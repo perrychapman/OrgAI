@@ -1,5 +1,5 @@
 import type { Project, ProjectKind, QuickRunInfo, Role } from '@shared/types'
-import { projectDocumentPath, projectKindOf } from '@shared/defaults'
+import { projectKindOf } from '@shared/defaults'
 import { CHAT_HARNESS_TOOLS, RUN_HARNESS_TOOLS } from '@shared/types'
 import { INTEGRATE_TOOL, datum } from './harnessTools'
 import type { PeerMessage } from './types'
@@ -130,6 +130,17 @@ export function networkPeerText(): string {
 export function architectureText(architecturePath: string, kind: ProjectKind = 'code'): string {
   if (kind === 'engagement') return `The agreed engagement, workstreams, working agreements and deliverable standards live in ${architecturePath}. Read it before starting work and follow it.`
   return `The agreed architecture and conventions live in ${architecturePath}. Read it before changing code and follow it.`
+}
+
+/**
+ * The approved engagement document, shown in the prompt (OrgAI keeps it in its data folder, not the working folder).
+ * It is user-approved content, so it is not wrapped as untrusted data. The text is already capped by
+ * readEngagementDocument; without one, a short line says none was agreed yet.
+ */
+export function engagementDocumentText(doc: string | undefined): string {
+  const text = typeof doc === 'string' ? doc.trim() : ''
+  if (!text) return 'No engagement document has been agreed yet. Work from the brief and ask the user when something material is unclear.'
+  return `The agreed engagement document (approved by the user; follow it):\n\n${text}`
 }
 
 /** For the root orchestrator: keep the architecture document true when the work changes it. */
@@ -331,7 +342,9 @@ export function buildRolePrompt(role: Role, roles: Role[], project: Project, fla
   } else if (!isSetup) {
     const kind = projectKindOf(project)
     const archPath = project.setup?.architecturePath
-    if (archPath) {
+    if (kind === 'engagement') {
+      parts.push(engagementDocumentText(flags.engagementDocument))
+    } else if (archPath) {
       parts.push(architectureText(archPath, kind))
       if (role.reportsTo === null) parts.push(architectureDriftText(archPath, kind))
     }
@@ -365,8 +378,8 @@ export function isArchitectureFile(filePath: unknown, architecturePath: string):
   if (typeof filePath !== 'string' || !filePath) return false
   const norm = (p: string): string => p.replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase()
   const file = norm(filePath)
-  return [architecturePath, projectDocumentPath('engagement')].some((p) => {
-    const target = norm(p)
-    return file === target || file.endsWith(`/${target}`)
-  })
+  if (!architecturePath) return false
+  // Engagements keep their document in OrgAI's data folder, so no path in the folder is the document.
+  const target = norm(architecturePath)
+  return file === target || file.endsWith(`/${target}`)
 }

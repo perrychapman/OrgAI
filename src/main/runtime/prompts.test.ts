@@ -264,13 +264,6 @@ describe('engagement prompts and reference folders', () => {
     expect(text).not.toContain('build and tests')
   })
 
-  it('points at the engagement document with engagement wording', () => {
-    const text = buildRolePrompt(roles[1], roles, eng(), flags)
-    expect(text).toContain('The agreed engagement, workstreams, working agreements and deliverable standards live in .orgai/ENGAGEMENT.md. Read it before starting work')
-    expect(text).not.toContain('Read it before changing code')
-    expect(buildRolePrompt(roles[0], roles, eng(), flags)).toContain('update .orgai/ENGAGEMENT.md in the same run')
-  })
-
   it('names reference folders for writing and reading roles, as one-line data', () => {
     const line = 'These folders are reference material: read them, never change them: "C:\\client\\inputs", "/mnt/‹ref› more".'
     expect(referenceDirectoriesText(refs)).toBe(line)
@@ -287,10 +280,40 @@ describe('engagement prompts and reference folders', () => {
     expect(buildRolePrompt(roles[0], roles, eng(), { ...flags, quick, referenceDirectories: refs })).not.toContain('reference material')
   })
 
-  it('isArchitectureFile also recognises the engagement document', () => {
-    expect(isArchitectureFile('C:\\folder\\.orgai\\ENGAGEMENT.md', '.orgai/ARCHITECTURE.md')).toBe(true)
-    expect(isArchitectureFile('.orgai/ENGAGEMENT.md', '.orgai/ENGAGEMENT.md')).toBe(true)
+  it('isArchitectureFile never matches an engagement file in the folder (the document is kept in OrgAI)', () => {
+    expect(isArchitectureFile('C:\\folder\\.orgai\\ENGAGEMENT.md', '.orgai/ARCHITECTURE.md')).toBe(false)
     expect(isArchitectureFile('/folder/ENGAGEMENT.md', '.orgai/ARCHITECTURE.md')).toBe(false)
+    expect(isArchitectureFile('/folder/ENGAGEMENT.md', '')).toBe(false)
+  })
+})
+
+describe('engagement document in the prompt', () => {
+  const roles = orgChart()
+  const eng = (): ReturnType<typeof project> => project({ kind: 'engagement', setup: { kind: 'new', state: 'complete' } })
+  const flags = { isSetup: false, isolation: false }
+
+  it('includes the agreed document text for every role, with no file path and no drift text', () => {
+    const doc = '# Client engagement\n\n## Summary\n\nMigrate reporting.'
+    for (const r of [roles[0], roles[1]]) {
+      const text = buildRolePrompt(r, roles, eng(), { ...flags, engagementDocument: doc })
+      expect(text).toContain('The agreed engagement document (approved by the user; follow it):\n\n# Client engagement')
+      expect(text).toContain('Migrate reporting.')
+      expect(text).not.toContain('ENGAGEMENT.md')
+      expect(text).not.toContain('in the same run so it stays true')
+    }
+  })
+
+  it('says none was agreed yet when there is no document, even with a stale architecturePath', () => {
+    const p = project({ kind: 'engagement', setup: { kind: 'new', state: 'complete', architecturePath: '.orgai/ENGAGEMENT.md' } })
+    const text = buildRolePrompt(roles[1], roles, p, flags)
+    expect(text).toContain('No engagement document has been agreed yet.')
+    expect(text).not.toContain('.orgai')
+  })
+
+  it('renders a truncation note from readEngagementDocument as part of the text, and code prompts ignore the flag', () => {
+    const text = buildRolePrompt(roles[1], roles, eng(), { ...flags, engagementDocument: 'abc\n\n… (truncated: the engagement document is longer than 10 characters)' })
+    expect(text).toContain('… (truncated: the engagement document is longer than 10 characters)')
+    expect(buildRolePrompt(roles[1], roles, project(), { ...flags, engagementDocument: 'SECRET DOC' })).not.toContain('SECRET DOC')
   })
 })
 

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { PROPOSAL_TOOLS } from '@shared/setup'
 import { harnessToolsFor, setupTools, type HarnessTool } from './harnessTools'
 import { fakeCtx, project, runSummary } from './testHelpers'
@@ -41,6 +41,21 @@ describe('harness tools per project kind', () => {
     const ctx = fakeCtx({ project: project({ kind: 'engagement' }) })
     const tool = byName(setupTools(ctx), PROPOSAL_TOOLS.architecture)
     expect(tool.description).toMatch(/engagement charter/)
-    expect(await tool.call(archArgs)).toContain('The engagement charter was saved and written to .orgai/ENGAGEMENT.md')
+    const text = await tool.call(archArgs)
+    expect(text).toContain('The engagement document was saved in OrgAI (nothing is written to the working folder). Continue with the org chart.')
+    expect(text).not.toContain('.orgai')
+  })
+
+  it('propose_settings carries a trimmed client, refuses hidden characters and drops isolateWriters for engagements', async () => {
+    const ctx = fakeCtx({ project: project({ kind: 'engagement' }) })
+    const tool = byName(setupTools(ctx), PROPOSAL_TOOLS.settings)
+    const base = { title: 'S', rationale: 'r', brief: 'b' }
+    expect(await tool.call({ ...base, client: '  Northwind Ltd  ', isolateWriters: true })).toContain('settings were applied')
+    const sent = vi.mocked(ctx.requestProposal).mock.calls[0][0] as unknown as { payload: Record<string, unknown> }
+    expect(sent.payload.client).toBe('Northwind Ltd')
+    expect('isolateWriters' in sent.payload).toBe(false)
+    expect(await tool.call({ ...base, client: 'North​wind' })).toMatch(/^REVISE\. .*client contains a hidden character/)
+    await expect(tool.call({ ...base, client: 'x'.repeat(121) })).rejects.toThrow()
+    expect(ctx.requestProposal).toHaveBeenCalledTimes(1)
   })
 })

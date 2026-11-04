@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { newProject } from '@shared/defaults'
 import type { ArchitectureSpec, Project } from '@shared/types'
 import type { ProjectStore } from '../store/projects'
+import { appRulesFile, engagementDocumentFile } from '../store/projectData'
 import { CLAUDE_MD_MARKER, SetupService, renderEngagement } from './service'
 
 const spec: ArchitectureSpec = {
@@ -17,6 +18,7 @@ const spec: ArchitectureSpec = {
 }
 
 let dir: string
+let data: string
 let stored: Project
 let service: SetupService
 
@@ -26,55 +28,87 @@ function fakeStore(): ProjectStore {
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'orgai-engsetup-'))
+  data = mkdtempSync(join(tmpdir(), 'orgai-engdata-'))
   stored = newProject({ name: 'Client work', path: dir, brief: 'b', kind: 'engagement', setupKind: 'new' })
-  service = new SetupService(fakeStore())
+  service = new SetupService(fakeStore(), { dataDir: data })
 })
 
 afterEach(() => {
   rmSync(dir, { recursive: true, force: true })
+  rmSync(data, { recursive: true, force: true })
 })
 
 const arch = (): Parameters<SetupService['applyProposal']>[1] =>
   ({ id: 'x', runId: 'r', createdAt: 0, kind: 'architecture', agentId: 'root', title: 'Charter', payload: spec }) as never
 
+const settings = (payload: Record<string, unknown>): Parameters<SetupService['applyProposal']>[1] =>
+  ({ id: 's', runId: 'r', createdAt: 0, kind: 'settings', agentId: 'root', title: 'Settings', payload: { brief: 'New brief', ...payload } }) as never
+
 describe('engagement setup', () => {
-  it('writes .orgai/ENGAGEMENT.md with engagement headings and records the path', () => {
+  it('writes the engagement document to the data folder and leaves architecturePath unset', () => {
     const saved = service.applyProposal(stored.id, arch())
-    expect(saved.setup?.architecturePath).toBe('.orgai/ENGAGEMENT.md')
-    expect(existsSync(join(dir, '.orgai', 'ARCHITECTURE.md'))).toBe(false)
-    const md = readFileSync(join(dir, '.orgai', 'ENGAGEMENT.md'), 'utf8')
+    expect(saved.setup?.architecturePath).toBeUndefined()
+    expect(saved.setup?.architecture).toEqual(spec)
+    const file = engagementDocumentFile(data, stored.id)
+    const md = readFileSync(file, 'utf8')
     expect(md).toBe(renderEngagement('Client work', spec))
     for (const h of ['# Client work engagement', '## Summary', '## Platforms and systems', '## Workstreams', '## Working agreements and standards', '## Recurring procedures', '## Risks']) {
       expect(md).toContain(h)
     }
-    expect(md).not.toMatch(/## (Stack|Modules|Commands|Conventions)/)
+    expect(readdirSync(join(file, '..')).filter((f) => f.endsWith('.tmp'))).toEqual([])
   })
 
-  it('points CLAUDE.md at the engagement document with engagement wording', () => {
+  it('writes nothing into the working folder after architecture and settings approval', () => {
+    writeFileSync(join(dir, 'Brief.docx'), 'x')
+    writeFileSync(join(dir, 'CLAUDE.md'), '# Client notes\n', 'utf8')
     service.applyProposal(stored.id, arch())
-    const text = readFileSync(join(dir, 'CLAUDE.md'), 'utf8')
-    expect(text).toContain(CLAUDE_MD_MARKER)
-    expect(text).toContain('Read `.orgai/ENGAGEMENT.md` before starting work. It records the agreed engagement, workstreams, working agreements and deliverable standards. Keep it current when they change.')
-    expect(text).not.toContain('before changing code')
+    service.applyProposal(stored.id, arch())
+    service.applyProposal(stored.id, settings({ allowRules: ['Bash(npm test:*)'], client: 'Northwind', isolateWriters: true, permissionMode: 'auto' }))
+    expect(readdirSync(dir).sort()).toEqual(['Brief.docx', 'CLAUDE.md'])
+    expect(readFileSync(join(dir, 'CLAUDE.md'), 'utf8')).toBe('# Client notes\n')
+    expect(existsSync(join(dir, '.orgai'))).toBe(false)
+    expect(existsSync(join(dir, '.claude'))).toBe(false)
   })
 
-  it('keeps an existing CLAUDE.md and does not add the pointer twice', () => {
-    writeFileSync(join(dir, 'CLAUDE.md'), '# Notes\n\nHand written.\n', 'utf8')
-    service.applyProposal(stored.id, arch())
-    service.applyProposal(stored.id, arch())
-    const text = readFileSync(join(dir, 'CLAUDE.md'), 'utf8')
-    expect(text.startsWith('# Notes\n\nHand written.')).toBe(true)
-    expect(text.split(CLAUDE_MD_MARKER)).toHaveLength(2)
+  it('saves allow rules in the app rules file, sets the client and leaves isolateWriters unset', () => {
+    const saved = service.applyProposal(stored.id, settings({ allowRules: ['Bash(npm test:*)'], client: '  Northwind Ltd  ', isolateWriters: true }))
+    const rules = JSON.parse(readFileSync(appRulesFile(data, stored.id), 'utf8')) as { permissions: { allow: string[] } }
+    expect(rules.permissions.allow).toEqual(['Bash(npm test:*)'])
+    expect(saved.client).toBe('Northwind Ltd')
+    expect(saved.isolateWriters).toBeUndefined()
+    expect(existsSync(join(dir, '.claude'))).toBe(false)
   })
 
-  it('a code project still writes ARCHITECTURE.md', () => {
+  it('an empty client clears it; hidden characters and overlong names are refused', () => {
+    service.applyProposal(stored.id, settings({ client: 'Northwind' }))
+    expect(stored.client).toBe('Northwind')
+    expect(() => service.applyProposal(stored.id, settings({ client: 'North‮wind' }))).toThrow(/invisible/)
+    expect(() => service.applyProposal(stored.id, settings({ client: 'x'.repeat(121) }))).toThrow(/longer than 120/)
+    expect(stored.client).toBe('Northwind')
+    expect(service.applyProposal(stored.id, settings({ client: '  ' })).client).toBeUndefined()
+  })
+
+  it('refuses to save an engagement document without a data folder', () => {
+    expect(() => new SetupService(fakeStore()).applyProposal(stored.id, arch())).toThrow(/data folder/)
+    expect(readdirSync(dir)).toEqual([])
+  })
+
+  it('a code project still writes ARCHITECTURE.md, the CLAUDE.md pointer and settings.local.json', () => {
     stored = newProject({ name: 'Code', path: dir, brief: 'b', setupKind: 'new' })
     const saved = service.applyProposal(stored.id, arch())
     expect(saved.setup?.architecturePath).toBe('.orgai/ARCHITECTURE.md')
-    expect(readFileSync(join(dir, 'CLAUDE.md'), 'utf8')).toContain('before changing code')
+    expect(existsSync(join(dir, '.orgai', 'ARCHITECTURE.md'))).toBe(true)
+    const text = readFileSync(join(dir, 'CLAUDE.md'), 'utf8')
+    expect(text).toContain(CLAUDE_MD_MARKER)
+    expect(text).toContain('before changing code')
+    const after = service.applyProposal(stored.id, settings({ allowRules: ['Bash(npm test:*)'], isolateWriters: true, client: 'ignored-for-code?' }))
+    expect(existsSync(join(dir, '.claude', 'settings.local.json'))).toBe(true)
+    expect(existsSync(appRulesFile(data, stored.id))).toBe(false)
+    expect(after.isolateWriters).toBe(true)
+    expect(after.client).toBeUndefined()
   })
 
-  it('prepare profiles the folder as an engagement and the hidden context names the kind', async () => {
+  it('prepare profiles the folder as an engagement without writing to it, and the hidden context names the kind', async () => {
     mkdirSync(join(dir, 'inputs'))
     writeFileSync(join(dir, 'inputs', 'survey.xlsx'), '')
     writeFileSync(join(dir, 'Brief.md'), 'Client brief')
@@ -83,8 +117,10 @@ describe('engagement setup', () => {
     expect(prepared.setup?.profile?.documents).toContain('inputs/survey.xlsx')
     const text = service.hiddenContext(prepared)
     expect(text).toContain('Project kind: engagement')
+    expect(text).toContain('nothing is written to the working folder')
+    expect(text).not.toContain('.orgai')
     expect(text).toContain('Working folder profile:')
-    expect(text).toContain('Documents:')
     expect(text).not.toContain('Repository profile')
+    expect(readdirSync(dir).sort()).toEqual(['Brief.md', 'inputs'])
   })
 })
