@@ -106,10 +106,11 @@ describe('McpService servers', () => {
   })
 
   it('persistInstall saves the spec as agent-sourced and stores the secrets', () => {
-    const p = svc.persistInstall(pid, spec(), { GITHUB_TOKEN: 'tok' })
+    const SECRET = 'tok-secret-7f3a9c1e-never-in-json'
+    const p = svc.persistInstall(pid, spec(), { GITHUB_TOKEN: SECRET })
     expect(p.mcpServers?.[0].source).toBe('agent')
-    expect(JSON.stringify(p)).not.toContain('tok')
-    expect(svc.resolve(pid, p.mcpServers![0]).env.GITHUB_TOKEN).toBe('tok')
+    expect(JSON.stringify(p)).not.toContain(SECRET)
+    expect(svc.resolve(pid, p.mcpServers![0]).env.GITHUB_TOKEN).toBe(SECRET)
     expect(svc.enabledServers(p)).toHaveLength(1)
     expect(svc.enabledServers({ ...p, mcpServers: [{ ...p.mcpServers![0], enabled: false }] })).toHaveLength(0)
   })
