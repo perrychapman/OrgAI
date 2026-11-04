@@ -28,7 +28,7 @@ import {
   shellRuleContents,
   suggestionLabels
 } from './permissionRules'
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { shellRulesFor } from './ruleMatch'
 
@@ -120,6 +120,25 @@ describe('offerable directories (review M1)', () => {
       { type: 'setMode', mode: 'acceptEdits', destination: 'session' },
       { type: 'addDirectories', directories: ['/home/u/.ssh'], destination: 'session' }
     ], false, o)).toEqual([{ type: 'setMode', mode: 'acceptEdits', destination: 'session' }])
+  })
+})
+
+describe('engagements: a { file } target round trip', () => {
+  it('lists, adds and removes through the file and leaves the project folder empty', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'orgai-rules-'))
+    try {
+      const project = join(dir, 'client')
+      mkdirSync(project)
+      const target = { file: join(dir, 'data', 'projects', 'p1', 'permission-rules.json') }
+      expect(listRules(target)).toEqual([])
+      expect(addRulesReport(target, ['Bash(ls:*)', 'Bash(ls:*)'])).toEqual({ rules: ['Bash(ls:*)'], added: ['Bash(ls:*)'] })
+      expect(listRules(target)).toEqual(['Bash(ls:*)'])
+      expect(addRules(target, ['Bash(cat:*)'])).toEqual(['Bash(ls:*)', 'Bash(cat:*)'])
+      expect(removeRule(target, 'Bash(ls:*)')).toEqual(['Bash(cat:*)'])
+      expect(readdirSync(project)).toEqual([])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
 

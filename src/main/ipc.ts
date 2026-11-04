@@ -117,6 +117,7 @@ import { assistPrompt } from './mcp/assist'
 import { draftOrgChart } from './ai/draft'
 import { projectConnection } from '@shared/defaults'
 import { log, logPath, logsDir } from './log'
+import { projectRulesFile, removeProjectData } from './store/projectData'
 import { addRules, allowRuleRefusal, listRules, removeRule, ruleSaveRefusal } from './runtime/permissionRules'
 import { isValidRule } from './runtime/ruleMatch'
 import { buildAppInfo, buildSettingsInfo, stripSettingsInfo } from './appInfo'
@@ -296,6 +297,7 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
     skills.removeProjectFiles(id)
     capabilities.forgetProject(id)
     projects.remove(id)
+    removeProjectData(settings.dataDir, id)
   })
   ipcMain.handle(IPC.projectsPickDir, async (e) => {
     const win = BrowserWindow.fromWebContents(e.sender)
@@ -490,13 +492,13 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
   ipcMain.handle(IPC.permissionsList, (_e, projectId: string) => {
     const project = projects.get(projectId)
     if (!project) throw new Error('Project not found')
-    return listRules(project.path)
+    return listRules({ file: projectRulesFile(project, settings.dataDir) })
   })
   ipcMain.handle(IPC.permissionsRemove, (_e, raw: unknown) => {
     const input = permissionRuleArgs(raw)
     const project = projects.get(input.projectId)
     if (!project) throw new Error('Project not found')
-    return removeRule(project.path, input.rule)
+    return removeRule({ file: projectRulesFile(project, settings.dataDir) }, input.rule)
   })
   ipcMain.handle(IPC.permissionsAdd, (_e, raw: unknown) => {
     const input = permissionRuleArgs(raw)
@@ -505,7 +507,7 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
     const rule = input.rule
     const refusal = permissionAddRefusal(rule)
     if (refusal) throw new Error(refusal)
-    return addRules(project.path, [rule])
+    return addRules({ file: projectRulesFile(project, settings.dataDir) }, [rule])
   })
   ipcMain.handle(
     IPC.permissionsDecideRequest,

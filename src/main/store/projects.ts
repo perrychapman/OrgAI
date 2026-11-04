@@ -1,7 +1,8 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, posix, win32, type PlatformPath } from 'node:path'
 import type { AppSettings, ConnectionId, Project, ProjectCreateInput, ProjectPathCheck, Role } from '@shared/types'
-import { HARNESS_PROJECT_ID, PROJECT_ALLOWED_DIRECTORIES_MAX, PROJECT_ALLOWED_DIRECTORY_MAX_CHARS, isModelTier, isProjectKind, isVirtualProjectId } from '@shared/types'
+import { hiddenCharIn } from '../capabilities/sanitize'
+import { HARNESS_PROJECT_ID, PROJECT_CLIENT_MAX_CHARS, PROJECT_ALLOWED_DIRECTORIES_MAX, PROJECT_ALLOWED_DIRECTORY_MAX_CHARS, isModelTier, isProjectKind, isVirtualProjectId } from '@shared/types'
 import { isSafeId, modelForTier, newProject, preferEverydayNearLimit, projectConnection, storedSkillEvaluation, teamReviewOf, type TierContext } from '@shared/defaults'
 import { migrateProject } from '../connections/remap'
 import { validModelId } from '../connections/codexAccount'
@@ -270,6 +271,31 @@ function cleanDirectoryList(raw: unknown, dataDir: string, opts: AllowedDirector
 }
 
 /**
+ * Normalize `Project.client`: a string, trimmed, cut to PROJECT_CLIENT_MAX_CHARS at a character boundary; dropped
+ * (undefined) when it is not a string, empty or holds a hidden character.
+ */
+export function cleanClient(raw: unknown): string | undefined {
+  if (typeof raw !== 'string') {
+    console.debug('client: dropped a value that is not a string')
+    return undefined
+  }
+  let text = raw.trim()
+  if (!text) return undefined
+  if (hiddenCharIn(text, { prose: true })) {
+    console.debug('client: dropped a value with a hidden character')
+    return undefined
+  }
+  if (text.length > PROJECT_CLIENT_MAX_CHARS) {
+    text = text.slice(0, PROJECT_CLIENT_MAX_CHARS)
+    const last = text.charCodeAt(text.length - 1)
+    if (last >= 0xd800 && last <= 0xdbff) text = text.slice(0, -1)
+    text = text.trim()
+    console.debug('client: cut to the length limit')
+  }
+  return text || undefined
+}
+
+/**
  * The project with allowedDirectories and referenceDirectories normalized (each removed when it is not an array), a
  * reference entry that names the same place as an allowed one dropped (the folder stays writable), and a non-ProjectKind
  * `kind` removed (missing = 'code'); `changed` when anything differs.
@@ -283,6 +309,15 @@ function withCleanAllowedDirectories(project: Project, dataDir: string, home: st
     next = { ...next }
     delete next.kind
     changed = true
+  }
+  if ('client' in project) {
+    const client = cleanClient(project.client)
+    if (client !== project.client) {
+      next = { ...next }
+      if (client === undefined) delete next.client
+      else next.client = client
+      changed = true
+    }
   }
   const hasAllowed = 'allowedDirectories' in project
   const hasRefs = 'referenceDirectories' in project

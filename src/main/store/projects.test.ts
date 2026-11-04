@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join, posix, sep, win32 } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { McpServerSpec, PluginSpec, Project, Role, SkillSpec } from '@shared/types'
-import { PROJECT_ALLOWED_DIRECTORIES_MAX, PROJECT_ALLOWED_DIRECTORY_MAX_CHARS, PROJECT_REFERENCE_DIRECTORIES_MAX, PROJECT_REFERENCE_DIRECTORY_MAX_CHARS } from '@shared/types'
+import { PROJECT_CLIENT_MAX_CHARS, PROJECT_ALLOWED_DIRECTORIES_MAX, PROJECT_ALLOWED_DIRECTORY_MAX_CHARS, PROJECT_REFERENCE_DIRECTORIES_MAX, PROJECT_REFERENCE_DIRECTORY_MAX_CHARS } from '@shared/types'
 import { projectKindOf } from '@shared/defaults'
 import { project, role } from '../runtime/testHelpers'
 import { ProjectStore, cleanAllowedDirectories, cleanReferenceDirectories,acceptableRoleModel, sanitizeRoleModels, checkProjectPath, cleanProjectPath, createPathError, reconcileNearLimitProject, suggestedProjectName, type PathFs } from './projects'
@@ -65,6 +65,26 @@ describe('ProjectStore.saveFromRenderer', () => {
     expect(() => store.saveFromRenderer(project({ id: 'harness' }))).toThrow(/harness/)
     expect(() => store.saveFromRenderer(project({ id: 'quick' }))).toThrow(/cannot be saved/)
     expect(() => store.saveFromRenderer(project({ id: 'skills' }))).toThrow(/cannot be saved/)
+  })
+})
+
+describe('Project.client normalization', () => {
+  it('trims, cuts at the limit, and drops empty, non-string and hidden-character values on save', () => {
+    const store = new ProjectStore(dataDir())
+    const clientOf = (client: unknown): unknown => store.save(project({ client } as Partial<Project>)).client
+    expect(clientOf('  Acme Corp  ')).toBe('Acme Corp')
+    expect(clientOf('   ')).toBeUndefined()
+    expect(clientOf(42)).toBeUndefined()
+    expect(clientOf('Ac‮me')).toBeUndefined()
+    expect(clientOf('Ac​me')).toBeUndefined()
+    const cut = clientOf('x'.repeat(PROJECT_CLIENT_MAX_CHARS + 20)) as string
+    expect(cut).toBe('x'.repeat(PROJECT_CLIENT_MAX_CHARS))
+  })
+
+  it('does not cut an emoji in half', () => {
+    const store = new ProjectStore(dataDir())
+    const text = `${'x'.repeat(PROJECT_CLIENT_MAX_CHARS - 1)}😀`
+    expect(store.save(project({ client: text } as Partial<Project>)).client).toBe('x'.repeat(PROJECT_CLIENT_MAX_CHARS - 1))
   })
 })
 
