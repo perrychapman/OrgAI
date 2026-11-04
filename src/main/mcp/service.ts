@@ -56,6 +56,7 @@ import {
 } from './connectors'
 import { insideWorkspace, removeBuildDir, rewritePath, stageBuild, type InstalledBuild } from './builds'
 import { scratchDirFor } from '../quick/scratch'
+import { log } from '../log'
 import type { ConnectorAddInput, ConnectorInfo, ConnectorPresetRemoveInput, ConnectorState, ConnectorTokenInput, ConnectorDef, ConnectorVariant, McpProjectOverridesInput, UserConnectorDef } from '@shared/types'
 import { USER_CONNECTOR_PRESETS_MAX } from '@shared/types'
 import { presetVariantRefusal } from '../kit/format'
@@ -263,7 +264,8 @@ export class McpService {
   }) {
     this.mock = deps.mock === true
     this.dataDir = deps.dataDir
-    this.presets = deps.presets ?? (deps.dataDir ? new ConnectorPresetStore(deps.dataDir) : undefined)
+    if (!deps.dataDir) log.warn('McpService has no dataDir: built MCP servers cannot be staged and custom connector presets are unavailable (unless a presets store is passed).')
+    this.presets =deps.presets ?? (deps.dataDir ? new ConnectorPresetStore(deps.dataDir) : undefined)
     this.projects = deps.projects
     this.secrets = deps.secrets
     this.library = deps.library

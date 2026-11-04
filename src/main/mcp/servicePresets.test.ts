@@ -85,6 +85,24 @@ afterEach(() => {
 
 const infoOf = (svc: McpService, id: string) => svc.connectorsList().find((c) => c.connector.id === id)!
 
+describe('wiring as index.ts does it', () => {
+  it('a service built with only dataDir (no presets store) can save a preset', () => {
+    const svc = new McpService({ projects, secrets, library, dataDir: join(dir, 'data'), openExternal: async () => {} })
+    expect(svc.connectorPresetsUpsert(preset()).map((p) => p.id)).toEqual(['acme-crm'])
+  })
+
+  it('warns once at construction when dataDir is missing', async () => {
+    const log = await import('../log')
+    const warn = vi.spyOn(log.log, 'warn').mockImplementation(() => {})
+    new McpService({ projects, secrets, library })
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(String(warn.mock.calls[0][0])).toMatch(/dataDir.*built MCP servers.*presets/)
+    warn.mockClear()
+    new McpService({ projects, secrets, library, dataDir: join(dir, 'data') })
+    expect(warn).not.toHaveBeenCalled()
+  })
+})
+
 describe('connectorPresets list / upsert / remove', () => {
   it('stores, lists, edits and removes a preset and broadcasts', () => {
     const svc = build()
