@@ -2,7 +2,6 @@
 
 /* ---------- Dashboard (docs/design/dashboard.md) ----------
    Region layout, hero band and the attention column. Project tiles and fact cards: dashboard-projects.css. */
-@import './dashboard-projects.css';
 
 /* The scroll region under the topbar. One page scroll, no per-column scroll. Its padding sits on the grid, because a
    container cannot be styled by its own container query. */
@@ -45,18 +44,9 @@
   .dash-facts {
     grid-column: 2;
     grid-row: 3;
-    display: grid;
-    grid-template-columns: minmax(0, 1fr);
-    gap: var(--space-4);
-    align-content: start;
   }
 }
-/* The projects track is 600 px wide from a 1064 px container: three fact cards fit in a row from there. */
-@container dashboard (min-width: 1064px) and (max-width: 1279px) {
-  .dash-facts {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-}
+/* The cards inside .dash-facts lay themselves out (.dash-facts-grid in dashboard-projects.css). */
 @container dashboard (min-width: 1280px) {
   .dashboard-grid {
     grid-template-columns: minmax(340px, 4fr) minmax(0, 7fr) minmax(260px, 3fr);
