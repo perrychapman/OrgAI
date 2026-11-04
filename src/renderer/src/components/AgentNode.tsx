@@ -1,8 +1,8 @@
-import type { ReactElement } from 'react'
+import type { CSSProperties, ReactElement } from 'react'
 import { memo, useEffect, useState } from 'react'
 import { Check, TriangleAlert } from 'lucide-react'
 import { Handle, type Position, type Node, type NodeProps } from '@xyflow/react'
-import { handlesFor, useCanvasOptions, useHandleRefresh } from '../lib/canvas'
+import { handlesFor, stationGeometry, stationHandleStyle, useCanvasOptions, useHandleRefresh } from '../lib/canvas'
 import type { AgentInstance } from '@shared/types'
 import { formatElapsed, formatTokens, initials } from '../lib/layout'
 import { agentProducedNothing } from '@shared/defaults'
@@ -64,7 +64,23 @@ function AgentNodeView({ id, data, selected }: NodeProps<AgentFlowNode>): ReactE
   const { layout, nodeStyle } = useCanvasOptions()
   useHandleRefresh(id, layout, nodeStyle)
   const sides = handlesFor(layout)
-  const compact = nodeStyle === 'compact'
+  const station = nodeStyle === 'station'
+  const hex = nodeStyle === 'hex'
+  // Every style but the card moves its details into the tooltip and the sr-only line.
+  const compact = nodeStyle !== 'card'
+  const geo = stationGeometry(layout)
+  // Station handles sit on the circle's edge (flow.css centres them on the inline left / top).
+  const hs = (side: string): { style?: CSSProperties } => (station ? { style: stationHandleStyle(geo, side as `${Position}`) } : {})
+  const badges = (
+    <>
+      {agent.state === 'done' && <div className="badge">
+          <Icon icon={Check} size="xs" label="Finished" />
+        </div>}
+      {agent.state === 'error' && <div className="badge">
+          <Icon icon={TriangleAlert} size="xs" label="Failed" />
+        </div>}
+    </>
+  )
   const tokensText = `${formatTokens(agent.inputTokens + agent.outputTokens)} tok`
   const tail = hasCost ? costView(costInput).text : formatElapsed(agent.startedAt, agent.endedAt)
   const worktreeText = agent.worktree
@@ -83,22 +99,44 @@ function AgentNodeView({ id, data, selected }: NodeProps<AgentFlowNode>): ReactE
 
   return (
     <div
-      className={`agent-node state-${agent.state} ${selected ? 'selected' : ''} ${noResult ? 'no-result' : ''}`}
+      className={`agent-node state-${agent.state} ${selected ? 'selected' : ''} ${noResult ? 'no-result' : ''} ${isRoot ? 'is-root' : ''}`}
       data-style={nodeStyle}
-      style={{ ['--role' as string]: color }}
+      data-label={station ? geo.label : undefined}
+      style={{ ['--role' as string]: color, ...(station ? { width: geo.width, height: geo.height } : {}) }}
       title={compact ? compactTip : noResult ? 'Ended without a result: its tokens produced nothing' : undefined}
     >
-      {!isRoot && <Handle type="target" position={sides.target as Position} />}
-      <div className="head">
+      {!isRoot && <Handle type="target" position={sides.target as Position} {...hs(sides.target)} />}
+      {station && (
+        <>
+          <div className="station" style={{ left: geo.cx - geo.r, top: geo.cy - geo.r }}>
+            <div className="ring" />
+            {badges}
+          </div>
+          <div className="station-name">{agent.name}</div>
+          <span className="sr-only">{[activity, worktreeText].filter(Boolean).join(', ')}</span>
+        </>
+      )}
+      {hex && (
+        <>
+          <div className="hex-tile" aria-hidden="true">
+            <div className="hex-fill" />
+          </div>
+          <div className="hex-content">
+            <div className="avatar-wrap">
+              <div className="avatar">{initials(agent.name)}</div>
+              <div className="ring" />
+              {badges}
+            </div>
+            <div className="hex-name">{agent.name}</div>
+            <span className="sr-only">{[activity, worktreeText].filter(Boolean).join(', ')}</span>
+          </div>
+        </>
+      )}
+      {!station && !hex && <div className="head">
         <div className="avatar-wrap">
           <div className="avatar">{initials(agent.name)}</div>
           <div className="ring" />
-          {agent.state === 'done' && <div className="badge">
-              <Icon icon={Check} size="xs" label="Finished" />
-            </div>}
-          {agent.state === 'error' && <div className="badge">
-              <Icon icon={TriangleAlert} size="xs" label="Failed" />
-            </div>}
+          {badges}
         </div>
         <div className="title">
           <div className="name" title={compact ? undefined : agent.name}>
@@ -113,7 +151,7 @@ function AgentNodeView({ id, data, selected }: NodeProps<AgentFlowNode>): ReactE
             </div>
           )}
         </div>
-      </div>
+      </div>}
       {!compact && (
         <>
           <div className={`activity ${streaming || WORKING.has(agent.state) ? 'working' : ''}`} title={activity}>
@@ -130,10 +168,10 @@ function AgentNodeView({ id, data, selected }: NodeProps<AgentFlowNode>): ReactE
           </div>
         </>
       )}
-      <Handle type="source" position={sides.source as Position} />
+      <Handle type="source" position={sides.source as Position} {...hs(sides.source)} />
       {/* Agent-to-agent messages attach on the other two sides, after the reporting-line handles so those stay the defaults. */}
-      <Handle id={MSG_OUT} type="source" position={sides.msgOut as Position} className="msg-handle" isConnectable={false} />
-      <Handle id={MSG_IN} type="target" position={sides.msgIn as Position} className="msg-handle" isConnectable={false} />
+      <Handle id={MSG_OUT} type="source" position={sides.msgOut as Position} className="msg-handle" isConnectable={false} {...hs(sides.msgOut)} />
+      <Handle id={MSG_IN} type="target" position={sides.msgIn as Position} className="msg-handle" isConnectable={false} {...hs(sides.msgIn)} />
     </div>
   )
 }

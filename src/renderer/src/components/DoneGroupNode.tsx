@@ -1,8 +1,8 @@
-import type { ReactElement } from 'react'
+import type { CSSProperties, ReactElement } from 'react'
 import { memo } from 'react'
 import { ChevronDown } from 'lucide-react'
 import { Handle, type Position, type Node, type NodeProps } from '@xyflow/react'
-import { handlesFor, useCanvasOptions, useHandleRefresh } from '../lib/canvas'
+import { handlesFor, stationGeometry, stationHandleStyle, useCanvasOptions, useHandleRefresh } from '../lib/canvas'
 import { MSG_IN, MSG_OUT } from './AgentNode'
 import type { AgentInstance } from '@shared/types'
 import { IconButton } from './ui/IconButton'
@@ -41,38 +41,83 @@ function DoneGroupNodeView({ id, data, selected }: NodeProps<DoneGroupFlowNode>)
   const { layout, nodeStyle } = useCanvasOptions()
   useHandleRefresh(id, layout, nodeStyle)
   const sides = handlesFor(layout)
-  const compact = nodeStyle === 'compact'
+  const station = nodeStyle === 'station'
+  const hex = nodeStyle === 'hex'
+  // Every style but the card moves its details into the tooltip.
+  const compact = nodeStyle !== 'card'
+  const geo = stationGeometry(layout)
+  // The terminus bar is 10 px high and 28 wide: handles meet its edge, not the 32 px station circle's.
+  const hs = (side: string): { style?: CSSProperties } => {
+    if (!station) return {}
+    const half = side === 'top' || side === 'bottom' ? 5 : 14
+    return { style: stationHandleStyle({ ...geo, r: half }, side as `${Position}`) }
+  }
   const tip = names + (agents.length > 4 ? ', …' : '') + (compact && conflicts > 0 ? ` · ${conflicts} unmerged` : '')
+  const expand = (
+    <span className="done-expand">
+      <IconButton
+        icon={ChevronDown}
+        size="sm"
+        label={earlier && label ? `Show ${label} on the chart` : `Show reports under ${parentName}`}
+        onClick={(e) => {
+          // The click expands the group; it must not also select the node.
+          e.stopPropagation()
+          onToggle(parentId)
+        }}
+      />
+    </span>
+  )
+  const main = (
+    <div className="done-group-main">
+      <span className="done-count">
+        <i /> {label ?? `${done} done`}
+      </span>
+      {failed > 0 && <span className="done-failed">{compact ? `· ${failed} failed` : `${failed} failed`}</span>}
+      {!compact && conflicts > 0 && <span className="done-conflict">{conflicts} unmerged</span>}
+      {!compact && <Cost value={cost} hideEmpty className="done-cost" />}
+    </div>
+  )
 
   return (
     <div
       data-testid="done-group"
       data-count={agents.length}
       data-style={nodeStyle}
-      className={`done-group ${earlier ? 'earlier' : ''} ${selected ? 'selected' : ''}`} data-earlier={earlier ? 'true' : undefined} style={{ ['--role' as string]: color }} title={tip}>
-      <Handle type="target" position={sides.target as Position} />
-      <Handle id={MSG_OUT} type="source" position={sides.msgOut as Position} className="msg-handle" isConnectable={false} />
-      <Handle id={MSG_IN} type="target" position={sides.msgIn as Position} className="msg-handle" isConnectable={false} />
-      <div className="done-group-main">
-        <span className="done-count">
-          <i /> {label ?? `${done} done`}
-        </span>
-        {failed > 0 && <span className="done-failed">{compact ? `· ${failed} failed` : `${failed} failed`}</span>}
-        {!compact && conflicts > 0 && <span className="done-conflict">{conflicts} unmerged</span>}
-        {!compact && <Cost value={cost} hideEmpty className="done-cost" />}
-      </div>
-      <span className="done-expand">
-        <IconButton
-          icon={ChevronDown}
-          size="sm"
-          label={earlier && label ? `Show ${label} on the chart` : `Show reports under ${parentName}`}
-          onClick={(e) => {
-            // The click expands the group; it must not also select the node.
-            e.stopPropagation()
-            onToggle(parentId)
-          }}
-        />
-      </span>
+      data-label={station ? geo.label : undefined}
+      className={`done-group ${earlier ? 'earlier' : ''} ${selected ? 'selected' : ''}`}
+      data-earlier={earlier ? 'true' : undefined}
+      style={{ ['--role' as string]: color, ...(station ? { width: geo.width, height: geo.height } : {}) }}
+      title={tip}
+    >
+      <Handle type="target" position={sides.target as Position} {...hs(sides.target)} />
+      <Handle id={MSG_OUT} type="source" position={sides.msgOut as Position} className="msg-handle" isConnectable={false} {...hs(sides.msgOut)} />
+      <Handle id={MSG_IN} type="target" position={sides.msgIn as Position} className="msg-handle" isConnectable={false} {...hs(sides.msgIn)} />
+      {station && (
+        <>
+          <div className="station-terminus" style={{ left: geo.cx - 14, top: geo.cy - 5 }} aria-hidden="true" />
+          <div className="station-name">
+            {main}
+            {expand}
+          </div>
+        </>
+      )}
+      {hex && (
+        <>
+          <div className="hex-tile" aria-hidden="true">
+            <div className="hex-fill" />
+          </div>
+          <div className="hex-content">
+            {main}
+            {expand}
+          </div>
+        </>
+      )}
+      {!station && !hex && (
+        <>
+          {main}
+          {expand}
+        </>
+      )}
     </div>
   )
 }
