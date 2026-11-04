@@ -4,12 +4,12 @@ UX Researcher, build `ad2ee6d`, `ORGAI_MOCK=1`, fresh temp data dir, 1600x1000 a
 keyboard pass at 1024x640 light. Compared with `dashboard.md` 5.2, `ux-review-usage-2.md`, `UsageMeter.tsx`,
 `Sidebar.tsx`, `FactsCards.tsx`, `usage.css`, `shell.css`. Shots and scripts: `e2e/shots/ux/litellm-periods/`
 (gitignored). The mock hides the spend bar and figures, so geometry was measured by swapping candidate label text into
-the live row; no LiteLLM figure was seen in the app. `periods` is not in `UsageSpend` yet (types.ts ~2826).
+the live row; no LiteLLM figure was seen. `periods` is not in `UsageSpend` yet (types.ts ~2826).
 
 ## Verdict: DESIGN NOTES, no blocker
 
-The row has room for exactly one figure. Show today's spend there, keep the budget on the bar, and put the three
-periods in the popover as a definition list. The Dashboard card should repeat the row's line.
+The row has room for one figure: today's spend, with the budget on the bar. The popover lists the three periods as a
+definition list and the Dashboard card repeats the row's line.
 
 ## 1. Account row
 
@@ -50,8 +50,8 @@ Since Mon 2 Nov (tooltip per row)
   "Daily, weekly and monthly spend not reported. The proxy needs spend logs this key can read." (`usage-hint`).
 - Stale: the one existing `Stale` line covers budget and periods; no per-row stamps. If `since` of a period is older
   than its calendar start, say "Since <date>" in the `dt` tooltip only.
-- Keyboard (observed): Tab reaches `auth-pill` in 5 stops from the top, 2 px inset focus ring, Enter opens, focus
-  lands on "App settings: Connections", Esc returns focus to the row. The list adds no tab stop. Good.
+- Keyboard (observed): `auth-pill` is 5 Tab stops from the top with a 2 px inset ring; Enter opens, focus lands on
+  "App settings: Connections", Esc returns it to the row. The list adds no tab stop.
 
 ## 3. Dashboard Usage card (`dash-usage`)
 
@@ -66,10 +66,9 @@ empty text for LiteLLM: today it reads "No usage reported yet." (M2).
   7.4:1 light. Fine for the caption rows.
 - The 4 px fill `--warning` on `--surface-3` in light is about 2.3:1 (`#e08a00` on `#e9ecf4`), below 3:1 for a
   component; the text beside it carries the state, so keep it but never add a bar without text (L1).
-- At 1024x640 the sidebar is the rail: the row is icon-only and the period line reaches the user only through the
-  tooltip and the popover. The popover (320 px, x 8) overlays the dashboard; fine.
-- A user who widens the sidebar past ~300 px gains nothing today; do not add a second figure at width, it makes the
-  line change meaning when the panel resizes.
+- At 1024x640 the sidebar is the rail: the row is icon-only, so the line reaches the user only through the tooltip
+  and the popover (320 px at x 8, over the dashboard; fine).
+- Do not add a second figure at wide sidebars: the line would change meaning on resize.
 
 ## 5. Testids
 
@@ -86,14 +85,12 @@ empty text for LiteLLM: today it reads "No usage reported yet." (M2).
   combined line never fits under 420. Fix: one figure as in section 1.
 - **M2** `FactsCards.tsx` LiteLLM empty state says "No usage reported yet." and the card heading is "Usage"; the
   popover rule is "spend". Fix: "No spend reported yet." for LiteLLM; heading can stay (it covers plan windows).
-- **M3** Accessibility: the budget bar's name is "LiteLLM spend 84 percent of budget" only; without a list the periods
-  would be unnamed text. Fix: the `dl` above.
+- **M3** Accessibility: the bar's name is "LiteLLM spend 84 percent of budget" only; periods as loose text would be
+  unnamed. Fix: the `dl` above.
 - **L1** Light-theme warning fill contrast 2.3:1 (pre-existing).
-- **L2** `Popover` is a native `popover`; after Esc focus returned to the row, but whether Tab-out closes it was not
-  verified (my probe tested DOM presence, which is always true).
+- **L2** Whether Tab-out closes the native `popover` is not verified (my probe tested DOM presence, always true).
 
 ## Not driven
 
-LiteLLM figures, budget bar, warn and danger levels, stale state (mock reports no spend); the `periods` payload (not in
-types yet); a resized sidebar with a real bar (label budget computed from CSS, not seen); System theme; 320 px reflow
-and browser zoom.
+LiteLLM figures, bar, warn and danger levels, stale state (the mock reports no spend); the `periods` payload; a
+resized sidebar with a real bar (label budget computed from CSS); System theme; 320 px reflow; browser zoom.
