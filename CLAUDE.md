@@ -369,7 +369,17 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   Context notes carry `excerpt`, `createdAt` (order by it), `source`, `recordedBy`, `updatedBy`, `retired`. Prompts:
   engagement roots and reports are told to search the graph before dependent work and record what they learn; the
   single-assistant paragraph names note saving only. Verified by unit tests with fake stores and fake adapters only;
-  no live run, no mock marker and no renderer yet.
+  no live run and no renderer yet.
+  - Mock marker `[mock:knowledge]` (mock.ts `knowledgeSteps`, default script, engagement work runs): before the default
+    script the root calls `engagement_knowledge` vocabulary, upsert_node for Acme Corp (organisation, alias Acme, facts
+    "Headquartered in Leeds" / "Fiscal year ends in March"), Jane Doe (person, alias J. Doe), the decision "Migrate
+    billing to Stripe" and the risk "Legacy export format undocumented", link Jane works-at Acme and the decision
+    decided-by Jane (note "Sponsor sign-off"), `engagement_context` save "Kickoff call summary", search "Acme", then
+    get Acme Corp and retire its March fact (`knowledgeFactId` parses the id from the fenced result; unparsable = the
+    retire is skipped with an info log, never a failure), says "I recorded what I learned about the engagement." and
+    goes on with the default script; on a code project (or without `ctx.knowledge`) it says "No knowledge graph is
+    available in this run." instead. Each call goes through the real harness tools, so RunManager counts the writes
+    and writes the harness rows. Unit-tested with fake `knowledge` / `engagementNotes` contexts (mock.test.ts).
 - Self-configuration (2026-11-03; ARCHITECTURE.md Shared contracts, Connections, Conventions): derivable settings are
   automatic with an override; never fill them with defaults in a store, `newProject` or a renderer save.
   - Effective default connection: `ConnectionService.effectiveDefault()` (defaults.ts `effectiveDefaultConnection`)

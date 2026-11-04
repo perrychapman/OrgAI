@@ -1,10 +1,10 @@
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { AgentInstance, ConnectionId, ImageAttachment, McpServerSpec, PermissionSuggestion, PluginSpec, ProviderId, Role, RunEvent, RunPlan, TokenUsage, TranscriptBlock } from '@shared/types'
-import { CHAT_HARNESS_TOOLS, HARNESS_PROJECT_ID, MCP_HARNESS_TOOLS, SKILLS_PROJECT_ID, SKILL_ASSIST_HARNESS_TOOLS, SKILL_HARNESS_TOOLS, SPAWN_TOOL } from '@shared/types'
+import { CHAT_HARNESS_TOOLS, ENGAGEMENT_CONTEXT_TOOL, HARNESS_PROJECT_ID, KNOWLEDGE_FACT_MAX_CHARS, KNOWLEDGE_TOOL, MCP_HARNESS_TOOLS, SKILLS_PROJECT_ID, SKILL_ASSIST_HARNESS_TOOLS, SKILL_HARNESS_TOOLS, SPAWN_TOOL } from '@shared/types'
 import { mcpServersForRole, newId, projectKindOf } from '@shared/defaults'
 import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo, type CompletionInput, type PeerMessage, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
-import { harnessToolsFor, isBlockingHarnessTool, type ConfigChange, type ConfigChangeResult, type HarnessTool, type HarnessToolAudience, type HarnessToolHooks, type McpAttachResult } from './harnessTools'
+import { datum, harnessToolsFor, isBlockingHarnessTool, type ConfigChange, type ConfigChangeResult, type HarnessTool, type HarnessToolAudience, type HarnessToolHooks, type McpAttachResult } from './harnessTools'
 import { agentInstalledServers, mcpCallDenial, withoutServerRules } from './mcpGrants'
 import {
   REFERENCE_EDIT_TOOLS,
@@ -43,6 +43,11 @@ import { countUsage, setModelTokens, usageOf } from './runUsage'
  * reference folder (read only)"; the run goes on to its usual end. [mock:reference-shell] (referenceShellSteps): the
  * root runs Bash `del "<first reference folder>/brief.md"` with no `ask` on the step; the reference shell guard forces
  * a card with referenceFolder and no suggestions (allow: result 'ok', nothing runs; deny: the deny text).
+ * [mock:knowledge] (knowledgeSteps, engagement work runs): before the default script the root reads the graph's
+ * vocabulary, records Acme Corp (organisation), Jane Doe (person), a decision and a risk with facts, links them,
+ * saves the context note "Kickoff call summary", searches "Acme", reads Acme Corp back and retires its fact "Fiscal
+ * year ends in March" (skipped when the fact cannot be read back), then says MOCK_KNOWLEDGE_DONE; without a knowledge
+ * graph (a code project) it says MOCK_KNOWLEDGE_NONE instead and the default script follows either way.
  *
  * Reference folders (same as the Claude adapter): a shell step touching one always asks, never through a rule, a
  * suggestion shortcut or acceptEdits; a Read / Glob / Grep card under one carries referenceFolder and no suggestions.
@@ -82,6 +87,12 @@ export type MockStep =
   | { type: 'finish'; id: string; result: string }
   /** Call one of the harness's own tools by bare name (propose_architecture, ask_user, complete_setup, ...). */
   | { type: 'harness'; name: string; args?: Record<string, unknown>; /** Re-run the call when the user asks for changes. Default true. */ retryOnRevise?: boolean }
+  /**
+   * engagement_knowledge from the root: `get` the entity `node` (a name), find the id of its live fact whose text is
+   * `fact` in the fenced result (knowledgeFactId) and `retire` it with `reason`. When the entity or the fact cannot be
+   * read back, the retire is skipped with a log line; the run never fails on it.
+   */
+  | { type: 'retireFact'; node: string; fact: string; reason?: string }
   /**
    * The plan's usage limit rejects the next request: reports ctx.rateLimited (with `until` ms from now,
    * when given) and ends the session, like the Claude adapter does at the next result.
@@ -406,6 +417,87 @@ export function deepTreeSteps(leadSlug: string, reportSlug: string): MockStep[] 
     { type: 'finish', id: MOCK_DEEP_LEAD, result: 'Both halves done by mock-lead-report-1 and mock-lead-report-2.' },
     { type: 'text', text: 'The lead finished: both halves are done. Anything else?' }
   ]
+}
+
+/** Trigger token (engagement work runs, default script): the root records what it learned in the knowledge graph (knowledgeSteps). */
+export const KNOWLEDGE_TOKEN = '[mock:knowledge]'
+/** What the [mock:knowledge] script records, by name, and the fact the root retires afterwards. */
+export const MOCK_KNOWLEDGE = {
+  client: 'Acme Corp',
+  sponsor: 'Jane Doe',
+  decision: 'Migrate billing to Stripe',
+  risk: 'Legacy export format undocumented',
+  noteTitle: 'Kickoff call summary',
+  retiredFact: 'Fiscal year ends in March'
+} as const
+/** The root's sentence after the [mock:knowledge] steps. */
+export const MOCK_KNOWLEDGE_DONE = 'I recorded what I learned about the engagement.'
+/** The root's sentence when [mock:knowledge] is set but the run has no knowledge graph (not an engagement work run). */
+export const MOCK_KNOWLEDGE_NONE = 'No knowledge graph is available in this run.'
+
+/**
+ * The [mock:knowledge] steps, each a real harness tool call through the mock's tool path (RunManager counts the
+ * writes and writes the harness transcript rows): vocabulary; Acme Corp (organisation) and Jane Doe (person) with
+ * aliases, summaries and facts; Jane works-at Acme; the decision "Migrate billing to Stripe" decided-by Jane; the risk
+ * "Legacy export format undocumented"; the context note "Kickoff call summary"; a search for "Acme"; then a `get` of
+ * Acme Corp and the retire of its fact "Fiscal year ends in March" (retireFact). Nothing touches the disk directly.
+ */
+export function knowledgeSteps(): MockStep[] {
+  const kg = (args: Record<string, unknown>): MockStep => ({ type: 'harness', name: KNOWLEDGE_TOOL, args })
+  return [
+    kg({ action: 'vocabulary' }),
+    kg({
+      action: 'upsert_node',
+      kind: 'organisation',
+      name: MOCK_KNOWLEDGE.client,
+      aliases: ['Acme'],
+      summary: 'The client. Mid-size manufacturer moving its billing off a legacy system.',
+      facts: ['Headquartered in Leeds', MOCK_KNOWLEDGE.retiredFact]
+    }),
+    kg({
+      action: 'upsert_node',
+      kind: 'person',
+      name: MOCK_KNOWLEDGE.sponsor,
+      aliases: ['J. Doe'],
+      summary: 'Chief Financial Officer at Acme Corp and the engagement sponsor.',
+      facts: ['Role: CFO', 'Prefers written summaries before meetings']
+    }),
+    kg({ action: 'link', from: MOCK_KNOWLEDGE.sponsor, to: MOCK_KNOWLEDGE.client, relation: 'works-at' }),
+    kg({ action: 'upsert_node', kind: 'decision', name: MOCK_KNOWLEDGE.decision, facts: ['Agreed at the kickoff call'] }),
+    kg({ action: 'link', from: MOCK_KNOWLEDGE.decision, to: MOCK_KNOWLEDGE.sponsor, relation: 'decided-by', note: 'Sponsor sign-off' }),
+    kg({ action: 'upsert_node', kind: 'risk', name: MOCK_KNOWLEDGE.risk, facts: ['No one at Acme owns the export spec'] }),
+    {
+      type: 'harness',
+      name: ENGAGEMENT_CONTEXT_TOOL,
+      args: {
+        action: 'save',
+        title: MOCK_KNOWLEDGE.noteTitle,
+        text: 'Kickoff call with Jane Doe (CFO).\n\nAgreed to migrate billing to Stripe before the March year end. Open risk: the legacy export format is undocumented.'
+      }
+    },
+    kg({ action: 'search', query: 'Acme' }),
+    { type: 'retireFact', node: MOCK_KNOWLEDGE.client, fact: MOCK_KNOWLEDGE.retiredFact, reason: 'Corrected: fiscal year ends in April' },
+    { type: 'text', text: MOCK_KNOWLEDGE_DONE }
+  ]
+}
+
+/**
+ * The id of the live fact whose text is `text` in an engagement_knowledge `get` result: its fact lines read
+ * `  kf_<id> | <text>` with ` | retired` appended on a retired one. The text is compared as datum() renders it
+ * (whitespace runs joined, angle brackets replaced), so a plain fact reads back unchanged. undefined when there is no
+ * such live fact or the result is not a `get` block (a refusal, "No entity ...").
+ */
+export function knowledgeFactId(result: string, text: string): string | undefined {
+  const want = datum(text, KNOWLEDGE_FACT_MAX_CHARS)
+  const retiredSuffix = ' | retired'
+  for (const line of result.split('\n')) {
+    const m = /^\s+(kf_[A-Za-z0-9_-]+) \| (.*)$/.exec(line)
+    if (!m) continue
+    const rest = m[2]!
+    if (rest.endsWith(retiredSuffix)) continue
+    if (rest === want) return m[1]!
+  }
+  return undefined
 }
 
 export const CONFIG_CHANGE_TOKEN = '[mock:config-change]'
@@ -884,6 +976,13 @@ export class MockSession implements RuntimeSession {
       const lead = this.firstSpawnableSlug(this.root)
       return deepTreeSteps(lead, this.firstSpawnableSlug(this.rolesBySlug.get(lead), lead))
     }
+    if (!this.isSetup && this.ctx.run.kind === 'work' && !this.ctx.run.quick && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(KNOWLEDGE_TOKEN)) {
+      // The tool is bound on engagement work runs only, and answers the same sentence itself without ctx.knowledge.
+      const available = !!this.ctx.knowledge && this.tools.some((t) => t.name === KNOWLEDGE_TOOL)
+      if (!available) this.log('info', 'Mock [mock:knowledge]: this run has no knowledge graph (not an engagement work run), so the knowledge steps are skipped.')
+      const first: MockStep[] = available ? knowledgeSteps() : [{ type: 'text', text: MOCK_KNOWLEDGE_NONE }]
+      return [...first, ...DEFAULT_WORK]
+    }
     return this.isSetup ? this.script.setup : this.script.work
   }
 
@@ -961,7 +1060,10 @@ export class MockSession implements RuntimeSession {
         return
       }
       case 'harness':
-        return this.harnessStep(step)
+        await this.harnessStep(step)
+        return
+      case 'retireFact':
+        return this.retireFactStep(step)
       case 'retry': {
         const a = this.ensureAgent(step.agent ?? ROOT_AGENT_ID)
         countUsage(a, 'retries')
@@ -970,15 +1072,18 @@ export class MockSession implements RuntimeSession {
         return
       }
       case 'plan':
-        return this.harnessStep({
+        await this.harnessStep({
           type: 'harness',
           name: PLAN_TOOLS.set,
           args: { goal: step.goal, steps: step.steps.map((s) => (typeof s === 'string' ? { title: s } : s)) }
         })
+        return
       case 'planUpdate':
-        return this.harnessStep({ type: 'harness', name: PLAN_TOOLS.update, args: { steps: step.steps } })
+        await this.harnessStep({ type: 'harness', name: PLAN_TOOLS.update, args: { steps: step.steps } })
+        return
       case 'planComplete':
-        return this.harnessStep({ type: 'harness', name: PLAN_TOOLS.complete, args: { summary: step.summary } })
+        await this.harnessStep({ type: 'harness', name: PLAN_TOOLS.complete, args: { summary: step.summary } })
+        return
       case 'message': {
         const from = step.from ?? ROOT_AGENT_ID
         const input = { to: step.to, message: step.text }
@@ -1311,12 +1416,17 @@ export class MockSession implements RuntimeSession {
     this.transcript(agentId, { kind: 'tool_result', toolUseId: id, content: text, isError })
   }
 
-  private async harnessStep(step: Extract<MockStep, { type: 'harness' }>): Promise<void> {
+  /**
+   * A harness tool call from the root. Returns the tool's last result text (a thrown error's message counts), or
+   * undefined when the tool is not bound for this run or the session stopped mid-call.
+   */
+  private async harnessStep(step: Extract<MockStep, { type: 'harness' }>): Promise<string | undefined> {
     const t = this.tools.find((x) => x.name === step.name)
     if (!t) {
       this.log('warn', `Mock script calls unknown harness tool ${step.name} for a ${this.ctx.run.kind} run`)
-      return
+      return undefined
     }
+    let last: string | undefined
     for (let attempt = 0; attempt < 3; attempt++) {
       const id = newId('tu')
       this.transcript(ROOT_AGENT_ID, { kind: 'tool_use', id, name: step.name, input: step.args ?? {} })
@@ -1326,18 +1436,36 @@ export class MockSession implements RuntimeSession {
       let isError = false
       try {
         const res = await this.untilStopped(t.call(step.args ?? {}, { agentId: ROOT_AGENT_ID, roleId: this.root.id }))
-        if (res === STOPPED) return
+        if (res === STOPPED) return undefined
         text = res
       } catch (e) {
         text = (e as Error).message
         isError = true
       }
+      last = text
       this.transcript(ROOT_AGENT_ID, { kind: 'tool_result', toolUseId: id, content: text, isError })
       const a = this.agents.get(ROOT_AGENT_ID)
       if (a && (a.state === 'waiting' || a.state === 'tool')) this.setState(ROOT_AGENT_ID, 'thinking', stepActivity(this.ctx.getPlan()) ?? 'Thinking…')
-      if (isError || !text.startsWith('REVISE') || step.retryOnRevise === false || this.stopped || this.interrupted) return
+      if (isError || !text.startsWith('REVISE') || step.retryOnRevise === false || this.stopped || this.interrupted) return text
       this.transcript(ROOT_AGENT_ID, { kind: 'text', text: 'Revising the proposal with your feedback.' })
     }
+    return last
+  }
+
+  /**
+   * The retireFact step: read the entity back with engagement_knowledge `get`, find the fact's id in the fenced result
+   * and `retire` it. When the entity or the fact cannot be read back (no graph, a refusal, the fact missing or already
+   * retired) the retire is skipped with an info log line, never a failure.
+   */
+  private async retireFactStep(step: Extract<MockStep, { type: 'retireFact' }>): Promise<void> {
+    const got = await this.harnessStep({ type: 'harness', name: KNOWLEDGE_TOOL, args: { action: 'get', name: step.node } })
+    if (this.stopped || this.interrupted) return
+    const factId = got === undefined ? undefined : knowledgeFactId(got, step.fact)
+    if (!factId) {
+      this.log('info', `Mock: the fact "${step.fact}" of ${step.node} could not be read back from the knowledge graph, so the retire step is skipped.`)
+      return
+    }
+    await this.harnessStep({ type: 'harness', name: KNOWLEDGE_TOOL, args: { action: 'retire', factId, ...(step.reason ? { reason: step.reason } : {}) } })
   }
 }
 
