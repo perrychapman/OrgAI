@@ -1,4 +1,4 @@
-import type { ModelRef, ModelTier, Project, Role, SetupKind } from './types'
+import type { ModelRef, ModelTier, Project, ProjectKind, Role, SetupKind } from './types'
 import { ROLE_COLORS, newId } from './defaults'
 
 export const ARCHITECT_SLUG = 'architect'
@@ -46,6 +46,15 @@ Org chart design principles:
 
 You have a shell (Bash) for environment work the user asks for or that setup clearly needs: installing CLIs and tools, git init and first commits, checking tool versions, creating accounts' config files. Commands may be shown to the user for approval before they run, so keep commands short and explain what each does. If the permission policy denies a command you need, call request_permission_rules with the narrowest rule (for example "Bash(gh:*)") and a reason; the user decides in the app and the result says whether to retry. Do not write or edit project code yourself; that is the org chart's job once setup is complete. The harness writes the approved architecture to .orgai/ARCHITECTURE.md and references it from CLAUDE.md so every future agent inherits it.`
 
+/**
+ * The Architect's system prompt for a project kind. 'code' is the repository prompt; 'engagement' interviews for the
+ * client, field, platforms, phase, deliverables and coding scope and proposes the engagement charter (ENGAGEMENT.md).
+ */
+export function architectPrompt(kind: ProjectKind): string {
+  // The engagement variant lands with the engagement setup work (Runtime Engineer); until then both kinds share one.
+  return kind === 'engagement' ? ARCHITECT_PROMPT : ARCHITECT_PROMPT
+}
+
 /** The built-in role that runs setup sessions. Not part of the project's org chart. */
 /** The model a built-in role runs on, resolved per run against the project's connection (RunManager). */
 export interface BuiltinRoleModel {
@@ -57,7 +66,7 @@ export interface BuiltinRoleModel {
  * The built-in role that runs setup sessions. RunManager always passes the model resolved from AppSettings.setupModel
  * (runtime/builtinModel.ts); without one it inherits the adapter's default model (no vendor alias).
  */
-export function architectRole(choice?: BuiltinRoleModel): Role {
+export function architectRole(choice?: BuiltinRoleModel, opts: { kind?: ProjectKind } = {}): Role {
   return {
     id: newId('role'),
     slug: ARCHITECT_SLUG,
@@ -69,7 +78,7 @@ export function architectRole(choice?: BuiltinRoleModel): Role {
       'Design an org chart of agent roles that fits the work',
       'Recommend run settings and a project brief'
     ],
-    prompt: ARCHITECT_PROMPT,
+    prompt: architectPrompt(opts.kind ?? 'code'),
     tools: ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch', 'Bash'],
     model: choice?.model ?? 'inherit',
     ...(choice?.tier ? { tier: choice.tier } : {}),

@@ -14,6 +14,7 @@ import type {
   ModelTier,
   PermissionMode,
   Project,
+  ProjectKind,
   ProviderAuth,
   ProviderConnections,
   ProviderId,
@@ -28,17 +29,41 @@ import type {
   UsageStatus,
   ToolName
 } from './types'
-import { CONNECTION_IDS, DEFAULT_KEEP_RUNS, DEFAULT_MAX_AUTO_CONTINUES, MODEL_TIERS, SKILL_DESCRIPTION_MAX, SKILL_NAME_MAX, TEAM_REVIEW_MAX_BUDGET, TEAM_REVIEW_MAX_EVERY_RUNS, TEAM_REVIEW_MIN_BUDGET, isModelTier } from './types'
+import { CONNECTION_IDS, DEFAULT_KEEP_RUNS, DEFAULT_MAX_AUTO_CONTINUES, MODEL_TIERS, SKILL_DESCRIPTION_MAX, SKILL_NAME_MAX, TEAM_REVIEW_MAX_BUDGET, TEAM_REVIEW_MAX_EVERY_RUNS, TEAM_REVIEW_MIN_BUDGET, isModelTier, isProjectKind } from './types'
 
 /** Run limits for new projects: enough parallel reports for a real team, and room for leads with their own reports. */
 export const DEFAULT_MAX_CONCURRENT_SUBAGENTS = 8
 export const DEFAULT_MAX_SUBAGENT_DEPTH = 3
-/** Cross-run messaging is on by default; an explicit Project.runMessaging false turns it off. */
+/** Cross-run messaging is on by default for code projects; an explicit Project.runMessaging false turns it off. */
 export const DEFAULT_RUN_MESSAGING = true
 
-/** Whether a project lets its runs message other runs and be messaged (Project.runMessaging, default on; an explicit false turns it off). */
-export function runMessagingOn(project: { runMessaging?: boolean } | null | undefined): boolean {
-  return (project?.runMessaging ?? DEFAULT_RUN_MESSAGING) === true
+/**
+ * Whether a project lets its runs message other runs and be messaged (Project.runMessaging). Missing = on for code
+ * projects (DEFAULT_RUN_MESSAGING) and off for engagements; an explicit boolean always wins.
+ */
+export function runMessagingOn(project: { runMessaging?: boolean; kind?: unknown } | null | undefined): boolean {
+  if (typeof project?.runMessaging === 'boolean') return project.runMessaging
+  return projectKindOf(project) === 'engagement' ? false : DEFAULT_RUN_MESSAGING
+}
+
+/** The project's kind: Project.kind when it is a ProjectKind, else 'code' (missing, junk, null project). */
+export function projectKindOf(project: { kind?: unknown } | null | undefined): ProjectKind {
+  return isProjectKind(project?.kind) ? project.kind : 'code'
+}
+
+/** UI word for a kind: "Project" / "Engagement". */
+export function projectKindLabel(kind: ProjectKind): string {
+  return kind === 'engagement' ? 'Engagement' : 'Project'
+}
+
+/** Project-relative path of the charter document the harness writes on approval: ARCHITECTURE.md or ENGAGEMENT.md. */
+export function projectDocumentPath(kind: ProjectKind): string {
+  return kind === 'engagement' ? '.orgai/ENGAGEMENT.md' : '.orgai/ARCHITECTURE.md'
+}
+
+/** How prompts name that document: "the architecture document" / "the engagement document". */
+export function projectDocumentName(kind: ProjectKind): string {
+  return kind === 'engagement' ? 'the engagement document' : 'the architecture document'
 }
 /** Upper bounds of the run-limit settings (settings inputs, proposal schema, applying proposals). */
 export const MAX_CONCURRENT_SUBAGENTS_LIMIT = 32
@@ -795,8 +820,13 @@ Plan before acting. Delegate implementation, review and testing to your speciali
   return [orchestrator, implementer, reviewer, researcher]
 }
 
-export function newProject(input: { name: string; path: string; brief: string; setupKind?: SetupKind }, settings?: AppSettings): Project {
+/**
+ * A fresh project. `input.kind` (junk = 'code') is stored on Project.kind; an engagement starts from the neutral
+ * engagement chart (`engagementRoles`), a code project from `defaultRoles`.
+ */
+export function newProject(input: { name: string; path: string; brief: string; setupKind?: SetupKind; kind?: ProjectKind }, settings?: AppSettings): Project {
   const now = new Date().toISOString()
+  const kind = projectKindOf(input)
   if (settings) {
     // New projects start on anthropic; ConnectionService.prepareNewProject then moves them to the default connection
     // (a 'switched' remap re-resolves every tiered role there).
@@ -813,6 +843,7 @@ export function newProject(input: { name: string; path: string; brief: string; s
       id: newId('proj'),
       name: input.name,
       path: input.path,
+      kind,
       brief: input.brief,
       provider: { id: 'claude', label: claudeProviderLabel(auth), auth, connection: 'anthropic' },
       permissionMode: settings.defaultPermissionMode,
@@ -831,6 +862,7 @@ export function newProject(input: { name: string; path: string; brief: string; s
     id: newId('proj'),
     name: input.name,
     path: input.path,
+    kind,
     brief: input.brief,
     provider: { id: 'claude', label: 'Claude (Claude Code login)', auth: { kind: 'subscription' }, connection: 'anthropic' },
     permissionMode: 'auto',
