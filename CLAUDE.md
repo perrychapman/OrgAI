@@ -346,6 +346,30 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   `ProjectRemoveResult` (removeRuns default true; engagements always forget their runs), and usage export
   (`UsageStatsQuery.range` month, `runs:usageCsv` with formula-injection quoting, leading `project` and `client` columns (names from ipc.ts, client blank for code projects), `started` / `ended` as local ISO 8601 with the UTC offset plus `started_utc`; `RunUsageRow.team: 'single'` marks Ask runs and the CSV `kind` is then `ask`). Contracts sit in one types.ts section
   with their channels in `TEMPLATE_ENGAGEMENT_IPC`. Verified by unit tests and the mock only; no renderer uses it yet.
+- Engagement knowledge graph (2026-11-04; ARCHITECTURE.md Shared contracts "Engagement knowledge graph", Runtime core
+  "Engagement knowledge graph in runs", Risks): `<data>/projects/<id>/knowledge.json` (`src/main/store/knowledge.ts`,
+  `knowledgeStore(dataDir)` = `KnowledgeStoreApi`; pure helpers in `src/shared/knowledge.ts`: `normalizeKnowledgeKey`,
+  `matchKnowledgeNodes`, `resolveKnowledgeNode`, `searchKnowledge`, `knowledgeVocabulary`). Nodes `kn_`, edges `ke_`,
+  facts `kf_`; free-form `kind` / `relation` normalised to `KNOWLEDGE_KEY_RE`; identity by id, else (kind, name) /
+  (kind, alias) case-insensitive; edges unique per (from, to, relation); removing a node removes its edges; every item
+  carries a `KnowledgeSource` main fills. Caps KNOWLEDGE_NODES_MAX 2000, _EDGES_MAX 5000, _NODE_FACTS_MAX 50,
+  _RUN_WRITES_MAX 500 (per run, notes included; checked before the store call), _SEARCH_LIMIT 50; hidden characters
+  and over-long strings refused, never cut. IPC `knowledge:get / saveNode / removeNode / saveEdge / removeEdge / clear`
+  (`KNOWLEDGE_IPC`, preload `window.orgai.knowledge`, inputs rebuilt by ipc.ts `knowledgeArgs`, writes on engagements
+  only, every write pushes `projects:engagementChanged` `what: 'knowledge'` with `ids`). Harness tools:
+  `engagement_context` gained `action: 'list' | 'read' | 'save'` (agents create notes and replace only agent-written
+  ones the user has not edited; "Only the user can change that note; save a new one instead."; ENGAGEMENT_NOTES_MAX is
+  200 and reported at the cap) and `engagement_knowledge` (`KNOWLEDGE_TOOL`, audience 'all', non-blocking, engagement
+  work runs only, never single / quick / setup-like / trust-restricted): vocabulary, search, get, upsert_node, link,
+  retire (never deletes; refused on user-written items). Results are fenced data (`<<<` `>>>`, look-alike
+  substitution, `datum()`); refusals read "REFUSED: ...". RunManager (`RuntimeContext.knowledge`,
+  `engagementNotes.save`) fills the source (run id, agent id, role name from the agent record), writes one harness
+  transcript row on the writing agent ("Recorded <kind> <name>", "Updated ...", "Linked <a> <relation> <b>",
+  "Retired <item> <label>", "Saved note <title>") and broadcasts through `RunManagerOptions.engagementChanged`.
+  Context notes carry `excerpt`, `createdAt` (order by it), `source`, `recordedBy`, `updatedBy`, `retired`. Prompts:
+  engagement roots and reports are told to search the graph before dependent work and record what they learn; the
+  single-assistant paragraph names note saving only. Verified by unit tests with fake stores and fake adapters only;
+  no live run, no mock marker and no renderer yet.
 - Self-configuration (2026-11-03; ARCHITECTURE.md Shared contracts, Connections, Conventions): derivable settings are
   automatic with an override; never fill them with defaults in a store, `newProject` or a renderer save.
   - Effective default connection: `ConnectionService.effectiveDefault()` (defaults.ts `effectiveDefaultConnection`)
