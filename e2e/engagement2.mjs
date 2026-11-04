@@ -192,6 +192,32 @@ try {
   check(true, 'removing the template shows templates-empty')
   check((await page.evaluate(() => window.orgai.templates.list())).length === 0, 'templates.list is empty after removal')
 
+  // Practice kit (native dialogs are not driven).
+  if (!(await page.evaluate(() => !!window.orgai.kit))) {
+    log_skip('Practice kit: window.orgai.kit is undefined (no runtime side in this build)')
+  } else {
+    const kitSection = page.locator('[data-testid=kit-section]')
+    await kitSection.waitFor({ state: 'visible' })
+    check((await kitSection.locator('[data-testid=kit-export]').count()) === 1 && (await kitSection.locator('[data-testid=kit-import]').count()) === 1, 'Practice kit has Export and Import buttons')
+    for (const [w, h] of [[1024, 640], [1600, 1000]]) {
+      await setSize(w, h)
+      await kitSection.locator('[data-testid=kit-export]').click()
+      const kitDialog = page.locator('[data-testid=kit-export-dialog]')
+      await kitDialog.waitFor({ state: 'visible' })
+      await kitDialog.locator('[data-testid=kit-group]').first().waitFor({ state: 'visible' })
+      const groups = await kitDialog.locator('[data-testid=kit-group]').evaluateAll((els) => els.map((e) => e.getAttribute('data-group')))
+      check(JSON.stringify(groups) === JSON.stringify(['skills', 'servers', 'presets', 'templates']), `kit export dialog lists the four groups at ${w}x${h}`, JSON.stringify(groups))
+      const countText = clean(await kitDialog.locator('[data-testid=kit-export-count]').innerText())
+      const items = await kitDialog.locator('[data-testid=kit-item]').count()
+      check(countText === (items === 0 ? 'Choose at least one item.' : `${items} ${items === 1 ? 'item' : 'items'}`), 'kit export count line matches the ticked items', `${countText} / ${items}`)
+      check((await kitDialog.locator('[data-testid=kit-export-save]').isDisabled()) === (items === 0), 'Save kit is disabled only at zero items')
+      await shot(`kit-export-${w}`)
+      await kitDialog.getByRole('button', { name: 'Cancel', exact: true }).click()
+      await kitDialog.waitFor({ state: 'hidden' })
+      check(await kitSection.locator('[data-testid=kit-export]').evaluate((el) => el === document.activeElement), 'Cancel returns focus to Export a kit')
+    }
+  }
+
   // ======== 3. Plan ========
   await openProject(page, A)
   await openSettingsPane('General')
