@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { SPEND_PERIOD_DAYS, type ModelPrice, type ProviderModel, type SpendPeriod, type UsageSpend } from '@shared/types'
+import { SPEND_PERIOD_DAYS, SPEND_PERIOD_NOTES, type ModelPrice, type ProviderModel, type SpendPeriod, type SpendPeriodsNote, type UsageSpend } from '@shared/types'
 import { makeDiscoveredModel } from './catalog'
 import { validModelId } from './codexAccount'
 import { sanitizeModelPrice } from '../runtime/pricing'
@@ -19,11 +19,15 @@ import { sanitizeModelPrice } from '../runtime/pricing'
  *                                  breakdown: { api_keys: { '<sha256>': { metrics: { spend } } } } }], metadata }
  *                                (read from LiteLLM source v1.108.0, UNVERIFIED live: any role may call it, a key
  *                                with no user answers 403, no DB answers 500; proxies older than about v1.75 answer
- *                                404 and have only the paginated GET {base}/user/daily/activity, whose metadata
- *                                adds page / total_pages / has_more)
+ *                                404 and have only the paginated GET {base}/user/daily/activity (about v1.65+),
+ *                                whose metadata adds page / total_pages / has_more)
  * Auth is sent both as `Authorization: Bearer` and `x-api-key` since proxies differ. /model/info is
- * best-effort enrichment and may be admin-only. The key never appears in an error string or a URL: the daily
- * routes carry only its SHA-256 hash (the proxy's stored key id).
+ * best-effort enrichment and may be admin-only. The raw key never appears in an error string or a URL. The daily
+ * routes carry its SHA-256 hash in the query: that hash is the proxy's stored key id, and LiteLLM's
+ * user_api_key_auth accepts a presented hash as the key itself (it hashes only tokens starting with "sk-"), so the
+ * hash is as sensitive as the key. It goes only to the proxy that already receives the raw key in the auth headers
+ * of the same request (where an access log may keep the query string), is never logged by OrgAI and never enters
+ * the returned UsageSpend.
  */
 
 const TIMEOUT_MS = 10_000
@@ -301,22 +305,18 @@ export async function fetchLiteLLMKeyInfo(baseUrl: string, key: string, fetchImp
 
 // ---- Spend by period (GET /user/daily/activity/aggregated, UNVERIFIED live) ----
 
-/** The fixed `UsageSpend.periodsNote` sentences (see the contract in shared/types.ts). Never proxy error text. */
-export const SPEND_PERIOD_NOTES = {
-  /** 403: the key has no user_id (a service-account key), so the proxy refuses the self-managed route. */
-  noUser: 'This key is not bound to a user, so the proxy refuses its daily spend.',
-  /** 404 / 405 on both routes, or a paginated answer with more pages. */
-  unsupported: 'This proxy does not report daily spend (needs LiteLLM 1.65 or newer).',
-  /** Anything else: 5xx, network, timeout, redirect, non-JSON, oversized body, junk shape. */
-  failed: 'The proxy did not answer its daily spend request.'
-} as const
+/** The fixed `UsageSpend.periodsNote` sentences live in the contract (shared/types.ts); re-exported for the tests. */
+export { SPEND_PERIOD_NOTES }
 
 /** Rows kept from one daily-activity answer (the probe asks for at most SPEND_PERIOD_DAYS days). */
 export const LITELLM_MAX_DAILY_ROWS = 400
 
 const DAY_MS = 24 * 60 * 60 * 1000
 
-/** The proxy's stored key id: the SHA-256 hex digest of the raw key (LiteLLM `hash_token`). UNVERIFIED live. */
+/**
+ * The proxy's stored key id: the SHA-256 hex digest of the raw key (LiteLLM `hash_token`). UNVERIFIED live. Treat
+ * it like the key: LiteLLM accepts a presented hash as a credential (see the header comment).
+ */
 export function keyHash(rawKey: string): string {
   return createHash('sha256').update(rawKey, 'utf8').digest('hex')
 }
@@ -363,8 +363,9 @@ const plain = (v: unknown): Record<string, unknown> | undefined =>
 
 /**
  * The key's spend per UTC day from a daily-activity body (aggregated or paginated: both carry `results`).
- * Only plain-object rows with a real `YYYY-MM-DD` date and a finite spend >= 0 are kept, at most
- * LITELLM_MAX_DAILY_ROWS. Cross-check of the `api_key` filter through `breakdown.api_keys` (UNVERIFIED live):
+ * Only plain-object rows with a real `YYYY-MM-DD` date and a finite spend >= 0 are kept, the first row per date
+ * (a repeated date is never double-counted), at most LITELLM_MAX_DAILY_ROWS. Cross-check of the `api_key` filter
+ * through `breakdown.api_keys` (UNVERIFIED live):
  * the entry for `hash` wins when present; other hashes present but ours absent means the filter was ignored and
  * the day counts 0 for this key; no breakdown (or an empty map) falls back to `metrics.spend`.
  */
@@ -372,16 +373,18 @@ export function parseDailyActivity(body: unknown, hash: string): { date: string;
   const results = plain(body)?.results
   if (!Array.isArray(results)) return []
   const out: { date: string; usd: number }[] = []
+  const seen = new Set<string>()
   for (const item of results) {
     if (out.length >= LITELLM_MAX_DAILY_ROWS) break
     const row = plain(item)
-    if (!row || dayStartOf(row.date) === undefined) continue
+    if (!row || dayStartOf(row.date) === undefined || seen.has(row.date as string)) continue
     const keys = plain(plain(row.breakdown)?.api_keys)
     let usd: number | undefined
     if (keys && Object.hasOwn(keys, hash)) usd = amount(plain(plain(keys[hash])?.metrics)?.spend)
     else if (keys && Object.keys(keys).length > 0) usd = 0
     else usd = amount(plain(row.metrics)?.spend)
     if (usd === undefined) continue
+    seen.add(row.date as string)
     out.push({ date: row.date as string, usd })
   }
   return out
@@ -404,11 +407,13 @@ export function spendPeriods(rows: { date: string; usd: number }[], nowMs: numbe
   return { day: sum(b.day), week: sum(b.week), month: sum(b.month) }
 }
 
-type DailyOutcome = { periods: NonNullable<UsageSpend['periods']> } | { note: string }
+type DailyOutcome = { periods: NonNullable<UsageSpend['periods']> } | { note: SpendPeriodsNote }
 
 /**
  * The daily routes for the key's hash. Never throws and never fails the whole probe: an outcome is either the
- * periods or one fixed note. The raw key travels only in the auth headers.
+ * periods or one fixed note. The raw key travels only in the auth headers (the hash in the query, see the header
+ * comment). A sum that is not a finite number (absurd row values) is the `failed` note, never Infinity over IPC.
+ * Worst case the two daily calls take 2 x TIMEOUT_MS on top of /key/info.
  */
 export async function fetchDailySpend(base: string, key: string, fetchImpl: FetchLike, nowMs: number): Promise<DailyOutcome> {
   const bounds = periodBounds(nowMs)
@@ -427,7 +432,9 @@ export async function fetchDailySpend(base: string, key: string, fetchImpl: Fetc
     return { note: SPEND_PERIOD_NOTES.failed }
   }
   if (!Array.isArray(plain(answer.body)?.results)) return { note: SPEND_PERIOD_NOTES.failed }
-  return { periods: spendPeriods(parseDailyActivity(answer.body, hash), nowMs) }
+  const periods = spendPeriods(parseDailyActivity(answer.body, hash), nowMs)
+  if (![periods.day, periods.week, periods.month].every((p) => Number.isFinite(p.usd))) return { note: SPEND_PERIOD_NOTES.failed }
+  return { periods }
 }
 
 /**

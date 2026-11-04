@@ -520,6 +520,7 @@ describe('LiteLLM spend and pricing', () => {
       updatedAt: SPEND_NOW
     })
     expect(JSON.stringify(usage)).not.toContain(KEY)
+    expect(JSON.stringify(usage)).not.toContain(keyHash(KEY)) // the hash is a LiteLLM credential too
     expect(structuredClone(usage)).toEqual(usage)
     const call = fetchImpl.mock.calls.find(([u]) => String(u).endsWith('/key/info'))!
     expect(String(call[0])).toBe('http://localhost:4000/key/info') // no key in the URL

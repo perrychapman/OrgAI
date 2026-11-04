@@ -302,6 +302,12 @@ describe('parseDailyActivity', () => {
       expect(parseDailyActivity(body, HASH)).toEqual([])
     }
   })
+  it('counts a repeated date once (first row wins)', () => {
+    expect(parseDailyActivity({ results: [row('2026-11-03', 2), row('2026-11-03', 5), row('2026-11-04', 1)] }, HASH)).toEqual([
+      { date: '2026-11-03', usd: 2 },
+      { date: '2026-11-04', usd: 1 }
+    ])
+  })
   it('keeps at most LITELLM_MAX_DAILY_ROWS rows', () => {
     const results = Array.from({ length: LITELLM_MAX_DAILY_ROWS + 25 }, (_, i) => row(new Date(Date.UTC(2020, 0, 1) + i * DAY).toISOString().slice(0, 10), 1))
     expect(parseDailyActivity({ results }, HASH)).toHaveLength(LITELLM_MAX_DAILY_ROWS)
@@ -366,7 +372,15 @@ describe('fetchLiteLLMSpend', () => {
     const init = f.mock.calls[1]![1]!
     expect(init).toMatchObject({ method: 'GET', redirect: 'error', headers: { Authorization: `Bearer ${RAW_KEY}`, 'x-api-key': RAW_KEY, Accept: 'application/json' } })
     expect(init.signal).toBeInstanceOf(AbortSignal)
+    // Neither the key nor its hash (which LiteLLM accepts as a credential) enters the record that crosses IPC.
     expect(JSON.stringify(spend)).not.toContain(RAW_KEY)
+    expect(JSON.stringify(spend)).not.toContain(HASH)
+  })
+  it('absurd row values never sum to Infinity: the did-not-answer note instead', async () => {
+    const huge = { results: [{ date: '2026-11-03', metrics: { spend: 1e308 } }, { date: '2026-11-04', metrics: { spend: 1e308 } }] }
+    const spend = await run(proxy(() => json(huge)))
+    expect(spend).toEqual({ ...KEY_INFO, periodsNote: SPEND_PERIOD_NOTES.failed })
+    oneOf(spend)
   })
   it('falls back to the paginated route on 404 with the same query', async () => {
     const f = proxy(() => json({ detail: 'Not Found' }, 404), () => json({ ...(fx('litellm-daily-activity.json') as object), metadata: { page: 1, total_pages: 1, has_more: false } }))
