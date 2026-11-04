@@ -25,7 +25,8 @@ import {
   resolveFocus,
   roleWord,
   searchItems,
-  searchRank
+  searchRank,
+  splitHistoryLine
 } from './knowledge'
 
 const T0 = new Date(2026, 10, 4, 11, 46).getTime()
@@ -198,5 +199,11 @@ describe('relations and summaries', () => {
     expect(idAfterRemoval(['a', 'b', 'c'], 'b')).toBe('c')
     expect(idAfterRemoval(['a', 'b'], 'b')).toBe('a')
     expect(idAfterRemoval(['a'], 'a')).toBeNull()
+  })
+  it('splits a history line around its run link', () => {
+    const [line] = historyLines({ type: 'node', id: jane.id, node: jane }, runs)
+    expect(splitHistoryLine(line, runs)).toEqual({ before: 'Recorded by Analyst in ', link: 'R1 Summarise the kickoff', after: ', 4 Nov 2026 11:46' })
+    expect(splitHistoryLine({ text: 'Added by you, 4 Nov 2026 11:46', at: T0 }, runs)).toBeNull()
+    expect(splitHistoryLine({ text: 'Recorded by Analyst in R? , now', runId: 'r9', at: T0 }, runs)).toEqual({ before: 'Recorded by Analyst in ', link: 'R?', after: ' , now' })
   })
 })
