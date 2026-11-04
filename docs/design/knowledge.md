@@ -309,3 +309,71 @@ else. The Maintenance "Architecture document" line and History are out of scope 
 ## 13. Implementation notes
 
 (Filled in by the engineers and the lead as the work lands: files, helpers, what was verified, what was not.)
+
+### Run view, transcript, Settings and Maintenance (sections 7, 8, 9; UI Engineer 3)
+
+- Files: `lib/transcriptRows.ts` (+ test), `lib/knowledgeRun.ts` (new, + test), `components/TranscriptPanel.tsx`,
+  `components/RunMeta.tsx`, `components/settings/ContextNotesSection.tsx`, `components/settings/MaintenanceSection.tsx`,
+  `lib/dashboard.ts` (+ test), `styles/run.css`, `styles/transcript.css`, `styles/settings.css`, `e2e/knowledge-run.mjs`.
+- Transcript (section 7): `humanizeToolUse` gives `engagement_knowledge` and `engagement_context` calls (bare or
+  `mcp__orgai__` names: the mock writes the bare name) the new `ToolKind` `'knowledge'` (lucide `Database`) and the
+  sentences of the table; a search with only a kind reads "Searched the knowledge for people" through `kindGroupLabel`.
+  `humanizeToolResult` labels their results ("Looked up N kinds" / "No kinds in use yet", "N items found" / "No items
+  found", "Item returned" / "No such item", "Recorded", "Updated", "Linked", "Retired", "Already retired", "Notes
+  listed" / "No context notes", "Note returned" / "No such note", "Saved note") with the fenced text under "Show
+  output"; a "REFUSED: …" answer reads "Failed: <message>" in the error style (`ResultRow.failed`) although the call
+  itself did not throw. `lib/knowledgeRun.ts` `collapseKnowledgeWrites(entries)` pairs each write call with the next
+  unclaimed harness write row of the same agent whose text matches the action (any position after the call; RunManager
+  writes the row during the call, so it sits between the call and its result), hides the call and its result, keeps
+  the result as the row's body, and builds the row's `text` (`humanizeKnowledgeRow`: the kind token after "Recorded" /
+  "Updated" / "Retired node" and the relation token of a "Linked" row, from the call's `relation`, else the one
+  hyphenated token, as words; "Retired edge …" reads "Retired relation …"), `name` and `focus` (`KnowledgeFocus`: the
+  `kn_` id from "Created … (kn_…)" / "Merged into existing … (kn_…)", else the call's normalised kind and the row's
+  name; a link's `to` by id or name; a retired node by `nodeId`; a retired fact or relation by the entity whose earlier
+  `get` result of the same agent listed that `kf_` / `ke_` id (first fenced line `kn_x | kind | name`), else no link;
+  a saved note by the id in "Saved note <id> (<title>)", else the title). A refused or unchanged write ("REFUSED",
+  "Already retired", "No knowledge graph", "No context notes", or an `isError` result) pairs with nothing, so it never
+  steals a later write's row. Unclaimed write rows (older records, another agent's rows) still get a headline and a
+  name-based link. `labels` gives a `get` by id and a note read their sentence from the result ("Read Acme Corp",
+  "Read the note Kickoff call summary"). `TranscriptPanel` renders a paired row as `KnowledgeWriteRow`
+  (`div.entry.system.harness.knowledge-row[data-testid=knowledge-row]`, `Database` icon, the plain headline, the
+  `button.link-btn` "Open" `knowledge-row-open` named "Open <name> in Knowledge" that calls `openKnowledgeItem({ projectId,
+  …focus })`, and "Show output"). `recordedCount(entries)` counts the harness write rows.
+- RunMeta (section 8): `run-meta-recorded` is a `button.run-meta-item` "Recorded N items" after the agents count, title
+  "What the team recorded this run. Opens Knowledge.", `setView('knowledge')`; N sums `recordedCount` over every chain
+  member's transcript in the store (a zustand selector returning the number, so no re-render churn); engagements only,
+  N > 0 only; it drops at a frame under 420 px like the other counts (run.css). It counts what the run did, not what is
+  left: it stays "Recorded 8 items" after Clear everything.
+- Settings (section 9): `ContextNotesSection` is the description plus one line `p.knowledge-summary-line`:
+  `knowledge-summary` (`knowledgeSummaryLine(graph, notes)` from `knowledge.get` + `listNotes`, "Looking…" first, the
+  newest request wins) " · " `knowledge-open` "Open Knowledge" (`setView('knowledge')`); refetched on
+  `onEngagementChanged` 'notes' / 'knowledge'; a read error shows the danger Banner. The inline list, Add a note, the
+  dialog, `context-note-*`, `context-notes-empty` and `context-notes-status` are gone from this file
+  (`lib/engagementContext.ts` keeps `sortNotes` and the row labels for other callers; they are unused by Settings now).
+- Maintenance (section 9): `knowledge-clear` "Clear everything…" (danger, next to Forget) reads the graph on mount and
+  on every 'knowledge' push; it is natively disabled with the quiet reason `knowledge-clear-empty` "Nothing recorded
+  yet." while the graph is empty. The confirm is the shared `Dialog` (`knowledge-clear-dialog`, Cancel focused first,
+  `knowledge-clear-confirm` "Clear everything", body `knowledge-clear-body` "Deletes <clearCountsLine>. Context notes
+  stay. Agents and you can no longer see them. Retire items on the Knowledge tab to keep records instead.") rather than
+  `useConfirm`, because `ConfirmOptions` had no confirm-button testId when this landed; the lead added
+  `confirmTestId` on their branch, so this should move to `useConfirm({ …, confirmTestId: 'knowledge-clear-confirm' })`
+  after the merge. `knowledge.clear` then the section notice `KNOWLEDGE_CLEARED_NOTICE` "Cleared everything the team
+  recorded." (the existing `role=status` box) and focus back on the button. The danger-zone text
+  (`ENGAGEMENT_DANGER_TEXT`) adds "what the team recorded". `forgetConfirmText` lists "N recorded items" after the
+  notes and its uncounted sentence names "what the team recorded"; `forgetNoticeText` adds "N recorded items".
+- Verified: unit tests (`knowledgeRun.test.ts` 11, `transcriptRows.test.ts` and `dashboard.test.ts` additions; `npm
+  test` 4136 passing), `npm run typecheck`, `npm run build`, and `e2e/knowledge-run.mjs` (mock, in e2e:free): two
+  engagements, the `[mock:knowledge]` run to Idle (the default script's edit card is allowed once), the eleven
+  sentences in order on the root transcript, no "not instructions" / tool-name text, eight `knowledge-row`s each with
+  an Open link ("Open Acme Corp in Knowledge" on the first and on the retired-fact row), "Show output" holding
+  "Created organisation Acme Corp (kn_…)", Enter on Open and the RunMeta button showing `knowledge-view`, the summary
+  "1 note, 5 facts, 1 person" computed from `knowledge.get` + `listNotes` (the mock retires one of Acme's two facts) and
+  its refetch after a `saveNote`, the forget confirm "4 recorded items", Clear everything ("4 items, 6 facts, 2
+  relations"; afterwards an empty graph, the notice, the greyed button, notes kept), the Dashboard forget notice "4
+  recorded items" on the second engagement, no page scroll and no window shift at 1024x640 and 1600x1000 in both
+  themes, 15 screenshots. `e2e/engagement.mjs` and `e2e/runs.mjs` were re-run after the transcript change.
+- Not verified: the Claude and Codex adapters' row order (the pairing takes the next matching row after the call, so
+  a row written after the result still pairs); a run where a write is refused (the mock has none; unit-tested only);
+  the Open link landing on the item (the tab in this worktree is the stub, so only the tab switch is checked; the list
+  engineer's `resolveFocus` does the rest); the "Retired edge" headline (the mock retires a fact only); a chain with
+  recorded items in an earlier member; the 420 px drop of `run-meta-recorded` by eye; screen-reader output.
