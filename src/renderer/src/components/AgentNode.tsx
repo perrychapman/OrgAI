@@ -104,6 +104,8 @@ function AgentNodeView({ id, data, selected }: NodeProps<AgentFlowNode>): ReactE
           <div className="name" title={compact ? undefined : agent.name}>
             {agent.name}
           </div>
+          {/* The tooltip is not read by keyboard or screen-reader users: say what the card would show. */}
+          {compact && <span className="sr-only">{[activity, worktreeText].filter(Boolean).join(', ')}</span>}
           {!compact && (
             <div className="sub">
               <span title={agent.handle ? `Handle ${agent.handle} (role ${agent.roleSlug})` : undefined}>{agent.handle ?? agent.roleSlug}</span>
