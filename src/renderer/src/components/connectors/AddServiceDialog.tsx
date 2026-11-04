@@ -19,7 +19,8 @@ import { clampText } from '../../lib/capabilities'
 import { CATEGORY_LABELS, EASE_BADGE, filterConnectors, filterLibrary, infoEase, serviceCount, sortForGallery, stateChip } from '../../lib/connectors'
 import { UseInProjectDialog, connectorAccess } from './ConnectedServices'
 import { ConnectorLogo } from './ConnectorLogo'
-import { EaseBadge } from './ConnectorTile'
+import { CustomBadge, EaseBadge } from './ConnectorTile'
+import { isCustomConnector, presetOf } from '../../lib/mcpScope'
 import ConnectorDialog from './ConnectorDialog'
 import { useRovingFocus } from './useRovingFocus'
 
@@ -143,17 +144,19 @@ export default function AddServiceDialog({
   const roving = useRovingFocus(listRef, '[role=option]')
   const ids = useId()
 
-  const { ready, more } = useMemo(() => {
+  const { ready, more, presets } = useMemo(() => {
     const ranked = filterConnectors(sortForGallery(connectors ?? []), query)
     // A query ranks by match; keep the Ready section on top without losing that order inside each section.
-    return { ready: ranked.filter((i) => i.state === 'connected'), more: ranked.filter((i) => i.state !== 'connected') }
+    // The user's own presets that are not connected sit with "Your servers", beside their saved custom servers.
+    const notReady = ranked.filter((i) => i.state !== 'connected')
+    return { ready: ranked.filter((i) => i.state === 'connected'), more: notReady.filter((i) => !isCustomConnector(i)), presets: notReady.filter(isCustomConnector) }
   }, [connectors, query])
   const { library } = useMcpLibrary()
   const yours = useMemo(
     () => filterLibrary((library ?? []).filter((l) => !l.entry.connectorId), query),
     [library, query]
   )
-  const total = yours.length + ready.length + more.length
+  const total = yours.length + presets.length + ready.length + more.length
 
   if (step.kind === 'library') {
     return (
@@ -299,7 +302,7 @@ export default function AddServiceDialog({
         data-ready={isReady ? 'true' : undefined}
         data-used={used ? 'true' : undefined}
         aria-selected={activeId === def.id}
-        aria-label={`${def.name}, ${CATEGORY_LABELS[def.category]}, ${status}`}
+        aria-label={`${def.name}, ${isCustomConnector(info) ? `${presetOf(info)?.origin === 'kit' ? 'from a kit' : 'yours'}, ` : ''}${CATEGORY_LABELS[def.category]}, ${status}`}
         aria-describedby={descId}
         tabIndex={-1}
         onFocus={() => setActiveId(def.id)}
@@ -308,7 +311,10 @@ export default function AddServiceDialog({
       >
         <ConnectorLogo def={def} />
         <span className="addsvc-text">
-          <span className="mcp-name">{def.name}</span>
+          <span className="mcp-name addsvc-name">
+            {def.name}
+            {isCustomConnector(info) && <CustomBadge info={info} />}
+          </span>
           <span id={descId} className="muted addsvc-desc">
             {def.description}
           </span>
@@ -436,12 +442,13 @@ export default function AddServiceDialog({
             </div>
           ) : (
             <div ref={listRef} className="addsvc-lists" onKeyDown={roving.onKeyDown} onFocus={roving.onFocus}>
-              {yours.length > 0 && (
+              {yours.length + presets.length > 0 && (
                 <section className="addsvc-group" data-testid="add-service-yours">
                   <h3 className="connector-group-title" id={`${ids}-yours`}>
-                    Your servers <span className="muted connector-group-n">{yours.length}</span>
+                    Your servers <span className="muted connector-group-n">{yours.length + presets.length}</span>
                   </h3>
                   <ul role="listbox" aria-labelledby={`${ids}-yours`} className="addsvc-list">
+                    {presets.map((i) => option(i, false))}
                     {yours.map((l) => libraryOption(l))}
                   </ul>
                 </section>
@@ -459,7 +466,7 @@ export default function AddServiceDialog({
               {more.length > 0 && (
                 <section className="addsvc-group" data-testid="add-service-new">
                   <h3 className="connector-group-title" id={`${ids}-new`}>
-                    {yours.length > 0 || ready.length > 0 || query.trim() ? 'Connect a new service' : 'Services'} <span className="muted connector-group-n">{more.length}</span>
+                    {yours.length + presets.length > 0 || ready.length > 0 || query.trim() ? 'Connect a new service' : 'Services'} <span className="muted connector-group-n">{more.length}</span>
                   </h3>
                   <ul role="listbox" aria-labelledby={`${ids}-new`} className="addsvc-list">
                     {more.map((i) => option(i, false))}

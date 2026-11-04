@@ -30,6 +30,7 @@ import { scrollWithin } from '../lib/scrollWithin'
 import ConnectionsPanel from '../components/connections/ConnectionsPanel'
 import { ModelPricesSection } from '../components/settings/ModelPricesSection'
 import { ConnectorGallery } from '../components/connectors/ConnectorGallery'
+import PresetsSection from '../components/connectors/PresetsSection'
 import McpLibrarySection from '../components/mcp/McpLibrarySection'
 import SkillLibrarySection from '../components/skills/SkillLibrarySection'
 import TemplatesSection from '../components/templates/TemplatesSection'
@@ -526,6 +527,7 @@ export default function AppSettingsView(): ReactElement {
         {pane === 'mcp-library' && (
           <>
             <ConnectorGallery />
+            <PresetsSection />
             <McpLibrarySection />
           </>
         )}

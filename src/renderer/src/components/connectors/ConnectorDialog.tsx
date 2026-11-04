@@ -1,6 +1,6 @@
 import type { ReactElement } from 'react'
 import { useEffect, useId, useRef, useState } from 'react'
-import { ExternalLink, PlugZap, ShieldCheck, Unplug } from 'lucide-react'
+import { ExternalLink, Pencil, PlugZap, ShieldCheck, TriangleAlert, Unplug } from 'lucide-react'
 import type { ConnectorInfo, McpTestResult } from '@shared/types'
 import { CONNECTOR_REDIRECT_URI, connectorEase, connectorVariant } from '@shared/connectors'
 import { Badge } from '../ui/Badge'
@@ -15,6 +15,7 @@ import {
   clampText,
   connectLabel,
   connectMissing,
+  customNote,
   defaultVariantId,
   dialogLead,
   dialogTitle,
@@ -23,12 +24,15 @@ import {
   noteForUser,
   plainToolName,
   removeConsequence,
+  variantCommandLine,
   variantExplain
 } from '../../lib/connectors'
 import { authFailure, connectStep, disconnectKind, httpsUrl, testFailure } from '../../lib/connectorFlow'
+import { hasHidden, showHidden } from '../../lib/hiddenChars'
+import { presetOf, type UserConnectorDef, type UserConnectorVariant } from '../../lib/mcpScope'
 import { errMessage } from '../mcp/mcpHelpers'
 import { ConnectorLogo } from './ConnectorLogo'
-import { EaseBadge } from './ConnectorTile'
+import { CustomBadge, EaseBadge } from './ConnectorTile'
 import { useConnectors } from './useConnectors'
 
 type Phase = 'idle' | 'working' | 'waiting'
@@ -44,8 +48,42 @@ function ExtLink({ href, children }: { href: string; children: string }): ReactE
   )
 }
 
+/**
+ * Where a preset the user described will connect, in full and unclamped: the program and every argument, or the address.
+ * Text goes through hiddenChars so a disguised character is shown as an escape, with a badge.
+ */
+function CustomTarget({ variant }: { variant: UserConnectorVariant }): ReactElement {
+  const program = variant.transport === 'stdio'
+  const text = program ? variantCommandLine(variant) : (variant.url ?? '')
+  const hidden = hasHidden(text)
+  return (
+    <div className="connector-custom-target">
+      <span className="connector-custom-target-label">{program ? 'Runs this program on this computer' : 'Connects to'}</span>
+      <code className="mono connector-custom-text" data-testid={program ? 'connector-custom-command' : 'connector-custom-url'}>
+        {showHidden(text)}
+      </code>
+      {hidden && (
+        <Badge tone="danger" icon={TriangleAlert}>
+          Hidden characters shown
+        </Badge>
+      )}
+    </div>
+  )
+}
+
 /** Connect, check, disconnect or remove one service. Plain words only; the live state comes from connectors:list. */
-export default function ConnectorDialog({ info, onClose, onConnected }: { info: ConnectorInfo; onClose: () => void; onConnected?: (info: ConnectorInfo) => void }): ReactElement {
+export default function ConnectorDialog({
+  info,
+  onClose,
+  onConnected,
+  onEditPreset
+}: {
+  info: ConnectorInfo
+  onClose: () => void
+  onConnected?: (info: ConnectorInfo) => void
+  /** A service the user described: the footer then offers "Edit preset". The caller closes this dialog and opens the form. */
+  onEditPreset?: (preset: UserConnectorDef) => void
+}): ReactElement {
   const { connectors, refresh } = useConnectors()
   const live = connectors?.find((c) => c.connector.id === info.connector.id) ?? info
   const def = live.connector
@@ -75,7 +113,9 @@ export default function ConnectorDialog({ info, onClose, onConnected }: { info: 
 
   const usedBy = entry?.usedBy ?? []
   const account = entry?.auth.account
-  const note = honestyNote(def)
+  const preset = presetOf(live)
+  const presetVariant = preset?.variants.find((v) => v.id === variant.id)
+  const note = preset ? customNote(preset.origin) : honestyNote(def)
   const missing = connected ? [] : connectMissing(auth, { clientId, clientSecret, token })
   const sentence = missingSentence(missing)
   const busy = phase !== 'idle'
@@ -248,7 +288,7 @@ export default function ConnectorDialog({ info, onClose, onConnected }: { info: 
         </ul>
       )}
       {note && (
-        <p className="muted connector-honesty" data-testid="connector-honesty">
+        <p className="muted connector-honesty" data-testid={preset ? 'connector-custom-note' : 'connector-honesty'}>
           {note}
         </p>
       )}
@@ -264,6 +304,13 @@ export default function ConnectorDialog({ info, onClose, onConnected }: { info: 
       testId="connector-dialog"
       footer={
         <>
+          {preset && onEditPreset && phase === 'idle' && (
+            <span className="connector-foot-edit">
+              <Button icon={Pencil} testId="connector-preset-edit" onClick={() => onEditPreset(preset)}>
+                Edit preset
+              </Button>
+            </span>
+          )}
           {form && phase === 'waiting' && (
             <>
               <span className="muted connector-foot-status" role="status" data-testid="connector-waiting">
@@ -306,8 +353,9 @@ export default function ConnectorDialog({ info, onClose, onConnected }: { info: 
         <div className="connector-dlg-head">
           <ConnectorLogo def={def} size="lg" />
           <div className="connector-dlg-id">
-            <span className="connector-dlg-vendor">by {def.vendor}</span>
+            {!preset && <span className="connector-dlg-vendor">by {def.vendor}</span>}
             <div className="connector-badges">
+              {preset && <CustomBadge info={live} />}
               {!connected && <EaseBadge ease={ease} />}
               {def.status === 'preview' && <Badge>Preview</Badge>}
             </div>
@@ -333,6 +381,7 @@ export default function ConnectorDialog({ info, onClose, onConnected }: { info: 
           </button>
         )}
         {variantsBlock}
+        {presetVariant && <CustomTarget variant={presetVariant} />}
         {!tokenFirst && extras}
 
         {form && (

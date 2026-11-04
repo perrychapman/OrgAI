@@ -1,10 +1,11 @@
 import type { ReactElement } from 'react'
-import { CircleAlert, CircleCheck, CircleDashed, KeyRound, LogIn, TriangleAlert, Wrench, Zap } from 'lucide-react'
+import { CircleAlert, CircleCheck, CircleDashed, KeyRound, LogIn, TriangleAlert, UserRound, Wrench, Zap } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import type { ConnectorEase, ConnectorInfo } from '@shared/types'
 import { Badge } from '../ui/Badge'
 import { Button } from '../ui/Button'
 import { EASE_BADGE, clampText, infoEase, stateChip, tileAction } from '../../lib/connectors'
+import { isCustomConnector, presetOf } from '../../lib/mcpScope'
 import { ConnectorLogo } from './ConnectorLogo'
 
 const CHIP_ICON = { success: CircleCheck, warning: TriangleAlert, danger: CircleAlert, neutral: CircleDashed }
@@ -20,9 +21,20 @@ export function EaseBadge({ ease }: { ease: ConnectorEase }): ReactElement {
   )
 }
 
+/** "Yours" (or "From a kit"): told apart from the curated services by text, not colour. */
+export function CustomBadge({ info }: { info: ConnectorInfo }): ReactElement {
+  const fromKit = presetOf(info)?.origin === 'kit'
+  return (
+    <Badge tone="neutral" icon={UserRound} testId="connector-custom-badge">
+      {fromKit ? 'From a kit' : 'Yours'}
+    </Badge>
+  )
+}
+
 /** One service in the gallery: logo, name, one line, and one badge plus one button. */
 export function ConnectorTile({ info, onOpen }: { info: ConnectorInfo; onOpen: () => void }): ReactElement {
   const def = info.connector
+  const isCustom = isCustomConnector(info)
   const ease = infoEase(info)
   const action = tileAction(info)
   const available = info.state === 'available'
@@ -30,10 +42,22 @@ export function ConnectorTile({ info, onOpen }: { info: ConnectorInfo; onOpen: (
   const rawAccount = info.state === 'connected' ? info.library?.auth.account : undefined
   const account = rawAccount ? clampText(rawAccount, 200) : undefined
   return (
-    <li className="connector-tile" data-testid="connector-tile" data-connector={def.id} data-state={info.state} data-ease={ease}>
+    <li
+      className="connector-tile"
+      data-testid="connector-tile"
+      data-connector={def.id}
+      data-state={info.state}
+      data-ease={ease}
+      data-custom={isCustom ? 'true' : undefined}
+    >
       <ConnectorLogo def={def} />
       <div className="connector-tile-main">
-        <span className="connector-name">{def.name}</span>
+        <span className="connector-name-row">
+          <span className="connector-name" title={isCustom ? def.name : undefined}>
+            {def.name}
+          </span>
+          {isCustom && <CustomBadge info={info} />}
+        </span>
         <span className="connector-meta">
           {available ? (
             <span data-ease={ease} data-testid="connector-ease-wrap">
