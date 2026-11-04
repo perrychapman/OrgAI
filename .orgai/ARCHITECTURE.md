@@ -225,7 +225,7 @@ Three sessions shown in the main window like projects, each on a virtual project
 - app:info (IPC.appInfo) returns AppInfo: version, platform, dataDir, logsDir, packaged, and mockAdapter, derived from the adapters map RunManager received (registerIpc gets its keys as adapterIds). The pure builder is appInfo.ts. ORGAI_MOCK=1 registers the mock adapter, and the new-project form then offers "Use the mock adapter" (ProjectCreateInput.mock).
 - The idle usage monitor (the Claude plan, plus Codex through extraProbes).
 - JSON stores.
-- shellEnv.ts gives macOS and Linux GUI launches the login shell's PATH, per shell: POSIX shells print $PATH, fish uses `string join`, and csh/tcsh/nushell/unknown shells fall back to /bin/zsh on macOS or /bin/bash on Linux. appMenu.ts is the macOS application menu.
+- shellEnv.ts gives macOS and Linux GUI launches the login shell's PATH, per shell: POSIX shells print $PATH, fish uses `string join`, and csh/tcsh/nushell/unknown shells fall back to /bin/zsh on macOS or /bin/bash on Linux. appMenu.ts is the application menu for every platform (scope routing: app-level actions go to the main window and focus it, run-scoped ones to a focused run window; Help links are guarded to two constants; darwin consuming Cmd+B / Cmd+Shift+N / Cmd+T natively is unverified).
 - Leftover-branch maintenance.
 - Run store layout under the data dir: runs.json (index), runs/<runId>.json (record), runs/<runId>/images/<sha256>.<ext>.
 - Secrets live in secrets.json (safeStorage ciphertext) and the model catalog in models.json. OrgAI's own Codex home is <data>/codex.

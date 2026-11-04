@@ -9,7 +9,7 @@ vi.mock('electron', () => ({
 vi.mock('./log', () => ({ logsDir: () => '/logs' }))
 
 import type { MenuItemConstructorOptions } from 'electron'
-import { DOCS_URL, ISSUES_URL, buildMenuTemplate, menuActionSender } from './appMenu'
+import { DOCS_URL, ISSUES_URL, RUN_SCOPED_MENU_ACTIONS, buildMenuTemplate, menuActionSender, openHelpUrl } from './appMenu'
 import { IPC, MENU_ACTIONS } from '../shared/types'
 import type { MenuAction } from '../shared/types'
 
@@ -122,25 +122,67 @@ describe.each(['darwin', 'win32', 'linux'])('buildMenuTemplate on %s', (platform
 })
 
 describe('menuActionSender', () => {
-  const win = (destroyed = false, contentsDestroyed = false) => ({
+  const win = (destroyed = false, contentsDestroyed = false, minimized = false) => ({
     isDestroyed: () => destroyed,
+    isMinimized: vi.fn(() => minimized),
+    restore: vi.fn(),
+    focus: vi.fn(),
     webContents: { isDestroyed: () => contentsDestroyed, send: vi.fn() }
   })
+  const RUN = { projectId: 'p', runId: 'r' }
 
-  it('sends { action } on menu:action to the focused window', () => {
+  it('sends { action } on menu:action to a focused main window', () => {
     const a = win()
     const b = win()
-    menuActionSender(() => a as never, () => [b, a] as never)('new-run')
+    menuActionSender(() => a, () => [[b, undefined], [a, undefined]])('new-run')
     expect(a.webContents.send).toHaveBeenCalledWith(IPC.menuAction, { action: 'new-run' })
     expect(IPC.menuAction).toBe('menu:action')
     expect(b.webContents.send).not.toHaveBeenCalled()
+    expect(a.focus).not.toHaveBeenCalled()
+  })
+
+  it('sends a run-scoped action to a focused run window', () => {
+    const main = win()
+    const run = win()
+    menuActionSender(() => run, () => [[main, undefined], [run, RUN]])('interrupt-run')
+    expect(run.webContents.send).toHaveBeenCalledWith('menu:action', { action: 'interrupt-run' })
+    expect(main.webContents.send).not.toHaveBeenCalled()
+  })
+
+  it('routes an app-level action from a run window to the main window and focuses it', () => {
+    const main = win(false, false, true)
+    const run = win()
+    menuActionSender(() => run, () => [[run, RUN], [main, undefined]])('open-app-settings')
+    expect(main.webContents.send).toHaveBeenCalledWith('menu:action', { action: 'open-app-settings' })
+    expect(run.webContents.send).not.toHaveBeenCalled()
+    expect(main.restore).toHaveBeenCalled()
+    expect(main.focus).toHaveBeenCalled()
+  })
+
+  it('sends to the main window and focuses it when nothing is focused', () => {
+    const main = win()
+    menuActionSender(() => null, () => [[main, undefined]])('show-live')
+    expect(main.webContents.send).toHaveBeenCalled()
+    expect(main.focus).toHaveBeenCalled()
+    expect(main.restore).not.toHaveBeenCalled()
+  })
+
+  it('falls back to the focused run window, else the first live window, without a main window', () => {
+    const run = win()
+    const other = win()
+    menuActionSender(() => run, () => [[other, RUN], [run, RUN]])('show-team')
+    expect(run.webContents.send).toHaveBeenCalled()
+    expect(other.webContents.send).not.toHaveBeenCalled()
+    const r2 = win()
+    menuActionSender(() => null, () => [[r2, RUN]])('show-team')
+    expect(r2.webContents.send).toHaveBeenCalled()
   })
 
   it('skips destroyed windows and falls back to the first live one', () => {
     const dead = win(true)
     const deadContents = win(false, true)
     const live = win()
-    menuActionSender(() => dead as never, () => [dead, deadContents, live] as never)('show-live')
+    menuActionSender(() => dead, () => [[dead, undefined], [deadContents, undefined], [live, undefined]])('show-live')
     expect(dead.webContents.send).not.toHaveBeenCalled()
     expect(deadContents.webContents.send).not.toHaveBeenCalled()
     expect(live.webContents.send).toHaveBeenCalledWith('menu:action', { action: 'show-live' })
@@ -149,7 +191,26 @@ describe('menuActionSender', () => {
   it('does nothing with no windows or an unknown action', () => {
     const live = win()
     expect(() => menuActionSender(() => null, () => [])('show-live')).not.toThrow()
-    menuActionSender(() => live as never, () => [live] as never)('bogus' as MenuAction)
+    menuActionSender(() => live, () => [[live, undefined]])('bogus' as MenuAction)
     expect(live.webContents.send).not.toHaveBeenCalled()
+  })
+
+  it('lists exactly the run-scoped actions', () => {
+    expect([...RUN_SCOPED_MENU_ACTIONS]).toEqual([
+      'interrupt-run', 'end-session', 'org-retrospective', 'canvas-fit', 'toggle-hide-finished', 'keyboard-shortcuts'
+    ])
+  })
+})
+
+describe('openHelpUrl', () => {
+  it('opens only the two fixed URLs', () => {
+    const open = vi.fn()
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    expect(openHelpUrl(DOCS_URL, open)).toBe(true)
+    expect(openHelpUrl(ISSUES_URL, open)).toBe(true)
+    expect(openHelpUrl(DOCS_URL + '/', open)).toBe(false)
+    expect(openHelpUrl('file:///C:/Windows/System32/calc.exe', open)).toBe(false)
+    expect(open.mock.calls).toEqual([[DOCS_URL], [ISSUES_URL]])
+    warn.mockRestore()
   })
 })

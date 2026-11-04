@@ -513,7 +513,7 @@ app.whenReady().then(() => {
   dropped += sweepScratchDirs(dataDir, runStore.all())
   sweepStaleSkillDirs()
   if (dropped) console.log(`Housekeeping removed ${dropped} stale run(s) or record file(s).`)
-  installAppMenu(menuActionSender(() => BrowserWindow.getFocusedWindow(), () => BrowserWindow.getAllWindows()))
+  installAppMenu(menuActionSender(() => BrowserWindow.getFocusedWindow(), liveWindowScopes))
   createWindow()
 
   app.on('activate', () => {

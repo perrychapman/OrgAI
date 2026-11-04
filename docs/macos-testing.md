@@ -41,6 +41,7 @@ Open the `.dmg`, drag OrgAI to Applications, then right-click the app and choose
 
 - Open the log: `open ~/Library/Logs/OrgAI` (the app also has an Open log folder action). The first lines should include `OrgAI <version> starting ... darwin arm64 packaged=true` and a `PATH: N entries added (login shell)` line.
 - In the app, confirm `git`, `claude` and `codex` are found: the Claude status pill shows logged in, and starting a project on a git repo works.
+- Cmd+B, Cmd+Shift+N, Cmd+T each fire once through the menu (the native menu consumes them on macOS; check the renderer handler does not fire a second time).
 - Check the packaged native binaries exist: `ls /Applications/OrgAI.app/Contents/Resources/app.asar.unpacked/node_modules/@anthropic-ai/*/claude` and `.../@openai/codex-darwin-*/vendor/*/codex/codex`.
 
 ## 6. Claude login
