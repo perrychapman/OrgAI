@@ -248,6 +248,17 @@ try {
   check((await row.locator('[data-testid=connector-use]').count()) === 0, 'the Use button is gone once linked')
 
   // ---- Add a service: search-first picker ----
+  // One saved (library) server of the user's own, to find in "Your servers".
+  await page.evaluate(() =>
+    window.orgai.mcpLibrary.upsert({
+      id: 'mcp_e2e_idp',
+      name: 'client-idp-admin',
+      transport: 'stdio',
+      command: 'npx',
+      args: ['-y', 'client-idp-admin@1.0.0'],
+      description: 'Admin tools for the client identity provider'
+    })
+  )
   await page.locator('[data-testid=mcp-add-service]').scrollIntoViewIfNeeded()
   await page.locator('[data-testid=mcp-add-service]').click()
   const add = page.locator('[data-testid=add-service-dialog]')
@@ -272,8 +283,49 @@ try {
   check((await add.locator('[data-testid=add-service-more]').count()) === 1 && (await add.locator('[data-testid=add-service-assist]').count()) === 1, 'the other ways to add stay pinned in one footer row when nothing matches')
   await addSearch.fill('sla')
   check((await add.locator('[data-testid=add-service-option]').first().getAttribute('data-connector')) === 'slack', 'search "sla" lists Slack first')
-  await page.keyboard.press('Escape')
-  await add.waitFor({ state: 'detached', timeout: 10_000 })
+  check((await add.locator('[data-testid=add-service-yours]').count()) === 0, 'a search that matches no saved server hides "Your servers"')
+  // Your servers: first section, found by name and by description, links with the chosen roles.
+  await addSearch.fill('')
+  const yoursRow = add.locator('[data-testid=add-service-library-option][data-id=mcp_e2e_idp]')
+  await yoursRow.waitFor({ timeout: 10_000 })
+  const sectionOrder = await add.locator('.addsvc-lists > section').evaluateAll((els) => els.map((e) => e.getAttribute('data-testid')))
+  check(sectionOrder[0] === 'add-service-yours' && sectionOrder.indexOf('add-service-ready') > 0, 'Your servers is the first section, Ready to use after it', sectionOrder.join(','))
+  await shot('add-service-yours')
+  check(/Add/.test((await yoursRow.textContent()) ?? '') && !/Manage roles/.test((await yoursRow.textContent()) ?? ''), 'an unlinked saved server offers "Add"')
+  check((await yoursRow.getAttribute('aria-label')) === 'client-idp-admin, your server, ready to add', 'the saved server option has a short name')
+  const optionStops2 = await add.locator('[role=option]').evaluateAll((els) => els.filter((e) => e.tabIndex === 0).length)
+  check(optionStops2 === 1, 'the picker stays one tab stop with Your servers', String(optionStops2))
+  await addSearch.fill('idp')
+  check((await add.locator('[data-testid=add-service-library-option]').count()) === 1, 'search "idp" finds the saved server by name')
+  check(/^1 service/.test(((await add.locator('[data-testid=add-service-count]').textContent()) ?? '').trim()), 'the count includes the saved server', await add.locator('[data-testid=add-service-count]').textContent())
+  await addSearch.fill('identity provider')
+  check((await add.locator('[data-testid=add-service-library-option]').count()) === 1, 'search finds the saved server by description')
+  await addSearch.fill('zzzqqq')
+  await add.locator('[data-testid=add-service-empty]').waitFor({ timeout: 5_000 })
+  check(/No service or saved server matches "zzzqqq"/.test((await add.locator('[data-testid=add-service-empty]').textContent()) ?? ''), 'the empty copy names services and saved servers')
+  check((await add.locator('[data-testid=add-service-empty-custom]').count()) === 1, 'the empty state offers "Set up a custom server"')
+  await addSearch.fill('idp')
+  await yoursRow.focus()
+  await page.keyboard.press('Enter')
+  const libDlg = page.locator('[data-testid=add-service-library-dialog]')
+  await libDlg.waitFor({ timeout: 10_000 })
+  check(await libDlg.locator('[data-testid=add-service-library-confirm]').isDisabled(), 'Add is disabled until a role is chosen')
+  await libDlg.getByRole('checkbox', { name: role, exact: true }).check()
+  await libDlg.locator('[data-testid=add-service-library-confirm]').click()
+  await libDlg.waitFor({ state: 'detached', timeout: 10_000 })
+  const linkedRow = page.locator('[data-testid=mcp-row][data-server=client-idp-admin]')
+  await linkedRow.waitFor({ timeout: 10_000 })
+  check((await linkedRow.locator('[data-testid=mcp-row-library-badge]').count()) === 1, 'Add links the saved server into the project')
+  await page.locator('[data-testid=mcp-add-service]').click()
+  const add3 = page.locator('[data-testid=add-service-dialog]')
+  await add3.waitFor({ timeout: 10_000 })
+  const used = add3.locator('[data-testid=add-service-library-option][data-id=mcp_e2e_idp]')
+  await used.waitFor({ timeout: 10_000 })
+  check((await used.getAttribute('data-used')) === 'true' && /Manage roles/.test((await used.textContent()) ?? ''), 'a linked saved server says "Manage roles"')
+  await used.click()
+  await add3.waitFor({ state: 'detached', timeout: 10_000 })
+  await sleep(300)
+  check(await linkedRow.evaluate((el) => el.contains(document.activeElement) || el === document.activeElement), 'Manage roles jumps to the project row')
 
   // ---- role inspector ----
   await projectTab(page, 'Team').click()

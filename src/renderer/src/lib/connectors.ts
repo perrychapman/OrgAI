@@ -262,6 +262,39 @@ export function filterConnectors(infos: ConnectorInfo[], query: string): Connect
     .map((o) => o.x)
 }
 
+/**
+ * Rank of a saved (library) server for a search: 0 name starts with it, 1 a name word starts with it, 2 the name
+ * contains it, 3 the description contains it, null no match. Every word of a multi-word query must match somewhere;
+ * the worst word decides. An empty query is 0.
+ */
+export function libraryMatchRank(entry: { name: string; description?: string }, query: string): number | null {
+  const q = query.trim().toLowerCase()
+  if (!q) return 0
+  const name = entry.name.toLowerCase()
+  const desc = (entry.description ?? '').toLowerCase()
+  let worst = 0
+  for (const w of q.split(/\s+/)) {
+    let r: number | null = null
+    if (name.startsWith(w)) r = 0
+    else if (name.split(/[^a-z0-9]+/).some((p) => p.startsWith(w))) r = 1
+    else if (name.includes(w)) r = 2
+    else if (desc.includes(w)) r = 3
+    if (r === null) return null
+    worst = Math.max(worst, r)
+  }
+  return worst
+}
+
+/** Saved servers that match the query, best first (stable otherwise). */
+export function filterLibrary<T extends { entry: { name: string; description?: string } }>(items: T[], query: string): T[] {
+  if (!query.trim()) return items
+  return items
+    .map((x, idx) => ({ x, idx, r: libraryMatchRank(x.entry, query) }))
+    .filter((o): o is { x: T; idx: number; r: number } => o.r !== null)
+    .sort((a, b) => a.r - b.r || a.idx - b.idx)
+    .map((o) => o.x)
+}
+
 /** "12 services" / "1 service" / "No services": the live count under the search. */
 export function serviceCount(n: number): string {
   return n === 0 ? 'No services' : n === 1 ? '1 service' : `${n} services`
