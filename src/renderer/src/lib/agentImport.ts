@@ -45,8 +45,9 @@ export function effectiveSetupChoice(hasAgents: boolean, picked: SetupChoice | n
   return architect ? 'architect' : 'default'
 }
 
-export function setupSubmitLabel(choice: SetupChoice, busy: boolean): string {
+export function setupSubmitLabel(choice: SetupChoice, busy: boolean, kind: 'code' | 'engagement' = 'code'): string {
   if (choice === 'import') return busy ? 'Creating…' : 'Create project and review import'
+  if (choice === 'architect' && kind === 'engagement') return busy ? 'Starting the interview…' : 'Create and start interview'
   if (choice === 'architect') return busy ? 'Scanning and starting the Architect…' : 'Create and start setup'
   return busy ? 'Creating…' : 'Create project'
 }
