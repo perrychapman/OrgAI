@@ -1522,8 +1522,18 @@ export const RUN_TITLE_MAX_CHARS = 32
 /** 'system' follows the OS (Electron nativeTheme); the renderer resolves it with matchMedia('(prefers-color-scheme: dark)'). */
 export type ThemeMode = 'dark' | 'light' | 'system'
 export const THEME_MODES: readonly ThemeMode[] = ['dark', 'light', 'system']
-export type CanvasPattern = 'dots' | 'grid' | 'none'
-export const CANVAS_PATTERNS: readonly CanvasPattern[] = ['dots', 'grid', 'none']
+/** Canvas background. 'blueprint', 'paper', 'isometric', 'circuit', 'terminal' and 'starfield' are themed backdrops. */
+export type CanvasPattern = 'dots' | 'grid' | 'none' | 'blueprint' | 'paper' | 'isometric' | 'circuit' | 'terminal' | 'starfield'
+export const CANVAS_PATTERNS: readonly CanvasPattern[] = ['dots', 'grid', 'none', 'blueprint', 'paper', 'isometric', 'circuit', 'terminal', 'starfield']
+/** How the org chart is arranged. 'top-down' and 'left-right' are dagre rank directions; 'radial' puts the root at the centre with each depth on a ring. */
+export type CanvasLayout = 'top-down' | 'left-right' | 'radial'
+export const CANVAS_LAYOUTS: readonly CanvasLayout[] = ['top-down', 'left-right', 'radial']
+/**
+ * How an agent is drawn. 'card' is the 240x112 card; 'compact' is a name-tag pill with the state ring, details on
+ * select; 'station' is a subway-map circle on one coloured line per lead; 'hex' is a honeycomb tile.
+ */
+export type CanvasNodeStyle = 'card' | 'compact' | 'station' | 'hex'
+export const CANVAS_NODE_STYLES: readonly CanvasNodeStyle[] = ['card', 'compact', 'station', 'hex']
 export type CanvasEdgeStyle = 'curved' | 'orthogonal' | 'straight'
 export const CANVAS_EDGE_STYLES: readonly CanvasEdgeStyle[] = ['curved', 'orthogonal', 'straight']
 
@@ -1538,6 +1548,10 @@ export interface AppearanceSettings {
     /** Tint the canvas background with the accent. */
     tint: boolean
     edges: CanvasEdgeStyle
+    /** Chart arrangement. Main fills 'top-down' for settings saved before it existed. */
+    layout: CanvasLayout
+    /** Agent drawing. Main fills 'card' for settings saved before it existed. */
+    nodeStyle: CanvasNodeStyle
     minimap: boolean
   }
   /** 'system' honours prefers-reduced-motion; 'on' always reduces motion. */

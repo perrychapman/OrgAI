@@ -245,10 +245,20 @@ describe('appearance', () => {
   it('keeps valid values and falls back field by field', () => {
     expect(
       normalizeAppearance({ theme: 'light', accent: '#22C58B', canvas: { pattern: 'grid', tint: false, edges: 'orthogonal', minimap: true }, reduceMotion: 'on' })
-    ).toEqual({ theme: 'light', accent: '#22c58b', canvas: { pattern: 'grid', tint: false, edges: 'orthogonal', minimap: true }, reduceMotion: 'on' })
-    expect(normalizeAppearance({ theme: 'sepia', accent: 'purple', canvas: { pattern: 'stars', tint: 'yes', edges: 3 }, reduceMotion: 'always' })).toEqual(DEFAULT_APPEARANCE)
+    ).toEqual({ theme: 'light', accent: '#22c58b', canvas: { pattern: 'grid', tint: false, edges: 'orthogonal', layout: 'top-down', nodeStyle: 'card', minimap: true }, reduceMotion: 'on' })
+    expect(normalizeAppearance({ theme: 'sepia', accent: 'purple', canvas: { pattern: 'stars', tint: 'yes', edges: 3, layout: 'spiral', nodeStyle: 'blob' }, reduceMotion: 'always' })).toEqual(DEFAULT_APPEARANCE)
     expect(normalizeAppearance({ theme: 'system', accent: '#AbC' })).toMatchObject({ theme: 'system', accent: '#aabbcc' })
     expect(normalizeAppearance('nonsense')).toEqual(DEFAULT_APPEARANCE)
+  })
+
+  it('loads a canvas saved before layout and nodeStyle existed with their defaults', () => {
+    const a = normalizeAppearance({ canvas: { pattern: 'grid', tint: false, edges: 'straight', minimap: true } })
+    expect(a.canvas).toEqual({ pattern: 'grid', tint: false, edges: 'straight', layout: 'top-down', nodeStyle: 'card', minimap: true })
+  })
+
+  it('keeps the new themed values and drops junk for pattern, layout and nodeStyle', () => {
+    expect(normalizeAppearance({ canvas: { pattern: 'starfield', layout: 'radial', nodeStyle: 'hex' } }).canvas).toMatchObject({ pattern: 'starfield', layout: 'radial', nodeStyle: 'hex' })
+    expect(normalizeAppearance({ canvas: { pattern: 7, layout: {}, nodeStyle: null } }).canvas).toMatchObject({ pattern: 'dots', layout: 'top-down', nodeStyle: 'card' })
   })
 })
 
@@ -278,6 +288,18 @@ describe('SettingsStore', () => {
       store.set({ ...store.get(), appearance: { ...DEFAULT_APPEARANCE, accent: '#22c58b', canvas: { ...DEFAULT_APPEARANCE.canvas, minimap: true } } })
       store.set({ ...store.get(), appearance: { theme: 'light', canvas: { pattern: 'grid' } } as never })
       expect(store.get().appearance).toEqual({ ...DEFAULT_APPEARANCE, theme: 'light', accent: '#22c58b', canvas: { ...DEFAULT_APPEARANCE.canvas, pattern: 'grid', minimap: true } })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps stored layout and nodeStyle when a partial canvas is set', () => {
+    const dir = tmp()
+    try {
+      const store = new SettingsStore(dir)
+      store.set({ ...store.get(), appearance: { ...DEFAULT_APPEARANCE, canvas: { ...DEFAULT_APPEARANCE.canvas, layout: 'radial', nodeStyle: 'hex' } } })
+      store.set({ ...store.get(), appearance: { canvas: { pattern: 'paper' } } as never })
+      expect(store.get().appearance.canvas).toMatchObject({ pattern: 'paper', layout: 'radial', nodeStyle: 'hex' })
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

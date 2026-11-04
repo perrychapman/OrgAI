@@ -451,8 +451,75 @@ export function mcpServersForRole(project: Pick<Project, 'mcpServers'>, role: Pi
 export const DEFAULT_APPEARANCE: AppearanceSettings = {
   theme: 'dark',
   accent: '#7c5cff',
-  canvas: { pattern: 'dots', tint: true, edges: 'curved', minimap: false },
+  canvas: { pattern: 'dots', tint: true, edges: 'curved', layout: 'top-down', nodeStyle: 'card', minimap: false },
   reduceMotion: 'system'
+}
+
+export type CanvasPresetId = 'blueprint' | 'constellation' | 'subway' | 'mission-control' | 'paper' | 'hive'
+
+/** A canvas preset is a button that sets five canvas fields; it is never stored. The UI finds the active one with activeCanvasPreset. */
+export interface CanvasPreset {
+  id: CanvasPresetId
+  label: string
+  description: string
+  canvas: Pick<AppearanceSettings['canvas'], 'pattern' | 'edges' | 'layout' | 'nodeStyle' | 'tint'>
+}
+
+export const CANVAS_PRESETS: readonly CanvasPreset[] = [
+  {
+    id: 'blueprint',
+    label: 'Blueprint',
+    description: 'A drafting-table look: fine blue lines, right-angle connectors and plain cards.',
+    canvas: { pattern: 'blueprint', edges: 'orthogonal', layout: 'top-down', nodeStyle: 'card', tint: false }
+  },
+  {
+    id: 'constellation',
+    label: 'Constellation',
+    description: 'Agents as small name tags spread in rings around the root, over a field of stars.',
+    canvas: { pattern: 'starfield', edges: 'curved', layout: 'radial', nodeStyle: 'compact', tint: false }
+  },
+  {
+    id: 'subway',
+    label: 'Subway',
+    description: 'A transit map: one coloured line per lead, with each agent as a station, running left to right.',
+    canvas: { pattern: 'none', edges: 'orthogonal', layout: 'left-right', nodeStyle: 'station', tint: false }
+  },
+  {
+    id: 'mission-control',
+    label: 'Mission control',
+    description: 'A dark console look with straight connectors, laid out left to right.',
+    canvas: { pattern: 'terminal', edges: 'straight', layout: 'left-right', nodeStyle: 'card', tint: false }
+  },
+  {
+    id: 'paper',
+    label: 'Paper',
+    description: 'A soft paper background with gentle curved connectors and plain cards.',
+    canvas: { pattern: 'paper', edges: 'curved', layout: 'top-down', nodeStyle: 'card', tint: false }
+  },
+  {
+    id: 'hive',
+    label: 'Hive',
+    description: 'Honeycomb tiles in rings around the root, on a three-dimensional grid.',
+    canvas: { pattern: 'isometric', edges: 'straight', layout: 'radial', nodeStyle: 'hex', tint: false }
+  }
+]
+
+/** The preset whose five fields all match this canvas (minimap is not part of a preset), or undefined. */
+export function activeCanvasPreset(canvas: AppearanceSettings['canvas']): CanvasPresetId | undefined {
+  return CANVAS_PRESETS.find(
+    (p) =>
+      p.canvas.pattern === canvas.pattern &&
+      p.canvas.edges === canvas.edges &&
+      p.canvas.layout === canvas.layout &&
+      p.canvas.nodeStyle === canvas.nodeStyle &&
+      p.canvas.tint === canvas.tint
+  )?.id
+}
+
+/** A new canvas with the preset's five fields and the given minimap setting kept. An unknown id returns a copy unchanged. */
+export function applyCanvasPreset(canvas: AppearanceSettings['canvas'], id: CanvasPresetId): AppearanceSettings['canvas'] {
+  const preset = CANVAS_PRESETS.find((p) => p.id === id)
+  return preset ? { ...canvas, ...preset.canvas } : { ...canvas }
 }
 
 /** Window background before the renderer paints, per resolved theme (matches --surface-0 in tokens.css). */
