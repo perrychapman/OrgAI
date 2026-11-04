@@ -551,6 +551,12 @@
     min-height: 16lh;
   }
 }
+/* Context notes summary (knowledge.md section 9): one quiet line with the "Open Knowledge" link. */
+.knowledge-summary-line {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-small);
+}
 .notes-add {
   display: flex;
   flex-wrap: wrap;

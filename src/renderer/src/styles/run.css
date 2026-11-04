@@ -900,6 +900,13 @@
   overflow: visible;
 }
 
+/* "Recorded N items" (RunMeta, engagements): drops with the other counts in a narrow frame (layout.css run-meta rules). */
+@container frame (max-width: 420px) {
+  .run-meta-recorded {
+    display: none;
+  }
+}
+
 /* ---------- Run strip helpers ---------- */
 
 .run-act {

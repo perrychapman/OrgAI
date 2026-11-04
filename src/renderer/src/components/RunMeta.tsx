@@ -1,9 +1,11 @@
 import type { ReactElement } from 'react'
 import { useEffect, useState } from 'react'
-import { Bot, ClipboardList, Clock, Folder, ShieldAlert } from 'lucide-react'
+import { Bot, ClipboardList, Clock, Database, Folder, ShieldAlert } from 'lucide-react'
 import type { Project } from '@shared/types'
 import { isVirtualProjectId } from '@shared/types'
+import { projectKindOf } from '@shared/defaults'
 import { folderName } from '../lib/paths'
+import { recordedCount } from '../lib/knowledgeRun'
 import { PROPOSAL_NEXT_COPY, proposalNextLead } from '../lib/proposalNext'
 import { APP_SETTINGS_PANES, requestAppSettingsSection, requestSkillLibrary } from '../lib/settingsTarget'
 import { useAppStore, useProjectSummaries, type RunState } from '../store/useAppStore'
@@ -43,6 +45,10 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
   const cost = earlier.length > 0 ? sumCosts([...earlier.map(runCostInput), own]) : own
   const showCost = !costView(cost).empty
   const sessions = chain.length
+  // Section 8: what the conversation recorded on the Knowledge tab (every member's harness write rows), engagements only.
+  const engagement = projectKindOf(project) === 'engagement'
+  const recorded = useAppStore((s) => (engagement ? chain.reduce((n, m) => n + recordedCount(s.runs[m.id]?.transcript ?? []), 0) : 0))
+  const setView = useAppStore((s) => s.setView)
   const progress = run.plan ? planProgress(run.plan) : undefined
   const auto = autoContinueState({
     status: summary.status,
@@ -102,6 +108,12 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
         <Icon icon={Bot} size="xs" />
         {agentCount} agent{agentCount === 1 ? '' : 's'}
       </span>
+      {recorded > 0 && (
+        <button type="button" className="run-meta-item run-meta-recorded" data-testid="run-meta-recorded" title="What the team recorded this run. Opens Knowledge." onClick={() => setView('knowledge')}>
+          <Icon icon={Database} size="xs" />
+          Recorded {recorded} item{recorded === 1 ? '' : 's'}
+        </button>
+      )}
       {sessions > 1 && (
         <span className="run-meta-item run-meta-sessions" data-testid="run-meta-sessions" title="This conversation has been continued; the figures cover every session.">
           {sessions} sessions

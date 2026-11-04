@@ -333,10 +333,11 @@ describe('forget an engagement', () => {
     expect(removeConfirmLabel('code')).toBe('Delete project')
   })
   it('lists the counts and leaves zero rows out', () => {
-    const t = forgetConfirmText(counts, 1, 'Acme')
+    const t = forgetConfirmText({ ...counts, knowledgeRemoved: 40 }, 1, 'Acme')
     expect(t.lines).toEqual([
       'The engagement plan',
       '12 context notes',
+      '40 recorded items',
       'Saved permission rules',
       'Ends 1 open run and deletes 23 runs with their transcripts and costs',
       '3 skill copies made for it',
@@ -350,10 +351,15 @@ describe('forget an engagement', () => {
   it('names the kinds without numbers when the count is unavailable', () => {
     const t = forgetConfirmText(null, 0, 'Acme')
     expect(t.lines).toEqual([])
-    expect(t.uncounted).toBe('its plan, context notes, saved rules, runs and costs')
+    expect(t.uncounted).toBe('its plan, context notes, what the team recorded, saved rules, runs and costs')
+  })
+  it('counts recorded items with the singular form', () => {
+    expect(forgetConfirmText({ ...counts, knowledgeRemoved: 1 }, 0, 'Acme').lines).toContain('1 recorded item')
+    expect(forgetNoticeText('Acme', { ...counts, knowledgeRemoved: 1 })).toBe('Forgot Acme. Deleted the plan, 12 notes, 1 recorded item, its saved rules, 23 runs, 3 skill copies.')
   })
   it('words the notice from the returned counts', () => {
     expect(forgetNoticeText('Acme', counts)).toBe('Forgot Acme. Deleted the plan, 12 notes, its saved rules, 23 runs, 3 skill copies.')
+    expect(forgetNoticeText('Acme', { ...counts, knowledgeRemoved: 40 })).toBe('Forgot Acme. Deleted the plan, 12 notes, 40 recorded items, its saved rules, 23 runs, 3 skill copies.')
     expect(forgetNoticeText('Acme', { ...counts, runsRemoved: 0, notesRemoved: 0, skillsRemoved: 0, documentRemoved: false, rulesRemoved: false })).toBe('Forgot Acme.')
   })
 })

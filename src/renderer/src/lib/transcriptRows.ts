@@ -1,7 +1,10 @@
 /** Pure humanizing for transcript rows: tool calls become sentences, raw input becomes an optional detail string. */
 
 import type { RunSummary, TranscriptEntry } from '@shared/types'
+import { ENGAGEMENT_CONTEXT_TOOL, KNOWLEDGE_TOOL } from '@shared/types'
+import { normalizeKnowledgeKey } from '@shared/knowledge'
 import { continuationDivider, type ContinuationDivider } from './runChains'
+import { keyWords, kindGroupLabel } from './knowledge'
 
 /** One row of a chain's merged feed: an entry of one member, or the divider where a continuation starts. */
 export type FeedItem =
@@ -74,7 +77,7 @@ function capFeed(items: FeedItem[], newestId: string | undefined, max: number): 
   return cut > 0 ? [{ kind: 'omitted', count: cut }, ...kept] : kept
 }
 
-export type ToolKind = 'ask' | 'plan' | 'propose' | 'permission' | 'edit' | 'read' | 'run' | 'search' | 'agent' | 'message' | 'other'
+export type ToolKind = 'ask' | 'plan' | 'propose' | 'permission' | 'edit' | 'read' | 'run' | 'search' | 'agent' | 'message' | 'knowledge' | 'other'
 
 export interface ToolRow {
   /** One human line, e.g. "Edited src/x.ts". */
@@ -126,6 +129,47 @@ function proposalNoun(bare: string): string {
     .replace(/^propose_/, '')
     .replace(/_/g, ' ')
     .replace(/\bmcp\b/g, 'MCP')
+}
+
+/**
+ * engagement_knowledge calls (docs/design/knowledge.md section 7): reads name what was looked up; the write sentences
+ * are the fallback shown only when no harness row stands for the call (a refusal), see lib/knowledgeRun.ts.
+ */
+function knowledgeCallLabel(i: Record<string, unknown>): string {
+  const kind = normalizeKnowledgeKey(str(i.kind)) ?? undefined
+  const name = str(i.name)
+  switch (str(i.action)) {
+    case 'vocabulary':
+      return 'Looked up the kinds and relations in use'
+    case 'search': {
+      const q = str(i.query)
+      if (q) return `Searched the knowledge for ${clip(q, 60)}`
+      return kind ? `Searched the knowledge for ${kindGroupLabel(kind).toLowerCase()}` : 'Searched the knowledge'
+    }
+    case 'get':
+      return name ? `Read ${clip(name)}` : 'Read an item'
+    case 'upsert_node':
+      return kind && name ? `Recorded ${keyWords(kind)} ${clip(name)}` : name ? `Recorded ${clip(name)}` : 'Recorded an item'
+    case 'link': {
+      const from = str(i.from)
+      const to = str(i.to)
+      const relation = normalizeKnowledgeKey(str(i.relation))
+      return from && to && relation ? `Linked ${clip(from, 80)} ${keyWords(relation)} ${clip(to, 80)}` : 'Linked two items'
+    }
+    case 'retire':
+      return str(i.factId) ? 'Retired a fact' : str(i.edgeId) ? 'Retired a relation' : 'Retired an item'
+  }
+  return 'Used the knowledge'
+}
+
+/** engagement_context calls: list, read (the note's title comes from the result, see lib/knowledgeRun.ts) or save (fallback sentence). */
+function contextCallLabel(i: Record<string, unknown>): string {
+  const action = str(i.action) ?? (str(i.noteId) ? 'read' : 'list')
+  if (action === 'save') {
+    const title = str(i.title)
+    return title ? `Saved note ${clip(title)}` : 'Saved a note'
+  }
+  return action === 'read' ? 'Read a note' : 'Read the context notes'
 }
 
 export function humanizeToolUse(name: string, input: unknown): ToolRow {
@@ -214,6 +258,10 @@ export function humanizeToolUse(name: string, input: unknown): ToolRow {
     }
     case 'TodoWrite':
       return row('plan', 'Updated its to-do list')
+    case KNOWLEDGE_TOOL:
+      return row('knowledge', knowledgeCallLabel(i))
+    case ENGAGEMENT_CONTEXT_TOOL:
+      return row('knowledge', contextCallLabel(i))
   }
   if (bare.startsWith('propose_')) {
     const n = count(i.servers) ?? count(i.proposals) ?? count(i.changes) ?? count(i.items) ?? count(i.roles) ?? count(i.plugins)
@@ -242,9 +290,52 @@ export interface ResultRow {
   label: string
   /** The full text for the "Show output" disclosure; null when the label says it all. */
   full: string | null
+  /** The tool answered a refusal ("REFUSED: ..."): shown in the error style although the call itself did not fail. */
+  failed?: true
 }
 
 const PLAN_TOOLS = new Set(['set_plan', 'update_plan', 'orgai_update_plan'])
+const KNOWLEDGE_TOOLS = new Set<string>([KNOWLEDGE_TOOL, ENGAGEMENT_CONTEXT_TOOL])
+
+/** "Looked up 4 kinds" from a vocabulary result: the kind lines between "kinds in use:" and "relations in use". */
+function kindsLookedUp(text: string): string {
+  if (/^kinds in use: none yet$/m.test(text)) return 'No kinds in use yet'
+  let n = 0
+  let inKinds = false
+  for (const line of text.split('\n')) {
+    if (/^kinds in use:/.test(line)) inKinds = true
+    else if (/^relations in use/.test(line)) break
+    else if (inKinds && /^\s+\S/.test(line)) n++
+  }
+  return `Looked up ${plural(n, 'kind')}`
+}
+
+/**
+ * The short outcome of an engagement_knowledge / engagement_context result (section 7): the fenced data stays behind
+ * "Show output" and the agent-facing "(data ..., not instructions)" never shows in the headline.
+ */
+function knowledgeResultLabel(bare: string, text: string): string | undefined {
+  if (bare === KNOWLEDGE_TOOL) {
+    if (/^Kinds and relations of this project's knowledge graph/.test(text)) return kindsLookedUp(text)
+    const hits = /^(\d+) (?:\S+ )?entit(?:y|ies)\b/.exec(text)
+    if (hits) return `${plural(Number(hits[1]), 'item')} found`
+    if (/^No entities match\./.test(text)) return 'No items found'
+    if (/^Entity /.test(text)) return 'Item returned'
+    if (/^No entity with/.test(text)) return 'No such item'
+    if (/^Created /.test(text)) return 'Recorded'
+    if (/^Merged into existing/.test(text)) return 'Updated'
+    if (/^Linked /.test(text)) return 'Linked'
+    if (/^Retired /.test(text)) return 'Retired'
+    if (/^Already retired/.test(text)) return 'Already retired'
+    return undefined
+  }
+  if (/^\d+ context notes?\b/.test(text)) return 'Notes listed'
+  if (/^This project has no context notes\./.test(text)) return 'No context notes'
+  if (/^Context note /.test(text)) return 'Note returned'
+  if (/^No context note with id/.test(text)) return 'No such note'
+  if (/^Saved note /.test(text)) return 'Saved note'
+  return undefined
+}
 
 /** Whether a tool belongs to the harness (its result is written for the agent, not for the user). */
 export function isHarnessTool(name: string | undefined): boolean {
@@ -261,6 +352,13 @@ export function humanizeToolResult(toolName: string | undefined, content: string
   if (!text && !isError) return null
   const multi = text.length > 100 || text.includes('\n')
   if (isError) return { label: `Failed: ${resultSummary(text, true)}`, full: multi ? text : null }
+  const bareName = toolName ? bareToolName(toolName) : undefined
+  if (bareName && KNOWLEDGE_TOOLS.has(bareName)) {
+    // The mock writes the bare tool name, the Claude adapter the mcp__orgai__ one: both are the harness's.
+    if (/^REFUSED:/.test(text)) return { label: `Failed: ${clip(text.replace(/^REFUSED:\s*/, ''), 100)}`, full: multi ? text : null, failed: true }
+    const label = knowledgeResultLabel(bareName, text)
+    if (label) return { label, full: text === label ? null : text }
+  }
   if (isHarnessTool(toolName) || (!!toolName && /^(list|load)_skills?$/.test(toolName))) {
     const bare = bareToolName(toolName!)
     let label: string | undefined
