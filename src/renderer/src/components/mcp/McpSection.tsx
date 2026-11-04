@@ -83,6 +83,8 @@ export default function McpSection({ project, onSelectRole }: { project: Project
   const [modal, setModal] = useState<Modal>(null)
   const seq = useRef(0)
   const root = useRef<HTMLElement>(null)
+  const pendingFocus = useRef<string | null>(null)
+  const [focusTick, setFocusTick] = useState(0)
   const setView = useAppStore((s) => s.setView)
   const focus = useAppStore((s) => s.mcpFocus)
   const clearMcpFocus = useAppStore((s) => s.clearMcpFocus)
@@ -154,11 +156,20 @@ export default function McpSection({ project, onSelectRole }: { project: Project
   // A project-only copy moves the row to another group: announce it and put focus on the new row's More actions button.
   const copied = (info: McpServerInfo): void => {
     setStatus(`Made a project-only copy of ${info.spec.name}.`)
-    window.setTimeout(() => {
-      const row = [...(root.current?.querySelectorAll<HTMLElement>('[data-testid="mcp-row"]') ?? [])].find((r) => r.dataset.id === info.spec.id)
-      row?.querySelector<HTMLElement>('.mcp-row-actions [aria-expanded]')?.focus()
-    }, 50)
+    pendingFocus.current = info.spec.name
+    setFocusTick((n) => n + 1)
   }
+  // The copy gets a new server id (matched by name) and mounts in another group; the old row's dialog restores focus to its
+  // unmounted trigger as it goes. Focus is placed in a passive effect after that commit, retried on each servers update.
+  useEffect(() => {
+    const name = pendingFocus.current
+    if (!name) return
+    const row = [...(root.current?.querySelectorAll<HTMLElement>('[data-testid="mcp-row"]') ?? [])].find((r) => r.dataset.server === name)
+    const button = row?.querySelector<HTMLElement>('.mcp-row-actions [aria-expanded]')
+    if (!button) return
+    button.focus()
+    pendingFocus.current = null
+  }, [servers, focusTick])
 
   const all = servers ?? []
   const { rest } = splitConnectorServers(all, connectors)
