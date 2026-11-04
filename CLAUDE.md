@@ -456,6 +456,17 @@ and the frontend-design skill is not vendored in `.claude/skills` (only `run-des
 - Run view: one 40 px run strip (`[data-testid=run-strip]`: run tabs plus Interrupt / End session / Org retrospective), then a 32 px canvas toolbar
   (`[data-testid=run-meta]` metadata, Hide finished switch, zoom IconButtons, the legend popover). The tray stacks under the canvas and docks
   beside it only in a frame of 1500 x 560 or more; `section.frame-tray[data-compact=true]` marks a frame under 480 px high.
+- Application menu (renderer; `docs/design/ux-review-menu.md` Implementation notes): `lib/menuActions.ts` holds
+  `routeMenuAction` (installed once by `lib/useAppMenu.ts` through `installMenuRouter`, also fed by `window.orgai.onMenuAction`
+  and by `runMenuAction` from keydown handlers; unknown names ignored, never throws), the store fallbacks, `menuStateFor` /
+  `menuStateChanged` (the five `MenuState` booleans, sent once on mount and then only on change), `announceMenu`, the one
+  `SHORTCUTS` table, `openRunWindow` and `closeCurrentTab` (shared by Ctrl+W and Window > Close tab). A screen-local handler
+  from `lib/menuRegistry.ts` runs first; it returns the sentence to announce when the action does not apply, else the store
+  fallback runs. Announcements use the run tabs' `tabNotice` when a project is in the run view, else the app-wide sr-only
+  status region `menu-announce` in `components/AppMenuLayer.tsx` (which also mounts `KeyboardShortcutsDialog`,
+  `keyboard-shortcuts-dialog`, styles in `styles/menu.css`). `useRunTabShortcuts` routes Ctrl+T / Ctrl+W through
+  `runMenuAction('new-run' | 'close-tab')`. Unit-tested (menuActions.test.ts, mocked store and window); the dialog, the live
+  region and the real menu round trip are not driven by e2e from this change.
 - "Needs you" counts decisions (cards), never runs: the bell, the Needs-you row, the project row badge and subtitle
   ("3 decisions · 1 run") and the topbar all come from `lib/needsYou.ts` `waitingItems` / `decisionCount`. A run row's dot
   is the run's status. A Needs-you item names the kind and the ask first, then the location, and opens that card.

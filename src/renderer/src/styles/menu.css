@@ -1,0 +1,76 @@
+/* ---------- Keyboard shortcuts dialog (components/KeyboardShortcutsDialog) ---------- */
+
+.shortcuts {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.shortcuts-group h3 {
+  margin: 0 0 var(--space-1);
+  font-size: var(--text-small);
+  font-weight: 600;
+  color: var(--text-tertiary);
+}
+
+.shortcuts-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-body);
+}
+
+.shortcuts-table th,
+.shortcuts-table td {
+  padding: var(--space-1) 0;
+  border-top: 1px solid var(--border-default);
+  text-align: left;
+  vertical-align: baseline;
+  font-weight: 400;
+}
+
+.shortcuts-table tr:first-child th,
+.shortcuts-table tr:first-child td {
+  border-top: 0;
+}
+
+.shortcuts-table th {
+  color: var(--text-primary);
+}
+
+.shortcuts-note {
+  display: block;
+  font-size: var(--text-small);
+  color: var(--text-tertiary);
+}
+
+.shortcuts-keys {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
+  justify-content: flex-end;
+}
+
+.shortcuts-combo {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.shortcuts-or {
+  font-size: var(--text-small);
+  color: var(--text-tertiary);
+}
+
+.shortcuts kbd {
+  display: inline-block;
+  min-width: var(--space-5);
+  padding: 0 var(--space-1);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-xs);
+  background: var(--surface-3);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: var(--text-mono);
+  line-height: var(--space-5);
+  text-align: center;
+}
