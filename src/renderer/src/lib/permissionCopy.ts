@@ -373,6 +373,19 @@ export function ruleChip(label: string): { text: string; wholeTool: boolean; bro
   return { text, wholeTool, broad: wholeTool || server }
 }
 
+/**
+ * The glance line for a request main flagged with `referenceFolder` (a shell command that touches a reference folder).
+ * Replaces the cwd-based location: the folder is the fact the user needs. The text is untrusted, so it is made visible
+ * and one line.
+ */
+export function referenceLocation(folder: string): PermissionLocation {
+  const clean = visible(folder.trim())
+  return { kind: 'reference', label: oneLine(`Touches a reference folder (read only): ${abbreviatePath(clean, 48)}`, 160), full: clean, attention: false }
+}
+
+/** The effect sentence of a reference-folder request: replaces the scope sentences, since only Allow once is offered. */
+export const REFERENCE_EFFECT = 'This command names or runs inside a folder agents may only read. Allow once lets this one command run; nothing is saved.'
+
 /** The line a card without scope buttons shows: why no rule is offered (shell commands only), else null. */
 export function noRuleLine(toolName: string, hasSuggestions: boolean): string | null {
   if (hasSuggestions || !SHELL_TOOLS.has(toolName)) return null

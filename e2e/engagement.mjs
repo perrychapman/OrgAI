@@ -267,6 +267,64 @@ try {
   check(clean(await tileClient.innerText().catch(() => '')) === 'Acme Corp', 'dashboard tile shows the client')
   check((await page.locator(`[data-testid=project-tile][data-name="${CODE}"] [data-testid=tile-client]`).count()) === 0, 'a code tile has no client line')
 
+  // ---- Reference folders in a run: shell card (Allow once and Deny only) and the edit refusal row ----
+  const CARD = 'section.frame-tray article.decision-card[data-kind="permission"]'
+  const startRun = async (text) => {
+    await projectTab(page, 'Live').click()
+    if (!(await page.locator('.new-run').count())) {
+      await page.keyboard.press('Control+t')
+      await page.locator('.new-run').waitFor({ timeout: 8000 })
+    }
+    const ta = page.locator('.composer textarea')
+    await ta.waitFor({ timeout: 10_000 })
+    await ta.fill(text)
+    await page.locator('.composer .btn.primary').click()
+  }
+  const endRun = async () => {
+    const end = page.getByRole('button', { name: 'End session' })
+    if (await end.count()) {
+      await end.first().click().catch(() => {})
+      await sleep(1200)
+    }
+  }
+  for (const [w, h] of [[1600, 1000], [1024, 640]]) {
+    const tag = `${w}x${h}`
+    await setSize(w, h)
+    await setTheme(w > 1024 ? 'dark' : 'light')
+    await openProject(page, AUDIT)
+    await startRun(`Tidy the client files [mock:reference-shell] ${tag}`)
+    const card = page.locator(CARD).first()
+    const appeared = await card.waitFor({ state: 'visible', timeout: 15_000 }).then(() => true).catch(() => false)
+    check(appeared, `${tag}: the reference-folder shell command raises a permission card`)
+    if (appeared) {
+      const loc = card.locator('[data-testid=perm-location]')
+      check((await loc.getAttribute('data-kind')) === 'reference', `${tag}: perm-location has data-kind=reference`)
+      check(/^Touches a reference folder \(read only\): /.test(clean(await loc.innerText())), `${tag}: the glance line says "Touches a reference folder (read only)"`, clean(await loc.innerText()))
+      check(clean(await card.locator('[data-testid=perm-reference-effect]').innerText().catch(() => '')).includes('only read'), `${tag}: the effect sentence says agents may only read the folder`)
+      check((await card.locator('[data-testid=perm-rule-chip]').count()) === 0 && (await card.locator('[data-testid=perm-scope-project]').count()) === 0, `${tag}: no rule chips or project scope sentence`)
+      check((await card.getByRole('button', { name: /Always allow|Allow for session/ }).count()) === 0, `${tag}: no Always allow or Allow for session control`)
+      check((await card.getByRole('button', { name: 'Allow once', exact: true }).count()) === 1 && (await card.getByRole('button', { name: 'Deny', exact: true }).count()) === 1, `${tag}: Allow once and Deny are offered`)
+      await shot(`reference-card-${tag}`)
+      await card.getByRole('button', { name: 'Deny', exact: true }).click()
+      await sleep(600)
+    }
+    await endRun()
+
+    await openProject(page, AUDIT)
+    await startRun(`Edit the client brief [mock:reference-edit] ${tag}`)
+    // The refusal is on the report's transcript: let the finished report's group open, then select its node.
+    await page.locator('[data-testid=done-group]').first().waitFor({ timeout: 15_000 }).catch(() => {})
+    await page.locator('[data-testid=done-group]').first().click().catch(() => {})
+    await sleep(400)
+    await page.locator('.side-panel, aside').getByText('specialist-1', { exact: true }).first().click().catch(() => {})
+    await sleep(400)
+    const refused = await page.getByText(/Refused: .* is in a reference folder \(read only\)/).first().waitFor({ state: 'attached', timeout: 15_000 }).then(() => true).catch(() => false)
+    check(refused, `${tag}: an edit under a reference folder leaves a "Refused:" harness row`)
+    check((await page.locator(CARD).count()) === 0, `${tag}: the edit refusal raises no card`)
+    await shot(`reference-refused-${tag}`)
+    await endRun()
+  }
+
   // ---- Both sizes, both themes: layout and screenshots ----
   for (const [w, h] of [[1600, 1000], [1024, 640]]) {
     for (const theme of ['dark', 'light']) {

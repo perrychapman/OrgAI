@@ -15,6 +15,8 @@ import {
   normalizePath,
   parentPath,
   permissionLocation,
+  REFERENCE_EFFECT,
+  referenceLocation,
   ruleChip,
   ruleInfo,
   ruleSubject,
@@ -46,6 +48,23 @@ describe('paths', () => {
     expect(isInsidePath('/home/Me/x', '/home/me')).toBe(false)
     expect(parentPath('C:\\a\\b.txt')).toBe('C:/a')
     expect(parentPath('C:\\b.txt')).toBe('C:/')
+  })
+})
+
+describe('referenceLocation', () => {
+  it('names the folder and says read only', () => {
+    const loc = referenceLocation('C:\\Clients\\acme\\inputs')
+    expect(loc).toMatchObject({ kind: 'reference', attention: false, full: 'C:\\Clients\\acme\\inputs' })
+    expect(loc.label).toBe('Touches a reference folder (read only): C:\\Clients\\acme\\inputs')
+  })
+  it('makes hidden characters visible and keeps one line', () => {
+    const loc = referenceLocation('/mnt/a\u202eb\nc')
+    expect(loc.label).not.toMatch(/[\u202e\n]/)
+    expect(loc.full).not.toMatch(/\u202e/)
+  })
+  it('has an effect sentence that promises nothing is saved', () => {
+    expect(REFERENCE_EFFECT).toMatch(/only read/)
+    expect(REFERENCE_EFFECT).toMatch(/nothing is saved/)
   })
 })
 

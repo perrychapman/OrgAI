@@ -7,6 +7,7 @@ import { useAppStore } from '../../store/useAppStore'
 import { cleanIpcError } from '../../lib/ipcError'
 import { examplePath } from '../../lib/platform'
 import { effectiveSetupChoice, foundLine, importChoiceLabel, setupSubmitLabel, totalAgents, type SetupChoice } from '../../lib/agentImport'
+import { REFERENCE_FOLDERS_HINT } from '../settings/AllowedDirectoriesSection'
 import { firstWorkingFolderConflict } from '../../lib/folderLists'
 import { addReferenceFolder,effectiveName, newProjectConnectionView, pathStatus, readLastProjectKind, submitBlocker, writeLastProjectKind } from '../../lib/projectsForm'
 import { Button } from '../ui/Button'
@@ -435,7 +436,7 @@ export function NewProjectForm({
               </span>
             )}
             <span id={`${ids.ref}-hint`} className="hint">
-              Read only. Agents can never change files here.
+              {REFERENCE_FOLDERS_HINT}
             </span>
           </div>
           {(!hasAgents || choice === 'architect') && (
@@ -537,13 +538,20 @@ export function NewProjectForm({
       )}
 
       <div className="row form-submit">
-        <Button type="submit" variant="primary" loading={busy} disabled={!pending && !!blocker}>
-          {pending
-            ? 'Open project'
-            : existingId
-              ? `Open ${current?.existingProjectName ?? 'project'}`
-              : setupSubmitLabel(choice, busy, projectKind ?? 'code')}
-        </Button>
+        {/* A blocked submit stays focusable (aria-disabled) so the keyboard reaches it and hears the reason; submit() ignores it. */}
+        {!pending && blocker && !busy ? (
+          <button type="submit" className="btn primary" aria-disabled="true" aria-describedby={ids.why} data-testid="new-project-submit" onClick={(e) => e.preventDefault()}>
+            {existingId ? `Open ${current?.existingProjectName ?? 'project'}` : setupSubmitLabel(choice, busy, projectKind ?? 'code')}
+          </button>
+        ) : (
+          <Button type="submit" variant="primary" loading={busy} testId="new-project-submit">
+            {pending
+              ? 'Open project'
+              : existingId
+                ? `Open ${current?.existingProjectName ?? 'project'}`
+                : setupSubmitLabel(choice, busy, projectKind ?? 'code')}
+          </Button>
+        )}
         {variant !== 'card' && onCancel && !pending && (
           <Button variant="secondary" onClick={onCancel}>
             Cancel

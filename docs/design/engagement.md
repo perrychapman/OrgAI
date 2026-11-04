@@ -22,7 +22,7 @@ open; the first-launch inline form does not take focus). Arrow keys move the cho
 | Name | placeholder "My app" / "Defaults to the folder name" | label "Name", placeholder "Client or case name" |
 | Client | none | "Client or case (optional)", `new-project-client`, at most `PROJECT_CLIENT_MAX_CHARS` |
 | Folder | "Folder to create it in" / "Repository folder" | "Working folder", hint "Where the team saves deliverables. Your files stay where they are." |
-| Reference folders | none | "Folders the team may read (optional)": `new-project-ref-row` list, `new-project-ref-input` (Enter adds), `new-project-ref-browse`, `new-project-ref-add`, `new-project-ref-error`, hint "Read only. Agents can never change files here." |
+| Reference folders | none | "Folders the team may read (optional)": `new-project-ref-row` list, `new-project-ref-input` (Enter adds), `new-project-ref-browse`, `new-project-ref-add`, `new-project-ref-error`, hint "Agents can read files here. OrgAI refuses their file edits here, and every command that names this folder asks you first." (`REFERENCE_FOLDERS_HINT`, shared with the Permissions card) |
 | Brief | "What do you want to build?" / "Anything the Architect should know? (optional)" | "What is the engagement about? (optional)" (hidden when agents were found and the import choice is not Architect) |
 | Setup checkbox `architect-setup` | "Set up with the Architect (recommended)" | "Start with the setup interview (recommended)", description "Turn off to start with the standard engagement team." |
 | Submit | "Create and start setup" / "Create project" | "Create and start interview" / "Create project" |
@@ -62,7 +62,7 @@ these folders: ..."), the project is kept, the form stays open with `new-project
 
 ## Cards and text elsewhere
 
-- Permission card: `perm-location[data-kind=reference]` "In a reference folder (read only): <path>".
+- Permission card: `perm-location[data-kind=reference]` "Touches a reference folder (read only): <folder>" (lock icon) when the request carries `referenceFolder`, plus `perm-reference-effect` ("This command names or runs inside a folder agents may only read..."); only Allow once and Deny, no rule chips, no "Fewer prompts" link. A file-tool location under a reference folder still reads "In a reference folder (read only)". Edit refusals are a quiet harness row "Refused: <file> is in a reference folder (read only)", no card.
 - Architecture proposal card (`lib/projectKindCopy.ts`): title "Approve engagement plan", headings Engagement summary,
   Platforms and systems, Workstreams, Working agreements, Recurring procedures, Risks; apply note "Approving saves the
   engagement plan in OrgAI. Nothing is written to your folder."; settings apply note says "allowed actions", not
