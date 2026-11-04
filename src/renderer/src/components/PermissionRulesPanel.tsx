@@ -105,7 +105,7 @@ export default function PermissionRulesPanel({ project, onRulesChange }: { proje
       if (mine === seq.current) setRules(list)
       setDraft('')
     } catch (e) {
-      if (mine === seq.current) setError(cleanError(e))
+      setError(cleanError(e))
     } finally {
       setBusy(null)
       // The Add button was disabled while saving; keep the keyboard in the rule input.
@@ -123,7 +123,7 @@ export default function PermissionRulesPanel({ project, onRulesChange }: { proje
       // The row is gone: the next row's Remove (the previous one for the last row), else the rule input.
       focusAfter(index)
     } catch (e) {
-      if (mine === seq.current) setListError(cleanError(e))
+      setListError(cleanError(e))
       // The row is still there: back to its own Remove button.
       focusAfter(index)
     } finally {
