@@ -437,6 +437,24 @@
   font-weight: var(--weight-semibold);
   color: var(--text-primary);
 }
+/* New run: the Team / Ask switch is always one row and never shrinks; its description sits on its own line below. */
+.new-run-mode {
+  flex: none;
+  display: inline-flex;
+}
+.new-run-mode .seg {
+  flex-wrap: nowrap;
+  align-self: center;
+}
+.new-run-mode .seg-item {
+  white-space: nowrap;
+}
+.new-run-mode-desc {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-small);
+  overflow-wrap: anywhere;
+}
 .composer-hint {
   flex: 0 1 auto;
   display: inline-flex;
