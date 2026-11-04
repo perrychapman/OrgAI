@@ -21,7 +21,7 @@ import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../lib/setting
 import { devBuildLabel, isDevBuild } from '../lib/buildChannel'
 import { useSidebarCollapsed } from '../lib/useSidebarCollapsed'
 import UsageMeter, { SpendBar, tightestWindow, UsageBar } from './UsageMeter'
-import { CONNECTION_LABEL, currentConnection, spendAria, spendLabel, spendLevel } from '../lib/usage'
+import { CONNECTION_LABEL, currentConnection, spendLevel, spendRowFigure, spendRowLabel, spendSentence } from '../lib/usage'
 import { BrandLockup } from './layout/BrandLockup'
 import { ResizeHandle } from './layout/ResizeHandle'
 import { Icon } from './ui/Icon'
@@ -75,9 +75,14 @@ function claudePill(auth: AuthStatusResult | null, status: ConnectionStatus | un
   return auth.loggedIn ? { tone: 'ok', label: `Claude · ${auth.method ?? 'logged in'}`, title: auth.detail } : { tone: 'danger', label: 'Claude not logged in', title: auth.detail }
 }
 
-type Pill = { tone: string; label: string; title?: string }
+/** `figure` is the label's part after "LiteLLM · "; the row renders the name visually hidden under a narrow footer so the figure and "today" always show. */
+type Pill = { tone: string; label: string; title?: string; figure?: string }
 
-/** Account row for a non-Anthropic connection: Codex follows its status, LiteLLM shows the key's spend. */
+/**
+ * Account row for a non-Anthropic connection: Codex follows its status, LiteLLM shows the key's spend: one figure
+ * (today's spend when the proxy reports periods, else the budget text; `spendRowLabel`), the whole sentence as the
+ * tooltip (`spendSentence`). The dot tone is the budget level only; a period figure never colours it.
+ */
 function connectionPill(id: 'openai' | 'litellm', status: ConnectionStatus | undefined, usage: UsageStatus | undefined): Pill {
   const name = CONNECTION_LABEL[id]
   const detail = status?.detail
@@ -88,7 +93,7 @@ function connectionPill(id: 'openai' | 'litellm', status: ConnectionStatus | und
     const spend = usage?.spend
     if (!spend) return { tone: 'warn', label: 'LiteLLM · spend unavailable', title: detail }
     const level = spendLevel(spend)
-    return { tone: level === 'danger' ? 'danger' : level === 'warn' ? 'warn' : 'ok', label: spendLabel(spend), title: spendAria(spend) }
+    return { tone: level === 'danger' ? 'danger' : level === 'warn' ? 'warn' : 'ok', label: spendRowLabel(spend), title: spendSentence(spend), figure: spendRowFigure(spend) }
   }
   return { tone: 'ok', label: `${name} · ${status.account ?? 'connected'}`, title: detail }
 }
@@ -164,6 +169,10 @@ export default function Sidebar({
   const names = projects.map((p) => p.name)
 
   const account = mockAdapter ? { tone: 'ok', label: 'Mock adapter', title: undefined } : pill
+  /** The rail's accessible name and tooltip: LiteLLM's whole spend sentence (the rail shows no figure), else the label. */
+  const railName = current === 'litellm' && account.title ? account.title : account.label
+  /** The full row's tooltip: the LiteLLM spend sentence (the one-figure label can clip at narrow widths); other rows keep none. */
+  const rowTitle = rail ? railName : current === 'litellm' && !mockAdapter ? account.title : undefined
   const tight = mockAdapter || current === 'litellm' ? null : tightestWindow(currentUsage)
   const needsLabel = `Needs you · ${items.length}`
   const sidebarKey = isMacPlatform(currentPlatform()) ? '⌘B' : `${modKeyLabel(currentPlatform())}+B`
@@ -467,13 +476,22 @@ export default function Sidebar({
           trigger={
             <>
               <span className={`dot ${account.tone}`} aria-hidden="true" />
-              <span className="account-label">{account.label}</span>
+              <span className="account-label">
+                {account.figure ? (
+                  <>
+                    <span className="account-name">{`${CONNECTION_LABEL.litellm} · `}</span>
+                    {account.figure}
+                  </>
+                ) : (
+                  account.label
+                )}
+              </span>
               {tight && !rail && <span className="account-pct">{Math.round(tight.pct)}%</span>}
               {!rail && !mockAdapter && (current === 'litellm' ? <SpendBar spend={currentUsage?.spend} /> : <UsageBar usage={currentUsage} />)}
             </>
           }
-          triggerLabel={rail ? account.label : undefined}
-          triggerTitle={rail ? account.label : undefined}
+          triggerLabel={rail ? railName : undefined}
+          triggerTitle={rowTitle}
           triggerClassName="account-row"
           triggerTestId="auth-pill"
           label="Account, plan usage and spend"

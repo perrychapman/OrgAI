@@ -4,7 +4,21 @@ import type { ConnectionId, RateLimitWindow, UsageSpend, UsageStatus } from '@sh
 import { useAppStore } from '../store/useAppStore'
 
 import { formatUntil } from '../lib/layout'
-import { CONNECTION_LABEL, connectionOrder, connectionsInUse, spendAria, spendLevel, spendPct, spendText } from '../lib/usage'
+import type { SpendPeriodKey } from '../lib/usage'
+import {
+  CONNECTION_LABEL,
+  connectionOrder,
+  connectionsInUse,
+  lifetimeText,
+  money,
+  periodSince,
+  SPEND_PERIOD_LABEL,
+  SPEND_PERIOD_ORDER,
+  spendAria,
+  spendLevel,
+  spendPct,
+  spendText
+} from '../lib/usage'
 
 /** Renderer-side auto-refresh: at most one read per minute, never overlapping, failures included. */
 const REFRESH_EVERY_MS = 60_000
@@ -109,9 +123,46 @@ export function SpendBar({ spend }: { spend: UsageSpend | undefined }): ReactEle
 function Stale({ usage, now }: { usage: UsageStatus; now: number }): ReactElement | null {
   if (now - usage.updatedAt <= OUT_OF_DATE_MS) return null
   return (
-    <div className="usage-hint usage-stale" title={`Last updated ${new Date(usage.updatedAt).toLocaleTimeString()}`}>
+    <div className="usage-hint usage-stale" data-testid="usage-stale" title={`Last updated ${new Date(usage.updatedAt).toLocaleTimeString()}`}>
       Out of date · updated {formatUntil(now, usage.updatedAt)} ago
     </div>
+  )
+}
+
+export type SpendPeriodRow = { key: SpendPeriodKey; label: string; value: string; since: string }
+
+/**
+ * The popover's period rows (Today / This week / This month) in display order, each with its money text and the UTC
+ * "Since" tooltip. Empty when the proxy reported no periods (the contract is all three or none).
+ */
+export function spendPeriodRows(spend: UsageSpend): SpendPeriodRow[] {
+  const p = spend.periods
+  if (!p) return []
+  return SPEND_PERIOD_ORDER.map((key) => ({ key, label: SPEND_PERIOD_LABEL[key], value: money(p[key].usd), since: periodSince(p[key].since) }))
+}
+
+/** Spend by UTC calendar period under the budget row; a fixed note when the proxy did not report it; nothing for an older report. */
+function SpendPeriods({ spend }: { spend: UsageSpend }): ReactElement | null {
+  const rows = spendPeriodRows(spend)
+  if (rows.length === 0) {
+    if (!spend.periodsNote) return null
+    return (
+      <div className="usage-hint" data-testid="spend-periods-missing">
+        {spend.periodsNote}
+      </div>
+    )
+  }
+  return (
+    <dl className="spend-periods" data-testid="spend-periods">
+      {rows.map((r) => (
+        <div key={r.key} className="spend-period" data-testid="spend-period" data-period={r.key} data-present="true">
+          <dt title={r.since || undefined}>{r.label}</dt>
+          <dd className="spend-period-value" data-testid="spend-period-value">
+            {r.value}
+          </dd>
+        </div>
+      ))}
+    </dl>
   )
 }
 
@@ -127,11 +178,14 @@ function SpendSection({ usage, now, reading }: { usage: UsageStatus | undefined;
   }
   const pct = spendPct(spend)
   const level = spendLevel(spend)
+  const lifetime = lifetimeText(spend)
   return (
     <div className={`usage-row ${level}`} data-testid="spend-row">
       <div className="usage-head">
         <span>Spend</span>
-        <span className="usage-pct">{level === 'danger' ? 'Budget used up' : spendText(spend)}</span>
+        <span className="usage-pct" data-testid="spend-budget">
+          {level === 'danger' ? 'Budget used up' : spendText(spend)}
+        </span>
       </div>
       {pct !== null && (
         <div className="usage-bar" role="img" aria-label={spendAria(spend)}>
@@ -143,6 +197,12 @@ function SpendSection({ usage, now, reading }: { usage: UsageStatus | undefined;
       {spend.resetsAt !== null && (
         <div className="usage-reset" title={new Date(spend.resetsAt).toLocaleString()}>
           {spend.resetsAt > now ? `Resets in ${formatUntil(spend.resetsAt, now)}` : 'Reset due'}
+        </div>
+      )}
+      <SpendPeriods spend={spend} />
+      {lifetime !== '' && (
+        <div className="usage-hint" data-testid="spend-lifetime">
+          {lifetime}
         </div>
       )}
       <Stale usage={usage} now={now} />

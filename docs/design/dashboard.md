@@ -161,11 +161,18 @@ the list in place (focus stays on the button, which then reads "Show fewer").
 ### 5.2 Usage (`dash-usage`)
 
 - Source: `usageByConnection`, `connectionsInUse` (lib/usage.ts), `tightestWindow`, `UsageBar`, `SpendBar`,
-  `spendText`. On mount call `refreshUsage()` when the newest report is older than 60 s (the UsageMeter rule; at most
-  one call in flight). No timer while the page is open.
+  `spendText`, `periodText`, `periodsCaption`, `spendSentence`. On mount call `refreshUsage()` when the newest report
+  is older than 60 s (the UsageMeter rule; at most one call in flight). No timer while the page is open.
 - One row per connection in use (`dash-usage-row[data-connection]`): `CONNECTION_LABEL` name, then the tightest window
-  "5-hour window · 62%" with `UsageBar` (warning from 80%, danger when limited); LiteLLM shows `spendText` with
-  `SpendBar`; an API-key connection says "Billed per token. No plan windows."; no report yet: "No usage reported yet."
+  "5-hour window · 62%" with `UsageBar` (warning from 80%, danger when limited); an API-key connection says "Billed per
+  token. No plan windows."; no report yet: "No usage reported yet."
+- LiteLLM row (`ux-review-litellm-periods.md` section 3): the same one figure as the sidebar account row, today's spend
+  `periodText(periods.day.usd, 'day')` ("$3.20 today") when the proxy reports `UsageSpend.periods`, else `spendText`
+  ("$42.10 of $50.00" / "$42.10 spent"); then `SpendBar` (share of the key budget only, none without a budget); then,
+  only with periods, a second caption `dash-usage-periods` from `periodsCaption`: "$12.40 this week · $31.00 this
+  month" (one line that wraps). The `li` carries `title` = `spendSentence` ("LiteLLM spend: $3.20 today, $12.40 this
+  week, $31.00 this month. $42.10 of $50.00 budget."). No report yet: "No spend reported yet." (words: spend and
+  budget, never usage or limit).
 - The section has no button of its own; the full window list stays in the sidebar account popover.
 
 ### 5.3 Cost, last 7 days (`dash-cost`)
