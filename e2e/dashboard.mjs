@@ -173,6 +173,46 @@ try {
   check(/Ended when OrgAI closed/.test(since), 'after a relaunch Since shows "Ended when OrgAI closed"', since.slice(0, 200))
   check((await page.locator('[data-testid=dash-since-continue]').count()) >= 1, 'the run that was waiting has Continue')
   await shot('relaunch')
+
+  // M2: "All quiet" names the runs cut while they waited.
+  const hero = ((await page.locator('[data-testid=dashboard-hero]').innerText().catch(() => '')) || '').replace(/\s+/g, ' ')
+  check(/waiting on you when OrgAI closed/.test(hero), 'the hero subline names the runs cut while waiting', hero)
+
+  // M1: the Continue row survives a trip to a project and back.
+  await tileOf(BUSY).locator('[data-testid=project-tile-main]').click()
+  await sleep(600)
+  await gotoProjects(page)
+  const waitRow = page.locator('[data-testid=dash-since-row]', { hasText: WAIT })
+  await waitRow.first().waitFor({ timeout: 10_000 }).catch(() => {})
+  check((await waitRow.locator('[data-testid=dash-since-continue]').count()) === 1, 'the cut-while-waiting row keeps its Continue after leaving the Dashboard')
+
+  // H1: Continue from the Dashboard opens that project's run with the cursor in the composer.
+  await waitRow.locator('[data-testid=dash-since-continue]').click()
+  await page.locator('.composer textarea').waitFor({ timeout: 15_000 })
+  await sleep(500)
+  const landed = await page.evaluate(() => ({
+    h1: document.querySelector('main .topbar h1')?.textContent?.trim() ?? '',
+    tabs: document.querySelectorAll('.run-tab[aria-selected=true]').length,
+    inComposer: !!document.activeElement?.closest?.('.composer') && document.activeElement?.tagName === 'TEXTAREA'
+  }))
+  check(landed.h1 === WAIT && landed.tabs === 1, 'Continue on a Dashboard row opens the run in its project', JSON.stringify(landed))
+  check(landed.inComposer, 'Continue puts the cursor in the composer', JSON.stringify(landed))
+
+  // A plain row click opens the run and focus does not fall to the body.
+  await gotoProjects(page)
+  await page.locator('[data-testid=dash-since-row]', { hasText: WAIT }).first().locator('[data-row-main]').click().catch(() => {})
+  await sleep(800)
+  const rowLanded = await page.evaluate(() => ({ h1: document.querySelector('main .topbar h1')?.textContent?.trim() ?? '', body: document.activeElement === document.body }))
+  check(rowLanded.h1 === WAIT && !rowLanded.body, 'a row click opens the run and focus stays on a real element', JSON.stringify(rowLanded))
+
+  // H2: deleting a project removes its runs from the attention column and the Cost card.
+  const left = await deleteProject(page, WAIT)
+  check(left === 0, 'the project is deleted')
+  await gotoProjects(page)
+  await sleep(500)
+  const ghostRows = await page.locator('[data-testid=dash-since-row]', { hasText: WAIT }).count()
+  const costText = ((await page.locator('[data-testid=dash-cost]').innerText().catch(() => '')) || '').replace(/\s+/g, ' ')
+  check(ghostRows === 0 && !costText.includes(WAIT), 'a deleted project leaves no Since row or Cost row', `${ghostRows} ${costText}`)
 } catch (e) {
   check(false, 'dashboard script ran to the end', e.stack ?? e.message)
   await screenshot(page, 'dashboard-failure').catch(() => {})

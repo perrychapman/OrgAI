@@ -179,6 +179,15 @@ describe('sinceLastSeen', () => {
     const second = run('c2', 2, { status: 'running', sessionId: 's', resumedFrom: 'c1' })
     expect(sinceLastSeen([first, second], 0, NOW).items).toHaveLength(0)
   })
+  it('keeps a run cut while waiting until clearedAt passes it, other kinds follow lastSeen', () => {
+    const cut = run('cut', 1, { endedAt: T0 + 100, endedBy: 'app', endedWhile: 'waiting' })
+    const done = run('done', 2, { endedAt: T0 + 100 })
+    const rows = [cut, done]
+    const lastSeen = T0 + 500
+    expect(sinceLastSeen(rows, lastSeen, NOW, { clearedAt: T0 }).items.map((i) => i.run.id)).toEqual(['cut'])
+    expect(sinceLastSeen(rows, lastSeen, NOW, { clearedAt: T0 + 500 }).items).toHaveLength(0)
+    expect(sinceLastSeen(rows, lastSeen, NOW).items).toHaveLength(0)
+  })
 })
 
 describe('pausedRuns', () => {
@@ -283,6 +292,9 @@ describe('heroSublineParts', () => {
     expect(heroSublineParts({ projects: 1, openRuns: 1 })).toEqual(['1 project', '1 run open'])
     expect(heroSublineParts({ projects: 2, openRuns: 0 })).toEqual(['2 projects'])
     expect(heroSublineParts({ projects: 0, openRuns: 0 })).toEqual([])
+    expect(heroSublineParts({ projects: 2, openRuns: 0, closedWaiting: 1, quiet: true })).toEqual(['2 projects', '1 was waiting on you when OrgAI closed'])
+    expect(heroSublineParts({ projects: 2, openRuns: 0, closedWaiting: 2, quiet: true })[1]).toBe('2 were waiting on you when OrgAI closed')
+    expect(heroSublineParts({ projects: 2, openRuns: 1, closedWaiting: 2, quiet: false })).toEqual(['2 projects', '1 run open'])
   })
 })
 

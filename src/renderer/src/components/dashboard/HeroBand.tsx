@@ -6,7 +6,7 @@ import { Cost } from '../ui/Cost'
 import { costView, runCostInput, sumCosts } from '../../lib/cost'
 import { isDevBuild } from '../../lib/buildChannel'
 import { decisionCount } from '../../lib/needsYou'
-import { FIRST_LAUNCH_LINE, WEEK_MS, heroFigure, heroSublineParts, pausedRuns } from '../../lib/dashboard'
+import { FIRST_LAUNCH_LINE, WEEK_MS, heroFigure, heroSublineParts, pausedRuns, sinceLastSeen } from '../../lib/dashboard'
 import { useAllSummaries, useLiveRuns, useNow, useWaitingRuns } from './useDashboardData'
 
 /**
@@ -20,7 +20,19 @@ export interface DashboardAnnouncement {
   seq: number
 }
 
-export function HeroBand({ firstLaunch, announce }: { firstLaunch: boolean; announce: DashboardAnnouncement | null }): ReactElement {
+const TOGETHER_MS = 1500
+
+export function HeroBand({
+  firstLaunch,
+  announce,
+  lastSeen,
+  clearedAt
+}: {
+  firstLaunch: boolean
+  announce: DashboardAnnouncement | null
+  lastSeen: number
+  clearedAt: number
+}): ReactElement {
   const projectCount = useAppStore((s) => s.projects.length)
   const appInfo = useAppStore((s) => s.appInfo)
   const waiting = useWaitingRuns()
@@ -31,26 +43,39 @@ export function HeroBand({ firstLaunch, announce }: { firstLaunch: boolean; anno
   const decisions = decisionCount(waiting)
   const paused = useMemo(() => pausedRuns(summaries).length, [summaries])
   const { figure } = heroFigure({ decisions, running: live.length, paused, projects: projectCount })
+  const closedWaiting = useMemo(
+    () => sinceLastSeen(summaries, lastSeen, now, { cap: Number.MAX_SAFE_INTEGER, clearedAt }).items.filter((it) => it.kind === 'closed-waiting').length,
+    [summaries, lastSeen, clearedAt, now]
+  )
 
   const cost = useMemo(() => {
     const from = now - WEEK_MS
     return sumCosts(summaries.filter((s) => s.startedAt >= from).map(runCostInput))
   }, [summaries, now])
   const showCost = !firstLaunch && costView(cost).kind !== 'none'
-  const parts = heroSublineParts({ projects: projectCount, openRuns: live.length })
+  const parts = heroSublineParts({ projects: projectCount, openRuns: live.length, closedWaiting, quiet: figure === 'All quiet' })
 
   const [spoken, setSpoken] = useState('')
   const lastFigure = useRef(figure)
   const lastAnnounce = useRef(announce)
+  // M4: a message and a figure change within one beat are spoken as one sentence, so neither overwrites the other.
+  const figureAt = useRef(0)
+  const announceAt = useRef(0)
   useEffect(() => {
     if (lastFigure.current === figure) return
     lastFigure.current = figure
-    setSpoken(figure)
+    const t = Date.now()
+    figureAt.current = t
+    const msg = lastAnnounce.current
+    setSpoken(msg && t - announceAt.current < TOGETHER_MS ? `${msg.text} ${figure}.` : figure)
   }, [figure])
   useEffect(() => {
     if (lastAnnounce.current?.seq === announce?.seq) return
     lastAnnounce.current = announce
-    if (announce) setSpoken(announce.text)
+    if (!announce) return
+    const t = Date.now()
+    announceAt.current = t
+    setSpoken(t - figureAt.current < TOGETHER_MS ? `${announce.text} ${lastFigure.current}.` : announce.text)
   }, [announce])
 
   const version = appInfo?.version
