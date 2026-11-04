@@ -309,3 +309,64 @@ else. The Maintenance "Architecture document" line and History are out of scope 
 ## 13. Implementation notes
 
 (Filled in by the engineers and the lead as the work lands: files, helpers, what was verified, what was not.)
+
+### Graph view
+
+Files: `components/knowledge/KnowledgeGraph.tsx` (the view; `KnowledgeGraphProps` unchanged from the stub, `projectId`
+included), `KnowledgeGraphNode.tsx` (type `knowledge`), `KnowledgeRetiredGroupNode.tsx` (type `knowledge-retired`),
+`KnowledgeGraphEdge.tsx` (type `knowledge`), `KnowledgeGraphLegend.tsx`, `lib/knowledgeGraph.ts` (+ `.test.ts`),
+`styles/knowledge-graph.css`, `e2e/knowledge-graph.mjs`.
+
+- Pure helpers (`lib/knowledgeGraph.ts`, unit-tested): `neighbourhood(graph, centreId, depth, filter)` walks live
+  edges to live nodes the kind and origin filters keep (with `showRetired` retired nodes and edges count too; the
+  centre is always kept; a filtered-out neighbour stops the walk behind it); `foldRetired(graph, drawnIds, filter)`
+  gives one group per drawn node holding the retired items and the far ends of retired relations hanging off it (an
+  item off two drawn nodes joins the first group only, in list order, so counts never double; a filtered-out item never
+  folds; with `showRetired` nothing folds); `drawnGraph({ graph, selectedId, depth, showAll, filter, expanded })` is
+  the one entry point: nodes in `orderItems` order (the Tab order), the edges among them (a retired edge only with
+  `showRetired` or an expanded member at one end), the groups, the layout tree (the BFS parents of the neighbourhood;
+  for "Show all" a BFS forest from the centre's component first, then list order) and `expandedMembers`;
+  `nodeSpokenName(node, facts, relations)` = "Jane Doe, person. 3 facts, 2 relations: works at Acme Corp, Migrate
+  billing to Stripe decided by. Press Enter to open." (retired: "…, person, retired. …"; at most six relation texts
+  then "and N more"; the relation words are read here because edges are not focusable); `groupSpokenName`,
+  `retiredGroupLabel` ("3 retired"), `nodeCountsLine` ("3 facts · 2 relations"), `drawnAnnouncement` ("Showing 3 items
+  and 2 relations, 2 retired folded."), `legendEntries` (kinds on the canvas in `kindOrder` with `kindColor` over the
+  whole graph's kinds, relations on it alphabetically, `retired` / `groups` flags), `EDGE_LABEL_MIN_ZOOM` 1 /
+  `edgeLabelsShown`, `SHOW_ALL_WARN_AT` 150 / `needsShowAllConfirm` / `showAllWarning`, the boxes
+  (`knowledgeNodeSize`: card 220 x 96, compact 160 x 40, station by layout, hex 120 x 104; `retiredGroupSize`: card
+  220 x 56), `layoutItems`, `topologyKey`, and `neighbourInDirection` for Ctrl+Arrow.
+- Canvas: `layoutCanvas(options.layout, …)` with `ringStepFor` and the honeycomb for hex; radial puts the selected item
+  at the centre (`is-root`: the station interchange); ring guides only in radial with two or more nodes. Nodes carry
+  `.role-node.knowledge-node[data-style]` (`data-testid=knowledge-node`, `data-id`, `data-retired`), so the card, name
+  tag, station and hex looks and the focus ring come from editor.css / run.css; the kind's `kindColor` is `--role`.
+  Edges are `edgeStroke` of the from-node's kind colour with an arrow (stations: 6 px, no arrow); a retired edge is
+  dashed at opacity 0.7 (`className` `knowledge-edge-retired`); the label (`keyWords`) is passed only at zoom >= 1
+  (`useViewport` in the edge wrapper) and the sentence "Jane Doe works at Acme Corp" (plus the edge note) is the SVG
+  `<title>` and the edge's `ariaLabel`. Groups: `knowledge-retired-group[data-count][data-parent]` on the `done-group`
+  look, chevron `knowledge-retired-expand`; expansion is remembered per project for the session in a module-level map.
+  Selection: `selected` from `selectedId`; a 'select' change, a click or Space calls `onSelect`; Enter and a double
+  click call `onOpen` (Enter also selects first); group nodes never select (a click or Enter toggles them); pane clicks
+  keep the selection. Ctrl+Arrow (rec 17) is built: it focuses the drawn neighbour most in that direction (a 90-degree
+  cone). `+` / `-` / `0` zoom and fit like the Live canvas. Fit: once per `topologyKey` + layout + node style change
+  (60 ms later, 300 ms, or 0 under `useReducedMotion`), on stage resize (debounced) and on init; `fitOptions` from
+  `canvasFit.ts` with the stage height.
+- Toolbar `knowledge-graph-toolbar`: `knowledge-skip-list` / `knowledge-skip-detail` (`a.skip-link`, visible on focus,
+  anchored to the toolbar; they focus the element with that id, giving it `tabindex=-1` when it is not focusable),
+  `knowledge-graph-depth` (a `SegmentedControl` "Depth"), `knowledge-graph-all` (`Switch`), `knowledge-graph-zoom-out`
+  / `-zoom-in` / `-fit`, the legend `knowledge-graph-legend` (trigger `knowledge-graph-legend-trigger`; rows
+  `knowledge-legend-kind[data-kind]`, `knowledge-legend-relation[data-relation]`, `knowledge-legend-retired`,
+  `knowledge-legend-group`; the swatch takes the node style's shape in the edge mix). The root carries `data-drawn`,
+  `data-depth`, `data-all`. Stage messages: `knowledge-graph-empty` (with `knowledge-graph-empty-all`),
+  `knowledge-graph-warn` (`knowledge-graph-warn-confirm` / `-keep`; the confirmation holds while Show all stays on).
+  Announcements through `announce`: depth changes, Show all on / off, the warning, a confirm, a group expansion.
+- The list's query is not applied to the graph (section 5 names `applyFilter`: kinds, origins, retired). A retired
+  item with no drawn neighbour is simply not drawn under "Show all" with Show retired off. The warn state is not
+  driven by e2e (the mock records 4 items).
+- Verified: `lib/knowledgeGraph.test.ts` (30 tests), typecheck, `npm test`, `npm run build`. Not verified by its
+  author: the running view (the worktree's `KnowledgeView.tsx` was still the stub, so the graph could not be mounted
+  without editing a file outside the brief) and therefore `e2e/knowledge-graph.mjs`, which the lead runs once the list
+  view is merged; it drives an engagement with "[mock:knowledge]", Depth 1 / 2, the spoken names, zoom-1 edge labels
+  and titles, the legend, Show all, the skip links, the Tab order, Space / Enter / Ctrl+Arrow, the retired fold
+  (retiring Acme Corp through `window.orgai.knowledge.saveNode`, expanding, Show retired, restoring), the empty message
+  on a note, reduced motion, the four node styles with their boxes, and both sizes and themes (no page scroll,
+  `windowShift`).
