@@ -2,7 +2,7 @@ import type { ReactElement } from 'react'
 import { memo } from 'react'
 import { ChevronDown } from 'lucide-react'
 import { Handle, type Position, type Node, type NodeProps } from '@xyflow/react'
-import { handlesFor, useCanvasOptions } from '../lib/canvas'
+import { handlesFor, useCanvasOptions, useHandleRefresh } from '../lib/canvas'
 import { MSG_IN, MSG_OUT } from './AgentNode'
 import type { AgentInstance } from '@shared/types'
 import { IconButton } from './ui/IconButton'
@@ -27,7 +27,7 @@ export function groupId(parentId: string): string {
   return `group:${parentId}`
 }
 
-function DoneGroupNodeView({ data, selected }: NodeProps<DoneGroupFlowNode>): ReactElement {
+function DoneGroupNodeView({ id, data, selected }: NodeProps<DoneGroupFlowNode>): ReactElement {
   const { agents, color, parentId, parentName, onToggle, label, earlier } = data
   const failed = agents.filter((a) => a.state === 'error').length
   const done = agents.length - failed
@@ -39,6 +39,7 @@ function DoneGroupNodeView({ data, selected }: NodeProps<DoneGroupFlowNode>): Re
     .join(', ')
 
   const { layout, nodeStyle } = useCanvasOptions()
+  useHandleRefresh(id, layout, nodeStyle)
   const sides = handlesFor(layout)
   const compact = nodeStyle === 'compact'
   const tip = names + (agents.length > 4 ? ', …' : '') + (compact && conflicts > 0 ? ` · ${conflicts} unmerged` : '')

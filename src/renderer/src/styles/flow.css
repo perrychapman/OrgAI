@@ -124,3 +124,7 @@
 .react-flow[data-layout='radial'] .react-flow__handle {
   opacity: 0;
 }
+/* The Team editor draws reporting lines by dragging from a handle: show them on the role under the pointer or focus. */
+.react-flow[data-layout='radial'] .react-flow__node-role:is(:hover, :focus-visible, :focus-within) .react-flow__handle {
+  opacity: 1;
+}

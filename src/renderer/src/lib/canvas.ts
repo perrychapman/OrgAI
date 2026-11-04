@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { NodeChange, Position } from '@xyflow/react'
+import { useUpdateNodeInternals, type NodeChange, type Position } from '@xyflow/react'
 import type { AppearanceSettings, CanvasEdgeStyle, CanvasLayout, CanvasNodeStyle, CanvasPattern } from '@shared/types'
 import { CANVAS_EDGE_STYLES, CANVAS_LAYOUTS, CANVAS_NODE_STYLES, CANVAS_PATTERNS } from '@shared/types'
 import { CANVAS_PRESETS, DEFAULT_APPEARANCE, activeCanvasPreset, type CanvasPreset, type CanvasPresetId } from '@shared/defaults'
@@ -130,6 +130,18 @@ export interface LayoutHandles {
 export function handlesFor(layout: CanvasLayout): LayoutHandles {
   if (layout === 'left-right') return { target: 'left', source: 'right', msgIn: 'top', msgOut: 'bottom' }
   return { target: 'top', source: 'bottom', msgIn: 'left', msgOut: 'right' }
+}
+
+/**
+ * React Flow measures a node's handles only when the node resizes. A layout change moves the handles to other sides
+ * without a resize (a card stays 240 x 112), so edges would keep leaving from the old side: re-measure the node after
+ * the layout or node style changes. Call it in every node component with the node's id.
+ */
+export function useHandleRefresh(id: string, layout: CanvasLayout, nodeStyle: CanvasNodeStyle): void {
+  const update = useUpdateNodeInternals()
+  useEffect(() => {
+    update(id)
+  }, [id, layout, nodeStyle, update])
 }
 
 /** Live agent node box per node style (layout input and fit). Phase B adds station and hex. */

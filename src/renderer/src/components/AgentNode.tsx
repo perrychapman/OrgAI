@@ -2,7 +2,7 @@ import type { ReactElement } from 'react'
 import { memo, useEffect, useState } from 'react'
 import { Check, TriangleAlert } from 'lucide-react'
 import { Handle, type Position, type Node, type NodeProps } from '@xyflow/react'
-import { handlesFor, useCanvasOptions } from '../lib/canvas'
+import { handlesFor, useCanvasOptions, useHandleRefresh } from '../lib/canvas'
 import type { AgentInstance } from '@shared/types'
 import { formatElapsed, formatTokens, initials } from '../lib/layout'
 import { agentProducedNothing } from '@shared/defaults'
@@ -37,7 +37,7 @@ function worktreeLabel(wt: NonNullable<AgentInstance['worktree']>): string {
   return WORKTREE_LABEL[wt.status]
 }
 
-function AgentNodeView({ data, selected }: NodeProps<AgentFlowNode>): ReactElement {
+function AgentNodeView({ id, data, selected }: NodeProps<AgentFlowNode>): ReactElement {
   const { agent, color, isRoot } = data
   const [, tick] = useState(0)
   const live = !agent.endedAt
@@ -62,6 +62,7 @@ function AgentNodeView({ data, selected }: NodeProps<AgentFlowNode>): ReactEleme
   const activity = streaming ? partial.replace(/\s+/g, ' ').trim().slice(0, 80) || 'Writing…' : noResult ? 'Ended without a result' : idleActivity
 
   const { layout, nodeStyle } = useCanvasOptions()
+  useHandleRefresh(id, layout, nodeStyle)
   const sides = handlesFor(layout)
   const compact = nodeStyle === 'compact'
   const tokensText = `${formatTokens(agent.inputTokens + agent.outputTokens)} tok`

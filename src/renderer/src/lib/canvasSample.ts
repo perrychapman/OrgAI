@@ -1,7 +1,7 @@
 import { MarkerType, type Edge, type Node } from '@xyflow/react'
 import type { AgentInstance, AgentState } from '@shared/types'
 import { ROLE_COLORS } from '@shared/defaults'
-import { EDGE_TYPE, agentNodeSize, edgeStroke, groupNodeSize, type CanvasOptions } from './canvas'
+import { EDGE_TYPE, agentNodeSize, edgeStroke, groupNodeSize, ringStepFor, type CanvasOptions } from './canvas'
 import { layoutCanvas, type RingGuides } from './layout'
 
 /**
@@ -106,7 +106,7 @@ export function buildSample(opts: Pick<CanvasOptions, 'layout' | 'nodeStyle' | '
   const result = layoutCanvas(opts.layout, [
     ...AGENTS.map((a) => ({ id: a.id, parentId: a.parentId, width: agentSize.width, height: agentSize.height })),
     { id: GROUP_NODE_ID, parentId: GROUP_PARENT, width: groupSize.width, height: groupSize.height }
-  ])
+  ], { ringStep: ringStepFor(opts.nodeStyle) })
   const at = (id: string): { x: number; y: number } => result.positions[id] ?? { x: 0, y: 0 }
   const colorOf = (id: string): string => AGENTS.find((a) => a.id === id)?.color ?? ROLE_COLORS[0]
   const agents = AGENTS.map(instance)

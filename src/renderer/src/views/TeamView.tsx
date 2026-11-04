@@ -512,7 +512,9 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
                 </Button>
               </span>
             )}
-            <CanvasStyleButton testId="canvas-style-button" />
+            <span className="frame-toolbar-end">
+              <CanvasStyleButton testId="canvas-style-button" />
+            </span>
           </FrameToolbar>
         <div className="import-notices">
           {importNotice && importNotice.state !== 'reverted' && (
@@ -617,7 +619,9 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
           />
         </FrameTray>
         <FrameFooter>
-          <span>Drag from a node's bottom handle to another node to make it a report. With a node focused, Enter edits it and Delete removes it.</span>
+          <span>
+            {options.layout === 'left-right' ? "Drag from a node's right handle" : options.layout === 'radial' ? "Point at a node and drag from its handle" : "Drag from a node's bottom handle"} to another node to make it a report. With a node focused, Enter edits it and Delete removes it.
+          </span>
         </FrameFooter>
       </CanvasFrame>
       <SidePanel label="team panel" open={panelOpen} onOpenChange={setPanelOpen}>

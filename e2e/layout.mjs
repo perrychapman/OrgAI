@@ -227,7 +227,11 @@ try {
       await legendBtn.click()
       await sleep(250)
       const legendText = ((await page.locator('[data-testid=canvas-legend]').innerText().catch(() => '')) || '').toLowerCase()
-      check(['working', 'needs approval', 'done', 'error', 'message'].every((t) => legendText.includes(t)), `legend popover lists all five states at ${w}x${h} ${theme}`, legendText.replace(/\s+/g, ' '))
+      check(
+        ['working', 'needs you', 'finished', 'failed', 'selected', 'folded', 'reporting line', 'message'].every((t) => legendText.includes(t)),
+        `legend popover lists all eight entries at ${w}x${h} ${theme}`,
+        legendText.replace(/\s+/g, ' ')
+      )
       await page.keyboard.press('Escape')
       await sleep(150)
       check((await page.locator('.frame-footer').count()) === 0, `no legend row under the canvas at ${w}x${h} ${theme}`)
