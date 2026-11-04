@@ -1087,8 +1087,12 @@ export class McpService {
   private entryState(variant: ConnectorVariant | undefined, info: McpLibraryInfo): ConnectorState {
     if (variant) return connectorState(variant, info)
     if (info.missingSecrets.length) return 'needsSetup'
-    if (info.entry.oauth) return info.auth.state === 'authorized' ? 'connected' : info.auth.state === 'error' ? 'error' : 'needsSetup'
-    return 'connected'
+    if (info.auth.state === 'error') return 'error'
+    if (info.entry.oauth) return info.auth.state === 'authorized' ? 'connected' : 'needsSetup'
+    // connectedAt is stamped by every successful connect (no-auth add, token set, sign-in), so an OAuth entry that was
+    // never authorized (no oauth block yet) does not read as connected.
+    const slots = (info.entry.secretEnv?.length ?? 0) + (info.entry.secretHeaders?.length ?? 0)
+    return slots > 0 || info.entry.connectedAt !== undefined ? 'connected' : 'needsSetup'
   }
 
   private connectorInfo(def: ConnectorDef, entry: McpLibraryEntry | undefined, custom: boolean, all: Project[]): ConnectorInfo {

@@ -288,6 +288,14 @@ describe('editing and removing the preset behind an entry', () => {
     expect(infoOf(svc, 'acme-crm').state).toBe('connected')
   })
 
+  it('a never-authorized OAuth entry whose variant left the preset is not connected', () => {
+    const svc = build(true)
+    svc.connectorPresetsUpsert(preset({ variants: [httpVariant({ id: 'sso', headers: undefined, auth: { kind: 'oauth' } })], defaultVariant: 'sso' }))
+    svc.connectorsAdd({ connectorId: 'acme-crm' })
+    svc.connectorPresetsUpsert(preset({ variants: [stdioVariant()], defaultVariant: 'local' }))
+    expect(infoOf(svc, 'acme-crm').state).toBe('needsSetup')
+  })
+
   it('a removed preset leaves the entry a plain library entry that no tile shows', () => {
     const svc = build()
     svc.connectorPresetsUpsert(preset())
