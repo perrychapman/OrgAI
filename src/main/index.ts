@@ -240,7 +240,7 @@ app.whenReady().then(() => {
       log.warn(`Could not set the Dock icon: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
-  const dataDir =join(app.getPath('userData'), 'data')
+  const dataDir = join(app.getPath('userData'), 'data')
   const projects = new ProjectStore(dataDir)
   const settings = new SettingsStore(dataDir)
   settingsStore = settings
