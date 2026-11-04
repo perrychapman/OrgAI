@@ -379,6 +379,8 @@ export class McpService {
     // Link-side overrides never belong on an entry.
     const { envOverrides: _eo, headerOverrides: _ho, ...incomingEntry } = incoming as McpLibraryEntry & { envOverrides?: unknown; headerOverrides?: unknown }
     const entry: McpLibraryEntry = withOAuth({ ...noConnector(incomingEntry), source: normalSource(incoming.source) }, undefined)
+    if (entry.perProjectSecrets === undefined) delete entry.perProjectSecrets
+    if (entry.perProjectEnv === undefined) delete entry.perProjectEnv
     if (opts.applied === true) {
       // An approved proposal or install never sets or clears the per-project fields: the stored entry's stay.
       delete entry.perProjectSecrets
