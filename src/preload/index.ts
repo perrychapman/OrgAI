@@ -9,6 +9,7 @@ import type {
   FocusRunTarget,
   McpLibraryInfo,
   MenuActionEvent,
+  MenuState,
   OrgAIApi,
   SkillLibraryInfo,
   PermissionDecision,
@@ -223,6 +224,16 @@ const api: OrgAIApi = {
     }
     ipcRenderer.on(IPC.menuAction, listener)
     return () => ipcRenderer.removeListener(IPC.menuAction, listener)
+  },
+  menu: {
+    setState: (state: MenuState) =>
+      ipcRenderer.invoke(IPC.menuSetState, {
+        hasProject: state?.hasProject === true,
+        hasRun: state?.hasRun === true,
+        runLive: state?.runLive === true,
+        chatRun: state?.chatRun === true,
+        hasDecision: state?.hasDecision === true
+      })
   },
   usage: {
     refresh: () => ipcRenderer.invoke(IPC.usageRefresh)
