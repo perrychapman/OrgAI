@@ -8,6 +8,8 @@ import {
   connectMissing,
   connectorInitial,
   filterConnectors,
+  filterLibrary,
+  libraryMatchRank,
   honestyNote,
   missingSentence,
   plainToolName,
@@ -98,6 +100,28 @@ describe('connectors lib', () => {
   it('consequence names projects', () => {
     expect(removeConsequence([{ projectName: 'Acme' }], 'remove')).toContain('Acme will lose access')
     expect(removeConsequence([], 'disconnect')).toContain('No project')
+  })
+})
+
+describe('saved server search', () => {
+  const idp = { entry: { name: 'client-idp-admin', description: 'Admin tools for the identity provider' } }
+  const crm = { entry: { name: 'acme-crm' } }
+  it('ranks name start, name word, name substring, then description', () => {
+    expect(libraryMatchRank(idp.entry, 'client')).toBe(0)
+    expect(libraryMatchRank(idp.entry, 'idp')).toBe(1)
+    expect(libraryMatchRank(idp.entry, 'dmin')).toBe(2)
+    expect(libraryMatchRank(idp.entry, 'identity')).toBe(3)
+    expect(libraryMatchRank(idp.entry, 'zzz')).toBeNull()
+  })
+  it('needs every word and treats an empty query as a match', () => {
+    expect(libraryMatchRank(idp.entry, 'idp provider')).toBe(3)
+    expect(libraryMatchRank(idp.entry, 'idp zzz')).toBeNull()
+    expect(libraryMatchRank(crm.entry, '  ')).toBe(0)
+  })
+  it('filters and orders best first', () => {
+    expect(filterLibrary([crm, idp], 'idp')).toEqual([idp])
+    expect(filterLibrary([crm, idp], '')).toEqual([crm, idp])
+    expect(filterLibrary([idp, { entry: { name: 'x', description: 'idp helper' } }], 'idp')[0]).toBe(idp)
   })
 })
 
