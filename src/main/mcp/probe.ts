@@ -39,6 +39,85 @@ export function redact(text: string, secrets: string[]): string {
   return redactOAuth(out, secrets)
 }
 
+/** How many `cause` links below the thrown error are read. */
+const CAUSE_DEPTH = 3
+
+interface CauseLink {
+  code?: string
+  message?: string
+}
+
+/** The thrown error and up to CAUSE_DEPTH nested causes, each reduced to its string `code` and `message`. */
+function causeChain(e: unknown): CauseLink[] {
+  const out: CauseLink[] = []
+  let cur: unknown = e
+  for (let i = 0; i <= CAUSE_DEPTH && cur && typeof cur === 'object'; i++) {
+    const o = cur as { code?: unknown; message?: unknown; cause?: unknown }
+    out.push({
+      ...(typeof o.code === 'string' && o.code ? { code: o.code } : {}),
+      ...(typeof o.message === 'string' && o.message ? { message: o.message } : {})
+    })
+    cur = o.cause
+  }
+  return out
+}
+
+/** The host of a server URL for an error sentence; never the URL's userinfo, path or query. */
+export function hostOfUrl(url: string | undefined): string {
+  try {
+    const host = url ? new URL(url).host : ''
+    return host || 'the server'
+  } catch {
+    return 'the server'
+  }
+}
+
+const DNS_CODES = new Set(['ENOTFOUND', 'EAI_AGAIN', 'EAI_FAIL', 'EAI_NONAME'])
+const CONNECT_CODES = new Set(['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT', 'EHOSTUNREACH', 'ENETUNREACH', 'EPIPE'])
+const ANSWER_TIMEOUT_CODES = new Set(['UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT'])
+
+function isCertificateCode(code: string): boolean {
+  return code.includes('CERT') || code.startsWith('ERR_TLS') || code.startsWith('SELF_SIGNED') || code.startsWith('UNABLE_TO_VERIFY')
+}
+
+/** True for undici's "fetch failed" whose cause is a socket the other side closed or reset before answering. */
+export function isClosedSocketFailure(e: unknown): boolean {
+  for (const { code, message } of causeChain(e)) {
+    if (code === 'UND_ERR_SOCKET' || code === 'ECONNRESET') return true
+    if (message && /other side closed/i.test(message)) return true
+  }
+  return false
+}
+
+/**
+ * Plain words for undici's bare `TypeError: fetch failed`, whose reason sits in `error.cause` (at most CAUSE_DEPTH
+ * levels are read). Null when the error is neither "fetch failed" nor carries a cause, so other errors keep their
+ * own message. `host` names the server; the caller still redacts the result.
+ */
+export function describeFetchFailure(e: unknown, host = 'the server'): string | null {
+  if (!e || typeof e !== 'object') return null
+  const chain = causeChain(e)
+  const top = chain[0]
+  const hasCause = chain.length > 1
+  if (top.message !== 'fetch failed' && !hasCause) return null
+  const causes = hasCause ? chain.slice(1) : chain
+  for (const { code, message } of causes) {
+    if (code && DNS_CODES.has(code)) return `Could not look up ${host}. Check your internet connection, VPN or DNS.`
+    if (code && CONNECT_CODES.has(code)) return `Could not connect to ${host} (${code}). Check your internet connection, VPN, firewall or proxy.`
+    if (code && isCertificateCode(code)) {
+      return `The TLS certificate of ${host} could not be verified (${code}). A proxy, VPN or antivirus that inspects HTTPS can cause this.`
+    }
+    if (message && /certificate/i.test(message)) {
+      return `The TLS certificate of ${host} could not be verified${code ? ` (${code})` : ''}. A proxy, VPN or antivirus that inspects HTTPS can cause this.`
+    }
+    if (message && /unexpected redirect/i.test(message)) return `${host} redirected the request; OrgAI does not follow redirects for MCP servers. Check the URL.`
+    if (code === 'UND_ERR_SOCKET' || (message && /other side closed/i.test(message))) return `${host} closed the connection before answering.`
+    if (code && ANSWER_TIMEOUT_CODES.has(code)) return `${host} did not answer in time (${code}).`
+  }
+  const detail = causes.map((c) => c.code).find((c) => c) ?? [...causes].reverse().map((c) => c.message).find((m) => m && m !== 'fetch failed')
+  return `fetch failed: ${detail ?? 'no further detail'}.`
+}
+
 /** A 401 from a remote server: carries the WWW-Authenticate header for the result. */
 class AuthRequiredError extends Error {
   constructor(readonly challenge: string) {
@@ -215,7 +294,12 @@ class HttpClient implements RpcClient {
     private fetchImpl: typeof fetch
   ) {}
 
-  private async post(body: unknown): Promise<Response> {
+  /**
+   * One POST. `repeatable` requests (initialize, tools/list) are sent once more on a fresh request when the first
+   * attempt died on a closed or reset socket before any response arrived (a stale keep-alive connection);
+   * notifications are never repeated.
+   */
+  private async post(body: unknown, repeatable = false): Promise<Response> {
     const headers: Record<string, string> = {
       ...this.resolved.headers,
       Accept: 'application/json, text/event-stream',
@@ -223,12 +307,19 @@ class HttpClient implements RpcClient {
     }
     if (this.session) headers['Mcp-Session-Id'] = this.session
     if (this.version) headers['MCP-Protocol-Version'] = this.version
-    return this.fetchImpl(this.resolved.spec.url!, { method: 'POST', headers, body: JSON.stringify(body), redirect: 'error', signal: this.signal })
+    const init: RequestInit = { method: 'POST', headers, body: JSON.stringify(body), redirect: 'error', signal: this.signal }
+    try {
+      return await this.fetchImpl(this.resolved.spec.url!, init)
+    } catch (e) {
+      if (!repeatable || this.signal.aborted || !isClosedSocketFailure(e)) throw e
+      return this.fetchImpl(this.resolved.spec.url!, { ...init, headers: { ...headers } })
+    }
   }
 
   async request(method: string, params?: unknown): Promise<unknown> {
     const id = this.nextId++
-    const res = await this.post({ jsonrpc: '2.0', id, method, ...(params !== undefined ? { params } : {}) })
+    const repeatable = method === 'initialize' || method === 'tools/list'
+    const res = await this.post({ jsonrpc: '2.0', id, method, ...(params !== undefined ? { params } : {}) }, repeatable)
     const session = res.headers.get('mcp-session-id')
     if (session) this.session = session
     if (res.status === 401) {
@@ -330,7 +421,8 @@ export async function testServer(resolved: ResolvedMcpServer, timeoutMs = 20_000
       const authorizationServer = found ? redact(found, secrets) : undefined
       return { ok: false, needsAuthorization: true, ...(authorizationServer ? { authorizationServer } : {}), error: e.message, durationMs: Date.now() - started }
     }
-    let message = redact((e as Error).message, secrets)
+    const described = spec.transport === 'stdio' ? null : describeFetchFailure(e, hostOfUrl(spec.url))
+    let message = redact(described ? `Could not reach the server: ${described}` : (e as Error).message, secrets)
     const tail = stdio?.stderrTail()
     if (tail) message += `\n${tail}`
     return {
