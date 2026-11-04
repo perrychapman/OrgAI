@@ -167,4 +167,20 @@ describe('architectPrompt', () => {
     expect(architectRole(undefined, { kind: 'engagement' }).prompt).toBe(p)
     expect(p).not.toBe(architectPrompt('code'))
   })
+
+  it('the engagement prompt recommends permissionMode "default" and "auto" only on request', () => {
+    const p = architectPrompt('engagement')
+    expect(p).toContain('recommend permissionMode "default" (ask for risky actions) for client work')
+    expect(p).toContain('Propose "auto" only when the user asks for unattended runs')
+    expect(p).toContain('asks before any command that names one')
+    expect(p).not.toContain('Recommend permissionMode "auto"')
+    expect(architectPrompt('code')).toContain('Recommend permissionMode "auto"')
+  })
+
+  it('the Analyst keeps Bash and writes only in the working folder', () => {
+    const analyst = engagementRoles(ctx).find((r) => r.slug === 'analyst')!
+    expect(analyst.tools).toContain('Bash')
+    expect(analyst.prompt).toContain('never in a reference folder')
+    expect(analyst.prompt).toContain('asks the user first')
+  })
 })
