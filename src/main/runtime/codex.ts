@@ -191,6 +191,8 @@ class CodexSession implements RuntimeSession {
   private sessionRules: string[] = []
   /** A session (or project) grant of a setMode acceptEdits suggestion: edits inside free folders need no card. */
   private sessionAcceptEdits = false
+  /** The reference-folder policy downgrade warning was logged (once per run). */
+  private warnedReferencePolicy = false
   /** Folders granted through an addDirectories suggestion for this session (also free for `cd` and edits). */
   private sessionDirs: string[] = []
   private limited = false
@@ -441,8 +443,31 @@ class CodexSession implements RuntimeSession {
 
   // ---------- start ----------
 
+  /**
+   * The thread policy for a role, derived from the project's mode read now (so the MCP restart re-derives it). With
+   * reference folders (read live; an unreadable list counts as having some) bypass and auto are downgraded so writes
+   * outside the workspace still reach onFileApproval (codexProtocol.ts policyFor); one run warning says so.
+   */
   private policyFor(role: Role): PolicyChoice {
-    return policyFor(this.ctx.project.permissionMode, { writes: canWrite(role), setupLike: this.setupLike, quick: !!this.ctx.run.quick, setupWrites: typeof this.ctx.run.buildWorkspace === 'string' })
+    const mode = this.ctx.project.permissionMode
+    const base = { writes: canWrite(role), setupLike: this.setupLike, quick: !!this.ctx.run.quick, setupWrites: typeof this.ctx.run.buildWorkspace === 'string' }
+    if (!this.hasReferenceFolders()) return policyFor(mode, base)
+    const choice = policyFor(mode, { ...base, referenceFolders: true })
+    const plain = policyFor(mode, base)
+    if (!this.warnedReferencePolicy && (plain.sandbox !== choice.sandbox || plain.approvalsReviewer !== choice.approvalsReviewer)) {
+      this.warnedReferencePolicy = true
+      this.log('warn', plain.sandbox === 'danger-full-access' ? 'Reference folders keep this Codex run asking before writes outside the project.' : "Reference folders turn off Codex's auto reviewer for this run; OrgAI decides each approval.")
+    }
+    return choice
+  }
+
+  private hasReferenceFolders(): boolean {
+    if (!this.ctx.referenceDirectories) return false
+    try {
+      return this.ctx.referenceDirectories().some((r) => typeof r === 'string' && r.length > 0)
+    } catch {
+      return true
+    }
   }
 
   private toolsFor(role: Role, isRoot: boolean): { specs: DynamicToolSpec[]; names: string[] } {
@@ -868,12 +893,26 @@ class CodexSession implements RuntimeSession {
     }
   }
 
-  /** Free to edit without a card: every path is concrete, has no protected segment, and sits in a free dir lexically and by real path. */
+  /**
+   * Free to edit without a card: every path is concrete, has no protected segment, and sits in a free dir lexically
+   * and by real path. Only MatchOptions.freeDirs count (reference folders live in readOnlyDirs); as a defence in case
+   * the lists ever overlap, a path under a reference folder (read live; an unreadable list frees nothing) is never free.
+   */
   private editPathsFree(paths: readonly string[]): boolean {
     if (!paths.length) return false
+    // Read the reference list first: matchOptionsFor reads it too, unguarded.
+    let refs: string[] = []
+    if (this.ctx.referenceDirectories) {
+      try {
+        refs = this.ctx.referenceDirectories().filter((r) => typeof r === 'string' && r.length > 0)
+      } catch {
+        return false
+      }
+    }
     const opts = this.matchOpts()
     return paths.every((p) => {
       if (typeof p !== 'string' || !p || !isAbsolute(p) || hasProtectedSegment(p)) return false
+      if (refs.length && referenceFolderOf(p, refs, this.ctx.project.path)) return false
       if (!isFreeCdTarget(dirname(p), opts)) return false
       let real: string
       try {
@@ -1199,9 +1238,11 @@ class CodexSession implements RuntimeSession {
       for (const [threadId, info] of this.threads) {
         const role = this.net.roleOf(info.agentId) ?? this.root
         const wt = this.integrator.worktreeOf(info.agentId)
+        // threadParams re-derives the policy (mode and reference folders read now); the thread keeps the new one.
         const { dynamicTools: _t, serviceName: _s, ...resume } = this.threadParams(role, info.agentId === ROOT_AGENT_ID, wt?.path ?? this.ctx.project.path)
         void _t
         void _s
+        info.policy = this.policyFor(role)
         try {
           await this.startThread({ threadId, ...resume }, METHOD.threadResume)
         } catch (e) {

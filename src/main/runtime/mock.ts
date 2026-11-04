@@ -6,7 +6,7 @@ import { mcpServersForRole, newId, projectKindOf } from '@shared/defaults'
 import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo, type CompletionInput, type PeerMessage, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
 import { harnessToolsFor, isBlockingHarnessTool, type ConfigChange, type ConfigChangeResult, type HarnessTool, type HarnessToolAudience, type HarnessToolHooks, type McpAttachResult } from './harnessTools'
 import { agentInstalledServers, mcpCallDenial, withoutServerRules } from './mcpGrants'
-import { referenceEditDenial } from './referenceDirectories'
+import { REFERENCE_EDIT_TOOLS, referenceEditDenial } from './referenceDirectories'
 import { ContinuationDriver, PLAN_TOOLS, stepActivity } from './continuation'
 import { authFailureMessage, describeTool, harnessToolActivity } from './activity'
 import { EDIT_TOOLS, allowRuleStrings, applyAllowScope, chooseSuggestions, editTargetOf, isOfferableDirectory, listRules, suggestionLabels, type AllowScopePersist } from './permissionRules'
@@ -991,7 +991,16 @@ export class MockSession implements RuntimeSession {
     }
     // Same reference-folder gate as the Claude adapter's PreToolUse: edit tools under a reference folder (or naming no
     // path while any exist) are refused before any rule, mode or card. The list is live; the mock's cwd is the project.
-    const refDenial = this.ctx.referenceDirectories ? referenceEditDenial(step.name, input, this.ctx.referenceDirectories(), this.ctx.project.path) : null
+    // An unreadable list refuses an edit tool (same wording as the Claude adapter's referenceDenial).
+    let refDenial: string | null = null
+    if (this.ctx.referenceDirectories && REFERENCE_EDIT_TOOLS.has(step.name)) {
+      try {
+        refDenial = referenceEditDenial(step.name, input, this.ctx.referenceDirectories(), this.ctx.project.path)
+      } catch (e) {
+        this.log('warn', `Could not read the run's reference folders: ${(e as Error).message}`)
+        refDenial = 'OrgAI could not check the reference folders, so this edit was refused. Try again shortly.'
+      }
+    }
     if (refDenial) {
       this.log('warn', `Blocked ${step.name} by ${this.agents.get(agentId)?.name ?? agentId}: ${refDenial}`)
       this.transcript(agentId, { kind: 'tool_result', toolUseId: id, content: refDenial, isError: true })

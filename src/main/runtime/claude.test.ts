@@ -450,6 +450,13 @@ describe('quick runs and build sessions (assistants)', () => {
     expect(claudeSettingSources(fakeCtx())).toEqual(['project'])
   })
 
+  it('M4: loads no setting sources for any run of an engagement (work and setup); code projects keep the project source', () => {
+    const engagement = project({ kind: 'engagement' })
+    expect(claudeSettingSources(fakeCtx({ project: engagement }))).toEqual([])
+    expect(claudeSettingSources(fakeCtx({ project: engagement, run: runSummary({ kind: 'setup' }) }))).toEqual([])
+    expect(claudeSettingSources(fakeCtx({ project: project({ kind: 'code' }) }))).toEqual(['project'])
+  })
+
   it('never reads saved rules from the folder for a quick run', () => {
     expect(claudeSavedRules(quickCtx())).toEqual([])
     expect(claudeSavedRules(fakeCtx({ project: project({ path: join(tmpdir(), 'orgai-no-such-dir') }) }))).toEqual([])
@@ -1362,6 +1369,19 @@ describe('ClaudeSession permission fatigue (fake query)', () => {
     const quick = runSummary({ projectId: 'quick', quick: { folder: dir, team: 'single', allowEdits: false, gitRepo: false } })
     expect(cliProjectSettings({ run: quick, project: project({ path: dir }) })).toEqual({ rules: [], failed: false })
     expect(cliProjectSettings({ run: runSummary({}), project: project({ path: dir }) }).failed).toBe(true)
+  })
+
+  it('M4: an engagement never reads settings.json (settingSources []), so its rules force no ask', async () => {
+    const { ctx, dir } = start()
+    ;(ctx.project as { kind?: string }).kind = 'engagement'
+    mkdirSync(join(dir, '.claude'), { recursive: true })
+    writeFileSync(join(dir, '.claude', 'settings.json'), JSON.stringify({ permissions: { allow: ['Bash(npm test:*)'] } }))
+    expect(cliProjectSettings({ run: runSummary({}), project: project({ path: dir, kind: 'engagement' }) })).toEqual({ rules: [], failed: false })
+    expect(cliProjectSettings({ run: runSummary({}), project: project({ path: dir }) }).rules).toEqual(['Bash(npm test:*)'])
+    const q = await firstQuery()
+    expect(q.options.settingSources).toEqual([])
+    // A code project would get 'ask' naming the rule here; the engagement's hook does not consult the file.
+    expect((await bash(q, 'timeout 5 npm test')).hookSpecificOutput?.permissionDecision).not.toBe('ask')
   })
 
   it('L1: settings.json rule text is bounded and quoted in the reason; a rule with a hidden character is never named', () => {
