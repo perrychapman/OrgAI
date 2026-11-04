@@ -53,21 +53,29 @@ async function sectionBlock(page) {
   check(!/Manage in Tools|MCP/.test(await block.innerText()), 'the block never says "Manage in Tools" or "MCP"')
 }
 
+/** Open the role model fold and its Advanced details, re-opening them if a re-render (project.updated) remounts the panel, until Exact model is visible. */
+async function openAdvancedModel(page) {
+  await page.waitForFunction(
+    () => {
+      const fold = document.querySelector('[data-testid=role-model-fold]')
+      if (fold && !fold.open) fold.open = true
+      const adv = document.querySelector('[data-testid=role-model-advanced]')
+      if (adv && !adv.open) adv.open = true
+      const sel = document.querySelector('[data-testid=role-exact-model]')
+      return !!sel && sel.getClientRects().length > 0
+    },
+    undefined,
+    { timeout: 20_000, polling: 100 }
+  )
+}
+
 /** ux-review-config-2 N3: a tier role's Exact model reads Not set; Not set on a custom role returns Model to a tier, never Inherit. */
 async function sectionExactModel(page) {
   await selectReviewer(page)
-  await page.evaluate(() => {
-    const d = document.querySelector('[data-testid=role-model-fold]')
-    if (d) d.open = true
-  })
   const roleSel = page.locator('[data-testid=role-model]')
   const exactSel = page.locator('[data-testid=role-exact-model]')
   await roleSel.waitFor({ timeout: 10_000 })
-  await page.evaluate(() => {
-    const d = document.querySelector('[data-testid=role-model-advanced]')
-    if (d) d.open = true
-  })
-  await exactSel.waitFor({ timeout: 10_000 })
+  await openAdvancedModel(page)
   const start = await roleSel.inputValue()
   if (/^(top|deep|everyday|fast)$/.test(start)) check((await exactSel.inputValue()) === '', `a ${start} role's Exact model reads Not set`, await exactSel.inputValue())
   const ids = await exactSel.locator('option:not([disabled])').evaluateAll((os) => os.map((o) => o.value).filter(Boolean))
@@ -89,7 +97,10 @@ async function sectionExactModel(page) {
     check(back !== 'inherit' && back !== 'custom', 'Not set on a custom role returns Model to a tier, not Inherit', back)
     check((await exactSel.inputValue()) === '', 'Exact model reads Not set again')
   }
-  if (start !== 'custom') await roleSel.selectOption(start).catch(() => {})
+  if (start !== 'custom') {
+    await openAdvancedModel(page)
+    await roleSel.selectOption(start).catch(() => {})
+  }
   await sleep(300)
   await page.evaluate(() => {
     const d = document.querySelector('[data-testid=role-model-advanced]')
