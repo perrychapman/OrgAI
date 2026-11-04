@@ -2,6 +2,14 @@ import type {
   ConnectionId,
   EngagementNote,
   EngagementNoteContent,
+  KnowledgeEdgeSaveInput,
+  KnowledgeEdgeWriteResult,
+  KnowledgeGraph,
+  KnowledgeNodeUpsertInput,
+  KnowledgeNodeWriteResult,
+  KnowledgeRetireInput,
+  KnowledgeRetireResult,
+  KnowledgeSource,
   ModelRef,
   ModelTier,
   ImageAttachment,
@@ -139,6 +147,32 @@ export interface RunSkill {
   roleIds: string[]
 }
 
+/**
+ * The calling agent of a knowledge or note write, as the adapter reports it to the harness tool (the same fields as
+ * harnessTools.ts HarnessToolCaller). Missing agentId = the root; RunManager turns it into a KnowledgeSource.
+ */
+export interface KnowledgeCaller {
+  agentId?: string
+  roleId?: string
+}
+
+/**
+ * The knowledge graph store as RunManager and ipc.ts use it (store/knowledge.ts `knowledgeStore(dataDir)`): every
+ * function is keyed by the stored project id, validates its input (keys, lengths, hidden characters, caps, note ids
+ * against the note index) and throws an Error whose message is shown to the caller. Writes are atomic. The agent
+ * functions take the KnowledgeSource RunManager built; the user's IPC writes use the store's own user functions.
+ */
+export interface KnowledgeStoreApi {
+  /** The graph as stored (junk dropped, note links to missing notes dropped); empty when there is no file. */
+  get(projectId: string): KnowledgeGraph
+  /** Agent upsert (identity by id, else (kind, name) / (kind, alias) case-insensitive; see KnowledgeNodeUpsertInput). */
+  upsertNode(projectId: string, input: KnowledgeNodeUpsertInput, source: KnowledgeSource): KnowledgeNodeWriteResult
+  /** Agent or user link: from / to are node ids; (from, to, relation) dedupes onto the existing edge (note updated). */
+  saveEdge(projectId: string, input: Omit<KnowledgeEdgeSaveInput, 'projectId'>, source: KnowledgeSource): KnowledgeEdgeWriteResult
+  /** Agent retire: refuses an item whose source.by is 'user' ("Only the user can change that."). */
+  retire(projectId: string, input: KnowledgeRetireInput, source: KnowledgeSource): KnowledgeRetireResult
+}
+
 /** What message_run achieved (RuntimeContext.messageRun). */
 export type RunMessageResult = 'delivered' | 'queued' | 'not-live' | 'not-found' | 'refused'
 
@@ -255,10 +289,36 @@ export interface RuntimeContext {
    * work runs and single-agent runs (RunSummary.team 'single') of a stored project, never on quick, setup-like or
    * trust-restricted runs. `list` is the index (EngagementNote), `read` one note's text or null for an unknown id.
    * Read at call time. Missing = the tool is not offered (adapters) or says no notes are available.
+   * `save` creates (no noteId) or replaces an agent-written note: RunManager fills source 'agent', the run id and the
+   * caller's role (from the run's agent record, else the caller's roleId, else the root role), writes the harness
+   * transcript row "Saved note <title>" on the writing agent, counts it toward KNOWLEDGE_RUN_WRITES_MAX and pushes
+   * projects:engagementChanged 'notes'. It throws (the tool answers REFUSED with the message) for a user note
+   * ("Only the user can change that note; save a new one instead."), an unknown id, the caps, or the writes limit.
    */
   engagementNotes?: {
     list(): EngagementNote[]
     read(noteId: string): EngagementNoteContent | null
+    save(input: { noteId?: string; title: string; text: string }, caller: KnowledgeCaller): EngagementNote
+  }
+  /**
+   * engagement_knowledge (KNOWLEDGE_TOOL): the engagement's knowledge graph (types.ts "Engagement knowledge graph").
+   * RunManager provides it on engagement work runs of a stored project (any team, never bare, quick, setup-like or
+   * trust-restricted runs); missing = the tool is not offered (adapters) or answers that no knowledge graph is
+   * available. `graph` is read at call time (search, vocabulary and get are pure helpers in shared/knowledge.ts over
+   * it). Every write takes the calling agent (HarnessToolCaller) and RunManager fills the KnowledgeSource (by 'agent',
+   * run id, agent id, role name or slug), writes one harness transcript row on the writing agent ("Recorded <kind>
+   * <name>" / "Updated <kind> <name>" / "Linked <from> <relation> <to>" / "Retired <item> <label>"), counts it toward
+   * KNOWLEDGE_RUN_WRITES_MAX (past it every write throws "The knowledge graph write limit for this run (N) is
+   * reached; nothing was saved." and nothing is saved) and pushes projects:engagementChanged 'knowledge'. Validation
+   * failures (keys, lengths, hidden characters, unknown ids, user-written items on retire, the graph caps) throw with
+   * the message the tool shows after "REFUSED: ".
+   */
+  knowledge?: {
+    graph(): KnowledgeGraph
+    upsertNode(input: KnowledgeNodeUpsertInput, caller: KnowledgeCaller): KnowledgeNodeWriteResult
+    /** from / to are node ids (the tool resolves names first). */
+    link(input: Omit<KnowledgeEdgeSaveInput, 'projectId' | 'edgeId' | 'retired'>, caller: KnowledgeCaller): KnowledgeEdgeWriteResult
+    retire(input: KnowledgeRetireInput, caller: KnowledgeCaller): KnowledgeRetireResult
   }
   /**
    * propose_org_chart `fromTemplate` (setup runs): the saved team template's roles as drafts for this project

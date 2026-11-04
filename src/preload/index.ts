@@ -263,6 +263,15 @@ const api: OrgAIApi = {
   projectRemoval: {
     preview: (input) => ipcRenderer.invoke(IPC.projectsRemovePreview, input)
   },
+  // ---- Engagement knowledge graph (every write pushes onEngagementChanged 'knowledge') ----
+  knowledge: {
+    get: (projectId: string) => ipcRenderer.invoke(IPC.knowledgeGet, projectId),
+    saveNode: (input) => ipcRenderer.invoke(IPC.knowledgeSaveNode, input),
+    removeNode: (ref) => ipcRenderer.invoke(IPC.knowledgeRemoveNode, ref),
+    saveEdge: (input) => ipcRenderer.invoke(IPC.knowledgeSaveEdge, input),
+    removeEdge: (ref) => ipcRenderer.invoke(IPC.knowledgeRemoveEdge, ref),
+    clear: (projectId: string) => ipcRenderer.invoke(IPC.knowledgeClear, projectId)
+  },
   onEngagementChanged: (cb) => {
     const listener = (_e: IpcRendererEvent, event: EngagementChangedEvent): void => cb(event)
     ipcRenderer.on(IPC.projectsEngagementChanged, listener)

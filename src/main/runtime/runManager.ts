@@ -3,6 +3,8 @@ import { homedir } from 'node:os'
 import { resolve as resolvePath } from 'node:path'
 import type {
   AgentInstance,
+  EngagementChangedEvent,
+  EngagementNoteWriter,
   RunUsage,
   UsageStats,
   UsageStatsQuery,
@@ -57,7 +59,7 @@ import { DEFAULT_MAX_AUTO_CONTINUES, HARNESS_PROJECT_ID, QUICK_PROJECT_ID, RUN_M
 import { architectRole, mcpAssistantRole, skillAssistantRole } from '@shared/setup'
 import { isTrustRestrictedRun, isInsideEither, samePath, canonicalDeep } from '../quick/scratch'
 import { MCP_ASSIST_MODEL_LABEL, QUICK_RUN_MODEL_LABEL, SETUP_MODEL_LABEL, SKILL_ASSIST_MODEL_LABEL, resolveBuiltinModel, type ResolvedBuiltinModel } from './builtinModel'
-import { ROOT_AGENT_ID, isSetupLikeRun, type CompletionInput, type ResolvedMcpServer, type RunMessageOutcome, type RunConnection, type RunSkill, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type SkillAssistCatalog } from './types'
+import { ROOT_AGENT_ID, isSetupLikeRun, type CompletionInput, type KnowledgeStoreApi, type ResolvedMcpServer, type RunMessageOutcome, type RunConnection, type RunSkill, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type SkillAssistCatalog } from './types'
 import type { SkillRunSource } from '../skills/types'
 import { RunStore } from '../store/runs'
 import type { SetupService } from '../setup/service'
@@ -526,12 +528,24 @@ export interface RunManagerOptions {
   }
   /**
    * Context notes of a stored project (store/projectData.ts), for RuntimeContext.engagementNotes on engagement work
-   * runs and single-agent runs. Missing = no engagement_context data.
+   * runs and single-agent runs. Missing = no engagement_context data. `save` is the store's saveNote with an agent
+   * writer (RunManager fills the run id and role); missing = the tool's save action is refused.
    */
   engagementNotes?: {
     list(projectId: string): EngagementNote[]
     read(projectId: string, noteId: string): EngagementNoteContent | null
+    save?(projectId: string, input: { noteId?: string; title: string; text: string }, writer: EngagementNoteWriter): EngagementNote
   }
+  /**
+   * The engagement knowledge graph store (store/knowledge.ts `knowledgeStore(dataDir)`), for RuntimeContext.knowledge
+   * on engagement work runs. Missing = engagement_knowledge is not offered.
+   */
+  knowledge?: KnowledgeStoreApi
+  /**
+   * Push projects:engagementChanged to every window after an agent wrote a note ('notes') or the knowledge graph
+   * ('knowledge') (index.ts passes ipc.ts broadcastEngagementChanged). Missing = no push.
+   */
+  engagementChanged?: (event: EngagementChangedEvent) => void
   /**
    * A saved team template's roles converted for `project` (setup/templates.ts, the agent-import convert path),
    * for RuntimeContext.orgTemplate on setup runs. null for an unknown id. Missing = templates unavailable.
@@ -1312,7 +1326,11 @@ export class RunManager {
           ? {
               engagementNotes: {
                 list: () => this.options.engagementNotes!.list(project.id),
-                read: (noteId: string) => this.options.engagementNotes!.read(project.id, noteId)
+                read: (noteId: string) => this.options.engagementNotes!.read(project.id, noteId),
+                // Placeholder until the knowledge-graph wiring lands: the Runtime Engineer replaces it with the real save.
+                save: () => {
+                  throw new Error('Notes cannot be saved in this run.')
+                }
               }
             }
           : {}),

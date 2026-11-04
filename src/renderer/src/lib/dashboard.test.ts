@@ -323,7 +323,8 @@ describe('forget an engagement', () => {
     documentRemoved: true,
     rulesRemoved: true,
     teamReviewRemoved: true,
-    skillEvaluationRemoved: true
+    skillEvaluationRemoved: true,
+    knowledgeRemoved: 0
   }
   it('words the menu item and button per kind', () => {
     expect(tileRemoveLabel('engagement')).toBe('Forget engagement…')

@@ -15,7 +15,10 @@ function notesCtx(notes: EngagementNoteContent[]) {
   const list = (): EngagementNote[] => notes.map(({ text, ...n }) => ({ ...n, chars: text.length }))
   return {
     list,
-    read: (id: string) => notes.find((n) => n.id === id) ?? null
+    read: (id: string) => notes.find((n) => n.id === id) ?? null,
+    save: (): EngagementNote => {
+      throw new Error('not wired in this test')
+    }
   }
 }
 
@@ -90,7 +93,7 @@ describe('engagement_context', () => {
 
   it('answers an unknown id and a failing store plainly', async () => {
     expect(await tool(notesCtx([])).call({ noteId: 'nope' })).toContain('No context note with id "nope"')
-    const bad = { list: () => { throw new Error('boom') }, read: () => { throw new Error('boom') } }
+    const bad = { list: () => { throw new Error('boom') }, read: () => { throw new Error('boom') }, save: () => { throw new Error('boom') } }
     expect(await tool(bad).call({ noteId: 'n1' })).toBe('The context notes could not be read right now.')
   })
 })

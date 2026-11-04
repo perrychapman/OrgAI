@@ -749,7 +749,9 @@ export function removalFacts(deps: RemovalDeps, projectId: string, removeRuns: b
     documentRemoved: engagementDocumentExists(deps.dataDir, projectId),
     rulesRemoved: appRulesExist(deps.dataDir, projectId),
     teamReviewRemoved: exists(teamReviewFile(deps.dataDir, projectId)),
-    skillEvaluationRemoved: exists(skillEvaluationFile(deps.dataDir, projectId))
+    skillEvaluationRemoved: exists(skillEvaluationFile(deps.dataDir, projectId)),
+    // Placeholder: the knowledge store lands with the Runtime Engineer, who replaces this with the node count.
+    knowledgeRemoved: 0
   }
 }
 
