@@ -21,8 +21,14 @@ const reader = (async () => {
 // Try the usage request immediately (before init) and again after init.
 try {
   const u = await q.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET({ skipBehaviors: true })
+  // Which rate_limits keys carry anything, so the next run shows at a glance where the windows live
+  // (2026-11-04: five_hour came back null on a Max login; seven_day and model_scoped still answered).
+  const limits = u.rate_limits && typeof u.rate_limits === 'object' ? u.rate_limits : {}
+  const nonNull = Object.keys(limits).filter((k) => limits[k] !== null && limits[k] !== undefined)
   console.log('usage at', Date.now() - t0, 'ms | sawInit', sawInit, '| plan', u.subscription_type, '| available', u.rate_limits_available,
     '| five_hour', JSON.stringify(u.rate_limits?.five_hour), '| seven_day', JSON.stringify(u.rate_limits?.seven_day),
+    '| model_scoped', JSON.stringify(u.rate_limits?.model_scoped),
+    '| non-null keys:', nonNull.length ? nonNull.join(', ') : '(none)',
     '| session cost', u.session?.total_cost_usd)
 } catch (e) { console.log('usage failed:', e.message) }
 abort.abort()

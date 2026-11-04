@@ -604,7 +604,11 @@ and the frontend-design skill is not vendored in `.claude/skills` (only `run-des
     `seven_day_opus` / `seven_day_sonnet` were null and the per-model weekly window came as
     `rate_limits.model_scoped: [{ display_name: 'Fable', utilization, resets_at }]`. A `rate_limit_event` arrives on every
     normal request (status `allowed`); its `resetsAt` is epoch **seconds** and `utilization` a 0-1 **fraction**, and it
-    carries an undocumented `unifiedWindows` map. Mapping lives in `src/main/runtime/usage.ts`.
+    carries an undocumented `unifiedWindows` map. Mapping lives in `src/main/runtime/usage.ts`. Probed again on
+    2026-11-04 (`scripts/smoke-usage-probe.mjs`, token-free, same Max login): `five_hour` was null, `seven_day` and
+    `model_scoped` (Fable) were present, new keys `seven_day_breakdown`, `weekly_scoped_shares`, `pace` (null) and
+    `spend` appeared, and there was no `limits[]` in the control reply; `mergeUsage` therefore keeps a window only an
+    event reported (e.g. five_hour from `unifiedWindows`) until its reset passes, instead of letting the next poll erase it.
   - In-process MCP tools (`createSdkMcpServer` + `tool` with zod shapes) surface as `mcp__<server>__<tool>` in
     `PreToolUse`, `canUseTool` and `tools` lists. Under `acceptEdits` they still hit `canUseTool`, so the Claude
     adapter auto-allows `mcp__orgai__*`. A handler may block indefinitely; the model receives its returned text.

@@ -45,6 +45,42 @@ const REAL_RESPONSE = {
   behaviors: null
 }
 
+/**
+ * The reply seen on 2026-11-04 (scripts/smoke-usage-probe.mjs, same SDK and Max login): five_hour is null, new keys
+ * appeared, and there is no rate_limits.limits[] array.
+ */
+const RESPONSE_2026_11_04 = {
+  subscription_type: 'max',
+  rate_limits_available: true,
+  rate_limits: {
+    five_hour: null,
+    seven_day: {
+      utilization: 18,
+      resets_at: '2026-11-10T15:00:00.211350+00:00',
+      limit_dollars: null,
+      used_dollars: null,
+      remaining_dollars: null,
+      locked_reason: null
+    },
+    seven_day_oauth_apps: null,
+    seven_day_opus: null,
+    seven_day_sonnet: null,
+    seven_day_cowork: null,
+    extra_usage: { enabled: false, limit_dollars: null, used_dollars: null },
+    spend: { current_period_usd: null, period_start: null },
+    seven_day_breakdown: {
+      as_of: '2026-11-04T12:00:00+00:00',
+      window_started_at: '2026-11-03T15:00:00+00:00',
+      rows: [{ key: 'claude_code', display_name: 'Claude Code', percent: 100 }, { key: 'other', display_name: 'Other', percent: 0 }]
+    },
+    weekly_scoped_shares: [{ limit_index: 1, used_percent_of_weekly: 10, allowance_percent_of_weekly: 50 }],
+    model_scoped: [{ display_name: 'Fable', utilization: 20, resets_at: '2026-11-10T15:00:00.211484+00:00' }],
+    pace: null,
+    some_future_key: null,
+    another_future_key: { nested: [1, 2, 3] }
+  }
+}
+
 /** The rate_limit_event seen in the same smoke run. */
 const REAL_EVENT = {
   status: 'allowed' as const,
@@ -101,6 +137,20 @@ describe('mapUsageResponse', () => {
     const bad = mapUsageResponse({ rate_limits_available: true, rate_limits: { five_hour: { utilization: 'x' as unknown as number, resets_at: 'not a date' } } }, 'unknown', NOW)
     expect(bad.windows.fiveHour).toEqual({ utilization: null, resetsAt: null })
   })
+
+  it('maps the 2026-11-04 shape: five_hour null, seven_day and Fable only, unknown keys ignored', () => {
+    let u: UsageStatus | undefined
+    expect(() => { u = mapUsageResponse(RESPONSE_2026_11_04 as unknown as UsageResponseLike, 'unknown', NOW) }).not.toThrow()
+    expect(u).toEqual({
+      authMode: 'subscription',
+      subscriptionType: 'max',
+      available: true,
+      windows: { sevenDay: { utilization: 18, resetsAt: Date.parse('2026-11-10T15:00:00.211Z') } },
+      modelWindows: [{ model: 'Fable', utilization: 20, resetsAt: Date.parse('2026-11-10T15:00:00.211Z') }],
+      updatedAt: NOW
+    })
+    expect(Object.keys(u!.windows)).toEqual(['sevenDay'])
+  })
 })
 
 describe('mapRateLimitEvent', () => {
@@ -149,6 +199,66 @@ describe('mergeUsage', () => {
     const merged = mergeUsage(prev, { authMode: 'subscription', subscriptionType: null, available: false, windows: {}, updatedAt: NOW })
     expect(merged.available).toBe(true)
     expect(merged.windows.fiveHour?.utilization).toBe(40)
+  })
+
+  describe('windows the report leaves out', () => {
+    const sevenDayOnly = (updatedAt: number): UsageStatus =>
+      status({ windows: { sevenDay: { utilization: 18, resetsAt: updatedAt + 6 * 86_400_000 } }, updatedAt })
+
+    it('keeps an event-reported five-hour window whose reset is still ahead', () => {
+      const fromEvent = mapRateLimitEvent(REAL_EVENT, null, NOW - 60_000)
+      expect(fromEvent.windows.fiveHour).toEqual({ utilization: 22, resetsAt: 1793305200_000 })
+      const report = sevenDayOnly(NOW) // NOW is 2026-10-29T19:21:17Z, before the 20:20 reset
+      const merged = mergeUsage(fromEvent, report)
+      expect(merged.windows).toEqual({ fiveHour: { utilization: 22, resetsAt: 1793305200_000 }, sevenDay: report.windows.sevenDay })
+      expect(merged.available).toBe(true)
+      // Pure: neither input was touched.
+      expect(fromEvent.windows.sevenDay).toEqual({ utilization: 6, resetsAt: 1793718000_000 })
+      expect(report.windows.fiveHour).toBeUndefined()
+    })
+
+    it('drops a kept window once its reset time has passed', () => {
+      const prev = status({ windows: { fiveHour: { utilization: 22, resetsAt: 1793305200_000 }, sevenDay: { utilization: 6, resetsAt: 1793718000_000 } } })
+      const merged = mergeUsage(prev, sevenDayOnly(1793305200_000 + 1))
+      expect(merged.windows.fiveHour).toBeUndefined()
+      expect(merged.windows.sevenDay?.utilization).toBe(18)
+      // Exactly at the reset moment it is already gone (resetsAt must be later than the report).
+      expect(mergeUsage(prev, sevenDayOnly(1793305200_000)).windows.fiveHour).toBeUndefined()
+    })
+
+    it('keeps a window with no known reset time', () => {
+      const prev = status({ windows: { fiveHour: { utilization: 40, resetsAt: null } } })
+      const merged = mergeUsage(prev, sevenDayOnly(NOW + 365 * 86_400_000))
+      expect(merged.windows.fiveHour).toEqual({ utilization: 40, resetsAt: null })
+    })
+
+    it('takes the report value for every window the report names', () => {
+      const prev = status({
+        windows: {
+          fiveHour: { utilization: 22, resetsAt: NOW + 3_600_000 },
+          sevenDay: { utilization: 99, resetsAt: NOW + 3_600_000 },
+          sevenDayOpus: { utilization: 50, resetsAt: NOW + 3_600_000 }
+        }
+      })
+      const report = status({
+        windows: { sevenDay: { utilization: 18, resetsAt: NOW + 7 * 86_400_000 }, sevenDayOpus: { utilization: 51, resetsAt: null } },
+        updatedAt: NOW + 60_000
+      })
+      const merged = mergeUsage(prev, report)
+      expect(merged.windows.sevenDay).toEqual({ utilization: 18, resetsAt: NOW + 7 * 86_400_000 })
+      expect(merged.windows.sevenDayOpus).toEqual({ utilization: 51, resetsAt: null })
+      expect(merged.windows.fiveHour).toEqual({ utilization: 22, resetsAt: NOW + 3_600_000 })
+      expect(merged.modelWindows).toBeUndefined()
+    })
+
+    it('takes the report modelWindows and leaves the unavailable-report branch as it was', () => {
+      const prev = status({ windows: { fiveHour: { utilization: 22, resetsAt: NOW + 3_600_000 } }, modelWindows: [{ model: 'Fable', utilization: 1, resetsAt: null }] })
+      const report = status({ windows: { sevenDay: { utilization: 18, resetsAt: null } }, modelWindows: [{ model: 'Fable', utilization: 20, resetsAt: null }], updatedAt: NOW + 1 })
+      expect(mergeUsage(prev, report).modelWindows).toEqual(report.modelWindows)
+      // The existing unavailable branch is unchanged: the whole previous window set stays.
+      const failed = mergeUsage(prev, status({ available: false, windows: {}, updatedAt: NOW + 1 }))
+      expect(failed.windows).toEqual(prev.windows)
+    })
   })
 })
 

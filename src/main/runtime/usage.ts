@@ -19,6 +19,18 @@ import type { ModelRateLimitWindow, RateLimitWindow, UsageStatus } from '@shared
  *     seven_day: { utilization: 0.06, resetsAt: 1793718000, status: 'allowed' } } }.
  *   Units differ from the usage response: resetsAt is epoch SECONDS and utilization a 0-1 FRACTION.
  *   unifiedWindows is not in the SDK typings.
+ *
+ * Observed again on 2026-11-04 (same SDK, same Max login, scripts/smoke-usage-probe.mjs, token-free):
+ * - rate_limits.five_hour was null. seven_day was still an object ({ utilization: 18, resets_at, limit_dollars: null, ... })
+ *   and model_scoped still [{ display_name: 'Fable', utilization: 20, resets_at }]. seven_day_oauth_apps, seven_day_opus,
+ *   seven_day_sonnet and pace were null. New non-null keys: extra_usage, spend, seven_day_breakdown ({ as_of,
+ *   window_started_at, rows: [{ key: 'claude_code', display_name: 'Claude Code', percent: 100 }, ...] }) and
+ *   weekly_scoped_shares ([{ limit_index: 1, used_percent_of_weekly: 10, allowance_percent_of_weekly: 50 }]), plus many
+ *   null placeholder keys. There was NO rate_limits.limits[] array in this control reply (the typings describe one on a
+ *   message's usage_report, kinds 'session' | 'weekly_all' | 'weekly_scoped'; the control reply does not carry it).
+ *   So the server stopped reporting the five-hour window here; a live run's rate_limit_event is the only other source,
+ *   and whether those events still carry five_hour is unverified. mergeUsage therefore keeps event-only windows until
+ *   they reset instead of letting the next poll erase them.
  */
 
 export type AuthMode = UsageStatus['authMode']
@@ -168,7 +180,14 @@ export function mapRateLimitEvent(info: RateLimitInfoLike, prev: UsageStatus | n
   return next
 }
 
-/** Fold a fresh usage report into the previous status, keeping the live request status from events. */
+/**
+ * Fold a fresh usage report into the previous status, keeping the live request status from events.
+ *
+ * Windows the report names take the report's value. A window the previous status knew but the report leaves out is
+ * kept until its reset time has passed (resetsAt null or later than the report): since 2026-11-04 the usage reply
+ * omits five_hour on at least one Max account while a run's rate_limit_event still may report it, and without this
+ * the next poll (a minute later) erased what the event had just told us. A window whose reset has passed is dropped.
+ */
 export function mergeUsage(prev: UsageStatus | null, report: UsageStatus): UsageStatus {
   if (!prev) return report
   const merged: UsageStatus = { ...report }
@@ -177,6 +196,13 @@ export function mergeUsage(prev: UsageStatus | null, report: UsageStatus): Usage
     merged.available = true
     merged.windows = prev.windows
     if (prev.modelWindows) merged.modelWindows = prev.modelWindows
+  } else if (report.available) {
+    const windows: UsageStatus['windows'] = { ...report.windows }
+    for (const [k, w] of Object.entries(prev.windows) as [WindowKey, RateLimitWindow | undefined][]) {
+      if (!w || windows[k]) continue
+      if (w.resetsAt === null || w.resetsAt > report.updatedAt) windows[k] = w
+    }
+    merged.windows = windows
   }
   if (prev.status) merged.status = prev.status
   if (prev.limitedWindow) merged.limitedWindow = prev.limitedWindow
