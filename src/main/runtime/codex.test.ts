@@ -9,11 +9,20 @@ import type { CodexAppServerOptions } from './codexAppServer'
 import { fakeCtx, project, role, runSummary } from './testHelpers'
 import type { RuntimeContext, RuntimeSession } from './types'
 import { buildRolePrompt } from './prompts'
+import { harnessToolsFor } from './harnessTools'
+import { z } from 'zod'
 
 // buildRolePrompt is the real one, wrapped so tests can read the flags an adapter passes.
 vi.mock('./prompts', async (importOriginal) => {
   const orig = await importOriginal<typeof import('./prompts')>()
   return { ...orig, buildRolePrompt: vi.fn(orig.buildRolePrompt) }
+})
+// harnessToolsFor is the real one, wrapped so a test can add a fake tool.
+const harnessToolsActual = vi.hoisted(() => ({ harnessToolsFor: undefined as unknown as typeof import('./harnessTools').harnessToolsFor }))
+vi.mock('./harnessTools', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('./harnessTools')>()
+  harnessToolsActual.harnessToolsFor = orig.harnessToolsFor
+  return { ...orig, harnessToolsFor: vi.fn(orig.harnessToolsFor) }
 })
 
 /** A scripted app-server: records requests, answers them, and lets the test push notifications and server requests. */
@@ -302,6 +311,55 @@ describe('CodexAdapter session', () => {
     doc = undefined
     await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c2', namespace: null, tool: 'spawn_agent', arguments: { role: 'reviewer', brief: 'y' } })
     expect('engagementDocument' in vi.mocked(buildRolePrompt).mock.calls.at(-1)![3]!).toBe(false)
+  })
+
+  it('a single-agent run (team single) passes the team flag and gives the root no spawn or messaging tools', async () => {
+    const roles = [role({ id: 'r-a', slug: 'assistant', name: 'Assistant', tools: ['Read', 'Edit', 'Bash'] })]
+    const { adapter, servers } = setup()
+    const ctx = ctxFor({ run: runSummary({ team: 'single' }), project: project({ path: dir, isolateWriters: false, roles }), roles, autoContinue: false })
+    vi.mocked(buildRolePrompt).mockClear()
+    session = await adapter.start(ctx)
+    const s = servers[0]!
+    await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+    expect(vi.mocked(buildRolePrompt).mock.calls.at(-1)![3]).toMatchObject({ team: 'single' })
+    const names = (s.of('thread/start')[0].params.dynamicTools as { name: string }[]).map((t) => t.name)
+    expect(names).not.toContain('spawn_agent')
+    expect(names).not.toContain('send_message')
+    expect(names).not.toContain('list_agents')
+    // A spawn attempt is refused as an unknown tool.
+    const out = await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c1', namespace: null, tool: 'spawn_agent', arguments: { role: 'assistant', brief: 'x' } })
+    expect(out.success).toBe(false)
+    expect(s.of('thread/start')).toHaveLength(1)
+  })
+
+  it('a team run passes no team flag', async () => {
+    const { adapter, servers } = setup()
+    const ctx = ctxFor()
+    vi.mocked(buildRolePrompt).mockClear()
+    session = await adapter.start(ctx)
+    await vi.waitFor(() => expect(servers[0]!.turnStarts('th-1')).toHaveLength(1))
+    expect('team' in vi.mocked(buildRolePrompt).mock.calls.at(-1)![3]!).toBe(false)
+  })
+
+  it("exposes an 'all'-audience harness tool (engagement_context) on a report thread and answers its call", async () => {
+    const call = vi.fn(async () => 'Engagement context: notes')
+    vi.mocked(harnessToolsFor).mockImplementationOnce((c, h) => [
+      ...harnessToolsActual.harnessToolsFor(c, h),
+      { name: 'engagement_context', description: 'Engagement context', audience: 'all', inputSchema: z.object({}), call }
+    ])
+    const { adapter, servers } = setup()
+    const ctx = ctxFor()
+    session = await adapter.start(ctx)
+    const s = servers[0]!
+    await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+    await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c-spawn', namespace: null, tool: 'spawn_agent', arguments: { role: 'reviewer', brief: 'Look' } })
+    const child = s.of('thread/start')[1].params
+    expect((child.dynamicTools as { name: string }[]).map((t) => t.name)).toContain('engagement_context')
+    expect((child.dynamicTools as { name: string }[]).map((t) => t.name)).not.toContain('set_plan')
+    const out = await s.ask('item/tool/call', { threadId: 'th-2', turnId: 'tu-2', callId: 'c-ctx', namespace: null, tool: 'engagement_context', arguments: {} })
+    expect(out.success).toBe(true)
+    expect(out.contentItems[0].text).toContain('Engagement context: notes')
+    expect(call).toHaveBeenCalledTimes(1)
   })
 
   it('steers the running turn when a message arrives mid-turn, and falls back to a new turn', async () => {

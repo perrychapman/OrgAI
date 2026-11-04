@@ -12,6 +12,17 @@ import { fakeCtx, project, runSummary } from './testHelpers'
 import { addRules } from './permissionRules'
 import { defaultRoles } from '@shared/defaults'
 import type { AgentInstance } from '@shared/types'
+import type { MockStep } from './mock'
+import { harnessToolsFor } from './harnessTools'
+import { z } from 'zod'
+
+// harnessToolsFor is the real one, wrapped so a test can add a fake tool.
+const harnessToolsActual = vi.hoisted(() => ({ harnessToolsFor: undefined as unknown as typeof import('./harnessTools').harnessToolsFor }))
+vi.mock('./harnessTools', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('./harnessTools')>()
+  harnessToolsActual.harnessToolsFor = orig.harnessToolsFor
+  return { ...orig, harnessToolsFor: vi.fn(orig.harnessToolsFor) }
+})
 
 describe('mock listModels', () => {
   it('lists the builtin aliases plus an unknown family', async () => {
@@ -518,6 +529,44 @@ describe('mock adapter assistants scripts', () => {
     expect(toolNames(ctx)).toEqual(['list_projects'])
     expect(texts(ctx)).toEqual(['I can see 2 OrgAI projects. Tell me what you would like to do.', 'Mock reply to: thanks'])
     await stopAll(session)
+  })
+
+  it('single-agent work run (team single): replies to the prompt and to follow-ups, no spawn, no plan, then idle', async () => {
+    const roles = [defaultRoles()[0]!].map((r) => ({ ...r, reportsTo: null, canSpawn: false, spawnable: [] }))
+    const ctx = fakeCtx({ run: runSummary({ team: 'single' }), prompt: 'Summarise the brief', project: project({ roles }), roles, autoContinue: false })
+    const session = await runToIdle(ctx, 'and the risks?')
+    expect(texts(ctx)).toEqual(['Mock reply to: Summarise the brief', 'Mock reply to: and the risks?'])
+    expect(toolNames(ctx)).toEqual([])
+    expect(ctx.events.filter((e) => e.type === 'agent.upsert' && e.agent.id !== ROOT_AGENT_ID)).toEqual([])
+    expect(ctx.updatePlan).not.toHaveBeenCalled()
+    await stopAll(session)
+  })
+
+  it("lets a report call an 'all'-audience harness tool (engagement_context) through the grant gate", async () => {
+    vi.mocked(harnessToolsFor).mockImplementation((c, h) => [
+      ...harnessToolsActual.harnessToolsFor(c, h),
+      { name: 'engagement_context', description: 'Engagement context', audience: 'all', inputSchema: z.object({}), call: async () => 'notes' }
+    ])
+    try {
+      const ctx = fakeCtx({ autoContinue: false })
+      const work: MockStep[] = [
+        { type: 'spawn', id: 'rev', role: 'reviewer', description: 'Look' },
+        { type: 'tool', agent: 'rev', name: 'mcp__orgai__engagement_context', input: {}, result: 'notes' },
+        { type: 'tool', agent: 'rev', name: 'mcp__orgai__set_plan', input: {} },
+        { type: 'finish', id: 'rev', result: 'done' },
+        { type: 'text', text: 'All done.' }
+      ]
+      const session = (await new MockAdapter({ script: { delayMs: 0, work } }).start(ctx)) as MockSession
+      await vi.waitFor(() => expect(texts(ctx)).toContain('All done.'))
+      const results = ctx.events.flatMap((e) => (e.type === 'transcript' && e.entry.block.kind === 'tool_result' && e.entry.agentId === 'rev' ? [e.entry.block] : []))
+      expect(results[0]).toMatchObject({ content: 'notes' })
+      expect(results[0]!.isError).toBeFalsy()
+      expect(results[1]).toMatchObject({ isError: true })
+      expect(results[1]!.content).toContain('not available')
+      await stopAll(session)
+    } finally {
+      vi.mocked(harnessToolsFor).mockImplementation(harnessToolsActual.harnessToolsFor)
+    }
   })
 
   it('quick run: singular wording for one project', async () => {
