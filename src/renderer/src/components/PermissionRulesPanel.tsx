@@ -47,11 +47,18 @@ export default function PermissionRulesPanel({ project, onRulesChange }: { proje
     else document.getElementById(inputId)?.focus()
   }, [busy, rules, inputId])
 
+  /** Latest request wins: refresh, add and remove each take a number, and a response with an older one is dropped. */
+  const seq = useRef(0)
+
   const refresh = useCallback(async () => {
+    const mine = ++seq.current
     try {
-      setRules(await window.orgai.permissions.list(project.id))
+      const list = await window.orgai.permissions.list(project.id)
+      if (mine !== seq.current) return
+      setRules(list)
       setListError(null)
     } catch (e) {
+      if (mine !== seq.current) return
       setListError(cleanError(e))
       setRules([])
     }
@@ -59,16 +66,21 @@ export default function PermissionRulesPanel({ project, onRulesChange }: { proje
 
   useEffect(() => {
     void refresh()
+    // A project switch (or unmount) invalidates every response still in flight.
+    return () => {
+      seq.current++
+    }
   }, [refresh])
 
-  // Rules granted or saved from a run: refresh when the store's counter moves after mount (never a second fetch on mount).
+  // Rules granted or saved from a run: refresh when the store's counter moves after mount (never a second fetch on mount or on a project switch).
   const changeCount = useAppStore((s) => s.rulesChangedByProject[project.id] ?? 0)
-  const seenCount = useRef(changeCount)
+  const seenCount = useRef({ projectId: project.id, count: changeCount })
   useEffect(() => {
-    if (seenCount.current === changeCount) return
-    seenCount.current = changeCount
+    const prev = seenCount.current
+    seenCount.current = { projectId: project.id, count: changeCount }
+    if (prev.projectId !== project.id || prev.count === changeCount) return
     void refresh()
-  }, [changeCount, refresh])
+  }, [changeCount, project.id, refresh])
 
   const notify = useRef(onRulesChange)
   notify.current = onRulesChange
@@ -87,11 +99,13 @@ export default function PermissionRulesPanel({ project, onRulesChange }: { proje
     const rule = checked.rule
     setBusy(rule)
     setError(null)
+    const mine = ++seq.current
     try {
-      setRules(await window.orgai.permissions.add({ projectId: project.id, rule }))
+      const list = await window.orgai.permissions.add({ projectId: project.id, rule })
+      if (mine === seq.current) setRules(list)
       setDraft('')
     } catch (e) {
-      setError(cleanError(e))
+      if (mine === seq.current) setError(cleanError(e))
     } finally {
       setBusy(null)
       // The Add button was disabled while saving; keep the keyboard in the rule input.
@@ -102,12 +116,14 @@ export default function PermissionRulesPanel({ project, onRulesChange }: { proje
   const remove = async (rule: string, index: number): Promise<void> => {
     setBusy(rule)
     setListError(null)
+    const mine = ++seq.current
     try {
-      setRules(await window.orgai.permissions.remove({ projectId: project.id, rule }))
+      const list = await window.orgai.permissions.remove({ projectId: project.id, rule })
+      if (mine === seq.current) setRules(list)
       // The row is gone: the next row's Remove (the previous one for the last row), else the rule input.
       focusAfter(index)
     } catch (e) {
-      setListError(cleanError(e))
+      if (mine === seq.current) setListError(cleanError(e))
       // The row is still there: back to its own Remove button.
       focusAfter(index)
     } finally {
