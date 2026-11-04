@@ -1,11 +1,12 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { engagementDocumentFile, projectRulesFile } from '../store/projectData'
 import type { ArchitectureSpec, McpLibraryEntry, McpServerSpec, McpServersProposalPayload, Project, ProjectKind, Proposal, ProjectSetup, RunRecord, SkillsProposalPayload } from '@shared/types'
 import { describeServer, promptDatum } from '../mcp/assist'
 import { validateSpec } from '../mcp/validate'
 import { setupKindLabel } from '@shared/setup'
-import { isPermissionMode } from '@shared/types'
-import { effectiveSubagentLimits, projectDocumentPath, projectKindOf, MAX_AUTO_CONTINUES_LIMIT, MAX_CONCURRENT_SUBAGENTS_LIMIT, MAX_SUBAGENT_DEPTH_LIMIT } from '@shared/defaults'
+import { isPermissionMode, PROJECT_CLIENT_MAX_CHARS } from '@shared/types'
+import { effectiveSubagentLimits, projectDocumentPath, projectKindOf, projectRulesLocation, MAX_AUTO_CONTINUES_LIMIT, MAX_CONCURRENT_SUBAGENTS_LIMIT, MAX_SUBAGENT_DEPTH_LIMIT } from '@shared/defaults'
 import { addRules, allowRuleRefusal } from '../runtime/permissionRules'
 import { hiddenCharIn } from '../capabilities/sanitize'
 import type { ProjectStore } from '../store/projects'
@@ -65,6 +66,8 @@ export class SetupService {
     private projects: ProjectStore,
     /** Optional hooks into other services; the constructor stays backward compatible. */
     private hooks: {
+      /** OrgAI's data folder. Engagements keep their document and saved rules there (nothing goes into their folder). */
+      dataDir?: string
       /** An approved MCP proposal removed a server: forget its stored secrets. */
       removeMcpSecrets?(projectId: string, serverId: string): void
       /**
@@ -86,6 +89,11 @@ export class SetupService {
       }
     } = {}
   ) {}
+
+  private requireDataDir(): string {
+    if (!this.hooks.dataDir) throw new Error('OrgAI cannot save this project\'s files: its data folder is not available.')
+    return this.hooks.dataDir
+  }
 
   /** Apply an approved library-scope skills proposal (SKILLS_PROJECT_ID: nothing project-shaped is saved). */
   applySkillsLibraryProposal(proposal: Proposal | SkillsProposalPayload): void {
@@ -171,7 +179,7 @@ export class SetupService {
       `Project name: ${promptDatum(project.name, 200)}`,
       `Working directory: ${promptDatum(project.path, 400)}`,
       ...(projectKindOf(project) === 'engagement'
-        ? ['Project kind: engagement (client work; the working directory holds the deliverables, reference folders are read-only; the charter goes to .orgai/ENGAGEMENT.md)']
+        ? ['Project kind: engagement (client work; the working directory holds the deliverables, reference folders are read-only; the engagement document is kept in OrgAI and nothing is written to the working folder)']
         : []),
       `Setup kind: ${setupKindLabel(kind)}`,
       `Project brief or idea from the user: ${promptDatum(project.brief, 8000, true) || '(none)'}`
@@ -204,7 +212,14 @@ export class SetupService {
     const setup: ProjectSetup = project.setup ?? { kind: 'existing', state: 'in_progress' }
     switch (proposal.kind) {
       case 'architecture': {
-        const written = writeArchitecture(project.path, project.name, proposal.payload, projectKindOf(project))
+        if (projectKindOf(project) === 'engagement') {
+          // Nothing goes into the working folder: the document lives in OrgAI's data folder and architecturePath stays unset.
+          writeEngagementDocument(this.requireDataDir(), project, renderEngagement(project.name, proposal.payload))
+          const { architecturePath: _gone, ...rest } = setup
+          void _gone
+          return this.projects.save({ ...project, setup: { ...rest, architecture: proposal.payload } })
+        }
+        const written = writeArchitecture(project.path, project.name, proposal.payload, 'code')
         return this.projects.save({ ...project, setup: { ...setup, architecture: proposal.payload, architecturePath: written } })
       }
       case 'orgChart': {
@@ -231,15 +246,24 @@ export class SetupService {
           if (v !== auto.concurrency) next.maxConcurrentSubagents = v
           else delete next.maxConcurrentSubagents
         }
-        if (typeof p.isolateWriters === 'boolean') next.isolateWriters = p.isolateWriters
+        // Engagements: the Architect never proposes isolateWriters; the user opts in in Settings.
+        if (typeof p.isolateWriters === 'boolean' && projectKindOf(project) !== 'engagement') next.isolateWriters = p.isolateWriters
+        if (typeof p.client === 'string' && projectKindOf(project) === 'engagement') {
+          const client = p.client.trim()
+          if (client.length > PROJECT_CLIENT_MAX_CHARS) throw new Error(`The client name is longer than ${PROJECT_CLIENT_MAX_CHARS} characters.`)
+          if (hiddenCharIn(client)) throw new Error('The client name holds a control or invisible character.')
+          if (client) next.client = client
+          else delete next.client
+        }
         if (typeof p.reviewMerges === 'boolean') next.reviewMerges = p.reviewMerges
         if (typeof p.autoContinue === 'boolean') next.autoContinue = p.autoContinue
         if (typeof p.maxAutoContinues === 'number' && Number.isFinite(p.maxAutoContinues)) {
           next.maxAutoContinues = clamp(Math.floor(p.maxAutoContinues), 0, MAX_AUTO_CONTINUES_LIMIT)
         }
-        // The safe-command allowlist lives with the other saved rules in .claude/settings.local.json.
+        // The safe-command allowlist lives with the other saved rules: .claude/settings.local.json for code projects,
+        // OrgAI's data folder for engagements.
         const rules = cleanAllowRules(p.allowRules)
-        if (rules.length) addRules(project.path, rules)
+        if (rules.length) addRules(projectRulesLocation(project) === 'app' ? { file: projectRulesFile(project, this.requireDataDir()) } : project.path, rules)
         return this.projects.save(next)
       }
       case 'mcpServers':
@@ -340,6 +364,15 @@ export function cleanAllowRules(rules: unknown): string[] {
 
 function clamp(n: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, Math.round(n)))
+}
+
+/** Write an engagement document into OrgAI's data folder (temp file + rename). Never touches the working folder. */
+function writeEngagementDocument(dataDir: string, project: Project, text: string): void {
+  const file = engagementDocumentFile(dataDir, project.id)
+  mkdirSync(dirname(file), { recursive: true })
+  const tmp = `${file}.${process.pid}.tmp`
+  writeFileSync(tmp, text, 'utf8')
+  renameSync(tmp, file)
 }
 
 /** Write the architecture document into the repo and make sure CLAUDE.md points at it. Returns the repo-relative path. */

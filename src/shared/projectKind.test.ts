@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { engagementRoles, modelForTier, newProject, projectDocumentName, projectDocumentPath, projectKindLabel, projectKindOf, runMessagingOn, type TierContext } from './defaults'
+import { engagementRoles, isolateWritersOn, modelForTier, newProject, projectDocumentName, projectDocumentPath, projectKindLabel, projectKindOf, projectRulesLocation, runMessagingOn, writesToProjectFolder, type TierContext } from './defaults'
 import { architectPrompt, architectRole } from './setup'
 import { isProjectKind } from './types'
 
@@ -20,9 +20,31 @@ describe('project kind helpers', () => {
     expect(projectKindLabel('code')).toBe('Project')
     expect(projectKindLabel('engagement')).toBe('Engagement')
     expect(projectDocumentPath('code')).toBe('.orgai/ARCHITECTURE.md')
-    expect(projectDocumentPath('engagement')).toBe('.orgai/ENGAGEMENT.md')
+    expect(projectDocumentPath('engagement')).toBe('ENGAGEMENT.md')
     expect(projectDocumentName('engagement')).toBe('the engagement document')
     expect(projectDocumentName('code')).toBe('the architecture document')
+  })
+
+  it('engagements write nothing to the folder; isolation is opt-in for them only', () => {
+    expect(writesToProjectFolder({ kind: 'engagement' })).toBe(false)
+    expect(writesToProjectFolder({ kind: 'code' })).toBe(true)
+    expect(writesToProjectFolder({})).toBe(true)
+    expect(projectRulesLocation({ kind: 'engagement' })).toBe('app')
+    expect(projectRulesLocation({})).toBe('folder')
+    expect(isolateWritersOn({ kind: 'engagement' })).toBe(false)
+    expect(isolateWritersOn({ kind: 'engagement', isolateWriters: false })).toBe(false)
+    expect(isolateWritersOn({ kind: 'engagement', isolateWriters: true })).toBe(true)
+    expect(isolateWritersOn({})).toBe(true)
+    expect(isolateWritersOn({ kind: 'code', isolateWriters: false })).toBe(false)
+  })
+
+  it('the engagement Architect prompt keeps files out of the folder, asks for the client and never proposes isolateWriters', () => {
+    const text = architectPrompt('engagement')
+    expect(text).toContain('never in the working folder')
+    expect(text).toContain("client = the client's name")
+    expect(text).toContain('Never propose isolateWriters for an engagement')
+    expect(text).not.toContain('.orgai/ENGAGEMENT.md')
+    expect(architectPrompt('code')).toContain('writes the approved architecture to .orgai/ARCHITECTURE.md')
   })
 
   it('run messaging defaults off for engagements, on for code; an explicit value wins', () => {
@@ -133,16 +155,15 @@ describe('architectPrompt', () => {
     expect(architectRole(undefined, { kind: 'code' }).prompt).toBe(code)
   })
 
-  it('the engagement prompt writes ENGAGEMENT.md and asks at most five questions in one batch', () => {
+  it('the engagement prompt keeps the document in OrgAI and asks at most five questions in one batch', () => {
     const p = architectPrompt('engagement')
-    expect(p).toContain('.orgai/ENGAGEMENT.md')
+    expect(p).not.toContain('.orgai/ENGAGEMENT.md')
     expect(p).not.toContain('.orgai/ARCHITECTURE.md')
     expect(p).toMatch(/ONE message of at most five questions/)
     const interview = p.split('\n').find((l) => l.startsWith('1. Interview first'))!
     for (const topic of ['client', 'field of work', 'platforms or systems', 'phase', 'deliverables', 'coding']) expect(interview).toContain(topic)
     expect(p).toMatch(/never edit them/)
     expect(p).toMatch(/only when coding is in scope/)
-    expect(p).toMatch(/only when the working folder is a git repository/)
     expect(architectRole(undefined, { kind: 'engagement' }).prompt).toBe(p)
     expect(p).not.toBe(architectPrompt('code'))
   })

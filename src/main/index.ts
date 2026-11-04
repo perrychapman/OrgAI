@@ -304,6 +304,7 @@ app.whenReady().then(() => {
     onProjectChanged: (project) => broadcast({ type: 'project.updated', runId: '', project })
   })
   const setup = new SetupService(projects, {
+    dataDir,
     removeMcpSecrets: (projectId, serverId) => mcp.removeServerSecrets(projectId, serverId),
     mcp: {
       libraryEntries: () => mcp.libraryEntries(),

@@ -2,7 +2,7 @@ import { z } from 'zod'
 import { constants as fsConstants, promises as fsp } from 'node:fs'
 import path from 'node:path'
 import type { McpInstallDecision, McpLibraryEntry, McpProposalServer, McpRegistryEntry, McpServerSource, McpServerSpec, PlanStep, ProjectKind, Proposal, ProposalOutcome, QuestionAnswer, Role, RunPlan, SkillProposalItem } from '@shared/types'
-import { CHAT_HARNESS_TOOLS, HARNESS_PROJECT_ID, MCP_HARNESS_TOOLS, PERMISSION_MODES, PROJECT_PEEK_BRIEF_CHARS, RUN_HARNESS_TOOLS, SKILLS_PROJECT_ID, SKILL_ASSIST_HARNESS_TOOLS, SKILL_CONFIG_ACTIONS, SKILL_HARNESS_TOOLS, SKILL_PROPOSAL_MAX_ITEMS, TOOL_CATALOG } from '@shared/types'
+import { CHAT_HARNESS_TOOLS, HARNESS_PROJECT_ID, MCP_HARNESS_TOOLS, PERMISSION_MODES, PROJECT_CLIENT_MAX_CHARS, PROJECT_PEEK_BRIEF_CHARS, RUN_HARNESS_TOOLS, SKILLS_PROJECT_ID, SKILL_ASSIST_HARNESS_TOOLS, SKILL_CONFIG_ACTIONS, SKILL_HARNESS_TOOLS, SKILL_PROPOSAL_MAX_ITEMS, TOOL_CATALOG } from '@shared/types'
 import { skillProposalProblem } from '../skills/assist'
 import { MAX_AUTO_CONTINUES_LIMIT, MAX_CONCURRENT_SUBAGENTS_LIMIT, MAX_SUBAGENT_DEPTH_LIMIT, libraryEntryFromSpec, linkedSpec, mcpSecretNames, newId, projectDocumentPath, projectKindOf } from '@shared/defaults'
 import { PROPOSAL_TOOLS } from '@shared/setup'
@@ -327,7 +327,12 @@ export const proposeArchitecture = defineTool({
     const d = await askProposal(ctx, { kind: 'architecture', agentId: ROOT_AGENT_ID, title, payload })
     hooks.onDecided?.()
     const engagement = projectKindOf(ctx.project) === 'engagement'
-    return decisionText(d, `The ${engagement ? 'engagement charter' : 'architecture'} was saved and written to ${projectDocumentPath(projectKindOf(ctx.project))}. Continue with the org chart.`)
+    return decisionText(
+      d,
+      engagement
+        ? 'The engagement document was saved in OrgAI (nothing is written to the working folder). Continue with the org chart.'
+        : `The architecture was saved and written to ${projectDocumentPath('code')}. Continue with the org chart.`
+    )
   }
 })
 
@@ -372,6 +377,11 @@ export const proposeSettings = defineTool({
       .boolean()
       .optional()
       .describe('Run writing reports in their own git worktrees and merge them back; true for git repositories with more than one writing role'),
+    client: z
+      .string()
+      .max(PROJECT_CLIENT_MAX_CHARS)
+      .optional()
+      .describe("Engagements: the client's name in the user's own words (at most 120 characters); an empty string clears it. Leave out for code projects"),
     reviewMerges: z
       .boolean()
       .optional()
@@ -391,6 +401,13 @@ export const proposeSettings = defineTool({
   async handler(ctx, { title, ...payload }, hooks) {
     const hidden = (payload.allowRules ?? []).map((r, i) => hiddenCharProblem(`allowRules item ${i + 1}`, r)).find((p) => p !== null)
     if (hidden) return `REVISE. The settings were not shown to the user: ${hidden}`
+    if (typeof payload.client === 'string') {
+      const clientHidden = hiddenCharProblem('client', payload.client)
+      if (clientHidden) return `REVISE. The settings were not shown to the user: ${clientHidden}`
+      payload.client = payload.client.trim()
+    }
+    // Engagements: isolation is the user's opt-in in Settings, never an Architect proposal.
+    if (projectKindOf(ctx.project) === 'engagement') delete payload.isolateWriters
     const d = await askProposal(ctx, { kind: 'settings', agentId: ROOT_AGENT_ID, title, payload })
     hooks.onDecided?.()
     return decisionText(d, 'The settings were applied. If everything is approved, call complete_setup.')
