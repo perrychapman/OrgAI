@@ -25,6 +25,31 @@
   background: var(--danger);
 }
 
+/*
+ * The account row shows one spend figure beside the 4 px budget bar. The bar yields first (its basis is its minimum,
+ * so the label shrinks only once the bar is at 24 px), and under a narrow footer the "LiteLLM · " name goes
+ * screen-reader-only so the figure and "today" stay visible: measured at the default 232 px sidebar the label has
+ * 114 px, which fits "$142.10 today" (about 75 px) but not "LiteLLM · $42.10 today" (about 119 px).
+ */
+.account-label + .usage-mini {
+  flex: 1 1 var(--space-6);
+}
+.sidebar-footer {
+  container-type: inline-size;
+}
+@container (max-width: 228px) {
+  .account-name {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}
+
 .usage-meter {
   display: flex;
   flex-direction: column;

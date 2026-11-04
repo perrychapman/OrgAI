@@ -90,8 +90,13 @@ export function periodText(usd: number, period: SpendPeriodKey): string {
  * else the current budget text. Never two figures (the row clips at 200 px, ux-review-litellm-periods.md M1).
  */
 export function spendRowLabel(spend: UsageSpend): string {
-  if (spend.periods) return `LiteLLM · ${periodText(spend.periods.day.usd, 'day')}`
-  return spendLabel(spend)
+  return `LiteLLM · ${spendRowFigure(spend)}`
+}
+
+/** The row's figure without the connection name: "$3.20 today" with periods, else "$42.10 of $50.00" / "$42.10 spent". */
+export function spendRowFigure(spend: UsageSpend): string {
+  if (spend.periods) return periodText(spend.periods.day.usd, 'day')
+  return spendText(spend)
 }
 
 /** "$42.10 of $50.00 budget." or "No budget set." */

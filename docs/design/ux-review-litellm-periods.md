@@ -126,3 +126,38 @@ Not seen in the app: the mock adapter hides every LiteLLM figure, so the list, t
 the danger / no-budget orderings were checked by reading the code and by the unit test only; the lead adds the
 by-hand check with a real LiteLLM report later. Verified: `npm run typecheck`, `npx vitest run src/renderer`,
 `npm run build` and `node e2e/layout.mjs` (the account popover opens and focus returns to the row).
+
+### Account row and Dashboard (UI Lead, after the hand check)
+
+- Account row (`Sidebar.tsx` `connectionPill`): one figure from `lib/usage.ts` `spendRowLabel` (`LiteLLM · $3.20
+  today` with periods, else the budget text); `title` and the rail's accessible name (`railName`) carry
+  `spendSentence` ("LiteLLM spend: $3.20 today, $12.40 this week, $31.00 this month. $42.10 of $50.00 budget." /
+  "... No budget set."). The `SpendBar` and the dot tone stay the budget level (`spendAria`, `spendLevel`); a period
+  figure never colours them. The full-width row gets the sentence as its tooltip too (Reviewer M: the label can clip).
+- Deviation from section 1, forced by measurement: the hand check gave the label 107 px at the default 232 px
+  sidebar (the walk estimated 115), because the 4 px bar shrank in proportion with the label; with the bar yielding
+  first (`usage.css` `.account-label + .usage-mini { flex: 1 1 var(--space-6) }`) it is 114 px, which fits
+  "LiteLLM · $3.20 today" (112) but not "LiteLLM · $42.10 today" (119) or "LiteLLM · $142.10 today" (125). So the
+  row renders the name as its own `span.account-name` and `.sidebar-footer` is an inline-size container: under 228 px
+  of footer content (a sidebar narrower than about 244 px, the default included) the name goes screen-reader-only,
+  exactly as the topbar hides the folder name, and the row reads "$142.10 today" beside the dot and bar. The
+  accessible name keeps "LiteLLM · "; the popover title and the tooltip name the connection. From 244 px the full
+  label shows. Measured in the hand check: 200 px and 232 px show "$142.10 today" (75 px, nothing clipped); 260 px and
+  420 px show "LiteLLM · $142.10 today" (125 px, nothing clipped).
+- Dashboard Usage card (`FactsCards.tsx`): the LiteLLM row shows the same figure (`spendRowFigure`: "$3.20 today",
+  else `spendText`), the `SpendBar`, and `dash-usage-periods` "$12.40 this week · $31.00 this month" only with periods;
+  the `li` carries `spendSentence` as its title; empty text "No spend reported yet." (M2). Spec: `dashboard.md` 5.2.
+- Helpers (`lib/usage.ts`, unit-tested in `usage.test.ts`): `periodText`, `spendRowLabel`, `spendRowFigure`,
+  `spendSentence`, `periodsCaption`, `periodSince`, `lifetimeText`, `SPEND_PERIOD_LABEL`, `SPEND_PERIOD_ORDER`.
+
+Hand check (UI Lead, 2026-11-04, build of this change, `ORGAI_MOCK=1`, token-free): a throwaway driver on
+`e2e/lib.mjs` wrote a fake LiteLLM report into the renderer store through a temporary window hook (removed before
+hand-back; nothing of it is in the repo) and read the DOM at 1024x640 (rail) and 1600x1000 in dark and light. Seen:
+the row, tooltip and rail name above; the popover list (Today $3.20 / This week $12.40 / This month $31.00 with
+"Since Wed, Nov 4 (UTC)"-style `dt` titles), "Lifetime $142.10", the `unsupported` note without the list, the
+no-budget order (head "$42.10 spent", "No budget set on this key", then the list, no lifetime line when equal, no
+bar), the danger + stale order ("Budget used up", "$55.00 of $50.00", reset, list, lifetime, "Out of date · updated
+20m ago"); the Dashboard row "LiteLLM / $3.20 today / bar / $12.40 this week · $31.00 this month" at both sizes and
+"No spend reported yet." without a report; Enter opens the popover with focus on "App settings: Connections" and Esc
+returns it to the row. Not seen: a real proxy payload, warn-level (80 %) colouring, System theme, 320 px reflow,
+browser zoom, the accessibility tree of the `display: contents` rows.

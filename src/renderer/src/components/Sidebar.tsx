@@ -21,7 +21,7 @@ import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../lib/setting
 import { devBuildLabel, isDevBuild } from '../lib/buildChannel'
 import { useSidebarCollapsed } from '../lib/useSidebarCollapsed'
 import UsageMeter, { SpendBar, tightestWindow, UsageBar } from './UsageMeter'
-import { CONNECTION_LABEL, currentConnection, spendLevel, spendRowLabel, spendSentence } from '../lib/usage'
+import { CONNECTION_LABEL, currentConnection, spendLevel, spendRowFigure, spendRowLabel, spendSentence } from '../lib/usage'
 import { BrandLockup } from './layout/BrandLockup'
 import { ResizeHandle } from './layout/ResizeHandle'
 import { Icon } from './ui/Icon'
@@ -75,7 +75,8 @@ function claudePill(auth: AuthStatusResult | null, status: ConnectionStatus | un
   return auth.loggedIn ? { tone: 'ok', label: `Claude · ${auth.method ?? 'logged in'}`, title: auth.detail } : { tone: 'danger', label: 'Claude not logged in', title: auth.detail }
 }
 
-type Pill = { tone: string; label: string; title?: string }
+/** `figure` is the label's part after "LiteLLM · "; the row renders the name visually hidden under a narrow footer so the figure and "today" always show. */
+type Pill = { tone: string; label: string; title?: string; figure?: string }
 
 /**
  * Account row for a non-Anthropic connection: Codex follows its status, LiteLLM shows the key's spend: one figure
@@ -92,7 +93,7 @@ function connectionPill(id: 'openai' | 'litellm', status: ConnectionStatus | und
     const spend = usage?.spend
     if (!spend) return { tone: 'warn', label: 'LiteLLM · spend unavailable', title: detail }
     const level = spendLevel(spend)
-    return { tone: level === 'danger' ? 'danger' : level === 'warn' ? 'warn' : 'ok', label: spendRowLabel(spend), title: spendSentence(spend) }
+    return { tone: level === 'danger' ? 'danger' : level === 'warn' ? 'warn' : 'ok', label: spendRowLabel(spend), title: spendSentence(spend), figure: spendRowFigure(spend) }
   }
   return { tone: 'ok', label: `${name} · ${status.account ?? 'connected'}`, title: detail }
 }
@@ -475,7 +476,16 @@ export default function Sidebar({
           trigger={
             <>
               <span className={`dot ${account.tone}`} aria-hidden="true" />
-              <span className="account-label">{account.label}</span>
+              <span className="account-label">
+                {account.figure ? (
+                  <>
+                    <span className="account-name">{`${CONNECTION_LABEL.litellm} · `}</span>
+                    {account.figure}
+                  </>
+                ) : (
+                  account.label
+                )}
+              </span>
               {tight && !rail && <span className="account-pct">{Math.round(tight.pct)}%</span>}
               {!rail && !mockAdapter && (current === 'litellm' ? <SpendBar spend={currentUsage?.spend} /> : <UsageBar usage={currentUsage} />)}
             </>

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { UsageSpend } from '@shared/types'
-import { connectionOrder, connectionsInUse, currentConnection, lifetimeText, periodSince, periodText, periodsCaption, spendLabel, spendLevel, spendPct, spendRowLabel, spendSentence, spendText } from './usage'
+import { connectionOrder, connectionsInUse, currentConnection, lifetimeText, periodSince, periodText, periodsCaption, spendLabel, spendLevel, spendPct, spendRowFigure, spendRowLabel, spendSentence, spendText } from './usage'
 
 const all = (): boolean => true
 const s = (usd: number, budgetUsd: number | null): UsageSpend => ({ usd, budgetUsd, resetsAt: null, budgetDuration: null, keyAlias: null })
@@ -31,6 +31,8 @@ describe('usage', () => {
     expect(spendRowLabel(withPeriods(42.1, null))).toBe('LiteLLM · $3.20 today')
     expect(spendRowLabel(s(42.1, 50))).toBe('LiteLLM · $42.10 of $50.00')
     expect(spendRowLabel(s(42.1, null))).toBe('LiteLLM · $42.10 spent')
+    expect(spendRowFigure(withPeriods(42.1, 50))).toBe('$3.20 today')
+    expect(spendRowFigure(s(42.1, 50))).toBe('$42.10 of $50.00')
   })
   it('carries the whole sentence in the tooltip and the rail name', () => {
     expect(spendSentence(withPeriods(42.1, 50))).toBe('LiteLLM spend: $3.20 today, $12.40 this week, $31.00 this month. $42.10 of $50.00 budget.')
