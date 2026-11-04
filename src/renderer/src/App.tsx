@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { BellRing, Folder } from 'lucide-react'
 import { isVirtualProjectId } from '@shared/types'
 import { activeRun, openNewChat, selectedProject, useAppStore, useProjectSummaries, useRunIndexes } from './store/useAppStore'
-import ProjectsView from './views/ProjectsView'
+import DashboardView from './views/DashboardView'
 import SettingsView from './views/SettingsView'
 import TeamView from './views/TeamView'
 import { initTeamAssistant, seedTeamReview, useTeamReviewSummary } from './store/teamAssistant'
@@ -157,7 +157,7 @@ export default function App(): ReactElement {
           {view === 'appSettings' ? (
             <AppSettingsView />
           ) : view === 'projects' || !project ? (
-            <ProjectsView />
+            <DashboardView />
           ) : (
             <>
               <div className="topbar project-topbar">

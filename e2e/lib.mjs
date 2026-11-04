@@ -262,9 +262,13 @@ export async function screenshot(page, name) {
 }
 
 export async function gotoProjects(page) {
-  await page.locator('.sidebar .nav-item', { hasText: 'Projects' }).or(page.locator('.sidebar [aria-label="All projects"]')).first().click()
+  await page
+    .locator('.sidebar .nav-item', { hasText: /^\s*(Dashboard|Projects)\s*$/ })
+    .or(page.locator('.sidebar [aria-label="Dashboard"], .sidebar [aria-label="All projects"]'))
+    .first()
+    .click()
   // With no projects the form is open; otherwise it sits behind the topbar "New project" button.
-  await page.waitForSelector('form.card, [data-testid=new-project], .project-card', { timeout: 10_000 })
+  await page.waitForSelector('form.card, [data-testid=new-project], .project-card, [data-testid=project-tile]', { timeout: 10_000 })
 }
 
 /** Open the new-project form if it is closed. Returns the form locator. */

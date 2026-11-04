@@ -1,22 +1,18 @@
 import type { ReactElement } from 'react'
 import { useEffect, useId, useState } from 'react'
-import { FolderOpen, MessageSquare, Plus } from 'lucide-react'
+import { FolderOpen } from 'lucide-react'
 import type { ProjectPathCheck, SetupKind } from '@shared/types'
-import { setupPending } from '@shared/setup'
-import { openNewChat, useAppStore } from '../store/useAppStore'
-import { initials } from '../lib/layout'
-import { cleanIpcError } from '../lib/ipcError'
-import { examplePath } from '../lib/platform'
-import { effectiveSetupChoice, foundLine, importChoiceLabel, setupSubmitLabel, totalAgents, type SetupChoice } from '../lib/agentImport'
-import { effectiveName, newProjectConnectionView, pathStatus, submitBlocker } from '../lib/projectsForm'
-import { Badge } from '../components/ui/Badge'
-import { Button } from '../components/ui/Button'
-import { Checkbox } from '../components/ui/Checkbox'
-import { useConfirm } from '../components/ui/ConfirmDialog'
-import { Input } from '../components/ui/Input'
-import { SegmentedControl } from '../components/ui/SegmentedControl'
-import { Textarea } from '../components/ui/Textarea'
-import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../lib/settingsTarget'
+import { useAppStore } from '../../store/useAppStore'
+import { cleanIpcError } from '../../lib/ipcError'
+import { examplePath } from '../../lib/platform'
+import { effectiveSetupChoice, foundLine, importChoiceLabel, setupSubmitLabel, totalAgents, type SetupChoice } from '../../lib/agentImport'
+import { effectiveName, newProjectConnectionView, pathStatus, submitBlocker } from '../../lib/projectsForm'
+import { Button } from '../ui/Button'
+import { Checkbox } from '../ui/Checkbox'
+import { Input } from '../ui/Input'
+import { SegmentedControl } from '../ui/SegmentedControl'
+import { Textarea } from '../ui/Textarea'
+import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../../lib/settingsTarget'
 
 const KINDS: { value: SetupKind; label: string }[] = [
   { value: 'new', label: 'New idea' },
@@ -38,7 +34,12 @@ interface NewProjectDraft {
 }
 let parkedDraft: NewProjectDraft | null = null
 
-function NewProjectForm({ mockAvailable, onCancel }: { mockAvailable: boolean; onCancel?: () => void }): ReactElement {
+/** True when a form parked by its connection link should come back open. */
+export function hasParkedDraft(): boolean {
+  return parkedDraft !== null
+}
+
+export function NewProjectForm({ mockAvailable, onCancel }: { mockAvailable: boolean; onCancel?: () => void }): ReactElement {
   const createProject = useAppStore((s) => s.createProject)
   const connections = useAppStore((s) => s.connections)
   useEffect(() => {
@@ -321,123 +322,5 @@ function NewProjectForm({ mockAvailable, onCancel }: { mockAvailable: boolean; o
         )}
       </div>
     </form>
-  )
-}
-
-export default function ProjectsView(): ReactElement {
-  const projects = useAppStore((s) => s.projects)
-  const selectProject = useAppStore((s) => s.selectProject)
-  const setView = useAppStore((s) => s.setView)
-  const removeProject = useAppStore((s) => s.removeProject)
-  const appInfo = useAppStore((s) => s.appInfo)
-  const loadAppInfo = useAppStore((s) => s.loadAppInfo)
-  const { confirm, dialog } = useConfirm()
-  // A form parked by its connection link comes back open.
-  const [formOpen, setFormOpen] = useState(() => parkedDraft !== null)
-
-  useEffect(() => {
-    void loadAppInfo()
-  }, [loadAppInfo])
-
-  const mockAvailable = !!appInfo?.mockAdapter
-  const empty = projects.length === 0
-
-  const remove = async (id: string, name: string): Promise<void> => {
-    const ok = await confirm({
-      title: `Delete "${name}"?`,
-      body: 'This only removes the project from OrgAI. Files in its folder are untouched.',
-      confirmLabel: 'Delete project',
-      danger: true
-    })
-    if (ok) await removeProject(id)
-  }
-
-  return (
-    <>
-      <div className="topbar">
-        <h1>Projects</h1>
-        {mockAvailable && (
-          <Badge tone="warning" title="The mock adapter is available: new projects can run on scripted data">
-            Mock mode
-          </Badge>
-        )}
-        <div className="spacer" />
-        {!empty && !formOpen && (
-          <>
-            <Button variant="secondary" icon={MessageSquare} onClick={() => void openNewChat()} testId="projects-new-chat">
-              New chat
-            </Button>
-            <Button variant="primary" icon={Plus} onClick={() => setFormOpen(true)} testId="new-project">
-              New project
-            </Button>
-          </>
-        )}
-      </div>
-      <div className="projects">
-        {empty ? (
-          <div className="projects-empty">
-            <div className="projects-empty-main">
-              <div className="projects-intro">
-                <h2>Start with a project</h2>
-                <p>
-                  Describe a new idea or point at an existing repository. The Architect interviews you, reads what is there, and proposes the
-                  architecture, the org chart of agent roles, and the run settings. You approve each step before it is applied.
-                </p>
-              </div>
-              <NewProjectForm mockAvailable={mockAvailable} />
-            </div>
-            <section className="card chat-now" aria-labelledby="chat-now-title">
-              <h2 id="chat-now-title" className="form-title">
-                Chat now
-              </h2>
-              <p>Ask a question or hand over a task without making a project.</p>
-              <Button variant="primary" icon={MessageSquare} testId="empty-chat-now" onClick={() => void openNewChat()}>
-                Chat now
-              </Button>
-            </section>
-          </div>
-        ) : (
-          formOpen && <NewProjectForm mockAvailable={mockAvailable} onCancel={() => setFormOpen(false)} />
-        )}
-        {!empty && (
-          <ul className="project-list">
-            {projects.map((p) => (
-              <li key={p.id} className="card project-card">
-                <button
-                  type="button"
-                  className="project-card-main"
-                  aria-label={`Open ${p.name}, ${p.path}`}
-                  onClick={() => {
-                    selectProject(p.id)
-                    setView('run')
-                  }}
-                >
-                  <h3>{p.name}</h3>
-                  <div className="path">{p.path}</div>
-                  <div className="roles">
-                    {p.roles.slice(0, 8).map((r) => (
-                      <span key={r.id} style={{ background: r.color }} title={r.name}>
-                        {initials(r.name)}
-                      </span>
-                    ))}
-                    {p.roles.length > 8 && <span className="more">+{p.roles.length - 8}</span>}
-                  </div>
-                </button>
-                <div className="row between project-card-foot">
-                  <span className="row gap-2">
-                    <span className="chip">{p.roles.length} roles</span>
-                    {setupPending(p) && <span className="chip warn">Setup pending</span>}
-                  </span>
-                  <Button variant="ghost" size="sm" onClick={() => void remove(p.id, p.name)}>
-                    Delete
-                  </Button>
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
-      {dialog}
-    </>
   )
 }

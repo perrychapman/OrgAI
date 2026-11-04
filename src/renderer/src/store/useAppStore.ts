@@ -179,6 +179,8 @@ interface AppState {
   startLibraryAssist(instruction?: string, allowBuild?: boolean): Promise<RunSummary>
   selectedProjectId: string | null
   view: View
+  /** Bumped by openNewProject(); the Dashboard opens its New project form when it changes. */
+  newProjectRequest: number
   saveStatus: SaveStatus
   selectedRoleId: string | null
   runs: Record<string, RunState>
@@ -381,6 +383,11 @@ function debouncedSave(project: Project): void {
 /** Open the Chat assistant on its start page (a new chat), whatever it showed before. */
 export async function openNewChat(): Promise<void> {
   await useAppStore.getState().openAssistant('quick', { fresh: true })
+}
+
+/** Show the Dashboard and open its New project form. */
+export function openNewProject(): void {
+  useAppStore.setState((s) => ({ view: 'projects', newProjectRequest: s.newProjectRequest + 1 }))
 }
 
 export const selectedProject =(s: AppState): Project | undefined =>
@@ -703,6 +710,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   projectSettingsPane: {},
   selectedProjectId: null,
   view: 'projects',
+  newProjectRequest: 0,
   saveStatus: { state: 'idle' },
   selectedRoleId: null,
   runs: {},
