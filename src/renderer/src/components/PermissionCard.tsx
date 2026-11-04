@@ -8,7 +8,7 @@ import { Button } from './ui/Button'
 import { Badge } from './ui/Badge'
 import { Icon } from './ui/Icon'
 import { isHiddenCommand, permissionTitle, shellSegments } from '../lib/decisionTitle'
-import { noRuleLine, permissionLocation, ruleChip, scopeCopy } from '../lib/permissionCopy'
+import { REFERENCE_EFFECT, noRuleLine, permissionLocation, referenceLocation, ruleChip, scopeCopy } from '../lib/permissionCopy'
 import { PROJECT_SETTINGS_SECTIONS } from '../lib/settingsTarget'
 import { openProjectSettings } from '../lib/openProjectSettings'
 import { useAppStore } from '../store/useAppStore'
@@ -129,7 +129,10 @@ export default function PermissionCard({ runId, request, who, onDecide }: Props)
   const projectId = useAppStore((st) => st.runs[runId]?.summary.projectId)
   const project = useAppStore((st) => (projectId && !isVirtualProjectId(projectId) ? st.projects.find((p) => p.id === projectId) : undefined))
   const agentCwd = useAppStore((st) => st.runs[runId]?.agents[request.agentId]?.worktree?.path)
-  const canScope = (request.suggestions?.length ?? 0) > 0
+  // A command that touches a reference folder offers Allow once and Deny only; main sends no suggestions, and any that
+  // arrive anyway are ignored so the card never synthesizes an Always allow.
+  const referenceFolder = typeof request.referenceFolder === 'string' && request.referenceFolder.trim() ? request.referenceFolder : undefined
+  const canScope = !referenceFolder && (request.suggestions?.length ?? 0) > 0
   const lines = previewLines(request.toolName, request.input)
   const command = bashCommand(request.toolName, request.input)
   const hidden = isHiddenCommand(request.toolName, request.input)
@@ -139,13 +142,18 @@ export default function PermissionCard({ runId, request, who, onDecide }: Props)
   const hasHidden = command !== undefined && HIDDEN_CHARS.test(command)
   const [full, setFull] = useState(false)
   const location = useMemo(
-    () => (project ? permissionLocation(request.toolName, request.input, { projectPath: project.path, allowedDirectories: project.allowedDirectories, referenceDirectories: project.referenceDirectories, agentCwd }) : null),
-    [project, request.toolName, request.input, agentCwd]
+    () =>
+      referenceFolder
+        ? referenceLocation(referenceFolder)
+        : project
+          ? permissionLocation(request.toolName, request.input, { projectPath: project.path, allowedDirectories: project.allowedDirectories, referenceDirectories: project.referenceDirectories, agentCwd })
+          : null,
+    [project, referenceFolder, request.toolName, request.input, agentCwd]
   )
-  const copy = useMemo(() => scopeCopy(request.suggestions, project?.permissionMode), [request.suggestions, project?.permissionMode])
+  const copy = useMemo(() => scopeCopy(canScope ? request.suggestions : undefined, project?.permissionMode), [canScope, request.suggestions, project?.permissionMode])
   const chips = canScope ? [...new Set(request.ruleLabels ?? [])].map(ruleChip).filter((c) => c.text) : []
   const showEffect = canScope && !!copy.project
-  const noRule = noRuleLine(request.toolName, canScope)
+  const noRule = referenceFolder ? null : noRuleLine(request.toolName, canScope)
   return (
     <DecisionCard
       kind="permission"
@@ -170,7 +178,7 @@ export default function PermissionCard({ runId, request, who, onDecide }: Props)
             {canScope && copy.session && <li>{copy.session}</li>}
             {canScope && copy.project && <li>{copy.project}</li>}
           </ul>
-          {project && (
+          {project && !referenceFolder && (
             <button type="button" className="link-btn perm-settings-link" data-testid="perm-settings-link" onClick={() => openPermissionSettings(project.id)}>
               Fewer prompts: permission settings
             </button>
@@ -200,7 +208,7 @@ export default function PermissionCard({ runId, request, who, onDecide }: Props)
         </Button>
       }
     >
-      {(location || showEffect || noRule) && (
+      {(location || showEffect || noRule || referenceFolder) && (
       <div className="perm-glance">
         {location && (
           <p className="perm-location" data-testid="perm-location" data-kind={location.kind} data-attention={location.attention ? 'true' : undefined} title={location.full}>
@@ -232,6 +240,11 @@ export default function PermissionCard({ runId, request, who, onDecide }: Props)
               </ul>
             )}
           </div>
+        )}
+        {referenceFolder && (
+          <p className="perm-no-rule" data-testid="perm-reference-effect">
+            {REFERENCE_EFFECT}
+          </p>
         )}
         {noRule && (
           <p className="perm-no-rule" data-testid="perm-no-rule">

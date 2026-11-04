@@ -19,7 +19,7 @@ import { useAppStore } from '../../store/useAppStore'
 
 export const allowedFoldersHint = (engagement: boolean): string =>
   `Agents may read and change files here, with the same permission mode as the ${engagement ? 'working' : 'project'} folder.`
-export const REFERENCE_FOLDERS_HINT = 'Agents can read files here. They can never change, add or delete anything, in any permission mode.'
+export const REFERENCE_FOLDERS_HINT = 'Agents can read files here. OrgAI refuses their file edits here, and every command that names this folder asks you first.'
 
 interface ListCopy {
   /** data-testid prefix: `${prefix}-row`, `-input`, `-add`, ... */
@@ -125,10 +125,23 @@ export function FolderListSection({ project, kind }: { project: Project; kind: F
    * last row) or null for the folder input. Applied in an effect, so it never lands on a still-disabled control.
    */
   const pendingFocus = useRef<number | null | undefined>(undefined)
+  /** A folder just moved to the other list: focus its row there (the control that moves it back), else fall through. */
+  const movedTo = useRef<{ kind: FolderListKind; path: string } | null>(null)
   useEffect(() => {
     if (busy || pendingFocus.current === undefined) return
     const index = pendingFocus.current
     pendingFocus.current = undefined
+    const moved = movedTo.current
+    movedTo.current = null
+    if (moved) {
+      const prefix = COPY[moved.kind].prefix
+      const row = [...document.querySelectorAll<HTMLElement>(`[data-testid=${prefix}-row]`)].find((r) => r.dataset.path === moved.path)
+      const back = row?.querySelector<HTMLElement>(`[data-testid=${moved.kind === 'allowed' ? `${prefix}-make-readonly` : `${prefix}-allow-changes`}]`)
+      if (back) {
+        back.focus()
+        return
+      }
+    }
     const buttons = listRef.current?.querySelectorAll<HTMLElement>(`[data-testid=${p}-remove]`)
     const target = index === null || !buttons?.length ? null : buttons[Math.min(index, buttons.length - 1)]
     if (target) target.focus()
@@ -200,7 +213,9 @@ export function FolderListSection({ project, kind }: { project: Project; kind: F
   const move = async (dir: string, index: number): Promise<void> => {
     setAnnounce('')
     pendingFocus.current = index
-    await relocate(dir, kind)
+    const to: FolderListKind = kind === 'allowed' ? 'reference' : 'allowed'
+    movedTo.current = { kind: to, path: dir }
+    if (!(await relocate(dir, kind))) movedTo.current = null
   }
 
   const browse = async (): Promise<void> => {
@@ -218,7 +233,7 @@ export function FolderListSection({ project, kind }: { project: Project; kind: F
 
   const emptyText =
     kind === 'reference'
-      ? 'No reference folders. Add folders agents may read but never change.'
+      ? 'No reference folders. Add folders agents may read but not edit.'
       : engagement
         ? 'No extra folders. Agents work in the working folder.'
         : 'No extra folders. Agents work in the project folder and its worktrees.'

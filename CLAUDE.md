@@ -461,7 +461,7 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
 
 - Permissions UI (#14; `docs/design/permissions.md`, walk `docs/design/ux-review-permissions.md`): PermissionCard
   glance block `perm-location[data-kind]` (fails closed to "Working folder unclear"), effect sentence, rule chips with
-  `data-broad`, a no-rule line, `perm-settings-link` (window event `orgai:project-settings-section`); Settings >
+  `data-broad`, a no-rule line, `perm-settings-link` (window event `orgai:project-settings-section`); a request with `referenceFolder` reads `perm-location[data-kind=reference]` "Touches a reference folder (read only): <folder>" plus `perm-reference-effect`, offers only Allow once and Deny and never synthesizes rules (`referenceLocation` / `REFERENCE_EFFECT` in `lib/permissionCopy.ts`; e2e/engagement.mjs drives it with `[mock:reference-shell]` and `[mock:reference-edit]`), and the reference folder hint (`REFERENCE_FOLDERS_HINT`) says OrgAI refuses edits and asks before any command naming the folder, with no "never" promise; Settings >
   Permissions Allowed folders `allowed-folder-*` (inside the `permissions-summary` disclosure) (quiet notice for folders main dropped on save); rules panel grammar
   check and kind chips. Helpers `lib/permissionCopy.ts`, `lib/decisionTitle.ts`; e2e `e2e/permissions.mjs` (e2e:free).
 - Dashboard (spec `docs/design/dashboard.md`, walk `docs/design/ux-review-dashboard.md`): `views/DashboardView.tsx` +

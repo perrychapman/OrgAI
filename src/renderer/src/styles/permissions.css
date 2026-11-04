@@ -170,13 +170,19 @@
   color: var(--text-secondary);
 }
 .allowed-folder-path {
-  flex: 1 1 0;
+  /* Wrap, never cut: the end of a path is what tells two folders apart. */
+  flex: 1 1 12ch;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
   font-family: var(--font-mono);
   font-size: var(--text-mono);
+}
+/* New project form rows wrap like the settings rows: the end of the path is never cut. */
+.ref-folders .ref-folder-path {
+  flex: 1 1 12ch;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 /* Lock + "Read only" or pencil + "Can change": the difference between the two folder lists without colour. */
 .folder-access {
