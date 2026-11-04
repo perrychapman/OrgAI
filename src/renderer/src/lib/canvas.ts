@@ -11,10 +11,10 @@ import { CANVAS_PRESETS, DEFAULT_APPEARANCE, activeCanvasPreset, type CanvasPres
  */
 
 /**
- * Node styles built in this release. Phase A: 'station' and 'hex' exist in the contract but are not built; every
- * selector filters through this list and a stored unavailable style renders as 'card'. Phase B adds them here.
+ * Node styles built in this release (phase B added 'station' and 'hex'). Every selector filters through this list and
+ * a stored unavailable style renders as 'card'.
  */
-export const AVAILABLE_NODE_STYLES: readonly CanvasNodeStyle[] = ['card', 'compact']
+export const AVAILABLE_NODE_STYLES: readonly CanvasNodeStyle[] = ['card', 'compact', 'station', 'hex']
 
 export function isAvailableNodeStyle(style: CanvasNodeStyle): boolean {
   return AVAILABLE_NODE_STYLES.includes(style)
@@ -144,20 +144,82 @@ export function useHandleRefresh(id: string, layout: CanvasLayout, nodeStyle: Ca
   }, [id, layout, nodeStyle, update])
 }
 
-/** Live agent node box per node style (layout input and fit). Phase B adds station and hex. */
-export const AGENT_NODE_SIZE: Record<'card' | 'compact', { width: number; height: number }> = {
+/**
+ * Station geometry (docs/design/canvas-themes.md section 4b). The node box holds the station circle and its name.
+ * Top down: the name sits beside the circle (reporting lines run vertically through the circle, never through the
+ * name). Left to right and radial: the name sits below the circle (lines run horizontally or centre to centre).
+ * `cx` / `cy` is the circle's centre inside the box, `r` its radius (border included).
+ */
+export interface StationGeometry {
+  width: number
+  height: number
+  cx: number
+  cy: number
+  r: number
+  label: 'beside' | 'below'
+}
+
+export const STATION_RADIUS = 16
+
+export function stationGeometry(layout: CanvasLayout): StationGeometry {
+  if (layout === 'top-down') return { width: 160, height: 40, cx: 20, cy: 20, r: STATION_RADIUS, label: 'beside' }
+  return { width: 120, height: 64, cx: 60, cy: 18, r: STATION_RADIUS, label: 'below' }
+}
+
+/** Hex tile box (flat-top hexagon, about 120 across): the same for agents, groups and roles in every layout. */
+export const HEX_TILE = { width: 120, height: 104 } as const
+/** Gap between neighbouring honeycomb cells in the radial layout. */
+export const HEX_GAP = 12
+
+/**
+ * Where each handle sits inside a station box: on the circle's edge, so a reporting line meets the station and not
+ * the box around its name. Pass the result as the Handle's `style` (left / top of the handle's centre; React Flow's
+ * handle classes translate by -50% / -50% on top and left, the overrides in flow.css make bottom and right do so too).
+ */
+export function stationHandleStyle(geo: StationGeometry, side: `${Position}`): { left: number; top: number } {
+  switch (side) {
+    case 'top':
+      return { left: geo.cx, top: geo.cy - geo.r }
+    case 'bottom':
+      return { left: geo.cx, top: geo.cy + geo.r }
+    case 'left':
+      return { left: geo.cx - geo.r, top: geo.cy }
+    default:
+      return { left: geo.cx + geo.r, top: geo.cy }
+  }
+}
+
+/** Live agent node box per node style (layout input and fit). Station is the left-to-right / radial box. */
+export const AGENT_NODE_SIZE: Record<CanvasNodeStyle, { width: number; height: number }> = {
   card: { width: 240, height: 112 },
-  compact: { width: 160, height: 40 }
+  compact: { width: 160, height: 40 },
+  station: { width: 120, height: 64 },
+  hex: { width: HEX_TILE.width, height: HEX_TILE.height }
 }
 
 /** Done-group node box per node style. */
-export const GROUP_NODE_SIZE: Record<'card' | 'compact', { width: number; height: number }> = {
+export const GROUP_NODE_SIZE: Record<CanvasNodeStyle, { width: number; height: number }> = {
   card: { width: 240, height: 56 },
-  compact: { width: 160, height: 40 }
+  compact: { width: 160, height: 40 },
+  station: { width: 120, height: 64 },
+  hex: { width: HEX_TILE.width, height: HEX_TILE.height }
 }
 
-export function agentNodeSize(style: CanvasNodeStyle): { width: number; height: number } {
-  return style === 'compact' ? AGENT_NODE_SIZE.compact : AGENT_NODE_SIZE.card
+/** Agent node box for a style; stations depend on the layout (see stationGeometry). */
+export function agentNodeSize(style: CanvasNodeStyle, layout: CanvasLayout = 'left-right'): { width: number; height: number } {
+  if (style === 'station') {
+    const g = stationGeometry(layout)
+    return { width: g.width, height: g.height }
+  }
+  return AGENT_NODE_SIZE[effectiveNodeStyle(style)]
+}
+
+/**
+ * Reporting line colour before the ink mix: stations draw one coloured line per lead, so a report's line takes its
+ * lead's (parent's) role colour; every other style colours the line by the report's own role.
+ */
+export function reportingLineRole(style: CanvasNodeStyle, parentColor: string, childColor: string): string {
+  return style === 'station' ? parentColor : childColor
 }
 
 type Rgb = [number, number, number]
@@ -232,9 +294,15 @@ export function useNodeDims(): { dims: NodeDims; apply: (changes: NodeChange[]) 
   return { dims, apply }
 }
 
-/** Ring step of the radial layout per node style (section 3): 300 for cards, 200 for compact. */
+/**
+ * Ring step of the radial layout per node style (section 3): 300 for cards, 200 for compact, 180 for stations, and one
+ * honeycomb cell (tile height plus gap) for hex, so ring-1 tiles land on the cells next to the root.
+ */
 export function ringStepFor(style: CanvasNodeStyle): number {
-  return style === 'compact' ? 200 : 300
+  if (style === 'compact') return 200
+  if (style === 'station') return 180
+  if (style === 'hex') return HEX_TILE.height + HEX_GAP
+  return 300
 }
 
 /**
@@ -247,6 +315,7 @@ export function minimapSize(stageWidth: number, stageHeight: number): { width: n
   return { width, height: Math.min(Math.round(0.3 * stageHeight), Math.round(0.75 * width)) }
 }
 
-export function groupNodeSize(style: CanvasNodeStyle): { width: number; height: number } {
-  return style === 'compact' ? GROUP_NODE_SIZE.compact : GROUP_NODE_SIZE.card
+export function groupNodeSize(style: CanvasNodeStyle, layout: CanvasLayout = 'left-right'): { width: number; height: number } {
+  if (style === 'station') return agentNodeSize(style, layout)
+  return GROUP_NODE_SIZE[effectiveNodeStyle(style)]
 }

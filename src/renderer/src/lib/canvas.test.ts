@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_APPEARANCE, applyCanvasPreset } from '@shared/defaults'
+import { CANVAS_PRESETS, DEFAULT_APPEARANCE, applyCanvasPreset } from '@shared/defaults'
 import {
   AVAILABLE_PRESETS,
   agentNodeSize,
@@ -9,8 +9,11 @@ import {
   handlesFor,
   minimapSize,
   readCanvasOptions,
+  reportingLineRole,
   ringStepFor,
-  shownPreset
+  shownPreset,
+  stationGeometry,
+  stationHandleStyle
 } from './canvas'
 
 describe('readCanvasOptions', () => {
@@ -36,20 +39,48 @@ describe('effectiveNodeStyle', () => {
   it('keeps built styles and draws the rest as card', () => {
     expect(effectiveNodeStyle('compact')).toBe('compact')
     expect(effectiveNodeStyle('card')).toBe('card')
-    expect(effectiveNodeStyle('hex')).toBe('card')
-    expect(effectiveNodeStyle('station')).toBe('card')
+    expect(effectiveNodeStyle('hex')).toBe('hex')
+    expect(effectiveNodeStyle('station')).toBe('station')
     expect(effectiveNodeStyle('bogus')).toBe('card')
     expect(effectiveNodeStyle(null)).toBe('card')
   })
 })
 
 describe('shownPreset', () => {
-  it('names an available preset and hides unavailable and custom ones', () => {
+  it('names every preset once all node styles are built, and Custom otherwise', () => {
     const base = DEFAULT_APPEARANCE.canvas
     expect(shownPreset(applyCanvasPreset(base, 'blueprint'))).toBe('blueprint')
-    expect(shownPreset(applyCanvasPreset(base, 'subway'))).toBeUndefined()
+    expect(shownPreset(applyCanvasPreset(base, 'subway'))).toBe('subway')
+    expect(shownPreset(applyCanvasPreset(base, 'hive'))).toBe('hive')
     expect(shownPreset({ ...base, pattern: 'grid' })).toBeUndefined()
-    expect(AVAILABLE_PRESETS.some((p) => p.id === 'hive')).toBe(false)
+    expect(AVAILABLE_PRESETS.map((p) => p.id)).toEqual(CANVAS_PRESETS.map((p) => p.id))
+  })
+})
+
+describe('stations and hex tiles', () => {
+  it('puts the name beside the station top down and below it otherwise', () => {
+    expect(stationGeometry('top-down')).toMatchObject({ width: 160, height: 40, cx: 20, cy: 20, label: 'beside' })
+    expect(stationGeometry('left-right')).toMatchObject({ width: 120, height: 64, cx: 60, cy: 18, label: 'below' })
+    expect(stationGeometry('radial')).toEqual(stationGeometry('left-right'))
+    expect(agentNodeSize('station', 'top-down')).toEqual({ width: 160, height: 40 })
+    expect(groupNodeSize('station', 'radial')).toEqual({ width: 120, height: 64 })
+  })
+  it('places handles on the circle edge', () => {
+    const g = stationGeometry('left-right')
+    expect(stationHandleStyle(g, 'left')).toEqual({ left: 44, top: 18 })
+    expect(stationHandleStyle(g, 'right')).toEqual({ left: 76, top: 18 })
+    expect(stationHandleStyle(stationGeometry('top-down'), 'bottom')).toEqual({ left: 20, top: 36 })
+  })
+  it('sizes hex tiles and steps the radial ring by one cell', () => {
+    expect(agentNodeSize('hex')).toEqual({ width: 120, height: 104 })
+    expect(groupNodeSize('hex')).toEqual({ width: 120, height: 104 })
+    expect(ringStepFor('hex')).toBe(116)
+    expect(ringStepFor('station')).toBe(180)
+  })
+  it('colours a station line by its lead and every other line by its report', () => {
+    expect(reportingLineRole('station', '#111111', '#222222')).toBe('#111111')
+    expect(reportingLineRole('card', '#111111', '#222222')).toBe('#222222')
+    expect(reportingLineRole('hex', '#111111', '#222222')).toBe('#222222')
   })
 })
 
