@@ -34,11 +34,12 @@ import { MockAdapter } from './runtime/mock'
 import { sweepStaleSkillDirs } from './runtime/claudeSkills'
 import { SetupService } from './setup/service'
 import { MaintenanceService } from './maintenance'
-import { registerIpc, harnessProjectFor, withEffectiveDefault } from './ipc'
+import { registerIpc, harnessProjectFor, withEffectiveDefault, broadcastEngagementChanged } from './ipc'
 import { AgentImportService } from './setup/import/importer'
 import { TemplateService } from './setup/templates'
 import { KitService } from './kit/service'
-import { listNotes, orphanRunProjects, readNote, readRetainedRunProjects } from './store/projectData'
+import { listNotes, orphanRunProjects, readNote, readRetainedRunProjects, saveNote } from './store/projectData'
+import { knowledgeStore } from './store/knowledge'
 import { Notifier } from './notifications'
 import { DEFAULT_KEEP_RUNS } from '@shared/types'
 import { dataDirOverride, installLogging, log } from './log'
@@ -378,8 +379,15 @@ app.whenReady().then(() => {
         ...(patch.acceptEdits && p.permissionMode === 'default' ? { permissionMode: 'acceptEdits' as const } : {})
       })),
     resolveProject: (projectId) => projectOrHarness(projectId),
-    // Context notes for engagement_context; propose_org_chart fromTemplate.
-    engagementNotes: { list: (projectId) => listNotes(dataDir, projectId), read: (projectId, noteId) => readNote(dataDir, projectId, noteId) },
+    // Context notes for engagement_context (agent saves carry the run and role as the writer); the knowledge graph for
+    // engagement_knowledge; both agent write paths push projects:engagementChanged. propose_org_chart fromTemplate.
+    engagementNotes: {
+      list: (projectId) => listNotes(dataDir, projectId),
+      read: (projectId, noteId) => readNote(dataDir, projectId, noteId),
+      save: (projectId, input, writer) => saveNote(dataDir, projectId, input, writer)
+    },
+    knowledge: knowledgeStore(dataDir),
+    engagementChanged: broadcastEngagementChanged,
     orgTemplate: (templateId, project) => templates.forRun(templateId, project),
     // An auto-resumed build session gets its checked workspace back; a vanished one throws (resumeNow reports it).
     buildProject: (summary) => harnessProjectFor(summary, connections.effectiveSettings(), dataDir, mockAdapter),

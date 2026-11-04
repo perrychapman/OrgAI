@@ -4349,25 +4349,41 @@ export type EngagementNoteSource = 'user' | 'agent'
  */
 export type EngagementNoteWriter = { by: 'user' } | { by: 'agent'; runId?: string; role?: string }
 
-/** One context note in the index (projects:listNotes). */
+/** Longest note excerpt kept in the index. */
+export const ENGAGEMENT_NOTE_EXCERPT_MAX_CHARS = 120
+
+/**
+ * One context note in the index (projects:listNotes). The renderer orders by `createdAt`, so agent writes never
+ * reshuffle the list. Rows saved before these fields existed read as: excerpt and createdAt from the file (createdAt
+ * = updatedAt), source user, no recordedBy / updatedBy / retired.
+ */
 export interface EngagementNote {
   id: string
   /** 1..120 characters, no control or hidden characters. */
   title: string
-  /** Epoch ms. */
+  /** The first non-empty line of the text, at most ENGAGEMENT_NOTE_EXCERPT_MAX_CHARS, hidden characters stripped. */
+  excerpt: string
+  /** Epoch ms of the first save (stable). */
+  createdAt: number
+  /** Epoch ms of the last save. */
   updatedAt: number
   /** Length of the note's text. */
   chars: number
   /**
-   * Missing = 'user'. An agent may replace only a note whose source is 'agent'; a user note is read-only to agents
-   * ("Only the user can change that note; save a new one instead."). A user save (projects:saveNote) of an agent note
-   * makes it a user note. Main fills the field, never the renderer or the agent.
+   * Who created it; missing = 'user'. Main fills it, never the renderer or the agent. An agent may replace only a
+   * note whose source is 'agent' and that the user has not edited since (updatedBy !== 'user'); any other note is
+   * read-only to agents ("Only the user can change that note; save a new one instead.").
    */
   source?: EngagementNoteSource
-  /** The run that wrote it (agent notes only). */
-  runId?: string
-  /** The writing agent's role name or slug (agent notes only; main fills it from the run's agent record). */
-  role?: string
+  /** The creating run and the writing agent's role name or slug (agent notes only; main fills it from the run's agent record). */
+  recordedBy?: { runId?: string; role?: string }
+  /** Who saved it last (absent until the first save after creation). */
+  updatedBy?: EngagementNoteSource
+  /**
+   * A user-set flag (projects:saveNote `retired`), reversible: the note stays, lists mark it, reads still return it,
+   * the tool's list marks it. Agents cannot set or clear it.
+   */
+  retired?: boolean
 }
 
 /** projects:getNote result. */
@@ -4381,22 +4397,31 @@ export interface EngagementNoteRef {
   noteId: string
 }
 
-/** projects:saveNote input. Without noteId a new note is created; with one, that note is replaced. */
+/**
+ * projects:saveNote input. Without noteId a new note is created (refused at ENGAGEMENT_NOTES_MAX: "A project keeps at
+ * most 200 notes. Remove or merge notes first."); with one, that note is replaced (a user save of an agent note keeps
+ * source 'agent' and sets updatedBy 'user', which makes it read-only to agents).
+ */
 export interface EngagementNoteSaveInput {
   projectId: string
   noteId?: string
   title: string
   /** At most ENGAGEMENT_NOTE_MAX_CHARS; hidden characters other than tab, LF and CR are refused. */
   text: string
+  /** Sets or clears the user's retired flag (omitted = unchanged). */
+  retired?: boolean
 }
 
 /**
  * main -> renderer push (IPC projectsEngagementChanged) after the document, a note or the knowledge graph was written
- * or removed, by the user (IPC) or by an agent (engagement_context save, engagement_knowledge writes).
+ * or removed, by the user (IPC) or by an agent (engagement_context save, engagement_knowledge writes). `ids` names the
+ * note ids ('notes') or the node / edge ids ('knowledge') the write touched, so the renderer can refresh one row and
+ * announce it; absent for the document and for knowledge:clear.
  */
 export interface EngagementChangedEvent {
   projectId: string
   what: 'document' | 'notes' | 'knowledge'
+  ids?: string[]
 }
 
 /**

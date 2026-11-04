@@ -1,17 +1,18 @@
 import { randomBytes } from 'node:crypto'
 import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { EngagementDocumentInfo, EngagementNote, EngagementNoteContent, Project } from '@shared/types'
+import type { EngagementDocumentInfo, EngagementNote, EngagementNoteContent, EngagementNoteWriter, Project } from '@shared/types'
 import {
   ENGAGEMENT_DOCUMENT_MAX_CHARS,
   ENGAGEMENT_DOCUMENT_PROMPT_MAX_CHARS,
   ENGAGEMENT_NOTES_MAX,
+  ENGAGEMENT_NOTE_EXCERPT_MAX_CHARS,
   ENGAGEMENT_NOTE_MAX_CHARS,
   ENGAGEMENT_NOTE_TITLE_MAX_CHARS
 } from '@shared/types'
 import { isSafeId, projectDocumentPath, projectRulesLocation } from '@shared/defaults'
 import { settingsLocalPath } from '../runtime/permissionRules'
-import { hiddenCharProblem } from '../capabilities/sanitize'
+import { clampText, hiddenCharIn, hiddenCharProblem } from '../capabilities/sanitize'
 
 /**
  * Per-project files OrgAI keeps in its own data folder instead of the project folder (engagements write nothing into
@@ -76,7 +77,8 @@ export function readEngagementDocument(dataDir: string, projectId: string, max =
 /** Largest file these helpers read (a document is at most 100,000 characters, a note 50,000). */
 const READ_MAX_BYTES = 2 * 1024 * 1024
 
-function isLink(path: string): boolean {
+/** True for a symbolic link (false for anything else, including a missing path). */
+export function isLink(path: string): boolean {
   try {
     return lstatSync(path).isSymbolicLink()
   } catch {
@@ -85,7 +87,7 @@ function isLink(path: string): boolean {
 }
 
 /** Create `dir` (and parents) after checking that the project data folder and `dir` are plain folders, not links. */
-function ensurePlainDir(dataDir: string, projectId: string, dir: string): void {
+export function ensurePlainDir(dataDir: string, projectId: string, dir: string): void {
   const base = projectDataDir(dataDir, projectId)
   for (const d of dir === base ? [base] : [base, dir]) {
     if (existsSync(d) || isLink(d)) {
@@ -96,7 +98,7 @@ function ensurePlainDir(dataDir: string, projectId: string, dir: string): void {
 }
 
 /** Write through an exclusive random temp name and rename; refuses a link or non-file at the target. */
-function atomicWrite(file: string, text: string): void {
+export function atomicWrite(file: string, text: string): void {
   if (isLink(file) || (existsSync(file) && !lstatSync(file).isFile())) throw new Error('A file in OrgAI\'s data folder is not a plain file.')
   const tmp = `${file}.${randomBytes(8).toString('hex')}.tmp`
   try {
@@ -109,7 +111,7 @@ function atomicWrite(file: string, text: string): void {
 }
 
 /** The text of a regular, non-linked file of at most READ_MAX_BYTES, or null. */
-function readPlain(file: string): { text: string; mtimeMs: number } | null {
+export function readPlain(file: string): { text: string; mtimeMs: number } | null {
   try {
     const st = lstatSync(file)
     if (!st.isFile() || st.size > READ_MAX_BYTES) return null
@@ -268,7 +270,32 @@ function isNoteId(id: unknown): id is string {
   return isSafeId(id) && id.startsWith('note_')
 }
 
-/** The index with junk entries, duplicates and entries whose note file is missing dropped; at most ENGAGEMENT_NOTES_MAX. */
+/** The first non-empty line of a note's text, hidden characters stripped, at most ENGAGEMENT_NOTE_EXCERPT_MAX_CHARS. */
+export function noteExcerpt(text: string): string {
+  const line = text.split(/\r?\n/).find((l) => l.trim()) ?? ''
+  return clampText(line, ENGAGEMENT_NOTE_EXCERPT_MAX_CHARS)
+}
+
+/** A role name or slug as stored on an agent note: 1..120 characters without hidden characters, else undefined. */
+function cleanRole(role: unknown): string | undefined {
+  if (typeof role !== 'string') return undefined
+  const r = role.trim()
+  return r && r.length <= ENGAGEMENT_NOTE_TITLE_MAX_CHARS && !hiddenCharIn(r) ? r : undefined
+}
+
+/** `recordedBy` of an agent note from untrusted fields: only a safe runId and a clean role survive; undefined when neither does. */
+function cleanRecordedBy(runId: unknown, role: unknown): EngagementNote['recordedBy'] {
+  const out: { runId?: string; role?: string } = {}
+  if (isSafeId(runId)) out.runId = runId
+  const r = cleanRole(role)
+  if (r !== undefined) out.role = r
+  return Object.keys(out).length ? out : undefined
+}
+
+/**
+ * The index with junk entries, duplicates and entries whose note file is missing dropped; at most ENGAGEMENT_NOTES_MAX.
+ * Rows written before `excerpt` / `createdAt` existed are filled from the file (createdAt = updatedAt), never rewritten.
+ */
 function readIndex(dataDir: string, projectId: string): EngagementNote[] {
   const raw = readPlain(indexFile(dataDir, projectId))
   if (!raw) return []
@@ -288,16 +315,35 @@ function readIndex(dataDir: string, projectId: string): EngagementNote[] {
     if (!isNoteId(e.id) || seen.has(e.id)) continue
     if (typeof e.title !== 'string' || !e.title.trim() || e.title.length > ENGAGEMENT_NOTE_TITLE_MAX_CHARS) continue
     if (typeof e.updatedAt !== 'number' || !Number.isFinite(e.updatedAt)) continue
+    const file = noteFile(dataDir, projectId, e.id)
     const st = (() => {
       try {
-        return lstatSync(noteFile(dataDir, projectId, e.id as string))
+        return lstatSync(file)
       } catch {
         return null
       }
     })()
     if (!st || !st.isFile()) continue
     seen.add(e.id)
-    out.push({ id: e.id, title: e.title, updatedAt: e.updatedAt, chars: typeof e.chars === 'number' && Number.isFinite(e.chars) && e.chars >= 0 ? Math.floor(e.chars) : 0 })
+    const excerptOk = typeof e.excerpt === 'string' && e.excerpt.length <= ENGAGEMENT_NOTE_EXCERPT_MAX_CHARS && !hiddenCharIn(e.excerpt)
+    const excerpt = excerptOk ? (e.excerpt as string) : noteExcerpt(readPlain(file)?.text ?? '')
+    const createdAt = typeof e.createdAt === 'number' && Number.isFinite(e.createdAt) ? e.createdAt : e.updatedAt
+    const source = e.source === 'agent' ? 'agent' : undefined
+    const rb = e.recordedBy && typeof e.recordedBy === 'object' ? (e.recordedBy as Record<string, unknown>) : undefined
+    const recordedBy = source && rb ? cleanRecordedBy(rb.runId, rb.role) : undefined
+    const updatedBy = e.updatedBy === 'user' || e.updatedBy === 'agent' ? e.updatedBy : undefined
+    out.push({
+      id: e.id,
+      title: e.title,
+      excerpt,
+      createdAt,
+      updatedAt: e.updatedAt,
+      chars: typeof e.chars === 'number' && Number.isFinite(e.chars) && e.chars >= 0 ? Math.floor(e.chars) : 0,
+      ...(source ? { source } : {}),
+      ...(recordedBy ? { recordedBy } : {}),
+      ...(updatedBy ? { updatedBy } : {}),
+      ...(e.retired === true ? { retired: true } : {})
+    })
     if (out.length >= ENGAGEMENT_NOTES_MAX) break
   }
   return out
@@ -329,12 +375,24 @@ export function readNote(dataDir: string, projectId: string, noteId: string): En
   }
 }
 
+/** The refusal when an agent tries to replace a note it may not change. */
+export const NOTE_USER_ONLY_MESSAGE = 'Only the user can change that note; save a new one instead.'
+
 /**
  * Create a note (no noteId) or replace one (a known noteId; an unknown one throws "Note not found"). Title 1..120
  * characters without hidden characters; text at most ENGAGEMENT_NOTE_MAX_CHARS, hidden characters other than tab, LF and
- * CR refused; at most ENGAGEMENT_NOTES_MAX notes. Returns the index entry.
+ * CR refused; at most ENGAGEMENT_NOTES_MAX notes. `writer` is the user (default) or an agent (engagement_context save):
+ * an agent may replace only a note whose source is 'agent' and that the user has not saved since (updatedBy !==
+ * 'user'), else NOTE_USER_ONLY_MESSAGE. A new note records who created it (`source` 'agent' with `recordedBy`; a user
+ * note stores no source); a replace sets `updatedBy` and keeps source and recordedBy. `retired` is the user's only
+ * (ignored for agent writers; omitted = unchanged). Returns the index entry.
  */
-export function saveNote(dataDir: string, projectId: string, input: { noteId?: string; title: string; text: string }): EngagementNote {
+export function saveNote(
+  dataDir: string,
+  projectId: string,
+  input: { noteId?: string; title: string; text: string; retired?: boolean },
+  writer: EngagementNoteWriter = { by: 'user' }
+): EngagementNote {
   if (typeof input.title !== 'string') throw new Error('The title must be text.')
   const title = input.title.trim()
   if (!title) throw new Error('Give the note a title.')
@@ -343,17 +401,36 @@ export function saveNote(dataDir: string, projectId: string, input: { noteId?: s
   if (titleProblem) throw new Error(titleProblem)
   const text = checkedText('The note', input.text, ENGAGEMENT_NOTE_MAX_CHARS)
   const notes = readIndex(dataDir, projectId)
+  const agent = writer.by === 'agent'
   let id: string
+  let existing: EngagementNote | undefined
   if (input.noteId !== undefined) {
-    if (!isNoteId(input.noteId) || !notes.some((n) => n.id === input.noteId)) throw new Error('Note not found')
-    id = input.noteId
+    existing = isNoteId(input.noteId) ? notes.find((n) => n.id === input.noteId) : undefined
+    if (!existing) throw new Error('Note not found')
+    if (agent && (existing.source !== 'agent' || existing.updatedBy === 'user')) throw new Error(NOTE_USER_ONLY_MESSAGE)
+    id = existing.id
   } else {
-    if (notes.length >= ENGAGEMENT_NOTES_MAX) throw new Error(`A project keeps at most ${ENGAGEMENT_NOTES_MAX} notes. Remove one first.`)
+    if (notes.length >= ENGAGEMENT_NOTES_MAX) throw new Error(`A project keeps at most ${ENGAGEMENT_NOTES_MAX} notes. Remove or merge notes first.`)
     do id = `note_${randomBytes(6).toString('hex')}`
     while (notes.some((n) => n.id === id))
   }
   ensurePlainDir(dataDir, projectId, contextDir(dataDir, projectId))
-  const entry: EngagementNote = { id, title, updatedAt: Date.now(), chars: text.length }
+  const now = Date.now()
+  const source = existing ? existing.source : agent ? 'agent' : undefined
+  const recordedBy = existing ? existing.recordedBy : agent ? cleanRecordedBy(writer.runId, writer.role) : undefined
+  const retired = !agent && input.retired !== undefined ? input.retired : existing?.retired
+  const entry: EngagementNote = {
+    id,
+    title,
+    excerpt: noteExcerpt(text),
+    createdAt: existing ? existing.createdAt : now,
+    updatedAt: now,
+    chars: text.length,
+    ...(source ? { source } : {}),
+    ...(recordedBy ? { recordedBy } : {}),
+    ...(existing ? { updatedBy: writer.by } : {}),
+    ...(retired ? { retired: true } : {})
+  }
   atomicWrite(noteFile(dataDir, projectId, id), text)
   try {
     writeIndex(dataDir, projectId, [...notes.filter((n) => n.id !== id), entry])

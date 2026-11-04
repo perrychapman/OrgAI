@@ -2,8 +2,17 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync,
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { ENGAGEMENT_DOCUMENT_MAX_CHARS, ENGAGEMENT_DOCUMENT_PROMPT_MAX_CHARS, ENGAGEMENT_NOTES_MAX, ENGAGEMENT_NOTE_MAX_CHARS, ENGAGEMENT_NOTE_TITLE_MAX_CHARS } from '@shared/types'
 import {
+  ENGAGEMENT_DOCUMENT_MAX_CHARS,
+  ENGAGEMENT_DOCUMENT_PROMPT_MAX_CHARS,
+  ENGAGEMENT_NOTES_MAX,
+  ENGAGEMENT_NOTE_EXCERPT_MAX_CHARS,
+  ENGAGEMENT_NOTE_MAX_CHARS,
+  ENGAGEMENT_NOTE_TITLE_MAX_CHARS
+} from '@shared/types'
+import {
+  NOTE_USER_ONLY_MESSAGE,
+  noteExcerpt,
   appRulesExist,
   appRulesFile,
   contextDir,
@@ -228,7 +237,7 @@ describe('context notes', () => {
     expect(() => saveNote(dir, 'p1', { title: 'big', text: 'x'.repeat(ENGAGEMENT_NOTE_MAX_CHARS) })).not.toThrow()
     for (let i = 0; i < ENGAGEMENT_NOTES_MAX - 2; i++) saveNote(dir, 'p1', { title: `n${i}`, text: 'x' })
     expect(listNotes(dir, 'p1')).toHaveLength(ENGAGEMENT_NOTES_MAX)
-    expect(() => saveNote(dir, 'p1', { title: 'one more', text: 'x' })).toThrow(/at most 50/)
+    expect(() => saveNote(dir, 'p1', { title: 'one more', text: 'x' })).toThrow(`A project keeps at most ${ENGAGEMENT_NOTES_MAX} notes. Remove or merge notes first.`)
     // Replacing at the cap still works.
     const first = listNotes(dir, 'p1')[0]
     expect(() => saveNote(dir, 'p1', { noteId: first.id, title: 'again', text: 'y' })).not.toThrow()
@@ -308,6 +317,93 @@ describe('saveNote index failure', () => {
     mkdirSync(join(contextDir(dir, 'p1'), 'index.json'), { recursive: true })
     expect(() => saveNote(dir, 'p1', { title: 'A', text: 'a' })).toThrow()
     expect(readdirSync(contextDir(dir, 'p1')).filter((f) => f.endsWith('.md'))).toEqual([])
+  })
+})
+
+describe('note writers, excerpts and retired flags', () => {
+  const agent = { by: 'agent', runId: 'run_1', role: 'Analyst' } as const
+
+  it('a user note stores no source; an agent note records who created it and only clean fields survive', () => {
+    const u = saveNote(dir, 'p1', { title: 'Mine', text: 'first line\nsecond' })
+    expect(u).toEqual({ id: u.id, title: 'Mine', excerpt: 'first line', createdAt: u.updatedAt, updatedAt: u.updatedAt, chars: 17 })
+    const a = saveNote(dir, 'p1', { title: 'Theirs', text: '\n\n  Found it  \nmore' }, agent)
+    expect(a).toMatchObject({ source: 'agent', recordedBy: { runId: 'run_1', role: 'Analyst' }, excerpt: 'Found it' })
+    expect(a.updatedBy).toBeUndefined()
+    expect(readNote(dir, 'p1', a.id)).toMatchObject({ source: 'agent', recordedBy: { runId: 'run_1', role: 'Analyst' }, text: '\n\n  Found it  \nmore' })
+    expect(listNotes(dir, 'p1').find((n) => n.id === a.id)).toMatchObject({ source: 'agent', recordedBy: { runId: 'run_1', role: 'Analyst' } })
+    const junk = saveNote(dir, 'p1', { title: 'Junk writer', text: 'x' }, { by: 'agent', runId: '../x', role: `A${'​'}` })
+    expect(junk.source).toBe('agent')
+    expect(junk.recordedBy).toBeUndefined()
+    const roleOnly = saveNote(dir, 'p1', { title: 'Role only', text: 'x' }, { by: 'agent', role: ' Lead ' })
+    expect(roleOnly.recordedBy).toEqual({ role: 'Lead' })
+    expect(saveNote(dir, 'p1', { title: 'Long role', text: 'x' }, { by: 'agent', role: 'r'.repeat(ENGAGEMENT_NOTE_TITLE_MAX_CHARS + 1) }).recordedBy).toBeUndefined()
+  })
+
+  it('an agent may replace only an agent note the user has not saved since; a user save sets updatedBy', async () => {
+    const u = saveNote(dir, 'p1', { title: 'Mine', text: 'a' })
+    expect(() => saveNote(dir, 'p1', { noteId: u.id, title: 'Mine', text: 'b' }, agent)).toThrow(NOTE_USER_ONLY_MESSAGE)
+    expect(readNote(dir, 'p1', u.id)!.text).toBe('a')
+    const a = saveNote(dir, 'p1', { title: 'Theirs', text: 'a' }, agent)
+    await new Promise((r) => setTimeout(r, 5))
+    const a2 = saveNote(dir, 'p1', { noteId: a.id, title: 'Theirs v2', text: 'b' }, { by: 'agent', runId: 'run_2', role: 'Other' })
+    expect(a2).toMatchObject({ id: a.id, title: 'Theirs v2', source: 'agent', recordedBy: { runId: 'run_1', role: 'Analyst' }, updatedBy: 'agent', createdAt: a.createdAt })
+    expect(a2.updatedAt).toBeGreaterThan(a.updatedAt)
+    const a3 = saveNote(dir, 'p1', { noteId: a.id, title: 'Theirs v3', text: 'c' })
+    expect(a3).toMatchObject({ source: 'agent', recordedBy: { runId: 'run_1', role: 'Analyst' }, updatedBy: 'user', createdAt: a.createdAt })
+    expect(() => saveNote(dir, 'p1', { noteId: a.id, title: 'Theirs v4', text: 'd' }, agent)).toThrow(NOTE_USER_ONLY_MESSAGE)
+    expect(readNote(dir, 'p1', a.id)!.text).toBe('c')
+    const u2 = saveNote(dir, 'p1', { noteId: u.id, title: 'Mine v2', text: 'e' })
+    expect(u2.source).toBeUndefined()
+    expect(u2.updatedBy).toBe('user')
+    expect(() => saveNote(dir, 'p1', { noteId: 'note_deadbeef', title: 't', text: 'x' }, agent)).toThrow('Note not found')
+  })
+
+  it('retired is the user\'s flag: set, kept across saves, cleared, ignored for agents', () => {
+    const a = saveNote(dir, 'p1', { title: 'Theirs', text: 'a' }, agent)
+    expect(saveNote(dir, 'p1', { noteId: a.id, title: 'Theirs', text: 'a', retired: true }, agent).retired).toBeUndefined()
+    expect(saveNote(dir, 'p1', { noteId: a.id, title: 'Theirs', text: 'a', retired: true }).retired).toBe(true)
+    expect(listNotes(dir, 'p1')[0].retired).toBe(true)
+    expect(readNote(dir, 'p1', a.id)!.retired).toBe(true)
+    expect(saveNote(dir, 'p1', { noteId: a.id, title: 'Theirs', text: 'b' }).retired).toBe(true)
+    expect(saveNote(dir, 'p1', { noteId: a.id, title: 'Theirs', text: 'b', retired: false }).retired).toBeUndefined()
+    expect(saveNote(dir, 'p1', { title: 'New', text: 'x', retired: true }).retired).toBe(true)
+  })
+
+  it('excerpts are the first non-empty line, clamped, hidden characters stripped', () => {
+    expect(noteExcerpt('')).toBe('')
+    expect(noteExcerpt('\n \n')).toBe('')
+    expect(noteExcerpt('  hello\tworld  \nnext')).toBe('hello world')
+    expect(noteExcerpt(`a${'​'}b‮c`)).toBe('a b c')
+    const long = noteExcerpt('x'.repeat(ENGAGEMENT_NOTE_EXCERPT_MAX_CHARS + 50))
+    expect(long).toHaveLength(ENGAGEMENT_NOTE_EXCERPT_MAX_CHARS)
+    expect(long.endsWith('…')).toBe(true)
+    expect(saveNote(dir, 'p1', { title: 't', text: 'x'.repeat(ENGAGEMENT_NOTE_MAX_CHARS) }).excerpt).toHaveLength(ENGAGEMENT_NOTE_EXCERPT_MAX_CHARS)
+  })
+
+  it('fills legacy rows from the file and drops junk writer fields on read', () => {
+    const a = saveNote(dir, 'p1', { title: 'A', text: 'line one\nline two' })
+    const b = saveNote(dir, 'p1', { title: 'B', text: 'bee' }, agent)
+    writeFileSync(
+      join(contextDir(dir, 'p1'), 'index.json'),
+      JSON.stringify({
+        notes: [
+          { id: a.id, title: 'A', updatedAt: 1234, chars: 17 },
+          { id: b.id, title: 'B', updatedAt: 5, chars: 3, createdAt: 'x', excerpt: `b${'​'}`, source: 'robot', recordedBy: { runId: '../x', role: 5 }, updatedBy: 'robot', retired: 'yes' }
+        ]
+      }),
+      'utf8'
+    )
+    const rows = listNotes(dir, 'p1')
+    expect(rows.find((n) => n.id === a.id)).toEqual({ id: a.id, title: 'A', excerpt: 'line one', createdAt: 1234, updatedAt: 1234, chars: 17 })
+    expect(rows.find((n) => n.id === b.id)).toEqual({ id: b.id, title: 'B', excerpt: 'bee', createdAt: 5, updatedAt: 5, chars: 3 })
+    writeFileSync(
+      join(contextDir(dir, 'p1'), 'index.json'),
+      JSON.stringify({ notes: [{ id: b.id, title: 'B', updatedAt: 5, chars: 3, createdAt: 4, excerpt: 'kept', source: 'agent', recordedBy: { runId: 'run_9', role: 'X' }, updatedBy: 'user', retired: true }, { id: a.id, title: 'A', updatedAt: 1, chars: 1, source: 'user', recordedBy: { runId: 'run_9' } }] }),
+      'utf8'
+    )
+    expect(listNotes(dir, 'p1').find((n) => n.id === b.id)).toEqual({ id: b.id, title: 'B', excerpt: 'kept', createdAt: 4, updatedAt: 5, chars: 3, source: 'agent', recordedBy: { runId: 'run_9', role: 'X' }, updatedBy: 'user', retired: true })
+    // recordedBy is kept only on agent notes.
+    expect(listNotes(dir, 'p1').find((n) => n.id === a.id)!.recordedBy).toBeUndefined()
   })
 })
 
