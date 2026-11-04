@@ -96,8 +96,10 @@ import { isConnectionId, isSafeId } from '@shared/defaults'
 import { sanitizeImages } from './runtime/attachments'
 import { skillAssistPrompt, skillsProject } from './skills/assist'
 import { harnessProject as buildHarnessProject } from './mcp/assist'
-import { createScratchDir, scratchDirFor, validateQuickFolder } from './quick/scratch'
-import { existsSync } from 'node:fs'
+import { createScratchDir, isInsideEither, samePath, scratchDirFor, validateQuickFolder } from './quick/scratch'
+import { existsSync, lstatSync } from 'node:fs'
+import { isAbsolute } from 'node:path'
+import { hiddenCharProblem } from './capabilities/sanitize'
 import type { QuickRunService } from './quick/quickRuns'
 import type { ProjectStore } from './store/projects'
 import type { RunManager } from './runtime/runManager'
@@ -452,7 +454,26 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
   ipcMain.handle(IPC.appSetNotifications, (_e, enabled: boolean): void => {
     settings.set({ ...settings.get(), notifications: !!enabled })
   })
-  ipcMain.handle(IPC.appOpenPath, (_e, path: string) => shell.openPath(path))
+  // Returns shell.openPath's contract: an error message, or '' on success. Never throws to the renderer.
+  ipcMain.handle(IPC.appOpenPath, async (_e, path: unknown): Promise<string> => {
+    try {
+      const list = projects.list()
+      const refusal = openPathRefusal(path, {
+        dataDir: settings.dataDir,
+        projectPaths: list.map((p) => p.path),
+        allowedDirectories: list.flatMap((p) => p.allowedDirectories ?? []),
+        stat: lstatDirectory
+      })
+      if (refusal) {
+        log.warn('app:openPath refused:', refusal)
+        return refusal
+      }
+      return await shell.openPath(path as string)
+    } catch (err) {
+      log.warn('app:openPath failed:', err instanceof Error ? err.message : String(err))
+      return 'OrgAI could not open that folder.'
+    }
+  })
   ipcMain.handle(IPC.appLogPath, () => logPath())
   ipcMain.handle(IPC.appInfo, (): AppInfo => buildAppInfo(app, { platform: process.platform, logsDir: logsDir(), adapterIds }))
   ipcMain.handle(IPC.appOpenLogs, async () => {
@@ -865,6 +886,45 @@ export function modelsQueryArg(raw: unknown): ModelsQuery | undefined {
  * connections:setDefault), connections and its providerAuth mirror (connections:update / setSecret). The
  * AppSettingsInfo extras are dropped. Pure; exported for tests. SettingsStore.set normalizes the rest.
  */
+export const OPEN_PATH_MAX_CHARS = 1024
+export const OPEN_PATH_REFUSAL = "OrgAI only opens project folders, allowed folders and its own data folder."
+
+/** lstat as a directory probe: a symlink or a file is not a directory; null when missing or unreadable. */
+export function lstatDirectory(p: string): { isDirectory: boolean } | null {
+  try {
+    return { isDirectory: lstatSync(p).isDirectory() }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * app:openPath guard (pure apart from the injected stat and path canonicalization): a refusal message, or null when
+ * `path` may be handed to the OS. Only an existing real directory that is a stored project's folder, an entry of a
+ * project's allowedDirectories, or the data folder / inside it, compared on lexical and real spellings.
+ */
+export function openPathRefusal(
+  path: unknown,
+  ctx: { dataDir: string; projectPaths: string[]; allowedDirectories: string[]; stat: (p: string) => { isDirectory: boolean } | null }
+): string | null {
+  if (typeof path !== 'string' || path.length === 0) return 'No folder was given.'
+  if (path.length > OPEN_PATH_MAX_CHARS) return 'That path is too long.'
+  if (path.includes('\0') || hiddenCharProblem('path', path)) return 'That path has hidden characters.'
+  if (/^[\\/]{2}/.test(path)) return 'OrgAI does not open network or device paths.'
+  const absolute = process.platform === 'win32' ? /^[a-zA-Z]:[\\/]/.test(path) : isAbsolute(path)
+  if (!absolute) return 'That path is not absolute.'
+  const st = ctx.stat(path)
+  if (!st) return 'That folder does not exist.'
+  if (!st.isDirectory) return 'OrgAI only opens folders.'
+  try {
+    const known = [...ctx.projectPaths, ...ctx.allowedDirectories].some((p) => typeof p === 'string' && p !== '' && samePath(p, path))
+    if (known || isInsideEither(ctx.dataDir, path)) return null
+  } catch {
+    // fall through: fail closed
+  }
+  return OPEN_PATH_REFUSAL
+}
+
 export function settingsSetArgs(raw: unknown, stored: AppSettings): AppSettings {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('Settings must be an object.')
   const proto = Object.getPrototypeOf(raw)

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterAll, describe, expect, it, vi } from 'vitest'
 
 vi.mock('electron', () => ({
   app: { getPath: () => '', getVersion: () => '0.0.0', isPackaged: false, on: () => {} },
@@ -13,6 +13,52 @@ vi.mock('electron', () => ({
 
 const { CONNECTOR_TOKEN_MAX_CHARS, PICKED_FOLDERS_PER_SENDER, PickedFolders, connectorArgs, proposalDecideArgs, PROPOSAL_SECRETS_MAX, PERMISSION_RULE_MAX_CHARS, permissionAddRefusal, permissionRuleArgs, settingsSetArgs, connectionIdArg, connectionSecretArgs, CONNECTION_SECRET_MAX_CHARS, modelsQueryArg, withEffectiveDefault } = await import('./ipc')
 const { DEFAULT_APP_SETTINGS } = await import('@shared/defaults')
+const { openPathRefusal, lstatDirectory, OPEN_PATH_REFUSAL } = await import('./ipc')
+const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('node:fs')
+const { tmpdir } = await import('node:os')
+const { join } = await import('node:path')
+
+describe('openPathRefusal (app:openPath)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'orgai-open-'))
+  const data = join(root, 'data')
+  const logs = join(data, 'logs')
+  const proj = join(root, 'proj')
+  const allowed = join(root, 'allowed')
+  const other = join(root, 'other')
+  const file = join(proj, 'a.txt')
+  for (const d of [data, logs, proj, allowed, other]) mkdirSync(d, { recursive: true })
+  writeFileSync(file, 'x')
+  const ctx = { dataDir: data, projectPaths: [proj], allowedDirectories: [allowed], stat: lstatDirectory }
+  afterAll(() => rmSync(root, { recursive: true, force: true }))
+
+  it('allows a project folder, an allowed folder, the data folder and a subfolder of it', () => {
+    expect(openPathRefusal(proj, ctx)).toBeNull()
+    expect(openPathRefusal(allowed, ctx)).toBeNull()
+    expect(openPathRefusal(data, ctx)).toBeNull()
+    expect(openPathRefusal(logs, ctx)).toBeNull()
+  })
+  it('refuses a file, even inside a project', () => {
+    expect(openPathRefusal(file, ctx)).not.toBeNull()
+  })
+  it('refuses a folder outside every allowed place and a missing one', () => {
+    expect(openPathRefusal(other, ctx)).toBe(OPEN_PATH_REFUSAL)
+    expect(openPathRefusal(join(data, 'missing'), ctx)).not.toBeNull()
+  })
+  it('refuses junk types, relative, UNC and hidden characters', () => {
+    for (const v of [undefined, null, 5, {}, [], '', 'relative/dir', '\\\\server\\share', '//host/x']) {
+      expect(openPathRefusal(v, ctx)).not.toBeNull()
+    }
+    expect(openPathRefusal(proj + '‮', ctx)).not.toBeNull()
+    expect(openPathRefusal(proj + '​', ctx)).not.toBeNull()
+    expect(openPathRefusal(proj + '\n', ctx)).not.toBeNull()
+    expect(openPathRefusal(proj + '\0', ctx)).not.toBeNull()
+    expect(openPathRefusal(join(proj, 'a'.repeat(1100)), ctx)).not.toBeNull()
+  })
+  it('refuses a symlink or a stat that says not a directory', () => {
+    expect(openPathRefusal(proj, { ...ctx, stat: () => ({ isDirectory: false }) })).not.toBeNull()
+    expect(openPathRefusal(proj, { ...ctx, stat: () => null })).not.toBeNull()
+  })
+})
 
 describe('permissionRuleArgs (permissions:add / permissions:remove, review re-check L8)', () => {
   it('rebuilds the input with a trimmed rule and drops extra fields', () => {
