@@ -20,22 +20,16 @@ export class MaintenanceService {
   }
 
   /**
-   * Engagements make no git worktrees unless the user opted in (isolateWriters true): without it the worktree tools
-   * never look at the folder.
+   * Leftover report branches are listed whenever the folder is a git repository, whatever the isolation setting is
+   * now (it may have been on for an earlier run). Listing only reads; inspectPending answers [] for a non-git folder.
    */
-  private noWorktrees(p: Project): boolean {
-    return !writesToProjectFolder(p) && p.isolateWriters !== true
-  }
-
   async listWorktrees(projectId: string): Promise<PendingWorktree[]> {
     const p = this.project(projectId)
-    if (this.noWorktrees(p)) return []
     return inspectPending(p.path)
   }
 
   private async find(projectId: string, branch: string): Promise<{ root: string; wt: PendingWorktree }> {
     const p = this.project(projectId)
-    if (this.noWorktrees(p)) throw new Error(`Branch ${branch} is not a pending report branch`)
     const root = p.path
     const wt = (await inspectPending(root)).find((w) => w.branch === branch)
     if (!wt) throw new Error(`Branch ${branch} is not a pending report branch`)

@@ -63,7 +63,7 @@ describe('uninstallRepo for an engagement', () => {
       expect(existsSync(join(root, '.orgai', 'ENGAGEMENT.md'))).toBe(true)
       expect(existsSync(join(root, 'CLAUDE.md'))).toBe(true)
       expect(saved).toEqual([])
-      // Not a git repo and no opt-in: the worktree tools answer without looking.
+      // Not a git repo: nothing to list or act on.
       expect(await svc.listWorktrees('p1')).toEqual([])
       await expect(svc.discardWorktree('p1', 'worktree-agent-x')).rejects.toThrow(/not a pending report branch/)
     } finally {
