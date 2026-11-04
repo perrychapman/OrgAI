@@ -15,6 +15,13 @@ describe('rulesChangedProject', () => {
     expect(rulesChangedProject(resolved({ cancelled: true }), of)).toBeNull()
     expect(rulesChangedProject(resolved({ runId: 'nope' }), of)).toBeNull()
   })
+  it('bumps for permission.resolved with savedToProject only', () => {
+    const perm = (over: Record<string, unknown>): RunEvent => ({ type: 'permission.resolved', runId: 'r1', requestId: 'q', ...over }) as unknown as RunEvent
+    expect(rulesChangedProject(perm({ savedToProject: true }), of)).toBe('p1')
+    expect(rulesChangedProject(perm({}), of)).toBeNull()
+    expect(rulesChangedProject(perm({ savedToProject: true, cancelled: true }), of)).toBeNull()
+    expect(rulesChangedProject(perm({ savedToProject: true, runId: 'nope' }), of)).toBeNull()
+  })
   it('bumps for project.updated', () => {
     expect(rulesChangedProject({ type: 'project.updated', project: { id: 'p2' } } as unknown as RunEvent, of)).toBe('p2')
   })
