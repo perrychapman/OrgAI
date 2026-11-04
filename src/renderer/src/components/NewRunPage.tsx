@@ -2,6 +2,8 @@ import type { ReactElement } from 'react'
 import { useMemo, useState } from 'react'
 import type { Project } from '@shared/types'
 import { setupPending } from '@shared/setup'
+import { projectKindOf } from '@shared/defaults'
+import { newRunLead, projectKindCopy } from '../lib/projectKindCopy'
 import { isRunLive, newRunDraftKey, useAppStore, useRunIndexes } from '../store/useAppStore'
 import { promptLine, runTitle } from '../lib/runLabels'
 import { Button } from './ui/Button'
@@ -34,7 +36,9 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
   const [busy, setBusy] = useState(false)
   const [setupBusy, setSetupBusy] = useState(false)
   const needsSetup = setupPending(project)
-  const rootName = project.roles.find((r) => r.reportsTo === null)?.name ?? 'the orchestrator'
+  const kind = projectKindOf(project)
+  const engagement = kind === 'engagement'
+  const rootName =project.roles.find((r) => r.reportsTo === null)?.name ?? 'the orchestrator'
 
   const beginSetup = async (): Promise<void> => {
     setSetupBusy(true)
@@ -60,7 +64,9 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
           <EmptyState
             title={project.setup?.state === 'pending' ? 'Set this project up with the Architect' : 'Setup is not finished'}
             description={
-              project.setup?.kind === 'new'
+              engagement
+                ? projectKindCopy(kind).setupLead
+                : project.setup?.kind === 'new'
                 ? 'The Architect asks a few questions about your idea, then proposes the architecture, the org chart, and the run settings. You approve each one.'
                 : 'The Architect scans the repository, reads the code, and proposes an architecture document, an org chart that fits the work already done, and run settings. You approve each one.'
             }
@@ -73,7 +79,10 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
         ) : (
           <EmptyState
             title={`Give ${rootName} something to do`}
-            description="Type a task below. The orchestrator plans it and delegates to its reports. Every subagent appears here the moment it is created, attached to the agent that spawned it."
+            description={
+              newRunLead(kind, rootName) ??
+              'Type a task below. The orchestrator plans it and delegates to its reports. Every subagent appears here the moment it is created, attached to the agent that spawned it.'
+            }
             actions={
               <ul className="role-chips" aria-label="Roles in this project">
                 {project.roles.map((r) => (
@@ -117,7 +126,7 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
           </section>
         )}
 
-        {!needsSetup && project.setup?.kind === 'new' && project.setup.state === 'complete' && !project.setup.scaffoldedAt && (
+        {!needsSetup && !engagement && project.setup?.kind === 'new' && project.setup.state === 'complete' && !project.setup.scaffoldedAt && (
           <section className="new-run-scaffold">
             <p>
               Setup is complete and the folder is still empty. The org chart can build the initial structure from the approved architecture

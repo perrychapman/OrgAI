@@ -117,6 +117,19 @@ describe('permissionLocation', () => {
     const loc = permissionLocation('Edit', { file_path: '/home/me/shared-lib/x/y.js' }, { ...POSIX, allowedDirectories: ['/home/me/shared-lib'] })
     expect(loc).toMatchObject({ kind: 'allowed', label: 'In an allowed folder: /home/me/shared-lib', detail: 'x/y.js', attention: false })
   })
+  it('names a reference folder as read only, ahead of allowed ones', () => {
+    const posix = permissionLocation('Read', { file_path: '/home/me/refs/a/b.md' }, { ...POSIX, referenceDirectories: ['/home/me/refs'], allowedDirectories: ['/home/me/shared-lib'] })
+    expect(posix).toMatchObject({ kind: 'reference', label: 'In a reference folder (read only): /home/me/refs', detail: 'a/b.md', attention: false })
+    const win = permissionLocation('Read', { file_path: 'D:\\Refs\\notes\\x.txt' }, { ...WIN, referenceDirectories: ['d:\\refs'] })
+    expect(win).toMatchObject({ kind: 'reference', label: 'In a reference folder (read only): d:\\refs', detail: 'notes/x.txt' })
+    expect(permissionLocation('Bash', { command: 'cd /home/me/refs/a && ls' }, { ...POSIX, referenceDirectories: ['/home/me/refs'] })).toMatchObject({
+      kind: 'reference',
+      label: 'Starts in a reference folder (read only): /home/me/refs'
+    })
+    // A nested allowed folder inside the reference folder still reads as the reference folder; others are unchanged.
+    expect(permissionLocation('Edit', { file_path: '/home/me/shared-lib/x.js' }, { ...POSIX, referenceDirectories: ['/home/me/refs'], allowedDirectories: ['/home/me/shared-lib'] })?.kind).toBe('allowed')
+    expect(permissionLocation('Read', { file_path: '/home/me/refs-other/x' }, { ...POSIX, referenceDirectories: ['/home/me/refs'] })?.kind).toBe('outside')
+  })
   it('follows relative cd steps and cwd, and stops at an unknown target', () => {
     expect(permissionLocation('Bash', { command: 'cd packages/api && npm test' }, POSIX)).toMatchObject({ kind: 'project', label: 'Starts in the project', detail: 'packages/api' })
     expect(permissionLocation('Bash', { command: 'npm test', cwd: '/tmp' }, POSIX)).toMatchObject({ kind: 'outside' })
