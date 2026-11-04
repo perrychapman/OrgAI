@@ -10,6 +10,7 @@
  *   4. Theme-invariant tokens and composites built from the themed ones.
  *   5. Element-scoped composites (they read --role, which only exists on the element).
  *   6. LEGACY ALIAS BLOCK, removed by B13 once no TSX uses the old names.
+ *   7. Appearance switches: tint, then the canvas backdrops per theme (docs/design/canvas-themes.md).
  *
  * Blocks 1 to 3 must define the same set of custom properties (tokens.test.ts enforces it).
  * The default accent set is the static derivation of #7c5cff (spec section 5); lib/theme.ts only
@@ -75,8 +76,31 @@
 
   --edge: #3a4258;
   --edge-message: #5d8bd6;
-  --canvas-pattern: #1f2432;
-  --canvas-wash-opacity: 0.06;
+  /* Canvas (docs/design/canvas-themes.md). These are the Dots values; section 7 overrides them per backdrop.
+     Contrast on #0b0d12: pattern 1.71, pattern-strong 2.53, group edge 3.99, focus ring 7.55. */
+  --canvas-bg: var(--surface-0);
+  --node-bg: var(--surface-2);
+  --canvas-pattern: #343a4a;
+  --canvas-pattern-strong: #4a5368;
+  --canvas-ring: var(--canvas-pattern-strong);
+  --canvas-wash-opacity: 0.1;
+  --canvas-node-bg: var(--node-bg);
+  --canvas-node-border: var(--border-default);
+  --canvas-node-text: var(--text-primary);
+  --canvas-node-text-muted: var(--text-secondary);
+  --canvas-node-font: var(--font-sans);
+  /* Edge stroke = color-mix(in srgb, role mix, ink). Dark lifts the role colour toward light ink. */
+  --canvas-edge-role-mix: 85%;
+  --canvas-edge-ink: var(--text-primary);
+  --canvas-edge-done-opacity: 0.8;
+  --canvas-edge-group: #66718c;
+  --canvas-edge-message-dash: 2 5;
+  --canvas-edge-live-dash: 6 4;
+  --canvas-focus-ring: var(--focus-ring);
+  --canvas-glow: transparent;
+  --canvas-minimap-bg: var(--surface-1);
+  --canvas-minimap-node: var(--text-tertiary);
+  --canvas-minimap-mask: color-mix(in srgb, var(--surface-0) 65%, transparent);
   /* Strength of an element that produced nothing (no-result node, dim table row). */
   --dim-opacity: 0.55;
 
@@ -144,8 +168,30 @@
 
   --edge: #aab3c7;
   --edge-message: #2f67b4;
-  --canvas-pattern: #d3d8e4;
-  --canvas-wash-opacity: 0.05;
+  /* Contrast on #f4f5f9: pattern 1.59, pattern-strong 2.11, group edge 3.48, focus ring 6.94. */
+  --canvas-bg: var(--surface-0);
+  --node-bg: var(--surface-2);
+  --canvas-pattern: #bfc5d3;
+  --canvas-pattern-strong: #a3abbd;
+  --canvas-ring: var(--canvas-pattern-strong);
+  --canvas-wash-opacity: 0.07;
+  --canvas-node-bg: var(--node-bg);
+  --canvas-node-border: var(--border-default);
+  --canvas-node-text: var(--text-primary);
+  --canvas-node-text-muted: var(--text-secondary);
+  --canvas-node-font: var(--font-sans);
+  /* Light darkens the role colour toward dark ink so every ROLE_COLORS edge reaches 3:1 (ux-review-canvas-themes M3). */
+  --canvas-edge-role-mix: 50%;
+  --canvas-edge-ink: var(--text-primary);
+  --canvas-edge-done-opacity: 0.9;
+  --canvas-edge-group: #7a8399;
+  --canvas-edge-message-dash: 2 5;
+  --canvas-edge-live-dash: 6 4;
+  --canvas-focus-ring: var(--focus-ring);
+  --canvas-glow: transparent;
+  --canvas-minimap-bg: var(--surface-1);
+  --canvas-minimap-node: var(--text-tertiary);
+  --canvas-minimap-mask: color-mix(in srgb, var(--surface-0) 65%, transparent);
   --dim-opacity: 0.5;
 
   --elev-0: none;
@@ -213,8 +259,28 @@
 
     --edge: #aab3c7;
     --edge-message: #2f67b4;
-    --canvas-pattern: #d3d8e4;
-    --canvas-wash-opacity: 0.05;
+    --canvas-bg: var(--surface-0);
+    --node-bg: var(--surface-2);
+    --canvas-pattern: #bfc5d3;
+    --canvas-pattern-strong: #a3abbd;
+    --canvas-ring: var(--canvas-pattern-strong);
+    --canvas-wash-opacity: 0.07;
+    --canvas-node-bg: var(--node-bg);
+    --canvas-node-border: var(--border-default);
+    --canvas-node-text: var(--text-primary);
+    --canvas-node-text-muted: var(--text-secondary);
+    --canvas-node-font: var(--font-sans);
+    --canvas-edge-role-mix: 50%;
+    --canvas-edge-ink: var(--text-primary);
+    --canvas-edge-done-opacity: 0.9;
+    --canvas-edge-group: #7a8399;
+    --canvas-edge-message-dash: 2 5;
+    --canvas-edge-live-dash: 6 4;
+    --canvas-focus-ring: var(--focus-ring);
+    --canvas-glow: transparent;
+    --canvas-minimap-bg: var(--surface-1);
+    --canvas-minimap-node: var(--text-tertiary);
+    --canvas-minimap-mask: color-mix(in srgb, var(--surface-0) 65%, transparent);
     --dim-opacity: 0.5;
 
     --elev-0: none;
@@ -310,8 +376,6 @@
 
   /* Derived from the themed tokens above (resolved on :root, so they follow the active theme and accent). */
   --ring: 0 0 0 3px color-mix(in oklab, var(--focus-ring) 35%, transparent);
-  --canvas-bg: var(--surface-0);
-  --node-bg: var(--surface-2);
   --state-working: var(--info);
   --state-waiting: var(--warning);
   --state-done: var(--success);
@@ -394,6 +458,693 @@
 :root[data-canvas-tint='off'] {
   --canvas-wash-opacity: 0;
 }
-:root[data-canvas-pattern='none'] {
+
+/*
+ * 7a. Canvas backdrops (docs/design/canvas-themes.md section 2).
+ *
+ * Every backdrop sets the same 18 canvas tokens, in the dark rule and again in its light and system-light rules,
+ * so nothing leaks from one theme or backdrop into another. Each rule also matches [data-canvas-thumb='<pattern>'],
+ * the preset thumbnails in settings: a thumbnail shows its own backdrop whatever the active one is.
+ * Ratios in the comments are WCAG contrast against that backdrop's --canvas-bg (canvas-themes.md section 9).
+ * Edge strokes: color-mix(in srgb, <role> var(--canvas-edge-role-mix), var(--canvas-edge-ink)).
+ */
+
+/* Dots and Grid: the theme defaults. Dark pattern 1.71, strong 2.53. */
+:root[data-canvas-pattern='dots'],
+:root[data-canvas-pattern='grid'],
+[data-canvas-thumb='dots'],
+[data-canvas-thumb='grid'] {
+  --canvas-bg: var(--surface-0);
+  --canvas-pattern: #343a4a;
+  --canvas-pattern-strong: #4a5368;
+  --canvas-ring: #4a5368;
+  --canvas-node-bg: var(--surface-2);
+  --canvas-node-border: var(--border-default);
+  --canvas-node-text: var(--text-primary);
+  --canvas-node-text-muted: var(--text-secondary);
+  --canvas-node-font: var(--font-sans);
+  --canvas-edge-role-mix: 85%;
+  --canvas-edge-ink: var(--text-primary);
+  --canvas-edge-done-opacity: 0.8;
+  --canvas-edge-group: #66718c;
+  --canvas-focus-ring: var(--focus-ring);
+  --canvas-glow: transparent;
+  --canvas-minimap-bg: var(--surface-1);
+  --canvas-minimap-node: var(--text-tertiary);
+  --canvas-minimap-mask: color-mix(in srgb, var(--surface-0) 65%, transparent);
+}
+
+/* Isometric: three line families, so a fainter line. Dark 1.57. */
+:root[data-canvas-pattern='isometric'],
+[data-canvas-thumb='isometric'] {
+  --canvas-bg: var(--surface-0);
+  --canvas-pattern: #2f3443;
+  --canvas-pattern-strong: #4a5368;
+  --canvas-ring: #4a5368;
+  --canvas-node-bg: var(--surface-2);
+  --canvas-node-border: var(--border-default);
+  --canvas-node-text: var(--text-primary);
+  --canvas-node-text-muted: var(--text-secondary);
+  --canvas-node-font: var(--font-sans);
+  --canvas-edge-role-mix: 85%;
+  --canvas-edge-ink: var(--text-primary);
+  --canvas-edge-done-opacity: 0.8;
+  --canvas-edge-group: #66718c;
+  --canvas-focus-ring: var(--focus-ring);
+  --canvas-glow: transparent;
+  --canvas-minimap-bg: var(--surface-1);
+  --canvas-minimap-node: var(--text-tertiary);
+  --canvas-minimap-mask: color-mix(in srgb, var(--surface-0) 65%, transparent);
+}
+
+/* None: no pattern; radial ring guides still draw (2.53). */
+:root[data-canvas-pattern='none'],
+[data-canvas-thumb='none'] {
+  --canvas-bg: var(--surface-0);
   --canvas-pattern: transparent;
+  --canvas-pattern-strong: transparent;
+  --canvas-ring: #4a5368;
+  --canvas-node-bg: var(--surface-2);
+  --canvas-node-border: var(--border-default);
+  --canvas-node-text: var(--text-primary);
+  --canvas-node-text-muted: var(--text-secondary);
+  --canvas-node-font: var(--font-sans);
+  --canvas-edge-role-mix: 85%;
+  --canvas-edge-ink: var(--text-primary);
+  --canvas-edge-done-opacity: 0.8;
+  --canvas-edge-group: #66718c;
+  --canvas-focus-ring: var(--focus-ring);
+  --canvas-glow: transparent;
+  --canvas-minimap-bg: var(--surface-1);
+  --canvas-minimap-node: var(--text-tertiary);
+  --canvas-minimap-mask: color-mix(in srgb, var(--surface-0) 65%, transparent);
+}
+
+/* Blueprint: deep blue. Minor 1.67, major 2.68, group 3.56, node text 13.3 / muted 7.02. */
+:root[data-canvas-pattern='blueprint'],
+[data-canvas-thumb='blueprint'] {
+  --canvas-bg: #0b1a33;
+  --canvas-pattern: #23406b;
+  --canvas-pattern-strong: #3a5f94;
+  --canvas-ring: #3a5f94;
+  --canvas-node-bg: #12223f;
+  --canvas-node-border: #3a5f94;
+  --canvas-node-text: var(--text-primary);
+  --canvas-node-text-muted: var(--text-secondary);
+  --canvas-node-font: var(--font-sans);
+  --canvas-edge-role-mix: 85%;
+  --canvas-edge-ink: var(--text-primary);
+  --canvas-edge-done-opacity: 0.8;
+  --canvas-edge-group: #66718c;
+  --canvas-focus-ring: var(--focus-ring);
+  --canvas-glow: transparent;
+  --canvas-minimap-bg: var(--surface-1);
+  --canvas-minimap-node: var(--text-tertiary);
+  --canvas-minimap-mask: color-mix(in srgb, var(--surface-0) 65%, transparent);
+}
+
+/* Paper: warm dark sheet. Rules 1.51, strong 2.39, group 3.77, node text 14.1 / muted 7.45. */
+:root[data-canvas-pattern='paper'],
+[data-canvas-thumb='paper'] {
+  --canvas-bg: #16140f;
+  --canvas-pattern: #3a352b;
+  --canvas-pattern-strong: #5a5244;
+  --canvas-ring: #5a5244;
+  --canvas-node-bg: #201d17;
+  --canvas-node-border: #4a4438;
+  --canvas-node-text: var(--text-primary);
+  --canvas-node-text-muted: var(--text-secondary);
+  --canvas-node-font: var(--font-sans);
+  --canvas-edge-role-mix: 85%;
+  --canvas-edge-ink: var(--text-primary);
+  --canvas-edge-done-opacity: 0.8;
+  --canvas-edge-group: #66718c;
+  --canvas-focus-ring: var(--focus-ring);
+  --canvas-glow: transparent;
+  --canvas-minimap-bg: var(--surface-1);
+  --canvas-minimap-node: var(--text-tertiary);
+  --canvas-minimap-mask: color-mix(in srgb, var(--surface-0) 65%, transparent);
+}
+
+/* Circuit: dark board. Traces 1.66, pads 2.34, group 3.84, node text 14.0 / muted 7.43. */
+:root[data-canvas-pattern='circuit'],
+[data-canvas-thumb='circuit'] {
+  --canvas-bg: #0a1410;
+  --canvas-pattern: #26402f;
+  --canvas-pattern-strong: #36583f;
+  --canvas-ring: #36583f;
+  --canvas-node-bg: #15201a;
+  --canvas-node-border: #36583f;
+  --canvas-node-text: var(--text-primary);
+  --canvas-node-text-muted: var(--text-secondary);
+  --canvas-node-font: var(--font-sans);
+  --canvas-edge-role-mix: 85%;
+  --canvas-edge-ink: var(--text-primary);
+  --canvas-edge-done-opacity: 0.8;
+  --canvas-edge-group: #66718c;
+  --canvas-focus-ring: var(--focus-ring);
+  --canvas-glow: transparent;
+  --canvas-minimap-bg: var(--surface-1);
+  --canvas-minimap-node: var(--text-tertiary);
+  --canvas-minimap-mask: color-mix(in srgb, var(--surface-0) 65%, transparent);
+}
+
+/* Terminal: phosphor on near-black, in both themes (see the light island below). Dots 1.47, strong 2.50,
+   node text 14.7 / muted 8.45, group 4.08, message 5.81. */
+:root[data-canvas-pattern='terminal'],
+[data-canvas-thumb='terminal'] {
+  --canvas-bg: #060a08;
+  --canvas-pattern: #1d3326;
+  --canvas-pattern-strong: #2c5a3c;
+  --canvas-ring: #2c5a3c;
+  --canvas-node-bg: #0c140f;
+  --canvas-node-border: #2c5a3c;
+  --canvas-node-text: #b6f2c6;
+  --canvas-node-text-muted: #6fbf88;
+  --canvas-node-font: var(--font-mono);
+  --canvas-edge-role-mix: 85%;
+  --canvas-edge-ink: #e8ebf3;
+  --canvas-edge-done-opacity: 0.8;
+  --canvas-edge-group: #66718c;
+  --canvas-focus-ring: var(--focus-ring);
+  --canvas-glow: transparent;
+  --canvas-minimap-bg: #0c140f;
+  --canvas-minimap-node: #6fbf88;
+  --canvas-minimap-mask: color-mix(in srgb, #060a08 65%, transparent);
+  --edge-message: #5d8bd6;
+}
+
+/* Starfield: small stars 2.02, bright stars (points) 9.41, ring guides 1.57, group 4.07. Message edges glow. */
+:root[data-canvas-pattern='starfield'],
+[data-canvas-thumb='starfield'] {
+  --canvas-bg: #070912;
+  --canvas-pattern: #3b4260;
+  --canvas-pattern-strong: #a9b1d6;
+  --canvas-ring: #2a3150;
+  --canvas-node-bg: var(--surface-2);
+  --canvas-node-border: var(--border-default);
+  --canvas-node-text: var(--text-primary);
+  --canvas-node-text-muted: var(--text-secondary);
+  --canvas-node-font: var(--font-sans);
+  --canvas-edge-role-mix: 85%;
+  --canvas-edge-ink: var(--text-primary);
+  --canvas-edge-done-opacity: 0.8;
+  --canvas-edge-group: #66718c;
+  --canvas-focus-ring: var(--focus-ring);
+  --canvas-glow: color-mix(in srgb, var(--edge-message) 55%, transparent);
+  --canvas-minimap-bg: var(--surface-1);
+  --canvas-minimap-node: var(--text-tertiary);
+  --canvas-minimap-mask: color-mix(in srgb, var(--surface-0) 65%, transparent);
+}
+
+/* ----- 7b. Light variants: the same 18 tokens (plus --edge-message for Terminal). ----- */
+
+/* Dots and Grid, light: pattern 1.59, strong 2.11, group 3.48. */
+:root[data-theme='light'][data-canvas-pattern='dots'],
+:root[data-theme='light'][data-canvas-pattern='grid'],
+:root[data-theme='light'] [data-canvas-thumb='dots'],
+:root[data-theme='light'] [data-canvas-thumb='grid'] {
+  --canvas-bg: var(--surface-0);
+  --canvas-pattern: #bfc5d3;
+  --canvas-pattern-strong: #a3abbd;
+  --canvas-ring: #a3abbd;
+  --canvas-node-bg: var(--surface-2);
+  --canvas-node-border: var(--border-default);
+  --canvas-node-text: var(--text-primary);
+  --canvas-node-text-muted: var(--text-secondary);
+  --canvas-node-font: var(--font-sans);
+  --canvas-edge-role-mix: 50%;
+  --canvas-edge-ink: var(--text-primary);
+  --canvas-edge-done-opacity: 0.9;
+  --canvas-edge-group: #7a8399;
+  --canvas-focus-ring: var(--focus-ring);
+  --canvas-glow: transparent;
+  --canvas-minimap-bg: var(--surface-1);
+  --canvas-minimap-node: var(--text-tertiary);
+  --canvas-minimap-mask: color-mix(in srgb, var(--surface-0) 65%, transparent);
+}
+
+/* Isometric, light: 1.45. */
+:root[data-theme='light'][data-canvas-pattern='isometric'],
+:root[data-theme='light'] [data-canvas-thumb='isometric'] {
+  --canvas-bg: var(--surface-0);
+  --canvas-pattern: #c9ced9;
+  --canvas-pattern-strong: #a3abbd;
+  --canvas-ring: #a3abbd;
+  --canvas-node-bg: var(--surface-2);
+  --canvas-node-border: var(--border-default);
+  --canvas-node-text: var(--text-primary);
+  --canvas-node-text-muted: var(--text-secondary);
+  --canvas-node-font: var(--font-sans);
+  --canvas-edge-role-mix: 50%;
+  --canvas-edge-ink: var(--text-primary);
+  --canvas-edge-done-opacity: 0.9;
+  --canvas-edge-group: #7a8399;
+  --canvas-focus-ring: var(--focus-ring);
+  --canvas-glow: transparent;
+  --canvas-minimap-bg: var(--surface-1);
+  --canvas-minimap-node: var(--text-tertiary);
+  --canvas-minimap-mask: color-mix(in srgb, var(--surface-0) 65%, transparent);
+}
+
+/* None, light: ring guides 2.11. */
+:root[data-theme='light'][data-canvas-pattern='none'],
+:root[data-theme='light'] [data-canvas-thumb='none'] {
+  --canvas-bg: var(--surface-0);
+  --canvas-pattern: transparent;
+  --canvas-pattern-strong: transparent;
+  --canvas-ring: #a3abbd;
+  --canvas-node-bg: var(--surface-2);
+  --canvas-node-border: var(--border-default);
+  --canvas-node-text: var(--text-primary);
+  --canvas-node-text-muted: var(--text-secondary);
+  --canvas-node-font: var(--font-sans);
+  --canvas-edge-role-mix: 50%;
+  --canvas-edge-ink: var(--text-primary);
+  --canvas-edge-done-opacity: 0.9;
+  --canvas-edge-group: #7a8399;
+  --canvas-focus-ring: var(--focus-ring);
+  --canvas-glow: transparent;
+  --canvas-minimap-bg: var(--surface-1);
+  --canvas-minimap-node: var(--text-tertiary);
+  --canvas-minimap-mask: color-mix(in srgb, var(--surface-0) 65%, transparent);
+}
+
+/* Blueprint, light (a pale whiteprint): minor 1.59, major 2.39, group 3.34. */
+:root[data-theme='light'][data-canvas-pattern='blueprint'],
+:root[data-theme='light'] [data-canvas-thumb='blueprint'] {
+  --canvas-bg: #eaf1fb;
+  --canvas-pattern: #a9c3e6;
+  --canvas-pattern-strong: #7d9fd0;
+  --canvas-ring: #7d9fd0;
+  --canvas-node-bg: var(--surface-2);
+  --canvas-node-border: #a9c3e6;
+  --canvas-node-text: var(--text-primary);
+  --canvas-node-text-muted: var(--text-secondary);
+  --canvas-node-font: var(--font-sans);
+  --canvas-edge-role-mix: 50%;
+  --canvas-edge-ink: var(--text-primary);
+  --canvas-edge-done-opacity: 0.9;
+  --canvas-edge-group: #7a8399;
+  --canvas-focus-ring: var(--focus-ring);
+  --canvas-glow: transparent;
+  --canvas-minimap-bg: var(--surface-1);
+  --canvas-minimap-node: var(--text-tertiary);
+  --canvas-minimap-mask: color-mix(in srgb, var(--surface-0) 65%, transparent);
+}
+
+/* Paper, light: rules 1.43, strong 2.17, group 3.43, node text 17.9 / muted 7.57. */
+:root[data-theme='light'][data-canvas-pattern='paper'],
+:root[data-theme='light'] [data-canvas-thumb='paper'] {
+  --canvas-bg: #f7f3ea;
+  --canvas-pattern: #d6cdb9;
+  --canvas-pattern-strong: #b3a688;
+  --canvas-ring: #b3a688;
+  --canvas-node-bg: #fffdf8;
+  --canvas-node-border: #d6cdb9;
+  --canvas-node-text: var(--text-primary);
+  --canvas-node-text-muted: var(--text-secondary);
+  --canvas-node-font: var(--font-sans);
+  --canvas-edge-role-mix: 50%;
+  --canvas-edge-ink: var(--text-primary);
+  --canvas-edge-done-opacity: 0.9;
+  --canvas-edge-group: #7a8399;
+  --canvas-focus-ring: var(--focus-ring);
+  --canvas-glow: transparent;
+  --canvas-minimap-bg: var(--surface-1);
+  --canvas-minimap-node: var(--text-tertiary);
+  --canvas-minimap-mask: color-mix(in srgb, var(--surface-0) 65%, transparent);
+}
+
+/* Circuit, light: traces 1.53, pads 2.32, group 3.38. */
+:root[data-theme='light'][data-canvas-pattern='circuit'],
+:root[data-theme='light'] [data-canvas-thumb='circuit'] {
+  --canvas-bg: #eef3ef;
+  --canvas-pattern: #b4cbbb;
+  --canvas-pattern-strong: #88a893;
+  --canvas-ring: #88a893;
+  --canvas-node-bg: var(--surface-2);
+  --canvas-node-border: #b4cbbb;
+  --canvas-node-text: var(--text-primary);
+  --canvas-node-text-muted: var(--text-secondary);
+  --canvas-node-font: var(--font-sans);
+  --canvas-edge-role-mix: 50%;
+  --canvas-edge-ink: var(--text-primary);
+  --canvas-edge-done-opacity: 0.9;
+  --canvas-edge-group: #7a8399;
+  --canvas-focus-ring: var(--focus-ring);
+  --canvas-glow: transparent;
+  --canvas-minimap-bg: var(--surface-1);
+  --canvas-minimap-node: var(--text-tertiary);
+  --canvas-minimap-mask: color-mix(in srgb, var(--surface-0) 65%, transparent);
+}
+
+/* Terminal, light: stays dark. Same values as dark; the focus ring is the accent lifted toward white (8.83). */
+:root[data-theme='light'][data-canvas-pattern='terminal'],
+:root[data-theme='light'] [data-canvas-thumb='terminal'] {
+  --canvas-bg: #060a08;
+  --canvas-pattern: #1d3326;
+  --canvas-pattern-strong: #2c5a3c;
+  --canvas-ring: #2c5a3c;
+  --canvas-node-bg: #0c140f;
+  --canvas-node-border: #2c5a3c;
+  --canvas-node-text: #b6f2c6;
+  --canvas-node-text-muted: #6fbf88;
+  --canvas-node-font: var(--font-mono);
+  --canvas-edge-role-mix: 85%;
+  --canvas-edge-ink: #e8ebf3;
+  --canvas-edge-done-opacity: 0.8;
+  --canvas-edge-group: #66718c;
+  --canvas-focus-ring: color-mix(in srgb, var(--accent-text) 45%, #ffffff);
+  --canvas-glow: transparent;
+  --canvas-minimap-bg: #0c140f;
+  --canvas-minimap-node: #6fbf88;
+  --canvas-minimap-mask: color-mix(in srgb, #060a08 65%, transparent);
+  --edge-message: #5d8bd6;
+}
+
+/* Starfield, light (a pale dawn sky): small stars 1.86, bright stars 3.83, ring 1.51, group 3.45. No glow. */
+:root[data-theme='light'][data-canvas-pattern='starfield'],
+:root[data-theme='light'] [data-canvas-thumb='starfield'] {
+  --canvas-bg: #f2f4fb;
+  --canvas-pattern: #aeb5cc;
+  --canvas-pattern-strong: #6f7aa3;
+  --canvas-ring: #c3c9db;
+  --canvas-node-bg: var(--surface-2);
+  --canvas-node-border: var(--border-default);
+  --canvas-node-text: var(--text-primary);
+  --canvas-node-text-muted: var(--text-secondary);
+  --canvas-node-font: var(--font-sans);
+  --canvas-edge-role-mix: 50%;
+  --canvas-edge-ink: var(--text-primary);
+  --canvas-edge-done-opacity: 0.9;
+  --canvas-edge-group: #7a8399;
+  --canvas-focus-ring: var(--focus-ring);
+  --canvas-glow: transparent;
+  --canvas-minimap-bg: var(--surface-1);
+  --canvas-minimap-node: var(--text-tertiary);
+  --canvas-minimap-mask: color-mix(in srgb, var(--surface-0) 65%, transparent);
+}
+
+/*
+ * 7c. Terminal island, light theme: the stage (and the settings preview and thumbnail) keeps the dark app tokens,
+ * so badges, worktree lines, avatars and legacy TSX colours inside nodes stay readable on the dark backdrop.
+ * The toolbar, tray and side panel stay light. --focus-ring follows --canvas-focus-ring (declared on :root).
+ */
+:root[data-theme='light'][data-canvas-pattern='terminal'] :is(.frame-stage, .canvas-preview),
+:root[data-theme='light'] [data-canvas-thumb='terminal'] {
+  color-scheme: dark;
+  --surface-0: #0b0d12;
+  --surface-1: #12161f;
+  --surface-2: #181c27;
+  --surface-3: #20263a;
+  --field-bg: #0b0d12;
+  --border-subtle: #1d2332;
+  --border-default: #283045;
+  --border-strong: #39435b;
+  --border-input: #5d6882;
+  --text-primary: #e8ebf3;
+  --text-secondary: #a3adc2;
+  --text-tertiary: #8791a8;
+  --text-disabled: #5b6479;
+  --text-on-success: #0b0d12;
+  --text-on-danger: #0b0d12;
+  --success: #22c58b;
+  --success-text: #34d399;
+  --success-soft: color-mix(in oklab, var(--success) 14%, transparent);
+  --warning: #f5a524;
+  --warning-text: #f5b73d;
+  --warning-soft: color-mix(in oklab, var(--warning) 14%, transparent);
+  --danger: #ff6b6b;
+  --danger-text: #ff7b7b;
+  --danger-soft: color-mix(in oklab, var(--danger) 14%, transparent);
+  --info: #2bb0ff;
+  --info-text: #4cb8ff;
+  --info-soft: color-mix(in oklab, var(--info) 14%, transparent);
+  --success-border: color-mix(in oklab, var(--success) 50%, transparent);
+  --warning-border: color-mix(in oklab, var(--warning) 55%, transparent);
+  --danger-border: color-mix(in oklab, var(--danger) 45%, transparent);
+  --info-border: color-mix(in oklab, var(--info) 55%, transparent);
+  --halo-warning: 0 0 0 3px color-mix(in oklab, var(--warning) 16%, transparent);
+  --halo-dot-live: 0 0 0 4px var(--success-soft);
+  --halo-dot-warning: 0 0 0 4px var(--warning-soft);
+  --state-working: var(--info);
+  --state-waiting: var(--warning);
+  --state-done: var(--success);
+  --state-error: var(--danger);
+  --state-idle: var(--text-tertiary);
+  --code-bg: #0b0d12;
+  --edge: #3a4258;
+  --node-bg: #0c140f;
+  --focus-ring: var(--canvas-focus-ring);
+  --ring: 0 0 0 3px color-mix(in oklab, var(--focus-ring) 35%, transparent);
+  --elev-1: 0 1px 0 rgb(255 255 255 / 0.03) inset, 0 1px 2px rgb(0 0 0 / 0.4);
+  --elev-2: 0 8px 24px rgb(0 0 0 / 0.5), 0 0 0 1px var(--border-default);
+  --bg: var(--surface-0);
+  --bg-elev: var(--surface-2);
+  --panel: var(--surface-1);
+  --border: var(--border-default);
+  --text: var(--text-primary);
+  --text-dim: var(--text-secondary);
+  --text-faint: var(--text-tertiary);
+}
+
+/* 7d. System theme when the OS prefers light: the 7b light variants and the 7c island again. */
+@media (prefers-color-scheme: light) {
+  :root[data-theme='system'][data-canvas-pattern='dots'],
+  :root[data-theme='system'][data-canvas-pattern='grid'],
+  :root[data-theme='system'] [data-canvas-thumb='dots'],
+  :root[data-theme='system'] [data-canvas-thumb='grid'] {
+    --canvas-bg: var(--surface-0);
+    --canvas-pattern: #bfc5d3;
+    --canvas-pattern-strong: #a3abbd;
+    --canvas-ring: #a3abbd;
+    --canvas-node-bg: var(--surface-2);
+    --canvas-node-border: var(--border-default);
+    --canvas-node-text: var(--text-primary);
+    --canvas-node-text-muted: var(--text-secondary);
+    --canvas-node-font: var(--font-sans);
+    --canvas-edge-role-mix: 50%;
+    --canvas-edge-ink: var(--text-primary);
+    --canvas-edge-done-opacity: 0.9;
+    --canvas-edge-group: #7a8399;
+    --canvas-focus-ring: var(--focus-ring);
+    --canvas-glow: transparent;
+    --canvas-minimap-bg: var(--surface-1);
+    --canvas-minimap-node: var(--text-tertiary);
+    --canvas-minimap-mask: color-mix(in srgb, var(--surface-0) 65%, transparent);
+  }
+
+  :root[data-theme='system'][data-canvas-pattern='isometric'],
+  :root[data-theme='system'] [data-canvas-thumb='isometric'] {
+    --canvas-bg: var(--surface-0);
+    --canvas-pattern: #c9ced9;
+    --canvas-pattern-strong: #a3abbd;
+    --canvas-ring: #a3abbd;
+    --canvas-node-bg: var(--surface-2);
+    --canvas-node-border: var(--border-default);
+    --canvas-node-text: var(--text-primary);
+    --canvas-node-text-muted: var(--text-secondary);
+    --canvas-node-font: var(--font-sans);
+    --canvas-edge-role-mix: 50%;
+    --canvas-edge-ink: var(--text-primary);
+    --canvas-edge-done-opacity: 0.9;
+    --canvas-edge-group: #7a8399;
+    --canvas-focus-ring: var(--focus-ring);
+    --canvas-glow: transparent;
+    --canvas-minimap-bg: var(--surface-1);
+    --canvas-minimap-node: var(--text-tertiary);
+    --canvas-minimap-mask: color-mix(in srgb, var(--surface-0) 65%, transparent);
+  }
+
+  :root[data-theme='system'][data-canvas-pattern='none'],
+  :root[data-theme='system'] [data-canvas-thumb='none'] {
+    --canvas-bg: var(--surface-0);
+    --canvas-pattern: transparent;
+    --canvas-pattern-strong: transparent;
+    --canvas-ring: #a3abbd;
+    --canvas-node-bg: var(--surface-2);
+    --canvas-node-border: var(--border-default);
+    --canvas-node-text: var(--text-primary);
+    --canvas-node-text-muted: var(--text-secondary);
+    --canvas-node-font: var(--font-sans);
+    --canvas-edge-role-mix: 50%;
+    --canvas-edge-ink: var(--text-primary);
+    --canvas-edge-done-opacity: 0.9;
+    --canvas-edge-group: #7a8399;
+    --canvas-focus-ring: var(--focus-ring);
+    --canvas-glow: transparent;
+    --canvas-minimap-bg: var(--surface-1);
+    --canvas-minimap-node: var(--text-tertiary);
+    --canvas-minimap-mask: color-mix(in srgb, var(--surface-0) 65%, transparent);
+  }
+
+  :root[data-theme='system'][data-canvas-pattern='blueprint'],
+  :root[data-theme='system'] [data-canvas-thumb='blueprint'] {
+    --canvas-bg: #eaf1fb;
+    --canvas-pattern: #a9c3e6;
+    --canvas-pattern-strong: #7d9fd0;
+    --canvas-ring: #7d9fd0;
+    --canvas-node-bg: var(--surface-2);
+    --canvas-node-border: #a9c3e6;
+    --canvas-node-text: var(--text-primary);
+    --canvas-node-text-muted: var(--text-secondary);
+    --canvas-node-font: var(--font-sans);
+    --canvas-edge-role-mix: 50%;
+    --canvas-edge-ink: var(--text-primary);
+    --canvas-edge-done-opacity: 0.9;
+    --canvas-edge-group: #7a8399;
+    --canvas-focus-ring: var(--focus-ring);
+    --canvas-glow: transparent;
+    --canvas-minimap-bg: var(--surface-1);
+    --canvas-minimap-node: var(--text-tertiary);
+    --canvas-minimap-mask: color-mix(in srgb, var(--surface-0) 65%, transparent);
+  }
+
+  :root[data-theme='system'][data-canvas-pattern='paper'],
+  :root[data-theme='system'] [data-canvas-thumb='paper'] {
+    --canvas-bg: #f7f3ea;
+    --canvas-pattern: #d6cdb9;
+    --canvas-pattern-strong: #b3a688;
+    --canvas-ring: #b3a688;
+    --canvas-node-bg: #fffdf8;
+    --canvas-node-border: #d6cdb9;
+    --canvas-node-text: var(--text-primary);
+    --canvas-node-text-muted: var(--text-secondary);
+    --canvas-node-font: var(--font-sans);
+    --canvas-edge-role-mix: 50%;
+    --canvas-edge-ink: var(--text-primary);
+    --canvas-edge-done-opacity: 0.9;
+    --canvas-edge-group: #7a8399;
+    --canvas-focus-ring: var(--focus-ring);
+    --canvas-glow: transparent;
+    --canvas-minimap-bg: var(--surface-1);
+    --canvas-minimap-node: var(--text-tertiary);
+    --canvas-minimap-mask: color-mix(in srgb, var(--surface-0) 65%, transparent);
+  }
+
+  :root[data-theme='system'][data-canvas-pattern='circuit'],
+  :root[data-theme='system'] [data-canvas-thumb='circuit'] {
+    --canvas-bg: #eef3ef;
+    --canvas-pattern: #b4cbbb;
+    --canvas-pattern-strong: #88a893;
+    --canvas-ring: #88a893;
+    --canvas-node-bg: var(--surface-2);
+    --canvas-node-border: #b4cbbb;
+    --canvas-node-text: var(--text-primary);
+    --canvas-node-text-muted: var(--text-secondary);
+    --canvas-node-font: var(--font-sans);
+    --canvas-edge-role-mix: 50%;
+    --canvas-edge-ink: var(--text-primary);
+    --canvas-edge-done-opacity: 0.9;
+    --canvas-edge-group: #7a8399;
+    --canvas-focus-ring: var(--focus-ring);
+    --canvas-glow: transparent;
+    --canvas-minimap-bg: var(--surface-1);
+    --canvas-minimap-node: var(--text-tertiary);
+    --canvas-minimap-mask: color-mix(in srgb, var(--surface-0) 65%, transparent);
+  }
+
+  :root[data-theme='system'][data-canvas-pattern='terminal'],
+  :root[data-theme='system'] [data-canvas-thumb='terminal'] {
+    --canvas-bg: #060a08;
+    --canvas-pattern: #1d3326;
+    --canvas-pattern-strong: #2c5a3c;
+    --canvas-ring: #2c5a3c;
+    --canvas-node-bg: #0c140f;
+    --canvas-node-border: #2c5a3c;
+    --canvas-node-text: #b6f2c6;
+    --canvas-node-text-muted: #6fbf88;
+    --canvas-node-font: var(--font-mono);
+    --canvas-edge-role-mix: 85%;
+    --canvas-edge-ink: #e8ebf3;
+    --canvas-edge-done-opacity: 0.8;
+    --canvas-edge-group: #66718c;
+    --canvas-focus-ring: color-mix(in srgb, var(--accent-text) 45%, #ffffff);
+    --canvas-glow: transparent;
+    --canvas-minimap-bg: #0c140f;
+    --canvas-minimap-node: #6fbf88;
+    --canvas-minimap-mask: color-mix(in srgb, #060a08 65%, transparent);
+    --edge-message: #5d8bd6;
+  }
+
+  :root[data-theme='system'][data-canvas-pattern='starfield'],
+  :root[data-theme='system'] [data-canvas-thumb='starfield'] {
+    --canvas-bg: #f2f4fb;
+    --canvas-pattern: #aeb5cc;
+    --canvas-pattern-strong: #6f7aa3;
+    --canvas-ring: #c3c9db;
+    --canvas-node-bg: var(--surface-2);
+    --canvas-node-border: var(--border-default);
+    --canvas-node-text: var(--text-primary);
+    --canvas-node-text-muted: var(--text-secondary);
+    --canvas-node-font: var(--font-sans);
+    --canvas-edge-role-mix: 50%;
+    --canvas-edge-ink: var(--text-primary);
+    --canvas-edge-done-opacity: 0.9;
+    --canvas-edge-group: #7a8399;
+    --canvas-focus-ring: var(--focus-ring);
+    --canvas-glow: transparent;
+    --canvas-minimap-bg: var(--surface-1);
+    --canvas-minimap-node: var(--text-tertiary);
+    --canvas-minimap-mask: color-mix(in srgb, var(--surface-0) 65%, transparent);
+  }
+
+  :root[data-theme='system'][data-canvas-pattern='terminal'] :is(.frame-stage, .canvas-preview),
+  :root[data-theme='system'] [data-canvas-thumb='terminal'] {
+    color-scheme: dark;
+    --surface-0: #0b0d12;
+    --surface-1: #12161f;
+    --surface-2: #181c27;
+    --surface-3: #20263a;
+    --field-bg: #0b0d12;
+    --border-subtle: #1d2332;
+    --border-default: #283045;
+    --border-strong: #39435b;
+    --border-input: #5d6882;
+    --text-primary: #e8ebf3;
+    --text-secondary: #a3adc2;
+    --text-tertiary: #8791a8;
+    --text-disabled: #5b6479;
+    --text-on-success: #0b0d12;
+    --text-on-danger: #0b0d12;
+    --success: #22c58b;
+    --success-text: #34d399;
+    --success-soft: color-mix(in oklab, var(--success) 14%, transparent);
+    --warning: #f5a524;
+    --warning-text: #f5b73d;
+    --warning-soft: color-mix(in oklab, var(--warning) 14%, transparent);
+    --danger: #ff6b6b;
+    --danger-text: #ff7b7b;
+    --danger-soft: color-mix(in oklab, var(--danger) 14%, transparent);
+    --info: #2bb0ff;
+    --info-text: #4cb8ff;
+    --info-soft: color-mix(in oklab, var(--info) 14%, transparent);
+    --success-border: color-mix(in oklab, var(--success) 50%, transparent);
+    --warning-border: color-mix(in oklab, var(--warning) 55%, transparent);
+    --danger-border: color-mix(in oklab, var(--danger) 45%, transparent);
+    --info-border: color-mix(in oklab, var(--info) 55%, transparent);
+    --halo-warning: 0 0 0 3px color-mix(in oklab, var(--warning) 16%, transparent);
+    --halo-dot-live: 0 0 0 4px var(--success-soft);
+    --halo-dot-warning: 0 0 0 4px var(--warning-soft);
+    --state-working: var(--info);
+    --state-waiting: var(--warning);
+    --state-done: var(--success);
+    --state-error: var(--danger);
+    --state-idle: var(--text-tertiary);
+    --code-bg: #0b0d12;
+    --edge: #3a4258;
+    --node-bg: #0c140f;
+    --focus-ring: var(--canvas-focus-ring);
+    --ring: 0 0 0 3px color-mix(in oklab, var(--focus-ring) 35%, transparent);
+    --elev-1: 0 1px 0 rgb(255 255 255 / 0.03) inset, 0 1px 2px rgb(0 0 0 / 0.4);
+    --elev-2: 0 8px 24px rgb(0 0 0 / 0.5), 0 0 0 1px var(--border-default);
+    --bg: var(--surface-0);
+    --bg-elev: var(--surface-2);
+    --panel: var(--surface-1);
+    --border: var(--border-default);
+    --text: var(--text-primary);
+    --text-dim: var(--text-secondary);
+    --text-faint: var(--text-tertiary);
+  }
 }
