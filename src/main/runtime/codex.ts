@@ -1,6 +1,6 @@
 import type { AgentInstance, AgentMessage, ImageAttachment, McpServerSpec, Role, RunEvent, TranscriptBlock, WorktreeInfo } from '@shared/types'
 import { SKILL_HARNESS_TOOLS, isModelTier } from '@shared/types'
-import { effectiveSubagentLimits, newId } from '@shared/defaults'
+import { effectiveSubagentLimits, isolateWritersOn, newId, projectKindOf } from '@shared/defaults'
 import { validModelId } from '../connections/codexAccount'
 import { ROOT_AGENT_ID, isSetupLikeRun, type CompletionInput, type PeerMessage, type RunConnection, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
 import { CodexAppServer, CodexRpcError, codexExitMessage, type CodexAppServerOptions } from './codexAppServer'
@@ -211,7 +211,7 @@ class CodexSession implements RuntimeSession {
     if (!root) throw new Error('Project has no roles')
     this.root = root
     this.setupLike = isSetupLikeRun(ctx.run.kind)
-    this.isolation = !this.setupLike && ctx.project.isolateWriters !== false && isGitRepo(ctx.project.path)
+    this.isolation = !this.setupLike && isolateWritersOn(ctx.project) && isGitRepo(ctx.project.path)
     // Explicit project limits win; otherwise derived from the roles this run actually has (effectiveSubagentLimits).
     const limits = effectiveSubagentLimits({ ...ctx.project, roles: ctx.roles })
     this.net = new CodexAgentNetwork({ roles: ctx.roles, root, maxDepth: limits.depth, maxConcurrent: limits.concurrency })
@@ -251,6 +251,7 @@ class CodexSession implements RuntimeSession {
     })
     this.continuation = new ContinuationDriver({
       kind: ctx.run.kind,
+      projectKind: projectKindOf(ctx.project),
       autoContinue: ctx.autoContinue,
       maxAutoContinues: ctx.maxAutoContinues,
       delayMs: ctx.continuationDelayMs,
@@ -457,7 +458,9 @@ class CodexSession implements RuntimeSession {
     const isSetup = this.setupLike
     const hasSkillTool = this.harness.some((t) => t.name === SKILL_HARNESS_TOOLS.load)
     const skills = hasSkillTool && !isSetup ? (this.ctx.skills?.() ?? []).filter((s) => s.roleIds.includes(role.id)).map((s) => ({ name: s.name, description: s.description })) : []
-    const base = buildRolePrompt(role, this.ctx.roles, this.ctx.project, { isSetup, isolation: this.isolation, ...(this.ctx.run.quick ? { quick: this.ctx.run.quick } : {}), ...(this.ctx.allowedDirectories?.().length ? { allowedDirectories: this.ctx.allowedDirectories() } : {}), ...(this.ctx.referenceDirectories?.().length ? { referenceDirectories: this.ctx.referenceDirectories() } : {}), ...(skills.length ? { skills, skillTool: 'load_skill' as const } : {}) })
+    // Engagements: the approved engagement document, read at prompt-build time (each new thread re-reads it).
+    const engagementDocument = this.ctx.engagementDocument?.()
+    const base = buildRolePrompt(role, this.ctx.roles, this.ctx.project, { isSetup, isolation: this.isolation, ...(this.ctx.run.quick ? { quick: this.ctx.run.quick } : {}), ...(this.ctx.allowedDirectories?.().length ? { allowedDirectories: this.ctx.allowedDirectories() } : {}), ...(this.ctx.referenceDirectories?.().length ? { referenceDirectories: this.ctx.referenceDirectories() } : {}), ...(engagementDocument ? { engagementDocument } : {}), ...(skills.length ? { skills, skillTool: 'load_skill' as const } : {}) })
     const { names } = this.toolsFor(role, isRoot)
     const notes = codexToolNotes(names, { renamedPlanTool: names.includes('orgai_update_plan') })
     const parts = [base]
@@ -882,6 +885,15 @@ class CodexSession implements RuntimeSession {
     })
   }
 
+  /**
+   * Saved rules when ctx.allowedRules is absent: ctx.savedRules() (wherever the project keeps them), else the project
+   * folder's file; none on a trust-restricted run.
+   */
+  private savedRules(): string[] {
+    if (isTrustRestrictedRun(this.ctx.run)) return []
+    return this.ctx.savedRules ? this.ctx.savedRules() : listRules(this.ctx.project.path)
+  }
+
   private async ask(agentId: string, toolName: 'Bash' | 'Edit', input: Record<string, unknown>, cwd?: string) {
     const summary = describePermission(toolName, input)
     this.setState(agentId, 'waiting', `Needs approval: ${summary}`)
@@ -904,7 +916,9 @@ class CodexSession implements RuntimeSession {
         const safe = isTrustRestrictedRun(this.ctx.run) && decision.scope === 'project' ? { ...decision, scope: 'session' as const } : decision
         const persist = {
           ...(this.ctx.allowDirectories ? { allowDirectories: this.ctx.allowDirectories.bind(this.ctx) } : {}),
-          ...(this.ctx.acceptEditsForProject ? { acceptEditsForProject: this.ctx.acceptEditsForProject.bind(this.ctx) } : {})
+          ...(this.ctx.acceptEditsForProject ? { acceptEditsForProject: this.ctx.acceptEditsForProject.bind(this.ctx) } : {}),
+          // Where the project keeps its rules (OrgAI's data folder for engagements); absent = the folder's file.
+          ...(this.ctx.saveProjectRules ? { saveProjectRules: this.ctx.saveProjectRules.bind(this.ctx) } : {})
         }
         const scoped = applyAllowScope(this.ctx.project.path, safe, suggestions, (level, message) => this.log(level, message), persist, { toolName, input, opts: callOpts })
         if (scoped) {
@@ -937,7 +951,7 @@ class CodexSession implements RuntimeSession {
       return { decision: 'decline' }
     }
     // Saved rules plus anything granted while the run is live (request_permission_rules, the rules panel).
-    const rules = [...(this.ctx.allowedRules?.() ?? (isTrustRestrictedRun(this.ctx.run) ? [] : listRules(this.ctx.project.path))), ...this.sessionRules]
+    const rules = [...(this.ctx.allowedRules?.() ?? this.savedRules()), ...this.sessionRules]
     const opts = this.matchOpts(req.cwd)
     if (req.command && matchesBashRule(req.command, rules, opts)) return { decision: 'accept' }
     const input = { command: req.command, ...(req.cwd ? { cwd: req.cwd } : {}), ...(req.reason ? { reason: req.reason } : {}) }
@@ -998,7 +1012,7 @@ class CodexSession implements RuntimeSession {
       this.transcript(agentId, { kind: 'system', text: 'Build sessions cannot write settings under .claude/ in the workspace.' }, { source: 'harness' })
       return { decision: 'decline' }
     }
-    const saved = this.ctx.allowedRules?.() ?? (isTrustRestrictedRun(this.ctx.run) ? [] : listRules(this.ctx.project.path))
+    const saved = this.ctx.allowedRules?.() ?? this.savedRules()
     const paths = changes.map((c) => c.path)
     // Settings, hooks and VCS folders are never accepted silently, whatever rule or mode is in force.
     // Lexical and real path both (a link inside the project can name a protected folder elsewhere).

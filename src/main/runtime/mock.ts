@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { AgentInstance, ConnectionId, ImageAttachment, McpServerSpec, PermissionSuggestion, PluginSpec, ProviderId, Role, RunEvent, RunPlan, TokenUsage, TranscriptBlock } from '@shared/types'
 import { CHAT_HARNESS_TOOLS, HARNESS_PROJECT_ID, MCP_HARNESS_TOOLS, SKILLS_PROJECT_ID, SKILL_ASSIST_HARNESS_TOOLS, SKILL_HARNESS_TOOLS, SPAWN_TOOL } from '@shared/types'
-import { mcpServersForRole, newId } from '@shared/defaults'
+import { mcpServersForRole, newId, projectKindOf } from '@shared/defaults'
 import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo, type CompletionInput, type PeerMessage, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
 import { harnessToolsFor, isBlockingHarnessTool, type ConfigChange, type ConfigChangeResult, type HarnessTool, type HarnessToolAudience, type HarnessToolHooks, type McpAttachResult } from './harnessTools'
 import { agentInstalledServers, mcpCallDenial, withoutServerRules } from './mcpGrants'
@@ -496,6 +496,7 @@ export class MockSession implements RuntimeSession {
     this.continueTurns = [...(script.continue ?? [])]
     this.continuation = new ContinuationDriver({
       kind: ctx.run.kind,
+      projectKind: projectKindOf(ctx.project),
       autoContinue: ctx.autoContinue,
       maxAutoContinues: ctx.maxAutoContinues,
       delayMs: ctx.continuationDelayMs,
@@ -1029,7 +1030,9 @@ export class MockSession implements RuntimeSession {
       const suggestions = restricted ? chosen.filter((s) => s.type !== 'setMode') : chosen
       const rules = allowRuleStrings(suggestions)
       // A quick run or build session never reads saved rules from the user's folder (same as the Claude adapter).
-      const saved = new Set([...(isTrustRestrictedRun(this.ctx.run) ? [] : listRules(this.ctx.project.path)), ...this.sessionRules])
+      // Saved rules come from ctx.savedRules() (OrgAI's data folder for engagements), else the folder's file.
+      const savedRules = isTrustRestrictedRun(this.ctx.run) ? [] : this.ctx.savedRules ? this.ctx.savedRules() : listRules(this.ctx.project.path)
+      const saved = new Set([...savedRules, ...this.sessionRules])
       // Live grants (request_permission_rules, the rules panel) count too, like the real adapters' matchers.
       // A server an agent installed this run is never approved by a server-level rule (same as the Claude adapter).
       const installed = step.name.startsWith('mcp__') ? installedAll : new Set<string>()
@@ -1208,7 +1211,8 @@ export interface MockAdapterOptions {
 function allowScopePersist(ctx: RuntimeContext): AllowScopePersist {
   return {
     ...(ctx.allowDirectories ? { allowDirectories: (dirs: string[]) => ctx.allowDirectories!(dirs) } : {}),
-    ...(ctx.acceptEditsForProject ? { acceptEditsForProject: () => ctx.acceptEditsForProject!() } : {})
+    ...(ctx.acceptEditsForProject ? { acceptEditsForProject: () => ctx.acceptEditsForProject!() } : {}),
+    ...(ctx.saveProjectRules ? { saveProjectRules: (rules: string[]) => ctx.saveProjectRules!(rules) } : {})
   }
 }
 
