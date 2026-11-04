@@ -40,7 +40,7 @@ const EDGE_OPTIONS: { value: CanvasEdgeStyle; label: string }[] = [
   { value: 'orthogonal', label: 'Right angle' },
   { value: 'straight', label: 'Straight' }
 ]
-const NODE_STYLE_LABEL: Partial<Record<CanvasNodeStyle, string>> = { card: 'Cards', compact: 'Name tags' }
+const NODE_STYLE_LABEL: Partial<Record<CanvasNodeStyle, string>> = { card: 'Cards', compact: 'Name tags', station: 'Stations', hex: 'Honeycomb' }
 
 function readOpen(): boolean | null {
   try {
@@ -159,7 +159,7 @@ export function CanvasSection({ canvas, onChange }: { canvas: CanvasSettings; on
                     {styleOptions.length > 1 && (
                       <SettingRow
                         title="Agents as"
-                        description="Name tags fit more agents. Activity and tokens move to the tooltip and side panel."
+                        description="Name tags, stations and honeycomb tiles fit more agents. Activity and tokens move to the tooltip and side panel."
                         width="select"
                         control={
                           <div data-testid="canvas-node-style">

@@ -56,7 +56,7 @@ export interface CanvasLayoutResult {
  * overlaps. Sectors start at 12 o'clock and run clockwise; a child's share is proportional to its leaf count.
  * Positions are top-left (centre minus half size). `rings` are the guides (centre (0, 0), radii of depths 1..n).
  */
-export function radialLayout(items: LayoutItem[], opts?: { ringStep?: number; gap?: number }): CanvasLayoutResult {
+export function radialLayout(items: LayoutItem[], opts?: { ringStep?: number; gap?: number; packed?: boolean }): CanvasLayoutResult {
   const rings: RingGuides = { cx: 0, cy: 0, radii: [] }
   if (items.length === 0) return { positions: {}, rings }
   const step = opts?.ringStep ?? 300
@@ -102,7 +102,7 @@ export function radialLayout(items: LayoutItem[], opts?: { ringStep?: number; ga
   for (let d = 1; d < byDepth.length; d++) {
     const row = byDepth[d]
     const widest = Math.max(...row.map((i) => i.width))
-    radius[d] = Math.max(radius[d - 1] + step, (row.length * (widest + gap)) / (2 * Math.PI))
+    radius[d] = opts?.packed ? radius[d - 1] + step : Math.max(radius[d - 1] + step, (row.length * (widest + gap)) / (2 * Math.PI))
     rings.radii.push(radius[d])
   }
   const positions: Record<string, { x: number; y: number }> = {}
@@ -115,13 +115,91 @@ export function radialLayout(items: LayoutItem[], opts?: { ringStep?: number; ga
   return { positions, rings }
 }
 
-/** The one entry point every canvas uses: the layout setting picks tree TB, tree LR or radial. */
+export interface HoneycombOptions {
+  /** Hex tile box (flat-top hexagon). */
+  width: number
+  height: number
+  /** Space between neighbouring cells. */
+  gap: number
+}
+
+const HONEYCOMB_TIE = 2
+
+/** Centre of lattice cell (col, row): see `honeycombSnap` for the convention. */
+export function honeycombCell(col: number, row: number, o: HoneycombOptions): { x: number; y: number } {
+  const dy = o.height + o.gap
+  const dx = 0.75 * o.width + o.gap * Math.cos(Math.PI / 6)
+  return { x: col * dx, y: row * dy + (Math.abs(col) % 2 === 1 ? dy / 2 : 0) }
+}
+
+/**
+ * Snaps a radial result to a honeycomb (docs/design/canvas-themes.md hex style). Flat-top lattice: column step
+ * dx = 0.75 * width + gap * cos 30deg, row step dy = height + gap, odd columns (by absolute index) shifted DOWN by dy / 2,
+ * so cell (0, 0) is the radial centre and its six neighbours are (0, +-1), (+-1, 0) and (+-1, -1), all about dy away.
+ * Nodes are placed root first, then by distance from the centre (depth), then clockwise from 12 o'clock (the radial
+ * order), each on the nearest free cell to where the radial layout put it. Positions are top-left; no `rings`.
+ */
+export function honeycombSnap(result: CanvasLayoutResult, items: LayoutItem[], opts: HoneycombOptions): CanvasLayoutResult {
+  const dy = opts.height + opts.gap
+  const dx = 0.75 * opts.width + opts.gap * Math.cos(Math.PI / 6)
+  const size = new Map(items.map((i) => [i.id, i]))
+  const nodes = items
+    .filter((i) => result.positions[i.id])
+    .map((i) => {
+      const p = result.positions[i.id]
+      const x = p.x + i.width / 2
+      const y = p.y + i.height / 2
+      const angle = (Math.atan2(x, -y) + 2 * Math.PI) % (2 * Math.PI)
+      return { id: i.id, x, y, dist: Math.round(Math.hypot(x, y) * 100) / 100, angle: Math.round(angle * 1e6) / 1e6 }
+    })
+    .sort((a, b) => a.dist - b.dist || a.angle - b.angle || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+  const taken = new Set<string>()
+  const positions: Record<string, { x: number; y: number }> = {}
+  for (const n of nodes) {
+    const c0 = Math.round(n.x / dx)
+    const r0 = Math.round(n.y / dy)
+    let best = null as { col: number; row: number; d: number; turn: number } | null
+    for (let k = 1; k <= 400; k++) {
+      for (let col = c0 - k; col <= c0 + k; col++) {
+        for (let row = r0 - k; row <= r0 + k; row++) {
+          if (taken.has(`${col},${row}`)) continue
+          const c = honeycombCell(col, row, opts)
+          const d = Math.hypot(c.x - n.x, c.y - n.y)
+          // Cells within TIE px of each other count as equally near; then the one next clockwise from the node's own
+          // angle wins, so a full ring of sector-centred nodes rotates onto its cells instead of colliding.
+          const turn = (((Math.atan2(c.x, -c.y) - Math.atan2(n.x, -n.y)) % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI)
+          const better =
+            !best ||
+            d < best.d - HONEYCOMB_TIE ||
+            (Math.abs(d - best.d) <= HONEYCOMB_TIE && (turn < best.turn - 1e-9 || (Math.abs(turn - best.turn) <= 1e-9 && (col < best.col || (col === best.col && row < best.row)))))
+          if (better) best = { col, row, d, turn }
+        }
+      }
+      if (best && best.d <= k * dx) break
+    }
+    if (!best) continue
+    taken.add(`${best.col},${best.row}`)
+    const c = honeycombCell(best.col, best.row, opts)
+    const it = size.get(n.id)
+    positions[n.id] = { x: c.x - (it?.width ?? 0) / 2, y: c.y - (it?.height ?? 0) / 2 }
+  }
+  return { positions }
+}
+
+/**
+ * The one entry point every canvas uses: the layout setting picks tree TB, tree LR or radial. `honeycomb` applies to
+ * the radial layout only (hex node style): the result is snapped to a honeycomb and has no rings.
+ */
 export function layoutCanvas(
   layout: CanvasLayout,
   items: LayoutItem[],
-  opts?: { nodesep?: number; ranksep?: number; ringStep?: number }
+  opts?: { nodesep?: number; ranksep?: number; ringStep?: number; honeycomb?: HoneycombOptions }
 ): CanvasLayoutResult {
-  if (layout === 'radial') return radialLayout(items, { ringStep: opts?.ringStep })
+  if (layout === 'radial') {
+    // `packed` keeps ring d at d * ringStep (no circumference growth): the lattice resolves crowding itself.
+    const radial = radialLayout(items, { ringStep: opts?.ringStep, packed: !!opts?.honeycomb })
+    return opts?.honeycomb ? honeycombSnap(radial, items, opts.honeycomb) : radial
+  }
   return { positions: treeLayout(items, { nodesep: opts?.nodesep, ranksep: opts?.ranksep, rankdir: layout === 'left-right' ? 'LR' : 'TB' }) }
 }
 
