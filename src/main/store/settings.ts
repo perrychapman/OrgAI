@@ -11,7 +11,7 @@ import type {
   ProviderAuth,
   ProviderConnections
 } from '@shared/types'
-import { CANVAS_EDGE_STYLES, CANVAS_PATTERNS, CONNECTION_IDS, THEME_MODES, isModelTier, isPermissionMode } from '@shared/types'
+import { CANVAS_EDGE_STYLES, CANVAS_LAYOUTS, CANVAS_NODE_STYLES, CANVAS_PATTERNS, CONNECTION_IDS, THEME_MODES, isModelTier, isPermissionMode } from '@shared/types'
 import { DEFAULT_APPEARANCE, DEFAULT_APP_SETTINGS, MAX_AUTO_CONTINUES_LIMIT, MODEL_PRICE_ID_MAX_CHARS, MODEL_PRICE_OVERRIDES_MAX, defaultConnections, isConnectionId } from '@shared/defaults'
 import { normalizeModelId, sanitizeModelPrice } from '../runtime/pricing'
 import { validModelId } from '../connections/codexAccount'
@@ -41,6 +41,8 @@ export function normalizeAppearance(raw: unknown): AppearanceSettings {
       pattern: oneOf(CANVAS_PATTERNS, c.pattern, d.canvas.pattern),
       tint: typeof c.tint === 'boolean' ? c.tint : d.canvas.tint,
       edges: oneOf(CANVAS_EDGE_STYLES, c.edges, d.canvas.edges),
+      layout: oneOf(CANVAS_LAYOUTS, c.layout, d.canvas.layout),
+      nodeStyle: oneOf(CANVAS_NODE_STYLES, c.nodeStyle, d.canvas.nodeStyle),
       minimap: typeof c.minimap === 'boolean' ? c.minimap : d.canvas.minimap
     },
     reduceMotion: oneOf(['system', 'on'] as const, r.reduceMotion, d.reduceMotion)
