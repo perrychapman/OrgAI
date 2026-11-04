@@ -37,7 +37,10 @@ export function Dialog({
     el.querySelector<HTMLElement>('[data-autofocus]')?.focus()
     return () => {
       if (el.open) el.close()
-      opener?.focus?.()
+      // Passive cleanups can run after the caller already moved focus on (a save that focuses the new row): give focus
+      // back to the opener only when it is still on nothing or inside the closed dialog.
+      const now = document.activeElement
+      if (!now || now === document.body || el.contains(now)) opener?.focus?.()
     }
   }, [open])
   return (
