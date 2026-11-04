@@ -20,9 +20,20 @@ export function settingsLocalPath(projectPath: string): string {
   return join(projectPath, '.claude', 'settings.local.json')
 }
 
+/**
+ * Where saved rules are read and written: a project folder (its .claude/settings.local.json, code projects) or
+ * `{ file }`, an explicit rules file of the same JSON shape (engagements: store/projectData.ts appRulesFile; build it
+ * with projectRulesFile). Every function below takes either.
+ */
+export type RulesTarget = string | { file: string }
+
+function rulesFileOf(target: RulesTarget): string {
+  return typeof target === 'string' ? settingsLocalPath(target) : target.file
+}
+
 /** The parsed file, {} when it does not exist. Throws when it exists but is not a JSON object. */
-export function readLocalSettings(projectPath: string): LocalSettings {
-  const file = settingsLocalPath(projectPath)
+export function readLocalSettings(target: RulesTarget): LocalSettings {
+  const file = rulesFileOf(target)
   if (!existsSync(file)) return {}
   const text = readFileSync(file, 'utf8').replace(/^﻿/, '')
   if (!text.trim()) return {}
@@ -31,8 +42,8 @@ export function readLocalSettings(projectPath: string): LocalSettings {
   return parsed as LocalSettings
 }
 
-function writeLocalSettings(projectPath: string, settings: LocalSettings): void {
-  const file = settingsLocalPath(projectPath)
+function writeLocalSettings(target: RulesTarget, settings: LocalSettings): void {
+  const file = rulesFileOf(target)
   mkdirSync(dirname(file), { recursive: true })
   writeFileSync(file, JSON.stringify(settings, null, 2) + '\n', 'utf8')
 }
@@ -48,9 +59,9 @@ function uniqueRules(rules: readonly string[]): string[] {
 }
 
 /** Saved allow rules, trimmed and deduplicated. An unreadable file yields no rules rather than failing the caller. */
-export function listRules(projectPath: string): string[] {
+export function listRules(target: RulesTarget): string[] {
   try {
-    return uniqueRules(allowOf(readLocalSettings(projectPath)))
+    return uniqueRules(allowOf(readLocalSettings(target)))
   } catch {
     return []
   }
@@ -61,8 +72,8 @@ export function listRules(projectPath: string): string[] {
  * file is rewritten when it held any, even with nothing new). `added` lists only rules that were not there before.
  * Synchronous read-modify-write: no other write in this process can interleave.
  */
-export function addRulesReport(projectPath: string, rules: string[]): { rules: string[]; added: string[] } {
-  const settings = readLocalSettings(projectPath)
+export function addRulesReport(target: RulesTarget, rules: string[]): { rules: string[]; added: string[] } {
+  const settings = readLocalSettings(target)
   const raw = allowOf(settings)
   const current = uniqueRules(raw)
   // Never write a rule with a hidden character (card suggestions, install-card edits and permissions:add alike).
@@ -75,26 +86,26 @@ export function addRulesReport(projectPath: string, rules: string[]): { rules: s
   const next = [...current, ...added]
   if (added.length || raw.length !== current.length || raw.some((r, i) => r !== current[i])) {
     settings.permissions = { ...(settings.permissions ?? {}), allow: next }
-    writeLocalSettings(projectPath, settings)
+    writeLocalSettings(target, settings)
   }
   return { rules: next, added }
 }
 
 /** Merge rules into permissions.allow (addRulesReport). Returns the full list. */
-export function addRules(projectPath: string, rules: string[]): string[] {
-  return addRulesReport(projectPath, rules).rules
+export function addRules(target: RulesTarget, rules: string[]): string[] {
+  return addRulesReport(target, rules).rules
 }
 
 /** Drop one rule from permissions.allow. Returns the remaining rules. */
-export function removeRule(projectPath: string, rule: string): string[] {
-  const settings = readLocalSettings(projectPath)
+export function removeRule(target: RulesTarget, rule: string): string[] {
+  const settings = readLocalSettings(target)
   const raw = allowOf(settings)
-  const target = rule.trim()
-  if (!raw.some((r) => r.trim() === target)) return uniqueRules(raw)
+  const wanted = rule.trim()
+  if (!raw.some((r) => r.trim() === wanted)) return uniqueRules(raw)
   // Every copy goes (a bloated file may hold the rule many times, with stray whitespace).
-  const next = uniqueRules(raw.filter((r) => r.trim() !== target))
+  const next = uniqueRules(raw.filter((r) => r.trim() !== wanted))
   settings.permissions = { ...(settings.permissions ?? {}), allow: next }
-  writeLocalSettings(projectPath, settings)
+  writeLocalSettings(target, settings)
   return next
 }
 
@@ -581,11 +592,12 @@ function dedupeRules(rules: PermissionRuleSpec[]): PermissionRuleSpec[] {
 }
 
 /** What a 'project' scope may persist besides rules (RuntimeContext; both missing on trust-restricted runs). */
-export type AllowScopePersist = Pick<RuntimeContext, 'allowDirectories' | 'acceptEditsForProject'>
+export type AllowScopePersist = Pick<RuntimeContext, 'allowDirectories' | 'acceptEditsForProject' | 'saveProjectRules'>
 
 /**
  * Apply an allow decision's scope. Returns the suggestions to grant for the rest of the session, or
- * null when the allow covers this call only. Project scope also saves the allow rules to the project, the
+ * null when the allow covers this call only. Project scope also saves the allow rules to the project (through
+ * persist.saveProjectRules when given, else into `projectPath`'s .claude/settings.local.json), the
  * addDirectories folders through persist.allowDirectories and a setMode acceptEdits through
  * persist.acceptEditsForProject (RunManager logs both and switches the mode only from 'default'). "Saved" is logged
  * only for rules that were new; with `call` given, a shell command the saved rules still do not cover logs a warning.
@@ -607,7 +619,8 @@ export function applyAllowScope(
     if (rules.length < all.length) log('warn', `Not saved for the project (too broad): ${all.filter((r) => isBlanketAllowRule(r)).join(', ')}. It applies to this session only.`)
     try {
       if (rules.length) {
-        const { rules: saved, added } = addRulesReport(projectPath, rules)
+        // RunManager's saveProjectRules writes where the project keeps its rules (OrgAI's data folder for engagements).
+        const { rules: saved, added } = persist?.saveProjectRules ? persist.saveProjectRules(rules) : addRulesReport(projectPath, rules)
         if (added.length) log('info', `Saved permission rule${added.length === 1 ? '' : 's'} for this project: ${added.join(', ')}`)
         const command = call && SHELL_TOOLS.has(call.toolName) ? commandOf(call.input) : undefined
         if (command && shellRulesFor(command, saved.filter((r) => r.startsWith(`${call!.toolName}(`)), call!.opts) === null) {

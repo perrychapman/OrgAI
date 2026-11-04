@@ -307,6 +307,21 @@ describe('free cd segments', () => {
     expect(matchOptionsFor({ project: { path: '/p' } as never })).toEqual({ cwd: '/p', freeDirs: ['/p'] })
     expect(matchOptionsFor({ project: { path: '/p' } as never, protectedDirectories: () => ['/data'] }).deniedDirs).toEqual(['/data'])
   })
+
+  it('reference folders are read-only dirs: a cd alone is free, a compound command is not covered', () => {
+    const ctx = { project: { path: '/home/u/proj' } as never, allowedDirectories: () => ['/x'], referenceDirectories: () => ['/home/u/refs'] }
+    const opts = { ...matchOptionsFor(ctx), platform: 'linux' as const }
+    expect(opts.freeDirs).toEqual(['/home/u/proj', '/x'])
+    expect(opts.readOnlyDirs).toEqual(['/home/u/refs'])
+    expect(isFreeCdTarget('/home/u/refs/sub', opts)).toBe(false)
+    expect(matchingRule('Bash', { command: 'cd /home/u/refs' }, [], opts)).toBeTruthy()
+    expect(matchingRule('Bash', { command: 'cd /home/u/refs/sub' }, [], opts)).toBeTruthy()
+    expect(matchingRule('Bash', { command: 'cd /home/u/other' }, [], opts)).toBeUndefined()
+    const rules = ['Bash(npm test:*)']
+    expect(matchingRule('Bash', { command: 'cd /home/u/refs && npm test' }, rules, opts)).toBeUndefined()
+    expect(matchingRule('Bash', { command: 'cd /x && npm test' }, rules, opts)).toBeTruthy()
+    expect(matchingRule('Bash', { command: 'cd /home/u/refs && cd /x' }, rules, opts)).toBeTruthy()
+  })
 })
 
 describe('reviewer-3: program options that run another program (programRunsProgram)', () => {

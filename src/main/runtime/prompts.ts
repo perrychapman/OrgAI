@@ -1,4 +1,5 @@
-import type { Project, QuickRunInfo, Role } from '@shared/types'
+import type { Project, ProjectKind, QuickRunInfo, Role } from '@shared/types'
+import { projectKindOf } from '@shared/defaults'
 import { CHAT_HARNESS_TOOLS, RUN_HARNESS_TOOLS } from '@shared/types'
 import { INTEGRATE_TOOL, datum } from './harnessTools'
 import type { PeerMessage } from './types'
@@ -42,6 +43,18 @@ export interface PromptFlags {
    * not quick) gain one sentence naming them. Missing or empty = no sentence.
    */
   allowedDirectories?: string[]
+  /**
+   * Read-only reference folders (RuntimeContext.referenceDirectories()). Adapters pass
+   * `referenceDirectories: ctx.referenceDirectories?.()` wherever they pass allowedDirectories. Work-run prompts (not
+   * setup, not quick) gain one sentence naming them, for writing and reading roles alike. Missing or empty = none.
+   */
+  referenceDirectories?: string[]
+  /**
+   * Engagements: the approved engagement document's text (RuntimeContext.engagementDocument()). Adapters pass
+   * `engagementDocument: ctx.engagementDocument?.()`. Work-run prompts include it as the agreed engagement document
+   * (user-approved content, not untrusted data). Missing = none.
+   */
+  engagementDocument?: string
 }
 
 /** The roles this role may delegate to. */
@@ -114,8 +127,20 @@ export function networkPeerText(): string {
   )
 }
 
-export function architectureText(architecturePath: string): string {
+export function architectureText(architecturePath: string, kind: ProjectKind = 'code'): string {
+  if (kind === 'engagement') return `The agreed engagement, workstreams, working agreements and deliverable standards live in ${architecturePath}. Read it before starting work and follow it.`
   return `The agreed architecture and conventions live in ${architecturePath}. Read it before changing code and follow it.`
+}
+
+/**
+ * The approved engagement document, shown in the prompt (OrgAI keeps it in its data folder, not the working folder).
+ * It is user-approved content, so it is not wrapped as untrusted data. The text is already capped by
+ * readEngagementDocument; without one, a short line says none was agreed yet.
+ */
+export function engagementDocumentText(doc: string | undefined): string {
+  const text = typeof doc === 'string' ? doc.trim() : ''
+  if (!text) return 'No engagement document has been agreed yet. Work from the brief and ask the user when something material is unclear.'
+  return `The agreed engagement document (approved by the user; follow it):\n\n${text}`
 }
 
 /** For the root orchestrator: keep the architecture document true when the work changes it. */
@@ -129,9 +154,13 @@ export function orgChangeText(): string {
 }
 
 /** Work-run orchestrators work unattended: plan first, keep going, stop only for genuine decisions. */
-export function unattendedText(): string {
+export function unattendedText(kind: ProjectKind = 'code'): string {
+  const last =
+    kind === 'engagement'
+      ? 'the last step is a review of the deliverables against the brief, then the final report'
+      : 'the last step is always verification: build and tests, then the final report'
   return (
-    'Work unattended. Start every task by calling set_plan with the goal and the concrete steps (the last step is always verification: build and tests, then the final report). ' +
+    `Work unattended. Start every task by calling set_plan with the goal and the concrete steps (${last}). ` +
     'Mark steps with update_plan as you go. Do not stop to ask whether to continue; continue until every step is done, then call complete_plan with a summary. ' +
     'Stop only for a genuine decision the user must make: ask_user (waits for the answer) or mark_blocked (ends the run\'s automatic continuation with the reason). ' +
     'The harness will remind you of remaining steps whenever a turn ends with work left.'
@@ -142,6 +171,12 @@ export function unattendedText(): string {
 export function allowedDirectoriesText(dirs: string[] | undefined): string {
   const list = (dirs ?? []).filter((d) => typeof d === 'string' && d.trim()).slice(0, 20).map((d) => '"' + datum(d, 300) + '"')
   return list.length ? 'You may also read and edit files in: ' + list.join(', ') + '.' : ''
+}
+
+/** One sentence naming the project's read-only reference folders (paths are data: one line, at most 20). */
+export function referenceDirectoriesText(dirs: string[] | undefined): string {
+  const list = (dirs ?? []).filter((d) => typeof d === 'string' && d.trim()).slice(0, 20).map((d) => '"' + datum(d, 300) + '"')
+  return list.length ? 'These folders are reference material: read them, never change them: ' + list.join(', ') + '.' : ''
 }
 
 /**
@@ -247,7 +282,8 @@ export function skillsText(skills: { name: string; description: string }[] | und
   )
 }
 
-export function architectureDriftText(architecturePath: string): string {
+export function architectureDriftText(architecturePath: string, kind: ProjectKind = 'code'): string {
+  if (kind === 'engagement') return `When a task changes the workstreams, working agreements, deliverable standards or recurring procedures, update ${architecturePath} in the same run so it stays true, and mention the update in your report.`
   return `When a task changes the stack, module layout, conventions or commands, update ${architecturePath} in the same run so it stays true, and mention the update in your report.`
 }
 
@@ -304,12 +340,15 @@ export function buildRolePrompt(role: Role, roles: Role[], project: Project, fla
     const skills = skillsText(flags.skills, flags.skillTool)
     if (skills) parts.push(skills)
   } else if (!isSetup) {
+    const kind = projectKindOf(project)
     const archPath = project.setup?.architecturePath
-    if (archPath) {
-      parts.push(architectureText(archPath))
-      if (role.reportsTo === null) parts.push(architectureDriftText(archPath))
+    if (kind === 'engagement') {
+      parts.push(engagementDocumentText(flags.engagementDocument))
+    } else if (archPath) {
+      parts.push(architectureText(archPath, kind))
+      if (role.reportsTo === null) parts.push(architectureDriftText(archPath, kind))
     }
-    if (role.reportsTo === null) parts.push(unattendedText())
+    if (role.reportsTo === null) parts.push(unattendedText(kind))
     if (role.reportsTo === null) parts.push(orgChangeText())
     if (role.reportsTo === null) parts.push(crossRunText())
     if (role.reportsTo === null) parts.push(mcpInstallText('root'))
@@ -319,6 +358,8 @@ export function buildRolePrompt(role: Role, roles: Role[], project: Project, fla
     parts.push(toolHygieneText())
     const folders = allowedDirectoriesText(flags.allowedDirectories)
     if (folders) parts.push(folders)
+    const references = referenceDirectoriesText(flags.referenceDirectories)
+    if (references) parts.push(references)
     const skills = skillsText(flags.skills, flags.skillTool)
     if (skills) parts.push(skills)
     const brief = briefText(project.brief)
@@ -337,6 +378,8 @@ export function isArchitectureFile(filePath: unknown, architecturePath: string):
   if (typeof filePath !== 'string' || !filePath) return false
   const norm = (p: string): string => p.replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase()
   const file = norm(filePath)
+  if (!architecturePath) return false
+  // Engagements keep their document in OrgAI's data folder, so no path in the folder is the document.
   const target = norm(architecturePath)
   return file === target || file.endsWith(`/${target}`)
 }

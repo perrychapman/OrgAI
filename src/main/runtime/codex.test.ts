@@ -1,13 +1,20 @@
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentInstance, RunEvent } from '@shared/types'
-import { CodexAdapter, codexModelFor, offerableByRealPath, type CodexServerLike } from './codex'
+import { CodexAdapter, codexModelFor, codexWritableRoots, offerableByRealPath, type CodexServerLike } from './codex'
 import type { CodexAppServerOptions } from './codexAppServer'
 import { fakeCtx, project, role, runSummary } from './testHelpers'
 import type { RuntimeContext, RuntimeSession } from './types'
+import { buildRolePrompt } from './prompts'
+
+// buildRolePrompt is the real one, wrapped so tests can read the flags an adapter passes.
+vi.mock('./prompts', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('./prompts')>()
+  return { ...orig, buildRolePrompt: vi.fn(orig.buildRolePrompt) }
+})
 
 /** A scripted app-server: records requests, answers them, and lets the test push notifications and server requests. */
 class FakeServer implements CodexServerLike {
@@ -255,6 +262,48 @@ describe('CodexAdapter session', () => {
     await vi.waitFor(() => expect(agentOf().worktree?.status).toBe('empty'), { timeout: 5000 })
   })
 
+  it('an engagement isolates writers only with an explicit isolateWriters: true (isolateWritersOn)', async () => {
+    const run = (...a: string[]) => execFileSync('git', a, { cwd: dir, stdio: 'ignore' })
+    run('init', '-q')
+    run('config', 'user.email', 't@t')
+    run('config', 'user.name', 't')
+    writeFileSync(join(dir, 'a.txt'), 'a')
+    run('add', '.')
+    run('commit', '-q', '-m', 'init')
+    const spawnCwd = async (over: Partial<ReturnType<typeof project>>): Promise<string> => {
+      const { adapter, servers } = setup()
+      const ctx = fakeCtx({ project: project({ path: dir, kind: 'engagement', ...over }), continuationDelayMs: 5 })
+      session = await adapter.start(ctx)
+      await vi.waitFor(() => expect(servers[0]?.turnStarts('th-1')).toHaveLength(1), { timeout: 5000 })
+      const s = servers[0]!
+      await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c1', namespace: null, tool: 'spawn_agent', arguments: { role: 'engineer', brief: 'Edit a.txt' } })
+      const cwd = s.of('thread/start')[1].params.cwd as string
+      await session.stop()
+      session = undefined
+      return cwd
+    }
+    // Unset on an engagement: off (the code default would be on).
+    expect(await spawnCwd({ isolateWriters: undefined })).toBe(dir)
+    expect(await spawnCwd({ isolateWriters: true })).toMatch(/[\\/]\.claude[\\/]worktrees[\\/]agent-cx_/)
+  })
+
+  it('passes ctx.engagementDocument as the engagementDocument prompt flag, read when each thread starts', async () => {
+    let doc: string | undefined = 'Engagement doc v1'
+    const { adapter, servers } = setup()
+    const ctx = ctxFor({ project: project({ path: dir, isolateWriters: false, kind: 'engagement' }), engagementDocument: () => doc })
+    vi.mocked(buildRolePrompt).mockClear()
+    session = await adapter.start(ctx)
+    const s = servers[0]!
+    await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+    expect(vi.mocked(buildRolePrompt).mock.calls.at(-1)![3]).toMatchObject({ engagementDocument: 'Engagement doc v1' })
+    doc = 'Engagement doc v2'
+    await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c1', namespace: null, tool: 'spawn_agent', arguments: { role: 'engineer', brief: 'x' } })
+    expect(vi.mocked(buildRolePrompt).mock.calls.at(-1)![3]).toMatchObject({ engagementDocument: 'Engagement doc v2' })
+    doc = undefined
+    await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c2', namespace: null, tool: 'spawn_agent', arguments: { role: 'reviewer', brief: 'y' } })
+    expect('engagementDocument' in vi.mocked(buildRolePrompt).mock.calls.at(-1)![3]!).toBe(false)
+  })
+
   it('steers the running turn when a message arrives mid-turn, and falls back to a new turn', async () => {
     const { adapter, servers } = setup()
     const ctx = ctxFor()
@@ -302,7 +351,7 @@ describe('CodexAdapter session', () => {
   describe('approvals', () => {
     const cmd = (command: string) => ({ threadId: 'th-1', turnId: 'tu-1', itemId: 'i-1', command, cwd: '/r', startedAtMs: 1 })
 
-    async function started(mode: 'default' | 'acceptEdits' | 'dontAsk' | 'bypassPermissions', over: Partial<RuntimeContext> = {}) {
+    async function started(mode: 'default' | 'acceptEdits' | 'dontAsk' | 'bypassPermissions' | 'auto', over: Partial<RuntimeContext> = {}) {
       const { adapter, servers } = setup()
       const ctx = ctxFor({ project: project({ path: dir, isolateWriters: false, permissionMode: mode }), ...over })
       session = await adapter.start(ctx)
@@ -538,6 +587,195 @@ describe('CodexAdapter session', () => {
         await s.ask('item/fileChange/requestApproval', edit)
         expect(allowDirectories).toHaveBeenCalledWith([expect.stringContaining(other.slice(-12))])
         expect(acceptEditsForProject).toHaveBeenCalledTimes(1)
+      })
+    })
+
+    describe('reference folders', () => {
+      const edit = { threadId: 'th-1', turnId: 'tu-1', itemId: 'f1', startedAtMs: 1 }
+      const change = (s: FakeServer, paths: string[], id = 'f1') =>
+        s.push('item/started', { threadId: 'th-1', turnId: 'tu-1', item: { type: 'fileChange', id, status: 'inProgress', changes: paths.map((path) => ({ path, kind: { type: 'update', move_path: null }, diff: '' })) } })
+      let ref = ''
+      let other = ''
+      beforeEach(() => {
+        ref = realpathSync.native(mkdtempSync(join(tmpdir(), 'orgai-codex-ref-')))
+        other = realpathSync.native(mkdtempSync(join(tmpdir(), 'orgai-codex-other-')))
+      })
+      afterEach(() => {
+        rmSync(ref, { recursive: true, force: true })
+        rmSync(other, { recursive: true, force: true })
+      })
+      const msg = () => `${ref} is a reference folder: agents may read it, not change it`
+      const harnessRows = (ctx: { events: RunEvent[] }) =>
+        ctx.events.filter((e) => e.type === 'transcript' && e.entry.block.kind === 'system' && e.entry.source === 'harness' && e.entry.block.text.includes('reference folder'))
+
+      it('never puts a reference folder in writable_roots, even when it is also an allowed folder', async () => {
+        const { s } = await started('default', { allowedDirectories: () => [other, ref], referenceDirectories: () => [ref] })
+        expect(s.options.config).toContain(`sandbox_workspace_write.writable_roots=${JSON.stringify([other])}`)
+        const only = await started('default', { referenceDirectories: () => [ref] })
+        expect((only.s.options.config ?? []).join('\n')).not.toContain('writable_roots')
+        // Pure: an allowed folder inside or containing a reference folder is left out; restricted runs get none.
+        expect(codexWritableRoots({ run: runSummary({}), allowedDirectories: () => [join(ref, 'sub'), other], referenceDirectories: () => [ref] })).toEqual([other])
+        expect(codexWritableRoots({ run: runSummary({}), allowedDirectories: () => [tmpdir(), other], referenceDirectories: () => [ref] })).toEqual([other])
+        expect(codexWritableRoots({ run: runSummary({ quick: { folder: dir } as never }), allowedDirectories: () => [other] })).toEqual([])
+      })
+
+      it('declines a change under a reference folder without a card, with a warn log and a harness row, even in acceptEdits with a blanket rule', async () => {
+        for (const mode of ['default', 'acceptEdits'] as const) {
+          const { ctx, s } = await started(mode, { referenceDirectories: () => [ref], allowedRules: () => ['Edit', 'Write'] })
+          change(s, [join(dir, 'ok.ts'), join(ref, 'brief.md')])
+          expect(await s.ask('item/fileChange/requestApproval', edit), mode).toEqual({ decision: 'decline' })
+          expect(ctx.requestPermission).not.toHaveBeenCalled()
+          expect(ctx.events.some((e) => e.type === 'log' && e.level === 'warn' && e.message.includes(msg()))).toBe(true)
+          expect(harnessRows(ctx)).toHaveLength(1)
+          expect(harnessRows(ctx)[0]).toMatchObject({ entry: { block: { text: msg() } } })
+          await session?.stop()
+        }
+      })
+
+      it('declines a grantRoot under or above a reference folder, and a change with no paths (fails closed)', async () => {
+        const { ctx, s } = await started('default', { referenceDirectories: () => [ref] })
+        expect(await s.ask('item/fileChange/requestApproval', { ...edit, itemId: 'none-1', grantRoot: join(ref, 'sub') })).toEqual({ decision: 'decline' })
+        expect(await s.ask('item/fileChange/requestApproval', { ...edit, itemId: 'none-2', grantRoot: tmpdir() })).toEqual({ decision: 'decline' })
+        expect(await s.ask('item/fileChange/requestApproval', { ...edit, itemId: 'none-3' })).toEqual({ decision: 'decline' })
+        expect(ctx.requestPermission).not.toHaveBeenCalled()
+        expect(harnessRows(ctx)).toHaveLength(3)
+      })
+
+      it('a change elsewhere follows the old path, and the list is read live', async () => {
+        const refs: string[] = []
+        const { ctx, s } = await started('acceptEdits', { referenceDirectories: () => refs })
+        change(s, [join(dir, 'a.ts')])
+        expect(await s.ask('item/fileChange/requestApproval', edit)).toEqual({ decision: 'accept' })
+        change(s, [join(ref, 'a.md')], 'f2')
+        // Not a reference folder yet: outside every free folder, so it asks.
+        await s.ask('item/fileChange/requestApproval', { ...edit, itemId: 'f2' })
+        expect(ctx.requestPermission).toHaveBeenCalledTimes(1)
+        refs.push(ref)
+        change(s, [join(ref, 'a.md')], 'f3')
+        expect(await s.ask('item/fileChange/requestApproval', { ...edit, itemId: 'f3' })).toEqual({ decision: 'decline' })
+        expect(ctx.requestPermission).toHaveBeenCalledTimes(1)
+        // With no reference folders at all, a change without paths still goes to the card as before.
+        refs.length = 0
+        await s.ask('item/fileChange/requestApproval', { ...edit, itemId: 'none' })
+        expect(ctx.requestPermission).toHaveBeenCalledTimes(2)
+      })
+
+      // A writing root, so the sandbox is not forced to read-only by the role.
+      const writers = [role({ id: 'r-lead', slug: 'lead', tools: ['Read', 'Edit', 'Write', 'Bash'] })]
+      async function startedWriter(mode: 'bypassPermissions' | 'auto' | 'default', over: Partial<RuntimeContext> = {}) {
+        const { adapter, servers } = setup()
+        const ctx = ctxFor({ roles: writers, project: project({ path: dir, isolateWriters: false, permissionMode: mode, roles: writers }), ...over })
+        session = await adapter.start(ctx)
+        const s = servers[0]
+        await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+        return { ctx, s, servers }
+      }
+      const warnings = (ctx: { events: RunEvent[] }, text: string) => ctx.events.filter((e) => e.type === 'log' && e.level === 'warn' && e.message.includes(text))
+      const bypassWarning = 'Reference folders keep this Codex run asking before writes outside the project.'
+      const autoWarning = "Reference folders turn off Codex's auto reviewer"
+
+      it('bypassPermissions with a reference folder runs workspace-write + untrusted and warns once (H1)', async () => {
+        const { ctx, s } = await startedWriter('bypassPermissions', { referenceDirectories: () => [ref] })
+        expect(s.of('thread/start')[0].params).toMatchObject({ approvalPolicy: 'untrusted', sandbox: 'workspace-write' })
+        expect(warnings(ctx, bypassWarning)).toHaveLength(1)
+        // The downgraded thread now sends file approvals, and a change under the reference folder is declined.
+        change(s, [join(ref, 'brief.md')])
+        expect(await s.ask('item/fileChange/requestApproval', edit)).toEqual({ decision: 'decline' })
+        await session?.stop()
+        // No reference folders (absent or empty): the policy is unchanged and nothing is logged.
+        for (const over of [{}, { referenceDirectories: () => [] }]) {
+          const plain = await startedWriter('bypassPermissions', over)
+          expect(plain.s.of('thread/start')[0].params).toMatchObject({ approvalPolicy: 'never', sandbox: 'danger-full-access' })
+          expect(warnings(plain.ctx, 'Reference folders')).toHaveLength(0)
+          await session?.stop()
+        }
+        // An unreadable list counts as having reference folders (fails closed); it breaks only after start here,
+        // because the prompt and writable_roots read it unguarded at start.
+        let boom = false
+        await startedWriter('bypassPermissions', { referenceDirectories: () => { if (boom) throw new Error('boom'); return [] } })
+        boom = true
+        expect((session as any).policyFor(writers[0])).toMatchObject({ approvalPolicy: 'untrusted', sandbox: 'workspace-write' })
+      })
+
+      it('auto with a reference folder drops the auto reviewer so approvals reach OrgAI; without one it keeps it', async () => {
+        const { ctx, s } = await startedWriter('auto', { referenceDirectories: () => [ref] })
+        const params = s.of('thread/start')[0].params
+        expect(params).toMatchObject({ approvalPolicy: 'on-request', sandbox: 'workspace-write' })
+        expect(params.approvalsReviewer).toBeUndefined()
+        expect(warnings(ctx, autoWarning)).toHaveLength(1)
+        await session?.stop()
+        const plain = await startedWriter('auto')
+        expect(plain.s.of('thread/start')[0].params).toMatchObject({ approvalPolicy: 'on-request', sandbox: 'workspace-write', approvalsReviewer: 'auto_review' })
+        expect(warnings(plain.ctx, 'Reference folders')).toHaveLength(0)
+        await session?.stop()
+        // default is untouched by reference folders.
+        const def = await startedWriter('default', { referenceDirectories: () => [ref] })
+        expect(def.s.of('thread/start')[0].params).toMatchObject({ approvalPolicy: 'untrusted', sandbox: 'workspace-write' })
+        expect(warnings(def.ctx, 'Reference folders')).toHaveLength(0)
+      })
+
+      it('re-derives the policy on the MCP restart path (reference folder added after start)', async () => {
+        const refs: string[] = []
+        const mcp: any[] = []
+        const { ctx, s, servers } = await startedWriter('bypassPermissions', { referenceDirectories: () => refs, resolvedMcpServers: async () => mcp })
+        expect(s.of('thread/start')[0].params).toMatchObject({ approvalPolicy: 'never', sandbox: 'danger-full-access' })
+        refs.push(ref)
+        mcp.push({ spec: { id: 'm', name: 'files', transport: 'stdio', command: 'npx', enabled: true, source: 'agent', addedAt: '' }, env: {}, headers: {} })
+        await (session as any).addMcpServer(mcp[0].spec)
+        s.push('turn/completed', turnDone('th-1', 'tu-1'))
+        await vi.waitFor(() => expect(servers).toHaveLength(2))
+        const s2 = servers[1]
+        await vi.waitFor(() => expect(s2.of('thread/resume')).toHaveLength(1))
+        expect(s2.of('thread/resume')[0].params).toMatchObject({ threadId: 'th-1', approvalPolicy: 'untrusted', sandbox: 'workspace-write' })
+        expect(warnings(ctx, bypassWarning)).toHaveLength(1)
+        // The thread keeps the new policy: its file approvals are checked against the reference folder.
+        change(s2, [join(ref, 'brief.md')])
+        expect(await s2.ask('item/fileChange/requestApproval', edit)).toEqual({ decision: 'decline' })
+      })
+
+      it('editPathsFree never frees a path under a reference folder, even when it is also a free folder', async () => {
+        await started('acceptEdits', { allowedDirectories: () => [ref, other], referenceDirectories: () => [ref] })
+        const free = (paths: string[]) => (session as any).editPathsFree(paths) as boolean
+        expect(free([join(ref, 'a.md')])).toBe(false)
+        expect(free([join(other, 'a.md'), join(ref, 'a.md')])).toBe(false)
+        expect(free([join(other, 'a.md')])).toBe(true)
+        expect(free([join(dir, 'a.ts')])).toBe(true)
+        await session?.stop()
+        // An unreadable reference list frees nothing.
+        let boom = false
+        await started('acceptEdits', { referenceDirectories: () => { if (boom) throw new Error('boom'); return [] } })
+        expect(free([join(dir, 'a.ts')])).toBe(true)
+        boom = true
+        expect(free([join(dir, 'a.ts')])).toBe(false)
+      })
+    })
+
+    describe('rules kept outside the folder (engagements)', () => {
+      const folderRules = (rules: string[]) => {
+        mkdirSync(join(dir, '.claude'), { recursive: true })
+        writeFileSync(join(dir, '.claude', 'settings.local.json'), JSON.stringify({ permissions: { allow: rules } }))
+      }
+
+      it('reads ctx.savedRules instead of the folder file when allowedRules is absent (commands and file changes)', async () => {
+        folderRules(['Bash(ls:*)', 'Edit'])
+        const { ctx, s } = await started('default', { savedRules: () => ['Bash(npm test:*)'] })
+        expect(await s.ask('item/commandExecution/requestApproval', cmd('npm test'))).toEqual({ decision: 'accept' })
+        expect(ctx.requestPermission).not.toHaveBeenCalled()
+        // The folder's own rules are not read when the project keeps its rules elsewhere.
+        await s.ask('item/commandExecution/requestApproval', cmd('ls'))
+        expect(ctx.requestPermission).toHaveBeenCalledTimes(1)
+        s.push('item/started', { threadId: 'th-1', turnId: 'tu-1', item: { type: 'fileChange', id: 'f1', status: 'inProgress', changes: [{ path: join(dir, 'a.ts'), kind: { type: 'update', move_path: null }, diff: '' }] } })
+        await s.ask('item/fileChange/requestApproval', { threadId: 'th-1', turnId: 'tu-1', itemId: 'f1', startedAtMs: 1 })
+        expect(ctx.requestPermission).toHaveBeenCalledTimes(2)
+      })
+
+      it('a project-scope grant goes through ctx.saveProjectRules and writes nothing into the folder', async () => {
+        const saveProjectRules = vi.fn((rules: string[]) => ({ rules, added: rules }))
+        const { ctx, s } = await started('default', { savedRules: () => [], saveProjectRules })
+        ;(ctx.requestPermission as any).mockResolvedValueOnce({ behavior: 'allow', scope: 'project' })
+        expect(await s.ask('item/commandExecution/requestApproval', cmd('npm test'))).toEqual({ decision: 'acceptForSession' })
+        expect(saveProjectRules).toHaveBeenCalledWith(['Bash(npm test:*)'])
+        expect(existsSync(join(dir, '.claude'))).toBe(false)
       })
     })
 

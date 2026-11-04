@@ -415,6 +415,18 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     (defaultConnection.test.ts "review hardening", ipc.test.ts, settings.test.ts); boot-time probe timing and the live
     CLI timeout path are not covered.
 
+- Engagement kind (phase 1, 2026-11-03; ARCHITECTURE.md Shared contracts, Conventions, Risks): `Project.kind`
+  'code' | 'engagement' (read through `projectKindOf`; missing = code), `Project.referenceDirectories` (read-only
+  folders), `Project.client`. Built-in roles, prompts and copy name no industry; the Architect specialises from its
+  interview (`architectPrompt(kind)`, `engagementRoles`). Engagements write nothing into the working folder: the
+  engagement document and saved rules live in `<data>/projects/<id>/` (store/projectData.ts), the document reaches
+  agents through their prompt, maintenance's repository tools do nothing, isolateWriters is off unless the user sets
+  it (`isolateWritersOn`), run messaging is off unless set (`runMessagingOn`). Reference folders: every adapter denies
+  Edit / Write / MultiEdit / NotebookEdit and Codex file changes under one before any allow path
+  (runtime/referenceDirectories.ts); Bash writes there are NOT gated. Verified by unit tests (fake query(), fake Codex
+  app-server, `[mock:reference-edit]`, store, RunManager, profiler, setup service, prompt and nudge wording) only;
+  nothing live, no renderer code yet.
+
 ## Renderer
 
 - Permissions UI (#14; `docs/design/permissions.md`, walk `docs/design/ux-review-permissions.md`): PermissionCard

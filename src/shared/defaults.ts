@@ -14,6 +14,8 @@ import type {
   ModelTier,
   PermissionMode,
   Project,
+  ProjectKind,
+  ProjectRulesLocation,
   ProviderAuth,
   ProviderConnections,
   ProviderId,
@@ -28,17 +30,70 @@ import type {
   UsageStatus,
   ToolName
 } from './types'
-import { CONNECTION_IDS, DEFAULT_KEEP_RUNS, DEFAULT_MAX_AUTO_CONTINUES, MODEL_TIERS, SKILL_DESCRIPTION_MAX, SKILL_NAME_MAX, TEAM_REVIEW_MAX_BUDGET, TEAM_REVIEW_MAX_EVERY_RUNS, TEAM_REVIEW_MIN_BUDGET, isModelTier } from './types'
+import { CONNECTION_IDS, DEFAULT_KEEP_RUNS, DEFAULT_MAX_AUTO_CONTINUES, MODEL_TIERS, SKILL_DESCRIPTION_MAX, SKILL_NAME_MAX, TEAM_REVIEW_MAX_BUDGET, TEAM_REVIEW_MAX_EVERY_RUNS, TEAM_REVIEW_MIN_BUDGET, isModelTier, isProjectKind } from './types'
 
 /** Run limits for new projects: enough parallel reports for a real team, and room for leads with their own reports. */
 export const DEFAULT_MAX_CONCURRENT_SUBAGENTS = 8
 export const DEFAULT_MAX_SUBAGENT_DEPTH = 3
-/** Cross-run messaging is on by default; an explicit Project.runMessaging false turns it off. */
+/** Cross-run messaging is on by default for code projects; an explicit Project.runMessaging false turns it off. */
 export const DEFAULT_RUN_MESSAGING = true
 
-/** Whether a project lets its runs message other runs and be messaged (Project.runMessaging, default on; an explicit false turns it off). */
-export function runMessagingOn(project: { runMessaging?: boolean } | null | undefined): boolean {
-  return (project?.runMessaging ?? DEFAULT_RUN_MESSAGING) === true
+/**
+ * Whether a project lets its runs message other runs and be messaged (Project.runMessaging). Missing = on for code
+ * projects (DEFAULT_RUN_MESSAGING) and off for engagements; an explicit boolean always wins.
+ */
+export function runMessagingOn(project: { runMessaging?: boolean; kind?: unknown } | null | undefined): boolean {
+  if (typeof project?.runMessaging === 'boolean') return project.runMessaging
+  return projectKindOf(project) === 'engagement' ? false : DEFAULT_RUN_MESSAGING
+}
+
+/** The project's kind: Project.kind when it is a ProjectKind, else 'code' (missing, junk, null project). */
+export function projectKindOf(project: { kind?: unknown } | null | undefined): ProjectKind {
+  return isProjectKind(project?.kind) ? project.kind : 'code'
+}
+
+/** UI word for a kind: "Project" / "Engagement". */
+export function projectKindLabel(kind: ProjectKind): string {
+  return kind === 'engagement' ? 'Engagement' : 'Project'
+}
+
+/**
+ * The charter document the harness writes on approval. Code: '.orgai/ARCHITECTURE.md', relative to the project folder.
+ * Engagement: 'ENGAGEMENT.md', the file name inside `<data>/projects/<id>/` (main: store/projectData.ts
+ * `engagementDocumentFile`); nothing is written to an engagement's folder.
+ */
+export function projectDocumentPath(kind: ProjectKind): string {
+  return kind === 'engagement' ? 'ENGAGEMENT.md' : '.orgai/ARCHITECTURE.md'
+}
+
+/**
+ * Whether OrgAI may write its own files into the project folder (.orgai/, CLAUDE.md, .claude/settings.local.json,
+ * .git/info/exclude). False for engagements: their folder is often a share the client can see. Git worktrees follow
+ * isolateWritersOn instead (an engagement's explicit opt-in).
+ */
+export function writesToProjectFolder(project: { kind?: unknown } | null | undefined): boolean {
+  return projectKindOf(project) !== 'engagement'
+}
+
+/**
+ * Whether writing reports run in their own git worktree (Project.isolateWriters; still silently off without a git
+ * repository). Code projects: on unless explicitly false (today's default). Engagements: off unless the user set it
+ * explicitly true (then the worktree, .claude/worktrees and .git/info/exclude writes are their own opt-in); the
+ * engagement Architect never proposes it. Every reader goes through this helper.
+ */
+export function isolateWritersOn(project: { kind?: unknown; isolateWriters?: boolean } | null | undefined): boolean {
+  if (projectKindOf(project) === 'engagement') return project?.isolateWriters === true
+  return project?.isolateWriters !== false
+}
+
+/** Where the project's saved allow rules live: 'folder' (.claude/settings.local.json) or 'app' (OrgAI's data folder). */
+export function projectRulesLocation(project: { kind?: unknown } | null | undefined): ProjectRulesLocation {
+  return writesToProjectFolder(project) ? 'folder' : 'app'
+}
+
+/** How prompts name that document: "the architecture document" / "the engagement document". */
+export function projectDocumentName(kind: ProjectKind): string {
+  return kind === 'engagement' ? 'the engagement document' : 'the architecture document'
 }
 /** Upper bounds of the run-limit settings (settings inputs, proposal schema, applying proposals). */
 export const MAX_CONCURRENT_SUBAGENTS_LIMIT = 32
@@ -795,13 +850,126 @@ Plan before acting. Delegate implementation, review and testing to your speciali
   return [orchestrator, implementer, reviewer, researcher]
 }
 
-export function newProject(input: { name: string; path: string; brief: string; setupKind?: SetupKind }, settings?: AppSettings): Project {
+/**
+ * A neutral starting org for an engagement (client work in any field): an Engagement Lead over a Specialist, an Analyst,
+ * a Writer and a Reviewer. Nothing here names a field of work; the Architect renames the Specialist and adds roles from
+ * the interview. Models resolve through modelForTier like defaultRoles ('inherit' when the connection maps no tier).
+ */
+export function engagementRoles(ctx: TierContext = { connection: 'anthropic', tierModels: {} }): Role[] {
+  const modelOf = (tier: ModelTier): { model: ModelRef; tier?: ModelTier } => modelForTier(tier, ctx) ?? { model: 'inherit' }
+  const lead: Role = {
+    id: newId('role'),
+    slug: 'engagement-lead',
+    name: 'Engagement Lead',
+    description: 'Lead agent. Plans the engagement work, briefs the team, gates deliverables and reports to the user.',
+    responsibilities: [
+      'Turn the request into a plan of well-scoped steps',
+      'Brief each report with the files involved, the standards and the acceptance criteria',
+      'Give parallel writers disjoint file lists',
+      'Review returned work against the brief before it reaches the user'
+    ],
+    prompt: `You are the lead of this engagement. Read the engagement document first: it records the client, the workstreams, the working agreements and the deliverable standards.
+Plan before acting, then delegate. Give each report a precise brief: the question, the files it may change, the standard it must meet and what done looks like. Writers working in parallel get disjoint file lists. You do not write deliverables yourself; you coordinate, check and decide. The reference folders are read-only client material: never change them. Finish with a review of the deliverables against the brief, then report to the user what was produced, where it lives and what remains open.`,
+    tools: ['Read', 'Glob', 'Grep', 'SendMessage', 'ListAgents'],
+    ...modelOf('deep'),
+    canSpawn: true,
+    spawnable: [],
+    reportsTo: null,
+    position: { x: 0, y: 0 },
+    color: ROLE_COLORS[0]
+  }
+  const specialist: Role = {
+    id: newId('role'),
+    slug: 'specialist',
+    name: 'Specialist',
+    description: 'Domain expert for the engagement. Advises on the substance and drafts the content that needs expert judgement.',
+    responsibilities: [
+      'Answer domain questions with reasons and references',
+      'Draft the substantive content of a deliverable for the Writer to place',
+      'Flag assumptions, risks and open questions'
+    ],
+    prompt: `You are the domain expert on this engagement. Read the engagement document and the brief you are given, then use the reference folders and any connected services to ground your answer. Advise plainly: give your recommendation, the reasoning, the sources you used and what you are unsure about. When asked for substantive content, draft it as text in your report so the Writer can place it; you do not edit files. Reference folders are read-only client material. Report your findings with the paths of the files you read.`,
+    tools: ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch'],
+    ...modelOf('deep'),
+    canSpawn: false,
+    spawnable: [],
+    reportsTo: lead.id,
+    position: { x: -420, y: 200 },
+    color: ROLE_COLORS[1]
+  }
+  const analyst: Role = {
+    id: newId('role'),
+    slug: 'analyst',
+    name: 'Analyst',
+    description: 'Works with data: extracts, comparisons, calculations and spreadsheets. Use when a question needs the numbers.',
+    responsibilities: [
+      'Extract and clean the data a question needs',
+      'Compare, calculate and summarise with the method stated',
+      'Save results in the working folder'
+    ],
+    prompt: `You are an analyst on this engagement. Read the brief, then work from the data in the reference folders and the working folder. State your method, check your numbers a second way where you can, and keep source files untouched: reference folders are read-only client material, so write results only into the working folder, in the files your brief names. Report the conclusion first, then how you reached it, any data problems you found, and every file you created or changed.`,
+    tools: ['Read', 'Glob', 'Grep', 'Bash', 'Edit', 'Write'],
+    ...modelOf('everyday'),
+    canSpawn: false,
+    spawnable: [],
+    reportsTo: lead.id,
+    position: { x: -140, y: 200 },
+    color: ROLE_COLORS[2]
+  }
+  const writer: Role = {
+    id: newId('role'),
+    slug: 'writer',
+    name: 'Writer',
+    description: 'Produces the deliverables in the working folder to the engagement standards.',
+    responsibilities: [
+      'Write and revise deliverables in the working folder',
+      'Follow the standards in the engagement document',
+      'Stay within the files of the brief'
+    ],
+    prompt: `You are a writer on this engagement. Read the engagement document for the standards, then produce exactly the deliverable you are briefed on, in the working folder. Keep to the files named in your brief so parallel work does not collide. Reference folders are read-only client material: read them, never change them. Say where a claim comes from and mark anything you could not confirm. Report which files you created or changed, one line each, and what still needs a decision.`,
+    tools: ['Read', 'Glob', 'Grep', 'Edit', 'Write'],
+    ...modelOf('everyday'),
+    canSpawn: false,
+    spawnable: [],
+    reportsTo: lead.id,
+    position: { x: 140, y: 200 },
+    color: ROLE_COLORS[3]
+  }
+  const reviewer: Role = {
+    id: newId('role'),
+    slug: 'reviewer',
+    name: 'Reviewer',
+    description: 'Read-only reviewer. Checks deliverables against the brief and the standards.',
+    responsibilities: [
+      'Check each deliverable against the brief and the standards',
+      'Name every finding with a severity',
+      'Never modify files'
+    ],
+    prompt: `You are a meticulous reviewer. You may read anything but must not modify files. Check the named deliverables against the brief and the standards in the engagement document: completeness, accuracy, consistency, tone and anything the client would question. Report every finding with its location and a severity (blocking, important or minor), say what would fix it, and say explicitly when you find nothing. Do not soften a blocking finding.`,
+    tools: ['Read', 'Glob', 'Grep'],
+    ...modelOf('everyday'),
+    canSpawn: false,
+    spawnable: [],
+    reportsTo: lead.id,
+    position: { x: 420, y: 200 },
+    color: ROLE_COLORS[4]
+  }
+  lead.spawnable = [specialist.id, analyst.id, writer.id, reviewer.id]
+  return [lead, specialist, analyst, writer, reviewer]
+}
+
+/**
+ * A fresh project. `input.kind` (junk = 'code') is stored on Project.kind; an engagement starts from the neutral
+ * engagement chart (`engagementRoles`), a code project from `defaultRoles`.
+ */
+export function newProject(input: { name: string; path: string; brief: string; setupKind?: SetupKind; kind?: ProjectKind }, settings?: AppSettings): Project {
   const now = new Date().toISOString()
+  const kind = projectKindOf(input)
   if (settings) {
     // New projects start on anthropic; ConnectionService.prepareNewProject then moves them to the default connection
     // (a 'switched' remap re-resolves every tiered role there).
     const ctx: TierContext = { connection: 'anthropic', tierModels: settings.connections.anthropic.tierModels }
-    const roles = defaultRoles(ctx).map((r) => {
+    const roles = (kind === 'engagement' ? engagementRoles(ctx) : defaultRoles(ctx)).map((r) => {
       const setting = r.reportsTo === null ? settings.defaultRootModel : settings.defaultReportModel
       const resolved = resolveModelSetting(setting, ctx)
       if (!resolved) return r
@@ -813,11 +981,13 @@ export function newProject(input: { name: string; path: string; brief: string; s
       id: newId('proj'),
       name: input.name,
       path: input.path,
+      kind,
       brief: input.brief,
       provider: { id: 'claude', label: claudeProviderLabel(auth), auth, connection: 'anthropic' },
       permissionMode: settings.defaultPermissionMode,
       maxBudgetUsd: settings.defaultMaxBudgetUsd,
-      isolateWriters: settings.defaultIsolateWriters,
+      // Engagements leave it unset (off by default, isolateWritersOn); only the user's explicit true turns it on.
+      ...(kind === 'engagement' ? {} : { isolateWriters: settings.defaultIsolateWriters }),
       keepRuns: settings.defaultKeepRuns,
       autoContinue: settings.defaultAutoContinue,
       maxAutoContinues: settings.defaultMaxAutoContinues,
@@ -831,11 +1001,12 @@ export function newProject(input: { name: string; path: string; brief: string; s
     id: newId('proj'),
     name: input.name,
     path: input.path,
+    kind,
     brief: input.brief,
     provider: { id: 'claude', label: 'Claude (Claude Code login)', auth: { kind: 'subscription' }, connection: 'anthropic' },
     permissionMode: 'auto',
-    isolateWriters: true,
-    roles: defaultRoles(),
+    ...(kind === 'engagement' ? {} : { isolateWriters: true }),
+    roles: kind === 'engagement' ? engagementRoles() : defaultRoles(),
     setup: input.setupKind ? { kind: input.setupKind, state: 'pending' } : undefined,
     createdAt: now,
     updatedAt: now

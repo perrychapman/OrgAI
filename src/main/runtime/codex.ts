@@ -1,6 +1,6 @@
 import type { AgentInstance, AgentMessage, ImageAttachment, McpServerSpec, Role, RunEvent, TranscriptBlock, WorktreeInfo } from '@shared/types'
 import { SKILL_HARNESS_TOOLS, isModelTier } from '@shared/types'
-import { effectiveSubagentLimits, newId } from '@shared/defaults'
+import { effectiveSubagentLimits, isolateWritersOn, newId, projectKindOf } from '@shared/defaults'
 import { validModelId } from '../connections/codexAccount'
 import { ROOT_AGENT_ID, isSetupLikeRun, type CompletionInput, type PeerMessage, type RunConnection, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
 import { CodexAppServer, CodexRpcError, codexExitMessage, type CodexAppServerOptions } from './codexAppServer'
@@ -51,9 +51,23 @@ import { describeTool } from './activity'
 import { WorktreeIntegrator } from './integration'
 import { allowRuleStrings, applyAllowScope, chooseSuggestions, isOfferableDirectory, listRules, suggestionLabels } from './permissionRules'
 import { isFreeCdTarget, matchOptionsFor, type MatchOptions } from './ruleMatch'
-import { dirname, isAbsolute } from 'node:path'
+import { dirname, isAbsolute, join } from 'node:path'
 import { isGitRepo } from './worktrees'
 import { canonicalDeep, isInsideEither, isTrustRestrictedRun, isWorkspaceConfigPath } from '../quick/scratch'
+import { referenceFolderMessage, referenceFolderOf } from './referenceDirectories'
+
+/**
+ * sandbox_workspace_write.writable_roots for a run: the allowed folders only, never on a trust-restricted run, and
+ * never a reference folder: an allowed folder that is, is inside or contains a reference folder is left out (writes
+ * inside writable roots need no approval, so the reference gate in onFileApproval would never see them).
+ */
+export function codexWritableRoots(ctx: Pick<RuntimeContext, 'allowedDirectories' | 'referenceDirectories' | 'run'>): string[] {
+  if (isTrustRestrictedRun(ctx.run)) return []
+  const allowed = (ctx.allowedDirectories?.() ?? []).filter((d) => typeof d === 'string' && d.length > 0)
+  const refs = (ctx.referenceDirectories?.() ?? []).filter((r) => typeof r === 'string' && r.length > 0)
+  if (!refs.length) return allowed
+  return allowed.filter((d) => !referenceFolderOf(d, refs) && !refs.some((r) => referenceFolderOf(r, [d])))
+}
 
 const PROTECTED_SEGMENTS = new Set(['.git', '.codex', '.agents', '.claude'])
 /** True when a path has a .git, .codex, .agents or .claude segment (case-insensitive, either separator). */
@@ -177,6 +191,8 @@ class CodexSession implements RuntimeSession {
   private sessionRules: string[] = []
   /** A session (or project) grant of a setMode acceptEdits suggestion: edits inside free folders need no card. */
   private sessionAcceptEdits = false
+  /** The reference-folder policy downgrade warning was logged (once per run). */
+  private warnedReferencePolicy = false
   /** Folders granted through an addDirectories suggestion for this session (also free for `cd` and edits). */
   private sessionDirs: string[] = []
   private limited = false
@@ -197,7 +213,7 @@ class CodexSession implements RuntimeSession {
     if (!root) throw new Error('Project has no roles')
     this.root = root
     this.setupLike = isSetupLikeRun(ctx.run.kind)
-    this.isolation = !this.setupLike && ctx.project.isolateWriters !== false && isGitRepo(ctx.project.path)
+    this.isolation = !this.setupLike && isolateWritersOn(ctx.project) && isGitRepo(ctx.project.path)
     // Explicit project limits win; otherwise derived from the roles this run actually has (effectiveSubagentLimits).
     const limits = effectiveSubagentLimits({ ...ctx.project, roles: ctx.roles })
     this.net = new CodexAgentNetwork({ roles: ctx.roles, root, maxDepth: limits.depth, maxConcurrent: limits.concurrency })
@@ -237,6 +253,7 @@ class CodexSession implements RuntimeSession {
     })
     this.continuation = new ContinuationDriver({
       kind: ctx.run.kind,
+      projectKind: projectKindOf(ctx.project),
       autoContinue: ctx.autoContinue,
       maxAutoContinues: ctx.maxAutoContinues,
       delayMs: ctx.continuationDelayMs,
@@ -426,8 +443,31 @@ class CodexSession implements RuntimeSession {
 
   // ---------- start ----------
 
+  /**
+   * The thread policy for a role, derived from the project's mode read now (so the MCP restart re-derives it). With
+   * reference folders (read live; an unreadable list counts as having some) bypass and auto are downgraded so writes
+   * outside the workspace still reach onFileApproval (codexProtocol.ts policyFor); one run warning says so.
+   */
   private policyFor(role: Role): PolicyChoice {
-    return policyFor(this.ctx.project.permissionMode, { writes: canWrite(role), setupLike: this.setupLike, quick: !!this.ctx.run.quick, setupWrites: typeof this.ctx.run.buildWorkspace === 'string' })
+    const mode = this.ctx.project.permissionMode
+    const base = { writes: canWrite(role), setupLike: this.setupLike, quick: !!this.ctx.run.quick, setupWrites: typeof this.ctx.run.buildWorkspace === 'string' }
+    if (!this.hasReferenceFolders()) return policyFor(mode, base)
+    const choice = policyFor(mode, { ...base, referenceFolders: true })
+    const plain = policyFor(mode, base)
+    if (!this.warnedReferencePolicy && (plain.sandbox !== choice.sandbox || plain.approvalsReviewer !== choice.approvalsReviewer)) {
+      this.warnedReferencePolicy = true
+      this.log('warn', plain.sandbox === 'danger-full-access' ? 'Reference folders keep this Codex run asking before writes outside the project.' : "Reference folders turn off Codex's auto reviewer for this run; OrgAI decides each approval.")
+    }
+    return choice
+  }
+
+  private hasReferenceFolders(): boolean {
+    if (!this.ctx.referenceDirectories) return false
+    try {
+      return this.ctx.referenceDirectories().some((r) => typeof r === 'string' && r.length > 0)
+    } catch {
+      return true
+    }
   }
 
   private toolsFor(role: Role, isRoot: boolean): { specs: DynamicToolSpec[]; names: string[] } {
@@ -443,7 +483,9 @@ class CodexSession implements RuntimeSession {
     const isSetup = this.setupLike
     const hasSkillTool = this.harness.some((t) => t.name === SKILL_HARNESS_TOOLS.load)
     const skills = hasSkillTool && !isSetup ? (this.ctx.skills?.() ?? []).filter((s) => s.roleIds.includes(role.id)).map((s) => ({ name: s.name, description: s.description })) : []
-    const base = buildRolePrompt(role, this.ctx.roles, this.ctx.project, { isSetup, isolation: this.isolation, ...(this.ctx.run.quick ? { quick: this.ctx.run.quick } : {}), ...(this.ctx.allowedDirectories?.().length ? { allowedDirectories: this.ctx.allowedDirectories() } : {}),...(skills.length ? { skills, skillTool: 'load_skill' as const } : {}) })
+    // Engagements: the approved engagement document, read at prompt-build time (each new thread re-reads it).
+    const engagementDocument = this.ctx.engagementDocument?.()
+    const base = buildRolePrompt(role, this.ctx.roles, this.ctx.project, { isSetup, isolation: this.isolation, ...(this.ctx.run.quick ? { quick: this.ctx.run.quick } : {}), ...(this.ctx.allowedDirectories?.().length ? { allowedDirectories: this.ctx.allowedDirectories() } : {}), ...(this.ctx.referenceDirectories?.().length ? { referenceDirectories: this.ctx.referenceDirectories() } : {}), ...(engagementDocument ? { engagementDocument } : {}), ...(skills.length ? { skills, skillTool: 'load_skill' as const } : {}) })
     const { names } = this.toolsFor(role, isRoot)
     const notes = codexToolNotes(names, { renamedPlanTool: names.includes('orgai_update_plan') })
     const parts = [base]
@@ -570,7 +612,7 @@ class CodexSession implements RuntimeSession {
         if (leftover) firstMessage += `\n\n---\n${leftover}`
       }
       const servers = ctx.resolvedMcpServers ? await ctx.resolvedMcpServers() : []
-      this.launch = buildLaunchConfig(ctx.connection, servers, { noProjectDocs: isTrustRestrictedRun(ctx.run), writableRoots: isTrustRestrictedRun(ctx.run) ? [] : (ctx.allowedDirectories?.() ?? []) })
+      this.launch = buildLaunchConfig(ctx.connection, servers, { noProjectDocs: isTrustRestrictedRun(ctx.run), writableRoots: codexWritableRoots(ctx) })
       for (const s of this.launch.skipped) this.log('warn', `MCP server ${s.name} was skipped: ${s.reason}`)
       for (const line of this.launch.summary) this.log('info', `Codex: ${line}`)
       this.server = this.createServer(this.launch)
@@ -851,12 +893,26 @@ class CodexSession implements RuntimeSession {
     }
   }
 
-  /** Free to edit without a card: every path is concrete, has no protected segment, and sits in a free dir lexically and by real path. */
+  /**
+   * Free to edit without a card: every path is concrete, has no protected segment, and sits in a free dir lexically
+   * and by real path. Only MatchOptions.freeDirs count (reference folders live in readOnlyDirs); as a defence in case
+   * the lists ever overlap, a path under a reference folder (read live; an unreadable list frees nothing) is never free.
+   */
   private editPathsFree(paths: readonly string[]): boolean {
     if (!paths.length) return false
+    // Read the reference list first: matchOptionsFor reads it too, unguarded.
+    let refs: string[] = []
+    if (this.ctx.referenceDirectories) {
+      try {
+        refs = this.ctx.referenceDirectories().filter((r) => typeof r === 'string' && r.length > 0)
+      } catch {
+        return false
+      }
+    }
     const opts = this.matchOpts()
     return paths.every((p) => {
       if (typeof p !== 'string' || !p || !isAbsolute(p) || hasProtectedSegment(p)) return false
+      if (refs.length && referenceFolderOf(p, refs, this.ctx.project.path)) return false
       if (!isFreeCdTarget(dirname(p), opts)) return false
       let real: string
       try {
@@ -866,6 +922,15 @@ class CodexSession implements RuntimeSession {
       }
       return (opts.freeDirs ?? []).some((d) => typeof d === 'string' && isAbsolute(d) && isInsideEither(d, real))
     })
+  }
+
+  /**
+   * Saved rules when ctx.allowedRules is absent: ctx.savedRules() (wherever the project keeps them), else the project
+   * folder's file; none on a trust-restricted run.
+   */
+  private savedRules(): string[] {
+    if (isTrustRestrictedRun(this.ctx.run)) return []
+    return this.ctx.savedRules ? this.ctx.savedRules() : listRules(this.ctx.project.path)
   }
 
   private async ask(agentId: string, toolName: 'Bash' | 'Edit', input: Record<string, unknown>, cwd?: string) {
@@ -890,7 +955,9 @@ class CodexSession implements RuntimeSession {
         const safe = isTrustRestrictedRun(this.ctx.run) && decision.scope === 'project' ? { ...decision, scope: 'session' as const } : decision
         const persist = {
           ...(this.ctx.allowDirectories ? { allowDirectories: this.ctx.allowDirectories.bind(this.ctx) } : {}),
-          ...(this.ctx.acceptEditsForProject ? { acceptEditsForProject: this.ctx.acceptEditsForProject.bind(this.ctx) } : {})
+          ...(this.ctx.acceptEditsForProject ? { acceptEditsForProject: this.ctx.acceptEditsForProject.bind(this.ctx) } : {}),
+          // Where the project keeps its rules (OrgAI's data folder for engagements); absent = the folder's file.
+          ...(this.ctx.saveProjectRules ? { saveProjectRules: this.ctx.saveProjectRules.bind(this.ctx) } : {})
         }
         const scoped = applyAllowScope(this.ctx.project.path, safe, suggestions, (level, message) => this.log(level, message), persist, { toolName, input, opts: callOpts })
         if (scoped) {
@@ -923,13 +990,44 @@ class CodexSession implements RuntimeSession {
       return { decision: 'decline' }
     }
     // Saved rules plus anything granted while the run is live (request_permission_rules, the rules panel).
-    const rules = [...(this.ctx.allowedRules?.() ?? (isTrustRestrictedRun(this.ctx.run) ? [] : listRules(this.ctx.project.path))), ...this.sessionRules]
+    const rules = [...(this.ctx.allowedRules?.() ?? this.savedRules()), ...this.sessionRules]
     const opts = this.matchOpts(req.cwd)
     if (req.command && matchesBashRule(req.command, rules, opts)) return { decision: 'accept' }
     const input = { command: req.command, ...(req.cwd ? { cwd: req.cwd } : {}), ...(req.reason ? { reason: req.reason } : {}) }
     const { decision, granted } = await this.ask(agentId, 'Bash', input, req.cwd)
     if (decision.behavior === 'deny') return { decision: 'decline' }
     return { decision: granted ? 'acceptForSession' : 'accept' }
+  }
+
+  /**
+   * Why a file-change approval must be declined because of a reference folder, or null. Only when the run has
+   * reference folders (read live): a changed path under one, a grantRoot under one or containing one, a change with no
+   * usable path, or a request naming neither changes nor a grantRoot (fails closed). Relative paths resolve against
+   * the agent's worktree, else the project folder.
+   */
+  private referenceChangeDenial(agentId: string, changes: ReadonlyArray<{ path: string }>, grantRoot: string | undefined): string | null {
+    if (!this.ctx.referenceDirectories) return null
+    let refs: string[]
+    try {
+      refs = this.ctx.referenceDirectories().filter((r) => typeof r === 'string' && r.length > 0)
+    } catch (e) {
+      this.log('warn', `Could not read the run's reference folders: ${(e as Error).message}`)
+      return 'OrgAI could not check the reference folders, so this change was declined.'
+    }
+    if (!refs.length) return null
+    const cwd = this.integrator.worktreeOf(agentId)?.path ?? this.ctx.project.path
+    const unnamed = `${referenceFolderMessage(refs[0]!)}; this change names no file path, so it was declined`
+    if (!changes.length && !grantRoot) return unnamed
+    for (const c of changes) {
+      if (typeof c.path !== 'string' || !c.path) return unnamed
+      const hit = referenceFolderOf(c.path, refs, cwd)
+      if (hit) return referenceFolderMessage(hit)
+    }
+    if (grantRoot) {
+      const hit = referenceFolderOf(grantRoot, refs, cwd) ?? refs.find((r) => referenceFolderOf(r, [isAbsolute(grantRoot) ? grantRoot : join(cwd, grantRoot)]))
+      if (hit) return referenceFolderMessage(hit)
+    }
+    return null
   }
 
   private async onFileApproval(params: unknown): Promise<unknown> {
@@ -940,13 +1038,20 @@ class CodexSession implements RuntimeSession {
     if (policy?.denyApprovals) return { decision: 'decline' }
     const item = this.mapper.item(req.itemId)
     const changes = item ? fileChanges(item) : []
+    // Reference folders are read-only: declined without a card, before the accept-edits auto-accept and any rule.
+    const refDenial = this.referenceChangeDenial(agentId, changes, req.grantRoot)
+    if (refDenial) {
+      this.log('warn', `Declined a file change by ${this.agents.get(agentId)?.name ?? agentId}: ${refDenial}`)
+      this.transcript(agentId, { kind: 'system', text: refDenial }, { source: 'harness' })
+      return { decision: 'decline' }
+    }
     const buildWorkspace = this.ctx.run.buildWorkspace
     if (buildWorkspace && (changes.length ? changes.some((c) => isWorkspaceConfigPath(buildWorkspace, c.path)) : req.grantRoot ? isWorkspaceConfigPath(buildWorkspace, req.grantRoot) : false)) {
       this.log('warn', 'Declined a change under .claude/ in the build workspace.')
       this.transcript(agentId, { kind: 'system', text: 'Build sessions cannot write settings under .claude/ in the workspace.' }, { source: 'harness' })
       return { decision: 'decline' }
     }
-    const saved = this.ctx.allowedRules?.() ?? (isTrustRestrictedRun(this.ctx.run) ? [] : listRules(this.ctx.project.path))
+    const saved = this.ctx.allowedRules?.() ?? this.savedRules()
     const paths = changes.map((c) => c.path)
     // Settings, hooks and VCS folders are never accepted silently, whatever rule or mode is in force.
     // Lexical and real path both (a link inside the project can name a protected folder elsewhere).
@@ -1120,7 +1225,7 @@ class CodexSession implements RuntimeSession {
       const servers = await this.ctx.resolvedMcpServers!()
       const launch = buildLaunchConfig(this.ctx.connection, servers, {
         noProjectDocs: isTrustRestrictedRun(this.ctx.run),
-        writableRoots: isTrustRestrictedRun(this.ctx.run) ? [] : (this.ctx.allowedDirectories?.() ?? [])
+        writableRoots: codexWritableRoots(this.ctx)
       })
       const old = this.server
       this.unwire()
@@ -1133,9 +1238,11 @@ class CodexSession implements RuntimeSession {
       for (const [threadId, info] of this.threads) {
         const role = this.net.roleOf(info.agentId) ?? this.root
         const wt = this.integrator.worktreeOf(info.agentId)
+        // threadParams re-derives the policy (mode and reference folders read now); the thread keeps the new one.
         const { dynamicTools: _t, serviceName: _s, ...resume } = this.threadParams(role, info.agentId === ROOT_AGENT_ID, wt?.path ?? this.ctx.project.path)
         void _t
         void _s
+        info.policy = this.policyFor(role)
         try {
           await this.startThread({ threadId, ...resume }, METHOD.threadResume)
         } catch (e) {

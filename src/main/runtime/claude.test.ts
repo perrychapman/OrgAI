@@ -1,4 +1,5 @@
-import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { existsSync, mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -94,6 +95,14 @@ import { fakeCtx, mcpSpec, orgChart, project, role, runSummary } from './testHel
 import type { ResolvedMcpServer, RuntimeContext } from './types'
 import { addRules } from './permissionRules'
 import { refreshRoleGrants } from './runManager'
+import { allowScopePersist, claudeAdditionalDirectories } from './claude'
+import { buildRolePrompt } from './prompts'
+
+// buildRolePrompt is the real one, wrapped so tests can read the flags the adapter passes.
+vi.mock('./prompts', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('./prompts')>()
+  return { ...orig, buildRolePrompt: vi.fn(orig.buildRolePrompt) }
+})
 
 function spec(over: Partial<McpServerSpec> & { id: string; name: string }): McpServerSpec {
   return { transport: 'stdio', enabled: true, source: 'user', addedAt: '2026-01-01T00:00:00.000Z', ...over }
@@ -439,6 +448,13 @@ describe('quick runs and build sessions (assistants)', () => {
   it('loads no setting sources for a quick run and the project source otherwise', () => {
     expect(claudeSettingSources(quickCtx())).toEqual([])
     expect(claudeSettingSources(fakeCtx())).toEqual(['project'])
+  })
+
+  it('M4: loads no setting sources for any run of an engagement (work and setup); code projects keep the project source', () => {
+    const engagement = project({ kind: 'engagement' })
+    expect(claudeSettingSources(fakeCtx({ project: engagement }))).toEqual([])
+    expect(claudeSettingSources(fakeCtx({ project: engagement, run: runSummary({ kind: 'setup' }) }))).toEqual([])
+    expect(claudeSettingSources(fakeCtx({ project: project({ kind: 'code' }) }))).toEqual(['project'])
   })
 
   it('never reads saved rules from the folder for a quick run', () => {
@@ -1355,6 +1371,19 @@ describe('ClaudeSession permission fatigue (fake query)', () => {
     expect(cliProjectSettings({ run: runSummary({}), project: project({ path: dir }) }).failed).toBe(true)
   })
 
+  it('M4: an engagement never reads settings.json (settingSources []), so its rules force no ask', async () => {
+    const { ctx, dir } = start()
+    ;(ctx.project as { kind?: string }).kind = 'engagement'
+    mkdirSync(join(dir, '.claude'), { recursive: true })
+    writeFileSync(join(dir, '.claude', 'settings.json'), JSON.stringify({ permissions: { allow: ['Bash(npm test:*)'] } }))
+    expect(cliProjectSettings({ run: runSummary({}), project: project({ path: dir, kind: 'engagement' }) })).toEqual({ rules: [], failed: false })
+    expect(cliProjectSettings({ run: runSummary({}), project: project({ path: dir }) }).rules).toEqual(['Bash(npm test:*)'])
+    const q = await firstQuery()
+    expect(q.options.settingSources).toEqual([])
+    // A code project would get 'ask' naming the rule here; the engagement's hook does not consult the file.
+    expect((await bash(q, 'timeout 5 npm test')).hookSpecificOutput?.permissionDecision).not.toBe('ask')
+  })
+
   it('L1: settings.json rule text is bounded and quoted in the reason; a rule with a hidden character is never named', () => {
     const long = `Bash(<b> ${'a'.repeat(300)}:*)`
     const reason = cliShellAskReason('Bash', { command: 'curl x' }, { rules: [long], failed: false })!
@@ -1519,6 +1548,79 @@ describe('ClaudeSession permission fatigue (fake query)', () => {
     expect(logs.some((m) => m.includes('do not cover this command'))).toBe(false)
   })
 
+  it('engagement rules: options.allowedTools and the hook read ctx.savedRules, never the folder file', async () => {
+    const { dir } = start({ savedRules: () => ['Read', 'Bash(npm test:*)'] })
+    addRules(dir, ['Glob', 'Bash(git status)'])
+    const q = await firstQuery()
+    expect(q.options.allowedTools).toEqual(['Read'])
+    expect((await bash(q, 'npm test')).hookSpecificOutput?.permissionDecision).toBe('allow')
+    expect(await bash(q, 'git status')).toEqual({})
+  })
+
+  it('engagement rules: a project-scope grant goes through ctx.saveProjectRules and writes nothing into the folder', async () => {
+    const saveProjectRules = vi.fn((rules: string[]) => ({ rules, added: rules }))
+    const { ctx, dir } = start({ savedRules: () => [], saveProjectRules })
+    vi.mocked(ctx.requestPermission).mockResolvedValue({ behavior: 'allow', scope: 'project' })
+    const q = await firstQuery()
+    await canUseTool(q)('Bash', { command: 'npm test' }, { signal: signal() })
+    expect(saveProjectRules).toHaveBeenCalledWith(['Bash(npm test:*)'])
+    expect(existsSync(join(dir, '.claude'))).toBe(false)
+    const logs = ctx.events.flatMap((e) => (e.type === 'log' ? [e.message] : []))
+    expect(logs).toContain('Saved permission rule for this project: Bash(npm test:*)')
+  })
+
+  it('allowScopePersist passes saveProjectRules only when the context has it', () => {
+    const saveProjectRules = vi.fn((rules: string[]) => ({ rules, added: [] }))
+    expect('saveProjectRules' in allowScopePersist(fakeCtx())).toBe(false)
+    allowScopePersist(fakeCtx({ saveProjectRules })).saveProjectRules!(['Read'])
+    expect(saveProjectRules).toHaveBeenCalledWith(['Read'])
+  })
+
+  it('claudeSavedRules: ctx.savedRules wins over the folder, and a restricted run gets none even with it', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'orgai-claude-saved-'))
+    addRules(dir, ['Glob'])
+    expect(claudeSavedRules(fakeCtx({ project: project({ path: dir }) }))).toEqual(['Glob'])
+    expect(claudeSavedRules(fakeCtx({ project: project({ path: dir }), savedRules: () => ['Read'] }))).toEqual(['Read'])
+    const quick = runSummary({ projectId: 'quick', quick: { folder: dir, team: 'single', allowEdits: true, gitRepo: false } })
+    expect(claudeSavedRules(fakeCtx({ run: quick, project: project({ path: dir }), savedRules: () => ['Read'] }))).toEqual([])
+  })
+
+  it('passes ctx.engagementDocument as the engagementDocument prompt flag to every role, read at build time', () => {
+    let doc: string | undefined = 'Engagement doc v1'
+    const ctx = fakeCtx({ project: project({ kind: 'engagement' }), engagementDocument: () => doc })
+    vi.mocked(buildRolePrompt).mockClear()
+    buildAgents(ctx, [], false)
+    const flags = vi.mocked(buildRolePrompt).mock.calls.map((c) => c[3])
+    expect(flags.length).toBe(ctx.roles.length)
+    for (const f of flags) expect(f).toMatchObject({ engagementDocument: 'Engagement doc v1' })
+    doc = 'Engagement doc v2'
+    vi.mocked(buildRolePrompt).mockClear()
+    buildAgents(ctx, [], false)
+    expect(vi.mocked(buildRolePrompt).mock.calls[0]![3]).toMatchObject({ engagementDocument: 'Engagement doc v2' })
+    doc = undefined
+    vi.mocked(buildRolePrompt).mockClear()
+    buildAgents(ctx, [], false)
+    expect('engagementDocument' in vi.mocked(buildRolePrompt).mock.calls[0]![3]!).toBe(false)
+  })
+
+  it('isolation follows isolateWritersOn: an engagement isolates only with an explicit true', async () => {
+    const dir = realpathSync.native(mkdtempSync(join(tmpdir(), 'orgai-claude-iso-')))
+    const git = (...a: string[]) => execFileSync('git', a, { cwd: dir, stdio: 'ignore' })
+    git('init', '-q')
+    const isolation = async (over: Partial<Project>): Promise<boolean> => {
+      const before = sdk.queries.length
+      const s = new ClaudeSession(fakeCtx({ project: project({ path: dir, ...over }), autoContinue: false }))
+      // Let the session reach its query before stopping it, so no late query leaks into the next test.
+      await vi.waitFor(() => expect(sdk.queries.length).toBe(before + 1))
+      await s.stop()
+      return (s as unknown as { isolation: boolean }).isolation
+    }
+    expect(await isolation({ kind: 'engagement', isolateWriters: undefined })).toBe(false)
+    expect(await isolation({ kind: 'engagement', isolateWriters: true })).toBe(true)
+    expect(await isolation({ isolateWriters: undefined })).toBe(true)
+    expect(await isolation({ isolateWriters: false })).toBe(false)
+  })
+
   it('a quick run gets no setMode suggestion on the card or in updatedPermissions', async () => {
     const { ctx, dir } = start({ run: runSummary({ projectId: 'quick', quick: { folder: '/f', team: 'single', allowEdits: true, gitRepo: false } }) })
     vi.mocked(ctx.requestPermission).mockResolvedValue({ behavior: 'allow', scope: 'session' })
@@ -1546,6 +1648,87 @@ describe('ClaudeSession permission fatigue (fake query)', () => {
     expect(vi.mocked(ctx.requestPermission)).toHaveBeenCalledTimes(1)
     expect(allowDirectories).not.toHaveBeenCalled()
     expect(acceptEditsForProject).not.toHaveBeenCalled()
+  })
+
+  describe('reference folders', () => {
+    const refHook = async (q: Fake, tool: string, input: Record<string, unknown>, cwd = '/repo'): Promise<HookOut> =>
+      (q.options.hooks.PreToolUse[0].hooks[0] as (i: unknown, id: string, o: unknown) => Promise<HookOut>)(
+        { hook_event_name: 'PreToolUse', session_id: 's', transcript_path: '', cwd, tool_name: tool, tool_input: input, tool_use_id: `tu-${Math.random()}` },
+        'x',
+        {}
+      )
+    const newRef = () => realpathSync.native(mkdtempSync(join(tmpdir(), 'orgai-claude-ref-')))
+
+    it('additionalDirectories holds the allowed and the reference folders, deduped, and none on a restricted run', async () => {
+      const allowed = mkdtempSync(join(tmpdir(), 'orgai-claude-extra-'))
+      const ref = newRef()
+      start({ allowedDirectories: () => [allowed], referenceDirectories: () => [ref, allowed] })
+      expect((await firstQuery()).options.additionalDirectories).toEqual([allowed, ref])
+      const quick = runSummary({ projectId: 'quick', quick: { folder: '/f', team: 'single', allowEdits: true, gitRepo: false } })
+      expect(claudeAdditionalDirectories({ run: quick, allowedDirectories: () => [allowed], referenceDirectories: () => [ref] })).toEqual([])
+      expect(claudeAdditionalDirectories({ run: runSummary({}), referenceDirectories: () => [ref] })).toEqual([ref])
+    })
+
+    it('PreToolUse denies each edit tool under a reference folder with the exact message, and a missing path', async () => {
+      const ref = newRef()
+      const { ctx } = start({ referenceDirectories: () => [ref] })
+      const q = await firstQuery()
+      const msg = `${ref} is a reference folder: agents may read it, not change it`
+      for (const tool of ['Edit', 'Write', 'MultiEdit']) {
+        expect((await refHook(q, tool, { file_path: join(ref, 'sub', 'a.md') })).hookSpecificOutput, tool).toEqual({ hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: msg })
+      }
+      expect((await refHook(q, 'NotebookEdit', { notebook_path: join(ref, 'n.ipynb') })).hookSpecificOutput?.permissionDecisionReason).toBe(msg)
+      // A relative path resolves against the calling agent's cwd.
+      expect((await refHook(q, 'Edit', { file_path: join('sub', 'a.md') }, ref)).hookSpecificOutput?.permissionDecision).toBe('deny')
+      // Fails closed: no path at all while reference folders exist.
+      const missing = (await refHook(q, 'Write', {})).hookSpecificOutput
+      expect(missing?.permissionDecision).toBe('deny')
+      expect(missing?.permissionDecisionReason).toContain(msg)
+      expect(ctx.events.some((e) => e.type === 'log' && e.level === 'warn' && e.message.includes(msg))).toBe(true)
+      // Reads in the folder and edits elsewhere are untouched by the gate.
+      expect(await refHook(q, 'Read', { file_path: join(ref, 'a.md') })).toEqual({})
+      expect((await refHook(q, 'Edit', { file_path: join(ctx.project.path, 'a.md') })).hookSpecificOutput?.permissionDecision).not.toBe('deny')
+    })
+
+    it('the deny wins over a saved rule, a run grant, acceptEdits and auto; canUseTool never shows a card for it', async () => {
+      for (const permissionMode of ['acceptEdits', 'auto'] as const) {
+        const ref = newRef()
+        const dir = realpathSync.native(mkdtempSync(join(tmpdir(), 'orgai-claude-refmode-')))
+        addRules(dir, ['Edit', 'Write'])
+        const ctx = fakeCtx({ project: project({ path: dir, permissionMode }), autoContinue: false, allowedRules: () => ['Edit', 'Write'], referenceDirectories: () => [ref] })
+        const session = new ClaudeSession(ctx)
+        sessions.push(session)
+        const q = await firstQuery()
+        expect((await refHook(q, 'Edit', { file_path: join(ref, 'a.md') })).hookSpecificOutput?.permissionDecision, permissionMode).toBe('deny')
+        const out = await canUseTool(q)('Write', { file_path: join(ref, 'b.md') }, { signal: new AbortController().signal })
+        expect(out).toMatchObject({ behavior: 'deny', message: `${ref} is a reference folder: agents may read it, not change it` })
+        expect(vi.mocked(ctx.requestPermission)).not.toHaveBeenCalled()
+        await sessions.pop()!.stop()
+        sdk.queries.length = 0
+      }
+    })
+
+    it('reads the list live and keeps the gate and the folders on a restarted query', async () => {
+      const ref = newRef()
+      const later = newRef()
+      const refs = [ref]
+      const servers: McpServerSpec[] = []
+      const { session } = start({ referenceDirectories: () => refs, mcpServers: () => servers, resolvedMcpServers: async () => servers.map((spec) => ({ spec, env: {}, headers: {} })) })
+      const q1 = await firstQuery()
+      expect(await refHook(q1, 'Edit', { file_path: join(later, 'a.md') })).not.toMatchObject({ hookSpecificOutput: { permissionDecision: 'deny' } })
+      refs.push(later)
+      expect((await refHook(q1, 'Edit', { file_path: join(later, 'a.md') })).hookSpecificOutput?.permissionDecision).toBe('deny')
+      q1.emit({ type: 'system', subtype: 'init', session_id: 'sess-1', model: 'm', claude_code_version: 'test', tools: [], mcp_servers: [] })
+      await vi.waitFor(() => expect(q1.inputs.length).toBeGreaterThan(0))
+      servers.push(mcpSpec({ id: 'mcp-pg', name: 'pg', roles: ['lead'], secretEnv: [] }))
+      sdk.status = [{ name: 'pg', status: 'connected', tools: [{ name: 'query' }] }]
+      await (session as unknown as { addMcpServer(x: McpServerSpec): Promise<unknown> }).addMcpServer(servers[0]!)
+      q1.emit({ type: 'result', subtype: 'success', total_cost_usd: 0, modelUsage: {}, result: 'ok', is_error: false, usage: {} })
+      await vi.waitFor(() => expect(sdk.queries).toHaveLength(2), { timeout: MCP_RESTART_DELAY_MS + 3000 })
+      const q2 = sdk.queries[1]!
+      expect(q2.options.additionalDirectories).toEqual([ref, later])
+      expect((await refHook(q2, 'Write', { file_path: join(ref, 'x.md') })).hookSpecificOutput?.permissionDecisionReason).toBe(`${ref} is a reference folder: agents may read it, not change it`)
+    }, 10_000)
   })
 })
 

@@ -446,6 +446,11 @@ export interface MatchOptions {
   cwd?: string
   /** Folders a `cd` may enter freely (the folder itself or anything inside it): the project path plus allowed directories. */
   freeDirs?: readonly string[]
+  /**
+   * Read-only reference folders. A `cd` into one is free only when the whole command is made of free cds alone; in
+   * a compound command (`cd <ref> && npm test`) it is not free, so no saved rule runs inside the folder.
+   */
+  readOnlyDirs?: readonly string[]
   /** Path rules to apply; default process.platform. win32 compares case-insensitively and reads MSYS `/c/...` paths. */
   platform?: NodeJS.Platform
   /** Folders never offered as extra directories (RuntimeContext.protectedDirectories: OrgAI's data folder). */
@@ -463,12 +468,20 @@ export const FREE_CD_LABEL = 'cd inside the project'
 
 /**
  * MatchOptions for a run right now: cwd is the project path, free dirs the project path plus `allowedDirectories()`
- * (live), denied dirs `protectedDirectories()`.
+ * and `referenceDirectories()` (live), denied dirs `protectedDirectories()`.
  */
-export function matchOptionsFor(ctx: Pick<RuntimeContext, 'project' | 'allowedDirectories' | 'protectedDirectories'>): MatchOptions {
+export function matchOptionsFor(ctx: Pick<RuntimeContext, 'project' | 'allowedDirectories' | 'referenceDirectories' | 'protectedDirectories'>): MatchOptions {
+  // Reference folders are read-only: a `cd` into one is free only as a command of cds alone (readOnlyDirs), never
+  // in a compound command, so a saved rule does not run inside them.
   const extra = ctx.allowedDirectories?.() ?? []
+  const refs = ctx.referenceDirectories?.() ?? []
   const denied = ctx.protectedDirectories?.() ?? []
-  return { cwd: ctx.project.path, freeDirs: [ctx.project.path, ...extra], ...(denied.length ? { deniedDirs: denied } : {}) }
+  return {
+    cwd: ctx.project.path,
+    freeDirs: [ctx.project.path, ...extra],
+    ...(refs.length ? { readOnlyDirs: refs } : {}),
+    ...(denied.length ? { deniedDirs: denied } : {}),
+  }
 }
 
 /** Shells a wrapped command may name (`bash -lc '...'`); any other first token is never unwrapped. */
@@ -663,11 +676,16 @@ export function isFreeCdTarget(dir: string, opts: MatchOptions): boolean {
   })
 }
 
-/** True for a `cd <dir>` segment that needs no rule (see MatchOptions). */
-export function isFreeCd(segment: string, opts: MatchOptions | undefined): boolean {
-  if (!opts?.freeDirs?.length) return false
+/**
+ * True for a `cd <dir>` segment that needs no rule (see MatchOptions). A target inside `readOnlyDirs` counts only
+ * when `allowReadOnly` is true (shellRulesFor passes it when the whole command is free cds).
+ */
+export function isFreeCd(segment: string, opts: MatchOptions | undefined, allowReadOnly = false): boolean {
+  if (!opts) return false
   const dir = cdTarget(segment, opts.platform ?? process.platform)
-  return dir !== null && isFreeCdTarget(dir, opts)
+  if (dir === null) return false
+  if (opts.freeDirs?.length && isFreeCdTarget(dir, opts)) return true
+  return allowReadOnly && !!opts.readOnlyDirs?.length && isFreeCdTarget(dir, { ...opts, freeDirs: opts.readOnlyDirs })
 }
 
 /**
@@ -683,9 +701,12 @@ export function shellRulesFor(command: string, rules: readonly string[], opts?: 
   const cmd = unwrapShellCommand(command)
   if (!cmd) return null
   const hits: string[] = []
-  for (const segment of splitCommand(cmd)) {
+  const segments = splitCommand(cmd)
+  // A cd into a read-only (reference) folder is free only when the whole command is nothing but free cds.
+  const onlyCds = segments.length > 0 && segments.every((s) => isFreeCd(s, opts, true))
+  for (const segment of segments) {
     if (!segment || isUnsafeSegment(segment, opts?.shell ?? 'bash')) return null
-    if (isFreeCd(segment, opts)) continue
+    if (isFreeCd(segment, opts, onlyCds)) continue
     const rule = shellRuleFor(segment, rules)
     if (!rule) return null
     if (!hits.includes(rule)) hits.push(rule)

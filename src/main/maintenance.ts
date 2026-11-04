@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync, rmSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { MaintenanceResult, PendingWorktree, Project, WorktreeDiff } from '@shared/types'
+import { writesToProjectFolder } from '@shared/defaults'
 import type { ProjectStore } from './store/projects'
 import { ARCHITECTURE_PATH, CLAUDE_MD_MARKER } from './setup/service'
 import { diffWorktree, discardWorktree, inspectPending, integrateWorktree, isGitRepo, removeExcludeLine } from './runtime/worktrees'
@@ -18,12 +19,24 @@ export class MaintenanceService {
     return p
   }
 
-  listWorktrees(projectId: string): Promise<PendingWorktree[]> {
-    return inspectPending(this.project(projectId).path)
+  /**
+   * Engagements make no git worktrees unless the user opted in (isolateWriters true): without it the worktree tools
+   * never look at the folder.
+   */
+  private noWorktrees(p: Project): boolean {
+    return !writesToProjectFolder(p) && p.isolateWriters !== true
+  }
+
+  async listWorktrees(projectId: string): Promise<PendingWorktree[]> {
+    const p = this.project(projectId)
+    if (this.noWorktrees(p)) return []
+    return inspectPending(p.path)
   }
 
   private async find(projectId: string, branch: string): Promise<{ root: string; wt: PendingWorktree }> {
-    const root = this.project(projectId).path
+    const p = this.project(projectId)
+    if (this.noWorktrees(p)) throw new Error(`Branch ${branch} is not a pending report branch`)
+    const root = p.path
     const wt = (await inspectPending(root)).find((w) => w.branch === branch)
     if (!wt) throw new Error(`Branch ${branch} is not a pending report branch`)
     return { root, wt }
@@ -52,6 +65,8 @@ export class MaintenanceService {
   async uninstallRepo(projectId: string): Promise<MaintenanceResult> {
     const project = this.project(projectId)
     const root = project.path
+    // An engagement's folder holds nothing of OrgAI's (its document and rules live in the data folder): never touch it.
+    if (!writesToProjectFolder(project)) return { ok: true, message: 'Nothing to remove.' }
     if (isGitRepo(root)) {
       const holding = (await inspectPending(root)).filter((w) => w.uncommittedFiles > 0 || w.commitsAhead > 0)
       if (holding.length) {
@@ -64,10 +79,16 @@ export class MaintenanceService {
     }
 
     const removed: string[] = []
-    const archFile = join(root, ARCHITECTURE_PATH)
-    if (existsSync(archFile)) {
-      unlinkSync(archFile)
-      removed.push(ARCHITECTURE_PATH)
+    let removedDoc = false
+    for (const docPath of [ARCHITECTURE_PATH]) {
+      const docFile = join(root, docPath)
+      if (existsSync(docFile)) {
+        unlinkSync(docFile)
+        removed.push(docPath)
+        removedDoc = true
+      }
+    }
+    if (removedDoc) {
       const dir = join(root, '.orgai')
       try {
         if (existsSync(dir) && readdirSync(dir).filter((n) => n !== '.DS_Store').length === 0) {

@@ -229,6 +229,26 @@ export interface RuntimeContext {
    */
   allowedRules?(): string[]
   /**
+   * The project's saved allow rules alone (no run grants), re-read at each call from wherever the project keeps them
+   * (store/projectData.ts projectRulesFile: .claude/settings.local.json for code projects, OrgAI's data folder for
+   * engagements). Adapters use it instead of `listRules(ctx.project.path)` (Claude options.allowedTools, Codex and
+   * mock fallbacks). Missing on trust-restricted runs = none.
+   */
+  savedRules?(): string[]
+  /**
+   * Save "Always allow for project" rules where the project keeps them (see savedRules); returns the full list and
+   * the rules that were new (permissionRules.ts addRulesReport). permissionRules.ts applyAllowScope calls it through
+   * AllowScopePersist, so adapters pass it with allowDirectories / acceptEditsForProject. Missing on
+   * trust-restricted runs: nothing persists.
+   */
+  saveProjectRules?(rules: string[]): { rules: string[]; added: string[] }
+  /**
+   * Engagements: the approved engagement document's text (store/projectData.ts readEngagementDocument, at most
+   * ENGAGEMENT_DOCUMENT_PROMPT_MAX_CHARS plus a truncation note), read at call time; undefined for code projects or
+   * before one is approved. Adapters pass it as PromptFlags.engagementDocument.
+   */
+  engagementDocument?(): string | undefined
+  /**
    * Extra folders agents may read and edit like the project folder: Project.allowedDirectories resolved by RunManager
    * at run start (existing directories only, canonical, never touching OrgAI's data folder in either direction, never
    * the project folder or a folder inside it). Live: folders added during the run through allowDirectories appear at
@@ -238,10 +258,29 @@ export interface RuntimeContext {
    */
   allowedDirectories?(): string[]
   /**
+   * Read-only extra folders: Project.referenceDirectories resolved by RunManager at run start like allowedDirectories
+   * (existing directories only, canonical, the same refusals, one run warning per missing or dropped folder; a folder
+   * also in allowedDirectories() is left out here). Read it at call time. Missing (quick runs, build sessions, every
+   * isTrustRestrictedRun) or empty = none.
+   * - The provider sees them as readable extra folders: Claude adds them to Options.additionalDirectories next to
+   *   allowedDirectories(); Codex never adds them to sandbox_workspace_write.writable_roots (workspace-write reads
+   *   outside the workspace already, per the Codex docs; unverified live).
+   * - The adapter MUST refuse Edit / Write / MultiEdit / NotebookEdit whose path is under one (lexical plus the real
+   *   path of the nearest existing ancestor; a missing or non-string path on those tools is refused) before any allow
+   *   path, restarted queries included, and decline a Codex file change under one without a card, always with
+   *   referenceDirectories.ts `referenceFolderMessage(folder)`: "<folder> is a reference folder: agents may read it,
+   *   not change it". Use referenceDirectories.ts `referenceEditDenial` / `referenceFolderOf`.
+   * - A `cd` into one needs no rule (ruleMatch.ts matchOptionsFor adds them to freeDirs).
+   * - LIMITATION: Bash (and PowerShell) commands that write inside a reference folder are NOT gated by this; the
+   *   project's permission mode still applies to them.
+   */
+  referenceDirectories?(): string[]
+  /**
    * "Always allow for project" on an addDirectories suggestion (permissionRules.ts applyAllowScope): save the folders
    * onto Project.allowedDirectories through ProjectStore (cleaned) and add the ones that resolve (as above) to
    * allowedDirectories() at once. Returns the canonical folders now in force from `dirs`. Logs one info line.
-   * Missing on trust-restricted runs: nothing persists.
+   * A folder that is (or is inside) a reference folder is never added: it is skipped with a log line, so a
+   * reference folder stays read-only. Missing on trust-restricted runs: nothing persists.
    */
   allowDirectories?(dirs: string[]): string[]
   /**

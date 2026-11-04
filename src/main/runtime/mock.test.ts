@@ -1,9 +1,9 @@
-import { mkdtempSync, realpathSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, realpathSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import type { ImageAttachment, McpServerSpec, RunEvent, TranscriptBlock } from '@shared/types'
-import { DEEP_TREE_TOKEN, FATIGUE_TOKEN, MCP_MIDRUN_TOKEN, MOCK_MIDRUN_REPORT, MOCK_MIDRUN_SERVER, MOCK_MIDRUN_TOOL, MockAdapter, fatigueSteps, type MockSession } from './mock'
+import { DEEP_TREE_TOKEN, FATIGUE_TOKEN, MCP_MIDRUN_TOKEN, MOCK_REFERENCE_REPORT, REFERENCE_EDIT_TOKEN, MOCK_MIDRUN_REPORT, MOCK_MIDRUN_SERVER, MOCK_MIDRUN_TOOL, MockAdapter, fatigueSteps, type MockSession } from './mock'
 import { ROOT_AGENT_ID, type PeerMessage, type RunSkill } from './types'
 import { parseSuggestions } from '../skills/suggest'
 import { peerMessageText } from './prompts'
@@ -174,6 +174,23 @@ describe('mock adapter harness transcript rows', () => {
     const text = (row?.block as { text: string }).text
     expect(text).not.toBe(full)
     expect(text.length).toBeLessThan(full.length)
+  })
+
+  it('nudges an engagement with the engagement wording (review the deliverables), a code project with verification', async () => {
+    const nudgeFor = async (kind: 'engagement' | 'code'): Promise<string> => {
+      const ctx = fakeCtx({ autoContinue: true, continuationDelayMs: 1, project: project({ kind }) })
+      const session = (await new MockAdapter({
+        script: { delayMs: 0, work: [{ type: 'plan', goal: 'G', steps: ['A', 'B'] }, { type: 'text', text: 'Step one.' }] }
+      }).start(ctx)) as MockSession
+      await waitFor(() => session.harnessMessages.length > 0)
+      await session.stop()
+      await session.finished
+      return session.harnessMessages[0] ?? ''
+    }
+    const engagement = await nudgeFor('engagement')
+    expect(engagement).toContain('review the deliverables against the brief')
+    expect(engagement).not.toContain('verification')
+    expect(await nudgeFor('code')).toContain("run the project's verification")
   })
 
   it('marks tellUser lines as harness rows', async () => {
@@ -729,6 +746,29 @@ describe('mock adapter [mock:fatigue] (permission fatigue parity)', () => {
     rmSync(dir, { recursive: true, force: true })
   })
 
+  it('engagement rules: a project-scope grant goes through ctx.saveProjectRules, is read back through ctx.savedRules, and the folder stays untouched', async () => {
+    const dir = realpathSync.native(mkdtempSync(join(tmpdir(), 'orgai-mock-engagement-')))
+    addRules(dir, ['Bash(git status)'])
+    let store: string[] = []
+    const saveProjectRules = vi.fn((rules: string[]) => {
+      const added = rules.filter((r) => !store.includes(r))
+      store = [...store, ...added]
+      return { rules: store, added }
+    })
+    const step = (command: string) => ({ type: 'tool' as const, name: 'Bash', input: { command }, ask: true, result: 'ok' })
+    const { ctx, cards } = await play(
+      { project: project({ path: dir, kind: 'engagement' }), savedRules: () => store, saveProjectRules },
+      () => ({ behavior: 'allow', scope: 'project' }),
+      { work: [step('npm test'), step('npm test'), step('git status')] }
+    )
+    expect(saveProjectRules).toHaveBeenCalledWith(['Bash(npm test:*)'])
+    // The second npm test rides on the rule saved through the context; the folder's git status rule is not read.
+    expect(cards.map((c) => (c as { input: { command: string } }).input.command)).toEqual(['npm test', 'git status'])
+    expect(readFileSync(join(dir, '.claude', 'settings.local.json'), 'utf8')).not.toContain('npm')
+    expect(ctx.events.some((e) => e.type === 'log' && e.message === 'Saved permission rule for this project: Bash(npm test:*)')).toBe(true)
+    rmSync(dir, { recursive: true, force: true })
+  })
+
   it('H-A parity: a command a saved Bash(npm test:*) seems to cover but the matcher refuses raises a card; plain npm test does not', async () => {
     const dir = realpathSync.native(mkdtempSync(join(tmpdir(), 'orgai-mock-refused-')))
     addRules(dir, ['Bash(npm test:*)'])
@@ -811,6 +851,71 @@ describe('mock adapter [mock:fatigue] (permission fatigue parity)', () => {
     expect(cards.map((c) => c.toolName)).toEqual(['Bash', 'Edit'])
     expect(allowDirectories).not.toHaveBeenCalled()
     expect(acceptEditsForProject).not.toHaveBeenCalled()
+  })
+})
+
+describe('mock [mock:reference-edit]', () => {
+  async function play(referenceDirectories?: () => string[]) {
+    const ctx = fakeCtx({ autoContinue: false, prompt: `Review the brief ${REFERENCE_EDIT_TOKEN}`, project: project({ roles: defaultRoles(), permissionMode: 'acceptEdits' }), allowedRules: () => ['Edit'], ...(referenceDirectories ? { referenceDirectories } : {}) })
+    const session = await new MockAdapter({ script: { delayMs: 0 } }).start(ctx)
+    const statuses = (): string[] => ctx.events.flatMap((e) => (e.type === 'run.status' ? [e.status] : []))
+    for (let i = 0; i < 300 && !statuses().includes('idle'); i++) await new Promise((r) => setTimeout(r, 10))
+    return { ctx, session, statuses }
+  }
+
+  it('a report edit under the first reference folder is denied without a card, and the run goes on to its end', async () => {
+    const ref = mkdtempSync(join(tmpdir(), 'orgai-mock-ref-'))
+    const { ctx, session, statuses } = await play(() => [ref])
+    const msg = `${ref} is a reference folder: agents may read it, not change it`
+    const results = ctx.events.flatMap((e) => (e.type === 'transcript' && e.entry.block.kind === 'tool_result' && e.entry.agentId === MOCK_REFERENCE_REPORT ? [e.entry.block] : []))
+    expect(results).toEqual([expect.objectContaining({ content: '# Client brief\n' }), expect.objectContaining({ content: msg, isError: true })])
+    // Denied before the saved Edit rule, acceptEdits or a card.
+    expect(ctx.requestPermission).not.toHaveBeenCalled()
+    expect(ctx.events.some((e) => e.type === 'log' && e.level === 'warn' && e.message.includes(msg))).toBe(true)
+    expect(statuses()).toContain('idle')
+    expect(ctx.events.some((e) => e.type === 'transcript' && e.entry.block.kind === 'text' && e.entry.block.text === 'Mock: the reference-edit script is done.')).toBe(true)
+    await session.stop()
+    await session.finished
+    expect(statuses().at(-1)).toBe('finished')
+  })
+
+  it('skips the edit with a log line when the run has no reference folder', async () => {
+    const { ctx, session } = await play()
+    expect(ctx.events.some((e) => e.type === 'log' && e.message.includes('no reference folder'))).toBe(true)
+    expect(ctx.events.some((e) => e.type === 'transcript' && e.entry.block.kind === 'tool_use' && e.entry.block.name === 'Edit')).toBe(false)
+    await session.stop()
+  })
+
+  it('the edit gate fails closed on a missing path and leaves other edits alone', async () => {
+    const ref = mkdtempSync(join(tmpdir(), 'orgai-mock-ref-'))
+    const ctx = fakeCtx({ autoContinue: false, referenceDirectories: () => [ref] })
+    const work = [
+      { type: 'tool' as const, name: 'Write', input: {}, ask: true, result: 'written' },
+      { type: 'tool' as const, name: 'Edit', input: { file_path: join(ctx.project.path, 'a.md') }, ask: true, result: 'edited' }
+    ]
+    const session = await new MockAdapter({ script: { delayMs: 0, work } }).start(ctx)
+    for (let i = 0; i < 300 && !ctx.events.some((e) => e.type === 'run.status' && e.status === 'idle'); i++) await new Promise((r) => setTimeout(r, 10))
+    const results = ctx.events.flatMap((e) => (e.type === 'transcript' && e.entry.block.kind === 'tool_result' ? [e.entry.block] : []))
+    expect(results[0]).toMatchObject({ isError: true, content: expect.stringContaining('names no file path') })
+    expect(results[1]).toMatchObject({ content: 'edited' })
+    expect(ctx.requestPermission).toHaveBeenCalledTimes(1)
+    await session.stop()
+  })
+
+  it('L4: an unreadable reference list refuses edit tools (warn log, no card) and leaves other tools alone', async () => {
+    const ctx = fakeCtx({ autoContinue: false, referenceDirectories: () => { throw new Error('boom') } })
+    const work = [
+      { type: 'tool' as const, name: 'Edit', input: { file_path: join(ctx.project.path, 'a.md') }, ask: true, result: 'edited' },
+      { type: 'tool' as const, name: 'Read', input: { file_path: join(ctx.project.path, 'a.md') }, result: 'read' }
+    ]
+    const session = await new MockAdapter({ script: { delayMs: 0, work } }).start(ctx)
+    for (let i = 0; i < 300 && !ctx.events.some((e) => e.type === 'run.status' && e.status === 'idle'); i++) await new Promise((r) => setTimeout(r, 10))
+    const results = ctx.events.flatMap((e) => (e.type === 'transcript' && e.entry.block.kind === 'tool_result' ? [e.entry.block] : []))
+    expect(results[0]).toMatchObject({ isError: true, content: 'OrgAI could not check the reference folders, so this edit was refused. Try again shortly.' })
+    expect(results[1]).toMatchObject({ content: 'read' })
+    expect(ctx.requestPermission).not.toHaveBeenCalled()
+    expect(ctx.events.some((e) => e.type === 'log' && e.level === 'warn' && e.message.includes("Could not read the run's reference folders: boom"))).toBe(true)
+    await session.stop()
   })
 })
 

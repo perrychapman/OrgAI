@@ -46,7 +46,8 @@ import type {
   SkillUseCount,
   UserQuestion
 } from '@shared/types'
-import { QUICK_ASSISTANT_SLUG, adapterForProject, agentProducedNothing, mcpSecretNames, mixedFamilyRefusal, modelFamily, newId, projectConnection, runMessagingOn, settingTier } from '@shared/defaults'
+import { QUICK_ASSISTANT_SLUG, adapterForProject, agentProducedNothing, isolateWritersOn, mcpSecretNames, mixedFamilyRefusal, modelFamily, newId, projectConnection, projectKindOf, runMessagingOn, settingTier, writesToProjectFolder } from '@shared/defaults'
+import { referenceFolderOf } from './referenceDirectories'
 import { aliasesFor, priceAgentUsage, type PricingContext } from './pricing'
 import { IntervalTimer, buildUsageStats, computeRunUsage, emptyAgentUsage, legacySummaryUsage, normalizeRunRecord } from './runUsage'
 import { DEFAULT_MAX_AUTO_CONTINUES, HARNESS_PROJECT_ID, QUICK_PROJECT_ID, RUN_MESSAGE_MAX_CHARS, RUN_PEER_PROMPT_CHARS, SKILLS_PROJECT_ID, USAGE_STATS_DEFAULT_LIMIT, USAGE_STATS_MAX_LIMIT, isVirtualProjectId } from '@shared/types'
@@ -63,7 +64,19 @@ import { breakParentCycles } from './agentTree'
 import { describePlanChange, peerDeliveryBlocked, planNudgesApply } from './continuation'
 import { isLiveAgent, runOutcome, settleAgent, withSkillActivity, type RunOutcome } from './activity'
 import { cancelPending, cleanProposalDecision, emptyPending, listPending, proposalEffect, proposalOutcome, type PendingCardMaps } from './pendingCards'
-import { addRules, isBlanketAllowRule, isUnsafeAllowRule, listRules, tooBroadRuleRefusal } from './permissionRules'
+import { addRules, addRulesReport, isBlanketAllowRule, isUnsafeAllowRule, listRules, tooBroadRuleRefusal } from './permissionRules'
+import { projectRulesFile, readEngagementDocument } from '../store/projectData'
+
+/**
+ * The project the adapters see. Adapters read `isolateWriters !== false`, so the value is made explicit: an
+ * engagement isolates (git worktrees) only on an explicit true; a code project is on unless explicitly false.
+ * Code projects pass through untouched; engagements get the explicit isolateWritersOn value.
+ */
+function noFolderWrites(p: Project): Project {
+  if (writesToProjectFolder(p)) return p
+  const on = isolateWritersOn(p)
+  return p.isolateWriters === on ? p : { ...p, isolateWriters: on }
+}
 import { allowedDirectoryRisk } from './allowedDirectories'
 import { isValidRule } from './ruleMatch'
 import { validateSpec } from '../mcp/validate'
@@ -230,6 +243,8 @@ interface ActiveRun {
   runRules: string[]
   /** The project's (canonical) path, for saving project-scoped grants. */
   projectPath: string
+  /** Set for engagements: their saved rules live in OrgAI's data folder, never in the project folder. */
+  rulesTarget?: { file: string }
   /** Servers approved with scope 'run': kept in memory (secret values included) until the run ends. */
   runServers: Map<string, { spec: McpServerSpec; secrets: Record<string, string> }>
   /** Everything needed to redraw the run later; flushed to disk on a timer and at the end. */
@@ -789,6 +804,12 @@ export class RunManager {
     return from ? this.chainOf(from) : []
   }
 
+  /** Where the project's saved rules live (projectRulesFile). An engagement needs the data dir: never falls back to a relative path. */
+  private rulesFileFor(p: Pick<Project, 'id' | 'path' | 'kind'>): string {
+    if (!writesToProjectFolder(p) && !this.options.dataDir) throw new Error('OrgAI has no data folder to keep this engagement\'s rules in.')
+    return projectRulesFile(p, this.options.dataDir ?? '')
+  }
+
   /** The project a stored or live run continues in: a quick run's rebuilt project, else the current saved one. */
   private projectOfRun(run: RunSummary): Project | null | undefined {
     if (run.quick) return this.options.quickProject?.(run)
@@ -874,6 +895,7 @@ export class RunManager {
       pendingRules: new Map(),
       runRules: [],
       projectPath: project.path,
+      ...(writesToProjectFolder(project) ? {} : { rulesTarget: { file: this.rulesFileFor(project) } }),
       runServers: new Map(),
       emit: () => {},
       skills: [],
@@ -1089,12 +1111,14 @@ export class RunManager {
       if (isQuick) {
         if (!existsSync(project.path)) throw new Error(`The folder ${project.path} no longer exists.`)
       } else {
-        // A new project's folder may not exist yet, and the provider needs a real cwd.
-        mkdirSync(project.path, { recursive: true })
+        // A new project's folder may not exist yet, and the provider needs a real cwd. An engagement's folder is the
+        // client's: OrgAI never creates it.
+        if (writesToProjectFolder(project)) mkdirSync(project.path, { recursive: true })
+        else if (!existsSync(project.path)) throw new Error(`The folder ${project.path} no longer exists.`)
       }
       // Git and Claude Code compare paths case-sensitively on Windows; a project path typed in a different
       // case than the folder on disk makes worktree isolation refuse to start. Use the on-disk spelling.
-      project = { ...project, path: canonicalPath(project.path) }
+      project = noFolderWrites({ ...project, path: canonicalPath(project.path) })
       live = project
       if (scaffold) {
         const updated = this.setup.markScaffolded(project.id)
@@ -1118,7 +1142,7 @@ export class RunManager {
        */
       // skills false (an approved org chart, review M1): the card says it applies from the next run, so this run's grants stay.
       const setLive = (saved: Project, skills = true): void => {
-        live = { ...saved, path: live.path }
+        live = noFolderWrites({ ...saved, path: live.path })
         ctx.project = live
         // Grant changes reach the live run's roles (review M1): the adapters' gates, restarts and role lookups read these
         // objects. An org chart approval (skills false) leaves them as they started.
@@ -1150,12 +1174,40 @@ export class RunManager {
           emit({ type: 'log', runId: summary.id, level: 'warn', message: `Allowed folder ${u} is too broad or sensitive; agents cannot use it in this run.` })
         }
       }
-      if (foldersOn) resolveFolders()
+      // Reference folders (Project.referenceDirectories): readable, never editable. Same resolution and conditions.
+      let refDirs: string[] = []
+      const resolveReferences = (): void => {
+        const r = resolveAllowedDirectories(live.referenceDirectories, { projectPath: live.path, dataDir: this.options.dataDir })
+        // A folder that is also an allowed folder stays writable: it is only in allowedDirectories().
+        refDirs = r.dirs.filter((d) => !allowedDirs.some((a) => samePath(a, d)))
+        for (const ref of refDirs) {
+          for (const a of allowedDirs) {
+            const key = `contains:${a}|${ref}`
+            if (warnedMissing.has(key) || !isInsideEither(a, ref)) continue
+            warnedMissing.add(key)
+            log.info(`Run ${summary.id}: ${a} contains reference folder ${ref}; edits there stay refused.`)
+          }
+        }
+        for (const m of r.missing) {
+          if (warnedMissing.has(m)) continue
+          warnedMissing.add(m)
+          emit({ type: 'log', runId: summary.id, level: 'warn', message: `Reference folder ${m} does not exist; agents cannot read it in this run.` })
+        }
+        for (const u of r.unsafe) {
+          if (warnedMissing.has(u)) continue
+          warnedMissing.add(u)
+          emit({ type: 'log', runId: summary.id, level: 'warn', message: `Reference folder ${u} is too broad or sensitive; agents cannot use it in this run.` })
+        }
+      }
+      if (foldersOn) {
+        resolveFolders()
+        resolveReferences()
+      }
       const ctx: RuntimeContext = {
         run: summary,
         project,
         roles:
-          kind === 'setup' ? [architectRole(builtinModel)]
+          kind === 'setup' ? [architectRole(builtinModel, { kind: projectKindOf(project) })]
           : kind === 'mcp-assist' ? [withBuildTools(mcpAssistantRole(builtinModel), summary)]
           : kind === 'skill-assist' ? [skillAssistantRole(builtinModel)]
           : project.roles.map((r) => ({ ...r })),
@@ -1204,17 +1256,35 @@ export class RunManager {
         // A quick run works in a folder the user never made a project: only this run's own grants count, never the
         // folder's saved rules file (it is untrusted), and nothing is ever written there (decideRules).
         protectedDirectories: () => protectedDirsOf(this.options.dataDir),
-        allowedRules: () => [...new Set([...(restricted ? [] : listRules(project.path)), ...active.runRules])],
+        allowedRules: () => [...new Set([...(restricted ? [] : listRules({ file: this.rulesFileFor(live) })), ...active.runRules])],
+        // Where the project keeps its saved rules: the folder file for code projects, OrgAI's data folder for engagements.
+        ...(restricted
+          ? {}
+          : {
+              savedRules: () => listRules({ file: this.rulesFileFor(live) }),
+              saveProjectRules: (rules: string[]) => addRulesReport({ file: this.rulesFileFor(live) }, rules)
+            }),
+        ...(!writesToProjectFolder(project) ? { engagementDocument: () => (this.options.dataDir ? readEngagementDocument(this.options.dataDir, project.id) : undefined) } : {}),
         ...(foldersOn
           ? {
               allowedDirectories: () => [...allowedDirs],
+              referenceDirectories: () => [...refDirs],
               ...(folderSave
                 ? {
-                    allowDirectories: (dirs: string[]) => {
+                    allowDirectories: (requested: string[]) => {
+                      // A reference folder (or anything inside one) stays read-only: never saved as writable.
+                      const refs = [...new Set([...refDirs, ...(live.referenceDirectories ?? []).filter((r): r is string => typeof r === 'string')])]
+                      const dirs = requested.filter((d) => {
+                        if (!referenceFolderOf(d, refs, live.path)) return true
+                        log.info(`Run ${summary.id}: ${d} is a reference folder; it stays read-only.`)
+                        return false
+                      })
+                      if (!dirs.length) return []
                       const saved = folderSave(live.id, { addDirectories: dirs })
                       setLive(saved, false)
                       this.broadcast({ type: 'project.updated', runId: summary.id, project: saved })
                       resolveFolders()
+                      resolveReferences()
                       const asked = resolveAllowedDirectories(dirs, { projectPath: live.path, dataDir: this.options.dataDir }).dirs
                       const inForce = asked.filter((d) => allowedDirs.some((a) => samePath(a, d)))
                       if (inForce.length) emit({ type: 'log', runId: summary.id, level: 'info', message: `Allowed folders for this project: ${inForce.join(', ')}` })
@@ -1934,7 +2004,7 @@ export class RunManager {
           if (refusal) this.broadcast({ type: 'log', runId, level: 'warn', message: `Not saved for the project: ${refusal} It applies to this run only.` })
         }
         try {
-          if (savable.length) addRules(active.projectPath, savable)
+          if (savable.length) addRules(active.rulesTarget ?? active.projectPath, savable)
         } catch (e) {
           clean = { behavior: 'grant', scope: 'run' }
           this.broadcast({ type: 'log', runId, level: 'warn', message: `Could not save the rules to the project (${(e as Error).message}); they apply to this run only.` })

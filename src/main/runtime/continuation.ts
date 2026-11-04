@@ -1,4 +1,4 @@
-import type { PlanStep, RunKind, RunPlan, RunSummary } from '@shared/types'
+import type { PlanStep, ProjectKind, RunKind, RunPlan, RunSummary } from '@shared/types'
 import { DEFAULT_MAX_AUTO_CONTINUES } from '@shared/types'
 
 /**
@@ -70,22 +70,26 @@ export function describePlanChange(previous: RunPlan | undefined, next: RunPlan)
 }
 
 /** The instruction sent to the orchestrator when steps remain. The transcript shows continueSummary instead. */
-export function continueNudgeText(plan: RunPlan): string {
+export function continueNudgeText(plan: RunPlan, kind: ProjectKind = 'code'): string {
   const remaining = remainingSteps(plan)
   const list = remaining.map((s) => `${s.id} ${s.title}${s.status === 'in_progress' ? ' (in progress)' : s.status === 'blocked' ? ' (blocked)' : ''}`).join('; ')
   return (
     `Harness: plan ${finishedCount(plan)} of ${plan.steps.length} done. Remaining: ${list}. ` +
     'Continue with the next step; mark steps with update_plan as you go. ' +
-    "When all are done, run the project's verification (build/tests) and call complete_plan. " +
+    (kind === 'engagement'
+      ? 'When all are done, review the deliverables against the brief and call complete_plan. '
+      : "When all are done, run the project's verification (build/tests) and call complete_plan. ") +
     'Stop only for a real decision: ask_user, or mark_blocked with the reason.'
   )
 }
 
 /** Every step is marked done or skipped but complete_plan was never called. */
-export function finishNudgeText(plan: RunPlan): string {
+export function finishNudgeText(plan: RunPlan, kind: ProjectKind = 'code'): string {
   return (
     `Harness: plan ${finishedCount(plan)} of ${plan.steps.length} done but not completed. ` +
-    "Run the project's verification (build/tests) and call complete_plan with a summary. " +
+    (kind === 'engagement'
+      ? 'Review the deliverables against the brief and call complete_plan with a summary. '
+      : "Run the project's verification (build/tests) and call complete_plan with a summary. ") +
     'Stop only for a real decision: ask_user, or mark_blocked with the reason.'
   )
 }
@@ -129,6 +133,8 @@ export interface NudgeInput {
   turnsWithoutPlan: number
   /** The orchestrator is in a turn again (a report or message woke it during the delay). */
   orchestratorBusy?: boolean
+  /** The run's project kind; wording of the nudges only. Missing = 'code'. */
+  projectKind?: ProjectKind
 }
 
 export interface NudgeDecision {
@@ -160,7 +166,7 @@ export function nextNudge(input: NudgeInput): NudgeDecision {
   if (!plan) return input.turnsWithoutPlan === 1 ? { kind: 'set-plan', text: SET_PLAN_NUDGE, summary: SET_PLAN_SUMMARY } : { kind: 'none' }
   if (plan.status !== 'active') return { kind: 'none' }
   if (plan.autoContinues >= Math.max(0, input.maxAutoContinues)) return { kind: 'none', limitReached: true }
-  const text = remainingSteps(plan).length ? continueNudgeText(plan) : finishNudgeText(plan)
+  const text = remainingSteps(plan).length ? continueNudgeText(plan, input.projectKind) : finishNudgeText(plan, input.projectKind)
   return { kind: 'continue', text, summary: continueSummary(plan) }
 }
 
@@ -191,6 +197,8 @@ export interface ContinuationHost {
   autoContinue?: boolean
   maxAutoContinues?: number
   delayMs?: number
+  /** The run's project kind (projectKindOf(ctx.project)); only changes the nudge wording. Missing = 'code'. */
+  projectKind?: ProjectKind
   getPlan(): RunPlan | undefined
   updatePlan(plan: RunPlan): Promise<void>
   liveReports(): number
@@ -277,7 +285,8 @@ export class ContinuationDriver {
       rateLimited: this.host.rateLimited(),
       stopping: this.held || this.host.stopping(),
       turnsWithoutPlan: this.turnsWithoutPlan,
-      orchestratorBusy: this.host.orchestratorBusy()
+      orchestratorBusy: this.host.orchestratorBusy(),
+      ...(this.host.projectKind ? { projectKind: this.host.projectKind } : {})
     }
     if (!plan && !nudgeBlocked(input)) input.turnsWithoutPlan = ++this.turnsWithoutPlan
     const decision = nextNudge(input)
@@ -293,7 +302,7 @@ export class ContinuationDriver {
       const updated: RunPlan = { ...plan, autoContinues: plan.autoContinues + 1, updatedAt: Date.now() }
       await this.host.updatePlan(updated)
       const step = nextStep(updated)
-      activity = step ? `Continuing: ${step.title}`.slice(0, 90) : 'Continuing: verification'
+      activity = step ? `Continuing: ${step.title}`.slice(0, 90) : this.host.projectKind === 'engagement' ? 'Continuing: review' : 'Continuing: verification'
       summary = continueSummary(updated)
       this.host.log('info', `Automatic continue ${updated.autoContinues} of ${input.maxAutoContinues}: ${planProgressLabel(updated)} done.`)
     } else {

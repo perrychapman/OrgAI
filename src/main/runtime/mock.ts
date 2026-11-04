@@ -2,10 +2,11 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { AgentInstance, ConnectionId, ImageAttachment, McpServerSpec, PermissionSuggestion, PluginSpec, ProviderId, Role, RunEvent, RunPlan, TokenUsage, TranscriptBlock } from '@shared/types'
 import { CHAT_HARNESS_TOOLS, HARNESS_PROJECT_ID, MCP_HARNESS_TOOLS, SKILLS_PROJECT_ID, SKILL_ASSIST_HARNESS_TOOLS, SKILL_HARNESS_TOOLS, SPAWN_TOOL } from '@shared/types'
-import { mcpServersForRole, newId } from '@shared/defaults'
+import { mcpServersForRole, newId, projectKindOf } from '@shared/defaults'
 import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo, type CompletionInput, type PeerMessage, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
 import { harnessToolsFor, isBlockingHarnessTool, type ConfigChange, type ConfigChangeResult, type HarnessTool, type HarnessToolAudience, type HarnessToolHooks, type McpAttachResult } from './harnessTools'
 import { agentInstalledServers, mcpCallDenial, withoutServerRules } from './mcpGrants'
+import { REFERENCE_EDIT_TOOLS, referenceEditDenial } from './referenceDirectories'
 import { ContinuationDriver, PLAN_TOOLS, stepActivity } from './continuation'
 import { authFailureMessage, describeTool, harnessToolActivity } from './activity'
 import { EDIT_TOOLS, allowRuleStrings, applyAllowScope, chooseSuggestions, editTargetOf, isOfferableDirectory, listRules, suggestionLabels, type AllowScopePersist } from './permissionRules'
@@ -28,7 +29,8 @@ import { countUsage, setModelTokens, usageOf } from './runUsage'
  * runs `cd <project>/.claude/worktrees/agent-x && npm test` with a provider-style compound rule suggestion (the card
  * offers `Bash(npm test:*)`), a report edits `<parent of project>/sibling-notes/README.md` with setMode acceptEdits +
  * addDirectories suggestions, then the root runs `cd <project>/sub && npm test` (no card once `Bash(npm test:*)` is
- * granted; the free cd needs no rule).
+ * granted; the free cd needs no rule). [mock:reference-edit] (referenceEditSteps): a report tries an Edit under the
+ * run's first reference folder and gets the reference gate's refusal; the run goes on to its usual end.
  *
  * Permission asks follow the Claude adapter: saved, session and live rules (matchingRule with matchOptionsFor, so a
  * `cd` into the project or an allowed directory needs no rule), and an edit is pre-approved when its file is inside
@@ -317,6 +319,31 @@ export function fatigueSteps(projectPath: string): MockStep[] {
   ]
 }
 
+/** Trigger token (work runs, default script): a report tries to edit a file in the first reference folder (referenceEditSteps). */
+export const REFERENCE_EDIT_TOKEN = '[mock:reference-edit]'
+/** The report the [mock:reference-edit] script spawns. */
+export const MOCK_REFERENCE_REPORT = 'mock-reference-report'
+
+/**
+ * The [mock:reference-edit] turn: a report reads, then tries an Edit under `ref` (the run's first reference folder),
+ * which the reference gate refuses with referenceFolderMessage (the denial is the tool result), then finishes and the
+ * root wraps up as usual. Without a reference folder the edit step is left out. Nothing touches the disk.
+ */
+export function referenceEditSteps(ref: string | undefined): MockStep[] {
+  return [
+    { type: 'text', text: 'Checking the client material.' },
+    { type: 'spawn', id: MOCK_REFERENCE_REPORT, description: 'Review the client material' },
+    ...(ref
+      ? ([
+          { type: 'tool', agent: MOCK_REFERENCE_REPORT, name: 'Read', input: { file_path: join(ref, 'brief.md') }, result: '# Client brief\n' },
+          { type: 'tool', agent: MOCK_REFERENCE_REPORT, name: 'Edit', input: { file_path: join(ref, 'brief.md'), old_string: 'old', new_string: 'new' }, ask: true, result: 'File updated.' }
+        ] satisfies MockStep[])
+      : []),
+    { type: 'finish', id: MOCK_REFERENCE_REPORT, result: 'Reviewed the client material; it is read-only, so notes go in the project folder.' },
+    { type: 'text', text: 'Mock: the reference-edit script is done.' }
+  ]
+}
+
 /** Trigger token (work runs, default script): the root changes its own project's MCP servers and skills mid-run. */
 /** Trigger token (work runs, default script): a three-level agent tree whose reports all finish (deepTreeSteps). */
 export const DEEP_TREE_TOKEN = '[mock:deep-tree]'
@@ -469,6 +496,7 @@ export class MockSession implements RuntimeSession {
     this.continueTurns = [...(script.continue ?? [])]
     this.continuation = new ContinuationDriver({
       kind: ctx.run.kind,
+      projectKind: projectKindOf(ctx.project),
       autoContinue: ctx.autoContinue,
       maxAutoContinues: ctx.maxAutoContinues,
       delayMs: ctx.continuationDelayMs,
@@ -802,6 +830,11 @@ export class MockSession implements RuntimeSession {
     if (!this.isSetup && this.ctx.run.kind === 'work' && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(MCP_MIDRUN_TOKEN)) return MCP_MIDRUN_STEPS
     if (!this.isSetup && this.ctx.run.kind === 'work' && !this.ctx.run.quick && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(CONFIG_CHANGE_TOKEN)) return configChangeSteps(this.root.slug)
     if (!this.isSetup && this.ctx.run.kind === 'work' && !this.ctx.run.quick && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(FATIGUE_TOKEN)) return fatigueSteps(this.ctx.project.path)
+    if (!this.isSetup && this.ctx.run.kind === 'work' && !this.ctx.run.quick && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(REFERENCE_EDIT_TOKEN)) {
+      const ref = this.ctx.referenceDirectories?.()[0]
+      if (!ref) this.log('info', 'Mock [mock:reference-edit]: this run has no reference folder, so the edit step is skipped.')
+      return referenceEditSteps(ref)
+    }
     if (!this.isSetup && this.ctx.run.kind === 'work' && !this.ctx.run.quick && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(DEEP_TREE_TOKEN)) {
       const lead = this.firstSpawnableSlug(this.root)
       return deepTreeSteps(lead, this.firstSpawnableSlug(this.rolesBySlug.get(lead), lead))
@@ -956,6 +989,24 @@ export class MockSession implements RuntimeSession {
         return
       }
     }
+    // Same reference-folder gate as the Claude adapter's PreToolUse: edit tools under a reference folder (or naming no
+    // path while any exist) are refused before any rule, mode or card. The list is live; the mock's cwd is the project.
+    // An unreadable list refuses an edit tool (same wording as the Claude adapter's referenceDenial).
+    let refDenial: string | null = null
+    if (this.ctx.referenceDirectories && REFERENCE_EDIT_TOOLS.has(step.name)) {
+      try {
+        refDenial = referenceEditDenial(step.name, input, this.ctx.referenceDirectories(), this.ctx.project.path)
+      } catch (e) {
+        this.log('warn', `Could not read the run's reference folders: ${(e as Error).message}`)
+        refDenial = 'OrgAI could not check the reference folders, so this edit was refused. Try again shortly.'
+      }
+    }
+    if (refDenial) {
+      this.log('warn', `Blocked ${step.name} by ${this.agents.get(agentId)?.name ?? agentId}: ${refDenial}`)
+      this.transcript(agentId, { kind: 'tool_result', toolUseId: id, content: refDenial, isError: true })
+      this.setState(agentId, 'thinking', 'Thinking…')
+      return
+    }
     // Same per-role MCP grant gate as the Claude adapter's PreToolUse, from the live server list; the MCP resource
     // tools are gated on input.server.
     const mcpDenial = mcpCallDenial(step.name, { role: this.roleOf(agentId), isRoot: agentId === ROOT_AGENT_ID }, this.liveMcpServers(), this.harnessAudiences, input)
@@ -988,7 +1039,9 @@ export class MockSession implements RuntimeSession {
       const suggestions = restricted ? chosen.filter((s) => s.type !== 'setMode') : chosen
       const rules = allowRuleStrings(suggestions)
       // A quick run or build session never reads saved rules from the user's folder (same as the Claude adapter).
-      const saved = new Set([...(isTrustRestrictedRun(this.ctx.run) ? [] : listRules(this.ctx.project.path)), ...this.sessionRules])
+      // Saved rules come from ctx.savedRules() (OrgAI's data folder for engagements), else the folder's file.
+      const savedRules = isTrustRestrictedRun(this.ctx.run) ? [] : this.ctx.savedRules ? this.ctx.savedRules() : listRules(this.ctx.project.path)
+      const saved = new Set([...savedRules, ...this.sessionRules])
       // Live grants (request_permission_rules, the rules panel) count too, like the real adapters' matchers.
       // A server an agent installed this run is never approved by a server-level rule (same as the Claude adapter).
       const installed = step.name.startsWith('mcp__') ? installedAll : new Set<string>()
@@ -1167,7 +1220,8 @@ export interface MockAdapterOptions {
 function allowScopePersist(ctx: RuntimeContext): AllowScopePersist {
   return {
     ...(ctx.allowDirectories ? { allowDirectories: (dirs: string[]) => ctx.allowDirectories!(dirs) } : {}),
-    ...(ctx.acceptEditsForProject ? { acceptEditsForProject: () => ctx.acceptEditsForProject!() } : {})
+    ...(ctx.acceptEditsForProject ? { acceptEditsForProject: () => ctx.acceptEditsForProject!() } : {}),
+    ...(ctx.saveProjectRules ? { saveProjectRules: (rules: string[]) => ctx.saveProjectRules!(rules) } : {})
   }
 }
 

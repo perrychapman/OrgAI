@@ -28,7 +28,7 @@ import {
 import type { AgentInstance, ImageAttachment, McpServerSpec, PluginSpec, Project, RunSummary, Role, RunEvent, TranscriptBlock, UsageStatus, WorktreeInfo } from '@shared/types'
 import type { PermissionDecision, PermissionSuggestion, ProviderAuth } from '@shared/types'
 import { SPAWN_TOOL } from '@shared/types'
-import { ANTHROPIC_BUILTIN_MODELS, effectiveSubagentLimits, mcpServersForRole, newId, planGuardEngaged, planGuardOf, settingTier, tierForModel } from '@shared/defaults'
+import { ANTHROPIC_BUILTIN_MODELS, effectiveSubagentLimits, isolateWritersOn, mcpServersForRole, newId, planGuardEngaged, planGuardOf, projectKindOf, settingTier, tierForModel } from '@shared/defaults'
 import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo, type RunSkill, type CompletionInput, type RunConnection, type ResolvedMcpServer, type RuntimeAdapter, type PeerMessage, type RuntimeContext, type RuntimeSession } from './types'
 import { isTrustRestrictedRun, isWorkspaceConfigPath } from '../quick/scratch'
 import { hiddenCharIn } from '../capabilities/sanitize'
@@ -41,6 +41,7 @@ import { PartialText } from './claudePartial'
 import { buildSkillPlugin, livePluginNames, pluginStale, skillGate, type SkillPlugin } from './claudeSkills'
 import { SETUP_TOOLS_INSTRUCTIONS, datum, harnessToolsFor, isBlockingHarnessTool, type ConfigChange, type ConfigChangeResult, type HarnessTool, type HarnessToolAudience, type McpAttachResult } from './harnessTools'
 import { agentInstalledServers, isMcpGated, mcpCallDenial, rolesGrantedServer, withoutServerRules } from './mcpGrants'
+import { REFERENCE_EDIT_TOOLS, referenceEditDenial } from './referenceDirectories'
 import { SHELL_TOOLS, isUnsafeSegment, matchOptionsFor, matchingRule, programRunsProgram, ruleCoversButRefused, splitCommand, unwrapShellCommand, type MatchOptions } from './ruleMatch'
 import { ContinuationDriver, stepActivity } from './continuation'
 import { LIST_AGENTS_TOOL, MESSAGE_TOOL, buildRolePrompt, peerMessageText, canWrite, composeFirstMessage, isArchitectureFile } from './prompts'
@@ -546,6 +547,7 @@ export function buildAgents(
   skills: Map<string, RunSkill> = new Map()
 ): Record<string, AgentDefinition> {
   const isSetup = isSetupLikeRun(ctx.run.kind)
+  const engagementDocument = ctx.engagementDocument?.()
   const agents: Record<string, AgentDefinition> = {}
   for (const role of ctx.roles) {
     const tools: string[] = [...role.tools]
@@ -568,6 +570,10 @@ export function buildAgents(
         ...(ctx.run.quick ? { quick: ctx.run.quick } : {}),
         // The run's allowed directories, so agents know where a plain `cd` and edits need no approval.
         ...(ctx.allowedDirectories?.().length ? { allowedDirectories: ctx.allowedDirectories() } : {}),
+        // Read-only reference folders, so agents read them and never try to change them.
+        ...(ctx.referenceDirectories?.().length ? { referenceDirectories: ctx.referenceDirectories() } : {}),
+        // Engagements: the approved engagement document, read now (a restart rebuilds agents and re-reads it).
+        ...(engagementDocument ? { engagementDocument } : {}),
         ...(granted.length ? { skills: granted.map(([q, s]) => ({ name: q, description: s.description })), skillTool: 'Skill' as const } : {})
       }),
       tools,
@@ -604,14 +610,28 @@ export function claudeAllowsBypass(ctx: RuntimeContext): boolean {
   return !isSetupLikeRun(ctx.run.kind) && !isTrustRestrictedRun(ctx.run) && ctx.project.permissionMode === 'bypassPermissions'
 }
 
-/** A quick run's folder and a build session's scratch dir are untrusted: .claude/settings*.json (rules, hooks) must not load. */
-export function claudeSettingSources(ctx: RuntimeContext): Options['settingSources'] {
-  return isTrustRestrictedRun(ctx.run) ? [] : ['project']
+/**
+ * Whether the CLI loads the working folder's `.claude/settings.json` (settingSources ['project']). Not for a quick run's
+ * folder or a build session's scratch dir (trust-restricted), and not for any run of an engagement: its folder is
+ * often a client share, so its hooks, rules and MCP servers must not load (OrgAI keeps an engagement's rules in its
+ * own data folder, ctx.savedRules). Every reader of that file (claudeSettingSources, cliProjectSettings) uses this.
+ */
+export function projectSettingsLoad(ctx: Pick<RuntimeContext, 'run' | 'project'>): boolean {
+  return !isTrustRestrictedRun(ctx.run) && projectKindOf(ctx.project) !== 'engagement'
 }
 
-/** Saved "always allow" rules from the project folder; none for a quick run (its grants come from allowedRules()). */
+/** settingSources for a run: ['project'] only when projectSettingsLoad (never for a restricted run or an engagement). */
+export function claudeSettingSources(ctx: RuntimeContext): Options['settingSources'] {
+  return projectSettingsLoad(ctx) ? ['project'] : []
+}
+
+/**
+ * Saved "always allow" rules: ctx.savedRules() (wherever the project keeps them; OrgAI's data folder for engagements),
+ * else the project folder's file; none for a trust-restricted run (its grants come from allowedRules()).
+ */
 export function claudeSavedRules(ctx: RuntimeContext): string[] {
-  return isTrustRestrictedRun(ctx.run) ? [] : listRules(ctx.project.path)
+  if (isTrustRestrictedRun(ctx.run)) return []
+  return ctx.savedRules ? ctx.savedRules() : listRules(ctx.project.path)
 }
 
 /**
@@ -652,10 +672,11 @@ const cliSettingsCache = new Map<string, { mtimeMs: number; size: number; result
  * Reads `<project>/.claude/settings.json` for the PreToolUse ask check, never as an allow source. The file is untrusted
  * and read synchronously on the main process: lstat first (a symlink, FIFO or directory is refused without opening it),
  * at most CLI_SETTINGS_MAX_BYTES, a leading BOM stripped, cached by path + mtimeMs + size. A missing file (or project
- * path) is no rules; a trust-restricted run (settingSources []) is no rules.
+ * path) is no rules. When the CLI does not load the file (projectSettingsLoad false: a trust-restricted run or an
+ * engagement, settingSources []) it holds no rules the CLI could apply, so it is not read and forces no 'ask'.
  */
 export function cliProjectSettings(ctx: Pick<RuntimeContext, 'run' | 'project'>): CliProjectSettings {
-  if (isTrustRestrictedRun(ctx.run) || !ctx.project.path) return NO_CLI_SETTINGS
+  if (!projectSettingsLoad(ctx) || !ctx.project.path) return NO_CLI_SETTINGS
   const file = join(ctx.project.path, '.claude', 'settings.json')
   let st
   try {
@@ -770,11 +791,18 @@ export function cliShellAskReason(toolName: string, input: unknown, settings: Cl
 }
 
 /**
- * Options.additionalDirectories for a run: RuntimeContext.allowedDirectories() read now (absent on trust-restricted
- * runs = none). The CLI treats them like the cwd for read-only `cd` and acceptEdits (docs; unverified live).
+ * Options.additionalDirectories for a run: RuntimeContext.allowedDirectories() plus referenceDirectories() read now,
+ * deduped (both absent on trust-restricted runs = none; a restricted run gets none here either way). The CLI treats
+ * them like the cwd for read-only `cd` and acceptEdits (docs; unverified live); reference folders are kept read-only
+ * by the PreToolUse reference gate, which runs before any allow path, acceptEdits included.
  */
-export function claudeAdditionalDirectories(ctx: Pick<RuntimeContext, 'allowedDirectories'>): string[] {
-  return (ctx.allowedDirectories?.() ?? []).filter((d) => typeof d === 'string' && d.length > 0)
+export function claudeAdditionalDirectories(ctx: Pick<RuntimeContext, 'allowedDirectories' | 'referenceDirectories' | 'run'>): string[] {
+  if (isTrustRestrictedRun(ctx.run)) return []
+  const out: string[] = []
+  for (const d of [...(ctx.allowedDirectories?.() ?? []), ...(ctx.referenceDirectories?.() ?? [])]) {
+    if (typeof d === 'string' && d.length > 0 && !out.includes(d)) out.push(d)
+  }
+  return out
 }
 
 /**
@@ -784,7 +812,8 @@ export function claudeAdditionalDirectories(ctx: Pick<RuntimeContext, 'allowedDi
 export function allowScopePersist(ctx: RuntimeContext): AllowScopePersist {
   return {
     ...(ctx.allowDirectories ? { allowDirectories: (dirs: string[]) => ctx.allowDirectories!(dirs) } : {}),
-    ...(ctx.acceptEditsForProject ? { acceptEditsForProject: () => ctx.acceptEditsForProject!() } : {})
+    ...(ctx.acceptEditsForProject ? { acceptEditsForProject: () => ctx.acceptEditsForProject!() } : {}),
+    ...(ctx.saveProjectRules ? { saveProjectRules: (rules: string[]) => ctx.saveProjectRules!(rules) } : {})
   }
 }
 
@@ -1072,7 +1101,7 @@ export class ClaudeSession implements RuntimeSession {
     if (!root) throw new Error('Project has no roles')
     this.root = root
     this.isSetup = isSetupLikeRun(ctx.run.kind)
-    this.isolation = !this.isSetup && ctx.project.isolateWriters !== false && isGitRepo(ctx.project.path)
+    this.isolation = !this.isSetup && isolateWritersOn(ctx.project) && isGitRepo(ctx.project.path)
     this.rolesBySlug = new Map(ctx.roles.map((r) => [r.slug, r]))
     // A proxy connection (LiteLLM) has no subscription plan windows: treat it like an API key.
     this.authMode = usesProxy(ctx) || ctx.project.provider.auth.kind === 'apiKey' ? 'apiKey' : 'unknown'
@@ -1088,6 +1117,7 @@ export class ClaudeSession implements RuntimeSession {
     })
     this.continuation = new ContinuationDriver({
       kind: ctx.run.kind,
+      projectKind: projectKindOf(ctx.project),
       autoContinue: ctx.autoContinue,
       maxAutoContinues: ctx.maxAutoContinues,
       delayMs: ctx.continuationDelayMs,
@@ -1438,6 +1468,20 @@ export class ClaudeSession implements RuntimeSession {
     return { from: model || 'its configured model', to }
   }
 
+  /** referenceDirectories.ts referenceEditDenial for a PreToolUse call; an unreadable list denies an edit tool. */
+  private referenceDenial(input: Pick<PreToolUseHookInput, 'tool_name' | 'tool_input' | 'cwd'>): string | null {
+    if (!REFERENCE_EDIT_TOOLS.has(input.tool_name) || !this.ctx.referenceDirectories) return null
+    let refs: string[]
+    try {
+      refs = this.ctx.referenceDirectories()
+    } catch (e) {
+      this.log('warn', `Could not read the run's reference folders: ${(e as Error).message}`)
+      return 'OrgAI could not check the reference folders, so this edit was refused. Try again shortly.'
+    }
+    const cwd = typeof input.cwd === 'string' && input.cwd ? input.cwd : this.ctx.project.path
+    return referenceEditDenial(input.tool_name, input.tool_input, refs, cwd)
+  }
+
   private buildHooks(): Options['hooks'] {
     const hookAllow = (reason: string): HookJSONOutput => ({
       hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow', permissionDecisionReason: reason }
@@ -1450,6 +1494,14 @@ export class ClaudeSession implements RuntimeSession {
       if (configDenial) {
         this.log('warn', `Blocked ${input.tool_name} by ${this.agents.get(agentId)?.name ?? agentId}: ${configDenial}`)
         return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: configDenial } }
+      }
+      // Reference folders are read-only: edit tools under one (or naming no path while any exist) are denied before
+      // any allow path (saved rules, acceptEdits, auto). The list is live, read at call time; relative paths resolve
+      // against the calling agent's cwd (a worktree for isolated agents), else the project folder.
+      const referenceDenial = this.referenceDenial(input)
+      if (referenceDenial) {
+        this.log('warn', `Blocked ${input.tool_name} by ${this.agents.get(agentId)?.name ?? agentId}: ${referenceDenial}`)
+        return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: referenceDenial } }
       }
       // Per-role MCP grants on every MCP call, from the LIVE server list (run-scoped installs and the install card's
       // roles included), before any rule or hook-allow path. Whitelists alone do not restrict: def.mcpServers grants
@@ -2459,6 +2511,9 @@ export class ClaudeSession implements RuntimeSession {
         // The harness's own tools carry their approval inside the proposal round-trip.
         if (toolName.startsWith(ORGAI_TOOL_PREFIX)) return { behavior: 'allow', updatedInput: input }
         const agentId = this.takeIssuer(permissionKey(toolName, input)) ?? this.lastToolAgent.get(toolName) ?? ROOT_ID
+        // Backstop for the PreToolUse reference gate: never a card for an edit under a reference folder.
+        const refDenial = this.referenceDenial({ tool_name: toolName, tool_input: input, cwd: this.integrator.worktreeOf(agentId)?.path ?? this.ctx.project.path })
+        if (refDenial) return { behavior: 'deny', message: refDenial }
         this.setState(agentId, 'waiting', `Needs approval: ${describe(toolName, input)}`)
         // The SDK can forbid a "don't ask again" choice for asks whose rule would grant too much.
         // A trust-restricted run never gets a setMode suggestion (it stays ask-only after "allow for session").
@@ -2485,7 +2540,8 @@ export class ClaudeSession implements RuntimeSession {
         return { behavior: 'deny', message: decision.message }
       }
     }
-    // Allowed directories (live: folders granted during the run join the next build, a config restart included).
+    // Allowed and reference directories (live: folders granted during the run join the next build, a config restart
+    // included). Reference folders are readable here and kept read-only by the PreToolUse reference gate.
     const dirs = claudeAdditionalDirectories(this.ctx)
     if (dirs.length) options.additionalDirectories = dirs
     if (CLAUDE_EXECUTABLE) options.pathToClaudeCodeExecutable = CLAUDE_EXECUTABLE

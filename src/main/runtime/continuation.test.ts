@@ -344,3 +344,49 @@ describe('planNudgesApply (UX M5: a single-assistant Chat is a conversation)', (
     expect(second.nudges[0]).toContain('Harness: plan 1 of 3 done.')
   })
 })
+
+describe('nudge wording per project kind', () => {
+  it('code keeps the verification wording, engagements review the deliverables', () => {
+    const code = nextNudge(input())
+    expect(code.text).toContain("run the project's verification (build/tests)")
+    const eng = nextNudge(input({ projectKind: 'engagement' }))
+    expect(eng.text).toContain('review the deliverables against the brief')
+    expect(eng.text).not.toMatch(/build\/tests|verification/)
+    const done = plan({ steps: [step('p1', 'A', 'done')] })
+    expect(nextNudge(input({ plan: done })).text).toContain("Run the project's verification (build/tests)")
+    const finish = nextNudge(input({ plan: done, projectKind: 'engagement' })).text
+    expect(finish).toContain('Review the deliverables against the brief and call complete_plan')
+    expect(finish).not.toMatch(/build\/tests/)
+  })
+
+  it('the driver passes the host project kind to the decision and the activity line', async () => {
+    vi.useFakeTimers()
+    try {
+      const nudges: [string, string, string][] = []
+      const done = plan({ steps: [step('p1', 'A', 'done')] })
+      const d = new ContinuationDriver({
+        kind: 'work',
+        maxAutoContinues: 5,
+        delayMs: 10,
+        projectKind: 'engagement',
+        getPlan: () => done,
+        updatePlan: async () => {},
+        liveReports: () => 0,
+        pendingInteractions: () => 0,
+        rateLimited: () => false,
+        stopping: () => false,
+        orchestratorBusy: () => false,
+        nudge: (text, activity, summary) => nudges.push([text, activity, summary]),
+        log: () => {},
+        tellUser: () => {}
+      })
+      d.turnEnded()
+      await vi.advanceTimersByTimeAsync(50)
+      expect(nudges).toHaveLength(1)
+      expect(nudges[0][0]).toContain('Review the deliverables')
+      expect(nudges[0][1]).toBe('Continuing: review')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})

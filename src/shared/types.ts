@@ -447,12 +447,62 @@ export function isPermissionMode(v: unknown): v is PermissionMode {
 export const PROJECT_ALLOWED_DIRECTORIES_MAX = 20
 /** Longest path accepted in `Project.allowedDirectories`. */
 export const PROJECT_ALLOWED_DIRECTORY_MAX_CHARS = 1024
+/** Most read-only folders a project may list in `Project.referenceDirectories` (same cap as allowed folders). */
+export const PROJECT_REFERENCE_DIRECTORIES_MAX = PROJECT_ALLOWED_DIRECTORIES_MAX
+/** Longest path accepted in `Project.referenceDirectories`. */
+export const PROJECT_REFERENCE_DIRECTORY_MAX_CHARS = PROJECT_ALLOWED_DIRECTORY_MAX_CHARS
+/** Longest `Project.client` kept. */
+export const PROJECT_CLIENT_MAX_CHARS = 120
+/** Most characters of the engagement document put into each agent's prompt (a truncation note follows). */
+export const ENGAGEMENT_DOCUMENT_PROMPT_MAX_CHARS = 16_000
+
+/** Where a project's saved "always allow" rules live: the project folder's .claude/settings.local.json, or OrgAI's data folder. */
+export type ProjectRulesLocation = 'folder' | 'app'
+
+/**
+ * What a project is for. 'code': a software repository (the original OrgAI project). 'engagement': client or
+ * practice work in any field: a working folder for deliverables (often not git), read-only reference folders, and
+ * the Architect specialises the neutral engagement chart from its interview. OrgAI writes nothing into an engagement's
+ * working folder (it is often a share the client can see): the engagement document lives at
+ * `<data>/projects/<id>/ENGAGEMENT.md` and reaches agents through their prompt, saved rules at
+ * `<data>/projects/<id>/permission-rules.json`, no CLAUDE.md, no .orgai/, and writers never run in git worktrees
+ * (no .git/info/exclude edit). Industry-neutral by design: no built-in
+ * role, prompt or label names a field of work. Read it only through defaults.ts `projectKindOf` (missing = 'code').
+ */
+export type ProjectKind = 'code' | 'engagement'
+export const PROJECT_KINDS: readonly ProjectKind[] = ['code', 'engagement']
+export function isProjectKind(v: unknown): v is ProjectKind {
+  return typeof v === 'string' && (PROJECT_KINDS as readonly string[]).includes(v)
+}
 
 export interface Project {
   id: string
   name: string
   /** Working directory the agents operate in. */
   path: string
+  /**
+   * What the project is for (see ProjectKind). Missing = 'code'; ProjectStore drops any other value on read and save.
+   * Read it through defaults.ts `projectKindOf(project)`. Set by projects:create (`ProjectCreateInput.kind`).
+   */
+  kind?: ProjectKind
+  /**
+   * Absolute folders agents may READ like the project folder but never change (client material, source documents).
+   * Passed to the provider as extra readable folders; every adapter refuses Edit / Write / MultiEdit / NotebookEdit
+   * (and Codex file changes) under them with "<folder> is a reference folder: agents may read it, not change it".
+   * Bash writes there are NOT gated (the permission mode still applies to Bash). At most
+   * PROJECT_REFERENCE_DIRECTORIES_MAX, each at most PROJECT_REFERENCE_DIRECTORY_MAX_CHARS. Cleaned by ProjectStore on
+   * save and on read with the allowedDirectories rules (relative, roots, UNC / device, OrgAI's data folder either
+   * way, the project or inside it, a folder containing it, home or above, home config folders dropped silently;
+   * duplicates collapse); a folder listed in both lists stays only in allowedDirectories. The folders need not exist.
+   */
+  referenceDirectories?: string[]
+  /**
+   * Engagements: who the work is for, in the user's own words (plain text, no category list), so the renderer can
+   * group engagements by client. At most PROJECT_CLIENT_MAX_CHARS; ProjectStore trims it on save and read, drops it
+   * when empty, not a string or holding control, zero-width, bidi or other hidden characters. The engagement
+   * Architect asks for it and propose_settings may set it.
+   */
+  client?: string
   /**
    * Extra folders, absolute paths, that agents may read and edit like the project folder (passed to the provider as
    * additional working directories; edits there follow the project's permission mode). At most
@@ -514,8 +564,8 @@ export interface Project {
   /** Upper bound on automatic continues per run. Default DEFAULT_MAX_AUTO_CONTINUES. */
   maxAutoContinues?: number
   /**
-   * Cross-run messaging ("Let runs message each other" in Project settings). On by default: missing =
-   * DEFAULT_RUN_MESSAGING (on) and an explicit false turns it off. message_run is refused unless the sender's and the
+   * Cross-run messaging ("Let runs message each other" in Project settings). Missing = on for 'code' projects
+   * (DEFAULT_RUN_MESSAGING) and off for engagements; an explicit value always wins. message_run is refused unless the sender's and the
    * target's projects both have it on; read it with runMessagingOn() from defaults.ts. Saved through projects:save.
    */
   runMessaging?: boolean
@@ -1699,8 +1749,32 @@ export interface ProjectProfile {
    * `.github/agents`...), project-relative. Missing on profiles taken before the importer existed.
    */
   agentDefinitions?: string[]
+  /**
+   * The kind the profile was taken for. Missing = 'code' (and on profiles taken before engagements existed). An
+   * engagement profile (setup/profile.ts) has no git log and no manifests; `languages` then counts file types,
+   * keyFiles holds only .md / .txt notes (README, brief, notes), and the two fields below are set.
+   */
+  kind?: ProjectKind
+  /** Engagement profiles: top-level folder names (at most 50). */
+  topFolders?: string[]
+  /**
+   * Engagement profiles: project-relative paths of documents found (.docx .xlsx .pptx .pdf .md .txt .csv), at most
+   * PROFILE_DOCUMENTS_MAX; `documentsTruncated` when more were found.
+   */
+  documents?: string[]
+  documentsTruncated?: boolean
 }
 
+/** Most document paths an engagement ProjectProfile lists. */
+export const PROFILE_DOCUMENTS_MAX = 200
+
+/**
+ * The approved charter. Code projects: the architecture (summary, stack, modules, conventions, commands, risks),
+ * written to .orgai/ARCHITECTURE.md. Engagements reuse the fields with engagement meaning, written to
+ * .orgai/ENGAGEMENT.md: summary = engagement summary; stack = platforms and systems involved; modules = workstreams
+ * with their folders; conventions = working agreements and deliverable standards; commands = recurring procedures
+ * (may be empty); risks.
+ */
 export interface ArchitectureSpec {
   summary: string
   stack: string[]
@@ -1715,7 +1789,10 @@ export interface ProjectSetup {
   state: SetupState
   profile?: ProjectProfile
   architecture?: ArchitectureSpec
-  /** Repo-relative path of the architecture document written on approval. */
+  /**
+   * Repo-relative path of the architecture document written on approval (code projects). Unset for engagements: their
+   * document is in OrgAI's data folder (`<data>/projects/<id>/ENGAGEMENT.md`) and is never written to the folder.
+   */
   architecturePath?: string
   /** The Architect's closing summary. */
   summary?: string
@@ -1744,8 +1821,14 @@ export interface SettingsProposalPayload {
   autoContinue?: boolean
   /** Automatic continues allowed per run. */
   maxAutoContinues?: number
-  /** Permission rules to save as project allow rules, e.g. "Bash(npm:*)". Merged into .claude/settings.local.json. */
+  /**
+   * Permission rules to save as project allow rules, e.g. "Bash(npm:*)". Saved where the project keeps its rules
+   * (defaults.ts `projectRulesLocation`): .claude/settings.local.json for code projects, OrgAI's data folder for
+   * engagements.
+   */
   allowRules?: string[]
+  /** Engagements: the client's name in the user's own words (Project.client rules; '' clears it). */
+  client?: string
   rationale: string
 }
 
@@ -3019,6 +3102,8 @@ export interface ProjectCreateInput {
   path: string
   brief: string
   setupKind?: SetupKind
+  /** What the project is for; missing = 'code'. Any other value is dropped (the project is 'code'). */
+  kind?: ProjectKind
   /**
    * Run the project on the scripted, token-free mock adapter (provider.id 'mock'). Only accepted when
    * AppInfo.mockAdapter is true (ORGAI_MOCK=1); otherwise projects:create rejects.

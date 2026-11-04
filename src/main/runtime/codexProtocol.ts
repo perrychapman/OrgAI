@@ -316,8 +316,16 @@ export interface PolicyChoice {
  *   plan              never + read-only
  *   bypassPermissions never + danger-full-access
  * A role without any writing tool (`writes` false) and every setup-like run get read-only, unless the mode is stricter.
+ *
+ * referenceFolders: the run has read-only reference folders (RuntimeContext.referenceDirectories). They are kept out of
+ * writable_roots, and codex.ts onFileApproval declines changes there, but that only works while writes outside the
+ * workspace reach the client as approvals:
+ *   - bypassPermissions: danger-full-access + never sends no approval at all, so it becomes workspace-write + untrusted.
+ *   - auto: the auto_review reviewer is dropped (approvals route to the client; on-request + workspace-write stay).
+ *     The app-server schema does not say whether auto_review settles a file-change or escalation request without
+ *     sending item/fileChange/requestApproval to the client, so OrgAI assumes it can (UNVERIFIED live; schema-read only).
  */
-export function policyFor(mode: PermissionMode, opts: { writes: boolean; setupLike: boolean; quick?: boolean; setupWrites?: boolean }): PolicyChoice {
+export function policyFor(mode: PermissionMode, opts: { writes: boolean; setupLike: boolean; quick?: boolean; setupWrites?: boolean; referenceFolders?: boolean }): PolicyChoice {
   // Quick runs and setup-like runs whose role can write (allowBuild MCP assistant) ask for every change: auto,
   // acceptEdits and bypass fall back to the asking default (mirrors claude.ts claudePermissionMode).
   // setupWrites: a build session (allowBuild MCP assistant) whose role has write tools; the Architect (Bash only) is not one.
@@ -352,6 +360,14 @@ export function policyFor(mode: PermissionMode, opts: { writes: boolean; setupLi
     choice = { ...choice, sandbox: 'read-only', ...(mode === 'plan' ? { approvalPolicy: 'untrusted' as const, denyApprovals: false } : {}) }
   } else if (!opts.writes && choice.sandbox !== 'read-only') {
     choice = { ...choice, sandbox: 'read-only' }
+  }
+  if (opts.referenceFolders && choice.sandbox !== 'read-only') {
+    if (choice.sandbox === 'danger-full-access') choice = { ...choice, sandbox: 'workspace-write', approvalPolicy: 'untrusted' }
+    if (choice.approvalsReviewer) {
+      const { approvalsReviewer: _reviewer, ...rest } = choice
+      void _reviewer
+      choice = rest
+    }
   }
   return choice
 }

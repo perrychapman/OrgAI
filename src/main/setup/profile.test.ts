@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import type { ProjectProfile } from '@shared/types'
+import { PROFILE_DOCUMENTS_MAX, type ProjectProfile } from '@shared/types'
 import { profileRepo, renderProfile } from './profile'
 
 let root: string
@@ -42,6 +42,32 @@ describe('profileRepo', () => {
     const p = await profileRepo(root)
     expect(p.agentDefinitions).toEqual(['.orgai/org.json', '.claude/agents', '.codex/agents'])
     expect(renderProfile(p)).toContain('Agent definitions present: .orgai/org.json, .claude/agents, .codex/agents.')
+  })
+
+  it('skips symlinks and junctions and reads key files with a bound', async () => {
+    const outside = mkdtempSync(join(tmpdir(), 'orgai-profile-out-'))
+    try {
+      writeFileSync(join(outside, 'secret-notes.md'), 'outside secret')
+      put('README.md', 'x'.repeat(50_000))
+      let linked = true
+      try {
+        symlinkSync(outside, join(root, 'linked'), 'junction')
+        symlinkSync(join(outside, 'secret-notes.md'), join(root, 'brief-link.md'))
+      } catch {
+        linked = false
+      }
+      const p = await profileRepo(root, 'engagement')
+      if (linked) {
+        expect(p.tree).not.toContain('linked')
+        expect(p.tree).not.toContain('brief-link')
+        expect(p.keyFiles.some((f) => f.content.includes('outside secret'))).toBe(false)
+      }
+      const readme = (await profileRepo(root)).keyFiles.find((f) => f.path === 'README.md')
+      expect(readme?.content.length).toBeLessThan(6100)
+      expect(readme?.content).toContain('(truncated)')
+    } finally {
+      rmSync(outside, { recursive: true, force: true })
+    }
   })
 
   it('treats a file path like a missing directory', async () => {
@@ -138,6 +164,58 @@ describe('profileRepo', () => {
     expect(p.tree).toContain('        e/')
     expect(p.tree).not.toContain('f/')
     expect(p.fileCount).toBe(0)
+  })
+})
+
+describe('engagement profile', () => {
+  it('lists documents, top folders, file types and notes only, with no git log or manifests', async () => {
+    put('Brief.md', 'Client brief')
+    put('package.json', '{"name":"x"}')
+    put('inputs/survey.xlsx')
+    put('inputs/report.PDF')
+    put('inputs/readme.txt', 'read me')
+    put('drafts/plan.docx')
+    put('drafts/slides.pptx')
+    put('data/rows.csv')
+    put('notes/ideas.md', 'ideas')
+    put('image.png')
+    const p = await profileRepo(root, 'engagement')
+    expect(p.kind).toBe('engagement')
+    expect(p.gitLog).toEqual([])
+    expect(p.topFolders).toEqual(['data', 'drafts', 'inputs', 'notes'])
+    expect(p.documents).toContain('inputs/survey.xlsx')
+    expect(p.documents).toContain('inputs/report.PDF')
+    expect(p.documents).toContain('drafts/plan.docx')
+    expect(p.documents).toContain('Brief.md')
+    expect(p.documents).not.toContain('image.png')
+    expect(p.documents).not.toContain('package.json')
+    expect(p.documentsTruncated).toBeUndefined()
+    expect(p.keyFiles.map((f) => f.path).sort()).toEqual(['Brief.md', 'inputs/readme.txt'])
+    expect(p.languages[0].files).toBeGreaterThan(0)
+  })
+
+  it('caps documents at PROFILE_DOCUMENTS_MAX and flags truncation', async () => {
+    for (let i = 0; i < PROFILE_DOCUMENTS_MAX + 5; i++) put(`d/f${String(i).padStart(3, '0')}.pdf`)
+    const p = await profileRepo(root, 'engagement')
+    expect(p.documents).toHaveLength(PROFILE_DOCUMENTS_MAX)
+    expect(p.documentsTruncated).toBe(true)
+  })
+
+  it('a missing folder keeps the engagement kind; code profiles carry no kind', async () => {
+    expect((await profileRepo(join(root, 'nope'), 'engagement')).kind).toBe('engagement')
+    put('a.md', 'x')
+    expect((await profileRepo(root)).kind).toBeUndefined()
+  })
+
+  it('renders with folder words and no commits or languages', async () => {
+    put('Brief.md', 'Client brief')
+    put('docs/a.docx')
+    const text = renderProfile(await profileRepo(root, 'engagement'))
+    expect(text).toContain('Working folder: 2 files.')
+    expect(text).toContain('Documents:')
+    expect(text).toContain('--- Brief.md ---')
+    expect(text).not.toMatch(/Languages|Recent commits/)
+    expect(renderProfile({ ...(await profileRepo(join(root, 'x'), 'engagement')) })).toMatch(/working folder does not exist/)
   })
 })
 
