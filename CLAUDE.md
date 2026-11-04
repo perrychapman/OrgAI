@@ -914,6 +914,10 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
     unit-tested with a junction/symlink and a git that has no identity config.
   - CI (`.github/workflows/ci.yml`) runs on windows-latest and macos-14. Release legs run on native-arch runners
     (macos-14 arm64, macos-15-intel x64). Nothing in CI spends tokens.
+  - Local builds: `npm run pack` (`scripts/pack-local.mjs`, `--dry-run` prints the plan) keeps only `release/win-unpacked`
+    (current, `release/BUILD.txt`: version, short sha, time) and `release/previous` (the build before); never create
+    other `release-*` folders, and delete old ones rather than archive them. The real pack was not run by its author;
+    the dry run and the rotation on a fake build were.
   - Branches: `dev` is integration (agent runs, PRs, dependabot), `main` is stable and protected. CI runs on both;
     `release.yml` only releases `v<version>` tags whose commit is on `main`.
   - The first real CI run has not happened yet. Open items: winCodeSign extraction on windows-latest, macos-15-intel
