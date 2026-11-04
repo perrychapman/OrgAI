@@ -127,7 +127,10 @@ describe('addReferenceFolder', () => {
     expect(addReferenceFolder(['/a'], ' /b ', '/w')).toEqual({ list: ['/a', '/b'] })
   })
   it('refuses the working folder, duplicates, relative paths, empty input and a full list', () => {
-    expect(addReferenceFolder([], '/w/', '/w')).toEqual({ error: 'This is the working folder. Pick a folder inside it or elsewhere.' })
+    expect(addReferenceFolder([], '/w/', '/w')).toEqual({ error: 'This is the working folder. Agents can already change files in it.' })
+    expect(addReferenceFolder([], '/w/sub', '/w')).toMatchObject({ error: expect.stringMatching(/inside the working folder/) })
+    expect(addReferenceFolder([], '/', '/w', 'code')).toMatchObject({ error: expect.stringMatching(/contains the project folder/) })
+    expect(addReferenceFolder([], 'C:\\work2', 'C:\\work')).toEqual({ list: ['C:\\work2'] })
     expect(addReferenceFolder([], 'C:\\Work\\', 'c:/work')).toMatchObject({ error: expect.stringMatching(/working folder/) })
     expect(addReferenceFolder(['/a'], '/a', '/w')).toMatchObject({ error: expect.stringMatching(/already/) })
     expect(addReferenceFolder([], 'rel/x', '/w')).toMatchObject({ error: expect.stringMatching(/full path/) })

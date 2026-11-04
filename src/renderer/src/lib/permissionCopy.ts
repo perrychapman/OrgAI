@@ -531,5 +531,5 @@ export function droppedFolders(sent: readonly string[], saved: readonly string[]
 
 /** The notice for a folder main did not save. */
 export function droppedFolderNotice(path: string): string {
-  return `${oneLine(path, 200)} was not saved: must be an absolute folder, not a drive root, not OrgAI's data folder, and not the same folder as one already listed.`
+  return `${oneLine(path, 200)} was not saved: must be an absolute folder, not a drive root, not OrgAI's data folder, not the working folder or a folder inside or containing it, and not the same folder as one already listed.`
 }

@@ -306,6 +306,6 @@ describe('allowed folders', () => {
     expect(droppedFolders(['/a', 'rel', 'C:\\X\\'], ['/a', 'C:\\X'])).toEqual(['rel'])
     expect(droppedFolders(['/a', '/a'], ['/a'])).toEqual([])
     expect(droppedFolders(['rel'], undefined)).toEqual(['rel'])
-    expect(droppedFolderNotice('rel')).toBe("rel was not saved: must be an absolute folder, not a drive root, not OrgAI's data folder, and not the same folder as one already listed.")
+    expect(droppedFolderNotice('rel')).toBe("rel was not saved: must be an absolute folder, not a drive root, not OrgAI's data folder, not the working folder or a folder inside or containing it, and not the same folder as one already listed.")
   })
 })

@@ -1,22 +1,69 @@
-import { allowedFolderDraftProblem, pathKey } from './permissionCopy'
+import type { ProjectKind } from '@shared/types'
+import { allowedFolderDraftProblem, isInsidePath, pathKey } from './permissionCopy'
 
 /** Which of the two folder lists on Project settings > Permissions a card edits. */
 export type FolderListKind = 'reference' | 'allowed'
 
-export const WORKING_FOLDER_REFUSAL = 'This is the working folder. Pick a folder inside it or elsewhere.'
+/** How a folder relates to the working folder. Main drops all three from both lists, so the UI refuses them up front. */
+export type WorkingFolderRelation = 'same' | 'inside' | 'contains'
+
+const folderWord = (kind: ProjectKind): string => (kind === 'engagement' ? 'working folder' : 'project folder')
+
+/** The refusal for each relation, in the words of the project's kind. */
+export function workingFolderRefusal(relation: WorkingFolderRelation, kind: ProjectKind = 'engagement'): string {
+  const w = folderWord(kind)
+  if (relation === 'same') return `This is the ${w}. Agents can already change files in it.`
+  if (relation === 'inside') return `This folder is inside the ${w}. Reference folders must be outside it.`
+  return `This folder contains the ${w}. Pick a folder outside it.`
+}
+
+/** The copy for the engagement default, kept for callers that have no kind. */
+export const WORKING_FOLDER_REFUSAL = workingFolderRefusal('same')
 
 const plural = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`
 
-/** The working folder can be in neither list. Null when the draft is some other folder. */
-export function workingFolderProblem(draft: string, projectPath: string): string | null {
+/** Equal to, inside or containing the working folder (case-insensitive on Windows paths, separators normalised); null otherwise. */
+export function workingFolderRelation(draft: string, projectPath: string): WorkingFolderRelation | null {
   const d = draft.trim()
-  if (!d || !projectPath) return null
-  return pathKey(d) === pathKey(projectPath) ? WORKING_FOLDER_REFUSAL : null
+  const w = projectPath.trim()
+  if (!d || !w) return null
+  if (pathKey(d) === pathKey(w)) return 'same'
+  if (isInsidePath(d, w)) return 'inside'
+  if (isInsidePath(w, d)) return 'contains'
+  return null
+}
+
+/** The working folder, anything inside it and anything containing it can be in neither list. Null for any other folder. */
+export function workingFolderProblem(draft: string, projectPath: string, kind: ProjectKind = 'engagement'): string | null {
+  const relation = workingFolderRelation(draft, projectPath)
+  return relation ? workingFolderRefusal(relation, kind) : null
 }
 
 /** The first inline problem for a draft folder: empty, too long, listed already, list full, or the working folder. */
-export function folderDraftProblem(draft: string, own: readonly string[], projectPath: string): string | null {
-  return allowedFolderDraftProblem(draft, own) ?? workingFolderProblem(draft, projectPath)
+export function folderDraftProblem(draft: string, own: readonly string[], projectPath: string, kind: ProjectKind = 'engagement'): string | null {
+  return allowedFolderDraftProblem(draft, own) ?? workingFolderProblem(draft, projectPath, kind)
+}
+
+/** The first reference folder in a list that main would drop for the working folder, with the reason; null when all stay. */
+export function firstWorkingFolderConflict(list: readonly string[], projectPath: string, kind: ProjectKind = 'engagement'): { path: string; problem: string } | null {
+  for (const p of list) {
+    const problem = workingFolderProblem(p, projectPath, kind)
+    if (problem) return { path: p, problem }
+  }
+  return null
+}
+
+/**
+ * What to say when the saved project lacks something the form sent (main cleaned a folder away or dropped the client),
+ * or null when everything was kept.
+ */
+export function droppedExtrasMessage(sentRefs: readonly string[], saved: { referenceDirectories?: string[]; client?: string }, sentClient?: string): string | null {
+  const keep = new Set((saved.referenceDirectories ?? []).map(pathKey))
+  const lost = sentRefs.filter((r) => !keep.has(pathKey(r)))
+  const parts: string[] = []
+  if (lost.length) parts.push(`OrgAI did not keep these folders: ${lost.join(', ')}. Folders must be absolute, and cannot be the working folder, inside it or contain it.`)
+  if (sentClient && !(saved.client ?? '').trim()) parts.push('OrgAI did not keep the client name.')
+  return parts.length ? parts.join(' ') : null
 }
 
 /** The entry of `other` that is the same folder as `draft` (the stored spelling), or null: the add needs a move. */

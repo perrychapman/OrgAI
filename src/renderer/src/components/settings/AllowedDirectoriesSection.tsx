@@ -17,7 +17,8 @@ import { PROJECT_SETTINGS_SECTIONS } from '../../lib/settingsTarget'
 import { cleanIpcError } from '../../lib/ipcError'
 import { useAppStore } from '../../store/useAppStore'
 
-export const ALLOWED_FOLDERS_HINT = 'Agents may read and change files here, with the same permission mode as the working folder.'
+export const allowedFoldersHint = (engagement: boolean): string =>
+  `Agents may read and change files here, with the same permission mode as the ${engagement ? 'working' : 'project'} folder.`
 export const REFERENCE_FOLDERS_HINT = 'Agents can read files here. They can never change, add or delete anything, in any permission mode.'
 
 interface ListCopy {
@@ -37,7 +38,7 @@ const COPY: Record<FolderListKind, ListCopy> = {
   allowed: {
     prefix: 'allowed-folder',
     title: 'Allowed folders (read and change)',
-    hint: ALLOWED_FOLDERS_HINT,
+    hint: '',
     accessWord: 'Can change',
     inputLabel: 'Allowed folder path',
     addLabel: 'Add folder to allowed folders',
@@ -141,16 +142,18 @@ export function FolderListSection({ project, kind }: { project: Project; kind: F
     const next = from === 'allowed' ? { allowedDirectories: moved.from, referenceDirectories: moved.to } : { referenceDirectories: moved.from, allowedDirectories: moved.to }
     const dropped = await save(next)
     if (dropped === null) return false
-    const mine = dropped[kind]
+    // Report drops from both lists; a folder the target dropped did not move, so it is not announced as moved.
+    const mine = [...dropped[kind], ...dropped[to]].filter((x, i, all) => all.indexOf(x) === i)
     if (mine.length) setNotices((n) => [...n.filter((x) => !mine.includes(x)), ...mine])
-    setAnnounce(`Moved ${path} to ${COPY[to].movedTo}.`)
-    return true
+    const targetDropped = dropped[to].length > 0
+    setAnnounce(targetDropped ? '' : `Moved ${path} to ${COPY[to].movedTo}.`)
+    return !targetDropped
   }
 
   const add = async (value = draft): Promise<void> => {
     if (busy) return
     const text = value.trim()
-    const problem = folderDraftProblem(text, dirs, project.path)
+    const problem = folderDraftProblem(text, dirs, project.path, projectKindOf(project))
     if (problem) {
       setError(problem)
       return
@@ -228,7 +231,7 @@ export function FolderListSection({ project, kind }: { project: Project; kind: F
     >
       <SettingsCard>
         <p className="settings-card-note allowed-folders-hint" data-testid={`${p}s-hint`}>
-          {c.hint}
+          {kind === 'allowed' ? allowedFoldersHint(engagement) : c.hint}
         </p>
         {dirs.length === 0 ? (
           <p className="settings-card-note" data-testid={`${p}s-empty`}>

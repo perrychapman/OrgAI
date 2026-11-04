@@ -1,4 +1,5 @@
 import { normalizeView } from '../lib/teamView'
+import { droppedExtrasMessage } from '../lib/folderLists'
 import { rulesChangedProject } from '../lib/rulesChange'
 import { isTeamSurfaceRun } from '../lib/runSurface'
 import { useTeamAssistantStore } from './teamAssistant'
@@ -1181,6 +1182,13 @@ export const useAppStore = create<AppState>((set, get) => ({
           ...(client ? { client } : {}),
           ...(referenceDirectories && referenceDirectories.length > 0 ? { referenceDirectories } : {})
         })
+        // Main drops folders inside, containing or equal to the project folder (and cleans the rest); say so rather than
+        // landing as if they were kept. The form keeps the user there with the note and an Open button.
+        const dropped = droppedExtrasMessage(referenceDirectories ?? [], saved, client)
+        if (dropped) {
+          opts?.onExtrasError?.(new Error(dropped))
+          return saved
+        }
         land()
         return saved
       } catch (err) {
