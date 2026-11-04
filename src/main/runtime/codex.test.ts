@@ -627,9 +627,45 @@ describe('CodexAdapter session', () => {
           expect(ctx.requestPermission).not.toHaveBeenCalled()
           expect(ctx.events.some((e) => e.type === 'log' && e.level === 'warn' && e.message.includes(msg()))).toBe(true)
           expect(harnessRows(ctx)).toHaveLength(1)
-          expect(harnessRows(ctx)[0]).toMatchObject({ entry: { block: { text: msg() } } })
+          // H2: the row is referenceRefusalEntry: file name first, the full path and the folder message as detail.
+          expect(harnessRows(ctx)[0]).toMatchObject({ entry: { agentId: 'root', block: { text: 'Refused: brief.md is in a reference folder (read only)', detail: `${join(ref, 'brief.md')}\n${msg()}` } } })
           await session?.stop()
         }
+      })
+
+      it('shell guard (H1): a command naming a reference file is asked with the folder and no suggestions, even under a saved rule', async () => {
+        const { ctx, s } = await started('acceptEdits', { referenceDirectories: () => [ref], allowedRules: () => ['Bash(del:*)', 'Bash(npm test:*)'] })
+        ;(ctx.requestPermission as any).mockResolvedValue({ behavior: 'allow', scope: 'project' })
+        const named = `del "${join(ref, 'brief.md')}"`
+        // An allow (even with project scope) accepts this command only, never for the session.
+        expect(await s.ask('item/commandExecution/requestApproval', { ...cmd(named), cwd: dir })).toEqual({ decision: 'accept' })
+        const req = (ctx.requestPermission as any).mock.calls[0][0]
+        expect(req).toMatchObject({ toolName: 'Bash', referenceFolder: ref })
+        expect(req.suggestions).toBeUndefined()
+        expect(req.ruleLabels).toBeUndefined()
+        expect(ctx.events.some((e) => e.type === 'log' && e.level === 'info' && e.message.includes(`${msg()}; this command names it`))).toBe(true)
+        // Nothing was kept: it asks again; a decline declines.
+        ;(ctx.requestPermission as any).mockResolvedValueOnce({ behavior: 'deny', message: 'no' })
+        expect(await s.ask('item/commandExecution/requestApproval', { ...cmd(named), cwd: dir })).toEqual({ decision: 'decline' })
+        expect(ctx.requestPermission).toHaveBeenCalledTimes(2)
+        // npm test with req.cwd inside the reference folder asks too ("runs inside it").
+        expect(await s.ask('item/commandExecution/requestApproval', { ...cmd('npm test'), cwd: join(ref, 'sub') })).toEqual({ decision: 'accept' })
+        expect((ctx.requestPermission as any).mock.calls[2][0]).toMatchObject({ referenceFolder: ref })
+        expect(ctx.events.some((e) => e.type === 'log' && e.message.includes(`${msg()}; this command runs inside it`))).toBe(true)
+        // Elsewhere the saved rules still accept without a card.
+        expect(await s.ask('item/commandExecution/requestApproval', { ...cmd('npm test'), cwd: dir })).toEqual({ decision: 'accept' })
+        expect(await s.ask('item/commandExecution/requestApproval', { ...cmd('del notes.md'), cwd: dir })).toEqual({ decision: 'accept' })
+        expect(ctx.requestPermission).toHaveBeenCalledTimes(3)
+      })
+
+      it('an unreadable reference list asks a command (no folder, no suggestions) instead of matching a rule', async () => {
+        let boom = false
+        const { ctx, s } = await started('default', { referenceDirectories: () => { if (boom) throw new Error('boom'); return [] }, allowedRules: () => ['Bash(npm test:*)'] })
+        boom = true
+        await s.ask('item/commandExecution/requestApproval', { ...cmd('npm test'), cwd: dir })
+        const req = (ctx.requestPermission as any).mock.calls[0][0]
+        expect(req.referenceFolder).toBeUndefined()
+        expect(req.suggestions).toBeUndefined()
       })
 
       it('declines a grantRoot under or above a reference folder, and a change with no paths (fails closed)', async () => {
