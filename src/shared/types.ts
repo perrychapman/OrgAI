@@ -4304,7 +4304,10 @@ export interface OrgTemplateApplyInput {
  */
 export type RunTeam = 'single'
 
-/** Harness tool of engagement work runs (every role) and single-agent runs: lists context notes, reads one. */
+/**
+ * Harness tool of engagement work runs (every role) and single-agent runs: lists context notes, reads one, or saves
+ * an agent-written note (`action: 'list' | 'read' | 'save'`; no action and no noteId = list, a noteId alone = read).
+ */
 export const ENGAGEMENT_CONTEXT_TOOL = 'engagement_context'
 /** engagement_context: at most this many characters of a note per call (the rest is reported as cut). */
 export const ENGAGEMENT_CONTEXT_TOOL_MAX_CHARS = 20_000
@@ -4332,20 +4335,55 @@ export interface EngagementDocumentUpdate {
   expectedUpdatedAt?: number
 }
 
-/** Context notes per project (`<data>/projects/<id>/context/<noteId>.md` plus an index). */
-export const ENGAGEMENT_NOTES_MAX = 50
+/** Context notes per project (`<data>/projects/<id>/context/<noteId>.md` plus an index). Agents write notes too (see EngagementNote.source). */
+export const ENGAGEMENT_NOTES_MAX = 200
 export const ENGAGEMENT_NOTE_MAX_CHARS = 50_000
 export const ENGAGEMENT_NOTE_TITLE_MAX_CHARS = 120
 
-/** One context note in the index (projects:listNotes). */
+/** Who wrote a context note: the user (missing = user, notes saved before the field existed) or an agent through engagement_context. */
+export type EngagementNoteSource = 'user' | 'agent'
+
+/**
+ * Who is saving a note (store/projectData.ts saveNote): the user (IPC; default) or an agent (engagement_context save,
+ * with the run id and the role name or slug RunManager resolved). An agent may replace only an agent-written note.
+ */
+export type EngagementNoteWriter = { by: 'user' } | { by: 'agent'; runId?: string; role?: string }
+
+/** Longest note excerpt kept in the index. */
+export const ENGAGEMENT_NOTE_EXCERPT_MAX_CHARS = 120
+
+/**
+ * One context note in the index (projects:listNotes). The renderer orders by `createdAt`, so agent writes never
+ * reshuffle the list. Rows saved before these fields existed read as: excerpt and createdAt from the file (createdAt
+ * = updatedAt), source user, no recordedBy / updatedBy / retired.
+ */
 export interface EngagementNote {
   id: string
   /** 1..120 characters, no control or hidden characters. */
   title: string
-  /** Epoch ms. */
+  /** The first non-empty line of the text, at most ENGAGEMENT_NOTE_EXCERPT_MAX_CHARS, hidden characters stripped. */
+  excerpt: string
+  /** Epoch ms of the first save (stable). */
+  createdAt: number
+  /** Epoch ms of the last save. */
   updatedAt: number
   /** Length of the note's text. */
   chars: number
+  /**
+   * Who created it; missing = 'user'. Main fills it, never the renderer or the agent. An agent may replace only a
+   * note whose source is 'agent' and that the user has not edited since (updatedBy !== 'user'); any other note is
+   * read-only to agents ("Only the user can change that note; save a new one instead.").
+   */
+  source?: EngagementNoteSource
+  /** The creating run and the writing agent's role name or slug (agent notes only; main fills it from the run's agent record). */
+  recordedBy?: { runId?: string; role?: string }
+  /** Who saved it last (absent until the first save after creation). */
+  updatedBy?: EngagementNoteSource
+  /**
+   * A user-set flag (projects:saveNote `retired`), reversible: the note stays, lists mark it, reads still return it,
+   * the tool's list marks it. Agents cannot set or clear it.
+   */
+  retired?: boolean
 }
 
 /** projects:getNote result. */
@@ -4359,19 +4397,31 @@ export interface EngagementNoteRef {
   noteId: string
 }
 
-/** projects:saveNote input. Without noteId a new note is created; with one, that note is replaced. */
+/**
+ * projects:saveNote input. Without noteId a new note is created (refused at ENGAGEMENT_NOTES_MAX: "A project keeps at
+ * most 200 notes. Remove or merge notes first."); with one, that note is replaced (a user save of an agent note keeps
+ * source 'agent' and sets updatedBy 'user', which makes it read-only to agents).
+ */
 export interface EngagementNoteSaveInput {
   projectId: string
   noteId?: string
   title: string
   /** At most ENGAGEMENT_NOTE_MAX_CHARS; hidden characters other than tab, LF and CR are refused. */
   text: string
+  /** Sets or clears the user's retired flag (omitted = unchanged). */
+  retired?: boolean
 }
 
-/** main -> renderer push (IPC projectsEngagementChanged) after the document or a note was written or removed. */
+/**
+ * main -> renderer push (IPC projectsEngagementChanged) after the document, a note or the knowledge graph was written
+ * or removed, by the user (IPC) or by an agent (engagement_context save, engagement_knowledge writes). `ids` names the
+ * note ids ('notes') or the node / edge ids ('knowledge') the write touched, so the renderer can refresh one row and
+ * announce it; absent for the document and for knowledge:clear.
+ */
 export interface EngagementChangedEvent {
   projectId: string
-  what: 'document' | 'notes'
+  what: 'document' | 'notes' | 'knowledge'
+  ids?: string[]
 }
 
 /**
@@ -4404,6 +4454,8 @@ export interface ProjectRemoveResult {
   teamReviewRemoved: boolean
   /** The skill evaluation file (`<data>/skill-evaluations/<id>.json`) existed and was deleted. */
   skillEvaluationRemoved: boolean
+  /** Knowledge graph nodes deleted with `<data>/projects/<id>/knowledge.json` (0 when there was no graph). */
+  knowledgeRemoved: number
 }
 
 /**
@@ -4486,6 +4538,290 @@ export interface OrgAIApi {
   }
 }
 
+// ---- Engagement knowledge graph ----
+//
+// Per engagement, agents and the user build a graph of the engagement: entities of free-form kinds (person,
+// organisation, system, document, decision, risk, ...), relations of free-form types between them, and facts on each
+// entity, every item with provenance. Stored at `<data>/projects/<id>/knowledge.json` (version 1, atomic writes, junk
+// dropped on read, never in the working folder). Agents reach it through the `engagement_knowledge` harness tool on
+// engagement work runs; the user through the knowledge:* channels (reads for any project, writes for engagements only).
+// Every write, by whom ever, pushes projects:engagementChanged with what 'knowledge'.
+// Pure helpers (normalisation, vocabulary, search, identity matching) live in src/shared/knowledge.ts.
+
+/** Most nodes one graph keeps; a save past it is refused ("The knowledge graph is full ..."). */
+export const KNOWLEDGE_NODES_MAX = 2000
+/** Most edges one graph keeps. */
+export const KNOWLEDGE_EDGES_MAX = 5000
+/** Most facts one node keeps (append-only for agents; the user may remove facts). */
+export const KNOWLEDGE_NODE_FACTS_MAX = 50
+/** Most writes (node upserts, links, retirements and saved notes) one run may make through the harness tools. */
+export const KNOWLEDGE_RUN_WRITES_MAX = 500
+/** Most hits engagement_knowledge search returns (also its default). */
+export const KNOWLEDGE_SEARCH_LIMIT = 50
+/** Node name: 1..120 characters, one line, no hidden characters. Aliases the same. */
+export const KNOWLEDGE_NAME_MAX_CHARS = 120
+/** Most aliases per node. */
+export const KNOWLEDGE_ALIASES_MAX = 10
+/** Node summary: at most 2,000 characters (tab, LF and CR allowed; other hidden characters refused). */
+export const KNOWLEDGE_SUMMARY_MAX_CHARS = 2000
+/** Fact text: 1..1,000 characters (tab, LF and CR allowed). */
+export const KNOWLEDGE_FACT_MAX_CHARS = 1000
+/** Edge note: at most 500 characters (tab, LF and CR allowed). */
+export const KNOWLEDGE_EDGE_NOTE_MAX_CHARS = 500
+/** Most context notes a node links to. */
+export const KNOWLEDGE_NODE_NOTES_MAX = 20
+/**
+ * A node kind or edge relation after normalisation (knowledge.ts `normalizeKnowledgeKey`: trim, lower-case, runs of
+ * whitespace and underscores to '-'): 1..40 characters of a-z, 0-9 and '-', starting with a letter or digit.
+ */
+export const KNOWLEDGE_KEY_RE = /^[a-z0-9][a-z0-9-]{0,39}$/
+/**
+ * Kinds the tool suggests so agents pick consistent names (data, not a closed list: any key that matches
+ * KNOWLEDGE_KEY_RE is accepted).
+ */
+export const KNOWLEDGE_COMMON_KINDS = ['person', 'organisation', 'system', 'document', 'decision', 'risk', 'requirement', 'deadline', 'meeting', 'open-question'] as const
+/** Harness tool of engagement work runs (every role): vocabulary, search, get, upsert_node, link, retire. */
+export const KNOWLEDGE_TOOL = 'engagement_knowledge'
+/** engagement_knowledge actions. */
+export const KNOWLEDGE_TOOL_ACTIONS = ['vocabulary', 'search', 'get', 'upsert_node', 'link', 'retire'] as const
+export type KnowledgeToolAction = (typeof KNOWLEDGE_TOOL_ACTIONS)[number]
+
+/**
+ * Who wrote an item. `by: 'user'` comes from the knowledge:* channels (no run); `by: 'agent'` from the harness tool,
+ * with the run, the agent id and the agent's role (the role name or slug as recorded on the run; main fills every
+ * field, the agent never names itself). `at` is epoch ms.
+ */
+export interface KnowledgeSource {
+  by: 'user' | 'agent'
+  runId?: string
+  agentId?: string
+  role?: string
+  at: number
+}
+
+/**
+ * One fact on a node. Ids are `kf_<hex>`. Facts are append-only for agents (they may only retire their own or other
+ * agents' facts); the user may edit, remove or retire any fact through knowledge:saveNode.
+ */
+export interface KnowledgeFact {
+  id: string
+  /** 1..KNOWLEDGE_FACT_MAX_CHARS, tab / LF / CR allowed, other hidden characters refused, never cut. */
+  text: string
+  source: KnowledgeSource
+  /** Marked retired (kept for history, shown as such, left out of search). */
+  retired?: boolean
+}
+
+/** One entity of the engagement. Ids are `kn_<hex>`. */
+export interface KnowledgeNode {
+  id: string
+  /** A normalised key (KNOWLEDGE_KEY_RE), e.g. 'person', 'organisation', 'system', 'decision'. */
+  kind: string
+  /** 1..KNOWLEDGE_NAME_MAX_CHARS, one line. Unique per kind together with the aliases, case-insensitively. */
+  name: string
+  /** At most KNOWLEDGE_ALIASES_MAX, each like a name; identity matching uses them like the name. */
+  aliases?: string[]
+  /** At most KNOWLEDGE_SUMMARY_MAX_CHARS. */
+  summary?: string
+  /** At most KNOWLEDGE_NODE_FACTS_MAX. */
+  facts: KnowledgeFact[]
+  /**
+   * Context notes this entity links to (EngagementNote ids): validated against the note index on write, and an id
+   * whose note is gone is dropped on read. At most KNOWLEDGE_NODE_NOTES_MAX.
+   */
+  noteIds?: string[]
+  /** Who created it. */
+  source: KnowledgeSource
+  /** Who last changed it (absent until the first change after creation). */
+  updatedBy?: KnowledgeSource
+  /** Epoch ms. */
+  createdAt: number
+  updatedAt: number
+  /** Marked retired: kept, listed as retired, left out of search unless asked for; its edges stay. */
+  retired?: boolean
+}
+
+/**
+ * One relation between two nodes. Ids are `ke_<hex>`. `from` and `to` are existing node ids (removing a node removes
+ * its edges); (from, to, relation) is unique: linking the same triple again updates the note, never duplicates.
+ */
+export interface KnowledgeEdge {
+  id: string
+  from: string
+  to: string
+  /** A normalised key (KNOWLEDGE_KEY_RE), e.g. 'works-at', 'owns', 'depends-on', 'decided-in'. */
+  relation: string
+  /** At most KNOWLEDGE_EDGE_NOTE_MAX_CHARS. */
+  note?: string
+  source: KnowledgeSource
+  /** Epoch ms. */
+  createdAt: number
+  retired?: boolean
+}
+
+/** The whole graph (knowledge:get). Empty (no nodes, no edges, no updatedAt) for code projects and before the first write. */
+export interface KnowledgeGraph {
+  version: 1
+  nodes: KnowledgeNode[]
+  edges: KnowledgeEdge[]
+  /** Epoch ms of the last write. */
+  updatedAt?: number
+}
+
+/** Kinds and relations in use with counts (live, non-retired items), most used first (knowledge.ts `knowledgeVocabulary`). */
+export interface KnowledgeVocabulary {
+  kinds: { kind: string; count: number }[]
+  relations: { relation: string; count: number }[]
+}
+
+/** knowledge:saveNode fact input: an id keeps that fact's source (and text edits are the user's); no id = a new user fact. */
+export interface KnowledgeFactInput {
+  id?: string
+  text: string
+  retired?: boolean
+}
+
+/**
+ * knowledge:saveNode input (the user's editor; engagements only). Without nodeId a node is created, and a (kind, name)
+ * or (kind, alias) match with an existing node is refused ("... already exists; edit it instead."). With nodeId that
+ * node is replaced field by field: `facts` given = the full list afterwards (a fact whose id is left out is removed),
+ * omitted = unchanged; `aliases`, `summary`, `noteIds` given replace, omitted keep. Unknown noteIds are refused.
+ * `kind` is normalised and must match KNOWLEDGE_KEY_RE.
+ */
+export interface KnowledgeNodeSaveInput {
+  projectId: string
+  nodeId?: string
+  kind: string
+  name: string
+  aliases?: string[]
+  summary?: string
+  facts?: KnowledgeFactInput[]
+  noteIds?: string[]
+  retired?: boolean
+}
+
+/**
+ * Agent-side node write (engagement_knowledge upsert_node, RuntimeContext.knowledge.upsertNode). Identity: nodeId
+ * when given, else a (kind, name) or (kind, alias) match, case-insensitive, else a new node ("created" vs "merged").
+ * On a merge: `aliases` are added (deduped), `summary` replaces when given, `facts` are appended as new facts with the
+ * caller's source (a text already on the node is not appended twice), `noteIds` are added. Nothing is removed.
+ */
+export interface KnowledgeNodeUpsertInput {
+  nodeId?: string
+  kind: string
+  name: string
+  aliases?: string[]
+  summary?: string
+  facts?: string[]
+  noteIds?: string[]
+}
+
+/** knowledge:saveNode / upsert result: the node and whether it was created (false = an existing node was updated or merged). */
+export interface KnowledgeNodeWriteResult {
+  node: KnowledgeNode
+  created: boolean
+}
+
+/**
+ * knowledge:saveEdge input (engagements only) and the agent link write after name resolution: from / to are node ids.
+ * Without edgeId: a (from, to, relation) match updates that edge's note (and un-retires it when `retired` is false),
+ * else a new edge. With edgeId: that edge's note / retired change (from, to and relation stay).
+ */
+export interface KnowledgeEdgeSaveInput {
+  projectId: string
+  edgeId?: string
+  from: string
+  to: string
+  relation: string
+  note?: string
+  retired?: boolean
+}
+
+export interface KnowledgeEdgeWriteResult {
+  edge: KnowledgeEdge
+  created: boolean
+}
+
+/** knowledge:removeNode / knowledge:removeEdge input. Removing a node removes its edges. Unknown ids are refused. */
+export interface KnowledgeItemRef {
+  projectId: string
+  nodeId?: string
+  edgeId?: string
+}
+
+/**
+ * Agent-side retire (engagement_knowledge retire): exactly one of nodeId / edgeId / factId. Marks the item retired,
+ * never deletes. Refused on an item whose source.by is 'user' ("Only the user can change that."). `reason` is kept
+ * in the harness transcript row only.
+ */
+export interface KnowledgeRetireInput {
+  nodeId?: string
+  edgeId?: string
+  factId?: string
+  reason?: string
+}
+
+/** What an agent retire marked: the item kind, its id and a label for the transcript row (node: "<kind> <name>"; edge: "<from> <relation> <to>"; fact: its text). */
+export interface KnowledgeRetireResult {
+  item: 'node' | 'edge' | 'fact'
+  id: string
+  label: string
+  /** True when it was already retired (nothing changed, no write counted). */
+  alreadyRetired: boolean
+}
+
+/** engagement_knowledge search input (knowledge.ts `searchKnowledge`). */
+export interface KnowledgeSearchQuery {
+  /** Case-insensitive substring over name, aliases, summary and live fact texts. Empty = no text filter. */
+  query?: string
+  /** A normalised kind; empty = every kind. */
+  kind?: string
+  /** 1..KNOWLEDGE_SEARCH_LIMIT, default KNOWLEDGE_SEARCH_LIMIT. */
+  limit?: number
+  /** Include retired nodes (default false). */
+  includeRetired?: boolean
+}
+
+/** One search hit: name / alias hits sort first, then the most recently updated. */
+export interface KnowledgeSearchHit {
+  node: KnowledgeNode
+  /** The query matched the name or an alias (not only the summary or a fact). */
+  nameHit: boolean
+  /** Live edges touching the node, both directions. */
+  edgeCount: number
+}
+
+/** Channels of this section; spread into IPC. */
+export const KNOWLEDGE_IPC = {
+  /** (projectId) -> KnowledgeGraph. Empty for code projects. */
+  knowledgeGet: 'knowledge:get',
+  /** (KnowledgeNodeSaveInput) -> KnowledgeNode. Engagements only. */
+  knowledgeSaveNode: 'knowledge:saveNode',
+  /** (KnowledgeItemRef with nodeId) -> KnowledgeGraph. Engagements only. */
+  knowledgeRemoveNode: 'knowledge:removeNode',
+  /** (KnowledgeEdgeSaveInput) -> KnowledgeEdge. Engagements only. */
+  knowledgeSaveEdge: 'knowledge:saveEdge',
+  /** (KnowledgeItemRef with edgeId) -> KnowledgeGraph. Engagements only. */
+  knowledgeRemoveEdge: 'knowledge:removeEdge',
+  /** (projectId) -> KnowledgeGraph (empty): the user's "start over". Engagements only. */
+  knowledgeClear: 'knowledge:clear'
+} as const
+
+/** window.orgai additions of this section (declaration-merged into OrgAIApi). Every write pushes onEngagementChanged 'knowledge'. */
+export interface OrgAIApi {
+  knowledge: {
+    get(projectId: string): Promise<KnowledgeGraph>
+    saveNode(input: KnowledgeNodeSaveInput): Promise<KnowledgeNode>
+    /** Resolves to the graph afterwards. */
+    removeNode(ref: KnowledgeItemRef): Promise<KnowledgeGraph>
+    saveEdge(input: KnowledgeEdgeSaveInput): Promise<KnowledgeEdge>
+    /** Resolves to the graph afterwards. */
+    removeEdge(ref: KnowledgeItemRef): Promise<KnowledgeGraph>
+    /** Removes every node and edge; resolves to the empty graph. */
+    clear(projectId: string): Promise<KnowledgeGraph>
+  }
+}
+
 /** Read-only facts about the running app (`app:info`). Structured-clone safe. */
 export interface AppInfo {
   /** app.getVersion() */
@@ -4504,6 +4840,7 @@ export interface AppInfo {
 
 export const IPC = {
   ...TEMPLATE_ENGAGEMENT_IPC,
+  ...KNOWLEDGE_IPC,
   projectsList: 'projects:list',
   projectsGet: 'projects:get',
   projectsCreate: 'projects:create',

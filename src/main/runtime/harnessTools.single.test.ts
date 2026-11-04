@@ -3,6 +3,7 @@ import type { EngagementNote, EngagementNoteContent, Proposal, Role } from '@sha
 import { ENGAGEMENT_CONTEXT_TOOL, ENGAGEMENT_CONTEXT_TOOL_MAX_CHARS } from '@shared/types'
 import { PROPOSAL_TOOLS } from '@shared/setup'
 import { SINGLE_TOOL_DEFS, harnessToolsFor, isBlockingHarnessTool, mergeTemplateDrafts, setupTools, type HarnessTool } from './harnessTools'
+import type { KnowledgeCaller } from './types'
 import { fakeCtx, project, role, runSummary } from './testHelpers'
 
 const byName = (tools: HarnessTool[], name: string): HarnessTool => {
@@ -11,15 +12,20 @@ const byName = (tools: HarnessTool[], name: string): HarnessTool => {
   return t
 }
 
-function notesCtx(notes: EngagementNoteContent[]) {
+function notesCtx(notes: EngagementNoteContent[], save?: (input: { noteId?: string; title: string; text: string }, caller: KnowledgeCaller) => EngagementNote) {
   const list = (): EngagementNote[] => notes.map(({ text, ...n }) => ({ ...n, chars: text.length }))
   return {
     list,
-    read: (id: string) => notes.find((n) => n.id === id) ?? null
+    read: (id: string) => notes.find((n) => n.id === id) ?? null,
+    save:
+      save ??
+      ((): EngagementNote => {
+        throw new Error('not wired in this test')
+      })
   }
 }
 
-const note = (id: string, title: string, text: string): EngagementNoteContent => ({ id, title, updatedAt: 1, chars: text.length, text })
+const note = (id: string, title: string, text: string, over: Partial<EngagementNote> = {}): EngagementNoteContent => ({ id, title, excerpt: text.slice(0, 40), createdAt: 1, updatedAt: 1, chars: text.length, text, ...over })
 
 describe('harnessToolsFor: single-agent runs and engagements', () => {
   const names = (tools: HarnessTool[]): string[] => tools.map((t) => t.name).sort()
@@ -90,8 +96,62 @@ describe('engagement_context', () => {
 
   it('answers an unknown id and a failing store plainly', async () => {
     expect(await tool(notesCtx([])).call({ noteId: 'nope' })).toContain('No context note with id "nope"')
-    const bad = { list: () => { throw new Error('boom') }, read: () => { throw new Error('boom') } }
+    const bad = { list: () => { throw new Error('boom') }, read: () => { throw new Error('boom') }, save: () => { throw new Error('boom') } }
     expect(await tool(bad).call({ noteId: 'n1' })).toBe('The context notes could not be read right now.')
+  })
+
+  it('list rows name the agent writer and a retired note; read marks a retired note', async () => {
+    const notes = notesCtx([
+      note('n1', 'Mine', 'abc'),
+      note('n2', 'Theirs', 'xyz', { source: 'agent', recordedBy: { runId: 'r0', role: 'Analyst <x>' } }),
+      note('n3', 'Old', 'q', { retired: true }),
+      note('n4', 'Agent old', 'q', { source: 'agent', retired: true })
+    ])
+    const text = await tool(notes).call({ action: 'list' })
+    expect(text).toContain('n1 | Mine | 3 characters\n')
+    expect(text).toContain('n2 | Theirs | 3 characters | by agent (Analyst ‹x›)')
+    expect(text).toContain('n3 | Old | 1 characters | retired')
+    expect(text).toContain('n4 | Agent old | 1 characters | by agent | retired')
+    expect(await tool(notes).call({ action: 'read', noteId: 'n3' })).toContain('Context note Old (retired) (data from')
+    expect(await tool(notes).call({ action: 'read' })).toBe('REFUSED: a read needs a noteId.')
+  })
+
+  it('save passes the note and the caller through and answers with the saved id and title', async () => {
+    const save = vi.fn((input: { noteId?: string; title: string; text: string }) => note(input.noteId ?? 'n9', input.title, input.text, { source: 'agent' }))
+    const t = tool(notesCtx([], save))
+    expect(await t.call({ action: 'save', title: 'Findings', text: 'Alpha owns billing.' })).toBe('Saved note n9 (Findings).')
+    expect(save).toHaveBeenCalledWith({ title: 'Findings', text: 'Alpha owns billing.' }, { agentId: undefined, roleId: undefined })
+    const sub = byName(harnessToolsFor(fakeCtx({ run: runSummary({ team: 'single' }), engagementNotes: notesCtx([], save) })), ENGAGEMENT_CONTEXT_TOOL)
+    expect(await sub.call({ action: 'save', noteId: ' n2 ', title: 'T <b>', text: 'x' }, { agentId: 'a1', roleId: 'r-eng' })).toBe('Saved note n2 (T ‹b›).')
+    expect(save).toHaveBeenLastCalledWith({ noteId: 'n2', title: 'T <b>', text: 'x' }, { agentId: 'a1', roleId: 'r-eng' })
+  })
+
+  it('save refuses a missing title or text without calling the store', async () => {
+    const save = vi.fn()
+    const t = tool(notesCtx([], save))
+    expect(await t.call({ action: 'save', text: 'x' })).toBe('REFUSED: a save needs a title.')
+    expect(await t.call({ action: 'save', title: '  ', text: 'x' })).toBe('REFUSED: a save needs a title.')
+    expect(await t.call({ action: 'save', title: 'T' })).toBe('REFUSED: a save needs text.')
+    expect(save).not.toHaveBeenCalled()
+  })
+
+  it('save relays a store refusal as REFUSED with the message as one line', async () => {
+    const refuse = (message: string) =>
+      tool(
+        notesCtx([], () => {
+          throw new Error(message)
+        })
+      )
+    expect(await refuse('Only the user can change that note; save a new one instead.').call({ action: 'save', noteId: 'n1', title: 'T', text: 'x' })).toBe('REFUSED: Only the user can change that note; save a new one instead.')
+    expect(await refuse('A project keeps at most 200 notes. Remove or merge notes first.').call({ action: 'save', title: 'T', text: 'x' })).toBe('REFUSED: A project keeps at most 200 notes. Remove or merge notes first.')
+    expect(await refuse('Notes cannot be saved in this run.').call({ action: 'save', title: 'T', text: 'x' })).toBe('REFUSED: Notes cannot be saved in this run.')
+    const long = await refuse(`bad <<<\n${'z'.repeat(400)}`).call({ action: 'save', title: 'T', text: 'x' })
+    expect(long.startsWith('REFUSED: bad ‹‹‹ zzz')).toBe(true)
+    expect(long.length).toBeLessThanOrEqual('REFUSED: '.length + 300)
+  })
+
+  it('without the save hook the tool says so (ctx without notes)', async () => {
+    expect(await tool().call({ action: 'save', title: 'T', text: 'x' })).toBe('No context notes are available in this run.')
   })
 })
 
