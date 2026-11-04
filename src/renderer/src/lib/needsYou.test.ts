@@ -32,6 +32,12 @@ describe('waitingItems', () => {
     })
     expect(waitingItems(r).map((i) => i.label)).toEqual(['MCP servers: Add GitHub issues', 'Org chart: Add a release writer', 'Proposal: to approve'])
   })
+  it('calls an engagement architecture proposal the engagement plan', () => {
+    const r = run('r1', 1, 'running', { proposals: [{ id: 'a', kind: 'architecture', title: 'Acme plan' }, { id: 'b', kind: 'orgChart', title: 'Team' }] })
+    expect(waitingItems(r, 'engagement').map((i) => i.label)).toEqual(['Engagement plan: Acme plan', 'Org chart: Team'])
+    expect(waitingItems(r, 'code').map((i) => i.label)[0]).toBe('Architecture: Acme plan')
+    expect(waitingItems(r).map((i) => i.label)[0]).toBe('Architecture: Acme plan')
+  })
   it('reports a blocked plan when nothing else waits', () => {
     expect(waitingItems(run('r1', 1, 'idle', { plan: { status: 'blocked' } })).map((i) => i.kind)).toEqual(['plan'])
   })

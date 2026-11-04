@@ -1,5 +1,5 @@
-import type { ProposalKind, RunStatus } from '@shared/types'
-import { oneLine, permissionTitle, PROPOSAL_KIND_LABEL } from './decisionTitle'
+import type { ProjectKind, ProposalKind, RunStatus } from '@shared/types'
+import { oneLine, permissionTitle, proposalKindLabel } from './decisionTitle'
 import { isOpenStatus, needsYou } from './runChains'
 
 /** Structural view of a run's open decisions, so this stays free of store types. */
@@ -26,14 +26,14 @@ export interface WaitingItem {
 }
 
 /** Every decision an open run is waiting on, in the order the cards show. */
-export function waitingItems(run: WaitRun): WaitingItem[] {
+export function waitingItems(run: WaitRun, projectKind?: ProjectKind): WaitingItem[] {
   if (!needsYou(run)) return []
   const runId = run.summary.id
   const who = (agentId: string): string => run.agents[agentId]?.name ?? 'An agent'
   const items: WaitingItem[] = []
   for (const r of run.ruleRequests ?? []) items.push({ key: r.id, runId, kind: 'rules', label: `Rules: ${who(r.agentId)} asks for permission rules` })
   for (const q of run.questions ?? []) items.push({ key: q.id, runId, kind: 'question', label: `Question: ${oneLine(q.question, 100)}` })
-  for (const p of run.proposals ?? []) items.push({ key: p.id, runId, kind: 'proposal', label: `${p.kind ? PROPOSAL_KIND_LABEL[p.kind] : 'Proposal'}: ${p.title ? oneLine(p.title, 100) : 'to approve'}` })
+  for (const p of run.proposals ?? []) items.push({ key: p.id, runId, kind: 'proposal', label: `${p.kind ? proposalKindLabel(p.kind, projectKind) : 'Proposal'}: ${p.title ? oneLine(p.title, 100) : 'to approve'}` })
   for (const m of run.mergeReviews ?? []) items.push({ key: m.id, runId, kind: 'merge', label: `Merge: review ${oneLine(m.agentName, 40)}'s changes` })
   for (const p of run.permissions ?? []) items.push({ key: p.id, runId, kind: 'permission', label: `Allow: ${permissionTitle(p.toolName, p.input)}` })
   for (const i of run.mcpInstalls ?? []) items.push({ key: i.id, runId, kind: 'install', label: `Install: ${who(i.agentId)} asks to install an MCP server` })

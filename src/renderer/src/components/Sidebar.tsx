@@ -1,7 +1,7 @@
 import type { ReactElement, ReactNode } from 'react'
 import { useEffect, useMemo, useState } from 'react'
 import type { AuthStatusResult, ConnectionId, ConnectionStatus, Project, RunSummary, UsageStatus, VirtualProjectId } from '@shared/types'
-import { projectConnection } from '@shared/defaults'
+import { projectConnection, projectKindOf } from '@shared/defaults'
 import { BellRing, ChevronDown, ChevronRight, LayoutDashboard,MessageSquare, PanelLeftClose, Plug, Settings, Sparkles, type LucideIcon } from 'lucide-react'
 import { ASSISTANT_ORDER, assistantLabel, displayProject, locationLabel } from '../lib/assistants'
 import { useShallow } from 'zustand/react/shallow'
@@ -356,7 +356,7 @@ export default function Sidebar({
             {({ close }) => (
               <ul className="needs-list">
                 {waiting.flatMap((r) =>
-                  waitingItems(r).map((it) => (
+                  waitingItems(r, projectKindOf(projects.find((p) => p.id === r.summary.projectId))).map((it) => (
                     <li key={it.key}>
                       <button
                         type="button"

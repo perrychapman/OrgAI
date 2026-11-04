@@ -4,7 +4,7 @@
  * it; the full text lives in the card body. Output is only ever rendered as React text.
  */
 
-import type { ProposalKind } from '@shared/types'
+import type { ProjectKind, ProposalKind } from '@shared/types'
 import { HIDDEN_OR_CONTROL_RUN } from './hiddenChars'
 
 const MAX_TITLE = 120
@@ -153,6 +153,11 @@ export const PROPOSAL_KIND_LABEL: Record<ProposalKind, string> = {
   settings: 'Run settings',
   mcpServers: 'MCP servers',
   skills: 'Skills'
+}
+
+/** The kind label for one project: an engagement's architecture proposal is its "Engagement plan". */
+export function proposalKindLabel(kind: ProposalKind, projectKind?: ProjectKind): string {
+  return kind === 'architecture' && projectKind === 'engagement' ? 'Engagement plan' : PROPOSAL_KIND_LABEL[kind]
 }
 
 /** "Approve architecture proposal", "Approve MCP servers proposal": a leading capital on a plain word is lowered, an acronym is kept. */
