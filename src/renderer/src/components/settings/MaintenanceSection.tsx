@@ -9,7 +9,7 @@ import { IconButton } from '../ui/IconButton'
 import { SettingRow } from '../ui/SettingRow'
 import { SettingsCard } from './SettingsCard'
 import { useConfirm } from '../ui/ConfirmDialog'
-import { projectKindOf } from '@shared/defaults'
+import { isolateWritersOn, projectKindOf } from '@shared/defaults'
 import { MAINTENANCE_ENGAGEMENT_LINE } from '../../lib/settingsCopy'
 import { SettingsGroup, SettingsSection } from './SettingsSection'
 
@@ -24,22 +24,20 @@ export function MaintenanceSection({ project }: { project: Project }): ReactElem
   const [notice, setNotice] = useState<MaintenanceResult | null>(null)
   const [diffs, setDiffs] = useState<Record<string, WorktreeDiff | 'loading'>>({})
 
-  // Engagements write nothing to their folder: no branch tools unless the user opted in to separate git copies.
+  // Engagements write nothing to their folder unless separate git copies are on. Branches are always looked up, and the
+  // block shows whenever any exist, so leftovers can be discarded after isolation was turned off.
   const engagement = projectKindOf(project) === 'engagement'
-  const showBranches = !engagement || project.isolateWriters === true
+  const isolating = isolateWritersOn(project)
+  const showBranches = !engagement || isolating || (worktrees !== null && worktrees.length > 0)
 
   const refresh = useCallback(async () => {
-    if (!showBranches) {
-      setWorktrees([])
-      return
-    }
     try {
       setWorktrees(await window.orgai.maintenance.listWorktrees(project.id))
     } catch (e) {
       setNotice({ ok: false, message: (e as Error).message })
       setWorktrees([])
     }
-  }, [project.id, showBranches])
+  }, [project.id])
 
   useEffect(() => {
     void refresh()
@@ -99,7 +97,9 @@ export function MaintenanceSection({ project }: { project: Project }): ReactElem
     <SettingsSection id="settings-section-maintenance" title="Maintenance">
       {engagement && (
         <p className="settings-card-note" data-testid="maintenance-engagement-line">
-          {MAINTENANCE_ENGAGEMENT_LINE}
+          {isolating
+            ? 'OrgAI keeps its notes for this engagement in its own data folder. Because separate git copies are on, it adds them and a .git/info/exclude line in the working folder.'
+            : MAINTENANCE_ENGAGEMENT_LINE}
         </p>
       )}
       {showBranches && <div className="field">

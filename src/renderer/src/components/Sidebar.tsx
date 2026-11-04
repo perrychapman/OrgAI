@@ -140,6 +140,19 @@ export default function Sidebar({
   const { collapsed: rail, toggle, setCollapsed } = useSidebarCollapsed()
   const [collapsed, setCollapsedRuns] = useState<Record<string, boolean>>({})
   const [collapsedClients, setCollapsedClients] = useState<Set<string>>(() => readCollapsedClients())
+  // The selected project's row must stay reachable: opening it (or a project added to a collapsed client) expands its group.
+  useEffect(() => {
+    if (!selectedId) return
+    const holder = groupByClient(projects).groups.find((g) => g.items.some((p) => p.id === selectedId))
+    if (!holder) return
+    setCollapsedClients((prev) => {
+      if (!prev.has(holder.key)) return prev
+      const next = new Set(prev)
+      next.delete(holder.key)
+      writeCollapsedClients(next)
+      return next
+    })
+  }, [selectedId, projects])
 
   const allRuns = useMemo(() => Object.values(runs), [runs])
   const items = waiting.flatMap((r) => waitingItems(r))
@@ -433,7 +446,8 @@ export default function Sidebar({
                     <span className="nav-client-fill" />
                     {closed && need > 0 && (
                       <Badge tone="attention" title={`${need} ${need === 1 ? 'decision needs' : 'decisions need'} you`}>
-                        {need}
+                        <span aria-hidden="true">{need}</span>
+                        <span className="sr-only">{`, ${need} ${need === 1 ? 'decision' : 'decisions'}`}</span>
                       </Badge>
                     )}
                   </button>

@@ -1,5 +1,5 @@
 import type { ReactElement } from 'react'
-import { useEffect, useId, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import type { Project } from '@shared/types'
 import { PROJECT_CLIENT_MAX_CHARS } from '@shared/types'
 import { projectKindOf } from '@shared/defaults'
@@ -18,30 +18,69 @@ import { SettingsSection } from './SettingsSection'
  */
 function ClientField({ id, project, patch }: { id: string; project: Project; patch: (p: Partial<Project>) => void }): ReactElement {
   const [draft, setDraft] = useState(project.client ?? '')
-  useEffect(() => setDraft(project.client ?? ''), [project.id]) // eslint-disable-line react-hooks/exhaustive-deps
+  const [error, setError] = useState<string | null>(null)
+  const [note, setNote] = useState<string | null>(null)
+  const focused = useRef(false)
+  const msgId = `${id}-msg`
+  // Follow the stored value (a settings proposal can change it) unless the user is typing.
+  useEffect(() => {
+    if (!focused.current) setDraft(project.client ?? '')
+  }, [project.id, project.client])
   return (
-    <Input
-      id={id}
-      aria-label="Client or case"
-      maxLength={PROJECT_CLIENT_MAX_CHARS}
-      value={draft}
-      data-testid="project-client-input"
-      onChange={(v) => {
-        setDraft(v)
-        patch({ client: v === '' ? undefined : v })
-      }}
-      onBlur={() => {
-        const st = useAppStore.getState()
-        const current = st.projects.find((p) => p.id === project.id) ?? project
-        const value = draft.trim()
-        const updated: Project = { ...current, client: value === '' ? undefined : value }
-        // Replace any pending debounced save with this snapshot first, so an older one cannot land after it.
-        st.updateProject(updated)
-        st.saveProjectNow(updated)
-          .then((saved) => setDraft(saved.client ?? ''))
-          .catch(() => undefined)
-      }}
-    />
+    <>
+      <Input
+        id={id}
+        aria-label="Client or case"
+        aria-describedby={error || note ? msgId : undefined}
+        invalid={!!error}
+        maxLength={PROJECT_CLIENT_MAX_CHARS}
+        value={draft}
+        data-testid="project-client-input"
+        onFocus={() => {
+          focused.current = true
+        }}
+        onChange={(v) => {
+          setDraft(v)
+          setError(null)
+          setNote(null)
+          patch({ client: v === '' ? undefined : v })
+        }}
+        onBlur={() => {
+          focused.current = false
+          const st = useAppStore.getState()
+          const current = st.projects.find((p) => p.id === project.id) ?? project
+          const value = draft.trim()
+          if (value === (current.client ?? '')) {
+            setDraft(value)
+            return
+          }
+          const updated: Project = { ...current, client: value === '' ? undefined : value }
+          // Replace any pending debounced save with this snapshot first, so an older one cannot land after it.
+          st.updateProject(updated)
+          st.saveProjectNow(updated)
+            .then((saved) => {
+              const kept = saved.client ?? ''
+              setDraft(kept)
+              setError(null)
+              if (kept === value) setNote(null)
+              else setNote(kept ? `OrgAI kept: ${kept}` : 'OrgAI could not keep that name (hidden characters).')
+            })
+            .catch((e: unknown) => {
+              setNote(null)
+              setError(`Could not save: ${e instanceof Error ? e.message : 'try again'}`)
+            })
+        }}
+      />
+      {error ? (
+        <span id={msgId} className="field-msg error" role="alert" data-testid="project-client-error">
+          {error}
+        </span>
+      ) : note ? (
+        <span id={msgId} className="field-msg" role="status" data-testid="project-client-note">
+          {note}
+        </span>
+      ) : null}
+    </>
   )
 }
 
