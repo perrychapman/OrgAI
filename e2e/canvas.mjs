@@ -137,7 +137,11 @@ try {
       })
       check(order, `General shows the Canvas section before Advanced settings at ${w}x${h} ${theme}`)
       check((await section.locator('[data-testid=canvas-preview] .react-flow').count()) === 1, `the preview draws a canvas at ${w}x${h} ${theme}`)
-      check((await section.locator('[data-preset=custom][aria-checked=true]').count()) === 1, `the default canvas shows Custom checked at ${w}x${h} ${theme}`)
+      check(
+        (await section.locator('[data-preset=default][aria-checked=true]').count()) === 1 && (await section.locator('[data-preset=custom]').count()) === 0,
+        `the default canvas shows Default checked and no Custom at ${w}x${h} ${theme}`
+      )
+      check((await section.locator('[data-preset=default] svg[data-canvas-thumb=dots]').count()) === 1, `the Default entry draws a dots thumbnail at ${w}x${h} ${theme}`)
       check((await section.locator('[role=radiogroup][aria-label="Canvas style"] [role=radio][tabindex="0"]').count()) === 1, `the style gallery is one tab stop at ${w}x${h} ${theme}`)
       // Two columns from 720 px of section width: the preview sits beside the gallery, else above it.
       const geo = await page.evaluate(() => {
@@ -165,7 +169,7 @@ try {
   await openAppSettings(page)
   const section = page.locator('[data-testid=canvas-section]')
   await section.waitFor({ timeout: 10_000 })
-  await section.locator('[data-preset=custom]').focus()
+  await section.locator('[data-preset=default]').focus()
   await page.keyboard.press('ArrowRight')
   await sleep(500)
   check((await html('data-canvas-pattern')) === 'blueprint', 'ArrowRight in the gallery applies Blueprint on <html>', String(await html('data-canvas-pattern')))
@@ -215,6 +219,39 @@ try {
     check((await section.locator('[data-testid=canvas-preview] .react-flow').count()) === 1, `the preview still draws on ${preset}`)
     await shot(`settings-${preset}`)
   }
+
+  // Default entry: Blueprint, then arrow back to Default restores the way OrgAI starts.
+  await section.locator('[data-preset=blueprint]').click()
+  await sleep(500)
+  check((await html('data-canvas-pattern')) === 'blueprint', 'picking Blueprint applies it')
+  await section.locator('[data-preset=blueprint]').focus()
+  await page.keyboard.press('ArrowLeft')
+  await sleep(500)
+  check((await section.locator('[data-preset=default]').getAttribute('aria-checked')) === 'true', 'ArrowLeft from Blueprint checks Default')
+  check((await html('data-canvas-pattern')) === 'dots' && (await html('data-canvas-node-style')) === 'card', 'Default sets dots and cards on <html>')
+  check((await section.locator('[data-testid=canvas-announce]').innerText()).trim() === 'Canvas style: Default.', 'Default is announced')
+
+  // The preview stays in view while Customise controls scroll (one column, 1024x640).
+  await resizeTo(1024, 640)
+  if ((await customise.getAttribute('aria-expanded')) !== 'true') await customise.click()
+  const minimapSwitch = section.locator('[data-testid=canvas-minimap]')
+  await minimapSwitch.focus()
+  await page.evaluate(() => {
+    const sc = document.querySelector('.settings-scroll')
+    const m = document.querySelector('[data-testid=canvas-minimap]')
+    if (sc && m) sc.scrollTop += m.getBoundingClientRect().bottom - sc.getBoundingClientRect().bottom + 24
+  })
+  await sleep(300)
+  const stick = await page.evaluate(() => {
+    const sc = document.querySelector('.settings-scroll').getBoundingClientRect()
+    const p = document.querySelector('[data-testid=canvas-preview]').getBoundingClientRect()
+    const m = document.querySelector('[data-testid=canvas-minimap]').getBoundingClientRect()
+    return { sc: { top: sc.top, bottom: sc.bottom }, p: { top: p.top, bottom: p.bottom }, m: { top: m.top, bottom: m.bottom }, scrolled: document.querySelector('.settings-scroll').scrollTop }
+  })
+  check(stick.scrolled > 0 && stick.p.top >= stick.sc.top - 1 && stick.p.bottom <= stick.sc.bottom + 1, 'at 1024x640 the preview stays inside the settings view after scrolling to Minimap', JSON.stringify(stick))
+  check(stick.m.top >= stick.p.bottom - 1 && stick.m.bottom <= stick.sc.bottom + 1, 'the focused Minimap switch is not covered by the preview', JSON.stringify(stick))
+  await shot('settings-sticky-preview')
+  check((await windowShift(page)).ok, 'scrolling the settings does not shift the window')
 
   // ---------- Live run: a deep tree ----------
   await openProject(page, NAME)
@@ -425,7 +462,8 @@ try {
   const pop = page.locator('[data-testid=canvas-style-popover]')
   await pop.waitFor({ timeout: 5000 })
   await sleep(300)
-  check(await page.evaluate(() => document.activeElement?.getAttribute('data-preset') === 'custom'), 'opening the popover focuses the checked option')
+  check(await page.evaluate(() => document.activeElement?.getAttribute('data-preset') === 'default'), 'opening the popover focuses the checked option (Default)')
+  check((await pop.locator('[data-preset=default]').count()) === 1 && (await pop.locator('[data-preset]').first().getAttribute('data-preset')) === 'default', 'the popover lists Default first')
   const popBox = await pop.boundingBox()
   check(!intersects(miniBox, popBox), 'the style popover does not land on the minimap', JSON.stringify({ miniBox, popBox }))
   await page.keyboard.press('ArrowDown')

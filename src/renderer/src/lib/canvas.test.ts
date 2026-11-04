@@ -2,7 +2,12 @@ import { describe, expect, it } from 'vitest'
 import { CANVAS_PRESETS, DEFAULT_APPEARANCE, applyCanvasPreset } from '@shared/defaults'
 import {
   AVAILABLE_PRESETS,
+  CANVAS_STYLE_OPTIONS,
   agentNodeSize,
+  applyCanvasStyle,
+  applyDefaultCanvas,
+  shownStyle,
+  styleLabel,
   edgeStroke,
   effectiveNodeStyle,
   groupNodeSize,
@@ -54,6 +59,34 @@ describe('shownPreset', () => {
     expect(shownPreset(applyCanvasPreset(base, 'hive'))).toBe('hive')
     expect(shownPreset({ ...base, pattern: 'grid' })).toBeUndefined()
     expect(AVAILABLE_PRESETS.map((p) => p.id)).toEqual(CANVAS_PRESETS.map((p) => p.id))
+  })
+})
+
+describe('the Default gallery entry', () => {
+  const base = DEFAULT_APPEARANCE.canvas
+  it('is first and reads as checked on the default look, with or without the minimap', () => {
+    expect(CANVAS_STYLE_OPTIONS[0].id).toBe('default')
+    expect(CANVAS_STYLE_OPTIONS.map((o) => o.id)).toEqual(['default', ...CANVAS_PRESETS.map((p) => p.id)])
+    expect(shownStyle(base)).toBe('default')
+    expect(shownStyle({ ...base, minimap: true })).toBe('default')
+  })
+  it('is Custom only when neither Default nor a preset matches', () => {
+    expect(shownStyle(applyCanvasPreset(base, 'blueprint'))).toBe('blueprint')
+    expect(shownStyle({ ...base, pattern: 'grid' })).toBeUndefined()
+    expect(shownStyle({ ...base, tint: false })).toBeUndefined()
+  })
+  it('applyDefaultCanvas restores the five fields and keeps the minimap', () => {
+    const blueprint = { ...applyCanvasPreset(base, 'blueprint'), minimap: true }
+    const back = applyDefaultCanvas(blueprint)
+    expect(back).toEqual({ ...base, minimap: true })
+    expect(shownStyle(back)).toBe('default')
+    expect(applyCanvasStyle(blueprint, 'default')).toEqual(back)
+    expect(applyCanvasStyle(base, 'hive')).toEqual(applyCanvasPreset(base, 'hive'))
+  })
+  it('names the entries', () => {
+    expect(styleLabel('default')).toBe('Default')
+    expect(styleLabel('paper')).toBe('Paper')
+    expect(styleLabel(undefined)).toBeUndefined()
   })
 })
 

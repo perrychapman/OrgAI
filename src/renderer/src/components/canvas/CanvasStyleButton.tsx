@@ -1,9 +1,8 @@
 import type { ReactElement } from 'react'
 import { useEffect, useRef } from 'react'
 import { Palette } from 'lucide-react'
-import { CANVAS_PRESETS, type CanvasPresetId } from '@shared/defaults'
-import { useCanvasOptions } from '../../lib/canvas'
-import { canvasAfterPreset, canvasAnnouncement, saveCanvas } from '../../lib/canvasSettings'
+import { applyCanvasStyle, styleLabel, useCanvasOptions, type CanvasStyleId } from '../../lib/canvas'
+import { canvasAnnouncement, saveCanvas } from '../../lib/canvasSettings'
 import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../../lib/settingsTarget'
 import { useAppStore } from '../../store/useAppStore'
 import { useFrameAnnounce } from '../layout/CanvasFrame'
@@ -30,9 +29,9 @@ function StylePanel({ close }: { close: () => void }): ReactElement {
     return () => timers.forEach(clearTimeout)
   }, [])
 
-  const pick = (id: CanvasPresetId): void => {
-    void saveCanvas((c) => canvasAfterPreset(c, id)).catch(() => undefined)
-    announce?.(canvasAnnouncement(CANVAS_PRESETS.find((p) => p.id === id)?.label))
+  const pick = (id: CanvasStyleId): void => {
+    void saveCanvas((c) => applyCanvasStyle(c, id)).catch(() => undefined)
+    announce?.(canvasAnnouncement(styleLabel(id)))
   }
 
   return (

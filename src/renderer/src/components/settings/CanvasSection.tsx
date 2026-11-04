@@ -3,9 +3,8 @@ import { useId, useRef, useState } from 'react'
 import { ChevronRight } from 'lucide-react'
 import type { CanvasEdgeStyle, CanvasLayout, CanvasNodeStyle, CanvasPattern } from '@shared/types'
 import { CANVAS_PATTERNS } from '@shared/types'
-import { CANVAS_PRESETS, type CanvasPresetId } from '@shared/defaults'
-import { AVAILABLE_NODE_STYLES, effectiveNodeStyle, shownPreset } from '../../lib/canvas'
-import { canvasAfterPreset, canvasAnnouncement, type CanvasSettings } from '../../lib/canvasSettings'
+import { AVAILABLE_NODE_STYLES, applyCanvasStyle, effectiveNodeStyle, shownStyle, styleLabel, type CanvasStyleId } from '../../lib/canvas'
+import { canvasAnnouncement, type CanvasSettings } from '../../lib/canvasSettings'
 import { CanvasPresetGroup } from '../canvas/CanvasPresetGroup'
 import { CanvasPreview } from '../canvas/CanvasPreview'
 import { Icon } from '../ui/Icon'
@@ -60,7 +59,7 @@ function readOpen(): boolean | null {
  */
 export function CanvasSection({ canvas, onChange }: { canvas: CanvasSettings; onChange: (next: CanvasSettings) => void }): ReactElement {
   const bodyId = useId()
-  const [open, setOpen] = useState<boolean>(() => readOpen() ?? shownPreset(canvas) === undefined)
+  const [open, setOpen] = useState<boolean>(() => readOpen() ?? shownStyle(canvas) === undefined)
   const [said, setSaid] = useState('')
   const groupRef = useRef<HTMLDivElement>(null)
 
@@ -73,12 +72,9 @@ export function CanvasSection({ canvas, onChange }: { canvas: CanvasSettings; on
       /* storage unavailable: the choice lasts until reload */
     }
   }
-  const labelOf = (c: CanvasSettings): string | undefined => {
-    const id = shownPreset(c)
-    return id ? CANVAS_PRESETS.find((p) => p.id === id)?.label : undefined
-  }
-  const pick = (id: CanvasPresetId): void => {
-    const next = canvasAfterPreset(canvas, id)
+  const labelOf = (c: CanvasSettings): string | undefined => styleLabel(shownStyle(c))
+  const pick = (id: CanvasStyleId): void => {
+    const next = applyCanvasStyle(canvas, id)
     onChange(next)
     setSaid(canvasAnnouncement(labelOf(next)))
   }

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { useUpdateNodeInternals, type NodeChange, type Position } from '@xyflow/react'
 import type { AppearanceSettings, CanvasEdgeStyle, CanvasLayout, CanvasNodeStyle, CanvasPattern } from '@shared/types'
 import { CANVAS_EDGE_STYLES, CANVAS_LAYOUTS, CANVAS_NODE_STYLES, CANVAS_PATTERNS } from '@shared/types'
-import { CANVAS_PRESETS, DEFAULT_APPEARANCE, activeCanvasPreset, type CanvasPreset, type CanvasPresetId } from '@shared/defaults'
+import { CANVAS_PRESETS, DEFAULT_APPEARANCE, activeCanvasPreset, applyCanvasPreset, type CanvasPreset, type CanvasPresetId } from '@shared/defaults'
 
 /**
  * Canvas appearance for the renderer's React Flow canvases (Live run, Team editor, the settings sample).
@@ -32,6 +32,54 @@ export const AVAILABLE_PRESETS: readonly CanvasPreset[] = CANVAS_PRESETS.filter(
 export function shownPreset(canvas: AppearanceSettings['canvas']): CanvasPresetId | undefined {
   const id = activeCanvasPreset(canvas)
   return id && AVAILABLE_PRESETS.some((p) => p.id === id) ? id : undefined
+}
+
+/** The gallery's first entry: the way OrgAI starts (DEFAULT_APPEARANCE.canvas). Not a preset in the shared contract. */
+export const DEFAULT_STYLE_ID = 'default'
+export type CanvasStyleId = CanvasPresetId | typeof DEFAULT_STYLE_ID
+
+export interface CanvasStyleOption {
+  id: CanvasStyleId
+  label: string
+  description: string
+  canvas: CanvasPreset['canvas']
+}
+
+const DEFAULT_LOOK = DEFAULT_APPEARANCE.canvas
+
+export const DEFAULT_STYLE: CanvasStyleOption = {
+  id: DEFAULT_STYLE_ID,
+  label: 'Default',
+  description: 'Dots, curved lines, cards, top down. The way OrgAI starts.',
+  canvas: { pattern: DEFAULT_LOOK.pattern, edges: DEFAULT_LOOK.edges, layout: DEFAULT_LOOK.layout, nodeStyle: DEFAULT_LOOK.nodeStyle, tint: DEFAULT_LOOK.tint }
+}
+
+/** Every gallery entry in order: Default, then the available presets. */
+export const CANVAS_STYLE_OPTIONS: readonly CanvasStyleOption[] = [DEFAULT_STYLE, ...AVAILABLE_PRESETS]
+
+function sameLook(a: CanvasPreset['canvas'], b: AppearanceSettings['canvas']): boolean {
+  return a.pattern === b.pattern && a.edges === b.edges && a.layout === b.layout && a.nodeStyle === b.nodeStyle && a.tint === b.tint
+}
+
+/** The entry to show as selected: 'default', a preset id, or undefined ("Custom"). The minimap never counts. */
+export function shownStyle(canvas: AppearanceSettings['canvas']): CanvasStyleId | undefined {
+  if (sameLook(DEFAULT_STYLE.canvas, canvas)) return DEFAULT_STYLE_ID
+  return shownPreset(canvas)
+}
+
+/** A new canvas with the default look's five fields; the minimap is kept. */
+export function applyDefaultCanvas(canvas: AppearanceSettings['canvas']): AppearanceSettings['canvas'] {
+  return { ...canvas, ...DEFAULT_STYLE.canvas }
+}
+
+/** A new canvas after picking a gallery entry (Default or a preset); the minimap is kept. */
+export function applyCanvasStyle(canvas: AppearanceSettings['canvas'], id: CanvasStyleId): AppearanceSettings['canvas'] {
+  return id === DEFAULT_STYLE_ID ? applyDefaultCanvas(canvas) : applyCanvasPreset(canvas, id)
+}
+
+/** The label of a shown entry, or undefined for Custom. */
+export function styleLabel(id: CanvasStyleId | undefined): string | undefined {
+  return CANVAS_STYLE_OPTIONS.find((o) => o.id === id)?.label
 }
 
 export interface CanvasOptions {
