@@ -50,8 +50,9 @@ export default function ConnectorDialog({ info, onClose, onConnected }: { info: 
   const live = connectors?.find((c) => c.connector.id === info.connector.id) ?? info
   const def = live.connector
   const entry = live.library
-  const [variantId, setVariantId] = useState(() => info.variant ?? defaultVariantId(def))
-  const variant = connectorVariant(def, entry ? live.variant : variantId)
+  const [variantId, setVariantId] = useState(() => info.library?.entry.connectorVariant ?? info.variant ?? defaultVariantId(def))
+  const connected = live.state === 'connected'
+  const variant = connectorVariant(def, connected ? live.variant : variantId)
   const auth = variant.auth
   const ease = connectorEase(def, variant.id)
   const [haveClient, setHaveClient] = useState(false)
@@ -72,7 +73,6 @@ export default function ConnectorDialog({ info, onClose, onConnected }: { info: 
   const waitingRef = useRef(false)
   const ids = useId()
 
-  const connected = live.state === 'connected'
   const usedBy = entry?.usedBy ?? []
   const account = entry?.auth.account
   const note = honestyNote(def)
@@ -104,7 +104,8 @@ export default function ConnectorDialog({ info, onClose, onConnected }: { info: 
     setPhase('working')
     cancelled.current = false
     try {
-      const lib = entry ?? (await window.orgai.connectors.add({ connectorId: def.id, variant: variantId }))
+      // An entry that is not connected is rewritten in place to the chosen variant.
+      const lib = entry && entry.entry.connectorVariant === variantId ? entry : await window.orgai.connectors.add({ connectorId: def.id, variant: variantId })
       const id = lib.entry.id
       libraryId.current = id
       let failure: string | undefined
@@ -196,10 +197,10 @@ export default function ConnectorDialog({ info, onClose, onConnected }: { info: 
   const extras = (
     <>
       {multi && (
-        <fieldset className="connector-variants" disabled={!!entry || busy}>
+        <fieldset className="connector-variants" disabled={connected || busy}>
           <legend>What agents can do</legend>
           {def.variants.map((v) => (
-            <label key={v.id} className={`connector-variant${v.id === variant.id ? ' on' : ''}`}>
+            <label key={v.id} data-testid="connector-variant" data-variant={v.id} className={`connector-variant${v.id === variant.id ? ' on' : ''}`}>
               <input type="radio" name={`${ids}-variant`} value={v.id} checked={v.id === variant.id} onChange={() => setVariantId(v.id)} />
               <span className="connector-variant-text">
                 <strong>
@@ -212,7 +213,11 @@ export default function ConnectorDialog({ info, onClose, onConnected }: { info: 
               </span>
             </label>
           ))}
-          {entry && <p className="muted connector-locked">Access is set when the service is added. To switch it, remove the service and add it again.</p>}
+          {connected && (
+            <p className="muted connector-locked" data-testid="connector-locked">
+              Access was chosen when you connected this service. Disconnect it to change it.
+            </p>
+          )}
         </fieldset>
       )}
       {!multi && (
