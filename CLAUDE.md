@@ -54,8 +54,8 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   docs/macos-testing.md). Cmd/Ctrl+W is close-tab's only (never a window close); Window > Close window is a plain item
   with no accelerator, not the `close` role. Help opens only the fixed `DOCS_URL` / `ISSUES_URL` (guarded by
   `openHelpUrl`) and "Open data folder" opens `app.getPath('userData')` (ORGAI_DATA_DIR replaces it). Window
-  `minHeight` is 706 (the Windows menu bar takes about 26 px at 100%, keeping 680 of content; measured by the UX
-  researcher, not by a test).
+  `minHeight` stays 680 (an outer size: at the minimum window the content area on Windows is about 654 px with the
+  26 px menu bar; accepted, see ux-review-menu.md M1).
   Unit-tested only; the live menu bars, the enablement greying are unverified until QA or a pack.
 - Run end: RunManager calls `cancelPending` (`pendingCards.ts`) when a run reaches an outcome or `paused`, and at
   teardown. Every open card then gets its `*.resolved` event with `cancelled: true`. `activity.ts` `runOutcome` /

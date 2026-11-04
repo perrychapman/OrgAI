@@ -180,7 +180,7 @@ function createWindow(scope?: FocusRunTarget): BrowserWindow {
     width: scope ? 1280 : 1440,
     height: scope ? 840 : 920,
     minWidth: 1024,
-    minHeight: 706,
+    minHeight: 680,
     show: false,
     autoHideMenuBar: false,
     backgroundColor: windowBackground(settingsStore?.get().appearance.theme ?? 'dark', nativeTheme.shouldUseDarkColors),
