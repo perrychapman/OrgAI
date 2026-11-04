@@ -772,7 +772,8 @@ function rowsToRecord(rows: PresetRowDraft[]): Record<string, string> | undefine
  * The preset to send to main. `id` is the preset's id (kept on edit, from `kebabId` on add); saved option ids are kept and
  * new options get one from their label. Assumes `validatePreset` passed. A kit preset keeps its origin.
  */
-export function draftToDef(d: PresetDraft, id: string, origin?: 'kit'): UserConnectorDef {
+export function draftToDef(d: PresetDraft, id: string, origin?: 'kit', base?: UserConnectorDef): UserConnectorDef {
+  if (base) return mergeDraftOnto(d, id, origin, base)
   const stdio = d.transport === 'stdio'
   const auth = authOf(d)
   const taken = new Set<string>(d.variants.map((v) => v.id).filter(Boolean))
@@ -803,6 +804,113 @@ export function draftToDef(d: PresetDraft, id: string, origin?: 'kit'): UserConn
     defaultVariant: variants[Math.max(0, chosen)].id,
     verified: false,
     ...(origin ? { origin } : {})
+  }
+}
+
+function canon(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(canon).join(',')}]`
+  if (v && typeof v === 'object') {
+    const o = v as Record<string, unknown>
+    return `{${Object.keys(o).sort().map((k) => `${JSON.stringify(k)}:${canon(o[k])}`).join(',')}}`
+  }
+  return JSON.stringify(v) ?? 'null'
+}
+
+const argExact = (a: string): boolean => a.trim() !== '' && !/[\r\n]/.test(a) && a === a.replace(/\s+$/, '')
+
+/**
+ * True when the form cannot show this preset as one shared address / command / sign-in / fixed values plus per-option
+ * extras (options that differ in transport, sign-in, command or fixed values, arguments that do not start with the default
+ * option's, or arguments the one-per-line box cannot hold). Such a preset opens with those parts read-only and keeps them.
+ */
+export function presetLocked(def: UserConnectorDef): boolean {
+  const base = def.variants.find((v) => v.id === def.defaultVariant) ?? def.variants[0]
+  if (!base) return false
+  const stdio = base.transport === 'stdio'
+  const baseArgs = base.args ?? []
+  for (const v of def.variants) {
+    if ((v.transport === 'stdio') !== stdio) return true
+    if (canon(v.auth) !== canon(base.auth)) return true
+    if (stdio) {
+      if ((v.command ?? '') !== (base.command ?? '')) return true
+      if (canon(v.env ?? {}) !== canon(base.env ?? {})) return true
+      const a = v.args ?? []
+      if (!a.every(argExact)) return true
+      if (v.id !== base.id && !baseArgs.every((x, i) => a[i] === x)) return true
+    } else {
+      if (canon(v.headers ?? {}) !== canon(base.headers ?? {})) return true
+      if (!(v.url ?? '').trim()) return true
+    }
+  }
+  return false
+}
+
+function mergeAuth(d: PresetDraft, prev: UserConnectorAuth | undefined): UserConnectorAuth {
+  if (d.auth === 'oauth' && d.transport !== 'stdio') return prev?.kind === 'oauth' ? prev : { kind: 'oauth' }
+  if (d.auth === 'token') {
+    const fresh = authOf(d) as Extract<UserConnectorAuth, { kind: 'token' }>
+    if (prev?.kind !== 'token') return fresh
+    const typed = d.tokenPrefix.trim()
+    const prefix = (prev.prefix ?? '').trimEnd() === typed ? prev.prefix : fresh.prefix
+    const { prefix: _p, link: _l, ...rest } = prev
+    void _p
+    void _l
+    return { ...rest, header: fresh.header, ...(prefix ? { prefix } : {}), ...(fresh.link ? { link: fresh.link } : {}) }
+  }
+  return { kind: 'none' }
+}
+
+/** Edit `base` with what the form shows; every field the form does not hold stays as it was (per option by id). */
+function mergeDraftOnto(d: PresetDraft, id: string, origin: 'kit' | undefined, base: UserConnectorDef): UserConnectorDef {
+  const locked = presetLocked(base)
+  const stdio = d.transport === 'stdio'
+  const baseVariant = base.variants.find((v) => v.id === base.defaultVariant) ?? base.variants[0]
+  const byId = new Map(base.variants.map((v) => [v.id, v]))
+  const taken = new Set<string>(d.variants.map((v) => v.id).filter(Boolean))
+  const fixed = rowsToRecord(d.rows)
+  const baseArgs = argLines(d.args)
+  const auth = mergeAuth(d, baseVariant?.auth)
+  const variants: UserConnectorVariant[] = d.variants.map((v) => {
+    const vid = v.id || kebabId(v.label, taken, 'option')
+    taken.add(vid)
+    const prev = byId.get(vid)
+    const label = v.label.trim()
+    if (locked) {
+      const { description: _d, ...fromDefault } = baseVariant
+      void _d
+      return { ...(prev ?? fromDefault), id: vid, label, readOnly: v.readOnly }
+    }
+    const { url: _u, headers: _h, command: _c, args: _a, env: _e, ...kept } = prev ?? (({ description: _d, ...r }) => r)(baseVariant)
+    void _u
+    void _h
+    void _c
+    void _a
+    void _e
+    const common = { ...kept, id: vid, label, readOnly: v.readOnly, auth }
+    if (stdio) {
+      const args = [...baseArgs, ...argLines(v.extra)]
+      return { ...common, transport: 'stdio' as const, command: d.command.trim(), ...(args.length ? { args } : {}), ...(fixed ? { env: fixed } : {}) }
+    }
+    const extra = v.extra.trim()
+    const transport = kept.transport === 'sse' ? ('sse' as const) : ('http' as const)
+    return { ...common, transport, url: extra || d.url.trim(), ...(fixed ? { headers: fixed } : {}) }
+  })
+  const chosen = d.variants.findIndex((v) => v.rid === d.defaultRid)
+  const aliases = parseAliases(d.aliases)
+  const { aliases: _al, origin: _o, ...rest } = base
+  void _al
+  void _o
+  const keptOrigin = origin ?? base.origin
+  return {
+    ...rest,
+    id,
+    name: d.name.trim(),
+    category: d.category,
+    description: d.description.trim() || 'A service you added yourself.',
+    ...(aliases.length ? { aliases } : {}),
+    variants,
+    defaultVariant: variants[Math.max(0, chosen)].id,
+    ...(keptOrigin ? { origin: keptOrigin } : {})
   }
 }
 

@@ -48,17 +48,27 @@ function ExtLink({ href, children }: { href: string; children: string }): ReactE
   )
 }
 
+type TargetShape = Pick<UserConnectorVariant, 'transport' | 'url' | 'headers' | 'command' | 'args' | 'env'> & { secretEnv?: string[]; secretHeaders?: string[] }
+
 /**
  * Where a preset the user described will connect, in full and unclamped: the program and every argument, or the address.
  * Text goes through hiddenChars so a disguised character is shown as an escape, with a badge.
  */
-function CustomTarget({ variant }: { variant: UserConnectorVariant }): ReactElement {
+function CustomTarget({ variant, added = false }: { variant: TargetShape; added?: boolean }): ReactElement | null {
   const program = variant.transport === 'stdio'
-  const text = program ? variantCommandLine(variant) : (variant.url ?? '')
+  const headerLines = [
+    ...Object.entries(variant.headers ?? {}).map(([k, v]) => ` -H ${JSON.stringify(`${k}: ${v}`)}`),
+    ...(variant.secretHeaders ?? []).map((k) => ` -H ${JSON.stringify(`${k}: (secret)`)}`)
+  ].join('')
+  const secretEnv = (variant.secretEnv ?? []).map((k) => `${k}=(secret)`)
+  const text = program ? [...secretEnv, variantCommandLine(variant)].join(' ') : `${variant.url ?? ''}${headerLines}`.trim()
+  if (!text.trim()) return null
   const hidden = hasHidden(text)
   return (
     <div className="connector-custom-target">
-      <span className="connector-custom-target-label">{program ? 'Runs this program on this computer' : 'Connects to'}</span>
+      <span className="connector-custom-target-label">
+        {added ? (program ? 'Already added; runs this program on this computer' : 'Already added; connects to') : program ? 'Runs this program on this computer' : 'Connects to'}
+      </span>
       <code className="mono connector-custom-text" data-testid={program ? 'connector-custom-command' : 'connector-custom-url'}>
         {showHidden(text)}
       </code>
@@ -381,7 +391,7 @@ export default function ConnectorDialog({
           </button>
         )}
         {variantsBlock}
-        {presetVariant && <CustomTarget variant={presetVariant} />}
+        {preset && entry ? <CustomTarget variant={entry.entry} added /> : presetVariant && <CustomTarget variant={presetVariant} />}
         {!tokenFirst && extras}
 
         {form && (
