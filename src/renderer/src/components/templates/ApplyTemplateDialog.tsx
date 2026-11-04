@@ -31,6 +31,10 @@ export default function ApplyTemplateDialog({
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
+    if (chosen === '' && list.length > 0) setChosen((groups.same[0] ?? groups.other[0])?.id ?? '')
+  }, [chosen, list.length, groups.same, groups.other])
+
+  useEffect(() => {
     if (useAppStore.getState().templates === null) void useAppStore.getState().loadTemplates()
   }, [])
 

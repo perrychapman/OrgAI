@@ -91,12 +91,12 @@ describe('kit secrets and last line', () => {
 })
 
 describe('kit export selection', () => {
-  it('maps to all, ids or absent', () => {
+  it('maps to the ticked ids or absent, never all', () => {
     const sel = emptySelection()
     sel.skills = new Set(['a', 'b'])
     sel.servers = new Set(['s1'])
     const inc = selectionToInclude(sel, { skills: 2, servers: 3, presets: 0, templates: 0 })
-    expect(inc).toEqual({ skills: 'all', mcpServers: ['s1'] })
+    expect(inc).toEqual({ skills: ['a', 'b'], mcpServers: ['s1'] })
   })
   it('states and count line', () => {
     expect(groupState(0, 3)).toBe('none')

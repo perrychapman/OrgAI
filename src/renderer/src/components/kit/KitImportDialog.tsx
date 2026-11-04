@@ -36,7 +36,11 @@ const ELEVATED_LABEL: Record<KitRoleElevatedTool, string> = {
 
 /** A digest refusal: main says the file no longer matches the preview. */
 function isStale(message: string): boolean {
-  return /changed|digest|stale|preview it again/i.test(message)
+  return /^The kit file changed since the preview\./.test(message)
+}
+
+function focusLater(selector: string): void {
+  requestAnimationFrame(() => requestAnimationFrame(() => document.querySelector<HTMLElement>(selector)?.focus()))
 }
 
 /** The kit preview: one row per item with a choice, then the apply (engagement-2 section 8). */
@@ -67,6 +71,7 @@ export default function KitImportDialog({
       setPreview(next)
       setChoices((c) => mergeChoices(c, next.items))
       setStale(false)
+      focusLater('[data-testid=kit-preview-wrap]')
     } catch (e) {
       setError(cleanIpcError(e))
     } finally {
@@ -101,8 +106,10 @@ export default function KitImportDialog({
       onApplied(result)
     } catch (e) {
       const message = cleanIpcError(e)
-      if (isStale(message)) setStale(true)
-      else setError(message)
+      if (isStale(message)) {
+        setStale(true)
+        focusLater('[data-testid=kit-preview-again]')
+      } else setError(message)
     } finally {
       setBusy(false)
     }
@@ -145,7 +152,7 @@ export default function KitImportDialog({
             />
           )}
           {error && (
-            <Banner tone="danger" title="Could not import the kit">
+            <Banner tone="danger" title="Could not import the kit" testId="kit-import-error">
               {error}
             </Banner>
           )}
@@ -159,7 +166,7 @@ export default function KitImportDialog({
           {preview.items.length === 0 ? (
             <p className="muted">This kit has nothing in it.</p>
           ) : (
-            <div className="kit-preview-wrap">
+            <div className="kit-preview-wrap" role="region" tabIndex={-1} aria-label="Items in this kit" data-testid="kit-preview-wrap">
               <table className="kit-preview" data-testid="kit-preview">
                 <caption className="sr-only">Items in this kit</caption>
                 <thead>
@@ -275,7 +282,7 @@ function ItemDetail({ item }: { item: KitPreviewItem }): ReactElement | null {
   if (item.kind === 'skill' && item.scripts && item.scripts.length > 0) {
     return (
       <p className="kit-warn" data-testid="kit-skill-scripts">
-        <TriangleAlert size={14} aria-hidden="true" /> Has scripts the skill may ask agents to run: {item.scripts.map((s) => clampLabel(showHidden(s), 60)).join(', ')}
+        <TriangleAlert size={14} aria-hidden="true" /> Has scripts the skill may ask agents to run: {item.scripts.map((s) => showHidden(s)).join(', ')}
       </p>
     )
   }
@@ -301,7 +308,7 @@ function ItemDetail({ item }: { item: KitPreviewItem }): ReactElement | null {
                       Contains hidden characters
                     </Badge>
                   )}
-                  {r.prompt ? <ClampText text={r.prompt} label={`${r.name} prompt`} /> : <p className="muted">Empty prompt.</p>}
+                  {r.prompt ? <ClampText text={r.prompt} label={`${clampLabel(showHidden(r.name), 60)} prompt`} /> : <p className="muted">Empty prompt.</p>}
                 </div>
               </details>
             </li>

@@ -143,6 +143,9 @@ export function EngagementPlanSection({ project }: { project: Project }): ReactE
       testId="engagement-plan-section"
       description="What the team works from. Agents read it at the start of every run; a run already going keeps the version it started with."
     >
+      <span role="status" aria-live="polite" className="plan-status" data-testid="engagement-plan-status">
+        {status}
+      </span>
       {loadError && (
         <Banner
           tone="danger"
@@ -163,15 +166,20 @@ export function EngagementPlanSection({ project }: { project: Project }): ReactE
             No plan yet. The setup interview writes one, or you can write it yourself.
           </p>
           <div className="plan-actions">
-            <Button variant="primary" disabled={setupLive || starting} testId="engagement-plan-interview" onClick={() => interview()}>
+            <Button
+              variant="primary"
+              inert={setupLive || starting}
+              ariaDescribedBy={setupLive ? busyId : undefined}
+              testId="engagement-plan-interview"
+              onClick={() => {
+                if (!setupLive && !starting) interview()
+              }}
+            >
               {starting ? 'Starting…' : 'Start the setup interview'}
             </Button>
             <Button testId="engagement-plan-write" onClick={startEdit}>
               Write it yourself
             </Button>
-            <span role="status" className="plan-status" data-testid="engagement-plan-status">
-              {status}
-            </span>
           </div>
         </SettingsCard>
       )}
@@ -186,15 +194,26 @@ export function EngagementPlanSection({ project }: { project: Project }): ReactE
             <Markdown text={info.text} />
           </div>
           <div className="plan-actions">
-            <Button disabled={setupLive} ariaDescribedBy={setupLive ? busyId : undefined} testId="engagement-plan-edit" onClick={startEdit}>
+            <Button
+              inert={setupLive}
+              ariaDescribedBy={setupLive ? busyId : undefined}
+              testId="engagement-plan-edit"
+              onClick={() => {
+                if (!setupLive) startEdit()
+              }}
+            >
               Edit
             </Button>
-            <Button disabled={setupLive || starting} testId="engagement-plan-review" onClick={() => interview(REVIEW_PROMPT)}>
+            <Button
+              inert={setupLive || starting}
+              ariaDescribedBy={setupLive ? busyId : undefined}
+              testId="engagement-plan-review"
+              onClick={() => {
+                if (!setupLive && !starting) interview(REVIEW_PROMPT)
+              }}
+            >
               {starting ? 'Starting…' : 'Review in the setup interview'}
             </Button>
-            <span role="status" className="plan-status" data-testid="engagement-plan-status">
-              {status}
-            </span>
           </div>
         </SettingsCard>
       )}

@@ -189,13 +189,12 @@ export function groupState(selected: number, total: number): 'all' | 'some' | 'n
   return selected >= total ? 'all' : 'some'
 }
 
-/** Ids per group -> main's `include`: 'all' when every item of a group is ticked, the ids when some are, absent when none. */
-export function selectionToInclude(sel: KitSelectionState, totals: Record<KitGroupId, number>): KitExportInput['include'] {
+/** Ids per group -> main's `include`: always the ticked ids (never 'all', so items added after the list loaded stay out), absent when none. */
+export function selectionToInclude(sel: KitSelectionState, _totals?: Record<KitGroupId, number>): KitExportInput['include'] {
   const include: KitExportInput['include'] = {}
   for (const g of KIT_GROUPS) {
-    const n = sel[g].size
-    if (n === 0) continue
-    const value: KitSelection = totals[g] > 0 && n >= totals[g] ? 'all' : [...sel[g]]
+    if (sel[g].size === 0) continue
+    const value: KitSelection = [...sel[g]]
     include[KIT_INCLUDE_KEY[g]] = value
   }
   return include
