@@ -1,4 +1,5 @@
-import type { ConnectionInfo, ProjectPathCheck, SetupKind } from '@shared/types'
+import type { ConnectionInfo, ProjectKind, ProjectPathCheck, SetupKind } from '@shared/types'
+import { PROJECT_REFERENCE_DIRECTORIES_MAX, isProjectKind } from '@shared/types'
 import { connectionWithAuth, defaultConnectionInfo } from './connectionLabel'
 
 export type PathTone = 'error' | 'warn' | 'ok' | 'info'
@@ -25,12 +26,18 @@ function fullPathExample(): string {
 }
 
 /** What to tell the user about the folder they typed, or null while there is nothing to say. */
-export function pathStatus(kind: SetupKind, path: string, check: ProjectPathCheck | null): PathStatus | null {
+export function pathStatus(kind: SetupKind, path: string, check: ProjectPathCheck | null, projectKind: ProjectKind = 'code'): PathStatus | null {
   const p = path.trim()
   if (!p) return null
   // A relative path would resolve against the app's own folder, so it is refused before anything is checked.
   if (!isFullPath(p)) return { tone: 'error', text: `Use a full path, for example ${fullPathExample()}`, blocking: true }
   if (!check) return null
+  if (projectKind === 'engagement') {
+    // The working folder must exist; nothing about git, emptiness or code is said.
+    if (!check.exists) return { tone: 'error', text: 'No folder at this path.', blocking: true }
+    if (!check.isDirectory) return { tone: 'error', text: 'This is a file, not a folder.', blocking: true }
+    return null
+  }
   // A folder that is not there never counts as empty, whatever else the check says.
   if (!check.exists && kind === 'existing') return { tone: 'error', text: 'No folder at this path.', blocking: true }
   if (check.exists && !check.isDirectory) return { tone: 'error', text: 'This is a file, not a folder.', blocking: true }
@@ -45,7 +52,11 @@ export function pathStatus(kind: SetupKind, path: string, check: ProjectPathChec
 }
 
 /** Why Create is disabled, or null when it can be submitted. */
-export function submitBlocker(input: { kind: SetupKind; name: string; path: string; brief: string; status: PathStatus | null }): string | null {
+export function submitBlocker(input: { kind: SetupKind; name: string; path: string; brief: string; status: PathStatus | null; projectKind?: ProjectKind }): string | null {
+  if (input.projectKind === 'engagement') {
+    if (!input.path.trim()) return 'Choose the working folder.'
+    return input.status?.blocking ? input.status.text : null
+  }
   if (!input.path.trim()) return input.kind === 'new' ? 'Choose a folder to create the project in.' : 'Choose the repository folder.'
   if (input.status?.blocking) return input.status.text
   if (input.kind === 'new') {
@@ -74,6 +85,52 @@ export function newProjectConnectionView(connections: readonly ConnectionInfo[] 
   if (!def) return { text: '', link: null }
   if (def.status.state !== 'connected') return { text: `Runs on ${connectionWithAuth(def)}, which is not connected.`, link: 'Change' }
   return { text: `Runs on ${connectionWithAuth(def)}.`, link: 'Change' }
+}
+
+export const LAST_PROJECT_KIND_KEY = 'orgai.lastProjectKind'
+
+type KindStorage = Pick<Storage, 'getItem' | 'setItem'>
+
+function defaultStorage(): KindStorage | null {
+  try {
+    return typeof localStorage === 'undefined' ? null : localStorage
+  } catch {
+    return null
+  }
+}
+
+/** The kind of the user's last created project, or null (first launch, junk, storage unavailable). */
+export function readLastProjectKind(storage: KindStorage | null = defaultStorage()): ProjectKind | null {
+  try {
+    const v = storage?.getItem(LAST_PROJECT_KIND_KEY)
+    return isProjectKind(v) ? v : null
+  } catch {
+    return null
+  }
+}
+
+export function writeLastProjectKind(kind: ProjectKind, storage: KindStorage | null = defaultStorage()): void {
+  try {
+    storage?.setItem(LAST_PROJECT_KIND_KEY, kind)
+  } catch {
+    /* remembering is a convenience */
+  }
+}
+
+function folderKey(path: string): string {
+  const p = path.trim().replace(/[\\/]+$/, '')
+  return /^[a-zA-Z]:|\\/.test(p) ? p.replace(/\//g, '\\').toLowerCase() : p
+}
+
+/** Adding one reference folder to the list: the new list, or the reason it was refused. */
+export function addReferenceFolder(list: readonly string[], input: string, workingFolder: string): { list: string[] } | { error: string } {
+  const p = input.trim()
+  if (!p) return { error: 'Enter a folder path or choose one with Browse.' }
+  if (!isFullPath(p)) return { error: `Use a full path, for example ${fullPathExample()}` }
+  if (workingFolder.trim() && folderKey(workingFolder) === folderKey(p)) return { error: 'This is the working folder. Pick a folder inside it or elsewhere.' }
+  if (list.some((x) => folderKey(x) === folderKey(p))) return { error: 'This folder is already in the list.' }
+  if (list.length >= PROJECT_REFERENCE_DIRECTORIES_MAX) return { error: `At most ${PROJECT_REFERENCE_DIRECTORIES_MAX} folders.` }
+  return { list: [...list, p] }
 }
 
 /** The name to create with: the typed one, else the folder's name. */
