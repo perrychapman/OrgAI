@@ -22,7 +22,7 @@ export default function DashboardView(): ReactElement {
   const loadAppInfo = useAppStore((s) => s.loadAppInfo)
   const loadAllHistory = useAppStore((s) => s.loadAllHistory)
   const newProjectRequest = useAppStore((s) => s.newProjectRequest)
-  const { lastSeen, markAllSeen } = useLastSeen()
+  const { lastSeen, clearedAt, markAllSeen } = useLastSeen()
   // A form parked by its connection link comes back open.
   const [formOpen, setFormOpen] = useState(() => hasParkedDraft())
   const [announce, setAnnounce] = useState<DashboardAnnouncement | null>(null)
@@ -62,12 +62,12 @@ export default function DashboardView(): ReactElement {
       </div>
       <div className="dashboard" data-testid="dashboard">
         <div className="dashboard-grid">
-          <HeroBand firstLaunch={empty} announce={announce} />
+          <HeroBand firstLaunch={empty} announce={announce} lastSeen={lastSeen} clearedAt={clearedAt} />
           {empty ? (
             <FirstLaunch mockAvailable={mockAvailable} />
           ) : (
             <>
-              <AttentionColumn lastSeen={lastSeen} onMarkAllSeen={markAllSeen} />
+              <AttentionColumn lastSeen={lastSeen} clearedAt={clearedAt} onMarkAllSeen={markAllSeen} />
               <ProjectsGrid onAnnounce={say} />
               <FactsCards />
             </>

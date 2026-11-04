@@ -229,7 +229,8 @@ interface AppState {
   /** Run whose composer should open on "Continue this run" (set by History's Continue). */
   continueIntent: string | null
   /** Open a finished run with its composer preset to Continue, and focus the composer. */
-  continueFromHistory(runId: string): Promise<void>
+  /** `projectId` selects that project first (the Dashboard's Continue); omitted inside a project. */
+  continueFromHistory(runId: string, projectId?: string): Promise<void>
   /** Show the blank New run page for the selected project. */
   openDraft(): void
   /** Close the New run page and drop its draft. */
@@ -975,7 +976,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ pendingDecisionFocus: null, pendingDecisionRequest: null })
   },
 
-  async continueFromHistory(runId) {
+  async continueFromHistory(runId, projectId) {
+    // From the Dashboard no project is selected yet: select it and load the run first (H1).
+    if (projectId && get().selectedProjectId !== projectId) await get().focusRun(projectId, runId)
     // Continue acts on the chain's newest member, which is the run the tab shows.
     const s = get()
     const newest = chainOf(summariesOf(s, s.selectedProjectId ?? ''), runId).at(-1)?.id ?? runId
@@ -1187,11 +1190,29 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   async removeProject(id) {
     await window.orgai.projects.remove(id)
-    set((s) => ({
-      projects: s.projects.filter((p) => p.id !== id),
-      selectedProjectId: s.selectedProjectId === id ? null : s.selectedProjectId,
-      view: s.selectedProjectId === id ? 'projects' : s.view
-    }))
+    set((s) => {
+      // H2: the project's runs go with it, so the Dashboard (attention column, hero, tiles, Cost card) stops counting them.
+      const gone = new Set<string>()
+      for (const r of Object.values(s.runs)) if (r.summary.projectId === id) gone.add(r.summary.id)
+      for (const h of s.historyByProject[id] ?? []) gone.add(h.id)
+      const { [id]: _hist, ...historyByProject } = s.historyByProject
+      const { [id]: _active, ...activeRunByProject } = s.activeRunByProject
+      const { [id]: _draft, ...draftPage } = s.draftPage
+      const runs = Object.fromEntries(Object.entries(s.runs).filter(([runId]) => !gone.has(runId)))
+      const dismissedRuns = Object.fromEntries(Object.entries(s.dismissedRuns).filter(([runId]) => !gone.has(runId))) as Record<string, true>
+      const wasSelected = s.selectedProjectId === id
+      return {
+        projects: s.projects.filter((p) => p.id !== id),
+        selectedProjectId: wasSelected ? null : s.selectedProjectId,
+        view: wasSelected ? 'projects' : s.view,
+        historyByProject,
+        activeRunByProject,
+        draftPage,
+        runs,
+        dismissedRuns,
+        ...(wasSelected ? { history: [] } : {})
+      }
+    })
   },
 
   history: [],

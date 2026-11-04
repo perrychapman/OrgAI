@@ -151,9 +151,11 @@ export function sinceLastSeen<T extends EndedRunLike>(
   summaries: readonly T[],
   lastSeen: number,
   now: number,
-  opts: { cap?: number } = {}
+  opts: { cap?: number; clearedAt?: number } = {}
 ): { items: EndedItem<T>[]; more: number } {
   const cap = Math.max(0, opts.cap ?? SINCE_LAST_SEEN_CAP)
+  // M1: a run cut while it waited on the user stays until "Mark all seen" (clearedAt), whatever the last-seen time says.
+  const closedWaitingSince = Math.min(lastSeen, opts.clearedAt ?? lastSeen)
   const all: EndedItem<T>[] = []
   for (const run of chainNewest(summaries)) {
     if (run.status !== 'finished' && run.status !== 'error') continue
@@ -161,7 +163,7 @@ export function sinceLastSeen<T extends EndedRunLike>(
     const kind = endedKind(run)
     if (!kind || kind === 'paused') continue
     const endedAt = run.endedAt ?? run.startedAt
-    if (endedAt <= lastSeen || endedAt < now - SINCE_WINDOW_MS) continue
+    if (endedAt <= (kind === 'closed-waiting' ? closedWaitingSince : lastSeen) || endedAt < now - SINCE_WINDOW_MS) continue
     all.push({ run, kind, endedAt })
   }
   all.sort((a, b) => b.endedAt - a.endedAt || b.run.startedAt - a.run.startedAt || a.run.id.localeCompare(b.run.id))
@@ -265,10 +267,13 @@ export function heroFigure(input: { decisions: number; running: number; paused: 
 const plural = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`
 
 /** The text parts of the hero subline before the cost: "3 projects", "2 runs open". Empty parts are left out. */
-export function heroSublineParts(input: { projects: number; openRuns: number }): string[] {
+export function heroSublineParts(input: { projects: number; openRuns: number; closedWaiting?: number; quiet?: boolean }): string[] {
   const parts: string[] = []
   if (input.projects > 0) parts.push(plural(input.projects, 'project', 'projects'))
   if (input.openRuns > 0) parts.push(`${plural(input.openRuns, 'run', 'runs')} open`)
+  // M2: "All quiet" must not hide runs OrgAI cut while they waited on the user.
+  const cut = Math.max(0, Math.floor(input.closedWaiting ?? 0))
+  if (input.quiet && cut > 0) parts.push(`${cut} ${cut === 1 ? 'was' : 'were'} waiting on you when OrgAI closed`)
   return parts
 }
 
