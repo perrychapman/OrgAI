@@ -226,7 +226,7 @@ describe('usage range and CSV export', () => {
     seed(store, 'oct', at(2026, 9, 3))
     const csv = m.usageCsv({ projectId: 'p1', range: { month: '2026-11' } })
     const lines = csv.split('\r\n')
-    expect(lines[0]).toBe(USAGE_CSV_COLUMNS.join(','))
+    expect(lines[0]).toBe('﻿' + USAGE_CSV_COLUMNS.join(','))
     expect(lines).toHaveLength(3)
     expect(lines[1]).toContain("'=HYPERLINK()")
     expect(lines[2]).toContain('"First, ""run"""')

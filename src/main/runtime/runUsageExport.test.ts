@@ -59,22 +59,30 @@ describe('buildUsageCsv', () => {
   it('writes the header and one CRLF-separated row per run', () => {
     const csv = buildUsageCsv(stats([row({ endedAt: Date.UTC(2026, 10, 3, 12, 5, 0), title: 'Fix it' }), row({ runId: 'r2' })]))
     const lines = csv.split('\r\n')
-    expect(lines[0]).toBe(USAGE_CSV_COLUMNS.join(','))
+    expect(lines[0]).toBe('﻿' + USAGE_CSV_COLUMNS.join(','))
     expect(lines).toHaveLength(3)
-    expect(lines[1]).toBe('2026-11-03T12:00:00.000Z,2026-11-03T12:05:00.000Z,work,finished,Fix it,0,10,20,30,40,0.5,')
+    expect(lines[1]).toBe('2026-11-03T12:00:00.000Z,2026-11-03T12:05:00.000Z,work,finished,Fix it,0,10,20,30,40,0.500000,')
     expect(lines[2]!.split(',')[1]).toBe('')
     expect(lines[2]!.split(',')[4]).toBe('Do it')
   })
 
   it('is only the header for no runs', () => {
-    expect(buildUsageCsv(stats([]))).toBe(USAGE_CSV_COLUMNS.join(','))
+    expect(buildUsageCsv(stats([]))).toBe('﻿' + USAGE_CSV_COLUMNS.join(','))
+  })
+
+  it('never uses exponent notation for small costs and keeps truncated rows as they are', () => {
+    const csv = buildUsageCsv({ ...stats([row({ usage: usage({ costUsd: 0.0000001 }) })]), truncated: true } as UsageStats)
+    const lines = csv.split('\r\n')
+    expect(lines).toHaveLength(2)
+    expect(lines[1]!.split(',')[10]).toBe('0.000000')
+    expect(csv).not.toMatch(/e-/)
   })
 
   it('leaves unknown cost blank (never 0) and marks partial cost', () => {
     const csv = buildUsageCsv(stats([row({ usage: usage({ costUsd: null }) }), row({ usage: usage({ costPartial: true }) })]))
     const [, unknown, partial] = csv.split('\r\n')
     expect(unknown!.split(',').slice(-2)).toEqual(['', ''])
-    expect(partial!.split(',').slice(-2)).toEqual(['0.5', 'true'])
+    expect(partial!.split(',').slice(-2)).toEqual(['0.500000', 'true'])
   })
 
   it('counts roles', () => {
@@ -92,6 +100,10 @@ describe('buildUsageCsv', () => {
 
   it('neutralises formula starts before quoting', () => {
     for (const lead of ['=', '+', '-', '@', '\t', '\r']) {
+      const csv = buildUsageCsv(stats([row({ title: `${lead}SUM(A1)` })]))
+      expect(csv, JSON.stringify(lead)).toContain(`'${lead}SUM(A1)`)
+    }
+    for (const lead of ['\n', ' =', ' +', '  @', ' -', '＝', '＋', '－', '＠', ' ＝']) {
       const csv = buildUsageCsv(stats([row({ title: `${lead}SUM(A1)` })]))
       expect(csv, JSON.stringify(lead)).toContain(`'${lead}SUM(A1)`)
     }

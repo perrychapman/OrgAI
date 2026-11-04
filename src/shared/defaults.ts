@@ -657,8 +657,8 @@ const SINGLE_EXCLUDED_TOOLS: readonly ToolName[] = ['SendMessage', 'ListAgents']
 /**
  * The project a single-agent work run (RunTeam 'single') works as: the stored project with its chart replaced by one
  * root role "Assistant" (slug QUICK_ASSISTANT_SLUG). Tools are the union of the project's roles' tools without
- * spawning and agent messaging tools (SPAWN_TOOL is never a catalog tool; canSpawn is false); MCP grants are every
- * enabled server, skill grants every enabled project skill. `model` is the unresolved AppSettings.quickRunModel
+ * spawning and agent messaging tools (SPAWN_TOOL is never a catalog tool; canSpawn is false); MCP grants are the
+ * enabled servers some role may use (`mcpServersForRole`), skill grants the enabled project skills some role is granted. `model` is the unresolved AppSettings.quickRunModel
  * ('everyday' when blank). Permission mode, reference and allowed folders, connection and everything else stay as the
  * project has them; run messaging and writer isolation are off. Pure.
  */
@@ -667,8 +667,12 @@ export function singleRunProject(project: Project, model?: string): Project {
   for (const role of project.roles) {
     for (const t of role.tools) if (!SINGLE_EXCLUDED_TOOLS.includes(t) && (t as string) !== SPAWN_TOOL && !tools.includes(t)) tools.push(t)
   }
-  const mcpServers = (project.mcpServers ?? []).filter((s) => s.enabled).map((s) => s.id)
-  const skills = (project.skills ?? []).filter((s) => s.enabled).map((s) => s.id)
+  const mcpServers: string[] = []
+  for (const role of project.roles) {
+    for (const s of mcpServersForRole(project, role)) if (!mcpServers.includes(s.id)) mcpServers.push(s.id)
+  }
+  const grantedSkills = new Set(project.roles.flatMap((r) => r.skills ?? []))
+  const skills = (project.skills ?? []).filter((s) => s.enabled && grantedSkills.has(s.id)).map((s) => s.id)
   const assistant: Role = {
     id: newId('role'),
     slug: QUICK_ASSISTANT_SLUG,
