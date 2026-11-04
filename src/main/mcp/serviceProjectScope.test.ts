@@ -92,7 +92,7 @@ afterEach(() => {
 describe('perProjectSecrets: where values are read', () => {
   it('a flagged link uses only this project\'s values, never the entry\'s', () => {
     svc.libraryUpsert(vendor())
-    svc.librarySetSecret({ libraryId: 'mcpl_s', kind: 'env', name: 'VENDOR_KEY', value: 'ENTRY' })
+    secrets.set(mcpLibrarySecretKey('mcpl_s', 'env', 'VENDOR_KEY'), 'ENTRY')
     const l = link(pid, 'mcpl_s')
     // The entry's value is set but the link has none: it does not start and nothing falls back.
     expect(svc.enabledServers(projects.get(pid)!)).toEqual([])
@@ -120,9 +120,9 @@ describe('perProjectSecrets: where values are read', () => {
 
   it('info reports the scope and has-flags from the project scope', () => {
     svc.libraryUpsert(vendor())
-    svc.librarySetSecret({ libraryId: 'mcpl_s', kind: 'env', name: 'VENDOR_KEY', value: 'ENTRY' })
+    secrets.set(mcpLibrarySecretKey('mcpl_s', 'env', 'VENDOR_KEY'), 'ENTRY')
     const l = link(pid, 'mcpl_s')
-    expect(svc.list(pid)[0]).toMatchObject({ secretScope: 'project', envSet: [], missingSecrets: ['VENDOR_KEY'] })
+    expect(svc.list(pid)[0]).toMatchObject({ secretScope: 'project', envSet: [],missingSecrets: ['VENDOR_KEY'] })
     svc.setSecret({ projectId: pid, serverId: l.id, kind: 'env', name: 'VENDOR_KEY', value: 'PROJ' })
     expect(svc.list(pid)[0]).toMatchObject({ secretScope: 'project', envSet: ['VENDOR_KEY'], missingSecrets: [] })
     expect(JSON.stringify(svc.list(pid))).not.toContain('PROJ')
@@ -144,8 +144,12 @@ describe('perProjectSecrets: where values are read', () => {
         { projectId: pid2, projectName: 'client-b', serverId: b.id, missingSecrets: ['VENDOR_KEY'] }
       ])
     )
+    // an upsert that omits the flag keeps it; false clears it
     svc.libraryUpsert(vendor({ perProjectSecrets: undefined }))
+    expect(svc.libraryList()[0].projectSecrets).toHaveLength(2)
+    svc.libraryUpsert(vendor({ perProjectSecrets: false }))
     expect(svc.libraryList()[0].projectSecrets).toBeUndefined()
+    expect(library.get('mcpl_s')).not.toHaveProperty('perProjectSecrets')
   })
 
   it('setSecret keeps its slot, kind and single-line checks for a flagged link', () => {
@@ -162,17 +166,91 @@ describe('perProjectSecrets: where values are read', () => {
     expect(svc.resolve(pid, l).headers['X-Vendor-Key']).toBeUndefined()
   })
 
-  it('toggling the flag keeps both stores; only the active scope is read', () => {
+  it('turning the flag off keeps the project values; turning it on deletes the entry\'s own env and header values', () => {
     svc.libraryUpsert(vendor())
-    svc.librarySetSecret({ libraryId: 'mcpl_s', kind: 'env', name: 'VENDOR_KEY', value: 'ENTRY' })
     const l = link(pid, 'mcpl_s')
     svc.setSecret({ projectId: pid, serverId: l.id, kind: 'env', name: 'VENDOR_KEY', value: 'PROJ' })
-    svc.libraryUpsert(vendor({ perProjectSecrets: undefined }))
-    expect(svc.resolve(pid, l).env.VENDOR_KEY).toBe('ENTRY')
+    svc.libraryUpsert(vendor({ perProjectSecrets: false }))
     expect(secrets.has(mcpSecretKey(pid, l.id, 'env', 'VENDOR_KEY'))).toBe(true)
+    svc.librarySetSecret({ libraryId: 'mcpl_s', kind: 'env', name: 'VENDOR_KEY', value: 'ENTRY' })
+    expect(svc.resolve(pid, l).env.VENDOR_KEY).toBe('ENTRY')
     svc.libraryUpsert(vendor())
     expect(svc.resolve(pid, l).env.VENDOR_KEY).toBe('PROJ')
-    expect(secrets.has(mcpLibrarySecretKey('mcpl_s', 'env', 'VENDOR_KEY'))).toBe(true)
+    expect(secrets.has(mcpLibrarySecretKey('mcpl_s', 'env', 'VENDOR_KEY'))).toBe(false)
+  })
+
+  it('an upsert without the per-project fields keeps both; false and [] clear them', () => {
+    svc.libraryUpsert(vendor())
+    svc.libraryUpsert(vendor({ perProjectSecrets: undefined, perProjectEnv: undefined, description: 'edited' }))
+    expect(library.get('mcpl_s')).toMatchObject({ description: 'edited', perProjectSecrets: true, perProjectEnv: ['BASE_URL'] })
+    svc.libraryUpsert(vendor({ perProjectSecrets: undefined, perProjectEnv: [] }))
+    expect(library.get('mcpl_s')).toMatchObject({ perProjectSecrets: true })
+    expect(library.get('mcpl_s')).not.toHaveProperty('perProjectEnv')
+    svc.libraryUpsert(vendor({ perProjectSecrets: false, perProjectEnv: undefined }))
+    expect(library.get('mcpl_s')).not.toHaveProperty('perProjectSecrets')
+    expect(JSON.stringify(library.get('mcpl_s'))).not.toContain('false')
+  })
+
+  it('a flagged entry refuses library secrets and reports none of its own', () => {
+    svc.libraryUpsert(vendor())
+    expect(() => svc.librarySetSecret({ libraryId: 'mcpl_s', kind: 'env', name: 'VENDOR_KEY', value: 'x' })).toThrow(/keeps its secrets per project/)
+    secrets.set(mcpLibrarySecretKey('mcpl_s', 'env', 'VENDOR_KEY'), 'LEGACY')
+    expect(svc.libraryList()[0]).toMatchObject({ envSet: [], headersSet: [], missingSecrets: [] })
+  })
+
+  it('a library session skips the secret slots of a flagged entry and does not count them as waiting', () => {
+    svc.libraryUpsert(vendor())
+    const slot = { serverId: 'mcpl_s', kind: 'env' as const, name: 'VENDOR_KEY' }
+    const payload = { scope: 'library', upsert: [{ ...vendor(), enabled: true }], secrets: [slot], rationale: 'r' } as McpServersProposalPayload
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    expect(svc.storeProposalSecrets(null, payload, { [proposalSecretKey(slot)]: 'NOPE' })).toEqual([])
+    expect(secrets.has(mcpLibrarySecretKey('mcpl_s', 'env', 'VENDOR_KEY'))).toBe(false)
+    expect(warn).toHaveBeenCalled()
+    for (const call of warn.mock.calls) expect(JSON.stringify(call)).not.toMatch(/VENDOR_KEY|NOPE|vendor/)
+  })
+
+  it('libraryTest on a flagged entry probes without secret values and explains a failure', async () => {
+    svc.libraryUpsert(remote({ url: 'http://127.0.0.1:1/mcp' }))
+    secrets.set(mcpLibrarySecretKey('mcpl_h', 'header', 'X-Vendor-Key'), 'LEGACY')
+    const seen: string[] = []
+    const fetchImpl = (async (_u: unknown, init?: { headers?: Record<string, string> }) => {
+      seen.push(JSON.stringify(init?.headers ?? {}))
+      throw new Error('down')
+    }) as unknown as typeof fetch
+    const s2 = new McpService({ projects, secrets, library, now: () => NOW, openExternal: async () => {}, fetch: fetchImpl })
+    const r = await s2.libraryTest({ libraryId: 'mcpl_h' })
+    expect(r.ok).toBe(false)
+    expect(r.error).toContain('keeps its secrets per project: test it from a project.')
+    expect(seen.join('')).not.toContain('LEGACY')
+  })
+
+  it('a removed flagged link\'s values are not inherited by a new server with the same id and slot', () => {
+    svc.libraryUpsert(vendor())
+    const l = link(pid, 'mcpl_s')
+    svc.setSecret({ projectId: pid, serverId: l.id, kind: 'env', name: 'VENDOR_KEY', value: 'OLD' })
+    const reused = projectOnly({ id: l.id, name: 'reused', secretEnv: ['VENDOR_KEY'] })
+    const payload = { scope: 'project', remove: [l.id], upsert: [{ ...reused, projectOnly: true }], rationale: 'r' } as McpServersProposalPayload
+    svc.applyProposal(pid, payload)
+    expect(projectKeys(pid, l.id)).toEqual([])
+    expect(svc.storeProposalSecrets(pid, payload, undefined)).toEqual(['reused'])
+  })
+
+  it('a removal alone deletes a linked server\'s project values', () => {
+    svc.libraryUpsert(vendor())
+    const l = link(pid, 'mcpl_s')
+    svc.setSecret({ projectId: pid, serverId: l.id, kind: 'env', name: 'VENDOR_KEY', value: 'OLD' })
+    svc.applyProposal(pid, { scope: 'project', remove: [l.id], upsert: [], rationale: 'r' } as McpServersProposalPayload)
+    expect(projectKeys(pid, l.id)).toEqual([])
+  })
+
+  it('persistInstall never inherits values left under the id', () => {
+    secrets.set(mcpSecretKey(pid, 'mcp-inst2', 'env', 'OWN_KEY'), 'STALE')
+    svc.persistInstall(pid, projectOnly({ id: 'mcp-inst2', name: 'inst2' }))
+    expect(secrets.has(mcpSecretKey(pid, 'mcp-inst2', 'env', 'OWN_KEY'))).toBe(false)
+    expect(svc.storeProposalSecrets(pid, { scope: 'project', upsert: [projectOnly({ id: 'mcp-inst2', name: 'inst2' })], rationale: 'r' } as McpServersProposalPayload, undefined)).toEqual(['inst2'])
+    secrets.set(mcpSecretKey(pid, 'mcp-inst3', 'env', 'OWN_KEY'), 'STALE')
+    svc.persistInstall(pid, projectOnly({ id: 'mcp-inst3', name: 'inst3' }), {}, 'library')
+    expect(secrets.has(mcpSecretKey(pid, 'mcp-inst3', 'env', 'OWN_KEY'))).toBe(false)
   })
 
   it('stores a proposal card secret for a flagged link in the project scope', () => {
@@ -240,7 +318,7 @@ describe('overrides', () => {
 
   it('resolve merges the overrides over the entry\'s env, after plain values and before secrets', () => {
     svc.libraryUpsert(vendor())
-    svc.librarySetSecret({ libraryId: 'mcpl_s', kind: 'env', name: 'VENDOR_KEY', value: 'ENTRY' })
+    secrets.set(mcpLibrarySecretKey('mcpl_s', 'env', 'VENDOR_KEY'), 'ENTRY')
     const l = link(pid, 'mcpl_s')
     svc.setSecret({ projectId: pid, serverId: l.id, kind: 'env', name: 'VENDOR_KEY', value: 'PROJ' })
     svc.upsert({ projectId: pid, spec: { ...l, envOverrides: { BASE_URL: 'https://tenant.test' } } })
@@ -308,7 +386,7 @@ describe('entry rules', () => {
     expect(library.get('mcpl_new')).not.toHaveProperty('perProjectSecrets')
     expect(library.get('mcpl_new')).not.toHaveProperty('perProjectEnv')
     // the user clears them
-    svc.libraryUpsert(vendor({ perProjectSecrets: undefined, perProjectEnv: undefined }))
+    svc.libraryUpsert(vendor({ perProjectSecrets: false, perProjectEnv: [] }))
     expect(library.get('mcpl_s')).not.toHaveProperty('perProjectSecrets')
     expect(library.get('mcpl_s')).not.toHaveProperty('perProjectEnv')
   })
@@ -387,7 +465,7 @@ describe('retarget and cleanup', () => {
 
   it('remove() of a link deletes its project prefix and keeps the entry\'s values and tokens', () => {
     const { a } = seed()
-    svc.libraryUpsert(vendor({ perProjectSecrets: undefined }))
+    svc.libraryUpsert(vendor({ perProjectSecrets: false }))
     svc.librarySetSecret({ libraryId: 'mcpl_s', kind: 'env', name: 'VENDOR_KEY', value: 'ENTRY' })
     secrets.set(mcpLibraryOAuthKey('mcpl_s', 'accessToken'), 'AT')
     svc.remove({ projectId: pid, serverId: a.id })
@@ -408,7 +486,7 @@ describe('retarget and cleanup', () => {
 describe('copyFromLibrary', () => {
   it('copies a flagged link: overrides baked, own values moved, grants and enabled kept, entry values not copied', () => {
     svc.libraryUpsert(vendor())
-    svc.librarySetSecret({ libraryId: 'mcpl_s', kind: 'env', name: 'VENDOR_KEY', value: 'ENTRY' })
+    secrets.set(mcpLibrarySecretKey('mcpl_s', 'env', 'VENDOR_KEY'), 'ENTRY')
     secrets.set(mcpLibraryOAuthKey('mcpl_s', 'accessToken'), 'AT')
     const slug = projects.get(pid)!.roles[0].slug
     const l = link(pid, 'mcpl_s', { roles: [slug] })

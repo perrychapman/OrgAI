@@ -84,6 +84,25 @@ function noProjectScope<T extends object>(x: T): T {
   return rest as T
 }
 
+/**
+ * A user upsert's per-project fields against the stored entry: perProjectSecrets true sets, false clears, absent keeps;
+ * perProjectEnv an array replaces ([] clears, no empty list is stored), absent keeps. Only a literal true is stored.
+ */
+function mergePerProject(
+  prev: McpLibraryEntry | undefined,
+  incoming: McpLibraryEntry
+): { perProjectSecrets?: true; perProjectEnv?: string[] } {
+  const out: { perProjectSecrets?: true; perProjectEnv?: string[] } = {}
+  const ps = incoming.perProjectSecrets
+  if (ps === undefined ? prev?.perProjectSecrets === true : ps === true) out.perProjectSecrets = true
+  const pe: unknown = incoming.perProjectEnv
+  if (pe === undefined) {
+    if (prev?.perProjectEnv?.length) out.perProjectEnv = [...prev.perProjectEnv]
+  } else if (!Array.isArray(pe)) out.perProjectEnv = pe as string[]
+  else if (pe.length) out.perProjectEnv = pe as string[]
+  return out
+}
+
 /** Overrides merged over a base map; header names replace an existing header of any letter case. */
 function mergeOverrides(base: Record<string, string> | undefined, overrides: Record<string, string>, headers: boolean): Record<string, string> {
   const out: Record<string, string> = { ...(base ?? {}) }
@@ -345,9 +364,11 @@ export class McpService {
 
   private libraryInfo(entry: McpLibraryEntry, all: Project[]): McpLibraryInfo {
     const owner: McpSecretOwner = { libraryId: entry.id }
-    const envSet = (entry.secretEnv ?? []).filter((n) => this.secrets.has(mcpOwnerSecretKey(owner, 'env', n)))
-    const headersSet = (entry.secretHeaders ?? []).filter((n) => this.secrets.has(mcpOwnerSecretKey(owner, 'header', n)))
-    const missingSecrets = [...(entry.secretEnv ?? []).filter((n) => !envSet.includes(n)), ...(entry.secretHeaders ?? []).filter((n) => !headersSet.includes(n))]
+    // A per-project entry holds no env / header values of its own (projectSecrets carries the per-project state).
+    const own = entry.perProjectSecrets !== true
+    const envSet = own ? (entry.secretEnv ?? []).filter((n) => this.secrets.has(mcpOwnerSecretKey(owner, 'env', n))) : []
+    const headersSet = own ? (entry.secretHeaders ?? []).filter((n) => this.secrets.has(mcpOwnerSecretKey(owner, 'header', n))) : []
+    const missingSecrets = own ? [...(entry.secretEnv ?? []).filter((n) => !envSet.includes(n)), ...(entry.secretHeaders ?? []).filter((n) => !headersSet.includes(n))] : []
     const projectSecrets =
       entry.perProjectSecrets === true
         ? all.flatMap((p) =>
@@ -392,8 +413,13 @@ export class McpService {
     // Link-side overrides never belong on an entry.
     const { envOverrides: _eo, headerOverrides: _ho, ...incomingEntry } = incoming as McpLibraryEntry & { envOverrides?: unknown; headerOverrides?: unknown }
     const entry: McpLibraryEntry = withOAuth({ ...noConnector(incomingEntry), source: normalSource(incoming.source) }, undefined)
-    if (entry.perProjectSecrets === undefined) delete entry.perProjectSecrets
-    if (entry.perProjectEnv === undefined) delete entry.perProjectEnv
+    if (opts.applied !== true) {
+      const merged = mergePerProject(prev, entry)
+      if (merged.perProjectSecrets === true) entry.perProjectSecrets = true
+      else delete entry.perProjectSecrets
+      if (merged.perProjectEnv) entry.perProjectEnv = merged.perProjectEnv
+      else delete entry.perProjectEnv
+    }
     if (opts.applied === true) {
       // An approved proposal or install never sets or clears the per-project fields: the stored entry's stay.
       delete entry.perProjectSecrets
@@ -417,6 +443,11 @@ export class McpService {
     if (prev?.buildDigest && sameTarget(prev, entry)) entry.buildDigest = prev.buildDigest
     else if (opts.buildDigest) entry.buildDigest = opts.buildDigest
     const owner: McpSecretOwner = { libraryId: entry.id }
+    // Turning per-project secrets on: the entry's own env / header values go (OAuth tokens stay).
+    if (prev && entry.perProjectSecrets === true && prev.perProjectSecrets !== true) {
+      this.secrets.deletePrefix(`${mcpOwnerPrefix(owner)}env:`)
+      this.secrets.deletePrefix(`${mcpOwnerPrefix(owner)}header:`)
+    }
     if (prev) {
       this.retarget(owner, prev, entry, opts.applied === true)
       // The same retarget rule for every project's own values (perProjectSecrets links): an approved launch change
@@ -463,8 +494,17 @@ export class McpService {
   libraryUpsert(entry: McpLibraryEntry): McpLibraryInfo[] {
     const lib = this.lib()
     const others = lib.list().filter((e) => e.id !== entry?.id)
-    assertValidLibraryEntry(entry, others)
-    const prev = lib.get(entry.id)
+    const prev = entry && typeof entry === 'object' ? lib.get(entry.id) : undefined
+    // Validate the merged value: an omitted per-project field keeps the stored one (false clears, [] clears).
+    if (entry && typeof entry === 'object') {
+      const merged = mergePerProject(prev, entry)
+      const next: McpLibraryEntry = { ...entry }
+      if (merged.perProjectSecrets === true) next.perProjectSecrets = true
+      else delete next.perProjectSecrets
+      if (merged.perProjectEnv) next.perProjectEnv = merged.perProjectEnv
+      else delete next.perProjectEnv
+      assertValidLibraryEntry(next, others)
+    } else assertValidLibraryEntry(entry, others)
     if (prev?.connectorId && !sameDefinition(prev, entry)) {
       throw new Error(`${prev.name} is a connector: its address, headers and secret slots come from the preset. Remove it and add a custom server to change them.`)
     }
@@ -506,6 +546,7 @@ export class McpService {
     const entry = this.lib().get(input.libraryId)
     if (!entry) throw new Error('Library entry not found')
     if (!isSecretKind(input?.kind)) throw new Error('Unknown secret kind.')
+    if (entry.perProjectSecrets === true) throw new Error(`${entry.name} keeps its secrets per project. Set them in each project's MCP servers.`)
     const slots = input.kind === 'env' ? entry.secretEnv : entry.secretHeaders
     if (!slots?.includes(input.name)) throw new Error(`"${input.name}" is not a secret ${input.kind === 'env' ? 'environment variable' : 'header'} of ${entry.name}.`)
     if (typeof input.value === 'string' && input.kind === 'header' && /[\r\n]/.test(input.value)) throw new Error('A header value must be a single line.')
@@ -520,6 +561,12 @@ export class McpService {
     const mocked = this.mockTest(entry)
     if (mocked) return mocked
     await this.refreshIfNeeded({ libraryId: entry.id })
+    if (entry.perProjectSecrets === true) {
+      // The entry holds no env / header values of its own: probe without secret slots, never with stored values.
+      const { secretEnv: _se, secretHeaders: _sh, ...bare } = entry
+      const r = await testServer(this.resolveSpec({ libraryId: entry.id }, { ...bare, enabled: true }), 20_000, this.fetchImpl)
+      return r.ok ? r : { ...r, error: `${r.error ?? 'The server did not answer.'} (This server keeps its secrets per project: test it from a project.)` }
+    }
     return testServer(this.resolveSpec({ libraryId: entry.id }, { ...entry, enabled: true }), 20_000, this.fetchImpl)
   }
 
@@ -661,6 +708,7 @@ export class McpService {
       addedAt: new Date(this.now()).toISOString()
     })
     assertValidSpec(link, existing)
+    this.removeServerSecrets(project.id, link.id)
     return this.result(this.projects.save({ ...project, mcpServers: [...existing, link] }))
   }
 
@@ -745,6 +793,7 @@ export class McpService {
     assertValidSpec(copy, existing.filter((s) => s.id !== stored.id))
     const from = mcpSecretPrefix(project.id, stored.id)
     const to = mcpSecretPrefix(project.id, copy.id)
+    this.removeServerSecrets(project.id, copy.id)
     try {
       const source: McpSecretOwner | null = entry.perProjectSecrets === true ? { projectId: project.id, serverId: stored.id } : input.copySecrets === true ? { libraryId: entry.id } : null
       if (source) {
@@ -1442,6 +1491,8 @@ export class McpService {
     assertValidSpec(spec, existing)
     // OAuth configs are written by the main process only, after an authorization; an install never brings one.
     const saved: McpServerSpec = withOAuth({ ...noProjectScope(noConnector(spec)), source: spec.source === 'registry' ? 'registry' : 'agent' }, undefined)
+    // A new server never inherits values left under its id (a removed perProjectSecrets link's, for one).
+    this.removeServerSecrets(projectId, saved.id)
     if (scope === 'library') {
       const lib = this.lib()
       const entry = libraryEntryFromSpec(saved, newId('mcpl'))
@@ -1513,6 +1564,11 @@ export class McpService {
       const spec = specOf(slot.serverId)
       const slots = spec ? (slot.kind === 'env' ? spec.secretEnv : spec.secretHeaders) : undefined
       if (!spec || !slots?.includes(slot.name)) continue
+      if (!project && this.library?.get(spec.id)?.perProjectSecrets === true) {
+        // A per-project entry holds no values of its own: each project sets them. Names and values stay out of the line.
+        console.warn('A library proposal secret was skipped: that entry keeps its secrets per project.')
+        continue
+      }
       this.secrets.set(mcpOwnerSecretKey(ownerFor(spec), slot.kind, slot.name), v)
     }
     if (projectId === null) this.notifyLibrary()
@@ -1520,6 +1576,7 @@ export class McpService {
     for (const raw of Array.isArray(p.upsert) ? p.upsert : []) {
       const spec = typeof raw?.id === 'string' ? specOf(raw.id) : undefined
       if (!spec || !spec.enabled) continue
+      if (!project && this.library?.get(spec.id)?.perProjectSecrets === true) continue
       const owner = ownerFor(spec)
       const unset = [
         ...(spec.secretEnv ?? []).filter((n) => !this.secrets.get(mcpOwnerSecretKey(owner, 'env', n))),
@@ -1696,6 +1753,10 @@ export class McpService {
       put(link)
     }
     if (problems.length) throw new Error(`Invalid MCP server: ${problems.join(' ')}`)
+    // A server id the project did not hold before (new project-only servers, new links, a removed id added back) starts
+    // with no stored values: nothing left under that id's prefix may be inherited.
+    const heldBefore = new Set((project.mcpServers ?? []).filter((s) => !removeIds.has(s.id)).map((s) => s.id))
+    for (const s of servers) if (!heldBefore.has(s.id)) this.removeServerSecrets(project.id, s.id)
     for (const entry of newEntries) lib?.save(entry)
     // A roles list on a server is the whole answer to "who can use it" (review M2): an explicit Role.mcpServers grant of
     // a role left off the list goes too, so an ungrant is never reported done while the grant still lets it through.
@@ -1708,7 +1769,8 @@ export class McpService {
     const roles = project.roles.map((r) => (r.mcpServers?.some((id) => !keeps(r, id)) ? { ...r, mcpServers: r.mcpServers.filter((id) => keeps(r, id)) } : r))
     const saved = this.projects.save({ ...project, roles, mcpServers: servers })
     for (const [before, after] of redefined) this.retarget({ projectId: project.id, serverId: before.id }, before, after, true)
-    for (const s of removed) if (!s.libraryId) this.removeServerSecrets(project.id, s.id)
+    // Linked or not: a removed server's own project values (a perProjectSecrets link keeps them there) go with it.
+    for (const s of removed) this.removeServerSecrets(project.id, s.id)
     if (newEntries.length) this.notifyLibrary()
     return saved
   }
