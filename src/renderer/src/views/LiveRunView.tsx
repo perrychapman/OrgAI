@@ -20,6 +20,7 @@ import { chainCanvas, earlierLabel, isEarlierKey } from '../lib/chainView'
 import { foldFinished, groupParentOf, isSettledAt, nextSettleAt, settleTimerDelay } from '../lib/foldFinished'
 import { mergeChainFeed } from '../lib/transcriptRows'
 import { runName } from '../lib/runLabels'
+import { registerMenuHandler, runMenuAction } from '../lib/menuRegistry'
 import ChatStartPage from '../components/assistants/ChatStartPage'
 import McpAssistantStartPage from '../components/assistants/McpAssistantStartPage'
 import SkillAssistantStartPage from '../components/assistants/SkillAssistantStartPage'
@@ -86,6 +87,18 @@ function useHtmlAttr(name: string, fallback: string): string {
 function fitOpts(o: { duration: number }): FitViewOptions {
   const h = document.querySelector('.frame-stage')?.clientHeight ?? 1000
   return { padding: 0.25, maxZoom: 1, duration: o.duration, ...(h < 300 ? { minZoom: 0.8 } : {}) }
+}
+
+/** The canvas controls, shared by the toolbar buttons and the application menu handlers. */
+const ZOOM_MS = 150
+function zoomInCanvas(rf: { zoomIn: (o?: { duration: number }) => unknown }, reduced: boolean): void {
+  void rf.zoomIn({ duration: reduced ? 0 : ZOOM_MS })
+}
+function zoomOutCanvas(rf: { zoomOut: (o?: { duration: number }) => unknown }, reduced: boolean): void {
+  void rf.zoomOut({ duration: reduced ? 0 : ZOOM_MS })
+}
+function fitCanvas(rf: { fitView: (o?: FitViewOptions) => unknown }, reduced: boolean): void {
+  void rf.fitView(fitOpts({ duration: reduced ? 0 : ZOOM_MS }))
 }
 
 /** True when the OS or the app asks for reduced motion (animated edges stay still). */
@@ -643,11 +656,36 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
       const jump = (e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey && e.key === '.') || (e.altKey && !e.ctrlKey && !e.shiftKey && !e.metaKey && e.key.toLowerCase() === 'd')
       if (!jump || !bodyRef.current?.querySelector('.frame-tray')) return
       e.preventDefault()
-      focusDecision()
+      runMenuAction('go-to-decision')
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [focusDecision])
+  }, [])
+
+  // Application menu handlers (docs/design/ux-review-menu.md H2): the canvas actions only this view can run. The refs
+  // carry the latest state so the registration happens once per mounted run view, not on every render.
+  const menuRef = useRef({ conversation: false, hasDecision: false, toggleCollapse: () => {}, toggleLayout: () => {} })
+  useEffect(() => {
+    const NO_CANVAS = 'Open a run on Live to use the canvas.'
+    const onCanvas = (run: () => void): string | void => {
+      const m = menuRef.current
+      if (m.conversation || stageHidden()) return NO_CANVAS
+      run()
+    }
+    const offs = [
+      registerMenuHandler('canvas-zoom-in', () => onCanvas(() => zoomInCanvas({ zoomIn }, reducedRef.current))),
+      registerMenuHandler('canvas-zoom-out', () => onCanvas(() => zoomOutCanvas({ zoomOut }, reducedRef.current))),
+      registerMenuHandler('canvas-fit', () => onCanvas(() => fitCanvas({ fitView }, reducedRef.current))),
+      registerMenuHandler('toggle-hide-finished', () => onCanvas(() => menuRef.current.toggleCollapse())),
+      registerMenuHandler('toggle-conversation', () => menuRef.current.toggleLayout()),
+      registerMenuHandler('go-to-decision', () => {
+        if (!menuRef.current.hasDecision || !bodyRef.current?.querySelector('.frame-tray')) return 'No decision is waiting on this run.'
+        focusDecision()
+      })
+    ]
+    return () => offs.forEach((off) => off())
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [zoomIn, zoomOut, fitView, focusDecision])
 
   // Re-fit when the canvas container itself changes size (window resize, side panel, decisions region).
   const canvasRef = useRef<HTMLDivElement>(null)
@@ -828,6 +866,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   // otherwise read a whole proposal body aloud.
   const seenDecisions = useRef<{ runId: string; keys: Set<string> } | null>(null)
   const decisionKeys = decisionItems.map((d) => d.key).join('|')
+  menuRef.current = { conversation, hasDecision: decisionItems.length > 0, toggleCollapse, toggleLayout: () => setRunLayout(runId, conversation ? 'canvas' : 'conversation') }
   useEffect(() => {
     const prior = seenDecisions.current
     const now = new Set(decisionItems.filter((d) => !isRecord(d.key)).map((d) => d.key))
@@ -1057,9 +1096,9 @@ function CanvasTools(): ReactElement {
   return (
     <span className="canvas-tools">
       <span className="zoom-group" role="group" aria-label="Canvas zoom">
-        <IconButton icon={ZoomOut} label="Zoom out" size="sm" onClick={() => void zoomOut({ duration: reduced ? 0 : 150 })} />
-        <IconButton icon={ZoomIn} label="Zoom in" size="sm" onClick={() => void zoomIn({ duration: reduced ? 0 : 150 })} />
-        <IconButton icon={Maximize} label="Fit to view" size="sm" onClick={() => stageShown() && void fitView(fitOpts({ duration: reduced ? 0 : 150 }))} />
+        <IconButton icon={ZoomOut} label="Zoom out" size="sm" onClick={() => zoomOutCanvas({ zoomOut }, reduced)} />
+        <IconButton icon={ZoomIn} label="Zoom in" size="sm" onClick={() => zoomInCanvas({ zoomIn }, reduced)} />
+        <IconButton icon={Maximize} label="Fit to view" size="sm" onClick={() => stageShown() && fitCanvas({ fitView }, reduced)} />
       </span>
       <Popover
         label="Canvas legend"
