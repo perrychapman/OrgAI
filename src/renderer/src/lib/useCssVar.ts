@@ -14,7 +14,8 @@ export function useCssVar(name: string): string {
     const update = (): void => setValue(read(name))
     update()
     const observer = new MutationObserver(update)
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'class'] })
+    // Canvas backdrops re-point canvas tokens per data-canvas-pattern (docs/design/canvas-themes.md).
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'class', 'data-canvas-pattern', 'data-canvas-node-style', 'data-canvas-layout'] })
     const media = window.matchMedia('(prefers-color-scheme: dark)')
     media.addEventListener('change', update)
     return () => {

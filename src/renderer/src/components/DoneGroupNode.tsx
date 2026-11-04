@@ -1,7 +1,8 @@
 import type { ReactElement } from 'react'
 import { memo } from 'react'
 import { ChevronDown } from 'lucide-react'
-import { Handle, Position, type Node, type NodeProps } from '@xyflow/react'
+import { Handle, type Position, type Node, type NodeProps } from '@xyflow/react'
+import { handlesFor, useCanvasOptions } from '../lib/canvas'
 import { MSG_IN, MSG_OUT } from './AgentNode'
 import type { AgentInstance } from '@shared/types'
 import { IconButton } from './ui/IconButton'
@@ -37,21 +38,27 @@ function DoneGroupNodeView({ data, selected }: NodeProps<DoneGroupFlowNode>): Re
     .map(agentLabel)
     .join(', ')
 
+  const { layout, nodeStyle } = useCanvasOptions()
+  const sides = handlesFor(layout)
+  const compact = nodeStyle === 'compact'
+  const tip = names + (agents.length > 4 ? ', …' : '') + (compact && conflicts > 0 ? ` · ${conflicts} unmerged` : '')
+
   return (
     <div
       data-testid="done-group"
       data-count={agents.length}
-      className={`done-group ${earlier ? 'earlier' : ''} ${selected ? 'selected' : ''}`} data-earlier={earlier ? 'true' : undefined} style={{ ['--role' as string]: color }} title={names + (agents.length > 4 ? ', …' : '')}>
-      <Handle type="target" position={Position.Top} />
-      <Handle id={MSG_OUT} type="source" position={Position.Right} className="msg-handle" isConnectable={false} />
-      <Handle id={MSG_IN} type="target" position={Position.Left} className="msg-handle" isConnectable={false} />
+      data-style={nodeStyle}
+      className={`done-group ${earlier ? 'earlier' : ''} ${selected ? 'selected' : ''}`} data-earlier={earlier ? 'true' : undefined} style={{ ['--role' as string]: color }} title={tip}>
+      <Handle type="target" position={sides.target as Position} />
+      <Handle id={MSG_OUT} type="source" position={sides.msgOut as Position} className="msg-handle" isConnectable={false} />
+      <Handle id={MSG_IN} type="target" position={sides.msgIn as Position} className="msg-handle" isConnectable={false} />
       <div className="done-group-main">
         <span className="done-count">
           <i /> {label ?? `${done} done`}
         </span>
-        {failed > 0 && <span className="done-failed">{failed} failed</span>}
-        {conflicts > 0 && <span className="done-conflict">{conflicts} unmerged</span>}
-        <Cost value={cost} hideEmpty className="done-cost" />
+        {failed > 0 && <span className="done-failed">{compact ? `· ${failed} failed` : `${failed} failed`}</span>}
+        {!compact && conflicts > 0 && <span className="done-conflict">{conflicts} unmerged</span>}
+        {!compact && <Cost value={cost} hideEmpty className="done-cost" />}
       </div>
       <span className="done-expand">
         <IconButton

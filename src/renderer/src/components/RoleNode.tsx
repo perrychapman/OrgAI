@@ -2,7 +2,8 @@ import { BookOpen, Plug, TriangleAlert, Wrench } from 'lucide-react'
 import { Icon } from './ui/Icon'
 import type { ReactElement } from 'react'
 import { memo } from 'react'
-import { Handle, Position, type Node, type NodeProps } from '@xyflow/react'
+import { Handle, type Position, type Node, type NodeProps } from '@xyflow/react'
+import { handlesFor, useCanvasOptions } from '../lib/canvas'
 import { TOOL_CATALOG, type Role } from '@shared/types'
 import { initials } from '../lib/layout'
 import { roleChipLabel } from '../lib/roleModels'
@@ -17,23 +18,34 @@ function RoleNodeView({ data, selected }: NodeProps<RoleFlowNode>): ReactElement
   const { role, reportCount, capabilities } = data
   const parts = capabilityParts(capabilities)
   const elevated = elevatedTools(role.tools, TOOL_CATALOG)
+  const { layout, nodeStyle } = useCanvasOptions()
+  const sides = handlesFor(layout)
+  const compact = nodeStyle === 'compact'
+  const tip = compact
+    ? [role.name, role.slug, roleChipLabel(role), role.canSpawn ? `leads ${reportCount}` : '', parts.length === 0 ? 'No tools' : capabilityLabel(capabilities)]
+        .filter(Boolean)
+        .join('\n')
+    : undefined
   return (
-    <div className={`role-node ${selected ? 'selected' : ''}`} style={{ ['--role' as string]: role.color }}>
-      {role.reportsTo !== null && <Handle type="target" position={Position.Top} />}
+    <div className={`role-node ${selected ? 'selected' : ''}`} data-style={nodeStyle} style={{ ['--role' as string]: role.color }} title={tip}>
+      {role.reportsTo !== null && <Handle type="target" position={sides.target as Position} />}
       <div className="head">
         <div className="avatar">{initials(role.name)}</div>
         <div className="head-text">
           <div className="name">{role.name}</div>
-          <div className="slug">{role.slug}</div>
+          {!compact && <div className="slug">{role.slug}</div>}
         </div>
       </div>
-      <div className="meta">
+      {compact && (
+        <span className="sr-only" data-testid="role-node-caps" role="img" aria-label={`${role.name}. ${capabilityLabel(capabilities)}${elevated.length > 0 ? `. ${toolsAriaLabel(role.tools, TOOL_CATALOG)}` : ''}`} />
+      )}
+      {!compact && <div className="meta">
         <span className="chip" title={role.model === 'inherit' ? undefined : role.model}>
           {roleChipLabel(role)}
         </span>
         {role.canSpawn && <span className="chip">leads {reportCount}</span>}
-      </div>
-      <div className="caps" data-testid="role-node-caps" role="img" aria-label={`${role.name}. ${capabilityLabel(capabilities)}${elevated.length > 0 ? `. ${toolsAriaLabel(role.tools, TOOL_CATALOG)}` : ''}`}>
+      </div>}
+      {!compact && <div className="caps" data-testid="role-node-caps" role="img" aria-label={`${role.name}. ${capabilityLabel(capabilities)}${elevated.length > 0 ? `. ${toolsAriaLabel(role.tools, TOOL_CATALOG)}` : ''}`}>
         {parts.length === 0 ? 'No tools' : parts.map((p, i) => (
           <span key={p.key} className="caps-part" aria-hidden="true">
             {i > 0 && <span className="caps-sep"> · </span>}
@@ -47,8 +59,8 @@ function RoleNodeView({ data, selected }: NodeProps<RoleFlowNode>): ReactElement
             <Icon icon={TriangleAlert} size="xs" />
           </span>
         )}
-      </div>
-      <Handle type="source" position={Position.Bottom} />
+      </div>}
+      <Handle type="source" position={sides.source as Position} />
     </div>
   )
 }

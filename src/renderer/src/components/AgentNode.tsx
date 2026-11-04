@@ -1,7 +1,8 @@
 import type { ReactElement } from 'react'
 import { memo, useEffect, useState } from 'react'
 import { Check, TriangleAlert } from 'lucide-react'
-import { Handle, Position, type Node, type NodeProps } from '@xyflow/react'
+import { Handle, type Position, type Node, type NodeProps } from '@xyflow/react'
+import { handlesFor, useCanvasOptions } from '../lib/canvas'
 import type { AgentInstance } from '@shared/types'
 import { formatElapsed, formatTokens, initials } from '../lib/layout'
 import { agentProducedNothing } from '@shared/defaults'
@@ -60,13 +61,33 @@ function AgentNodeView({ data, selected }: NodeProps<AgentFlowNode>): ReactEleme
   const idleActivity = isRoot && agent.state === 'idle' && agent.activity === 'Waiting for you' ? 'Waiting for your reply' : agent.activity
   const activity = streaming ? partial.replace(/\s+/g, ' ').trim().slice(0, 80) || 'Writing…' : noResult ? 'Ended without a result' : idleActivity
 
+  const { layout, nodeStyle } = useCanvasOptions()
+  const sides = handlesFor(layout)
+  const compact = nodeStyle === 'compact'
+  const tokensText = `${formatTokens(agent.inputTokens + agent.outputTokens)} tok`
+  const tail = hasCost ? costView(costInput).text : formatElapsed(agent.startedAt, agent.endedAt)
+  const worktreeText = agent.worktree
+    ? worktreeLabel(agent.worktree) + (agent.worktree.changedFiles?.length ? ` · ${agent.worktree.changedFiles.length} file${agent.worktree.changedFiles.length === 1 ? '' : 's'}` : '')
+    : ''
+  // The compact pill shows the name only; everything the card shows moves here, in the card's order.
+  const compactTip = [
+    `${agent.name}`,
+    [agent.handle ?? agent.roleSlug, shortModel].filter(Boolean).join(' · '),
+    activity,
+    worktreeText,
+    `${tokensText} · ${tail}`
+  ]
+    .filter(Boolean)
+    .join('\n')
+
   return (
     <div
       className={`agent-node state-${agent.state} ${selected ? 'selected' : ''} ${noResult ? 'no-result' : ''}`}
+      data-style={nodeStyle}
       style={{ ['--role' as string]: color }}
-      title={noResult ? 'Ended without a result: its tokens produced nothing' : undefined}
+      title={compact ? compactTip : noResult ? 'Ended without a result: its tokens produced nothing' : undefined}
     >
-      {!isRoot && <Handle type="target" position={Position.Top} />}
+      {!isRoot && <Handle type="target" position={sides.target as Position} />}
       <div className="head">
         <div className="avatar-wrap">
           <div className="avatar">{initials(agent.name)}</div>
@@ -79,32 +100,37 @@ function AgentNodeView({ data, selected }: NodeProps<AgentFlowNode>): ReactEleme
             </div>}
         </div>
         <div className="title">
-          <div className="name" title={agent.name}>
+          <div className="name" title={compact ? undefined : agent.name}>
             {agent.name}
           </div>
-          <div className="sub">
-            <span title={agent.handle ? `Handle ${agent.handle} (role ${agent.roleSlug})` : undefined}>{agent.handle ?? agent.roleSlug}</span>
-            {shortModel && <span>· {shortModel}</span>}
+          {!compact && (
+            <div className="sub">
+              <span title={agent.handle ? `Handle ${agent.handle} (role ${agent.roleSlug})` : undefined}>{agent.handle ?? agent.roleSlug}</span>
+              {shortModel && <span>· {shortModel}</span>}
+            </div>
+          )}
+        </div>
+      </div>
+      {!compact && (
+        <>
+          <div className={`activity ${streaming || WORKING.has(agent.state) ? 'working' : ''}`} title={activity}>
+            {activity}
           </div>
-        </div>
-      </div>
-      <div className={`activity ${streaming || WORKING.has(agent.state) ? 'working' : ''}`} title={activity}>
-        {activity}
-      </div>
-      {agent.worktree && (
-        <div className={`worktree wt-${agent.worktree.status}`} title={`${agent.worktree.branch} · ${agent.worktree.path}`}>
-          {worktreeLabel(agent.worktree)}
-          {agent.worktree.changedFiles?.length ? ` · ${agent.worktree.changedFiles.length} file${agent.worktree.changedFiles.length === 1 ? '' : 's'}` : ''}
-        </div>
+          {agent.worktree && (
+            <div className={`worktree wt-${agent.worktree.status}`} title={`${agent.worktree.branch} · ${agent.worktree.path}`}>
+              {worktreeText}
+            </div>
+          )}
+          <div className="foot">
+            <span>{tokensText}</span>
+            {hasCost ? <Cost value={costInput} labelled /> : <span>{formatElapsed(agent.startedAt, agent.endedAt)}</span>}
+          </div>
+        </>
       )}
-      <div className="foot">
-        <span>{formatTokens(agent.inputTokens + agent.outputTokens)} tok</span>
-        {hasCost ? <Cost value={costInput} labelled /> : <span>{formatElapsed(agent.startedAt, agent.endedAt)}</span>}
-      </div>
-      <Handle type="source" position={Position.Bottom} />
-      {/* Agent-to-agent messages attach at the sides, after the reporting-line handles so those stay the defaults. */}
-      <Handle id={MSG_OUT} type="source" position={Position.Right} className="msg-handle" isConnectable={false} />
-      <Handle id={MSG_IN} type="target" position={Position.Left} className="msg-handle" isConnectable={false} />
+      <Handle type="source" position={sides.source as Position} />
+      {/* Agent-to-agent messages attach on the other two sides, after the reporting-line handles so those stay the defaults. */}
+      <Handle id={MSG_OUT} type="source" position={sides.msgOut as Position} className="msg-handle" isConnectable={false} />
+      <Handle id={MSG_IN} type="target" position={sides.msgIn as Position} className="msg-handle" isConnectable={false} />
     </div>
   )
 }

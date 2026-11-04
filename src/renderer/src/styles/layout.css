@@ -33,11 +33,22 @@
   border-bottom: 1px solid var(--border-default);
   min-width: 0;
 }
+/* The frame itself stays on the page surface; the stage paints the backdrop colour and the accent wash. */
+.canvas.canvas-frame {
+  background: var(--surface-0);
+}
 .frame-stage {
   grid-area: stage;
   position: relative;
   min-width: 0;
   min-height: 0;
+  background:
+    radial-gradient(
+      1200px 600px at 50% -10%,
+      color-mix(in oklab, var(--accent) calc(var(--canvas-wash-opacity) * 100%), transparent),
+      transparent 60%
+    ),
+    var(--canvas-bg);
 }
 .frame-stage > .react-flow,
 .frame-stage > .empty {
@@ -428,9 +439,34 @@ button.run-meta-item:focus-visible {
   border: 2px solid var(--info);
   box-shadow: 0 0 0 2px color-mix(in oklab, var(--info) 25%, transparent);
 }
+.legend-wide {
+  width: 56px;
+}
 .legend-line {
-  width: 18px;
-  border-top: 2px dashed var(--edge-message);
+  width: 40px;
+  border-top: 2px dotted var(--edge-message);
+}
+.legend-report {
+  width: 40px;
+  height: 0;
+  border-top: 2px solid var(--text-tertiary);
+}
+.legend-selected {
+  width: 16px;
+  height: 16px;
+  border-radius: var(--radius-sm);
+  border: 2px solid var(--accent-text);
+  background: var(--canvas-node-bg);
+}
+.legend-folded {
+  padding: 0 var(--space-2);
+  border: 1px dashed var(--canvas-edge-group);
+  border-radius: var(--radius-full);
+  background: var(--canvas-node-bg);
+  color: var(--text-secondary);
+  font-size: var(--text-caption);
+  line-height: 1.4;
+  white-space: nowrap;
 }
 .legend-warn {
   color: var(--warning-text);
