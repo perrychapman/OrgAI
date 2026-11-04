@@ -61,6 +61,8 @@ if (process.platform === 'win32') app.setAppUserModelId('com.orgai.app')
 let runManager: RunManager | undefined
 let notifier: Notifier | undefined
 let settingsStore: SettingsStore | undefined
+/** Set once constructed; broadcast() feeds it every usage.status so the idle probe merges onto a run's report. */
+let usageMonitor: UsageMonitor | null = null
 
 /** Native menus, scrollbars, dialogs and prefers-color-scheme in the renderer follow AppSettings.appearance.theme. */
 function applyTheme(s: AppSettings): void {
@@ -93,6 +95,7 @@ function broadcast(event: RunEvent): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send(IPC.runEvent, event)
   }
+  usageMonitor?.observe(event)
   try {
     notifier?.handle(event)
   } catch (e) {
@@ -497,18 +500,19 @@ app.whenReady().then(() => {
   })
 
   // Plan usage without a run: at boot, every 10 minutes while idle, and on request from the meter.
-  const usageMonitor = new UsageMonitor({
+  const monitor = new UsageMonitor({
     adapter: adapters.claude,
     auth: () => settings.get().providerAuth,
     broadcast,
     liveRuns: () => runManager?.liveRunCount() ?? 0,
     extraProbes: [() => connections.probeCodexUsage(), { key: 'litellm', probe: () => connections.probeLiteLLMUsage() }]
   })
-  refreshLiteLLMSpend = () => void usageMonitor.refreshProbe('litellm')
+  usageMonitor = monitor
+  refreshLiteLLMSpend = () => void monitor.refreshProbe('litellm')
   app.on('before-quit', () => clearTimeout(spendTimer))
-  ipcMain.handle(IPC.usageRefresh, () => usageMonitor.refresh())
-  usageMonitor.start()
-  app.on('before-quit', () => usageMonitor.stop())
+  ipcMain.handle(IPC.usageRefresh, () => monitor.refresh())
+  monitor.start()
+  app.on('before-quit', () => monitor.stop())
 
   // Housekeeping: runs of projects that no longer exist, runs past retention, record files nobody indexes.
   // The virtual projects (harness, quick, skills) own runs without being stored: their runs survive restarts.

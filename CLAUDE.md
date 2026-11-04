@@ -609,6 +609,9 @@ and the frontend-design skill is not vendored in `.claude/skills` (only `run-des
     `model_scoped` (Fable) were present, new keys `seven_day_breakdown`, `weekly_scoped_shares`, `pace` (null) and
     `spend` appeared, and there was no `limits[]` in the control reply; `mergeUsage` therefore keeps a window only an
     event reported (e.g. five_hour from `unifiedWindows`) until its reset passes, instead of letting the next poll erase it.
+    UsageMonitor observes every usage.status broadcast and merges the idle probe onto the newest Claude status the same
+    way, so the row survives between runs until its reset (`usageMonitor.ts` `observe`, fed from index.ts `broadcast`;
+    unit-tested only).
   - In-process MCP tools (`createSdkMcpServer` + `tool` with zod shapes) surface as `mcp__<server>__<tool>` in
     `PreToolUse`, `canUseTool` and `tools` lists. Under `acceptEdits` they still hit `canUseTool`, so the Claude
     adapter auto-allows `mcp__orgai__*`. A handler may block indefinitely; the model receives its returned text.
