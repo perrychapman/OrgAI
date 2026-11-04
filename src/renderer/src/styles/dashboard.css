@@ -1,24 +1,414 @@
-/* ---------- Projects view ---------- */
+/* ---------- Dashboard (docs/design/dashboard.md) ----------
+   Region layout, hero band and the attention column. Project tiles and fact cards: dashboard-projects.css. */
 
-.projects {
-  padding: 24px;
+/* The scroll region under the topbar. One page scroll, no per-column scroll. Its padding sits on the grid, because a
+   container cannot be styled by its own container query. */
+.dashboard {
+  container: dashboard / size;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
   overflow: auto;
+}
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-content: start;
+  gap: var(--space-4);
+  padding: var(--space-4);
+}
+.dash-hero,
+.dash-first {
+  grid-column: 1 / -1;
+}
+.dash-attention,
+.dash-projects-region,
+.dash-facts {
+  min-width: 0;
+}
+@container dashboard (min-width: 900px) {
+  .dashboard-grid {
+    padding: var(--space-6);
+    grid-template-columns: minmax(320px, 2fr) minmax(0, 3fr);
+  }
+  .dash-attention {
+    grid-column: 1;
+    grid-row: 2 / span 2;
+  }
+  .dash-projects-region {
+    grid-column: 2;
+    grid-row: 2;
+  }
+  .dash-facts {
+    grid-column: 2;
+    grid-row: 3;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-4);
+    align-content: start;
+  }
+}
+/* The projects track is 600 px wide from a 1064 px container: three fact cards fit in a row from there. */
+@container dashboard (min-width: 1064px) and (max-width: 1279px) {
+  .dash-facts {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+@container dashboard (min-width: 1280px) {
+  .dashboard-grid {
+    grid-template-columns: minmax(340px, 4fr) minmax(0, 7fr) minmax(260px, 3fr);
+  }
+  .dash-attention {
+    grid-column: 1;
+    grid-row: 2;
+  }
+  .dash-projects-region {
+    grid-column: 2;
+    grid-row: 2;
+  }
+  .dash-facts {
+    grid-column: 3;
+    grid-row: 2;
+  }
+}
+
+/* ---------- Hero band ---------- */
+
+.dash-hero {
+  position: relative;
+  isolation: isolate;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-areas: 'mark main facts';
+  align-items: center;
+  column-gap: var(--space-4);
+  min-height: 120px;
+  padding: var(--space-4) var(--space-6);
+  background: var(--surface-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xl);
+  overflow: hidden;
+}
+/* The org chart echo: a dot grid in the canvas pattern colour, faint, gone under the "no pattern" canvas setting. */
+.dash-hero::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background-image: radial-gradient(var(--canvas-pattern) 1.5px, transparent 1.5px);
+  background-size: 16px 16px;
+  opacity: var(--canvas-wash-opacity);
+  pointer-events: none;
+}
+.dash-hero::after {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 3px;
+  z-index: -1;
+  background: var(--gradient-ui);
+  pointer-events: none;
+}
+.dash-hero-mark {
+  grid-area: mark;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-md);
+  background: var(--gradient-mark);
+}
+.dash-hero-main {
+  grid-area: main;
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: var(--space-1);
 }
-.projects-intro {
-  max-width: 640px;
+.dash-hero-figure {
+  margin: 0;
+  font-size: var(--text-display);
+  font-weight: var(--weight-semibold);
+  line-height: 1.15;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dash-hero-sub {
+  margin: 0;
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dash-hero-facts {
+  grid-area: facts;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-caption);
+  color: var(--text-tertiary);
+}
+.dash-hero-facts:empty {
+  display: none;
+}
+/* Compact height: the facts move under the subline. */
+@container dashboard (max-height: 719px) {
+  .dash-hero {
+    min-height: 88px;
+    padding: var(--space-2) var(--space-4);
+    grid-template-areas:
+      'mark main'
+      'mark facts';
+    grid-template-columns: auto minmax(0, 1fr);
+    row-gap: var(--space-1);
+  }
+  .dash-hero-facts {
+    justify-self: start;
+  }
+}
+/* Narrow: the facts always sit under the text. */
+@container dashboard (max-width: 599px) {
+  .dash-hero {
+    grid-template-areas:
+      'mark main'
+      'mark facts';
+    grid-template-columns: auto minmax(0, 1fr);
+    row-gap: var(--space-1);
+  }
+  .dash-hero-facts {
+    justify-self: start;
+  }
+}
+
+/* Numbers are mono everywhere on this page. */
+.dash-num,
+.dash-count {
+  font-family: var(--font-mono);
+  font-size: var(--text-mono);
+  font-variant-numeric: tabular-nums;
+}
+.dash-sep {
+  color: var(--text-tertiary);
+}
+
+/* ---------- Attention column ---------- */
+
+.dash-attention {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+.dash-section {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.dash-section > .btn,
+.dash-section > button {
+  align-self: flex-start;
+}
+.dash-section-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 28px;
+}
+.dash-section-head h2 {
+  margin: 0;
+  font-size: var(--text-title);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+  border-radius: var(--radius-sm);
+}
+.dash-section-head h2:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.dash-count {
   color: var(--text-secondary);
 }
-.projects-intro h2 {
-  margin: 0 0 6px;
-  font-size: var(--text-title-sm);
+.dash-section-action {
+  margin-left: auto;
+}
+.dash-empty {
+  margin: 0;
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}
+.dash-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+/* A row: one full-width native button, plus at most one secondary Button at its right. */
+.dash-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: stretch;
+  min-height: 52px;
+  background: var(--surface-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  min-width: 0;
+}
+.dash-row[data-has-action='true'] {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+.dash-row:hover {
+  border-color: var(--border-strong);
+}
+.dash-row-main {
+  all: unset;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: inherit;
+  cursor: pointer;
   color: var(--text-primary);
 }
-.projects-intro p {
-  margin: 0;
+.dash-row-main:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
 }
+.dash-row-side {
+  display: flex;
+  align-items: center;
+  padding-right: var(--space-2);
+}
+.dash-row-icon {
+  display: inline-flex;
+  flex: none;
+  color: var(--warning-text);
+}
+.dash-row-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.dash-row-line {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0;
+  font-size: var(--text-small);
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dash-row-needs .dash-row-line {
+  display: block;
+}
+.dash-status {
+  flex: none;
+  font-weight: var(--weight-semibold);
+}
+.dash-row-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dash-row-cap {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  font-size: var(--text-caption);
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dash-clip {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dash-plan {
+  flex: none;
+}
+.dash-row-detail {
+  display: block;
+}
+
+/* Needs you: warning tint. */
+.dash-row-needs {
+  background: var(--warning-soft);
+  border-color: var(--warning-border);
+}
+.dash-row-needs:hover {
+  border-color: var(--warning);
+}
+
+/* Status dot: colour always sits beside its word. */
+.dash-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: var(--state-idle);
+  --role: var(--state-working);
+}
+.dash-dot[data-tone='is-running'] {
+  background: var(--state-working);
+}
+.dash-dot[data-tone='warn'],
+.dash-dot[data-tone='paused'] {
+  background: var(--state-waiting);
+}
+.dash-dot[data-tone='ok'] {
+  background: var(--state-done);
+}
+.dash-dot[data-tone='danger'] {
+  background: var(--state-error);
+}
+.dash-dot[data-tone='idle'],
+.dash-dot[data-tone='stopped'] {
+  background: var(--state-idle);
+}
+.dash-dot[data-live='true'] {
+  box-shadow: var(--halo-dot-live);
+}
+
+/* Running: a 2 px edge in the working colour, and the working glow on a Running row. */
+.dash-row-running {
+  border-left: 2px solid var(--state-working);
+  --role: var(--state-working);
+}
+.dash-row-running[data-status='Running'] {
+  box-shadow: var(--glow-working);
+}
+.dash-row-since[data-status='Failed'] {
+  border-left: 2px solid var(--state-error);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dash-dot[data-live='true'],
+  .dash-row-running[data-status='Running'] {
+    box-shadow: none;
+  }
+}
+:root[data-reduce-motion='on'] .dash-dot[data-live='true'],
+:root[data-reduce-motion='on'] .dash-row-running[data-status='Running'] {
+  box-shadow: none;
+}
+
+/* ---------- New project form (components/dashboard/NewProjectForm) ---------- */
+
 .project-form {
   width: 100%;
   max-width: 640px;
@@ -41,66 +431,9 @@
 .form-submit {
   gap: 12px;
 }
-.project-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-  gap: 12px;
-}
-.project-card {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  transition: border-color var(--dur-fast);
-}
-.project-card:hover,
-.project-card:has(.project-card-main:focus-visible) {
-  border-color: var(--border-strong);
-}
-.project-card-main {
-  all: unset;
-  box-sizing: border-box;
-  display: block;
-  cursor: pointer;
-  min-width: 0;
-  border-radius: var(--radius-md);
-}
-.project-card-main:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 4px;
-}
-.project-card h3 {
-  margin: 0 0 4px;
-  font-size: var(--text-title-sm);
-}
-.project-card .path {
-  font-family: var(--font-mono);
+.form-submit .hint {
   font-size: var(--text-caption);
-  color: var(--text-tertiary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.project-card .roles {
-  display: flex;
-  gap: 4px;
-  margin-top: 10px;
-}
-.project-card .roles span.more {
-  background: var(--border-strong);
-}
-.project-card .roles span {
-  width: 20px;
-  height: 20px;
-  border-radius: var(--radius-full);
-  display: inline-grid;
-  place-items: center;
-  font-size: var(--text-caption);
-  font-weight: var(--weight-semibold);
-  color: var(--text-on-role);
+  color: var(--text-secondary);
 }
 
 /* ---------- Maintenance panel ---------- */
@@ -123,8 +456,4 @@
 .maint-row code {
   font-family: var(--font-mono);
   font-size: var(--text-caption);
-}
-.form-submit .hint {
-  font-size: var(--text-caption);
-  color: var(--text-secondary);
 }
