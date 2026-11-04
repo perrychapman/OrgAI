@@ -68,10 +68,22 @@ export function projectDocumentPath(kind: ProjectKind): string {
 
 /**
  * Whether OrgAI may write its own files into the project folder (.orgai/, CLAUDE.md, .claude/settings.local.json,
- * .git/info/exclude, git worktrees). False for engagements: their folder is often a share the client can see.
+ * .git/info/exclude). False for engagements: their folder is often a share the client can see. Git worktrees follow
+ * isolateWritersOn instead (an engagement's explicit opt-in).
  */
 export function writesToProjectFolder(project: { kind?: unknown } | null | undefined): boolean {
   return projectKindOf(project) !== 'engagement'
+}
+
+/**
+ * Whether writing reports run in their own git worktree (Project.isolateWriters; still silently off without a git
+ * repository). Code projects: on unless explicitly false (today's default). Engagements: off unless the user set it
+ * explicitly true (then the worktree, .claude/worktrees and .git/info/exclude writes are their own opt-in); the
+ * engagement Architect never proposes it. Every reader goes through this helper.
+ */
+export function isolateWritersOn(project: { kind?: unknown; isolateWriters?: boolean } | null | undefined): boolean {
+  if (projectKindOf(project) === 'engagement') return project?.isolateWriters === true
+  return project?.isolateWriters !== false
 }
 
 /** Where the project's saved allow rules live: 'folder' (.claude/settings.local.json) or 'app' (OrgAI's data folder). */
@@ -974,7 +986,8 @@ export function newProject(input: { name: string; path: string; brief: string; s
       provider: { id: 'claude', label: claudeProviderLabel(auth), auth, connection: 'anthropic' },
       permissionMode: settings.defaultPermissionMode,
       maxBudgetUsd: settings.defaultMaxBudgetUsd,
-      isolateWriters: settings.defaultIsolateWriters,
+      // Engagements leave it unset (off by default, isolateWritersOn); only the user's explicit true turns it on.
+      ...(kind === 'engagement' ? {} : { isolateWriters: settings.defaultIsolateWriters }),
       keepRuns: settings.defaultKeepRuns,
       autoContinue: settings.defaultAutoContinue,
       maxAutoContinues: settings.defaultMaxAutoContinues,
@@ -992,7 +1005,7 @@ export function newProject(input: { name: string; path: string; brief: string; s
     brief: input.brief,
     provider: { id: 'claude', label: 'Claude (Claude Code login)', auth: { kind: 'subscription' }, connection: 'anthropic' },
     permissionMode: 'auto',
-    isolateWriters: true,
+    ...(kind === 'engagement' ? {} : { isolateWriters: true }),
     roles: kind === 'engagement' ? engagementRoles() : defaultRoles(),
     setup: input.setupKind ? { kind: input.setupKind, state: 'pending' } : undefined,
     createdAt: now,
