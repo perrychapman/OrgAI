@@ -93,6 +93,15 @@
   opacity: var(--canvas-wash-opacity);
   pointer-events: none;
 }
+:root[data-canvas-pattern='none'] .dash-hero::before {
+  display: none;
+}
+:root[data-canvas-pattern='grid'] .dash-hero::before {
+  background-image:
+    linear-gradient(var(--canvas-pattern) 1px, transparent 1px),
+    linear-gradient(90deg, var(--canvas-pattern) 1px, transparent 1px);
+  background-size: 16px 16px;
+}
 .dash-hero::after {
   content: '';
   position: absolute;
