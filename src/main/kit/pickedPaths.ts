@@ -4,6 +4,19 @@ export function kitExportPath(chosen: string): string {
 }
 
 /**
+ * The export target for what the save dialog returned. When the suffix was added here, the dialog's own overwrite
+ * prompt did not cover the real name, so an existing file at it is refused with a readable error instead of replaced.
+ */
+export function kitExportTarget(chosen: string, exists: (path: string) => boolean): string {
+  const path = kitExportPath(chosen)
+  if (path !== chosen && exists(path)) {
+    const name = path.split(/[\\/]/).pop() ?? path
+    throw new Error(`${name} already exists. Choose another name, or include .json in the name to replace a file.`)
+  }
+  return path
+}
+
+/**
  * Files the user chose in a main-process dialog (kit:pickExportPath / kit:pickImportPath), per renderer
  * (`WebContents.id`), newest last, at most `max` each. The kit channels accept only a path the same renderer picked, so
  * a compromised renderer cannot make main write or read an arbitrary file. Pure; exported for tests.

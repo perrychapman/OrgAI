@@ -11,7 +11,7 @@ import { McpService } from '../mcp/service'
 import { SkillService } from '../skills/service'
 import { TemplateService } from '../setup/templates'
 import { KitService, applyArgs, exportArgs, readKitFile } from './service'
-import { PickedPaths, kitExportPath } from './pickedPaths'
+import { PickedPaths, kitExportPath, kitExportTarget } from './pickedPaths'
 
 const FIXTURE = join(__dirname, '..', 'skills', 'fixtures', 'pdf')
 const SECRET = 'sk-live-TOP-SECRET-9f3a'
@@ -241,6 +241,45 @@ describe('export refusals', () => {
     expect(out.notes[0]).toMatch(/binskill.*not a text file/)
   })
 
+  it('keeps credentials held in plain values out of the file (review M1)', () => {
+    const a = world()
+    const lib = new McpLibraryStore(join(a.dir, 'data'))
+    lib.save(stdio('argurl', { args: ['-y', 'x@1.0.0', 'postgresql://u:p@h/db'], secretEnv: undefined }))
+    lib.save(stdio('dburl', { env: { DATABASE_URL: 'postgres://u:p@h/db' }, secretEnv: undefined }))
+    lib.save(stdio('awskey', { env: { AWS_ACCESS_KEY_ID: 'AKIAEXAMPLE' }, secretEnv: undefined }))
+    lib.save(stdio('pat', { env: { GITHUB_PAT: 'abc' }, secretEnv: undefined }))
+    lib.save(stdio('privkey', { env: { PRIVATE_KEY: 'abc' }, secretEnv: undefined }))
+    lib.save(stdio('dsn', { env: { SENTRY_DSN: 'abc' }, secretEnv: undefined }))
+    lib.save(http('shaped', { headers: { 'X-Custom': 'ghp_abcdefghijklmnopqrstuvwxyz0123456789' }, secretHeaders: undefined }))
+    lib.save(http('bearer', { headers: { 'X-Custom': 'Bearer abcdef123456' }, secretHeaders: undefined }))
+    lib.save(stdio('envurlq', { env: { ENDPOINT: 'https://x.test/a?access_token=abc' }, secretEnv: undefined }))
+    lib.save(stdio('fine', { env: { REGION: 'eu', PATTERN: 'a*', MONKEY: 'x' } }))
+    const mcp = new McpService({ projects: a.projects, secrets: a.secrets, library: lib, dataDir: join(a.dir, 'data') })
+    const kit = new KitService({ appVersion: '1', platform: 'test', skills: a.skills, mcp, templates: a.templates })
+    const file = join(a.dir, 'x.orgai-kit.json')
+    const out = kit.export({ path: file, include: { mcpServers: 'all' } })
+    expect(out.counts.mcpServers).toBe(1)
+    expect(out.notes.filter((n) => n.startsWith('Left out')).length).toBe(9)
+    const text = readFileSync(file, 'utf8')
+    for (const leak of ['u:p@h', 'AKIAEXAMPLE', 'GITHUB_PAT', 'PRIVATE_KEY', 'SENTRY_DSN', 'ghp_abc', 'Bearer abc', 'access_token']) expect(text).not.toContain(leak)
+  })
+
+  it('leaves out skill files that look private, with a note (review L4)', () => {
+    const a = world()
+    const dir = join(a.dir, 'priv')
+    mkdirSync(dir)
+    writeFileSync(join(dir, 'SKILL.md'), '---\nname: priv\ndescription: Use for private things.\n---\nBody\n')
+    writeFileSync(join(dir, '.env'), 'TOKEN=abc')
+    writeFileSync(join(dir, 'key.pem'), 'PEM')
+    writeFileSync(join(dir, 'ok.md'), 'fine')
+    a.skills.libraryAddFromFolder({ path: dir })
+    const file = join(a.dir, 'p.orgai-kit.json')
+    const out = a.kit.export({ path: file, include: { skills: 'all' } })
+    expect(out.notes.join(' ')).toMatch(/Left out 2 private-looking files/)
+    const doc = JSON.parse(readFileSync(file, 'utf8'))
+    expect(doc.skills[0].files.map((f: { path: string }) => f.path).sort()).toEqual(['SKILL.md', 'ok.md'])
+  })
+
   it('refuses to write over a folder', () => {
     const a = world()
     populate(a)
@@ -438,6 +477,95 @@ describe('untrusted files', () => {
     expect(preview.items[3].refusal).toMatch(/same name/)
   })
 
+  it('holds an imported server to the outside-source rules (review M2)', () => {
+    const w = world()
+    const base = { transport: 'stdio', command: 'npx', args: ['-y', 'x@1.0.0'] }
+    const file = kitFile(w, {
+      mcpServers: [
+        { name: 'userinfo-arg', ...base, args: ['-y', 'x@1.0.0', 'postgresql://u:p@h/db'] },
+        { name: 'envurl', ...base, env: { DATABASE_URL: 'postgres://u:p@h/db' } },
+        { name: 'awskey', ...base, env: { AWS_ACCESS_KEY_ID: 'x' } },
+        { name: 'shaped', transport: 'http', url: 'https://ok.test/mcp', headers: { 'X-Custom': 'ghp_abcdefghijklmnopqrstuvwxyz0123456789' } },
+        { name: 'http-url', transport: 'http', url: 'http://plain.test/mcp' },
+        { name: 'local', transport: 'http', url: 'https://localhost/mcp' },
+        { name: 'private', transport: 'http', url: 'https://10.0.0.5/mcp' },
+        { name: 'linklocal', transport: 'http', url: 'https://169.254.169.254/latest' },
+        { name: 'long', transport: 'http', url: `https://long.test/${'a'.repeat(450)}` },
+        { name: 'slot-env', ...base, secretEnv: ['NODE_OPTIONS'] },
+        { name: 'slot-header', transport: 'http', url: 'https://ok.test/mcp', secretHeaders: ['Host'] },
+        { name: 'slot-ok', transport: 'http', url: 'https://ok.test/mcp', secretHeaders: ['Authorization'] }
+      ]
+    })
+    const preview = w.kit.previewImport({ path: file })
+    expect(preview.items.map((i) => i.status)).toEqual([...Array(11).fill('refused'), 'new'])
+    expect(preview.items[0].refusal).toMatch(/user name or password/)
+    expect(preview.items[4].refusal).toMatch(/not https/)
+    expect(preview.items[5].refusal).toMatch(/private network/)
+    expect(preview.items[8].refusal).toMatch(/cannot be reviewed/)
+    expect(preview.items[9].refusal).toMatch(/changes what runs/)
+    expect(preview.items[10].refusal).toMatch(/where requests go/)
+  })
+
+  it('holds preset variants to the same value and slot rules, at preview and at save', () => {
+    const w = world()
+    const variant = (over: Record<string, unknown>): Record<string, unknown> => ({ id: 'v', label: 'V', transport: 'http', url: 'https://ok.test/mcp', readOnly: false, auth: { kind: 'none' }, ...over })
+    const bad = [
+      preset('p-local', { variants: [variant({ url: 'https://127.0.0.1/mcp' })] as never }),
+      preset('p-userinfo', { variants: [variant({ url: 'https://u:p@ok.test/mcp' })] as never }),
+      preset('p-header', { variants: [variant({ headers: { 'X-Custom': 'Bearer abcdef123456' } })] as never }),
+      preset('p-slot', { variants: [variant({ auth: { kind: 'token', header: 'Host', label: 'K', help: '' } })] as never }),
+      preset('p-arg', { variants: [variant({ transport: 'stdio', url: undefined, command: 'npx', args: ['-y', 'x@1.0.0', 'postgres://u:p@h/db'] })] as never })
+    ]
+    const file = kitFile(w, { connectorPresets: [...bad, preset('p-fine')] })
+    const preview = w.kit.previewImport({ path: file })
+    expect(preview.items.map((i) => i.status)).toEqual(['refused', 'refused', 'refused', 'refused', 'refused', 'new'])
+    for (const p of bad) expect(() => w.mcp.connectorPresetsKitSave(p)).toThrow()
+    expect(() => w.mcp.connectorPresetsKitSave(preset('p-fine'))).not.toThrow()
+  })
+
+  it('refuses Windows-reserved and stream-style skill paths (review L1)', () => {
+    const w = world()
+    const md = '---\nname: s\ndescription: Use for x.\n---\n\nok\n'
+    const paths = ['CON', 'nul.txt', 'docs/COM1.md', 'lpt9', 'a:b.txt', 'file.txt:stream', 'trail.', 'space ', 'x/aux.tar.gz']
+    const file = kitFile(w, { skills: paths.map((p, i) => ({ ...skillDoc(`s${i}`, md.replace('name: s', `name: s${i}`), [{ path: p, text: 'x' }]) })) })
+    const preview = w.kit.previewImport({ path: file })
+    expect(preview.items.map((i) => i.status)).toEqual(paths.map(() => 'refused'))
+    for (const i of preview.items) expect(i.refusal).toMatch(/not allowed/)
+    const ok = kitFile(w, { skills: [skillDoc('s', md, [{ path: 'docs/console.md', text: 'x' }, { path: 'a.b.txt', text: 'x' }])] })
+    expect(w.kit.previewImport({ path: ok }).items[0].status).toBe('new')
+  })
+
+  it('stores a template rebuilt from known fields and previews each role (review M3)', () => {
+    const w = world()
+    const longPrompt = 'p'.repeat(25_000)
+    const raw = `{"format":"${KIT_FORMAT}","templates":[{"name":"Team","description":"d","kind":"code","org":{"format":"orgai.org/1","evil":1,"roles":[` +
+      `{"id":"role_1","slug":"lead","name":"Lead","description":"Leads","prompt":"Lead things","tools":["Read","Bash","Edit"],"canSpawn":true,"spawnable":["dev"],"reportsTo":null,"model":"inherit","mcpServers":["srv1"],"skills":["sk1"],"unknownField":{"a":1},"__proto__":{"polluted":true}},` +
+      `{"slug":"dev","name":"Dev","description":"Builds","prompt":"${longPrompt}","tools":["Read"],"canSpawn":false,"reportsTo":"lead"}]}}]}`
+    const f = join(w.dir, 'tpl.json')
+    writeFileSync(f, raw)
+    const preview = w.kit.previewImport({ path: f })
+    const item = preview.items[0]
+    expect(item.status).toBe('new')
+    expect(item.roles?.map((r) => r.slug)).toEqual(['lead', 'dev'])
+    expect(item.roles?.[0].elevatedTools).toEqual(['Bash', 'Edit', 'canSpawn'])
+    expect(item.roles?.[0].prompt).toBe('Lead things')
+    expect(item.roles?.[1].prompt.length).toBe(20_000)
+    expect(item.roles?.[1].elevatedTools).toEqual([])
+    expect(item.notes.join(' ')).toMatch(/services and skills/)
+    w.kit.applyImport({ path: f, digest: preview.digest, choices: [{ key: item.key, action: 'add' }] })
+    const stored = w.templates.readForKit(w.templates.list()[0].id)!.orgText
+    const org = JSON.parse(stored) as { evil?: unknown; roles: Record<string, unknown>[] }
+    expect(org.evil).toBeUndefined()
+    expect(org.roles).toHaveLength(2)
+    for (const r of org.roles) {
+      for (const k of ['id', 'mcpServers', 'skills', 'unknownField', 'polluted']) expect(r).not.toHaveProperty(k)
+    }
+    expect(Object.keys(org.roles[0])).toEqual(['slug', 'name', 'description', 'responsibilities', 'prompt', 'tools', 'model', 'canSpawn', 'spawnable', 'reportsTo'])
+    expect(stored).not.toContain('srv1')
+    // re-previewing the same file now reads as identical to what was stored
+    expect(w.kit.previewImport({ path: f }).items[0].status).toBe('same')
+  })
+
   it('refuses a preset that shadows a built-in connector or breaks the rules', () => {
     const w = world()
     const file = kitFile(w, {
@@ -529,6 +657,12 @@ describe('arguments and picked paths', () => {
     expect(p.take(1, '/c')).toBe(false)
     p.forget(1)
     expect(p.has(1, '/b')).toBe(false)
+  })
+
+  it('refuses an existing target when the suffix was added, but not one the user typed', () => {
+    expect(kitExportTarget('/x/practice', () => false)).toBe('/x/practice.orgai-kit.json')
+    expect(() => kitExportTarget('/x/practice', (p) => p === '/x/practice.orgai-kit.json')).toThrow(/practice\.orgai-kit\.json already exists/)
+    expect(kitExportTarget('/x/p.json', () => true)).toBe('/x/p.json')
   })
 
   it('adds the kit suffix to a name without .json', () => {

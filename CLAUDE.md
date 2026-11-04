@@ -475,6 +475,12 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   sha256 `digest` and per-item status (new / same / different / refused); `kit:applyImport` refuses a missing or stale digest
   and applies only the chosen items (add, replace, copy, skip). A replace of a server clears its stored secrets and sign-in;
   `needsSecrets` lists the slots to fill in. No undo, no renderer yet. Unit-tested only (`kit.test.ts`).
+  Review fixes: export and import both refuse a server whose plain argument, env value, header value or address carries a
+  credential (URL userinfo, key-shaped values, credential-like names incl. key / pat / dsn / private; pattern checks, not a
+  guarantee), import adds the outside-source rules (https, no private address, `reviewTarget`, no run-changing slot names)
+  to servers and preset variants (`connectorPresetsKitSave` too), templates are stored rebuilt from parsed roles and
+  `KitPreviewItem.roles` shows prompts and elevated tools, skill paths use `safeKitRelPath`, skill export drops private-looking
+  files, and an export target whose suffix was added here is refused when it exists (`kitExportTarget`).
 
 ## Renderer
 
