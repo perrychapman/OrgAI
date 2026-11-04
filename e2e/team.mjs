@@ -75,6 +75,10 @@ async function sectionExactModel(page) {
   const roleSel = page.locator('[data-testid=role-model]')
   const exactSel = page.locator('[data-testid=role-exact-model]')
   await roleSel.waitFor({ timeout: 10_000 })
+  if (await roleSel.isDisabled()) {
+    log('SKIP Exact model checks: no connection connected')
+    return
+  }
   await openAdvancedModel(page)
   const start = await roleSel.inputValue()
   if (/^(top|deep|everyday|fast)$/.test(start)) check((await exactSel.inputValue()) === '', `a ${start} role's Exact model reads Not set`, await exactSel.inputValue())
