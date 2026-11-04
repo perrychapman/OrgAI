@@ -463,7 +463,12 @@ and the frontend-design skill is not vendored in `.claude/skills` (only `run-des
   never $0, "$0.42+" is a lower bound). The run side panel has a Usage tab (`components/UsagePanel.tsx`, `SideTab`
   'usage'); History switches Runs | Trends (`components/UsageTrends.tsx`, `runs:usageStats`). App settings >
   Connections > Model prices is `components/settings/ModelPricesSection.tsx`; `lib/settingsTarget.ts`
-  `requestModelPrice(model?)` deep-links to it with the model pre-filled.
+  `requestModelPrice(model?)` deep-links to it with the model pre-filled. The account popover shows the quiet line
+  `usage-no-five-hour` ("Five-hour window: not reported by your plan right now.", `UsageMeter.tsx` `missingFiveHour`)
+  when a subscription report lists plan windows but no five-hour one (seen 2026-11-04 on a Max login: `five_hour:
+  null` beside Seven-day and the Fable weekly window), and the sidebar footer bar shows the tightest reported window
+  (`tightestWindow`); unit-tested in `components/usageMeter.test.ts`, not driven by e2e (the footer meter is hidden
+  under the mock adapter).
 - Layout: `components/layout` (`CanvasFrame` with `FrameToolbar` / `FrameStage` / `FrameTray` / `FrameFooter`,
   `SidePanel`, `SaveIndicator`). Nothing floats over the canvas: decision cards sit in `FrameTray` on the
   `components/DecisionCard.tsx` shell.

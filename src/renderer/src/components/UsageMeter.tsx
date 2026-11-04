@@ -54,6 +54,18 @@ export function usageRows(usage: UsageStatus): Row[] {
   return out
 }
 
+/**
+ * True when a subscription report lists plan windows but no five-hour one (seen 2026-11-04 on a Max login: the
+ * endpoint answered `five_hour: null` beside the weekly windows). The popover then says so instead of silently
+ * dropping the row. False for API keys, before the first report, and when no window at all is reported (the
+ * "No plan windows reported" empty state covers that).
+ */
+export function missingFiveHour(usage: UsageStatus | null | undefined): boolean {
+  if (!usage || !usage.available || usage.authMode === 'apiKey') return false
+  if (usage.windows.fiveHour) return false
+  return usageRows(usage).length > 0
+}
+
 export type UsageLevel = '' | 'warn' | 'danger'
 
 /** The window closest to its limit (the one the footer bar shows), or null when no plan window is reported. */
@@ -172,6 +184,11 @@ function PlanSection({ usage, now, reading }: { usage: UsageStatus | undefined; 
           </div>
         )
       })}
+      {missingFiveHour(usage) && (
+        <div className="usage-hint" data-testid="usage-no-five-hour">
+          Five-hour window: not reported by your plan right now.
+        </div>
+      )}
       <Stale usage={usage} now={now} />
       {usage.overageInUse && <div className="usage-hint">Extra usage in use</div>}
     </div>
