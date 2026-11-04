@@ -878,14 +878,47 @@ export class McpService {
 
   /**
    * connectors:add: create the library entry from the catalog. Only the connector id and a variant id are read
-   * from the input. Idempotent: an existing entry for the connector is returned unchanged.
+   * from the input. Idempotent: an existing entry for the connector is returned unchanged, except that while it is
+   * not connected a different valid `variant` rewrites it in place (same id, name, addedAt and source; the old
+   * variant's stored header values, OAuth state and tokens are dropped, an in-flight authorization is aborted).
+   * A connected entry (or a 'none'-auth one) keeps its variant until it is disconnected.
    */
   connectorsAdd(input: ConnectorAddInput): McpLibraryInfo {
     const def = connectorById(input?.connectorId)
     if (!def) throw new Error('Unknown connector.')
     const lib = this.lib()
     const existing = this.connectorEntry(def.id)
-    if (existing) return this.libraryInfo(existing, this.projects.list())
+    if (existing) {
+      const wanted = typeof input.variant === 'string' ? def.variants.find((v) => v.id === input.variant) : undefined
+      const current = connectorVariant(def, existing.connectorVariant)
+      if (!wanted || wanted.id === existing.connectorVariant || wanted.id === current.id) {
+        return this.libraryInfo(existing, this.projects.list())
+      }
+      if (connectorState(current, this.libraryInfo(existing, this.projects.list())) === 'connected') {
+        return this.libraryInfo(existing, this.projects.list())
+      }
+      const entries = lib.list()
+      const built = buildConnectorEntry(def, wanted, existing.id, [], new Date(this.now()))
+      const { headers: _h, secretHeaders: _s, oauth: _o, connectedAt: _c, buildDigest: _b, ...keep } = existing
+      const next: McpLibraryEntry = {
+        ...keep,
+        transport: built.transport,
+        url: built.url,
+        ...(built.headers ? { headers: built.headers } : {}),
+        ...(built.secretHeaders ? { secretHeaders: built.secretHeaders } : {}),
+        description: built.description,
+        connectorVariant: built.connectorVariant
+      }
+      assertValidLibraryEntry(next, entries.filter((e) => e.id !== existing.id))
+      const key = mcpOwnerPrefix({ libraryId: existing.id })
+      this.flows.get(key)?.abort()
+      this.lastErrors.delete(key)
+      this.secrets.deletePrefix(`${key}header:`)
+      this.secrets.deletePrefix(`${key}oauth:`)
+      const saved = lib.save(next)
+      this.notifyLibrary()
+      return this.libraryInfo(saved, this.projects.list())
+    }
     const variant = connectorVariant(def, typeof input.variant === 'string' ? input.variant : undefined)
     const entries = lib.list()
     const built = buildConnectorEntry(def, variant, newId('mcpl'), entries.map((e) => e.name), new Date(this.now()))
