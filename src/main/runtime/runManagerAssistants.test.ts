@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -20,7 +20,9 @@ let dir: string
 let events: RunEvent[]
 
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), 'orgai-rma-'))
+  // Real path: macOS /var -> /private/var and the Windows 8.3 temp spelling differ from the lexical one,
+  // and RunManager reports real paths.
+  dir = realpathSync.native(mkdtempSync(join(tmpdir(), 'orgai-rma-')))
   events = []
 })
 afterEach(() => {
