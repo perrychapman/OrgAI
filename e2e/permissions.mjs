@@ -571,8 +571,11 @@ try {
   await page.keyboard.press('Enter')
   check(await adv.evaluate((el) => el.open), 'Advanced reopens before the reload')
   check(await page.getByRole('switch', { name: 'Let runs message each other' }).isVisible(), 'the Runs rows are visible in the open Advanced settings')
+  // The details toggle event stores the state asynchronously: wait for the stored value before reloading (slow CI runners).
+  await page.waitForFunction(() => localStorage.getItem('orgai.settingsAdvanced.project-permissions') === '1', null, { timeout: 5_000 }).catch(() => {})
   await reloadToSettings()
   await paneTab('Permissions')
+  await adv.waitFor({ timeout: 10_000 })
   check(await adv.evaluate((el) => el.open), 'the open Advanced state survives a reload')
   await setAdvanced('project-permissions', false)
 
