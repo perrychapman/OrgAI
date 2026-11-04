@@ -398,6 +398,15 @@ components/layout:
   refetches on `projects:engagementChanged`, never from the write's result alone. Agent-written text renders as plain
   React text only (no Markdown, no HTML, no selectors or RegExps from it). e2e:free: `e2e/knowledge.mjs`,
   `e2e/knowledge-graph.mjs`, `e2e/knowledge-run.mjs`.
+  Walk-2 fix-up (cfa7737, unit-tested and e2e-driven only, not re-walked by eye): the transcript write row is
+  `knowledge-write-row` (the list's `knowledge-row` is unchanged); RunMeta reads "Recorded N changes" with the
+  breakdown in its title (`recordedBreakdown` in `lib/knowledgeRun.ts`); Settings' summary and Clear everything counts
+  follow `knowledgeSummaryLine` (live) and `clearCountsLine` (including retired); graph relation edges use the facing
+  sides (`relationHandles`) and unfocused skip links are clipped; retire / delete show a `knowledge-notice` Banner
+  (Undo on retire, 8 s, paused while pointer or focus is inside) and the pane stays on a retired item; focus requests
+  with no target and the History run link land on a real element, and `SidePanel` returns focus to the rail's Show
+  button after the user's Hide. Open: the "Show item details" click still drops focus to body; the 8 s timer, retired-group
+  edge geometry and radial layout with the new handles are unverified.
 
 - `src/renderer/src/`
 - `src/renderer/src/components/connections/`

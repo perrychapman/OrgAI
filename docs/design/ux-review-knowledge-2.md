@@ -303,3 +303,7 @@ Knowledge, the History run link and Hide item details.
   unit-tested only), screen-reader output (status texts were read from the DOM).
 - Contrast was judged by eye in both themes, not measured; System theme not driven.
 - The native folder picker, the setup interview, a second engagement's data isolation (one engagement only in this walk).
+
+## Status after fix-up (cfa7737)
+
+M1, M2, M3, M4, M5 and M7 are fixed on dev at cfa7737 (details in docs/design/knowledge.md section 13 "Fix-up after the re-walk"). Checked by unit tests and the e2e scripts (knowledge.mjs, knowledge-graph.mjs, knowledge-run.mjs) only; not re-walked by eye. Unverified: the 8 s notice timer and its pause, Esc on a filtered-out selected item, retired-group edge geometry, radial layout with the new handles. Still open: M6, L1-L10, and clicking "Show item details" drops focus to body.

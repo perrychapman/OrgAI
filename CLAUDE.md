@@ -770,19 +770,34 @@ and the frontend-design skill is not vendored in `.claude/skills` (only `run-des
   (`knowledge-graph-depth`), Show all (`knowledge-graph-all`) warned past `SHOW_ALL_WARN_AT` 150, "N retired" fold
   groups (`knowledge-retired-group`, expand chevron), relation labels at zoom >= 1 else in the edge title, kind -> role
   colour slot, the four node styles and both themes through `useCanvasOptions`, legend popover
-  `knowledge-graph-legend`, skip links `knowledge-skip-list` / `knowledge-skip-detail`, nodes `knowledge-node[data-id]`
+  `knowledge-graph-legend`, skip links `knowledge-skip-list` / `knowledge-skip-detail` (sr-only-style with no pointer
+  hits until focused, in knowledge-graph.css; the global `.skip-link` is untouched), nodes `knowledge-node[data-id]`
   as Tab stops in list order with spoken names (`nodeSpokenName`), Space selects, Enter opens the detail, Ctrl+Arrow
-  moves between neighbours, no animated layout under reduced motion. Run view: `lib/knowledgeRun.ts`
+  moves between neighbours, no animated layout under reduced motion. Relation edges leave and enter by the sides that
+  face each other (`lib/knowledgeGraph.ts` `relationHandles`, reusing `messageSides` / `msgHandleId`; nodes carry hidden
+  handles on all four sides, the original two stay for retired-group edges). Run view: `lib/knowledgeRun.ts`
   `collapseKnowledgeWrites` folds each engagement_knowledge / engagement_context write call and result into the harness
-  row ("Recorded organisation Acme Corp", kinds and relations with hyphens as spaces, result under "Show output",
-  `knowledge-row-open` "Open" link; ids parsed from result text must match `KNOWLEDGE_ID_RE`), `transcriptRows.ts`
+  row (`knowledge-write-row`, "Recorded organisation Acme Corp", kinds and relations with hyphens as spaces, result under "Show output",
+  inner `knowledge-row-open` "Open" link; the name no longer collides with the list's `knowledge-row`; ids parsed from result text must match `KNOWLEDGE_ID_RE`), `transcriptRows.ts`
   gives reads their sentences ("Looked up the kinds and relations in use", "Searched the knowledge for Acme", "Read
-  Jane Doe", "Read the note …", "Read the context notes"), RunMeta `run-meta-recorded` "Recorded N items"
-  (`recordedCount` over the chain's harness rows, engagements only) opens the tab. Settings > General > Context notes
-  is one line `knowledge-summary` (`knowledgeSummaryLine`: "12 notes, 40 facts, 8 people") + `knowledge-open`;
-  Maintenance danger zone adds `knowledge-clear` "Clear everything…" (`clearCountsLine`, `knowledge-clear-confirm`,
+  Jane Doe", "Read the note …", "Read the context notes"), RunMeta `run-meta-recorded` "Recorded N changes"
+  (`recordedBreakdown` over the chain's harness rows, engagements only; the breakdown "4 items, 2 relations, 1 note, 1
+  retired" is in its title and sr-only text via `recordedBreakdownText`, label `recordedLabel`) opens the tab. Settings > General > Context notes
+  is one line `knowledge-summary` (`knowledgeSummaryLine`: "5 items (1 person, 4 systems), 2 notes, 6 facts", live counts only, at most 5 kinds then ", N more") + `knowledge-open`;
+  Maintenance danger zone adds `knowledge-clear` "Clear everything…" (`clearCountsLine`: counts everything including retired,
+  "5 items (1 retired), 7 facts, 2 relations", a parenthetical only when non-zero; `knowledge-clear-confirm`,
   notice `maintenance-notice` takes focus; notes stay) and the forget confirm / `forget-notice` count "N recorded
-  items" (`knowledgeRemoved`). Dates: `lib/dates.ts` `formatDate` / `formatDateTime` ("4 Nov 2026"), used by plan,
+  items" (`knowledgeRemoved`, wording unchanged).
+  - Fix-up of walk-2 M1-M5, M7 (cfa7737; `docs/design/ux-review-knowledge-2.md` "Status after fix-up"): retire / delete
+    show a Banner `knowledge-notice` ("Retired <name>." with `knowledge-notice-undo`, "Deleted <name>." without Undo),
+    announced through `knowledge-status`, cleared after 8 s (`NOTICE_MS`, restarted after a pause while pointer or
+    focus is inside); after a retire the pane stays on the item (Restore shown), no jump to the next. RunMeta and
+    Settings call `openKnowledgeItem({ projectId })`; a focus request with no target lands on the selected row, else the
+    first row, else Add a note (a node in Graph view); the History run link lands on the composer, else the selected
+    tab, else the topbar h1; `SidePanel` focuses the rail's Show button only after the user's Hide and only if focus is on
+    body. Unit-tested and driven by e2e (knowledge.mjs, knowledge-graph.mjs, knowledge-run.mjs) only; not seen by eye, not re-walked.
+    Unverified: the 8 s timer and its pause, Esc on a filtered-out selected item, retired-group edge geometry, radial
+    layout with the new handles. Clicking "Show item details" still drops focus to body (open). Dates: `lib/dates.ts` `formatDate` / `formatDateTime` ("4 Nov 2026"), used by plan,
   notes, kit and template lines. `ConfirmDialog` / `useConfirm` take `confirmTestId`. e2e (in e2e:free; mock
   `[mock:knowledge]`, both sizes and themes, keyboard pass): `e2e/knowledge.mjs`, `e2e/knowledge-graph.mjs`,
   `e2e/knowledge-run.mjs`; engagement2.mjs drives the note dialog from the tab. Reviewer (two passes): no Critical or
