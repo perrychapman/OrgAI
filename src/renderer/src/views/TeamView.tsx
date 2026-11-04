@@ -503,6 +503,9 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
             <Button size="sm" icon={LayoutGrid} onClick={autoLayout}>
               Auto-layout
             </Button>
+            {/* Beside Auto-layout, in the button row: on the wrapped row with the note a 28 px button grew the toolbar
+                at 1024x640 and took that height from the Team assistant tray. */}
+            <CanvasStyleButton testId="canvas-style-button" />
             <span className="toolbar-note">{addParent ? `New roles report to ${addParent.name}.` : 'The first role becomes the root.'}</span>
             {undo && (
               <span className="toolbar-undo" role="status">
@@ -512,9 +515,6 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
                 </Button>
               </span>
             )}
-            <span className="frame-toolbar-end">
-              <CanvasStyleButton testId="canvas-style-button" />
-            </span>
           </FrameToolbar>
         <div className="import-notices">
           {importNotice && importNotice.state !== 'reverted' && (

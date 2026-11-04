@@ -4,7 +4,7 @@
 // minimap (one shape per node, size at 1024x640, never under a popover), and the Team editor following the settings.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { TMP, check, cleanup, createProject, finish, launch, log, makeFixtureRepo, openAppSettings, openProject, openTeam, projectTab, sleep, windowShift } from './lib.mjs'
+import { TMP, check, cleanup, createProject, endSession, finish, launch, log, makeFixtureRepo, openAppSettings, openProject, openTeam, projectTab, sleep, windowShift } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const scriptFile = path.join(fs.mkdtempSync(path.join(TMP, 'orgai-e2e-canvas-script-')), 'script.json')
@@ -304,13 +304,6 @@ try {
   check((await page.locator(`${STAGE} .react-flow__edge.animated`).count()) === 0, 'reduced motion leaves no animated edge')
   await setAppearance({ reduceMotion: 'system' })
 
-  // Messages, when the mock sent one: dotted message colour, unlike a reporting line, drawn under the nodes.
-  const msg = page.locator(`${STAGE} .msg-edge`)
-  if (await msg.count()) {
-    const dash = await msg.first().locator('path').first().evaluate((p) => getComputedStyle(p).strokeDasharray)
-    check(dash !== 'none', 'a message edge is dotted', dash)
-  } else log('no message edge on the canvas (the deep-tree script sends none); skipped the message checks')
-
   // ---------- The toolbar "Canvas style" popover ----------
   await setCanvas({ pattern: 'dots', tint: true, edges: 'curved', layout: 'top-down', nodeStyle: 'card' })
   const styleBtn = page.locator('.run-body [data-testid=canvas-style-button]')
@@ -346,6 +339,52 @@ try {
   check(shift.ok, 'the deep link does not shift the window', JSON.stringify(shift))
   check(await page.evaluate(() => document.activeElement?.getAttribute('data-testid') === 'canvas-preset'), 'the deep link focuses the checked style option')
   await shot('deep-link-canvas')
+
+  // ---------- A message between two working reports (M4) ----------
+  await openProject(page, NAME)
+  await setCanvas({ pattern: 'dots', tint: true, edges: 'curved', layout: 'top-down', nodeStyle: 'card', minimap: false })
+  fs.writeFileSync(
+    scriptFile,
+    JSON.stringify({
+      delayMs: 300,
+      work: [
+        { type: 'spawn', id: 'msg-a', description: 'First report', name: 'worker-a' },
+        { type: 'spawn', id: 'msg-b', description: 'Second report', name: 'worker-b' },
+        // `from` is an agent id, `to` a handle (mock.ts MockStep 'message').
+        { type: 'message', from: 'msg-a', to: 'worker-b', text: 'Here is what I found.' },
+        { type: 'text', text: 'Both reports are working.' }
+      ]
+    })
+  )
+  await projectTab(page, 'Live').click()
+  await page.keyboard.press('Control+t')
+  await page.locator('.new-run').waitFor({ timeout: 5000 })
+  await page.locator('.composer textarea').fill('Message check')
+  await page.locator('.composer .btn.primary').click()
+  const msgEdge = page.locator(`${STAGE} .react-flow__edge.msg-edge`)
+  await msgEdge.first().waitFor({ timeout: 10_000 }).catch(() => {})
+  if (await msgEdge.count()) {
+    const m = await page.evaluate(() => {
+      const path = (el) => el?.querySelector('path.react-flow__edge-path')
+      const msg = path(document.querySelector('.run-body .react-flow__edge.msg-edge'))
+      const live = path(document.querySelector('.run-body .react-flow__edge.animated:not(.msg-edge)'))
+      const svg = msg?.closest('svg')
+      return {
+        msgDash: msg ? getComputedStyle(msg).strokeDasharray : null,
+        msgCap: msg ? getComputedStyle(msg).strokeLinecap : null,
+        msgStroke: msg ? getComputedStyle(msg).stroke : null,
+        liveDash: live ? getComputedStyle(live).strokeDasharray : null,
+        liveStroke: live ? getComputedStyle(live).stroke : null,
+        layerZ: svg ? getComputedStyle(svg).zIndex : null
+      }
+    })
+    check(!!m.msgDash && m.msgDash !== 'none' && m.msgCap === 'round', 'a message edge is a round-capped dotted line', JSON.stringify(m))
+    check(!m.liveDash || (m.liveDash !== m.msgDash && m.liveStroke !== m.msgStroke), 'a message edge differs from a working reporting line in dash and colour', JSON.stringify(m))
+    check(m.layerZ === null || m.layerZ === 'auto' || Number(m.layerZ) <= 0, 'a message edge is drawn in the edge layer, under the nodes', JSON.stringify(m))
+    await shot('live-message-edge')
+  } else check(false, 'the mock message shows as a message edge')
+  await endSession(page)
+  fs.writeFileSync(scriptFile, JSON.stringify({ delayMs: 300 }))
 
   // ---------- Team editor ----------
   await openProject(page, NAME)
