@@ -120,6 +120,21 @@
   filter: none;
 }
 
+/* Station nodes: the handle's inline left / top is its centre, so bottom and right must not pin or shift it (React Flow's
+   own rules do, see @xyflow/react base.css). Invisible on the Live canvas; the Team editor shows them like the radial rule. */
+.react-flow__node > [data-style='station'] > .react-flow__handle {
+  right: auto;
+  bottom: auto;
+  transform: translate(-50%, -50%);
+}
+.react-flow__node-agent > [data-style='station'] > .react-flow__handle,
+.react-flow__node-done-group > [data-style='station'] > .react-flow__handle {
+  opacity: 0;
+}
+.react-flow__node-role:is(:hover, :focus-visible, :focus-within) > [data-style='station'] > .react-flow__handle {
+  opacity: 1;
+}
+
 /* Radial layout: edges run centre to centre, so the handles are only anchors for React Flow. */
 .react-flow[data-layout='radial'] .react-flow__handle {
   opacity: 0;

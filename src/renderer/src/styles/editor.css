@@ -110,6 +110,22 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* Station and hex: a transparent box; the circle, name pill and tile are styled with the agent nodes (run.css). */
+.role-node[data-style='station'],
+.role-node[data-style='hex'] {
+  box-sizing: border-box;
+  display: block;
+  padding: 0;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  border-radius: var(--radius-md);
+  position: relative;
+}
+.role-node[data-style='hex'] {
+  width: 120px;
+  height: 104px;
+}
 .role-node .head {
   display: flex;
   align-items: center;
