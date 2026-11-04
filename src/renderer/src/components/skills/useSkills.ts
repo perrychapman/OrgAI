@@ -25,11 +25,19 @@ export function useProjectSkills(projectId: string): ProjectSkills {
   const [error, setError] = useState<string | null>(null)
   const seq = useRef(0)
 
+  // The store's copy of this project: a change to its skills or roles (an approved proposal, a grant, a library refresh) reloads the list.
+  const storeSkills = useAppStore((s) => s.projects.find((p) => p.id === projectId)?.skills)
+  const storeRoles = useAppStore((s) => s.projects.find((p) => p.id === projectId)?.roles)
+  const seen = useRef({ skills: storeSkills, roles: storeRoles })
+  /** References our own apply() pushed into the store: not a change to react to. */
+  const applied = useRef<{ skills: unknown; roles: unknown } | null>(null)
+
   const apply = useCallback((result: SkillMutationResult): void => {
     seq.current++
     setSkills(result.skills)
     setError(null)
     setLoading(false)
+    applied.current = { skills: result.project.skills, roles: result.project.roles }
     useAppStore.getState().replaceProject(result.project)
   }, [])
 
@@ -55,6 +63,16 @@ export function useProjectSkills(projectId: string): ProjectSkills {
       seq.current++
     }
   }, [reload])
+
+  useEffect(() => {
+    const prev = seen.current
+    seen.current = { skills: storeSkills, roles: storeRoles }
+    if (prev.skills === storeSkills && prev.roles === storeRoles) return
+    const mine = applied.current
+    if (mine && mine.skills === storeSkills && mine.roles === storeRoles) return
+    // Background reload: keeps the list and `loading` as they are.
+    void reload()
+  }, [storeSkills, storeRoles, reload])
 
   const mutate = useCallback(
     async (fn: () => Promise<SkillMutationResult>): Promise<SkillMutationResult> => {

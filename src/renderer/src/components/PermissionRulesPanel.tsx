@@ -9,6 +9,7 @@ import { SettingsCard } from './settings/SettingsCard'
 import { SettingsSection } from './settings/SettingsSection'
 import { checkRuleDraft, collapseRules, ruleInfo } from '../lib/permissionCopy'
 import { PROJECT_SETTINGS_SECTIONS } from '../lib/settingsTarget'
+import { useAppStore } from '../store/useAppStore'
 
 const EXAMPLES = ['Bash(npm test:*)', 'Bash(npm test *)', 'Bash(git status)', 'WebSearch', 'mcp__github']
 
@@ -59,6 +60,15 @@ export default function PermissionRulesPanel({ project, onRulesChange }: { proje
   useEffect(() => {
     void refresh()
   }, [refresh])
+
+  // Rules granted or saved from a run: refresh when the store's counter moves after mount (never a second fetch on mount).
+  const changeCount = useAppStore((s) => s.rulesChangedByProject[project.id] ?? 0)
+  const seenCount = useRef(changeCount)
+  useEffect(() => {
+    if (seenCount.current === changeCount) return
+    seenCount.current = changeCount
+    void refresh()
+  }, [changeCount, refresh])
 
   const notify = useRef(onRulesChange)
   notify.current = onRulesChange

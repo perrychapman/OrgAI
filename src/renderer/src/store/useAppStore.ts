@@ -1,4 +1,5 @@
 import { normalizeView } from '../lib/teamView'
+import { rulesChangedProject } from '../lib/rulesChange'
 import { isTeamSurfaceRun } from '../lib/runSurface'
 import { useTeamAssistantStore } from './teamAssistant'
 import { create } from 'zustand'
@@ -289,6 +290,8 @@ interface AppState {
   proposalNextByRun: Record<string, ProposalNext>
   /** The secret-free outcome of each resolved proposal (by proposal id), from the proposal.resolved event. */
   proposalOutcomes: Record<string, ProposalOutcome>
+  /** Per project: bumped when saved permission rules may have changed (project-scope grant, project.updated). */
+  rulesChangedByProject: Record<string, number>
   requestImport(request: { projectId: string; fresh: boolean } | null): void
   recordImport(projectId: string, notice: Omit<ImportNotice, 'state' | 'error'>): void
   undoImport(projectId: string): Promise<void>
@@ -755,6 +758,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   importNotices: {},
   proposalNextByRun: {},
   proposalOutcomes: {},
+  rulesChangedByProject: {},
 
   defaultConnection: null,
   defaultConnectionChosen: null,
@@ -1455,6 +1459,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   handleEvent(e) {
+    const rulesProject = rulesChangedProject(e, (runId) => get().runs[runId]?.summary.projectId)
+    if (rulesProject) set((s) => ({ rulesChangedByProject: { ...s.rulesChangedByProject, [rulesProject]: (s.rulesChangedByProject[rulesProject] ?? 0) + 1 } }))
     if (e.type === 'project.updated') {
       set((s) => ({ projects: s.projects.map((p) => (p.id === e.project.id ? e.project : p)) }))
       return
