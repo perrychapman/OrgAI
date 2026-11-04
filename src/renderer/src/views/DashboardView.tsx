@@ -1,41 +1,36 @@
 import type { ReactElement } from 'react'
 import { useEffect, useState } from 'react'
 import { MessageSquare, Plus } from 'lucide-react'
-import { setupPending } from '@shared/setup'
 import { openNewChat, useAppStore } from '../store/useAppStore'
-import { initials } from '../lib/layout'
 import { Button } from '../components/ui/Button'
-import { useConfirm } from '../components/ui/ConfirmDialog'
-import { NewProjectForm, hasParkedDraft } from '../components/dashboard/NewProjectForm'
+import { hasParkedDraft } from '../components/dashboard/NewProjectForm'
+import { HeroBand } from '../components/dashboard/HeroBand'
+import { AttentionColumn } from '../components/dashboard/AttentionColumn'
+import { useLastSeen } from '../components/dashboard/useLastSeen'
+import { ProjectsGrid } from '../components/dashboard/ProjectsGrid'
+import { FactsCards } from '../components/dashboard/FactsCards'
+import { NewProjectDialog } from '../components/dashboard/NewProjectDialog'
+import { FirstLaunch } from '../components/dashboard/FirstLaunch'
 
 /** The last openNewProject() request this view acted on, so a request is consumed once. */
 let consumedNewProjectRequest = 0
 
-/** Move focus to the topbar heading (the page's landmark) after the control that was focused is gone. */
-function focusHeading(): void {
-  requestAnimationFrame(() => {
-    const h = document.querySelector<HTMLElement>('main .topbar h1')
-    if (!h) return
-    h.tabIndex = -1
-    h.focus({ preventScroll: true })
-  })
-}
-
+/** The home page (docs/design/dashboard.md): hero, attention column, project tiles and facts. */
 export default function DashboardView(): ReactElement {
   const projects = useAppStore((s) => s.projects)
-  const selectProject = useAppStore((s) => s.selectProject)
-  const setView = useAppStore((s) => s.setView)
-  const removeProject = useAppStore((s) => s.removeProject)
   const appInfo = useAppStore((s) => s.appInfo)
   const loadAppInfo = useAppStore((s) => s.loadAppInfo)
+  const loadAllHistory = useAppStore((s) => s.loadAllHistory)
   const newProjectRequest = useAppStore((s) => s.newProjectRequest)
-  const { confirm, dialog } = useConfirm()
+  const { lastSeen, markAllSeen } = useLastSeen()
   // A form parked by its connection link comes back open.
   const [formOpen, setFormOpen] = useState(() => hasParkedDraft())
+  const [announce, setAnnounce] = useState<string | null>(null)
 
   useEffect(() => {
     void loadAppInfo()
-  }, [loadAppInfo])
+    void loadAllHistory()
+  }, [loadAppInfo, loadAllHistory])
 
   // openNewProject() opens the form once, whether it fired before or after this view mounted.
   useEffect(() => {
@@ -48,28 +43,12 @@ export default function DashboardView(): ReactElement {
   const mockAvailable = !!appInfo?.mockAdapter
   const empty = projects.length === 0
 
-  const remove = async (id: string, name: string): Promise<void> => {
-    const ok = await confirm({
-      title: `Delete "${name}"?`,
-      body: 'This only removes the project from OrgAI. Files in its folder are untouched.',
-      confirmLabel: 'Delete project',
-      danger: true
-    })
-    if (ok) await removeProject(id)
-  }
-
-  const cancelForm = (): void => {
-    setFormOpen(false)
-    // The Cancel button unmounts with the form: hand focus back to the button that opened it.
-    requestAnimationFrame(() => document.querySelector<HTMLElement>('[data-testid=new-project]')?.focus())
-  }
-
   return (
     <>
       <div className="topbar">
         <h1>Dashboard</h1>
         <div className="spacer" />
-        {!empty && !formOpen && (
+        {!empty && (
           <>
             <Button variant="secondary" icon={MessageSquare} onClick={() => void openNewChat()} testId="projects-new-chat">
               New chat
@@ -80,72 +59,21 @@ export default function DashboardView(): ReactElement {
           </>
         )}
       </div>
-      <div className="projects">
-        {empty ? (
-          <div className="projects-empty">
-            <div className="projects-empty-main">
-              <div className="projects-intro">
-                <h2>Start with a project</h2>
-                <p>
-                  Describe a new idea or point at an existing repository. The Architect interviews you, reads what is there, and proposes the
-                  architecture, the org chart of agent roles, and the run settings. You approve each step before it is applied.
-                </p>
-              </div>
-              <NewProjectForm mockAvailable={mockAvailable} />
-            </div>
-            <section className="card chat-now" aria-labelledby="chat-now-title">
-              <h2 id="chat-now-title" className="form-title">
-                Chat now
-              </h2>
-              <p>Ask a question or hand over a task without making a project.</p>
-              <Button variant="primary" icon={MessageSquare} testId="empty-chat-now" onClick={() => void openNewChat()}>
-                Chat now
-              </Button>
-            </section>
-          </div>
-        ) : (
-          formOpen && <NewProjectForm mockAvailable={mockAvailable} onCancel={cancelForm} />
-        )}
-        {!empty && (
-          <ul className="project-list">
-            {projects.map((p) => (
-              <li key={p.id} className="card project-card">
-                <button
-                  type="button"
-                  className="project-card-main"
-                  aria-label={`Open ${p.name}, ${p.path}`}
-                  onClick={() => {
-                    selectProject(p.id)
-                    setView('run')
-                    focusHeading()
-                  }}
-                >
-                  <h3>{p.name}</h3>
-                  <div className="path">{p.path}</div>
-                  <div className="roles">
-                    {p.roles.slice(0, 8).map((r) => (
-                      <span key={r.id} style={{ background: r.color }} title={r.name}>
-                        {initials(r.name)}
-                      </span>
-                    ))}
-                    {p.roles.length > 8 && <span className="more">+{p.roles.length - 8}</span>}
-                  </div>
-                </button>
-                <div className="row between project-card-foot">
-                  <span className="row gap-2">
-                    <span className="chip">{p.roles.length} roles</span>
-                    {setupPending(p) && <span className="chip warn">Setup pending</span>}
-                  </span>
-                  <Button variant="ghost" size="sm" onClick={() => void remove(p.id, p.name)}>
-                    Delete
-                  </Button>
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
+      <div className="dashboard" data-testid="dashboard">
+        <div className="dashboard-grid">
+          <HeroBand firstLaunch={empty} announce={announce} />
+          {empty ? (
+            <FirstLaunch mockAvailable={mockAvailable} />
+          ) : (
+            <>
+              <AttentionColumn lastSeen={lastSeen} onMarkAllSeen={markAllSeen} />
+              <ProjectsGrid onDeleted={(name) => setAnnounce(`Deleted ${name}.`)} />
+              <FactsCards />
+            </>
+          )}
+        </div>
       </div>
-      {dialog}
+      {!empty && <NewProjectDialog open={formOpen} onClose={() => setFormOpen(false)} mockAvailable={mockAvailable} />}
     </>
   )
 }
