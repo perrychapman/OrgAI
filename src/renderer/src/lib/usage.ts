@@ -130,6 +130,6 @@ export function periodSince(since: number, locale?: string): string {
 /** A quiet "Lifetime $X" line: only when the proxy reports a lifetime total that differs from the current budget period's spend. */
 export function lifetimeText(spend: UsageSpend): string {
   const t = spend.totalUsd
-  if (t === null || t === undefined || !Number.isFinite(t) || Math.abs(t - spend.usd) < 0.005) return ''
+  if (t === null || t === undefined || !Number.isFinite(t) || t < 0 || Math.abs(t - spend.usd) < 0.005) return ''
   return `Lifetime ${money(t)}`
 }

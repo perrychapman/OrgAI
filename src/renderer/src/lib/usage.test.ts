@@ -55,6 +55,7 @@ describe('usage', () => {
     expect(lifetimeText({ ...s(42.1, 50), totalUsd: null })).toBe('')
     expect(lifetimeText(s(42.1, 50))).toBe('')
     expect(lifetimeText({ ...s(42.1, 50), totalUsd: Number.POSITIVE_INFINITY })).toBe('')
+    expect(lifetimeText({ ...s(42.1, 50), totalUsd: -5 })).toBe('')
   })
   it('levels', () => {
     expect(spendLevel(s(10, 50))).toBe('')

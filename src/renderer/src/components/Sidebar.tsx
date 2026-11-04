@@ -170,6 +170,8 @@ export default function Sidebar({
   const account = mockAdapter ? { tone: 'ok', label: 'Mock adapter', title: undefined } : pill
   /** The rail's accessible name and tooltip: LiteLLM's whole spend sentence (the rail shows no figure), else the label. */
   const railName = current === 'litellm' && account.title ? account.title : account.label
+  /** The full row's tooltip: the LiteLLM spend sentence (the one-figure label can clip at narrow widths); other rows keep none. */
+  const rowTitle = rail ? railName : current === 'litellm' && !mockAdapter ? account.title : undefined
   const tight = mockAdapter || current === 'litellm' ? null : tightestWindow(currentUsage)
   const needsLabel = `Needs you · ${items.length}`
   const sidebarKey = isMacPlatform(currentPlatform()) ? '⌘B' : `${modKeyLabel(currentPlatform())}+B`
@@ -479,7 +481,7 @@ export default function Sidebar({
             </>
           }
           triggerLabel={rail ? railName : undefined}
-          triggerTitle={rail ? railName : undefined}
+          triggerTitle={rowTitle}
           triggerClassName="account-row"
           triggerTestId="auth-pill"
           label="Account, plan usage and spend"
