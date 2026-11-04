@@ -272,6 +272,15 @@ Removed: `.project-card` hooks.
   outside this change; e2e matches the "Dashboard" text and aria-label).
 - Live region: `dashboard-live` is the only one on the page; delete results and Open folder errors speak through it
   (`DashboardAnnouncement` with a rising `seq`).
+- Fix-up after the re-walk (`ux-review-dashboard-2.md`): H1 Continue on a Since row calls
+  `continueFromHistory(runId, projectId)`, which selects the project through `focusRun`, opens the chain's newest run and
+  focuses the composer; a plain row click uses `focusRun` and then focuses the topbar heading unless focus already
+  landed somewhere. H2 `removeProject` drops the project's runs, history, active run, draft and dismissed entries, and
+  the Dashboard hooks ignore summaries of projects that are neither stored nor virtual. M1 `useLastSeen` also returns
+  `clearedAt` (localStorage `orgai.dashboardClearedAt`, moved only by Mark all seen); `sinceLastSeen(..., { clearedAt })`
+  keeps `closed-waiting` rows until then, other kinds still follow last seen. M2 `heroSublineParts` adds "N were waiting
+  on you when OrgAI closed" when the figure is All quiet. M4 the live region joins a message and a figure change that
+  land within 1.5 s into one sentence. Still open: M3 (paused runs after a quit), L1-L8 of that walk (except row focus).
 - Open: the hero may announce once when history finishes loading after mount; delete counts take open runs from the
   live store only; `weekCost` is unused; the caps, Show more, `project-tile-error`, Open folder and reduced motion are
   not driven by e2e.
