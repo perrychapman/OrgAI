@@ -56,3 +56,35 @@ end and NOT pushed.
 - Walk-2 Lows L1-L10 and knowledge.md section 13 Lows; runtime Lows L5 / L7 / L8; `knowledgeFileState` not exposed to
   the renderer; the tool still pre-reads a fact count instead of using the store's `factsAdded`.
 - Never run live: no Claude or Codex run has called `engagement_knowledge`; everything is unit tests + the mock.
+
+## Update at pause: the ui-lead-2 fix-up never started
+
+Its branch was empty and has been deleted (no in-flight branch remains; `git worktree list` shows only the main
+checkout). The walk-2 Mediums M1-M5 and M7 are all untouched. Pointers it gathered, so the next run can brief engineers
+on disjoint files straight away:
+
+- M1: `components/TranscriptPanel.tsx` `KnowledgeWriteRow` (~line 240) renders `div.entry.system.harness.knowledge-row`
+  with `data-testid=knowledge-row`; `styles/knowledge.css` ~223 `.knowledge-row` (list row, 56 px flex column) breaks it;
+  `styles/transcript.css` ~137 has `.knowledge-row .knowledge-row-open`. Rename to `knowledge-write-row` in the
+  component, transcript.css, `e2e/knowledge-run.mjs` ~188-189, the CLAUDE.md "Knowledge tab" bullet and knowledge.md
+  section 13.
+- M4: `styles/knowledge-graph.css` ~28-35 positions `.knowledge-skip` inside the toolbar; `styles/ui.css` ~586
+  `.skip-link` hides by `translateY(-200%)` only. Make `.knowledge-graph-toolbar .knowledge-skip:not(:focus)` sr-only;
+  `e2e/knowledge-graph.mjs` ~228-232 checks the focused box is visible.
+- M7: `RunMeta.tsx` ~112 and `ContextNotesSection.tsx` ~61 call `setView('knowledge')` only; use the store's
+  `openKnowledgeItem({ projectId })` (useAppStore.ts ~1457) and make `KnowledgeView.tsx` (~271-276, `resolveFocus`)
+  focus the selected row, else the first row (`listRef.current.focusCurrent()`), else `knowledge-add-note` when nothing
+  resolves. History run link: `KnowledgeView.tsx` ~471 `onOpenRun` -> follow `components/dashboard/AttentionColumn.tsx`
+  ~144 `settleFocus`. "Hide item details": `components/layout/SidePanel.tsx` `setCollapsed(true)` removes the focused
+  button; focus the rail's "Show <label>" IconButton after collapse.
+- M5: `KnowledgeView.tsx` `setRetired` (~297); add a dismissable notice "Retired <name>." with Undo
+  (`setRetired(item, false)`), announced through `announce()` / `knowledge-status`; `e2e/knowledge.mjs` ~241-244 checks
+  the status and next-row focus.
+- M3: `lib/knowledgeGraph.ts` + test, `components/knowledge/KnowledgeGraph.tsx` (edges), `KnowledgeGraphNode.tsx` (one
+  top target / one bottom source handle today), `KnowledgeGraphEdge.tsx`; pattern `lib/canvasShapes.ts` `messageSides`
+  / `msgHandleId` as used by `views/LiveRunView.tsx` ~585 and `components/AgentNode.tsx` `MessageHandles`.
+- M2: `lib/knowledge.ts` `knowledgeSummaryLine` (~344), `clearCountsLine` (~359) + tests ~188-191; `lib/dashboard.ts`
+  `forgetConfirmText` / `forgetNoticeText` (~314, ~334) + tests ~327-362; RunMeta ~112-116; strings in
+  `e2e/knowledge-run.mjs` lines 4, 125-137, 218, 250, 284, 297, 333, 338.
+- Suggested split (disjoint files): A graph (M3 + M4), B tab (M5 + M7 view side incl. SidePanel.tsx), C run / settings
+  (M1 + M2 + M7 trigger side + the two doc bullets).
