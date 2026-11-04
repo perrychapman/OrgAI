@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, nativeTheme, safeStorage, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, nativeImage, nativeTheme, safeStorage, shell } from 'electron'
 import { mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -185,8 +185,8 @@ function createWindow(scope?: FocusRunTarget): BrowserWindow {
     autoHideMenuBar: true,
     backgroundColor: windowBackground(settingsStore?.get().appearance.theme ?? 'dark', nativeTheme.shouldUseDarkColors),
     title: 'OrgAI',
-    // Packaged builds take the icon from the executable; in development use the generated PNG.
-    ...(app.isPackaged ? {} : { icon: join(app.getAppPath(), 'build', 'icon.png') }),
+    // Packaged builds take the icon from the executable; in development use the generated ICO (Windows) or PNG.
+    ...(app.isPackaged ? {} : { icon: join(app.getAppPath(), 'build', process.platform === 'win32' ? 'icon.ico' : 'icon.png') }),
     webPreferences: {
       preload: join(__dirname, '../preload/index.mjs'),
       // The preload is built as an ES module (index.mjs, package.json "type": "module"), which Electron cannot load
@@ -232,6 +232,14 @@ function createWindow(scope?: FocusRunTarget): BrowserWindow {
 }
 
 app.whenReady().then(() => {
+  // In development the Dock would show Electron's icon; packaged builds take it from the bundle.
+  if (process.platform === 'darwin' && !app.isPackaged) {
+    try {
+      app.dock?.setIcon(nativeImage.createFromPath(join(app.getAppPath(), 'build', 'icon.png')))
+    } catch (err) {
+      log.warn(`Could not set the Dock icon: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
   const dataDir = join(app.getPath('userData'), 'data')
   const projects = new ProjectStore(dataDir)
   const settings = new SettingsStore(dataDir)

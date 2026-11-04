@@ -912,6 +912,7 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
     documented URL; PayPal's POST /http answers 404, not 401, though resource metadata exists. Advertised metadata
     only: no sign-in was attempted, so DCR plus loopback acceptance is still unverified everywhere.
 - macOS is untested; nobody has run it on a Mac yet (`docs/macos-testing.md` is the checklist).
+  - App icon: `npm run icon` (`scripts/make-icon.mjs`, pure parts in `scripts/lib/icon.mjs`, tested in `src/main/icon/makeIcon.test.ts`) writes `build/icon.png` (1024), `build/icon.ico` (16-256, Windows) and `build/icon.icns` (macOS, mark inset to ~80% with a transparent margin); commit all three together. In dev, `index.ts` sets the window icon (ico on Windows, png elsewhere) and on darwin `app.dock.setIcon` (never packaged). Verified by unit tests and file inspection; the Dock, Finder and taskbar rendering is unverified on a Mac.
   - `applyShellPath()` runs right after `installLogging()` and merges the login shell's PATH with well-known dirs.
     GUI launches otherwise miss Homebrew, nvm and similar.
   - `listClaudeBinaries` also tries `~/.claude/local/claude`, `~/.local/bin/claude`, `/opt/homebrew/bin/claude` and
