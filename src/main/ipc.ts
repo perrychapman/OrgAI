@@ -101,7 +101,7 @@ import { harnessProject as buildHarnessProject } from './mcp/assist'
 import { createScratchDir, isInsideEither, samePath, scratchDirFor, validateQuickFolder } from './quick/scratch'
 import { existsSync, lstatSync } from 'node:fs'
 import { isAbsolute } from 'node:path'
-import { hiddenCharProblem } from './capabilities/sanitize'
+import { hiddenCharIn, hiddenCharProblem } from './capabilities/sanitize'
 import type { QuickRunService } from './quick/quickRuns'
 import type { ProjectStore } from './store/projects'
 import type { RunManager } from './runtime/runManager'
@@ -795,7 +795,7 @@ function registerMcpIpc(
   ipcMain.handle(IPC.mcpList, (_e, projectId: string): McpServerInfo[] => mcp.list(projectId))
   ipcMain.handle(IPC.mcpUpsert, (_e, input: McpUpsertInput): McpMutationResult => mcp.upsert(input))
   ipcMain.handle(IPC.mcpRemove, (_e, input: { projectId: string; serverId: string }): McpMutationResult => mcp.remove(input))
-  ipcMain.handle(IPC.mcpSetSecret, (_e, input: McpSecretInput): McpMutationResult => mcp.setSecret(input))
+  ipcMain.handle(IPC.mcpSetSecret, (_e, input: unknown): McpMutationResult => mcp.setSecret(mcpSecretArgs(input)))
   ipcMain.handle(IPC.mcpTest, (_e, input: { projectId: string; serverId: string }): Promise<McpTestResult> => mcp.test(input))
   ipcMain.handle(IPC.mcpRegistrySearch, (_e, input: McpRegistrySearchInput): Promise<McpRegistrySearchResult> => mcp.registrySearch(input))
   ipcMain.handle(IPC.mcpAnswerInstall, (_e, input: McpAnswerInstallInput): void => runs.answerMcpInstall(input.runId, input.requestId, input.decision))
@@ -829,7 +829,7 @@ function registerMcpIpc(
   ipcMain.handle(IPC.mcpLibraryList, (): McpLibraryInfo[] => mcp.libraryList())
   ipcMain.handle(IPC.mcpLibraryUpsert, (_e, entry: McpLibraryEntry): McpLibraryInfo[] => mcp.libraryUpsert(entry))
   ipcMain.handle(IPC.mcpLibraryRemove, (_e, input: { libraryId: string }): McpLibraryInfo[] => mcp.libraryRemove(input))
-  ipcMain.handle(IPC.mcpLibrarySetSecret, (_e, input: McpLibrarySecretInput): McpLibraryInfo[] => mcp.librarySetSecret(input))
+  ipcMain.handle(IPC.mcpLibrarySetSecret, (_e, input: unknown): McpLibraryInfo[] => mcp.librarySetSecret(mcpLibrarySecretArgs(input)))
   ipcMain.handle(IPC.mcpLibraryTest, (_e, input: { libraryId: string }): Promise<McpTestResult> => mcp.libraryTest(input))
   // Connectors: the renderer names a preset (and a variant); main builds the entry from src/shared/connectors.ts.
   ipcMain.handle(IPC.connectorsList, (): ConnectorInfo[] => mcp.connectorsList())
@@ -1021,6 +1021,42 @@ export function mcpCopyArgs(input: unknown): McpCopyFromLibraryInput {
   const i = input as Record<string, unknown>
   if (!isSafeId(i.projectId) || !isSafeId(i.serverId) || typeof i.copySecrets !== 'boolean') throw new Error('Invalid copy request.')
   return { projectId: i.projectId, serverId: i.serverId, copySecrets: i.copySecrets }
+}
+
+function secretArgs(input: unknown, idField: 'projectId' | 'libraryId'): Record<string, unknown> {
+  const bad = (): never => {
+    throw new Error('Invalid secret.')
+  }
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return bad()
+  const proto = Object.getPrototypeOf(input)
+  if (proto !== Object.prototype && proto !== null) return bad()
+  const i = input as Record<string, unknown>
+  const own = (k: string): unknown => (Object.hasOwn(i, k) ? i[k] : undefined)
+  if (!isSafeId(own(idField))) return bad()
+  const kind = own('kind')
+  if (kind !== 'env' && kind !== 'header') return bad()
+  const name = own('name')
+  if (typeof name !== 'string' || name.length < 1 || name.length > 128) return bad()
+  const value = own('value')
+  if (value !== null) {
+    if (typeof value !== 'string' || value.length > 4000 || hiddenCharIn(value)) return bad()
+  }
+  const out: Record<string, unknown> = { [idField]: own(idField), kind, name, value }
+  if (idField === 'projectId') {
+    if (!isSafeId(own('serverId'))) return bad()
+    out.serverId = own('serverId')
+  }
+  return out
+}
+
+/** mcp:setSecret input rebuilt field by field; "Invalid secret." never echoes the value. Exported for tests. */
+export function mcpSecretArgs(input: unknown): McpSecretInput {
+  return secretArgs(input, 'projectId') as unknown as McpSecretInput
+}
+
+/** mcpLibrary:setSecret input rebuilt field by field. Exported for tests. */
+export function mcpLibrarySecretArgs(input: unknown): McpLibrarySecretInput {
+  return secretArgs(input, 'libraryId') as unknown as McpLibrarySecretInput
 }
 
 /** Most names one mcp:setProjectOverrides map may carry (the entry's perProjectEnv is capped at 20 anyway). */

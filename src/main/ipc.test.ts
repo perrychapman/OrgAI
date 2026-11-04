@@ -31,6 +31,30 @@ describe('mcpCopyArgs (mcp:copyFromLibrary)', () => {
   })
 })
 
+const { mcpSecretArgs, mcpLibrarySecretArgs } = await import('./ipc')
+
+describe('mcpSecretArgs / mcpLibrarySecretArgs', () => {
+  it('rebuilds the fields and drops extras', () => {
+    expect(mcpSecretArgs({ projectId: 'p_1', serverId: 's-1', kind: 'env', name: 'TOKEN', value: 'abc', extra: 1 })).toEqual({ projectId: 'p_1', serverId: 's-1', kind: 'env', name: 'TOKEN', value: 'abc' })
+    expect(mcpSecretArgs({ projectId: 'p_1', serverId: 's-1', kind: 'header', name: 'X-Key', value: null })).toEqual({ projectId: 'p_1', serverId: 's-1', kind: 'header', name: 'X-Key', value: null })
+    expect(mcpLibrarySecretArgs({ libraryId: 'lib_1', kind: 'env', name: 'T', value: 'v', junk: true })).toEqual({ libraryId: 'lib_1', kind: 'env', name: 'T', value: 'v' })
+  })
+  it('refuses bad shapes without echoing the value', () => {
+    const base = { projectId: 'p_1', serverId: 's-1', kind: 'env', name: 'T', value: 'v' }
+    const bads: unknown[] = [null, 'x', [], { ...base, projectId: '../x' }, { ...base, serverId: '' }, { ...base, kind: 'other' }, { ...base, name: '' }, { ...base, name: 'n'.repeat(129) }, { ...base, value: 5 }, { ...base, value: undefined }, { ...base, value: 'a'.repeat(4001) }, { ...base, value: 'line\nbreak' }, { ...base, value: 'zero​width' }]
+    for (const bad of bads) {
+      expect(() => mcpSecretArgs(bad)).toThrow('Invalid secret.')
+    }
+    try {
+      mcpSecretArgs({ ...base, value: 'sekrit\nvalue' })
+    } catch (e) {
+      expect((e as Error).message).not.toContain('sekrit')
+    }
+    expect(() => mcpLibrarySecretArgs({ ...base, libraryId: '' })).toThrow('Invalid secret.')
+    expect(() => mcpLibrarySecretArgs({ libraryId: 'l', kind: 'env', name: 'T' })).toThrow('Invalid secret.')
+  })
+})
+
 const { mcpOverridesArgs, presetRemoveArgs, OVERRIDES_MAX_KEYS } = await import('./ipc')
 
 describe('mcpOverridesArgs (mcp:setProjectOverrides)', () => {

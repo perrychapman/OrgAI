@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest'
 import type { McpLibraryEntry, McpServerSpec } from '@shared/types'
 import { MCP_OVERRIDE_VALUE_MAX, MCP_PER_PROJECT_ENV_MAX } from '@shared/types'
 import { parseRegistryResponse } from './registry'
-import { cleanOverrides, nameFromRegistry, perProjectEnvProblems, pinErrors, specFromRegistry, validateLibraryEntry, validateSpec } from './validate'
+import { credentialLikeName, riskyEnvName, cleanOverrides, nameFromRegistry, perProjectEnvProblems, pinErrors, specFromRegistry, validateLibraryEntry, validateSpec } from './validate'
 
 const entries = parseRegistryResponse(JSON.parse(readFileSync(join(__dirname, 'fixtures', 'registry-response.json'), 'utf8'))).entries
 
@@ -67,6 +67,19 @@ describe('perProjectEnvProblems', () => {
     for (const n of ['NODE_OPTIONS', 'PATH', 'LD_PRELOAD', 'HTTPS_PROXY', 'PYTHONPATH', 'NPM_CONFIG_REGISTRY', 'GIT_DIR']) {
       expect(perProjectEnvProblems(stdioEntry({ perProjectEnv: [n] })), n).not.toEqual([])
     }
+  })
+
+  it('compares stdio names case-insensitively (secret slots and duplicates)', () => {
+    expect(perProjectEnvProblems(stdioEntry({ perProjectEnv: ['vendor_key'] }))[0]).toMatch(/secret slot/)
+    expect(perProjectEnvProblems(stdioEntry({ perProjectEnv: ['Base_Url', 'BASE_URL'] }))[0]).toMatch(/twice/)
+  })
+
+  it('exports the name predicates', () => {
+    expect(riskyEnvName('node_options')).toBe(true)
+    expect(riskyEnvName('BASE_URL')).toBe(false)
+    expect(credentialLikeName('API_TOKEN')).toBe(true)
+    expect(credentialLikeName('Cookie')).toBe(false)
+    expect(credentialLikeName('Cookie', true)).toBe(true)
   })
 
   it('refuses hidden characters without echoing them', () => {

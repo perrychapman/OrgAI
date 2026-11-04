@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -173,10 +173,19 @@ describe('validateUserPreset', () => {
     expect(def).not.toHaveProperty('aliases')
   })
 
-  it("keeps origin only when exactly 'kit'", () => {
-    expect(validateUserPreset(good({ origin: 'kit' })).origin).toBe('kit')
-    expect(validateUserPreset(good({ origin: 'other' }))).not.toHaveProperty('origin')
-    expect(validateUserPreset(good({ origin: 7 }))).not.toHaveProperty('origin')
+  it('refuses credential-like and run-changing names in plain env and headers', () => {
+    expect(() => validateUserPreset(good({ variants: [http({ headers: { Authorization: 'x' } })] }))).toThrow('Variant "api": put credentials in the token sign-in, not a plain header.')
+    expect(() => validateUserPreset(good({ variants: [http({ headers: { 'X-Api-Key': 'x' } })] }))).toThrow(/plain header/)
+    expect(() => validateUserPreset(good({ variants: [stdio({ env: { ACME_TOKEN: 'x' } })], defaultVariant: 'local' }))).toThrow(/Variant "local": put credentials in the token sign-in/)
+    expect(() => validateUserPreset(good({ variants: [stdio({ env: { NODE_OPTIONS: '--require x' } })], defaultVariant: 'local' }))).toThrow('Variant "local": NODE_OPTIONS changes what runs and cannot be set by a preset.')
+    expect(() => validateUserPreset(good({ variants: [stdio({ env: { https_proxy: 'x' } })], defaultVariant: 'local' }))).toThrow(/changes what runs/)
+  })
+
+  it("keeps origin only when allowed and exactly 'kit'", () => {
+    expect(validateUserPreset(good({ origin: 'kit' }))).not.toHaveProperty('origin')
+    expect(validateUserPreset(good({ origin: 'kit' }), { allowOrigin: true }).origin).toBe('kit')
+    expect(validateUserPreset(good({ origin: 'other' }), { allowOrigin: true })).not.toHaveProperty('origin')
+    expect(validateUserPreset(good({ origin: 7 }), { allowOrigin: true })).not.toHaveProperty('origin')
   })
 
   it('ignores prototype fields', () => {
@@ -286,6 +295,23 @@ describe('ConnectorPresetStore', () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     writeFileSync(join(dir, 'connector-presets.json'), '{not json')
     expect(new ConnectorPresetStore(dir).list()).toEqual([])
+  })
+
+  it('keeps a stored kit origin on load', () => {
+    const kit = validateUserPreset(good({ origin: 'kit' }), { allowOrigin: true })
+    writeFileSync(join(dir, 'connector-presets.json'), JSON.stringify({ version: 1, presets: [kit] }))
+    expect(new ConnectorPresetStore(dir).get('acme-crm')?.origin).toBe('kit')
+  })
+
+  it('starts empty on a directory or an oversize file, warning without contents', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    mkdirSync(join(dir, 'connector-presets.json'))
+    expect(new ConnectorPresetStore(dir).list()).toEqual([])
+    rmSync(join(dir, 'connector-presets.json'), { recursive: true })
+    const big = JSON.stringify({ version: 1, presets: [validateUserPreset(good())], pad: 'x'.repeat(2 * 1024 * 1024) })
+    writeFileSync(join(dir, 'connector-presets.json'), big)
+    expect(new ConnectorPresetStore(dir).list()).toEqual([])
+    expect(warn).toHaveBeenCalledTimes(2)
   })
 
   it('refuses to save an invalid preset', () => {

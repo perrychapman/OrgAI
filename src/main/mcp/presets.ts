@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type {
   ConnectorCategory,
@@ -14,7 +14,7 @@ import { connectorById } from '@shared/connectors'
 import { isValidMcpServerName } from '@shared/defaults'
 import { hiddenCharIn } from '../capabilities/sanitize'
 import { connectorEntryName } from './connectors'
-import { validateLibraryEntry } from './validate'
+import { credentialLikeName, riskyEnvName, validateLibraryEntry } from './validate'
 
 /**
  * Custom connector presets (<data>/connector-presets.json): tiles the user defines for the Connectors gallery.
@@ -28,6 +28,7 @@ const HEADER_NAME = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/
 const KEBAB = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
 const PRINTABLE_ASCII = /^[\x20-\x7e]+$/
 
+const PRESET_FILE_MAX_BYTES = 2 * 1024 * 1024
 const URL_MAX = 2000
 const VALUE_MAX = 2000
 const COMMAND_MAX = 500
@@ -163,6 +164,12 @@ function validateVariant(raw: unknown, index: number): UserConnectorVariant {
       })
     }
     const env = stringMap(`${where} env`, own(raw, 'env'), ENV_NAME, 'environment variable')
+    if (env) {
+      for (const k of Object.keys(env)) {
+        if (credentialLikeName(k)) return fail(`Variant "${id}": put credentials in the token sign-in, not a plain environment variable${/^[\w.-]{1,64}$/.test(k) ? ` (${k})` : ''}.`)
+        if (riskyEnvName(k)) return fail(`Variant "${id}": ${/^[\w.-]{1,64}$/.test(k) ? k : 'An environment variable'} changes what runs and cannot be set by a preset.`)
+      }
+    }
     const auth = validateAuth(own(raw, 'auth'), 'stdio', where)
     return { ...base, command, ...(args?.length ? { args } : {}), ...(env ? { env } : {}), auth }
   }
@@ -170,18 +177,23 @@ function validateVariant(raw: unknown, index: number): UserConnectorVariant {
   if (hasKey('env')) return fail(`${where}: an ${transport} server cannot have env variables; use headers.`)
   const url = httpsUrl(`${where} address`, own(raw, 'url'))
   const headers = stringMap(`${where} headers`, own(raw, 'headers'), HEADER_NAME, 'header')
-  if (headers) for (const v of Object.values(headers)) if (/[\r\n]/.test(v)) return fail(`${where}: a header value must be a single line.`)
+  if (headers) {
+    for (const v of Object.values(headers)) if (/[\r\n]/.test(v)) return fail(`${where}: a header value must be a single line.`)
+    for (const k of Object.keys(headers)) {
+      if (credentialLikeName(k, true)) return fail(`Variant "${id}": put credentials in the token sign-in, not a plain header.`)
+    }
+  }
   const auth = validateAuth(own(raw, 'auth'), transport, where)
   return { ...base, url, ...(headers ? { headers } : {}), auth }
 }
 
 /**
  * A user preset rebuilt from untrusted input, or one readable Error. publisher is forced to 'user' and verified to
- * false; origin survives only as exactly 'kit'; unknown fields are dropped. Each variant is also built into its
+ * false; origin is dropped unless opts.allowOrigin (stored records, never the renderer) and then survives only as exactly 'kit'; unknown fields are dropped. Each variant is also built into its
  * library entry and run through validateLibraryEntry (pinned versions and the other server rules), reporting the first
  * problem per variant.
  */
-export function validateUserPreset(input: unknown): UserConnectorDef {
+export function validateUserPreset(input: unknown, opts: { allowOrigin?: boolean } = {}): UserConnectorDef {
   if (!isPlain(input)) return fail('A custom connector must be an object.')
   const id = text('The id', own(input, 'id'), 1, 48)
   if (!KEBAB.test(id) || !isValidMcpServerName(id)) return fail('The id must be lowercase letters, digits and single hyphens (at most 48 characters).')
@@ -230,7 +242,7 @@ export function validateUserPreset(input: unknown): UserConnectorDef {
     ...(notes ? { notes } : {}),
     ...(aliases?.length ? { aliases } : {}),
     verified: false,
-    ...(own(input, 'origin') === 'kit' ? { origin: 'kit' as const } : {})
+    ...(opts.allowOrigin === true && own(input, 'origin') === 'kit' ?{ origin: 'kit' as const } : {})
   }
   for (const v of variants) {
     const problems = validateLibraryEntry(buildPresetEntry(def, v, 'preset-check', [], new Date(0)), [])
@@ -315,12 +327,17 @@ export class ConnectorPresetStore {
   private load(): void {
     try {
       if (!existsSync(this.file)) return
+      const st = lstatSync(this.file)
+      if (!st.isFile() || st.isSymbolicLink() || st.size > PRESET_FILE_MAX_BYTES) {
+        console.warn('connector-presets.json is not a regular file of a readable size; starting empty.')
+        return
+      }
       const parsed = JSON.parse(readFileSync(this.file, 'utf8')) as { presets?: unknown }
       if (!Array.isArray(parsed.presets)) return
       const seen = new Set<string>()
       for (const raw of parsed.presets) {
         try {
-          const def = validateUserPreset(raw)
+          const def = validateUserPreset(raw, { allowOrigin: true })
           if (seen.has(def.id)) throw new Error('duplicate')
           seen.add(def.id)
           this.presets.push(def)
@@ -354,7 +371,7 @@ export class ConnectorPresetStore {
 
   /** Add or replace (by id) a validated preset; returns the saved copy. */
   save(def: UserConnectorDef): UserConnectorDef {
-    const clean = validateUserPreset(def)
+    const clean = validateUserPreset(def, { allowOrigin: true })
     const idx = this.presets.findIndex((p) => p.id === clean.id)
     if (idx === -1) this.presets.push(clean)
     else this.presets[idx] = clean
