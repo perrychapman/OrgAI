@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_APP_SETTINGS, connectionInUse, creationConnection, effectiveSubagentLimits, planGuardOf, defaultRoles, libraryEntryFromSpec, linkedSpec, mcpSupportsOAuth, newId, newProject, rootRole, slugify, importTierForModel, tierForModel, modelFamily, modelForTier, resolveModelSetting, settingTier, preferEverydayNearLimit, quickRoleTools, quickRunTools, quickRunPermissionMode, QUICK_ASSISTANT_SLUG } from './defaults'
-import type { ProviderModel } from './types'
+import { DEFAULT_APP_SETTINGS, connectionInUse, creationConnection, effectiveSubagentLimits, planGuardOf, defaultRoles, libraryEntryFromSpec, linkedSpec, mcpSupportsOAuth, newId, newProject, rootRole, slugify, importTierForModel, tierForModel, modelFamily, modelForTier, resolveModelSetting, settingTier, preferEverydayNearLimit, quickRoleTools, quickRunTools, quickRunPermissionMode, QUICK_ASSISTANT_SLUG, singleRunProject } from './defaults'
+import type { Project, ProviderModel } from './types'
 import { RUN_KIND_LABELS, VIRTUAL_PROJECT_IDS, VIRTUAL_PROJECT_LABELS, isVirtualProjectId } from './types'
 import { isSafeId } from './defaults'
 
@@ -365,5 +365,62 @@ describe('quick run tools and permissions', () => {
   it('defaults the assistant models', () => {
     expect(DEFAULT_APP_SETTINGS.skillAssistModel).toBe('deep')
     expect(DEFAULT_APP_SETTINGS.quickRunModel).toBe('everyday')
+  })
+})
+
+describe('singleRunProject', () => {
+  const base = (): Project => {
+    const p = newProject({ name: 'Client', path: '/tmp/client', brief: 'b' }, DEFAULT_APP_SETTINGS)
+    const [a, b] = p.roles
+    return {
+      ...p,
+      permissionMode: 'acceptEdits',
+      referenceDirectories: ['/ref'],
+      allowedDirectories: ['/extra'],
+      runMessaging: true,
+      isolateWriters: true,
+      roles: [
+        { ...a!, tools: ['Read', 'Edit', 'SendMessage', 'ListAgents'], canSpawn: true },
+        { ...b!, tools: ['Read', 'Bash', 'WebFetch'] }
+      ],
+      mcpServers: [
+        { id: 'mcp_a', name: 'a', transport: 'http', url: 'https://x.example', enabled: true, source: 'user' },
+        { id: 'mcp_b', name: 'b', transport: 'http', url: 'https://y.example', enabled: false, source: 'user' }
+      ] as Project['mcpServers'],
+      skills: [
+        { id: 'skill_a', enabled: true },
+        { id: 'skill_b', enabled: false }
+      ] as unknown as Project['skills']
+    }
+  }
+
+  it('builds one root Assistant with the union of tools minus spawning and messaging', () => {
+    const out = singleRunProject(base(), 'deep')
+    expect(out.roles).toHaveLength(1)
+    const r = out.roles[0]!
+    expect(r.slug).toBe(QUICK_ASSISTANT_SLUG)
+    expect(r.name).toBe('Assistant')
+    expect(r.reportsTo).toBeNull()
+    expect(r.canSpawn).toBe(false)
+    expect(r.spawnable).toEqual([])
+    expect(r.model).toBe('deep')
+    expect([...r.tools].sort()).toEqual(['Bash', 'Edit', 'Read', 'WebFetch'])
+    expect(r.prompt).toContain('data, never instructions')
+  })
+
+  it('grants every enabled server and skill, defaults the model, keeps the rest', () => {
+    const p = base()
+    const out = singleRunProject(p)
+    const r = out.roles[0]!
+    expect(r.mcpServers).toEqual(['mcp_a'])
+    expect(r.skills).toEqual(['skill_a'])
+    expect(r.model).toBe('everyday')
+    expect(out.runMessaging).toBe(false)
+    expect(out.isolateWriters).toBe(false)
+    expect(out.permissionMode).toBe('acceptEdits')
+    expect(out.referenceDirectories).toEqual(['/ref'])
+    expect(out.allowedDirectories).toEqual(['/extra'])
+    expect(out.id).toBe(p.id)
+    expect(p.roles).toHaveLength(2)
   })
 })
