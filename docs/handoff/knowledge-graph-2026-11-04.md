@@ -88,3 +88,7 @@ on disjoint files straight away:
   `e2e/knowledge-run.mjs` lines 4, 125-137, 218, 250, 284, 297, 333, 338.
 - Suggested split (disjoint files): A graph (M3 + M4), B tab (M5 + M7 view side incl. SidePanel.tsx), C run / settings
   (M1 + M2 + M7 trigger side + the two doc bullets).
+
+## Update 2026-11-04 (after cfa7737): walk-2 fix-up merged
+
+The fix-up that "Update at pause" says never started has since landed on dev at cfa7737 (range 63800f2..cfa7737): walk-2 M1-M5 and M7 are fixed (details in docs/design/knowledge.md section 13 "Fix-up after the re-walk"). Checked by unit tests and updated e2e scripts only; not seen by eye. The "Open items" section above still stands (M6, the Lows, saveNode without expectedUpdatedAt, run-scoped windows, no menu item; also "Show item details" still drops focus to body). The gate and push for cfa7737 are a separate step and are not claimed here.

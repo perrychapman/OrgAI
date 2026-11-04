@@ -247,25 +247,29 @@ recording row gets a link "Open" (`knowledge-row-open`, `button.link-btn`, name 
 
 ## 8. Run view (rec 2 alternative)
 
-`RunMeta` gains `run-meta-recorded` after the agents count: "Recorded N items" (`recordedCount(entries)`: harness
-system rows of the run whose text starts with "Recorded ", "Updated ", "Linked ", "Retired " or "Saved note ",
-across every agent; the chain's earlier members count too), shown only when N > 0 and the project is an engagement,
-as a `button.link-btn` opening the Knowledge tab (`setView('knowledge')`), title "What the team recorded this run.
-Opens Knowledge." It drops with the other items in a narrow frame.
+`RunMeta` gains `run-meta-recorded` after the agents count: "Recorded N changes" ("Recorded 1 change";
+`recordedBreakdown(entries)`: harness system rows of the run whose text starts with "Recorded ", "Updated ", "Linked ",
+"Retired " or "Saved note ", across every agent; the chain's earlier members count too, N is `breakdownTotal`), shown
+only when N > 0 and the project is an engagement, as a `button.run-meta-item` opening the Knowledge tab
+(`openKnowledgeItem({ projectId })`), title "What the team recorded this run: 4 items, 2 relations, 1 note, 1 retired.
+Opens Knowledge." and the same breakdown (`recordedBreakdownText`, zero parts omitted) in its sr-only text. It drops
+with the other items in a narrow frame. (Walk-2 M2: the word "items" was four different numbers; "changes" counts
+write rows, the Settings line and Clear counts say items.)
 
 ## 9. Settings and Maintenance (rec 3, 10)
 
 - Project settings > General > **Context notes** keeps its id, title and description (description now: "Background the
   team can look up when it needs it: meeting notes, client preferences, terms. Agents read and write these notes; do
   not put passwords or keys here.") and shows one line `knowledge-summary` (`knowledgeSummaryLine(graph, notes)`:
-  "12 notes, 40 facts, 8 people" / "Nothing recorded yet") followed by " · " and `button.link-btn` "Open Knowledge"
-  (`knowledge-open`, `setView('knowledge')`). The inline list, "Add a note", the dialog, `context-note-row`,
+  "5 items (1 person, 4 systems), 2 notes, 6 facts" / "Nothing recorded yet"; live counts only, kinds in `kindOrder`,
+  at most 5 then ", N more", zero parts omitted) followed by " · " and `button.link-btn` "Open Knowledge"
+  (`knowledge-open`, `openKnowledgeItem({ projectId })`). The inline list, "Add a note", the dialog, `context-note-row`,
   `context-note-add`, `context-notes-empty` and `context-notes-status` leave this section (e2e/engagement2.mjs drives
   the note dialog from the Knowledge tab instead). The line refetches on `onEngagementChanged` ('notes' /
   'knowledge').
 - Maintenance danger zone (engagements): a second button "Clear everything…" (`knowledge-clear`, danger, next to
-  "Forget this engagement…") with `ConfirmDialog` "Clear everything the team recorded?" / "Deletes 12 items, 40 facts,
-  8 relations (`clearCountsLine`). Context notes stay. Agents and you can no longer see them. Retire items on the
+  "Forget this engagement…") with `ConfirmDialog` "Clear everything the team recorded?" / "Deletes 12 items (2 retired),
+  40 facts, 8 relations (`clearCountsLine`: counts everything Clear deletes, retired included, a parenthetical only when non-zero). Context notes stay. Agents and you can no longer see them. Retire items on the
   Knowledge tab to keep records instead." / "Clear everything" (`knowledge-clear-confirm`). Calls `knowledge.clear`;
   the section's notice reads "Cleared everything the team recorded." The danger-zone text adds "what the team
   recorded".
@@ -392,17 +396,18 @@ Verified: unit tests (knowledgeList.test.ts, knowledge.test.ts), `e2e/knowledge.
   steals a later write's row. Unclaimed write rows (older records, another agent's rows) still get a headline and a
   name-based link. `labels` gives a `get` by id and a note read their sentence from the result ("Read Acme Corp",
   "Read the note Kickoff call summary"). `TranscriptPanel` renders a paired row as `KnowledgeWriteRow`
-  (`div.entry.system.harness.knowledge-row[data-testid=knowledge-row]`, `Database` icon, the plain headline, the
+  (`div.entry.system.harness.knowledge-write-row[data-testid=knowledge-write-row]`, renamed from `knowledge-row` at cfa7737 because it collided with the list row's class; `Database` icon, the plain headline, the
   `button.link-btn` "Open" `knowledge-row-open` named "Open <name> in Knowledge" that calls `openKnowledgeItem({ projectId,
   …focus })`, and "Show output"). `recordedCount(entries)` counts the harness write rows.
-- RunMeta (section 8): `run-meta-recorded` is a `button.run-meta-item` "Recorded N items" after the agents count, title
-  "What the team recorded this run. Opens Knowledge.", `setView('knowledge')`; N sums `recordedCount` over every chain
-  member's transcript in the store (a zustand selector returning the number, so no re-render churn); engagements only,
+- RunMeta (section 8): `run-meta-recorded` is a `button.run-meta-item` "Recorded N changes" after the agents count (as
+  built first: "N items", title "What the team recorded this run. Opens Knowledge."; changed at cfa7737, see the
+  fix-up below); N sums `recordedBreakdown` over every chain member's transcript in the store (the selector returns the
+  joined `breakdownKey` string, so no re-render churn); engagements only,
   N > 0 only; it drops at a frame under 420 px like the other counts (run.css). It counts what the run did, not what is
-  left: it stays "Recorded 8 items" after Clear everything.
+  left: it stays "Recorded 8 changes" after Clear everything.
 - Settings (section 9): `ContextNotesSection` is the description plus one line `p.knowledge-summary-line`:
   `knowledge-summary` (`knowledgeSummaryLine(graph, notes)` from `knowledge.get` + `listNotes`, "Looking…" first, the
-  newest request wins) " · " `knowledge-open` "Open Knowledge" (`setView('knowledge')`); refetched on
+  newest request wins) " · " `knowledge-open` "Open Knowledge" (`openKnowledgeItem({ projectId })`); refetched on
   `onEngagementChanged` 'notes' / 'knowledge'; a read error shows the danger Banner. The inline list, Add a note, the
   dialog, `context-note-*`, `context-notes-empty` and `context-notes-status` are gone from this file
   (`lib/engagementContext.ts` keeps `sortNotes` and the row labels for other callers; they are unused by Settings now).
@@ -426,11 +431,44 @@ Verified: unit tests (knowledgeList.test.ts, knowledge.test.ts), `e2e/knowledge.
   relations"; afterwards an empty graph, the notice, the greyed button, notes kept), the Dashboard forget notice "4
   recorded items" on the second engagement, no page scroll and no window shift at 1024x640 and 1600x1000 in both
   themes, 15 screenshots. `e2e/engagement.mjs` and `e2e/runs.mjs` were re-run after the transcript change.
+- Superseded by the fix-up below: the "Recorded N items" label, the summary "1 note, 5 facts, 1 person" and the Clear
+  counts "4 items, 6 facts, 2 relations" in the Verified paragraph (now "Recorded N changes", "N items (kinds), N notes,
+  N facts", and Clear counts that include retired).
 - Not verified: the Claude and Codex adapters' row order (the pairing takes the next matching row after the call, so
   a row written after the result still pairs); a run where a write is refused (the mock has none; unit-tested only);
   the Open link landing on the item (the tab in this worktree is the stub, so only the tab switch is checked; the list
   engineer's `resolveFocus` does the rest); the "Retired edge" headline (the mock retires a fact only); a chain with
   recorded items in an earlier member; the 420 px drop of `run-meta-recorded` by eye; screen-reader output.
+
+### Fix-up after the re-walk (cfa7737; walk `ux-review-knowledge-2.md` M1-M5, M7)
+
+Verified by unit tests (`knowledge.test.ts`, `knowledgeRun.test.ts`, `knowledgeGraph.test.ts`, `knowledgeList.test.ts`) and
+by the e2e scripts being updated to the new names and behaviour (`knowledge.mjs`, `knowledge-graph.mjs`,
+`knowledge-run.mjs`). Nothing was seen by eye and the walk was not repeated. M6 and the walk's Lows are not fixed.
+
+- M1: the transcript write row is `knowledge-write-row`; its inner `knowledge-row-open` stays; the list's `knowledge-row`
+  is unchanged. `styles/transcript.css` follows.
+- M2: `run-meta-recorded` "Recorded N changes" (`recordedBreakdown`, `recordedBreakdownText`, `recordedLabel`,
+  `breakdownKey` in `lib/knowledgeRun.ts`; breakdown in the title and sr-only text). `knowledgeSummaryLine`: "N items
+  (kind counts), N notes, N facts", live counts only, at most 5 kinds then ", N more". `clearCountsLine` counts everything
+  including retired, a parenthetical only when non-zero. Forget wording unchanged.
+- M3: `relationHandles(from, to)` in `lib/knowledgeGraph.ts` reuses `messageSides` / `msgHandleId`; `KnowledgeGraph`
+  passes `sourceHandle` / `targetHandle` from the laid-out boxes (radial edges ignore handles); nodes carry hidden handles
+  on all four sides, the original two stay for the retired-group edge.
+- M4: `.knowledge-graph-toolbar .knowledge-skip:not(:focus)` is clipped to nothing with `pointer-events: none`
+  (`styles/knowledge-graph.css`); the global `.skip-link` is untouched.
+- M5: Banner `knowledge-notice` with `knowledge-notice-undo` ("Retired <name>."; "Deleted <name>." has no Undo),
+  announced through `knowledge-status` (`retireNoticeText`), cleared after `NOTICE_MS` 8 s, the timer restarting after a
+  pause while pointer or focus is inside. After a retire the pane stays on the item (Restore shown); Undo restores and
+  focuses the row once the refetch shows it live (`restoreReady`, `pendingRestore`, dropped when the filter changes).
+- M7: RunMeta and Settings call `openKnowledgeItem({ projectId })`; a focus request with no target lands on the selected
+  row, else the first row, else Add a note (else Add an item, else the view switch; a node in Graph view); the History
+  run link lands on the composer, else the selected tab, else the topbar h1 (`settleRunFocus`); `SidePanel` focuses the
+  rail's Show button only after a user's Hide, and only if focus is on body.
+- Not verified: the 8 s timer and its pause, Esc on a filtered-out selected item, retired-group edge geometry, radial
+  layout with the new handles, anything by eye. Open: clicking "Show item details" still drops focus to body; M6 (an
+  agent's retire reason never reaches the tab); the walk's Lows.
+
 ### Graph view
 
 Files: `components/knowledge/KnowledgeGraph.tsx` (the view; `KnowledgeGraphProps` unchanged from the stub, `projectId`
