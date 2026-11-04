@@ -78,6 +78,7 @@ export function ConfirmDialog({
   body,
   confirmLabel,
   danger,
+  confirmTestId,
   onConfirm,
   onCancel
 }: {
@@ -86,6 +87,8 @@ export function ConfirmDialog({
   body: ReactNode
   confirmLabel: string
   danger?: boolean
+  /** data-testid of the confirm button (e2e hooks for confirms whose label is not unique). */
+  confirmTestId?: string
   onConfirm: () => void
   onCancel: () => void
 }): ReactElement {
@@ -100,7 +103,7 @@ export function ConfirmDialog({
           <Button autoFocusDialog onClick={onCancel}>
             Cancel
           </Button>
-          <Button variant={danger ? 'danger' : 'primary'} onClick={onConfirm}>
+          <Button variant={danger ? 'danger' : 'primary'} testId={confirmTestId} onClick={onConfirm}>
             {confirmLabel}
           </Button>
         </>
