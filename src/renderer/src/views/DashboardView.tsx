@@ -3,6 +3,8 @@ import { useEffect, useState } from 'react'
 import { MessageSquare, Plus } from 'lucide-react'
 import { openNewChat, useAppStore } from '../store/useAppStore'
 import { Button } from '../components/ui/Button'
+import { Banner } from '../components/ui/Banner'
+import { forgetNoticeText } from '../lib/dashboard'
 import { hasParkedDraft } from '../components/dashboard/NewProjectForm'
 import { HeroBand, type DashboardAnnouncement } from '../components/dashboard/HeroBand'
 import { AttentionColumn } from '../components/dashboard/AttentionColumn'
@@ -22,6 +24,8 @@ export default function DashboardView(): ReactElement {
   const loadAppInfo = useAppStore((s) => s.loadAppInfo)
   const loadAllHistory = useAppStore((s) => s.loadAllHistory)
   const newProjectRequest = useAppStore((s) => s.newProjectRequest)
+  const forgetNotice = useAppStore((s) => s.forgetNotice)
+  const setForgetNotice = useAppStore((s) => s.setForgetNotice)
   const { lastSeen, clearedAt, markAllSeen } = useLastSeen()
   // A form parked by its connection link comes back open.
   const [formOpen, setFormOpen] = useState(() => hasParkedDraft())
@@ -62,6 +66,13 @@ export default function DashboardView(): ReactElement {
       </div>
       <div className="dashboard" data-testid="dashboard">
         <div className="dashboard-grid">
+          {forgetNotice && (
+            <div className="dash-forget-notice">
+              <Banner tone="success" testId="forget-notice" onDismiss={() => setForgetNotice(null)}>
+                {forgetNoticeText(forgetNotice.name, forgetNotice.result)}
+              </Banner>
+            </div>
+          )}
           <HeroBand firstLaunch={empty} announce={announce} lastSeen={lastSeen} clearedAt={clearedAt} />
           {empty ? (
             <FirstLaunch mockAvailable={mockAvailable} />

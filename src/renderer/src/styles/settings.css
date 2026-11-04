@@ -512,6 +512,126 @@
   color: var(--text-primary);
 }
 
+/* ---------- Engagement plan and context notes (General, engagements only) ---------- */
+.settings-card > .plan-view {
+  max-height: var(--scroll-region-max);
+  overflow: auto;
+  border-radius: var(--radius-sm);
+}
+.plan-view:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.settings-card > .plan-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.plan-status {
+  color: var(--text-secondary);
+  font-size: var(--text-small);
+}
+.plan-editor-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.plan-editor-label {
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}
+.plan-editor-field .textarea {
+  width: 100%;
+  font-family: var(--font-sans);
+}
+@container settings-col (min-width: 900px) {
+  .plan-editor-field .textarea {
+    min-height: 16lh;
+  }
+}
+.notes-add {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.notes-list {
+  container: notes / inline-size;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  background: var(--surface-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+}
+.notes-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+}
+.notes-row + .notes-row {
+  border-top: 1px solid var(--border-subtle);
+}
+.notes-row-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.notes-row-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: var(--weight-semibold);
+}
+.notes-row-meta {
+  color: var(--text-tertiary);
+  font-size: var(--text-small);
+}
+.notes-row-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+@container notes (min-width: 520px) {
+  .notes-row {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+  }
+}
+.note-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.note-form .field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.note-form .textarea {
+  width: 100%;
+  font-family: var(--font-sans);
+}
+.forget-confirm-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.forget-confirm-body p,
+.forget-confirm-body ul {
+  margin: 0;
+}
+.forget-confirm-body ul {
+  padding-left: var(--space-5);
+}
+.forget-confirm-quiet {
+  color: var(--text-tertiary);
+  font-size: var(--text-small);
+}
+
 /* Brief highlight of a row a deep link scrolled to (the attribute is cleared after a moment; no motion, so nothing to reduce). */
 .settings-highlightable[data-highlight] {
   background: var(--accent-soft);

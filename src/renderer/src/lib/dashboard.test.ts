@@ -6,6 +6,10 @@ import {
   elapsedLabel,
   endedKind,
   errorFirstLine,
+  forgetConfirmText,
+  forgetNoticeText,
+  removeConfirmLabel,
+  tileRemoveLabel,
   heroFigure,
   heroSublineParts,
   pausedRuns,
@@ -305,5 +309,50 @@ describe('deleteProjectBody', () => {
     expect(deleteProjectBody({ openRuns: 2, historyRuns: 1 })).toBe(`Ends 2 open runs and deletes the history, transcripts and costs of 1 run. ${also}`)
     expect(deleteProjectBody({ openRuns: 0, historyRuns: 4 })).toBe(`Deletes the history, transcripts and costs of 4 runs. ${also}`)
     expect(deleteProjectBody({ openRuns: 0, historyRuns: 0 })).toBe('Removes the project from OrgAI. Files in its folder are untouched.')
+  })
+})
+
+describe('forget an engagement', () => {
+  const counts = {
+    projectId: 'p',
+    kind: 'engagement' as const,
+    runsRemoved: 23,
+    runsKept: 0,
+    notesRemoved: 12,
+    skillsRemoved: 3,
+    documentRemoved: true,
+    rulesRemoved: true,
+    teamReviewRemoved: true,
+    skillEvaluationRemoved: true
+  }
+  it('words the menu item and button per kind', () => {
+    expect(tileRemoveLabel('engagement')).toBe('Forget engagement…')
+    expect(tileRemoveLabel('code')).toBe('Delete project…')
+    expect(removeConfirmLabel('engagement')).toBe('Forget engagement')
+    expect(removeConfirmLabel('code')).toBe('Delete project')
+  })
+  it('lists the counts and leaves zero rows out', () => {
+    const t = forgetConfirmText(counts, 1, 'Acme')
+    expect(t.lines).toEqual([
+      'The engagement plan',
+      '12 context notes',
+      'Saved permission rules',
+      'Ends 1 open run and deletes 23 runs with their transcripts and costs',
+      '3 skill copies made for it',
+      '2 team review files'
+    ])
+    expect(t.uncounted).toBeNull()
+    expect(t.stays).toContain('files in Acme')
+    const bare = forgetConfirmText({ ...counts, runsRemoved: 0, notesRemoved: 0, skillsRemoved: 0, documentRemoved: false, rulesRemoved: false, teamReviewRemoved: false, skillEvaluationRemoved: false }, 0, '')
+    expect(bare.lines).toEqual([])
+  })
+  it('names the kinds without numbers when the count is unavailable', () => {
+    const t = forgetConfirmText(null, 0, 'Acme')
+    expect(t.lines).toEqual([])
+    expect(t.uncounted).toBe('its plan, context notes, saved rules, runs and costs')
+  })
+  it('words the notice from the returned counts', () => {
+    expect(forgetNoticeText('Acme', counts)).toBe('Forgot Acme. Deleted the plan, 12 notes, its saved rules, 23 runs, 3 skill copies.')
+    expect(forgetNoticeText('Acme', { ...counts, runsRemoved: 0, notesRemoved: 0, skillsRemoved: 0, documentRemoved: false, rulesRemoved: false })).toBe('Forgot Acme.')
   })
 })
