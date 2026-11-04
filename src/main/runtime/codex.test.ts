@@ -668,6 +668,61 @@ describe('CodexAdapter session', () => {
         expect(req.suggestions).toBeUndefined()
       })
 
+      it('M4: with reference folders a session grant answers accept (never acceptForSession) and a later call inside the folder asks again', async () => {
+        const { ctx, s } = await started('default', { referenceDirectories: () => [ref] })
+        ;(ctx.requestPermission as any).mockResolvedValue({ behavior: 'allow', scope: 'session' })
+        expect(await s.ask('item/commandExecution/requestApproval', { ...cmd('npm test'), cwd: dir })).toEqual({ decision: 'accept' })
+        expect((ctx.requestPermission as any).mock.calls[0][0].suggestions?.length).toBeGreaterThan(0)
+        // The grant is kept in OrgAI's own session rules: the same command elsewhere needs no card.
+        expect(await s.ask('item/commandExecution/requestApproval', { ...cmd('npm test'), cwd: dir })).toEqual({ decision: 'accept' })
+        expect(ctx.requestPermission).toHaveBeenCalledTimes(1)
+        // The identical command run inside the reference folder is asked again, naming the folder, with no suggestions.
+        expect(await s.ask('item/commandExecution/requestApproval', { ...cmd('npm test'), cwd: join(ref, 'sub') })).toEqual({ decision: 'accept' })
+        expect(ctx.requestPermission).toHaveBeenCalledTimes(2)
+        const again = (ctx.requestPermission as any).mock.calls[1][0]
+        expect(again).toMatchObject({ toolName: 'Bash', referenceFolder: ref })
+        expect(again.suggestions).toBeUndefined()
+        // File approvals: a session grant answers accept too.
+        change(s, [join(other, 'x.ts')])
+        expect(await s.ask('item/fileChange/requestApproval', edit)).toEqual({ decision: 'accept' })
+        expect(ctx.requestPermission).toHaveBeenCalledTimes(3)
+        expect((ctx.requestPermission as any).mock.calls[2][0].suggestions?.length).toBeGreaterThan(0)
+        await session?.stop()
+        // Control: no reference folders (empty list) keeps acceptForSession for both.
+        const plain = await started('default', { referenceDirectories: () => [] })
+        ;(plain.ctx.requestPermission as any).mockResolvedValue({ behavior: 'allow', scope: 'session' })
+        expect(await plain.s.ask('item/commandExecution/requestApproval', { ...cmd('npm test'), cwd: dir })).toEqual({ decision: 'acceptForSession' })
+        change(plain.s, [join(other, 'x.ts')])
+        expect(await plain.s.ask('item/fileChange/requestApproval', edit)).toEqual({ decision: 'acceptForSession' })
+        await session?.stop()
+        // An unreadable list counts as having reference folders.
+        let boom = false
+        const broken = await started('default', { referenceDirectories: () => { if (boom) throw new Error('boom'); return [] } })
+        boom = true
+        ;(broken.ctx.requestPermission as any).mockResolvedValue({ behavior: 'allow', scope: 'session' })
+        change(broken.s, [join(other, 'x.ts')])
+        expect(await broken.s.ask('item/fileChange/requestApproval', edit)).toEqual({ decision: 'decline' })
+        expect((session as any).sessionDecision(true)).toBe('accept')
+      })
+
+      it('L1: unreadable folder lists ask a command with no suggestions and accept it once (no rejected handler)', async () => {
+        let boom = false
+        const { ctx, s } = await started('default', { allowedDirectories: () => { if (boom) throw new Error('boom'); return [] }, allowedRules: () => ['Bash(npm test:*)'] })
+        boom = true
+        ;(ctx.requestPermission as any).mockResolvedValue({ behavior: 'allow', scope: 'session' })
+        expect(await s.ask('item/commandExecution/requestApproval', { ...cmd('npm test'), cwd: dir })).toEqual({ decision: 'accept' })
+        const req = (ctx.requestPermission as any).mock.calls[0][0]
+        expect(req.suggestions).toBeUndefined()
+        expect(req.referenceFolder).toBeUndefined()
+        expect(ctx.events.some((e) => e.type === 'log' && e.level === 'warn' && e.message.includes("Could not read the run's folders"))).toBe(true)
+        // Nothing was kept: it asks again. A file change asks with no suggestions and is accepted once.
+        await s.ask('item/commandExecution/requestApproval', { ...cmd('npm test'), cwd: dir })
+        expect(ctx.requestPermission).toHaveBeenCalledTimes(2)
+        change(s, [join(other, 'x.ts')])
+        expect(await s.ask('item/fileChange/requestApproval', edit)).toEqual({ decision: 'accept' })
+        expect((ctx.requestPermission as any).mock.calls[2][0].suggestions).toBeUndefined()
+      })
+
       it('declines a grantRoot under or above a reference folder, and a change with no paths (fails closed)', async () => {
         const { ctx, s } = await started('default', { referenceDirectories: () => [ref] })
         expect(await s.ask('item/fileChange/requestApproval', { ...edit, itemId: 'none-1', grantRoot: join(ref, 'sub') })).toEqual({ decision: 'decline' })
