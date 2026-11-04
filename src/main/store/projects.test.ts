@@ -6,7 +6,7 @@ import type { McpServerSpec, PluginSpec, Project, Role, SkillSpec } from '@share
 import { PROJECT_CLIENT_MAX_CHARS, PROJECT_ALLOWED_DIRECTORIES_MAX, PROJECT_ALLOWED_DIRECTORY_MAX_CHARS, PROJECT_REFERENCE_DIRECTORIES_MAX, PROJECT_REFERENCE_DIRECTORY_MAX_CHARS } from '@shared/types'
 import { projectKindOf } from '@shared/defaults'
 import { project, role } from '../runtime/testHelpers'
-import { ProjectStore, cleanAllowedDirectories, cleanReferenceDirectories,acceptableRoleModel, sanitizeRoleModels, checkProjectPath, cleanProjectPath, createPathError, reconcileNearLimitProject, suggestedProjectName, type PathFs } from './projects'
+import { ProjectStore, cleanClient, cleanAllowedDirectories, cleanReferenceDirectories,acceptableRoleModel, sanitizeRoleModels, checkProjectPath, cleanProjectPath, createPathError, reconcileNearLimitProject, suggestedProjectName, type PathFs } from './projects'
 import { mkdirSync } from 'node:fs'
 
 describe('reconcileNearLimitProject', () => {
@@ -611,6 +611,31 @@ describe('ProjectStore referenceDirectories and kind', () => {
     expect(store.save(project({ kind: 'engagement' })).kind).toBe('engagement')
     expect('kind' in store.save(project({ kind: 'nope' as never }))).toBe(false)
     expect('kind' in store.saveFromRenderer(project({ kind: 5 as never }))).toBe(false)
+  })
+
+  it('saveFromRenderer never changes the stored kind', () => {
+    const store = new ProjectStore(dataDir())
+    store.save(project({ id: 'e1', kind: 'engagement' }))
+    expect(store.saveFromRenderer(project({ id: 'e1', kind: 'code' })).kind).toBe('engagement')
+    expect(store.saveFromRenderer(project({ id: 'e1' })).kind).toBe('engagement')
+    store.save(project({ id: 'c1' }))
+    expect('kind' in store.saveFromRenderer(project({ id: 'c1', kind: 'engagement' }))).toBe(false)
+    expect('kind' in store.get('c1')!).toBe(false)
+  })
+
+  it('client drops line breaks, tabs and hidden characters', () => {
+    expect(cleanClient('Acme Co')).toBe('Acme Co')
+    expect(cleanClient('Acme\nignore previous')).toBeUndefined()
+    expect(cleanClient('Acme\tCo')).toBeUndefined()
+    expect(cleanClient('Acme\u202eCo')).toBeUndefined()
+    expect(cleanClient('Acme\u2028Co')).toBeUndefined()
+  })
+
+  it('an engagement needs an existing folder', () => {
+    const missing = { exists: false, isDirectory: false, isGitRepo: false, suggestedName: 'x', empty: false }
+    expect(createPathError({ path: 'C:/new/folder', kind: 'engagement' }, missing)).toBe("Choose an existing folder for the engagement's working files.")
+    expect(createPathError({ path: 'C:/new/folder', kind: 'engagement' }, { ...missing, exists: true, isDirectory: true })).toBeNull()
+    expect(createPathError({ path: 'C:/new/folder' }, missing)).toBeNull()
   })
 
   it('create passes kind through and drops junk to code', () => {

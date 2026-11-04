@@ -60,6 +60,7 @@ export function referenceEditDenial(toolName: string, input: unknown, refs: read
   if (!REFERENCE_EDIT_TOOLS.has(toolName) || !refs?.length) return null
   const target = editTargetOf(toolName, input)
   if (typeof target !== 'string' || !target) return `${referenceFolderMessage(refs[0])}; this ${toolName} call names no file path, so it was refused`
+  if (target.includes('\0')) return `${referenceFolderMessage(refs[0])}; this ${toolName} call names a path with a NUL character, so it was refused`
   const hit = referenceFolderOf(target, refs, cwd)
   return hit ? referenceFolderMessage(hit) : null
 }

@@ -1,7 +1,8 @@
 import { execFile } from 'node:child_process'
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { closeSync, existsSync, lstatSync, openSync, readdirSync, readSync, statSync } from 'node:fs'
 import { extname, join, relative } from 'node:path'
 import { PROFILE_DOCUMENTS_MAX, type ProjectKind, type ProjectProfile } from '@shared/types'
+import { promptDatum } from '../mcp/assist'
 import { agentDefinitionLocations } from './import/scan'
 
 const IGNORED_DIRS = new Set([
@@ -68,14 +69,17 @@ export async function profileRepo(root: string, kind: ProjectKind = 'code'): Pro
       const rel = relative(root, full).replace(/\\/g, '/')
       let isDir = false
       try {
-        isDir = statSync(full).isDirectory()
+        // lstat: a symlink or junction (to an outside folder or file) is never followed or listed.
+        const st = lstatSync(full)
+        if (st.isSymbolicLink()) continue
+        isDir = st.isDirectory()
       } catch {
         continue
       }
       if (isDir) {
         if (IGNORED_DIRS.has(name) || (name.startsWith('.') && name !== '.github')) continue
-        if (depth === 0 && topFolders.length < MAX_TOP_FOLDERS) topFolders.push(name)
-        if (treeLines.length < MAX_TREE_ENTRIES) treeLines.push(`${'  '.repeat(depth)}${name}/`)
+        if (depth === 0 && topFolders.length < MAX_TOP_FOLDERS) topFolders.push(promptDatum(name, 200))
+        if (treeLines.length < MAX_TREE_ENTRIES) treeLines.push(`${'  '.repeat(depth)}${promptDatum(name, 200)}/`)
         else truncated = true
         if (depth < MAX_DEPTH) walk(full, depth + 1)
         continue
@@ -83,10 +87,10 @@ export async function profileRepo(root: string, kind: ProjectKind = 'code'): Pro
       fileCount++
       const ext = extname(name).toLowerCase()
       if (ext) langs.set(ext, (langs.get(ext) ?? 0) + 1)
-      if (treeLines.length < MAX_TREE_ENTRIES) treeLines.push(`${'  '.repeat(depth)}${name}`)
+      if (treeLines.length < MAX_TREE_ENTRIES) treeLines.push(`${'  '.repeat(depth)}${promptDatum(name, 200)}`)
       else truncated = true
       if (engagement && DOCUMENT_EXTS.has(ext)) {
-        if (documents.length < PROFILE_DOCUMENTS_MAX) documents.push(rel)
+        if (documents.length < PROFILE_DOCUMENTS_MAX) documents.push(promptDatum(rel, 300))
         else documentsTruncated = true
       }
       const isKey = engagement
@@ -94,9 +98,9 @@ export async function profileRepo(root: string, kind: ProjectKind = 'code'): Pro
         : KEY_FILES.has(rel.toLowerCase()) || KEY_FILES.has(name.toLowerCase())
       if (isKey && keyFiles.length < MAX_KEY_FILES) {
         try {
-          const raw = readFileSync(full, 'utf8')
-          const content = raw.length > MAX_KEY_FILE_BYTES ? `${raw.slice(0, MAX_KEY_FILE_BYTES)}\n… (truncated)` : raw
-          keyFiles.push({ path: rel, content })
+          const { text, more } = readBounded(full)
+          const content = text.length > MAX_KEY_FILE_BYTES ? `${text.slice(0, MAX_KEY_FILE_BYTES)}\n… (truncated)` : more ? `${text}\n… (truncated)` : text
+          keyFiles.push({ path: promptDatum(rel, 300), content })
         } catch {
           /* unreadable, skip */
         }
@@ -128,6 +132,19 @@ export async function profileRepo(root: string, kind: ProjectKind = 'code'): Pro
     gitLog,
     ...(agentDefinitions.length ? { agentDefinitions } : {}),
     ...(engagement ? { kind, topFolders, documents, ...(documentsTruncated ? { documentsTruncated } : {}) } : {})
+  }
+}
+
+/** Read at most MAX_KEY_FILE_BYTES + 64 bytes of a file through an fd; `more` when the file has more. */
+function readBounded(file: string): { text: string; more: boolean } {
+  const limit = MAX_KEY_FILE_BYTES + 64
+  const fd = openSync(file, 'r')
+  try {
+    const buf = Buffer.alloc(limit)
+    const n = readSync(fd, buf, 0, limit, 0)
+    return { text: buf.subarray(0, n).toString('utf8'), more: n >= limit }
+  } finally {
+    closeSync(fd)
   }
 }
 
