@@ -49,10 +49,10 @@ import type {
   SkillUseCount,
   UserQuestion
 } from '@shared/types'
-import { QUICK_ASSISTANT_SLUG, adapterForProject, agentProducedNothing, isolateWritersOn, mcpSecretNames, mixedFamilyRefusal, modelFamily, newId, projectConnection, projectKindOf, runMessagingOn, settingTier, writesToProjectFolder } from '@shared/defaults'
+import { QUICK_ASSISTANT_SLUG, adapterForProject, agentProducedNothing, isolateWritersOn, mcpSecretNames, mixedFamilyRefusal, modelFamily, newId, projectConnection, projectKindOf, runMessagingOn, settingTier, singleRunProject, writesToProjectFolder } from '@shared/defaults'
 import { referenceFolderOf } from './referenceDirectories'
 import { aliasesFor, priceAgentUsage, type PricingContext } from './pricing'
-import { IntervalTimer, buildUsageStats, computeRunUsage, emptyAgentUsage, legacySummaryUsage, normalizeRunRecord } from './runUsage'
+import { IntervalTimer, buildUsageCsv, buildUsageStats, computeRunUsage, emptyAgentUsage, legacySummaryUsage, monthRange, normalizeRunRecord } from './runUsage'
 import { DEFAULT_MAX_AUTO_CONTINUES, HARNESS_PROJECT_ID, QUICK_PROJECT_ID, RUN_MESSAGE_MAX_CHARS, RUN_PEER_PROMPT_CHARS, SKILLS_PROJECT_ID, USAGE_STATS_DEFAULT_LIMIT, USAGE_STATS_MAX_LIMIT, isVirtualProjectId } from '@shared/types'
 import { architectRole, mcpAssistantRole, skillAssistantRole } from '@shared/setup'
 import { isTrustRestrictedRun, isInsideEither, samePath, canonicalDeep } from '../quick/scratch'
@@ -431,6 +431,12 @@ function sanitizeUsageQuery(raw: UsageStatsQuery): UsageStatsQuery & { kinds: Ru
   }
   if (typeof q.since === 'number' && Number.isFinite(q.since)) out.since = q.since
   if (typeof q.until === 'number' && Number.isFinite(q.until)) out.until = q.until
+  // A calendar month replaces since / until; a malformed one is refused, never ignored.
+  if (q.range !== undefined && q.range !== null) {
+    const { since, until } = monthRange((q.range as { month?: unknown }).month as string)
+    out.since = since
+    out.until = until
+  }
   const limit = typeof q.limit === 'number' && Number.isFinite(q.limit) ? Math.floor(q.limit) : USAGE_STATS_DEFAULT_LIMIT
   out.limit = Math.min(USAGE_STATS_MAX_LIMIT, Math.max(1, limit))
   return out
@@ -858,9 +864,15 @@ export class RunManager {
     titleContext,
     surface,
     quick,
-    buildWorkspace
+    buildWorkspace,
+    team
   }: StartInput): Promise<RunSummary> {
     this.refuseWhileQuitting()
+    if (team !== undefined && team !== 'single') throw new Error('Unknown team for this run.')
+    if (team === 'single') {
+      if (kind !== 'work') throw new Error('Only a work run can use the single assistant.')
+      if (isVirtualProjectId(project.id) || quick || buildWorkspace) throw new Error('The single assistant runs on a saved project only.')
+    }
     // Each virtual project belongs to exactly one kind of run.
     if (project.id === HARNESS_PROJECT_ID && kind !== 'mcp-assist') throw new Error('Only the MCP assistant can run on the harness project.')
     if (project.id === SKILLS_PROJECT_ID && kind !== 'skill-assist') throw new Error('Only the Skill assistant can run on the skills project.')
@@ -871,7 +883,8 @@ export class RunManager {
     project = this.options.mcp?.withLibrary?.(project) ?? project
     // The Chat's single assistant settles its model before the adapter is chosen.
     let quickWarning: string | undefined
-    if (quick?.team === 'single') {
+    if (team === 'single') project = singleRunProject(project, this.options.appSettings?.().quickRunModel)
+    if (quick?.team === 'single' || team === 'single') {
       const resolved = this.resolveQuickAssistant(project)
       project = resolved.project
       quickWarning = resolved.warning
@@ -909,6 +922,7 @@ export class RunManager {
     if (surface === 'team' && kind === 'setup') summary.surface = surface
     if (quick) summary.quick = { ...quick }
     if (buildWorkspace) summary.buildWorkspace = buildWorkspace
+    if (team === 'single') summary.team = 'single'
     const active: ActiveRun = {
       summary,
       adapter: choice.adapter,
@@ -1290,6 +1304,19 @@ export class RunManager {
               saveProjectRules: (rules: string[]) => addRulesReport({ file: this.rulesFileFor(live) }, rules)
             }),
         ...(!writesToProjectFolder(project) ? { engagementDocument: () => (this.options.dataDir ? readEngagementDocument(this.options.dataDir, project.id) : undefined) } : {}),
+        // Context notes: work runs of an engagement and single-agent runs; never Chat, setup-like or trust-restricted runs.
+        ...(this.options.engagementNotes && kind === 'work' && !bare && !restricted && (projectKindOf(project) === 'engagement' || team === 'single')
+          ? {
+              engagementNotes: {
+                list: () => this.options.engagementNotes!.list(project.id),
+                read: (noteId: string) => this.options.engagementNotes!.read(project.id, noteId)
+              }
+            }
+          : {}),
+        // Saved team templates: Architect setup runs only.
+        ...(this.options.orgTemplate && kind === 'setup' && !isVirtualProjectId(project.id)
+          ? { orgTemplate: (templateId: string) => this.options.orgTemplate!(templateId, live) }
+          : {}),
         ...(foldersOn
           ? {
               allowedDirectories: () => [...allowedDirs],
@@ -1601,13 +1628,9 @@ export class RunManager {
     return active ? listPending(active) : emptyPending()
   }
 
-  /**
-   * runs:usageCsv: usageStats rows as CSV (USAGE_CSV_COLUMNS), limit USAGE_STATS_MAX_LIMIT. STUB: the Runtime
-   * Engineer implements it (runUsage.ts buildUsageCsv).
-   */
+  /** runs:usageCsv: usageStats rows as CSV (USAGE_CSV_COLUMNS), limit USAGE_STATS_MAX_LIMIT (runUsage.ts buildUsageCsv). */
   usageCsv(raw: UsageStatsQuery): string {
-    void raw
-    throw new Error('Usage export is not available yet.')
+    return buildUsageCsv(this.usageStats({ ...(raw && typeof raw === 'object' ? raw : {}), limit: USAGE_STATS_MAX_LIMIT } as UsageStatsQuery))
   }
 
   /** runs:usageStats: usage per run, per role and per trend bucket for one project (see UsageStats). */
@@ -1647,7 +1670,7 @@ export class RunManager {
    * that did not opt in neither reads nor reveals what other runs are doing beyond project, status and orchestrator.
    */
   private listRunsFor(self: ActiveRun): RunPeer[] {
-    if (isSetupLikeRun(self.summary.kind) || isVirtualProjectId(self.summary.projectId)) return []
+    if (isSetupLikeRun(self.summary.kind) || isVirtualProjectId(self.summary.projectId) || self.summary.team === 'single') return []
     const selfOn = this.messagingOn(self)
     return [...this.runs.values()]
       .filter((a) => a !== self && a.summary.kind === 'work' && !isVirtualProjectId(a.summary.projectId) && isOpenStatus(a.summary.status))
@@ -1669,14 +1692,14 @@ export class RunManager {
   /** message_run: see RuntimeContext.messageRun. Both runs record the exchange through their own emit. */
   private async messageRun(sender: ActiveRun, targetId: string, rawText: string): Promise<RunMessageOutcome> {
     const text = (typeof rawText === 'string' ? rawText : '').trim().slice(0, RUN_MESSAGE_MAX_CHARS)
-    if (isSetupLikeRun(sender.summary.kind) || isVirtualProjectId(sender.summary.projectId)) return { result: 'refused', refusal: 'not-work' }
+    if (isSetupLikeRun(sender.summary.kind) || isVirtualProjectId(sender.summary.projectId) || sender.summary.team === 'single') return { result: 'refused', refusal: 'not-work' }
     if (targetId === sender.summary.id) return { result: 'refused', refusal: 'self' }
     if (!text) return { result: 'refused', refusal: 'empty' }
     const target = this.runs.get(targetId)
     const stored = target ? undefined : this.store.get(targetId)
     if (!target && !stored) return { result: 'not-found' }
     const targetSummary = target?.summary ?? stored!
-    if (isSetupLikeRun(targetSummary.kind) || isVirtualProjectId(targetSummary.projectId)) return { result: 'refused', refusal: 'not-work' }
+    if (isSetupLikeRun(targetSummary.kind) || isVirtualProjectId(targetSummary.projectId) || targetSummary.team === 'single') return { result: 'refused', refusal: 'not-work' }
     // An ended run is just not live; checking its project's flag would name a project the caller cannot list.
     if (!target) return { result: 'not-live' }
     // Opt-in per project (Project.runMessaging): both ends must allow it; one project only needs its own flag.
@@ -1801,7 +1824,7 @@ export class RunManager {
 
   /** Project.runMessaging of a run's project, read from the current saved project when possible. */
   private messagingOn(a: ActiveRun): boolean {
-    if (isVirtualProjectId(a.summary.projectId)) return false
+    if (isVirtualProjectId(a.summary.projectId) || a.summary.team === 'single') return false
     const current = this.options.resolveProject?.(a.summary.projectId)
     return current ? runMessagingOn(current) : a.messagingAtStart
   }
@@ -2356,6 +2379,7 @@ export class RunManager {
       // A Chat run keeps its folder and settings; an MCP build session reopens in the same workspace.
       ...(target.quick ? { quick: target.quick } : {}),
       ...(target.buildWorkspace ? { buildWorkspace: target.buildWorkspace } : {}),
+      ...(target.team === 'single' ? { team: target.team } : {}),
       resumeSessionId: sessionId,
       resumedFrom: target.id,
       // totalCostUsd may be a computed cost; only the provider's own total is subtracted from the next provider total.

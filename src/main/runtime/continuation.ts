@@ -113,8 +113,8 @@ export function limitReachedText(max: number): string {
  * RunManager folds this into RuntimeContext.autoContinue, so every adapter's ContinuationDriver stays off for such a
  * run; interrupt holds, idle handling and auto-resume do not depend on it. Pure.
  */
-export function planNudgesApply(run: Pick<RunSummary, 'kind' | 'quick'>): boolean {
-  return run.kind === 'work' && run.quick?.team !== 'single'
+export function planNudgesApply(run: Pick<RunSummary, 'kind' | 'quick' | 'team'>): boolean {
+  return run.kind === 'work' && run.quick?.team !== 'single' && run.team !== 'single'
 }
 
 export interface NudgeInput {

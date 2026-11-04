@@ -294,6 +294,10 @@ describe('planNudgesApply (UX M5: a single-assistant Chat is a conversation)', (
     expect(planNudgesApply({ kind: 'mcp-assist' })).toBe(false)
   })
 
+  it('is off for a single-agent work run of a stored project (RunSummary.team)', () => {
+    expect(planNudgesApply({ kind: 'work', team: 'single' })).toBe(false)
+  })
+
   function driverFor(run: Parameters<typeof planNudgesApply>[0], current: RunPlan | undefined) {
     const nudges: string[] = []
     const d = new ContinuationDriver({
