@@ -1,5 +1,6 @@
 /* ---------- Dashboard (docs/design/dashboard.md) ----------
    Region layout, hero band and the attention column. Project tiles and fact cards: dashboard-projects.css. */
+@import './dashboard-projects.css';
 
 /* The scroll region under the topbar. One page scroll, no per-column scroll. Its padding sits on the grid, because a
    container cannot be styled by its own container query. */
@@ -161,7 +162,10 @@
       'mark main'
       'mark facts';
     grid-template-columns: auto minmax(0, 1fr);
-    row-gap: var(--space-1);
+    row-gap: 0;
+  }
+  .dash-hero-main {
+    gap: 0;
   }
   .dash-hero-facts {
     justify-self: start;

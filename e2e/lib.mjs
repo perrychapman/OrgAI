@@ -236,8 +236,8 @@ export async function launch({ shotPrefix = 'shot', clearPrefs = true } = {}) {
     await page.reload()
     await page.waitForSelector('.sidebar', { timeout: 60_000 })
   }
-  // A relaunch on existing data may open on a project list or a run, not the new-project form.
-  if (clearPrefs) await page.waitForSelector('form.card, .editor', { timeout: 60_000 })
+  // A relaunch on existing data may open on the dashboard or a run.
+  if (clearPrefs) await page.waitForSelector('[data-testid=dashboard], .editor', { timeout: 60_000 })
   let n = 0
   const shot = (name) => screenshot(page, `${shotPrefix}-${String(++n).padStart(2, '0')}-${name}`)
   return { app, page, shot }
@@ -267,15 +267,26 @@ export async function gotoProjects(page) {
     .or(page.locator('.sidebar [aria-label="Dashboard"], .sidebar [aria-label="All projects"]'))
     .first()
     .click()
-  // With no projects the form is open; otherwise it sits behind the topbar "New project" button.
-  await page.waitForSelector('form.card, [data-testid=new-project], .project-card, [data-testid=project-tile]', { timeout: 10_000 })
+  await page.waitForSelector('[data-testid=dashboard]', { timeout: 10_000 })
 }
 
-/** Open the new-project form if it is closed. Returns the form locator. */
-async function openProjectForm(page) {
-  const form = page.locator('form.card')
-  if (!(await form.count())) await page.locator('[data-testid=new-project]').click()
-  await form.waitFor({ timeout: 10_000 })
+/**
+ * Open the new-project form. With projects it sits in `new-project-dialog` behind the topbar "New project" button;
+ * on first launch it is the inline form of the Dashboard. Returns the form locator.
+ */
+export async function openProjectForm(page) {
+  const trigger = page.locator('[data-testid=new-project]')
+  if (await trigger.count()) {
+    await trigger.click()
+    const form = page.locator('[data-testid=new-project-dialog] form')
+    await form.waitFor({ timeout: 10_000 })
+    return form
+  }
+  // First launch: "Start a project" is checked by default.
+  const choice = page.locator('[data-testid=dash-start-choice]').getByRole('radio', { name: 'Start a project' })
+  if (!(await choice.isChecked())) await choice.check({ force: true })
+  const form = page.locator('[data-testid=dashboard] form.project-form')
+  await form.waitFor({ state: 'visible', timeout: 10_000 })
   return form
 }
 
@@ -305,8 +316,8 @@ export async function createProject(page, { mode = 'existing', path: dir, name, 
   const mock = form.locator('[data-testid=use-mock]')
   if ((await mock.count()) && (await mock.isChecked()) !== useMock) await form.locator('label.checkbox', { hasText: 'Use the mock adapter' }).click()
   await form.getByRole('button', { name: skipSetup ? 'Create project' : 'Create and start setup' }).click()
-  // The projects view (and its form) goes away once the project exists and the app navigates to it.
-  await page.waitForSelector('form.card, [data-testid=new-project]', { state: 'detached', timeout: 120_000 })
+  // The dashboard (and its dialog or form) goes away once the project exists and the app navigates to it.
+  await page.waitForSelector('[data-testid=dashboard]', { state: 'detached', timeout: 120_000 })
   return await findProject(page, name)
 }
 
@@ -319,20 +330,22 @@ export async function findProject(page, name) {
 /** Open a project from the sidebar. */
 export async function openProject(page, name) {
   await page.locator(`.sidebar [data-testid=nav-project][data-name="${name.replace(/"/g, '\\"')}"]`).first().click()
-  await page.waitForSelector('form.card, [data-testid=new-project]', { state: 'detached', timeout: 10_000 })
+  await page.waitForSelector('[data-testid=dashboard]', { state: 'detached', timeout: 10_000 })
 }
 
-/** Delete every project card with this name. Returns how many cards remain (0 on success). */
+/** Delete every project tile with this name. Returns how many tiles remain (0 on success). */
 export async function deleteProject(page, name) {
   await gotoProjects(page)
+  const tiles = () => page.locator(`[data-testid=project-tile][data-name="${name.replace(/"/g, '\\"')}"]`)
   for (let i = 0; i < 5; i++) {
-    const card = page.locator('.project-card', { hasText: name }).first()
-    if (!(await card.count())) break
-    await card.getByRole('button', { name: 'Delete', exact: true }).click()
+    const tile = tiles().first()
+    if (!(await tile.count())) break
+    await tile.locator('[data-testid=project-tile-more]').click()
+    await page.locator('[data-testid=project-tile-delete]').click()
     await page.getByRole('button', { name: 'Delete project', exact: true }).click()
     await sleep(700)
   }
-  return page.locator('.project-card', { hasText: name }).count()
+  return tiles().count()
 }
 
 /** End a live session if the button is there. */
