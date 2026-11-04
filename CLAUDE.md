@@ -440,6 +440,19 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   `weekCost` unused, no e2e for focus after a tile opens, no `nav-dashboard` testid. Not built (need new contracts):
   cross-project usage stats, run outcome/changes, cut decisions after a relaunch, per-project team suggestion counts,
   update check.
+  - Fix-up after the re-walk (3507ebe, `docs/design/ux-review-dashboard-2.md`): `continueFromHistory(runId, projectId?)`
+    selects the project through `focusRun` when needed, opens the chain's newest run and focuses the composer (never
+    starts a run); `dash-since-row` / Running / Paused rows open the run and land focus on a real element, else the topbar
+    h1; `removeProject` drops the project's `historyByProject`, `activeRunByProject`, `draftPage`, `runs` and
+    `dismissedRuns` entries and the summary hooks ignore runs of unknown projects; `useLastSeen` adds `clearedAt`
+    (localStorage `orgai.dashboardClearedAt`, moved only by Mark all seen) so closed-waiting rows survive trips away;
+    `heroSublineParts` adds "N were waiting on you when OrgAI closed" under "All quiet"; `HeroBand` joins a delete
+    message and a figure change within 1.5 s into one announcement. Verified by renderer unit tests and e2e/dashboard.mjs
+    relaunch checks (Continue opens the Live view, row click focus, deleted project gone from Since and Cost). Walk-2
+    status: H1, H2, M1, M2, M4 fixed; open: M3 (a paused run cut by a quit reads "Ended when OrgAI closed" with no limit
+    note or Continue; needs a main-side marker), M3-old focus partly, M4-old first-launch scroll at 1024x640, L1-L8 of
+    walk 2 (incl. hero cost vs Cost card unchecked, Usage dead space / Connections below the fold at 1424x855, wordmark
+    "( MOCK Dev" in light theme, mock named four times on first launch).
 
 - Resizable columns share one width budget (`lib/panelWidth.ts` `panelBudget`): the canvas keeps 280 px (`CANVAS_MIN_PX`); when the side panel minimum (280 px) does not fit it shows as its rail (saved width and choice kept, re-applied when space returns). `SidePanel` `autoCollapseBelow` reacts to first layout and window resizes only, never to handle drags. Resize handles: Enter or double-click resets, arrows move the splitter.
 
