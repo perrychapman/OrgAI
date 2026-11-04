@@ -1,0 +1,70 @@
+/* Canvas backdrops (docs/design/canvas-themes.md section 2). Colours come from the canvas tokens in tokens.css. */
+.canvas-backdrop {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: -1;
+  pointer-events: none;
+  overflow: hidden;
+}
+/* A thumbnail sample sits in normal flow at its own size. */
+.canvas-backdrop-tile {
+  position: static;
+  inset: auto;
+  z-index: auto;
+  display: block;
+  background: var(--canvas-bg);
+}
+.canvas-backdrop .canvas-fill {
+  fill: var(--canvas-pattern);
+  stroke: none;
+}
+.canvas-backdrop .canvas-fill-strong {
+  fill: var(--canvas-pattern-strong);
+}
+.canvas-backdrop .canvas-line {
+  fill: none;
+  stroke: var(--canvas-pattern);
+  stroke-width: 1px;
+  vector-effect: non-scaling-stroke;
+}
+.canvas-backdrop .canvas-line-strong {
+  stroke: var(--canvas-pattern-strong);
+}
+.canvas-backdrop .canvas-line-major {
+  stroke-width: 1.5px;
+}
+.canvas-backdrop .canvas-trace {
+  stroke-width: 1.25px;
+  stroke-linejoin: round;
+}
+.canvas-backdrop .canvas-pad {
+  fill: var(--canvas-bg);
+  stroke: var(--canvas-pattern-strong);
+  stroke-width: 1.5px;
+  vector-effect: non-scaling-stroke;
+}
+.canvas-backdrop .canvas-via {
+  fill: var(--canvas-pattern-strong);
+  stroke: none;
+}
+.canvas-backdrop .canvas-ring {
+  fill: none;
+  stroke: var(--canvas-ring);
+  stroke-width: 1px;
+  stroke-dasharray: 2 6;
+  vector-effect: non-scaling-stroke;
+}
+/* Terminal texture: screen-fixed, under nodes and edges, no meaning. */
+.canvas-scanlines {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--canvas-pattern) 40%, transparent) 0 1px,
+    transparent 1px 3px
+  );
+}
