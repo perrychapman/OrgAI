@@ -310,6 +310,62 @@ else. The Maintenance "Architecture document" line and History are out of scope 
 
 (Filled in by the engineers and the lead as the work lands: files, helpers, what was verified, what was not.)
 
+### Integration status and gate (UI Lead, 2026-11-04)
+
+- Foundation (lead): `lib/knowledge.ts` (+ test; the item model, kinds, order, search rank, provenance and history
+  lines, related rows, the Settings summary and clear counts, `resolveFocus`), `lib/dates.ts` (+ test; routed through
+  `engagementContext.ts`, `kit.ts`, `templates.ts`), the store (`View` 'knowledge', `knowledgeFocus`,
+  `openKnowledgeItem`, `clearKnowledgeFocus`), `App.tsx` (`tab-knowledge`, engagements only), `ConfirmDialog` /
+  `useConfirm` `confirmTestId` (used by `knowledge-delete-confirm` and `knowledge-clear-confirm`), package.json
+  e2e:free (`knowledge.mjs`, `knowledge-run.mjs`).
+- Graph view (section 5): built on the branch `worktree-agent-af61dccbcb371c725` (`components/knowledge/KnowledgeGraph.tsx`
+  replacing the stub, `KnowledgeGraphNode.tsx`, `KnowledgeRetiredGroupNode.tsx`, `KnowledgeGraphEdge.tsx`,
+  `KnowledgeGraphLegend.tsx`, `lib/knowledgeGraph.ts` + test, `styles/knowledge-graph.css`, `e2e/knowledge-graph.mjs`
+  and its own "Graph view" notes in this section). That branch did not merge into the lead's tree (a conflict in this
+  file), so on the lead's branch the Graph switch still renders the stub ("The graph view is not built yet.") and
+  `e2e/knowledge-graph.mjs` is not in e2e:free; the orchestrator merges it onto dev after this branch, re-adds
+  `node e2e/knowledge-graph.mjs` to e2e:free and runs that script there (never run against the list view yet).
+- Gate on the lead's tree (list + detail + notes + run view + Settings + Maintenance, graph stub): `npm run typecheck`,
+  `npm test` (4,156 tests), `npm run build`, `node e2e/knowledge.mjs`, `node e2e/knowledge-run.mjs` and the full
+  `npm run e2e:free` (see the hand-back for the result), both sizes and themes through the scripts' screenshots
+  (`e2e/shots/knowledge-*.png`, looked at by the lead at 1600 dark, 1024 light and the 1600 dark transcript).
+- Reviewer-2 (list, detail, notes) blocked on one High, fixed: `withFactRetired` now always sends the fact's
+  `retired` flag (main keeps the stored flag when it is omitted, so Restore was a no-op that announced success);
+  `e2e/knowledge.mjs` now drives Restore and Retire from the fact menu against the store. Mediums fixed: `KnowledgeView`
+  is keyed by project id (an in-flight read of one engagement can no longer land in another's view); inline fields
+  stay enabled while saving (`readOnly` + `aria-busy`) so a refused Enter save keeps focus in the field; after a fact
+  or relation Remove or a note Unlink, focus moves to the section's add button. Lows fixed: `cleanIpcError` in the
+  relation form, Esc cancels the relation form, an empty new fact's blur drops the row without pulling focus back, a
+  failed first load shows only the Banner (never "Nothing recorded yet"). Open: a fact or note link an agent appends
+  between the tab's fetch and the user's save is dropped, because `knowledge:saveNode` takes the full list and has no
+  `expectedUpdatedAt` (a contract change; listed in the hand-back for ARCHITECTURE.md Risks); a push that changes a
+  fact's text replaces the draft of a fact row being typed in (two windows); headings inside the listbox and
+  `aria-setsize` / `aria-posinset` under windowing; the detail heading's spoken name leads with "Edit name"; testids
+  of the sub-controls (`knowledge-row-prov`, `knowledge-row-edit-note`, `knowledge-row-retire`, `knowledge-create-save`
+  / `-cancel`, `knowledge-relation-form` / `-options` / `-option` / `-cancel` / `-retire` / `-remove`,
+  `knowledge-fact-retire` / `-remove`, `knowledge-note-row` / `-unlink` / `-search` / `-options` / `-option`,
+  `knowledge-main`) are listed here for the record.
+- Reviewer: reviewer-1 (foundation, transcript, RunMeta, Settings, Maintenance) approved with one Medium and Lows; the
+  Medium (focus after Clear everything landed on the body because the button greys) is fixed: focus moves to the
+  section notice (`maintenance-notice`, `tabIndex=-1`). Lows fixed: ids parsed from agent text must match
+  `KNOWLEDGE_ID_RE` (`kn_` / `ke_` / `kf_` plus at most 64 id characters) or a note-id shape before they become a focus
+  target (else the kind + name fallback); the Settings summary reads "Could not read what the team recorded" on a read
+  error instead of "Nothing recorded yet"; the RunMeta button's name ends "(opens Knowledge)"; the disabled Clear
+  button no longer carries a dead `aria-describedby`. Open Lows: the transcript pairing is O(rows x writes) per append
+  and `recordedCount` runs in a selector (fine at mock sizes); the Open link and RunMeta button do nothing visible in a
+  run-scoped window; `linkedTarget` splits on the first relation occurrence; a long retired-fact headline is not
+  clipped; the docs bullets (hand-back text).
+
+### List, detail and notes (UI Engineer, 2026-11-04)
+
+Files: `views/KnowledgeView.tsx` (data, filter, selection, view switch, `SidePanel`, the one status region, live updates, the `knowledgeFocus` deep link, retire / restore / delete), `components/knowledge/KnowledgeFilters.tsx` (the `form[role=search]` headed "Show"; the search box is a plain `input.input` so it can take a ref; 150 ms debounce), `KnowledgeList.tsx` (one `ul[role=listbox]` over `li[role=presentation]` groups with `h2` titles and `ul[role=group]` rows; a roving tabindex kept by row id so windowing survives; Up / Down / Home / End, type-ahead, Enter opens, Space selects, Shift+F10 / Menu key / right-click open a `popover="auto"` menu `knowledge-row-more` with Open, Retire / Restore and Edit for notes; past `WINDOW_THRESHOLD` 100 rows only the viewport plus 20 rows each side render, with spacer `li`s and fixed heights GROUP_TITLE_PX 32 / ROW_PX 56 / ROW_PLAIN_PX 44; a `KnowledgeListHandle` with `focusRow(id)` / `focusCurrent()`), `KnowledgeRow.tsx`, `KnowledgeDetail.tsx` (header with `InlineField`s for name, kind (datalist of kinds in use), aliases and summary; the note view; History through `splitHistoryLine` so the run is a `button.link-btn` calling `focusRun`; the footer; the inline create form `knowledge-create`), `KnowledgeFacts.tsx` (always-editable fact inputs, save on blur / Enter, Esc restores, per-row `Popover` menu, "Add a fact"; every save sends the full list through `factInputs` / `withFactText` / `withFactRetired` / `withoutFact` / `withNewFact`), `KnowledgeRelated.tsx` (rows from `relatedRows`, the neighbour link, the per-row menu with the "Remove this relation?" confirm, the inline add form: a combobox over `relationCandidates` with a listbox, the relation text with a datalist of `relationsInUse`, a `SegmentedControl` direction, saved through `saveEdge` with `normalizeKnowledgeKey`), `KnowledgeNotesLinks.tsx` (linked notes, Unlink, "Link a note" combobox over `noteCandidates`; hidden with no notes), `InlineField.tsx`, `NoteDialog.tsx` (moved out of ContextNotesSection; `onSaved(saved)`), `knowledgeWrites.ts` (`KnowledgeWrites`: every pane write goes through the view, which counts it as its own and refetches; `focusLater`), `menuKeys.ts`, `lib/knowledgeList.ts` (pure helpers, unit-tested), `styles/knowledge.css`. The Delete confirm is `useConfirm` with `confirmTestId: 'knowledge-delete-confirm'` (added by the lead after the merge).
+
+Live updates: `onEngagementChanged` for the project; 'knowledge' refetches the graph, 'notes' the note index, each coalesced (one in flight, one queued); 'document' ignored. The tab's own writes are told apart by an in-flight counter (main broadcasts before the IPC resolves) plus ids written here within 10 s (`isOwnEvent`); the note dialog counts as in flight while open. Other writes batch into "The team recorded N items" (`addRecorded` / `flushRecorded`, 5 s) and, when the pushed items are filtered out, show "Show new" (`hiddenNewIds`), which clears kinds, origins and the query. The list never re-sorts (creation order) and focus is never moved by a push.
+
+Status: `announce()` clears and re-sets the one `role=status` region (40 ms) so a repeated text speaks again; the count line is spoken 400 ms after a filter change once the data is loaded.
+
+Verified: unit tests (knowledgeList.test.ts, knowledge.test.ts), `e2e/knowledge.mjs` (mock; both sizes and themes; see the script header: the tab on the engagement only, groups, provenance "Engagement Lead · R1 · <date>", search "Acme" = "3 of 5 items" (Acme Corp by name, Jane Doe by her summary, the risk by its fact), the detail's facts / Related / History, the retired fact behind Show retired, inline fact edit and Add a fact, retire / restore / delete the risk, Add a note and Edit note, Add an item with a kind normalised to "vendor" and a duplicate refusal, "The team recorded 1 item" plus "Show new" for an outside write, the History run link, a keyboard pass at 1024x640, both sizes and themes without page scroll), `e2e/engagement2.mjs` section 4 moved to the tab. Not driven: inline name / kind / aliases / summary edits, the fact and relation menus, the relation form, note linking, the caps, loading and error states, windowing in the app (math only), the transcript-row deep link, focus to "Add a note" after deleting the last row. Deviations: the summary saves on blur and Ctrl/Cmd+Enter (Enter adds a line); "Show new" also clears the query; arrows select without opening the pane (so the 1024x640 rail does not pop open per arrow press; Enter, a click, a relation link or the deep link open it); `listDomId` for the graph is the filters form (`knowledge-filters`, the list is not rendered in Graph view) and `detailDomId` is `knowledge-detail-body`; the row's More actions is a native `popover="auto"` panel, not the `Popover` component (rows carry no buttons); search results keep group order with the rank inside a group; the detail header always shows the Agent badge.
+
 ### Run view, transcript, Settings and Maintenance (sections 7, 8, 9; UI Engineer 3)
 
 - Files: `lib/transcriptRows.ts` (+ test), `lib/knowledgeRun.ts` (new, + test), `components/TranscriptPanel.tsx`,

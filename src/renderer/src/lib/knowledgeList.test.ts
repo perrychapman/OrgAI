@@ -202,7 +202,7 @@ describe('detail pane edits', () => {
     ])
     expect(withFactText(facts, 'kf_1', 'HQ in Leeds')[0]).toEqual({ id: 'kf_1', text: 'HQ in Leeds' })
     expect(withFactRetired(facts, 'kf_1', true)[0]).toEqual({ id: 'kf_1', text: 'Headquartered in Leeds', retired: true })
-    expect(withFactRetired(facts, 'kf_2', false)[1]).toEqual({ id: 'kf_2', text: 'Fiscal year ends in March' })
+    expect(withFactRetired(facts, 'kf_2', false)[1]).toEqual({ id: 'kf_2', text: 'Fiscal year ends in March', retired: false })
     expect(withoutFact(facts, 'kf_2')).toEqual([{ id: 'kf_1', text: 'Headquartered in Leeds' }])
     expect(withNewFact(facts, 'New').at(-1)).toEqual({ text: 'New' })
   })

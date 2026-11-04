@@ -233,8 +233,9 @@ export function withFactText(facts: readonly KnowledgeFact[], id: string, text: 
   return factInputs(facts).map((f) => (f.id === id ? { ...f, text } : f))
 }
 
+/** The list with one fact retired or restored. The flag is always sent for that fact: main keeps the stored flag when it is omitted. */
 export function withFactRetired(facts: readonly KnowledgeFact[], id: string, retired: boolean): KnowledgeFactInput[] {
-  return factInputs(facts).map((f) => (f.id === id ? { id: f.id, text: f.text, ...(retired ? { retired: true } : {}) } : f))
+  return factInputs(facts).map((f) => (f.id === id ? { id: f.id, text: f.text, retired } : f))
 }
 
 export function withoutFact(facts: readonly KnowledgeFact[], id: string): KnowledgeFactInput[] {

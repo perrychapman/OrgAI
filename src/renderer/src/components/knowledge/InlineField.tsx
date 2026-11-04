@@ -115,7 +115,8 @@ export function InlineField({
           maxLength={maxLength}
           invalid={!!error}
           aria-describedby={describedBy}
-          disabled={busy}
+          readOnly={busy}
+          aria-busy={busy || undefined}
           data-testid={inputTestId}
           onChange={(v) => {
             setDraft(v)
@@ -141,7 +142,8 @@ export function InlineField({
           maxLength={maxLength}
           invalid={!!error}
           aria-describedby={describedBy}
-          disabled={busy}
+          readOnly={busy}
+          aria-busy={busy || undefined}
           autoComplete="off"
           spellCheck={false}
           list={listId}
