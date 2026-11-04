@@ -3,7 +3,7 @@
 // "Import agents" and "Export to repo" actions, and checks the repository stays untouched except for the export.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { check, cleanup, finish, findProject, gotoProjects, launch, log, makeFixtureRepo, removeFixture, sleep, writeFile } from './lib.mjs'
+import { check, cleanup, finish, findProject, gotoProjects, launch, log, makeFixtureRepo, openProjectForm, removeFixture, sleep, writeFile } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const NAME = 'E2E import (orgai test)'
@@ -21,9 +21,7 @@ try {
   const size = /^(\d+)x(\d+)$/.exec(process.env.E2E_SIZE ?? '')
   if (size) await app.evaluate(({ BrowserWindow }, [w, h]) => BrowserWindow.getAllWindows()[0].setContentSize(w, h), [Number(size[1]), Number(size[2])])
   await gotoProjects(page)
-  const form = page.locator('form.card')
-  if (!(await form.count())) await page.locator('[data-testid=new-project]').click()
-  await form.waitFor({ timeout: 10_000 })
+  const form = await openProjectForm(page)
   await form.getByRole('radio', { name: 'Existing repository', exact: true }).check({ force: true })
   await form.locator('input[placeholder*="repo"]').fill(repo)
   await form.locator('input[placeholder*="Defaults to the folder name"]').fill(NAME)
