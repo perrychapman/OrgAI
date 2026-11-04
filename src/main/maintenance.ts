@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync, rmSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { MaintenanceResult, PendingWorktree, Project, WorktreeDiff } from '@shared/types'
+import { projectDocumentPath } from '@shared/defaults'
 import type { ProjectStore } from './store/projects'
 import { ARCHITECTURE_PATH, CLAUDE_MD_MARKER } from './setup/service'
 import { diffWorktree, discardWorktree, inspectPending, integrateWorktree, isGitRepo, removeExcludeLine } from './runtime/worktrees'
@@ -64,10 +65,16 @@ export class MaintenanceService {
     }
 
     const removed: string[] = []
-    const archFile = join(root, ARCHITECTURE_PATH)
-    if (existsSync(archFile)) {
-      unlinkSync(archFile)
-      removed.push(ARCHITECTURE_PATH)
+    let removedDoc = false
+    for (const docPath of [ARCHITECTURE_PATH, projectDocumentPath('engagement')]) {
+      const docFile = join(root, docPath)
+      if (existsSync(docFile)) {
+        unlinkSync(docFile)
+        removed.push(docPath)
+        removedDoc = true
+      }
+    }
+    if (removedDoc) {
       const dir = join(root, '.orgai')
       try {
         if (existsSync(dir) && readdirSync(dir).filter((n) => n !== '.DS_Store').length === 0) {

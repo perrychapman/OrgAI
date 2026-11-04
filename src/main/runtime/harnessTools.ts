@@ -1,10 +1,10 @@
 import { z } from 'zod'
 import { constants as fsConstants, promises as fsp } from 'node:fs'
 import path from 'node:path'
-import type { McpInstallDecision, McpLibraryEntry, McpProposalServer, McpRegistryEntry, McpServerSource, McpServerSpec, PlanStep, Proposal, ProposalOutcome, QuestionAnswer, Role, RunPlan, SkillProposalItem } from '@shared/types'
+import type { McpInstallDecision, McpLibraryEntry, McpProposalServer, McpRegistryEntry, McpServerSource, McpServerSpec, PlanStep, ProjectKind, Proposal, ProposalOutcome, QuestionAnswer, Role, RunPlan, SkillProposalItem } from '@shared/types'
 import { CHAT_HARNESS_TOOLS, HARNESS_PROJECT_ID, MCP_HARNESS_TOOLS, PERMISSION_MODES, PROJECT_PEEK_BRIEF_CHARS, RUN_HARNESS_TOOLS, SKILLS_PROJECT_ID, SKILL_ASSIST_HARNESS_TOOLS, SKILL_CONFIG_ACTIONS, SKILL_HARNESS_TOOLS, SKILL_PROPOSAL_MAX_ITEMS, TOOL_CATALOG } from '@shared/types'
 import { skillProposalProblem } from '../skills/assist'
-import { MAX_AUTO_CONTINUES_LIMIT, MAX_CONCURRENT_SUBAGENTS_LIMIT, MAX_SUBAGENT_DEPTH_LIMIT, libraryEntryFromSpec, linkedSpec, mcpSecretNames, newId } from '@shared/defaults'
+import { MAX_AUTO_CONTINUES_LIMIT, MAX_CONCURRENT_SUBAGENTS_LIMIT, MAX_SUBAGENT_DEPTH_LIMIT, libraryEntryFromSpec, linkedSpec, mcpSecretNames, newId, projectDocumentPath, projectKindOf } from '@shared/defaults'
 import { PROPOSAL_TOOLS } from '@shared/setup'
 import { toRoles, type DraftModelContext } from '../ai/draft'
 import { mergeOrgChart, type OrgMergeResult } from '../setup/orgMerge'
@@ -159,10 +159,28 @@ function defineTool<S extends z.ZodRawShape>(def: HarnessToolDef<S>): HarnessToo
   return def as unknown as HarnessToolDef
 }
 
+/**
+ * Tool descriptions that differ for an engagement project (the code wording stays on the definitions). The plan tools
+ * end in a review of the deliverables instead of build and tests; the charter tool describes the engagement fields.
+ */
+export const ENGAGEMENT_TOOL_DESCRIPTIONS: Record<string, string> = {
+  set_plan:
+    'Create or replace the plan for this run: the goal and the concrete steps in order (the last step is a review of the deliverables against the brief, then the final report). Every step starts pending; ids are p1..pn. The harness uses the plan to keep the run going until it is complete.',
+  complete_plan: 'Mark the plan complete once every step is done and the deliverables were reviewed. Ends the automatic continuation.',
+  propose_architecture:
+    'Propose the engagement charter: summary (client, field, phase, goal), stack (platforms and systems involved), modules (workstreams with their folders), conventions (working agreements and deliverable standards), commands (recurring procedures, may be empty) and risks. Blocks until the user approves or asks for changes.'
+}
+
+/** The description a bound tool shows for a project kind. */
+export function toolDescription(def: { name: string; description: string }, kind: ProjectKind): string {
+  return (kind === 'engagement' ? ENGAGEMENT_TOOL_DESCRIPTIONS[def.name] : undefined) ?? def.description
+}
+
 function bind(defs: HarnessToolDef[], ctx: RuntimeContext, hooks: HarnessToolHooks): HarnessTool[] {
+  const kind = projectKindOf(ctx.project)
   return defs.map((def) => ({
     name: def.name,
-    description: def.description,
+    description: toolDescription(def, kind),
     audience: def.audience ?? 'root',
     inputSchema: def.inputSchema,
     call: async (args, caller) => def.handler(ctx, def.inputSchema.parse(args ?? {}), hooks, caller ?? {})
@@ -308,7 +326,8 @@ export const proposeArchitecture = defineTool({
   async handler(ctx, { title, ...payload }, hooks) {
     const d = await askProposal(ctx, { kind: 'architecture', agentId: ROOT_AGENT_ID, title, payload })
     hooks.onDecided?.()
-    return decisionText(d, 'The architecture was saved and written to .orgai/ARCHITECTURE.md. Continue with the org chart.')
+    const engagement = projectKindOf(ctx.project) === 'engagement'
+    return decisionText(d, `The ${engagement ? 'engagement charter' : 'architecture'} was saved and written to ${projectDocumentPath(projectKindOf(ctx.project))}. Continue with the org chart.`)
   }
 })
 
