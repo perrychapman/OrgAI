@@ -8,6 +8,7 @@ import { useMemo } from 'react'
 import { defaultRunToOpen } from '../lib/needsYou'
 import { assistantRunToOpen } from '../lib/assistantNav'
 import { secretsNextFor, type ProposalNext } from '../lib/proposalNext'
+import type { KnowledgeFocusRequest } from '../lib/knowledge'
 import { adoptEndFacts, statusEventEndFacts, CHAIN_EAGER_MEMBERS, CHAIN_FETCH_CONCURRENCY, CHAIN_WALK_MAX_HOPS, chainGroups, chainIdsToLoad, chainKeyOf, chainOf, needsYou, runBatched, type ChainGroup } from '../lib/runChains'
 import { cutWhile, settleEndedAgents } from '../lib/runStatus'
 import { readOpenTabs, sameRunSummaries, tabsSignature, writeOpenTabs } from '../lib/openTabs'
@@ -58,7 +59,7 @@ import type { ProjectKind, QuickRunInput, QuickRunPromoteResult, SkillAssistInpu
 import type { OrgTemplateInfo, OrgTemplateSaveInput, ProjectRemoveResult, RunTeam } from '@shared/types'
 import { displayProject, type RunLayout } from '../lib/assistants'
 
-/** Project tabs: run (Live), history, team (Team; was 'org', see lib/teamView normalizeView), settings. projects and appSettings are app-level. */
+/** Project tabs: run (Live), history, knowledge (engagements only), team (Team; was 'org', see lib/teamView normalizeView), settings. projects and appSettings are app-level. */
 /** The Banner after an agent import: what came in, and what Undo restores. */
 export interface ImportNotice {
   /** What replaced the chart: an agent import (default) or a team template (templates:apply). One notice per project. */
@@ -72,7 +73,7 @@ export interface ImportNotice {
   error?: string
 }
 
-export type View = 'projects' | 'team' | 'settings' | 'run' | 'history' | 'appSettings'
+export type View = 'projects' | 'team' | 'settings' | 'run' | 'history' | 'knowledge' | 'appSettings'
 /** Tabs of the live view's side panel. The side tab is remembered per run. */
 export type SideTab = 'transcript' | 'plan' | 'usage' | 'logs'
 
@@ -172,6 +173,14 @@ interface AppState {
   /** Save a quick run's chain as a project. On 'created' the project is selected and the run opened. */
   promoteQuick(runId: string, name: string): Promise<QuickRunPromoteResult>
   mcpFocus: McpFocus | null
+  /**
+   * A pending request to select one item on the Knowledge tab (a transcript row's link, a settings link). KnowledgeView
+   * resolves it (lib/knowledge.ts resolveFocus) once it has its data and clears it through clearKnowledgeFocus.
+   */
+  knowledgeFocus: KnowledgeFocusRequest | null
+  /** Open the project's Knowledge tab, on one item when the request names one (ids first, else kind and name, else a note title). */
+  openKnowledgeItem(req: KnowledgeFocusRequest): void
+  clearKnowledgeFocus(): void
   /** Selected project-settings pane per project id (lib/settingsTarget PROJECT_SETTINGS_PANES); absent means General. */
   projectSettingsPane: Record<string, string>
   setProjectSettingsPane(projectId: string, pane: string): void
@@ -748,6 +757,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   virtualProjects: {},
   assistantSeed: {},
   mcpFocus: null,
+  knowledgeFocus: null,
   projectSettingsPane: {},
   selectedProjectId: null,
   view: 'projects',
@@ -1442,6 +1452,15 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   clearMcpFocus() {
     set({ mcpFocus: null })
+  },
+
+  openKnowledgeItem(req) {
+    if (get().selectedProjectId !== req.projectId) get().selectProject(req.projectId)
+    set({ view: 'knowledge', knowledgeFocus: req })
+  },
+
+  clearKnowledgeFocus() {
+    set({ knowledgeFocus: null })
   },
 
   async startLibraryAssist(instruction, allowBuild) {

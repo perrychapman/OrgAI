@@ -3,10 +3,12 @@ import type { CSSProperties } from 'react'
 import { useEffect, useMemo, useState } from 'react'
 import { BellRing, Folder } from 'lucide-react'
 import { isVirtualProjectId } from '@shared/types'
+import { projectKindOf } from '@shared/defaults'
 import { activeRun, openNewChat, selectedProject, useAppStore, useProjectSummaries, useRunIndexes } from './store/useAppStore'
 import DashboardView from './views/DashboardView'
 import SettingsView from './views/SettingsView'
 import TeamView from './views/TeamView'
+import KnowledgeView from './views/KnowledgeView'
 import { initTeamAssistant, seedTeamReview, useTeamReviewSummary } from './store/teamAssistant'
 import { SaveIndicator } from './components/layout/SaveIndicator'
 import './styles/run-tabs.css'
@@ -30,8 +32,8 @@ import ProjectClient from './components/ProjectClient'
 import { MAIN_MIN_PX, SIDEBAR_W, clampWidth, maxWidthFor, usePersistedWidth } from './lib/panelWidth'
 import { toggleSidebar, useSidebarCollapsed } from './lib/useSidebarCollapsed'
 
-type SectionView = 'run' | 'history' | 'team' | 'settings'
-const SECTION_VIEWS: readonly string[] = ['run', 'history', 'team', 'settings']
+type SectionView = 'run' | 'history' | 'knowledge' | 'team' | 'settings'
+const SECTION_VIEWS: readonly string[] = ['run', 'history', 'knowledge', 'team', 'settings']
 
 export default function App(): ReactElement {
   const init = useAppStore((s) => s.init)
@@ -117,9 +119,12 @@ export default function App(): ReactElement {
   }, [run, first, runIndex, view, project, isVirtual])
 
   const teamPending = teamSummary?.pendingCount ?? 0
+  // Knowledge (docs/design/knowledge.md, rec 1): engagements only, between History and Team; never on the assistants.
+  const hasKnowledge = !!project && !isVirtual && projectKindOf(project) === 'engagement'
   const sections: TabItem[] = [
     { id: 'run', label: 'Live', testId: 'tab-live' },
     { id: 'history', label: 'History', testId: 'tab-history' },
+    ...(hasKnowledge ? [{ id: 'knowledge', label: 'Knowledge', testId: 'tab-knowledge' }] : []),
     ...(isVirtual
       ? []
       : [
@@ -173,7 +178,7 @@ export default function App(): ReactElement {
                 )}
                 <Tabs
                   tabs={sections}
-                  value={SECTION_VIEWS.includes(view) ? view : 'run'}
+                  value={SECTION_VIEWS.includes(view) && (view !== 'knowledge' || hasKnowledge) ? view : 'run'}
                   onChange={(id) => setView(id as SectionView)}
                   label="Project sections"
                   idPrefix="project"
@@ -198,6 +203,8 @@ export default function App(): ReactElement {
               </div>
               {view === 'settings' ? (
                 <SettingsView project={project} />
+              ) : view === 'knowledge' && hasKnowledge ? (
+                <KnowledgeView project={project} />
               ) : view === 'team' ? (
                 <TeamView project={project} />
               ) : view === 'history' ? (

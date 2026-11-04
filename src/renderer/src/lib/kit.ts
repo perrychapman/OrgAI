@@ -1,3 +1,4 @@
+import { formatDate } from './dates'
 import type { KitAction, KitApplyResult, KitExportInput, KitItemKind, KitNeedsSecrets, KitPreviewItem, KitSelection } from './kitApi'
 
 /** Pure helpers of the Practice kit UI (engagement-2 spec section 8). */
@@ -226,7 +227,7 @@ export function parseKitLast(raw: string | null): KitLast | null {
 
 /** "Exported 14 items on 4 Nov 2026." */
 export function kitLastLine(last: KitLast): string {
-  const date = new Date(last.at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
+  const date = formatDate(last.at)
   return `${last.kind === 'exported' ? 'Exported' : 'Imported'} ${itemCountText(last.count)} on ${date}.`
 }
 
