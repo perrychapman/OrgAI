@@ -2,8 +2,10 @@
 
 .agent-node {
   width: 240px;
-  background: var(--node-bg);
-  border: 1px solid var(--border-default);
+  background: var(--canvas-node-bg);
+  color: var(--canvas-node-text);
+  font-family: var(--canvas-node-font);
+  border: 1px solid var(--canvas-node-border);
   border-radius: var(--radius-lg);
   padding: 11px 12px 10px;
   box-shadow: var(--elev-1);
@@ -11,11 +13,14 @@
   transition: border-color var(--dur-base), box-shadow var(--dur-base), opacity var(--dur-base);
   position: relative;
 }
+/* Selected: role-colour border plus an inner 1px line (no layout shift). Keyboard focus is the outline below. */
 .agent-node.selected {
   border-color: var(--role);
-  outline: 2px solid var(--accent-text);
-  outline-offset: 2px;
-  box-shadow: var(--elev-2);
+  box-shadow: inset 0 0 0 1px var(--role), var(--elev-2);
+}
+.react-flow__node:focus-visible > .agent-node {
+  outline: 2px solid var(--canvas-focus-ring);
+  outline-offset: 3px;
 }
 .agent-node.state-done {
   border-color: var(--border-subtle);
@@ -109,7 +114,7 @@
   place-items: center;
   font-size: var(--text-small);
   font-weight: var(--weight-semibold);
-  border: 2px solid var(--surface-2);
+  border: 2px solid var(--canvas-node-bg);
 }
 .state-error .badge {
   background: var(--danger);
@@ -118,6 +123,47 @@
 .agent-node .title {
   min-width: 0;
   flex: 1;
+}
+.agent-node .avatar {
+  background: color-mix(in oklab, var(--role) 24%, var(--canvas-node-bg));
+  color: var(--canvas-node-text);
+}
+
+/* Compact: a 160 x 40 name tag (AGENT_NODE_SIZE.compact). Detail lives in the tooltip and the side panel. */
+.agent-node[data-style='compact'] {
+  box-sizing: border-box;
+  width: 160px;
+  height: 40px;
+  padding: 0 12px 0 6px;
+  border-radius: var(--radius-full);
+  display: flex;
+  align-items: center;
+}
+.agent-node[data-style='compact'] .head {
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+.agent-node[data-style='compact'] .avatar-wrap,
+.agent-node[data-style='compact'] .avatar {
+  width: 28px;
+  height: 28px;
+}
+.agent-node[data-style='compact'] .avatar {
+  font-size: var(--text-caption);
+}
+.agent-node[data-style='compact'] .ring {
+  inset: -3px;
+}
+.agent-node[data-style='compact'] .badge {
+  width: 14px;
+  height: 14px;
+  right: -4px;
+  bottom: -4px;
+  border-width: 1px;
+}
+.agent-node[data-style='compact'] .name {
+  color: var(--canvas-node-text);
 }
 .agent-node .name {
   font-weight: var(--weight-semibold);
@@ -133,7 +179,7 @@
   align-items: center;
   margin-top: 3px;
   font-size: var(--text-small);
-  color: var(--text-tertiary);
+  color: var(--canvas-node-text-muted);
   font-family: var(--font-mono);
   white-space: nowrap;
   overflow: hidden;
@@ -142,7 +188,7 @@
 .agent-node .activity {
   margin-top: 9px;
   font-size: var(--text-small);
-  color: var(--text-secondary);
+  color: var(--canvas-node-text-muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -164,7 +210,7 @@
   justify-content: space-between;
   margin-top: 8px;
   font-size: var(--text-small);
-  color: var(--text-tertiary);
+  color: var(--canvas-node-text-muted);
   font-family: var(--font-mono);
 }
 
@@ -452,9 +498,10 @@
   gap: 8px;
   padding: 0 8px 0 12px;
   border-radius: var(--radius-lg);
-  border: 1px dashed var(--border-strong);
-  background: color-mix(in oklab, var(--surface-2) 85%, transparent);
-  color: var(--text-secondary);
+  border: 1px dashed var(--canvas-edge-group);
+  background: var(--canvas-node-bg);
+  color: var(--canvas-node-text-muted);
+  font-family: var(--canvas-node-font);
   font-size: var(--text-small);
   position: relative;
   transition: border-color var(--dur-base);
@@ -462,11 +509,21 @@
 .done-group.selected,
 .done-group:hover {
   border-color: var(--role);
-  color: var(--text-primary);
+  color: var(--canvas-node-text);
 }
-/* An earlier session's reports: same dashed fold, quieter dot, no fill. */
+/* An earlier session's reports: same dashed fold, quieter dot, opaque canvas colour. */
 .done-group.earlier {
-  background: transparent;
+  background: var(--canvas-bg);
+}
+.done-group[data-style='compact'] {
+  box-sizing: border-box;
+  width: 160px;
+  height: 40px;
+  border-radius: var(--radius-full);
+  padding: 0 6px 0 12px;
+}
+.done-group[data-style='compact'] .done-failed {
+  white-space: nowrap;
 }
 .done-group.earlier .done-count i {
   background: var(--border-strong);
