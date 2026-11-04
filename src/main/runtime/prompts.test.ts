@@ -339,6 +339,14 @@ describe('single-agent runs and context notes', () => {
   const eng = (): ReturnType<typeof project> => project({ kind: 'engagement', setup: { kind: 'new', state: 'complete' } })
   const single = { ...flags, team: 'single' as const }
 
+  it('the single root gets no reminder promise, a team root still does', () => {
+    const text = buildRolePrompt(roles[0], roles, project(), single)
+    expect(text).not.toContain('The harness will remind you')
+    expect(text).toContain('Nothing will remind you')
+    expect(text).not.toContain('Start every task by calling set_plan')
+    expect(buildRolePrompt(roles[0], roles, project(), flags)).toContain('The harness will remind you')
+  })
+
   it('the single root gets the assistant paragraph and none of the org-chart ones', () => {
     const text = buildRolePrompt(roles[0], roles, project(), single)
     expect(text).toContain('You are the only agent on this run')

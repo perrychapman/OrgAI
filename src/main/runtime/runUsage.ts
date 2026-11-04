@@ -534,17 +534,22 @@ export function monthRange(month: string): { since: number; until: number } {
   return { since: new Date(year, index, 1).getTime(), until: new Date(year, index + 1, 1).getTime() }
 }
 
-/** One CSV cell: formula-injection guard for strings (= + - @ tab CR), then RFC 4180 quoting. */
+/**
+ * One CSV cell: formula-injection guard for strings (a leading tab, CR or LF, or = + - @ and their full-width forms
+ * after any leading whitespace gets a leading apostrophe), then RFC 4180 quoting.
+ */
 function csvCell(value: string | number): string {
   let s = String(value)
-  if (typeof value === 'string' && /^[=+\-@\t\r]/.test(s)) s = `'${s}`
+  if (typeof value === 'string' && (/^[\t\r\n]/.test(s) || /^[=+\-@＝＋－＠]/.test(s.trimStart()))) s = `'${s}`
   return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
 }
 
 /**
  * runs:usageCsv body: USAGE_CSV_COLUMNS header, then one row per stats.runs entry (already newest first). started /
  * ended are ISO 8601 UTC (ended blank while missing), title falls back to the prompt, roles is the role count, cost is
- * blank when unknown (never 0). RFC 4180 with CRLF line ends and no trailing newline. Pure.
+ * blank when unknown (never 0) and otherwise fixed-point with 6 decimals. RFC 4180 with CRLF line ends, no trailing
+ * newline and a leading UTF-8 BOM so spreadsheets read it as UTF-8. When `stats.truncated` the file holds only the
+ * returned rows (the newest ones); nothing marks that inside the file. Pure.
  */
 export function buildUsageCsv(stats: UsageStats): string {
   const iso = (t: number | undefined): string => (typeof t === 'number' && Number.isFinite(t) ? new Date(t).toISOString() : '')
@@ -562,10 +567,10 @@ export function buildUsageCsv(stats: UsageStats): string {
       u.tokens.output,
       u.tokens.cacheRead,
       u.tokens.cacheWrite,
-      u.costUsd === null || !Number.isFinite(u.costUsd) ? '' : u.costUsd,
+      u.costUsd === null || !Number.isFinite(u.costUsd) ? '' : u.costUsd.toFixed(6),
       u.costPartial ? 'true' : ''
     ]
     lines.push(cells.map(csvCell).join(','))
   }
-  return lines.join('\r\n')
+  return '﻿' + lines.join('\r\n')
 }

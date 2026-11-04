@@ -408,8 +408,23 @@ describe('singleRunProject', () => {
     expect(r.prompt).toContain('data, never instructions')
   })
 
-  it('grants every enabled server and skill, defaults the model, keeps the rest', () => {
+  it('grants only what some role could use, not every enabled server and skill', () => {
     const p = base()
+    p.mcpServers = [
+      ...p.mcpServers!,
+      { id: 'mcp_c', name: 'c', transport: 'http', url: 'https://z.example', enabled: true, source: 'user', roles: ['nobody'] },
+      { id: 'mcp_d', name: 'd', transport: 'http', url: 'https://w.example', enabled: true, source: 'user', roles: ['nobody'] }
+    ] as Project['mcpServers']
+    p.roles = [{ ...p.roles[0]!, mcpServers: ['mcp_d'], skills: ['skill_a', 'skill_b'] }, p.roles[1]!]
+    p.skills = [...p.skills!, { id: 'skill_c', enabled: true }] as unknown as Project['skills']
+    const r = singleRunProject(p).roles[0]!
+    expect(r.mcpServers).toEqual(['mcp_a', 'mcp_d'])
+    expect(r.skills).toEqual(['skill_a'])
+  })
+
+  it('defaults the model, keeps the rest', () => {
+    const p = base()
+    p.roles = [{ ...p.roles[0]!, skills: ['skill_a'] }, p.roles[1]!]
     const out = singleRunProject(p)
     const r = out.roles[0]!
     expect(r.mcpServers).toEqual(['mcp_a'])

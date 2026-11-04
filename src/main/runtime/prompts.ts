@@ -160,11 +160,18 @@ export function orgChangeText(): string {
 }
 
 /** Work-run orchestrators work unattended: plan first, keep going, stop only for genuine decisions. */
-export function unattendedText(kind: ProjectKind = 'code'): string {
+export function unattendedText(kind: ProjectKind = 'code', nudges = true): string {
   const last =
     kind === 'engagement'
       ? 'the last step is a review of the deliverables against the brief, then the final report'
       : 'the last step is always verification: build and tests, then the final report'
+  if (!nudges) {
+    return (
+      'Keep going until the task is done, without asking whether to continue. For a longer task you may call set_plan with the goal and the concrete steps ' +
+      `(${last}), mark steps with update_plan and finish with complete_plan; for a short one, just do it. Nothing will remind you of remaining steps, so finish the work in this turn. ` +
+      'Stop only for a genuine decision the user must make: ask_user (waits for the answer) or mark_blocked.'
+    )
+  }
   return (
     `Work unattended. Start every task by calling set_plan with the goal and the concrete steps (${last}). ` +
     'Mark steps with update_plan as you go. Do not stop to ask whether to continue; continue until every step is done, then call complete_plan with a summary. ' +
@@ -371,7 +378,7 @@ export function buildRolePrompt(role: Role, roles: Role[], project: Project, fla
       parts.push(architectureText(archPath, kind))
       if (role.reportsTo === null) parts.push(architectureDriftText(archPath, kind))
     }
-    if (role.reportsTo === null) parts.push(unattendedText(kind))
+    if (role.reportsTo === null) parts.push(unattendedText(kind, flags.team !== 'single'))
     if (flags.team === 'single') {
       if (role.reportsTo === null) parts.push(singleAssistantText())
     } else {
