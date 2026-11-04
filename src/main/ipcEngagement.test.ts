@@ -23,7 +23,7 @@ vi.mock('./log', () => ({ log: { debug: () => {}, info: () => {}, warn: () => {}
 
 const { effectiveRemoveRuns, projectRemoveArgs, registerIpc, removalFacts, templateEngagementArgs: args } = await import('./ipc')
 const { project: makeProject } = await import('./runtime/testHelpers')
-const { saveNote, writeEngagementDocumentFromSetup, writeEngagementDocument } = await import('./store/projectData')
+const { saveNote, readRetainedRunProjects, writeEngagementDocumentFromSetup, writeEngagementDocument } = await import('./store/projectData')
 
 describe('projectRemoveArgs and effectiveRemoveRuns', () => {
   it('accepts a bare id or an object, drops extra fields, refuses junk', () => {
@@ -195,7 +195,11 @@ describe('registered engagement and removal handlers', () => {
     const result = (await call(IPC.projectsRemove, { projectId: 'proj_c', removeRuns: false })) as ProjectRemoveResult
     expect(result).toEqual(preview)
     expect(runs.removeProject).toHaveBeenCalledWith('proj_c', { removeRuns: false })
+    expect(readRetainedRunProjects(dir).has('proj_c')).toBe(true)
     await expect(call(IPC.projectsRemovePreview, 'proj_zzz')).rejects.toThrow(/not found/)
+    await expect(call(IPC.projectsRemove, 'proj_zzz')).rejects.toThrow(/not found/)
+    expect(runs.removeProject).toHaveBeenCalledTimes(1)
+    expect(readRetainedRunProjects(dir).has('proj_zzz')).toBe(false)
     await expect(call(IPC.projectsRemove, 'quick')).rejects.toThrow(/cannot be removed/)
     const again = register([makeProject({ id: 'proj_d' })])
     const r = (await again.call(IPC.projectsRemove, 'proj_d')) as ProjectRemoveResult

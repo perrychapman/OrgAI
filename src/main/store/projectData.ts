@@ -355,7 +355,13 @@ export function saveNote(dataDir: string, projectId: string, input: { noteId?: s
   ensurePlainDir(dataDir, projectId, contextDir(dataDir, projectId))
   const entry: EngagementNote = { id, title, updatedAt: Date.now(), chars: text.length }
   atomicWrite(noteFile(dataDir, projectId, id), text)
-  writeIndex(dataDir, projectId, [...notes.filter((n) => n.id !== id), entry])
+  try {
+    writeIndex(dataDir, projectId, [...notes.filter((n) => n.id !== id), entry])
+  } catch (err) {
+    // A new note whose index entry could not be written would be an orphan file: remove it.
+    if (input.noteId === undefined) rmSync(noteFile(dataDir, projectId, id), { force: true })
+    throw err
+  }
   return entry
 }
 
@@ -368,4 +374,46 @@ export function removeNote(dataDir: string, projectId: string, noteId: string): 
   writeIndex(dataDir, projectId, rest)
   rmSync(noteFile(dataDir, projectId, noteId), { force: true })
   return rest.sort((a, b) => b.updatedAt - a.updatedAt)
+}
+
+/** Most project ids whose run records are kept after the project was removed. */
+export const RETAINED_RUN_PROJECTS_MAX = 1000
+
+function retainedFile(dataDir: string): string {
+  return join(dataDir, 'retained-run-projects.json')
+}
+
+/** Ids of removed projects whose run records the user chose to keep. Junk is dropped; never throws. */
+export function readRetainedRunProjects(dataDir: string): Set<string> {
+  const out = new Set<string>()
+  try {
+    const raw = readPlain(retainedFile(dataDir))
+    if (!raw) return out
+    const list = (JSON.parse(raw.text) as { projectIds?: unknown } | null)?.projectIds
+    if (!Array.isArray(list)) return out
+    for (const id of list) {
+      if (isSafeId(id)) out.add(id)
+      if (out.size >= RETAINED_RUN_PROJECTS_MAX) break
+    }
+  } catch {
+    return new Set()
+  }
+  return out
+}
+
+/** Remember that a removed project's runs are kept, so boot housekeeping does not delete them. */
+export function retainRunProject(dataDir: string, projectId: string): void {
+  if (!isSafeId(projectId)) throw new Error('Invalid project id')
+  const ids = readRetainedRunProjects(dataDir)
+  if (ids.has(projectId)) return
+  const list = [...ids, projectId].slice(-RETAINED_RUN_PROJECTS_MAX)
+  mkdirSync(dataDir, { recursive: true })
+  atomicWrite(retainedFile(dataDir), `${JSON.stringify({ version: 1, projectIds: list }, null, 2)}\n`)
+}
+
+/** Run project ids housekeeping may delete: not live, not retained. */
+export function orphanRunProjects(runProjectIds: Iterable<string>, liveIds: ReadonlySet<string>, retained: ReadonlySet<string>): string[] {
+  const out: string[] = []
+  for (const id of new Set(runProjectIds)) if (!liveIds.has(id) && !retained.has(id)) out.push(id)
+  return out
 }

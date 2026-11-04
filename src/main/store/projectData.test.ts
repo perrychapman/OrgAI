@@ -10,6 +10,9 @@ import {
   engagementDocumentExists,
   engagementDocumentFile,
   listNotes,
+  orphanRunProjects,
+  readRetainedRunProjects,
+  retainRunProject,
   projectDataDir,
   projectRulesFile,
   readEngagementDocument,
@@ -278,6 +281,33 @@ describe('file helpers for project removal', () => {
     writeFileSync(appRulesFile(dir, 'p1'), '{}')
     expect(engagementDocumentExists(dir, 'p1')).toBe(true)
     expect(appRulesExist(dir, 'p1')).toBe(true)
+  })
+})
+
+describe('retained run projects', () => {
+  it('records ids, ignores repeats, drops junk and unsafe ids on read', () => {
+    expect(readRetainedRunProjects(dir).size).toBe(0)
+    retainRunProject(dir, 'p1')
+    retainRunProject(dir, 'p1')
+    retainRunProject(dir, 'p2')
+    expect([...readRetainedRunProjects(dir)]).toEqual(['p1', 'p2'])
+    expect(() => retainRunProject(dir, '../x')).toThrow()
+    writeFileSync(join(dir, 'retained-run-projects.json'), JSON.stringify({ version: 1, projectIds: ['ok', '../x', 5, null, 'ok2'] }))
+    expect([...readRetainedRunProjects(dir)]).toEqual(['ok', 'ok2'])
+    writeFileSync(join(dir, 'retained-run-projects.json'), '{nope')
+    expect(readRetainedRunProjects(dir).size).toBe(0)
+  })
+
+  it('orphanRunProjects skips live and retained ids', () => {
+    expect(orphanRunProjects(['a', 'b', 'c', 'a'], new Set(['a']), new Set(['b']))).toEqual(['c'])
+  })
+})
+
+describe('saveNote index failure', () => {
+  it('removes a new note file when the index cannot be written', () => {
+    mkdirSync(join(contextDir(dir, 'p1'), 'index.json'), { recursive: true })
+    expect(() => saveNote(dir, 'p1', { title: 'A', text: 'a' })).toThrow()
+    expect(readdirSync(contextDir(dir, 'p1')).filter((f) => f.endsWith('.md'))).toEqual([])
   })
 })
 
