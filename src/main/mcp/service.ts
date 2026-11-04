@@ -543,6 +543,56 @@ export class McpService {
     return this.libraryList()
   }
 
+  /**
+   * For the practice kit: add a library entry from a kit file (new id, source 'user', no OAuth, connector or build
+   * fields), or replace `replaceId` in place (same id, links refreshed). A replace drops every stored secret value and
+   * sign-in of the entry and of each project link, like an approved retarget: the user enters them again. The caller
+   * has rebuilt `fields`; this validates the whole entry (names, pinned versions, hidden characters) and throws a
+   * readable Error. Refuses to replace a connector entry or a built server. Returns the saved entry.
+   */
+  kitImportEntry(fields: Omit<McpLibraryEntry, 'id' | 'source' | 'addedAt'>, replaceId?: string): McpLibraryEntry {
+    const lib = this.lib()
+    const prev = replaceId === undefined ? undefined : lib.get(replaceId)
+    if (replaceId !== undefined) {
+      if (!prev) throw new Error('Library entry not found')
+      if (prev.connectorId || prev.buildDigest) throw new Error(`${prev.name} is a connector or a built server; it cannot be replaced from a kit.`)
+    }
+    const entry: McpLibraryEntry = { ...fields, id: prev?.id ?? newId('mcpl'), source: 'user', addedAt: prev?.addedAt ?? new Date(this.now()).toISOString() }
+    assertValidLibraryEntry(entry, lib.list().filter((e) => e.id !== entry.id))
+    if (prev) {
+      const owner: McpSecretOwner = { libraryId: prev.id }
+      const key = mcpOwnerPrefix(owner)
+      this.flows.get(key)?.abort()
+      this.lastErrors.delete(key)
+      this.secrets.deletePrefix(`${key}env:`)
+      this.secrets.deletePrefix(`${key}header:`)
+      this.secrets.deletePrefix(`${key}oauth:`)
+      for (const lo of this.linkOwners(prev.id)) {
+        this.secrets.deletePrefix(`${mcpOwnerPrefix(lo)}env:`)
+        this.secrets.deletePrefix(`${mcpOwnerPrefix(lo)}header:`)
+      }
+    }
+    const saved = lib.save(entry)
+    if (prev) this.relinkProjects(saved)
+    this.notifyLibrary()
+    return saved
+  }
+
+  /**
+   * For the practice kit: save a custom preset from a kit file (validated like an upsert, then marked origin 'kit').
+   * Library entries already made from it are never rewritten. Throws a readable Error.
+   */
+  connectorPresetsKitSave(input: unknown): UserConnectorDef {
+    if (!this.presets) throw new Error('Custom connectors are not available.')
+    const def = validateUserPreset(typeof input === 'object' && input ? { ...(input as object), origin: 'kit' } : input, { allowOrigin: true })
+    if (!this.presets.get(def.id) && this.presets.list().length >= USER_CONNECTOR_PRESETS_MAX) {
+      throw new Error(`You can keep at most ${USER_CONNECTOR_PRESETS_MAX} custom connectors. Remove one first.`)
+    }
+    const saved = this.presets.save(def)
+    this.notifyLibrary()
+    return saved
+  }
+
   librarySetSecret(input: McpLibrarySecretInput): McpLibraryInfo[] {
     const entry = this.lib().get(input.libraryId)
     if (!entry) throw new Error('Library entry not found')

@@ -615,6 +615,38 @@ export class SkillService implements SkillServiceApi, SkillRunSource {
     return this.libraryList()
   }
 
+  /** For the practice kit: a library skill's files (read from OrgAI's own folder). Throws "Library skill not found". */
+  libraryFilesForKit(libraryId: string): { name: string; description: string; files: FileData[] } {
+    const entry = this.entry(libraryId)
+    return { name: entry.name, description: entry.description, files: readStoredFolder(this.libDir(entry.id)) }
+  }
+
+  /**
+   * For the practice kit: add a validated skill to the library, or replace the files of `replaceId` (same name; every
+   * project that links it is refreshed). The caller has already validated name, description and files (buildScannedSkill).
+   */
+  libraryImportForKit(input: { name: string; description: string; files: FileData[] }, replaceId?: string): SkillLibraryEntry {
+    if (replaceId === undefined) {
+      const entry = this.newEntry(input.name, input.description, 'user', input.files)
+      this.addEntry(entry, input.files)
+      this.notifyLibrary()
+      return entry
+    }
+    const prev = this.entry(replaceId)
+    if (prev.name !== input.name) throw new Error('The library skill has another name.')
+    const dir = this.libDir(prev.id)
+    writeFolder(dir, input.files)
+    const entry: SkillLibraryEntry = { ...prev, description: input.description, source: 'user', digest: digestFiles(input.files), files: fileInfos(input.files), updatedAt: this.now() }
+    this.library.save(entry)
+    for (const p of this.deps.projects.list()) {
+      if (!p.skills?.some((s) => s.libraryId === entry.id)) continue
+      const saved = this.deps.projects.save({ ...p, skills: p.skills.map((s) => (s.libraryId === entry.id ? linkedSnapshot(entry, s) : s)) })
+      this.deps.onProjectChanged?.(saved)
+    }
+    this.notifyLibrary()
+    return entry
+  }
+
   // ---------- shared ----------
 
   withLibrary(project: Project): Project {

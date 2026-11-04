@@ -92,7 +92,10 @@ import type {
 } from '@shared/types'
 import type { QuickRunInput, QuickRunPromoteInput, QuickRunPromoteResult } from '@shared/types'
 import type { ConnectorPresetRemoveInput, McpCopyFromLibraryInput, McpProjectOverridesInput } from '@shared/types'
-import { MCP_SCOPE_IPC } from '@shared/types'
+import { KIT_IPC, MCP_SCOPE_IPC } from '@shared/types'
+import type { KitApplyResult, KitExportResult, KitImportPreview } from '@shared/types'
+import { applyArgs as kitApplyArgs, exportArgs as kitExportArgs, type KitService } from './kit/service'
+import { PickedPaths, kitExportPath } from './kit/pickedPaths'
 import { CONNECTION_IDS, HARNESS_PROJECT_ID, IPC, QUICK_PROJECT_ID, PROPOSAL_NOTE_MAX_CHARS, QUICK_RUN_MAX_PROMPT_CHARS, SKILLS_PROJECT_ID, isVirtualProjectId } from '@shared/types'
 import { isConnectionId, isSafeId } from '@shared/defaults'
 import { sanitizeImages } from './runtime/attachments'
@@ -186,6 +189,8 @@ export interface IpcServices {
   quick: QuickRunService
   /** Saved team templates (src/main/setup/templates.ts). */
   templates: TemplateService
+  /** The practice kit (src/main/kit/service.ts). Absent = the kit channels are not registered (older tests). */
+  kit?: KitService
 }
 
 /** Longest instruction accepted for the MCP and Skill assistants; longer is cut. */
@@ -287,7 +292,7 @@ export function mcpAssistArgs(input: unknown): { library: boolean; projectId: st
   return { library, projectId: library ? HARNESS_PROJECT_ID : typeof i.projectId === 'string' ? i.projectId : '', allowBuild, ...(instruction ? { instruction } : {}) }
 }
 
-export function registerIpc({ projects, runs, setup, maintenance, settings, connections, mcp, adapterIds, harnessProject, openRunWindow, importer, skills, skillEvaluation, capabilities, quick, templates }: IpcServices): void {
+export function registerIpc({ projects, runs, setup, maintenance, settings, connections, mcp, adapterIds, harnessProject, openRunWindow, importer, skills, skillEvaluation, capabilities, quick, templates, kit }: IpcServices): void {
   const mock = adapterIds.includes('mock')
   /**
    * A stored project, or the display project of a virtual id (harness, quick = "Chat", skills). Never listed by
@@ -576,6 +581,71 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
   registerMcpIpc(runs, mcp, projectOrHarness, { quick, settings, effectiveSettings: () => connections.effectiveSettings(), mock })
   registerSkillIpc(skills, skillEvaluation)
   registerCapabilityIpc(capabilities)
+  if (kit) registerKitIpc(kit)
+}
+
+// ---- Practice kit ----
+
+const kitExportPicks = new PickedPaths()
+const kitImportPicks = new PickedPaths()
+const kitTrackedSenders = new Set<number>()
+function rememberKitPath(picks: PickedPaths, sender: WebContents, path: string): void {
+  picks.remember(sender.id, path)
+  if (kitTrackedSenders.has(sender.id)) return
+  kitTrackedSenders.add(sender.id)
+  const id = sender.id
+  sender.once('destroyed', () => {
+    kitExportPicks.forget(id)
+    kitImportPicks.forget(id)
+    kitTrackedSenders.delete(id)
+  })
+}
+
+/**
+ * kit:* channels. The save and open dialogs are main's own; kit:export, kit:previewImport and kit:applyImport accept
+ * only a path the same renderer picked (an export path is consumed by a successful export). Inputs are rebuilt field by
+ * field (`exportArgs`, `applyArgs`).
+ */
+function registerKitIpc(kit: KitService): void {
+  const pickedPath = (input: unknown): string => {
+    const p = input && typeof input === 'object' && !Array.isArray(input) ? (input as { path?: unknown }).path : undefined
+    if (typeof p !== 'string' || !p || p.length > 4096) throw new Error('Choose a kit file.')
+    return p
+  }
+  ipcMain.handle(KIT_IPC.kitPickExportPath, async (e): Promise<string | null> => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    const options = { title: 'Save a practice kit', defaultPath: 'practice.orgai-kit.json', filters: [{ name: 'OrgAI kit', extensions: ['json'] }] }
+    const result = win ? await dialog.showSaveDialog(win, options) : await dialog.showSaveDialog(options)
+    if (result.canceled || !result.filePath) return null
+    const path = kitExportPath(result.filePath)
+    rememberKitPath(kitExportPicks, e.sender, path)
+    return path
+  })
+  ipcMain.handle(KIT_IPC.kitPickImportPath, async (e): Promise<string | null> => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    const options = { title: 'Import a practice kit', properties: ['openFile' as const], filters: [{ name: 'OrgAI kit', extensions: ['json'] }] }
+    const result = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options)
+    const path = result.canceled ? null : result.filePaths[0] ?? null
+    if (path) rememberKitPath(kitImportPicks, e.sender, path)
+    return path
+  })
+  ipcMain.handle(KIT_IPC.kitExport, (e, input: unknown): KitExportResult => {
+    const i = kitExportArgs(input)
+    if (!kitExportPicks.has(e.sender.id, i.path)) throw new Error('Choose where to save the kit with the Save dialog first.')
+    const out = kit.export(i)
+    kitExportPicks.take(e.sender.id, i.path)
+    return out
+  })
+  ipcMain.handle(KIT_IPC.kitPreviewImport, (e, input: unknown): KitImportPreview => {
+    const path = pickedPath(input)
+    if (!kitImportPicks.has(e.sender.id, path)) throw new Error('Choose the kit file with the file dialog first.')
+    return kit.previewImport({ path })
+  })
+  ipcMain.handle(KIT_IPC.kitApplyImport, (e, input: unknown): KitApplyResult => {
+    const i = kitApplyArgs(input)
+    if (!kitImportPicks.has(e.sender.id, i.path)) throw new Error('Choose the kit file with the file dialog first.')
+    return kit.applyImport(i)
+  })
 }
 
 /**

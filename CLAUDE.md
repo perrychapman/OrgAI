@@ -466,6 +466,16 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   PreToolUse 'ask' prompts under 'auto' / 'bypassPermissions', and that Claude's hook `input.cwd` follows the Bash
   tool's cd.
 
+- Practice kit (`src/main/kit/`, `KitService`, `kit:*` IPC, `window.orgai.kit`; ARCHITECTURE.md "Practice kit"): library skills,
+  library MCP servers, custom connector presets and team templates in one `*.orgai-kit.json` (`orgai.kit/1`, at most 50 MB).
+  Secret values, OAuth state, tokens, `connectedAt`, `buildDigest` / built files, connector entries and ids never go in it;
+  export leaves such items out with a note. Paths come only from main's save / open dialogs (`PickedPaths`; an export path
+  is consumed by a successful export). Import is untrusted: items are rebuilt and validated (shell-injection skill bodies,
+  hidden characters, pinned versions, preset rules, caps) and a bad item is refused alone. `kit:previewImport` gives the
+  sha256 `digest` and per-item status (new / same / different / refused); `kit:applyImport` refuses a missing or stale digest
+  and applies only the chosen items (add, replace, copy, skip). A replace of a server clears its stored secrets and sign-in;
+  `needsSecrets` lists the slots to fill in. No undo, no renderer yet. Unit-tested only (`kit.test.ts`).
+
 ## Renderer
 
 - Permissions UI (#14; `docs/design/permissions.md`, walk `docs/design/ux-review-permissions.md`): PermissionCard

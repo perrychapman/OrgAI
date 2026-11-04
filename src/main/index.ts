@@ -37,6 +37,7 @@ import { MaintenanceService } from './maintenance'
 import { registerIpc, harnessProjectFor, withEffectiveDefault } from './ipc'
 import { AgentImportService } from './setup/import/importer'
 import { TemplateService } from './setup/templates'
+import { KitService } from './kit/service'
 import { listNotes, orphanRunProjects, readNote, readRetainedRunProjects } from './store/projectData'
 import { Notifier } from './notifications'
 import { DEFAULT_KEEP_RUNS } from '@shared/types'
@@ -491,7 +492,8 @@ app.whenReady().then(() => {
     skillEvaluation,
     capabilities: caps,
     quick,
-    templates
+    templates,
+    kit: new KitService({ appVersion: app.getVersion(), platform: process.platform, skills, mcp, templates })
   })
   connections.init()
   connections.startDiscovery()

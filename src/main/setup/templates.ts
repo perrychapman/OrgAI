@@ -9,7 +9,7 @@ import {
   isProjectKind,
   isVirtualProjectId
 } from '@shared/types'
-import type { AgentImportApplyResult, ConnectionId, OrgTemplateApplyInput, OrgTemplateInfo, OrgTemplateSaveInput, Project, Role } from '@shared/types'
+import type { AgentImportApplyResult, ConnectionId, OrgTemplateApplyInput, OrgTemplateInfo, OrgTemplateSaveInput, Project, ProjectKind, Role } from '@shared/types'
 import { isSafeId, newId, projectConnection, projectKindOf } from '@shared/defaults'
 import { hiddenCharProblem } from '../capabilities/sanitize'
 import { convertImport } from './import/convert'
@@ -200,6 +200,65 @@ export class TemplateService {
       this.writeIndex([...templates, info])
     } catch (e) {
       rmSync(dir, { recursive: true, force: true })
+      throw e
+    }
+    return info
+  }
+
+  /** For the practice kit: a template's index entry and org.json text, or null when unknown or unreadable. */
+  readForKit(templateId: string): { info: OrgTemplateInfo; orgText: string } | null {
+    try {
+      const info = isSafeId(templateId) ? this.readIndex().find((t) => t.id === templateId) : undefined
+      if (!info || isLink(this.root()) || isLink(join(this.root(), info.id))) return null
+      const orgText = readPlain(this.orgFile(info.id))
+      return orgText === null ? null : { info, orgText }
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * For the practice kit: store a template whose org.json text the caller has validated (name, description, hidden
+   * characters, size). With `replaceId` the template keeps its id and creation time. Refuses at ORG_TEMPLATES_MAX.
+   */
+  saveFromKit(input: { name: string; description: string; kind: ProjectKind; orgText: string }, replaceId?: string): OrgTemplateInfo {
+    const name = cleanTemplateName(input.name)
+    const description = cleanTemplateDescription(input.description)
+    if (!isProjectKind(input.kind)) throw new Error('The template has an unknown kind.')
+    const parsed = parseOrgExport(input.orgText, 'org.json')
+    if (!parsed.agents.length) throw new Error(parsed.warnings[0] ?? 'The template has no roles.')
+    const roleNames = parsed.agents
+      .map((a) => (typeof a.name === 'string' ? a.name.trim().slice(0, 80) : ''))
+      .filter((n) => n && !hiddenCharProblem('n', n))
+      .slice(0, ORG_TEMPLATE_ROLE_NAMES_MAX)
+    const templates = this.readIndex()
+    const prev = replaceId === undefined ? undefined : templates.find((t) => t.id === replaceId)
+    if (replaceId !== undefined && !prev) throw new Error('Template not found')
+    if (!prev && templates.length >= ORG_TEMPLATES_MAX) throw new Error(`OrgAI keeps at most ${ORG_TEMPLATES_MAX} templates. Remove one first.`)
+    let id = prev?.id ?? ''
+    if (!prev) {
+      do id = newId('tpl')
+      while (!isSafeId(id) || templates.some((t) => t.id === id))
+    }
+    const now = Date.now()
+    const info: OrgTemplateInfo = { id, name, description, kind: input.kind, roleCount: parsed.agents.length, roleNames, createdAt: prev?.createdAt ?? now, updatedAt: now }
+    ensurePlainDir(this.root())
+    const dir = join(this.root(), id)
+    ensurePlainDir(dir)
+    const before = prev ? readPlain(this.orgFile(id)) : null
+    try {
+      atomicWrite(this.orgFile(id), input.orgText.endsWith('\n') ? input.orgText : `${input.orgText}\n`)
+      this.writeIndex(prev ? templates.map((t) => (t.id === id ? info : t)) : [...templates, info])
+    } catch (e) {
+      if (prev) {
+        if (before !== null) {
+          try {
+            atomicWrite(this.orgFile(id), before)
+          } catch {
+            /* best effort */
+          }
+        }
+      } else rmSync(dir, { recursive: true, force: true })
       throw e
     }
     return info
