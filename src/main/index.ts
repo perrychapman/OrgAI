@@ -180,7 +180,7 @@ function createWindow(scope?: FocusRunTarget): BrowserWindow {
     width: scope ? 1280 : 1440,
     height: scope ? 840 : 920,
     minWidth: 1024,
-    minHeight: 680,
+    minHeight: 706,
     show: false,
     autoHideMenuBar: false,
     backgroundColor: windowBackground(settingsStore?.get().appearance.theme ?? 'dark', nativeTheme.shouldUseDarkColors),
@@ -513,7 +513,9 @@ app.whenReady().then(() => {
   dropped += sweepScratchDirs(dataDir, runStore.all())
   sweepStaleSkillDirs()
   if (dropped) console.log(`Housekeeping removed ${dropped} stale run(s) or record file(s).`)
-  installAppMenu(menuActionSender(() => BrowserWindow.getFocusedWindow(), liveWindowScopes))
+  installAppMenu(
+    menuActionSender(() => BrowserWindow.getFocusedWindow(), liveWindowScopes, () => createWindow())
+  )
   createWindow()
 
   app.on('activate', () => {
