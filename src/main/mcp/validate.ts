@@ -297,6 +297,15 @@ const CREDENTIAL_HEADER = /^(?:authorization|proxy-authorization|cookie|x-api-ke
 /** Names that look like a credential, whatever the transport. */
 const CREDENTIAL_LIKE = /(secret|token|passw|api[-_]?key|credential|auth)/i
 
+/** Whether an env variable name changes what runs (loader, interpreter options, proxies, paths). */
+export function riskyEnvName(name: string): boolean {
+  return RISKY_ENV.test(name)
+}
+/** Whether a name looks like a credential (any transport) or, for a header, is a credential / routing header. */
+export function credentialLikeName(name: string, header = false): boolean {
+  return CREDENTIAL_LIKE.test(name) || (header && CREDENTIAL_HEADER.test(name))
+}
+
 /**
  * Problems with the per-project fields of a library entry (perProjectSecrets, perProjectEnv). Pure. Both are refused
  * on connector entries. Names are never echoed unless plain.
@@ -318,7 +327,7 @@ export function perProjectEnvProblems(entry: McpLibraryEntry): string[] {
   if (names.length > MCP_PER_PROJECT_ENV_MAX) return [...out, `At most ${MCP_PER_PROJECT_ENV_MAX} per-project names are allowed.`]
   const stdio = entry.transport === 'stdio'
   const kind = stdio ? 'environment variable' : 'header'
-  const secrets = new Set((stdio ? entry.secretEnv ?? [] : entry.secretHeaders ?? []).map((n) => (stdio ? String(n) : String(n).toLowerCase())))
+  const secrets = new Set((stdio ? entry.secretEnv ?? [] : entry.secretHeaders ?? []).map((n) => (stdio ? String(n).toLowerCase() : String(n).toLowerCase())))
   const seen = new Set<string>()
   for (const raw of names) {
     if (typeof raw !== 'string') {
@@ -335,7 +344,7 @@ export function perProjectEnvProblems(entry: McpLibraryEntry): string[] {
       out.push(`${label} is not a valid ${kind} name.`)
       continue
     }
-    const key = stdio ? raw : raw.toLowerCase()
+    const key = raw.toLowerCase()
     if (seen.has(key)) {
       out.push(`${label} is listed twice.`)
       continue

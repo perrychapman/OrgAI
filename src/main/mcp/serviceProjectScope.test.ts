@@ -512,6 +512,8 @@ describe('store normalization', () => {
     for (const k of ['perProjectSecrets', 'perProjectEnv', 'connectorCustom']) expect(j1, k).not.toHaveProperty(k)
     expect(again.get('mcpl_j2')).not.toHaveProperty('perProjectEnv')
     expect(again.get('mcpl_j2')!.perProjectSecrets).toBe(true)
-    expect(again.get('mcpl_ok')).toMatchObject({ perProjectSecrets: true, perProjectEnv: ['BASE_URL'], connectorCustom: true })
+    // Connector entries (custom included) never carry per-project fields: validate refuses them, so a read drops them.
+    expect(again.get('mcpl_ok')).toMatchObject({ connectorCustom: true })
+    for (const k of ['perProjectSecrets', 'perProjectEnv']) expect(again.get('mcpl_ok'), k).not.toHaveProperty(k)
   })
 })
