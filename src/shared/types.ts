@@ -2824,6 +2824,33 @@ export interface ModelRateLimitWindow extends RateLimitWindow {
   model: string
 }
 
+/** USD spent in one calendar period as the proxy's daily spend rows sum up (UTC calendar days). */
+export interface SpendPeriod {
+  usd: number
+  /** Start of the period, epoch ms (UTC day start / ISO week Monday 00:00 UTC / first of the month 00:00 UTC). */
+  since: number
+}
+
+/**
+ * How many UTC days back the daily spend probe asks for at most. The probe asks from the earlier of the month start
+ * and the ISO week's Monday (at most 30 days back), so the cap only guards the arithmetic.
+ */
+export const SPEND_PERIOD_DAYS = 40
+
+/**
+ * The fixed sentences `UsageSpend.periodsNote` may carry (never proxy error text; the proxy body is untrusted).
+ * The UI may switch on them.
+ */
+export const SPEND_PERIOD_NOTES = {
+  /** The daily route answered 403: the key has no user (a service-account key). */
+  noUser: 'This key is not bound to a user, so the proxy refuses its daily spend.',
+  /** 404 / 405 on both daily routes, or a paginated answer with more pages than the one read. */
+  unsupported: 'This proxy does not report daily spend (needs LiteLLM 1.65 or newer).',
+  /** Any other failure: 5xx, network, timeout, redirect, non-JSON, oversized body, junk shape, non-finite sums. */
+  failed: 'The proxy did not answer its daily spend request.'
+} as const
+export type SpendPeriodsNote = (typeof SPEND_PERIOD_NOTES)[keyof typeof SPEND_PERIOD_NOTES]
+
 /**
  * Spend of a LiteLLM virtual key as the proxy reports it (GET {base}/key/info with the key as Bearer; UNVERIFIED
  * against a live proxy). Only the key's own budget: a team budget that may also govern the key is not read.
@@ -2839,6 +2866,23 @@ export interface UsageSpend {
   budgetDuration: string | null
   /** The key's alias (info.key_alias); null when unset. Never the key itself. */
   keyAlias: string | null
+  /**
+   * Lifetime spend of the key (info.total_spend, which keeps counting when `usd` resets at `resetsAt`); null when the
+   * proxy does not report it. Optional only so records and fixtures written before it was read still type-check.
+   */
+  totalUsd?: number | null
+  /**
+   * Spend by period from GET {base}/user/daily/activity/aggregated (older proxies: /user/daily/activity) filtered to
+   * this key by its SHA-256 hash (the proxy's stored key id, which LiteLLM also accepts as a credential, so it goes
+   * only to the proxy that already holds the key and never into this record), summed over UTC calendar days: `day` =
+   * the UTC day containing `UsageStatus.updatedAt`,
+   * `week` = the ISO week (Monday 00:00 UTC) containing it, `month` = its calendar month. Never rolling windows, and
+   * all three are present or none. Absent when the proxy did not report daily spend; `periodsNote` then says why.
+   * UNVERIFIED against a live proxy (read from LiteLLM source, v1.108.0).
+   */
+  periods?: { day: SpendPeriod; week: SpendPeriod; month: SpendPeriod }
+  /** Why `periods` is absent: one of the fixed `SPEND_PERIOD_NOTES` sentences, never proxy error text. */
+  periodsNote?: SpendPeriodsNote
 }
 
 /**

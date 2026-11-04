@@ -39,7 +39,7 @@ import { anthropicStatus } from './anthropicAuth'
 import { anthropicModelsToCatalog, builtinTierModels, makeDiscoveredModel, suggestTierModels, tierFromDescription } from './catalog'
 import { cancelLogin, listModels, validModelId, MODEL_TEXT_MAX, logoutAccount, onLoginCompleted, readAccount, readRateLimits, startLogin, type CodexRpc } from './codexAccount'
 import { mapCodexRateLimits } from './codexUsage'
-import { LITELLM_MAX_MODELS, fetchLiteLLMKeyInfo, fetchLiteLLMModels, normalizeBaseUrl } from './litellm'
+import { LITELLM_MAX_MODELS, fetchLiteLLMModels, fetchLiteLLMSpend, normalizeBaseUrl } from './litellm'
 import { pricingFromCatalog } from '../runtime/pricing'
 import { remapProject } from './remap'
 import { CONNECTION_LABELS, defaultRefusal, withoutReplaced } from './defaultPick'
@@ -1005,9 +1005,11 @@ export class ConnectionService {
   }
 
   /**
-   * The LiteLLM virtual key's spend and budget (GET /key/info), or null when LiteLLM is off, has no base URL or key,
-   * is not in use (neither the default connection nor any project's, `connectionInUse`) or the proxy did not answer
-   * with a spend (no DB, refused, timeout, junk). Never throws; the key is never logged.
+   * The LiteLLM virtual key's spend and budget (GET /key/info) plus its spend by UTC calendar period (the daily
+   * activity routes, keyed by the key's hash; a failure there only sets `spend.periodsNote`), or null when LiteLLM
+   * is off, has no base URL or key, is not in use (neither the default connection nor any project's,
+   * `connectionInUse`) or the proxy did not answer /key/info with a spend (no DB, refused, timeout, junk). Never
+   * throws; the key is never logged. `updatedAt` is the instant the periods were computed from.
    */
   async probeLiteLLMUsage(): Promise<UsageStatus | null> {
     const settings = this.effectiveSettings()
@@ -1017,9 +1019,10 @@ export class ConnectionService {
     const key = this.deps.secrets.get(LITELLM_KEY)
     if (!key) return null
     try {
-      const spend = await fetchLiteLLMKeyInfo(conn.baseUrl, key, this.deps.fetch ?? fetch)
+      const now = this.now()
+      const spend = await fetchLiteLLMSpend(conn.baseUrl, key, this.deps.fetch ?? fetch, now)
       if (!spend) return null
-      return { connection: 'litellm', authMode: 'apiKey', subscriptionType: null, available: true, windows: {}, spend, updatedAt: this.now() }
+      return { connection: 'litellm', authMode: 'apiKey', subscriptionType: null, available: true, windows: {}, spend, updatedAt: now }
     } catch {
       return null
     }
