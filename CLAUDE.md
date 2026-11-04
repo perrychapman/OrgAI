@@ -919,7 +919,10 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
     other `release-*` folders, and delete old ones rather than archive them. The real pack was not run by its author;
     the dry run and the rotation on a fake build were.
   - Branches: `dev` is integration (agent runs, PRs, dependabot), `main` is stable and protected. CI runs on both;
-    `release.yml` only releases `v<version>` tags whose commit is on `main`.
+    `release.yml` only releases `v<version>` tags whose commit is on `main`. Push as you go: after each merged
+    feature passes its gate (typecheck, unit tests, build, e2e:free where UI changed, the Reviewer where required),
+    dev is pushed to origin (`git push origin dev`) before the next step, never a red tree and never `main` directly
+    (release PRs only); the orchestrator does the push after each gate; reports never push.
   - The first real CI run has not happened yet. Open items: winCodeSign extraction on windows-latest, macos-15-intel
     really being x64, e2e:free on mac (a possible Keychain prompt), unsigned dmg/zip with hardenedRuntime, the publish job.
 

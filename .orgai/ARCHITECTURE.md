@@ -438,6 +438,7 @@ components/layout:
 - Worktree commit and merge belong to the harness. Never register WorktreeCreate or WorktreeRemove hooks just to observe.
 - Each feature lands as one descriptive commit plus a merge commit ('Merge <feature>').
 - Branches: dev is the integration branch, main is stable and protected; releases are v<version> tags on main (release.yml refuses other refs). Stable versions are plain semver (0.1.5); dev builds are `<next patch>-devN` (0.1.6-dev1, 0.1.6-dev2, ...), and the release drops the tag. Agent runs happen on dev.
+- Push as you go: after each merged feature passes its gate (typecheck, unit tests, build, e2e:free where UI changed, and the Reviewer where required), the orchestrator pushes dev to origin (`git push origin dev`) before starting the next step; the final report confirms origin/dev equals local dev. Never push a red tree, never push main directly (release PRs only).
 - Build output (out/, release/, release-*/, *.tsbuildinfo) is gitignored. Never commit it.
 - Local builds live only in `release/win-unpacked` (current, described by `release/BUILD.txt`) and `release/previous` (the one before, with its own `BUILD.txt`), both kept by `npm run pack`. Agents never create other `release-*` folders.
 - Permission cards never clip a command silently: a Bash command is shown in full in a scrollable block, the title carries a "(+N lines)" or "(long command)" marker, and the header shows a "Command" badge (or "N lines" / "Long command" for multi-line or long ones) for every Bash call. In compact mode (body collapsed) every Bash card with a command focuses the Details toggle instead of the primary action (`DecisionCard` `focusDetails`, a no-op outside compact; also set for broad rule requests). Bidi and control characters in a command are shown as visible `\uXXXX` escapes with a "Hidden characters" badge.
@@ -459,6 +460,7 @@ components/layout:
 - Dev (hot reload): `npm run dev`
 - Dev without tokens: `ORGAI_MOCK=1 npm run dev`
 - Free local gate (typecheck, unit tests, build, e2e:free): `npm run check`
+- Publish a passed gate: `git push origin dev`
 - Typecheck: `npm run typecheck`
 - Unit tests: `npm test`
 - Build: `npm run build`
