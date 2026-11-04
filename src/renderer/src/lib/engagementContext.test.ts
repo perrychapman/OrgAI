@@ -1,7 +1,19 @@
 import { describe, expect, it } from 'vitest'
-import { idAfterNoteRemoval, noteSizeLabel, notesCountLine, planRevisedLine, sortNotes } from './engagementContext'
+import { idAfterNoteRemoval, noteSizeLabel, notesCountLine, planDateLabel, planRevisedLine, setupBlocksPlan, sortNotes } from './engagementContext'
 
 describe('engagement context copy', () => {
+  it('blocks plan edits only while a setup run is proposing', () => {
+    expect(setupBlocksPlan([])).toBe(false)
+    expect(setupBlocksPlan([{ status: 'idle', proposals: 0 }])).toBe(false)
+    expect(setupBlocksPlan([{ status: 'finished', proposals: 0 }, { status: 'error', proposals: 0 }])).toBe(false)
+    expect(setupBlocksPlan([{ status: 'running', proposals: 0 }])).toBe(true)
+    expect(setupBlocksPlan([{ status: 'starting', proposals: 0 }])).toBe(true)
+    expect(setupBlocksPlan([{ status: 'idle', proposals: 1 }])).toBe(true)
+  })
+  it('words a plan date', () => {
+    expect(planDateLabel(undefined)).toBe('')
+    expect(planDateLabel(Date.UTC(2026, 10, 4, 12))).toMatch(/2026/)
+  })
   it('words who wrote the plan', () => {
     expect(planRevisedLine({})).toBeNull()
     expect(planRevisedLine({ updatedAt: 0 })).toBeNull()

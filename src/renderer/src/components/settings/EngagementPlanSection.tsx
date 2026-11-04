@@ -4,7 +4,7 @@ import type { EngagementDocumentInfo, Project } from '@shared/types'
 import { ENGAGEMENT_DOCUMENT_MAX_CHARS } from '@shared/types'
 import { isRunLive, useAppStore } from '../../store/useAppStore'
 import { cleanIpcError } from '../../lib/ipcError'
-import { planRevisedLine } from '../../lib/engagementContext'
+import { planDateLabel, planRevisedLine, setupBlocksPlan } from '../../lib/engagementContext'
 import { Markdown } from '../Markdown'
 import { Banner } from '../ui/Banner'
 import { Button } from '../ui/Button'
@@ -30,7 +30,13 @@ export function EngagementPlanSection({ project }: { project: Project }): ReactE
   const uid = useId()
   const startSetup = useAppStore((s) => s.startSetup)
   const setView = useAppStore((s) => s.setView)
-  const setupLive = useAppStore((s) => Object.values(s.runs).some((r) => r.summary.projectId === project.id && r.summary.kind === 'setup' && isRunLive(r)))
+  const setupLive = useAppStore((s) =>
+    setupBlocksPlan(
+      Object.values(s.runs)
+        .filter((r) => r.summary.projectId === project.id && r.summary.kind === 'setup' && isRunLive(r))
+        .map((r) => ({ status: r.summary.status, proposals: r.proposals.length })),
+    ),
+  )
   const { confirm, dialog } = useConfirm()
   const [info, setInfo] = useState<EngagementDocumentInfo | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -130,6 +136,20 @@ export function EngagementPlanSection({ project }: { project: Project }): ReactE
       .finally(() => setStarting(false))
   }
 
+  const review = async (): Promise<void> => {
+    if (setupLive || starting) return
+    if (info?.updatedBy === 'user') {
+      const when = planDateLabel(info.updatedAt)
+      const ok = await confirm({
+        title: 'Review replaces your edits',
+        body: `The interview proposes a new plan from scratch. Your edits${when ? ` of ${when}` : ''} are replaced if you approve it.`,
+        confirmLabel: 'Continue',
+      })
+      if (!ok) return
+    }
+    interview(REVIEW_PROMPT)
+  }
+
   const has = !!info && info.text !== ''
   const over = draft.length > ENGAGEMENT_DOCUMENT_MAX_CHARS
   const count = `${draft.length.toLocaleString()} of ${ENGAGEMENT_DOCUMENT_MAX_CHARS.toLocaleString()}`
@@ -208,9 +228,7 @@ export function EngagementPlanSection({ project }: { project: Project }): ReactE
               inert={setupLive || starting}
               ariaDescribedBy={setupLive ? busyId : undefined}
               testId="engagement-plan-review"
-              onClick={() => {
-                if (!setupLive && !starting) interview(REVIEW_PROMPT)
-              }}
+              onClick={() => void review()}
             >
               {starting ? 'Starting…' : 'Review in the setup interview'}
             </Button>
@@ -219,7 +237,7 @@ export function EngagementPlanSection({ project }: { project: Project }): ReactE
       )}
       {mode === 'view' && setupLive && info !== null && (
         <p id={busyId} className="settings-quiet" data-testid="engagement-plan-busy">
-          The setup interview is running. Edit after it ends.
+          The setup interview is proposing a plan right now.
         </p>
       )}
       {startError && (

@@ -21,6 +21,7 @@ import {
   formatShare,
   groupByKind,
   loadRange,
+  mergeRoleRows,
   monthOptions,
   pointValue,
   rangeSince,
@@ -262,7 +263,7 @@ function TrendsBody({
   const summaryById = useMemo(() => new Map(summaries.map((s) => [s.id, s])), [summaries])
   const kinds = useMemo(() => groupByKind(stats.runs, (id) => summaryById.get(id)), [stats.runs, summaryById])
   const fractions = useMemo(() => barFractions(points.map((p) => pointValue(p, metric))), [points, metric])
-  const roles = useMemo(() => [...stats.roles].sort((a, b) => totalTokens(b.tokens) - totalTokens(a.tokens)), [stats.roles])
+  const roles = useMemo(() => mergeRoleRows(stats.roles).sort((a, b) => totalTokens(b.tokens) - totalTokens(a.tokens)), [stats.roles])
   const roleShares = useMemo(() => shares(roles.map((r) => totalTokens(r.tokens))), [roles])
   const totalCost: CostInput = { ...totals, sourceMixed: true }
 

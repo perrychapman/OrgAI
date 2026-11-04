@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import type { RunUsageRow } from '@shared/types'
-import { chartSpan, copiedText, csvFileName, csvRowCount, fillBuckets, groupByKind, kindLabel, monthBounds, monthOptions, parseRangeKey, rangeToKey } from './trends'
+import type { RunUsageRow, UsageStats } from '@shared/types'
+import { mergeRoleRows, chartSpan, copiedText, csvFileName, csvRowCount, fillBuckets, groupByKind, kindLabel, monthBounds, monthOptions, parseRangeKey, rangeToKey } from './trends'
 
 const now = new Date(2026, 10, 4, 12).getTime()
 
@@ -28,6 +28,38 @@ describe('month ranges', () => {
     expect(span.since).toBe(monthBounds('2026-11').start)
     expect(fillBuckets([], span.since, span.until, 'day')).toHaveLength(30)
     expect(fillBuckets([], chartSpan({ kind: 'month', month: '2026-02' }, now).since, chartSpan({ kind: 'month', month: '2026-02' }, now).until, 'day')).toHaveLength(28)
+  })
+})
+
+describe('role rows', () => {
+  const role = (roleId: string, tokens: number, costUsd: number | null, over: Partial<UsageStats['roles'][number]> = {}): UsageStats['roles'][number] => ({
+    roleId,
+    roleSlug: 'architect',
+    roleName: 'Architect',
+    agents: 1,
+    tokens: { input: tokens, output: 0, cacheRead: 0, cacheWrite: 0 },
+    costUsd,
+    costSource: costUsd === null ? 'unknown' : 'computed',
+    turns: 1,
+    toolCalls: 2,
+    retries: 0,
+    agentWallMs: 10,
+    agentsWithoutResult: 0,
+    noResultTokens: 0,
+    models: ['m'],
+    runs: 1,
+    ...over
+  })
+  it('sums rows of one role across runs', () => {
+    const rows = mergeRoleRows([role('a', 100, 0.5), role('b', 50, 0.25), role('c', 7, 1, { roleSlug: 'eng', roleName: 'Eng' })])
+    expect(rows).toHaveLength(2)
+    expect(rows[0]).toMatchObject({ roleName: 'Architect', runs: 2, agents: 2, toolCalls: 4, costUsd: 0.75, costSource: 'computed', roleId: null, models: ['m'] })
+    expect(rows[0]!.tokens.input).toBe(150)
+    expect(rows[0]!.costPartial).toBeUndefined()
+  })
+  it('keeps unknown cost unknown, partial when mixed', () => {
+    expect(mergeRoleRows([role('a', 1, null), role('b', 1, null)])[0]).toMatchObject({ costUsd: null, costSource: 'unknown' })
+    expect(mergeRoleRows([role('a', 1, null), role('b', 1, 0.5)])[0]).toMatchObject({ costUsd: 0.5, costPartial: true })
   })
 })
 

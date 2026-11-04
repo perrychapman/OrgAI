@@ -130,7 +130,7 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
           draftKey={newRunDraftKey(project.id)}
           modeLabel={
             ask
-              ? 'New conversation with one assistant'
+              ? 'Ask one assistant'
               : others.length > 0
                 ? `New run: ${others.length} other run${others.length === 1 ? '' : 's'} keep${others.length === 1 ? 's' : ''} going`
                 : 'New run'
@@ -139,7 +139,7 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
           placeholder={ask ? 'Ask a question or give a small task' : needsSetup ? 'Describe the task (setup is not finished)' : 'Describe the task'}
           modeSwitch={
             canChooseMode ? (
-              <span data-testid="new-run-mode">
+              <span className="new-run-mode" data-testid="new-run-mode">
                 <SegmentedControl<NewRunMode>
                   label="Who works on it"
                   value={mode}
@@ -152,6 +152,7 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
               </span>
             ) : undefined
           }
+          notices={ask ? <p className="new-run-mode-desc" data-testid="new-run-mode-desc">New conversation with one assistant. No team is started.</p> : undefined}
           autoFocus
           focusToken={focusToken}
           onSubmit={async (text, images) => {

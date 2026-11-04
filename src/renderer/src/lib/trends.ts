@@ -1,4 +1,53 @@
-import type { RunKind, RunUsageRow, TokenUsage, UsageTrendPoint } from '@shared/types'
+import type { RunKind, RunUsageRow, TokenUsage, UsageStats, UsageTrendPoint } from '@shared/types'
+import { sumCosts } from './cost'
+
+type RoleRow = UsageStats['roles'][number]
+
+/**
+ * One row per role: rows that share a slug (name when the slug is missing) are summed, so a role used in three runs
+ * is one row. Cost follows `sumCosts` (an unknown part makes the sum a lower bound, all unknown stays unknown).
+ * The first row's id and name win; order of first appearance is kept.
+ */
+export function mergeRoleRows(rows: readonly RoleRow[]): RoleRow[] {
+  const groups = new Map<string, RoleRow[]>()
+  for (const r of rows) {
+    const key = (r.roleSlug || r.roleName).toLowerCase()
+    const g = groups.get(key)
+    if (g) g.push(r)
+    else groups.set(key, [r])
+  }
+  return [...groups.values()].map((g) => {
+    if (g.length === 1) return g[0]!
+    const first = g[0]!
+    const cost = sumCosts(g.map((r) => ({ costUsd: r.costUsd, costSource: r.costSource, ...(r.costPartial ? { costPartial: true } : {}) })))
+    const tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+    for (const r of g) {
+      tokens.input += r.tokens.input
+      tokens.output += r.tokens.output
+      tokens.cacheRead += r.tokens.cacheRead
+      tokens.cacheWrite += r.tokens.cacheWrite
+    }
+    const merged: RoleRow = {
+      ...first,
+      roleId: g.every((r) => r.roleId === first.roleId) ? first.roleId : null,
+      agents: g.reduce((n, r) => n + r.agents, 0),
+      tokens,
+      costUsd: cost.costUsd,
+      costSource: cost.costSource,
+      turns: g.reduce((n, r) => n + r.turns, 0),
+      toolCalls: g.reduce((n, r) => n + r.toolCalls, 0),
+      retries: g.reduce((n, r) => n + r.retries, 0),
+      agentWallMs: g.reduce((n, r) => n + r.agentWallMs, 0),
+      agentsWithoutResult: g.reduce((n, r) => n + r.agentsWithoutResult, 0),
+      noResultTokens: g.reduce((n, r) => n + r.noResultTokens, 0),
+      models: [...new Set(g.flatMap((r) => r.models))],
+      runs: g.reduce((n, r) => n + r.runs, 0),
+    }
+    if (cost.costPartial) merged.costPartial = true
+    else delete merged.costPartial
+    return merged
+  })
+}
 
 export type TrendBucket = 'day' | 'week'
 export type TrendMetric = 'tokens' | 'cost'

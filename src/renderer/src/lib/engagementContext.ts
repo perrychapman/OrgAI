@@ -12,6 +12,19 @@ export function planRevisedLine(info: Pick<EngagementDocumentInfo, 'updatedAt' |
   return { text: info.updatedBy === 'user' ? `Edited by you, ${when}` : `Approved in the setup interview, ${when}`, title }
 }
 
+/** "4 Nov 2026" for a write time; '' when it is not a usable time. */
+export function planDateLabel(ms: number | undefined): string {
+  return typeof ms === 'number' && Number.isFinite(ms) && ms > 0 ? dateOf(ms) : ''
+}
+
+/**
+ * True while a setup run is actively proposing: starting, running or stopping, or holding an open proposal card.
+ * A setup run that sits idle (or ended) without a card does not block editing the plan.
+ */
+export function setupBlocksPlan(runs: readonly { status: string; proposals: number }[]): boolean {
+  return runs.some((r) => r.proposals > 0 || r.status === 'starting' || r.status === 'running' || r.status === 'stopping')
+}
+
 /** Notes newest edit first (ties by title, then id). */
 export function sortNotes<T extends Pick<EngagementNote, 'id' | 'title' | 'updatedAt'>>(notes: readonly T[]): T[] {
   return [...notes].sort((a, b) => b.updatedAt - a.updatedAt || a.title.localeCompare(b.title) || a.id.localeCompare(b.id))
