@@ -1751,7 +1751,8 @@ export class RunManager {
     const narrowed: PermissionDecision =
       decision?.behavior === 'allow' && decision.scope === 'project' && this.isRestricted(active.summary) ? { ...decision, scope: 'session' } : decision
     pending.resolve(narrowed)
-    this.broadcast({ type: 'permission.resolved', runId, requestId })
+    const savedToProject = narrowed?.behavior === 'allow' && narrowed.scope === 'project'
+    this.broadcast({ type: 'permission.resolved', runId, requestId, ...(savedToProject ? { savedToProject: true as const } : {}) })
     this.cardSettled(active)
   }
 
