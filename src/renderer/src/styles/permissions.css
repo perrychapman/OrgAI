@@ -178,6 +178,17 @@
   font-family: var(--font-mono);
   font-size: var(--text-mono);
 }
+/* Lock + "Read only" or pencil + "Can change": the difference between the two folder lists without colour. */
+.folder-access {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
 .allowed-folder-add {
   display: flex;
   flex-wrap: wrap;

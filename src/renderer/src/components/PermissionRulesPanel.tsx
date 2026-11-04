@@ -8,10 +8,10 @@ import { Input } from './ui/Input'
 import { SettingsCard } from './settings/SettingsCard'
 import { SettingsSection } from './settings/SettingsSection'
 import { checkRuleDraft, collapseRules, ruleInfo } from '../lib/permissionCopy'
+import { projectRulesLocation } from '@shared/defaults'
+import { rulePlaceholder, ruleExamples, rulesSavedIn } from '../lib/settingsCopy'
 import { PROJECT_SETTINGS_SECTIONS } from '../lib/settingsTarget'
 import { useAppStore } from '../store/useAppStore'
-
-const EXAMPLES = ['Bash(npm test:*)', 'Bash(npm test *)', 'Bash(git status)', 'WebSearch', 'mcp__github']
 
 const capitalize = (s: string): string => s.charAt(0).toUpperCase() + s.slice(1)
 
@@ -19,6 +19,7 @@ const cleanError = (e: unknown): string => (e instanceof Error ? e.message : Str
 
 /** "Always allow (project)" rules saved in the project's .claude/settings.local.json. */
 export default function PermissionRulesPanel({ project, onRulesChange }: { project: Project; /** Called with the saved rules whenever the list loads or changes. */ onRulesChange?: (rules: string[]) => void }): ReactElement {
+  const location = projectRulesLocation(project)
   const [rules, setRules] = useState<string[] | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -135,7 +136,7 @@ export default function PermissionRulesPanel({ project, onRulesChange }: { proje
     <SettingsSection
       id={PROJECT_SETTINGS_SECTIONS.rules}
       title="Saved permission rules"
-      description="Saved in .claude/settings.local.json in the project folder."
+      description={rulesSavedIn(location)}
       testId="rules-section"
       actions={<IconButton icon={RefreshCw} label="Reload saved rules" size="sm" disabled={busy !== null} onClick={() => void refresh()} />}
     >
@@ -195,7 +196,7 @@ export default function PermissionRulesPanel({ project, onRulesChange }: { proje
                 value={draft}
                 readOnly={busy !== null}
                 aria-busy={busy !== null || undefined}
-                placeholder="Bash(npm test:*)"
+                placeholder={rulePlaceholder(location)}
                 spellCheck={false}
                 invalid={!!error}
                 aria-describedby={error ? errorId : check?.ok ? kindId : undefined}
@@ -235,10 +236,12 @@ export default function PermissionRulesPanel({ project, onRulesChange }: { proje
             <summary>Examples</summary>
             <div className="rule-examples-body">
               <span className="settings-card-hint">
-                A command prefix (both forms below), an exact command, a whole tool or all tools of an MCP server. Prefix, exact, whole-tool and server rules take effect in open runs too; other patterns from the next run. A command joined with &amp;&amp; needs every step covered.
+                {location === 'app'
+                  ? 'A whole tool or all tools of a connected server. These rules take effect in open runs too.'
+                  : 'A command prefix (both forms below), an exact command, a whole tool or all tools of an MCP server. Prefix, exact, whole-tool and server rules take effect in open runs too; other patterns from the next run. A command joined with && needs every step covered.'}
               </span>
               <div className="chip-row" role="group" aria-label="Rule examples">
-                {EXAMPLES.map((ex) => (
+                {ruleExamples(location).map((ex) => (
                   <button
                     key={ex}
                     type="button"

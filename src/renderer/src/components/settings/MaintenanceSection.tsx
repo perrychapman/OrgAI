@@ -9,6 +9,8 @@ import { IconButton } from '../ui/IconButton'
 import { SettingRow } from '../ui/SettingRow'
 import { SettingsCard } from './SettingsCard'
 import { useConfirm } from '../ui/ConfirmDialog'
+import { projectKindOf } from '@shared/defaults'
+import { MAINTENANCE_ENGAGEMENT_LINE } from '../../lib/settingsCopy'
 import { SettingsGroup, SettingsSection } from './SettingsSection'
 
 /** Leftover report branches, the architecture document, and (in a danger zone at the foot) removing OrgAI's files. */
@@ -22,14 +24,22 @@ export function MaintenanceSection({ project }: { project: Project }): ReactElem
   const [notice, setNotice] = useState<MaintenanceResult | null>(null)
   const [diffs, setDiffs] = useState<Record<string, WorktreeDiff | 'loading'>>({})
 
+  // Engagements write nothing to their folder: no branch tools unless the user opted in to separate git copies.
+  const engagement = projectKindOf(project) === 'engagement'
+  const showBranches = !engagement || project.isolateWriters === true
+
   const refresh = useCallback(async () => {
+    if (!showBranches) {
+      setWorktrees([])
+      return
+    }
     try {
       setWorktrees(await window.orgai.maintenance.listWorktrees(project.id))
     } catch (e) {
       setNotice({ ok: false, message: (e as Error).message })
       setWorktrees([])
     }
-  }, [project.id])
+  }, [project.id, showBranches])
 
   useEffect(() => {
     void refresh()
@@ -87,7 +97,12 @@ export function MaintenanceSection({ project }: { project: Project }): ReactElem
 
   return (
     <SettingsSection id="settings-section-maintenance" title="Maintenance">
-      <div className="field">
+      {engagement && (
+        <p className="settings-card-note" data-testid="maintenance-engagement-line">
+          {MAINTENANCE_ENGAGEMENT_LINE}
+        </p>
+      )}
+      {showBranches && <div className="field">
         {worktrees === null ? (
           <span className="settings-quiet">Looking…</span>
         ) : worktrees.length === 0 ? (
@@ -152,7 +167,7 @@ export function MaintenanceSection({ project }: { project: Project }): ReactElem
             </details>
           </div>
         )}
-      </div>
+      </div>}
 
       {project.setup?.architecturePath && (
         <SettingsCard>
@@ -186,24 +201,26 @@ export function MaintenanceSection({ project }: { project: Project }): ReactElem
 
       {notice && <div className={`draft-box${notice.ok ? '' : ' is-error'}`} role={notice.ok ? 'status' : 'alert'}>{notice.message}</div>}
 
-      <SettingsGroup title="Danger zone">
-        <div className="danger-zone">
-          <p className="danger-zone-text">Deletes the files OrgAI created in this repository. Your own files stay.</p>
-          <details className="setting-row-more">
-            <summary>Learn more</summary>
-            <div className="setting-row-more-body">
-              {hasFootprint
-                ? `${project.setup?.architecturePath} and a short section in CLAUDE.md, plus a .git/info/exclude entry for agent worktrees.`
-                : 'None recorded. Any leftover worktrees and the .git/info/exclude entry are still removed.'}
+      {!engagement && (
+        <SettingsGroup title="Danger zone">
+          <div className="danger-zone">
+            <p className="danger-zone-text">Deletes the files OrgAI created in this repository. Your own files stay.</p>
+            <details className="setting-row-more">
+              <summary>Learn more</summary>
+              <div className="setting-row-more-body">
+                {hasFootprint
+                  ? `${project.setup?.architecturePath} and a short section in CLAUDE.md, plus a .git/info/exclude entry for agent worktrees.`
+                  : 'None recorded. Any leftover worktrees and the .git/info/exclude entry are still removed.'}
+              </div>
+            </details>
+            <div className="row gap-2">
+              <Button variant="danger" size="sm" disabled={busy !== null} onClick={() => void uninstall()}>
+                {busy === 'uninstall' ? 'Removing…' : 'Remove OrgAI files from repository'}
+              </Button>
             </div>
-          </details>
-          <div className="row gap-2">
-            <Button variant="danger" size="sm" disabled={busy !== null} onClick={() => void uninstall()}>
-              {busy === 'uninstall' ? 'Removing…' : 'Remove OrgAI files from repository'}
-            </Button>
           </div>
-        </div>
-      </SettingsGroup>
+        </SettingsGroup>
+      )}
       {dialog}
     </SettingsSection>
   )
