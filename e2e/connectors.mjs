@@ -332,6 +332,8 @@ try {
   await page.locator('.react-flow__node', { hasText: role }).first().click()
   const svc = page.locator('[data-testid=role-services]')
   await svc.waitFor({ timeout: 10_000 })
+  // The group renders ("Loading connections...") before the server list arrives; wait for the row, not the container.
+  await svc.locator('[data-testid=role-service][data-name=Notion]').waitFor({ timeout: 10_000 }).catch(() => {})
   check((await svc.locator('[data-testid=role-service][data-name=Notion]').count()) === 1, 'role inspector Services lists Notion')
   check((await svc.locator('[data-testid=role-service][data-name=Slack]').count()) === 0, 'role inspector does not list a service the role cannot use')
   await shot('role-services')
