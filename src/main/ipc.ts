@@ -461,8 +461,9 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
   })
   ipcMain.handle(IPC.runsUsageCsv, (_e, query: UsageStatsQuery): string => {
     const q = query && typeof query === 'object' ? query : ({} as UsageStatsQuery)
-    if (!isValidId(q.projectId) || !projectOrHarness(q.projectId)) throw new Error('Project not found')
-    return runs.usageCsv(q)
+    const project = isValidId(q.projectId) ? projectOrHarness(q.projectId) : null
+    if (!project) throw new Error('Project not found')
+    return runs.usageCsv(q, { project: project.name, client: project.client ?? '' })
   })
   registerTemplateEngagementIpc({ projects, templates, dataDir: settings.dataDir })
   ipcMain.handle(IPC.windowOpenRun, (_e, input: FocusRunTarget): void => {

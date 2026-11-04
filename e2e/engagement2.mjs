@@ -335,7 +335,7 @@ try {
   const csv = await page.evaluate((id) => window.orgai.runs.usageCsv({ projectId: id, kinds: ['work', 'setup', 'mcp-assist', 'skill-assist'], range: { month: `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}` } }), a.id)
   // Main emits a leading UTF-8 BOM by design (runUsage.ts); the header is checked after it.
   const noBom = (s) => s.replace(/^﻿/, '')
-  check(noBom(csv).startsWith('started,ended,kind,status,title,roles'), 'usageCsv has the header row started,ended,kind,...', csv.split(/\r?\n/)[0])
+  check(noBom(csv).startsWith('project,client,started,started_utc,ended,kind,status,title,roles'), 'usageCsv has the header row started,ended,kind,...', csv.split(/\r?\n/)[0])
   const clip = await page.evaluate(() => navigator.clipboard.readText().catch(() => null))
   if (clip !== null) check(noBom(clip).startsWith('started,ended,kind'), 'the clipboard holds the CSV header row', clip.split(/\r?\n/)[0])
   else log_skip('clipboard not readable in this window; header checked through runs.usageCsv')

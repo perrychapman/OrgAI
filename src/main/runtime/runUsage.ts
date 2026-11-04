@@ -545,21 +545,45 @@ function csvCell(value: string | number): string {
   return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
 }
 
+/** buildUsageCsv inputs from the caller: names for the project / client columns, and a UTC offset source for tests. */
+export interface UsageCsvOptions {
+  project?: string
+  client?: string
+  /** Offset east of UTC in minutes at the instant; default is the process time zone. A parameter so tests need no TZ. */
+  offsetMinutes?: (t: number) => number
+}
+
 /**
- * runs:usageCsv body: USAGE_CSV_COLUMNS header, then one row per stats.runs entry (already newest first). started /
- * ended are ISO 8601 UTC (ended blank while missing), title falls back to the prompt, roles is the role count, cost is
+ * runs:usageCsv body: USAGE_CSV_COLUMNS header, then one row per stats.runs entry (already newest first). project and
+ * client come from `opts` (blank when missing); started / ended are local time with the UTC offset, started_utc is
+ * ISO 8601 UTC (all blank while missing), title falls back to the prompt, roles is the role count, cost is
  * blank when unknown (never 0) and otherwise fixed-point with 6 decimals. RFC 4180 with CRLF line ends, no trailing
  * newline and a leading UTF-8 BOM so spreadsheets read it as UTF-8. When `stats.truncated` the file holds only the
  * returned rows (the newest ones); nothing marks that inside the file. Pure.
  */
-export function buildUsageCsv(stats: UsageStats): string {
-  const iso = (t: number | undefined): string => (typeof t === 'number' && Number.isFinite(t) ? new Date(t).toISOString() : '')
+export function buildUsageCsv(stats: UsageStats, opts: UsageCsvOptions = {}): string {
+  const offsetOf = opts.offsetMinutes ?? ((t: number) => -new Date(t).getTimezoneOffset())
+  const valid = (t: number | undefined): t is number => typeof t === 'number' && Number.isFinite(t) && Math.abs(t) <= 8.64e15
+  const utc = (t: number | undefined): string => (valid(t) ? new Date(t).toISOString() : '')
+  const local = (t: number | undefined): string => {
+    if (!valid(t)) return ''
+    const off = offsetOf(t)
+    const mins = Number.isFinite(off) ? Math.trunc(off) : 0
+    const shifted = new Date(t + mins * 60000)
+    if (Number.isNaN(shifted.getTime())) return ''
+    const abs = Math.abs(mins)
+    const pad = (n: number): string => String(n).padStart(2, '0')
+    return `${shifted.toISOString().slice(0, 19)}${mins < 0 ? '-' : '+'}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`
+  }
   const lines: string[] = [USAGE_CSV_COLUMNS.join(',')]
   for (const r of stats.runs) {
     const u = r.usage
     const cells: (string | number)[] = [
-      iso(r.startedAt),
-      iso(r.endedAt),
+      opts.project ?? '',
+      opts.client ?? '',
+      local(r.startedAt),
+      utc(r.startedAt),
+      local(r.endedAt),
       r.team === 'single' && r.kind === 'work' ? 'ask' : r.kind,
       r.status,
       r.title || r.prompt || '',
