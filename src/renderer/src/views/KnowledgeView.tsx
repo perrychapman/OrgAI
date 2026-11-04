@@ -319,7 +319,7 @@ export default function KnowledgeView({ project }: { project: Project }): ReactE
     const name = itemName(item)
     const ok =
       item.type === 'node'
-        ? await confirm({ title: `Delete ${name}?`, body: 'Agents and you can no longer see it. Retire it instead to keep the record.', confirmLabel: 'Delete', danger: true })
+        ? await confirm({ title: `Delete ${name}?`, body: 'Agents and you can no longer see it. Retire it instead to keep the record.', confirmLabel: 'Delete', danger: true, confirmTestId: 'knowledge-delete-confirm' })
         : await confirm({ title: `Remove the note ${name}?`, body: 'Agents can no longer read it. This cannot be undone.', confirmLabel: 'Remove note', danger: true })
     if (!ok) return
     const shownIds = shown.map((i) => i.id)

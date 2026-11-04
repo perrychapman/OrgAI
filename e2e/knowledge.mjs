@@ -251,7 +251,7 @@ try {
   await confirmDlg.waitFor({ state: 'visible' })
   check(new RegExp(`Delete ${RISK}\\?`).test(await confirmDlg.innerText()) && /Retire it instead to keep the record/.test(await confirmDlg.innerText()), 'the delete confirm has the spec wording', clean(await confirmDlg.innerText()))
   await shot('delete-confirm')
-  await confirmDlg.getByRole('button', { name: 'Delete', exact: true }).click()
+  await confirmDlg.locator('[data-testid=knowledge-delete-confirm]').click()
   check(await statusIs(`Deleted ${RISK}.`), 'delete announces "Deleted <name>."', await status())
   check(await until(async () => (await graph(eng.id)).nodes.length === 3), 'the graph has three nodes after the delete')
   check(await until(async () => (await page.locator('[data-testid=knowledge-row]').count()) === 4), 'the list has four rows (three items and the note)')
