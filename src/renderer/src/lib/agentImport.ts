@@ -2,7 +2,7 @@ import type { AgentImportAction, AgentImportChoice, AgentImportMode, AgentImport
 import { AGENT_IMPORT_SOURCE_LABELS } from '@shared/types'
 
 /** What a new project does with the agent files found in its folder. */
-export type SetupChoice = 'import' | 'architect' | 'default'
+export type SetupChoice = 'import' | 'architect' | 'default' | 'template'
 
 /** The user's edits to one previewed role. Unset fields keep what the importer chose. */
 export interface ImportEdit {
@@ -39,13 +39,19 @@ export function foundLine(check: Pick<ProjectPathCheck, 'agentSources' | 'instru
   return parts.length ? `Found ${joinWords(parts)}.` : null
 }
 
-/** The choice in force: the user's pick, else Import when agents exist, else the old Architect checkbox. */
-export function effectiveSetupChoice(hasAgents: boolean, picked: SetupChoice | null, architect: boolean): SetupChoice {
-  if (hasAgents) return picked ?? 'import'
+/**
+ * The choice in force: the user's pick, else Import when agents exist, else the old Architect checkbox. With saved
+ * templates the checkbox becomes the radio group, so a pick of Architect or the standard team counts without agents too.
+ */
+export function effectiveSetupChoice(hasAgents: boolean, picked: SetupChoice | null, architect: boolean, hasTemplates = false): SetupChoice {
+  if (picked === 'template' && hasTemplates) return 'template'
+  if (hasAgents) return picked && picked !== 'template' ? picked : 'import'
+  if (hasTemplates && (picked === 'architect' || picked === 'default')) return picked
   return architect ? 'architect' : 'default'
 }
 
 export function setupSubmitLabel(choice: SetupChoice, busy: boolean, kind: 'code' | 'engagement' = 'code'): string {
+  if (choice === 'template') return busy ? 'Creating…' : 'Create from template'
   if (choice === 'import') return busy ? 'Creating…' : 'Create project and review import'
   if (choice === 'architect' && kind === 'engagement') return busy ? 'Starting the interview…' : 'Create and start interview'
   if (choice === 'architect') return busy ? 'Scanning and starting the Architect…' : 'Create and start setup'
@@ -56,6 +62,24 @@ export function importChoiceLabel(choice: SetupChoice, count: number): string {
   if (choice === 'import') return `Import the ${count} agent${count === 1 ? '' : 's'} (review first)`
   if (choice === 'architect') return 'Let the Architect set up (it sees the agents)'
   return 'Start with the default chart'
+}
+
+/** Radio labels of the "How should the team start?" group (the template option has its own row). */
+export function setupChoiceLabel(choice: SetupChoice, count: number, kind: 'code' | 'engagement', hasAgents: boolean): string {
+  if (choice === 'import') return importChoiceLabel('import', count)
+  if (choice === 'template') return 'Start from a template'
+  if (choice === 'architect') {
+    if (hasAgents) return importChoiceLabel('architect', count)
+    return kind === 'engagement' ? 'Start with the setup interview (recommended)' : 'Set up with the Architect (recommended)'
+  }
+  return kind === 'engagement' ? 'Start with the standard team' : 'Start with the default chart'
+}
+
+/** The hint under the checked template option. */
+export function templateChoiceHint(kind: 'code' | 'engagement'): string {
+  return kind === 'engagement'
+    ? 'The setup interview is skipped. Run it later from the Live tab to write the engagement plan.'
+    : 'The Architect is skipped. Run setup later from the Live tab.'
 }
 
 /** The choices sent to previewImport / applyImport: only keys the user edited. */
