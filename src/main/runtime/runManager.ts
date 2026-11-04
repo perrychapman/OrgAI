@@ -31,6 +31,8 @@ import type {
   ProjectPeek,
   QuickRunInfo,
   SkillContent,
+  KnowledgeNode,
+  KnowledgeSource,
   EngagementNote,
   EngagementNoteContent,
   RunTeam,
@@ -55,11 +57,12 @@ import { QUICK_ASSISTANT_SLUG, adapterForProject, agentProducedNothing, isolateW
 import { referenceFolderOf } from './referenceDirectories'
 import { aliasesFor, priceAgentUsage, type PricingContext } from './pricing'
 import { IntervalTimer, buildUsageCsv, buildUsageStats, computeRunUsage, emptyAgentUsage, legacySummaryUsage, monthRange, normalizeRunRecord } from './runUsage'
-import { DEFAULT_MAX_AUTO_CONTINUES, HARNESS_PROJECT_ID, QUICK_PROJECT_ID, RUN_MESSAGE_MAX_CHARS, RUN_PEER_PROMPT_CHARS, SKILLS_PROJECT_ID, USAGE_STATS_DEFAULT_LIMIT, USAGE_STATS_MAX_LIMIT, isVirtualProjectId } from '@shared/types'
+import { DEFAULT_MAX_AUTO_CONTINUES, HARNESS_PROJECT_ID, KNOWLEDGE_RUN_WRITES_MAX, QUICK_PROJECT_ID, RUN_MESSAGE_MAX_CHARS, RUN_PEER_PROMPT_CHARS, SKILLS_PROJECT_ID, USAGE_STATS_DEFAULT_LIMIT, USAGE_STATS_MAX_LIMIT, isVirtualProjectId } from '@shared/types'
 import { architectRole, mcpAssistantRole, skillAssistantRole } from '@shared/setup'
 import { isTrustRestrictedRun, isInsideEither, samePath, canonicalDeep } from '../quick/scratch'
 import { MCP_ASSIST_MODEL_LABEL, QUICK_RUN_MODEL_LABEL, SETUP_MODEL_LABEL, SKILL_ASSIST_MODEL_LABEL, resolveBuiltinModel, type ResolvedBuiltinModel } from './builtinModel'
-import { ROOT_AGENT_ID, isSetupLikeRun, type CompletionInput, type KnowledgeStoreApi, type ResolvedMcpServer, type RunMessageOutcome, type RunConnection, type RunSkill, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type SkillAssistCatalog } from './types'
+import { ROOT_AGENT_ID, isSetupLikeRun, type CompletionInput, type KnowledgeCaller, type KnowledgeStoreApi, type ResolvedMcpServer, type RunMessageOutcome, type RunConnection, type RunSkill, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type SkillAssistCatalog } from './types'
+import { datum } from './harnessTools'
 import type { SkillRunSource } from '../skills/types'
 import { RunStore } from '../store/runs'
 import type { SetupService } from '../setup/service'
@@ -290,6 +293,10 @@ interface ActiveRun {
   /** Counted skill loads by skill id (RunUsage.skills) and their total (capped at RUN_SKILL_LOAD_LIMIT). */
   skillCounts: Map<string, SkillUseCount>
   skillLoads: number
+  /** Knowledge graph writes and saved notes this run made through the harness tools (KNOWLEDGE_RUN_WRITES_MAX). */
+  knowledgeWrites: number
+  /** The writes cap was reached and logged once. */
+  knowledgeCapWarned?: boolean
   /** Time with at least one decision card open. */
   waiting: IntervalTimer
   /** Time held on a usage limit, until the user's next send or the run's end. */
@@ -954,6 +961,7 @@ export class RunManager {
       skills: [],
       skillCounts: new Map(),
       skillLoads: 0,
+      knowledgeWrites: 0,
       projectName: project.name,
       rootRole: (project.roles.find((r) => r.reportsTo === null) ?? project.roles[0])?.name ?? '',
       messagesSent: new Map(),
@@ -1327,12 +1335,22 @@ export class RunManager {
               engagementNotes: {
                 list: () => this.options.engagementNotes!.list(project.id),
                 read: (noteId: string) => this.options.engagementNotes!.read(project.id, noteId),
-                // Placeholder until the knowledge-graph wiring lands: the Runtime Engineer replaces it with the real save.
-                save: () => {
-                  throw new Error('Notes cannot be saved in this run.')
+                save: (input: { noteId?: string; title: string; text: string }, caller: KnowledgeCaller) => {
+                  const save = this.options.engagementNotes?.save
+                  if (!save) throw new Error('Notes cannot be saved in this run.')
+                  this.checkKnowledgeBudget(active)
+                  const source = this.knowledgeSource(active, caller, ctx.roles)
+                  const note = save(project.id, input, { by: 'agent', runId: summary.id, role: source.role })
+                  this.countKnowledgeWrite(active, source.agentId, `Saved note ${note.title}`)
+                  this.engagementChanged(project.id, 'notes', [note.id])
+                  return note
                 }
               }
             }
+          : {}),
+        // The knowledge graph: work runs of an engagement (any team); never Chat, setup-like or trust-restricted runs.
+        ...(this.options.knowledge && kind === 'work' && !bare && !restricted && projectKindOf(project) === 'engagement'
+          ? { knowledge: this.bindKnowledge(active, this.options.knowledge, project.id, () => ctx.roles) }
           : {}),
         // Saved team templates: Architect setup runs only.
         ...(this.options.orgTemplate && kind === 'setup' && !isVirtualProjectId(project.id)
@@ -1482,6 +1500,93 @@ export class RunManager {
       if (updated !== agent) a.emit({ type: 'agent.upsert', runId: a.summary.id, agent: updated })
     }
     return true
+  }
+
+  // ---------- engagement notes and knowledge graph (harness tool writes) ----------
+
+  /**
+   * Provenance of a knowledge or note write: the run, the calling agent (missing = the root) and its role name. The
+   * role comes from the run's agent record (its slug, shown as the role's name when the run's roles know it), else the
+   * role the adapter named (caller.roleId), else the root role. Never a string the agent supplied.
+   */
+  private knowledgeSource(a: ActiveRun, caller: KnowledgeCaller, roles: Role[]): KnowledgeSource & { agentId: string } {
+    const agentId = caller.agentId ?? ROOT_AGENT_ID
+    const slug = a.record.agents[agentId]?.roleSlug
+    const role =
+      (slug ? (roles.find((r) => r.slug === slug)?.name ?? slug) : undefined) ??
+      (caller.roleId ? roles.find((r) => r.id === caller.roleId)?.name : undefined) ??
+      a.rootRole
+    return { by: 'agent', runId: a.summary.id, agentId, ...(role ? { role } : {}), at: Date.now() }
+  }
+
+  /** Throws (before anything is saved) once the run made KNOWLEDGE_RUN_WRITES_MAX writes; the cap is logged once. */
+  private checkKnowledgeBudget(a: ActiveRun): void {
+    if (a.knowledgeWrites < KNOWLEDGE_RUN_WRITES_MAX) return
+    if (!a.knowledgeCapWarned) {
+      a.knowledgeCapWarned = true
+      log.warn(`Run ${a.summary.id}: knowledge graph write limit (${KNOWLEDGE_RUN_WRITES_MAX}) reached; later writes are refused`)
+    }
+    throw new Error(`The knowledge graph write limit for this run (${KNOWLEDGE_RUN_WRITES_MAX}) is reached; nothing was saved.`)
+  }
+
+  /** After a successful store write: count it and write its harness transcript row on the writing agent. */
+  private countKnowledgeWrite(a: ActiveRun, agentId: string, text: string): void {
+    a.knowledgeWrites++
+    this.knowledgeRow(a, agentId, text)
+  }
+
+  /** A quiet harness row (like a skill load) on the agent that wrote to the notes or the graph. */
+  private knowledgeRow(a: ActiveRun, agentId: string, text: string): void {
+    a.emit({ type: 'transcript', runId: a.summary.id, entry: { id: newId('t'), agentId, at: Date.now(), source: 'harness', block: { kind: 'system', text } } })
+  }
+
+  /** Push projects:engagementChanged for an agent write (index.ts passes the broadcaster); never throws into the tool. */
+  private engagementChanged(projectId: string, what: 'notes' | 'knowledge', ids: string[]): void {
+    const event: EngagementChangedEvent = { projectId, what, ids }
+    try {
+      this.options.engagementChanged?.(event)
+    } catch (e) {
+      log.warn(`engagementChanged broadcast failed: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+
+  /** RuntimeContext.knowledge over the store: provenance, the writes cap, one transcript row per write, the push. */
+  private bindKnowledge(a: ActiveRun, store: KnowledgeStoreApi, projectId: string, roles: () => Role[]): NonNullable<RuntimeContext['knowledge']> {
+    const label = (n: KnowledgeNode): string => `${n.kind} ${n.name}`
+    return {
+      graph: () => store.get(projectId),
+      upsertNode: (input, caller) => {
+        this.checkKnowledgeBudget(a)
+        const source = this.knowledgeSource(a, caller, roles())
+        const r = store.upsertNode(projectId, input, source)
+        this.countKnowledgeWrite(a, source.agentId, `${r.created ? 'Recorded' : 'Updated'} ${label(r.node)}`)
+        this.engagementChanged(projectId, 'knowledge', [r.node.id])
+        return r
+      },
+      link: (input, caller) => {
+        this.checkKnowledgeBudget(a)
+        const source = this.knowledgeSource(a, caller, roles())
+        const r = store.saveEdge(projectId, input, source)
+        const g = store.get(projectId)
+        const name = (id: string): string => {
+          const n = g.nodes.find((x) => x.id === id)
+          return n ? n.name : id
+        }
+        this.countKnowledgeWrite(a, source.agentId, `Linked ${name(r.edge.from)} ${r.edge.relation} ${name(r.edge.to)}`)
+        this.engagementChanged(projectId, 'knowledge', [r.edge.id])
+        return r
+      },
+      retire: (input, caller) => {
+        this.checkKnowledgeBudget(a)
+        const source = this.knowledgeSource(a, caller, roles())
+        const r = store.retire(projectId, input, source)
+        if (r.alreadyRetired) return r
+        const reason = input.reason?.trim() ? ` (${datum(input.reason, 120)})` : ''
+        this.countKnowledgeWrite(a, source.agentId, `Retired ${r.item} ${r.label}${reason}`)
+        this.engagementChanged(projectId, 'knowledge', [r.id])
+        return r
+      }
+    }
   }
 
   /**

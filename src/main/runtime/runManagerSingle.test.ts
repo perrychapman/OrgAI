@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { AppSettings, EngagementNoteContent, RunEvent, RunKind, RunSummary } from '@shared/types'
+import type { AppSettings, EngagementNote, EngagementNoteContent, RunEvent, RunKind, RunSummary } from '@shared/types'
 import { QUICK_PROJECT_ID, USAGE_CSV_COLUMNS } from '@shared/types'
 import { DEFAULT_APP_SETTINGS, QUICK_ASSISTANT_SLUG } from '@shared/defaults'
 import { RunManager, type RunManagerOptions } from './runManager'
@@ -127,9 +127,10 @@ describe('single-agent work runs', () => {
 })
 
 describe('RuntimeContext.engagementNotes and orgTemplate', () => {
-  const note: EngagementNoteContent = { id: 'n1', title: 'Facts', updatedAt: 1, chars: 3, text: 'abc' }
+  const index: EngagementNote = { id: 'n1', title: 'Facts', excerpt: 'abc', createdAt: 1, updatedAt: 1, chars: 3 }
+  const note: EngagementNoteContent = { ...index, text: 'abc' }
   const notes = () => ({
-    list: vi.fn((projectId: string) => (projectId === 'p1' ? [{ id: 'n1', title: 'Facts', updatedAt: 1, chars: 3 }] : [])),
+    list: vi.fn((projectId: string): EngagementNote[] => (projectId === 'p1' ? [index] : [])),
     read: vi.fn((projectId: string, id: string) => (projectId === 'p1' && id === 'n1' ? note : null))
   })
 
@@ -137,7 +138,7 @@ describe('RuntimeContext.engagementNotes and orgTemplate', () => {
     const engagementNotes = notes()
     const { m, ctxs } = rig({ engagementNotes })
     await m.start({ project: stored({ kind: 'engagement' }), prompt: 'go' })
-    expect(ctxs[0].engagementNotes?.list()).toEqual([{ id: 'n1', title: 'Facts', updatedAt: 1, chars: 3 }])
+    expect(ctxs[0].engagementNotes?.list()).toEqual([index])
     expect(ctxs[0].engagementNotes?.read('n1')).toEqual(note)
     expect(engagementNotes.list).toHaveBeenCalledWith('p1')
     expect(engagementNotes.read).toHaveBeenCalledWith('p1', 'n1')
