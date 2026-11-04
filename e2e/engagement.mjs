@@ -68,6 +68,15 @@ const openSettingsPane = async (pane) => {
   await page.getByRole('tab', { name: pane, exact: true }).click()
   await sleep(300)
 }
+/** Poll the saved project until its client matches (the save is debounced), up to 10 s. */
+const waitForClient = async (expected) => {
+  const end = Date.now() + 10_000
+  while (Date.now() < end) {
+    if ((await findProject(page, AUDIT))?.client === expected) return true
+    await sleep(200)
+  }
+  return false
+}
 const openSummary = async () => {
   const toggle = page.locator('[data-testid=permissions-summary-toggle]')
   if ((await toggle.getAttribute('aria-expanded')) !== 'true') await toggle.click()
@@ -98,6 +107,10 @@ try {
     await form.locator('[data-testid=new-project-ref-input]').fill(wfAudit)
     await form.locator('[data-testid=new-project-ref-add]').click()
     check(/working folder/.test(await form.locator('[data-testid=new-project-ref-error]').innerText().catch(() => '')), 'the working folder is refused as a reference folder')
+    await form.locator('[data-testid=new-project-ref-input]').fill(`${path.join(wfAudit, 'inner')}`)
+    await form.locator('[data-testid=new-project-ref-add]').click()
+    check(/inside the working folder/.test(await form.locator('[data-testid=new-project-ref-error]').innerText().catch(() => '')), 'a folder inside the working folder is refused as a reference folder')
+    check((await form.locator('[data-testid=new-project-ref-row]').count()) === 0, 'the inside folder was not added to the list')
     await form.locator('[data-testid=new-project-ref-input]').fill('')
     // Switching to Code swaps the fields back.
     await form.locator('[data-testid=project-kind-option][data-kind=code] input[type=radio]').check({ force: true })
@@ -151,8 +164,7 @@ try {
   check((await clientInput.inputValue()) === 'Acme Corp', 'General: the client field holds the saved client')
   await clientInput.fill('Acme Corporation')
   await clientInput.press('Tab')
-  await sleep(600)
-  check((await findProject(page, AUDIT))?.client === 'Acme Corporation', 'editing the client saves it')
+  check(await waitForClient('Acme Corporation'), 'editing the client saves it')
   check(clean(await page.locator('[data-testid=project-client]').first().innerText()) === 'Acme Corporation', 'the topbar follows the edited client')
   await page.reload()
   await page.waitForSelector('.sidebar', { timeout: 30_000 })
@@ -161,8 +173,7 @@ try {
   check((await page.locator('[data-testid=project-client-input]').inputValue()) === 'Acme Corporation', 'the edited client survives a reload')
   await page.locator('[data-testid=project-client-input]').fill('Acme Corp')
   await page.locator('[data-testid=project-client-input]').press('Tab')
-  await sleep(600)
-  check((await findProject(page, AUDIT))?.client === 'Acme Corp', 'the client is set back')
+  check(await waitForClient('Acme Corp'), 'the client is set back')
   check(clean(await page.locator('[data-testid=project-path]').innerText()) !== '', 'General: working directory still shown')
   const shift0 = await windowShift(page)
   check(shift0.ok, 'General pane did not shift the window', JSON.stringify(shift0))
@@ -195,6 +206,19 @@ try {
   const back = await findProject(page, AUDIT)
   check((back.referenceDirectories ?? []).length === 1 && (back.allowedDirectories ?? []).length === 0, 'Make read only moves it back')
   check(/1 reference folder\b/.test(clean(await page.locator('[data-testid=permissions-summary]').innerText())), 'summary is back to 1 reference folder')
+
+  // The settings cards refuse a folder inside the working folder too.
+  {
+    const inner = path.join(wfAudit, 'inner')
+    await page.locator('[data-testid=reference-folder-input]').fill(inner)
+    await page.locator('[data-testid=reference-folder-add]').click()
+    check(/inside the working folder/.test(await page.locator('[data-testid=reference-folder-error]').innerText().catch(() => '')), 'the reference card refuses a folder inside the working folder')
+    await page.locator('[data-testid=reference-folder-input]').fill('')
+    await page.locator('[data-testid=allowed-folder-input]').fill(path.dirname(wfAudit))
+    await page.locator('[data-testid=allowed-folder-add]').click()
+    check(/contains the working folder/.test(await page.locator('[data-testid=allowed-folder-error]').innerText().catch(() => '')), 'the allowed card refuses a folder containing the working folder')
+    await page.locator('[data-testid=allowed-folder-input]').fill('')
+  }
 
   // ---- Maintenance ----
   await openSettingsPane('Maintenance')

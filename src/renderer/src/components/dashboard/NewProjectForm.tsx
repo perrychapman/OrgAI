@@ -7,7 +7,8 @@ import { useAppStore } from '../../store/useAppStore'
 import { cleanIpcError } from '../../lib/ipcError'
 import { examplePath } from '../../lib/platform'
 import { effectiveSetupChoice, foundLine, importChoiceLabel, setupSubmitLabel, totalAgents, type SetupChoice } from '../../lib/agentImport'
-import { addReferenceFolder, effectiveName, newProjectConnectionView, pathStatus, readLastProjectKind, submitBlocker, writeLastProjectKind } from '../../lib/projectsForm'
+import { firstWorkingFolderConflict } from '../../lib/folderLists'
+import { addReferenceFolder,effectiveName, newProjectConnectionView, pathStatus, readLastProjectKind, submitBlocker, writeLastProjectKind } from '../../lib/projectsForm'
 import { Button } from '../ui/Button'
 import { Checkbox } from '../ui/Checkbox'
 import { IconButton } from '../ui/IconButton'
@@ -167,7 +168,7 @@ export function NewProjectForm({
     if (dir) setPathValue(dir)
   }
   const addRef = (value: string): void => {
-    const r = addReferenceFolder(refs, value, path)
+    const r = addReferenceFolder(refs, value, path, 'engagement')
     if ('error' in r) {
       setRefError(r.error)
       return
@@ -231,6 +232,15 @@ export function NewProjectForm({
     if (existingId && !duplicate) {
       openExisting()
       return
+    }
+    // The working folder may have changed since the folders were added: main would drop any that now overlap it.
+    if (engagement) {
+      const conflict = firstWorkingFolderConflict(refs, path, 'engagement')
+      if (conflict) {
+        setRefError(`${conflict.path}: ${conflict.problem}`)
+        document.getElementById(ids.ref)?.focus()
+        return
+      }
     }
     setBusy(true)
     setError(null)
@@ -522,7 +532,7 @@ export function NewProjectForm({
 
       {pending && (
         <p id={ids.extrasErr} className="field-msg error" role="alert" data-testid="new-project-extras-error">
-          The project was created, but its client and folders were not saved: {pending.message} Open the project and set them in its settings.
+          The project was created, but not everything was saved. {pending.message} Open the project and set the rest in its settings.
         </p>
       )}
 

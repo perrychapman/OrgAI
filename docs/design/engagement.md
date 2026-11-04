@@ -27,14 +27,20 @@ open; the first-launch inline form does not take focus). Arrow keys move the cho
 | Setup checkbox `architect-setup` | "Set up with the Architect (recommended)" | "Start with the setup interview (recommended)", description "Turn off to start with the standard engagement team." |
 | Submit | "Create and start setup" / "Create project" | "Create and start interview" / "Create project" |
 
-Reference rows refuse a relative path, the working folder ("This is the working folder. Pick a folder inside it or
-elsewhere."), a duplicate and more than the cap (`addReferenceFolder`, `lib/projectsForm.ts`). A found-agents line
+Reference rows refuse a relative path, a duplicate, more than the cap and any folder equal to, inside or containing the
+working folder (`addReferenceFolder`, `lib/projectsForm.ts`, over `workingFolderRelation` in `lib/folderLists.ts`, case-
+and separator-insensitive; main drops all three from both lists, so the UI refuses them first). Copy: "This is the
+working folder. Agents can already change files in it." / "This folder is inside the working folder. Reference folders
+must be outside it." / "This folder contains the working folder. Pick a folder outside it." (a code project says
+"project folder"; both settings cards use the same helper). Submit re-checks the list against the working folder. A found-agents line
 (`foundLine`, `agents-found`) shows for an engagement only when saved team members were found; instruction files
 (CLAUDE.md, AGENTS.md) are not mentioned. The "Existing code" / "New idea" labels of the Code sub-switch replaced
 "Existing repository".
 
 Client and reference folders are saved after the project exists (`createProject(input, { onExtrasError })`). If that
-save fails the project is kept, the form stays open with `new-project-extras-error` and the submit reads "Open project".
+save fails, or main kept fewer folders than were sent (or dropped the client; `droppedExtrasMessage`: "OrgAI did not keep
+these folders: ..."), the project is kept, the form stays open with `new-project-extras-error` and the submit reads
+"Open project".
 
 ## Project settings
 
@@ -109,6 +115,8 @@ save fails the project is kept, the form stays open with `new-project-extras-err
   the default chart's role names in the UI and the catalog copy).
 - L4: Save as project still makes a "default team" code project. L5: a finished setup run still dominates the
   Dashboard. L6: the "Import agents" wording and vendor-folder list.
+- The two folder cards each mount their own polite `role=status` announcer plus the notices list (not lifted into one
+  shared announcer). Folder checks are lexical: a link into the working folder is only caught by main.
 - The permission card's "Always allow for project" wording for a reference folder is unchanged (it reads as if a folder
   could be allowed; a reference folder never can be changed).
 - NewRunPage title "Give X something to do" is unchanged; only the lead line differs.

@@ -299,10 +299,10 @@ try {
     // The working folder is refused in both cards.
     await refInput.fill(repo)
     await page.locator('[data-testid=reference-folder-add]').click()
-    check(/This is the working folder/.test(await page.locator('[data-testid=reference-folder-error]').innerText().catch(() => '')), 'the working folder is refused as a reference folder')
+    check(/This is the project folder\. Agents can already change files in it\./.test(await page.locator('[data-testid=reference-folder-error]').innerText().catch(() => '')), 'the working folder is refused as a reference folder')
     await allowedInput.fill(repo)
     await page.locator('[data-testid=allowed-folder-add]').click()
-    check(/This is the working folder/.test(await page.locator('[data-testid=allowed-folder-error]').innerText().catch(() => '')), 'the working folder is refused as an allowed folder')
+    check(/This is the project folder\. Agents can already change files in it\./.test(await page.locator('[data-testid=allowed-folder-error]').innerText().catch(() => '')), 'the working folder is refused as an allowed folder')
     await shot('settings-reference-folders')
     await allowedInput.fill('')
     await refInput.fill('')

@@ -1,6 +1,7 @@
 import type { ConnectionInfo, ProjectKind, ProjectPathCheck, SetupKind } from '@shared/types'
 import { PROJECT_REFERENCE_DIRECTORIES_MAX, isProjectKind } from '@shared/types'
 import { connectionWithAuth, defaultConnectionInfo } from './connectionLabel'
+import { workingFolderProblem } from './folderLists'
 
 export type PathTone = 'error' | 'warn' | 'ok' | 'info'
 export interface PathStatus {
@@ -123,11 +124,12 @@ function folderKey(path: string): string {
 }
 
 /** Adding one reference folder to the list: the new list, or the reason it was refused. */
-export function addReferenceFolder(list: readonly string[], input: string, workingFolder: string): { list: string[] } | { error: string } {
+export function addReferenceFolder(list: readonly string[], input: string, workingFolder: string, kind: ProjectKind = 'engagement'): { list: string[] } | { error: string } {
   const p = input.trim()
   if (!p) return { error: 'Enter a folder path or choose one with Browse.' }
   if (!isFullPath(p)) return { error: `Use a full path, for example ${fullPathExample()}` }
-  if (workingFolder.trim() && folderKey(workingFolder) === folderKey(p)) return { error: 'This is the working folder. Pick a folder inside it or elsewhere.' }
+  const outside = workingFolderProblem(p, workingFolder, kind)
+  if (outside) return { error: outside }
   if (list.some((x) => folderKey(x) === folderKey(p))) return { error: 'This folder is already in the list.' }
   if (list.length >= PROJECT_REFERENCE_DIRECTORIES_MAX) return { error: `At most ${PROJECT_REFERENCE_DIRECTORIES_MAX} folders.` }
   return { list: [...list, p] }
