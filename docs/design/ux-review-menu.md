@@ -348,4 +348,19 @@ Decisions: announcements use the run tabs' visible `tabNotice` when a project is
 `menu-announce` status region (cleared, then set 60 ms later, cleared after 4 s, so a repeat is read again). The
 shortcuts dialog reads one `SHORTCUTS` table (Cmd on a Mac, detected from the platform string); after Esc, focus goes to
 `#main-content` when nothing held it. Ctrl+T always calls preventDefault, Ctrl+W always does and keeps the repeat guard.
-Not driven in the running app: the dialog layout at both window sizes, the live region, the native menu round trip.
+Two wordings are new, not from the table under "When an item does not apply": "Open a run first." (a run action
+with no run tab shown) and "Nothing needs you right now." (Show what needs you with nothing waiting). Kept as is.
+A click on a greyed item does nothing (Electron does not call it), so announcements come only from key presses the
+renderer handles itself (Ctrl+T, Ctrl+W, Ctrl+., Alt+D) or a stale command. e2e/menu.mjs (mock, 1024x640 and
+1600x1000, dark and light) clicks items through `Menu.getMenuItemById(id).click()` and checks: New chat, View > Team,
+Help > About, New run (one draft, also for Ctrl+T), Show conversation, Interrupt turn enabled while the session is open
+(the mock run waits on a card while running, so it is not clicked), Org retrospective on a live run announcing "Not
+available for this run." in the run tabs' status line, View > Team greyed on the Projects page, the shortcuts dialog
+(Esc, focus back), and Ctrl+T on the Projects page announcing "Open a project first." in `menu-announce`. Not driven:
+macOS key equivalents, run-scoped windows, canvas zoom and fit.
+
+Reviewer (reviewer-3): no Critical or High. Fixed: M1 (the run tabs' status span is always mounted; a repeated notice is
+cleared and re-set, newest call owns the timer), L1 (Ctrl+. / Alt+D announce with no tray), L4 (announcements go to the
+tab notice only when the project really exists). Open: L2 (macOS double fire, unverified), L3 (`anyDecision` builds
+labels on every store change), L5 (Save as project from the menu may return focus to body), L6 (no column headers in the
+shortcuts table).

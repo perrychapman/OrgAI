@@ -173,7 +173,7 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
     const gap = parseFloat(getComputedStyle(bar).columnGap) || 0
     const tabW = first.getBoundingClientRect().width + gap
     const plusW = plus.getBoundingClientRect().width + gap
-    const noticeW = noticeRef.current ? noticeRef.current.getBoundingClientRect().width + gap : 0
+    const noticeW = noticeRef.current?.textContent ? noticeRef.current.getBoundingClientRect().width + gap : 0
     const room = bar.clientWidth - plusW - noticeW
     const all = Math.floor((room + gap) / tabW)
     setCap(count <= all ? count : Math.max(1, Math.floor((room - plusW + gap) / tabW)))
@@ -490,11 +490,10 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
       <button type="button" ref={newRef} className="run-tab-new" aria-label={newLabel} title={`${newLabel} (Ctrl+T)`} onClick={openDraft}>
         <Icon icon={Plus} size="sm" />
       </button>
-      {notice && (
-        <span className="run-tabs-notice" role="status" ref={noticeRef}>
-          {notice}
-        </span>
-      )}
+      {/* Always mounted, so a screen reader is already watching the region when a notice arrives. */}
+      <span className="run-tabs-notice" role="status" ref={noticeRef}>
+        {notice ?? ''}
+      </span>
     </div>
   )
 }

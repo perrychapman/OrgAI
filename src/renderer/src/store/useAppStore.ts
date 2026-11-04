@@ -364,6 +364,8 @@ interface AppState {
 }
 
 let unsubscribeEvents: (() => void) | null = null
+/** Bumped by every setTabNotice call; only the newest call may show or clear the notice. */
+let tabNoticeSeq = 0
 /** Runs whose real summary is being fetched after an event created a placeholder. */
 const summaryLookups = new Set<string>()
 const saveTimers = new Map<string, ReturnType<typeof setTimeout>>()
@@ -1247,8 +1249,20 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   setTabNotice(message) {
-    set({ tabNotice: message })
-    setTimeout(() => set((s) => (s.tabNotice === message ? { tabNotice: null } : {})), 4000)
+    // Each call owns the notice until a newer one: an older timer never clears it, and a repeat of the same text is
+    // cleared first and set again on the next tick so the always-mounted status region reads it again.
+    const seq = ++tabNoticeSeq
+    const show = (): void => {
+      if (seq !== tabNoticeSeq) return
+      set({ tabNotice: message })
+      setTimeout(() => {
+        if (seq === tabNoticeSeq) set((s) => (s.tabNotice === message ? { tabNotice: null } : {}))
+      }, 4000)
+    }
+    if (get().tabNotice === message) {
+      set({ tabNotice: null })
+      setTimeout(show, 60)
+    } else show()
   },
 
   async startRun(prompt, opts) {
