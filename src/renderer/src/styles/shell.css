@@ -601,6 +601,73 @@
   min-width: var(--space-5);
 }
 
+/* Engagement client: sidebar group headers and the topbar client text. */
+.nav-client-header {
+  all: unset;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  width: 100%;
+  min-height: var(--control-sm);
+  padding: 0 var(--space-3);
+  cursor: pointer;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  font-weight: var(--weight-semibold);
+  color: var(--text-tertiary);
+  border-radius: var(--radius-sm);
+}
+.nav-client-header:hover {
+  background: var(--surface-2);
+  color: var(--text-primary);
+}
+.nav-client-header:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.nav-client-header > svg {
+  flex: none;
+}
+.nav-client-count {
+  flex: none;
+  white-space: pre;
+}
+.nav-client-fill {
+  flex: 1;
+}
+.nav-client-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nav-client-label {
+  padding: var(--space-1) var(--space-3) 0;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  font-weight: var(--weight-semibold);
+  color: var(--text-tertiary);
+}
+.nav-client-divider {
+  width: var(--space-5);
+  margin: var(--space-1) auto;
+  border: 0;
+  border-top: 1px solid var(--border-subtle);
+}
+.project-client {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-tertiary);
+}
+
 /* The document never scrolls: only the view panes do, so a scrollIntoView can not push the topbar away. */
 html,
 #root {
