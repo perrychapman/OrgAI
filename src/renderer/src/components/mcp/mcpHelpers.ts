@@ -7,6 +7,7 @@ import type {
   Role
 } from '@shared/types'
 import { newId } from '@shared/defaults'
+import { scopeFields, secretScopeOf } from '../../lib/mcpScope'
 
 /** The exact thing that runs: `command args` for stdio, the URL for http and sse. */
 export function launchTarget(spec: Pick<McpServerSpec, 'transport' | 'command' | 'args' | 'url'>): string {
@@ -32,6 +33,54 @@ export function secretStatuses(info: McpServerInfo): SecretStatus[] {
     ...(info.spec.secretEnv ?? []).map((name) => ({ name, set: info.envSet.includes(name) })),
     ...(info.spec.secretHeaders ?? []).map((name) => ({ name, set: info.headersSet.includes(name) }))
   ]
+}
+
+export interface PerProjectSecretSlot {
+  kind: 'env' | 'header'
+  name: string
+  set: boolean
+}
+
+export interface PerProjectState {
+  /** True when the linked entry declares any slot this project fills in. */
+  declared: boolean
+  /** Non-secret names (spec.perProjectEnv) with this project's saved values (empty string = unset). */
+  plain: Array<{ name: string; value: string }>
+  /** Secret slots, only while the secrets are this project's own (secretScope 'project'). */
+  secrets: PerProjectSecretSlot[]
+  missingPlain: string[]
+  missingSecrets: string[]
+  missingCount: number
+}
+
+/** This project's own slots on a linked server and which of them are still empty. */
+export function perProjectState(info: McpServerInfo): PerProjectState {
+  const fields = scopeFields(info.spec)
+  const values = (info.spec.transport === 'stdio' ? fields.envOverrides : fields.headerOverrides) ?? {}
+  const plain = (fields.perProjectEnv ?? []).map((name) => ({ name, value: values[name] ?? '' }))
+  const secrets: PerProjectSecretSlot[] =
+    info.spec.libraryId && secretScopeOf(info) === 'project'
+      ? [
+          ...(info.spec.secretEnv ?? []).map((name) => ({ kind: 'env' as const, name, set: info.envSet.includes(name) })),
+          ...(info.spec.secretHeaders ?? []).map((name) => ({ kind: 'header' as const, name, set: info.headersSet.includes(name) }))
+        ]
+      : []
+  const missingPlain = plain.filter((p) => p.value === '').map((p) => p.name)
+  const missingSecrets = secrets.filter((s) => !s.set).map((s) => s.name)
+  return { declared: plain.length + secrets.length > 0, plain, secrets, missingPlain, missingSecrets, missingCount: missingPlain.length + missingSecrets.length }
+}
+
+/** The full overrides map after setting one name; an empty value removes it (main replaces the whole map). */
+export function nextOverrides(current: Record<string, string>, name: string, value: string): Record<string, string> {
+  const next = { ...current }
+  if (value === '') delete next[name]
+  else next[name] = value
+  return next
+}
+
+/** "Needs 2 values for this engagement before agents can use it." */
+export function perProjectMissingLine(count: number, noun: string): string {
+  return `Needs ${count} ${count === 1 ? 'value' : 'values'} for this ${noun} before agents can use it.`
 }
 
 export function allRoleSlugs(roles: Role[]): string[] {

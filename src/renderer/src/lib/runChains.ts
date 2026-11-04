@@ -201,7 +201,7 @@ export function sessionOpenRunId(message: string): string | null {
 
 // ---------- One conversation per session chain (docs/design/ux-review-continue.md, model 1-6) ----------
 
-type EndSummary = ChainSummary & Partial<Pick<RunSummary, 'endedAt' | 'endedWithApp' | 'title' | 'prompt' | 'error'>> & { endedBy?: 'user' | 'app'; endedWhile?: 'working' | 'waiting' }
+type EndSummary = ChainSummary & Partial<Pick<RunSummary, 'endedAt' | 'endedWithApp' | 'title' | 'prompt' | 'error' | 'team'>> & { endedBy?: 'user' | 'app'; endedWhile?: 'working' | 'waiting' }
 
 /** The chain's key: its oldest member's id. Stable across continues, so a chain tab or a chain view keeps its identity. */
 export function chainKeyOf<T extends ChainSummary>(runs: readonly T[], id: string): string {
@@ -326,7 +326,7 @@ export function endedComposerCopy(
 ): EndedComposerCopy {
   if (!opts.continuable) return { mode: 'new', modeLabel: 'This run cannot be continued (no saved session).', placeholder: 'Describe the task' }
   const now = opts.now ?? Date.now()
-  const placeholder = 'Message the orchestrator'
+  const placeholder = summary.team === 'single' ? 'Message the assistant' : 'Message the orchestrator'
   const ended = `Session ended ${relativeTime(lastActivityAt(summary), now)}. Send to continue with its memory.`
   if (summary.status === 'error') {
     // The danger Banner above already says why (L4): the mode line then leaves the reason out.

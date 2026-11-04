@@ -1,6 +1,6 @@
 import type { KeyboardEvent, ReactElement } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Download, LayoutGrid, MousePointerClick, Plus, Undo2, Upload } from 'lucide-react'
+import { ChevronDown, Download, LayoutGrid, LayoutTemplate, MousePointerClick, Plus, Undo2, Upload } from 'lucide-react'
 import {
   ReactFlow,
   Controls,
@@ -19,6 +19,11 @@ import { SidePanel } from '../components/layout/SidePanel'
 import { Banner } from '../components/ui/Banner'
 import { Button } from '../components/ui/Button'
 import { EmptyState } from '../components/ui/EmptyState'
+import { Icon } from '../components/ui/Icon'
+import { Popover } from '../components/ui/Popover'
+import SaveTemplateDialog from '../components/templates/SaveTemplateDialog'
+import ApplyTemplateDialog from '../components/templates/ApplyTemplateDialog'
+import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../lib/settingsTarget'
 import { Tabs, panelDomId, tabDomId } from '../components/ui/Tabs'
 import TeamAssistantTray, { type TeamAssistantMode } from '../components/team/TeamAssistantTray'
 import TeamCatalog from '../components/team/TeamCatalog'
@@ -62,6 +67,17 @@ const PANEL_TABS = [
 
 /** How long the "Role removed. Undo" row stays in the toolbar. */
 const UNDO_MS = 12_000
+
+/** Arrow keys, Home and End move between the Templates menu's items (a disabled item stays reachable to read its reason). */
+function onTemplateMenuKey(e: KeyboardEvent<HTMLDivElement>): void {
+  if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) return
+  const items = Array.from(e.currentTarget.querySelectorAll<HTMLButtonElement>('[role=menuitem]'))
+  if (items.length === 0) return
+  e.preventDefault()
+  const at = items.indexOf(document.activeElement as HTMLButtonElement)
+  const next = e.key === 'Home' ? 0 : e.key === 'End' ? items.length - 1 : e.key === 'ArrowDown' ? (at + 1) % items.length : (at - 1 + items.length) % items.length
+  items[next]?.focus()
+}
 
 export default function TeamView({ project }: { project: Project }): ReactElement {
   // Re-fit when the frame changes size (window, sidebar or side panel resize), as the live view does.
@@ -166,6 +182,22 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
   const undoImport = useAppStore((s) => s.undoImport)
   const focusWanted = useRef(false)
   const rootRef = useRef<HTMLDivElement>(null)
+  const templates = useAppStore((s) => s.templates)
+  const [templateDialog, setTemplateDialog] = useState<'save' | 'apply' | null>(null)
+  const [savedTemplate, setSavedTemplate] = useState<string | null>(null)
+  useEffect(() => {
+    void useAppStore.getState().loadTemplates()
+  }, [])
+  // The chart notice is shared: an agent import (default) or a team template, whichever is newer.
+  const templateNotice = importNotice?.source === 'template' ? importNotice : undefined
+  const importOnly = importNotice?.source === 'template' ? undefined : importNotice
+  const focusTemplatesButton = (): void => {
+    window.requestAnimationFrame(() => rootRef.current?.querySelector<HTMLElement>('[data-testid=team-templates]')?.focus())
+  }
+  const closeTemplateDialog = (): void => {
+    setTemplateDialog(null)
+    focusTemplatesButton()
+  }
 
   const root = project.roles.find((r) => r.reportsTo === null)
   const selectedRole = project.roles.find((r) => r.id === selectedRoleId)
@@ -201,7 +233,10 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
       const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
       void flowRef.current?.fitView({ padding: 0.3, maxZoom: 1, duration: reduced ? 0 : 150 })
     }, 120)
-    if (importState === 'reverted') rootRef.current?.querySelector<HTMLElement>('[data-testid=import-agents]')?.focus()
+    if (importState === 'reverted') {
+      const button = importNotice?.source === 'template' ? 'team-templates' : 'import-agents'
+      rootRef.current?.querySelector<HTMLElement>(`[data-testid=${button}]`)?.focus()
+    }
     return () => window.clearTimeout(t)
   }, [importState])
 
@@ -519,6 +554,62 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
             <Button size="sm" icon={Upload} onClick={() => void exportOrg()} testId="export-org">
               Export to repo
             </Button>
+            <Popover
+              label="Templates"
+              role="menu"
+              placement="bottom-start"
+              triggerClassName="btn sm"
+              triggerTestId="team-templates"
+              testId="team-templates-menu"
+              trigger={
+                <>
+                  <span className="team-templates-icon" aria-hidden="true">
+                    <Icon icon={LayoutTemplate} size="sm" />
+                  </span>
+                  Templates
+                  <span className="team-templates-icon" aria-hidden="true">
+                    <Icon icon={ChevronDown} size="sm" />
+                  </span>
+                </>
+              }
+            >
+              {({ close }) => (
+                <div className="team-menu" role="presentation" onKeyDown={onTemplateMenuKey}>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="team-menu-item"
+                    data-testid="team-template-save"
+                    onClick={() => {
+                      close()
+                      setTemplateDialog('save')
+                    }}
+                  >
+                    Save this team as a template...
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="team-menu-item"
+                    data-testid="team-template-apply"
+                    aria-disabled={!templates || templates.length === 0 ? 'true' : undefined}
+                    aria-describedby={!templates || templates.length === 0 ? 'team-template-apply-reason' : undefined}
+                    onClick={() => {
+                      if (!templates || templates.length === 0) return
+                      close()
+                      setTemplateDialog('apply')
+                    }}
+                  >
+                    Replace the team with a template...
+                    {(!templates || templates.length === 0) && (
+                      <span id="team-template-apply-reason" className="team-menu-reason">
+                        No templates yet
+                      </span>
+                    )}
+                  </button>
+                </div>
+              )}
+            </Popover>
             <Button size="sm" icon={LayoutGrid} onClick={autoLayout}>
               Auto-layout
             </Button>
@@ -536,30 +627,83 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
             )}
           </FrameToolbar>
         <div className="import-notices">
-          {importNotice && importNotice.state !== 'reverted' && (
+          {savedTemplate && (
             <Banner
-              tone={importNotice.state === 'error' ? 'danger' : importNotice.state === 'expired' ? 'info' : 'success'}
-              title={importNotice.summary}
-              // A labelled region would replace the alert role an error needs.
-              label={importNotice.state === 'error' ? undefined : 'Agent import'}
-              testId="import-notice"
+              tone="success"
+              title={`Saved the template ${savedTemplate}.`}
+              testId="template-saved-notice"
+              onDismiss={() => {
+                setSavedTemplate(null)
+                focusTemplatesButton()
+              }}
+              actions={
+                <Button
+                  size="sm"
+                  onClick={() => {
+                    requestAppSettingsSection(APP_SETTINGS_SECTIONS.templates)
+                    useAppStore.getState().setView('appSettings')
+                  }}
+                >
+                  Manage templates
+                </Button>
+              }
+            />
+          )}
+          {templateNotice && templateNotice.state !== 'reverted' && (
+            <Banner
+              tone={templateNotice.state === 'error' ? 'danger' : templateNotice.state === 'expired' ? 'info' : 'success'}
+              title={templateNotice.summary}
+              label={templateNotice.state === 'error' ? undefined : 'Team template'}
+              testId="template-notice"
               onDismiss={() => dismissImportNotice(project.id)}
               actions={
-                importNotice.state === 'expired' ? undefined : (
-                  <Button size="sm" loading={importNotice.state === 'busy'} onClick={() => void undoImport(project.id)} testId="import-undo">
-                    {importNotice.state === 'error' ? 'Retry undo' : 'Undo'}
+                templateNotice.state === 'expired' ? undefined : (
+                  <Button size="sm" loading={templateNotice.state === 'busy'} onClick={() => void undoImport(project.id)} testId="template-undo">
+                    {templateNotice.state === 'error' ? 'Retry undo' : 'Undo'}
                   </Button>
                 )
               }
             >
-              {importNotice.state === 'error'
-                ? importNotice.error
-                : importNotice.state === 'expired'
+              {templateNotice.state === 'error'
+                ? templateNotice.error
+                : templateNotice.state === 'expired'
                   ? 'Undo ended because you edited the chart.'
                   : 'You can undo until you edit the chart.'}
             </Banner>
           )}
-          {importNotice?.state === 'reverted' && (
+          {templateNotice?.state === 'reverted' && (
+            <Banner
+              tone="info"
+              title="Undo done. The previous team is back."
+              label="Team template"
+              testId="template-undone"
+              onDismiss={() => dismissImportNotice(project.id)}
+            />
+          )}
+          {importOnly && importOnly.state !== 'reverted' && (
+            <Banner
+              tone={importOnly.state === 'error' ? 'danger' : importOnly.state === 'expired' ? 'info' : 'success'}
+              title={importOnly.summary}
+              // A labelled region would replace the alert role an error needs.
+              label={importOnly.state === 'error' ? undefined : 'Agent import'}
+              testId="import-notice"
+              onDismiss={() => dismissImportNotice(project.id)}
+              actions={
+                importOnly.state === 'expired' ? undefined : (
+                  <Button size="sm" loading={importOnly.state === 'busy'} onClick={() => void undoImport(project.id)} testId="import-undo">
+                    {importOnly.state === 'error' ? 'Retry undo' : 'Undo'}
+                  </Button>
+                )
+              }
+            >
+              {importOnly.state === 'error'
+                ? importOnly.error
+                : importOnly.state === 'expired'
+                  ? 'Undo ended because you edited the chart.'
+                  : 'You can undo until you edit the chart.'}
+            </Banner>
+          )}
+          {importOnly?.state === 'reverted' && (
             <Banner
               tone="info"
               title="Import undone. The previous chart is back."
@@ -685,6 +829,17 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
           </div>
         </div>
       </SidePanel>
+      {templateDialog === 'save' && (
+        <SaveTemplateDialog
+          project={project}
+          onClose={closeTemplateDialog}
+          onSaved={(name) => {
+            setSavedTemplate(name)
+            closeTemplateDialog()
+          }}
+        />
+      )}
+      {templateDialog === 'apply' && <ApplyTemplateDialog project={project} onClose={closeTemplateDialog} onApplied={closeTemplateDialog} />}
       {importDialog && (
         <ImportAgentsDialog project={project} defaultMode={importDialog.fresh ? 'replace' : 'merge'} fresh={importDialog.fresh} onClose={closeImport} />
       )}

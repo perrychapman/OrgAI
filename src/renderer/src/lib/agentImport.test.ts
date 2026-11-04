@@ -44,6 +44,15 @@ describe('setup choice', () => {
     expect(effectiveSetupChoice(false, 'import', true)).toBe('architect')
     expect(effectiveSetupChoice(false, null, false)).toBe('default')
   })
+  it('adds the template choice only with templates', () => {
+    expect(effectiveSetupChoice(false, 'template', true, true)).toBe('template')
+    expect(effectiveSetupChoice(false, 'template', true, false)).toBe('architect')
+    expect(effectiveSetupChoice(true, 'template', true, true)).toBe('template')
+    expect(effectiveSetupChoice(false, 'default', true, true)).toBe('default')
+    expect(effectiveSetupChoice(false, null, true, true)).toBe('architect')
+    expect(effectiveSetupChoice(true, 'template', true, false)).toBe('import')
+    expect(setupSubmitLabel('template', false)).toBe('Create from template')
+  })
   it('labels the submit button', () => {
     expect(setupSubmitLabel('import', false)).toBe('Create project and review import')
     expect(setupSubmitLabel('architect', false)).toBe('Create and start setup')

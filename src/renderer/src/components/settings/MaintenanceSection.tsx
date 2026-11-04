@@ -1,7 +1,9 @@
 import type { ReactElement } from 'react'
 import { useCallback, useEffect, useState } from 'react'
 import type { MaintenanceResult, PendingWorktree, Project, WorktreeDiff } from '@shared/types'
-import { useAppStore } from '../../store/useAppStore'
+import { isRunLive, useAppStore } from '../../store/useAppStore'
+import { Banner } from '../ui/Banner'
+import { useForgetEngagement } from '../dashboard/useForgetEngagement'
 import DiffView from '../DiffView'
 import { RefreshCw } from 'lucide-react'
 import { Button } from '../ui/Button'
@@ -20,6 +22,8 @@ export function MaintenanceSection({ project }: { project: Project }): ReactElem
   const setView = useAppStore((s) => s.setView)
   const { confirm, dialog } = useConfirm()
   const [worktrees, setWorktrees] = useState<PendingWorktree[] | null>(null)
+  const { forget, dialog: forgetDialog } = useForgetEngagement()
+  const [forgetError, setForgetError] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [notice, setNotice] = useState<MaintenanceResult | null>(null)
   const [diffs, setDiffs] = useState<Record<string, WorktreeDiff | 'loading'>>({})
@@ -91,6 +95,28 @@ export function MaintenanceSection({ project }: { project: Project }): ReactElem
       danger: true
     })
     if (ok) await act('uninstall', () => window.orgai.maintenance.uninstallRepo(project.id))
+  }
+
+  const forgetThis = async (): Promise<void> => {
+    setBusy('forget')
+    setForgetError(null)
+    const openRuns = Object.values(useAppStore.getState().runs).filter(
+      (r) => r.summary.projectId === project.id && (isRunLive(r) || r.summary.status === 'paused')
+    ).length
+    const out = await forget(project, openRuns)
+    setBusy(null)
+    if (out.status === 'cancelled') {
+      requestAnimationFrame(() => document.querySelector<HTMLElement>('[data-testid=forget-engagement]')?.focus())
+    } else if (out.status === 'error') {
+      setForgetError(out.message)
+      requestAnimationFrame(() => document.querySelector<HTMLElement>('[data-testid=forget-engagement]')?.focus())
+    }
+    else {
+      // Done: the store already left this project for the Dashboard, where the notice shows (its Banner is the live region).
+      requestAnimationFrame(() =>
+        requestAnimationFrame(() => (document.querySelector<HTMLElement>('[data-testid=new-project]') ?? document.querySelector<HTMLElement>('[data-testid=dash-start-choice] input:checked'))?.focus())
+      )
+    }
   }
 
   return (
@@ -201,6 +227,26 @@ export function MaintenanceSection({ project }: { project: Project }): ReactElem
 
       {notice && <div className={`draft-box${notice.ok ? '' : ' is-error'}`} role={notice.ok ? 'status' : 'alert'}>{notice.message}</div>}
 
+      {engagement && (
+        <SettingsGroup title="Danger zone">
+          <div className="danger-zone">
+            <p className="danger-zone-text" data-testid="danger-zone-text">
+              Deletes everything OrgAI keeps for this engagement: the plan, context notes, saved permission rules, run history and costs, and saved service values for it. Files in the working folder and in reference folders are not touched.
+            </p>
+            {forgetError && (
+              <Banner tone="danger" title="Could not forget this engagement" testId="forget-error">
+                {forgetError}
+              </Banner>
+            )}
+            <div className="row gap-2">
+              <Button variant="danger" size="sm" disabled={busy !== null} testId="forget-engagement" onClick={() => void forgetThis()}>
+                {busy === 'forget' ? 'Forgetting…' : 'Forget this engagement…'}
+              </Button>
+            </div>
+          </div>
+        </SettingsGroup>
+      )}
+
       {!engagement && (
         <SettingsGroup title="Danger zone">
           <div className="danger-zone">
@@ -222,6 +268,7 @@ export function MaintenanceSection({ project }: { project: Project }): ReactElem
         </SettingsGroup>
       )}
       {dialog}
+      {forgetDialog}
     </SettingsSection>
   )
 }

@@ -10,9 +10,11 @@ import { CATEGORY_GROUP_THRESHOLD, CATEGORY_LABELS, categoriesPresent, gallerySe
 import type { GalleryFilter } from '../../lib/connectors'
 import { clearTeamOrigin, peekTeamOrigin, takeConnectorTarget, type TeamOrigin } from '../../lib/settingsTarget'
 import { scrollWithin } from '../../lib/scrollWithin'
+import { connectorPresetsApi, isCustomConnector, type UserConnectorDef } from '../../lib/mcpScope'
 import { useAppStore } from '../../store/useAppStore'
 import { ConnectorTile } from './ConnectorTile'
 import ConnectorDialog from './ConnectorDialog'
+import PresetForm from './PresetForm'
 import { useConnectors } from './useConnectors'
 import { useRovingFocus } from './useRovingFocus'
 
@@ -30,6 +32,8 @@ export function ConnectorGallery(): ReactElement {
   const [filter, setFilter] = useState<GalleryFilter>('all')
   const [easy, setEasy] = useState(false)
   const [openId, setOpenId] = useState<string | null>(null)
+  // "Edit preset" in a custom tile's dialog closes it and opens the form; the id of the tile it came from.
+  const [editing, setEditing] = useState<{ id: string; preset: UserConnectorDef } | null>(null)
   const sectionsRef = useRef<HTMLDivElement>(null)
   const chipsRef = useRef<HTMLDivElement>(null)
   const roving = useRovingFocus(sectionsRef, '[data-testid=connector-action]')
@@ -39,9 +43,11 @@ export function ConnectorGallery(): ReactElement {
   const open = connectors?.find((c) => c.connector.id === openId)
   const categories = useMemo(() => (connectors && connectors.length > CATEGORY_GROUP_THRESHOLD ? categoriesPresent(connectors) : []), [connectors])
   const connectedCount = connectors?.filter((c) => c.state === 'connected').length ?? 0
+  const customCount = connectors?.filter(isCustomConnector).length ?? 0
   const chips: { id: GalleryFilter; label: string; count?: number }[] = [
     { id: 'all', label: 'All', count: connectors?.length },
     ...(connectedCount > 0 ? [{ id: 'connected' as const, label: 'Connected', count: connectedCount }] : []),
+    ...(customCount > 0 ? [{ id: 'custom' as const, label: 'Yours', count: customCount }] : []),
     { id: 'easy', label: 'Easy sign-in', count: connectors?.filter((c) => matchesFilter(c, 'easy')).length },
     ...categories.map((c) => ({ id: c.category as GalleryFilter, label: CATEGORY_LABELS[c.category], count: c.count }))
   ]
@@ -246,7 +252,39 @@ export function ConnectorGallery(): ReactElement {
             )}
           </>
         )}
-        {open && <ConnectorDialog info={open} onClose={() => setOpenId(null)} />}
+        {open && (
+          <ConnectorDialog
+            info={open}
+            onClose={() => setOpenId(null)}
+            onEditPreset={
+              connectorPresetsApi()
+                ? (preset) => {
+                    setOpenId(null)
+                    setEditing({ id: preset.id, preset })
+                  }
+                : undefined
+            }
+          />
+        )}
+        {editing && (
+          <PresetForm
+            key={editing.id}
+            preset={editing.preset}
+            added={!!connectors?.find((c) => c.connector.id === editing.id)?.library}
+            takenIds={(connectors ?? []).map((c) => c.connector.id)}
+            takenNames={(connectors ?? []).filter(isCustomConnector).map((c) => c.connector.name)}
+            onClose={() => {
+              const id = editing.id
+              setEditing(null)
+              // The dialog gave up focus when it closed; put it back on the tile's button.
+              window.setTimeout(() => sectionsRef.current?.querySelector<HTMLElement>(`[data-testid=connector-tile][data-connector="${id}"] [data-testid=connector-action]`)?.focus(), 60)
+            }}
+            onSaved={(def) => {
+              setAnnounce(`Saved ${def.name}`)
+              refresh()
+            }}
+          />
+        )}
       </div>
     </SettingsSection>
   )

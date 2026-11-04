@@ -3,7 +3,9 @@ import { useEffect, useId, useMemo, useState } from 'react'
 import type { Project, RunSummary } from '@shared/types'
 import { isRunLive, useAppStore, type RunState } from '../../store/useAppStore'
 import { cleanIpcError } from '../../lib/ipcError'
-import { buildAttentionCtx, deleteProjectBody, projectAttentionOrder } from '../../lib/dashboard'
+import { projectKindOf } from '@shared/defaults'
+import { buildAttentionCtx, deleteProjectBody, projectAttentionOrder, removeConfirmLabel } from '../../lib/dashboard'
+import { useForgetEngagement } from './useForgetEngagement'
 import { decisionCount } from '../../lib/needsYou'
 import { projectStatus } from '../../lib/projectStatus'
 import { runName } from '../../lib/runLabels'
@@ -66,6 +68,7 @@ export function ProjectsGrid({ onAnnounce }: { onAnnounce: (text: string) => voi
   const setView = useAppStore((s) => s.setView)
   const removeProject = useAppStore((s) => s.removeProject)
   const { confirm, dialog } = useConfirm()
+  const { forget, dialog: forgetDialog } = useForgetEngagement()
   const [query, setQuery] = useState('')
   const [now, setNow] = useState(() => Date.now())
   const [deleteError, setDeleteError] = useState<{ id: string; text: string } | null>(null)
@@ -104,31 +107,42 @@ export function ProjectsGrid({ onAnnounce }: { onAnnounce: (text: string) => voi
       mine.map((r) => r.summary),
       [history[project.id] ?? []]
     ).length
-    const ok = await confirm({
-      title: `Delete "${project.name}"?`,
-      body: deleteProjectBody({ openRuns, historyRuns }),
-      confirmLabel: 'Delete project',
-      danger: true
-    })
-    if (!ok) {
-      focusLater(() => document.querySelector<HTMLElement>(`${tileSelector(project.id)} [data-testid=project-tile-more]`))
-      return
-    }
+    const engagement = projectKindOf(project) === 'engagement'
     const next = idAfterRemoval(
       shown.map((p) => p.id),
       project.id
     )
-    try {
-      await removeProject(project.id)
-    } catch (err) {
-      const text = cleanIpcError(err)
-      setDeleteError({ id: project.id, text })
-      onAnnounce(`Could not delete ${project.name}: ${text}`)
-      focusLater(() => document.querySelector<HTMLElement>(`${tileSelector(project.id)} [data-testid=project-tile-more]`))
-      return
+    const backToMenu = (): void => focusLater(() => document.querySelector<HTMLElement>(`${tileSelector(project.id)} [data-testid=project-tile-more]`))
+    let done: string
+    if (engagement) {
+      const out = await forget(project, openRuns)
+      if (out.status === 'cancelled') return backToMenu()
+      if (out.status === 'error') {
+        setDeleteError({ id: project.id, text: out.message })
+        onAnnounce(`Could not forget ${project.name}: ${out.message}`)
+        return backToMenu()
+      }
+      done = out.notice
+    } else {
+      const ok = await confirm({
+        title: `Delete "${project.name}"?`,
+        body: deleteProjectBody({ openRuns, historyRuns }),
+        confirmLabel: removeConfirmLabel('code'),
+        danger: true
+      })
+      if (!ok) return backToMenu()
+      try {
+        await removeProject(project.id)
+      } catch (err) {
+        const text = cleanIpcError(err)
+        setDeleteError({ id: project.id, text })
+        onAnnounce(`Could not delete ${project.name}: ${text}`)
+        return backToMenu()
+      }
+      done = `Deleted ${project.name}.`
     }
     setDeleteError(null)
-    onAnnounce(`Deleted ${project.name}.`)
+    onAnnounce(done)
     focusLater(
       () =>
         (next ? document.querySelector<HTMLElement>(`${tileSelector(next)} [data-testid=project-tile-main]`) : null) ??
@@ -150,7 +164,7 @@ export function ProjectsGrid({ onAnnounce }: { onAnnounce: (text: string) => voi
       )}
       {deleteError && (
         <p className="project-tile-error">
-          Could not delete {projects.find((p) => p.id === deleteError.id)?.name ?? 'the project'}: {deleteError.text}
+          Could not {(() => { const p = projects.find((q) => q.id === deleteError.id); return p && projectKindOf(p) === 'engagement' ? 'forget' : 'delete' })()} {projects.find((p) => p.id === deleteError.id)?.name ?? 'the project'}: {deleteError.text}
         </p>
       )}
       {models.length === 0 ? (
@@ -163,6 +177,7 @@ export function ProjectsGrid({ onAnnounce }: { onAnnounce: (text: string) => voi
         </ul>
       )}
       {dialog}
+      {forgetDialog}
     </section>
   )
 }

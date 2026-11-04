@@ -1,13 +1,18 @@
 import type { ReactElement } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Check, Copy, Ellipsis, ExternalLink, Library, Minus, Pencil, Plug, Plus, TriangleAlert, Trash2, Unlink, Upload } from 'lucide-react'
+import { Check, Copy, CopyPlus, Ellipsis, ExternalLink, Library, Minus, Pencil, Plug, Plus, TriangleAlert, Trash2, Unlink, Upload } from 'lucide-react'
 import type { McpMutationResult, McpServerInfo, McpServerSpec, McpTestResult, Project } from '@shared/types'
+import { projectKindOf } from '@shared/defaults'
 import { useAppStore } from '../../store/useAppStore'
 import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../../lib/settingsTarget'
+import { mcpProjectApi, secretScopeOf } from '../../lib/mcpScope'
+import { projectNoun } from '../../lib/projectKindCopy'
+import { cleanIpcError } from '../../lib/ipcError'
 import { Badge } from '../ui/Badge'
 import { Banner } from '../ui/Banner'
 import { Button } from '../ui/Button'
-import { ConfirmDialog } from '../ui/Dialog'
+import { Checkbox } from '../ui/Checkbox'
+import { ConfirmDialog, Dialog } from '../ui/Dialog'
 import { Icon } from '../ui/Icon'
 import { IconButton } from '../ui/IconButton'
 import { Switch } from '../ui/Switch'
@@ -18,10 +23,11 @@ import { AuthChip, AuthorizeControl, SourceBadge } from './McpAuth'
 import McpAssistDialog from './McpAssistDialog'
 import McpLinkDialog from './McpLinkDialog'
 import McpServerForm from './McpServerForm'
+import PerProjectValues from './PerProjectValues'
 import RegistryDialog from './RegistryDialog'
 import { RoleAccess } from './RoleAccess'
 import TestResultPanel from './TestResultPanel'
-import { errMessage, launchTarget, secretStatuses } from './mcpHelpers'
+import { errMessage, launchTarget, perProjectMissingLine, perProjectState, secretStatuses } from './mcpHelpers'
 import { authTarget, authWarning, emptyKind, setUpConnectors, splitConnectorServers, transportWords } from './mcpLibraryHelpers'
 import AddServiceDialog from '../connectors/AddServiceDialog'
 import ConnectedServices from '../connectors/ConnectedServices'
@@ -51,8 +57,14 @@ function focusRow(root: HTMLElement | null, match: { id?: string; name?: string 
   )
   if (!row) return false
   row.scrollIntoView({ block: 'center' })
+  // A row waiting for this project's own values: land on the first empty slot field.
+  const emptySlot = row.querySelector('[data-testid="mcp-per-project-badge"]')
+    ? [...row.querySelectorAll<HTMLInputElement>('.mcp-per-project input:not([disabled])')].find((i) => !i.value)
+    : undefined
   const control =
-    row.querySelector<HTMLElement>('[data-testid="mcp-library-authorize"], [data-testid="connector-finish-setup"]') ?? row.querySelector<HTMLElement>('button')
+    emptySlot ??
+    row.querySelector<HTMLElement>('[data-testid="mcp-library-authorize"], [data-testid="connector-finish-setup"]') ??
+    row.querySelector<HTMLElement>('button')
   control?.focus()
   if (!reducedMotion()) {
     row.classList.add('is-flash')
@@ -138,6 +150,15 @@ export default function McpSection({ project, onSelectRole }: { project: Project
     refreshLibrary()
   }, [refreshLibrary])
   const writer = useMemo(() => projectWriter(project, applyResult), [project, applyResult])
+  const [status, setStatus] = useState('')
+  // A project-only copy moves the row to another group: announce it and put focus on the new row's More actions button.
+  const copied = (info: McpServerInfo): void => {
+    setStatus(`Made a project-only copy of ${info.spec.name}.`)
+    window.setTimeout(() => {
+      const row = [...(root.current?.querySelectorAll<HTMLElement>('[data-testid="mcp-row"]') ?? [])].find((r) => r.dataset.id === info.spec.id)
+      row?.querySelector<HTMLElement>('.mcp-row-actions [aria-expanded]')?.focus()
+    }, 50)
+  }
 
   const all = servers ?? []
   const { rest } = splitConnectorServers(all, connectors)
@@ -169,7 +190,8 @@ export default function McpSection({ project, onSelectRole }: { project: Project
     },
     onEdit: () => setModal({ kind: 'form', editing: info }),
     onDuplicate: () => setModal({ kind: 'form', seed: info.spec }),
-    onSelectRole
+    onSelectRole,
+    onCopied: copied
   })
 
   return (
@@ -183,6 +205,9 @@ export default function McpSection({ project, onSelectRole }: { project: Project
       sectionRef={root}
     >
       <div className="mcp-body" data-testid="mcp-section">
+        <p className="sr-only" role="status" data-testid="mcp-section-status">
+          {status}
+        </p>
         {assistRun && (
           <Banner
             tone="neutral"
@@ -337,6 +362,79 @@ export default function McpSection({ project, onSelectRole }: { project: Project
   )
 }
 
+/** "Make a project-only copy of <name>?": this project stops following the library entry. */
+function CopyDialog({
+  info,
+  projectId,
+  noun,
+  onClose,
+  onDone
+}: {
+  info: McpServerInfo
+  projectId: string
+  noun: string
+  onClose: () => void
+  onDone: (r: McpMutationResult) => void
+}): ReactElement {
+  const [copySecrets, setCopySecrets] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const entered = perProjectState(info)
+  // The library holds no secret values when each project enters its own; the values this project entered move anyway.
+  const perProjectSecrets = secretScopeOf(info) === 'project'
+  const hasValues = entered.plain.some((p) => p.value !== '') || entered.secrets.some((s) => s.set)
+  const confirm = async (): Promise<void> => {
+    const api = mcpProjectApi()
+    if (!api) return
+    setBusy(true)
+    setError(null)
+    try {
+      const result = await api.copyFromLibrary({ projectId, serverId: info.spec.id, copySecrets: perProjectSecrets ? false : copySecrets })
+      onDone(result)
+      onClose()
+    } catch (e) {
+      setError(cleanIpcError(e))
+      setBusy(false)
+    }
+  }
+  return (
+    <Dialog
+      open
+      onClose={busy ? () => undefined : onClose}
+      title={`Make a project-only copy of ${info.spec.name}?`}
+      description={`This ${noun} stops following the library entry. Later changes to the entry in your library do not reach the copy. Roles keep their access.`}
+      size="md"
+      testId="mcp-copy-dialog"
+      footer={
+        <>
+          <Button onClick={onClose} disabled={busy}>
+            Cancel
+          </Button>
+          <Button variant="primary" testId="mcp-copy-confirm" loading={busy} onClick={() => void confirm()}>
+            Make a copy
+          </Button>
+        </>
+      }
+    >
+      {error && (
+        <Banner tone="danger" title="Could not make the copy">
+          {error}
+        </Banner>
+      )}
+      {!perProjectSecrets && (
+        <Checkbox
+          label="Copy the library's secret values too"
+          description={`Leave off to enter this ${noun}'s own values after the copy.`}
+          checked={copySecrets}
+          onChange={setCopySecrets}
+          testId="mcp-copy-secrets"
+        />
+      )}
+      {hasValues && <p className="muted">Values you entered for this {noun} stay.</p>}
+    </Dialog>
+  )
+}
+
 function McpRow({
   info,
   project,
@@ -344,7 +442,8 @@ function McpRow({
   onRefresh,
   onEdit,
   onDuplicate,
-  onSelectRole
+  onSelectRole,
+  onCopied
 }: {
   info: McpServerInfo
   project: Project
@@ -353,11 +452,17 @@ function McpRow({
   onEdit: () => void
   onDuplicate: () => void
   onSelectRole?: (roleId: string) => void
+  onCopied: (info: McpServerInfo) => void
 }): ReactElement {
   const { spec } = info
   const linked = !!spec.libraryId
+  const noun = projectNoun(projectKindOf(project))
+  const perProject = perProjectState(info)
+  const needsValues = linked && perProject.missingCount > 0 && !info.libraryMissing
+  const libraryScope = secretScopeOf(info) === 'library'
   const [menu, setMenu] = useState(false)
   const [confirm, setConfirm] = useState(false)
+  const [copyOpen, setCopyOpen] = useState(false)
   const [testing, setTesting] = useState(false)
   const [result, setResult] = useState<McpTestResult | null>(null)
   const [focusResult, setFocusResult] = useState(false)
@@ -409,7 +514,7 @@ function McpRow({
 
   return (
     <li
-      className={`mcp-row${spec.enabled ? '' : ' off'}${needsSecret || info.libraryMissing ? ' warn' : ''}`}
+      className={`mcp-row${spec.enabled ? '' : ' off'}${needsSecret || needsValues || info.libraryMissing ? ' warn' : ''}`}
       data-testid="mcp-row"
       data-server={spec.name}
       data-id={spec.id}
@@ -449,6 +554,11 @@ function McpRow({
             <SourceBadge source={spec.source} />
           )}
           {showAuth && <AuthChip auth={info.auth} />}
+          {needsValues && (
+            <Badge tone="attention" testId="mcp-per-project-badge">
+              Needs values
+            </Badge>
+          )}
         </div>
         <div className="mcp-row-roles">
           <UsedBy all={spec.roles === undefined} roles={loseRoles} onSelectRole={onSelectRole} />
@@ -491,7 +601,16 @@ function McpRow({
           <span>Its library entry was removed. Agents will not get this server. Unlink it, or add it back to the library.</span>
         </p>
       )}
-      {linked && needsSecret && !info.libraryMissing && (
+      {linked && !info.libraryMissing && perProject.declared && (
+        <PerProjectValues info={info} projectId={project.id} noun={noun} onResult={onResult} />
+      )}
+      {needsValues && (
+        <p className="mcp-row-note warn" data-testid="mcp-per-project-missing">
+          <Icon icon={TriangleAlert} size="sm" />
+          <span>{perProjectMissingLine(perProject.missingCount, noun)}</span>
+        </p>
+      )}
+      {linked && needsSecret && libraryScope && !info.libraryMissing && (
         <p className="mcp-row-note warn" role="status">
           <Icon icon={TriangleAlert} size="sm" />
           <span>
@@ -516,6 +635,19 @@ function McpRow({
               >
                 {spec.connectorId ? 'Open in Connectors' : 'Open in library'}
               </Button>
+              {mcpProjectApi() && (
+                <Button
+                  size="sm"
+                  icon={CopyPlus}
+                  testId="mcp-copy-from-library"
+                  onClick={() => {
+                    setMenu(false)
+                    setCopyOpen(true)
+                  }}
+                >
+                  Make a project-only copy...
+                </Button>
+              )}
               <Button
                 size="sm"
                 variant="danger"
@@ -599,6 +731,7 @@ function McpRow({
           }
         />
       )}
+      {copyOpen && <CopyDialog info={info} projectId={project.id} noun={noun} onClose={() => setCopyOpen(false)} onDone={(r) => { onResult(r); onCopied(info) }} />}
       <ConfirmDialog
         open={confirm}
         title={linked ? `Unlink ${spec.name}?` : `Remove ${spec.name}?`}

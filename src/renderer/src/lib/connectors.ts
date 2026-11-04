@@ -1,5 +1,7 @@
 import type { ConnectorAuth, ConnectorCategory, ConnectorDef, ConnectorEase, ConnectorInfo, ConnectorVariant, McpServerSpec, Role } from '@shared/types'
 import { connectorEase, connectorVariant, easeRank } from '@shared/connectors'
+import { USER_CONNECTOR_PRESETS_MAX, isCustomConnector, type UserConnectorAuth, type UserConnectorDef, type UserConnectorVariant } from './mcpScope'
+import { hasHidden } from './hiddenChars'
 
 /** Plain-word helpers for the Connectors gallery, connect dialog and project side. No protocol vocabulary. */
 
@@ -308,11 +310,12 @@ export function serviceCount(n: number): string {
 export const CATEGORY_GROUP_THRESHOLD = 24
 
 /** A gallery filter chip: everything, connected, the easy sign-in ones, or one category. */
-export type GalleryFilter = 'all' | 'connected' | 'easy' | ConnectorCategory
+export type GalleryFilter = 'all' | 'connected' | 'custom' | 'easy' | ConnectorCategory
 
 export function matchesFilter(info: ConnectorInfo, filter: GalleryFilter): boolean {
   if (filter === 'all') return true
   if (filter === 'connected') return info.state === 'connected'
+  if (filter === 'custom') return isCustomConnector(info)
   if (filter === 'easy') return easeGroup(infoEase(info)) === 0
   return info.connector.category === filter
 }
@@ -349,10 +352,12 @@ export function gallerySections(infos: ConnectorInfo[], opts: { query: string; f
   if (connected.length) out.push({ key: 'connected', title: 'Connected', items: connected })
   if (infos.length > CATEGORY_GROUP_THRESHOLD) {
     // Past the threshold the default view groups by effort, so the one-click services lead; categories are chips.
+    // The user's own presets that are not connected come first, as their own group.
     const groups: { key: string; title: string; test: (i: ConnectorInfo) => boolean }[] = [
-      { key: 'easy', title: 'Easy sign-in', test: (i) => easeGroup(infoEase(i)) === 0 },
-      { key: 'token', title: 'Needs a token', test: (i) => easeGroup(infoEase(i)) === 1 },
-      { key: 'ownApp', title: 'Needs your own app', test: (i) => easeGroup(infoEase(i)) === 2 }
+      { key: 'custom', title: 'Your presets', test: (i) => isCustomConnector(i) },
+      { key: 'easy', title: 'Easy sign-in', test: (i) => !isCustomConnector(i) && easeGroup(infoEase(i)) === 0 },
+      { key: 'token', title: 'Needs a token', test: (i) => !isCustomConnector(i) && easeGroup(infoEase(i)) === 1 },
+      { key: 'ownApp', title: 'Needs your own app', test: (i) => !isCustomConnector(i) && easeGroup(infoEase(i)) === 2 }
     ]
     for (const g of groups) {
       const items = rest.filter(g.test)
@@ -448,4 +453,512 @@ export function noteForUser(notes: readonly string[] | undefined, serviceName: s
     rest.push(n)
   }
   return [...caveat, ...rest]
+}
+
+// ---------- Custom presets (the user's own services) ----------
+
+export const PRESET_VARIANTS_MAX = 5
+export const PRESET_NAME_MAX = 60
+export const PRESET_DESCRIPTION_MAX = 160
+export const PRESET_ALIASES_MAX = 10
+const PRESET_ALIAS_MAX_CHARS = 40
+const PRESET_COMMAND_MAX = 500
+const PRESET_VALUE_MAX = 2000
+export const DEFAULT_TOKEN_HEADER = 'Authorization'
+
+export type PresetAuthKind = 'none' | 'token' | 'oauth'
+export type PresetTransport = 'http' | 'stdio'
+
+/** One fixed (non-secret) header or environment variable. */
+export interface PresetRowDraft {
+  rid: string
+  name: string
+  value: string
+}
+
+/** One access option as the form edits it. */
+export interface PresetVariantDraft {
+  rid: string
+  /** Kept from the saved preset so an edit never renames an option; empty for a new one (made from its label on save). */
+  id: string
+  label: string
+  readOnly: boolean
+  /** Remote: an address for this option (empty = the base address). Program: extra arguments, one per line. */
+  extra: string
+}
+
+/** The preset form's state. Text fields stay strings until `draftToDef`. */
+export interface PresetDraft {
+  name: string
+  description: string
+  category: ConnectorCategory
+  /** Comma separated. */
+  aliases: string
+  transport: PresetTransport
+  url: string
+  command: string
+  /** One argument per line. */
+  args: string
+  auth: PresetAuthKind
+  /** Header name (remote) or environment variable (program) that carries the token. */
+  tokenName: string
+  tokenPrefix: string
+  /** Optional https address where the person gets a token. */
+  tokenHelp: string
+  rows: PresetRowDraft[]
+  variants: PresetVariantDraft[]
+  /** The rid of the default option. */
+  defaultRid: string
+}
+
+let ridCounter = 0
+/** A fresh row key for the form's lists. */
+export function newRid(prefix = 'r'): string {
+  ridCounter += 1
+  return `${prefix}${ridCounter}`
+}
+
+export function newVariantDraft(label = '', readOnly = false): PresetVariantDraft {
+  return { rid: newRid('v'), id: '', label, readOnly, extra: '' }
+}
+
+/** A blank form: one remote service with no sign-in and one access option. */
+export function newPresetDraft(): PresetDraft {
+  const v = newVariantDraft('Standard', false)
+  return {
+    name: '',
+    description: '',
+    category: 'data',
+    aliases: '',
+    transport: 'http',
+    url: '',
+    command: '',
+    args: '',
+    auth: 'none',
+    tokenName: DEFAULT_TOKEN_HEADER,
+    tokenPrefix: '',
+    tokenHelp: '',
+    rows: [],
+    variants: [v],
+    defaultRid: v.rid
+  }
+}
+
+function recordToRows(rec: Record<string, string> | undefined): PresetRowDraft[] {
+  return Object.entries(rec ?? {}).map(([name, value]) => ({ rid: newRid(), name, value }))
+}
+
+/** The preset as the form edits it. The default option supplies the shared address, command and fixed values. */
+export function defToDraft(def: UserConnectorDef): PresetDraft {
+  const base = def.variants.find((v) => v.id === def.defaultVariant) ?? def.variants[0]
+  const stdio = base.transport === 'stdio'
+  const auth = base.auth
+  const baseArgs = base.args ?? []
+  const variants: PresetVariantDraft[] = def.variants.map((v) => {
+    let extra = ''
+    if (v.id !== base.id) {
+      if (stdio) {
+        const a = v.args ?? []
+        const prefixed = baseArgs.every((x, i) => a[i] === x)
+        extra = (prefixed ? a.slice(baseArgs.length) : a).join('\n')
+      } else if ((v.url ?? '') !== (base.url ?? '')) extra = v.url ?? ''
+    }
+    return { rid: newRid('v'), id: v.id, label: v.label, readOnly: v.readOnly, extra }
+  })
+  const defaultRid = variants[Math.max(0, def.variants.findIndex((v) => v.id === base.id))].rid
+  return {
+    name: def.name,
+    description: def.description,
+    category: def.category,
+    aliases: (def.aliases ?? []).join(', '),
+    transport: stdio ? 'stdio' : 'http',
+    url: stdio ? '' : (base.url ?? ''),
+    command: base.command ?? '',
+    args: baseArgs.join('\n'),
+    auth: auth.kind === 'token' ? 'token' : auth.kind === 'oauth' ? 'oauth' : 'none',
+    tokenName: auth.kind === 'token' ? auth.header : stdio ? '' : DEFAULT_TOKEN_HEADER,
+    tokenPrefix: auth.kind === 'token' ? (auth.prefix ?? '').trimEnd() : '',
+    tokenHelp: auth.kind === 'token' ? (auth.link ?? '') : '',
+    rows: recordToRows(stdio ? base.env : base.headers),
+    variants,
+    defaultRid
+  }
+}
+
+/** A copy for "Duplicate": same fields, a fresh name, no saved option ids. */
+export function duplicateDraft(def: UserConnectorDef, takenNames: readonly string[]): PresetDraft {
+  const d = defToDraft(def)
+  const lower = new Set(takenNames.map((n) => n.toLowerCase()))
+  const stem = clampText(def.name, PRESET_NAME_MAX - 9)
+  let name = `${stem} copy`
+  for (let n = 2; lower.has(name.toLowerCase()); n += 1) name = `${stem} copy ${n}`
+  return { ...d, name, variants: d.variants.map((v) => ({ ...v, id: '' })) }
+}
+
+/** Search words typed as "a, b" -> lowercase, trimmed, unique. */
+export function parseAliases(text: string): string[] {
+  const out: string[] = []
+  for (const raw of text.split(/[,\n]/)) {
+    const w = raw.trim().toLowerCase()
+    if (w && !out.includes(w)) out.push(w)
+  }
+  return out
+}
+
+/** Non-empty lines, as typed (an argument keeps its inner spaces). */
+export function argLines(text: string): string[] {
+  return text
+    .split(/\r?\n/)
+    .map((l) => l.replace(/\s+$/, ''))
+    .filter((l) => l.trim() !== '')
+}
+
+/** A kebab-case id from words ("Acme CRM" -> "acme-crm"), unique among `taken`. */
+export function kebabId(text: string, taken: ReadonlySet<string>, fallback = 'service'): string {
+  const stem =
+    text
+      .toLowerCase()
+      .normalize('NFKD')
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 40)
+      .replace(/-+$/g, '') || fallback
+  if (!taken.has(stem)) return stem
+  for (let n = 2; ; n += 1) {
+    const next = `${stem}-${n}`
+    if (!taken.has(next)) return next
+  }
+}
+
+const HEADER_NAME = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/
+
+function nameProblem(name: string, stdio: boolean): string | undefined {
+  if (hasHidden(name)) return 'Remove the hidden characters.'
+  if (stdio) return ENV_NAME.test(name) ? undefined : 'Use letters, numbers and underscores, not starting with a number.'
+  return HEADER_NAME.test(name) ? undefined : 'Use letters, numbers and dashes only.'
+}
+
+function httpsProblem(text: string): string | undefined {
+  if (hasHidden(text)) return 'Remove the hidden characters.'
+  let u: URL
+  try {
+    u = new URL(text)
+  } catch {
+    return 'Use an address that starts with https://'
+  }
+  if (u.protocol !== 'https:') return 'Use an address that starts with https://'
+  if (u.username || u.password) return 'Leave the user name and password out of the address.'
+  return undefined
+}
+
+export type PresetErrors = Record<string, string>
+
+/**
+ * What stops a draft from saving, keyed by field: name, description, aliases, url, command, auth, tokenName, tokenHelp,
+ * `row:<rid>`, `variants` and `variant:<rid>`. Empty = fine. Main checks again and may refuse more.
+ */
+export function validatePreset(d: PresetDraft): PresetErrors {
+  const e: PresetErrors = {}
+  const stdio = d.transport === 'stdio'
+  const name = d.name.trim()
+  if (!name) e.name = 'Give it a name.'
+  else if (Array.from(name).length > PRESET_NAME_MAX) e.name = `Use ${PRESET_NAME_MAX} characters or fewer.`
+  else if (hasHidden(name)) e.name = 'Remove the hidden characters.'
+  const desc = d.description.trim()
+  if (Array.from(desc).length > PRESET_DESCRIPTION_MAX) e.description = `Use ${PRESET_DESCRIPTION_MAX} characters or fewer.`
+  else if (hasHidden(desc) || /[\r\n]/.test(desc)) e.description = 'Keep it to one line without hidden characters.'
+  const aliases = parseAliases(d.aliases)
+  if (aliases.length > PRESET_ALIASES_MAX) e.aliases = `Use ${PRESET_ALIASES_MAX} search words or fewer.`
+  else if (aliases.some((a) => Array.from(a).length > PRESET_ALIAS_MAX_CHARS || hasHidden(a))) e.aliases = `Keep each word under ${PRESET_ALIAS_MAX_CHARS} characters, without hidden characters.`
+
+  if (stdio) {
+    const cmd = d.command.trim()
+    if (!cmd) e.command = 'Enter the program to run.'
+    else if (cmd.length > PRESET_COMMAND_MAX) e.command = `Use ${PRESET_COMMAND_MAX} characters or fewer.`
+    else if (/[\r\n]/.test(cmd)) e.command = 'Enter the program on one line.'
+    else if (hasHidden(cmd)) e.command = 'Remove the hidden characters.'
+    if (hasHidden(d.args)) e.args = 'Remove the hidden characters.'
+  } else {
+    const url = d.url.trim()
+    if (!url) e.url = 'Enter the address.'
+    else {
+      const p = httpsProblem(url)
+      if (p) e.url = p
+    }
+  }
+  if (d.auth === 'oauth' && stdio) e.auth = 'Browser sign-in works only with a remote address.'
+  if (d.auth === 'token') {
+    const tn = d.tokenName.trim()
+    if (!tn) e.tokenName = stdio ? 'Enter the variable name.' : 'Enter the header name.'
+    else {
+      const p = nameProblem(tn, stdio)
+      if (p) e.tokenName = p
+    }
+    const help = d.tokenHelp.trim()
+    if (help) {
+      const p = httpsProblem(help)
+      if (p) e.tokenHelp = p
+    }
+    if (!e.tokenName && hasHidden(d.tokenPrefix)) e.tokenName = 'Remove the hidden characters from the prefix.'
+  }
+  const seen = new Set<string>()
+  if (d.auth === 'token' && d.tokenName.trim()) seen.add(d.tokenName.trim().toLowerCase())
+  for (const r of d.rows) {
+    const n = r.name.trim()
+    if (!n && !r.value) continue
+    const key = `row:${r.rid}`
+    if (!n) e[key] = 'Enter a name.'
+    else {
+      const p = nameProblem(n, stdio)
+      if (p) e[key] = p
+      else if (seen.has(n.toLowerCase())) e[key] = d.auth === 'token' && n.toLowerCase() === d.tokenName.trim().toLowerCase() ? 'The token already uses this name.' : 'Already listed.'
+      else if (r.value.length > PRESET_VALUE_MAX) e[key] = `Use ${PRESET_VALUE_MAX} characters or fewer.`
+      else if (hasHidden(r.value)) e[key] = 'Remove the hidden characters from the value.'
+      seen.add(n.toLowerCase())
+    }
+  }
+  if (d.variants.length < 1) e.variants = 'Add at least one access option.'
+  else if (d.variants.length > PRESET_VARIANTS_MAX) e.variants = `${PRESET_VARIANTS_MAX} is the most.`
+  const labels = new Set<string>()
+  for (const v of d.variants) {
+    const key = `variant:${v.rid}`
+    const label = v.label.trim()
+    if (!label) e[key] = 'Name this option.'
+    else if (Array.from(label).length > PRESET_NAME_MAX) e[key] = `Use ${PRESET_NAME_MAX} characters or fewer.`
+    else if (hasHidden(label)) e[key] = 'Remove the hidden characters.'
+    else if (labels.has(label.toLowerCase())) e[key] = 'Another option has this name.'
+    else if (v.extra.trim()) {
+      const p = stdio ? (hasHidden(v.extra) ? 'Remove the hidden characters.' : undefined) : httpsProblem(v.extra.trim())
+      if (p) e[key] = p
+    }
+    labels.add(label.toLowerCase())
+  }
+  return e
+}
+
+/** Field keys in the order the form shows them, for "focus the first problem". */
+export function presetErrorOrder(d: PresetDraft): string[] {
+  return ['name', 'description', 'aliases', 'url', 'command', 'args', 'auth', 'tokenName', 'tokenHelp', ...d.rows.map((r) => `row:${r.rid}`), 'variants', ...d.variants.map((v) => `variant:${v.rid}`)]
+}
+
+function authOf(d: PresetDraft): UserConnectorAuth {
+  if (d.auth === 'oauth' && d.transport !== 'stdio') return { kind: 'oauth' }
+  if (d.auth === 'token') {
+    const prefix = d.tokenPrefix.trim()
+    const link = d.tokenHelp.trim()
+    return {
+      kind: 'token',
+      header: d.tokenName.trim(),
+      ...(prefix ? { prefix: `${prefix} ` } : {}),
+      label: `${d.name.trim()} token`,
+      help: `Paste the token for ${d.name.trim()}.`,
+      ...(link ? { link } : {})
+    }
+  }
+  return { kind: 'none' }
+}
+
+function rowsToRecord(rows: PresetRowDraft[]): Record<string, string> | undefined {
+  const out: Record<string, string> = {}
+  for (const r of rows) {
+    const n = r.name.trim()
+    if (n) out[n] = r.value
+  }
+  return Object.keys(out).length ? out : undefined
+}
+
+/**
+ * The preset to send to main. `id` is the preset's id (kept on edit, from `kebabId` on add); saved option ids are kept and
+ * new options get one from their label. Assumes `validatePreset` passed. A kit preset keeps its origin.
+ */
+export function draftToDef(d: PresetDraft, id: string, origin?: 'kit', base?: UserConnectorDef): UserConnectorDef {
+  if (base) return mergeDraftOnto(d, id, origin, base)
+  const stdio = d.transport === 'stdio'
+  const auth = authOf(d)
+  const taken = new Set<string>(d.variants.map((v) => v.id).filter(Boolean))
+  const fixed = rowsToRecord(d.rows)
+  const baseArgs = argLines(d.args)
+  const variants: UserConnectorVariant[] = d.variants.map((v) => {
+    const vid = v.id || kebabId(v.label, taken, 'option')
+    taken.add(vid)
+    const extra = v.extra.trim()
+    const common = { id: vid, label: v.label.trim(), readOnly: v.readOnly, auth }
+    if (stdio) {
+      const args = [...baseArgs, ...argLines(v.extra)]
+      return { ...common, transport: 'stdio' as const, command: d.command.trim(), ...(args.length ? { args } : {}), ...(fixed ? { env: fixed } : {}) }
+    }
+    return { ...common, transport: 'http' as const, url: extra || d.url.trim(), ...(fixed ? { headers: fixed } : {}) }
+  })
+  const chosen = d.variants.findIndex((v) => v.rid === d.defaultRid)
+  const aliases = parseAliases(d.aliases)
+  return {
+    id,
+    name: d.name.trim(),
+    vendor: 'You',
+    publisher: 'user',
+    category: d.category,
+    description: d.description.trim() || 'A service you added yourself.',
+    ...(aliases.length ? { aliases } : {}),
+    variants,
+    defaultVariant: variants[Math.max(0, chosen)].id,
+    verified: false,
+    ...(origin ? { origin } : {})
+  }
+}
+
+function canon(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(canon).join(',')}]`
+  if (v && typeof v === 'object') {
+    const o = v as Record<string, unknown>
+    return `{${Object.keys(o).sort().map((k) => `${JSON.stringify(k)}:${canon(o[k])}`).join(',')}}`
+  }
+  return JSON.stringify(v) ?? 'null'
+}
+
+const argExact = (a: string): boolean => a.trim() !== '' && !/[\r\n]/.test(a) && a === a.replace(/\s+$/, '')
+
+/**
+ * True when the form cannot show this preset as one shared address / command / sign-in / fixed values plus per-option
+ * extras (options that differ in transport, sign-in, command or fixed values, arguments that do not start with the default
+ * option's, or arguments the one-per-line box cannot hold). Such a preset opens with those parts read-only and keeps them.
+ */
+export function presetLocked(def: UserConnectorDef): boolean {
+  const base = def.variants.find((v) => v.id === def.defaultVariant) ?? def.variants[0]
+  if (!base) return false
+  const stdio = base.transport === 'stdio'
+  const baseArgs = base.args ?? []
+  for (const v of def.variants) {
+    if ((v.transport === 'stdio') !== stdio) return true
+    if (canon(v.auth) !== canon(base.auth)) return true
+    if (stdio) {
+      if ((v.command ?? '') !== (base.command ?? '')) return true
+      if (canon(v.env ?? {}) !== canon(base.env ?? {})) return true
+      const a = v.args ?? []
+      if (!a.every(argExact)) return true
+      if (v.id !== base.id && !baseArgs.every((x, i) => a[i] === x)) return true
+    } else {
+      if (canon(v.headers ?? {}) !== canon(base.headers ?? {})) return true
+      if (!(v.url ?? '').trim()) return true
+    }
+  }
+  return false
+}
+
+function mergeAuth(d: PresetDraft, prev: UserConnectorAuth | undefined): UserConnectorAuth {
+  if (d.auth === 'oauth' && d.transport !== 'stdio') return prev?.kind === 'oauth' ? prev : { kind: 'oauth' }
+  if (d.auth === 'token') {
+    const fresh = authOf(d) as Extract<UserConnectorAuth, { kind: 'token' }>
+    if (prev?.kind !== 'token') return fresh
+    const typed = d.tokenPrefix.trim()
+    const prefix = (prev.prefix ?? '').trimEnd() === typed ? prev.prefix : fresh.prefix
+    const { prefix: _p, link: _l, ...rest } = prev
+    void _p
+    void _l
+    return { ...rest, header: fresh.header, ...(prefix ? { prefix } : {}), ...(fresh.link ? { link: fresh.link } : {}) }
+  }
+  return { kind: 'none' }
+}
+
+/** Edit `base` with what the form shows; every field the form does not hold stays as it was (per option by id). */
+function mergeDraftOnto(d: PresetDraft, id: string, origin: 'kit' | undefined, base: UserConnectorDef): UserConnectorDef {
+  const locked = presetLocked(base)
+  const stdio = d.transport === 'stdio'
+  const baseVariant = base.variants.find((v) => v.id === base.defaultVariant) ?? base.variants[0]
+  const byId = new Map(base.variants.map((v) => [v.id, v]))
+  const taken = new Set<string>(d.variants.map((v) => v.id).filter(Boolean))
+  const fixed = rowsToRecord(d.rows)
+  const baseArgs = argLines(d.args)
+  const auth = mergeAuth(d, baseVariant?.auth)
+  const variants: UserConnectorVariant[] = d.variants.map((v) => {
+    const vid = v.id || kebabId(v.label, taken, 'option')
+    taken.add(vid)
+    const prev = byId.get(vid)
+    const label = v.label.trim()
+    if (locked) {
+      const { description: _d, ...fromDefault } = baseVariant
+      void _d
+      return { ...(prev ?? fromDefault), id: vid, label, readOnly: v.readOnly }
+    }
+    const { url: _u, headers: _h, command: _c, args: _a, env: _e, ...kept } = prev ?? (({ description: _d, ...r }) => r)(baseVariant)
+    void _u
+    void _h
+    void _c
+    void _a
+    void _e
+    const common = { ...kept, id: vid, label, readOnly: v.readOnly, auth }
+    if (stdio) {
+      const args = [...baseArgs, ...argLines(v.extra)]
+      return { ...common, transport: 'stdio' as const, command: d.command.trim(), ...(args.length ? { args } : {}), ...(fixed ? { env: fixed } : {}) }
+    }
+    const extra = v.extra.trim()
+    const transport = kept.transport === 'sse' ? ('sse' as const) : ('http' as const)
+    return { ...common, transport, url: extra || d.url.trim(), ...(fixed ? { headers: fixed } : {}) }
+  })
+  const chosen = d.variants.findIndex((v) => v.rid === d.defaultRid)
+  const aliases = parseAliases(d.aliases)
+  const { aliases: _al, origin: _o, ...rest } = base
+  void _al
+  void _o
+  const keptOrigin = origin ?? base.origin
+  return {
+    ...rest,
+    id,
+    name: d.name.trim(),
+    category: d.category,
+    description: d.description.trim() || 'A service you added yourself.',
+    ...(aliases.length ? { aliases } : {}),
+    variants,
+    defaultVariant: variants[Math.max(0, chosen)].id,
+    ...(keptOrigin ? { origin: keptOrigin } : {})
+  }
+}
+
+/** True when two drafts would save the same preset (rids and a blank row do not count). */
+export function sameDraft(a: PresetDraft, b: PresetDraft): boolean {
+  const norm = (d: PresetDraft): string =>
+    JSON.stringify({
+      ...d,
+      rows: d.rows.filter((r) => r.name.trim() || r.value).map((r) => [r.name, r.value]),
+      variants: d.variants.map((v) => [v.id, v.label, v.readOnly, v.extra, v.rid === d.defaultRid])
+    })
+  return norm(a) === norm(b)
+}
+
+/** "Remote" or "Program": how a preset connects (its default option decides). */
+export function presetKindWord(def: Pick<UserConnectorDef, 'variants' | 'defaultVariant'>): 'Remote' | 'Program' {
+  const v = def.variants.find((x) => x.id === def.defaultVariant) ?? def.variants[0]
+  return v?.transport === 'stdio' ? 'Program' : 'Remote'
+}
+
+/** "1 access option" / "2 access options". */
+export function accessOptionCount(n: number): string {
+  return n === 1 ? '1 access option' : `${n} access options`
+}
+
+/** Quote a command part when it has spaces or quotes, so the shown line reads as one command. */
+function shellPart(s: string): string {
+  return /[\s"'\\]/.test(s) || s === '' ? JSON.stringify(s) : s
+}
+
+/** The whole command an option runs, in one line: preset values first (`NAME=value`), then the program and arguments. Never cut. */
+export function variantCommandLine(v: Pick<UserConnectorVariant, 'command' | 'args' | 'env'>): string {
+  const env = Object.entries(v.env ?? {}).map(([k, val]) => `${k}=${shellPart(val)}`)
+  return [...env, shellPart(v.command ?? ''), ...(v.args ?? []).map(shellPart)].join(' ')
+}
+
+/** The dialog's note about where a preset came from. */
+export function customNote(origin: 'kit' | undefined): string {
+  return origin === 'kit'
+    ? 'This service came from an imported kit. Check where it connects before you add it.'
+    : 'You described this service yourself. OrgAI has not checked it.'
+}
+
+/** The line on the preset form when the service is already added. */
+export const PRESET_ADDED_NOTE =
+  'Changes apply the next time it is added. The added service keeps its current settings until you remove and add it again.'
+
+/** Whether another preset still fits. */
+export function canAddPreset(count: number): boolean {
+  return count < USER_CONNECTOR_PRESETS_MAX
 }

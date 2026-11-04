@@ -54,6 +54,11 @@ export function projectKindCopy(kind: ProjectKind): ProjectKindCopy {
   return kind === 'engagement' ? ENGAGEMENT : CODE
 }
 
+/** The word for the project in user-facing copy: "engagement" for an engagement, "project" for a code project. */
+export function projectNoun(kind: ProjectKind): 'engagement' | 'project' {
+  return kind === 'engagement' ? 'engagement' : 'project'
+}
+
 /** The "give the lead a task" line of an engagement's new-run page; null for code (the page keeps its own words). */
 export function newRunLead(kind: ProjectKind, rootName: string): string | null {
   if (kind !== 'engagement') return null

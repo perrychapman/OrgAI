@@ -343,7 +343,7 @@ export async function deleteProject(page, name) {
     if (!(await tile.count())) break
     await tile.locator('[data-testid=project-tile-more]').click()
     await page.locator('[data-testid=project-tile-delete]').click()
-    await page.getByRole('button', { name: 'Delete project', exact: true }).click()
+    await page.getByRole('button', { name: /^(Delete project|Forget engagement)$/ }).click()
     await sleep(700)
   }
   return tiles().count()

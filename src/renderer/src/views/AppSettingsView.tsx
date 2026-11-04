@@ -30,8 +30,11 @@ import { scrollWithin } from '../lib/scrollWithin'
 import ConnectionsPanel from '../components/connections/ConnectionsPanel'
 import { ModelPricesSection } from '../components/settings/ModelPricesSection'
 import { ConnectorGallery } from '../components/connectors/ConnectorGallery'
+import PresetsSection from '../components/connectors/PresetsSection'
 import McpLibrarySection from '../components/mcp/McpLibrarySection'
 import SkillLibrarySection from '../components/skills/SkillLibrarySection'
+import TemplatesSection from '../components/templates/TemplatesSection'
+import KitSection from '../components/kit/KitSection'
 import { CanvasSection } from '../components/settings/CanvasSection'
 import { focusCheckedPreset } from '../components/canvas/CanvasPresetGroup'
 
@@ -63,6 +66,7 @@ const PANES: SettingsNavItem[] = [
   { id: APP_SETTINGS_PANES.connections, label: 'Connections' },
   { id: APP_SETTINGS_PANES.mcpLibrary, label: 'Connectors' },
   { id: APP_SETTINGS_PANES.skillLibrary, label: 'Skill library' },
+  { id: APP_SETTINGS_PANES.kit, label: 'Templates and kit' },
   { id: APP_SETTINGS_PANES.about, label: 'About' }
 ]
 
@@ -524,10 +528,13 @@ export default function AppSettingsView(): ReactElement {
         {pane === 'mcp-library' && (
           <>
             <ConnectorGallery />
+            <PresetsSection />
             <McpLibrarySection />
           </>
         )}
         {pane === 'skill-library' && <SkillLibrarySection />}
+        {pane === 'kit' && <TemplatesSection />}
+        {pane === 'kit' && <KitSection />}
         {pane === 'about' && appInfo && (
           <SettingsSection id={APP_SETTINGS_SECTIONS.about} title="About" testId="about-block">
             <SettingsCard>
