@@ -141,18 +141,21 @@ export default function Sidebar({
   const [collapsed, setCollapsedRuns] = useState<Record<string, boolean>>({})
   const [collapsedClients, setCollapsedClients] = useState<Set<string>>(() => readCollapsedClients())
   // The selected project's row must stay reachable: opening it (or a project added to a collapsed client) expands its group.
+  // Keyed on the selection and its group only, so a later save of any project never re-opens a group the user collapsed.
+  const holderKey = useMemo(
+    () => (selectedId ? groupByClient(projects).groups.find((g) => g.items.some((p) => p.id === selectedId))?.key : undefined),
+    [selectedId, projects]
+  )
   useEffect(() => {
-    if (!selectedId) return
-    const holder = groupByClient(projects).groups.find((g) => g.items.some((p) => p.id === selectedId))
-    if (!holder) return
+    if (holderKey === undefined) return
     setCollapsedClients((prev) => {
-      if (!prev.has(holder.key)) return prev
+      if (!prev.has(holderKey)) return prev
       const next = new Set(prev)
-      next.delete(holder.key)
+      next.delete(holderKey)
       writeCollapsedClients(next)
       return next
     })
-  }, [selectedId, projects])
+  }, [selectedId, holderKey])
 
   const allRuns = useMemo(() => Object.values(runs), [runs])
   const items = waiting.flatMap((r) => waitingItems(r))
