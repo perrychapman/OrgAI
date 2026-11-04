@@ -16,6 +16,8 @@ export const APP_SETTINGS_SECTIONS = {
   assistantModels: 'appsettings-section-assistant-models',
   /** Connections > Advanced > Costs. */
   costs: 'appsettings-section-costs',
+  /** Templates and kit > Team templates. */
+  templates: 'appsettings-section-templates',
   about: 'appsettings-section-about'
 } as const
 
@@ -37,6 +39,8 @@ export const APP_SETTINGS_PANES = {
   connections: 'connections',
   mcpLibrary: 'mcp-library',
   skillLibrary: 'skill-library',
+  /** Templates and kit (engagement-2 spec section 8; the kit part comes later). */
+  kit: 'kit',
   about: 'about'
 } as const
 export type AppSettingsPane = (typeof APP_SETTINGS_PANES)[keyof typeof APP_SETTINGS_PANES]
@@ -71,7 +75,11 @@ export const PROJECT_SETTINGS_SECTIONS = {
   /** General > Connection (not a deep-link target of PermissionCard; listed for e2e and the pane map). */
   connection: 'settings-section-connection',
   /** Permissions > Advanced > Runs > the Team assistant select (Team tab "Team assistant settings"; the select takes focus). */
-  teamAssistant: 'settings-section-team-assistant'
+  teamAssistant: 'settings-section-team-assistant',
+  /** General > Engagement plan (engagements only). */
+  engagementPlan: 'settings-section-engagement-plan',
+  /** General > Context notes (engagements only). */
+  contextNotes: 'settings-section-context-notes'
 } as const
 export type ProjectSettingsSection = (typeof PROJECT_SETTINGS_SECTIONS)[keyof typeof PROJECT_SETTINGS_SECTIONS]
 
@@ -80,7 +88,9 @@ const PROJECT_SECTION_PANE: Record<ProjectSettingsSection, ProjectSettingsPane> 
   [PROJECT_SETTINGS_SECTIONS.allowedFolders]: 'permissions',
   [PROJECT_SETTINGS_SECTIONS.rules]: 'permissions',
   [PROJECT_SETTINGS_SECTIONS.connection]: 'general',
-  [PROJECT_SETTINGS_SECTIONS.teamAssistant]: 'permissions'
+  [PROJECT_SETTINGS_SECTIONS.teamAssistant]: 'permissions',
+  [PROJECT_SETTINGS_SECTIONS.engagementPlan]: 'general',
+  [PROJECT_SETTINGS_SECTIONS.contextNotes]: 'general'
 }
 
 /** Project targets inside a pane's Advanced disclosure (SettingsAdvanced pane key); deep links open it before landing. */
@@ -136,6 +146,7 @@ const APP_SECTION_PANE: Record<string, AppSettingsPane> = {
   [APP_SETTINGS_SECTIONS.assistantModels]: 'general',
   [APP_SETTINGS_SECTIONS.mcpLibrary]: 'mcp-library',
   [APP_SETTINGS_SECTIONS.skillLibrary]: 'skill-library',
+  [APP_SETTINGS_SECTIONS.templates]: 'kit',
   [APP_SETTINGS_SECTIONS.about]: 'about'
 }
 

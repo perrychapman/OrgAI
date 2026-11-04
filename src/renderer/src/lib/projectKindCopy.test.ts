@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { newRunLead, projectKindCopy } from './projectKindCopy'
+import { newRunLead, projectKindCopy, projectNoun } from './projectKindCopy'
 
 describe('projectKindCopy', () => {
   it('keeps the code words', () => {
@@ -17,5 +17,9 @@ describe('projectKindCopy', () => {
   it('leads the engagement new-run page only', () => {
     expect(newRunLead('code', 'Lead')).toBeNull()
     expect(newRunLead('engagement', 'Lead')).toMatch(/^Give Lead a task\./)
+  })
+  it('names the project per kind', () => {
+    expect(projectNoun('engagement')).toBe('engagement')
+    expect(projectNoun('code')).toBe('project')
   })
 })

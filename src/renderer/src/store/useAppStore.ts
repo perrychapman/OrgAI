@@ -55,11 +55,14 @@ import type {
 import { HARNESS_PROJECT_ID, QUICK_PROJECT_ID, SKILLS_PROJECT_ID, VIRTUAL_PROJECT_IDS, isVirtualProjectId, parseRunWindowHash } from '@shared/types'
 import { projectKindOf } from '@shared/defaults'
 import type { ProjectKind, QuickRunInput, QuickRunPromoteResult, SkillAssistInput, VirtualProjectId } from '@shared/types'
+import type { OrgTemplateInfo, OrgTemplateSaveInput, ProjectRemoveResult, RunTeam } from '@shared/types'
 import { displayProject, type RunLayout } from '../lib/assistants'
 
 /** Project tabs: run (Live), history, team (Team; was 'org', see lib/teamView normalizeView), settings. projects and appSettings are app-level. */
 /** The Banner after an agent import: what came in, and what Undo restores. */
 export interface ImportNotice {
+  /** What replaced the chart: an agent import (default) or a team template (templates:apply). One notice per project. */
+  source?: 'import' | 'template'
   count: number
   summary: string
   previousRoles: Role[]
@@ -316,14 +319,44 @@ interface AppState {
   selectRole(id: string | null): void
   selectAgent(id: string | null): void
   createProject(
-    input: { name: string; path: string; brief: string; setupKind?: SetupKind; kind?: ProjectKind; mock?: boolean; client?: string; referenceDirectories?: string[] },
+    input: {
+      name: string
+      path: string
+      brief: string
+      setupKind?: SetupKind
+      kind?: ProjectKind
+      mock?: boolean
+      client?: string
+      referenceDirectories?: string[]
+      /** Start from a saved team template (ProjectCreateInput.templateId). */
+      templateId?: string
+    },
     opts?: { onExtrasError?: (err: unknown) => void }
   ): Promise<Project>
   updateProject(project: Project): void
   updateRoles(projectId: string, mutate: (roles: Role[]) => Role[]): void
-  removeProject(id: string): Promise<void>
+  /** projects:remove; resolves to main's counts of what was deleted. */
+  removeProject(id: string): Promise<ProjectRemoveResult>
+  /** The Dashboard notice after "Forget this engagement" (name and main's counts); null when none. */
+  forgetNotice: { name: string; result: ProjectRemoveResult } | null
+  setForgetNotice(notice: { name: string; result: ProjectRemoveResult } | null): void
 
-  startRun(prompt: string, opts?: { scaffold?: boolean; images?: ImageAttachment[] }): Promise<void>
+  /** Saved team templates (templates:list); null until loaded. */
+  templates: OrgTemplateInfo[] | null
+  templatesError: string | null
+  loadTemplates(): Promise<void>
+  /** templates:saveFromProject; refreshes the list. Rejects with main's refusal. */
+  saveTemplate(input: OrgTemplateSaveInput): Promise<OrgTemplateInfo>
+  /** templates:remove; replaces the list with the remaining ones. */
+  removeTemplate(templateId: string): Promise<void>
+  /**
+   * templates:apply (mode 'replace'): replaces the store's project and records the project's chart notice with
+   * source 'template' (Undo restores previousRoles through undoImport). Rejects with main's refusal.
+   */
+  applyTemplate(projectId: string, template: Pick<OrgTemplateInfo, 'id' | 'name'>): Promise<void>
+
+  /** `team: 'single'` starts an Ask run (one assistant, conversation layout). */
+  startRun(prompt: string, opts?: { scaffold?: boolean; images?: ImageAttachment[]; team?: RunTeam }): Promise<void>
   /** Start an Architect session for the selected project. */
   startSetup(instruction?: string): Promise<void>
   /** Start the MCP assistant run (kind 'mcp-assist') for the selected project and show it. */
@@ -1220,8 +1253,50 @@ export const useAppStore = create<AppState>((set, get) => ({
     get().updateProject({ ...project, roles: mutate(project.roles) })
   },
 
+  forgetNotice: null,
+
+  setForgetNotice(notice) {
+    set({ forgetNotice: notice })
+  },
+
+  templates: null,
+  templatesError: null,
+
+  async loadTemplates() {
+    try {
+      const templates = await window.orgai.templates.list()
+      set({ templates, templatesError: null })
+    } catch (e) {
+      set({ templatesError: cleanIpcError(e) })
+    }
+  },
+
+  async saveTemplate(input) {
+    const saved = await window.orgai.templates.saveFromProject(input)
+    await get().loadTemplates()
+    return saved
+  },
+
+  async removeTemplate(templateId) {
+    const templates = await window.orgai.templates.remove(templateId)
+    set({ templates, templatesError: null })
+  },
+
+  async applyTemplate(projectId, template) {
+    const result = await window.orgai.templates.apply({ projectId, templateId: template.id, mode: 'replace' })
+    get().replaceProject(result.project)
+    // The newer notice replaces an import notice: one Undo per chart.
+    get().recordImport(projectId, {
+      source: 'template',
+      count: result.project.roles.length,
+      summary: `Team replaced with ${template.name}.`,
+      previousRoles: result.previousRoles,
+      importedRoles: result.project.roles
+    })
+  },
+
   async removeProject(id) {
-    await window.orgai.projects.remove(id)
+    const result = await window.orgai.projects.remove(id)
     set((s) => {
       // H2: the project's runs go with it, so the Dashboard (attention column, hero, tiles, Cost card) stops counting them.
       const gone = new Set<string>()
@@ -1245,6 +1320,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         ...(wasSelected ? { history: [] } : {})
       }
     })
+    return result
   },
 
   history: [],
@@ -1322,11 +1398,17 @@ export const useAppStore = create<AppState>((set, get) => ({
     const project = selectedProject(get())
     // Assistants never start work runs through here (Chat has startQuick, the others their own start calls).
     if (!project || isVirtualProjectId(project.id)) return
-    const summary = await window.orgai.runs.start({ projectId: project.id, prompt, scaffold: opts?.scaffold, images: opts?.images })
+    const summary = await window.orgai.runs.start({
+      projectId: project.id,
+      prompt,
+      scaffold: opts?.scaffold,
+      images: opts?.images,
+      ...(opts?.team === 'single' ? { team: 'single' as const } : {})
+    })
     get().handleEvent({ type: 'run.status', runId: summary.id, status: summary.status })
     set((s) => ({
       // Events may have landed before the IPC call returned; keep them and take the real summary.
-      runs: { ...s.runs, [summary.id]: { ...(s.runs[summary.id] ?? emptyRun(summary)), summary: { ...summary, ...s.runs[summary.id]?.summary, kind: summary.kind, prompt: summary.prompt, projectId: summary.projectId } } },
+      runs: { ...s.runs, [summary.id]: { ...(s.runs[summary.id] ?? emptyRun(summary)), summary: { ...summary, ...s.runs[summary.id]?.summary, kind: summary.kind, prompt: summary.prompt, projectId: summary.projectId, team: summary.team } } },
       ...showRunPatch(s, project.id, summary.id)
     }))
   },
