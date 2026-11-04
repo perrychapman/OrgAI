@@ -7,6 +7,7 @@ import { Banner } from '../ui/Banner'
 import { Button } from '../ui/Button'
 import { Checkbox } from '../ui/Checkbox'
 import { Dialog } from '../ui/Dialog'
+import { useConfirm } from '../ui/ConfirmDialog'
 import { IconButton } from '../ui/IconButton'
 import { Input } from '../ui/Input'
 import { SecretField } from '../ui/SecretField'
@@ -76,6 +77,7 @@ export default function McpServerForm({
   const [pending, setPending] = useState<Record<string, string>>({})
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const { confirm, dialog } = useConfirm()
 
   const live = editing ? servers.find((s) => s.spec.id === editing.spec.id) : undefined
   const touch = (k: string): void => setTouched((t) => ({ ...t, [k]: true }))
@@ -161,6 +163,20 @@ export default function McpServerForm({
   const submit = async (): Promise<void> => {
     setTouched({ name: true, command: true, url: true, ...Object.fromEntries(Object.keys(errors).map((k) => [k, true])) })
     if (Object.keys(errors).length > 0) return
+    if (library && editing && perSecrets && baseScope?.perProjectSecrets !== true && (editing.envSet.length > 0 || editing.headersSet.length > 0)) {
+      // Main deletes the library's stored secret values when this turns on; linked projects then each need their own.
+      const linked = await window.orgai.mcpLibrary
+        .list()
+        .then((l) => l.find((x) => x.entry.id === editing.spec.id)?.usedBy.length ?? 0)
+        .catch(() => 0)
+      const ok = await confirm({
+        title: "Delete the library's secret values?",
+        body: `${linked === 0 ? 'No project links' : `${linked} project${linked === 1 ? ' links' : 's link'}`} this server. The secret values stored in the library will be deleted, and each project then enters its own before the server can start.`,
+        confirmLabel: 'Use per-project values',
+        danger: true
+      })
+      if (!ok) return
+    }
     setBusy(true)
     setError(null)
     try {
@@ -416,6 +432,7 @@ export default function McpServerForm({
       )}
 
       <p className="muted">{editing ? 'Use Test on the server row to check the saved configuration.' : 'Save first to test.'}</p>
+      {dialog}
     </Dialog>
   )
 }

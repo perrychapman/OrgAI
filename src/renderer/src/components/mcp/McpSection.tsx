@@ -380,6 +380,8 @@ function CopyDialog({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const entered = perProjectState(info)
+  // The library holds no secret values when each project enters its own; the values this project entered move anyway.
+  const perProjectSecrets = secretScopeOf(info) === 'project'
   const hasValues = entered.plain.some((p) => p.value !== '') || entered.secrets.some((s) => s.set)
   const confirm = async (): Promise<void> => {
     const api = mcpProjectApi()
@@ -387,7 +389,7 @@ function CopyDialog({
     setBusy(true)
     setError(null)
     try {
-      const result = await api.copyFromLibrary({ projectId, serverId: info.spec.id, copySecrets })
+      const result = await api.copyFromLibrary({ projectId, serverId: info.spec.id, copySecrets: perProjectSecrets ? false : copySecrets })
       onDone(result)
       onClose()
     } catch (e) {
@@ -419,13 +421,15 @@ function CopyDialog({
           {error}
         </Banner>
       )}
-      <Checkbox
-        label="Copy the library's secret values too"
-        description={`Leave off to enter this ${noun}'s own values after the copy.`}
-        checked={copySecrets}
-        onChange={setCopySecrets}
-        testId="mcp-copy-secrets"
-      />
+      {!perProjectSecrets && (
+        <Checkbox
+          label="Copy the library's secret values too"
+          description={`Leave off to enter this ${noun}'s own values after the copy.`}
+          checked={copySecrets}
+          onChange={setCopySecrets}
+          testId="mcp-copy-secrets"
+        />
+      )}
       {hasValues && <p className="muted">Values you entered for this {noun} stay.</p>}
     </Dialog>
   )
