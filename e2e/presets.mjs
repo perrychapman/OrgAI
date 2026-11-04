@@ -70,6 +70,10 @@ try {
   check((await focused()) === 'preset-name', 'the form opens on the Name field', await focused())
   await form().locator('[data-testid=preset-save]').click()
   check((await field('preset-name').getAttribute('aria-invalid')) === 'true', 'saving without a name marks the Name field invalid')
+  // The form moves focus in a setTimeout(0) after the render that sets aria-invalid, so wait for it (slow runners).
+  await page
+    .waitForFunction(() => document.activeElement?.getAttribute('data-testid') === 'preset-name', null, { timeout: 5_000 })
+    .catch(() => {})
   check((await focused()) === 'preset-name', 'focus goes to the first invalid field', await focused())
   await field('preset-name').fill('Acme CRM')
   await field('preset-description').fill('Customer records from the Acme system')
