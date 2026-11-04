@@ -5,7 +5,7 @@ import type { Project } from '@shared/types'
 import { isVirtualProjectId } from '@shared/types'
 import { projectKindOf } from '@shared/defaults'
 import { folderName } from '../lib/paths'
-import { breakdownKey, breakdownTotal, EMPTY_BREAKDOWN, parseBreakdownKey, recordedBreakdown, recordedBreakdownText, recordedLabel } from '../lib/knowledgeRun'
+import { breakdownKey, breakdownTotal, EMPTY_BREAKDOWN, parseBreakdownKey, parseBreakdownPartial, recordedBreakdown, recordedBreakdownText, recordedLabel, recordedTitle } from '../lib/knowledgeRun'
 import { PROPOSAL_NEXT_COPY, proposalNextLead } from '../lib/proposalNext'
 import { APP_SETTINGS_PANES, requestAppSettingsSection, requestSkillLibrary } from '../lib/settingsTarget'
 import { useAppStore, useProjectSummaries, type RunState } from '../store/useAppStore'
@@ -51,7 +51,9 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
   const recordedKey = useAppStore((s) => {
     if (!engagement) return ''
     const sum = { ...EMPTY_BREAKDOWN }
+    let partial = false
     for (const m of chain) {
+      if (!s.runs[m.id]) partial = true
       const b = recordedBreakdown(s.runs[m.id]?.transcript ?? [])
       sum.items += b.items
       sum.updates += b.updates
@@ -59,9 +61,10 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
       sum.notes += b.notes
       sum.retired += b.retired
     }
-    return breakdownKey(sum)
+    return breakdownKey(sum, partial)
   })
   const breakdown = parseBreakdownKey(recordedKey)
+  const recordedPartial = parseBreakdownPartial(recordedKey)
   const recorded = breakdownTotal(breakdown)
   const recordedText = recordedBreakdownText(breakdown)
   const progress = run.plan ? planProgress(run.plan) : undefined
@@ -124,10 +127,10 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
         {agentCount} agent{agentCount === 1 ? '' : 's'}
       </span>
       {recorded > 0 && (
-        <button type="button" className="run-meta-item run-meta-recorded" data-testid="run-meta-recorded" title={`What the team recorded this run: ${recordedText}. Opens Knowledge.`} onClick={() => useAppStore.getState().openKnowledgeItem({ projectId: project.id })}>
+        <button type="button" className="run-meta-item run-meta-recorded" data-testid="run-meta-recorded" title={recordedTitle(recordedText, sessions, recordedPartial)} onClick={() => useAppStore.getState().openKnowledgeItem({ projectId: project.id })}>
           <Icon icon={Database} size="xs" />
-          {recordedLabel(recorded)}
-          <span className="sr-only"> ({recordedText}; opens Knowledge)</span>
+          {recordedLabel(recorded, recordedPartial)}
+          <span className="sr-only"> ({recordedText}{recordedPartial ? ', at least; some sessions are not loaded' : ''}; opens Knowledge)</span>
         </button>
       )}
       {sessions > 1 && (

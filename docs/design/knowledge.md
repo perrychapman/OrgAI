@@ -251,7 +251,7 @@ recording row gets a link "Open" (`knowledge-row-open`, `button.link-btn`, name 
 `recordedBreakdown(entries)`: harness system rows of the run whose text starts with "Recorded ", "Updated ", "Linked ",
 "Retired " or "Saved note ", across every agent; the chain's earlier members count too, N is `breakdownTotal`), shown
 only when N > 0 and the project is an engagement, as a `button.run-meta-item` opening the Knowledge tab
-(`openKnowledgeItem({ projectId })`), title "What the team recorded this run: 4 items, 2 relations, 1 note, 1 retired.
+(`openKnowledgeItem({ projectId })`), title "What the team recorded this run (this conversation when continued; "N+" and "at least" when a session is not loaded): 4 items, 2 relations, 1 note, 1 retired.
 Opens Knowledge." and the same breakdown (`recordedBreakdownText`, zero parts omitted) in its sr-only text. It drops
 with the other items in a narrow frame. (Walk-2 M2: the word "items" was four different numbers; "changes" counts
 write rows, the Settings line and Clear counts say items.)
@@ -269,7 +269,7 @@ write rows, the Settings line and Clear counts say items.)
   'knowledge').
 - Maintenance danger zone (engagements): a second button "Clear everything…" (`knowledge-clear`, danger, next to
   "Forget this engagement…") with `ConfirmDialog` "Clear everything the team recorded?" / "Deletes 12 items (2 retired),
-  40 facts, 8 relations (`clearCountsLine`: counts everything Clear deletes, retired included, a parenthetical only when non-zero). Context notes stay. Agents and you can no longer see them. Retire items on the
+  40 facts, 8 relations (`clearCountsLine`: counts everything Clear deletes, retired included, a parenthetical only when non-zero). Agents and you can no longer see these. Context notes stay. Retire items on the
   Knowledge tab to keep records instead." / "Clear everything" (`knowledge-clear-confirm`). Calls `knowledge.clear`;
   the section's notice reads "Cleared everything the team recorded." The danger-zone text adds "what the team
   recorded".
@@ -414,8 +414,8 @@ Verified: unit tests (knowledgeList.test.ts, knowledge.test.ts), `e2e/knowledge.
 - Maintenance (section 9): `knowledge-clear` "Clear everything…" (danger, next to Forget) reads the graph on mount and
   on every 'knowledge' push; it is natively disabled with the quiet reason `knowledge-clear-empty` "Nothing recorded
   yet." while the graph is empty. The confirm is the shared `useConfirm` (Cancel focused first, `confirmTestId: 'knowledge-clear-confirm'` on
-  "Clear everything", body `knowledge-clear-body` "Deletes <clearCountsLine>. Context notes stay. Agents and you can no
-  longer see them. Retire items on the Knowledge tab to keep records instead."; the lead moved it off a bare `Dialog`
+  "Clear everything", body `knowledge-clear-body` "Deletes <clearCountsLine>. Agents and you can no
+  longer see these. Context notes stay. Retire items on the Knowledge tab to keep records instead."; the lead moved it off a bare `Dialog`
   after adding `confirmTestId` to `ConfirmOptions` / `ConfirmDialog`). `knowledge.clear` then the section notice `KNOWLEDGE_CLEARED_NOTICE` "Cleared everything the team
   recorded." (the existing `role=status` box) and focus back on the button. The danger-zone text
   (`ENGAGEMENT_DANGER_TEXT`) adds "what the team recorded". `forgetConfirmText` lists "N recorded items" after the
@@ -468,6 +468,27 @@ by the e2e scripts being updated to the new names and behaviour (`knowledge.mjs`
 - Not verified: the 8 s timer and its pause, Esc on a filtered-out selected item, retired-group edge geometry, radial
   layout with the new handles, anything by eye. Open: clicking "Show item details" still drops focus to body; M6 (an
   agent's retire reason never reaches the tab); the walk's Lows.
+
+### Review fixes (Mediums) and open Lows
+
+- Fixed: Undo restores the live item looked up by id at click time (`undoRetire`), so a rename made after the retire
+  survives; a vanished item clears the notice and announces "That item no longer exists." RunMeta says "this
+  conversation" when the chain has more than one session, and reads "Recorded 8+ changes" (title and sr-only text too)
+  when a chain member has no loaded run (`breakdownKey(b, partial)`, `parseBreakdownPartial`, `recordedTitle`; a single
+  session keeps "this run"). The Clear confirm reads "Agents and you can no longer see these. Context notes stay."
+  Checked by `knowledgeRun.test.ts` and e2e/knowledge.mjs (retire, rename, Undo).
+- Open Lows, not fixed:
+  - L1 identical-text notice keeps the old timer (no per-notice key).
+  - L2 window blur ends the hold, so alt-tabbing can unmount the focused Undo in Graph view.
+  - L3 Undo with a changed filter or failed refetch leaves focus on body.
+  - L4 Retire then Delete from the pane moves focus to Add a note although rows exist.
+  - L5 the in-flow notice resizes the graph stage and refits, discarding zoom and pan.
+  - L6 the announcement and button name do not tell a screen-reader user about Undo.
+  - L7 a no-target deep link in Graph view with nothing selected polls 40 frames.
+  - L8 "Skip to detail" targets a hidden body while the pane is a rail (pre-existing).
+  - L9 a saved closed pane choice is ignored on remount (pre-existing).
+  - L10 "items" still differs between the tab (includes notes) and Settings/Clear; free-form kinds read "2 vendor".
+  - L11 dead projectId reset effect and two stale comments.
 
 ### Graph view
 

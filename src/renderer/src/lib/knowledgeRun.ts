@@ -74,13 +74,17 @@ export function recordedBreakdown(entries: readonly TranscriptEntry[]): Recorded
 }
 
 /** A breakdown as one stable string ("4,0,2,1,1") so a store selector can return a primitive. */
-export const breakdownKey = (b: RecordedBreakdown): string => `${b.items},${b.updates},${b.relations},${b.notes},${b.retired}`
+export const breakdownKey = (b: RecordedBreakdown, partial = false): string =>
+  `${b.items},${b.updates},${b.relations},${b.notes},${b.retired}${partial ? ',1' : ''}`
 
 /** The inverse of `breakdownKey`; junk reads as zeros. */
 export function parseBreakdownKey(key: string): RecordedBreakdown {
   const [items = 0, updates = 0, relations = 0, notes = 0, retired = 0] = key.split(',').map((x) => Math.max(0, Number(x) || 0))
   return { items, updates, relations, notes, retired }
 }
+
+/** True when the key says some chain member was not loaded, so the figure is a lower bound. */
+export const parseBreakdownPartial = (key: string): boolean => key.split(',')[5] === '1'
 
 export const breakdownTotal = (b: RecordedBreakdown): number => b.items + b.updates + b.relations + b.notes + b.retired
 
@@ -96,7 +100,12 @@ export function recordedBreakdownText(b: RecordedBreakdown): string {
 }
 
 /** The RunMeta label: "Recorded 8 changes" / "Recorded 1 change". */
-export const recordedLabel = (total: number): string => `Recorded ${total} ${total === 1 ? 'change' : 'changes'}`
+export const recordedLabel = (total: number, partial = false): string =>
+  partial ? `Recorded ${total}+ changes` : `Recorded ${total} ${total === 1 ? 'change' : 'changes'}`
+
+/** The RunMeta tooltip: "this run" for one session, "this conversation" for a chain; a lower bound says so. */
+export const recordedTitle = (text: string, sessions: number, partial: boolean): string =>
+  `What the team recorded ${sessions > 1 ? 'this conversation' : 'this run'}${partial ? ' (at least; earlier sessions are not loaded)' : ''}: ${text}. Opens Knowledge.`
 
 type WriteKind = 'upsert_node' | 'link' | 'retire' | 'save'
 

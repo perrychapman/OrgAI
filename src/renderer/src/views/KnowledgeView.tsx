@@ -445,6 +445,18 @@ export default function KnowledgeView({ project }: { project: Project }): ReactE
       setError(cleanIpcError(e))
     }
   }
+  /** Undo restores the item as it is now (a rename made after the retire survives); a vanished item just clears the notice. */
+  const undoRetire = (id: string): void => {
+    const live = items.find((i) => i.id === id)
+    if (!live) {
+      setNotice(null)
+      announce('That item no longer exists.')
+      if (view === 'graph' || shown.length === 0) focusAddNote()
+      else focusRow(selectedId)
+      return
+    }
+    void setRetired(live, false)
+  }
   const remove = async (item: KnowledgeItem): Promise<void> => {
     const name = itemName(item)
     const ok =
@@ -526,7 +538,7 @@ export default function KnowledgeView({ project }: { project: Project }): ReactE
       </div>
       <KnowledgeFilters domId={filtersDomId} filter={filter} kinds={kinds} origins={origins} onChange={changeFilter} countText={countText} hiddenNew={hiddenNew.length} onShowNew={showNew} />
       <div className="knowledge-main" data-testid="knowledge-main">
-        {notice && <WriteNotice text={notice.text} undoable={notice.undoable} onUndo={() => void setRetired(notice.item, false)} onDismiss={dismissNotice} onExpire={() => setNotice(null)} />}
+        {notice && <WriteNotice text={notice.text} undoable={notice.undoable} onUndo={() => undoRetire(notice.id)} onDismiss={dismissNotice} onExpire={() => setNotice(null)} />}
         {(loadError || error) && (
           <Banner
             tone="danger"

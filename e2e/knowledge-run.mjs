@@ -312,7 +312,7 @@ try {
   check(clean(await dlg.getByRole('heading').first().innerText()) === 'Clear everything the team recorded?', 'the confirm title', clean(await dlg.getByRole('heading').first().innerText()))
   const body = clean(await dlg.locator('[data-testid=knowledge-clear-body]').innerText())
   const wantCounts = clearCounts(graph)
-  check(body.startsWith(`Deletes ${wantCounts}.`) && /Context notes stay\./.test(body) && /Retire items on the Knowledge tab/.test(body), `the confirm names "${wantCounts}" and that notes stay`, body)
+  check(body.startsWith(`Deletes ${wantCounts}.`) && /Agents and you can no longer see these\. Context notes stay\./.test(body) && /Retire items on the Knowledge tab/.test(body), `the confirm names "${wantCounts}" and that notes stay`, body)
   check(await page.evaluate(() => document.activeElement?.textContent?.trim() === 'Cancel'), 'focus starts on Cancel')
   await shot('clear-confirm-1600-dark')
   await dlg.locator('[data-testid=knowledge-clear-confirm]').click()
