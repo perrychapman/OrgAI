@@ -3,12 +3,13 @@ import { useCallback, useEffect, useId, useState } from 'react'
 import { flushSync } from 'react-dom'
 import type { PermissionMode, Project, TeamReviewAuto } from '@shared/types'
 import { DEFAULT_MAX_AUTO_CONTINUES, PERMISSION_MODE_OPTIONS } from '@shared/types'
-import { MAX_AUTO_CONTINUES_LIMIT, runMessagingOn, teamReviewOf } from '@shared/defaults'
+import { MAX_AUTO_CONTINUES_LIMIT, isolateWritersOn, projectKindOf, runMessagingOn, teamReviewOf } from '@shared/defaults'
 import PermissionRulesPanel from '../PermissionRulesPanel'
 import { Select } from '../ui/Select'
 import { SettingRow, settingDescId } from '../ui/SettingRow'
 import { Switch } from '../ui/Switch'
-import { PERMISSION_MODE_SHORT, SETTINGS_COPY, ISOLATE_WRITERS_STATE, TEAM_ASSISTANT_COPY } from '../../lib/settingsCopy'
+import { PERMISSION_MODE_SHORT, SETTINGS_COPY, ISOLATE_WRITERS_STATE, RUN_MESSAGING_ENGAGEMENT_DESCRIPTION, TEAM_ASSISTANT_COPY } from '../../lib/settingsCopy'
+import { foldersSummary } from '../../lib/folderLists'
 import { PERMISSION_MODE_TRADEOFF, collapseRules, rulesApplyInMode } from '../../lib/permissionCopy'
 import { scrollWithin } from '../../lib/scrollWithin'
 import {
@@ -19,6 +20,7 @@ import {
   type ProjectSettingsSection
 } from '../../lib/settingsTarget'
 import { AllowedDirectoriesSection } from './AllowedDirectoriesSection'
+import { ReferenceDirectoriesSection } from './ReferenceDirectoriesSection'
 import { ClampedNumber } from './ClampedNumber'
 import { SettingsAdvanced, openSettingsAdvanced } from './SettingsAdvanced'
 import { SettingsCard } from './SettingsCard'
@@ -31,14 +33,9 @@ export { PERMISSION_MODE_SHORT }
 const MODE_MORE =
   'Every mode except Never ask and Bypass can show approval cards in the live view. Unattended lets the model\'s safety check approve routine calls and asks least without turning checks off; Auto-accept edits still asks for commands and for files outside the project and its allowed folders. A card\'s "Always allow for project" saves its rules below, adds its folders to Allowed folders, and for an edit on "Ask for everything risky" switches the project to Auto-accept edits.'
 
-const plural = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`
-
-/** "3 rules and 1 folder you allowed"; null while the rule count is still loading. */
-export function allowedSummary(rules: number | null, folders: number): string | null {
-  if (rules === null) return null
-  if (rules === 0 && folders === 0) return 'None yet. Approval cards add them here.'
-  const parts = [rules > 0 ? plural(rules, 'rule', 'rules') : '', folders > 0 ? plural(folders, 'folder', 'folders') : ''].filter(Boolean)
-  return `${parts.join(' and ')} you allowed`
+/** "3 rules and 1 folder you allowed" / "2 reference folders, 1 folder you allowed"; null while the rule count is loading. */
+export function allowedSummary(rules: number | null, folders: number, reference = 0): string | null {
+  return foldersSummary(rules, folders, reference)
 }
 
 /**
@@ -115,6 +112,8 @@ export function PermissionsSection({ project, patch }: { project: Project; patch
   }, [project.id])
   const onRulesChange = useCallback((r: string[]) => setRuleCount(collapseRules(r).length), [])
   const folderCount = (project.allowedDirectories ?? []).length
+  const referenceCount = (project.referenceDirectories ?? []).length
+  const engagement = projectKindOf(project) === 'engagement'
 
   // Git state, once per mount and path.
   const [isGit, setIsGit] = useState<boolean | null>(null)
@@ -133,10 +132,31 @@ export function PermissionsSection({ project, patch }: { project: Project; patch
   const review = teamReviewOf(project)
   const autoOn = project.autoContinue !== false
   const noGit = isGit === false
-  const userOff = project.isolateWriters === false
-  const isolated = !noGit && !userOff
-  const isoDesc = noGit ? ISOLATE_WRITERS_STATE.noGit : userOff ? ISOLATE_WRITERS_STATE.off : ISOLATE_WRITERS_STATE.auto
-  const summary = allowedSummary(ruleCount, folderCount)
+  // The switch always shows the stored value (isolateWritersOn); a missing git repository is explained, never shown as Off.
+  const isoStored = isolateWritersOn(project)
+  const isolated = isoStored && !noGit
+  const isoDesc = engagement
+    ? !isoStored
+      ? ISOLATE_WRITERS_STATE.off
+      : noGit
+        ? ISOLATE_WRITERS_STATE.engagementOnNoGit
+        : ISOLATE_WRITERS_STATE.engagementOn
+    : noGit
+      ? isoStored
+        ? 'On, but this folder is not a git repository, so writers work in the folder itself.'
+        : ISOLATE_WRITERS_STATE.off
+      : isoStored
+        ? ISOLATE_WRITERS_STATE.auto
+        : ISOLATE_WRITERS_STATE.off
+  // Engagements show the isolation rows only once the user opted in (isolateWriters === true); once seen on they stay
+  // for this visit, so turning it off does not make the row vanish under the keyboard.
+  const [isoSeenOn, setIsoSeenOn] = useState(false)
+  useEffect(() => {
+    if (project.isolateWriters === true) setIsoSeenOn(true)
+  }, [project.isolateWriters])
+  const showIsolation = !engagement || isoSeenOn || project.isolateWriters === true
+  const isoLabel = engagement ? 'Give each writer its own copy (git worktrees)' : copy.isolateWriters.label
+  const summary = allowedSummary(ruleCount, folderCount, referenceCount)
   const bodyId = row('summary-body')
 
   return (
@@ -197,6 +217,7 @@ export function PermissionsSection({ project, patch }: { project: Project; patch
         </SettingsCard>
         <div id={bodyId} className="perm-summary-body" hidden={!summaryOpen}>
           <p>{MODE_MORE}</p>
+          <ReferenceDirectoriesSection project={project} />
           <AllowedDirectoriesSection project={project} />
           <PermissionRulesPanel project={project} onRulesChange={onRulesChange} />
         </div>
@@ -205,40 +226,45 @@ export function PermissionsSection({ project, patch }: { project: Project; patch
       <SettingsAdvanced paneKey="project-permissions">
         <SettingsGroup title="Runs">
           <SettingsCard>
-            <SettingRow
-              id={row('iso-row')}
-              title={copy.isolateWriters.label}
-              description={isoDesc}
-              control={
-                <Switch
-                  checked={isolated}
-                  disabled={noGit}
-                  title={noGit ? ISOLATE_WRITERS_STATE.noGit : undefined}
-                  label={copy.isolateWriters.label}
-                  describedBy={settingDescId(row('iso-row'))}
-                  onChange={(v) => patch({ isolateWriters: v ? undefined : false })}
-                />
-              }
-            />
-            <SettingRow
-              id={row('review-row')}
-              title={copy.reviewMerges.label}
-              description={isolated ? copy.reviewMerges.description : copy.reviewMerges.disabled}
-              control={
-                <Switch
-                  checked={!!project.reviewMerges}
-                  disabled={!isolated}
-                  title={isolated ? undefined : copy.reviewMerges.disabled}
-                  label={copy.reviewMerges.label}
-                  describedBy={settingDescId(row('review-row'))}
-                  onChange={(v) => patch({ reviewMerges: v })}
-                />
-              }
-            />
+            {showIsolation && (
+              <SettingRow
+                id={row('iso-row')}
+                title={isoLabel}
+                description={isoDesc}
+                control={
+                  <Switch
+                    checked={isoStored}
+                    // A code folder without git cannot turn it on, but a stored "on" can always be turned off.
+                    disabled={noGit && !isoStored && !engagement}
+                    title={noGit && !isoStored && !engagement ? ISOLATE_WRITERS_STATE.noGit : undefined}
+                    label={isoLabel}
+                    describedBy={settingDescId(row('iso-row'))}
+                    onChange={(v) => patch({ isolateWriters: engagement ? (v ? true : undefined) : v ? undefined : false })}
+                  />
+                }
+              />
+            )}
+            {showIsolation && (
+              <SettingRow
+                id={row('review-row')}
+                title={copy.reviewMerges.label}
+                description={isolated ? copy.reviewMerges.description : copy.reviewMerges.disabled}
+                control={
+                  <Switch
+                    checked={!!project.reviewMerges}
+                    disabled={!isolated}
+                    title={isolated ? undefined : copy.reviewMerges.disabled}
+                    label={copy.reviewMerges.label}
+                    describedBy={settingDescId(row('review-row'))}
+                    onChange={(v) => patch({ reviewMerges: v })}
+                  />
+                }
+              />
+            )}
             <SettingRow
               id={row('msg-row')}
               title={copy.runMessaging.label}
-              description={copy.runMessaging.description}
+              description={engagement ? RUN_MESSAGING_ENGAGEMENT_DESCRIPTION : copy.runMessaging.description}
               control={
                 <Switch
                   checked={runMessagingOn(project)}
