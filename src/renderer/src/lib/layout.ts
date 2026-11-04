@@ -49,10 +49,70 @@ export interface CanvasLayoutResult {
 
 /**
  * Radial layout (docs/design/canvas-themes.md section 3): root centre at (0, 0), depth d on ring d, children within
- * their parent's angular sector. SEAM: placeholder until the canvas-engine brief implements it (falls back to a tree).
+ * their parent's angular sector.
+ *
+ * Several roots: the first root (input order) is the centre and every other root is treated as its child, so it
+ * sits on ring 1. Ring radius is max(previous + ringStep, n * (widest node + gap) / 2PI) so a full ring never
+ * overlaps. Sectors start at 12 o'clock and run clockwise; a child's share is proportional to its leaf count.
+ * Positions are top-left (centre minus half size). `rings` are the guides (centre (0, 0), radii of depths 1..n).
  */
-export function radialLayout(items: LayoutItem[], _opts?: { ringStep?: number; gap?: number }): CanvasLayoutResult {
-  return { positions: treeLayout(items) }
+export function radialLayout(items: LayoutItem[], opts?: { ringStep?: number; gap?: number }): CanvasLayoutResult {
+  const rings: RingGuides = { cx: 0, cy: 0, radii: [] }
+  if (items.length === 0) return { positions: {}, rings }
+  const step = opts?.ringStep ?? 300
+  const gap = opts?.gap ?? 24
+  const parents = acyclicParents(items)
+  const roots = items.filter((i) => !parents.has(i.id))
+  const centre = roots[0] ?? items[0]
+  const kids = new Map<string, LayoutItem[]>()
+  for (const item of items) {
+    if (item === centre) continue
+    const pid = parents.get(item.id) ?? centre.id
+    const list = kids.get(pid)
+    if (list) list.push(item)
+    else kids.set(pid, [item])
+  }
+  const leaves = new Map<string, number>()
+  const countLeaves = (item: LayoutItem): number => {
+    const c = kids.get(item.id)
+    const n = c && c.length > 0 ? c.reduce((s, k) => s + countLeaves(k), 0) : 1
+    leaves.set(item.id, n)
+    return n
+  }
+  countLeaves(centre)
+  // Depth, sector and angle per node.
+  const depthOf = new Map<string, number>()
+  const angleOf = new Map<string, number>()
+  const byDepth: LayoutItem[][] = []
+  const place = (item: LayoutItem, depth: number, a0: number, a1: number): void => {
+    depthOf.set(item.id, depth)
+    angleOf.set(item.id, (a0 + a1) / 2)
+    ;(byDepth[depth] ??= []).push(item)
+    const c = kids.get(item.id) ?? []
+    const total = leaves.get(item.id) ?? 1
+    let at = a0
+    for (const k of c) {
+      const share = ((a1 - a0) * (leaves.get(k.id) ?? 1)) / total
+      place(k, depth + 1, at, at + share)
+      at += share
+    }
+  }
+  place(centre, 0, 0, 2 * Math.PI)
+  const radius: number[] = [0]
+  for (let d = 1; d < byDepth.length; d++) {
+    const row = byDepth[d]
+    const widest = Math.max(...row.map((i) => i.width))
+    radius[d] = Math.max(radius[d - 1] + step, (row.length * (widest + gap)) / (2 * Math.PI))
+    rings.radii.push(radius[d])
+  }
+  const positions: Record<string, { x: number; y: number }> = {}
+  for (const item of items) {
+    const d = depthOf.get(item.id) ?? 0
+    const r = radius[d] ?? 0
+    const a = angleOf.get(item.id) ?? 0
+    positions[item.id] = { x: r * Math.sin(a) - item.width / 2, y: -r * Math.cos(a) - item.height / 2 }
+  }
+  return { positions, rings }
 }
 
 /** The one entry point every canvas uses: the layout setting picks tree TB, tree LR or radial. */
