@@ -5,6 +5,7 @@ import type {
   CapabilityProgressEvent,
   ConnectionEvent,
   ContinueRunInput,
+  EngagementChangedEvent,
   DraftRequest,
   FocusRunTarget,
   McpLibraryInfo,
@@ -27,7 +28,7 @@ const api: OrgAIApi = {
     get: (id: string) => ipcRenderer.invoke(IPC.projectsGet, id),
     create: (input) => ipcRenderer.invoke(IPC.projectsCreate, input),
     save: (project: Project) => ipcRenderer.invoke(IPC.projectsSave, project),
-    remove: (id: string) => ipcRenderer.invoke(IPC.projectsRemove, id),
+    remove: (input) => ipcRenderer.invoke(IPC.projectsRemove, input),
     pickDirectory: () => ipcRenderer.invoke(IPC.projectsPickDir),
     checkPath: (path: string) => ipcRenderer.invoke(IPC.projectsCheckPath, path),
     remapModels: (input) => ipcRenderer.invoke(IPC.projectsRemapModels, input),
@@ -163,6 +164,7 @@ const api: OrgAIApi = {
     listLive: () => ipcRenderer.invoke(IPC.runsListLive),
     pendingCards: (runId: string) => ipcRenderer.invoke(IPC.runsPendingCards, runId),
     usageStats: (query) => ipcRenderer.invoke(IPC.runsUsageStats, query),
+    usageCsv: (query) => ipcRenderer.invoke(IPC.runsUsageCsv, query),
     startQuick: (input) => ipcRenderer.invoke(IPC.runsStartQuick, input),
     promoteQuick: (input) => ipcRenderer.invoke(IPC.runsPromoteQuick, input)
   },
@@ -241,6 +243,26 @@ const api: OrgAIApi = {
   notifications: {
     /** @deprecated Mirrors into AppSettings.notifications; removed with NotificationsToggle in phase 1. */
     setEnabled: (enabled: boolean) => ipcRenderer.invoke(IPC.appSetNotifications, enabled)
+  },
+  // ---- Team templates, engagement context (runs.usageCsv sits in runs) ----
+  templates: {
+    list: () => ipcRenderer.invoke(IPC.templatesList),
+    saveFromProject: (input) => ipcRenderer.invoke(IPC.templatesSaveFromProject, input),
+    remove: (templateId: string) => ipcRenderer.invoke(IPC.templatesRemove, templateId),
+    apply: (input) => ipcRenderer.invoke(IPC.templatesApply, input)
+  },
+  engagement: {
+    document: (projectId: string) => ipcRenderer.invoke(IPC.projectsEngagementDocument, projectId),
+    updateDocument: (input) => ipcRenderer.invoke(IPC.projectsUpdateEngagementDocument, input),
+    listNotes: (projectId: string) => ipcRenderer.invoke(IPC.projectsListNotes, projectId),
+    getNote: (ref) => ipcRenderer.invoke(IPC.projectsGetNote, ref),
+    saveNote: (input) => ipcRenderer.invoke(IPC.projectsSaveNote, input),
+    removeNote: (ref) => ipcRenderer.invoke(IPC.projectsRemoveNote, ref)
+  },
+  onEngagementChanged: (cb) => {
+    const listener = (_e: IpcRendererEvent, event: EngagementChangedEvent): void => cb(event)
+    ipcRenderer.on(IPC.projectsEngagementChanged, listener)
+    return () => ipcRenderer.removeListener(IPC.projectsEngagementChanged, listener)
   }
 }
 

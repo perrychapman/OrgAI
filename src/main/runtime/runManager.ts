@@ -29,6 +29,8 @@ import type {
   ProjectPeek,
   QuickRunInfo,
   SkillContent,
+  EngagementNote,
+  EngagementNoteContent,
   Proposal,
   ProposalDecision,
   ProposalOutcome,
@@ -515,6 +517,19 @@ export interface RunManagerOptions {
     catalog(projectId: string | null): SkillAssistCatalog
     read(projectId: string | null, ref: { libraryId?: string; skillId?: string }): SkillContent | null
   }
+  /**
+   * Context notes of a stored project (store/projectData.ts), for RuntimeContext.engagementNotes on engagement work
+   * runs and single-agent runs. Missing = no engagement_context data.
+   */
+  engagementNotes?: {
+    list(projectId: string): EngagementNote[]
+    read(projectId: string, noteId: string): EngagementNoteContent | null
+  }
+  /**
+   * A saved team template's roles converted for `project` (setup/templates.ts, the agent-import convert path),
+   * for RuntimeContext.orgTemplate on setup runs. null for an unknown id. Missing = templates unavailable.
+   */
+  orgTemplate?: (templateId: string, project: Project) => { name: string; roles: Role[] } | null
 }
 
 /** RunManager.completeForProject input: a one-shot completion on the project's own connection. */
@@ -656,7 +671,11 @@ export class RunManager {
   }
 
   /** Drop every run of a deleted project. Live runs are stopped first. */
-  async removeProject(projectId: string): Promise<void> {
+  /**
+   * Stop the project's live runs and cancel their titles. With `removeRuns` (default true) its run records are deleted
+   * too; resolves with the number deleted (0 when kept).
+   */
+  async removeProject(projectId: string, { removeRuns = true }: { removeRuns?: boolean } = {}): Promise<number> {
     // Pending titles of the project's runs, live or already ended, are cancelled.
     for (const [a, pid] of this.titleAborts) if (pid === projectId) a.abort()
     for (const r of this.runs.values()) {
@@ -669,7 +688,7 @@ export class RunManager {
       }
     }
     for (const s of this.store.list(projectId)) this.clearResume(s.id)
-    this.store.removeProject(projectId)
+    return removeRuns ? this.store.removeProject(projectId) : 0
   }
 
   /** The adapter a project's runs use (also used by the org chart drafter). Does not check role mismatches. */
@@ -1574,6 +1593,15 @@ export class RunManager {
   pendingCards(runId: string): PendingCards {
     const active = this.runs.get(runId)
     return active ? listPending(active) : emptyPending()
+  }
+
+  /**
+   * runs:usageCsv: usageStats rows as CSV (USAGE_CSV_COLUMNS), limit USAGE_STATS_MAX_LIMIT. STUB: the Runtime
+   * Engineer implements it (runUsage.ts buildUsageCsv).
+   */
+  usageCsv(raw: UsageStatsQuery): string {
+    void raw
+    throw new Error('Usage export is not available yet.')
   }
 
   /** runs:usageStats: usage per run, per role and per trend bucket for one project (see UsageStats). */
