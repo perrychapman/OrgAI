@@ -46,7 +46,8 @@ import type {
   SkillUseCount,
   UserQuestion
 } from '@shared/types'
-import { QUICK_ASSISTANT_SLUG, adapterForProject, agentProducedNothing, mcpSecretNames, mixedFamilyRefusal, modelFamily, newId, projectConnection, runMessagingOn, settingTier } from '@shared/defaults'
+import { QUICK_ASSISTANT_SLUG, adapterForProject, agentProducedNothing, mcpSecretNames, mixedFamilyRefusal, modelFamily, newId, projectConnection, projectKindOf, runMessagingOn, settingTier } from '@shared/defaults'
+import { referenceFolderOf } from './referenceDirectories'
 import { aliasesFor, priceAgentUsage, type PricingContext } from './pricing'
 import { IntervalTimer, buildUsageStats, computeRunUsage, emptyAgentUsage, legacySummaryUsage, normalizeRunRecord } from './runUsage'
 import { DEFAULT_MAX_AUTO_CONTINUES, HARNESS_PROJECT_ID, QUICK_PROJECT_ID, RUN_MESSAGE_MAX_CHARS, RUN_PEER_PROMPT_CHARS, SKILLS_PROJECT_ID, USAGE_STATS_DEFAULT_LIMIT, USAGE_STATS_MAX_LIMIT, isVirtualProjectId } from '@shared/types'
@@ -1150,12 +1151,32 @@ export class RunManager {
           emit({ type: 'log', runId: summary.id, level: 'warn', message: `Allowed folder ${u} is too broad or sensitive; agents cannot use it in this run.` })
         }
       }
-      if (foldersOn) resolveFolders()
+      // Reference folders (Project.referenceDirectories): readable, never editable. Same resolution and conditions.
+      let refDirs: string[] = []
+      const resolveReferences = (): void => {
+        const r = resolveAllowedDirectories(live.referenceDirectories, { projectPath: live.path, dataDir: this.options.dataDir })
+        // A folder that is also an allowed folder stays writable: it is only in allowedDirectories().
+        refDirs = r.dirs.filter((d) => !allowedDirs.some((a) => samePath(a, d)))
+        for (const m of r.missing) {
+          if (warnedMissing.has(m)) continue
+          warnedMissing.add(m)
+          emit({ type: 'log', runId: summary.id, level: 'warn', message: `Reference folder ${m} does not exist; agents cannot read it in this run.` })
+        }
+        for (const u of r.unsafe) {
+          if (warnedMissing.has(u)) continue
+          warnedMissing.add(u)
+          emit({ type: 'log', runId: summary.id, level: 'warn', message: `Reference folder ${u} is too broad or sensitive; agents cannot use it in this run.` })
+        }
+      }
+      if (foldersOn) {
+        resolveFolders()
+        resolveReferences()
+      }
       const ctx: RuntimeContext = {
         run: summary,
         project,
         roles:
-          kind === 'setup' ? [architectRole(builtinModel)]
+          kind === 'setup' ? [architectRole(builtinModel, { kind: projectKindOf(project) })]
           : kind === 'mcp-assist' ? [withBuildTools(mcpAssistantRole(builtinModel), summary)]
           : kind === 'skill-assist' ? [skillAssistantRole(builtinModel)]
           : project.roles.map((r) => ({ ...r })),
@@ -1208,13 +1229,23 @@ export class RunManager {
         ...(foldersOn
           ? {
               allowedDirectories: () => [...allowedDirs],
+              referenceDirectories: () => [...refDirs],
               ...(folderSave
                 ? {
-                    allowDirectories: (dirs: string[]) => {
+                    allowDirectories: (requested: string[]) => {
+                      // A reference folder (or anything inside one) stays read-only: never saved as writable.
+                      const refs = [...new Set([...refDirs, ...(live.referenceDirectories ?? []).filter((r): r is string => typeof r === 'string')])]
+                      const dirs = requested.filter((d) => {
+                        if (!referenceFolderOf(d, refs, live.path)) return true
+                        log.info(`Run ${summary.id}: ${d} is a reference folder; it stays read-only.`)
+                        return false
+                      })
+                      if (!dirs.length) return []
                       const saved = folderSave(live.id, { addDirectories: dirs })
                       setLive(saved, false)
                       this.broadcast({ type: 'project.updated', runId: summary.id, project: saved })
                       resolveFolders()
+                      resolveReferences()
                       const asked = resolveAllowedDirectories(dirs, { projectPath: live.path, dataDir: this.options.dataDir }).dirs
                       const inForce = asked.filter((d) => allowedDirs.some((a) => samePath(a, d)))
                       if (inForce.length) emit({ type: 'log', runId: summary.id, level: 'info', message: `Allowed folders for this project: ${inForce.join(', ')}` })

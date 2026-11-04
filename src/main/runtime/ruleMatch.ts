@@ -463,10 +463,11 @@ export const FREE_CD_LABEL = 'cd inside the project'
 
 /**
  * MatchOptions for a run right now: cwd is the project path, free dirs the project path plus `allowedDirectories()`
- * (live), denied dirs `protectedDirectories()`.
+ * and `referenceDirectories()` (live), denied dirs `protectedDirectories()`.
  */
-export function matchOptionsFor(ctx: Pick<RuntimeContext, 'project' | 'allowedDirectories' | 'protectedDirectories'>): MatchOptions {
-  const extra = ctx.allowedDirectories?.() ?? []
+export function matchOptionsFor(ctx: Pick<RuntimeContext, 'project' | 'allowedDirectories' | 'referenceDirectories' | 'protectedDirectories'>): MatchOptions {
+  // A `cd` into a reference folder is free too (it is a read-only move; edits there are refused by the edit gates).
+  const extra = [...(ctx.allowedDirectories?.() ?? []), ...(ctx.referenceDirectories?.() ?? [])]
   const denied = ctx.protectedDirectories?.() ?? []
   return { cwd: ctx.project.path, freeDirs: [ctx.project.path, ...extra], ...(denied.length ? { deniedDirs: denied } : {}) }
 }

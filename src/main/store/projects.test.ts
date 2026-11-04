@@ -3,9 +3,10 @@ import { tmpdir } from 'node:os'
 import { dirname, join, posix, sep, win32 } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { McpServerSpec, PluginSpec, Project, Role, SkillSpec } from '@shared/types'
-import { PROJECT_ALLOWED_DIRECTORIES_MAX, PROJECT_ALLOWED_DIRECTORY_MAX_CHARS } from '@shared/types'
+import { PROJECT_ALLOWED_DIRECTORIES_MAX, PROJECT_ALLOWED_DIRECTORY_MAX_CHARS, PROJECT_REFERENCE_DIRECTORIES_MAX, PROJECT_REFERENCE_DIRECTORY_MAX_CHARS } from '@shared/types'
+import { projectKindOf } from '@shared/defaults'
 import { project, role } from '../runtime/testHelpers'
-import { ProjectStore, cleanAllowedDirectories, acceptableRoleModel, sanitizeRoleModels, checkProjectPath, cleanProjectPath, createPathError, reconcileNearLimitProject, suggestedProjectName, type PathFs } from './projects'
+import { ProjectStore, cleanAllowedDirectories, cleanReferenceDirectories,acceptableRoleModel, sanitizeRoleModels, checkProjectPath, cleanProjectPath, createPathError, reconcileNearLimitProject, suggestedProjectName, type PathFs } from './projects'
 import { mkdirSync } from 'node:fs'
 
 describe('reconcileNearLimitProject', () => {
@@ -515,5 +516,91 @@ describe('cleanAllowedDirectories: too broad or sensitive (allowedDirectoryRisk,
     } finally {
       debug.mockRestore()
     }
+  })
+})
+
+describe('cleanReferenceDirectories', () => {
+  const winOpts = { path: win32, touchesData: (d: string) => d.toLowerCase().startsWith('c:\\data'), same: (a: string, b: string) => a.toLowerCase() === b.toLowerCase(), home: 'C:\\Users\\me', projectPath: 'C:\\work\\proj' }
+  const posixOpts = { path: posix, touchesData: () => false, same: (a: string, b: string) => a === b, home: '/home/me', projectPath: '/work/proj' }
+
+  it('drops non-arrays', () => {
+    expect(cleanReferenceDirectories(undefined, 'C:\\data', winOpts)).toBeUndefined()
+    expect(cleanReferenceDirectories('C:\\x', 'C:\\data', winOpts)).toBeUndefined()
+  })
+
+  it('applies the allowed-folder rules: relative, root, UNC, data dir, project, containing the project, home, home config, duplicates', () => {
+    const out = cleanReferenceDirectories(
+      ['relative\\dir', 'C:\\', '\\\\server\\share', 'C:\\data\\sub', 'C:\\work\\proj', 'C:\\work\\proj\\src', 'C:\\work', 'C:\\Users\\me', 'C:\\Users\\me\\.ssh', 42, 'D:\\Docs\\', 'd:\\docs', 'E:\\other'],
+      'C:\\data',
+      winOpts
+    )
+    expect(out).toEqual(['D:\\Docs', 'E:\\other'])
+    expect(cleanReferenceDirectories(['/home/me/.claude', '/home', '/srv/ref/', '/srv/ref'], '/data', posixOpts)).toEqual(['/srv/ref'])
+  })
+
+  it('caps the list and the path length like the allowed list', () => {
+    const many = Array.from({ length: 30 }, (_, i) => `/srv/d${i}`)
+    expect(cleanReferenceDirectories(many, '/data', posixOpts)).toHaveLength(PROJECT_REFERENCE_DIRECTORIES_MAX)
+    const exact = '/' + 'a'.repeat(PROJECT_REFERENCE_DIRECTORY_MAX_CHARS - 1)
+    expect(cleanReferenceDirectories([exact, exact + 'b'], '/data', posixOpts)).toEqual([exact])
+  })
+})
+
+describe('ProjectStore referenceDirectories and kind', () => {
+  it('cleans reference folders on save and drops one that is also an allowed folder', () => {
+    const data = dataDir()
+    const root = dataDir()
+    const home = join(root, 'home')
+    const proj = join(root, 'work', 'proj')
+    const keep = join(root, 'work', 'ref')
+    const both = join(root, 'work', 'both')
+    const store = new ProjectStore(data, { home })
+    store.save(project({ path: proj }))
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {})
+    try {
+      const saved = store.saveFromRenderer(project({ path: proj, allowedDirectories: [both], referenceDirectories: [keep, 'relative', join(data, 'x'), join(proj, 'src'), both, keep] }))
+      expect(saved.referenceDirectories).toEqual([keep])
+      expect(saved.allowedDirectories).toEqual([both])
+      expect(store.get('p1')?.referenceDirectories).toEqual([keep])
+      expect(debug.mock.calls.some((c) => String(c[0]).includes('also an allowed folder'))).toBe(true)
+      const bad = store.save(project({ path: proj, referenceDirectories: 'nope' as never }))
+      expect('referenceDirectories' in bad).toBe(false)
+    } finally {
+      debug.mockRestore()
+    }
+  })
+
+  it('cleans reference folders and kind at boot and persists once', () => {
+    const data = dataDir()
+    const root = dataDir()
+    const keep = join(root, 'ref')
+    const both = join(root, 'both')
+    const raw = project({ path: join(root, 'proj'), allowedDirectories: [both], referenceDirectories: [keep, both, 'x', 7] as never, kind: 'banana' as never })
+    writeFileSync(join(data, 'projects.json'), JSON.stringify({ version: 2, projects: [raw] }))
+    const store = new ProjectStore(data, { home: join(root, 'home') })
+    expect(store.get('p1')?.referenceDirectories).toEqual([keep])
+    expect('kind' in store.get('p1')!).toBe(false)
+    const disk = JSON.parse(readFileSync(join(data, 'projects.json'), 'utf8')).projects[0]
+    expect(disk.referenceDirectories).toEqual([keep])
+    expect('kind' in disk).toBe(false)
+    expect(new ProjectStore(data, { home: join(root, 'home') }).migrateAll()).toBe(0)
+  })
+
+  it('normalizes kind on save: a valid kind stays, junk is removed', () => {
+    const store = new ProjectStore(dataDir())
+    expect(store.save(project({ kind: 'engagement' })).kind).toBe('engagement')
+    expect('kind' in store.save(project({ kind: 'nope' as never }))).toBe(false)
+    expect('kind' in store.saveFromRenderer(project({ kind: 5 as never }))).toBe(false)
+  })
+
+  it('create passes kind through and drops junk to code', () => {
+    const d = dataDir()
+    const store = new ProjectStore(d)
+    const eng = store.create({ name: 'E', path: d, brief: '', kind: 'engagement' })
+    expect(eng.kind).toBe('engagement')
+    expect(store.get(eng.id)?.kind).toBe('engagement')
+    const junk = store.create({ name: 'J', path: d, brief: '', kind: 'junk' as never })
+    expect(projectKindOf(junk)).toBe('code')
+    expect(projectKindOf(store.create({ name: 'C', path: d, brief: '' }))).toBe('code')
   })
 })
