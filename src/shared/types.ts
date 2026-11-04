@@ -2182,7 +2182,9 @@ export interface UsageStatsQuery {
   since?: number
   /** Only runs started before this time (epoch ms). */
   until?: number
-  /** Run kinds to include. Default ['work']. */
+  /** A local calendar month (UsageStatsRange); replaces since / until when set. */
+  range?: UsageStatsRange
+  /** Run kinds to include. Default ['work']; pass every RunKind to count setup and assistant runs too. */
   kinds?: RunKind[]
   /** Trend bucket size, by local calendar day or ISO week (Monday start). Default 'day'. */
   bucket?: 'day' | 'week'
@@ -2669,6 +2671,8 @@ export interface RunSummary {
    * sweep keeps a scratch dir any run record points to (quick.folder or buildWorkspace).
    */
   buildWorkspace?: string
+  /** Work runs of a real project started with StartRunInput.team 'single' (RunTeam). Kept by continuations and auto-resume. */
+  team?: RunTeam
 }
 
 /**
@@ -3123,6 +3127,12 @@ export interface ProjectCreateInput {
    * created on. Unknown sources are ignored; when nothing importable is found the default chart is kept.
    */
   importAgents?: AgentImportSource[]
+  /**
+   * Start the project from this saved team template (OrgTemplateInfo.id) instead of the default chart: the 'replace'
+   * apply, models mapped to the connection the project is created on. importAgents wins when both are set; an unknown
+   * id keeps the default chart.
+   */
+  templateId?: string
 }
 
 /** projects:checkPath. Never rejects; an empty or unreadable path reports exists false. */
@@ -3326,6 +3336,8 @@ export interface StartRunInput {
   prompt: string
   scaffold?: boolean
   images?: ImageAttachment[]
+  /** 'single': one assistant instead of the org chart (RunTeam). Any other value is dropped. */
+  team?: RunTeam
 }
 
 /** runs:send: a follow-up message to a live run's orchestrator. */
@@ -3814,7 +3826,8 @@ export interface OrgAIApi {
     /** What is at `path` right now, for validating the New project form. Never rejects. */
     checkPath(path: string): Promise<ProjectPathCheck>
     save(project: Project): Promise<Project>
-    remove(id: string): Promise<void>
+    /** A project id string or ProjectRemoveInput (removeRuns default true; engagements always remove their runs). */
+    remove(input: string | ProjectRemoveInput): Promise<ProjectRemoveResult>
     pickDirectory(): Promise<string | null>
     /**
      * Remap the project's tiered role models to its connection's tierModels. With `connection`, switch the
@@ -4109,6 +4122,8 @@ export interface OrgAIApi {
      * unknown project. Never spends tokens.
      */
     usageStats(query: UsageStatsQuery): Promise<UsageStats>
+    /** The same rows as usageStats as CSV text (USAGE_CSV_COLUMNS), at most USAGE_STATS_MAX_LIMIT rows. */
+    usageCsv(query: UsageStatsQuery): Promise<string>
     /**
      * Start a quick run (the Chat assistant): a project-less work run on QUICK_PROJECT_ID (RunSummary.quick set).
      * Rejects on an empty or too long prompt (QUICK_RUN_MAX_PROMPT_CHARS) or an invalid folder.
@@ -4182,6 +4197,239 @@ export interface OrgAIApi {
   }
 }
 
+// ---- Team templates, single-agent runs, engagement context, usage export ----
+
+/** Most saved team templates (`<data>/org-templates/templates.json`). Saving one more is refused. */
+export const ORG_TEMPLATES_MAX = 100
+/** Template name: 1..80 characters, no control or hidden characters. */
+export const ORG_TEMPLATE_NAME_MAX_CHARS = 80
+/** Template description: at most 500 characters (tab and line breaks allowed, other hidden characters refused). */
+export const ORG_TEMPLATE_DESCRIPTION_MAX_CHARS = 500
+
+/**
+ * One saved team template (templates:list). The chart itself lives in `<data>/org-templates/<id>/org.json`, format
+ * 'orgai.org/1' (the same document projects:exportOrg writes and the agent importer reads): roles with slug
+ * references, no ids, positions, secrets, MCP or skill grants.
+ */
+export interface OrgTemplateInfo {
+  id: string
+  name: string
+  description: string
+  /** The kind of the project the template was saved from. */
+  kind: ProjectKind
+  roleCount: number
+  /** Role names in chart order (root first), at most ORG_TEMPLATE_ROLE_NAMES_MAX. */
+  roleNames: string[]
+  /** Epoch ms. */
+  createdAt: number
+  updatedAt: number
+}
+
+/** Most role names kept on an OrgTemplateInfo. */
+export const ORG_TEMPLATE_ROLE_NAMES_MAX = 40
+
+/** templates:saveFromProject input. */
+export interface OrgTemplateSaveInput {
+  projectId: string
+  name: string
+  description?: string
+}
+
+/**
+ * templates:apply input: the template's chart through the agent-import convert path (models mapped to the project's
+ * connection). 'replace' drops the chart, 'merge' adds under its root. Result: AgentImportApplyResult (Undo = save
+ * previousRoles through projects:save).
+ */
+export interface OrgTemplateApplyInput {
+  projectId: string
+  templateId: string
+  mode: 'replace' | 'merge'
+}
+
+/**
+ * Who works on a work run of a real project. 'single' = one root role "Assistant" built from the project (no
+ * spawning, the union of the project's role tools, every enabled MCP server, every project skill, the project's
+ * permission mode; plan nudges and run messaging off). Missing = the project's org chart. Never on setup-like runs.
+ * StartRunInput.team / RunSummary.team; continuations keep it.
+ */
+export type RunTeam = 'single'
+
+/** Harness tool of engagement work runs (every role) and single-agent runs: lists context notes, reads one. */
+export const ENGAGEMENT_CONTEXT_TOOL = 'engagement_context'
+/** engagement_context: at most this many characters of a note per call (the rest is reported as cut). */
+export const ENGAGEMENT_CONTEXT_TOOL_MAX_CHARS = 20_000
+
+/** projects:updateEngagementDocument: the longest engagement document accepted (longer is refused, never cut). */
+export const ENGAGEMENT_DOCUMENT_MAX_CHARS = 100_000
+
+/** projects:engagementDocument result. Empty text and no updatedAt when there is none (always for code projects). */
+export interface EngagementDocumentInfo {
+  text: string
+  /** Epoch ms of the file's last write. */
+  updatedAt?: number
+  /** Who wrote it last: the user (editor) or setup (the approved charter). Present whenever updatedAt is. */
+  updatedBy?: 'user' | 'setup'
+}
+
+/** projects:updateEngagementDocument input (engagements only). Hidden characters other than tab, LF and CR are refused. */
+export interface EngagementDocumentUpdate {
+  projectId: string
+  text: string
+  /**
+   * The updatedAt the editor loaded (0 or undefined = no document yet). The save is refused when the stored document
+   * changed since; omitted while a document exists is refused too.
+   */
+  expectedUpdatedAt?: number
+}
+
+/** Context notes per project (`<data>/projects/<id>/context/<noteId>.md` plus an index). */
+export const ENGAGEMENT_NOTES_MAX = 50
+export const ENGAGEMENT_NOTE_MAX_CHARS = 50_000
+export const ENGAGEMENT_NOTE_TITLE_MAX_CHARS = 120
+
+/** One context note in the index (projects:listNotes). */
+export interface EngagementNote {
+  id: string
+  /** 1..120 characters, no control or hidden characters. */
+  title: string
+  /** Epoch ms. */
+  updatedAt: number
+  /** Length of the note's text. */
+  chars: number
+}
+
+/** projects:getNote result. */
+export interface EngagementNoteContent extends EngagementNote {
+  text: string
+}
+
+/** projects:getNote / projects:removeNote input. */
+export interface EngagementNoteRef {
+  projectId: string
+  noteId: string
+}
+
+/** projects:saveNote input. Without noteId a new note is created; with one, that note is replaced. */
+export interface EngagementNoteSaveInput {
+  projectId: string
+  noteId?: string
+  title: string
+  /** At most ENGAGEMENT_NOTE_MAX_CHARS; hidden characters other than tab, LF and CR are refused. */
+  text: string
+}
+
+/** main -> renderer push (IPC projectsEngagementChanged) after the document or a note was written or removed. */
+export interface EngagementChangedEvent {
+  projectId: string
+  what: 'document' | 'notes'
+}
+
+/**
+ * projects:remove input (a bare project id string is still accepted). `removeRuns` default true for both kinds
+ * (the behaviour before this flag existed). An engagement always removes its runs ("forget engagement"): false is
+ * ignored there. A code project with removeRuns false keeps its run records (orphaned, still in RunStore).
+ */
+export interface ProjectRemoveInput {
+  projectId: string
+  removeRuns?: boolean
+}
+
+/** projects:remove result: what was deleted, for the renderer's notice. Best effort: a failed delete is not counted. */
+export interface ProjectRemoveResult {
+  projectId: string
+  kind: ProjectKind
+  /** Run records deleted (index entries with their transcripts). */
+  runsRemoved: number
+  /** Run records left in place (code project with removeRuns false). */
+  runsKept: number
+  /** Context notes deleted. */
+  notesRemoved: number
+  /** Project skills whose stored files were deleted. */
+  skillsRemoved: number
+  /** `<data>/projects/<id>/ENGAGEMENT.md` existed and was deleted. */
+  documentRemoved: boolean
+  /** App-folder saved rules (`<data>/projects/<id>/permission-rules.json`) existed and were deleted. */
+  rulesRemoved: boolean
+  /** The Team review file (`<data>/team-reviews/<id>.json`) existed and was deleted. */
+  teamReviewRemoved: boolean
+  /** The skill evaluation file (`<data>/skill-evaluations/<id>.json`) existed and was deleted. */
+  skillEvaluationRemoved: boolean
+}
+
+/**
+ * UsageStatsQuery.range: a local calendar month as 'YYYY-MM' (months 01..12, years 2000..2999). Sugar over
+ * since / until (local midnight of the 1st to local midnight of the next month's 1st); it wins over both. A malformed
+ * month is refused.
+ */
+export interface UsageStatsRange {
+  month: string
+}
+
+/**
+ * runs:usageCsv columns, in order. One row per run (UsageStats.runs, newest first, at most USAGE_STATS_MAX_LIMIT rows);
+ * started / ended as ISO 8601 UTC, cost blank when unknown, cost_partial 'true' / ''. RFC 4180 quoting (CRLF line
+ * ends, a header row); a cell starting with = + - @ (or tab / CR) gets a leading single quote (formula injection).
+ */
+export const USAGE_CSV_COLUMNS = [
+  'started',
+  'ended',
+  'kind',
+  'status',
+  'title',
+  'roles',
+  'tokens_in',
+  'tokens_out',
+  'tokens_cache_read',
+  'tokens_cache_write',
+  'cost_usd',
+  'cost_partial'
+] as const
+
+/** Channels of this section; spread into IPC. */
+export const TEMPLATE_ENGAGEMENT_IPC = {
+  templatesList: 'templates:list',
+  templatesSaveFromProject: 'templates:saveFromProject',
+  templatesRemove: 'templates:remove',
+  templatesApply: 'templates:apply',
+  projectsEngagementDocument: 'projects:engagementDocument',
+  projectsUpdateEngagementDocument: 'projects:updateEngagementDocument',
+  projectsListNotes: 'projects:listNotes',
+  projectsGetNote: 'projects:getNote',
+  projectsSaveNote: 'projects:saveNote',
+  projectsRemoveNote: 'projects:removeNote',
+  /** main -> renderer push channel carrying EngagementChangedEvent. */
+  projectsEngagementChanged: 'projects:engagementChanged',
+  runsUsageCsv: 'runs:usageCsv',
+  /** Same input as projects:remove; returns the counts it would produce, deleting nothing. */
+  projectsRemovePreview: 'projects:removePreview'
+} as const
+
+/** window.orgai additions of this section (declaration-merged into OrgAIApi). */
+export interface OrgAIApi {
+  templates: {
+    list(): Promise<OrgTemplateInfo[]>
+    /** Save the project's chart (no ids, positions, secrets or grants) as a new template. Rejects at ORG_TEMPLATES_MAX. */
+    saveFromProject(input: OrgTemplateSaveInput): Promise<OrgTemplateInfo>
+    /** Resolves to the remaining templates. */
+    remove(templateId: string): Promise<OrgTemplateInfo[]>
+    apply(input: OrgTemplateApplyInput): Promise<AgentImportApplyResult>
+  }
+  engagement: {
+    document(projectId: string): Promise<EngagementDocumentInfo>
+    updateDocument(input: EngagementDocumentUpdate): Promise<EngagementDocumentInfo>
+    listNotes(projectId: string): Promise<EngagementNote[]>
+    getNote(ref: EngagementNoteRef): Promise<EngagementNoteContent>
+    saveNote(input: EngagementNoteSaveInput): Promise<EngagementNote>
+    /** Resolves to the remaining notes. */
+    removeNote(ref: EngagementNoteRef): Promise<EngagementNote[]>
+  }
+  onEngagementChanged(cb: (event: EngagementChangedEvent) => void): () => void
+  projectRemoval: {
+    /** What projects:remove would delete for the same input (counts), without deleting anything. */
+    preview(input: string | ProjectRemoveInput): Promise<ProjectRemoveResult>
+  }
+}
+
 /** Read-only facts about the running app (`app:info`). Structured-clone safe. */
 export interface AppInfo {
   /** app.getVersion() */
@@ -4199,6 +4447,7 @@ export interface AppInfo {
 }
 
 export const IPC = {
+  ...TEMPLATE_ENGAGEMENT_IPC,
   projectsList: 'projects:list',
   projectsGet: 'projects:get',
   projectsCreate: 'projects:create',

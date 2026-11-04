@@ -347,6 +347,33 @@ describe('creating projects', () => {
     store.create({ name: 'Z', path: d, brief: '' }, undefined, { prepare, importRoles })
     expect(order).toEqual(['prepare'])
   })
+
+  it('create applies fromTemplate after prepare, and importAgents wins when it produced roles', () => {
+    const d = dataDir()
+    const store = new ProjectStore(d)
+    const order: string[] = []
+    const prepare = (p: Project): Project => ({ ...p, provider: { ...p.provider, connection: 'openai' } })
+    const fromTemplate = (p: Project, id: string): Project => {
+      order.push(`tpl:${p.provider.connection}:${id}`)
+      return { ...p, roles: [role({ id: 'r2', slug: 'from-template' })] }
+    }
+    const importRoles = (p: Project): Project => ({ ...p, roles: [role({ id: 'r1', slug: 'imported' })] })
+    const noImport = (p: Project): Project => p
+    const a = store.create({ name: 'A', path: d, brief: '', templateId: 'tpl_1' }, undefined, { prepare, fromTemplate })
+    expect(order).toEqual(['tpl:openai:tpl_1'])
+    expect(a.roles.map((r) => r.slug)).toEqual(['from-template'])
+    order.length = 0
+    const b = store.create({ name: 'B', path: d, brief: '', templateId: 'tpl_1', importAgents: ['claude'] }, undefined, { prepare, fromTemplate, importRoles })
+    expect(order).toEqual([])
+    expect(b.roles.map((r) => r.slug)).toEqual(['imported'])
+    const c = store.create({ name: 'C', path: d, brief: '', templateId: 'tpl_1', importAgents: ['claude'] }, undefined, { prepare, fromTemplate, importRoles: noImport })
+    expect(order).toEqual(['tpl:openai:tpl_1'])
+    expect(c.roles.map((r) => r.slug)).toEqual(['from-template'])
+    order.length = 0
+    store.create({ name: 'D', path: d, brief: '' }, undefined, { prepare, fromTemplate })
+    store.create({ name: 'E', path: d, brief: '', templateId: '' }, undefined, { prepare, fromTemplate })
+    expect(order).toEqual([])
+  })
 })
 
 describe('Role.model validation', () => {

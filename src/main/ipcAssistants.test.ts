@@ -167,7 +167,8 @@ describe('registered handlers', () => {
       skills: { removeProjectFiles: vi.fn() } as never,
       skillEvaluation: {} as never,
       capabilities: { forgetProject: vi.fn() } as never,
-      quick: quick as never
+      quick: quick as never,
+      templates: {} as never
     })
     const call = (channel: string, ...args: unknown[]): unknown => handlers.get(channel)!({ sender: { id: 1 } }, ...args)
     return { call, runs, started, quick, projects }

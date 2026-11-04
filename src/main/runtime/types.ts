@@ -1,5 +1,7 @@
 import type {
   ConnectionId,
+  EngagementNote,
+  EngagementNoteContent,
   ModelRef,
   ModelTier,
   ImageAttachment,
@@ -248,6 +250,22 @@ export interface RuntimeContext {
    * before one is approved. Adapters pass it as PromptFlags.engagementDocument.
    */
   engagementDocument?(): string | undefined
+  /**
+   * engagement_context (ENGAGEMENT_CONTEXT_TOOL): the project's context notes. RunManager provides it on engagement
+   * work runs and single-agent runs (RunSummary.team 'single') of a stored project, never on quick, setup-like or
+   * trust-restricted runs. `list` is the index (EngagementNote), `read` one note's text or null for an unknown id.
+   * Read at call time. Missing = the tool is not offered (adapters) or says no notes are available.
+   */
+  engagementNotes?: {
+    list(): EngagementNote[]
+    read(noteId: string): EngagementNoteContent | null
+  }
+  /**
+   * propose_org_chart `fromTemplate` (setup runs): the saved team template's roles as drafts for this project
+   * (converted through the agent-import path, models mapped to the project's connection; no ids, grants or
+   * positions), with the template's name. null for an unknown id. Missing = templates unavailable.
+   */
+  orgTemplate?(templateId: string): { name: string; roles: Role[] } | null
   /**
    * Extra folders agents may read and edit like the project folder: Project.allowedDirectories resolved by RunManager
    * at run start (existing directories only, canonical, never touching OrgAI's data folder in either direction, never

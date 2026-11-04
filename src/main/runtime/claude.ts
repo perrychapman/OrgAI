@@ -577,6 +577,8 @@ export function buildAgents(
         isSetup,
         isolation,
         ...(ctx.run.quick ? { quick: ctx.run.quick } : {}),
+        // Single-agent work runs ('single'): the prompt drops delegation and plan wording.
+        ...(ctx.run.team ? { team: ctx.run.team } : {}),
         // The run's allowed directories, so agents know where a plain `cd` and edits need no approval.
         ...(ctx.allowedDirectories?.().length ? { allowedDirectories: ctx.allowedDirectories() } : {}),
         // Read-only reference folders, so agents read them and never try to change them.

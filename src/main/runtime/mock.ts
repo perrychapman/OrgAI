@@ -850,6 +850,10 @@ export class MockSession implements RuntimeSession {
         { type: 'text', text: `I can see ${n} OrgAI project${n === 1 ? '' : 's'}. Tell me what you would like to do.` }
       ]
     }
+    // A single-agent work run (team 'single'): like a Chat conversation, one reply to the prompt, no spawning, no plan.
+    if (this.ctx.run.kind === 'work' && this.ctx.run.team === 'single' && this.script.work === DEFAULT_WORK) {
+      return [{ type: 'text', text: this.script.reply.replace('{text}', this.ctx.prompt) }]
+    }
     if (this.isSetup && this.script.setup === DEFAULT_SETUP && library[0]) {
       const at = DEFAULT_SETUP.findIndex((st) => st.type === 'harness' && st.name === 'complete_setup')
       const item: Record<string, unknown> = { libraryId: library[0].id, ...(this.root ? { roles: [this.root.slug] } : {}) }

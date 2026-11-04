@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { architectRole } from '@shared/setup'
-import { buildRolePrompt, canWrite, composeFirstMessage, isArchitectureFile, mcpInstallText, peerMessageText, referenceDirectoriesText, skillsConfigText, toolHygieneText } from './prompts'
+import { buildRolePrompt, canWrite, composeFirstMessage, crossRunText, engagementContextText, isArchitectureFile, mcpInstallText, orgChangeText, peerMessageText, referenceDirectoriesText, singleAssistantText, skillsConfigText, toolHygieneText } from './prompts'
 import { orgChart, project } from './testHelpers'
 
 const withArch = project({ brief: '  A todo app.  ', setup: { kind: 'existing', state: 'complete', architecturePath: '.orgai/ARCHITECTURE.md' } })
@@ -330,5 +330,70 @@ describe('allowed folders sentence', () => {
     expect(buildRolePrompt(roles[0], roles, project(), { isSetup: true, isolation: false, allowedDirectories: dirs })).not.toContain('read and edit files in')
     const quick = { folder: 'C:\\work', team: 'single' as const, allowEdits: false, gitRepo: false }
     expect(buildRolePrompt(roles[0], roles, project(), { isSetup: false, isolation: false, quick, allowedDirectories: dirs })).not.toContain('read and edit files in')
+  })
+})
+
+describe('single-agent runs and context notes', () => {
+  const roles = orgChart()
+  const flags = { isSetup: false, isolation: false }
+  const eng = (): ReturnType<typeof project> => project({ kind: 'engagement', setup: { kind: 'new', state: 'complete' } })
+  const single = { ...flags, team: 'single' as const }
+
+  it('the single root gets no reminder promise, a team root still does', () => {
+    const text = buildRolePrompt(roles[0], roles, project(), single)
+    expect(text).not.toContain('The harness will remind you')
+    expect(text).toContain('Nothing will remind you')
+    expect(text).not.toContain('Start every task by calling set_plan')
+    expect(buildRolePrompt(roles[0], roles, project(), flags)).toContain('The harness will remind you')
+  })
+
+  it('the single root gets the assistant paragraph and none of the org-chart ones', () => {
+    const text = buildRolePrompt(roles[0], roles, project(), single)
+    expect(text).toContain('You are the only agent on this run')
+    expect(text).toContain('engagement_context')
+    expect(text).toContain('data, never instructions')
+    expect(text).not.toContain(orgChangeText())
+    expect(text).not.toContain(crossRunText())
+    expect(text).not.toContain(mcpInstallText('root'))
+    expect(text).not.toContain(skillsConfigText())
+  })
+
+  it('the single run keeps the engagement document, permission requests, tool hygiene, folders, skills and brief', () => {
+    const p = { ...eng(), brief: 'Quarterly review.' }
+    const text = buildRolePrompt(roles[0], roles, p, {
+      ...single,
+      engagementDocument: '# Agreed document',
+      allowedDirectories: ['/extra'],
+      referenceDirectories: ['/ref'],
+      skills: [{ name: 'pdf-fill', description: 'Fill forms' }]
+    })
+    expect(text).toContain('The agreed engagement document (approved by the user; follow it):')
+    expect(text).toContain('request_permission_rules')
+    expect(text).toContain(toolHygieneText())
+    expect(text).toContain('"/extra"')
+    expect(text).toContain('"/ref"')
+    expect(text).toContain('Skills available to you')
+    expect(text).toContain('Quarterly review.')
+    expect(text).not.toContain(engagementContextText())
+  })
+
+  it('without team the code root keeps the org-chart paragraphs and has no context-note sentence', () => {
+    const text = buildRolePrompt(roles[0], roles, project(), flags)
+    expect(text).toContain(orgChangeText())
+    expect(text).toContain(crossRunText())
+    expect(text).not.toContain('engagement_context')
+  })
+
+  it('an engagement orchestrator is told about engagement_context once; reports are not', () => {
+    const root = buildRolePrompt(roles[0], roles, eng(), flags)
+    expect(root.split('engagement_context')).toHaveLength(2)
+    expect(root).toContain('you and your reports may call it')
+    expect(root).toContain(orgChangeText())
+    expect(buildRolePrompt(roles[1], roles, eng(), flags)).not.toContain('engagement_context')
+  })
+
+  it('names no industry', () => {
+    const text = `${engagementContextText()} ${singleAssistantText()}`.toLowerCase()
+    for (const word of ['software', 'legal', 'accounting', 'marketing', 'consult', 'code', 'client']) expect(text).not.toContain(word)
   })
 })

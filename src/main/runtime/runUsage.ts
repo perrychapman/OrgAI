@@ -1,6 +1,6 @@
 import type { AgentInstance, AgentUsage, CostSource, ModelUsageEntry, PriceSource, RoleUsage, RunRecord, RunSummary, RunUsage, SkillUseCount, TokenUsage, UsageStats, UsageStatsQuery, UsageTrendPoint } from '@shared/types'
 import { agentProducedNothing, emptyTokens, totalTokens } from '@shared/defaults'
-import { USAGE_STATS_DEFAULT_LIMIT, USAGE_STATS_MAX_LIMIT } from '@shared/types'
+import { USAGE_CSV_COLUMNS, USAGE_STATS_DEFAULT_LIMIT, USAGE_STATS_MAX_LIMIT } from '@shared/types'
 
 /**
  * Vendor-neutral usage metrics: the adapter-facing tally helpers (below, used by claude.ts, codex.ts and mock.ts),
@@ -517,4 +517,60 @@ export function buildUsageStats(summaries: readonly RunSummary[], query: UsageSt
   const stats: UsageStats = { projectId: query.projectId, runs, roles: totals.roles as UsageStats['roles'], trend, totals, generatedAt: now }
   if (truncated) stats.truncated = true
   return stats
+}
+
+// ---------- month range and CSV export ----------
+
+/**
+ * A local calendar month as the [since, until) window UsageStatsQuery uses: local midnight of the 1st to local
+ * midnight of the next month's 1st. 'YYYY-MM' only, months 01..12, years 2000..2999; anything else throws
+ * "Invalid month". Pure.
+ */
+export function monthRange(month: string): { since: number; until: number } {
+  const m = typeof month === 'string' ? /^(2\d{3})-(0[1-9]|1[0-2])$/.exec(month) : null
+  if (!m) throw new Error('Invalid month')
+  const year = Number(m[1])
+  const index = Number(m[2]) - 1
+  return { since: new Date(year, index, 1).getTime(), until: new Date(year, index + 1, 1).getTime() }
+}
+
+/**
+ * One CSV cell: formula-injection guard for strings (a leading tab, CR or LF, or = + - @ and their full-width forms
+ * after any leading whitespace gets a leading apostrophe), then RFC 4180 quoting.
+ */
+function csvCell(value: string | number): string {
+  let s = String(value)
+  if (typeof value === 'string' && (/^[\t\r\n]/.test(s) || /^[=+\-@＝＋－＠]/.test(s.trimStart()))) s = `'${s}`
+  return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+}
+
+/**
+ * runs:usageCsv body: USAGE_CSV_COLUMNS header, then one row per stats.runs entry (already newest first). started /
+ * ended are ISO 8601 UTC (ended blank while missing), title falls back to the prompt, roles is the role count, cost is
+ * blank when unknown (never 0) and otherwise fixed-point with 6 decimals. RFC 4180 with CRLF line ends, no trailing
+ * newline and a leading UTF-8 BOM so spreadsheets read it as UTF-8. When `stats.truncated` the file holds only the
+ * returned rows (the newest ones); nothing marks that inside the file. Pure.
+ */
+export function buildUsageCsv(stats: UsageStats): string {
+  const iso = (t: number | undefined): string => (typeof t === 'number' && Number.isFinite(t) ? new Date(t).toISOString() : '')
+  const lines: string[] = [USAGE_CSV_COLUMNS.join(',')]
+  for (const r of stats.runs) {
+    const u = r.usage
+    const cells: (string | number)[] = [
+      iso(r.startedAt),
+      iso(r.endedAt),
+      r.kind,
+      r.status,
+      r.title || r.prompt || '',
+      u.roles.length,
+      u.tokens.input,
+      u.tokens.output,
+      u.tokens.cacheRead,
+      u.tokens.cacheWrite,
+      u.costUsd === null || !Number.isFinite(u.costUsd) ? '' : u.costUsd.toFixed(6),
+      u.costPartial ? 'true' : ''
+    ]
+    lines.push(cells.map(csvCell).join(','))
+  }
+  return '﻿' + lines.join('\r\n')
 }
