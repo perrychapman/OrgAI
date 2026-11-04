@@ -21,7 +21,7 @@ import type {
   TeamReviewSummary
 } from '../shared/types'
 import { IPC, isMenuAction } from '../shared/types'
-import { MCP_SCOPE_IPC } from '../shared/types'
+import { KIT_IPC, MCP_SCOPE_IPC } from '../shared/types'
 
 const api: OrgAIApi = {
   projects: {
@@ -277,6 +277,14 @@ const api: OrgAIApi = {
     list: () => ipcRenderer.invoke(MCP_SCOPE_IPC.connectorPresetsList),
     upsert: (def) => ipcRenderer.invoke(MCP_SCOPE_IPC.connectorPresetsUpsert, def),
     remove: (input) => ipcRenderer.invoke(MCP_SCOPE_IPC.connectorPresetsRemove, input)
+  },
+  // ---- Practice kit ----
+  kit: {
+    pickExportPath: () => ipcRenderer.invoke(KIT_IPC.kitPickExportPath),
+    pickImportPath: () => ipcRenderer.invoke(KIT_IPC.kitPickImportPath),
+    export: (input) => ipcRenderer.invoke(KIT_IPC.kitExport, input),
+    previewImport: (input) => ipcRenderer.invoke(KIT_IPC.kitPreviewImport, input),
+    applyImport: (input) => ipcRenderer.invoke(KIT_IPC.kitApplyImport, input)
   }
 }
 

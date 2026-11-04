@@ -4789,3 +4789,170 @@ export interface OrgAIApi {
     remove(input: ConnectorPresetRemoveInput): Promise<UserConnectorDef[]>
   }
 }
+
+// ---- Practice kit ----
+
+/** The practice-kit file format (`*.orgai-kit.json`, UTF-8 JSON, one file). */
+export const KIT_FORMAT = 'orgai.kit/1'
+/** Largest kit file main writes or reads. */
+export const KIT_MAX_BYTES = 50 * 1024 * 1024
+/** Most items of one kind in a kit, and most items in all. */
+export const KIT_MAX_ITEMS_PER_KIND = 200
+export const KIT_MAX_ITEMS = 500
+/** Most choices kit:applyImport accepts. */
+export const KIT_MAX_CHOICES = 500
+
+export type KitItemKind = 'skill' | 'server' | 'preset' | 'template'
+
+/** What to export from one group: the stored ids (library entry ids, preset ids, template ids) or every item. Absent = none. */
+export type KitSelection = string[] | 'all'
+
+/** kit:export input. `path` must come from kit:pickExportPath (main refuses any other path). */
+export interface KitExportInput {
+  path: string
+  include: {
+    /** Skill library entry ids. */
+    skills?: KitSelection
+    /** MCP library entry ids. */
+    mcpServers?: KitSelection
+    /** Custom connector preset ids. */
+    connectorPresets?: KitSelection
+    /** Team template ids. */
+    templates?: KitSelection
+  }
+}
+
+/** Items per group. */
+export interface KitCounts {
+  skills: number
+  mcpServers: number
+  connectorPresets: number
+  templates: number
+}
+
+export interface KitExportResult {
+  path: string
+  /** What went into the file. */
+  counts: KitCounts
+  /** Bytes written. */
+  bytes: number
+  /** Plain-language notes: items left out and why, what the file does not carry (secrets, sign-ins). */
+  notes: string[]
+}
+
+/** kit:previewImport input. `path` must come from kit:pickImportPath. */
+export interface KitPreviewInput {
+  path: string
+}
+
+/** new = not in your data; same = identical to yours; different = same name (id for presets), other content; refused = main will not import it. */
+export type KitItemStatus = 'new' | 'same' | 'different' | 'refused'
+
+/** add (status new), replace / copy (status different), skip (always). */
+export type KitAction = 'add' | 'replace' | 'copy' | 'skip'
+
+export interface KitPreviewItem {
+  /** Opaque, stable for one file digest ("skill:0"); choices refer to it. */
+  key: string
+  kind: KitItemKind
+  /** Display name (control and hidden characters replaced, at most 80 characters). */
+  name: string
+  description?: string
+  status: KitItemStatus
+  /** The action to preselect: 'add' for new, otherwise 'skip'. */
+  action: KitAction
+  /** Why it is `different` ("A skill with this name exists with other content") or why a replace is blocked. */
+  conflict?: string
+  /** False when a replace is not possible (a connector entry or a built server of yours has that name). */
+  canReplace: boolean
+  /** Bytes the item takes in the file. */
+  size: number
+  notes: string[]
+  /** status refused: the reason. */
+  refusal?: string
+  /** Servers and presets: what would run or connect, in full (command and arguments, or address). Never clamped. */
+  command?: string
+  /** Servers: secret slot names the user must fill in after importing (env, then headers). */
+  secretSlots?: string[]
+  /** Servers: every project that links it keeps its own secrets. */
+  perProjectSecrets?: boolean
+  /** Skills: files the skill carries other than SKILL.md. */
+  files?: string[]
+  /** Skills: files that look like scripts (the skill may ask agents to run them). */
+  scripts?: string[]
+  /** Templates: role names. */
+  roleNames?: string[]
+}
+
+export interface KitImportPreview {
+  path: string
+  fileName: string
+  /** sha256 hex of the file's bytes; kit:applyImport refuses a missing or different one. */
+  digest: string
+  bytes: number
+  exportedAt?: string
+  appVersion?: string
+  platform?: string
+  items: KitPreviewItem[]
+  /** Whole-file notes ("3 items refused"). */
+  notes: string[]
+}
+
+export interface KitImportChoice {
+  key: string
+  action: KitAction
+}
+
+export interface KitApplyInput {
+  path: string
+  digest: string
+  /** Only these items are applied; an item without a choice is skipped. At most KIT_MAX_CHOICES. */
+  choices: KitImportChoice[]
+}
+
+export interface KitNeedsSecrets {
+  /** The library server's name. */
+  name: string
+  /** Secret environment variable names to set in Settings > Connectors. */
+  env: string[]
+  /** Secret header names. */
+  headers: string[]
+  /** Each project that links it enters its own values. */
+  perProject: boolean
+}
+
+export interface KitApplyResult {
+  added: number
+  replaced: number
+  copied: number
+  skipped: number
+  /** Added + replaced + copied per group. */
+  counts: KitCounts
+  /** Items that could not be applied (the rest were). */
+  failed: { key: string; name: string; reason: string }[]
+  /** Imported servers that cannot start until their secrets are set. */
+  needsSecrets: KitNeedsSecrets[]
+  notes: string[]
+}
+
+/** IPC channels of this section. */
+export const KIT_IPC = {
+  /** Opens the save dialog; resolves to the path or null. Only that path is accepted by kit:export (once). */
+  kitPickExportPath: 'kit:pickExportPath',
+  /** Opens the file dialog; resolves to the path or null. Only that path is accepted by the import channels. */
+  kitPickImportPath: 'kit:pickImportPath',
+  kitExport: 'kit:export',
+  kitPreviewImport: 'kit:previewImport',
+  kitApplyImport: 'kit:applyImport'
+} as const
+
+export interface OrgAIApi {
+  /** Practice kit: skills, custom servers, presets and templates in one file. Secret values and sign-ins never go in it. No undo. */
+  kit: {
+    pickExportPath(): Promise<string | null>
+    pickImportPath(): Promise<string | null>
+    export(input: KitExportInput): Promise<KitExportResult>
+    previewImport(input: KitPreviewInput): Promise<KitImportPreview>
+    applyImport(input: KitApplyInput): Promise<KitApplyResult>
+  }
+}
