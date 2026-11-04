@@ -5,12 +5,14 @@ import type { McpMutationResult, McpServerInfo, Project, Role, ToolName } from '
 import { TOOL_CATALOG, TOOL_HINTS } from '@shared/types'
 import RoleServices from '../connectors/RoleServices'
 import RoleSkills from '../skills/RoleSkills'
+import { Badge } from '../ui/Badge'
 import { Button } from '../ui/Button'
 import { Checkbox } from '../ui/Checkbox'
 import { Icon } from '../ui/Icon'
 import { useAppStore } from '../../store/useAppStore'
 import { cleanIpcError } from '../../lib/ipcError'
-import { grantServerRoles, revokePlan, toolsSummaryParts } from '../../lib/roleCapabilities'
+import { grantServerRoles, grantedServers, revokePlan, toolsSummaryParts } from '../../lib/roleCapabilities'
+import { perProjectState } from '../mcp/mcpHelpers'
 import { CapabilityGroup, type CapabilityKind } from './CapabilityBlock'
 import { CapabilityChooser, type ChooserActions } from './CapabilityChooser'
 
@@ -152,6 +154,8 @@ export default function RoleCapabilities({
     }
   }
 
+  const waitingForValues = grantedServers(servers ?? [], role).filter((s) => s.spec.libraryId && perProjectState(s).missingCount > 0)
+
   const ask = onAskAssistant
   const askFor = (scope: CapabilityKind): (() => void) | undefined =>
     ask
@@ -205,6 +209,31 @@ export default function RoleCapabilities({
       </CapabilityGroup>
 
       <RoleServices role={role} servers={servers} error={connError} onRevoke={revoke} onAdd={() => setChooser('connections')} onAsk={askFor('connections')} />
+
+      {servers && waitingForValues.length > 0 && (
+        <ul className="role-cap-list" aria-label={`Connections of ${role.name} that need values`} data-testid="role-needs-values-list">
+          {waitingForValues.map((info) => (
+            <li key={info.spec.id} className="role-cap-row" data-testid="role-needs-values" data-name={info.spec.name}>
+              <span className="role-cap-text">
+                <span className="role-service-name">{info.spec.name}</span>
+              </span>
+              <span className="role-cap-tags">
+                <Badge tone="attention" testId="role-needs-values-badge">
+                  Needs values
+                </Badge>
+                <Button
+                  size="sm"
+                  ariaLabel={`Fill in values for ${info.spec.name}`}
+                  testId="role-fill-in"
+                  onClick={() => useAppStore.getState().openProjectMcp(project.id, info.spec.id)}
+                >
+                  Fill in
+                </Button>
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
 
       <RoleSkills
         project={project}

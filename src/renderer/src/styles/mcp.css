@@ -137,6 +137,72 @@
   box-shadow: inset var(--space-0h) 0 0 var(--warning-text);
 }
 
+/* Per-project values on a linked row: one column in a narrow block, label | field at 420px and up. */
+.mcp-per-project {
+  container-type: inline-size;
+  container-name: mcp-pp;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-left: var(--space-8);
+  min-width: 0;
+}
+.mcp-pp-title {
+  margin: 0;
+  font-size: var(--text-body);
+  line-height: var(--text-body-lh);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+.mcp-pp-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-1);
+  align-items: start;
+  min-width: 0;
+}
+.mcp-pp-label {
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.mcp-pp-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+  max-width: 40ch;
+}
+.mcp-pp-field .secret-row {
+  flex-wrap: wrap;
+}
+.mcp-pp-status {
+  min-height: var(--text-small-lh);
+}
+@container mcp-pp (min-width: 420px) {
+  .mcp-pp-row {
+    grid-template-columns: minmax(0, 12ch) minmax(0, 1fr);
+    column-gap: var(--space-3);
+  }
+  .mcp-pp-label {
+    padding-top: var(--space-2);
+  }
+}
+.mcp-var-quiet {
+  display: inline-block;
+  padding: var(--space-2) 0;
+  font-size: var(--text-small);
+}
+.mcp-link-static {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}
+
 @container settings-col (min-width: 480px) {
   .mcp-row-main {
     grid-template-columns: auto minmax(0, 1fr) auto;
