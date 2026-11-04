@@ -1,5 +1,5 @@
 import type { ReactElement } from 'react'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { KnowledgeGraph, MaintenanceResult, PendingWorktree, Project, WorktreeDiff } from '@shared/types'
 import { isRunLive, useAppStore } from '../../store/useAppStore'
 import { Banner } from '../ui/Banner'
@@ -68,7 +68,11 @@ export function MaintenanceSection({ project }: { project: Project }): ReactElem
   }, [engagement, project.id])
 
   const graphEmpty = graph !== null && graph.nodes.length === 0 && graph.edges.length === 0
-  const clearReasonId = `${project.id}-knowledge-clear-why`
+  const noticeRef = useRef<HTMLDivElement>(null)
+  const [noticeFocus, setNoticeFocus] = useState(0)
+  useEffect(() => {
+    if (noticeFocus > 0) noticeRef.current?.focus()
+  }, [noticeFocus])
 
   const clearKnowledge = async (): Promise<void> => {
     const ok = await confirm({
@@ -91,11 +95,13 @@ export function MaintenanceSection({ project }: { project: Project }): ReactElem
     try {
       setGraph(await window.orgai.knowledge.clear(project.id))
       setNotice({ ok: true, message: KNOWLEDGE_CLEARED_NOTICE })
+      // The button is disabled once the graph is empty, so after a clear focus moves to the notice (reviewer M1).
+      setNoticeFocus((n) => n + 1)
     } catch (e) {
       setNotice({ ok: false, message: cleanIpcError(e) })
+      requestAnimationFrame(() => document.querySelector<HTMLElement>('[data-testid=knowledge-clear]')?.focus())
     } finally {
       setBusy(null)
-      requestAnimationFrame(() => document.querySelector<HTMLElement>('[data-testid=knowledge-clear]')?.focus())
     }
   }
   const isolating = isolateWritersOn(project)
@@ -292,7 +298,11 @@ export function MaintenanceSection({ project }: { project: Project }): ReactElem
         </SettingsCard>
       )}
 
-      {notice && <div className={`draft-box${notice.ok ? '' : ' is-error'}`} role={notice.ok ? 'status' : 'alert'}>{notice.message}</div>}
+      {notice && (
+        <div ref={noticeRef} tabIndex={-1} className={`draft-box${notice.ok ? '' : ' is-error'}`} role={notice.ok ? 'status' : 'alert'} data-testid="maintenance-notice">
+          {notice.message}
+        </div>
+      )}
 
       {engagement && (
         <SettingsGroup title="Danger zone">
@@ -313,14 +323,13 @@ export function MaintenanceSection({ project }: { project: Project }): ReactElem
                 variant="danger"
                 size="sm"
                 disabled={busy !== null || graph === null || graphEmpty}
-                ariaDescribedBy={graphEmpty ? clearReasonId : undefined}
                 testId="knowledge-clear"
                 onClick={() => void clearKnowledge()}
               >
                 {busy === 'knowledge-clear' ? 'Clearing…' : 'Clear everything…'}
               </Button>
               {graphEmpty && (
-                <span id={clearReasonId} className="settings-quiet" data-testid="knowledge-clear-empty">
+                <span className="settings-quiet" data-testid="knowledge-clear-empty">
                   Nothing recorded yet.
                 </span>
               )}

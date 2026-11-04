@@ -152,6 +152,12 @@ function entityOfItem(entries: readonly TranscriptEntry[], before: number, agent
   return undefined
 }
 
+/** An id as the store mints them (kn_ / ke_ / kf_ plus a short token); anything else from agent text is ignored. */
+export const KNOWLEDGE_ID_RE = /^(kn|ke|kf)_[A-Za-z0-9_-]{1,64}$/
+/** A note id as main mints them (short token, no punctuation beyond _ and -). */
+const NOTE_ID_RE = /^[A-Za-z0-9_-]{1,64}$/
+const validId = (id: string | undefined): string | undefined => (id && KNOWLEDGE_ID_RE.test(id) ? id : undefined)
+
 /** The focus request and name of a write row from the call's input, its result and the row text. */
 function rowFor(text: string, input: unknown, result: string | undefined, ctx: { entries: readonly TranscriptEntry[]; at: number; agentId: string }): KnowledgeRow {
   const i = obj(input)
@@ -159,7 +165,7 @@ function rowFor(text: string, input: unknown, result: string | undefined, ctx: {
   let m: RegExpExecArray | null
   if ((m = /^(?:Recorded|Updated) \S+ (.*)$/.exec(text))) {
     const name = m[1]
-    const nodeId = result ? /\((kn_[^()\s]+)\)/.exec(result)?.[1] : undefined
+    const nodeId = validId(result ? /\((kn_[^()\s]+)\)/.exec(result)?.[1] : undefined)
     const inputKind = normalizeKnowledgeKey(str(i.kind)) ?? undefined
     const focus: KnowledgeFocus = nodeId ? { nodeId } : { ...(inputKind ? { kind: inputKind } : {}), name }
     return { text: shown, name, focus }
@@ -168,22 +174,23 @@ function rowFor(text: string, input: unknown, result: string | undefined, ctx: {
     const relation = normalizeKnowledgeKey(str(i.relation)) ?? undefined
     const to = str(i.to)
     const target = linkedTarget(text, relation) ?? (to && !/^kn_/.test(to) ? to : undefined)
-    if (to && /^kn_/.test(to)) return { text: shown, name: target ?? to, focus: { nodeId: to } }
+    if (to && /^kn_/.test(to)) return validId(to) ? { text: shown, name: target ?? to, focus: { nodeId: to } } : { text: shown, name: target ?? '' , ...(target ? { focus: { name: target } } : {}) }
     return target ? { text: shown, name: target, focus: { name: target } } : { text: shown, name: '' }
   }
   if ((m = /^Retired node \S+ (.*)$/.exec(text))) {
     const name = m[1]
-    const nodeId = str(i.nodeId)
+    const nodeId = validId(str(i.nodeId))
     return { text: shown, name, focus: nodeId ? { nodeId } : { name } }
   }
   if (text.startsWith('Retired ')) {
-    const itemId = str(i.factId) ?? str(i.edgeId)
+    const itemId = validId(str(i.factId) ?? str(i.edgeId))
     const ref = itemId ? entityOfItem(ctx.entries, ctx.at, ctx.agentId, itemId) : undefined
     return ref ? { text: shown, name: ref.name, focus: { nodeId: ref.nodeId } } : { text: shown, name: '' }
   }
   if ((m = /^Saved note (.*)$/.exec(text))) {
     const title = m[1]
-    const noteId = result ? /^Saved note (\S+) \(/.exec(firstLine(result))?.[1] : undefined
+    const rawNoteId = result ? /^Saved note (\S+) \(/.exec(firstLine(result))?.[1] : undefined
+    const noteId = rawNoteId && NOTE_ID_RE.test(rawNoteId) ? rawNoteId : undefined
     return { text: shown, name: title, focus: noteId ? { noteId } : { noteTitle: title } }
   }
   return { text: shown, name: '' }

@@ -112,6 +112,7 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
         <button type="button" className="run-meta-item run-meta-recorded" data-testid="run-meta-recorded" title="What the team recorded this run. Opens Knowledge." onClick={() => setView('knowledge')}>
           <Icon icon={Database} size="xs" />
           Recorded {recorded} item{recorded === 1 ? '' : 's'}
+          <span className="sr-only"> (opens Knowledge)</span>
         </button>
       )}
       {sessions > 1 && (

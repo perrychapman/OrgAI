@@ -212,8 +212,10 @@ try {
   // ======== 3. RunMeta (section 8) ========
   await projectTab(page, 'Live').click()
   const meta = page.locator('[data-testid=run-meta-recorded]')
+  // The button carries an sr-only " (opens Knowledge)" suffix in its accessible name; the visible text is checked.
+  const metaText = async () => clean((await meta.innerText().catch(() => '')).replace('(opens Knowledge)', ''))
   await meta.waitFor({ state: 'visible', timeout: 8000 })
-  check(clean(await meta.innerText()) === 'Recorded 8 items', 'RunMeta reads "Recorded 8 items"', clean(await meta.innerText()))
+  check((await metaText()) === 'Recorded 8 items', 'RunMeta reads "Recorded 8 items"', await metaText())
   check((await meta.evaluate((el) => el.tagName)) === 'BUTTON' && /Opens Knowledge/.test((await meta.getAttribute('title')) ?? ''), 'the count is a button with the Knowledge title')
   await meta.click()
   await page.locator('[data-testid=knowledge-view]').waitFor({ state: 'visible', timeout: 8000 })
@@ -272,14 +274,14 @@ try {
   check(await until(async () => (await clearBtn.isDisabled()) && (await page.locator('[data-testid=knowledge-clear-empty]').count()) === 1), 'after clearing, the button greys with "Nothing recorded yet."')
   const notesAfter = await page.evaluate((id) => window.orgai.engagement.listNotes(id), a.id)
   check(notesAfter.length === 2, 'context notes survive Clear everything', String(notesAfter.length))
-  check(await page.evaluate(() => document.activeElement?.getAttribute('data-testid') === 'knowledge-clear' || document.activeElement === document.body) , 'focus returns to the button (or the body when it is disabled)')
+  check(await until(async () => page.evaluate(() => document.activeElement?.getAttribute('data-testid') === 'maintenance-notice')), 'focus moves to the "Cleared everything" notice (the button is disabled once the graph is empty)')
   await shot('cleared-1600-dark')
   // The summary line follows the clear.
   await openSettingsPane('General')
   check(await until(async () => clean(await summary.innerText()) === summaryLine(after, notesAfter)), 'the summary line refetches after the clear', clean(await summary.innerText()))
   // The RunMeta count still counts what the run did, not what is left.
   await projectTab(page, 'Live').click()
-  check(clean(await meta.innerText().catch(() => '')) === 'Recorded 8 items', 'RunMeta still reads "Recorded 8 items" after the clear (it counts the run, not the graph)')
+  check((await metaText()) === 'Recorded 8 items', 'RunMeta still reads "Recorded 8 items" after the clear (it counts the run, not the graph)')
 
   // ======== 6. Both sizes and themes: transcript, Settings and Maintenance, no page scroll ========
   for (const [w, h, theme] of [[1600, 1000, 'light'], [1024, 640, 'dark'], [1024, 640, 'light']]) {
@@ -292,7 +294,7 @@ try {
     check(JSON.stringify(r.filter((t) => EXPECTED_ROWS.includes(t))) === JSON.stringify(EXPECTED_ROWS), `${tag}: the eleven knowledge sentences show`, JSON.stringify(r).slice(0, 400))
     check((await page.locator('[data-testid=knowledge-row-open]').count()) === RECORDING_ROWS.length, `${tag}: every recording row has an Open link`)
     const metaVisible = await meta.isVisible().catch(() => false)
-    check(metaVisible && clean(await meta.innerText()) === 'Recorded 8 items', `${tag}: RunMeta reads "Recorded 8 items"`)
+    check(metaVisible && (await metaText()) === 'Recorded 8 items', `${tag}: RunMeta reads "Recorded 8 items"`)
     await fitsWindow(`${tag} Live`)
     await shot(`transcript-${w}-${theme}`)
     await openSettingsPane('General')

@@ -56,7 +56,7 @@ export function ContextNotesSection({ project }: { project: Project }): ReactEle
         </Banner>
       )}
       <p className="settings-card-note knowledge-summary-line">
-        <span data-testid="knowledge-summary">{summary === null ? 'Looking…' : summary || 'Nothing recorded yet'}</span>
+        <span data-testid="knowledge-summary">{error ? 'Could not read what the team recorded' : summary === null ? 'Looking…' : summary || 'Nothing recorded yet'}</span>
         {' · '}
         <button type="button" className="link-btn" data-testid="knowledge-open" onClick={() => setView('knowledge')}>
           Open Knowledge

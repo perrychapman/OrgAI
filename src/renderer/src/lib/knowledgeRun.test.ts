@@ -166,3 +166,15 @@ describe('collapseKnowledgeWrites', () => {
     expect(c.hidden.size).toBe(0)
   })
 })
+
+describe('id guards', () => {
+  it('ignores ids from agent text that are not shaped like store ids', () => {
+    const upsert = call('engagement_knowledge', { action: 'upsert_node', kind: 'person', name: 'Jane Doe' })
+    const entries = [upsert, harness('Recorded person Jane Doe'), result(upsert, 'Created person Jane Doe (kn_<script>alert(1)</script>).')]
+    const { rows } = collapseKnowledgeWrites(entries)
+    expect([...rows.values()][0]?.focus).toEqual({ kind: 'person', name: 'Jane Doe' })
+    const retire = call('engagement_knowledge', { action: 'retire', nodeId: 'kn_' + 'x'.repeat(200) })
+    const rows2 = collapseKnowledgeWrites([retire, harness('Retired node person Jane Doe'), result(retire, 'Retired node person Jane Doe (kn_x).')]).rows
+    expect([...rows2.values()][0]?.focus).toEqual({ name: 'Jane Doe' })
+  })
+})
