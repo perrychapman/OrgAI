@@ -14,7 +14,13 @@ import { useAllSummaries, useLiveRuns, useNow, useWaitingRuns } from './useDashb
  * the polite live region `dashboard-live` is a visually hidden sibling that stays empty on mount and speaks only when
  * the figure changes afterwards, or when `announce` changes to a new message.
  */
-export function HeroBand({ firstLaunch, announce }: { firstLaunch: boolean; announce: string | null }): ReactElement {
+/** A message for the page's one live region; `seq` rises with every message so a repeated text still speaks. */
+export interface DashboardAnnouncement {
+  text: string
+  seq: number
+}
+
+export function HeroBand({ firstLaunch, announce }: { firstLaunch: boolean; announce: DashboardAnnouncement | null }): ReactElement {
   const projectCount = useAppStore((s) => s.projects.length)
   const appInfo = useAppStore((s) => s.appInfo)
   const waiting = useWaitingRuns()
@@ -42,9 +48,9 @@ export function HeroBand({ firstLaunch, announce }: { firstLaunch: boolean; anno
     setSpoken(figure)
   }, [figure])
   useEffect(() => {
-    if (lastAnnounce.current === announce) return
+    if (lastAnnounce.current?.seq === announce?.seq) return
     lastAnnounce.current = announce
-    if (announce) setSpoken(announce)
+    if (announce) setSpoken(announce.text)
   }, [announce])
 
   const version = appInfo?.version

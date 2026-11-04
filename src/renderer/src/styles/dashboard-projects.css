@@ -227,7 +227,13 @@ html[data-reduce-motion='on'] .project-tile-dot.live {
   grid-template-columns: minmax(0, 1fr);
   gap: var(--space-4);
 }
-@container dash-facts (min-width: 600px) {
+/* A card needs about 240 px for the "Connection settings" link and a usage bar: two across from 500 px, three from 780. */
+@container dash-facts (min-width: 500px) {
+  .dash-facts-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@container dash-facts (min-width: 780px) {
   .dash-facts-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
@@ -271,6 +277,9 @@ html[data-reduce-motion='on'] .project-tile-dot.live {
 .dash-fact-link {
   align-self: flex-start;
   margin-top: auto;
+  max-width: 100%;
+  white-space: normal;
+  text-align: start;
 }
 
 .dash-usage-row {

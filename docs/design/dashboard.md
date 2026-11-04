@@ -255,3 +255,23 @@ Removed: `.project-card` hooks.
 - `app:openPath` in main takes any path unvalidated; the Dashboard passes only a stored `project.path`. Flag for the
   Reviewer; tightening it is a main-process change.
 - Costs and the Since list cover only the summaries the renderer holds (`loadAllHistory`), trimmed by runs-to-keep.
+
+## 12. Implementation notes (2026-11-03)
+
+- Files: `views/DashboardView.tsx` (wiring, `useLastSeen`, the announce channel), `components/dashboard/` (`HeroBand`,
+  `AttentionColumn` + `AttentionSection` + `useDashboardData` + `useLastSeen`, `ProjectsGrid` + `ProjectTile`,
+  `FactsCards`, `NewProjectDialog`, `FirstLaunch`, `NewProjectForm` with `variant` 'card' | 'dialog' | 'inline',
+  `dashboardProjects.ts`), `lib/dashboard.ts`, `styles/dashboard.css` (grid, hero, attention; imports
+  `dashboard-projects.css` for tiles, facts and first launch). e2e: `e2e/dashboard.mjs` (in e2e:free).
+- Deviations: padding sits on `.dashboard-grid` (a container cannot query itself); `.dash-facts` is its own
+  container and lays its cards one, two (from 500 px) or three (from 780 px) across, because three cards under about
+  240 px each squeezed the Connection settings link; the hero uses min-height 120 / 88 px; tiles with live runs get the
+  2 px `--state-working` edge but no `--glow-working` (it is defined on agent nodes only); a connection in 'error'
+  reads "<Name> has a problem. N projects use it."; the tile shows its 7-day cost only when something was spent;
+  `useLastSeen` never moves the stored time backwards; the Sidebar item has no `nav-dashboard` testid (Sidebar.tsx was
+  outside this change; e2e matches the "Dashboard" text and aria-label).
+- Live region: `dashboard-live` is the only one on the page; delete results and Open folder errors speak through it
+  (`DashboardAnnouncement` with a rising `seq`).
+- Open: the hero may announce once when history finishes loading after mount; delete counts take open runs from the
+  live store only; `weekCost` is unused; the caps, Show more, `project-tile-error`, Open folder and reduced motion are
+  not driven by e2e.

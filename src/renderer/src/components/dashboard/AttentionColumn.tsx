@@ -211,6 +211,7 @@ function pausedCaption(s: RunSummary): string {
 
 function PausedSection({ summaries }: { summaries: RunSummary[] }): ReactElement | null {
   const projects = useAppStore((s) => s.projects)
+  const projectOf = useProjectLookup()
   const focusRun = useAppStore((s) => s.focusRun)
   const resumeNow = useAppStore((s) => s.resumeNow)
   const paused = useMemo(() => pausedRuns(summaries), [summaries])
@@ -228,7 +229,7 @@ function PausedSection({ summaries }: { summaries: RunSummary[] }): ReactElement
             <Dot tone="paused" />
             <span className="dash-row-text">
               <span className="dash-row-line">
-                <span className="dash-status">Paused</span>
+                <span className="dash-status">{statusText(statusOfRun({ summary: s }, projectOf(s.projectId), false))}</span>
                 <span className="dash-row-name">{runName(s)}</span>
               </span>
               <span className="dash-row-cap">
@@ -236,7 +237,7 @@ function PausedSection({ summaries }: { summaries: RunSummary[] }): ReactElement
                   {locationLabel(s.projectId, projects)} · {pausedCaption(s)}
                 </span>
               </span>
-              {s.pauseReason && <span className="dash-row-cap dash-row-detail">{s.pauseReason}</span>}
+              {s.pauseReason && <span className="dash-row-cap dash-row-detail">{errorFirstLine(s.pauseReason)}</span>}
             </span>
           </button>
           <span className="dash-row-side">
