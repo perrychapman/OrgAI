@@ -2,10 +2,10 @@
 //   icon.png  1024x1024, full bleed rounded square (Linux, dev window and Dock icon)
 //   icon.ico  16, 20, 24, 32, 40, 48, 64, 128, 256 (Windows), each size rendered natively
 //   icon.icns 16..1024 incl. @2x slots, the mark inset to ~80% with a transparent margin (macOS)
-// Regenerate all three together; output is byte-for-byte reproducible. The rasterizer lives in scripts/lib/icon.mjs.
-import { mkdirSync, writeFileSync } from 'node:fs'
+// Regenerate all three together; output is reproducible on the same Node version (zlib deflate output may differ between versions). The rasterizer lives in scripts/lib/icon.mjs.
+import { mkdirSync, realpathSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { fileURLToPath } from 'node:url'
 import { ICNS_TYPES, MAC_INSET, encodeIcns, encodeIco, encodePng, renderIcon } from './lib/icon.mjs'
 
 export { ICNS_TYPES, MAC_INSET, encodeIcns, encodeIco, encodePng, renderIcon }
@@ -43,4 +43,15 @@ function main() {
   for (const line of written) console.log(line)
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) main()
+function isEntry() {
+  if (!process.argv[1]) return false
+  try {
+    const entry = realpathSync(process.argv[1])
+    const self = realpathSync(fileURLToPath(import.meta.url))
+    return process.platform === 'win32' ? entry.toLowerCase() === self.toLowerCase() : entry === self
+  } catch {
+    return false
+  }
+}
+
+if (isEntry()) main()

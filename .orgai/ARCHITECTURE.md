@@ -332,7 +332,7 @@ components/layout:
 ### Scripts, e2e and packaging
 
 - SDK and provider smoke tests. They spend tokens, except smoke-litellm without --yes.
-- Icon generation (`npm run icon`): writes `build/icon.png`, `build/icon.ico` and `build/icon.icns`, each size rendered natively and byte-reproducible. Commit all three together; electron-builder uses them as is (win.icon ico, mac.icon icns, linux png).
+- Icon generation (`npm run icon`): writes `build/icon.png`, `build/icon.ico` and `build/icon.icns`, each size rendered natively and reproducible on the same Node version (zlib deflate output may differ between versions). Commit all three together; electron-builder uses them as is (win.icon ico, mac.icon icns, linux png).
 - Electron e2e flows run against out/. e2e:free (package.json) runs layout, runs, proposals, maintenance, connections, connectors, import, skills, usage, team, assistants and permissions; none spends tokens.
 - electron-builder config, macOS entitlements, and the macOS first-test checklist.
 - electron-builder.yml mac targets carry no arch list (in electron-builder 26 an arch list overrides the --arm64/--x64 CLI flags). Mac artifacts are ${productName}-${version}-${arch}.${ext}.
