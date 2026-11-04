@@ -187,6 +187,8 @@ try {
             return { fv: el.matches(':focus-visible'), style: cs.outlineStyle, width: parseFloat(cs.outlineWidth) }
           })
           check(ring.fv && ring.style !== 'none' && ring.width > 0, `${pane} Advanced summary shows a focus ring`, JSON.stringify(ring))
+          // The toggle event that stores the state is queued by the browser; wait for the stored value before reloading.
+          await page.waitForFunction((k) => localStorage.getItem(k) === '1', `orgai.settingsAdvanced.${pane}`, { timeout: 5_000 }).catch(() => {})
           await page.reload()
           await page.waitForSelector('.nav-item', { timeout: 15_000 })
           await openAppSettings(page)
