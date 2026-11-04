@@ -151,6 +151,13 @@ export function needsSignIn(info: { spec: Pick<McpServerSpec, 'enabled'>; auth: 
   return info.spec.enabled && (info.auth.state === 'notAuthorized' || info.auth.state === 'expired')
 }
 
+/** What a waiting connection needs: a sign in (OAuth, token) or this project's own value(s) for a per-project entry. */
+export function waitingLabel(info: { missingSecrets: readonly string[]; secretScope?: 'project' | 'library' }): string {
+  const n = info.missingSecrets.length
+  if (info.secretScope === 'project' && n > 0) return n === 1 ? 'Needs a value for this project' : `Needs ${n} values for this project`
+  return 'Needs sign in'
+}
+
 export interface RevokePlan {
   /** New McpServerSpec.roles (always an explicit list). */
   roles: string[]

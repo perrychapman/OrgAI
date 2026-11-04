@@ -40,6 +40,12 @@ try {
   })
   check(!!libId, 'library entry saved')
   await page.evaluate(([projectId, libraryId]) => window.orgai.mcp.linkLibrary({ projectId, libraryId, enabled: true }), [pid, libId])
+  // A raw IPC link does not reach the open Catalog (no project.updated); a library write broadcasts mcpLibrary:changed so the section re-reads.
+  await page.evaluate(async () => {
+    const list = await window.orgai.mcpLibrary.list()
+    const mine = list.find((i) => i.entry.name === 'client-idp-admin')
+    if (mine) await window.orgai.mcpLibrary.upsert(mine.entry)
+  })
 
   for (const [w, h, tag] of [[1024, 640, 'small'], [1600, 1000, 'large']]) {
     await setSize(w, h)
@@ -73,7 +79,9 @@ try {
   await row.locator('[data-testid=mcp-copy-from-library]').click()
   const dlg = page.locator('[data-testid=mcp-copy-dialog]')
   await dlg.waitFor()
-  check((await dlg.locator('[data-testid=mcp-copy-secrets]').isChecked()) === false, 'copy secrets is off by default')
+  // A per-project entry's own values always move with the copy, so there is no "copy the library's values" choice.
+  check((await dlg.locator('[data-testid=mcp-copy-secrets]').count()) === 0, 'no copy-secrets choice for a per-project entry')
+  check(/Values you entered/.test(await dlg.innerText()), 'the dialog says the entered values stay')
   await dlg.locator('[data-testid=mcp-copy-confirm]').click()
   await page.locator('[data-testid=mcp-group-local] [data-testid=mcp-row][data-server=client-idp-admin]').waitFor()
   check(true, 'the copy appears under Only in this project')
