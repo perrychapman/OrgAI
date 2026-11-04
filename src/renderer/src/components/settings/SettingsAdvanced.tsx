@@ -1,4 +1,4 @@
-import type { ReactElement, ReactNode, SyntheticEvent } from 'react'
+import type { MouseEvent, ReactElement, ReactNode, SyntheticEvent } from 'react'
 import { useState } from 'react'
 import { ChevronRight } from 'lucide-react'
 import { GroupHeadingLevelContext } from './SettingsSection'
@@ -47,9 +47,17 @@ export function SettingsAdvanced({ paneKey, children }: { paneKey: SettingsAdvan
   // Read once on mount; afterwards the DOM owns the open state and the toggle event stores it.
   const [initialOpen] = useState(() => readOpen(paneKey))
   const onToggle = (e: SyntheticEvent<HTMLDetailsElement>): void => writeOpen(paneKey, e.currentTarget.open)
+  // The toggle event is asynchronous, so a reload right after the interaction could beat it. A summary's click
+  // (mouse, and the click the browser synthesizes for Enter and Space) runs before the default toggle, so the new
+  // state is the inverse of the current one; store it now. The toggle listener stays as the fallback for other
+  // ways the element opens (deep links). Both write the same value, so the write is idempotent.
+  const onSummaryClick = (e: MouseEvent<HTMLElement>): void => {
+    const details = e.currentTarget.parentElement as HTMLDetailsElement | null
+    if (details) writeOpen(paneKey, !details.open)
+  }
   return (
     <details className="settings-advanced" data-testid="settings-advanced" data-pane={paneKey} open={initialOpen} onToggle={onToggle}>
-      <summary className="settings-advanced-summary">
+      <summary className="settings-advanced-summary" onClick={onSummaryClick}>
         <ChevronRight className="settings-advanced-chevron" size={14} aria-hidden="true" />
         Advanced settings
       </summary>
