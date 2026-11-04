@@ -27,6 +27,17 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
 - Windows run with `sandbox: false` because the preload is ESM (`index.mjs`) and Electron cannot sandbox an ESM
   preload. The fix is building the preload as CommonJS and enabling the sandbox. Navigation guards
   (`shouldBlockNavigation` in `windowScope.ts`) cover will-navigate, will-redirect and will-frame-navigate and fail closed.
+- Application menu (`src/main/appMenu.ts`, all platforms; the window menu bar is always shown, `autoHideMenuBar: false`):
+  File, Edit, View, Run, Window, Help (plus an app menu first on macOS, where App settings lives as "Settings…"). Contract:
+  `MENU_ACTIONS` / `MenuAction` / `isMenuAction` and `IPC.menuAction` ('menu:action', payload `{ action }`) in types.ts,
+  received through preload `onMenuAction(cb)`. `buildMenuTemplate` is pure; every renderer item goes through one helper
+  so `id === action`, and `menuActionSender` sends to the focused live window, else the first live one, re-checking the
+  action. Accelerators: new-project CmdOrCtrl+N and open-app-settings CmdOrCtrl+, register normally; toggle-sidebar
+  (CmdOrCtrl+B), new-chat (CmdOrCtrl+Shift+N) and new-run (CmdOrCtrl+T) are keys the renderer already handles, so on
+  win32 / linux they set `registerAccelerator: false` (hint shown, key not consumed, Playwright `keyboard.press` keeps
+  working) while darwin consumes key equivalents natively. There is no Ctrl/Cmd+W anywhere (RunTabs.tsx swallows it):
+  Window > Close window is a plain item, not the `close` role. Help opens only the fixed `DOCS_URL` / `ISSUES_URL`.
+  Unit-tested only; the live Windows/Linux menu bar and the renderer router (lands with the UI Lead) are unverified until QA or a pack.
 - Run end: RunManager calls `cancelPending` (`pendingCards.ts`) when a run reaches an outcome or `paused`, and at
   teardown. Every open card then gets its `*.resolved` event with `cancelled: true`. `activity.ts` `runOutcome` /
   `settleAgent` relabel agents Finished, Stopped or Failed. Harness-written transcript entries carry

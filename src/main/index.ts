@@ -29,7 +29,7 @@ import { SkillEvaluationService } from './skills/evaluation'
 import { CapabilityService } from './capabilities/service'
 import { seedMockHome } from './capabilities/mockHome'
 import { applyShellPath } from './shellEnv'
-import { installAppMenu } from './appMenu'
+import { installAppMenu, menuActionSender } from './appMenu'
 import { MockAdapter } from './runtime/mock'
 import { sweepStaleSkillDirs } from './runtime/claudeSkills'
 import { SetupService } from './setup/service'
@@ -182,7 +182,7 @@ function createWindow(scope?: FocusRunTarget): BrowserWindow {
     minWidth: 1024,
     minHeight: 680,
     show: false,
-    autoHideMenuBar: true,
+    autoHideMenuBar: false,
     backgroundColor: windowBackground(settingsStore?.get().appearance.theme ?? 'dark', nativeTheme.shouldUseDarkColors),
     title: 'OrgAI',
     // Packaged builds take the icon from the executable; in development use the generated PNG.
@@ -513,7 +513,7 @@ app.whenReady().then(() => {
   dropped += sweepScratchDirs(dataDir, runStore.all())
   sweepStaleSkillDirs()
   if (dropped) console.log(`Housekeeping removed ${dropped} stale run(s) or record file(s).`)
-  installAppMenu()
+  installAppMenu(menuActionSender(() => BrowserWindow.getFocusedWindow(), () => BrowserWindow.getAllWindows()))
   createWindow()
 
   app.on('activate', () => {
