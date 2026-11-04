@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { stripArchitectureBlock } from './maintenance'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import type { Project } from '@shared/types'
+import { MaintenanceService, stripArchitectureBlock } from './maintenance'
 import { ARCHITECTURE_PATH, CLAUDE_MD_MARKER } from './setup/service'
+import type { ProjectStore } from './store/projects'
 
 /** Mirrors writeArchitecture in setup/service.ts, which is not exported. */
 function withBlock(existing: string, projectName = 'Demo'): string {
@@ -40,5 +45,28 @@ describe('stripArchitectureBlock', () => {
   it('drops trailing blank lines the original had before the block', () => {
     const written = withBlock('# Demo\n\nIntro.\n\n\n\n')
     expect(stripArchitectureBlock(written)).toBe('# Demo\n\nIntro.\n')
+  })
+})
+
+describe('uninstallRepo for an engagement', () => {
+  it('removes .orgai/ENGAGEMENT.md, the CLAUDE.md block and the recorded path', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'orgai-maint-'))
+    try {
+      mkdirSync(join(root, '.orgai'))
+      writeFileSync(join(root, '.orgai', 'ENGAGEMENT.md'), '# charter', 'utf8')
+      writeFileSync(join(root, 'CLAUDE.md'), withBlock('', 'Client'), 'utf8')
+      const saved: Project[] = []
+      const project = { id: 'p1', name: 'Client', path: root, kind: 'engagement', roles: [], setup: { kind: 'new', state: 'complete', architecturePath: '.orgai/ENGAGEMENT.md' } } as unknown as Project
+      const store = { get: () => project, save: (p: Project) => (saved.push(p), p) } as unknown as ProjectStore
+      const result = await new MaintenanceService(store).uninstallRepo('p1')
+      expect(result.ok).toBe(true)
+      expect(result.message).toContain('.orgai/ENGAGEMENT.md')
+      expect(existsSync(join(root, '.orgai', 'ENGAGEMENT.md'))).toBe(false)
+      expect(existsSync(join(root, '.orgai'))).toBe(false)
+      expect(existsSync(join(root, 'CLAUDE.md'))).toBe(false)
+      expect(saved[0].setup?.architecturePath).toBeUndefined()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { architectRole } from '@shared/setup'
-import { buildRolePrompt, canWrite, composeFirstMessage, isArchitectureFile, mcpInstallText, peerMessageText, skillsConfigText, toolHygieneText } from './prompts'
+import { buildRolePrompt, canWrite, composeFirstMessage, isArchitectureFile, mcpInstallText, peerMessageText, referenceDirectoriesText, skillsConfigText, toolHygieneText } from './prompts'
 import { orgChart, project } from './testHelpers'
 
 const withArch = project({ brief: '  A todo app.  ', setup: { kind: 'existing', state: 'complete', architecturePath: '.orgai/ARCHITECTURE.md' } })
@@ -247,6 +247,50 @@ describe('quick run (Chat) prompts', () => {
 
   it('leaves normal runs unchanged', () => {
     expect(buildRolePrompt(lead, roles, proj, { isSetup: false, isolation: false })).toContain('propose_org_change')
+  })
+})
+
+describe('engagement prompts and reference folders', () => {
+  const roles = orgChart()
+  const refs = ['C:\\client\\inputs', '/mnt/<ref>\nmore']
+  const eng = (): ReturnType<typeof project> => project({ kind: 'engagement', setup: { kind: 'new', state: 'complete', architecturePath: '.orgai/ENGAGEMENT.md' } })
+  const flags = { isSetup: false, isolation: false }
+
+  it('unattended text ends in a deliverable review for engagements and in verification for code', () => {
+    const code = buildRolePrompt(roles[0], roles, project(), flags)
+    expect(code).toContain('the last step is always verification: build and tests, then the final report')
+    const text = buildRolePrompt(roles[0], roles, eng(), flags)
+    expect(text).toContain('the last step is a review of the deliverables against the brief, then the final report')
+    expect(text).not.toContain('build and tests')
+  })
+
+  it('points at the engagement document with engagement wording', () => {
+    const text = buildRolePrompt(roles[1], roles, eng(), flags)
+    expect(text).toContain('The agreed engagement, workstreams, working agreements and deliverable standards live in .orgai/ENGAGEMENT.md. Read it before starting work')
+    expect(text).not.toContain('Read it before changing code')
+    expect(buildRolePrompt(roles[0], roles, eng(), flags)).toContain('update .orgai/ENGAGEMENT.md in the same run')
+  })
+
+  it('names reference folders for writing and reading roles, as one-line data', () => {
+    const line = 'These folders are reference material: read them, never change them: "C:\\client\\inputs", "/mnt/‹ref› more".'
+    expect(referenceDirectoriesText(refs)).toBe(line)
+    expect(buildRolePrompt(roles[1], roles, eng(), { ...flags, referenceDirectories: refs })).toContain(line)
+    expect(buildRolePrompt(roles[2], roles, eng(), { ...flags, referenceDirectories: refs })).toContain(line)
+  })
+
+  it('adds nothing for none, setup runs or quick runs', () => {
+    expect(referenceDirectoriesText([])).toBe('')
+    expect(referenceDirectoriesText(undefined)).toBe('')
+    expect(buildRolePrompt(roles[1], roles, eng(), flags)).not.toContain('reference material')
+    expect(buildRolePrompt(roles[0], roles, eng(), { ...flags, isSetup: true, referenceDirectories: refs })).not.toContain('reference material')
+    const quick = { folder: 'C:\\work', team: 'single' as const, allowEdits: false, gitRepo: false }
+    expect(buildRolePrompt(roles[0], roles, eng(), { ...flags, quick, referenceDirectories: refs })).not.toContain('reference material')
+  })
+
+  it('isArchitectureFile also recognises the engagement document', () => {
+    expect(isArchitectureFile('C:\\folder\\.orgai\\ENGAGEMENT.md', '.orgai/ARCHITECTURE.md')).toBe(true)
+    expect(isArchitectureFile('.orgai/ENGAGEMENT.md', '.orgai/ENGAGEMENT.md')).toBe(true)
+    expect(isArchitectureFile('/folder/ENGAGEMENT.md', '.orgai/ARCHITECTURE.md')).toBe(false)
   })
 })
 
