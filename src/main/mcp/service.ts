@@ -56,7 +56,9 @@ import {
 } from './connectors'
 import { insideWorkspace, removeBuildDir, rewritePath, stageBuild, type InstalledBuild } from './builds'
 import { scratchDirFor } from '../quick/scratch'
-import type { ConnectorAddInput, ConnectorInfo, ConnectorTokenInput } from '@shared/types'
+import type { ConnectorAddInput, ConnectorInfo, ConnectorPresetRemoveInput, ConnectorState, ConnectorTokenInput, ConnectorDef, ConnectorVariant, McpProjectOverridesInput, UserConnectorDef } from '@shared/types'
+import { USER_CONNECTOR_PRESETS_MAX } from '@shared/types'
+import { ConnectorPresetStore, buildPresetEntry, presetConnectorDef, validateUserPreset } from './presets'
 
 /** Connector fields and buildDigest are written by the main process only: drop whatever an input carries. */
 function noConnector<T extends { connectorId?: string; connectorVariant?: string }>(x: T): T {
@@ -203,6 +205,8 @@ export class McpService {
   /** ORGAI_MOCK=1: connector entries authorize and test without network (see mockAuthorize). Never set otherwise. */
   private mock: boolean
   private dataDir?: string
+  /** Custom connector presets (<data>/connector-presets.json); undefined = none available (older tests). */
+  private presets?: ConnectorPresetStore
   /** One interactive authorization per owner; a new call aborts the previous. */
   private flows = new Map<string, AbortController>()
   /**
@@ -234,9 +238,12 @@ export class McpService {
     dataDir?: string
     /** index.ts passes process.env.ORGAI_MOCK === '1': connector authorize/test then run without network. */
     mock?: boolean
+    /** The custom connector preset store. Missing = one in `dataDir`, else none. */
+    presets?: ConnectorPresetStore
   }) {
     this.mock = deps.mock === true
     this.dataDir = deps.dataDir
+    this.presets = deps.presets ?? (deps.dataDir ? new ConnectorPresetStore(deps.dataDir) : undefined)
     this.projects = deps.projects
     this.secrets = deps.secrets
     this.library = deps.library
@@ -307,6 +314,12 @@ export class McpService {
       const saved = this.projects.save({ ...p, mcpServers: p.mcpServers.map((s) => (s.libraryId === entry.id ? linkedSpec(entry, s) : s)) })
       this.onProjectChanged?.(saved)
     }
+  }
+
+  /** A custom preset's ConnectorDef projection by id; passed to connectorOf / oauthPresetFor. */
+  private customDef = (id: string): ConnectorDef | undefined => {
+    const stored = this.presets?.get(id)
+    return stored ? presetConnectorDef(stored) : undefined
   }
 
   private notifyLibrary(): void {
@@ -836,8 +849,8 @@ export class McpService {
     let settled!: () => void
     const done = new Promise<void>((r) => (settled = r))
     const secretOf = (): string | undefined => this.secrets.get(mcpOwnerOAuthKey(ref.owner, 'clientSecret'))
-    const connector = connectorOf(ref.spec)
-    const preset = oauthPresetFor(ref.spec)
+    const connector = connectorOf(ref.spec, this.customDef)
+    const preset = oauthPresetFor(ref.spec, this.customDef)
     try {
       if (connector?.variant.auth.kind === 'token') {
         throw new OAuthError('authorization', `${connector.def.name} uses a ${connector.variant.auth.label.toLowerCase()}, not OAuth. Paste it instead.`)
@@ -976,7 +989,7 @@ export class McpService {
     if (!Number.isFinite(expires) || expires - this.now() > MCP_OAUTH_REFRESH_SKEW_MS) return
     const clientSecret = this.secrets.get(mcpOwnerOAuthKey(owner, 'clientSecret'))
     try {
-      const preset = oauthPresetFor(ref.spec)
+      const preset = oauthPresetFor(ref.spec, this.customDef)
       // Defence in depth: a connector's stored token endpoint must still be on its issuer's (or its preset token
       // endpoint's) domain before the client secret is posted there; sign-in checked it, a tampered config would not.
       if (
@@ -1056,28 +1069,111 @@ export class McpService {
   }
 
   /** The library entry made from a connector, if any (the first one; connectors:add keeps it unique). */
-  private connectorEntry(connectorId: string): McpLibraryEntry | undefined {
-    return this.libraryEntries().find((e) => e.connectorId === connectorId)
+  private connectorEntry(connectorId: string, custom = false): McpLibraryEntry | undefined {
+    return this.libraryEntries().find((e) => e.connectorId === connectorId && (e.connectorCustom === true) === custom)
   }
 
-  /** connectors:list: every preset in catalog order with its library entry and gallery state. */
+  /**
+   * The variant an entry made from a preset connects with. Curated: the entry's variant, else the default. Custom: the
+   * entry's variant while the preset still has it (the default when the entry names none), else undefined.
+   */
+  private entryVariant(def: ConnectorDef, entry: McpLibraryEntry, custom: boolean): ConnectorVariant | undefined {
+    if (!custom) return connectorVariant(def, entry.connectorVariant)
+    if (entry.connectorVariant === undefined) return connectorVariant(def)
+    return def.variants.find((v) => v.id === entry.connectorVariant)
+  }
+
+  /** The card state; a custom entry whose variant left the preset is judged from the entry alone. */
+  private entryState(variant: ConnectorVariant | undefined, info: McpLibraryInfo): ConnectorState {
+    if (variant) return connectorState(variant, info)
+    if (info.missingSecrets.length) return 'needsSetup'
+    if (info.entry.oauth) return info.auth.state === 'authorized' ? 'connected' : info.auth.state === 'error' ? 'error' : 'needsSetup'
+    return 'connected'
+  }
+
+  private connectorInfo(def: ConnectorDef, entry: McpLibraryEntry | undefined, custom: boolean, all: Project[]): ConnectorInfo {
+    if (!entry) return { connector: structuredClone(def), state: 'available' as const }
+    const info = this.libraryInfo(entry, all)
+    const variant = this.entryVariant(def, entry, custom)
+    const state = this.entryState(variant, info)
+    return {
+      connector: structuredClone(def),
+      library: info,
+      variant: variant?.id ?? entry.connectorVariant,
+      state,
+      // Only a connected card carries it: a stale stamp (e.g. a mock sign-in seen outside mock mode) is not shown.
+      ...(state === 'connected' && entry.connectedAt !== undefined ? { connectedAt: entry.connectedAt } : {})
+    }
+  }
+
+  /** connectors:list: curated presets in catalog order with their library entry and gallery state, then custom presets in store order. */
   connectorsList(): ConnectorInfo[] {
     const all = this.projects.list()
-    return CONNECTORS.map((def) => {
-      const entry = this.connectorEntry(def.id)
-      if (!entry) return { connector: structuredClone(def), state: 'available' as const }
-      const info = this.libraryInfo(entry, all)
-      const variant = connectorVariant(def, entry.connectorVariant)
-      const state = connectorState(variant, info)
-      return {
-        connector: structuredClone(def),
-        library: info,
-        variant: variant.id,
-        state,
-        // Only a connected card carries it: a stale stamp (e.g. a mock sign-in seen outside mock mode) is not shown.
-        ...(state === 'connected' && entry.connectedAt !== undefined ? { connectedAt: entry.connectedAt } : {})
-      }
-    })
+    const curated = CONNECTORS.map((def) => this.connectorInfo(def, this.connectorEntry(def.id), false, all))
+    const custom = (this.presets?.list() ?? []).map((preset): ConnectorInfo => ({
+      ...this.connectorInfo(presetConnectorDef(preset), this.connectorEntry(preset.id, true), true, all),
+      custom: true,
+      preset
+    }))
+    return [...curated, ...custom]
+  }
+
+  // ---------- custom connector presets ----------
+
+  /** connectorPresets:list: the stored definitions in store order. */
+  connectorPresetsList(): UserConnectorDef[] {
+    return this.presets?.list() ?? []
+  }
+
+  /**
+   * connectorPresets:upsert: validate (validateUserPreset rebuilds every field), enforce the cap on a new id, save.
+   * A library entry already made from the preset is never rewritten: it keeps its own definition and secrets.
+   */
+  connectorPresetsUpsert(input: unknown): UserConnectorDef[] {
+    if (!this.presets) throw new Error('Custom connectors are not available.')
+    const def = validateUserPreset(input)
+    if (!this.presets.get(def.id) && this.presets.list().length >= USER_CONNECTOR_PRESETS_MAX) {
+      throw new Error(`You can keep at most ${USER_CONNECTOR_PRESETS_MAX} custom connectors. Remove one first.`)
+    }
+    this.presets.save(def)
+    this.notifyLibrary()
+    return this.presets.list()
+  }
+
+  /** connectorPresets:remove: refused while a library entry made from the preset exists. */
+  connectorPresetsRemove(input: ConnectorPresetRemoveInput): UserConnectorDef[] {
+    const presets = this.presets
+    const stored = typeof input?.id === 'string' ? presets?.get(input.id) : undefined
+    if (!presets || !stored) throw new Error('Custom connector not found.')
+    if (this.connectorEntry(stored.id, true)) throw new Error(`${stored.name} is in your MCP library. Remove it there first.`)
+    presets.remove(stored.id)
+    this.notifyLibrary()
+    return presets.list()
+  }
+
+  /**
+   * mcp:setProjectOverrides: this project's non-secret values for a linked server's perProjectEnv names. Each map given
+   * replaces the stored one ({} clears it, absent keeps it), filtered and checked by cleanOverrides like mcp:upsert.
+   */
+  setProjectOverrides(input: McpProjectOverridesInput): McpMutationResult {
+    const project = this.project(input.projectId)
+    const existing = project.mcpServers ?? []
+    const stored = existing.find((s) => s.id === input.serverId)
+    if (!stored) throw new Error('MCP server not found')
+    if (!stored.libraryId) throw new Error(`${stored.name} is project-only: edit its env and headers directly.`)
+    const entry = this.library?.get(stored.libraryId)
+    if (!entry) throw new Error(`${stored.name} was removed from your MCP library.`)
+    const stdio = entry.transport === 'stdio'
+    const next: McpServerSpec = { ...stored }
+    for (const [field, kind, given] of [['envOverrides', 'env', input.env], ['headerOverrides', 'header', input.headers]] as const) {
+      if (given === undefined) continue
+      if (given === null || typeof given !== 'object' || Array.isArray(given)) throw new Error('The per-project values must be a list of names and values.')
+      if (stdio !== (kind === 'env')) throw new Error(stdio ? 'This server takes env, not headers.' : 'This server takes headers, not env.')
+      delete next[field]
+      const cleaned = cleanOverrides(given, entry.perProjectEnv ?? [], kind)
+      if (Object.keys(cleaned).length) next[field] = cleaned
+    }
+    return this.result(this.projects.save({ ...project, mcpServers: existing.map((s) => (s.id === stored.id ? next : s)) }))
   }
 
   /**
@@ -1088,28 +1184,39 @@ export class McpService {
    * A connected entry (or a 'none'-auth one) keeps its variant until it is disconnected.
    */
   connectorsAdd(input: ConnectorAddInput): McpLibraryInfo {
-    const def = connectorById(input?.connectorId)
+    const curated = connectorById(input?.connectorId)
+    const preset = curated ? undefined : typeof input?.connectorId === 'string' ? this.presets?.get(input.connectorId) : undefined
+    const def = curated ?? (preset ? presetConnectorDef(preset) : undefined)
     if (!def) throw new Error('Unknown connector.')
+    const custom = !!preset
+    const build = (variant: ConnectorVariant, id: string, taken: readonly string[]): McpLibraryEntry => {
+      const mine = preset?.variants.find((v) => v.id === variant.id)
+      return preset && mine ? buildPresetEntry(preset, mine, id, taken, new Date(this.now())) : buildConnectorEntry(def, variant, id, taken, new Date(this.now()))
+    }
     const lib = this.lib()
-    const existing = this.connectorEntry(def.id)
+    const existing = this.connectorEntry(def.id, custom)
     if (existing) {
       const wanted = typeof input.variant === 'string' ? def.variants.find((v) => v.id === input.variant) : undefined
-      const current = connectorVariant(def, existing.connectorVariant)
-      if (!wanted || wanted.id === existing.connectorVariant || wanted.id === current.id) {
+      const current = this.entryVariant(def, existing, custom)
+      if (!wanted || wanted.id === existing.connectorVariant || wanted.id === current?.id) {
         return this.libraryInfo(existing, this.projects.list())
       }
-      if (connectorState(current, this.libraryInfo(existing, this.projects.list())) === 'connected') {
+      if (this.entryState(current, this.libraryInfo(existing, this.projects.list())) === 'connected') {
         return this.libraryInfo(existing, this.projects.list())
       }
       const entries = lib.list()
-      const built = buildConnectorEntry(def, wanted, existing.id, [], new Date(this.now()))
-      const { headers: _h, secretHeaders: _s, oauth: _o, connectedAt: _c, buildDigest: _b, ...keep } = existing
+      const built = build(wanted, existing.id, [])
+      const { url: _u, headers: _h, secretHeaders: _s, command: _cmd, args: _a, env: _e, secretEnv: _se, oauth: _o, connectedAt: _c, buildDigest: _b, ...keep } = existing
       const rewritten: McpLibraryEntry = {
         ...keep,
         transport: built.transport,
-        url: built.url,
+        ...(built.url !== undefined ? { url: built.url } : {}),
         ...(built.headers ? { headers: built.headers } : {}),
         ...(built.secretHeaders ? { secretHeaders: built.secretHeaders } : {}),
+        ...(built.command !== undefined ? { command: built.command } : {}),
+        ...(built.args ? { args: built.args } : {}),
+        ...(built.env ? { env: built.env } : {}),
+        ...(built.secretEnv ? { secretEnv: built.secretEnv } : {}),
         description: built.description,
         connectorVariant: built.connectorVariant
       }
@@ -1120,6 +1227,7 @@ export class McpService {
       this.flows.get(key)?.abort()
       this.lastErrors.delete(key)
       this.secrets.deletePrefix(`${key}header:`)
+      if (custom) this.secrets.deletePrefix(`${key}env:`)
       this.secrets.deletePrefix(`${key}oauth:`)
       const saved = lib.save(next)
       this.relinkProjects(saved)
@@ -1128,7 +1236,7 @@ export class McpService {
     }
     const variant = connectorVariant(def, typeof input.variant === 'string' ? input.variant : undefined)
     const entries = lib.list()
-    const built = buildConnectorEntry(def, variant, newId('mcpl'), entries.map((e) => e.name), new Date(this.now()))
+    const built = build(variant, newId('mcpl'), entries.map((e) => e.name))
     // Nothing to sign in to: the entry is connected as soon as it exists.
     const entry = variant.auth.kind === 'none' ? withConnectedAt(built, this.now()) : built
     assertValidLibraryEntry(entry, entries)
@@ -1139,15 +1247,23 @@ export class McpService {
 
   /** connectors:setToken: store (or clear with null) a 'token' connector's secret header, prefix added. */
   connectorsSetToken(input: ConnectorTokenInput): McpLibraryInfo {
-    const def = connectorById(input?.connectorId)
+    const curated = connectorById(input?.connectorId)
+    const preset = curated ? undefined : typeof input?.connectorId === 'string' ? this.presets?.get(input.connectorId) : undefined
+    const def = curated ?? (preset ? presetConnectorDef(preset) : undefined)
     if (!def) throw new Error('Unknown connector.')
-    const entry = this.connectorEntry(def.id)
+    const custom = !!preset
+    const entry = this.connectorEntry(def.id, custom)
     if (!entry) throw new Error(`Add ${def.name} first.`)
-    const auth = connectorVariant(def, entry.connectorVariant).auth
+    const variant = this.entryVariant(def, entry, custom)
+    if (!variant) throw new Error(`${def.name} no longer has the variant this entry was made from. Remove it from your MCP library and add it again.`)
+    const auth = variant.auth
     if (auth.kind === 'none') throw new Error(`${def.name} needs no sign-in.`)
     if (auth.kind !== 'token') throw new Error(`${def.name} signs in with OAuth; use Authorize instead.`)
-    if (!(entry.secretHeaders ?? []).includes(auth.header)) throw new Error(`${def.name} has no ${auth.header} slot. Remove it and add it again.`)
-    const key = mcpOwnerSecretKey({ libraryId: entry.id }, 'header', auth.header)
+    // A command (stdio) variant keeps its token in an environment variable, any other in a header.
+    const slotKind = entry.transport === 'stdio' ? 'env' : 'header'
+    const slots = slotKind === 'env' ? entry.secretEnv : entry.secretHeaders
+    if (!(slots ?? []).includes(auth.header)) throw new Error(`${def.name} has no ${auth.header} slot. Remove it and add it again.`)
+    const key = mcpOwnerSecretKey({ libraryId: entry.id }, slotKind, auth.header)
     if (input.token === null) this.secrets.delete(key)
     else if (typeof input.token === 'string') this.secrets.set(key, tokenHeaderValue(auth, input.token))
     else throw new Error('The token must be text.')
@@ -1159,7 +1275,7 @@ export class McpService {
   /** ORGAI_MOCK=1 only: a connector entry's test without network; undefined otherwise. */
   private mockTest(entry: McpLibraryEntry): McpTestResult | undefined {
     if (!this.mock) return undefined
-    const c = connectorOf(entry)
+    const c = connectorOf(entry, this.customDef)
     if (!c) return undefined
     return mockConnectorTest(c.def, c.variant, this.libraryInfo(entry, this.projects.list()))
   }
@@ -1170,7 +1286,7 @@ export class McpService {
    */
   private mockAuthorize(ref: AuthRef, manualClient: boolean, enteredClientId: string): McpAuthStatus {
     const cur = this.refFromOwner(ref.owner)?.spec.oauth
-    const preset = oauthPresetFor(ref.spec)
+    const preset = oauthPresetFor(ref.spec, this.customDef)
     const clientId = enteredClientId || (cur?.clientId !== MOCK_CLIENT_ID ? cur?.clientId : undefined)
     const config: McpOAuthConfig = {
       resource: resourceOf(ref.spec.url),
