@@ -4558,6 +4558,13 @@ export const KNOWLEDGE_NODE_FACTS_MAX = 50
 export const KNOWLEDGE_RUN_WRITES_MAX = 500
 /** Most hits engagement_knowledge search returns (also its default). */
 export const KNOWLEDGE_SEARCH_LIMIT = 50
+/**
+ * Largest knowledge.json the store reads or writes (64 MB; the file is compact JSON). A larger file reads as empty
+ * and every write refuses ("could not be read"); a write whose serialized graph would cross it is refused ("The
+ * knowledge graph file is full ..."), nothing written. A full graph (2,000 nodes with 50 facts of 1,000 characters)
+ * could exceed it, so the cap is real, not theoretical.
+ */
+export const KNOWLEDGE_FILE_MAX_BYTES = 64 * 1024 * 1024
 /** Node name: 1..120 characters, one line, no hidden characters. Aliases the same. */
 export const KNOWLEDGE_NAME_MAX_CHARS = 120
 /** Most aliases per node. */
@@ -4702,9 +4709,12 @@ export interface KnowledgeNodeSaveInput {
 
 /**
  * Agent-side node write (engagement_knowledge upsert_node, RuntimeContext.knowledge.upsertNode). Identity: nodeId
- * when given, else a (kind, name) or (kind, alias) match, case-insensitive, else a new node ("created" vs "merged").
- * On a merge: `aliases` are added (deduped), `summary` replaces when given, `facts` are appended as new facts with the
- * caller's source (a text already on the node is not appended twice), `noteIds` are added. Nothing is removed.
+ * when given (its `kind` must then equal the stored kind, else refused: "That entity is a <stored kind>, not a
+ * <given kind> ..."), else a (kind, name) or (kind, alias) match, case-insensitive, else a new node ("created" vs
+ * "merged"). On a merge: `aliases` are added (deduped; one another entity of the kind already uses is skipped and
+ * reported in `aliasesSkipped`), `summary` replaces when given unless the node is user-created (then it is appended as
+ * a fact and `summaryKept` is true), `facts` are appended as new facts with the caller's source (a text already on
+ * the node is not appended twice), `noteIds` are added. Nothing is removed.
  */
 export interface KnowledgeNodeUpsertInput {
   nodeId?: string
@@ -4716,16 +4726,27 @@ export interface KnowledgeNodeUpsertInput {
   noteIds?: string[]
 }
 
-/** knowledge:saveNode / upsert result: the node and whether it was created (false = an existing node was updated or merged). */
+/**
+ * knowledge:saveNode / upsert result: the node and whether it was created (false = an existing node was updated or
+ * merged). The optional fields are filled by the agent upsert only (absent on the user's save).
+ */
 export interface KnowledgeNodeWriteResult {
   node: KnowledgeNode
   created: boolean
+  /** Facts the store actually appended on this call (deduped against the node's live facts). */
+  factsAdded?: number
+  /** Aliases (the input name included on a merge) dropped because another entity of the kind already uses them. */
+  aliasesSkipped?: string[]
+  /** The node is user-created, so the agent's summary was appended as a fact instead of replacing the user's summary. */
+  summaryKept?: boolean
 }
 
 /**
  * knowledge:saveEdge input (engagements only) and the agent link write after name resolution: from / to are node ids.
  * Without edgeId: a (from, to, relation) match updates that edge's note (and un-retires it when `retired` is false),
- * else a new edge. With edgeId: that edge's note / retired change (from, to and relation stay).
+ * else a new edge. With edgeId: that edge's note / retired change; from, to and relation must equal the stored edge's
+ * (a different value is refused: "That relation id names <from> <relation> <to>; from, to and relation cannot
+ * change. Remove it and link again.").
  */
 export interface KnowledgeEdgeSaveInput {
   projectId: string
