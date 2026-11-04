@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ConnectorInfo } from '@shared/types'
-import { CONNECTORS } from '@shared/connectors'
+import { CONNECTORS, connectorEase } from '@shared/connectors'
 import {
   accessWords,
   clampText,
@@ -10,6 +10,7 @@ import {
   filterConnectors,
   filterLibrary,
   libraryMatchRank,
+  matchRank,
   honestyNote,
   missingSentence,
   plainToolName,
@@ -100,6 +101,18 @@ describe('connectors lib', () => {
   it('consequence names projects', () => {
     expect(removeConsequence([{ projectName: 'Acme' }], 'remove')).toContain('Acme will lose access')
     expect(removeConsequence([], 'disconnect')).toContain('No project')
+  })
+})
+
+describe('ease keywords', () => {
+  it('the bare words "client" and "open" do not match whole methods; phrases still do', () => {
+    const own = CONNECTORS.filter((c) => connectorEase(c) === 'ownApp')
+    expect(own.length).toBeGreaterThan(0)
+    for (const c of own) {
+      const text = [c.name, c.vendor, c.description, ...(c.aliases ?? [])].join(' ').toLowerCase()
+      if (!text.includes('client')) expect(matchRank(c, 'client')).toBeNull()
+      expect(matchRank(c, 'client id')).not.toBeNull()
+    }
   })
 })
 

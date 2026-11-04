@@ -298,7 +298,8 @@ export async function openProjectForm(page) {
 export async function createProject(page, { mode = 'existing', path: dir, name, brief = '', skipSetup = true, useMock = true }) {
   await gotoProjects(page)
   const form = await openProjectForm(page)
-  await form.getByRole('radio', { name: mode === 'new' ? 'New idea' : 'Existing repository', exact: true }).check({ force: true })
+  await form.locator('[data-testid=project-kind-option][data-kind=code] input[type=radio]').check({ force: true })
+  await form.getByRole('radio', { name: mode === 'new' ? 'New idea' : 'Existing code', exact: true }).check({ force: true })
   if (mode === 'new') {
     await form.locator('input[placeholder="My app"]').fill(name)
     await form.locator('textarea').first().fill(brief)

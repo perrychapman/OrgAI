@@ -1,6 +1,6 @@
 import type { ReactElement } from 'react'
 import { useMemo, useState } from 'react'
-import { FolderOpen, TriangleAlert } from 'lucide-react'
+import { FolderOpen, Lock, TriangleAlert } from 'lucide-react'
 import type { PermissionRequest } from '@shared/types'
 import { isVirtualProjectId } from '@shared/types'
 import DecisionCard, { useDecisionAnswer } from './DecisionCard'
@@ -139,7 +139,7 @@ export default function PermissionCard({ runId, request, who, onDecide }: Props)
   const hasHidden = command !== undefined && HIDDEN_CHARS.test(command)
   const [full, setFull] = useState(false)
   const location = useMemo(
-    () => (project ? permissionLocation(request.toolName, request.input, { projectPath: project.path, allowedDirectories: project.allowedDirectories, agentCwd }) : null),
+    () => (project ? permissionLocation(request.toolName, request.input, { projectPath: project.path, allowedDirectories: project.allowedDirectories, referenceDirectories: project.referenceDirectories, agentCwd }) : null),
     [project, request.toolName, request.input, agentCwd]
   )
   const copy = useMemo(() => scopeCopy(request.suggestions, project?.permissionMode), [request.suggestions, project?.permissionMode])
@@ -204,7 +204,7 @@ export default function PermissionCard({ runId, request, who, onDecide }: Props)
       <div className="perm-glance">
         {location && (
           <p className="perm-location" data-testid="perm-location" data-kind={location.kind} data-attention={location.attention ? 'true' : undefined} title={location.full}>
-            <Icon icon={location.attention ? TriangleAlert : FolderOpen} size="xs" />
+            <Icon icon={location.attention ? TriangleAlert : location.kind === 'reference' ? Lock : FolderOpen} size="xs" />
             <span className="perm-location-label">{location.label}</span>
             {location.detail && <span className="perm-location-detail">{location.detail}</span>}
           </p>

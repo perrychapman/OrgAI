@@ -268,6 +268,49 @@ try {
   check(afterRemove === 'allowed-folder-input', 'removing the last folder moves focus to the folder input', afterRemove)
   check(((await findProject(page, NAME))?.allowedDirectories ?? []).length === 0, 'Remove clears the saved folder')
 
+  // Reference folders (read only): add, row labels, move both ways with a confirm, working folder refusal.
+  {
+    const refInput = page.locator('[data-testid=reference-folder-input]')
+    await refInput.fill(extra)
+    await refInput.press('Enter')
+    await page.locator('[data-testid=reference-folder-row]').first().waitFor({ timeout: 8000 })
+    const refRow = (await page.locator('[data-testid=reference-folder-row]').first().innerText()).replace(/\s+/g, ' ')
+    check(/Read only/.test(refRow), 'a reference row says Read only', refRow)
+    check(((await findProject(page, NAME))?.referenceDirectories ?? []).length === 1, 'the reference folder is saved')
+    check(/1 reference folder\b/.test(await page.locator('[data-testid=permissions-summary]').innerText()), 'the summary counts the reference folder')
+    // Adding it to Allowed asks first; cancel keeps both lists.
+    const allowedInput = page.locator('[data-testid=allowed-folder-input]')
+    await allowedInput.fill(extra)
+    await page.locator('[data-testid=allowed-folder-add]').click()
+    await page.getByRole('dialog').getByText('Allow changes to it?').waitFor({ timeout: 8000 })
+    await page.getByRole('dialog').getByRole('button', { name: 'Cancel' }).click()
+    await sleep(300)
+    check((await page.locator('[data-testid=allowed-folder-row]').count()) === 0 && (await page.locator('[data-testid=reference-folder-row]').count()) === 1, 'cancel keeps both lists unchanged')
+    // Row action moves it in one save.
+    await page.locator('[data-testid=reference-folder-allow-changes]').first().click()
+    await page.locator('[data-testid=allowed-folder-row]').first().waitFor({ timeout: 8000 })
+    const movedRow = (await page.locator('[data-testid=allowed-folder-row]').first().innerText()).replace(/\s+/g, ' ')
+    const afterMove = await findProject(page, NAME)
+    check(/Can change/.test(movedRow) && (afterMove?.referenceDirectories ?? []).length === 0 && (afterMove?.allowedDirectories ?? []).length === 1, 'Allow changes moves the folder to Allowed', movedRow)
+    await page.locator('[data-testid=allowed-folder-make-readonly]').first().click()
+    await page.locator('[data-testid=reference-folder-row]').first().waitFor({ timeout: 8000 })
+    const backAfter = await findProject(page, NAME)
+    check((backAfter?.allowedDirectories ?? []).length === 0 && (backAfter?.referenceDirectories ?? []).length === 1, 'Make read only moves it back')
+    // The working folder is refused in both cards.
+    await refInput.fill(repo)
+    await page.locator('[data-testid=reference-folder-add]').click()
+    check(/This is the project folder\. Agents can already change files in it\./.test(await page.locator('[data-testid=reference-folder-error]').innerText().catch(() => '')), 'the working folder is refused as a reference folder')
+    await allowedInput.fill(repo)
+    await page.locator('[data-testid=allowed-folder-add]').click()
+    check(/This is the project folder\. Agents can already change files in it\./.test(await page.locator('[data-testid=allowed-folder-error]').innerText().catch(() => '')), 'the working folder is refused as an allowed folder')
+    await shot('settings-reference-folders')
+    await allowedInput.fill('')
+    await refInput.fill('')
+    await page.locator('[data-testid=reference-folder-remove]').first().click()
+    await page.locator('[data-testid=reference-folders-empty]').waitFor({ timeout: 8000 }).catch(() => {})
+    check(((await findProject(page, NAME))?.referenceDirectories ?? []).length === 0, 'Remove clears the reference folder')
+  }
+
   // Rules panel: refuse Edit, accept both prefix forms.
   const ruleInput = page.locator('[data-testid=rule-input]')
   await ruleInput.fill('Edit')

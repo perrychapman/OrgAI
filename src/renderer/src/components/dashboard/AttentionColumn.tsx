@@ -2,6 +2,7 @@ import type { ReactElement } from 'react'
 import { useMemo } from 'react'
 import { CircleAlert, FileDiff, GitMerge, ListChecks, MessageCircleQuestion, Plug, ShieldQuestion, type LucideIcon } from 'lucide-react'
 import { isVirtualProjectId, type Project, type RunSummary } from '@shared/types'
+import { projectKindOf } from '@shared/defaults'
 import { useAppStore, type RunState } from '../../store/useAppStore'
 import { Badge } from '../ui/Badge'
 import { Button } from '../ui/Button'
@@ -53,7 +54,13 @@ function NeedsYouSection(): ReactElement {
   const waiting = useWaitingRuns()
   const projects = useAppStore((s) => s.projects)
   const jumpToDecision = useAppStore((s) => s.jumpToDecision)
-  const items = useMemo<NeedsItem[]>(() => waiting.flatMap((run) => waitingItems(run).map((it) => ({ ...it, projectId: run.summary.projectId, run }))), [waiting])
+  const items = useMemo<NeedsItem[]>(
+    () =>
+      waiting.flatMap((run) =>
+        waitingItems(run, projectKindOf(projects.find((p) => p.id === run.summary.projectId))).map((it) => ({ ...it, projectId: run.summary.projectId, run }))
+      ),
+    [waiting, projects]
+  )
   return (
     <AttentionSection
       testId="dash-needs-you"

@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest'
-import { PERMISSION_MODE_SHORT, SETTINGS_COPY, planGuardLine, type SettingCopy } from './settingsCopy'
+import {
+  PERMISSION_MODE_SHORT,
+  SETTINGS_COPY,
+  planGuardLine,
+  projectKindLine,
+  rulePlaceholder,
+  ruleExamples,
+  rulesSavedIn,
+  type SettingCopy
+} from './settingsCopy'
 
 const entries = Object.entries(SETTINGS_COPY) as [string, SettingCopy][]
 const words = (s: string): number => s.trim().split(/\s+/).filter(Boolean).length
@@ -29,6 +38,23 @@ describe('planGuardLine (ux-review-config-2 N2)', () => {
   it('names a set share', () => {
     expect(planGuardLine('on', 30)).toMatch(/Stops at 30% of the five-hour window\.$/)
     expect(planGuardLine('auto', 250)).toMatch(/Stops at 100% /)
+  })
+})
+
+describe('engagement copy', () => {
+  it('names the kind and where rules are saved', () => {
+    expect(projectKindLine('engagement')).toBe('Kind: Engagement')
+    expect(projectKindLine('code')).toBe('Kind: Code project')
+    expect(rulesSavedIn('app')).toBe('Saved in OrgAI for this project.')
+    expect(rulesSavedIn('app')).not.toMatch(/\.claude|folder/)
+    expect(rulesSavedIn('folder')).toMatch(/settings\.local\.json/)
+  })
+  it('keeps engagement rule examples free of developer commands', () => {
+    expect(ruleExamples('app')).toEqual(['WebSearch', 'WebFetch', 'mcp__<your server>'])
+    expect(ruleExamples('app').join(' ')).not.toMatch(/Bash|git|npm/)
+    expect(rulePlaceholder('app')).toBe('WebSearch')
+    expect(ruleExamples('folder')).toContain('Bash(npm test:*)')
+    expect(rulePlaceholder('folder')).toBe('Bash(npm test:*)')
   })
 })
 

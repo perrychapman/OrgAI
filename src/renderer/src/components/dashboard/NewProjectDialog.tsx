@@ -11,11 +11,12 @@ const OPENER = '[data-testid=new-project]'
  * where the dialog was opened without that button focused, such as a draft parked by the Connections link).
  */
 export function NewProjectDialog({ open, onClose, mockAvailable }: { open: boolean; onClose: () => void; mockAvailable: boolean }): ReactElement | null {
-  // The form mounts inside a still-closed <dialog>, so its own focus call finds nothing to focus. Put the cursor in the first field once open.
+  // The form mounts inside a still-closed <dialog>, so its own focus call finds nothing to focus. Put the cursor in the project kind choice (the checked card, else the first) once open.
   useEffect(() => {
     if (!open) return undefined
     const frame = requestAnimationFrame(() => {
-      document.querySelector<HTMLElement>('[data-testid=new-project-dialog] form input.input')?.focus()
+      const radios = Array.from(document.querySelectorAll<HTMLInputElement>('[data-testid=new-project-dialog] [data-testid=project-kind] input[type=radio]'))
+      ;(radios.find((r) => r.checked) ?? radios[0])?.focus()
     })
     return () => cancelAnimationFrame(frame)
   }, [open])

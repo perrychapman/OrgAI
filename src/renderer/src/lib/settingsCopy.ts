@@ -128,5 +128,35 @@ export const TEAM_ASSISTANT_COPY = {
 export const ISOLATE_WRITERS_STATE = {
   auto: 'Automatic: git repository found.',
   noGit: 'Off: not a git repository.',
-  off: 'Off for this project.'
+  off: 'Off for this project.',
+  /** An engagement that opted in (Project.isolateWriters === true). */
+  engagementOn: 'On for this engagement: writers work in separate git copies of the working folder, and OrgAI adds them there.',
+  /** The stored value is on but the folder is not a git repository: say both, never show "Off". */
+  engagementOnNoGit: 'On for this engagement, but the working folder is not a git repository, so writers work in the folder itself.'
 } as const
+
+/** Run messaging row description by kind: engagements start with it off. */
+export const RUN_MESSAGING_ENGAGEMENT_DESCRIPTION = 'Off by default for engagements.'
+
+/** Project settings > General kind line: "Kind: Engagement" / "Kind: Code project". */
+export function projectKindLine(kind: 'code' | 'engagement'): string {
+  return `Kind: ${kind === 'engagement' ? 'Engagement' : 'Code project'}`
+}
+
+/** Saved rules panel: where the rules live (M8: no file path for the app location). */
+export function rulesSavedIn(location: 'folder' | 'app'): string {
+  return location === 'app' ? 'Saved in OrgAI for this project.' : 'Saved in .claude/settings.local.json in the project folder.'
+}
+
+/** Rule examples and the input placeholder, by where the rules live (engagements lose the developer flavour). */
+export function ruleExamples(location: 'folder' | 'app'): string[] {
+  return location === 'app'
+    ? ['WebSearch', 'WebFetch', 'mcp__<your server>']
+    : ['Bash(npm test:*)', 'Bash(npm test *)', 'Bash(git status)', 'WebSearch', 'mcp__github']
+}
+export function rulePlaceholder(location: 'folder' | 'app'): string {
+  return location === 'app' ? 'WebSearch' : 'Bash(npm test:*)'
+}
+
+/** Maintenance pane line for an engagement (nothing is written to the working folder). */
+export const MAINTENANCE_ENGAGEMENT_LINE = 'OrgAI keeps its notes for this engagement in its own data folder. Nothing is written to your working folder.'

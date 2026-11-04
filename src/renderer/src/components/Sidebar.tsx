@@ -1,12 +1,13 @@
 import type { ReactElement, ReactNode } from 'react'
 import { useEffect, useMemo, useState } from 'react'
 import type { AuthStatusResult, ConnectionId, ConnectionStatus, Project, RunSummary, UsageStatus, VirtualProjectId } from '@shared/types'
-import { projectConnection } from '@shared/defaults'
+import { projectConnection, projectKindOf } from '@shared/defaults'
 import { BellRing, ChevronDown, ChevronRight, LayoutDashboard,MessageSquare, PanelLeftClose, Plug, Settings, Sparkles, type LucideIcon } from 'lucide-react'
 import { ASSISTANT_ORDER, assistantLabel, displayProject, locationLabel } from '../lib/assistants'
 import { useShallow } from 'zustand/react/shallow'
 import { isRunLive, useAppStore, useRunIndexes, waitingRuns, type RunState } from '../store/useAppStore'
 import { decisionCount, waitingItems } from '../lib/needsYou'
+import { groupByClient, readCollapsedClients, writeCollapsedClients } from '../lib/clientGroups'
 import { needsYou } from '../lib/runChains'
 import { oneLine } from '../lib/decisionTitle'
 import { promptLine, runName, runTag } from '../lib/runLabels'
@@ -138,6 +139,20 @@ export default function Sidebar({
   const indexes = useRunIndexes()
   const { collapsed: rail, toggle, setCollapsed } = useSidebarCollapsed()
   const [collapsed, setCollapsedRuns] = useState<Record<string, boolean>>({})
+  const [collapsedClients, setCollapsedClients] = useState<Set<string>>(() => readCollapsedClients())
+  // The selected project's row must stay reachable: opening it (or a project added to a collapsed client) expands its group.
+  useEffect(() => {
+    if (!selectedId) return
+    const holder = groupByClient(projects).groups.find((g) => g.items.some((p) => p.id === selectedId))
+    if (!holder) return
+    setCollapsedClients((prev) => {
+      if (!prev.has(holder.key)) return prev
+      const next = new Set(prev)
+      next.delete(holder.key)
+      writeCollapsedClients(next)
+      return next
+    })
+  }, [selectedId, projects])
 
   const allRuns = useMemo(() => Object.values(runs), [runs])
   const items = waiting.flatMap((r) => waitingItems(r))
@@ -266,6 +281,16 @@ export default function Sidebar({
       if (!inProject(view)) setView('run')
     }
   }))
+  const entryById = new Map(projectEntries.map((e) => [e.id, e]))
+  const grouping = groupByClient(projects)
+  const toggleClient = (key: string): void =>
+    setCollapsedClients((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      writeCollapsedClients(next)
+      return next
+    })
   const assistantEntries: NavEntry[] = ASSISTANT_ORDER.map((id) => ({
     id,
     name: assistantLabel(id),
@@ -344,7 +369,7 @@ export default function Sidebar({
             {({ close }) => (
               <ul className="needs-list">
                 {waiting.flatMap((r) =>
-                  waitingItems(r).map((it) => (
+                  waitingItems(r, projectKindOf(projects.find((p) => p.id === r.summary.projectId))).map((it) => (
                     <li key={it.key}>
                       <button
                         type="button"
@@ -378,7 +403,60 @@ export default function Sidebar({
       {!rail && <div className="sidebar-label">Projects</div>}
       <div className="sidebar-section sidebar-projects">
         {projects.length === 0 && !rail && <div className="sidebar-empty">No projects yet</div>}
-        {projectEntries.map(renderEntry)}
+        {!grouping.showHeaders
+          ? projectEntries.map(renderEntry)
+          : grouping.groups.map((g, gi) => {
+              const rows = g.items.map((p) => entryById.get(p.id)).filter((e): e is NavEntry => !!e)
+              if (rail) {
+                return (
+                  <div key={g.key} className="nav-client-rail">
+                    {gi > 0 && <hr className="nav-client-divider" aria-hidden="true" />}
+                    {rows.map(renderEntry)}
+                  </div>
+                )
+              }
+              if (g.type === 'code') {
+                return (
+                  <div key={g.key} className="nav-client-group">
+                    <div className="nav-client-label" data-testid="nav-client-code-label">
+                      {g.label}
+                    </div>
+                    {rows.map(renderEntry)}
+                  </div>
+                )
+              }
+              const closed = collapsedClients.has(g.key)
+              const need = g.items.reduce((n, p) => n + decisionCount(allRuns.filter((r) => r.summary.projectId === p.id)), 0)
+              const panelId = `nav-client-rows-${gi}`
+              return (
+                <div key={g.key} className="nav-client-group">
+                  <button
+                    type="button"
+                    className="nav-client-header"
+                    aria-expanded={!closed}
+                    aria-controls={panelId}
+                    data-testid="nav-client-group"
+                    data-client={g.label}
+                    title={`${g.label} (${g.items.length})`}
+                    onClick={() => toggleClient(g.key)}
+                  >
+                    <Icon icon={closed ? ChevronRight : ChevronDown} size="xs" />
+                    <span className="nav-client-name">{g.label}</span>
+                    <span className="nav-client-count">{` (${g.items.length})`}</span>
+                    <span className="nav-client-fill" />
+                    {closed && need > 0 && (
+                      <Badge tone="attention" title={`${need} ${need === 1 ? 'decision needs' : 'decisions need'} you`}>
+                        <span aria-hidden="true">{need}</span>
+                        <span className="sr-only">{`, ${need} ${need === 1 ? 'decision' : 'decisions'}`}</span>
+                      </Badge>
+                    )}
+                  </button>
+                  <div id={panelId} role="group" aria-label={g.label} hidden={closed}>
+                    {rows.map(renderEntry)}
+                  </div>
+                </div>
+              )
+            })}
       </div>
 
       <div className="sidebar-footer">

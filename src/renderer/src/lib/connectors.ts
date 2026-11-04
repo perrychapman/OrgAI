@@ -213,17 +213,21 @@ function wordRank(def: ConnectorDef, w: string): number | null {
 /** What a person may type for a connection method: the badge words, so searching what they just read works. */
 const EASE_KEYWORDS: Record<ConnectorEase, string[]> = {
   signIn: ['sign in', 'easy', 'one click'],
-  none: ['no sign in', 'no sign in needed', 'easy', 'open'],
+  none: ['no sign in', 'no sign in needed', 'easy'],
   token: ['token', 'paste a token', 'paste', 'api key'],
-  ownApp: ['own app', 'needs your own app', 'client id', 'client']
+  ownApp: ['own app', 'needs your own app', 'client id']
 }
 
 function easeMatch(def: ConnectorDef, q: string): number | null {
   const n = q.replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim()
   if (n.length < 3) return null
   const keys = EASE_KEYWORDS[connectorEase(def)]
-  if (keys.some((k) => k.startsWith(n))) return 8
-  if (keys.some((k) => k.includes(n))) return 9
+  // A one-word query matches one-word keywords only (so "client" does not pull in the "client id" phrase); a
+  // multi-word query matches a phrase from its start (8) or at a later word boundary (9), never mid-word.
+  const oneWord = !n.includes(' ')
+  const pool = oneWord ? keys.filter((k) => !k.includes(' ')) : keys
+  if (pool.some((k) => k.startsWith(n))) return 8
+  if (!oneWord && pool.some((k) => ` ${k}`.includes(` ${n}`))) return 9
   return null
 }
 

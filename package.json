@@ -25,7 +25,7 @@
     "pack": "node scripts/pack-local.mjs",
     "test:scripts": "node --test scripts/pack-local.test.mjs",
     "test:watch": "vitest",
-    "e2e:free": "node e2e/layout.mjs && node e2e/dashboard.mjs && node e2e/runs.mjs && node e2e/proposals.mjs && node e2e/maintenance.mjs && node e2e/connections.mjs && node e2e/connectors.mjs && node e2e/import.mjs && node e2e/skills.mjs && node e2e/usage.mjs && node e2e/team.mjs && node e2e/canvas.mjs && node e2e/assistants.mjs && node e2e/permissions.mjs && node e2e/menu.mjs",
+    "e2e:free": "node e2e/layout.mjs && node e2e/dashboard.mjs && node e2e/runs.mjs && node e2e/proposals.mjs && node e2e/maintenance.mjs && node e2e/connections.mjs && node e2e/connectors.mjs && node e2e/import.mjs && node e2e/skills.mjs && node e2e/usage.mjs && node e2e/team.mjs && node e2e/canvas.mjs && node e2e/assistants.mjs && node e2e/permissions.mjs && node e2e/menu.mjs && node e2e/engagement.mjs",
     "check": "npm run typecheck && npm test && npm run build && npm run e2e:free"
   },
   "engines": {

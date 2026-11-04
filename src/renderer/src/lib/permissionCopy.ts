@@ -90,7 +90,7 @@ function display(p: string, like: string): string {
 
 // ---------- Where the agent is working ----------
 
-export type PermissionLocationKind = 'project' | 'worktree' | 'allowed' | 'outside' | 'unknown'
+export type PermissionLocationKind = 'project' | 'worktree' | 'allowed' | 'reference' | 'outside' | 'unknown'
 
 export interface PermissionLocation {
   kind: PermissionLocationKind
@@ -109,6 +109,8 @@ export interface LocationContext {
   projectPath: string
   /** The project's extra allowed folders. */
   allowedDirectories?: readonly string[]
+  /** The project's read-only reference folders (engagements). */
+  referenceDirectories?: readonly string[]
   /** The agent's own working folder when it differs from the project (its worktree). */
   agentCwd?: string
 }
@@ -195,6 +197,17 @@ function classify(target: string, isFile: boolean, ctx: LocationContext, shell =
       if (name) return { kind: 'worktree', label: oneLine(`${where} worktree ${name} (inside the project)`), detail: inner ? oneLine(inner, 200) : undefined, full, attention: false }
     }
     return { kind: 'project', label: `${where} the project`, detail: rel ? oneLine(rel, 200) : undefined, full, attention: false }
+  }
+  for (const dir of ctx.referenceDirectories ?? []) {
+    if (typeof dir !== 'string' || !dir.trim() || !isInsidePath(target, dir)) continue
+    const rel = relativePath(target, dir)
+    return {
+      kind: 'reference',
+      label: oneLine(`${where} a reference folder (read only): ${abbreviatePath(display(normalizePath(dir), dir), 48)}`),
+      detail: rel ? oneLine(rel, 200) : undefined,
+      full,
+      attention: false
+    }
   }
   for (const dir of ctx.allowedDirectories ?? []) {
     if (typeof dir !== 'string' || !dir.trim() || !isInsidePath(target, dir)) continue
@@ -518,5 +531,5 @@ export function droppedFolders(sent: readonly string[], saved: readonly string[]
 
 /** The notice for a folder main did not save. */
 export function droppedFolderNotice(path: string): string {
-  return `${oneLine(path, 200)} was not saved: must be an absolute folder, not a drive root, not OrgAI's data folder, and not the same folder as one already listed.`
+  return `${oneLine(path, 200)} was not saved: must be an absolute folder, not a drive root, not OrgAI's data folder, not the working folder or a folder inside or containing it, and not the same folder as one already listed.`
 }

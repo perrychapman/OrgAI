@@ -1,4 +1,5 @@
 import { normalizeView } from '../lib/teamView'
+import { droppedExtrasMessage } from '../lib/folderLists'
 import { rulesChangedProject } from '../lib/rulesChange'
 import { isTeamSurfaceRun } from '../lib/runSurface'
 import { useTeamAssistantStore } from './teamAssistant'
@@ -52,7 +53,8 @@ import type {
   UserQuestion
 } from '@shared/types'
 import { HARNESS_PROJECT_ID, QUICK_PROJECT_ID, SKILLS_PROJECT_ID, VIRTUAL_PROJECT_IDS, isVirtualProjectId, parseRunWindowHash } from '@shared/types'
-import type { QuickRunInput, QuickRunPromoteResult, SkillAssistInput, VirtualProjectId } from '@shared/types'
+import { projectKindOf } from '@shared/defaults'
+import type { ProjectKind, QuickRunInput, QuickRunPromoteResult, SkillAssistInput, VirtualProjectId } from '@shared/types'
 import { displayProject, type RunLayout } from '../lib/assistants'
 
 /** Project tabs: run (Live), history, team (Team; was 'org', see lib/teamView normalizeView), settings. projects and appSettings are app-level. */
@@ -313,7 +315,10 @@ interface AppState {
   trackSave<T>(fn: () => Promise<T>): Promise<T>
   selectRole(id: string | null): void
   selectAgent(id: string | null): void
-  createProject(input: { name: string; path: string; brief: string; setupKind?: SetupKind; mock?: boolean }): Promise<Project>
+  createProject(
+    input: { name: string; path: string; brief: string; setupKind?: SetupKind; kind?: ProjectKind; mock?: boolean; client?: string; referenceDirectories?: string[] },
+    opts?: { onExtrasError?: (err: unknown) => void }
+  ): Promise<Project>
   updateProject(project: Project): void
   updateRoles(projectId: string, mutate: (roles: Role[]) => Role[]): void
   removeProject(id: string): Promise<void>
@@ -1162,9 +1167,36 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ selectedAgentId: id })
   },
 
-  async createProject(input) {
-    const project = await window.orgai.projects.create(input)
-    set((s) => ({ projects: [project, ...s.projects], selectedProjectId: project.id, view: 'team' }))
+  async createProject(input, opts) {
+    const { client, referenceDirectories, ...createInput } = input
+    const project = await window.orgai.projects.create(createInput)
+    const land = (): void => set({ selectedProjectId: project.id, view: 'team' })
+    set((s) => ({ projects: [project, ...s.projects] }))
+    // client and reference folders are not part of ProjectCreateInput: one direct save right after create. A failure
+    // keeps the project in the list but does not land on it: the callback fires, the form shows the error
+    // and the caller selects the project itself when the user chooses to open it.
+    if (client || (referenceDirectories && referenceDirectories.length > 0)) {
+      try {
+        const saved = await get().saveProjectNow({
+          ...project,
+          ...(client ? { client } : {}),
+          ...(referenceDirectories && referenceDirectories.length > 0 ? { referenceDirectories } : {})
+        })
+        // Main drops folders inside, containing or equal to the project folder (and cleans the rest); say so rather than
+        // landing as if they were kept. The form keeps the user there with the note and an Open button.
+        const dropped = droppedExtrasMessage(referenceDirectories ?? [], saved, client)
+        if (dropped) {
+          opts?.onExtrasError?.(new Error(dropped))
+          return saved
+        }
+        land()
+        return saved
+      } catch (err) {
+        opts?.onExtrasError?.(err)
+        return project
+      }
+    }
+    land()
     return project
   },
 
@@ -1302,7 +1334,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   async startSetup(instruction) {
     const project = selectedProject(get())
     if (!project) return
-    const summary = await window.orgai.setup.start({ projectId: project.id, instruction })
+    // An engagement has no repository to scan, so the visible prompt and the run title read as a request to begin.
+    const text = instruction ?? (projectKindOf(project) === 'engagement' ? 'Set up this project with me.' : undefined)
+    const summary = await window.orgai.setup.start({ projectId: project.id, instruction: text })
     set((s) => ({
       runs: { ...s.runs, [summary.id]: { ...(s.runs[summary.id] ?? emptyRun(summary)), summary: { ...summary, ...s.runs[summary.id]?.summary, kind: summary.kind, prompt: summary.prompt, projectId: summary.projectId } } },
       ...showRunPatch(s, project.id, summary.id)
