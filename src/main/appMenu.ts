@@ -22,6 +22,8 @@ export interface MenuTemplateOptions {
   closeWindow?: () => void
   /** What the focused window shows; decides which items are enabled. Default: nothing open. */
   state?: MenuState
+  /** What the main (unscoped) window shows; decides the items routed to 'main'. Default: `state`. */
+  mainState?: MenuState
 }
 
 /**
@@ -89,6 +91,7 @@ export function buildMenuTemplate(opts: MenuTemplateOptions): MenuItemConstructo
   const linux = opts.platform === 'linux'
   const { send } = opts
   const state = opts.state ?? EMPTY_MENU_STATE
+  const mainState = opts.mainState ?? state
 
   const item = (
     action: MenuAction,
@@ -99,7 +102,7 @@ export function buildMenuTemplate(opts: MenuTemplateOptions): MenuItemConstructo
     const it: MenuItemConstructorOptions = {
       id: action,
       label,
-      enabled: menuItemEnabled(action, state),
+      enabled: menuItemEnabled(action, menuActionTarget(action) === 'main' ? mainState : state),
       click: () => send(action)
     }
     if (accelerator) {
@@ -245,16 +248,79 @@ export function buildMenuTemplate(opts: MenuTemplateOptions): MenuItemConstructo
 }
 
 export interface WindowLike {
+  id?: number
   isDestroyed(): boolean
   isMinimized?(): boolean
   restore?(): void
   focus?(): void
   show?(): void
+  once?(event: 'closed', listener: () => void): unknown
   webContents: {
     isDestroyed(): boolean
     send(channel: string, ...args: unknown[]): void
-    once?(event: string, listener: () => void): unknown
   }
+}
+
+// Per-window menu bookkeeping, keyed by window id. A window is "ready" once its renderer has called menu.setState
+// (the renderer does so on mount and on every change), so that first call is the readiness signal. Actions for a
+// window that is not ready yet wait in its queue and flush, in order, on that first call.
+export const MENU_QUEUE_CAP = 8
+const windowStates = new Map<number, MenuState>()
+const readyWindows = new Set<number>()
+const queues = new Map<number, MenuAction[]>()
+const tracked = new Set<number>()
+let windowAccess: { focusedId: () => number | undefined; mainId: () => number | undefined } | null = null
+let rebuild: ((focused: MenuState, main: MenuState) => void) | null = null
+
+const sameState = (a: MenuState, b: MenuState): boolean =>
+  a.hasProject === b.hasProject &&
+  a.hasRun === b.hasRun &&
+  a.runLive === b.runLive &&
+  a.chatRun === b.chatRun &&
+  a.hasDecision === b.hasDecision
+
+/** Rebuilds the menu from the stored states: the focused window drives run items, the main window the rest. */
+function refreshMenu(): void {
+  if (!rebuild) return
+  try {
+    const focusedId = windowAccess?.focusedId() ?? currentFocusedId()
+    const mainId = windowAccess?.mainId()
+    const focused = (focusedId !== undefined ? windowStates.get(focusedId) : undefined) ?? EMPTY_MENU_STATE
+    const main = (mainId !== undefined ? windowStates.get(mainId) : undefined) ?? EMPTY_MENU_STATE
+    rebuild(focused, main)
+  } catch (e) {
+    console.warn(`Could not refresh the application menu: ${(e as Error).message}`)
+  }
+}
+
+function currentFocusedId(): number | undefined {
+  try {
+    return BrowserWindow.getFocusedWindow()?.id
+  } catch {
+    return undefined
+  }
+}
+
+/** Attaches the one 'closed' cleanup of a window, whether its first touch is a queued action or a state. */
+function trackWindow(win: { id: number; once?(event: 'closed', listener: () => void): unknown }): void {
+  const id = win.id
+  if (tracked.has(id)) return
+  tracked.add(id)
+  win.once?.('closed', () => {
+    windowStates.delete(id)
+    readyWindows.delete(id)
+    queues.delete(id)
+    tracked.delete(id)
+    refreshMenu()
+  })
+}
+
+function enqueue(win: { id: number; once?(event: 'closed', listener: () => void): unknown }, action: MenuAction): void {
+  trackWindow(win)
+  const q = (queues.get(win.id) ?? []).filter((a) => a !== action)
+  q.push(action)
+  while (q.length > MENU_QUEUE_CAP) q.shift()
+  queues.set(win.id, q)
 }
 
 /**
@@ -283,7 +349,7 @@ const MENU_ACTION_TARGETS: Record<MenuAction, 'main' | 'focused'> = {
   'interrupt-run': 'focused',
   'end-session': 'focused',
   'go-to-decision': 'focused',
-  'show-needs-you': 'focused',
+  'show-needs-you': 'main',
   'org-retrospective': 'focused',
   'save-chat-as-project': 'focused',
   'open-run-window': 'focused',
@@ -301,7 +367,8 @@ export function menuActionTarget(action: MenuAction): 'main' | 'focused' {
 /**
  * Returns the sender the menu uses. 'focused' actions go to the focused live window, else the main window, else the
  * first live window. 'main' actions go to the live unscoped main window (restored when minimized, focused when it was
- * not the focused one); with no main window, `createMain` makes one and the action is sent once it finishes loading.
+ * not the focused one); with no main window, `createMain` makes one. Delivery to a window waits (queue of at most 8,
+ * newest of each action) until its renderer's first menu.setState. Also tells the menu which windows are focused / main.
  * Scope comes only from main's own map. Never sends to a destroyed window and re-checks the action.
  */
 export function menuActionSender<W extends WindowLike>(
@@ -310,8 +377,18 @@ export function menuActionSender<W extends WindowLike>(
   createMain?: () => W
 ): (action: MenuAction) => void {
   const live = (w: WindowLike | null | undefined): w is W => !!w && !w.isDestroyed() && !w.webContents.isDestroyed()
+  const idOf = (w: W | null | undefined): number | undefined => (live(w) ? w.id : undefined)
+  windowAccess = {
+    focusedId: () => idOf(getFocused()),
+    mainId: () => idOf(getWindows().find(([w, scope]) => scope === undefined && live(w))?.[0])
+  }
+  // Delivers at once to a ready, live window; otherwise queues (a window without an id cannot be tracked and gets it now).
   const deliver = (target: W, action: MenuAction): void => {
     if (!live(target)) return
+    if (target.id !== undefined && !readyWindows.has(target.id)) {
+      enqueue({ id: target.id, once: target.once?.bind(target) }, action)
+      return
+    }
     const payload: MenuActionEvent = { action }
     target.webContents.send(IPC.menuAction, payload)
   }
@@ -336,16 +413,8 @@ export function menuActionSender<W extends WindowLike>(
         return
       }
       if (createMain) {
-        const created = createMain()
-        const go = (): void => {
-          try {
-            deliver(created, action)
-          } catch (e) {
-            console.warn(`Could not deliver menu action ${action}: ${(e as Error).message}`)
-          }
-        }
-        if (created.webContents.once) created.webContents.once('did-finish-load', go)
-        else go()
+        // The new window queues the action until its renderer reports ready (first menu.setState).
+        deliver(createMain(), action)
         return
       }
       const fallback = focused ?? all[0]?.[0]
@@ -366,32 +435,48 @@ export function openHelpUrl(url: string, open: (url: string) => void): boolean {
   return true
 }
 
-// Per-window states, keyed by window id. The focused window's state drives the menu.
-const windowStates = new Map<number, MenuState>()
-let rebuild: ((state: MenuState) => void) | null = null
-
 /**
- * Stores a window's state (already cleaned) and rebuilds the application menu when that window is the focused one.
- * A window with no state yet counts as EMPTY_MENU_STATE.
+ * Stores a window's state (already cleaned). The first call marks the window ready and flushes its queued actions in
+ * order. The menu is rebuilt when the state changed and the window is the focused or the main one; an equal state is a
+ * no-op. A window with no state yet counts as EMPTY_MENU_STATE.
  */
 export function setMenuState(
-  win: { id: number; once?(event: 'closed', listener: () => void): unknown },
+  win: {
+    id: number
+    once?(event: 'closed', listener: () => void): unknown
+    isDestroyed?(): boolean
+    webContents?: { isDestroyed(): boolean; send(channel: string, ...args: unknown[]): void }
+  },
   state: MenuState
 ): void {
-  if (!windowStates.has(win.id)) {
-    const id = win.id
-    win.once?.('closed', () => windowStates.delete(id))
+  const id = win.id
+  trackWindow(win)
+  const prev = windowStates.get(id)
+  const wasReady = readyWindows.has(id)
+  windowStates.set(id, state)
+  readyWindows.add(id)
+  if (!wasReady) {
+    const queued = queues.get(id) ?? []
+    queues.delete(id)
+    const wc = win.webContents
+    if (wc && !win.isDestroyed?.() && !wc.isDestroyed()) {
+      for (const action of queued) {
+        try {
+          const payload: MenuActionEvent = { action }
+          wc.send(IPC.menuAction, payload)
+        } catch (e) {
+          console.warn(`Could not deliver menu action ${action}: ${(e as Error).message}`)
+        }
+      }
+    }
   }
-  windowStates.set(win.id, state)
-  try {
-    if (BrowserWindow.getFocusedWindow()?.id === win.id) rebuild?.(state)
-  } catch (e) {
-    console.warn(`Could not refresh the application menu: ${(e as Error).message}`)
-  }
+  if (wasReady && prev && sameState(prev, state)) return
+  const isFocused = (windowAccess?.focusedId() ?? currentFocusedId()) === id
+  if (isFocused || windowAccess?.mainId() === id) refreshMenu()
 }
 
 export function installAppMenu(send: (action: MenuAction) => void): void {
-  const build = (state: MenuState): void => {
+  const build = (state: MenuState, mainState: MenuState): void => {
     try {
       Menu.setApplicationMenu(
         Menu.buildFromTemplate(
@@ -401,6 +486,7 @@ export function installAppMenu(send: (action: MenuAction) => void): void {
             isDev: !app.isPackaged,
             send,
             state,
+            mainState,
             openExternal: (url) =>
               openHelpUrl(url, (u) => {
                 shell.openExternal(u).catch((e: Error) => console.warn(`Could not open ${u}: ${e.message}`))
@@ -431,9 +517,15 @@ export function installAppMenu(send: (action: MenuAction) => void): void {
     }
   }
   rebuild = build
-  build(EMPTY_MENU_STATE)
+  build(EMPTY_MENU_STATE, EMPTY_MENU_STATE)
   try {
-    app.on('browser-window-focus', (_e, win) => build(windowStates.get(win.id) ?? EMPTY_MENU_STATE))
+    app.on('browser-window-focus', (_e, win) => {
+      const mainId = windowAccess?.mainId()
+      build(
+        windowStates.get(win.id) ?? EMPTY_MENU_STATE,
+        (mainId !== undefined ? windowStates.get(mainId) : undefined) ?? EMPTY_MENU_STATE
+      )
+    })
   } catch (e) {
     console.warn(`Could not watch window focus for the application menu: ${(e as Error).message}`)
   }

@@ -270,8 +270,8 @@ describe('menuActionTarget', () => {
   it('classifies every action', () => {
     const main = ['new-project', 'new-chat', 'open-chat', 'open-mcp-assistant', 'open-skill-assistant', 'open-app-settings',
       'open-connections', 'open-connectors', 'open-skill-library', 'open-about', 'show-live', 'show-history', 'show-team',
-      'show-project-settings', 'toggle-sidebar', 'keyboard-shortcuts']
-    const focused = ['new-run', 'close-tab', 'interrupt-run', 'end-session', 'go-to-decision', 'show-needs-you',
+      'show-project-settings', 'toggle-sidebar', 'keyboard-shortcuts', 'show-needs-you']
+    const focused = ['new-run', 'close-tab', 'interrupt-run', 'end-session', 'go-to-decision',
       'org-retrospective', 'save-chat-as-project', 'open-run-window', 'toggle-conversation', 'toggle-hide-finished',
       'canvas-fit', 'canvas-zoom-in', 'canvas-zoom-out']
     for (const a of MENU_ACTIONS) expect(menuActionTarget(a)).toBe(main.includes(a) ? 'main' : 'focused')
@@ -347,18 +347,19 @@ describe('menuActionSender', () => {
     expect(main.restore).not.toHaveBeenCalled()
   })
 
-  it('creates the main window for a navigation action and sends once it has loaded', () => {
+  it('creates the main window for a navigation action and sends once its renderer is ready', () => {
     const run = win()
-    const created = win()
+    const created = { ...win(), id: 501, once: vi.fn() }
     const createMain = vi.fn(() => created)
     menuActionSender(() => run, () => [[run, RUN]], createMain)('open-about')
     expect(createMain).toHaveBeenCalledTimes(1)
     expect(created.webContents.send).not.toHaveBeenCalled()
     expect(run.webContents.send).not.toHaveBeenCalled()
-    expect(created.webContents.once).toHaveBeenCalledWith('did-finish-load', expect.any(Function))
-    ;(created.webContents.once.mock.calls[0][1] as () => void)()
+    expect(created.webContents.once).not.toHaveBeenCalled()
+    setMenuState(created, EMPTY_MENU_STATE)
     expect(created.webContents.send).toHaveBeenCalledTimes(1)
     expect(created.webContents.send).toHaveBeenCalledWith('menu:action', { action: 'open-about' })
+    expect(created.once).toHaveBeenCalledTimes(1)
   })
 
   it('does not create a main window for a run action or when one exists', () => {
@@ -371,10 +372,10 @@ describe('menuActionSender', () => {
 
   it('does not send to a window destroyed before the load finished', () => {
     let destroyed = false
-    const created = { ...win(), isDestroyed: () => destroyed }
+    const created = { ...win(), id: 502, once: vi.fn(), isDestroyed: () => destroyed }
     menuActionSender(() => null, () => [], () => created)('show-team')
     destroyed = true
-    ;(created.webContents.once.mock.calls[0][1] as () => void)()
+    setMenuState(created, EMPTY_MENU_STATE)
     expect(created.webContents.send).not.toHaveBeenCalled()
   })
 
@@ -456,6 +457,118 @@ describe('installAppMenu and setMenuState', () => {
     focusHandlers[0]({}, winA)
     expect(enabledOf(last(), 'close-tab')).toBe(false)
     electronMock.focused = null
+  })
+
+  describe('readiness queue, equality and main-routed enablement', () => {
+    const fake = (id: number) => {
+      const closers: (() => void)[] = []
+      return {
+        id,
+        closers,
+        isDestroyed: () => false,
+        webContents: { isDestroyed: () => false, send: vi.fn() },
+        once: vi.fn((_e: string, l: () => void) => {
+          closers.push(l)
+        })
+      }
+    }
+    const sentActions = (w: ReturnType<typeof fake>): string[] =>
+      w.webContents.send.mock.calls.map((c) => (c[1] as { action: string }).action)
+    const lastTemplate = () => {
+      const r = electronMock.buildFromTemplate.mock.results
+      return r[r.length - 1].value
+    }
+
+    it('queues until the first setState, flushes in order with de-dup, then delivers at once', () => {
+      const w = fake(601)
+      const send = menuActionSender(() => w, () => [[w, undefined]])
+      send('show-live')
+      send('show-team')
+      send('show-live')
+      expect(w.webContents.send).not.toHaveBeenCalled()
+      setMenuState(w, EMPTY_MENU_STATE)
+      expect(sentActions(w)).toEqual(['show-team', 'show-live'])
+      send('show-history')
+      expect(sentActions(w)).toEqual(['show-team', 'show-live', 'show-history'])
+      expect(w.once).toHaveBeenCalledTimes(1)
+    })
+
+    it('caps the queue at 8, dropping the oldest', () => {
+      const w = fake(602)
+      const send = menuActionSender(() => w, () => [[w, undefined]])
+      const acts: MenuAction[] = ['show-live', 'show-history', 'show-team', 'show-project-settings', 'new-project',
+        'new-chat', 'open-chat', 'open-about', 'open-connectors', 'open-connections']
+      for (const a of acts) send(a)
+      setMenuState(w, EMPTY_MENU_STATE)
+      expect(sentActions(w)).toEqual(acts.slice(2))
+    })
+
+    it('forgets the queue and state when the window closes', () => {
+      const w = fake(603)
+      const send = menuActionSender(() => w, () => [[w, undefined]])
+      send('show-live')
+      expect(w.closers).toHaveLength(1)
+      w.closers[0]()
+      setMenuState(w, EMPTY_MENU_STATE)
+      expect(w.webContents.send).not.toHaveBeenCalled()
+      expect(w.closers).toHaveLength(2)
+    })
+
+    it('does not rebuild for an equal state, but does for a change', () => {
+      const w = fake(604)
+      menuActionSender(() => w, () => [[w, undefined]])
+      electronMock.focused = w
+      installAppMenu(vi.fn())
+      setMenuState(w, { ...EMPTY_MENU_STATE, hasRun: true })
+      electronMock.setApplicationMenu.mockClear()
+      setMenuState(w, { ...EMPTY_MENU_STATE, hasRun: true })
+      expect(electronMock.setApplicationMenu).not.toHaveBeenCalled()
+      setMenuState(w, { ...EMPTY_MENU_STATE, hasRun: true, runLive: true })
+      expect(electronMock.setApplicationMenu).toHaveBeenCalledTimes(1)
+      electronMock.focused = null
+    })
+
+    it('rebuilds with the empty state when a window closes and none is focused', () => {
+      const w = fake(605)
+      menuActionSender(() => w, () => [[w, undefined]])
+      electronMock.focused = w
+      installAppMenu(vi.fn())
+      setMenuState(w, FULL)
+      expect(enabledOf(lastTemplate(), 'new-run')).toBe(true)
+      electronMock.focused = null
+      const before = electronMock.setApplicationMenu.mock.calls.length
+      w.closers[0]()
+      expect(electronMock.setApplicationMenu.mock.calls.length).toBe(before + 1)
+      expect(enabledOf(lastTemplate(), 'new-run')).toBe(false)
+    })
+
+    it('enables main-routed items from the main window and run items from the focused window', () => {
+      const main = fake(606)
+      const run = fake(607)
+      menuActionSender(() => run, () => [[main, undefined], [run, { projectId: 'p', runId: 'r' }]])
+      electronMock.focused = run
+      installAppMenu(vi.fn())
+      setMenuState(main, { ...EMPTY_MENU_STATE, hasProject: true, hasDecision: true })
+      setMenuState(run, { ...EMPTY_MENU_STATE, hasRun: true })
+      const t = lastTemplate()
+      expect(enabledOf(t, 'show-live')).toBe(true)
+      expect(enabledOf(t, 'show-needs-you')).toBe(true)
+      expect(enabledOf(t, 'go-to-decision')).toBe(false)
+      expect(enabledOf(t, 'close-tab')).toBe(true)
+      expect(enabledOf(t, 'new-run')).toBe(false)
+      electronMock.focused = null
+    })
+
+    it('builds main-routed items from mainState', () => {
+      const { template } = build('win32', false, {
+        state: { ...EMPTY_MENU_STATE, hasRun: true },
+        mainState: { ...EMPTY_MENU_STATE, hasProject: true }
+      })
+      expect(find(template, 'show-live').enabled).toBe(true)
+      expect(find(template, 'close-tab').enabled).toBe(true)
+      expect(find(template, 'new-run').enabled).toBe(false)
+      expect(menuActionTarget('show-needs-you')).toBe('main')
+    })
   })
 
   it('survives a failing Menu build', () => {
