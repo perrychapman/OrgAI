@@ -17,6 +17,7 @@ import ErrorBoundary from './components/ui/ErrorBoundary'
 import Sidebar from './components/Sidebar'
 import RunHistory from './components/RunHistory'
 import { useRunTabShortcuts } from './components/RunTabs'
+import AppMenuLayer from './components/AppMenuLayer'
 import { Badge } from './components/ui/Badge'
 import { Icon } from './components/ui/Icon'
 import { Tabs, type TabItem } from './components/ui/Tabs'
@@ -206,6 +207,7 @@ export default function App(): ReactElement {
           )}
         </ErrorBoundary>
       </main>
+      <AppMenuLayer />
     </div>
   )
 }
