@@ -41,7 +41,16 @@ import { PartialText } from './claudePartial'
 import { buildSkillPlugin, livePluginNames, pluginStale, skillGate, type SkillPlugin } from './claudeSkills'
 import { SETUP_TOOLS_INSTRUCTIONS, datum, harnessToolsFor, isBlockingHarnessTool, type ConfigChange, type ConfigChangeResult, type HarnessTool, type HarnessToolAudience, type McpAttachResult } from './harnessTools'
 import { agentInstalledServers, isMcpGated, mcpCallDenial, rolesGrantedServer, withoutServerRules } from './mcpGrants'
-import { REFERENCE_EDIT_TOOLS, referenceEditDenial } from './referenceDirectories'
+import {
+  REFERENCE_EDIT_TOOLS,
+  commandReferenceTouch,
+  editTargetOf,
+  referenceCommandMessage,
+  referenceEditDenial,
+  referenceFolderOf,
+  referenceRefusalEntry,
+  referenceTouchOf
+} from './referenceDirectories'
 import { SHELL_TOOLS, isUnsafeSegment, matchOptionsFor, matchingRule, programRunsProgram, ruleCoversButRefused, splitCommand, unwrapShellCommand, type MatchOptions } from './ruleMatch'
 import { ContinuationDriver, stepActivity } from './continuation'
 import { LIST_AGENTS_TOOL, MESSAGE_TOOL, buildRolePrompt, peerMessageText, canWrite, composeFirstMessage, isArchitectureFile } from './prompts'
@@ -924,6 +933,9 @@ function buildHarnessServer(tools: HarnessTool[], callers: HarnessCallerTracker,
   })
 }
 
+/** Appended to the deny text an agent gets for an edit under a reference folder (referenceFolderMessage stays as is). */
+export const REFERENCE_COPY_HINT = '; write a copy in the working folder instead'
+
 function permissionKey(toolName: string, input: unknown): string {
   try {
     return `${toolName}\u0000${JSON.stringify(input ?? {})}`
@@ -1071,6 +1083,14 @@ export class ClaudeSession implements RuntimeSession {
    * a server-level `mcp__<server>` grant holds whatever the CLI's own matcher does, and survives a restarted query.
    */
   private sessionRules = new Set<string>()
+  /**
+   * permissionKey -> the reference folder touch the PreToolUse hook found for a shell call it asked about (null folder:
+   * the list could not be read), so canUseTool's card names the folder even when the hook's cwd differs from the
+   * fallback cwd canUseTool has. Taken by canUseTool, dropped at PostToolUse.
+   */
+  private referenceTouches = new Map<string, { folder: string | null }>()
+  /** permissionKey -> edit calls the PreToolUse hook refused under a reference folder (their refusal row is written). */
+  private refusedEdits = new Map<string, number>()
   /** Open non-subagent tasks (task_started with another task_type) until their notification: restart blockers. */
   private backgroundTasks = new Set<string>()
   /**
@@ -1468,18 +1488,75 @@ export class ClaudeSession implements RuntimeSession {
     return { from: model || 'its configured model', to }
   }
 
-  /** referenceDirectories.ts referenceEditDenial for a PreToolUse call; an unreadable list denies an edit tool. */
-  private referenceDenial(input: Pick<PreToolUseHookInput, 'tool_name' | 'tool_input' | 'cwd'>): string | null {
-    if (!REFERENCE_EDIT_TOOLS.has(input.tool_name) || !this.ctx.referenceDirectories) return null
-    let refs: string[]
+  /** The run's reference folders now (live): undefined when the run has no list, 'unreadable' when reading it throws. */
+  private referenceList(): string[] | 'unreadable' | undefined {
+    if (!this.ctx.referenceDirectories) return undefined
     try {
-      refs = this.ctx.referenceDirectories()
+      return this.ctx.referenceDirectories().filter((r) => typeof r === 'string' && r.length > 0)
     } catch (e) {
       this.log('warn', `Could not read the run's reference folders: ${(e as Error).message}`)
-      return 'OrgAI could not check the reference folders, so this edit was refused. Try again shortly.'
+      return 'unreadable'
     }
-    const cwd = typeof input.cwd === 'string' && input.cwd ? input.cwd : this.ctx.project.path
-    return referenceEditDenial(input.tool_name, input.tool_input, refs, cwd)
+  }
+
+  /** The working folder of an agent when the provider does not say: its worktree, else the project folder. */
+  private agentCwd(agentId: string): string {
+    return this.integrator.worktreeOf(agentId)?.path ?? this.ctx.project.path
+  }
+
+  /**
+   * referenceDirectories.ts referenceEditDenial for an edit tool call, with the deny text the agent gets (plus
+   * REFERENCE_COPY_HINT) and the harness transcript row (referenceRefusalEntry). An unreadable list refuses an edit tool.
+   */
+  private referenceEditRefusal(toolName: string, toolInput: unknown, cwd: string): { reason: string; entry: { text: string; detail: string } } | null {
+    if (!REFERENCE_EDIT_TOOLS.has(toolName)) return null
+    const refs = this.referenceList()
+    if (refs === undefined) return null
+    if (refs === 'unreadable') {
+      return { reason: 'OrgAI could not check the reference folders, so this edit was refused. Try again shortly.', entry: referenceRefusalEntry(undefined, 'a reference folder') }
+    }
+    const denial = referenceEditDenial(toolName, toolInput, refs, cwd)
+    if (!denial) return null
+    const target = editTargetOf(toolName, toolInput)
+    const hit = referenceFolderOf(target, refs, cwd)
+    return { reason: `${denial}${REFERENCE_COPY_HINT}`, entry: referenceRefusalEntry(hit ? target : undefined, hit ?? refs[0] ?? 'a reference folder') }
+  }
+
+  /** The one harness row for a refused edit under a reference folder, on the calling agent. */
+  private referenceRefusalRow(agentId: string, entry: { text: string; detail: string }): void {
+    this.transcript(agentId, { kind: 'system', ...entry }, { source: 'harness' })
+  }
+
+  /**
+   * The reference folder a shell call touches from `cwd` (commandReferenceTouch), `{ folder: null }` when the list cannot
+   * be read (the call is asked), null when it touches none or the run has no reference folders.
+   */
+  private shellReferenceTouch(toolName: string, toolInput: Record<string, unknown>, cwd: string): { folder: string | null; how?: 'names' | 'runs-in' } | null {
+    if (!SHELL_TOOLS.has(toolName)) return null
+    const refs = this.referenceList()
+    if (refs === undefined) return null
+    if (refs === 'unreadable') return { folder: null }
+    if (!refs.length || typeof toolInput.command !== 'string') return null
+    return commandReferenceTouch(toolInput.command, cwd, refs, { shell: toolName === 'PowerShell' ? 'powershell' : 'bash' })
+  }
+
+  /**
+   * For canUseTool's card: the reference folder a shell, Read, Glob or Grep call touches. The hook's finding for this
+   * call (its cwd is the real one) wins; otherwise recomputed from the agent's worktree or the project folder.
+   * `{ folder: null }`: the list could not be read. null: no reference folder involved.
+   */
+  private cardReferenceTouch(key: string, toolName: string, input: Record<string, unknown>, cwd: string): { folder: string | null } | null {
+    const stashed = this.referenceTouches.get(key)
+    if (stashed) {
+      this.referenceTouches.delete(key)
+      return stashed
+    }
+    if (!SHELL_TOOLS.has(toolName) && toolName !== 'Read' && toolName !== 'Glob' && toolName !== 'Grep') return null
+    const refs = this.referenceList()
+    if (refs === undefined || (Array.isArray(refs) && !refs.length)) return null
+    if (refs === 'unreadable') return { folder: null }
+    const folder = referenceTouchOf(toolName, input, refs, cwd, { shell: toolName === 'PowerShell' ? 'powershell' : 'bash' })
+    return folder ? { folder } : null
   }
 
   private buildHooks(): Options['hooks'] {
@@ -1498,10 +1575,18 @@ export class ClaudeSession implements RuntimeSession {
       // Reference folders are read-only: edit tools under one (or naming no path while any exist) are denied before
       // any allow path (saved rules, acceptEdits, auto). The list is live, read at call time; relative paths resolve
       // against the calling agent's cwd (a worktree for isolated agents), else the project folder.
-      const referenceDenial = this.referenceDenial(input)
-      if (referenceDenial) {
-        this.log('warn', `Blocked ${input.tool_name} by ${this.agents.get(agentId)?.name ?? agentId}: ${referenceDenial}`)
-        return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: referenceDenial } }
+      // The refusal also writes one harness row on the calling agent ("Refused: <file> is in a reference folder (read
+      // only)"), counted per call so canUseTool's backstop never writes it twice.
+      const hookCwd = typeof input.cwd === 'string' && input.cwd ? input.cwd : this.agentCwd(agentId)
+      const editRefusal = this.referenceEditRefusal(input.tool_name, input.tool_input, hookCwd)
+      if (editRefusal) {
+        this.log('warn', `Blocked ${input.tool_name} by ${this.agents.get(agentId)?.name ?? agentId}: ${editRefusal.reason}`)
+        const refusedKey = permissionKey(input.tool_name, (input.tool_input ?? {}) as Record<string, unknown>)
+        // A hook deny normally never reaches canUseTool, so entries are kept only for the newest calls.
+        if (this.refusedEdits.size >= 100) this.refusedEdits.delete(this.refusedEdits.keys().next().value!)
+        this.refusedEdits.set(refusedKey, (this.refusedEdits.get(refusedKey) ?? 0) + 1)
+        this.referenceRefusalRow(agentId, editRefusal.entry)
+        return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: editRefusal.reason } }
       }
       // Per-role MCP grants on every MCP call, from the LIVE server list (run-scoped installs and the install card's
       // roles included), before any rule or hook-allow path. Whitelists alone do not restrict: def.mcpServers grants
@@ -1611,6 +1696,22 @@ export class ClaudeSession implements RuntimeSession {
       // scripts/smoke-permission-hook.mjs). The harness's own tools carry their approval inside their round-trip,
       // and rules granted while the run is live (request_permission_rules, the rules panel) apply without a restart.
       if (harness) return hookAllow('OrgAI harness tool')
+      // Reference folders (H1): a shell command that runs inside one or names a path at, under or above one never takes
+      // an allow path (saved, run or session rules, the CLI's settings rules, acceptEdits / auto pre-approval): it is
+      // asked, and canUseTool's card names the folder with no suggestions. The cwd is the hook's (the CLI's current
+      // folder for this agent), else the agent's worktree, else the project. An unreadable list asks too.
+      if (SHELL_TOOLS.has(input.tool_name)) {
+        const touch = this.shellReferenceTouch(input.tool_name, toolInput, hookCwd)
+        if (touch) {
+          this.referenceTouches.set(key, { folder: touch.folder })
+          const reason = touch.folder
+            ? referenceCommandMessage(touch.folder, touch.how ?? 'names')
+            : 'OrgAI could not check the reference folders, so this command needs your approval.'
+          this.log('info', `Asking about ${input.tool_name} by ${this.agents.get(agentId)?.name ?? agentId}: ${reason}`)
+          return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask', permissionDecisionReason: reason } }
+        }
+      }
+      const matchOpts: MatchOptions = { ...matchOptionsFor(this.ctx), effectiveCwd: hookCwd }
       // Matched even with no rules: a command made only of `cd` segments into the project or an allowed directory
       // runs nothing and needs no rule (ruleMatch.ts FREE_CD_LABEL).
       // Allow sources: RunManager's allowedRules (saved settings.local.json rules plus run grants; the run's grants only
@@ -1621,7 +1722,7 @@ export class ClaudeSession implements RuntimeSession {
       // A server an agent installed this run is never approved wholesale by a server-level rule (M3): its calls
       // ask per call unless an exact tool rule covers them.
       const usable = rules.length && input.tool_name.startsWith('mcp__') ? withoutServerRules(rules, this.agentInstalledMcp()) : rules
-      const hit = matchingRule(input.tool_name, toolInput, usable, matchOptionsFor(this.ctx))
+      const hit = matchingRule(input.tool_name, toolInput, usable, matchOpts)
       if (hit) return hookAllow(`OrgAI: allowed by saved rule ${hit}`)
       // Reviewer-4 H-A and its follow-up review (H1, M1-M3): the only shell allow rules the CLI still holds are those of
       // <project>/.claude/settings.json, and its matcher approves shapes ruleMatch refuses (`timeout 5 npm test
@@ -1631,7 +1732,7 @@ export class ClaudeSession implements RuntimeSession {
       // Per the Claude Code hooks docs, PreToolUse 'ask' prompts the user; that 'ask' beats a settings allow rule is
       // UNVERIFIED live (scripts/smoke-permission-hook.mjs could check it; it spends tokens and needs the user's consent).
       if (SHELL_TOOLS.has(input.tool_name)) {
-        const reason = cliShellAskReason(input.tool_name, toolInput, cliProjectSettings(this.ctx), matchOptionsFor(this.ctx))
+        const reason = cliShellAskReason(input.tool_name, toolInput, cliProjectSettings(this.ctx), matchOpts)
         if (reason) {
           this.log('info', reason)
           return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask', permissionDecisionReason: reason } }
@@ -1649,7 +1750,9 @@ export class ClaudeSession implements RuntimeSession {
         this.emit({ type: 'skill.used', runId: this.ctx.run.id, agentId: gated.agentId, skillId: gated.skill.id, name: gated.skill.name, at: Date.now() })
       }
       // Calls that never needed a permission prompt still leave an issuer queued; drop it now.
-      this.takeIssuer(permissionKey(input.tool_name, (input.tool_input ?? {}) as Record<string, unknown>), agentId)
+      const doneKey = permissionKey(input.tool_name, (input.tool_input ?? {}) as Record<string, unknown>)
+      this.takeIssuer(doneKey, agentId)
+      this.referenceTouches.delete(doneKey)
       const archPath = this.ctx.project.setup?.architecturePath
       if (!this.isSetup && archPath && (input.tool_name === 'Edit' || input.tool_name === 'Write')) {
         const filePath = ((input.tool_input ?? {}) as Record<string, unknown>).file_path
@@ -1776,14 +1879,14 @@ export class ClaudeSession implements RuntimeSession {
   }
 
   /** Match options plus the user's MCP servers (server-level card rules) for chooseSuggestions. */
-  private suggestOptions(): SuggestOptions {
+  private suggestOptions(effectiveCwd?: string): SuggestOptions {
     let live: McpServerSpec[] = []
     try {
       live = this.liveMcpServers()
     } catch {
       /* no server-level offers */
     }
-    return { ...matchOptionsFor(this.ctx), userMcpServers: userMcpServerNames(live, this.agentInstalledMcp()) }
+    return { ...matchOptionsFor(this.ctx), ...(effectiveCwd ? { effectiveCwd } : {}), userMcpServers: userMcpServerNames(live, this.agentInstalledMcp()) }
   }
 
   /** Servers agents installed during this run (attached mid-run, or run-scoped 'agent' installs): no server-level rule approves them. */
@@ -2510,32 +2613,48 @@ export class ClaudeSession implements RuntimeSession {
       canUseTool: async (toolName, input, permOptions) => {
         // The harness's own tools carry their approval inside the proposal round-trip.
         if (toolName.startsWith(ORGAI_TOOL_PREFIX)) return { behavior: 'allow', updatedInput: input }
-        const agentId = this.takeIssuer(permissionKey(toolName, input)) ?? this.lastToolAgent.get(toolName) ?? ROOT_ID
-        // Backstop for the PreToolUse reference gate: never a card for an edit under a reference folder.
-        const refDenial = this.referenceDenial({ tool_name: toolName, tool_input: input, cwd: this.integrator.worktreeOf(agentId)?.path ?? this.ctx.project.path })
-        if (refDenial) return { behavior: 'deny', message: refDenial }
+        const key = permissionKey(toolName, input)
+        const agentId = this.takeIssuer(key) ?? this.lastToolAgent.get(toolName) ?? ROOT_ID
+        const cwd = this.agentCwd(agentId)
+        // Backstop for the PreToolUse reference gate: never a card for an edit under a reference folder. The refusal row
+        // is written here only when the hook did not already refuse (and write it for) this call.
+        const edit = this.referenceEditRefusal(toolName, input, cwd)
+        if (edit) {
+          const refused = this.refusedEdits.get(key) ?? 0
+          if (refused > 1) this.refusedEdits.set(key, refused - 1)
+          else if (refused === 1) this.refusedEdits.delete(key)
+          else this.referenceRefusalRow(agentId, edit.entry)
+          return { behavior: 'deny', message: edit.reason }
+        }
+        // A shell, Read, Glob or Grep call touching a reference folder: the card names the folder, offers no rule
+        // (RunManager narrows any allow to 'once'), and an allow grants this call only.
+        const ref = this.cardReferenceTouch(key, toolName, input, cwd)
         this.setState(agentId, 'waiting', `Needs approval: ${describe(toolName, input)}`)
         // The SDK can forbid a "don't ask again" choice for asks whose rule would grant too much.
         // A trust-restricted run never gets a setMode suggestion (it stays ask-only after "allow for session").
-        const suggestions = restrictedSafeSuggestions(
-          this.ctx,
-          chooseSuggestions(
-            toolName,
-            input,
-            permOptions.suggestions?.length ? fromSdkSuggestions(permOptions.suggestions) : undefined,
-            !!permOptions.suppressAlwaysAllowRule,
-            this.suggestOptions()
-          )
-        )
+        const suggestions = ref
+          ? []
+          : restrictedSafeSuggestions(
+              this.ctx,
+              chooseSuggestions(
+                toolName,
+                input,
+                permOptions.suggestions?.length ? fromSdkSuggestions(permOptions.suggestions) : undefined,
+                !!permOptions.suppressAlwaysAllowRule,
+                this.suggestOptions(cwd)
+              )
+            )
         const decision = await this.ctx.requestPermission({
           agentId,
           toolName,
           input,
           summary: describe(toolName, input),
-          ...(suggestions.length ? { suggestions, ruleLabels: suggestionLabels(suggestions) } : {})
+          ...(suggestions.length ? { suggestions, ruleLabels: suggestionLabels(suggestions) } : {}),
+          ...(ref?.folder ? { referenceFolder: ref.folder } : {})
         })
         const a = this.agents.get(agentId)
         if (a && a.state === 'waiting') this.setState(agentId, 'tool', describe(toolName, input))
+        if (decision.behavior === 'allow' && ref) return { behavior: 'allow', updatedInput: input }
         if (decision.behavior === 'allow') return this.allowWithScope(decision, suggestions, input, toolName)
         return { behavior: 'deny', message: decision.message }
       }
