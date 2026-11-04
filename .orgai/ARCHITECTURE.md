@@ -339,7 +339,7 @@ components/layout:
 - electron-builder config, macOS entitlements, and the macOS first-test checklist.
 - electron-builder.yml mac targets carry no arch list (in electron-builder 26 an arch list overrides the --arm64/--x64 CLI flags). Mac artifacts are ${productName}-${version}-${arch}.${ext}.
 - CI and packaging:
-  - .github/workflows/ci.yml: on push to main or dev and on pull requests into main or dev. check job (npm ci, typecheck, test, build, e2e:free) and pack job (electron-builder --dir), both on windows-latest and macos-14.
+  - .github/workflows/ci.yml: on push to main or dev (docs-only pushes, `docs/**` and `**.md`, are skipped by `paths-ignore`) and on pull requests into main or dev. check job (npm ci, typecheck, test, build, e2e:free) and pack job (electron-builder --dir), both on windows-latest and macos-14.
   - .github/workflows/release.yml: a v<version> tag, or workflow_dispatch (dry run by default). The meta job refuses a tag or publishing dispatch whose commit is not reachable from origin/main (a dry run of another ref only builds, with a notice). windows on windows-latest, mac-arm64 on macos-14, mac-x64 on macos-15-intel. Each leg runs on its native runner so npm ci installs the matching darwin-<arch> optional deps. Unsigned unless the CSC_LINK/APPLE_* secrets are set. The publish job drafts a GitHub release.
   - .github/dependabot.yml: weekly grouped npm and actions updates, targeting dev.
   - scripts/ci-check-version.mjs: the release tag must equal package.json's version.
