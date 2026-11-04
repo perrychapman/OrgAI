@@ -352,12 +352,10 @@ else. The Maintenance "Architecture document" line and History are out of scope 
   (`lib/engagementContext.ts` keeps `sortNotes` and the row labels for other callers; they are unused by Settings now).
 - Maintenance (section 9): `knowledge-clear` "Clear everything…" (danger, next to Forget) reads the graph on mount and
   on every 'knowledge' push; it is natively disabled with the quiet reason `knowledge-clear-empty` "Nothing recorded
-  yet." while the graph is empty. The confirm is the shared `Dialog` (`knowledge-clear-dialog`, Cancel focused first,
-  `knowledge-clear-confirm` "Clear everything", body `knowledge-clear-body` "Deletes <clearCountsLine>. Context notes
-  stay. Agents and you can no longer see them. Retire items on the Knowledge tab to keep records instead.") rather than
-  `useConfirm`, because `ConfirmOptions` had no confirm-button testId when this landed; the lead added
-  `confirmTestId` on their branch, so this should move to `useConfirm({ …, confirmTestId: 'knowledge-clear-confirm' })`
-  after the merge. `knowledge.clear` then the section notice `KNOWLEDGE_CLEARED_NOTICE` "Cleared everything the team
+  yet." while the graph is empty. The confirm is the shared `useConfirm` (Cancel focused first, `confirmTestId: 'knowledge-clear-confirm'` on
+  "Clear everything", body `knowledge-clear-body` "Deletes <clearCountsLine>. Context notes stay. Agents and you can no
+  longer see them. Retire items on the Knowledge tab to keep records instead."; the lead moved it off a bare `Dialog`
+  after adding `confirmTestId` to `ConfirmOptions` / `ConfirmDialog`). `knowledge.clear` then the section notice `KNOWLEDGE_CLEARED_NOTICE` "Cleared everything the team
   recorded." (the existing `role=status` box) and focus back on the button. The danger-zone text
   (`ENGAGEMENT_DANGER_TEXT`) adds "what the team recorded". `forgetConfirmText` lists "N recorded items" after the
   notes and its uncounted sentence names "what the team recorded"; `forgetNoticeText` adds "N recorded items".

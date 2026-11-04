@@ -7,7 +7,6 @@ import { useForgetEngagement } from '../dashboard/useForgetEngagement'
 import DiffView from '../DiffView'
 import { RefreshCw } from 'lucide-react'
 import { Button } from '../ui/Button'
-import { Dialog } from '../ui/Dialog'
 import { IconButton } from '../ui/IconButton'
 import { SettingRow } from '../ui/SettingRow'
 import { SettingsCard } from './SettingsCard'
@@ -39,7 +38,6 @@ export function MaintenanceSection({ project }: { project: Project }): ReactElem
   const [diffs, setDiffs] = useState<Record<string, WorktreeDiff | 'loading'>>({})
   // What the team recorded (engagements): the counts the Clear-everything confirm names; null until read.
   const [graph, setGraph] = useState<KnowledgeGraph | null>(null)
-  const [clearOpen, setClearOpen] = useState(false)
 
   // Engagements write nothing to their folder unless separate git copies are on. Branches are always looked up, and the
   // block shows whenever any exist, so leftovers can be discarded after isolation was turned off.
@@ -73,7 +71,21 @@ export function MaintenanceSection({ project }: { project: Project }): ReactElem
   const clearReasonId = `${project.id}-knowledge-clear-why`
 
   const clearKnowledge = async (): Promise<void> => {
-    setClearOpen(false)
+    const ok = await confirm({
+      title: 'Clear everything the team recorded?',
+      body: (
+        <p data-testid="knowledge-clear-body">
+          Deletes {clearCountsLine(graph ?? { nodes: [], edges: [] })}. Context notes stay. Agents and you can no longer see them. Retire items on the Knowledge tab to keep records instead.
+        </p>
+      ),
+      confirmLabel: 'Clear everything',
+      danger: true,
+      confirmTestId: 'knowledge-clear-confirm'
+    })
+    if (!ok) {
+      requestAnimationFrame(() => document.querySelector<HTMLElement>('[data-testid=knowledge-clear]')?.focus())
+      return
+    }
     setBusy('knowledge-clear')
     setNotice(null)
     try {
@@ -303,7 +315,7 @@ export function MaintenanceSection({ project }: { project: Project }): ReactElem
                 disabled={busy !== null || graph === null || graphEmpty}
                 ariaDescribedBy={graphEmpty ? clearReasonId : undefined}
                 testId="knowledge-clear"
-                onClick={() => setClearOpen(true)}
+                onClick={() => void clearKnowledge()}
               >
                 {busy === 'knowledge-clear' ? 'Clearing…' : 'Clear everything…'}
               </Button>
@@ -315,29 +327,6 @@ export function MaintenanceSection({ project }: { project: Project }): ReactElem
             </div>
           </div>
         </SettingsGroup>
-      )}
-      {engagement && (
-        <Dialog
-          open={clearOpen}
-          onClose={() => setClearOpen(false)}
-          title="Clear everything the team recorded?"
-          size="sm"
-          testId="knowledge-clear-dialog"
-          footer={
-            <>
-              <Button autoFocusDialog onClick={() => setClearOpen(false)}>
-                Cancel
-              </Button>
-              <Button variant="danger" testId="knowledge-clear-confirm" onClick={() => void clearKnowledge()}>
-                Clear everything
-              </Button>
-            </>
-          }
-        >
-          <p data-testid="knowledge-clear-body">
-            Deletes {clearCountsLine(graph ?? { nodes: [], edges: [] })}. Context notes stay. Agents and you can no longer see them. Retire items on the Knowledge tab to keep records instead.
-          </p>
-        </Dialog>
       )}
 
       {!engagement && (

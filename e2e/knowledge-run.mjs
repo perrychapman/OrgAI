@@ -254,7 +254,8 @@ try {
   check(await until(async () => !(await clearBtn.isDisabled())), '"Clear everything…" is enabled while items exist')
   await clearBtn.focus()
   await page.keyboard.press('Enter')
-  const dlg = page.locator('[data-testid=knowledge-clear-dialog]')
+  // The shared useConfirm dialog (no dialog testId): found by its confirm button.
+  const dlg = page.locator('.dialog, [role=dialog]', { has: page.locator('[data-testid=knowledge-clear-confirm]') }).first()
   await dlg.waitFor({ state: 'visible' })
   check(clean(await dlg.getByRole('heading').first().innerText()) === 'Clear everything the team recorded?', 'the confirm title', clean(await dlg.getByRole('heading').first().innerText()))
   const body = clean(await dlg.locator('[data-testid=knowledge-clear-body]').innerText())
