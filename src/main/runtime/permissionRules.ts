@@ -6,6 +6,7 @@ import { hiddenCharProblem } from '../capabilities/sanitize'
 import { posix, win32 } from 'node:path'
 import { homedir } from 'node:os'
 import { isFreeCd, isFreeCdTarget, mcpServerOfRule, rulePrefix, shellRulesFor, splitCommand, unwrapShellCommand, type MatchOptions } from './ruleMatch'
+import { referenceTouchOf } from './referenceDirectories'
 import type { RuntimeContext } from './types'
 
 /**
@@ -467,6 +468,10 @@ export function isOfferableDirectory(dir: string, opts: SuggestOptions = {}): bo
     if (HOME_CONFIG_DIRS.some((c) => within(p.join(home, c), abs, platform))) return false
   }
   if (opts.cwd && p.isAbsolute(opts.cwd) && within(abs, opts.cwd, platform)) return false
+  // A reference folder, a folder inside one or a folder containing one is never made writable.
+  for (const r of opts.readOnlyDirs ?? []) {
+    if (typeof r === 'string' && p.isAbsolute(r) && (within(r, abs, platform) || within(abs, r, platform))) return false
+  }
   return true
 }
 
@@ -547,6 +552,9 @@ export function chooseSuggestions(
   opts?: SuggestOptions
 ): PermissionSuggestion[] {
   if (suppressed) return []
+  // Reference folders are read-only client material: nothing touching one is offered a "don't ask again" rule (a Read
+  // there never offers "every Read call"; a command naming one never offers a prefix rule).
+  if (opts?.readOnlyDirs?.length && referenceTouchOf(toolName, input, opts.readOnlyDirs, opts.effectiveCwd ?? opts.cwd, { platform: opts.platform, home: opts.home }) !== null) return []
   if (!provided?.length) return deriveSuggestions(toolName, input, opts).map((s) => offerableDirs(s, opts)).filter((s): s is PermissionSuggestion => !!s)
   // A provider's blanket rule (bare Bash / Edit / Write, an exec wrapper) is never offered: a session grant of it would
   // become a PreToolUse bypass (review re-check L-d).

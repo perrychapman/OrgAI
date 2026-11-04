@@ -1,6 +1,7 @@
 import { posix, win32 } from 'node:path'
 import { isWholeToolRule } from '@shared/types'
 import { hiddenCharProblem } from '../capabilities/sanitize'
+import { commandTouchesReference } from './referenceDirectories'
 import type { RuntimeContext } from './types'
 
 /**
@@ -447,10 +448,13 @@ export interface MatchOptions {
   /** Folders a `cd` may enter freely (the folder itself or anything inside it): the project path plus allowed directories. */
   freeDirs?: readonly string[]
   /**
-   * Read-only reference folders. A `cd` into one is free only when the whole command is made of free cds alone; in
-   * a compound command (`cd <ref> && npm test`) it is not free, so no saved rule runs inside the folder.
+   * Read-only reference folders. A command that touches one (runs inside it, or names a path at, under or above it:
+   * commandTouchesReference) is never covered by a rule and never free. Since the shell guard this includes a lone
+   * `cd` into one, which used to be free.
    */
   readOnlyDirs?: readonly string[]
+  /** The agent's current folder when the provider reports it (Claude hook cwd, Codex req.cwd); default `cwd`. */
+  effectiveCwd?: string
   /** Path rules to apply; default process.platform. win32 compares case-insensitively and reads MSYS `/c/...` paths. */
   platform?: NodeJS.Platform
   /** Folders never offered as extra directories (RuntimeContext.protectedDirectories: OrgAI's data folder). */
@@ -471,8 +475,7 @@ export const FREE_CD_LABEL = 'cd inside the project'
  * and `referenceDirectories()` (live), denied dirs `protectedDirectories()`.
  */
 export function matchOptionsFor(ctx: Pick<RuntimeContext, 'project' | 'allowedDirectories' | 'referenceDirectories' | 'protectedDirectories'>): MatchOptions {
-  // Reference folders are read-only: a `cd` into one is free only as a command of cds alone (readOnlyDirs), never
-  // in a compound command, so a saved rule does not run inside them.
+  // Reference folders are read-only (readOnlyDirs): a command touching one is never free or covered by a rule.
   const extra = ctx.allowedDirectories?.() ?? []
   const refs = ctx.referenceDirectories?.() ?? []
   const denied = ctx.protectedDirectories?.() ?? []
@@ -700,13 +703,17 @@ export function shellRulesFor(command: string, rules: readonly string[], opts?: 
   if (hiddenCharProblem('command', command.replace(/\t/g, ' ')) !== null) return null
   const cmd = unwrapShellCommand(command)
   if (!cmd) return null
+  // A command that touches a reference folder (read-only client material) is never covered by a rule or free: not even
+  // a lone `cd` into one (it names the folder). It goes through the provider's own permission flow.
+  if (opts?.readOnlyDirs?.length) {
+    const touch = commandTouchesReference(command, opts.effectiveCwd ?? opts.cwd, opts.readOnlyDirs, { platform: opts.platform, shell: opts.shell })
+    if (touch !== null) return null
+  }
   const hits: string[] = []
   const segments = splitCommand(cmd)
-  // A cd into a read-only (reference) folder is free only when the whole command is nothing but free cds.
-  const onlyCds = segments.length > 0 && segments.every((s) => isFreeCd(s, opts, true))
   for (const segment of segments) {
     if (!segment || isUnsafeSegment(segment, opts?.shell ?? 'bash')) return null
-    if (isFreeCd(segment, opts, onlyCds)) continue
+    if (isFreeCd(segment, opts)) continue
     const rule = shellRuleFor(segment, rules)
     if (!rule) return null
     if (!hits.includes(rule)) hits.push(rule)

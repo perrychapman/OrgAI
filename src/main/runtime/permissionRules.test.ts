@@ -123,6 +123,33 @@ describe('offerable directories (review M1)', () => {
   })
 })
 
+describe('reference folders: no rule is offered for anything touching one', () => {
+  const o = { cwd: '/srv/proj', freeDirs: ['/srv/proj'], readOnlyDirs: ['/srv/acme'], platform: 'linux' as const, home: '/home/u' }
+  it('offers nothing for a Read, Glob, Grep, edit or command under or naming a reference folder', () => {
+    expect(chooseSuggestions('Read', { file_path: '/srv/acme/a.md' }, undefined, false, o)).toEqual([])
+    expect(chooseSuggestions('Bash', { command: 'rm -rf /srv/acme/x' }, undefined, false, o)).toEqual([])
+    expect(chooseSuggestions('Bash', { command: 'npm test' }, undefined, false, { ...o, effectiveCwd: '/srv/acme/sub' })).toEqual([])
+    expect(chooseSuggestions('Edit', { file_path: '/srv/acme/a.md' }, undefined, false, o)).toEqual([])
+    expect(chooseSuggestions('Grep', { pattern: 'x', path: '/srv/acme' }, undefined, false, o)).toEqual([])
+    // A provider's own suggestions are dropped too.
+    const provided: PermissionSuggestion[] = [{ type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'rm:*' }], behavior: 'allow', destination: 'session' }]
+    expect(chooseSuggestions('Bash', { command: 'rm /srv/acme/x' }, provided, false, o)).toEqual([])
+  })
+  it('still offers the usual suggestion elsewhere', () => {
+    expect(chooseSuggestions('Read', { file_path: '/srv/proj/a.md' }, undefined, false, o)).toEqual([
+      { type: 'addRules', rules: [{ toolName: 'Read' }], behavior: 'allow', destination: 'session' }
+    ])
+    expect(chooseSuggestions('Bash', { command: 'npm test' }, undefined, false, o)).toHaveLength(1)
+    expect(chooseSuggestions('Read', { file_path: '/srv/acme/a.md' }, undefined, false, { ...o, readOnlyDirs: [] })).toHaveLength(1)
+  })
+  it('never offers a reference folder, or one inside or containing it, as an extra directory', () => {
+    expect(isOfferableDirectory('/srv/notes', o)).toBe(true)
+    for (const d of ['/srv/acme', '/srv/acme/sub']) expect(isOfferableDirectory(d, o), d).toBe(false)
+    expect(isOfferableDirectory('/srv', { ...o, cwd: '/home/u/proj' })).toBe(false)
+    expect(isOfferableDirectory('/srv/acme', { ...o, readOnlyDirs: undefined })).toBe(true)
+  })
+})
+
 describe('engagements: a { file } target round trip', () => {
   it('lists, adds and removes through the file and leaves the project folder empty', () => {
     const dir = mkdtempSync(join(tmpdir(), 'orgai-rules-'))
