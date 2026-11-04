@@ -1,7 +1,7 @@
 import type { ReactElement, ReactNode } from 'react'
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { Minus, Pencil, Plus, TriangleAlert } from 'lucide-react'
-import type { Proposal, ProposalDecision, Role } from '@shared/types'
+import type { Proposal, ProposalDecision, ProjectKind, Role } from '@shared/types'
 import { PERMISSION_MODE_OPTIONS, PROPOSAL_NOTE_MAX_CHARS, proposalSecretKey } from '@shared/types'
 import { initials } from '../lib/layout'
 import { useAppStore } from '../store/useAppStore'
@@ -20,6 +20,8 @@ import { SkillsProposalBody } from './proposals/SkillsProposalBody'
 import { useMcpCurrent } from './proposals/useCurrent'
 import { ClampText } from './proposals/ClampText'
 import { clampLabel } from '../lib/clampLabel'
+import { projectKindOf } from '@shared/defaults'
+import { projectKindCopy, type ArchitectureHeadings } from '../lib/projectKindCopy'
 
 interface Props {
   proposal: Proposal
@@ -83,6 +85,8 @@ export default function ProposalCard({ proposal, runId, currentRoles, who, agent
   const canSkip = isSetup && proposal.kind === 'mcpServers'
   const canDecline = !isSetup && (proposal.kind === 'mcpServers' || proposal.kind === 'orgChart' || proposal.kind === 'skills')
   const project = useAppStore((st) => st.projects.find((p) => p.id === runSummary?.projectId))
+  const kind = projectKindOf(project)
+  const kindCopy = projectKindCopy(kind)
   const mcp = proposal.kind === 'mcpServers' ? proposal.payload : null
   const scope = mcp ? proposalScope(mcp) : 'project'
   // The library is read when the card needs it: library scope (what is there now) and link rows (their command). The
@@ -98,7 +102,15 @@ export default function ProposalCard({ proposal, runId, currentRoles, who, agent
   const hasSecrets = !!mcp && uniqueSecretSlots(mcp).length > 0
   const effectCopy = proposalEffectCopy(proposal.effect, isSetup ? 'architect' : runSummary?.kind === 'mcp-assist' || runSummary?.kind === 'skill-assist' || runSummary?.quick ? 'assistant' : 'orchestrator')
   const helperText =
-    proposal.kind === 'mcpServers' ? mcpApplyNote(scope, hasSecrets) : proposal.kind === 'skills' ? skillsApplyNote(proposal.payload) : APPLY_NOTE[proposal.kind]
+    proposal.kind === 'mcpServers'
+      ? mcpApplyNote(scope, hasSecrets)
+      : proposal.kind === 'skills'
+        ? skillsApplyNote(proposal.payload)
+        : proposal.kind === 'architecture'
+          ? kindCopy.architectureApplyNote
+          : proposal.kind === 'settings'
+            ? kindCopy.settingsApplyNote
+            : APPLY_NOTE[proposal.kind]
 
   const setSecret = (index: number, v: string): void => setSecretValues((cur) => ({ ...cur, [index]: v }))
 
@@ -135,7 +147,7 @@ export default function ProposalCard({ proposal, runId, currentRoles, who, agent
       agentId={agentId}
       expandSignal={expandSignal}
       focusDetails
-      title={proposalTitle(proposal.kind)}
+      title={proposal.kind === 'architecture' ? kindCopy.architectureTitle : proposalTitle(proposal.kind)}
       summary={foldSummary}
       helper={
         <>
@@ -188,9 +200,9 @@ export default function ProposalCard({ proposal, runId, currentRoles, who, agent
       }
     >
       {proposal.title.trim() && <p className="proposal-lead">{oneLine(proposal.title, 200)}</p>}
-      {proposal.kind === 'architecture' && <ArchitectureBody payload={proposal.payload} />}
+      {proposal.kind === 'architecture' && <ArchitectureBody payload={proposal.payload} headings={kindCopy.architecture} />}
       {proposal.kind === 'orgChart' && <OrgChartBody payload={proposal.payload} currentRoles={currentRoles} />}
-      {proposal.kind === 'settings' && <SettingsBody payload={proposal.payload} />}
+      {proposal.kind === 'settings' && <SettingsBody payload={proposal.payload} kind={kind} />}
       {proposal.kind === 'mcpServers' && <McpProposalBody proposalId={proposal.id} payload={proposal.payload} current={mcpCurrent} roles={currentRoles} secretValues={secretValues} setSecret={setSecret} />}
       {proposal.kind === 'skills' && <SkillsProposalBody proposalId={proposal.id} payload={proposal.payload} current={skillCurrent} projectId={project?.id} />}
       {mode !== 'idle' && (
@@ -226,12 +238,18 @@ function Section({ title, children }: { title: string; children: ReactNode }): R
   )
 }
 
-function ArchitectureBody({ payload }: { payload: Extract<Proposal, { kind: 'architecture' }>['payload'] }): ReactElement {
+function ArchitectureBody({ payload, headings }: { payload: Extract<Proposal, { kind: 'architecture' }>['payload']; headings: ArchitectureHeadings }): ReactElement {
   return (
     <>
-      <p className="proposal-lead">{payload.summary}</p>
+      {headings.summary === 'Summary' ? (
+        <p className="proposal-lead">{payload.summary}</p>
+      ) : (
+        <Section title={headings.summary}>
+          <p className="proposal-lead">{payload.summary}</p>
+        </Section>
+      )}
       {payload.stack.length > 0 && (
-        <Section title="Stack">
+        <Section title={headings.stack}>
           <div className="proposal-chips">
             {payload.stack.map((s, i) => (
               <span key={i} className="chip proposal-chip">
@@ -242,7 +260,7 @@ function ArchitectureBody({ payload }: { payload: Extract<Proposal, { kind: 'arc
         </Section>
       )}
       {payload.modules.length > 0 && (
-        <Section title="Modules">
+        <Section title={headings.modules}>
           <ul className="proposal-list">
             {payload.modules.map((m, i) => (
               <li key={i}>
@@ -254,7 +272,7 @@ function ArchitectureBody({ payload }: { payload: Extract<Proposal, { kind: 'arc
         </Section>
       )}
       {payload.conventions.length > 0 && (
-        <Section title="Conventions">
+        <Section title={headings.conventions}>
           <ul className="proposal-list">
             {payload.conventions.map((c, i) => (
               <li key={i}>{c}</li>
@@ -263,7 +281,7 @@ function ArchitectureBody({ payload }: { payload: Extract<Proposal, { kind: 'arc
         </Section>
       )}
       {payload.commands.length > 0 && (
-        <Section title="Commands">
+        <Section title={headings.commands}>
           <ul className="proposal-list">
             {payload.commands.map((c, i) => (
               <li key={i}>
@@ -274,7 +292,7 @@ function ArchitectureBody({ payload }: { payload: Extract<Proposal, { kind: 'arc
         </Section>
       )}
       {payload.risks.length > 0 && (
-        <Section title="Risks and gaps">
+        <Section title={headings.risks}>
           <ul className="proposal-list">
             {payload.risks.map((r, i) => (
               <li key={i}>{r}</li>
@@ -493,16 +511,18 @@ function OrgChartBody({ payload, currentRoles }: { payload: Extract<Proposal, { 
   )
 }
 
-function SettingsBody({ payload }: { payload: Extract<Proposal, { kind: 'settings' }>['payload'] }): ReactElement {
+function SettingsBody({ payload, kind }: { payload: Extract<Proposal, { kind: 'settings' }>['payload']; kind: ProjectKind }): ReactElement {
   const rows: [string, string][] = []
+  const engagement = kind === 'engagement'
+  if (engagement && payload.client !== undefined) rows.push(['Client or case', payload.client.trim() ? showHidden(oneLine(payload.client, 120)) : 'Cleared'])
   if (payload.permissionMode) {
     rows.push(['Permission mode', PERMISSION_MODE_OPTIONS.find((o) => o.value === payload.permissionMode)?.label ?? payload.permissionMode])
   }
   if (payload.maxBudgetUsd !== undefined) rows.push(['Spend cap per run', payload.maxBudgetUsd === null ? 'No cap' : `$${payload.maxBudgetUsd}`])
   if (payload.maxSubagentDepth !== undefined) rows.push(['Max subagent depth', String(payload.maxSubagentDepth)])
   if (payload.maxConcurrentSubagents !== undefined) rows.push(['Max concurrent subagents', String(payload.maxConcurrentSubagents)])
-  if (payload.isolateWriters !== undefined) rows.push(['Isolate writers in worktrees', payload.isolateWriters ? 'on' : 'off'])
-  if (payload.reviewMerges !== undefined) rows.push(['Review changes before merging', payload.reviewMerges ? 'on' : 'off'])
+  if (payload.isolateWriters !== undefined) rows.push([engagement ? 'Give each writer its own copy (git worktrees)' : 'Isolate writers in worktrees', payload.isolateWriters ? 'on' : 'off'])
+  if (payload.reviewMerges !== undefined) rows.push(['Review changes before merging',payload.reviewMerges ? 'on' : 'off'])
   if (payload.autoContinue !== undefined) rows.push(['Keep going until the plan is complete', payload.autoContinue ? 'on' : 'off'])
   if (payload.maxAutoContinues !== undefined) rows.push(['Max automatic continues per run', String(payload.maxAutoContinues)])
   return (
