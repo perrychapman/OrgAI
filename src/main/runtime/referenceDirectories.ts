@@ -113,7 +113,7 @@ const MAX_NEST = 3
 const MAX_PARTS = 2000
 /** Longest command text checked; past this the check fails closed with no file-system access. */
 const MAX_COMMAND_CHARS = 32 * 1024
-const CD_NAMES: ReadonlySet<string> = new Set(['cd', 'pushd', 'set-location', 'sl', 'chdir'])
+const CD_NAMES: ReadonlySet<string> = new Set(['cd', 'pushd', 'push-location', 'set-location', 'sl', 'chdir'])
 /** These make the working folder unknown (the previous folder is not tracked). */
 const POP_NAMES: ReadonlySet<string> = new Set(['popd', 'pop-location'])
 const PUNCTUATION = /[<>|&;(){}`]|\$\(/
@@ -234,10 +234,13 @@ function variantsOf(s: CheckState, raw: string): string[] | 'touch' {
   let w = raw
   const param = /^-[A-Za-z][A-Za-z0-9]*:(?=.)/.exec(w)
   if (param) w = w.slice(param[0].length)
+  // A URL is never a file path (and its `https:/` would read as a provider). `//host/s` is not one.
+  if (w.includes('://')) return []
   const fsPrefix = /^(?:microsoft\.powershell\.core\\)?filesystem::/i.exec(w)
   if (fsPrefix) w = w.slice(fsPrefix[0].length)
-  else if (s.platform === 'win32') {
-    const named = /^((?:[A-Za-z][\w.-]*\\)?[A-Za-z][\w.-]*)::/.exec(w) ?? /^([A-Za-z][\w.-]+):[\\/]/.exec(w)
+  else if (s.platform === 'win32' && s.shell === 'powershell') {
+    // `Foo::bar` / `std::fs` are not paths (FileSystem:: is handled above); a PSDrive-looking `Name:\` word may be one.
+    const named = /^([A-Za-z][\w.-]+):[\\/]/.exec(w)
     if (named) {
       const name = (named[1].split('\\').pop() ?? '').toLowerCase()
       return NON_FS_PROVIDERS.has(name) ? [] : 'touch'
@@ -292,18 +295,6 @@ function partsOf(word: string): string[] {
 
 type Touch = { folder: string; how: 'names' | 'runs-in' }
 
-/** True for a word that is an absolute path (or `~`) without resolving it. */
-function isAbsoluteWord(s: CheckState, w: string): boolean {
-  if (w === '~' || /^~[\\/]/.test(w)) return true
-  return s.platform === 'win32' ? /^(?:[a-zA-Z]:[\\/]|[\\/])/.test(w) : w.startsWith('/')
-}
-
-/** True for a relative word that names a place: has a separator or is `.` / `..`. */
-function isRelativePathWord(s: CheckState, w: string): boolean {
-  if (!w || isAbsoluteWord(s, w) || w.includes('://')) return false
-  return w === '.' || w === '..' || w.includes('/') || (s.platform === 'win32' && w.includes('\\'))
-}
-
 /** The cd target among a cd segment's words after the command: the last non-flag word, `-Name:value` accepted. */
 function cdTargetWord(words: readonly string[]): string | null {
   let target: string | null = null
@@ -319,6 +310,14 @@ function cdTargetWord(words: readonly string[]): string | null {
   return target
 }
 
+/** The folder a cd segment moves to when it can be tracked (a plain path, not `-`, a variable or a glob), else null. */
+function trackedTarget(s: CheckState, words: readonly string[], cwd: string | undefined): string | null {
+  const arg = cdTargetWord(words)
+  if (arg === null || arg === '-' || /[$%`()<>|&]/.test(arg) || GLOB_CHAR.test(arg)) return null
+  const target = resolveWord(s, arg, cwd)
+  return target && !(s.platform === 'win32' && isUncLike(target)) ? target : null
+}
+
 function scanCommand(s: CheckState, text: string, startCwd: string | undefined, depth: number, startUnknown = false): Touch | null {
   let cwd = startCwd
   let unknown = startUnknown
@@ -329,18 +328,8 @@ function scanCommand(s: CheckState, text: string, startCwd: string | undefined, 
     const head = (words[0].split(/[\\/]/).pop() ?? words[0]).toLowerCase().replace(/\.(?:exe|cmd|bat|ps1)$/, '')
     const isCd = CD_NAMES.has(head) || POP_NAMES.has(head)
     const scanned = isCd ? words.slice(1) : words
-    // Once the working folder is unknown, a segment must name an absolute path and no relative one, else it fails closed.
-    if (unknown) {
-      let abs = 0
-      let rel = 0
-      for (const w of scanned) {
-        for (const part of partsOf(w)) {
-          if (isAbsoluteWord(s, part)) abs++
-          else if (isRelativePathWord(s, part)) rel++
-        }
-      }
-      if (rel > 0 || (abs === 0 && depth === 0)) return { folder: first, how: 'runs-in' }
-    }
+    // Once the working folder is unknown (an untracked cd), every later segment fails closed until a tracked cd.
+    if (unknown && !(isCd && !POP_NAMES.has(head) && trackedTarget(s, words, cwd))) return { folder: first, how: 'runs-in' }
     for (const word of scanned) {
       if (++s.words > MAX_WORDS) return { folder: first, how: 'names' }
       if (depth < MAX_NEST && /\s/.test(word)) {
@@ -355,10 +344,8 @@ function scanCommand(s: CheckState, text: string, startCwd: string | undefined, 
     }
     if (isCd) {
       // Words were scanned with the folder from before the cd (an ancestor of a reference folder counts as touching).
-      const arg = POP_NAMES.has(head) ? null : cdTargetWord(words)
-      const target =
-        arg !== null && arg !== '-' && !/[$%`()<>|&]/.test(arg) && !GLOB_CHAR.test(arg) ? resolveWord(s, arg, cwd) : null
-      if (target && !(s.platform === 'win32' && isUncLike(target))) {
+      const target = POP_NAMES.has(head) ? null : trackedTarget(s, words, cwd)
+      if (target) {
         cwd = target
         unknown = false
       } else {
@@ -470,7 +457,7 @@ export function referenceTouchOf(
 
 // Control, zero-width, bidi and other invisible characters (the set capabilities/sanitize.ts uses).
 const HIDDEN_RUN = new RegExp(
-  '[\u0000-\u001f\u007f-\u009f\u00ad\u034f\u061c\u115f\u1160\u180e\u200b-\u200f\u202a-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff9-\ufffb\u{e0000}-\u{e007f}]+',
+  '[\u0000-\u001f\u007f-\u009f\u00ad\u034f\u061c\u115f\u1160\u180e\u200b-\u200f\u202a-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff9-\ufffb\u{e0000}-\u{e007f}\u{e0100}-\u{e01ef}]+',
   'gu'
 )
 

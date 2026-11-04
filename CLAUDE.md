@@ -438,10 +438,14 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   says to write only in the working folder. Shell check hardening (review fix): a UNC or device word (`\\host\share`,
   `//host/s`, `\\?\...`, `\\.\...`) counts as touching the first folder with no file-system access (resolving it would
   open an SMB connection), as does a UNC edit path, cwd or reference folder; `-Path:X`, `FileSystem::X` and bash `\x`
-  spellings are checked, `HKCU:`-style non-file-system providers are not touching and any other provider-qualified
-  word is; a cd's own words are scanned (a cd into an ancestor of a folder, `cd ..` to a sibling's parent, asks), and
-  after `cd -`, `popd`, a bare cd or an untrackable target a segment with a relative path word or no absolute path
-  word asks; commands over 32 KB or past 2,000 words / parts ask without file-system access. A `Bash` whole-tool rule
+  spellings are checked, `HKCU:`-style non-file-system providers are not touching and (PowerShell only) any other
+  `Name:\` word is; URLs (`://`) and `Foo::bar` words never are; a cd's own words are scanned (a cd into an ancestor of a folder, `cd ..` to a
+  sibling's parent, asks; `Push-Location` counts as a cd), and after `cd -`, `popd`, `Pop-Location`, a bare cd or an
+  untrackable target (a variable) EVERY later segment asks until a tracked cd (fail closed); a command over 32 KB asks
+  with no file-system work, one with over 2,000 words or parts asks once that count is hit. `scratch.ts` `canonicalDeep`
+  (every caller) never calls the file system for a network path (`isNetworkPath`: on win32 anything starting with two
+  separators, on darwin `/net/` and `/Network/`) and returns it resolved lexically only. The refusal-row cleaner also
+  strips U+E0100-E01EF. A `Bash` whole-tool rule
   never allows a touching command. Honest limits: a command that reaches a reference folder through a variable
   ($HOME, %USERPROFILE%), a link created at run time, a program's own config / script file, or a provider deciding by
   itself for calls OrgAI never sees (Codex commands that run inside its sandbox without an approval request; reference
