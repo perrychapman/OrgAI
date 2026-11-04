@@ -343,7 +343,7 @@ try {
   const noBom = (s) => s.replace(/^﻿/, '')
   check(noBom(csv).startsWith('project,client,started,started_utc,ended,kind,status,title,roles'), 'usageCsv has the header row started,ended,kind,...', csv.split(/\r?\n/)[0])
   const clip = await page.evaluate(() => navigator.clipboard.readText().catch(() => null))
-  if (clip !== null) check(noBom(clip).startsWith('started,ended,kind'), 'the clipboard holds the CSV header row', clip.split(/\r?\n/)[0])
+  if (clip !== null) check(noBom(clip).startsWith('project,client,started,started_utc,ended,kind'), 'the clipboard holds the CSV header row', clip.split(/\r?\n/)[0])
   else log_skip('clipboard not readable in this window; header checked through runs.usageCsv')
   await shot('trends')
   await fitsWindow('Trends (1600x1000 dark)')
