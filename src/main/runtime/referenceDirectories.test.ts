@@ -128,9 +128,11 @@ describe('commandTouchesReference (shell guard)', () => {
   it('resolves relative words against the tracked cwd and follows cd', () => {
     expect(w('type ..\\Acme\\x')).toBe(WREF)
     expect(w('cd .. && del Acme\\x')).toBe(WREF)
-    expect(w('cd .. && del Other\\x')).toBeNull()
+    // A cd to a sibling's parent is an ancestor of the folder: it asks (accepted).
+    expect(w('cd .. && del Other\\x')).toBe(WREF)
+    expect(commandTouchesReference('cd .. && del Other\\x', 'C:\\Work\\Proj', [WREF], { platform: 'win32' })).toBeNull()
     expect(commandTouchesReference('del Acme\\x', undefined, [WREF], { platform: 'win32' })).toBeNull()
-    expect(w('cd $X && del Acme\\x')).toBeNull()
+    expect(w('cd $X && del Acme\\x')).toBe(WREF)
     expect(w('cd Acme', 'powershell', 'C:\\Clients')).toBe(WREF)
     expect(commandReferenceTouch('cd /srv/acme', PCWD, [PREF], { platform: 'linux' })).toEqual({ folder: PREF, how: 'names' })
   })

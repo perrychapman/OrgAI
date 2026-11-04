@@ -337,6 +337,13 @@ describe('free cd segments', () => {
     expect(matchingRule('Bash', { command: 'rm /srv/acme/x' }, ['Bash(rm:*)'], posix)).toBeUndefined()
     expect(matchingRule('Bash', { command: 'rm x' }, ['Bash(rm:*)'], posix)).toBeTruthy()
   })
+
+  it('a hand-edited bare Bash rule never allows a command touching a reference folder (L2)', () => {
+    const posix = { cwd: '/srv/proj', freeDirs: ['/srv/proj'], readOnlyDirs: ['/srv/acme'], platform: 'linux' as const }
+    expect(matchingRule('Bash', { command: 'rm /srv/acme/x' }, ['Bash'], posix)).toBeUndefined()
+    expect(matchingRule('Bash', { command: 'ls' }, ['Bash'], posix)).toBe('Bash')
+    expect(matchingRule('Bash', { command: 'rm /srv/acme/x' }, ['Bash', 'Bash(rm:*)'], posix)).toBeUndefined()
+  })
 })
 
 describe('reviewer-3: program options that run another program (programRunsProgram)', () => {

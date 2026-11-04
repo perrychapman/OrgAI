@@ -733,9 +733,23 @@ export function matchesBashRule(command: string, rules: readonly string[], opts?
  * Callers pass opts (matchOptionsFor(ctx)) even when `rules` is empty: a command of free cds alone is allowed.
  */
 export function matchingRule(toolName: string, input: unknown, rules: readonly string[], opts?: MatchOptions): string | undefined {
+  // A hand-edited bare `Bash` rule never allows a command that touches a reference folder (reference check first).
+  let wholeToolBlocked = false
+  if (SHELL_TOOLS.has(toolName) && opts?.readOnlyDirs?.length) {
+    const cmd = input && typeof input === 'object' ? (input as { command?: unknown }).command : undefined
+    wholeToolBlocked =
+      typeof cmd !== 'string' ||
+      commandTouchesReference(cmd, opts.effectiveCwd ?? opts.cwd, opts.readOnlyDirs, {
+        platform: opts.platform,
+        shell: toolName === 'PowerShell' ? 'powershell' : 'bash'
+      }) !== null
+  }
   for (const rule of rules) {
     const r = rule.trim()
-    if (isWholeToolRule(r) && r === toolName) return r
+    if (isWholeToolRule(r) && r === toolName) {
+      if (wholeToolBlocked) continue
+      return r
+    }
     // Server-level rules: exact `mcp__<server>__` prefix, so `mcp__a` never covers `mcp__ab__x` or `mcp__a_b__x`.
     // A tool named `mcp__a__b__c` is covered by `mcp__a` (the split is ambiguous; the first segment is the server).
     const server = mcpServerOfRule(r)

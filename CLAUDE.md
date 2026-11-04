@@ -435,10 +435,19 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   a reference folder (read only)" (the folder in the detail). Engagements start on permission mode 'default'
   (`newProject`) and the engagement Architect recommends it; it proposes 'auto' only on request and says OrgAI still
   refuses edits in reference folders and asks before a command that names one. The Analyst keeps Bash and its prompt
-  says to write only in the working folder. Honest limits: a command that reaches a reference folder through a variable
-  ($HOME, %USERPROFILE%), a relative path from an unknown cwd, a link created at run time, or a program's own config /
-  script file is not detected; the permission mode decides those, and on Claude 'auto' the classifier still decides for
-  them. Mock markers: `[mock:reference-edit]` (also writes the refusal row), `[mock:reference-shell]` (a root Bash
+  says to write only in the working folder. Shell check hardening (review fix): a UNC or device word (`\\host\share`,
+  `//host/s`, `\\?\...`, `\\.\...`) counts as touching the first folder with no file-system access (resolving it would
+  open an SMB connection), as does a UNC edit path, cwd or reference folder; `-Path:X`, `FileSystem::X` and bash `\x`
+  spellings are checked, `HKCU:`-style non-file-system providers are not touching and any other provider-qualified
+  word is; a cd's own words are scanned (a cd into an ancestor of a folder, `cd ..` to a sibling's parent, asks), and
+  after `cd -`, `popd`, a bare cd or an untrackable target a segment with a relative path word or no absolute path
+  word asks; commands over 32 KB or past 2,000 words / parts ask without file-system access. A `Bash` whole-tool rule
+  never allows a touching command. Honest limits: a command that reaches a reference folder through a variable
+  ($HOME, %USERPROFILE%), a link created at run time, a program's own config / script file, or a provider deciding by
+  itself for calls OrgAI never sees (Codex commands that run inside its sandbox without an approval request; reference
+  folders go to Claude as additionalDirectories, so the CLI may treat them as working folders for its own read-only
+  command approval) is not detected; the permission mode decides those, and on Claude 'auto' the classifier still
+  decides for them. Codex answers 'accept' (never acceptForSession) on runs with reference folders. Mock markers: `[mock:reference-edit]` (also writes the refusal row), `[mock:reference-shell]` (a root Bash
   `del "<first ref>\brief.md"` that asks with referenceFolder set). Verified by unit tests (fake query(), fake Codex
   app-server, mock, store, RunManager, profiler, setup service, prompt and nudge wording) only; unverified live: that a
   PreToolUse 'ask' prompts under 'auto' / 'bypassPermissions', and that Claude's hook `input.cwd` follows the Bash

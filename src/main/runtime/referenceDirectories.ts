@@ -11,13 +11,21 @@ import { SHELL_TOOLS, segmentWords, splitCommand, unwrapShellCommand } from './r
  * Edit tools are gated by path (referenceEditDenial). Shell commands are gated by naming (commandReferenceTouch): a
  * command touches a folder when the agent's working folder is at or under it, or any word of any segment names a path
  * at, under or above it (`rm -rf ..`, `del /s C:\Clients`, a glob's static prefix). Reads are not told apart from
- * writes: every touching command asks. Honest limits: a command that reaches a folder through a variable ($VAR, %VAR%),
- * a relative path from an unknown cwd, a symlink not resolvable at check time, or a program's own config (a script
- * that deletes files, a makefile) is not detected.
+ * writes: every touching command asks. A UNC or device word (\\host\share, //host/s, \\?\...) counts as touching with no
+ * file-system access (resolving it would open a network connection). After a cd whose target cannot be tracked (`cd -`,
+ * popd, a bare cd, a variable) a segment with a relative path word or no absolute path word asks. Commands over 32 KB
+ * or with over 2,000 words or parts ask without any file-system access. Honest limits: a command that reaches a folder
+ * through a variable ($VAR, %VAR%), a link created at run time, a program's own config or script files (a script that
+ * deletes files, a makefile), or a provider deciding by itself for calls OrgAI never sees is not detected.
  *
  * ruleMatch.ts calls this module (shellRulesFor) and this module calls ruleMatch.ts (splitting): each side uses the
  * other only inside function bodies, never at module load.
  */
+
+/** True for a path that starts with two separators (UNC, device and extended-length paths): never touched on disk. */
+function isUncLike(p: string): boolean {
+  return /^[\\/]{2}/.test(p)
+}
 
 /** The edit tools refused under a reference folder. */
 export const REFERENCE_EDIT_TOOLS: ReadonlySet<string> = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
@@ -39,18 +47,27 @@ export function referenceFolderOf(target: unknown, refs: readonly string[], cwd?
   const usable = refs.filter((r) => typeof r === 'string' && r !== '' && isAbsolute(r))
   if (!usable.length) return null
   const abs = isAbsolute(target) ? target : cwd ? join(cwd, target) : target
+  // A UNC or device path (\\host\share, //host/s, \\?\..., \\.\...) is never handed to the file system: resolving it
+  // would open a network connection. On Windows it counts as inside the first reference folder (edit tools are denied).
+  if (isUncLike(abs) || isUncLike(target)) {
+    if (process.platform === 'win32') return usable[0]
+  }
   let real = abs
-  try {
-    real = canonicalDeep(abs)
-  } catch {
-    // Unresolvable: the lexical check alone.
+  if (!isUncLike(abs)) {
+    try {
+      real = canonicalDeep(abs)
+    } catch {
+      // Unresolvable: the lexical check alone.
+    }
   }
   for (const ref of usable) {
     let refReal = ref
-    try {
-      refReal = canonicalDeep(ref)
-    } catch {
-      // Keep the given spelling.
+    if (!isUncLike(ref)) {
+      try {
+        refReal = canonicalDeep(ref)
+      } catch {
+        // Keep the given spelling.
+      }
     }
     if ([ref, refReal].some((r) => isInside(r, abs) || isInside(r, real))) return ref
   }
@@ -92,7 +109,13 @@ export interface ReferenceCheckOptions {
 const MAX_WORDS = 2000
 /** Nested command texts (a word that itself holds a command) are scanned this deep. */
 const MAX_NEST = 3
+/** Parts (pieces of words) checked per command; past this the check fails closed. */
+const MAX_PARTS = 2000
+/** Longest command text checked; past this the check fails closed with no file-system access. */
+const MAX_COMMAND_CHARS = 32 * 1024
 const CD_NAMES: ReadonlySet<string> = new Set(['cd', 'pushd', 'set-location', 'sl', 'chdir'])
+/** These make the working folder unknown (the previous folder is not tracked). */
+const POP_NAMES: ReadonlySet<string> = new Set(['popd', 'pop-location'])
 const PUNCTUATION = /[<>|&;(){}`]|\$\(/
 const GLOB_CHAR = /[*?[]/
 
@@ -113,6 +136,7 @@ interface CheckState {
   real: boolean
   cache: Map<string, string>
   words: number
+  parts: number
 }
 
 function fold(s: CheckState, v: string): string {
@@ -129,10 +153,12 @@ function realOf(s: CheckState, abs: string): string {
   const hit = s.cache.get(abs)
   if (hit !== undefined) return hit
   let real = abs
-  try {
-    real = canonicalDeep(abs)
-  } catch {
-    // Unresolvable: the lexical spelling alone.
+  if (!isUncLike(abs)) {
+    try {
+      real = canonicalDeep(abs)
+    } catch {
+      // Unresolvable: the lexical spelling alone.
+    }
   }
   s.cache.set(abs, real)
   return real
@@ -154,6 +180,12 @@ function touchOf(s: CheckState, abs: string, ancestor: boolean): string | null {
   return null
 }
 
+function trimDotsSpaces(part: string): string {
+  let end = part.length
+  while (end > 0 && (part.charCodeAt(end - 1) === 46 || part.charCodeAt(end - 1) === 32)) end--
+  return end === part.length ? part : part.slice(0, end)
+}
+
 /** One word as an absolute path against `cwd`, or null when it names no resolvable path. */
 function resolveWord(s: CheckState, raw: string, cwd: string | undefined): string | null {
   let w = raw
@@ -167,12 +199,12 @@ function resolveWord(s: CheckState, raw: string, cwd: string | undefined): strin
       const msys = /^\/([a-zA-Z])(?:\/(.*))?$/.exec(w)
       if (msys) w = `${msys[1].toUpperCase()}:\\${(msys[2] ?? '').replace(/\//g, '\\')}`
     }
-    // Provider paths (HKCU:\..., Microsoft.PowerShell.Core\FileSystem::C:\...): a ':' only as a drive prefix.
+    // Other ':' (providers are screened in variantsOf): only a drive prefix is a path.
     if (w.replace(/^[a-zA-Z]:/, '').includes(':')) return null
-    // win32 drops trailing dots and spaces from a name (`Acme.` opens `Acme`).
+    // win32 drops trailing dots and spaces from a name (`Acme.` opens `Acme`). A linear trim, never a backtracking regex.
     w = w
       .split(/[\\/]/)
-      .map((part) => (part === '.' || part === '..' ? part : part.replace(/[. ]+$/, '') || part))
+      .map((part) => (part === '.' || part === '..' ? part : trimDotsSpaces(part) || part))
       .join('\\')
   }
   if (cwd && s.p.isAbsolute(cwd)) return s.p.resolve(cwd, w)
@@ -188,8 +220,53 @@ function globDir(s: CheckState, w: string): string {
   return sep >= 0 ? prefix.slice(0, sep + 1) : '.'
 }
 
-function checkPart(s: CheckState, part: string, cwd: string | undefined): string | null {
-  if (!part || part.includes('://')) return null
+/** PowerShell providers that are not the file system: a path in one touches no folder. */
+const NON_FS_PROVIDERS: ReadonlySet<string> = new Set([
+  'hkcu', 'hklm', 'hkcr', 'hku', 'hkcc', 'env', 'alias', 'function', 'variable', 'cert', 'wsman', 'registry'
+])
+
+/**
+ * The spellings of a word to check: the word itself, a leading PowerShell `-Name:` parameter prefix removed, a
+ * `(Microsoft.PowerShell.Core\)FileSystem::` prefix removed, and (bash) the word with `\x` unescaped to `x`. 'touch'
+ * for a provider-qualified word that may be the file system; an empty list for a known non-file-system provider.
+ */
+function variantsOf(s: CheckState, raw: string): string[] | 'touch' {
+  let w = raw
+  const param = /^-[A-Za-z][A-Za-z0-9]*:(?=.)/.exec(w)
+  if (param) w = w.slice(param[0].length)
+  const fsPrefix = /^(?:microsoft\.powershell\.core\\)?filesystem::/i.exec(w)
+  if (fsPrefix) w = w.slice(fsPrefix[0].length)
+  else if (s.platform === 'win32') {
+    const named = /^((?:[A-Za-z][\w.-]*\\)?[A-Za-z][\w.-]*)::/.exec(w) ?? /^([A-Za-z][\w.-]+):[\\/]/.exec(w)
+    if (named) {
+      const name = (named[1].split('\\').pop() ?? '').toLowerCase()
+      return NON_FS_PROVIDERS.has(name) ? [] : 'touch'
+    }
+  }
+  const out = [w]
+  if (s.shell !== 'powershell' && w.includes('\\')) {
+    const unescaped = w.replace(/\\(.)/g, '$1')
+    if (unescaped !== w) out.push(unescaped)
+  }
+  return out
+}
+
+function checkPart(s: CheckState, raw: string, cwd: string | undefined): string | null {
+  if (!raw) return null
+  const variants = variantsOf(s, raw)
+  if (variants === 'touch') return s.refs[0].ref
+  for (const v of variants) {
+    if (v.includes('://')) continue
+    // A UNC or device word is never resolved (that would touch the network): it counts as naming a reference folder.
+    if (s.platform === 'win32' && isUncLike(v)) return s.refs[0].ref
+    const hit = checkWord(s, v, cwd)
+    if (hit) return hit
+  }
+  return null
+}
+
+function checkWord(s: CheckState, part: string, cwd: string | undefined): string | null {
+  if (!part) return null
   const full = resolveWord(s, part, cwd)
   if (GLOB_CHAR.test(part)) {
     if (full) {
@@ -215,35 +292,78 @@ function partsOf(word: string): string[] {
 
 type Touch = { folder: string; how: 'names' | 'runs-in' }
 
-function scanCommand(s: CheckState, text: string, startCwd: string | undefined, depth: number): Touch | null {
+/** True for a word that is an absolute path (or `~`) without resolving it. */
+function isAbsoluteWord(s: CheckState, w: string): boolean {
+  if (w === '~' || /^~[\\/]/.test(w)) return true
+  return s.platform === 'win32' ? /^(?:[a-zA-Z]:[\\/]|[\\/])/.test(w) : w.startsWith('/')
+}
+
+/** True for a relative word that names a place: has a separator or is `.` / `..`. */
+function isRelativePathWord(s: CheckState, w: string): boolean {
+  if (!w || isAbsoluteWord(s, w) || w.includes('://')) return false
+  return w === '.' || w === '..' || w.includes('/') || (s.platform === 'win32' && w.includes('\\'))
+}
+
+/** The cd target among a cd segment's words after the command: the last non-flag word, `-Name:value` accepted. */
+function cdTargetWord(words: readonly string[]): string | null {
+  let target: string | null = null
+  for (let i = 1; i < words.length; i++) {
+    const w = words[i]
+    const attached = /^-[A-Za-z][A-Za-z0-9]*:(?=.)/.exec(w)
+    if (attached) target = w.slice(attached[0].length)
+    else if (w === '-') target = '-'
+    else if (w.startsWith('-')) continue
+    else if (/^\/d$/i.test(w) && i < words.length - 1) continue
+    else target = w
+  }
+  return target
+}
+
+function scanCommand(s: CheckState, text: string, startCwd: string | undefined, depth: number, startUnknown = false): Touch | null {
   let cwd = startCwd
+  let unknown = startUnknown
+  const first = s.refs[0].ref
   for (const segment of splitCommand(text)) {
     const words = segmentWords(segment)
     if (!words.length) continue
     const head = (words[0].split(/[\\/]/).pop() ?? words[0]).toLowerCase().replace(/\.(?:exe|cmd|bat|ps1)$/, '')
-    if (CD_NAMES.has(head)) {
-      // A cd only moves the tracked folder: its target is checked for being at or under a reference folder, not above.
-      const arg = words.length === 2 ? words[1] : null
-      if (arg !== null && !arg.startsWith('-') && !/[$%`()<>|&]/.test(arg)) {
-        const target = resolveWord(s, arg, cwd)
-        if (target) {
-          const hit = touchOf(s, target, false)
-          if (hit) return { folder: hit, how: 'names' }
-          cwd = target
-          continue
+    const isCd = CD_NAMES.has(head) || POP_NAMES.has(head)
+    const scanned = isCd ? words.slice(1) : words
+    // Once the working folder is unknown, a segment must name an absolute path and no relative one, else it fails closed.
+    if (unknown) {
+      let abs = 0
+      let rel = 0
+      for (const w of scanned) {
+        for (const part of partsOf(w)) {
+          if (isAbsoluteWord(s, part)) abs++
+          else if (isRelativePathWord(s, part)) rel++
         }
       }
-      cwd = undefined
+      if (rel > 0 || (abs === 0 && depth === 0)) return { folder: first, how: 'runs-in' }
     }
-    for (const word of words) {
-      if (++s.words > MAX_WORDS) return { folder: s.refs[0].ref, how: 'names' }
+    for (const word of scanned) {
+      if (++s.words > MAX_WORDS) return { folder: first, how: 'names' }
       if (depth < MAX_NEST && /\s/.test(word)) {
-        const nested = scanCommand(s, word, cwd, depth + 1)
+        const nested = scanCommand(s, word, cwd, depth + 1, unknown)
         if (nested) return nested
       }
       for (const part of partsOf(word)) {
+        if (++s.parts > MAX_PARTS) return { folder: first, how: 'names' }
         const hit = checkPart(s, part, cwd)
         if (hit) return { folder: hit, how: 'names' }
+      }
+    }
+    if (isCd) {
+      // Words were scanned with the folder from before the cd (an ancestor of a reference folder counts as touching).
+      const arg = POP_NAMES.has(head) ? null : cdTargetWord(words)
+      const target =
+        arg !== null && arg !== '-' && !/[$%`()<>|&]/.test(arg) && !GLOB_CHAR.test(arg) ? resolveWord(s, arg, cwd) : null
+      if (target && !(s.platform === 'win32' && isUncLike(target))) {
+        cwd = target
+        unknown = false
+      } else {
+        cwd = undefined
+        unknown = true
       }
     }
   }
@@ -277,9 +397,12 @@ export function commandReferenceTouch(
     refs: entries,
     real: platform === process.platform,
     cache: new Map(),
-    words: 0
+    words: 0,
+    parts: 0
   }
+  if (command.length > MAX_COMMAND_CHARS) return { folder: entries[0].ref, how: 'names' }
   const startCwd = typeof cwd === 'string' && cwd !== '' && p.isAbsolute(cwd) ? p.resolve(cwd) : undefined
+  if (startCwd && platform === 'win32' && isUncLike(startCwd)) return { folder: entries[0].ref, how: 'runs-in' }
   if (startCwd) {
     const hit = touchOf(s, startCwd, false)
     if (hit) return { folder: hit, how: 'runs-in' }
@@ -347,7 +470,7 @@ export function referenceTouchOf(
 
 // Control, zero-width, bidi and other invisible characters (the set capabilities/sanitize.ts uses).
 const HIDDEN_RUN = new RegExp(
-  '[\u0000-\u001f\u007f-\u009f\u00ad\u034f\u061c\u115f\u1160\u180e\u200b-\u200f\u202a-\u202e\u2060-\u206f\u3164\ufeff\uffa0\u{e0000}-\u{e007f}]+',
+  '[\u0000-\u001f\u007f-\u009f\u00ad\u034f\u061c\u115f\u1160\u180e\u200b-\u200f\u202a-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff9-\ufffb\u{e0000}-\u{e007f}]+',
   'gu'
 )
 
