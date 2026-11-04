@@ -34,7 +34,8 @@ import { Banner } from '../components/ui/Banner'
 import { IconButton } from '../components/ui/IconButton'
 import PermissionCard from '../components/PermissionCard'
 import DecisionTray, { type DecisionItem } from '../components/DecisionTray'
-import { oneLine, permissionTitle, PROPOSAL_KIND_LABEL } from '../lib/decisionTitle'
+import { oneLine, permissionTitle, proposalKindLabel } from '../lib/decisionTitle'
+import { projectKindOf } from '@shared/defaults'
 import { defaultDecisionIndex } from '../lib/needsYou'
 import { Icon } from '../components/ui/Icon'
 import { Popover } from '../components/ui/Popover'
@@ -875,7 +876,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
     })),
     ...run.proposals.map((p) => ({
       key: p.id,
-      label: `${PROPOSAL_KIND_LABEL[p.kind]}: ${short(p.title)}`,
+      label: `${proposalKindLabel(p.kind, projectKindOf(project))}:${short(p.title)}`,
       node: <ProposalCard runId={runId} who={isSetupRun ? 'The Architect' : who(p.agentId)} agentId={isSetupRun ? undefined : p.agentId} proposal={p} currentRoles={project.roles} onDecide={(d) => trackProposal(p, d)} />
     })),
     ...(run.mergeReviews ?? []).map((m) => ({
