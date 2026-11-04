@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, readFileSync } from 'node:fs'
+import { existsSync, lstatSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Project } from '@shared/types'
 import { ENGAGEMENT_DOCUMENT_PROMPT_MAX_CHARS } from '@shared/types'
@@ -17,6 +17,15 @@ import { settingsLocalPath } from '../runtime/permissionRules'
 export function projectDataDir(dataDir: string, projectId: string): string {
   if (!isSafeId(projectId)) throw new Error('Invalid project id')
   return join(dataDir, 'projects', projectId)
+}
+
+/** Delete `<data>/projects/<projectId>` (a missing dir or an unsafe id is ignored; a link is removed, never followed). */
+export function removeProjectData(dataDir: string, projectId: string): void {
+  try {
+    rmSync(projectDataDir(dataDir, projectId), { recursive: true, force: true })
+  } catch {
+    /* unsafe id or not removable: nothing to clean */
+  }
 }
 
 /** `<data>/projects/<projectId>/ENGAGEMENT.md`. */

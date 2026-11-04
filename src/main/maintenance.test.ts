@@ -49,22 +49,23 @@ describe('stripArchitectureBlock', () => {
 })
 
 describe('uninstallRepo for an engagement', () => {
-  it('removes .orgai/ENGAGEMENT.md, the CLAUDE.md block and the recorded path', async () => {
+  it('removes nothing and never touches the folder', async () => {
     const root = mkdtempSync(join(tmpdir(), 'orgai-maint-'))
     try {
       mkdirSync(join(root, '.orgai'))
-      writeFileSync(join(root, '.orgai', 'ENGAGEMENT.md'), '# charter', 'utf8')
+      writeFileSync(join(root, '.orgai', 'ENGAGEMENT.md'), '# the client\'s own file', 'utf8')
       writeFileSync(join(root, 'CLAUDE.md'), withBlock('', 'Client'), 'utf8')
       const saved: Project[] = []
-      const project = { id: 'p1', name: 'Client', path: root, kind: 'engagement', roles: [], setup: { kind: 'new', state: 'complete', architecturePath: '.orgai/ENGAGEMENT.md' } } as unknown as Project
+      const project = { id: 'p1', name: 'Client', path: root, kind: 'engagement', roles: [], setup: { kind: 'new', state: 'complete', architecturePath: 'x' } } as unknown as Project
       const store = { get: () => project, save: (p: Project) => (saved.push(p), p) } as unknown as ProjectStore
-      const result = await new MaintenanceService(store).uninstallRepo('p1')
-      expect(result.ok).toBe(true)
-      expect(result.message).toContain('.orgai/ENGAGEMENT.md')
-      expect(existsSync(join(root, '.orgai', 'ENGAGEMENT.md'))).toBe(false)
-      expect(existsSync(join(root, '.orgai'))).toBe(false)
-      expect(existsSync(join(root, 'CLAUDE.md'))).toBe(false)
-      expect(saved[0].setup?.architecturePath).toBeUndefined()
+      const svc = new MaintenanceService(store)
+      expect(await svc.uninstallRepo('p1')).toEqual({ ok: true, message: 'Nothing to remove.' })
+      expect(existsSync(join(root, '.orgai', 'ENGAGEMENT.md'))).toBe(true)
+      expect(existsSync(join(root, 'CLAUDE.md'))).toBe(true)
+      expect(saved).toEqual([])
+      // Not a git repo and no opt-in: the worktree tools answer without looking.
+      expect(await svc.listWorktrees('p1')).toEqual([])
+      await expect(svc.discardWorktree('p1', 'worktree-agent-x')).rejects.toThrow(/not a pending report branch/)
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
