@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, truncateSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -8,6 +8,7 @@ import {
   KNOWLEDGE_EDGES_MAX,
   KNOWLEDGE_EDGE_NOTE_MAX_CHARS,
   KNOWLEDGE_FACT_MAX_CHARS,
+  KNOWLEDGE_FILE_MAX_BYTES,
   KNOWLEDGE_NAME_MAX_CHARS,
   KNOWLEDGE_NODES_MAX,
   KNOWLEDGE_NODE_FACTS_MAX,
@@ -15,8 +16,11 @@ import {
   KNOWLEDGE_SUMMARY_MAX_CHARS
 } from '@shared/types'
 import {
+  FILE_FULL_MESSAGE,
   clearKnowledge,
   knowledgeFile,
+  knowledgeFileLimits,
+  knowledgeFileState,
   knowledgeNodeCount,
   knowledgeStore,
   readKnowledge,
@@ -25,6 +29,7 @@ import {
   retireItem,
   saveEdge,
   saveNodeForUser,
+  unreadableMessage,
   upsertNode
 } from './knowledge'
 import { projectDataDir, removeNote, saveNote } from './projectData'
@@ -113,12 +118,64 @@ describe('upsertNode (agent path)', () => {
     expect(c.node.aliases).toEqual(['Acme', 'Acme Corp', 'Something else'])
   })
 
-  it('nodeId wins over the name; an unknown id throws', () => {
+  it('nodeId wins over the name; an unknown id throws; a different kind is refused (L4)', () => {
     const a = person('Ada')
-    const b = upsertNode(dir, P, { nodeId: a.node.id, kind: 'organisation', name: 'Different', facts: ['x'] }, agent)
+    const b = upsertNode(dir, P, { nodeId: a.node.id, kind: ' PERSON ', name: 'Different', facts: ['x'] }, agent)
     expect(b.created).toBe(false)
     expect(b.node).toMatchObject({ id: a.node.id, kind: 'person', name: 'Ada', aliases: ['Different'] })
     expect(() => upsertNode(dir, P, { nodeId: 'kn_000000000000', kind: 'person', name: 'Ada' }, agent)).toThrow('No entity with id "kn_000000000000".')
+    const before = fileText()
+    expect(() => upsertNode(dir, P, { nodeId: a.node.id, kind: 'organisation', name: 'Ada', facts: ['y'] }, agent)).toThrow('That entity is a person, not a organisation. Retire it and create a new one, or pass its kind.')
+    expect(fileText()).toBe(before)
+    expect(graphOf().nodes[0].facts.map((f) => f.text)).toEqual(['x'])
+  })
+
+  it('reports factsAdded and aliasesSkipped (L1 / L2)', () => {
+    person('Grace')
+    const a = person('Ada', { aliases: ['AL'], facts: ['f1', 'F1', 'f2'] })
+    expect(a.factsAdded).toBe(2)
+    expect(a.aliasesSkipped).toEqual([])
+    expect(a.summaryKept).toBeUndefined()
+    const b = upsertNode(dir, P, { kind: 'person', name: 'Ada', aliases: ['grace', 'Lovelace', 'al'], facts: ['f2', 'f3'] }, agent)
+    expect(b).toMatchObject({ created: false, factsAdded: 1, aliasesSkipped: ['grace'] })
+    expect(b.node.aliases).toEqual(['AL', 'Lovelace'])
+    expect(b.node.facts.map((f) => f.text)).toEqual(['f1', 'f2', 'f3'])
+    // The input name is an alias candidate on a merge, so a name another entity owns is skipped too.
+    const c = upsertNode(dir, P, { nodeId: a.node.id, kind: 'person', name: 'GRACE' }, agent)
+    expect(c).toMatchObject({ factsAdded: 0, aliasesSkipped: ['GRACE'] })
+    expect(upsertNode(dir, P, { kind: 'person', name: 'ada' }, agent)).toMatchObject({ factsAdded: 0, aliasesSkipped: [] })
+    // The user's save carries none of them.
+    const u = saveNodeForUser(dir, P, { kind: 'person', name: 'Linus' })
+    expect('factsAdded' in u).toBe(false)
+  })
+
+  it('keeps a user-created summary and appends the agent summary as a fact (M1)', () => {
+    const u = saveNodeForUser(dir, P, { kind: 'person', name: 'Ada', summary: 'The user wrote this.', facts: [{ text: 'User fact' }] })
+    const r = upsertNode(dir, P, { kind: 'person', name: 'ada', summary: 'Agent summary', facts: ['Agent fact'], aliases: ['AL'] }, agent)
+    expect(r).toMatchObject({ created: false, summaryKept: true, factsAdded: 2 })
+    expect(r.node.summary).toBe('The user wrote this.')
+    expect(r.node.facts.map((f) => [f.text, f.source.by])).toEqual([['User fact', 'user'], ['Agent fact', 'agent'], ['Agent summary', 'agent']])
+    expect(r.node.aliases).toEqual(['AL'])
+    expect(graphOf().nodes[0].summary).toBe('The user wrote this.')
+    // Deduped like any fact, and never appended when it equals the user's summary; the facts cap still applies.
+    const again = upsertNode(dir, P, { kind: 'person', name: 'Ada', summary: 'agent SUMMARY' }, agent)
+    expect(again).toMatchObject({ summaryKept: true, factsAdded: 0 })
+    expect(again.node.facts).toHaveLength(3)
+    expect(upsertNode(dir, P, { kind: 'person', name: 'Ada', summary: 'the user wrote this.' }, agent)).toMatchObject({ summaryKept: true, factsAdded: 0 })
+    const filler = Array.from({ length: KNOWLEDGE_NODE_FACTS_MAX - 3 }, (_, i) => `filler ${i}`)
+    expect(upsertNode(dir, P, { kind: 'person', name: 'Ada', facts: filler }, agent).node.facts).toHaveLength(KNOWLEDGE_NODE_FACTS_MAX)
+    expect(() => upsertNode(dir, P, { kind: 'person', name: 'Ada', summary: 'One more' }, agent)).toThrow(/at most 50 facts \(51 would be stored\)/)
+    // A user-created node without a summary still gets the agent's summary as a fact, not as its summary.
+    const bare = saveNodeForUser(dir, P, { kind: 'person', name: 'Grace' })
+    const g = upsertNode(dir, P, { nodeId: bare.id, kind: 'person', name: 'Grace', summary: 'Suggested' }, agent)
+    expect(g).toMatchObject({ summaryKept: true, factsAdded: 1 })
+    expect(g.node.summary).toBeUndefined()
+    expect(g.node.facts[0].text).toBe('Suggested')
+    // An agent-created node still takes the summary; a blank summary never counts as kept.
+    const ag = person('Linus', { summary: 'first' })
+    expect(upsertNode(dir, P, { kind: 'person', name: 'Linus', summary: 'second' }, agent).summaryKept).toBeUndefined()
+    expect(graphOf().nodes.find((n) => n.id === ag.node.id)!.summary).toBe('second')
+    expect(upsertNode(dir, P, { nodeId: u.id, kind: 'person', name: 'Ada', summary: '  ' }, agent).summaryKept).toBeUndefined()
   })
 
   it('ignores an empty summary, does not re-append a live fact text, re-appends a retired one, and adds note links', () => {
@@ -297,12 +354,18 @@ describe('edges', () => {
     // Retired flag: untouched without `retired`, set and cleared with it; '' clears the note.
     expect(saveEdge(dir, P, { from: a.id, to: b.id, relation: 'works-at', retired: true }, agent).edge.retired).toBe(true)
     expect(saveEdge(dir, P, { from: a.id, to: b.id, relation: 'works-at' }, agent).edge.retired).toBe(true)
-    const byId = saveEdge(dir, P, { edgeId: r1.edge.id, from: a.id, to: b.id, relation: 'ignored-here', note: '', retired: false }, user)
+    const byId = saveEdge(dir, P, { edgeId: r1.edge.id, from: a.id, to: b.id, relation: ' Works  At ', note: '', retired: false }, user)
     expect(byId.created).toBe(false)
     expect(byId.edge).toMatchObject({ id: r1.edge.id, relation: 'works-at' })
     expect(byId.edge.note).toBeUndefined()
     expect(byId.edge.retired).toBeUndefined()
     expect(() => saveEdge(dir, P, { edgeId: 'ke_000000000000', from: a.id, to: b.id, relation: 'x' }, user)).toThrow('No relation with id "ke_000000000000".')
+    // With edgeId, from / to / relation must be the stored edge's (L3).
+    const before = fileText()
+    for (const change of [{ relation: 'other' }, { from: b.id }, { to: a.id }, { from: 'kn_000000000000' }]) {
+      expect(() => saveEdge(dir, P, { edgeId: r1.edge.id, from: a.id, to: b.id, relation: 'works-at', note: 'changed', ...change }, user), JSON.stringify(change)).toThrow('That relation id names Ada works-at Acme; from, to and relation cannot change. Remove it and link again.')
+    }
+    expect(fileText()).toBe(before)
     expect(() => saveEdge(dir, P, { from: a.id, to: a.id, relation: 'knows' }, agent)).toThrow('An entity cannot relate to itself.')
     expect(() => saveEdge(dir, P, { from: 'kn_000000000000', to: b.id, relation: 'knows' }, agent)).toThrow('The "from" entity "kn_000000000000" does not exist.')
     expect(() => saveEdge(dir, P, { from: a.id, to: 'Acme', relation: 'knows' }, agent)).toThrow('The "to" entity "Acme" does not exist.')
@@ -416,19 +479,17 @@ describe('reading junk and legacy files', () => {
     expect(graphOf().nodes[1].noteIds).toBeUndefined()
   })
 
-  it('reads a truncated file, a non-object root and a directory as empty', () => {
-    writeRaw('{"version":1,"nodes":[{"id":"kn_aaaaaaaaaaaa"')
-    expect(graphOf()).toEqual({ version: 1, nodes: [], edges: [] })
-    writeRaw('[]')
-    expect(graphOf()).toEqual({ version: 1, nodes: [], edges: [] })
-    writeRaw('"text"')
-    expect(graphOf()).toEqual({ version: 1, nodes: [], edges: [] })
-    writeRaw({ version: 1, nodes: 'x', edges: {} })
-    expect(graphOf()).toEqual({ version: 1, nodes: [], edges: [] })
+  it('reads a truncated file, a non-object root, a wrong root and a directory as empty and unreadable', () => {
+    for (const junk of ['{"version":1,"nodes":[{"id":"kn_aaaaaaaaaaaa"', '[]', '"text"', '', { version: 1, nodes: 'x', edges: {} }, { version: 2, nodes: [], edges: [] }, { nodes: [], edges: [] }]) {
+      writeRaw(junk)
+      expect(graphOf(), JSON.stringify(junk)).toEqual({ version: 1, nodes: [], edges: [] })
+      expect(knowledgeFileState(dir, P), JSON.stringify(junk)).toBe('unreadable')
+    }
     rmSync(knowledgeFile(dir, P))
     mkdirSync(knowledgeFile(dir, P))
     expect(graphOf()).toEqual({ version: 1, nodes: [], edges: [] })
-    expect(() => person('Ada')).toThrow(/not a plain file/)
+    expect(knowledgeFileState(dir, P)).toBe('unreadable')
+    expect(() => person('Ada')).toThrow(unreadableMessage(knowledgeFile(dir, P)))
   })
 
   it('applies the node, edge and fact caps on read', () => {
@@ -454,6 +515,126 @@ describe('reading junk and legacy files', () => {
     upsertNode(dir, 'proj_b', { kind: 'person', name: 'Grace' }, agent)
     expect(graphOf().nodes.map((n) => n.name)).toEqual(['Ada'])
     expect(readKnowledge(dir, 'proj_b').nodes.map((n) => n.name)).toEqual(['Grace'])
+  })
+})
+
+describe('file size and unreadable files (H1)', () => {
+  const bigNodes = (count: number, summaryLen: number) =>
+    Array.from({ length: count }, (_, i) => ({ id: `kn_${i.toString(16).padStart(12, '0')}`, kind: 'person', name: `P${i}`, summary: 'x'.repeat(summaryLen), facts: [], source: user, createdAt: 1, updatedAt: 1 }))
+
+  it('reads a valid graph over 2 MB fully and keeps every node on the next write, written compact', () => {
+    const nodes = bigNodes(1500, 2000)
+    writeRaw({ version: 1, nodes, edges: [] })
+    expect(statSync(knowledgeFile(dir, P)).size).toBeGreaterThan(2 * 1024 * 1024)
+    expect(knowledgeFileState(dir, P)).toBe('ok')
+    expect(graphOf().nodes).toHaveLength(1500)
+    expect(person('One more').created).toBe(true)
+    const after = graphOf()
+    expect(after.nodes).toHaveLength(1501)
+    expect(after.nodes[0].summary).toHaveLength(2000)
+    expect(fileText().split('\n')).toHaveLength(2)
+    expect(JSON.parse(fileText())).toMatchObject({ version: 1, updatedAt: expect.any(Number) })
+    // A pretty-printed file (the earlier format) still reads.
+    writeRaw(JSON.stringify({ version: 1, nodes: nodes.slice(0, 2), edges: [] }, null, 2))
+    expect(graphOf().nodes).toHaveLength(2)
+    expect(knowledgeFileState(dir, P)).toBe('ok')
+  })
+
+  it('reads a file over KNOWLEDGE_FILE_MAX_BYTES as empty and refuses every write, leaving it byte-identical', () => {
+    const a = person('Ada').node
+    const b = person('Acme').node
+    const e = saveEdge(dir, P, { from: a.id, to: b.id, relation: 'works-at' }, agent).edge
+    const file = knowledgeFile(dir, P)
+    truncateSync(file, KNOWLEDGE_FILE_MAX_BYTES + 1)
+    const before = readFileSync(file)
+    expect(graphOf()).toEqual({ version: 1, nodes: [], edges: [] })
+    expect(knowledgeNodeCount(dir, P)).toBe(0)
+    expect(knowledgeFileState(dir, P)).toBe('unreadable')
+    expect(knowledgeStore(dir).get(P).nodes).toEqual([])
+    const message = unreadableMessage(file)
+    expect(message).toBe(`The knowledge graph file could not be read (too large or damaged); nothing was saved. Fix or remove ${file}.`)
+    const writes: [string, () => unknown][] = [
+      ['upsertNode', () => person('Grace')],
+      ['saveNodeForUser', () => saveNodeForUser(dir, P, { kind: 'person', name: 'Grace' })],
+      ['removeNode', () => removeNode(dir, P, a.id)],
+      ['saveEdge', () => saveEdge(dir, P, { from: a.id, to: b.id, relation: 'knows' }, agent)],
+      ['removeEdge', () => removeEdge(dir, P, e.id)],
+      ['retireItem', () => retireItem(dir, P, { nodeId: a.id }, agent)],
+      ['store.upsertNode', () => knowledgeStore(dir).upsertNode(P, { kind: 'person', name: 'Grace' }, agent)],
+      ['store.retire', () => knowledgeStore(dir).retire(P, { edgeId: e.id }, agent)]
+    ]
+    for (const [label, write] of writes) {
+      expect(write, label).toThrow(message)
+      expect(readFileSync(file).equals(before), label).toBe(true)
+    }
+    noTmp()
+    // The user's start-over still removes it, and writes create a fresh file afterwards.
+    expect(clearKnowledge(dir, P)).toEqual({ version: 1, nodes: [], edges: [] })
+    expect(knowledgeFileState(dir, P)).toBe('missing')
+    expect(person('Grace').created).toBe(true)
+    expect(knowledgeFileState(dir, P)).toBe('ok')
+  })
+
+  it('refuses every write on a junk-JSON file the same way, and a missing file still creates', () => {
+    expect(knowledgeFileState(dir, P)).toBe('missing')
+    expect(knowledgeFileState(dir, 'proj_other')).toBe('missing')
+    expect(() => knowledgeFileState(dir, '../x')).toThrow('Invalid project id')
+    const a = person('Ada').node
+    const file = knowledgeFile(dir, P)
+    writeRaw('{"version":1,"nodes":[{"id":"kn_aaaaaaaaaaaa"')
+    const before = readFileSync(file)
+    const message = unreadableMessage(file)
+    expect(() => person('Grace')).toThrow(message)
+    expect(() => saveNodeForUser(dir, P, { kind: 'person', name: 'Grace' })).toThrow(message)
+    expect(() => removeNode(dir, P, a.id)).toThrow(message)
+    expect(() => saveEdge(dir, P, { from: a.id, to: a.id, relation: 'knows' }, agent)).toThrow(message)
+    expect(() => removeEdge(dir, P, 'ke_000000000000')).toThrow(message)
+    expect(() => retireItem(dir, P, { factId: 'kf_000000000000' }, agent)).toThrow(message)
+    expect(readFileSync(file).equals(before)).toBe(true)
+    // Junk inside a valid graph is still dropped item by item, not refused.
+    writeRaw({ version: 1, nodes: [null, 5, { id: 'bad' }], edges: ['x'], updatedAt: 'now' })
+    expect(knowledgeFileState(dir, P)).toBe('ok')
+    expect(person('Grace').created).toBe(true)
+    expect(graphOf().nodes.map((n) => n.name)).toEqual(['Grace'])
+  })
+
+  it('refuses a write whose serialized graph would cross the cap, nothing written (lowered cap)', () => {
+    const original = knowledgeFileLimits.maxBytes
+    const file = knowledgeFile(dir, P)
+    try {
+      person('Ada')
+      knowledgeFileLimits.maxBytes = statSync(file).size + 400
+      const before = fileText()
+      expect(FILE_FULL_MESSAGE).toBe('The knowledge graph file is full (64 MB). Retire or remove entities first.')
+      expect(() => person('Grace', { summary: 'y'.repeat(600) })).toThrow(FILE_FULL_MESSAGE)
+      expect(() => saveNodeForUser(dir, P, { kind: 'person', name: 'Grace', summary: 'y'.repeat(600) })).toThrow(FILE_FULL_MESSAGE)
+      expect(fileText()).toBe(before)
+      noTmp()
+      // A smaller write still fits.
+      expect(person('Grace').created).toBe(true)
+      // The cap counts UTF-8 bytes, not characters: the same merge is refused at one byte under what it produced,
+      // a cap its character count would fit.
+      knowledgeFileLimits.maxBytes = original
+      const prev = readFileSync(file)
+      upsertNode(dir, P, { kind: 'person', name: 'Grace', summary: 'é'.repeat(100) }, agent)
+      const bytes = statSync(file).size
+      expect(bytes).toBe(fileText().length + 100)
+      writeFileSync(file, prev)
+      knowledgeFileLimits.maxBytes = bytes - 1
+      expect(() => upsertNode(dir, P, { kind: 'person', name: 'Grace', summary: 'é'.repeat(100) }, agent)).toThrow(FILE_FULL_MESSAGE)
+      expect(readFileSync(file).equals(prev)).toBe(true)
+      knowledgeFileLimits.maxBytes = bytes
+      expect(upsertNode(dir, P, { kind: 'person', name: 'Grace', summary: 'é'.repeat(100) }, agent).node.summary).toBe('é'.repeat(100))
+      // A file over the (lowered) cap reads as unreadable and refuses, exactly like the real cap.
+      knowledgeFileLimits.maxBytes = 10
+      expect(graphOf()).toEqual({ version: 1, nodes: [], edges: [] })
+      expect(knowledgeFileState(dir, P)).toBe('unreadable')
+      expect(() => person('Linus')).toThrow(unreadableMessage(knowledgeFile(dir, P)))
+    } finally {
+      knowledgeFileLimits.maxBytes = original
+    }
+    expect(knowledgeFileLimits.maxBytes).toBe(KNOWLEDGE_FILE_MAX_BYTES)
+    expect(graphOf().nodes.map((n) => n.name)).toEqual(['Ada', 'Grace'])
   })
 })
 

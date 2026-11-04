@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto'
-import { existsSync, rmSync } from 'node:fs'
+import { existsSync, lstatSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import type {
   KnowledgeEdge,
@@ -21,6 +21,7 @@ import {
   KNOWLEDGE_EDGES_MAX,
   KNOWLEDGE_EDGE_NOTE_MAX_CHARS,
   KNOWLEDGE_FACT_MAX_CHARS,
+  KNOWLEDGE_FILE_MAX_BYTES,
   KNOWLEDGE_KEY_RE,
   KNOWLEDGE_NAME_MAX_CHARS,
   KNOWLEDGE_NODES_MAX,
@@ -36,10 +37,14 @@ import { atomicWrite, ensurePlainDir, isLink, listNotes, projectDataDir, readPla
 
 /**
  * The engagement knowledge graph store (types.ts "Engagement knowledge graph"): `<data>/projects/<id>/knowledge.json`
- * = { version: 1, nodes, edges, updatedAt }, never in the working folder. Every write re-reads the file, validates the
- * whole input (keys, lengths, hidden characters, caps, note ids against the note index; refused, never cut), mutates
- * the in-memory graph and writes once through an atomic rename, so a throw leaves the file untouched. Reads never
- * throw and drop junk. Identity, vocabulary and search helpers are the shared ones in src/shared/knowledge.ts.
+ * = { version: 1, nodes, edges, updatedAt } as compact JSON (either form reads), never in the working folder. Every
+ * write re-reads the file, validates the whole input (keys, lengths, hidden characters, caps, note ids against the
+ * note index; refused, never cut), mutates the in-memory graph and writes once through an atomic rename, so a throw
+ * leaves the file untouched. Reads never throw and drop junk INSIDE a valid graph item by item; a file that is present
+ * but cannot be read as a graph at all (over KNOWLEDGE_FILE_MAX_BYTES, not a regular file, not JSON, or a root that
+ * is not { version: 1, nodes: [], edges: [] }) reads as empty and makes every write refuse (UNREADABLE_MESSAGE), so a
+ * damaged or over-size file is never overwritten with a near-empty graph; only clearKnowledge (the user's start-over)
+ * removes it. Identity, vocabulary and search helpers are the shared ones in src/shared/knowledge.ts.
  */
 
 const NODE_PREFIX = 'kn_'
@@ -202,17 +207,74 @@ function cleanGraph(parsed: unknown, noteIndex: ReadonlySet<string>): KnowledgeG
 }
 
 /**
- * The graph as stored: empty when there is no file, it is unreadable or junk. Entries that fail the contract are
- * dropped, note links whose note is not in the index are dropped, and the caps apply on read too. Never throws.
+ * The file cap (KNOWLEDGE_FILE_MAX_BYTES) as the store applies it on read and write. Tests lower `maxBytes` to
+ * exercise the over-size refusals without writing 64 MB files; nothing else assigns it.
+ */
+export const knowledgeFileLimits = { maxBytes: KNOWLEDGE_FILE_MAX_BYTES }
+
+/**
+ * How knowledge.json stands: 'missing' (no file; writes create it), 'ok' (a graph; junk inside dropped item by
+ * item), 'unreadable' (present but not readable as a graph: over the cap, not a regular file, not JSON, or a root
+ * without version 1 and node / edge arrays; reads are empty and writes refuse).
+ */
+export type KnowledgeFileState = 'missing' | 'ok' | 'unreadable'
+
+/** A parsed root that is a graph at all: an object with version 1 and node / edge arrays (their items are checked later). */
+function isGraphRoot(parsed: unknown): parsed is { version: 1; nodes: unknown[]; edges: unknown[] } {
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false
+  const g = parsed as Record<string, unknown>
+  return g.version === 1 && Array.isArray(g.nodes) && Array.isArray(g.edges)
+}
+
+/** The stored graph with the file's state. Throws only on an unsafe project id. */
+function loadGraph(dataDir: string, projectId: string): { graph: KnowledgeGraph; state: KnowledgeFileState } {
+  const file = knowledgeFile(dataDir, projectId)
+  try {
+    lstatSync(file)
+  } catch {
+    return { graph: emptyKnowledgeGraph(), state: 'missing' }
+  }
+  const unreadable = { graph: emptyKnowledgeGraph(), state: 'unreadable' as const }
+  const raw = readPlain(file, knowledgeFileLimits.maxBytes)
+  if (!raw) return unreadable
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw.text)
+  } catch {
+    return unreadable
+  }
+  if (!isGraphRoot(parsed)) return unreadable
+  return { graph: cleanGraph(parsed, new Set(listNotes(dataDir, projectId).map((n) => n.id))), state: 'ok' }
+}
+
+/**
+ * The graph as stored: empty when there is no file or it is unreadable (see KnowledgeFileState). Entries that fail
+ * the contract are dropped, note links whose note is not in the index are dropped, and the caps apply on read too.
+ * Never throws.
  */
 export function readKnowledge(dataDir: string, projectId: string): KnowledgeGraph {
   try {
-    const raw = readPlain(knowledgeFile(dataDir, projectId))
-    if (!raw) return emptyKnowledgeGraph()
-    return cleanGraph(JSON.parse(raw.text), new Set(listNotes(dataDir, projectId).map((n) => n.id)))
+    return loadGraph(dataDir, projectId).graph
   } catch {
     return emptyKnowledgeGraph()
   }
+}
+
+/** The state of the project's knowledge.json (for the IPC layer to tell the user a file needs attention). Throws on an unsafe id. */
+export function knowledgeFileState(dataDir: string, projectId: string): KnowledgeFileState {
+  return loadGraph(dataDir, projectId).state
+}
+
+/** The refusal of every write while the file is present but unreadable (the path is the file to fix or remove). */
+export function unreadableMessage(file: string): string {
+  return `The knowledge graph file could not be read (too large or damaged); nothing was saved. Fix or remove ${file}.`
+}
+
+/** The graph for a write: a missing file is an empty graph, an unreadable one refuses (never overwritten). */
+function loadForWrite(dataDir: string, projectId: string): KnowledgeGraph {
+  const { graph, state } = loadGraph(dataDir, projectId)
+  if (state === 'unreadable') throw new Error(unreadableMessage(knowledgeFile(dataDir, projectId)))
+  return graph
 }
 
 /** Nodes in the stored graph (0 when there is no file or on any failure), for the project removal result. */
@@ -355,10 +417,17 @@ function factIdsOf(graph: KnowledgeGraph): Set<string> {
 
 // ---------- Write ----------
 
+/** The refusal when the serialized graph would cross the file cap (nothing written). */
+export const FILE_FULL_MESSAGE = `The knowledge graph file is full (${Math.round(KNOWLEDGE_FILE_MAX_BYTES / 1024 / 1024)} MB). Retire or remove entities first.`
+
+/** Compact JSON (so the cap is meaningful); refused before anything touches the disk when it is over the cap. */
 function writeGraph(dataDir: string, projectId: string, graph: KnowledgeGraph): void {
   ensurePlainDir(dataDir, projectId, projectDataDir(dataDir, projectId))
-  graph.updatedAt = Date.now()
-  atomicWrite(knowledgeFile(dataDir, projectId), `${JSON.stringify(graph, null, 2)}\n`)
+  const updatedAt = Date.now()
+  const text = `${JSON.stringify({ ...graph, updatedAt })}\n`
+  if (Buffer.byteLength(text, 'utf8') > knowledgeFileLimits.maxBytes) throw new Error(FILE_FULL_MESSAGE)
+  atomicWrite(knowledgeFile(dataDir, projectId), text)
+  graph.updatedAt = updatedAt
 }
 
 /** The user's source stamp. */
@@ -367,15 +436,17 @@ export function userSource(): KnowledgeSource {
 }
 
 /**
- * Agent upsert (KnowledgeStoreApi.upsertNode). Identity: `nodeId` when given (unknown = throw), else the first
- * non-retired (kind, name / alias) match (else the first match), else a new node. On a merge the stored name and kind
- * stay (the input name becomes an alias when it differs), new aliases are added (an alias naming another entity of
- * the kind is skipped), the summary is replaced when given and not blank, facts are appended with the caller's source
- * unless a live fact with the same text exists, note links are added; a retired node stays retired (the caller
- * reports it). Caps are checked before anything is written.
+ * Agent upsert (KnowledgeStoreApi.upsertNode). Identity: `nodeId` when given (unknown = throw; a `kind` other than
+ * the stored one is refused: "That entity is a <stored>, not a <given> ..."), else the first non-retired (kind, name /
+ * alias) match (else the first match), else a new node. On a merge the stored name and kind stay (the input name
+ * becomes an alias when it differs), new aliases are added (an alias naming another entity of the kind is skipped and
+ * listed in `aliasesSkipped`), the summary is replaced when given and not blank unless the node is user-created
+ * (then it is appended as a fact, deduped like the others, and `summaryKept` is true), facts are appended with the
+ * caller's source unless a live fact with the same text exists (`factsAdded` counts them), note links are added; a
+ * retired node stays retired (the caller reports it). Caps are checked before anything is written.
  */
 export function upsertNode(dataDir: string, projectId: string, input: KnowledgeNodeUpsertInput, source: KnowledgeSource): KnowledgeNodeWriteResult {
-  const graph = readKnowledge(dataDir, projectId)
+  const graph = loadForWrite(dataDir, projectId)
   const kind = checkKey('kind', input.kind)
   const name = checkName('The name', input.name)
   const aliases = checkAliases(input.aliases, name)
@@ -386,8 +457,10 @@ export function upsertNode(dataDir: string, projectId: string, input: KnowledgeN
   const now = Date.now()
 
   let target: KnowledgeNode | undefined
-  if (input.nodeId !== undefined) target = nodeById(graph, input.nodeId)
-  else {
+  if (input.nodeId !== undefined) {
+    target = nodeById(graph, input.nodeId)
+    if (target.kind !== kind) throw new Error(`That entity is a ${target.kind}, not a ${kind}. Retire it and create a new one, or pass its kind.`)
+  } else {
     const found = matches(graph, kind, name, aliases)
     target = found.find((n) => !n.retired) ?? found[0]
   }
@@ -416,21 +489,28 @@ export function upsertNode(dataDir: string, projectId: string, input: KnowledgeN
     }
     graph.nodes.push(node)
     writeGraph(dataDir, projectId, graph)
-    return { node, created: true }
+    return { node, created: true, factsAdded: facts.length, aliasesSkipped: [] }
   }
 
   // Merge: aliases (the input name included) that the node does not answer to yet and no other entity of the kind owns.
   const addAliases: string[] = []
+  const aliasesSkipped: string[] = []
   for (const candidate of [...aliases, name]) {
     if (knowledgeNodeNamed(target, candidate) || addAliases.some((a) => knowledgeNameKey(a) === knowledgeNameKey(candidate))) continue
-    if (matchKnowledgeNodes(graph, candidate, target.kind).some((n) => n.id !== target.id)) continue
+    if (matchKnowledgeNodes(graph, candidate, target.kind).some((n) => n.id !== target.id)) {
+      aliasesSkipped.push(candidate)
+      continue
+    }
     addAliases.push(candidate)
   }
   const mergedAliases = [...(target.aliases ?? []), ...addAliases]
   if (mergedAliases.length > KNOWLEDGE_ALIASES_MAX) {
     throw new Error(`An entity keeps at most ${KNOWLEDGE_ALIASES_MAX} aliases (${mergedAliases.length} would be stored). Drop some; nothing was saved.`)
   }
-  const newTexts = dedupeFactTexts(factTexts, target.facts.filter((f) => !f.retired).map((f) => f.text))
+  // A user-created entity keeps the user's summary: an agent's summary becomes a fact instead (M1).
+  const summaryKept = !!summary && target.source.by === 'user' && source.by !== 'user'
+  const summaryFact = summaryKept && knowledgeNameKey(target.summary ?? '') !== knowledgeNameKey(summary) ? [summary] : []
+  const newTexts = dedupeFactTexts([...factTexts, ...summaryFact], target.facts.filter((f) => !f.retired).map((f) => f.text))
   checkFactCount(target.facts.length + newTexts.length)
   const mergedNotes = [...new Set([...(target.noteIds ?? []), ...noteIds])]
   if (mergedNotes.length > KNOWLEDGE_NODE_NOTES_MAX) {
@@ -443,12 +523,12 @@ export function upsertNode(dataDir: string, projectId: string, input: KnowledgeN
     target.facts.push({ id, text, source })
   }
   if (mergedAliases.length) target.aliases = mergedAliases
-  if (summary) target.summary = summary
+  if (summary && !summaryKept) target.summary = summary
   if (mergedNotes.length) target.noteIds = mergedNotes
   target.updatedBy = source
   target.updatedAt = now
   writeGraph(dataDir, projectId, graph)
-  return { node: target, created: false }
+  return { node: target, created: false, factsAdded: newTexts.length, aliasesSkipped, ...(summaryKept ? { summaryKept: true } : {}) }
 }
 
 /** Texts not already present (by knowledgeNameKey) in `existing`, without repeats among themselves. */
@@ -472,7 +552,7 @@ function dedupeFactTexts(texts: string[], existing: string[]): string[] {
  * omitted keep; `retired` given sets it. The source stamp is the user's.
  */
 export function saveNodeForUser(dataDir: string, projectId: string, input: Omit<KnowledgeNodeSaveInput, 'projectId'>): KnowledgeNode {
-  const graph = readKnowledge(dataDir, projectId)
+  const graph = loadForWrite(dataDir, projectId)
   const kind = checkKey('kind', input.kind)
   const name = checkName('The name', input.name)
   const aliases = input.aliases === undefined ? undefined : checkAliases(input.aliases, name)
@@ -566,7 +646,7 @@ export function saveNodeForUser(dataDir: string, projectId: string, input: Omit<
 
 /** Remove a node and every edge touching it (unknown id throws). Returns the graph afterwards. */
 export function removeNode(dataDir: string, projectId: string, nodeId: string): KnowledgeGraph {
-  const graph = readKnowledge(dataDir, projectId)
+  const graph = loadForWrite(dataDir, projectId)
   const node = nodeById(graph, nodeId)
   graph.nodes = graph.nodes.filter((n) => n !== node)
   graph.edges = graph.edges.filter((e) => e.from !== node.id && e.to !== node.id)
@@ -577,19 +657,15 @@ export function removeNode(dataDir: string, projectId: string, nodeId: string): 
 /**
  * Agent link or user edge save (KnowledgeStoreApi.saveEdge). from / to must be existing, distinct node ids. Without
  * edgeId a (from, to, relation) match is updated (note when given, retired when given; nothing else touched) and
- * reported as not created, else a new edge with the caller's source. With edgeId only that edge's note / retired change.
+ * reported as not created, else a new edge with the caller's source. With edgeId only that edge's note / retired
+ * change, and from / to / relation must equal the stored edge's (refused otherwise: "That relation id names ...").
  */
 export function saveEdge(dataDir: string, projectId: string, input: Omit<KnowledgeEdgeSaveInput, 'projectId'>, source: KnowledgeSource): KnowledgeEdgeWriteResult {
-  const graph = readKnowledge(dataDir, projectId)
+  const graph = loadForWrite(dataDir, projectId)
   const relation = checkKey('relation', input.relation)
   const note = checkOptionalText('The note', input.note, KNOWLEDGE_EDGE_NOTE_MAX_CHARS)
   const retired = checkRetired(input.retired)
-  const from = typeof input.from === 'string' ? graph.nodes.find((n) => n.id === input.from) : undefined
-  if (!from) throw new Error(`The "from" entity ${typeof input.from === 'string' ? JSON.stringify(input.from) : '(not text)'} does not exist.`)
-  const to = typeof input.to === 'string' ? graph.nodes.find((n) => n.id === input.to) : undefined
-  if (!to) throw new Error(`The "to" entity ${typeof input.to === 'string' ? JSON.stringify(input.to) : '(not text)'} does not exist.`)
-  if (from === to) throw new Error('An entity cannot relate to itself.')
-
+  const nameOf = (id: string): string => graph.nodes.find((n) => n.id === id)?.name ?? id
   const apply = (edge: KnowledgeEdge): KnowledgeEdgeWriteResult => {
     if (note !== undefined) {
       if (note) edge.note = note
@@ -602,7 +678,18 @@ export function saveEdge(dataDir: string, projectId: string, input: Omit<Knowled
     writeGraph(dataDir, projectId, graph)
     return { edge, created: false }
   }
-  if (input.edgeId !== undefined) return apply(edgeById(graph, input.edgeId))
+  if (input.edgeId !== undefined) {
+    const edge = edgeById(graph, input.edgeId)
+    if (input.from !== edge.from || input.to !== edge.to || relation !== edge.relation) {
+      throw new Error(`That relation id names ${nameOf(edge.from)} ${edge.relation} ${nameOf(edge.to)}; from, to and relation cannot change. Remove it and link again.`)
+    }
+    return apply(edge)
+  }
+  const from = typeof input.from === 'string' ? graph.nodes.find((n) => n.id === input.from) : undefined
+  if (!from) throw new Error(`The "from" entity ${typeof input.from === 'string' ? JSON.stringify(input.from) : '(not text)'} does not exist.`)
+  const to = typeof input.to === 'string' ? graph.nodes.find((n) => n.id === input.to) : undefined
+  if (!to) throw new Error(`The "to" entity ${typeof input.to === 'string' ? JSON.stringify(input.to) : '(not text)'} does not exist.`)
+  if (from === to) throw new Error('An entity cannot relate to itself.')
   const key = tripleKey({ from: from.id, to: to.id, relation })
   const existing = graph.edges.find((e) => tripleKey(e) === key)
   if (existing) return apply(existing)
@@ -624,14 +711,14 @@ export function saveEdge(dataDir: string, projectId: string, input: Omit<Knowled
 
 /** Remove one edge (unknown id throws). Returns the graph afterwards. */
 export function removeEdge(dataDir: string, projectId: string, edgeId: string): KnowledgeGraph {
-  const graph = readKnowledge(dataDir, projectId)
+  const graph = loadForWrite(dataDir, projectId)
   const edge = edgeById(graph, edgeId)
   graph.edges = graph.edges.filter((e) => e !== edge)
   writeGraph(dataDir, projectId, graph)
   return graph
 }
 
-/** Delete the graph file (a link is removed, never followed). Returns the empty graph. */
+/** Delete the graph file (a link is removed, never followed; an unreadable file too: this is the user's start-over). Returns the empty graph. */
 export function clearKnowledge(dataDir: string, projectId: string): KnowledgeGraph {
   const file = knowledgeFile(dataDir, projectId)
   if (isLink(file) || existsSync(file)) rmSync(file, { force: true })
@@ -645,7 +732,7 @@ export function clearKnowledge(dataDir: string, projectId: string): KnowledgeGra
 export function retireItem(dataDir: string, projectId: string, input: KnowledgeRetireInput, source: KnowledgeSource): KnowledgeRetireResult {
   const given = (['nodeId', 'edgeId', 'factId'] as const).filter((k) => input[k] !== undefined)
   if (given.length !== 1) throw new Error('Name exactly one of nodeId, edgeId or factId.')
-  const graph = readKnowledge(dataDir, projectId)
+  const graph = loadForWrite(dataDir, projectId)
   const guard = (item: { source: KnowledgeSource }): void => {
     if (item.source.by === 'user' && source.by !== 'user') throw new Error('Only the user can change that.')
   }

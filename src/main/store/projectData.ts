@@ -110,11 +110,11 @@ export function atomicWrite(file: string, text: string): void {
   }
 }
 
-/** The text of a regular, non-linked file of at most READ_MAX_BYTES, or null. */
-export function readPlain(file: string): { text: string; mtimeMs: number } | null {
+/** The text of a regular, non-linked file of at most `maxBytes` (default READ_MAX_BYTES), or null. */
+export function readPlain(file: string, maxBytes = READ_MAX_BYTES): { text: string; mtimeMs: number } | null {
   try {
     const st = lstatSync(file)
-    if (!st.isFile() || st.size > READ_MAX_BYTES) return null
+    if (!st.isFile() || st.size > maxBytes) return null
     return { text: readFileSync(file, 'utf8').replace(/^﻿/, ''), mtimeMs: st.mtimeMs }
   } catch {
     return null
