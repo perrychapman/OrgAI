@@ -4,6 +4,8 @@ const KEY = 'orgai.pendingSettingsSection'
 export const APP_SETTINGS_SECTIONS = {
   appearance: 'appsettings-section-appearance',
   notifications: 'appsettings-section-notifications',
+  /** General > Canvas (visible; a deep link focuses the checked style option). */
+  canvas: 'appsettings-section-canvas',
   connections: 'appsettings-section-connections',
   modelPrices: 'appsettings-section-model-prices',
   mcpLibrary: 'appsettings-section-mcp-library',
@@ -126,6 +128,7 @@ export function takeProjectSettingsSection(pane: ProjectSettingsPane): ProjectSe
 const APP_SECTION_PANE: Record<string, AppSettingsPane> = {
   [APP_SETTINGS_SECTIONS.appearance]: 'general',
   [APP_SETTINGS_SECTIONS.notifications]: 'general',
+  [APP_SETTINGS_SECTIONS.canvas]: 'general',
   [APP_SETTINGS_SECTIONS.connections]: 'connections',
   [APP_SETTINGS_SECTIONS.modelPrices]: 'connections',
   [APP_SETTINGS_SECTIONS.costs]: 'connections',
