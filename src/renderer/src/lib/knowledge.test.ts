@@ -185,10 +185,14 @@ describe('relations and summaries', () => {
     expect(relatedRows(graph, 'kn_acme', false)[0]).toMatchObject({ outgoing: false, text: 'Jane Doe works at' })
   })
   it('writes the settings summary and the clear counts', () => {
-    expect(knowledgeSummaryLine(graph, [kickoff, mine])).toBe('2 notes, 3 facts, 1 person')
+    expect(knowledgeSummaryLine(graph, [kickoff, mine])).toBe('3 items (1 person, 1 organisation, 1 decision), 2 notes, 3 facts')
     expect(knowledgeSummaryLine({ nodes: [] }, [])).toBe('Nothing recorded yet')
-    expect(knowledgeSummaryLine({ nodes: [jane, { ...acme, kind: 'person', id: 'p2' }] }, [])).toBe('2 facts, 2 people')
-    expect(clearCountsLine(graph)).toBe('4 items, 4 facts, 2 relations')
+    expect(knowledgeSummaryLine({ nodes: [] }, [kickoff, mine])).toBe('2 notes')
+    expect(knowledgeSummaryLine({ nodes: [jane, { ...acme, kind: 'person', id: 'p2' }] }, [])).toBe('2 items (2 people), 2 facts')
+    const many = ['a', 'b', 'c', 'd', 'e', 'f', 'g'].map((k) => node({ id: `kn_${k}`, kind: `kind-${k}`, name: k }))
+    expect(knowledgeSummaryLine({ nodes: many }, [])).toBe('7 items (1 kind a, 1 kind b, 1 kind c, 1 kind d, 1 kind e, 2 more)')
+    expect(clearCountsLine(graph)).toBe('4 items (1 retired), 4 facts (1 retired), 2 relations')
+    expect(clearCountsLine({ nodes: [], edges: [] })).toBe('0 items, 0 facts, 0 relations')
   })
   it('resolves focus requests by id, name or title', () => {
     expect(resolveFocus(items, { nodeId: 'kn_jane' })).toBe('kn_jane')

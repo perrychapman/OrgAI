@@ -10,7 +10,7 @@ import { Switch } from '../ui/Switch'
 import { CanvasBackdrop } from '../canvas/CanvasBackdrop'
 import { CanvasMinimap } from '../canvas/CanvasMinimap'
 import { CANVAS_EDGE_TYPES } from '../canvas/RadialEdge'
-import { STATION_CORNER_RADIUS, STATION_LINE_WIDTH } from '../../lib/canvasShapes'
+import { STATION_CORNER_RADIUS, STATION_LINE_WIDTH, type PlacedBox } from '../../lib/canvasShapes'
 import { fitOptions } from '../../lib/canvasFit'
 import { EDGE_TYPE, HEX_GAP, HEX_TILE, edgeStroke, ringStepFor, useCanvasOptions, useNodeDims, useReducedMotion } from '../../lib/canvas'
 import { layoutCanvas } from '../../lib/layout'
@@ -35,6 +35,7 @@ import {
   neighbourInDirection,
   nodeCountsLine,
   nodeSpokenName,
+  relationHandles,
   relationTexts,
   retiredGroupId,
   retiredGroupSize,
@@ -234,6 +235,12 @@ function GraphInner({ projectId, graph, filter, selectedId, onSelect, onOpen, li
 
   const edges: Edge[] = useMemo(() => {
     const byId = new Map(graph.nodes.map((n) => [n.id, n]))
+    const boxOf = (id: string): PlacedBox | null => {
+      const at = positions[id]
+      if (!at) return null
+      const m = nodeDims.dims[id]
+      return { x: at.x, y: at.y, width: m?.width ?? nodeSize.width, height: m?.height ?? nodeSize.height }
+    }
     const relationEdges: Edge[] = drawn.edges.map((e) => {
       const from = byId.get(e.from)
       const to = byId.get(e.to)
@@ -242,10 +249,15 @@ function GraphInner({ projectId, graph, filter, selectedId, onSelect, onOpen, li
       const retired = !!e.retired || !!from?.retired || !!to?.retired
       const sentence = `${from?.name ?? '(removed)'} ${words} ${to?.name ?? '(removed)'}`
       const data: KnowledgeEdgeData = { kind: edgeKind, label: words, title: e.note ? `${sentence}\n${e.note}` : sentence }
+      // The sides that face each other, from the laid-out boxes; radial edges ignore handles (clipped at the shapes).
+      const a = boxOf(e.from)
+      const b = boxOf(e.to)
+      const handles = a && b ? relationHandles(a, b) : {}
       return {
         id: e.id,
         source: e.from,
         target: e.to,
+        ...handles,
         type: 'knowledge',
         ariaLabel: sentence,
         className: retired ? 'knowledge-edge-retired' : undefined,
@@ -272,7 +284,7 @@ function GraphInner({ projectId, graph, filter, selectedId, onSelect, onOpen, li
       return { ...base, style: { stroke: color, strokeWidth: STATION_LINE_WIDTH, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const, opacity: 0.7 }, ...roundedCorners }
     })
     return [...relationEdges, ...groupEdges]
-  }, [drawn, graph.nodes, colorOf, edgeMix, edgeInk, edgeKind, station, roundedCorners, labelColor, labelBg, groupEdgeColor])
+  }, [drawn, graph.nodes, positions, nodeSize, nodeDims.dims, colorOf, edgeMix, edgeInk, edgeKind, station, roundedCorners, labelColor, labelBg, groupEdgeColor])
 
   const fitOpts = useCallback(
     (duration: number) =>

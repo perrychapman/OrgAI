@@ -243,7 +243,7 @@ function KnowledgeWriteRow({ row, body, projectId }: { row: KnowledgeRow; body: 
     useAppStore.getState().openKnowledgeItem({ projectId, ...row.focus })
   }
   return (
-    <div className="entry system harness knowledge-row" data-testid="knowledge-row">
+    <div className="entry system harness knowledge-write-row" data-testid="knowledge-write-row">
       <Icon icon={Database} size="sm" />
       <div className="tool-main">
         <span className="entry-plain">{row.text}</span>

@@ -296,6 +296,18 @@ export function noteCandidates<T extends { id: string; title: string; retired?: 
 export const notesCapText = (max: number): string => `${max.toLocaleString()} notes is the most an engagement can keep.`
 export const itemsCapText = (max: number): string => `${max.toLocaleString()} items is the most an engagement can keep.`
 
+/** How long the retire / delete notice stays, counted only while neither pointer nor focus is inside it. */
+export const NOTICE_MS = 8000
+
+/** The notice and the status announcement share this wording. */
+export const retireNoticeText = (name: string, kind: 'retired' | 'deleted'): string => (kind === 'retired' ? `Retired ${name}.` : `Deleted ${name}.`)
+
+/** A restored item is ready to take focus once the refetch shows it live in the list. */
+export function restoreReady(shown: readonly KnowledgeItem[], id: string): boolean {
+  const hit = shown.find((i) => i.id === id)
+  return !!hit && !(hit.type === 'node' ? hit.node.retired : hit.note.retired)
+}
+
 /** The row's list index by id, or -1. */
 export function rowIndexOf(entries: readonly ListEntry[], id: string | null): number {
   if (!id) return -1

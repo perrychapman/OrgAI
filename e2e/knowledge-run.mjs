@@ -1,7 +1,7 @@
 // Token-free. Mock adapter, temp ORGAI_DATA_DIR. The knowledge graph in run views, Settings and Maintenance
 // (docs/design/knowledge.md sections 7, 8, 9): a [mock:knowledge] work run on an engagement writes eight harness rows
 // (4 Recorded, 2 Linked, 1 Saved note, 1 Retired fact); the root transcript shows one plain sentence per knowledge call
-// and one row per write with an "Open" link; RunMeta reads "Recorded 8 items" and opens the Knowledge tab; Settings >
+// and one row per write with an "Open" link; RunMeta reads "Recorded 8 changes" (title: the breakdown) and opens the Knowledge tab; Settings >
 // General > Context notes is the summary line with "Open Knowledge"; Maintenance "Clear everything…" names the counts
 // and empties the graph; the forget confirm counts recorded items. Both sizes and themes, with screenshots.
 import * as fs from 'node:fs'
@@ -120,22 +120,40 @@ function summaryLine(graph, notes) {
   const liveNodes = graph.nodes.filter((n) => !n.retired)
   const facts = liveNodes.reduce((n, node) => n + node.facts.filter((f) => !f.retired).length, 0)
   const parts = []
+  if (liveNodes.length > 0) {
+    const counts = new Map()
+    for (const n of liveNodes) counts.set(n.kind, (counts.get(n.kind) ?? 0) + 1)
+    const order = [...COMMON.filter((k) => counts.has(k)), ...[...counts.keys()].filter((k) => !COMMON.includes(k)).sort()]
+    const kinds = order.map((kind) => `${counts.get(kind)} ${(counts.get(kind) === 1 ? sentence(words(kind)) : PLURAL[kind] ?? sentence(words(kind))).toLowerCase()}`)
+    const shown = kinds.slice(0, 5)
+    const more = kinds.length - shown.length
+    parts.push(`${liveNodes.length} ${liveNodes.length === 1 ? 'item' : 'items'} (${shown.join(', ')}${more > 0 ? `, ${more} more` : ''})`)
+  }
   if (liveNotes > 0) parts.push(`${liveNotes} ${liveNotes === 1 ? 'note' : 'notes'}`)
   if (facts > 0) parts.push(`${facts} ${facts === 1 ? 'fact' : 'facts'}`)
-  const counts = new Map()
-  for (const n of liveNodes) counts.set(n.kind, (counts.get(n.kind) ?? 0) + 1)
-  const order = [...COMMON.filter((k) => counts.has(k)), ...[...counts.keys()].filter((k) => !COMMON.includes(k)).sort()]
-  const top = order.map((kind) => ({ kind, count: counts.get(kind) })).sort((a, b) => b.count - a.count)[0]
-  if (top) parts.push(`${top.count} ${(top.count === 1 ? sentence(words(top.kind)) : PLURAL[top.kind] ?? sentence(words(top.kind))).toLowerCase()}`)
-  else if (liveNodes.length > 0) parts.push(`${liveNodes.length} ${liveNodes.length === 1 ? 'item' : 'items'}`)
   return parts.length ? parts.join(', ') : 'Nothing recorded yet'
 }
 const clearCounts = (graph) => {
-  const n = graph.nodes.length
-  const facts = graph.nodes.reduce((s, node) => s + node.facts.length, 0)
-  const e = graph.edges.length
-  return `${n} ${n === 1 ? 'item' : 'items'}, ${facts} ${facts === 1 ? 'fact' : 'facts'}, ${e} ${e === 1 ? 'relation' : 'relations'}`
+  const one = (n, s, p, retired) => `${n} ${n === 1 ? s : p}${retired > 0 ? ` (${retired} retired)` : ''}`
+  const facts = graph.nodes.flatMap((n) => n.facts)
+  return [
+    one(graph.nodes.length, 'item', 'items', graph.nodes.filter((n) => n.retired).length),
+    one(facts.length, 'fact', 'facts', facts.filter((f) => f.retired).length),
+    one(graph.edges.length, 'relation', 'relations', graph.edges.filter((e) => e.retired).length)
+  ].join(', ')
 }
+/** A write row's visible geometry: icon and headline on one line, "Open" not wrapped under the headline. */
+const writeRowGeometry = (row) =>
+  row.evaluate((el) => {
+    const icon = el.querySelector(':scope > svg')?.getBoundingClientRect()
+    const head = el.querySelector('.entry-plain')?.getBoundingClientRect()
+    const open = el.querySelector('[data-testid=knowledge-row-open]')?.getBoundingClientRect()
+    const box = el.getBoundingClientRect()
+    const lineH = parseFloat(getComputedStyle(el.querySelector('.entry-plain')).lineHeight) || 18
+    const single = !!head && head.height < lineH * 1.5
+    // A long headline may wrap onto a second line; "Open" follows its last line then. A one-line headline keeps "Open" on that line.
+    return { sameLine: !!icon && !!head && Math.abs(icon.top - head.top) < 12, openOnLine: !open || !head || !single || Math.abs(open.top - head.top) < lineH, single, h: box.height, headH: head?.height ?? 0 }
+  })
 
 const EXPECTED_ROWS = [
   'Looked up the kinds and relations in use',
@@ -185,8 +203,9 @@ try {
   const noisy = rows.filter((t) => /not instructions|engagement_knowledge|engagement_context|Used engagement/.test(t))
   check(noisy.length === 0, 'no visible row text names the tool or says "not instructions"', JSON.stringify(noisy))
   check(!rows.some((t) => /^(Created|Merged into existing) /.test(t)), 'the write results are folded into their harness rows (no "Created ..." row)', JSON.stringify(rows))
-  const kRows = page.locator('[data-testid=knowledge-row]')
-  check((await kRows.count()) === RECORDING_ROWS.length, `${RECORDING_ROWS.length} harness write rows carry data-testid=knowledge-row`, String(await kRows.count()))
+  const kRows = page.locator('[data-testid=knowledge-write-row]')
+  check((await kRows.count()) === RECORDING_ROWS.length, `${RECORDING_ROWS.length} harness write rows carry data-testid=knowledge-write-row`, String(await kRows.count()))
+  check((await page.locator('.side-run [data-testid=knowledge-row]').count()) === 0, 'no transcript row uses the Knowledge list row testid')
   const opens = page.locator('[data-testid=knowledge-row-open]')
   check((await opens.count()) === RECORDING_ROWS.length, 'every recording row has an "Open" link', String(await opens.count()))
   const openNames = await opens.evaluateAll((els) => els.map((e) => e.getAttribute('aria-label')))
@@ -197,6 +216,13 @@ try {
   const firstRow = kRows.first()
   await firstRow.locator('summary').click()
   check(/Created organisation Acme Corp \(kn_/.test(await firstRow.locator('pre').innerText()), 'Show output holds the raw "Created ..." result')
+  // The expanded output stays inside its row and never overlaps the next row.
+  const overlap = await kRows.evaluateAll((els) => {
+    const pre = els[0].querySelector('pre')?.getBoundingClientRect()
+    const next = els[1]?.getBoundingClientRect()
+    return pre && next ? { preBottom: pre.bottom, nextTop: next.top } : null
+  })
+  check(!!overlap && overlap.preBottom <= overlap.nextTop + 1, 'an expanded output does not overlap the next row', JSON.stringify(overlap))
   await firstRow.locator('summary').click()
   const resultLabels = rows.filter((t) => /^(Looked up \d+ kinds?|No kinds in use yet|\d+ items? found|Item returned)$/.test(t))
   check(resultLabels.length === 3, 'the read results read "Looked up N kinds" / "N items found" / "Item returned"', JSON.stringify(resultLabels))
@@ -213,13 +239,22 @@ try {
   await projectTab(page, 'Live').click()
   const meta = page.locator('[data-testid=run-meta-recorded]')
   // The button carries an sr-only " (opens Knowledge)" suffix in its accessible name; the visible text is checked.
-  const metaText = async () => clean((await meta.innerText().catch(() => '')).replace('(opens Knowledge)', ''))
+  const metaText = async () => clean((await meta.innerText().catch(() => '')).replace(/\([^)]*opens Knowledge\)/, ''))
   await meta.waitFor({ state: 'visible', timeout: 8000 })
-  check((await metaText()) === 'Recorded 8 items', 'RunMeta reads "Recorded 8 items"', await metaText())
-  check((await meta.evaluate((el) => el.tagName)) === 'BUTTON' && /Opens Knowledge/.test((await meta.getAttribute('title')) ?? ''), 'the count is a button with the Knowledge title')
+  check((await metaText()) === 'Recorded 8 changes', 'RunMeta reads "Recorded 8 changes"', await metaText())
+  const WANT_TITLE = 'What the team recorded this run: 4 items, 2 relations, 1 note, 1 retired. Opens Knowledge.'
+  check((await meta.evaluate((el) => el.tagName)) === 'BUTTON' && (await meta.getAttribute('title')) === WANT_TITLE, 'the count is a button whose title gives the breakdown', (await meta.getAttribute('title')) ?? '')
+  const srText = clean(await meta.locator('.sr-only').innerText())
+  check(srText === '(4 items, 2 relations, 1 note, 1 retired; opens Knowledge)', 'the screen-reader text carries the breakdown and "opens Knowledge"', srText)
   await meta.click()
   await page.locator('[data-testid=knowledge-view]').waitFor({ state: 'visible', timeout: 8000 })
-  check(true, 'clicking "Recorded 8 items" shows the Knowledge tab')
+  check(true, 'clicking "Recorded 8 changes" shows the Knowledge tab')
+  // Needs the Knowledge view change from the parallel branch (focus lands on a row when the request has no target).
+  check(
+    await until(() => page.evaluate(() => document.activeElement?.getAttribute('data-testid') === 'knowledge-row'), 4000),
+    'RunMeta trigger: focus lands on a knowledge row',
+    await page.evaluate(() => document.activeElement?.getAttribute('data-testid') ?? document.activeElement?.tagName)
+  )
 
   // ======== 4. Settings > General (section 9) ========
   await openSettingsPane('General')
@@ -239,6 +274,18 @@ try {
   await page.locator('[data-testid=knowledge-open]').click()
   await page.locator('[data-testid=knowledge-view]').waitFor({ state: 'visible', timeout: 8000 })
   check(true, '"Open Knowledge" shows the Knowledge tab')
+  // Needs the Knowledge view change from the parallel branch (focus lands on a row when the request has no target).
+  check(
+    await until(() => page.evaluate(() => document.activeElement?.getAttribute('data-testid') === 'knowledge-row'), 4000),
+    'Settings trigger: focus lands on a knowledge row',
+    await page.evaluate(() => document.activeElement?.getAttribute('data-testid') ?? document.activeElement?.tagName)
+  )
+  // The tab's total (items and notes) is what the forget confirm counts as recorded items plus context notes.
+  const tabTotal = await (async () => {
+    const t = clean(await page.locator('[data-testid=knowledge-count]').innerText())
+    const nums = (t.match(/\d+/g) ?? []).map(Number)
+    return nums.length ? nums[nums.length - 1] : -1
+  })()
 
   // ======== 5. Maintenance: forget confirm counts, then Clear everything (section 9) ========
   await openSettingsPane('Maintenance')
@@ -248,6 +295,9 @@ try {
   await forgetBody.waitFor({ state: 'visible' })
   const forgetText = clean(await forgetBody.innerText())
   check(/4 recorded items/.test(forgetText), 'the forget confirm lists "4 recorded items"', forgetText)
+  const forgetNotes = Number(/(\d+) context notes?/.exec(forgetText)?.[1] ?? 0)
+  const forgetItems = Number(/(\d+) recorded items?/.exec(forgetText)?.[1] ?? 0)
+  check(tabTotal > 0 && tabTotal === forgetItems + forgetNotes, "the Knowledge tab's total equals the forget confirm's recorded items plus its notes", `tab ${tabTotal}, forget ${forgetItems} + ${forgetNotes}`)
   await shot('forget-confirm-1600-dark')
   await page.getByRole('button', { name: 'Cancel', exact: true }).click()
   await page.locator('[data-testid=forget-confirm]').waitFor({ state: 'hidden' })
@@ -281,7 +331,7 @@ try {
   check(await until(async () => clean(await summary.innerText()) === summaryLine(after, notesAfter)), 'the summary line refetches after the clear', clean(await summary.innerText()))
   // The RunMeta count still counts what the run did, not what is left.
   await projectTab(page, 'Live').click()
-  check((await metaText()) === 'Recorded 8 items', 'RunMeta still reads "Recorded 8 items" after the clear (it counts the run, not the graph)')
+  check((await metaText()) === 'Recorded 8 changes', 'RunMeta still reads "Recorded 8 changes" after the clear (it counts the run, not the graph)')
 
   // ======== 6. Both sizes and themes: transcript, Settings and Maintenance, no page scroll ========
   for (const [w, h, theme] of [[1600, 1000, 'light'], [1024, 640, 'dark'], [1024, 640, 'light']]) {
@@ -294,7 +344,12 @@ try {
     check(JSON.stringify(r.filter((t) => EXPECTED_ROWS.includes(t))) === JSON.stringify(EXPECTED_ROWS), `${tag}: the eleven knowledge sentences show`, JSON.stringify(r).slice(0, 400))
     check((await page.locator('[data-testid=knowledge-row-open]').count()) === RECORDING_ROWS.length, `${tag}: every recording row has an Open link`)
     const metaVisible = await meta.isVisible().catch(() => false)
-    check(metaVisible && (await metaText()) === 'Recorded 8 items', `${tag}: RunMeta reads "Recorded 8 items"`)
+    check(metaVisible && (await metaText()) === 'Recorded 8 changes', `${tag}: RunMeta reads "Recorded 8 changes"`)
+    const geo = []
+    const writeRows = page.locator('[data-testid=knowledge-write-row]')
+    for (let i = 0; i < (await writeRows.count()); i++) geo.push(await writeRowGeometry(writeRows.nth(i)))
+    check(geo.length === RECORDING_ROWS.length && geo.every((g) => g.sameLine && g.openOnLine), `${tag}: each write row keeps its icon and headline on one line, Open beside the headline`, JSON.stringify(geo.filter((g) => !g.sameLine || !g.openOnLine)))
+    check(geo.every((g) => g.h <= g.headH + 40), `${tag}: write rows are as tall as their text, not the list row height`, JSON.stringify(geo.map((g) => [Math.round(g.h), Math.round(g.headH)])))
     await fitsWindow(`${tag} Live`)
     await shot(`transcript-${w}-${theme}`)
     await openSettingsPane('General')

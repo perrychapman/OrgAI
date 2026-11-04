@@ -338,29 +338,45 @@ export function factsInOrder(facts: readonly KnowledgeFact[], showRetired: boole
 // ---- Settings summary (rec 3) ----
 
 /**
- * "12 notes, 40 facts, 8 people" for Project settings > General > Context notes: live counts, the largest kind by
- * count named (common kinds by their plural, a free-form kind as "3 vendor"); "Nothing recorded yet" when empty.
+ * "5 items (1 person, 1 organisation, 2 systems, 1 decision), 2 notes, 6 facts" for Project settings > General >
+ * Context notes: live counts only; the kinds in `kindOrder` (at most 5, then ", N more"); zero parts omitted;
+ * "Nothing recorded yet" when empty.
  */
 export function knowledgeSummaryLine(graph: Pick<KnowledgeGraph, 'nodes'>, notes: readonly EngagementNote[]): string {
   const liveNotes = notes.filter((n) => !n.retired).length
   const liveNodes = graph.nodes.filter((n) => !n.retired)
   const facts = liveNodes.reduce((n, node) => n + node.facts.filter((f) => !f.retired).length, 0)
   const parts: string[] = []
+  if (liveNodes.length > 0) {
+    const kinds = kindCounts(itemsOf({ nodes: liveNodes }, []), false).map(
+      (k) => `${k.count} ${k.count === 1 ? kindLabel(k.kind).toLowerCase() : kindGroupLabel(k.kind).toLowerCase()}`
+    )
+    const shown = kinds.slice(0, SUMMARY_KINDS_MAX)
+    const more = kinds.length - shown.length
+    parts.push(`${liveNodes.length} ${liveNodes.length === 1 ? 'item' : 'items'} (${shown.join(', ')}${more > 0 ? `, ${more} more` : ''})`)
+  }
   if (liveNotes > 0) parts.push(`${liveNotes} ${liveNotes === 1 ? 'note' : 'notes'}`)
   if (facts > 0) parts.push(`${facts} ${facts === 1 ? 'fact' : 'facts'}`)
-  const counts = kindCounts(itemsOf({ nodes: liveNodes }, []), false)
-  const top = [...counts].sort((a, b) => b.count - a.count)[0]
-  if (top) parts.push(`${top.count} ${top.count === 1 ? kindLabel(top.kind).toLowerCase() : kindGroupLabel(top.kind).toLowerCase()}`)
-  else if (liveNodes.length > 0) parts.push(`${liveNodes.length} ${liveNodes.length === 1 ? 'item' : 'items'}`)
   return parts.length ? parts.join(', ') : 'Nothing recorded yet'
 }
 
-/** "Clear everything" confirm counts: "12 items, 40 facts, 8 relations". Notes are not cleared (knowledge:clear leaves them). */
+const SUMMARY_KINDS_MAX = 5
+
+/**
+ * "Clear everything" confirm counts, totals including retired because that is what Clear deletes: "5 items (1
+ * retired), 7 facts (1 retired), 2 relations". A parenthetical only when non-zero. Notes are not cleared.
+ */
 export function clearCountsLine(graph: Pick<KnowledgeGraph, 'nodes' | 'edges'>): string {
-  const n = graph.nodes.length
+  const count = (n: number, one: string, many: string, retired: number): string => `${n} ${n === 1 ? one : many}${retired > 0 ? ` (${retired} retired)` : ''}`
+  const items = graph.nodes.length
   const facts = graph.nodes.reduce((s, node) => s + node.facts.length, 0)
-  const e = graph.edges.length
-  return `${n} ${n === 1 ? 'item' : 'items'}, ${facts} ${facts === 1 ? 'fact' : 'facts'}, ${e} ${e === 1 ? 'relation' : 'relations'}`
+  const retiredFacts = graph.nodes.reduce((s, node) => s + node.facts.filter((f) => f.retired).length, 0)
+  const edges = graph.edges.length
+  return [
+    count(items, 'item', 'items', graph.nodes.filter((n) => n.retired).length),
+    count(facts, 'fact', 'facts', retiredFacts),
+    count(edges, 'relation', 'relations', graph.edges.filter((e) => e.retired).length)
+  ].join(', ')
 }
 
 // ---- focus requests ----

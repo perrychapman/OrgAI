@@ -5,7 +5,7 @@ import type { Project } from '@shared/types'
 import { isVirtualProjectId } from '@shared/types'
 import { projectKindOf } from '@shared/defaults'
 import { folderName } from '../lib/paths'
-import { recordedCount } from '../lib/knowledgeRun'
+import { breakdownKey, breakdownTotal, EMPTY_BREAKDOWN, parseBreakdownKey, recordedBreakdown, recordedBreakdownText, recordedLabel } from '../lib/knowledgeRun'
 import { PROPOSAL_NEXT_COPY, proposalNextLead } from '../lib/proposalNext'
 import { APP_SETTINGS_PANES, requestAppSettingsSection, requestSkillLibrary } from '../lib/settingsTarget'
 import { useAppStore, useProjectSummaries, type RunState } from '../store/useAppStore'
@@ -47,8 +47,23 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
   const sessions = chain.length
   // Section 8: what the conversation recorded on the Knowledge tab (every member's harness write rows), engagements only.
   const engagement = projectKindOf(project) === 'engagement'
-  const recorded = useAppStore((s) => (engagement ? chain.reduce((n, m) => n + recordedCount(s.runs[m.id]?.transcript ?? []), 0) : 0))
-  const setView = useAppStore((s) => s.setView)
+  // A joined string keeps the selector's result a stable primitive.
+  const recordedKey = useAppStore((s) => {
+    if (!engagement) return ''
+    const sum = { ...EMPTY_BREAKDOWN }
+    for (const m of chain) {
+      const b = recordedBreakdown(s.runs[m.id]?.transcript ?? [])
+      sum.items += b.items
+      sum.updates += b.updates
+      sum.relations += b.relations
+      sum.notes += b.notes
+      sum.retired += b.retired
+    }
+    return breakdownKey(sum)
+  })
+  const breakdown = parseBreakdownKey(recordedKey)
+  const recorded = breakdownTotal(breakdown)
+  const recordedText = recordedBreakdownText(breakdown)
   const progress = run.plan ? planProgress(run.plan) : undefined
   const auto = autoContinueState({
     status: summary.status,
@@ -109,10 +124,10 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
         {agentCount} agent{agentCount === 1 ? '' : 's'}
       </span>
       {recorded > 0 && (
-        <button type="button" className="run-meta-item run-meta-recorded" data-testid="run-meta-recorded" title="What the team recorded this run. Opens Knowledge." onClick={() => setView('knowledge')}>
+        <button type="button" className="run-meta-item run-meta-recorded" data-testid="run-meta-recorded" title={`What the team recorded this run: ${recordedText}. Opens Knowledge.`} onClick={() => useAppStore.getState().openKnowledgeItem({ projectId: project.id })}>
           <Icon icon={Database} size="xs" />
-          Recorded {recorded} item{recorded === 1 ? '' : 's'}
-          <span className="sr-only"> (opens Knowledge)</span>
+          {recordedLabel(recorded)}
+          <span className="sr-only"> ({recordedText}; opens Knowledge)</span>
         </button>
       )}
       {sessions > 1 && (

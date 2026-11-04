@@ -2,6 +2,7 @@ import type { CSSProperties, ReactElement } from 'react'
 import { memo } from 'react'
 import { Handle, type Node, type NodeProps, type Position } from '@xyflow/react'
 import { handlesFor, stationGeometry, stationHandleStyle, useCanvasOptions, useHandleRefresh } from '../../lib/canvas'
+import { SIDES, msgHandleId } from '../../lib/canvasShapes'
 import { initials } from '../../lib/layout'
 
 /**
@@ -97,6 +98,14 @@ function KnowledgeGraphNodeView({ id, data, selected }: NodeProps<KnowledgeFlowN
         </div>
       )}
       <Handle type="source" position={sides.source as Position} isConnectable={false} {...hs(sides.source)} />
+      {/* Relation edges pick the pair of sides that face each other (relationHandles); the two handles above serve the
+          retired-group edge. All hidden. */}
+      {SIDES.map((side) => (
+        <Handle key={`out-${side}`} id={msgHandleId('out', side)} type="source" position={side as Position} className="msg-handle" isConnectable={false} {...hs(side)} />
+      ))}
+      {SIDES.map((side) => (
+        <Handle key={`in-${side}`} id={msgHandleId('in', side)} type="target" position={side as Position} className="msg-handle" isConnectable={false} {...hs(side)} />
+      ))}
     </div>
   )
 }

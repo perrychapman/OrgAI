@@ -10,11 +10,10 @@ import { SettingsSection } from './SettingsSection'
 
 /**
  * Project settings > General > Context notes (engagements only; docs/design/knowledge.md section 9): one summary line
- * of what the team knows ("12 notes, 40 facts, 8 people") and a link to the Knowledge tab, where notes and items are
+ * of what the team knows ("5 items (1 person, 4 systems), 2 notes, 6 facts") and a link to the Knowledge tab, where notes and items are
  * browsed and edited. Refetched on every engagement change push (notes and knowledge).
  */
 export function ContextNotesSection({ project }: { project: Project }): ReactElement {
-  const setView = useAppStore((s) => s.setView)
   const [summary, setSummary] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   // The newest request wins: a push can arrive while an earlier read is still in flight.
@@ -58,7 +57,7 @@ export function ContextNotesSection({ project }: { project: Project }): ReactEle
       <p className="settings-card-note knowledge-summary-line">
         <span data-testid="knowledge-summary">{error ? 'Could not read what the team recorded' : summary === null ? 'Looking…' : summary || 'Nothing recorded yet'}</span>
         {' · '}
-        <button type="button" className="link-btn" data-testid="knowledge-open" onClick={() => setView('knowledge')}>
+        <button type="button" className="link-btn" data-testid="knowledge-open" onClick={() => useAppStore.getState().openKnowledgeItem({ projectId: project.id })}>
           Open Knowledge
         </button>
       </p>

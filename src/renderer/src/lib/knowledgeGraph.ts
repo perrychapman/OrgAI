@@ -1,6 +1,7 @@
 import type { CanvasLayout, CanvasNodeStyle, KnowledgeEdge, KnowledgeGraph, KnowledgeNode } from '@shared/types'
 import { knowledgeEdgesOf } from '@shared/knowledge'
 import { HEX_TILE, stationGeometry } from './canvas'
+import { messageSides, msgHandleId, type PlacedBox } from './canvasShapes'
 import { EMPTY_FILTER, applyFilter, itemsOf, keyWords, kindColor, kindLabel, kindOrder, orderItems, type KnowledgeFilter } from './knowledge'
 
 /**
@@ -335,6 +336,16 @@ export function knowledgeNodeSize(style: CanvasNodeStyle, layout: CanvasLayout):
 export function retiredGroupSize(style: CanvasNodeStyle, layout: CanvasLayout): { width: number; height: number } {
   if (style === 'station' || style === 'hex') return knowledgeNodeSize(style, layout)
   return style === 'compact' ? { width: 160, height: 40 } : { width: 220, height: 56 }
+}
+
+/**
+ * The handle ids a relation edge leaves and enters by (M3): the sides of the two laid-out boxes that face each other,
+ * so an edge against the layout runs through open space instead of looping behind the nodes. Source above target =
+ * bottom to top, below = top to bottom, side by side = right to left or left to right. The arrow stays at the target.
+ */
+export function relationHandles(from: PlacedBox, to: PlacedBox): { sourceHandle: string; targetHandle: string } {
+  const sides = messageSides(from, to)
+  return { sourceHandle: msgHandleId('out', sides.out), targetHandle: msgHandleId('in', sides.in) }
 }
 
 /** Items for `layoutCanvas`: the drawn nodes and groups with their parent and box. */

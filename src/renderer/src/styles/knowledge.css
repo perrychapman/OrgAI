@@ -173,8 +173,12 @@
   display: flex;
   flex-direction: column;
 }
-.knowledge-main > .banner {
+.knowledge-main > .banner,
+.knowledge-main > .knowledge-notice-wrap > .banner {
   margin: var(--space-3) var(--space-3) 0;
+}
+.knowledge-notice-wrap {
+  flex: none;
 }
 .knowledge-main > .empty-state {
   margin: auto;

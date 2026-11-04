@@ -147,6 +147,24 @@ export function SidePanel({
   }
   // No room for the panel's minimum next to a 360 px canvas: show the rail (the saved width and choice are kept).
   const isCollapsed = collapsible && (collapsed || !budget.fits)
+  // The Hide button unmounts under focus: after the user's own Hide (never auto-collapse, reveal or the budget) focus
+  // goes to the rail's Show button, unless a parent already moved it.
+  const hideClicked = useRef(false)
+  const hide = (): void => {
+    hideClicked.current = true
+    setCollapsed(true)
+    // A parent that refused the change leaves the flag behind: spend it after this event's commit.
+    requestAnimationFrame(() => {
+      hideClicked.current = false
+    })
+  }
+  useEffect(() => {
+    if (!hideClicked.current || !isCollapsed) return
+    hideClicked.current = false
+    const active = document.activeElement
+    if (active && active !== document.body) return
+    ref.current?.querySelector<HTMLElement>('.side-rail button')?.focus({ preventScroll: true })
+  }, [isCollapsed])
   return (
     <aside ref={ref} className="side side-panel" aria-label={label} data-collapsed={isCollapsed ? 'true' : 'false'} data-testid={testId}>
       {isCollapsed && (
@@ -156,7 +174,7 @@ export function SidePanel({
       )}
       {!isCollapsed && collapsible && (
         <div className="side-panel-bar">
-          <IconButton icon={PanelRightClose} label={`Hide ${label}`} size="sm" expanded onClick={() => setCollapsed(true)} />
+          <IconButton icon={PanelRightClose} label={`Hide ${label}`} size="sm" expanded onClick={hide} />
         </div>
       )}
       {!isCollapsed && collapsible && sizes.panel > 0 && (

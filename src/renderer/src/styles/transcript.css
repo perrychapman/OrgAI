@@ -134,7 +134,8 @@
   flex: 1;
 }
 /* A harness row standing for a knowledge write: headline, then its "Open" link to the Knowledge tab. */
-.knowledge-row .knowledge-row-open {
+.knowledge-write-row .knowledge-row-open {
+  white-space: nowrap;
   margin-left: var(--space-1);
   font-size: var(--text-small);
 }
