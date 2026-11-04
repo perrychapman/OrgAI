@@ -286,6 +286,19 @@ export function historyLines(i: KnowledgeItem, runs: RunFacts): HistoryLine[] {
   return lines
 }
 
+/**
+ * A History line split around its run link: "Recorded by Analyst in " + "R1 Summarise the kickoff" + ", 4 Nov 2026
+ * 11:46", so the run part renders as a button. Null when the line has no run (the whole text is plain).
+ */
+export function splitHistoryLine(line: HistoryLine, runs: RunFacts): { before: string; link: string; after: string } | null {
+  if (!line.runId) return null
+  const label = `${runTag(runs.indexes.get(line.runId))}${runs.names?.get(line.runId) ? ` ${runs.names.get(line.runId)}` : ''}`
+  const needle = ` in ${label}`
+  const at = line.text.indexOf(needle)
+  if (at < 0) return null
+  return { before: line.text.slice(0, at + 4), link: label, after: line.text.slice(at + needle.length) }
+}
+
 /** A run's name for `RunFacts.names` from the store's summaries. */
 export function runNamesOf(summaries: readonly { id: string; title?: string; prompt: string }[]): Map<string, string> {
   return new Map(summaries.map((s) => [s.id, runName(s)]))
