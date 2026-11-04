@@ -86,6 +86,30 @@
 .usage-stale {
   color: var(--warning-text);
 }
+
+/* LiteLLM spend by UTC calendar period: a definition list laid out as label / mono figure rows under the budget bar. */
+.spend-periods {
+  margin: 0;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: var(--space-2);
+  row-gap: var(--space-0h);
+  font-size: var(--text-caption);
+  color: var(--text-secondary);
+}
+.spend-period {
+  display: contents;
+}
+.spend-period dt {
+  margin: 0;
+  color: var(--text-tertiary);
+}
+.spend-period dd {
+  margin: 0;
+  font-family: var(--font-mono);
+  text-align: end;
+  color: var(--text-primary);
+}
 .usage-section {
   display: flex;
   flex-direction: column;

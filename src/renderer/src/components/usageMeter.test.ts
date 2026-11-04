@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import type { UsageStatus } from '@shared/types'
-import { missingFiveHour, tightestWindow, usageRows } from './UsageMeter'
+import type { UsageSpend, UsageStatus } from '@shared/types'
+import { missingFiveHour, spendPeriodRows, tightestWindow, usageRows } from './UsageMeter'
 
 const RESETS_AT = Date.UTC(2026, 10, 11, 12, 0, 0)
 
@@ -80,5 +80,34 @@ describe('missingFiveHour', () => {
   it('is false when no window at all is reported (the empty state covers it)', () => {
     expect(missingFiveHour(status())).toBe(false)
     expect(missingFiveHour(status({ modelWindows: [] }))).toBe(false)
+  })
+})
+
+describe('SpendSection periods', () => {
+  const base: UsageSpend = { usd: 42.1, budgetUsd: 50, resetsAt: null, budgetDuration: '30d', keyAlias: null }
+
+  it('lists Today, This week and This month in order with their money text and a UTC "Since" tooltip', () => {
+    const spend: UsageSpend = {
+      ...base,
+      periods: {
+        day: { usd: 3.2, since: Date.UTC(2026, 10, 4) },
+        week: { usd: 12.4, since: Date.UTC(2026, 10, 2) },
+        month: { usd: 31, since: Date.UTC(2026, 10, 1) }
+      }
+    }
+    const rows = spendPeriodRows(spend)
+    expect(rows.map((r) => [r.key, r.label, r.value])).toEqual([
+      ['day', 'Today', '$3.20'],
+      ['week', 'This week', '$12.40'],
+      ['month', 'This month', '$31.00']
+    ])
+    // The date spelling follows the runtime locale; the shape and the UTC marker do not.
+    for (const r of rows) expect(r.since).toMatch(/^Since .+ \(UTC\)$/)
+    expect(rows[1].since).toContain('2')
+  })
+
+  it('is empty without periods, whether or not a note says why', () => {
+    expect(spendPeriodRows(base)).toEqual([])
+    expect(spendPeriodRows({ ...base, periodsNote: 'The proxy did not answer its daily spend request.' })).toEqual([])
   })
 })

@@ -94,3 +94,35 @@ empty text for LiteLLM: today it reads "No usage reported yet." (M2).
 
 LiteLLM figures, bar, warn and danger levels, stale state (the mock reports no spend); the `periods` payload; a
 resized sidebar with a real bar (label budget computed from CSS); System theme; 320 px reflow; browser zoom.
+
+## Implementation notes (2026-11-04)
+
+### Popover
+
+`UsageMeter.tsx` `SpendSection` keeps the budget head, bar, "Budget used up" line, "No budget set on this key" hint
+and reset line as they were. After the reset line it renders, in this order:
+
+- `spend.periods` present: `dl.spend-periods` (`data-testid=spend-periods`) with one `div.spend-period`
+  (`data-testid=spend-period`, `data-period=day|week|month`, `data-present=true`) per `SPEND_PERIOD_ORDER` entry, each
+  a `dt` ("Today" / "This week" / "This month" from `SPEND_PERIOD_LABEL`) and a mono `dd.spend-period-value`
+  (`data-testid=spend-period-value`, `money(usd)`). No `role=img` and no `aria-label` on the list: the definition
+  list reads itself, and the bar's name stays budget-only (`spendAria`, M3). `data-present` is always "true" today
+  because the contract is all three periods or none; the attribute stays so a partial contract later needs no selector
+  change. The rows come from the pure `spendPeriodRows(spend)` (unit-tested in `usageMeter.test.ts`).
+- `spend.periods` absent and `spend.periodsNote` set: one `div.usage-hint` (`data-testid=spend-periods-missing`) with
+  the note, which is one of the three fixed `SPEND_PERIOD_NOTES` sentences from types.ts, never proxy text.
+- Both absent (a report written before periods were read): nothing in that slot.
+- `lifetimeText(spend)` non-empty: one `div.usage-hint` (`data-testid=spend-lifetime`, "Lifetime $142.10") after the
+  list. Hidden when the proxy reports no lifetime total or it equals the budget period's spend.
+- `Stale` stays last (`data-testid=usage-stale`); it covers the budget and the periods, no per-row stamps.
+
+The head figure carries `data-testid=spend-budget`. "Since" rule: each `dt` carries `periodSince(since)` as its
+`title` ("Since Mon 2 Nov (UTC)"); period starts are UTC calendar boundaries, so the date is printed in UTC and says
+so. An unparseable `since` gives no tooltip. Danger order unchanged: "Budget used up" in the head first, then the bar,
+then the budget text, then the periods list. Styles in `usage.css` (`.spend-periods` grid `auto 1fr`,
+`.spend-period { display: contents }`, `dt` in `--text-tertiary`, `dd` mono in `--text-primary`, all from tokens).
+
+Not seen in the app: the mock adapter hides every LiteLLM figure, so the list, the missing note, the lifetime line and
+the danger / no-budget orderings were checked by reading the code and by the unit test only; the lead adds the
+by-hand check with a real LiteLLM report later. Verified: `npm run typecheck`, `npx vitest run src/renderer`,
+`npm run build` and `node e2e/layout.mjs` (the account popover opens and focus returns to the row).
