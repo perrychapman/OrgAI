@@ -374,7 +374,8 @@ export function ruleChip(label: string): { text: string; wholeTool: boolean; bro
 }
 
 /**
- * The glance line for a request main flagged with `referenceFolder` (a shell command that touches a reference folder).
+ * The glance line for a request main flagged with `referenceFolder` (a shell command or a Read / Glob / Grep call that
+ * touches a reference folder).
  * Replaces the cwd-based location: the folder is the fact the user needs. The text is untrusted, so it is made visible
  * and one line.
  */
@@ -383,8 +384,31 @@ export function referenceLocation(folder: string): PermissionLocation {
   return { kind: 'reference', label: oneLine(`Touches a reference folder (read only): ${abbreviatePath(clean, 48)}`, 160), full: clean, attention: false }
 }
 
-/** The effect sentence of a reference-folder request: replaces the scope sentences, since only Allow once is offered. */
+/** The effect sentence of a shell reference-folder request: replaces the scope sentences, since only Allow once is offered. */
 export const REFERENCE_EFFECT = 'This command names or runs inside a folder agents may only read. Allow once lets this one command run; nothing is saved.'
+
+/** The effect sentence for a non-shell tool (Read, Glob, Grep) under a reference folder. */
+export const REFERENCE_EFFECT_TOOL = 'This call reads a folder agents may only read. Allow once allows this one call; nothing is saved.'
+
+/** The reference-folder effect sentence for a tool: the command wording for Bash / PowerShell, else the call wording. */
+export function referenceEffect(toolName: string): string {
+  return SHELL_TOOLS.has(toolName) ? REFERENCE_EFFECT : REFERENCE_EFFECT_TOOL
+}
+
+/**
+ * What a card offers. A request flagged with `referenceFolder` offers Allow once and Deny only: no scope buttons, rule
+ * chips or settings link, even when suggestions arrive with it.
+ */
+export function permissionOffer(request: { referenceFolder?: unknown; suggestions?: readonly unknown[] }): {
+  referenceFolder: string | undefined
+  canScope: boolean
+  showRuleChips: boolean
+  showSettingsLink: boolean
+} {
+  const referenceFolder = typeof request.referenceFolder === 'string' && request.referenceFolder.trim() ? request.referenceFolder : undefined
+  const canScope = !referenceFolder && (request.suggestions?.length ?? 0) > 0
+  return { referenceFolder, canScope, showRuleChips: canScope, showSettingsLink: !referenceFolder }
+}
 
 /** The line a card without scope buttons shows: why no rule is offered (shell commands only), else null. */
 export function noRuleLine(toolName: string, hasSuggestions: boolean): string | null {

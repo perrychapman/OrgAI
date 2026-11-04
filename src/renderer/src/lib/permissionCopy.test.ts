@@ -16,6 +16,8 @@ import {
   parentPath,
   permissionLocation,
   REFERENCE_EFFECT,
+  permissionOffer,
+  referenceEffect,
   referenceLocation,
   ruleChip,
   ruleInfo,
@@ -65,6 +67,18 @@ describe('referenceLocation', () => {
   it('has an effect sentence that promises nothing is saved', () => {
     expect(REFERENCE_EFFECT).toMatch(/only read/)
     expect(REFERENCE_EFFECT).toMatch(/nothing is saved/)
+  })
+  it('words the effect by tool', () => {
+    expect(referenceEffect('Bash')).toBe(REFERENCE_EFFECT)
+    expect(referenceEffect('PowerShell')).toBe(REFERENCE_EFFECT)
+    expect(referenceEffect('Read')).toBe('This call reads a folder agents may only read. Allow once allows this one call; nothing is saved.')
+    expect(referenceEffect('Grep')).not.toMatch(/command/)
+  })
+  it('hides scope buttons, chips and the settings link even when suggestions arrive', () => {
+    const suggestions = [{ type: 'addRules', behavior: 'allow', rules: [{ toolName: 'Read' }] }]
+    expect(permissionOffer({ referenceFolder: '/mnt/ref', suggestions })).toMatchObject({ referenceFolder: '/mnt/ref', canScope: false, showRuleChips: false, showSettingsLink: false })
+    expect(permissionOffer({ suggestions })).toMatchObject({ referenceFolder: undefined, canScope: true, showRuleChips: true, showSettingsLink: true })
+    expect(permissionOffer({ referenceFolder: '  ', suggestions }).canScope).toBe(true)
   })
 })
 

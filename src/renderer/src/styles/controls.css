@@ -52,14 +52,19 @@
 .btn:disabled,
 .btn.primary:disabled,
 .btn.danger:disabled,
-.btn.ghost:disabled {
+.btn.ghost:disabled,
+.btn[aria-disabled='true'],
+.btn.primary[aria-disabled='true'],
+.btn.danger[aria-disabled='true'],
+.btn.ghost[aria-disabled='true'] {
   background: var(--surface-3);
   border-color: var(--border-subtle);
   color: var(--text-disabled);
-  cursor: default;
+  cursor: not-allowed;
   transform: none;
 }
-.btn.ghost:disabled {
+.btn.ghost:disabled,
+.btn.ghost[aria-disabled='true'] {
   background: transparent;
   border-color: transparent;
 }

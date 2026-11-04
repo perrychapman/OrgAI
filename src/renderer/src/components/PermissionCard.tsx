@@ -8,7 +8,7 @@ import { Button } from './ui/Button'
 import { Badge } from './ui/Badge'
 import { Icon } from './ui/Icon'
 import { isHiddenCommand, permissionTitle, shellSegments } from '../lib/decisionTitle'
-import { REFERENCE_EFFECT, noRuleLine, permissionLocation, referenceLocation, ruleChip, scopeCopy } from '../lib/permissionCopy'
+import { noRuleLine, permissionLocation, permissionOffer, referenceEffect, referenceLocation, ruleChip, scopeCopy } from '../lib/permissionCopy'
 import { PROJECT_SETTINGS_SECTIONS } from '../lib/settingsTarget'
 import { openProjectSettings } from '../lib/openProjectSettings'
 import { useAppStore } from '../store/useAppStore'
@@ -131,8 +131,7 @@ export default function PermissionCard({ runId, request, who, onDecide }: Props)
   const agentCwd = useAppStore((st) => st.runs[runId]?.agents[request.agentId]?.worktree?.path)
   // A command that touches a reference folder offers Allow once and Deny only; main sends no suggestions, and any that
   // arrive anyway are ignored so the card never synthesizes an Always allow.
-  const referenceFolder = typeof request.referenceFolder === 'string' && request.referenceFolder.trim() ? request.referenceFolder : undefined
-  const canScope = !referenceFolder && (request.suggestions?.length ?? 0) > 0
+  const { referenceFolder, canScope, showSettingsLink } = permissionOffer(request)
   const lines = previewLines(request.toolName, request.input)
   const command = bashCommand(request.toolName, request.input)
   const hidden = isHiddenCommand(request.toolName, request.input)
@@ -178,7 +177,7 @@ export default function PermissionCard({ runId, request, who, onDecide }: Props)
             {canScope && copy.session && <li>{copy.session}</li>}
             {canScope && copy.project && <li>{copy.project}</li>}
           </ul>
-          {project && !referenceFolder && (
+          {project && showSettingsLink && (
             <button type="button" className="link-btn perm-settings-link" data-testid="perm-settings-link" onClick={() => openPermissionSettings(project.id)}>
               Fewer prompts: permission settings
             </button>
@@ -243,7 +242,7 @@ export default function PermissionCard({ runId, request, who, onDecide }: Props)
         )}
         {referenceFolder && (
           <p className="perm-no-rule" data-testid="perm-reference-effect">
-            {REFERENCE_EFFECT}
+            {referenceEffect(request.toolName)}
           </p>
         )}
         {noRule && (

@@ -19,8 +19,14 @@ export function Button({
   className,
   type = 'button',
   autoFocusDialog,
-  ariaLabel
+  ariaLabel,
+  inert,
+  ariaDescribedBy
 }: {
+  /** Looks disabled and ignores click, Enter and Space, but stays focusable so its reason can be heard (aria-disabled). */
+  inert?: boolean
+  /** Id of the element that says why (read after the name). */
+  ariaDescribedBy?: string
   /** Accessible name when the visible text alone is ambiguous (e.g. repeated "Remove" in a list). */
   ariaLabel?: string
   variant?: ButtonVariant
@@ -47,7 +53,9 @@ export function Button({
       aria-busy={loading || undefined}
       title={title}
       aria-label={ariaLabel}
-      onClick={onClick}
+      aria-disabled={inert ? 'true' : undefined}
+      aria-describedby={ariaDescribedBy}
+      onClick={inert ? (e) => e.preventDefault() : onClick}
       data-testid={testId}
       data-autofocus={autoFocusDialog ? '' : undefined}
     >
