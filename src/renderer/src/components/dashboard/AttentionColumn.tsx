@@ -110,7 +110,7 @@ function RunningSection({ now }: { now: number }): ReactElement {
         const chip = isVirtualProjectId(s.projectId) || s.quick ? runKindLabel(s) : null
         return (
           <li key={s.id} className="dash-row dash-row-running" data-testid="dash-running-row" data-status={view.word} data-row-key={s.id}>
-            <button type="button" className="dash-row-main" data-row-main="" onClick={() => void focusRun(s.projectId, s.id)}>
+            <button type="button" className="dash-row-main" data-row-main="" onClick={() => void focusRun(s.projectId, s.id).then(settleFocus)}>
               <Dot tone={view.tone} live />
               <span className="dash-row-text">
                 <span className="dash-row-line">
@@ -133,12 +133,41 @@ function RunningSection({ now }: { now: number }): ReactElement {
   )
 }
 
-function SinceSection({ lastSeen, onMarkAllSeen, now, summaries }: { lastSeen: number; onMarkAllSeen: () => void; now: number; summaries: RunSummary[] }): ReactElement | null {
+/** After a row opens a run, focus the topbar heading unless focus already moved somewhere real (the composer). */
+function settleFocus(): void {
+  requestAnimationFrame(() =>
+    requestAnimationFrame(() => {
+      const active = document.activeElement
+      if (active && active !== document.body) return
+      const h = document.querySelector<HTMLElement>('main .topbar h1')
+      if (!h) return
+      h.tabIndex = -1
+      h.focus({ preventScroll: true })
+    })
+  )
+}
+
+function SinceSection({
+  lastSeen,
+  clearedAt,
+  onMarkAllSeen,
+  now,
+  summaries
+}: {
+  lastSeen: number
+  clearedAt: number
+  onMarkAllSeen: () => void
+  now: number
+  summaries: RunSummary[]
+}): ReactElement | null {
   const projects = useAppStore((s) => s.projects)
   const projectOf = useProjectLookup()
   const focusRun = useAppStore((s) => s.focusRun)
   const continueFromHistory = useAppStore((s) => s.continueFromHistory)
-  const result = useMemo(() => sinceLastSeen(summaries, lastSeen, now, { cap: Number.MAX_SAFE_INTEGER }), [summaries, lastSeen, now])
+  const result = useMemo(() => sinceLastSeen(summaries, lastSeen, now, { cap: Number.MAX_SAFE_INTEGER, clearedAt }), [summaries, lastSeen, clearedAt, now])
+  const openRow = (projectId: string, runId: string): void => {
+    void focusRun(projectId, runId).then(settleFocus)
+  }
   const items = result.items
 
   const markAllSeen = (): void => {
@@ -171,7 +200,7 @@ function SinceSection({ lastSeen, onMarkAllSeen, now, summaries }: { lastSeen: n
         const canGo = closedWaiting && canContinue(summaries, s.id)
         return (
           <li key={s.id} className="dash-row dash-row-since" data-testid="dash-since-row" data-status={view.word} data-row-key={s.id} data-has-action={canGo ? 'true' : undefined}>
-            <button type="button" className="dash-row-main" data-row-main="" onClick={() => void focusRun(s.projectId, s.id)}>
+            <button type="button" className="dash-row-main" data-row-main="" onClick={() => openRow(s.projectId, s.id)}>
               <Dot tone={view.tone} />
               <span className="dash-row-text">
                 <span className="dash-row-line">
@@ -190,7 +219,7 @@ function SinceSection({ lastSeen, onMarkAllSeen, now, summaries }: { lastSeen: n
             </button>
             {canGo && (
               <span className="dash-row-side">
-                <Button variant="secondary" size="sm" testId="dash-since-continue" ariaLabel={`Continue ${runName(s)}`} onClick={() => void continueFromHistory(s.id)}>
+                <Button variant="secondary" size="sm" testId="dash-since-continue" ariaLabel={`Continue ${runName(s)}`} onClick={() => void continueFromHistory(s.id, s.projectId)}>
                   Continue
                 </Button>
               </span>
@@ -225,7 +254,7 @@ function PausedSection({ summaries }: { summaries: RunSummary[] }): ReactElement
       itemKey={(s) => s.id}
       renderItem={(s) => (
         <li key={s.id} className="dash-row dash-row-paused" data-testid="dash-paused-row" data-row-key={s.id} data-has-action="true">
-          <button type="button" className="dash-row-main" data-row-main="" onClick={() => void focusRun(s.projectId, s.id)}>
+          <button type="button" className="dash-row-main" data-row-main="" onClick={() => void focusRun(s.projectId, s.id).then(settleFocus)}>
             <Dot tone="paused" />
             <span className="dash-row-text">
               <span className="dash-row-line">
@@ -255,14 +284,14 @@ function PausedSection({ summaries }: { summaries: RunSummary[] }): ReactElement
  * The Dashboard's attention column (spec 4): Needs you, Running now, Since you were last here, Paused, in that order.
  * Elapsed times re-render every 30 s and are never announced.
  */
-export function AttentionColumn({ lastSeen, onMarkAllSeen }: { lastSeen: number; onMarkAllSeen: () => void }): ReactElement {
+export function AttentionColumn({ lastSeen, clearedAt, onMarkAllSeen }: { lastSeen: number; clearedAt: number; onMarkAllSeen: () => void }): ReactElement {
   const now = useNow()
   const summaries = useAllSummaries()
   return (
     <div className="dash-attention">
       <NeedsYouSection />
       <RunningSection now={now} />
-      <SinceSection lastSeen={lastSeen} onMarkAllSeen={onMarkAllSeen} now={now} summaries={summaries} />
+      <SinceSection lastSeen={lastSeen} clearedAt={clearedAt} onMarkAllSeen={onMarkAllSeen} now={now} summaries={summaries} />
       <PausedSection summaries={summaries} />
     </div>
   )
