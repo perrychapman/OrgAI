@@ -52,6 +52,8 @@ try {
   await openPane()
 
   // ---- empty ----
+  // The section shows "Loading your presets" until connectorPresets:list answers; wait for it (slow runners).
+  await page.locator('[data-testid=presets-empty]').waitFor({ timeout: 10_000 })
   check((await page.locator('[data-testid=presets-empty]').count()) === 1, 'no presets: the section shows its empty state')
   check((await page.locator('[data-testid=preset-row]').count()) === 0, 'no preset rows yet')
   check((await chip('custom').count()) === 0, 'no "Yours" filter chip without a preset')
