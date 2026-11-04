@@ -266,12 +266,31 @@ Team assistant: window.orgai.capabilities.discover / recommend / cancel / apply 
 
 ### Theme layer
 
-lib/theme.ts applies AppSettings.appearance to <html>. initTheme() runs in main.tsx before React renders and follows settings:changed and prefers-color-scheme. It sets data-theme (the resolved dark or light), data-reduce-motion="on", data-canvas-pattern, data-canvas-tint, data-canvas-edges and data-canvas-minimap, the accent vars, and --canvas-pattern-kind, --canvas-edge-style and --canvas-minimap. CSS reads the attributes. Code that needs a resolved color value (React Flow props) reads a CSS var through lib/useCssVar.ts. tokens.css defines every token for both themes, and styles/tokens.test.ts checks it.
+lib/theme.ts applies AppSettings.appearance to <html>. initTheme() runs in main.tsx before React renders and follows settings:changed and prefers-color-scheme. It sets data-theme (the resolved dark or light), data-reduce-motion="on", data-canvas-pattern, data-canvas-tint, data-canvas-edges, data-canvas-minimap, data-canvas-layout and data-canvas-node-style (an unbuilt style is written as 'card'), the accent vars, and --canvas-pattern-kind, --canvas-edge-style, --canvas-minimap, --canvas-layout and --canvas-node-style. CSS reads the attributes; tokens.css re-points the canvas tokens per `data-canvas-pattern` (and per `[data-canvas-thumb]` for thumbnails). Code that needs a resolved color value (React Flow props) reads a CSS var through lib/useCssVar.ts. tokens.css defines every token for both themes, and styles/tokens.test.ts checks it.
 
 - `src/renderer/src/styles/tokens.css`
 - `src/renderer/src/styles/global.css`
 - `src/renderer/src/lib/theme.ts`
 - `src/renderer/src/lib/useCssVar.ts`
+
+### Canvas (themes, layouts, node styles)
+
+Spec `docs/design/canvas-themes.md` (phase A: node styles card and compact; station / hex and the Subway / Hive presets
+are phase B). Every React Flow canvas (Live run, Team editor, the settings sample) reads `useCanvasOptions()` and
+nothing else, draws `CanvasBackdrop` and `CanvasMinimap` inside `<ReactFlow>`, passes `data-layout` and
+`edgeTypes={CANVAS_EDGE_TYPES}`, lays out through `layoutCanvas`, and its node components call `useHandleRefresh`
+(React Flow re-measures handles only on resize, so a layout switch would leave edges on the old sides).
+
+- `src/renderer/src/lib/canvas.ts`: `useCanvasOptions`, `AVAILABLE_NODE_STYLES`, `AVAILABLE_PRESETS`, `shownPreset`,
+  `effectiveNodeStyle`, `handlesFor`, `AGENT_NODE_SIZE` / `GROUP_NODE_SIZE`, `edgeStroke` (sRGB role/ink mix to hex),
+  `minimapSize`, `useNodeDims` (controlled nodes keep measured sizes for the minimap), `useHandleRefresh`,
+  `ringStepFor`, `useReducedMotion`, `EDGE_TYPE`
+- `src/renderer/src/lib/layout.ts`: `layoutCanvas` (dagre TB / LR or `radialLayout` with ring guides)
+- `src/renderer/src/lib/canvasSample.ts` (the preview's sample graph) and `lib/canvasSettings.ts` (`canvasAfterPreset`,
+  `canvasAnnouncement`, `saveCanvas` for the toolbar popover)
+- `src/renderer/src/components/canvas/`: `CanvasBackdrop`, `CanvasMinimap`, `RadialEdge`, `CanvasPreview`,
+  `CanvasThumb`, `CanvasPresetGroup`, `CanvasStyleButton`
+- `src/renderer/src/components/settings/CanvasSection.tsx`; styles `styles/canvas.css`, `styles/canvas-settings.css`
 
 ### UI primitives
 

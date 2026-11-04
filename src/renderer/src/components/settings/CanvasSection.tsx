@@ -4,7 +4,7 @@ import { ChevronRight } from 'lucide-react'
 import type { CanvasEdgeStyle, CanvasLayout, CanvasNodeStyle, CanvasPattern } from '@shared/types'
 import { CANVAS_PATTERNS } from '@shared/types'
 import { CANVAS_PRESETS, type CanvasPresetId } from '@shared/defaults'
-import { AVAILABLE_NODE_STYLES, shownPreset } from '../../lib/canvas'
+import { AVAILABLE_NODE_STYLES, effectiveNodeStyle, shownPreset } from '../../lib/canvas'
 import { canvasAfterPreset, canvasAnnouncement, type CanvasSettings } from '../../lib/canvasSettings'
 import { CanvasPresetGroup } from '../canvas/CanvasPresetGroup'
 import { CanvasPreview } from '../canvas/CanvasPreview'
@@ -163,7 +163,7 @@ export function CanvasSection({ canvas, onChange }: { canvas: CanvasSettings; on
                         width="select"
                         control={
                           <div data-testid="canvas-node-style">
-                            <SegmentedControl label="Agents as" value={canvas.nodeStyle} options={styleOptions} onChange={(nodeStyle) => change({ nodeStyle })} />
+                            <SegmentedControl label="Agents as" value={effectiveNodeStyle(canvas.nodeStyle)} options={styleOptions} onChange={(nodeStyle) => change({ nodeStyle })} />
                           </div>
                         }
                       />

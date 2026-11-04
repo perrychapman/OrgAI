@@ -212,8 +212,8 @@ try {
   await shot('mcp-expanded-graph-layout-1024')
   check(g.stageVisibility === 'hidden', 'the collapsed stage is visibility: hidden', String(g.stageVisibility))
   check(
-    (await page.locator('[aria-label="Zoom in"]:visible, [aria-label="Fit to view"]:visible, [data-testid=canvas-legend-trigger]:visible').count()) === 0,
-    'zoom, fit and legend controls are out of reach while the stage is collapsed'
+    (await page.locator('[aria-label="Zoom in"]:visible, [aria-label="Fit to view"]:visible, [data-testid=canvas-legend-trigger]:visible, .run-body [data-testid=canvas-style-button]:visible').count()) === 0,
+    'zoom, fit, canvas style and legend controls are out of reach while the stage is collapsed'
   )
   await details().focus()
   const tabbed = []

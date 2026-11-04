@@ -3,7 +3,7 @@ import { Icon } from './ui/Icon'
 import type { ReactElement } from 'react'
 import { memo } from 'react'
 import { Handle, type Position, type Node, type NodeProps } from '@xyflow/react'
-import { handlesFor, useCanvasOptions } from '../lib/canvas'
+import { handlesFor, useCanvasOptions, useHandleRefresh } from '../lib/canvas'
 import { TOOL_CATALOG, type Role } from '@shared/types'
 import { initials } from '../lib/layout'
 import { roleChipLabel } from '../lib/roleModels'
@@ -14,11 +14,12 @@ export type RoleFlowNode = Node<{ role: Role; reportCount: number; capabilities:
 
 const CAP_ICONS = { tools: Wrench, connections: Plug, skills: BookOpen } as const
 
-function RoleNodeView({ data, selected }: NodeProps<RoleFlowNode>): ReactElement {
+function RoleNodeView({ id, data, selected }: NodeProps<RoleFlowNode>): ReactElement {
   const { role, reportCount, capabilities } = data
   const parts = capabilityParts(capabilities)
   const elevated = elevatedTools(role.tools, TOOL_CATALOG)
   const { layout, nodeStyle } = useCanvasOptions()
+  useHandleRefresh(id, layout, nodeStyle)
   const sides = handlesFor(layout)
   const compact = nodeStyle === 'compact'
   const tip = compact

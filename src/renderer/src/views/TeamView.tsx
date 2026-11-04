@@ -503,6 +503,9 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
             <Button size="sm" icon={LayoutGrid} onClick={autoLayout}>
               Auto-layout
             </Button>
+            {/* Beside Auto-layout, in the button row: on the wrapped row with the note a 28 px button grew the toolbar
+                at 1024x640 and took that height from the Team assistant tray. */}
+            <CanvasStyleButton testId="canvas-style-button" />
             <span className="toolbar-note">{addParent ? `New roles report to ${addParent.name}.` : 'The first role becomes the root.'}</span>
             {undo && (
               <span className="toolbar-undo" role="status">
@@ -512,7 +515,6 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
                 </Button>
               </span>
             )}
-            <CanvasStyleButton testId="canvas-style-button" />
           </FrameToolbar>
         <div className="import-notices">
           {importNotice && importNotice.state !== 'reverted' && (
@@ -617,7 +619,9 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
           />
         </FrameTray>
         <FrameFooter>
-          <span>Drag from a node's bottom handle to another node to make it a report. With a node focused, Enter edits it and Delete removes it.</span>
+          <span>
+            {options.layout === 'left-right' ? "Drag from a node's right handle" : options.layout === 'radial' ? "Point at a node and drag from its handle" : "Drag from a node's bottom handle"} to another node to make it a report. With a node focused, Enter edits it and Delete removes it.
+          </span>
         </FrameFooter>
       </CanvasFrame>
       <SidePanel label="team panel" open={panelOpen} onOpenChange={setPanelOpen}>

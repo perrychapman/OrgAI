@@ -321,6 +321,21 @@ Worst role colour per theme: dark `#7c5cff` (darkest), light `#a3e635` (lightest
 Minimap nodes on `--canvas-minimap-bg`: dark 5.73, light 5.02, Terminal 8.45. At the tint's wash peak (top centre,
 tint on) the lowest value is the finished lime edge in light at about 3.2:1.
 
+## 10. Implementation notes (phase A, UI Lead)
+
+- Node components call `useHandleRefresh(id, layout, nodeStyle)` (`lib/canvas.ts`): React Flow re-measures handles only
+  on resize, so without it a layout switch left edges on the old sides (found by `e2e/canvas.mjs`).
+- The settings sample never shows a minimap: at 300 x 200 it is under `minimapSize`'s 480 x 240 floor.
+- The Team editor draws no ring guides in radial (its positions are the user's, not `radialLayout`'s), and in radial its
+  handles show on the hovered or focused role so reporting lines can still be dragged; the footer hint names the
+  handle per layout. Its "Canvas style" button sits right after Auto-layout, not at the toolbar's end: at 1024 x 640 the toolbar wraps,
+  and the button on the second row beside the note made the toolbar about 10 px taller, which came off the Team
+  assistant tray (team.mjs "the tray has room for the results").
+- The minimap does not reserve room in the fit: at 1024 x 640 it can cover a node in the bottom-left corner until the
+  user pans.
+- `.settings-scroll` is positioned so absolutely placed descendants (sr-only live regions) no longer extend the window's
+  scroll area.
+
 Not checked: custom accents other than the default (the focus ring follows `--accent-text`, which `lib/theme.ts`
 derives per theme), custom role colours, and oklab vs sRGB rounding in the browser (the edge mix is specified in sRGB
 so the numbers above are what renders).

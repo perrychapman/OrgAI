@@ -8,6 +8,8 @@
   min-height: 0;
   overflow: auto;
   padding: var(--space-5) var(--space-6);
+  /* Contain absolutely positioned descendants (sr-only live regions, native inputs) so they never extend the window. */
+  position: relative;
 }
 .settings-loading {
   padding: var(--space-6);

@@ -2,7 +2,7 @@ import type { ReactElement } from 'react'
 import { memo, useEffect, useState } from 'react'
 import { Check, TriangleAlert } from 'lucide-react'
 import { Handle, type Position, type Node, type NodeProps } from '@xyflow/react'
-import { handlesFor, useCanvasOptions } from '../lib/canvas'
+import { handlesFor, useCanvasOptions, useHandleRefresh } from '../lib/canvas'
 import type { AgentInstance } from '@shared/types'
 import { formatElapsed, formatTokens, initials } from '../lib/layout'
 import { agentProducedNothing } from '@shared/defaults'
@@ -37,7 +37,7 @@ function worktreeLabel(wt: NonNullable<AgentInstance['worktree']>): string {
   return WORKTREE_LABEL[wt.status]
 }
 
-function AgentNodeView({ data, selected }: NodeProps<AgentFlowNode>): ReactElement {
+function AgentNodeView({ id, data, selected }: NodeProps<AgentFlowNode>): ReactElement {
   const { agent, color, isRoot } = data
   const [, tick] = useState(0)
   const live = !agent.endedAt
@@ -62,6 +62,7 @@ function AgentNodeView({ data, selected }: NodeProps<AgentFlowNode>): ReactEleme
   const activity = streaming ? partial.replace(/\s+/g, ' ').trim().slice(0, 80) || 'Writing…' : noResult ? 'Ended without a result' : idleActivity
 
   const { layout, nodeStyle } = useCanvasOptions()
+  useHandleRefresh(id, layout, nodeStyle)
   const sides = handlesFor(layout)
   const compact = nodeStyle === 'compact'
   const tokensText = `${formatTokens(agent.inputTokens + agent.outputTokens)} tok`
@@ -103,6 +104,8 @@ function AgentNodeView({ data, selected }: NodeProps<AgentFlowNode>): ReactEleme
           <div className="name" title={compact ? undefined : agent.name}>
             {agent.name}
           </div>
+          {/* The tooltip is not read by keyboard or screen-reader users: say what the card would show. */}
+          {compact && <span className="sr-only">{[activity, worktreeText].filter(Boolean).join(', ')}</span>}
           {!compact && (
             <div className="sub">
               <span title={agent.handle ? `Handle ${agent.handle} (role ${agent.roleSlug})` : undefined}>{agent.handle ?? agent.roleSlug}</span>
