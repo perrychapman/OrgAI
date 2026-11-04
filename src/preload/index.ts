@@ -259,6 +259,9 @@ const api: OrgAIApi = {
     saveNote: (input) => ipcRenderer.invoke(IPC.projectsSaveNote, input),
     removeNote: (ref) => ipcRenderer.invoke(IPC.projectsRemoveNote, ref)
   },
+  projectRemoval: {
+    preview: (input) => ipcRenderer.invoke(IPC.projectsRemovePreview, input)
+  },
   onEngagementChanged: (cb) => {
     const listener = (_e: IpcRendererEvent, event: EngagementChangedEvent): void => cb(event)
     ipcRenderer.on(IPC.projectsEngagementChanged, listener)

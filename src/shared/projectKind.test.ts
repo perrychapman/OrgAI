@@ -177,6 +177,14 @@ describe('architectPrompt', () => {
     expect(architectPrompt('code')).toContain('Recommend permissionMode "auto"')
   })
 
+  it('both prompts mention starting from a saved team template with fromTemplate', () => {
+    for (const kind of ['code', 'engagement'] as const) {
+      const p = architectPrompt(kind)
+      expect(p, kind).toContain('saved team templates')
+      expect(p, kind).toContain('propose_org_chart fromTemplate')
+    }
+  })
+
   it('the Analyst keeps Bash and writes only in the working folder', () => {
     const analyst = engagementRoles(ctx).find((r) => r.slug === 'analyst')!
     expect(analyst.tools).toContain('Bash')

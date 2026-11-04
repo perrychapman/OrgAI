@@ -438,7 +438,7 @@ export class ProjectStore {
   create(
     input: ProjectCreateInput,
     settings?: AppSettings,
-    opts: { mockAvailable?: boolean; fs?: PathFs; prepare?: (p: Project) => Project; importRoles?: (p: Project, sources: unknown) => Project } = {}
+    opts: { mockAvailable?: boolean; fs?: PathFs; prepare?: (p: Project) => Project; importRoles?: (p: Project, sources: unknown) => Project; fromTemplate?: (p: Project, templateId: string) => Project } = {}
   ): Project {
     const error = createPathError(input, checkProjectPath(input.path, opts.fs))
     if (error) throw new Error(error)
@@ -448,7 +448,14 @@ export class ProjectStore {
     if (input.mock) project.provider = { ...project.provider, id: 'mock' }
     else if (opts.prepare) project = opts.prepare(project)
     // Imported agents replace the default chart after the connection is chosen, so their models map to it.
-    if (Array.isArray(input.importAgents) && input.importAgents.length && opts.importRoles) project = opts.importRoles(project, input.importAgents)
+    let imported = false
+    if (Array.isArray(input.importAgents) && input.importAgents.length && opts.importRoles) {
+      const before = project
+      project = opts.importRoles(project, input.importAgents)
+      imported = project.roles !== before.roles
+    }
+    // A team template pre-fills the chart only when the agent import produced nothing (importAgents wins).
+    if (!imported && typeof input.templateId === 'string' && input.templateId && opts.fromTemplate) project = opts.fromTemplate(project, input.templateId)
     project = sanitizeRoleModels(project, this.tierContext).project
     this.projects.push(project)
     this.persist()

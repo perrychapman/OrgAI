@@ -4218,10 +4218,15 @@ export interface OrgTemplateInfo {
   /** The kind of the project the template was saved from. */
   kind: ProjectKind
   roleCount: number
+  /** Role names in chart order (root first), at most ORG_TEMPLATE_ROLE_NAMES_MAX. */
+  roleNames: string[]
   /** Epoch ms. */
   createdAt: number
   updatedAt: number
 }
+
+/** Most role names kept on an OrgTemplateInfo. */
+export const ORG_TEMPLATE_ROLE_NAMES_MAX = 40
 
 /** templates:saveFromProject input. */
 export interface OrgTemplateSaveInput {
@@ -4262,12 +4267,19 @@ export interface EngagementDocumentInfo {
   text: string
   /** Epoch ms of the file's last write. */
   updatedAt?: number
+  /** Who wrote it last: the user (editor) or setup (the approved charter). Present whenever updatedAt is. */
+  updatedBy?: 'user' | 'setup'
 }
 
 /** projects:updateEngagementDocument input (engagements only). Hidden characters other than tab, LF and CR are refused. */
 export interface EngagementDocumentUpdate {
   projectId: string
   text: string
+  /**
+   * The updatedAt the editor loaded (0 or undefined = no document yet). The save is refused when the stored document
+   * changed since; omitted while a document exists is refused too.
+   */
+  expectedUpdatedAt?: number
 }
 
 /** Context notes per project (`<data>/projects/<id>/context/<noteId>.md` plus an index). */
@@ -4387,7 +4399,9 @@ export const TEMPLATE_ENGAGEMENT_IPC = {
   projectsRemoveNote: 'projects:removeNote',
   /** main -> renderer push channel carrying EngagementChangedEvent. */
   projectsEngagementChanged: 'projects:engagementChanged',
-  runsUsageCsv: 'runs:usageCsv'
+  runsUsageCsv: 'runs:usageCsv',
+  /** Same input as projects:remove; returns the counts it would produce, deleting nothing. */
+  projectsRemovePreview: 'projects:removePreview'
 } as const
 
 /** window.orgai additions of this section (declaration-merged into OrgAIApi). */
@@ -4410,6 +4424,10 @@ export interface OrgAIApi {
     removeNote(ref: EngagementNoteRef): Promise<EngagementNote[]>
   }
   onEngagementChanged(cb: (event: EngagementChangedEvent) => void): () => void
+  projectRemoval: {
+    /** What projects:remove would delete for the same input (counts), without deleting anything. */
+    preview(input: string | ProjectRemoveInput): Promise<ProjectRemoveResult>
+  }
 }
 
 /** Read-only facts about the running app (`app:info`). Structured-clone safe. */
