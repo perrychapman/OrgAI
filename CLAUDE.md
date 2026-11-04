@@ -1058,7 +1058,14 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
   - Registry search hits `https://registry.modelcontextprotocol.io/v0.1/servers`. The shape is unverified live,
     the tests use a fixture, and registry content is untrusted data.
   - `mcp:test` (`src/main/mcp/probe.ts`) runs initialize + tools/list without a run. It covers stdio and streamable
-    HTTP but not legacy SSE. Verified by a stdio fixture server and fake-fetch tests.
+    HTTP but not legacy SSE. Verified by a stdio fixture server and fake-fetch tests. Network failures name their
+    cause (`describeFetchFailure` reads undici's `error.cause`, at most 3 levels: DNS, connection, certificate,
+    redirect, closed socket, answer timeout, else "fetch failed: <code or message>", prefixed "Could not reach the
+    server:" and naming only the URL's host), initialize and tools/list are retried once on a fresh request after a
+    closed or reset socket (never a notification), and a failed library or project test (not a needsAuthorization
+    one) is logged at warn in main.log with the redacted error (`McpService.noteTestResult`); verified by unit tests
+    with a fake fetch only (the GitHub "fetch failed" report of 2026-11-04 could not be reproduced: the user's stored
+    token tested ok through the app).
   - Secret values live only in `SecretStore` (Electron `safeStorage`, `<data>/secrets.json`). They never cross IPC
     and are redacted from probe errors. `projects:save` (`saveFromRenderer`) keeps the stored `mcpServers`/`plugins`.
   - A server with any unset `secretEnv` / `secretHeaders` slot never starts: `McpService.enabledServers` skips it and

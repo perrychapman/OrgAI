@@ -624,9 +624,21 @@ export class McpService {
       // The entry holds no env / header values of its own: probe without secret slots, never with stored values.
       const { secretEnv: _se, secretHeaders: _sh, ...bare } = entry
       const r = await testServer(this.resolveSpec({ libraryId: entry.id }, { ...bare, enabled: true }), 20_000, this.fetchImpl)
-      return r.ok ? r : { ...r, error: `${r.error ?? 'The server did not answer.'} (This server keeps its secrets per project: test it from a project.)` }
+      return this.noteTestResult(entry, r.ok ? r : { ...r, error: `${r.error ?? 'The server did not answer.'} (This server keeps its secrets per project: test it from a project.)` })
     }
-    return testServer(this.resolveSpec({ libraryId: entry.id }, { ...entry, enabled: true }), 20_000, this.fetchImpl)
+    return this.noteTestResult(entry, await testServer(this.resolveSpec({ libraryId: entry.id }, { ...entry, enabled: true }), 20_000, this.fetchImpl))
+  }
+
+  /**
+   * A failed test leaves one warn line in main.log so a user's report can be matched to its cause. The probe has
+   * already redacted secret values from `error`; the line never carries headers, env values or the URL.
+   */
+  private noteTestResult(target: { name: string; transport: string }, r: McpTestResult): McpTestResult {
+    if (!r.ok && !r.needsAuthorization) {
+      const oneLine = (s: string) => s.replace(/[\r\n]+/g, ' | ').slice(0, 1000)
+      log.warn(`MCP test failed for ${oneLine(target.name)} (${target.transport}): ${oneLine(r.error ?? 'no error text')}`)
+    }
+    return r
   }
 
   // ---------- project servers ----------
@@ -747,7 +759,7 @@ export class McpService {
     const mocked = entry ? this.mockTest(entry) : undefined
     if (mocked) return mocked
     await this.refreshIfNeeded(this.ownerOf(input.projectId, spec))
-    return testServer(this.resolve(input.projectId, spec), 20_000, this.fetchImpl)
+    return this.noteTestResult(spec, await testServer(this.resolve(input.projectId, spec), 20_000, this.fetchImpl))
   }
 
   registrySearch(input: McpRegistrySearchInput): Promise<McpRegistrySearchResult> {
