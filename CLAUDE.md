@@ -551,7 +551,15 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     on (accepted deviation from spec 7(2), recorded with its risk); `host/packagedLayout.ts` (layout, shim render /
     parse) and `host/shimInstaller.ts` (PATH shim, never over a foreign file or symlink; launch refresh only for an
     older-format shim of this install or a vanished launcher); Linux AppImage cannot install the shim;
-    `npm run pack:verify` checks a local unpacked pack token-free (macOS only so far).
+    `npm run pack:verify` (`scripts/verify-pack.mjs`, CI pack job) checks a local unpacked pack token-free: files,
+    unpacked imports, `--version`, doctor, a mock exec on `--host inproc` and through the spawned background app
+    (passes on macOS arm64 only). Desktop-only IPC `app:cliShimStatus` / `installCliShim` / `uninstallCliShim`
+    (`CliShimStatus` / `CliShimResult`, never reject, refused over the socket); App settings > General > Advanced >
+    Terminal `CliShimRow` (`cli-shim-row`, `-status[data-state]`, `-path-hint`, `-notice`; `lib/cliShim.ts`); an
+    install turns Terminal access on and `lib/settingsMerge.ts` keeps a queued App settings save from undoing it.
+    `orgai doctor` adds install and shim checks. Unit-tested (packagedLayout, shimInstaller, cliShim, doctor,
+    launcher, packaging.test.ts keeps `asarUnpack` in step with `CLI_RUNTIME_PACKAGES`); unverified: Windows
+    (orgai.cmd, its argument passing, the shim), Linux, signed / notarized and x64 macOS builds, the row by eye.
   - Wave 3: adapters call `ctx.onRootTurnEnded` on every root turn end before 'idle' and expose `settlement()`;
     `ContinuationDriver.isSettledForTurn(gen)`; RunManager `trySettleExecRun` (pure `execSettle.ts`), stall watchdog,
     idempotent `finalizeExecRun` -> one `run.finalized` with `RunSummary.execOutcome`, chain budget (an override `maxBudgetUsd` 0
@@ -1441,8 +1449,9 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
   - CI (`.github/workflows/ci.yml`) runs on windows-latest and macos-14. Release legs run on native-arch runners
     (macos-14 arm64, macos-15-intel x64). Nothing in CI spends tokens. A push that changes only `docs/**` or Markdown
     files does not trigger it (`paths-ignore`); pull requests always run.
-  - Local builds: `npm run pack` (`scripts/pack-local.mjs`, `--dry-run` prints the plan) keeps only `release/win-unpacked`
-    (current, `release/BUILD.txt`: version, short sha, time) and `release/previous` (the build before); never create
+  - Local builds: `npm run pack` (`scripts/pack-local.mjs`, `--dry-run` prints the plan; builds the CLI bundle too, and
+    on macOS never signs: `CSC_IDENTITY_AUTO_DISCOVERY=false` unless set) keeps only `release/<unpacked>` (win-unpacked,
+    mac-arm64 / mac, linux-unpacked; current, `release/BUILD.txt`: version, short sha, time) and `release/previous` (the build before); never create
     other `release-*` folders, and delete old ones rather than archive them. The real pack was not run by its author;
     the dry run and the rotation on a fake build were.
   - Branches: `dev` is integration (agent runs, PRs, dependabot), `main` is stable and protected. CI runs on both;
