@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentInstance, RunEvent } from '@shared/types'
-import { CodexAdapter, codexModelFor, codexWritableRoots, offerableByRealPath, type CodexServerLike } from './codex'
+import { CodexAdapter, codexFolderTrust, codexModelFor, codexWritableRoots, offerableByRealPath, type CodexServerLike } from './codex'
+import { folderTrustEntry } from './codexProtocol'
 import type { CodexAppServerOptions } from './codexAppServer'
 import { fakeCtx, project, role, runSummary } from './testHelpers'
 import { ROOT_AGENT_ID, type RuntimeContext, type RuntimeSession } from './types'
@@ -1366,6 +1367,89 @@ describe('CodexAdapter session', () => {
     expect((s2.options.config ?? []).join('\n')).not.toContain('old-cmd')
     await vi.waitFor(() => expect(s2.turnStarts('th-1')).toHaveLength(1))
     expect(s2.turnStarts('th-1')[0].params.input[0].text).toContain('mcp__fresh__')
+  })
+
+  describe('folder config trust (projects table pin)', () => {
+    const trustEntry = (s: FakeServer) => (s.options.config ?? []).find((c) => c.startsWith('projects='))
+    const firstEntry = async (servers: FakeServer[]) => {
+      await vi.waitFor(() => expect(servers).toHaveLength(1))
+      return trustEntry(servers[0])
+    }
+    const repo = () => {
+      const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'orgai-codex-trust-')))
+      mkdirSync(join(root, '.git'))
+      const sub = join(root, 'pkg')
+      mkdirSync(sub)
+      return { root, sub }
+    }
+
+    it('pins nothing for a project with no gate, and for a gate-less ctx even with a stored trusted state', async () => {
+      const { root } = repo()
+      const a = setup()
+      session = await a.adapter.start(ctxFor({ project: project({ path: root }) }))
+      expect(await firstEntry(a.servers)).toBeUndefined()
+      const b = setup()
+      const s2 = await b.adapter.start(ctxFor({ project: project({ path: root, folderConfigTrust: { state: 'trusted', digest: 'a' } }) }))
+      expect(await firstEntry(b.servers)).toBeUndefined()
+      await s2.stop()
+    })
+
+    it('pins untrusted (project, repo root, no AGENTS.md) when folderConfigLoads is false', async () => {
+      const { sub, root } = repo()
+      const { adapter, servers } = setup()
+      session = await adapter.start(ctxFor({ project: project({ path: sub }), folderConfigLoads: () => false }))
+      const entry = trustEntry(servers[0])!
+      expect(entry).toBe(`projects={ ${JSON.stringify(sub)} = { trust_level = "untrusted" }, ${JSON.stringify(root)} = { trust_level = "untrusted" } }`)
+      expect(servers[0].options.config).toContain('project_doc_max_bytes=0')
+    })
+
+    it('pins trusted (project only, docs kept) when the user accepted and folderConfigLoads is true', async () => {
+      const { sub } = repo()
+      const { adapter, servers } = setup()
+      session = await adapter.start(ctxFor({ project: project({ path: sub, folderConfigTrust: { state: 'trusted', digest: 'a' } }), folderConfigLoads: () => true }))
+      expect(trustEntry(servers[0])).toBe(`projects={ ${JSON.stringify(sub)} = { trust_level = "trusted" } }`)
+      expect(servers[0].options.config).not.toContain('project_doc_max_bytes=0')
+    })
+
+    it('a restart reads folderConfigLoads again: trusted, then untrusted after it flips', async () => {
+      const { sub } = repo()
+      let loads = true
+      const mcp: any[] = []
+      const { adapter, servers } = setup()
+      const ctx = ctxFor({
+        project: project({ path: sub, folderConfigTrust: { state: 'trusted', digest: 'a' } }),
+        folderConfigLoads: () => loads,
+        resolvedMcpServers: async () => mcp
+      })
+      session = await adapter.start(ctx)
+      await vi.waitFor(() => expect(servers[0].turnStarts('th-1')).toHaveLength(1))
+      expect(trustEntry(servers[0])).toContain('"trusted"')
+      loads = false
+      mcp.push({ spec: { id: 'm', name: 'files', transport: 'stdio', command: 'npx', enabled: true, source: 'agent', addedAt: '' }, env: {}, headers: {} })
+      await (session as any).addMcpServer(mcp[0].spec)
+      servers[0].push('turn/completed', turnDone('th-1', 'tu-1'))
+      await vi.waitFor(() => expect(servers).toHaveLength(2))
+      expect(trustEntry(servers[1])).toContain('"untrusted"')
+      expect(servers[1].options.config).toContain('project_doc_max_bytes=0')
+    })
+
+    it('restricted and engagement runs get untrusted without any gate', async () => {
+      const { root } = repo()
+      const a = setup()
+      session = await a.adapter.start(ctxFor({ project: project({ path: root, kind: 'engagement' }) }))
+      expect(await firstEntry(a.servers)).toContain('"untrusted"')
+      await session.stop()
+      const b = setup()
+      const quick = { folder: root, team: 'single' as const, allowEdits: false, gitRepo: false }
+      session = await b.adapter.start(ctxFor({ run: runSummary({ projectId: 'quick', quick }), project: project({ path: root }) }))
+      expect(await firstEntry(b.servers)).toContain('"untrusted"')
+    })
+
+    it('pins nothing for an empty project path, and escapes backslashes and quotes in paths', () => {
+      expect(codexFolderTrust({ run: runSummary({ kind: 'mcp-assist' }), project: project({ path: '' }), folderConfigLoads: () => false })).toBeUndefined()
+      expect(folderTrustEntry({ level: 'untrusted', paths: ['C:\\a"b\\c'] })).toBe('projects={ "C:\\\\a\\"b\\\\c" = { trust_level = "untrusted" } }')
+      expect(folderTrustEntry({ level: 'trusted', paths: [] })).toBeUndefined()
+    })
   })
 
   it('configChanged (MCP, removal only): tells the orchestrator the change is in place without a tool prefix', async () => {

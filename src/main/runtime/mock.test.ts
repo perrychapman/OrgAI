@@ -1,11 +1,11 @@
-import { mkdtempSync, readFileSync, realpathSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import type { EngagementNote, ImageAttachment, KnowledgeEdge, KnowledgeGraph, KnowledgeNode, KnowledgeSource, McpServerSpec, RunEvent, TranscriptBlock } from '@shared/types'
 import { ENGAGEMENT_CONTEXT_TOOL, KNOWLEDGE_RECALL_TOOL, KNOWLEDGE_TOOL } from '@shared/types'
 import { RESUME_TEXT } from './runManager'
-import { DEEP_TREE_TOKEN, FATIGUE_TOKEN, KNOWLEDGE_RECALL_TOKEN, KNOWLEDGE_TOKEN, MCP_MIDRUN_TOKEN, MOCK_KNOWLEDGE, MOCK_KNOWLEDGE_DONE, MOCK_KNOWLEDGE_NONE, MOCK_KNOWLEDGE_RECALLED, MOCK_KNOWLEDGE_RECALL_BRIEF, MOCK_KNOWLEDGE_RECALL_QUERY, UNPRICED_REPORT_ID, MOCK_REFERENCE_COPY_HINT, MOCK_REFERENCE_REPORT, REFERENCE_EDIT_TOKEN, REFERENCE_SHELL_TOKEN,MOCK_MIDRUN_REPORT, MOCK_MIDRUN_SERVER, MOCK_MIDRUN_TOOL, MockAdapter, fatigueSteps, knowledgeFactId, type MockSession } from './mock'
+import { DEEP_TREE_TOKEN, FATIGUE_TOKEN, FOLDER_CONFIG_TOKEN, KNOWLEDGE_RECALL_TOKEN, KNOWLEDGE_TOKEN, MCP_MIDRUN_TOKEN, MOCK_KNOWLEDGE, MOCK_KNOWLEDGE_DONE, MOCK_KNOWLEDGE_NONE, MOCK_KNOWLEDGE_RECALLED, MOCK_KNOWLEDGE_RECALL_BRIEF, MOCK_KNOWLEDGE_RECALL_QUERY, UNPRICED_REPORT_ID, MOCK_REFERENCE_COPY_HINT, MOCK_REFERENCE_REPORT, REFERENCE_EDIT_TOKEN, REFERENCE_SHELL_TOKEN,MOCK_MIDRUN_REPORT, MOCK_MIDRUN_SERVER, MOCK_MIDRUN_TOOL, MockAdapter, fatigueSteps, knowledgeFactId, type MockSession } from './mock'
 import { ROOT_AGENT_ID, type KnowledgeCaller, type PeerMessage, type RunSkill, type RuntimeContext } from './types'
 import { parseSuggestions } from '../skills/suggest'
 import { peerMessageText } from './prompts'
@@ -1377,5 +1377,47 @@ describe('mock [mock:knowledge]', () => {
     expect(knowledgeFactId(result, 'Not there')).toBeUndefined()
     expect(knowledgeFactId('No entity with id or name Acme Corp.', 'Headquartered in Leeds')).toBeUndefined()
     expect(knowledgeFactId('REFUSED: get needs a nodeId or a name.', 'Headquartered in Leeds')).toBeUndefined()
+  })
+})
+
+describe('mock adapter [mock:folder-config] (folder config trust parity)', () => {
+  function folder() {
+    const dir = realpathSync.native(mkdtempSync(join(tmpdir(), 'orgai-mock-folder-config-')))
+    mkdirSync(join(dir, '.claude'))
+    writeFileSync(join(dir, '.claude', 'settings.json'), '{"permissions":{"allow":["Bash(npm test:*)"]}}\n')
+    return dir
+  }
+  async function play(over: Parameters<typeof fakeCtx>[0]) {
+    const dir = folder()
+    const ctx = fakeCtx({ autoContinue: false, prompt: `Run the tests ${FOLDER_CONFIG_TOKEN}`, project: project({ path: dir }), ...over })
+    vi.mocked(ctx.requestPermission).mockImplementation(async () => ({ behavior: 'allow', scope: 'once' }))
+    const session = await new MockAdapter({ script: { delayMs: 0 } }).start(ctx)
+    for (let i = 0; i < 300 && !ctx.events.some((e) => e.type === 'run.status' && e.status === 'idle'); i++) await new Promise((r) => setTimeout(r, 10))
+    await session.stop()
+    await session.finished
+    const texts = ctx.events.flatMap((e) => (e.type === 'transcript' && e.entry.block.kind === 'text' ? [e.entry.block.text] : []))
+    return { ctx, texts, cards: vi.mocked(ctx.requestPermission).mock.calls.map((c) => c[0]) }
+  }
+
+  it('loads the folder rule when nothing gates: no card for npm test', async () => {
+    const { texts, cards } = await play({})
+    expect(texts).toContain('Folder config loaded.')
+    expect(cards).toEqual([])
+  })
+
+  it('loads it when folderConfigLoads is true, ignores it when false: npm test then asks', async () => {
+    const yes = await play({ folderConfigLoads: () => true })
+    expect(yes.texts).toContain('Folder config loaded.')
+    expect(yes.cards).toEqual([])
+    const no = await play({ folderConfigLoads: () => false })
+    expect(no.texts).toContain('Folder config ignored.')
+    expect(no.texts).not.toContain('Folder config loaded.')
+    expect(no.cards.map((c) => c.toolName)).toEqual(['Bash'])
+  })
+
+  it('reads the gate once for the turn', async () => {
+    const loads = vi.fn(() => true)
+    await play({ folderConfigLoads: loads })
+    expect(loads).toHaveBeenCalledTimes(1)
   })
 })

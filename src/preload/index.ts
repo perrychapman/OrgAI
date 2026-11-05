@@ -299,6 +299,11 @@ const api: OrgAIApi = {
     previewImport: (input) => ipcRenderer.invoke(KIT_IPC.kitPreviewImport, input),
     applyImport: (input) => ipcRenderer.invoke(KIT_IPC.kitApplyImport, input)
   },
+  // ---- Folder config trust ----
+  folderConfig: {
+    review: (projectId: string) => ipcRenderer.invoke(IPC.projectsFolderConfig, projectId),
+    setTrust: (input) => ipcRenderer.invoke(IPC.projectsSetFolderConfigTrust, input)
+  },
   // ---- Start a project from a repository (clone or fork) ----
   repos: {
     parseSource: (text: string) => ipcRenderer.invoke(IPC.projectsParseRepoSource, text),

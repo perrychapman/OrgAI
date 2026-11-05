@@ -26,6 +26,7 @@ import {
   untilFromRateLimits,
   userInput,
   type DynamicToolSpec,
+  type FolderTrustConfig,
   type LaunchConfig,
   type PolicyChoice
 } from './codexProtocol'
@@ -54,7 +55,8 @@ import { allowRuleStrings, applyAllowScope, chooseSuggestions, isOfferableDirect
 import { isFreeCdTarget, matchOptionsFor, type MatchOptions } from './ruleMatch'
 import { dirname, isAbsolute, join } from 'node:path'
 import { isGitRepo } from './worktrees'
-import { canonicalDeep, isInsideEither, isTrustRestrictedRun, isWorkspaceConfigPath } from '../quick/scratch'
+import { canonicalDeep, isInsideEither, isNetworkPath, isTrustRestrictedRun, isWorkspaceConfigPath } from '../quick/scratch'
+import { lstatSync } from 'node:fs'
 import { commandReferenceTouch, referenceCommandMessage, referenceFolderMessage, referenceFolderOf, referenceRefusalEntry } from './referenceDirectories'
 
 /**
@@ -70,7 +72,78 @@ export function codexWritableRoots(ctx: Pick<RuntimeContext, 'allowedDirectories
   return allowed.filter((d) => !referenceFolderOf(d, refs) && !refs.some((r) => referenceFolderOf(r, [d])))
 }
 
-const PROTECTED_SEGMENTS = new Set(['.git', '.codex', '.agents', '.claude'])
+/** Most parent folders folderTrustPaths climbs looking for a `.git` entry. */
+const REPO_ROOT_CLIMB_MAX = 40
+
+/** The nearest ancestor of `start` (itself included) holding a `.git` entry, by lstat only; undefined for a network path or none. */
+function nearestGitRoot(start: string): string | undefined {
+  if (!start || isNetworkPath(start)) return undefined
+  let dir = start
+  for (let i = 0; i < REPO_ROOT_CLIMB_MAX; i++) {
+    try {
+      lstatSync(join(dir, '.git'))
+      return dir
+    } catch {
+      // not here
+    }
+    const up = dirname(dir)
+    if (up === dir) return undefined
+    dir = up
+  }
+  return undefined
+}
+
+/**
+ * The folders Codex's project-layer lookup may use for this run: the project path, its real (canonicalDeep) spelling
+ * when different, and for 'untrusted' also the nearest ancestor holding a `.git` entry (Codex also looks the repo root up).
+ * An empty project path gives none. Never touches the file system for a network path.
+ */
+export function folderTrustPaths(projectPath: string, level: 'untrusted' | 'trusted'): string[] {
+  if (!projectPath) return []
+  const out = new Set<string>([projectPath])
+  let real = projectPath
+  try {
+    real = canonicalDeep(projectPath)
+  } catch {
+    // keep the lexical spelling only
+  }
+  out.add(real)
+  if (level === 'untrusted') {
+    const root = nearestGitRoot(projectPath)
+    if (root) out.add(root)
+    const realRoot = real !== projectPath ? nearestGitRoot(real) : undefined
+    if (realRoot) out.add(realRoot)
+  }
+  return [...out]
+}
+
+/**
+ * Codex project trust to pin for a run (see folderTrustEntry for how the config form was checked). 'untrusted' for a
+ * trust-restricted run, an engagement, or when ctx.folderConfigLoads() is false; 'trusted' only when the project's
+ * stored trust is 'trusted' and ctx.folderConfigLoads() is true (the user accepted it; Codex then writes nothing to the
+ * shared CODEX_HOME); otherwise undefined (no gate: today's behaviour). A run with no folder path (setup-like
+ * assistants on virtual projects) pins nothing. Read when a launch config is built, never per tool call.
+ */
+export function codexFolderTrust(ctx: Pick<RuntimeContext, 'run' | 'project' | 'folderConfigLoads'>): FolderTrustConfig | undefined {
+  const loads = ctx.folderConfigLoads?.()
+  const level: 'untrusted' | 'trusted' | undefined =
+    isTrustRestrictedRun(ctx.run) || projectKindOf(ctx.project) === 'engagement' || loads === false
+      ? 'untrusted'
+      : ctx.project.folderConfigTrust?.state === 'trusted' && loads === true
+        ? 'trusted'
+        : undefined
+  if (!level) return undefined
+  const paths = folderTrustPaths(ctx.project.path, level)
+  return paths.length ? { level, paths } : undefined
+}
+
+/** Launch options for the trust pin: the entry itself, and no AGENTS.md whenever the level is 'untrusted'. */
+function trustLaunchOpts(ctx: RuntimeContext): { folderTrust?: FolderTrustConfig; noProjectDocs: boolean } {
+  const folderTrust = codexFolderTrust(ctx)
+  return { ...(folderTrust ? { folderTrust } : {}), noProjectDocs: isTrustRestrictedRun(ctx.run) || folderTrust?.level === 'untrusted' }
+}
+
+const PROTECTED_SEGMENTS =new Set(['.git', '.codex', '.agents', '.claude'])
 /** True when a path has a .git, .codex, .agents or .claude segment (case-insensitive, either separator). */
 export function hasProtectedSegment(p: string): boolean {
   return p.split(/[\\/]+/).some((seg) => PROTECTED_SEGMENTS.has(seg.toLowerCase()))
@@ -617,7 +690,7 @@ class CodexSession implements RuntimeSession {
         if (leftover) firstMessage += `\n\n---\n${leftover}`
       }
       const servers = ctx.resolvedMcpServers ? await ctx.resolvedMcpServers() : []
-      this.launch = buildLaunchConfig(ctx.connection, servers, { noProjectDocs: isTrustRestrictedRun(ctx.run), writableRoots: codexWritableRoots(ctx) })
+      this.launch = buildLaunchConfig(ctx.connection, servers, { ...trustLaunchOpts(ctx), writableRoots: codexWritableRoots(ctx) })
       for (const s of this.launch.skipped) this.log('warn', `MCP server ${s.name} was skipped: ${s.reason}`)
       for (const line of this.launch.summary) this.log('info', `Codex: ${line}`)
       this.server = this.createServer(this.launch)
@@ -1303,7 +1376,7 @@ class CodexSession implements RuntimeSession {
     try {
       const servers = await this.ctx.resolvedMcpServers!()
       const launch = buildLaunchConfig(this.ctx.connection, servers, {
-        noProjectDocs: isTrustRestrictedRun(this.ctx.run),
+        ...trustLaunchOpts(this.ctx),
         writableRoots: codexWritableRoots(this.ctx)
       })
       const old = this.server

@@ -497,6 +497,13 @@ export interface Project {
    */
   referenceDirectories?: string[]
   /**
+   * Whether this folder's own agent config may load (section "Folder config trust" near the end of this file). Written
+   * only by main: projects:create sets it when the folder holds anything from REPO_CONFIG_PATHS, the trust channel
+   * changes it, and a renderer save keeps the stored value. Absent = state 'none': today's behaviour (projects stored
+   * before this field, and folders with no such config at creation).
+   */
+  folderConfigTrust?: FolderConfigTrust
+  /**
    * Engagements: who the work is for, in the user's own words (plain text, no category list), so the renderer can
    * group engagements by client. At most PROJECT_CLIENT_MAX_CHARS; ProjectStore trims it on save and read, drops it
    * when empty, not a string or holding control, zero-width, bidi or other hidden characters. The engagement
@@ -5040,10 +5047,19 @@ export const REPO_CLONE_IPC = {
   projectsCloneProgress: 'projects:cloneProgress'
 } as const
 
+/** Channels of "Folder config trust" (section near the end of this file). Declared here for the same reason. */
+export const FOLDER_CONFIG_IPC = {
+  /** Project id -> FolderConfigReview. Rejects only for an unknown project. */
+  projectsFolderConfig: 'projects:folderConfig',
+  /** FolderConfigTrustInput -> FolderConfigTrustResult. Rejects with a readable sentence (missing or stale digest...). */
+  projectsSetFolderConfigTrust: 'projects:setFolderConfigTrust'
+} as const
+
 export const IPC = {
   ...TEMPLATE_ENGAGEMENT_IPC,
   ...KNOWLEDGE_IPC,
   ...REPO_CLONE_IPC,
+  ...FOLDER_CONFIG_IPC,
   projectsList: 'projects:list',
   projectsGet: 'projects:get',
   projectsCreate: 'projects:create',
@@ -5674,7 +5690,8 @@ export type RepoConfigEffect =
 
 /**
  * Files in a repository that agents would load or that can run commands, checked in this order. A file or folder that
- * is a link still counts: it is listed, never followed. Claude work runs on code projects load `.claude/settings.json`
+ * is a link still counts: it is listed, never followed. A code project whose folder holds any of these at creation is
+ * gated (section "Folder config trust"); once allowed, Claude runs load `.claude/settings.json`
  * (settingSources ['project']), so its hooks can run on the user's computer. From the docs, not confirmed by a live
  * run: `.mcp.json` does not load on Claude runs (strictMcpConfig) and is listed because Codex and the importers may
  * read it; `.claude/settings.local.json` is listed because OrgAI itself reads its permission rules
@@ -5726,7 +5743,168 @@ export interface RepoCloneProgress {
 /** A cancelled projects:cloneRepo rejects with a message starting with this. */
 export const REPO_CLONE_CANCELLED_PREFIX = 'Cancelled.'
 
+// ---- Folder config trust ----
+
+/**
+ * What a project's own agent config may do, seen by the renderer:
+ *   'none'       no gate: Project.folderConfigTrust is absent (stored before this feature, or no config at creation).
+ *   'untrusted'  the folder held config at creation and the user has not accepted it. Runs still work and ignore it.
+ *   'trusted'    the user accepted it and what is on disk still has that digest. Runs load it.
+ *   'changed'    accepted once, but the digest on disk differs now. Runs ignore it until accepted again.
+ */
+export type FolderConfigState = 'none' | 'untrusted' | 'trusted' | 'changed'
+
+/** Project.folderConfigTrust as stored. 'changed' is never stored: it is 'trusted' whose digest no longer matches. */
+export interface FolderConfigTrust {
+  state: 'untrusted' | 'trusted'
+  /** Lowercase sha256 hex of the accepted config (folderConfigTrust.ts). Only on 'trusted'. */
+  digest?: string
+  /** ISO time of the user's last accept or revoke. */
+  decidedAt?: string
+  /**
+   * Allow rules copied from the folder's settings.local.json into OrgAI's data folder on accept. Revoking removes them,
+   * and a later accept never re-adds one the user removed. Main only.
+   */
+  importedRules?: string[]
+}
+
+/** Longest text of one file in a review, in characters; longer text is cut and marked `truncated`. */
+export const FOLDER_CONFIG_FILE_TEXT_MAX = 64 * 1024
+/** All file text of one review together, in characters; files past it are listed with no text and `truncated`. */
+export const FOLDER_CONFIG_TOTAL_TEXT_MAX = 1024 * 1024
+/** Most entries of each list in a review (files, commands, env, allowRules, mcpServers); past it `truncated` is set. */
+export const FOLDER_CONFIG_LIST_MAX = 500
+
+/**
+ * One path in a review. All text is untrusted and comes from whoever wrote the folder: render it as plain text. It is
+ * not stripped: `hiddenChar` names the first control, zero-width, bidi or other invisible character ("U+202E"; tab and
+ * line breaks do not count), the way an import preview's text is badged. Secret-looking values are already masked.
+ */
+export interface FolderConfigFile {
+  /** '/'-relative to the project folder. */
+  path: string
+  effect: RepoConfigEffect
+  kind: 'file' | 'link' | 'other'
+  /** Only with kind 'link': where it points, as stored in the link. */
+  linkTarget?: string
+  sizeBytes: number
+  /** Absent for a link, a binary file or a file past FOLDER_CONFIG_TOTAL_TEXT_MAX. */
+  text?: string
+  truncated?: boolean
+  hiddenChar?: string
+  /** False for text the digest does not bind: 'instructions' files and .orgai/org.json can change while trusted. */
+  digested: boolean
+}
+
+/** Something the folder's config would run: a hook, or a helper setting such as apiKeyHelper or statusLine. */
+export interface FolderConfigCommand {
+  /** The file it is declared in. */
+  source: string
+  kind: 'hook' | 'helper'
+  /** Hook: its event and matcher ("PreToolUse Bash"). Helper: the setting's name ("apiKeyHelper"). */
+  label: string
+  /**
+   * The command, or the handler as JSON when it is not a command handler (an http or prompt hook). Only the
+   * credential-looking part is replaced by '[masked]' (URL userinfo, a key-shaped word, "Bearer x", the value of
+   * `API_KEY=...` or `--token=...`); everything else, including code after it, always shows.
+   */
+  command: string
+  /** Something in `command` was replaced by '[masked]'. */
+  masked?: boolean
+  hiddenChar?: string
+}
+
+export interface FolderConfigEnv {
+  source: string
+  name: string
+  /** '[masked]' when `masked`. */
+  value: string
+  /** The name or the value looked like a secret. */
+  masked: boolean
+  /** The name redirects where requests go or which model or account is used (a name Claude runs strip, or ending _BASE_URL). */
+  routing?: boolean
+  hiddenChar?: string
+}
+
+/**
+ * A setting that redirects or runs things but is not a hook, env value, allow rule or MCP server of its own:
+ * `.claude/settings*.json` enabledPlugins, extraKnownMarketplaces, permissions.defaultMode,
+ * permissions.additionalDirectories, enableAllProjectMcpServers, enabledMcpjsonServers, mcpServers; and
+ * `.codex/config.toml` notify, hooks, model_provider, model_providers, profile, profiles, approval_policy, sandbox_mode.
+ */
+export interface FolderConfigOtherSetting {
+  /** The file it is declared in. */
+  source: string
+  /** The setting's name, dotted for a nested one ("permissions.defaultMode"). */
+  key: string
+  /** The value as compact JSON, secret-looking parts masked. Never cut: a value over the field cap makes the review unreviewable. */
+  value: string
+  /** Something in `value` was replaced by '[masked]'. */
+  masked?: boolean
+  hiddenChar?: string
+}
+
+export interface FolderConfigAllowRule {
+  source: string
+  rule: string
+  /** OrgAI's reason for refusing this rule (allowRuleRefusal), else absent. A refused rule is never read as a saved rule. */
+  refused?: string
+  hiddenChar?: string
+}
+
+export interface FolderConfigMcpServer {
+  source: string
+  name: string
+  /** The whole command line or URL as it would run; only credential-looking parts are replaced by '[masked]'. */
+  target: string
+  /** Something in `target` was replaced by '[masked]'. */
+  masked?: boolean
+  hiddenChar?: string
+}
+
+/** projects:folderConfig. What accepting would approve, read from disk at call time. */
+export interface FolderConfigReview {
+  projectId: string
+  state: FolderConfigState
+  /** Lowercase sha256 hex of what the digest binds right now. Send it back through the write channel. */
+  digest: string
+  files: FolderConfigFile[]
+  commands: FolderConfigCommand[]
+  env: FolderConfigEnv[]
+  allowRules: FolderConfigAllowRule[]
+  mcpServers: FolderConfigMcpServer[]
+  /** Settings that redirect or run things beyond the lists above (see FolderConfigOtherSetting). */
+  otherSettings: FolderConfigOtherSetting[]
+  /** A list hit FOLDER_CONFIG_LIST_MAX or the total text cap. A file of 'tools' may be cut; anything that runs may not (see unreviewable). */
+  truncated: boolean
+  /**
+   * Why this config cannot be accepted (too many files, too large, a link leaving the project folder, a settings file
+   * too large to read, a command / helper / MCP target / env value / allow rule over 4,000 characters, a list that
+   * reached FOLDER_CONFIG_LIST_MAX, or a file that runs commands whose text could not be shown in full). Nothing is
+   * ever accepted unseen. The trust channel then refuses trust: true.
+   */
+  unreviewable?: string
+}
+
+/** projects:setFolderConfigTrust. `digest` is FolderConfigReview.digest of the review the user read. */
+export interface FolderConfigTrustInput {
+  projectId: string
+  trust: boolean
+  digest: string
+}
+
+export interface FolderConfigTrustResult {
+  /** The saved project; the renderer replaces its copy. */
+  project: Project
+  review: FolderConfigReview
+}
+
 export interface OrgAIApi {
+  /** Whether a project's own agent config may load. Takes effect from the next run; a live run keeps what it started with. */
+  folderConfig: {
+    review(projectId: string): Promise<FolderConfigReview>
+    setTrust(input: FolderConfigTrustInput): Promise<FolderConfigTrustResult>
+  }
   /** Start a project from a repository. Create the project afterwards with projects.create and the returned path. */
   repos: {
     /** Never rejects. */

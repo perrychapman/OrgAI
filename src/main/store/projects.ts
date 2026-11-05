@@ -8,6 +8,7 @@ import { migrateProject } from '../connections/remap'
 import { validModelId } from '../connections/codexAccount'
 import { isInsideEither, pathKey, samePath } from '../quick/scratch'
 import { allowedDirectoryRisk } from '../runtime/allowedDirectories'
+import { cleanFolderConfigTrust, initialFolderConfigTrust } from '../runtime/folderConfigTrust'
 import { homedir } from 'node:os'
 
 /** The tier mapping of a connection, for the invalid-model fallback. Default: the connection's builtin catalog only. */
@@ -318,6 +319,17 @@ function withCleanAllowedDirectories(project: Project, dataDir: string, home: st
     delete next.knowledgeAutoContext
     changed = true
   }
+  // Project.folderConfigTrust (folder config gate): rebuilt when present, junk fails closed to 'untrusted'. Never
+  // added to a project without it: projects stored before the gate stay 'none' (no gate) on purpose.
+  if ('folderConfigTrust' in project) {
+    const trust = cleanFolderConfigTrust(project.folderConfigTrust)
+    if (JSON.stringify(trust) !== JSON.stringify(project.folderConfigTrust)) {
+      next = { ...next }
+      if (trust === undefined) delete next.folderConfigTrust
+      else next.folderConfigTrust = trust
+      changed = true
+    }
+  }
   if ('client' in project) {
     const client = cleanClient(project.client)
     if (client !== project.client) {
@@ -493,6 +505,10 @@ export class ProjectStore {
     // A team template pre-fills the chart only when the agent import produced nothing (importAgents wins).
     if (!imported && typeof input.templateId === 'string' && input.templateId && opts.fromTemplate) project = opts.fromTemplate(project, input.templateId)
     project = sanitizeRoleModels(project, this.tierContext).project
+    // A folder that came with agent config of its own (a cloned repository, or a quick chat promoted to a project) starts
+    // gated: runs ignore that config until the user accepts it. A missing folder or an engagement stays ungated.
+    const trust = initialFolderConfigTrust(project)
+    if (trust) project = { ...project, folderConfigTrust: trust }
     this.projects.push(project)
     this.persist()
     if (fromFiles) {
@@ -553,6 +569,13 @@ export class ProjectStore {
     // A renderer may never change a project's kind (it selects the rules file and where OrgAI writes).
     if (stored.kind !== undefined) next.kind = stored.kind
     else delete next.kind
+    // Nor the folder config gate: only projects:setFolderConfigTrust changes it. A new folder is judged afresh.
+    if (typeof next.path === 'string' && next.path !== stored.path) {
+      const trust = initialFolderConfigTrust({ path: next.path, kind: stored.kind })
+      if (trust) next.folderConfigTrust = trust
+      else delete next.folderConfigTrust
+    } else if (stored.folderConfigTrust !== undefined) next.folderConfigTrust = stored.folderConfigTrust
+    else delete next.folderConfigTrust
     if (stored.mcpServers !== undefined) next.mcpServers = stored.mcpServers
     else delete next.mcpServers
     if (stored.plugins !== undefined) next.plugins = stored.plugins

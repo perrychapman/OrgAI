@@ -48,11 +48,11 @@ export function appRulesFile(dataDir: string, projectId: string): string {
 }
 
 /**
- * The file holding a project's saved allow rules: `<project>/.claude/settings.local.json` for code projects,
- * appRulesFile for engagements (defaults.ts projectRulesLocation). Both use the same JSON shape, so
+ * The file holding a project's saved allow rules: `<project>/.claude/settings.local.json` for code projects with no
+ * folder config gate, appRulesFile for engagements and gated projects (defaults.ts projectRulesLocation). Both use the same JSON shape, so
  * permissionRules.ts reads and writes either through its file-path functions.
  */
-export function projectRulesFile(project: Pick<Project, 'id' | 'path' | 'kind'>, dataDir: string): string {
+export function projectRulesFile(project: Pick<Project, 'id' | 'path' | 'kind' | 'folderConfigTrust'>, dataDir: string): string {
   return projectRulesLocation(project) === 'app' ? appRulesFile(dataDir, project.id) : settingsLocalPath(project.path)
 }
 

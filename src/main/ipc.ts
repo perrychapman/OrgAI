@@ -94,6 +94,8 @@ import type { QuickRunInput, QuickRunPromoteInput, QuickRunPromoteResult } from 
 import type { ConnectorPresetRemoveInput, McpCopyFromLibraryInput, McpProjectOverridesInput } from '@shared/types'
 import { KIT_IPC, MCP_SCOPE_IPC, REPO_DESTINATION_MAX_CHARS, REPO_SOURCE_MAX_CHARS, TEAM_FILES_IPC } from '@shared/types'
 import type { RepoCloneInput, RepoCloneProgress, RepoCloneResult, RepoSourceParse, RepoTools } from '@shared/types'
+import type { FolderConfigReview, FolderConfigTrustInput, FolderConfigTrustResult } from '@shared/types'
+import { applyFolderConfigTrust, folderConfigReview } from './runtime/folderConfigTrust'
 import { REPO_REQUEST_ID_RE, parseRepoSource, scrubStderr, type RepoCloneService } from './repoClone'
 import type { TeamFilesActionResult, TeamFilesCommitResult, TeamFilesStatus } from '@shared/types'
 import type { TeamFilesService } from './teamFiles/service'
@@ -408,6 +410,19 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
   ipcMain.handle(IPC.projectsSave, (_e, project: Project) => {
     if (typeof project?.id === 'string' && isVirtualProjectId(project.id)) throw new Error('This assistant project cannot be saved.')
     return projects.saveFromRenderer(project)
+  })
+  // Folder config trust: what the folder's own agent config would do (read from disk now), and the user's decision on it.
+  ipcMain.handle(IPC.projectsFolderConfig, (_e, id: unknown): FolderConfigReview => {
+    const project = projects.get(folderConfigProjectArg(id))
+    if (!project) throw new Error('Project not found')
+    return folderConfigReview(project)
+  })
+  ipcMain.handle(IPC.projectsSetFolderConfigTrust, (_e, raw: unknown): FolderConfigTrustResult => {
+    const input = folderConfigTrustArgs(raw)
+    if (!projects.get(input.projectId)) throw new Error('Project not found')
+    // A gated project keeps its saved rules in the data folder (projectRulesFile), never in the folder being judged.
+    const saved = projects.update(input.projectId, (p) => applyFolderConfigTrust(p, input, { rulesFile: projectRulesFile(p, settings.dataDir) }))
+    return { project: saved, review: folderConfigReview(saved) }
   })
   // A string id or ProjectRemoveInput. Facts are gathered before anything is deleted (removalFacts).
   ipcMain.handle(IPC.projectsRemove, async (_e, input: unknown): Promise<ProjectRemoveResult> => {
@@ -888,6 +903,24 @@ function rememberPickedFolder(sender: WebContents, path: string): void {
 function storedIdArg(id: unknown): string {
   if (!isSafeId(id) || isVirtualProjectId(id)) throw new Error('Project not found')
   return id
+}
+
+/**
+ * projects:folderConfig takes a project id; projects:setFolderConfigTrust takes { projectId, trust, digest }. Rebuilt
+ * field by field (extra fields dropped); trust must be a boolean, the digest a string of at most 64 characters.
+ * Exported for tests.
+ */
+export function folderConfigProjectArg(id: unknown): string {
+  if (typeof id === 'string' && isVirtualProjectId(id)) throw new Error('This assistant project has no folder config.')
+  return storedIdArg(id)
+}
+
+export function folderConfigTrustArgs(input: unknown): FolderConfigTrustInput {
+  const i = obj<Record<string, unknown>>(input)
+  const projectId = folderConfigProjectArg(i.projectId)
+  if (typeof i.trust !== 'boolean') throw new Error('Choose whether to trust or stop trusting this folder\'s config.')
+  if (typeof i.digest !== 'string' || i.digest.length > 64) throw new Error("Review this folder's config first.")
+  return { projectId, trust: i.trust, digest: i.digest }
 }
 
 /** projects:remove / projects:removePreview input: a bare id, or { projectId, removeRuns? } (extra fields dropped). */

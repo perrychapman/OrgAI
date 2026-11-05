@@ -5,6 +5,7 @@ import type {
   AgentInstance,
   EngagementChangedEvent,
   EngagementNoteWriter,
+  FolderConfigState,
   RunUsage,
   UsageStats,
   UsageStatsQuery,
@@ -57,7 +58,7 @@ import type {
   SkillUseCount,
   UserQuestion
 } from '@shared/types'
-import { QUICK_ASSISTANT_SLUG, adapterForProject, agentProducedNothing, isolateWritersOn, mcpSecretNames, mixedFamilyRefusal, modelFamily, newId, projectConnection, projectKindOf, runMessagingOn, settingTier, singleRunProject, writesToProjectFolder } from '@shared/defaults'
+import { QUICK_ASSISTANT_SLUG, adapterForProject, agentProducedNothing, isolateWritersOn, mcpSecretNames, mixedFamilyRefusal, modelFamily, newId, projectConnection, projectKindOf, projectRulesLocation, runMessagingOn, settingTier, singleRunProject, writesToProjectFolder } from '@shared/defaults'
 import { referenceFolderOf } from './referenceDirectories'
 import { aliasesFor, priceAgentUsage, type PricingContext } from './pricing'
 import { IntervalTimer, buildUsageCsv, buildUsageStats, computeRunUsage, emptyAgentUsage, legacySummaryUsage, monthRange, normalizeRunRecord } from './runUsage'
@@ -82,6 +83,7 @@ import { isLiveAgent, runOutcome, settleAgent, withSkillActivity, type RunOutcom
 import { cancelPending, cleanProposalDecision, emptyPending, listPending, proposalEffect, proposalOutcome, type PendingCardMaps } from './pendingCards'
 import { addRules, addRulesReport, isBlanketAllowRule, isUnsafeAllowRule, listRules, tooBroadRuleRefusal } from './permissionRules'
 import { projectRulesFile, readEngagementDocument } from '../store/projectData'
+import { cleanFolderConfigTrust, folderConfigStateOf, folderConfigWarning, presentConfigPaths } from './folderConfigTrust'
 
 /**
  * The project the adapters see. Adapters read `isolateWriters !== false`, so the value is made explicit: an
@@ -187,6 +189,8 @@ export function resolveAllowedDirectories(raw: readonly unknown[] | undefined, o
 }
 
 const FLUSH_INTERVAL_MS = 1500
+/** How long a 'trusted' folder-config answer is reused before the folder is scanned again. */
+const FOLDER_CHECK_MS = 2000
 /** Most skill loads one run counts (RunUsage.skills, transcript rows); later skill.used events are dropped. */
 export const RUN_SKILL_LOAD_LIMIT = 1000
 /** run.usage events (and the index save that goes with them) are published at most this often per run. */
@@ -988,8 +992,9 @@ export class RunManager {
   }
 
   /** Where the project's saved rules live (projectRulesFile). An engagement needs the data dir: never falls back to a relative path. */
-  private rulesFileFor(p: Pick<Project, 'id' | 'path' | 'kind'>): string {
-    if (!writesToProjectFolder(p) && !this.options.dataDir) throw new Error('OrgAI has no data folder to keep this engagement\'s rules in.')
+  private rulesFileFor(p: Pick<Project, 'id' | 'path' | 'kind' | 'folderConfigTrust'>): string {
+    // An engagement or a project behind the folder config gate keeps its rules in the data folder, never in the folder.
+    if (projectRulesLocation(p) === 'app' && !this.options.dataDir) throw new Error('OrgAI has no data folder to keep this project\'s rules in.')
     return projectRulesFile(p, this.options.dataDir ?? '')
   }
 
@@ -1097,7 +1102,7 @@ export class RunManager {
       pendingRules: new Map(),
       runRules: [],
       projectPath: project.path,
-      ...(writesToProjectFolder(project) ? {} : { rulesTarget: { file: this.rulesFileFor(project) } }),
+      ...(projectRulesLocation(project) === 'app' ? { rulesTarget: { file: this.rulesFileFor(project) } } : {}),
       runServers: new Map(),
       emit: () => {},
       skills: [],
@@ -1462,9 +1467,65 @@ export class RunManager {
         resolveFolders()
         resolveReferences()
       }
+      // Folder config gate (folderConfigTrust.ts): decided at run start and latched. A run that started without the
+      // folder's own agent config never gains it mid-run (accepting applies from the next run); one that started with
+      // it loses it for good when the folder changes. Omitted for projects with no gate field (legacy, virtual,
+      // trust-restricted), whose behaviour is unchanged. A scan that fails counts as "do not load".
+      let folderLoads: (() => boolean) | undefined
+      // Rules copied from the folder's settings.local.json on accept stop counting when the folder's config stops loading.
+      let importedRulesNow: () => string[] = () => []
+      if (!restricted && !isVirtualProjectId(project.id) && project.folderConfigTrust !== undefined) {
+        // The stored record decides the trust, but the folder judged is the one this run is in.
+        const gateProject = (): Project => ({ ...(this.options.resolveProject?.(project.id) ?? live), path: live.path })
+        importedRulesNow = () => cleanFolderConfigTrust(gateProject().folderConfigTrust)?.importedRules ?? []
+        const stateNow = (): FolderConfigState => {
+          try {
+            return folderConfigStateOf(gateProject())
+          } catch {
+            return 'changed'
+          }
+        }
+        const warnNotLoaded = (state: FolderConfigState): void => {
+          let paths: string[] = []
+          try {
+            paths = presentConfigPaths(live.path)
+          } catch {
+            /* the sentence still reads right without a list */
+          }
+          emit({ type: 'log', runId: summary.id, level: 'warn', message: folderConfigWarning(state, paths) })
+        }
+        const first = stateNow()
+        let latched = first === 'none' || first === 'trusted'
+        if (!latched) warnNotLoaded(first)
+        // This is asked on every permission check and a check scans the whole config, so a 'trusted' answer is reused
+        // for FOLDER_CHECK_MS; a change shows up within that window. A latched-false run never scans again.
+        let checkedAt = Date.now()
+        folderLoads = () => {
+          if (!latched) return false
+          const at = Date.now()
+          if (at >= checkedAt && at - checkedAt < FOLDER_CHECK_MS) return true
+          const now = stateNow()
+          checkedAt = at
+          if (now === 'none' || now === 'trusted') return true
+          latched = false
+          warnNotLoaded(now)
+          return false
+        }
+      }
+      const withoutUnloadedImports = (rules: string[]): string[] => {
+        if (!folderLoads || folderLoads()) return rules
+        let imported: string[] = []
+        try {
+          imported = importedRulesNow()
+        } catch {
+          /* an unreadable record drops nothing it cannot name */
+        }
+        return imported.length ? rules.filter((r) => !imported.includes(r)) : rules
+      }
       const ctx: RuntimeContext = {
         run: summary,
         project,
+        ...(folderLoads ? { folderConfigLoads: folderLoads } : {}),
         roles:
           kind === 'setup' ? [architectRole(builtinModel, { kind: projectKindOf(project) })]
           : kind === 'mcp-assist' ? [withBuildTools(mcpAssistantRole(builtinModel), summary)]
@@ -1524,12 +1585,12 @@ export class RunManager {
         // A quick run works in a folder the user never made a project: only this run's own grants count, never the
         // folder's saved rules file (it is untrusted), and nothing is ever written there (decideRules).
         protectedDirectories: () => protectedDirsOf(this.options.dataDir),
-        allowedRules: () => [...new Set([...(restricted ? [] : listRules({ file: this.rulesFileFor(live) })), ...active.runRules])],
+        allowedRules: () => [...new Set([...(restricted ? [] : withoutUnloadedImports(listRules({ file: this.rulesFileFor(live) }))), ...active.runRules])],
         // Where the project keeps its saved rules: the folder file for code projects, OrgAI's data folder for engagements.
         ...(restricted
           ? {}
           : {
-              savedRules: () => listRules({ file: this.rulesFileFor(live) }),
+              savedRules: () => withoutUnloadedImports(listRules({ file: this.rulesFileFor(live) })),
               saveProjectRules: (rules: string[]) => addRulesReport({ file: this.rulesFileFor(live) }, rules)
             }),
         ...(!writesToProjectFolder(project) ? { engagementDocument: () => (this.options.dataDir ? readEngagementDocument(this.options.dataDir, project.id) : undefined) } : {}),
