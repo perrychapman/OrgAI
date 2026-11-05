@@ -231,7 +231,15 @@ try {
   if ((await page.locator('.decision-card.kind-proposal').getAttribute('data-expanded')) !== 'true' && (await details().isVisible().catch(() => false))) await details().click()
   await sleep(500)
   g = await geometry()
-  check(!!g.tray && !!g.frame && g.tray.h <= g.frame.h * 0.62, 'at 1600x1000 the tray takes at most about 60% of the frame', JSON.stringify({ tray: g.tray?.h, frame: g.frame?.h }))
+  // The OS may clamp the window to the screen (a small CI display: macos-15 gave a 1024x684 work area and a 520 px
+  // frame, which is compact mode where the card fills the tray by design). The 60% rule is for a tall frame, so
+  // measure what we got and skip with the reason logged when the frame is too short (compact exits at 544 px).
+  if (g.frame && g.frame.h < 700) {
+    const got = await app.evaluate(({ BrowserWindow, screen }) => ({ content: BrowserWindow.getAllWindows()[0].getContentSize(), workArea: screen.getPrimaryDisplay().workAreaSize }))
+    log(`SKIP tray share check at 1600x1000: the window got a ${Math.round(g.frame.r - g.frame.l)}x${Math.round(g.frame.h)} frame (content ${got.content.join('x')}, screen work area ${got.workArea.width}x${got.workArea.height}); the rule needs a frame of 700 px or more`)
+  } else {
+    check(!!g.tray && !!g.frame && g.tray.h <= g.frame.h * 0.62, 'at 1600x1000 the tray takes at most about 60% of the frame', JSON.stringify({ tray: g.tray?.h, frame: g.frame?.h }))
+  }
   check((await page.locator('[data-testid=proposal-summary]').count()) === 1, 'at 1600x1000 the body shows the proposal summary')
   await shot('mcp-1600')
   await setSize(1024, 640)
