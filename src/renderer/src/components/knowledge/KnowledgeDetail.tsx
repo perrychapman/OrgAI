@@ -1,7 +1,7 @@
 import type { KeyboardEvent, ReactElement } from 'react'
 import { useEffect, useId, useState } from 'react'
 import { Archive, ArchiveRestore, Pencil, Trash2 } from 'lucide-react'
-import type { EngagementNote, KnowledgeGraph, KnowledgeNode } from '@shared/types'
+import type { EngagementNote, KnowledgeGraph, KnowledgeInferredLink, KnowledgeNode } from '@shared/types'
 import { KNOWLEDGE_NAME_MAX_CHARS, KNOWLEDGE_SUMMARY_MAX_CHARS } from '@shared/types'
 import { normalizeKnowledgeKey } from '@shared/knowledge'
 import type { KnowledgeItem, RunFacts } from '../../lib/knowledge'
@@ -15,6 +15,7 @@ import { Input } from '../ui/Input'
 import { InlineField } from './InlineField'
 import { KnowledgeFacts } from './KnowledgeFacts'
 import { KnowledgeNotesLinks } from './KnowledgeNotesLinks'
+import { KnowledgePossible } from './KnowledgePossible'
 import { KnowledgeRelated } from './KnowledgeRelated'
 import type { KnowledgeWrites } from './knowledgeWrites'
 
@@ -45,7 +46,11 @@ export function KnowledgeDetail({
   onCancelCreate,
   onEscape,
   onError,
-  announce
+  announce,
+  inferredLinks,
+  inferredFailed,
+  onRetryInferred,
+  onDismissLink
 }: {
   mode: DetailMode
   graph: KnowledgeGraph
@@ -65,6 +70,11 @@ export function KnowledgeDetail({
   onEscape: () => void
   onError: (message: string) => void
   announce: (text: string) => void
+  /** Possible connections: the latest inferred links (null before the first answer), whether the read failed, Retry and Dismiss. */
+  inferredLinks: readonly KnowledgeInferredLink[] | null
+  inferredFailed: boolean
+  onRetryInferred: () => void
+  onDismissLink: (linkId: string) => Promise<void>
 }): ReactElement {
   const onHeadingKey = (e: KeyboardEvent<HTMLElement>): void => {
     if (e.key === 'Escape' && e.target === e.currentTarget) {
@@ -219,6 +229,9 @@ export function KnowledgeDetail({
       </dl>
       <KnowledgeFacts node={node} showRetired={showRetired} onSave={(facts) => patch({ facts })} announce={announce} />
       <KnowledgeRelated node={node} graph={graph} showRetired={showRetired} writes={writes} onSelect={onSelect} onError={onError} announce={announce} />
+      {!node.retired && (
+        <KnowledgePossible node={node} graph={graph} links={inferredLinks} failed={inferredFailed} writes={writes} onSelect={onSelect} onRetry={onRetryInferred} onDismiss={onDismissLink} announce={announce} />
+      )}
       <KnowledgeNotesLinks node={node} notes={notes} onOpenNote={onSelect} onSaveNoteIds={(noteIds) => patch({ noteIds })} announce={announce} />
       {history}
       {footer}
