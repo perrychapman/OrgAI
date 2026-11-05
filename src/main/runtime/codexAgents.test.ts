@@ -247,7 +247,8 @@ describe('report delivery text', () => {
 describe('createAgentWorktree', () => {
   let dir = ''
   afterEach(() => {
-    if (dir) rmSync(dir, { recursive: true, force: true })
+    // The test awaits createAgentWorktree, so no git is pending; retries cover a late handle release on Windows.
+    if (dir) rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 })
     dir = ''
   })
 

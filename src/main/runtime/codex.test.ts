@@ -12,6 +12,7 @@ import { ROOT_AGENT_ID, type RuntimeContext, type RuntimeSession } from './types
 import { buildRolePrompt } from './prompts'
 import { RESUME_TEXT } from './runManager'
 import { harnessToolsFor } from './harnessTools'
+import { withRepoLock } from './worktrees'
 import { z } from 'zod'
 
 // buildRolePrompt is the real one, wrapped so tests can read the flags an adapter passes.
@@ -133,7 +134,10 @@ describe('CodexAdapter session', () => {
   afterEach(async () => {
     await session?.stop()
     session = undefined
-    rmSync(dir, { recursive: true, force: true })
+    // Integration git work (worktree add, commit, merge) queues on the repo lock; wait for it to drain
+    // before removing the folder, or a running git holds it open on Windows (EBUSY).
+    await withRepoLock(dir, async () => {})
+    rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 })
   })
 
   const ctxFor = (over: Partial<RuntimeContext> = {}) => fakeCtx({ project: project({ path: dir, isolateWriters: false }), continuationDelayMs: 5, ...over })
