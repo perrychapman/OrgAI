@@ -629,6 +629,32 @@ export function repoCancelArg(input: unknown): string {
   return input
 }
 
+/** The slice of WebContents that watchSenderGone uses. */
+export interface GoneWatchable {
+  on(event: string, listener: (...args: unknown[]) => void): unknown
+  removeListener(event: string, listener: (...args: unknown[]) => void): unknown
+}
+
+/**
+ * Calls `onGone` (once) when the window is destroyed, its renderer process is gone, or its main frame starts a new
+ * navigation to another document. Returns a function that removes every listener; call it when the work ends.
+ */
+export function watchSenderGone(sender: GoneWatchable, onGone: () => void): () => void {
+  const fire = (): void => onGone()
+  const onNavigate = (...args: unknown[]): void => {
+    const d = args[0] as { isMainFrame?: boolean; isSameDocument?: boolean } | undefined
+    if (d && d.isMainFrame === true && d.isSameDocument !== true) onGone()
+  }
+  sender.on('destroyed', fire)
+  sender.on('render-process-gone', fire)
+  sender.on('did-start-navigation', onNavigate)
+  return () => {
+    sender.removeListener('destroyed', fire)
+    sender.removeListener('render-process-gone', fire)
+    sender.removeListener('did-start-navigation', onNavigate)
+  }
+}
+
 function registerRepoIpc(repoClone: RepoCloneService): void {
   ipcMain.handle(IPC.projectsParseRepoSource, (_e, text: unknown): RepoSourceParse => {
     try {
@@ -650,9 +676,8 @@ function registerRepoIpc(repoClone: RepoCloneService): void {
     const onProgress = (event: RepoCloneProgress): void => {
       if (!sender.isDestroyed()) sender.send(IPC.projectsCloneProgress, event)
     }
-    // A closed window cancels its own clone.
-    const onGone = (): void => repoClone.cancel(input.requestId)
-    sender.once('destroyed', onGone)
+    // A closed, crashed or navigated window cancels its own clone.
+    const stopWatching = watchSenderGone(sender as unknown as GoneWatchable,() => repoClone.cancel(input.requestId))
     try {
       return await repoClone.clone(input, onProgress)
     } catch (err) {
@@ -660,7 +685,7 @@ function registerRepoIpc(repoClone: RepoCloneService): void {
       log.warn(`Clone request failed: ${scrubStderr(message)}`)
       throw new Error(message)
     } finally {
-      sender.removeListener('destroyed', onGone)
+      stopWatching()
     }
   })
   ipcMain.handle(IPC.projectsCancelClone, (_e, id: unknown): void => {

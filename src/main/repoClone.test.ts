@@ -1,22 +1,26 @@
 import { execFileSync } from 'node:child_process'
+import net from 'node:net'
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { REPO_CONFIG_PATHS, type RepoCloneInput, type RepoCloneProgress } from '@shared/types'
+import { REPO_CLONE_CANCELLED_PREFIX, REPO_CONFIG_PATHS, type RepoCloneInput, type RepoCloneProgress } from '@shared/types'
 import {
   CloneOutputReader,
   MOCK_REPO_MARKERS,
   RepoCloneService,
   checkDestination,
   cleanupDestination,
+  cleanupDestinationAsync,
   cloneArgs,
   cloneErrorKind,
   cloneErrorMessage,
   defaultRun,
   destinationProblem,
   emptyDestination,
+  emptyDestinationAsync,
   forkArgs,
+  gitSaysNotEmpty,
   forkErrorMessage,
   gitEnv,
   ghEnv,
@@ -58,7 +62,7 @@ interface Call {
 
 const GH_OK = JSON.stringify({ hosts: { 'github.com': [{ active: true, host: 'github.com', login: 'me', state: 'success', error: null }] } })
 const forkJson = (fullName: string, createdAt = new Date().toISOString()): string =>
-  JSON.stringify({ full_name: fullName, clone_url: `https://github.com/${fullName}.git`, html_url: `https://github.com/${fullName}`, created_at: createdAt })
+  JSON.stringify({ fork: true, full_name: fullName, clone_url:`https://github.com/${fullName}.git`, html_url: `https://github.com/${fullName}`, created_at: createdAt })
 
 /** A fake runner: resolves git and gh, answers the follow-up git calls, and lets a test override any call. */
 function makeRun(override?: (c: Call) => RunResult | Promise<RunResult> | undefined) {
@@ -235,6 +239,15 @@ describe('parseRepoSource', () => {
     ['ssh://git@github.com:22/a/b'],
     ['ssh://host.com/a/b'],
     ['ssh://u:pw@host.com/a/b', 'pw'],
+    ['ssh://ghp_abcDEF123@host.com/r', 'ghp_abc'],
+    ['ghp_abcDEF123@host.com:r', 'ghp_abc'],
+    ['github_pat_11AAAbbb@host.com:g/r', 'github_pat_'],
+    ['glpat-abcdef123@gitlab.com:g/r', 'glpat-'],
+    ['x-access-token@host.com:g/r', 'x-access-token'],
+    ['https://host.com/ghp_abcDEF123/r', 'ghp_abc'],
+    ['https://host.com/g/glpat-abcdef', 'glpat-'],
+    ['https://github.com/o/github_pat_11AAA', 'github_pat_'],
+    ['git@host.com:ghp_abcDEF123/r', 'ghp_abc'],
     ['git@github.com:a/b/c'],
     ['', undefined],
     ['   ']
@@ -291,6 +304,13 @@ describe('parseRepoSource', () => {
     expect(suggestedFolderFor('x.')).toBe('x')
     expect(suggestedFolderFor('...')).toBe('repo')
     expect(suggestedFolderFor('console')).toBe('console')
+    expect(suggestedFolderFor('com¹')).toBe('com¹-repo')
+    expect(suggestedFolderFor('LPT².txt')).toBe('LPT².txt-repo')
+    expect(suggestedFolderFor('conin$')).toBe('conin$-repo')
+    expect(suggestedFolderFor('CONOUT$')).toBe('CONOUT$-repo')
+    expect(suggestedFolderFor('.ssh')).toBe('ssh')
+    expect(suggestedFolderFor('.github')).toBe('github')
+    expect(suggestedFolderFor('..x.')).toBe('x')
     expect((parseRepoSource('o/aux') as { suggestedFolder: string }).suggestedFolder).toBe('aux-repo')
   })
 })
@@ -322,6 +342,49 @@ describe('destination rules', () => {
     expect(destinationProblem(data(), data())).toContain('data folder')
     expect(destinationProblem(join(data(), 'x'), data())).toContain('data folder')
     expect(destinationProblem(root, data())).toContain('data folder')
+  })
+
+  it('refuses folders that run or sign in later, but not an ordinary one under home', () => {
+    const home = join(root, 'home')
+    mkdirSync(home)
+    const unsafe = 'That folder is one OrgAI will not clone into: files there can run or sign in later. Choose another folder.'
+    const ctx = { home }
+    for (const rel of ['.ssh', '.claude', '.codex', '.config', join('AppData', 'Roaming'), join('AppData', 'Roaming', 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup'), join('.local', 'bin'), join('Documents', 'PowerShell'), join('Library', 'LaunchAgents'), join('.ssh', 'sub', 'x')]) {
+      expect(destinationProblem(join(home, rel), data(), process.platform, ctx), rel).toBe(unsafe)
+    }
+    // Home itself and everything above it.
+    expect(destinationProblem(home, data(), process.platform, ctx)).toBe(unsafe)
+    expect(destinationProblem(root, '', process.platform, ctx)).toBe(unsafe)
+    // Not refused: an ordinary folder under home.
+    expect(destinationProblem(join(home, 'projects', 'x'), data(), process.platform, ctx)).toBeNull()
+    // A link to a config folder is judged on its real spelling.
+    mkdirSync(join(home, '.ssh'))
+    const sneaky = join(root, 'sneaky')
+    symlinkSync(join(home, '.ssh'), sneaky, WIN ? 'junction' : 'dir')
+    expect(destinationProblem(join(sneaky, 'x'), data(), process.platform, ctx)).toBe(unsafe)
+  })
+
+  it('refuses a .git, .claude or .codex part anywhere in the path, case-folded', () => {
+    for (const bad of [join(root, '.git', 'x'), join(root, 'a', '.Claude'), join(root, '.CODEX'), join(root, 'x', '.git')]) {
+      expect(destinationProblem(bad, data(), process.platform, { home: join(root, 'home') }), bad).toContain('will not clone into')
+    }
+    expect(destinationProblem('C:\\a\\.git\\x', 'C:\\data', 'win32')).toContain('will not clone into')
+  })
+
+  it('refuses a folder of an existing project (equal or inside, both spellings) and fails closed', () => {
+    const proj = join(root, 'proj')
+    const allowed = join(root, 'allowed')
+    const ref = join(root, 'ref')
+    for (const d of [proj, allowed, ref]) mkdirSync(d)
+    const ctx = { home: join(root, 'home'), projectFolders: () => [proj, allowed, ref, 'relative/ignored', ''] }
+    const belongs = 'That folder belongs to an existing project. Choose a new folder.'
+    for (const d of [proj, join(proj, 'sub'), allowed, join(ref, 'a', 'b')]) expect(destinationProblem(d, data(), process.platform, ctx), d).toBe(belongs)
+    expect(destinationProblem(join(root, 'elsewhere'), data(), process.platform, ctx)).toBeNull()
+    const link = join(root, 'projlink')
+    symlinkSync(proj, link, WIN ? 'junction' : 'dir')
+    expect(destinationProblem(join(link, 'x'), data(), process.platform, ctx)).toBe(belongs)
+    const throwing = { home: join(root, 'home'), projectFolders: () => { throw new Error('store broke') } }
+    expect(destinationProblem(join(root, 'elsewhere'), data(), process.platform, throwing)).toBe('OrgAI could not check that folder.')
   })
 
   it('accepts a missing folder, an empty folder, and refuses files, non-empty folders and links', () => {
@@ -416,7 +479,7 @@ describe('prepareDestination and cleanup', () => {
     expect(existsSync(join(dest, 'theirs.txt'))).toBe(true)
   })
 
-  it('removes nothing through a link that replaced the folder', () => {
+  it('removes nothing through a link that replaced the folder', async () => {
     const outside = join(root, 'outside')
     mkdirSync(outside)
     writeFileSync(join(outside, 'precious.txt'), 'keep')
@@ -424,10 +487,55 @@ describe('prepareDestination and cleanup', () => {
     const rec = prepareDestination(dest)
     rmSync(dest, { recursive: true })
     symlinkSync(outside, dest, WIN ? 'junction' : 'dir')
-    expect(cleanupDestination(rec)).toBe(true)
+    expect(cleanupDestination(rec)).toBe(false)
     expect(existsSync(join(outside, 'precious.txt'))).toBe(true)
     expect(emptyDestination(rec)).toBe(false)
     expect(existsSync(join(outside, 'precious.txt'))).toBe(true)
+    expect(await cleanupDestinationAsync(rec)).toBe(false)
+    expect(await emptyDestinationAsync(rec)).toBe(false)
+    expect(existsSync(join(outside, 'precious.txt'))).toBe(true)
+  })
+
+  it('removes nothing when an ancestor was swapped for a link after prepare (real path differs)', async () => {
+    const outside = join(root, 'outside')
+    mkdirSync(join(outside, 'repo'), { recursive: true })
+    writeFileSync(join(outside, 'repo', 'precious.txt'), 'keep')
+    const rec = prepareDestination(join(root, 'a', 'repo'))
+    rmSync(join(root, 'a'), { recursive: true })
+    symlinkSync(outside, join(root, 'a'), WIN ? 'junction' : 'dir')
+    expect(cleanupDestination(rec)).toBe(false)
+    expect(await cleanupDestinationAsync(rec)).toBe(false)
+    expect(existsSync(join(outside, 'repo', 'precious.txt'))).toBe(true)
+  })
+
+  it('async cleanup follows the same record rules as the sync one', async () => {
+    const dest = join(root, 'a', 'b', 'repo')
+    const rec = prepareDestination(dest)
+    writeFileSync(join(dest, 'partial'), 'x')
+    expect(await cleanupDestinationAsync(rec)).toBe(true)
+    expect(existsSync(join(root, 'a'))).toBe(false)
+    const pre = join(root, 'pre')
+    mkdirSync(pre)
+    const r2 = prepareDestination(pre)
+    writeFileSync(join(pre, 'x'), 'x')
+    mkdirSync(join(pre, 'sub'))
+    expect(await emptyDestinationAsync(r2)).toBe(true)
+    writeFileSync(join(pre, 'y'), 'x')
+    expect(await cleanupDestinationAsync(r2)).toBe(true)
+    expect(readdirSync(pre)).toEqual([])
+    expect(await cleanupDestinationAsync(r2, { contentsAdded: true })).toBe(true)
+  })
+
+  it('refuses a probe error other than "missing" without creating or removing anything', () => {
+    const file = join(root, 'file')
+    writeFileSync(file, 'x')
+    expect(() => prepareDestination(join(file, 'child', 'repo'))).toThrow()
+    expect(readFileSync(file, 'utf8')).toBe('x')
+  })
+
+  it('records the real path at prepare', () => {
+    const rec = prepareDestination(join(root, 'r1', 'repo'))
+    expect(rec.real).toBeTruthy()
   })
 
   it('empties the folder between attempts and keeps the record', () => {
@@ -471,9 +579,18 @@ describe('arguments and environment', () => {
 
   it('cleans the git and gh environments', () => {
     const base = { PATH: 'p', git_dir: 'x', GIT_WORK_TREE: 'x', GIT_CONFIG_COUNT: '1', GIT_TEMPLATE_DIR: 'x', GIT_ASKPASS: 'keep', GH_HOST: 'evil', DEBUG: '1', GH_REPO: 'x', GH_ENTERPRISE_TOKEN: 't', LC_ALL: 'de' }
-    const g = gitEnv(base)
-    expect(g).toMatchObject({ PATH: 'p', GIT_ASKPASS: 'keep', GIT_TERMINAL_PROMPT: '0', GIT_ALLOW_PROTOCOL: 'https:ssh', SSH_ASKPASS_REQUIRE: 'never', LC_ALL: 'C', LANGUAGE: 'C' })
-    for (const k of ['git_dir', 'GIT_WORK_TREE', 'GIT_CONFIG_COUNT', 'GIT_TEMPLATE_DIR']) expect(k in g).toBe(false)
+    const g = gitEnv(base, 'win32')
+    expect(g).toMatchObject({ PATH: 'p', GIT_TERMINAL_PROMPT: '0', GIT_ALLOW_PROTOCOL: 'https:ssh', SSH_ASKPASS_REQUIRE: 'never', LC_ALL: 'C', LANGUAGE: 'C' })
+    for (const k of ['git_dir', 'GIT_WORK_TREE', 'GIT_CONFIG_COUNT', 'GIT_TEMPLATE_DIR', 'GIT_ASKPASS']) expect(k in g).toBe(false)
+    const more = { GIT_SSH: 'a', GIT_SSH_COMMAND: 'b', GIT_SSH_VARIANT: 'c', GIT_SSL_CAINFO: 'd', GIT_SSL_CAPATH: 'e', GIT_EXEC_PATH: 'x', GIT_PAGER: 'x', GIT_EDITOR: 'x', GIT_CONFIG_GLOBAL: 'x', GIT_CONFIG_KEY_0: 'x', GIT_PROXY_COMMAND: 'x', GITHUB_TOKEN: 'keep', git_ssh: 'lower' }
+    const gm = gitEnv(more, 'linux')
+    expect(gm).toMatchObject({ GIT_SSH: 'a', GIT_SSH_COMMAND: 'b', GIT_SSH_VARIANT: 'c', GIT_SSL_CAINFO: 'd', GIT_SSL_CAPATH: 'e', GITHUB_TOKEN: 'keep', git_ssh: 'lower' })
+    for (const k of ['GIT_EXEC_PATH', 'GIT_PAGER', 'GIT_EDITOR', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_KEY_0', 'GIT_PROXY_COMMAND']) expect(k in gm).toBe(false)
+    // Windows folds case: a lower-case name is the same variable there.
+    const gw = gitEnv({ git_exec_path: 'x', git_ssh: 'ok', Git_Pager: 'x' }, 'win32')
+    expect(gw).toMatchObject({ git_ssh: 'ok' })
+    expect('git_exec_path' in gw).toBe(false)
+    expect('Git_Pager' in gw).toBe(false)
     const h = ghEnv(base)
     expect(h).toMatchObject({ PATH: 'p', GH_PROMPT_DISABLED: '1', GH_NO_UPDATE_NOTIFIER: '1', NO_COLOR: '1' })
     for (const k of ['GH_HOST', 'DEBUG', 'GH_REPO', 'GH_ENTERPRISE_TOKEN']) expect(k in h).toBe(false)
@@ -524,6 +641,12 @@ describe('error mapping', () => {
     expect(scrubStderr('https://u:p@host.com/x')).toBe('https://host.com/x')
   })
 
+  it('scrubs userinfo with a slash, glpat- and x-access-token shapes', () => {
+    const s = scrubStderr('fatal: https://user:pa/ss@host.com/o/r glpat-abcDEF123_-x x-access-token:ghs_zzz111 https://x-access-token:abcdef@github.com/o/r')
+    for (const bad of ['pa/ss', 'abcDEF123', 'ghs_zzz111', 'abcdef@', 'user:']) expect(s).not.toContain(bad)
+    expect(s).toContain('host.com/o/r')
+  })
+
   it('bounds and cleans the last line', () => {
     const m = cloneErrorMessage(`fatal: ${'x'.repeat(500)}\u202e`, ctx)
     expect(m.length).toBeLessThan(260)
@@ -546,7 +669,7 @@ describe('error mapping', () => {
 describe('validateForkResponse', () => {
   const src = { owner: 'o', repo: 'r' }
   const NOW = Date.parse('2026-11-05T00:10:00Z')
-  const ok = (over: Record<string, unknown> = {}): string => JSON.stringify({ full_name: 'me/r', clone_url: 'https://github.com/me/r.git', html_url: 'https://github.com/me/r', created_at: '2026-11-05T00:09:00Z', ...over })
+  const ok = (over: Record<string, unknown> = {}): string => JSON.stringify({ fork: true, full_name: 'me/r', clone_url: 'https://github.com/me/r.git', html_url: 'https://github.com/me/r', created_at: '2026-11-05T00:09:00Z', ...over })
   it('accepts a good answer', () => {
     expect(validateForkResponse(ok(), src, NOW)).toMatchObject({ ok: true, fullName: 'me/r', htmlUrl: 'https://github.com/me/r', cloneUrl: 'https://github.com/me/r.git', alreadyExisted: false })
   })
@@ -565,6 +688,9 @@ describe('validateForkResponse', () => {
       ok({ full_name: 5 }),
       ok({ full_name: '-me/r', clone_url: 'https://github.com/-me/r.git', html_url: 'https://github.com/-me/r' }),
       ok({ full_name: 'me/r\u202e' }),
+      ok({ fork: false }),
+      ok({ fork: undefined }),
+      ok({ fork: 'true' }),
       '[]',
       'null',
       'not json',
@@ -577,6 +703,9 @@ describe('validateForkResponse', () => {
   it('recognises the source itself as your own repository', () => {
     const r = validateForkResponse(ok({ full_name: 'O/R', clone_url: 'https://github.com/O/R.git', html_url: 'https://github.com/O/R' }), src, NOW)
     expect(r).toEqual({ ok: false, problem: 'This is your own repository, so GitHub will not fork it. Clone it instead.', own: true })
+    // The own-repository answer is detected before the fork flag is required.
+    const notFork = validateForkResponse(ok({ fork: false, full_name: 'O/R', clone_url: 'https://github.com/O/R.git', html_url: 'https://github.com/O/R' }), src, NOW)
+    expect(notFork).toMatchObject({ ok: false, own: true })
   })
 })
 
@@ -598,7 +727,8 @@ describe('progress', () => {
     expect(events.map((e) => e.text)).toEqual(['Receiving files', 'Receiving files', 'Receiving files', 'Resolving changes', 'Writing files'])
     expect(events.map((e) => e.percent)).toEqual([40, 40, 80, 88, 100])
     expect(events.some((e) => e.text.includes('evil'))).toBe(false)
-    expect(r.tail).toContain('remote: evil text')
+    expect(r.tail).not.toContain('remote:')
+    expect(r.tail).not.toContain('evil')
     expect(r.tail).toContain('fatal: boom')
     expect(r.tail).not.toContain('Receiving objects')
   })
@@ -775,10 +905,54 @@ describe('clone()', () => {
     const dest = join(root, 'pre')
     const { svc } = service({ spawnGit: makeSpawn((h, args) => {
       writeFileSync(join(args[args.length - 1], 'theirs.txt'), 'x')
-      cloneFail(h, "fatal: destination path '/x' already exists and is not an empty directory.")
+      cloneFail(h, `fatal: destination path '${args[args.length - 1]}' already exists and is not an empty directory.`)
     }).spawnGit })
     await expect(svc.clone(input({ destination: dest }), noop)).rejects.toThrow('could not write to the folder')
     expect(existsSync(join(dest, 'theirs.txt'))).toBe(true)
+  })
+
+  it('a remote line cannot stop the cleanup, and remote text never reaches the message', async () => {
+    const dest = join(root, 'pre')
+    const { svc } = service({ spawnGit: makeSpawn((h, args) => {
+      writeFileSync(join(args[args.length - 1], 'partial'), 'x')
+      cloneFail(h, "remote: already exists and is not an empty directory\nremote: visit evil.example\nfatal: unable to access 'x': Could not resolve host: github.com")
+    }).spawnGit })
+    const err = (await svc.clone(input({ destination: dest }), noop).catch((e: Error) => e)) as Error
+    expect(err.message).toContain('Could not reach github.com')
+    expect(err.message).not.toContain('evil.example')
+    expect(existsSync(dest)).toBe(false)
+    expect(gitSaysNotEmpty("remote: fatal: destination path 'x' already exists and is not an empty directory.", 'x')).toBe(false)
+    expect(gitSaysNotEmpty("fatal: destination path '/somewhere/else' already exists and is not an empty directory.", join(root, 'x'))).toBe(false)
+  })
+
+  it('refuses a second clone into the same folder and frees it afterwards', async () => {
+    const sp = makeSpawn()
+    const kill = makeKill(sp.spawned)
+    const { svc } = service({ spawnGit: sp.spawnGit, killTree: kill.killTree })
+    const a = svc.clone(input({ requestId: 'a' }), noop).catch((e: Error) => e)
+    await vi.waitFor(() => expect(sp.spawned.length).toBe(1))
+    await expect(svc.clone(input({ requestId: 'b' }), noop)).rejects.toThrow('A clone into that folder is already running.')
+    // The refused call must not touch what A made.
+    expect(existsSync(join(root, 'out', 'repo'))).toBe(true)
+    svc.cancel('a')
+    expect(((await a) as Error).message).toBe('Cancelled.')
+    const again = service({ spawnGit: makeSpawn(cloneOk).spawnGit })
+    await expect(again.svc.clone(input({ requestId: 'c' }), noop)).resolves.toMatchObject({ branch: 'main' })
+  })
+
+  it('a destination that is swapped for a link before cleanup is left alone and reported', async () => {
+    const outside = join(root, 'outside')
+    mkdirSync(outside)
+    writeFileSync(join(outside, 'precious.txt'), 'keep')
+    const dest = join(root, 'dest')
+    const { svc } = service({ spawnGit: makeSpawn((h, args) => {
+      const d = args[args.length - 1]
+      rmSync(d, { recursive: true })
+      symlinkSync(outside, d, WIN ? 'junction' : 'dir')
+      cloneFail(h, 'fatal: unable to access: Could not resolve host')
+    }).spawnGit })
+    await expect(svc.clone(input({ destination: dest }), noop)).rejects.toThrow(`A partial folder may remain at ${dest}.`)
+    expect(existsSync(join(outside, 'precious.txt'))).toBe(true)
   })
 
   it('removes nothing through a link that replaced the folder, and says a partial folder may remain when removal fails', async () => {
@@ -1019,6 +1193,21 @@ describe('fork', () => {
     }
   })
 
+  it('says a fork may exist when the answer to a successful call cannot be checked', async () => {
+    const f = forkService({ gh: (c) => (c.file === GH && c.args[0] === 'api' ? done(forkJson('me/r').replace('github.com/me/r.git', 'evil.com/me/r.git')) : undefined) })
+    await expect(f.svc.clone(forkInput(), noop)).rejects.toThrow('GitHub answered with something OrgAI could not check, so nothing was cloned. A fork may exist on GitHub.')
+    const notFork = forkService({ gh: (c) => (c.file === GH && c.args[0] === 'api' ? done(JSON.stringify({ fork: false, full_name: 'me/r', clone_url: 'https://github.com/me/r.git', html_url: 'https://github.com/me/r' })) : undefined) })
+    await expect(notFork.svc.clone(forkInput(), noop)).rejects.toThrow('A fork may exist on GitHub.')
+  })
+
+  it('a gh that was stopped is not "gh is missing" and keeps the in-flight note', async () => {
+    const f = forkService({ gh: (c) => (c.file === GH && c.args[0] === 'api' ? { code: null, stdout: '', stderr: '', failed: true } : undefined) })
+    const err = (await f.svc.clone(forkInput(), noop).catch((e: Error) => e)) as Error
+    expect(err.message).toBe('The GitHub CLI stopped before it answered. The fork may still have been made on GitHub.')
+    expect(err.message).not.toContain('Forking needs')
+    expect(f.spawned).toHaveLength(0)
+  })
+
   it('retries a clone of a fresh fork that is not found yet, then succeeds', async () => {
     const f = forkService({ spawn: (h, args, n) => (n < 3 ? cloneFail(h, "remote: Repository not found.\nfatal: repository 'x' not found") : cloneOk(h, args)) })
     const events: RepoCloneProgress[] = []
@@ -1043,7 +1232,7 @@ describe('fork', () => {
   })
 
   it('gives up at the deadline, names the fork and cleans up', async () => {
-    const f = forkService({ spawn: (h) => cloneFail(h, 'remote: Repository not found.') })
+    const f = forkService({ spawn: (h) => cloneFail(h, "remote: Repository not found.\nfatal: repository 'x' not found") })
     await expect(f.svc.clone(forkInput(), noop)).rejects.toThrow('me/r was not found, or this account has no access to it. The fork exists at https://github.com/me/r.')
     expect(f.sleeps.reduce((a, b) => a + b, 0)).toBeGreaterThanOrEqual(60_000)
     expect(Math.max(...f.sleeps)).toBe(8000)
@@ -1082,7 +1271,7 @@ describe('fork', () => {
   })
 
   it('cancels during the wait for the fork and names it', async () => {
-    const sp = makeSpawn((h) => cloneFail(h, 'remote: Repository not found.'))
+    const sp = makeSpawn((h) => cloneFail(h, "remote: Repository not found.\nfatal: repository 'x' not found"))
     const kill = makeKill(sp.spawned)
     let waiting = false
     const r = makeRun((c) => (c.file === GH && c.args[0] === 'api' ? done(forkJson('me/r')) : undefined))
@@ -1187,6 +1376,14 @@ describe.skipIf(!gitPresent)('mock mode', () => {
     expect(clonedOwn.repoConfig).toEqual([])
   })
 
+  it('mock-org/missing in fork mode fails at the fork step, never waiting for the fork', async () => {
+    const sleeps: number[] = []
+    const { svc } = mockService({}, async (ms) => { sleeps.push(ms) })
+    await expect(svc.clone(input({ source: 'mock-org/missing', mode: 'fork' }), noop)).rejects.toThrow('mock-org/missing was not found, or your GitHub account has no access to it.')
+    expect(Math.max(...sleeps)).toBeLessThan(1000)
+    expect(existsSync(join(root, 'out'))).toBe(false)
+  })
+
   it('fork-slow waits in waiting-for-fork', async () => {
     const { svc } = mockService()
     const events: RepoCloneProgress[] = []
@@ -1223,6 +1420,77 @@ describe.skipIf(!gitPresent)('mock mode', () => {
   it('exports a marker table that lists every behaviour the docs name', () => {
     expect(MOCK_REPO_MARKERS.map((m) => m.repo)).toEqual(['mock-org/with-agents', 'mock-org/slow', 'mock-org/missing', 'mock-org/private', 'mock-org/unreachable', 'mock-org/no-fork', 'mock-org/fork-clone-fails', 'mock-org/fork-exists', 'mock-org/fork-slow', 'mock-user/<anything>'])
   })
+})
+
+describe('real processes (loopback only)', () => {
+  const NODE_RUN = (code: string, timeoutMs = 10_000): Promise<RunResult> => defaultRun(process.execPath, ['-e', code], { cwd: tmpdir(), env: process.env, timeoutMs })
+
+  it('defaultRun tells "could not start", "overran its output", and "timed out" apart', async () => {
+    const missing = await defaultRun(join(root, 'no-such-program'), [], { cwd: tmpdir(), env: process.env, timeoutMs: 5_000 })
+    expect(missing).toMatchObject({ code: null, spawnError: 'ENOENT' })
+    const big = await NODE_RUN("process.stdout.write('x'.repeat(2*1024*1024))")
+    expect(big.spawnError).toBeUndefined()
+    expect(big.failed).toBe(true)
+    const slow = await NODE_RUN('setTimeout(() => {}, 60000)', 400)
+    expect(slow.timedOut).toBe(true)
+    expect(slow.spawnError).toBeUndefined()
+    const bad = await NODE_RUN('process.exit(3)')
+    expect(bad.code).toBe(3)
+  }, 30_000)
+
+  const realService = (): RepoCloneService =>
+    new RepoCloneService({ dataDir: join(root, 'data'), env: { ...process.env, NO_PROXY: '127.0.0.1', no_proxy: '127.0.0.1', HTTPS_PROXY: '', https_proxy: '' } })
+
+  it.skipIf(!gitPresent)('a closed port is "could not reach", the created folder is gone and the parent stays', async () => {
+    const closed = await new Promise<number>((res) => {
+      const s = net.createServer()
+      s.listen(0, '127.0.0.1', () => {
+        const port = (s.address() as net.AddressInfo).port
+        s.close(() => res(port))
+      })
+    })
+    const parent = join(root, 'parent')
+    mkdirSync(parent)
+    writeFileSync(join(parent, 'mine.txt'), 'x')
+    const dest = join(parent, 'new', 'repo')
+    const err = (await realService().clone(input({ source: `https://127.0.0.1:${closed}/o/r.git`, destination: dest }), noop).catch((e: Error) => e)) as Error
+    expect(err.message).toBe(`Could not reach 127.0.0.1:${closed}. Check your connection, or a proxy or firewall.`)
+    expect(existsSync(join(parent, 'new'))).toBe(false)
+    expect(readFileSync(join(parent, 'mine.txt'), 'utf8')).toBe('x')
+  }, 60_000)
+
+  it.skipIf(!gitPresent)('a server that never answers: cancel stops the clone, removes the folder and ends the helper process', async () => {
+    const sockets: net.Socket[] = []
+    const closed: boolean[] = []
+    const server = net.createServer((sock) => {
+      const i = sockets.push(sock) - 1
+      closed[i] = false
+      sock.on('data', () => {})
+      sock.on('error', () => {})
+      sock.on('close', () => {
+        closed[i] = true
+      })
+    })
+    await new Promise<void>((res) => server.listen(0, '127.0.0.1', res))
+    const port = (server.address() as net.AddressInfo).port
+    try {
+      const svc = realService()
+      const dest = join(root, 'hang', 'repo')
+      const p = svc.clone(input({ source: `https://127.0.0.1:${port}/o/r.git`, destination: dest }), noop).catch((e: Error) => e)
+      await vi.waitFor(() => expect(sockets.length).toBeGreaterThan(0), { timeout: 30_000, interval: 100 })
+      const t0 = Date.now()
+      svc.cancel('req1')
+      const err = (await p) as Error
+      expect(err.message.startsWith(REPO_CLONE_CANCELLED_PREFIX)).toBe(true)
+      expect(Date.now() - t0).toBeLessThan(15_000)
+      expect(existsSync(join(root, 'hang'))).toBe(false)
+      // The connection was held by git's helper process: it closes only when the whole tree died.
+      await vi.waitFor(() => expect(closed.every(Boolean)).toBe(true), { timeout: 15_000, interval: 100 })
+    } finally {
+      for (const s of sockets) s.destroy()
+      server.close()
+    }
+  }, 90_000)
 })
 
 describe('real git hardening (local, no network)', () => {
