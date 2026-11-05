@@ -342,6 +342,8 @@ app.whenReady().then(() => {
     mcp: {
       libraryEntries: () => mcp.libraryEntries(),
       connectorEntry: (connectorId, variant) => mcp.connectorEntryForTeam(connectorId, variant),
+      connectorPreview: (connectorId, variant) => mcp.connectorPreviewForTeam(connectorId, variant),
+      discardConnectorEntry: (entryId) => mcp.discardConnectorEntryForTeam(entryId),
       removeServerSecrets: (projectId, serverId) => mcp.removeServerSecrets(projectId, serverId)
     },
     broadcastStatus: broadcastTeamFiles,

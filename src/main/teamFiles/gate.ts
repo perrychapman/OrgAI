@@ -1,5 +1,5 @@
-import { TEAM_FILES_AGENTS_DIR, TEAM_FILES_JSON, TEAM_FILES_MCP_JSON, TEAM_FILES_SKILLS_DIR, type PermissionMode, type TeamFileChange, type TeamFileChangeKind } from '@shared/types'
-import { skillEvaluationOf, teamReviewOf } from '@shared/defaults'
+import { AGENT_IMPORT_ELEVATED_TOOLS, TEAM_FILES_AGENTS_DIR, TEAM_FILES_JSON, TEAM_FILES_MCP_JSON, TEAM_FILES_SKILLS_DIR, DEFAULT_MAX_AUTO_CONTINUES, type ModelTier, type PermissionMode, type TeamFileChange, type TeamFileChangeKind } from '@shared/types'
+import { effectiveSubagentLimits, skillEvaluationOf, teamReviewOf } from '@shared/defaults'
 import { fullTarget, safeText } from '../kit/format'
 import type { TeamDoc, TeamMcpDoc, TeamRoleDoc, TeamSettingsDoc, TeamSkillDoc } from './doc'
 import { canonicalJson, normalizeDoc } from './digest'
@@ -15,8 +15,35 @@ import { chartProblem, skillScripts } from './parse'
 
 export const FIRST_SEEN_REASON = "First time this repository's team is seen on this computer"
 export const CHART_REASON = 'Part of a chart change that needs review'
-const ELEVATED_TOOLS = ['Bash', 'Edit', 'Write', 'NotebookEdit']
 const PROMPT_TEXT_MAX = 200_000
+
+/**
+ * The one place tools are classified (the Team files gate, the folder preview and the service all use it).
+ * TRIVIAL_TOOLS is an ALLOWLIST: a new role applies at once only when every tool it holds is on it. PLAIN_SAFE_TOOLS adds
+ * the web tools, which still wait for approval on a new role but are not listed as "elevated". Anything else, including
+ * Bash, PowerShell, Edit, Write, MultiEdit, NotebookEdit and every tool this list has never heard of, is elevated.
+ */
+export const TRIVIAL_TOOLS: readonly string[] = ['Read', 'Glob', 'Grep', 'TodoWrite']
+export const PLAIN_SAFE_TOOLS: readonly string[] = [...TRIVIAL_TOOLS, 'WebFetch', 'WebSearch']
+export const ELEVATED_TOOLS: readonly string[] = [...AGENT_IMPORT_ELEVATED_TOOLS, 'PowerShell', 'MultiEdit']
+export const isElevatedTool = (t: string): boolean => ELEVATED_TOOLS.includes(t) || !PLAIN_SAFE_TOOLS.includes(t)
+
+/** Resolves what a connector or library server would link to on this computer (the service injects it; this file stays pure). */
+export interface LinkInfo {
+  /** The ENTRY's real target (the file's own address is never shown for a linked server). */
+  target: string
+}
+export type LinkResolver = (m: TeamMcpDoc) => LinkInfo | null
+
+const TIER_RANK: Record<ModelTier, number> = { fast: 0, everyday: 1, deep: 2, top: 3 }
+const EFFORT_RANK: Record<string, number> = { low: 0, medium: 1, high: 2, xhigh: 3, max: 4 }
+
+/** Whether a role's model setting moves to something that may spend more: only a strictly lower tier is safe. */
+function modelMayCostMore(a: TeamRoleDoc, d: TeamRoleDoc): boolean {
+  if (a.tier !== undefined && d.tier !== undefined) return TIER_RANK[d.tier] > TIER_RANK[a.tier]
+  return true
+}
+const effortRaised = (a: TeamRoleDoc, d: TeamRoleDoc): boolean => (d.effort === undefined ? false : (EFFORT_RANK[d.effort] ?? 99) > (a.effort === undefined ? -1 : (EFFORT_RANK[a.effort] ?? 99)))
 
 const MODE_RANK: Record<PermissionMode, number> = { plan: 0, dontAsk: 1, default: 2, acceptEdits: 3, auto: 4, bypassPermissions: 5 }
 /** plan < dontAsk < default < acceptEdits < auto < bypassPermissions. Unknown values rank highest. */
@@ -67,7 +94,12 @@ function serverTarget(m: TeamMcpDoc): string {
 }
 
 function launchOf(m: TeamMcpDoc): unknown {
-  return [m.transport, m.command ?? null, m.args ?? [], m.env ?? {}, m.secretEnv ?? [], m.url ?? null, m.headers ?? {}, m.secretHeaders ?? [], m.connectorId ?? null, m.connectorVariant ?? null]
+  return [m.transport, m.command ?? null, m.args ?? [], m.env ?? {}, m.secretEnv ?? [], m.url ?? null, m.headers ?? {}, m.secretHeaders ?? [], m.connectorId ?? null, m.connectorVariant ?? null, m.fromLibrary === true]
+}
+
+/** Text for who could use a linked server once approved. */
+function reach(m: TeamMcpDoc): string {
+  return m.roles ? `Available to ${joinAnd(m.roles)}.` : 'Available to every role.'
 }
 
 const SETTING_LABELS: Record<keyof TeamSettingsDoc, string> = {
@@ -101,6 +133,14 @@ function showSetting(k: keyof TeamSettingsDoc, v: unknown): string {
   return `${s.enabled === undefined ? 'follows the team assistant' : s.enabled ? 'on' : 'off'}, up to ${s.tokenBudget} tokens`
 }
 
+/** A document's chart in the shape effectiveSubagentLimits reads (slug as id). */
+const limitRoles = (doc: TeamDoc): { id: string; reportsTo: string | null }[] => doc.roles.map((r) => ({ id: r.slug, reportsTo: r.reportsTo }))
+
+/** The settings (brief left out) as label and value, in plain words: the folder preview shows them beside the changes. */
+export function describeSettings(s: TeamSettingsDoc): { label: string; value: string }[] {
+  return SETTING_ORDER.filter((k) => k !== 'brief').map((k) => ({ label: SETTING_LABELS[k], value: showSetting(k, s[k]) }))
+}
+
 function loosens(k: keyof TeamSettingsDoc, a: TeamDoc, d: TeamDoc): boolean {
   const av = a.settings[k]
   const dv = d.settings[k]
@@ -110,19 +150,35 @@ function loosens(k: keyof TeamSettingsDoc, a: TeamDoc, d: TeamDoc): boolean {
     case 'permissionMode':
       return permissionRank(dv as PermissionMode) > permissionRank(av as PermissionMode)
     case 'isolateWriters':
-    case 'preferEverydayNearLimit':
       return av !== false && dv === false
+    case 'preferEverydayNearLimit': {
+      // true (always on) > unset (automatic) > false (off): any step down loosens.
+      const rank = (v: unknown): number => (v === true ? 2 : v === false ? 0 : 1)
+      return rank(dv) < rank(av)
+    }
     case 'reviewMerges':
       return av === true && dv !== true
     case 'autoContinue':
     case 'runMessaging':
       return av === false && dv !== false
+    // Effective values are compared, never the stored ones: 0 or unset budget = no cap; unset limits are automatic.
     case 'maxBudgetUsd':
-    case 'maxSubagentDepth':
-    case 'maxConcurrentSubagents':
-    case 'maxWindowShare':
-    case 'maxAutoContinues':
-      return typeof av === 'number' && (typeof dv !== 'number' || dv > av)
+    case 'maxWindowShare': {
+      const eff = (v: unknown): number => (typeof v === 'number' && v > 0 ? v : Infinity)
+      return eff(dv) > eff(av)
+    }
+    case 'maxSubagentDepth': {
+      const depth = (doc: TeamDoc): number => effectiveSubagentLimits({ maxSubagentDepth: doc.settings.maxSubagentDepth, roles: limitRoles(doc) }).depth
+      return depth(d) > depth(a)
+    }
+    case 'maxConcurrentSubagents': {
+      const conc = (doc: TeamDoc): number => effectiveSubagentLimits({ maxConcurrentSubagents: doc.settings.maxConcurrentSubagents, roles: limitRoles(doc) }).concurrency
+      return conc(d) > conc(a)
+    }
+    case 'maxAutoContinues': {
+      const eff = (v: unknown): number => (typeof v === 'number' ? v : DEFAULT_MAX_AUTO_CONTINUES)
+      return eff(dv) > eff(av)
+    }
     case 'teamReview': {
       const x = teamReviewOf({ teamReview: av as TeamSettingsDoc['teamReview'] })
       const y = teamReviewOf({ teamReview: dv as TeamSettingsDoc['teamReview'] })
@@ -137,7 +193,7 @@ function loosens(k: keyof TeamSettingsDoc, a: TeamDoc, d: TeamDoc): boolean {
   }
 }
 
-function engine(approvedIn: TeamDoc, diskIn: TeamDoc, force: string | null): Run {
+function engine(approvedIn: TeamDoc, diskIn: TeamDoc, force: string | null, link?: LinkResolver): Run {
   const a = normalizeDoc(approvedIn)
   const d = normalizeDoc(diskIn)
   const eff: TeamDoc = structuredClone(a)
@@ -214,14 +270,26 @@ function engine(approvedIn: TeamDoc, diskIn: TeamDoc, force: string | null): Run
     const dm = dMcp.get(name)
     const base = { kind: 'mcp' as TeamFileChangeKind, name: nm(name), file: TEAM_FILES_MCP_JSON }
     const secretNames = (m: TeamMcpDoc): string[] => [...(m.secretEnv ?? []), ...(m.secretHeaders ?? [])].map((s) => nm(s, 64))
+    /** What approving shows: a linked server shows the ENTRY's target and says it uses the stored sign-in and who can reach it. */
+    const shown = (m: TeamMcpDoc, plain: string): Pick<TeamFileChange, 'summary' | 'target' | 'secretNames' | 'usesStoredSignIn' | 'reachesRoles'> => {
+      const linked = m.connectorId !== undefined || m.fromLibrary === true ? (link?.(m) ?? null) : null
+      if (!linked) return { summary: plain, target: serverTarget(m), secretNames: secretNames(m) }
+      return {
+        summary: `${plain.replace(/ would run or connect to the address shown\.$/, ' would connect to the address shown')}, using the sign-in stored on this computer. ${reach(m)}`,
+        target: linked.target.replace(HIDDEN_ALL, '?'),
+        secretNames: secretNames(m),
+        usesStoredSignIn: true,
+        ...(m.roles ? { reachesRoles: [...m.roles] } : {})
+      }
+    }
     if (!am && dm) {
-      record({ ...base, id: `mcp:${name}`, action: 'added', summary: `New service ${nm(name)} would run or connect to the address shown.`, target: serverTarget(dm), secretNames: secretNames(dm) }, true, 'New service')
+      record({ ...base, id: `mcp:${name}`, action: 'added', ...shown(dm, `New service ${nm(name)} would run or connect to the address shown.`) }, true, 'New service')
     } else if (am && !dm) {
       if (record({ ...base, id: `mcp:${name}`, action: 'removed', summary: `Service ${nm(name)} is removed.` }, false, '')) effMcp.delete(name)
     } else if (am && dm) {
       const next: TeamMcpDoc = structuredClone(am)
       if (!same(launchOf(am), launchOf(dm))) {
-        record({ ...base, id: `mcp:${name}:launch`, action: 'changed', summary: `Service ${nm(name)} would run or connect to something different.`, target: serverTarget(dm), secretNames: secretNames(dm) }, true, 'Changed what the service runs or connects to')
+        record({ ...base, id: `mcp:${name}:launch`, action: 'changed', ...shown(dm, `Service ${nm(name)} would run or connect to something different.`) }, true, 'Changed what the service runs or connects to')
       }
       if (am.enabled !== dm.enabled) {
         if (dm.enabled) record({ ...base, id: `mcp:${name}:enabled`, action: 'changed', summary: `Service ${nm(name)} is turned on.` }, true, 'Service turned on')
@@ -233,8 +301,7 @@ function engine(approvedIn: TeamDoc, diskIn: TeamDoc, force: string | null): Run
         else next.description = dm.description
         if (dm.registry === undefined) delete next.registry
         else next.registry = structuredClone(dm.registry)
-        if (dm.fromLibrary) next.fromLibrary = true
-        else delete next.fromLibrary
+        // fromLibrary is part of the launch (it relinks to this computer's stored sign-in): it waits with the rest of it.
       }
       // Which roles may use it.
       const ar = am.roles
@@ -285,7 +352,21 @@ function engine(approvedIn: TeamDoc, diskIn: TeamDoc, force: string | null): Run
       if (record({ ...base, id: `role:${slug}:prompt`, action: 'changed', summary: `${who}'s instructions changed.`, before: longText(ar.prompt), after: longText(dr.prompt) }, false, '')) next.prompt = dr.prompt
     }
     // Everything else that is not power.
-    const detailKeys: (keyof TeamRoleDoc)[] = ['name', 'description', 'responsibilities', 'tier', 'model', 'effort', 'color', 'reportsTo']
+    const detailKeys: (keyof TeamRoleDoc)[] = ['name', 'description', 'responsibilities', 'color']
+    // Becoming or ceasing to be the top of the chart always waits (a root swap is how a pulled file takes over the team);
+    // moving under a different parent applies.
+    if ((ar.reportsTo === null) !== (dr.reportsTo === null)) {
+      record({ ...base, id: `role:${slug}:root`, action: 'changed', summary: dr.reportsTo === null ? `${who} would become the top of the chart.` : `${who} would stop being the top of the chart.` }, true, 'Changes who is at the top of the chart')
+    } else detailKeys.push('reportsTo')
+    // A model that may spend more waits: a higher tier, any pinned model, or leaving a tier for anything but a lower one.
+    if (!same([ar.tier, ar.model], [dr.tier, dr.model])) {
+      if (modelMayCostMore(ar, dr)) record({ ...base, id: `role:${slug}:model`, action: 'changed', summary: `${who}'s model changes and may spend more.` }, true, 'May spend more')
+      else detailKeys.push('tier', 'model')
+    }
+    if (!same(ar.effort, dr.effort)) {
+      if (effortRaised(ar, dr)) record({ ...base, id: `role:${slug}:effort`, action: 'changed', summary: `${who}'s reasoning effort is raised and may spend more.` }, true, 'May spend more')
+      else detailKeys.push('effort')
+    }
     const changedDetails = detailKeys.filter((k) => !same(ar[k], dr[k]))
     if (changedDetails.length) {
       const labels = changedDetails.map((k) => (k === 'reportsTo' ? 'reporting line' : k === 'tier' || k === 'model' ? 'model' : k))
@@ -305,7 +386,7 @@ function engine(approvedIn: TeamDoc, diskIn: TeamDoc, force: string | null): Run
       if (record({ ...base, id: `role:${slug}:tools-removed`, action: 'changed', summary: `${who} loses ${joinAnd(removed)}.`, toolsBefore: ar.tools.map((t) => nm(t, 64)), toolsAfter: kept.map((t) => nm(t, 64)) }, false, '')) next.tools = kept
     }
     if (added.length) {
-      const elevated = added.filter((t) => ELEVATED_TOOLS.includes(t))
+      const elevated = added.filter(isElevatedTool)
       record({ ...base, id: `role:${slug}:tools`, action: 'changed', summary: `${who} gains ${joinAnd(added)}.`, toolsBefore: kept.map((t) => nm(t, 64)), toolsAfter: dr.tools.map((t) => nm(t, 64)), toolsAdded: added.map((t) => nm(t, 64)), ...(elevated.length ? { elevatedAdded: elevated.map((t) => nm(t, 64)) } : {}) }, true, elevated.length ? 'New tools, including elevated ones' : 'New tools')
     }
     // Spawning.
@@ -343,7 +424,8 @@ function engine(approvedIn: TeamDoc, diskIn: TeamDoc, force: string | null): Run
     const trivial = new Map<string, TeamRoleDoc>()
     for (const r of newRoles) {
       const explicitServer = d.mcp.some((m) => m.roles?.includes(r.slug))
-      const plain = !r.tools.some((t) => ELEVATED_TOOLS.includes(t)) && !r.canSpawn && r.skills.length === 0 && r.mcpServers.length === 0 && !explicitServer
+      // Only the allowlist is trivial; a new top of the chart always waits.
+      const plain = r.reportsTo !== null && r.tools.every((t) => TRIVIAL_TOOLS.includes(t)) && !r.canSpawn && r.skills.length === 0 && r.mcpServers.length === 0 && !explicitServer
       if (plain) trivial.set(r.slug, r)
     }
     const accepted = new Set<string>()
@@ -351,7 +433,7 @@ function engine(approvedIn: TeamDoc, diskIn: TeamDoc, force: string | null): Run
       changed = false
       for (const [slug, r] of trivial) {
         if (accepted.has(slug)) continue
-        if (r.reportsTo === null || effRoles.has(r.reportsTo) || accepted.has(r.reportsTo)) {
+        if (r.reportsTo !== null && (effRoles.has(r.reportsTo) || accepted.has(r.reportsTo))) {
           accepted.add(slug)
           effRoles.set(slug, structuredClone(r))
           changed = true
@@ -360,17 +442,17 @@ function engine(approvedIn: TeamDoc, diskIn: TeamDoc, force: string | null): Run
     }
     for (const r of newRoles) {
       const draft: Draft = { id: `role:${r.slug}`, kind: 'role', name: nm(r.name), file: roleFile(r.slug), action: 'added', summary: `${nm(r.name)} joins the team.`, after: longText(r.prompt), toolsAfter: r.tools.map((t) => nm(t, 64)) }
-      const elevated = [...r.tools.filter((t) => ELEVATED_TOOLS.includes(t)), ...(r.canSpawn ? ['canSpawn'] : [])]
+      const elevated = [...r.tools.filter(isElevatedTool), ...(r.canSpawn ? ['canSpawn'] : [])]
       if (elevated.length) draft.elevatedAdded = elevated.map((t) => nm(t, 64))
       if (accepted.has(r.slug)) applied.push({ ...draft, needsApproval: false })
       else {
-        const reason = trivial.has(r.slug) ? 'Reports to a role that needs review' : elevated.length ? 'New role with elevated tools' : r.skills.length || r.mcpServers.length || d.mcp.some((m) => m.roles?.includes(r.slug)) ? 'New role with skills or services' : 'New role'
+        const reason = r.reportsTo === null ? 'New top of the chart' : trivial.has(r.slug) ? 'Reports to a role that needs review' : elevated.length ? 'New role with elevated tools' : r.skills.length || r.mcpServers.length || d.mcp.some((m) => m.roles?.includes(r.slug)) ? 'New role with skills or services' : 'New role'
         pending.push({ ...draft, needsApproval: true, reason })
       }
     }
   } else {
     for (const r of newRoles) {
-      const elevated = [...r.tools.filter((t) => ELEVATED_TOOLS.includes(t)), ...(r.canSpawn ? ['canSpawn'] : [])]
+      const elevated = [...r.tools.filter(isElevatedTool), ...(r.canSpawn ? ['canSpawn'] : [])]
       pending.push({
         id: `role:${r.slug}`,
         kind: 'role',
@@ -399,22 +481,38 @@ function engine(approvedIn: TeamDoc, diskIn: TeamDoc, force: string | null): Run
   return { effective: normalizeDoc(eff), pending, applied }
 }
 
+/** Most powerful first: settings that loosen, roles with elevated tools, services, skills, then the rest. */
+function powerGroup(c: TeamFileChange): number {
+  if (c.kind === 'settings' && c.needsApproval && c.id !== 'settings:brief') return 0
+  if (c.kind === 'role' && c.elevatedAdded?.length) return 1
+  if (c.kind === 'mcp') return 2
+  if (c.kind === 'skill') return 3
+  return 4
+}
+
+/** Sorted by power group, then by id (stable, so a listing and its digest agree). */
 function byId(list: TeamFileChange[]): TeamFileChange[] {
-  return list.sort((x, y) => cmp(x.id, y.id))
+  return list.sort((x, y) => powerGroup(x) - powerGroup(y) || cmp(x.id, y.id))
+}
+
+export interface GateOptions {
+  firstSeen?: boolean
+  /** What a connector or library server would link to on this computer; absent: the file's own target is shown. */
+  link?: LinkResolver
 }
 
 /**
  * Splits the differences between `approved` and `disk` into `applied` (already in `effective`) and `pending`.
  * `firstSeen`: no team of this folder was ever approved here, so everything waits and `effective` is `approved`.
  */
-export function gateTeam(approved: TeamDoc, disk: TeamDoc, opts: { firstSeen?: boolean } = {}): { effective: TeamDoc; pending: TeamFileChange[]; applied: TeamFileChange[] } {
+export function gateTeam(approved: TeamDoc, disk: TeamDoc, opts: GateOptions = {}): { effective: TeamDoc; pending: TeamFileChange[]; applied: TeamFileChange[] } {
   if (opts.firstSeen) {
-    const r = engine(approved, disk, FIRST_SEEN_REASON)
+    const r = engine(approved, disk, FIRST_SEEN_REASON, opts.link)
     return { effective: normalizeDoc(approved), pending: byId(r.pending), applied: [] }
   }
-  const r = engine(approved, disk, null)
+  const r = engine(approved, disk, null, opts.link)
   if (chartProblem(r.effective) !== null) {
-    const f = engine(approved, disk, CHART_REASON)
+    const f = engine(approved, disk, CHART_REASON, opts.link)
     return { effective: normalizeDoc(approved), pending: byId(f.pending), applied: [] }
   }
   return { effective: r.effective, pending: byId(r.pending), applied: byId(r.applied) }
@@ -423,6 +521,6 @@ export function gateTeam(approved: TeamDoc, disk: TeamDoc, opts: { firstSeen?: b
 const EMPTY: TeamDoc = { settings: { brief: '', permissionMode: 'default' }, roles: [], skills: [], mcp: [] }
 
 /** Every difference between `before` (null: nothing) and `after`, all needing approval: the New project preview. */
-export function describeChanges(before: TeamDoc | null, after: TeamDoc): TeamFileChange[] {
-  return byId(engine(before ?? EMPTY, after, before ? 'Needs review' : FIRST_SEEN_REASON).pending)
+export function describeChanges(before: TeamDoc | null, after: TeamDoc, link?: LinkResolver): TeamFileChange[] {
+  return byId(engine(before ?? EMPTY, after, before ? 'Needs review' : FIRST_SEEN_REASON, link).pending)
 }

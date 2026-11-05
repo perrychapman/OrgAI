@@ -265,10 +265,11 @@ async function commitLeftoversUnlocked(wt: string, message: string): Promise<{ c
 }
 
 /** git output exactly as printed (the trimming `git()` does would eat the leading space of a porcelain line). */
-function gitRaw(root: string, args: string[]): Promise<{ ok: boolean; out: string; err: string }> {
+function gitRaw(root: string, args: string[]): Promise<{ ok: boolean; out: string; err: string; overflow?: boolean }> {
   return new Promise((resolve) => {
     execFile('git', args, { cwd: root, windowsHide: true, timeout: 60_000, maxBuffer: 8 * 1024 * 1024 }, (error, stdout, stderr) => {
-      resolve({ ok: !error, out: String(stdout), err: String(stderr ?? error?.message ?? '').trim() })
+      const overflow = (error as { code?: unknown } | null)?.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'
+      resolve({ ok: !error, out: String(stdout ?? ''), err: String(stderr ?? error?.message ?? '').trim(), ...(overflow ? { overflow: true } : {}) })
     })
   })
 }
@@ -282,9 +283,12 @@ const TEAM_PATHSPEC = ['.orgai/team.json', '.orgai/mcp.json', '.orgai/agents', '
  */
 export async function teamFilesStatusGit(root: string): Promise<{ ok: boolean; files: string[]; error?: string }> {
   if (!isGitRepo(root)) return { ok: false, files: [] }
-  const res = await gitRaw(root, ['status', '--porcelain', '-z', '--untracked-files=all', '--', ...TEAM_PATHSPEC])
-  if (!res.ok) return { ok: false, files: [], error: res.err }
+  // The repository's own config is untrusted: no file-system monitor (it is a program the repository names), literal paths.
+  const res = await gitRaw(root, ['-c', 'core.fsmonitor=false', '--literal-pathspecs', 'status', '--porcelain', '-z', '--untracked-files=all', '--', ...TEAM_PATHSPEC])
+  // Output past the buffer is a git that works and a huge change list, not "not a repository": keep what was read.
+  if (!res.ok && !res.overflow) return { ok: false, files: [], error: res.err }
   const parts = res.out.split('\0')
+  if (res.overflow) parts.pop() // the last entry may be cut
   const files: string[] = []
   for (let i = 0; i < parts.length; i++) {
     const entry = parts[i]
@@ -311,7 +315,8 @@ export async function teamFilesStatusGit(root: string): Promise<{ ok: boolean; f
 export async function commitPaths(root: string, paths: string[], message: string): Promise<{ committed: boolean; error?: string }> {
   if (!paths.length) return { committed: false }
   return withRepoLock(root, async () => {
-    const noHooks = ['-c', `core.hooksPath=${devNull}`]
+    // Paths come from a repository's status: literal, never a pathspec magic word or glob.
+    const noHooks = ['-c', `core.hooksPath=${devNull}`, '--literal-pathspecs']
     const add = await git(root, [...noHooks, 'add', '-A', '--', ...paths])
     if (!add.ok) {
       // A path that only HEAD knows (the old name of a staged rename, a staged deletion) cannot be added; the commit below

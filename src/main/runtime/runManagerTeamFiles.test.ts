@@ -105,6 +105,34 @@ describe('RunManager and team files (mock adapter)', () => {
     await m.stop(second.id)
   })
 
+  it('a pull ingested by the same save that approves a change never reaches the live run: only the approved change does (setLive)', async () => {
+    const p = mockProject()
+    c.svc.status(p.id)
+    c.projects.update(p.id, (x) => ({ ...x, permissionMode: 'default' }))
+    const { adapter, contexts } = capturing()
+    const setup = new SetupService(c.projects, {})
+    const m = new RunManager({ mock: adapter }, (e) => void events.push(e), new RunStore(join(c.data)), setup, () => 100, {
+      teamFiles: c.svc,
+      dataDir: c.data,
+      saveProjectPermissions: (id) => c.projects.update(id, (x) => ({ ...x, permissionMode: 'acceptEdits' }))
+    })
+    const run = await m.start({ project: c.projects.get(p.id)!, prompt: 'First run' })
+    await settled(run.id)
+    const ctx = contexts[0]
+    const briefBefore = ctx.project.brief
+    // A pull changes the brief in team.json (applies at once). The next save ingests it first.
+    const file = join(repo, '.orgai', 'team.json')
+    writeFileSync(file, readFileSync(file, 'utf8').replace(briefBefore, 'Pulled brief'), 'utf8')
+    expect(ctx.acceptEditsForProject?.()).toBe(true)
+    const stored = c.projects.get(p.id)!
+    expect(stored.brief).toBe('Pulled brief')
+    expect(stored.permissionMode).toBe('acceptEdits')
+    // The live run has the approved change and not the pulled one.
+    expect(ctx.project.permissionMode).toBe('acceptEdits')
+    expect(ctx.project.brief).toBe(briefBefore)
+    await m.stop(run.id)
+  })
+
   it('a run on an engagement writes nothing into its folder', async () => {
     const e = c.projects.create({ name: 'Eng', path: repo, brief: '', kind: 'engagement' }, undefined, {})
     const { adapter } = capturing()

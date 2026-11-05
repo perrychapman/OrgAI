@@ -1,6 +1,6 @@
 import { rmSync } from 'node:fs'
 import { join } from 'node:path'
-import type { TeamFileChange, TeamFilesUndoInfo } from '@shared/types'
+import type { McpServerSpec, TeamFileChange, TeamFilesUndoInfo } from '@shared/types'
 import { TEAM_FILES_LIST_MAX } from '@shared/types'
 import { atomicWrite, ensurePlainDir, projectDataDir, readPlain } from '../store/projectData'
 import type { TeamDoc } from './doc'
@@ -37,6 +37,17 @@ export interface TeamFilesState {
 }
 
 const BIG = 160 * 1024 * 1024
+/** Most server tombstones kept per project; the oldest go first, with their stored secrets. */
+export const SERVER_TOMBSTONES_MAX = 200
+
+export interface ServerTombstone {
+  name: string
+  /** The server id its secrets and OAuth tokens are stored under. */
+  id: string
+  /** The server as the project held it (no secret values live in a spec): launch, addedAt, source, oauth. */
+  spec: McpServerSpec
+  at: number
+}
 
 export function teamFilesDir(dataDir: string, projectId: string): string {
   return join(projectDataDir(dataDir, projectId), 'team-files')
@@ -45,6 +56,7 @@ export function teamFilesDir(dataDir: string, projectId: string): string {
 const stateFile = (d: string, id: string): string => join(teamFilesDir(d, id), 'state.json')
 const approvedFile = (d: string, id: string): string => join(teamFilesDir(d, id), 'approved.json')
 const undoFile = (d: string, id: string): string => join(teamFilesDir(d, id), 'undo.json')
+const tombstoneFile = (d: string, id: string): string => join(teamFilesDir(d, id), 'tombstones.json')
 
 const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
 
@@ -147,6 +159,32 @@ export class TeamFilesStore {
       return
     }
     this.write(projectId, undoFile(this.dataDir, projectId), JSON.stringify(doc))
+  }
+
+  /**
+   * Servers that left the project's team (a branch switch, a removed line, an Undo) and whose id, secrets and sign-in were
+   * kept: the same launch coming back takes the id again. Newest last. A separate file, so a stale copy of state.json can
+   * never write an old list back.
+   */
+  readTombstones(projectId: string): ServerTombstone[] {
+    try {
+      const j = readJson(tombstoneFile(this.dataDir, projectId))
+      if (!isObj(j) || !Array.isArray(j.items)) return []
+      const out: ServerTombstone[] = []
+      for (const x of j.items.slice(0, SERVER_TOMBSTONES_MAX)) {
+        if (!isObj(x) || typeof x.name !== 'string' || typeof x.id !== 'string' || !isObj(x.spec) || typeof x.at !== 'number') continue
+        const spec = x.spec as unknown as McpServerSpec
+        if (typeof spec.id !== 'string' || typeof spec.name !== 'string' || typeof spec.transport !== 'string') continue
+        out.push({ name: x.name, id: x.id, spec, at: x.at })
+      }
+      return out
+    } catch {
+      return []
+    }
+  }
+
+  writeTombstones(projectId: string, items: ServerTombstone[]): void {
+    this.write(projectId, tombstoneFile(this.dataDir, projectId), JSON.stringify({ items }))
   }
 
   /** Forget everything remembered about a project's team files. */

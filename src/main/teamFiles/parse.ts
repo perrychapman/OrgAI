@@ -22,7 +22,7 @@ import {
   type TeamFileProblem,
   type TeamFileWarning
 } from '@shared/types'
-import { ROLE_COLORS, isValidMcpServerName, skillDescriptionProblem, skillNameProblem, storedSkillEvaluation, teamReviewOf } from '@shared/defaults'
+import { MAX_CONCURRENT_SUBAGENTS_LIMIT, MAX_SUBAGENT_DEPTH_LIMIT, ROLE_COLORS, isValidMcpServerName, skillDescriptionProblem, skillNameProblem, storedSkillEvaluation, teamReviewOf } from '@shared/defaults'
 import { hiddenCharIn, hiddenCharProblem, isKeyLikeValue, reviewTarget } from '../capabilities/sanitize'
 import { validModelId } from '../connections/codexAccount'
 import { serverRiskRefusal, serverValueRefusal, slotRefusal, safeText } from '../kit/format'
@@ -55,8 +55,8 @@ export const TEAM_BRIEF_MAX = 20_000
 export const EFFORT_VALUES: readonly Effort[] = ['low', 'medium', 'high', 'xhigh', 'max']
 
 const REFS_MAX = 200
-const TOOL_RE = /^[A-Za-z][\w-]{0,127}$/
-const COLOR_RE = /^#[0-9a-f]{6}$/i
+export const TOOL_RE = /^[A-Za-z][\w-]{0,127}$/
+export const COLOR_RE = /^#[0-9a-f]{6}$/i
 const CONNECTOR_ID_RE = /^[a-z0-9][a-z0-9-]{0,63}$/
 const CONFLICT = 'It has merge conflict markers.'
 const MCP_STR_MAX = 8_000
@@ -372,8 +372,9 @@ function readSettings(o: Record<string, unknown>, base: TeamSettingsDoc | null, 
     if (v !== undefined) settings[k] = v as TeamSettingsDoc[K]
   }
   set('maxBudgetUsd', numField(o, 'maxBudgetUsd', 0, 1_000_000, false))
-  set('maxSubagentDepth', numField(o, 'maxSubagentDepth', 0, 1000, true))
-  set('maxConcurrentSubagents', numField(o, 'maxConcurrentSubagents', 0, 1000, true))
+  // Above the effective caps is a problem, not a silent clamp: the file would say more than any run can do.
+  set('maxSubagentDepth', numField(o, 'maxSubagentDepth', 0, MAX_SUBAGENT_DEPTH_LIMIT, true))
+  set('maxConcurrentSubagents', numField(o, 'maxConcurrentSubagents', 0, MAX_CONCURRENT_SUBAGENTS_LIMIT, true))
   set('maxWindowShare', numField(o, 'maxWindowShare', 0, 100, false))
   set('preferEverydayNearLimit', boolField(o, 'preferEverydayNearLimit'))
   set('isolateWriters', boolField(o, 'isolateWriters'))
@@ -453,7 +454,9 @@ export function serverFileRefusal(m: TeamMcpDoc): string | null {
   const first = errors.find((e) => !pins.has(e))
   if (first) return first
   const fields = { transport: m.transport, args: m.args, url: m.url, env: m.env, headers: m.headers }
-  const refusal = serverRiskRefusal(fields) ?? serverValueRefusal(fields) ?? slotRefusal(m.transport, m.secretEnv, m.secretHeaders)
+  // The command and the description are plain values too: a key pasted into either is committed like any argument.
+  const textual = { transport: 'stdio' as const, args: [m.command, m.description].filter((v): v is string => typeof v === 'string' && v !== '') }
+  const refusal = serverRiskRefusal(fields) ?? serverValueRefusal(fields) ?? serverValueRefusal(textual) ?? slotRefusal(m.transport, m.secretEnv, m.secretHeaders)
   if (refusal) return refusal
   const review = reviewTarget({ transport: m.transport, command: m.command, args: m.args, url: m.url, env: m.env, headers: m.headers })
   if (review.blockedReason) return review.blockedReason
@@ -686,7 +689,18 @@ function emptyResult(present: boolean): ParsedTeam {
   return { present, doc: null, problems: [], notes: [], warnings: [], heldPaths: [], digest: '' }
 }
 
-export function parseTeamFiles(files: TeamFile[], opts: { base: TeamDoc | null; agentsDirExists: boolean; readProblems?: TeamFileProblem[] }): ParsedTeam {
+export interface ParseOptions {
+  base: TeamDoc | null
+  agentsDirExists: boolean
+  readProblems?: TeamFileProblem[]
+  /**
+   * Injected by the service (parse has no catalog or library): a message when a server that names a connector or a library
+   * entry known on this computer carries a different address than that entry. The whole mcp.json is then a problem.
+   */
+  linkCheck?: (m: TeamMcpDoc) => string | null
+}
+
+export function parseTeamFiles(files: TeamFile[], opts: ParseOptions): ParsedTeam {
   try {
     return parseInner(files, opts)
   } catch {
@@ -699,7 +713,7 @@ export function parseTeamFiles(files: TeamFile[], opts: { base: TeamDoc | null; 
 const ROLE_PATH = new RegExp(`^${TEAM_FILES_AGENTS_DIR.replace(/[.]/g, '\\.')}/([^/]+)$`)
 const SKILL_PATH = new RegExp(`^${TEAM_FILES_SKILLS_DIR.replace(/[.]/g, '\\.')}/([^/]+)/(.+)$`)
 
-function parseInner(allFiles: TeamFile[], opts: { base: TeamDoc | null; agentsDirExists: boolean; readProblems?: TeamFileProblem[] }): ParsedTeam {
+function parseInner(allFiles: TeamFile[], opts: ParseOptions): ParsedTeam {
   const base = opts.base
   const readProblems = opts.readProblems ?? []
   const out = emptyResult(false)
@@ -884,9 +898,30 @@ function parseInner(allFiles: TeamFile[], opts: { base: TeamDoc | null; agentsDi
     held.add(TEAM_FILES_MCP_JSON)
   } else if (mcpFile) {
     const r = readMcp(mcpFile.data)
-    if (r.value) {
+    // A connector or library link must carry the address of the entry it would link on this computer.
+    let linkProblem: string | undefined
+    if (r.value && opts.linkCheck) {
+      for (const m of r.value) {
+        let msg: string | null = null
+        try {
+          msg = opts.linkCheck(m)
+        } catch {
+          msg = null
+        }
+        if (msg) {
+          const label = /^[\w.-]{1,48}$/.test(m.name) ? m.name : 'a server'
+          linkProblem = `Server ${label} was refused: ${safeText(msg, 300)}`
+          break
+        }
+      }
+    }
+    if (r.value && !linkProblem) {
       // Credential-shaped values are refused outright (serverFileRefusal), so there is nothing left to warn about.
       mcp = r.value
+    } else if (r.value && linkProblem) {
+      problem(TEAM_FILES_MCP_JSON, linkProblem, sha256Hex(normalizeForId(mcpFile.data)))
+      held.add(TEAM_FILES_MCP_JSON)
+      mcp = base?.mcp ?? []
     } else {
       problem(TEAM_FILES_MCP_JSON, r.problem ?? 'It could not be read.', sha256Hex(normalizeForId(mcpFile.data)))
       held.add(TEAM_FILES_MCP_JSON)

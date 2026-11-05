@@ -10,16 +10,20 @@ import {
   type TeamFileWarning,
   type ToolName
 } from '@shared/types'
-import { newId, storedSkillEvaluation, teamReviewOf } from '@shared/defaults'
+import { MAX_CONCURRENT_SUBAGENTS_LIMIT, MAX_SUBAGENT_DEPTH_LIMIT, newId, storedSkillEvaluation, teamReviewOf } from '@shared/defaults'
 import { hiddenCharIn } from '../capabilities/sanitize'
+import { skippedNote } from '../capabilities/localSkills'
+import { safeKitRelPath } from '../skills/files'
 import { validModelId } from '../connections/codexAccount'
 import { mergeOrgChart } from '../setup/orgMerge'
 import { normalizeDescription } from '../skills/skillMd'
 import type { TeamDoc, TeamMcpDoc, TeamRoleDoc, TeamSettingsDoc, TeamSkillDoc, TeamSkillFileDoc } from './doc'
 import { canonicalJson, normalizeDoc, normalizeText } from './digest'
 import {
+  COLOR_RE,
   EFFORT_VALUES,
   ROLE_SLUG_RE,
+  TOOL_RE,
   TEAM_BRIEF_MAX,
   TEAM_DESCRIPTION_MAX,
   TEAM_NAME_MAX,
@@ -42,8 +46,6 @@ import {
  */
 
 const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0)
-const COLOR_RE = /^#[0-9a-f]{6}$/i
-const TOOL_RE = /^[A-Za-z][\w-]{0,127}$/
 
 type Opts = { multiline?: boolean; prose?: boolean }
 
@@ -125,7 +127,17 @@ export interface DocFromProject {
   blocked?: string
 }
 
-export function docFromProject(project: Project, skillContent: (spec: SkillSpec) => { body: string; files: TeamSkillFileDoc[] } | null): DocFromProject {
+/** Skill file content as the project holds it. `skipped`: private-looking files (.env*, .pem, .key, dot-files) left out. */
+export interface SkillContent {
+  body: string
+  files: TeamSkillFileDoc[]
+  skipped?: string[]
+}
+
+/** A role file name the folder reader would refuse (Windows device names, trailing dots...), so the role would vanish on the next read. */
+export const roleFileUnsafe = (slug: string): boolean => !safeKitRelPath(`.orgai/agents/${slug}.md`)
+
+export function docFromProject(project: Project, skillContent: (spec: SkillSpec) => SkillContent | null): DocFromProject {
   const notes: string[] = []
   const warnings: TeamFileWarning[] = []
   const track = { stripped: false, cut: false }
@@ -142,8 +154,8 @@ export function docFromProject(project: Project, skillContent: (spec: SkillSpec)
     else notes.push(`A project setting (${k}) has a value the team files cannot hold and was left out.`)
   }
   put('maxBudgetUsd', project.maxBudgetUsd, okNum(project.maxBudgetUsd, 0, 1_000_000, false))
-  put('maxSubagentDepth', project.maxSubagentDepth, okNum(project.maxSubagentDepth, 0, 1000, true))
-  put('maxConcurrentSubagents', project.maxConcurrentSubagents, okNum(project.maxConcurrentSubagents, 0, 1000, true))
+  put('maxSubagentDepth', project.maxSubagentDepth, okNum(project.maxSubagentDepth, 0, MAX_SUBAGENT_DEPTH_LIMIT, true))
+  put('maxConcurrentSubagents', project.maxConcurrentSubagents, okNum(project.maxConcurrentSubagents, 0, MAX_CONCURRENT_SUBAGENTS_LIMIT, true))
   put('maxWindowShare', project.maxWindowShare, okNum(project.maxWindowShare, 0, 100, false))
   const plan = project.preferEverydayNearLimit ?? project.preferSonnetNearLimit
   put('preferEverydayNearLimit', plan, typeof plan === 'boolean')
@@ -185,6 +197,7 @@ export function docFromProject(project: Project, skillContent: (spec: SkillSpec)
       notes.push(`Skill ${label} is left out: ${problem}`)
       continue
     }
+    if (content.skipped?.length) notes.push(`Skill ${label}: ${skippedNote(content.skipped)}. They stay on this computer and are not written to the team files.`)
     if (t.stripped) notes.push(`Hidden characters were removed from the text of skill ${label}.`)
     if (t.cut) notes.push(`The text of skill ${label} was shortened.`)
     seenSkill.add(spec.name)
@@ -236,6 +249,10 @@ export function docFromProject(project: Project, skillContent: (spec: SkillSpec)
     const shown = typeof r.name === 'string' ? stripHidden(r.name, {}).slice(0, 60) : 'a role'
     if (typeof r.slug !== 'string' || !ROLE_SLUG_RE.test(r.slug)) {
       block(`The role "${shown}" has a name that cannot be a file name. Rename it so it uses lowercase letters, digits and hyphens.`)
+      continue
+    }
+    if (roleFileUnsafe(r.slug)) {
+      block(`The role "${shown}" has a name that is reserved on Windows (${r.slug}), so its file would not be read back. Rename it.`)
       continue
     }
     if (seenSlug.has(r.slug)) {

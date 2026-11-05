@@ -3178,9 +3178,9 @@ describe('approved installs and proposals keep the run current (setLive)', () =>
       }
     }
     // The saved project after the change: a new name, a server and a skill that grants only exist on it.
-    const saved: Project = { ...p, name: 'After', path: '/somewhere/else', mcpServers: [{ id: 'm1', name: 'docs', transport: 'http', url: 'https://d.test/mcp', enabled: true, source: 'user', addedAt: '' }] }
+    const saved: Project = { ...p, name: 'After', brief: 'Pulled from the files', path: '/somewhere/else', mcpServers: [{ id: 'm1', name: 'docs', transport: 'http', url: 'https://d.test/mcp', enabled: true, source: 'user', addedAt: '' }], skills: [{ id: 'sk1', name: 'triage' } as never] }
     const setup = fakeSetup(saved)
-    const forRun = vi.fn((proj: Project): RunSkill[] => (proj.name === 'After' ? [skill()] : []))
+    const forRun = vi.fn((proj: Project): RunSkill[] => (proj.mcpServers?.length || proj.skills?.length ? [skill()] : []))
     const m = new RunManager({ mock: adapter }, sink(), new RunStore(join(dir, 'data')), setup.service, () => 100, { skills: { forRun }, ...options })
     return { p, saved, m, ctxs, forRun }
   }
@@ -3196,16 +3196,20 @@ describe('approved installs and proposals keep the run current (setLive)', () =>
     const req = await waitFor(isType('proposal.request', (e) => e.proposal.kind === kind))
     m.decideProposal(run.id, req.proposal.id, { behavior: 'approve' })
     expect(await pending).toEqual({ behavior: 'approve' })
-    expect(ctx.project.name).toBe('After')
-    expect(ctx.project.mcpServers?.[0].name).toBe('docs')
+    // Only what the proposal touched moves; the rest of the saved project (here a name and a brief a pull would bring in
+    // the same save) never reaches the live run.
+    expect(ctx.project.name).toBe('Before')
+    expect(ctx.project.brief).toBe(p.brief)
     expect(ctx.project.path).toBe(path)
+    expect(ctx.project.mcpServers?.[0]?.name).toBe(kind === 'mcpServers' ? 'docs' : undefined)
+    expect(ctx.project.skills?.[0]?.id).toBe(kind === 'skills' ? 'sk1' : undefined)
     if (kind === 'orgChart') {
       // The org chart card says it applies from the next run: this run's grants stay (review M1).
       expect(ctx.skills!()).toEqual([])
       expect(forRun).toHaveBeenCalledTimes(callsBefore)
     } else {
       expect(ctx.skills!().map((s) => s.id)).toEqual(['sk1'])
-      expect(forRun).toHaveBeenLastCalledWith(expect.objectContaining({ name: 'After', path }), expect.any(Array))
+      expect(forRun).toHaveBeenLastCalledWith(expect.objectContaining({ name: 'Before', path }), expect.any(Array))
     }
     await m.stopAll()
   })
@@ -3244,7 +3248,8 @@ describe('approved installs and proposals keep the run current (setLive)', () =>
     const req = await waitFor(isType('mcpInstall.request'))
     m.answerMcpInstall(run.id, req.request.id, { approved: true, scope: 'project' })
     expect(await pending).toMatchObject({ approved: true })
-    expect(ctx.project.name).toBe('After')
+    // The install settled the servers (and the grants to them); the pulled name stays out of the live view.
+    expect(ctx.project.name).toBe('Before')
     expect(ctx.project.path).not.toBe('/somewhere/else')
     expect(ctx.skills!().map((s) => s.id)).toEqual(['sk1'])
     expect(ctx.mcpServers!().map((s) => s.name)).toEqual(['docs'])

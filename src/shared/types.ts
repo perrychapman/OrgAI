@@ -5695,6 +5695,11 @@ export const REPO_CONFIG_PATHS: readonly { path: string; effect: RepoConfigEffec
   { path: '.claude/routines', effect: 'tools' },
   { path: '.claude/output-styles', effect: 'tools' },
   { path: '.orgai/org.json', effect: 'tools' },
+  // Team files (src/main/teamFiles/): roles, skills and servers a project would take on, behind an approval card.
+  { path: '.orgai/team.json', effect: 'tools' },
+  { path: '.orgai/mcp.json', effect: 'tools' },
+  { path: '.orgai/agents', effect: 'tools' },
+  { path: '.orgai/skills', effect: 'tools' },
   { path: '.agents', effect: 'tools' },
   { path: 'CLAUDE.md', effect: 'instructions' },
   { path: 'CLAUDE.local.md', effect: 'instructions' },
@@ -5763,7 +5768,11 @@ export const TEAM_FILES_MAX_JSON_BYTES = 1024 * 1024
 export const TEAM_FILES_MAX_SERVERS = 200
 /** Largest whole team (every file together), bytes. Past it the team files are a problem and nothing is read or written. */
 export const TEAM_FILES_MAX_TOTAL_BYTES = 32 * 1024 * 1024
-/** How many files one status may list per list; the rest are counted in the plain-words text. */
+/**
+ * How many entries one status lists per list (changes, problems, notes, ...). Changes are sorted power first, so the cut
+ * only ever drops the least risky ones, and `omittedChanges` counts them: approve and create-from-folder refuse while
+ * anything is omitted, because the user could not have seen it.
+ */
 export const TEAM_FILES_LIST_MAX = 200
 
 /**
@@ -5821,6 +5830,13 @@ export interface TeamFileChange {
   target?: string
   /** MCP: secret slot names this computer must fill in before the server starts. */
   secretNames?: string[]
+  /**
+   * MCP: the file names a connector or a library server, so approving links this computer's stored entry and its stored
+   * sign-in. `target` is then the ENTRY's real target, not the file's address.
+   */
+  usesStoredSignIn?: true
+  /** MCP: the role slugs the server is limited to once approved. Absent: every role (the `summary` says so). */
+  reachesRoles?: string[]
 }
 
 /** A file or folder that could not be used. The last approved content stays and the file is never overwritten. */
@@ -5865,8 +5881,10 @@ export interface TeamFilesStatus {
   uncommitted: boolean
   /** Those files, folder-relative, at most TEAM_FILES_LIST_MAX. */
   uncommittedFiles: string[]
-  /** The changes waiting for approval (or refused, on 'rejected'). Empty when in sync. */
+  /** The changes waiting for approval (or refused, on 'rejected'). Empty when in sync. Most powerful first. */
   changes: TeamFileChange[]
+  /** Changes beyond TEAM_FILES_LIST_MAX that are not listed. Greater than 0: approve is refused ("Too many changes to review at once"). */
+  omittedChanges?: number
   /** The changes last applied at once from the files; what `undo` reverts. */
   applied: TeamFileChange[]
   problems: TeamFileProblem[]
@@ -5914,8 +5932,12 @@ export interface TeamFilesFound {
   roles: { name: string; slug: string; prompt: string; tools: string[]; elevated: string[]; reportsTo: string | null }[]
   skills: { name: string; description: string; scripts: string[] }[]
   mcpServers: { name: string; target: string; secretNames: string[]; connectorId?: string }[]
-  /** Every difference from nothing, for a review that matches the approval card. */
+  /** Every difference from nothing, for a review that matches the approval card. Most powerful first. */
   changes: TeamFileChange[]
+  /** Changes beyond TEAM_FILES_LIST_MAX that are not listed. Greater than 0: `digest` is absent and creating is refused. */
+  omittedChanges?: number
+  /** The team's settings as the files hold them, in plain words (permission mode, limits, switches). */
+  settings?: { label: string; value: string }[]
   problems: TeamFileProblem[]
   warnings: TeamFileWarning[]
 }
