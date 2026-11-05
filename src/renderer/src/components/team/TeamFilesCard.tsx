@@ -32,7 +32,7 @@ function PromptDetails({ summary, text, name }: { summary: string; text: string;
   return (
     <details className="team-files-prompt">
       <summary>{summary}</summary>
-      {text ? <ClampText text={text} label={`${name} ${summary.toLowerCase()}`} /> : <p className="team-files-empty">Empty.</p>}
+      {text ? <ClampText text={text} label={`${showHidden(name)} ${summary.toLowerCase()}`} /> : <p className="team-files-empty">Empty.</p>}
     </details>
   )
 }
@@ -130,13 +130,11 @@ export default function TeamFilesCard({
   const bodyRef = useRef<HTMLDivElement>(null)
   // `scrolls` is live (null: not measured yet or hidden; a layout that settles later can turn it on); `reachedEnd` is kept
   // once the reader got to the bottom of this digest's list.
-  const [reachedEnd, setReachedEnd] = useState(false)
-  const [scrolls, setScrolls] = useState<boolean | null>(null)
-  const reviewed = scrolls === false || reachedEnd
   const digest = status.digest
-  useEffect(() => {
-    setReachedEnd(false)
-  }, [digest, status.projectId])
+  const readKey = `${status.projectId}:${digest ?? ''}`
+  const [readFor, setReadFor] = useState<string | null>(null)
+  const [scrolls, setScrolls] = useState<boolean | null>(null)
+  const reviewed = scrolls === false || readFor === readKey
   useEffect(() => {
     const el = bodyRef.current
     if (!el) return undefined
@@ -147,7 +145,7 @@ export default function TeamFilesCard({
       }
       const over = el.scrollHeight - el.clientHeight > 4
       setScrolls(over)
-      if (over && el.scrollHeight - el.scrollTop - el.clientHeight <= 4) setReachedEnd(true)
+      if (over && el.scrollHeight - el.scrollTop - el.clientHeight <= 4) setReadFor(readKey)
     }
     measure()
     el.addEventListener('scroll', measure, { passive: true })
@@ -158,7 +156,7 @@ export default function TeamFilesCard({
       el.removeEventListener('scroll', measure)
       ro.disconnect()
     }
-  }, [digest, expanded, compact])
+  }, [digest, readKey, expanded, compact])
   const blocked = approveBlockedReason(status) ?? (reviewed ? null : compact && !expanded ? READ_FIRST_COMPACT_TEXT : READ_FIRST_TEXT)
   const title = cardTitle(status)
   const omitted = status.omittedChanges ?? 0

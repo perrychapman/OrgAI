@@ -109,7 +109,8 @@
   }
   .team-files-card {
     flex: 1 1 auto;
-    min-height: 0;
+    /* A floor: with the Team assistant open under it the tray scrolls instead of clipping Approve and Reject. */
+    min-height: 200px;
   }
   .team-files-card .decision-body {
     /* Content-sized, so the tray asks for the whole list; the grid clamps the tray and this shrinks to fit. */

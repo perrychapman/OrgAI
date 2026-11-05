@@ -2,7 +2,7 @@ import { useCallback, useRef, useState } from 'react'
 import type { TeamFilesActionResult, TeamFilesStatus } from '@shared/types'
 import { useAppStore } from '../../store/useAppStore'
 import { cleanIpcError } from '../../lib/ipcError'
-import { TEAM_FILES_STALE_TEXT, isStaleDecision, statusKey } from '../../lib/teamFiles'
+import { TEAM_FILES_STALE_TEXT, cardVisible, isStaleDecision, statusKey } from '../../lib/teamFiles'
 
 export type TeamFilesBusy = 'commit' | 'enable' | 'approve' | 'reject' | 'undo' | null
 
@@ -93,9 +93,9 @@ export function useTeamFilesActions(projectId: string): {
         } catch (e) {
           if (isStaleDecision(e)) {
             await useAppStore.getState().refreshTeamFiles(projectId)
-            fail(TEAM_FILES_STALE_TEXT)
-            // The card may be gone after the re-fetch; the polite status line says it too.
-            say(TEAM_FILES_STALE_TEXT)
+            // One voice: the card's alert when the card survived the re-fetch, else the status line.
+            if (cardVisible(useAppStore.getState().teamFilesByProject[projectId])) fail(TEAM_FILES_STALE_TEXT)
+            else say(TEAM_FILES_STALE_TEXT)
           } else {
             fail(cleanIpcError(e, kind === 'approve' ? 'The changes could not be approved.' : 'The changes could not be rejected.'))
           }
