@@ -14,7 +14,8 @@ import type {
   KnowledgeNodeWriteResult,
   KnowledgeRetireInput,
   KnowledgeRetireResult,
-  KnowledgeSource
+  KnowledgeSource,
+  HostRpcErrorCode
 } from '@shared/types'
 import {
   KNOWLEDGE_ALIASES_MAX,
@@ -531,11 +532,11 @@ export function upsertNode(dataDir: string, projectId: string, input: KnowledgeN
   return { node: target, created: false, factsAdded: newTexts.length, aliasesSkipped, ...(summaryKept ? { summaryKept: true } : {}) }
 }
 
-/** The refusal of a compare-and-set save whose expectedUpdatedAt no longer matches (code 'stale'). */
+/** The refusal of a compare-and-set save whose expectedUpdatedAt no longer matches (code 'stale_revision', a HostRpcErrorCode). */
 export const STALE_NODE_MESSAGE = 'This item changed since you opened it. Reload it and try again.'
 
 function staleError(): Error {
-  return Object.assign(new Error(STALE_NODE_MESSAGE), { code: 'stale' })
+  return Object.assign(new Error(STALE_NODE_MESSAGE), { code: 'stale_revision' satisfies HostRpcErrorCode })
 }
 
 /** saveNodeForUser's appendFacts: undefined = none; a list of at most KNOWLEDGE_NODE_FACTS_MAX fact texts. */
@@ -566,7 +567,7 @@ function dedupeFactTexts(texts: string[], existing: string[]): string[] {
  * unknown id is refused; no id = a new user fact), omitted = unchanged; `aliases`, `summary`, `noteIds` given replace,
  * omitted keep; `retired` given sets it. The source stamp is the user's.
  *
- * cli-spec 3.6 item 3: `expectedUpdatedAt` (only with nodeId; a finite number) refuses the save with code 'stale'
+ * cli-spec 3.6 item 3: `expectedUpdatedAt` (only with nodeId; a finite number) refuses the save with code 'stale_revision'
  * when the stored node's updatedAt differs. `appendFacts` adds each text as a new user fact (after `facts`, when both
  * are given) unless a live fact with the same text (knowledgeNameKey, the agent upsert's rule) is already on the node
  * or earlier in the list; it works on create and update, and the KNOWLEDGE_NODE_FACTS_MAX cap counts the result.

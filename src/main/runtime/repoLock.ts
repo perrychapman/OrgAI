@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { currentHostInstanceId } from '../host/identity'
-import { isLiveProcess as defaultIsLiveProcess, selfStartTime } from '../host/processInfo'
+import { isLiveProcessCached as defaultIsLiveProcess, selfStartTime } from '../host/processInfo'
 
 /**
  * The repository lock (cli-spec 3.2 (5)). One lock per git repository, keyed by its common git dir, so the main
@@ -283,6 +283,22 @@ function inspectLeftovers(commonDir: string, checkout: string): string[] {
   return found
 }
 
+/**
+ * True when the lock dir moved to `moved` is still the one judged stale: the same owner (by token, else pid, host and
+ * acquiredAt), or, judged without an owner, still without one and not young (a fresh mkdir by another contender).
+ */
+function sameLock(judged: RepoLockOwner | undefined, moved: string): boolean {
+  const now = readOwner(moved)
+  if (!judged) {
+    if (now) return false
+    const mtime = newestMtime(moved)
+    return mtime === undefined || Date.now() - mtime > config.missingOwnerGraceMs
+  }
+  if (!now) return false
+  if (judged.token !== undefined || now.token !== undefined) return judged.token === now.token
+  return judged.pid === now.pid && judged.hostInstanceId === now.hostInstanceId && judged.acquiredAt === now.acquiredAt
+}
+
 interface DirLock {
   release(): void
 }
@@ -324,6 +340,17 @@ async function acquireDirLock(common: CommonDir, checkout: string): Promise<DirL
           if ((re as NodeJS.ErrnoException).code === 'ENOENT') continue // another process reclaimed it first
           throw re
         }
+        // The check and the rename are not one step: another contender may have reclaimed the stale lock and taken a
+        // fresh one in between. If the copy we moved is not the lock we judged, put it back and look again.
+        if (!sameLock(owner, stale)) {
+          try {
+            renameSync(stale, lockDir)
+          } catch {
+            // A newer lock dir is already there: the one we moved is lost, and its holder sees that at release.
+            rmSync(stale, { recursive: true, force: true })
+          }
+          continue
+        }
         rmSync(stale, { recursive: true, force: true })
         const notice: RepoLockRecoveryNotice = {
           commonDir: common.path,
@@ -363,6 +390,9 @@ async function acquireDirLock(common: CommonDir, checkout: string): Promise<DirL
       writeFileSync(`${ownerFile}.tmp`, JSON.stringify(mine), 'utf8')
       renameSync(`${ownerFile}.tmp`, ownerFile)
     } catch (e) {
+      // ENOENT: a contender moved our fresh dir away (it judged the previous lock); whatever is at the path now is
+      // not ours, so never remove it: start over.
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') continue
       rmSync(lockDir, { recursive: true, force: true })
       throw e
     }

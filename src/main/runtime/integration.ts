@@ -47,6 +47,18 @@ interface MergeTarget {
   parent?: { id: string; name: string; branch: string; path: string }
 }
 
+function errorText(e: unknown): string {
+  return e instanceof Error ? e.message : String(e)
+}
+
+/** A merge attempt that threw before git could answer: the branch stays pending, reported as a conflict. */
+function integrationFailure(info: WorktreeInfo, e: unknown): { info: WorktreeInfo; message: string } {
+  return {
+    info: { ...info, status: 'conflict' },
+    message: `The merge of ${info.branch} could not run (${errorText(e)}). Its changes are still on that branch.`
+  }
+}
+
 export class WorktreeIntegrator {
   /** Isolated agents by agent id. */
   private worktrees = new Map<string, WorktreeInfo>()
@@ -154,7 +166,9 @@ export class WorktreeIntegrator {
     // Commit the parent's own work now, so its reports merge into a clean, committed worktree.
     const path = (await findWorktree(this.root, agentId))?.path ?? wt.path
     const brief = this.briefs.get(agentId) ?? this.host.agent(agentId)?.activity ?? ''
-    const commit = await this.exclusive(path, () => commitLeftovers(path, `${name}: ${brief}`.slice(0, 120)))
+    const commit = await this.exclusive(path, () => commitLeftovers(path, `${name}: ${brief}`.slice(0, 120))).catch(
+      (e: unknown): { committed: boolean; error?: string } => ({ committed: false, error: errorText(e) })
+    )
     if (commit.error) this.log('warn', `${name}: could not commit its own changes before its reports merge: ${commit.error}`)
     // Children may have settled while we were committing.
     await this.settle(agentId)
@@ -189,9 +203,12 @@ export class WorktreeIntegrator {
     const agent = this.host.agent(agentId)
     const name = agent?.name ?? agentId
     const brief = this.briefs.get(agentId) ?? agent?.activity ?? ''
+    // The git layer can throw now (the cross-process repository lock: a timeout against another OrgAI process, an
+    // unwritable owner file). Callers fire and forget, so a throw would leave the worktree 'merging' for good and its
+    // parent waiting forever: settle it as a conflict the orchestrator can retry with the integrate tool.
     const result = await this.exclusive(target.root, () =>
       integrateWorktree(target.root, info, `${name}: ${brief}`.slice(0, 120), this.reviewGate(agentId, info, target.root))
-    )
+    ).catch((e: unknown) => integrationFailure(info, e))
     this.set(agentId, result.info)
     const level = result.info.status === 'conflict' ? 'warn' : 'info'
     this.log(level, `${name}: ${result.message}`)
@@ -285,7 +302,7 @@ export class WorktreeIntegrator {
     const brief = ownerId ? this.briefs.get(ownerId) ?? owner?.activity ?? '' : wt.branch
     const result = await this.exclusive(target.root, () =>
       integrateWorktree(target.root, info, `${name ?? 'report'}: ${brief}`.slice(0, 120), this.reviewGate(ownerId ?? null, info, target.root))
-    )
+    ).catch((e: unknown) => integrationFailure(info, e))
     if (ownerId) this.set(ownerId, result.info)
     this.log(result.info.status === 'conflict' ? 'warn' : 'info', `${name ?? wt.branch}: ${result.message}`)
     if (ownerId && !target.parent && GONE.has(result.info.status)) await this.retarget(ownerId)
@@ -336,7 +353,9 @@ export class WorktreeIntegrator {
     for (const wt of pending) {
       let note = ''
       if (wt.exists && wt.uncommittedFiles > 0) {
-        const c = await commitLeftovers(wt.path, 'OrgAI: uncommitted work left by an earlier run')
+        const c = await commitLeftovers(wt.path, 'OrgAI: uncommitted work left by an earlier run').catch(
+          (e: unknown): { committed: boolean; error?: string } => ({ committed: false, error: errorText(e) })
+        )
         note = c.committed ? ' (uncommitted work was just committed to keep it safe)' : c.error ? ` (could not commit leftovers: ${c.error})` : ''
       }
       const files = wt.changedFiles.length ? `, touches ${wt.changedFiles.slice(0, 8).join(', ')}${wt.changedFiles.length > 8 ? ', …' : ''}` : ''

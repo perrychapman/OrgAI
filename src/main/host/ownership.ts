@@ -17,7 +17,7 @@ import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import type { DaemonInfo, HostKind, HostState } from '@shared/types'
 import { HOST_INSTANCE_ID_RE, currentHostInstanceId } from './identity'
-import { isLiveProcess as realIsLiveProcess, processStartTime, selfStartTime } from './processInfo'
+import { isLiveProcessCached as realIsLiveProcess, processStartTime, selfStartTime } from './processInfo'
 
 /**
  * Pre-store host ownership of a data dir (cli-spec 3.2(2), Step 0 of booting a host). Runs before any store
@@ -57,6 +57,26 @@ export type OwnershipBoundary =
   | 'after-daemon-starting'
   | 'before-startup-release'
   | 'after-ready'
+
+/** Named points in {@link HostOwnership.release} where `faultAt` throws (a crash while giving up ownership). */
+export type ReleaseBoundary =
+  | 'release-after-startup-mkdir'
+  | 'release-after-owner-tmp'
+  | 'release-after-owner-rename'
+  | 'release-after-secret-removed'
+  | 'release-after-daemon-unlink'
+  | 'release-after-close'
+  | 'release-before-startup-release'
+
+export const RELEASE_BOUNDARIES: readonly ReleaseBoundary[] = [
+  'release-after-startup-mkdir',
+  'release-after-owner-tmp',
+  'release-after-owner-rename',
+  'release-after-secret-removed',
+  'release-after-daemon-unlink',
+  'release-after-close',
+  'release-before-startup-release'
+]
 
 export const OWNERSHIP_BOUNDARIES: readonly OwnershipBoundary[] = [
   'after-run-dir',
@@ -114,7 +134,7 @@ export class HostStartingOrBusyError extends HostOwnershipError {
 export class OwnershipFaultError extends Error {
   /** Tests: make the in-process listener die like a crashed process's (its socket file stays). Idempotent. */
   crash: () => Promise<void> = () => Promise.resolve()
-  constructor(readonly boundary: OwnershipBoundary) {
+  constructor(readonly boundary: OwnershipBoundary | ReleaseBoundary) {
     super(`Injected ownership fault at ${boundary}`)
     this.name = 'OwnershipFaultError'
   }
@@ -146,7 +166,7 @@ export interface OwnershipOptions {
   /** Connection probe of the incumbent's endpoint (default 1500). */
   probeTimeoutMs?: number
   /** Crash injection (tests only). */
-  faultAt?: OwnershipBoundary
+  faultAt?: OwnershipBoundary | ReleaseBoundary
   /** Platform override (tests only; the win32 pipe path is UNVERIFIED and not exercised live). */
   platform?: NodeJS.Platform
 }
@@ -254,17 +274,23 @@ interface OwnerRecord {
   pid: number
   processStartTime?: string
   hostInstanceId?: string
+  createdAt?: number
 }
 
 function parseOwner(raw: unknown): OwnerRecord | null {
   if (!isObject(raw)) return null
-  const { pid, processStartTime: start, hostInstanceId } = raw
+  const { pid, processStartTime: start, hostInstanceId, createdAt } = raw
   if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0) return null
   return {
     pid,
     ...(typeof start === 'string' ? { processStartTime: start } : {}),
-    ...(typeof hostInstanceId === 'string' ? { hostInstanceId } : {})
+    ...(typeof hostInstanceId === 'string' ? { hostInstanceId } : {}),
+    ...(typeof createdAt === 'number' ? { createdAt } : {})
   }
+}
+
+function sameOwner(a: OwnerRecord, b: OwnerRecord): boolean {
+  return a.pid === b.pid && a.processStartTime === b.processStartTime && a.hostInstanceId === b.hostInstanceId && a.createdAt === b.createdAt
 }
 
 function errCode(e: unknown): string | undefined {
@@ -337,7 +363,7 @@ export async function acquireHostOwnership(opts: OwnershipOptions): Promise<Host
   const liveWaitMs = opts.liveWaitMs ?? 30_000
   const probeTimeoutMs = opts.probeTimeoutMs ?? 1500
   const runtimeBase = opts.runtimeBase ?? defaultRuntimeBase()
-  const fault = (b: OwnershipBoundary): void => {
+  const fault = (b: OwnershipBoundary | ReleaseBoundary): void => {
     if (opts.faultAt === b) throw new OwnershipFaultError(b)
   }
 
@@ -448,7 +474,7 @@ export async function acquireHostOwnership(opts: OwnershipOptions): Promise<Host
             await sleep(retryMs)
             continue
           }
-          reclaimStartupDir()
+          reclaimStartupDir({ owner })
           continue
         }
         // owner.json missing or corrupt: a writer between mkdir and rename while the dir is young.
@@ -463,7 +489,7 @@ export async function acquireHostOwnership(opts: OwnershipOptions): Promise<Host
           await sleep(retryMs)
           continue
         }
-        reclaimStartupDir()
+        reclaimStartupDir({ owner: null })
         continue
       }
       fault('after-startup-mkdir')
@@ -477,8 +503,12 @@ export async function acquireHostOwnership(opts: OwnershipOptions): Promise<Host
     }
   }
 
-  /** Rename a dead mutex out of the way (atomic: one contender wins), then remove the renamed copy. */
-  function reclaimStartupDir(): void {
+  /**
+   * Rename a dead mutex out of the way (atomic: one contender wins), then remove the renamed copy. With `judged`, the
+   * copy is first compared with what was judged dead (its owner, or still no owner and not young): when another
+   * contender reclaimed it and took a fresh one between our check and the rename, the fresh one is put back.
+   */
+  function reclaimStartupDir(judged?: { owner: OwnerRecord | null }): void {
     const stale = `${startupDir}.stale-${randomUUID()}`
     try {
       renameSync(startupDir, stale)
@@ -486,7 +516,28 @@ export async function acquireHostOwnership(opts: OwnershipOptions): Promise<Host
       if (errCode(e) === 'ENOENT') return // another contender won the rename; loop
       throw e
     }
+    if (judged && !stillJudged(stale, judged)) {
+      try {
+        renameSync(stale, startupDir)
+      } catch {
+        // A newer mutex is already there; the moved one is lost and its holder goes on without it.
+        rmSync(stale, { recursive: true, force: true })
+      }
+      return
+    }
     rmSync(stale, { recursive: true, force: true })
+  }
+
+  function stillJudged(moved: string, judged: { owner: OwnerRecord | null }): boolean {
+    const owner = parseOwner(readJsonFile(join(moved, OWNER_JSON), 4096))
+    if (judged.owner) return !!owner && sameOwner(owner, judged.owner)
+    if (owner) return false
+    try {
+      // Still as old as when it was judged; a fresh mkdir by another contender is young.
+      return now() - statSync(moved).mtimeMs >= startupYoungMs
+    } catch {
+      return false
+    }
   }
 
   /** Our own mutex, released the same atomic way. */
@@ -663,40 +714,81 @@ export async function acquireHostOwnership(opts: OwnershipOptions): Promise<Host
       release() {
         if (released) return
         released = true
-        // One try at the mutex so a host starting right now does not read a half-removed state; go on regardless.
-        let tookMutex = false
         try {
-          mkdirSync(startupDir, { mode: 0o700 })
-          tookMutex = true
-          writeFileSync(join(startupDir, OWNER_JSON), JSON.stringify({ pid, ...(myStart ? { processStartTime: myStart } : {}), hostInstanceId: id, createdAt: now() }), { mode: 0o600 })
-        } catch {
-          /* busy (or unwritable): go on anyway */
+          releaseNow()
+        } catch (e) {
+          // A crash injected while releasing: nothing more is cleaned up (tests call e.crash()).
+          if (e instanceof OwnershipFaultError) e.crash = () => simulateCrash(srv, info.endpoint)
+          throw e
         }
-        let ours = false
+      }
+    }
+
+    function releaseNow(): void {
+      // One try at the mutex so a host starting right now does not read a half-removed state; go on regardless.
+      let tookMutex = false
+      try {
+        mkdirSync(startupDir, { mode: 0o700 })
+        tookMutex = true
+      } catch {
+        /* busy (or unwritable): go on anyway */
+      }
+      if (tookMutex) {
+        fault('release-after-startup-mkdir')
+        // tmp + rename like acquisition, so a contender never reads a half-written owner.json.
         try {
-          ours = readDaemonInfo(dataDir)?.hostInstanceId === id
-          if (ours) unlinkSync(daemonPath)
-        } catch {
-          /* gone */
+          const ownerTmp = join(startupDir, `${OWNER_JSON}.tmp`)
+          writeFileSync(ownerTmp, JSON.stringify({ pid, ...(myStart ? { processStartTime: myStart } : {}), hostInstanceId: id, createdAt: now() }), { mode: 0o600 })
+          fault('release-after-owner-tmp')
+          renameSync(ownerTmp, join(startupDir, OWNER_JSON))
+        } catch (e) {
+          if (e instanceof OwnershipFaultError) throw e
+          /* unwritable: the dir alone still marks the mutex taken */
         }
+        fault('release-after-owner-rename')
+      }
+      let ours = false
+      try {
+        ours = readDaemonInfo(dataDir)?.hostInstanceId === id
+      } catch {
+        /* unreadable: not provably ours */
+      }
+      // The secret goes first, while daemon.json still names us: once daemon.json is gone a newer host may write its
+      // own daemon.secret (same file name), and removing it afterwards would delete that one.
+      if (ours) {
         try {
-          srv.close()
-        } catch {
-          /* already closed */
-        }
-        try {
-          if (platform !== 'win32') rmSync(info.endpoint, { force: true })
-          if (rtDir) rmSync(rtDir, { recursive: true, force: true })
-          if (ours) rmSync(secretPath, { force: true })
+          rmSync(secretPath, { force: true })
         } catch {
           /* best effort */
         }
-        if (tookMutex) {
-          try {
-            rmSync(startupDir, { recursive: true, force: true })
-          } catch {
-            /* best effort */
-          }
+      }
+      fault('release-after-secret-removed')
+      if (ours) {
+        try {
+          unlinkSync(daemonPath)
+        } catch {
+          /* gone */
+        }
+      }
+      fault('release-after-daemon-unlink')
+      try {
+        srv.close()
+      } catch {
+        /* already closed */
+      }
+      fault('release-after-close')
+      try {
+        if (platform !== 'win32') rmSync(info.endpoint, { force: true })
+        if (rtDir) rmSync(rtDir, { recursive: true, force: true })
+      } catch {
+        /* best effort */
+      }
+      if (tookMutex) {
+        fault('release-before-startup-release')
+        try {
+          rmSync(startupDir, { recursive: true, force: true })
+        } catch {
+          /* best effort */
         }
       }
     }

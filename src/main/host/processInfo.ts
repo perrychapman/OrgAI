@@ -18,7 +18,8 @@ function validPid(pid: number): boolean {
 
 /**
  * The process's start time as an opaque, comparable string, or undefined when it cannot be read.
- * darwin: `ps -o lstart=` (second resolution). linux: field 22 of /proc/<pid>/stat (clock ticks since boot).
+ * darwin: `ps -o lstart=` (second resolution), run with LC_ALL=C and TZ=UTC so the text never depends on the reader's
+ * locale or time zone (two processes with different LANG / TZ must read one process's start time identically). linux: field 22 of /proc/<pid>/stat (clock ticks since boot).
  * win32: PowerShell StartTime in UTC, ISO 8601 (UNVERIFIED: never run on Windows from this code).
  * Compare values only from the same platform; the formats differ.
  */
@@ -28,6 +29,7 @@ export function processStartTime(pid: number): string | undefined {
     if (process.platform === 'darwin') {
       const out = execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], {
         encoding: 'utf8',
+        env: fixedPsEnv(),
         timeout: EXEC_TIMEOUT_MS,
         windowsHide: true,
         stdio: ['ignore', 'pipe', 'ignore']
@@ -55,6 +57,22 @@ export function processStartTime(pid: number): string | undefined {
     /* gone, no permission, tool missing or timed out */
   }
   return undefined
+}
+
+/**
+ * The caller's environment with every locale variable pinned to C and the time zone to UTC: BSD ps formats lstart with
+ * strftime %c in local time, so LANG / LC_* / TZ would otherwise change the string.
+ */
+function fixedPsEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {}
+  for (const [k, v] of Object.entries(process.env)) {
+    if (k === 'LANG' || k === 'LANGUAGE' || k === 'TZ' || k.startsWith('LC_')) continue
+    env[k] = v
+  }
+  env.LC_ALL = 'C'
+  env.LANG = 'C'
+  env.TZ = 'UTC'
+  return env
 }
 
 let selfStart: { value: string | undefined } | undefined
@@ -91,4 +109,37 @@ export function isLiveProcess(pid: number, startTime?: string, deps: LiveProcess
   const current = (deps.startTimeOf ?? processStartTime)(pid)
   if (current === undefined || current === '') return true
   return current === startTime
+}
+
+/** How long a confirmed start-time match is trusted before {@link isLiveProcessCached} reads the start time again. */
+export const START_TIME_RECHECK_MS = 5000
+const LIVENESS_CACHE_MAX = 256
+/** `${pid}\0${startTime}` -> when the start time last matched. */
+const confirmed = new Map<string, number>()
+
+/**
+ * {@link isLiveProcess} for polling loops (the repo lock, the startup mutex): reading another process's start time
+ * spawns `ps` (darwin) or PowerShell (win32) synchronously, so once it matched for (pid, startTime) only the cheap
+ * signal-0 probe runs until `recheckMs` has passed. A pid the OS reports gone is dead at once either way.
+ */
+export function isLiveProcessCached(
+  pid: number,
+  startTime?: string,
+  deps: LiveProcessDeps & { now?: () => number; recheckMs?: number } = {}
+): boolean {
+  if (startTime === undefined || startTime === '') return isLiveProcess(pid, startTime, deps)
+  const now = (deps.now ?? Date.now)()
+  const key = `${pid}\0${startTime}`
+  const at = confirmed.get(key)
+  if (at !== undefined && now - at < (deps.recheckMs ?? START_TIME_RECHECK_MS)) {
+    if (isLiveProcess(pid, undefined, deps)) return true
+    confirmed.delete(key)
+    return false
+  }
+  const live = isLiveProcess(pid, startTime, deps)
+  if (live) {
+    if (confirmed.size >= LIVENESS_CACHE_MAX) confirmed.clear()
+    confirmed.set(key, now)
+  } else confirmed.delete(key)
+  return live
 }

@@ -193,6 +193,31 @@ describe('withRepoLock (repoLock.ts)', () => {
     expect(notices).toEqual([])
   })
 
+  it('puts a lock back when it changed hands between the dead-owner check and the rename', async () => {
+    const lockDir = lockDirOf(common)
+    mkdirSync(lockDir)
+    writeFileSync(join(lockDir, 'owner.json'), JSON.stringify({ pid: 999_999, hostInstanceId: 'dddddddddddd', acquiredAt: Date.now(), token: 'dead' }))
+    let calls = 0
+    configureRepoLock({
+      timeoutMs: 200,
+      pollMs: 20,
+      isLiveProcess: (pid) => {
+        calls++
+        if (pid !== 999_999) return true
+        // Another contender reclaims the dead lock and takes a fresh one while we are still checking.
+        rmSync(lockDir, { recursive: true, force: true })
+        mkdirSync(lockDir)
+        writeFileSync(join(lockDir, 'owner.json'), JSON.stringify({ pid: 4242, hostInstanceId: 'eeeeeeeeeeee', acquiredAt: Date.now(), token: 'fresh' }))
+        return false
+      }
+    })
+    await expect(withRepoLock(repo, async () => {})).rejects.toBeInstanceOf(RepoLockTimeoutError)
+    expect(calls).toBeGreaterThan(1)
+    expect(JSON.parse(readFileSync(join(lockDir, 'owner.json'), 'utf8')).token).toBe('fresh')
+    expect(notices).toEqual([])
+    expect(staleDirs()).toEqual([])
+  })
+
   it('reclaims a leftover lock owned by this very process when no lease holds it', async () => {
     const lockDir = lockDirOf(common)
     mkdirSync(lockDir)

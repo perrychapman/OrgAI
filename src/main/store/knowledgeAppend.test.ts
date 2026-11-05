@@ -109,7 +109,7 @@ describe('saveNodeForUser expectedUpdatedAt', () => {
     expect(saved.facts.map((f) => f.text)).toEqual(['A'])
     const before = fileText()
     const err = errorOf(() => saveNodeForUser(dir, P, { nodeId: created.id, kind: 'person', name: 'Ada', expectedUpdatedAt: saved.updatedAt - 1, appendFacts: ['B'] }))
-    expect(err?.code).toBe('stale')
+    expect(err?.code).toBe('stale_revision')
     expect(err?.message).toBe(STALE_NODE_MESSAGE)
     expect(err?.message).toBe('This item changed since you opened it. Reload it and try again.')
     expect(fileText()).toBe(before)
@@ -127,7 +127,7 @@ describe('saveNodeForUser expectedUpdatedAt', () => {
       Date.now = realNow
     }
     const err = errorOf(() => saveNodeForUser(dir, P, { nodeId: created.id, kind: 'person', name: 'Ada', expectedUpdatedAt: opened, appendFacts: ['Mine'] }))
-    expect(err?.code).toBe('stale')
+    expect(err?.code).toBe('stale_revision')
     expect(readKnowledge(dir, P).nodes[0].facts.map((f) => f.text)).toEqual(['From an agent'])
   })
 

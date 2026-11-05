@@ -79,17 +79,26 @@ let usageMonitor: UsageMonitor | null = null
 let ownership: HostOwnership | undefined
 /** True once whenReady has built the stores and the first window: the window handlers below wait for it. */
 let booted = false
+/** Set on the first before-quit: a second launch during a quit must not open a window in the quitting app. */
+let quitting = false
 
 // A second launch on the same userData (Electron's single-instance lock) brings the running app forward instead.
 // Wave 0: restore and focus the main window, or open one. (--headless-host argv handling comes with Wave 2.)
+app.on('before-quit', () => {
+  quitting = true
+})
 app.on('second-instance', () => {
   if (!booted) return
+  if (quitting) {
+    log.info('A second launch arrived while OrgAI is quitting; ignored (start OrgAI again once it has closed).')
+    return
+  }
   const main = liveWindowScopes().find(([, scope]) => scope === undefined)?.[0]
   if (main) showWindow(main)
   else createWindow()
 })
 app.on('activate', () => {
-  if (booted && BrowserWindow.getAllWindows().length === 0) createWindow()
+  if (booted && !quitting && BrowserWindow.getAllWindows().length === 0) createWindow()
 })
 // The lock is keyed by userData, so it is taken after setPath. An unpackaged dev build ('orgai') and the packaged
 // 'OrgAI' share one userData folder on case-insensitive macOS, so the lock correctly makes them exclusive. The losing
@@ -292,6 +301,13 @@ app.whenReady().then(async () => {
     log.error(`Host ownership failed: ${message}`)
     if (e instanceof HostAlreadyRunningError || e instanceof HostStartingOrBusyError) {
       dialog.showErrorBox('OrgAI is already running', `${message}\n\nQuit the other OrgAI (or the terminal host using this data folder), then start OrgAI again.`)
+    } else {
+      // Every other failure (an unsafe or unwritable run folder, a socket that cannot be created there, a full disk)
+      // would otherwise quit with no window at all.
+      dialog.showErrorBox(
+        'OrgAI could not start',
+        `OrgAI could not take ownership of its data folder:\n${message}\n\nData folder: ${dataDir}\nCheck that the folder is on a local disk you can write to, then start OrgAI again.`
+      )
     }
     app.exit(6)
     return

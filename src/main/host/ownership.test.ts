@@ -26,6 +26,7 @@ import {
   HostStartingOrBusyError,
   OWNERSHIP_BOUNDARIES,
   OwnershipFaultError,
+  RELEASE_BOUNDARIES,
   acquireHostOwnership,
   parseDaemonInfo,
   pipeNameFor,
@@ -238,6 +239,66 @@ describe.skipIf(!posix)('acquireHostOwnership', () => {
       own.release()
       expect(readdirSync(env.runDir)).toEqual([])
     })
+  })
+
+  describe('crash injection while releasing', () => {
+    it.each(RELEASE_BOUNDARIES)('recovers after a crash at %s', async (boundary) => {
+      const env = tempEnv()
+      const fast = { startupYoungMs: 50, retryMs: 10 }
+      const crashed = await acquireHostOwnership(opts(env, { ...fast, faultAt: boundary }))
+      crashed.markReady()
+      let fault: unknown
+      try {
+        crashed.release()
+      } catch (e) {
+        fault = e
+      }
+      expect(fault).toBeInstanceOf(OwnershipFaultError)
+      expect((fault as OwnershipFaultError).boundary).toBe(boundary)
+      if (boundary === 'release-after-secret-removed') {
+        // The secret is gone before daemon.json, so a newer host's secret is never removed by us.
+        expect(existsSync(crashed.secretPath)).toBe(false)
+        expect(readDaemonInfo(env.dataDir)?.hostInstanceId).toBe(crashed.info.hostInstanceId)
+      }
+      await (fault as OwnershipFaultError).crash()
+      // Released already: a second call is a no-op.
+      expect(() => crashed.release()).not.toThrow()
+
+      const own = await acquire(env, { ...fast, isLiveProcess: () => false })
+      expect(readDaemonInfo(env.dataDir)?.hostInstanceId).toBe(own.info.hostInstanceId)
+      expect(existsSync(join(env.runDir, 'startup.mkdir'))).toBe(false)
+      expect(existsSync(crashed.endpoint)).toBe(false)
+      expect(leftovers(env.runDir)).toEqual([])
+      expect(await canConnect(own.endpoint)).toBe(true)
+      own.release()
+      expect(readdirSync(env.runDir)).toEqual([])
+    })
+  })
+
+  it('puts startup.mkdir back when another contender took it between the dead-owner check and the rename', async () => {
+    const env = tempEnv()
+    const startup = join(env.runDir, 'startup.mkdir')
+    mkdirSync(startup, { recursive: true, mode: 0o700 })
+    writeFileSync(join(startup, 'owner.json'), JSON.stringify({ pid: 999_991, hostInstanceId: 'dddddddddddd', createdAt: 1 }))
+    const fresh = { pid: 999_992, hostInstanceId: 'eeeeeeeeeeee', createdAt: 2 }
+    const err = await acquireHostOwnership(
+      opts(env, {
+        liveWaitMs: 200,
+        retryMs: 10,
+        isLiveProcess: (pid) => {
+          if (pid !== 999_991) return true
+          // A second contender reclaims the dead mutex and takes it while we are still checking.
+          rmSync(startup, { recursive: true, force: true })
+          mkdirSync(startup, { mode: 0o700 })
+          writeFileSync(join(startup, 'owner.json'), JSON.stringify(fresh))
+          return false
+        }
+      })
+    ).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(HostStartingOrBusyError)
+    expect(JSON.parse(readFileSync(join(startup, 'owner.json'), 'utf8'))).toEqual(fresh)
+    expect(leftovers(env.runDir)).toEqual([])
+    expect(existsSync(join(env.runDir, 'daemon.json'))).toBe(false)
   })
 
   it('never steals startup.mkdir from a live owner, and takes it once the owner is dead', async () => {
