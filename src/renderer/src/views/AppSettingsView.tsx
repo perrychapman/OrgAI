@@ -36,6 +36,7 @@ import SkillLibrarySection from '../components/skills/SkillLibrarySection'
 import TemplatesSection from '../components/templates/TemplatesSection'
 import KitSection from '../components/kit/KitSection'
 import { CanvasSection } from '../components/settings/CanvasSection'
+import { CliShimRow } from '../components/settings/CliShimRow'
 import { focusCheckedPreset } from '../components/canvas/CanvasPresetGroup'
 
 /** Same debounce the project store uses for project saves. */
@@ -512,6 +513,7 @@ export default function AppSettingsView(): ReactElement {
                       />
                     }
                   />
+                  <CliShimRow />
                 </SettingsCard>
               </SettingsGroup>
             </SettingsAdvanced>
