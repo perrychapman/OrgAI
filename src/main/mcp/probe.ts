@@ -97,6 +97,16 @@ function isCertificateCode(code: string): boolean {
   return code.includes('CERT') || code.startsWith('ERR_TLS') || code.startsWith('SELF_SIGNED') || code.startsWith('UNABLE_TO_VERIFY')
 }
 
+const CERT_CAUSE = 'A proxy, VPN or antivirus that inspects HTTPS can cause this.'
+const CERT_STORE_HINT = " OrgAI trusts your system's certificate store, so the root certificate of that proxy must be installed there."
+/** Chain failures a missing root certificate causes; expired and altname failures are not one. */
+const UNTRUSTED_CHAIN_CODES = new Set(['UNABLE_TO_GET_ISSUER_CERT_LOCALLY', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'SELF_SIGNED_CERT_IN_CHAIN', 'DEPTH_ZERO_SELF_SIGNED_CERT'])
+
+function untrustedChain(code: string | undefined, message: string | undefined): boolean {
+  if (code && UNTRUSTED_CHAIN_CODES.has(code)) return true
+  return !!message && /unable to verify|self[- ]signed|unable to get (local )?issuer/i.test(message)
+}
+
 /** True for undici's "fetch failed" whose cause is a socket the other side closed or reset before answering. */
 export function isClosedSocketFailure(e: unknown): boolean {
   for (const { code, message } of causeChain(e)) {
@@ -123,10 +133,10 @@ export function describeFetchFailure(e: unknown, host = 'the server'): string | 
     if (code && DNS_CODES.has(code)) return `Could not look up ${host}. Check your internet connection, VPN or DNS.`
     if (code && CONNECT_CODES.has(code)) return `Could not connect to ${host} (${code}). Check your internet connection, VPN, firewall or proxy.`
     if (code && isCertificateCode(code)) {
-      return `The TLS certificate of ${host} could not be verified (${code}). A proxy, VPN or antivirus that inspects HTTPS can cause this.`
+      return `The TLS certificate of ${host} could not be verified (${code}). ${CERT_CAUSE}${untrustedChain(code, message) ? CERT_STORE_HINT : ''}`
     }
     if (message && /certificate/i.test(message)) {
-      return `The TLS certificate of ${host} could not be verified${code ? ` (${code})` : ''}. A proxy, VPN or antivirus that inspects HTTPS can cause this.`
+      return `The TLS certificate of ${host} could not be verified${code ? ` (${code})` : ''}. ${CERT_CAUSE}${untrustedChain(code, message) ? CERT_STORE_HINT : ''}`
     }
     if (message && /unexpected redirect/i.test(message)) return `${host} redirected the request; OrgAI does not follow redirects for MCP servers. Check the URL.`
     if ((code && CLOSED_SOCKET_CODES.has(code)) || (message && /other side closed/i.test(message))) return `${host} closed the connection before answering.`

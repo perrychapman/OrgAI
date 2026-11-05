@@ -346,12 +346,21 @@ describe('describeFetchFailure', () => {
   })
 
   it('names certificate failures', () => {
-    for (const code of ['UNABLE_TO_GET_ISSUER_CERT_LOCALLY', 'SELF_SIGNED_CERT_IN_CHAIN', 'CERT_HAS_EXPIRED', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'ERR_TLS_CERT_ALTNAME_INVALID', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE']) {
+    const store = " OrgAI trusts your system's certificate store, so the root certificate of that proxy must be installed there."
+    for (const code of ['UNABLE_TO_GET_ISSUER_CERT_LOCALLY', 'SELF_SIGNED_CERT_IN_CHAIN', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE']) {
+      expect(describeFetchFailure(fetchFailed(coded('tls', code)), host)).toBe(
+        `The TLS certificate of mcp.example.com could not be verified (${code}). A proxy, VPN or antivirus that inspects HTTPS can cause this.${store}`
+      )
+    }
+    for (const code of ['CERT_HAS_EXPIRED', 'ERR_TLS_CERT_ALTNAME_INVALID']) {
       expect(describeFetchFailure(fetchFailed(coded('tls', code)), host)).toBe(
         `The TLS certificate of mcp.example.com could not be verified (${code}). A proxy, VPN or antivirus that inspects HTTPS can cause this.`
       )
     }
     expect(describeFetchFailure(fetchFailed(coded('unable to verify the first certificate')), host)).toBe(
+      `The TLS certificate of mcp.example.com could not be verified. A proxy, VPN or antivirus that inspects HTTPS can cause this.${store}`
+    )
+    expect(describeFetchFailure(fetchFailed(coded('certificate has expired')), host)).toBe(
       'The TLS certificate of mcp.example.com could not be verified. A proxy, VPN or antivirus that inspects HTTPS can cause this.'
     )
   })
