@@ -374,6 +374,7 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
       skippedServers: (project) => mcp.skippedServers(project),
       libraryEntries: () => mcp.libraryEntries(),
       storeProposalSecrets: (projectId, payload, values) => mcp.storeProposalSecrets(projectId, payload, values),
+      secretsRefusal: () => mcp.secretsRefusal(),
       searchRegistry: (input) => mcp.registrySearch(input)
     },
     skills,

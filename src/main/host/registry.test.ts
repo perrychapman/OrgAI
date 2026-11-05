@@ -219,7 +219,7 @@ describe('entry flags', () => {
     for (const c of ['secrets:init', 'secrets:reset', 'secrets:undelete', 'secrets:confirmDelete']) expect((HOST_CHANNEL_REGISTRY[c] as RequestChannelEntry).scope, c).toBe('configure')
   })
 
-  it('storesSecret (Wave 7) marks exactly the channels cli-standalone.md 5.6 names; the stubs store nothing yet', () => {
+  it('storesSecret (Wave 7) marks exactly the channels cli-standalone.md 5.6 names; odd input stores nothing', () => {
     const marked = requestEntries()
       .filter(([, e]) => e.storesSecret)
       .map(([c]) => c)
@@ -228,7 +228,13 @@ describe('entry flags', () => {
       ['connections:setSecret', 'connectors:setToken', 'mcp:setSecret', 'mcpLibrary:setSecret', 'setup:decide', 'mcp:answerInstall', 'mcp:authorize', 'mcp:promote', 'mcp:copyFromLibrary'].sort()
     )
     const view = { project: () => null, libraryEntry: () => undefined, secretKeys: () => [], secretStatus: () => 'unset' as const }
-    for (const c of marked) expect((HOST_CHANNEL_REGISTRY[c] as RequestChannelEntry).storesSecret?.([{ value: 'x' }], view), c).toBe(false)
+    for (const c of marked) {
+      const fn = (HOST_CHANNEL_REGISTRY[c] as RequestChannelEntry).storesSecret!
+      for (const args of [[], [null], ['x'], [[]], [{}], [{ value: '' }]]) expect(fn(args, view), c).toBe(false)
+    }
+    // A throwing view never escapes a predicate (storesSecret.test.ts covers each predicate).
+    const throwing = { ...view, project: () => { throw new Error('boom') } }
+    expect((HOST_CHANNEL_REGISTRY['mcp:promote'] as RequestChannelEntry).storesSecret!([{ projectId: 'p', serverId: 's' }], throwing)).toBe(false)
   })
 
   it('socketInvokableChannels leaves out desktop_only and transport channels', () => {

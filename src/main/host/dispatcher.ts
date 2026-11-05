@@ -82,7 +82,6 @@ import type {
   SecretsConfirmDeleteResult,
   SecretsInitResult,
   SecretsResetResult,
-  SecretsStatusInput,
   SecretsStatusResult,
   SecretsUndeleteResult,
   SetupStartInput,
@@ -152,7 +151,7 @@ import {
 } from '../store/projectData'
 import { checkProjectPath, type ProjectStore } from '../store/projects'
 import type { SettingsStore } from '../store/settings'
-import type { SecretStoreApi } from '../store/vaultTypes'
+import { VAULT_MESSAGES, type SecretStoreApi } from '../store/vaultTypes'
 import { checkRunTarget, isValidId } from '../windowScope'
 import { noopActivity } from './activity'
 import {
@@ -193,6 +192,7 @@ import {
   withEffectiveDefault
 } from './args'
 import { HostEventBus } from './events'
+import { secretsConfirmDeleteArgs, secretsInitArgs, secretsResetArgs, secretsStatusArgs, secretsUndeleteArgs } from './secretsArgs'
 import { HostRpcFailure, gateRequest, type GateFn, type StoresSecretHostView } from './registry'
 import type { HostActivityTrackerApi, HostDispatchEnv, HostServices, InvokeContext, RpcInvokeContext } from './types'
 
@@ -668,7 +668,7 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
   registerSkillIpc(handle, skills, skillEvaluation)
   registerCapabilityIpc(handle, capabilities)
   if (kit) registerKitBundleIpc(handle, kit)
-  registerSecretsIpc(handle, services.secrets)
+  registerSecretsIpc(handle, services.secrets, mcp)
 
   // ---- Host protocol methods the dispatcher answers (socket only; runs:subscribe / host.subscribe are transport) ----
   handle(HOST_METHODS.hostStatus, () => {
@@ -977,26 +977,25 @@ function registerMcpIpc(
 
 
 /**
- * secrets:* (Wave 7, cli-standalone.md 5.6). Contracts only: secrets:status answers the store's report (a host without
- * a vault reports the legacy file), the others refuse until WP-H builds them (argument builders, the reset refusal
- * while a write, an OAuth flow or a token refresh is in flight) over WP-G's store. Never a secret value.
+ * secrets:* (Wave 7, cli-standalone.md 5.6, 5.7) over the host's SecretStore: inputs rebuilt by secretsArgs.ts, never a
+ * secret value either way. secrets:reset is refused while an MCP sign-in or a token refresh is in flight (the store
+ * itself refuses while one of its own writes is, and takes its write queue for the move).
  */
-function registerSecretsIpc(handle: Register, secrets: SecretStoreApi | undefined): void {
+function registerSecretsIpc(handle: Register, secrets: SecretStoreApi | undefined, mcp: Partial<Pick<McpService, 'activeAuthorizationCount' | 'refreshingCount'>>): void {
   const store = (): SecretStoreApi => {
     if (!secrets) throw new HostRpcFailure('bad_request', 'This OrgAI host has no secret store.')
     return secrets
   }
-  const notYet = (channel: string): never => {
-    throw new HostRpcFailure('bad_request', `${channel} is not available in this build yet.`)
-  }
-  handle(SECRETS_IPC.secretsStatus, (_e, input?: unknown): Promise<SecretsStatusResult> => {
-    const probe = input && typeof input === 'object' && (input as SecretsStatusInput).probe === true
-    return store().statusReport(probe ? { probe: true } : {})
+  handle(SECRETS_IPC.secretsStatus, (_e, input?: unknown): Promise<SecretsStatusResult> => store().statusReport(secretsStatusArgs(input)))
+  handle(SECRETS_IPC.secretsInit, (_e, input?: unknown): Promise<SecretsInitResult> => store().initVault(secretsInitArgs(input)))
+  handle(SECRETS_IPC.secretsReset, (_e, input: unknown): Promise<SecretsResetResult> => {
+    const i = secretsResetArgs(input)
+    const s = store()
+    if ((mcp.activeAuthorizationCount?.() ?? 0) > 0 || (mcp.refreshingCount?.() ?? 0) > 0) throw new Error(VAULT_MESSAGES.resetBusy)
+    return s.resetVault(i)
   })
-  handle(SECRETS_IPC.secretsInit, (): Promise<SecretsInitResult> => notYet(SECRETS_IPC.secretsInit))
-  handle(SECRETS_IPC.secretsReset, (): Promise<SecretsResetResult> => notYet(SECRETS_IPC.secretsReset))
-  handle(SECRETS_IPC.secretsUndelete, (): SecretsUndeleteResult => notYet(SECRETS_IPC.secretsUndelete))
-  handle(SECRETS_IPC.secretsConfirmDelete, (): SecretsConfirmDeleteResult => notYet(SECRETS_IPC.secretsConfirmDelete))
+  handle(SECRETS_IPC.secretsUndelete, (_e, input: unknown): SecretsUndeleteResult => store().undelete(secretsUndeleteArgs(input)))
+  handle(SECRETS_IPC.secretsConfirmDelete, (_e, input: unknown): SecretsConfirmDeleteResult => store().confirmDeletes(secretsConfirmDeleteArgs(input)))
 }
 
 /**

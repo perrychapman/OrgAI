@@ -163,6 +163,18 @@ describe('mcp list / show / enable / remove', () => {
     expect(miss.code).toBe(EXIT.usage)
   })
 
+  it('show says why a saved value cannot be read here (Wave 7, 5.4); json carries it, never a value', async () => {
+    const reason = 'Saved by the OrgAI app and not yet shared with the orgai command: open the app once'
+    const s = spec()
+    const { f } = setup({ 'mcp:list': () => [info(s, { unreadableSecrets: [{ name: 'GITHUB_TOKEN', reason }] })] })
+    const r = await run(f, ['show', 'github'])
+    expect(r.code).toBe(0)
+    expect(r.out).toContain(`Unreadable:   GITHUB_TOKEN: ${reason}`)
+    const g = setup({ 'mcp:list': () => [info(s, { unreadableSecrets: [{ name: 'GITHUB_TOKEN', reason }] })] }, { globals: { outputFormat: 'json' } })
+    const j = JSON.parse((await run(g.f, ['show', 'github'])).out)
+    expect(j.server.unreadableSecrets).toEqual([{ name: 'GITHUB_TOKEN', reason }])
+  })
+
   it('enable / disable upsert the stored spec with enabled flipped', async () => {
     const s = spec({ enabled: false })
     const { client, f } = setup({ 'mcp:list': () => [info(s)], 'mcp:upsert': (p) => ({ project: P, servers: [info((p as [{ spec: McpServerSpec }])[0].spec)] }) })
