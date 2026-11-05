@@ -191,11 +191,14 @@ export function peerDeliveryBlocked(input: PeerDeliveryInput): 'held' | 'rate li
   return null
 }
 
-/** What a ContinuationDriver needs from the adapter and the run manager. */
+/**
+ * What a ContinuationDriver needs from the adapter and the run manager. `autoContinue` and `maxAutoContinues` are read
+ * at every check (adapters pass getters over ctx), so RunManager's setLive re-clamp reaches a live driver.
+ */
 export interface ContinuationHost {
   kind: RunKind
-  autoContinue?: boolean
-  maxAutoContinues?: number
+  readonly autoContinue?: boolean
+  readonly maxAutoContinues?: number
   delayMs?: number
   /** The run's project kind (projectKindOf(ctx.project)); only changes the nudge wording. Missing = 'code'. */
   projectKind?: ProjectKind
@@ -214,12 +217,22 @@ export interface ContinuationHost {
   log(level: 'info' | 'warn' | 'error', message: string): void
   /** A system line in the orchestrator's transcript, for the user (`source: 'harness'`). */
   tellUser(text: string): void
+  /**
+   * Headless exec settlement (cli-spec 6.2(2)): a root turn generation became settled (evaluated without a nudge,
+   * skipped, or the driver is off). Adapters forward it as ctx.noteActivity('continuation'). Optional.
+   */
+  onSettled?(turnGen: number): void
 }
 
 /**
- * Re-engages the orchestrator after a turn ends with plan steps left. The adapter calls `turnEnded`
- * at every successful turn end, `userMessage` when the user sends a message, `hold` on interrupt and
- * `dispose` when the session ends.
+ * Re-engages the orchestrator after a turn ends with plan steps left. The adapter calls `turnEnded(gen)`
+ * at every successful root turn end, `skipTurn(gen)` at a failed or interrupted one, `userMessage` when
+ * the user sends a message, `hold` on interrupt and `dispose` when the session ends.
+ *
+ * Turn generations (cli-spec 6.2(2)): each root turn end carries the adapter's monotonic `turnGen`. A
+ * generation is settled once it was evaluated without sending a nudge (or skipped, or the driver is off)
+ * and nothing is pending; `isSettledForTurn(gen)` is what RunManager's exec settlement reads. A turn that
+ * got a nudge is never settled: the follow-up turn the nudge starts gets the next generation.
  */
 export class ContinuationDriver {
   private timer: ReturnType<typeof setTimeout> | null = null
@@ -227,33 +240,82 @@ export class ContinuationDriver {
   private disposed = false
   private turnsWithoutPlan = 0
   private limitWarned = false
+  private evaluating = false
+  /** The newest root turn generation reported (turnEnded / skipTurn). */
+  private currentTurnGen = 0
+  /** The newest generation evaluated without a nudge (or skipped); -1 = none yet, or unsettled by a user message. */
+  private lastEvaluatedTurnGen = -1
+  private setPlanNudgeSent = false
 
   constructor(private host: ContinuationHost) {}
 
+  /** Read at every check: the host's autoContinue may change while the run is live (setLive re-clamp). */
   private get enabled(): boolean {
     return this.host.kind === 'work' && this.host.autoContinue !== false
   }
 
-  /** A turn finished. Evaluate after the delay, re-checking every condition then. */
-  turnEnded(): void {
-    if (!this.enabled || this.disposed) return
+  /** The turn-1 set-plan nudge was sent in this session. */
+  get nudgeTurn1Sent(): boolean {
+    return this.setPlanNudgeSent
+  }
+
+  /** The generation of the newest root turn end the driver heard of. */
+  get turnGen(): number {
+    return this.currentTurnGen
+  }
+
+  /** No timer, no evaluation in flight, and `gen` was evaluated without a nudge (or skipped, or the driver is off). */
+  isSettledForTurn(gen: number): boolean {
+    return !this.timer && !this.evaluating && this.lastEvaluatedTurnGen === gen
+  }
+
+  private markSettled(gen: number): void {
+    this.lastEvaluatedTurnGen = gen
+    try {
+      this.host.onSettled?.(gen)
+    } catch {
+      /* a listener never breaks the driver */
+    }
+  }
+
+  /**
+   * A turn finished (`turnGen`: the adapter's root turn counter; missing = the previous one plus 1). Evaluate after
+   * the delay, re-checking every condition then. A disabled or disposed driver settles the generation at once.
+   */
+  turnEnded(turnGen?: number): void {
+    this.currentTurnGen = turnGen ?? this.currentTurnGen + 1
     this.cancel()
+    if (!this.enabled || this.disposed) {
+      this.markSettled(this.currentTurnGen)
+      return
+    }
     this.timer = setTimeout(() => {
       this.timer = null
       void this.evaluate()
     }, this.host.delayMs ?? DEFAULT_CONTINUATION_DELAY_MS)
   }
 
-  /** The user spoke: drop a pending evaluation and lift an interrupt's hold. */
+  /** A failed or interrupted root turn: no nudge for it, and its generation counts as evaluated at once. */
+  skipTurn(turnGen: number): void {
+    this.currentTurnGen = turnGen
+    this.cancel()
+    this.markSettled(turnGen)
+  }
+
+  /** The user spoke: drop a pending evaluation and lift an interrupt's hold. Unsettled until the next turn end. */
   userMessage(): void {
     this.cancel()
     this.held = false
+    this.lastEvaluatedTurnGen = -1
   }
 
   /** The user interrupted the turn: no automatic continues until they send a message. */
   hold(): void {
+    const pending = !!this.timer
     this.cancel()
     this.held = true
+    // A held run never nudges: a turn end still waiting for its evaluation is settled now.
+    if (pending) this.markSettled(this.currentTurnGen)
   }
 
   /** True from an interrupt (`hold`) until the user's next message (`userMessage`). */
@@ -263,7 +325,9 @@ export class ContinuationDriver {
 
   dispose(): void {
     this.disposed = true
+    const pending = !!this.timer
     this.cancel()
+    if (pending) this.markSettled(this.currentTurnGen)
   }
 
   private cancel(): void {
@@ -271,9 +335,26 @@ export class ContinuationDriver {
     this.timer = null
   }
 
-  /** Decide and act now. Returns the decision (for tests). */
+  /**
+   * Decide and act now. Returns the decision (for tests). Unless a nudge was sent, the generation current when the
+   * evaluation started is settled when it finishes (decision 'none', limit reached, blocked, held or disposed).
+   */
   async evaluate(): Promise<NudgeDecision> {
-    if (this.disposed) return { kind: 'none' }
+    const gen = this.currentTurnGen
+    this.evaluating = true
+    let sent = false
+    try {
+      const result = await this.decide()
+      sent = result.sent
+      return result.decision
+    } finally {
+      this.evaluating = false
+      if (!sent) this.markSettled(gen)
+    }
+  }
+
+  private async decide(): Promise<{ decision: NudgeDecision; sent: boolean }> {
+    if (this.disposed) return { decision: { kind: 'none' }, sent: false }
     const plan = this.host.getPlan()
     const input: NudgeInput = {
       plan,
@@ -295,7 +376,7 @@ export class ContinuationDriver {
       this.host.log('warn', `Automatic-continue limit reached (${input.maxAutoContinues}); the orchestrator waits for you.`)
       this.host.tellUser(limitReachedText(input.maxAutoContinues))
     }
-    if (decision.kind === 'none' || !decision.text) return decision
+    if (decision.kind === 'none' || !decision.text) return { decision, sent: false }
     let activity = 'Planning the work…'
     let summary = decision.summary ?? decision.text
     if (decision.kind === 'continue' && plan) {
@@ -308,8 +389,9 @@ export class ContinuationDriver {
     } else {
       this.host.log('info', 'The orchestrator ended a turn without a plan; asking it to set one.')
     }
-    if (this.disposed) return decision
+    if (this.disposed) return { decision, sent: false }
     this.host.nudge(decision.text, activity, summary)
-    return decision
+    if (decision.kind === 'set-plan') this.setPlanNudgeSent = true
+    return { decision, sent: true }
   }
 }

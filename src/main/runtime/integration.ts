@@ -66,6 +66,10 @@ export class WorktreeIntegrator {
   private briefs = new Map<string, string>()
   /** Per working directory: the tail of the queue of git operations that write to it. */
   private locks = new Map<string, Promise<unknown>>()
+  /** exclusive() calls queued or running. */
+  private exclusiveInFlight = 0
+  /** Integrations (and finished-report handling) started and not settled. */
+  private busy = 0
 
   constructor(
     private ctx: RuntimeContext,
@@ -93,13 +97,48 @@ export class WorktreeIntegrator {
   private exclusive<T>(dir: string, fn: () => Promise<T>): Promise<T> {
     const key = dir.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
     const prev = this.locks.get(key) ?? Promise.resolve()
+    this.exclusiveInFlight += 1
     const next = prev.then(fn, fn)
     const tail = next.catch(() => undefined)
     this.locks.set(key, tail)
     void tail.then(() => {
+      this.exclusiveInFlight -= 1
       if (this.locks.get(key) === tail) this.locks.delete(key)
     })
     return next
+  }
+
+  /** Count `fn` as pending work until it settles (hasPendingWork); `integration` also notes exec activity at both ends. */
+  private async counted<T>(fn: () => Promise<T>, integration = false): Promise<T> {
+    this.busy += 1
+    if (integration) this.noteIntegration()
+    try {
+      return await fn()
+    } finally {
+      this.busy -= 1
+      if (integration) this.noteIntegration()
+    }
+  }
+
+  private noteIntegration(): void {
+    try {
+      this.ctx.noteActivity?.('integration')
+    } catch {
+      /* a listener never breaks integration */
+    }
+  }
+
+  /**
+   * Headless exec settlement (cli-spec 6.2(2)): true while any exclusive git operation (commit, merge) is queued or
+   * running, or an integration has started and not settled (including one waiting on a merge review card).
+   */
+  hasPendingWork(): boolean {
+    return this.exclusiveInFlight > 0 || this.busy > 0
+  }
+
+  /** Branches of tracked worktrees left in 'conflict' (exec outcome 'unmerged-conflicts'). */
+  unmergedConflictBranches(): string[] {
+    return [...this.worktrees.values()].filter((w) => w.status === 'conflict').map((w) => w.branch)
   }
 
   /**
@@ -152,7 +191,11 @@ export class WorktreeIntegrator {
    * A finished isolated report gets its branch committed and merged exactly once. If its own
    * isolated reports are still running or merging, it waits for them first.
    */
-  async onSubagentFinished(agentId: string): Promise<void> {
+  onSubagentFinished(agentId: string): Promise<void> {
+    return this.counted(() => this.subagentFinished(agentId))
+  }
+
+  private async subagentFinished(agentId: string): Promise<void> {
     const wt = this.worktrees.get(agentId)
     if (!wt || wt.status !== 'active') return
     const waitingOn = this.unsettledChildren(agentId)
@@ -196,7 +239,11 @@ export class WorktreeIntegrator {
     return { root: path, parent: { id: parentId, name: this.nameOf(parentId), branch: located?.branch ?? parent.branch, path } }
   }
 
-  private async integrate(agentId: string): Promise<void> {
+  private integrate(agentId: string): Promise<void> {
+    return this.counted(() => this.integrateNow(agentId), true)
+  }
+
+  private async integrateNow(agentId: string): Promise<void> {
     const located = await findWorktree(this.root, agentId)
     const info: WorktreeInfo = { ...this.worktrees.get(agentId)!, ...(located ?? {}), status: 'merging' }
     const target = await this.targetFor(info)
@@ -278,7 +325,11 @@ export class WorktreeIntegrator {
   }
 
   /** Retry from the orchestrator's integrate tool: find the agent that owns the branch, or integrate anonymously. */
-  async integratePending(wt: { path: string; branch: string }): Promise<string> {
+  integratePending(wt: { path: string; branch: string }): Promise<string> {
+    return this.counted(() => this.integratePendingNow(wt), true)
+  }
+
+  private async integratePendingNow(wt: { path: string; branch: string }): Promise<string> {
     const ownerId = [...this.worktrees].find(([, info]) => info.branch === wt.branch)?.[0]
     const tracked = ownerId ? this.worktrees.get(ownerId) : undefined
     if (tracked && UNSETTLED.has(tracked.status)) {

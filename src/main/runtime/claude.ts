@@ -29,7 +29,7 @@ import type { AgentInstance, ImageAttachment, McpServerSpec, PluginSpec, Project
 import type { PermissionDecision, PermissionSuggestion, ProviderAuth } from '@shared/types'
 import { SPAWN_TOOL } from '@shared/types'
 import { ANTHROPIC_BUILTIN_MODELS, effectiveSubagentLimits, isolateWritersOn, mcpServersForRole, newId, planGuardEngaged, planGuardOf, projectKindOf, settingTier, tierForModel } from '@shared/defaults'
-import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo, type RunSkill, type CompletionInput, type RunConnection, type ResolvedMcpServer, type RuntimeAdapter, type PeerMessage, type RuntimeContext, type RuntimeSession } from './types'
+import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo, type RunSkill, type CompletionInput, type RunConnection, type ResolvedMcpServer, type RuntimeAdapter, type PeerMessage, type RuntimeContext, type RuntimeSession, type RootTurnEnd, type SessionSettlement, type ExecActivityReason } from './types'
 import { isTrustRestrictedRun, isWorkspaceConfigPath } from '../quick/scratch'
 import { hiddenCharIn } from '../capabilities/sanitize'
 import { allowRuleStrings, applyAllowScope, chooseSuggestions, listRules, suggestionLabels, type AllowScopePersist, type SuggestOptions } from './permissionRules'
@@ -1030,6 +1030,12 @@ export class ClaudeSession implements RuntimeSession {
   private authFailed = false
   /** Unattended execution: re-engages the orchestrator when a turn ends with plan steps left. */
   private continuation: ContinuationDriver
+  /** Root turn ends so far (every result, failures and auth failures included): RootTurnEnd.turnGen. */
+  private rootTurnGen = 0
+  /** A root turn is running (a message was pushed, or the query emitted init, and no result since). */
+  private turnInFlight = false
+  /** The generation of the turn end held back in turnEndDeferred. */
+  private deferredTurnGen = 0
   /** The run-scoped orgai skills plugin of the current query (work runs with granted skills). */
   private skillPlugin?: SkillPlugin
   /**
@@ -1143,8 +1149,13 @@ export class ClaudeSession implements RuntimeSession {
     this.continuation = new ContinuationDriver({
       kind: ctx.run.kind,
       projectKind: projectKindOf(ctx.project),
-      autoContinue: ctx.autoContinue,
-      maxAutoContinues: ctx.maxAutoContinues,
+      // Getters: RunManager's setLive re-clamp of ctx reaches the live driver.
+      get autoContinue() {
+        return ctx.autoContinue
+      },
+      get maxAutoContinues() {
+        return ctx.maxAutoContinues
+      },
       delayMs: ctx.continuationDelayMs,
       getPlan: () => ctx.getPlan(),
       updatePlan: (plan) => ctx.updatePlan(plan),
@@ -1162,7 +1173,8 @@ export class ClaudeSession implements RuntimeSession {
         this.emit({ type: 'run.status', runId: this.ctx.run.id, status: 'running' })
       },
       log: (level, message) => this.log(level, message),
-      tellUser: (text) => this.transcript(ROOT_ID, { kind: 'system', text }, { source: 'harness' })
+      tellUser: (text) => this.transcript(ROOT_ID, { kind: 'system', text }, { source: 'harness' }),
+      onSettled: () => this.noteActivity('continuation')
     })
     this.finished = this.run()
   }
@@ -1209,6 +1221,31 @@ export class ClaudeSession implements RuntimeSession {
     this.notifyOrchestrator(peerMessageText(message), 'Reading a message from another run…', { transcript: false })
   }
 
+  /** Headless exec settlement view (cli-spec 6.2(2)). */
+  settlement(): SessionSettlement {
+    const root = this.agents.get(ROOT_ID)
+    const rootIdle = !this.turnInFlight && (!root || root.state === 'idle' || root.state === 'done' || root.state === 'error')
+    const quiescent =
+      !this.turnEndDeferred &&
+      !this.restartTimer &&
+      !this.restartCloseTimer &&
+      this.pendingMcp.size === 0 &&
+      !this.pendingConfig.due &&
+      !this.restarting &&
+      !this.nextQuery &&
+      this.backgroundTasks.size === 0 &&
+      this.heldNotices.length === 0 &&
+      this.input.peek().length === 0 &&
+      !this.integrator.hasPendingWork()
+    return {
+      rootTurnGen: this.rootTurnGen,
+      rootIdle,
+      continuationSettled: this.continuation.isSettledForTurn(this.rootTurnGen),
+      nudgeTurn1Sent: this.continuation.nudgeTurn1Sent,
+      quiescent
+    }
+  }
+
   async stop(): Promise<void> {
     this.continuation.dispose()
     this.clearRestartTimers()
@@ -1226,6 +1263,31 @@ export class ClaudeSession implements RuntimeSession {
 
   private log(level: 'info' | 'warn' | 'error', message: string): void {
     this.emit({ type: 'log', runId: this.ctx.run.id, level, message })
+  }
+
+  /** Exec settlement: adapter-internal activity (a listener's throw never breaks the session). */
+  private noteActivity(reason: ExecActivityReason): void {
+    try {
+      this.ctx.noteActivity?.(reason)
+    } catch {
+      /* ignore */
+    }
+  }
+
+  /**
+   * A root turn ended (any outcome): count it and tell RunManager BEFORE run.status 'idle' is emitted (cli-spec
+   * 6.2(2)). Returns the new generation; the caller hands it to the continuation driver (turnEnded or skipTurn).
+   */
+  private reportRootTurnEnd(e: Omit<RootTurnEnd, 'turnGen'>): number {
+    this.turnInFlight = false
+    this.rootTurnGen += 1
+    const turnGen = this.rootTurnGen
+    try {
+      this.ctx.onRootTurnEnded?.({ turnGen, ...e })
+    } catch (err) {
+      this.log('warn', `Root turn end listener failed: ${(err as Error)?.message ?? String(err)}`)
+    }
+    return turnGen
   }
 
   private transcript(agentId: string, block: TranscriptBlock, opts?: { source?: 'harness' }): void {
@@ -1348,6 +1410,7 @@ export class ClaudeSession implements RuntimeSession {
     const message: SDKUserMessage = { type: 'user', message: { role: 'user', content: text }, parent_tool_use_id: null }
     this.harnessMessages.set(message, { nudge: !!opts.nudge, text, ...(opts.restart ? { restart: true } : {}) })
     this.pushInput(message)
+    this.noteActivity('message')
     if (opts.transcript !== false) {
       this.transcript(ROOT_ID, { kind: 'system', text: opts.summary ?? text, ...(opts.summary ? { detail: text } : {}) }, { source: 'harness' })
     }
@@ -1357,6 +1420,7 @@ export class ClaudeSession implements RuntimeSession {
 
   /** Push to the current input stream; before the query's init the message is also kept for a restart replay (N2). */
   private pushInput(message: SDKUserMessage): void {
+    this.turnInFlight = true
     this.input.push(message)
     if (!this.queryInitSeen) this.preInit.push(message)
   }
@@ -1877,6 +1941,7 @@ export class ClaudeSession implements RuntimeSession {
       const input = raw as SubagentStartHookInput
       const role = this.rolesBySlug.get(input.agent_type)
       const existing = this.agents.get(input.agent_id)
+      if (!existing) this.noteActivity('subagent')
       this.upsert({
         ...(existing ?? this.ensureAgent(input.agent_id, { roleSlug: input.agent_type, parentId: ROOT_ID })),
         roleId: role?.id ?? null,
@@ -1897,6 +1962,7 @@ export class ClaudeSession implements RuntimeSession {
       a.endedAt = Date.now()
       this.partial.clear(a.id, true)
       this.upsert(a)
+      this.noteActivity('report')
       void this.integrator.onSubagentFinished(a.id)
       return {}
     }
@@ -2248,13 +2314,14 @@ export class ClaudeSession implements RuntimeSession {
    * re-engages the orchestrator instead, and the turn after it nudges normally. If the restart then does not happen,
    * the held turn end is handed to the driver (releaseTurnEnd), so the run never stalls.
    */
-  private onTurnEnded(): void {
+  private onTurnEnded(turnGen: number): void {
     if (this.restartDue() && !mcpRestartBlocker(this.restartState())) {
       this.turnEndDeferred = true
+      this.deferredTurnGen = turnGen
       return
     }
     this.turnEndDeferred = false
-    this.continuation.turnEnded()
+    this.continuation.turnEnded(turnGen)
   }
 
   /** A non-subagent task ended; the last one to end lets a waiting MCP restart go ahead. */
@@ -2267,7 +2334,7 @@ export class ClaudeSession implements RuntimeSession {
   private releaseTurnEnd(): void {
     if (!this.turnEndDeferred) return
     this.turnEndDeferred = false
-    this.continuation.turnEnded()
+    this.continuation.turnEnded(this.deferredTurnGen)
   }
 
   /** Check for an MCP restart shortly after a turn ends (a report hand-back the SDK resumes with goes first). */
@@ -2291,8 +2358,9 @@ export class ClaudeSession implements RuntimeSession {
    * would otherwise get the whole budget again, review M2). undefined = no budget set; null = nothing is left.
    */
   private restartBudget(): number | undefined | null {
-    const max = this.ctx.project.maxBudgetUsd
-    if (!max || this.isSetup) return undefined
+    // An exec run's budget (ctx.budgetUsd, 0 allowed) replaces the project's; 0 is a real budget, never "none".
+    const max = this.ctx.budgetUsd !== undefined ? this.ctx.budgetUsd : this.ctx.project.maxBudgetUsd
+    if (max === undefined || this.isSetup) return undefined
     const left = max - Math.max(0, this.lastRunCost, this.lastPricedTotal)
     // Below the minimum counts as nothing left: rounding it up would overshoot the budget (review N7).
     if (!(left >= MCP_RESTART_MIN_BUDGET_USD)) return null
@@ -2362,6 +2430,7 @@ export class ClaudeSession implements RuntimeSession {
     this.restarting = false
     if (config) this.log('info', `Resuming the session to apply the approved configuration change${servers.length ? ` (MCP server${servers.length === 1 ? '' : 's'} ${servers.join(', ')})` : ''}.`)
     else this.log('info', `Resuming the session to attach the MCP server${servers.length === 1 ? '' : 's'} ${servers.join(', ')}.`)
+    this.noteActivity('restart')
     // Close the old query's input: it ends once the CLI exits; anything pushed but unread moves to the next query.
     this.swapInput()
     const oldQ = this.q
@@ -2545,6 +2614,7 @@ export class ClaudeSession implements RuntimeSession {
     this.queryGrants = this.optionGrants.get(next.options)
     this.liveGrants = this.queryGrants
     this.q = query({ prompt: this.input, options: next.options })
+    this.noteActivity('restart')
     const config = next.config
     if (next.dropped?.length || next.droppedSkills) {
       const why = `the resumed session would not start with ${(next.dropped?.length ?? 0) + (next.droppedSkills ? 1 : 0) === 1 ? 'it' : 'them'}`
@@ -2802,7 +2872,11 @@ export class ClaudeSession implements RuntimeSession {
       else this.log('warn', 'The root role has an invalid model id; using the CLI default.')
     }
     if (opts.maxBudgetUsd !== undefined) options.maxBudgetUsd = opts.maxBudgetUsd
-    else if (project.maxBudgetUsd && !this.isSetup) options.maxBudgetUsd = project.maxBudgetUsd
+    else if (!this.isSetup) {
+      // ctx.budgetUsd (exec runs, the chain's prior cost already taken off) wins; 0 is a real budget (cli-spec 6.2(3)).
+      const budget = this.ctx.budgetUsd !== undefined ? this.ctx.budgetUsd : project.maxBudgetUsd
+      if (budget !== undefined) options.maxBudgetUsd = budget
+    }
     const resumeId = resume ?? this.ctx.resumeSessionId
     if (resumeId) options.resume = resumeId
     if (options.agents) this.optionGrants.set(options, grantSnapshot(options.agents))
@@ -2965,6 +3039,8 @@ export class ClaudeSession implements RuntimeSession {
     this.log('error', `Authentication failed${detail ? `: ${detail}` : ''}`)
     this.partial.clearAll()
     this.setState(ROOT_ID, 'error', 'Connection refused')
+    // Every root turn end is reported, an auth failure included (the result that follows is ignored).
+    this.continuation.skipTurn(this.reportRootTurnEnd({ ok: false, isAuthError: true, ...(this.limited ? { limited: true } : {}) }))
     this.ending = true
     void this.stop()
   }
@@ -2979,6 +3055,7 @@ export class ClaudeSession implements RuntimeSession {
           root.model = msg.model
           this.upsert(root)
           this.sessionId = msg.session_id
+          this.turnInFlight = true
           this.queryInitSeen = true
           this.preInit = []
           // A restarted query that starts clears the failure count, so a later restart gets its own retries.
@@ -2993,6 +3070,7 @@ export class ClaudeSession implements RuntimeSession {
           }
           this.startUsagePolling()
         } else if (msg.subtype === 'task_started') {
+          if ((!msg.task_type || msg.task_type === 'local_agent') && !this.agents.has(msg.task_id)) this.noteActivity('subagent')
           // Background shell commands and MCP calls are tasks too; only subagents belong on the chart. The others are
           // counted until they end, because an MCP restart would kill them (review M5). Ambient tasks (watchers,
           // housekeeping) are left out: the SDK says they are not activity, and some never end.
@@ -3054,6 +3132,7 @@ export class ClaudeSession implements RuntimeSession {
             a.result = a.result ?? msg.summary
             a.endedAt = Date.now()
             this.upsert(a)
+            this.noteActivity('report')
             void this.integrator.onSubagentFinished(a.id)
           }
         }
@@ -3202,11 +3281,17 @@ export class ClaudeSession implements RuntimeSession {
           this.log('error', `Run ended: ${msg.subtype}`)
         }
         this.upsert(root)
+        // Exec settlement (cli-spec 6.2(2)): every root turn end is reported before 'idle', failed ones included.
+        const ok = msg.subtype === 'success'
+        const turnGen = this.reportRootTurnEnd({ ok, ...(ok ? {} : { errorSubtype: msg.subtype }), ...(this.limited ? { limited: true } : {}) })
         this.emit({ type: 'run.status', runId, status: 'idle' })
         // Unattended execution: after a short delay (a report that just landed wakes the orchestrator
         // first), remind it of the plan's remaining steps. The driver re-checks every condition then.
         // With an MCP restart due, the restart's notice re-engages the orchestrator instead (onTurnEnded, review H1).
-        if (msg.subtype === 'success' && !this.isSetup) this.onTurnEnded()
+        // A failed turn is never nudged; its generation is settled at once (skipTurn).
+        if (!ok) this.continuation.skipTurn(turnGen)
+        else if (this.isSetup) this.continuation.turnEnded(turnGen)
+        else this.onTurnEnded(turnGen)
         // MCP servers approved this turn reach the agents through a restart once everything is idle.
         if (this.restartDue()) this.scheduleMcpRestart()
         if (this.limited && !this.ending) {

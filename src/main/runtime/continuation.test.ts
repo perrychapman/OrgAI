@@ -394,3 +394,188 @@ describe('nudge wording per project kind', () => {
     }
   })
 })
+
+describe('ContinuationDriver turn-generation settlement (cli-spec 6.2(2))', () => {
+  let current: RunPlan | undefined
+  let host: ContinuationHost & { nudges: string[]; settled: number[] }
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    current = plan()
+    const nudges: string[] = []
+    const settled: number[] = []
+    host = {
+      kind: 'work',
+      autoContinue: true,
+      maxAutoContinues: 5,
+      delayMs: 1500,
+      getPlan: () => current,
+      updatePlan: async (p: RunPlan) => {
+        current = p
+      },
+      liveReports: () => 0,
+      pendingInteractions: () => 0,
+      rateLimited: () => false,
+      stopping: () => false,
+      orchestratorBusy: () => false,
+      nudge: (text) => nudges.push(text),
+      log: () => undefined,
+      tellUser: () => undefined,
+      onSettled: (gen) => settled.push(gen),
+      nudges,
+      settled
+    }
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('settles at once when the driver is off (setup run, autoContinue false)', () => {
+    for (const over of [{ kind: 'setup' as const }, { autoContinue: false }]) {
+      const settled: number[] = []
+      const d = new ContinuationDriver({ ...host, ...over, onSettled: (g) => settled.push(g) })
+      expect(d.isSettledForTurn(1)).toBe(false)
+      d.turnEnded(1)
+      expect(d.isSettledForTurn(1)).toBe(true)
+      expect(settled).toEqual([1])
+      d.turnEnded(2)
+      expect(d.isSettledForTurn(2)).toBe(true)
+      expect(d.isSettledForTurn(1)).toBe(false)
+    }
+  })
+
+  it('a missing turnGen counts up from the previous one', () => {
+    const d = new ContinuationDriver({ ...host, autoContinue: false })
+    d.turnEnded()
+    d.turnEnded()
+    expect(d.turnGen).toBe(2)
+    expect(d.isSettledForTurn(2)).toBe(true)
+  })
+
+  it('is not settled while the timer is pending and settles after a none evaluation', async () => {
+    current = plan({ status: 'done' })
+    const d = new ContinuationDriver(host)
+    d.turnEnded(1)
+    expect(d.isSettledForTurn(1)).toBe(false)
+    await vi.advanceTimersByTimeAsync(1400)
+    expect(d.isSettledForTurn(1)).toBe(false)
+    await vi.advanceTimersByTimeAsync(200)
+    expect(d.isSettledForTurn(1)).toBe(true)
+    expect(host.settled).toEqual([1])
+    expect(host.nudges).toHaveLength(0)
+  })
+
+  it('is not settled while evaluate runs; a nudged turn stays unsettled', async () => {
+    let release!: () => void
+    host.updatePlan = (p: RunPlan) =>
+      new Promise<void>((r) => {
+        current = p
+        release = r
+      })
+    const d = new ContinuationDriver(host)
+    d.turnEnded(1)
+    await vi.advanceTimersByTimeAsync(1600)
+    // The continue decision waits on updatePlan: the evaluation is in flight.
+    expect(d.isSettledForTurn(1)).toBe(false)
+    release()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(host.nudges).toHaveLength(1)
+    expect(d.isSettledForTurn(1)).toBe(false)
+    expect(host.settled).toEqual([])
+  })
+
+  it('a nudged turn stays unsettled until the next generation settles', async () => {
+    const d = new ContinuationDriver(host)
+    d.turnEnded(1)
+    await vi.advanceTimersByTimeAsync(1600)
+    expect(host.nudges).toHaveLength(1)
+    expect(d.isSettledForTurn(1)).toBe(false)
+    current = { ...current!, status: 'done' }
+    d.turnEnded(2)
+    expect(d.isSettledForTurn(2)).toBe(false)
+    await vi.advanceTimersByTimeAsync(1600)
+    expect(d.isSettledForTurn(2)).toBe(true)
+    expect(host.settled).toEqual([2])
+  })
+
+  it('a limit-reached evaluation settles the generation', async () => {
+    current = plan({ autoContinues: 5 })
+    const d = new ContinuationDriver(host)
+    d.turnEnded(1)
+    await vi.advanceTimersByTimeAsync(1600)
+    expect(host.nudges).toHaveLength(0)
+    expect(d.isSettledForTurn(1)).toBe(true)
+  })
+
+  it('skipTurn settles a failed or interrupted turn without a timer or a nudge', async () => {
+    const d = new ContinuationDriver(host)
+    d.turnEnded(1)
+    d.skipTurn(2)
+    expect(d.isSettledForTurn(2)).toBe(true)
+    expect(host.settled).toEqual([2])
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(host.nudges).toHaveLength(0)
+    expect(d.turnGen).toBe(2)
+  })
+
+  it('nudgeTurn1Sent turns true once the set-plan nudge is sent', async () => {
+    current = undefined
+    const d = new ContinuationDriver(host)
+    expect(d.nudgeTurn1Sent).toBe(false)
+    d.turnEnded(1)
+    await vi.advanceTimersByTimeAsync(1600)
+    expect(d.nudgeTurn1Sent).toBe(true)
+    expect(d.isSettledForTurn(1)).toBe(false)
+    d.turnEnded(2)
+    await vi.advanceTimersByTimeAsync(1600)
+    expect(host.nudges).toHaveLength(1)
+    expect(d.isSettledForTurn(2)).toBe(true)
+  })
+
+  it('userMessage cancels a pending timer and unsettles the generation', async () => {
+    current = plan({ status: 'done' })
+    const d = new ContinuationDriver(host)
+    d.turnEnded(1)
+    await vi.advanceTimersByTimeAsync(1600)
+    expect(d.isSettledForTurn(1)).toBe(true)
+    d.userMessage()
+    expect(d.isSettledForTurn(1)).toBe(false)
+    d.turnEnded(2)
+    d.userMessage()
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(d.isSettledForTurn(2)).toBe(false)
+    expect(host.settled).toEqual([1])
+  })
+
+  it('hold with a pending timer settles that generation', () => {
+    const d = new ContinuationDriver(host)
+    d.turnEnded(1)
+    d.hold()
+    expect(d.isSettledForTurn(1)).toBe(true)
+  })
+
+  it('reads autoContinue and maxAutoContinues through getters at every check', async () => {
+    let auto = true
+    let max = 5
+    const live: ContinuationHost = {
+      ...host,
+      get autoContinue() {
+        return auto
+      },
+      get maxAutoContinues() {
+        return max
+      }
+    }
+    const d = new ContinuationDriver(live)
+    max = 0
+    expect(await d.evaluate()).toEqual({ kind: 'none', limitReached: true })
+    max = 5
+    expect((await d.evaluate()).kind).toBe('continue')
+    auto = false
+    d.turnEnded(3)
+    expect(d.isSettledForTurn(3)).toBe(true)
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(host.nudges).toHaveLength(1)
+  })
+})

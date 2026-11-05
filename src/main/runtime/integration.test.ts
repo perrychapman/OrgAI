@@ -439,3 +439,71 @@ describe('nested isolation', () => {
     expect(integrateWorktree).toHaveBeenCalledTimes(2)
   })
 })
+
+describe('WorktreeIntegrator exec settlement (cli-spec 6.2(2))', () => {
+  it('hasPendingWork is true while a merge runs and false after; integration activity is noted at both ends', async () => {
+    let finish!: () => void
+    vi.mocked(integrateWorktree).mockImplementation(
+      (_root, info) =>
+        new Promise((resolve) => {
+          finish = () => resolve({ info: { ...info, status: 'merged', changedFiles: ['a.ts'] }, message: 'merged' })
+        })
+    )
+    const { ctx, integrator } = setup()
+    const reasons: string[] = []
+    ctx.noteActivity = (r) => reasons.push(r)
+    integrator.track('a1', WT)
+    expect(integrator.hasPendingWork()).toBe(false)
+    const done = integrator.onSubagentFinished('a1')
+    expect(integrator.hasPendingWork()).toBe(true)
+    await vi.waitFor(() => expect(integrateWorktree).toHaveBeenCalled())
+    expect(integrator.hasPendingWork()).toBe(true)
+    expect(reasons).toEqual(['integration'])
+    finish()
+    await done
+    await Promise.resolve()
+    expect(integrator.hasPendingWork()).toBe(false)
+    expect(reasons).toEqual(['integration', 'integration'])
+  })
+
+  it('hasPendingWork covers the commit of a parent waiting for its children', async () => {
+    let commitDone!: () => void
+    vi.mocked(commitLeftovers).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          commitDone = () => resolve({ committed: true })
+        })
+    )
+    const { integrator } = setup()
+    integrator.track('a1', WT)
+    integrator.track('c1', { path: '/repo/.claude/worktrees/agent-a1/.claude/worktrees/agent-c1', branch: 'worktree-agent-c1', status: 'active', mergeTarget: 'parent', parentAgentId: 'a1', parentBranch: WT.branch })
+    const done = integrator.onSubagentFinished('a1')
+    await vi.waitFor(() => expect(commitLeftovers).toHaveBeenCalled())
+    expect(integrator.worktreeOf('a1')?.status).toBe('waiting-children')
+    expect(integrator.hasPendingWork()).toBe(true)
+    commitDone()
+    await done
+    await Promise.resolve()
+    expect(integrator.hasPendingWork()).toBe(false)
+  })
+
+  it('unmergedConflictBranches lists the branches left in conflict', async () => {
+    integrateTo('conflict', 'Conflicts in a.ts.')
+    const { integrator } = setup()
+    expect(integrator.unmergedConflictBranches()).toEqual([])
+    integrator.track('a1', WT)
+    await integrator.onSubagentFinished('a1')
+    expect(integrator.unmergedConflictBranches()).toEqual(['worktree-agent-a1'])
+    expect(integrator.hasPendingWork()).toBe(false)
+  })
+
+  it('hasPendingWork is false again after a merge that throws', async () => {
+    vi.mocked(integrateWorktree).mockRejectedValueOnce(new Error('lock timeout'))
+    const { integrator } = setup()
+    integrator.track('a1', WT)
+    await integrator.onSubagentFinished('a1')
+    await Promise.resolve()
+    expect(integrator.hasPendingWork()).toBe(false)
+    expect(integrator.unmergedConflictBranches()).toEqual(['worktree-agent-a1'])
+  })
+})
