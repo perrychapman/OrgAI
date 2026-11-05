@@ -954,6 +954,13 @@ Resolved `R1`–`R10` (single-host daemon vs Desktop ownership, socket authentic
   - mcp:authorize with `announceUrl`: the browser is opened first and the URL is then announced with `openedBrowser`
     saying whether it really opened; a failure to open is logged and the flow keeps waiting for the callback (without
     `announceUrl` an opener failure still fails the flow).
+  - `org import` (replacing) and `team templates apply` (replace) never promise an Undo: the Desktop's import Undo covers
+    only its own applies, so the confirmation and the result say the replace cannot be undone and `--json` carries
+    `previousRoles` (12baf95).
+  - The TUI's `stopOnQuit` claims 'stopped' (exit 130) only when the run ended or runs:stop succeeded; otherwise it exits
+    1 with "Could not stop <label>: <reason>. The run keeps going." (12baf95).
+  - `mcp overrides`: only names given on the command line count as dropped; a stale stored name the entry no longer
+    lists is filtered by the host silently (bfab23e).
 - **Unverified / open.** Not run on this Mac: the SSH `ssh -L 38917:127.0.0.1:38917 <host>` forward flow and device-code
   login against a real OpenAI or OAuth server (unit-tested with fakes; e2e drives only the mock and a read-only secret
   store), the Windows (`rundll32.exe url.dll,FileProtocolHandler`) and Linux (`xdg-open`) URL openers, Windows /dev/tty

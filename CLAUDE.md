@@ -529,7 +529,9 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     logged and the flow keeps waiting), `EngagementNoteSaveInput.expectedUpdatedAt` (`stale_revision`). Exit rules
     beyond the spec: kit import is 1 when any item is refused; init is 1 when /stop ends the Architect before
     complete_setup; `mcp overrides` merges onto the stored map and a dropped name is 1. worktrees calls wait 10 min
-    (the repo lock alone may take 60 s); `usage csv` to a terminal is sanitized. Unit, inproc integration and e2e
+    (the repo lock alone may take 60 s); `usage csv` to a terminal is sanitized. Org import / template replace never promise
+    Desktop Undo (they say it cannot be undone; --json carries `previousRoles`); the TUI's `stopOnQuit` exits 130 only
+    when the run ended or runs:stop succeeded, else 1 ("Could not stop ... The run keeps going."). Unit, inproc integration and e2e
     (`cli-projects`, `cli-org`, `cli-connections`, `cli-mcp`, `cli-skills-kit`) on macOS; SSH forward, device-code login
     against a real server and the Windows / Linux URL openers are unverified.
   - Wave 4: the Ink TUI in `src/cli/tui/` (ink 8.0.0, loaded only through `await import('../tui/index')`, the
