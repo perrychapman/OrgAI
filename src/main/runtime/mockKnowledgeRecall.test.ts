@@ -6,7 +6,7 @@ import type { RunEvent } from '@shared/types'
 import { KNOWLEDGE_RECALL_TOKEN, MOCK_KNOWLEDGE_RECALLED, MockAdapter } from './mock'
 import { RunManager } from './runManager'
 import { RunStore } from '../store/runs'
-import { knowledgeStore } from '../store/knowledge'
+import { knowledgeStore, saveNodeForUser } from '../store/knowledge'
 import type { SetupService } from '../setup/service'
 import { ROOT_AGENT_ID } from './types'
 import { project } from './testHelpers'
@@ -39,6 +39,9 @@ describe('[mock:knowledge-recall] under the real RunManager and store', () => {
     const work = join(dir, 'work')
     mkdirSync(work, { recursive: true })
     const m = rig()
+    // The automatic block only matches entities the USER created, so the person the report's brief names is the user's
+    // own (seeded through the real store); the mock's later upsert of "Jane Doe" merges into it.
+    saveNodeForUser(join(dir, 'data'), 'p1', { kind: 'person', name: 'Jane Doe' })
     const run = await m.start({ project: project({ id: 'p1', path: work, kind: 'engagement', isolateWriters: false }), prompt: `Check the billing ${KNOWLEDGE_RECALL_TOKEN}`, kind: 'work' })
     // The report's Edit then waits on a permission card nobody answers here, so the row is as far as this test goes.
     await vi.waitFor(() => expect(systemRows().some((r) => r.text.startsWith('Added '))).toBe(true), { timeout: 5000 })
@@ -53,6 +56,21 @@ describe('[mock:knowledge-recall] under the real RunManager and store', () => {
     // The repeat is the dedupe path: the second answer says it was already shown.
     const results = events.flatMap((e) => (e.type === 'transcript' && e.entry.block.kind === 'tool_result' ? [e.entry.block.content] : []))
     expect(results.filter((c) => c.includes('already shown')).length).toBeGreaterThanOrEqual(1)
+    await m.stop(run.id)
+  })
+
+  it('an agent-created Jane Doe stays quiet: the report\'s brief gets no block and no "Added" row', async () => {
+    const work = join(dir, 'work')
+    mkdirSync(work, { recursive: true })
+    const m = rig()
+    const run = await m.start({ project: project({ id: 'p1', path: work, kind: 'engagement', isolateWriters: false }), prompt: `Check the billing ${KNOWLEDGE_RECALL_TOKEN}`, kind: 'work' })
+    // The report reads a file only after it was spawned with its brief, so its result proves the spawn went through.
+    await vi.waitFor(() => expect(events.some((e) => e.type === 'transcript' && e.entry.block.kind === 'tool_result' && e.entry.block.content.includes('export const x'))).toBe(true), { timeout: 5000 })
+    expect(texts()).toContain(MOCK_KNOWLEDGE_RECALLED)
+    // Jane Doe exists (the mock wrote her as an agent) and the brief names her, but nothing was added.
+    expect(systemRows().filter((r) => r.text.startsWith('Added '))).toEqual([])
+    expect(m.summaryOf(run.id)?.usage?.knowledge?.autoContexts ?? 0).toBe(0)
+    expect(systemRows().filter((r) => r.text.startsWith('Recalled '))).toHaveLength(2)
     await m.stop(run.id)
   })
 })

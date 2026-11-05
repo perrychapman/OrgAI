@@ -32,6 +32,7 @@ import {
   knowledgeFileLimits,
   knowledgeFileState,
   knowledgeNodeCount,
+  knowledgeRecallSnapshotCount,
   knowledgeStore,
   readKnowledge,
   removeEdge,
@@ -135,7 +136,7 @@ describe('review round 2 of the knowledge graph', () => {
     expect(searchKnowledge(g).length).toBeGreaterThan(0)
     expect(knowledgeVocabulary(g).kinds.length).toBeGreaterThan(0)
     expect(recallKnowledge(g, q, { inferred: strongMentionLinks(readKnowledgeInferred(dir, P)) }).text).not.toBe('')
-    expect(knowledgeContextBlock(g, 'Priya Raman and Stripe')).not.toBeNull()
+    expect(knowledgeContextBlock(g, 'Ines Duarte and Stripe')).not.toBeNull()
     expect(knowledgeBrief(g)).toBeDefined()
     expect(knowledgeMentions(g).length).toBeGreaterThan(0)
     expect(inferKnowledgeLinks(g).length).toBeGreaterThan(0)
@@ -203,6 +204,75 @@ describe('review round 2 of the knowledge graph', () => {
       const moved = readRecallView(dir, P)
       expect(moved.rankOn).toBe(readKnowledge(dir, P))
       expect(moved.rankOn.nodes.map((n) => n.name)).toContain('Cleo')
+    } finally {
+      now.mockRestore()
+      knowledgeFileLimits.recallDebounceMinBytes = original
+    }
+  })
+
+  it('a held revision is dropped when the graph is cleared or its file is gone, so forgotten data is not served from memory', () => {
+    const original = knowledgeFileLimits.recallDebounceMinBytes
+    knowledgeFileLimits.recallDebounceMinBytes = 1
+    resetKnowledgeCache()
+    const now = vi.spyOn(Date, 'now')
+    try {
+      for (const remove of [() => clearKnowledge(dir, P), () => rmSync(knowledgeFile(dir, P), { force: true })]) {
+        now.mockReturnValue(1_000_000)
+        person('Ada')
+        expect(readRecallView(dir, P).rankOn.nodes.map((n) => n.name)).toContain('Ada')
+        expect(knowledgeRecallSnapshotCount()).toBe(1)
+        remove()
+        now.mockReturnValue(1_001_000)
+        // A read after the removal (a recall, the next write) must not hand the old revision back inside the window.
+        expect(readRecallView(dir, P).rankOn.nodes).toEqual([])
+        expect(knowledgeRecallSnapshotCount()).toBe(0)
+        person('Zed')
+        const again = readRecallView(dir, P).rankOn.nodes.map((n) => n.name)
+        expect(again).toEqual(['Zed'])
+        clearKnowledge(dir, P)
+      }
+    } finally {
+      now.mockRestore()
+      knowledgeFileLimits.recallDebounceMinBytes = original
+    }
+  })
+
+  it('held revisions never outnumber the graph cache', () => {
+    const original = knowledgeFileLimits.recallDebounceMinBytes
+    knowledgeFileLimits.recallDebounceMinBytes = 1
+    resetKnowledgeCache()
+    try {
+      for (let i = 0; i < 8; i++) {
+        const p = `proj_${i}`
+        upsertNode(dir, p, { kind: 'person', name: 'Ada' }, agent)
+        readRecallView(dir, p)
+        expect(knowledgeRecallSnapshotCount()).toBeLessThanOrEqual(knowledgeCacheFiles().length)
+        expect(knowledgeRecallSnapshotCount()).toBeLessThanOrEqual(4)
+      }
+    } finally {
+      knowledgeFileLimits.recallDebounceMinBytes = original
+    }
+  })
+
+  it('a link dismissed since the held revision is left out of what a recall shows', () => {
+    const original = knowledgeFileLimits.recallDebounceMinBytes
+    writeRaw(knowledgeFixture())
+    resetKnowledgeCache()
+    knowledgeFileLimits.recallDebounceMinBytes = 1
+    const now = vi.spyOn(Date, 'now')
+    try {
+      now.mockReturnValue(1_000_000)
+      const first = readRecallView(dir, P)
+      const target = strongMentionLinks(first.inferred)[0]
+      expect(target).toBeDefined()
+      dismissKnowledgeLink(dir, P, target.id)
+      now.mockReturnValue(1_010_000)
+      const held = readRecallView(dir, P)
+      expect(held.rankOn).toBe(first.rankOn)
+      expect(held.inferred.links.map((l) => l.id)).not.toContain(target.id)
+      expect(held.inferred.links.length).toBe(first.inferred.links.length - 1)
+      // The held revision's own memoized result is untouched.
+      expect(first.inferred.links.map((l) => l.id)).toContain(target.id)
     } finally {
       now.mockRestore()
       knowledgeFileLimits.recallDebounceMinBytes = original

@@ -1,5 +1,4 @@
-import { composeFirstMessage } from './prompts'
-import { RESUME_TEXT } from './runManager'
+import { KNOWLEDGE_BLOCK_MARK, RESUME_TEXT, withKnowledgeBlock } from './prompts'
 import { ROOT_AGENT_ID, type RuntimeContext } from './types'
 
 /**
@@ -27,16 +26,23 @@ export function userMessageKnowledge(ctx: Pick<RuntimeContext, 'knowledgeContext
   return contextBlock(ctx, text, { agentId: ROOT_AGENT_ID, purpose: 'message' }, warn)
 }
 
-/** A user message as the model receives it, block included. The block never goes in the transcript entry. */
+/**
+ * A user message as the model receives it, block included: the text, then the block under its own plain separator and its
+ * own data label (the user can see their own message, so it is not "context the user cannot see"). The block never goes
+ * in the transcript entry.
+ */
 export function withUserMessageKnowledge(text: string, block: string | null): string {
-  return block ? composeFirstMessage(text, block) : text
+  return block ? withKnowledgeBlock(text, block) : text
 }
 
-/** ctx.hiddenContext for the first message, with the prompt's knowledge block after it (a resumed run's RESUME_TEXT gets none). */
+/**
+ * ctx.hiddenContext for the first message, with the prompt's knowledge block after it behind KNOWLEDGE_BLOCK_MARK, which
+ * composeFirstMessage turns into the block's own separator (a resumed run's RESUME_TEXT gets none).
+ */
 export function firstMessageHiddenContext(ctx: Pick<RuntimeContext, 'knowledgeContext' | 'hiddenContext' | 'prompt'>, warn: Warn): string | undefined {
   const block = userMessageKnowledge(ctx, ctx.prompt, warn)
   if (!block) return ctx.hiddenContext
-  return ctx.hiddenContext ? `${ctx.hiddenContext}\n\n${block}` : block
+  return `${ctx.hiddenContext ?? ''}${KNOWLEDGE_BLOCK_MARK}${block}`
 }
 
 /**

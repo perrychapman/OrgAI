@@ -317,6 +317,11 @@ function remember(file: string, entry: CacheEntry): void {
   }
 }
 
+/** How many held recall revisions there are (tests): never more than the graph cache holds. */
+export function knowledgeRecallSnapshotCount(): number {
+  return recallSnapshots.size
+}
+
 /** What the cache holds now, oldest first (tests). */
 export function knowledgeCacheFiles(): string[] {
   return [...cache.keys()]
@@ -328,6 +333,7 @@ function loadGraph(dataDir: string, projectId: string): Loaded {
   const fs = fileStat(file)
   if (fs === null) {
     cache.delete(file)
+    recallSnapshots.delete(file)
     return { graph: emptyKnowledgeGraph(), state: 'missing' }
   }
   const noteIds = listNotes(dataDir, projectId).map((n) => n.id)
@@ -349,6 +355,7 @@ function rememberWritten(dataDir: string, projectId: string, graph: KnowledgeGra
   const fs = fileStat(file)
   if (fs === null) {
     cache.delete(file)
+    recallSnapshots.delete(file)
     return
   }
   remember(file, { graph, state: 'ok', stamp: stampOf(fs.stamp, listNotes(dataDir, projectId).map((n) => n.id)), bytes: fs.bytes })
@@ -848,6 +855,7 @@ export function removeEdge(dataDir: string, projectId: string, edgeId: string): 
 export function clearKnowledge(dataDir: string, projectId: string): KnowledgeGraph {
   const file = knowledgeFile(dataDir, projectId)
   cache.delete(file)
+  recallSnapshots.delete(file)
   if (isLink(file) || existsSync(file)) rmSync(file, { force: true })
   return emptyKnowledgeGraph()
 }
@@ -885,10 +893,23 @@ export function readRecallView(dataDir: string, projectId: string): { rankOn: Kn
     const rankOn = large && snap && now - snap.at < RECALL_DEBOUNCE_MS ? snap.graph : graph
     if (rankOn === graph) {
       if (large) {
-        if (snap?.graph !== graph) recallSnapshots.set(file, { graph, at: now })
+        if (snap?.graph !== graph) {
+          // Refresh the entry (newest last) and keep the map no larger than the graph cache.
+          recallSnapshots.delete(file)
+          recallSnapshots.set(file, { graph, at: now })
+          while (recallSnapshots.size > KNOWLEDGE_CACHE_MAX) {
+            const oldest = recallSnapshots.keys().next().value
+            if (oldest === undefined) break
+            recallSnapshots.delete(oldest)
+          }
+        }
       } else recallSnapshots.delete(file)
     }
-    return { rankOn, inferred: knowledgeInferredResult(rankOn) }
+    const inferred = knowledgeInferredResult(rankOn)
+    if (rankOn === graph) return { rankOn, inferred }
+    // An older revision's links: a dismissal made since must not show again (the id list is the current graph's).
+    const dismissed = new Set(graph.dismissedLinks ?? [])
+    return { rankOn, inferred: dismissed.size ? { ...inferred, links: inferred.links.filter((l) => !dismissed.has(l.id)) } : inferred }
   } catch {
     const empty = emptyKnowledgeGraph()
     return { rankOn: empty, inferred: { links: [], appearances: {} } }

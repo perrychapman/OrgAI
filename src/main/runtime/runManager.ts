@@ -60,6 +60,7 @@ import { referenceFolderOf } from './referenceDirectories'
 import { aliasesFor, priceAgentUsage, type PricingContext } from './pricing'
 import { IntervalTimer, buildUsageCsv, buildUsageStats, computeRunUsage, emptyAgentUsage, legacySummaryUsage, monthRange, normalizeRunRecord } from './runUsage'
 import { knowledgeAutoContextOn } from '@shared/knowledge'
+import { RESUME_TEXT } from './prompts'
 import { dropLoneHighSurrogate, fenceDatum, knowledgeBrief, knowledgeContextBlock, knowledgeListItem, recallKnowledge } from '@shared/knowledgeIndex'
 import { strongMentionLinks } from '@shared/knowledgeLinks'
 import { DEFAULT_MAX_AUTO_CONTINUES, HARNESS_PROJECT_ID, KNOWLEDGE_RECALLED_IDS_MAX, KNOWLEDGE_RUN_WRITES_MAX, QUICK_PROJECT_ID, RUN_MESSAGE_MAX_CHARS, RUN_PEER_PROMPT_CHARS, SKILLS_PROJECT_ID, USAGE_STATS_DEFAULT_LIMIT, USAGE_STATS_MAX_LIMIT, isVirtualProjectId } from '@shared/types'
@@ -203,9 +204,9 @@ interface RecalledThrottle {
 }
 /** When a usage limit gives no reset time, try again after this long. */
 export const DEFAULT_PAUSE_MS = 5 * 60 * 1000
-/** Sent to the orchestrator when a paused run continues. */
-export const RESUME_TEXT =
-  'The usage window has reset. Continue exactly where you left off; the harness has reconciled any report branches left in progress.'
+// RESUME_TEXT lives in prompts.ts (the adapters' delivery helpers need it without importing the manager); re-exported
+// here so existing imports of it from './runManager' keep compiling.
+export { RESUME_TEXT }
 
 const WINDOW_LABELS: Record<string, string> = {
   five_hour: 'five-hour',
@@ -1749,9 +1750,11 @@ export class RunManager {
           this.noteServed(a, 'recalls', r.served.length, r.text.length)
           this.knowledgeRow(a, agentId, `Recalled ${ids.length} item${ids.length === 1 ? '' : 's'} about ${datum(query, 80)}`)
           this.noteRecalled(a, agentId, ids, 'recall')
-          if (r.text) return r.text
+          // A very large graph is ranked on a revision up to 30 s old (store readRecallView): say so, in a few words.
+          const old = view && view.rankOn !== graph ? ' (Search index up to 30 s old.)' : ''
+          if (r.text) return `${r.text}${old ? `\n${old.trim()}` : ''}`
           const q = fenceDatum(query, 120)
-          return r.cut.length ? `${r.cut.length} entities match "${q}" but none fit the budget. Ask again with a larger budget.` : `Nothing in the knowledge graph matches "${q}".`
+          return (r.cut.length ? `${r.cut.length} entities match "${q}" but none fit the budget. Ask again with a larger budget.` : `Nothing in the knowledge graph matches "${q}".`) + old
         } catch (e) {
           log.warn(`Run ${a.summary.id}: knowledge recall failed: ${e instanceof Error ? e.message : String(e)}`)
           return 'The knowledge graph could not be read right now.'
