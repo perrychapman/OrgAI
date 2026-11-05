@@ -97,7 +97,7 @@ jobs:
           # Each mac arch on its native runner so `npm ci` installs the matching
           # @anthropic-ai/claude-agent-sdk-darwin-<arch> and @openai/codex-darwin-<arch> optional deps.
           - name: mac-arm64
-            os: macos-14
+            os: macos-15
             args: --mac --arm64
             arch: arm64
           - name: mac-x64

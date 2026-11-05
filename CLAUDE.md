@@ -1417,8 +1417,10 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
     package.json `productName: "OrgAI"` names the packaged app (`app.name`, log dir).
   - The `pathKey` symlink fix (macOS `/tmp` is `/private/tmp`) and the OrgAI identity fallback for commit and merge are
     unit-tested with a junction/symlink and a git that has no identity config.
-  - CI (`.github/workflows/ci.yml`) runs on windows-latest and macos-14. Release legs run on native-arch runners
-    (macos-14 arm64, macos-15-intel x64). Nothing in CI spends tokens. A push that changes only `docs/**` or Markdown
+  - CI (`.github/workflows/ci.yml`) runs on windows-latest and macos-15. Release legs run on native-arch runners
+    (macos-15 arm64, macos-15-intel x64). macos-14 was refused from 2026-11-05 (jobs cancelled with "The configuration
+    'macos-14-arm64-us-default' is not supported"; the same jobs passed at 18:25 UTC that day), so CI and release moved
+    to macos-15 (unrun: the first macos-15 CI run has not happened). Nothing in CI spends tokens. A push that changes only `docs/**` or Markdown
     files does not trigger it (`paths-ignore`); pull requests always run.
   - Local builds: `npm run pack` (`scripts/pack-local.mjs`, `--dry-run` prints the plan) keeps only `release/win-unpacked`
     (current, `release/BUILD.txt`: version, short sha, time) and `release/previous` (the build before); never create
