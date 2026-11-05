@@ -127,7 +127,12 @@ export function NewProjectForm({
   const [repo, setRepo] = useState<RepoFields>(() => draft?.repo ?? emptyRepoFields(readLastCloneParent()))
   const [adopted, setAdopted] = useState(draft ? draft.adopted || draft.cloneRunning : false)
   const cloned = adopted && session.status === 'done' ? session.result : null
-  const [liveText, setLiveText] = useState('')
+  const [liveText, setLive] = useState('')
+  // Cleared first, so saying the same sentence again is heard again.
+  const setLiveText = (text: string): void => {
+    setLive('')
+    requestAnimationFrame(() => setLive(text))
+  }
   const [name, setName] = useState(draft?.name ?? '')
   const [path, setPath] = useState(draft?.path ?? '')
   const [brief, setBrief] = useState(draft?.brief ?? '')
@@ -149,7 +154,9 @@ export function NewProjectForm({
     if (!autoFocus) return
     const radios = kindRef.current?.querySelectorAll<HTMLInputElement>('input[type=radio]')
     const target = Array.from(radios ?? []).find((r) => r.checked) ?? radios?.[0]
-    target?.focus()
+    // A running clone locks the radios.
+    if (repoSession().status === 'running') document.getElementById(`${uid}-repo-cancel`)?.focus()
+    else target?.focus()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -367,7 +374,7 @@ export function NewProjectForm({
       const created = await createProject(input, { onExtrasError: (err) => void (extras.failed = cleanIpcError(err)) })
       writeLastProjectKind(projectKind)
       // The clone is a project now: nothing left to offer next time.
-      if (cloned) forgetRepoClone()
+      if (cloned && github) forgetRepoClone()
       if (input.templateId) writeLastTemplateId(window.localStorage, input.templateId)
       if (extras.failed) {
         // The project exists; wait for the user rather than leaving the form with the problem unseen.

@@ -26,7 +26,15 @@ export function NewProjectDialog({ open, onClose, mockAvailable }: { open: boole
         danger: true,
         confirmTestId: 'repo-clone-stop-confirm'
       })
-      if (!ok) return
+      if (!ok) {
+        // It may have ended behind the question, where focus could not reach its result: go there now.
+        requestAnimationFrame(() => {
+          const s = repoSession().status
+          if (s === 'running') return
+          document.querySelector<HTMLElement>('[data-testid=repo-cloned-line], [data-testid=repo-clone-error], [data-testid=repo-destination-error]')?.focus()
+        })
+        return
+      }
       // It may have finished while the question was open; then the folder stays and the form offers it next time.
       cancelRepoClone({ quiet: true })
     }
@@ -37,6 +45,12 @@ export function NewProjectDialog({ open, onClose, mockAvailable }: { open: boole
   useEffect(() => {
     if (!open) return undefined
     const frame = requestAnimationFrame(() => {
+      // Back on a running clone the kind choice is locked: the one control that does anything is Cancel clone.
+      const cancel = document.querySelector<HTMLElement>('[data-testid=new-project-dialog] [data-testid=repo-clone-cancel]')
+      if (cancel) {
+        cancel.focus()
+        return
+      }
       const radios = Array.from(document.querySelectorAll<HTMLInputElement>('[data-testid=new-project-dialog] [data-testid=project-kind] input[type=radio]'))
       ;(radios.find((r) => r.checked) ?? radios[0])?.focus()
     })

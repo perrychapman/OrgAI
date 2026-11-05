@@ -96,7 +96,7 @@ export function RepoStartPanel({
         setTools(t)
         setChecking(false)
         if (say) {
-          const fork = forkAvailability(t, null)
+          const fork = forkAvailability(t, parse)
           announce(!t.git.available ? GIT_MISSING_REASON : fork.available ? (t.gh.login ? `Signed in to the GitHub CLI as ${t.gh.login}.` : 'Signed in to the GitHub CLI.') : (fork.reason ?? ''))
         }
       })
@@ -205,7 +205,7 @@ export function RepoStartPanel({
   if (adopted && session.status === 'done') {
     const { result } = session
     return (
-      <section className="repo-start" data-testid="repo-start-panel" aria-label="Repository">
+      <div className="repo-start" data-testid="repo-start-panel">
         <p id={ids.cloned} className="field-msg ok repo-cloned" tabIndex={-1} data-testid="repo-cloned-line">
           Cloned to <span className="repo-path">{result.path}</span>
           {result.branch ? `, branch ${result.branch}` : ''}. {CLONE_KEPT_NOTE}
@@ -241,12 +241,12 @@ export function RepoStartPanel({
             Clone a different repository
           </button>
         </div>
-      </section>
+      </div>
     )
   }
 
   return (
-    <section className="repo-start" data-testid="repo-start-panel" aria-label="Repository">
+    <div className="repo-start" data-testid="repo-start-panel">
       <fieldset className="repo-lock" disabled={running}>
         <div className="field">
           <label htmlFor={ids.source}>Repository</label>
@@ -396,14 +396,14 @@ export function RepoStartPanel({
           )}
         </div>
         {refusal && (
-          <span id={ids.destErr} className="field-msg error repo-error" role="alert" tabIndex={-1} data-testid="repo-destination-error">
+          <span id={ids.destErr} className="field-msg error repo-error" tabIndex={-1} data-testid="repo-destination-error">
             {refusal}
           </span>
         )}
       </fieldset>
 
       {failure && (
-        <p id={ids.error} className="field-msg error repo-error" role="alert" tabIndex={-1} data-testid="repo-clone-error">
+        <p id={ids.error} className="field-msg error repo-error" tabIndex={-1} data-testid="repo-clone-error">
           {failure}
         </p>
       )}
@@ -419,7 +419,15 @@ export function RepoStartPanel({
           </span>
           {session.progress?.percent !== undefined ? <progress className="repo-progress" max={100} value={session.progress.percent} aria-label="Clone progress" /> : <progress className="repo-progress" aria-label="Clone progress" />}
           <div>
-            <Button id={ids.cancel} inert={session.cancelling} onClick={() => cancelRepoClone()} testId="repo-clone-cancel">
+            <Button
+              id={ids.cancel}
+              inert={session.cancelling}
+              onClick={() => {
+                announce('Stopping the clone.')
+                cancelRepoClone()
+              }}
+              testId="repo-clone-cancel"
+            >
               Cancel clone
             </Button>
           </div>
@@ -442,6 +450,6 @@ export function RepoStartPanel({
           )}
         </div>
       )}
-    </section>
+    </div>
   )
 }

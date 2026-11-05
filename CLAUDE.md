@@ -828,7 +828,7 @@ and the frontend-design skill is not vendored in `.claude/skills` (only `run-des
     custom round trip (skipped when the mock catalog has no id outside the tiers). Unit tests: scrollWithin,
     settingsCopy, roleModels, assistantModels, settingsTarget, permissionCopy. Non-Anthropic connections are not
     driven. Open: N7, N9, N13 and the Lows in ARCHITECTURE.md Risks.
-- e2e:free is `e2e/layout.mjs`, `dashboard.mjs`, `runs.mjs`, `proposals.mjs`, `maintenance.mjs`, `connections.mjs`, `connectors.mjs`, `import.mjs`, `skills.mjs`, `usage.mjs`, `team.mjs`, `canvas.mjs`, `assistants.mjs`, `permissions.mjs`, `menu.mjs`, `engagement.mjs`, `engagement2.mjs`, `per-project.mjs` and `presets.mjs` (package.json). Update selectors in the same change.
+- e2e:free is `e2e/layout.mjs`, `dashboard.mjs`, `runs.mjs`, `proposals.mjs`, `maintenance.mjs`, `connections.mjs`, `connectors.mjs`, `import.mjs`, `skills.mjs`, `usage.mjs`, `team.mjs`, `canvas.mjs`, `assistants.mjs`, `permissions.mjs`, `menu.mjs`, `engagement.mjs`, `engagement2.mjs`, `per-project.mjs`, `presets.mjs`, the three `knowledge*.mjs` and `clone-start.mjs` (package.json). Update selectors in the same change.
 - Engagement phases 2-3, renderer (2026-11-04; `docs/design/engagement-2.md` "Implementation notes"): Team tab
   Templates menu (`team-templates`, save / apply dialogs, `template-notice` with Undo through `undoImport` and
   `ImportNotice.source: 'template'`), New project "Start from a template" (`setup-choice-template`,

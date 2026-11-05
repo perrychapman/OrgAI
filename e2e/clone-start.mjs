@@ -407,6 +407,8 @@ try {
     await gotoProjects(page)
     await tid('repo-clone-progress').waitFor({ timeout: 10_000 })
     check((await tid('repo-source').inputValue()) === 'mock-org/slow', 'the form comes back with what was typed')
+    await sleep(200)
+    check((await activeTestId()) === 'repo-clone-cancel', 'the returned form focuses Cancel clone', String(await activeTestId()))
     await tid('repo-clone-cancel').click()
     await tid('repo-clone-cancelled').waitFor({ timeout: 15_000 })
     check(await waitGone(dest), 'the returned form can still stop it')

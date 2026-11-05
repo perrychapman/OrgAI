@@ -144,8 +144,10 @@ describe('forkPreview', () => {
 
 describe('cloneBlocker', () => {
   const fields = { ...emptyRepoFields('C:\\p'), source: 'o/r', folder: 'r' }
-  it('passes a complete form', () => {
-    expect(cloneBlocker({ fields, parse: gh, tools: signedIn, check: null })).toBeNull()
+  const free = check({ exists: false, isDirectory: false })
+  it('passes a complete form, once the folder has been checked', () => {
+    expect(cloneBlocker({ fields, parse: gh, tools: signedIn, check: free })).toBeNull()
+    expect(cloneBlocker({ fields, parse: gh, tools: signedIn, check: null })).toMatch(/Checking the folder/)
   })
   it('names each missing step, git first', () => {
     const noGit: RepoTools = { git: { available: false }, gh: { available: false, loggedIn: false } }
@@ -159,7 +161,7 @@ describe('cloneBlocker', () => {
     expect(cloneBlocker({ fields, parse: gh, tools: signedIn, check: check({}), existingProjectName: 'Shop' })).toContain('Shop')
   })
   it('does not wait for the slow gh check', () => {
-    expect(cloneBlocker({ fields, parse: gh, tools: null, check: null })).toBeNull()
+    expect(cloneBlocker({ fields, parse: gh, tools: null, check: free })).toBeNull()
   })
 })
 

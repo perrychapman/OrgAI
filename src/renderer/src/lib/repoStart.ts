@@ -163,6 +163,7 @@ export function cloneBlocker(input: { fields: RepoFields; parse: RepoSourceParse
   if (fieldProblem) return fieldProblem
   if (!fields.folder.trim()) return 'Give the folder a name.'
   if (input.existingProjectName) return `This folder is already a project: ${input.existingProjectName}.`
+  if (!check) return 'Checking the folder.'
   return targetProblem(check)
 }
 
