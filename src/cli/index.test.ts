@@ -23,8 +23,18 @@ vi.mock('./commands/doctor', () => ({
 vi.mock('./commands/completions', () => ({ runCompletions: stub('completions') }))
 vi.mock('./commands/exec', () => ({ runExec: stub('exec'), runResume: stub('resume') }))
 vi.mock('./commands/decide', () => ({ runDecide: stub('decide') }))
+vi.mock('./commands/tui', () => ({
+  PROMPT_HINT: 'To start the terminal UI with a prompt: orgai -- "<prompt>"',
+  runTuiCommand: stub('tui'),
+  runAttach: stub('attach'),
+  runDefaultTui: vi.fn(async (ctx: CliContext, args: string[], opts?: { help?: () => string }) => {
+    calls.push({ name: 'default', args, ctx })
+    if (opts?.help) ctx.io.stdout.write(`${opts.help()}\n`)
+    return 0
+  })
+}))
 
-const { main, editDistance, TUI_LATER_NOTE } = await import('./index')
+const { main, editDistance, generalHelp } = await import('./index')
 const { CLI_VERSION } = await import('./version')
 const { SECRET_ENV_REFUSAL } = await import('./secretOverlay')
 
@@ -87,11 +97,13 @@ describe('orgai routing', () => {
     for (const v of ['--version', '-V', 'version']) expect(await run([v])).toMatchObject({ code: 0, out: `${CLI_VERSION}\n` })
   })
 
-  it('prints help, command help and the TUI note for a bare orgai', async () => {
+  it('prints help and command help; a bare orgai goes to the terminal UI (which prints help without a terminal)', async () => {
     const bare = await run([])
     expect(bare.code).toBe(0)
-    expect(bare.out).toContain('Usage: orgai <command>')
-    expect(bare.out).toContain(TUI_LATER_NOTE)
+    expect(calls.map((c) => [c.name, c.args])).toEqual([['default', []]])
+    expect(bare.out).toContain('orgai <command> [options]')
+    expect(bare.out).not.toContain('later version')
+    calls.length = 0
     const h = await run(['--help'])
     expect(h.out).toContain('status')
     expect(h.out).toContain('--data-dir')
@@ -103,13 +115,58 @@ describe('orgai routing', () => {
     for (const f of ['--status', '--transcript', '--tail']) expect(await helpOf('runs')).toContain(f)
     for (const f of ['--force', '--foreground', '--timeout', '--lines', '--follow']) expect(await helpOf('daemon')).toContain(f)
     expect(await helpOf('status')).toContain('--all-projects')
+    for (const f of ['--run', '--inline', '--ax-screen-reader']) expect(await helpOf('tui')).toContain(f)
+    expect(await helpOf('attach')).toContain('--inline')
+    expect(await helpOf('resume')).toContain('resume [runId-or-R#] [--prompt <text> | -] [--exec [exec options]]')
     expect(calls).toHaveLength(0)
   })
 
+  it('the general help names the terminal UI flags and lists tui and attach as commands, not as coming later', () => {
+    const h = generalHelp()
+    expect(h).toContain('Usage: orgai [options] [--] [prompt]')
+    for (const f of ['--inline', '--ax-screen-reader', '--team']) expect(h).toContain(f)
+    const later = h.split('\n').find((l) => l.startsWith('Coming later')) ?? ''
+    expect(later).not.toMatch(/\btui\b|\battach\b/)
+    expect(h).toMatch(/^ {2}tui\s/m)
+    expect(h).toMatch(/^ {2}attach\s/m)
+  })
+
   it('an unavailable command exits 2', async () => {
-    const r = await run(['attach', 'R1'])
+    const r = await run(['org', 'list'])
     expect(r.code).toBe(2)
-    expect(r.err).toContain('`orgai attach` is not available in this build yet.')
+    expect(r.err).toContain('`orgai org` is not available in this build yet.')
+  })
+
+  it('routes tui and attach, and prompts to the terminal UI', async () => {
+    for (const [argv, name, args] of [
+      [['tui', '--run', 'R1'], 'tui', ['--run', 'R1']],
+      [['attach', 'R2', '--inline'], 'attach', ['R2', '--inline']],
+      [['--', 'fix', 'the', 'bug'], 'default', ['--', 'fix', 'the', 'bug']],
+      [['fix the bug'], 'default', ['fix the bug']],
+      [['--inline', 'fix the bug'], 'default', ['--inline', 'fix the bug']],
+      [['--team', 'single', '--', 'fix'], 'default', ['--team', 'single', '--', 'fix']],
+      [['--team=single', 'a b'], 'default', ['--team=single', 'a b']],
+      [['--ax-screen-reader'], 'default', ['--ax-screen-reader']],
+      [['--project', 'p1', '--', 'go now'], 'default', ['--', 'go now']]
+    ] as const) {
+      calls.length = 0
+      const r = await run([...argv])
+      expect(r.code, argv.join(' ')).toBe(0)
+      expect(calls.map((c) => c.name), argv.join(' ')).toEqual([name])
+      expect(calls[0].args, argv.join(' ')).toEqual(args)
+    }
+  })
+
+  it('a single unknown word is a usage error with the prompt hint', async () => {
+    const r = await run(['fix'])
+    expect(r.code).toBe(2)
+    expect(r.err).toContain("Unknown command 'fix'.")
+    expect(r.err).toContain('orgai -- "<prompt>"')
+    expect(calls).toHaveLength(0)
+    // -p keeps meaning exec.
+    calls.length = 0
+    await run(['-p', 'fix'])
+    expect(calls.map((c) => c.name)).toEqual(['exec'])
   })
 
   it('exec, -p / --print, resume and decide route to their Wave 3 commands with their arguments', async () => {

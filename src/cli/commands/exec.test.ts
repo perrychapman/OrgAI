@@ -1,8 +1,16 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { EXEC_OUTCOMES, EXEC_OUTCOME_EXIT_CODE, type ExecOutcome, type Project, type RunEvent, type RunRecord, type RunsSubscribeResult, type RunSummary, type TranscriptEntry } from '../../shared/types'
 import { resetSkewWarning } from '../runRef'
 import { FakeHostClient, fakeContext, fakeInproc, flush, project, record, summary, type FakeContextOptions } from '../testing/fakeContext'
 import { EXIT } from '../types'
+const resumeTui = vi.hoisted(() => ({ calls: [] as string[][] }))
+vi.mock('./tui', () => ({
+  runResumeTui: async (_ctx: unknown, args: string[]) => {
+    resumeTui.calls.push(args)
+    return 0
+  }
+}))
+
 import { execIo, lastRootText, overridesFromFlags, runExec, runResume, UNREGISTERED_MESSAGE } from './exec'
 
 const p1 = project('p1', '/work/app', { name: 'App', permissionMode: 'default' } as Partial<Project>)
@@ -374,9 +382,17 @@ describe('orgai exec: following and outcomes', () => {
 })
 
 describe('orgai resume', () => {
-  it('without --exec is a usage error', async () => {
+  it('without --exec opens the terminal UI; exec-only flags without --exec and TUI flags with it are refused', async () => {
     const f = live()
-    await expect(runResume(f.ctx, ['R1', '--prompt', 'more'])).rejects.toMatchObject({ exitCode: EXIT.usage, message: 'The terminal UI comes in a later version; use --exec.' })
+    resumeTui.calls.length = 0
+    expect(await runResume(f.ctx, ['R1', '--prompt', 'more'])).toBe(0)
+    expect(await runResume(f.ctx, ['--inline'])).toBe(0)
+    expect(resumeTui.calls).toEqual([['R1', '--prompt', 'more'], ['--inline']])
+    await expect(runResume(f.ctx, ['R1', '--max-budget', '1'])).rejects.toMatchObject({ exitCode: EXIT.usage, message: expect.stringContaining('--max-budget needs --exec') })
+    await expect(runResume(f.ctx, ['R1', '--on-permission', 'wait'])).rejects.toMatchObject({ exitCode: EXIT.usage })
+    await expect(runResume(f.ctx, ['R1', '--exec', '--inline', '--prompt', 'x'])).rejects.toMatchObject({ exitCode: EXIT.usage, message: expect.stringContaining('--inline applies to the terminal UI') })
+    expect(resumeTui.calls).toHaveLength(2)
+    expect(f.connectCalls).toEqual([])
   })
 
   it('continues R# with exec: true and follows the new run', async () => {

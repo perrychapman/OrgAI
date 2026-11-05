@@ -29,6 +29,17 @@ export function colorEnabled(globals: CliGlobals, env: NodeJS.ProcessEnv, io: Cl
   return globals.color && io.stdout.isTTY === true && !env.NO_COLOR
 }
 
+/** Contexts whose `--host inproc` host must keep the terminal clean (the TUI owns the screen). */
+const quietContexts = new WeakSet<CliContext>()
+
+/**
+ * The terminal UI owns the screen: a `--host inproc` host this context starts later logs to its file only (console
+ * output never reaches the terminal). Call before the host starts; a no-op for a host already running.
+ */
+export function quietInproc(ctx: CliContext): void {
+  quietContexts.add(ctx)
+}
+
 export function buildContext(input: BuildContextInput): CliContext {
   const { env, cwd, platform, io } = input
   const globals: CliGlobals = { ...input.globals, color: colorEnabled(input.globals, env, io) }
@@ -43,7 +54,7 @@ export function buildContext(input: BuildContextInput): CliContext {
   })
 
   let inproc: Promise<InprocHostHandle> | undefined
-  return {
+  const ctx: CliContext = {
     globals,
     paths,
     env,
@@ -73,7 +84,8 @@ export function buildContext(input: BuildContextInput): CliContext {
           dataDir: paths.dataDir,
           env,
           mock: env.ORGAI_MOCK === '1',
-          overlay: input.overlay ?? new Map()
+          overlay: input.overlay ?? new Map(),
+          ...(quietContexts.has(ctx) ? { quiet: true } : {})
         })
       )
       return inproc
@@ -91,4 +103,5 @@ export function buildContext(input: BuildContextInput): CliContext {
       }
     }
   }
+  return ctx
 }

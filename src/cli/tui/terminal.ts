@@ -1,8 +1,27 @@
 /**
- * Terminal lifecycle (W4-T5): buffer mode chosen once at startup and kept across resize, SIGTSTP / SIGCONT and the
- * pager; raw mode, bracketed paste and alternate screen; crash, exit and signal cleanup. Stub until W4-T5 lands.
+ * Terminal lifecycle (cli-spec 5.1): the buffer mode is chosen once at startup and kept across resize, SIGTSTP /
+ * SIGCONT and the pager; this module owns raw mode, bracketed paste (\x1b[?2004h/l), the cursor and the alternate
+ * screen (\x1b[?1049h/l), and the crash, exit and signal cleanup. Ink never touches any of them (types.ts INK_NOTES).
+ *
+ * Windows has no SIGTSTP / SIGCONT: those handlers are skipped there (and Ctrl+Z is ignored); unverified on Windows.
  */
-import type { BufferMode, TerminalController } from './types'
+import { writeSync } from 'node:fs'
+import { FULLSCREEN_MIN_COLS, FULLSCREEN_MIN_ROWS, type BufferMode, type TerminalController } from './types'
+
+export const SEQ = {
+  altEnter: '\x1b[?1049h',
+  altLeave: '\x1b[?1049l',
+  pasteOn: '\x1b[?2004h',
+  pasteOff: '\x1b[?2004l',
+  cursorHide: '\x1b[?25l',
+  cursorShow: '\x1b[?25h',
+  sgrReset: '\x1b[0m',
+  /** Clear the screen and home the cursor (a full redraw after SIGCONT in full-screen mode). */
+  clear: '\x1b[2J\x1b[H'
+} as const
+
+/** Exit codes for signals received from outside (raw mode means Ctrl+C never raises SIGINT itself). */
+export const SIGNAL_EXIT = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 } as const
 
 export function chooseBufferMode(input: {
   isTTY: boolean
@@ -12,9 +31,22 @@ export function chooseBufferMode(input: {
   screenReader: boolean
   term?: string
 }): BufferMode {
-  void input
-  throw new Error('not implemented (Wave 4)')
+  if (input.inline || input.screenReader || input.term === 'dumb' || !input.isTTY) return 'inline'
+  if (!(input.cols >= FULLSCREEN_MIN_COLS) || !(input.rows >= FULLSCREEN_MIN_ROWS)) return 'inline'
+  return 'fullscreen'
 }
+
+/** The controller plus what the shell needs beyond the shared contract. */
+export interface TuiTerminal extends TerminalController {
+  /** Called after every resume() (SIGCONT, after the pager): the App resyncs and redraws. */
+  onResume(fn: () => void): () => void
+  /** Ctrl+Z arrives as a key in raw mode: suspend and take the default SIGTSTP stop (no-op on win32). */
+  stopSelf(): void
+  /** Whether the terminal is currently suspended (SIGTSTP or the pager). */
+  readonly suspended: boolean
+}
+
+type Proc = Pick<NodeJS.Process, 'on' | 'off' | 'kill' | 'pid' | 'exit' | 'platform'> & { stderr?: { write(s: string): unknown; fd?: number } }
 
 export function createTerminal(opts: {
   stdout: NodeJS.WriteStream
@@ -22,7 +54,191 @@ export function createTerminal(opts: {
   bufferMode: BufferMode
   bracketedPaste: boolean
   proc?: NodeJS.Process
-}): TerminalController {
-  void opts
-  throw new Error('not implemented (Wave 4)')
+}): TuiTerminal {
+  const { stdout, stdin, bufferMode, bracketedPaste } = opts
+  const proc = (opts.proc ?? process) as unknown as Proc
+  const fullscreen = bufferMode === 'fullscreen'
+  const jobControl = proc.platform !== 'win32'
+
+  let entered = false
+  let restored = false
+  let suspended = false
+  const resumeListeners = new Set<() => void>()
+  const resizeListeners = new Set<(cols: number, rows: number) => void>()
+
+  /** Synchronous where possible (a TTY fd), so nothing is lost before a stop or an exit. */
+  const writeNow = (s: string): void => {
+    if (!s) return
+    const fd = (stdout as { fd?: unknown }).fd
+    if (typeof fd === 'number' && stdout.isTTY === true) {
+      try {
+        writeSync(fd, s)
+        return
+      } catch {
+        // Fall back to the stream (EAGAIN on a non-blocking fd).
+      }
+    }
+    try {
+      stdout.write(s)
+    } catch {
+      // A closed terminal: nothing left to restore.
+    }
+  }
+
+  const setRaw = (on: boolean): void => {
+    const s = stdin as NodeJS.ReadStream & { setRawMode?: (m: boolean) => unknown }
+    if (stdin.isTTY === true && typeof s.setRawMode === 'function') {
+      try {
+        s.setRawMode(on)
+      } catch {
+        // The terminal went away.
+      }
+    }
+  }
+
+  /** The sequences that put the startup mode back (enter and resume). */
+  const modeOn = (): void => {
+    writeNow((fullscreen ? SEQ.altEnter + SEQ.cursorHide : '') + (bracketedPaste ? SEQ.pasteOn : ''))
+    setRaw(true)
+    try {
+      stdin.setEncoding('utf8')
+      stdin.resume()
+    } catch {
+      // ignore
+    }
+  }
+
+  /** The sequences that hand the terminal back (suspend and restore). */
+  const modeOff = (final: boolean): void => {
+    writeNow((bracketedPaste ? SEQ.pasteOff : '') + SEQ.cursorShow + (final ? SEQ.sgrReset : '') + (fullscreen ? SEQ.altLeave : ''))
+    setRaw(false)
+    try {
+      stdin.pause()
+    } catch {
+      // ignore
+    }
+  }
+
+  const exitWith = (code: number): void => {
+    restore()
+    proc.exit(code)
+  }
+
+  const onTstp = (): void => {
+    suspend()
+    proc.off('SIGTSTP', onTstp)
+    try {
+      proc.kill(proc.pid, 'SIGTSTP')
+    } catch {
+      // Could not stop: carry on as if resumed.
+      proc.on('SIGTSTP', onTstp)
+      resume()
+    }
+  }
+  const onCont = (): void => {
+    proc.off('SIGTSTP', onTstp)
+    proc.on('SIGTSTP', onTstp)
+    resume()
+  }
+  const onTerm = (): void => exitWith(SIGNAL_EXIT.SIGTERM)
+  const onInt = (): void => exitWith(SIGNAL_EXIT.SIGINT)
+  const onHup = (): void => exitWith(SIGNAL_EXIT.SIGHUP)
+  const onExit = (): void => restore()
+  const onCrash = (err: unknown): void => {
+    restore()
+    const text = err instanceof Error ? (err.stack ?? err.message) : String(err)
+    try {
+      const fd = proc.stderr?.fd
+      if (typeof fd === 'number') writeSync(fd, `orgai: ${text}\n`)
+      else proc.stderr?.write(`orgai: ${text}\n`)
+    } catch {
+      // ignore
+    }
+    proc.exit(1)
+  }
+  const onStdoutResize = (): void => {
+    const { cols, rows } = size()
+    for (const fn of [...resizeListeners]) fn(cols, rows)
+  }
+
+  const listeners: [string, (...a: never[]) => void][] = [
+    ['SIGTERM', onTerm],
+    ['SIGINT', onInt],
+    ['SIGHUP', onHup],
+    ['exit', onExit],
+    ['uncaughtException', onCrash],
+    ['unhandledRejection', onCrash]
+  ]
+  if (jobControl) listeners.push(['SIGCONT', onCont])
+
+  function size(): { cols: number; rows: number } {
+    return { cols: stdout.columns || 80, rows: stdout.rows || 24 }
+  }
+
+  function enter(): void {
+    if (entered || restored) return
+    entered = true
+    for (const [ev, fn] of listeners) proc.on(ev as 'exit', fn as () => void)
+    if (jobControl) proc.on('SIGTSTP', onTstp)
+    stdout.on('resize', onStdoutResize)
+    modeOn()
+  }
+
+  function suspend(): void {
+    if (!entered || restored || suspended) return
+    suspended = true
+    modeOff(false)
+  }
+
+  function resume(): void {
+    if (!entered || restored || !suspended) return
+    suspended = false
+    modeOn()
+    for (const fn of [...resumeListeners]) {
+      try {
+        fn()
+      } catch {
+        // A listener's failure never leaves the terminal half restored.
+      }
+    }
+  }
+
+  function restore(): void {
+    if (restored) return
+    restored = true
+    if (!entered) return
+    for (const [ev, fn] of listeners) proc.off(ev as 'exit', fn as () => void)
+    if (jobControl) proc.off('SIGTSTP', onTstp)
+    stdout.off('resize', onStdoutResize)
+    resumeListeners.clear()
+    resizeListeners.clear()
+    if (!suspended) modeOff(true)
+    else writeNow(SEQ.sgrReset)
+    suspended = false
+  }
+
+  return {
+    bufferMode,
+    bracketedPaste,
+    enter,
+    suspend,
+    resume,
+    restore,
+    size,
+    get suspended() {
+      return suspended
+    },
+    onResize(fn) {
+      resizeListeners.add(fn)
+      return () => void resizeListeners.delete(fn)
+    },
+    onResume(fn) {
+      resumeListeners.add(fn)
+      return () => void resumeListeners.delete(fn)
+    },
+    stopSelf() {
+      if (!jobControl || !entered || restored) return
+      onTstp()
+    }
+  }
 }
