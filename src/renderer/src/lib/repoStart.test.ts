@@ -248,17 +248,20 @@ describe('repoConfig lines', () => {
     expect(lines[0]).toMatch(/^Can run commands.*\.claude\/settings\.json/)
     expect(lines[1]).toMatch(/\.mcp\.json/)
     expect(lines[2]).toMatch(/AGENTS\.md/)
-    expect(lines[3]).toMatch(/subfolders/)
+    expect(lines[3]).toMatch(/until you allow them in the project's Settings/)
+    expect(lines[4]).toMatch(/subfolders/)
   })
   it('covers every known path', () => {
     const lines = repoConfigLines(REPO_CONFIG_PATHS.map((c) => c.path)).join(' ')
     for (const c of REPO_CONFIG_PATHS) expect(lines).toContain(c.path)
   })
-  it('keeps the note when nothing is found, and promises nothing about what OrgAI does', () => {
+  it('keeps the note when nothing is found, and says nothing about a gate then', () => {
     const empty = repoConfigLines([]).join(' ')
     expect(empty).toMatch(/subfolders/)
+    expect(empty).not.toMatch(/until you allow/i)
     const all = repoConfigLines(REPO_CONFIG_PATHS.map((c) => c.path)).join(' ')
-    expect(all).not.toMatch(/until you allow|will not use|allowed|safe/i)
+    expect(all).toMatch(/until you allow them/)
+    expect(all).not.toMatch(/\bsafe\b/i)
   })
 })
 
