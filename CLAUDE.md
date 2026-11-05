@@ -383,6 +383,53 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     goes on with the default script; on a code project (or without `ctx.knowledge`) it says "No knowledge graph is
     available in this run." instead. Each call goes through the real harness tools, so RunManager counts the writes
     and writes the harness rows. Unit-tested with fake `knowledge` / `engagementNotes` contexts (mock.test.ts).
+  - Round 2, retrieval (2026-11-05; ARCHITECTURE.md "Knowledge retrieval and inferred links"). `src/shared/knowledgeIndex.ts`
+    (pure): `tokenizeKnowledge`, a ranked inverted index (`knowledgeIndexFor`, memo by graph object), `rankKnowledge` (per
+    term, OR; name > alias > kind > summary > live facts; prefix for terms of 3+ chars; stopwords dropped),
+    `searchKnowledge` now uses it and falls back to the old whole-query substring only when it finds nothing.
+    `fenceDatum` / `fencedBlock` are the single implementation behind harnessTools `datum` / `fenced`. `recallKnowledge`:
+    `text.length <= budget` always (default 1,500, 400..6,000), lines `id | name | kind | summary`, `  fact:`, `  ->` /
+    `  <-`, `  ~ names: X (inferred)` (only `strongMentionLinks`), `  +N facts`, `id | name | already shown`,
+    `N more: A, B, ...` (at most 8 names, the count honest). `KNOWLEDGE_RECALL_RELEVANCE_FLOOR` 0.2: only matches at or
+    above that share of the best score get detail, so the budget is a ceiling, not a target. `knowledgeBrief`: <= 600
+    chars, fenced, counts, kinds, relations and most connected names (40 chars each); it lands in every agent's system
+    prompt through `PromptFlags.knowledgeBrief`. `knowledgeContextBlock`: exact name / alias matches in the first 64 KB
+    of a text, <= 800 chars, already-served entities silently out. `knowledgeNameMatcher` is the one matcher: one map by
+    first token, a single-word name needs its own capitalisation, a single word in `KNOWLEDGE_COMMON_WORDS` is also
+    refused at a sentence start, names under 3 chars skipped, longest match wins.
+    RunManager `bindKnowledgeReads` (same gate as `knowledge`, so single engagement runs included; never bare, quick,
+    setup-like, trust-restricted or code): `knowledgeRecall` (harness tool `knowledge_recall`, audience 'all', read-only,
+    never counts toward KNOWLEDGE_RUN_WRITES_MAX), `knowledgeContext` (off with `knowledgeAutoContextOn(project)` false,
+    read at call time; `Project.knowledgeAutoContext` unset = on, junk dropped, never filled), `knowledgeBrief` (once per
+    run, constant so prompt caching holds). Per-agent dedupe lives on ActiveRun (raw agent id, at most 500 agents, only
+    `complete` entities recorded, signature over the untrimmed content), `fresh: true` is the escape. Rows: "Recalled N
+    items about <query>", "Added 2 known items: Acme Corp, Jane Doe". `RunUsage.knowledge { recalls, autoContexts,
+    itemsServed, charsServed }`; `knowledge.recalled` per agent: first at once, then one trailing per second, ids merged,
+    newest 50, flushed before a terminal or paused status and at teardown. Store: per-file parsed cache, at most 4
+    projects, stamp = lstat mtime + size + ino + kind + the cap + note ids; writes still re-read from disk and cache a new
+    graph object (pure memos key on object identity, so never mutate a graph you read).
+    Measured (`knowledgeRecall.measure.test.ts`, real tool handlers over `knowledge.fixture.ts`, chars / 4 is an estimate;
+    `today` is the best case, an agent that already knows which entities to get): vocabulary + search + get vs one recall:
+    5,355 -> 1,498 chars (5 -> 1 calls, 3/3 names), 3,480 -> 1,046 (5 -> 1, 3/3), 4,704 -> 1,185 (5 -> 1, 3/3), 4,654 ->
+    1,482 (6 -> 1, 4/4), 3,574 -> 1,142 (5 -> 1, 3/3). Asking again at the default budget: 806, 383, 442, 688, 475 chars.
+    Synthetic 2,000 nodes / 5,000 edges / 2.2 MB: index about 70 ms, a broad rank about 80 ms, recall about 5 ms, inferred
+    links about 100 ms once, store read about 32 ms cold and 0.3 ms cached (logged, not asserted; a 64 MB file not measured).
+    Verified by unit tests and that measurement only; our own fixture is a weak test, and no adapter calls
+    `knowledgeContext` or `knowledgeBrief` yet (Adapter Engineer next). Nothing ran live.
+  - Round 2, inferred links (`docs/design/knowledge-connections.md`; `src/shared/knowledgeLinks.ts`, pure):
+    `inferKnowledgeLinks` builds only what the evaluation passed, `KnowledgeLinkBasis` 'mention' and 'same-name'. Shared
+    source, same target, same run, across engagements, co-occurrence and embeddings were rejected; temporal, contradiction,
+    evidence, mitigation, answerer and owner are relations agents record (`KNOWLEDGE_COMMON_RELATIONS`). Other engagements'
+    data must never reach a run or this view. Links are never stored as edges or reported as facts; a pair with any edge,
+    retired included, is not suggested; ambiguous mentions are never suggested. Ids `kl_` + 16 hex over basis and
+    endpoints. The user confirms through `knowledge:saveEdge` or dismisses through `knowledge:dismissLink`
+    (`KnowledgeGraph.dismissedLinks`, ids only, at most 2,000, oldest dropped, junk dropped on read); agents have no path to
+    either. `knowledge:inferredLinks` -> `{ links, appearances }`, memoized per graph object. `knowledgeAppearances`:
+    `{ relations, mentions, notes, total }` per node, derived only, no hub cutoff, recalls not counted. `knowledge_recall`
+    shows `KNOWLEDGE_STRONG_MENTION` (0.65) mentions only, marked "(inferred)". Fixture precision (hand-labelled by the
+    author, some rules changed after the first look, so fitted to it): all mentions 109/129 (0.845), unambiguous
+    suggestions 38/40, strong ones 19/21 (0.905), same-name 3/5, suggested relation only for person > organisation
+    `works-at` and risk > system `affects`. Unmeasured: real data, a large hub crowding the 500-link cap.
 - Self-configuration (2026-11-03; ARCHITECTURE.md Shared contracts, Connections, Conventions): derivable settings are
   automatic with an override; never fill them with defaults in a store, `newProject` or a renderer save.
   - Effective default connection: `ConnectionService.effectiveDefault()` (defaults.ts `effectiveDefaultConnection`)

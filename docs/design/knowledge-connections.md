@@ -1,7 +1,7 @@
 # Knowledge connections beyond recorded edges: evaluation
 
-Status: pure layer built and measured on a fixture (2026-11-05). Nothing here ran against real engagement data, a live
-model or the app. Companion to `docs/design/knowledge.md`. Code: `src/shared/knowledgeIndex.ts`,
+Status: pure layer and main-process wiring built and measured on a fixture (2026-11-05). Nothing here ran against real
+engagement data, a live model or the app. Companion to `docs/design/knowledge.md`. Code: `src/shared/knowledgeIndex.ts`,
 `src/shared/knowledgeLinks.ts`, `src/shared/knowledge.fixture.ts`; the measurements are pinned in
 `src/shared/knowledgeLinks.test.ts` ("evaluation on the fixture") and can be re-run with
 `npx vitest run src/shared/knowledgeLinks.test.ts`. Every number below comes from that test.
@@ -209,10 +209,18 @@ out), and notes. The client organisation being the largest node is correct.
 
 On the five questions in `KNOWLEDGE_FIXTURE_QUESTIONS` (one `knowledge_recall` of the question at the default 1,500
 character budget, against the old keyword search with a single word): the expected entities appeared in 16 of 16 places in
-the recall text (1,477 to 1,500 characters each) and in 14 of 16 of the keyword hits (4 to 12 entities listed per
-question, not their neighbours or facts). This compares different things: recall also prints facts and neighbours,
-search lists entities, so the 14/16 is not a like-for-like score. Tokens were not measured here (about 4 characters per
-token would put a recall at roughly 375 tokens, the brief at about 150, a context block at about 200: estimates).
+the recall text and in 14 of 16 of the keyword hits (4 to 12 entities listed per question, not their neighbours or
+facts). This compares different things: recall also prints facts and neighbours, search lists entities, so the 14/16 is
+not a like-for-like score. The size comparison against the real vocabulary + search + get output is in
+`src/main/runtime/knowledgeRecall.measure.test.ts`: 3,480 to 5,355 characters in 5 or 6 calls against 1,046 to 1,498
+characters in one call, every expected name present, on the same fixture and with the same caveats. Tokens were not
+measured (about 4 characters per token would put a recall at 262 to 375 tokens: an estimate).
+
+The first version filled the budget whatever the match quality, so a repeated question came back nearly as large (1,490
+to 1,480 characters) with ever weaker matches. `KNOWLEDGE_RECALL_RELEVANCE_FLOOR` (0.2 of the best score) now gives detail
+only to real matches and names the rest on the "N more:" line, at most 8 names. A repeat at the default budget is now 383
+to 806 characters. Asked about one name, an entity whose only link is a fact naming it is below the floor and is named, not
+detailed; that trade-off is untested beyond this fixture.
 
 ## 7. Open and unverified
 
@@ -221,4 +229,5 @@ token would put a recall at roughly 375 tokens, the brief at about 150, a contex
   "Grant" at the start of a sentence is refused only because it is in the list).
 - The edge cases of the matcher on non-Latin scripts are tested for tokenisation only.
 - Crowding of the 500-link cap by a very large hub is unmeasured.
-- The renderer (confirm, dismiss, node size) and the main-process wiring are not part of this layer.
+- The renderer (confirm, dismiss, node size) and the adapters' calls to `knowledgeContext` and `knowledgeBrief` land
+  separately.

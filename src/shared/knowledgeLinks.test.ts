@@ -232,11 +232,11 @@ const PINNED: Record<string, unknown> = {
     'risk>system': { mentions: 9, labelled: 8, correct: 8, reversed: 0 }
   },
   questions: [
-    { wanted: 3, recall: 3, recallChars: 1478, keywordHits: 12, keyword: 3 },
-    { wanted: 3, recall: 3, recallChars: 1500, keywordHits: 5, keyword: 3 },
-    { wanted: 3, recall: 3, recallChars: 1477, keywordHits: 11, keyword: 2 },
+    { wanted: 3, recall: 3, recallChars: 1496, keywordHits: 12, keyword: 3 },
+    { wanted: 3, recall: 3, recallChars: 974, keywordHits: 5, keyword: 3 },
+    { wanted: 3, recall: 3, recallChars: 1150, keywordHits: 11, keyword: 2 },
     { wanted: 4, recall: 4, recallChars: 1492, keywordHits: 8, keyword: 4 },
-    { wanted: 3, recall: 3, recallChars: 1495, keywordHits: 4, keyword: 2 }
+    { wanted: 3, recall: 3, recallChars: 1142, keywordHits: 4, keyword: 2 }
   ]
 }
 
