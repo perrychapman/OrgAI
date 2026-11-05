@@ -2,7 +2,7 @@ import type { AgentInstance, AgentMessage, ImageAttachment, McpServerSpec, Role,
 import { SKILL_HARNESS_TOOLS, isModelTier } from '@shared/types'
 import { effectiveSubagentLimits, isolateWritersOn, newId, projectKindOf } from '@shared/defaults'
 import { validModelId } from '../connections/codexAccount'
-import { ROOT_AGENT_ID, isSetupLikeRun, type CompletionInput, type PeerMessage, type RunConnection, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
+import { ROOT_AGENT_ID, isSetupLikeRun, type CompletionInput, type PeerMessage, type RunConnection, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type RootTurnEnd, type SessionSettlement, type ExecActivityReason } from './types'
 import { CodexAppServer, CodexRpcError, codexExitMessage, type CodexAppServerOptions } from './codexAppServer'
 import {
   METHOD,
@@ -47,7 +47,7 @@ import {
 import { SETUP_TOOLS_INSTRUCTIONS, harnessToolsFor, isBlockingHarnessTool, type ConfigChange, type ConfigChangeResult, type HarnessTool, type HarnessToolHooks, type McpAttachResult } from './harnessTools'
 import { ContinuationDriver, stepActivity } from './continuation'
 import { buildRolePrompt, peerMessageText, canWrite, composeFirstMessage, isArchitectureFile } from './prompts'
-import { describeTool } from './activity'
+import { describeTool, isAuthFailure } from './activity'
 import { WorktreeIntegrator } from './integration'
 import { allowRuleStrings, applyAllowScope, chooseSuggestions, isOfferableDirectory, listRules, suggestionLabels } from './permissionRules'
 import { isFreeCdTarget, matchOptionsFor, type MatchOptions } from './ruleMatch'
@@ -211,6 +211,10 @@ class CodexSession implements RuntimeSession {
   private ended = false
   private launch: LaunchConfig = { config: [], env: {}, summary: [], skipped: [] }
   private mcpRestartPending = false
+  /** Root turn ends so far (completed, failed and interrupted): RootTurnEnd.turnGen. */
+  private rootTurnGen = 0
+  /** thread/start or thread/resume requests in flight. */
+  private threadStarts = 0
   private restarting = false
   private pendingMcpPrefixes: string[] = []
   private closeSignal!: () => void
@@ -265,8 +269,13 @@ class CodexSession implements RuntimeSession {
     this.continuation = new ContinuationDriver({
       kind: ctx.run.kind,
       projectKind: projectKindOf(ctx.project),
-      autoContinue: ctx.autoContinue,
-      maxAutoContinues: ctx.maxAutoContinues,
+      // Getters: RunManager's setLive re-clamp of ctx reaches the live driver.
+      get autoContinue() {
+        return ctx.autoContinue
+      },
+      get maxAutoContinues() {
+        return ctx.maxAutoContinues
+      },
       delayMs: ctx.continuationDelayMs,
       getPlan: () => ctx.getPlan(),
       updatePlan: (plan) => ctx.updatePlan(plan),
@@ -283,7 +292,8 @@ class CodexSession implements RuntimeSession {
         this.emit({ type: 'run.status', runId: ctx.run.id, status: 'running' })
       },
       log: (level, message) => this.log(level, message),
-      tellUser: (text) => this.transcript(ROOT_AGENT_ID, { kind: 'system', text }, { source: 'harness' })
+      tellUser: (text) => this.transcript(ROOT_AGENT_ID, { kind: 'system', text }, { source: 'harness' }),
+      onSettled: () => this.noteActivity('continuation')
     })
     this.finished = this.run()
   }
@@ -310,6 +320,22 @@ class CodexSession implements RuntimeSession {
     this.notifyOrchestrator(peerMessageText(message), 'Reading a message from another run…', { transcript: false })
   }
 
+  /** Headless exec settlement view (cli-spec 6.2(2)). */
+  settlement(): SessionSettlement {
+    const root = this.agents.get(ROOT_AGENT_ID)
+    const rootIdle =
+      (!this.rootThreadId || !this.activeTurn.has(this.rootThreadId)) && (!root || root.state === 'idle' || root.state === 'done' || root.state === 'error')
+    const quiescent =
+      !this.mcpRestartPending && !this.restarting && this.queues.size === 0 && this.threadStarts === 0 && this.earlySends.length === 0 && !this.integrator.hasPendingWork()
+    return {
+      rootTurnGen: this.rootTurnGen,
+      rootIdle,
+      continuationSettled: this.continuation.isSettledForTurn(this.rootTurnGen),
+      nudgeTurn1Sent: this.continuation.nudgeTurn1Sent,
+      quiescent
+    }
+  }
+
   async stop(): Promise<void> {
     if (this.ending) return
     this.ending = true
@@ -327,6 +353,15 @@ class CodexSession implements RuntimeSession {
 
   private log(level: 'info' | 'warn' | 'error', message: string): void {
     this.emit({ type: 'log', runId: this.ctx.run.id, level, message })
+  }
+
+  /** Exec settlement: adapter-internal activity (a listener's throw never breaks the session). */
+  private noteActivity(reason: ExecActivityReason): void {
+    try {
+      this.ctx.noteActivity?.(reason)
+    } catch {
+      /* ignore */
+    }
   }
 
   private transcript(agentId: string, block: TranscriptBlock, opts?: { source?: 'harness' }): void {
@@ -472,6 +507,7 @@ class CodexSession implements RuntimeSession {
       return
     }
     void this.sendToThread(this.rootThreadId, text).catch((e) => this.log('warn', `Could not deliver a harness message to the orchestrator: ${(e as Error).message}`))
+    this.noteActivity('message')
   }
 
   private async interruptAll(): Promise<void> {
@@ -556,6 +592,15 @@ class CodexSession implements RuntimeSession {
 
   /** thread/start; when the server rejects the unstable approvalsReviewer field, retry without it. */
   private async startThread(params: Record<string, unknown>, method: string = METHOD.threadStart): Promise<{ threadId: string; model?: string }> {
+    this.threadStarts += 1
+    try {
+      return await this.startThreadNow(params, method)
+    } finally {
+      this.threadStarts -= 1
+    }
+  }
+
+  private async startThreadNow(params: Record<string, unknown>, method: string): Promise<{ threadId: string; model?: string }> {
     let res: unknown
     // Codex discovers skills itself (repo .agents/skills, the user's and the admin folders); OrgAI hands out only the
     // granted ones through load_skill, so every thread's native skills are switched off first (best effort, warned).
@@ -803,8 +848,23 @@ class CodexSession implements RuntimeSession {
       root.activity = u.status === 'interrupted' ? 'Interrupted' : reportsRunning ? 'Waiting on reports…' : 'Waiting for you'
     }
     this.upsert(root)
+    // Exec settlement (cli-spec 6.2(2)): every root turn end is reported before 'idle', failed and interrupted ones included.
+    this.rootTurnGen += 1
+    const turnGen = this.rootTurnGen
+    const end: RootTurnEnd =
+      u.status === 'failed'
+        ? { turnGen, ok: false, errorSubtype: 'failed', isAuthError: isAuthFailure({ text: u.error?.message ?? '', isError: true }) }
+        : { turnGen, ok: true, ...(u.status === 'interrupted' ? { interrupted: true } : {}) }
+    if (this.limited) end.limited = true
+    try {
+      this.ctx.onRootTurnEnded?.(end)
+    } catch (e) {
+      this.log('warn', `Root turn end listener failed: ${(e as Error)?.message ?? String(e)}`)
+    }
     this.emit({ type: 'run.status', runId: this.ctx.run.id, status: 'idle' })
-    if (u.status === 'completed' && !this.setupLike) this.continuation.turnEnded()
+    // Only a completed turn may be nudged; a failed or interrupted one is settled at once.
+    if (u.status === 'completed') this.continuation.turnEnded(turnGen)
+    else this.continuation.skipTurn(turnGen)
     if (this.limited && !this.ending) {
       this.log('info', 'Ending the session at the usage limit; it continues when the window resets.')
       void this.stop()
@@ -828,6 +888,7 @@ class CodexSession implements RuntimeSession {
     }
     child.endedAt = Date.now()
     this.upsert(child)
+    this.noteActivity('report')
     if (u.status === 'completed') void this.integrator.onSubagentFinished(agentId)
     if (u.status === 'interrupted') return
     const text = reportMessage(child, u.status === 'failed' ? { status: 'failed', result: u.result, error: u.error?.message } : { status: 'completed', result: u.result })
@@ -1290,6 +1351,7 @@ class CodexSession implements RuntimeSession {
       const params = this.threadParams(req.role, false, cwd, parent?.model)
       const started = await this.startThread(params)
       this.bindThread(started.threadId, req.id, policy)
+      this.noteActivity('subagent')
       this.newAgent(req.id, req.role, {
         parentId: req.parentId,
         spawnToolUseId: req.callId || null,
@@ -1353,6 +1415,7 @@ class CodexSession implements RuntimeSession {
     if (!this.mcpRestartPending || this.restarting || this.ending || this.activeTurn.size > 0) return
     this.restarting = true
     this.mcpRestartPending = false
+    this.noteActivity('restart')
     try {
       const servers = withoutControlEnv(await this.ctx.resolvedMcpServers!())
       const launch = buildLaunchConfig(this.ctx.connection, servers, {
@@ -1398,6 +1461,7 @@ class CodexSession implements RuntimeSession {
       return
     }
     this.restarting = false
+    this.noteActivity('restart')
   }
 }
 
