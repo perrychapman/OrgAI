@@ -44,7 +44,7 @@ describe('resolveProject', () => {
   it('a symlinked cwd resolves through its real path', () => {
     const base = temp()
     mkdirSync(join(base, 'real', 'sub'), { recursive: true })
-    symlinkSync(join(base, 'real'), join(base, 'link'))
+    symlinkSync(join(base, 'real'), join(base, 'link'), 'junction') // junction on Windows (no privilege), ignored on POSIX
     const r = resolveProject([proj('p', join(base, 'real'))], { cwd: join(base, 'link', 'sub'), git: noGit })
     expect(r).toMatchObject({ project: { id: 'p' } })
     // And a project stored through the link matches a real cwd.

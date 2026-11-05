@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { readSkillFolder, segmentProblem } from './bundle'
 import { CliError, EXIT } from './types'
@@ -37,20 +37,25 @@ describe('readSkillFolder', () => {
     const b = await readSkillFolder(dir)
     expect(b.files.map((f) => f.relPath)).toEqual(['SKILL.md', 'ref/deep/a.md', 'scripts/fill.py'])
     expect(Buffer.from(b.files[0].base64, 'base64').toString()).toBe(SKILL_MD)
-    expect(b.name).toBe(dir.split('/').pop())
+    expect(b.name).toBe(basename(dir))
     expect((await readSkillFolder(dir, { name: 'custom' })).name).toBe('custom')
   })
 
   it('skips symlinks, dot entries, .git and node_modules with a note', async () => {
     put('SKILL.md', SKILL_MD)
     put('real.md', 'x')
-    symlinkSync(join(dir, 'real.md'), join(dir, 'link.md'))
+    // Windows: a file symlink needs a privilege (EPERM), a junction does not. lstat reports both as links.
+    if (process.platform === 'win32') {
+      mkdirSync(join(dir, 'realdir'))
+      symlinkSync(join(dir, 'realdir'), join(dir, 'link.md'), 'junction')
+    } else symlinkSync(join(dir, 'real.md'), join(dir, 'link.md'))
     put('.env', 'SECRET=1')
     put('.git/config', 'x')
     put('node_modules/a/index.js', 'x')
     const notes: string[] = []
     const b = await readSkillFolder(dir, { notes })
     expect(b.files.map((f) => f.relPath)).toEqual(['SKILL.md', 'real.md'])
+    expect(b.files.map((f) => f.relPath)).not.toContain('link.md')
     expect(notes.some((n) => n.includes('link.md') && n.includes('link'))).toBe(true)
     expect(notes.some((n) => n.includes('.env'))).toBe(true)
     expect(notes.some((n) => n.includes('node_modules'))).toBe(true)
@@ -88,7 +93,10 @@ describe('readSkillFolder', () => {
     expect((await usageError(readSkillFolder(dir))).message).toContain('1 MB')
   })
 
-  it('refuses a reserved name, a colon and a control character, naming the file', async () => {
+  // Windows cannot create these files (CON.txt is the console device, a:b.md an alternate data stream, a control
+  // character is an invalid name), so there is nothing on disk for the walker to see there; the 'segmentProblem'
+  // test below checks the same names on every platform.
+  it.skipIf(process.platform === 'win32')('refuses a reserved name, a colon and a control character, naming the file', async () => {
     put('SKILL.md', SKILL_MD)
     put('CON.txt', 'x')
     expect((await usageError(readSkillFolder(dir))).message).toContain('CON.txt')
@@ -106,5 +114,8 @@ describe('readSkillFolder', () => {
     expect(segmentProblem('lpt1.txt')).toMatch(/reserved/)
     expect(segmentProblem('a‮b')).toMatch(/hidden/)
     expect(segmentProblem('x.')).toMatch(/dot/)
+    expect(segmentProblem('CON.txt')).toMatch(/reserved/)
+    expect(segmentProblem('a:b.md')).toContain("':'")
+    expect(segmentProblem('bad\u0007.md')).toContain('control or hidden')
   })
 })
