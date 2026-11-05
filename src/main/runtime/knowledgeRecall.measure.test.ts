@@ -3,12 +3,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
 import type { KnowledgeGraph, KnowledgeNode } from '@shared/types'
-import { KNOWLEDGE_RECALL_TOOL, KNOWLEDGE_TOOL } from '@shared/types'
+import { KNOWLEDGE_FILE_MAX_BYTES, KNOWLEDGE_MATCH_BUDGET, KNOWLEDGE_RECALL_TOOL, KNOWLEDGE_TOOL } from '@shared/types'
 import { KNOWLEDGE_FIXTURE_QUESTIONS, KNOWLEDGE_FIXTURE_TRUTH, knowledgeFixture } from '@shared/knowledge.fixture'
-import { buildKnowledgeIndex, rankKnowledge, recallKnowledge } from '@shared/knowledgeIndex'
+import { buildKnowledgeIndex, rankKnowledge, rankKnowledgeOrSubstring, recallKnowledge } from '@shared/knowledgeIndex'
 import { knowledgeInferredResult, strongMentionLinks } from '@shared/knowledgeLinks'
 import { harnessToolsFor, type HarnessTool } from './harnessTools'
-import { readKnowledge, resetKnowledgeCache } from '../store/knowledge'
+import { readKnowledge, resetKnowledgeCache, upsertNode } from '../store/knowledge'
 import { fakeCtx, project, runSummary } from './testHelpers'
 import type { RuntimeContext } from './types'
 
@@ -19,18 +19,17 @@ import type { RuntimeContext } from './types'
  */
 
 const ctxFor = (graph: KnowledgeGraph): { ctx: RuntimeContext; tools: Map<string, HarnessTool> } => {
-  // A recall fake with the same per-agent "already shown" rule RunManager applies (complete entities only).
+  // A recall fake with the same "already shown" rule RunManager applies: named agents only, complete entities only.
   const shownByAgent = new Map<string, Map<string, string>>()
   const ctx = fakeCtx({
     project: project({ kind: 'engagement' }),
     run: runSummary({ kind: 'work' }),
     knowledge: { graph: () => graph, upsertNode: () => { throw new Error('read-only measurement') }, link: () => { throw new Error('read-only measurement') }, retire: () => { throw new Error('read-only measurement') } },
     knowledgeRecall: (input, caller) => {
-      const agent = caller.agentId ?? 'root'
-      const shown = shownByAgent.get(agent) ?? new Map<string, string>()
-      shownByAgent.set(agent, shown)
-      const r = recallKnowledge(graph, input.query, { budget: input.budget, fresh: input.fresh, shown, inferred: strongMentionLinks(knowledgeInferredResult(graph)) })
-      for (const s of r.served) if (s.complete) shown.set(s.id, s.signature)
+      const shown = caller.agentId ? (shownByAgent.get(caller.agentId) ?? new Map<string, string>()) : undefined
+      if (caller.agentId && shown) shownByAgent.set(caller.agentId, shown)
+      const r = recallKnowledge(graph, input.query, { budget: input.budget, fresh: input.fresh, ...(shown ? { shown } : {}), inferred: strongMentionLinks(knowledgeInferredResult(graph)) })
+      if (shown) for (const s of r.served) if (s.complete) shown.set(s.id, s.signature)
       return r.text || `Nothing in the knowledge graph matches "${input.query}".`
     }
   })
@@ -46,6 +45,7 @@ describe('knowledge_recall vs the search + get flow (fixture)', () => {
 
   afterAll(() => {
     const line = (r: (typeof rows)[number]): string =>
+      // Sizes quoted in docs/design/knowledge-connections.md section 6; pinned by the test below.
       `${r.question.slice(0, 44).padEnd(44)} | ${String(r.today).padStart(6)} | ${String(r.recall).padStart(6)} | ~${String(r.tokensToday).padStart(5)} -> ~${String(r.tokensRecall).padStart(5)} | ${String(r.callsToday).padStart(2)} -> ${r.callsRecall} | ${r.found}`
     const header = `${'question'.padEnd(44)} | ${'today'.padStart(6)} | ${'recall'.padStart(6)} | est. tokens (chars/4, ESTIMATE) | calls | names found`
     console.log(`\nknowledge_recall vs vocabulary + search + get (chars of tool output)\n${header}\n${rows.map(line).join('\n')}\n`)
@@ -80,6 +80,13 @@ describe('knowledge_recall vs the search + get flow (fixture)', () => {
     })
   }
 
+  it('pins the sizes the evaluation doc quotes (section 6)', () => {
+    expect(rows.map((r) => r.today)).toEqual([5400, 3391, 4824, 4656, 3625])
+    expect(rows.map((r) => r.recall)).toEqual([1483, 1046, 1225, 1486, 1174])
+    expect(rows.map((r) => r.callsToday)).toEqual([5, 5, 5, 6, 5])
+    expect(rows.every((r) => r.callsRecall === 1 && !r.found.includes('MISSING'))).toBe(true)
+  })
+
   it('the same agent asking again gets "already shown" lines and, once every match fits, a much smaller answer; fresh brings the detail back', async () => {
     const { tools } = ctxFor(graph)
     const recall = tools.get(KNOWLEDGE_RECALL_TOOL)!
@@ -100,6 +107,7 @@ describe('knowledge_recall vs the search + get flow (fixture)', () => {
       expect(bigAgain.length).toBeLessThan(big.length * 0.75)
     }
     console.log(`\ndedupe, first -> repeat chars. default budget 1500: ${atDefault.join(', ')}. budget 6000: ${atMax.join(', ')}\n`)
+    expect(atDefault).toEqual(['1483 -> 930', '1046 -> 470', '1225 -> 529', '1486 -> 812', '979 -> 562'])
   })
 })
 
@@ -191,4 +199,77 @@ describe('a full graph (2,000 entities, 5,000 relations): timings are logged, no
     expect(cold.out.nodes).toHaveLength(2000)
     expect(warm.out).toBe(cold.out)
   })
+})
+
+// ---------- a graph with near-maximum text (review M6) ----------
+
+/** `facts` facts of 1,000 characters on each of `nodeCount` nodes, plus a 2,000-character summary: most of the file cap. */
+function fullTextGraph(nodeCount: number, facts: number): KnowledgeGraph {
+  const rand = rng(7)
+  const pick = <T,>(list: readonly T[]): T => list[Math.floor(rand() * list.length)]
+  const word = (): string => `${pick(SYL)}${pick(SYL)}${rand() < 0.5 ? pick(SYL) : ''}`
+  const text = (chars: number): string => {
+    let s = ''
+    while (s.length < chars) s += `${rand() < 0.35 ? pick(WORDS) : word()} `
+    return s.slice(0, chars).trim()
+  }
+  const hex = (i: number): string => i.toString(16).padStart(10, '0')
+  const nodes: KnowledgeNode[] = []
+  for (let i = 0; i < nodeCount; i++) {
+    nodes.push({
+      id: `kn_${hex(i)}`,
+      kind: pick(KINDS),
+      name: `${word()} ${word()} ${i}`,
+      summary: text(2000),
+      facts: Array.from({ length: facts }, (_, j) => ({ id: `kf_${hex(i)}${j.toString(36)}`, text: text(1000), source: { by: 'agent' as const, at: 1_700_000_000_000 + j } })),
+      source: { by: 'agent', at: 1_700_000_000_000 },
+      createdAt: 1_700_000_000_000,
+      updatedAt: 1_700_000_000_000
+    })
+  }
+  return { version: 1, nodes, edges: [], updatedAt: 1_700_000_000_000 }
+}
+
+/** Run by hand: KNOWLEDGE_MEASURE_FULL=1 npx vitest run src/main/runtime/knowledgeRecall.measure.test.ts. It takes minutes and a few GB. */
+describe.runIf(process.env.KNOWLEDGE_MEASURE_FULL === '1')('near-maximum text: timings are logged, not asserted', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'orgai-knowledge-full-'))
+  afterAll(() => {
+    resetKnowledgeCache()
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  for (const [nodes, facts] of [[1100, 50], [2000, 50]] as const) {
+    it(`${nodes} nodes x ${facts} facts of 1,000 characters`, { timeout: 600_000 }, () => {
+      const ms = <T,>(f: () => T): { out: T; ms: number } => {
+        const t = performance.now()
+        const out = f()
+        return { out, ms: Math.round(performance.now() - t) }
+      }
+      const graph = fullTextGraph(nodes, facts)
+      const json = JSON.stringify(graph)
+      const mb = Buffer.byteLength(json) / 1024 / 1024
+      const index = ms(() => buildKnowledgeIndex(graph))
+      const memoed = { ...graph }
+      const hit = ms(() => rankKnowledge(memoed, 'invoice approval'))
+      const miss1 = ms(() => rankKnowledgeOrSubstring(memoed, 'qqqzzz'))
+      const miss2 = ms(() => rankKnowledgeOrSubstring(memoed, 'qqqyyy'))
+      const inferred = ms(() => knowledgeInferredResult(graph))
+      const lines = [
+        `\n${nodes} nodes x ${facts} facts x 1,000 chars: ${mb.toFixed(1)} MB JSON (file cap ${KNOWLEDGE_FILE_MAX_BYTES / 1024 / 1024} MB)`,
+        `  buildKnowledgeIndex ${index.ms} ms | rankKnowledge first ${hit.ms} ms | substring miss first ${miss1.ms} ms, second ${miss2.ms} ms`,
+        `  knowledgeInferredResult ${inferred.ms} ms, partial ${JSON.stringify(inferred.out.partial ?? null)} (budget ${KNOWLEDGE_MATCH_BUDGET})`
+      ]
+      if (mb < KNOWLEDGE_FILE_MAX_BYTES / 1024 / 1024) {
+        const folder = join(dir, 'projects', `p${nodes}`)
+        mkdirSync(folder, { recursive: true })
+        writeFileSync(join(folder, 'knowledge.json'), json)
+        resetKnowledgeCache()
+        const cold = ms(() => readKnowledge(dir, `p${nodes}`))
+        const write = ms(() => upsertNode(dir, `p${nodes}`, { kind: 'person', name: 'Newcomer', facts: ['x'] }, { by: 'agent', at: 1 }))
+        lines.push(`  store cold read ${cold.ms} ms | one agent write (parse, clean, stringify, atomic rename) ${write.ms} ms`)
+        expect(write.out.created).toBe(true)
+      } else lines.push('  over the file cap: the store would refuse this graph')
+      console.log(lines.join('\n'))
+    })
+  }
 })

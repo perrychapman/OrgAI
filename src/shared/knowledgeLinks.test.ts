@@ -234,9 +234,9 @@ const PINNED: Record<string, unknown> = {
   questions: [
     { wanted: 3, recall: 3, recallChars: 1496, keywordHits: 12, keyword: 3 },
     { wanted: 3, recall: 3, recallChars: 974, keywordHits: 5, keyword: 3 },
-    { wanted: 3, recall: 3, recallChars: 1150, keywordHits: 11, keyword: 2 },
-    { wanted: 4, recall: 4, recallChars: 1492, keywordHits: 8, keyword: 4 },
-    { wanted: 3, recall: 3, recallChars: 1142, keywordHits: 4, keyword: 2 }
+    { wanted: 3, recall: 3, recallChars: 1190, keywordHits: 11, keyword: 2 },
+    { wanted: 4, recall: 4, recallChars: 1483, keywordHits: 8, keyword: 4 },
+    { wanted: 3, recall: 3, recallChars: 1174, keywordHits: 4, keyword: 2 }
   ]
 }
 
@@ -245,6 +245,17 @@ describe('evaluation on the fixture (numbers quoted in docs/design/knowledge-con
     const m = evaluate()
     console.log(JSON.stringify(m))
     expect(m).toEqual(PINNED)
+  })
+
+  it('the false suggestions, and the false strong ones an agent would see, are all the phrase "VAT per line" in ordinary prose', () => {
+    const wrong = (ls: { from: string; to: string }[]): { from: string; to: string }[] => ls.filter((l) => !T.mentions.has(`${l.from}>${l.to}`))
+    const suggested = inferKnowledgeLinks(G).filter((l) => l.basis === 'mention')
+    const falseOnes = wrong(suggested)
+    expect(falseOnes).toHaveLength(2)
+    for (const l of falseOnes) expect(nameOf.get(l.to)).toBe('VAT per line')
+    const strong = wrong(strongMentionLinks(suggested))
+    expect(strong).toHaveLength(2)
+    for (const l of strong) expect(nameOf.get(l.to)).toBe('VAT per line')
   })
 })
 
@@ -363,6 +374,18 @@ describe('knowledgeMentions', () => {
     expect(links.every((l) => l.strength < KNOWLEDGE_STRONG_MENTION)).toBe(true)
   })
 
+  it('stays below 0.5 however often a multi-word ambiguous name is repeated', () => {
+    const texts = ['Calls Billing Core', 'Billing Core again', 'and Billing Core']
+    const g = graph([
+      { ...node('kn_a', 'Alpha'), facts: texts.map((text, i) => ({ id: `kf_${i}`, text, source: { by: 'agent' as const, at: 1 } })) },
+      node('kn_s1', 'Billing Core', { kind: 'organisation' }),
+      node('kn_s2', 'Billing Core', { kind: 'system' })
+    ])
+    const links = knowledgeMentions(g)
+    expect(links).toHaveLength(2)
+    expect(links.every((l) => l.count === 3 && l.strength < 0.5)).toBe(true)
+  })
+
   it('suggests a relation word only for measured kind pairs', () => {
     const g = graph([mention('kn_r', 'Slip', 'Hits Billing Core hard', { kind: 'risk' }), node('kn_s', 'Billing Core'), mention('kn_d', 'Pick', 'Chose Billing Core', { kind: 'decision' })])
     const links = knowledgeMentions(g)
@@ -375,10 +398,14 @@ describe('inferKnowledgeLinks', () => {
   const alpha = mention('kn_a', 'Alpha', 'Uses Beta Service')
   const beta = node('kn_b', 'Beta Service')
 
-  it('drops pairs that already have any edge, retired ones and either direction included', () => {
+  it('drops pairs that already have a live edge in either direction or a retired edge the user wrote', () => {
     expect(inferKnowledgeLinks(graph([alpha, beta]))).toHaveLength(1)
     expect(inferKnowledgeLinks(graph([alpha, beta], [edge('e', 'kn_b', 'kn_a')]))).toHaveLength(0)
-    expect(inferKnowledgeLinks(graph([alpha, beta], [edge('e', 'kn_a', 'kn_b', 'x', { retired: true })]))).toHaveLength(0)
+    expect(inferKnowledgeLinks(graph([alpha, beta], [edge('e', 'kn_a', 'kn_b', 'x', { retired: true, source: { by: 'user', at: 1 } })]))).toHaveLength(0)
+  })
+
+  it('a retired edge an agent wrote does not hold a suggestion back: linking and retiring cannot silence one', () => {
+    expect(inferKnowledgeLinks(graph([alpha, beta], [edge('e', 'kn_a', 'kn_b', 'x', { retired: true, source: { by: 'agent', at: 1 } })]))).toHaveLength(1)
   })
 
   it('leaves dismissed ids out unless asked', () => {

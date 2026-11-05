@@ -432,6 +432,15 @@ describe('single-agent runs and context notes', () => {
     expect(buildRolePrompt(roles[1], roles, eng(), withBrief)).toContain(brief)
     expect(buildRolePrompt(roles[0], roles, eng(), { ...single, knowledgeBrief: brief })).toContain(brief)
     expect(buildRolePrompt(roles[0], roles, eng(), flags)).not.toContain('Knowledge graph index')
+    // Never beside the engagement document: another paragraph sits between "approved by the user" and the index.
+    for (const [role, f] of [[roles[0], withBrief], [roles[1], withBrief], [roles[0], { ...single, knowledgeBrief: brief }]] as const) {
+      const prompt = buildRolePrompt(role, roles, eng(), { ...f, engagementDocument: 'The plan.' })
+      const doc = prompt.indexOf('The plan.')
+      const at = prompt.indexOf(brief)
+      expect(doc).toBeGreaterThanOrEqual(0)
+      expect(at).toBeGreaterThan(doc)
+      expect(prompt.slice(doc + 'The plan.'.length, at).trim().length).toBeGreaterThan(0)
+    }
     // Code projects, setup and quick prompts never carry it.
     expect(buildRolePrompt(roles[0], roles, project(), withBrief)).not.toContain(brief)
     expect(buildRolePrompt(roles[0], roles, eng(), { ...withBrief, isSetup: true })).not.toContain(brief)

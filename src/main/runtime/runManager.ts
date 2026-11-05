@@ -60,7 +60,7 @@ import { referenceFolderOf } from './referenceDirectories'
 import { aliasesFor, priceAgentUsage, type PricingContext } from './pricing'
 import { IntervalTimer, buildUsageCsv, buildUsageStats, computeRunUsage, emptyAgentUsage, legacySummaryUsage, monthRange, normalizeRunRecord } from './runUsage'
 import { knowledgeAutoContextOn } from '@shared/knowledge'
-import { fenceDatum, knowledgeBrief, knowledgeContextBlock, recallKnowledge } from '@shared/knowledgeIndex'
+import { dropLoneHighSurrogate, fenceDatum, knowledgeBrief, knowledgeContextBlock, knowledgeListItem, recallKnowledge } from '@shared/knowledgeIndex'
 import { strongMentionLinks } from '@shared/knowledgeLinks'
 import { DEFAULT_MAX_AUTO_CONTINUES, HARNESS_PROJECT_ID, KNOWLEDGE_RECALLED_IDS_MAX, KNOWLEDGE_RUN_WRITES_MAX, QUICK_PROJECT_ID, RUN_MESSAGE_MAX_CHARS, RUN_PEER_PROMPT_CHARS, SKILLS_PROJECT_ID, USAGE_STATS_DEFAULT_LIMIT, USAGE_STATS_MAX_LIMIT, isVirtualProjectId } from '@shared/types'
 import { architectRole, mcpAssistantRole, skillAssistantRole } from '@shared/setup'
@@ -315,8 +315,10 @@ interface ActiveRun {
   knowledgeWrites: number
   /** The writes cap was reached and logged once. */
   knowledgeCapWarned?: boolean
-  /** Per receiving agent: node id -> the signature last served in full (knowledge_recall and auto context). In memory only. */
+  /** Per named receiving agent: node id -> the signature last served in full (knowledge_recall and auto context). In memory only. */
   knowledgeShown: Map<string, Map<string, string>>
+  /** Per named receiving agent: node id -> the signature last put in an automatic context block, full or not. In memory only. */
+  knowledgeContextShown: Map<string, Map<string, string>>
   /** RunUsage.knowledge: recalls, auto context blocks, entities and characters served. */
   knowledgeUsage: KnowledgeServedUsage
   /** Per agent: knowledge.recalled throttle state (last emit, trailing timer, ids and `via` waiting to go out). */
@@ -992,6 +994,7 @@ export class RunManager {
       skillLoads: 0,
       knowledgeWrites: 0,
       knowledgeShown: new Map(),
+      knowledgeContextShown: new Map(),
       knowledgeUsage: { recalls: 0, autoContexts: 0, itemsServed: 0, charsServed: 0 },
       knowledgeRecalled: new Map(),
       projectName: project.name,
@@ -1656,6 +1659,18 @@ export class RunManager {
     return m
   }
 
+  /** Like shownFor, for what an automatic context block already gave this agent (it may be less than a recall gives). */
+  private contextShownFor(a: ActiveRun, agentId: string | undefined): Map<string, string> | undefined {
+    if (typeof agentId !== 'string' || !agentId || agentId.length > 128) return undefined
+    let m = a.knowledgeContextShown.get(agentId)
+    if (!m) {
+      if (a.knowledgeContextShown.size >= KNOWLEDGE_SHOWN_AGENTS_MAX) return undefined
+      m = new Map()
+      a.knowledgeContextShown.set(agentId, m)
+    }
+    return m
+  }
+
   /** Count what was served, refresh the usage and (for a non-empty answer) tell the renderer which nodes were touched. */
   private noteServed(a: ActiveRun, kind: 'recalls' | 'autoContexts', items: number, chars: number): void {
     a.knowledgeUsage[kind]++
@@ -1720,12 +1735,15 @@ export class RunManager {
     return {
       knowledgeRecall: (input: KnowledgeRecallInput, caller: KnowledgeCaller): string => {
         try {
+          // The row lands on the root when no agent is named, but dedupe needs a named agent: an unknown caller must not
+          // share the root's "already shown" state (ROOT_AGENT_ID named explicitly does).
           const agentId = caller.agentId ?? ROOT_AGENT_ID
           const query = String(input.query)
           const graph = store.get(projectId)
-          const inferred = strongMentionLinks(store.inferred?.(projectId) ?? [])
-          const shown = this.shownFor(a, agentId)
-          const r = recallKnowledge(graph, query, { budget: input.budget, fresh: input.fresh === true, ...(shown ? { shown } : {}), inferred })
+          const view = store.recallView?.(projectId)
+          const inferred = strongMentionLinks(view?.inferred ?? store.inferred?.(projectId) ?? [])
+          const shown = this.shownFor(a, caller.agentId)
+          const r = recallKnowledge(graph, query, { budget: input.budget, fresh: input.fresh === true, ...(shown ? { shown } : {}), inferred, ...(view ? { rankOn: view.rankOn } : {}) })
           const ids = [...r.served.map((s) => s.id), ...r.alreadyShown]
           if (shown) for (const s of r.served) if (s.complete) shown.set(s.id, s.signature)
           this.noteServed(a, 'recalls', r.served.length, r.text.length)
@@ -1745,15 +1763,18 @@ export class RunManager {
           if (!knowledgeAutoContextOn(project())) return null
           const agentId = typeof opts?.agentId === 'string' && opts.agentId ? opts.agentId : undefined
           const shown = this.shownFor(a, agentId)
-          const r = knowledgeContextBlock(store.get(projectId), text, shown ? { shown } : {})
+          const contextShown = this.contextShownFor(a, agentId)
+          const r = knowledgeContextBlock(store.get(projectId), text, { ...(shown ? { shown } : {}), ...(contextShown ? { contextShown } : {}) })
           if (!r) return null
+          // "Already shown" for a recall needs everything printed; the next automatic block only needs this one to have gone out.
           if (shown) for (const s of r.served) if (s.complete) shown.set(s.id, s.signature)
+          if (contextShown) for (const s of r.served) contextShown.set(s.id, s.signature)
           this.noteServed(a, 'autoContexts', r.served.length, r.text.length)
-          const names = r.served.map((s) => datum(s.name, 60))
+          const names = r.served.map((s) => knowledgeListItem(s.name, 60))
           const n = names.length
           const list = names.slice(0, KNOWLEDGE_ROW_NAMES).join(', ') + (n > KNOWLEDGE_ROW_NAMES ? `, and ${n - KNOWLEDGE_ROW_NAMES} more` : '')
           const row = `Added ${n} known item${n === 1 ? '' : 's'}: ${list}`
-          this.knowledgeRow(a, agentId ?? ROOT_AGENT_ID, row.length > 200 ? `${row.slice(0, 199)}…` : row)
+          this.knowledgeRow(a, agentId ?? ROOT_AGENT_ID, row.length > 200 ? `${dropLoneHighSurrogate(row.slice(0, 199))}…` : row)
           this.noteRecalled(a, agentId ?? ROOT_AGENT_ID, r.served.map((s) => s.id), 'auto')
           return r.text
         } catch (e) {

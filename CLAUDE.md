@@ -409,38 +409,66 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     `searchKnowledge` now uses it and falls back to the old whole-query substring only when it finds nothing.
     `fenceDatum` / `fencedBlock` are the single implementation behind harnessTools `datum` / `fenced`. `recallKnowledge`:
     `text.length <= budget` always (default 1,500, 400..6,000), lines `id | name | kind | summary`, `  fact:`, `  ->` /
-    `  <-`, `  ~ names: X (inferred)` (only `strongMentionLinks`), `  +N facts`, `id | name | already shown`,
-    `N more: A, B, ...` (at most 8 names, the count honest). `KNOWLEDGE_RECALL_RELEVANCE_FLOOR` 0.2: only matches at or
-    above that share of the best score get detail, so the budget is a ceiling, not a target. `knowledgeBrief`: <= 600
-    chars, fenced, counts, kinds, relations and most connected names (40 chars each); it lands in every agent's system
-    prompt through `PromptFlags.knowledgeBrief`. `knowledgeContextBlock`: exact name / alias matches in the first 64 KB
-    of a text, <= 800 chars, already-served entities silently out. `knowledgeNameMatcher` is the one matcher: one map by
-    first token, a single-word name needs its own capitalisation, a single word in `KNOWLEDGE_COMMON_WORDS` is also
-    refused at a sentence start, names under 3 chars skipped, longest match wins.
+    `  <-`, `  ~ names: X (inferred)` (only `strongMentionLinks`), `  +N facts`, `id | name | already shown (fresh: true
+    shows it again)`, `N more: A, B, ...` (at most 8 names, the count honest). A fact an agent wrote reads `  fact (agent):`.
+    `KNOWLEDGE_RECALL_RELEVANCE_FLOOR` 0.2: only matches at or above that share of the best score get detail, so the budget
+    is a ceiling, not a target. `knowledgeBrief`: <= 600 chars, fenced, in every agent's system prompt through
+    `PromptFlags.knowledgeBrief` (after the team paragraphs, never beside the engagement document, which is the user's
+    approved text). It carries only what no agent wrote: counts, kinds and relations from `KNOWLEDGE_COMMON_KINDS` /
+    `_RELATIONS` ("+N other"), and most connected names of nodes with `source.by === 'user'`, never an alias
+    (`upsertNode` never changes a stored name: an agent's spelling becomes an alias; tested). `knowledgeContextBlock`
+    (exact name / alias matches in the first 64 KB of a text, <= 800 chars) reaches later turns unasked, so it prints name,
+    kind, relations and only user-written summaries and facts, never an alias. `knowledgeNameMatcher` is the one matcher,
+    a token trie: names over `KNOWLEDGE_NAME_TOKENS_MAX` (8) tokens are not matched as mentions, words of a name at most
+    `KNOWLEDGE_NAME_GAP_MAX` (8) characters apart, at most `KNOWLEDGE_SAME_NAME_MAX` (16) entities per span,
+    `find(text, budget?)`, a single-word name needs its own capitalisation, a single word in `KNOWLEDGE_COMMON_WORDS` is
+    also refused at a sentence start, names under 3 chars skipped, longest match wins. One inference pass spends at most
+    `KNOWLEDGE_MATCH_BUDGET` (4,000,000 units) and then `KnowledgeInferredResult.partial` says how far it got. Attack test
+    `knowledgeMatcher.adversarial.test.ts`: the old matcher took 2,672 ms per fact and `timeout 120` killed the pass; now
+    0.1 ms and 40 ms (names at exactly 8 tokens: the budget stops the pass at 241 ms). Values in `engagement_knowledge`
+    results go through `knowledgeField` (no `|`, line break, `(inferred)` in any width) and `knowledgeListItem` (no comma);
+    `fenceDatum` treats VT, FF, NEL, LS and PS as breaks and sanitize's one-line class refuses LS and PS (multi-line fields
+    keep them). Stored text travels only inside a fence: a merge says `Merged into existing entity (kn_x): N facts added.`,
+    a link `Linked kn_a works-at kn_b (ke_x, created).`, a retire `Retired fact (kf_x).`, a `get` starts `Entity (data
+    from ...)` and `Created <kind> <name> (kn_x).` stays because those are the caller's own words of that call. A stored
+    kind no longer appears in a refusal; a `get` fact line ends ` | by user` when the user wrote it. saveEdge: an agent
+    never changes a relation the user wrote (`noteKept`, retired refused). A retired edge an agent wrote does not hold back a
+    suggestion; a retired user edge does. Ambiguous mentions stay under 0.5 strength however often repeated.
     RunManager `bindKnowledgeReads` (same gate as `knowledge`, so single engagement runs included; never bare, quick,
     setup-like, trust-restricted or code): `knowledgeRecall` (harness tool `knowledge_recall`, audience 'all', read-only,
     never counts toward KNOWLEDGE_RUN_WRITES_MAX), `knowledgeContext` (off with `knowledgeAutoContextOn(project)` false,
     read at call time; `Project.knowledgeAutoContext` unset = on, junk dropped, never filled), `knowledgeBrief` (once per
-    run, constant so prompt caching holds). Per-agent dedupe lives on ActiveRun (raw agent id, at most 500 agents, only
-    `complete` entities recorded, signature over the untrimmed content), `fresh: true` is the escape. Rows: "Recalled N
-    items about <query>", "Added 2 known items: Acme Corp, Jane Doe". `RunUsage.knowledge { recalls, autoContexts,
+    run, constant so prompt caching holds). Per-agent dedupe lives on ActiveRun (only for a named agent: no agent id = no
+    dedupe, while the row still lands on the root; at most 500 agents; `complete` means everything live was printed,
+    so an entity with a capped fact or relation list, hidden aliases or text the automatic block left out is never
+    "already shown"; signature over the untrimmed content), `fresh: true` is the escape. A second per-agent map keeps an
+    automatic block from repeating an entity it already gave. Rows: "Recalled N items about <query>", "Added 2 known items:
+    Acme Corp, Jane Doe" (a comma inside a name becomes a look-alike). `RunUsage.knowledge { recalls, autoContexts,
     itemsServed, charsServed }`; `knowledge.recalled` per agent: first at once, then one trailing per second, ids merged,
     newest 50, flushed before a terminal or paused status and at teardown. Store: per-file parsed cache, at most 4
-    projects, stamp = lstat mtime + size + ino + kind + the cap + note ids; writes still re-read from disk and cache a new
-    graph object (pure memos key on object identity, so never mutate a graph you read).
+    projects and 96 MB of file size, the newest always stays, stamp = lstat mtime + size + ino + kind + the cap + note ids;
+    writes still re-read from disk and cache a new graph object (pure memos key on object identity, so never mutate a graph
+    you read; store tests freeze the cache through `knowledgeFileLimits.freezeCached`, so a mutation throws).
+    `readRecallView` (`KnowledgeStoreApi.recallView`): a file of 8 MB or more keeps one revision for a recall's ranking and
+    inferred links for 30 s, so an entity written in that window is not found by a recall until it passes; printed text is
+    always current; search and IPC stay exact.
     Measured (`knowledgeRecall.measure.test.ts`, real tool handlers over `knowledge.fixture.ts`, chars / 4 is an estimate;
     `today` is the best case, an agent that already knows which entities to get): vocabulary + search + get vs one recall:
-    5,355 -> 1,498 chars (5 -> 1 calls, 3/3 names), 3,480 -> 1,046 (5 -> 1, 3/3), 4,704 -> 1,185 (5 -> 1, 3/3), 4,654 ->
-    1,482 (6 -> 1, 4/4), 3,574 -> 1,142 (5 -> 1, 3/3). Asking again at the default budget: 806, 383, 442, 688, 475 chars.
-    Synthetic 2,000 nodes / 5,000 edges / 2.2 MB: index about 70 ms, a broad rank about 80 ms, recall about 5 ms, inferred
-    links about 100 ms once, store read about 32 ms cold and 0.3 ms cached (logged, not asserted; a 64 MB file not measured).
-    Verified by unit tests and that measurement only; our own fixture is a weak test. Nothing ran live.
+    5,400 -> 1,483 chars (5 -> 1 calls, 3/3 names), 3,391 -> 1,046 (5 -> 1, 3/3), 4,824 -> 1,225 (5 -> 1, 3/3), 4,656 ->
+    1,486 (6 -> 1, 4/4), 3,625 -> 1,174 (5 -> 1, 3/3). Asking again at the default budget: 930, 470, 529, 812, 562 chars.
+    Synthetic 2,000 nodes / 5,000 edges / 2.2 MB: index about 60 ms, a broad rank about 80 ms, recall about 5 ms, inferred
+    links about 65 ms once, store read about 40 ms cold and 0.4 ms cached (logged, not asserted). Near the file cap
+    (`KNOWLEDGE_MEASURE_FULL=1`; 1,100 entities x 50 facts x 1,000 chars, 58.8 MB; 2,000 x 50 is 106.9 MB and the store
+    refuses it): index 2.1 s, inference 0.3 s (partial), one write 0.4 s, on the main thread. Slow, not a hang; a worker
+    thread is the real fix and is not built (docs/design/knowledge-connections.md section 8).
+    Verified by unit tests and that measurement only; our own fixture is a weak test, and no adapter calls
+    `knowledgeContext` or `knowledgeBrief` yet (Adapter Engineer next). Nothing ran live.
   - Round 2, inferred links (`docs/design/knowledge-connections.md`; `src/shared/knowledgeLinks.ts`, pure):
     `inferKnowledgeLinks` builds only what the evaluation passed, `KnowledgeLinkBasis` 'mention' and 'same-name'. Shared
     source, same target, same run, across engagements, co-occurrence and embeddings were rejected; temporal, contradiction,
     evidence, mitigation, answerer and owner are relations agents record (`KNOWLEDGE_COMMON_RELATIONS`). Other engagements'
-    data must never reach a run or this view. Links are never stored as edges or reported as facts; a pair with any edge,
-    retired included, is not suggested; ambiguous mentions are never suggested. Ids `kl_` + 16 hex over basis and
+    data must never reach a run or this view. Links are never stored as edges or reported as facts; a pair with a live
+    edge or a retired user edge is not suggested; ambiguous mentions are never suggested. Ids `kl_` + 16 hex over basis and
     endpoints. The user confirms through `knowledge:saveEdge` or dismisses through `knowledge:dismissLink`
     (`KnowledgeGraph.dismissedLinks`, ids only, at most 2,000, oldest dropped, junk dropped on read); agents have no path to
     either. `knowledge:inferredLinks` -> `{ links, appearances }`, memoized per graph object. `knowledgeAppearances`:

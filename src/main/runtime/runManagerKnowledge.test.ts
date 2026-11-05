@@ -392,15 +392,46 @@ describe('knowledge_recall through RunManager', () => {
     await m.start({ project: engagement(), prompt: 'go' })
     const ctx = ctxs[0]
     // Every match fits the largest budget, so the repeat is one short line per entity.
-    const first = ctx.knowledgeRecall!({ query: 'cut-over', budget: 6000 }, {})
-    const again = ctx.knowledgeRecall!({ query: 'cut-over', budget: 6000 }, {})
+    const root = { agentId: ROOT_AGENT_ID }
+    const first = ctx.knowledgeRecall!({ query: 'cut-over', budget: 6000 }, root)
+    const again = ctx.knowledgeRecall!({ query: 'cut-over', budget: 6000 }, root)
     expect(again.length).toBeLessThan(first.length / 2)
-    expect(again).toContain('already shown')
+    expect(again).toContain('already shown (fresh: true shows it again)')
     expect(ctx.knowledgeRecall!({ query: 'cut-over', budget: 6000 }, { agentId: 'someone-else' })).toBe(first)
-    expect(ctx.knowledgeRecall!({ query: 'cut-over', budget: 6000, fresh: true }, {})).toBe(first)
-    for (let i = 0; i < KNOWLEDGE_RUN_WRITES_MAX + 5; i++) ctx.knowledgeRecall!({ query: 'cut-over' }, {})
-    expect(ctx.knowledgeRecall!({ query: 'cut-over' }, {})).toContain('already shown')
+    expect(ctx.knowledgeRecall!({ query: 'cut-over', budget: 6000, fresh: true }, root)).toBe(first)
+    for (let i = 0; i < KNOWLEDGE_RUN_WRITES_MAX + 5; i++) ctx.knowledgeRecall!({ query: 'cut-over' }, root)
+    expect(ctx.knowledgeRecall!({ query: 'cut-over' }, root)).toContain('already shown')
     expect(knowledge.calls).toEqual([])
+    await m.stopAll()
+  })
+
+  it('a caller with no agent id gets no dedupe and does not share the root\'s state; its row still lands on the root', async () => {
+    const knowledge = fakeStore(knowledgeFixture())
+    const { m, ctxs } = rig({ knowledge })
+    await m.start({ project: engagement(), prompt: 'go' })
+    const ctx = ctxs[0]
+    const first = ctx.knowledgeRecall!({ query: 'cut-over', budget: 6000 }, {})
+    expect(rows().at(-1)!.agentId).toBe(ROOT_AGENT_ID)
+    expect(ctx.knowledgeRecall!({ query: 'cut-over', budget: 6000 }, {})).toBe(first)
+    // Neither did the unknown caller's calls mark anything shown for the root itself.
+    expect(ctx.knowledgeRecall!({ query: 'cut-over', budget: 6000 }, { agentId: ROOT_AGENT_ID })).toBe(first)
+    expect(ctx.knowledgeRecall!({ query: 'cut-over', budget: 6000 }, { agentId: ROOT_AGENT_ID })).toContain('already shown')
+    expect(ctx.knowledgeRecall!({ query: 'cut-over', budget: 6000 }, {})).toBe(first)
+    await m.stopAll()
+  })
+
+  it('ranks on the store\'s recall view when it has one, and takes its inferred links from it', async () => {
+    const graph = knowledgeFixture()
+    const knowledge = fakeStore(graph)
+    knowledge.inferred = vi.fn(() => ({ links: [], appearances: {} }))
+    const older: KnowledgeGraph = { version: 1, nodes: graph.nodes.filter((n) => n.name !== 'Lena Koster'), edges: [] }
+    knowledge.recallView = vi.fn(() => ({ rankOn: older, inferred: { links: [], appearances: {} } }))
+    const { m, ctxs } = rig({ knowledge })
+    await m.start({ project: engagement(), prompt: 'go' })
+    expect(ctxs[0].knowledgeRecall!({ query: 'Priya Raman' }, {})).toContain('Priya Raman')
+    expect(ctxs[0].knowledgeRecall!({ query: 'Lena Koster' }, {})).not.toContain(`${fixtureId('Lena Koster')} | Lena Koster`)
+    expect(knowledge.recallView).toHaveBeenCalledWith('p1')
+    expect(knowledge.inferred).not.toHaveBeenCalled()
     await m.stopAll()
   })
 
@@ -507,14 +538,50 @@ describe('knowledge context through RunManager', () => {
     await m.stopAll()
   })
 
-  it('a single name reads "Added 1 known item: X" and the recall dedupe is shared with it', async () => {
+  it('a single name reads "Added 1 known item: X"; a block that left something out does not count as shown for a recall', async () => {
     const knowledge = fakeStore(knowledgeFixture())
     const { m, ctxs } = rig({ knowledge })
     await m.start({ project: engagement(), prompt: 'go' })
     const ctx = ctxs[0]
     ctx.knowledgeContext!('Lena Koster', { agentId: 'a1', purpose: 'message' })
     expect(rows().at(-1)!.text).toBe('Added 1 known item: Lena Koster')
-    expect(ctx.knowledgeRecall!({ query: 'Lena Koster' }, { agentId: 'a1' })).toContain('already shown')
+    // The block held only part of her (an agent wrote the rest), so a recall still gives the detail ...
+    const recall = ctx.knowledgeRecall!({ query: 'Lena Koster' }, { agentId: 'a1' })
+    expect(recall).toContain('Lena Koster')
+    expect(recall).not.toContain(`${fixtureId('Lena Koster')} | Lena Koster | already shown`)
+    // ... and the next block does not repeat her either.
+    expect(ctx.knowledgeContext!('Lena Koster', { agentId: 'a1', purpose: 'message' })).toBeNull()
+    await m.stopAll()
+  })
+
+  it('a block that printed everything (all user-written, within the caps) is shared with the recall dedupe', async () => {
+    const user = { by: 'user' as const, at: 1 }
+    const g: KnowledgeGraph = { version: 1, nodes: [{ id: 'kn_u', kind: 'person', name: 'Una Field', summary: 'Sponsor', facts: [], source: user, createdAt: 1, updatedAt: 1 }], edges: [] }
+    const { m, ctxs } = rig({ knowledge: fakeStore(g) })
+    await m.start({ project: engagement(), prompt: 'go' })
+    ctxs[0].knowledgeContext!('Una Field', { agentId: 'a1', purpose: 'message' })
+    expect(ctxs[0].knowledgeRecall!({ query: 'Una Field' }, { agentId: 'a1' })).toContain('kn_u | Una Field | already shown')
+    await m.stopAll()
+  })
+
+  it('a long row never cuts a surrogate pair and a comma in a name does not read as two items', async () => {
+    const agent = { by: 'agent' as const, at: 1 }
+    const mk = (id: string, name: string, aliases?: string[]) => ({ id, kind: 'person', name, ...(aliases ? { aliases } : {}), facts: [], source: agent, createdAt: 1, updatedAt: 1 })
+    // Three names of 60 characters make a 217-character row. With the 'x' offset the cut at 199 falls inside a pair of astral letters.
+    const astral = (i: number, pad: string): string => `${pad}${'𠀀'.repeat(28)} word${i}`
+    const nameSets = ['', 'x'].map((pad) => Array.from({ length: 5 }, (_, i) => astral(i, pad)))
+    const nodes = [mk('kn_c', 'Acme, Beta', ['Zedcorp']), ...nameSets.flatMap((names, s) => names.map((n, i) => mk(`kn_${s}_${i}`, n)))]
+    const { m, ctxs } = rig({ knowledge: fakeStore({ version: 1, nodes, edges: [] }) })
+    await m.start({ project: engagement(), prompt: 'go' })
+    for (const names of nameSets) {
+      expect(ctxs[0].knowledgeContext!(names.join(' and '), { purpose: 'message' })).not.toBeNull()
+      const row = rows().at(-1)!.text
+      expect(row).toMatch(/^Added 5 known items: .*…$/)
+      expect(row.length).toBeLessThanOrEqual(200)
+      expect(row).not.toMatch(/[\ud800-\udbff](?![\udc00-\udfff])/)
+    }
+    expect(ctxs[0].knowledgeContext!('Ask Zedcorp', { purpose: 'message' })).not.toBeNull()
+    expect(rows().at(-1)!.text).toBe('Added 1 known item: Acme‚ Beta')
     await m.stopAll()
   })
 
