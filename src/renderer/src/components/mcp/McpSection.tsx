@@ -2,7 +2,8 @@ import type { ReactElement } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Check, Copy, CopyPlus, Ellipsis, ExternalLink, Library, Minus, Pencil, Plug, Plus, TriangleAlert, Trash2, Unlink, Upload } from 'lucide-react'
 import type { McpMutationResult, McpServerInfo, McpServerSpec, McpTestResult, Project } from '@shared/types'
-import { projectKindOf } from '@shared/defaults'
+import { adapterForProject, projectConnection, projectKindOf } from '@shared/defaults'
+import { secretEnvClashes, type McpSecretClash } from '@shared/mcpSecretClash'
 import { useAppStore } from '../../store/useAppStore'
 import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../../lib/settingsTarget'
 import { mcpProjectApi, secretScopeOf } from '../../lib/mcpScope'
@@ -27,7 +28,7 @@ import PerProjectValues from './PerProjectValues'
 import RegistryDialog from './RegistryDialog'
 import { RoleAccess } from './RoleAccess'
 import TestResultPanel from './TestResultPanel'
-import { errMessage, launchTarget, perProjectMissingLine, perProjectState, secretStatuses } from './mcpHelpers'
+import { errMessage, launchTarget, perProjectMissingLine, perProjectState, secretClashLine, secretStatuses } from './mcpHelpers'
 import { authTarget, authWarning, emptyKind, setUpConnectors, splitConnectorServers, transportWords } from './mcpLibraryHelpers'
 import AddServiceDialog from '../connectors/AddServiceDialog'
 import ConnectedServices from '../connectors/ConnectedServices'
@@ -90,6 +91,7 @@ export default function McpSection({ project, onSelectRole }: { project: Project
   const clearMcpFocus = useAppStore((s) => s.clearMcpFocus)
   const { library, refresh: refreshLibrary } = useMcpLibrary()
   const { connectors, error: connectorsError, refresh: refreshConnectors } = useConnectors()
+  const catalog = useAppStore((s) => s.models[projectConnection(project)])
   const assistRun = useAppStore((s) => {
     const id = s.activeRunByProject[project.id]
     const summary = id ? s.runs[id]?.summary : undefined
@@ -179,6 +181,13 @@ export default function McpSection({ project, onSelectRole }: { project: Project
   // Connector-linked servers show their own state and "Finish setup" on the row; the banner is for the rest.
   const warnings = authWarning(all.filter((s) => !s.spec.connectorId))
   const libraryCount = library?.length ?? 0
+  // One Codex run passes one value per secret env name: warn on rows sharing a name, only when this project runs on
+  // Codex (the launch refuses the later server when the values differ). A link whose entry is gone never runs.
+  const codex = adapterForProject(project, catalog ?? []).adapter === 'codex'
+  const clashes = useMemo(
+    () => (codex && servers ? secretEnvClashes(servers.filter((s) => !s.libraryMissing).map((s) => s.spec)) : {}),
+    [codex, servers]
+  )
 
   const empty = servers !== null && servers.length === 0 && !hasConnectedServices
   const addButton = (
@@ -202,7 +211,8 @@ export default function McpSection({ project, onSelectRole }: { project: Project
     onEdit: () => setModal({ kind: 'form', editing: info }),
     onDuplicate: () => setModal({ kind: 'form', seed: info.spec }),
     onSelectRole,
-    onCopied: copied
+    onCopied: copied,
+    clashes: clashes[info.spec.id]
   })
 
   return (
@@ -454,7 +464,8 @@ function McpRow({
   onEdit,
   onDuplicate,
   onSelectRole,
-  onCopied
+  onCopied,
+  clashes
 }: {
   info: McpServerInfo
   project: Project
@@ -464,6 +475,8 @@ function McpRow({
   onDuplicate: () => void
   onSelectRole?: (roleId: string) => void
   onCopied: (info: McpServerInfo) => void
+  /** Secret env names this server shares with other enabled stdio servers (Codex projects only). */
+  clashes?: McpSecretClash[]
 }): ReactElement {
   const { spec } = info
   const linked = !!spec.libraryId
@@ -612,6 +625,12 @@ function McpRow({
           <span>Its library entry was removed. Agents will not get this server. Unlink it, or add it back to the library.</span>
         </p>
       )}
+      {clashes?.map((c) => (
+        <p key={c.envName} className="mcp-row-note mcp-secret-clash" data-testid="mcp-secret-clash">
+          <Icon icon={TriangleAlert} size="sm" />
+          <span>{secretClashLine(c)}</span>
+        </p>
+      ))}
       {linked && !info.libraryMissing && perProject.declared && (
         <PerProjectValues info={info} projectId={project.id} noun={noun} onResult={onResult} />
       )}

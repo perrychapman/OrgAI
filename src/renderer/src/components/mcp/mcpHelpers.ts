@@ -7,6 +7,7 @@ import type {
   Role
 } from '@shared/types'
 import { newId } from '@shared/defaults'
+import type { McpSecretClash } from '@shared/mcpSecretClash'
 import { scopeFields, secretScopeOf } from '../../lib/mcpScope'
 
 /** The exact thing that runs: `command args` for stdio, the URL for http and sse. */
@@ -235,4 +236,19 @@ export const REGISTRY_SUGGESTIONS = ['filesystem', 'github', 'fetch', 'memory', 
 
 export function errMessage(e: unknown): string {
   return e instanceof Error ? e.message.replace(/^Error invoking remote method '[^']*': (Error: )?/, '') : String(e)
+}
+
+/** "a", "a and b", "a, b and c". */
+function nameList(names: readonly string[]): string {
+  if (names.length <= 1) return names[0] ?? ''
+  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
+}
+
+/**
+ * The quiet row warning for a secret env name shared with other servers (shared/mcpSecretClash.ts). The renderer
+ * never sees the values, so it warns on the shared name; a run on the OpenAI connection refuses the later server
+ * only when the values differ.
+ */
+export function secretClashLine(clash: McpSecretClash): string {
+  return `Shares the secret name ${clash.envName} with ${nameList(clash.others)}. On the OpenAI connection, a run starts only one of them when their values differ.`
 }

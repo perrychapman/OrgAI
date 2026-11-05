@@ -431,7 +431,7 @@ export const API_KEY_ENV = 'ORGAI_CODEX_API_KEY'
 export const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com/v1'
 
 export interface LaunchConfig {
-  /** `-c key=value` overrides for `codex app-server`. May contain no secrets except for the documented collision fallback. */
+  /** `-c key=value` overrides for `codex app-server`. Never contains a secret value. */
   config: string[]
   /** Extra child environment: CODEX_HOME, the API key and forwarded MCP secrets. Never log. */
   env: Record<string, string>
@@ -454,8 +454,11 @@ export interface LaunchConfig {
  *          app-server's own environment (same name), so values are not in argv.
  *   http   url + http_headers (non-secret); each secret header becomes env_http_headers { Header = "ORGAI_MCP_<n>_H<k>" }.
  *          An Authorization header of the form "Bearer x" is passed as bearer_token_env_var instead.
- * Two stdio servers needing the same secret name with different values cannot both use env_vars; the later one
- * gets the value inline in `env` (visible in the process arguments) and the summary says so.
+ * One app-server has one environment, so one secret env name can carry only one value per run. Two enabled stdio
+ * servers that need the same secret name with the same value share it through env_vars. With different values the
+ * later server is refused before launch (no config line at all, an entry in `skipped` naming the variable and the
+ * server that forwarded it first); a secret value never goes into argv. The adapter logs each skipped entry as a run
+ * warning. HTTP secret headers need no such check: their env names (ORGAI_MCP_<n>_H<k>) are unique per server.
  */
 export function buildLaunchConfig(
   connection: RunConnection | undefined,
@@ -486,7 +489,8 @@ export function buildLaunchConfig(
     summary.push('ChatGPT login from CODEX_HOME')
   }
 
-  const forwarded = new Map<string, string>() // env var name -> value already forwarded for another server
+  // Secret env name -> the value forwarded for it and the server that forwarded it first.
+  const forwarded = new Map<string, { value: string; serverName: string }>()
   servers.forEach((srv, n) => {
     const { spec } = srv
     if (!spec.enabled) return
@@ -496,27 +500,37 @@ export function buildLaunchConfig(
         skipped.push({ name: spec.name, reason: 'no command' })
         return
       }
+      const secretNames = new Set(spec.secretEnv ?? [])
+      // Decide the clash before any config line is pushed, so a refused server leaves nothing behind.
+      const clash = Object.entries(srv.env).find(
+        ([k, v]) => secretNames.has(k) && forwarded.has(k) && forwarded.get(k)!.value !== v
+      )
+      if (clash) {
+        const other = forwarded.get(clash[0])!.serverName
+        skipped.push({
+          name: spec.name,
+          reason: `its secret ${clash[0]} has a different value than server "${other}" uses; one Codex run can pass only one value per name. Rename the variable in one server.`
+        })
+        summary.push(`mcp ${spec.name}: refused (secret ${clash[0]} clashes with server ${other})`)
+        return
+      }
       config.push(`${base}.command=${tomlString(spec.command)}`)
       if (spec.args?.length) config.push(`${base}.args=${tomlArray(spec.args)}`)
-      const secretNames = new Set(spec.secretEnv ?? [])
       const plain: Record<string, string> = {}
       const forward: string[] = []
-      const inlineSecrets: string[] = []
       for (const [k, v] of Object.entries(srv.env)) {
-        if (!secretNames.has(k)) plain[k] = v
-        else if (!forwarded.has(k) || forwarded.get(k) === v) {
-          forwarded.set(k, v)
-          env[k] = v
-          forward.push(k)
-        } else {
+        if (!secretNames.has(k)) {
           plain[k] = v
-          inlineSecrets.push(k)
+          continue
         }
+        if (!forwarded.has(k)) forwarded.set(k, { value: v, serverName: spec.name })
+        env[k] = v
+        forward.push(k)
       }
       if (Object.keys(plain).length) config.push(`${base}.env=${tomlTable(plain)}`)
       if (forward.length) config.push(`${base}.env_vars=${tomlArray(forward)}`)
       summary.push(
-        `mcp ${spec.name}: stdio ${spec.command}${forward.length ? ` (secrets forwarded: ${forward.join(', ')})` : ''}${inlineSecrets.length ? ` (WARNING ${inlineSecrets.join(', ')} passed inline: name clash with another server)` : ''}`
+        `mcp ${spec.name}: stdio ${spec.command}${forward.length ? ` (secrets forwarded: ${forward.join(', ')})` : ''}`
       )
     } else {
       if (!spec.url) {
@@ -530,6 +544,7 @@ export function buildLaunchConfig(
       const declared = spec.headers ?? {}
       const plain: Record<string, string> = {}
       const fromEnv: Record<string, string> = {}
+      // These env names carry the server's index, so they are unique per server and never clash between servers.
       let k = 0
       for (const [h, v] of Object.entries(srv.headers)) {
         if (!secretNames.has(h) && declared[h] === v) {
