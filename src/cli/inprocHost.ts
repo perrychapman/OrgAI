@@ -13,6 +13,7 @@ import { currentHostInstanceId } from '../main/host/identity'
 import { HostOwnershipError, acquireHostOwnership, type HostOwnership } from '../main/host/ownership'
 import { HostSocketServer } from '../main/host/socketServer'
 import { installLogging, log } from '../main/log'
+import { stopSystemCertRead, trustSystemCertificates } from '../main/systemCerts'
 import { orgaiCliRootsOf, setOrgaiCliRoots } from '../main/runtime/selfControlGate'
 import type { SecretCipher } from '../main/store/secrets'
 import { openUrl } from './openUrl'
@@ -36,6 +37,24 @@ export interface StartInprocHostOptions {
    * console mirror writes to stderr too). Default false.
    */
   quiet?: boolean
+  /**
+   * Trust the OS certificate store too (corporate / inspecting root CAs, issue #16), as the desktop app does: taken once
+   * this process owns the data folder, stopped when the host ends. Default: on unless `startBackground` is false
+   * (tests); hooks may be injected.
+   */
+  systemCertificates?: boolean | SystemCertHooks
+}
+
+/** The certificate setup the in-process host calls (src/main/systemCerts.ts). */
+export interface SystemCertHooks {
+  trust(env: NodeJS.ProcessEnv): void
+  stop(): void
+}
+
+const SYSTEM_CERTS: SystemCertHooks = {
+  // The macOS reader child gets a minimal environment built from the host's own (childEnvFor), never NODE_OPTIONS.
+  trust: (env) => void trustSystemCertificates({ env }),
+  stop: () => stopSystemCertRead()
 }
 
 /** Console methods that write to main.log only (`--host inproc` under the terminal UI). */
@@ -95,7 +114,25 @@ export async function startInprocHost(opts: StartInprocHostOptions): Promise<Inp
     if (e instanceof HostOwnershipError) throw new CliError(e.message, EXIT.hostBusy)
     throw e
   }
-  const onExit = (): void => ownership.release()
+  // After ownership (the in-process twin of the desktop's single-instance lock), before anything can fetch.
+  const certOpt = opts.systemCertificates ?? opts.startBackground !== false
+  const certs = certOpt === true ? SYSTEM_CERTS : certOpt === false ? undefined : certOpt
+  const stopCerts = (): void => {
+    try {
+      certs?.stop()
+    } catch {
+      // stopping a finished read is a no-op
+    }
+  }
+  try {
+    certs?.trust(opts.env)
+  } catch (e) {
+    log.warn(`System certificates not added: ${e instanceof Error ? e.message : String(e)}`)
+  }
+  const onExit = (): void => {
+    stopCerts()
+    ownership.release()
+  }
   process.on('exit', onExit)
 
   let resolveClosed!: () => void
@@ -105,6 +142,7 @@ export async function startInprocHost(opts: StartInprocHostOptions): Promise<Inp
   const cleanup = (): void => {
     if (cleaned) return
     cleaned = true
+    stopCerts()
     server.close()
     host?.dispose()
     try {

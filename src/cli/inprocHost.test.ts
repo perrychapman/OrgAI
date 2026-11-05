@@ -70,3 +70,39 @@ describe('inprocCliRoots (cli-spec 7, Wave 6)', () => {
     expect(inprocCliRoots('/repo/src/cli', 'linux')).toEqual(['/repo/out/cli', '/repo/src/cli'])
   })
 })
+
+describe('startInprocHost system certificates (issue #16)', () => {
+  it('trusts the OS store once after taking ownership and stops the read when the host ends', async () => {
+    const calls: string[] = []
+    const env = { ORGAI_MOCK: '1', ORGAI_DAEMON_IDLE_MINUTES: '0' }
+    const h = await startInprocHost({
+      userDataDir,
+      dataDir,
+      env,
+      mock: true,
+      overlay: new Map(),
+      logging: false,
+      startBackground: false,
+      systemCertificates: {
+        trust: (e) => {
+          // Ownership is already taken: daemon.json exists before the read starts.
+          calls.push(`trust:${e === env}:${existsSync(join(dataDir, 'run', 'daemon.json'))}`)
+        },
+        stop: () => calls.push('stop')
+      }
+    })
+    expect(calls).toEqual(['trust:true:true'])
+    await h.stop(true)
+    expect(calls).toEqual(['trust:true:true', 'stop'])
+  })
+
+  it('does nothing with systemCertificates false, and a host that fails to take ownership never starts the read', async () => {
+    const calls: string[] = []
+    const hooks = { trust: () => calls.push('trust'), stop: () => calls.push('stop') }
+    const first = await startInprocHost({ userDataDir, dataDir, env: {}, mock: true, overlay: new Map(), logging: false, startBackground: false, systemCertificates: false })
+    started.push(first)
+    const err = await startInprocHost({ userDataDir, dataDir, env: {}, mock: true, overlay: new Map(), logging: false, startBackground: false, systemCertificates: hooks }).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(CliError)
+    expect(calls).toEqual([])
+  })
+})
