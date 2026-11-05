@@ -25,6 +25,7 @@ import type { McpService } from '../mcp/service'
 import type { QuickRunService } from '../quick/quickRuns'
 import type { RunManager } from '../runtime/runManager'
 import type { AgentImportService } from '../setup/import/importer'
+import type { TeamFilesService } from '../teamFiles/service'
 import type { SetupService } from '../setup/service'
 import type { TemplateService } from '../setup/templates'
 import type { SkillEvaluationApi, SkillServiceApi } from '../skills/types'
@@ -85,6 +86,8 @@ export interface HostServices {
   templates: TemplateService
   /** The practice kit (src/main/kit/service.ts). Absent = the kit channels are not registered (older tests). */
   kit?: KitService
+  /** Team files (src/main/teamFiles/service.ts). Absent = the teamFiles channels answer 'not available' (older tests). */
+  teamFiles?: TeamFilesService
   /** The push bus. Absent = the dispatcher makes its own. */
   events?: HostEventBus
   /** Lease tracking for idle exit and drain. Absent = no tracking (noopActivity). */

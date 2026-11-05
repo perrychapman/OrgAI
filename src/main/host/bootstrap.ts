@@ -13,7 +13,7 @@
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { AppSettings, ConnectionId, HostKind, HostStatusResult, Project, RunEvent, RunSummary, TerminalAccessLevel } from '../../shared/types'
-import { DEFAULT_KEEP_RUNS, HARNESS_PROJECT_ID, HOST_PROTOCOL_VERSION, IPC, QUICK_PROJECT_ID, SKILLS_PROJECT_ID, isVirtualProjectId } from '../../shared/types'
+import { DEFAULT_KEEP_RUNS, HARNESS_PROJECT_ID, HOST_PROTOCOL_VERSION, IPC, QUICK_PROJECT_ID, SKILLS_PROJECT_ID, TEAM_FILES_IPC, isVirtualProjectId } from '../../shared/types'
 import { buildSettingsInfo } from '../appInfo'
 import { CapabilityService } from '../capabilities/service'
 import { seedMockHome } from '../capabilities/mockHome'
@@ -22,6 +22,7 @@ import { ConnectionService } from '../connections/service'
 import { KitService } from '../kit/service'
 import { log } from '../log'
 import { MaintenanceService } from '../maintenance'
+import { TeamFilesService } from '../teamFiles/service'
 import { harnessProject } from '../mcp/assist'
 import { McpService } from '../mcp/service'
 import { QuickRunService, projectPeeks } from '../quick/quickRuns'
@@ -246,6 +247,30 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     onLibraryChanged: (entries) => events.emit(IPC.skillLibraryChanged, entries),
     onProjectChanged: emitProject
   })
+  // Team files: a code project's team as plain files under .orgai/ (the project cache stays what runs read). Every
+  // ProjectStore.save passes through its hook; the folders are checked at boot (index.ts), on window focus and at project open / run start.
+  const teamFiles = new TeamFilesService({
+    dataDir,
+    projects,
+    modelContext: (id) => connections.importModelContext(id),
+    withAdapter: (project) => connections.withAdapter(project),
+    skills: {
+      readFiles: (projectId, spec) => skills.teamReadFiles(projectId, spec),
+      storeFiles: (projectId, skillId, files) => skills.teamStoreFiles(projectId, skillId, files),
+      removeFiles: (projectId, skillId) => skills.teamRemoveFiles(projectId, skillId)
+    },
+    mcp: {
+      libraryEntries: () => mcp.libraryEntries(),
+      connectorEntry: (connectorId, variant) => mcp.connectorEntryForTeam(connectorId, variant),
+      connectorPreview: (connectorId, variant) => mcp.connectorPreviewForTeam(connectorId, variant),
+      discardConnectorEntry: (entryId) => mcp.discardConnectorEntryForTeam(entryId),
+      removeServerSecrets: (projectId, serverId) => mcp.removeServerSecrets(projectId, serverId)
+    },
+    broadcastStatus: (status) => events.emit(TEAM_FILES_IPC.teamFilesChanged, status),
+    broadcastProject: emitProject,
+    warn: (m) => log.warn(`Team files: ${m}`)
+  })
+  projects.setTeamFilesHook(teamFiles)
   const templates = new TemplateService({
     dataDir,
     projects,
@@ -309,6 +334,7 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
   let activityRef: HostActivityTracker | undefined
   const rm = new RunManager(adapters, runBroadcast, runStore, setup, keepRunsFor, {
     dataDir,
+    teamFiles,
     // cli-spec 3.4(1): the control socket dir, daemon secret, secrets.json and CODEX_HOME are off limits to agent tools.
     controlProtectedPaths: () => controlProtectedPaths(dataDir, ownership.runtimeDir),
     // cli-spec 6.2(1) humanGraceMs: open windows (index.ts source) plus TUI / interactive sockets (socketServer's
@@ -425,7 +451,7 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     mock: mockAdapter
   })
   capabilities = caps
-  const maintenance = new MaintenanceService(projects)
+  const maintenance = new MaintenanceService(projects, teamFiles)
   const importer = new AgentImportService({
     projects,
     modelContext: (id) => connections.importModelContext(id),
@@ -527,6 +553,7 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     quick,
     templates,
     kit,
+    teamFiles,
     events,
     activity,
     usage: { refresh: () => monitor.refresh() },
