@@ -58,7 +58,7 @@ import type {
 import { HARNESS_PROJECT_ID, QUICK_PROJECT_ID, SKILLS_PROJECT_ID, VIRTUAL_PROJECT_IDS, isVirtualProjectId, parseRunWindowHash } from '@shared/types'
 import { projectKindOf } from '@shared/defaults'
 import type { ProjectKind, QuickRunInput, QuickRunPromoteResult, SkillAssistInput, VirtualProjectId } from '@shared/types'
-import type { OrgTemplateInfo, OrgTemplateSaveInput, ProjectRemoveResult, RunTeam } from '@shared/types'
+import type { OrgTemplateInfo, OrgTemplateSaveInput, ProjectRemoveResult, RunTeam, TeamFilesStatus } from '@shared/types'
 import { displayProject, type RunLayout } from '../lib/assistants'
 
 /** Project tabs: run (Live), history, knowledge (engagements only), team (Team; was 'org', see lib/teamView normalizeView), settings. projects and appSettings are app-level. */
@@ -341,6 +341,19 @@ interface AppState {
   proposalOutcomes: Record<string, ProposalOutcome>
   /** Per project: bumped when saved permission rules may have changed (project-scope grant, project.updated). */
   rulesChangedByProject: Record<string, number>
+  /** Latest team-files status per project (lib/teamFiles.ts). Filled by listAttention at boot, status() and the push. */
+  teamFilesByProject: Record<string, TeamFilesStatus>
+  /**
+   * A request to land focus on the team-files approval card (or status line) of a project's Team tab. The Team tab
+   * consumes it (focus, then clearTeamFilesFocus). Callers also open the project and its Team view.
+   */
+  teamFilesFocus: { projectId: string; n: number } | null
+  requestTeamFilesFocus(projectId: string): void
+  clearTeamFilesFocus(): void
+  setTeamFilesStatus(status: TeamFilesStatus): void
+  loadTeamFilesAttention(): Promise<void>
+  /** Calls teamFiles.status (which may write a project's files the first time) and stores the answer; null on failure. */
+  refreshTeamFiles(projectId: string): Promise<TeamFilesStatus | null>
   requestImport(request: { projectId: string; fresh: boolean } | null): void
   recordImport(projectId: string, notice: Omit<ImportNotice, 'state' | 'error'>): void
   undoImport(projectId: string): Promise<void>
@@ -852,6 +865,38 @@ export const useAppStore = create<AppState>((set, get) => ({
   proposalNextByRun: {},
   proposalOutcomes: {},
   rulesChangedByProject: {},
+  teamFilesByProject: {},
+  teamFilesFocus: null,
+  requestTeamFilesFocus(projectId) {
+    set((s) => ({ teamFilesFocus: { projectId, n: (s.teamFilesFocus?.n ?? 0) + 1 } }))
+  },
+  clearTeamFilesFocus() {
+    set({ teamFilesFocus: null })
+  },
+  setTeamFilesStatus(status) {
+    set((s) => ({ teamFilesByProject: { ...s.teamFilesByProject, [status.projectId]: status } }))
+  },
+  async loadTeamFilesAttention() {
+    try {
+      const list = await window.orgai.teamFiles.listAttention()
+      set((s) => {
+        const next = { ...s.teamFilesByProject }
+        for (const st of list) next[st.projectId] = st
+        return { teamFilesByProject: next }
+      })
+    } catch {
+      /* optional: the Team tab loads its own status */
+    }
+  },
+  async refreshTeamFiles(projectId) {
+    try {
+      const status = await window.orgai.teamFiles.status({ projectId })
+      get().setTeamFilesStatus(status)
+      return status
+    } catch {
+      return null
+    }
+  },
 
   defaultConnection: null,
   defaultConnectionChosen: null,
@@ -1188,6 +1233,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     unsubscribeEvents = window.orgai.onRunEvent((e) => get().handleEvent(e))
     window.orgai.onFocusRun(({ projectId, runId }) => void get().focusRun(projectId, runId))
     window.orgai.onConnectionEvent((e) => get().handleConnectionEvent(e))
+    // Team files: the push keeps every known status fresh; listAttention seeds the ones that need the user.
+    window.orgai.onTeamFilesChanged?.((status) => get().setTeamFilesStatus(status))
+    void get().loadTeamFilesAttention()
     await get().loadProjects()
     void get().loadAllHistory()
     void get().loadConnections()
