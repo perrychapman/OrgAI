@@ -20,6 +20,7 @@ import type {
   McpLibraryEntry,
   McpServerSpec,
   McpServersProposalPayload,
+  OrgChartProposalPayload,
   SkillsProposalPayload,
   MergeDecision,
   PendingCards,
@@ -759,6 +760,35 @@ export function overlayOwnItems<T extends { id: string; name: string; libraryId?
   return { items: live === undefined && saved === undefined ? undefined : items, roles }
 }
 
+/**
+ * The live roles with only the approved org chart's own roles (matched by id or name) taken from the saved roles, in
+ * place, new ones at the end. Roles the proposal did not name stay as the run has them, so a prompt edit the same
+ * save ingested from the team files never reaches a live run. Pure.
+ */
+export function overlayOwnRoles(live: readonly Role[], saved: readonly Role[], own: { ids: readonly string[]; names: readonly string[] }): Role[] {
+  const ids = new Set(own.ids)
+  const names = new Set(own.names)
+  const isOwn = (r: Role): boolean => ids.has(r.id) || names.has(r.name)
+  const mine = saved.filter(isOwn)
+  const byId = new Map(mine.map((r) => [r.id, r]))
+  const byName = new Map(mine.map((r) => [r.name, r]))
+  const used = new Set<string>()
+  const out: Role[] = []
+  for (const r of live) {
+    if (!isOwn(r)) {
+      out.push(r)
+      continue
+    }
+    const next = byId.get(r.id) ?? byName.get(r.name)
+    if (next && !used.has(next.id)) {
+      used.add(next.id)
+      out.push(next)
+    }
+  }
+  for (const r of mine) if (!used.has(r.id)) out.push(r)
+  return out
+}
+
 export function refreshRoleGrants(running: Role[], saved: readonly Role[]): void {
   const byId = new Map(saved.map((r) => [r.id, r]))
   for (const role of running) {
@@ -1327,6 +1357,7 @@ export class RunManager {
       // also carries whatever the same save ingested from the team files (a pull), and a file change never reaches a
       // live run. An approved org chart (review M1) says it applies from the next run, so this run's grants stay.
       const setLive = (saved: Project, settle: LiveSettle = 'mcpServers', own?: LiveOwnItems): void => {
+        // Never the roles list as saved for an org chart with named roles: only the proposal's own roles move.
         const next: Project = { ...live }
         const overlay = <K extends keyof Project>(key: K): void => {
           if (saved[key] === undefined) delete next[key]
@@ -1363,7 +1394,10 @@ export class RunManager {
         } else if (settle === 'skills') {
           overlay('skills')
           grants('skills')
-        } else if (settle === 'orgChart') overlay('roles')
+        } else if (settle === 'orgChart') {
+          if (own) next.roles = overlayOwnRoles(live.roles, saved.roles, own)
+          else overlay('roles')
+        }
         else if (settle === 'folders') overlay('allowedDirectories')
         else overlay('permissionMode')
         live = noFolderWrites({ ...next, path: live.path })
@@ -1455,7 +1489,10 @@ export class RunManager {
             } else if (req.kind === 'skills') {
               const payload = req.payload as SkillsProposalPayload
               setLive(saved, 'skills', { ids: payload.items.flatMap((i) => (i.libraryId ? [i.libraryId] : [])), names: payload.items.map((i) => i.draft.name) })
-            } else if (req.kind === 'orgChart') setLive(saved, 'orgChart')
+            } else if (req.kind === 'orgChart') {
+              const payload = req.payload as OrgChartProposalPayload
+              setLive(saved, 'orgChart', { ids: payload.roles.map((r) => r.id), names: payload.roles.map((r) => r.name) })
+            }
           }),
         // Setup-like runs (setup, mcp-assist, the harness project) change servers through proposals only.
         ...(bare

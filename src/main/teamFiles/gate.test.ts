@@ -544,6 +544,18 @@ describe('security review fixes', () => {
     expect(plainLink.usesStoredSignIn).toBeUndefined()
   })
 
+  it('N3: a connector with no entry on this computer yet says the user will need to sign in, not that a stored sign-in is used', () => {
+    const link: LinkResolver = () => ({ target: 'https://entry.example/mcp', stored: false })
+    const approved = sampleDoc()
+    const disk = clone(approved)
+    disk.mcp.push({ name: 'gh', transport: 'http', url: 'https://entry.example/mcp', enabled: true, connectorId: 'github' })
+    const gh = gateTeam(approved, disk, { link }).pending.find((c) => c.id === 'mcp:gh')!
+    expect(gh.usesStoredSignIn).toBeUndefined()
+    expect(gh.summary).toContain('and you will need to sign in.')
+    expect(gh.summary).not.toContain('stored on this computer')
+    expect(gh.summary).toBe('New service gh would connect to the address shown, and you will need to sign in. Available to every role.')
+  })
+
   it('lists the most powerful changes first: loosening settings, elevated roles, services, skills, the rest', () => {
     const r = gate((d) => {
       d.settings.permissionMode = 'bypassPermissions'

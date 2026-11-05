@@ -49,6 +49,7 @@ import { SERVER_TOMBSTONES_MAX, TeamFilesStore, type ServerTombstone, type TeamF
  * cache or the runs except through the gate, and nothing here follows a link.
  */
 
+export const LINKS_CHANGED_MESSAGE = 'A service in these files now connects to something different on this computer than what you were shown. Check again and review it.'
 export const STALE_MESSAGE = 'The team files changed since you looked. Review them again.'
 const PENDING_WARNING = 'This run uses the last approved team: the team files in the folder have changes waiting for your approval.'
 const COMMIT_MESSAGE = 'Update OrgAI team files'
@@ -233,6 +234,10 @@ export class TeamFilesService {
   private inHook = new Set<string>()
   private lastBroadcast = new Map<string, string>()
   private adoptions = new Map<string, TeamDoc>()
+  /** What each linked server pointed to on this computer when status / found last showed it (N4): key `p:<id>` or `f:<folder>`. */
+  private shownLinks = new Map<string, string>()
+  /** createFromFolder applies not yet stored by ProjectStore.create (N5). */
+  private pendingCreates = new Map<string, () => void>()
   private lastFocusCheck = 0
   private foundMemo = new Map<string, { key: string; result: TeamFilesFound | undefined }>()
   /** The last git answer per project and the key (files stamp) it was taken at. */
@@ -405,10 +410,39 @@ export class TeamFilesService {
   private readonly linkResolver: LinkResolver = (m) => {
     try {
       const l = this.linkedEntry(m, this.deps.mcp.libraryEntries())
-      return l ? { target: fullTarget(l.entry) } : null
+      return l ? { target: fullTarget(l.entry), stored: l.stored } : null
     } catch {
       return null
     }
+  }
+
+  /** Where each linked server of the document points on this computer now (name, whether the entry exists, target), as one string. */
+  private linkSnapshot(doc: TeamDoc): string {
+    const rows: string[] = []
+    let lib: McpLibraryEntry[] = []
+    try {
+      lib = this.deps.mcp.libraryEntries()
+    } catch {
+      /* none */
+    }
+    for (const m of doc.mcp) {
+      if (!m.connectorId && !m.fromLibrary) continue
+      let l: ReturnType<TeamFilesService['linkedEntry']>
+      try {
+        l = this.linkedEntry(m, lib)
+      } catch {
+        l = undefined
+      }
+      rows.push(`${m.name}\0${l ? `${l.stored ? 'stored' : 'new'}\0${fullTarget(l.entry)}` : 'none'}`)
+    }
+    return rows.sort().join('\n')
+  }
+
+  /** Refuses when a linked server now points somewhere other than what the user was shown (this computer's library changed). */
+  private assertLinksUnchanged(key: string, doc: TeamDoc): void {
+    const shown = this.shownLinks.get(key)
+    if (shown === undefined) return
+    if (shown !== this.linkSnapshot(doc)) throw new Error(LINKS_CHANGED_MESSAGE)
   }
 
   /** parse's injected check: a connector server whose address differs from this computer's entry for it is a problem for mcp.json. */
@@ -872,6 +906,7 @@ export class TeamFilesService {
     s.notes = cap(notes())
     s.warnings = cap(warnings())
     s.digest = parsed.digest
+    this.shownLinks.set(`p:${id}`, this.linkSnapshot(parsed.doc))
     if (g.pending.length && firstSeen) s.firstSeen = true
     if (s.problems.length) s.state = 'problem'
     else if (g.pending.length) s.state = st.rejectedDigest && st.rejectedDigest === parsed.digest ? 'rejected' : 'pending'
@@ -1057,6 +1092,17 @@ export class TeamFilesService {
         this.warn(`could not keep the pulled team changes in this save: ${e instanceof Error ? e.message : String(e)}`)
       }
     }
+    // A server the main process removed on purpose (mcp:remove, an approved removal): its tombstone goes with it (N1). The
+    // renderer cannot remove servers, and a file-driven removal never passes through here (it tombstones in applyDoc).
+    const kept = new Set([...(next.mcpServers ?? []), ...(result.mcpServers ?? [])].map((s) => s.id))
+    for (const s of stored.mcpServers ?? []) {
+      if (kept.has(s.id)) continue
+      try {
+        this.forgetTombstone(id, s.id)
+      } catch (e) {
+        this.warn(`could not forget a removed service's record: ${e instanceof Error ? e.message : String(e)}`)
+      }
+    }
     if (!changed && !stale) return next
     if (!sameTeam(newApproved, approved)) this.store.writeApproved(id, newApproved)
     if (changed) {
@@ -1117,6 +1163,7 @@ export class TeamFilesService {
     if (!parsed.doc) throw new Error(`Fix the problem in ${parsed.problems[0]?.file ?? TEAM_FILES_JSON} first.`)
     if (input.digest !== parsed.digest) throw new Error(STALE_MESSAGE)
     if (parsed.problems.length) throw new Error(`Fix the problem in ${parsed.problems[0].file} first.`)
+    this.assertLinksUnchanged(`p:${id}`, parsed.doc)
     const pending = approved ? gateTeam(approved, parsed.doc, { firstSeen: st.firstSeen === true, link: this.linkResolver }).pending : []
     // Approving applies the whole file: the user must have been able to see every change that needs approval.
     if (pending.length > TEAM_FILES_LIST_MAX) throw new Error(TOO_MANY_MESSAGE)
@@ -1262,6 +1309,7 @@ export class TeamFilesService {
     if (read.notes.length) parsed.notes = [...parsed.notes, ...read.notes]
     if (!parsed.present) return undefined
     const doc = parsed.doc
+    if (doc) this.shownLinks.set(`f:${root}`, this.linkSnapshot(doc))
     const out: TeamFilesFound = { roleCount: doc?.roles.length ?? 0, roles: [], skills: [], mcpServers: [], changes: [], problems: cap(parsed.problems), warnings: cap(parsed.warnings) }
     if (!doc) return out
     const roots = doc.roles.filter((r) => r.reportsTo === null)
@@ -1305,17 +1353,40 @@ export class TeamFilesService {
     if (digest !== parsed.digest) throw new Error(STALE_MESSAGE)
     if (parsed.problems.length) throw new Error(`Fix the problem in ${parsed.problems[0].file} first.`)
     if (describeChanges(null, parsed.doc, this.linkResolver).length > TEAM_FILES_LIST_MAX) throw new Error(TOO_MANY_MESSAGE)
+    this.assertLinksUnchanged(`f:${cleanProjectPath(project.path)}`, parsed.doc)
+    this.sweepPendingCreates()
     const empty: Project = { ...project, roles: [], mcpServers: [], skills: [] }
     const ap = this.applyDoc(empty, parsed.doc)
     ap.commit()
     this.adoptions.set(project.id, parsed.doc)
+    // ProjectStore.create stores the project right after this returns and has no failure hook: if it never gets stored
+    // (a later step threw), the connector entry this apply added and the skill files go again (N5).
+    const id = project.id
+    this.pendingCreates.set(id, ap.rollback)
+    const timer = setTimeout(() => this.sweepPendingCreates(), 0)
+    timer.unref?.()
     return ap.project
+  }
+
+  /** Rolls back the applies of createFromFolder whose project was never stored; a stored one just forgets its rollback. */
+  sweepPendingCreates(): void {
+    for (const [id, rollback] of [...this.pendingCreates]) {
+      this.pendingCreates.delete(id)
+      if (this.deps.projects.get(id)) continue
+      this.adoptions.delete(id)
+      try {
+        rollback()
+      } catch (e) {
+        this.warn(`could not undo a team apply that was never stored: ${e instanceof Error ? e.message : String(e)}`)
+      }
+    }
   }
 
   /** After createFromFolder's project is stored: the folder's team is the approved team. */
   adopted(projectId: string, doc?: TeamDoc): void {
     const d = doc ?? this.adoptions.get(projectId)
     this.adoptions.delete(projectId)
+    this.pendingCreates.delete(projectId)
     if (!d) return
     const project = this.deps.projects.get(projectId)
     this.store.writeApproved(projectId, d)

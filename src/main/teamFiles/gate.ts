@@ -32,6 +32,8 @@ export const isElevatedTool = (t: string): boolean => ELEVATED_TOOLS.includes(t)
 export interface LinkInfo {
   /** The ENTRY's real target (the file's own address is never shown for a linked server). */
   target: string
+  /** False: a catalog connector with no entry on this computer yet (approving adds it, and the user signs in). Unset = stored. */
+  stored?: boolean
 }
 export type LinkResolver = (m: TeamMcpDoc) => LinkInfo | null
 
@@ -277,11 +279,12 @@ function engine(approvedIn: TeamDoc, diskIn: TeamDoc, force: string | null, link
     const shown = (m: TeamMcpDoc, plain: string): Pick<TeamFileChange, 'summary' | 'target' | 'secretNames' | 'usesStoredSignIn' | 'reachesRoles'> => {
       const linked = m.connectorId !== undefined || m.fromLibrary === true ? (link?.(m) ?? null) : null
       if (!linked) return { summary: plain, target: serverTarget(m), secretNames: secretNames(m) }
+      const stored = linked.stored !== false
       return {
-        summary: `${plain.replace(/ would run or connect to the address shown\.$/, ' would connect to the address shown')}, using the sign-in stored on this computer. ${reach(m)}`,
+        summary: `${plain.replace(/ would run or connect to the address shown\.$/, ' would connect to the address shown')}, ${stored ? 'using the sign-in stored on this computer' : 'and you will need to sign in'}. ${reach(m)}`,
         target: linked.target.replace(HIDDEN_ALL, '?'),
         secretNames: secretNames(m),
-        usesStoredSignIn: true,
+        ...(stored ? { usesStoredSignIn: true as const } : {}),
         ...(m.roles ? { reachesRoles: [...m.roles] } : {})
       }
     }
