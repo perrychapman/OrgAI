@@ -184,7 +184,11 @@ try {
       if (w === 1600) {
         // The quiet link opens Project settings > Permissions with "Rules and folders you allowed" open and the saved
         // rules heading focused (ux-review-config-2 N11).
-        await page.locator(`${CARD} [data-testid=perm-settings-link]`).click()
+        // In a compact frame (a clamped window, e.g. a 684 px work area) the link sits behind Details, by design.
+        const link = page.locator(`${CARD} [data-testid=perm-settings-link]`)
+        const moreDetails = page.locator(`${CARD} .decision-details`)
+        if (!(await link.isVisible()) && (await moreDetails.isVisible())) await moreDetails.click()
+        await link.click()
         await page.locator('#settings-section-permissions').waitFor({ timeout: 10_000 })
         await sleep(400)
         const focused = await page.evaluate(() => {

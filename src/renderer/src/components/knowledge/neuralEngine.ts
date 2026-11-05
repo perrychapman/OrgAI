@@ -520,6 +520,7 @@ export class NeuralEngine {
   fitNow(): void {
     this.autoFit = false
     this.userView = false
+    this.resizeBase = null
     this.host.userMoved()
     this.fit(true)
   }
@@ -527,6 +528,7 @@ export class NeuralEngine {
   zoomBy(factor: number): void {
     this.autoFit = false
     this.userView = true
+    this.resizeBase = null
     this.host.userMoved()
     const target = zoomAt(this.v, this.v.k * factor, this.w / 2, this.h / 2)
     this.moveTo(target, true)
@@ -814,6 +816,7 @@ export class NeuralEngine {
         d.moved = true
         this.autoFit = false
         this.userView = true
+        this.resizeBase = null
         this.anim = null
         this.host.userMoved()
         if (this.hoverIdx >= 0) this.setHover(-1)
@@ -848,6 +851,7 @@ export class NeuralEngine {
     const factor = Math.exp(-e.deltaY * unit * 0.0015)
     this.autoFit = false
     this.userView = true
+    this.resizeBase = null
     this.anim = null
     this.host.userMoved()
     if (this.hoverIdx >= 0) this.setHover(-1)
