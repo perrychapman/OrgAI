@@ -214,7 +214,9 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     mock: mockAdapter,
     onLibraryChanged: (entries) => events.emit(IPC.mcpLibraryChanged, entries),
     // Library changes that save a project (unlink on remove, promote) reach every client like a run's project update.
-    onProjectChanged: emitProject
+    onProjectChanged: emitProject,
+    // `orgai mcp auth` (announceUrl): the authorization URL reaches 'connections' subscribers (cli-spec 6.3(5)).
+    onAuthorizeUrl: (u) => events.emit(IPC.connectionsEvent, { type: 'mcp.authorize', authorize: u })
   })
   const skills = new SkillService({
     dataDir,
