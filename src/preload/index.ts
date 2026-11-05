@@ -190,6 +190,7 @@ const api: OrgAIApi = {
   },
   permissions: {
     list: (projectId: string) => ipcRenderer.invoke(IPC.permissionsList, projectId),
+    ignored: (projectId: string) => ipcRenderer.invoke(IPC.permissionsIgnored, projectId),
     remove: (input) => ipcRenderer.invoke(IPC.permissionsRemove, input),
     add: (input) => ipcRenderer.invoke(IPC.permissionsAdd, input),
     decideRequest: (input) => ipcRenderer.invoke(IPC.permissionsDecideRequest, input)

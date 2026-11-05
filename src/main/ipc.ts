@@ -171,7 +171,7 @@ import type {
   ProjectRemoveResult
 } from '@shared/types'
 import { projectKindOf } from '@shared/defaults'
-import { addRules, allowRuleRefusal, listRules, removeRule, ruleSaveRefusal } from './runtime/permissionRules'
+import { addRules, allowRuleRefusal, listIgnoredRules, listRules, removeRule, ruleSaveRefusal } from './runtime/permissionRules'
 import { isValidRule } from './runtime/ruleMatch'
 import { buildAppInfo, buildSettingsInfo, stripSettingsInfo } from './appInfo'
 import { checkProjectPath } from './store/projects'
@@ -649,6 +649,11 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
     const project = projects.get(projectId)
     if (!project) throw new Error('Project not found')
     return listRules({ file: projectRulesFile(project, settings.dataDir) })
+  })
+  ipcMain.handle(IPC.permissionsIgnored, (_e, projectId: unknown) => {
+    const project = typeof projectId === 'string' ? projects.get(projectId) : undefined
+    if (!project) throw new Error('Project not found')
+    return listIgnoredRules({ file: projectRulesFile(project, settings.dataDir) })
   })
   ipcMain.handle(IPC.permissionsRemove, (_e, raw: unknown) => {
     const input = permissionRuleArgs(raw)
