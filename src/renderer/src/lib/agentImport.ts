@@ -2,7 +2,7 @@ import type { AgentImportAction, AgentImportChoice, AgentImportMode, AgentImport
 import { AGENT_IMPORT_SOURCE_LABELS } from '@shared/types'
 
 /** What a new project does with the agent files found in its folder. */
-export type SetupChoice = 'import' | 'architect' | 'default' | 'template'
+export type SetupChoice = 'import' | 'architect' | 'default' | 'template' | 'team'
 
 /** The user's edits to one previewed role. Unset fields keep what the importer chose. */
 export interface ImportEdit {
@@ -16,8 +16,18 @@ export function sourceLabel(source: AgentImportSource): string {
   return AGENT_IMPORT_SOURCE_LABELS[source]
 }
 
-export function totalAgents(check: Pick<ProjectPathCheck, 'agentSources'> | null | undefined): number {
+/**
+ * Agents other tools left in the folder. While a team is found (`teamFiles`) the folder's own `.orgai` source is never
+ * counted (main leaves it out too) and the team path replaces the import path, so this is 0.
+ */
+export function totalAgents(check: Pick<ProjectPathCheck, 'agentSources' | 'teamFiles'> | null | undefined): number {
+  if (check?.teamFiles) return 0
   return (check?.agentSources ?? []).reduce((n, s) => n + s.agentCount, 0)
+}
+
+/** Agents of other tools next to a found team: not imported, mentioned in one quiet line. */
+export function otherToolAgents(check: Pick<ProjectPathCheck, 'agentSources'> | null | undefined): number {
+  return (check?.agentSources ?? []).filter((s) => s.source !== 'orgai').reduce((n, s) => n + s.agentCount, 0)
 }
 
 function baseName(file: string): string {
@@ -30,8 +40,9 @@ function joinWords(parts: string[]): string {
 }
 
 /** "Found 2 Claude Code agents and AGENTS.md." or null when the folder has neither. */
-export function foundLine(check: Pick<ProjectPathCheck, 'agentSources' | 'instructionFiles'> | null | undefined): string | null {
-  if (!check) return null
+export function foundLine(check: Pick<ProjectPathCheck, 'agentSources' | 'instructionFiles' | 'teamFiles'> | null | undefined): string | null {
+  // A found team has its own panel; nothing here talks about importing agents next to it.
+  if (!check || check.teamFiles) return null
   const parts = (check.agentSources ?? []).filter((s) => s.agentCount > 0).map((s) => `${s.agentCount} ${s.label} agent${s.agentCount === 1 ? '' : 's'}`)
   const docs = [...new Set((check.instructionFiles ?? []).map(baseName))]
   if (docs.length > 2) parts.push(`${docs.length} instruction files`)
@@ -51,6 +62,7 @@ export function effectiveSetupChoice(hasAgents: boolean, picked: SetupChoice | n
 }
 
 export function setupSubmitLabel(choice: SetupChoice, busy: boolean, kind: 'code' | 'engagement' = 'code'): string {
+  if (choice === 'team') return busy ? 'Creating…' : 'Create project'
   if (choice === 'template') return busy ? 'Creating…' : 'Create from template'
   if (choice === 'import') return busy ? 'Creating…' : 'Create project and review import'
   if (choice === 'architect' && kind === 'engagement') return busy ? 'Starting the interview…' : 'Create and start interview'
@@ -68,6 +80,7 @@ export function importChoiceLabel(choice: SetupChoice, count: number): string {
 export function setupChoiceLabel(choice: SetupChoice, count: number, kind: 'code' | 'engagement', hasAgents: boolean): string {
   if (choice === 'import') return importChoiceLabel('import', count)
   if (choice === 'template') return 'Start from a template'
+  if (choice === 'team') return "Use the team in this folder"
   if (choice === 'architect') {
     if (hasAgents) return importChoiceLabel('architect', count)
     return kind === 'engagement' ? 'Start with the setup interview (recommended)' : 'Set up with the Architect (recommended)'
