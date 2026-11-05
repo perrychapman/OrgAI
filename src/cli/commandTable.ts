@@ -40,6 +40,18 @@ export const GLOBAL_FLAGS: readonly CommandFlag[] = [
   { name: 'version', short: 'V', takesValue: false, summary: 'Print the version' }
 ]
 
+/** Terminal UI flags (bare `orgai`, `tui`, `attach`, `resume` without --exec). */
+export const TUI_FLAGS: readonly CommandFlag[] = [
+  { name: 'inline', takesValue: false, summary: 'Draw in the normal scrollback instead of the full screen' },
+  { name: 'ax-screen-reader', takesValue: false, summary: 'Screen reader mode: inline, plain text, no animation' }
+]
+
+/** Flags of bare `orgai [options] [--] <prompt>` (index.ts routes them to the terminal UI; shown in --help). */
+export const DEFAULT_TUI_FLAGS: readonly CommandFlag[] = [
+  ...TUI_FLAGS,
+  { name: 'team', takesValue: true, values: ['default', 'single'], summary: 'With a prompt: the org chart (default) or one assistant (single)' }
+]
+
 const later = (name: string, summary: string, usage: string, subcommands?: readonly string[]): CommandEntry => ({
   name,
   summary,
@@ -153,7 +165,13 @@ export const COMMANDS: readonly CommandEntry[] = [
     flags: [],
     available: true
   },
-  later('tui', 'Start the interactive terminal UI', 'tui [--run <runId-or-R#>]'),
+  {
+    name: 'tui',
+    summary: 'Start the interactive terminal UI (optionally on a run)',
+    usage: 'tui [--run <runId-or-R#>] [--inline] [--ax-screen-reader]',
+    flags: [{ name: 'run', takesValue: true, summary: 'Run to open' }, ...TUI_FLAGS],
+    available: true
+  },
   {
     name: 'exec',
     summary: 'Run headless, non-interactively (alias: orgai -p <prompt>)',
@@ -163,16 +181,23 @@ export const COMMANDS: readonly CommandEntry[] = [
   },
   {
     name: 'resume',
-    summary: 'Continue a session chain headless (--exec)',
-    usage: 'resume [runId-or-R#] [--prompt <text> | -] --exec [exec options]',
+    summary: 'Continue a session chain in the terminal UI, or headless with --exec',
+    usage: 'resume [runId-or-R#] [--prompt <text> | -] [--exec [exec options]]',
     flags: [
-      { name: 'prompt', takesValue: true, summary: 'The message to continue with ("-" reads stdin)' },
+      { name: 'prompt', takesValue: true, summary: 'The message to continue with ("-" reads stdin, --exec only)' },
       { name: 'exec', takesValue: false, summary: 'Continue headless, keeping the chain\'s exec settings' },
+      ...TUI_FLAGS,
       ...EXEC_RUN_FLAGS
     ],
     available: true
   },
-  later('attach', 'Attach the terminal UI to a run', 'attach <runId-or-R#>'),
+  {
+    name: 'attach',
+    summary: 'Attach the terminal UI to a live or ended run',
+    usage: 'attach <runId-or-R#> [--inline] [--ax-screen-reader]',
+    flags: [...TUI_FLAGS],
+    available: true
+  },
   {
     name: 'decide',
     summary:

@@ -14,16 +14,15 @@ import { runExec, runResume } from './commands/exec'
 import { runInbox } from './commands/inbox'
 import { runRuns } from './commands/runs'
 import { runStatus } from './commands/status'
+import { PROMPT_HINT, runAttach, runDefaultTui, runTuiCommand } from './commands/tui'
 import { runWatch } from './commands/watch'
-import { COMMANDS, GLOBAL_FLAGS, findCommand, type CommandEntry, type CommandFlag } from './commandTable'
+import { COMMANDS, DEFAULT_TUI_FLAGS, GLOBAL_FLAGS, findCommand, type CommandEntry, type CommandFlag } from './commandTable'
 import { buildContext } from './context'
 import { splitGlobalFlags } from './flags'
 import { safe } from './output'
 import { collectSecretOverlay, scrubSecretEnv, secretEnvRefusal } from './secretOverlay'
 import { CliError, EXIT, type CliIo, type CommandFn } from './types'
 import { CLI_VERSION } from './version'
-
-export const TUI_LATER_NOTE = 'The interactive terminal UI comes in a later version.'
 
 const ROUTES: Record<string, CommandFn> = {
   status: runStatus,
@@ -36,7 +35,9 @@ const ROUTES: Record<string, CommandFn> = {
   completions: runCompletions,
   exec: runExec,
   resume: runResume,
-  decide: runDecide
+  decide: runDecide,
+  tui: runTuiCommand,
+  attach: runAttach
 }
 
 export interface MainOverrides {
@@ -86,13 +87,16 @@ export function generalHelp(): string {
   const now = COMMANDS.filter((c) => c.available)
   const later = COMMANDS.filter((c) => !c.available)
   return [
-    'Usage: orgai <command> [options]',
+    'Usage: orgai [options] [--] [prompt]   Start the terminal UI (with a prompt: start a run)',
+    '       orgai <command> [options]',
+    '',
+    'Terminal UI options:',
+    table(DEFAULT_TUI_FLAGS.map((f) => [flagLabel(f), f.summary])),
     '',
     'Commands:',
     table(now.map((c) => [c.name, c.summary])),
     '',
-    `Coming later: ${later.map((c) => c.name).join(', ')}.`,
-    '',
+    ...(later.length ? [`Coming later: ${later.map((c) => c.name).join(', ')}.`, ''] : []),
     'Global options:',
     table(GLOBAL_FLAGS.map((f) => [flagLabel(f), f.summary])),
     '',
@@ -128,9 +132,28 @@ export async function main(argv: string[] = process.argv.slice(2), overrides: Ma
     const { globals, rest } = splitGlobalFlags(argv)
     const [name, ...args] = rest
 
-    if (name === undefined) {
-      out(`${generalHelp()}\n\n${TUI_LATER_NOTE}`)
-      return EXIT.ok
+    /** The secret refusal and the --host inproc overlay (taken out of the environment before anything can spawn). */
+    const prepareContext = (checkSecrets: boolean): ReturnType<typeof buildContext> => {
+      if (checkSecrets) {
+        const refusal = secretEnvRefusal(globals.host, env, globals.secretEnv)
+        if (refusal) throw new CliError(refusal, EXIT.usage)
+      }
+      let overlay: Map<string, string> | undefined
+      if (globals.host === 'inproc') {
+        const collected = collectSecretOverlay(env, globals.secretEnv)
+        scrubSecretEnv(env, collected.consumedVars)
+        overlay = collected.overlay
+      }
+      return contextFor(globals, env, io, overrides, overlay)
+    }
+
+    // Bare `orgai`, `orgai [tui options] [--] <prompt>` or a quoted prompt (an unknown first word with whitespace).
+    if (name === undefined || name === '--' || isDefaultTuiFlag(name) || (findCommand(name) === undefined && !name.startsWith('-') && /\s/.test(name))) {
+      if (asksHelp(rest)) {
+        out(generalHelp())
+        return EXIT.ok
+      }
+      return await runDefaultTui(prepareContext(true), rest, { help: generalHelp })
     }
     if (VERSION_WORDS.has(name)) {
       out(CLI_VERSION)
@@ -160,27 +183,7 @@ export async function main(argv: string[] = process.argv.slice(2), overrides: Ma
     }
     if (!command.available || !ROUTES[command.name]) throw new CliError(`\`orgai ${command.name}\` is not available in this build yet.`, EXIT.usage)
 
-    if (command.name !== 'completions') {
-      const refusal = secretEnvRefusal(globals.host, env, globals.secretEnv)
-      if (refusal) throw new CliError(refusal, EXIT.usage)
-    }
-    // --host inproc: take the secrets out of the environment before anything can spawn.
-    let overlay: Map<string, string> | undefined
-    if (globals.host === 'inproc') {
-      const collected = collectSecretOverlay(env, globals.secretEnv)
-      scrubSecretEnv(env, collected.consumedVars)
-      overlay = collected.overlay
-    }
-
-    const ctx = buildContext({
-      globals,
-      env,
-      cwd: overrides.cwd ?? process.cwd(),
-      platform: overrides.platform ?? process.platform,
-      io,
-      ...(overlay ? { overlay } : {})
-    })
-    return await ROUTES[command.name](ctx, args)
+    return await ROUTES[command.name](prepareContext(command.name !== 'completions'), args)
   } catch (e) {
     if (e instanceof CliError) {
       err(e.message)
@@ -193,9 +196,36 @@ export async function main(argv: string[] = process.argv.slice(2), overrides: Ma
   }
 }
 
+/** `--inline`, `--ax-screen-reader` or `--team` before the prompt: terminal UI flags of bare `orgai`. */
+function isDefaultTuiFlag(arg: string): boolean {
+  return DEFAULT_TUI_FLAGS.some((f) => arg === `--${f.name}` || (f.takesValue && arg.startsWith(`--${f.name}=`)))
+}
+
+/**
+ * The context, with the --host inproc secret overlay taken out of the environment first (before anything can spawn).
+ * `overlay` is passed when the caller already collected it.
+ */
+function contextFor(
+  globals: ReturnType<typeof splitGlobalFlags>['globals'],
+  env: NodeJS.ProcessEnv,
+  io: CliIo,
+  overrides: MainOverrides,
+  overlay?: Map<string, string>
+): ReturnType<typeof buildContext> {
+  return buildContext({
+    globals,
+    env,
+    cwd: overrides.cwd ?? process.cwd(),
+    platform: overrides.platform ?? process.platform,
+    io,
+    ...(overlay ? { overlay } : {})
+  })
+}
+
 function unknownCommandMessage(word: string): string {
   const s = suggestCommand(word)
-  return s ? `Unknown command '${word}'. Did you mean '${s}'?` : `Unknown command '${word}'. Run 'orgai --help' for the commands.`
+  const base = s ? `Unknown command '${word}'. Did you mean '${s}'?` : `Unknown command '${word}'. Run 'orgai --help' for the commands.`
+  return `${base} ${PROMPT_HINT}`
 }
 
 /** True when this module is the process entry (also through a symlinked bin shim). False when imported (tests). */

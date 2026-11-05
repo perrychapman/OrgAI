@@ -45,13 +45,14 @@ import { statusText } from '../../shared/view/runStatus'
 import { overridesWidening } from '../../main/runtime/runOverrides'
 import { ensureHost, connectFailure, type EnsuredHost } from '../client/ensureHost'
 import { RunStream, defaultRunStreamTimers, type RunStreamTimers, type SnapshotResult } from '../client/runStream'
-import { findCommand } from '../commandTable'
+import { TUI_FLAGS, findCommand } from '../commandTable'
 import { parseFlags, type FlagSpec } from '../flags'
 import { emit, emitLine, isJsonOutput, note, printText, safeLine, styleFor, styleStatus, warn, type Json } from '../output'
 import { agentLabel, costText, pendingItems, planUpdateLine, recordWithoutImages, statusViewOf, statusWordOfSummary, transcriptLine } from '../render'
 import { resolveRunFromSource, warnVersionSkew } from '../runRef'
 import { CliError, EXIT, type CliContext, type CommandFn, type HostCallError, type HostClient } from '../types'
 import { intFlag } from './runs'
+import { runResumeTui } from './tui'
 import { liveSource } from './watch'
 
 export const EXEC_STDIN_MAX_BYTES = 1024 * 1024
@@ -328,7 +329,14 @@ export const runExec: CommandFn = async (ctx: CliContext, args: string[]): Promi
 export const runResume: CommandFn = async (ctx: CliContext, args: string[]): Promise<number> => {
   const { values, positionals } = parseFlags(args, specOf('resume'))
   const v = values as Values
-  if (v.exec !== true) throw usage('The terminal UI comes in a later version; use --exec.')
+  if (v.exec !== true) {
+    // Without --exec this is the terminal UI: exec-only flags are a mistake, not something to ignore.
+    const tuiOnly = new Set(['prompt', 'exec', ...TUI_FLAGS.map((f) => f.name)])
+    const execOnly = (findCommand('resume')?.flags ?? []).find((f) => !tuiOnly.has(f.name) && v[f.name] !== undefined)
+    if (execOnly) throw usage(`--${execOnly.name} needs --exec (without it, resume opens the terminal UI).`)
+    return runResumeTui(ctx, args)
+  }
+  for (const f of TUI_FLAGS) if (v[f.name] !== undefined) throw usage(`--${f.name} applies to the terminal UI, not to --exec.`)
   const overrides = overridesFromFlags(v)
   const dash = positionals.filter((p) => p === '-')
   const refs = positionals.filter((p) => p !== '-')

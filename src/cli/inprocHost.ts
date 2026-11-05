@@ -12,7 +12,7 @@ import { bootOrgAIHost, type OrgAIHost } from '../main/host/bootstrap'
 import { currentHostInstanceId } from '../main/host/identity'
 import { HostOwnershipError, acquireHostOwnership, type HostOwnership } from '../main/host/ownership'
 import { HostSocketServer } from '../main/host/socketServer'
-import { installLogging } from '../main/log'
+import { installLogging, log } from '../main/log'
 import { orgaiCliRootsOf, setOrgaiCliRoots } from '../main/runtime/selfControlGate'
 import type { SecretCipher } from '../main/store/secrets'
 import { openUrl } from './openUrl'
@@ -31,6 +31,20 @@ export interface StartInprocHostOptions {
   logging?: boolean
   /** bootOrgAIHost's background probes and discovery. Default true; tests turn it off. */
   startBackground?: boolean
+  /**
+   * The terminal UI owns the screen: console output goes to main.log only, never to the terminal (installLogging's
+   * console mirror writes to stderr too). Default false.
+   */
+  quiet?: boolean
+}
+
+/** Console methods that write to main.log only (`--host inproc` under the terminal UI). */
+export function quietConsole(target: Pick<Console, 'log' | 'info' | 'warn' | 'error' | 'debug'> = console): void {
+  target.log = (...args: unknown[]): void => log.info(...args)
+  target.info = (...args: unknown[]): void => log.info(...args)
+  target.debug = (...args: unknown[]): void => log.debug(...args)
+  target.warn = (...args: unknown[]): void => log.warn(...args)
+  target.error = (...args: unknown[]): void => log.error(...args)
 }
 
 /** The handle plus the host and server themselves (tests, and commands that need the dispatcher directly). */
@@ -62,6 +76,7 @@ export async function startInprocHost(opts: StartInprocHostOptions): Promise<Inp
   const { userDataDir, dataDir } = opts
   const logsDir = join(userDataDir, 'logs')
   if (opts.logging !== false) installLogging({ userDataDir, logsDir, appVersion: CLI_VERSION, isPackaged: false })
+  if (opts.quiet) quietConsole()
   const hostInstanceId = currentHostInstanceId()
   const server = new HostSocketServer({ dataDir, hostKind: 'inproc', hostInstanceId, appVersion: CLI_VERSION, mock: opts.mock, ...(opts.log ? { log: opts.log } : {}) })
 

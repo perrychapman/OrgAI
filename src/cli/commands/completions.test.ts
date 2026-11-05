@@ -37,7 +37,17 @@ describe('orgai completions', () => {
 
   it('offers available commands only', () => {
     expect(completionCommands().map((c) => c.entry.name)).toEqual(COMMANDS.filter((x) => x.available).map((x) => x.name))
-    expect(completionScript('bash')).not.toMatch(/compgen -W "[^"]*\battach\b/)
+    expect(completionScript('bash')).not.toMatch(/compgen -W "[^"]*\bknowledge\b/)
+  })
+
+  it('offers the terminal UI commands and their flags', () => {
+    const names = completionCommands().map((c) => c.entry.name)
+    expect(names).toContain('tui')
+    expect(names).toContain('attach')
+    const bash = completionScript('bash')
+    expect(bash).toMatch(/compgen -W "[^"]*\btui\b[^"]*\battach\b/)
+    expect(bash).toMatch(/tui\) words="--run --inline --ax-screen-reader/)
+    expect(bash).toMatch(/attach\) words="--inline --ax-screen-reader/)
   })
 
   it('an unknown shell is exit 2', async () => {
