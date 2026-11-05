@@ -493,8 +493,25 @@ try {
   check(/^Permission: Run npm test/.test(opened), 'clicking a Needs you item opens that decision', opened)
   // Beside only in a frame of 1500 px or more.
   await setSize(2400, 1000)
+  await sleep(300)
   ts = await trayState()
-  check(!!ts.tray && !!ts.stage && ts.tray.l >= ts.stage.r - 0.5, 'the tray docks beside the stage in a frame of 1500 px or more', JSON.stringify(ts))
+  // The OS may clamp the window to the screen (a small CI display). Measure the frame we actually got; the docking rule
+  // needs a frame of 1500 x 560 or more, so with a smaller one the two docking checks are skipped, with the reason logged.
+  const got = await app.evaluate(({ BrowserWindow, screen }) => {
+    const w = BrowserWindow.getAllWindows()[0]
+    return { content: w.getContentSize(), workArea: screen.getPrimaryDisplay().workAreaSize }
+  })
+  const frameBox = await page.evaluate(() => {
+    const r = document.querySelector('.frame-grid')?.getBoundingClientRect()
+    return r ? { w: Math.round(r.width), h: Math.round(r.height) } : null
+  })
+  log('window after setSize(2400, 1000):', JSON.stringify({ ...got, frame: frameBox }))
+  const dockFits = !!frameBox && frameBox.w >= 1500 && frameBox.h >= 560
+  if (!dockFits) {
+    log(`SKIP tray docking checks at 2400: the window got a ${frameBox ? frameBox.w + 'x' + frameBox.h : 'unknown'} frame (content ${got.content.join('x')}, screen work area ${got.workArea.width}x${got.workArea.height}); docking needs 1500x560`)
+  } else {
+    check(!!ts.tray && !!ts.stage && ts.tray.l >= ts.stage.r - 0.5, 'the tray docks beside the stage in a frame of 1500 px or more', JSON.stringify(ts))
+  }
   await shot('three-decisions-2400')
   // Docked tray: the canvas pane meets the tray (no blank strip between them).
   const dockGap = await page.evaluate(() => {
@@ -502,7 +519,7 @@ try {
     const tray = document.querySelector('section.frame-tray')?.getBoundingClientRect()
     return pane && tray ? Math.round(tray.left - pane.right) : null
   })
-  check(dockGap !== null && Math.abs(dockGap) <= 2, 'with an open decision at 2400 the canvas pane meets the docked tray', String(dockGap))
+  if (dockFits) check(dockGap !== null && Math.abs(dockGap) <= 2, 'with an open decision at 2400 the canvas pane meets the docked tray', String(dockGap))
   await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), prev3)
   await sleep(400)
   await endSession(page)
