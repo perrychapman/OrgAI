@@ -10,6 +10,9 @@ import {
   cardTitle,
   changeHasHidden,
   elevatedLine,
+  PROBLEM_NEXT,
+  READ_FIRST_COMPACT_TEXT,
+  READ_FIRST_TEXT,
   reachLine,
   secretsLine,
   toolsAddedLine
@@ -122,7 +125,41 @@ export default function TeamFilesCard({
     const id = window.requestAnimationFrame(() => ref.current?.focus())
     return () => window.cancelAnimationFrame(id)
   }, [focusSignal, compact])
-  const blocked = approveBlockedReason(status)
+  // Nobody approves what they have not been shown: Approve waits until the change list has been scrolled to its end
+  // (or fits without scrolling). A body hidden behind Details in a compact frame has not been shown at all.
+  const bodyRef = useRef<HTMLDivElement>(null)
+  // `scrolls` is live (null: not measured yet or hidden; a layout that settles later can turn it on); `reachedEnd` is kept
+  // once the reader got to the bottom of this digest's list.
+  const [reachedEnd, setReachedEnd] = useState(false)
+  const [scrolls, setScrolls] = useState<boolean | null>(null)
+  const reviewed = scrolls === false || reachedEnd
+  const digest = status.digest
+  useEffect(() => {
+    setReachedEnd(false)
+  }, [digest, status.projectId])
+  useEffect(() => {
+    const el = bodyRef.current
+    if (!el) return undefined
+    const measure = (): void => {
+      if (el.clientHeight === 0) {
+        setScrolls(null)
+        return
+      }
+      const over = el.scrollHeight - el.clientHeight > 4
+      setScrolls(over)
+      if (over && el.scrollHeight - el.scrollTop - el.clientHeight <= 4) setReachedEnd(true)
+    }
+    measure()
+    el.addEventListener('scroll', measure, { passive: true })
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    for (const child of Array.from(el.children)) ro.observe(child)
+    return () => {
+      el.removeEventListener('scroll', measure)
+      ro.disconnect()
+    }
+  }, [digest, expanded, compact])
+  const blocked = approveBlockedReason(status) ?? (reviewed ? null : compact && !expanded ? READ_FIRST_COMPACT_TEXT : READ_FIRST_TEXT)
   const title = cardTitle(status)
   const omitted = status.omittedChanges ?? 0
   useAnnounceOnce(`team-files:${status.projectId}`, `${title}. They need your approval in the tray below the chart.`)
@@ -141,6 +178,10 @@ export default function TeamFilesCard({
         <div className="decision-meta">
           <Badge tone="accent">Team files</Badge>
           {status.firstSeen && <Badge tone="info">First time seen here</Badge>}
+          {/* Not a decision: a way to ask the Team assistant about these files, kept in the head, away from Approve and Reject. */}
+          <button type="button" className="link-btn team-files-assistant-link" data-testid="team-files-assistant-toggle" aria-expanded={assistantOpen} onClick={onToggleAssistant}>
+            {assistantOpen ? 'Hide Team assistant' : 'Ask the Team assistant'}
+          </button>
         </div>
         <div className="decision-titlebar">
           <span className="decision-title">{title}</span>
@@ -151,10 +192,19 @@ export default function TeamFilesCard({
         </div>
         <p className="decision-summary">{cardLead(status)}</p>
       </header>
-      <div className="decision-body" id={bodyId}>
+      <div
+        className="decision-body"
+        id={bodyId}
+        ref={bodyRef}
+        data-testid="team-files-body"
+        // A scrolling region must be reachable by keyboard so the end of the list can be read before Approve.
+        tabIndex={scrolls ? 0 : undefined}
+        role={scrolls ? 'region' : undefined}
+        aria-label={scrolls ? 'Changes to review' : undefined}
+      >
         {problem && (
           <p className="team-files-problem" data-testid="team-files-card-problem">
-            <Icon icon={TriangleAlert} size="sm" /> {showHidden(problem.file)}: {showHidden(problem.message)}
+            <Icon icon={TriangleAlert} size="sm" /> {showHidden(problem.file)}: {showHidden(problem.message)} {PROBLEM_NEXT}
           </p>
         )}
         <ul className="team-files-changes" aria-label="Changes in the team files">
@@ -192,11 +242,6 @@ export default function TeamFilesCard({
         >
           Approve
         </Button>
-        <div className="decision-secondary">
-          <Button variant="ghost" testId="team-files-assistant-toggle" ariaDescribedBy={undefined} onClick={onToggleAssistant}>
-            {assistantOpen ? 'Hide Team assistant' : 'Team assistant'}
-          </Button>
-        </div>
         <div className="decision-deny">
           <Button testId="team-files-reject" loading={busy === 'reject'} disabled={busy === 'approve'} inert={!status.digest} onClick={onReject}>
             Reject

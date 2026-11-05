@@ -77,6 +77,18 @@ const onReal = () =>
     return !!a && a !== document.body && a !== document.documentElement ? `${a.tagName.toLowerCase()}${a.getAttribute('data-testid') ? '[' + a.getAttribute('data-testid') + ']' : ''}` : ''
   })
 const focusLands = () => page.waitForFunction(() => document.activeElement && document.activeElement !== document.body, null, { timeout: 4000, polling: 100 }).then(() => true, () => false)
+/** Scroll the card's change list to its end (what a reader does), so Approve unlocks. Returns whether the end was reachable. */
+const readToEnd = async () => {
+  const ok = await page.evaluate(() => {
+    const el = document.querySelector('[data-testid=team-files-body]')
+    if (!el) return false
+    el.scrollTop = el.scrollHeight
+    return el.scrollHeight - el.scrollTop - el.clientHeight <= 4
+  })
+  await sleep(150)
+  return ok
+}
+const approveInert = () => page.locator('[data-testid=team-files-approve]').getAttribute('aria-disabled').then((v) => v === 'true')
 const gotoTeam = async () => {
   await page.locator('[data-testid=tab-team]').click()
   await line().waitFor({ timeout: 10_000 })
@@ -122,6 +134,8 @@ try {
   await applied.waitFor({ timeout: 10_000 }).catch(() => {})
   const appliedText = (await applied.innerText().catch(() => '')).replace(/\s+/g, ' ')
   check(/1 change applied/i.test(appliedText), 'applied notice appears', appliedText)
+  check((await line().locator('[data-testid=team-files-applied]').count()) === 1, 'the applied notice shares the status line (no stacked banner)')
+  check((await page.locator('.import-notices').evaluate((el) => el.getBoundingClientRect().height).catch(() => 0)) < 4, 'no banner is stacked above the chart for it')
   check(/Undo rewrites .*agents\/dev\.md.*uncommitted/i.test(await page.locator('[data-testid=team-files-undo-files]').innerText().catch(() => '')), 'Undo says which file it rewrites and that it shows as uncommitted')
   check((await findProject(page, NAME)).roles.find((r) => r.slug === 'dev').prompt.includes('Write tests first'), 'the new prompt is in the chart without a card')
   await shot('applied')
@@ -175,6 +189,8 @@ try {
   await refresh()
 
   await card.waitFor({ timeout: 10_000 })
+  check(await readToEnd(), 'the change list can be scrolled to its end')
+  check(!(await approveInert()), 'Approve unlocks once the list has been read to its end')
   await page.locator('[data-testid=team-files-approve]').click()
   check(await waitLine(/Approved\. The team in use/), 'line leaves the pending state after Approve', await lineText())
   check((await findProject(page, NAME)).roles.find((r) => r.slug === 'dev').tools.includes('Bash'), 'Approve put Bash on the chart')
@@ -188,15 +204,26 @@ try {
   fs.writeFileSync(orgai('agents/dev.md'), devFile(['Read', 'Grep', 'Bash', 'Write'], DEV_PROMPT + ' Be brief.'))
   await refresh()
   await waitLine(/need.* your approval/i)
-  await page.locator('[data-testid=team-files-review]').click()
-  await page.locator('[data-testid=team-files-card]').waitFor()
+  // A message belongs to the state it came from: "Approved." from the earlier decision is gone beside a new change.
+  check(!/Approved\.|Committed/.test(await lineText()), 'no stale Approved / Committed message beside a new pending change', await lineText())
+  // Live shows a quiet pointer to the Team card while changes wait.
+  await page.locator('[data-testid=tab-live]').click()
+  check(await page.locator('[data-testid=team-files-pointer]').first().waitFor({ timeout: 8000 }).then(() => true, () => false), 'Live shows a pointer while team changes wait')
+  await page.locator('[data-testid=team-files-pointer] button').first().click()
+  check(await page.locator('[data-testid=team-files-card]').waitFor({ timeout: 8000 }).then(() => true, () => false), 'the Live pointer opens the Team card')
   await page.locator('[data-testid=team-files-reject]').click()
   check(await waitLine(/differ from the team in use/i), 'Reject leaves the files differing from the team in use', await lineText())
+  {
+    const t = await lineText()
+    const said = (t.match(/You rejected them/g) ?? []).length
+    check(said === 1, 'the rejected state says its sentence once', t)
+  }
   check(!(await findProject(page, NAME)).roles.find((r) => r.slug === 'dev').tools.includes('Write'), 'Reject keeps the chart as it was')
   check(await focusLands(), 'focus is on a real element after Reject', await onReal())
   git(repo, ['checkout', '--', '.orgai'])
   await refresh()
   check(await waitLine(/in sync/i), 'restoring the files clears the rejected state', await lineText())
+  check(!/Reject|rejected/i.test(await lineText()), 'no rejected wording is left in the line once the state is in sync', await lineText())
 
   // A new MCP server in mcp.json: the target is shown in full.
   writeFile(repo, '.orgai/mcp.json', `${JSON.stringify({ format: 'orgai.team/1', servers: [{ name: 'docs', transport: 'http', url: SERVER_URL, enabled: true }] }, null, 2)}\n`)
@@ -209,6 +236,8 @@ try {
       const tag = `${w}x${h} ${theme}`
       await setSize(w, h)
       await setTheme(theme)
+      // Leave and come back so the card mounts unread each time.
+      await page.locator('[data-testid=tab-live]').click()
       await gotoTeam()
       await page.locator('[data-testid=team-files-review]').waitFor({ timeout: 10_000 })
       check(await noPageScroll(), `no page scroll with the Review line (${tag})`)
@@ -234,6 +263,23 @@ try {
       check(((await target.first().innerText().catch(() => '')) || '').includes(SERVER_URL), `card shows the server address in full (${tag})`)
       const approveBox = await page.locator('[data-testid=team-files-approve]').boundingBox()
       check(!!approveBox && approveBox.y + approveBox.height <= h + 1 && approveBox.y >= 0, `Approve is inside the window (${tag})`, JSON.stringify(approveBox))
+      // Geometry: the chart keeps a usable height, the change list is what scrolls, and Approve waits for its end.
+      const g = await page.evaluate(() => {
+        const r = (s) => document.querySelector(s)?.getBoundingClientRect()
+        const body = document.querySelector('[data-testid=team-files-body]')
+        const items = document.querySelectorAll('[data-testid=team-files-change]')
+        const last = items[items.length - 1]?.getBoundingClientRect()
+        return { stage: r('.frame-stage')?.height ?? 0, frame: r('.frame-grid')?.height ?? 0, body: body?.clientHeight ?? 0, scrolls: !!body && body.scrollHeight - body.clientHeight > 4, lastBottom: last?.bottom ?? 0, bodyTop: body?.getBoundingClientRect().top ?? 0 }
+      })
+      check(g.stage >= 150, `the chart keeps a usable height with the card open (${tag})`, JSON.stringify(g))
+      check(g.body >= 60 || !g.scrolls, `the change list has room to be read (${tag})`, JSON.stringify(g))
+      if (g.scrolls) {
+        check(await approveInert(), `Approve waits while the list is unread (${tag})`)
+        check(await readToEnd(), `the whole change list is reachable by scrolling (${tag})`, JSON.stringify(g))
+        check(!(await approveInert()), `Approve unlocks at the end of the list (${tag})`)
+      } else {
+        check(!(await approveInert()), `a list that fits needs no scrolling before Approve (${tag})`)
+      }
       let seen = false
       for (let i = 0; i < 40 && !seen; i++) {
         await page.keyboard.press('Tab')
@@ -249,6 +295,7 @@ try {
   await setSize(1600, 1000)
   await setTheme('dark')
   const approve = page.locator('[data-testid=team-files-approve]')
+  await readToEnd()
   await approve.focus()
   await page.keyboard.press('Enter')
   check(await waitLine(/Approved\. The team in use/), 'keyboard Approve leaves the pending state', await lineText())

@@ -1,4 +1,4 @@
-import type { ReactElement, Ref } from 'react'
+import type { ReactElement, ReactNode, Ref } from 'react'
 import { TriangleAlert } from 'lucide-react'
 import type { TeamFilesStatus } from '@shared/types'
 import { teamFilesLine } from '../../lib/teamFiles'
@@ -18,8 +18,11 @@ export default function TeamFilesLine({
   lineRef,
   onCommit,
   onEnable,
-  onReview
+  onReview,
+  children
 }: {
+  /** The applied / undone notice: it shares this row instead of stacking a banner above the chart. */
+  children?: ReactNode
   status: TeamFilesStatus | undefined
   busy: TeamFilesBusy
   message: string | null
@@ -57,6 +60,7 @@ export default function TeamFilesLine({
           {line.actionLabel ?? 'Open'}
         </Button>
       )}
+      {children}
       {warnings.length > 0 && (
         <ul className="team-files-warnings" data-testid="team-files-warnings" aria-label="Team files warnings">
           {warnings.slice(0, 3).map((w, i) => (

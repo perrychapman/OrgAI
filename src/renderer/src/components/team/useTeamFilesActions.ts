@@ -2,20 +2,26 @@ import { useCallback, useRef, useState } from 'react'
 import type { TeamFilesActionResult, TeamFilesStatus } from '@shared/types'
 import { useAppStore } from '../../store/useAppStore'
 import { cleanIpcError } from '../../lib/ipcError'
-import { TEAM_FILES_STALE_TEXT, isStaleDecision, undoneLine } from '../../lib/teamFiles'
+import { TEAM_FILES_STALE_TEXT, isStaleDecision, statusKey } from '../../lib/teamFiles'
 
 export type TeamFilesBusy = 'commit' | 'enable' | 'approve' | 'reject' | 'undo' | null
 
+interface Keyed {
+  text: string
+  /** `statusKey` of the status the action left behind: the text is shown only while the status still has this key. */
+  key: string
+}
+
 /**
  * The Team tab's actions on a project's team files. Every result goes to the store (status and, for approve, reject,
- * undo and enable, the saved project). `message` is the last outcome in words (the status line says it, polite);
- * `error` is a failure the card shows next to its buttons.
+ * undo and enable, the saved project). `message` is the last outcome in words (the status line says it, polite) and
+ * `error` is a failure the card shows next to its buttons; both belong to the status they came from and disappear when
+ * it changes (new files, another state), so they never sit beside a state they do not describe.
  */
 export function useTeamFilesActions(projectId: string): {
   busy: TeamFilesBusy
   message: string | null
   error: string | null
-  clearMessage: () => void
   commit: () => Promise<void>
   enable: () => Promise<void>
   approve: (digest: string) => Promise<boolean>
@@ -23,9 +29,13 @@ export function useTeamFilesActions(projectId: string): {
   undo: () => Promise<void>
 } {
   const [busy, setBusy] = useState<TeamFilesBusy>(null)
-  const [message, setMessage] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [msg, setMsg] = useState<Keyed | null>(null)
+  const [err, setErr] = useState<Keyed | null>(null)
+  const status = useAppStore((s) => s.teamFilesByProject[projectId])
   const inFlight = useRef(false)
+  const nowKey = useCallback((): string => statusKey(useAppStore.getState().teamFilesByProject[projectId]), [projectId])
+  const say = useCallback((text: string | null): void => setMsg(text ? { text, key: nowKey() } : null), [nowKey])
+  const fail = useCallback((text: string): void => setErr({ text, key: nowKey() }), [nowKey])
 
   const takeResult = useCallback((r: TeamFilesActionResult): TeamFilesStatus => {
     const st = useAppStore.getState()
@@ -38,7 +48,7 @@ export function useTeamFilesActions(projectId: string): {
     if (inFlight.current) return false
     inFlight.current = true
     setBusy(kind)
-    setError(null)
+    setErr(null)
     try {
       return (await fn()) !== false
     } finally {
@@ -52,23 +62,23 @@ export function useTeamFilesActions(projectId: string): {
       try {
         const r = await window.orgai.teamFiles.commit({ projectId })
         useAppStore.getState().setTeamFilesStatus(r.status)
-        setMessage(r.ok ? r.message || 'Committed the team files.' : r.message || 'The team files could not be committed.')
+        say(r.ok ? r.message || 'Committed the team files.' : r.message || 'The team files could not be committed.')
       } catch (e) {
-        setMessage(cleanIpcError(e, 'The team files could not be committed.'))
+        say(cleanIpcError(e, 'The team files could not be committed.'))
       }
     })
-  }, [projectId, run])
+  }, [projectId, run, say])
 
   const enable = useCallback(async (): Promise<void> => {
     await run('enable', async () => {
       try {
         takeResult(await window.orgai.teamFiles.enable({ projectId }))
-        setMessage('Team files are on again. They were written from the current team.')
+        say('Team files are on again. They were written from the current team.')
       } catch (e) {
-        setMessage(cleanIpcError(e, 'Team files could not be turned on.'))
+        say(cleanIpcError(e, 'Team files could not be turned on.'))
       }
     })
-  }, [projectId, run, takeResult])
+  }, [projectId, run, say, takeResult])
 
   const decide = useCallback(
     async (kind: 'approve' | 'reject', digest: string): Promise<boolean> =>
@@ -76,25 +86,23 @@ export function useTeamFilesActions(projectId: string): {
         try {
           const call = kind === 'approve' ? window.orgai.teamFiles.approve : window.orgai.teamFiles.reject
           takeResult(await call({ projectId, digest }))
-          setMessage(
-            kind === 'approve'
-              ? 'Approved. The team in use now matches the files.'
-              : 'Rejected. Runs keep the last approved team. OrgAI asks again when the files change.'
-          )
+          // A rejection is the status line's own sentence ("differ from the team in use ... You rejected them"): saying it
+          // twice made screen readers read it twice.
+          say(kind === 'approve' ? 'Approved. The team in use now matches the files.' : null)
           return true
         } catch (e) {
           if (isStaleDecision(e)) {
             await useAppStore.getState().refreshTeamFiles(projectId)
-            setError(TEAM_FILES_STALE_TEXT)
+            fail(TEAM_FILES_STALE_TEXT)
             // The card may be gone after the re-fetch; the polite status line says it too.
-            setMessage(TEAM_FILES_STALE_TEXT)
+            say(TEAM_FILES_STALE_TEXT)
           } else {
-            setError(cleanIpcError(e, kind === 'approve' ? 'The changes could not be approved.' : 'The changes could not be rejected.'))
+            fail(cleanIpcError(e, kind === 'approve' ? 'The changes could not be approved.' : 'The changes could not be rejected.'))
           }
           return false
         }
       }),
-    [projectId, run, takeResult]
+    [projectId, run, say, fail, takeResult]
   )
 
   const approve = useCallback((digest: string) => decide('approve', digest), [decide])
@@ -103,13 +111,24 @@ export function useTeamFilesActions(projectId: string): {
   const undo = useCallback(async (): Promise<void> => {
     await run('undo', async () => {
       try {
-        const status = takeResult(await window.orgai.teamFiles.undo({ projectId }))
-        setMessage(undoneLine(status.lastUndo?.files ?? []))
+        // The "Undone. Rewrote ..." sentence is the notice that replaces the Undo one; no second message.
+        takeResult(await window.orgai.teamFiles.undo({ projectId }))
+        say(null)
       } catch (e) {
-        setMessage(cleanIpcError(e, 'Undo did not work.'))
+        say(cleanIpcError(e, 'Undo did not work.'))
       }
     })
-  }, [projectId, run, takeResult])
+  }, [projectId, run, say, takeResult])
 
-  return { busy, message, error, clearMessage: () => setMessage(null), commit, enable, approve, reject, undo }
+  const key = statusKey(status)
+  return {
+    busy,
+    message: msg && msg.key === key ? msg.text : null,
+    error: err && err.key === key ? err.text : null,
+    commit,
+    enable,
+    approve,
+    reject,
+    undo
+  }
 }

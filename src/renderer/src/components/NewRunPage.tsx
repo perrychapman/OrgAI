@@ -10,6 +10,7 @@ import { isRunLive, newRunDraftKey, useAppStore, useRunIndexes } from '../store/
 import { promptLine, runTitle } from '../lib/runLabels'
 import { Button } from './ui/Button'
 import { EmptyState } from './ui/EmptyState'
+import TeamFilesPointer from './team/TeamFilesPointer'
 import Composer from './Composer'
 import McpAuthNotice from './mcp/McpAuthNotice'
 
@@ -87,6 +88,7 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
   return (
     <div className="new-run">
       <div className="new-run-inner">
+        <TeamFilesPointer projectId={project.id} />
         {needsSetup ? (
           <EmptyState
             title={project.setup?.state === 'pending' ? 'Set this project up with the Architect' : 'Setup is not finished'}
