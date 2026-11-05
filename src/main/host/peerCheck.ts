@@ -27,8 +27,13 @@
  *   both ends of the socket) passes; a claim of the host's pid with no mapped peer (no socket fd, lsof failed or found
  *   none) is 'unavailable', never 'ok', and the mapped peers are walked as for any claim, so an agent's shell claiming
  *   the host's pid is 'descendant'. Linux and other platforms keep the shortcut: a claimed pid equal to the host's is
- *   'ok' (only strict descendants count), since nothing there maps the socket to its peer. The inproc host's own client
- *   is recognised by its owner proof (RpcHelloParams.ownerProof), never by pid.
+ *   'ok' (only strict descendants count), since nothing there maps the socket to its peer.
+ * - 'unavailable' is ACCEPTED by socketServer.ts (logged "peer ancestry check unavailable; allowed"). So the macOS fix
+ *   above holds only when lsof maps the peer: a host-pid claim whose mapping fails (lsof error, timeout, no socket fd)
+ *   is accepted exactly as before, with only the log line changed. Recognising the in-process host's own client by an
+ *   owner proof (`RpcHelloParams.ownerProof`) arrives with PR #18 (commit 5a55c68), which is not on this branch; the
+ *   two are reconciled at merge (then a host-pid claim without a mapped peer could be refused unless it carries the
+ *   proof).
  */
 import { execFile } from 'node:child_process'
 

@@ -52,8 +52,10 @@
  * Wave 7 (docs/design/cli-standalone.md 8.4; text checks, a speed bump and not a boundary, 5.8):
  * - Package runners (npx, pnpx, bunx, `npm exec|x`, `pnpm dlx|exec`, `yarn dlx|exec`, `bun x`, options first allowed)
  *   with `orgai` or `@orgai/cli` in any word (versions, `-p` / `--package` forms, `npm:` aliases, registry URLs; the
- *   scoped name is matched on the raw word, SCOPED_CLI), and their whitespace words (`npx -c 'orgai status'`) as command
- *   texts. A `node_modules/@orgai/cli/...` path run as a program, script or interpreter argument counts too.
+ *   scoped name is matched on the raw word, SCOPED_CLI), and their `-c` / `--call` value or a first positional word
+ *   holding whitespace (`npx -c 'orgai status'`) as command texts (runnerCommandTexts; the package's own arguments,
+ *   `npx vitest -t 'a b'`, are not). A `node_modules/@orgai/cli/...` path run as a program, script or interpreter
+ *   argument counts too.
  * - Files directly in the data folder whose base name starts with `vault.json` or `secrets.json` (the .tmp, .reset-*,
  *   .corrupt-* siblings), lexical and canonical, for every file tool and shell word (referenceDirectories.ts
  *   PrefixProtection; the data folder is found among the protected paths, vaultPrefixProtections), and globs in the data
@@ -62,17 +64,25 @@
  *   brace expansions expanded, `$XDG_CONFIG_HOME` / `%APPDATA%` / `$env:APPDATA` / LOCALAPPDATA read as their usual
  *   place under the home folder, escaped spaces (`Application\ Support`) kept in the word, and a third with quotes,
  *   parentheses and commas as spaces (paths inside inline code).
- * - ORGAI_VAULT_* expansions, assignments, exports and environment reads (VAULT_ENV_REFERENCES, namesVaultEnv); a plain
- *   mention (`grep -rn ORGAI_VAULT_KEY_FILE src`) passes.
- * - Key custodian tools: `security` with a keychain item subcommand (KEYCHAIN_SUBCOMMANDS), `-i`, a redirect or
- *   here-string, no subcommand, a pipe into it, or the `OrgAI Vault` name; any `secret-tool` call; busctl / gdbus /
- *   dbus-send / qdbus naming the Secret Service; PowerShell text naming ProtectedData or Unprotect (the PowerShell tool,
- *   `pwsh -c`, a pipe or here-string into pwsh, and `-EncodedCommand` texts, which are decoded and scanned like any
- *   command); and code run by an interpreter in the same text that names any of these (CUSTODIAN_CODE).
+ * - Any word referencing ORGAI_VAULT_* (VAULT_ENV_WORD, spec 8.4 as written; review round 1): expansions,
+ *   assignments, environment dumps filtered on it (`printenv | grep ORGAI_VAULT`, `Get-ChildItem Env: | ? Name -like
+ *   'ORGAI_VAULT*'`) and plain mentions (`grep -rn ORGAI_VAULT_KEY_FILE src`; the Grep tool is the way to search for
+ *   it), with quotes, backslashes, backticks and brackets removed first, plus a shortened prefix that can only stand for
+ *   it (`ORGAI_V*`). A data-only here-document body is left out as for every rule (stripDataHeredocs).
+ * - Key custodian tools: `security` with a keychain item subcommand (KEYCHAIN_SUBCOMMANDS) after its own options, `-i`,
+ *   a redirect or here-string, no subcommand, a pipe into it, or the `OrgAI Vault` name; any `secret-tool` call; busctl
+ *   / gdbus / dbus-send / qdbus naming the Secret Service; PowerShell text naming ProtectedData or Unprotect (the
+ *   PowerShell tool, `pwsh -c`, a pipe or here-string into pwsh, and `-EncodedCommand` texts, which are decoded and
+ *   scanned like any command); and code a code runner in the text runs (its own words, a here-document, a pipe into
+ *   one that reads stdin) that names any of these (CUSTODIAN_CODE, custodianCodeRuns). Program, wrapper and subcommand
+ *   names are read through backslash escapes and globs (wordMayBe: `sec\urity`, `/usr/bin/secur*y`, `np?`, `npm
+ *   ex?c`), and `arch -arch <name>` / `xcrun --sdk <x>` are unwrapped.
  * Honest limits as above, plus: the data folder named as a whole (`cp -r <data> x`, `grep -r k <data>`, `find <data>
  * -exec cat {} +`) is a parent and passes, as before; a moved APPDATA / XDG folder is not followed; a script file or a
  * program that calls the keychain, the Secret Service or DPAPI itself (Python's keyring from a .py file, a compiled
- * helper) is not seen.
+ * helper) is not seen; a bare environment dump (`env`, `printenv`, `env | grep ORGAI_`) is not a reference to
+ * ORGAI_VAULT_* and passes (the 6.3 environment scrub is the defence there); an awk or other program text that names a
+ * custodian (`awk '/secret-tool/'`) is read as code and denied.
  */
 import { join, posix, resolve, win32 } from 'node:path'
 import { packagedCliRoots } from '../host/packagedLayout'
@@ -245,7 +255,7 @@ const ELECTRON_AS_NODE_PS = [/\$env:ELECTRON_RUN_AS_NODE\s*=/i, /\bset-item\b[^;
 const ELECTRON_AS_NODE_ASSIGN = /^ELECTRON_RUN_AS_NODE=/i
 /** Words that may come before an assignment in a segment (env, export, cmd `set`, declare...). */
 const ASSIGN_LEADERS: ReadonlySet<string> = new Set(['env', 'export', 'set', 'declare', 'typeset', 'local', 'readonly', 'sudo', 'command', 'exec', 'nohup'])
-const PACKAGE_RUNNERS: ReadonlySet<string> = new Set(['npx', 'npm', 'pnpm', 'pnpx', 'yarn', 'bun', 'bunx'])
+const PACKAGE_RUNNERS: readonly string[] = ['npx', 'npm', 'pnpm', 'pnpx', 'yarn', 'bun', 'bunx']
 const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/
 const MAX_NEST = 3
 const MAX_SEGMENTS = 2000
@@ -257,83 +267,192 @@ const MAX_SEGMENTS = 2000
  */
 const SCOPED_CLI = /@orgai(?:[\\/]|%2f)cli(?=$|[@\\/?#])/i
 /** Package runners that need no subcommand, and the subcommands that make npm / pnpm / yarn / bun one. */
-const RUNNER_PROGRAMS: ReadonlySet<string> = new Set(['npx', 'pnpx', 'bunx'])
-const RUNNER_SUBCOMMANDS: Readonly<Record<string, ReadonlySet<string>>> = {
-  npm: new Set(['exec', 'x']),
-  pnpm: new Set(['dlx', 'exec']),
-  yarn: new Set(['dlx', 'exec']),
-  bun: new Set(['x'])
+const RUNNER_PROGRAMS: readonly string[] = ['npx', 'pnpx', 'bunx']
+const RUNNER_SUBCOMMANDS: readonly (readonly [string, readonly string[]])[] = [
+  ['npm', ['exec', 'x']],
+  ['pnpm', ['dlx', 'exec']],
+  ['yarn', ['dlx', 'exec']],
+  ['bun', ['x']]
+]
+const RUNNER_SUB_NAMES: readonly string[] = ['exec', 'x', 'dlx']
+
+/** Compiled glob names (wordMayBe), at most 256 kept. */
+const globCache = new Map<string, RegExp>()
+
+function cachedGlobRegex(glob: string): RegExp {
+  let re = globCache.get(glob)
+  if (!re) {
+    if (globCache.size >= 256) globCache.clear()
+    re = globRegex(glob)
+    globCache.set(glob, re)
+  }
+  return re
 }
 
-/** A segment that runs a package: npx, pnpx, bunx, `npm exec|x`, `pnpm dlx|exec`, `yarn dlx|exec`, `bun x` (options may come first). */
-function isPackageRunner(words: readonly string[]): boolean {
-  // Walked from the end with the words seen so far, so a long segment costs one pass.
-  const later = new Set<string>()
-  for (let k = words.length - 1; k >= 0; k--) {
-    const n = stripExe(binName(words[k]))
-    if (RUNNER_PROGRAMS.has(n)) return true
-    if (Object.hasOwn(RUNNER_SUBCOMMANDS, n)) {
-      for (const sub of RUNNER_SUBCOMMANDS[n]) if (later.has(sub)) return true
-    }
-    later.add(words[k].toLowerCase())
+/** The base names a word may stand for: each spelling (as written, backslash escapes removed), lowercase, `.exe` dropped. */
+function wordNames(word: string): readonly string[] {
+  let out = wordNamesCache.get(word)
+  if (out) return out
+  const names: string[] = []
+  for (const v of spellings(word)) {
+    const n = stripExe(binName(v))
+    if (!names.includes(n)) names.push(n)
+  }
+  if (wordNamesCache.size >= 4096) wordNamesCache.clear()
+  wordNamesCache.set(word, (out = names))
+  return out
+}
+
+/** wordNames results (a long segment asks for one word's names many times), at most 4,096 kept. */
+const wordNamesCache = new Map<string, readonly string[]>()
+
+/** The literal letters a glob keeps (bracket expressions and wildcards dropped); when it matches a name they are that name's, in order. */
+function globLiteralLength(glob: string): number {
+  return glob.replace(/\[[^\]]*\]/g, '').replace(/[*?]/g, '').length
+}
+
+/**
+ * Review round 1 (Wave 7): a program or subcommand word that may be one of `names` the way the shell reads it: any
+ * spelling (`sec\urity`, `secret\-tool`, `np\x`), or a glob that matches the name and keeps at least three of its
+ * letters, two of a three-letter name (`secur?ty`, `/usr/bin/secur*y`, `ex?c`, `np?`; a bare `*` or `?` is not read
+ * as a name).
+ */
+function wordMayBe(word: string, names: readonly string[]): boolean {
+  for (const n of wordNames(word)) {
+    if (names.includes(n)) return true
+    if (!GLOB_CHARS.test(n)) continue
+    const re = cachedGlobRegex(n)
+    const kept = globLiteralLength(n)
+    for (const name of names) if (re.test(name) && kept >= Math.min(3, Math.max(1, name.length - 1))) return true
   }
   return false
 }
 
+/** Where the words after a package runner start (after `npm [options] exec`), or -1 when words[k] is not one. */
+function runnerArgsStart(words: readonly string[], k: number): number {
+  if (wordMayBe(words[k], RUNNER_PROGRAMS)) return k + 1
+  for (const [runner, subs] of RUNNER_SUBCOMMANDS) {
+    if (!wordMayBe(words[k], [runner])) continue
+    let j = k + 1
+    // Options may come first (`pnpm --package=@orgai/cli dlx cli`).
+    for (let guard = 0; j < words.length && words[j].startsWith('-') && guard < 64; guard++) {
+      if (/^(?:-p|--package)$/.test(words[j])) j++
+      j++
+    }
+    if (j < words.length && wordMayBe(words[j], subs)) return j + 1
+  }
+  return -1
+}
+
+/** A segment that runs a package: npx, pnpx, bunx, `npm exec|x`, `pnpm dlx|exec`, `yarn dlx|exec`, `bun x` (options may come first). */
+function isPackageRunner(words: readonly string[]): boolean {
+  // Walked from the end with the subcommands seen so far, so a long segment costs one pass.
+  const later = new Set<string>()
+  for (let k = words.length - 1; k >= 0; k--) {
+    const w = words[k]
+    if (wordMayBe(w, RUNNER_PROGRAMS)) return true
+    for (const [runner, subs] of RUNNER_SUBCOMMANDS) {
+      if (subs.some((s) => later.has(s)) && wordMayBe(w, [runner])) return true
+    }
+    for (const sub of RUNNER_SUB_NAMES) if (!later.has(sub) && wordMayBe(w, [sub])) later.add(sub)
+  }
+  return false
+}
+
+/**
+ * The command texts a package runner runs (review round 1): the value of `-c` / `--call` (`npx -c 'orgai status'`) and
+ * its first positional word when that holds whitespace (fail closed). Words after the package (`npx vitest -t 'a b'`)
+ * are the package's own arguments, not command texts.
+ */
+function runnerCommandTexts(words: readonly string[]): string[] {
+  const out: string[] = []
+  for (let k = 0; k < words.length; k++) {
+    const start = runnerArgsStart(words, k)
+    if (start < 0) continue
+    for (let j = start; j < words.length; j++) {
+      const w = words[j]
+      if (w === '-c' || w === '--call') {
+        if (words[j + 1] !== undefined) out.push(words[j + 1])
+        j++
+        continue
+      }
+      const call = w.startsWith('--call=') ? w.slice('--call='.length) : /^-c[\s\S]/.test(w) ? w.slice(2) : null
+      if (call !== null) {
+        out.push(call)
+        continue
+      }
+      if (/^(?:-p|--package)$/.test(w)) {
+        j++
+        continue
+      }
+      if (w === '--') {
+        if (words[j + 1] !== undefined) out.push(words[j + 1])
+        break
+      }
+      if (w.startsWith('-')) continue
+      out.push(w)
+      break
+    }
+  }
+  return out.filter((t) => /\s/.test(t))
+}
+
 /** `security` subcommands that read, write, delete or export keychain items (and the vault's key with them). */
-const KEYCHAIN_SUBCOMMANDS: ReadonlySet<string> = new Set([
+const KEYCHAIN_SUBCOMMANDS: readonly string[] = [
   'find-generic-password', 'find-internet-password', 'add-generic-password', 'add-internet-password',
   'delete-generic-password', 'delete-internet-password', 'set-generic-password-partition-list',
   'set-internet-password-partition-list', 'dump-keychain', 'export'
-])
+]
 /** The keychain service name `OrgAI Vault` (vaultTypes KEYCHAIN_SERVICE) in any case and spacing, quotes or escapes between. */
 const VAULT_LABEL = /orgai(?:[\s"'\\]|\\x20|\\040|\\u0020)*vault/i
-/** secret-tool subcommands (any secret-tool call is denied at the program position; these also anywhere). */
-const SECRET_TOOL_SUBCOMMANDS: ReadonlySet<string> = new Set(['lookup', 'store', 'search', 'clear', 'lock', 'unlock'])
+/** secret-tool subcommands (any secret-tool call is denied at the program position; elsewhere one must follow it). */
+const SECRET_TOOL_SUBCOMMANDS: readonly string[] = ['lookup', 'store', 'search', 'clear', 'lock', 'unlock']
 /** D-Bus clients that can call the Secret Service. */
-const DBUS_TOOLS: ReadonlySet<string> = new Set(['busctl', 'gdbus', 'dbus-send', 'qdbus', 'qdbus6', 'qdbus-qt5', 'qdbus-qt6'])
+const DBUS_TOOLS: readonly string[] = ['busctl', 'gdbus', 'dbus-send', 'qdbus', 'qdbus6', 'qdbus-qt5', 'qdbus-qt6']
 /** The Secret Service bus name, object path or interface (`org.freedesktop.secrets`, `/org/freedesktop/secrets`, `org.freedesktop.Secret.Service`). */
 const SECRETS_BUS = /org[./]freedesktop[./]secrets?\b/i
 /** PowerShell programs, and the DPAPI names their text may not carry (ProtectedData, Unprotect, CryptUnprotectData). */
-const POWERSHELLS: ReadonlySet<string> = new Set(['pwsh', 'pwsh-preview', 'powershell', 'powershell_ise'])
+const POWERSHELLS: readonly string[] = ['pwsh', 'pwsh-preview', 'powershell', 'powershell_ise']
 const PS_DPAPI = /ProtectedData|Unprotect/i
+const SECURITY: readonly string[] = ['security']
+const SECRET_TOOL: readonly string[] = ['secret-tool']
+/** `security`'s own leading options: -h, -i, -l, -q, -v clusters (`-p <prompt>` takes a value). */
+const SECURITY_OPTION = /^-[hilqvp]+$/
 
 /**
- * Wave 7 (cli-standalone 8.4): the segment calls a key custodian tool. Anywhere in the words (wrappers OrgAI does not
- * unwrap): `security` followed by a KEYCHAIN_SUBCOMMANDS word or the `OrgAI Vault` name, `secret-tool` followed by one
- * of its subcommands, a D-Bus client followed by a Secret Service name. At the program position: any `secret-tool`
- * call; `security` with `-i` among its leading options, an input redirect, here-document or here-string before its
- * subcommand, or no subcommand at all (it then reads commands from stdin; a pipe into it is caught by textRunsCli);
- * PowerShell with a word naming ProtectedData or Unprotect. Other `security` subcommands (find-certificate,
- * find-identity, cms -D -i, verify-cert...) pass.
+ * Wave 7 (cli-standalone 8.4): the segment calls a key custodian tool. Every name is read through wordMayBe (escapes
+ * and globs, review round 1). Anywhere in the words (wrappers OrgAI does not unwrap: `launchctl asuser 501 security
+ * ...`): `security` whose first word after its own options is a KEYCHAIN_SUBCOMMANDS word, or followed later by the
+ * `OrgAI Vault` name; `secret-tool` directly followed by one of its subcommands; a
+ * D-Bus client followed later by a Secret Service name. At the program position: any `secret-tool` call; `security`
+ * with `-i` among its leading options, an input redirect, here-document or here-string before its subcommand, or no
+ * subcommand at all (it then reads commands from stdin; a pipe into it is caught by textRunsCli); PowerShell with a
+ * word naming ProtectedData or Unprotect. Other `security` subcommands (find-certificate, find-identity, cms -D -i,
+ * verify-cert...) pass, and so does a word `security` that is some other program's argument (`rg security -e export`).
  */
 function custodianCall(words: readonly string[], at: number): boolean {
-  // One pass from the end: what the later words hold (a long segment must not cost a pass per word).
-  let keychainLater = false
-  let secretToolLater = false
   let busLater = false
-  let firstSecurity = -1
   for (let k = words.length - 1; k >= 0; k--) {
-    const name = stripExe(binName(words[k]))
-    if (name === 'security') {
-      if (keychainLater) return true
-      firstSecurity = k
-    }
-    if (name === 'secret-tool' && secretToolLater) return true
-    if (DBUS_TOOLS.has(name) && busLater) return true
-    const lower = words[k].toLowerCase()
-    keychainLater ||= KEYCHAIN_SUBCOMMANDS.has(lower)
-    secretToolLater ||= SECRET_TOOL_SUBCOMMANDS.has(lower)
+    if (busLater && wordMayBe(words[k], DBUS_TOOLS)) return true
     busLater ||= SECRETS_BUS.test(words[k])
+  }
+  let firstSecurity = -1
+  for (let k = 0; k < words.length; k++) {
+    const w = words[k]
+    if (wordMayBe(w, SECRET_TOOL) && words[k + 1] !== undefined && wordMayBe(words[k + 1], SECRET_TOOL_SUBCOMMANDS)) return true
+    if (!wordMayBe(w, SECURITY)) continue
+    if (firstSecurity < 0) firstSecurity = k
+    let j = k + 1
+    for (; j < words.length && SECURITY_OPTION.test(words[j]); j++) if (words[j] === '-p') j++
+    if (j < words.length && wordMayBe(words[j], KEYCHAIN_SUBCOMMANDS)) return true
   }
   // `OrgAI Vault` after a `security` word, also split over words (`OrgAI\ Vault`).
   if (firstSecurity >= 0 && VAULT_LABEL.test(words.slice(firstSecurity + 1).join(' '))) return true
   const prog = words[at]
   if (prog === undefined) return false
-  const bare = stripExe(binName(prog))
-  if (bare === 'secret-tool') return true
-  if (POWERSHELLS.has(bare)) return words.slice(at + 1).some((w) => PS_DPAPI.test(w))
-  if (bare !== 'security') return false
+  if (wordMayBe(prog, SECRET_TOOL)) return true
+  if (wordMayBe(prog, POWERSHELLS)) return words.slice(at + 1).some((w) => PS_DPAPI.test(w))
+  if (!wordMayBe(prog, SECURITY)) return false
   const rest = words.slice(at + 1)
   for (let k = 0; k < rest.length; k++) {
     const w = rest[k]
@@ -355,17 +474,17 @@ function custodianCall(words: readonly string[], at: number): boolean {
 }
 
 /**
- * Programs that run inline or stdin code (`python3 -c`, `osascript -e`, a here-document fed to perl...): when one is in
- * a command text, CUSTODIAN_CODE is matched on the whole text, since the code may call a custodian tool itself
+ * Programs that run inline or stdin code (`python3 -c`, `osascript -e`, a here-document fed to perl...): CUSTODIAN_CODE
+ * is matched on the code such a segment carries (custodianCodeRuns), since the code may call a custodian tool itself
  * (`subprocess.run(['security', 'dump-keychain'])`, `keyring.get_password('OrgAI Vault', id)`).
  */
 const CODE_RUNNERS: ReadonlySet<string> = new Set([
   ...INTERPRETERS, 'python', 'python2', 'python3', 'pythonw', 'py', 'pypy', 'pypy3', 'perl', 'ruby', 'irb', 'php', 'lua',
   'osascript', 'swift', 'rscript', 'awk', 'gawk', 'mawk', 'nawk', 'jshell', 'groovy', 'tclsh', 'expect'
 ])
-/** Custodian calls and names inside code text (see CODE_RUNNERS). Bounded repetitions only. */
+/** Custodian calls and names inside code text (see CODE_RUNNERS). Bounded repetitions only; array and call punctuation between words. */
 const CUSTODIAN_CODE: readonly RegExp[] = [
-  /\bsecurity[\s'",]+(?:-\w+[\s'",]+){0,8}(?:find-generic-password|find-internet-password|add-generic-password|add-internet-password|delete-generic-password|delete-internet-password|set-generic-password-partition-list|set-internet-password-partition-list|dump-keychain|export)\b/i,
+  /\bsecurity[\s'",[\](){}+]{1,16}(?:-\w+[\s'",[\](){}+]{1,16}){0,8}(?:find-generic-password|find-internet-password|add-generic-password|add-internet-password|delete-generic-password|delete-internet-password|set-generic-password-partition-list|set-internet-password-partition-list|dump-keychain|export)\b/i,
   /\bsecret-tool\b/i,
   SECRETS_BUS,
   VAULT_LABEL,
@@ -377,50 +496,63 @@ function isCodeRunner(bare: string): boolean {
   return CODE_RUNNERS.has(bare) || /^python[\d.]*$/.test(bare)
 }
 
-/** The program of a segment (base name, lowercase, `.exe` dropped), or '' when there is none. */
-function segmentProgram(segment: string): string {
-  const words = segmentWords(segment)
-  const prog = words[programIndex(words)]
-  return prog === undefined ? '' : stripExe(binName(prog))
+/** A code runner given no script, program text or inline code reads its code from stdin (`python3`, `perl -`, `awk -f -`). */
+function codeRunnerReadsStdin(bare: string, rest: readonly string[]): boolean {
+  if (INTERPRETERS.has(bare)) return !interpreterHasScript(bare, rest)
+  for (let k = 0; k < rest.length; k++) {
+    const w = rest[k]
+    if (w === '-') return true
+    if (/^\d*[<>]/.test(w)) {
+      if (/^\d*(?:<<<?|[<>]+&?)$/.test(w)) k++
+      continue
+    }
+    if (!w.startsWith('-')) return false
+  }
+  return true
 }
 
 /**
- * Wave 7: an ORGAI_VAULT_* expansion or reader, matched on the raw text (quoted or not, since a quoted text may be a
- * shell's or an interpreter's): `$ORGAI_VAULT_X`, `${ORGAI_VAULT_X}`, `${#...}`, `${!ORGAI_VAULT@}`, PowerShell
- * `$env:ORGAI_VAULT_X` / `${env:...}` and the `env:` drive (Get-Item, Set-Item, Remove-Item), cmd `%ORGAI_VAULT_X%` /
- * `!ORGAI_VAULT_X!`, and environment APIs naming it (`os.environ`, `getenv`, `process.env`,
- * `[Environment]::GetEnvironmentVariable`, `env | grep`...). A plain mention (`grep -rn ORGAI_VAULT_KEY_FILE src`,
- * `echo 'ORGAI_VAULT_KEY_FILE is set'`) is not a reference.
+ * Review round 1: code a code-runner segment of `text` runs names a key custodian (CUSTODIAN_CODE): its own words
+ * (`python3 -c "..."`, `node -e "..."`, a here-string), the whole text when it takes a here-document (the body sits on
+ * later lines; fail closed), and the pieces before it when it reads its code from a pipe. A code runner that only
+ * shares the text with such a word (`grep -rn 'secret-tool' docs | awk '{print $1}'`, `grep 'OrgAI Vault' src && node
+ * -v`) is not.
  */
-const VAULT_ENV_REFERENCES: readonly RegExp[] = [
-  /\$\{?[#!]?ORGAI_VAULT/i,
-  /\$\{?env:\\?ORGAI_VAULT/i,
-  /%ORGAI_VAULT/i,
-  /!ORGAI_VAULT\w*!/i,
-  /\benv:[\\/]?ORGAI_VAULT/i,
-  /(?:getenv|putenv|setenv|unsetenv|environ|EnvironmentVariables?|process\.env|Deno\.env|Bun\.env|LookupEnv|env::var|\benv\b|\bENV\b)[^\n]{0,16}?ORGAI_VAULT/i
-]
-/** Words after which a bare name is set, unset, exported or printed (`export ORGAI_VAULT_X`, `printenv ORGAI_VAULT_X`). */
-const VAULT_NAME_LEADERS: ReadonlySet<string> = new Set([...ASSIGN_LEADERS, 'unset', 'printenv'])
-
-/**
- * Wave 7: a segment assigns, exports, unsets or prints an ORGAI_VAULT_* variable: `ORGAI_VAULT_X=v` (or `+=`) before
- * its program, or a name or assignment after env / export / set / declare / unset / printenv (quotes removed, so
- * `env "ORGAI_VAULT_KEY_FILE=x" cmd` counts). A name after the program (`grep ORGAI_VAULT_X= src`) does not.
- */
-function namesVaultEnv(segment: string): boolean {
-  let leader = false
-  for (const w of segmentWords(segment)) {
-    if (/^ORGAI_VAULT\w*\+?=/i.test(w)) return true
-    if (leader && /^ORGAI_VAULT/i.test(w)) return true
-    if (ASSIGNMENT.test(w) || w.startsWith('-')) continue
-    if (VAULT_NAME_LEADERS.has(stripExe(binName(w)))) {
-      leader = true
-      continue
-    }
-    return false
+function custodianCodeRuns(text: string): boolean {
+  const segments = cliSegments(text)
+  for (let k = 0; k < segments.length; k++) {
+    const seg = segments[k]
+    const words = segmentWords(seg.text)
+    const at = programIndex(words)
+    const prog = words[at]
+    if (prog === undefined) continue
+    const bare = wordNames(prog).find(isCodeRunner)
+    if (bare === undefined) continue
+    const rest = words.slice(at + 1)
+    if (CUSTODIAN_CODE.some((re) => re.test(seg.text))) return true
+    if (rest.some((w) => /^\d*<<(?!<)/.test(w))) return true
+    if (seg.pipeIn && codeRunnerReadsStdin(bare, rest) && segments.slice(0, k).some((u) => CUSTODIAN_CODE.some((re) => re.test(u.text)))) return true
   }
   return false
+}
+
+/** The program word of a segment (after env assignments and wrappers), or undefined when there is none. */
+function segmentProgramWord(segment: string): string | undefined {
+  const words = segmentWords(segment)
+  return words[programIndex(words)]
+}
+
+/**
+ * Wave 7 (cli-standalone 8.4, review round 1): any word referencing ORGAI_VAULT_*, matched on the text with quotes,
+ * backslashes, backticks and brackets removed (`ORGAI_"VAULT"`, `ORGAI_VAU\LT`, `ORGAI_[V]AULT`), case-insensitive:
+ * expansions, assignments, exports, `printenv | grep ORGAI_VAULT`, `Get-ChildItem Env: | ? Name -like 'ORGAI_VAULT*'`,
+ * and also a plain mention (`grep -rn ORGAI_VAULT_KEY_FILE src`; agents search with the Grep tool instead). A shortened
+ * prefix that can only stand for it (`ORGAI_V*`, `${!ORGAI_VA@}`) counts too; `ORGAI_VERSION` does not.
+ */
+const VAULT_ENV_WORD = /ORGAI_VAULT|ORGAI_V(?:A(?:UL?)?)?(?![A-Za-z0-9_])/i
+
+function referencesVaultEnv(text: string): boolean {
+  return VAULT_ENV_WORD.test(text.replace(/["'\\`[\]]/g, ''))
 }
 
 /** Segments read so far; `limited` once MAX_SEGMENTS or MAX_NEST cut the scan short. */
@@ -536,9 +668,12 @@ function programIndex(words: readonly string[]): number {
       i++
       continue
     }
-    const name = stripExe(binName(w))
-    const next = words[i + 1] ? stripExe(binName(words[i + 1])) : ''
-    if (name === 'env') {
+    // Every spelling of the word (`ar\\ch`, `/usr/bin/x\\crun`; review round 1).
+    const names = wordNames(w)
+    const nextNames = words[i + 1] !== undefined ? wordNames(words[i + 1]) : []
+    const is = (n: string): boolean => names.includes(n)
+    const nextIs = (...ns: string[]): boolean => ns.some((n) => nextNames.includes(n))
+    if (is('env')) {
       i++
       while (i < words.length && (words[i].startsWith('-') || ASSIGNMENT.test(words[i]))) {
         // `env -u NAME` / `env -C dir` take a value.
@@ -547,7 +682,7 @@ function programIndex(words: readonly string[]): number {
       }
       continue
     }
-    if (['command', 'exec', 'nohup', 'time', 'builtin', 'sudo', 'doas', 'stdbuf', 'caffeinate', 'call', 'start', 'xargs', 'nice', 'ionice', 'chrt', 'setsid', 'bunx', 'pnpx', 'watch'].includes(name)) {
+    if (['command', 'exec', 'nohup', 'time', 'builtin', 'sudo', 'doas', 'stdbuf', 'caffeinate', 'call', 'start', 'xargs', 'nice', 'ionice', 'chrt', 'setsid', 'bunx', 'pnpx', 'watch'].some(is)) {
       i++
       // Options of the wrapper (and a value after nice -n / timeout's duration).
       while (i < words.length && words[i].startsWith('-')) {
@@ -556,22 +691,24 @@ function programIndex(words: readonly string[]): number {
       }
       continue
     }
-    if (name === 'timeout') {
+    if (is('timeout')) {
       i++
       while (i < words.length && words[i].startsWith('-')) i++
       i++ // duration
       continue
     }
-    // macOS `xcrun [--sdk X] security ...`, `arch -arm64 [-e VAR=x] security ...` (Wave 7: key custodian tools).
-    if (name === 'xcrun' || name === 'arch') {
+    // macOS `xcrun [--sdk X] security ...`, `arch [-arm64 | -arch arm64] [-e VAR=x] security ...` (Wave 7: key
+    // custodian tools). arch(1)'s `-arch <name>`, `-e VAR=x` and `-d VAR` take a value (review round 1).
+    if (is('xcrun') || is('arch')) {
+      const valued = is('xcrun') ? /^-{1,2}(?:sdk|toolchain)$/ : /^-(?:arch|[ed])$/
       i++
       while (i < words.length && words[i].startsWith('-')) {
-        if (/^-{1,2}(?:sdk|toolchain)$/.test(words[i]) || /^-[ed]$/.test(words[i])) i++
+        if (valued.test(words[i])) i++
         i++
       }
       continue
     }
-    if (name === 'npx') {
+    if (is('npx')) {
       i++
       while (i < words.length && words[i].startsWith('-')) {
         if (/^(?:-p|--package)$/.test(words[i])) i++
@@ -579,7 +716,7 @@ function programIndex(words: readonly string[]): number {
       }
       continue
     }
-    if ((name === 'npm' && (next === 'exec' || next === 'x')) || ((name === 'pnpm' || name === 'yarn') && (next === 'dlx' || next === 'exec')) || (name === 'bun' && next === 'x')) {
+    if ((is('npm') && nextIs('exec', 'x')) || ((is('pnpm') || is('yarn')) && nextIs('dlx', 'exec')) || (is('bun') && nextIs('x'))) {
       i += 2
       while (i < words.length && words[i].startsWith('-')) {
         if (/^(?:-p|--package)$/.test(words[i])) i++
@@ -627,7 +764,7 @@ const FIND_EXEC: Readonly<Record<string, RegExp>> = { find: /^-(?:exec|execdir|o
 function wordsRunCli(words: readonly string[], depth: number, budget: CliBudget, check: CliCheck): boolean {
   if (!words.length) return false
   // npx / npm exec with `-p orgai` / `--package=orgai`.
-  const runner = words.some((w) => PACKAGE_RUNNERS.has(stripExe(binName(w))))
+  const runner = words.some((w) => wordMayBe(w, PACKAGE_RUNNERS))
   for (let k = 0; runner && k < words.length; k++) {
     if (/^(?:-p|--package)$/.test(words[k]) && words[k + 1] && CLI_NAME.test(binName(words[k + 1]))) return true
     const eq = /^(?:--package=|-p)(.+)$/.exec(words[k])
@@ -635,15 +772,13 @@ function wordsRunCli(words: readonly string[], depth: number, budget: CliBudget,
   }
   // Wave 7 (cli-standalone 8.4): a package runner naming the npm package. `@orgai/cli` is matched on the raw word
   // (binName keeps only `cli`), in every spelling (`@orgai/cli@1.2.3`, `--package=@orgai/cli`, `npm:@orgai/cli`, a
-  // registry URL), and so is any `orgai` word; a word holding whitespace (`npx -c 'orgai status'`, `pnpm dlx -c ...`)
-  // is a command text of its own.
+  // registry URL), and so is any `orgai` word; a `-c` / `--call` value or a first positional word holding whitespace
+  // (`npx -c 'orgai status'`, `pnpm dlx -c ...`) is a command text of its own (runnerCommandTexts).
   if (isPackageRunner(words)) {
-    for (const w of words) {
-      if (spellings(w).some((v) => SCOPED_CLI.test(v) || CLI_NAME.test(binName(v)))) return true
-      if (/\s/.test(w)) {
-        if (depth >= MAX_NEST) return (budget.limited = true)
-        if (textRunsCli(w, depth + 1, budget, check)) return true
-      }
+    for (const w of words) if (spellings(w).some((v) => SCOPED_CLI.test(v) || CLI_NAME.test(binName(v)))) return true
+    for (const t of runnerCommandTexts(words)) {
+      if (depth >= MAX_NEST) return (budget.limited = true)
+      if (textRunsCli(t, depth + 1, budget, check)) return true
     }
   }
   // `env -S 'X=1 prog' args`: the split string is a command text of its own (assignments included).
@@ -1014,14 +1149,13 @@ function assignsElectronAsNode(segment: string): boolean {
 
 function textRunsCli(text: string, depth: number, budget: CliBudget, check: CliCheck): boolean {
   if (ELECTRON_AS_NODE_PS.some((re) => re.test(text))) return true
-  // Wave 7: an ORGAI_VAULT_* expansion or reader anywhere in the text, quoted or not (it may be handed to a shell).
-  if (VAULT_ENV_REFERENCES.some((re) => re.test(text))) return true
+  // Wave 7: any word referencing ORGAI_VAULT_*, quoted or not (it may be handed to a shell).
+  if (referencesVaultEnv(text)) return true
   const plain = unquoted(text)
-  if (/\bsetx\s+ELECTRON_RUN_AS_NODE\b/i.test(plain) || /\bsetx\s+["']?ORGAI_VAULT/i.test(text)) return true
+  if (/\bsetx\s+ELECTRON_RUN_AS_NODE\b/i.test(plain)) return true
   for (const segment of cliSegments(plain)) if (assignsElectronAsNode(segment.text)) return true
-  for (const segment of cliSegments(text)) if (namesVaultEnv(segment.text)) return true
   // Wave 7: code run by an interpreter (inline, piped or a here-document) that calls a key custodian tool.
-  if (CUSTODIAN_CODE.some((re) => re.test(text)) && cliSegments(text).some((seg) => isCodeRunner(segmentProgram(seg.text)))) return true
+  if (CUSTODIAN_CODE.some((re) => re.test(text)) && custodianCodeRuns(text)) return true
   // A second pass keeps brace expansions whole (`<Resources>/bin/orga{i,} status`) when there are any.
   for (const keepBraces of /\{[^\s{}]*(?:,|\.\.)[^\s{}]*\}/.test(text) ? [false, true] : [false]) {
     const segments = cliSegments(text, keepBraces)
@@ -1034,9 +1168,9 @@ function textRunsCli(text: string, depth: number, budget: CliBudget, check: CliC
       if (seg.pipeIn && segmentReadsCode(seg.text) && segments.slice(0, k).some((u) => producerRunsCli(u.text, depth, budget, check))) return true
       // Wave 7: `security` reading its commands from a pipe; PowerShell reading DPAPI code from one.
       if (seg.pipeIn) {
-        const reader = segmentProgram(seg.text)
-        if (reader === 'security') return true
-        if (POWERSHELLS.has(reader) && segments.slice(0, k).some((u) => PS_DPAPI.test(u.text))) return true
+        const reader = segmentProgramWord(seg.text)
+        if (reader !== undefined && wordMayBe(reader, SECURITY)) return true
+        if (reader !== undefined && wordMayBe(reader, POWERSHELLS) && segments.slice(0, k).some((u) => PS_DPAPI.test(u.text))) return true
       }
     }
   }

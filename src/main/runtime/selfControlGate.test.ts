@@ -1104,16 +1104,54 @@ describe('Wave 7 gate additions (cli-standalone.md 8.4)', () => {
       }
     })
 
-    it('allows plain mentions of the name (searching, docs, messages)', () => {
+    it('denies any word referencing ORGAI_VAULT_*, plain mentions and environment dumps included (review round 1)', () => {
       for (const command of [
+        // Plain mentions (spec 8.4: any word; agents search with the Grep tool instead).
         'grep -rn ORGAI_VAULT_KEY_FILE src',
         'grep -rn "ORGAI_VAULT_KEY_FILE=" .',
         'rg ORGAI_VAULT_ docs',
         "echo 'ORGAI_VAULT_KEY_FILE names the key file'",
-        'git log --grep ORGAI_VAULT'
+        'git log --grep ORGAI_VAULT',
+        'cat docs/environment.md | grep ORGAI_VAULT_KEY',
+        // Environment dumps filtered on the name.
+        'printenv | grep ORGAI_VAULT',
+        'set | grep ORGAI_VAULT',
+        'export -p | grep ORGAI_VAULT',
+        'declare | grep ORGAI_VAULT',
+        'compgen -e | grep ORGAI_VAULT',
+        "cat /proc/self/environ | tr '\\0' '\\n' | grep ORGAI_VAULT",
+        'ps eww $$ | grep -o "ORGAI_VAULT[^ ]*"',
+        'env | grep -i orgai_vault',
+        // Spellings that hide the name from a plain search.
+        'env | grep ORGAI_"VAULT"',
+        "env | grep 'ORGAI_'VAULT",
+        'env | grep ORGAI_VAU\\LT',
+        'env | grep ORGAI_[V]AULT',
+        'env | grep ORGAI_V',
+        'printenv | grep ^ORGAI_VA',
+        'echo ${!ORGAI_V@}',
+        'compgen -v ORGAI_VAU'
       ]) {
+        expect(bash(command, ctx), command).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      }
+      for (const command of [
+        "Get-ChildItem Env: | Where-Object Name -like 'ORGAI_VAULT*'",
+        "dir env: | ? { $_.Name -match 'ORGAI_VAULT' }",
+        'gci env: | where Name -like ORGAI_V*',
+        'ls env:ORGAI_VAULT_KEY_FILE',
+        `pwsh -enc ${encode("Get-ChildItem Env: | Where-Object Name -like 'ORGAI_VAULT*'")}`
+      ]) {
+        expect(ps(command, ctx), command).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      }
+      // Other ORGAI_ names stay usable; the Grep tool is the way to search the name.
+      for (const command of ['echo $ORGAI_DATA_DIR', 'ORGAI_MOCK=1 npm run dev', 'grep -rn ORGAI_VERSION src', 'env | grep ORGAI_VERBOSE']) {
         expect(bash(command, ctx), command).toBeNull()
       }
+      expect(checkSelfControlDenial('Grep', { pattern: 'ORGAI_VAULT_KEY_FILE', path: '/work/proj/src' }, ctx)).toBeNull()
+    })
+
+    it('leaves a data-only here-document that mentions the name alone (writing docs)', () => {
+      expect(bash("cat <<'EOF' > docs/notes.md\nSet ORGAI_VAULT_KEY_FILE to move the key.\nEOF", ctx)).toBeNull()
     })
   })
 
@@ -1229,6 +1267,104 @@ describe('Wave 7 gate additions (cli-standalone.md 8.4)', () => {
       }
     })
 
+    it('reads arch -arch <name> as taking a value (review round 1)', () => {
+      for (const command of [
+        "printf 'dump-keychain\\n' | arch -arch arm64 security",
+        'arch -arch x86_64 security -i',
+        'arch -arch arm64 security',
+        'arch -arch arm64 -e FOO=1 security -i',
+        'arch -x86_64 -d FOO security -i',
+        'arch -arch arm64 orgai status',
+        'ar\\ch -arch arm64 security -i',
+        'xcrun --toolchain x security -i',
+        "printf 'dump-keychain\\n' | arch -arm64 security"
+      ]) {
+        expect(bash(command, ctx), JSON.stringify(command)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      }
+      expect(bash('arch -arch arm64 security find-certificate -c Apple', ctx)).toBeNull()
+      expect(bash('arch -arch arm64 /usr/bin/true', ctx)).toBeNull()
+    })
+
+    it('reads custodian and package-runner names through backslash escapes and globs (review round 1)', () => {
+      for (const command of [
+        'sec\\urity dump-keychain',
+        'security dump-keych\\ain',
+        '/usr/bin/sec\\urity find-generic-password -w -s x',
+        'secret\\-tool lookup service orgai',
+        's\\ecret-tool lookup a b',
+        'secur?ty dump-keychain',
+        '/usr/bin/secur*y dump-keychain',
+        '/usr/bin/s[e]curity -i',
+        'security dump-keych?in',
+        'secret-too? lookup a b',
+        '/usr/bin/secret-t* store --label=x a b',
+        'launchctl asuser 501 sec\\urity find-generic-password -w',
+        'flatpak-spawn --host secret\\-tool lookup a b',
+        'echo dump-keychain | secur?ty',
+        'echo dump-keychain | sec\\urity -q',
+        'bus\\ctl --user call org.freedesktop.secrets / x y',
+        'gdbu? call --dest org.freedesktop.secrets',
+        "echo '[Security.Cryptography.ProtectedData]::Unprotect(1)' | pws? -",
+        // The scoped package name.
+        'n\\px @orgai/cli status',
+        'np\\x @orgai/cli status',
+        'npm e\\xec @orgai/cli status',
+        'bun\\x @orgai/cli status',
+        'pnpm --package=@orgai/cli d\\lx cli status',
+        'np? @orgai/cli status',
+        'npm ex?c @orgai/cli status',
+        '/usr/local/bin/np* @orgai/cli status',
+        'n\\px -c "orgai status"',
+        'pnpm --package=@orgai/cli dlx cli status'
+      ]) {
+        expect(bash(command, ctx), JSON.stringify(command)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      }
+      for (const command of [
+        'ls *',
+        'echo s* x*',
+        'cp ./* export/',
+        'grep -rn sec src',
+        'rg security -e export src',
+        'grep security -i notes.md',
+        'ls ?? lookup',
+        'npm run build',
+        'npm ex?c-thing status',
+        'np? cli status'
+      ]) {
+        expect(bash(command, ctx), JSON.stringify(command)).toBeNull()
+      }
+    })
+
+    it('reads custodian calls in array and call spellings inside interpreter code (review round 1)', () => {
+      for (const command of [
+        "node -e \"require('child_process').execFileSync('security',['dump-keychain'])\"",
+        "node -e \"require('child_process').execFileSync('security', ['find-generic-password','-s','x','-w'])\"",
+        "python3 -c \"import subprocess; subprocess.run(['security'] + ['dump-keychain'])\"",
+        "python3 -c \"import subprocess; subprocess.run(['security','dump-keychain'])\"",
+        "ruby -e 'system(%w[security dump-keychain])'",
+        "perl -e 'system((\"security\"), (\"dump-keychain\"))'",
+        // Code piped into a code runner that reads stdin.
+        "echo \"import subprocess; subprocess.run(['security','dump-keychain'])\" | python3",
+        "printf '%s' \"system('secret-tool lookup a b')\" | perl -",
+        "awk -f - <<< 'BEGIN { system(\"secret-tool lookup a b\") }'"
+      ]) {
+        expect(bash(command, ctx), JSON.stringify(command)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      }
+    })
+
+    it('does not refuse ordinary work that only mentions custodian names beside a code runner (review round 1)', () => {
+      for (const command of [
+        "grep -rn 'secret-tool' docs | awk '{print $1}'",
+        "grep -rn 'OrgAI Vault' src && node -v",
+        "npx vitest run src/main/runtime/selfControlGate.test.ts -t 'OrgAI Vault'",
+        'rg security -e export src',
+        "rg -n 'org.freedesktop.secrets' src | python3 tools/count.py",
+        "grep -rn 'security dump-keychain' docs | node scripts/summarize.mjs"
+      ]) {
+        expect(bash(command, ctx), JSON.stringify(command)).toBeNull()
+      }
+    })
+
     it('denies PowerShell text naming ProtectedData or Unprotect, encoded commands included', () => {
       for (const command of [
         "pwsh -c '[Security.Cryptography.ProtectedData]::Unprotect($b, $null, 0)'",
@@ -1282,7 +1418,12 @@ describe('Wave 7 scan cost', () => {
       `echo ${'security '.repeat(10_000)}x && node x.js`,
       `echo ${'orgai\\'.repeat(20_000)}`,
       `echo ${'env '.repeat(20_000)}`,
-      `echo ${'{a,b}'.repeat(5)}`
+      `echo ${'{a,b}'.repeat(5)}`,
+      // Review round 1: glob and escaped names read as programs and subcommands, runner words, security options.
+      `echo ${'s?c*r?t[y] '.repeat(5_000)}`,
+      `npx ${'np\\x e?ec '.repeat(5_000)}`,
+      `echo ${'security -v '.repeat(5_000)}`,
+      `echo ${'ORGAI_'.repeat(20_000)}`
     ]
     for (const command of texts) {
       const t0 = Date.now()
