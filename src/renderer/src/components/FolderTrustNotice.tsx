@@ -50,6 +50,8 @@ export default function FolderTrustNotice({ project }: { project: Project }): Re
             onClick={() => {
               writeDismissedDigest(project.id, review.digest)
               setDismissed({ id: project.id, digest: review.digest })
+              // The focused button unmounts: land on the page's prompt box, else its heading.
+              setTimeout(() => document.querySelector<HTMLElement>('.new-run textarea, .new-run h1, .new-run h2')?.focus(), 0)
             }}
           >
             Dismiss

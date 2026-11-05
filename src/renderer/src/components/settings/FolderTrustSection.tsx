@@ -128,7 +128,7 @@ function SectionList({ review, k }: { review: FolderConfigReview; k: ReviewSecti
         <ul className="trust-list">
           {review.commands.map((c, i) => (
             <Item key={i} testId="folder-trust-command" head={`${c.kind === 'hook' ? 'Hook' : 'Helper'}: ${showHidden(c.label)}`} source={c.source} badges={<Badges item={c} />}>
-              <TrustText text={c.command} label={c.label} />
+              <TrustText text={c.command} label={showHidden(c.label)} />
             </Item>
           ))}
         </ul>
@@ -138,7 +138,7 @@ function SectionList({ review, k }: { review: FolderConfigReview; k: ReviewSecti
         <ul className="trust-list">
           {review.mcpServers.map((m, i) => (
             <Item key={i} testId="folder-trust-mcp" head={showHidden(m.name)} source={m.source} badges={<Badges item={m} />}>
-              <TrustText text={m.target} label={m.name} />
+              <TrustText text={m.target} label={showHidden(m.name)} />
             </Item>
           ))}
         </ul>
@@ -164,7 +164,7 @@ function SectionList({ review, k }: { review: FolderConfigReview; k: ReviewSecti
                 </>
               }
             >
-              <TrustText text={e.value} label={e.name} />
+              <TrustText text={e.value} label={showHidden(e.name)} />
             </Item>
           ))}
         </ul>
@@ -174,7 +174,7 @@ function SectionList({ review, k }: { review: FolderConfigReview; k: ReviewSecti
         <ul className="trust-list">
           {review.otherSettings.map((s, i) => (
             <Item key={i} testId="folder-trust-setting" head={<span className="trust-mono">{showHidden(s.key)}</span>} source={s.source} badges={<Badges item={s} />}>
-              <TrustText text={s.value} label={s.key} />
+              <TrustText text={s.value} label={showHidden(s.key)} />
             </Item>
           ))}
         </ul>
@@ -263,12 +263,28 @@ export function FolderTrustSection({ project, trust }: { project: Project; trust
   const [messageTick, setMessageTick] = useState(0)
   const rowId = useId()
 
+  // The review the user is shown must be the one read since the dialog opened, so Accept waits for that read (M1).
+  const [reading, setReading] = useState(false)
+  const [loadError, setLoadError] = useState(false)
+  const framingRef = useRef<HTMLParagraphElement>(null)
+
+  const load = useCallback(async () => {
+    setReading(true)
+    setLoadError(false)
+    const fresh = await refresh()
+    setReading(false)
+    if (!fresh) {
+      setLoadError(true)
+      setLive('The folder could not be read.')
+    }
+  }, [refresh])
+
   const openDialog = useCallback(() => {
     setMessage(null)
     setLive('')
     setOpen(true)
-    void refresh()
-  }, [refresh])
+    void load()
+  }, [load])
 
   useEffect(() => {
     if (takeFolderTrustRequest(project.id)) openDialog()
@@ -300,6 +316,8 @@ export function FolderTrustSection({ project, trust }: { project: Project; trust
       replaceProject(res.project)
       setReview(res.review)
       setLive(trustIt ? 'Allowed. Agents use this folder\'s own settings from the next run.' : 'Stopped. Agents ignore this folder\'s own settings from the next run.')
+      // The clicked button unmounts: keep focus inside the dialog.
+      setTimeout(() => framingRef.current?.focus(), 0)
     } catch (e) {
       await fail(review.digest, e)
     } finally {
@@ -308,7 +326,7 @@ export function FolderTrustSection({ project, trust }: { project: Project; trust
   }
 
   const state = folderTrustState(project, review)
-  if (state === 'none') return null
+  if (state === 'none' && !open) return null
   const sentence = folderTrustSentence(state, project.folderConfigTrust?.decidedAt)
 
   return (
@@ -345,7 +363,7 @@ export function FolderTrustSection({ project, trust }: { project: Project; trust
                 Stop using these settings
               </Button>
             )}
-            {canAccept(review) && (
+            {canAccept(review) && !reading && !loadError && (
               <Button variant="primary" loading={busy} testId="folder-trust-accept" onClick={() => void decide(true)}>
                 Allow these settings
               </Button>
@@ -354,7 +372,7 @@ export function FolderTrustSection({ project, trust }: { project: Project; trust
         }
       >
         <div className="trust-dialog">
-          <p className="trust-framing" data-autofocus tabIndex={-1}>
+          <p ref={framingRef} className="trust-framing" data-autofocus tabIndex={-1}>
             {FOLDER_TRUST_FRAMING}
           </p>
           <p className="trust-state" data-testid="folder-trust-dialog-status" data-state={state}>
@@ -363,7 +381,19 @@ export function FolderTrustSection({ project, trust }: { project: Project; trust
           <div className="sr-only" role="status" data-testid="folder-trust-live">
             {live}
           </div>
-          <ReviewBody review={review} message={message} messageRef={messageRef} />
+          {loadError ? (
+            <p className="trust-message" data-testid="folder-trust-load-error">
+              The folder could not be read.{' '}
+              <Button size="sm" onClick={() => void load()}>
+                Try again
+              </Button>
+            </p>
+          ) : (
+            <>
+              {reading && review && <p className="trust-meta">Reading the folder again…</p>}
+              <ReviewBody review={review} message={message} messageRef={messageRef} />
+            </>
+          )}
         </div>
       </Dialog>
     </>

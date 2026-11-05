@@ -21,17 +21,26 @@ export function useFolderTrustReview(project: Project): FolderTrustReviewState {
   const refresh = useCallback(async (): Promise<FolderConfigReview | null> => {
     if (!gated) return null
     const mine = ++seq.current
-    try {
-      const r = await window.orgai.folderConfig.review(projectId)
-      if (mine !== seq.current) return null
-      setReviewState(r)
-      return r
-    } catch {
-      return null
-    }
+    const run = (async (): Promise<FolderConfigReview | null> => {
+      try {
+        const r = await window.orgai.folderConfig.review(projectId)
+        if (mine !== seq.current) return null
+        setReviewState(r)
+        return r
+      } catch {
+        return null
+      }
+    })()
+    latest.current = run
+    const r = await run
+    // A newer call took over: answer with its result, so a caller never mistakes "superseded" for "could not read".
+    if (mine !== seq.current && latest.current) return latest.current
+    return r
   }, [gated, projectId])
+  const latest = useRef<Promise<FolderConfigReview | null> | null>(null)
   const setReview = useCallback((r: FolderConfigReview) => {
     seq.current++
+    latest.current = Promise.resolve(r)
     setReviewState(r)
   }, [])
   const stored = project.folderConfigTrust
