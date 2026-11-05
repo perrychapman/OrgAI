@@ -1,4 +1,4 @@
-import type { AgentInstance, AgentState, RunStatus, RunSummary } from '@shared/types'
+import type { AgentInstance, AgentState, RunEndedBy, RunStatus, RunSummary } from '@shared/types'
 
 /**
  * The one status vocabulary of the app (spec 12.4): tabs, run header, history, sidebar, node activity and the topbar
@@ -30,7 +30,8 @@ export type EndedBy = 'user' | 'app'
 
 /** The summary fields that say how a run ended. `endedBy` is RunSummary.endedBy (older records only have endedWithApp). */
 export interface EndFacts {
-  endedBy?: EndedBy
+  /** 'policy' / 'budget' (host-finalized exec runs) are neither 'user' nor 'app': endedByOf gives undefined and they read Finished. */
+  endedBy?: RunEndedBy
   endedWithApp?: boolean
 }
 
@@ -119,7 +120,7 @@ export function statusText(view: RunStatusView): string {
 /** The shared status of a run held in the store, so tab, header, pill, sidebar and history never disagree. */
 export function statusOfRun(
   run: {
-    summary: Pick<RunSummary, 'status' | 'kind' | 'endedWithApp'> & { endedBy?: EndedBy }
+    summary: Pick<RunSummary, 'status' | 'kind' | 'endedWithApp'> & { endedBy?: RunEndedBy }
     plan?: AutoContinueInput['plan']
     agents?: Record<string, Pick<AgentInstance, 'parentId' | 'activity'>>
   },
@@ -138,7 +139,7 @@ export function statusOfRun(
     waiting,
     endedBy,
     // The summary decides; the root agent's label is read only for old records that carry no end reason.
-    stopped: endedBy === undefined && isStoppedRun(run.agents),
+    stopped: endedBy === undefined && run.summary.endedBy === undefined && isStoppedRun(run.agents),
     autoContinuing: auto.active
   })
 }
@@ -166,7 +167,7 @@ export function cutWhile(agents: Record<string, Pick<AgentInstance, 'parentId' |
  * already finished keep their own label. Live, idle and paused runs are returned unchanged (same object).
  */
 export function settleEndedAgents<A extends Pick<AgentInstance, 'id' | 'parentId' | 'state' | 'activity' | 'endedAt'>>(
-  summary: Pick<RunSummary, 'status' | 'endedWithApp' | 'endedAt'> & { endedBy?: EndedBy },
+  summary: Pick<RunSummary, 'status' | 'endedWithApp' | 'endedAt'> & { endedBy?: RunEndedBy },
   agents: Record<string, A>
 ): Record<string, A> {
   if (summary.status !== 'finished' && summary.status !== 'error') return agents

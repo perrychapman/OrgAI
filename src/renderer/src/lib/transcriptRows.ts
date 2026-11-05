@@ -1,6 +1,6 @@
 /** Pure humanizing for transcript rows: tool calls become sentences, raw input becomes an optional detail string. */
 
-import type { RunSummary, TranscriptEntry } from '@shared/types'
+import type { RunEndedBy, RunSummary, TranscriptEntry } from '@shared/types'
 import { ENGAGEMENT_CONTEXT_TOOL, KNOWLEDGE_TOOL } from '@shared/types'
 import { normalizeKnowledgeKey } from '@shared/knowledge'
 import { continuationDivider, type ContinuationDivider } from './runChains'
@@ -22,7 +22,7 @@ export const omittedLabel = (n: number): string => `${n.toLocaleString('en-US')}
 /** A chain member as the merged feed needs it. */
 export interface FeedMember {
   summary: Pick<RunSummary, 'id' | 'startedAt' | 'status'> &
-    Partial<Pick<RunSummary, 'sessionId' | 'resumedFrom' | 'endedAt' | 'endedWithApp'>> & { endedBy?: 'user' | 'app' }
+    Partial<Pick<RunSummary, 'sessionId' | 'resumedFrom' | 'endedAt' | 'endedWithApp'>> & { endedBy?: RunEndedBy }
   entries: readonly TranscriptEntry[]
 }
 

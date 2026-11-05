@@ -2646,10 +2646,19 @@ export interface RunSummary {
    * It stays continuable.
    */
   endedWithApp?: true
-  /** Who ended the run. 'user': End session (RunManager.stop). 'app': OrgAI quit or crashed while it was live (stopAll on quit, or the store's boot normalization). Absent: the run ended on its own (finished, error, paused). Structured-clone safe. */
-  endedBy?: 'user' | 'app'
+  /**
+   * Who ended the run. 'user': End session (RunManager.stop). 'app': OrgAI quit or crashed while it was live (stopAll on
+   * quit, or the store's boot normalization). 'policy' / 'budget': a host-finalized headless exec run (decision policy,
+   * completion or stall; or its budget cap); these read 'Finished', never 'Stopped'. Absent: the run ended on its own
+   * (finished, error, paused). Structured-clone safe.
+   */
+  endedBy?: RunEndedBy
   /** Only with endedBy 'app': what the run was doing when OrgAI cut it. 'waiting': status idle or a decision card open (the user's turn). 'working': starting, running or stopping. Absent for a paused run. */
   endedWhile?: 'working' | 'waiting'
+  /** Headless exec overrides (cli-spec 6.2). Host-set only, never from the renderer; RunStore rebuilds them on read and drops unknown keys or bad types. */
+  overrides?: RunOverrides
+  /** How a headless exec run ended. Host-set (RunManager.finalizeExecRun); RunStore keeps only EXEC_OUTCOMES values on read. */
+  execOutcome?: ExecOutcome
   /**
    * Work runs: a short AI summary of the run's first message (one line, at most RUN_TITLE_MAX_CHARS characters),
    * written by the connection's fast model shortly after the run starts (a run.title event announces it). Absent
@@ -2949,13 +2958,19 @@ export type RunEvent =
       autoResume?: boolean
       /**
        * Who ended the run (RunSummary.endedBy). 'user': End session (RunManager.stop). 'app': OrgAI quit or crashed while
-       * it was live. Set by RunManager on a terminal status ('finished' / 'error') of a cut run, and on 'stopping' with
-       * 'user'. Absent: the run ended on its own. Adapters never set it. Structured-clone safe.
+       * it was live. 'policy' / 'budget': a host-finalized headless exec run (reads 'Finished'). Set by RunManager on a
+       * terminal status ('finished' / 'error') of a cut run, and on 'stopping' with 'user'. Absent: the run ended on its
+       * own. Adapters never set it. Structured-clone safe.
        */
-      endedBy?: 'user' | 'app'
+      endedBy?: RunEndedBy
       /** Only with endedBy 'app' (RunSummary.endedWhile): 'waiting' (idle or a card open) or 'working' when OrgAI cut it. */
       endedWhile?: 'working' | 'waiting'
     }
+  /**
+   * A headless exec run reached its outcome (RunSummary.execOutcome). Emitted exactly once per run by
+   * RunManager.finalizeExecRun (cli-spec Wave 3), after the final summary is persisted; never by adapters.
+   */
+  | { type: 'run.finalized'; runId: string; execChainId?: string; outcome: ExecOutcome; summary: RunSummary }
   /**
    * The run's AI-generated title (RunSummary.title) arrived. Sent at most once per run, work runs only, possibly
    * after the run ended. The summary in runs:list / runs:get carries it from then on.
@@ -4705,6 +4720,10 @@ export interface KnowledgeNodeSaveInput {
   facts?: KnowledgeFactInput[]
   noteIds?: string[]
   retired?: boolean
+  /** User facts appended atomically inside the store (deduplicated against the node's facts and each other); cli-spec 3.6. */
+  appendFacts?: string[]
+  /** Only with nodeId: refuse the save when the stored node's updatedAt differs (compare-and-set). */
+  expectedUpdatedAt?: number
 }
 
 /**
@@ -5308,6 +5327,7 @@ export interface KitPreviewRole {
 }
 
 export interface KitImportPreview {
+  /** The picked file's path; '' for a kit:previewBundle preview (the bytes came over the socket). */
   path: string
   fileName: string
   /** sha256 hex of the file's bytes; kit:applyImport refuses a missing or different one. */
@@ -5319,6 +5339,11 @@ export interface KitImportPreview {
   items: KitPreviewItem[]
   /** Whole-file notes ("3 items refused"). */
   notes: string[]
+  /**
+   * sha256 hex over the destination library state the items would touch (cli-spec 3.6). Set by kit:previewBundle;
+   * kit:applyBundle refuses with stale_target_digest when it no longer matches.
+   */
+  targetDigest?: string
 }
 
 export interface KitImportChoice {
@@ -5378,4 +5403,390 @@ export interface OrgAIApi {
     previewImport(input: KitPreviewInput): Promise<KitImportPreview>
     applyImport(input: KitApplyInput): Promise<KitApplyResult>
   }
+}
+
+// ---------- CLI and host (cli-spec Wave 0) ----------
+//
+// Contracts for the local host daemon, its socket wire protocol, headless exec runs and the host-validated bundle
+// channels (docs/design/cli-spec.md sections 3.2, 3.3, 3.4(4), 3.6 and 6.2). Wave 0 only lands the shapes: no socket
+// server, dispatcher or IPC handler uses them yet. Everything here is structured-clone and JSON safe.
+
+/**
+ * Socket-only host channels (cli-spec 3.3(3)). Deliberately NOT spread into IPC: no ipcMain handler exists for them,
+ * and Wave 1 wires them into the host channel registry.
+ */
+export const HOST_IPC = {
+  runsSubscribe: 'runs:subscribe',
+  skillLibraryAddFromBundle: 'skillLibrary:addFromBundle',
+  kitExportBundle: 'kit:exportBundle',
+  kitPreviewBundle: 'kit:previewBundle',
+  kitApplyBundle: 'kit:applyBundle'
+} as const
+
+export type HostIpcChannel = (typeof HOST_IPC)[keyof typeof HOST_IPC]
+
+/** Who ended a run (RunSummary.endedBy, run.status). 'policy' and 'budget' are host-finalized exec runs. */
+export type RunEndedBy = 'user' | 'app' | 'policy' | 'budget'
+
+/** Wire protocol version of the host socket (host.challenge / host.hello). */
+export const HOST_PROTOCOL_VERSION = 1
+
+/** What an authenticated client may do. 'read' < 'operate' < 'decide' < 'configure' by convention; each is granted explicitly. */
+export type HostScope = 'read' | 'operate' | 'decide' | 'configure'
+export const HOST_SCOPES: readonly HostScope[] = ['read', 'operate', 'decide', 'configure']
+
+export type HostClientKind = 'tui' | 'cli'
+
+/** 'desktop': the Electron app with a window. 'headless-host': the Electron app started with --headless-host. 'inproc': pure Node inside the CLI. */
+export type HostKind = 'desktop' | 'headless-host' | 'inproc'
+
+export type HostState = 'starting' | 'ready' | 'draining'
+
+/** `<dataDir>/run/daemon.json`: the live host's advertisement (cli-spec 3.2). Written atomically by the owner only. */
+export interface DaemonInfo {
+  /** 12 lowercase hex chars (src/main/host/identity.ts). */
+  hostInstanceId: string
+  pid: number
+  /** The owner's process start time as processStartTime() reports it; guards against PID reuse. */
+  processStartTime?: string
+  /** Socket path (unix) or pipe name (win32). */
+  endpoint: string
+  state: HostState
+  /** Epoch ms. */
+  startedAt: number
+  hostKind?: HostKind
+  appVersion?: string
+}
+
+/** Step 1 of the handshake: host -> client, sent immediately on socket connect. */
+export interface RpcChallengeFrame {
+  jsonrpc: '2.0'
+  method: 'host.challenge'
+  params: {
+    protocolVersion: 1
+    hostInstanceId: string
+    /** 32-byte hex random nonce. */
+    hostNonce: string
+  }
+}
+
+/** host.hello params (step 2: client -> host). */
+export interface RpcHelloParams {
+  protocolVersion: 1
+  clientKind: HostClientKind
+  clientVersion: string
+  pid: number
+  cwd: string
+  /** 32-byte hex random nonce. */
+  clientNonce: string
+  requestedScopes: HostScope[]
+  /**
+   * Canonical structured full-transcript HMAC (binds all client fields including cwd):
+   * HMAC-SHA256(daemon.secret,
+   *   JSON.stringify(['client:v1', protocolVersion, hostInstanceId, hostNonce, clientNonce, clientKind, clientVersion, pid, cwd, requestedScopes]))
+   */
+  clientProof: string
+}
+
+/** Step 2: client -> host. */
+export interface RpcHelloRequest {
+  jsonrpc: '2.0'
+  id: 1
+  method: 'host.hello'
+  params: RpcHelloParams
+}
+
+/** Step 3: host -> client (the result of host.hello). */
+export interface RpcHelloResult {
+  protocolVersion: 1
+  hostInstanceId: string
+  hostKind: HostKind
+  appVersion: string
+  dataDir: string
+  mock: boolean
+  grantedScopes: HostScope[]
+  /** Populated when clientVersion !== appVersion; 'read', 'operate', and 'decide' still work when protocolVersion matches. */
+  versionSkewWarning?: string
+  /**
+   * Canonical structured full-transcript HMAC (binds all host fields):
+   * HMAC-SHA256(daemon.secret,
+   *   JSON.stringify(['host:v1', protocolVersion, hostInstanceId, clientNonce, hostNonce, hostKind, appVersion, dataDir, mock, grantedScopes]))
+   */
+  hostProof: string
+}
+
+export type HostRpcErrorCode =
+  | 'host_starting'
+  | 'host_draining'
+  | 'terminal_server_disabled'
+  | 'unknown_channel'
+  | 'desktop_unavailable'
+  | 'agent_descendant_refused'
+  | 'stale_target_digest'
+  | 'stale_revision'
+  | 'scope_denied'
+  | 'frame_too_large'
+  | 'bad_request'
+
+/** The `data` of a JSON-RPC error answered by the host. */
+export interface HostRpcError {
+  code: HostRpcErrorCode
+  message: string
+  /** host_starting / host_draining: when to try again. */
+  retryAfterMs?: number
+}
+
+/** Max line length until host.hello succeeds. */
+export const RPC_PRE_AUTH_FRAME_MAX_BYTES = 16 * 1024
+/** Standard control channel request cap. */
+export const RPC_CONTROL_REQUEST_MAX_BYTES = 2 * 1024 * 1024
+/** Standard control channel response cap (runs:subscribe snapshots must fit). */
+export const RPC_CONTROL_RESPONSE_MAX_BYTES = 16 * 1024 * 1024
+/** Request / response cap of RPC_BULK_CHANNELS. */
+export const RPC_BULK_FRAME_MAX_BYTES = 80 * 1024 * 1024
+/** Host-wide cap on concurrent in-flight bulk frames (> 2 MB) across all sockets. */
+export const RPC_BULK_MEMORY_BUDGET_BYTES = 256 * 1024 * 1024
+/** Deadline for an unauthenticated socket to finish host.hello. */
+export const RPC_HANDSHAKE_TIMEOUT_MS = 2000
+export const RPC_MAX_UNAUTH_SOCKETS = 16
+export const RPC_MAX_CLIENT_SOCKETS = 32
+export const RPC_MAX_INFLIGHT_PER_SOCKET = 4
+
+/** Channels whose frames may reach RPC_BULK_FRAME_MAX_BYTES (base64 images, kit bundles, knowledge graphs). */
+export const RPC_BULK_CHANNELS: readonly string[] = [
+  'runs:start',
+  'runs:startQuick',
+  'runs:continue',
+  'runs:send',
+  'runs:get',
+  'kit:exportBundle',
+  'kit:previewBundle',
+  'kit:applyBundle',
+  'knowledge:get',
+  'skillLibrary:addFromBundle'
+]
+
+/** host.subscribe topics: non-run push channels a socket client may receive. */
+export type HostSubscribeTopic = 'settings' | 'connections' | 'mcpLibrary' | 'skillLibrary' | 'capabilities' | 'engagement'
+
+/** runs:subscribe input (cli-spec 3.3(4).1). */
+export interface RunsSubscribeInput {
+  projectIds?: string[]
+  runIds?: string[]
+  /** Run id whose RunRecord the snapshot carries (images replaced by OmittedImage). */
+  includeActiveRunRecord?: string
+  /** Follow continuations / auto-resumes and run.moved promotions of subscribed runs. */
+  followChains?: boolean
+  /** Last seq the client applied; a valid one in the ring buffer gets a replay. */
+  sinceSeq?: number
+  filterKey?: string
+  hostInstanceId?: string
+}
+
+/** Stands in for an image's base64 data in snapshots and oversized push frames; the bytes come only via runs:get. */
+export interface OmittedImage {
+  mediaType: ImageMediaType
+  byteLength: number
+  omittedBase64: true
+}
+
+/** A durable RunEvent with its host event bus sequence number. */
+export interface SequencedHostEvent {
+  seq: number
+  event: RunEvent
+}
+
+/** runs:subscribe result: a snapshot XOR a replay, never both. */
+export type RunsSubscribeResult =
+  | {
+      mode: 'snapshot'
+      hostInstanceId: string
+      seq: number
+      filterKey: string
+      snapshot: {
+        liveRuns: RunSummary[]
+        /** Open cards of each live run, keyed by run id (runs:pendingCards per run). */
+        pendingCards: Record<string, PendingCards>
+        activeRun?: RunRecord
+        /** Runs ended within the last 10 minutes. */
+        recentEndedRuns: RunSummary[]
+      }
+    }
+  | {
+      mode: 'replay'
+      hostInstanceId: string
+      fromSeq: number
+      toSeq: number
+      filterKey: string
+      events: SequencedHostEvent[]
+    }
+
+// Headless exec (cli-spec 6.2(1)).
+
+export interface HeadlessDecisionPolicy {
+  permission: 'deny' | 'fail' | 'wait' // default: 'deny'
+  rules: 'deny' | 'fail' | 'wait' // default: 'deny'
+  mcpInstall: 'deny' | 'fail' | 'wait' // default: 'deny'
+  question: 'fail' | 'conservative' | 'wait' // default: 'fail'
+  proposal: 'decline' | 'fail' | 'wait' // default: 'decline'
+  merge: 'hold' | 'fail' | 'wait' // default: 'hold'
+  /** Max auto-denials/declines before ending the run as 'needs-decision' (default 5). */
+  maxAutoDenials?: number
+  /** Timeout in ms when a policy is 'wait' (default 900_000 = 15 min). */
+  waitTimeoutMs?: number
+  /** Grace window in ms before auto-resolving while an interactive Desktop/TUI client is open (default 60_000). */
+  humanGraceMs?: number
+}
+
+export const DEFAULT_HEADLESS_DECISION_POLICY: Readonly<Required<HeadlessDecisionPolicy>> = {
+  permission: 'deny',
+  rules: 'deny',
+  mcpInstall: 'deny',
+  question: 'fail',
+  proposal: 'decline',
+  merge: 'hold',
+  maxAutoDenials: 5,
+  waitTimeoutMs: 900_000,
+  humanGraceMs: 60_000
+}
+
+export interface RunOverrides {
+  /** Overrides Project.permissionMode. Under 'operate' scope, must satisfy canNarrowPermissionMode(projectMode, overrideMode). */
+  permissionMode?: PermissionMode
+  /** Overrides Project.autoContinue for this run (under 'operate', cannot change false -> true). */
+  autoContinue?: boolean
+  /** Overrides Project.maxAutoContinues (0..MAX_AUTO_CONTINUES_LIMIT = 500; under 'operate', <= project.maxAutoContinues). */
+  maxAutoContinues?: number
+  /** Overrides Project.maxBudgetUsd (finite >= 0 USD estimated cap across the execChainId; under 'operate', <= project.maxBudgetUsd). */
+  maxBudgetUsd?: number
+  /** Allow starting/continuing with maxBudgetUsd even when an effective role model has no known price (requires 'configure' if project sets maxBudgetUsd). */
+  allowUnpricedBudget?: boolean
+  /** Allow ending as 'completed' even if conflict worktree branches remain unmerged (--allow-unmerged, default false). */
+  allowUnmerged?: boolean
+  /** Allow inbound cross-run `message_run` deliveries during an execMode run (default false; requires 'configure' if enabled). */
+  allowPeerMessages?: boolean
+  /** Host-enforced headless lifecycle & decision policy. */
+  execMode?: boolean
+  /** Stable identifier linking all continuation/auto-resume RunSummaries belonging to one headless invocation. */
+  execChainId?: string
+  /** Keep paused run alive with an auto-resume timer on rate-limit hit in execMode (default false). */
+  waitForReset?: boolean
+  /** Stall timeout in ms when idle with non-quiescent state and no activityGen progress (default 300_000 = 5 min). */
+  execStallTimeoutMs?: number
+  /** Executed inside RunManager under `decidedBy: { surface: 'policy' }` (requires no client 'decide' scope). */
+  decisionPolicy?: HeadlessDecisionPolicy
+}
+
+/** RunOverrides.execStallTimeoutMs default (5 min). */
+export const DEFAULT_EXEC_STALL_TIMEOUT_MS = 300_000
+
+/** How a headless exec run ended (RunSummary.execOutcome, run.finalized). */
+export type ExecOutcome =
+  | 'completed'
+  | 'completed-unplanned'
+  | 'unmerged-conflicts'
+  | 'blocked'
+  | 'incomplete-plan'
+  | 'needs-decision'
+  | 'budget-exceeded'
+  | 'rate-limited'
+  | 'auth-error'
+  | 'failed'
+  | 'stalled'
+  | 'interrupted'
+
+export const EXEC_OUTCOMES: readonly ExecOutcome[] = [
+  'completed',
+  'completed-unplanned',
+  'unmerged-conflicts',
+  'blocked',
+  'incomplete-plan',
+  'needs-decision',
+  'budget-exceeded',
+  'rate-limited',
+  'auth-error',
+  'failed',
+  'stalled',
+  'interrupted'
+]
+
+/** CLI exit code per outcome (cli-spec 6.2(3)). */
+export const EXEC_OUTCOME_EXIT_CODE: Record<ExecOutcome, number> = {
+  completed: 0,
+  'completed-unplanned': 0,
+  'unmerged-conflicts': 3,
+  blocked: 3,
+  'incomplete-plan': 3,
+  'needs-decision': 3,
+  'budget-exceeded': 3,
+  'rate-limited': 4,
+  'auth-error': 5,
+  failed: 1,
+  stalled: 1,
+  interrupted: 130
+}
+
+/** Who resolved a decision card (cli-spec 3.4(4)). */
+export interface DecidedBy {
+  surface: 'desktop' | 'tui' | 'cli' | 'policy'
+  reportedPid?: number
+}
+
+/** The result of a decision method (decide, decideRules, decideProposal, answerQuestion, decideMerge, answerMcpInstall). */
+export interface DecisionOutcome {
+  status: 'applied' | 'already-resolved' | 'stale-revision' | 'cancelled' | 'not-found'
+  runId?: string
+  requestId: string
+  /** e.g. 'allow', 'deny', 'grant', 'approve', 'revise', 'decline', 'hold', 'merge', 'discard' */
+  effectiveDecision?: string
+  /** Populated when a proposal approval was turned into a 'revise' outcome due to a validation/apply error. */
+  applyError?: string
+  decidedBy?: DecidedBy
+}
+
+// Host-validated bundles (cli-spec 3.6).
+
+/** One file of a skill bundle: a relative POSIX path and its bytes as base64. */
+export interface SkillBundleFile {
+  relPath: string
+  base64: string
+}
+
+/** skillLibrary:addFromBundle input. The host decodes and validates every file like skillLibrary:addFromFolder. */
+export interface SkillBundleInput {
+  name: string
+  files: SkillBundleFile[]
+}
+
+export const SKILL_BUNDLE_MAX_FILES = 50
+export const SKILL_BUNDLE_SKILL_MD_MAX_BYTES = 256 * 1024
+export const SKILL_BUNDLE_FILE_MAX_BYTES = 64 * 1024
+export const SKILL_BUNDLE_MAX_BYTES = 1024 * 1024
+
+/** kit:exportBundle input: like kit:export, but the bytes come back instead of going to a picked path. */
+export interface KitBundleExportInput {
+  include: KitExportInput['include']
+  fileName?: string
+}
+
+export interface KitBundleExportResult {
+  fileName: string
+  rawBytesBase64: string
+  counts: KitCounts
+  bytes: number
+  notes: string[]
+}
+
+/** kit:previewBundle input. The result is a KitImportPreview with `path: ''` and a `targetDigest`. */
+export interface KitBundlePreviewInput {
+  fileName: string
+  rawBytesBase64: string
+}
+
+/** kit:applyBundle input. Refused when `digest` does not match the bytes or `targetDigest` the destination state (stale_target_digest). */
+export interface KitBundleApplyInput {
+  rawBytesBase64: string
+  digest: string
+  targetDigest: string
+  choices: KitImportChoice[]
 }

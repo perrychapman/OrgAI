@@ -1,4 +1,4 @@
-import type { ProjectKind, ProjectRemoveResult, RunStatus } from '@shared/types'
+import type { ProjectKind, ProjectRemoveResult, RunEndedBy, RunStatus } from '@shared/types'
 import { chainGroups, isOpenStatus } from './runChains'
 import { waitingItems, type WaitRun } from './needsYou'
 
@@ -102,7 +102,7 @@ export interface EndedRunLike {
   /** Only 'work' runs count (quick runs are 'work' too); absent counts as work. */
   kind?: string
   endedAt?: number
-  endedBy?: 'user' | 'app'
+  endedBy?: RunEndedBy
   endedWhile?: 'working' | 'waiting'
   endedWithApp?: true
 }

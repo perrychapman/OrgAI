@@ -1,4 +1,4 @@
-import type { RunStatus, RunSummary } from '@shared/types'
+import type { RunEndedBy, RunStatus, RunSummary } from '@shared/types'
 
 /**
  * Session chains. Continuing a run starts a new run that resumes the old run's provider session, so the new run
@@ -103,7 +103,7 @@ export function adoptEndFacts(summary: RunSummary, row: Partial<RunSummary>): Ru
  * The end facts a run.status event carries (`endedBy`, `endedWhile`): taken on 'finished' / 'error', and on 'stopping'
  * only when `endedBy` is 'user' (End session). Other statuses, or an event without them, give {}.
  */
-export function statusEventEndFacts(e: { status: RunStatus; endedBy?: 'user' | 'app'; endedWhile?: 'working' | 'waiting' }): { endedBy?: 'user' | 'app'; endedWhile?: 'working' | 'waiting' } {
+export function statusEventEndFacts(e: { status: RunStatus; endedBy?: RunEndedBy; endedWhile?: 'working' | 'waiting' }): { endedBy?: RunEndedBy; endedWhile?: 'working' | 'waiting' } {
   const terminal = e.status === 'finished' || e.status === 'error'
   if (!terminal && !(e.status === 'stopping' && e.endedBy === 'user')) return {}
   return { ...(e.endedBy ? { endedBy: e.endedBy } : {}), ...(terminal && e.endedWhile ? { endedWhile: e.endedWhile } : {}) }
@@ -201,7 +201,7 @@ export function sessionOpenRunId(message: string): string | null {
 
 // ---------- One conversation per session chain (docs/design/ux-review-continue.md, model 1-6) ----------
 
-type EndSummary = ChainSummary & Partial<Pick<RunSummary, 'endedAt' | 'endedWithApp' | 'title' | 'prompt' | 'error' | 'team'>> & { endedBy?: 'user' | 'app'; endedWhile?: 'working' | 'waiting' }
+type EndSummary = ChainSummary & Partial<Pick<RunSummary, 'endedAt' | 'endedWithApp' | 'title' | 'prompt' | 'error' | 'team'>> & { endedBy?: RunEndedBy; endedWhile?: 'working' | 'waiting' }
 
 /** The chain's key: its oldest member's id. Stable across continues, so a chain tab or a chain view keeps its identity. */
 export function chainKeyOf<T extends ChainSummary>(runs: readonly T[], id: string): string {
