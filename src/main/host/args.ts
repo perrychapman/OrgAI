@@ -22,7 +22,17 @@ import type {
   KnowledgeFactInput,
   KnowledgeItemRef,
   KnowledgeNodeSaveInput,
+  ImageAttachment,
+  McpAnswerInstallInput,
   McpCopyFromLibraryInput,
+  McpInstallDecision,
+  McpServerSpec,
+  MergeDecision,
+  PermissionDecision,
+  PermissionRuleDecision,
+  QuestionAnswer,
+  SendRunInput,
+  StartRunInput,
   McpLibrarySecretInput,
   McpProjectOverridesInput,
   McpSecretInput,
@@ -799,3 +809,166 @@ export function proposalDecideArgs(input: unknown): { runId: string; proposalId:
   throw new Error('Unknown proposal decision.')
 }
 
+
+// ---------- Decision cards and run messages (cli-spec 3.3(3): deep validators for channels with no other builder) ----------
+
+/** A refusal of a malformed input: the dispatcher's invokeRpc reports it as `bad_request`. */
+export function badInput(message: string): Error {
+  return Object.assign(new Error(message), { code: 'bad_request' })
+}
+
+/** Longest free text on a decision (a deny message, a question note, an install note). */
+export const DECISION_TEXT_MAX_CHARS = 20_000
+/** Most labels a question answer may carry (RunManager keeps only the offered ones). */
+export const QUESTION_SELECTED_MAX = 200
+/** Most secret values an MCP install answer may carry. */
+export const INSTALL_SECRETS_MAX = 50
+/** Longest run message or prompt (work runs; quick runs are capped by QUICK_RUN_MAX_PROMPT_CHARS in checkQuickContinue). */
+export const RUN_MESSAGE_MAX_CHARS = 1_000_000
+
+const isPlain = (v: unknown): v is Record<string, unknown> => {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return false
+  const proto = Object.getPrototypeOf(v)
+  return proto === Object.prototype || proto === null
+}
+
+/** A required id field (run, request, card): text of 1 to 200 characters. */
+function refField(i: Record<string, unknown>, key: string, what: string): string {
+  const v = i[key]
+  if (typeof v !== 'string' || !v || v.length > 200) throw badInput(`Unknown ${what}.`)
+  return v
+}
+
+/** Optional text: undefined and null are absent; anything else must be text of at most `max`. */
+function decisionText(v: unknown, what: string, max = DECISION_TEXT_MAX_CHARS): string | undefined {
+  if (v === undefined || v === null) return undefined
+  if (typeof v !== 'string') throw badInput(`The ${what} must be text.`)
+  if (v.length > max) throw badInput(`The ${what} is too long (at most ${max.toLocaleString('en-US')} characters).`)
+  return v
+}
+
+function cardInput(input: unknown, what: string): { i: Record<string, unknown>; decision: Record<string, unknown> } {
+  if (!isPlain(input)) throw badInput(`Unknown ${what}.`)
+  if (!isPlain(input.decision)) throw badInput(`Unknown ${what}.`)
+  return { i: input, decision: input.decision }
+}
+
+/** runs:decide: { runId, requestId, decision: PermissionDecision }, rebuilt; extra fields dropped. */
+export function permissionDecideArgs(input: unknown): { runId: string; requestId: string; decision: PermissionDecision } {
+  const { i, decision: d } = cardInput(input, 'permission decision')
+  const head = { runId: refField(i, 'runId', 'run'), requestId: refField(i, 'requestId', 'permission request') }
+  if (d.behavior === 'allow') {
+    if (d.scope === undefined || d.scope === null) return { ...head, decision: { behavior: 'allow' } }
+    if (d.scope !== 'once' && d.scope !== 'session' && d.scope !== 'project') throw badInput('Unknown permission scope.')
+    return { ...head, decision: { behavior: 'allow', scope: d.scope } }
+  }
+  if (d.behavior === 'deny') {
+    const message = decisionText(d.message, 'message')
+    if (message === undefined) throw badInput('A denial needs a message for the agent.')
+    return { ...head, decision: { behavior: 'deny', message } }
+  }
+  throw badInput('Unknown permission decision.')
+}
+
+/** permissions:decideRequest: { runId, requestId, decision: PermissionRuleDecision }, rebuilt. */
+export function ruleDecideArgs(input: unknown): { runId: string; requestId: string; decision: PermissionRuleDecision } {
+  const { i, decision: d } = cardInput(input, 'rule decision')
+  const head = { runId: refField(i, 'runId', 'run'), requestId: refField(i, 'requestId', 'rule request') }
+  if (d.behavior === 'grant') {
+    if (d.scope !== 'run' && d.scope !== 'project') throw badInput('Unknown grant scope.')
+    return { ...head, decision: { behavior: 'grant', scope: d.scope } }
+  }
+  if (d.behavior === 'deny') {
+    const message = decisionText(d.message, 'message')
+    return { ...head, decision: message === undefined ? { behavior: 'deny' } : { behavior: 'deny', message } }
+  }
+  throw badInput('Unknown rule decision.')
+}
+
+/** merges:decide: { runId, reviewId, decision: MergeDecision }, rebuilt. */
+export function mergeDecideArgs(input: unknown): { runId: string; reviewId: string; decision: MergeDecision } {
+  const { i, decision: d } = cardInput(input, 'merge decision')
+  const head = { runId: refField(i, 'runId', 'run'), reviewId: refField(i, 'reviewId', 'merge review') }
+  if (d.behavior === 'merge' || d.behavior === 'discard' || d.behavior === 'hold') return { ...head, decision: { behavior: d.behavior } }
+  throw badInput('Unknown merge decision.')
+}
+
+/** setup:answer: { runId, questionId, answer: QuestionAnswer }, rebuilt (RunManager keeps only the offered labels). */
+export function questionAnswerArgs(input: unknown): { runId: string; questionId: string; answer: QuestionAnswer } {
+  if (!isPlain(input) || !isPlain(input.answer)) throw badInput('Unknown answer.')
+  const a = input.answer
+  const head = { runId: refField(input, 'runId', 'run'), questionId: refField(input, 'questionId', 'question') }
+  if (!Array.isArray(a.selected)) throw badInput('The answer must list the chosen options.')
+  if (a.selected.length > QUESTION_SELECTED_MAX) throw badInput(`At most ${QUESTION_SELECTED_MAX} options.`)
+  if (!a.selected.every((l) => typeof l === 'string')) throw badInput('Every chosen option must be text.')
+  const text = decisionText(a.text, 'note')
+  return { ...head, answer: text === undefined ? { selected: [...(a.selected as string[])] } : { selected: [...(a.selected as string[])], text } }
+}
+
+/**
+ * mcp:answerInstall: { runId, requestId, decision: McpInstallDecision }, rebuilt by type. RunManager.settleInstall
+ * still decides what an approval may change (the edited spec is allowlisted onto the request there).
+ */
+export function installAnswerArgs(input: unknown): McpAnswerInstallInput {
+  const { i, decision: d } = cardInput(input, 'install answer')
+  const head = { runId: refField(i, 'runId', 'run'), requestId: refField(i, 'requestId', 'install request') }
+  if (typeof d.approved !== 'boolean') throw badInput('An install answer must say whether it is approved.')
+  let scope: McpInstallDecision['scope'] = 'run'
+  if (d.scope !== undefined && d.scope !== null) {
+    if (d.scope !== 'run' && d.scope !== 'project' && d.scope !== 'library') throw badInput('Unknown install scope.')
+    scope = d.scope
+  }
+  const decision: McpInstallDecision = { approved: d.approved, scope }
+  const note = decisionText(d.note, 'note')
+  if (note !== undefined) decision.note = note
+  if (d.secrets !== undefined && d.secrets !== null) {
+    if (!isPlain(d.secrets)) throw badInput('Secrets must be name-value pairs.')
+    const entries = Object.entries(d.secrets)
+    if (entries.length > INSTALL_SECRETS_MAX) throw badInput(`At most ${INSTALL_SECRETS_MAX} secret values.`)
+    const secrets: Record<string, string> = Object.create(null) as Record<string, string>
+    for (const [k, v] of entries) {
+      if (!k || k.length > 200) throw badInput('Unknown secret slot.')
+      if (typeof v !== 'string' || v.length > 4_000) throw badInput('A secret value must be text of at most 4,000 characters.')
+      secrets[k] = v
+    }
+    decision.secrets = secrets
+  }
+  if (d.spec !== undefined && d.spec !== null) {
+    if (!isPlain(d.spec)) throw badInput('The edited server must be an object.')
+    decision.spec = d.spec as unknown as McpServerSpec
+  }
+  return { ...head, decision }
+}
+
+/** A run message's text and images: text (may be empty when images come along), images an array or absent. */
+function messageParts(text: unknown, images: unknown, what: string): { text: string; images?: ImageAttachment[] } {
+  if (typeof text !== 'string') throw badInput(`The ${what} must be text.`)
+  if (text.length > RUN_MESSAGE_MAX_CHARS) throw badInput(`The ${what} is too long.`)
+  if (images === undefined || images === null) return { text }
+  // Items are checked (type, size, count) by RunManager's sanitizeImages; here only the container.
+  if (!Array.isArray(images)) throw badInput('Images must be a list.')
+  return { text, images: images as ImageAttachment[] }
+}
+
+/** runs:start: { projectId, prompt, scaffold?, images?, team? }, rebuilt; team only 'single'. */
+export function startRunArgs(input: unknown): StartRunInput {
+  if (!isPlain(input)) throw badInput('Unknown run input.')
+  if (!isValidId(input.projectId)) throw badInput('Project not found')
+  const { text, images } = messageParts(input.prompt, input.images, 'prompt')
+  if (input.scaffold !== undefined && input.scaffold !== null && typeof input.scaffold !== 'boolean') throw badInput('scaffold must be true or false.')
+  return {
+    projectId: input.projectId,
+    prompt: text,
+    ...(input.scaffold === true ? { scaffold: true } : {}),
+    ...(images ? { images } : {}),
+    ...(input.team === 'single' ? { team: 'single' as const } : {})
+  }
+}
+
+/** runs:send / runs:continue: { runId, text, images? }, rebuilt. */
+export function runMessageArgs(input: unknown): SendRunInput {
+  if (!isPlain(input)) throw badInput('Unknown run message.')
+  const runId = refField(input, 'runId', 'run')
+  const { text, images } = messageParts(input.text, input.images, 'message')
+  return { runId, text, ...(images ? { images } : {}) }
+}

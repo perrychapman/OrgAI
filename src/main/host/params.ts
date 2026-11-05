@@ -2,8 +2,10 @@
  * Positional parameter specs of every request channel (cli-spec 3.3(3), Wave 1). A channel's params are exactly the
  * ipcRenderer.invoke arguments after the channel (src/preload/index.ts), and the specs follow the ipc.ts handler
  * signatures. They are shallow on purpose: type and arity only. The handlers' own arg builders (quickArgs,
- * knowledgeArgs, capabilityArgs, ...) still do the deep validation, so a spec never refuses something the renderer
- * legitimately sends.
+ * knowledgeArgs, capabilityArgs, proposalDecideArgs, and for the decision cards and run messages
+ * permissionDecideArgs, ruleDecideArgs, mergeDecideArgs, questionAnswerArgs, installAnswerArgs, startRunArgs,
+ * runMessageArgs in args.ts) do the deep validation (a coded `bad_request` over RPC), so a spec never refuses something
+ * the renderer legitimately sends.
  *
  * Electron-free; relative imports only. Only registry.ts (and its tests) read these.
  */

@@ -696,6 +696,21 @@ Resolved `R1`–`R10` (single-host daemon vs Desktop ownership, socket authentic
     from `startsInFlight`, which tracks adapter.start calls); bootstrap sums the two into the `pausedAutoResumes`
     source. Same behaviour: the lease is taken before the timer entry is deleted and dropped once `continueRun` has
     registered the successor.
+  - Forced drain, second review fix: every drain first quiesces background work (`quiesce`: bootstrap disposes the
+    CapabilityService, so the runs `forceStop` ends arm no run-ended Team review that the settle step would wait on or
+    that would call a model from a host giving up its data folder), and `forceStop` is raced against `forceStopMs`
+    (3 s, as the desktop quit's `QUIT_STOP_DEADLINE_MS`); past it, or on a throw, `forceStopFallback`
+    (`RunManager.markQuit`) writes every live run synchronously and the drain goes on to settle and release.
+    `RunManager.completeForProject` refuses once quitting.
+  - Runtime validators: `params.ts` stays shallow (type and arity). The deep checks are the handlers' arg builders
+    in `args.ts`; the decision and run-message channels that had none now have them (`runs:decide`
+    `permissionDecideArgs`, `permissions:decideRequest` `ruleDecideArgs`, `merges:decide` `mergeDecideArgs`,
+    `setup:answer` `questionAnswerArgs`, `mcp:answerInstall` `installAnswerArgs`, `runs:start` `startRunArgs`,
+    `runs:send` / `runs:continue` `runMessageArgs`; a coded `bad_request` over RPC, extra fields dropped). Still only
+    shallow-checked at the boundary and left to the service: `setup:start` / `setup:retro` (ids looked up, instruction
+    passed to the prompt builder), `maintenance:*` (project id and branch looked up), `draft:orgChart`,
+    `projects:previewRemap` / `remapModels`, `mcp:upsert` / `mcpLibrary:upsert` (validateSpec in the service). Images
+    are checked item by item by RunManager's `sanitizeImages`, not at the boundary.
   - The desktop host never arms idle exit in Wave 1; `interactiveClients` counts open BrowserWindows only (no TUI
     sockets until Wave 2).
 - **Unverified / open.** No socket server, so nothing outside the process reaches `invokeRpc` yet. The desktop

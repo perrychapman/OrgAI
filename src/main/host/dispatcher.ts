@@ -42,7 +42,6 @@ import type {
   KnowledgeEdge,
   KnowledgeGraph,
   KnowledgeNode,
-  McpAnswerInstallInput,
   McpAssistInput,
   McpAuthStatus,
   McpAuthTarget,
@@ -56,14 +55,11 @@ import type {
   McpServerInfo,
   McpTestResult,
   McpUpsertInput,
-  MergeDecision,
   ModelPriceInfo,
   ModelPricesQuery,
   OrgExportResult,
   OrgTemplateInfo,
   PendingCards,
-  PermissionDecision,
-  PermissionRuleDecision,
   PluginUpsertInput,
   Project,
   ProjectCreateInput,
@@ -71,13 +67,11 @@ import type {
   ProjectRemoveResult,
   ProviderConnection,
   ProviderModel,
-  QuestionAnswer,
   QuickRunPromoteResult,
   RemapModelsInput,
   RemapModelsOutput,
   RemapResult,
   RunSummary,
-  SendRunInput,
   SetupStartInput,
   SkillApplySuggestionInput,
   SkillContent,
@@ -93,7 +87,6 @@ import type {
   SkillLinkLibraryInput,
   SkillMutationResult,
   SkillUpdateInput,
-  StartRunInput,
   TeamRecommendations,
   TeamReview,
   UsageStats,
@@ -148,6 +141,13 @@ import { checkRunTarget, isValidId } from '../windowScope'
 import { noopActivity } from './activity'
 import {
   capabilityArgs,
+  installAnswerArgs,
+  mergeDecideArgs,
+  permissionDecideArgs,
+  questionAnswerArgs,
+  ruleDecideArgs,
+  runMessageArgs,
+  startRunArgs,
   checkQuickContinue,
   connectionIdArg,
   connectionSecretArgs,
@@ -378,7 +378,8 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
     return draftOrgChart(runs.adapterFor(project), project, req, connections.importModelContext(projectConnection(project)))
   })
 
-  handle(IPC.runsStart, async (_e, input: StartRunInput) => {
+  handle(IPC.runsStart, async (_e, raw: unknown) => {
+    const input = startRunArgs(raw)
     const project = projects.get(input.projectId)
     if (!project) throw new Error('Project not found')
     return runs.start({ project, prompt: input.prompt, scaffold: input.scaffold, images: input.images, ...(input.team === 'single' ? { team: 'single' as const } : {}) })
@@ -428,7 +429,8 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
       runs.decideProposal(i.runId, i.proposalId, i.decision)
     }
   )
-  handle(IPC.runsContinue, async (_e, input: ContinueRunInput) => {
+  handle(IPC.runsContinue, async (_e, raw: unknown) => {
+    const input: ContinueRunInput = runMessageArgs(raw)
     const from = runs.summary(input.runId)
     if (!from) throw new Error('Run not found')
     // A quick run continues as the project rebuilt from its own summary (folder, team, edits), never a stored one.
@@ -445,10 +447,13 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
   handle(IPC.runsCancelAutoResume, (_e, runId: string) => runs.cancelAutoResume(runId))
   handle(
     IPC.setupAnswer,
-    (_e, input: { runId: string; questionId: string; answer: QuestionAnswer }) =>
+    (_e, raw: unknown) => {
+      const input = questionAnswerArgs(raw)
       runs.answerQuestion(input.runId, input.questionId, input.answer)
+    }
   )
-  handle(IPC.runsSend, (_e, input: SendRunInput) => {
+  handle(IPC.runsSend, (_e, raw: unknown) => {
+    const input = runMessageArgs(raw)
     const from = runs.summary(input.runId)
     if (from) checkQuickContinue(from, input.text, settings.dataDir)
     return runs.send(input.runId, input.text, input.images)
@@ -484,12 +489,15 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
   })
   handle(
     IPC.runsDecide,
-    (_e, input: { runId: string; requestId: string; decision: PermissionDecision }) =>
+    (_e, raw: unknown) => {
+      const input = permissionDecideArgs(raw)
       runs.decide(input.runId, input.requestId, input.decision)
+    }
   )
-  handle(IPC.mergesDecide, (_e, input: { runId: string; reviewId: string; decision: MergeDecision }) =>
+  handle(IPC.mergesDecide, (_e, raw: unknown) => {
+    const input = mergeDecideArgs(raw)
     runs.decideMerge(input.runId, input.reviewId, input.decision)
-  )
+  })
 
   handle(IPC.maintListWorktrees, (_e, projectId: string) => maintenance.listWorktrees(projectId))
   handle(IPC.maintIntegrate, (_e, input: { projectId: string; branch: string }) => maintenance.integrateWorktree(input.projectId, input.branch))
@@ -548,8 +556,10 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
   })
   handle(
     IPC.permissionsDecideRequest,
-    (_e, input: { runId: string; requestId: string; decision: PermissionRuleDecision }) =>
+    (_e, raw: unknown) => {
+      const input = ruleDecideArgs(raw)
       runs.decideRules(input.runId, input.requestId, input.decision)
+    }
   )
 
   registerConnectionIpc(handle, projects, connections)
@@ -792,7 +802,10 @@ function registerMcpIpc(
   handle(IPC.mcpSetSecret, (_e, input: unknown): McpMutationResult => mcp.setSecret(mcpSecretArgs(input)))
   handle(IPC.mcpTest, (_e, input: { projectId: string; serverId: string }): Promise<McpTestResult> => mcp.test(input))
   handle(IPC.mcpRegistrySearch, (_e, input: McpRegistrySearchInput): Promise<McpRegistrySearchResult> => mcp.registrySearch(input))
-  handle(IPC.mcpAnswerInstall, (_e, input: McpAnswerInstallInput): void => runs.answerMcpInstall(input.runId, input.requestId, input.decision))
+  handle(IPC.mcpAnswerInstall, (_e, raw: unknown): void => {
+    const input = installAnswerArgs(raw)
+    runs.answerMcpInstall(input.runId, input.requestId, input.decision)
+  })
   // scope 'library' runs the assistant on the virtual harness project; RunManager and the harness tools treat a run
   // whose projectId is HARNESS_PROJECT_ID as library scope.
   // allowBuild (library scope only, literal true): the session works in its own scratch dir under <data>/quick, with

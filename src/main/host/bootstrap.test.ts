@@ -212,6 +212,11 @@ describe('bootOrgAIHost', () => {
     await expect(h.dispatcher.invokeRpc(IPC.runsStart, [{ projectId: project.id, prompt: 'x' }], { surface: 'inproc', grantedScopes: ['read'] })).rejects.toMatchObject({ code: 'scope_denied' })
     await expect(h.dispatcher.invokeRpc(IPC.runsList, [{ not: 'an id' }], ctx)).rejects.toMatchObject({ code: 'bad_request' })
     await expect(h.dispatcher.invokeRpc('runs:nothing', [], ctx)).rejects.toMatchObject({ code: 'unknown_channel' })
+    // Deep validators: a decision that is not a PermissionDecision, or a prompt that is not text, is bad_request.
+    const decide = { surface: 'inproc' as const, grantedScopes: ['read', 'operate', 'decide'] as const }
+    await expect(h.dispatcher.invokeRpc(IPC.runsDecide, [{ runId: run.id, requestId: 'p1', decision: 'yes' }], decide)).rejects.toMatchObject({ code: 'bad_request' })
+    await expect(h.dispatcher.invokeRpc(IPC.mergesDecide, [{ runId: run.id, reviewId: 'm1', decision: { behavior: 'push' } }], decide)).rejects.toMatchObject({ code: 'bad_request' })
+    await expect(h.dispatcher.invokeRpc(IPC.runsStart, [{ projectId: project.id, prompt: { text: 'x' } }], ctx)).rejects.toMatchObject({ code: 'bad_request' })
     await h.runs.stopAll({ reason: 'quit' })
   })
 
@@ -265,6 +270,31 @@ describe('bootOrgAIHost', () => {
     expect(res.refusedBecause?.inFlightRpcMutations).toBeUndefined()
     expect(h.activity.state()).toBe('ready')
     await h.runs.stopAll({ reason: 'quit' })
+  })
+
+  it('a forced host.stop with a live work run schedules no Team review, waits on none and refuses model calls after', async () => {
+    const releasedWith: number[] = []
+    const own = fakeOwnership()
+    const h = boot({ ownership: own })
+    own.release.mockImplementation(() => {
+      releasedWith.push(h.activity.snapshot().counts.backgroundTasks)
+    })
+    const folder = join(root, 'repo-force')
+    mkdirSync(folder)
+    const project = h.services.projects.create({ name: 'Force', path: folder, brief: '', setupKind: 'existing', mock: true }, h.settings.get(), { mockAvailable: true })
+    const runEnded = vi.spyOn(h.services.capabilities, 'runEnded')
+    const ctx = { surface: 'inproc' as const, grantedScopes: ['read', 'operate', 'configure'] as const }
+    await h.dispatcher.invokeRpc(IPC.runsStart, [{ projectId: project.id, prompt: 'keep me live' }], ctx)
+    expect(h.runs.liveRuns().length).toBe(1)
+    const started = Date.now()
+    await expect(h.dispatcher.invokeRpc('host.stop', [{ force: true }], ctx)).resolves.toEqual({ stopping: true })
+    // The run's end reached the Team assistant after it was disposed: nothing armed, nothing waited on.
+    expect(runEnded).toHaveBeenCalled()
+    expect(releasedWith).toEqual([0])
+    expect(h.activity.snapshot().counts.backgroundTasks).toBe(0)
+    expect(Date.now() - started).toBeLessThan(2_000)
+    expect(h.runs.liveRuns().length).toBe(0)
+    await expect(h.runs.completeForProject(project, { system: 's', prompt: 'p', kind: 'recommend', tier: 'everyday' })).rejects.toThrow(/quitting/)
   })
 
   it('registers polled activity sources for the five host-owned kinds', () => {

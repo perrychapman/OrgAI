@@ -739,6 +739,8 @@ export class RunManager {
    * the adapter's default. Never for the harness project.
    */
   async completeForProject(project: Project, input: ProjectCompletionInput): Promise<{ text: string; model?: string }> {
+    // A quitting app (or draining host) spends no tokens on helpers.
+    if (this.quitting) throw new Error('OrgAI is quitting; no model calls start now.')
     if (isVirtualProjectId(project.id)) throw new Error('The harness and the built-in assistant projects have no model connection for completions.')
     const { adapter, choice } = this.choose(project, 'setup')
     const connection = this.options.resolveConnection?.(project, choice)

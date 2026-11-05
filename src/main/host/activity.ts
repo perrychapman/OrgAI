@@ -16,8 +16,23 @@ export interface HostActivityOptions {
   /** How often polled sources are read. */
   pollMs?: number
   now?: () => number
+  /**
+   * Every drain, synchronously, right after the state turns 'draining' and before forceStop: stop starting new
+   * background work (bootstrap: CapabilityService.dispose, so a run that forceStop ends schedules no Team review).
+   */
+  quiesce?: () => void
   /** host.stop with force: stop every run first. */
   forceStop?: () => Promise<void>
+  /**
+   * A forced drain gives forceStop at most this long. Default DEFAULT_FORCE_STOP_MS (as the desktop quit's
+   * QUIT_STOP_DEADLINE_MS).
+   */
+  forceStopMs?: number
+  /**
+   * Called when forceStop passes forceStopMs or throws (bootstrap: RunManager.markQuit, which synchronously refuses new
+   * work and writes every live run as cut by the app), as quitGate does on the desktop quit.
+   */
+  forceStopFallback?: () => void
   /** Called once the drain finished (the process may exit). */
   onDrained?: () => void
   /**
@@ -32,6 +47,9 @@ export interface HostActivityOptions {
 
 /** Default interval of the idle-exit poll. */
 export const DEFAULT_ACTIVITY_POLL_MS = 15_000
+
+/** A forced drain gives forceStop at most this long, then calls forceStopFallback and goes on. */
+export const DEFAULT_FORCE_STOP_MS = 3_000
 
 /** A forced drain waits at most this long for in-flight writers before it releases ownership anyway. */
 export const DEFAULT_FORCE_SETTLE_MS = 10_000
@@ -69,8 +87,8 @@ interface Source {
  * Leases (acquire / track) and polled sources (addSource) per ActivityLeaseKind. The host is idle when every count is
  * 0; `idleSince` is when it last became idle (sources are re-read on every poll and every snapshot). An armed idle
  * exit drains once the host has been idle for idleMs without a break. The drain (requestDrain or idle exit) is one
- * shared promise: state 'draining', ownership.markDraining, (forced: forceStop, then a bounded wait for in-flight
- * writers), ownership.release (HostOwnership removes only this host's own files), then onDrained once. Leases still
+ * shared promise: state 'draining', ownership.markDraining, quiesce, (forced: forceStop bounded by forceStopMs with
+ * forceStopFallback past it, then a bounded wait for in-flight writers), ownership.release (HostOwnership removes only this host's own files), then onDrained once. Leases still
  * work after the drain; the state stays.
  */
 export class HostActivityTracker implements HostActivityTrackerApi {
@@ -130,7 +148,8 @@ export class HostActivityTracker implements HostActivityTrackerApi {
 
   /**
    * Without force: refused (with the busy counts) unless every count is 0. With force: the host is 'draining' at once
-   * (new mutations get host_draining), forceStop runs, in-flight writers get up to forceSettleMs to finish, then
+   * (new mutations get host_draining), background work is quiesced, forceStop runs (at most forceStopMs, then
+   * forceStopFallback), in-flight writers get up to forceSettleMs to finish, then
    * ownership is released. A call made while a drain (forced or not) is under way joins it.
    */
   requestDrain(input: HostStopInput = {}): Promise<HostStopResult> {
@@ -205,12 +224,13 @@ export class HostActivityTracker implements HostActivityTrackerApi {
     } catch (e) {
       this.log(`Activity: marking the host draining failed: ${errText(e)}`)
     }
+    try {
+      this.opts.quiesce?.()
+    } catch (e) {
+      this.log(`Activity: quiescing background work failed: ${errText(e)}`)
+    }
     if (force) {
-      try {
-        await this.opts.forceStop?.()
-      } catch (e) {
-        this.log(`Activity: force stop failed, draining anyway: ${errText(e)}`)
-      }
+      await this.boundedForceStop()
       await this.settleWriters()
     }
     try {
@@ -224,6 +244,40 @@ export class HostActivityTracker implements HostActivityTrackerApi {
       this.opts.onDrained?.()
     } catch (e) {
       this.log(`Activity: onDrained failed: ${errText(e)}`)
+    }
+  }
+
+  /**
+   * Forced drain: forceStop raced against forceStopMs. On the deadline or a throw, forceStopFallback runs (synchronous
+   * writes of every live run) and the drain goes on; a forceStop that settles later is ignored.
+   */
+  private async boundedForceStop(): Promise<void> {
+    if (!this.opts.forceStop) return
+    const limit = this.opts.forceStopMs ?? DEFAULT_FORCE_STOP_MS
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let started: Promise<void>
+    try {
+      started = Promise.resolve(this.opts.forceStop())
+    } catch (e) {
+      started = Promise.reject(e)
+    }
+    const stopped = started.then(
+      () => 'done' as const,
+      (e: unknown) => {
+        this.log(`Activity: force stop failed, draining anyway: ${errText(e)}`)
+        return 'failed' as const
+      }
+    )
+    // Through globalThis at call time, so vi.useFakeTimers() replaces it.
+    const timeout = new Promise<'timeout'>((r) => (timer = globalThis.setTimeout(() => r('timeout'), limit)))
+    const outcome = await Promise.race([stopped, timeout])
+    globalThis.clearTimeout(timer)
+    if (outcome === 'done') return
+    if (outcome === 'timeout') this.log(`Activity: force stop did not finish within ${limit} ms; writing the runs now and draining anyway`)
+    try {
+      this.opts.forceStopFallback?.()
+    } catch (e) {
+      this.log(`Activity: the force stop fallback failed: ${errText(e)}`)
     }
   }
 

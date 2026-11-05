@@ -257,12 +257,82 @@ describe('HostActivityTracker requestDrain', () => {
       order.push('forceStop')
       throw new Error('stop failed')
     })
-    const { a, logs } = tracker({ ownership: own, forceStop, onDrained: () => order.push('onDrained') })
+    const { a, logs } = tracker({
+      ownership: own,
+      forceStop,
+      forceStopFallback: () => order.push('fallback'),
+      quiesce: () => order.push('quiesce'),
+      onDrained: () => order.push('onDrained')
+    })
     a.acquire('liveRuns')
     await expect(a.requestDrain({ force: true })).resolves.toEqual({ stopping: true })
-    expect(order).toEqual(['markDraining', 'forceStop', 'release', 'onDrained'])
+    expect(order).toEqual(['markDraining', 'quiesce', 'forceStop', 'fallback', 'release', 'onDrained'])
     expect(logs.some((l) => l.includes('stop failed'))).toBe(true)
     expect(a.state()).toBe('draining')
+  })
+
+  it('a forceStop that never settles is cut at forceStopMs: the fallback writes the runs and the drain finishes', async () => {
+    vi.useFakeTimers()
+    const order: string[] = []
+    const own = fakeOwnership(order)
+    const forceStop = vi.fn(() => new Promise<void>(() => {}))
+    const fallback = vi.fn(() => order.push('fallback'))
+    const onDrained = vi.fn(() => order.push('onDrained'))
+    const { a, logs } = tracker({ ownership: own, forceStop, forceStopMs: 3_000, forceStopFallback: fallback, onDrained })
+    a.acquire('liveRuns')
+    let settled = false
+    const p = a.requestDrain({ force: true }).then((r) => {
+      settled = true
+      return r
+    })
+    await vi.advanceTimersByTimeAsync(2_999)
+    expect(settled).toBe(false)
+    expect(fallback).not.toHaveBeenCalled()
+    expect(own.release).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1)
+    await expect(p).resolves.toEqual({ stopping: true })
+    expect(order).toEqual(['markDraining', 'fallback', 'release', 'onDrained'])
+    expect(fallback).toHaveBeenCalledTimes(1)
+    expect(logs.some((l) => l.includes('did not finish within 3000 ms'))).toBe(true)
+  })
+
+  it('a forceStop that finishes in time never calls the fallback', async () => {
+    const fallback = vi.fn()
+    const { a } = tracker({ ownership: fakeOwnership(), forceStop: async () => {}, forceStopFallback: fallback })
+    await expect(a.requestDrain({ force: true })).resolves.toEqual({ stopping: true })
+    expect(fallback).not.toHaveBeenCalled()
+  })
+
+  it('quiesce runs before forceStop, so background work forceStop would start is never waited on', async () => {
+    vi.useFakeTimers()
+    const own = fakeOwnership()
+    // Stands in for CapabilityService: a run ending arms a debounced review (a backgroundTasks count) unless disposed.
+    let disposed = false
+    let reviews = 0
+    const forceStop = vi.fn(async () => {
+      if (!disposed) reviews++
+    })
+    const { a } = tracker({ ownership: own, forceStop, quiesce: () => (disposed = true), forceSettleMs: 10_000, forceSettlePollMs: 50 })
+    a.addSource('backgroundTasks', () => reviews)
+    a.acquire('liveRuns')
+    const p = a.requestDrain({ force: true })
+    await vi.advanceTimersByTimeAsync(0)
+    await expect(p).resolves.toEqual({ stopping: true })
+    expect(reviews).toBe(0)
+    expect(own.release).toHaveBeenCalledTimes(1)
+  })
+
+  it('a throwing quiesce is logged and the drain goes on', async () => {
+    const own = fakeOwnership()
+    const { a, logs } = tracker({
+      ownership: own,
+      quiesce: () => {
+        throw new Error('dispose broke')
+      }
+    })
+    await expect(a.requestDrain()).resolves.toEqual({ stopping: true })
+    expect(own.release).toHaveBeenCalledTimes(1)
+    expect(logs.some((l) => l.includes('dispose broke'))).toBe(true)
   })
 
   it('a forced drain is draining while forceStop runs, joins concurrent stops and calls forceStop once', async () => {

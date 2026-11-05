@@ -433,7 +433,12 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     ownership,
     idleMs: daemonIdleMs(processEnv),
     onDrained: opts.onDrained,
+    // A draining host starts no Team review: without this, every run forceStop ends would arm a run-ended review
+    // (a backgroundTasks lease the settle step then waits on, and a model call from a host giving up its data folder).
+    quiesce: () => caps.dispose(),
     forceStop: () => rm.stopAll({ reason: 'quit' }),
+    // As the desktop quit's quitGate: past the deadline (or on a throw) write every live run as cut by the app now.
+    forceStopFallback: () => rm.markQuit(),
     log: (m) => log.info(m)
   })
   activity.addSource('liveRuns', () => rm.liveRuns().length)
