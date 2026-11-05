@@ -41,6 +41,15 @@ describe('permissions list', () => {
     expect(await runPermissions(f.ctx, ['list'])).toBe(0)
     expect(JSON.parse(f.out())).toMatchObject({ location: 'app', rules: [] })
   })
+
+  it('a folder-config-gated code project names the data folder, never settings.local.json', async () => {
+    const gated = project('g1', '/work', { folderConfigTrust: { state: 'untrusted' } } as unknown as Partial<Project>)
+    const { f } = setup({ 'permissions:list': () => [] }, { project: gated })
+    expect(await runPermissions(f.ctx, ['list'])).toBe(0)
+    expect(f.out()).toContain("OrgAI's data folder")
+    expect(f.out()).toContain('gated')
+    expect(f.out()).not.toContain('settings.local.json')
+  })
 })
 
 describe('permissions add / remove', () => {

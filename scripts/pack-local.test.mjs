@@ -120,7 +120,7 @@ test('main passes the darwin child env to every build step, in order', () => {
     const exec = (cmd, args, opts) => {
       calls.push({ cmd, args, env: opts.env })
       // The last step "builds" the app so the marker check passes.
-      if (args.includes('--dir')) fs.mkdirSync(path.join(root, 'release', 'mac-arm64', 'OrgAI.app'), { recursive: true })
+      if (args.includes('--dir')) fs.mkdirSync(path.join(root, 'release', unpackedLayout('darwin', process.arch).dir, 'OrgAI.app'), { recursive: true })
     }
     const lines = []
     main([], root, (l) => lines.push(l), { platform: 'darwin', env: { HOME: '/h' }, exec })

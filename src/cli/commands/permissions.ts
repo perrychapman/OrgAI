@@ -43,7 +43,12 @@ function whereRules(project: Project): { location: 'folder' | 'app'; text: strin
   const location = projectRulesLocation(project)
   return {
     location,
-    text: location === 'folder' ? `Rules are saved in ${safeLine(project.path)}/.claude/settings.local.json.` : "Rules are saved in OrgAI's data folder (engagements write nothing into their folder)."
+    text:
+      location === 'folder'
+        ? `Rules are saved in ${safeLine(project.path)}/.claude/settings.local.json.`
+        : project.folderConfigTrust !== undefined
+          ? "Rules are saved in OrgAI's data folder (this project's folder configuration is gated, so OrgAI writes nothing into the folder)."
+          : "Rules are saved in OrgAI's data folder (engagements write nothing into their folder)."
   }
 }
 

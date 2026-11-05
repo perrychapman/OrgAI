@@ -60,9 +60,12 @@ try {
   r = await at(['permissions', 'add', 'Bash(npm test:*)'])
   check(r.code === 0 && r.out.includes('Saved Bash(npm test:*)'), 'permissions add saves the rule', show(r))
   j = await jsonOf(['permissions', 'list'])
-  check(j.r.code === 0 && j.v?.rules?.some((x) => x.rule === 'Bash(npm test:*)') && j.v.location === 'folder', 'permissions list JSON has the rule (folder location)', show(j.r))
+  // Where rules live follows the project: gated folder config (folderConfigTrust set) or an engagement = the app's data folder.
+  const gated = project.folderConfigTrust !== undefined || project.kind === 'engagement'
+  const wantLocation = gated ? 'app' : 'folder'
+  check(j.r.code === 0 && j.v?.rules?.some((x) => x.rule === 'Bash(npm test:*)') && j.v.location === wantLocation, `permissions list JSON has the rule (${wantLocation} location)`, show(j.r))
   r = await at(['permissions', 'list'])
-  check(r.code === 0 && r.out.includes('.claude/settings.local.json'), 'permissions list text names where rules live', show(r))
+  check(r.code === 0 && r.out.includes('.claude/settings.local.json') === !gated && (gated ? r.out.includes("OrgAI's data folder") : true), 'permissions list text names where rules live', show(r))
   r = await at(['permissions', 'add', 'Bash(curl:*)'])
   check(r.code === 2 && /orgai: /.test(r.err), 'a too-broad rule is refused with the host sentence (exit 2)', show(r))
   r = await at(['permissions', 'remove', 'Bash(npm test:*)'])
