@@ -76,4 +76,15 @@ describe('ensureHost', () => {
     await expect(ensureHost(g.ctx, ['read'])).rejects.toMatchObject({ exitCode: EXIT.auth })
     expect(other.stops).toEqual([true])
   })
+
+  it("passes clientKind 'tui' through (the terminal UI is an interactive client)", async () => {
+    const h = new FakeHostClient()
+    const f = fakeContext({ connect: [h] })
+    await ensureHost(f.ctx, ['read', 'operate', 'decide'], { clientKind: 'tui' })
+    expect(f.connectCalls).toEqual([{ scopes: ['read', 'operate', 'decide'], opts: { clientKind: 'tui', waitStartingMs: 2000 } }])
+    const inproc = fakeInproc()
+    const g = fakeContext({ globals: { host: 'inproc' }, connect: [h], inproc: async () => inproc })
+    await ensureHost(g.ctx, ['read'], { clientKind: 'tui' })
+    expect(g.connectCalls[0].opts).toEqual({ clientKind: 'tui', waitStartingMs: 2000 })
+  })
 })

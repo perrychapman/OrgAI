@@ -8,7 +8,12 @@
  *   applies anything twice; a transient agent.partial (`atSeq`) always passes.
  * - When the socket closes, one reconnect loop runs with backoff (250 ms doubling to 5 s) for up to the window
  *   (30 s by default) and resubscribes with sinceSeq + hostInstanceId + filterKey. Past the window `onGone` fires.
- * - The follower never marks itself interactive (exec subscribers must not hold the human grace window).
+ * - `resubscribe()` re-runs runs:subscribe on the current client with the resume fields (sinceSeq + hostInstanceId +
+ *   filterKey), queueing notifications during the call exactly like `start()`: the TUI calls it after SIGCONT (an
+ *   unchanged filter gets a replay) and after a focus change (a new includeActiveRunRecord changes the filterKey, so
+ *   the host answers a snapshot).
+ * - The follower itself never asks to be non-interactive: `orgai watch` / `orgai exec` put `nonInteractive` in their
+ *   subscribe input (exec subscribers must not hold the human grace window); the TUI leaves it out.
  */
 import type { RunsEventParams, RunsSubscribeInput, RunsSubscribeResult } from '../../shared/types'
 import type { ConnectResult, HostClient } from '../types'
@@ -46,6 +51,10 @@ export interface RunStreamOptions {
   /** Timers (an object read at call time, so tests may swap its members). */
   timers?: RunStreamTimers
   reconnectWindowMs?: number
+  /** The socket closed and the reconnect loop started (optional; the TUI shows "reconnecting"). */
+  onReconnecting?: () => void
+  /** A (re)subscribe answered and was applied (optional; after a reconnect, `firstTime` is false). */
+  onSubscribed?: (mode: RunsSubscribeResult['mode'], firstTime: boolean) => void
 }
 
 export class RunStream {
@@ -64,6 +73,8 @@ export class RunStream {
   /** The client whose socket closed while a (re)subscribe was in flight; checked once that subscribe settles. */
   private closedWhileBusy: HostClient | undefined
   private closed = false
+  /** resubscribe() was called while a (re)subscribe was busy. */
+  private resubscribeQueued = false
 
   constructor(private readonly o: RunStreamOptions) {
     this.current = o.client
@@ -103,7 +114,44 @@ export class RunStream {
     if (this.closedWhileBusy === this.current) {
       this.closedWhileBusy = undefined
       void this.reconnect()
+      return
     }
+    this.runQueuedResubscribe()
+  }
+
+  /**
+   * Subscribe again on the current client (resume fields included). While another (re)subscribe or the reconnect loop
+   * is busy, one more resubscribe is queued for when it settles, so the newest subscribe input always wins. Rejects
+   * when the call fails; a socket that closed during it starts the reconnect loop instead.
+   */
+  async resubscribe(): Promise<void> {
+    if (this.done()) return
+    if (this.reconnecting) {
+      this.resubscribeQueued = true
+      return
+    }
+    const c = this.current
+    try {
+      this.reconnecting = true
+      await this.subscribe(c, false)
+    } catch (e) {
+      if (this.closedWhileBusy !== c) throw e
+    } finally {
+      this.reconnecting = false
+    }
+    if (this.closedWhileBusy === c) {
+      this.closedWhileBusy = undefined
+      void this.reconnect()
+      return
+    }
+    this.runQueuedResubscribe()
+  }
+
+  /** A resubscribe asked for while busy runs now (errors are dropped: the caller's promise already settled). */
+  private runQueuedResubscribe(): void {
+    if (!this.resubscribeQueued || this.reconnecting || this.done()) return
+    this.resubscribeQueued = false
+    void this.resubscribe().catch(() => undefined)
   }
 
   /** Remove the listeners and close the client. Idempotent. */
@@ -154,6 +202,7 @@ export class RunStream {
     const pending = queue
     queue = null
     for (const p of pending) this.onRunsEvent(p)
+    if (!this.done()) this.o.onSubscribed?.(res.mode, firstTime)
   }
 
   private watchClose(c: HostClient): void {
@@ -168,6 +217,7 @@ export class RunStream {
   private async reconnect(): Promise<void> {
     if (this.reconnecting) return
     this.reconnecting = true
+    if (!this.done()) this.o.onReconnecting?.()
     try {
       const window = this.o.reconnectWindowMs ?? RUN_STREAM_RECONNECT_WINDOW_MS
       const started = this.timers.now()
@@ -203,6 +253,7 @@ export class RunStream {
       }
     } finally {
       this.reconnecting = false
+      this.runQueuedResubscribe()
     }
   }
 }

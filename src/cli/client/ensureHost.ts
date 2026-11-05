@@ -7,8 +7,12 @@
  *   does, then connect.
  *
  * Refusals: terminal access off exits 1 naming App settings > Terminal access; a failed handshake proof exits 5; a
- * draining host, or one still starting past the wait, exits 6; anything else exits 1. The client never marks itself
- * interactive (exec runs must not hold the human grace window).
+ * draining host, or one still starting past the wait, exits 6; anything else exits 1.
+ *
+ * Interactivity follows the client kind: exec, resume --exec and the other commands connect as 'cli' (the default) and
+ * never count as interactive (exec runs must not hold the human grace window). The terminal UI connects with
+ * `clientKind: 'tui'`: the host counts 'tui' sockets as interactiveClients (a person is watching) and fills
+ * `decidedBy.surface` 'tui' on the decisions it sends.
  */
 import type { HostClientKind, HostKind, HostScope } from '../../shared/types'
 import { CliError, EXIT, type CliContext, type ConnectResult, type HostClient, type InprocHostHandle } from '../types'
@@ -28,8 +32,9 @@ export interface EnsuredHost {
 }
 
 export interface EnsureHostOptions {
-  /** Exec clients are never interactive; only `false` is accepted. */
+  /** Exec clients are never interactive; only `false` is accepted (it changes nothing; 'cli' clients never are). */
   interactive?: false
+  /** 'cli' (default; non-interactive) or 'tui' (the interactive terminal UI; counted as an interactive client). */
   clientKind?: HostClientKind
 }
 
