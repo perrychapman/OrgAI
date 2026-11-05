@@ -1,10 +1,20 @@
 import { describe, expect, it } from 'vitest'
 import type { Role } from '@shared/types'
-import { overlayOwnItems } from './runManager'
+import { overlayOwnItems, overlayOwnRoles } from './runManager'
 
 const role = (id: string, mcpServers?: string[]): Role =>
   ({ id, slug: id, name: id, description: '', responsibilities: [], prompt: '', tools: [], model: 'inherit', canSpawn: false, spawnable: [], reportsTo: null, position: { x: 0, y: 0 }, color: '#000000', ...(mcpServers ? { mcpServers } : {}) }) as Role
 const item = (id: string, name: string, extra: { libraryId?: string; v?: number } = {}): { id: string; name: string; libraryId?: string; v?: number } => ({ id, name, ...extra })
+
+describe('overlayOwnRoles: an approved org chart moves only its own roles', () => {
+  const withPrompt = (id: string, prompt: string): Role => ({ ...role(id), prompt })
+  it('keeps an ingested prompt edit on an unnamed role out of the live run', () => {
+    const live = [withPrompt('a', 'old'), withPrompt('b', 'old')]
+    const saved = [withPrompt('a', 'new'), withPrompt('b', 'INGESTED'), withPrompt('c', 'added')]
+    const out = overlayOwnRoles(live, saved, { ids: ['a', 'c'], names: ['a', 'c'] })
+    expect(out.map((r) => [r.id, r.prompt])).toEqual([['a', 'new'], ['b', 'old'], ['c', 'added']])
+  })
+})
 
 describe('overlayOwnItems: what an approved change moves onto a live run', () => {
   it('takes only the named server; a pulled removal, change or addition in the same save stays out', () => {
