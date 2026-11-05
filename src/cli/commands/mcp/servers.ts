@@ -284,7 +284,8 @@ export async function mcpOverrides(ctx: CliContext, args: string[]): Promise<num
     const res = await hostCall<McpMutationResult>(client, 'mcp:setProjectOverrides', [input])
     const saved = res.servers.find((x) => x.spec.id === s.spec.id)?.spec
     const kept = (stdio ? saved?.envOverrides : saved?.headerOverrides) ?? {}
-    const dropped = Object.keys(sent).filter((k) => kept[k] !== sent[k])
+    // Only names given on this command line count: a stored name the entry no longer lists is dropped by the host too.
+    const dropped = Object.keys(stdio ? env : headers).filter((k) => kept[k] !== sent[k])
     if (dropped.length) {
       throw new CliError(
         `${safeLine(s.spec.name)} does not take ${dropped.map(safeLine).join(', ')} per project (its library entry lists the names a project may override); ${dropped.length === 1 ? 'it was' : 'they were'} not saved. The other values were saved.`,

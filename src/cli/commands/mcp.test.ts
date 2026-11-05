@@ -465,6 +465,8 @@ describe('mcp test / promote / copy / overrides', () => {
     const r = await run(f, ['overrides', 'pg', '--env', 'NOPE=x'])
     expect(r.code).toBe(1)
     expect(r.err).toContain('does not take NOPE per project')
+    const stale = setup(overridesHost(linked({ envOverrides: { OLD: '1' } }), ['A']))
+    expect((await run(stale.f, ['overrides', 'pg', '--env', 'A=2'])).code).toBe(0)
     for (const args of [['overrides', 'pg', '--unset', 'Z'], ['overrides', 'pg', '--header', 'X=1'], ['overrides', 'pg', '--env', 'A=1', '--unset', 'A'], ['overrides', 'pg', '--clear', '--env', 'A=2']]) {
       const g = setup(overridesHost(stored, ['A']))
       expect((await run(g.f, args)).code).toBe(EXIT.usage)
