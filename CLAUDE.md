@@ -519,6 +519,23 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   `KitPreviewItem.roles` shows prompts and elevated tools, skill paths use `safeKitRelPath`, skill export drops private-looking
   files, and an export target whose suffix was added here is refused when it exists (`kitExportTarget`).
 
+- Repository lock: `worktrees.ts` `withRepoLock` (delegating to `runtime/repoLock.ts`) serializes ALL git operations
+  per repository, keyed by the common git dir, across processes through `<commonDir>/orgai-repo.lock` (owner.json with
+  pid, start time and host instance id, 2 s heartbeat, 60 s `RepoLockTimeoutError`, dead or leftover owners reclaimed
+  with a read-only index.lock / MERGE_HEAD notice), reentrant per async call chain (`RepoLockLease.released` stops
+  detached work from reusing an ended scope) and never held across a merge review. A worktree and the main checkout of
+  one repo now queue behind each other; different repos do not. The info/exclude line follows
+  `git rev-parse --git-path info/exclude`, so linked worktrees and `.git`-file checkouts write the common dir's file.
+  Unit-tested with real git repos on macOS only.
+- CLI groundwork (Wave 0, docs/design/cli-spec.md section 8; no CLI yet): shared contracts in types.ts (HOST_IPC,
+  RunOverrides, HeadlessDecisionPolicy, DecisionOutcome, ExecOutcome, endedBy 'policy' / 'budget', run.finalized,
+  host wire-protocol and bundle/CAS types) with RunStore normalization; host primitives `src/main/host/processInfo.ts`
+  and `identity.ts`; the host ownership protocol (`requestSingleInstanceLock`, startup.mkdir, daemon.json, per-instance
+  socket) and an electron-free log.ts; the single-order cross-process `withRepoLock` and the info/exclude fix; the
+  pure view-models moved to `src/shared/view/`; refused colliding MCP secret env names on Codex launch; host-side
+  bundle validation and knowledge appendFacts / expectedUpdatedAt; the safe JSON codec. Each is verified by unit tests
+  only; Windows named pipes / ACLs and Windows / Linux process start times are unverified.
+
 ## Renderer
 
 - Permissions UI (#14; `docs/design/permissions.md`, walk `docs/design/ux-review-permissions.md`): PermissionCard

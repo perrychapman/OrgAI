@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { execSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import {
@@ -16,6 +16,7 @@ import {
   removeExcludeLine,
   withRepoLock
 } from './worktrees'
+import { repoLockActivity } from './repoLock'
 
 const ID = '-c user.name=OrgAI-Test -c user.email=test@orgai.local'
 let root: string
@@ -107,6 +108,43 @@ describe('prepareRepo / removeExcludeLine', () => {
       expect(await inspectPending(plain)).toEqual([])
     } finally {
       rmSync(plain, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('.git-file checkouts (h)', () => {
+  const lines = (f: string): string[] => (existsSync(f) ? readFileSync(f, 'utf8').split(/\r?\n/) : [])
+
+  it('a linked worktree writes the common info/exclude, never <worktree>/.git/info', async () => {
+    const wt = addWorktree('gitfile')
+    expect(statSync(join(wt.path, '.git')).isFile()).toBe(true)
+    expect(isGitRepo(wt.path)).toBe(true)
+    await prepareRepo(wt.path)
+    const common = join(root, '.git', 'info', 'exclude')
+    expect(lines(common).filter((l) => l === '.claude/worktrees/')).toHaveLength(1)
+    expect(statSync(join(wt.path, '.git')).isFile()).toBe(true)
+    expect(existsSync(join(wt.path, '.git', 'info'))).toBe(false)
+    expect(removeExcludeLine(wt.path)).toBe(true)
+    expect(lines(common)).not.toContain('.claude/worktrees/')
+    expect(removeExcludeLine(wt.path)).toBe(false)
+  })
+
+  it('a checkout made with git init --separate-git-dir writes the separate dir\'s info/exclude', async () => {
+    const base = realpathSync.native(mkdtempSync(join(tmpdir(), 'orgai-sep-')))
+    try {
+      const checkout = join(base, 'work')
+      const gitDir = join(base, 'store.git')
+      execSync(`git init -q -b main --separate-git-dir "${gitDir}" "${checkout}"`, { stdio: 'ignore' })
+      expect(statSync(join(checkout, '.git')).isFile()).toBe(true)
+      await prepareRepo(checkout)
+      const exclude = join(gitDir, 'info', 'exclude')
+      expect(lines(exclude)).toContain('.claude/worktrees/')
+      expect(statSync(join(checkout, '.git')).isFile()).toBe(true)
+      expect(existsSync(join(checkout, '.git', 'info'))).toBe(false)
+      expect(removeExcludeLine(checkout)).toBe(true)
+      expect(lines(exclude)).not.toContain('.claude/worktrees/')
+    } finally {
+      rmSync(base, { recursive: true, force: true })
     }
   })
 })
@@ -440,6 +478,7 @@ describe('withRepoLock', () => {
     return { promise, resolve }
   }
   const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
+  const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 
   it('serializes calls on one checkout in arrival order', async () => {
     const order: string[] = []
@@ -453,17 +492,16 @@ describe('withRepoLock', () => {
     const b = withRepoLock(`${root.replace(/\\/g, '/')}/`, async () => {
       order.push('b')
     })
-    await tick()
-    await tick()
+    while (!order.length) await tick()
+    await sleep(50)
     expect(order).toEqual(['a:start'])
     gate.resolve()
     await Promise.all([a, b])
     expect(order).toEqual(['a:start', 'a:end', 'b'])
   })
 
-  it('lets different checkouts interleave', async () => {
-    const other = join(root, '.claude', 'worktrees', 'agent-x')
-    mkdirSync(other, { recursive: true })
+  it('(c) serializes a worktree and the main checkout of one repository', async () => {
+    const wt = addWorktree('serial')
     const order: string[] = []
     const gate = deferred()
     const a = withRepoLock(root, async () => {
@@ -471,13 +509,118 @@ describe('withRepoLock', () => {
       await gate.promise
       order.push('main:end')
     })
-    await withRepoLock(other, async () => {
+    while (!order.length) await tick()
+    const b = withRepoLock(wt.path, async () => {
       order.push('worktree')
     })
-    expect(order).toEqual(['main:start', 'worktree'])
+    await sleep(50)
+    expect(order).toEqual(['main:start'])
     gate.resolve()
-    await a
-    expect(order).toEqual(['main:start', 'worktree', 'main:end'])
+    await Promise.all([a, b])
+    expect(order).toEqual(['main:start', 'main:end', 'worktree'])
+  })
+
+  it('(c) lets two different repositories interleave', async () => {
+    const other = realpathSync.native(mkdtempSync(join(tmpdir(), 'orgai-wt-other-')))
+    try {
+      git(other, 'init -q -b main')
+      const order: string[] = []
+      const gate = deferred()
+      const a = withRepoLock(root, async () => {
+        order.push('one:start')
+        await gate.promise
+        order.push('one:end')
+      })
+      while (!order.length) await tick()
+      await withRepoLock(other, async () => {
+        order.push('two')
+      })
+      expect(order).toEqual(['one:start', 'two'])
+      gate.resolve()
+      await a
+      expect(order).toEqual(['one:start', 'two', 'one:end'])
+    } finally {
+      rmSync(other, { recursive: true, force: true })
+    }
+  })
+
+  it('(a) contended: integrateWorktree(root) -> commitLeftovers(wt) races commitLeftovers(wt) without deadlock', async () => {
+    await prepareRepo(root)
+    const wt = addWorktree('race')
+    put(wt.path, 'src/race.js', 'export const race = 1\n')
+    // A pre-commit hook parks Task B inside commitLeftovers(wt), i.e. while it holds the repository lock.
+    const marks = realpathSync.native(mkdtempSync(join(tmpdir(), 'orgai-wt-hook-')))
+    const inside = join(marks, 'inside')
+    const go = join(marks, 'go')
+    const hooks = join(root, '.git', 'hooks')
+    mkdirSync(hooks, { recursive: true })
+    writeFileSync(
+      join(hooks, 'pre-commit'),
+      `#!/bin/sh\nif [ ! -f "${inside}" ]; then touch "${inside}"; while [ ! -f "${go}" ]; do sleep 0.05; done; fi\nexit 0\n`,
+      { mode: 0o755 }
+    )
+    try {
+      const done: string[] = []
+      const b = integrateWorktree(root, { ...wt, status: 'merging' }, 'race').then((r) => {
+        done.push('B')
+        return r
+      })
+      const deadline = Date.now() + 10_000
+      while (!existsSync(inside)) {
+        if (Date.now() > deadline) throw new Error('B never reached its commit')
+        await sleep(10)
+      }
+      // Task C on the same repository queues on the common dir (B is the holder, C a waiter).
+      const c = commitLeftovers(wt.path, 'C').then((r) => {
+        done.push('C')
+        return r
+      })
+      while (repoLockActivity() < 2) await sleep(5)
+      await sleep(100)
+      expect(done).toEqual([])
+      writeFileSync(go, '')
+      const timeout = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('deadlock')), 10_000))
+      const [rb, rc] = await Promise.race([Promise.all([b, c]), timeout])
+      expect(done).toEqual(['B', 'C'])
+      expect(rb.info.status).toBe('merged')
+      expect(readFileSync(join(root, 'src/race.js'), 'utf8')).toContain('race = 1')
+      expect(branches()).toEqual(['main'])
+      expect(rc.committed).toBe(false)
+      expect(repoLockActivity()).toBe(0)
+    } finally {
+      rmSync(join(hooks, 'pre-commit'), { force: true })
+      rmSync(marks, { recursive: true, force: true })
+    }
+  })
+
+  it('(b) same-checkout nesting: integrateWorktree(root) -> discardWorktree(root) completes', async () => {
+    await prepareRepo(root)
+    const wt = addWorktree('nest')
+    const timeout = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('deadlock')), 10_000))
+    const res = await Promise.race([integrateWorktree(root, { ...wt, status: 'merging' }, 'nothing'), timeout])
+    expect(res.info.status).toBe('empty')
+    expect(existsSync(wt.path)).toBe(false)
+    expect(branches()).toEqual(['main'])
+  })
+
+  it('(k) does not hold the repository lock while the review callback is pending', async () => {
+    await prepareRepo(root)
+    const wt = addWorktree('revk')
+    put(wt.path, 'src/k.js', 'export const k = 1\n')
+    const review = deferred()
+    let reviewing = false
+    const pending = integrateWorktree(root, { ...wt, status: 'merging' }, 'reviewed', async () => {
+      reviewing = true
+      await review.promise
+      return { behavior: 'merge' }
+    })
+    while (!reviewing) await tick()
+    expect(repoLockActivity()).toBe(0)
+    expect(existsSync(join(root, '.git', 'orgai-repo.lock'))).toBe(false)
+    expect(await withRepoLock(root, async () => 'free')).toBe('free')
+    expect(await withRepoLock(wt.path, async () => 'free too')).toBe('free too')
+    review.resolve()
+    expect((await pending).info.status).toBe('merged')
   })
 
   it('releases on rejection and is re-entrant within one call chain', async () => {
