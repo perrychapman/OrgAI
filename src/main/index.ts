@@ -1,4 +1,5 @@
-import { app, BrowserWindow, ipcMain, nativeImage, nativeTheme, safeStorage, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, nativeImage, nativeTheme, safeStorage, screen, shell } from 'electron'
+import { parseWindowInactive, windowPlacement } from './windowPlacement'
 import { mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -193,15 +194,41 @@ function openRunWindow(target: FocusRunTarget): void {
   else createWindow(target)
 }
 
+// Opt-in, read once: ORGAI_WINDOW_DISPLAY ('secondary' or a 1-based display number) and ORGAI_WINDOW_INACTIVE=1 let
+// test and walkthrough windows open on another monitor without taking focus. Unset = the default behaviour.
+const WINDOW_DISPLAY = process.env.ORGAI_WINDOW_DISPLAY
+const WINDOW_INACTIVE = parseWindowInactive(process.env.ORGAI_WINDOW_INACTIVE)
+let windowDisplayNoted = false
+
+function windowPlacementFor(width: number, height: number): { x: number; y: number } | null {
+  if (WINDOW_DISPLAY === undefined) return null
+  try {
+    const displays = screen.getAllDisplays().map((d) => ({ id: d.id, bounds: d.bounds, workArea: d.workArea }))
+    const result = windowPlacement(WINDOW_DISPLAY, displays, screen.getPrimaryDisplay().id, width, height)
+    if (result.note && !windowDisplayNoted) {
+      windowDisplayNoted = true
+      log.info(result.note)
+    }
+    return result.position
+  } catch (err) {
+    log.warn(`Window placement failed: ${err instanceof Error ? err.message : String(err)}`)
+    return null
+  }
+}
+
 /**
  * The one window factory. Every window, main or run-scoped, gets the same preload and security settings
  * (contextIsolation, the external-link handler). A run-scoped window loads the renderer with the hash
  * `#/run/<projectId>/<runId>`.
  */
 function createWindow(scope?: FocusRunTarget): BrowserWindow {
+  const width = scope ? 1280 : 1440
+  const height = scope ? 840 : 920
+  const placement = windowPlacementFor(width, height)
   const win = new BrowserWindow({
-    width: scope ? 1280 : 1440,
-    height: scope ? 840 : 920,
+    width,
+    height,
+    ...(placement ? { x: placement.x, y: placement.y } : {}),
     minWidth: 1024,
     minHeight: 680,
     show: false,
@@ -222,7 +249,7 @@ function createWindow(scope?: FocusRunTarget): BrowserWindow {
 
   windowScopes.set(win, scope)
   win.on('closed', () => windowScopes.delete(win))
-  win.on('ready-to-show', () => win.show())
+  win.on('ready-to-show', () => (WINDOW_INACTIVE ? win.showInactive() : win.show()))
   notifier?.attach(win)
   // window.open and target=_blank never create a window: http(s) links go to the user's browser, anything else
   // (file:, custom protocols, javascript:) is refused.
