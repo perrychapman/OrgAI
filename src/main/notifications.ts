@@ -1,6 +1,7 @@
 import { app, BrowserWindow, Notification } from 'electron'
 import type { FocusRunTarget, RunEvent, RunKind, RunPlan } from '@shared/types'
 import { DEFAULT_MAX_AUTO_CONTINUES, IPC, QUICK_PROJECT_ID } from '@shared/types'
+import { hiddenWindows } from './testWindows'
 import { pickFocusWindow } from './windowScope'
 
 /** What the notifier knows about a run. */
@@ -179,10 +180,12 @@ export class Notifier {
       target
     )
     if (!win) return
-    if (win.isMinimized()) win.restore()
-    win.show()
-    win.focus()
-    if (process.platform === 'win32') win.flashFrame(false)
+    if (!hiddenWindows()) {
+      if (win.isMinimized()) win.restore()
+      win.show()
+      win.focus()
+      if (process.platform === 'win32') win.flashFrame(false)
+    }
     win.webContents.send(IPC.appFocusRun, target)
   }
 }
