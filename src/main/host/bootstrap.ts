@@ -282,10 +282,15 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
       refreshLiteLLMSpend?.()
     }, LITELLM_SPEND_DELAY_MS)
   }
+  let activityRef: HostActivityTracker | undefined
   const rm = new RunManager(adapters, runBroadcast, runStore, setup, keepRunsFor, {
     dataDir,
     // cli-spec 3.4(1): the control socket dir, daemon secret, secrets.json and CODEX_HOME are off limits to agent tools.
     controlProtectedPaths: () => controlProtectedPaths(dataDir, ownership.runtimeDir),
+    // cli-spec 6.2(1) humanGraceMs: open windows (index.ts source) plus TUI / interactive sockets (socketServer's
+    // attachedClientCount, which leaves non-interactive CLI exec sockets out). `activity` is created further down;
+    // before that (never during a run) there is nobody to count.
+    interactiveClients: () => (activityRef ? activityRef.snapshot().counts.interactiveClients : 0),
     // "Always allow for project" cards: append folders / switch to Accept edits on the stored project (the store cleans them).
     saveProjectPermissions: (projectId, patch) =>
       projects.update(projectId, (p) => ({
@@ -457,6 +462,7 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     forceStopFallback: () => rm.markQuit(),
     log: (m) => log.info(m)
   })
+  activityRef = activity
   activity.addSource('liveRuns', () => rm.liveRuns().length)
   activity.addSource('pausedAutoResumes', () => rm.activeResumeTimerCount() + rm.inFlightResumeCount())
   activity.addSource('activeWorktreeOps', () => repoLockActivity())

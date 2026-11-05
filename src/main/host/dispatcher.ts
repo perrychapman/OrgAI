@@ -18,7 +18,10 @@ import type {
   AgentImportScan,
   AppInfo,
   AppSettings,
+  DecidedBy,
   DecisionLookup,
+  DecisionOptions,
+  DecisionOutcome,
   AppSettingsInfo,
   AuthStatusResult,
   CapabilityApplyResult,
@@ -72,6 +75,7 @@ import type {
   RemapModelsInput,
   RemapModelsOutput,
   RemapResult,
+  RunOverrides,
   RunSummary,
   SetupStartInput,
   SkillApplySuggestionInput,
@@ -119,6 +123,7 @@ import type { QuickRunService } from '../quick/quickRuns'
 import { createScratchDir } from '../quick/scratch'
 import { addRules, listRules, removeRule } from '../runtime/permissionRules'
 import type { RunManager } from '../runtime/runManager'
+import { overridesWidening } from '../runtime/runOverrides'
 import type { TemplateService } from '../setup/templates'
 import { skillAssistPrompt, skillsProject } from '../skills/assist'
 import { bundleArgs } from '../skills/files'
@@ -147,6 +152,7 @@ import {
   permissionDecideArgs,
   questionAnswerArgs,
   ruleDecideArgs,
+  continueRunArgs,
   runMessageArgs,
   startRunArgs,
   checkQuickContinue,
@@ -302,6 +308,42 @@ function rpcError(err: unknown): unknown {
   return err
 }
 
+/** Who resolves a card through this call (cli-spec 3.4(4)): the desktop, else the client's kind (default 'cli'). */
+export function decidedByOf(ctx: InvokeContext): DecidedBy {
+  return {
+    surface: ctx.surface === 'desktop' ? 'desktop' : (ctx.clientKind ?? 'cli'),
+    ...(ctx.pid ? { reportedPid: ctx.pid } : {})
+  }
+}
+
+/**
+ * The DecisionOptions every decision channel passes (cli-spec 3.4(4), 5.3): the card revision the client saw (absent =
+ * not checked) and who decided. The handlers return RunManager's DecisionOutcome; desktop callers ignore it.
+ */
+export function decisionOpts(ctx: InvokeContext, input: { expectedRevision?: number }): DecisionOptions {
+  return { ...(input.expectedRevision !== undefined ? { expectedRevision: input.expectedRevision } : {}), decidedBy: decidedByOf(ctx) }
+}
+
+/**
+ * Headless run overrides at the RPC boundary (cli-spec 2 item 2, 6.2(1)). The desktop surface never sets them (the
+ * renderer has no such field), so they are dropped there. From a socket / inproc client every widening field needs the
+ * 'configure' scope ('operate', the channel's own scope, may only narrow): without it the call is refused as
+ * scope_denied naming the fields. `allowWidening` tells RunManager whether a widening value may apply.
+ */
+export function checkRunOverrides(
+  ctx: InvokeContext,
+  project: Project,
+  overrides: RunOverrides | undefined
+): { overrides?: RunOverrides; allowWidening: boolean } {
+  if (ctx.surface === 'desktop' || !overrides) return { allowWidening: false }
+  const configure = !!ctx.grantedScopes?.includes('configure')
+  if (!configure) {
+    const widening = overridesWidening(project, overrides)
+    if (widening.length) throw new HostRpcFailure('scope_denied', `These run options need the configure scope: ${widening.join(', ')}.`)
+  }
+  return { overrides, allowWidening: configure }
+}
+
 /**
  * Every request handler registerIpc and its register*Ipc helpers had, moved verbatim (same sync / async shape, same
  * error messages). The first handler argument is the InvokeContext instead of the IpcMainInvokeEvent.
@@ -383,15 +425,30 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
     return draftOrgChart(runs.adapterFor(project), project, req, connections.importModelContext(projectConnection(project)))
   })
 
-  handle(IPC.runsStart, async (_e, raw: unknown) => {
+  handle(IPC.runsStart, async (ctx, raw: unknown) => {
     const input = startRunArgs(raw)
     const project = projects.get(input.projectId)
     if (!project) throw new Error('Project not found')
-    return runs.start({ project, prompt: input.prompt, scaffold: input.scaffold, images: input.images, ...(input.team === 'single' ? { team: 'single' as const } : {}) })
+    const o = checkRunOverrides(ctx, project, input.overrides)
+    return runs.start({
+      project,
+      prompt: input.prompt,
+      scaffold: input.scaffold,
+      images: input.images,
+      ...(input.team === 'single' ? { team: 'single' as const } : {}),
+      ...(o.overrides ? { overrides: o.overrides, allowWidening: o.allowWidening } : {})
+    })
   })
   handle(IPC.runsGet, (_e, runId: string) => runs.get(runId))
   // Chat: every field is rebuilt (quickArgs); the folder is validated in main (QuickRunService), never trusted here.
-  handle(IPC.runsStartQuick, (_e, input: unknown): Promise<RunSummary> => quick.start(quickArgs.start(input)))
+  // Overrides (socket / inproc only) are checked against the quick project the run will see, inside QuickRunService.start.
+  handle(IPC.runsStartQuick, (ctx, raw: unknown): Promise<RunSummary> => {
+    const input = quickArgs.start(raw)
+    if (ctx.surface === 'desktop') delete input.overrides
+    if (!input.overrides) return quick.start(input)
+    const overrides = input.overrides
+    return quick.start(input, { checkOverrides: (project) => checkRunOverrides(ctx, project, overrides).allowWidening })
+  })
   handle(IPC.runsPromoteQuick, (_e, input: unknown): QuickRunPromoteResult => quick.promote(quickArgs.promote(input)))
   // Skill assistant: library scope on the virtual skills project, project scope on a stored project.
   handle(IPC.skillsStartAssist, async (_e, input: unknown): Promise<RunSummary> => {
@@ -429,13 +486,13 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
   })
   handle(
     IPC.setupDecide,
-    (_e, input: unknown) => {
+    (ctx, input: unknown): DecisionOutcome => {
       const i = proposalDecideArgs(input)
-      runs.decideProposal(i.runId, i.proposalId, i.decision)
+      return runs.decideProposal(i.runId, i.proposalId, i.decision, decisionOpts(ctx, i))
     }
   )
-  handle(IPC.runsContinue, async (_e, raw: unknown) => {
-    const input: ContinueRunInput = runMessageArgs(raw)
+  handle(IPC.runsContinue, async (ctx, raw: unknown) => {
+    const input: ContinueRunInput = continueRunArgs(raw)
     const from = runs.summary(input.runId)
     if (!from) throw new Error('Run not found')
     // A quick run continues as the project rebuilt from its own summary (folder, team, edits), never a stored one.
@@ -446,15 +503,24 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
     if (!existing) throw new Error('Project not found')
     // Setup runs re-profile the repo like setup:start so the Architect's hidden context is current.
     const project = from.kind === 'setup' ? await setup.prepare(existing) : existing
-    return runs.continueRun(project, input.runId, input.text, input.images)
+    // Headless fields only from socket / inproc clients; overrides are checked against the project the run continues as.
+    if (ctx.surface === 'desktop' || (!input.overrides && input.exec === undefined)) {
+      return runs.continueRun(project, input.runId, input.text, input.images)
+    }
+    const o = checkRunOverrides(ctx, project, input.overrides)
+    return runs.continueRun(project, input.runId, input.text, input.images, {
+      ...(o.overrides ? { overrides: o.overrides } : {}),
+      ...(input.exec !== undefined ? { exec: input.exec } : {}),
+      allowWidening: !!ctx.grantedScopes?.includes('configure')
+    })
   })
   handle(IPC.runsResumeNow, (_e, runId: string) => runs.resumeNow(runId))
   handle(IPC.runsCancelAutoResume, (_e, runId: string) => runs.cancelAutoResume(runId))
   handle(
     IPC.setupAnswer,
-    (_e, raw: unknown) => {
+    (ctx, raw: unknown): DecisionOutcome => {
       const input = questionAnswerArgs(raw)
-      runs.answerQuestion(input.runId, input.questionId, input.answer)
+      return runs.answerQuestion(input.runId, input.questionId, input.answer, decisionOpts(ctx, input))
     }
   )
   handle(IPC.runsSend, (_e, raw: unknown) => {
@@ -494,14 +560,14 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
   })
   handle(
     IPC.runsDecide,
-    (_e, raw: unknown) => {
+    (ctx, raw: unknown): DecisionOutcome => {
       const input = permissionDecideArgs(raw)
-      runs.decide(input.runId, input.requestId, input.decision)
+      return runs.decide(input.runId, input.requestId, input.decision, decisionOpts(ctx, input))
     }
   )
-  handle(IPC.mergesDecide, (_e, raw: unknown) => {
+  handle(IPC.mergesDecide, (ctx, raw: unknown): DecisionOutcome => {
     const input = mergeDecideArgs(raw)
-    runs.decideMerge(input.runId, input.reviewId, input.decision)
+    return runs.decideMerge(input.runId, input.reviewId, input.decision, decisionOpts(ctx, input))
   })
   // `orgai decide` lookup (socket only, scope 'read').
   handle(HOST_IPC.runsFindDecision, (_e, id: unknown): DecisionLookup => {
@@ -566,9 +632,9 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
   })
   handle(
     IPC.permissionsDecideRequest,
-    (_e, raw: unknown) => {
+    (ctx, raw: unknown): DecisionOutcome => {
       const input = ruleDecideArgs(raw)
-      runs.decideRules(input.runId, input.requestId, input.decision)
+      return runs.decideRules(input.runId, input.requestId, input.decision, decisionOpts(ctx, input))
     }
   )
 
@@ -820,9 +886,9 @@ function registerMcpIpc(
   handle(IPC.mcpSetSecret, (_e, input: unknown): McpMutationResult => mcp.setSecret(mcpSecretArgs(input)))
   handle(IPC.mcpTest, (_e, input: { projectId: string; serverId: string }): Promise<McpTestResult> => mcp.test(input))
   handle(IPC.mcpRegistrySearch, (_e, input: McpRegistrySearchInput): Promise<McpRegistrySearchResult> => mcp.registrySearch(input))
-  handle(IPC.mcpAnswerInstall, (_e, raw: unknown): void => {
+  handle(IPC.mcpAnswerInstall, (ctx, raw: unknown): DecisionOutcome => {
     const input = installAnswerArgs(raw)
-    runs.answerMcpInstall(input.runId, input.requestId, input.decision)
+    return runs.answerMcpInstall(input.runId, input.requestId, input.decision, decisionOpts(ctx, input))
   })
   // scope 'library' runs the assistant on the virtual harness project; RunManager and the harness tools treat a run
   // whose projectId is HARNESS_PROJECT_ID as library scope.
