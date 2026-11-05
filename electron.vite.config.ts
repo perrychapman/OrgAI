@@ -7,9 +7,16 @@ export default defineConfig({
     plugins: [externalizeDepsPlugin()],
     resolve: { alias: { '@shared': resolve('src/shared') } }
   },
+  // The preload is CommonJS (out/preload/index.cjs, cli-spec 7(1)) so the windows can run sandboxed: a sandboxed
+  // preload cannot be an ES module and may require only 'electron'. '@shared' is aliased, so it is bundled in.
   preload: {
     plugins: [externalizeDepsPlugin()],
-    resolve: { alias: { '@shared': resolve('src/shared') } }
+    resolve: { alias: { '@shared': resolve('src/shared') } },
+    build: {
+      rollupOptions: {
+        output: { format: 'cjs', entryFileNames: '[name].cjs' }
+      }
+    }
   },
   renderer: {
     plugins: [react()],
