@@ -24,6 +24,7 @@ import { basename } from 'node:path'
 import { MAX_AUTO_CONTINUES_LIMIT } from '../../shared/defaults'
 import {
   EXEC_OUTCOME_EXIT_CODE,
+  MAX_TIMER_DELAY_MS,
   isPermissionMode,
   type AgentInstance,
   type ExecOutcome,
@@ -56,7 +57,8 @@ import { liveSource } from './watch'
 export const EXEC_STDIN_MAX_BYTES = 1024 * 1024
 export const EXEC_STOP_WAIT_MS = 10_000
 export const MAX_AUTO_DENIALS_LIMIT = 10_000
-const MAX_SECONDS = 30 * 24 * 3600
+/** The longest timer the host can arm (MAX_TIMER_DELAY_MS, about 24.8 days), in whole seconds. */
+const MAX_SECONDS = Math.floor(MAX_TIMER_DELAY_MS / 1000)
 
 /** Swappable in tests: stdin, the reconnect timers and the stop wait. */
 export const execIo = {

@@ -229,6 +229,20 @@ describe('headless decision policy', () => {
     await m.stop(run.id)
   })
 
+  it('merge holds keep the branch and never count toward maxAutoDenials', async () => {
+    const { m, ctxs } = rig()
+    const run = await m.start({ project: proj(), prompt: 'go', overrides: exec({ merge: 'hold', maxAutoDenials: 2 }) })
+    for (let i = 0; i < 4; i++) {
+      const held = raise(ctxs[0], 'merge')
+      await vi.advanceTimersByTimeAsync(0)
+      expect(await held).toEqual({ behavior: 'hold' })
+    }
+    await vi.advanceTimersByTimeAsync(100)
+    expect(m.summary(run.id)?.execOutcome).toBeUndefined()
+    expect(finalized()).toHaveLength(0)
+    await m.stop(run.id)
+  })
+
   it("'fail' ends the run as needs-decision", async () => {
     const { m, ctxs } = rig()
     const run = await m.start({ project: proj(), prompt: 'go', overrides: exec() })

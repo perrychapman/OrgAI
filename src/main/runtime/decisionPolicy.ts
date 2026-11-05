@@ -90,7 +90,11 @@ export function policyAction<K extends CardKind>(kind: K, card: unknown, policy:
   }
 }
 
-/** Whether a policy resolution counts toward maxAutoDenials (every refusal does; a conservative answer does not). */
+/**
+ * Whether a policy resolution counts toward maxAutoDenials ("auto-denials/declines"): every refusal does. A conservative
+ * answer does not, and neither does a merge 'hold', which keeps the report's branch for review and refuses nothing
+ * (a reviewMerges exec run holds one per report and must not end after maxAutoDenials of them).
+ */
 export function countsAsDenial(kind: CardKind): boolean {
-  return kind !== 'question'
+  return kind !== 'question' && kind !== 'merge'
 }

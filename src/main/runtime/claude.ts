@@ -226,6 +226,12 @@ export function mcpToolRule(serverName: string): string {
 
 /** Wait after the orchestrator's turn ends before an MCP restart, so a report hand-back the SDK is about to resume with goes first. */
 export const MCP_RESTART_DELAY_MS = 1500
+/**
+ * Exec settlement: after a report finishes, the SDK resumes the orchestrator with its result by itself (no input from
+ * OrgAI). Until that turn's init arrives, or this long after the report (or after the root turn that ended later), the
+ * session is not quiescent, so an exec run never settles in that gap. Matches DEFAULT_CONTINUATION_DELAY_MS.
+ */
+export const REPORT_HANDBACK_GRACE_MS = 1500
 /** How long addMcpServer polls mcpServerStatus for the new server's tool names. */
 const MCP_STATUS_WAIT_MS = 5000
 /** If the old query has not ended this long after its input closed for a restart, it is closed. */
@@ -1037,6 +1043,11 @@ export class ClaudeSession implements RuntimeSession {
   private turnInFlight = false
   /** interrupt() was called during a root turn; the next root result is that turn's (interrupted) end. */
   private interruptPending = false
+  /**
+   * A report finished and the SDK has not started the root turn that reads it: when (ms) the grace window started.
+   * Cleared by the next root init; restarted when a root turn ends with it still set (REPORT_HANDBACK_GRACE_MS).
+   */
+  private handBackSince?: number
   /** The generation of the turn end held back in turnEndDeferred. */
   private deferredTurnGen = 0
   /** The run-scoped orgai skills plugin of the current query (work runs with granted skills). */
@@ -1241,7 +1252,8 @@ export class ClaudeSession implements RuntimeSession {
       this.backgroundTasks.size === 0 &&
       this.heldNotices.length === 0 &&
       this.input.peek().length === 0 &&
-      !this.integrator.hasPendingWork()
+      !this.integrator.hasPendingWork() &&
+      !this.handBackPending()
     return {
       rootTurnGen: this.rootTurnGen,
       rootIdle,
@@ -1270,6 +1282,21 @@ export class ClaudeSession implements RuntimeSession {
     this.emit({ type: 'log', runId: this.ctx.run.id, level, message })
   }
 
+  /** A finished report's result may still be on its way to the orchestrator (REPORT_HANDBACK_GRACE_MS). */
+  private handBackPending(): boolean {
+    if (this.handBackSince === undefined) return false
+    const grace = this.ctx.continuationDelayMs ?? REPORT_HANDBACK_GRACE_MS
+    if (Date.now() - this.handBackSince < grace) return true
+    this.handBackSince = undefined
+    return false
+  }
+
+  /** A report finished: the SDK will hand its result to the orchestrator in a turn of its own. */
+  private reportFinished(): void {
+    this.handBackSince = Date.now()
+    this.noteActivity('report')
+  }
+
   /** Exec settlement: adapter-internal activity (a listener's throw never breaks the session). */
   private noteActivity(reason: ExecActivityReason): void {
     try {
@@ -1285,6 +1312,8 @@ export class ClaudeSession implements RuntimeSession {
    */
   private reportRootTurnEnd(e: Omit<RootTurnEnd, 'turnGen'>): number {
     this.turnInFlight = false
+    // A report that finished during this turn is handed back in the next one, which the SDK starts after this result.
+    if (this.handBackSince !== undefined) this.handBackSince = Date.now()
     this.rootTurnGen += 1
     const turnGen = this.rootTurnGen
     try {
@@ -1967,7 +1996,7 @@ export class ClaudeSession implements RuntimeSession {
       a.endedAt = Date.now()
       this.partial.clear(a.id, true)
       this.upsert(a)
-      this.noteActivity('report')
+      this.reportFinished()
       void this.integrator.onSubagentFinished(a.id)
       return {}
     }
@@ -3063,6 +3092,7 @@ export class ClaudeSession implements RuntimeSession {
           this.upsert(root)
           this.sessionId = msg.session_id
           this.turnInFlight = true
+          this.handBackSince = undefined
           this.queryInitSeen = true
           this.preInit = []
           // A restarted query that starts clears the failure count, so a later restart gets its own retries.
@@ -3134,12 +3164,15 @@ export class ClaudeSession implements RuntimeSession {
           this.backgroundTaskEnded(msg.task_id)
           const a = this.agents.get(msg.task_id)
           if (a) {
+            // SubagentStop usually marked it done already; only a first finish opens the hand-back window.
+            const firstFinish = a.state !== 'done' && a.state !== 'error'
             a.state = msg.status === 'completed' ? 'done' : 'error'
             a.activity = msg.status === 'completed' ? 'Reported back' : `Task ${msg.status}`
             a.result = a.result ?? msg.summary
             a.endedAt = Date.now()
             this.upsert(a)
-            this.noteActivity('report')
+            if (firstFinish) this.reportFinished()
+            else this.noteActivity('report')
             void this.integrator.onSubagentFinished(a.id)
           }
         }

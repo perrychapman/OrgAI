@@ -106,6 +106,8 @@ describe('exec flags', () => {
       decisionPolicy: { permission: 'wait', rules: 'fail', mcpInstall: 'deny', question: 'conservative', proposal: 'decline', merge: 'hold', maxAutoDenials: 3, waitTimeoutMs: 60_000, humanGraceMs: 0 }
     })
     expect(overridesFromFlags({ 'max-budget': '0' })).toEqual({ execMode: true, maxBudgetUsd: 0 })
+    // The longest timer the host can arm, in whole seconds.
+    expect(overridesFromFlags({ 'stall-timeout': '2147483' })).toEqual({ execMode: true, execStallTimeoutMs: 2_147_483_000 })
     expect(overridesFromFlags({ 'on-question': 'fail' })).toEqual({ execMode: true, decisionPolicy: { question: 'fail' } })
   })
 
@@ -117,6 +119,10 @@ describe('exec flags', () => {
     [['--max-auto-continues', '501', 'x']],
     [['--max-auto-continues', '1.5', 'x']],
     [['--stall-timeout', '0', 'x']],
+    // Above 2^31 - 1 ms a host timer would fire after 1 ms.
+    [['--stall-timeout', '2200000', 'x']],
+    [['--wait-timeout', '2147484', 'x']],
+    [['--human-grace', '2592000', 'x']],
     [['--wait-timeout', 'soon', 'x']],
     [['--on-question', 'maybe', 'x']],
     [['--permission-mode', 'yolo', 'x']],

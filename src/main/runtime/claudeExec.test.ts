@@ -266,6 +266,31 @@ describe('ClaudeSession exec settlement (fake query)', () => {
     await vi.waitFor(() => expect(activity).toEqual(expect.arrayContaining(['subagent', 'report'])))
   })
 
+  it('a finished report keeps the session unsettled until the SDK resumes the root with it, or the grace passes', async () => {
+    const { session } = start({ continuationDelayMs: 300 })
+    const q = await firstQuery()
+    q.emit(init)
+    q.emit({ type: 'system', subtype: 'task_started', task_id: 'a1', tool_use_id: 'tu1', subagent_type: 'engineer', description: 'Do it', session_id: 'sess-1', uuid: 'u1' })
+    q.emit(result())
+    await vi.waitFor(() => expect(session.settlement()).toMatchObject({ rootTurnGen: 1, rootIdle: true, quiescent: true }))
+    // The report lands while the root is idle: the SDK is about to start a turn with its result.
+    q.emit({ type: 'system', subtype: 'task_notification', task_id: 'a1', status: 'completed', output_file: '', summary: 'done', session_id: 'sess-1', uuid: 'u2' })
+    await vi.waitFor(() => expect(session.settlement().quiescent).toBe(false))
+    expect(session.settlement().rootIdle).toBe(true)
+    // The hand-back turn starts: in flight, then settled again after its result.
+    q.emit(init)
+    await vi.waitFor(() => expect(session.settlement().rootIdle).toBe(false))
+    q.emit(result())
+    await vi.waitFor(() => expect(session.settlement()).toMatchObject({ rootTurnGen: 2, rootIdle: true, quiescent: true }))
+
+    // A second report whose hand-back never comes: quiescent again once the grace has passed.
+    q.emit({ type: 'system', subtype: 'task_started', task_id: 'a2', tool_use_id: 'tu2', subagent_type: 'engineer', description: 'More', session_id: 'sess-1', uuid: 'u3' })
+    q.emit({ type: 'system', subtype: 'task_notification', task_id: 'a2', status: 'completed', output_file: '', summary: 'done', session_id: 'sess-1', uuid: 'u4' })
+    await vi.waitFor(() => expect(session.settlement().quiescent).toBe(false))
+    await new Promise((r) => setTimeout(r, 350))
+    expect(session.settlement().quiescent).toBe(true)
+  })
+
   describe('budget (cli-spec 6.2(3))', () => {
     it('a stored project cap of 0 means no cap outside exec (ctx.budgetUsd 0 is the real $0 budget)', async () => {
       start({}, { maxBudgetUsd: 0 })

@@ -844,6 +844,16 @@ Resolved `R1`–`R10` (single-host daemon vs Desktop ownership, socket authentic
     `execStallTimeoutMs` must be > 0 at the host boundary too. A finalizer-claimed exec run stays live until its
     final status is written. Unit-tested only (runManagerExec.test.ts, claudeExec.test.ts, runOverrides.test.ts);
     which result subtype the live SDK sends after an interrupt is unverified.
+  - Second review fixes (2026-11-05): a Claude report that finishes keeps `settlement().quiescent` false until the SDK's
+    next root `init` (the turn that hands the report back) or `REPORT_HANDBACK_GRACE_MS` (1.5 s, `continuationDelayMs`
+    when set; restarted when a root turn ends inside it) has passed, so an exec run never settles in that gap
+    (claudeExec.test.ts; the live SDK's real gap is unverified). A merge 'hold' by the policy does not count toward
+    `maxAutoDenials` (it refuses nothing). Exec timer overrides (`execStallTimeoutMs`, `waitTimeoutMs`, `humanGraceMs`)
+    are refused above `MAX_TIMER_DELAY_MS` (2^31 - 1 ms; setTimeout fires a longer one after 1 ms), the CLI caps its
+    seconds flags at 2,147,483 s, and RunManager caps stored values (`timerDelay`). A paused exec run still waiting
+    for its reset that is continued as a desktop run (the composer, `resume` without `--exec`) is finalized
+    'interrupted' by the user before the continuation starts, so its `orgai exec` follower ends instead of adopting
+    the desktop run. Unit-tested only.
   - Proposal decline from `orgai decide` is not limited to work runs in the CLI; the host decides.
   - Codex has no deferred-turn-end path and no Claude-style query restart ('restart' activity comes only from its
     app-server restart). The mock's `settlement()` has nothing to report on integration or restarts.

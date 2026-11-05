@@ -529,7 +529,10 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     method, tombstones (`decisionIndex.ts`, socket-only `runs:findDecision`). Widening overrides need 'configure'
     (`allowWidening`, never persisted; only the timer-driven waitForReset resume keeps it, and an operate-only
     `resume --exec` drops carried allowPeerMessages / allowUnpricedBudget). `runs:stop` ends a paused run (an exec
-    one in flight finalizes 'interrupted'); a waitForReset run that can no longer resume finalizes 'rate-limited'. CLI `orgai exec` / `-p`,
+    one in flight finalizes 'interrupted'); a waitForReset run that can no longer resume finalizes 'rate-limited', and one
+    continued as a desktop run finalizes 'interrupted' first; a Claude report's hand-back (until the next root init or
+    `REPORT_HANDBACK_GRACE_MS`) keeps the session unsettled; policy merge holds never count as denials; exec timer
+    overrides are capped at `MAX_TIMER_DELAY_MS` (2^31 - 1 ms). CLI `orgai exec` / `-p`,
     `resume --exec`, `decide`, `runs send / interrupt / stop`; exec followers subscribe `nonInteractive` so they never
     hold `humanGraceMs`. Mock markers `[mock:exec-plan|exec-blocked|exec-question|turn-fail|rate-limit|exec-slow]`.
     Unit tests with fake adapters / query() / app-server and e2e `cli-exec.mjs` (macOS); nothing live.

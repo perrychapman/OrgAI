@@ -70,5 +70,7 @@ describe('helpers', () => {
   it('questions never count as denials', () => {
     expect(countsAsDenial('question')).toBe(false)
     expect(countsAsDenial('permission')).toBe(true)
+    expect(countsAsDenial('merge')).toBe(false)
+    for (const k of ['rules', 'proposal', 'mcpInstall'] as const) expect(countsAsDenial(k)).toBe(true)
   })
 })

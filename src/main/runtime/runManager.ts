@@ -65,7 +65,7 @@ import { QUICK_ASSISTANT_SLUG, adapterForProject, agentProducedNothing, isolateW
 import { referenceFolderOf } from './referenceDirectories'
 import { aliasesFor, priceAgentUsage, resolvePrice, type PricingContext } from './pricing'
 import { IntervalTimer, buildUsageCsv, buildUsageStats, computeRunUsage, emptyAgentUsage, legacySummaryUsage, monthRange, normalizeRunRecord } from './runUsage'
-import { DEFAULT_EXEC_STALL_TIMEOUT_MS, DEFAULT_HEADLESS_DECISION_POLICY, DEFAULT_MAX_AUTO_CONTINUES, EXEC_FINALIZE_STOP_TIMEOUT_MS, EXEC_SETTLE_DEBOUNCE_MS, EXEC_TITLE_JOIN_MS, HARNESS_PROJECT_ID, KNOWLEDGE_RUN_WRITES_MAX, QUICK_PROJECT_ID, RUN_MESSAGE_MAX_CHARS, RUN_PEER_PROMPT_CHARS, SKILLS_PROJECT_ID, USAGE_STATS_DEFAULT_LIMIT, USAGE_STATS_MAX_LIMIT, isVirtualProjectId } from '@shared/types'
+import { DEFAULT_EXEC_STALL_TIMEOUT_MS, DEFAULT_HEADLESS_DECISION_POLICY, DEFAULT_MAX_AUTO_CONTINUES, EXEC_FINALIZE_STOP_TIMEOUT_MS, EXEC_SETTLE_DEBOUNCE_MS, EXEC_TITLE_JOIN_MS, HARNESS_PROJECT_ID, KNOWLEDGE_RUN_WRITES_MAX, MAX_TIMER_DELAY_MS, QUICK_PROJECT_ID, RUN_MESSAGE_MAX_CHARS, RUN_PEER_PROMPT_CHARS, SKILLS_PROJECT_ID, USAGE_STATS_DEFAULT_LIMIT, USAGE_STATS_MAX_LIMIT, isVirtualProjectId } from '@shared/types'
 import { architectRole, mcpAssistantRole, skillAssistantRole } from '@shared/setup'
 import { isTrustRestrictedRun, isInsideEither, samePath, canonicalDeep } from '../quick/scratch'
 import { MCP_ASSIST_MODEL_LABEL, QUICK_RUN_MODEL_LABEL, SETUP_MODEL_LABEL, SKILL_ASSIST_MODEL_LABEL, resolveBuiltinModel, type ResolvedBuiltinModel } from './builtinModel'
@@ -194,6 +194,14 @@ export function resolveAllowedDirectories(raw: readonly unknown[] | undefined, o
 const FLUSH_INTERVAL_MS = 1500
 /** Exec settlement re-check while the root is idle but the adapter is not settled yet (a continuation timer...). */
 export const EXEC_SETTLE_POLL_MS = 1000
+
+/**
+ * A delay setTimeout honours: setTimeout runs anything above MAX_TIMER_DELAY_MS (about 24.8 days) after 1 ms, so a
+ * longer exec timer (a record saved before the host refused such values) is capped there; non-finite or negative is 0.
+ */
+export function timerDelay(ms: number): number {
+  return Number.isFinite(ms) && ms > 0 ? Math.min(ms, MAX_TIMER_DELAY_MS) : 0
+}
 
 /** Wait for `p` at most `ms`; true when the time ran out first. Never rejects. */
 async function raceTimeout(p: Promise<unknown>, ms: number): Promise<boolean> {
@@ -1870,7 +1878,7 @@ export class RunManager {
     const o = a.summary.overrides
     if (!o?.execMode || a.finalizing) return
     const gen = a.activityGen
-    const ms = o.execStallTimeoutMs ?? DEFAULT_EXEC_STALL_TIMEOUT_MS
+    const ms = timerDelay(o.execStallTimeoutMs ?? DEFAULT_EXEC_STALL_TIMEOUT_MS)
     a.stallTimer = setTimeout(() => {
       a.stallTimer = undefined
       if (a.finalizing || this.runs.get(a.summary.id) !== a) return
@@ -2064,7 +2072,7 @@ export class RunManager {
             if (a.finalizing || this.runs.get(runId) !== a || !findPendingCard(a, id)) return
             a.emit({ type: 'log', runId, level: 'warn', message: `Nobody answered a ${kind} card within ${policy.waitTimeoutMs} ms; the run ends.` })
             void this.finalizeExecRun(runId, 'needs-decision', { endedBy: 'policy' })
-          }, policy.waitTimeoutMs)
+          }, timerDelay(policy.waitTimeoutMs))
         )
         return
       }
@@ -2076,7 +2084,7 @@ export class RunManager {
         void this.finalizeExecRun(runId, 'needs-decision', { endedBy: 'policy' })
       }
     }
-    a.policyTimers.set(id, setTimeout(act, interactive > 0 ? policy.humanGraceMs : 0))
+    a.policyTimers.set(id, setTimeout(act, interactive > 0 ? timerDelay(policy.humanGraceMs) : 0))
   }
 
   /** Close the open wait / limit / idle intervals (the run ended or paused). */
@@ -3254,14 +3262,21 @@ export class RunManager {
       .reduce((best, r) => (r.startedAt > best.startedAt || (r.startedAt === best.startedAt && r.resumedFrom === best.id) ? r : best), from)
     const sessionId = target.sessionId ?? from.sessionId
 
-    // A paused run is handed over to its continuation; it stays in history as finished.
+    const overrides = continuedOverrides(target.overrides ?? from.overrides, opts)
+    // A paused run is handed over to its continuation; it stays in history as finished. An exec run still waiting for
+    // its reset (no execOutcome) whose continuation is not an exec run (the Desktop composer, `orgai resume` without
+    // --exec) is finalized as 'interrupted' by the user, so its `orgai exec` follower ends instead of adopting the
+    // desktop continuation (which never sends run.finalized) and waiting forever.
+    const handedToExec = !!overrides?.execMode
     for (const r of target.id === from.id ? [from] : [target, from]) {
       if (r.status !== 'paused') continue
       this.clearResume(r.id)
-      const done = this.patchSummary(r.id, { status: 'finished', autoResume: false })
-      if (done) this.broadcast({ type: 'run.status', runId: done.id, status: 'finished', pausedUntil: done.pausedUntil, pauseReason: done.pauseReason, autoResume: false })
+      const strand = !!r.overrides?.execMode && !r.execOutcome && !handedToExec
+      const done = this.patchSummary(r.id, { status: 'finished', autoResume: false, ...(strand ? { execOutcome: 'interrupted' as const, endedBy: 'user' as const } : {}) })
+      if (!done) continue
+      this.broadcast(withEndFacts({ type: 'run.status', runId: done.id, status: 'finished', pausedUntil: done.pausedUntil, pauseReason: done.pauseReason, autoResume: false }, done))
+      if (strand) this.broadcastFinalized(done, 'interrupted')
     }
-    const overrides = continuedOverrides(target.overrides ?? from.overrides, opts)
     return this.start({
       project,
       prompt,

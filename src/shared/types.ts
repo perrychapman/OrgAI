@@ -5850,6 +5850,11 @@ export const EXEC_FINALIZE_STOP_TIMEOUT_MS = 5000
 export const EXEC_TITLE_JOIN_MS = 2000
 /** trySettleExecRun debounce. */
 export const EXEC_SETTLE_DEBOUNCE_MS = 50
+/**
+ * The longest delay a Node / Electron timer honours (2^31 - 1 ms, about 24.8 days): setTimeout runs a longer one after
+ * 1 ms. Exec timer overrides (execStallTimeoutMs, decisionPolicy.waitTimeoutMs / humanGraceMs) are refused above it.
+ */
+export const MAX_TIMER_DELAY_MS = 2_147_483_647
 /** The deny message a headless decision policy sends to the agent. */
 export const HEADLESS_POLICY_DENY_MESSAGE = 'Denied by the headless decision policy (orgai exec).'
 /** A question option whose label or description starts with this is the conservative policy's pick. */

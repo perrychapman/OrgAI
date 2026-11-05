@@ -7,7 +7,7 @@
  * policy choice sets below must stay in step with its POLICY_CHOICES.
  */
 import { MAX_AUTO_CONTINUES_LIMIT } from '@shared/defaults'
-import { DEFAULT_HEADLESS_DECISION_POLICY, DEFAULT_MAX_AUTO_CONTINUES, isPermissionMode } from '@shared/types'
+import { DEFAULT_HEADLESS_DECISION_POLICY, DEFAULT_MAX_AUTO_CONTINUES, MAX_TIMER_DELAY_MS, isPermissionMode } from '@shared/types'
 import type { HeadlessDecisionPolicy, PermissionMode, Project, RunOverrides } from '@shared/types'
 
 /** Which project modes each override mode narrows (besides being equal; 'plan' narrows every mode). */
@@ -132,6 +132,8 @@ function decisionPolicyArgs(raw: unknown, partial: boolean): HeadlessDecisionPol
     if (!isNonNegative(value) || (key === 'maxAutoDenials' && !Number.isInteger(value))) {
       throw badRequest(`overrides.decisionPolicy.${key} must be a ${key === 'maxAutoDenials' ? 'whole ' : ''}number >= 0.`)
     }
+    // A longer timer would fire after 1 ms (setTimeout's limit).
+    if (key !== 'maxAutoDenials' && value > MAX_TIMER_DELAY_MS) throw badRequest(`overrides.decisionPolicy.${key} must be at most ${MAX_TIMER_DELAY_MS} ms.`)
     out[key] = value
   }
   return out as unknown as HeadlessDecisionPolicy
@@ -173,6 +175,7 @@ export function runOverridesArgs(raw: unknown, opts: { partialPolicy?: boolean }
   if (raw.execStallTimeoutMs !== undefined) {
     const v = raw.execStallTimeoutMs
     if (!isNonNegative(v) || v <= 0) throw badRequest('overrides.execStallTimeoutMs must be a finite number > 0.')
+    if (v > MAX_TIMER_DELAY_MS) throw badRequest(`overrides.execStallTimeoutMs must be at most ${MAX_TIMER_DELAY_MS} ms.`)
     out.execStallTimeoutMs = v
   }
   if (raw.execChainId !== undefined) {

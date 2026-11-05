@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_HEADLESS_DECISION_POLICY, DEFAULT_MAX_AUTO_CONTINUES, PERMISSION_MODES } from '@shared/types'
+import { DEFAULT_HEADLESS_DECISION_POLICY, DEFAULT_MAX_AUTO_CONTINUES, MAX_TIMER_DELAY_MS, PERMISSION_MODES } from '@shared/types'
 import type { PermissionMode, Project, RunOverrides } from '@shared/types'
 import { canNarrowPermissionMode, effectiveRunProject, execBudgetUsd, overridesWidening, runOverridesArgs } from './runOverrides'
 
@@ -154,6 +154,15 @@ describe('runOverridesArgs', () => {
     expect(bad({ decisionPolicy: { permission: 'allow' } })).toBe('bad_request')
     expect(bad({ decisionPolicy: { maxAutoDenials: 1.5 } })).toBe('bad_request')
     expect(bad({ decisionPolicy: { waitTimeoutMs: -1 } })).toBe('bad_request')
+    // setTimeout runs anything above 2^31 - 1 ms after 1 ms.
+    expect(bad({ execStallTimeoutMs: MAX_TIMER_DELAY_MS + 1 })).toBe('bad_request')
+    expect(bad({ decisionPolicy: { waitTimeoutMs: MAX_TIMER_DELAY_MS + 1 } })).toBe('bad_request')
+    expect(bad({ decisionPolicy: { humanGraceMs: 2_200_000_000 } })).toBe('bad_request')
+    expect(runOverridesArgs({ execStallTimeoutMs: MAX_TIMER_DELAY_MS, decisionPolicy: { waitTimeoutMs: MAX_TIMER_DELAY_MS }, maxBudgetUsd: 1 })).toMatchObject({
+      execStallTimeoutMs: MAX_TIMER_DELAY_MS,
+      decisionPolicy: { waitTimeoutMs: MAX_TIMER_DELAY_MS }
+    })
+    expect(runOverridesArgs({ decisionPolicy: { maxAutoDenials: MAX_TIMER_DELAY_MS + 1 } })?.decisionPolicy?.maxAutoDenials).toBe(MAX_TIMER_DELAY_MS + 1)
   })
   it('keeps valid values and drops unknown keys', () => {
     expect(

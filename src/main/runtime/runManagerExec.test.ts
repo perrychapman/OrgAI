@@ -3,8 +3,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentInstance, RunEvent, RunOverrides, RunPlan, RunSummary } from '@shared/types'
-import { DEFAULT_EXEC_STALL_TIMEOUT_MS, EXEC_FINALIZE_STOP_TIMEOUT_MS } from '@shared/types'
-import { RunManager, continuedOverrides, type RunManagerOptions } from './runManager'
+import { DEFAULT_EXEC_STALL_TIMEOUT_MS, EXEC_FINALIZE_STOP_TIMEOUT_MS, MAX_TIMER_DELAY_MS } from '@shared/types'
+import { RunManager, continuedOverrides, timerDelay, type RunManagerOptions } from './runManager'
 import { RunStore } from '../store/runs'
 import type { SetupService } from '../setup/service'
 import type { CompletionInput, RootTurnEnd, RuntimeAdapter, RuntimeContext, SessionSettlement } from './types'
@@ -145,6 +145,21 @@ describe('exec settlement', () => {
     endTurn(fakes[0], {}, { nudgeTurn1Sent: true })
     await flush()
     expect(m.summary(run.id)?.execOutcome).toBe('completed-unplanned')
+  })
+
+  it('timer values past setTimeout\'s limit are capped, never fired after 1 ms', async () => {
+    expect(timerDelay(2_200_000_000)).toBe(MAX_TIMER_DELAY_MS)
+    expect(timerDelay(1000)).toBe(1000)
+    expect(timerDelay(-1)).toBe(0)
+    expect(timerDelay(NaN)).toBe(0)
+    // A record saved before the host refused such values: the stall watchdog must not end the run at once.
+    const { m, fakes } = rig()
+    const run = await m.start({ project: proj(), prompt: 'go', overrides: exec({ autoContinue: false, execStallTimeoutMs: 2_200_000_000 }) })
+    endTurn(fakes[0], {}, { continuationSettled: false })
+    await flush(5000)
+    expect(finalized()).toHaveLength(0)
+    expect(m.summary(run.id)?.execOutcome).toBeUndefined()
+    await m.stop(run.id)
   })
 
   it('a pending continuation never settles until it flips', async () => {
@@ -429,6 +444,32 @@ describe('exec pauses: stop, cancel and manual resume (review fixes)', () => {
     expect(widened.has(b.run.id)).toBe(true)
     b.m.cancelAutoResume(b.run.id)
     expect(widened.size).toBe(0)
+  })
+
+  it('a desktop continue of a waiting waitForReset run finalizes it interrupted, so its follower never waits on the desktop run', async () => {
+    const { m, fakes, p, run } = await pausedRun({ waitForReset: true })
+    expect(m.hasAutoResume(run.id)).toBe(true)
+    const next = await m.continueRun(p, run.id, 'carry on')
+    expect(m.hasAutoResume(run.id)).toBe(false)
+    expect(m.summary(run.id)).toMatchObject({ status: 'finished', execOutcome: 'interrupted', endedBy: 'user', autoResume: false })
+    expect(finalized().map((e) => [e.runId, e.outcome])).toEqual([[run.id, 'interrupted']])
+    // run.finalized goes out before the continuation starts.
+    const finalAt = events.findIndex((e) => e.type === 'run.finalized')
+    const nextAt = events.findIndex((e) => 'runId' in e && e.runId === next.id)
+    expect(finalAt).toBeGreaterThanOrEqual(0)
+    expect(finalAt).toBeLessThan(nextAt)
+    expect(fakes[1].ctx.run.overrides?.execMode).toBeUndefined()
+    await m.stopAll()
+  })
+
+  it('resume --exec of a waiting waitForReset run hands the chain over without finalizing it', async () => {
+    const { m, fakes, p, run } = await pausedRun({ waitForReset: true })
+    await m.continueRun(p, run.id, 'carry on', undefined, { exec: true })
+    expect(m.summary(run.id)?.status).toBe('finished')
+    expect(m.summary(run.id)?.execOutcome).toBeUndefined()
+    expect(finalized()).toHaveLength(0)
+    expect(fakes[1].ctx.run.overrides).toMatchObject({ execMode: true, execChainId: run.id })
+    await m.stopAll()
   })
 
   it('resume --exec merges a partial decisionPolicy over the chain policy per field', () => {
