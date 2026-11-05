@@ -151,13 +151,13 @@ class Parser {
   lines: Line[] = []
   rawLines: string[]
   error?: string
-  constructor(src: string[]) {
+  constructor(src: string[], maxLine: number = MAX_LINE_CHARS) {
     this.rawLines = src
     for (let n = 0; n < src.length; n++) {
       let raw = src[n]
-      if (raw.length > MAX_LINE_CHARS) {
-        this.fail(`line ${n + 1} is longer than ${MAX_LINE_CHARS} characters; it was cut`)
-        raw = raw.slice(0, MAX_LINE_CHARS)
+      if (raw.length > maxLine) {
+        this.fail(`line ${n + 1} is longer than ${maxLine} characters; it was cut`)
+        raw = raw.slice(0, maxLine)
       }
       if (/^\s*$/.test(raw)) { this.lines.push({ indent: -1, text: '', raw }); continue }
       const indent = raw.length - raw.trimStart().length
@@ -325,10 +325,20 @@ class Parser {
   }
 }
 
+export interface FrontmatterOptions {
+  /** Longest line kept (default MAX_LINE_CHARS). Parsing stays linear whatever the value. */
+  maxLineChars?: number
+}
+
+function lineLimit(opts: FrontmatterOptions | undefined): number {
+  const n = opts?.maxLineChars
+  return typeof n === 'number' && Number.isFinite(n) && n >= 1 ? Math.floor(n) : MAX_LINE_CHARS
+}
+
 /** Parses a whole YAML document (the supported subset). Never throws. */
-export function parseYamlDoc(text: string): { data: FmValue; error?: string } {
+export function parseYamlDoc(text: string, opts?: FrontmatterOptions): { data: FmValue; error?: string } {
   try {
-    const p = new Parser(normalize(text).split('\n'))
+    const p = new Parser(normalize(text).split('\n'), lineLimit(opts))
     const first = p.skip(0)
     if (first >= p.lines.length) return { data: {} }
     const r = p.parseBlock(first, p.lines[first].indent, 0)
@@ -339,7 +349,7 @@ export function parseYamlDoc(text: string): { data: FmValue; error?: string } {
 }
 
 /** Splits `---` frontmatter from the body and parses it. Never throws. */
-export function parseFrontmatter(text: string): FrontmatterResult {
+export function parseFrontmatter(text: string, opts?: FrontmatterOptions): FrontmatterResult {
   try {
     const src = normalize(text)
     const lines = src.split('\n')
@@ -351,7 +361,7 @@ export function parseFrontmatter(text: string): FrontmatterResult {
     }
     if (end < 0) return { data: {}, body: src.trim(), error: 'frontmatter is not closed with ---' }
     const body = lines.slice(end + 1).join('\n').trim()
-    const doc = parseYamlDoc(lines.slice(1, end).join('\n'))
+    const doc = parseYamlDoc(lines.slice(1, end).join('\n'), opts)
     const data = doc.data && typeof doc.data === 'object' && !Array.isArray(doc.data) ? (doc.data as Record<string, FmValue>) : {}
     if (!doc.error && doc.data !== null && (typeof doc.data !== 'object' || Array.isArray(doc.data))) {
       return { data: {}, body, error: 'frontmatter is not a key: value map' }
