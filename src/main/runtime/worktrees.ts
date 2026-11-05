@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { gitPath, gitPathSync, pathKey, repoLockRecovery, withRepoLock as repoLock } from './repoLock'
+import { gitExecutable } from '../host/systemBinaries'
 import type { MergeDecision, PendingWorktree, WorktreeDiff, WorktreeInfo } from '@shared/types'
 
 /**
@@ -52,8 +53,12 @@ export function isGitRepo(root: string): boolean {
 }
 
 function git(root: string, args: string[]): Promise<{ ok: boolean; out: string; err: string }> {
+  // By absolute path (review H1): on Windows a bare 'git' is searched in the cwd (the checkout, maybe an untrusted
+  // clone) before PATH. Missing on Windows = git is not installed.
+  const bin = gitExecutable()
+  if (!bin) return Promise.resolve({ ok: false, out: '', err: 'git was not found on PATH.' })
   return new Promise((resolve) => {
-    execFile('git', args, { cwd: root, windowsHide: true, timeout: 60_000, maxBuffer: 8 * 1024 * 1024 }, (error, stdout, stderr) => {
+    execFile(bin, args, { cwd: root, windowsHide: true, timeout: 60_000, maxBuffer: 8 * 1024 * 1024 }, (error, stdout, stderr) => {
       resolve({ ok: !error, out: String(stdout).trim(), err: String(stderr ?? error?.message ?? '').trim() })
     })
   })

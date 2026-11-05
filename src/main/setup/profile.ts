@@ -4,6 +4,7 @@ import { extname, join, relative } from 'node:path'
 import { PROFILE_DOCUMENTS_MAX, type ProjectKind, type ProjectProfile } from '@shared/types'
 import { promptDatum } from '../mcp/assist'
 import { agentDefinitionLocations } from './import/scan'
+import { gitExecutable } from '../host/systemBinaries'
 
 const IGNORED_DIRS = new Set([
   'node_modules', '.git', '.hg', '.svn', 'dist', 'build', 'out', 'target', 'bin', 'obj', '.next', '.nuxt', '.turbo',
@@ -149,8 +150,11 @@ function readBounded(file: string): { text: string; more: boolean } {
 }
 
 function gitLogLines(root: string): Promise<string[]> {
+  // By absolute path (review H1): the profiled folder may be an untrusted clone, searched first on Windows.
+  const bin = gitExecutable()
+  if (!bin) return Promise.resolve([])
   return new Promise((resolve) => {
-    execFile('git', ['log', '--oneline', '-n', '30', '--no-decorate'], { cwd: root, timeout: 8000, windowsHide: true }, (err, stdout) => {
+    execFile(bin, ['log', '--oneline', '-n', '30', '--no-decorate'], { cwd: root, timeout: 8000, windowsHide: true }, (err, stdout) => {
       if (err) resolve([])
       else resolve(stdout.split('\n').map((l) => l.trim()).filter(Boolean))
     })
