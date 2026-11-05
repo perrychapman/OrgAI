@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
+import { resolve } from 'node:path'
 import type { HostScope, Project, ProjectPathCheck, ProjectRemoveResult } from '../../shared/types'
 import { manageDeps } from '../manage'
 import { resetSkewWarning } from '../runRef'
@@ -102,13 +103,13 @@ describe('projects list / show / check', () => {
     })
     const { f, done } = run(['check', 'sub'], { client })
     expect(await done).toBe(0)
-    expect(client.callsOf('projects:checkPath')).toEqual([['/work/app/sub']])
+    expect(client.callsOf('projects:checkPath')).toEqual([[resolve('/work/app/sub')]])
     expect(f.out()).toContain('Claude Code: 2 agents (claude)')
     expect(f.out()).toContain('Instruction files: AGENTS.md')
     expect(f.out()).toContain('Already a project: App (p1)')
     const j = run(['check'], { json: true })
     expect(await j.done).toBe(0)
-    expect(JSON.parse(j.f.out())).toMatchObject({ folder: '/work/app', check: { exists: true, isGitRepo: true } })
+    expect(JSON.parse(j.f.out())).toMatchObject({ folder: resolve('/work/app'), check: { exists: true, isGitRepo: true } })
   })
 
   it('an unknown subcommand is exit 2', async () => {
@@ -123,7 +124,7 @@ describe('projects create', () => {
   it('sends mock only with ORGAI_MOCK=1', async () => {
     const a = run(['create', '/work/new', '--name', 'New'], { cwd: '/work' })
     expect(await a.done).toBe(0)
-    expect(created(a.client)).toEqual({ name: 'New', path: '/work/new', brief: '', kind: 'code' })
+    expect(created(a.client)).toEqual({ name: 'New', path: resolve('/work/new'), brief: '', kind: 'code' })
     const b = run(['create', '/work/new'], { cwd: '/work', env: { ORGAI_MOCK: '1' } })
     expect(await b.done).toBe(0)
     expect(created(b.client)).toMatchObject({ name: 'repo', mock: true })

@@ -178,8 +178,8 @@ describe('orgai daemon logs', () => {
 
   it('platform guess on macOS with the default data folder', () => {
     const f = fakeContext({ platform: 'darwin', env: { HOME: '/Users/me' } })
-    expect(guessLogPath(f.ctx)).toBe('/Users/me/Library/Logs/OrgAI/main.log')
+    expect(guessLogPath(f.ctx)).toBe(join('/Users/me', 'Library', 'Logs', 'OrgAI', 'main.log'))
     const l = fakeContext({ platform: 'linux', paths: { userDataDir: '/home/me/.config/OrgAI', dataDir: '/home/me/.config/OrgAI/data' } })
-    expect(guessLogPath(l.ctx)).toBe('/home/me/.config/OrgAI/logs/main.log')
+    expect(guessLogPath(l.ctx)).toBe(join('/home/me/.config/OrgAI', 'logs', 'main.log'))
   })
 })

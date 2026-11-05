@@ -36,9 +36,10 @@ describe('orgai doctor', () => {
       'auth:status': () => ({ loggedIn: true, mode: 'subscription', method: 'claude.ai' }),
       'connections:list': () => [{ connection: { id: 'anthropic', enabled: true, tierModels: {}, auth: { mode: 'apiKey', apiKey: 'sk-secret' } }, status: { state: 'connected' }, modelCount: 3, isDefault: true }]
     })
-    const f = fakeContext({ paths: { userDataDir: dir, dataDir: data }, connect: [h], globals: { outputFormat: 'json' }, env: { ORGAI_MOCK: '1' } })
+    // The run-dir check looks at POSIX mode bits unless the context platform is win32, so use the real platform here.
+    const f = fakeContext({ paths: { userDataDir: dir, dataDir: data }, platform: process.platform, connect: [h], globals: { outputFormat: 'json' }, env: { ORGAI_MOCK: '1' } })
     expect(await runDoctor(f.ctx, [])).toBe(EXIT.ok)
-    const j = JSON.parse(f.out())
+    const j =JSON.parse(f.out())
     expect(j.ok).toBe(true)
     const ids = j.checks.map((c: { id: string }) => c.id)
     expect(ids).toEqual(['node', 'install', 'data-dir', 'run-dir', 'daemon-json', 'socket', 'terminal-access', 'version', 'launcher', 'shim', 'git', 'mock', 'auth', 'connections'])
