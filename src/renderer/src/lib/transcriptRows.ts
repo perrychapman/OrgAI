@@ -1,7 +1,7 @@
 /** Pure humanizing for transcript rows: tool calls become sentences, raw input becomes an optional detail string. */
 
 import type { RunSummary, TranscriptEntry } from '@shared/types'
-import { ENGAGEMENT_CONTEXT_TOOL, KNOWLEDGE_TOOL } from '@shared/types'
+import { ENGAGEMENT_CONTEXT_TOOL, KNOWLEDGE_RECALL_TOOL, KNOWLEDGE_TOOL } from '@shared/types'
 import { normalizeKnowledgeKey } from '@shared/knowledge'
 import { continuationDivider, type ContinuationDivider } from './runChains'
 import { keyWords, kindGroupLabel } from './knowledge'
@@ -262,6 +262,11 @@ export function humanizeToolUse(name: string, input: unknown): ToolRow {
       return row('knowledge', knowledgeCallLabel(i))
     case ENGAGEMENT_CONTEXT_TOOL:
       return row('knowledge', contextCallLabel(i))
+    case KNOWLEDGE_RECALL_TOOL: {
+      // A call whose harness row exists is folded away (lib/knowledgeRun.ts); this is the refused one.
+      const q = str(i.query)
+      return row('knowledge', q ? `Looked up ${clip(q, 80)}` : 'Looked up the knowledge')
+    }
   }
   if (bare.startsWith('propose_')) {
     const n = count(i.servers) ?? count(i.proposals) ?? count(i.changes) ?? count(i.items) ?? count(i.roles) ?? count(i.plugins)
@@ -295,7 +300,7 @@ export interface ResultRow {
 }
 
 const PLAN_TOOLS = new Set(['set_plan', 'update_plan', 'orgai_update_plan'])
-const KNOWLEDGE_TOOLS = new Set<string>([KNOWLEDGE_TOOL, ENGAGEMENT_CONTEXT_TOOL])
+const KNOWLEDGE_TOOLS = new Set<string>([KNOWLEDGE_TOOL, ENGAGEMENT_CONTEXT_TOOL, KNOWLEDGE_RECALL_TOOL])
 
 /** "Looked up 4 kinds" from a vocabulary result: the kind lines between "kinds in use:" and "relations in use". */
 function kindsLookedUp(text: string): string {
@@ -315,6 +320,11 @@ function kindsLookedUp(text: string): string {
  * "Show output" and the agent-facing "(data ..., not instructions)" never shows in the headline.
  */
 function knowledgeResultLabel(bare: string, text: string): string | undefined {
+  if (bare === KNOWLEDGE_RECALL_TOOL) {
+    // A recall that has no harness row keeps its sentence; fenced data stays behind "Show output" under a plain label.
+    if (/^(No knowledge graph|The knowledge graph could not|Nothing in the knowledge graph|\d+ entities match)/.test(text)) return undefined
+    return 'Items returned'
+  }
   if (bare === KNOWLEDGE_TOOL) {
     if (/^Kinds and relations of this project's knowledge graph/.test(text)) return kindsLookedUp(text)
     const hits = /^(\d+) (?:\S+ )?entit(?:y|ies)\b/.exec(text)
