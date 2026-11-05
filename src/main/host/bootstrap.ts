@@ -587,6 +587,8 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     monitor.stop()
     activity.disarmIdleExit()
     unobserve()
+    // Wave 7 (cli-standalone.md 5.6): the vault's background retry timer (legacy-only app hosts).
+    secrets.dispose()
   }
 
   return { services, events, dispatcher, activity, runs: rm, settings, projectOrHarness, hostControl, terminalAccess, dispose }

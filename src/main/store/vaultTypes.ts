@@ -21,13 +21,13 @@
  * | SecretsStatusResult, SecretsSoftDelete, SecretsOrphanVault, SecretsInit/Reset/Undelete/ConfirmDelete Input and Result | src/shared/types.ts | G (store side), H (channels, CLI), app notice "Restore / Keep removed" (H) |
  * | SECRETS_IPC (secrets:status / init / reset / undelete / confirmDelete), SecretsIpcChannel | src/shared/types.ts | H (handlers are stubs) |
  * | VaultFile and its parts, VAULT_* constants, vaultEntryAad, vaultCheckAad, dpapiEntropy, vaultStateForFailure, VAULT_MESSAGES | this file | G |
- * | KeyCustodian, CustodyFailure, CustodyError, isCustodyFailure, CustodianProbe, CustodianCreated, CustodianFactory | this file | G (custodians), D (gate rules for their tools) |
+ * | KeyCustodian, CustodyFailure, CustodyError, isCustodyFailure, CustodianProbe, CustodianCreated, CustodianFactory, CustodianRequest | this file | G (custodians), D (gate rules for their tools); WP-G1 added CustodianRequest (key-file path, --import) and CustodianCreated.keyFile |
  * | VaultNotReady | this file | G (set() on an absent vault in a Node / inproc host) |
- * | SecretStoreApi (status, state, clearRefusal, prepareWrite, vaultKeyFiles, attachLeases, retryOpen, statusReport, initVault, resetVault, undelete, confirmDeletes) | this file; SecretStore implements it with stubs in secrets.ts (VAULT_NOT_AVAILABLE_MESSAGE) | G (store), H (callers: clearRefusal in explicit-clear handlers, the reset busy check); app (retryOpen on focus, F/H) |
+ * | SecretStoreApi (status, state, clearRefusal, prepareWrite, vaultKeyFiles, attachLeases, retryOpen, statusReport, initVault, resetVault, undelete, confirmDeletes) | this file; SecretStore implements it in secrets.ts (WP-G1: vaultFile.ts, vaultCrypto.ts, reconcile.ts, durableFs.ts; extras setResetBusyCheck, softDeletes, legacySoftDeletes, dispose) | done (store, WP-G1); H (callers: clearRefusal in explicit-clear handlers, setResetBusyCheck for OAuth / refresh); retryOpen('focus') wired in index.ts |
  * | VaultMetadata | this file | G |
- * | readVaultMetadata | src/main/store/vaultMetadata.ts (shape check only today) | G (full validation shared with the loader), H (doctor without a host) |
+ * | readVaultMetadata | src/main/store/vaultMetadata.ts (the store's own validator, vaultFile.ts validateVaultFile) | done (WP-G1); H (doctor without a host) |
  * | McpService.refreshingCount | src/main/mcp/service.ts | done; H (secrets:reset busy check) |
- * | OpenSecretStoreOptions, openSecretStore | src/main/store/secrets.ts (returns today's store) | G; already called by every host entry after acquireHostOwnership and before bootOrgAIHost (index.ts desktop and --headless-host with safeStorage, inprocHost.ts inproc and node with NO_CIPHER and readOnly) |
+ * | OpenSecretStoreOptions, openSecretStore | src/main/store/secrets.ts (opens, reconciles, creates on app hosts) | done (WP-G1): called by every host entry after acquireHostOwnership and before bootOrgAIHost (index.ts desktop and --headless-host with safeStorage, inprocHost.ts inproc and node with NO_CIPHER, no longer readOnly); custodian factory defaults to unavailableCustodian.ts until the platform custodians are passed |
  * | BootOrgAIHostOptions.secretStore, HostBackgroundOptions / BootOrgAIHostOptions.background | src/main/host/bootstrap.ts | G (secretStore), B (background split) |
  * | HostServices.secrets (bootstrap passes the store; secrets.attachLeases gets backgroundTasks leases) | src/main/host/types.ts, bootstrap.ts | H |
  * | secrets:* dispatcher handlers (status answers statusReport, the rest refuse 'not available in this build yet') | src/main/host/dispatcher.ts registerSecretsIpc | H |
@@ -210,6 +210,22 @@ export interface CustodianCreated {
   dek: Buffer
   /** dpapi-user: the protected blob for custody.wrapped. */
   wrapped?: string
+  /**
+   * key-file (WP-G1 addition): the canonical path of the file created or imported, recorded as custody.keyFile. When
+   * absent the store records the realpath of CustodianRequest.keyFile.
+   */
+  keyFile?: string
+}
+
+/**
+ * What the store asks a custodian for beyond the scheme (WP-G1 addition, optional so a one-argument factory still
+ * fits). Only the key-file scheme reads it: the path `secrets init --key-file` named (or ORGAI_VAULT_KEY_FILE), and
+ * `--import` (take an existing file instead of creating one). At open the store also passes the same path as
+ * custody.keyFile (ORGAI_VAULT_KEY_FILE overrides the recorded one, 5.3.1).
+ */
+export interface CustodianRequest {
+  keyFile?: string
+  importKeyFile?: boolean
 }
 
 /**
@@ -227,8 +243,8 @@ export interface KeyCustodian {
   open(vaultId: string, custody: VaultCustody): Promise<Buffer>
 }
 
-/** The custodian of a scheme on this platform (tests inject fakes). */
-export type CustodianFactory = (scheme: VaultCustodyScheme) => KeyCustodian
+/** The custodian of a scheme on this platform (tests inject fakes). `request` carries the key-file path (WP-G1). */
+export type CustodianFactory = (scheme: VaultCustodyScheme, request?: CustodianRequest) => KeyCustodian
 
 /** The vault state a custodian failure leads to (5.4): locked for unavailable / locked / timeout, else missing-key. */
 export function vaultStateForFailure(kind: CustodyFailureKind): Extract<VaultState, 'locked' | 'missing-key'> {

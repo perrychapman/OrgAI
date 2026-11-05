@@ -356,9 +356,13 @@ app.whenReady().then(async () => {
     markDraining: () => owned.markDraining(),
     release: () => owned.release()
   }
-  // Wave 7 (cli-standalone.md 5.6): open (and later reconcile) the secret store after ownership, before the boot, for
-  // the desktop and the --headless-host boot alike. Today's safeStorage store; WP-G makes it the vault here.
+  // Wave 7 (cli-standalone.md 5.6): open the secret vault (decrypt `check`, reconcile with secrets.json, create it when
+  // absent) after ownership and before the boot, for the desktop and the --headless-host boot alike, so the first
+  // probes see secrets the orgai command stored. A custodian failure leaves the app in legacy-only mode (secrets.json,
+  // as before) with a retry every 10 minutes and on window focus after a lock failure. No custodian factory is passed
+  // yet: the default answers 'unavailable' until the platform custodians are wired in.
   const secretStore = await openSecretStore({ dataDir, userDataDir, hostKind, cipher: safeStorage, log: (m) => log.info(m) })
+  app.on('browser-window-focus', () => secretStore.retryOpen('focus'))
   const h = bootOrgAIHost({
     env: runtimeEnv(),
     dataDir,

@@ -2,7 +2,9 @@ import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'nod
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { LITELLM_KEY, READ_ONLY_SECRETS_MESSAGE, type SecretStore } from '../main/store/secrets'
+import { LITELLM_KEY, type SecretStore } from '../main/store/secrets'
+import { fakeCustody } from '../main/store/vaultTesting'
+import { VaultNotReady } from '../main/store/vaultTypes'
 import { inprocCliRoots, startInprocHost, type InprocHost } from './inprocHost'
 import { CliError } from './types'
 
@@ -19,8 +21,8 @@ afterEach(async () => {
   rmSync(userDataDir, { recursive: true, force: true })
 })
 
-const start = async (overlay: Map<string, string> = new Map()): Promise<InprocHost> => {
-  const h = await startInprocHost({ userDataDir, dataDir, env: { ORGAI_MOCK: '1', ORGAI_DAEMON_IDLE_MINUTES: '0' }, mock: true, overlay, logging: false, startBackground: false })
+const start = async (overlay: Map<string, string> = new Map(), extra: Partial<Parameters<typeof startInprocHost>[0]> = {}): Promise<InprocHost> => {
+  const h = await startInprocHost({ userDataDir, dataDir, env: { ORGAI_MOCK: '1', ORGAI_DAEMON_IDLE_MINUTES: '0' }, mock: true, overlay, logging: false, startBackground: false, ...extra })
   started.push(h)
   return h
 }
@@ -28,7 +30,7 @@ const start = async (overlay: Map<string, string> = new Map()): Promise<InprocHo
 const secretsOf = (h: InprocHost): SecretStore => (h.host.services.connections as unknown as { deps: { secrets: SecretStore } }).deps.secrets
 
 describe('startInprocHost', () => {
-  it('owns the data dir as a ready inproc host, turns terminal access on, and serves the overlay read-only', async () => {
+  it('owns the data dir as a ready inproc host, turns terminal access on, and serves the overlay over the vault', async () => {
     const h = await start(new Map([[LITELLM_KEY, 'sk-overlay']]))
     const daemon = JSON.parse(readFileSync(join(dataDir, 'run', 'daemon.json'), 'utf8')) as Record<string, unknown>
     expect(daemon).toMatchObject({ hostKind: 'inproc', state: 'ready', pid: process.pid })
@@ -38,7 +40,28 @@ describe('startInprocHost', () => {
     expect(h.status()).toMatchObject({ hostKind: 'inproc', state: 'ready', mock: true, dataDir })
     const secrets = secretsOf(h)
     expect(secrets.get(LITELLM_KEY)).toBe('sk-overlay')
-    expect(() => secrets.set(LITELLM_KEY, 'other')).toThrow(READ_ONLY_SECRETS_MESSAGE)
+    // Wave 7: no vault until a value is stored, and only after prepareWrite (the bug trap of 5.6)
+    expect(secrets.state()).toBe('absent')
+    expect(() => secrets.set(LITELLM_KEY, 'other')).toThrow(VaultNotReady)
+    // the default custodian is unavailable until the platform custodians are wired in: values are refused with why
+    await expect(secrets.prepareWrite()).rejects.toThrow(/not available in this build yet/)
+    expect(existsSync(join(dataDir, 'vault.json'))).toBe(false)
+  })
+
+  it('with a key custodian, the first stored value creates vault.json lazily (Wave 7, cli-standalone.md 5.6)', async () => {
+    const custody = fakeCustody()
+    const h = await start(new Map(), { custodian: custody.factory })
+    const secrets = secretsOf(h)
+    expect(custody.calls.create).toBe(0)
+    await secrets.prepareWrite()
+    secrets.set(LITELLM_KEY, 'sk-stored')
+    expect(custody.calls.create).toBe(1)
+    expect(secrets.state()).toBe('open')
+    expect(readFileSync(join(dataDir, 'vault.json'), 'utf8')).not.toContain('sk-stored')
+    expect(existsSync(join(dataDir, 'secrets.json'))).toBe(false)
+    await h.stop(true)
+    const again = await start(new Map(), { custodian: custody.factory })
+    expect(secretsOf(again).get(LITELLM_KEY)).toBe('sk-stored')
   })
 
   it('a second host on the same data dir is refused with exit 6', async () => {
