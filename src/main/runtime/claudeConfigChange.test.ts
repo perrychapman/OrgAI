@@ -107,7 +107,7 @@ afterEach(async () => {
   for (const s of sessions.splice(0)) await s.stop()
   sdk.queries.length = 0
   sdk.status = []
-  for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true })
+  for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 })
 })
 
 function start(servers: McpServerSpec[], over: Partial<RuntimeContext> = {}) {
