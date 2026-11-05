@@ -54,6 +54,8 @@ Two opt-in variables (read by the app at startup, every window; the driver and `
   (`2`) picks that display counting left-to-right, top-to-bottom. Anything else, or a missing display, is ignored
   (one line in main.log).
 - `ORGAI_WINDOW_INACTIVE=1` shows windows without taking focus.
+- `ORGAI_WINDOW_LARGER_THAN_SCREEN=1` is CI only (the macOS e2e leg): windows may exceed the work area
+  (`enableLargerThanScreen`, macOS only, ignored elsewhere). Unverified live until the first macOS CI run.
 
 Set them for good on Windows with `setx ORGAI_WINDOW_DISPLAY secondary` and `setx ORGAI_WINDOW_INACTIVE 1`, then
 restart the app or terminal that launches agents (setx affects new processes only). Caveats: a second monitor with a

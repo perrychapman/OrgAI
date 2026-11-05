@@ -30,6 +30,11 @@ export function parseWindowInactive(value: string | undefined): boolean {
   return value === '1'
 }
 
+/** Only the exact value '1' turns it on (ORGAI_WINDOW_LARGER_THAN_SCREEN, macOS CI only). */
+export function parseLargerThanScreen(value: string | undefined): boolean {
+  return value === '1'
+}
+
 /** Displays in left-to-right, top-to-bottom order of their bounds (ties by id). */
 export function orderDisplays(displays: readonly DisplayInfo[]): DisplayInfo[] {
   return [...displays].sort((a, b) => a.bounds.x - b.bounds.x || a.bounds.y - b.bounds.y || a.id - b.id)

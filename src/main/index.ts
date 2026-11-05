@@ -1,5 +1,5 @@
 import { app, BrowserWindow, dialog, nativeImage, nativeTheme, safeStorage, screen, shell } from 'electron'
-import { parseWindowInactive, windowPlacement } from './windowPlacement'
+import { parseLargerThanScreen, parseWindowInactive, windowPlacement } from './windowPlacement'
 import { mkdirSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -235,6 +235,9 @@ function openRunWindow(target: FocusRunTarget): void {
 // test and walkthrough windows open on another monitor without taking focus. Unset = the default behaviour.
 const WINDOW_DISPLAY = process.env.ORGAI_WINDOW_DISPLAY
 const WINDOW_INACTIVE = parseWindowInactive(process.env.ORGAI_WINDOW_INACTIVE)
+// ORGAI_WINDOW_LARGER_THAN_SCREEN=1 (CI only, macOS): lets e2e windows exceed a small work area (constructor-only,
+// ignored off macOS). Unset = unchanged.
+const WINDOW_LARGER_THAN_SCREEN = parseLargerThanScreen(process.env.ORGAI_WINDOW_LARGER_THAN_SCREEN)
 let windowDisplayNoted = false
 
 function windowPlacementFor(width: number, height: number): { x: number; y: number } | null {
@@ -269,6 +272,7 @@ function createWindow(scope?: FocusRunTarget): BrowserWindow {
     ...(placement ? { x: placement.x, y: placement.y } : {}),
     minWidth: 1024,
     minHeight: 680,
+    ...(WINDOW_LARGER_THAN_SCREEN ? { enableLargerThanScreen: true } : {}),
     show: false,
     autoHideMenuBar: false,
     backgroundColor: windowBackground(host?.settings.get().appearance.theme ?? 'dark', nativeTheme.shouldUseDarkColors),
