@@ -138,7 +138,8 @@ const SCOPE_TABLE: Readonly<Record<ChannelScope, readonly string[]>> = {
   ],
   desktop_only: [
     'projects:pickDirectory', 'skillLibrary:addFromFolder', 'kit:pickExportPath', 'kit:pickImportPath', 'kit:export',
-    'kit:previewImport', 'kit:applyImport', 'menu:setState', 'app:openPath', 'app:openLogs', 'app:setNotifications'
+    'kit:previewImport', 'kit:applyImport', 'menu:setState', 'app:openPath', 'app:openLogs', 'app:setNotifications',
+    'app:cliShimStatus', 'app:installCliShim', 'app:uninstallCliShim'
   ]
 }
 
@@ -190,6 +191,7 @@ const SOURCE_TABLE: Readonly<Record<string, readonly string[]>> = {
   ],
   'ipc.ts registerKitIpc': [KIT_IPC.kitPickExportPath, KIT_IPC.kitPickImportPath, KIT_IPC.kitExport, KIT_IPC.kitPreviewImport, KIT_IPC.kitApplyImport],
   'ipc.ts registerIpc (UsageMonitor.refresh)': [IPC.usageRefresh],
+  'ipc.ts desktop-only (shimInstaller.ts)': [IPC.appCliShimStatus, IPC.appInstallCliShim, IPC.appUninstallCliShim],
   'host dispatcher (HOST_IPC, socket only; skills/service.ts libraryAddFromBundle)': [HOST_IPC.skillLibraryAddFromBundle],
   'host dispatcher (HOST_IPC, socket only; kit/service.ts bundle channels)': [HOST_IPC.kitExportBundle, HOST_IPC.kitPreviewBundle, HOST_IPC.kitApplyBundle],
   'host dispatcher (HOST_IPC, socket only; RunManager.findDecision, cli-spec Wave 3)': [HOST_IPC.runsFindDecision],

@@ -109,6 +109,10 @@ export const CHANNEL_PARAMS: Readonly<Record<string, readonly ParamSpec[]>> = {
   [IPC.appOpenLogs]: NONE,
   [IPC.appLogPath]: NONE,
   [IPC.appInfo]: NONE,
+  // Desktop only (cli-spec 7(3), shimInstaller.ts); the socket refuses them before params.
+  [IPC.appCliShimStatus]: NONE,
+  [IPC.appInstallCliShim]: NONE,
+  [IPC.appUninstallCliShim]: NONE,
 
   // ---- permissions ----
   [IPC.permissionsList]: ID,

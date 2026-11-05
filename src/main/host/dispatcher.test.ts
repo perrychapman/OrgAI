@@ -34,7 +34,10 @@ const DESKTOP_ONLY = [
   'menu:setState',
   'app:openPath',
   'app:openLogs',
-  'app:setNotifications'
+  'app:setNotifications',
+  'app:cliShimStatus',
+  'app:installCliShim',
+  'app:uninstallCliShim'
 ]
 
 const DESKTOP = { surface: 'desktop' as const, senderId: 1 }

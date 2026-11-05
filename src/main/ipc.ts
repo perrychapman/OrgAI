@@ -5,7 +5,7 @@
  * itself. The pure argument builders live in host/args.ts and are re-exported here for the existing tests.
  */
 import { app, BrowserWindow, dialog, ipcMain, shell, type IpcMainInvokeEvent, type WebContents } from 'electron'
-import type { FocusRunTarget, KitApplyResult, KitExportResult, KitImportPreview, SkillLibraryFolderInput, SkillLibraryInfo } from '@shared/types'
+import type { CliShimResult, CliShimStatus, FocusRunTarget, KitApplyResult, KitExportResult, KitImportPreview, SkillLibraryFolderInput, SkillLibraryInfo } from '@shared/types'
 import { HOST_IPC, HOST_METHODS, IPC, KIT_IPC } from '@shared/types'
 import { applyArgs as kitApplyArgs, exportArgs as kitExportArgs, type KitService } from './kit/service'
 import { PickedPaths, kitExportTarget } from './kit/pickedPaths'
@@ -18,6 +18,7 @@ import { log, logPath, logsDir } from './log'
 import { obj } from './host/args'
 import { HostDispatcher } from './host/dispatcher'
 import type { HostDispatchEnv, HostServices } from './host/types'
+import { CLI_SHIM_UNAVAILABLE, type CliShimService } from './host/shimInstaller'
 
 /**
  * What registerIpc serves: the host services (host/types.ts HostServices; the shared field docs live there) plus the
@@ -32,6 +33,8 @@ export interface IpcServices extends Omit<HostServices, 'desktop'> {
   openRunWindow(target: FocusRunTarget): void
   /** The host dispatcher to serve; absent = registerIpc builds one over these services. */
   dispatcher?: HostDispatcher
+  /** The orgai command shim (cli-spec 7(3)); absent = app:cliShim* answer CLI_SHIM_UNAVAILABLE. */
+  cliShim?: CliShimService
 }
 
 export { harnessProjectFor, withEffectiveDefault } from './host/args'
@@ -80,7 +83,10 @@ export const DESKTOP_ONLY_CHANNELS: readonly string[] = [
   IPC.menuSetState,
   IPC.appOpenPath,
   IPC.appOpenLogs,
-  IPC.appSetNotifications
+  IPC.appSetNotifications,
+  IPC.appCliShimStatus,
+  IPC.appInstallCliShim,
+  IPC.appUninstallCliShim
 ]
 
 /** Served over the socket only: HOST_IPC channels and host.* methods never get an ipcMain handler. */
@@ -158,7 +164,36 @@ export function registerIpc(services: IpcServices): void {
     const win = BrowserWindow.fromWebContents(e.sender)
     if (win && !win.isDestroyed()) setMenuState(win, cleanMenuState(input))
   })
+  registerCliShimIpc(services.cliShim)
   if (kit) registerKitIpc(kit)
+}
+
+// ---- orgai command shim (cli-spec 7(3)); desktop only, never throws to the renderer ----
+
+function cliShimStatusOf(shim: CliShimService | undefined): CliShimStatus {
+  try {
+    return shim?.status() ?? CLI_SHIM_UNAVAILABLE
+  } catch (err) {
+    log.warn('app:cliShimStatus failed:', err instanceof Error ? err.message : String(err))
+    return CLI_SHIM_UNAVAILABLE
+  }
+}
+
+function registerCliShimIpc(shim: CliShimService | undefined): void {
+  const unavailable = (): CliShimResult => ({ ok: false, message: CLI_SHIM_UNAVAILABLE.reason ?? '', status: CLI_SHIM_UNAVAILABLE })
+  const change = (what: 'install' | 'uninstall') => async (): Promise<CliShimResult> => {
+    if (!shim) return unavailable()
+    try {
+      return await shim[what]()
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      log.warn(`app:${what}CliShim failed:`, message)
+      return { ok: false, message: `OrgAI could not change the orgai command: ${message}`, status: cliShimStatusOf(shim) }
+    }
+  }
+  ipcMain.handle(IPC.appCliShimStatus, (): CliShimStatus => cliShimStatusOf(shim))
+  ipcMain.handle(IPC.appInstallCliShim, change('install'))
+  ipcMain.handle(IPC.appUninstallCliShim, change('uninstall'))
 }
 
 // ---- Practice kit ----

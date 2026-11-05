@@ -90,6 +90,9 @@ const PAYLOADS: Record<string, unknown[]> = {
   'app:setNotifications': [true],
   'usage:refresh': [],
   'app:openLogs': [],
+  'app:cliShimStatus': [],
+  'app:installCliShim': [],
+  'app:uninstallCliShim': [],
   'app:logPath': [],
   'app:info': [],
   // permissions

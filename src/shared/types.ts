@@ -4331,6 +4331,12 @@ export interface OrgAIApi {
     logPath(): Promise<string>
     /** Version, platform, data and logs folders, and whether the token-free mock adapter is available. */
     info(): Promise<AppInfo>
+    /** The orgai command shim's state (cli-spec 7(3)). Never rejects. */
+    cliShimStatus(): Promise<CliShimStatus>
+    /** Write or refresh the orgai command shim. Never rejects; failures come back as ok: false with a message. */
+    installCliShim(): Promise<CliShimResult>
+    /** Remove the orgai command shim (only OrgAI's own). Never rejects; failures come back as ok: false. */
+    uninstallCliShim(): Promise<CliShimResult>
   }
 }
 
@@ -4964,6 +4970,40 @@ export interface AppInfo {
   packaged: boolean
 }
 
+// ---- orgai command shim (cli-spec 7(3), Wave 6) ----
+
+/**
+ * Where the orgai command shim stands. 'unavailable': this OrgAI cannot install it (a dev build, ORGAI_DATA_DIR set,
+ * a translocated / disk-image / AppImage / portable copy; `reason` says which). 'not-installed': no file at `path`.
+ * 'installed': OrgAI's shim runs this install's launcher. 'outdated': OrgAI's shim runs another launcher (`target`).
+ * 'foreign': a file at `path` that OrgAI did not write; OrgAI never overwrites or removes it.
+ */
+export type CliShimState = 'unavailable' | 'not-installed' | 'installed' | 'outdated' | 'foreign'
+
+/** The orgai command shim (app:cliShimStatus). Structured-clone safe. */
+export interface CliShimStatus {
+  state: CliShimState
+  /** The shim file (~/.local/bin/orgai or %LOCALAPPDATA%\OrgAI\bin\orgai.cmd); '' when unknown. */
+  path: string
+  /** The shim's folder; '' when unknown. */
+  binDir: string
+  /** The launcher an OrgAI shim runs now (for 'outdated': the other install's). */
+  target?: string
+  /** True when binDir is on the login shell PATH; undefined when unknown. */
+  onPath?: boolean
+  /** One plain sentence for 'unavailable' and 'foreign'. */
+  reason?: string
+}
+
+/** The answer of app:installCliShim / app:uninstallCliShim. Never a rejection: failures are ok: false. */
+export interface CliShimResult {
+  ok: boolean
+  /** One plain sentence for the user. */
+  message: string
+  /** The status after the change (or the unchanged status after a failure). */
+  status: CliShimStatus
+}
+
 export const IPC = {
   ...TEMPLATE_ENGAGEMENT_IPC,
   ...KNOWLEDGE_IPC,
@@ -5016,6 +5056,12 @@ export const IPC = {
   appOpenLogs: 'app:openLogs',
   appLogPath: 'app:logPath',
   appInfo: 'app:info',
+  /** Desktop only (cli-spec 7(3)): the orgai command shim's CliShimStatus. Refused over the socket. */
+  appCliShimStatus: 'app:cliShimStatus',
+  /** Desktop only (cli-spec 7(3)): write or refresh the orgai command shim; answers CliShimResult. */
+  appInstallCliShim: 'app:installCliShim',
+  /** Desktop only (cli-spec 7(3)): remove the orgai command shim when it is OrgAI's; answers CliShimResult. */
+  appUninstallCliShim: 'app:uninstallCliShim',
   permissionsList: 'permissions:list',
   permissionsRemove: 'permissions:remove',
   permissionsAdd: 'permissions:add',

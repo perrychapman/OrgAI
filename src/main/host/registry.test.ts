@@ -34,7 +34,7 @@ const SPEC_TABLE = {
   operate: `runs:start, runs:startQuick, runs:continue, runs:send, runs:interrupt, runs:stop, runs:resumeNow, runs:cancelAutoResume, setup:start, setup:retro, mcp:startAssist, skills:startAssist, usage:refresh, connections:test, models:refresh, mcp:test, mcpLibrary:test, capabilities:discover, capabilities:recommend, capabilities:cancel, capabilities:review, skills:evaluate, draft:orgChart, window:openRun`,
   decide: `runs:decide, permissions:decideRequest, setup:decide, setup:answer, merges:decide, mcp:answerInstall`,
   configure: `host.stop, settings:set, projects:create, projects:save, projects:remove, projects:remapModels, projects:applyImport, projects:exportOrg, projects:updateEngagementDocument, projects:saveNote, projects:removeNote, runs:promoteQuick, permissions:add, permissions:remove, connections:connect, connections:update, connections:setSecret, connections:login, connections:cancelLogin, connections:logout, connections:setDefault, mcp:upsert, mcp:remove, mcp:setSecret, mcp:linkLibrary, mcp:promote, mcp:authorize, mcp:cancelAuthorize, mcp:revokeAuth, mcp:copyFromLibrary, mcp:setProjectOverrides, mcpLibrary:upsert, mcpLibrary:remove, mcpLibrary:setSecret, connectors:add, connectors:setToken, connectorPresets:upsert, connectorPresets:remove, plugins:upsert, plugins:remove, skills:create, skills:update, skills:remove, skills:linkLibrary, skills:promote, skills:applyImport, skills:undoImport, skills:applySuggestion, skillLibrary:create, skillLibrary:addFromBundle, skillLibrary:update, skillLibrary:remove, capabilities:apply, capabilities:undo, capabilities:dismiss, capabilities:restore, maintenance:integrateWorktree, maintenance:discardWorktree, maintenance:uninstallRepo, templates:saveFromProject, templates:remove, templates:apply, knowledge:saveNode, knowledge:removeNode, knowledge:saveEdge, knowledge:removeEdge, knowledge:clear, kit:exportBundle, kit:applyBundle`,
-  desktop_only: `projects:pickDirectory, skillLibrary:addFromFolder, kit:pickExportPath, kit:pickImportPath, kit:export, kit:previewImport, kit:applyImport, menu:setState, app:openPath, app:openLogs, app:setNotifications`,
+  desktop_only: `projects:pickDirectory, skillLibrary:addFromFolder, kit:pickExportPath, kit:pickImportPath, kit:export, kit:previewImport, kit:applyImport, menu:setState, app:openPath, app:openLogs, app:setNotifications, app:cliShimStatus, app:installCliShim, app:uninstallCliShim`,
   socket_subscribable: `runs:event, settings:changed, connections:event, mcpLibrary:changed, skillLibrary:changed, capabilities:progress, capabilities:reviewUpdated, projects:engagementChanged`,
   push_desktop_only: `app:focusRun, menu:action`
 } as const
@@ -57,21 +57,21 @@ function failure(fn: () => unknown): HostRpcFailure {
 const existing = [...new Set([...Object.values(IPC), ...Object.values(MCP_SCOPE_IPC), ...Object.values(KIT_IPC)])]
 
 describe('HOST_CHANNEL_REGISTRY coverage (Wave 1 gate)', () => {
-  it('has an entry for each of the 156 existing channels, the 6 HOST_IPC channels and the 5 HOST_METHODS, nothing else', () => {
-    expect(existing).toHaveLength(156)
+  it('has an entry for each of the 159 existing channels, the 6 HOST_IPC channels and the 5 HOST_METHODS, nothing else', () => {
+    expect(existing).toHaveLength(159)
     expect(Object.values(HOST_IPC)).toHaveLength(6)
     expect(Object.values(HOST_METHODS)).toHaveLength(5)
     for (const c of existing) expect(channelEntry(c), c).toBeDefined()
     for (const c of Object.values(HOST_IPC)) expect(channelEntry(c), c).toBeDefined()
     for (const c of Object.values(HOST_METHODS)) expect(channelEntry(c), c).toBeDefined()
     const expected = [...allChannels(), ...Object.values(HOST_METHODS)].sort()
-    expect(new Set(allChannels()).size).toBe(162)
+    expect(new Set(allChannels()).size).toBe(165)
     expect(Object.keys(HOST_CHANNEL_REGISTRY).sort()).toEqual(expected)
   })
 
-  it('splits the existing channels into 146 requests and 10 pushes (8 socket_subscribable, 2 desktop_only)', () => {
+  it('splits the existing channels into 149 requests and 10 pushes (8 socket_subscribable, 2 desktop_only)', () => {
     const entries = existing.map((c) => HOST_CHANNEL_REGISTRY[c])
-    expect(entries.filter((e) => e.direction === 'request')).toHaveLength(146)
+    expect(entries.filter((e) => e.direction === 'request')).toHaveLength(149)
     const push = entries.filter((e): e is PushChannelEntry => e.direction === 'push')
     expect(push).toHaveLength(10)
     expect(push.filter((e) => e.delivery === 'socket_subscribable')).toHaveLength(8)
@@ -136,7 +136,7 @@ describe('scope classification (cli-spec 3.3(3) table)', () => {
     expect(scopeOf('host.stop')).toBe('configure')
   })
 
-  it('exactly the 11 desktop_only request channels', () => {
+  it('exactly the 14 desktop_only request channels', () => {
     expect(desktopOnlyChannels().sort()).toEqual(
       [
         'projects:pickDirectory',
@@ -149,7 +149,10 @@ describe('scope classification (cli-spec 3.3(3) table)', () => {
         'menu:setState',
         'app:openPath',
         'app:openLogs',
-        'app:setNotifications'
+        'app:setNotifications',
+        'app:cliShimStatus',
+        'app:installCliShim',
+        'app:uninstallCliShim'
       ].sort()
     )
   })
@@ -190,13 +193,18 @@ describe('entry flags', () => {
 
   it('socketInvokableChannels leaves out desktop_only and transport channels', () => {
     const invokable = socketInvokableChannels()
-    expect(invokable).toHaveLength(requestEntries().length - 11 - 2)
+    expect(invokable).toHaveLength(requestEntries().length - 14 - 2)
     expect(invokable).toContain('runs:start')
     expect(invokable).toContain('host.status')
     expect(invokable).toContain('window:openRun')
     expect(invokable).not.toContain('runs:subscribe')
     expect(invokable).not.toContain('host.subscribe')
     expect(invokable).not.toContain('app:openPath')
+    for (const c of ['app:cliShimStatus', 'app:installCliShim', 'app:uninstallCliShim']) {
+      expect(invokable, c).not.toContain(c)
+      expect((HOST_CHANNEL_REGISTRY[c] as RequestChannelEntry).scope, c).toBe('desktop_only')
+      expect(HOST_CHANNEL_REGISTRY[c].source, c).toBe('ipc.ts desktop-only (shimInstaller.ts)')
+    }
   })
 
   it('topic mapping: runs, the six host.subscribe topics, and none for desktop pushes', () => {
