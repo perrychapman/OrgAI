@@ -65,7 +65,7 @@ import { QUICK_ASSISTANT_SLUG, adapterForProject, agentProducedNothing, isolateW
 import { referenceFolderOf } from './referenceDirectories'
 import { aliasesFor, priceAgentUsage, resolvePrice, type PricingContext } from './pricing'
 import { IntervalTimer, buildUsageCsv, buildUsageStats, computeRunUsage, emptyAgentUsage, legacySummaryUsage, monthRange, normalizeRunRecord } from './runUsage'
-import { DEFAULT_EXEC_STALL_TIMEOUT_MS, DEFAULT_MAX_AUTO_CONTINUES, EXEC_FINALIZE_STOP_TIMEOUT_MS, EXEC_SETTLE_DEBOUNCE_MS, EXEC_TITLE_JOIN_MS, HARNESS_PROJECT_ID, KNOWLEDGE_RUN_WRITES_MAX, QUICK_PROJECT_ID, RUN_MESSAGE_MAX_CHARS, RUN_PEER_PROMPT_CHARS, SKILLS_PROJECT_ID, USAGE_STATS_DEFAULT_LIMIT, USAGE_STATS_MAX_LIMIT, isVirtualProjectId } from '@shared/types'
+import { DEFAULT_EXEC_STALL_TIMEOUT_MS, DEFAULT_HEADLESS_DECISION_POLICY, DEFAULT_MAX_AUTO_CONTINUES, EXEC_FINALIZE_STOP_TIMEOUT_MS, EXEC_SETTLE_DEBOUNCE_MS, EXEC_TITLE_JOIN_MS, HARNESS_PROJECT_ID, KNOWLEDGE_RUN_WRITES_MAX, QUICK_PROJECT_ID, RUN_MESSAGE_MAX_CHARS, RUN_PEER_PROMPT_CHARS, SKILLS_PROJECT_ID, USAGE_STATS_DEFAULT_LIMIT, USAGE_STATS_MAX_LIMIT, isVirtualProjectId } from '@shared/types'
 import { architectRole, mcpAssistantRole, skillAssistantRole } from '@shared/setup'
 import { isTrustRestrictedRun, isInsideEither, samePath, canonicalDeep } from '../quick/scratch'
 import { MCP_ASSIST_MODEL_LABEL, QUICK_RUN_MODEL_LABEL, SETUP_MODEL_LABEL, SKILL_ASSIST_MODEL_LABEL, resolveBuiltinModel, type ResolvedBuiltinModel } from './builtinModel'
@@ -377,6 +377,8 @@ interface ActiveRun {
   finalizing?: Promise<void>
   /** The outcome finalizeExecRun claimed. */
   finalOutcome?: ExecOutcome
+  /** The finalizer wrote the final status (or gave up): teardown no longer waits for it. */
+  finalizeDone?: boolean
   /** The finalizer's own run.status is going through emit (late adapter statuses are dropped otherwise). */
   finalEmitting?: boolean
   /** run.finalized was broadcast (by the finalizer, or best effort by a quit). */
@@ -785,19 +787,36 @@ const NARROWING_KEYS = ['permissionMode', 'maxBudgetUsd', 'autoContinue', 'maxAu
 /** Exec fields a continuation keeps only with `exec` or on the automatic resume. */
 const EXEC_KEYS = ['execMode', 'execChainId', 'waitForReset', 'decisionPolicy', 'allowUnmerged', 'allowUnpricedBudget', 'execStallTimeoutMs', 'allowPeerMessages'] as const
 
+/** Carried exec fields that only a 'configure' caller can set (overridesWidening): kept only with allowWidening. */
+const CONFIGURE_ONLY_EXEC_KEYS: ReadonlySet<string> = new Set(['allowPeerMessages', 'allowUnpricedBudget'])
+
 /**
  * The overrides of a continuation (cli-spec 6.2(1)): the continued run's narrowing overrides always, its exec fields
  * only for `orgai resume --exec` or the automatic resume (a later desktop continue strips them), then opts.overrides
- * on top. undefined when nothing is left.
+ * on top. allowPeerMessages / allowUnpricedBudget carry over only with allowWidening (an 'operate'-only resume never
+ * inherits a 'configure' grant). A decisionPolicy merges per field over the carried one (opts.overrides may give only
+ * the fields the client set) and the remaining choices take the defaults. undefined when nothing is left.
  */
 export function continuedOverrides(prev: RunOverrides | undefined, opts: ContinueRunOptions): RunOverrides | undefined {
   const out: Record<string, unknown> = {}
   const keepExec = opts.exec === true || opts[AUTO_RESUME] === true
   for (const k of [...NARROWING_KEYS, ...(keepExec ? EXEC_KEYS : [])]) {
+    if (CONFIGURE_ONLY_EXEC_KEYS.has(k) && opts.allowWidening !== true) continue
     const v = prev?.[k]
     if (v !== undefined) out[k] = typeof v === 'object' ? structuredClone(v) : v
   }
-  for (const [k, v] of Object.entries(opts.overrides ?? {})) if (v !== undefined) out[k] = v
+  for (const [k, v] of Object.entries(opts.overrides ?? {})) {
+    if (v === undefined) continue
+    if (k === 'decisionPolicy') {
+      const merged: Record<string, unknown> = { ...((out.decisionPolicy as object | undefined) ?? {}) }
+      for (const [pk, pv] of Object.entries(v as object)) if (pv !== undefined) merged[pk] = pv
+      out.decisionPolicy = merged
+    } else out[k] = v
+  }
+  if (out.decisionPolicy) {
+    const policy = out.decisionPolicy as Record<string, unknown>
+    for (const k of ['permission', 'rules', 'mcpInstall', 'question', 'proposal', 'merge'] as const) policy[k] ??= DEFAULT_HEADLESS_DECISION_POLICY[k]
+  }
   return Object.keys(out).length ? (out as RunOverrides) : undefined
 }
 
@@ -827,8 +846,9 @@ export class RunManager {
   private titleAborts = new Map<AbortController, string>()
   private resumeTimers =new Map<string, ReturnType<typeof setTimeout>>()
   /**
-   * Exec runs started by a 'configure' caller (allowWidening). The automatic rate-limit resume (waitForReset) is the
-   * same invocation, so it keeps widening overrides; like the resume timers this lives only in this process.
+   * waitForReset exec runs started by a 'configure' caller (allowWidening). The automatic rate-limit resume (the timer
+   * path only) is the same invocation, so it keeps widening overrides; like the resume timers this lives only in this
+   * process. Dropped with the timer (clearResume), at teardown without an armed timer, and when the resume consumes it.
    */
   private widenedRuns = new Set<string>()
   /** Set by stopAll({ reason: 'quit' }) and markQuit: no run starts, continues, resumes or takes a message after it. */
@@ -1155,7 +1175,8 @@ export class RunManager {
       priceChecked: new Set()
     }
     this.runs.set(summary.id, active)
-    if (allowWidening && overrides?.execMode) this.widenedRuns.add(summary.id)
+    // Only the automatic resume of a waitForReset chain is the same invocation; nothing else re-applies the grant.
+    if (allowWidening && overrides?.execMode && overrides.waitForReset) this.widenedRuns.add(summary.id)
     this.store.upsert(summary)
 
     // Settings are read at each pricing call, so a saved override applies to a live run on its next usage update.
@@ -1760,7 +1781,8 @@ export class RunManager {
     if (a.finalizing || a.finalEmitting) return
     const runId = a.summary.id
     if (e.status === 'paused') {
-      if (!a.summary.overrides?.waitForReset) void this.finalizeExecRun(runId, 'rate-limited')
+      // waitForReset leaves the outcome to the auto-resume, unless none is armed (an adapter's autoResume false).
+      if (!a.summary.overrides?.waitForReset || e.autoResume === false) void this.finalizeExecRun(runId, 'rate-limited')
     } else if (e.status === 'error') {
       const auth = !!a.lastTurnEnd?.isAuthError || isAuthFailure({ text: e.error, isError: true })
       void this.finalizeExecRun(runId, auth ? 'auth-error' : 'failed')
@@ -1895,7 +1917,11 @@ export class RunManager {
     if (a.finalizing) return a.finalizing
     a.finalOutcome = outcome
     const endedBy = opts.endedBy !== undefined ? opts.endedBy : defaultEndedBy(outcome)
-    const run = this.runFinalizer(a, outcome, endedBy).catch((err: unknown) => log.warn(`Run ${runId}: finalizing failed: ${(err as Error)?.message ?? err}`))
+    const run = this.runFinalizer(a, outcome, endedBy)
+      .catch((err: unknown) => log.warn(`Run ${runId}: finalizing failed: ${(err as Error)?.message ?? err}`))
+      .finally(() => {
+        a.finalizeDone = true
+      })
     a.finalizing = run
     return run
   }
@@ -1905,6 +1931,9 @@ export class RunManager {
     await Promise.resolve()
     const s = a.summary
     this.clearExecTimers(a)
+    // A finalized run never resumes by itself (a waitForReset pause stopped by the user included).
+    this.clearResume(s.id)
+    if (s.status === 'paused') s.autoResume = false
     if (endedBy) a.endedBy ??= endedBy
     if (outcome === 'interrupted') {
       a.userStopped = true
@@ -1924,7 +1953,8 @@ export class RunManager {
     if (a.titleTask) await raceTimeout(a.titleTask, EXEC_TITLE_JOIN_MS)
     a.titleAbort?.abort()
     // The final status, unless the run already reached one (an adapter error, a natural end, the pause).
-    const terminal = s.status === 'finished' || s.status === 'error' || s.status === 'paused'
+    // A paused run the user stopped ('interrupted') is finished, not left paused.
+    const terminal = s.status === 'finished' || s.status === 'error' || (s.status === 'paused' && outcome !== 'interrupted')
     if (!terminal) {
       const status = outcome === 'failed' || outcome === 'auth-error' ? 'error' : outcome === 'rate-limited' ? 'paused' : 'finished'
       const error =
@@ -1942,8 +1972,9 @@ export class RunManager {
       log.warn(`Run ${s.id}: could not persist the finalized summary: ${(e as Error).message}`)
     }
     this.flush(a)
-    // No session (never started) or one that never finished: the run leaves the live set here.
-    if (this.runs.get(s.id) === a && (!a.session || timedOut)) this.teardown(a)
+    a.finalizeDone = true
+    // The run leaves the live set here once its final status is written (session.finished's teardown waited for it).
+    if (this.runs.get(s.id) === a) this.teardown(a)
     if (!a.finalizedSent) {
       a.finalizedSent = true
       this.broadcast({ type: 'run.finalized', runId: s.id, ...(s.overrides?.execChainId ? { execChainId: s.overrides.execChainId } : {}), outcome, summary: { ...s } })
@@ -2234,8 +2265,16 @@ export class RunManager {
   private teardown(active: ActiveRun): void {
     // Reached from session.finished and, for an exec run that never started or never finished, from the finalizer.
     if (active.tornDown) return
+    // An exec run the finalizer claimed stays live until its final status is written (it may still wait for the
+    // title), so listLive, continueRun and a quit's writeCut never see it gone while it still reads 'idle'.
+    if (active.finalizing && !active.finalizeDone) {
+      void active.finalizing.finally(() => this.teardown(active))
+      return
+    }
     active.tornDown = true
     const runId = active.summary.id
+    // A widened chain's grant lives only until its own automatic resume (an armed timer); any other end drops it.
+    if (!this.resumeTimers.has(runId)) this.widenedRuns.delete(runId)
     // Every waiting card (permissions, proposals, questions, rules, merges, installs) is settled as cancelled.
     this.cancelCards(active)
     // After the cards: their cancellation counts as activity and would re-arm the exec timers.
@@ -3006,7 +3045,7 @@ export class RunManager {
 
   async stop(runId: string): Promise<void> {
     const active = this.runs.get(runId)
-    if (!active) return
+    if (!active) return this.stopPaused(runId)
     const st = active.summary.status
     if (st === 'finished' || st === 'error') return
     // A headless exec run ends through its finalizer (outcome 'interrupted', endedBy 'user'); an outcome already
@@ -3021,6 +3060,45 @@ export class RunManager {
     this.flush(active)
     // A session still opening is stopped by start() as soon as adapter.start resolves (userStopped is set).
     await this.stopSession(active)
+  }
+
+  /**
+   * End a paused run that has no live session (it left `runs` when its session finished; only its resume timer may be
+   * left): the auto-resume is cancelled and the run is finished as ended by the user. An exec run still waiting for its
+   * reset (no execOutcome yet) is finalized as 'interrupted' (cli-spec 6.2(3)), so its follower gets run.finalized.
+   */
+  private stopPaused(runId: string): void {
+    const s = this.store.get(runId)
+    if (!s || s.status !== 'paused') return
+    this.clearResume(runId)
+    const exec = !!s.overrides?.execMode && !s.execOutcome
+    const done = this.patchSummary(runId, { status: 'finished', autoResume: false, endedBy: 'user', ...(exec ? { execOutcome: 'interrupted' as const } : {}) })
+    if (!done) return
+    this.broadcast(withEndFacts({ type: 'run.status', runId, status: 'finished', pausedUntil: done.pausedUntil, pauseReason: done.pauseReason, autoResume: false }, done))
+    if (exec) this.broadcastFinalized(done, 'interrupted')
+  }
+
+  /**
+   * A paused exec run of a waitForReset chain that will no longer resume by itself (no timer: an adapter's autoResume
+   * false, a resume that failed, Cancel auto-resume) is finalized as 'rate-limited', so its follower never waits
+   * forever. A live run goes through the finalizer; a stored one is patched and run.finalized broadcast. Idempotent.
+   */
+  private finalizeStrandedExec(runId: string): void {
+    if (this.resumeTimers.has(runId)) return
+    const a = this.runs.get(runId)
+    if (a) {
+      const o = a.summary.overrides
+      if (o?.execMode && o.waitForReset && a.summary.status === 'paused') void this.finalizeExecRun(runId, 'rate-limited')
+      return
+    }
+    const s = this.store.get(runId)
+    if (!s?.overrides?.execMode || !s.overrides.waitForReset || s.execOutcome || s.status !== 'paused') return
+    const done = this.patchSummary(runId, { execOutcome: 'rate-limited', autoResume: false })
+    if (done) this.broadcastFinalized(done, 'rate-limited')
+  }
+
+  private broadcastFinalized(s: RunSummary, outcome: ExecOutcome): void {
+    this.broadcast({ type: 'run.finalized', runId: s.id, ...(s.overrides?.execChainId ? { execChainId: s.overrides.execChainId } : {}), outcome, summary: { ...s } })
   }
 
   /** The run's session.stop(), one call at a time (End session, quit and a late start share it; a failed stop can be retried). */
@@ -3225,7 +3303,7 @@ export class RunManager {
   // ---------- pause and auto-resume ----------
 
   private scheduleResume(runId: string, at: number): void {
-    this.clearResume(runId)
+    this.clearResumeTimer(runId)
     // No auto-resume is armed while the app quits (resumeNow would refuse); the boot normalization ends the pause.
     if (this.quitting) return
     const delay = Math.max(0, at - Date.now())
@@ -3235,13 +3313,14 @@ export class RunManager {
       // drops the lease once, after the error handling below, when the resume settles.
       this.withResumeLease(() => {
         this.resumeTimers.delete(runId)
-        return this.resumeUnleased(runId).then(
+        return this.resumeUnleased(runId, { auto: true }).then(
           () => undefined,
           (err: unknown) => {
             const message = `Could not resume the paused run: ${(err as Error).message}`
             this.broadcast({ type: 'log', runId, level: 'error', message })
             const s = this.patchSummary(runId, { autoResume: false })
             if (s) this.broadcast({ type: 'run.status', runId, status: s.status, pausedUntil: s.pausedUntil, pauseReason: s.pauseReason, autoResume: false })
+            this.finalizeStrandedExec(runId)
           }
         )
       }).catch((err: unknown) => log.warn(`Run ${runId}: auto-resume failed: ${(err as Error)?.message ?? err}`))
@@ -3249,10 +3328,16 @@ export class RunManager {
     this.resumeTimers.set(runId, timer)
   }
 
-  private clearResume(runId: string): void {
+  private clearResumeTimer(runId: string): void {
     const t = this.resumeTimers.get(runId)
     if (t) clearTimeout(t)
     this.resumeTimers.delete(runId)
+  }
+
+  /** Cancel a run's auto-resume: its timer and the widening grant that only that resume may use. */
+  private clearResume(runId: string): void {
+    this.clearResumeTimer(runId)
+    this.widenedRuns.delete(runId)
   }
 
   /** Activity (pausedAutoResumes): auto-resume timers still armed. */
@@ -3315,8 +3400,12 @@ export class RunManager {
     return this.withResumeLease(() => this.resumeUnleased(runId))
   }
 
-  /** resumeNow's body, without the activity lease (the caller holds it). */
-  private async resumeUnleased(runId: string): Promise<RunSummary> {
+  /**
+   * resumeNow's body, without the activity lease (the caller holds it). `auto` is the timer path only: a manual
+   * Resume now (Desktop or RPC) never re-applies a 'configure' caller's widening.
+   */
+  private async resumeUnleased(runId: string, opts: { auto?: boolean } = {}): Promise<RunSummary> {
+    const widened = opts.auto === true && this.widenedRuns.has(runId)
     this.clearResume(runId)
     this.refuseWhileQuitting()
     const from = this.summary(runId)
@@ -3327,10 +3416,13 @@ export class RunManager {
     // Setup runs re-profile the repo like setup:start so the Architect's hidden context is current.
     const project = from.kind === 'setup' ? await this.setup.prepare(current) : current
     try {
-      // The automatic resume keeps an exec chain going (waitForReset): its exec fields carry over.
-      // A chain a 'configure' caller widened stays widened across its own automatic resume.
-      const widened = this.widenedRuns.delete(runId)
-      return await (from.overrides?.execMode
+      // A waitForReset exec chain still in flight (no execOutcome: its follower waits) keeps its exec fields, on the
+      // timer or an early Resume now. A finalized exec run (e.g. 'rate-limited', its client gone) resumed by hand
+      // continues as a desktop run, with the exec fields stripped (cli-spec 6.2(1)).
+      // A chain a 'configure' caller widened stays widened across its own automatic resume only.
+      const o = from.overrides
+      const keepExec = !!o?.execMode && !!o.waitForReset && !from.execOutcome
+      return await (keepExec
         ? this.continueRun(project, runId, RESUME_TEXT, undefined, { [AUTO_RESUME]: true, ...(widened ? { allowWidening: true } : {}) })
         : this.continueRun(project, runId, RESUME_TEXT))
     } catch (e) {
@@ -3347,6 +3439,8 @@ export class RunManager {
     const s = this.patchSummary(runId, { autoResume: false })
     if (s && s.status === 'paused') {
       this.broadcast({ type: 'run.status', runId, status: 'paused', pausedUntil: s.pausedUntil, pauseReason: s.pauseReason, autoResume: false })
+      // A waitForReset exec chain will not resume now: it ends 'rate-limited' (its follower would wait forever).
+      this.finalizeStrandedExec(runId)
     }
   }
 }

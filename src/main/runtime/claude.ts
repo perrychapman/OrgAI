@@ -36,6 +36,7 @@ import { allowRuleStrings, applyAllowScope, chooseSuggestions, listRules, sugges
 import { isGitRepo } from './worktrees'
 import { costOf, rateFor, ratesFromModelUsage, sumByModel, weighted, type CostRates, type TokenMix } from './claudeCost'
 import { costFromPrice, priceFor } from './pricing'
+import { projectBudgetUsd } from './runOverrides'
 import { countUsage, setModelTokens } from './runUsage'
 import { PartialText } from './claudePartial'
 import { buildSkillPlugin, livePluginNames, pluginStale, skillGate, type SkillPlugin } from './claudeSkills'
@@ -1034,6 +1035,8 @@ export class ClaudeSession implements RuntimeSession {
   private rootTurnGen = 0
   /** A root turn is running (a message was pushed, or the query emitted init, and no result since). */
   private turnInFlight = false
+  /** interrupt() was called during a root turn; the next root result is that turn's (interrupted) end. */
+  private interruptPending = false
   /** The generation of the turn end held back in turnEndDeferred. */
   private deferredTurnGen = 0
   /** The run-scoped orgai skills plugin of the current query (work runs with granted skills). */
@@ -1208,6 +1211,8 @@ export class ClaudeSession implements RuntimeSession {
     // An interrupted turn waits for the user; no automatic continue (and no MCP restart) until they reply.
     this.continuation.hold()
     this.held = true
+    // The result that ends this turn reports it as interrupted (RootTurnEnd.interrupted), never as a failed turn.
+    if (this.turnInFlight) this.interruptPending = true
     try {
       await this.q?.interrupt()
     } catch (e) {
@@ -2359,7 +2364,8 @@ export class ClaudeSession implements RuntimeSession {
    */
   private restartBudget(): number | undefined | null {
     // An exec run's budget (ctx.budgetUsd, 0 allowed) replaces the project's; 0 is a real budget, never "none".
-    const max = this.ctx.budgetUsd !== undefined ? this.ctx.budgetUsd : this.ctx.project.maxBudgetUsd
+    // A project cap <= 0 is "no cap" (projectBudgetUsd), as it always was for desktop runs.
+    const max = this.ctx.budgetUsd !== undefined ? this.ctx.budgetUsd : projectBudgetUsd(this.ctx.project)
     if (max === undefined || this.isSetup) return undefined
     const left = max - Math.max(0, this.lastRunCost, this.lastPricedTotal)
     // Below the minimum counts as nothing left: rounding it up would overshoot the budget (review N7).
@@ -2874,7 +2880,8 @@ export class ClaudeSession implements RuntimeSession {
     if (opts.maxBudgetUsd !== undefined) options.maxBudgetUsd = opts.maxBudgetUsd
     else if (!this.isSetup) {
       // ctx.budgetUsd (exec runs, the chain's prior cost already taken off) wins; 0 is a real budget (cli-spec 6.2(3)).
-      const budget = this.ctx.budgetUsd !== undefined ? this.ctx.budgetUsd : project.maxBudgetUsd
+      // A project cap <= 0 means no cap (projectBudgetUsd).
+      const budget = this.ctx.budgetUsd !== undefined ? this.ctx.budgetUsd : projectBudgetUsd(project)
       if (budget !== undefined) options.maxBudgetUsd = budget
     }
     const resumeId = resume ?? this.ctx.resumeSessionId
@@ -3268,6 +3275,8 @@ export class ClaudeSession implements RuntimeSession {
           break
         }
         const root = this.ensureAgent(ROOT_ID)
+        const interrupted = this.interruptPending
+        this.interruptPending = false
         if (msg.subtype === 'success') {
           root.result = msg.result
           root.state = 'idle'
@@ -3275,15 +3284,26 @@ export class ClaudeSession implements RuntimeSession {
             (x) => x.id !== ROOT_ID && x.state !== 'done' && x.state !== 'error'
           )
           root.activity = reportsRunning ? 'Waiting on reports…' : 'Waiting for you'
+        } else if (interrupted && msg.subtype !== 'error_max_budget_usd') {
+          // The user's interrupt ends the turn with a non-success subtype (unverified live which one); not an error.
+          root.state = 'idle'
+          root.activity = 'Interrupted'
+          this.log('info', `Turn interrupted (${msg.subtype})`)
         } else {
           root.state = 'error'
           root.activity = msg.subtype.replace(/^error_/, '').replace(/_/g, ' ')
           this.log('error', `Run ended: ${msg.subtype}`)
         }
         this.upsert(root)
-        // Exec settlement (cli-spec 6.2(2)): every root turn end is reported before 'idle', failed ones included.
+        // Exec settlement (cli-spec 6.2(2)): every root turn end is reported before 'idle', failed and interrupted
+        // ones included (an interrupted turn is held by RunManager, never finalized as failed).
         const ok = msg.subtype === 'success'
-        const turnGen = this.reportRootTurnEnd({ ok, ...(ok ? {} : { errorSubtype: msg.subtype }), ...(this.limited ? { limited: true } : {}) })
+        const turnGen = this.reportRootTurnEnd({
+          ok,
+          ...(ok ? {} : { errorSubtype: msg.subtype }),
+          ...(interrupted ? { interrupted: true } : {}),
+          ...(this.limited ? { limited: true } : {})
+        })
         this.emit({ type: 'run.status', runId, status: 'idle' })
         // Unattended execution: after a short delay (a report that just landed wakes the orchestrator
         // first), remind it of the plan's remaining steps. The driver re-checks every condition then.

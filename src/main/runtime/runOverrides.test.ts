@@ -48,8 +48,11 @@ describe('overridesWidening', () => {
     expect(overridesWidening(project(), { maxBudgetUsd: 200 })).toEqual([])
   })
   it('flags allowUnpricedBudget only when the project enforces a budget', () => {
-    expect(overridesWidening(project({ maxBudgetUsd: 0 }), { allowUnpricedBudget: true })).toEqual(['allowUnpricedBudget'])
+    expect(overridesWidening(project({ maxBudgetUsd: 0.5 }), { allowUnpricedBudget: true })).toEqual(['allowUnpricedBudget'])
     expect(overridesWidening(project(), { allowUnpricedBudget: true })).toEqual([])
+    // A stored project cap of 0 is "No cap" (projectBudgetUsd): nothing to widen.
+    expect(overridesWidening(project({ maxBudgetUsd: 0 }), { allowUnpricedBudget: true })).toEqual([])
+    expect(overridesWidening(project({ maxBudgetUsd: 0 }), { maxBudgetUsd: 5 })).toEqual([])
   })
   it('always flags allowPeerMessages', () => {
     expect(overridesWidening(project(), { allowPeerMessages: true })).toEqual(['allowPeerMessages'])
@@ -97,9 +100,12 @@ describe('effectiveRunProject', () => {
 })
 
 describe('execBudgetUsd', () => {
-  it('keeps a 0 budget on exec runs', () => {
-    expect(execBudgetUsd(project({ maxBudgetUsd: 0 }), { execMode: true })).toBe(0)
+  it('keeps an override budget of 0; a stored project cap of 0 means no cap', () => {
     expect(execBudgetUsd(project({ maxBudgetUsd: 0 }), { maxBudgetUsd: 0 })).toBe(0)
+    expect(execBudgetUsd(effectiveRunProject(project({ maxBudgetUsd: 3 }), { execMode: true, maxBudgetUsd: 0 }), { execMode: true, maxBudgetUsd: 0 })).toBe(0)
+    expect(execBudgetUsd(project({ maxBudgetUsd: 0 }), { execMode: true })).toBeUndefined()
+    expect(execBudgetUsd(effectiveRunProject(project({ maxBudgetUsd: 0 }), { execMode: true }), { execMode: true })).toBeUndefined()
+    expect(execBudgetUsd(effectiveRunProject(project({ maxBudgetUsd: 0 }), { execMode: true, maxBudgetUsd: 2 }), { execMode: true, maxBudgetUsd: 2 })).toBe(2)
   })
   it('is undefined for non-exec runs without an override budget', () => {
     expect(execBudgetUsd(project({ maxBudgetUsd: 3 }), undefined)).toBeUndefined()
@@ -140,6 +146,7 @@ describe('runOverridesArgs', () => {
     expect(bad({ maxBudgetUsd: Infinity })).toBe('bad_request')
     expect(bad({ maxBudgetUsd: '1' })).toBe('bad_request')
     expect(bad({ execStallTimeoutMs: NaN })).toBe('bad_request')
+    expect(bad({ execStallTimeoutMs: 0 })).toBe('bad_request')
     expect(bad({ execChainId: '' })).toBe('bad_request')
     expect(bad({ execChainId: 'a b' })).toBe('bad_request')
     expect(bad({ execChainId: 'x'.repeat(101) })).toBe('bad_request')
@@ -162,6 +169,9 @@ describe('runOverridesArgs', () => {
       })
     ).toEqual({ permissionMode: 'plan', autoContinue: false, maxAutoContinues: 0, maxBudgetUsd: 0, execMode: true, execChainId: 'chain_1-a', execStallTimeoutMs: 1000 })
     expect(runOverridesArgs({ surprise: 1 })).toBeUndefined()
+  })
+  it('keeps a partial policy as given with partialPolicy (runs:continue merges it over the chain policy)', () => {
+    expect(runOverridesArgs({ decisionPolicy: { question: 'conservative', waitTimeoutMs: 5 } }, { partialPolicy: true })?.decisionPolicy).toEqual({ question: 'conservative', waitTimeoutMs: 5 })
   })
   it('fills a partial policy from the defaults', () => {
     const o = runOverridesArgs({ decisionPolicy: { question: 'conservative', maxAutoDenials: 2, extra: 'x' } })

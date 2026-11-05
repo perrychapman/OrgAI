@@ -315,6 +315,151 @@ describe('exec rate limits', () => {
   })
 })
 
+describe('exec pauses: stop, cancel and manual resume (review fixes)', () => {
+  /** Start an exec run and pause it on a usage limit; the session ends (teardown), so only its summary is left. */
+  async function pausedRun(over: RunOverrides = {}, startOpts: { allowWidening?: boolean } = {}, projOver: Parameters<typeof proj>[0] = {}) {
+    const p = proj(projOver)
+    const r = rig({ resolveProject: () => p })
+    const run = await r.m.start({ project: p, prompt: 'go', overrides: exec(over), ...startOpts })
+    r.fakes[0].ctx.rateLimited?.({ until: Date.now() + 10_000 })
+    r.fakes[0].ctx.emit({ type: 'run.status', runId: run.id, status: 'finished' })
+    r.fakes[0].end()
+    await flush()
+    return { ...r, p, run }
+  }
+
+  it('stopping a paused waitForReset run finalizes it interrupted and cancels the auto-resume', async () => {
+    const { m, fakes, run } = await pausedRun({ waitForReset: true })
+    expect(m.liveRunCount()).toBe(0)
+    expect(m.hasAutoResume(run.id)).toBe(true)
+    await m.stop(run.id)
+    expect(m.hasAutoResume(run.id)).toBe(false)
+    expect(m.summary(run.id)).toMatchObject({ status: 'finished', execOutcome: 'interrupted', endedBy: 'user', autoResume: false })
+    expect(finalized().map((e) => e.outcome)).toEqual(['interrupted'])
+    expect(events.some((e) => e.type === 'run.status' && e.runId === run.id && e.status === 'finished' && e.endedBy === 'user')).toBe(true)
+    await flush(20_000)
+    expect(fakes).toHaveLength(1)
+  })
+
+  it('stopping a paused desktop run cancels its auto-resume and ends it as stopped by the user', async () => {
+    const p = proj()
+    const { m, fakes } = rig({ resolveProject: () => p })
+    const run = await m.start({ project: p, prompt: 'go' })
+    fakes[0].ctx.rateLimited?.({ until: Date.now() + 10_000 })
+    fakes[0].ctx.emit({ type: 'run.status', runId: run.id, status: 'finished' })
+    fakes[0].end()
+    await flush()
+    expect(m.hasAutoResume(run.id)).toBe(true)
+    await m.stop(run.id)
+    expect(m.summary(run.id)).toMatchObject({ status: 'finished', endedBy: 'user', autoResume: false })
+    expect(m.summary(run.id)?.execOutcome).toBeUndefined()
+    expect(finalized()).toHaveLength(0)
+    await flush(20_000)
+    expect(fakes).toHaveLength(1)
+  })
+
+  it('stopping a live paused waitForReset run (session still open) finishes it interrupted', async () => {
+    const p = proj()
+    const { m, fakes } = rig({ resolveProject: () => p })
+    const run = await m.start({ project: p, prompt: 'go', overrides: exec({ waitForReset: true }) })
+    fakes[0].ctx.emit({ type: 'run.status', runId: run.id, status: 'paused', pausedUntil: Date.now() + 10_000, autoResume: true })
+    expect(m.hasAutoResume(run.id)).toBe(true)
+    await m.stop(run.id)
+    expect(m.hasAutoResume(run.id)).toBe(false)
+    expect(m.summary(run.id)).toMatchObject({ status: 'finished', execOutcome: 'interrupted', endedBy: 'user', autoResume: false })
+    expect(finalized()).toHaveLength(1)
+    await flush(20_000)
+    expect(fakes).toHaveLength(1)
+  })
+
+  it('Cancel auto-resume on a waitForReset run finalizes it rate-limited', async () => {
+    const { m, run } = await pausedRun({ waitForReset: true })
+    m.cancelAutoResume(run.id)
+    expect(m.summary(run.id)).toMatchObject({ status: 'paused', execOutcome: 'rate-limited', autoResume: false })
+    expect(finalized().map((e) => e.outcome)).toEqual(['rate-limited'])
+    m.cancelAutoResume(run.id)
+    expect(finalized()).toHaveLength(1)
+  })
+
+  it('a waitForReset pause the adapter marks autoResume false finalizes rate-limited', async () => {
+    const { m, fakes } = rig()
+    const run = await m.start({ project: proj(), prompt: 'go', overrides: exec({ waitForReset: true }) })
+    fakes[0].ctx.emit({ type: 'run.status', runId: run.id, status: 'paused', pausedUntil: Date.now() + 10_000, autoResume: false })
+    await flush()
+    expect(m.hasAutoResume(run.id)).toBe(false)
+    expect(m.summary(run.id)).toMatchObject({ status: 'paused', execOutcome: 'rate-limited', autoResume: false })
+    expect(finalized()).toHaveLength(1)
+  })
+
+  it('a failed automatic resume finalizes the waitForReset run rate-limited', async () => {
+    const { m, run } = await pausedRun({ waitForReset: true })
+    // The project is gone by the reset: resumeUnleased throws before continueRun.
+    ;(m as unknown as { options: RunManagerOptions }).options.resolveProject = () => undefined
+    await flush(11_000)
+    expect(m.summary(run.id)).toMatchObject({ status: 'paused', execOutcome: 'rate-limited', autoResume: false })
+    expect(finalized().map((e) => e.outcome)).toEqual(['rate-limited'])
+  })
+
+  it('a manual Resume now of a finalized rate-limited exec run continues as a desktop run', async () => {
+    const { m, fakes, run } = await pausedRun({ decisionPolicy: { permission: 'deny', rules: 'deny', mcpInstall: 'deny', question: 'fail', proposal: 'decline', merge: 'hold' } })
+    expect(m.summary(run.id)?.execOutcome).toBe('rate-limited')
+    await m.resumeNow(run.id)
+    expect(fakes).toHaveLength(2)
+    expect(fakes[1].ctx.run.overrides?.execMode).toBeUndefined()
+    expect(fakes[1].ctx.run.overrides?.decisionPolicy).toBeUndefined()
+    await m.stopAll()
+  })
+
+  it("a manual Resume now never re-applies a 'configure' caller's widening; only the timer does", async () => {
+    const { m, fakes, run } = await pausedRun({ waitForReset: true, permissionMode: 'bypassPermissions' }, { allowWidening: true }, { permissionMode: 'default' })
+    expect(fakes[0].ctx.project.permissionMode).toBe('bypassPermissions')
+    await m.resumeNow(run.id)
+    expect(fakes).toHaveLength(2)
+    // Still the in-flight exec chain (its follower waits), but clamped to the project's mode.
+    expect(fakes[1].ctx.run.overrides?.execMode).toBe(true)
+    expect(fakes[1].ctx.project.permissionMode).toBe('default')
+    await m.stopAll()
+  })
+
+  it('widening is not kept for a run without waitForReset, nor after Cancel auto-resume', async () => {
+    const a = await pausedRun({ permissionMode: 'bypassPermissions' }, { allowWidening: true }, { permissionMode: 'default' })
+    expect((a.m as unknown as { widenedRuns: Set<string> }).widenedRuns.size).toBe(0)
+    const b = await pausedRun({ waitForReset: true, permissionMode: 'bypassPermissions' }, { allowWidening: true }, { permissionMode: 'default' })
+    const widened = (b.m as unknown as { widenedRuns: Set<string> }).widenedRuns
+    expect(widened.has(b.run.id)).toBe(true)
+    b.m.cancelAutoResume(b.run.id)
+    expect(widened.size).toBe(0)
+  })
+
+  it('resume --exec merges a partial decisionPolicy over the chain policy per field', () => {
+    const prev: RunOverrides = { execMode: true, execChainId: 'c', decisionPolicy: { permission: 'wait', rules: 'deny', mcpInstall: 'deny', question: 'fail', proposal: 'decline', merge: 'hold', waitTimeoutMs: 3_600_000 } }
+    const next = continuedOverrides(prev, { exec: true, overrides: { decisionPolicy: { question: 'conservative' } as RunOverrides['decisionPolicy'] } })
+    expect(next?.decisionPolicy).toEqual({ permission: 'wait', rules: 'deny', mcpInstall: 'deny', question: 'conservative', proposal: 'decline', merge: 'hold', waitTimeoutMs: 3_600_000 })
+    // Without a carried policy the missing choices take the defaults.
+    const fresh = continuedOverrides(undefined, { overrides: { decisionPolicy: { question: 'conservative' } as RunOverrides['decisionPolicy'] } })
+    expect(fresh?.decisionPolicy).toEqual({ permission: 'deny', rules: 'deny', mcpInstall: 'deny', question: 'conservative', proposal: 'decline', merge: 'hold' })
+  })
+})
+
+describe('exec finalizer and teardown order', () => {
+  it('a finalized run stays live until its final status is written (the title join)', async () => {
+    let resolveTitle!: (t: string) => void
+    const { m, fakes } = rig({ title: () => new Promise<string>((r) => (resolveTitle = r)) })
+    const run = await m.start({ project: proj(), prompt: 'go', team: 'single', overrides: exec() })
+    endTurn(fakes[0])
+    await flush(100)
+    // The session ended (stop), but the finalizer waits for the title: the run still counts as live.
+    expect(fakes[0].stopCalls).toBe(1)
+    expect(m.liveRunCount()).toBe(1)
+    expect(finalized()).toHaveLength(0)
+    resolveTitle('A title')
+    await flush(100)
+    expect(finalized()).toHaveLength(1)
+    expect(m.summary(run.id)?.status).toBe('finished')
+    expect(m.liveRunCount()).toBe(0)
+  })
+})
+
 describe('exec budget', () => {
   it('maxBudgetUsd 0 finalizes before adapter.start', async () => {
     const { m, start } = rig()
@@ -508,7 +653,12 @@ describe('overrides', () => {
   it('continuedOverrides keeps narrowing fields always and exec fields on exec only', () => {
     const prev: RunOverrides = { execMode: true, execChainId: 'c', permissionMode: 'plan', autoContinue: false, maxAutoContinues: 2, maxBudgetUsd: 1, decisionPolicy: undefined, allowPeerMessages: true }
     expect(continuedOverrides(prev, {})).toEqual({ permissionMode: 'plan', autoContinue: false, maxAutoContinues: 2, maxBudgetUsd: 1 })
-    expect(continuedOverrides(prev, { exec: true })).toMatchObject({ execMode: true, execChainId: 'c', allowPeerMessages: true })
+    expect(continuedOverrides(prev, { exec: true, allowWidening: true })).toMatchObject({ execMode: true, execChainId: 'c', allowPeerMessages: true })
+    // An 'operate'-only resume --exec never inherits the configure-only grants.
+    const operate = continuedOverrides({ ...prev, allowUnpricedBudget: true }, { exec: true })
+    expect(operate).toMatchObject({ execMode: true, execChainId: 'c' })
+    expect(operate).not.toHaveProperty('allowPeerMessages')
+    expect(operate).not.toHaveProperty('allowUnpricedBudget')
     expect(continuedOverrides(undefined, {})).toBeUndefined()
     expect(continuedOverrides(prev, { overrides: { maxBudgetUsd: 0.5 } })?.maxBudgetUsd).toBe(0.5)
   })

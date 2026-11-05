@@ -1006,12 +1006,13 @@ export function runMessageArgs(input: unknown): SendRunInput {
 /**
  * runs:continue: runMessageArgs plus the headless fields (cli-spec 6.2(1)): `overrides` strictly through
  * runOverridesArgs and `exec` only as a literal boolean (anything else but undefined / null is bad_request). The
- * dispatcher drops both on the desktop surface.
+ * dispatcher drops both on the desktop surface. A decisionPolicy keeps only the fields the client gave: RunManager
+ * merges them over the chain's policy (continuedOverrides) and fills the rest with the defaults.
  */
 export function continueRunArgs(input: unknown): ContinueRunInput {
   const base = runMessageArgs(input)
   const i = input as Record<string, unknown>
-  const overrides = runOverridesArgs(i.overrides)
+  const overrides = runOverridesArgs(i.overrides, { partialPolicy: true })
   if (i.exec !== undefined && i.exec !== null && typeof i.exec !== 'boolean') throw badInput('exec must be true or false.')
   return { ...base, ...(overrides ? { overrides } : {}), ...(typeof i.exec === 'boolean' ? { exec: i.exec } : {}) }
 }

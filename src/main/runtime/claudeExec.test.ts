@@ -123,6 +123,24 @@ describe('ClaudeSession exec settlement (fake query)', () => {
     return sdk.queries[0]!
   }
 
+  it('an interrupted root turn is reported as interrupted, never as a failed turn', async () => {
+    const { session, ends, ctx } = start()
+    const q = await firstQuery()
+    q.emit(init)
+    await vi.waitFor(() => expect(ctx.events.some((e) => e.type === 'agent.upsert')).toBe(true))
+    await session.interrupt()
+    q.emit(result('error_during_execution'))
+    await vi.waitFor(() => expect(ends).toHaveLength(1))
+    expect(ends[0]).toMatchObject({ ok: false, interrupted: true, errorSubtype: 'error_during_execution' })
+    const root = [...ctx.events].reverse().find((e) => e.type === 'agent.upsert' && e.agent.id === 'root')
+    expect(root && root.type === 'agent.upsert' ? root.agent.state : undefined).toBe('idle')
+    // The next turn's failure is a real failure again.
+    q.emit(init)
+    q.emit(result('error_during_execution'))
+    await vi.waitFor(() => expect(ends).toHaveLength(2))
+    expect(ends[1].interrupted).toBeUndefined()
+  })
+
   it('reports every root turn end before run.status idle, failed ones included, with increasing turnGen', async () => {
     const { log, ends } = start()
     const q = await firstQuery()
@@ -249,10 +267,10 @@ describe('ClaudeSession exec settlement (fake query)', () => {
   })
 
   describe('budget (cli-spec 6.2(3))', () => {
-    it('passes maxBudgetUsd 0 as a real budget', async () => {
+    it('a stored project cap of 0 means no cap outside exec (ctx.budgetUsd 0 is the real $0 budget)', async () => {
       start({}, { maxBudgetUsd: 0 })
       const q = await firstQuery()
-      expect(q.options.maxBudgetUsd).toBe(0)
+      expect('maxBudgetUsd' in q.options).toBe(false)
     })
 
     it('ctx.budgetUsd replaces the project budget (0 included); no budget leaves the option unset', async () => {
