@@ -519,9 +519,18 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   `KitPreviewItem.roles` shows prompts and elevated tools, skill paths use `safeKitRelPath`, skill export drops private-looking
   files, and an export target whose suffix was added here is refused when it exists (`kitExportTarget`).
 
-- CLI & host (docs/design/cli-spec.md; Waves 0-2 landed: the socket server, `--headless-host` / `--host inproc` hosts, the
-  self-control gate and the read-only `orgai` CLI; see the spec's "Implementation status, Wave 2" for deviations and what
-  is unverified):
+- CLI & host (docs/design/cli-spec.md; Waves 0-3 landed: the socket server, `--headless-host` / `--host inproc` hosts, the
+  self-control gate, the read-only `orgai` CLI and headless exec; see the spec's "Implementation status" for deviations
+  and what is unverified):
+  - Wave 3: adapters call `ctx.onRootTurnEnded` on every root turn end before 'idle' and expose `settlement()`;
+    `ContinuationDriver.isSettledForTurn(gen)`; RunManager `trySettleExecRun` (pure `execSettle.ts`), stall watchdog,
+    idempotent `finalizeExecRun` -> one `run.finalized` with `RunSummary.execOutcome`, chain budget (`maxBudgetUsd` 0 is
+    real), headless decision policy (`decisionPolicy.ts`), `expectedRevision` / `DecisionOutcome` on every decision
+    method, tombstones (`decisionIndex.ts`, socket-only `runs:findDecision`). Widening overrides need 'configure'
+    (`allowWidening`, never persisted; the automatic waitForReset resume keeps it). CLI `orgai exec` / `-p`,
+    `resume --exec`, `decide`, `runs send / interrupt / stop`; exec followers subscribe `nonInteractive` so they never
+    hold `humanGraceMs`. Mock markers `[mock:exec-plan|exec-blocked|exec-question|turn-fail|rate-limit|exec-slow]`.
+    Unit tests with fake adapters / query() / app-server and e2e `cli-exec.mjs` (macOS); nothing live.
   - Wave 2: `src/main/host/socketServer.ts` serves every host's socket; `AppSettings.terminalServer` ("Terminal access")
     gates host.hello and closes authenticated sockets when turned off; a headless / inproc boot turns it on only while
     `terminalServerChosen` (main-owned, set by a settings:set that changes it) is unset. A `--headless-host` launch

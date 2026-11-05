@@ -791,3 +791,53 @@ Resolved `R1`–`R10` (single-host daemon vs Desktop ownership, socket authentic
   build's CLI bundle sits relative to `app.getAppPath()` (Wave 6). Honest gate limits: other variables than home, a
   program that opens a protected file itself, aliases or renamed copies of `orgai`, and Codex commands that run inside
   its own sandbox without an approval request.
+
+### Wave 3 (landed on dev, 2026-11-05; merges d6d0c3b..e365461 on the contracts 2e12759, integration fix e6206c6)
+
+- **Landed.** Adapters (`claude.ts`, `codex.ts`, `mock.ts`): every root turn end (failed, interrupted, auth failures
+  and `error_max_budget_usd` included) calls `ctx.onRootTurnEnded({ turnGen, ok, errorSubtype, isAuthError })` before
+  `run.status 'idle'`; each session exposes `settlement()` (`SessionSettlement`: rootTurnGen, rootIdle,
+  continuationSettled, nudgeTurn1Sent, quiescent) and `ctx.budgetUsd` (0 is a real budget) replaces the project's
+  budget. `continuation.ts`: turn generations, `isSettledForTurn(gen)`, `skipTurn` for failed / interrupted turns,
+  `nudgeTurn1Sent`, getters so a `setLive` re-clamp reaches a live driver. `integration.ts`
+  `WorktreeIntegrator.hasPendingWork()`. RunManager: `effectiveRunProject` before ctx and on every `setLive`
+  (`runOverrides.ts`), `trySettleExecRun` over the pure `execSettle.ts`, the stall watchdog, `finalizeExecRun` (first
+  outcome wins, stop + bounded wait for `session.finished`, title join, synchronous usage flush, exactly one
+  `run.finalized`), the chain budget (`chainPriorCostUsd`, checked on every `agent.upsert`, pre-launch and live price
+  checks), the headless decision policy (`decisionPolicy.ts`, `decidedBy: { surface: 'policy' }`, auto-denial count,
+  wait timeout, human grace while an interactive client is attached), `expectedRevision` and `DecisionOutcome` on every
+  decision method, request index and resolved-card tombstones (`decisionIndex.ts`, `runs:findDecision`). Host
+  (`dispatcher.ts`, `args.ts`, `quickRuns.ts`): overrides only from socket / inproc clients, every widening field needs
+  'configure' (else `scope_denied` naming the fields), decision channels carry `expectedRevision` / `decidedBy` and
+  return the outcome. CLI: `orgai exec` / `-p` / `--print`, `orgai resume --exec` (`commands/exec.ts`,
+  `client/ensureHost.ts` which starts the app headless or an inproc host, `client/runStream.ts` shared with `watch`),
+  `orgai decide <requestId> <verb>` (`commands/decide.ts`; never starts a host; durable verbs need `--yes` or a y/N on
+  /dev/tty; secrets only via `--secret NAME=ENV_VAR`), `orgai runs send / interrupt / stop`. Mock markers
+  `[mock:exec-plan]`, `[mock:exec-blocked]`, `[mock:exec-question]`, `[mock:turn-fail]`, `[mock:rate-limit]`,
+  `[mock:exec-slow]`.
+- **Gate.** `npm run typecheck`, `npm test`, `npm run build`, `npm run e2e:free` with `e2e/cli-exec.mjs` (inproc hosts
+  per command plus a long-lived `daemon start --host inproc --foreground`) on macOS.
+- **Deviations / decisions beyond the spec.**
+  - `runs:subscribe` takes `nonInteractive: true` (not part of `filterKey`); `orgai exec` sets it, so an exec follower
+    that asks for an active run record never counts toward `interactiveClients` and never holds `humanGraceMs` (found
+    by cli-exec.mjs: the policy waited 60 s with nobody watching). `orgai watch` still counts.
+  - Only `worktree.status 'conflict'` counts as unmerged for 'unmerged-conflicts'; a branch the headless merge policy
+    holds ('held') still allows 'completed'.
+  - 'failed' and 'auth-error' always end with status 'error', also when the adapter never sent run.status 'error'
+    (e.g. error_max_turns). Every 'paused' on an exec run without waitForReset is treated as 'rate-limited'.
+  - The pre-launch price check skips 'inherit' and tier names or Claude aliases the connection does not map (the CLI
+    picks the real id; their price is checked from usage reports). The live new-agent model check skips the mock
+    adapter (fake ids priced by its own provider cost); unpriced usage entries are still checked there.
+  - Widening overrides apply only with a 'configure' caller (`allowWidening`, never persisted). A later
+    `resume --exec` by an 'operate'-only client re-clamps the chain's stored overrides to the project. The automatic
+    waitForReset resume keeps the grant of the run it resumes (in memory, like the resume timers).
+  - Proposal decline from `orgai decide` is not limited to work runs in the CLI; the host decides.
+  - Codex has no deferred-turn-end path and no Claude-style query restart ('restart' activity comes only from its
+    app-server restart). The mock's `settlement()` has nothing to report on integration or restarts.
+- **Unverified / open.** Live Claude SDK result and auth-failure shapes reaching `onRootTurnEnded`, the real Codex
+  turn/completed failed and interrupted shapes and its 401 text, how the SDK treats `maxBudgetUsd` 0 and a budget on a
+  resumed query. Claude's `rootIdle` is a heuristic (a turn the SDK starts by itself after a report lands counts as in
+  flight only from its init). findDecision tombstones live in memory and are lost on restart. Nothing re-checks
+  unpriced models when a tier is remapped mid-run, except through usage entries. The `/dev/tty` y/N prompt was never
+  run by hand (its Windows readline fallback neither). Windows named pipes and signals, packaged builds and the auto
+  mode that spawns the headless Electron host (fake launcher in unit tests only).
