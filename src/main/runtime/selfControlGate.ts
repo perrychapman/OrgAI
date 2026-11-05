@@ -23,13 +23,23 @@
  * dash / ksh given such a file (or an `orgai`-named one) as their script count the same way (every word that may be
  * an option's value is checked too: `bash -O extglob <launcher>`, `bash --rcfile F <launcher>`), as do an input
  * redirect of such a file into a shell or interpreter and `.` / `source` of one; `env -S '<text>'` is read as a
- * command text of its own; the
+ * command text of its own; the words after `find -exec` / `-execdir` / `-ok`, `fd -x` / `-X` and `watch` are a
+ * command. Program and script words are read the way the shell expands them: brace expansions are expanded
+ * (`orga{i,}`; at most 256 words, past that the command is unchecked), backslash escapes removed (`org\ai`), and a glob
+ * (`<Resources>/bin/orga?`, `<Resources>/bin/*`, `~/.local/bin/orga*`) counts when it may match an orgai file name or
+ * reach a CLI folder (a glob argument must keep three of the name's letters, so `node x.mjs src/*.js` passes). Code
+ * fed to a shell, an interpreter or `.` / `source` is read too: a here-string (`bash <<< 'orgai x'`), and for a pipe
+ * into one every earlier piece of the command (`echo 'orgai runs stop R1' | sh`, `cat ~/.local/bin/orgai | sh -s
+ * status`) counts when one of its words names the CLI or is a command text running it, as does any `$(...)`, backtick
+ * or `<(...)` body (`sh -c "$(cat <launcher>)"`, `echo "$(which orgai)"`, fail closed). The
  * ELECTRON_RUN_AS_NODE check needs an assignment (`X=1` before a program or after env / export / set, `$env:X`,
  * Set-Item env:X, SetEnvironmentVariable('X'), never a quoted argument that only mentions it. Honest limits: other
- * variables, a script or program that opens the file itself or sets ELECTRON_RUN_AS_NODE itself (a Python or Node
- * script; the packaged app keeps Electron's RunAsNode fuse on, cli-spec Wave 6 deviations), a launcher piped into a
- * shell's stdin from inside its own folder (`cat orgai | sh`), an `orgai` reached through an alias, a shell function or
- * a renamed copy, and a Grep `glob` filter (a Grep rooted above a protected path is denied whatever its filter).
+ * variables (`$p status` with p=orgai), a script or program that opens the file itself or sets ELECTRON_RUN_AS_NODE
+ * itself (a Python or Node script; the packaged app keeps Electron's RunAsNode fuse on, cli-spec Wave 6 deviations),
+ * text a program generates rather than names (`printf 'org%sai'`, `base64 -d`, a download, a file whose contents run
+ * orgai: `cat notes.sh | sh`), commands other wrappers run (`parallel`, `script -c`, a Makefile, an npm script, a
+ * PowerShell backtick escape), an `orgai` reached through an alias, a shell function or a renamed copy outside the
+ * CLI folders, and a Grep `glob` filter (a Grep rooted above a protected path is denied whatever its filter).
  * Commands a provider runs without asking OrgAI (Codex inside its own sandbox) are governed by that provider's sandbox
  * policy, not this gate.
  */
@@ -147,15 +157,34 @@ function stripExe(name: string): string {
   return name.replace(/\.(?:exe|cmd|bat|ps1)$/, '')
 }
 
+/** One piece of a shell text: `pipeIn` when a single `|` (or `|&`) feeds it, `producer` for a `$(...)`, backtick or
+ * `<(...)` body (its output becomes words, a script or a file). */
+interface CliSegment {
+  text: string
+  pipeIn: boolean
+  producer: boolean
+}
+
 /**
  * Split on `;`, `&`, `|`, newlines, parentheses and braces outside quotes (more eagerly than ruleMatch splitCommand:
- * pipes and subshells start a new program too), plus the bodies of `$(...)` and backtick substitutions outside single
- * quotes as segments of their own.
+ * pipes and subshells start a new program too), plus the bodies of `$(...)`, `<(...)` / `>(...)` and backtick
+ * substitutions outside single quotes as segments of their own. With `keepBraces` a `{` / `}` never splits, so a
+ * brace expansion (`orga{i,}`) stays one word for expandBraces.
  */
-function cliSegments(text: string): string[] {
-  const out: string[] = []
+function cliSegments(text: string, keepBraces = false): CliSegment[] {
+  const out: CliSegment[] = []
   let cur = ''
+  let pipeIn = false
   let quote: string | null = null
+  // An empty piece (`a | (sh)`, `(a) | sh`) passes its pipe on to the next one.
+  const push = (nextPipe: boolean): void => {
+    if (cur.trim() === '') pipeIn ||= nextPipe
+    else {
+      out.push({ text: cur, pipeIn, producer: false })
+      pipeIn = nextPipe
+    }
+    cur = ''
+  }
   for (let i = 0; i < text.length; i++) {
     const ch = text[i]
     if (quote) {
@@ -168,15 +197,41 @@ function cliSegments(text: string): string[] {
       cur += ch
       continue
     }
-    if (ch === ';' || ch === '&' || ch === '|' || ch === '\n' || ch === '\r' || ch === '(' || ch === ')' || ch === '{' || ch === '}' || ch === '`') {
-      out.push(cur)
-      cur = ''
+    if (ch === '|') {
+      if (text[i + 1] === '|') {
+        i++
+        push(false)
+      } else {
+        if (text[i + 1] === '&') i++
+        push(true)
+      }
+      continue
+    }
+    if (ch === '&' && text[i + 1] === '&') {
+      i++
+      push(false)
+      continue
+    }
+    if (ch === ')' || ch === '}') {
+      if (ch === '}' && keepBraces) {
+        cur += ch
+        continue
+      }
+      push(false)
+      continue
+    }
+    if (ch === ';' || ch === '&' || ch === '\n' || ch === '\r' || ch === '(' || ch === '{' || ch === '`') {
+      if (ch === '{' && keepBraces) {
+        cur += ch
+        continue
+      }
+      push(false)
       continue
     }
     cur += ch
   }
-  out.push(cur)
-  // Substitutions inside double quotes ("$(orgai status)", "`orgai x`").
+  push(false)
+  // Substitutions inside double quotes ("$(orgai status)", "`orgai x`") and process substitutions.
   let outside = ''
   quote = null
   for (const ch of text) {
@@ -191,8 +246,8 @@ function cliSegments(text: string): string[] {
     if (ch === '"') quote = quote === '"' ? null : '"'
     outside += ch
   }
-  for (const m of outside.matchAll(/\$\(([^()]*)\)|`([^`]*)`/g)) out.push(m[1] ?? m[2] ?? '')
-  return out.map((s) => s.trim()).filter(Boolean)
+  for (const m of outside.matchAll(/[$<>]\(([^()]*)\)|`([^`]*)`/g)) out.push({ text: m[1] ?? m[2] ?? '', pipeIn: false, producer: true })
+  return out.map((s) => ({ ...s, text: s.text.trim() })).filter((s) => s.text !== '')
 }
 
 /** Index of the program word after env assignments and wrappers (env, command, exec, nohup, time, npx, npm exec...). */
@@ -215,7 +270,7 @@ function programIndex(words: readonly string[]): number {
       }
       continue
     }
-    if (['command', 'exec', 'nohup', 'time', 'builtin', 'sudo', 'doas', 'stdbuf', 'caffeinate', 'call', 'start', 'xargs', 'nice', 'ionice', 'chrt', 'setsid', 'bunx', 'pnpx'].includes(name)) {
+    if (['command', 'exec', 'nohup', 'time', 'builtin', 'sudo', 'doas', 'stdbuf', 'caffeinate', 'call', 'start', 'xargs', 'nice', 'ionice', 'chrt', 'setsid', 'bunx', 'pnpx', 'watch'].includes(name)) {
       i++
       // Options of the wrapper (and a value after nice -n / timeout's duration).
       while (i < words.length && words[i].startsWith('-')) {
@@ -276,7 +331,14 @@ function envSplitText(words: readonly string[]): string | null {
 function segmentRunsCli(segment: string, depth: number, budget: CliBudget, check: CliCheck): boolean {
   // Past the budget the rest of the command goes unread: count it as running the CLI (fail closed).
   if (++budget.n > MAX_SEGMENTS) return (budget.limited = true)
-  const words = segmentWords(segment)
+  const words = expandWords(segmentWords(segment), budget)
+  return wordsRunCli(words, depth, budget, check)
+}
+
+/** `find -exec` / `-execdir` / `-ok` / `-okdir` and `fd -x` / `-X` / `--exec` / `--exec-batch`: the command they run. */
+const FIND_EXEC: Readonly<Record<string, RegExp>> = { find: /^-(?:exec|execdir|ok|okdir)$/, gfind: /^-(?:exec|execdir|ok|okdir)$/, fd: /^(?:-x|-X|--exec|--exec-batch)$/, fdfind: /^(?:-x|-X|--exec|--exec-batch)$/ }
+
+function wordsRunCli(words: readonly string[], depth: number, budget: CliBudget, check: CliCheck): boolean {
   if (!words.length) return false
   // npx / npm exec with `-p orgai` / `--package=orgai`.
   const runner = words.some((w) => PACKAGE_RUNNERS.has(stripExe(binName(w))))
@@ -294,16 +356,37 @@ function segmentRunsCli(segment: string, depth: number, budget: CliBudget, check
   const at = programIndex(words)
   const prog = words[at]
   if (prog === undefined) return false
+  if (programIsCli(prog, check)) return true
   const name = binName(prog)
-  if (CLI_NAME.test(name)) return true
-  // `. <file>` / `source <file>` runs a script in the current shell.
-  if ((prog === '.' || name === 'source') && words[at + 1] !== undefined && scriptWordIsCli(words[at + 1], check)) return true
   const bare = stripExe(name)
-  if (INTERPRETERS.has(bare) && (words.slice(at + 1).some((w) => interpreterArgIsCli(w, check)) || redirectFeedsCli(words.slice(at + 1), check))) return true
+  const rest = words.slice(at + 1)
+  // `find . -exec orgai status \;`: the words after -exec are a command of their own.
+  const execFlag = FIND_EXEC[bare]
+  if (execFlag) {
+    for (let k = 0; k < rest.length; k++) {
+      if (!execFlag.test(rest[k])) continue
+      const cmd: string[] = []
+      for (const w of rest.slice(k + 1)) {
+        if (w === ';' || w === '\\' || w === '+' || w === '\\;') break
+        cmd.push(w)
+      }
+      if (wordsRunCli(cmd, depth, budget, check)) return true
+    }
+  }
+  // A here-string fed to a shell or interpreter is a script (`bash <<< 'orgai runs stop R1'`).
+  if (readsCode(prog, bare)) {
+    for (const text of hereStrings(rest)) {
+      if (scriptWordIsCli(text, check)) return true
+      if (depth >= MAX_NEST) return (budget.limited = true)
+      if (textRunsCli(text, depth + 1, budget, check)) return true
+    }
+  }
+  // `. <file>` / `source <file>` runs a script in the current shell.
+  if ((prog === '.' || name === 'source') && rest[0] !== undefined && scriptWordIsCli(rest[0], check)) return true
+  if (INTERPRETERS.has(bare) && (rest.some((w) => interpreterArgIsCli(w, check)) || redirectFeedsCli(rest, check))) return true
   // `sh <file>`, `bash -e <file>`: a POSIX shell runs its first non-option argument as a script.
-  if (SCRIPT_SHELLS.has(bare) && shellScriptIsCli(words.slice(at + 1), check)) return true
+  if (SCRIPT_SHELLS.has(bare) && shellScriptIsCli(rest, check)) return true
   if (NESTING_SHELLS.has(bare) || bare === 'eval') {
-    const rest = words.slice(at + 1)
     for (let k = 0; k < rest.length; k++) {
       const inner = bare === 'eval' ? rest.join(' ') : NESTING_FLAGS.test(rest[k]) ? rest.slice(k + 1).join(' ') : null
       if (inner === null) continue
@@ -314,6 +397,172 @@ function segmentRunsCli(segment: string, depth: number, budget: CliBudget, check
       }
       return textRunsCli(inner, depth + 1, budget, check)
     }
+  }
+  return false
+}
+
+/** A program that runs what it reads on stdin (or a here-string) as code: a shell, an interpreter, `.` / `source`. */
+function readsCode(prog: string, bare: string): boolean {
+  return SCRIPT_SHELLS.has(bare) || NESTING_SHELLS.has(bare) || INTERPRETERS.has(bare) || prog === '.' || bare === 'source'
+}
+
+/** The texts of `<<< text` / `<<<text` here-strings among the words. */
+function hereStrings(rest: readonly string[]): string[] {
+  const out: string[] = []
+  for (let k = 0; k < rest.length; k++) {
+    const m = /^\d*<<<(.*)$/.exec(rest[k])
+    if (!m) continue
+    const text = m[1] !== '' ? m[1] : rest[++k]
+    if (text !== undefined && text !== '') out.push(text)
+  }
+  return out
+}
+
+/**
+ * A segment whose output may become code or a script: a word naming the CLI (`cat ~/.local/bin/orgai | sh`,
+ * `sh -c "$(cat <launcher>)"`, `echo orgai status | sh`) or a word that is itself a command text running it
+ * (`echo 'orgai runs stop R1' | sh`).
+ */
+function producerRunsCli(segment: string, depth: number, budget: CliBudget, check: CliCheck): boolean {
+  if (++budget.n > MAX_SEGMENTS) return (budget.limited = true)
+  for (const w of expandWords(segmentWords(segment), budget)) {
+    if (literalNamesCli(w, check) || scriptWordIsCli(w, check)) return true
+    if (/\s/.test(w)) {
+      if (depth >= MAX_NEST) return (budget.limited = true)
+      if (textRunsCli(w, depth + 1, budget, check)) return true
+    }
+  }
+  return false
+}
+
+/** Most words one segment's brace expansions may produce before the scan gives up (fail closed). */
+const MAX_BRACE_WORDS = 256
+
+/** The words after bash brace expansion (`orga{i,}` -> `orgai orga`); numeric and letter ranges keep their first value. */
+function expandWords(words: readonly string[], budget: CliBudget): string[] {
+  if (!words.some((w) => w.includes('{'))) return [...words]
+  const out: string[] = []
+  for (const w of words) {
+    for (const e of expandBraces(w, MAX_BRACE_WORDS - out.length)) out.push(e)
+    if (out.length >= MAX_BRACE_WORDS) {
+      budget.limited = true
+      break
+    }
+  }
+  return out
+}
+
+function expandBraces(word: string, limit: number): string[] {
+  // The first `{` with a matching `}` that holds a top-level comma or a `..` range.
+  for (let open = word.indexOf('{'); open !== -1; open = word.indexOf('{', open + 1)) {
+    let depth = 0
+    const commas: number[] = []
+    let close = -1
+    for (let i = open; i < word.length; i++) {
+      const ch = word[i]
+      if (ch === '{') depth++
+      else if (ch === '}' && --depth === 0) {
+        close = i
+        break
+      } else if (ch === ',' && depth === 1) commas.push(i)
+    }
+    if (close === -1) return [word]
+    const pre = word.slice(0, open)
+    const post = word.slice(close + 1)
+    let alts: string[]
+    if (commas.length) {
+      alts = []
+      let from = open + 1
+      for (const c of [...commas, close]) {
+        alts.push(word.slice(from, c))
+        from = c + 1
+      }
+    } else {
+      const range = /^(-?\d+|[A-Za-z])\.\.(-?\d+|[A-Za-z])(?:\.\.-?\d+)?$/.exec(word.slice(open + 1, close))
+      if (!range) continue
+      alts = [range[1]]
+    }
+    const out: string[] = []
+    for (const alt of alts) {
+      for (const e of expandBraces(pre + alt + post, limit - out.length)) {
+        out.push(e)
+        if (out.length >= limit) return out
+      }
+    }
+    return out
+  }
+  return [word]
+}
+
+/** The CLI file names a glob in a program or script word may stand for. */
+const CLI_FILE_NAMES = ['orgai', 'orgai.exe', 'orgai.cmd', 'orgai.bat', 'orgai.ps1', 'orgai.mjs', 'orgai.js']
+const GLOB_CHARS = /[*?[]/
+
+/** The ways a shell may read one word: as written and with backslash escapes removed (`org\ai` is `orgai`). */
+function spellings(word: string): string[] {
+  const unescaped = word.replace(/\\(.)/g, '$1')
+  return unescaped === word ? [word] : [word, unescaped]
+}
+
+/** A glob component (`orga?`, `*`, `[o]rgai`, `[!x]*`) as a whole-string, case-insensitive pattern. */
+function globRegex(pattern: string): RegExp {
+  let re = ''
+  for (let i = 0; i < pattern.length; i++) {
+    const ch = pattern[i]
+    if (ch === '*') re += '.*'
+    else if (ch === '?') re += '.'
+    else if (ch === '[') {
+      const end = pattern.indexOf(']', i + 2)
+      if (end === -1) re += '\\['
+      else {
+        let body = pattern.slice(i + 1, end)
+        if (body.startsWith('!')) body = `^${body.slice(1)}`
+        re += `[${body.replace(/\\/g, '\\\\')}]`
+        i = end
+      }
+    } else re += ch.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')
+  }
+  try {
+    return new RegExp(`^${re}$`, 'i')
+  } catch {
+    return /^.*$/
+  }
+}
+
+/**
+ * A program word that runs the CLI: an orgai-named file (also after backslash escapes), a path at or inside one of this
+ * install's CLI folders (`<Resources>/bin/<anything>`), or a glob that may expand to either (`<Resources>/bin/orga?`,
+ * `~/.local/bin/orga*`, `./o*`). Brace expansions arrive expanded (expandWords).
+ */
+function programIsCli(word: string, check: CliCheck): boolean {
+  for (const w of spellings(word)) {
+    if (CLI_NAME.test(binName(w))) return true
+    if (/[\\/]/.test(w) && (insideCliRoot(w, check) || (GLOB_CHARS.test(w) && globMayReachCliRoot(w, check)))) return true
+    if (GLOB_CHARS.test(binName(w))) {
+      const re = globRegex(binName(w))
+      if (CLI_FILE_NAMES.some((n) => re.test(n))) return true
+    }
+  }
+  return false
+}
+
+/** A literal word (no glob reading) naming the CLI or a path inside one of this install's CLI folders. */
+function literalNamesCli(word: string, check: CliCheck): boolean {
+  return spellings(word).some((w) => CLI_NAME.test(binName(w)) || (/[\\/]/.test(w) && insideCliRoot(w, check)))
+}
+
+/** A glob path whose leading components may match one of this install's CLI folders (fail closed: any component). */
+function globMayReachCliRoot(word: string, check: CliCheck): boolean {
+  if (!check.roots.length) return false
+  const p = check.platform === 'win32' ? win32 : posix
+  const abs = p.isAbsolute(word) ? word : check.cwd && p.isAbsolute(check.cwd) ? p.join(check.cwd, word) : null
+  if (!abs) return false
+  const parts = (w: string): string[] => w.split(/[\\/]+/).filter((x) => x !== '' && x !== '.')
+  const got = parts(abs)
+  for (const root of check.roots) {
+    const want = parts(p.resolve(root))
+    if (got.length < want.length || got.slice(0, want.length).includes('..')) continue
+    if (want.every((c, k) => (GLOB_CHARS.test(got[k]) ? globRegex(got[k]).test(c) : got[k].toLowerCase() === c.toLowerCase()))) return true
   }
   return false
 }
@@ -335,6 +584,12 @@ function shellScriptIsCli(rest: readonly string[], check: CliCheck): boolean {
   let valueNext = false
   for (let k = 0; k < rest.length; k++) {
     const w = rest[k]
+    // A here-doc / here-string (`<<EOF`, `<<< text`) is stdin, never the script (hereStrings reads the text).
+    const here = /^\d*<<(.*)$/.exec(w)
+    if (here) {
+      if (here[1] === '' || here[1] === '<' || here[1] === '-') k++
+      continue
+    }
     const redirect = /^\d*<(.*)$/.exec(w)
     if (redirect) {
       if (redirect[1] === '') k++
@@ -360,7 +615,8 @@ function shellScriptIsCli(rest: readonly string[], check: CliCheck): boolean {
 /** An input redirect anywhere in the words (`sh < <launcher>`, `node <orgai.mjs`) that feeds the program the CLI. */
 function redirectFeedsCli(rest: readonly string[], check: CliCheck): boolean {
   for (let k = 0; k < rest.length; k++) {
-    const redirect = /^\d*<(.*)$/.exec(rest[k])
+    // `<<EOF` / `<<< text` are not files.
+    const redirect = /^\d*<(?!<)(.*)$/.exec(rest[k])
     if (!redirect) continue
     const target = redirect[1] !== '' ? redirect[1] : rest[k + 1]
     if (target !== undefined && scriptWordIsCli(target, check)) return true
@@ -369,18 +625,36 @@ function redirectFeedsCli(rest: readonly string[], check: CliCheck): boolean {
 }
 
 function scriptWordIsCli(word: string, check: CliCheck): boolean {
-  return CLI_NAME.test(binName(word)) || interpreterArgIsCli(word, check)
+  return spellings(word).some((w) => CLI_NAME.test(binName(w)) || (GLOB_CHARS.test(binName(w)) && globNamesCli(binName(w)))) || interpreterArgIsCli(word, check)
 }
 
 /**
- * An interpreter argument that is the CLI:an `orgai` / `orgai.mjs` / `orgai.js` file, or a path (relative against the
- * cwd) inside one of this install's CLI folders.
+ * An interpreter argument that is the CLI: an `orgai` / `orgai.mjs` / `orgai.js` file, or a path (relative against the
+ * cwd) inside one of this install's CLI folders, also through backslash escapes and globs (`<Resources>/bin/o*`,
+ * `out/cli/orga?.mjs`; a bare `*.js` is not read as one).
  */
 function interpreterArgIsCli(word: string, check: CliCheck): boolean {
   const value = word.replace(/^--?[A-Za-z][\w-]*=/, '')
   if (!value || value.startsWith('-')) return false
-  if (CLI_NAME.test(binName(value)) && PATHISH.test(value)) return true
-  return PATHISH.test(value) && insideCliRoot(value, check)
+  for (const v of spellings(value)) {
+    if (!PATHISH.test(v)) continue
+    if (CLI_NAME.test(binName(v)) || insideCliRoot(v, check)) return true
+    if (GLOB_CHARS.test(v) && (globMayReachCliRoot(v, check) || (GLOB_CHARS.test(binName(v)) && globNamesCli(binName(v))))) return true
+  }
+  return false
+}
+
+/**
+ * A glob file name in an argument that stands for the CLI: it matches an orgai file name and keeps at least three of
+ * its letters (`orga?`, `o?gai.mjs`, `org*`), so `*.js` or `*` in an ordinary argument is not read as the CLI.
+ */
+function globNamesCli(base: string): boolean {
+  const re = globRegex(base)
+  if (!CLI_FILE_NAMES.some((n) => re.test(n))) return false
+  const literal = base.replace(/\[[^\]]*\]/g, '').replace(/[*?]/g, '').toLowerCase()
+  let got = 0
+  for (const ch of literal) if ('orgai'[got] === ch) got++
+  return got >= 3
 }
 
 /** A path (relative against the cwd) at or inside one of this install's CLI folders. */
@@ -434,9 +708,27 @@ function textRunsCli(text: string, depth: number, budget: CliBudget, check: CliC
   if (ELECTRON_AS_NODE_PS.some((re) => re.test(text))) return true
   const plain = unquoted(text)
   if (/\bsetx\s+ELECTRON_RUN_AS_NODE\b/i.test(plain)) return true
-  for (const segment of cliSegments(plain)) if (assignsElectronAsNode(segment)) return true
-  for (const segment of cliSegments(text)) if (segmentRunsCli(segment, depth, budget, check)) return true
+  for (const segment of cliSegments(plain)) if (assignsElectronAsNode(segment.text)) return true
+  // A second pass keeps brace expansions whole (`<Resources>/bin/orga{i,} status`) when there are any.
+  for (const keepBraces of /\{[^\s{}]*(?:,|\.\.)[^\s{}]*\}/.test(text) ? [false, true] : [false]) {
+    const segments = cliSegments(text, keepBraces)
+    for (let k = 0; k < segments.length; k++) {
+      const seg = segments[k]
+      if (segmentRunsCli(seg.text, depth, budget, check)) return true
+      if (seg.producer && producerRunsCli(seg.text, depth, budget, check)) return true
+      // `echo 'orgai runs stop R1' | sh`, `cat <launcher> | sh -s status`: a shell or interpreter reading code from a
+      // pipe runs what any earlier piece names (fail closed: every piece before it in this text).
+      if (seg.pipeIn && segmentReadsCode(seg.text) && segments.slice(0, k).some((u) => producerRunsCli(u.text, depth, budget, check))) return true
+    }
+  }
   return false
+}
+
+/** The segment's program is a shell, an interpreter or `.` / `source` (it may run what a pipe feeds it). */
+function segmentReadsCode(segment: string): boolean {
+  const words = segmentWords(segment)
+  const prog = words[programIndex(words)]
+  return prog !== undefined && readsCode(prog, stripExe(binName(prog)))
 }
 
 type CliScanOptions = { cwd?: string; cliRoots?: readonly string[]; platform?: NodeJS.Platform }

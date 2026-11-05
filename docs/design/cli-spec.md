@@ -1013,8 +1013,17 @@ Resolved `R1`–`R10` (single-host daemon vs Desktop ownership, socket authentic
   - Review fix-up for the gate: a POSIX shell's option that may take a value (`-O`, `+O`, `-o`, ksh `-R`, any long
     option without `=`, e.g. `--rcfile FILE`) no longer hides the script word after it, an input redirect of the
     launcher into a shell or interpreter and `.` / `source` of it are denied, and `env -S` text is read as a command.
-    Still not detected: `cat orgai | sh` from inside `<Resources>/bin` (the launcher then resolves itself by its
-    relative `$0`).
+    Second review fix-up: the gate reads program and script words the way the shell expands them (brace expansion,
+    backslash escapes, and globs that may match an orgai file name or reach a CLI folder such as `<Resources>/bin/orga?`
+    or `~/.local/bin/orga*`), a path at or inside a CLI folder as the program counts, code fed to a shell or
+    interpreter through a pipe (every earlier piece of the command is read: `echo 'orgai runs stop R1' | sh`,
+    `cat ~/.local/bin/orgai | sh -s status`), a here-string (`bash <<< '...'`) or a `$(...)` / backtick / `<(...)` body
+    (`sh -c "$(cat <launcher>)"`) is read, and `find -exec`, `fd -x` and `watch` run a command. Still not detected:
+    text a program generates (`printf`, `base64 -d`, a download, a file whose contents run orgai), variables, aliases
+    and other wrappers (selfControlGate.ts header). The standalone launcher of 7(2) and `electronFuses.runAsNode:
+    false` stay a follow-up: a Node SEA needs its own per-arch Node runtime in the app, the inproc host loaded by that
+    runtime from app.asar.unpacked, and its own signing and notarization, none of which can be built and verified
+    offline here (decision for the owner).
   - App settings keeps only the fields the view edited when settings:changed arrives during a queued save, so main
     turning Terminal access on after an install is no longer undone by a pending debounced save (review fix-up).
 - **Unverified / open.** Windows end to end (orgai.cmd, the shim and its argument passing with and without `call`,

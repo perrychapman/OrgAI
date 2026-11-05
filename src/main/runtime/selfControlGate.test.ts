@@ -415,6 +415,98 @@ describe('packaged app CLI roots (cli-spec 7, Wave 6)', () => {
   })
 })
 
+describe('stdin, here-strings, substitutions, find -exec, globs, braces and escapes (Wave 6 review)', () => {
+  const res = '/Applications/OrgAI.app/Contents/Resources'
+  const roots = orgaiCliRootsOf(`${res}/app.asar`, 'darwin')
+  const ctx: SelfControlContext = { protectedPaths: [], cwd: '/work/repo', platform: 'darwin', cliRoots: roots, home: '/Users/me' }
+  const deny = (command: string, c: SelfControlContext = ctx): string | null => checkSelfControlDenial('Bash', { command }, c)
+
+  it('denies the CLI reaching a shell through stdin, a here-string, a substitution or find -exec', () => {
+    for (const command of [
+      'cat ~/.local/bin/orgai | sh -s status',
+      `cat ${res}/bin/orgai | bash -s runs list`,
+      "echo 'orgai runs stop R1' | sh",
+      'echo orgai runs stop R1 | bash',
+      'printf "%s\\n" "orgai decide d1 approve" | zsh',
+      "echo 'x; orgai status' | tr a a | sh",
+      "(echo 'orgai status') | sh",
+      "echo 'orgai status' | (sh)",
+      "echo 'orgai status' |& bash",
+      `cat ${res}/app.asar.unpacked/out/cli/orgai.mjs | node`,
+      "bash <<< 'orgai runs stop R1'",
+      'bash <<<"orgai status"',
+      'sh <<< orgai',
+      'sh -c "$(cat ~/.local/bin/orgai)"',
+      `bash -c "$(cat ${res}/bin/orgai)" x status`,
+      'sh <(cat ~/.local/bin/orgai) status',
+      'eval "$(echo orgai status)"',
+      'find . -exec orgai status \\;',
+      'find . -maxdepth 0 -execdir ~/.local/bin/orgai runs list +',
+      'fd -x orgai status',
+      'watch -n 5 orgai status'
+    ]) {
+      expect(deny(command), command).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+    }
+  })
+
+  it('denies a program word that is the launcher through a glob, a brace expansion or a backslash', () => {
+    for (const command of [
+      `${res}/bin/orga? decide d1 approve`,
+      `${res}/bin/* runs list`,
+      `${res}/bin/orga{i,} status`,
+      `${res}/bin/{orgai,x} runs send r1 hi`,
+      `${res}/bin/org\\ai status`,
+      `"${res}/bin/"orga? status`,
+      `cd ${res}/bin && ./orga? status`,
+      `${res}/b?n/orgai status`,
+      `/Applications/OrgAI.app/Contents/Res*/bin/launcher status`,
+      `${res}/bin/launcher-copy status`,
+      '~/.local/bin/orga* status',
+      '~/.local/bin/[o]rgai status',
+      'org\\ai status',
+      'orga{i,} status',
+      `sh ${res}/bin/orga?`,
+      'sh ~/.local/bin/org\\ai status',
+      `node ${res}/app.asar.unpacked/out/cli/orga?.mjs`,
+      `source ${res}/bin/o*`
+    ]) {
+      expect(deny(command), command).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+    }
+  })
+
+  it('keeps ordinary pipes, globs, braces and escapes allowed', () => {
+    for (const command of [
+      'echo * | sort',
+      'ls *.js',
+      'node build.mjs src/*.js',
+      'for f in $(ls *.md); do echo $f; done',
+      'cat package.json | node -e "process.stdin.pipe(process.stdout)"',
+      'git log --oneline | head -5',
+      'echo orgai | grep org',
+      'grep -rn orgai src | wc -l',
+      'cat scripts/build.sh | bash',
+      'mkdir -p src/{a,b}',
+      'echo {1..100}',
+      'cp file.{js,bak}',
+      'find . -name "*.ts" -exec grep -l orgai {} \\;',
+      'bash <<< "echo hi"',
+      'cat <<EOF > notes.md',
+      'echo a\\ b',
+      'ls ./scripts/*.sh',
+      'echo "$(git rev-parse HEAD)"',
+      'if [ -f x ]; then echo y; fi',
+      'printf "%s" "${HOME}"'
+    ]) {
+      expect(deny(command), command).toBeNull()
+    }
+  })
+
+  it('fails closed on a brace expansion too large to read', () => {
+    const big = Array.from({ length: 20 }, (_, k) => `{a${k},b${k}}`).join('')
+    expect(deny(`echo ${big}`)).toBe(SELF_CONTROL_UNCHECKED_MESSAGE)
+  })
+})
+
 describe('commandRunsOrgaiCli', () => {
   it('reads nested shell texts and package runners', () => {
     expect(commandRunsOrgaiCli("pwsh -NoProfile -Command 'orgai status'")).toBe(true)

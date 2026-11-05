@@ -575,7 +575,8 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     reaching `<data>/run`, `<data>/secrets.json`, `<data>/codex` (home variables and globs followed; Grep rooted at or
     above them denied). A shell command the gate cannot read to the end (over 32 KB, 2,000 words / parts / segments,
     shells or quoting nested past three levels) is denied (`SELF_CONTROL_UNCHECKED_MESSAGE`), never handed to
-    bypassPermissions. The CLI is `src/cli/` (bundled `out/cli/orgai.mjs`, `npm run cli`); its help and completions
+    bypassPermissions. Program and script words are read after brace expansion, backslash escapes and globs (`<Resources>/bin/orga?`),
+    and pipes / here-strings into a shell and `$(...)` bodies are scanned (Wave 6 review; limits in the file header). The CLI is `src/cli/` (bundled `out/cli/orgai.mjs`, `npm run cli`); its help and completions
     read `commandTable.ts`; host text goes through `sanitizeTty`. The launcher hears the spawned app's 'error' and
     non-zero exit (waitForReady rejects) and filters by `hostKinds`; `orgai app` refuses (exit 6) while a `--host
     inproc` host owns the folder, and `daemon start` never spawns over a live host that refused or did not answer.
