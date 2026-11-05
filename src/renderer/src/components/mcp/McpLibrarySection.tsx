@@ -1,8 +1,9 @@
 import type { ReactElement } from 'react'
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
-import { ChevronDown, Ellipsis, KeyRound, Library, Pencil, Plus, Package, ShieldOff, Sparkles, Trash2, Users } from 'lucide-react'
+import { ChevronDown, Ellipsis, KeyRound, Library, Pencil, Plus, Package, ShieldOff, Sparkles, Trash2, TriangleAlert, Users } from 'lucide-react'
 import type { McpLibraryInfo, McpTestResult } from '@shared/types'
 import { HARNESS_PROJECT_ID } from '@shared/types'
+import { secretEnvClashes, type McpSecretClash } from '@shared/mcpSecretClash'
 import { useAppStore } from '../../store/useAppStore'
 import { focusPaneHeading } from '../../lib/settingsTarget'
 import { scrollWithin } from '../../lib/scrollWithin'
@@ -20,7 +21,7 @@ import { AuthChip, AuthorizeControl, SourceBadge } from './McpAuth'
 import McpServerForm from './McpServerForm'
 import RegistryDialog from './RegistryDialog'
 import TestResultPanel from './TestResultPanel'
-import { errMessage, launchTarget, secretStatuses } from './mcpHelpers'
+import { errMessage, launchTarget, secretClashLine, secretStatuses } from './mcpHelpers'
 import { infoFromLibrary, transportWords } from './mcpLibraryHelpers'
 import { libraryWriter } from './mcpWriter'
 import { useMcpLibrary } from './useMcpLibrary'
@@ -59,6 +60,9 @@ export default function McpLibrarySection(): ReactElement {
 
   // Services from the Connectors gallery live there; this list is for servers added by hand, from the registry or by an agent.
   const infos = (library ?? []).filter((i) => !i.entry.connectorId)
+  // Any project linking two entries that need the same secret env name may clash on the OpenAI connection (one Codex
+  // run passes one value per name), so warn whatever the adapter. Library entries have no enabled flag of their own.
+  const clashes = useMemo(() => secretEnvClashes((library ?? []).map((i) => ({ ...i.entry, enabled: true }))), [library])
   return (
     <SettingsSection
       id="appsettings-section-mcp-library"
@@ -121,7 +125,7 @@ export default function McpLibrarySection(): ReactElement {
         ) : (
           <ul className="card-block mcp-list" aria-label="Custom servers">
             {infos.map((info) => (
-              <LibraryRow key={info.entry.id} info={info} onList={setLibrary} onEdit={() => setModal({ kind: 'form', editing: info })} />
+              <LibraryRow key={info.entry.id} info={info} clashes={clashes[info.entry.id]} onList={setLibrary} onEdit={() => setModal({ kind: 'form', editing: info })} />
             ))}
           </ul>
         )}
@@ -143,7 +147,18 @@ export default function McpLibrarySection(): ReactElement {
   )
 }
 
-function LibraryRow({ info, onList, onEdit }: { info: McpLibraryInfo; onList: (l: McpLibraryInfo[]) => void; onEdit: () => void }): ReactElement {
+function LibraryRow({
+  info,
+  clashes,
+  onList,
+  onEdit
+}: {
+  info: McpLibraryInfo
+  /** Secret env names this entry shares with other stdio entries. */
+  clashes?: McpSecretClash[]
+  onList: (l: McpLibraryInfo[]) => void
+  onEdit: () => void
+}): ReactElement {
   const { entry, auth } = info
   const [menu, setMenu] = useState(false)
   const [confirm, setConfirm] = useState(false)
@@ -272,6 +287,12 @@ function LibraryRow({ info, onList, onEdit }: { info: McpLibraryInfo; onList: (l
           <IconButton icon={Ellipsis} label={`More actions for ${entry.name}`} size="sm" expanded={menu} onClick={() => setMenu((m) => !m)} />
         </div>
       </div>
+      {clashes?.map((c) => (
+        <p key={c.envName} className="mcp-row-note mcp-secret-clash" data-testid="mcp-secret-clash">
+          <Icon icon={TriangleAlert} size="sm" />
+          <span>{secretClashLine(c)}</span>
+        </p>
+      ))}
       {usedOpen && (
         <ul id={usedId} className="mcp-used-by" aria-label={`Projects using ${entry.name}`}>
           {info.usedBy.map((u) => (
