@@ -569,6 +569,12 @@ export interface Project {
    * target's projects both have it on; read it with runMessagingOn() from defaults.ts. Saved through projects:save.
    */
   runMessaging?: boolean
+  /**
+   * Engagements: add known knowledge-graph items to what an agent receives (RuntimeContext.knowledgeContext, no model
+   * call). Unset = on; only an explicit false turns it off. Read it with knowledgeAutoContextOn() from
+   * shared/knowledge.ts; never fill a default in a store or newProject. Saved through projects:save.
+   */
+  knowledgeAutoContext?: boolean
   roles: Role[]
   /**
    * MCP servers this project's agents may use (mcp__<name>__* tools). Missing = none. Secret values are
@@ -2173,7 +2179,21 @@ export interface RunUsage {
   legacy?: true
   /** Skills loaded in the run (skill.used events), most loaded first. Missing = none (or a run before skills existed). */
   skills?: SkillUseCount[]
+  /** Knowledge graph reads served to agents (knowledge_recall and auto context). Missing = none (or an older run). */
+  knowledge?: KnowledgeServedUsage
   updatedAt: number
+}
+
+/** RunUsage.knowledge: counted by RunManager, never by an adapter. */
+export interface KnowledgeServedUsage {
+  /** knowledge_recall calls answered. */
+  recalls: number
+  /** knowledgeContext blocks added to what an agent received (nulls are not counted). */
+  autoContexts: number
+  /** Entities served in full across both paths ("already shown" lines are not counted). */
+  itemsServed: number
+  /** Characters of tool results and context blocks served. */
+  charsServed: number
 }
 
 /** runs:usageStats input. */
@@ -3037,6 +3057,12 @@ export type RunEvent =
    * ("Loaded skill <name>", source 'harness') on that agent. `at` is epoch ms.
    */
   | { type: 'skill.used'; runId: string; agentId: string; skillId: string; name: string; at: number }
+  /**
+   * Knowledge graph items just reached an agent, so the renderer can light those nodes up. RunManager emits it (at most
+   * one per agent per second, trailing, ids merged, at most KNOWLEDGE_RECALLED_IDS_MAX ids). `via` 'recall' =
+   * knowledge_recall, 'auto' = knowledgeContext; a merged event carries the newest call's `via`. `at` is epoch ms.
+   */
+  | { type: 'knowledge.recalled'; runId: string; agentId: string; nodeIds: string[]; at: number; via: 'recall' | 'auto' }
   /** An agent asked to install an MCP server (request_mcp_install); the run waits for mcp:answerInstall. */
   | { type: 'mcpInstall.request'; runId: string; request: McpInstallRequest }
   /** The install request was answered (or dropped when the run ended: approved false). Never carries secrets. */
@@ -4587,8 +4613,38 @@ export const KNOWLEDGE_KEY_RE = /^[a-z0-9][a-z0-9-]{0,39}$/
  * KNOWLEDGE_KEY_RE is accepted).
  */
 export const KNOWLEDGE_COMMON_KINDS = ['person', 'organisation', 'system', 'document', 'decision', 'risk', 'requirement', 'deadline', 'meeting', 'open-question'] as const
+/**
+ * Relations the tool suggests so agents pick consistent names (a hint like KNOWLEDGE_COMMON_KINDS, not a closed list).
+ * The judgement-based connections of docs/design/knowledge-connections.md are recorded by agents under these names.
+ */
+export const KNOWLEDGE_COMMON_RELATIONS = ['works-at', 'reports-to', 'owns', 'depends-on', 'affects', 'decided-by', 'evidence-for', 'mitigates', 'supersedes', 'contradicts', 'can-answer', 'raised-by'] as const
 /** Harness tool of engagement work runs (every role): vocabulary, search, get, upsert_node, link, retire. */
 export const KNOWLEDGE_TOOL = 'engagement_knowledge'
+/**
+ * Read-only harness tool of engagement work runs and single (Ask) engagement runs, every role: one budgeted, ranked
+ * answer in place of vocabulary + search + get. On no other kind of run.
+ */
+export const KNOWLEDGE_RECALL_TOOL = 'knowledge_recall'
+/** knowledge_recall budget in characters of the whole result: default, floor and ceiling. */
+export const KNOWLEDGE_RECALL_BUDGET_DEFAULT = 1500
+export const KNOWLEDGE_RECALL_BUDGET_MIN = 400
+export const KNOWLEDGE_RECALL_BUDGET_MAX = 6000
+/** Longest knowledge_recall query; longer is refused, never cut. */
+export const KNOWLEDGE_RECALL_QUERY_MAX_CHARS = 500
+/** The standing index in the prompt (knowledgeBrief): at most this many characters, omitted for an empty graph. */
+export const KNOWLEDGE_BRIEF_MAX_CHARS = 600
+/** One knowledgeContext block, framing and fences included. */
+export const KNOWLEDGE_CONTEXT_MAX_CHARS = 800
+/** knowledgeContext reads at most this many characters of the incoming text when it looks for names. */
+export const KNOWLEDGE_CONTEXT_SCAN_MAX_CHARS = 64 * 1024
+/** Most node ids on one knowledge.recalled event (the newest are kept). */
+export const KNOWLEDGE_RECALLED_IDS_MAX = 50
+/** Most links inferKnowledgeLinks returns, strongest first. */
+export const KNOWLEDGE_INFERRED_LINKS_MAX = 500
+/** Most dismissed inferred link ids a graph keeps (oldest dropped). */
+export const KNOWLEDGE_DISMISSED_LINKS_MAX = 2000
+/** An inferred link id: stable hash of basis and endpoints. */
+export const KNOWLEDGE_LINK_ID_RE = /^kl_[a-f0-9]{16}$/
 /** engagement_knowledge actions. */
 export const KNOWLEDGE_TOOL_ACTIONS = ['vocabulary', 'search', 'get', 'upsert_node', 'link', 'retire'] as const
 export type KnowledgeToolAction = (typeof KNOWLEDGE_TOOL_ACTIONS)[number]
@@ -4671,6 +4727,12 @@ export interface KnowledgeGraph {
   version: 1
   nodes: KnowledgeNode[]
   edges: KnowledgeEdge[]
+  /**
+   * Inferred link ids (KnowledgeInferredLink.id) the user dismissed: ids only, shape KNOWLEDGE_LINK_ID_RE, at most
+   * KNOWLEDGE_DISMISSED_LINKS_MAX (oldest dropped). Tolerant on read: junk entries are dropped, an id whose link no
+   * longer exists is harmless. Absent when none.
+   */
+  dismissedLinks?: string[]
   /** Epoch ms of the last write. */
   updatedAt?: number
 }
@@ -4812,6 +4874,74 @@ export interface KnowledgeSearchHit {
   edgeCount: number
 }
 
+/** knowledge_recall input (RuntimeContext.knowledgeRecall). */
+export interface KnowledgeRecallInput {
+  query: string
+  /** Characters of the whole result, clamped to KNOWLEDGE_RECALL_BUDGET_MIN..MAX. Default KNOWLEDGE_RECALL_BUDGET_DEFAULT. */
+  budget?: number
+  /** Show entities this agent already received in full again (it may have lost context). */
+  fresh?: boolean
+}
+
+/**
+ * What an inferred link rests on. See docs/design/knowledge-connections.md for the evaluation; only what passed it is
+ * built. 'mention': the `from` entity's summary or a live fact names `to`. 'same-target': both entities have the same
+ * relation to one non-hub entity (`evidence` names it). 'shared-note': both link one context note. 'same-name': equal
+ * name or alias across different kinds, a possible duplicate.
+ */
+export type KnowledgeLinkBasis = 'mention' | 'same-target' | 'shared-note' | 'same-name'
+
+/**
+ * A connection OrgAI derived from the graph (src/shared/knowledgeLinks.ts). Never stored as an edge and never reported
+ * as a fact: the user can confirm it (an ordinary user edge through knowledge:saveEdge) or dismiss it
+ * (knowledge:dismissLink). Pairs that already have any edge, retired ones included, are not suggested.
+ */
+export interface KnowledgeInferredLink {
+  /** `kl_` + a stable hash of basis and endpoints (KNOWLEDGE_LINK_ID_RE); survives edits to the evidence text. */
+  id: string
+  /** Node ids. For symmetric bases (same-target, shared-note, same-name) `from` is the smaller id. */
+  from: string
+  to: string
+  basis: KnowledgeLinkBasis
+  /** A suggested relation word for confirming (a KNOWLEDGE_KEY_RE key), when the kind pair has one. */
+  suggestedRelation?: string
+  /** One short line of plain text saying why (at most 200 characters). User- or agent-written text: render as text only. */
+  evidence: string
+  /** The fact the evidence came from ('mention' in a fact). */
+  evidenceFactId?: string
+  /** The context note the evidence came from ('shared-note'). */
+  evidenceNoteId?: string
+  /** 0..1, comparable within a result; higher is stronger. Not a probability. */
+  strength: number
+  /** How many separate texts or shared items back it (1 or more). */
+  count: number
+}
+
+/**
+ * How often an entity shows up, for sizing graph nodes. Derived only, never stored, and agent recalls are not counted.
+ * `relations`: live edges touching it whose other end is live. `mentions`: live entities' summaries and live facts that
+ * name it, with no hub cutoff (a large client organisation being the largest node is correct); dismissed mentions do
+ * not count. `notes`: context notes it links. `total` is their sum.
+ */
+export interface KnowledgeAppearance {
+  relations: number
+  mentions: number
+  notes: number
+  total: number
+}
+
+/** knowledge:inferredLinks result, computed once per graph revision. `appearances` has one entry per node id. */
+export interface KnowledgeInferredResult {
+  links: KnowledgeInferredLink[]
+  appearances: Record<string, KnowledgeAppearance>
+}
+
+/** knowledge:dismissLink input (engagements only). The id must have the KNOWLEDGE_LINK_ID_RE shape; dismissing twice is a no-op. */
+export interface KnowledgeDismissLinkInput {
+  projectId: string
+  linkId: string
+}
+
 /** Channels of this section; spread into IPC. */
 export const KNOWLEDGE_IPC = {
   /** (projectId) -> KnowledgeGraph. Empty for code projects. */
@@ -4825,7 +4955,11 @@ export const KNOWLEDGE_IPC = {
   /** (KnowledgeItemRef with edgeId) -> KnowledgeGraph. Engagements only. */
   knowledgeRemoveEdge: 'knowledge:removeEdge',
   /** (projectId) -> KnowledgeGraph (empty): the user's "start over". Engagements only. */
-  knowledgeClear: 'knowledge:clear'
+  knowledgeClear: 'knowledge:clear',
+  /** (projectId) -> KnowledgeInferredResult. Empty for code projects. */
+  knowledgeInferredLinks: 'knowledge:inferredLinks',
+  /** (KnowledgeDismissLinkInput) -> KnowledgeInferredResult afterwards. Engagements only. */
+  knowledgeDismissLink: 'knowledge:dismissLink'
 } as const
 
 /** window.orgai additions of this section (declaration-merged into OrgAIApi). Every write pushes onEngagementChanged 'knowledge'. */
@@ -4840,6 +4974,10 @@ export interface OrgAIApi {
     removeEdge(ref: KnowledgeItemRef): Promise<KnowledgeGraph>
     /** Removes every node and edge; resolves to the empty graph. */
     clear(projectId: string): Promise<KnowledgeGraph>
+    /** Derived connections and appearance counts for the current graph; nothing is written. */
+    inferredLinks(projectId: string): Promise<KnowledgeInferredResult>
+    /** Resolves to the result afterwards. */
+    dismissLink(input: KnowledgeDismissLinkInput): Promise<KnowledgeInferredResult>
   }
 }
 
