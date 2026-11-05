@@ -15,7 +15,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import type { DaemonInfo } from '../../shared/types'
+import type { DaemonInfo, HostKind } from '../../shared/types'
 import { readDaemonInfo } from '../../main/host/ownership'
 import { isLiveProcessCached } from '../../main/host/processInfo'
 import type { HostLauncher } from '../types'
@@ -24,7 +24,17 @@ import { SECRET_ENV_PREFIX } from '../secretOverlay'
 export const APP_NOT_FOUND = 'OrgAI app not found; set ORGAI_ELECTRON_PATH or use --host inproc'
 const POLL_MS = 150
 
-export type SpawnFn = (command: string, args: string[], options: SpawnOptions) => { pid?: number; unref(): void }
+/**
+ * What a spawn returns (a ChildProcess fits). `on` is used for 'error' (the command could not be executed: Node emits
+ * it on the next tick, and an unheard 'error' would crash the CLI) and 'exit' (the app quit before it was ready).
+ */
+export interface SpawnedChild {
+  pid?: number
+  unref(): void
+  on?(event: string, listener: (...args: unknown[]) => void): unknown
+}
+
+export type SpawnFn = (command: string, args: string[], options: SpawnOptions) => SpawnedChild
 
 export interface LauncherOptions {
   dataDir: string
@@ -116,8 +126,27 @@ export function createLauncher(opts: LauncherOptions): HostLauncher {
     return { error: APP_NOT_FOUND }
   }
 
-  const ready = (d: DaemonInfo | null, notInstanceId?: string): d is DaemonInfo =>
-    !!d && d.state === 'ready' && d.hostInstanceId !== notInstanceId && isLive(d.pid, d.processStartTime)
+  const ready = (d: DaemonInfo | null, notInstanceId?: string, hostKinds?: readonly HostKind[]): d is DaemonInfo =>
+    !!d &&
+    d.state === 'ready' &&
+    d.hostInstanceId !== notInstanceId &&
+    // A daemon.json without hostKind comes from an older Electron host (inproc hosts always write theirs).
+    (!hostKinds || d.hostKind === undefined || hostKinds.includes(d.hostKind)) &&
+    isLive(d.pid, d.processStartTime)
+
+  /** The last spawned app: a spawn error, or how it exited (code / signal) once it did. */
+  let child: { error?: Error; exited?: { code: number | null; signal: string | null } } | undefined
+
+  /** Why the spawned app can no longer become ready, or undefined while it may. */
+  const childFailure = (): string | undefined => {
+    if (!child) return undefined
+    if (child.error) return child.error.message
+    const ex = child.exited
+    // Exit 0 is a hand-off: the single-instance lock went to a running OrgAI, which answers instead.
+    if (!ex || ex.code === 0) return undefined
+    if (ex.code === 6) return 'OrgAI exited (code 6): another OrgAI host owns this data folder. See `orgai daemon status`.'
+    return ex.code !== null ? `OrgAI exited (code ${ex.code}) before it was ready. See \`orgai daemon logs\`.` : `OrgAI was stopped (${ex.signal ?? 'signal'}) before it was ready.`
+  }
 
   return {
     resolve: resolveApp,
@@ -126,22 +155,38 @@ export function createLauncher(opts: LauncherOptions): HostLauncher {
       const app = resolveApp()
       if ('error' in app) throw new Error(app.error)
       const args = [...app.args, ...(headless ? ['--headless-host'] : []), ...(run ? ['--run', run] : [])]
-      const child = spawnFn(app.command, args, {
+      const state: NonNullable<typeof child> = {}
+      child = state
+      const proc = spawnFn(app.command, args, {
         detached: true,
         stdio: 'ignore',
         windowsHide: true,
         shell: false,
         env: hostSpawnEnv(env, opts)
       })
-      child.unref()
-      return child.pid !== undefined ? { pid: child.pid } : {}
+      // Listen before the next tick: Node emits 'error' asynchronously, and with no listener it would crash the CLI.
+      proc.on?.('error', (e) => {
+        state.error ??= e instanceof Error ? e : new Error(String(e))
+      })
+      proc.on?.('exit', (code, signal) => {
+        state.exited = { code: typeof code === 'number' ? code : null, signal: typeof signal === 'string' ? signal : null }
+      })
+      proc.unref()
+      return proc.pid !== undefined ? { pid: proc.pid } : {}
     },
 
-    async waitForReady({ timeoutMs, notInstanceId }) {
+    current() {
+      const d = readDaemonInfo(opts.dataDir)
+      return d && isLive(d.pid, d.processStartTime) ? d : null
+    },
+
+    async waitForReady({ timeoutMs, notInstanceId, hostKinds }) {
       const deadline = now() + timeoutMs
       for (;;) {
         const d = readDaemonInfo(opts.dataDir)
-        if (ready(d, notInstanceId)) return d
+        if (ready(d, notInstanceId, hostKinds)) return d
+        const failure = childFailure()
+        if (failure) throw new Error(failure)
         if (now() >= deadline) return null
         await sleep(Math.min(POLL_MS, Math.max(1, deadline - now())))
       }

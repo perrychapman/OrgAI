@@ -107,8 +107,9 @@ export interface ReferenceCheckOptions {
    * 'reference' (default): the reference-folder rules above (a word naming a parent counts, limits and untrackable
    * cds fail closed). 'self-control' (selfControlGate.ts): only definite hits count. A word must name a path AT or
    * UNDER a folder (a parent such as the home folder or the data dir never counts), and the fail-closed answers
-   * (command over 32 KB, too many words or parts, an untrackable cd, UNC / device words, provider-qualified words)
-   * give null so the normal permission flow decides. cd tracking stays on; after an untrackable cd relative words are
+   * (an untrackable cd, UNC / device words, provider-qualified words) give null so the normal permission flow decides.
+   * A scan limit (command over 32 KB, too many words or parts, a quoted word nested deeper than three levels) also
+   * gives null here, but commandControlScan reports it as 'limit' and the gate denies the command. cd tracking stays on; after an untrackable cd relative words are
    * not resolved, absolute ones still are.
    */
   mode?: 'reference' | 'self-control'
@@ -148,8 +149,13 @@ interface CheckState {
   parts: number
   /** mode 'self-control': only definite AT-or-UNDER hits, never a fail-closed answer. */
   definite: boolean
-  /** Set (definite mode) when a limit was hit: scanning stops and the command answers null. */
+  /** Set (definite mode) when a fail-closed answer was reached: scanning stops and the command answers null. */
   stopped: boolean
+  /**
+   * Set (definite mode) when a scan limit was hit (command over 32 KB, too many words or parts, a quoted word nested
+   * deeper than MAX_NEST): the scanner did not read the whole command, so selfControlGate.ts denies it.
+   */
+  limited: boolean
 }
 
 function fold(s: CheckState, v: string): string {
@@ -412,6 +418,12 @@ function stopOr(s: CheckState, touch: Touch): Touch | null {
   return null
 }
 
+/** A scan limit: as stopOr, and (definite mode) `limited` set so the self-control gate denies the command. */
+function limitHit(s: CheckState, touch: Touch): Touch | null {
+  if (s.definite) s.limited = true
+  return stopOr(s, touch)
+}
+
 function scanCommand(s: CheckState, text: string, startCwd: string | undefined, depth: number, startUnknown = false): Touch | null {
   let cwd = startCwd
   let unknown = startUnknown
@@ -426,14 +438,19 @@ function scanCommand(s: CheckState, text: string, startCwd: string | undefined, 
     // Definite mode goes on with no working folder: relative words resolve to nothing, absolute ones are checked.
     if (unknown && !s.definite && !(isCd && !POP_NAMES.has(head) && trackedTarget(s, words, cwd))) return { folder: first, how: 'runs-in' }
     for (const word of scanned) {
-      if (++s.words > MAX_WORDS) return stopOr(s, { folder: first, how: 'names' })
-      if (depth < MAX_NEST && /\s/.test(word)) {
-        const nested = scanCommand(s, word, cwd, depth + 1, unknown)
-        if (nested || s.stopped) return nested
+      if (++s.words > MAX_WORDS) return limitHit(s, { folder: first, how: 'names' })
+      if (/\s/.test(word)) {
+        if (depth < MAX_NEST) {
+          const nested = scanCommand(s, word, cwd, depth + 1, unknown)
+          if (nested || s.stopped) return nested
+        } else if (s.definite) {
+          // A quoted word deeper than MAX_NEST is not split again, so a path inside it would go unread.
+          return limitHit(s, { folder: first, how: 'names' })
+        }
       }
       // `${HOME}` would be split at its braces (PUNCTUATION); definite mode reads it as `$HOME` (HOME_VARIABLE).
       for (const part of partsOf(s.definite ? word.replace(/\$\{HOME\}/gi, () => '$HOME') : word)) {
-        if (++s.parts > MAX_PARTS) return stopOr(s, { folder: first, how: 'names' })
+        if (++s.parts > MAX_PARTS) return limitHit(s, { folder: first, how: 'names' })
         const hit = checkPart(s, part, cwd)
         if (hit) return { folder: hit, how: 'names' }
       }
@@ -464,14 +481,38 @@ export function commandReferenceTouch(
   refs: readonly string[],
   opts: ReferenceCheckOptions = {}
 ): Touch | null {
-  if (typeof command !== 'string' || !command.trim() || !Array.isArray(refs)) return null
+  return scanReferenceTouch(command, cwd, refs, opts).touch
+}
+
+/**
+ * The self-control gate's shell check (mode 'self-control'): 'touch' when the command definitely names (or runs
+ * inside) a protected path, 'limit' when the scanner hit a limit before reading all of it (over 32 KB, over 2,000 words
+ * or parts, a quoted word nested deeper than three levels), else null.
+ */
+export function commandControlScan(
+  command: string,
+  cwd: string | undefined,
+  refs: readonly string[],
+  opts: Omit<ReferenceCheckOptions, 'mode'> = {}
+): 'touch' | 'limit' | null {
+  const r = scanReferenceTouch(command, cwd, refs, { ...opts, mode: 'self-control' })
+  return r.touch ? 'touch' : r.limited ? 'limit' : null
+}
+
+function scanReferenceTouch(
+  command: string,
+  cwd: string | undefined,
+  refs: readonly string[],
+  opts: ReferenceCheckOptions
+): { touch: Touch | null; limited: boolean } {
+  if (typeof command !== 'string' || !command.trim() || !Array.isArray(refs)) return { touch: null, limited: false }
   const platform = opts.platform ?? process.platform
   const p: PathModule = platform === 'win32' ? win32 : posix
   const entries: RefEntry[] = []
   for (const r of refs) {
     if (typeof r === 'string' && r !== '' && !r.includes('\0') && p.isAbsolute(r)) entries.push({ ref: r, abs: p.resolve(r) })
   }
-  if (!entries.length) return null
+  if (!entries.length) return { touch: null, limited: false }
   const s: CheckState = {
     p,
     platform,
@@ -483,23 +524,25 @@ export function commandReferenceTouch(
     words: 0,
     parts: 0,
     definite: opts.mode === 'self-control',
-    stopped: false
+    stopped: false,
+    limited: false
   }
-  if (command.length > MAX_COMMAND_CHARS) return stopOr(s, { folder: entries[0].ref, how: 'names' })
+  const done = (touch: Touch | null): { touch: Touch | null; limited: boolean } => ({ touch, limited: s.limited })
+  if (command.length > MAX_COMMAND_CHARS) return done(limitHit(s, { folder: entries[0].ref, how: 'names' }))
   const startCwd = typeof cwd === 'string' && cwd !== '' && p.isAbsolute(cwd) ? p.resolve(cwd) : undefined
-  if (startCwd && platform === 'win32' && isUncLike(startCwd)) return stopOr(s, { folder: entries[0].ref, how: 'runs-in' })
+  if (startCwd && platform === 'win32' && isUncLike(startCwd)) return done(stopOr(s, { folder: entries[0].ref, how: 'runs-in' }))
   if (startCwd) {
     const hit = touchOf(s, startCwd, false)
-    if (hit) return { folder: hit, how: 'runs-in' }
+    if (hit) return done({ folder: hit, how: 'runs-in' })
   }
   const texts = [command]
   const unwrapped = unwrapShellCommand(command)
   if (unwrapped && unwrapped !== command.trim()) texts.push(unwrapped)
   for (const text of texts) {
     const hit = scanCommand(s, text, startCwd, 0)
-    if (hit || s.stopped) return hit
+    if (hit || s.stopped) return done(hit)
   }
-  return null
+  return done(null)
 }
 
 /** A definite-mode CheckState over `refs` (absolute ones only), or null when none is usable. */
@@ -523,7 +566,8 @@ function definiteState(refs: readonly string[], opts: Pick<ReferenceCheckOptions
     words: 0,
     parts: 0,
     definite: true,
-    stopped: false
+    stopped: false,
+    limited: false
   }
 }
 

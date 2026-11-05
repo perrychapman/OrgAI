@@ -12,8 +12,24 @@ describe('orgai app', () => {
     expect(f.launcherCalls).toEqual([
       { method: 'resolve', args: undefined },
       { method: 'spawn', args: { headless: false } },
-      { method: 'waitForReady', args: { timeoutMs: 10_000 } }
+      { method: 'waitForReady', args: { timeoutMs: 10_000, hostKinds: ['desktop', 'headless-host'] } }
     ])
+  })
+
+  it('refuses (exit 6) when a --host inproc host owns the data folder, without spawning (review M)', async () => {
+    const inproc = { ...ready, hostKind: 'inproc' as const, pid: 55 }
+    const f = fakeContext({ launcher: { current: () => inproc, waitForReady: async () => inproc } })
+    await expect(runApp(f.ctx, [])).rejects.toMatchObject({ exitCode: EXIT.hostBusy, message: expect.stringContaining('--host inproc (pid 55)') })
+    expect(f.launcherCalls).toEqual([])
+    // One that took the folder while the app was starting: the timeout names it.
+    let owner: typeof inproc | null = null
+    const g = fakeContext({ launcher: { current: () => owner, waitForReady: async () => ((owner = inproc), null) } })
+    await expect(runApp(g.ctx, [])).rejects.toMatchObject({ exitCode: EXIT.hostBusy })
+  })
+
+  it('a spawned app that cannot start is exit 1 with its reason (review M)', async () => {
+    const f = fakeContext({ launcher: { waitForReady: async () => Promise.reject(new Error('spawn /nope ENOENT')) } })
+    await expect(runApp(f.ctx, [])).rejects.toMatchObject({ exitCode: EXIT.failure, message: 'Could not start OrgAI: spawn /nope ENOENT' })
   })
 
   it('--run resolves R# and passes the run id', async () => {

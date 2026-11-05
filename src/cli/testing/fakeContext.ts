@@ -216,6 +216,8 @@ export function fakeContext(o: FakeContextOptions = {}): FakeContext {
       launcherCalls.push({ method: 'spawn', args })
       return o.launcher?.spawn ? o.launcher.spawn(args) : { pid: 999 }
     },
+    // A read of daemon.json; not recorded in launcherCalls.
+    current: () => (o.launcher?.current ? o.launcher.current() : null),
     waitForReady: async (args) => {
       launcherCalls.push({ method: 'waitForReady', args })
       return o.launcher?.waitForReady ? o.launcher.waitForReady(args) : null

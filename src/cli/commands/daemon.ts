@@ -25,6 +25,7 @@ export const DEFAULT_START_TIMEOUT_S = 30
 export const DEFAULT_STOP_TIMEOUT_S = 20
 export const DEFAULT_LOG_LINES = 200
 export const LOG_POLL_MS = 500
+const ELECTRON_HOST_KINDS = ['headless-host', 'desktop'] as const
 export const INPROC_BANNER = 'OrgAI host running in this terminal (inproc). Press Ctrl+C to stop.'
 
 /** Timers, swappable in tests. */
@@ -132,14 +133,35 @@ async function startHost(ctx: CliContext, o: { timeoutS: number; foreground: boo
       ])
       return res.reason === 'draining' ? EXIT.hostBusy : EXIT.ok
     }
+    if (res.reason !== 'no_host') {
+      // A live host owns the data folder but refused or did not answer this terminal (too many connections, an agent's
+      // own process, a failed proof, a version it cannot speak, a hung socket). A spawned host would only exit 6 on
+      // ownership, and its wait would report the incumbent as started: report the incumbent instead.
+      const d = res.daemon
+      const facts = d ? ` (${[d.hostKind, `pid ${d.pid}`].filter(Boolean).join(', ')})` : ''
+      throw new CliError(
+        `An OrgAI host is already running${facts} but this terminal cannot use it: ${res.message || res.reason}`,
+        res.reason === 'auth_failed' ? EXIT.auth : EXIT.failure
+      )
+    }
   }
 
   if (inproc) return runInproc(ctx)
 
   const app = ctx.launcher.resolve()
   if ('error' in app) throw new CliError(app.error, EXIT.failure)
-  ctx.launcher.spawn({ headless: true })
-  const ready = await ctx.launcher.waitForReady({ timeoutMs: o.timeoutS * 1000, ...(o.notInstanceId ? { notInstanceId: o.notInstanceId } : {}) })
+  let ready: DaemonInfo | null
+  try {
+    ctx.launcher.spawn({ headless: true })
+    // Only an Electron host counts (a running desktop app takes the hand-off); an inproc host's daemon.json never does.
+    ready = await ctx.launcher.waitForReady({
+      timeoutMs: o.timeoutS * 1000,
+      hostKinds: ELECTRON_HOST_KINDS,
+      ...(o.notInstanceId ? { notInstanceId: o.notInstanceId } : {})
+    })
+  } catch (e) {
+    throw new CliError(`Could not start the OrgAI host: ${e instanceof Error ? e.message : String(e)}`, EXIT.failure)
+  }
   if (!ready) throw new CliError(`The OrgAI host did not become ready within ${o.timeoutS} s. See \`orgai daemon logs\`.`, EXIT.hostBusy)
   return reportStarted(ctx, ready, false)
 }

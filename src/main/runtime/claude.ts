@@ -57,7 +57,7 @@ import { LIST_AGENTS_TOOL, MESSAGE_TOOL, buildRolePrompt, peerMessageText, canWr
 import { HandleNamer, mapSendMessage, messageTranscriptText, spawnHandle } from './network'
 import { authFailureMessage, describeTool, isAuthFailure, scrubAuthDetail } from './activity'
 import { isolateClaudeEnv, scrubControlEnv } from './childEnv'
-import { SELF_CONTROL_DENIAL_MESSAGE, SELF_CONTROL_REFUSAL_TEXT, checkSelfControlDenial, selfControlLogLine } from './selfControlGate'
+import { SELF_CONTROL_REFUSAL_TEXT, checkSelfControlDenial, selfControlLogLine } from './selfControlGate'
 import { WorktreeIntegrator } from './integration'
 import { resolveParent } from './agentTree'
 import {
@@ -1559,8 +1559,9 @@ export class ClaudeSession implements RuntimeSession {
   private selfControlSkipLogged = false
 
   /**
-   * The pre-mode self-control gate (selfControlGate.ts, cli-spec 3.4(1)): SELF_CONTROL_DENIAL_MESSAGE when this call
-   * runs the orgai command or opens OrgAI's control files, else null. On a hit it logs a warning and writes one harness
+   * The pre-mode self-control gate (selfControlGate.ts, cli-spec 3.4(1)): the gate's denial (SELF_CONTROL_DENIAL_MESSAGE,
+   * or SELF_CONTROL_UNCHECKED_MESSAGE for a command too long to check) when this call runs the orgai command or opens
+   * OrgAI's control files, else null. On a hit it logs a warning and writes one harness
    * row on the calling agent. An empty or unreadable protected list skips the gate (logged once per run).
    */
   private selfControlDenial(agentId: string, toolName: string, toolInput: unknown, cwd: string): string | null {
@@ -1585,7 +1586,7 @@ export class ClaudeSession implements RuntimeSession {
     if (!denial) return null
     this.log('warn', selfControlLogLine(toolName, this.agents.get(agentId)?.name ?? agentId))
     this.transcript(agentId, { kind: 'system', text: SELF_CONTROL_REFUSAL_TEXT }, { source: 'harness' })
-    return SELF_CONTROL_DENIAL_MESSAGE
+    return denial
   }
 
   /**

@@ -6,6 +6,7 @@
 import type {
   DaemonInfo,
   HostClientKind,
+  HostKind,
   HostRpcError,
   HostScope,
   HostStatusResult,
@@ -152,8 +153,14 @@ export interface HostLauncher {
   resolve(): { command: string; args: string[]; source: 'env' | 'dev' } | { error: string }
   /** Spawn it detached: `--headless-host` when headless, else a desktop window; `run` focuses that run id. */
   spawn(opts: { headless: boolean; run?: string }): { pid?: number }
-  /** Poll daemon.json until a host is 'ready' (and, with notInstanceId, a different one). null on timeout. */
-  waitForReady(opts: { timeoutMs: number; notInstanceId?: string }): Promise<DaemonInfo | null>
+  /** The daemon.json of the live host that owns the data folder (any state), else null. */
+  current(): DaemonInfo | null
+  /**
+   * Poll daemon.json until a host is 'ready' (with notInstanceId, a different one; with hostKinds, one of those kinds).
+   * null on timeout. Rejects with the reason when the app this launcher spawned could not start or exited non-zero
+   * before a matching host was ready (exit 0 is a hand-off to a running OrgAI, so polling goes on).
+   */
+  waitForReady(opts: { timeoutMs: number; notInstanceId?: string; hostKinds?: readonly HostKind[] }): Promise<DaemonInfo | null>
   /** Poll until no host (or not that hostInstanceId) advertises. false on timeout. */
   waitForGone(opts: { timeoutMs: number; hostInstanceId?: string }): Promise<boolean>
 }

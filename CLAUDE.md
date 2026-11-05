@@ -529,9 +529,13 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     (before every rule and mode in claude.ts, codex.ts, mock.ts) denies the orgai CLI (file names, this install's
     `out/cli` / `src/cli` via `setOrgaiCliRoots`, ELECTRON_RUN_AS_NODE assignments) and reads, searches or shell words
     reaching `<data>/run`, `<data>/secrets.json`, `<data>/codex` (home variables and globs followed; Grep rooted at or
-    above them denied). The CLI is `src/cli/` (bundled `out/cli/orgai.mjs`, `npm run cli`); its help and completions
-    read `commandTable.ts`; host text goes through `sanitizeTty`. Unit, integration (real inproc host) and e2e
-    (`cli-host.mjs`, `cli-readonly.mjs`) on macOS only.
+    above them denied). A shell command the gate cannot read to the end (over 32 KB, 2,000 words / parts / segments,
+    shells or quoting nested past three levels) is denied (`SELF_CONTROL_UNCHECKED_MESSAGE`), never handed to
+    bypassPermissions. The CLI is `src/cli/` (bundled `out/cli/orgai.mjs`, `npm run cli`); its help and completions
+    read `commandTable.ts`; host text goes through `sanitizeTty`. The launcher hears the spawned app's 'error' and
+    non-zero exit (waitForReady rejects) and filters by `hostKinds`; `orgai app` refuses (exit 6) while a `--host
+    inproc` host owns the folder, and `daemon start` never spawns over a live host that refused or did not answer.
+    Unit, integration (real inproc host) and e2e (`cli-host.mjs`, `cli-readonly.mjs`) on macOS only.
   - Wave 1 (`src/main/host/`, Electron-free): `bootstrap.ts` `bootOrgAIHost` builds every store and service and runs
     housekeeping; `index.ts` is the Electron shell over it (windows, menu, notifications, quit gate). `dispatcher.ts`
     `HostDispatcher` owns every request handler (`invoke` desktop path; `invokeRpc` wire path: `registry.ts`

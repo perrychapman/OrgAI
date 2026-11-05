@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { SELF_CONTROL_DENIAL_MESSAGE, checkSelfControlDenial, commandRunsOrgaiCli, controlProtectedPaths, type SelfControlContext } from './selfControlGate'
+import { SELF_CONTROL_DENIAL_MESSAGE, SELF_CONTROL_UNCHECKED_MESSAGE, checkSelfControlDenial, commandRunsOrgaiCli, controlProtectedPaths, type SelfControlContext } from './selfControlGate'
 
 const dirs: string[] = []
 afterEach(() => {
@@ -271,7 +271,7 @@ describe('checkSelfControlDenial', () => {
     expect(deny('Read', { file_path: '\\\\host\\share\\x' }, ctx)).toBeNull()
   })
 
-  it('does not deny parents, untrackable cds, long commands or other node scripts', () => {
+  it('does not deny parents, untrackable cds or other node scripts', () => {
     const s = setup()
     const ctx: SelfControlContext = { protectedPaths: s.refs, cwd: s.home, home: s.home }
     for (const command of [
@@ -291,14 +291,37 @@ describe('checkSelfControlDenial', () => {
       'grep -rn orgai src',
       'echo $ELECTRON_RUN_AS_NODE',
       'cat src/client/index.ts',
-      `echo ${'a'.repeat(40 * 1024)}`
+      `echo ${'a'.repeat(30 * 1024)}`,
+      `echo ${'x '.repeat(1500)}`,
+      `bash -c "git commit -m 'a b'"`
     ]) {
       expect(deny('Bash', { command }, ctx), command.slice(0, 80)).toBeNull()
     }
-    // Past the word limit the scanner gives up: no denial, the normal flow decides.
-    expect(deny('Bash', { command: `${'x '.repeat(3000)} cat run/daemon.secret` }, { ...ctx, cwd: s.data })).toBeNull()
     expect(deny('Bash', {}, ctx)).toBeNull()
     expect(deny('Bash', { command: 42 }, ctx)).toBeNull()
+  })
+
+  it('denies a command the scanners cannot read to the end, so bypassPermissions never runs it unread (review High)', () => {
+    const s = setup()
+    const ctx: SelfControlContext = { protectedPaths: s.refs, cwd: s.home, home: s.home }
+    const secret = `cat "${join(s.data, 'run', 'daemon.secret')}"`
+    expect(deny('Bash', { command: secret }, ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+    for (const command of [
+      // Past the word limit (2,000).
+      `true ${Array.from({ length: 2100 }, (_, k) => `w${k}`).join(' ')}; ${secret}`,
+      // Past the segment budget (2,000) before the CLI call.
+      `${Array(2100).fill(':').join('; ')}; orgai runs stop R1`,
+      // Over 32 KB.
+      `echo ${'a'.repeat(33 * 1024)}; ${secret}`,
+      // Shells nested deeper than three levels.
+      `bash -c "bash -c 'bash -c \"bash -c orgai\"'"`
+    ]) {
+      expect(deny('Bash', { command }, ctx), command.slice(0, 80)).toBe(SELF_CONTROL_UNCHECKED_MESSAGE)
+    }
+    expect(deny('Bash', { command: 'orgai runs stop R1' }, ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+    // Also with no protected paths (the CLI check alone).
+    expect(deny('Bash', { command: `${Array(2100).fill(':').join('; ')}; orgai runs stop R1` }, { protectedPaths: [] })).toBe(SELF_CONTROL_UNCHECKED_MESSAGE)
+    expect(commandRunsOrgaiCli(`${Array(2100).fill(':').join('; ')}; echo hi`)).toBe(true)
   })
 
   it('never throws', () => {

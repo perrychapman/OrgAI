@@ -13,8 +13,10 @@
  * counts for a file path or a shell word), a shell glob whose components can match a protected path
  * (`cat <dataDir>/r?n/daemon.secret`), a leading `$HOME` / `${HOME}` / `$env:USERPROFILE` / `%USERPROFILE%` read as the
  * home folder, and a Grep / Glob search that can descend into a protected path (a Grep rooted at the data dir or any
- * ancestor of a protected path, a Glob whose pattern reaches one). The shell scanner's fail-closed answers (over-long
- * commands, untrackable cds, UNC words) give null so the normal permission flow decides. Running the CLI by
+ * ancestor of a protected path, a Glob whose pattern reaches one). A shell command the scanners cannot read to the end
+ * (over 32 KB, over 2,000 words, parts or segments, quoting or `bash -c` nested deeper than three levels) is denied
+ * with SELF_CONTROL_UNCHECKED_MESSAGE, since bypassPermissions would otherwise run it unread. The scanner's other
+ * fail-closed answers (untrackable cds, UNC words) give null so the normal permission flow decides. Running the CLI by
  * interpreter is matched on an `orgai` / `orgai.mjs` / `orgai.js` argument, or on an argument inside this install's
  * own CLI folders (setOrgaiCliRoots: `<app>/out/cli`, `<app>/src/cli`), never on any project's `src/cli`; the
  * ELECTRON_RUN_AS_NODE check needs an assignment (`X=1` before a program or after env / export / set, `$env:X`,
@@ -26,10 +28,17 @@
  */
 import { join, posix, resolve, win32 } from 'node:path'
 import { canonicalDeep } from '../quick/scratch'
-import { commandReferenceTouch, pathAtOrUnder, searchReaches } from './referenceDirectories'
+import { commandControlScan, pathAtOrUnder, searchReaches } from './referenceDirectories'
 import { segmentWords } from './ruleMatch'
 
 export const SELF_CONTROL_DENIAL_MESSAGE = "OrgAI: Agent tools may not invoke the OrgAI CLI or access OrgAI's internal control and secret files."
+
+/**
+ * The denial for a shell command the gate could not read to the end (a scan limit): under bypassPermissions or the
+ * 'auto' classifier the normal flow would allow it, so the gate never lets an unread command through.
+ */
+export const SELF_CONTROL_UNCHECKED_MESSAGE =
+  "OrgAI: This command is too long or too deeply nested for OrgAI to check that it leaves the OrgAI CLI and OrgAI's control files alone. Split it into shorter commands."
 
 /** The harness transcript row every adapter writes on the agent when the gate refuses a call. */
 export const SELF_CONTROL_REFUSAL_TEXT = "Refused: agents may not run the orgai command or open OrgAI's control files"
@@ -110,6 +119,9 @@ const PACKAGE_RUNNERS: ReadonlySet<string> = new Set(['npx', 'npm', 'pnpm', 'pnp
 const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/
 const MAX_NEST = 3
 const MAX_SEGMENTS = 2000
+
+/** Segments read so far; `limited` once MAX_SEGMENTS or MAX_NEST cut the scan short. */
+type CliBudget = { n: number; limited: boolean }
 
 function binName(word: string): string {
   return (word.split(/[\\/]/).pop() ?? word).toLowerCase()
@@ -225,8 +237,9 @@ function programIndex(words: readonly string[]): number {
 }
 
 /** True when one segment (or a shell -c text inside it) runs the OrgAI CLI. */
-function segmentRunsCli(segment: string, depth: number, budget: { n: number }, check: CliCheck): boolean {
-  if (++budget.n > MAX_SEGMENTS) return false
+function segmentRunsCli(segment: string, depth: number, budget: CliBudget, check: CliCheck): boolean {
+  // Past the budget the rest of the command goes unread: count it as running the CLI (fail closed).
+  if (++budget.n > MAX_SEGMENTS) return (budget.limited = true)
   const words = segmentWords(segment)
   if (!words.length) return false
   // npx / npm exec with `-p orgai` / `--package=orgai`.
@@ -243,11 +256,17 @@ function segmentRunsCli(segment: string, depth: number, budget: { n: number }, c
   if (CLI_NAME.test(name)) return true
   const bare = stripExe(name)
   if (INTERPRETERS.has(bare) && words.slice(at + 1).some((w) => interpreterArgIsCli(w, check))) return true
-  if (depth < MAX_NEST && (NESTING_SHELLS.has(bare) || bare === 'eval')) {
+  if (NESTING_SHELLS.has(bare) || bare === 'eval') {
     const rest = words.slice(at + 1)
     for (let k = 0; k < rest.length; k++) {
       const inner = bare === 'eval' ? rest.join(' ') : NESTING_FLAGS.test(rest[k]) ? rest.slice(k + 1).join(' ') : null
-      if (inner !== null) return textRunsCli(inner, depth + 1, budget, check)
+      if (inner === null) continue
+      // A shell text nested deeper than MAX_NEST is not read: fail closed.
+      if (depth >= MAX_NEST) {
+        if (!inner.trim()) return false
+        return (budget.limited = true)
+      }
+      return textRunsCli(inner, depth + 1, budget, check)
     }
   }
   return false
@@ -306,7 +325,7 @@ function assignsElectronAsNode(segment: string): boolean {
   return false
 }
 
-function textRunsCli(text: string, depth: number, budget: { n: number }, check: CliCheck): boolean {
+function textRunsCli(text: string, depth: number, budget: CliBudget, check: CliCheck): boolean {
   if (ELECTRON_AS_NODE_PS.some((re) => re.test(text))) return true
   const plain = unquoted(text)
   if (/\bsetx\s+ELECTRON_RUN_AS_NODE\b/i.test(plain)) return true
@@ -315,10 +334,22 @@ function textRunsCli(text: string, depth: number, budget: { n: number }, check: 
   return false
 }
 
-/** True when a shell command runs the OrgAI CLI (cli-spec 3.4(1)(a)); exported for tests. */
-export function commandRunsOrgaiCli(command: string, opts: { cwd?: string; cliRoots?: readonly string[]; platform?: NodeJS.Platform } = {}): boolean {
-  if (typeof command !== 'string' || !command.trim()) return false
-  return textRunsCli(command, 0, { n: 0 }, { cwd: opts.cwd, roots: opts.cliRoots ?? configuredCliRoots, platform: opts.platform ?? process.platform })
+type CliScanOptions = { cwd?: string; cliRoots?: readonly string[]; platform?: NodeJS.Platform }
+
+/** 'runs' when a shell command runs the OrgAI CLI, 'limit' when the scan stopped before reading all of it, else null. */
+function cliScan(command: string, opts: CliScanOptions): 'runs' | 'limit' | null {
+  if (typeof command !== 'string' || !command.trim()) return null
+  const budget: CliBudget = { n: 0, limited: false }
+  const runs = textRunsCli(command, 0, budget, { cwd: opts.cwd, roots: opts.cliRoots ?? configuredCliRoots, platform: opts.platform ?? process.platform })
+  return budget.limited ? 'limit' : runs ? 'runs' : null
+}
+
+/**
+ * True when a shell command runs the OrgAI CLI (cli-spec 3.4(1)(a)), or cannot be read to the end (over MAX_SEGMENTS
+ * segments, a shell -c nested deeper than MAX_NEST): both are denied. Exported for tests.
+ */
+export function commandRunsOrgaiCli(command: string, opts: CliScanOptions = {}): boolean {
+  return cliScan(command, opts) !== null
 }
 
 /** The paths a file tool call names (file_path, path, notebook_path). MultiEdit's edits[] never name another file. */
@@ -370,11 +401,13 @@ export function checkSelfControlDenial(toolName: string, input: unknown, ctx: Se
     if (SHELLS.has(toolName)) {
       const command = i.command
       if (typeof command !== 'string' || !command.trim()) return null
-      if (commandRunsOrgaiCli(command, { cwd: ctx.cwd, cliRoots: ctx.cliRoots, platform })) return SELF_CONTROL_DENIAL_MESSAGE
+      const cli = cliScan(command, { cwd: ctx.cwd, cliRoots: ctx.cliRoots, platform })
+      if (cli === 'runs') return SELF_CONTROL_DENIAL_MESSAGE
+      if (cli === 'limit') return SELF_CONTROL_UNCHECKED_MESSAGE
       if (!refs.length) return null
       const shell = ctx.shell ?? (toolName === 'PowerShell' ? 'powershell' : 'bash')
-      const touch = commandReferenceTouch(command, ctx.cwd, refs, { mode: 'self-control', shell, platform, home: ctx.home })
-      return touch ? SELF_CONTROL_DENIAL_MESSAGE : null
+      const scan = commandControlScan(command, ctx.cwd, refs, { shell, platform, home: ctx.home })
+      return scan === 'touch' ? SELF_CONTROL_DENIAL_MESSAGE : scan === 'limit' ? SELF_CONTROL_UNCHECKED_MESSAGE : null
     }
     if (!FILE_TOOLS.has(toolName) || !refs.length) return null
     if (toolName === 'Glob' || toolName === 'Grep') return searchDenied(toolName, i, refs, ctx, platform) ? SELF_CONTROL_DENIAL_MESSAGE : null

@@ -766,6 +766,19 @@ Resolved `R1`–`R10` (single-host daemon vs Desktop ownership, socket authentic
     protected path (path, else the cwd) is denied whatever its `glob`; a Glob whose pattern reaches one is denied.
     Codex permissions approvals whose requested folders are at, under or above a protected path are declined with no
     card.
+  - Self-control gate scan limits (review High): a shell command the scanners cannot read to the end (over 32 KB, over
+    2,000 words or parts, over 2,000 segments in the CLI check, `bash -c` / `eval` or a quoted word nested deeper than
+    three levels) is denied outright with `SELF_CONTROL_UNCHECKED_MESSAGE` ("too long or too deeply nested ... split
+    it"), so bypassPermissions or the 'auto' classifier never runs it unread. Untrackable cds and UNC words still give
+    null (the normal flow decides). The Claude adapter returns the gate's own message.
+  - Launcher (review M): the default spawn listens for the child's 'error' (a bad ORGAI_ELECTRON_PATH no longer crashes
+    the CLI) and 'exit'; `waitForReady` rejects with the reason on a spawn error or a non-zero exit (code 6: another
+    host owns the folder) and keeps polling after exit 0 (a single-instance hand-off). `waitForReady({ hostKinds })`
+    accepts only those kinds (`orgai app` and `daemon start` accept desktop / headless-host, never inproc), and
+    `HostLauncher.current()` reads the live owner. `orgai app` refuses with exit 6 while a `--host inproc` host owns
+    the data folder. `daemon start` no longer spawns when a live host refused (too many connections, an agent
+    descendant), failed the proof, spoke another protocol or did not answer: it reports that host (exit 1, 5 for a
+    failed proof).
   - `sanitizeTty` keeps ZWJ / ZWNJ only after a non-ASCII character (emoji sequences, Persian / Indic ZWNJ); after
     ASCII, a newline, a tab or at the start of a stream they are dropped. Wide East Asian characters count one column.
   - `orgai watch` runs one reconnect loop at a time and closes a replaced client; a close during the first subscribe

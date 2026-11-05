@@ -1,5 +1,6 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
+import { EventEmitter } from 'node:events'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { APP_NOT_FOUND, createLauncher, hostSpawnEnv, type SpawnFn } from './launcher'
@@ -100,6 +101,51 @@ describe('launcher', () => {
     expect(t).toBeGreaterThanOrEqual(600)
     t = 0
     expect(await l.waitForReady({ timeoutMs: 400, notInstanceId: 'bbbbbbbbbbbb' })).toBeNull()
+  })
+
+  it('waitForReady filters by host kind (an inproc host never counts as the app being ready)', async () => {
+    let t = 0
+    const l = createLauncher({ dataDir, userDataDir: '', userChoseDataDir: false, env: {}, isLive: () => true, now: () => t, sleep: async (ms) => void (t += ms) })
+    writeFileSync(join(dataDir, 'run', 'daemon.json'), JSON.stringify({ hostInstanceId: 'aaaaaaaaaaaa', pid: 1, endpoint: '/x', state: 'ready', startedAt: 1, hostKind: 'inproc' }))
+    expect(await l.waitForReady({ timeoutMs: 300, hostKinds: ['desktop', 'headless-host'] })).toBeNull()
+    expect((await l.waitForReady({ timeoutMs: 300 }))?.hostKind).toBe('inproc')
+    expect(l.current()?.hostKind).toBe('inproc')
+  })
+
+  it('a spawn error or a non-zero exit of the spawned app fails waitForReady at once; exit 0 (a hand-off) does not (review M)', async () => {
+    const children: EventEmitter[] = []
+    const spawn: SpawnFn = () => {
+      const c = Object.assign(new EventEmitter(), { pid: 77, unref: () => undefined })
+      children.push(c)
+      return c
+    }
+    let t = 0
+    const l = createLauncher({ dataDir, userDataDir: '', userChoseDataDir: false, env: { ORGAI_ELECTRON_PATH: '/nope' }, spawn, isLive: () => true, now: () => t, sleep: async (ms) => void (t += ms) })
+    // The 'error' event has a listener (an unheard one would throw), and waitForReady rejects with it.
+    l.spawn({ headless: true })
+    expect(() => children[0].emit('error', new Error('spawn /nope ENOENT'))).not.toThrow()
+    await expect(l.waitForReady({ timeoutMs: 5000 })).rejects.toThrow('spawn /nope ENOENT')
+    expect(t).toBe(0)
+    // Exit 6: another host owns the data folder.
+    l.spawn({ headless: true })
+    children[1].emit('exit', 6, null)
+    await expect(l.waitForReady({ timeoutMs: 5000 })).rejects.toThrow(/code 6/)
+    // Exit 0 hands off to a running OrgAI: keep waiting for it.
+    l.spawn({ headless: false })
+    children[2].emit('exit', 0, null)
+    t = 0
+    expect(await l.waitForReady({ timeoutMs: 300 })).toBeNull()
+    expect(t).toBeGreaterThanOrEqual(300)
+  })
+
+  it('the default spawn hears the error of a missing command (no uncaught exception)', async () => {
+    let t = 0
+    const l = createLauncher({ dataDir, userDataDir: '', userChoseDataDir: false, env: { ORGAI_ELECTRON_PATH: join(base, 'no-such-electron') }, isLive: () => true, now: () => t, sleep: async (ms) => {
+      t += ms
+      await new Promise((r) => setTimeout(r, 5))
+    } })
+    l.spawn({ headless: true })
+    await expect(l.waitForReady({ timeoutMs: 10_000 })).rejects.toThrow(/ENOENT/)
   })
 
   it('waitForGone: missing file, dead pid or another instance', async () => {
