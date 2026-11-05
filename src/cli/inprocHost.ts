@@ -7,7 +7,7 @@
  * ever saved). There is no desktop, so window:openRun answers desktop_unavailable. Always loaded through a dynamic
  * import (its own chunk, out/cli/inprocHost.mjs). Electron-free; relative imports only.
  */
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join, posix, win32 } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { bootOrgAIHost, type OrgAIHost } from '../main/host/bootstrap'
 import { currentHostInstanceId } from '../main/host/identity'
@@ -92,7 +92,8 @@ export const NO_CIPHER: SecretCipher = {
  * orgaiCliRootsOf adds the unpacked bundle and `<Resources>/bin` (the launcher) too.
  */
 export function inprocCliRoots(moduleDir: string, platform: NodeJS.Platform = process.platform): string[] {
-  return orgaiCliRootsOf(resolve(moduleDir, '..', '..'), platform)
+  const p = platform === 'win32' ? win32 : posix
+  return orgaiCliRootsOf(p.resolve(moduleDir, '..', '..'), platform)
 }
 
 export async function startInprocHost(opts: StartInprocHostOptions): Promise<InprocHost> {

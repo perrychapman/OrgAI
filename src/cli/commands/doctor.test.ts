@@ -86,11 +86,17 @@ describe('orgai doctor', () => {
 describe('orgai doctor: install and shim (cli-spec 7, Wave 6)', () => {
   const RES = '/Applications/OrgAI.app/Contents/Resources'
   const LAUNCHER = `${RES}/bin/orgai`
-  const SHIM = () => join(dir, '.local', 'bin', 'orgai')
+  // The checks run with an injected 'darwin' platform (POSIX path rules), so the fake home is a POSIX-style path:
+  // forward slashes and no drive letter on Windows (the fake file system below is a Map, nothing touches the disk).
+  const px = (p: string): string => p.replace(/\\/g, '/').replace(/^[A-Za-z]:/, '')
+  const HOME = () => px(dir)
+  const join = (...parts: string[]): string => [...parts].join('/').replace(/\/+/g, '/')
+  const SHIM = () => join(HOME(), '.local', 'bin', 'orgai')
   /** Fake file system for the shim reads: path -> text. */
   let files: Map<string, string>
   beforeEach(() => {
     files = new Map()
+    doctorProbes.homeDir = HOME
     doctorProbes.readText = (p) => {
       const t = files.get(p)
       if (t === undefined) throw Object.assign(new Error(`ENOENT: ${p}`), { code: 'ENOENT' })
@@ -105,7 +111,7 @@ describe('orgai doctor: install and shim (cli-spec 7, Wave 6)', () => {
     doctorProbes.nodeVersion = () => '24.22.1'
   }
   const shimText = (launcher: string): string => renderCliShim({ platform: 'darwin', launcher })
-  const pathEnv = (): NodeJS.ProcessEnv => ({ PATH: `/usr/bin:${join(dir, '.local', 'bin')}` })
+  const pathEnv = (): NodeJS.ProcessEnv => ({ PATH: `/usr/bin:${join(HOME(), '.local', 'bin')}` })
 
   it('install: packaged, dev checkout, standalone bundle and a transient copy', () => {
     packaged()
@@ -118,8 +124,8 @@ describe('orgai doctor: install and shim (cli-spec 7, Wave 6)', () => {
     const dev = installCheck('darwin', {})
     expect(dev.status).toBe('ok')
     expect(dev.detail).toMatch(/^Development checkout /)
-    doctorProbes.bundleDir = () => join(dir, 'somewhere', 'cli')
-    expect(installCheck('linux', {})).toEqual({ id: 'install', status: 'ok', detail: `Standalone bundle ${join(dir, 'somewhere', 'cli')}` })
+    doctorProbes.bundleDir = () => join(HOME(), 'somewhere', 'cli')
+    expect(installCheck('linux', {})).toEqual({ id: 'install', status: 'ok', detail: `Standalone bundle ${join(HOME(), 'somewhere', 'cli')}` })
   })
 
   it('the node check passes on Electron 45 Node 24', async () => {
@@ -192,9 +198,9 @@ describe('orgai doctor: install and shim (cli-spec 7, Wave 6)', () => {
     files.set(SHIM(), shimText(LAUNCHER))
     const c = shimCheck('darwin', { PATH: '/usr/bin:/bin' })
     expect(c.status).toBe('warn')
-    expect(c.detail).toContain(`export PATH="${join(dir, '.local', 'bin')}:$PATH"`)
+    expect(c.detail).toContain(`export PATH="${join(HOME(), '.local', 'bin')}:$PATH"`)
     // A trailing slash on the PATH entry still counts.
-    expect(shimCheck('darwin', { PATH: `${join(dir, '.local', 'bin')}/` }).status).toBe('ok')
+    expect(shimCheck('darwin', { PATH: `${join(HOME(), '.local', 'bin')}/` }).status).toBe('ok')
   })
 
   it('doctor lists the shim check and never writes the shim', async () => {

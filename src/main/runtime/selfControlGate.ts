@@ -145,7 +145,10 @@ export function setOrgaiCliRoots(roots: readonly string[]): void {
  * and the launcher folder `<Resources>/bin` (packagedLayout.ts `packagedCliRoots`).
  */
 export function orgaiCliRootsOf(appRoot: string, platform: NodeJS.Platform = process.platform): string[] {
-  const out = [join(appRoot, 'out', 'cli'), join(appRoot, 'src', 'cli')]
+  // The platform's own path module: the roots are compared with it (insideCliRoot), so a win32 spelling must stay
+  // backslashed and a POSIX one forward-slashed whatever the host is.
+  const p = platform === 'win32' ? win32 : posix
+  const out = [p.join(appRoot, 'out', 'cli'), p.join(appRoot, 'src', 'cli')]
   for (const r of packagedCliRoots(appRoot, platform)) if (!out.includes(r)) out.push(r)
   return out
 }
