@@ -1,9 +1,6 @@
 /**
  * The host's JSON-RPC 2.0 socket server (cli-spec 3.3). Electron-free, relative imports only.
  *
- * Wave 2 contracts skeleton: the signatures below are final; W2-T1 implements the bodies. Until then accept() destroys
- * every socket and attachedClientCount() is 0.
- *
  * Use from an entry point (desktop shell, `--headless-host`, `--host inproc`):
  *
  *   const server = new HostSocketServer({ dataDir, hostKind, hostInstanceId: currentHostInstanceId(), appVersion, mock })
@@ -11,29 +8,86 @@
  *   const host = bootOrgAIHost({ ..., ownership })
  *   server.attach(host) // synchronously after boot
  *
- * Intended contract (T1):
+ * Contract:
  * - On accept the server sends `host.challenge` (protocol.ts challengeFrame) with a fresh hostNonce and reads lines
  *   through a LineReader capped at RPC_PRE_AUTH_FRAME_MAX_BYTES until host.hello succeeds; at most
- *   RPC_MAX_UNAUTH_SOCKETS unauthenticated sockets, each with an RPC_HANDSHAKE_TIMEOUT_MS deadline, and at most
- *   RPC_MAX_CLIENT_SOCKETS authenticated ones (else 'too_many_connections').
- * - host.hello (id HELLO_REQUEST_ID): before attach() it answers 'host_starting' with retryAfterMs 250. Then it checks
- *   protocolVersion ('protocol_mismatch'), the clientProof against readDaemonSecret(dataDir) ('auth_failed'),
- *   AppSettings.terminalServer ('terminal_server_disabled'), the optional peerCheck ('descendant' ->
- *   'agent_descendant_refused'; 'unavailable' is logged and accepted), grants the requested scopes and answers an
- *   RpcHelloResult with hostProof (and versionSkewWarning when clientVersion !== appVersion).
- * - After hello: requests go to host.dispatcher.invokeRpc (scope gate, draining, leases) with frame caps
- *   RPC_CONTROL_REQUEST_MAX_BYTES / RPC_BULK_FRAME_MAX_BYTES per channel, RPC_BULK_MEMORY_BUDGET_BYTES across all
- *   sockets for frames over 2 MB, and RPC_MAX_INFLIGHT_PER_SOCKET in flight per socket ('too_many_requests').
- * - The transport methods `runs:subscribe` (RunsSubscribeInput -> snapshot XOR replay; then `runs:event`
- *   notifications with RunsEventParams) and `host.subscribe` (HostSubscribeInput -> HostSubscribeResult; then
- *   `method: channel, params: payload` notifications from host.events) are answered here, never by invokeRpc. The
- *   durable ring (2,000 events / 16 MB, images over 512 KB scrubbed to OmittedImage) and the per-socket 16 MB outbound
- *   queue with tail agent.partial coalescing live here too.
+ *   RPC_MAX_UNAUTH_SOCKETS unauthenticated sockets (more are destroyed at once), each with an RPC_HANDSHAKE_TIMEOUT_MS
+ *   deadline, and at most RPC_MAX_CLIENT_SOCKETS authenticated ones (else 'too_many_connections').
+ * - host.hello (id HELLO_REQUEST_ID) is checked in this order: protocolVersion ('protocol_mismatch'), clientKind,
+ *   clientVersion, pid, cwd, clientNonce, requestedScopes ('bad_request'), the clientProof against
+ *   readDaemonSecret(dataDir) ('auth_failed'); then before attach() 'host_starting' (retryAfterMs 250), while the host
+ *   drains 'host_draining', AppSettings.terminalServer !== true 'terminal_server_disabled', the socket quota, and the
+ *   peer check ('descendant' -> 'agent_descendant_refused'; 'unavailable' is logged once and accepted). On success it
+ *   grants exactly the requested scopes, answers an RpcHelloResult with hostProof (and versionSkewWarning when
+ *   clientVersion !== appVersion) and raises the line cap to RPC_BULK_FRAME_MAX_BYTES. A refused hello closes the
+ *   socket once the error frame is flushed.
+ * - After hello: requests go to host.dispatcher.invokeRpc (scope gate, draining, leases) with the per-channel caps of
+ *   registry.ts frameLimitFor, RPC_BULK_MEMORY_BUDGET_BYTES across all sockets for frames over 2 MB (bulkBudget.ts), and
+ *   RPC_MAX_INFLIGHT_PER_SOCKET in flight per socket ('too_many_requests'). A complete line over its channel's cap is
+ *   answered 'frame_too_large' and the socket stays open; a line over RPC_BULK_FRAME_MAX_BYTES, or one the bulk budget
+ *   cannot hold while it arrives, destroys the socket (a partial line cannot be resynced).
+ * - The transport methods `runs:subscribe` (runSubscriptions.ts; snapshot XOR replay, then `runs:event` notifications
+ *   with RunsEventParams) and `host.subscribe` (HostSubscribeResult; then `method: channel, params: payload`
+ *   notifications) are answered here, never by invokeRpc. The durable ring is eventJournal.ts and the per-socket 16 MB
+ *   outbound queue with agent.partial coalescing is outboundQueue.ts.
  * - attach() registers the 'interactiveClients' activity source (attachedClientCount) on host.activity.
+ *
+ * Secrets, proofs and nonces are never logged.
  */
 import type { Socket } from 'node:net'
-import type { HostKind } from '../../shared/types'
+import {
+  HOST_IPC,
+  HOST_METHODS,
+  HOST_PROTOCOL_VERSION,
+  HOST_SCOPES,
+  RPC_BULK_FRAME_MAX_BYTES,
+  RPC_CONTROL_REQUEST_MAX_BYTES,
+  RPC_HANDSHAKE_TIMEOUT_MS,
+  RPC_MAX_CLIENT_SOCKETS,
+  RPC_MAX_INFLIGHT_PER_SOCKET,
+  RPC_MAX_UNAUTH_SOCKETS,
+  RPC_PRE_AUTH_FRAME_MAX_BYTES
+} from '../../shared/types'
+import type {
+  HostClientKind,
+  HostKind,
+  HostRpcError,
+  HostScope,
+  HostSubscribeResult,
+  HostSubscribeTopic,
+  RpcHelloResult,
+  RunEvent
+} from '../../shared/types'
+import { log } from '../log'
 import type { OrgAIHost } from './bootstrap'
+import { BulkBudget, type BulkReservation } from './bulkBudget'
+import { EventJournal } from './eventJournal'
+import type { HostPushChannel } from './events'
+import { OutboundQueue, frameKey, type FrameMeta } from './outboundQueue'
+import { checkPeerAncestry } from './peerCheck'
+import {
+  HELLO_REQUEST_ID,
+  LineReader,
+  challengeFrame,
+  clientProof,
+  encodeFrame,
+  hostProof,
+  isHexNonce,
+  isNotification,
+  isRequest,
+  newNonce,
+  parseFrame,
+  proofMatches,
+  readDaemonSecret,
+  rpcError,
+  rpcNotification,
+  rpcParseError,
+  rpcResult,
+  type JsonRpcId,
+  type JsonRpcRequest
+} from './protocol'
+import { HostRpcFailure, frameLimitFor, gateRequest, pushChannelsForTopic } from './registry'
+import { RunSubscription, parseRunsSubscribeInput, subscribeRuns } from './runSubscriptions'
 
 export interface HostSocketServerOptions {
   /** `<userDataDir>/data`; daemon.secret is read from `<dataDir>/run`. */
@@ -45,7 +99,7 @@ export interface HostSocketServerOptions {
   mock: boolean
   /**
    * Best-effort peer ancestry check of host.hello's pid (cli-spec 3.4(2)): 'descendant' refuses the client with
-   * 'agent_descendant_refused', 'unavailable' is logged and allowed. Missing = no check.
+   * 'agent_descendant_refused', 'unavailable' is logged and allowed. Missing = peerCheck.ts checkPeerAncestry.
    */
   peerCheck?: (pid: number) => Promise<'ok' | 'descendant' | 'unavailable'>
   log?: (m: string) => void
@@ -53,37 +107,558 @@ export interface HostSocketServerOptions {
   now?: () => number
 }
 
+/** host.subscribe topics (HostSubscribeTopic). */
+export const HOST_SUBSCRIBE_TOPICS: readonly HostSubscribeTopic[] = ['settings', 'connections', 'mcpLibrary', 'skillLibrary', 'capabilities', 'engagement']
+
+export const TERMINAL_ACCESS_OFF_MESSAGE =
+  'Terminal access is off. Turn it on in OrgAI: App settings > General > Advanced settings > Terminal access.'
+export const BULK_BUDGET_MESSAGE = 'OrgAI is handling too much data at once; try again'
+const HOST_STARTING_RETRY_MS = 250
+const HOST_DRAINING_RETRY_MS = 1000
+const CLIENT_VERSION_MAX = 200
+const CWD_MAX = 4096
+/** Lines a client may pipeline behind host.hello while it is checked. */
+const PENDING_LINES_MAX = RPC_MAX_INFLIGHT_PER_SOCKET
+/** How long a refused socket may take to flush its last frame. */
+const REFUSE_FLUSH_MS = 1000
+
+type ConnState = 'unauth' | 'hello' | 'auth' | 'closed'
+
+interface Conn {
+  id: number
+  socket: Socket
+  reader: LineReader
+  queue: OutboundQueue
+  state: ConnState
+  hostNonce: string
+  timer?: ReturnType<typeof setTimeout>
+  clientKind?: HostClientKind
+  pid?: number
+  scopes: HostScope[]
+  inflight: number
+  runs?: RunSubscription
+  topics: Set<HostSubscribeTopic>
+  pendingLines: string[]
+  incoming?: BulkReservation
+  reservations: Set<BulkReservation>
+}
+
+/** Re-read after calls that may close the connection (defeats narrowing). */
+const isClosed = (c: Conn): boolean => c.state === 'closed'
+const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
+
 export class HostSocketServer {
   protected readonly opts: HostSocketServerOptions
   protected host: OrgAIHost | undefined
+  /** Host-wide bulk frame budget (protected so tests can shrink it). */
+  protected budget = new BulkBudget()
+  protected readonly journal = new EventJournal()
   private closed = false
+  private readonly conns = new Set<Conn>()
+  private nextId = 1
+  private detach: Array<() => void> = []
+  private readonly channelTopic = new Map<string, HostSubscribeTopic>()
 
   constructor(opts: HostSocketServerOptions) {
     this.opts = opts
+    for (const t of HOST_SUBSCRIBE_TOPICS) for (const c of pushChannelsForTopic(t)) this.channelTopic.set(c, t)
+  }
+
+  private log(m: string): void {
+    if (this.opts.log) this.opts.log(m)
+    else log.info(`[socket] ${m}`)
+  }
+
+  private get unauthCount(): number {
+    let n = 0
+    for (const c of this.conns) if (c.state === 'unauth' || c.state === 'hello') n++
+    return n
+  }
+
+  private get authCount(): number {
+    let n = 0
+    for (const c of this.conns) if (c.state === 'auth') n++
+    return n
   }
 
   /** Ownership's onConnection hook: take over one freshly accepted socket (challenge, handshake, requests). */
   accept(socket: Socket): void {
-    // Skeleton: nothing is served until W2-T1 lands.
-    socket.destroy()
+    if (this.closed || this.unauthCount >= RPC_MAX_UNAUTH_SOCKETS) {
+      socket.destroy()
+      return
+    }
+    const reader = new LineReader()
+    reader.maxLineBytes = RPC_PRE_AUTH_FRAME_MAX_BYTES
+    const id = this.nextId++
+    const conn: Conn = {
+      id,
+      socket,
+      reader,
+      queue: new OutboundQueue(socket, {
+        onOverflow: (bytes) => this.log(`Client ${id} stopped reading (${Math.round(bytes / 1024 / 1024)} MB queued); disconnected it.`)
+      }),
+      state: 'unauth',
+      hostNonce: newNonce(),
+      scopes: [],
+      inflight: 0,
+      topics: new Set(),
+      pendingLines: [],
+      reservations: new Set()
+    }
+    this.conns.add(conn)
+    socket.on('error', () => {
+      /* closed below */
+    })
+    socket.on('close', () => this.cleanup(conn))
+    socket.on('data', (chunk: Buffer) => this.onData(conn, chunk))
+    conn.timer = setTimeout(() => {
+      if (conn.state === 'unauth' || conn.state === 'hello') this.kill(conn)
+    }, RPC_HANDSHAKE_TIMEOUT_MS)
+    conn.timer.unref?.()
+    this.send(conn, challengeFrame(this.opts.hostInstanceId, conn.hostNonce))
   }
 
   /**
    * Start serving the booted host (call synchronously after bootOrgAIHost). Before this, host.hello answers
-   * 'host_starting' with retryAfterMs 250. Registers the 'interactiveClients' activity source.
+   * 'host_starting' with retryAfterMs 250. Registers the 'interactiveClients' activity source and the journal listener.
    */
   attach(host: OrgAIHost): void {
+    if (this.closed || this.host) return
     this.host = host
+    this.detach.push(host.activity.addSource('interactiveClients', () => this.attachedClientCount()))
+    this.detach.push(host.events.on((channel, payload) => this.onHostEvent(channel, payload)))
   }
 
-  /** Authenticated sockets that are clientKind 'tui' or hold a runs:subscribe subscription. */
+  /** Authenticated sockets whose clientKind is 'tui' or whose runs:subscribe asked for an active run record. */
   attachedClientCount(): number {
-    return 0
+    let n = 0
+    for (const c of this.conns) if (c.state === 'auth' && (c.clientKind === 'tui' || c.runs?.interactive === true)) n++
+    return n
   }
 
   /** Destroy every socket and stop serving. Idempotent. */
   close(): void {
     if (this.closed) return
     this.closed = true
+    for (const d of this.detach.splice(0)) {
+      try {
+        d()
+      } catch {
+        // ignore
+      }
+    }
+    for (const c of [...this.conns]) this.kill(c)
+    this.conns.clear()
   }
+
+  // ---------- Connection plumbing ----------
+
+  private send(conn: Conn, msg: unknown): void {
+    if (conn.state === 'closed') return
+    let frame: string
+    try {
+      frame = encodeFrame(msg)
+    } catch {
+      return
+    }
+    conn.queue.enqueue(frame)
+  }
+
+  /** Send a last frame, then end the socket once it is flushed. */
+  private refuse(conn: Conn, msg: unknown): void {
+    this.send(conn, msg)
+    this.markClosing(conn)
+    conn.socket.once('finish', () => conn.socket.destroy())
+    // A client that stops reading cannot hold the socket open.
+    setTimeout(() => conn.socket.destroy(), REFUSE_FLUSH_MS).unref?.()
+    conn.queue.end()
+  }
+
+  private markClosing(conn: Conn): void {
+    if (conn.timer) clearTimeout(conn.timer)
+    conn.timer = undefined
+    conn.runs = undefined
+    conn.topics.clear()
+    // Stop reading; 'closed' blocks every later frame except the ones already queued.
+    conn.socket.pause()
+    conn.state = 'closed'
+  }
+
+  private kill(conn: Conn): void {
+    this.markClosing(conn)
+    conn.queue.destroy()
+    if (!conn.socket.destroyed) conn.socket.destroy()
+    this.cleanup(conn)
+  }
+
+  private cleanup(conn: Conn): void {
+    if (conn.timer) clearTimeout(conn.timer)
+    conn.timer = undefined
+    conn.state = 'closed'
+    conn.runs = undefined
+    conn.topics.clear()
+    conn.reader.reset()
+    conn.incoming?.release()
+    conn.incoming = undefined
+    for (const r of conn.reservations) r.release()
+    conn.reservations.clear()
+    conn.queue.destroy()
+    this.conns.delete(conn)
+  }
+
+  private onData(conn: Conn, chunk: Buffer): void {
+    if (conn.state === 'closed') return
+    const r = conn.reader.push(chunk)
+    for (const line of r.lines) {
+      if (isClosed(conn)) return
+      this.onLine(conn, line)
+    }
+    if (isClosed(conn)) return
+    if (r.overflow) {
+      this.refuse(conn, rpcError(null, { code: 'frame_too_large', message: `A frame exceeded ${conn.reader.maxLineBytes} bytes.` }))
+      return
+    }
+    // Bulk budget for a line still arriving.
+    if (r.pendingBytes > RPC_CONTROL_REQUEST_MAX_BYTES) {
+      if (conn.incoming) {
+        if (!conn.incoming.grow(r.pendingBytes)) return this.budgetRefuse(conn)
+      } else {
+        const res = this.budget.reserve(r.pendingBytes)
+        if (!res) return this.budgetRefuse(conn)
+        conn.incoming = res
+      }
+    } else if (conn.incoming) {
+      conn.incoming.release()
+      conn.incoming = undefined
+    }
+  }
+
+  private budgetRefuse(conn: Conn): void {
+    conn.incoming?.release()
+    conn.incoming = undefined
+    conn.reader.reset()
+    this.refuse(conn, rpcError(null, { code: 'frame_too_large', message: BULK_BUDGET_MESSAGE }))
+  }
+
+  private onLine(conn: Conn, line: string): void {
+    if (conn.state === 'hello') {
+      if (conn.pendingLines.length >= PENDING_LINES_MAX) {
+        this.refuse(conn, rpcError(null, { code: 'bad_request', message: 'Wait for the host.hello answer before sending requests.' }))
+        return
+      }
+      conn.pendingLines.push(line)
+      return
+    }
+    const parsed = parseFrame(line)
+    if (conn.state === 'unauth') {
+      if (!parsed.ok) return this.refuse(conn, rpcParseError(parsed.error.message))
+      const msg = parsed.message
+      if (!isRequest(msg) || msg.method !== HOST_METHODS.hostHello || msg.id !== HELLO_REQUEST_ID) {
+        const id = isObj(msg) && (typeof msg.id === 'number' || typeof msg.id === 'string') ? msg.id : null
+        return this.refuse(conn, rpcError(id, { code: 'bad_request', message: 'The first request must be host.hello with id 1.' }))
+      }
+      conn.state = 'hello'
+      void this.hello(conn, msg)
+      return
+    }
+    if (conn.state !== 'auth') return
+    if (!parsed.ok) return this.send(conn, rpcParseError(parsed.error.message))
+    const msg = parsed.message
+    if (isNotification(msg)) return
+    if (!isRequest(msg)) {
+      if (isObj(msg) && Object.hasOwn(msg, 'method')) {
+        const id = typeof msg.id === 'number' || typeof msg.id === 'string' ? msg.id : null
+        this.send(conn, rpcError(id, { code: 'bad_request', message: 'Not a JSON-RPC 2.0 request.' }))
+      }
+      // A response from the client: ignored.
+      return
+    }
+    this.onRequest(conn, msg, Buffer.byteLength(line, 'utf8'))
+  }
+
+  // ---------- Handshake ----------
+
+  private helloProblem(p: Record<string, unknown>): HostRpcError | undefined {
+    const badReq = (message: string): HostRpcError => ({ code: 'bad_request', message })
+    if (p.protocolVersion !== HOST_PROTOCOL_VERSION) {
+      return { code: 'protocol_mismatch', message: `This OrgAI speaks protocol version ${HOST_PROTOCOL_VERSION}; update the CLI or the app so they match.` }
+    }
+    if (p.clientKind !== 'cli' && p.clientKind !== 'tui') return badReq("host.hello clientKind must be 'cli' or 'tui'.")
+    if (typeof p.clientVersion !== 'string' || p.clientVersion.length > CLIENT_VERSION_MAX) return badReq('host.hello clientVersion must be a string of at most 200 characters.')
+    if (typeof p.pid !== 'number' || !Number.isSafeInteger(p.pid) || p.pid <= 0) return badReq('host.hello pid must be a positive integer.')
+    if (typeof p.cwd !== 'string' || p.cwd.length > CWD_MAX || p.cwd.includes('\u0000')) return badReq('host.hello cwd must be a path of at most 4096 characters.')
+    if (!isHexNonce(p.clientNonce)) return badReq('host.hello clientNonce must be 64 lowercase hex characters.')
+    if (!Array.isArray(p.requestedScopes) || p.requestedScopes.length === 0 || p.requestedScopes.length > 16) {
+      return badReq('host.hello requestedScopes must be a non-empty list of scopes.')
+    }
+    for (const s of p.requestedScopes) if (!HOST_SCOPES.includes(s as HostScope)) return badReq(`host.hello: unknown scope ${JSON.stringify(String(s)).slice(0, 40)}.`)
+    if (typeof p.clientProof !== 'string') return { code: 'auth_failed', message: 'The handshake proof did not verify.' }
+    return undefined
+  }
+
+  private secretCache: string | undefined
+
+  private async hello(conn: Conn, req: JsonRpcRequest): Promise<void> {
+    const fail = (err: HostRpcError): void => {
+      if (conn.state === 'closed') return
+      this.refuse(conn, rpcError(HELLO_REQUEST_ID, err))
+    }
+    const raw = Array.isArray(req.params) && req.params.length === 1 ? req.params[0] : req.params
+    if (!isObj(raw)) return fail({ code: 'bad_request', message: 'host.hello takes one object.' })
+    const problem = this.helloProblem(raw)
+    if (problem) return fail(problem)
+    const p = raw as Record<string, unknown> & {
+      clientKind: HostClientKind
+      clientVersion: string
+      pid: number
+      cwd: string
+      clientNonce: string
+      requestedScopes: HostScope[]
+      clientProof: string
+    }
+    const secret = this.secretCache ?? readDaemonSecret(this.opts.dataDir)
+    if (!secret) return fail({ code: 'auth_failed', message: 'The host secret could not be read.' })
+    const expected = clientProof(secret, {
+      protocolVersion: HOST_PROTOCOL_VERSION,
+      hostInstanceId: this.opts.hostInstanceId,
+      hostNonce: conn.hostNonce,
+      clientNonce: p.clientNonce,
+      clientKind: p.clientKind,
+      clientVersion: p.clientVersion,
+      pid: p.pid,
+      cwd: p.cwd,
+      requestedScopes: p.requestedScopes
+    })
+    if (!proofMatches(expected, p.clientProof)) return fail({ code: 'auth_failed', message: 'The handshake proof did not verify.' })
+    this.secretCache = secret
+    const gateProblem = (): HostRpcError | undefined => {
+      const host = this.host
+      if (!host) return { code: 'host_starting', message: 'OrgAI is starting; try again in a moment.', retryAfterMs: HOST_STARTING_RETRY_MS }
+      if (host.activity.state() === 'draining') return { code: 'host_draining', message: 'OrgAI is shutting down.', retryAfterMs: HOST_DRAINING_RETRY_MS }
+      if (host.settings.get().terminalServer !== true) return { code: 'terminal_server_disabled', message: TERMINAL_ACCESS_OFF_MESSAGE }
+      if (this.authCount >= RPC_MAX_CLIENT_SOCKETS) return { code: 'too_many_connections', message: `OrgAI already serves ${RPC_MAX_CLIENT_SOCKETS} terminal clients.` }
+      return undefined
+    }
+    const before = gateProblem()
+    if (before) return fail(before)
+    let peer: 'ok' | 'descendant' | 'unavailable'
+    try {
+      peer = await (this.opts.peerCheck ?? ((pid: number) => checkPeerAncestry(pid)))(p.pid)
+    } catch {
+      peer = 'unavailable'
+    }
+    if (conn.state !== 'hello') return
+    if (peer === 'descendant') {
+      this.log(`Refused client ${conn.id}: its process descends from this host (an agent's tool).`)
+      return fail({ code: 'agent_descendant_refused', message: "OrgAI refuses terminal connections from its own agents' processes." })
+    }
+    if (peer === 'unavailable') this.log(`Client ${conn.id}: peer ancestry check unavailable; allowed.`)
+    // Re-check after the await: another hello may have taken the last slot, or a drain may have begun.
+    const after = gateProblem()
+    if (after) return fail(after)
+    const grantedScopes = [...new Set(p.requestedScopes)]
+    const result: RpcHelloResult = {
+      protocolVersion: 1,
+      hostInstanceId: this.opts.hostInstanceId,
+      hostKind: this.opts.hostKind,
+      appVersion: this.opts.appVersion,
+      dataDir: this.opts.dataDir,
+      mock: this.opts.mock,
+      grantedScopes,
+      hostProof: hostProof(secret, {
+        protocolVersion: HOST_PROTOCOL_VERSION,
+        hostInstanceId: this.opts.hostInstanceId,
+        clientNonce: p.clientNonce,
+        hostNonce: conn.hostNonce,
+        hostKind: this.opts.hostKind,
+        appVersion: this.opts.appVersion,
+        dataDir: this.opts.dataDir,
+        mock: this.opts.mock,
+        grantedScopes
+      })
+    }
+    if (p.clientVersion !== this.opts.appVersion) {
+      result.versionSkewWarning = `This orgai CLI is version ${p.clientVersion} and the running OrgAI is ${this.opts.appVersion}; update them to the same version.`
+    }
+    if (conn.timer) clearTimeout(conn.timer)
+    conn.timer = undefined
+    conn.state = 'auth'
+    conn.clientKind = p.clientKind
+    conn.pid = p.pid
+    conn.scopes = grantedScopes
+    conn.reader.maxLineBytes = RPC_BULK_FRAME_MAX_BYTES
+    this.send(conn, rpcResult(HELLO_REQUEST_ID, result))
+    this.log(`Client ${conn.id} connected (${p.clientKind} ${p.clientVersion.slice(0, 40)}, scopes ${grantedScopes.join(', ')}).`)
+    for (const line of conn.pendingLines.splice(0)) {
+      if (conn.state !== 'auth') break
+      this.onLine(conn, line)
+    }
+  }
+
+  // ---------- Requests ----------
+
+  private onRequest(conn: Conn, req: JsonRpcRequest, lineBytes: number): void {
+    const { id, method } = req
+    if (lineBytes > frameLimitFor(method).requestBytes) {
+      return this.send(conn, rpcError(id, { code: 'frame_too_large', message: `${method} requests are limited to ${frameLimitFor(method).requestBytes} bytes.` }))
+    }
+    if (method === HOST_METHODS.hostHello) return this.send(conn, rpcError(id, { code: 'bad_request', message: 'Already connected.' }))
+    if (method === HOST_IPC.runsSubscribe) return this.runsSubscribe(conn, req)
+    if (method === HOST_METHODS.hostSubscribe) return this.hostSubscribe(conn, req)
+    const host = this.host
+    if (!host) return this.send(conn, rpcError(id, { code: 'host_starting', message: 'OrgAI is starting; try again in a moment.', retryAfterMs: HOST_STARTING_RETRY_MS }))
+    if (conn.inflight >= RPC_MAX_INFLIGHT_PER_SOCKET) {
+      return this.send(conn, rpcError(id, { code: 'too_many_requests', message: `At most ${RPC_MAX_INFLIGHT_PER_SOCKET} requests may be in flight on one connection.` }))
+    }
+    conn.inflight++
+    let p: Promise<unknown>
+    try {
+      p = host.dispatcher.invokeRpc(method, req.params, { surface: 'socket', clientKind: conn.clientKind, pid: conn.pid, grantedScopes: conn.scopes })
+    } catch (e) {
+      p = Promise.reject(e)
+    }
+    p.then(
+      (result) => this.sendResult(conn, id, method, result),
+      (err: unknown) => this.send(conn, rpcError(id, toRpcError(err)))
+    ).finally(() => {
+      conn.inflight--
+    })
+  }
+
+  /** Serialize a result within the channel's response cap and the bulk budget, else answer frame_too_large. */
+  private sendResult(conn: Conn, id: JsonRpcId, method: string, result: unknown): boolean {
+    if (conn.state !== 'auth') return false
+    let frame: string
+    try {
+      frame = encodeFrame(rpcResult(id, result))
+    } catch (e) {
+      this.send(conn, rpcError(id, { code: 'bad_request', message: (e as Error).message }))
+      return false
+    }
+    const bytes = Buffer.byteLength(frame, 'utf8')
+    const limit = frameLimitFor(method).responseBytes
+    if (bytes - 1 > limit) {
+      this.send(conn, rpcError(id, { code: 'frame_too_large', message: `The ${method} answer is larger than ${limit} bytes.` }))
+      return false
+    }
+    if (bytes > RPC_CONTROL_REQUEST_MAX_BYTES) {
+      const res = this.budget.reserve(bytes)
+      if (!res) {
+        this.send(conn, rpcError(id, { code: 'frame_too_large', message: BULK_BUDGET_MESSAGE }))
+        return false
+      }
+      conn.reservations.add(res)
+      return conn.queue.enqueue(frame, {
+        onDone: () => {
+          res.release()
+          conn.reservations.delete(res)
+        }
+      })
+    }
+    return conn.queue.enqueue(frame)
+  }
+
+  private runsSubscribe(conn: Conn, req: JsonRpcRequest): void {
+    const host = this.host
+    if (!host) return this.send(conn, rpcError(req.id, { code: 'host_starting', message: 'OrgAI is starting; try again in a moment.', retryAfterMs: HOST_STARTING_RETRY_MS }))
+    try {
+      const g = gateRequest(req.method, req.params, { grantedScopes: conn.scopes, hostKind: this.opts.hostKind })
+      const input = parseRunsSubscribeInput(g.args[0])
+      const { result, subscription } = subscribeRuns(input, {
+        view: host.runs,
+        journal: this.journal,
+        hostInstanceId: this.opts.hostInstanceId,
+        storedProjectIds: () => host.services.projects.list().map((p) => p.id),
+        now: this.opts.now
+      })
+      // Queue the result frame before delivery starts, so no push precedes it (all synchronous).
+      if (this.sendResult(conn, req.id, req.method, result)) conn.runs = subscription
+    } catch (e) {
+      this.send(conn, rpcError(req.id, toRpcError(e)))
+    }
+  }
+
+  private hostSubscribe(conn: Conn, req: JsonRpcRequest): void {
+    try {
+      const g = gateRequest(req.method, req.params, { grantedScopes: conn.scopes, hostKind: this.opts.hostKind })
+      const input = g.args[0]
+      if (!isObj(input) || !Array.isArray(input.topics)) throw new HostRpcFailure('bad_request', 'host.subscribe takes { topics: [...] }.')
+      if (input.topics.length > 64) throw new HostRpcFailure('bad_request', 'host.subscribe: too many topics.')
+      const topics = new Set<HostSubscribeTopic>()
+      for (const t of input.topics) {
+        if (typeof t !== 'string') throw new HostRpcFailure('bad_request', 'host.subscribe topics must be strings.')
+        if (HOST_SUBSCRIBE_TOPICS.includes(t as HostSubscribeTopic)) topics.add(t as HostSubscribeTopic)
+      }
+      const result: HostSubscribeResult = { topics: HOST_SUBSCRIBE_TOPICS.filter((t) => topics.has(t)) }
+      if (this.sendResult(conn, req.id, req.method, result)) conn.topics = new Set(result.topics)
+    } catch (e) {
+      this.send(conn, rpcError(req.id, toRpcError(e)))
+    }
+  }
+
+  // ---------- Pushes ----------
+
+  private onHostEvent(channel: HostPushChannel, payload: unknown): void {
+    if (this.closed) return
+    if (channel === 'runs:event') {
+      this.onRunEvent(payload as RunEvent)
+      return
+    }
+    const topic = this.channelTopic.get(channel)
+    if (!topic) return
+    let frame: string | undefined
+    for (const c of this.conns) {
+      if (c.state !== 'auth' || !c.topics.has(topic)) continue
+      if (frame === undefined) {
+        try {
+          frame = encodeFrame(rpcNotification(channel, payload))
+        } catch (e) {
+          this.log(`Could not encode a ${channel} push: ${(e as Error).message}`)
+          return
+        }
+      }
+      c.queue.enqueue(frame, { push: true })
+    }
+  }
+
+  private onRunEvent(event: RunEvent): void {
+    let appended
+    try {
+      appended = this.journal.append(event)
+    } catch (e) {
+      this.log(`Could not journal a ${String((event as { type?: unknown })?.type)} event: ${(e as Error).message}`)
+      return
+    }
+    const durable = appended.seq !== undefined
+    let frame: string | undefined
+    const meta = metaOf(appended.event)
+    for (const c of this.conns) {
+      if (c.state !== 'auth' || !c.runs) continue
+      let match: boolean
+      try {
+        match = c.runs.matches(appended.event, durable)
+      } catch {
+        match = false
+      }
+      if (!match) continue
+      frame ??= durable
+        ? `{"jsonrpc":"2.0","method":"runs:event","params":{"seq":${appended.seq},"event":${appended.json}}}\n`
+        : `{"jsonrpc":"2.0","method":"runs:event","params":{"atSeq":${appended.atSeq},"event":${appended.json}}}\n`
+      c.queue.enqueue(frame, { push: true, meta })
+    }
+  }
+}
+
+function metaOf(e: RunEvent): FrameMeta | undefined {
+  if (e.type === 'agent.partial') return { kind: 'partial', key: frameKey(e.runId, e.agentId) }
+  if (e.type === 'transcript') return { kind: 'transcript', key: frameKey(e.runId, e.entry.agentId) }
+  if (e.type === 'agent.upsert') return { kind: 'upsert', key: frameKey(e.runId, e.agent.id) }
+  return undefined
+}
+
+/** HostRpcFailure as its wire error; any other Error is bad_request with its message (never a stack). */
+export function toRpcError(err: unknown): HostRpcError {
+  if (err instanceof HostRpcFailure) return err.toRpcError()
+  if (err instanceof Error) return { code: 'bad_request', message: err.message || 'The request failed.' }
+  return { code: 'bad_request', message: 'The request failed.' }
 }
