@@ -369,6 +369,13 @@ export interface RuntimeContext {
    */
   orgTemplate?(templateId: string): { name: string; roles: Role[] } | null
   /**
+   * False when the working folder's own agent config must not load this run (folderConfigTrust.ts): the project's
+   * state is 'untrusted' or 'changed', or a digest that matched at run start no longer does. Sticky: once false it stays
+   * false for the run, so an agent's mid-run edit cannot reach a restarted query. It re-hashes the config, so read it
+   * when building a query or launch config, never per tool call. Absent = no gate.
+   */
+  folderConfigLoads?(): boolean
+  /**
    * Extra folders agents may read and edit like the project folder: Project.allowedDirectories resolved by RunManager
    * at run start (existing directories only, canonical, never touching OrgAI's data folder in either direction, never
    * the project folder or a folder inside it). Live: folders added during the run through allowDirectories appear at
