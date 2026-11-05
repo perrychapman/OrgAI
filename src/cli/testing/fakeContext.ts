@@ -117,6 +117,8 @@ export interface FakeContextOptions {
   resolveProject?: (projects: Project[]) => ProjectResolution
   launcher?: Partial<HostLauncher>
   inproc?: () => Promise<InprocHostHandle>
+  /** io.stdinIsTTY (default false). */
+  stdinIsTTY?: boolean
 }
 
 export interface FakeContext {
@@ -236,7 +238,7 @@ export function fakeContext(o: FakeContextOptions = {}): FakeContext {
     io: {
       stdout: { write: (s: string) => ((stdout += s), true), isTTY: false, columns: o.columns ?? 100 },
       stderr: { write: (s: string) => ((stderr += s), true), isTTY: false },
-      stdinIsTTY: false
+      stdinIsTTY: o.stdinIsTTY ?? false
     },
     version: '0.0.0-test',
     connect: async (scopes, opts) => {
@@ -278,6 +280,22 @@ export function fakeContext(o: FakeContextOptions = {}): FakeContext {
     connectCalls,
     launcherCalls,
     signalListeners: () => listeners.size
+  }
+}
+
+/** A fake `--host inproc` handle: records stop() calls; `closed` resolves on the first stop. */
+export function fakeInproc(status: Partial<HostStatusResult> = {}): InprocHostHandle & { stops: boolean[] } {
+  const stops: boolean[] = []
+  let resolveClosed!: () => void
+  const closed = new Promise<void>((r) => (resolveClosed = r))
+  return {
+    stops,
+    closed,
+    status: () => hostStatus({ hostKind: 'inproc', ...status }),
+    stop: async (force: boolean) => {
+      stops.push(force)
+      resolveClosed()
+    }
   }
 }
 
