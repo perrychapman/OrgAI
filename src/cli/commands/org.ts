@@ -5,7 +5,9 @@
  *   the effective subagent limits. Read scope.
  * - `org export`: projects:exportOrg (configure); prints the written `.orgai/org.json`.
  * - `org import [--source <id>...] [--mode merge|replace] [--yes]`: projects:scanAgents, projects:previewImport, a
- *   confirmation, then projects:applyImport with the preview's digest (configure). Undo stays in the Desktop Team tab.
+ *   confirmation, then projects:applyImport with the preview's digest (configure). There is no undo: the Desktop Team
+ *   tab's Undo covers only imports the Desktop made itself, so the confirmation says so and --json carries the
+ *   previous chart (`previousRoles`) for a script to keep.
  * - `org retro <runRef>`: an Org retrospective (setup:retro) of a finished work run; attaches the terminal UI with a
  *   TTY, else (or with --no-attach) prints the new run's tag.
  * - `org draft "<description>"`: draft:orgChart (operate); prints the drafted roles, never saves.
@@ -228,6 +230,12 @@ const orgExport: SubcommandFn = async (ctx, args) => {
 // ---------- org import ----------
 
 const STALE_IMPORT = 'The folder changed since the preview; run it again.'
+/**
+ * Neither the CLI nor the Desktop can undo a CLI import: the Desktop Team tab's Undo comes from imports the renderer
+ * applied itself (useAppStore.recordImport), never from a project.updated push. Shared with `team templates apply`.
+ */
+export const NO_UNDO = 'This cannot be undone.'
+export const NO_UNDO_AFTER = 'This cannot be undone from the CLI or the Desktop (--json output carries the previous chart as previousRoles).'
 
 function importItemLines(item: AgentImportItem): string[] {
   const flag = item.elevatedTools.length ? `  ! elevated: ${item.elevatedTools.map(safeLine).join(', ')}` : ''
@@ -288,7 +296,7 @@ const orgImport: SubcommandFn = async (ctx, args) => {
     }
     const question =
       preview.replacedRoleIds.length > 0
-        ? `Import ${importing.length} role(s) and drop or replace ${preview.replacedRoleIds.length} existing role(s)?`
+        ? `Import ${importing.length} role(s) and drop or replace ${preview.replacedRoleIds.length} existing role(s)? ${NO_UNDO}`
         : `Import ${importing.length} role(s) into ${safeLine(project.name)}?`
     if (!(await confirm(ctx, question, !!values.yes))) {
       note(ctx, 'Nothing imported.')
@@ -304,10 +312,15 @@ const orgImport: SubcommandFn = async (ctx, args) => {
       }
       throw err
     }
-    emit(ctx, { project: projectJson(res.project), imported: importing.length, digest: preview.digest, replacedRoleIds: preview.replacedRoleIds, roles: res.project.roles.length }, () => [
-      `Imported ${importing.length} role${importing.length === 1 ? '' : 's'}; the chart now has ${res.project.roles.length}.`,
-      'Undo is available only in the Desktop Team tab (the CLI does not keep the previous chart).'
-    ])
+    const previousRoles = Array.isArray(res.previousRoles) ? res.previousRoles : []
+    emit(
+      ctx,
+      { project: projectJson(res.project), imported: importing.length, digest: preview.digest, replacedRoleIds: preview.replacedRoleIds, roles: res.project.roles.length, previousRoles },
+      () => [
+        `Imported ${importing.length} role${importing.length === 1 ? '' : 's'}; the chart now has ${res.project.roles.length}.`,
+        ...(preview.replacedRoleIds.length > 0 ? [`${NO_UNDO_AFTER} The previous chart had ${previousRoles.length} role${previousRoles.length === 1 ? '' : 's'}.`] : [])
+      ]
+    )
     return EXIT.ok
   })
 }

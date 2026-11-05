@@ -507,7 +507,7 @@ describe('runForRef', () => {
 })
 
 describe('App exitWhenEnded / stopOnQuit (Wave 5 interactive runs)', async () => {
-  const { PRESS_AGAIN_STOP, launchedRunExit, setupCompletedSince } = await import('./App')
+  const { PRESS_AGAIN_STOP, STOP_WAIT_MS, launchedRunExit, setupCompletedSince } = await import('./App')
   const open = (status: RunSummary['status'], extra: Partial<RunSummary> = {}) => ({
     activeRunId: 'run_s',
     activeChain: ['run_s'],
@@ -582,6 +582,46 @@ describe('App exitWhenEnded / stopOnQuit (Wave 5 interactive runs)', async () =>
     expect(s.api.stop).toHaveBeenCalledTimes(1)
     expect(m.exits.map((e) => e[0])).toEqual([130])
     expect(m.exits[0][1]).toMatchObject({ detachedLive: false, message: 'Architect setup stopped.' })
+    m.r.unmount()
+  })
+
+  it('stopOnQuit: a failed runs:stop never claims "stopped"; it exits 1 and says the run keeps going', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'], shouldAdvanceTime: true })
+    try {
+      const s = fakeSession(open('running'))
+      s.api.stop.mockRejectedValue(new Error('The host refused the stop.'))
+      let t = 1000
+      const m = mount({ session: s, launch: LAUNCH, now: () => t })
+      await m.send(ctrlKey('c'))
+      t += 100
+      await m.send(ctrlKey('c'))
+      await tick()
+      expect(s.api.stop).toHaveBeenCalledTimes(1)
+      expect(m.exits).toEqual([]) // still waiting (bounded) for a status in case the stop landed anyway
+      await vi.advanceTimersByTimeAsync(STOP_WAIT_MS + 10)
+      expect(m.exits.map((e) => e[0])).toEqual([1])
+      expect(m.exits[0][1]).toMatchObject({ detachedLive: true, message: 'Could not stop Architect setup: The host refused the stop. The run keeps going.' })
+      expect((m.exits[0][1] as { message?: string }).message).not.toContain('stopped.')
+      m.r.unmount()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('stopOnQuit: a failed runs:stop whose run still ended exits 130 "stopped"', async () => {
+    const s = fakeSession(open('running'))
+    s.api.stop.mockImplementation(async () => {
+      s.set(open('finished', { endedBy: 'user' }))
+      throw new Error('connection dropped')
+    })
+    let t = 1000
+    const m = mount({ session: s, launch: LAUNCH, now: () => t })
+    await m.send(ctrlKey('c'))
+    t += 100
+    await m.send(ctrlKey('c'))
+    await tick()
+    expect(m.exits.map((e) => e[0])).toEqual([130])
+    expect(m.exits[0][1]).toMatchObject({ message: 'Architect setup stopped.' })
     m.r.unmount()
   })
 

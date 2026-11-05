@@ -2,7 +2,8 @@
  * `orgai team` (cli-spec 6.3, Wave 5): team templates, the role list, one role in full, and Claude Code plugins.
  *
  * - `team templates [list]` (read), `team templates save --name <n> [--description <d>]`, `team templates apply <id>
- *   [--mode replace|merge] [--yes]`, `team templates remove <id> [--yes]` (configure). Undo of an apply stays in Desktop.
+ *   [--mode replace|merge] [--yes]`, `team templates remove <id> [--yes]` (configure). An apply cannot be undone (the
+ *   Desktop's Undo covers only its own applies); --json carries the previous chart as `previousRoles`.
  * - `team roles`, `team role <name-or-slug>` (read): the prompt is shown with every hidden character made visible
  *   (shared/view/hiddenChars showHidden), then sanitized.
  * - `team plugins [list]`, `team plugins add --path <dir> [--name] [--id] [--disabled] [--skip-mcp]`, `team plugins
@@ -17,7 +18,7 @@ import { parseFlags } from '../flags'
 import { confirm, hostCall, requireProject, runSubcommands, withHost, type SubcommandFn } from '../manage'
 import { emit, note, safe, safeLine } from '../output'
 import { CliError, EXIT, type CommandFn } from '../types'
-import { checkArg, findRole, onlyPositionals, projectJson, roleTierWord } from './org'
+import { checkArg, findRole, NO_UNDO, NO_UNDO_AFTER, onlyPositionals, projectJson, roleTierWord } from './org'
 
 const USAGE =
   'team templates [list] | templates save --name <name> [--description <text>] | templates apply <id> [--mode replace|merge] [--yes] | templates remove <id> [--yes] | roles | role <name-or-slug> | plugins [list] | plugins add --path <dir> [--name <n>] [--id <id>] [--disabled] [--skip-mcp] | plugins remove <id> [--yes]'
@@ -76,16 +77,17 @@ const templatesApply: SubcommandFn = async (ctx, args) => {
     if (!t) throw new CliError(`No template ${safeLine(templateId)}. List them with: orgai team templates`, EXIT.usage)
     const question =
       mode === 'replace'
-        ? `Replace the ${project.roles.length} role(s) of ${safeLine(project.name)} with template ${safeLine(t.name)} (${t.roleCount} role(s))?`
+        ? `Replace the ${project.roles.length} role(s) of ${safeLine(project.name)} with template ${safeLine(t.name)} (${t.roleCount} role(s))? ${NO_UNDO}`
         : `Add the ${t.roleCount} role(s) of template ${safeLine(t.name)} under the root of ${safeLine(project.name)}?`
     if (!(await confirm(ctx, question, !!values.yes))) {
       note(ctx, 'Nothing changed.')
       return EXIT.failure
     }
     const res = await hostCall<AgentImportApplyResult>(client, 'templates:apply', [{ projectId: project.id, templateId, mode }])
-    emit(ctx, { project: projectJson(res.project), template: t, mode, roles: res.project.roles.length }, () => [
+    const previousRoles = Array.isArray(res.previousRoles) ? res.previousRoles : []
+    emit(ctx, { project: projectJson(res.project), template: t, mode, roles: res.project.roles.length, previousRoles }, () => [
       `Applied template ${safeLine(t.name)} (${mode}); the chart now has ${res.project.roles.length} role${res.project.roles.length === 1 ? '' : 's'}.`,
-      'Undo is available only in the Desktop Team tab.'
+      `${NO_UNDO_AFTER} The previous chart had ${previousRoles.length} role${previousRoles.length === 1 ? '' : 's'}.`
     ])
     return EXIT.ok
   })

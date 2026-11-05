@@ -70,14 +70,17 @@ describe('team templates', () => {
     expect(await exitOf(runTeam(f.ctx, ['templates', 'save']))).toBe(2)
   })
 
-  it('apply needs a confirmation; --yes applies (replace by default) and points at Desktop undo', async () => {
+  it('apply needs a confirmation; --yes applies (replace by default) and says it cannot be undone', async () => {
     let s = setup({ 'templates:apply': () => ({ project: P, previousRoles: [] }) })
     expect(await exitOf(runTeam(s.f.ctx, ['templates', 'apply', 'tpl_1']))).toBe(2)
     expect(s.client.callsOf('templates:apply')).toEqual([])
-    s = setup({ 'templates:apply': () => ({ project: P, previousRoles: [] }) })
+    s = setup({ 'templates:apply': () => ({ project: P, previousRoles: P.roles }) })
     expect(await runTeam(s.f.ctx, ['templates', 'apply', 'tpl_1', '--yes'])).toBe(0)
     expect(s.client.callsOf('templates:apply')).toEqual([[{ projectId: 'p1', templateId: 'tpl_1', mode: 'replace' }]])
-    expect(s.f.out()).toContain('Undo is available only in the Desktop Team tab')
+    // The Desktop Team tab cannot undo a CLI apply (its Undo comes only from applies the renderer made), so never promise it.
+    expect(s.f.out()).not.toContain('Desktop Team tab')
+    expect(s.f.out()).toContain('This cannot be undone from the CLI or the Desktop')
+    expect(s.f.out()).toContain(`The previous chart had ${P.roles.length} roles.`)
   })
 
   it('apply of an unknown template is exit 2', async () => {

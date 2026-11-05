@@ -151,7 +151,35 @@ describe('org import', () => {
     expect(client.callsOf('projects:applyImport')).toEqual([[{ projectId: 'p1', mode: 'merge', digest: 'd'.repeat(64) }]])
     expect(f.out()).toContain('elevated: Bash')
     expect(f.out()).not.toContain('\x1b')
-    expect(f.out()).toContain('Undo is available only in the Desktop Team tab')
+    expect(f.out()).not.toContain('Desktop Team tab') // the Desktop cannot undo a CLI import
+    expect(f.out()).not.toContain('cannot be undone') // a merge that drops or replaces nothing
+  })
+
+  it('a replacing import says it cannot be undone and --json keeps the previous chart', async () => {
+    let asked = ''
+    manageDeps.ttyConfirm = async (q) => ((asked = q), true)
+    const { f } = setup(
+      {
+        'projects:scanAgents': () => scan,
+        'projects:previewImport': () => preview({ mode: 'replace', replacedRoleIds: ['lead'] }),
+        'projects:applyImport': () => ({ project: { ...P, roles: [role('x')] }, previousRoles: roles })
+      },
+      { tty: true }
+    )
+    expect(await runOrg(f.ctx, ['import', '--mode', 'replace'])).toBe(0)
+    expect(asked).toContain('This cannot be undone.')
+    expect(f.out()).toContain('This cannot be undone from the CLI or the Desktop')
+    expect(f.out()).not.toContain('Desktop Team tab')
+    const j = setup(
+      {
+        'projects:scanAgents': () => scan,
+        'projects:previewImport': () => preview({ mode: 'replace', replacedRoleIds: ['lead'] }),
+        'projects:applyImport': () => ({ project: { ...P, roles: [role('x')] }, previousRoles: roles })
+      },
+      { format: 'json' }
+    )
+    expect(await runOrg(j.f.ctx, ['import', '--mode', 'replace', '--yes'])).toBe(0)
+    expect(JSON.parse(j.f.out()).previousRoles.map((r: { id: string }) => r.id)).toEqual(roles.map((r) => r.id))
   })
 
   it('without --yes and without a terminal it refuses with exit 2 and applies nothing', async () => {

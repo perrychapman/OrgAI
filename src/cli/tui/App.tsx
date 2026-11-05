@@ -49,6 +49,8 @@ import { WorktreesPane } from './WorktreesPane'
 
 /** 128 + SIGINT: a stopOnQuit session that was quit (types.ts EXIT.sigint; not imported to keep this file pure TUI). */
 const EXIT_SIGINT = 130
+/** A stopOnQuit session whose runs:stop failed and whose run is still open (types.ts EXIT.failure). */
+const EXIT_FAILURE = 1
 
 /** Two Ctrl+C presses within this window quit. */
 export const CTRL_C_QUIT_MS = 1500
@@ -336,12 +338,23 @@ export function App(props: AppProps) {
         resolve()
       })
     })
+    const name = sanitizeTty(label).replace(/\s+/g, ' ').trim() || 'The run'
+    let failure: string | undefined
     session
       .stop()
-      .catch((e: unknown) => notify(`Could not stop the run: ${errText(e)}`, 'danger'))
+      .catch((e: unknown) => {
+        failure = errText(e)
+        notify(`Could not stop the run: ${failure}`, 'danger')
+      })
       .then(() => settle)
-      .then(() => doExit(EXIT_SIGINT, `${sanitizeTty(label).replace(/\s+/g, ' ').trim() || 'The run'} stopped.`))
-  }, [session, notify, doExit, label])
+      .then(() => {
+        // Only claim "stopped" (130) when the run left its open status or the host accepted runs:stop; a refused or
+        // failed stop leaves the run live, so say so (exit 1) instead of hiding the detached-live hint.
+        if (ended() || failure === undefined) return doExit(EXIT_SIGINT, `${name} stopped.`)
+        const keepsGoing = conn.inproc === undefined ? ' The run keeps going.' : ''
+        doExit(EXIT_FAILURE, `Could not stop ${name}: ${failure.replace(/[.\s]+$/, '')}.${keepsGoing}`)
+      })
+  }, [session, notify, doExit, label, conn])
 
   const confirm = useCallback((question: string): Promise<boolean> => new Promise<boolean>((resolve) => setOverlay({ kind: 'confirm', question, resolve })), [])
 
