@@ -529,7 +529,10 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     `session.ts` `TuiConnection` owns the one shared client and every reconnect replacement (streams `keepClient: () =>
     true`), 'configure' only on a separate per-call connection for createProject. `DecisionTray` sends the exact 5.3
     payloads (revise `feedback`, rules deny `message`) with a 750 ms swap guard; `pager.ts` spawns the absolute path,
-    shell-free. Unit tests (ink-testing-library) and e2e `cli-tui.mjs` through a python3 pty on macOS (SKIP on win32);
+    shell-free; while the pager or a stop owns the terminal the App drops notifications, renders the last shown state,
+    defers resizes to resume and Ink's stdout is wrapped in `terminal.ts` `gateWrites`. `orgai [--] <prompt>` aims the
+    composer at a new run first (`App.tsx` `startLaunchRun`; never a runs:send to a focused live run, `--team` kept).
+    Unit tests (ink-testing-library) and e2e `cli-tui.mjs` through a python3 pty on macOS (SKIP on win32);
     Merge Review, the real pager and CSI-u Ctrl+. on real terminals are not driven.
   - Wave 3: adapters call `ctx.onRootTurnEnded` on every root turn end before 'idle' and expose `settlement()`;
     `ContinuationDriver.isSettledForTurn(gen)`; RunManager `trySettleExecRun` (pure `execSettle.ts`), stall watchdog,

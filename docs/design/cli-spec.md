@@ -865,7 +865,7 @@ Resolved `R1`–`R10` (single-host daemon vs Desktop ownership, socket authentic
   run by hand (its Windows readline fallback neither). Windows named pipes and signals, packaged builds and the auto
   mode that spawns the headless Electron host (fake launcher in unit tests only).
 
-### Wave 4 (landed on dev, 2026-11-05; contracts fa9676c, merges e538e40..38a5705, integration fix 3cbd3fd, review fix-up after it)
+### Wave 4 (landed on dev, 2026-11-05; contracts fa9676c, merges e538e40..38a5705, integration fix 3cbd3fd, review fixes 65cd1db and 507d88d)
 
 - **Landed.** The Ink TUI in `src/cli/tui/` (ink 8.0.0 and ink-testing-library 4.0.0, exact pins), reached only through
   `await import('../tui/index')` (the `out/cli/tui.mjs` chunk; lazyTui.test.ts keeps ink and react out of the static
@@ -903,6 +903,14 @@ Resolved `R1`–`R10` (single-host daemon vs Desktop ownership, socket authentic
   - The crash handler (uncaughtException / unhandledRejection) sanitizes its text before writing. Like every other
     command (index.ts), an unhandled rejection ends the TUI; under `--host inproc` that skips the host's drain.
   - Windows has no SIGTSTP / SIGCONT: those handlers are skipped and Ctrl+Z is ignored; the PTY tests SKIP on win32.
+  - `orgai [--] <prompt>` sets the compose target to a new run before submitting (`startLaunchRun`, as `/new` does):
+    the session's default pick may have focused a live run, which would otherwise get the prompt as runs:send and drop
+    `--team` (review, 507d88d).
+  - While the terminal is suspended (pager or SIGTSTP) the App holds still: store notifications are dropped, every
+    render reads the last shown state (so no `<Static>` transcript row is written over the child), a resize is applied
+    on resume, and Ink's stdout goes through `gateWrites`, which drops writes while suspended and still calls their
+    callbacks; the resume listener clears and redraws (review, 507d88d). Unit-tested (App.test.tsx, terminal.test.ts);
+    not checked with a real `less` in a PTY.
 - **Unverified / open.** Ctrl+. through CSI-u / modifyOtherKeys on real terminals (Kitty, iTerm2, WezTerm, Windows
   Terminal) was not tried by hand; only the parser is tested. Windows behaviour (console raw mode, no job control, the
   pager lookup) is not run. e2e drives permission y / n, question, rules r, MCP install n, proposal d, a two-step `a`
