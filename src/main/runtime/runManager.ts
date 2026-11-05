@@ -550,7 +550,7 @@ export interface RunManagerOptions {
   knowledge?: KnowledgeStoreApi
   /**
    * Push projects:engagementChanged to every window after an agent wrote a note ('notes') or the knowledge graph
-   * ('knowledge') (index.ts passes ipc.ts broadcastEngagementChanged). Missing = no push.
+   * ('knowledge') (bootstrap.ts emits it on the host's HostEventBus). Missing = no push.
    */
   engagementChanged?: (event: EngagementChangedEvent) => void
   /**

@@ -219,9 +219,12 @@ describe('HostDispatcher.invokeRpc (wire path)', () => {
     await expect(d.invokeRpc(HOST_IPC.kitApplyBundle, [{}], RPC)).rejects.toMatchObject({ code: 'unknown_channel' })
   })
 
-  it('uses the real gate by default (the skeleton refuses everything as unknown)', async () => {
+  it('uses the real gate by default: known channels pass, unknown and out-of-scope ones are refused', async () => {
     const d = new HostDispatcher(services())
-    await expect(d.invokeRpc(IPC.runsList, ['proj_a'], RPC)).rejects.toBeInstanceOf(HostRpcFailure)
+    await expect(d.invokeRpc(IPC.runsList, ['proj_a'], RPC)).resolves.toEqual([])
+    await expect(d.invokeRpc('nope:nothing', [], RPC)).rejects.toMatchObject({ code: 'unknown_channel' })
+    await expect(d.invokeRpc(IPC.runsStop, ['run_1'], { surface: 'socket', grantedScopes: ['read'] })).rejects.toMatchObject({ code: 'scope_denied' })
+    await expect(d.invokeRpc(IPC.runsList, [42], RPC)).rejects.toMatchObject({ code: 'bad_request' })
   })
 
   it('maps coded errors to HostRpcFailure and passes other errors through', async () => {

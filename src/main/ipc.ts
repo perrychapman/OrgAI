@@ -5,7 +5,7 @@
  * itself. The pure argument builders live in host/args.ts and are re-exported here for the existing tests.
  */
 import { app, BrowserWindow, dialog, ipcMain, shell, type IpcMainInvokeEvent, type WebContents } from 'electron'
-import type { EngagementChangedEvent, FocusRunTarget, KitApplyResult, KitExportResult, KitImportPreview, SkillLibraryFolderInput, SkillLibraryInfo } from '@shared/types'
+import type { FocusRunTarget, KitApplyResult, KitExportResult, KitImportPreview, SkillLibraryFolderInput, SkillLibraryInfo } from '@shared/types'
 import { HOST_IPC, HOST_METHODS, IPC, KIT_IPC } from '@shared/types'
 import { applyArgs as kitApplyArgs, exportArgs as kitExportArgs, type KitService } from './kit/service'
 import { PickedPaths, kitExportTarget } from './kit/pickedPaths'
@@ -265,16 +265,6 @@ function rememberPickedFolder(sender: WebContents, path: string): void {
     pickedFolders.forget(id)
     trackedSenders.delete(id)
   })
-}
-
-/**
- * Push projects:engagementChanged to every live window (RunManager gets it as `engagementChanged` for agent writes).
- * @deprecated Window-direct: emit on the host's HostEventBus instead. Kept until index.ts moves to the bus (bootstrap task).
- */
-export function broadcastEngagementChanged(event: EngagementChangedEvent): void {
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (!win.isDestroyed()) win.webContents.send(IPC.projectsEngagementChanged, event)
-  }
 }
 
 export const OPEN_PATH_MAX_CHARS = 1024

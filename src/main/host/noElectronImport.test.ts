@@ -14,6 +14,7 @@ const PURE_NODE_MODULES = [
   './runtimeEnv',
   './events',
   './registry',
+  './params',
   './dispatcher',
   './activity',
   './args',

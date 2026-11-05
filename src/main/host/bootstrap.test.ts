@@ -193,6 +193,28 @@ describe('bootOrgAIHost', () => {
     await h.runs.stopAll({ reason: 'quit' })
   })
 
+  it('serves runs:start and runs:list over invokeRpc through the real gate on a booted host (mock, no tokens)', async () => {
+    const h = boot()
+    const folder = join(root, 'repo-rpc')
+    mkdirSync(folder)
+    const project = h.services.projects.create({ name: 'Rpc', path: folder, brief: '', setupKind: 'existing', mock: true }, h.settings.get(), { mockAvailable: true })
+    const ctx = { surface: 'inproc' as const, grantedScopes: ['read', 'operate'] as const }
+    const leases: number[] = []
+    h.activity.onChange((snap) => leases.push(snap.counts.inFlightRpcMutations))
+    const run = (await h.dispatcher.invokeRpc(IPC.runsStart, [{ projectId: project.id, prompt: 'hello over rpc' }], ctx)) as { id: string; projectId: string }
+    expect(run.projectId).toBe(project.id)
+    // The mutation held an inFlightRpcMutations lease and released it.
+    expect(leases).toContain(1)
+    expect(h.activity.snapshot().counts.inFlightRpcMutations).toBe(0)
+    const listed = (await h.dispatcher.invokeRpc(IPC.runsList, [project.id], ctx)) as { id: string }[]
+    expect(listed.map((r) => r.id)).toContain(run.id)
+    // The real gate: scopes are explicit, params are shape-checked, unknown channels are refused.
+    await expect(h.dispatcher.invokeRpc(IPC.runsStart, [{ projectId: project.id, prompt: 'x' }], { surface: 'inproc', grantedScopes: ['read'] })).rejects.toMatchObject({ code: 'scope_denied' })
+    await expect(h.dispatcher.invokeRpc(IPC.runsList, [{ not: 'an id' }], ctx)).rejects.toMatchObject({ code: 'bad_request' })
+    await expect(h.dispatcher.invokeRpc('runs:nothing', [], ctx)).rejects.toMatchObject({ code: 'unknown_channel' })
+    await h.runs.stopAll({ reason: 'quit' })
+  })
+
   it('serves host.status from ownership info and the activity snapshot', async () => {
     const h = boot()
     const status = h.hostControl.status()

@@ -151,7 +151,7 @@ const PUSH_TABLE: Readonly<Record<string, Omit<PushChannelEntry, 'direction'>>> 
   [IPC.skillLibraryChanged]: { delivery: 'socket_subscribable', topic: 'skillLibrary', source: 'index.ts SkillService onLibraryChanged -> host/events.ts' },
   [IPC.capabilitiesProgress]: { delivery: 'socket_subscribable', topic: 'capabilities', source: 'index.ts CapabilityService onProgress -> host/events.ts' },
   [IPC.capabilitiesReviewUpdated]: { delivery: 'socket_subscribable', topic: 'capabilities', source: 'index.ts CapabilityService onReviewUpdated -> host/events.ts' },
-  [IPC.projectsEngagementChanged]: { delivery: 'socket_subscribable', topic: 'engagement', source: 'ipc.ts broadcastEngagementChanged -> host/events.ts' },
+  [IPC.projectsEngagementChanged]: { delivery: 'socket_subscribable', topic: 'engagement', source: 'host/dispatcher.ts + RunManager engagementChanged -> host/events.ts' },
   [IPC.appFocusRun]: { delivery: 'desktop_only', source: 'notifications.ts (notification click focuses a run)' },
   [IPC.menuAction]: { delivery: 'desktop_only', source: 'appMenu.ts (application menu item click)' }
 }
