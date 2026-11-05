@@ -24,6 +24,7 @@ import { Icon } from '../ui/Icon'
 import { Textarea } from '../ui/Textarea'
 import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../../lib/settingsTarget'
 import { RepoStartPanel } from './RepoStartPanel'
+import { scrollContainerOf, scrollWithin } from '../../lib/scrollWithin'
 
 const KINDS: { value: StartKind; label: string }[] = [
   { value: 'new', label: 'New idea' },
@@ -207,8 +208,24 @@ export function NewProjectForm({
   useEffect(() => {
     if (!cloned || !focusCloned.current) return
     focusCloned.current = false
-    document.getElementById(`${uid}-repo-cloned`)?.focus()
+    document.getElementById(`${uid}-repo-cloned`)?.focus({ preventScroll: true })
+    revealChoice.current = true
   }, [cloned, uid])
+  // Create is sticky and in view, so the user must meet the setup choice before it: bring the cloned line to the top of the
+  // form's own scroller, and the choice above the sticky rows. Runs again when the folder check grows the choice.
+  const revealChoice = useRef(false)
+  const submitRef = useRef<HTMLDivElement>(null)
+  // The sticky clone-step row sits just above the sticky submit row: measure that row instead of guessing its height.
+  useEffect(() => {
+    const row = submitRef.current
+    const form = row?.parentElement
+    if (!row || !form || typeof ResizeObserver === 'undefined') return undefined
+    const set = (): void => form.style.setProperty('--form-submit-h', `${Math.ceil(row.getBoundingClientRect().height)}px`)
+    set()
+    const ro = new ResizeObserver(set)
+    ro.observe(row)
+    return () => ro.disconnect()
+  }, [])
 
   // Offer the clone when the folder field holds a repository address instead of a folder.
   const bridgeText = projectKind === 'code' && pickedKind === 'existing' && !isFullPath(path) ? path.trim() : ''
@@ -231,6 +248,29 @@ export function NewProjectForm({
   const current = check && check.path === checkKey ? check.result : null
   // Before the clone exists the check only answers "may it go there": no setup choice, name or status from it.
   const folderCheck = github && !cloned ? null : current
+  // Only when the clone lands and when its folder check answers, never on every render (it would fight the user's scrolling).
+  useEffect(() => {
+    if (!cloned || !revealChoice.current) return undefined
+    const line = document.getElementById(`${uid}-repo-cloned`)
+    const form = line?.closest('form')
+    const choice = form?.querySelector<HTMLElement>('.form-options')
+    if (!line || !form || !choice) return undefined
+    const raf = requestAnimationFrame(() => {
+      scrollWithin(line, 'start')
+      const box = scrollContainerOf(line)
+      const bar = form.querySelector<HTMLElement>('.form-submit')
+      if (box && bar) {
+        const c = choice.getBoundingClientRect()
+        const over = c.bottom - bar.getBoundingClientRect().top + 8
+        // Never push the cloned line out of the top for it.
+        if (over > 0) box.scrollTop += Math.min(over, Math.max(0, c.top - box.getBoundingClientRect().top))
+      }
+    })
+    // Keep revealing until the folder check has answered (the choice grows then); once it has, stop.
+    if (folderCheck) revealChoice.current = false
+    return () => cancelAnimationFrame(raf)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cloned, folderCheck])
   const status = github && !cloned ? null : pathStatus(kind, folder, folderCheck, projectKind ?? 'code')
   // A team in the folder's .orgai/ replaces the import path (totalAgents is 0 then) and the default chart.
   const team = projectKind === 'code' && folderCheck?.teamFiles ? folderCheck.teamFiles : null
@@ -840,7 +880,7 @@ export function NewProjectForm({
         </p>
       )}
 
-      <div className="row form-submit">
+      <div className="row form-submit" ref={submitRef}>
         {/* A blocked submit stays focusable (aria-disabled) so the keyboard reaches it and hears the reason; submit() ignores it. */}
         {!pending && blocker && !busy ? (
           <Button type="submit" variant="primary" inert ariaDescribedBy={ids.why} testId="new-project-submit">

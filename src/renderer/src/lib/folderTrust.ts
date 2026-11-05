@@ -1,4 +1,4 @@
-import type { FolderConfigReview, FolderConfigState, Project } from '@shared/types'
+import type { FolderConfigFile, FolderConfigReview, FolderConfigState, Project } from '@shared/types'
 import { projectKindOf } from '@shared/defaults'
 import { formatDate } from './dates'
 
@@ -12,7 +12,38 @@ export const FOLDER_TRUST_FRAMING =
 
 export const FOLDER_TRUST_STALE = 'The files changed while you were reading. Read the review again before allowing.'
 
-export const FOLDER_TRUST_NOTICE_TEXT = "Agents are ignoring this folder's own settings."
+/** The permission card's quiet line while the folder's settings are ignored (a Review link follows it). */
+export const FOLDER_TRUST_CARD_LINE = "This folder's own settings are ignored right now."
+
+/** Agents ignore the folder's settings in these two states. */
+export function folderTrustIgnored(state: FolderConfigState): boolean {
+  return state === 'untrusted' || state === 'changed'
+}
+
+/** OrgAI's own team files; the Team tab's team files gate reviews them, not this one. */
+export function isTeamFilePath(path: string): boolean {
+  return path === '.orgai' || path.startsWith('.orgai/')
+}
+
+/** Plain count phrases for what the folder's own settings hold, without OrgAI's team files. Empty when nothing counts. */
+export function settingsCounts(review: Pick<FolderConfigReview, 'allowRules' | 'commands' | 'mcpServers' | 'env' | 'files'>): string[] {
+  const n = (count: number, one: string, many: string): string => (count === 0 ? '' : `${count} ${count === 1 ? one : many}`)
+  const agentFiles = review.files.filter((f) => !isTeamFilePath(f.path) && /(^|\/)agents\//.test(f.path)).length
+  return [
+    n(review.allowRules.length, 'command rule', 'command rules'),
+    n(review.commands.length, 'hook or helper', 'hooks and helpers'),
+    n(review.mcpServers.length, 'server', 'servers'),
+    n(review.env.length, 'environment value', 'environment values'),
+    n(agentFiles, 'agent file', 'agent files')
+  ].filter(Boolean)
+}
+
+/** The New run notice: why agents ignore the folder's settings and what Allow does, in one line. */
+export function folderTrustNoticeText(state: FolderConfigState, review: Parameters<typeof settingsCounts>[0] | null): string {
+  if (state === 'changed') return "This folder's own agent settings changed since you allowed them. Agents ignore them until you review and allow them again."
+  const counts = review ? settingsCounts(review) : []
+  return `This folder came with its own agent settings${counts.length ? ` (${counts.join(', ')})` : ''}. Agents ignore them until you review and allow them.`
+}
 
 /** Only a code project that carries the stored field is gated; everything else never fetches a review. */
 export function hasFolderTrustField(project: Pick<Project, 'kind' | 'folderConfigTrust'> | null | undefined): boolean {
@@ -37,9 +68,9 @@ function allowedOn(decidedAt: string | undefined): string {
 export function folderTrustSentence(state: FolderConfigState, decidedAt?: string): string {
   switch (state) {
     case 'untrusted':
-      return "Agents are ignoring this folder's own settings until you allow them."
+      return "Agents ignore this folder's own settings until you review and allow them. Allow lets agents use them from the next run."
     case 'changed':
-      return 'These settings changed since you allowed them. Agents are ignoring them until you review them again.'
+      return 'These settings changed since you allowed them. Agents ignore them until you review and allow them again.'
     case 'trusted':
       return `Agents use this folder's own settings.${allowedOn(decidedAt)}`
     default:
@@ -107,21 +138,40 @@ export function writeDismissedDigest(projectId: string, digest: string, storage:
 
 // ---- Review parts ----
 
-export type ReviewSectionKey = 'commands' | 'mcpServers' | 'env' | 'allowRules' | 'otherSettings' | 'files'
+export type ReviewSectionKey = 'commands' | 'mcpServers' | 'env' | 'allowRules' | 'otherSettings' | 'files' | 'teamFiles'
 
-/** Most dangerous first: what runs, what launches, what redirects, what grants, the rest, then the file list. */
-export const REVIEW_SECTION_ORDER: readonly ReviewSectionKey[] = ['commands', 'mcpServers', 'env', 'otherSettings', 'allowRules', 'files']
+/** Most dangerous first: what runs, what launches, what redirects, what grants, the rest, then the file lists. */
+export const REVIEW_SECTION_ORDER: readonly ReviewSectionKey[] = ['commands', 'mcpServers', 'env', 'otherSettings', 'allowRules', 'files', 'teamFiles']
 
-export const REVIEW_SECTION_TITLE: Record<ReviewSectionKey, string> = {
-  commands: 'Commands that would run',
-  mcpServers: 'MCP servers it would start',
-  env: 'Environment values it would set',
-  otherSettings: 'Other settings that change behavior',
-  allowRules: 'Permission rules it would add',
-  files: 'Files'
+/** Titles say "would" before the user allows and the plain present after: Allow adds, it does not "would add". */
+export const REVIEW_SECTION_TITLE: Record<ReviewSectionKey, { before: string; after: string }> = {
+  commands: { before: 'Commands that would run', after: 'Commands that run' },
+  mcpServers: { before: 'MCP servers it would start', after: 'MCP servers it starts' },
+  env: { before: 'Environment values it would set', after: 'Environment values it sets' },
+  otherSettings: { before: 'Other settings that would change behavior', after: 'Other settings that change behavior' },
+  allowRules: { before: 'Permission rules it would add', after: 'Permission rules it adds' },
+  files: { before: 'Files', after: 'Files' },
+  teamFiles: { before: 'OrgAI team files (reviewed in Team)', after: 'OrgAI team files (reviewed in Team)' }
+}
+
+/** One plain line under each section's title, so the list reads without opening any file text. */
+export const REVIEW_SECTION_SUMMARY: Record<ReviewSectionKey, string> = {
+  commands: 'Programs on your computer that start by themselves, such as hooks and helpers.',
+  mcpServers: 'Extra tools for agents. Each one starts a program or connects to an address.',
+  env: 'Values set in the environment of every agent run.',
+  otherSettings: 'Settings that change what agents may do or where their requests go.',
+  allowRules: 'Commands and tools agents may use without asking you first.',
+  files: 'The files these settings come from: rules, servers, helper agents and instructions.',
+  teamFiles: "OrgAI's own team files. The Team tab asks you about them separately; they are not part of this allow."
+}
+
+function filesOf(review: Pick<FolderConfigReview, 'files'>, team: boolean): FolderConfigFile[] {
+  return review.files.filter((f) => isTeamFilePath(f.path) === team)
 }
 
 export function reviewSectionCount(review: FolderConfigReview, key: ReviewSectionKey): number {
+  if (key === 'files') return filesOf(review, false).length
+  if (key === 'teamFiles') return filesOf(review, true).length
   return review[key].length
 }
 
@@ -130,9 +180,24 @@ export function hasContent(review: FolderConfigReview, key: ReviewSectionKey): b
 }
 
 /** Sections to draw, in order, with their counts; empty ones are left out (files stay when listed). */
-export function reviewSections(review: FolderConfigReview): { key: ReviewSectionKey; title: string; count: number }[] {
-  return REVIEW_SECTION_ORDER.filter((k) => hasContent(review, k)).map((key) => ({ key, title: REVIEW_SECTION_TITLE[key], count: reviewSectionCount(review, key) }))
+export function reviewSections(review: FolderConfigReview): { key: ReviewSectionKey; title: string; summary: string; count: number }[] {
+  const tense = review.state === 'trusted' ? 'after' : 'before'
+  return REVIEW_SECTION_ORDER.filter((k) => hasContent(review, k)).map((key) => ({
+    key,
+    title: REVIEW_SECTION_TITLE[key][tense],
+    summary: REVIEW_SECTION_SUMMARY[key],
+    count: reviewSectionCount(review, key)
+  }))
 }
+
+/** The files shown in a files section (the folder's own, or OrgAI's team files). */
+export function sectionFiles(review: Pick<FolderConfigReview, 'files'>, key: 'files' | 'teamFiles'): FolderConfigFile[] {
+  return filesOf(review, key === 'teamFiles')
+}
+
+/** What the per-file badge says: whether a change to this file asks again. */
+export const FILE_CHECKED_TEXT = 'Allow covers this file; a change asks again'
+export const FILE_UNCHECKED_TEXT = "Instructions only; changes don't ask again"
 
 export interface ItemBadges {
   masked: boolean
@@ -160,15 +225,15 @@ export function canRevoke(review: FolderConfigReview | null): boolean {
   return !!review && review.state === 'trusted'
 }
 
-/** The files line: how many are covered by the digest and how many can change while trusted. */
+/** The files line: how many files a change to asks again, and how many are instructions only. */
 export function filesSummary(review: Pick<FolderConfigReview, 'files'>): string {
-  const total = review.files.length
-  const digested = review.files.filter((f) => f.digested).length
-  const free = total - digested
-  const base = `${total} ${total === 1 ? 'file' : 'files'}, ${digested} checked for changes.`
-  return free > 0
-    ? `${base} The other ${free} (instruction files) are shown but not checked: they can change while you trust this folder.`
-    : base
+  const files = review.files.filter((f) => !isTeamFilePath(f.path))
+  const total = files.length
+  const covered = files.filter((f) => f.digested).length
+  const free = total - covered
+  const count = `${total} ${total === 1 ? 'file' : 'files'}.`
+  const base = covered === 0 ? count : `${count} A change to ${covered === total ? (total === 1 ? 'it' : 'any of them') : `${covered} of them`} asks you again.`
+  return free > 0 ? `${base} The other ${free} ${free === 1 ? 'is' : 'are'} instructions only: changes to ${free === 1 ? 'it' : 'them'} don't ask again.` : base
 }
 
 /** A long block is cut behind "Show all". */

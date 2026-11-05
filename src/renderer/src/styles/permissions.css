@@ -105,6 +105,16 @@
   margin-top: var(--space-2);
   font-size: var(--text-small);
 }
+/* The folder's own settings are ignored: one quiet line with a Review link, visible in compact mode too. */
+.perm-trust-line {
+  margin: var(--space-1) 0 0;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-secondary);
+}
+.topbar-trust {
+  flex: 0 0 auto;
+}
 
 /* Compact (frame under 480 px tall, or the tray flags it): the glance stays visible with the body collapsed; the
    command and the scope list stay behind Details. Two lines at most for the effect sentence. */

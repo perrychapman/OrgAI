@@ -131,6 +131,36 @@ try {
   check(!!project && path.resolve(project.path) === path.resolve(repoDir), 'project created on the clone', String(project?.path))
   check(project?.folderConfigTrust?.state === 'untrusted', 'project is gated and untrusted', JSON.stringify(project?.folderConfigTrust))
 
+  // ---- M2: a findable pointer in the topbar on every view, not only the New run page ----
+  for (const [w, h, theme] of [
+    [1024, 640, 'dark'],
+    [1024, 640, 'light'],
+    [1600, 1000, 'dark']
+  ]) {
+    const tag = `${w}x${h} ${theme}`
+    await size(w, h, theme)
+    for (const tab of ['Team', 'History', 'Settings', 'Live']) {
+      await projectTab(page, tab).click()
+      await tid('topbar-folder-trust').waitFor({ timeout: 15_000 })
+      const r = await page.evaluate(() => {
+        const el = document.querySelector('[data-testid=topbar-folder-trust]')
+        const b = el?.getBoundingClientRect()
+        const top = b ? document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2) : null
+        const bar = document.querySelector('.project-topbar')
+        return { inView: !!b && b.left >= 0 && b.right <= window.innerWidth && b.top >= 0 && b.bottom <= window.innerHeight, topmost: !!el && !!top && el.contains(top), barOverflow: bar ? bar.scrollWidth - bar.clientWidth : 0 }
+      })
+      check(r.inView && r.topmost && r.barOverflow <= 0, `${tag} ${tab}: topbar pointer is in view, topmost, and the bar does not overflow`, JSON.stringify(r))
+    }
+  }
+  await size(1024, 640, 'dark')
+  await projectTab(page, 'Team').click()
+  check((await textOf('topbar-folder-trust')).includes('Folder settings ignored'), 'topbar pointer names the state', await textOf('topbar-folder-trust'))
+  await tid('topbar-folder-trust').focus()
+  await page.keyboard.press('Enter')
+  await tid('folder-trust-dialog').waitFor({ state: 'visible', timeout: 10_000 })
+  check(true, 'topbar pointer opens the review (keyboard)')
+  await closeReview()
+
   // ---- Notice and dialog at both sizes and themes ----
   for (const [w, h, theme] of [
     [1024, 640, 'dark'],
@@ -142,7 +172,9 @@ try {
     await size(w, h, theme)
     await newRunPage()
     await tid('folder-trust-notice').waitFor()
-    check((await textOf('folder-trust-notice')).includes("ignoring this folder's own settings"), `${tag}: notice says agents ignore the settings`)
+    const noticeText = await textOf('folder-trust-notice')
+    check(noticeText.includes('came with its own agent settings') && noticeText.includes('Agents ignore them until you review and allow them'), `${tag}: notice says why agents ignore the settings and what Allow does`, noticeText)
+    check(/\(\d+ [a-z ,0-9]+\)/.test(noticeText), `${tag}: notice counts what the folder holds`, noticeText)
     const nb = await tid('folder-trust-notice').boundingBox()
     check(!!nb && nb.y >= 0 && nb.y + nb.height <= h, `${tag}: notice in view`, JSON.stringify(nb))
     await screenshot(page, `folder-trust-${w}-${theme}-notice`)
@@ -150,8 +182,18 @@ try {
     await tid('folder-trust-dialog').waitFor({ state: 'visible' })
     await tid('folder-trust-accept').waitFor()
     await sleep(300)
-    check((await textOf('folder-trust-dialog-status')).includes('ignoring'), `${tag}: dialog states the state`)
+    check((await textOf('folder-trust-dialog-status')).includes('ignore'), `${tag}: dialog states the state`)
     await dialogFits(`${tag} dialog`)
+    // M1: every section says in one line what it is; files read in plain words; one text toggle, no per-file stops.
+    const dlg = tid('folder-trust-dialog')
+    const nSections = await dlg.locator('section.trust-section').count()
+    check(nSections > 0 && (await dlg.locator('[data-testid=folder-trust-section-summary]').count()) === nSections, `${tag}: each section has its one-line summary`, `${nSections}`)
+    const dtext = await dlg.innerText()
+    check(!/Checked for changes|Not checked/.test(dtext), `${tag}: no "Checked for changes" / "Not checked" jargon`)
+    check(dtext.includes('Allow covers this file; a change asks again') || dtext.includes("Instructions only; changes don't ask again"), `${tag}: files say what a change does`)
+    check(dtext.includes('Permission rules it would add'), `${tag}: before Allow the title says "would add"`)
+    check((await dlg.getByRole('button', { name: /^Show text/ }).count()) === 0, `${tag}: no per-file Show text stops`)
+    check((await tid('folder-trust-text-toggle').count()) === 1, `${tag}: one Show all text toggle`)
     await screenshot(page, `folder-trust-${w}-${theme}-dialog`)
     await closeReview()
   }
@@ -160,6 +202,13 @@ try {
   await size(1024, 640, 'dark')
   await openPermissionsPane()
   check((await statusState()) === 'untrusted', 'settings status is untrusted')
+  {
+    // M1 / M5: one line why and what Allow does; the rules row has no doubled period and no appended trust sentence.
+    const row = await textOf('folder-trust-status')
+    check(row.includes('ignore') && row.includes('Allow lets agents use them from the next run'), 'settings row says why and what Allow does', row)
+    const sum = await textOf('permissions-summary')
+    check(!sum.includes('..') && !sum.includes('not allowed yet'), 'rules summary has no doubled period or trust sentence', sum)
+  }
   await tid('folder-trust-review-open').focus()
   check((await activeTestId()) === 'folder-trust-review-open', 'Review is focusable')
   await page.keyboard.press('Enter')
@@ -173,6 +222,24 @@ try {
   check(await pageHas('Folder config ignored.'), 'run 1 says the folder config is ignored')
   await page.locator(CARD).first().waitFor({ timeout: 20_000 })
   check(true, 'run 1: npm test shows a permission card')
+  {
+    // M2: the card says the folder's own settings are ignored and links to the review.
+    const line = page.locator(`${CARD} [data-testid=perm-trust-line]`).first()
+    await line.waitFor({ timeout: 10_000 })
+    check((await line.innerText()).includes("This folder's own settings are ignored right now."), 'card: quiet line says the folder settings are ignored', await line.innerText())
+    const inView = await line.evaluate((el) => {
+      const b = el.getBoundingClientRect()
+      const top = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2)
+      return b.top >= 0 && b.bottom <= window.innerHeight && !!top && el.contains(top)
+    })
+    check(inView, 'card: the line is in view and uncovered at 1024x640')
+    await page.locator(`${CARD} [data-testid=perm-trust-review]`).first().click()
+    await tid('folder-trust-dialog').waitFor({ state: 'visible', timeout: 10_000 })
+    check(true, 'card: Review opens the folder settings review')
+    await closeReview()
+    await projectTab(page, 'Live').click()
+    await page.locator(CARD).first().waitFor({ timeout: 10_000 })
+  }
   await page.locator(CARD).first().getByRole('button', { name: 'Allow once', exact: true }).click()
   await sleep(1000)
   await endRun()
@@ -196,6 +263,15 @@ try {
   await tid('folder-trust-revoke').waitFor()
   check((await tid('folder-trust-dialog-status').getAttribute('data-state')) === 'trusted', 'accept by keyboard: dialog says trusted')
   check((await textOf('folder-trust-live')).startsWith('Allowed.'), 'accept: live region announces it', await textOf('folder-trust-live'))
+  {
+    const t = await tid('folder-trust-dialog').innerText()
+    check(t.includes('Permission rules it adds') && !t.includes('would add'), 'after Allow the title says "adds"')
+    // The one text toggle shows and hides every file's text.
+    const toggle = tid('folder-trust-text-toggle')
+    check((await toggle.getAttribute('aria-expanded')) === 'false', 'files text starts hidden')
+    await toggle.click()
+    check((await toggle.getAttribute('aria-expanded')) === 'true' && (await tid('folder-trust-dialog').locator('pre.trust-text').count()) > 0, 'Show all text reveals the files')
+  }
   await closeReview()
   check((await statusState()) === 'trusted', 'settings status is trusted')
   check((await textOf('folder-trust-status')).includes('Agents use this folder'), 'trusted sentence')
@@ -206,6 +282,7 @@ try {
   await newRunPage()
   await sleep(500)
   check((await tid('folder-trust-notice').count()) === 0, 'notice gone once allowed')
+  check((await tid('topbar-folder-trust').count()) === 0, 'topbar pointer gone once allowed')
   await startRun('[mock:folder-config] run the tests again')
   check(await pageHas('Folder config loaded.'), 'run 2 says the folder config loaded')
   check(await pageHas('Mock: the folder-config script is done.'), 'run 2 finishes its script')
@@ -221,6 +298,9 @@ try {
   await newRunPage()
   await tid('folder-trust-notice').waitFor({ timeout: 15_000 })
   check(true, 'changed: the notice returns')
+  check((await textOf('folder-trust-notice')).includes('changed since you allowed them'), 'changed: the notice says it changed', await textOf('folder-trust-notice'))
+  await tid('topbar-folder-trust').waitFor({ timeout: 10_000 }).catch(() => {})
+  check((await tid('topbar-folder-trust').count()) === 1, 'changed: the topbar pointer returns')
   await startRun('[mock:folder-config] run the tests after the edit')
   check(await pageHas('Folder config ignored.'), 'changed: the run says ignored')
   await page.locator(CARD).first().waitFor({ timeout: 20_000 })
@@ -242,9 +322,10 @@ try {
   await newRunPage()
   await tid('folder-trust-notice').waitFor({ timeout: 15_000 })
   check(true, 'revoke: the notice is back')
-  // Dismiss hides it for this digest only.
+  // Dismiss hides it for this digest only; the topbar pointer stays until the user decides.
   await tid('folder-trust-notice-dismiss').click()
   check((await tid('folder-trust-notice').count()) === 0, 'Dismiss hides the notice')
+  check((await tid('topbar-folder-trust').count()) === 1, 'Dismiss leaves the topbar pointer')
   fs.writeFileSync(settingsFile, before)
 
   // ---- Ignored saved rules ("Not used") ----

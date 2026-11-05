@@ -30,6 +30,7 @@ import { runName, runTag } from './lib/runLabels'
 import { folderName } from './lib/paths'
 import { assistantLabel } from './lib/assistants'
 import ProjectClient from './components/ProjectClient'
+import { FolderTrustPointer } from './components/FolderTrustNotice'
 import { MAIN_MIN_PX, SIDEBAR_W, clampWidth, maxWidthFor, usePersistedWidth } from './lib/panelWidth'
 import { toggleSidebar, useSidebarCollapsed } from './lib/useSidebarCollapsed'
 
@@ -189,6 +190,7 @@ export default function App(): ReactElement {
                   className="topbar-tabs"
                 />
                 <div className="spacer" />
+                {!isVirtual && <FolderTrustPointer project={project} view={view} />}
                 {view !== 'run' && !(view === 'team' && waitingHere.count === 0) && waitingHere.count + teamHere > 0 && (
                   <button
                     type="button"

@@ -33,6 +33,23 @@ import { Input } from '../ui/Input'
 /** Kept between mounts so reopening the panel does not flash "checking" over what was just known. */
 let lastTools: RepoTools | null = null
 
+const GH_CLI_HOST = 'cli.github.com'
+
+/** The reason text, with the GitHub CLI's home page as a real link (the main process opens http(s) links in the browser). */
+function withCliLink(text: string): ReactNode {
+  const at = text.indexOf(GH_CLI_HOST)
+  if (at < 0) return text
+  return (
+    <>
+      {text.slice(0, at)}
+      <a href={`https://${GH_CLI_HOST}`} target="_blank" rel="noreferrer noopener" data-testid="repo-gh-install-link">
+        {GH_CLI_HOST}
+      </a>
+      {text.slice(at + GH_CLI_HOST.length)}
+    </>
+  )
+}
+
 function focusSoon(id: string): void {
   requestAnimationFrame(() => document.getElementById(id)?.focus())
 }
@@ -311,7 +328,7 @@ export function RepoStartPanel({
         )}
         {fork.reason && (
           <span id={ids.forkReason} className="field-msg repo-fork-reason" data-testid="repo-fork-reason">
-            {fork.reason} {!fork.available && fork.canRecheck ? 'A plain clone still works without it.' : ''}
+            {withCliLink(fork.reason)} {!fork.available && fork.canRecheck ? 'A plain clone still works without it.' : ''}
           </span>
         )}
         {(fork.canRecheck || fork.command || (tools && !tools.git.available)) && (
@@ -395,23 +412,8 @@ export function RepoStartPanel({
             </span>
           )}
         </div>
-        {refusal && (
-          <span id={ids.destErr} className="field-msg error repo-error" tabIndex={-1} data-testid="repo-destination-error">
-            {refusal}
-          </span>
-        )}
       </fieldset>
 
-      {failure && (
-        <p id={ids.error} className="field-msg error repo-error" tabIndex={-1} data-testid="repo-clone-error">
-          {failure}
-        </p>
-      )}
-      {stopped && (
-        <p className="field-msg" data-testid="repo-clone-cancelled">
-          {stopped}
-        </p>
-      )}
       {running ? (
         <div className="repo-progress-block" data-testid="repo-clone-progress">
           <span className="field-msg" data-testid="repo-clone-progress-label">
@@ -433,21 +435,39 @@ export function RepoStartPanel({
           </div>
         </div>
       ) : (
-        <div className="row repo-action">
-          {blocker ? (
-            <Button id={ids.action} variant="primary" inert ariaDescribedBy={ids.why} testId="repo-clone">
-              {cloneActionLabel(mode)}
-            </Button>
-          ) : (
-            <Button id={ids.action} variant="primary" onClick={start} testId="repo-clone">
-              {cloneActionLabel(mode)}
-            </Button>
-          )}
-          {blocker && (
-            <span id={ids.why} className="hint" data-testid="repo-clone-why">
-              {blocker}
+        // Errors and status live inside the sticky block, above the button, so nothing the user must read can sit under it.
+        <div className="repo-action" data-testid="repo-action-block">
+          {refusal && (
+            <span id={ids.destErr} className="field-msg error repo-error" tabIndex={-1} data-testid="repo-destination-error">
+              {refusal}
             </span>
           )}
+          {failure && (
+            <p id={ids.error} className="field-msg error repo-error" tabIndex={-1} data-testid="repo-clone-error">
+              {failure}
+            </p>
+          )}
+          {stopped && (
+            <p className="field-msg" data-testid="repo-clone-cancelled">
+              {stopped}
+            </p>
+          )}
+          <div className="row repo-action-row">
+            {blocker ? (
+              <Button id={ids.action} variant="primary" inert ariaDescribedBy={ids.why} testId="repo-clone">
+                {cloneActionLabel(mode)}
+              </Button>
+            ) : (
+              <Button id={ids.action} variant="primary" onClick={start} testId="repo-clone">
+                {cloneActionLabel(mode)}
+              </Button>
+            )}
+            {blocker && (
+              <span id={ids.why} className="hint" data-testid="repo-clone-why">
+                {blocker}
+              </span>
+            )}
+          </div>
         </div>
       )}
     </div>
