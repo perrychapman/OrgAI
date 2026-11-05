@@ -52,6 +52,8 @@ jobs:
           # any stray launch off the runner's profile.
           # (The runner context is only available at step level.)
           ORGAI_DATA_DIR: ${{ runner.temp }}/orgai-data
+          # macOS only: the runner's work area is 1024x684, which clamps the 1600x1000 / 2400x1000 e2e windows.
+          ORGAI_WINDOW_LARGER_THAN_SCREEN: ${{ runner.os == 'macOS' && '1' || '' }}
       - name: Upload e2e screenshots
         if: failure()
         uses: actions/upload-artifact@v4
