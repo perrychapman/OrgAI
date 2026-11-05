@@ -245,7 +245,9 @@ export class NeuralEngine {
     const mq = window.matchMedia('(prefers-color-scheme: dark)')
     const onScheme = (): void => this.refreshTheme()
     mq.addEventListener('change', onScheme)
-    this.disposers.push(() => mo.disconnect(), () => mq.removeEventListener('change', onScheme))
+    const fc = window.matchMedia('(forced-colors: active)')
+    fc.addEventListener('change', onScheme)
+    this.disposers.push(() => mo.disconnect(), () => mq.removeEventListener('change', onScheme), () => fc.removeEventListener('change', onScheme))
   }
 
   private readonly cvA: HTMLCanvasElement
@@ -378,10 +380,10 @@ export class NeuralEngine {
       if (fresh.length > 0) {
         const now = performance.now()
         for (const id of fresh) this.born[model.index.get(id)!] = this.reduced ? 0 : now
-        this.writeStored()
       }
     }
     this.syncPositions()
+    if (this.lay.settled && !first && !needInit && this.px.length === this.n && model.ids.some((id) => !known.has(id))) this.writeStored()
     this.buildEdges()
     this.buildDrift()
     this.buildGrid()
@@ -737,6 +739,8 @@ export class NeuralEngine {
 
   private pointerDown(e: PointerEvent): void {
     if (e.button !== 0 || !e.isPrimary) return
+    // Buttons laid over the stage (Clear filters, Show as list) keep their own clicks.
+    if (e.target instanceof Element && e.target.closest('button, a, input, [role=button]')) return
     const p = this.local(e)
     this.drag = { id: e.pointerId, x: p.x, y: p.y, vx: this.v.x, vy: this.v.y, moved: false }
     try {
@@ -897,6 +901,8 @@ export class NeuralEngine {
       this.setAnimating(false)
       return
     }
+    // Reduced motion: nothing is drawn until the layout has settled off-screen.
+    if (this.reduced && this.lay && !this.lay.settled) return
     this.raf = requestAnimationFrame((ts) => this.frame(ts))
   }
 
@@ -1342,7 +1348,7 @@ export class NeuralEngine {
       if (i === undefined || this.drawn[i] !== 1) continue
       const x = Math.max(2, Math.min(this.sx[i] - l.w / 2, this.w - l.w - 2))
       const y = this.sy[i] + this.sr[i] + 3
-      ctx.globalAlpha = Math.max(alpha ? alpha[i] : 1, 0.5) * (model.nodes[i].retired ? 0.6 : 1)
+      ctx.globalAlpha = Math.max(alpha ? alpha[i] : 1, 0.85) * (model.nodes[i].retired ? 0.6 : 1)
       ctx.strokeStyle = rgbCss(th.field)
       ctx.strokeText(l.text, x, y + 11)
       ctx.fillStyle = rgbCss(th.textPrimary)
@@ -1360,7 +1366,8 @@ export class NeuralEngine {
     for (let i = 0; i < this.n; i++) {
       if (this.drawn[i] !== 1 || !this.onScreen(i, 20)) continue
       const kept = !em || em.kept[i] === 1
-      const dimmed = !!em && em.alpha[i] < 0.5
+      // Hover shows names for the target and its neighbours only; a selection keeps the rest legible.
+      const dimmed = !!em && (em.mode === 'hover' ? em.alpha[i] < 0.99 : em.alpha[i] < 0.5)
       cands.push({ id: model.ids[i], x: this.sx[i], y: this.sy[i], r: this.sr[i], total: model.totals[i], order: i, text: cutLabel(model.names[i]), quiet: !kept || dimmed })
     }
     const must: string[] = []

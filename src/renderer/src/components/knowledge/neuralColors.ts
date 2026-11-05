@@ -91,6 +91,29 @@ export function readNeuralTheme(root: HTMLElement): NeuralTheme {
     const v = Number.parseFloat(token(name, String(fallback)))
     return Number.isFinite(v) ? v : fallback
   }
+  // Forced colours: the system palette, nodes in CanvasText, never additive.
+  const forced = window.matchMedia('(forced-colors: active)').matches
+  if (forced) {
+    const canvas = colour('Canvas')
+    const text = colour('CanvasText')
+    return {
+      field: canvas,
+      glow: canvas,
+      synapse: colour('GrayText'),
+      synapseOpacity: 0.8,
+      active: text,
+      inferred: colour('GrayText'),
+      pulse: colour('Highlight'),
+      haloOpacity: 0,
+      composite: 'source-over',
+      dim: 0.4,
+      textPrimary: text,
+      textSecondary: text,
+      font: getComputedStyle(root).fontFamily || 'system-ui, sans-serif',
+      dark: false,
+      node: () => text
+    }
+  }
   const composite = token('--neural-composite', 'source-over') === 'lighter' ? 'lighter' : 'source-over'
   const cache = new Map<string, Rgb>()
   const theme: NeuralTheme = {

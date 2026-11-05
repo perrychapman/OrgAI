@@ -307,12 +307,19 @@ function NeuralInner(props: KnowledgeNeuralProps): ReactElement {
       if (sel) engine.reveal(sel, 200)
     })
     ro.observe(stage)
-    const r0 = stage.getBoundingClientRect()
-    engine.resize(r0.width, r0.height, window.devicePixelRatio || 1)
+    const measure = (): void => {
+      const r = stage.getBoundingClientRect()
+      engine.resize(r.width, r.height, window.devicePixelRatio || 1)
+    }
+    // A change of device pixel ratio (another monitor, app zoom) does not resize the stage in CSS px.
+    window.addEventListener('resize', measure)
+    measure()
+    setThemeTick((n) => n + 1)
     const mo = new MutationObserver(() => setThemeTick((n) => n + 1))
     mo.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
     return () => {
       ro.disconnect()
+      window.removeEventListener('resize', measure)
       mo.disconnect()
       window.cancelAnimationFrame(viewRaf)
       engine.dispose()

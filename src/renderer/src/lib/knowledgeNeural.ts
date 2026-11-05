@@ -922,8 +922,9 @@ export function pickLabels(input: {
     if (placed.some((p) => rectsTouch(p, box, LABEL_PAD))) continue
     let blocked = false
     for (const o of candidates) {
-      if (o.id === c.id || o.r <= c.r) continue
-      if (circleHitsRect(o.x, o.y, o.r, box, LABEL_PAD)) {
+      if (o.id === c.id) continue
+      // A larger node keeps 4 px of air; a smaller one may not sit under the name either.
+      if (circleHitsRect(o.x, o.y, o.r, box, o.r > c.r ? LABEL_PAD : 1)) {
         blocked = true
         break
       }

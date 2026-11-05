@@ -339,7 +339,7 @@
     animation: none;
   }
 }
-:root[data-reduce-motion='true'] .neural-card {
+:root[data-reduce-motion='on'] .neural-card {
   animation: none;
 }
 @media (forced-colors: active) {
