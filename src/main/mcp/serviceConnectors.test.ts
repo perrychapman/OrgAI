@@ -63,6 +63,36 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true })
 })
 
+describe('team files helpers: preview and discard', () => {
+  it('previews the catalog entry without adding anything, and prefers an existing entry', () => {
+    const svc = build()
+    const preview = svc.connectorPreviewForTeam('linear', 'full')!
+    expect(preview).toMatchObject({ name: 'linear', url: 'https://mcp.linear.app/mcp', connectorId: 'linear', connectorVariant: 'full' })
+    expect(svc.libraryEntries()).toEqual([])
+    expect(libEvents).toEqual([])
+    expect(svc.connectorPreviewForTeam('not-a-connector')).toBeUndefined()
+    const added = svc.connectorEntryForTeam('linear', 'full')!
+    expect(svc.connectorPreviewForTeam('linear', 'full')!.id).toBe(added.id)
+    // An entry on another variant is never rewritten: no preview for the asked one.
+    expect(svc.connectorPreviewForTeam('linear', 'readonly')).toBeUndefined()
+  })
+
+  it('discards an entry nobody uses, but never one a project links, one with stored values or one that is signed in', () => {
+    const svc = build()
+    const entry = svc.connectorEntryForTeam('linear', 'full')!
+    svc.discardConnectorEntryForTeam(entry.id)
+    expect(svc.libraryEntries()).toEqual([])
+    const kept = svc.connectorEntryForTeam('linear', 'full')!
+    secrets.set(mcpLibrarySecretKey(kept.id, 'header', 'Authorization'), 'Bearer x')
+    svc.discardConnectorEntryForTeam(kept.id)
+    expect(svc.libraryEntries()).toHaveLength(1)
+    secrets.delete(mcpLibrarySecretKey(kept.id, 'header', 'Authorization'))
+    projects.update(pid, (p) => ({ ...p, mcpServers: [{ id: 'm', name: 'linear', transport: 'http', url: kept.url, libraryId: kept.id, enabled: true, source: 'user', addedAt: '' } as McpServerSpec] }))
+    svc.discardConnectorEntryForTeam(kept.id)
+    expect(svc.libraryEntries()).toHaveLength(1)
+  })
+})
+
 describe('connectors:list and connectors:add', () => {
   it('lists every preset as available until added', () => {
     const list = build().connectorsList()

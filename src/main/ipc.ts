@@ -370,6 +370,17 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
     if (input && typeof input === 'object') {
       if (teamArg) input.teamFiles = teamArg
       else delete input.teamFiles
+      // A folder with team files gets them only through the reviewed teamFiles path: importAgents may still bring other
+      // sources the user chose, but never the `.orgai/` agents, which would skip the approval card (project.ts is
+      // unchanged for the other sources).
+      if (Array.isArray(input.importAgents) && teamFiles) {
+        try {
+          const dir = checkProjectPath(input.path)
+          if (dir.isDirectory && teamFiles.found(input.path, dir)) input.importAgents = input.importAgents.filter((s) => s !== 'orgai')
+        } catch {
+          input.importAgents = input.importAgents.filter((s) => s !== 'orgai')
+        }
+      }
     }
     return projects.create(input, settings.get(), {
       mockAvailable: adapterIds.includes('mock'),

@@ -107,6 +107,20 @@ const unique = (list: string[]): string[] => [...new Set(list)]
 const cap = <T>(list: T[], n = TEAM_FILES_LIST_MAX): T[] => (list.length > n ? list.slice(0, n) : list)
 const plural = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`
 
+/** Whether the change from `before` to `after` is to an item whose file is held (does not parse): it cannot be written yet. */
+function deltaTouchesHeld(before: TeamDoc, after: TeamDoc, held: readonly string[]): boolean {
+  const differs = (a: unknown, b: unknown): boolean => canonicalJson(a) !== canonicalJson(b)
+  return held.some((path) => {
+    if (path === TEAM_FILES_JSON) return differs(before.settings, after.settings) || differs(before.skills.map((s) => [s.name, s.enabled]), after.skills.map((s) => [s.name, s.enabled]))
+    if (path === TEAM_FILES_MCP_JSON) return differs(before.mcp, after.mcp)
+    const role = /^\.orgai\/agents\/(.+)\.md$/.exec(path)
+    if (role) return differs(before.roles.find((r) => r.slug === role[1]), after.roles.find((r) => r.slug === role[1]))
+    const skill = /^\.orgai\/skills\/([^/]+)/.exec(path)
+    if (skill) return differs(before.skills.find((s) => s.name === skill[1]), after.skills.find((s) => s.name === skill[1]))
+    return false
+  })
+}
+
 /** A document with the definition of the named (linked) servers blanked: name, switch, roles and link fields stay. */
 function maskLinked(doc: TeamDoc, names: ReadonlySet<string>): TeamDoc {
   if (!names.size) return doc
@@ -435,7 +449,7 @@ export class TeamFilesService {
         }
         if (entry && entry.name !== d.name) entry = undefined
         // An entry this apply added goes again when the apply fails afterwards.
-        if (entry && !lib.some((e) => e.id === (entry as McpLibraryEntry).id)) {
+        if (entry) {
           const added = entry.id
           undo.push(() => this.deps.mcp.discardConnectorEntry?.(added))
         }
@@ -452,7 +466,8 @@ export class TeamFilesService {
       return spec
     }
     const spec = make(x && !x.libraryId ? x : undefined)
-    if (!x) {
+    // Not the server that is there now (none, a link, or another launch): an earlier one with this launch takes its id back.
+    if (!x || x.libraryId || spec.id !== x.id) {
       for (const t of tombs) {
         const back = make(t.spec)
         if (back.id === t.spec.id) return { spec: back, reused: t }
@@ -662,13 +677,15 @@ export class TeamFilesService {
     const plan = planTeamWrite(new Set(read.files.map((f) => f.path)), diskDoc, newDisk)
     if (!plan.write.length && !plan.remove.length) {
       if (parsed.digest) st.lastKnownDigest = parsed.digest
-      return { ok: true, written: [] }
+      // A held item reads as the approved content, so there is nothing to write yet: the delta must stay for later.
+      return { ok: !deltaTouchesHeld(beforeDoc, afterDoc, parsed.heldPaths), written: [] }
     }
     const res = this.writeFiles(folder, plan.write, plan.remove, parsed.heldPaths)
     const failed = res.skipped.filter((p) => !isHeldPath(p, parsed.heldPaths))
     // A change that wanted a held file (one that does not parse) is not written yet: it stays in the approved team and the
     // delta is kept, so when the file is fixed this change is applied onto it instead of the older fields winning.
-    const heldSkipped = res.skipped.some((p) => isHeldPath(p, parsed.heldPaths))
+    // (A held item reads as the approved content, so the plan alone cannot see it: compare the delta against the held paths.)
+    const heldSkipped = res.skipped.some((p) => isHeldPath(p, parsed.heldPaths)) || deltaTouchesHeld(beforeDoc, afterDoc, parsed.heldPaths)
     const reparsed = this.load(folder, base).parsed
     if (st.rejectedDigest && st.rejectedDigest === parsed.digest && reparsed.digest) st.rejectedDigest = reparsed.digest
     if (reparsed.digest) st.lastKnownDigest = reparsed.digest

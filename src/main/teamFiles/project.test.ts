@@ -281,3 +281,33 @@ describe('mcpSpecFromDoc', () => {
     expect(changed.oauth).toBeUndefined()
   })
 })
+
+describe('security review fixes', () => {
+  it('a role named like a Windows device is blocked with a rename message, never written', () => {
+    for (const slug of ['con', 'aux', 'nul', 'com1', 'lpt3', 'prn']) {
+      const p = mkProject()
+      p.roles = [mkRole('r-lead', 'lead', { reportsTo: null }), mkRole('r-x', slug)]
+      const r = docFromProject(p, content)
+      expect(r.blocked, slug).toMatch(/reserved on Windows/)
+      expect(r.blocked, slug).toContain('Rename it')
+    }
+    expect(docFromProject(mkProject(), content).blocked).toBeUndefined()
+  })
+
+  it('private-looking skill files are left out of the document with a note', () => {
+    const r = docFromProject(mkProject(), () => ({
+      body: 'Body.',
+      files: [{ path: 'fmt.sh', text: 'echo' }],
+      skipped: ['.env', 'key.pem']
+    }))
+    expect(r.doc.skills[0].files.map((f) => f.path)).toEqual(['fmt.sh'])
+    expect(r.notes.some((n) => /private-looking/.test(n) && n.includes('.env') && n.includes('key.pem'))).toBe(true)
+  })
+
+  it('limits above the effective caps are left out of the files with a note', () => {
+    const r = docFromProject(mkProject({ maxSubagentDepth: 9, maxConcurrentSubagents: 40 }), content)
+    expect(r.doc.settings.maxSubagentDepth).toBeUndefined()
+    expect(r.doc.settings.maxConcurrentSubagents).toBeUndefined()
+    expect(r.notes.filter((n) => /cannot hold/.test(n))).toHaveLength(2)
+  })
+})

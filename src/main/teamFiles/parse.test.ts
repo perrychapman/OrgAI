@@ -401,3 +401,40 @@ describe('hostile input', () => {
     expect(parseTeamFiles(null as unknown as TeamFile[], { base: null, agentsDirExists: true }).doc).toBeNull()
   })
 })
+
+describe('security review fixes', () => {
+  const withSettings = (patch: Record<string, unknown>): TeamFile[] => {
+    const files = serializeTeam(sampleDoc())
+    const j = JSON.parse(fileText(files, TEAM_FILES_JSON)) as Record<string, unknown>
+    return replaceFile(files, TEAM_FILES_JSON, JSON.stringify({ ...j, ...patch }))
+  }
+
+  it('subagent depth and concurrency above the effective caps are a problem for team.json', () => {
+    expect(parse(withSettings({ maxSubagentDepth: 5, maxConcurrentSubagents: 32 })).problems).toEqual([])
+    for (const patch of [{ maxSubagentDepth: 6 }, { maxConcurrentSubagents: 33 }, { maxSubagentDepth: 1000 }]) {
+      const p = parse(withSettings(patch))
+      expect(p.problems.map((x) => x.file), JSON.stringify(patch)).toEqual([TEAM_FILES_JSON])
+      expect(p.heldPaths).toContain(TEAM_FILES_JSON)
+    }
+  })
+
+  it('a key in a server\'s command or description is refused', () => {
+    const key = 'sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789'
+    const base = { name: 'docs', transport: 'stdio' as const, command: 'npx', args: ['-y', 'docs@1.0.0'], enabled: true }
+    expect(serverFileRefusal(base)).toBeNull()
+    expect(serverFileRefusal({ ...base, description: `Use ${key}` })).toMatch(/secret/)
+    expect(serverFileRefusal({ ...base, command: `run --token=${key}` })).toMatch(/secret/)
+  })
+
+  it('the injected link check makes mcp.json a problem and keeps the approved servers', () => {
+    const files = serializeTeam(sampleDoc())
+    const base = parse(files).doc!
+    const p = parseTeamFiles(files, { base, agentsDirExists: true, linkCheck: (m) => (m.connectorId ? 'Its address is not the one this computer uses.' : null) })
+    expect(p.problems.map((x) => x.file)).toEqual([TEAM_FILES_MCP_JSON])
+    expect(p.problems[0].message).toContain('Server wiki was refused')
+    expect(p.heldPaths).toContain(TEAM_FILES_MCP_JSON)
+    expect(p.doc?.mcp).toEqual(base.mcp)
+    // A throwing check never takes the parse down.
+    expect(parseTeamFiles(files, { base, agentsDirExists: true, linkCheck: () => { throw new Error('boom') } }).problems).toEqual([])
+  })
+})

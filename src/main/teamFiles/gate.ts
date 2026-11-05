@@ -223,7 +223,10 @@ function engine(approvedIn: TeamDoc, diskIn: TeamDoc, force: string | null, link
       draft.before = longText(String(av ?? ''))
       draft.after = longText(String(dv ?? ''))
     }
-    if (record(draft, needs, 'Loosens a limit or the permission mode')) {
+    const takes = record(draft, needs, 'Loosens a limit or the permission mode')
+    // Remember which settings really loosen (also in the all-pending previews), for the power-first order.
+    if (needs) LOOSENING.add((takes ? applied : pending)[(takes ? applied : pending).length - 1])
+    if (takes) {
       const s = eff.settings as unknown as Record<string, unknown>
       if (dv === undefined) delete s[k]
       else s[k] = structuredClone(dv)
@@ -481,9 +484,12 @@ function engine(approvedIn: TeamDoc, diskIn: TeamDoc, force: string | null, link
   return { effective: normalizeDoc(eff), pending, applied }
 }
 
+/** The settings changes that really loosen something (identity of the change objects built in this module). */
+const LOOSENING = new WeakSet<TeamFileChange>()
+
 /** Most powerful first: settings that loosen, roles with elevated tools, services, skills, then the rest. */
 function powerGroup(c: TeamFileChange): number {
-  if (c.kind === 'settings' && c.needsApproval && c.id !== 'settings:brief') return 0
+  if (c.kind === 'settings' && LOOSENING.has(c)) return 0
   if (c.kind === 'role' && c.elevatedAdded?.length) return 1
   if (c.kind === 'mcp') return 2
   if (c.kind === 'skill') return 3

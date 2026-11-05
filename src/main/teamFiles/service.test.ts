@@ -410,7 +410,8 @@ describe('skills and servers', () => {
     expect(server.url).toBe('https://evil.example.net/mcp')
     expect(server.id).not.toBe('mcp-wiki')
     expect([...c.secrets.keys()].filter((k) => k.includes(`:${server.id}:`))).toEqual([])
-    expect([...c.secrets.keys()].filter((k) => k.includes(':mcp-wiki:'))).toEqual([])
+    // The old target's secret is not deleted: it waits under a tombstone until the old launch returns or the user removes it.
+    expect(c.secrets.get(`mcp:${p.id}:mcp-wiki:header:Authorization`)).toBe('Bearer mine')
   })
 
   it('the same launch keeps the server id and its secrets when only the description changes', () => {
@@ -433,7 +434,7 @@ describe('skills and servers', () => {
     expect(c.secrets.get(`mcp:${p.id}:mcp-wiki:header:Authorization`)).toBe('Bearer mine')
   })
 
-  it('a connector server links the library entry of that connector, never using the file url', () => {
+  it('a connector server whose file address differs from this computer\'s entry is a problem for mcp.json, never linked', () => {
     const p = createProject(c)
     c.svc.status(p.id)
     c.library.push({ id: 'mcpl-gh', name: 'github', transport: 'http', url: 'https://api.githubcopilot.com/mcp/', enabled: true, source: 'user', addedAt: '', connectorId: 'github', connectorVariant: 'app-readonly' } as never)
@@ -444,11 +445,36 @@ describe('skills and servers', () => {
       'utf8'
     )
     const s = c.svc.check(p.id)
+    expect(s.state).toBe('problem')
+    expect(s.problems[0].file).toBe('.orgai/mcp.json')
+    expect(s.problems[0].message).toContain('address is not the one this computer uses')
+    expect(c.projects.get(p.id)!.mcpServers ?? []).toEqual([])
+    expect(() => c.svc.approve({ projectId: p.id, digest: s.digest! })).toThrow(/Fix the problem/)
+  })
+
+  it('a connector server with the entry\'s address shows the ENTRY target, the stored sign-in and the roles, then links it', () => {
+    const p = createProject(c)
+    c.svc.status(p.id)
+    c.library.push({ id: 'mcpl-gh', name: 'github', transport: 'http', url: 'https://api.githubcopilot.com/mcp/', enabled: true, source: 'user', addedAt: '', connectorId: 'github', connectorVariant: 'app-readonly' } as never)
+    const file = join(repo, '.orgai', 'mcp.json')
+    writeFileSync(
+      file,
+      `${JSON.stringify({ format: 'orgai.team/1', servers: [{ name: 'github', transport: 'http', url: 'https://api.githubcopilot.com/mcp/', enabled: true, roles: ['reviewer'], connectorId: 'github', connectorVariant: 'app-readonly' }] }, null, 2)}\n`,
+      'utf8'
+    )
+    const s = c.svc.check(p.id)
     expect(s.state).toBe('pending')
+    const change = s.changes.find((x) => x.kind === 'mcp')!
+    expect(change).toMatchObject({ usesStoredSignIn: true, reachesRoles: ['reviewer'], target: 'https://api.githubcopilot.com/mcp/' })
     c.svc.approve({ projectId: p.id, digest: s.digest! })
     const server = c.projects.get(p.id)!.mcpServers!.find((m) => m.name === 'github')!
     expect(server.libraryId).toBe('mcpl-gh')
     expect(server.url).toBe('https://api.githubcopilot.com/mcp/')
+    // Approved and cache agree about the linked server from here on: a later save does not take the rebuild path.
+    expect(c.svc.check(p.id).state).toBe('in-sync')
+    setRole(c, p.id, 'reviewer', () => ({ prompt: 'After the link.' }))
+    expect(c.svc.check(p.id).state).toBe('in-sync')
+    expect(readOrgai(c, 'agents/reviewer.md')).toContain('After the link.')
   })
 })
 
