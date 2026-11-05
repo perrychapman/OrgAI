@@ -5,7 +5,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type { AppSettings, FocusRunTarget, HostKind, RunEvent } from '@shared/types'
-import { IPC, runWindowHash } from '@shared/types'
+import { IPC, TEAM_FILES_IPC, runWindowHash } from '@shared/types'
 import { appUrlMatcher, isExternalWebUrl, scopedWindow, shouldBlockNavigation } from './windowScope'
 import { applyShellPath } from './shellEnv'
 import { stopSystemCertRead, trustSystemCertificates } from './systemCerts'
@@ -392,7 +392,14 @@ app.whenReady().then(async () => {
     ownership: bootOwnership,
     safeStorage,
     openExternal: (url) => shell.openExternal(url),
-    desktop: { openRunWindow },
+    desktop: {
+      openRunWindow,
+      teamFilesChanged: (status) => {
+        for (const win of BrowserWindow.getAllWindows()) {
+          if (!win.isDestroyed()) win.webContents.send(TEAM_FILES_IPC.teamFilesChanged, status)
+        }
+      }
+    },
     mock: process.env.ORGAI_MOCK === '1',
     onDrained: () => {
       drainQuit = true

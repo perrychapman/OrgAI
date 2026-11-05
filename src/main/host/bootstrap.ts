@@ -13,7 +13,7 @@
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { AppSettings, ConnectionId, HostKind, HostStatusResult, Project, RunEvent, RunSummary, TerminalAccessLevel } from '../../shared/types'
-import { DEFAULT_KEEP_RUNS, HARNESS_PROJECT_ID, HOST_PROTOCOL_VERSION, IPC, QUICK_PROJECT_ID, SKILLS_PROJECT_ID, TEAM_FILES_IPC, isVirtualProjectId } from '../../shared/types'
+import { DEFAULT_KEEP_RUNS, HARNESS_PROJECT_ID, HOST_PROTOCOL_VERSION, IPC, QUICK_PROJECT_ID, SKILLS_PROJECT_ID, isVirtualProjectId } from '../../shared/types'
 import { buildSettingsInfo } from '../appInfo'
 import { CapabilityService } from '../capabilities/service'
 import { seedMockHome } from '../capabilities/mockHome'
@@ -266,7 +266,8 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
       discardConnectorEntry: (entryId) => mcp.discardConnectorEntryForTeam(entryId),
       removeServerSecrets: (projectId, serverId) => mcp.removeServerSecrets(projectId, serverId)
     },
-    broadcastStatus: (status) => events.emit(TEAM_FILES_IPC.teamFilesChanged, status),
+    // teamFiles:changed is desktop_only delivery (registry PUSH_TABLE): it never goes on the bus a socket client can subscribe to.
+    broadcastStatus: (status) => opts.desktop?.teamFilesChanged?.(status),
     broadcastProject: emitProject,
     warn: (m) => log.warn(`Team files: ${m}`)
   })

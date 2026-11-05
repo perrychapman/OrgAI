@@ -59,6 +59,8 @@ export {
   connectionSecretArgs,
   connectorArgs,
   effectiveRemoveRuns,
+  folderConfigProjectArg,
+  folderConfigTrustArgs,
   knowledgeArgs,
   mcpAssistArgs,
   mcpCopyArgs,
@@ -66,6 +68,7 @@ export {
   mcpOverridesArgs,
   mcpSecretArgs,
   modelsQueryArg,
+  pathCheckWithTeamFiles,
   permissionAddRefusal,
   permissionRuleArgs,
   presetRemoveArgs,
@@ -75,6 +78,8 @@ export {
   removalFacts,
   settingsSetArgs,
   skillAssistArgs,
+  teamFilesArgs,
+  teamFilesCreateArg,
   templateEngagementArgs
 } from './host/args'
 export type { RemovalDeps } from './host/args'

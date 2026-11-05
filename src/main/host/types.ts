@@ -14,7 +14,8 @@ import type {
   HostStatusResult,
   HostStopInput,
   HostStopResult,
-  Project
+  Project,
+  TeamFilesStatus
 } from '../../shared/types'
 import type { AppLike } from '../appInfo'
 import type { CapabilityServiceApi } from '../capabilities/types'
@@ -48,6 +49,8 @@ export interface DesktopHooks {
    * `#/run/<projectId>/<runId>` (index.ts window factory).
    */
   openRunWindow(target: FocusRunTarget): void
+  /** teamFiles:changed: send a project's team-files status to every window (desktop_only push; never to a socket). */
+  teamFilesChanged?(status: TeamFilesStatus): void
 }
 
 /** host.status / host.stop, served by whoever owns the host lifecycle (bootstrap). */
