@@ -46,14 +46,14 @@ describe('(a) completeness', () => {
   const existing: string[] = [...Object.values(IPC), ...Object.values(MCP_SCOPE_IPC), ...Object.values(KIT_IPC)]
   const host: string[] = Object.values(HOST_IPC)
 
-  it('matches the spec counts: 156 existing channels (146 request + 10 push) plus 5 HOST_IPC', () => {
+  it('matches the spec counts: 156 existing channels (146 request + 10 push) plus 6 HOST_IPC', () => {
     const push = new Set(PUSH_CHANNELS)
     expect(new Set(existing).size).toBe(existing.length)
     expect(existing.length).toBe(156)
     expect(existing.filter((c) => push.has(c)).length).toBe(10)
     expect(existing.filter((c) => !push.has(c)).length).toBe(146)
-    expect(host.length).toBe(5)
-    expect(requestChannels().length).toBe(151)
+    expect(host.length).toBe(6)
+    expect(requestChannels().length).toBe(152)
   })
 
   it('every channel is either in CHANNEL_JSON_FIELDS or a push channel, never both', () => {

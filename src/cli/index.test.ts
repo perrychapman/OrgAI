@@ -105,9 +105,29 @@ describe('orgai routing', () => {
   })
 
   it('an unavailable command exits 2', async () => {
-    const r = await run(['exec', 'hi'])
+    const r = await run(['attach', 'R1'])
     expect(r.code).toBe(2)
-    expect(r.err).toContain('`orgai exec` is not available in this build yet.')
+    expect(r.err).toContain('`orgai attach` is not available in this build yet.')
+  })
+
+  it('exec, -p / --print, resume and decide route to their Wave 3 stubs (exit 1, not built yet)', async () => {
+    for (const [argv, name] of [
+      [['exec', 'hi'], 'exec'],
+      [['-p', 'hi'], 'exec'],
+      [['--print', 'hi'], 'exec'],
+      [['--project', 'p1', '-p', 'hi'], 'exec'],
+      [['resume', 'R1', '--exec'], 'resume'],
+      [['decide', 'perm_1', 'allow'], 'decide']
+    ] as const) {
+      const r = await run([...argv])
+      expect(r.code, argv.join(' ')).toBe(1)
+      expect(r.err, argv.join(' ')).toContain(`\`orgai ${name}\` is not built yet.`)
+    }
+    const h = await run(['-p', '--help'])
+    expect(h.code).toBe(0)
+    expect(h.out).toContain('Usage: orgai exec')
+    expect((await run(['help', 'decide'])).out).toContain('allow-session')
+    expect((await run(['help', 'resume'])).out).toContain('--exec')
   })
 
   it('an unknown command exits 2 with a did-you-mean', async () => {

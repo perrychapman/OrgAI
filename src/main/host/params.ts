@@ -212,6 +212,8 @@ export const CHANNEL_PARAMS: Readonly<Record<string, readonly ParamSpec[]>> = {
   [HOST_IPC.kitExportBundle]: OBJECT,
   [HOST_IPC.kitPreviewBundle]: OBJECT,
   [HOST_IPC.kitApplyBundle]: OBJECT,
+  // [requestId]
+  [HOST_IPC.runsFindDecision]: STRING,
 
   // ---- host.* request methods (a plain-object params is normalized to [object] by the gate) ----
   [HOST_METHODS.hostStatus]: OPTIONAL_NULLABLE_OBJECT,

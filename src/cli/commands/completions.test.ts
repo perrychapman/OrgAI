@@ -37,7 +37,7 @@ describe('orgai completions', () => {
 
   it('offers available commands only', () => {
     expect(completionCommands().map((c) => c.entry.name)).toEqual(COMMANDS.filter((x) => x.available).map((x) => x.name))
-    expect(completionScript('bash')).not.toMatch(/compgen -W "[^"]*\bexec\b/)
+    expect(completionScript('bash')).not.toMatch(/compgen -W "[^"]*\battach\b/)
   })
 
   it('an unknown shell is exit 2', async () => {

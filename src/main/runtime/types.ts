@@ -405,6 +405,18 @@ export interface RuntimeContext {
   /** Delay between a turn ending and the continuation check, in ms. Tests shorten it. */
   continuationDelayMs?: number
   /**
+   * Headless exec settlement (cli-spec 6.2(2)). Adapters call it on EVERY root turn end, failed ones included,
+   * BEFORE emitting run.status 'idle'. Optional: missing = nobody listens.
+   */
+  onRootTurnEnded?(e: RootTurnEnd): void
+  /** Adapter-internal activity that should keep an exec run from settling or stalling (bumps activityGen). */
+  noteActivity?(reason: ExecActivityReason): void
+  /**
+   * Set by RunManager on exec runs with a budget: the effective budget minus the exec chain's prior cost (0 allowed).
+   * Claude passes it as options.maxBudgetUsd instead of project.maxBudgetUsd; a restart subtracts this run's cost from it.
+   */
+  budgetUsd?: number
+  /**
    * request_mcp_install: put an agent's MCP server request in front of the user (mcpInstall.request event)
    * and block until mcp:answerInstall, like requestProposal. Resolves `{ approved: false, scope: 'run' }` if
    * the run ends first. The decision may carry secret values for the adapter to pass to the server's env or
@@ -511,6 +523,42 @@ export interface RuntimeSession {
    * cannot receive (message_run answers NOT LIVE).
    */
   receive?(message: PeerMessage): Promise<void>
+  /** Headless exec settlement view (cli-spec 6.2(2)). Missing = the adapter cannot report it (treated as not settled). */
+  settlement?(): SessionSettlement
+}
+
+/** One root turn end, reported through RuntimeContext.onRootTurnEnded. */
+export interface RootTurnEnd {
+  /** The adapter's own monotonic root-turn counter: 1 for the first root turn end of the session. */
+  turnGen: number
+  ok: boolean
+  /** The SDK result subtype, e.g. 'error_max_turns', 'error_during_execution', 'error_max_budget_usd', or 'failed' for a Codex failed turn. */
+  errorSubtype?: string
+  isAuthError?: boolean
+  /** The turn ended on a usage limit: the run is about to pause, not fail. */
+  limited?: boolean
+  /** The user interrupted the turn. */
+  interrupted?: boolean
+}
+
+/** Why RuntimeContext.noteActivity was called. */
+export type ExecActivityReason = 'subagent' | 'report' | 'integration' | 'continuation' | 'restart' | 'message'
+
+/** RuntimeSession.settlement(): what the adapter knows about being done (cli-spec 6.2(2)). */
+export interface SessionSettlement {
+  /** The newest root turn generation the adapter reported through onRootTurnEnded. */
+  rootTurnGen: number
+  /** The root agent is idle (no turn running). */
+  rootIdle: boolean
+  /** ContinuationDriver.isSettledForTurn(rootTurnGen): no timer, no evaluation in flight, that turn evaluated. */
+  continuationSettled: boolean
+  /** The turn-1 set-plan nudge was sent (ContinuationDriver.nudgeTurn1Sent). */
+  nudgeTurn1Sent: boolean
+  /**
+   * Nothing adapter-internal pending: no deferred turn end or MCP / app-server restart pending, no background tasks,
+   * no queued harness or user messages, no turn in flight, and integrator.hasPendingWork() false.
+   */
+  quiescent: boolean
 }
 
 export interface CompletionInput {

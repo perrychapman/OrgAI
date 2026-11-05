@@ -1494,6 +1494,8 @@ export interface McpInstallRequest {
   /** Secret names (from spec.secretEnv and spec.secretHeaders) the user must fill to approve. */
   requiredSecrets: string[]
   createdAt: number
+  /** Card revision, set by RunManager when the card is created (1 for now). Decision calls may send expectedRevision. */
+  revision?: number
 }
 
 /**
@@ -1520,6 +1522,8 @@ export interface McpAnswerInstallInput {
   runId: string
   requestId: string
   decision: McpInstallDecision
+  /** Refused as 'stale-revision' when it does not match the card's revision (cli-spec 5.3). */
+  expectedRevision?: number
 }
 
 /**
@@ -1939,6 +1943,8 @@ interface ProposalBase {
    * 'after-turn' on Claude and Codex, 'now' on the mock; everything else 'next-run'. Missing on older events.
    */
   effect?: ProposalEffect
+  /** Card revision, set by RunManager when the card is created (1 for now). Decision calls may send expectedRevision. */
+  revision?: number
 }
 
 /** When an approved proposal takes effect (Proposal.effect). */
@@ -1992,6 +1998,8 @@ export interface UserQuestion {
   allowMultiple: boolean
   allowFreeText: boolean
   createdAt: number
+  /** Card revision, set by RunManager when the card is created (1 for now). Decision calls may send expectedRevision. */
+  revision?: number
 }
 
 /** The user's answer: chosen option labels plus optional free text. Empty when the run ended unanswered. */
@@ -2384,6 +2392,8 @@ export interface MergeReview {
   /** Unified diff, truncated when very large. */
   patch: string
   createdAt: number
+  /** Card revision, set by RunManager when the card is created (1 for now). Decision calls may send expectedRevision. */
+  revision?: number
 }
 
 export type MergeDecision = { behavior: 'merge' } | { behavior: 'discard' } | { behavior: 'hold' }
@@ -2535,6 +2545,8 @@ export interface QuickRunInput {
   /** Allow Edit, Write and Bash in the folder (each still asks). Default false. A git folder with edits on isolates writers. */
   allowEdits?: boolean
   images?: ImageAttachment[]
+  /** Headless exec overrides (cli-spec 6.2(1)). Honoured only from socket / inproc host clients; the desktop handler drops it. */
+  overrides?: RunOverrides
 }
 
 /** RunSummary.quick: how a quick run was started. Kept by continuations. */
@@ -2789,6 +2801,8 @@ export interface PermissionRequest {
    * the card offers Allow once and Deny only ("Touches a reference folder (read only)").
    */
   referenceFolder?: string
+  /** Card revision, set by RunManager when the card is created (1 for now). Decision calls may send expectedRevision. */
+  revision?: number
 }
 
 /** How long an allow decision lasts: this call only, the rest of this run, or every future run of the project. */
@@ -2833,6 +2847,8 @@ export interface PermissionRuleRequest {
   /** Rules the harness flags as broad or destructive (a bare shell tool, a wildcard, rm, git push, sudo...). */
   flagged: string[]
   createdAt: number
+  /** Card revision, set by RunManager when the card is created (1 for now). Decision calls may send expectedRevision. */
+  revision?: number
 }
 
 export type PermissionRuleDecision = { behavior: 'grant'; scope: 'run' | 'project' } | { behavior: 'deny'; message?: string }
@@ -3016,6 +3032,8 @@ export type RunEvent =
        * rules, allowed folders or permission mode may have changed. Absent on deny, once, session and cancelled.
        */
       savedToProject?: true
+      /** Who decided (cli-spec 3.4(4)); absent on cancelled cards and older events. */
+      decidedBy?: DecidedBy
     }
   /** Adapters report the provider's run total here; RunManager stores the priced total on the summary. Kept for older readers. */
   | { type: 'run.cost'; runId: string; totalCostUsd: number }
@@ -3026,14 +3044,14 @@ export type RunEvent =
   | { type: 'run.usage'; runId: string; usage: RunUsage }
   | { type: 'log'; runId: string; level: 'info' | 'warn' | 'error'; message: string }
   | { type: 'proposal.request'; runId: string; proposal: Proposal }
-  | { type: 'proposal.resolved'; runId: string; proposalId: string; decision: ProposalOutcome; cancelled?: true }
+  | { type: 'proposal.resolved'; runId: string; proposalId: string; decision: ProposalOutcome; cancelled?: true; decidedBy?: DecidedBy }
   | { type: 'question.request'; runId: string; question: UserQuestion }
-  | { type: 'question.resolved'; runId: string; questionId: string; answer: QuestionAnswer; cancelled?: true }
+  | { type: 'question.resolved'; runId: string; questionId: string; answer: QuestionAnswer; cancelled?: true; decidedBy?: DecidedBy }
   /** An agent asked for permission rules (request_permission_rules); the run waits for permissions:decideRequest. */
   | { type: 'rules.request'; runId: string; request: PermissionRuleRequest }
-  | { type: 'rules.resolved'; runId: string; requestId: string; decision: PermissionRuleDecision; cancelled?: true }
+  | { type: 'rules.resolved'; runId: string; requestId: string; decision: PermissionRuleDecision; cancelled?: true; decidedBy?: DecidedBy }
   | { type: 'merge.request'; runId: string; review: MergeReview }
-  | { type: 'merge.resolved'; runId: string; reviewId: string; decision: MergeDecision; cancelled?: true }
+  | { type: 'merge.resolved'; runId: string; reviewId: string; decision: MergeDecision; cancelled?: true; decidedBy?: DecidedBy }
   /** The main process changed the project (an approved proposal, setup completion). */
   | { type: 'project.updated'; runId: string; project: Project }
   /** Latest plan usage as seen by a live session. Account-wide, not specific to the run. */
@@ -3069,7 +3087,7 @@ export type RunEvent =
   /** An agent asked to install an MCP server (request_mcp_install); the run waits for mcp:answerInstall. */
   | { type: 'mcpInstall.request'; runId: string; request: McpInstallRequest }
   /** The install request was answered (or dropped when the run ended: approved false). Never carries secrets. */
-  | { type: 'mcpInstall.resolved'; runId: string; requestId: string; outcome: McpInstallOutcome; cancelled?: true }
+  | { type: 'mcpInstall.resolved'; runId: string; requestId: string; outcome: McpInstallOutcome; cancelled?: true; decidedBy?: DecidedBy }
 
 /**
  * Payload of the main -> renderer `app:focusRun` message sent when a notification is clicked, and of
@@ -3417,6 +3435,8 @@ export interface StartRunInput {
   images?: ImageAttachment[]
   /** 'single': one assistant instead of the org chart (RunTeam). Any other value is dropped. */
   team?: RunTeam
+  /** Headless exec overrides (cli-spec 6.2(1)). Honoured only from socket / inproc host clients; the desktop handler drops it. */
+  overrides?: RunOverrides
 }
 
 /** runs:send: a follow-up message to a live run's orchestrator. */
@@ -3433,6 +3453,13 @@ export interface ContinueRunInput {
   /** May be empty when images are attached. */
   text: string
   images?: ImageAttachment[]
+  /** Headless exec overrides (cli-spec 6.2(1)). Honoured only from socket / inproc host clients; the desktop handler drops it. */
+  overrides?: RunOverrides
+  /**
+   * `orgai resume --exec`: keep the chain's execMode / execChainId / waitForReset / decisionPolicy. Without it a
+   * continuation strips them (narrowing overrides are kept). Socket / inproc clients only.
+   */
+  exec?: boolean
 }
 
 /**
@@ -5443,7 +5470,12 @@ export const HOST_IPC = {
   skillLibraryAddFromBundle: 'skillLibrary:addFromBundle',
   kitExportBundle: 'kit:exportBundle',
   kitPreviewBundle: 'kit:previewBundle',
-  kitApplyBundle: 'kit:applyBundle'
+  kitApplyBundle: 'kit:applyBundle',
+  /**
+   * `orgai decide` lookup (cli-spec 6.3): which run holds a pending card, or how a recently resolved one ended
+   * (RunManager tombstones). Scope 'read', socket only, params `[requestId]`, result DecisionLookup.
+   */
+  runsFindDecision: 'runs:findDecision'
 } as const
 
 export type HostIpcChannel = (typeof HOST_IPC)[keyof typeof HOST_IPC]
@@ -5780,6 +5812,43 @@ export interface DecisionOutcome {
   applyError?: string
   decidedBy?: DecidedBy
 }
+
+/** The six decision card kinds (RunManager pending maps, runs:findDecision). */
+export type CardKind = 'permission' | 'question' | 'proposal' | 'rules' | 'merge' | 'mcpInstall'
+
+/** Last-parameter options of the RunManager decision methods (cli-spec 3.4(4), 5.3). */
+export interface DecisionOptions {
+  /** Refused as 'stale-revision' when it does not match the card's revision. */
+  expectedRevision?: number
+  decidedBy?: DecidedBy
+}
+
+/** runs:findDecision result: a pending card, a recently resolved one (tombstone), or nothing. */
+export type DecisionLookup =
+  | { status: 'pending'; requestId: string; runId: string; projectId: string; kind: CardKind; revision: number }
+  | {
+      status: 'applied' | 'cancelled'
+      requestId: string
+      runId: string
+      kind: CardKind
+      effectiveDecision?: string
+      decidedBy?: DecidedBy
+      at: number
+    }
+  | { status: 'not-found'; requestId: string }
+
+/** Resolved-card tombstones RunManager keeps for runs:findDecision / 'already-resolved' answers. */
+export const DECISION_TOMBSTONES_MAX = 1000
+/** finalizeExecRun: how long it waits for session.finished and teardown before force-closing. */
+export const EXEC_FINALIZE_STOP_TIMEOUT_MS = 5000
+/** finalizeExecRun: how long it waits for an in-flight run title before cancelling it. */
+export const EXEC_TITLE_JOIN_MS = 2000
+/** trySettleExecRun debounce. */
+export const EXEC_SETTLE_DEBOUNCE_MS = 50
+/** The deny message a headless decision policy sends to the agent. */
+export const HEADLESS_POLICY_DENY_MESSAGE = 'Denied by the headless decision policy (orgai exec).'
+/** A question option whose label or description starts with this is the conservative policy's pick. */
+export const RECOMMENDED_OPTION_PREFIX = '(Recommended)'
 
 // Host-validated bundles (cli-spec 3.6).
 

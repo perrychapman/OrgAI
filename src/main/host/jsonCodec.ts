@@ -344,7 +344,8 @@ export const CHANNEL_JSON_FIELDS: Readonly<Record<string, ChannelJsonFields>> = 
   'skillLibrary:addFromBundle': { note: 'files[].base64 is base64 text; bulk.' }, // SkillBundleInput
   'kit:exportBundle': { note: 'Response rawBytesBase64 is base64 text; bulk.' }, // KitBundleExportInput
   'kit:previewBundle': { note: 'rawBytesBase64 is base64 text; bulk.' }, // KitBundlePreviewInput
-  'kit:applyBundle': { note: 'rawBytesBase64 is base64 text; bulk. stale_target_digest on a moved destination.' } // KitBundleApplyInput
+  'kit:applyBundle': { note: 'rawBytesBase64 is base64 text; bulk. stale_target_digest on a moved destination.' }, // KitBundleApplyInput
+  'runs:findDecision': {} // [requestId] -> DecisionLookup
 }
 
 // ---------- encode / decode ----------

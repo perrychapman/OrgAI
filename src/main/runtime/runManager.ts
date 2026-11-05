@@ -10,6 +10,11 @@ import type {
   UsageStatsQuery,
   AppSettings,
   AdapterChoice,
+  CardKind,
+  DecisionLookup,
+  DecisionOptions,
+  DecisionOutcome,
+  RunOverrides,
   ModelPrice,
   ImageAttachment,
   McpInstallDecision,
@@ -464,6 +469,11 @@ function excerpt(prompt: string, max = 60): string {
 }
 
 export interface RunManagerOptions {
+  /**
+   * Interactive clients right now: open desktop windows plus attached TUI or interactive sockets. The headless decision
+   * policy waits humanGraceMs before auto-resolving a card while this is above 0. Missing = 0.
+   */
+  interactiveClients?: () => number
   /** OrgAI's data dir, for the allowed-folder checks. Tests may omit it (the data-dir check is then skipped). */
   dataDir?: string
   /**
@@ -620,6 +630,34 @@ const CONNECTION_LABEL: Record<string, string> = { anthropic: 'Anthropic', opena
 /** A project or role name for one log line: control characters become spaces, at most 80 chars. */
 const logText = (s: string): string => s.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, ' ').slice(0, 80)
 
+/** A decision method's 'applied' outcome. */
+function applied(runId: string, requestId: string, effectiveDecision: string | undefined, opts: DecisionOptions): DecisionOutcome {
+  return {
+    status: 'applied',
+    runId,
+    requestId,
+    ...(effectiveDecision ? { effectiveDecision } : {}),
+    ...(opts.decidedBy ? { decidedBy: opts.decidedBy } : {})
+  }
+}
+
+/** The pending card `id` in one run's maps, with its kind and revision. */
+function findPendingCard(cards: PendingCardMaps, id: string): { kind: CardKind; revision?: number } | undefined {
+  const permission = cards.pending.get(id)
+  if (permission) return { kind: 'permission', revision: permission.request.revision }
+  const question = cards.pendingQuestions.get(id)
+  if (question) return { kind: 'question', revision: question.question.revision }
+  const proposal = cards.pendingProposals.get(id)
+  if (proposal) return { kind: 'proposal', revision: proposal.proposal.revision }
+  const rules = cards.pendingRules.get(id)
+  if (rules) return { kind: 'rules', revision: rules.request.revision }
+  const merge = cards.pendingMerges.get(id)
+  if (merge) return { kind: 'merge', revision: merge.review.revision }
+  const install = cards.pendingInstalls.get(id)
+  if (install) return { kind: 'mcpInstall', revision: install.request.revision }
+  return undefined
+}
+
 export interface StartInput {
   project: Project
   prompt: string
@@ -657,6 +695,19 @@ export interface StartInput {
    * Refused on setup-like runs, quick runs and virtual projects. Continuations carry it from the run they continue.
    */
   team?: RunTeam
+  /** Headless exec overrides (cli-spec 6.2(1)); host clients only. Accepted, not used yet (Wave 3 T2). */
+  overrides?: RunOverrides
+  /** The caller holds the 'configure' scope: widening overrides apply (runOverrides.ts effectiveRunProject). */
+  allowWidening?: boolean
+}
+
+/** continueRun options (cli-spec 6.2(1)). Accepted, not used yet (Wave 3 T2). */
+export interface ContinueRunOptions {
+  overrides?: RunOverrides
+  /** `orgai resume --exec`: keep the chain's execMode / execChainId / waitForReset / decisionPolicy. */
+  exec?: boolean
+  /** The caller holds the 'configure' scope. */
+  allowWidening?: boolean
 }
 
 /**
@@ -2018,10 +2069,10 @@ export class RunManager {
     return summary.projectId === QUICK_PROJECT_ID || isTrustRestrictedRun(summary)
   }
 
-  decide(runId: string, requestId: string, decision: PermissionDecision): void {
+  decide(runId: string, requestId: string, decision: PermissionDecision, opts: DecisionOptions = {}): DecisionOutcome {
     const active = this.runs.get(runId)
     const pending = active?.pending.get(requestId)
-    if (!active || !pending) return
+    if (!active || !pending) return { status: 'not-found', requestId }
     active.pending.delete(requestId)
     // A quick run or build session works in a folder that is not a project: a 'project' grant would let the adapter
     // save rules into it. Narrow to the session here so every adapter is covered.
@@ -2036,6 +2087,7 @@ export class RunManager {
     const savedToProject = narrowed?.behavior === 'allow' && narrowed.scope === 'project'
     this.broadcast({ type: 'permission.resolved', runId, requestId, ...(savedToProject ? { savedToProject: true as const } : {}) })
     this.cardSettled(active)
+    return applied(runId, requestId, narrowed?.behavior === 'allow' ? 'allow' : 'deny', opts)
   }
 
   private requestProposal(
@@ -2105,15 +2157,16 @@ export class RunManager {
     }
   }
 
-  decideProposal(runId: string, proposalId: string, decision: ProposalDecision): void {
+  decideProposal(runId: string, proposalId: string, decision: ProposalDecision, opts: DecisionOptions = {}): DecisionOutcome {
     const active = this.runs.get(runId)
     const pending = active?.pendingProposals.get(proposalId)
-    if (!active || !pending) return
+    if (!active || !pending) return { status: 'not-found', requestId: proposalId }
     active.pendingProposals.delete(proposalId)
     // The broadcast carries the secret-free outcome (with waitingForSecrets), never decision.secrets.
     const outcome = pending.resolve(decision) ?? proposalOutcome(cleanProposalDecision(decision))
     this.broadcast({ type: 'proposal.resolved', runId, proposalId, decision: outcome })
     this.cardSettled(active)
+    return applied(runId, proposalId, outcome.behavior, opts)
   }
 
   private requestQuestion(
@@ -2127,10 +2180,10 @@ export class RunManager {
     })
   }
 
-  answerQuestion(runId: string, questionId: string, answer: QuestionAnswer): void {
+  answerQuestion(runId: string, questionId: string, answer: QuestionAnswer, opts: DecisionOptions = {}): DecisionOutcome {
     const active = this.runs.get(runId)
     const pending = active?.pendingQuestions.get(questionId)
-    if (!active || !pending) return
+    if (!active || !pending) return { status: 'not-found', requestId: questionId }
     active.pendingQuestions.delete(questionId)
     // Only labels that were offered count; a single-choice question keeps the first.
     const labels = new Set(pending.question.options.map((o) => o.label))
@@ -2141,6 +2194,7 @@ export class RunManager {
     pending.resolve(clean)
     this.broadcast({ type: 'question.resolved', runId, questionId, answer: clean })
     this.cardSettled(active)
+    return applied(runId, questionId, 'answer', opts)
   }
 
   private requestMergeReview(
@@ -2154,14 +2208,15 @@ export class RunManager {
     })
   }
 
-  decideMerge(runId: string, reviewId: string, decision: MergeDecision): void {
+  decideMerge(runId: string, reviewId: string, decision: MergeDecision, opts: DecisionOptions = {}): DecisionOutcome {
     const active = this.runs.get(runId)
     const pending = active?.pendingMerges.get(reviewId)
-    if (!active || !pending) return
+    if (!active || !pending) return { status: 'not-found', requestId: reviewId }
     active.pendingMerges.delete(reviewId)
     pending.resolve(decision)
     this.broadcast({ type: 'merge.resolved', runId, reviewId, decision })
     this.cardSettled(active)
+    return applied(runId, reviewId, decision?.behavior, opts)
   }
 
   // ---------- permission rule requests ----------
@@ -2193,10 +2248,10 @@ export class RunManager {
    * chose the rules knowingly, so flagged destructive rules are saved too; blanket rules and too-broad shell prefixes
    * (tooBroadRuleRefusal) stay run grants.
    */
-  decideRules(runId: string, requestId: string, decision: PermissionRuleDecision): void {
+  decideRules(runId: string, requestId: string, decision: PermissionRuleDecision, opts: DecisionOptions = {}): DecisionOutcome {
     const active = this.runs.get(runId)
     const pending = active?.pendingRules.get(requestId)
-    if (!active || !pending) return
+    if (!active || !pending) return { status: 'not-found', requestId }
     active.pendingRules.delete(requestId)
     const { rules } = pending.request
     let clean: PermissionRuleDecision
@@ -2236,6 +2291,7 @@ export class RunManager {
     pending.resolve(clean)
     this.broadcast({ type: 'rules.resolved', runId, requestId, decision: clean })
     this.cardSettled(active)
+    return applied(runId, requestId, clean.behavior, opts)
   }
 
   // ---------- MCP install requests ----------
@@ -2305,13 +2361,35 @@ export class RunManager {
   }
 
   /** Answer a request_mcp_install card (mcp:answerInstall). Unknown or already answered requests are ignored. */
-  answerMcpInstall(runId: string, requestId: string, decision: McpInstallDecision): void {
+  answerMcpInstall(runId: string, requestId: string, decision: McpInstallDecision, opts: DecisionOptions = {}): DecisionOutcome {
     const active = this.runs.get(runId)
     const pending = active?.pendingInstalls.get(requestId)
-    if (!active || !pending) return
+    if (!active || !pending) return { status: 'not-found', requestId }
     active.pendingInstalls.delete(requestId)
     pending.resolve(decision)
     this.cardSettled(active)
+    return applied(runId, requestId, decision?.approved ? 'approve' : 'deny', opts)
+  }
+
+  /**
+   * runs:findDecision: which live run holds the pending card `requestId`, its kind and revision. Resolved-card
+   * tombstones ('applied' / 'cancelled') come with Wave 3 T2; until then anything not pending is 'not-found'.
+   */
+  findDecision(requestId: string): DecisionLookup {
+    for (const active of this.runs.values()) {
+      const hit = findPendingCard(active, requestId)
+      if (hit) {
+        return {
+          status: 'pending',
+          requestId,
+          runId: active.summary.id,
+          projectId: active.summary.projectId,
+          kind: hit.kind,
+          revision: hit.revision ?? 1
+        }
+      }
+    }
+    return { status: 'not-found', requestId }
   }
 
   async send(runId: string, text: string, rawImages?: ImageAttachment[]): Promise<void> {
@@ -2472,7 +2550,8 @@ export class RunManager {
    * its memory. Same kind as the old run: setup runs keep the Architect (with its hidden profile
    * context), work runs use the project's roles. `project` must be the old run's project.
    */
-  async continueRun(project: Project, fromRunId: string, text: string, rawImages?: ImageAttachment[]): Promise<RunSummary> {
+  // `opts` (exec overrides) is accepted and not used yet (Wave 3 T2).
+  async continueRun(project: Project, fromRunId: string, text: string, rawImages?: ImageAttachment[], _opts: ContinueRunOptions = {}): Promise<RunSummary> {
     this.refuseWhileQuitting()
     const from = this.summary(fromRunId)
     if (!from) throw new Error('Run not found')

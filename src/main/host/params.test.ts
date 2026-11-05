@@ -183,6 +183,7 @@ const PAYLOADS: Record<string, unknown[]> = {
   'kit:exportBundle': [{ include: { skills: ['skl_1'] }, fileName: 'team.orgai-kit.json' }],
   'kit:previewBundle': [{ fileName: 'team.orgai-kit.json', rawBytesBase64: 'e30=' }],
   'kit:applyBundle': [{ rawBytesBase64: 'e30=', digest: 'e'.repeat(64), targetDigest: 'f'.repeat(64), choices: [] }],
+  'runs:findDecision': ['perm_1'],
   // host.*
   'host.status': [],
   'host.subscribe': [{ topics: ['connections', 'capabilities'] }],

@@ -18,6 +18,7 @@ import type {
   AgentImportScan,
   AppInfo,
   AppSettings,
+  DecisionLookup,
   AppSettingsInfo,
   AuthStatusResult,
   CapabilityApplyResult,
@@ -501,6 +502,11 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
   handle(IPC.mergesDecide, (_e, raw: unknown) => {
     const input = mergeDecideArgs(raw)
     runs.decideMerge(input.runId, input.reviewId, input.decision)
+  })
+  // `orgai decide` lookup (socket only, scope 'read').
+  handle(HOST_IPC.runsFindDecision, (_e, id: unknown): DecisionLookup => {
+    if (!isValidId(id)) throw new Error('Invalid request id')
+    return runs.findDecision(id)
   })
 
   handle(IPC.maintListWorktrees, (_e, projectId: string) => maintenance.listWorktrees(projectId))

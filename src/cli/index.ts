@@ -8,7 +8,9 @@ import { fileURLToPath } from 'node:url'
 import { runApp } from './commands/app'
 import { runCompletions } from './commands/completions'
 import { runDaemon } from './commands/daemon'
+import { runDecide } from './commands/decide'
 import { runDoctor } from './commands/doctor'
+import { runExec, runResume } from './commands/exec'
 import { runInbox } from './commands/inbox'
 import { runRuns } from './commands/runs'
 import { runStatus } from './commands/status'
@@ -31,7 +33,10 @@ const ROUTES: Record<string, CommandFn> = {
   daemon: runDaemon,
   app: runApp,
   doctor: runDoctor,
-  completions: runCompletions
+  completions: runCompletions,
+  exec: runExec,
+  resume: runResume,
+  decide: runDecide
 }
 
 export interface MainOverrides {
@@ -143,9 +148,9 @@ export async function main(argv: string[] = process.argv.slice(2), overrides: Ma
       return EXIT.ok
     }
 
-    const command = findCommand(name)
+    // `orgai -p <prompt>` / `--print` is `orgai exec <prompt>`.
+    const command = name === '-p' || name === '--print' ? findCommand('exec') : findCommand(name)
     if (!command) {
-      if (name === '-p' || name === '--print') throw new CliError('`orgai exec` is not available in this build yet.', EXIT.usage)
       if (name.startsWith('-')) throw new CliError(`Unknown option ${name}.`, EXIT.usage)
       throw new CliError(unknownCommandMessage(name), EXIT.usage)
     }

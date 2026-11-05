@@ -2,6 +2,7 @@
  * The CLI's command table (cli-spec 6.1, 6.3): what `orgai --help`, routing (index.ts) and `orgai completions` read.
  * Entries with `available: false` belong to later waves; index.ts answers them with a "not available yet" usage error.
  */
+import { PERMISSION_MODES } from '../shared/types'
 
 export interface CommandFlag {
   /** Long name without the dashes. */
@@ -48,6 +49,37 @@ const later = (name: string, summary: string, usage: string, subcommands?: reado
   available: false
 })
 
+/** Exec flags shared by `orgai exec` and `orgai resume --exec` (cli-spec 6.2). */
+const EXEC_RUN_FLAGS: readonly CommandFlag[] = [
+  { name: 'permission-mode', takesValue: true, values: PERMISSION_MODES, summary: 'Permission mode for this run (narrowing needs no extra access)' },
+  { name: 'no-auto-continue', takesValue: false, summary: 'Do not continue automatically until the plan is done' },
+  { name: 'max-auto-continues', takesValue: true, summary: 'At most this many automatic continues' },
+  { name: 'max-budget', takesValue: true, summary: 'Estimated cost cap in USD across the exec chain (0 allowed)' },
+  { name: 'max-cost', takesValue: true, summary: 'Alias of --max-budget' },
+  { name: 'allow-unpriced-budget', takesValue: false, summary: 'Allow a budget even when a model has no known price' },
+  { name: 'allow-unmerged', takesValue: false, summary: 'Count unmerged conflict branches as completed' },
+  { name: 'allow-peer-messages', takesValue: false, summary: 'Accept messages from other runs (message_run)' },
+  { name: 'wait-for-reset', takesValue: false, summary: 'On a usage limit, wait for the reset instead of ending' },
+  { name: 'stall-timeout', takesValue: true, summary: 'Seconds without progress before the run ends as stalled' },
+  { name: 'on-permission', takesValue: true, values: ['deny', 'fail', 'wait'], summary: 'Permission cards: deny (default), fail or wait' },
+  { name: 'on-rules', takesValue: true, values: ['deny', 'fail', 'wait'], summary: 'Permission rule requests: deny (default), fail or wait' },
+  { name: 'on-mcp-install', takesValue: true, values: ['deny', 'fail', 'wait'], summary: 'MCP install requests: deny (default), fail or wait' },
+  { name: 'on-question', takesValue: true, values: ['fail', 'conservative', 'wait'], summary: 'Questions: fail (default), conservative (the recommended option) or wait' },
+  { name: 'on-proposal', takesValue: true, values: ['decline', 'fail', 'wait'], summary: 'Proposals: decline (default), fail or wait' },
+  { name: 'on-merge', takesValue: true, values: ['hold', 'fail', 'wait'], summary: 'Merge reviews: hold (default), fail or wait' },
+  { name: 'max-auto-denials', takesValue: true, summary: 'Automatic denials before the run ends as needs-decision (default 5)' },
+  { name: 'wait-timeout', takesValue: true, summary: 'Seconds a "wait" policy waits for a person (default 900)' },
+  { name: 'human-grace', takesValue: true, summary: 'Seconds to leave a card to an open app or terminal UI first (default 60)' }
+]
+
+/** Flags only `orgai exec` takes (how the run starts). */
+const EXEC_START_FLAGS: readonly CommandFlag[] = [
+  { name: 'team', takesValue: true, values: ['default', 'single'], summary: 'The org chart (default) or one assistant (single)' },
+  { name: 'quick', takesValue: false, summary: 'A Chat run outside any project' },
+  { name: 'allow-edits', takesValue: false, summary: 'With --quick: allow edits in the folder (each still asks)' },
+  { name: 'create-project', takesValue: false, summary: 'Make the current folder a project when it is not one' }
+]
+
 export const COMMANDS: readonly CommandEntry[] = [
   {
     name: 'status',
@@ -58,9 +90,10 @@ export const COMMANDS: readonly CommandEntry[] = [
   },
   {
     name: 'runs',
-    summary: 'List runs or show one run',
-    usage: 'runs list [--all-projects] [--status <status>] [--limit <n>] | runs show <runId-or-R#> [--transcript | --tail <n>]',
-    subcommands: ['list', 'show'],
+    summary: 'List, show, message, interrupt or stop runs',
+    usage:
+      'runs list [--all-projects] [--status <status>] [--limit <n>] | runs show <runId-or-R#> [--transcript | --tail <n>] | runs send <runId-or-R#> <text|-> | runs interrupt <runId-or-R#> | runs stop <runId-or-R#>',
+    subcommands: ['list', 'show', 'send', 'interrupt', 'stop'],
     flags: [
       { name: 'all-projects', takesValue: false, summary: 'Runs of every project' },
       { name: 'status', takesValue: true, values: ['running', 'needs you', 'idle', 'paused', 'finished', 'stopped', 'ended when orgai closed', 'failed'], summary: 'Only runs with this status' },
@@ -121,10 +154,42 @@ export const COMMANDS: readonly CommandEntry[] = [
     available: true
   },
   later('tui', 'Start the interactive terminal UI', 'tui [--run <runId-or-R#>]'),
-  later('exec', 'Run headless, non-interactively', 'exec [options] [--] [prompt]'),
-  later('resume', 'Continue a session chain', 'resume [runId-or-R#] [--prompt <text> | -]'),
+  {
+    name: 'exec',
+    summary: 'Run headless, non-interactively (alias: orgai -p <prompt>)',
+    usage: 'exec [options] [--] [prompt|-]',
+    flags: [...EXEC_RUN_FLAGS, ...EXEC_START_FLAGS],
+    available: true
+  },
+  {
+    name: 'resume',
+    summary: 'Continue a session chain headless (--exec)',
+    usage: 'resume [runId-or-R#] [--prompt <text> | -] --exec [exec options]',
+    flags: [
+      { name: 'prompt', takesValue: true, summary: 'The message to continue with ("-" reads stdin)' },
+      { name: 'exec', takesValue: false, summary: 'Continue headless, keeping the chain\'s exec settings' },
+      ...EXEC_RUN_FLAGS
+    ],
+    available: true
+  },
   later('attach', 'Attach the terminal UI to a run', 'attach <runId-or-R#>'),
-  later('decide', 'Resolve a pending decision card', 'decide <requestId> <action> [options]'),
+  {
+    name: 'decide',
+    summary:
+      'Resolve a pending decision card. Verbs: permission allow | allow-session | allow-project | deny; rules grant | grant-project | deny; proposal approve | revise | decline; question answer; merge merge | hold | discard; mcpInstall allow | save-project | save-library | deny',
+    usage: 'decide <requestId> <verb> [options]',
+    flags: [
+      { name: 'revision', takesValue: true, summary: 'Refuse when the card changed since this revision' },
+      { name: 'yes', short: 'y', takesValue: false, summary: 'Do not ask for confirmation' },
+      { name: 'message', takesValue: true, summary: 'deny: the reason the agent sees' },
+      { name: 'note', takesValue: true, summary: 'proposal revise / decline, mcpInstall: a note for the agent' },
+      { name: 'secret', takesValue: true, summary: 'proposal approve / mcpInstall: NAME=ENV_VAR, read from the environment (repeatable)' },
+      { name: 'option', takesValue: true, summary: 'question answer: an option label (repeatable)' },
+      { name: 'pick', takesValue: true, summary: 'question answer: an option number, 1-based (repeatable)' },
+      { name: 'text', takesValue: true, summary: 'question answer: free text' }
+    ],
+    available: true
+  },
   later('init', 'Set up a project in the current folder', 'init [options]'),
   later('org', 'Org chart and Team assistant', 'org <subcommand>'),
   later('team', 'Team templates and roles', 'team <subcommand>'),
