@@ -41,6 +41,7 @@ import { registerIpc, harnessProjectFor, withEffectiveDefault, broadcastEngageme
 import { AgentImportService } from './setup/import/importer'
 import { TemplateService } from './setup/templates'
 import { KitService } from './kit/service'
+import { RepoCloneService } from './repoClone'
 import { listNotes, orphanRunProjects, readNote, readRetainedRunProjects, saveNote } from './store/projectData'
 import { knowledgeStore } from './store/knowledge'
 import { Notifier } from './notifications'
@@ -49,6 +50,8 @@ import { dataDirOverride, installLogging, log } from './log'
 import { buildSettingsInfo, windowBackground } from './appInfo'
 import { quitGate } from './quitGate'
 
+// The certificate-reader child runs this binary with ELECTRON_RUN_AS_NODE=1; if a RunAsNode fuse is off it would boot a full app here.
+if (process.env.ELECTRON_RUN_AS_NODE) process.exit(0)
 // Before anything reads a path: ORGAI_DATA_DIR (CI, e2e) replaces userData and moves logs under it, so a run never
 // touches the real profile or ~/Library/Logs. app.setPath throws for a missing directory, so create it first.
 const dataOverride = dataDirOverride()
@@ -516,6 +519,12 @@ app.whenReady().then(() => {
     mock: mockAdapter
   })
   const caps = capabilities
+  const repoClone = new RepoCloneService({
+    dataDir,
+    mock: Object.keys(adapters).includes('mock'),
+    // A clone never lands in a folder an existing project already uses (its folder, allowed or reference folders).
+    projectFolders: () => projects.list().flatMap((p) => [p.path, ...(p.allowedDirectories ?? []), ...(p.referenceDirectories ?? [])]).filter((f): f is string => typeof f === 'string' && f.length > 0)
+  })
   registerIpc({
     projects,
     runs: runManager,
@@ -539,6 +548,7 @@ app.whenReady().then(() => {
     quick,
     templates,
     kit: new KitService({ appVersion: app.getVersion(), platform: process.platform, skills, mcp, templates }),
+    repoClone,
     teamFiles
   })
   // Pending and problem states exist before the first focus; later checks run on window focus, at most once per 2 s.
@@ -548,6 +558,7 @@ app.whenReady().then(() => {
   connections.startDiscovery()
   if (process.env.ORGAI_MOCK !== '1') communityPrices.start()
   app.on('before-quit', () => {
+    repoClone.dispose()
     caps.dispose()
     connections.dispose()
     communityPrices.dispose()

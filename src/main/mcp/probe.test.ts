@@ -371,6 +371,13 @@ describe('describeFetchFailure', () => {
     )
   })
 
+  it('decides the store hint by the code alone when there is one', () => {
+    const altname = describeFetchFailure(fetchFailed(coded("Host: a. is not in the cert's altnames: DNS:self-signed.example", 'ERR_TLS_CERT_ALTNAME_INVALID')), host, 'applied')!
+    expect(altname).toContain('(ERR_TLS_CERT_ALTNAME_INVALID)')
+    expect(altname).not.toContain('system certificate store')
+    expect(altname).not.toContain('incomplete or self-signed')
+  })
+
   it('does not claim store trust while the system store is still being read or could not be read', () => {
     const err = fetchFailed(coded('tls', 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY'))
     const pending = describeFetchFailure(err, host, 'pending')!

@@ -92,7 +92,9 @@ import type {
 } from '@shared/types'
 import type { QuickRunInput, QuickRunPromoteInput, QuickRunPromoteResult } from '@shared/types'
 import type { ConnectorPresetRemoveInput, McpCopyFromLibraryInput, McpProjectOverridesInput } from '@shared/types'
-import { KIT_IPC, MCP_SCOPE_IPC, TEAM_FILES_IPC } from '@shared/types'
+import { KIT_IPC, MCP_SCOPE_IPC, REPO_DESTINATION_MAX_CHARS, REPO_SOURCE_MAX_CHARS, TEAM_FILES_IPC } from '@shared/types'
+import type { RepoCloneInput, RepoCloneProgress, RepoCloneResult, RepoSourceParse, RepoTools } from '@shared/types'
+import { REPO_REQUEST_ID_RE, parseRepoSource, scrubStderr, type RepoCloneService } from './repoClone'
 import type { TeamFilesActionResult, TeamFilesCommitResult, TeamFilesStatus } from '@shared/types'
 import type { TeamFilesService } from './teamFiles/service'
 import type { KitApplyResult, KitExportResult, KitImportPreview } from '@shared/types'
@@ -204,6 +206,8 @@ export interface IpcServices {
   templates: TemplateService
   /** The practice kit (src/main/kit/service.ts). Absent = the kit channels are not registered (older tests). */
   kit?: KitService
+  /** Start a project from a repository: parse, tools, clone or fork, cancel (src/main/repoClone.ts). Absent = the channels are not registered. */
+  repoClone?: RepoCloneService
   /** Team files (src/main/teamFiles/service.ts). Absent = the teamFiles channels are not registered (older tests). */
   teamFiles?: TeamFilesService
 }
@@ -344,7 +348,7 @@ export function mcpAssistArgs(input: unknown): { library: boolean; projectId: st
   return { library, projectId: library ? HARNESS_PROJECT_ID : typeof i.projectId === 'string' ? i.projectId : '', allowBuild, ...(instruction ? { instruction } : {}) }
 }
 
-export function registerIpc({ projects, runs, setup, maintenance, settings, connections, mcp, adapterIds, harnessProject, openRunWindow, importer, skills, skillEvaluation, capabilities, quick, templates, kit, teamFiles }: IpcServices): void {
+export function registerIpc({ projects, runs, setup, maintenance, settings, connections, mcp, adapterIds, harnessProject, openRunWindow, importer, skills, skillEvaluation, capabilities, quick, templates, kit, repoClone, teamFiles }: IpcServices): void {
   const mock = adapterIds.includes('mock')
   /**
    * A stored project, or the display project of a virtual id (harness, quick = "Chat", skills). Never listed by
@@ -646,7 +650,103 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
   registerSkillIpc(skills, skillEvaluation)
   registerCapabilityIpc(capabilities)
   if (kit) registerKitIpc(kit)
+  if (repoClone) registerRepoIpc(repoClone)
   if (teamFiles) registerTeamFilesIpc(teamFiles)
+}
+
+// ---- Start a project from a repository (clone or fork) ----
+
+/**
+ * projects:cloneRepo input rebuilt field by field: a plain object, requestId 1..64 of letters, digits, '_' and '-',
+ * source and destination text within their limits (refused, never cut), mode exactly 'clone' or 'fork'; extra fields
+ * are dropped. The refusals are one fixed line and never quote the input. Exported for tests.
+ */
+export function repoCloneArgs(input: unknown): RepoCloneInput {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid clone request.')
+  const proto = Object.getPrototypeOf(input)
+  if (proto !== Object.prototype && proto !== null) throw new Error('Invalid clone request.')
+  const i = input as Record<string, unknown>
+  if (typeof i.requestId !== 'string' || !REPO_REQUEST_ID_RE.test(i.requestId)) throw new Error('Invalid clone request.')
+  if (typeof i.source !== 'string') throw new Error('Type or paste a repository address.')
+  if (i.source.length > REPO_SOURCE_MAX_CHARS * 2) throw new Error('That address is too long.')
+  if (i.mode !== 'clone' && i.mode !== 'fork') throw new Error('Choose clone or fork.')
+  if (typeof i.destination !== 'string' || !i.destination.trim()) throw new Error('Choose a folder for the new project.')
+  if (i.destination.length > REPO_DESTINATION_MAX_CHARS * 2) throw new Error('That folder path is too long.')
+  return { requestId: i.requestId, source: i.source, mode: i.mode, destination: i.destination }
+}
+
+/** projects:cancelClone argument: a valid request id, else refused. Exported for tests. */
+export function repoCancelArg(input: unknown): string {
+  if (typeof input !== 'string' || !REPO_REQUEST_ID_RE.test(input)) throw new Error('Invalid clone request.')
+  return input
+}
+
+/** The slice of WebContents that watchSenderGone uses. */
+export interface GoneWatchable {
+  on(event: string, listener: (...args: unknown[]) => void): unknown
+  removeListener(event: string, listener: (...args: unknown[]) => void): unknown
+}
+
+/**
+ * Calls `onGone` (once) when the window is destroyed, its renderer process is gone, or its main frame starts a new
+ * navigation to another document. Returns a function that removes every listener; call it when the work ends.
+ */
+export function watchSenderGone(sender: GoneWatchable, onGone: () => void): () => void {
+  const fire = (): void => onGone()
+  const onNavigate = (...args: unknown[]): void => {
+    const d = args[0] as { isMainFrame?: boolean; isSameDocument?: boolean } | undefined
+    if (d && d.isMainFrame === true && d.isSameDocument !== true) onGone()
+  }
+  sender.on('destroyed', fire)
+  sender.on('render-process-gone', fire)
+  sender.on('did-start-navigation', onNavigate)
+  return () => {
+    sender.removeListener('destroyed', fire)
+    sender.removeListener('render-process-gone', fire)
+    sender.removeListener('did-start-navigation', onNavigate)
+  }
+}
+
+function registerRepoIpc(repoClone: RepoCloneService): void {
+  ipcMain.handle(IPC.projectsParseRepoSource, (_e, text: unknown): RepoSourceParse => {
+    try {
+      return typeof text === 'string' ? repoClone.parse(text) : parseRepoSource(undefined)
+    } catch {
+      return parseRepoSource(undefined)
+    }
+  })
+  ipcMain.handle(IPC.projectsRepoTools, async (): Promise<RepoTools> => {
+    try {
+      return await repoClone.tools()
+    } catch {
+      return { git: { available: false }, gh: { available: false, loggedIn: false, detail: 'OrgAI could not check your GitHub CLI sign-in.' } }
+    }
+  })
+  ipcMain.handle(IPC.projectsCloneRepo, async (e, raw: unknown): Promise<RepoCloneResult> => {
+    const input = repoCloneArgs(raw)
+    const sender = e.sender
+    const onProgress = (event: RepoCloneProgress): void => {
+      if (!sender.isDestroyed()) sender.send(IPC.projectsCloneProgress, event)
+    }
+    // A closed, crashed or navigated window cancels its own clone.
+    const stopWatching = watchSenderGone(sender as unknown as GoneWatchable,() => repoClone.cancel(input.requestId))
+    try {
+      return await repoClone.clone(input, onProgress)
+    } catch (err) {
+      const message = err instanceof Error && err.message ? err.message : 'The clone failed.'
+      log.warn(`Clone request failed: ${scrubStderr(message)}`)
+      throw new Error(message)
+    } finally {
+      stopWatching()
+    }
+  })
+  ipcMain.handle(IPC.projectsCancelClone, (_e, id: unknown): void => {
+    try {
+      repoClone.cancel(repoCancelArg(id))
+    } catch {
+      // an invalid id names no clone
+    }
+  })
 }
 
 /**
