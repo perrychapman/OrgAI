@@ -10,7 +10,9 @@
 //   release/previous/<unpacked>/ + BUILD.txt  the build before it
 //
 // Steps: electron-vite build (main, preload, renderer), vite build -c vite.cli.config.ts (the orgai CLI bundle in
-// out/cli, which electron-builder unpacks from app.asar), then electron-builder --dir --publish never. On macOS the
+// out/cli, which electron-builder unpacks from app.asar), out/cli/install.json with channel 'app' (Wave 7,
+// cli-standalone.md 3.5; write-install-info.mjs), then electron-builder --dir --publish never; install.json is removed
+// from out/cli again afterwards, so the checkout's own CLI keeps reading as channel 'dev'. On macOS the
 // children get CSC_IDENTITY_AUTO_DISCOVERY=false unless the caller set it, so a local pack never signs, never
 // contacts a timestamp server and never notarizes. Check the result with `npm run pack:verify`.
 //
@@ -22,6 +24,8 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { unpackedLayout } from './lib/packLayout.mjs'
+import { installInfoFor } from './lib/npmPackage.mjs'
+import { commitOf, removeInstallInfo, writeInstallInfo } from './write-install-info.mjs'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -196,18 +200,30 @@ export function main(argv = process.argv.slice(2), root = ROOT, log = console.lo
   rotate(p, { dryRun, log, root })
 
   if (child.note) log(`${dryRun ? 'Would set' : 'Setting'} for every step: ${child.note}`)
-  for (const [pkg, bin, args] of steps) {
-    if (dryRun) {
-      let shown
-      try {
-        shown = rel(localBin(root, pkg, bin))
-      } catch (e) {
-        shown = `node_modules/${pkg} (${e.message})`
+  const cliDir = path.join(root, 'out', 'cli')
+  const appInstallInfo = installInfoFor('app', readVersion(root), commitOf(root, env))
+  try {
+    for (const [pkg, bin, args] of steps) {
+      // The app's bundle says channel 'app' (cli-standalone.md 3.5): written after the CLI build, before electron-builder.
+      if (pkg === 'electron-builder') {
+        if (dryRun) log(`Would write ${rel(path.join(cliDir, 'install.json'))}: ${JSON.stringify(appInstallInfo)} (removed after the pack)`)
+        else writeInstallInfo(cliDir, appInstallInfo)
       }
-      log(`Would run: node ${shown} ${args.join(' ')}`)
-      continue
+      if (dryRun) {
+        let shown
+        try {
+          shown = rel(localBin(root, pkg, bin))
+        } catch (e) {
+          shown = `node_modules/${pkg} (${e.message})`
+        }
+        log(`Would run: node ${shown} ${args.join(' ')}`)
+        continue
+      }
+      exec(process.execPath, [localBin(root, pkg, bin), ...args], { cwd: root, stdio: 'inherit', windowsHide: true, env: child.env })
     }
-    exec(process.execPath, [localBin(root, pkg, bin), ...args], { cwd: root, stdio: 'inherit', windowsHide: true, env: child.env })
+  } finally {
+    // The checkout's own out/cli reads as channel 'dev' again (HostLauncher treats 'app' as a packaged layout).
+    if (!dryRun) removeInstallInfo(cliDir)
   }
 
   const info = formatBuildInfo({ version: readVersion(root), commit: gitShortSha(root), builtAt: new Date() })

@@ -16,6 +16,7 @@ import {
   cliShimNotice,
   cliShimView,
   displayPath,
+  otherCliLine,
   hasCliShimApi,
   singleFlight
 } from './cliShim'
@@ -70,6 +71,29 @@ function expectedHint(p: Platform): string {
     ? `Add ${shownBin} to your user Path in Windows settings.`
     : `${shownBin} is not on your PATH. Add this line to your shell profile: export PATH="${shownBin}:$PATH"`
 }
+
+describe('another orgai on PATH (cli-standalone.md 8.2)', () => {
+  const base = { path: '/Users/a/.local/bin/orgai', binDir: '/Users/a/.local/bin' }
+  it('not installed: names the npm command and offers no Install', () => {
+    const v = cliShimView({ state: 'not-installed', ...base, otherCli: { path: '/opt/homebrew/bin/orgai', channel: 'npm', version: '0.2.0' } }, 'darwin')
+    expect(v).toEqual({ line: 'The orgai command from npm (0.2.0) is on your PATH.', remove: false })
+  })
+  it('outdated: no Update, Remove stays; installed: Remove stays', () => {
+    const other = { path: '/opt/homebrew/bin/orgai', channel: 'npm' as const }
+    const o = cliShimView({ state: 'outdated', ...base, onPath: true, otherCli: other }, 'darwin')
+    expect(o.primary).toBeUndefined()
+    expect(o.remove).toBe(true)
+    expect(o.line).toBe('Installed at ~/.local/bin/orgai, but it runs another copy of OrgAI. The orgai command from npm is also on your PATH.')
+    const i = cliShimView({ state: 'installed', ...base, onPath: true, otherCli: other }, 'darwin')
+    expect(i).toEqual({ line: 'Installed at ~/.local/bin/orgai. The orgai command from npm is also on your PATH.', remove: true })
+  })
+  it('words every channel; an unknown one names its path; a junk version is left out', () => {
+    expect(otherCliLine({ path: '/x', channel: 'archive', version: '1.0.0' }, 'linux')).toBe('The orgai command from the portable archive (1.0.0) is on your PATH.')
+    expect(otherCliLine({ path: '/x', channel: 'app' }, 'linux')).toBe('The orgai command of another OrgAI app is on your PATH.')
+    expect(otherCliLine({ path: '/home/u/bin/orgai', version: 'bad version\u202e' }, 'linux')).toBe('Another orgai command is on your PATH: ~/bin/orgai.')
+    expect(otherCliLine({ path: 'C:\\npm\\orgai.cmd', channel: 'dev' }, 'win32')).toBe('Another orgai command is on your PATH: C:\\npm\\orgai.cmd.')
+  })
+})
 
 describe('cliShimView', () => {
   for (const p of PLATFORMS) {

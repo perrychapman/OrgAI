@@ -7,6 +7,10 @@
 #   of a ref that is not on main is allowed (build only) and prints a notice.
 # Nothing is uploaded by electron-builder itself (`--publish never`); the publish job creates the draft release.
 # Mac builds are unsigned unless the CSC_LINK secret is set; notarization runs only when the APPLE_* secrets are set.
+# The orgai npm package (Wave 7, docs/design/cli-standalone.md 3.4): npm-package builds the tarball once from the
+# CLI bundle of this commit, verify-npm installs that exact tarball on three OSes and two Node versions, and
+# publish-npm publishes it (sha256 compared, --provenance, `next` for prerelease versions) only under the same guard as
+# the desktop release and only after a reviewer approves the `npm-publish` environment. Never a rebuild.
 name: Release
 
 on:
@@ -29,6 +33,12 @@ concurrency:
 
 permissions:
   contents: read
+
+env:
+  # 'full' ships npm-shrinkwrap.json (cli-standalone.md 3.1). npm 11.12.1 then installs every platform's Claude runtime
+  # (about 2 GB) and verify-npm step 1 fails, so publish-npm stays blocked until the owner decides; 'none' builds with
+  # --no-shrinkwrap (direct dependencies pinned exactly, about 300 MB per install). Keep ci.yml's value in step.
+  NPM_SHRINKWRAP: full
 
 jobs:
   meta:
@@ -129,6 +139,8 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+      # The app's CLI bundle says channel 'app' (cli-standalone.md 3.5); electron-builder unpacks out/cli/** with it.
+      - run: node scripts/write-install-info.mjs --channel app
       - name: Package
         # Windows keeps signAndEditExecutable: true (icon and version info stamped into OrgAI.exe); the runner is an
         # administrator, so winCodeSign's symlinks extract. If this step fails extracting winCodeSign, append
@@ -163,6 +175,134 @@ jobs:
             release/latest*.yml
           if-no-files-found: error
           retention-days: 14
+
+  # The npm tarball, built once from this commit's CLI bundle (the same vite.cli.config.ts the app's build uses).
+  npm-package:
+    needs: meta
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      file: ${{ steps.pack.outputs.file }}
+      sha256: ${{ steps.pack.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.meta.outputs.ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Check tag matches package.json
+        if: needs.meta.outputs.tag != ''
+        shell: bash
+        env:
+          TAG: ${{ needs.meta.outputs.tag }}
+        run: node scripts/ci-check-version.mjs "$TAG"
+      - run: npm ci
+      - run: npx vite build -c vite.cli.config.ts
+      - id: pack
+        shell: bash
+        run: |
+          args=()
+          if [ "$NPM_SHRINKWRAP" = "none" ]; then args=(--no-shrinkwrap); fi
+          node scripts/build-npm-package.mjs "${args[@]}"
+          file="$(cd release/npm && ls *.tgz)"
+          sum="$(sha256sum "release/npm/$file" | cut -d' ' -f1)"
+          echo "file=$file" >> "$GITHUB_OUTPUT"
+          echo "sha256=$sum" >> "$GITHUB_OUTPUT"
+          echo "$file sha256 $sum"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: orgai-npm
+          path: |
+            release/npm/*.tgz
+            release/npm/*.tgz.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  # cli-standalone.md 3.4 steps 1-7 on the exact tarball: Node at the engines floor of the 22 line and current 24.
+  verify-npm:
+    name: verify-npm (${{ matrix.os }}, Node ${{ matrix.node }})
+    needs: [meta, npm-package]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, windows-latest, ubuntu-latest]
+        # 22.19.0 = scripts/lib/npmPackage.mjs NODE_FLOOR_22 (engines.node), pinned exactly.
+        node: ['22.19.0', '24']
+    env:
+      GIT_AUTHOR_NAME: OrgAI CI
+      GIT_AUTHOR_EMAIL: ci@orgai.local
+      GIT_COMMITTER_NAME: OrgAI CI
+      GIT_COMMITTER_EMAIL: ci@orgai.local
+    steps:
+      # Only the scripts are needed (they import nothing from node_modules); no npm ci.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.meta.outputs.ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: orgai-npm
+          path: npm-artifact
+      - name: Compare the tarball's sha256
+        shell: bash
+        env:
+          FILE: ${{ needs.npm-package.outputs.file }}
+          WANT: ${{ needs.npm-package.outputs.sha256 }}
+        run: |
+          got="$(node -e "process.stdout.write(require('crypto').createHash('sha256').update(require('fs').readFileSync(process.argv[1])).digest('hex'))" "npm-artifact/$FILE")"
+          if [ "$got" != "$WANT" ]; then echo "::error::$FILE sha256 $got, expected $WANT"; exit 1; fi
+      # Step 7 (Codex, bring-your-own): the pinned version from package.json, installed apart from the tarball.
+      - name: Install Codex for step 7
+        shell: bash
+        run: |
+          v="$(node -p "require('./package.json').dependencies['@openai/codex']")"
+          npm install --global --prefix "$RUNNER_TEMP/codex" "@openai/codex@$v"
+          if [ "$RUNNER_OS" = "Windows" ]; then echo "$RUNNER_TEMP/codex" >> "$GITHUB_PATH"; else echo "$RUNNER_TEMP/codex/bin" >> "$GITHUB_PATH"; fi
+      - name: verify-npm
+        shell: bash
+        env:
+          FILE: ${{ needs.npm-package.outputs.file }}
+        run: node scripts/verify-npm.mjs --tarball "npm-artifact/$FILE"
+
+  # Publishes the verified tarball. The `npm-publish` environment must require a reviewer (repository settings:
+  # npm is not reversible after 72 hours; D2). Trusted publishing (OIDC, id-token) with provenance; npm must be 11.5.1+.
+  publish-npm:
+    needs: [meta, build, npm-package, verify-npm]
+    if: needs.meta.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: npm-publish
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm install --global npm@11
+      - uses: actions/download-artifact@v4
+        with:
+          name: orgai-npm
+          path: npm-artifact
+      - name: Publish the verified tarball
+        shell: bash
+        env:
+          FILE: ${{ needs.npm-package.outputs.file }}
+          WANT: ${{ needs.npm-package.outputs.sha256 }}
+        run: |
+          got="$(sha256sum "npm-artifact/$FILE" | cut -d' ' -f1)"
+          if [ "$got" != "$WANT" ]; then echo "::error::$FILE sha256 $got, expected $WANT"; exit 1; fi
+          version="$(tar -xOzf "npm-artifact/$FILE" package/package.json | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).version")"
+          tag=latest
+          case "$version" in *-*) tag=next ;; esac
+          echo "Publishing $FILE ($version) with --tag $tag"
+          npm publish "npm-artifact/$FILE" --provenance --access public --tag "$tag"
 
   publish:
     needs: [meta, build]

@@ -86,7 +86,10 @@ test('main --dry-run lists the CLI build step and the signing env choice on darw
     const eb = out.indexOf('--dir --publish never')
     assert.ok(ev >= 0 && cli > ev && eb > cli, out)
     assert.match(out, /npm run pack:verify/)
+    assert.match(out, /Would write out[\\/]cli[\\/]install\.json: \{"channel":"app","version":"9\.9\.9"/)
+    assert.ok(out.indexOf('install.json') < eb, 'install.json is written before electron-builder')
     assert.equal(fs.existsSync(path.join(root, 'release')), false, 'a dry run writes nothing')
+    assert.equal(fs.existsSync(path.join(root, 'out')), false, 'a dry run writes no install.json')
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
   }
@@ -117,13 +120,25 @@ test('main passes the darwin child env to every build step, in order', () => {
       fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: pkg, bin: { [pkg]: bin } }))
     }
     const calls = []
+    const installInfo = path.join(root, 'out', 'cli', 'install.json')
+    let seenByBuilder
     const exec = (cmd, args, opts) => {
       calls.push({ cmd, args, env: opts.env })
-      // The last step "builds" the app so the marker check passes.
-      if (args.includes('--dir')) fs.mkdirSync(path.join(root, 'release', 'mac-arm64', 'OrgAI.app'), { recursive: true })
+      // The CLI step "builds" out/cli; the last step "builds" the app so the marker check passes.
+      if (args.includes('vite.cli.config.ts')) {
+        fs.mkdirSync(path.dirname(installInfo), { recursive: true })
+        fs.writeFileSync(path.join(root, 'out', 'cli', 'orgai.mjs'), '')
+      }
+      if (args.includes('--dir')) {
+        seenByBuilder = JSON.parse(fs.readFileSync(installInfo, 'utf8'))
+        fs.mkdirSync(path.join(root, 'release', 'mac-arm64', 'OrgAI.app'), { recursive: true })
+      }
     }
     const lines = []
     main([], root, (l) => lines.push(l), { platform: 'darwin', env: { HOME: '/h' }, exec })
+    assert.equal(seenByBuilder.channel, 'app', 'electron-builder packs install.json with channel app')
+    assert.equal(seenByBuilder.version, '9.9.9')
+    assert.equal(fs.existsSync(installInfo), false, 'install.json is removed after the pack (the checkout reads as dev)')
     assert.equal(calls.length, 3)
     assert.ok(calls[0].args[0].endsWith(path.join('electron-vite', 'bin', 'ev.js')))
     assert.ok(calls[1].args[0].endsWith(path.join('vite', 'bin', 'vite.js')))

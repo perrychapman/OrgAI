@@ -295,6 +295,61 @@ describe('onPath', () => {
   })
 })
 
+const posixOnly = process.platform === 'win32' ? it.skip : it
+
+describe('otherCli (Wave 7, cli-standalone.md 8.2)', () => {
+  /** An npm install's bin folder: <prefix>/bin/orgai -> ../lib/node_modules/orgai/out/cli/orgai.mjs with install.json. */
+  function npmInstall(version: string): string {
+    const cli = join(root, 'npm', 'lib', 'node_modules', 'orgai', 'out', 'cli')
+    mkdirSync(cli, { recursive: true })
+    writeFileSync(join(cli, 'orgai.mjs'), '')
+    writeFileSync(join(cli, 'install.json'), JSON.stringify({ channel: 'npm', version }))
+    mkdirSync(join(root, 'npm', 'bin'), { recursive: true })
+    symlinkSync(join(cli, 'orgai.mjs'), join(root, 'npm', 'bin', 'orgai'))
+    return join(root, 'npm', 'bin')
+  }
+
+  posixOnly('names an npm orgai on the login PATH, before or after the shim folder', async () => {
+    const npmBin = npmInstall('0.2.0')
+    const before = createCliShimService(deps({ loginPath: `${npmBin}:${binDir}` })).status()
+    expect(before).toMatchObject({ state: 'not-installed', otherCli: { path: join(npmBin, 'orgai'), channel: 'npm', version: '0.2.0' } })
+    const svc = createCliShimService(deps({ loginPath: `${binDir}:${npmBin}` }))
+    await svc.install()
+    // Our own shim first on PATH is skipped: the npm one is still reported.
+    expect(svc.status()).toMatchObject({ state: 'installed', otherCli: { path: join(npmBin, 'orgai'), channel: 'npm' } })
+  })
+
+  posixOnly('ignores this install\'s shim and a link to this install\'s launcher; none when PATH is unknown', async () => {
+    const svc = createCliShimService(deps({ loginPath: binDir }))
+    await svc.install()
+    expect(svc.status().otherCli).toBeUndefined()
+    mkdirSync(join(root, 'linkbin'))
+    symlinkSync(launcher, join(root, 'linkbin', 'orgai'))
+    expect(createCliShimService(deps({ loginPath: `${join(root, 'linkbin')}:${binDir}` })).status().otherCli).toBeUndefined()
+    expect(createCliShimService(deps({ loginPath: '' })).status().otherCli).toBeUndefined()
+  })
+
+  it('a PATH reader that throws leaves otherCli unset and logs', () => {
+    const warn = vi.fn()
+    const status = createCliShimService(
+      deps({
+        log: { info: () => {}, warn },
+        findOnPath: () => {
+          throw new Error('boom')
+        }
+      })
+    ).status()
+    expect(status.otherCli).toBeUndefined()
+    expect(status.state).toBe('not-installed')
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('boom'))
+  })
+
+  it('passes channel and version through, and leaves them out when unknown', () => {
+    const status = createCliShimService(deps({ findOnPath: () => [{ path: '/x/orgai', kind: 'unknown' }] })).status()
+    expect(status.otherCli).toEqual({ path: '/x/orgai' })
+  })
+})
+
 describe('win32', () => {
   it('renders the .cmd shim under LOCALAPPDATA', async () => {
     // Build a Windows-shaped layout, stubbing the fs so the win32 path strings never touch this machine's disk.

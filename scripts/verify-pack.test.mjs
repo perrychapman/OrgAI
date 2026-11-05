@@ -6,6 +6,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { bareImports, isNodeBuiltin, packageOf, packagedPaths } from './lib/packLayout.mjs'
+import { globalLayout } from './lib/npmPackage.mjs'
 import {
   checkDoctorReport,
   cleanupDaemon,
@@ -115,6 +116,9 @@ test('packageOf and isNodeBuiltin', () => {
 
 test('parseArgs', () => {
   assert.deepEqual(parseArgs([]), { release: undefined, skipHost: false })
+  assert.deepEqual(parseArgs(['--npm']), { release: undefined, skipHost: false, npmTarball: true })
+  assert.deepEqual(parseArgs(['--npm-tarball', 'a.tgz', '--npm']), { release: undefined, skipHost: false, npmTarball: 'a.tgz' })
+  assert.throws(() => parseArgs(['--npm-tarball']), /needs a file/)
   assert.deepEqual(parseArgs(['--release', 'x', '--skip-host']), { release: 'x', skipHost: true })
   assert.deepEqual(parseArgs(['--release=y']), { release: 'y', skipHost: false })
   assert.throws(() => parseArgs(['--release']), /needs a folder/)
@@ -287,6 +291,13 @@ function fakeRunner(calls, overrides = {}) {
       return overrides[inproc ? 'inproc' : 'host'] ?? { code: 0, stdout: JSON.stringify({ outcome: 'completed', exitCode: 0 }), stderr: '' }
     }
     if (a.includes('daemon')) return { code: 0, stdout: '', stderr: '' }
+    if (a.includes('install') && a.includes('--prefix')) {
+      if (overrides.npmInstall) return overrides.npmInstall
+      const bin = globalLayout(process.platform, a[a.indexOf('--prefix') + 1]).bin
+      fs.mkdirSync(path.dirname(bin), { recursive: true })
+      fs.writeFileSync(bin, '')
+      return { code: 0, stdout: '', stderr: '' }
+    }
     return { code: 9, stdout: '', stderr: 'unexpected command' }
   }
 }
@@ -384,6 +395,34 @@ test('main: a wrong outcome, a dev launcher in doctor and a missing launcher eac
     assert.match(gone.out, /fail +\(a\) files {2}launcher missing/)
     assert.match(gone.out, /fail +\(c\) --version {2}skipped/)
     assert.equal(gone.calls.length, 0)
+  } finally {
+    fs.rmSync(fake.base, { recursive: true, force: true })
+  }
+})
+
+test('main --npm-tarball: the npm orgai drives the packed app (g), with ORGAI_ELECTRON_PATH at the app binary', async () => {
+  const fake = fakeRelease(['@anthropic-ai/claude-agent-sdk', 'zod'])
+  try {
+    const tgz = path.join(fake.base, 'orgai-1.0.0.tgz')
+    fs.writeFileSync(tgz, 'not really a tarball')
+    const r = await runMain(fake, ['--npm-tarball', tgz])
+    assert.equal(r.code, 0, r.out)
+    assert.match(r.out, /ok +\(g\) npm exec host/)
+    assert.match(r.out, /ok +\(g\) npm daemon stop/)
+    const install = r.calls.find((c) => c.args.includes('install'))
+    assert.ok(install.args.includes(tgz))
+    const npmExec = r.calls.filter((c) => c.env?.ORGAI_ELECTRON_PATH)
+    assert.equal(npmExec.length, 2, 'exec and daemon stop')
+    assert.equal(npmExec[0].env.ORGAI_ELECTRON_PATH, fake.paths.appBinary)
+    assert.ok(npmExec[0].args.includes('auto') && npmExec[0].args.includes('exec'))
+    assert.ok(npmExec[0].env.ORGAI_DATA_DIR.includes('orgai-verify-npmcli-'), 'its own data folder')
+    assert.deepEqual(r.leftovers, [], 'temp dirs removed')
+
+    const failed = await runMain(fake, ['--skip-host', '--npm-tarball', tgz], { npmInstall: { code: 1, stdout: '', stderr: 'E404' } })
+    assert.equal(failed.code, 1)
+    assert.match(failed.out, /fail +\(g\) npm exec host {2}npm install -g failed: exit 1; stderr: E404/)
+    const missing = await runMain(fake, ['--skip-host', '--npm-tarball', path.join(fake.base, 'nope.tgz')])
+    assert.match(missing.out, /fail +\(g\) npm exec host {2}no npm tarball/)
   } finally {
     fs.rmSync(fake.base, { recursive: true, force: true })
   }

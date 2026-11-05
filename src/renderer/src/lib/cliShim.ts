@@ -59,20 +59,50 @@ function pathHint(binDir: string, platform: string): string {
   return `${binDir} is not on your PATH. Add this line to your shell profile: export PATH="${binDir}:$PATH"`
 }
 
+/** A version as shown: a short printable token, else nothing. */
+function shownVersion(v: string | undefined): string {
+  const t = cleanShown(v)
+  return /^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}$/.test(t) ? t : ''
+}
+
+/**
+ * The sentence for another orgai on PATH (cli-standalone.md 8.2): "The orgai command from npm (0.2.0) is on your
+ * PATH." `also` after the app's own shim line.
+ */
+export function otherCliLine(other: NonNullable<CliShimStatus['otherCli']>, platform: string, home?: string, also = false): string {
+  const v = shownVersion(other.version)
+  const ver = v ? ` (${v})` : ''
+  const where = also ? 'also on your PATH' : 'on your PATH'
+  switch (other.channel) {
+    case 'npm':
+      return `The orgai command from npm${ver} is ${where}.`
+    case 'archive':
+      return `The orgai command from the portable archive${ver} is ${where}.`
+    case 'app':
+      return `The orgai command of another OrgAI app${ver} is ${where}.`
+    default:
+      return `Another orgai command${ver} is ${where}: ${displayPath(other.path, platform, home) || 'its folder unknown'}.`
+  }
+}
+
 export function cliShimView(status: CliShimStatus, platform: string, home?: string): CliShimView {
   const path = displayPath(status.path, platform, home) || 'its folder'
   const binDir = displayPath(status.binDir, platform, home)
   const hint = status.onPath === false && binDir ? { pathHint: pathHint(binDir, platform) } : {}
+  // Another orgai on PATH (an npm install): say so and never offer to install or update over it (8.2).
+  const other = status.otherCli && typeof status.otherCli.path === 'string' ? status.otherCli : undefined
   switch (status.state) {
     case 'not-installed':
+      if (other) return { line: otherCliLine(other, platform, home), remove: false }
       return {
         line: binDir ? `Not installed. Adds a small orgai command in ${binDir}.` : 'Not installed. Adds a small orgai command.',
         primary: { action: 'install', label: CLI_SHIM_INSTALL_LABEL },
         remove: false
       }
     case 'installed':
-      return { line: `Installed at ${path}.`, remove: true, ...hint }
+      return { line: `Installed at ${path}.${other ? ` ${otherCliLine(other, platform, home, true)}` : ''}`, remove: true, ...hint }
     case 'outdated':
+      if (other) return { line: `Installed at ${path}, but it runs another copy of OrgAI. ${otherCliLine(other, platform, home, true)}`, remove: true, ...hint }
       return {
         line: `Installed at ${path}, but it runs another copy of OrgAI.`,
         primary: { action: 'update', label: CLI_SHIM_UPDATE_LABEL },
