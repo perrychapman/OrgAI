@@ -338,11 +338,45 @@ describe('host-specific handlers', () => {
     await expect(d.invokeRpc(SECRETS_IPC.secretsStatus, [], RPC)).resolves.toBe(report)
     await expect(d.invokeRpc(SECRETS_IPC.secretsStatus, [{ probe: true }], RPC)).resolves.toBe(report)
     expect(statusReport.mock.calls).toEqual([[{}], [{ probe: true }]])
-    for (const c of [SECRETS_IPC.secretsInit, SECRETS_IPC.secretsReset, SECRETS_IPC.secretsUndelete]) {
+    for (const c of [SECRETS_IPC.secretsInit, SECRETS_IPC.secretsReset, SECRETS_IPC.secretsUndelete, SECRETS_IPC.secretsConfirmDelete]) {
       await expect(d.invokeRpc(c, [{}], RPC), c).rejects.toMatchObject({ code: 'bad_request', message: `${c} is not available in this build yet.` })
     }
     const bare = new HostDispatcher(services(), { gate: fakeGate() })
     await expect(bare.invokeRpc(SECRETS_IPC.secretsStatus, [], RPC)).rejects.toMatchObject({ code: 'bad_request' })
+  })
+
+  it('invokeRpc awaits secrets.prepareWrite() before the handler only when storesSecret is true (Wave 7)', async () => {
+    const order: string[] = []
+    const prepareWrite = vi.fn(async () => void order.push('prepare'))
+    const statusReport = vi.fn(async () => (order.push('handler'), { state: 'absent' }))
+    const keys = vi.fn(() => ['k'])
+    const seen: unknown[] = []
+    const gate: GateFn = (channel, params) => ({
+      channel,
+      args: Array.isArray(params) ? params : [],
+      entry: {
+        direction: 'request',
+        scope: 'read',
+        bulk: false,
+        params: [],
+        source: 'test',
+        storesSecret: (args, view) => {
+          seen.push(view.secretKeys('x'))
+          return (args[0] as { store?: boolean } | undefined)?.store === true
+        }
+      },
+      mutation: false
+    })
+    const d = new HostDispatcher(services({ secrets: { statusReport, prepareWrite, keys } as never }), { gate })
+    await d.invokeRpc(SECRETS_IPC.secretsStatus, [{ store: false }], RPC)
+    expect(prepareWrite).not.toHaveBeenCalled()
+    await d.invokeRpc(SECRETS_IPC.secretsStatus, [{ store: true }], RPC)
+    expect(order).toEqual(['handler', 'prepare', 'handler'])
+    expect(seen).toEqual([['k'], ['k']])
+    // A refused prepareWrite never reaches the handler.
+    prepareWrite.mockRejectedValueOnce(new Error('locked'))
+    await expect(d.invokeRpc(SECRETS_IPC.secretsStatus, [{ store: true }], RPC)).rejects.toThrow('locked')
+    expect(statusReport).toHaveBeenCalledTimes(2)
   })
 
   it('skillLibrary:addFromBundle validates through bundleArgs', () => {

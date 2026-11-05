@@ -252,6 +252,8 @@ export class McpService {
   activeAuthorizationCount(): number { return this.flows.size + (this.fixedPortFlow && ![...this.flows.values()].includes(this.fixedPortFlow.ac) ? 1 : 0) }
   /** In-flight refreshes per owner: refresh tokens rotate, so a second concurrent refresh would be fatal. */
   private refreshing = new Map<string, Promise<void>>()
+  /** Token refreshes in flight (Wave 7, cli-standalone.md 5.6: secrets:reset refuses while one is). */
+  refreshingCount(): number { return this.refreshing.size }
   /** The last failed authorization per owner, shown as state 'error' until it succeeds or is revoked. */
   private lastErrors = new Map<string, McpAuthStatus>()
 

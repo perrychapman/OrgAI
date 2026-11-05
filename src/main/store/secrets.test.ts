@@ -178,6 +178,10 @@ describe('SecretStore Wave 7 contract stubs (cli-standalone.md 5.4, 5.6)', () =>
     await expect(store.prepareWrite()).resolves.toBeUndefined()
     expect(store.vaultKeyFiles()).toEqual([])
     store.attachLeases(() => () => undefined)
+    // No vault yet: a clear is never refused and retryOpen does nothing.
+    expect(store.clearRefusal(LITELLM_KEY)).toBeUndefined()
+    store.retryOpen('focus')
+    expect(store.state()).toBe('absent')
     // A value this host cannot decrypt is unreadable, never "unset".
     const other = new SecretStore(dir, { ...fakeCipher(), decryptString: () => { throw new Error('no') } })
     expect(other.status(LITELLM_KEY)).toEqual({ unreadable: expect.any(String) })
@@ -194,6 +198,7 @@ describe('SecretStore Wave 7 contract stubs (cli-standalone.md 5.4, 5.6)', () =>
     await expect(empty.initVault({})).rejects.toThrow(VAULT_NOT_AVAILABLE_MESSAGE)
     await expect(empty.resetVault({ confirm: true })).rejects.toThrow(VAULT_NOT_AVAILABLE_MESSAGE)
     expect(() => empty.undelete({ key: LITELLM_KEY })).toThrow(VAULT_NOT_AVAILABLE_MESSAGE)
+    expect(() => empty.confirmDeletes({ keys: [LITELLM_KEY] })).toThrow(VAULT_NOT_AVAILABLE_MESSAGE)
   })
 
   it('openSecretStore returns today\'s store (read-only and overlay honoured)', async () => {

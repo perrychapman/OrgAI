@@ -148,7 +148,7 @@ const SCOPE_TABLE: Readonly<Record<ChannelScope, readonly string[]>> = {
     'maintenance:discardWorktree', 'maintenance:uninstallRepo', 'templates:saveFromProject', 'templates:remove',
     'templates:apply', 'knowledge:saveNode', 'knowledge:removeNode', 'knowledge:saveEdge', 'knowledge:removeEdge',
     'knowledge:clear', 'knowledge:dismissLink', 'kit:exportBundle', 'kit:applyBundle', 'secrets:init', 'secrets:reset',
-    'secrets:undelete'
+    'secrets:undelete', 'secrets:confirmDelete'
   ],
   desktop_only: [
     'projects:pickDirectory', 'skillLibrary:addFromFolder', 'kit:pickExportPath', 'kit:pickImportPath', 'kit:export',
@@ -216,7 +216,8 @@ const SOURCE_TABLE: Readonly<Record<string, readonly string[]>> = {
   'host dispatcher (HOST_IPC, socket only; kit/service.ts bundle channels)': [HOST_IPC.kitExportBundle, HOST_IPC.kitPreviewBundle, HOST_IPC.kitApplyBundle],
   'host dispatcher (HOST_IPC, socket only; RunManager.findDecision, cli-spec Wave 3)': [HOST_IPC.runsFindDecision],
   'host dispatcher (SECRETS_IPC; SecretStore vault, cli-standalone.md 5.6, Wave 7)': [
-    SECRETS_IPC.secretsStatus, SECRETS_IPC.secretsInit, SECRETS_IPC.secretsReset, SECRETS_IPC.secretsUndelete
+    SECRETS_IPC.secretsStatus, SECRETS_IPC.secretsInit, SECRETS_IPC.secretsReset, SECRETS_IPC.secretsUndelete,
+    SECRETS_IPC.secretsConfirmDelete
   ],
   'socket transport (Wave 2 socketServer.ts; cli-spec 3.3(4).1)': [HOST_IPC.runsSubscribe],
   'socket transport (Wave 2 socketServer.ts; cli-spec 3.3(4).2)': [HOST_METHODS.hostSubscribe],

@@ -13,26 +13,32 @@
  * | InstallChannel, INSTALL_CHANNELS, INSTALL_INFO_FILE, InstallInfo | src/shared/types.ts | A (builders write it; --version, doctor) |
  * | readInstallInfo | src/cli/installInfo.ts | done (reader); A (writers), B (launcher uses it) |
  * | HostStopInput.handoff, HostStopResult.handoffBlockers, HostStatusResult.handoff, HostHandoffFacts, HostHandoffBlocker, HOST_HANDOFF_BLOCKERS | src/shared/types.ts | F |
- * | RpcHelloResult.handoff, HOST_HANDOFF_METHODS, DESKTOP_HELLO_PEER_CHECK_MS | src/shared/types.ts | F |
+ * | RpcHelloResult.handoff, HOST_HANDOFF_METHODS, HOST_HANDOFF_SCOPES, DESKTOP_HELLO_PEER_CHECK_MS | src/shared/types.ts | F |
+ * | HostProofFields.handoff (bound only when true), parseHelloResult keeps handoff | src/main/host/protocol.ts, src/cli/client/hostClient.ts | done; F sets it in socketServer.ts |
+ * | CliShimStatus.otherCli | src/shared/types.ts | A (PATH lookup in shimInstaller), app Terminal row |
  * | helloProblem accepts clientKind 'desktop'; DESKTOP_HANDOFF_UNAVAILABLE_MESSAGE refuses it after the proof | src/main/host/socketServer.ts | F (replace the refusal with the handoff grant) |
  * | VaultState, VAULT_STATES, VaultCustodyScheme, VAULT_CUSTODY_SCHEMES, CustodyFailureKind, SecretStatus, LegacySecretsFileState | src/shared/types.ts | G |
- * | SecretsStatusResult, SecretsSoftDelete, SecretsOrphanVault, SecretsInit/Reset/Undelete Input and Result | src/shared/types.ts | G (store side), H (channels, CLI) |
- * | SECRETS_IPC (secrets:status / init / reset / undelete), SecretsIpcChannel | src/shared/types.ts | H (handlers are stubs) |
+ * | SecretsStatusResult, SecretsSoftDelete, SecretsOrphanVault, SecretsInit/Reset/Undelete/ConfirmDelete Input and Result | src/shared/types.ts | G (store side), H (channels, CLI), app notice "Restore / Keep removed" (H) |
+ * | SECRETS_IPC (secrets:status / init / reset / undelete / confirmDelete), SecretsIpcChannel | src/shared/types.ts | H (handlers are stubs) |
  * | VaultFile and its parts, VAULT_* constants, vaultEntryAad, vaultCheckAad, dpapiEntropy, vaultStateForFailure, VAULT_MESSAGES | this file | G |
  * | KeyCustodian, CustodyFailure, CustodyError, isCustodyFailure, CustodianProbe, CustodianCreated, CustodianFactory | this file | G (custodians), D (gate rules for their tools) |
  * | VaultNotReady | this file | G (set() on an absent vault in a Node / inproc host) |
- * | SecretStoreApi (status, state, prepareWrite, vaultKeyFiles, attachLeases, statusReport, initVault, resetVault, undelete) | this file; SecretStore implements it with stubs in secrets.ts (VAULT_NOT_AVAILABLE_MESSAGE) | G (store), H (callers) |
- * | OpenSecretStoreOptions, openSecretStore | src/main/store/secrets.ts (returns today's store) | G; every host entry calls it before bootOrgAIHost (desktop index.ts, headless, inprocHost.ts) |
+ * | SecretStoreApi (status, state, clearRefusal, prepareWrite, vaultKeyFiles, attachLeases, retryOpen, statusReport, initVault, resetVault, undelete, confirmDeletes) | this file; SecretStore implements it with stubs in secrets.ts (VAULT_NOT_AVAILABLE_MESSAGE) | G (store), H (callers: clearRefusal in explicit-clear handlers, the reset busy check); app (retryOpen on focus, F/H) |
+ * | VaultMetadata | this file | G |
+ * | readVaultMetadata | src/main/store/vaultMetadata.ts (shape check only today) | G (full validation shared with the loader), H (doctor without a host) |
+ * | McpService.refreshingCount | src/main/mcp/service.ts | done; H (secrets:reset busy check) |
+ * | OpenSecretStoreOptions, openSecretStore | src/main/store/secrets.ts (returns today's store) | G; already called by every host entry after acquireHostOwnership and before bootOrgAIHost (index.ts desktop and --headless-host with safeStorage, inprocHost.ts inproc and node with NO_CIPHER and readOnly) |
  * | BootOrgAIHostOptions.secretStore, HostBackgroundOptions / BootOrgAIHostOptions.background | src/main/host/bootstrap.ts | G (secretStore), B (background split) |
  * | HostServices.secrets (bootstrap passes the store; secrets.attachLeases gets backgroundTasks leases) | src/main/host/types.ts, bootstrap.ts | H |
  * | secrets:* dispatcher handlers (status answers statusReport, the rest refuse 'not available in this build yet') | src/main/host/dispatcher.ts registerSecretsIpc | H |
  * | HostStopInput.handoff passed through by the host.stop handler | src/main/host/dispatcher.ts | F (predicate in activity.ts) |
- * | RequestChannelEntry.storesSecret, StoresSecretFn, StoresSecretHostView, STORES_SECRET (stub predicates) | src/main/host/registry.ts, src/main/host/storesSecret.ts | H (predicates, invokeRpc prepareWrite) |
+ * | RequestChannelEntry.storesSecret, StoresSecretFn, StoresSecretHostView, STORES_SECRET (stub predicates) | src/main/host/registry.ts, src/main/host/storesSecret.ts | H (predicates only) |
+ * | invokeRpc awaits secrets.prepareWrite() when the entry's storesSecret is true (inside the mutation lease) | src/main/host/dispatcher.ts | done |
  * | ControlProtectedExtras, controlProtectedPaths(..., { vaultKeyFiles }) | src/main/runtime/selfControlGate.ts (bootstrap passes secrets.vaultKeyFiles()) | done (exact files); D (basename, glob, word and tool rules) |
  * | trackChildProcess, killTrackedChildren, trackedChildCount, shutdown constants and ShutdownCoordinatorApi | src/main/host/shutdown.ts | F (coordinator, kill at the hard limit); G and C register their children |
  * | claudeExecutable, ClaudeExecutableResolution, claudeRuntimeMissingMessage | src/main/runtime/claudeBinary.ts (stub) | C |
  * | StartInprocHostOptions.hostKind / background | src/cli/inprocHost.ts | E (node), B (background flags) |
- * | HostLauncherResolution, HostLauncher.locate, DaemonRuntime, HOST_STARTING_WAIT_MS | src/cli/types.ts (locate maps resolve()) | B (discovery), E (--runtime) |
+ * | HostLauncherResolution, HostLauncherFound, HostLauncher.locate, resolve() source 'installed' and `path` on errors, spawn({ app }), DaemonRuntime, HOST_STARTING_WAIT_MS | src/cli/types.ts (locate maps resolve()) | B (discovery), E (--runtime) |
  * | `secrets` and `terminal-access` command entries (available: false) and routes | src/cli/entries, src/cli/commands/secrets.ts, terminalAccess.ts | H (secrets), E (terminal-access) |
  * | DoctorGroupInput, DoctorCheckGroup; installChecks, runtimeChecks, secretsChecks (return [] today, called by runDoctor) | src/cli/doctor/*.ts | A, C, H |
  *
@@ -42,6 +48,8 @@
 import type {
   CustodyFailureKind,
   SecretStatus,
+  SecretsConfirmDeleteInput,
+  SecretsConfirmDeleteResult,
   SecretsInitInput,
   SecretsInitResult,
   SecretsResetInput,
@@ -267,7 +275,11 @@ export interface SecretStoreApi {
   has(key: string): boolean
   /** The plain value, or undefined when unset or unreadable (status() says which). */
   get(key: string): string | undefined
-  /** Store a value, or delete it with null or ''. */
+  /**
+   * Store a value, or delete it with null or ''. A delete (here, delete() and deletePrefix()) never throws for a
+   * removal in any vault state (5.5 Deletes): a key it cannot handle is left in place, logged and counted in
+   * SecretsStatusResult.orphanedKeys. An explicit clear calls clearRefusal() first.
+   */
   set(key: string, value: string | null): void
   delete(key: string): void
   keys(prefix?: string): string[]
@@ -277,6 +289,15 @@ export interface SecretStoreApi {
   status(key: string): SecretStatus
   /** The vault's state on this host. */
   state(): VaultState
+  /**
+   * 5.5 Deletes, explicit clears: why clearing `key` must be refused here, else undefined. Handlers of an explicit
+   * clear (connections:setSecret / mcp:setSecret / mcpLibrary:setSecret with null or '', connectors:setToken null; the
+   * service method behind each) call it before changing any record and throw the sentence: VAULT_MESSAGES.
+   * clearRefusedCorrupt while the vault is 'corrupt', VAULT_MESSAGES.clearRefusedLegacyOnly on a Node or inproc host
+   * whose vault is 'absent' for a key that exists only in secrets.json. Removals (project, server or library delete,
+   * linkLibrary, kit replace) never call it. A key that exists nowhere is never refused.
+   */
+  clearRefusal(key: string): string | undefined
   /**
    * Single-flight: create the vault (absent, Node / inproc hosts) or retry opening it (locked; missing-key with a key
    * file) before a handler stores a value. Re-checks vault.json after the custodian call and opens an existing vault
@@ -290,12 +311,42 @@ export interface SecretStoreApi {
   vaultKeyFiles(): string[]
   /** Background vault work (creation, reconciliation, write-back) holds a backgroundTasks lease once the host exists. */
   attachLeases(acquire: (label: string) => () => void): void
+  /**
+   * 5.6 App host creation: retry creating ('absent') or opening ('locked') the vault in the background, single-flight
+   * with prepareWrite and secrets:init; a success reconciles in place. index.ts calls it with 'focus' on window focus
+   * after a lock failure; the store's own VAULT_RETRY_MS timer uses 'timer'. A no-op when nothing failed, on a vault
+   * already open, and on hosts that cannot write back.
+   */
+  retryOpen(reason: 'focus' | 'timer'): void
   /** secrets:status. Probes the custodian when `input.probe` is true. */
   statusReport(input?: SecretsStatusInput): Promise<SecretsStatusResult>
   /** secrets:init. */
   initVault(input: SecretsInitInput): Promise<SecretsInitResult>
-  /** secrets:reset (served in every state; the caller refuses while a write, an OAuth flow or a refresh is in flight). */
+  /**
+   * secrets:reset (served in every state). The caller refuses with VAULT_MESSAGES.resetBusy while an OAuth flow
+   * (McpService.activeAuthorizationCount) or a token refresh (McpService.refreshingCount) is in flight; the store
+   * itself refuses while one of its own writes is.
+   */
   resetVault(input: SecretsResetInput): Promise<SecretsResetResult>
-  /** secrets:undelete. */
+  /** secrets:undelete ("Restore"). */
   undelete(input: SecretsUndeleteInput): SecretsUndeleteResult
+  /** secrets:confirmDelete ("Keep removed"): drops the kept values of the named soft deletes (SecretsConfirmDeleteInput). */
+  confirmDeletes(input: SecretsConfirmDeleteInput): SecretsConfirmDeleteResult
+}
+
+/**
+ * vault.json metadata read without decrypting anything (5.7: `orgai doctor` with no host running). 'absent': no file.
+ * 'corrupt': it does not parse or validate (the same rule the store applies on load). 'present': a valid vault; the
+ * counts and ids are from the file, never a value. src/main/store/vaultMetadata.ts readVaultMetadata.
+ */
+export interface VaultMetadata {
+  state: 'absent' | 'corrupt' | 'present'
+  vaultId?: string
+  scheme?: VaultCustodyScheme
+  /** Entries in vault.json (0 unless 'present'). */
+  entries: number
+  /** Tombstones in vault.json (0 unless 'present'). */
+  tombstones: number
+  /** legacyRetired is set (5.5 Retirement). */
+  legacyRetired: boolean
 }

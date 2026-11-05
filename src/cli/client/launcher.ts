@@ -152,13 +152,13 @@ export function packagedApp(
   bundleDir: string,
   platform: NodeJS.Platform,
   runtime: { execPath: string; electron?: string }
-): { command: string; args: string[]; source: 'packaged' } | { error: string } | undefined {
+): { command: string; args: string[]; source: 'packaged' } | { error: string; path: string } | undefined {
   const res = resourcesDirOfCliBundle(bundleDir, platform)
   if (res === undefined) return undefined
   const { appBinary } = packagedLayout(platform, res)
   if (runtime.electron && runtime.execPath && samePath(runtime.execPath, appBinary)) return { command: runtime.execPath, args: [], source: 'packaged' }
   if (existsSync(appBinary)) return { command: appBinary, args: [], source: 'packaged' }
-  return { error: packagedAppMissing(appBinary) }
+  return { error: packagedAppMissing(appBinary), path: appBinary }
 }
 
 /** Variables a command read a secret from (consumeSecretEnv); never handed to a spawned host. */
@@ -216,7 +216,7 @@ export function createLauncher(opts: LauncherOptions): HostLauncher {
     const root = devAppRoot(bundleDir)
     if (root) {
       if (!existsSync(join(root, 'out', 'main', 'index.js'))) {
-        return { error: `The OrgAI app in ${root} is not built (run npm run build); set ORGAI_ELECTRON_PATH or use --host inproc` }
+        return { error: `The OrgAI app in ${root} is not built (run npm run build); set ORGAI_ELECTRON_PATH or use --host inproc`, path: root }
       }
       const bin = electronBinaryOf(root, env)
       if (bin) return { command: bin, args: [root], source: 'dev' }
@@ -253,12 +253,12 @@ export function createLauncher(opts: LauncherOptions): HostLauncher {
       const app = resolveApp()
       if (!('error' in app)) return { status: 'found', ...app }
       if (app.error === APP_NOT_FOUND) return { status: 'absent', message: app.error }
-      // The only other refusal today: a dev checkout that is not built.
-      return { status: 'broken', path: devAppRoot(opts.bundleDir ?? moduleDir()) ?? '', message: app.error }
+      // A missing packaged binary or an unbuilt dev checkout: the error carries the path it is about.
+      return { status: 'broken', path: app.path ?? '', message: app.error }
     },
 
-    spawn({ headless, run }) {
-      const app = resolveApp()
+    spawn({ headless, run, app: located }) {
+      const app = located ?? resolveApp()
       if ('error' in app) throw new Error(app.error)
       const args = [...app.args, ...(headless ? ['--headless-host'] : []), ...(run ? ['--run', run] : [])]
       const state: NonNullable<typeof child> = {}

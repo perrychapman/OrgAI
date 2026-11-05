@@ -62,6 +62,8 @@ export interface HostProofFields {
   dataDir: string
   mock: boolean
   grantedScopes: readonly HostScope[]
+  /** Wave 7 (RpcHelloResult.handoff): bound only when true, so every other hello keeps its existing proof. */
+  handoff?: boolean
 }
 
 function hmacHex(secretHex: string, transcript: unknown[]): string {
@@ -89,7 +91,8 @@ export function clientProof(secretHex: string, f: ClientProofFields): string {
 
 /**
  * HMAC-SHA256(daemon.secret, JSON.stringify(['host:v1', protocolVersion, hostInstanceId, clientNonce, hostNonce,
- * hostKind, appVersion, dataDir, mock, grantedScopes])) as lowercase hex.
+ * hostKind, appVersion, dataDir, mock, grantedScopes])) as lowercase hex; with `handoff: true` (Wave 7, a desktop
+ * hello's handoff grant) `true` is appended after grantedScopes.
  */
 export function hostProof(secretHex: string, f: HostProofFields): string {
   return hmacHex(secretHex, [
@@ -102,7 +105,8 @@ export function hostProof(secretHex: string, f: HostProofFields): string {
     f.appVersion,
     f.dataDir,
     f.mock,
-    [...f.grantedScopes]
+    [...f.grantedScopes],
+    ...(f.handoff === true ? [true] : [])
   ])
 }
 

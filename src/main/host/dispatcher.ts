@@ -6,7 +6,8 @@
  * - `invoke` is the trusted in-process desktop path: no gate, no lease (the window is the interactiveClients lease),
  *   and the handler's result is returned as is, so a sync handler stays sync and a sync throw stays a sync throw.
  * - `invokeRpc` is the untrusted wire path: gate (scope, params), refuse transport-owned channels, refuse mutations
- *   while draining, hold an inFlightRpcMutations lease for mutations, map coded errors to HostRpcFailure.
+ *   while draining, hold an inFlightRpcMutations lease for mutations, await SecretStore.prepareWrite() when the
+ *   channel's storesSecret predicate is true (Wave 7), map coded errors to HostRpcFailure.
  *
  * Pushes the handlers make (projects:engagementChanged) go on `events`; the desktop shell forwards them to windows.
  */
@@ -78,6 +79,7 @@ import type {
   RemapResult,
   RunOverrides,
   RunSummary,
+  SecretsConfirmDeleteResult,
   SecretsInitResult,
   SecretsResetResult,
   SecretsStatusInput,
@@ -191,7 +193,7 @@ import {
   withEffectiveDefault
 } from './args'
 import { HostEventBus } from './events'
-import { HostRpcFailure, gateRequest, type GateFn } from './registry'
+import { HostRpcFailure, gateRequest, type GateFn, type StoresSecretHostView } from './registry'
 import type { HostActivityTrackerApi, HostDispatchEnv, HostServices, InvokeContext, RpcInvokeContext } from './types'
 
 /** One request handler: the call context, then the positional arguments (what ipcRenderer.invoke passed). */
@@ -282,6 +284,11 @@ export class HostDispatcher {
     if (!handler) throw new HostRpcFailure('unknown_channel', `Unknown channel: ${channel}`)
     const release = leased ? this.activity.acquire('inFlightRpcMutations', channel) : undefined
     try {
+      // Wave 7 (cli-standalone.md 5.6): a call that will store a non-empty secret value prepares the vault first (Node /
+      // inproc hosts create it lazily), inside the mutation lease, so the handler stays synchronous. Clears and calls
+      // that store nothing never reach prepareWrite. The predicates live in storesSecret.ts.
+      const secrets = this.services.secrets
+      if (secrets && g.entry.storesSecret?.(g.args, this.storesSecretView(secrets))) await secrets.prepareWrite()
       return await handler(ctx, ...g.args)
     } catch (err) {
       throw rpcError(err)
@@ -299,6 +306,16 @@ export class HostDispatcher {
     void this.services
     void this.opts
     return Object.keys(this.handlers)
+  }
+
+  /** Read-only host state for the storesSecret predicates (never a secret value). */
+  private storesSecretView(secrets: SecretStoreApi): StoresSecretHostView {
+    return {
+      project: (projectId) => this.services.projects.get(projectId),
+      libraryEntry: (entryId) => this.services.mcp.libraryEntries().find((e) => e.id === entryId),
+      secretKeys: (prefix) => secrets.keys(prefix),
+      secretStatus: (key) => secrets.status(key)
+    }
   }
 
   private lookup(channel: string): Handler | undefined {
@@ -979,6 +996,7 @@ function registerSecretsIpc(handle: Register, secrets: SecretStoreApi | undefine
   handle(SECRETS_IPC.secretsInit, (): Promise<SecretsInitResult> => notYet(SECRETS_IPC.secretsInit))
   handle(SECRETS_IPC.secretsReset, (): Promise<SecretsResetResult> => notYet(SECRETS_IPC.secretsReset))
   handle(SECRETS_IPC.secretsUndelete, (): SecretsUndeleteResult => notYet(SECRETS_IPC.secretsUndelete))
+  handle(SECRETS_IPC.secretsConfirmDelete, (): SecretsConfirmDeleteResult => notYet(SECRETS_IPC.secretsConfirmDelete))
 }
 
 /**

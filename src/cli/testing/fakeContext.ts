@@ -4,6 +4,7 @@
  * spends tokens.
  */
 import type { DaemonInfo, HostRpcError, HostStatusResult, Project, RpcHelloResult, RunRecord, RunSummary } from '../../shared/types'
+import { APP_NOT_FOUND } from '../client/launcher'
 import type {
   CliContext,
   CliGlobals,
@@ -221,7 +222,9 @@ export function fakeContext(o: FakeContextOptions = {}): FakeContext {
     locate: () => {
       if (o.launcher?.locate) return o.launcher.locate()
       const app = o.launcher?.resolve ? o.launcher.resolve() : { command: '/bin/orgai-app', args: [], source: 'dev' as const }
-      return 'error' in app ? { status: 'absent', message: app.error } : { status: 'found', ...app }
+      // As the real launcher: APP_NOT_FOUND is 'absent', any other refusal 'broken' (never the inproc fallback).
+      if (!('error' in app)) return { status: 'found', ...app }
+      return app.error === APP_NOT_FOUND ? { status: 'absent', message: app.error } : { status: 'broken', path: app.path ?? '', message: app.error }
     },
     spawn: (args) => {
       launcherCalls.push({ method: 'spawn', args })

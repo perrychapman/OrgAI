@@ -5172,6 +5172,12 @@ export interface CliShimStatus {
   onPath?: boolean
   /** One plain sentence for 'unavailable' and 'foreign'. */
   reason?: string
+  /**
+   * Wave 7 (cli-standalone.md 8.2, 9.2): the first `orgai` on the login shell PATH that is not this install's shim (an
+   * npm install, an archive, another app's shim); unset when there is none or PATH could not be read. The Terminal row
+   * then says "The orgai command from npm (<version>) is on your PATH" and offers no Install.
+   */
+  otherCli?: { path: string; channel?: InstallChannel; version?: string }
 }
 
 /** The answer of app:installCliShim / app:uninstallCliShim. Never a rejection: failures are ok: false. */
@@ -5856,15 +5862,19 @@ export interface RpcHelloResult {
   /** Populated when clientVersion !== appVersion; 'read', 'operate', and 'decide' still work when protocolVersion matches. */
   versionSkewWarning?: string
   /**
-   * Wave 7 (cli-standalone.md 4.4 step 5, D8): true for a `clientKind: 'desktop'` hello. The socket server then refuses
-   * every method on this connection before dispatch except HOST_HANDOFF_METHODS (host.status, host.stop, forced
-   * included). WP-F decides whether it is bound into hostProof (an older host never sets it; an older client ignores it).
+   * Wave 7 (cli-standalone.md 4.4 step 5, D8): true for a `clientKind: 'desktop'` hello, absent otherwise. Such a
+   * connection is granted exactly ['read', 'configure'] (host.status needs 'read', host.stop 'configure'), whatever
+   * Terminal access is (off, 'operate' or 'full'), and the socket server refuses every method other than
+   * HOST_HANDOFF_METHODS (host.status, host.stop, forced included) before gateRequest runs. Bound into hostProof only
+   * when true (protocol.ts hostProof appends it), so a hello without it keeps its existing proof; hostClient.ts
+   * parseHelloResult keeps it and checks the proof with it.
    */
   handoff?: true
   /**
    * Canonical structured full-transcript HMAC (binds all host fields):
    * HMAC-SHA256(daemon.secret,
    *   JSON.stringify(['host:v1', protocolVersion, hostInstanceId, clientNonce, hostNonce, hostKind, appVersion, dataDir, mock, grantedScopes]))
+   * with `true` appended after grantedScopes when `handoff` is true.
    */
   hostProof: string
 }
@@ -6392,8 +6402,15 @@ export interface InstallInfo {
 
 // ---- Handoff from a Node host to the app (cli-standalone.md 4.4) ----
 
-/** The only methods a handoff connection (RpcHelloResult.handoff) may call. */
+/**
+ * The only methods a handoff connection (RpcHelloResult.handoff) may call. socketServer.ts applies this filter before
+ * gateRequest (anything else answers scope_denied without reaching the registry); the connection's grantedScopes are
+ * exactly HOST_HANDOFF_SCOPES, so both methods pass the gate's scope check whatever Terminal access is.
+ */
 export const HOST_HANDOFF_METHODS: readonly HostMethod[] = ['host.status', 'host.stop']
+
+/** The grantedScopes of every handoff connection: host.status needs 'read', host.stop 'configure'. */
+export const HOST_HANDOFF_SCOPES: readonly HostScope[] = ['read', 'configure']
 
 /** The peer-check budget of a `clientKind: 'desktop'` hello (the others keep the shorter default). */
 export const DESKTOP_HELLO_PEER_CHECK_MS = 2_000
@@ -6560,6 +6577,24 @@ export interface SecretsUndeleteResult {
 }
 
 /**
+ * secrets:confirmDelete (scope 'configure'): the "Keep removed" answer to soft deletes (5.5 Deletes; the app notice
+ * "N saved secrets were removed by an older version of OrgAI. Restore / Keep removed"). Each named key's soft delete
+ * is confirmed: its kept value (`prev` / `prevLegacy`) is dropped, it no longer lists in `softDeletes`, it can no longer
+ * be undeleted, and a confirmed `by: 'legacy'` delete no longer holds back Retirement. A key with no soft delete is
+ * skipped (left out of `confirmed`). The store may keep a `by: 'vault'` tombstone's metadata (`legacyHash`) that rows 1
+ * and 2 of 5.5 still need. Metadata only: served in every state in which vault.json parses, no data key needed.
+ */
+export interface SecretsConfirmDeleteInput {
+  /** Key names (never values), as listed in SecretsStatusResult.softDeletes. */
+  keys: string[]
+}
+
+export interface SecretsConfirmDeleteResult {
+  /** The keys whose soft delete was confirmed, in input order. */
+  confirmed: string[]
+}
+
+/**
  * Channels of the secret vault (cli-standalone.md 5.6). Served by the host dispatcher on every surface (the app's
  * window and the socket); `secrets:status` needs 'read', the others 'configure'. None ever returns a value.
  */
@@ -6567,7 +6602,8 @@ export const SECRETS_IPC = {
   secretsStatus: 'secrets:status',
   secretsInit: 'secrets:init',
   secretsReset: 'secrets:reset',
-  secretsUndelete: 'secrets:undelete'
+  secretsUndelete: 'secrets:undelete',
+  secretsConfirmDelete: 'secrets:confirmDelete'
 } as const
 
 export type SecretsIpcChannel = (typeof SECRETS_IPC)[keyof typeof SECRETS_IPC]

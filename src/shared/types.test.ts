@@ -239,7 +239,7 @@ describe('IPC names', () => {
 describe('Wave 7 (standalone CLI) contracts', () => {
   it('SECRETS_IPC values are unique and collide with no IPC, HOST_IPC channel or host.* method', () => {
     const names = Object.values(SECRETS_IPC)
-    expect(names.sort()).toEqual(['secrets:init', 'secrets:reset', 'secrets:status', 'secrets:undelete'])
+    expect(names.sort()).toEqual(['secrets:confirmDelete', 'secrets:init', 'secrets:reset', 'secrets:status', 'secrets:undelete'])
     const taken = new Set<string>([IPC, TEMPLATE_ENGAGEMENT_IPC, KNOWLEDGE_IPC, MCP_SCOPE_IPC, KIT_IPC, HOST_IPC, HOST_METHODS].flatMap((o) => Object.values(o)))
     for (const n of names) expect(taken.has(n), n).toBe(false)
   })

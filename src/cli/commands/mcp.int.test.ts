@@ -10,14 +10,19 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { Project } from '../../shared/types'
 import type { CliIo } from '../types'
 
-vi.mock('../../main/host/bootstrap', async (importOriginal) => {
-  const real = await importOriginal<typeof import('../../main/host/bootstrap')>()
+// The host's store comes from openSecretStore (Wave 7, cli-standalone.md 5.6): open it writable with the test cipher.
+vi.mock('../../main/store/secrets', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../../main/store/secrets')>()
   const cipher = {
     isEncryptionAvailable: () => true,
     encryptString: (s: string) => Buffer.from(`enc:${s}`),
     decryptString: (b: Buffer) => b.toString().slice(4)
   }
-  return { ...real, bootOrgAIHost: (opts: Parameters<typeof real.bootOrgAIHost>[0]) => real.bootOrgAIHost({ ...opts, safeStorage: cipher, secrets: { overlay: opts.secrets?.overlay } }) }
+  return {
+    ...real,
+    openSecretStore: (opts: Parameters<typeof real.openSecretStore>[0]) =>
+      real.openSecretStore({ ...opts, cipher, readOnly: false, ...(opts.overlay ? { overlay: opts.overlay } : {}) })
+  }
 })
 
 const { startInprocHost } = await import('../inprocHost')

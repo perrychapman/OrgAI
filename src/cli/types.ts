@@ -165,9 +165,16 @@ export interface ProjectResolution {
  * in-process host. 'broken': found, but its binary or app.asar is missing; an error naming `path`, never a fallback.
  */
 export type HostLauncherResolution =
-  | { status: 'found'; command: string; args: string[]; source: 'env' | 'packaged' | 'dev' | 'installed' }
+  | ({ status: 'found' } & HostLauncherFound)
   | { status: 'absent'; message: string }
   | { status: 'broken'; path: string; message: string }
+
+/** An app HostLauncher can spawn: resolve()'s success and locate()'s 'found'. */
+export interface HostLauncherFound {
+  command: string
+  args: string[]
+  source: 'env' | 'packaged' | 'dev' | 'installed'
+}
 
 /** Finds and starts the OrgAI app as a host (src/cli/launcher.ts, W2-T4). */
 export interface HostLauncher {
@@ -175,14 +182,18 @@ export interface HostLauncher {
    * The app binary: ORGAI_ELECTRON_PATH ('env'), the packaged app next to this bundle ('packaged': the bundle sits in
    * `<Resources>/app.asar.unpacked/out/cli`) or the dev checkout's electron + out/main ('dev'), in that order.
    */
-  resolve(): { command: string; args: string[]; source: 'env' | 'packaged' | 'dev' } | { error: string }
+  resolve(): HostLauncherFound | { error: string; path?: string }
   /**
    * Wave 7: the same lookup as found / absent / broken (HostLauncherResolution). Until WP-B adds installed-app
-   * discovery and the checkout marker, it maps resolve(): APP_NOT_FOUND is 'absent', any other error 'broken'.
+   * discovery (source 'installed') and the checkout marker, it maps resolve(): APP_NOT_FOUND is 'absent', any other
+   * error 'broken' with the error's `path` (the missing packaged binary, the unbuilt checkout).
    */
   locate(): HostLauncherResolution
-  /** Spawn it detached: `--headless-host` when headless, else a desktop window; `run` focuses that run id. */
-  spawn(opts: { headless: boolean; run?: string }): { pid?: number }
+  /**
+   * Spawn it detached: `--headless-host` when headless, else a desktop window; `run` focuses that run id. `app`: the
+   * app locate() found, so the lookup that decided and the spawn cannot disagree; without it spawn() resolves again.
+   */
+  spawn(opts: { headless: boolean; run?: string; app?: HostLauncherFound }): { pid?: number }
   /** The daemon.json of the live host that owns the data folder (any state), else null. */
   current(): DaemonInfo | null
   /**

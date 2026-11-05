@@ -86,6 +86,10 @@ describe('launcher', () => {
     chosen.spawn({ headless: false })
     expect(calls[1].args).toEqual([])
     expect(calls[1].options.env?.ORGAI_DATA_DIR).toBe('/ud')
+    // Wave 7: spawn the app locate() found, without resolving again.
+    chosen.spawn({ headless: true, app: { command: '/Applications/OrgAI.app/Contents/MacOS/OrgAI', args: [], source: 'installed' } })
+    expect(calls[2].command).toBe('/Applications/OrgAI.app/Contents/MacOS/OrgAI')
+    expect(calls[2].args).toEqual(['--headless-host'])
   })
 
   it('hostSpawnCwd is the binary folder for an absolute command, else home; never the cwd', () => {
@@ -223,8 +227,10 @@ describe('launcher: packaged app (cli-spec 7, Wave 6)', () => {
     const { bundleDir, binary } = fakeApp(false)
     const l = createLauncher({ dataDir, userDataDir: '', userChoseDataDir: false, env: {}, bundleDir, platform: 'darwin', runtime: { execPath: '/usr/bin/node' } })
     const r = l.resolve()
-    expect(r).toEqual({ error: packagedAppMissing(binary) })
+    expect(r).toEqual({ error: packagedAppMissing(binary), path: binary })
     expect('error' in r && r.error).toContain('reinstall OrgAI or set ORGAI_ELECTRON_PATH')
+    // Wave 7: locate() reports it broken with the binary's path, never absent (which would fall back to inproc).
+    expect(l.locate()).toEqual({ status: 'broken', path: binary, message: packagedAppMissing(binary) })
   })
 
   it('ORGAI_ELECTRON_PATH still wins over the packaged app', () => {

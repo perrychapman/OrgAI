@@ -507,7 +507,8 @@ whose vault is open (for example through a key file) but whose safeStorage is un
   file as nearly empty look the same, so a `by: 'legacy'` tombstone makes the secret read as deleted (the user's last
   action may have been a delete) but keeps its value until the user decides. The app shows one notice, "N saved
   secrets were removed by an older version of OrgAI. Restore / Keep removed"; `orgai doctor` / `orgai secrets status`
-  list them; `orgai secrets undelete <key>` restores one. Nothing expires them on a timer. This wave's own deletes
+  list them; `orgai secrets undelete <key>` restores one (`secrets:undelete`), and "Keep removed" confirms them
+  (`secrets:confirmDelete`). Nothing expires them on a timer. This wave's own deletes
   never produce one (see Deletes).
 - `pending-legacy` lives in memory. A write of K by that host clears it, sets `legacy[K] = H` (the older app's value is
   superseded) and `lc = false`.
@@ -624,7 +625,9 @@ kept while a key is pending); a vault that turns corrupt after a Node rotation (
   that stores without its predicate firing fails the test.
 - Host channels: `secrets:status` (`read`; scheme, state, counts, pending, soft deletes, never values),
   `secrets:init` (`configure`; OS scheme or key file), `secrets:reset` (`configure`; served in every vault state),
-  `secrets:undelete` (`configure`). Registry and its tests updated.
+  `secrets:undelete` (`configure`; "Restore"), `secrets:confirmDelete` (`configure`; "Keep removed": `{ keys }` ->
+  `{ confirmed }`, drops the kept values of those soft deletes so they stop listing and no longer hold back
+  Retirement). Registry and its tests updated.
 - **Reset** (`orgai secrets reset --yes`): refused while a secret write, an OAuth flow or a token refresh is in
   flight ("A sign-in or save is in progress; try again when it ends"); it takes the store's write queue. Then `vault.json` is renamed to `vault.json.reset-<time>` (or
   `.corrupt-<time>`), so the store is `absent` again; nothing in the moved file is read again. The app host then

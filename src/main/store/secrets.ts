@@ -4,6 +4,8 @@ import type {
   HostKind,
   McpSecretKind,
   SecretStatus,
+  SecretsConfirmDeleteInput,
+  SecretsConfirmDeleteResult,
   SecretsInitInput,
   SecretsInitResult,
   SecretsResetInput,
@@ -245,6 +247,12 @@ export class SecretStore implements SecretStoreApi {
     return 'absent'
   }
 
+  /** No vault yet, so nothing to refuse: a clear behaves as before (WP-G returns the 5.5 refusals). */
+  clearRefusal(key: string): string | undefined {
+    void key
+    return undefined
+  }
+
   /** Nothing to prepare before the vault exists: set() behaves as before. */
   prepareWrite(): Promise<void> {
     return Promise.resolve()
@@ -259,6 +267,11 @@ export class SecretStore implements SecretStoreApi {
   attachLeases(acquire: (label: string) => () => void): void {
     // Nothing runs in the background before the vault lands (WP-G).
     void acquire
+  }
+
+  /** No vault to create or open yet: a no-op. */
+  retryOpen(reason: 'focus' | 'timer'): void {
+    void reason
   }
 
   /** secrets:status of a host without a vault: the legacy file and the overlay only. */
@@ -300,6 +313,11 @@ export class SecretStore implements SecretStoreApi {
     void input
     throw new Error(VAULT_NOT_AVAILABLE_MESSAGE)
   }
+
+  confirmDeletes(input: SecretsConfirmDeleteInput): SecretsConfirmDeleteResult {
+    void input
+    throw new Error(VAULT_NOT_AVAILABLE_MESSAGE)
+  }
 }
 
 /** openSecretStore's inputs (cli-standalone.md 5.6). */
@@ -327,7 +345,9 @@ export interface OpenSecretStoreOptions {
 /**
  * The async open step every host runs after acquireHostOwnership and before bootOrgAIHost (5.6): open an existing vault
  * (decrypting `check`), reconcile with secrets.json, create one at once on an app host, and only then hand the store to
- * BootOrgAIHostOptions.secretStore. Today (contracts only) it returns the existing store unchanged.
+ * BootOrgAIHostOptions.secretStore. Already called by every host entry (src/main/index.ts for desktop and
+ * --headless-host, src/cli/inprocHost.ts for inproc and node), so WP-G changes only this file and its custodians.
+ * Today (contracts only) it returns the existing store unchanged.
  */
 export async function openSecretStore(opts: OpenSecretStoreOptions): Promise<SecretStore> {
   return new SecretStore(opts.dataDir, opts.cipher, {

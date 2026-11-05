@@ -15,6 +15,7 @@ import { canWriteDir, dataDirOverride, installLogging, log, pickLogsDir } from '
 import { installElectronLogHooks } from './electronLogHooks'
 import { acquireHostOwnership, HostAlreadyRunningError, HostStartingOrBusyError, type HostOwnership } from './host/ownership'
 import { bootOrgAIHost, type OrgAIHost } from './host/bootstrap'
+import { openSecretStore } from './store/secrets'
 import { HostSocketServer } from './host/socketServer'
 import { currentHostInstanceId } from './host/identity'
 import {
@@ -347,12 +348,16 @@ app.whenReady().then(async () => {
     markDraining: () => owned.markDraining(),
     release: () => owned.release()
   }
+  // Wave 7 (cli-standalone.md 5.6): open (and later reconcile) the secret store after ownership, before the boot, for
+  // the desktop and the --headless-host boot alike. Today's safeStorage store; WP-G makes it the vault here.
+  const secretStore = await openSecretStore({ dataDir, userDataDir, hostKind, cipher: safeStorage, log: (m) => log.info(m) })
   const h = bootOrgAIHost({
     env: runtimeEnv(),
     dataDir,
     hostKind,
     ownership: bootOwnership,
     safeStorage,
+    secretStore,
     openExternal: (url) => shell.openExternal(url),
     desktop: { openRunWindow },
     mock: process.env.ORGAI_MOCK === '1',

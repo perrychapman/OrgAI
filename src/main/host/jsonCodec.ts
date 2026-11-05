@@ -365,7 +365,8 @@ export const CHANNEL_JSON_FIELDS: Readonly<Record<string, ChannelJsonFields>> = 
   'secrets:status': {}, // [SecretsStatusInput?] -> SecretsStatusResult
   'secrets:init': {}, // [SecretsInitInput?] -> SecretsInitResult
   'secrets:reset': {}, // [SecretsResetInput] -> SecretsResetResult
-  'secrets:undelete': {} // [SecretsUndeleteInput] -> SecretsUndeleteResult
+  'secrets:undelete': {}, // [SecretsUndeleteInput] -> SecretsUndeleteResult
+  'secrets:confirmDelete': {} // [SecretsConfirmDeleteInput] -> SecretsConfirmDeleteResult
 }
 
 // ---------- encode / decode ----------

@@ -7,8 +7,9 @@
  * A predicate sees the gated (validated, decoded) positional arguments and a read-only view of host state, and must be
  * true only when the call will store a non-empty value. registry.ts attaches these to the entries as `storesSecret`.
  *
- * Contracts only: every predicate below is a stub answering false until WP-H writes it (and wires invokeRpc), so
- * behaviour is unchanged. Electron-free; imports shared types only.
+ * invokeRpc already consults these (dispatcher.ts, inside the mutation lease; the view reads the project store, the
+ * MCP library and SecretStore.keys / status). Contracts only: every predicate below is a stub answering false until
+ * WP-H writes it, so behaviour is unchanged. Electron-free; imports shared types only.
  */
 import type { McpLibraryEntry, Project, SecretStatus } from '../../shared/types'
 

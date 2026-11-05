@@ -160,6 +160,9 @@ export const TERMINAL_ACCESS_LEVEL_MESSAGE =
 /**
  * A `clientKind: 'desktop'` hello (the OrgAI app asking a Node host to hand over; cli-standalone.md 4.4) is refused
  * until the handoff grant lands (WP-F): the app then shows the busy-folder message and the `orgai daemon stop` hint.
+ * The grant WP-F builds (contract, RpcHelloResult.handoff): grantedScopes exactly HOST_HANDOFF_SCOPES whatever Terminal
+ * access is (off included), `handoff: true` in the result and in hostProof, and HOST_HANDOFF_METHODS checked per call
+ * before gateRequest.
  */
 export const DESKTOP_HANDOFF_UNAVAILABLE_MESSAGE = 'This OrgAI host does not serve the app hand-off yet; stop it with `orgai daemon stop`.'
 /** hello refused on win32 when daemon.secret could not be restricted to the current user. */

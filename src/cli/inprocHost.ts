@@ -15,7 +15,7 @@ import { HostSocketServer } from '../main/host/socketServer'
 import { installLogging, log } from '../main/log'
 import { stopSystemCertRead, trustSystemCertificates } from '../main/systemCerts'
 import { orgaiCliRootsOf, setOrgaiCliRoots } from '../main/runtime/selfControlGate'
-import type { SecretCipher } from '../main/store/secrets'
+import { openSecretStore, type SecretCipher } from '../main/store/secrets'
 import { openUrl } from './openUrl'
 import { CliError, EXIT, type InprocHostHandle } from './types'
 import { CLI_VERSION } from './version'
@@ -166,13 +166,25 @@ export async function startInprocHost(opts: StartInprocHostOptions): Promise<Inp
   }
 
   try {
+    // Wave 7 (cli-standalone.md 5.6): open (and later reconcile) the secret store after ownership, before the boot.
+    // Today's read-only store with the CLI's overlay; WP-G makes it the vault without touching this call.
+    const secretStore = await openSecretStore({
+      dataDir,
+      userDataDir,
+      hostKind,
+      cipher: NO_CIPHER,
+      readOnly: true,
+      overlay: opts.overlay,
+      env: opts.env,
+      log: (m) => log.info(m)
+    })
     host = bootOrgAIHost({
       env: { userDataDir, logsDir, appVersion: CLI_VERSION, isPackaged: false },
       dataDir,
       hostKind,
       ownership,
       safeStorage: NO_CIPHER,
-      secrets: { readOnly: true, overlay: opts.overlay },
+      secretStore,
       openExternal: (url) => openUrl(url),
       mock: opts.mock,
       processEnv: opts.env,

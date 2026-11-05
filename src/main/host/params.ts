@@ -233,6 +233,7 @@ export const CHANNEL_PARAMS: Readonly<Record<string, readonly ParamSpec[]>> = {
   [SECRETS_IPC.secretsInit]: OPTIONAL_NULLABLE_OBJECT,
   [SECRETS_IPC.secretsReset]: OBJECT,
   [SECRETS_IPC.secretsUndelete]: OBJECT,
+  [SECRETS_IPC.secretsConfirmDelete]: OBJECT,
 
   // ---- host.* request methods (a plain-object params is normalized to [object] by the gate) ----
   [HOST_METHODS.hostStatus]: OPTIONAL_NULLABLE_OBJECT,

@@ -199,6 +199,7 @@ const PAYLOADS: Record<string, unknown[]> = {
   'secrets:init': [{ keyFile: '/home/u/orgai.key', importKeyFile: true }],
   'secrets:reset': [{ confirm: true }],
   'secrets:undelete': [{ key: 'connection:litellm:apiKey' }],
+  'secrets:confirmDelete': [{ keys: ['connection:litellm:apiKey'] }],
   // host.*
   'host.status': [],
   'host.subscribe': [{ topics: ['connections', 'capabilities'] }],
