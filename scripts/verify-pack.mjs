@@ -129,6 +129,25 @@ export function checkDoctorReport(stdout) {
   return { ok: problems.length === 0, problems }
 }
 
+/** Lease kinds that settle on their own (a run title or the Team review after a finished run); see host/activity.ts. */
+export const TRANSIENT_LEASES = ['backgroundTasks', 'inFlightRpcMutations', 'activeWorktreeOps']
+/** How long (f) keeps asking a host that is busy only with transient work to stop. */
+export const STOP_RETRY_MS = 30_000
+
+/**
+ * Reads an `orgai --output-format json daemon stop` refusal: 'transient' when every lease named is one that settles
+ * by itself (so asking again shortly is right), 'busy' for any other refusal (a live run: never forced), undefined
+ * when the output is not a refusal. Pure.
+ */
+export function stopRefusal(stdout) {
+  const doc = parseJson(stdout)
+  const leases = doc && typeof doc === 'object' && !Array.isArray(doc) ? doc.refusedBecause : undefined
+  if (!leases || typeof leases !== 'object') return undefined
+  const named = Object.entries(leases).filter(([, n]) => typeof n === 'number' && n > 0).map(([k]) => k)
+  if (named.length === 0) return undefined
+  return named.every((k) => TRANSIENT_LEASES.includes(k)) ? 'transient' : 'busy'
+}
+
 /** `{ outcome, exitCode }` of an `exec --output-format json` document, or undefined. Pure. */
 export function execOutcome(stdout) {
   const doc = parseJson(stdout)
@@ -388,7 +407,14 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
         await execCase('(e) exec inproc', ['--host', 'inproc'])
         if (!opts.skipHost) {
           await execCase('(f) exec host', [])
-          const s = await orgai(['daemon', 'stop'], repo)
+          // Plain `daemon stop` (never --force): a host still busy only with work that settles by itself (the run
+          // title, the Team review after the finished run) is asked again, at most STOP_RETRY_MS.
+          const stopUntil = Date.now() + STOP_RETRY_MS
+          let s = await orgai(['--output-format', 'json', 'daemon', 'stop'], repo)
+          while (s.code !== 0 && stopRefusal(s.stdout) === 'transient' && Date.now() < stopUntil) {
+            await new Promise((r) => setTimeout(r, 1000))
+            s = await orgai(['--output-format', 'json', 'daemon', 'stop'], repo)
+          }
           report('(f) daemon stop', s.code === 0, s.code === 0 ? 'the background app stopped' : showRun(s))
         }
       }

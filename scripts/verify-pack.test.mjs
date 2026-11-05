@@ -15,6 +15,7 @@ import {
   main,
   missingPackages,
   parseArgs,
+  stopRefusal,
   verifyEnv,
   versionMatches
 } from './verify-pack.mjs'
@@ -392,4 +393,15 @@ test('main: an unknown argument exits 2', async () => {
   const lines = []
   assert.equal(await main(['--bogus'], { log: (l) => lines.push(l) }), 2)
   assert.match(lines[0], /Unknown argument/)
+})
+
+test('stopRefusal tells settling work from a live run', () => {
+  assert.equal(stopRefusal(JSON.stringify({ stopped: false, refusedBecause: { backgroundTasks: 1 } })), 'transient')
+  assert.equal(stopRefusal(JSON.stringify({ stopped: false, refusedBecause: { backgroundTasks: 1, inFlightRpcMutations: 2 } })), 'transient')
+  assert.equal(stopRefusal(JSON.stringify({ stopped: false, refusedBecause: { liveRuns: 1, backgroundTasks: 1 } })), 'busy')
+  assert.equal(stopRefusal(JSON.stringify({ stopped: false, refusedBecause: { interactiveClients: 1 } })), 'busy')
+  assert.equal(stopRefusal(JSON.stringify({ stopped: false, refusedBecause: { backgroundTasks: 0 } })), undefined)
+  assert.equal(stopRefusal(JSON.stringify({ stopped: true, hostInstanceId: 'abc' })), undefined)
+  assert.equal(stopRefusal('The OrgAI host is busy (background tasks: 1).'), undefined)
+  assert.equal(stopRefusal(''), undefined)
 })
