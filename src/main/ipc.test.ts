@@ -19,6 +19,44 @@ const { tmpdir } = await import('node:os')
 const { join } = await import('node:path')
 
 const { mcpCopyArgs } = await import('./ipc')
+const { repoCloneArgs, repoCancelArg } = await import('./ipc')
+
+describe('repoCloneArgs / repoCancelArg (projects:cloneRepo)', () => {
+  const good = { requestId: 'req_1-A', source: 'https://github.com/o/r', mode: 'clone', destination: '/x/y' }
+  it('rebuilds the four fields and drops the rest', () => {
+    expect(repoCloneArgs({ ...good, extra: 1, nested: { a: 1 } })).toEqual(good)
+    expect(repoCloneArgs({ ...good, mode: 'fork' }).mode).toBe('fork')
+    expect(repoCloneArgs(Object.assign(Object.create(null), good))).toEqual(good)
+  })
+  it('refuses a wrong shape with one fixed line that never quotes the input', () => {
+    const secret = 'ghp_secret'
+    const bads: unknown[] = [
+      null, undefined, 'x', 5, [], new Map(),
+      { ...good, requestId: '' }, { ...good, requestId: 'a'.repeat(65) }, { ...good, requestId: 'a b' }, { ...good, requestId: '../x' }, { ...good, requestId: 5 },
+      { ...good, source: 5 }, { ...good, source: undefined }, { ...good, source: `https://${secret}@x/` + 'a'.repeat(2000) },
+      { ...good, mode: 'copy' }, { ...good, mode: undefined }, { ...good, mode: ['clone'] },
+      { ...good, destination: 5 }, { ...good, destination: '' }, { ...good, destination: '   ' }, { ...good, destination: 'x'.repeat(3000) }
+    ]
+    for (const bad of bads) {
+      let message = ''
+      try {
+        repoCloneArgs(bad)
+      } catch (e) {
+        message = (e as Error).message
+      }
+      expect(message, JSON.stringify(bad)?.slice(0, 60)).toBeTruthy()
+      expect(message).not.toContain(secret)
+      expect(message).not.toContain('\n')
+    }
+  })
+  it('lets the service judge the text itself (a bad address still passes the shape check)', () => {
+    expect(repoCloneArgs({ ...good, source: 'file:///x' }).source).toBe('file:///x')
+  })
+  it('repoCancelArg accepts only a request id', () => {
+    expect(repoCancelArg('abc_1')).toBe('abc_1')
+    for (const bad of [undefined, 5, '', 'a b', 'a'.repeat(65), {}]) expect(() => repoCancelArg(bad)).toThrow('Invalid clone request.')
+  })
+})
 
 describe('mcpCopyArgs (mcp:copyFromLibrary)', () => {
   it('rebuilds the three fields and drops the rest', () => {
