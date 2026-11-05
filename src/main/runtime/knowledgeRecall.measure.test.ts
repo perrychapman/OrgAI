@@ -86,17 +86,18 @@ describe('knowledge_recall vs the search + get flow (fixture)', () => {
     const atDefault: string[] = []
     const atMax: string[] = []
     for (const q of KNOWLEDGE_FIXTURE_QUESTIONS) {
-      // Default budget (1500): the repeat spends the budget the "already shown" lines freed on the next-ranked entities.
+      // Default budget (1500): the budget may cut strong matches, so a repeat can still bring the next strong ones.
       const first = await recall.call({ query: q.question }, { agentId: 'd' })
       const again = await recall.call({ query: q.question }, { agentId: 'd' })
       expect(again).toContain('already shown')
       expect(await recall.call({ query: q.question, fresh: true }, { agentId: 'd' })).not.toContain('already shown')
       atDefault.push(`${first.length} -> ${again.length}`)
-      // Budget 6000: everything that matches fits the first time, so the repeat is one short line per entity.
+      // Budget 6000: every strong match fits the first time, so the repeat is one short line per entity plus the same
+      // "N more:" line. Weak matches never refill the budget (KNOWLEDGE_RECALL_RELEVANCE_FLOOR).
       const big = await recall.call({ query: q.question, budget: 6000 }, { agentId: 'm' })
       const bigAgain = await recall.call({ query: q.question, budget: 6000 }, { agentId: 'm' })
       atMax.push(`${big.length} -> ${bigAgain.length}`)
-      expect(bigAgain.length).toBeLessThan(big.length / 2)
+      expect(bigAgain.length).toBeLessThan(big.length * 0.75)
     }
     console.log(`\ndedupe, first -> repeat chars. default budget 1500: ${atDefault.join(', ')}. budget 6000: ${atMax.join(', ')}\n`)
   })

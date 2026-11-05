@@ -295,6 +295,26 @@ describe('recallKnowledge', () => {
     expect(r.served.every((s) => /^[a-f0-9]{16}$/.test(s.signature))).toBe(true)
   })
 
+  it('gives detail only to matches above the relevance floor and names the weaker ones', () => {
+    const named = node('kn_s', 'Stripe', { summary: 'Payment provider', facts: [fact('kf_s', 'Handles card payments', { at: 1 })] })
+    const weak = Array.from({ length: 12 }, (_, i) => node(`kn_w${i}`, `Weak ${i}`, { facts: [fact(`kf_w${i}`, `Stripe appears here ${i}`, { at: 1 })] }))
+    const h = graph([named, ...weak], [])
+    const r = recallKnowledge(h, 'Stripe', { budget: 6000 })
+    expect(r.served.map((s) => s.id)).toEqual(['kn_s'])
+    expect(r.text).not.toContain('Stripe appears here')
+    expect(r.text).toContain('12 more: ')
+    expect(r.text.match(/Weak \d+/g)).toHaveLength(8)
+    expect(r.text).toContain(', ...')
+    expect(r.cut).toHaveLength(12)
+    // A repeat does not refill the budget with them.
+    const again = recallKnowledge(h, 'Stripe', { budget: 6000, shown: new Map(r.served.map((s) => [s.id, s.signature])) })
+    expect(again.served).toEqual([])
+    expect(again.alreadyShown).toEqual(['kn_s'])
+    expect(again.text.length).toBeLessThan(r.text.length)
+    // When only weak matches exist the best of them sets the floor, so they still get detail.
+    expect(recallKnowledge(graph(weak, []), 'Stripe', { budget: 6000 }).served.length).toBeGreaterThan(0)
+  })
+
   it('shows "+N facts, +M relations" when the caps hide some', () => {
     const many = node('kn_m', 'Many', { facts: Array.from({ length: 6 }, (_, i) => fact(`kf_${i}`, `fact number ${i}`, { at: i })) })
     const others = Array.from({ length: 9 }, (_, i) => node(`kn_o${i}`, `Other${i}`))
