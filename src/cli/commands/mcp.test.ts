@@ -5,7 +5,7 @@ import { manageDeps } from '../manage'
 import { fakeContext, FakeHostClient, project, rpcError, type FakeContextOptions } from '../testing/fakeContext'
 import { CliError, EXIT } from '../types'
 import { assistInput, mcpDeps, runMcp } from './mcp'
-import { parsePairs } from './mcp/common'
+import { PLAIN_VALUES_NOTE, parsePairs } from './mcp/common'
 
 const realDeps = { ...manageDeps }
 const realMcpDeps = { ...mcpDeps }
@@ -103,6 +103,33 @@ describe('mcp add', () => {
     const r = await run(f, args)
     expect(r.code).toBe(EXIT.usage)
     expect(client.calls).toHaveLength(0)
+  })
+
+  it.each([
+    [['add', 'x', '--command', 'a', '--env', 'GITHUB_TOKEN=abcdefgh1234']],
+    [['add', 'x', '--command', 'a', '--env', 'DB_PASSWORD=hunter22hunter']],
+    [['add', 'x', '--command', 'a', '--env', 'CONFIG=sk-proj-abcdefghijklmnop']],
+    [['add', 'x', '--command', 'a', '--env', 'X=ghp_abcdefghijklmnopqrstuvwxyz0123']],
+    [['add', 'x', '--command', 'a', '--env', 'DSN=postgres://me:pw@db.test/x']],
+    [['add', 'x', '--url', 'https://x.test', '--header', 'Authorization=Bearer abcdefghij']],
+    [['add', 'x', '--url', 'https://x.test', '--header', 'X-Api-Key=0123456789abcdef']],
+    [['library', 'add', 'x', '--command', 'a', '--env', 'API_KEY=abcdefgh12345678']]
+  ])('%j: a secret-looking plain value is a usage error pointing to --secret-var / set-secret (review Low)', async (args) => {
+    const { client, f } = setup({})
+    const r = await run(f, args)
+    expect(r.code).toBe(EXIT.usage)
+    expect(r.err).toMatch(/--secret-(var|header)/)
+    expect(r.err).toContain('orgai mcp set-secret')
+    expect(r.err).not.toMatch(/hunter22|sk-proj|ghp_|Bearer abc|0123456789abcdef|abcdefgh1/)
+    expect(client.calls).toHaveLength(0)
+  })
+
+  it('a plain value under a harmless name passes with a note on stderr; short values under a credential-like name pass', async () => {
+    const { client, f } = setup({ 'mcp:upsert': (p) => ({ project: P, servers: [info((p as [{ spec: McpServerSpec }])[0].spec)] }) })
+    const r = await run(f, ['add', 'x', '--command', 'a', '--env', 'LOG_LEVEL=debug', '--env', 'AUTH_MODE=oauth'])
+    expect(r.code).toBe(0)
+    expect(client.callsOf('mcp:upsert')).toHaveLength(1)
+    expect(r.err).toContain(PLAIN_VALUES_NOTE)
   })
 
   it("the host's validateSpec refusal reaches the user with its sentence", async () => {

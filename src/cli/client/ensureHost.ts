@@ -23,6 +23,28 @@ const ELECTRON_HOST_KINDS: readonly HostKind[] = ['headless-host', 'desktop']
 
 export const TERMINAL_ACCESS_HINT = 'Terminal access is off. Turn it on in OrgAI: App settings > General > Advanced settings > Terminal access.'
 
+/**
+ * Why a host withheld 'decide' / 'configure' (AppSettings.terminalAccessLevel 'operate', the default; review H2). Only
+ * the OrgAI window raises it, never a terminal client.
+ */
+export const TERMINAL_FULL_ACCESS_HINT =
+  'Terminal access lets terminal clients watch and run work only. To answer decisions or change settings from a terminal, allow it in OrgAI: App settings > General > Advanced settings > Terminal access, or use `--host inproc`.'
+
+/** A host of another version grants this CLI only read, operate, decide and host.stop. */
+export const VERSION_SKEW_SCOPE_HINT = 'A host of another version accepts only read, operate and decide from this CLI.'
+
+/**
+ * The CliError when a host granted fewer scopes than asked (`missing`), or undefined when nothing is missing: the
+ * version-skew hint for a skewed host, else the Terminal access level hint.
+ */
+export function missingScopesError(client: Pick<HostClient, 'hello'>, wanted: readonly HostScope[]): CliError | undefined {
+  const granted = client.hello.grantedScopes
+  const missing = Array.isArray(granted) ? wanted.filter((s) => !granted.includes(s)) : []
+  if (!missing.length) return undefined
+  const hint = client.hello.versionSkewWarning ? VERSION_SKEW_SCOPE_HINT : TERMINAL_FULL_ACCESS_HINT
+  return new CliError(`The OrgAI host did not grant the ${missing.map((s) => `'${s}'`).join(', ')} access this needs. ${hint}`, EXIT.failure)
+}
+
 export interface EnsuredHost {
   client: HostClient
   /** Set with --host inproc: the in-process host, which the caller stops when done. */

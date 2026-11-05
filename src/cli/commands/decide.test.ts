@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import type { CardKind, DecisionLookup, DecisionOutcome, PendingCards } from '../../shared/types'
+import type { CardKind, DecisionLookup, DecisionOutcome, HostScope, PendingCards } from '../../shared/types'
+import { TERMINAL_FULL_ACCESS_HINT } from '../client/ensureHost'
 import { FakeHostClient, fakeContext, noHost, rpcError, type FakeContextOptions } from '../testing/fakeContext'
 import { EXIT } from '../types'
 import { decideDeps, runDecide } from './decide'
@@ -44,6 +45,8 @@ interface Setup {
   cardExtra?: Record<string, unknown>
   outcome?: Partial<DecisionOutcome> | (() => unknown)
   opts?: FakeContextOptions
+  /** hello.grantedScopes (default read + decide). */
+  scopes?: HostScope[]
 }
 
 function setup(s: Setup = {}) {
@@ -53,7 +56,7 @@ function setup(s: Setup = {}) {
     'runs:findDecision': () => lookup,
     'runs:pendingCards': () => cardsFor(kind, s.cardExtra),
     [CHANNEL[kind]]: typeof s.outcome === 'function' ? s.outcome : () => ({ status: 'applied', runId: RUN, requestId: REQ, effectiveDecision: 'x', ...(s.outcome ?? {}) })
-  })
+  }, { hello: { grantedScopes: s.scopes ?? ['read', 'decide'] } })
   const f = fakeContext({ connect: [host], ...s.opts })
   return { f, host, sent: () => host.callsOf(CHANNEL[kind]) }
 }
@@ -178,6 +181,8 @@ describe('orgai decide: secrets from the environment', () => {
     await runDecide(f.ctx, [REQ, 'allow', '--secret', 'API_KEY=K'])
     expect(sent()).toEqual([[{ runId: RUN, requestId: REQ, expectedRevision: 4, decision: { approved: true, scope: 'run', secrets: { API_KEY: 'v1' } } }]])
     expect(f.out()).not.toContain('v1')
+    // Taken out of the environment once read (review M13).
+    expect(f.ctx.env.K).toBeUndefined()
   })
 
   it('a missing or empty variable, an unknown slot or a bad spec is exit 2 and sends nothing', async () => {
@@ -312,5 +317,15 @@ describe('orgai decide: lookups and outcomes', () => {
     const g = setup({ lookup: { status: 'applied', requestId: REQ, runId: RUN, kind: 'permission', effectiveDecision: '\x1b[2Jallow', at: 1 } })
     await runDecide(g.f.ctx, [REQ, 'allow'])
     expect(g.f.err()).not.toMatch(/\x1b/)
+  })
+})
+
+describe('orgai decide: Terminal access level (review H2)', () => {
+  it("a host that withheld 'decide' is exit 1 naming the setting, and nothing is looked up or sent", async () => {
+    const { f, host, sent } = setup({ scopes: ['read'] })
+    await expect(runDecide(f.ctx, [REQ, 'allow'])).rejects.toMatchObject({ exitCode: EXIT.failure, message: expect.stringContaining(TERMINAL_FULL_ACCESS_HINT) })
+    expect(host.callsOf('runs:findDecision')).toHaveLength(0)
+    expect(sent()).toHaveLength(0)
+    expect(host.closed).toBe(true)
   })
 })

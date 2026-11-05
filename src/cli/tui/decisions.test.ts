@@ -137,8 +137,6 @@ describe('decisionFor: exact cli-spec 5.3 payloads', () => {
 })
 
 describe('decisionFor matches orgai decide buildDecision', () => {
-  const env = { TOK: 'secret-value' }
-  const { ctx } = fakeContext({ env })
   const cases: [CardKind, unknown, string, Record<string, unknown>, TrayAction][] = [
     ['permission', permission(), 'allow', {}, { kind: 'permission', act: 'allow-once' }],
     ['permission', permission(), 'allow-session', {}, { kind: 'permission', act: 'allow-session' }],
@@ -167,6 +165,8 @@ describe('decisionFor matches orgai decide buildDecision', () => {
   ]
   for (const [kind, card, verb, flags, action] of cases) {
     it(`${kind} ${verb} ${JSON.stringify(flags)}`, () => {
+      // A fresh environment per case: orgai decide takes a secret's variable out once read (review M13).
+      const { ctx } = fakeContext({ env: { TOK: 'secret-value' } })
       const cli = buildDecision(ctx, kind, card, verb, flags as never, RUN, REQ, 3)
       expect(decisionFor(tray(kind, card, 3), action)).toEqual(cli)
     })

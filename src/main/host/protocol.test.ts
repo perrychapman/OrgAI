@@ -17,8 +17,12 @@ import {
   isResponse,
   newNonce,
   parseFrame,
+  parseWhoamiSid,
   proofMatches,
   readDaemonSecret,
+  restrictDaemonSecretAcl,
+  secretAclArgs,
+  system32Exe,
   rpcError,
   rpcNotification,
   rpcParseError,
@@ -266,5 +270,39 @@ describe('readDaemonSecret', () => {
     writeFileSync(real, SECRET, { mode: 0o600 })
     symlinkSync(real, join(d, 'run', 'daemon.secret'))
     expect(readDaemonSecret(d)).toBeUndefined()
+  })
+})
+
+describe('restrictDaemonSecretAcl (win32, review H2 (3); UNVERIFIED on Windows)', () => {
+  const env = { SystemRoot: 'D:\\Win' }
+  it('runs whoami and icacls by absolute System32 path from the temp folder, granting the user SID only', async () => {
+    const calls: { file: string; args: string[]; cwd: string }[] = []
+    const run = async (file: string, args: string[], o: { cwd: string }): Promise<string> => {
+      calls.push({ file, args, cwd: o.cwd })
+      return file.endsWith('whoami.exe') ? '"pc\\me","S-1-5-21-111-222-333-1001"\r\n' : 'processed file\r\n'
+    }
+    expect(await restrictDaemonSecretAcl('C:\\data\\run\\daemon.secret', { env, run })).toBeUndefined()
+    expect(calls.map((c) => c.file)).toEqual(['D:\\Win\\System32\\whoami.exe', 'D:\\Win\\System32\\icacls.exe'])
+    expect(calls[0].args).toEqual(['/user', '/fo', 'csv', '/nh'])
+    expect(calls[1].args).toEqual(['C:\\data\\run\\daemon.secret', '/inheritance:r', '/grant:r', '*S-1-5-21-111-222-333-1001:F'])
+    expect(calls.every((c) => c.cwd === tmpdir())).toBe(true)
+  })
+
+  it('answers a reason, never throws', async () => {
+    expect(await restrictDaemonSecretAcl('p', { env, run: async () => 'no sid here' })).toBe('whoami named no user SID')
+    const failing = async (file: string): Promise<string> => {
+      if (file.endsWith('icacls.exe')) throw new Error('Access is denied.')
+      return '"pc\\me","S-1-5-21-1-2-3-500"'
+    }
+    expect(await restrictDaemonSecretAcl('p', { env, run: failing })).toBe('icacls failed: Access is denied.')
+    expect(await restrictDaemonSecretAcl('p', { env, run: async () => Promise.reject(new Error('nope')) })).toBe('whoami failed: nope')
+  })
+
+  it('system32Exe falls back to windir, then C:\\Windows; parseWhoamiSid reads the CSV', () => {
+    expect(system32Exe('icacls.exe', { windir: 'E:\\W' })).toBe('E:\\W\\System32\\icacls.exe')
+    expect(system32Exe('icacls.exe', {})).toBe('C:\\Windows\\System32\\icacls.exe')
+    expect(parseWhoamiSid('"a\\b","S-1-12-1-2-3"')).toBe('S-1-12-1-2-3')
+    expect(parseWhoamiSid('S-x')).toBeUndefined()
+    expect(secretAclArgs('f', 'S-1-5-18')).toEqual(['f', '/inheritance:r', '/grant:r', '*S-1-5-18:F'])
   })
 })

@@ -69,9 +69,10 @@ export async function mcpAuth(ctx: CliContext, args: string[]): Promise<number> 
   const openBrowser = !(values['no-browser'] || (remote && !values.browser))
   const wantsSecret = values['client-secret-from-env'] !== undefined || !!values['client-secret-stdin']
   if (values['client-id'] !== undefined && !values['client-id'].trim()) throw usage('--client-id needs a value.')
+  // Read (and taken out of the environment) before withHost may start a host, which would inherit it (review M13).
+  const clientSecret = wantsSecret ? await readSecretValue(ctx, { fromEnv: values['client-secret-from-env'], stdin: values['client-secret-stdin'], what: 'the OAuth client secret' }) : undefined
   return withHost(ctx, [...CONFIGURE], async (client) => {
     const { target, name } = await resolveTarget(ctx, client, positionals[0], values.library, 'auth')
-    const clientSecret = wantsSecret ? await readSecretValue(ctx, { fromEnv: values['client-secret-from-env'], stdin: values['client-secret-stdin'], what: 'the OAuth client secret' }) : undefined
     let announced: McpAuthorizeUrlUpdate | undefined
     const say = (lines: string[]): void => {
       // JSON output stays one document on stdout: the instructions go to stderr there.

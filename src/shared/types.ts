@@ -324,8 +324,9 @@ export type ConnectionEvent =
   | { type: 'projects.remapped'; results: RemapResult[] }
   /**
    * An mcp:authorize with `announceUrl` is about to wait for its callback. Sent on the 'connections' host.subscribe
-   * topic only when announceUrl was set (the CLI's `orgai mcp auth`). It carries no token or PKCE verifier; every
-   * read-scope subscriber sees it (accepted risk, like connection.login's device code).
+   * topic only when announceUrl was set (the CLI's `orgai mcp auth`). It carries no token or PKCE verifier. The socket
+   * server delivers it only to the socket whose mcp:authorize for that target is in flight (socketServer.ts), never to
+   * every 'connections' subscriber; the desktop window still gets it.
    */
   | { type: 'mcp.authorize'; authorize: McpAuthorizeUrlUpdate }
 
@@ -1749,11 +1750,21 @@ export interface AppSettings {
   /**
    * Terminal access: external CLI / TUI clients (host.hello from clientKind 'cli' | 'tui' over the host socket,
    * cli-spec 3.3) are accepted only while this is true; otherwise host.hello answers 'terminal_server_disabled'.
-   * Default false (normalized: only a boolean true stays true). A host booted as 'headless-host' or 'inproc' turns it
-   * on (bootstrap.ts), since such a host exists only to serve the CLI, unless the user has chosen a value
-   * (terminalServerChosen).
+   * Default false (normalized: only a boolean true stays true). A host booted as 'headless-host' or 'inproc' accepts
+   * terminal clients for that session only (OrgAIHost.terminalAccess, bootstrap.ts), never saving true, unless the user
+   * has chosen a value (terminalServerChosen). A stored true without terminalServerChosen (an older build saved it on
+   * a headless boot) is read as false (store/settings.ts).
    */
   terminalServer: boolean
+  /**
+   * What Terminal access lets a terminal client do: host.hello grants at most these scopes (socketServer.ts
+   * scopesForAccessLevel). Missing = 'operate': read and operate (watch, start, send to, interrupt and stop runs);
+   * 'full' adds decide (answer decision cards) and configure (settings, projects, MCP, permissions, connections).
+   * Only the desktop window changes it in practice: settings:set needs 'configure', which a socket client gets only
+   * when this is already 'full', so the socket can lower it but never raise it. A `--host inproc` host (the CLI process
+   * owns it) always grants full. Normalized: only 'full' is stored.
+   */
+  terminalAccessLevel?: TerminalAccessLevel
   /**
    * Main-owned: true once a settings:set changed terminalServer (the user's choice in App settings, or a configure
    * client). A headless or in-process boot then never turns terminal access on by itself. settings:set never writes
@@ -5753,6 +5764,9 @@ export const HOST_PROTOCOL_VERSION = 1
 /** What an authenticated client may do. 'read' < 'operate' < 'decide' < 'configure' by convention; each is granted explicitly. */
 export type HostScope = 'read' | 'operate' | 'decide' | 'configure'
 export const HOST_SCOPES: readonly HostScope[] = ['read', 'operate', 'decide', 'configure']
+
+/** AppSettings.terminalAccessLevel: 'operate' grants read + operate, 'full' every scope. */
+export type TerminalAccessLevel = 'operate' | 'full'
 
 export type HostClientKind = 'tui' | 'cli'
 

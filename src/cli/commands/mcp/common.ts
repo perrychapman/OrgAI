@@ -6,9 +6,11 @@
 import { newId } from '../../../shared/defaults'
 import type { McpAuthStatus, McpLibraryEntry, McpLibraryInfo, McpServerInfo, McpServerSpec, McpTestResult, McpTransport } from '../../../shared/types'
 import type { McpSecretClash } from '../../../shared/mcpSecretClash'
+import { isCredentialArg, isKeyLikeValue } from '../../../main/capabilities/sanitize'
+import { credentialLikeName } from '../../../main/mcp/validate'
 import { hostCall } from '../../manage'
-import { safeLine } from '../../output'
-import { CliError, EXIT, type HostClient } from '../../types'
+import { note, safeLine } from '../../output'
+import { CliError, EXIT, type CliContext, type HostClient } from '../../types'
 
 /** Scopes per kind of subcommand (cli-spec 3.3): reads, tests and assist, changes. */
 export const READ = ['read'] as const
@@ -39,6 +41,36 @@ export function parsePairs(pairs: readonly string[] | undefined, flag: string): 
     out[name] = raw.slice(eq + 1)
   }
   return out
+}
+
+/** A credential-like name with a value this long or longer is taken for a secret. */
+const SECRET_NAME_VALUE_MIN = 8
+
+/**
+ * Refuse a plain `--env` / `--header` value that looks like a secret (review Low): plain values travel on argv (shell
+ * history, the process list) and are stored as they are. A secret is a key-shaped value under any name (sk-..., ghp_...,
+ * a JWT, "Bearer ...", URL userinfo, a long token: capabilities/sanitize.ts isKeyLikeValue / isCredentialArg) or a
+ * value of 8+ characters under a credential-like name (token, secret, password, api key, auth...; for a header also
+ * Authorization, Cookie, X-Api-Key...: mcp/validate.ts credentialLikeName). Pattern checks, not a guarantee.
+ */
+export function refuseSecretValues(pairs: Record<string, string>, flag: 'env' | 'header'): void {
+  for (const [name, value] of Object.entries(pairs)) {
+    const keyShaped = isKeyLikeValue(value) || isCredentialArg(value)
+    if (!keyShaped && !(credentialLikeName(name, flag === 'header') && value.length >= SECRET_NAME_VALUE_MIN)) continue
+    const slot = flag === 'env' ? 'secret-var' : 'secret-header'
+    throw usage(
+      `--${flag} ${safeLine(name).slice(0, 60)}: ${keyShaped ? 'the value looks like a key or token' : 'that name holds a secret'}. Plain values end up in your shell history and the process list; declare it with --${slot} ${safeLine(name).slice(0, 60)} and set it with \`orgai mcp set-secret <server> ${safeLine(name).slice(0, 60)} --from-env <VAR>\` (or --stdin).`
+    )
+  }
+}
+
+/** The stderr note (text output) for plain --env / --header values that passed refuseSecretValues. */
+export const PLAIN_VALUES_NOTE =
+  'Plain --env / --header values are stored as given and stay in your shell history; use --secret-var / --secret-header and `orgai mcp set-secret --from-env` for anything secret.'
+
+/** Note PLAIN_VALUES_NOTE once when the definition carries plain env or header values. */
+export function notePlainValues(ctx: CliContext, v: DefinitionValues): void {
+  if (v.env?.length || v.header?.length) note(ctx, PLAIN_VALUES_NOTE)
 }
 
 /** Secret slot names (never values): each a valid name, none twice, none also given a plain value. */
@@ -91,6 +123,7 @@ export function definitionFrom(name: string, v: DefinitionValues): Pick<McpServe
     if (v.header?.length || v['secret-header']?.length) throw usage('--header and --secret-header go with --url; a stdio server takes --env and --secret-var.')
     if (!v.command) throw usage('--command needs the program to run.')
     const env = parsePairs(v.env, 'env')
+    refuseSecretValues(env, 'env')
     const secretEnv = parseSlots(v['secret-var'], 'secret-var', env)
     return {
       name,
@@ -107,6 +140,7 @@ export function definitionFrom(name: string, v: DefinitionValues): Pick<McpServe
   const transport: McpTransport = v.transport === undefined ? 'http' : (v.transport as McpTransport)
   if (transport !== 'http' && transport !== 'sse') throw usage('--transport must be http or sse with --url.')
   const headers = parsePairs(v.header, 'header')
+  refuseSecretValues(headers, 'header')
   const secretHeaders = parseSlots(v['secret-header'], 'secret-header', headers)
   return {
     name,

@@ -22,8 +22,10 @@ import {
   findServer,
   listServers,
   newServerSpec,
+  notePlainValues,
   noMore,
   parsePairs,
+  refuseSecretValues,
   secretClashLine,
   targetText,
   testLines
@@ -126,6 +128,7 @@ export async function mcpAdd(ctx: CliContext, args: string[]): Promise<number> {
   if (!positionals[0]) throw usage('Usage: orgai mcp add <name> (--command <cmd> [--arg <a>]... | --url <url>) [options]')
   noMore(positionals, 1)
   const spec = newServerSpec(positionals[0], values, !values.disabled)
+  notePlainValues(ctx, values)
   return withHost(ctx, [...CONFIGURE], async (client) => {
     const project = await requireProject(ctx, client)
     const res = await hostCall<McpMutationResult>(client, 'mcp:upsert', [{ projectId: project.id, spec }])
@@ -173,11 +176,12 @@ export async function mcpSetSecret(ctx: CliContext, args: string[]): Promise<num
   if (!ref || !name) throw usage('Usage: orgai mcp set-secret <server> <NAME> (--from-env <VAR> | --stdin | --clear) [--header]')
   noMore(positionals, 2)
   if (values.clear && (values['from-env'] !== undefined || values.stdin)) throw usage('--clear takes no value; drop --from-env / --stdin.')
+  // Read (and taken out of the environment) before withHost may start a host, which would inherit it (review M13).
+  const value = values.clear ? null : await readSecretValue(ctx, { fromEnv: values['from-env'], stdin: values.stdin, what: `the value of ${safeLine(name)}` })
   return withHost(ctx, [...CONFIGURE], async (client) => {
     const project = await requireProject(ctx, client)
     const s = await findServer(client, project.id, ref)
     const kind: McpSecretKind = values.header || (!(s.spec.secretEnv ?? []).includes(name) && (s.spec.secretHeaders ?? []).includes(name)) ? 'header' : 'env'
-    const value = values.clear ? null : await readSecretValue(ctx, { fromEnv: values['from-env'], stdin: values.stdin, what: `the value of ${safeLine(name)}` })
     await hostCall<McpMutationResult>(client, 'mcp:setSecret', [{ projectId: project.id, serverId: s.spec.id, kind, name, value }])
     emit(ctx, { serverId: s.spec.id, kind, name, set: value !== null }, () => (value === null ? `Cleared ${safeLine(name)} of ${safeLine(s.spec.name)}.` : `Saved ${safeLine(name)} for ${safeLine(s.spec.name)}.`))
     return EXIT.ok
@@ -253,7 +257,9 @@ export async function mcpOverrides(ctx: CliContext, args: string[]): Promise<num
   if (!positionals[0]) throw usage('Usage: orgai mcp overrides <server> [--env NAME=VALUE]... [--header NAME=VALUE]... [--unset NAME]... [--clear]')
   noMore(positionals, 1)
   const env = parsePairs(values.env, 'env')
+  refuseSecretValues(env, 'env')
   const headers = parsePairs(values.header, 'header')
+  refuseSecretValues(headers, 'header')
   const unset = [...new Set(values.unset ?? [])]
   for (const n of unset) if (Object.hasOwn(env, n) || Object.hasOwn(headers, n)) throw usage(`${safeLine(n).slice(0, 60)} is both set and unset.`)
   const given = Object.keys(env).length + Object.keys(headers).length + unset.length > 0

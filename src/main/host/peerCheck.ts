@@ -9,7 +9,9 @@
  * Honest limits (UNVERIFIED / deferred):
  * - The pid is client-asserted (host.hello params.pid). An agent can claim any pid, and a process that double-forks
  *   (reparented to init / launchd) is no longer a descendant. This check is defence in depth only; the real gates are
- *   AppSettings.terminalServer and the self-control denial gate (checkSelfControlDenial).
+ *   Terminal access (AppSettings.terminalServer), its level (AppSettings.terminalAccessLevel: by default a client gets
+ *   read and operate only, never decide or configure; socketServer.ts grantScopes) and the self-control denial gate
+ *   (checkSelfControlDenial).
  * - Socket-to-PID mapping (macOS only): with the accepted socket's fd, one `lsof -nP -U -F pfdn` (same 150 ms budget,
  *   run beside ps) finds the kernel address of the host's end of the socket (`d0x...` on that fd) and every process
  *   holding the other end (`n->0x...` naming that address). Those are the real peers; the ancestry walk then runs on
@@ -17,7 +19,9 @@
  *   pid is walked as before. Linux has no such mapping here (`/proc/<pid>/fd` gives inodes but not the peer; that needs
  *   sock_diag / `ss -xp`), so it walks the claimed pid only. The lsof field format was checked on this Mac (Darwin 25);
  *   other macOS versions are unverified.
- * - win32 answers 'unavailable' (no ps; GetNamedPipeClientProcessId needs a native addon).
+ * - win32 answers 'unavailable' (no ps; GetNamedPipeClientProcessId needs a native addon). The socket server accepts
+ *   such a client, so on Windows an agent holding daemon.secret is told apart from the user by nothing here: the scope
+ *   cap is what keeps it from 'decide' / 'configure' unless the user chose full Terminal access (review H2).
  * - The claimed pid itself equal to the host's pid is 'ok' (only strict descendants count): an in-process client.
  */
 import { execFile } from 'node:child_process'

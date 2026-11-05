@@ -169,6 +169,8 @@ beforeEach(async () => {
     processEnv: {},
     homeDir: join(base, 'home')
   })
+  // These tests drive configure channels: the user allowed full Terminal access in App settings.
+  host.settings.set({ ...host.settings.get(), terminalAccessLevel: 'full' })
   server.attach(host)
   ownership.markReady()
 })
@@ -192,6 +194,15 @@ describe.runIf(posix)('socket server on a booted mock host', () => {
     expect(status).toMatchObject({ protocolVersion: 1, hostInstanceId, hostKind: 'headless-host', mock: true, dataDir })
     const project = mockProject('repo-list')
     expect(await c.call('runs:list', [project.id])).toEqual([])
+  })
+
+  it('a headless boot opens Terminal access for its session only; the default level grants read and operate (review H2)', async () => {
+    expect(host.settings.get().terminalServer).toBe(false)
+    expect(host.terminalAccess()).toEqual({ enabled: true, level: 'full' })
+    host.settings.set({ ...host.settings.get(), terminalAccessLevel: 'operate' })
+    expect(host.terminalAccess()).toEqual({ enabled: true, level: 'operate' })
+    const { hello } = await connectClient('cli', ['read', 'operate', 'decide', 'configure'])
+    expect(hello.grantedScopes).toEqual(['read', 'operate'])
   })
 
   it('runs:subscribe: snapshot, live pushes, then a replay after reconnecting with sinceSeq', async () => {

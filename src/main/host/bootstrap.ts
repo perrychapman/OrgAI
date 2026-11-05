@@ -12,7 +12,7 @@
  */
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import type { AppSettings, ConnectionId, HostKind, HostStatusResult, Project, RunEvent, RunSummary } from '../../shared/types'
+import type { AppSettings, ConnectionId, HostKind, HostStatusResult, Project, RunEvent, RunSummary, TerminalAccessLevel } from '../../shared/types'
 import { DEFAULT_KEEP_RUNS, HARNESS_PROJECT_ID, HOST_PROTOCOL_VERSION, IPC, QUICK_PROJECT_ID, SKILLS_PROJECT_ID, isVirtualProjectId } from '../../shared/types'
 import { buildSettingsInfo } from '../appInfo'
 import { CapabilityService } from '../capabilities/service'
@@ -126,8 +126,20 @@ export interface OrgAIHost {
   /** A stored project, or the display project of a virtual id (harness, quick, skills). */
   projectOrHarness(projectId: string): Project | null | undefined
   hostControl: HostControl
+  /**
+   * Whether host.hello accepts terminal clients now and the most it grants (socketServer.ts): AppSettings.terminalServer,
+   * or this session of a headless / in-process boot while the user has made no choice; the level from
+   * AppSettings.terminalAccessLevel, always 'full' on an in-process host.
+   */
+  terminalAccess(): HostTerminalAccess
   /** Stop background timers and probes (before-quit). Idempotent. */
   dispose(): void
+}
+
+/** OrgAIHost.terminalAccess(). */
+export interface HostTerminalAccess {
+  enabled: boolean
+  level: TerminalAccessLevel
 }
 
 export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
@@ -159,15 +171,24 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
 
   const runStore = new RunStore(dataDir)
   const secrets = new SecretStore(dataDir, opts.safeStorage, opts.secrets)
-  // A headless or in-process host exists to serve the CLI: terminal access is turned on (cli-spec 1 / 3.3, "enabled
-  // when ... launches via orgai"; AppSettings.terminalServer), unless the user has chosen a value in App settings
-  // (terminalServerChosen): then their choice stands and host.hello refuses terminal clients while it is off.
+  // A headless or in-process host exists to serve the CLI: it accepts terminal clients for this session (cli-spec 1 /
+  // 3.3, "enabled when ... launches via orgai"; AppSettings.terminalServer) without saving that, so the desktop app
+  // never inherits an open socket nobody chose (review H2). A choice made in App settings (terminalServerChosen)
+  // stands: off means host.hello refuses terminal clients here too.
+  const sessionTerminal = hostKind !== 'desktop' && settings.get().terminalServer !== true && settings.get().terminalServerChosen !== true
   if (hostKind !== 'desktop' && settings.get().terminalServer !== true) {
-    if (settings.get().terminalServerChosen === true) {
-      log.info(`Terminal access is off in App settings; this ${hostKind} host refuses terminal clients until it is turned on.`)
-    } else {
-      settings.set({ ...settings.get(), terminalServer: true })
-      log.info(`Terminal access turned on for this ${hostKind} host.`)
+    log.info(
+      sessionTerminal
+        ? `Terminal access is on for this ${hostKind} host's session only (not saved).`
+        : `Terminal access is off in App settings; this ${hostKind} host refuses terminal clients until it is turned on.`
+    )
+  }
+  const terminalAccess = (): HostTerminalAccess => {
+    const s = settings.get()
+    return {
+      enabled: s.terminalServer === true || (sessionTerminal && s.terminalServerChosen !== true),
+      // The in-process host belongs to the CLI process that started it; its own commands need every scope.
+      level: hostKind === 'inproc' || s.terminalAccessLevel === 'full' ? 'full' : 'operate'
     }
   }
   // `adapters` is declared below and only read when discovery runs.
@@ -536,5 +557,5 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     unobserve()
   }
 
-  return { services, events, dispatcher, activity, runs: rm, settings, projectOrHarness, hostControl, dispose }
+  return { services, events, dispatcher, activity, runs: rm, settings, projectOrHarness, hostControl, terminalAccess, dispose }
 }
