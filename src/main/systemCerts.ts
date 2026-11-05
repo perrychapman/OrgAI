@@ -1,4 +1,5 @@
 import { spawn as nodeSpawn } from 'node:child_process'
+import { tmpdir } from 'node:os'
 import tls from 'node:tls'
 import { log } from './log'
 
@@ -27,13 +28,13 @@ export interface TrustResult {
 
 /** The least of a child process this module uses; a fake in tests. */
 export interface CertChild {
-  stdout: { on(event: 'data', cb: (chunk: Buffer | string) => void): unknown } | null
+  stdout: { on(event: 'data', cb: (chunk: Buffer | string) => void): unknown; on(event: 'error', cb: (e: Error) => void): unknown } | null
   on(event: 'error', cb: (e: Error) => void): unknown
   on(event: 'close', cb: (code: number | null, signal: string | null) => void): unknown
   kill(): unknown
   unref?(): unknown
 }
-export type CertSpawner = (command: string, args: string[], options: { env: Record<string, string>; stdio: ['ignore', 'pipe', 'ignore']; windowsHide: true }) => CertChild
+export type CertSpawner = (command: string, args: string[], options: { cwd: string; env: Record<string, string>; stdio: ['ignore', 'pipe', 'ignore']; windowsHide: true }) => CertChild
 
 export interface TrustOptions {
   platform?: NodeJS.Platform
@@ -52,8 +53,8 @@ export interface TrustOptions {
   onSettled?: (r: TrustResult) => void
 }
 
-/** A darwin read is killed after this long and OrgAI carries on with the default roots. */
-export const SYSTEM_CERT_READ_TIMEOUT_MS = 30_000
+/** A darwin read is killed after this long and OrgAI carries on with the default roots (the child costs the main process nothing while it waits). */
+export const SYSTEM_CERT_READ_TIMEOUT_MS = 120_000
 /** The most the child may print. A Keychain with a few hundred roots is well under 1 MB. */
 export const SYSTEM_CERT_MAX_BYTES = 8 * 1024 * 1024
 
@@ -141,7 +142,7 @@ function mergeAndSet(api: CertApi, system: string[] | null, failure?: string): M
  * never certificate contents.
  *
  * Windows and Linux read the store synchronously. On macOS `getCACertificates('system')` asks the Security framework
- * to evaluate every Keychain certificate, which can stall for seconds to minutes (nodejs/node#63313), so a child
+ * to evaluate every Keychain certificate, which can stall (nodejs/node#63313; public reports of 5 s to about 10 s, one of 107 s, anthropics/claude-code#76079), so a child
  * (this executable with ELECTRON_RUN_AS_NODE=1, minimal env) reads it instead: killed after SYSTEM_CERT_READ_TIMEOUT_MS,
  * on quit, or past SYSTEM_CERT_MAX_BYTES of output, and the main thread only merges and sets. Until it finishes
  * (`systemCertTrust()` is 'pending') fetches use the defaults.
@@ -205,6 +206,7 @@ export function trustSystemCertificates(options: TrustOptions = {}): TrustResult
     const timeoutMs = options.timeoutMs ?? SYSTEM_CERT_READ_TIMEOUT_MS
     const maxBytes = options.maxBytes ?? SYSTEM_CERT_MAX_BYTES
     child = spawner(options.execPath ?? process.execPath, ['-e', SYSTEM_CERT_SCRIPT], {
+      cwd: tmpdir(),
       env: childEnvFor(options.env ?? process.env),
       stdio: ['ignore', 'pipe', 'ignore'],
       windowsHide: true
@@ -214,6 +216,7 @@ export function trustSystemCertificates(options: TrustOptions = {}): TrustResult
     } catch {
       /* optional */
     }
+    child.stdout?.on('error', () => undefined) // a broken pipe must not surface as an unhandled error; 'close' settles
     const chunks: Buffer[] = []
     let bytes = 0
     child.stdout?.on('data', (chunk) => {

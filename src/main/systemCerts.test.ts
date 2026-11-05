@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events'
+import { tmpdir } from 'node:os'
 import { describe, expect, it, vi } from 'vitest'
 import {
   childEnvFor,
@@ -108,7 +109,7 @@ function fakeDarwin(defaults: string[] = [PEM('def')]) {
   }
   const logger = { info: vi.fn(), warn: vi.fn() }
   const children: FakeChild[] = []
-  const spawns: Array<{ cmd: string; args: string[]; env: Record<string, string> }> = []
+  const spawns: Array<{ cmd: string; args: string[]; env: Record<string, string>; cwd: string }> = []
   const spawner: CertSpawner = (cmd, args, o) => {
     const out = new EventEmitter()
     const ev = new EventEmitter()
@@ -116,7 +117,8 @@ function fakeDarwin(defaults: string[] = [PEM('def')]) {
       out,
       ev,
       killed: 0,
-      stdout: { on: (_e, cb) => out.on('data', cb) },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      stdout: { on: ((e: string, cb: (...a: any[]) => void) => out.on(e, cb)) as NonNullable<CertChild['stdout']>['on'] },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       on: ((e: string, cb: (...a: any[]) => void) => ev.on(e, cb)) as CertChild['on'],
       kill: () => {
@@ -125,7 +127,7 @@ function fakeDarwin(defaults: string[] = [PEM('def')]) {
       unref: () => undefined
     }
     children.push(c)
-    spawns.push({ cmd, args, env: o.env })
+    spawns.push({ cmd, args, env: o.env, cwd: o.cwd })
     return c
   }
   const timers: Array<{ cb: () => void; ms: number; cleared: boolean }> = []
@@ -162,7 +164,8 @@ describe('trustSystemCertificates (darwin, child process)', () => {
     expect(d.spawns[0].cmd).toBe('/app/OrgAI')
     expect(d.spawns[0].args[0]).toBe('-e')
     expect(d.spawns[0].env).toEqual({ HOME: '/Users/x', PATH: '/usr/bin', ELECTRON_RUN_AS_NODE: '1' })
-    expect(d.timers[0].ms).toBe(30_000)
+    expect(d.timers[0].ms).toBe(120_000)
+    expect(d.spawns[0].cwd).toBe(tmpdir())
     const out = JSON.stringify([PEM('def'), PEM('corp')])
     d.children[0].out.emit('data', Buffer.from(out.slice(0, 20)))
     d.children[0].out.emit('data', Buffer.from(out.slice(20)))
@@ -217,6 +220,20 @@ describe('trustSystemCertificates (darwin, child process)', () => {
     expect(systemCertTrust()).toBe('unavailable')
     expect(e.logger.warn).toHaveBeenCalledTimes(1)
     expect(e.set).not.toHaveBeenCalled()
+  })
+
+  it('ignores a stdout error event and is unavailable with one warn when setting the merged list throws', () => {
+    const d = fakeDarwin([PEM('def')])
+    d.set.mockImplementation(() => {
+      throw new Error('unparsable PEM')
+    })
+    d.run()
+    expect(() => d.children[0].out.emit('error', new Error('EPIPE'))).not.toThrow()
+    d.children[0].out.emit('data', JSON.stringify([PEM('def'), PEM('broken')]))
+    d.children[0].ev.emit('close', 0, null)
+    expect(d.set).toHaveBeenCalledTimes(1)
+    expect(systemCertTrust()).toBe('unavailable')
+    expect(d.logger.warn).toHaveBeenCalledTimes(1)
   })
 
   it('fails open on a non-zero exit', () => {

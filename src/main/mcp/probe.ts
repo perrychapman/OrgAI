@@ -109,7 +109,7 @@ function certStoreHint(trust: CertTrustState): string {
 const UNTRUSTED_CHAIN_CODES = new Set(['UNABLE_TO_GET_ISSUER_CERT_LOCALLY', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'SELF_SIGNED_CERT_IN_CHAIN', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'CERT_UNTRUSTED'])
 
 function untrustedChain(code: string | undefined, message: string | undefined): boolean {
-  if (code && UNTRUSTED_CHAIN_CODES.has(code)) return true
+  if (code) return UNTRUSTED_CHAIN_CODES.has(code)
   return !!message && /unable to verify|self[- ]signed|unable to get (local )?issuer|certificate not trusted/i.test(message)
 }
 
