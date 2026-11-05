@@ -135,6 +135,22 @@ export function normalizeCrashedRunSummary(input: RunSummary, now: number = Date
 }
 
 /**
+ * The summaries of a parsed `runs.json` (pure; RunStore's constructor and the CLI's read-only reader). Only plain
+ * objects with a string id are runs; a null or junk entry is dropped. Not normalized (see normalizeCrashedRunSummary).
+ */
+export function parseRunIndex(parsed: unknown): RunSummary[] {
+  const runs = (parsed as { runs?: unknown } | null)?.runs
+  return Array.isArray(runs)
+    ? (runs as unknown[]).filter((r): r is RunSummary => !!r && typeof r === 'object' && !Array.isArray(r) && typeof (r as { id?: unknown }).id === 'string')
+    : []
+}
+
+/** The file name RunStore uses for a run's record under `<dataDir>/runs/` (characters outside [A-Za-z0-9_-] become '_'). */
+export function runRecordFileName(runId: string): string {
+  return `${runId.replace(/[^a-z0-9_-]/gi, '_')}.json`
+}
+
+/**
  * Persists run summaries in one index file, and one record file per run with the
  * agents, transcript and logs, so a past run can be redrawn after a restart.
  *
@@ -159,11 +175,7 @@ export class RunStore {
     this.recordsDir = join(dataDir, 'runs')
     try {
       if (existsSync(this.file)) {
-        const parsed = JSON.parse(readFileSync(this.file, 'utf8')) as { runs?: unknown } | null
-        // Only plain objects with a string id are runs; a null or junk entry is dropped, not thrown on below.
-        this.runs = Array.isArray(parsed?.runs)
-          ? (parsed!.runs as unknown[]).filter((r): r is RunSummary => !!r && typeof r === 'object' && !Array.isArray(r) && typeof (r as { id?: unknown }).id === 'string')
-          : []
+        this.runs = parseRunIndex(JSON.parse(readFileSync(this.file, 'utf8')))
       }
     } catch {
       this.runs = []
@@ -219,7 +231,7 @@ export class RunStore {
   }
 
   private recordPath(runId: string): string {
-    return join(this.recordsDir, `${this.safeId(runId)}.json`)
+    return join(this.recordsDir, runRecordFileName(runId))
   }
 
   /** Per-run directory beside the record file; holds `images/`. */
