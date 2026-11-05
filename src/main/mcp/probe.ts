@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import type { McpTestResult } from '@shared/types'
 import type { ResolvedMcpServer } from '../runtime/types'
+import { scrubControlEnv } from '../runtime/childEnv'
 import { parseWwwAuthenticate, redactOAuth } from './oauth'
 
 /**
@@ -198,7 +199,8 @@ class StdioClient implements RpcClient {
     const spec = resolved.spec
     const command = spec.command ?? ''
     const args = spec.args ?? []
-    const env = { ...process.env, ...resolved.env }
+    // OrgAI's control variables never reach a probed server, inherited or set by its spec (cli-spec 3.4(3)).
+    const env = scrubControlEnv({ ...process.env, ...resolved.env })
     const winShell = usesWindowsShell(command)
     if (winShell && [command, ...args].some((a) => /["%\r\n]/.test(a))) {
       throw new Error('Arguments with quotes or % cannot be tested on Windows; run the server by hand to check it.')

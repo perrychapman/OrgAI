@@ -87,6 +87,17 @@ export function offerableByRealPath(dir: string, opts: Parameters<typeof isOffer
   }
 }
 import { tmpdir } from 'node:os'
+import { scrubControlEnv } from './childEnv'
+import { SELF_CONTROL_REFUSAL_TEXT, checkSelfControlDenial, selfControlLogLine } from './selfControlGate'
+import type { ResolvedMcpServer } from './types'
+
+/**
+ * MCP servers without OrgAI's control variables in their env (cli-spec 3.4(3)): plain values go into the `-c
+ * mcp_servers.<name>.env` config, which the app-server env scrub never sees.
+ */
+function withoutControlEnv(servers: ResolvedMcpServer[]): ResolvedMcpServer[] {
+  return servers.map((s) => ({ ...s, env: scrubControlEnv(s.env ?? {}) }))
+}
 
 /**
  * The Codex adapter: drives `codex app-server` (JSON-RPC over stdio, codexAppServer.ts) and maps its threads,
@@ -320,6 +331,36 @@ class CodexSession implements RuntimeSession {
 
   private transcript(agentId: string, block: TranscriptBlock, opts?: { source?: 'harness' }): void {
     this.emit({ type: 'transcript', runId: this.ctx.run.id, entry: { id: newId('t'), agentId, at: Date.now(), block, ...(opts?.source ? { source: opts.source } : {}) } })
+  }
+
+  /** Set once the "self-control gate skipped" line was logged for this run. */
+  private selfControlSkipLogged = false
+
+  /**
+   * The pre-mode self-control gate (selfControlGate.ts, cli-spec 3.4(1)) for one approval request: true when it must
+   * be declined (the orgai command, OrgAI's control files). On a hit it logs a warning and writes one harness row on
+   * the calling agent. An empty or unreadable protected list skips the path check (logged once per run); the orgai
+   * command check needs no list. Commands Codex runs inside its own sandbox without an approval request never reach
+   * this gate: they are governed by Codex's sandbox policy (policyFor in codexProtocol.ts), not by OrgAI.
+   */
+  private selfControlDenied(agentId: string, checks: ReadonlyArray<{ toolName: string; input: unknown }>, cwd: string): boolean {
+    let paths: string[] | undefined
+    try {
+      paths = this.ctx.controlProtectedPaths?.()
+    } catch {
+      paths = undefined
+    }
+    if (this.ctx.controlProtectedPaths && (!Array.isArray(paths) || !paths.length) && !this.selfControlSkipLogged) {
+      this.selfControlSkipLogged = true
+      this.log('warn', 'OrgAI control paths are unavailable for this run; the self-control gate checks only for the orgai command')
+    }
+    const protectedPaths = Array.isArray(paths) ? paths : []
+    const shell = process.platform === 'win32' ? 'powershell' : 'bash'
+    const hit = checks.find((c) => checkSelfControlDenial(c.toolName, c.input, { protectedPaths, cwd, shell }))
+    if (!hit) return false
+    this.log('warn', selfControlLogLine(hit.toolName, this.agents.get(agentId)?.name ?? agentId))
+    this.transcript(agentId, { kind: 'system', text: SELF_CONTROL_REFUSAL_TEXT }, { source: 'harness' })
+    return true
   }
 
   /**
@@ -611,7 +652,7 @@ class CodexSession implements RuntimeSession {
         const leftover = await this.integrator.start()
         if (leftover) firstMessage += `\n\n---\n${leftover}`
       }
-      const servers = ctx.resolvedMcpServers ? await ctx.resolvedMcpServers() : []
+      const servers = withoutControlEnv(ctx.resolvedMcpServers ? await ctx.resolvedMcpServers() : [])
       this.launch = buildLaunchConfig(ctx.connection, servers, { noProjectDocs: isTrustRestrictedRun(ctx.run), writableRoots: codexWritableRoots(ctx) })
       for (const s of this.launch.skipped) this.log('warn', `MCP server ${s.name} was skipped: ${s.reason}`)
       for (const line of this.launch.summary) this.log('info', `Codex: ${line}`)
@@ -1006,6 +1047,11 @@ class CodexSession implements RuntimeSession {
     const req = parseCommandApproval(params)
     if (!req) return { decision: 'decline' }
     const agentId = this.agentOf(req.threadId)
+    // Self-control gate first (cli-spec 3.4(1)): declined without a card before the policy, reference checks and rules.
+    const selfCwd = typeof req.cwd === 'string' && req.cwd && isAbsolute(req.cwd) ? req.cwd : this.ctx.project.path
+    if (this.selfControlDenied(agentId, [{ toolName: process.platform === 'win32' ? 'PowerShell' : 'Bash', input: { command: req.command } }], selfCwd)) {
+      return { decision: 'decline' }
+    }
     const policy = this.threads.get(req.threadId)?.policy
     if (policy?.denyApprovals) {
       this.log('info', `Declined a command in ${this.ctx.project.permissionMode} mode: ${req.command.slice(0, 120)}`)
@@ -1102,10 +1148,18 @@ class CodexSession implements RuntimeSession {
     const req = parseFileApproval(params)
     if (!req) return { decision: 'decline' }
     const agentId = this.agentOf(req.threadId)
-    const policy = this.threads.get(req.threadId)?.policy
-    if (policy?.denyApprovals) return { decision: 'decline' }
     const item = this.mapper.item(req.itemId)
     const changes = item ? fileChanges(item) : []
+    // Self-control gate first (cli-spec 3.4(1)): every changed path and the grantRoot as edit targets, declined without
+    // a card. A change with no usable path is left to the checks below.
+    const selfChecks = [...changes.map((c) => c.path), ...(req.grantRoot ? [req.grantRoot] : [])]
+      .filter((p): p is string => typeof p === 'string' && p.length > 0)
+      .map((p) => ({ toolName: 'Edit', input: { file_path: p } }))
+    if (selfChecks.length && this.selfControlDenied(agentId, selfChecks, this.integrator.worktreeOf(agentId)?.path ?? this.ctx.project.path)) {
+      return { decision: 'decline' }
+    }
+    const policy = this.threads.get(req.threadId)?.policy
+    if (policy?.denyApprovals) return { decision: 'decline' }
     // Reference folders are read-only: declined without a card, before the accept-edits auto-accept and any rule.
     const refDenial = this.referenceChangeDenial(agentId, changes, req.grantRoot)
     if (refDenial) {
@@ -1292,7 +1346,7 @@ class CodexSession implements RuntimeSession {
     this.restarting = true
     this.mcpRestartPending = false
     try {
-      const servers = await this.ctx.resolvedMcpServers!()
+      const servers = withoutControlEnv(await this.ctx.resolvedMcpServers!())
       const launch = buildLaunchConfig(this.ctx.connection, servers, {
         noProjectDocs: isTrustRestrictedRun(this.ctx.run),
         writableRoots: codexWritableRoots(this.ctx)

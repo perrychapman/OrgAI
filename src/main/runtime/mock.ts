@@ -6,6 +6,7 @@ import { mcpServersForRole, newId, projectKindOf } from '@shared/defaults'
 import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo, type CompletionInput, type PeerMessage, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
 import { datum, harnessToolsFor, isBlockingHarnessTool, type ConfigChange, type ConfigChangeResult, type HarnessTool, type HarnessToolAudience, type HarnessToolHooks, type McpAttachResult } from './harnessTools'
 import { agentInstalledServers, mcpCallDenial, withoutServerRules } from './mcpGrants'
+import { SELF_CONTROL_REFUSAL_TEXT, checkSelfControlDenial, selfControlLogLine } from './selfControlGate'
 import {
   REFERENCE_EDIT_TOOLS,
   commandReferenceTouch,
@@ -1129,6 +1130,15 @@ export class MockSession implements RuntimeSession {
     this.charge(agentId, JSON.stringify(input))
     countUsage(this.ensureAgent(agentId), 'toolCalls')
     this.setState(agentId, 'tool', describeTool(step.name, input))
+    // Same self-control gate as the Claude adapter's PreToolUse (cli-spec 3.4(1)), before every other check, rule and
+    // mode: the orgai command and OrgAI's control files are refused outright.
+    const selfDenial = this.selfControlDenial(agentId, step.name, input)
+    if (selfDenial) {
+      this.transcript(agentId, { kind: 'tool_result', toolUseId: id, content: selfDenial, isError: true })
+      this.transcript(agentId, { kind: 'system', text: SELF_CONTROL_REFUSAL_TEXT }, { source: 'harness' })
+      this.setState(agentId, 'thinking', 'Thinking…')
+      return
+    }
     // Same refusal as the Claude adapter's PreToolUse deny: build sessions never write <workspace>/.claude (no card, no allow rule).
     const ws = this.ctx.run.buildWorkspace
     if (ws && MOCK_CONFIG_WRITE_TOOLS.has(step.name)) {
@@ -1284,6 +1294,32 @@ export class MockSession implements RuntimeSession {
       this.log('warn', `Could not read the run's reference folders: ${(e as Error).message}`)
       return 'unreadable'
     }
+  }
+
+  /** Set once the "self-control gate skipped" line was logged for this run. */
+  private selfControlSkipLogged = false
+
+  /**
+   * Same as the Claude adapter's selfControlDenial: SELF_CONTROL_DENIAL_MESSAGE for a call that runs the orgai command
+   * or opens OrgAI's control files (logged as a warning), else null. The cwd is input.cwd, else the project folder. An
+   * empty or unreadable protected list skips the path check (logged once per run).
+   */
+  private selfControlDenial(agentId: string, toolName: string, input: Record<string, unknown>): string | null {
+    let paths: string[] | undefined
+    try {
+      paths = this.ctx.controlProtectedPaths?.()
+    } catch {
+      paths = undefined
+    }
+    if (this.ctx.controlProtectedPaths && (!Array.isArray(paths) || !paths.length) && !this.selfControlSkipLogged) {
+      this.selfControlSkipLogged = true
+      this.log('warn', 'OrgAI control paths are unavailable for this run; the self-control gate checks only for the orgai command')
+    }
+    const cwd = typeof input.cwd === 'string' && input.cwd ? input.cwd : this.ctx.project.path
+    const denial = checkSelfControlDenial(toolName, input, { protectedPaths: Array.isArray(paths) ? paths : [], cwd, shell: toolName === 'PowerShell' ? 'powershell' : 'bash' })
+    if (!denial) return null
+    this.log('warn', selfControlLogLine(toolName, this.agents.get(agentId)?.name ?? agentId))
+    return denial
   }
 
   /**

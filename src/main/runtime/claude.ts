@@ -56,7 +56,8 @@ import { ContinuationDriver, stepActivity } from './continuation'
 import { LIST_AGENTS_TOOL, MESSAGE_TOOL, buildRolePrompt, peerMessageText, canWrite, composeFirstMessage, isArchitectureFile } from './prompts'
 import { HandleNamer, mapSendMessage, messageTranscriptText, spawnHandle } from './network'
 import { authFailureMessage, describeTool, isAuthFailure, scrubAuthDetail } from './activity'
-import { isolateClaudeEnv } from './childEnv'
+import { isolateClaudeEnv, scrubControlEnv } from './childEnv'
+import { SELF_CONTROL_DENIAL_MESSAGE, SELF_CONTROL_REFUSAL_TEXT, checkSelfControlDenial, selfControlLogLine } from './selfControlGate'
 import { WorktreeIntegrator } from './integration'
 import { resolveParent } from './agentTree'
 import {
@@ -422,7 +423,7 @@ export function toClaudeMcpServers(resolved: ResolvedMcpServer[]): Record<string
         type: 'stdio',
         command: spec.command,
         ...(spec.args?.length ? { args: [...spec.args] } : {}),
-        ...(Object.keys(r.env).length ? { env: { ...r.env } } : {})
+        ...(Object.keys(scrubControlEnv(r.env)).length ? { env: scrubControlEnv(r.env) } : {})
       }
     } else {
       if (!spec.url) continue
@@ -483,7 +484,7 @@ export function completionEnv(connection: RunConnection | undefined, base: NodeJ
   // No connection (drafts): isolated from routing vars, but the legacy inherited key still works.
   if (!connection) return isolateClaudeEnv(base, { keepApiKey: true })
   // The anthropic API key arrives through connection.env; nothing inherited authenticates.
-  return { ...isolateClaudeEnv(base, { proxy: connection.connection !== 'anthropic', keepApiKey: false }), ...connection.env }
+  return { ...isolateClaudeEnv(base, { proxy: connection.connection !== 'anthropic', keepApiKey: false }), ...scrubControlEnv(connection.env ?? {}) }
 }
 
 /**
@@ -510,7 +511,8 @@ export function buildEnv(ctx: RuntimeContext, base: NodeJS.ProcessEnv = process.
     const key = base[project.provider.auth.envVar]
     if (key) env.ANTHROPIC_API_KEY = key
   }
-  Object.assign(env, ctx.connection?.env)
+  // OrgAI's control variables stay out even when the connection names one (cli-spec 3.4(3)).
+  if (ctx.connection?.env) Object.assign(env, scrubControlEnv(ctx.connection.env))
   return env
 }
 
@@ -1553,6 +1555,39 @@ export class ClaudeSession implements RuntimeSession {
     return this.integrator.worktreeOf(agentId)?.path ?? this.ctx.project.path
   }
 
+  /** Set once the "self-control gate skipped" line was logged for this run. */
+  private selfControlSkipLogged = false
+
+  /**
+   * The pre-mode self-control gate (selfControlGate.ts, cli-spec 3.4(1)): SELF_CONTROL_DENIAL_MESSAGE when this call
+   * runs the orgai command or opens OrgAI's control files, else null. On a hit it logs a warning and writes one harness
+   * row on the calling agent. An empty or unreadable protected list skips the gate (logged once per run).
+   */
+  private selfControlDenial(agentId: string, toolName: string, toolInput: unknown, cwd: string): string | null {
+    let paths: string[] | undefined
+    try {
+      paths = this.ctx.controlProtectedPaths?.()
+    } catch {
+      paths = undefined
+    }
+    // A context without the hook (tests, drafts) skips the path check quietly.
+    if (this.ctx.controlProtectedPaths && (!Array.isArray(paths) || !paths.length)) {
+      if (!this.selfControlSkipLogged) {
+        this.selfControlSkipLogged = true
+        this.log('warn', 'OrgAI control paths are unavailable for this run; the self-control gate checks only for the orgai command')
+      }
+    }
+    const denial = checkSelfControlDenial(toolName, toolInput, {
+      protectedPaths: Array.isArray(paths) ? paths : [],
+      cwd,
+      shell: toolName === 'PowerShell' ? 'powershell' : 'bash'
+    })
+    if (!denial) return null
+    this.log('warn', selfControlLogLine(toolName, this.agents.get(agentId)?.name ?? agentId))
+    this.transcript(agentId, { kind: 'system', text: SELF_CONTROL_REFUSAL_TEXT }, { source: 'harness' })
+    return SELF_CONTROL_DENIAL_MESSAGE
+  }
+
   /**
    * referenceDirectories.ts referenceEditDenial for an edit tool call, with the deny text the agent gets (plus
    * REFERENCE_COPY_HINT) and the harness transcript row (referenceRefusalEntry). An unreadable list refuses an edit tool.
@@ -1617,6 +1652,11 @@ export class ClaudeSession implements RuntimeSession {
     const preToolUse: HookCallback = async (raw) => {
       const input = raw as PreToolUseHookInput
       const agentId = input.agent_id ?? ROOT_ID
+      // Self-control gate first (cli-spec 3.4(1)): the orgai command and OrgAI's control files are denied before every
+      // other check, rule, hook-allow path and permission mode (bypassPermissions included).
+      const selfCwd = typeof input.cwd === 'string' && input.cwd ? input.cwd : this.agentCwd(agentId)
+      const selfDenial = this.selfControlDenial(agentId, input.tool_name, input.tool_input, selfCwd)
+      if (selfDenial) return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: selfDenial } }
       // Build sessions never write their own .claude settings (hooks, rules): denied before any allow rule or hook-allow path.
       const configDenial = buildConfigWriteDenial(this.ctx.run, input.tool_name, input.tool_input)
       if (configDenial) {
@@ -2679,6 +2719,9 @@ export class ClaudeSession implements RuntimeSession {
         const key = permissionKey(toolName, input)
         const agentId = this.takeIssuer(key) ?? this.lastToolAgent.get(toolName) ?? ROOT_ID
         const cwd = this.agentCwd(agentId)
+        // Backstop for the PreToolUse self-control gate (a call that reached canUseTool without the hook).
+        const selfDenial = this.selfControlDenial(agentId, toolName, input, cwd)
+        if (selfDenial) return { behavior: 'deny', message: selfDenial }
         // Backstop for the PreToolUse reference gate: never a card for an edit under a reference folder. The refusal row
         // is written here only when the hook did not already refuse (and write it for) this call.
         const edit = this.referenceEditRefusal(toolName, input, cwd)

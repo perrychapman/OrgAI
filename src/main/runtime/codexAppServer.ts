@@ -2,6 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { existsSync, mkdirSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { delimiter, dirname, join } from 'node:path'
+import { scrubControlEnv } from './childEnv'
 
 /**
  * A client for `codex app-server`: JSON-RPC 2.0 messages, one JSON object per line, over the child's stdio.
@@ -167,7 +168,9 @@ export class CodexAppServer {
     // Owner-only: it holds the ChatGPT login (auth.json). The path is used exactly as the child will see it.
     const home = this.options.env?.CODEX_HOME
     if (home?.trim()) mkdirSync(home, { recursive: true, mode: 0o700 })
-    const env: Record<string, string | undefined> = { ...process.env, ...this.options.env }
+    // OrgAI's control variables (ORGAI_DATA_DIR, ORGAI_DAEMON_*, ORGAI_SECRET_*, ELECTRON_RUN_AS_NODE) never reach
+    // Codex or the MCP servers it spawns, inherited or set by the connection (cli-spec 3.4(3)).
+    const env: Record<string, string | undefined> = scrubControlEnv({ ...process.env, ...this.options.env })
     if (binary.pathDir) env.PATH = `${binary.pathDir}${delimiter}${env.PATH ?? env.Path ?? ''}`
     const args = ['app-server', ...(this.options.config ?? []).flatMap((c) => ['-c', c])]
     const child = spawn(binary.path, args, { cwd: this.options.cwd, env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
