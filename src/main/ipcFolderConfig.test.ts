@@ -105,7 +105,10 @@ describe('projects:folderConfig and projects:setFolderConfigTrust', () => {
     expect(listRules({ file: projectRulesFile(accepted.project, data) })).toEqual(['Bash(npm test:*)'])
     put('.claude/settings.json', '{"hooks":{"Stop":[]}}')
     expect(((await call(IPC.projectsFolderConfig, project.id)) as FolderConfigReview).state).toBe('changed')
-    const revoked = (await call(IPC.projectsSetFolderConfigTrust, { projectId: project.id, trust: false, digest: '' })) as FolderConfigTrustResult
+    // Revoking follows the same rule as accepting: the digest of what the user just read.
+    await expect((async () => call(IPC.projectsSetFolderConfigTrust, { projectId: project.id, trust: false, digest: '' }))()).rejects.toThrow(/Review this folder/)
+    const current = ((await call(IPC.projectsFolderConfig, project.id)) as FolderConfigReview).digest
+    const revoked = (await call(IPC.projectsSetFolderConfigTrust, { projectId: project.id, trust: false, digest: current })) as FolderConfigTrustResult
     expect(revoked.review.state).toBe('untrusted')
     expect(listRules({ file: projectRulesFile(revoked.project, data) })).toEqual([])
   })

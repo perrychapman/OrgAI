@@ -743,8 +743,10 @@ export function applyFolderConfigTrust(
   if (stored === undefined) throw new Error('This project has no folder config to review.')
   const decidedAt = (deps.now ?? (() => new Date().toISOString()))()
   const previous = cleanFolderConfigTrust(stored)?.importedRules ?? []
+  if (typeof input.digest !== 'string' || !DIGEST_RE.test(input.digest)) throw new Error("Review this folder's config first.")
+  const scan = scanFolderConfig(project.path)
+  if (scan.digest !== input.digest) throw new Error("This folder's config changed since you reviewed it. Review it again.")
   if (input.trust !== true) {
-    // Revoking never needs a digest: it only removes trust.
     for (const rule of previous) {
       try {
         removeRule({ file: deps.rulesFile }, rule)
@@ -754,11 +756,8 @@ export function applyFolderConfigTrust(
     }
     return { ...project, folderConfigTrust: { state: 'untrusted', decidedAt, importedRules: [] } }
   }
-  if (typeof input.digest !== 'string' || !DIGEST_RE.test(input.digest)) throw new Error("Review this folder's config first.")
-  const scan = scanFolderConfig(project.path)
   if (scan.unreviewable) throw new Error(scan.unreviewable)
-  if (scan.digest !== input.digest) throw new Error("This folder's config changed since you reviewed it. Review it again.")
-  const fresh = localRulesOf(scan).filter((r) => !previous.includes(r))
+  const fresh =localRulesOf(scan).filter((r) => !previous.includes(r))
   const { added } = fresh.length ? addRulesReport({ file: deps.rulesFile }, fresh) : { added: [] as string[] }
   const importedRules = [...new Set([...previous, ...added])].slice(0, 1000)
   return { ...project, folderConfigTrust: { state: 'trusted', digest: scan.digest, decidedAt, importedRules } }

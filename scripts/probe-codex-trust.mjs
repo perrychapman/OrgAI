@@ -171,6 +171,12 @@ fixture(dotted)
 await scenario('H dotted path, untrusted override, full access', { projectCwd: dotted, threadCwd: dotted, config: [untrusted(dotted)], sandbox: 'danger-full-access', approvalPolicy: 'never' })
 await scenario('I repo, old trust on disk, untrusted override, full access', { projectCwd: repo, threadCwd: repo, config: [untrusted(repo)], sandbox: 'danger-full-access', approvalPolicy: 'never', userToml: `[projects.${toml(repo)}]\ntrust_level = "trusted"\n` })
 
+// A project in a subfolder of a repository whose root holds the .codex config.
+const sub = join(repo, 'sub')
+mkdirSync(sub)
+await scenario('G subfolder, override on the subfolder only, full access', { projectCwd: sub, threadCwd: sub, config: [untrusted(sub)], sandbox: 'danger-full-access', approvalPolicy: 'never' })
+await scenario('G2 subfolder, override on subfolder and root, full access', { projectCwd: sub, threadCwd: sub, config: [`projects={ ${toml(sub)} = { trust_level = "untrusted" }, ${toml(repo)} = { trust_level = "untrusted" } }`], sandbox: 'danger-full-access', approvalPolicy: 'never' })
+
 // Positive control: proves the fixture loads when a folder is trusted.
 await scenario('T git repo, trusted', { projectCwd: repo, threadCwd: repo, config: [trusted(repo)] })
 for (const [sandbox, approvalPolicy] of [
