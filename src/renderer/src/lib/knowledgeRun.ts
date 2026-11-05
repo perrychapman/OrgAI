@@ -313,7 +313,8 @@ export function collapseKnowledgeWrites(entries: readonly TranscriptEntry[]): Kn
     const action = str(obj(b.input).action)
     // Reads whose sentence depends on the result.
     if (bare === KNOWLEDGE_TOOL && action === 'get' && !str(obj(b.input).name) && resText) {
-      const name = entityNameOfResult(resText)
+      // Older results name the entity in their first line; newer ones only in the first fenced line.
+      const name = entityNameOfResult(resText) ?? entityRefOfResult(resText)?.name
       if (name) labels.set(e.id, `Read ${name}`)
       return
     }

@@ -403,6 +403,8 @@ try {
   await setSize(1600, 1000)
   await setTheme('dark')
   await openProject(page, C)
+  // The automatic block matches items the user created: a user-owned Jane Doe makes a report's brief add her.
+  await page.evaluate((id) => window.orgai.knowledge.saveNode({ projectId: id, kind: 'person', name: 'Jane Doe' }), c.id)
   await startRun('Check the billing wording [mock:knowledge-recall]')
   const settledC = await until(async () => {
     const card = page.locator('section.frame-tray article.decision-card[data-kind="permission"]').first()

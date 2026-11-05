@@ -8,7 +8,7 @@ import type { KnowledgeFilter, KnowledgeItem, RunFacts } from '../lib/knowledge'
 import { EMPTY_FILTER, countLine, groupItems, idAfterRemoval, isFilterActive, itemName, itemsOf, kindCounts, originCounts, resolveFocus, runNamesOf, searchItems } from '../lib/knowledge'
 import type { RecordedBatch } from '../lib/knowledgeList'
 import { EMPTY_BATCH, NOTICE_MS, addRecorded, emptyKind, eventItemIds, flushRecorded, hiddenNewIds, isOwnEvent, itemsCapText, notesCapText, restoreReady, retireNoticeText } from '../lib/knowledgeList'
-import { inferredStatus, visibleLinkCount } from '../lib/knowledgePossible'
+import { inferredStatus, possiblePartialNote, visibleLinkCount, type PossiblePartial } from '../lib/knowledgePossible'
 import { cleanIpcError } from '../lib/ipcError'
 import { useAppStore, useProjectSummaries, useRunIndexes } from '../store/useAppStore'
 import { SidePanel } from '../components/layout/SidePanel'
@@ -749,6 +749,7 @@ export default function KnowledgeView({ project }: { project: Project }): ReactE
           onError={(m) => setError(cleanIpcError(m))}
           announce={announce}
           inferredLinks={inferred?.links ?? null}
+          inferredPartialNote={possiblePartialNote((inferred as (KnowledgeInferredResult & { partial?: PossiblePartial }) | null)?.partial)}
           inferredFailed={inferredFailed}
           onRetryInferred={reloadInferred}
           onDismissLink={dismissLink}

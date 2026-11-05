@@ -22,6 +22,7 @@ export function KnowledgePossible({
   graph,
   links,
   failed,
+  partialNote,
   writes,
   onSelect,
   onRetry,
@@ -33,6 +34,8 @@ export function KnowledgePossible({
   /** Null until the first answer. */
   links: readonly KnowledgeInferredLink[] | null
   failed: boolean
+  /** The matcher stopped at its budget: the honest line, else null. */
+  partialNote: string | null
   writes: KnowledgeWrites
   onSelect: (id: string) => void
   onRetry: () => void
@@ -126,6 +129,11 @@ export function KnowledgePossible({
         </p>
       )}
       <p className="knowledge-quiet">{POSSIBLE_QUIET}</p>
+      {partialNote && (
+        <p className="knowledge-quiet" data-testid="knowledge-possible-partial">
+          {partialNote}
+        </p>
+      )}
       <ul className="knowledge-possible-list">
         {shown.map((r) => {
           const id = r.link.id

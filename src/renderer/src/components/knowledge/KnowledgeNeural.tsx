@@ -404,19 +404,6 @@ function NeuralInner(props: KnowledgeNeuralProps): ReactElement {
     }
   }, [projectId])
 
-  // ---- inferred status
-  const inferredShown = useMemo(() => {
-    let n = 0
-    for (const l of model.inferred) if (drawn[l.a] === 1 && drawn[l.b] === 1 && kept[l.a] === 1 && kept[l.b] === 1) n++
-    return n
-  }, [model, drawn, kept])
-  const prevShow = useRef(showInferred)
-  useEffect(() => {
-    if (prevShow.current === showInferred) return
-    prevShow.current = showInferred
-    if (showInferred) announce(`Showing ${inferredShown} inferred ${inferredShown === 1 ? 'link' : 'links'}.`)
-  }, [showInferred, inferredShown, announce])
-
   // ---- options
   const positions = useMemo(
     () => engineRef.current?.positionsFor(model) ?? null,

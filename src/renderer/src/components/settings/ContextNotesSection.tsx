@@ -79,7 +79,7 @@ export function ContextNotesSection({ project }: { project: Project }): ReactEle
       <SettingRow
         id="knowledge-auto-context-title"
         title="Add known items to what agents receive"
-        description="When a message or brief names something the team recorded, OrgAI adds a short note about it. This adds a little text to agents' messages."
+        description="When a message or brief names an item you added yourself, OrgAI adds a short note about it. This adds a little text to agents' messages."
         control={<Switch checked={knowledgeAutoContextOn(project)} onChange={setAutoContext} label="Add known items to what agents receive" describedBy={settingDescId('knowledge-auto-context-title')} testId="knowledge-auto-context" />}
       />
       {autoError && (

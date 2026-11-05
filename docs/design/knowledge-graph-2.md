@@ -216,7 +216,7 @@ In run scope after "Skills loaded", when `usage.knowledge` exists: `dl.usage-lis
 
 ### 3.6 Project settings
 
-`ContextNotesSection` (engagements), under the summary line: `SettingRow` + `Switch` `knowledge-auto-context`, "Add known items to what agents receive", note "When a message or brief names something the team recorded, OrgAI adds a short note about it. This adds a little text to agents' messages." Reads `knowledgeAutoContextOn(project)`. Off saves `false`; on removes the field (unset = on). Confirm `projects:save` passes the field; raise it if not.
+`ContextNotesSection` (engagements), under the summary line: `SettingRow` + `Switch` `knowledge-auto-context`, "Add known items to what agents receive", note "When a message or brief names an item you added yourself, OrgAI adds a short note about it. This adds a little text to agents' messages." (main matches only user-created entities by stored name) Reads `knowledgeAutoContextOn(project)`. Off saves `false`; on removes the field (unset = on). Confirm `projects:save` passes the field; raise it if not.
 
 ## 4. States and sizes
 

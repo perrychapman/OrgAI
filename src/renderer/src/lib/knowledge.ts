@@ -96,8 +96,8 @@ export function kindLabel(kind: string): string {
 /** "People", "Open questions", "Notes", or a free-form kind as typed in sentence case ("Vendor"). */
 export function kindGroupLabel(kind: string): string {
   if (kind === NOTE_KIND) return 'Notes'
-  const common = (COMMON_PLURAL as Record<string, string>)[kind]
-  return common ?? sentenceCase(keyWords(kind))
+  // Own keys only: a kind is agent-written, and 'constructor' passes KNOWLEDGE_KEY_RE.
+  return Object.hasOwn(COMMON_PLURAL, kind) ? (COMMON_PLURAL as Record<string, string>)[kind] : sentenceCase(keyWords(kind))
 }
 
 /** Group order: the common kinds in order, then free-form kinds alphabetically by label, then Notes last. */

@@ -1,9 +1,18 @@
 import { describe, expect, it } from 'vitest'
 import type { KnowledgeInferredLink, KnowledgeNode } from '@shared/types'
-import { confirmWord, dismissLabel, inferredStatus, initialWord, linkWhy, linkedStatus, possibleRows, rowAfterRemoval, splitEvidence, visibleLinkCount, whyText } from './knowledgePossible'
+import { confirmWord, dismissLabel, inferredStatus, initialWord, linkWhy, linkedStatus, possiblePartialNote, possibleRows, rowAfterRemoval, splitEvidence, visibleLinkCount, whyText } from './knowledgePossible'
 
 const node = (id: string, name: string, extra: Partial<KnowledgeNode> = {}): KnowledgeNode => ({ id, name, kind: 'person', aliases: [], facts: [], noteIds: [], createdAt: 1, updatedAt: 1, ...extra }) as unknown as KnowledgeNode
 const link = (id: string, from: string, to: string, extra: Partial<KnowledgeInferredLink> = {}): KnowledgeInferredLink => ({ id, from, to, basis: 'mention', evidence: 'Fact: "Works at Acme"', strength: 0.5, count: 1, ...extra })
+
+describe('possiblePartialNote', () => {
+  it('says the list is partial only when the matcher stopped early', () => {
+    expect(possiblePartialNote(undefined)).toBeNull()
+    expect(possiblePartialNote(null)).toBeNull()
+    expect(possiblePartialNote({ scannedEntities: 1200, totalEntities: 2000 })).toBe('This list is partial: OrgAI checked 1,200 of 2,000 items before stopping.')
+    expect(possiblePartialNote({ scannedEntities: Number.NaN, totalEntities: 5 })).toBeNull()
+  })
+})
 
 describe('splitEvidence', () => {
   it('strips the label and the quotes', () => {

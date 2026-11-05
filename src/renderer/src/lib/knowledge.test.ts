@@ -94,6 +94,9 @@ describe('kinds', () => {
     expect(kindMark('meeting')).toBe('ring')
     expect(kindMark('vendor')).toBe('ring-dot')
     expect(kindMark('constructor')).toBe('ring-dot')
+    // Prototype keys are plain free-form kinds everywhere: no throw while sorting or labelling.
+    expect(kindGroupLabel('constructor')).toBe('Constructor')
+    expect(kindOrder(['constructor', 'vendor', 'to-string'])).toEqual(expect.arrayContaining(['constructor', 'vendor', 'to-string']))
   })
 })
 

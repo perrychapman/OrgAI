@@ -49,6 +49,7 @@ export function KnowledgeDetail({
   announce,
   inferredLinks,
   inferredFailed,
+  inferredPartialNote,
   onRetryInferred,
   onDismissLink
 }: {
@@ -73,6 +74,7 @@ export function KnowledgeDetail({
   /** Possible connections: the latest inferred links (null before the first answer), whether the read failed, Retry and Dismiss. */
   inferredLinks: readonly KnowledgeInferredLink[] | null
   inferredFailed: boolean
+  inferredPartialNote: string | null
   onRetryInferred: () => void
   onDismissLink: (linkId: string) => Promise<void>
 }): ReactElement {
@@ -230,7 +232,7 @@ export function KnowledgeDetail({
       <KnowledgeFacts node={node} showRetired={showRetired} onSave={(facts) => patch({ facts })} announce={announce} />
       <KnowledgeRelated node={node} graph={graph} showRetired={showRetired} writes={writes} onSelect={onSelect} onError={onError} announce={announce} />
       {!node.retired && (
-        <KnowledgePossible node={node} graph={graph} links={inferredLinks} failed={inferredFailed} writes={writes} onSelect={onSelect} onRetry={onRetryInferred} onDismiss={onDismissLink} announce={announce} />
+        <KnowledgePossible node={node} graph={graph} links={inferredLinks} failed={inferredFailed} partialNote={inferredPartialNote} writes={writes} onSelect={onSelect} onRetry={onRetryInferred} onDismiss={onDismissLink} announce={announce} />
       )}
       <KnowledgeNotesLinks node={node} notes={notes} onOpenNote={onSelect} onSaveNoteIds={(noteIds) => patch({ noteIds })} announce={announce} />
       {history}

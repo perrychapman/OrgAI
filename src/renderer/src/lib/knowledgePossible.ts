@@ -12,6 +12,20 @@ export const POSSIBLE_BLANK_WORD = 'Add a word for how they relate, such as work
 export const POSSIBLE_BAD_WORD = 'Use letters, digits, spaces and hyphens, at most 40 characters.'
 export const POSSIBLE_LOAD_FAILED = 'Could not check for possible connections.'
 
+/** KnowledgeInferredResult.partial: the name matcher stopped at its budget. Optional until every build has the field. */
+export interface PossiblePartial {
+  scannedEntities: number
+  totalEntities: number
+}
+
+/** The honest line when the matcher stopped early; null when it read everything or the counts are not usable. */
+export function possiblePartialNote(partial: PossiblePartial | null | undefined): string | null {
+  if (!partial) return null
+  const { scannedEntities: s, totalEntities: t } = partial
+  if (!Number.isFinite(s) || !Number.isFinite(t) || s < 0 || t <= 0) return null
+  return `This list is partial: OrgAI checked ${Math.min(s, t).toLocaleString('en-GB')} of ${t.toLocaleString('en-GB')} items before stopping.`
+}
+
 /** The evidence line without its `Fact: "..."` / `Summary: "..."` label, as plain text. */
 export function splitEvidence(evidence: string): { label: 'fact' | 'summary' | null; snippet: string } {
   const clean = evidence.replace(HIDDEN_OR_CONTROL_RUN, ' ').replace(/\s+/g, ' ').trim()
