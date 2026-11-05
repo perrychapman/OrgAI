@@ -810,7 +810,10 @@ export class TeamFilesService {
     const newApproved = applyTeamDelta(approved, beforeDoc, after.doc)
     const changed = !sameTeam(beforeDoc, after.doc)
     let result = next
-    if (ingested) {
+    // A save built from a copy older than an ingest (the renderer's, or a service's read before the pull) would revert
+    // what was pulled: the project is rebuilt from the merged team, keeping this save's per-computer fields.
+    const stale = ingested || !sameTeam(after.doc, newApproved)
+    if (stale) {
       try {
         const ap = this.applyDoc(next, newApproved)
         ap.commit()
@@ -819,7 +822,7 @@ export class TeamFilesService {
         this.warn(`could not keep the pulled team changes in this save: ${e instanceof Error ? e.message : String(e)}`)
       }
     }
-    if (!changed && !ingested) return next
+    if (!changed && !stale) return next
     if (!sameTeam(newApproved, approved)) this.store.writeApproved(id, newApproved)
     if (changed) {
       const w = this.writeDisk(next.path, newApproved, beforeDoc, after.doc, st)

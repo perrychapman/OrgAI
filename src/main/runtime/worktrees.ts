@@ -313,7 +313,11 @@ export async function commitPaths(root: string, paths: string[], message: string
   return withRepoLock(root, async () => {
     const noHooks = ['-c', `core.hooksPath=${devNull}`]
     const add = await git(root, [...noHooks, 'add', '-A', '--', ...paths])
-    if (!add.ok) return { committed: false, error: add.err }
+    if (!add.ok) {
+      // A path that only HEAD knows (the old name of a staged rename, a staged deletion) cannot be added; the commit below
+      // still sees it through HEAD. Anything else that fails to add is reported by the commit.
+      for (const p of paths) await git(root, [...noHooks, 'add', '-A', '--', p])
+    }
     const args = ['commit', '--only', '--no-verify', '-q', '-m', message, '--', ...paths]
     let commit = await git(root, [...noHooks, ...args])
     if (!commit.ok && IDENTITY_ERROR.test(commit.err)) commit = await git(root, [...noHooks, ...FALLBACK_IDENTITY, ...args])
