@@ -343,6 +343,13 @@ interface AppState {
   rulesChangedByProject: Record<string, number>
   /** Latest team-files status per project (lib/teamFiles.ts). Filled by listAttention at boot, status() and the push. */
   teamFilesByProject: Record<string, TeamFilesStatus>
+  /**
+   * A request to land focus on the team-files approval card (or status line) of a project's Team tab. The Team tab
+   * consumes it (focus, then clearTeamFilesFocus). Callers also open the project and its Team view.
+   */
+  teamFilesFocus: { projectId: string; n: number } | null
+  requestTeamFilesFocus(projectId: string): void
+  clearTeamFilesFocus(): void
   setTeamFilesStatus(status: TeamFilesStatus): void
   loadTeamFilesAttention(): Promise<void>
   /** Calls teamFiles.status (which may write a project's files the first time) and stores the answer; null on failure. */
@@ -859,6 +866,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   proposalOutcomes: {},
   rulesChangedByProject: {},
   teamFilesByProject: {},
+  teamFilesFocus: null,
+  requestTeamFilesFocus(projectId) {
+    set((s) => ({ teamFilesFocus: { projectId, n: (s.teamFilesFocus?.n ?? 0) + 1 } }))
+  },
+  clearTeamFilesFocus() {
+    set({ teamFilesFocus: null })
+  },
   setTeamFilesStatus(status) {
     set((s) => ({ teamFilesByProject: { ...s.teamFilesByProject, [status.projectId]: status } }))
   },
