@@ -1276,3 +1276,50 @@ describe('mock [mock:knowledge]', () => {
     expect(knowledgeFactId('REFUSED: get needs a nodeId or a name.', 'Headquartered in Leeds')).toBeUndefined()
   })
 })
+
+describe('mock text step partials', () => {
+  /** The root's agent.partial texts and text transcript entries, in emit order. */
+  const textEvents = (events: RunEvent[]): string[] =>
+    events.flatMap((e) => {
+      if (e.type === 'agent.partial' && e.agentId === ROOT_AGENT_ID) return [`partial:${e.text}`]
+      if (e.type === 'transcript' && e.entry.agentId === ROOT_AGENT_ID && e.entry.block.kind === 'text') return [`text:${e.entry.block.text}`]
+      return []
+    })
+  const idle = (events: RunEvent[]): boolean => events.some((e) => e.type === 'run.status' && e.status === 'idle')
+
+  const run = async (steps: MockStep[], delayMs = 0): Promise<RunEvent[]> => {
+    const ctx = fakeCtx()
+    const session = await new MockAdapter({ script: { delayMs, work: steps } }).start(ctx)
+    await vi.waitFor(() => expect(idle(ctx.events)).toBe(true), { timeout: 3000 })
+    await session.stop()
+    await session.finished
+    return ctx.events
+  }
+
+  it('emits each cumulative partial in order, then the transcript entry and the clear', async () => {
+    const osc = '\x1b]52;c;SGVsbG8=\x07'
+    const text = `Hi ${osc} done`
+    const events = await run([{ type: 'text', text, partials: ['Hi \x1b]5', 'Hi \x1b]52;c;SGVs', `Hi ${osc}`] }], 5)
+    expect(textEvents(events)).toEqual(['partial:Hi \x1b]5', 'partial:Hi \x1b]52;c;SGVs', `partial:Hi ${osc}`, `text:${text}`, 'partial:'])
+  })
+
+  it('keeps the single half-text partial without partials', async () => {
+    const events = await run([{ type: 'text', text: 'abcdef' }])
+    expect(textEvents(events)).toEqual(['partial:abc', 'text:abcdef', 'partial:'])
+  })
+
+  it('an interrupt during the partial waits cuts them short: no transcript entry, the clear still comes', async () => {
+    const ctx = fakeCtx()
+    const steps: MockStep[] = [
+      { type: 'text', text: 'abc', partials: ['a', 'ab', 'abc'] },
+      { type: 'text', text: 'after' }
+    ]
+    const session = await new MockAdapter({ script: { delayMs: 300, work: steps } }).start(ctx)
+    await vi.waitFor(() => expect(textEvents(ctx.events)).toContain('partial:a'), { timeout: 3000 })
+    await session.interrupt()
+    await vi.waitFor(() => expect(idle(ctx.events)).toBe(true), { timeout: 3000 })
+    await session.stop()
+    await session.finished
+    expect(textEvents(ctx.events)).toEqual(['partial:a', 'partial:'])
+  })
+})
