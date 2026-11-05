@@ -238,6 +238,15 @@ describe('connectHost', () => {
     expect(await connectHost(base())).toMatchObject({ ok: false, reason: 'unreachable' })
   })
 
+  it('a daemon.json that says listening: false is disabled without connecting (review M11)', async () => {
+    writeDaemon({ listening: false })
+    const res = await connectHost(base())
+    expect(res).toMatchObject({ ok: false, reason: 'disabled' })
+    expect(res.ok === false && res.message).toMatch(/Terminal access is off/)
+    // A dead pid is still no_host.
+    expect(await connectHost({ ...base(), isLive: () => false })).toMatchObject({ ok: false, reason: 'no_host' })
+  })
+
   it('more than 4 calls queue locally', async () => {
     const endpoint = writeDaemon()
     writeSecret()

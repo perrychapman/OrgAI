@@ -75,7 +75,7 @@ import { DEFAULT_EXEC_STALL_TIMEOUT_MS, DEFAULT_HEADLESS_DECISION_POLICY, DEFAUL
 import { architectRole, mcpAssistantRole, skillAssistantRole } from '@shared/setup'
 import { isTrustRestrictedRun, isInsideEither, samePath, canonicalDeep } from '../quick/scratch'
 import { MCP_ASSIST_MODEL_LABEL, QUICK_RUN_MODEL_LABEL, SETUP_MODEL_LABEL, SKILL_ASSIST_MODEL_LABEL, resolveBuiltinModel, type ResolvedBuiltinModel } from './builtinModel'
-import { ROOT_AGENT_ID, isSetupLikeRun, type RootTurnEnd, type CompletionInput, type KnowledgeCaller, type KnowledgeStoreApi, type ResolvedMcpServer, type RunMessageOutcome, type RunConnection, type RunSkill, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type SkillAssistCatalog } from './types'
+import { ROOT_AGENT_ID, isSetupLikeRun, type RootTurnEnd, type CompletionInput, type KnowledgeCaller, type KnowledgeStoreApi, type ResolvedMcpServer, type RunMessageOutcome, type RunConnection, type RunSkill, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type SessionSettlement, type SkillAssistCatalog } from './types'
 import { datum } from './harnessTools'
 import type { SkillRunSource } from '../skills/types'
 import { RunStore } from '../store/runs'
@@ -87,6 +87,7 @@ import { describePlanChange, peerDeliveryBlocked, planNudgesApply } from './cont
 import { isAuthFailure, isLiveAgent, runOutcome, settleAgent, withSkillActivity, type RunOutcome } from './activity'
 import { effectiveRunProject, execBudgetUsd } from './runOverrides'
 import { defaultEndedBy, execOutcomeFor, execQuiescent } from './execSettle'
+import { keepsHostBusy, runActivityState, type RunActivityState } from './runActivity'
 import { countsAsDenial, fullPolicy, policyAction, type PolicyDecisions } from './decisionPolicy'
 import { DecisionIndex } from './decisionIndex'
 import { cancelPending, cleanProposalDecision, emptyPending, listPending, proposalEffect, proposalOutcome, type PendingCardMaps } from './pendingCards'
@@ -2596,6 +2597,50 @@ export class RunManager {
   /** Runs whose session is still open. */
   liveRunCount(): number {
     return this.runs.size
+  }
+
+  /** What a live run is doing (runActivity.ts): working without the user, ending, or only waiting on the user. */
+  private activityStateOf(a: ActiveRun): RunActivityState {
+    let settlement: SessionSettlement | undefined
+    try {
+      settlement = a.session?.settlement?.()
+    } catch {
+      settlement = undefined
+    }
+    return runActivityState({
+      status: a.summary.status,
+      openCards: pendingCount(a),
+      held: a.held,
+      limitHold: !!a.limitHold,
+      agents: Object.values(a.record.agents),
+      peerMessagesPending: a.inbox.length > 0 || !!a.flushing,
+      ...(settlement ? { settlement } : {})
+    })
+  }
+
+  /**
+   * Live runs doing work without the user right now (review H3): the desktop asks before closing its last window
+   * only for these. Idle runs, runs with an open card and runs held by an interrupt or a usage limit do not count.
+   */
+  workingRunCount(): number {
+    let n = 0
+    for (const a of this.runs.values()) if (this.activityStateOf(a) === 'working') n++
+    return n
+  }
+
+  /**
+   * Activity ('liveRuns', cli-spec 3.2(4)): live runs that keep a host from going idle. Working and ending runs, and
+   * exec runs still in flight (their follower, stall watchdog and decision policy own their end). A run that only
+   * waits on its user does not: a background host's idle exit then ends it like a quit would (continuable).
+   */
+  busyRunCount(): number {
+    let n = 0
+    for (const a of this.runs.values()) {
+      const s = a.summary
+      if (!LIVE_STATUSES.has(s.status)) continue
+      if (keepsHostBusy(this.activityStateOf(a), !!s.overrides?.execMode && !s.execOutcome)) n++
+    }
+    return n
   }
 
   /** runs:listLive: every live run (session open or opening) across all projects, every kind, oldest first. Copies. */

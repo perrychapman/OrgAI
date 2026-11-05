@@ -201,3 +201,52 @@ describe('RunManager activity accessors', () => {
     await m.stopAll()
   })
 })
+
+// Review H3: runs that only wait on their user neither keep a host busy nor make the desktop ask before closing.
+describe('RunManager working and busy run counts', () => {
+  const idleScript: MockScript = { delayMs: 0, work: [{ type: 'text', text: 'Done for now.' }] }
+  const askScript: MockScript = { delayMs: 0, work: [{ type: 'tool', name: 'Bash', input: { command: 'npm test' }, ask: true }] }
+
+  it('an idle run is live but neither working nor busy', async () => {
+    const p = makeProject({ path: join(dir, 'repo'), autoContinue: false })
+    const { m } = rig(p, idleScript)
+    const run = await m.start({ project: p, prompt: 'Hi', kind: 'work' })
+    await vi.waitFor(() => expect(m.summaryOf(run.id)?.status).toBe('idle'))
+    await vi.waitFor(() => expect(m.workingRunCount()).toBe(0))
+    expect(m.liveRuns()).toHaveLength(1)
+    expect(m.busyRunCount()).toBe(0)
+    await m.stopAll()
+  })
+
+  it('a run in a turn is working and busy', async () => {
+    const p = makeProject({ path: join(dir, 'repo'), autoContinue: false })
+    const { m } = rig(p, { delayMs: 300, work: [{ type: 'text', text: 'one' }, { type: 'text', text: 'two' }] })
+    const run = await m.start({ project: p, prompt: 'Hi', kind: 'work' })
+    await vi.waitFor(() => expect(m.summaryOf(run.id)?.status).toBe('running'))
+    expect(m.workingRunCount()).toBe(1)
+    expect(m.busyRunCount()).toBe(1)
+    await m.stopAll()
+  })
+
+  it('a run waiting on a permission card is neither working nor busy', async () => {
+    const p = makeProject({ path: join(dir, 'repo'), autoContinue: false })
+    const { m } = rig(p, askScript)
+    const run = await m.start({ project: p, prompt: 'Run the tests', kind: 'work' })
+    await vi.waitFor(() => expect(events.some((e) => e.type === 'permission.request' && e.runId === run.id)).toBe(true))
+    expect(m.liveRuns()).toHaveLength(1)
+    expect(m.workingRunCount()).toBe(0)
+    expect(m.busyRunCount()).toBe(0)
+    await m.stopAll()
+  })
+
+  it('a paused run with an auto-resume timer is not a working run (its timer counts separately)', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const p = makeProject({ path: join(dir, 'repo') })
+    const { m } = rig(p)
+    const run = await pausedRun(m, p)
+    expect(m.workingRunCount()).toBe(0)
+    expect(m.busyRunCount()).toBe(0)
+    expect(m.activeResumeTimerCount()).toBe(1)
+    m.cancelAutoResume(run.id)
+  })
+})

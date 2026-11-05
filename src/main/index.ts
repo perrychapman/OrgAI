@@ -17,7 +17,19 @@ import { acquireHostOwnership, HostAlreadyRunningError, HostStartingOrBusyError,
 import { bootOrgAIHost, type OrgAIHost } from './host/bootstrap'
 import { HostSocketServer } from './host/socketServer'
 import { currentHostInstanceId } from './host/identity'
-import { parseHostArgs, quitPromptButtons, quitPromptNeeded, secondInstanceAction, windowAllClosedAction } from './hostLifecycle'
+import {
+  CLOSE_PROMPT_BUTTONS,
+  CLOSE_PROMPT_CANCEL_ID,
+  closePromptChoice,
+  closePromptText,
+  parseHostArgs,
+  quitPromptButtons,
+  quitPromptNeeded,
+  reopenAfterCancel,
+  secondInstanceAction,
+  windowAllClosedAction,
+  type ClosePromptChoice
+} from './hostLifecycle'
 import type { HostRuntimeEnv } from './host/runtimeEnv'
 import { windowBackground } from './appInfo'
 import { quitGate } from './quitGate'
@@ -69,19 +81,15 @@ const hostArgs = parseHostArgs(process.argv)
 const hostKind: HostKind = hostArgs.headless ? 'headless-host' : 'desktop'
 // The self-control gate treats an interpreter run of a file in this install's out/cli or src/cli as the orgai CLI.
 setOrgaiCliRoots(orgaiCliRootsOf(app.getAppPath()))
-/**
- * True for a --headless-host boot, and once a desktop-started host has gone to the background: closing the last
- * window of a desktop-started one while it is idle quits it; a --headless-host one (hostArgs.headless) goes back to
- * the background and leaves through its idle exit (windowAllClosedAction).
- */
-let startedHeadless = hostArgs.headless
 /** In background mode (no windows, kept alive for its activity); logged once per entry. */
 let inBackground = false
-/** The quit prompt was answered "Stop all runs and quit": the next quit goes through without asking. */
+/** A prompt was answered "Stop all runs and quit" / "Stop and quit": the next quit goes through without asking. */
 let quitAnswered = false
 /** The quit comes from the activity drain (idle exit, host.stop): never prompt. */
 let drainQuit = false
 let quitPromptOpen = false
+/** The last-window close prompt (review H3) is showing. */
+let closePromptOpen = false
 
 // A second launch on the same userData (Electron's single-instance lock) is answered by the incumbent: a terminal
 // host launch (--headless-host) only logs, anything else brings a window forward (and opens --run's run window).
@@ -195,14 +203,13 @@ function openRunById(runId: string): void {
 }
 
 /**
- * No windows, but the host is still busy (runs, resumes, sign-ins, terminal clients...): keep serving in the
- * background until idle (cli-spec 3.2(1)); a --headless-host one also when idle (daemon mode). From now on an idle close
- * of the last window of a desktop-started host quits.
+ * No windows, and the host keeps serving in the background (cli-spec 3.2(1)): a --headless-host launch (daemon mode),
+ * or a desktop launch whose user chose "Keep working in the background" (review H3: never without that answer). The
+ * idle exit then quits once nothing keeps the host busy for ORGAI_DAEMON_IDLE_MINUTES.
  */
 function goBackground(): void {
   windowScopes.clear()
   if (process.platform === 'darwin') app.dock?.hide()
-  startedHeadless = true
   host?.activity.armIdleExit()
   if (!inBackground) {
     inBackground = true
@@ -298,7 +305,8 @@ app.whenReady().then(async () => {
   })
   const socketServer = server
   try {
-    ownership = await acquireHostOwnership({ dataDir, hostKind, appVersion: app.getVersion(), onConnection: (s) => socketServer.accept(s) })
+    // Review M11: no listener and no daemon.secret yet; they exist only while Terminal access is on (syncTerminalListener).
+    ownership = await acquireHostOwnership({ dataDir, hostKind, appVersion: app.getVersion(), listen: false, onConnection: (s) => socketServer.accept(s) })
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e)
     log.error(`Host ownership failed: ${message}`)
@@ -327,12 +335,23 @@ app.whenReady().then(async () => {
       log.warn(`Could not set the Dock icon: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
-  // Stores, services, adapters, background probes and housekeeping (cli-spec 3.2(2) step 4); markReady at its end.
+  // Stores, services, adapters, background probes and housekeeping (cli-spec 3.2(2) step 4). The boot's markReady is
+  // held back: daemon.json turns 'ready' below, once the listener matches Terminal access, so a client that waits for
+  // 'ready' never reads "listening: false" from a host about to listen.
+  const bootOwnership = {
+    get info() {
+      return owned.info
+    },
+    ...(owned.runtimeDir ? { runtimeDir: owned.runtimeDir } : {}),
+    markReady: () => true,
+    markDraining: () => owned.markDraining(),
+    release: () => owned.release()
+  }
   const h = bootOrgAIHost({
     env: runtimeEnv(),
     dataDir,
     hostKind,
-    ownership: owned,
+    ownership: bootOwnership,
     safeStorage,
     openExternal: (url) => shell.openExternal(url),
     desktop: { openRunWindow },
@@ -348,6 +367,18 @@ app.whenReady().then(async () => {
   const settings = h.settings
   applyTheme(settings.get())
   settings.onChange((s) => applyTheme(s))
+  // Review M11: the listener and daemon.secret exist only while Terminal access is on; daemon.json turns 'ready' once
+  // the first sync settled. Not awaited: on Windows the secret's ACL step may take a while and the window need not wait.
+  void syncTerminalListener(owned, settings.get().terminalServer === true).then((ok) => {
+    if (!ok && hostArgs.headless) {
+      // A terminal host without a listener serves nobody; the orgai command reads the exit code and the log.
+      log.error('The terminal host could not open its connection point; quitting.')
+      app.exit(6)
+      return
+    }
+    owned.markReady()
+  })
+  settings.onChange((s) => void syncTerminalListener(owned, s.terminalServer === true))
   // Every push on the host's bus reaches every window (so a second window and the deprecated notifications mirror
   // stay in step); run events also go to the notifier.
   h.events.on((channel, payload) => {
@@ -411,9 +442,24 @@ app.whenReady().then(async () => {
 })
 
 /**
- * The orgai command shim service (cli-spec 7(3)). After an install, Terminal access is turned on through the same
- * settings:set path a window takes, so the socket server and the settings:changed broadcast react and the main-owned
- * terminalServerChosen is set.
+ * Bind or close the host's listener (and write or remove daemon.secret) to match Terminal access (review M11). Calls
+ * are serialized by the ownership handle. False when the listener could not be put in that state (logged).
+ */
+async function syncTerminalListener(owned: HostOwnership, on: boolean): Promise<boolean> {
+  const was = owned.listening
+  try {
+    await owned.setListening(on)
+    if (owned.listening !== was) log.info(on ? 'Terminal access is on: listening for terminal clients.' : 'Terminal access is off: stopped listening for terminal clients.')
+    return true
+  } catch (e) {
+    log.warn(`Terminal access: could not ${on ? 'start' : 'stop'} listening for terminal clients: ${e instanceof Error ? e.message : String(e)}`)
+    return false
+  }
+}
+
+/**
+ * The orgai command shim service (cli-spec 7(3)). Installing it never turns Terminal access on by itself (review H2):
+ * the App settings row asks the user to turn it on after an install.
  */
 function buildCliShim(h: OrgAIHost): CliShimService {
   const shellPath = shellPathResult?.shellPath ?? []
@@ -429,10 +475,7 @@ function buildCliShim(h: OrgAIHost): CliShimService {
     // additions (~/.local/bin among them), so it would always answer yes. Windows: the inherited user Path.
     ...(process.platform === 'win32' ? {} : { loginPath: shellPath.join(':') }),
     onInstalled: () => {
-      const current = h.settings.get()
-      if (current.terminalServer === true) return
-      h.dispatcher.invoke(IPC.settingsSet, [{ ...current, terminalServer: true }], { surface: 'desktop' })
-      log.info('Terminal access turned on after installing the orgai command.')
+      if (h.settings.get().terminalServer !== true) log.info('Installed the orgai command; Terminal access stays off until the user turns it on.')
     }
   })
 }
@@ -504,13 +547,57 @@ async function askQuit(terminalClients: number): Promise<void> {
   } else if (response === 1) {
     quitAnswered = true
     app.quit()
+  } else if (reopenAfterCancel({ platform: process.platform, liveWindows: liveWindowScopes().length, quitting })) {
+    // Cancel after the last window closed (Windows, Linux): never leave OrgAI running with nothing on screen.
+    createWindow()
   }
 }
 
-// The last window closed: keep serving in the background while busy, else quit (or stay: a desktop host on macOS).
+/**
+ * The last window closed on Windows or Linux while runs are working without the user (review H3): ask before going
+ * to the background. Cancel (or Esc) brings a window back.
+ */
+async function askClose(workingRuns: number): Promise<void> {
+  if (closePromptOpen) return
+  closePromptOpen = true
+  let choice: ClosePromptChoice = 'cancel'
+  try {
+    const { message, detail } = closePromptText(workingRuns)
+    const { response } = await dialog.showMessageBox({
+      type: 'question',
+      buttons: [...CLOSE_PROMPT_BUTTONS],
+      defaultId: 0,
+      cancelId: CLOSE_PROMPT_CANCEL_ID,
+      noLink: true,
+      title: 'OrgAI',
+      message,
+      detail
+    })
+    choice = closePromptChoice(response)
+  } catch (e) {
+    log.warn(`The close prompt failed: ${e instanceof Error ? e.message : String(e)}`)
+  } finally {
+    closePromptOpen = false
+  }
+  // A quit started meanwhile, or a window came back (a second launch): nothing left to decide.
+  if (quitting || liveWindowScopes().length > 0) return
+  if (choice === 'background') {
+    log.info('The user chose to keep OrgAI working in the background after closing its last window.')
+    goBackground()
+  } else if (choice === 'quit') {
+    quitAnswered = true
+    app.quit()
+  } else {
+    createWindow()
+  }
+}
+
+// The last window closed (review H3): a --headless-host launch goes back to the background, macOS stays (Dock), and
+// Windows / Linux quit through quitGate, asking first only while runs are working without the user.
 app.on('window-all-closed', () => {
-  const busy = host ? !host.activity.isIdle() : false
-  const action = windowAllClosedAction({ platform: process.platform, busy, startedHeadless, launchedHeadless: hostArgs.headless, quitting })
+  const workingRuns = host ? host.runs.workingRunCount() : 0
+  const action = windowAllClosedAction({ platform: process.platform, launchedHeadless: hostArgs.headless, quitting, workingRuns })
   if (action === 'quit') app.quit()
   else if (action === 'background') goBackground()
+  else if (action === 'ask') void askClose(workingRuns)
 })

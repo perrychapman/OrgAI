@@ -211,8 +211,12 @@ function openSocket(opts: ConnectHostOptions, endpoint: string, timeoutMs: numbe
   })
 }
 
+/** A host that binds no listener while Terminal access is off says so in daemon.json (review M11); same text as the host's refusal. */
+const LISTENER_OFF_MESSAGE = 'Terminal access is off. Turn it on in OrgAI: App settings > General > Advanced settings > Terminal access.'
+
 async function attemptOnce(opts: ConnectHostOptions, daemon: DaemonInfo, isLive: (pid: number, start?: string) => boolean): Promise<Attempt> {
   const done = (result: ConnectResult): Attempt => ({ kind: 'done', result })
+  if (daemon.listening === false) return done(fail('disabled', LISTENER_OFF_MESSAGE, daemon))
   const connectTimeoutMs = opts.connectTimeoutMs ?? 1500
   const opened = await openSocket(opts, daemon.endpoint, connectTimeoutMs)
   if ('error' in opened) {

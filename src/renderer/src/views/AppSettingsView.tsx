@@ -37,6 +37,9 @@ import TemplatesSection from '../components/templates/TemplatesSection'
 import KitSection from '../components/kit/KitSection'
 import { CanvasSection } from '../components/settings/CanvasSection'
 import { CliShimRow } from '../components/settings/CliShimRow'
+import { Select } from '../components/ui/Select'
+import { TERMINAL_ACCESS_TRUST } from '../lib/cliShim'
+import { TERMINAL_ACCESS_LEVEL_HINT, TERMINAL_ACCESS_LEVEL_OPTIONS, isTerminalAccessLevel, terminalAccessLevelOf, terminalAccessLevelPatch } from '../lib/terminalAccess'
 import { mergePendingSettings } from '../lib/settingsMerge'
 import { focusCheckedPreset } from '../components/canvas/CanvasPresetGroup'
 
@@ -267,6 +270,7 @@ export default function AppSettingsView(): ReactElement {
   }
 
   const appearance: AppearanceSettings = info.appearance ?? DEFAULT_APPEARANCE
+  const terminalLevel = terminalAccessLevelOf(info)
   const patchAppearance = (p: Partial<AppearanceSettings>, canvas?: Partial<AppearanceSettings['canvas']>): void => {
     const next: AppearanceSettings = { ...appearance, ...p, canvas: { ...appearance.canvas, ...canvas } }
     setAppearance(next)
@@ -512,7 +516,7 @@ export default function AppSettingsView(): ReactElement {
                   <SettingRow
                     id="terminal-server-row"
                     title="Terminal access"
-                    description="Lets the orgai command in a terminal on this computer see and control OrgAI. Turned on automatically when OrgAI is started from the orgai command."
+                    description={`Lets the orgai command in a terminal on this computer see and control OrgAI. ${TERMINAL_ACCESS_TRUST} Off, OrgAI opens no connection point for terminals at all.`}
                     control={
                       <Switch
                         checked={info.terminalServer === true}
@@ -523,7 +527,31 @@ export default function AppSettingsView(): ReactElement {
                       />
                     }
                   />
-                  <CliShimRow />
+                  <SettingRow
+                    id="terminal-access-level-row"
+                    title="What terminals may do"
+                    description={
+                      info.terminalServer === true
+                        ? TERMINAL_ACCESS_LEVEL_HINT[terminalLevel]
+                        : `${TERMINAL_ACCESS_LEVEL_HINT[terminalLevel]} Applies once Terminal access is on.`
+                    }
+                    width="select"
+                    control={
+                      <span data-testid="terminal-access-level">
+                        <Select
+                          id="terminal-access-level-select"
+                          label="What terminals may do"
+                          value={terminalLevel}
+                          options={TERMINAL_ACCESS_LEVEL_OPTIONS}
+                          describedBy={settingDescId('terminal-access-level-row')}
+                          onChange={(v) => {
+                            if (isTerminalAccessLevel(v)) patch(terminalAccessLevelPatch(v), true)
+                          }}
+                        />
+                      </span>
+                    }
+                  />
+                  <CliShimRow terminalAccessOn={info.terminalServer === true} onTurnOnTerminalAccess={() => patch({ terminalServer: true }, true)} />
                 </SettingsCard>
               </SettingsGroup>
             </SettingsAdvanced>

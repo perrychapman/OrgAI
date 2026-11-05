@@ -169,14 +169,30 @@ export interface OwnershipOptions {
   faultAt?: OwnershipBoundary | ReleaseBoundary
   /** Platform override (tests only; the win32 pipe path is UNVERIFIED and not exercised live). */
   platform?: NodeJS.Platform
+  /**
+   * Write daemon.secret and bind the listener now (default true). false (review M11; the Electron hosts, whose
+   * Terminal access may be off): neither exists until setListening(true); daemon.json carries `listening: false` and
+   * the endpoint the listener will use.
+   */
+  listen?: boolean
 }
 
 export interface HostOwnership {
   readonly info: DaemonInfo
+  /** The listener's socket path or pipe name (the same whether or not it is bound right now). */
   readonly endpoint: string
   readonly secretPath: string
-  /** The long-path runtime dir, when the socket lives there. */
+  /** The long-path runtime dir, when the socket lives (or will live) there. */
   readonly runtimeDir?: string
+  /** True while daemon.secret exists and the listener is bound. */
+  readonly listening: boolean
+  /**
+   * Bind the listener and write daemon.secret (on), or close the listener and remove daemon.secret (off), then rewrite
+   * daemon.json's `listening` (review M11: only while Terminal access is on). Calls run one at a time in call order; a
+   * call that matches the current state does nothing. The secret keeps its value for this host instance. Rejects when
+   * the bind (or, on Windows, the secret's ACL) fails; the listener is then off. After release() it does nothing.
+   */
+  setListening(on: boolean): Promise<void>
   /** Rewrite daemon.json with state 'ready' (only while it still carries our hostInstanceId). True when written. */
   markReady(): boolean
   /** Rewrite daemon.json with state 'draining' (same rule). */
@@ -234,7 +250,7 @@ function isObject(v: unknown): v is Record<string, unknown> {
 /** A validated DaemonInfo, or null for anything else (unknown fields dropped). */
 export function parseDaemonInfo(raw: unknown): DaemonInfo | null {
   if (!isObject(raw)) return null
-  const { hostInstanceId, pid, processStartTime: start, endpoint, state, startedAt, hostKind, appVersion } = raw
+  const { hostInstanceId, pid, processStartTime: start, endpoint, listening, state, startedAt, hostKind, appVersion } = raw
   if (typeof hostInstanceId !== 'string' || !HOST_INSTANCE_ID_RE.test(hostInstanceId)) return null
   if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0) return null
   if (typeof endpoint !== 'string' || !endpoint || endpoint.length > 1024 || endpoint.includes('\0')) return null
@@ -248,6 +264,8 @@ export function parseDaemonInfo(raw: unknown): DaemonInfo | null {
     pid,
     ...(start !== undefined ? { processStartTime: start } : {}),
     endpoint,
+    // Only an explicit false means "not listening"; anything else reads as listening (older hosts never write it).
+    ...(listening === false ? { listening: false as const } : {}),
     state: state as HostState,
     startedAt,
     ...(hostKind !== undefined ? { hostKind: hostKind as HostKind } : {}),
@@ -374,6 +392,9 @@ export async function acquireHostOwnership(opts: OwnershipOptions): Promise<Host
   const secretPath = join(runDir, DAEMON_SECRET)
   const pid = process.pid
   const myStart = opts.startTimeOf ? opts.startTimeOf(pid) : selfStartTime()
+  const listenNow = opts.listen !== false
+  /** This host instance's handshake secret: written while the listener is bound, the same value each time. */
+  const secretValue = randomBytes(32).toString('hex')
 
   // (1) <dataDir>/run, 0700, a real dir owned by us.
   mkdirSync(runDir, { recursive: true, mode: 0o700 })
@@ -406,24 +427,32 @@ export async function acquireHostOwnership(opts: OwnershipOptions): Promise<Host
     await sweepLeftovers()
     fault('after-probe')
 
-    // The handshake secret.
-    writeAtomic(secretPath, randomBytes(32).toString('hex'), 0o600, id)
-    wroteSecret = true
-    if (platform === 'win32') await restrictWindowsAcl(secretPath, dataDir)
-    fault('after-secret')
+    if (listenNow) {
+      // The handshake secret.
+      writeAtomic(secretPath, secretValue, 0o600, id)
+      wroteSecret = true
+      if (platform === 'win32') await restrictWindowsAcl(secretPath, dataDir)
+      fault('after-secret')
 
-    // The per-instance listener.
-    const bound = await bindListener()
-    server = bound.server
-    endpoint = bound.endpoint
-    runtimeDir = bound.runtimeDir
-    fault('after-listen')
+      // The per-instance listener.
+      const bound = await bindListener()
+      server = bound.server
+      endpoint = bound.endpoint
+      runtimeDir = bound.runtimeDir
+      fault('after-listen')
+    } else {
+      // Review M11: no secret and no listener until setListening(true); daemon.json names the endpoint it will use.
+      const planned = plannedEndpoint()
+      endpoint = planned.endpoint
+      runtimeDir = planned.runtimeDir
+    }
 
     const info: DaemonInfo = {
       hostInstanceId: id,
       pid,
       ...(myStart ? { processStartTime: myStart } : {}),
       endpoint,
+      ...(listenNow ? {} : { listening: false }),
       state: 'starting',
       startedAt: now(),
       hostKind: opts.hostKind,
@@ -615,6 +644,17 @@ export async function acquireHostOwnership(opts: OwnershipOptions): Promise<Host
     }
   }
 
+  /** Where bindListener will listen, computed without touching the disk (review M11: daemon.json names it while off). */
+  function plannedEndpoint(): { endpoint: string; runtimeDir?: string } {
+    if (platform === 'win32') return { endpoint: pipeNameFor(dataDir, id, platform) }
+    const path = socketPathFor(dataDir, id)
+    if (Buffer.byteLength(path) < SOCKET_PATH_MAX) return { endpoint: path }
+    const rtDir = runtimeDirFor(id, runtimeBase)
+    const inRt = join(rtDir, 'd.sock')
+    if (Buffer.byteLength(inRt) >= SOCKET_PATH_MAX) throw new HostOwnershipError('socket_path_too_long', `The socket path ${inRt} is too long.`)
+    return { endpoint: inRt, runtimeDir: rtDir }
+  }
+
   async function bindListener(): Promise<{ server: Server; endpoint: string; runtimeDir?: string }> {
     let path: string
     let rtDir: string | undefined
@@ -679,15 +719,69 @@ export async function acquireHostOwnership(opts: OwnershipOptions): Promise<Host
     }
   }
 
-  function ownershipHandle(info: DaemonInfo, srv: Server, rtDir: string | undefined): HostOwnership {
+  function ownershipHandle(info: DaemonInfo, initialServer: Server | undefined, rtDir: string | undefined): HostOwnership {
     let current = info
     let released = false
-    const rewrite = (state: HostState): boolean => {
+    /** The bound listener; undefined while Terminal access is off (review M11). */
+    let srv = initialServer
+    /** setListening calls, one at a time. */
+    let listenChain: Promise<void> = Promise.resolve()
+    const write = (next: DaemonInfo): boolean => {
       if (released) return false
       if (readDaemonInfo(dataDir)?.hostInstanceId !== id) return false
-      current = { ...current, state }
+      current = next
       writeAtomic(daemonPath, JSON.stringify(current, null, 2), 0o600, id)
       return true
+    }
+    const rewrite = (state: HostState): boolean => write({ ...current, state })
+    const withListening = (on: boolean): DaemonInfo => {
+      const { listening: _was, ...rest } = current
+      return on ? rest : { ...rest, listening: false }
+    }
+    const removeSecretIfOurs = (): void => {
+      try {
+        if (readDaemonInfo(dataDir)?.hostInstanceId === id) rmSync(secretPath, { force: true })
+      } catch {
+        /* best effort */
+      }
+    }
+    const removeEndpointFiles = (): void => {
+      try {
+        if (platform !== 'win32') rmSync(info.endpoint, { force: true })
+        if (rtDir) rmSync(rtDir, { recursive: true, force: true })
+      } catch {
+        /* best effort */
+      }
+    }
+    async function openListener(): Promise<void> {
+      if (released || srv) return
+      writeAtomic(secretPath, secretValue, 0o600, id)
+      let bound: Awaited<ReturnType<typeof bindListener>>
+      try {
+        if (platform === 'win32') await restrictWindowsAcl(secretPath, dataDir)
+        bound = await bindListener()
+      } catch (e) {
+        removeSecretIfOurs()
+        throw e
+      }
+      if (released) {
+        // Released while binding: undo it.
+        await new Promise<void>((r) => bound.server.close(() => r()))
+        removeEndpointFiles()
+        return
+      }
+      srv = bound.server
+      write(withListening(true))
+    }
+    async function closeListener(): Promise<void> {
+      if (released || !srv) return
+      const closing = srv
+      srv = undefined
+      // daemon.json first, so a client from now on reads "Terminal access is off" instead of a dead socket.
+      write(withListening(false))
+      removeSecretIfOurs()
+      await new Promise<void>((r) => closing.close(() => r()))
+      removeEndpointFiles()
     }
     return {
       get info() {
@@ -696,6 +790,14 @@ export async function acquireHostOwnership(opts: OwnershipOptions): Promise<Host
       endpoint: info.endpoint,
       secretPath,
       ...(rtDir ? { runtimeDir: rtDir } : {}),
+      get listening() {
+        return !!srv && !released
+      },
+      setListening(on: boolean) {
+        const step = listenChain.then(() => (on ? openListener() : closeListener()))
+        listenChain = step.catch(() => {})
+        return step
+      },
       markReady() {
         const wrote = rewrite('ready')
         try {
@@ -772,10 +874,11 @@ export async function acquireHostOwnership(opts: OwnershipOptions): Promise<Host
       }
       fault('release-after-daemon-unlink')
       try {
-        srv.close()
+        srv?.close()
       } catch {
         /* already closed */
       }
+      srv = undefined
       fault('release-after-close')
       try {
         if (platform !== 'win32') rmSync(info.endpoint, { force: true })

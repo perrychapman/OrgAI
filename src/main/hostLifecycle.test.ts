@@ -1,5 +1,16 @@
 import { describe, expect, it } from 'vitest'
-import { parseHostArgs, quitPromptButtons, quitPromptNeeded, secondInstanceAction, windowAllClosedAction } from './hostLifecycle'
+import {
+  CLOSE_PROMPT_BUTTONS,
+  CLOSE_PROMPT_CANCEL_ID,
+  closePromptChoice,
+  closePromptText,
+  parseHostArgs,
+  quitPromptButtons,
+  quitPromptNeeded,
+  reopenAfterCancel,
+  secondInstanceAction,
+  windowAllClosedAction
+} from './hostLifecycle'
 
 describe('parseHostArgs', () => {
   it('reads nothing from a plain launch', () => {
@@ -64,36 +75,63 @@ describe('secondInstanceAction', () => {
   })
 })
 
-describe('windowAllClosedAction', () => {
-  const expected = (platform: string, busy: boolean, startedHeadless: boolean, quitting: boolean): string => {
+describe('windowAllClosedAction (review H3)', () => {
+  const expected = (platform: string, launchedHeadless: boolean, quitting: boolean, workingRuns: number): string => {
     if (quitting) return 'quit'
-    if (busy) return 'background'
-    if (startedHeadless || platform !== 'darwin') return 'quit'
-    return 'stay'
+    if (launchedHeadless) return 'background'
+    if (platform === 'darwin') return 'stay'
+    return workingRuns > 0 ? 'ask' : 'quit'
   }
   for (const platform of ['darwin', 'win32', 'linux']) {
-    for (const busy of [false, true]) {
-      for (const startedHeadless of [false, true]) {
-        for (const quitting of [false, true]) {
-          it(`${platform} busy=${busy} headless=${startedHeadless} quitting=${quitting}`, () => {
-            expect(windowAllClosedAction({ platform, busy, startedHeadless, quitting })).toBe(expected(platform, busy, startedHeadless, quitting))
+    for (const launchedHeadless of [false, true]) {
+      for (const quitting of [false, true]) {
+        for (const workingRuns of [0, 2]) {
+          it(`${platform} headless=${launchedHeadless} quitting=${quitting} working=${workingRuns}`, () => {
+            expect(windowAllClosedAction({ platform, launchedHeadless, quitting, workingRuns })).toBe(expected(platform, launchedHeadless, quitting, workingRuns))
           })
         }
       }
     }
   }
-  it('spot checks', () => {
-    expect(windowAllClosedAction({ platform: 'darwin', busy: false, startedHeadless: false, quitting: false })).toBe('stay')
-    expect(windowAllClosedAction({ platform: 'win32', busy: false, startedHeadless: false, quitting: false })).toBe('quit')
-    expect(windowAllClosedAction({ platform: 'linux', busy: true, startedHeadless: false, quitting: false })).toBe('background')
-    expect(windowAllClosedAction({ platform: 'darwin', busy: true, startedHeadless: true, quitting: true })).toBe('quit')
-  })
-  it('a --headless-host launch goes back to the background when idle (daemon mode, idle exit decides)', () => {
-    for (const platform of ['darwin', 'win32', 'linux']) {
-      expect(windowAllClosedAction({ platform, busy: false, startedHeadless: true, launchedHeadless: true, quitting: false })).toBe('background')
-      expect(windowAllClosedAction({ platform, busy: true, startedHeadless: true, launchedHeadless: true, quitting: false })).toBe('background')
-      expect(windowAllClosedAction({ platform, busy: false, startedHeadless: true, launchedHeadless: true, quitting: true })).toBe('quit')
+  it('a desktop launch off macOS quits unless runs are working, and then asks; it never goes to the background by itself', () => {
+    for (const platform of ['win32', 'linux']) {
+      expect(windowAllClosedAction({ platform, launchedHeadless: false, quitting: false, workingRuns: 0 })).toBe('quit')
+      expect(windowAllClosedAction({ platform, launchedHeadless: false, quitting: false, workingRuns: 1 })).toBe('ask')
     }
+  })
+  it('macOS keeps the app (Dock) whatever its runs do', () => {
+    expect(windowAllClosedAction({ platform: 'darwin', launchedHeadless: false, quitting: false, workingRuns: 0 })).toBe('stay')
+    expect(windowAllClosedAction({ platform: 'darwin', launchedHeadless: false, quitting: false, workingRuns: 3 })).toBe('stay')
+  })
+  it('a --headless-host launch goes back to the background (daemon mode, idle exit decides)', () => {
+    for (const platform of ['darwin', 'win32', 'linux']) {
+      expect(windowAllClosedAction({ platform, launchedHeadless: true, quitting: false, workingRuns: 0 })).toBe('background')
+      expect(windowAllClosedAction({ platform, launchedHeadless: true, quitting: true, workingRuns: 1 })).toBe('quit')
+    }
+  })
+})
+
+describe('close prompt', () => {
+  it('maps responses; anything unexpected cancels', () => {
+    expect(CLOSE_PROMPT_BUTTONS).toEqual(['Keep working in the background', 'Stop and quit', 'Cancel'])
+    expect(closePromptChoice(0)).toBe('background')
+    expect(closePromptChoice(1)).toBe('quit')
+    expect(closePromptChoice(CLOSE_PROMPT_CANCEL_ID)).toBe('cancel')
+    expect(closePromptChoice(-1)).toBe('cancel')
+    expect(closePromptChoice(7)).toBe('cancel')
+  })
+  it('names the working runs', () => {
+    expect(closePromptText(1).message).toBe('A run is still working.')
+    expect(closePromptText(3).message).toBe('3 runs are still working.')
+    expect(closePromptText(Number.NaN).message).toBe('A run is still working.')
+    expect(closePromptText(2).detail).toMatch(/background/)
+  })
+  it('a cancelled quit with no window reopens one off macOS', () => {
+    expect(reopenAfterCancel({ platform: 'win32', liveWindows: 0, quitting: false })).toBe(true)
+    expect(reopenAfterCancel({ platform: 'linux', liveWindows: 0, quitting: false })).toBe(true)
+    expect(reopenAfterCancel({ platform: 'linux', liveWindows: 1, quitting: false })).toBe(false)
+    expect(reopenAfterCancel({ platform: 'darwin', liveWindows: 0, quitting: false })).toBe(false)
+    expect(reopenAfterCancel({ platform: 'win32', liveWindows: 0, quitting: true })).toBe(false)
   })
 })
 

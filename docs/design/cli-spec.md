@@ -90,7 +90,7 @@ Rather than running two competing host binaries (a Node daemon vs. an Electron D
     - When `app.on('second-instance', (_event, argv) => ...)` fires in the incumbent host: if `argv` includes `--headless-host` (e.g. a concurrent CLI spawn raced a running Desktop app), the incumbent does **not** open or focus a `BrowserWindow` (it simply ensures the socket server is ready); otherwise, it shows the Dock icon (`app.dock?.show()`), opens/focuses the `BrowserWindow` (focusing `--run <id>` if passed), and attaches to the **already-running `RunManager` and stores**.
     - On macOS, clicking the Dock icon or relaunching from Finder fires `app.on('activate')`, which shows the Dock icon and creates the main `BrowserWindow` when `BrowserWindow.getAllWindows().length === 0`.
   - **Window Close vs Explicit Quit**:
-    - On `window-all-closed` (across macOS, Windows, and Linux), if `HostActivityTracker` has active runs, `pausedAutoResumes`, or attached CLI/TUI clients (or background daemon mode is enabled), the process clears `windowScopes`, hides the Dock icon on macOS, and remains running in `--headless-host` mode until idle.
+    - On `window-all-closed` (review H3, PR #18): a host launched with `--headless-host` clears `windowScopes`, hides the Dock icon on macOS and stays in the background until its idle exit. A desktop launch on macOS stays (Dock behaviour). A desktop launch on Windows and Linux quits through `quitGate` (stopping its runs), as before the host work; only while runs are working without the user (`RunManager.workingRunCount`: not idle runs, runs with an open card, runs held by an interrupt or a usage limit, or paused runs waiting for an auto-resume) it first asks "Keep working in the background / Stop and quit / Cancel" (Cancel brings a window back). It never goes to the background without that answer.
     - On explicit application Quit (`Cmd+Q` / File > Quit) while CLI-started runs or TUI clients are active, `quitGate` (`src/main/index.ts:569-579`) offers `"Keep background host running for N terminal run(s)"` alongside `"Stop all runs and quit"`.
 - **Pure-Node In-Process Host (`--host inproc`)**:
   - Boots `OrgAIHost` directly inside the Node >= 22 CLI process without Electron, sharing the exact universal `<dataDir>/run/` ownership protocol below (refusing with exit code `6` if an Electron or Node host already owns `dataDir`), binding its per-instance socket so `orgai watch` / `orgai decide` can attach, and using `OverlaySecretStore` for environment-supplied secrets.
@@ -130,7 +130,7 @@ Node's standard library does not expose `flock()`/`fcntl()`, and `RunStore`'s co
 #### 4. Unified Activity Tracking & Ownership-Safe Drain (`HostActivityTracker`)
 Used identically for idle daemon exit, `orgai daemon stop`, and Desktop window close:
 - **Tracked Leases**:
-  1. `liveRuns`: `runManager.liveRuns().length` (`starting`, `running`, `idle`, `stopping`).
+  1. `liveRuns`: `runManager.busyRunCount()` (review H3): live runs working without the user or stopping, plus exec runs not yet finalized. A run that only waits on its user (idle, a card open, held by an interrupt or a usage limit; `src/main/runtime/runActivity.ts`) does not count, so a background host's idle exit ends it like a quit (continuable).
   2. `pausedAutoResumes`: count of active `resumeTimers` in `RunManager` (`runManager.hasActiveResumeTimers()`). When an `autoResume` timer fires (`runManager.ts:2541`), `RunManager` acquires an `inFlightStarts` lease **before** deleting the timer entry and holds it across async `setup.prepare` until `continueRun` registers the successor in `activeRuns` (eliminating any lease-transfer gap). *(Note: a paused 5h/7d rate-limited run with `autoResume` enabled keeps the background host alive until its reset timer fires or `runs:cancelAutoResume` / `orgai daemon stop --force` is called.)*
   3. `inFlightRpcMutations`: count of executing `'operate'`, `'decide'`, or `'configure'` RPC calls.
   4. `activeWorktreeOps`: count of both queued waiters and active holders inside `withRepoLock`.
@@ -746,8 +746,14 @@ Resolved `R1`–`R10` (single-host daemon vs Desktop ownership, socket authentic
     the handler, reach `orgai daemon stop`.
   - A host started with `--headless-host` (the background daemon) goes back to the background when its last window
     closes, even when idle, and leaves only through its idle exit (`ORGAI_DAEMON_IDLE_MINUTES`) or host.stop. A
-    desktop-started host that went to the background while busy quits on a later idle close (as before); a desktop
-    host on macOS stays (Dock).
+    desktop host on macOS stays (Dock). A desktop host on Windows / Linux quits through quitGate unless runs are
+    working without the user; then it asks Keep working in the background / Stop and quit / Cancel (review H3,
+    `hostLifecycle.ts` `windowAllClosedAction`; the prompt is unit-tested only, never driven on Windows or Linux).
+  - Review M11: the Electron hosts acquire ownership with `listen: false`: `daemon.secret` and the listener exist only
+    while `terminalServer` is true (`HostOwnership.setListening`, driven from index.ts on boot and on every settings
+    change; daemon.json says `listening: false` meanwhile and the CLI answers "Terminal access is off" without
+    connecting). daemon.json turns 'ready' only after the first sync. The secret keeps its value for the host instance.
+    `--host inproc` still binds at once (it is started to be connected to).
   - Terminal access: a headless or inproc boot turns `terminalServer` on (the spec's "enabled when ... launches via
     orgai") only while the user has not chosen a value; any settings:set that changes it sets the main-owned
     `AppSettings.terminalServerChosen`, after which no boot overrides it and host.hello answers
@@ -977,7 +983,8 @@ Resolved `R1`–`R10` (single-host daemon vs Desktop ownership, socket authentic
   covers `<Resources>/app.asar.unpacked/out/cli` and `<Resources>/bin`); `src/main/host/shimInstaller.ts` installs,
   removes and refreshes the PATH shim (`~/.local/bin/orgai`, `%LOCALAPPDATA%\OrgAI\bin\orgai.cmd`), only from a
   packaged app without ORGAI_DATA_DIR, never over a file without the `orgai-shim v1` marker, a symlink or a non-regular
-  file, and turns Terminal access on after an install. App settings > General > Advanced settings > Terminal has the
+  file. An install never turns Terminal access on by itself (review H2): the row asks ("Turn on Terminal access?") and
+  names the same-user trust model. App settings > General > Advanced settings > Terminal has the
   `CliShimRow` (`lib/cliShim.ts`). The preload is CommonJS (`out/preload/index.cjs`) and every window runs with
   `sandbox: true` (7(1)). `orgai doctor` gained the install and shim checks; the launcher finds a packaged app.
   `npm run pack` builds the CLI bundle too; `npm run pack:verify` (`scripts/verify-pack.mjs`) checks a local unpacked

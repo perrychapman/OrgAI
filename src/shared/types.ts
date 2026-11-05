@@ -5770,6 +5770,11 @@ export interface DaemonInfo {
   processStartTime?: string
   /** Socket path (unix) or pipe name (win32). */
   endpoint: string
+  /**
+   * false while the host binds no listener and has no daemon.secret (Terminal access off, review M11): clients answer
+   * "Terminal access is off" without connecting. Absent = listening.
+   */
+  listening?: false
   state: HostState
   /** Epoch ms. */
   startedAt: number

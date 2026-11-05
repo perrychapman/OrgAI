@@ -446,6 +446,102 @@ describe.skipIf(!posix)('acquireHostOwnership', () => {
     expect(readdirSync(env.runDir)).toEqual([])
   })
 
+  // Review M11: Electron hosts bind and write the secret only while Terminal access is on.
+  it('listen: false writes no secret and binds nothing; setListening toggles both and daemon.json says so', async () => {
+    const env = tempEnv()
+    let got = 0
+    const own = await acquire(env, {
+      listen: false,
+      onConnection: (s) => {
+        got++
+        s.end()
+      }
+    })
+    const secretPath = join(env.runDir, 'daemon.secret')
+    expect(own.listening).toBe(false)
+    expect(existsSync(secretPath)).toBe(false)
+    expect(own.endpoint).toBe(socketPathFor(env.dataDir, own.info.hostInstanceId))
+    expect(existsSync(own.endpoint)).toBe(false)
+    expect(readDaemonInfo(env.dataDir)).toMatchObject({ endpoint: own.endpoint, listening: false, state: 'starting' })
+    // A second host still sees a running one (live pid) and is refused.
+    expect(await acquireHostOwnership(opts(env)).catch((e: unknown) => e)).toBeInstanceOf(HostAlreadyRunningError)
+
+    await own.setListening(true)
+    expect(own.listening).toBe(true)
+    expect(mode(secretPath)).toBe(0o600)
+    const secret = readFileSync(secretPath, 'utf8')
+    expect(secret).toMatch(/^[0-9a-f]{64}$/)
+    expect(mode(own.endpoint)).toBe(0o600)
+    expect(readDaemonInfo(env.dataDir)?.listening).toBeUndefined()
+    expect(await canConnect(own.endpoint)).toBe(true)
+    await new Promise((r) => setTimeout(r, 20))
+    expect(got).toBe(1)
+    // markReady keeps the listening state.
+    own.markReady()
+    expect(readDaemonInfo(env.dataDir)).toMatchObject({ state: 'ready' })
+    expect(readDaemonInfo(env.dataDir)?.listening).toBeUndefined()
+
+    await own.setListening(false)
+    expect(own.listening).toBe(false)
+    expect(existsSync(secretPath)).toBe(false)
+    expect(existsSync(own.endpoint)).toBe(false)
+    expect(await canConnect(own.endpoint)).toBe(false)
+    expect(readDaemonInfo(env.dataDir)).toMatchObject({ state: 'ready', listening: false })
+
+    // Back on: the same secret for this host instance (the socket server caches it).
+    await own.setListening(true)
+    expect(readFileSync(secretPath, 'utf8')).toBe(secret)
+    expect(await canConnect(own.endpoint)).toBe(true)
+    own.release()
+    expect(readdirSync(env.runDir)).toEqual([])
+    expect(own.listening).toBe(false)
+    // After release it does nothing.
+    await own.setListening(true)
+    expect(readdirSync(env.runDir)).toEqual([])
+  })
+
+  it('setListening calls run in order and end in the last requested state; a repeat is a no-op', async () => {
+    const env = tempEnv()
+    const own = await acquire(env, { listen: false })
+    await Promise.all([own.setListening(true), own.setListening(false), own.setListening(true), own.setListening(true)])
+    expect(own.listening).toBe(true)
+    expect(await canConnect(own.endpoint)).toBe(true)
+    await Promise.all([own.setListening(false), own.setListening(false)])
+    expect(own.listening).toBe(false)
+    expect(existsSync(join(env.runDir, 'daemon.secret'))).toBe(false)
+  })
+
+  it('a host whose listener is off and whose pid is dead is replaced', async () => {
+    const env = tempEnv()
+    const child = spawnSleeper()
+    const pid = child.pid!
+    child.kill('SIGKILL')
+    await exited(child)
+    const id = newHostInstanceId()
+    daemonJson(env, { hostInstanceId: id, pid, endpoint: socketPathFor(env.dataDir, id), listening: false })
+    const own = await acquire(env)
+    expect(readDaemonInfo(env.dataDir)?.hostInstanceId).toBe(own.info.hostInstanceId)
+  })
+
+  it('listen: false with a long socket path names the runtime dir but creates it only when listening', async () => {
+    const env = tempEnv('y'.repeat(90))
+    const id = newHostInstanceId()
+    const own = await acquire(env, { hostInstanceId: id, listen: false })
+    const rt = join(env.runtimeBase, `orgai-${id}`)
+    expect(own.runtimeDir).toBe(rt)
+    expect(own.endpoint).toBe(join(rt, 'd.sock'))
+    expect(existsSync(rt)).toBe(false)
+    await own.setListening(true)
+    expect(mode(rt)).toBe(0o700)
+    expect(await canConnect(own.endpoint)).toBe(true)
+    await own.setListening(false)
+    expect(existsSync(rt)).toBe(false)
+    await own.setListening(true)
+    expect(await canConnect(own.endpoint)).toBe(true)
+    own.release()
+    expect(existsSync(rt)).toBe(false)
+  })
+
   it('refuses a run dir that is a symlink', async () => {
     const env = tempEnv()
     const target = join(env.base, 'target')
@@ -487,6 +583,11 @@ describe('readDaemonInfo / parseDaemonInfo', () => {
   const good = { hostInstanceId: '0123456789ab', pid: 42, endpoint: '/x/d.sock', state: 'ready', startedAt: 1 }
   it('accepts a valid record and drops unknown fields', () => {
     expect(parseDaemonInfo({ ...good, extra: 1, hostKind: 'desktop', appVersion: '1' })).toEqual({ ...good, hostKind: 'desktop', appVersion: '1' })
+  })
+  it('keeps listening only as an explicit false (review M11)', () => {
+    expect(parseDaemonInfo({ ...good, listening: false })).toEqual({ ...good, listening: false })
+    expect(parseDaemonInfo({ ...good, listening: true })).toEqual(good)
+    expect(parseDaemonInfo({ ...good, listening: 'no' })).toEqual(good)
   })
   it.each([
     null,
