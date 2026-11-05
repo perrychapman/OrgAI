@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { CardKind, DecisionOptions, DecisionOutcome, HeadlessDecisionPolicy, RunEvent, RunOverrides } from '@shared/types'
 import { DEFAULT_HEADLESS_DECISION_POLICY, HEADLESS_POLICY_DENY_MESSAGE } from '@shared/types'
+import { HEADLESS_CONSERVATIVE_ANSWER } from './decisionPolicy'
 import { RunManager, type RunManagerOptions } from './runManager'
 import { RunStore } from '../store/runs'
 import type { SetupService } from '../setup/service'
@@ -223,7 +224,7 @@ describe('headless decision policy', () => {
     const run = await m.start({ project: proj(), prompt: 'go', overrides: exec({ question: 'conservative', maxAutoDenials: 1 }) })
     const answer = raise(ctxs[0], 'question')
     await vi.advanceTimersByTimeAsync(0)
-    expect(await answer).toEqual({ selected: ['(Recommended) B'] })
+    expect(await answer).toEqual({ selected: [], text: HEADLESS_CONSERVATIVE_ANSWER })
     await vi.advanceTimersByTimeAsync(100)
     expect(m.summary(run.id)?.execOutcome).toBeUndefined()
     await m.stop(run.id)

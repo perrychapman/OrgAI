@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { HeadlessDecisionPolicy, UserQuestion } from '@shared/types'
 import { DEFAULT_HEADLESS_DECISION_POLICY, HEADLESS_POLICY_DENY_MESSAGE } from '@shared/types'
-import { HEADLESS_POLICY_DECLINE_NOTE, countsAsDenial, fullPolicy, policyAction, recommendedOption } from './decisionPolicy'
+import { HEADLESS_CONSERVATIVE_ANSWER, HEADLESS_POLICY_DECLINE_NOTE, conservativeAnswer, countsAsDenial, fullPolicy, policyAction } from './decisionPolicy'
 
 const question = (options: UserQuestion['options']): UserQuestion => ({
   id: 'q1',
@@ -37,22 +37,17 @@ describe('policyAction', () => {
     expect(policyAction(kind, question([]), policy({ [kind]: 'wait' }))).toEqual({ kind: 'wait' })
   })
 
-  it('conservative answers the recommended option by label, description or isDefault', () => {
+  it('conservative never follows an agent-authored "(Recommended)" label or isDefault flag (review Low)', () => {
     const p = policy({ question: 'conservative' })
-    expect(policyAction('question', question([{ label: 'A' }, { label: '(Recommended) B' }]), p)).toEqual({ kind: 'resolve', decision: { selected: ['(Recommended) B'] } })
-    expect(policyAction('question', question([{ label: 'A', description: '(Recommended) safest' }, { label: 'B' }]), p)).toEqual({
-      kind: 'resolve',
-      decision: { selected: ['A'] }
-    })
+    const answer = { kind: 'resolve', decision: { selected: [], text: HEADLESS_CONSERVATIVE_ANSWER } }
+    expect(policyAction('question', question([{ label: 'A' }, { label: '(Recommended) Delete everything' }]), p)).toEqual(answer)
+    expect(policyAction('question', question([{ label: 'A', description: '(Recommended) safest' }, { label: 'B' }]), p)).toEqual(answer)
     const withDefault = question([{ label: 'A' }, { label: 'B', isDefault: true } as UserQuestion['options'][number]])
-    expect(policyAction('question', withDefault, p)).toEqual({ kind: 'resolve', decision: { selected: ['B'] } })
-  })
-
-  it('conservative without a recommended option fails', () => {
-    expect(policyAction('question', question([{ label: 'A' }, { label: 'B', description: 'maybe (Recommended)' }]), policy({ question: 'conservative' }))).toEqual({
-      kind: 'fail'
-    })
-    expect(policyAction('question', undefined, policy({ question: 'conservative' }))).toEqual({ kind: 'fail' })
+    expect(policyAction('question', withDefault, p)).toEqual(answer)
+    expect(policyAction('question', question([]), p)).toEqual(answer)
+    expect(policyAction('question', undefined, p)).toEqual(answer)
+    expect(conservativeAnswer()).toEqual({ selected: [], text: HEADLESS_CONSERVATIVE_ANSWER })
+    expect(HEADLESS_CONSERVATIVE_ANSWER).toMatch(/no option was chosen/)
   })
 })
 
@@ -60,11 +55,6 @@ describe('helpers', () => {
   it('fullPolicy fills defaults and keeps given values', () => {
     expect(fullPolicy(undefined)).toEqual(DEFAULT_HEADLESS_DECISION_POLICY)
     expect(fullPolicy({ maxAutoDenials: 2, question: 'wait' } as Partial<HeadlessDecisionPolicy>)).toMatchObject({ maxAutoDenials: 2, question: 'wait', permission: 'deny' })
-  })
-
-  it('recommendedOption returns the first match only', () => {
-    expect(recommendedOption(question([{ label: '(Recommended) x' }, { label: '(Recommended) y' }]))).toBe('(Recommended) x')
-    expect(recommendedOption(question([]))).toBeUndefined()
   })
 
   it('questions never count as denials', () => {

@@ -6,7 +6,7 @@ import { mcpServersForRole, newId, projectKindOf } from '@shared/defaults'
 import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo, type CompletionInput, type ExecActivityReason, type PeerMessage, type RootTurnEnd, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type SessionSettlement } from './types'
 import { datum, harnessToolsFor, isBlockingHarnessTool, type ConfigChange, type ConfigChangeResult, type HarnessTool, type HarnessToolAudience, type HarnessToolHooks, type McpAttachResult } from './harnessTools'
 import { agentInstalledServers, mcpCallDenial, withoutServerRules } from './mcpGrants'
-import { SELF_CONTROL_REFUSAL_TEXT, checkSelfControlDenial, selfControlLogLine } from './selfControlGate'
+import { SELF_CONTROL_PATHS_UNAVAILABLE_LOG, SELF_CONTROL_REFUSAL_TEXT, checkSelfControlDenial, readControlProtectedPaths, selfControlLogLine } from './selfControlGate'
 import {
   REFERENCE_EDIT_TOOLS,
   commandReferenceTouch,
@@ -1568,21 +1568,22 @@ export class MockSession implements RuntimeSession {
   /**
    * Same as the Claude adapter's selfControlDenial: SELF_CONTROL_DENIAL_MESSAGE for a call that runs the orgai command
    * or opens OrgAI's control files (logged as a warning), else null. The cwd is input.cwd, else the project folder. An
-   * empty or unreadable protected list skips the path check (logged once per run).
+   * empty or unreadable protected list denies shell commands (SELF_CONTROL_UNCHECKED_MESSAGE, review M2) and leaves
+   * file tools to the normal flow (logged once per run).
    */
   private selfControlDenial(agentId: string, toolName: string, input: Record<string, unknown>): string | null {
-    let paths: string[] | undefined
-    try {
-      paths = this.ctx.controlProtectedPaths?.()
-    } catch {
-      paths = undefined
-    }
-    if (this.ctx.controlProtectedPaths && (!Array.isArray(paths) || !paths.length) && !this.selfControlSkipLogged) {
+    const { paths, unavailable } = readControlProtectedPaths(this.ctx.controlProtectedPaths?.bind(this.ctx))
+    if (unavailable && !this.selfControlSkipLogged) {
       this.selfControlSkipLogged = true
-      this.log('warn', 'OrgAI control paths are unavailable for this run; the self-control gate checks only for the orgai command')
+      this.log('warn', SELF_CONTROL_PATHS_UNAVAILABLE_LOG)
     }
     const cwd = typeof input.cwd === 'string' && input.cwd ? input.cwd : this.ctx.project.path
-    const denial = checkSelfControlDenial(toolName, input, { protectedPaths: Array.isArray(paths) ? paths : [], cwd, shell: toolName === 'PowerShell' ? 'powershell' : 'bash' })
+    const denial = checkSelfControlDenial(toolName, input, {
+      protectedPaths: paths,
+      pathsUnavailable: unavailable,
+      cwd,
+      shell: toolName === 'PowerShell' ? 'powershell' : 'bash'
+    })
     if (!denial) return null
     this.log('warn', selfControlLogLine(toolName, this.agents.get(agentId)?.name ?? agentId))
     return denial

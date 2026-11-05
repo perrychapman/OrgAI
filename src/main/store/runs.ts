@@ -78,7 +78,8 @@ export function cleanRunOverrides(v: unknown): RunOverrides | undefined {
   const mac = v.maxAutoContinues
   if (typeof mac === 'number' && Number.isInteger(mac) && mac >= 0 && mac <= MAX_AUTO_CONTINUES_LIMIT) out.maxAutoContinues = mac
   if (isNonNegative(v.maxBudgetUsd)) out.maxBudgetUsd = v.maxBudgetUsd
-  if (isNonNegative(v.execStallTimeoutMs)) out.execStallTimeoutMs = v.execStallTimeoutMs
+  // A stall timeout must be > 0 (as runOverridesArgs requires): 0 would re-arm the watchdog every tick (review Low).
+  if (isNonNegative(v.execStallTimeoutMs) && v.execStallTimeoutMs > 0) out.execStallTimeoutMs = v.execStallTimeoutMs
   if (typeof v.execChainId === 'string' && v.execChainId.length > 0 && v.execChainId.length <= EXEC_CHAIN_ID_MAX) out.execChainId = v.execChainId
   const policy = cleanDecisionPolicy(v.decisionPolicy)
   if (policy) out.decisionPolicy = policy

@@ -11,10 +11,9 @@ import type {
   PermissionDecision,
   PermissionRuleDecision,
   ProposalDecision,
-  QuestionAnswer,
-  UserQuestion
+  QuestionAnswer
 } from '@shared/types'
-import { DEFAULT_HEADLESS_DECISION_POLICY, HEADLESS_POLICY_DENY_MESSAGE, RECOMMENDED_OPTION_PREFIX } from '@shared/types'
+import { DEFAULT_HEADLESS_DECISION_POLICY, HEADLESS_POLICY_DENY_MESSAGE } from '@shared/types'
 
 /** The decision a policy applies, per card kind. */
 export interface PolicyDecisions {
@@ -47,19 +46,18 @@ export function fullPolicy(policy: Partial<HeadlessDecisionPolicy> | undefined):
 }
 
 /**
- * The conservative pick of a question: the first option whose label or description starts with
- * RECOMMENDED_OPTION_PREFIX, or that carries a truthy `isDefault` (not part of UserQuestion today; honoured if an
- * adapter sends it). undefined when there is none.
+ * The conservative answer to a question (review Low): no option is selected. Every option, its label, description and
+ * any "(Recommended)" mark or `isDefault` flag, is written by the agent that asks, so following one would let the agent
+ * steer its own answer. The agent is told instead that nobody can answer and to take the most cautious path.
  */
-export function recommendedOption(question: Pick<UserQuestion, 'options'>): string | undefined {
-  for (const o of question.options ?? []) {
-    if (!o || typeof o.label !== 'string') continue
-    const isDefault = (o as { isDefault?: unknown }).isDefault
-    if (isDefault) return o.label
-    if (o.label.trimStart().startsWith(RECOMMENDED_OPTION_PREFIX)) return o.label
-    if (typeof o.description === 'string' && o.description.trimStart().startsWith(RECOMMENDED_OPTION_PREFIX)) return o.label
-  }
-  return undefined
+export const HEADLESS_CONSERVATIVE_ANSWER =
+  'Nobody can answer questions in this run (orgai exec, --on-question conservative), and no option was chosen for you. ' +
+  'Do not treat any option as approved. Take the most cautious path that needs no decision and changes nothing that cannot be undone, ' +
+  'or stop and say what decision you need.'
+
+/** The conservative policy's answer: never an option, only HEADLESS_CONSERVATIVE_ANSWER as text. */
+export function conservativeAnswer(): QuestionAnswer {
+  return { selected: [], text: HEADLESS_CONSERVATIVE_ANSWER }
 }
 
 /** What the policy does with one card. `card` is the card's request object (only questions are read). */
@@ -80,11 +78,9 @@ export function policyAction<K extends CardKind>(kind: K, card: unknown, policy:
       return choice === 'deny' ? resolve({ approved: false, scope: 'run', note: HEADLESS_POLICY_DENY_MESSAGE } as PolicyDecisions[K]) : { kind: 'fail' }
     case 'merge':
       return choice === 'hold' ? resolve({ behavior: 'hold' } as PolicyDecisions[K]) : { kind: 'fail' }
-    case 'question': {
-      if (choice !== 'conservative') return { kind: 'fail' }
-      const label = card && typeof card === 'object' ? recommendedOption(card as UserQuestion) : undefined
-      return label !== undefined ? resolve({ selected: [label] } as PolicyDecisions[K]) : { kind: 'fail' }
-    }
+    case 'question':
+      // The card's options are never read: they are agent-authored (see HEADLESS_CONSERVATIVE_ANSWER).
+      return choice === 'conservative' ? resolve(conservativeAnswer() as PolicyDecisions[K]) : { kind: 'fail' }
     default:
       return { kind: 'fail' }
   }

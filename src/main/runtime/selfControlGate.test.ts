@@ -2,7 +2,17 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { SELF_CONTROL_DENIAL_MESSAGE, SELF_CONTROL_UNCHECKED_MESSAGE, checkSelfControlDenial, commandRunsOrgaiCli, controlProtectedPaths, orgaiCliRootsOf, type SelfControlContext } from './selfControlGate'
+import {
+  SELF_CONTROL_DENIAL_MESSAGE,
+  SELF_CONTROL_UNCHECKED_MESSAGE,
+  checkSelfControlDenial,
+  commandRunsOrgaiCli,
+  controlProtectedPaths,
+  orgaiCliRootsOf,
+  readControlProtectedPaths,
+  stripDataHeredocs,
+  type SelfControlContext
+} from './selfControlGate'
 
 const dirs: string[] = []
 afterEach(() => {
@@ -307,12 +317,12 @@ describe('checkSelfControlDenial', () => {
     const secret = `cat "${join(s.data, 'run', 'daemon.secret')}"`
     expect(deny('Bash', { command: secret }, ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
     for (const command of [
-      // Past the word limit (2,000).
-      `true ${Array.from({ length: 2100 }, (_, k) => `w${k}`).join(' ')}; ${secret}`,
+      // Past the gate's word limit (20,000; review M3 raised it from 2,000).
+      `true ${Array.from({ length: 20_100 }, (_, k) => `w${k}`).join(' ')}; ${secret}`,
       // Past the segment budget (2,000) before the CLI call.
       `${Array(2100).fill(':').join('; ')}; orgai runs stop R1`,
-      // Over 32 KB.
-      `echo ${'a'.repeat(33 * 1024)}; ${secret}`,
+      // Over 256 KB (was 32 KB).
+      `echo ${'a'.repeat(257 * 1024)}; ${secret}`,
       // Shells nested deeper than three levels.
       `bash -c "bash -c 'bash -c \"bash -c orgai\"'"`
     ]) {
@@ -324,10 +334,238 @@ describe('checkSelfControlDenial', () => {
     expect(commandRunsOrgaiCli(`${Array(2100).fill(':').join('; ')}; echo hi`)).toBe(true)
   })
 
-  it('never throws', () => {
+  it('never throws; an internal error fails closed for shell tools only (review M2)', () => {
     expect(checkSelfControlDenial('Read', { file_path: '/x' }, null as unknown as SelfControlContext)).toBeNull()
     expect(checkSelfControlDenial('Bash', { command: 'orgai' }, { protectedPaths: null as unknown as string[] })).toBe(SELF_CONTROL_DENIAL_MESSAGE)
     expect(checkSelfControlDenial('Read', null, { protectedPaths: ['/x'] })).toBeNull()
+    // A context that throws while it is read: the shell command is refused unchecked, never let through.
+    const throwing = {
+      get protectedPaths(): string[] {
+        throw new Error('boom')
+      }
+    } as unknown as SelfControlContext
+    expect(checkSelfControlDenial('Bash', { command: 'ls' }, throwing)).toBe(SELF_CONTROL_UNCHECKED_MESSAGE)
+    expect(checkSelfControlDenial('PowerShell', { command: 'Get-ChildItem' }, throwing)).toBe(SELF_CONTROL_UNCHECKED_MESSAGE)
+    expect(checkSelfControlDenial('Read', { file_path: '/x' }, throwing)).toBeNull()
+    expect(checkSelfControlDenial('Bash', { command: 'ls' }, null as unknown as SelfControlContext)).toBe(SELF_CONTROL_UNCHECKED_MESSAGE)
+  })
+
+  it('refuses shell commands when the protected paths are unavailable, file tools go on (review M2)', () => {
+    const ctx: SelfControlContext = { protectedPaths: [], pathsUnavailable: true, cwd: '/work' }
+    expect(deny('Bash', { command: 'ls' }, ctx)).toBe(SELF_CONTROL_UNCHECKED_MESSAGE)
+    expect(deny('PowerShell', { command: 'Get-ChildItem' }, ctx)).toBe(SELF_CONTROL_UNCHECKED_MESSAGE)
+    // The CLI check still names the real reason first.
+    expect(deny('Bash', { command: 'orgai status' }, ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+    expect(deny('Read', { file_path: '/work/x' }, ctx)).toBeNull()
+    expect(deny('Bash', { command: '' }, ctx)).toBeNull()
+    // Without the flag an empty list keeps the CLI-only check (contexts with no source: tests, drafts).
+    expect(deny('Bash', { command: 'ls' }, { protectedPaths: [] })).toBeNull()
+  })
+
+  it('readControlProtectedPaths: no source is not unavailable; a throwing, empty or junk source is', () => {
+    expect(readControlProtectedPaths(undefined)).toEqual({ paths: [], unavailable: false })
+    expect(readControlProtectedPaths(() => ['/d/run', '', 42 as unknown as string])).toEqual({ paths: ['/d/run'], unavailable: false })
+    expect(readControlProtectedPaths(() => [])).toEqual({ paths: [], unavailable: true })
+    expect(readControlProtectedPaths(() => null as unknown as string[])).toEqual({ paths: [], unavailable: true })
+    expect(
+      readControlProtectedPaths(() => {
+        throw new Error('x')
+      })
+    ).toEqual({ paths: [], unavailable: true })
+  })
+})
+
+describe('false positives in ordinary work (review M3)', () => {
+  function setupData(): { data: string; refs: string[]; home: string; proj: string } {
+    const home = realpathSync(mkdtempSync(join(tmpdir(), 'orgai-scg-fp-')))
+    dirs.push(home)
+    // No spaces: an unquoted path with one would be two words to bash too.
+    const data = join(home, 'Library', 'OrgAI')
+    for (const d of ['run', 'codex', 'skills']) mkdirSync(join(data, d), { recursive: true })
+    const proj = join(home, 'proj')
+    mkdirSync(proj)
+    return { data, refs: controlProtectedPaths(data), home, proj }
+  }
+  const deny = (tool: string, input: unknown, ctx: SelfControlContext): string | null => checkSelfControlDenial(tool, input, ctx)
+
+  it('a large data-only heredoc is neither denied for its size nor read as commands', () => {
+    const s = setupData()
+    const ctx: SelfControlContext = { protectedPaths: s.refs, cwd: s.proj, home: s.home }
+    const big = Array.from({ length: 4000 }, (_, k) => `export const v${k} = ${k} // orgai status ~/Library/OrgAI/run/daemon.secret`).join('\n')
+    expect(big.length).toBeGreaterThan(256 * 1024)
+    for (const command of [
+      `cat > src/big.ts <<'EOF'\n${big}\nEOF`,
+      `cat <<"EOF" > src/big.ts\n${big}\nEOF\nnpm test`,
+      `cat > notes.md <<-EOF\n\t${big.split('\n').slice(0, 50).join('\n\t')}\n\tEOF`,
+      `tee src/big.ts > /dev/null <<'EOF'\n${big}\nEOF`,
+      `git commit -q -F - <<'EOF'\nA message naming orgai runs stop R1\nEOF`,
+      `git commit -m "$(cat <<'EOF'\nRefactor the orgai CLI\n\nCo-Authored-By: x\nEOF\n)"`,
+      `gh pr create --title "x" --body "$(cat <<'EOF'\n## Summary\n- orgai status works\n${big.slice(0, 40_000)}\nEOF\n)"`
+    ]) {
+      expect(deny('Bash', { command }, ctx), command.slice(0, 60)).toBeNull()
+    }
+  })
+
+  it('a heredoc that feeds code, names files to run, or that the parser is not sure of is still read', () => {
+    const s = setupData()
+    const ctx: SelfControlContext = { protectedPaths: s.refs, cwd: s.proj, home: s.home }
+    const secret = join(s.data, 'run', 'daemon.secret')
+    for (const command of [
+      // Fed to a shell or interpreter, piped on, or run afterwards.
+      `bash <<'EOF'\norgai runs stop R1\nEOF`,
+      `sh -s <<'EOF'\norgai status\nEOF`,
+      `cat <<'EOF' | sh\norgai status\nEOF`,
+      `cat <<'EOF' > /tmp/x.sh\norgai status\nEOF\nsh /tmp/x.sh`,
+      `cat <<'EOF' > /tmp/x.sh && bash /tmp/x.sh\norgai status\nEOF`,
+      `cat <<'EOF'; orgai status\nx\nEOF`,
+      `cat > run.sh <<'EOF'\ncat ${secret}\nEOF\nchmod +x run.sh && ./run.sh`,
+      `cat <<'EOF' > a\nx\nEOF\norgai status`,
+      `cat <<'A' <<'B'\nx\nA\ny\nB\norgai status`,
+      `cat <<'EOF' | xargs cat\n${secret}\nEOF`,
+      `xargs cat <<'EOF'\n${secret}\nEOF`,
+      // An unquoted delimiter expands $( ) in the body.
+      `cat <<EOF > out.txt\n$(cat ${secret})\nEOF`,
+      // Not a data sink.
+      `python3 - <<'EOF'\nimport os; os.system('cat ${secret}')\nEOF`,
+      `git apply <<'EOF'\n--- ${secret}\nEOF`,
+      // A substitution that is not a git / gh message value.
+      `cat "$(cat <<'EOF'\n${secret}\nEOF\n)"`,
+      // Arithmetic shift, a continued body, a comment hiding the operator.
+      `echo $((1<<2))\ncat ${secret}\n2`,
+      `cat <<EOF\nEO\\\nF\ncat ${secret}\nEOF`,
+      `# cat <<EOF\ncat ${secret}\nEOF`,
+      `echo "<<EOF"\ncat ${secret}\nEOF`,
+      `echo \\<<EOF\ncat ${secret}\nEOF`,
+      // Unterminated: bash reads to the end as the body, the scanners read it all.
+      `cat <<'EOF'\ncat ${secret}`
+    ]) {
+      expect(deny('Bash', { command }, ctx), command.slice(0, 60)).not.toBeNull()
+    }
+    // The operator line itself is always read.
+    expect(deny('Bash', { command: `cat > ${secret} <<'EOF'\nx\nEOF` }, ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+    expect(stripDataHeredocs(`cat <<'EOF' > a\nbody\nEOF\necho done`)).toBe(`cat <<'EOF' > a\necho done`)
+    expect(stripDataHeredocs('no heredoc here')).toBe('no heredoc here')
+    // PowerShell has no here-documents of this form: nothing is stripped there.
+    expect(deny('PowerShell', { command: `cat <<'EOF'\nGet-Content ${secret}\nEOF` }, ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+  })
+
+  it('a long git add of many files is checked, not refused for its length', () => {
+    const s = setupData()
+    const ctx: SelfControlContext = { protectedPaths: s.refs, cwd: s.proj, home: s.home }
+    const files = Array.from({ length: 3000 }, (_, k) => `src/components/feature-${k}/component-file-${k}.tsx`)
+    const command = `git add ${files.join(' ')}`
+    expect(command.length).toBeGreaterThan(32 * 1024)
+    const t0 = Date.now()
+    expect(deny('Bash', { command }, ctx)).toBeNull()
+    expect(Date.now() - t0).toBeLessThan(5000)
+    expect(deny('Bash', { command: `${command} ${join(s.data, 'secrets.json')}` }, ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+  })
+
+  it('text piped into an interpreter running a script file is data, not the CLI', () => {
+    const ctx: SelfControlContext = { protectedPaths: [], cwd: '/work/repo', platform: 'darwin', cliRoots: [] }
+    for (const command of [
+      'grep -rn orgai src | node x.mjs',
+      'grep -rn orgai src | node scripts/count.mjs --json',
+      'echo orgai | node --no-warnings x.mjs',
+      'git log --grep orgai | bun run scripts/x.ts',
+      'grep -rn orgai src | tsx scripts/x.ts',
+      'echo orgai status | bash scripts/check.sh',
+      'echo orgai | deno run x.ts'
+    ]) {
+      expect(deny('Bash', { command }, ctx), command).toBeNull()
+    }
+    for (const command of [
+      'echo orgai status | node',
+      'echo orgai status | node -',
+      'echo orgai status | node -e "eval(require(\'fs\').readFileSync(0, \'utf8\'))"',
+      'echo orgai status | node --input-type module',
+      'echo orgai status | node -r ./x.js',
+      'echo orgai status | sh',
+      'echo orgai status | bash -s',
+      'echo orgai status | bash -c "$(cat)"',
+      'echo orgai status | bash -',
+      'echo orgai status | deno eval'
+    ]) {
+      expect(deny('Bash', { command }, ctx), command).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+    }
+  })
+
+  it('test runners over the install\'s own src/cli are not the CLI when the install is the repo being edited', () => {
+    const app = '/Users/me/OrgAI'
+    const ctx: SelfControlContext = { protectedPaths: [], cwd: app, platform: 'darwin', cliRoots: orgaiCliRootsOf(app, 'darwin') }
+    for (const command of [
+      'node --test src/cli/commands/exec.test.ts',
+      'node --test src/cli/',
+      'node --test --test-reporter spec src/cli',
+      "node --test 'src/cli/**/*.test.ts'",
+      'tsx --test src/cli/output.test.ts',
+      'npx tsx --test src/cli/output.test.ts',
+      'bun test src/cli/',
+      'bun test src/cli/output.test.ts',
+      'deno test src/cli',
+      'node node_modules/.bin/vitest run src/cli',
+      'node node_modules/vitest/vitest.mjs run src/cli/output.test.ts',
+      'bun run vitest src/cli',
+      'vitest run src/cli',
+      'npx vitest run src/cli/commands',
+      'npx vitest src/cli/tui/selectors.test.ts'
+    ]) {
+      expect(deny('Bash', { command }, ctx), command).toBeNull()
+    }
+    // Running the CLI itself is still the CLI, test flag or not.
+    for (const command of [
+      'node --test src/cli/index.ts',
+      'node --test out/cli/orgai.mjs',
+      'node --test out/cli/',
+      'bun test out/cli/orgai.mjs',
+      'tsx src/cli/index.ts',
+      'bun run src/cli/index.ts',
+      'node src/cli/output.test.ts'
+    ]) {
+      expect(deny('Bash', { command }, ctx), command).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+    }
+  })
+
+  it('Grep / Glob rooted at home are allowed with a source-file filter, never into a protected folder', () => {
+    const s = setupData()
+    const ctx: SelfControlContext = { protectedPaths: s.refs, cwd: s.proj, home: s.home }
+    for (const input of [
+      { pattern: 'TODO', path: s.home, glob: '*.ts' },
+      { pattern: 'TODO', path: '~', glob: '**/*.{ts,tsx}' },
+      { pattern: 'TODO', path: s.home, type: 'ts' },
+      { pattern: 'TODO', path: s.home, type: 'markdown' },
+      { pattern: 'TODO', path: s.data, glob: '*.md' }
+    ]) {
+      expect(deny('Grep', input, ctx), JSON.stringify(input)).toBeNull()
+    }
+    for (const input of [
+      { pattern: '**/*.ts', path: s.home },
+      { pattern: '**/*.md' },
+      { pattern: '~/**/*.py' }
+    ]) {
+      expect(deny('Glob', input, { ...ctx, cwd: s.home }), JSON.stringify(input)).toBeNull()
+    }
+    for (const input of [
+      { pattern: 'x', path: s.home },
+      { pattern: 'x', path: s.home, glob: '*.json' },
+      { pattern: 'x', path: s.home, glob: '*' },
+      { pattern: 'x', path: s.home, glob: '!*.ts' },
+      { pattern: 'x', path: s.home, glob: '*.{ts,json}' },
+      { pattern: 'x', path: s.home, glob: '*.ts*' },
+      { pattern: 'x', path: s.home, type: 'json' },
+      { pattern: 'x', path: join(s.data, 'run'), glob: '*.ts' },
+      { pattern: 'x', path: join(s.data, 'secrets.json'), type: 'ts' }
+    ]) {
+      expect(deny('Grep', input, ctx), JSON.stringify(input)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+    }
+    for (const input of [
+      { pattern: '**/*.json', path: s.home },
+      { pattern: '**/daemon.secret', path: s.home },
+      { pattern: `${join(s.data, 'run')}/*.ts` },
+      { pattern: '*.ts', path: join(s.data, 'codex') }
+    ]) {
+      expect(deny('Glob', input, ctx), JSON.stringify(input)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+    }
   })
 })
 

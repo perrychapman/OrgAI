@@ -23,6 +23,7 @@ import {
   type KitPreviewItem,
   type KitSelection,
   type McpLibraryEntry,
+  type McpLibraryInfo,
   type OrgTemplateInfo,
   type ProjectKind,
   type SkillLibraryInfo,
@@ -62,6 +63,12 @@ export interface KitDeps {
   }
   mcp: {
     libraryEntries(): McpLibraryEntry[]
+    /**
+     * Library entries with their secret and sign-in state (McpService.libraryList): which secret slots hold a value and
+     * the OAuth state. targetDigest covers it, so a value saved or a sign-in made after the preview makes a 'replace'
+     * (which clears them) stale. Missing = only the entry's own connectedAt is covered.
+     */
+    libraryList?(): McpLibraryInfo[]
     kitImportEntry(fields: KitServerFields, replaceId?: string): McpLibraryEntry
     connectorPresetsList(): UserConnectorDef[]
     connectorPresetsKitSave(input: unknown): UserConnectorDef
@@ -283,9 +290,21 @@ function canonicalJson(v: unknown): string {
   return JSON.stringify(v ?? null)
 }
 
+/** A library server's secret and sign-in state, by presence only (never a value or token): what a replace clears. */
+interface ServerSecretState {
+  envSet: string[]
+  headersSet: string[]
+  /** A token is stored ('authorized' or 'expired'); a transient 'error' or the expiry clock never count. */
+  signedIn: boolean
+  account: string | null
+  connectedAt: number | null
+}
+
 interface Existing {
   skills: Map<string, { id: string; digest: string }>
   servers: Map<string, McpLibraryEntry>
+  /** By entry id. */
+  serverSecrets: Map<string, ServerSecretState>
   presets: Map<string, UserConnectorDef>
   templates: Map<string, { id: string; rolesDigest: string; updatedAt: number }>
 }
@@ -447,9 +466,23 @@ export class KitService {
   // ---------- import ----------
 
   private existing(): Existing {
+    const entries = this.deps.mcp.libraryEntries()
+    const infos = new Map((this.deps.mcp.libraryList?.() ?? []).map((i) => [i.entry.id, i]))
+    const serverSecrets = new Map<string, ServerSecretState>()
+    for (const e of entries) {
+      const info = infos.get(e.id)
+      serverSecrets.set(e.id, {
+        envSet: [...(info?.envSet ?? [])].sort(),
+        headersSet: [...(info?.headersSet ?? [])].sort(),
+        signedIn: info?.auth.state === 'authorized' || info?.auth.state === 'expired',
+        account: info?.auth.account ?? null,
+        connectedAt: typeof e.connectedAt === 'number' ? e.connectedAt : null
+      })
+    }
     return {
       skills: new Map(this.deps.skills.libraryList().map((i) => [i.entry.name, { id: i.entry.id, digest: i.entry.digest }])),
-      servers: new Map(this.deps.mcp.libraryEntries().map((e) => [e.name, e])),
+      servers: new Map(entries.map((e) => [e.name, e])),
+      serverSecrets,
       presets: new Map(this.deps.mcp.connectorPresetsList().map((p) => [p.id, p])),
       templates: new Map(
         this.deps.templates.list().flatMap((t) => {
@@ -463,8 +496,10 @@ export class KitService {
   /**
    * sha256 over a canonical JSON of the destination state the kit's items would touch (cli-spec 3.6 item 2): per
    * non-refused item, the entry it would meet (skill by name: id + digest; server by name: id + serverSignature +
-   * connector / build markers; preset by id: its JSON; template by name: id + updatedAt + roles digest), or `null`
-   * when there is none, so a same-name entry added after the preview also makes the digest stale.
+   * connector / build markers + which secret slots hold a value, the OAuth state and account and connectedAt (review
+   * Low: a replace clears them, so a value saved or a sign-in made after the preview makes the apply stale instead of
+   * wiping it); preset by id: its JSON; template by name: id + updatedAt + roles digest), or `null` when there is none,
+   * so a same-name entry added after the preview also makes the digest stale. Secret values never enter it.
    */
   private targetDigestOf(items: ParsedItem[], ex: Existing): string {
     const state = items
@@ -479,7 +514,15 @@ export class KitService {
           return {
             kind: 'server',
             name: it.server.name,
-            hit: hit ? { id: hit.id, signature: serverSignature(serverFieldsOf(hit)), connectorId: hit.connectorId ?? null, built: !!hit.buildDigest } : null
+            hit: hit
+              ? {
+                  id: hit.id,
+                  signature: serverSignature(serverFieldsOf(hit)),
+                  connectorId: hit.connectorId ?? null,
+                  built: !!hit.buildDigest,
+                  secrets: ex.serverSecrets.get(hit.id) ?? null
+                }
+              : null
           }
         }
         if (it.preset) {

@@ -12,7 +12,8 @@ describe('canNarrowPermissionMode', () => {
     default: ['default', 'plan', 'dontAsk'],
     acceptEdits: ['acceptEdits', 'plan', 'dontAsk', 'default'],
     auto: ['auto', 'plan', 'dontAsk', 'default', 'acceptEdits'],
-    dontAsk: ['dontAsk', 'plan', 'default'],
+    // 'default' asks where 'dontAsk' denies, so an operate client could answer its own cards (review M1).
+    dontAsk: ['dontAsk', 'plan'],
     plan: ['plan'],
     bypassPermissions: ['bypassPermissions', 'plan', 'dontAsk', 'default', 'acceptEdits', 'auto']
   }
@@ -33,6 +34,12 @@ describe('overridesWidening', () => {
   })
   it('flags a wider permission mode', () => {
     expect(overridesWidening(project(), { permissionMode: 'bypassPermissions' })).toEqual(['permissionMode'])
+  })
+  it('flags default on a dontAsk project and keeps dontAsk without configure (review M1)', () => {
+    const p = project({ permissionMode: 'dontAsk' })
+    expect(overridesWidening(p, { permissionMode: 'default' })).toEqual(['permissionMode'])
+    expect(effectiveRunProject(p, { permissionMode: 'default' }).permissionMode).toBe('dontAsk')
+    expect(effectiveRunProject(p, { permissionMode: 'default' }, { allowWidening: true }).permissionMode).toBe('default')
   })
   it('flags autoContinue true only when the project turned it off', () => {
     expect(overridesWidening(project({ autoContinue: false }), { autoContinue: true })).toEqual(['autoContinue'])

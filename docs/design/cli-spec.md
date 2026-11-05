@@ -483,12 +483,12 @@ export interface RunOverrides {
   - `overrideMode === projectMode`, OR
   - `overrideMode === 'plan'` (read/plan-only; allowed from any `projectMode`), OR
   - `overrideMode === 'dontAsk'` and `projectMode` is `'default' | 'acceptEdits' | 'auto' | 'bypassPermissions'`, OR
-  - `overrideMode === 'default'` and `projectMode` is `'acceptEdits' | 'auto' | 'dontAsk' | 'bypassPermissions'`, OR
+  - `overrideMode === 'default'` and `projectMode` is `'acceptEdits' | 'auto' | 'bypassPermissions'` (never from `'dontAsk'`: "never ask" denies what `'default'` would ask about, and an `operate` client could answer those cards itself; review M1), OR
   - `overrideMode === 'acceptEdits'` and `projectMode` is `'auto' | 'bypassPermissions'`, OR
   - `overrideMode === 'auto'` and `projectMode === 'bypassPermissions'`.
   - Any widening override (`permissionMode` outside the matrix above, `autoContinue: true` when project is `false`, `maxAutoContinues > project.maxAutoContinues`, `maxBudgetUsd > project.maxBudgetUsd`, or `allowUnpricedBudget: true` when the project enforces a budget) requires `'configure'` scope (granted only when Terminal access is `'full'`, or by a `--host inproc` host, which belongs to the CLI process).
 - **Conservative Question Policy (`question: 'conservative'`)**:
-  - Default `HeadlessDecisionPolicy.question` is `'fail'`. When `'conservative'` is explicitly requested (`--on-question conservative`), if a `UserQuestion` has an option whose label/description starts with `(Recommended)` or has `isDefault: true`, `RunManager` selects `{ selected: [opt.label] }`; otherwise it immediately ends the run with `outcome: 'needs-decision'`.
+  - Default `HeadlessDecisionPolicy.question` is `'fail'`. When `'conservative'` is explicitly requested (`--on-question conservative`), `RunManager` answers every question with no option selected and the fixed text `HEADLESS_CONSERVATIVE_ANSWER` (decisionPolicy.ts `conservativeAnswer`: nobody can answer, no option was chosen, take the most cautious path that needs no decision or stop and say what is needed), also on cards that do not allow free text. The options (label, description, a `(Recommended)` mark, `isDefault`) are agent-authored, so they are never followed (PR #18 review Low; earlier drafts picked the `(Recommended)` option).
 - **Preservation Across Initial `ctx` Construction, `setLive`, `continueRun`, and `autoResume`**:
   - `RunManager` computes `effectiveRunProject(project, summary.overrides)` **before** constructing `ctx` (so `ctx.autoContinue` and `ctx.maxAutoContinues` at `runManager.ts:1425-1426` and adapter continuation hosts receive the effective values from turn 1) and re-applies `effectiveRunProject` on every `setLive` update (`runManager.ts:1208`, `:1374`), re-clamping narrowing overrides if project policy tightened mid-run and refreshing `ctx.autoContinue` / `ctx.maxAutoContinues`.
   - `RunManager.continueRun()` preserves narrowing overrides (`permissionMode`, `maxBudgetUsd`, `autoContinue`, `maxAutoContinues`). It preserves `execMode`, `execChainId`, `waitForReset`, and `decisionPolicy` **only** on automatic rate-limit resume (`resumeNow`) or `orgai resume --exec`; continuing an ended CLI run later from the Desktop UI or TUI strips `execMode` and `decisionPolicy`.
@@ -510,7 +510,7 @@ Because `claude.ts:3155-3165` and `codex.ts:765-766` emit `run.status: 'idle'` b
    - **Rate-Limit Intercept in `scheduleResume` (`runManager.ts:2538`)**:
      - When `execMode && !overrides.waitForReset`, `scheduleResume` immediately calls `finalizeExecRun(runId, 'rate-limited')` instead of arming a timer (so a reset timestamp already in the past with `0 ms` delay cannot resume the run before finalization).
      - When `execMode && overrides.waitForReset === true`, the paused run is **not** finalized; the attached `orgai exec` client stays subscribed across `resumeNow` via `followChains: true` until the chain's final member emits `run.finalized`.
-   - **Stall Watchdog**: If an `execMode` run remains non-quiescent while `rootIdle === true` with no `activityGen` change for `execStallTimeoutMs` (default 5 min), `finalizeExecRun(runId, 'stalled', { endedBy: 'policy' })` terminates it with exit code `1`.
+   - **Stall Watchdog**: If an `execMode` run remains non-quiescent while `rootIdle === true` with no `activityGen` change for `execStallTimeoutMs` (default 5 min), `finalizeExecRun(runId, 'stalled', { endedBy: 'policy' })` terminates it with exit code `1`. While the adapter reports `rootIdle === false` the watchdog re-arms, but at most `EXEC_STALL_BUSY_ROUNDS` (6) periods in a row with no activity at all (30 min at the default; PR #18 review M4), then it ends the run `stalled` too. A non-positive stored `execStallTimeoutMs` is dropped on read (`cleanRunOverrides`) and never re-arms at 0 ms. The Claude adapter marks a root turn in flight at once only for a user's message; a harness notice counts once the query's init for it arrives.
 3. **Total Outcome Evaluation (`ExecOutcome` on `RunSummary.execOutcome`)**:
 
 | Condition | `ExecOutcome` | Final `RunStatus` | `endedBy` | Desktop `statusText` | CLI Exit Code |
@@ -776,11 +776,28 @@ Resolved `R1`–`R10` (single-host daemon vs Desktop ownership, socket authentic
     protected path (path, else the cwd) is denied whatever its `glob`; a Glob whose pattern reaches one is denied.
     Codex permissions approvals whose requested folders are at, under or above a protected path are declined with no
     card.
-  - Self-control gate scan limits (review High): a shell command the scanners cannot read to the end (over 32 KB, over
-    2,000 words or parts, over 2,000 segments in the CLI check, `bash -c` / `eval` or a quoted word nested deeper than
-    three levels) is denied outright with `SELF_CONTROL_UNCHECKED_MESSAGE` ("too long or too deeply nested ... split
-    it"), so bypassPermissions or the 'auto' classifier never runs it unread. Untrackable cds and UNC words still give
-    null (the normal flow decides). The Claude adapter returns the gate's own message.
+  - Self-control gate scan limits (review High): a shell command the scanners cannot read to the end (over 256 KB,
+    over 20,000 words or 40,000 parts, over 2,000 segments in the CLI check, `bash -c` / `eval` or a quoted word nested
+    deeper than three levels; PR #18 review M3 raised the first three from 32 KB / 2,000 / 2,000) is denied outright
+    with `SELF_CONTROL_UNCHECKED_MESSAGE` ("could not check ... split it"), so bypassPermissions or the 'auto'
+    classifier never runs it unread. Untrackable cds and UNC words still give null (the normal flow decides). The
+    Claude adapter returns the gate's own message.
+  - PR #18 review M2: an internal error in the gate denies a shell command with `SELF_CONTROL_UNCHECKED_MESSAGE` (file
+    tools get null), and so does every shell command of a run whose `controlProtectedPaths` source threw or returned
+    none (`readControlProtectedPaths`, all three adapters; logged once). RunManager passes the source only when it has
+    `controlProtectedPaths` or a data dir.
+  - PR #18 review M3 (false positives): Bash here-documents whose body is only data (`stripDataHeredocs`: a data-sink
+    program such as cat / tee, `git commit -F -`, or `cat` inside a `git` / `gh` message substitution; a quoted
+    delimiter or a body with no `$(` / backtick; no pipe on the operator's line; nothing in the rest of the command
+    runs code, eval, xargs or parallel) are left out of the scan; anything the parser is unsure of (arithmetic `((`,
+    backticks, `$'...'`, `case`, a continued or unterminated body) is scanned whole as before. A pipe into an
+    interpreter or POSIX shell that runs a script file is data (`grep -rn orgai src | node x.mjs`); inline code, `-`,
+    `-s`, `-c` still count. A test runner (`node|tsx --test`, `bun|deno test`, vitest / jest as the interpreter's
+    script) given test files (`*.test.*`, `*.spec.*`), folders or test globs under this install's own `src/cli` root is
+    not the CLI; `out/cli`, `<Resources>/bin`, orgai-named files and non-test files still are. A Grep (or Glob) rooted
+    ABOVE a protected path is allowed when its `glob` / `type` (the Glob pattern) only matches source or document
+    extensions (ts, js, py, md...; never json, toml, jsonl, log, txt, sh); one rooted at or under a protected path is
+    denied whatever its filter.
   - Launcher (review M): the default spawn listens for the child's 'error' (a bad ORGAI_ELECTRON_PATH no longer crashes
     the CLI) and 'exit'; `waitForReady` rejects with the reason on a spawn error or a non-zero exit (code 6: another
     host owns the folder) and keeps polling after exit 0 (a single-instance hand-off). `waitForReady({ hostKinds })`

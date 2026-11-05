@@ -144,6 +144,19 @@ describe('CodexAdapter self-control gate (fake app-server)', () => {
     expect(rows(ctx.events)).toHaveLength(1)
   })
 
+  it('declines every command with no card when the protected paths are unavailable (review M2)', async () => {
+    for (const source of [() => [], () => {
+      throw new Error('boom')
+    }]) {
+      const { ctx, s, repo } = await started('bypassPermissions', { controlProtectedPaths: source, allowedRules: () => ['Bash(*)'] })
+      expect(await s.ask('item/commandExecution/requestApproval', cmd('ls', repo))).toEqual({ decision: 'decline' })
+      expect(ctx.requestPermission).not.toHaveBeenCalled()
+      expect(rows(ctx.events)).toHaveLength(1)
+      expect(ctx.events.filter((e) => e.type === 'log' && e.message.includes('control paths are unavailable'))).toHaveLength(1)
+      await session?.stop()
+    }
+  })
+
   it('keeps OrgAI control variables out of the MCP server config', async () => {
     const { s } = await started('default', {
       resolvedMcpServers: async () => [

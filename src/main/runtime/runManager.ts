@@ -201,6 +201,11 @@ export function resolveAllowedDirectories(raw: readonly unknown[] | undefined, o
 const FLUSH_INTERVAL_MS = 1500
 /** Exec settlement re-check while the root is idle but the adapter is not settled yet (a continuation timer...). */
 export const EXEC_SETTLE_POLL_MS = 1000
+/**
+ * The stall watchdog's hard ceiling (review M4): an exec run whose adapter keeps reporting a busy root with no activity
+ * at all ends 'stalled' after this many execStallTimeoutMs periods (30 min at the 5 min default).
+ */
+export const EXEC_STALL_BUSY_ROUNDS = 6
 
 /**
  * A delay setTimeout honours: setTimeout runs anything above MAX_TIMER_DELAY_MS (about 24.8 days) after 1 ms, so a
@@ -1598,7 +1603,10 @@ export class RunManager {
         // A quick run works in a folder the user never made a project: only this run's own grants count, never the
         // folder's saved rules file (it is untrusted), and nothing is ever written there (decideRules).
         protectedDirectories: () => protectedDirsOf(this.options.dataDir),
-        controlProtectedPaths: () => this.options.controlProtectedPaths?.() ?? (this.options.dataDir ? controlProtectedPaths(this.options.dataDir) : []),
+        // Only with a source: an empty answer from one makes the adapters' gate refuse shell commands (review M2).
+        ...(this.options.controlProtectedPaths || this.options.dataDir
+          ? { controlProtectedPaths: () => this.options.controlProtectedPaths?.() ?? (this.options.dataDir ? controlProtectedPaths(this.options.dataDir) : []) }
+          : {}),
         allowedRules: () => [...new Set([...(restricted ? [] : listRules({ file: this.rulesFileFor(live) })), ...active.runRules])],
         // Where the project keeps its saved rules: the folder file for code projects, OrgAI's data folder for engagements.
         ...(restricted
@@ -1914,14 +1922,21 @@ export class RunManager {
     if (settlement?.rootIdle) this.armSettle(a, EXEC_SETTLE_POLL_MS)
   }
 
-  /** The stall watchdog: reset on every activity; fires after execStallTimeoutMs without any. */
-  private armStall(a: ActiveRun): void {
+  /**
+   * The stall watchdog: reset on every activity; fires after execStallTimeoutMs without any. While the adapter says
+   * the root is busy it re-arms, but only EXEC_STALL_BUSY_ROUNDS times in a row with no activity at all (review M4):
+   * a lost harness notice or a hung turn that never reports back must not keep an exec run alive forever. Any activity
+   * (bumpActivity, a root turn end) starts the count again; a card under a policy timer never counts.
+   */
+  private armStall(a: ActiveRun, busyRounds = 0): void {
     if (a.stallTimer) clearTimeout(a.stallTimer)
     a.stallTimer = undefined
     const o = a.summary.overrides
     if (!o?.execMode || a.finalizing) return
     const gen = a.activityGen
-    const ms = timerDelay(o.execStallTimeoutMs ?? DEFAULT_EXEC_STALL_TIMEOUT_MS)
+    // A non-positive timeout (a record from before cleanRunOverrides refused one) would re-arm every tick: use the default.
+    const set = o.execStallTimeoutMs
+    const ms = timerDelay(typeof set === 'number' && set > 0 ? set : DEFAULT_EXEC_STALL_TIMEOUT_MS)
     a.stallTimer = setTimeout(() => {
       a.stallTimer = undefined
       if (a.finalizing || this.runs.get(a.summary.id) !== a) return
@@ -1931,7 +1946,12 @@ export class RunManager {
       if (a.policyTimers.size > 0) return this.armStall(a)
       const settlement = a.session?.settlement?.()
       // Without a settlement view the adapter cannot say it is busy: only this watchdog ends such a run.
-      if (settlement && !settlement.rootIdle) return this.armStall(a)
+      if (settlement && !settlement.rootIdle) {
+        if (busyRounds + 1 < EXEC_STALL_BUSY_ROUNDS) return this.armStall(a, busyRounds + 1)
+        log.warn(`Run ${a.summary.id}: busy with no activity for ${ms * EXEC_STALL_BUSY_ROUNDS} ms; ending it as stalled.`)
+        void this.finalizeExecRun(a.summary.id, 'stalled', { endedBy: 'policy' })
+        return
+      }
       log.warn(`Run ${a.summary.id}: no activity for ${ms} ms while not settled; ending it as stalled.`)
       void this.finalizeExecRun(a.summary.id, 'stalled', { endedBy: 'policy' })
     }, ms)
@@ -3050,7 +3070,9 @@ export class RunManager {
     const labels = new Set(pending.question.options.map((o) => o.label))
     let selected = (Array.isArray(answer?.selected) ? answer.selected : []).filter((l) => typeof l === 'string' && labels.has(l))
     if (!pending.question.allowMultiple) selected = selected.slice(0, 1)
-    const text = pending.question.allowFreeText && typeof answer?.text === 'string' && answer.text.trim() ? answer.text.trim() : undefined
+    // The headless policy's conservative answer is text only (decisionPolicy.ts conservativeAnswer), whatever the card allows.
+    const textAllowed = pending.question.allowFreeText || opts.decidedBy?.surface === 'policy'
+    const text = textAllowed && typeof answer?.text === 'string' && answer.text.trim() ? answer.text.trim() : undefined
     const clean: QuestionAnswer = text ? { selected, text } : { selected }
     this.cardResolved(active, 'question', questionId, 'applied', 'answer', opts.decidedBy)
     pending.resolve(clean)

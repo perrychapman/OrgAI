@@ -92,7 +92,7 @@ const EXPECTED_EXPORTS: Readonly<Record<string, readonly string[]>> = {
     'RUN_NAME_EXCERPT_CHARS', 'promptLine', 'runIndexMap', 'runName', 'runTag', 'runTitle', 'shortPrompt'
   ],
   runStatus: [
-    'ENDED_WITH_APP', 'autoContinueState', 'cutWhile', 'endedByOf', 'isStoppedRun', 'runStatus', 'settleEndedAgents',
+    'ENDED_WITH_APP', 'HOST_END_NOTE', 'autoContinueState', 'cutWhile', 'endedByOf', 'isStoppedRun', 'runStatus', 'settleEndedAgents',
     'statusOfRun', 'statusText'
   ],
   settingsCopy: [

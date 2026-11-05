@@ -13,9 +13,15 @@
  * counts for a file path or a shell word), a shell glob whose components can match a protected path
  * (`cat <dataDir>/r?n/daemon.secret`), a leading `$HOME` / `${HOME}` / `$env:USERPROFILE` / `%USERPROFILE%` read as the
  * home folder, and a Grep / Glob search that can descend into a protected path (a Grep rooted at the data dir or any
- * ancestor of a protected path, a Glob whose pattern reaches one). A shell command the scanners cannot read to the end
- * (over 32 KB, over 2,000 words, parts or segments, quoting or `bash -c` nested deeper than three levels) is denied
- * with SELF_CONTROL_UNCHECKED_MESSAGE, since bypassPermissions would otherwise run it unread. The scanner's other
+ * ancestor of a protected path, a Glob whose pattern reaches one), unless its file filter (Grep `glob` / `type`, the
+ * Glob pattern) only matches source or document extensions no protected file has (review M3: a search of the home
+ * folder for `*.ts`). A shell command the scanners cannot read to the end (over 256 KB, over 20,000 words, 40,000
+ * parts or 2,000 segments, quoting or `bash -c` nested deeper than three levels), an internal error, or a run whose
+ * protected paths are unavailable (review M2) is denied with SELF_CONTROL_UNCHECKED_MESSAGE, since bypassPermissions
+ * would otherwise run it unread. Bash here-documents whose body is only data (stripDataHeredocs: `cat <<'EOF' >
+ * file`, a `git commit -m "$(cat <<'EOF' ...)"` message) are left out of the scan first. Text piped into an
+ * interpreter or POSIX shell that runs a script file is data, not code (review M3), and a test runner (`node --test`,
+ * `bun test`, vitest) given test files or folders of this install's own `src/cli` is not the CLI. The scanner's other
  * fail-closed answers (untrackable cds, UNC words) give null so the normal permission flow decides. Running the CLI by
  * interpreter is matched on an `orgai` / `orgai.mjs` / `orgai.js` argument, or on an argument inside this install's
  * own CLI folders (setOrgaiCliRoots: `<app>/out/cli`, `<app>/src/cli`, and in a packaged app
@@ -52,11 +58,16 @@ import { segmentWords } from './ruleMatch'
 export const SELF_CONTROL_DENIAL_MESSAGE = "OrgAI: Agent tools may not invoke the OrgAI CLI or access OrgAI's internal control and secret files."
 
 /**
- * The denial for a shell command the gate could not read to the end (a scan limit): under bypassPermissions or the
- * 'auto' classifier the normal flow would allow it, so the gate never lets an unread command through.
+ * The denial for a shell command the gate could not check (a scan limit, an internal error, or a run whose protected
+ * paths are unavailable; review M2): under bypassPermissions or the 'auto' classifier the normal flow would allow it,
+ * so the gate never lets an unchecked command through.
  */
 export const SELF_CONTROL_UNCHECKED_MESSAGE =
-  "OrgAI: This command is too long or too deeply nested for OrgAI to check that it leaves the OrgAI CLI and OrgAI's control files alone. Split it into shorter commands."
+  "OrgAI: OrgAI could not check that this command leaves the OrgAI CLI and OrgAI's control files alone, so it was not run. If it is very long or deeply nested, split it into shorter commands."
+
+/** The warning every adapter logs once per run when the run's protected paths are unavailable (review M2). */
+export const SELF_CONTROL_PATHS_UNAVAILABLE_LOG =
+  'OrgAI control paths are unavailable for this run; the self-control gate refuses shell commands until they are back'
 
 /** The harness transcript row every adapter writes on the agent when the gate refuses a call. */
 export const SELF_CONTROL_REFUSAL_TEXT = "Refused: agents may not run the orgai command or open OrgAI's control files"
@@ -93,6 +104,29 @@ export interface SelfControlContext {
   home?: string
   /** This install's CLI folders (an interpreter run of a file inside one is the CLI). Default: setOrgaiCliRoots. */
   cliRoots?: readonly string[]
+  /**
+   * The run has a protected-path source (RuntimeContext.controlProtectedPaths) but it threw or returned none (review
+   * M2): a shell command cannot be checked against the control files, so it is denied with
+   * SELF_CONTROL_UNCHECKED_MESSAGE (the orgai command check still runs first). File tools are left to the normal flow.
+   */
+  pathsUnavailable?: boolean
+}
+
+/**
+ * The protected paths of a run, for the adapters' gate call (review M2): `paths` from RuntimeContext.controlProtectedPaths
+ * (an empty list when it threw or returned junk) and `unavailable` when the context has that source but it gave none,
+ * so shell commands fail closed. A context without the source (tests, drafts) is not unavailable.
+ */
+export function readControlProtectedPaths(source: (() => string[]) | undefined): { paths: string[]; unavailable: boolean } {
+  if (!source) return { paths: [], unavailable: false }
+  let paths: unknown
+  try {
+    paths = source()
+  } catch {
+    paths = undefined
+  }
+  const list = Array.isArray(paths) ? paths.filter((p): p is string => typeof p === 'string' && p !== '') : []
+  return { paths: list, unavailable: list.length === 0 }
 }
 
 let configuredCliRoots: string[] = []
@@ -120,6 +154,39 @@ interface CliCheck {
   cwd?: string
   roots: readonly string[]
   platform: NodeJS.Platform
+  /** The interpreter is a test runner: test files and folders under a `src/cli` root are not the CLI (isTestRun). */
+  testRun?: boolean
+}
+
+/** Test runner programs an interpreter may run as its script (`node node_modules/.bin/vitest run src/cli`). */
+const TEST_RUNNERS: ReadonlySet<string> = new Set(['vitest', 'jest', 'mocha', 'ava', 'tap', 'uvu'])
+/** A test file name: `x.test.ts`, `x.spec.mjs`, `x_test.js`. */
+const TEST_FILE = /(?:[._-](?:test|spec))\.[cm]?[jt]sx?$/i
+
+/** The interpreter runs tests: `node|tsx --test ...`, `bun|deno test ...`, or a test runner as its script. */
+function isTestRun(bare: string, rest: readonly string[]): boolean {
+  const positional = rest.filter((w) => !w.startsWith('-'))
+  const runnerName = (w: string | undefined): boolean => w !== undefined && TEST_RUNNERS.has(binName(w).replace(/\.[cm]?js$/, ''))
+  if (bare === 'bun' || bare === 'deno') {
+    if (positional[0] === 'test') return true
+    if ((positional[0] === 'run' || positional[0] === 'x') && runnerName(positional[1])) return true
+    return runnerName(positional[0])
+  }
+  if (rest.some((w) => /^--test(?:$|=|-)/.test(w))) return true
+  return runnerName(positional[0])
+}
+
+/** A root holding CLI sources (`<repo>/src/cli`), never a bundle or the packaged launcher folder. */
+function isSourceCliRoot(root: string, platform: NodeJS.Platform): boolean {
+  const parts = root.split(/[\\/]+/).filter(Boolean)
+  const fold = (s: string | undefined): string | undefined => (platform === 'linux' ? s : s?.toLowerCase())
+  return fold(parts.at(-1)) === 'cli' && fold(parts.at(-2)) === 'src'
+}
+
+/** In a test run: a test file, a folder (no extension) or a test-file glob, which the runner reads but never runs as the CLI. */
+function testRunTarget(value: string): boolean {
+  const base = value.split(/[\\/]/).filter(Boolean).pop() ?? ''
+  return base === '' || !base.includes('.') || TEST_FILE.test(base)
 }
 
 const FILE_TOOLS: ReadonlySet<string> = new Set(['Read', 'Glob', 'Grep', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
@@ -383,7 +450,12 @@ function wordsRunCli(words: readonly string[], depth: number, budget: CliBudget,
   }
   // `. <file>` / `source <file>` runs a script in the current shell.
   if ((prog === '.' || name === 'source') && rest[0] !== undefined && scriptWordIsCli(rest[0], check)) return true
-  if (INTERPRETERS.has(bare) && (rest.some((w) => interpreterArgIsCli(w, check)) || redirectFeedsCli(rest, check))) return true
+  if (INTERPRETERS.has(bare)) {
+    // A test runner (`node --test`, `bun test`, `deno test`, vitest / jest run by the interpreter) reads test files and
+    // folders of this install's own src/cli when the install is the repo being edited (review M3): those are not the CLI.
+    const testCheck: CliCheck = isTestRun(bare, rest) ? { ...check, testRun: true } : check
+    if (rest.some((w) => interpreterArgIsCli(w, testCheck)) || redirectFeedsCli(rest, check)) return true
+  }
   // `sh <file>`, `bash -e <file>`: a POSIX shell runs its first non-option argument as a script.
   if (SCRIPT_SHELLS.has(bare) && shellScriptIsCli(rest, check)) return true
   if (NESTING_SHELLS.has(bare) || bare === 'eval') {
@@ -560,6 +632,7 @@ function globMayReachCliRoot(word: string, check: CliCheck): boolean {
   const parts = (w: string): string[] => w.split(/[\\/]+/).filter((x) => x !== '' && x !== '.')
   const got = parts(abs)
   for (const root of check.roots) {
+    if (check.testRun && isSourceCliRoot(root, check.platform) && testRunTarget(word)) continue
     const want = parts(p.resolve(root))
     if (got.length < want.length || got.slice(0, want.length).includes('..')) continue
     if (want.every((c, k) => (GLOB_CHARS.test(got[k]) ? globRegex(got[k]).test(c) : got[k].toLowerCase() === c.toLowerCase()))) return true
@@ -665,6 +738,7 @@ function insideCliRoot(value: string, check: CliCheck): boolean {
   const abs = p.isAbsolute(value) ? p.resolve(value) : check.cwd && p.isAbsolute(check.cwd) ? p.resolve(check.cwd, value) : null
   if (!abs) return false
   for (const root of check.roots) {
+    if (check.testRun && isSourceCliRoot(root, check.platform) && testRunTarget(value)) continue
     const rel = p.relative(fold(p.resolve(root)), fold(abs))
     if (rel === '' || (rel !== '..' && !rel.startsWith(`..${p.sep}`) && !p.isAbsolute(rel))) return true
   }
@@ -724,11 +798,83 @@ function textRunsCli(text: string, depth: number, budget: CliBudget, check: CliC
   return false
 }
 
-/** The segment's program is a shell, an interpreter or `.` / `source` (it may run what a pipe feeds it). */
+/**
+ * The segment's program may run what a pipe feeds it as code: a shell, an interpreter or `.` / `source` reading its
+ * script from stdin. A POSIX shell given a script file (and no -c / -s) or an interpreter given a script file reads
+ * stdin as data (review M3: `grep -rn orgai src | node x.mjs` is not the CLI). Inline code (`node -e`), `-`, `-s`
+ * and every other shell still count (fail closed).
+ */
 function segmentReadsCode(segment: string): boolean {
   const words = segmentWords(segment)
-  const prog = words[programIndex(words)]
-  return prog !== undefined && readsCode(prog, stripExe(binName(prog)))
+  const at = programIndex(words)
+  const prog = words[at]
+  if (prog === undefined) return false
+  const bare = stripExe(binName(prog))
+  if (!readsCode(prog, bare)) return false
+  const rest = words.slice(at + 1)
+  if (INTERPRETERS.has(bare)) return !interpreterHasScript(bare, rest)
+  if (SCRIPT_SHELLS.has(bare)) return !shellHasScriptFile(rest)
+  return true
+}
+
+/** Interpreter options that take the next word as their value (when written without `=`). */
+const INTERPRETER_VALUE_OPTIONS: ReadonlySet<string> = new Set([
+  '-r', '--require', '--import', '--loader', '--experimental-loader', '-C', '--conditions', '--input-type', '--title',
+  '--env-file', '--watch-path', '--test-reporter', '--test-reporter-destination', '--test-name-pattern',
+  '--test-skip-pattern', '--redirect-warnings', '--diagnostic-dir', '--disable-warning', '--cwd', '--config', '-c',
+  '--tsconfig', '--project', '-P', '--preload', '--allow-read', '--allow-write', '--allow-net', '--allow-env',
+  '--allow-run', '--import-map', '--lock', '--cert', '--location', '--seed', '--v8-flags'
+])
+/** Interpreter options whose value is code to run (the program then has no script file; stdin may be read). */
+const INTERPRETER_EVAL_OPTIONS = /^(?:-e|-p|-pe|-ep|--eval|--print)(?:=|$)/
+
+/** True when the interpreter runs a script file (or a subcommand such as `bun test`), so stdin is data to it. */
+function interpreterHasScript(bare: string, rest: readonly string[]): boolean {
+  for (let k = 0; k < rest.length; k++) {
+    const w = rest[k]
+    if (w === '-') return false
+    if (w === '--') return rest[k + 1] !== undefined && rest[k + 1] !== '-'
+    if (INTERPRETER_EVAL_OPTIONS.test(w)) return false
+    // Redirects are not arguments (`node x.mjs < in.txt`, `node <script`: the latter feeds code, handled by redirectFeedsCli).
+    if (/^\d*[<>]/.test(w)) {
+      if (/^\d*[<>]+&?$/.test(w)) k++
+      continue
+    }
+    if (w.startsWith('-')) {
+      if (!w.includes('=') && INTERPRETER_VALUE_OPTIONS.has(w)) k++
+      continue
+    }
+    // deno / bun subcommands that read code from stdin.
+    if ((bare === 'deno' || bare === 'bun') && (w === 'eval' || w === 'repl')) return false
+    return true
+  }
+  return false
+}
+
+/** True when a POSIX shell's words name a script file to run (no -c, no -s, not `-`), so stdin is data to it. */
+function shellHasScriptFile(rest: readonly string[]): boolean {
+  let valueNext = false
+  for (let k = 0; k < rest.length; k++) {
+    const w = rest[k]
+    if (/^\d*[<>]/.test(w)) {
+      if (/^\d*(?:<<<?|[<>]+&?)$/.test(w)) k++
+      continue
+    }
+    if (w === '-') return false
+    if (w === '--') return rest[k + 1] !== undefined && rest[k + 1] !== '-'
+    if (NESTING_FLAGS.test(w)) return false
+    if (/^[-+][A-Za-z]*s[A-Za-z]*$/.test(w)) return false
+    if (/^[-+]/.test(w)) {
+      valueNext = SHELL_OPTION_WITH_VALUE.test(w)
+      continue
+    }
+    if (valueNext) {
+      valueNext = false
+      continue
+    }
+    return true
+  }
+  return false
 }
 
 type CliScanOptions = { cwd?: string; cliRoots?: readonly string[]; platform?: NodeJS.Platform }
@@ -747,6 +893,243 @@ function cliScan(command: string, opts: CliScanOptions): 'runs' | 'limit' | null
  */
 export function commandRunsOrgaiCli(command: string, opts: CliScanOptions = {}): boolean {
   return cliScan(command, opts) !== null
+}
+
+/** Programs that read a here-document's body only as data: never as code, file names or arguments to run. */
+const HEREDOC_DATA_SINKS: ReadonlySet<string> = new Set([
+  'cat', 'tee', 'git', 'gh', 'wc', 'head', 'tail', 'sort', 'uniq', 'tr', 'cut', 'grep', 'egrep', 'fgrep', 'rg', 'diff',
+  'jq', 'column', 'fold', 'fmt', 'nl', 'rev', 'paste', 'expand', 'unexpand', 'base64', 'iconv'
+])
+/** Words that may open a command before its program (`{ cat <<EOF ... }`, `then cat <<EOF`). */
+const HEREDOC_LEADERS: ReadonlySet<string> = new Set(['{', '!', 'then', 'do', 'else'])
+/** A `$(cat <<'EOF' ...)` substitution that is the value of a git / gh message option. */
+const MESSAGE_OPTION_TAIL = /(?:^|\s)(?:-m|--message|--body|-b|--title|-t|--notes)(?:\s+|=)"?$/
+const GIT_MESSAGE_SUBCOMMANDS: ReadonlySet<string> = new Set(['commit', 'tag', 'merge', 'notes', 'stash'])
+const GH_MESSAGE_SUBCOMMANDS: ReadonlySet<string> = new Set(['pr', 'issue', 'release'])
+const HEREDOC_DELIMITER = /^[A-Za-z0-9_.-]{1,64}$/
+/** Programs that turn their stdin into arguments or commands: a data-only here-document is never stripped next to one. */
+const STDIN_TO_COMMANDS: ReadonlySet<string> = new Set(['xargs', 'parallel', 'eval'])
+
+interface HeredocFrame {
+  /** Where the current simple command starts. */
+  cmdStart: number
+  quote: '"' | "'" | null
+  /** Index of the `$(` that opened this frame (-1 at the top). */
+  subStart: number
+  /** Open `(` inside this frame (subshells, process substitutions). */
+  depth: number
+}
+
+/** The first word of a command text (assignments and leaders skipped), or null when it is not a plain name. */
+function commandName(cmd: string): { name: string; words: string[] } | null {
+  const words = cmd.trim().split(/\s+/).filter(Boolean)
+  let k = 0
+  while (k < words.length && (ASSIGNMENT.test(words[k]) || HEREDOC_LEADERS.has(words[k]))) k++
+  const name = words[k]
+  if (!name || /['"\\$`/]/.test(name)) return null
+  return { name, words: words.slice(k) }
+}
+
+/** May the here-document whose operator starts at `op` (inside `frames`) be read as data only? (body checks aside) */
+function heredocEligible(text: string, frames: readonly HeredocFrame[], op: number): boolean {
+  const f = frames[frames.length - 1]
+  const cmd = commandName(text.slice(f.cmdStart, op))
+  if (!cmd) return false
+  if (frames.length === 1) {
+    // git / gh only as a message (`git commit -F -`, `gh pr create --body-file -`): never `git apply`, whose patch names files.
+    if (cmd.name === 'git') return cmd.words.some((w) => GIT_MESSAGE_SUBCOMMANDS.has(w))
+    if (cmd.name === 'gh') return cmd.words.some((w) => GH_MESSAGE_SUBCOMMANDS.has(w))
+    return HEREDOC_DATA_SINKS.has(cmd.name)
+  }
+  // `git commit -m "$(cat <<'EOF' ... EOF)"`: only plain cat, one level deep, as a git / gh message value.
+  if (frames.length !== 2 || cmd.name !== 'cat' || cmd.words.length !== 1) return false
+  const outerText = text.slice(frames[0].cmdStart, f.subStart)
+  if (!MESSAGE_OPTION_TAIL.test(outerText)) return false
+  const outer = commandName(outerText)
+  if (!outer) return false
+  if (outer.name === 'git') return outer.words.some((w) => GIT_MESSAGE_SUBCOMMANDS.has(w))
+  if (outer.name === 'gh') return outer.words.some((w) => GH_MESSAGE_SUBCOMMANDS.has(w))
+  return false
+}
+
+/** True when `segment` (the operator's line) pipes anywhere outside quotes. */
+function pipesOnLine(segment: string): boolean {
+  let quote: string | null = null
+  for (let i = 0; i < segment.length; i++) {
+    const ch = segment[i]
+    if (quote) {
+      if (ch === quote) quote = null
+      continue
+    }
+    if (ch === '\\') i++
+    else if (ch === '"' || ch === "'") quote = ch
+    else if (ch === '|') return true
+  }
+  return false
+}
+
+/**
+ * A Bash command with the bodies of its data-only here-documents left out (review M3), so a large `cat <<'EOF' >
+ * file` or a `git commit -m "$(cat <<'EOF' ...)"` message is neither denied for its size nor read as commands. A body
+ * is left out only when all of these hold: its program is a data sink (HEREDOC_DATA_SINKS; inside a substitution only
+ * `cat` as a git / gh message value), its delimiter is quoted or its body has no `$(` / backtick, its operator's line
+ * pipes nowhere, and no piece of the rest of the command is a shell, an interpreter, `.` / `source`, eval, xargs or
+ * parallel, nor a program run by its path (any of which could run the written text). Anything this parser is not sure bash reads the same way (arithmetic
+ * `((`, backticks, `$'...'`, `case`, an unterminated or continued body, an odd delimiter) returns the text unchanged,
+ * so the scanners read every line as before.
+ */
+export function stripDataHeredocs(text: string): string {
+  if (typeof text !== 'string' || !text.includes('<<')) return text
+  if (/\(\(|\$'|\bcase\b/.test(text)) return text
+  const frames: HeredocFrame[] = [{ cmdStart: 0, quote: null, subStart: -1, depth: 0 }]
+  let pending: { delim: string; dash: boolean; quoted: boolean; op: number; eligible: boolean }[] = []
+  const cut: { start: number; end: number }[] = []
+  for (let i = 0; i < text.length; i++) {
+    const f = frames[frames.length - 1]
+    const ch = text[i]
+    if (f.quote === "'") {
+      if (ch === "'") f.quote = null
+      else if (ch === '\n' && pending.length) return text
+      continue
+    }
+    if (ch === '\\') {
+      i++
+      continue
+    }
+    if (ch === '`') return text
+    if (ch === '$' && text[i + 1] === '{') {
+      const close = text.indexOf('}', i + 2)
+      if (close < 0) return text
+      const inner = text.slice(i + 2, close)
+      if (/<<|\$\(|`|\{/.test(inner)) return text
+      i = close
+      continue
+    }
+    if (ch === '$' && text[i + 1] === '(') {
+      frames.push({ cmdStart: i + 2, quote: null, subStart: i, depth: 0 })
+      i++
+      continue
+    }
+    if (f.quote === '"') {
+      if (ch === '"') f.quote = null
+      else if (ch === '\n' && pending.length) return text
+      continue
+    }
+    if (ch === '"' || ch === "'") {
+      f.quote = ch
+      continue
+    }
+    if (ch === '#' && (i === 0 || /[\s;&|()<>]/.test(text[i - 1]))) {
+      const nl = text.indexOf('\n', i)
+      if (nl < 0) break
+      i = nl - 1
+      continue
+    }
+    if (ch === '(') {
+      f.depth++
+      f.cmdStart = i + 1
+      continue
+    }
+    if (ch === ')') {
+      if (f.depth > 0) {
+        f.depth--
+        f.cmdStart = i + 1
+      } else if (frames.length > 1) {
+        frames.pop()
+      } else return text
+      continue
+    }
+    if (ch === ';' || ch === '&' || ch === '|') {
+      f.cmdStart = i + 1
+      continue
+    }
+    if (ch === '<' && text[i + 1] === '<') {
+      if (text[i + 2] === '<') {
+        i += 2
+        continue
+      }
+      let j = i + 2
+      const dash = text[j] === '-'
+      if (dash) j++
+      while (text[j] === ' ' || text[j] === '\t') j++
+      let delim = ''
+      let quoted = false
+      for (; j < text.length; j++) {
+        const c = text[j]
+        if (/[\s;&|<>()]/.test(c)) break
+        if (c === "'" || c === '"') {
+          const e = text.indexOf(c, j + 1)
+          if (e < 0) return text
+          const inner = text.slice(j + 1, e)
+          if (c === '"' && /[$`\\]/.test(inner)) return text
+          delim += inner
+          quoted = true
+          j = e
+          continue
+        }
+        if (c === '\\') {
+          if (j + 1 >= text.length) return text
+          delim += text[j + 1]
+          quoted = true
+          j++
+          continue
+        }
+        if (c === '$' || c === '`') return text
+        delim += c
+      }
+      if (!HEREDOC_DELIMITER.test(delim)) return text
+      pending.push({ delim, dash, quoted, op: i, eligible: heredocEligible(text, frames, i) })
+      i = j - 1
+      continue
+    }
+    if (ch === '\n') {
+      f.cmdStart = i + 1
+      if (!pending.length) continue
+      let pos = i + 1
+      for (const h of pending) {
+        const bodyStart = pos
+        let end = -1
+        while (pos < text.length) {
+          const nl = text.indexOf('\n', pos)
+          const lineEnd = nl < 0 ? text.length : nl
+          const line = text.slice(pos, lineEnd)
+          if ((h.dash ? line.replace(/^\t+/, '') : line) === h.delim) {
+            end = nl < 0 ? text.length : nl + 1
+            break
+          }
+          // An unquoted body continues a line ending in `\`: bash may end it elsewhere.
+          if (!h.quoted && line.endsWith('\\')) return text
+          if (nl < 0) break
+          pos = nl + 1
+        }
+        if (end < 0) return text
+        const body = text.slice(bodyStart, pos)
+        if (h.eligible && !pipesOnLine(text.slice(h.op, i)) && (h.quoted || !/\$\(|`/.test(body))) cut.push({ start: bodyStart, end })
+        pos = end
+      }
+      pending = []
+      i = pos - 1
+      f.cmdStart = pos
+      continue
+    }
+  }
+  if (!cut.length) return text
+  let out = ''
+  let from = 0
+  for (const c of cut) {
+    out += text.slice(from, c.start)
+    from = c.end
+  }
+  out += text.slice(from)
+  // The written text must not reach anything that runs it.
+  for (const seg of cliSegments(out)) {
+    const words = segmentWords(seg.text)
+    if (words.some((w) => STDIN_TO_COMMANDS.has(stripExe(binName(w))))) return text
+    const prog = words[programIndex(words)]
+    // A shell, an interpreter, or a program run by its path (`./x.sh` may be the file just written).
+    if (prog !== undefined && (readsCode(prog, stripExe(binName(prog))) || /[\\/]/.test(prog))) return text
+  }
+  return out
 }
 
 /** The paths a file tool call names (file_path, path, notebook_path). MultiEdit's edits[] never name another file. */
@@ -769,13 +1152,68 @@ function searchDenied(toolName: string, input: Record<string, unknown>, refs: re
   const opts = { platform, home: ctx.home }
   const root = typeof input.path === 'string' && input.path ? input.path : ctx.cwd
   const pattern = typeof input.pattern === 'string' && input.pattern ? input.pattern : undefined
+  // A search rooted AT or UNDER a protected path is denied whatever its filter (ripgrep searches a named file whatever
+  // its --glob). One rooted ABOVE it (the home folder, the data dir) is allowed when its file filter can only match
+  // source or text files with a known extension (review M3): no protected file has one.
+  if (root !== undefined && pathAtOrUnder(root, refs, ctx.cwd, opts)) return true
   if (toolName === 'Grep') {
-    if (root !== undefined && searchReaches(root, undefined, refs, ctx.cwd, opts)) return true
+    const safeFilter = safeFileGlob(input.glob) || safeSearchType(input.type)
+    if (root !== undefined && !safeFilter && searchReaches(root, undefined, refs, ctx.cwd, opts)) return true
     return pattern !== undefined && isRootedPattern(pattern, platform) && pathAtOrUnder(pattern, refs, ctx.cwd, opts) !== null
   }
-  if (pattern === undefined) return root !== undefined && pathAtOrUnder(root, refs, ctx.cwd, opts) !== null
-  if (root !== undefined && pathAtOrUnder(root, refs, ctx.cwd, opts)) return true
+  if (pattern === undefined) return false
+  // A safe-extension Glob lists only such files; one whose literal path itself lands in a protected folder still counts.
+  if (safeFileGlob(pattern)) {
+    const base = absoluteRoot(root, ctx, platform)
+    if (base !== undefined && pathAtOrUnder(pattern, refs, base, opts) === null) return false
+  }
   return searchReaches(root ?? '', pattern, refs, ctx.cwd, opts) !== null
+}
+
+/** A search root as an absolute path (`~` expanded, relative against the cwd), or undefined when it cannot be told. */
+function absoluteRoot(root: string | undefined, ctx: SelfControlContext, platform: NodeJS.Platform): string | undefined {
+  if (root === undefined) return undefined
+  const p = platform === 'win32' ? win32 : posix
+  let r = root
+  if (r === '~' || /^~[\\/]/.test(r)) {
+    if (!ctx.home || !p.isAbsolute(ctx.home)) return undefined
+    r = p.join(ctx.home, r.slice(1))
+  }
+  if (p.isAbsolute(r)) return p.resolve(r)
+  return ctx.cwd && p.isAbsolute(ctx.cwd) ? p.resolve(ctx.cwd, r) : undefined
+}
+
+/**
+ * Extensions a protected file never has (run/: daemon.json, daemon.secret, sockets; secrets.json; codex/: auth.json,
+ * config.toml, *.jsonl sessions, logs, shell snapshots): source and document files only. json, toml, yaml, jsonl, log,
+ * txt, sh, env and the like stay out.
+ */
+const SAFE_SEARCH_EXTS: ReadonlySet<string> = new Set([
+  'ts', 'tsx', 'mts', 'cts', 'js', 'jsx', 'mjs', 'cjs', 'py', 'go', 'rs', 'java', 'kt', 'kts', 'swift', 'c', 'h', 'cc',
+  'cpp', 'hpp', 'cs', 'rb', 'php', 'scala', 'vue', 'svelte', 'css', 'scss', 'sass', 'less', 'html', 'htm', 'md', 'mdx',
+  'markdown', 'rst', 'lua', 'dart', 'ex', 'exs', 'erl', 'hs', 'clj', 'sql'
+])
+/** ripgrep --type names whose files all carry SAFE_SEARCH_EXTS extensions. */
+const SAFE_SEARCH_TYPES: ReadonlySet<string> = new Set([
+  'ts', 'typescript', 'js', 'py', 'python', 'go', 'rust', 'java', 'kotlin', 'swift', 'c', 'cpp', 'cs', 'csharp', 'ruby',
+  'php', 'scala', 'vue', 'svelte', 'css', 'sass', 'less', 'html', 'md', 'markdown', 'lua', 'dart', 'elixir', 'erlang',
+  'haskell', 'clojure', 'sql'
+])
+
+/** A Grep `glob` / Glob pattern whose every brace alternative names files by a literal safe extension (`*.ts`, `src/**\/*.{ts,tsx}`). */
+function safeFileGlob(v: unknown): boolean {
+  if (typeof v !== 'string' || !v || v.length > 512 || v.startsWith('!')) return false
+  const alts = expandBraces(v, 64)
+  if (alts.length >= 64) return false
+  return alts.every((a) => {
+    const base = a.split(/[\\/]/).pop() ?? ''
+    const m = /\.([A-Za-z0-9]+)$/.exec(base)
+    return !!m && SAFE_SEARCH_EXTS.has(m[1].toLowerCase()) && !a.startsWith('!')
+  })
+}
+
+function safeSearchType(v: unknown): boolean {
+  return typeof v === 'string' && SAFE_SEARCH_TYPES.has(v.toLowerCase())
 }
 
 /** An absolute or ~ pattern (Grep's regex is a path only then). */
@@ -788,22 +1226,28 @@ function isRootedPattern(pattern: string, platform: NodeJS.Platform): boolean {
  * SELF_CONTROL_DENIAL_MESSAGE when the call must be denied outright, else null. Denied: Read / Glob / Grep / Edit /
  * Write / MultiEdit / NotebookEdit on a protected path, and a Bash / PowerShell segment that runs the OrgAI CLI
  * (`orgai`, `orgai.exe`, `orgai.cmd`, an ELECTRON_RUN_AS_NODE assignment, node / tsx / bun / deno on `orgai.mjs` or a
- * file in this install's CLI folders) or names a protected path (or runs inside one). Pure apart from real-path lookups; never throws (an internal error is null).
+ * file in this install's CLI folders) or names a protected path (or runs inside one). A Bash command's data-only
+ * here-documents are left out of the scan first (stripDataHeredocs). Pure apart from real-path lookups; never throws:
+ * an internal error denies a shell command with SELF_CONTROL_UNCHECKED_MESSAGE (review M2) and gives null for a file
+ * tool, as does ctx.pathsUnavailable for a shell command the CLI check let through.
  */
 export function checkSelfControlDenial(toolName: string, input: unknown, ctx: SelfControlContext): string | null {
+  const shellTool = SHELLS.has(toolName)
   try {
     const refs = Array.isArray(ctx?.protectedPaths) ? ctx.protectedPaths.filter((p) => typeof p === 'string' && p !== '') : []
     const i = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>
     const platform = ctx.platform ?? process.platform
-    if (SHELLS.has(toolName)) {
+    if (shellTool) {
       const command = i.command
       if (typeof command !== 'string' || !command.trim()) return null
-      const cli = cliScan(command, { cwd: ctx.cwd, cliRoots: ctx.cliRoots, platform })
+      const shell = ctx.shell ?? (toolName === 'PowerShell' ? 'powershell' : 'bash')
+      const text = shell === 'bash' ? stripDataHeredocs(command) : command
+      const cli = cliScan(text, { cwd: ctx.cwd, cliRoots: ctx.cliRoots, platform })
       if (cli === 'runs') return SELF_CONTROL_DENIAL_MESSAGE
       if (cli === 'limit') return SELF_CONTROL_UNCHECKED_MESSAGE
+      if (ctx.pathsUnavailable) return SELF_CONTROL_UNCHECKED_MESSAGE
       if (!refs.length) return null
-      const shell = ctx.shell ?? (toolName === 'PowerShell' ? 'powershell' : 'bash')
-      const scan = commandControlScan(command, ctx.cwd, refs, { shell, platform, home: ctx.home })
+      const scan = commandControlScan(text, ctx.cwd, refs, { shell, platform, home: ctx.home })
       return scan === 'touch' ? SELF_CONTROL_DENIAL_MESSAGE : scan === 'limit' ? SELF_CONTROL_UNCHECKED_MESSAGE : null
     }
     if (!FILE_TOOLS.has(toolName) || !refs.length) return null
@@ -813,6 +1257,7 @@ export function checkSelfControlDenial(toolName: string, input: unknown, ctx: Se
     }
     return null
   } catch {
-    return null
+    // A shell command the gate could not check never runs unread (bypassPermissions would allow it).
+    return shellTool ? SELF_CONTROL_UNCHECKED_MESSAGE : null
   }
 }

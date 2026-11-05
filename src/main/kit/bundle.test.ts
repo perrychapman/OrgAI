@@ -207,6 +207,29 @@ describe('kit bundles', () => {
     expect(ok.replaced).toBe(2)
   })
 
+  it('refuses a replace when a secret value or sign-in was saved on the server after the preview (review Low)', async () => {
+    const { bundle } = exported()
+    const w = world()
+    w.mcp.libraryUpsert(stdio('github', { args: ['-y', '@x/other@2.0.0'] }))
+    const preview = w.kit.previewBundle({ fileName: 'k', rawBytesBase64: bundle.rawBytesBase64 })
+    const replace = preview.items.map((i) => ({ key: i.key, action: i.name === 'github' ? ('replace' as const) : ('skip' as const) }))
+    const github = w.mcp.libraryEntries().find((e) => e.name === 'github')!
+    // The user saves the server's token between the preview and the apply.
+    w.mcp.librarySetSecret({ libraryId: github.id, kind: 'env', name: 'API_TOKEN', value: 'tok-123' })
+    const before = snapshot(w)
+    const err = (await w.kit.applyBundle({ rawBytesBase64: bundle.rawBytesBase64, digest: preview.digest, targetDigest: preview.targetDigest!, choices: replace }).catch((e: unknown) => e)) as Error & { code?: string }
+    expect(err.code).toBe('stale_target_digest')
+    expect(snapshot(w)).toBe(before)
+    expect(w.mcp.libraryList().find((i) => i.entry.id === github.id)?.envSet).toEqual(['API_TOKEN'])
+    // The digest never carries the value itself.
+    const fresh = w.kit.previewBundle({ fileName: 'k', rawBytesBase64: bundle.rawBytesBase64 })
+    expect(JSON.stringify(fresh)).not.toContain('tok-123')
+    expect(fresh.targetDigest).not.toBe(preview.targetDigest)
+    // A fresh preview (which sees the stored token) applies; the replace then clears it as its note says.
+    const ok = await w.kit.applyBundle({ rawBytesBase64: bundle.rawBytesBase64, digest: fresh.digest, targetDigest: fresh.targetDigest!, choices: replace })
+    expect(ok.replaced).toBe(1)
+  })
+
   it('serializes concurrent applyBundle calls: the second sees the first and goes stale', async () => {
     const { bundle } = exported()
     const w = world()
