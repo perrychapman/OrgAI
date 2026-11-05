@@ -140,6 +140,8 @@ export default function RunKnowledge({ runId, projectId }: { runId: string; proj
       setText(ui.query)
     }
   }, [ui.query])
+  const textNow = useRef(text)
+  textNow.current = text
   useEffect(() => {
     if (text === lastSent.current) return undefined
     const t = setTimeout(() => {
@@ -148,6 +150,16 @@ export default function RunKnowledge({ runId, projectId }: { runId: string; proj
     }, SEARCH_DEBOUNCE_MS)
     return () => clearTimeout(t)
   }, [text, patch])
+  // Leaving the tab inside the debounce keeps what was typed.
+  useEffect(
+    () => () => {
+      if (textNow.current !== lastSent.current) {
+        lastSent.current = textNow.current
+        patch({ query: textNow.current })
+      }
+    },
+    [patch]
+  )
   const query = ui.query.trim()
   const hits = useMemo(() => (graph && query ? searchKnowledge(graph, { query, limit: RUN_KNOWLEDGE_RESULT_LIMIT }) : []), [graph, query])
 
