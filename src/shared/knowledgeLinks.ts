@@ -1,6 +1,6 @@
-import type { KnowledgeAppearance, KnowledgeGraph, KnowledgeInferredLink, KnowledgeInferredResult, KnowledgeLinkBasis, KnowledgeNode } from './types'
-import { KNOWLEDGE_INFERRED_LINKS_MAX } from './types'
-import type { KnowledgeMatcherRules } from './knowledgeIndex'
+import type { KnowledgeAppearance, KnowledgeGraph, KnowledgeInferencePartial, KnowledgeInferredLink, KnowledgeInferredResult, KnowledgeLinkBasis, KnowledgeNode } from './types'
+import { KNOWLEDGE_INFERRED_LINKS_MAX, KNOWLEDGE_MATCH_BUDGET } from './types'
+import type { KnowledgeMatchBudget, KnowledgeMatcherRules } from './knowledgeIndex'
 import { knowledgeCompare, knowledgeHash, knowledgeNameMatcher } from './knowledgeIndex'
 
 /**
@@ -64,22 +64,39 @@ interface MentionAgg {
   factId?: string
 }
 
+/** A span that names two entities (equal names across kinds) cannot say which one is meant: never at or above this. */
+const AMBIGUOUS_STRENGTH_MAX = 0.49
+
 function mentionStrength(a: MentionAgg): number {
-  // A span that names two entities (equal names across kinds) cannot say which one is meant: always below the strong threshold.
-  const penalty = a.ambiguous >= a.count ? 0.3 : 0
-  return Math.max(0, Math.min(1, 0.35 + 0.15 * Math.min(a.count, 3) + (a.multi ? 0.2 : 0) - penalty))
+  const strength = Math.max(0, Math.min(1, 0.35 + 0.15 * Math.min(a.count, 3) + (a.multi ? 0.2 : 0)))
+  // Always below the 0.5 line the evaluation draws, and so below KNOWLEDGE_STRONG_MENTION, however often it is repeated.
+  return a.ambiguous >= a.count ? Math.min(AMBIGUOUS_STRENGTH_MAX, Math.max(0, strength - 0.3)) : strength
 }
 
-/** Every mention of a live entity in another live entity's summary or live facts, as aggregates. */
-function mentionAggregates(graph: GraphLike, rules?: KnowledgeMatcherRules): MentionAgg[] {
+/** The first time a pair is seen also builds its evidence snippet, so it counts for more than a plain match. */
+const NEW_PAIR_COST = 8
+
+interface MentionPass {
+  aggs: MentionAgg[]
+  /** Set when KNOWLEDGE_MATCH_BUDGET stopped the pass. */
+  partial?: KnowledgeInferencePartial
+}
+
+/**
+ * Every mention of a live entity in another live entity's summary or live facts, as aggregates, under one
+ * KNOWLEDGE_MATCH_BUDGET (`budget` replaces it for a test). Entities are scanned in graph order; past the budget the pass
+ * stops and says how far it got.
+ */
+function mentionAggregates(graph: GraphLike, rules?: KnowledgeMatcherRules, budgetTotal: number = KNOWLEDGE_MATCH_BUDGET): MentionPass {
   const live = graph.nodes.filter((n) => !n.retired)
   const matcher = knowledgeNameMatcher(live, rules)
-  if (matcher.size === 0) return []
+  if (matcher.size === 0) return { aggs: [] }
+  const budget: KnowledgeMatchBudget = { left: budgetTotal }
   const agg = new Map<string, MentionAgg>()
   const scan = (owner: KnowledgeNode, text: string | undefined, label: string, factId?: string): void => {
     if (!text) return
     const seen = new Set<string>()
-    const found = matcher.find(text)
+    const found = matcher.find(text, budget)
     // A span that names the owner itself ("Stripe" in Stripe's own text) is not also a mention of an entity that shares the name.
     const selfAt = new Set(found.filter((m) => m.id === owner.id).map((m) => m.charStart))
     const idsAt = new Map<number, Set<string>>()
@@ -96,15 +113,19 @@ function mentionAggregates(graph: GraphLike, rules?: KnowledgeMatcherRules): Men
         hit.ambiguous += amb
         hit.multi = hit.multi || multi
       } else {
+        budget.left -= NEW_PAIR_COST
         agg.set(key, { from: owner.id, to: m.id, count: 1, multi, ambiguous: amb, evidence: clip(`${label}: "${snippet(text, m.charStart, m.charEnd)}"`, EVIDENCE_MAX), ...(factId ? { factId } : {}) })
       }
     }
   }
+  let scanned = 0
   for (const n of live) {
     scan(n, n.summary, 'Summary')
     for (const f of n.facts) if (!f.retired) scan(n, f.text, 'Fact', f.id)
+    if (budget.exhausted) break
+    scanned++
   }
-  return [...agg.values()]
+  return { aggs: [...agg.values()], ...(budget.exhausted ? { partial: { scannedEntities: scanned, totalEntities: live.length } } : {}) }
 }
 
 function toMentionLink(a: MentionAgg, kinds: Map<string, string>): KnowledgeInferredLink {
@@ -135,9 +156,13 @@ function byStrength(a: KnowledgeInferredLink, b: KnowledgeInferredLink): number 
  * edges, not hub-limited, dismissed ones left out. Strongest first.
  */
 export function knowledgeMentions(graph: GraphLike, rules?: KnowledgeMatcherRules): KnowledgeInferredLink[] {
+  return mentionsFrom(graph, mentionAggregates(graph, rules).aggs)
+}
+
+function mentionsFrom(graph: GraphLike, aggs: readonly MentionAgg[]): KnowledgeInferredLink[] {
   const dismissed = new Set(graph.dismissedLinks ?? [])
   const kinds = kindMap(graph)
-  return mentionAggregates(graph, rules)
+  return aggs
     .map((a) => toMentionLink(a, kinds))
     .filter((l) => !dismissed.has(l.id))
     .sort(byStrength)
@@ -167,21 +192,26 @@ function spellingOf(n: KnowledgeNode, key: string): string {
 
 /**
  * Suggested connections for the user to confirm or dismiss: mentions (an entity's summary or live fact names another)
- * and equal names across kinds. Both ends live, never self, no pair that already has ANY edge (retired included),
- * dismissed ids left out, strongest first, at most KNOWLEDGE_INFERRED_LINKS_MAX. Names are indexed once through the
- * shared matcher, so the cost is linear in the text and nothing is quadratic over the graph (equal-name groups are
- * bounded at 6). Shared context notes and same-relation siblings were evaluated and rejected (see the doc).
+ * and equal names across kinds. Both ends live, never self, no pair that already has a live edge or a retired edge the
+ * user wrote (an agent could otherwise silence a suggestion by linking and retiring), dismissed ids left out, strongest
+ * first, at most KNOWLEDGE_INFERRED_LINKS_MAX. The cost is bounded, not linear in general: one pass costs at most tokens x
+ * KNOWLEDGE_NAME_TOKENS_MAX trie steps plus the matches, and KNOWLEDGE_MATCH_BUDGET caps the total (knowledgeInferredResult
+ * reports a pass it stopped). Equal-name groups are bounded at 6. Shared context notes and same-relation siblings were
+ * evaluated and rejected (see the doc).
  */
 export function inferKnowledgeLinks(graph: GraphLike, opts: InferKnowledgeOptions = {}): KnowledgeInferredLink[] {
+  return linksFrom(graph, mentionAggregates(graph, opts.matcherRules).aggs, opts)
+}
+
+function linksFrom(graph: GraphLike, aggs: readonly MentionAgg[], opts: InferKnowledgeOptions = {}): KnowledgeInferredLink[] {
   const cap = Math.min(KNOWLEDGE_INFERRED_LINKS_MAX, Math.max(1, Math.floor(opts.cap ?? KNOWLEDGE_INFERRED_LINKS_MAX)))
   const hub = opts.hubCutoff === undefined ? Infinity : Math.max(1, Math.floor(opts.hubCutoff))
   const live = graph.nodes.filter((n) => !n.retired)
   const kinds = kindMap(graph)
   const connected = new Set<string>()
-  for (const e of graph.edges) connected.add(pairKey(e.from, e.to))
+  for (const e of graph.edges) if (!e.retired || e.source.by === 'user') connected.add(pairKey(e.from, e.to))
   const out: KnowledgeInferredLink[] = []
 
-  const aggs = mentionAggregates(graph, opts.matcherRules)
   const mentioners = new Map<string, number>()
   for (const a of aggs) mentioners.set(a.to, (mentioners.get(a.to) ?? 0) + 1)
   for (const a of aggs) {
@@ -269,7 +299,13 @@ export function knowledgeInferredResult(graph: GraphLike): KnowledgeInferredResu
   if (hit && hit.nodes === graph.nodes && hit.edges === graph.edges && hit.dismissed === graph.dismissedLinks && hit.nodeCount === graph.nodes.length && hit.edgeCount === graph.edges.length && hit.updatedAt === graph.updatedAt) {
     return hit.result
   }
-  const result: KnowledgeInferredResult = { links: inferKnowledgeLinks(graph), appearances: knowledgeAppearances(graph, knowledgeMentions(graph)) }
+  // One pass over the text feeds both: the links filter its aggregates, the appearances count them.
+  const pass = mentionAggregates(graph)
+  const result: KnowledgeInferredResult = {
+    links: linksFrom(graph, pass.aggs),
+    appearances: knowledgeAppearances(graph, mentionsFrom(graph, pass.aggs)),
+    ...(pass.partial ? { partial: pass.partial } : {})
+  }
   resultMemo.set(graph, { nodes: graph.nodes, edges: graph.edges, dismissed: graph.dismissedLinks, nodeCount: graph.nodes.length, edgeCount: graph.edges.length, updatedAt: graph.updatedAt, result })
   return result
 }

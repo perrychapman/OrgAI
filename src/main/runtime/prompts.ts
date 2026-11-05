@@ -58,7 +58,8 @@ export interface PromptFlags {
   /**
    * Engagements: the standing knowledge index (RuntimeContext.knowledgeBrief()), already a labelled fenced data block.
    * Adapters pass `knowledgeBrief: ctx.knowledgeBrief?.()` wherever they pass engagementDocument. Engagement work
-   * prompts (orchestrator, reports and single runs) include it as is; never setup or quick prompts. Missing = none.
+   * prompts (orchestrator, reports and single runs) include it as is, after the team paragraphs and never next to the
+   * engagement document; never setup or quick prompts. It holds counts and user-written names only (knowledgeBrief). Missing = none.
    */
   knowledgeBrief?: string
   /**
@@ -393,7 +394,6 @@ export function buildRolePrompt(role: Role, roles: Role[], project: Project, fla
     const archPath = project.setup?.architecturePath
     if (kind === 'engagement') {
       parts.push(engagementDocumentText(flags.engagementDocument))
-      if (flags.knowledgeBrief) parts.push(flags.knowledgeBrief)
     } else if (archPath) {
       parts.push(architectureText(archPath, kind))
       if (role.reportsTo === null) parts.push(architectureDriftText(archPath, kind))
@@ -410,6 +410,8 @@ export function buildRolePrompt(role: Role, roles: Role[], project: Project, fla
       else if (role.canSpawn) parts.push(mcpInstallText('lead'))
       if (role.reportsTo === null) parts.push(skillsConfigText())
     }
+    // Apart from the engagement document ("approved by the user; follow it"): the index is data, never approved text.
+    if (kind === 'engagement' && flags.knowledgeBrief) parts.push(flags.knowledgeBrief)
     parts.push(permissionRequestText())
     parts.push(toolHygieneText())
     const folders = allowedDirectoriesText(flags.allowedDirectories)

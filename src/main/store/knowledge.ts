@@ -87,7 +87,7 @@ function cleanSource(x: unknown): KnowledgeSource | undefined {
   return out
 }
 
-/** A name or alias as stored: 1..KNOWLEDGE_NAME_MAX_CHARS, not blank, one line (no hidden characters). */
+/** A name or alias as stored: 1..KNOWLEDGE_NAME_MAX_CHARS, not blank, one line (hiddenCharIn refuses every line break, U+2028 and U+2029 included). */
 function cleanName(x: unknown): string | undefined {
   const s = cleanString(x, KNOWLEDGE_NAME_MAX_CHARS)
   return s !== undefined && knowledgeNameKey(s) ? s : undefined
@@ -218,9 +218,17 @@ function cleanGraph(parsed: unknown, noteIndex: ReadonlySet<string>): KnowledgeG
 
 /**
  * The file cap (KNOWLEDGE_FILE_MAX_BYTES) as the store applies it on read and write. Tests lower `maxBytes` to
- * exercise the over-size refusals without writing 64 MB files; nothing else assigns it.
+ * exercise the over-size refusals without writing 64 MB files, and set `freezeCached` so a reader that mutates the
+ * shared cached graph throws, and lower the two size thresholds below; nothing else assigns them.
  */
-export const knowledgeFileLimits = { maxBytes: KNOWLEDGE_FILE_MAX_BYTES }
+export const knowledgeFileLimits = {
+  maxBytes: KNOWLEDGE_FILE_MAX_BYTES,
+  freezeCached: false,
+  /** The read cache holds at most this much file size. */
+  cacheMaxBytes: 96 * 1024 * 1024,
+  /** A knowledge.json at least this large is debounced for recall (readRecallView): indexing it takes hundreds of milliseconds. */
+  recallDebounceMinBytes: 8 * 1024 * 1024
+}
 
 /**
  * How knowledge.json stands: 'missing' (no file; writes create it), 'ok' (a graph; junk inside dropped item by
@@ -263,18 +271,30 @@ function parseGraph(file: string, noteIds: ReadonlySet<string>): Loaded {
  * lstat (mtime, size, inode, kind: lstat so a swap to a link shows), the size cap in force and the note index's ids
  * (cleanGraph drops note links whose note is gone, which depends on the notes, not on the graph file). Reads hand out
  * the cached object BY REFERENCE and nothing may mutate it (the pure layer's memos key on object identity); every write
- * re-reads the file uncached and builds a new object. At most KNOWLEDGE_CACHE_MAX projects, least recently used out.
+ * re-reads the file uncached and builds a new object. Tests freeze what is cached (knowledgeFileLimits.freezeCached), so
+ * a mutating reader throws there. Bounded by KNOWLEDGE_CACHE_MAX projects and by knowledgeFileLimits.cacheMaxBytes of file size
+ * (a parsed graph takes several times its file size, and the pure layer's indexes hang off it), least recently used out;
+ * the newest entry always stays, so a single huge graph is still cached.
  */
 interface CacheEntry extends Loaded {
   stamp: string
+  bytes: number
 }
 const KNOWLEDGE_CACHE_MAX = 4
 const cache = new Map<string, CacheEntry>()
 
-function fileStamp(file: string): string | null {
+function deepFreeze<T>(value: T): T {
+  if (value && typeof value === 'object' && !Object.isFrozen(value)) {
+    Object.freeze(value)
+    for (const v of Object.values(value)) deepFreeze(v)
+  }
+  return value
+}
+
+function fileStat(file: string): { stamp: string; bytes: number } | null {
   try {
     const st = lstatSync(file)
-    return `${st.mtimeMs}:${st.size}:${st.ino}:${st.isFile() ? 'f' : 'x'}`
+    return { stamp: `${st.mtimeMs}:${st.size}:${st.ino}:${st.isFile() ? 'f' : 'x'}`, bytes: st.size }
   } catch {
     return null
   }
@@ -283,25 +303,35 @@ function fileStamp(file: string): string | null {
 const stampOf = (fileStampText: string, noteIds: readonly string[]): string => `${fileStampText}|${knowledgeFileLimits.maxBytes}|${[...noteIds].sort().join(',')}`
 
 function remember(file: string, entry: CacheEntry): void {
+  if (knowledgeFileLimits.freezeCached) deepFreeze(entry.graph)
   cache.delete(file)
   cache.set(file, entry)
-  while (cache.size > KNOWLEDGE_CACHE_MAX) {
+  let total = 0
+  for (const e of cache.values()) total += e.bytes
+  while (cache.size > 1 && (cache.size > KNOWLEDGE_CACHE_MAX || total > knowledgeFileLimits.cacheMaxBytes)) {
     const oldest = cache.keys().next().value
     if (oldest === undefined) break
+    total -= cache.get(oldest)?.bytes ?? 0
     cache.delete(oldest)
+    recallSnapshots.delete(oldest)
   }
+}
+
+/** What the cache holds now, oldest first (tests). */
+export function knowledgeCacheFiles(): string[] {
+  return [...cache.keys()]
 }
 
 /** The stored graph with the file's state, from the cache when the stamp is unchanged. Throws only on an unsafe project id. */
 function loadGraph(dataDir: string, projectId: string): Loaded {
   const file = knowledgeFile(dataDir, projectId)
-  const fs = fileStamp(file)
+  const fs = fileStat(file)
   if (fs === null) {
     cache.delete(file)
     return { graph: emptyKnowledgeGraph(), state: 'missing' }
   }
   const noteIds = listNotes(dataDir, projectId).map((n) => n.id)
-  const stamp = stampOf(fs, noteIds)
+  const stamp = stampOf(fs.stamp, noteIds)
   const hit = cache.get(file)
   if (hit && hit.stamp === stamp) {
     cache.delete(file)
@@ -309,24 +339,25 @@ function loadGraph(dataDir: string, projectId: string): Loaded {
     return hit
   }
   const loaded = parseGraph(file, new Set(noteIds))
-  remember(file, { ...loaded, stamp })
+  remember(file, { ...loaded, stamp, bytes: fs.bytes })
   return loaded
 }
 
 /** After a successful write: the written graph becomes the cached one (stamp of the file as it is now). */
 function rememberWritten(dataDir: string, projectId: string, graph: KnowledgeGraph): void {
   const file = knowledgeFile(dataDir, projectId)
-  const fs = fileStamp(file)
+  const fs = fileStat(file)
   if (fs === null) {
     cache.delete(file)
     return
   }
-  remember(file, { graph, state: 'ok', stamp: stampOf(fs, listNotes(dataDir, projectId).map((n) => n.id)) })
+  remember(file, { graph, state: 'ok', stamp: stampOf(fs.stamp, listNotes(dataDir, projectId).map((n) => n.id)), bytes: fs.bytes })
 }
 
 /** Drop every cached graph (tests). */
 export function resetKnowledgeCache(): void {
   cache.clear()
+  recallSnapshots.clear()
 }
 
 /**
@@ -355,7 +386,7 @@ export function unreadableMessage(file: string): string {
 /** The graph for a write: a missing file is an empty graph, an unreadable one refuses (never overwritten). */
 function loadForWrite(dataDir: string, projectId: string): KnowledgeGraph {
   const file = knowledgeFile(dataDir, projectId)
-  if (fileStamp(file) === null) return emptyKnowledgeGraph()
+  if (fileStat(file) === null) return emptyKnowledgeGraph()
   // Always from disk and always a new object: the cached one is shared with readers and never mutated.
   const { graph, state } = parseGraph(file, new Set(listNotes(dataDir, projectId).map((n) => n.id)))
   if (state === 'unreadable') throw new Error(unreadableMessage(file))
@@ -523,7 +554,7 @@ export function userSource(): KnowledgeSource {
 
 /**
  * Agent upsert (KnowledgeStoreApi.upsertNode). Identity: `nodeId` when given (unknown = throw; a `kind` other than
- * the stored one is refused: "That entity is a <stored>, not a <given> ..."), else the first non-retired (kind, name /
+ * the stored one is refused: "That entity is not a <given> ..."), else the first non-retired (kind, name /
  * alias) match (else the first match), else a new node. On a merge the stored name and kind stay (the input name
  * becomes an alias when it differs), new aliases are added (an alias naming another entity of the kind is skipped and
  * listed in `aliasesSkipped`), the summary is replaced when given and not blank unless the node is user-created
@@ -545,7 +576,8 @@ export function upsertNode(dataDir: string, projectId: string, input: KnowledgeN
   let target: KnowledgeNode | undefined
   if (input.nodeId !== undefined) {
     target = nodeById(graph, input.nodeId)
-    if (target.kind !== kind) throw new Error(`That entity is a ${target.kind}, not a ${kind}. Retire it and create a new one, or pass its kind.`)
+    // The stored kind stays out of the message: it is agent-written text and a refusal is not fenced. `get` shows it.
+    if (target.kind !== kind) throw new Error(`That entity is not a ${kind}. Read its kind with get and pass it, or retire it and create a new one.`)
   } else {
     const found = matches(graph, kind, name, aliases)
     target = found.find((n) => !n.retired) ?? found[0]
@@ -745,6 +777,9 @@ export function removeNode(dataDir: string, projectId: string, nodeId: string): 
  * edgeId a (from, to, relation) match is updated (note when given, retired when given; nothing else touched) and
  * reported as not created, else a new edge with the caller's source. With edgeId only that edge's note / retired
  * change, and from / to / relation must equal the stored edge's (refused otherwise: "That relation id names ...").
+ * An agent never changes a relation the user wrote, same rule as summaries and retire: its note is dropped, the user's
+ * stands (`noteKept`, no write), and asking to change its retired flag is refused. A user's edit of the note on an
+ * agent-written relation leaves the source alone, so an agent can still replace that note (edges carry no updatedBy).
  */
 export function saveEdge(dataDir: string, projectId: string, input: Omit<KnowledgeEdgeSaveInput, 'projectId'>, source: KnowledgeSource): KnowledgeEdgeWriteResult {
   const graph = loadForWrite(dataDir, projectId)
@@ -753,6 +788,11 @@ export function saveEdge(dataDir: string, projectId: string, input: Omit<Knowled
   const retired = checkRetired(input.retired)
   const nameOf = (id: string): string => graph.nodes.find((n) => n.id === id)?.name ?? id
   const apply = (edge: KnowledgeEdge): KnowledgeEdgeWriteResult => {
+    if (edge.source.by === 'user' && source.by !== 'user') {
+      if (retired !== undefined && retired !== !!edge.retired) throw new Error('Only the user can change that.')
+      const noteKept = note !== undefined && note !== (edge.note ?? '')
+      return { edge, created: false, ...(noteKept ? { noteKept: true } : {}) }
+    }
     if (note !== undefined) {
       if (note) edge.note = note
       else delete edge.note
@@ -824,6 +864,37 @@ export function readKnowledgeInferred(dataDir: string, projectId: string): Knowl
   }
 }
 
+/** How long a large graph's recall keeps ranking on the same revision (measured: 2.1 s to index a 59 MB graph). */
+const RECALL_DEBOUNCE_MS = 30_000
+const recallSnapshots = new Map<string, { graph: KnowledgeGraph; at: number }>()
+
+/**
+ * What a recall ranks on and its inferred links, computed on the main thread. Every write makes a new graph object, so
+ * without this each write on a very large graph would rebuild the text index and the inference at the next recall. A
+ * file under knowledgeFileLimits.recallDebounceMinBytes always uses the current revision. A larger one keeps the same revision for
+ * RECALL_DEBOUNCE_MS: an entity written since is not found by a recall until then, while printed text always comes from
+ * the current graph (recallKnowledge `rankOn`). Search and the IPC reads stay exact. Never throws.
+ */
+export function readRecallView(dataDir: string, projectId: string): { rankOn: KnowledgeGraph; inferred: KnowledgeInferredResult } {
+  try {
+    const file = knowledgeFile(dataDir, projectId)
+    const graph = loadGraph(dataDir, projectId).graph
+    const now = Date.now()
+    const snap = recallSnapshots.get(file)
+    const large = (cache.get(file)?.bytes ?? 0) >= knowledgeFileLimits.recallDebounceMinBytes
+    const rankOn = large && snap && now - snap.at < RECALL_DEBOUNCE_MS ? snap.graph : graph
+    if (rankOn === graph) {
+      if (large) {
+        if (snap?.graph !== graph) recallSnapshots.set(file, { graph, at: now })
+      } else recallSnapshots.delete(file)
+    }
+    return { rankOn, inferred: knowledgeInferredResult(rankOn) }
+  } catch {
+    const empty = emptyKnowledgeGraph()
+    return { rankOn: empty, inferred: { links: [], appearances: {} } }
+  }
+}
+
 /**
  * The user's "not a connection" (knowledge:dismissLink): the link id joins graph.dismissedLinks (the newest
  * KNOWLEDGE_DISMISSED_LINKS_MAX kept) through the normal write path. A malformed id is refused; an id already listed is
@@ -885,6 +956,7 @@ export function knowledgeStore(dataDir: string): KnowledgeStoreApi {
   return {
     get: (projectId) => readKnowledge(dataDir, projectId),
     inferred: (projectId) => readKnowledgeInferred(dataDir, projectId),
+    recallView: (projectId) => readRecallView(dataDir, projectId),
     upsertNode: (projectId, input, source) => upsertNode(dataDir, projectId, input, source),
     saveEdge: (projectId, input, source) => saveEdge(dataDir, projectId, input, source),
     retire: (projectId, input, source) => retireItem(dataDir, projectId, input, source)

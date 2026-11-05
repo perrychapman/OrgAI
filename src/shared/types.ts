@@ -4641,6 +4641,17 @@ export const KNOWLEDGE_CONTEXT_SCAN_MAX_CHARS = 64 * 1024
 export const KNOWLEDGE_RECALLED_IDS_MAX = 50
 /** Most links inferKnowledgeLinks returns, strongest first. */
 export const KNOWLEDGE_INFERRED_LINKS_MAX = 500
+/** A name or alias of more tokens than this is not matched as a mention of its entity (it stays searchable and resolvable). */
+export const KNOWLEDGE_NAME_TOKENS_MAX = 8
+/** Most characters between two tokens of a name in matched text ("Billing - Core"); a longer gap breaks the name. */
+export const KNOWLEDGE_NAME_GAP_MAX = 8
+/** Most entities one name matches at a span (past it the span is ambiguous anyway and is never suggested). */
+export const KNOWLEDGE_SAME_NAME_MAX = 16
+/**
+ * Work one inference pass may do on the main thread, in tokens scanned plus trie steps plus matches (a pair seen for the
+ * first time counts more: it costs an evidence snippet). Past it the pass stops and KnowledgeInferredResult.partial says so.
+ */
+export const KNOWLEDGE_MATCH_BUDGET = 4_000_000
 /** Most dismissed inferred link ids a graph keeps (oldest dropped). */
 export const KNOWLEDGE_DISMISSED_LINKS_MAX = 2000
 /** An inferred link id: stable hash of basis and endpoints. */
@@ -4823,6 +4834,8 @@ export interface KnowledgeEdgeSaveInput {
 export interface KnowledgeEdgeWriteResult {
   edge: KnowledgeEdge
   created: boolean
+  /** An agent's note was not applied because the relation is the user's: the user's note stands (same rule as summaryKept). */
+  noteKept?: boolean
 }
 
 /** knowledge:removeNode / knowledge:removeEdge input. Removing a node removes its edges. Unknown ids are refused. */
@@ -4897,7 +4910,9 @@ export type KnowledgeLinkBasis = 'mention' | 'same-name'
 /**
  * A connection OrgAI derived from the graph (src/shared/knowledgeLinks.ts). Never stored as an edge and never reported
  * as a fact: the user can confirm it (an ordinary user edge through knowledge:saveEdge) or dismiss it
- * (knowledge:dismissLink). Pairs that already have any edge, retired ones included, are not suggested.
+ * (knowledge:dismissLink). Pairs that already have an edge are not suggested: any live edge and a retired edge the user
+ * wrote. A retired edge an agent wrote does not hold a suggestion back (an agent could otherwise silence one by linking
+ * and retiring).
  */
 export interface KnowledgeInferredLink {
   /** `kl_` + a stable hash of basis and endpoints (KNOWLEDGE_LINK_ID_RE); survives edits to the evidence text. */
@@ -4933,10 +4948,22 @@ export interface KnowledgeAppearance {
   total: number
 }
 
+/**
+ * The name-matching pass stopped at KNOWLEDGE_MATCH_BUDGET (a graph with more text than one pass may scan on the main
+ * thread): entities are scanned in graph order, so `links` and the mention counts in `appearances` cover only the first
+ * `scannedEntities` of `totalEntities` live entities. The UI should say the list is partial.
+ */
+export interface KnowledgeInferencePartial {
+  scannedEntities: number
+  totalEntities: number
+}
+
 /** knowledge:inferredLinks result, computed once per graph revision. `appearances` has one entry per node id. */
 export interface KnowledgeInferredResult {
   links: KnowledgeInferredLink[]
   appearances: Record<string, KnowledgeAppearance>
+  /** Only when the pass stopped early; absent = every live entity's text was scanned. */
+  partial?: KnowledgeInferencePartial
 }
 
 /** knowledge:dismissLink input (engagements only). The id must have the KNOWLEDGE_LINK_ID_RE shape; dismissing twice is a no-op. */

@@ -10,12 +10,16 @@ import { CAPABILITY_DESCRIPTION_MAX, type CapabilityKind, type CapabilityOrigin,
 
 // C0/C1 controls, soft hyphen, combining grapheme joiner, Arabic letter mark, Mongolian vowel separator, zero-width,
 // bidi overrides/isolates, word joiner and invisible operators, BOM, Hangul fillers and tag characters.
-const HIDDEN_CLASS = '[\u0000-\u001f\u007f-\u009f\u00ad\u034f\u061c\u115f\u1160\u180e\u200b-\u200f\u202a-\u202e\u2060-\u206f\u3164\ufeff\uffa0\u{e0000}-\u{e007f}]'
+const HIDDEN_BASE = '[\u0000-\u001f\u007f-\u009f\u00ad\u034f\u061c\u115f\u1160\u180e\u200b-\u200f\u202a-\u202e\u2060-\u206f\u3164\ufeff\uffa0\u{e0000}-\u{e007f}]'
+// One-line fields also refuse the Unicode line and paragraph separators: they end a line in a prompt as much as LF does.
+// Built with fromCodePoint so neither appears literally in this file; multi-line fields keep allowing them like LF (the
+// renderer's mirror covers that multi-line set, which is unchanged).
+const HIDDEN_CLASS = HIDDEN_BASE.replace(']', `${String.fromCodePoint(0x2028, 0x2029)}]`)
 const HIDDEN_RUN = new RegExp(`${HIDDEN_CLASS}+`, 'gu')
 /** True when the text holds a control, zero-width, bidi or other invisible character. */
 export const HIDDEN_CHARS = new RegExp(HIDDEN_CLASS, 'u')
 // The same set with tab, line feed and carriage return allowed (the renderer's lib/hiddenChars.ts mirrors it).
-const DISGUISE_CHARS = new RegExp(HIDDEN_CLASS.replace('\u0000-\u001f', '\u0000-\u0008\u000b\u000c\u000e-\u001f'), 'u')
+const DISGUISE_CHARS = new RegExp(HIDDEN_BASE.replace('\u0000-\u001f', '\u0000-\u0008\u000b\u000c\u000e-\u001f'), 'u')
 // Prose (descriptions): controls other than tab / LF / CR, bidi marks, overrides and isolates, zero-width space, word
 // joiner and BOM. ZWJ, ZWNJ, soft hyphen and tag characters stay allowed: emoji sequences and Persian or Indic text
 // use them, and stored or registry descriptions with them must keep validating.
