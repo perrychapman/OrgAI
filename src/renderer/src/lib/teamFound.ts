@@ -53,9 +53,18 @@ export function roleElevated(elevated: string[]): string[] {
   return elevatedLabels(elevated)
 }
 
-/** The file's change for a server, when main sent one. */
-export function changeForServer(changes: TeamFileChange[], name: string): TeamFileChange | undefined {
-  return changes.find((c) => c.kind === 'mcp' && c.name === name)
+/**
+ * The file's change for a server, when main sent one. Never by name alone when names repeat: a change matches when its
+ * target equals the server's, or when the name is unique among the servers (`sameName` = how many share it) and among
+ * the changes.
+ */
+export function changeForServer(changes: TeamFileChange[], name: string, target?: string, sameName = 1): TeamFileChange | undefined {
+  const byName = changes.filter((c) => c.kind === 'mcp' && c.name === name)
+  if (target !== undefined) {
+    const exact = byName.find((c) => c.target === target)
+    if (exact) return exact
+  }
+  return byName.length === 1 && sameName === 1 ? byName[0] : undefined
 }
 
 /** Changes that need a decision, in the order main sent them (most powerful first). */

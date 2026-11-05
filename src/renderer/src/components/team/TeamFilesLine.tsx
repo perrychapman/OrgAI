@@ -33,8 +33,8 @@ export default function TeamFilesLine({
   const warnings = status.warnings
   const act = line.action
   return (
-    <div className="team-files-line" data-testid="team-files-line" data-state={status.state} data-tone={line.tone} ref={lineRef} tabIndex={-1} data-wrap={line.detail || message ? 'true' : 'false'}>
-      <div className="team-files-line-main" role="status" aria-live="polite" title={line.title}>
+    <div className="team-files-line" data-testid="team-files-line" data-state={status.state} data-tone={line.tone} ref={lineRef} tabIndex={-1} role="group" aria-label="Team files status" data-wrap={line.detail || message ? 'true' : 'false'}>
+      <div className="team-files-line-main" role="status" aria-live="polite" title={line.title ? showHidden(line.title) : undefined}>
         {line.tone === 'danger' && <Icon icon={TriangleAlert} size="sm" />}
         <span className="team-files-line-text">{showHidden(line.text)}</span>
         {line.detail && <span className="team-files-line-detail"> {showHidden(line.detail)}</span>}

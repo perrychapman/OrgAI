@@ -164,6 +164,11 @@ describe('routeMenuAction', () => {
     expect(store.setView).toHaveBeenCalledWith('team')
     expect(store.requestTeamFilesFocus).toHaveBeenCalledWith('p1')
     store.setView.mockClear()
+    // No project selected: go-to-decision falls back to the first team item.
+    setState({ selectedProjectId: null, projects: PROJECTS, view: 'projects', teamFilesByProject })
+    actions.routeMenuAction('go-to-decision')
+    expect(store.requestTeamFilesFocus).toHaveBeenLastCalledWith('p1')
+    store.setView.mockClear()
     setState({ selectedProjectId: null, projects: PROJECTS, view: 'projects', teamFilesByProject })
     actions.routeMenuAction('show-needs-you')
     expect(store.selectProject).toHaveBeenCalledWith('p1')

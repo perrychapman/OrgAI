@@ -1,4 +1,5 @@
 import type { TeamFileChange, TeamFilesStatus } from '@shared/types'
+import { showHidden } from './hiddenChars'
 
 /**
  * Team files, renderer side (spec docs/design/team-files.md). Pure helpers over the TeamFilesStatus main sends.
@@ -233,7 +234,9 @@ export function importSourcesFor<T extends { source: string }>(sources: readonly
 /** The Needs-you items for a set of statuses (pending and problem only), ordered by project name. */
 export function teamAttentionItems(statuses: readonly TeamFilesStatus[]): TeamAttentionItem[] {
   const items: TeamAttentionItem[] = []
-  for (const s of statuses) {
+  for (const s0 of statuses) {
+    // Names come from files and the folder: hidden characters are shown escaped wherever a consumer renders them.
+    const s = { ...s0, projectName: showHidden(s0.projectName) }
     if (s.state === 'pending') {
       const n = s.changes.filter((c) => c.needsApproval).length + (s.omittedChanges ?? 0)
       items.push({
@@ -250,7 +253,7 @@ export function teamAttentionItems(statuses: readonly TeamFilesStatus[]): TeamAt
         projectId: s.projectId,
         projectName: s.projectName,
         state: 'problem',
-        label: file ? `Team files: ${file} cannot be read` : 'Team files: a file cannot be read'
+        label: file ? `Team files: ${showHidden(file)} cannot be read` : 'Team files: a file cannot be read'
       })
     }
   }

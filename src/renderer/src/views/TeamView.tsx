@@ -58,7 +58,7 @@ import TeamFilesLine from '../components/team/TeamFilesLine'
 import TeamFilesCard from '../components/team/TeamFilesCard'
 import TeamFilesAppliedNotice from '../components/team/TeamFilesAppliedNotice'
 import { useTeamFilesActions } from '../components/team/useTeamFilesActions'
-import { cardVisible, importSourcesFor } from '../lib/teamFiles'
+import { approveBlockedReason, cardVisible, importSourcesFor } from '../lib/teamFiles'
 import { useCssVar } from '../lib/useCssVar'
 
 const nodeTypes = { role: RoleNode }
@@ -231,9 +231,19 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
   const decide = async (kind: 'approve' | 'reject'): Promise<void> => {
     const digest = filesStatus?.digest
     if (!digest) return
+    if (kind === 'approve' && filesStatus && approveBlockedReason(filesStatus)) return
     const ok = await (kind === 'approve' ? filesActions.approve(digest) : filesActions.reject(digest))
-    // The card is gone after a decision, so focus goes to the status line; a refusal keeps focus on the card's own buttons.
+    // The card is gone after a decision, so focus goes to the status line; a refusal keeps focus on the card's own
+    // buttons unless the re-fetch removed the card too (a stale digest).
     if (ok) window.requestAnimationFrame(() => lineRef.current?.focus())
+    else settleFocus()
+  }
+  /** Focus to the status line when the element that had it was removed (focus fell to the body). */
+  const settleFocus = (): void => {
+    window.requestAnimationFrame(() => {
+      const a = document.activeElement
+      if (!a || a === document.body) lineRef.current?.focus()
+    })
   }
 
   const root = project.roles.find((r) => r.reportsTo === null)
@@ -641,16 +651,8 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
               busy={filesActions.busy}
               message={filesActions.message}
               lineRef={lineRef}
-              onCommit={() =>
-                void filesActions.commit().then(() =>
-                  // The Commit button leaves once the files are committed; keep focus on the status line then.
-                  window.requestAnimationFrame(() => {
-                    const a = document.activeElement
-                    if (!a || a === document.body) lineRef.current?.focus()
-                  })
-                )
-              }
-              onEnable={() => void filesActions.enable()}
+              onCommit={() => void filesActions.commit().then(settleFocus)}
+              onEnable={() => void filesActions.enable().then(settleFocus)}
               onReview={() => setCardFocusN((n) => n + 1)}
             />
             {undo && (
@@ -770,7 +772,7 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
               }
             />
           )}
-          {filesStatus && <TeamFilesAppliedNotice status={filesStatus} busy={filesActions.busy} onUndo={() => void filesActions.undo()} />}
+          {filesStatus && <TeamFilesAppliedNotice status={filesStatus} busy={filesActions.busy} onUndo={() => void filesActions.undo().then(settleFocus)} />}
         </div>
         </div>
         <FrameStage>
