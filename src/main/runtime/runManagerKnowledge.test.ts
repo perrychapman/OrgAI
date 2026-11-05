@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentInstance, EngagementChangedEvent, EngagementNote, KnowledgeEdge, KnowledgeGraph, KnowledgeNode, KnowledgeSource, RunEvent } from '@shared/types'
 import { KNOWLEDGE_RUN_WRITES_MAX, QUICK_PROJECT_ID } from '@shared/types'
+import { fixtureId, knowledgeFixture } from '@shared/knowledge.fixture'
 import { RunManager, type RunManagerOptions } from './runManager'
 import { RunStore } from '../store/runs'
 import type { SetupService } from '../setup/service'
@@ -337,5 +338,240 @@ describe('RuntimeContext.engagementNotes.save', () => {
     expect(() => ctxs[0].engagementNotes!.save({ title: 'One too many', text: 'x' }, {})).toThrow(`The knowledge graph write limit for this run (${KNOWLEDGE_RUN_WRITES_MAX}) is reached; nothing was saved.`)
     expect(save).toHaveBeenCalledTimes(1)
     await m.stopAll()
+  })
+})
+
+// ---------- round 2: recall, automatic context, brief ----------
+
+describe('knowledge reads: where they are bound', () => {
+  it('recall, context and brief are bound exactly where knowledge is, never on code, setup, Chat, build or restricted runs', async () => {
+    const knowledge = fakeStore(knowledgeFixture())
+    const { m, ctxs } = rig({ knowledge })
+    await m.start({ project: engagement(), prompt: 'team' })
+    await m.start({ project: engagement({ id: 'p2', path: folder('b') }), prompt: 'single', team: 'single' })
+    await m.start({ project: makeProject({ id: 'p3', path: folder('c') }), prompt: 'code' })
+    await m.start({ project: engagement({ id: 'p4', path: folder('d') }), prompt: 'setup', kind: 'setup' })
+    const quickFolder = folder('quick')
+    await m.start({ project: makeProject({ id: QUICK_PROJECT_ID, path: quickFolder, kind: 'engagement' }), prompt: 'chat', quick: { folder: quickFolder, team: 'single', allowEdits: false, gitRepo: false, scratch: true } })
+    const ws = folder('ws')
+    await m.start({ project: makeProject({ id: 'harness', roles: [], path: ws, kind: 'engagement' }), prompt: 'build', kind: 'mcp-assist', buildWorkspace: ws })
+    const has = (c: RuntimeContext): boolean[] => [c.knowledgeRecall !== undefined, c.knowledgeContext !== undefined, c.knowledgeBrief !== undefined]
+    expect(has(ctxs[0])).toEqual([true, true, true])
+    expect(has(ctxs[1])).toEqual([true, true, true])
+    for (const c of ctxs.slice(2)) expect(has(c)).toEqual([false, false, false])
+    await m.stopAll()
+  })
+})
+
+describe('knowledge_recall through RunManager', () => {
+  it('serves fenced data, writes the row on the caller, counts usage and writes nothing to the graph', async () => {
+    const knowledge = fakeStore(knowledgeFixture())
+    const { m, ctxs } = rig({ knowledge })
+    const run = await m.start({ project: engagement(), prompt: 'go' })
+    const ctx = ctxs[0]
+    ctx.emit({ type: 'agent.upsert', runId: run.id, agent: agentWith({ id: 'a-sub' }) })
+    const text = ctx.knowledgeRecall!({ query: 'Priya Raman' }, { agentId: 'a-sub' })
+    expect(text).toContain('<<<')
+    expect(text).toContain('Priya Raman')
+    expect(text.length).toBeLessThanOrEqual(1500)
+    const row = rows().at(-1)!
+    expect(row.agentId).toBe('a-sub')
+    expect(row.source).toBe('harness')
+    expect(row.text).toMatch(/^Recalled \d+ items? about Priya Raman$/)
+    const usage = m.summaryOf(run.id)?.usage?.knowledge
+    expect(usage).toMatchObject({ recalls: 1, autoContexts: 0 })
+    expect(usage!.itemsServed).toBeGreaterThan(0)
+    expect(usage!.charsServed).toBe(text.length)
+    expect(knowledge.calls).toEqual([])
+    await m.stopAll()
+  })
+
+  it('a repeat by the same agent is much shorter; another agent and fresh get the full answer; reads never hit the writes cap', async () => {
+    const knowledge = fakeStore(knowledgeFixture())
+    const { m, ctxs } = rig({ knowledge })
+    await m.start({ project: engagement(), prompt: 'go' })
+    const ctx = ctxs[0]
+    // Every match fits the largest budget, so the repeat is one short line per entity.
+    const first = ctx.knowledgeRecall!({ query: 'cut-over', budget: 6000 }, {})
+    const again = ctx.knowledgeRecall!({ query: 'cut-over', budget: 6000 }, {})
+    expect(again.length).toBeLessThan(first.length / 2)
+    expect(again).toContain('already shown')
+    expect(ctx.knowledgeRecall!({ query: 'cut-over', budget: 6000 }, { agentId: 'someone-else' })).toBe(first)
+    expect(ctx.knowledgeRecall!({ query: 'cut-over', budget: 6000, fresh: true }, {})).toBe(first)
+    for (let i = 0; i < KNOWLEDGE_RUN_WRITES_MAX + 5; i++) ctx.knowledgeRecall!({ query: 'cut-over' }, {})
+    expect(ctx.knowledgeRecall!({ query: 'cut-over' }, {})).toContain('already shown')
+    expect(knowledge.calls).toEqual([])
+    await m.stopAll()
+  })
+
+  it('answers an empty match plainly (the query fenced), still counts it and emits no event', async () => {
+    const knowledge = fakeStore(knowledgeFixture())
+    const { m, ctxs } = rig({ knowledge })
+    const run = await m.start({ project: engagement(), prompt: 'go' })
+    const text = ctxs[0].knowledgeRecall!({ query: 'zzzqqq <<<>>> nothing' }, {})
+    expect(text).toBe('Nothing in the knowledge graph matches "zzzqqq ‹‹‹››› nothing".')
+    expect(m.summaryOf(run.id)?.usage?.knowledge).toMatchObject({ recalls: 1, itemsServed: 0 })
+    expect(events.filter((e) => e.type === 'knowledge.recalled')).toEqual([])
+    await m.stopAll()
+  })
+
+  it('a store failure answers a fixed sentence and never throws', async () => {
+    const knowledge = fakeStore(knowledgeFixture())
+    const { m, ctxs } = rig({ knowledge })
+    await m.start({ project: engagement(), prompt: 'go' })
+    vi.mocked(knowledge.get).mockImplementationOnce(() => {
+      throw new Error('disk gone')
+    })
+    expect(ctxs[0].knowledgeRecall!({ query: 'Stripe' }, {})).toBe('The knowledge graph could not be read right now.')
+    await m.stopAll()
+  })
+
+  it('asks the store for inferred links when it has them', async () => {
+    const knowledge = fakeStore(knowledgeFixture())
+    knowledge.inferred = vi.fn(() => ({ links: [], appearances: {} }))
+    const { m, ctxs } = rig({ knowledge })
+    await m.start({ project: engagement(), prompt: 'go' })
+    ctxs[0].knowledgeRecall!({ query: 'Stripe' }, {})
+    expect(knowledge.inferred).toHaveBeenCalledWith('p1')
+    await m.stopAll()
+  })
+})
+
+describe('knowledge.recalled throttle', () => {
+  it('goes out at once the first time, merges calls inside the second into one trailing event and flushes before the end', async () => {
+    const knowledge = fakeStore(knowledgeFixture())
+    const { m, ctxs } = rig({ knowledge })
+    const run = await m.start({ project: engagement(), prompt: 'go' })
+    const ctx = ctxs[0]
+    vi.useFakeTimers()
+    try {
+      const recalled = (): Extract<RunEvent, { type: 'knowledge.recalled' }>[] => events.filter((e): e is Extract<RunEvent, { type: 'knowledge.recalled' }> => e.type === 'knowledge.recalled')
+      ctx.knowledgeRecall!({ query: 'Priya Raman' }, {})
+      expect(recalled()).toHaveLength(1)
+      expect(recalled()[0]).toMatchObject({ runId: run.id, agentId: ROOT_AGENT_ID, via: 'recall' })
+      expect(recalled()[0].nodeIds).toContain(fixtureId('Priya Raman'))
+      ctx.knowledgeRecall!({ query: 'Stripe' }, {})
+      ctx.knowledgeRecall!({ query: 'tax' }, { agentId: ROOT_AGENT_ID })
+      expect(recalled()).toHaveLength(1)
+      vi.advanceTimersByTime(1000)
+      expect(recalled()).toHaveLength(2)
+      expect(new Set(recalled()[1].nodeIds).size).toBe(recalled()[1].nodeIds.length)
+      expect(recalled()[1].nodeIds.length).toBeLessThanOrEqual(50)
+      // A pending event is sent before the terminal status, never after it.
+      vi.advanceTimersByTime(1000)
+      ctx.knowledgeRecall!({ query: 'legacy export' }, {})
+      const sent = recalled().length
+      ctx.knowledgeRecall!({ query: 'Atlas' }, {})
+      expect(recalled()).toHaveLength(sent)
+      ctx.emit({ type: 'run.status', runId: run.id, status: 'finished' })
+      const types = events.map((e) => e.type)
+      expect(types.lastIndexOf('knowledge.recalled')).toBeLessThan(types.lastIndexOf('run.status'))
+      expect(recalled()).toHaveLength(sent + 1)
+      vi.advanceTimersByTime(5000)
+      expect(recalled()).toHaveLength(sent + 1)
+      ctx.knowledgeRecall!({ query: 'tax' }, {})
+      expect(recalled()).toHaveLength(sent + 1)
+    } finally {
+      vi.useRealTimers()
+    }
+    await m.stopAll()
+  })
+})
+
+describe('knowledge context through RunManager', () => {
+  it('adds a block for known names, writes the "Added" row, counts it and dedupes per agent', async () => {
+    const knowledge = fakeStore(knowledgeFixture())
+    const { m, ctxs } = rig({ knowledge })
+    const run = await m.start({ project: engagement(), prompt: 'go' })
+    const ctx = ctxs[0]
+    const block = ctx.knowledgeContext!('Please ask Priya Raman.', { agentId: 'a-new', purpose: 'spawn' })
+    expect(block).toContain('Priya Raman')
+    expect(block).toContain('<<<')
+    const row = rows().at(-1)!
+    expect(row.text).toMatch(/^Added \d+ known items?: /)
+    expect(row.text.length).toBeLessThanOrEqual(200)
+    expect(row.agentId).toBe(ROOT_AGENT_ID)
+    expect(m.summaryOf(run.id)?.usage?.knowledge).toMatchObject({ autoContexts: 1, recalls: 0 })
+    // The same agent hears the same names again: nothing new, no row.
+    const rowsBefore = rows().length
+    expect(ctx.knowledgeContext!('Priya Raman again', { agentId: 'a-new', purpose: 'message' })).toBeNull()
+    expect(rows()).toHaveLength(rowsBefore)
+    // Another agent, and calls with no agent id (no dedupe), still get it.
+    expect(ctx.knowledgeContext!('Priya Raman', { agentId: 'a-other', purpose: 'spawn' })).not.toBeNull()
+    expect(ctx.knowledgeContext!('Priya Raman', { purpose: 'message' })).not.toBeNull()
+    expect(ctx.knowledgeContext!('Priya Raman', { purpose: 'message' })).not.toBeNull()
+    // Nothing known in the text, or not text at all.
+    expect(ctx.knowledgeContext!('hello there', { purpose: 'message' })).toBeNull()
+    expect(ctx.knowledgeContext!(undefined as unknown as string, { purpose: 'message' })).toBeNull()
+    expect(knowledge.calls).toEqual([])
+    await m.stopAll()
+  })
+
+  it('a single name reads "Added 1 known item: X" and the recall dedupe is shared with it', async () => {
+    const knowledge = fakeStore(knowledgeFixture())
+    const { m, ctxs } = rig({ knowledge })
+    await m.start({ project: engagement(), prompt: 'go' })
+    const ctx = ctxs[0]
+    ctx.knowledgeContext!('Lena Koster', { agentId: 'a1', purpose: 'message' })
+    expect(rows().at(-1)!.text).toBe('Added 1 known item: Lena Koster')
+    expect(ctx.knowledgeRecall!({ query: 'Lena Koster' }, { agentId: 'a1' })).toContain('already shown')
+    await m.stopAll()
+  })
+
+  it('is null when the saved project turns it off, read at call time; unset means on', async () => {
+    const knowledge = fakeStore(knowledgeFixture())
+    let saved = engagement()
+    const { m, ctxs } = rig({ knowledge, resolveProject: () => saved })
+    await m.start({ project: engagement(), prompt: 'go' })
+    const ctx = ctxs[0]
+    expect(ctx.knowledgeContext!('Lena Koster', { purpose: 'message' })).not.toBeNull()
+    saved = { ...saved, knowledgeAutoContext: false }
+    expect(ctx.knowledgeContext!('Lena Koster', { purpose: 'message' })).toBeNull()
+    saved = { ...saved, knowledgeAutoContext: true }
+    expect(ctx.knowledgeContext!('Lena Koster', { purpose: 'message' })).not.toBeNull()
+    await m.stopAll()
+  })
+
+  it('a store failure returns null with a warning, never a throw', async () => {
+    const knowledge = fakeStore(knowledgeFixture())
+    const { m, ctxs } = rig({ knowledge })
+    await m.start({ project: engagement(), prompt: 'go' })
+    vi.mocked(knowledge.get).mockImplementationOnce(() => {
+      throw new Error('disk gone')
+    })
+    expect(ctxs[0].knowledgeContext!('Lena Koster', { purpose: 'message' })).toBeNull()
+    expect(warn).toHaveBeenCalled()
+    await m.stopAll()
+  })
+})
+
+describe('knowledge brief through RunManager', () => {
+  it('is computed once per run, memoised including an empty answer, and never throws', async () => {
+    const knowledge = fakeStore(knowledgeFixture())
+    const { m, ctxs } = rig({ knowledge })
+    await m.start({ project: engagement(), prompt: 'go' })
+    const first = ctxs[0].knowledgeBrief!()
+    expect(first).toContain('Knowledge graph index')
+    const calls = vi.mocked(knowledge.get).mock.calls.length
+    expect(ctxs[0].knowledgeBrief!()).toBe(first)
+    expect(vi.mocked(knowledge.get).mock.calls.length).toBe(calls)
+
+    const empty = fakeStore()
+    const other = rig({ knowledge: empty })
+    await other.m.start({ project: engagement({ id: 'p9', path: folder('e') }), prompt: 'go' })
+    expect(other.ctxs[0].knowledgeBrief!()).toBeUndefined()
+    empty.get = vi.fn(() => knowledgeFixture())
+    expect(other.ctxs[0].knowledgeBrief!()).toBeUndefined()
+
+    const broken = fakeStore()
+    broken.get = vi.fn(() => {
+      throw new Error('boom')
+    })
+    const third = rig({ knowledge: broken })
+    await third.m.start({ project: engagement({ id: 'p8', path: folder('f') }), prompt: 'go' })
+    expect(third.ctxs[0].knowledgeBrief!()).toBeUndefined()
+    await m.stopAll()
+    await other.m.stopAll()
+    await third.m.stopAll()
   })
 })

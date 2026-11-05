@@ -1,4 +1,4 @@
-import type { AgentInstance, AgentUsage, CostSource, ModelUsageEntry, PriceSource, RoleUsage, RunRecord, RunSummary, RunUsage, SkillUseCount, TokenUsage, UsageStats, UsageStatsQuery, UsageTrendPoint } from '@shared/types'
+import type { AgentInstance, AgentUsage, CostSource, KnowledgeServedUsage, ModelUsageEntry, PriceSource, RoleUsage, RunRecord, RunSummary, RunUsage, SkillUseCount, TokenUsage, UsageStats, UsageStatsQuery, UsageTrendPoint } from '@shared/types'
 import { agentProducedNothing, emptyTokens, totalTokens } from '@shared/defaults'
 import { USAGE_CSV_COLUMNS, USAGE_STATS_DEFAULT_LIMIT, USAGE_STATS_MAX_LIMIT } from '@shared/types'
 
@@ -71,6 +71,25 @@ export interface RunUsageInputs {
   now: number
   /** Skill loads counted by RunManager (skill.used events). Missing or empty = RunUsage.skills stays unset. */
   skills?: readonly SkillUseCount[]
+  /** Knowledge graph reads served (RunManager's tally). Missing or all zero = RunUsage.knowledge stays unset. */
+  knowledge?: KnowledgeServedUsage
+}
+
+/**
+ * A KnowledgeServedUsage from untrusted data (a persisted record): every field a finite whole number >= 0, else the
+ * whole value is absent. All zero counts as absent too. Never throws.
+ */
+export function cleanKnowledgeUsage(x: unknown): KnowledgeServedUsage | undefined {
+  if (!x || typeof x !== 'object' || Array.isArray(x)) return undefined
+  const o = x as Record<string, unknown>
+  const out: Partial<KnowledgeServedUsage> = {}
+  for (const k of ['recalls', 'autoContexts', 'itemsServed', 'charsServed'] as const) {
+    const v = o[k]
+    if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) return undefined
+    out[k] = Math.floor(v)
+  }
+  const u = out as KnowledgeServedUsage
+  return u.recalls + u.autoContexts + u.itemsServed + u.charsServed > 0 ? u : undefined
 }
 
 /**
@@ -245,6 +264,8 @@ export function computeRunUsage(summary: RunSummary, agents: readonly AgentInsta
   if (legacy) usage.legacy = true
   const skills = mergeSkillCounts([inputs.skills ?? []])
   if (skills.length) usage.skills = skills
+  const knowledge = cleanKnowledgeUsage(inputs.knowledge)
+  if (knowledge) usage.knowledge = knowledge
   return usage
 }
 
@@ -355,6 +376,16 @@ export function normalizeRunRecord(record: RunRecord, now: number = Date.now()):
     }
     summary = { ...summary, usage }
     changed = true
+  } else if (summary.usage.knowledge !== undefined) {
+    // A stored knowledge tally that is junk (old build, hand-edited file) reads as absent.
+    const clean = cleanKnowledgeUsage(summary.usage.knowledge)
+    if (JSON.stringify(clean) !== JSON.stringify(summary.usage.knowledge)) {
+      const usage = { ...summary.usage }
+      if (clean) usage.knowledge = clean
+      else delete usage.knowledge
+      summary = { ...summary, usage }
+      changed = true
+    }
   }
   return changed ? { ...record, summary, agents } : record
 }
@@ -456,7 +487,16 @@ export function sumRunUsage(list: readonly RunUsage[], now: number): RunUsage {
   if (list.some((u) => u.legacy)) total.legacy = true
   const skills = mergeSkillCounts(list.map((u) => u.skills ?? []))
   if (skills.length) total.skills = skills
-  const pc = sum((u) => u.providerCostUsd ?? 0)
+  const served = list.map((u) => cleanKnowledgeUsage(u.knowledge)).filter((k): k is KnowledgeServedUsage => k !== undefined)
+  if (served.length) {
+    total.knowledge = {
+      recalls: served.reduce((n, k) => n + k.recalls, 0),
+      autoContexts: served.reduce((n, k) => n + k.autoContexts, 0),
+      itemsServed: served.reduce((n, k) => n + k.itemsServed, 0),
+      charsServed: served.reduce((n, k) => n + k.charsServed, 0)
+    }
+  }
+  const pc =sum((u) => u.providerCostUsd ?? 0)
   if (pc > 0 && Number.isFinite(pc)) total.providerCostUsd = pc
   return total
 }
