@@ -184,18 +184,23 @@ export async function main(argv: string[] = process.argv.slice(2), overrides: Ma
 
     /**
      * Environment secrets (secretOverlay.ts planSecretEnv): the refusal, the one warning, and the overlay taken out of
-     * the environment before anything can spawn. `command` undefined is bare `orgai`; null skips secrets entirely
-     * (completions).
+     * the environment before anything can spawn. `command` undefined is bare `orgai`; null is completions, which
+     * only refuses an explicit --secret-env (a hostless command, cli-standalone.md 4.1) and leaves the environment be.
      */
     const prepareContext = (command: string | null | undefined, commandArgs: readonly string[]): ReturnType<typeof buildContext> => {
-      if (command === null) return contextFor(globals, env, io, overrides)
+      if (command === null) {
+        const refusal = planSecretEnv(globals.host, 'never-inproc', {}, globals.secretEnv).refusal
+        if (refusal) throw new CliError(refusal, EXIT.usage)
+        return contextFor(globals, env, io, overrides)
+      }
       const plan = planSecretEnv(globals.host, secretEnvCommandClass(command, commandArgs), env, globals.secretEnv)
       if (plan.refusal) throw new CliError(plan.refusal, EXIT.usage)
       let overlay: Map<string, string> | undefined
       if (plan.collect) {
         const collected = collectSecretOverlay(env, globals.secretEnv)
         scrubSecretEnv(env, collected.consumedVars)
-        overlay = collected.overlay
+        // An ignored ambient secret is scrubbed, never handed to a host this command may start (review round 1).
+        if (!plan.dropOverlay) overlay = collected.overlay
       }
       if (plan.warning) io.stderr.write(`${plan.warning}\n`)
       return contextFor(globals, env, io, overrides, overlay, plan.use)

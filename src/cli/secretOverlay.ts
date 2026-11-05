@@ -6,11 +6,13 @@
  * Per host mode (planSecretEnv):
  * - `--host inproc`: collected, scrubbed, used.
  * - `--host daemon`: refused (exit 2; the background host keeps its own stored secrets).
- * - `--host auto`: always collected and scrubbed. Commands that never run their own in-process host
- *   (NEVER_INPROC_COMMANDS: hostless, attach-only, daemon, app) refuse an explicit --secret-env and ignore an ambient
- *   ORGAI_SECRET_* with one warning. Every other command runs in-process when no host is live (ensureHost), and against
- *   a live host refuses an explicit --secret-env, refuses an ambient one when it would use a secret there
- *   (SECRET_USING_COMMANDS), else warns once.
+ * - `--host auto`: always scrubbed. Commands that never run their own in-process host (NEVER_INPROC_COMMANDS:
+ *   hostless, attach-only, daemon, app) refuse an explicit --secret-env and ignore an ambient ORGAI_SECRET_* with one
+ *   warning; the overlay is dropped, so a host such a command starts (`daemon start --foreground`) never gets the
+ *   secrets (review round 1). `projects list|show` (hostless in the spec, host-backed through withHost here) refuse an
+ *   explicit --secret-env and otherwise behave like any other host-backed command. Every other command runs in-process
+ *   when no host is live (ensureHost), and against a live host refuses an explicit --secret-env, refuses an ambient one
+ *   when it would use a secret there (SECRET_USING_COMMANDS), else warns once.
  */
 import { PARAM_ID_PATTERN } from '../main/host/params'
 import { LITELLM_KEY } from '../main/store/secrets'
@@ -111,20 +113,24 @@ export const SECRET_ENV_IGNORED_WARNING = 'ORGAI_SECRET_* ignored: a running Org
 
 /**
  * How a command treats environment secrets under `--host auto`:
- * - 'never-inproc': never runs its own in-process host (hostless, attach-only, daemon, app, doctor, completions,
- *   projects list|show, terminal-access): an explicit --secret-env is refused, an ambient one ignored with a warning.
+ * - 'never-inproc': never runs its own in-process host for a client (hostless, attach-only, daemon, app, doctor,
+ *   completions, terminal-access): an explicit --secret-env is refused, an ambient one ignored with a warning and
+ *   scrubbed without reaching any host (`daemon start --foreground` starts one, and other clients use it).
+ * - 'listing': `projects list|show`, which the spec lists as hostless but which go through withHost here: an explicit
+ *   --secret-env is refused (the spec's hostless rule), an ambient one behaves as 'host' (with no live host the command
+ *   stays in-process, so it never spawns a background host in the middle of such a session; round 6 item 8).
  * - 'secret-using': would use a secret on a live host (starts or continues a run, the Architect, an assistant, a
  *   credential probe, a model call): an ambient secret is refused against a live host.
  * - 'host': any other host-backed command: an ambient secret is ignored against a live host with a warning.
- * With no live host, both 'secret-using' and 'host' commands run in-process and use the secrets.
+ * With no live host, 'secret-using', 'listing' and 'host' commands run in-process and use the secrets.
  */
-export type SecretEnvClass = 'never-inproc' | 'secret-using' | 'host'
+export type SecretEnvClass = 'never-inproc' | 'listing' | 'secret-using' | 'host'
 
 /** Commands that never run their own in-process host (whatever their subcommand). */
 export const NEVER_INPROC_COMMANDS: ReadonlySet<string> = new Set(['status', 'runs', 'watch', 'inbox', 'decide', 'daemon', 'app', 'doctor', 'completions', 'terminal-access'])
 
-/** Subcommands that never run an in-process host (cli-standalone.md 4.1 lists `projects list|show` as hostless). */
-const NEVER_INPROC_SUBCOMMANDS: Readonly<Record<string, readonly string[]>> = { projects: ['list', 'show'] }
+/** Subcommands cli-standalone.md 4.1 lists as hostless but that run through withHost in this CLI ('listing'). */
+const LISTING_SUBCOMMANDS: Readonly<Record<string, readonly string[]>> = { projects: ['list', 'show'] }
 
 /** Commands that always use secrets on a live host (bare `orgai` and `orgai [--] <prompt>` route as undefined). */
 const SECRET_USING_COMMANDS: ReadonlySet<string> = new Set(['exec', 'resume', 'tui', 'attach'])
@@ -162,7 +168,7 @@ export function secretEnvCommandClass(command: string | undefined, args: readonl
   if (command === undefined || SECRET_USING_COMMANDS.has(command)) return 'secret-using'
   if (NEVER_INPROC_COMMANDS.has(command)) return 'never-inproc'
   const head = beforeDashes(args)
-  if (NEVER_INPROC_SUBCOMMANDS[command]?.includes(head[0] ?? '')) return 'never-inproc'
+  if (LISTING_SUBCOMMANDS[command]?.includes(head[0] ?? '')) return 'listing'
   // `orgai init` runs the Architect unless --skip-architect.
   if (command === 'init') return head.includes('--skip-architect') ? 'host' : 'secret-using'
   for (const path of SECRET_USING_SUBCOMMANDS) {
@@ -179,6 +185,11 @@ export interface SecretEnvPlan {
   warning?: string
   /** Collect the overlay and scrub the variables (always when any secret is present, and always under inproc). */
   collect: boolean
+  /**
+   * Scrub the variables but hand no overlay to the context: an ambient secret a 'never-inproc' command ignores must not
+   * reach a host it starts (`daemon start --foreground` under --host auto serves other clients).
+   */
+  dropOverlay?: boolean
   /** For ensureHost under `--host auto` (CliContext.secretEnv). */
   use?: SecretEnvUse
 }
@@ -190,7 +201,8 @@ export function planSecretEnv(hostMode: HostMode, cls: SecretEnvClass, env: Node
   if (hostMode === 'inproc') return { collect: true }
   if (!explicit && !ambient) return { collect: false }
   if (hostMode === 'daemon') return { collect: false, refusal: SECRET_ENV_REFUSAL }
-  if (cls === 'never-inproc') return explicit ? { collect: false, refusal: SECRET_ENV_REFUSAL } : { collect: true, warning: SECRET_ENV_IGNORED_WARNING }
+  if (cls === 'never-inproc') return explicit ? { collect: false, refusal: SECRET_ENV_REFUSAL } : { collect: true, dropOverlay: true, warning: SECRET_ENV_IGNORED_WARNING }
+  if (cls === 'listing' && explicit) return { collect: false, refusal: SECRET_ENV_REFUSAL }
   return { collect: true, use: { explicit, ambient, usesSecrets: cls === 'secret-using' } }
 }
 

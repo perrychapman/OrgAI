@@ -16,6 +16,7 @@ import {
   missingPackages,
   parseArgs,
   stopRefusal,
+  stoppedRunningHost,
   verifyEnv,
   versionMatches
 } from './verify-pack.mjs'
@@ -286,7 +287,7 @@ function fakeRunner(calls, overrides = {}) {
       const inproc = a.includes('inproc')
       return overrides[inproc ? 'inproc' : 'host'] ?? { code: 0, stdout: JSON.stringify({ outcome: 'completed', exitCode: 0 }), stderr: '' }
     }
-    if (a.includes('daemon')) return { code: 0, stdout: '', stderr: '' }
+    if (a.includes('daemon')) return overrides.stop ?? { code: 0, stdout: JSON.stringify({ stopped: true, hostInstanceId: 'abc' }), stderr: '' }
     return { code: 9, stdout: '', stderr: 'unexpected command' }
   }
 }
@@ -393,6 +394,25 @@ test('main: an unknown argument exits 2', async () => {
   const lines = []
   assert.equal(await main(['--bogus'], { log: (l) => lines.push(l) }), 2)
   assert.match(lines[0], /Unknown argument/)
+})
+
+test('stoppedRunningHost: only a stop of a running host counts', () => {
+  assert.equal(stoppedRunningHost(JSON.stringify({ stopped: true, hostInstanceId: 'abc' })), true)
+  assert.equal(stoppedRunningHost(JSON.stringify({ stopped: false, running: false })), false)
+  assert.equal(stoppedRunningHost(''), false)
+  assert.equal(stoppedRunningHost('OrgAI host stopped.'), false)
+})
+
+test('main: (f) fails when daemon stop found no running host (the exec ran in-process)', async () => {
+  const fake = fakeRelease(['@anthropic-ai/claude-agent-sdk', 'zod'])
+  try {
+    const r = await runMain(fake, [], { stop: { code: 0, stdout: JSON.stringify({ stopped: false, running: false }), stderr: '' } })
+    assert.equal(r.code, 1)
+    assert.match(r.out, /fail +\(f\) daemon stop {2}no background host was running/)
+    assert.match(r.out, /ok +\(f\) exec host/)
+  } finally {
+    fs.rmSync(fake.base, { recursive: true, force: true })
+  }
 })
 
 test('stopRefusal tells settling work from a live run', () => {

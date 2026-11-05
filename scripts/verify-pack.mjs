@@ -148,6 +148,16 @@ export function stopRefusal(stdout) {
   return named.every((k) => TRANSIENT_LEASES.includes(k)) ? 'transient' : 'busy'
 }
 
+/**
+ * True when an `orgai --output-format json daemon stop` document says a running host was stopped (`stopped: true`).
+ * `{ stopped: false, running: false }` (no host was running) is false: the exec of (f) then ran in-process, not in
+ * the spawned background app (review round 1). Pure.
+ */
+export function stoppedRunningHost(stdout) {
+  const doc = parseJson(stdout)
+  return !!doc && typeof doc === 'object' && !Array.isArray(doc) && doc.stopped === true
+}
+
 /** `{ outcome, exitCode }` of an `exec --output-format json` document, or undefined. Pure. */
 export function execOutcome(stdout) {
   const doc = parseJson(stdout)
@@ -415,7 +425,13 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
             await new Promise((r) => setTimeout(r, 1000))
             s = await orgai(['--output-format', 'json', 'daemon', 'stop'], repo)
           }
-          report('(f) daemon stop', s.code === 0, s.code === 0 ? 'the background app stopped' : showRun(s))
+          // Exit 0 alone also answers "No OrgAI host is running", which would mean the exec ran in-process.
+          const stoppedOk = s.code === 0 && stoppedRunningHost(s.stdout)
+          report(
+            '(f) daemon stop',
+            stoppedOk,
+            stoppedOk ? 'the background app stopped' : s.code === 0 ? `no background host was running, so the exec did not run in the spawned app: ${showRun(s)}` : showRun(s)
+          )
         }
       }
     }

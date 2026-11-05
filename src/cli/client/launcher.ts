@@ -20,7 +20,8 @@
  *   place). Source 'installed'. A candidate folder that exists but lacks its binary or app.asar is 'broken' (an error
  *   naming the path) unless a later candidate is complete.
  *
- * Which of these apply follows install.json (installInfo.ts, 3.5): the packaged layout only when it says 'app'; the dev
+ * Which of these apply follows install.json (installInfo.ts, 3.5): the packaged layout when it says 'app' or is absent
+ * (the layout's path shape is only ever an app's own; kept until every app build writes install.json); the dev
  * checkout only when there is no install.json at all AND the candidate root has electron.vite.config.ts and electron in
  * its devDependencies (an npm install's own package folder, also named orgai, is never a checkout; neither is a root
  * under node_modules). locate() answers found / absent / broken; only absent lets `--host auto` run in-process.
@@ -250,19 +251,23 @@ function samePath(a: string, b: string): boolean {
 
 /**
  * The packaged app for a bundle in `<Resources>/app.asar.unpacked/out/cli`, undefined for any other bundle folder.
- * The running binary wins when this CLI runs on Electron and that binary is the layout's app binary.
+ * The running binary wins when this CLI runs on Electron and that binary is the layout's app binary. Broken (4.1 step
+ * 3: the binary or `<Resources>/app.asar` is missing) is an error naming the missing path.
  */
 export function packagedApp(
   bundleDir: string,
   platform: NodeJS.Platform,
-  runtime: { execPath: string; electron?: string }
+  runtime: { execPath: string; electron?: string },
+  exists: (p: string) => boolean = existsSync
 ): { command: string; args: string[]; source: 'packaged' } | { error: string; path: string } | undefined {
   const res = resourcesDirOfCliBundle(bundleDir, platform)
   if (res === undefined) return undefined
   const { appBinary } = packagedLayout(platform, res)
-  if (runtime.electron && runtime.execPath && samePath(runtime.execPath, appBinary)) return { command: runtime.execPath, args: [], source: 'packaged' }
-  if (existsSync(appBinary)) return { command: appBinary, args: [], source: 'packaged' }
-  return { error: packagedAppMissing(appBinary), path: appBinary }
+  const running = !!runtime.electron && !!runtime.execPath && samePath(runtime.execPath, appBinary)
+  if (!running && !exists(appBinary)) return { error: packagedAppMissing(appBinary), path: appBinary }
+  const asar = (platform === 'win32' ? win32 : posix).join(res, 'app.asar')
+  if (!exists(asar)) return { error: packagedAppMissing(asar), path: asar }
+  return { command: running ? runtime.execPath : appBinary, args: [], source: 'packaged' }
 }
 
 /** Variables a command read a secret from (consumeSecretEnv); never handed to a spawned host. */
@@ -320,9 +325,13 @@ export function createLauncher(opts: LauncherOptions): HostLauncher {
     }
     const bundleDir = opts.bundleDir ?? moduleDir()
     installInfo ??= readInstallInfo({ bundleDir })
-    // The packaged layout only for a bundle install.json marks as the app's own (4.1 step 3).
-    if (installInfo.source === 'file' && installInfo.channel === 'app') {
-      const packaged = packagedApp(bundleDir, platform, opts.runtime ?? { execPath: process.execPath, electron: process.versions.electron })
+    // The packaged layout for a bundle install.json marks as the app's own (4.1 step 3), and, until every app build
+    // writes install.json (WP-A), for a bundle with no install.json at all: only an app's Resources folder has the
+    // `<Resources>/app.asar.unpacked/out/cli` shape, so an npm package folder can never match (review round 1). An
+    // install.json naming another channel, or one that did not read, never takes it.
+    const appInstall = installInfo.source === 'file' ? installInfo.channel === 'app' : installInfo.source === 'absent'
+    if (appInstall) {
+      const packaged = packagedApp(bundleDir, platform, opts.runtime ?? { execPath: process.execPath, electron: process.versions.electron }, exists)
       if (packaged) return packaged
     }
     // A dev checkout only without any install.json (an unreadable one is never a checkout).

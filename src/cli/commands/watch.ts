@@ -25,7 +25,7 @@ import { parseFlags } from '../flags'
 import { emitLine, isJsonOutput, printText, safeLine, styleFor, styleStatus, warn } from '../output'
 import { agentLabel, pendingItems, planUpdateLine, recordWithoutImages, statusViewOf, statusWordOfSummary, tailRows, transcriptLine } from '../render'
 import { hostlessNote, resolveRunFromSource, warnVersionSkew, type HostlessReason } from '../runRef'
-import { CliError, EXIT, type CliContext, type CommandFn, type HostClient, type ProjectResolution } from '../types'
+import { CliError, EXIT, HOST_STARTING_WAIT_MS, type CliContext, type CommandFn, type HostClient, type ProjectResolution } from '../types'
 
 export const WATCH_SNAPSHOT_ROWS = 20
 /** Give up reconnecting after this long without a successful resubscribe. */
@@ -54,7 +54,7 @@ export const runWatch: CommandFn = async (ctx: CliContext, args: string[]): Prom
   const json = isJsonOutput(ctx)
   const st = styleFor(ctx)
 
-  const first = await ctx.connect(['read'], { clientKind: 'cli', waitStartingMs: 2000 })
+  const first = await ctx.connect(['read'], { clientKind: 'cli', waitStartingMs: HOST_STARTING_WAIT_MS })
   if (!first.ok) {
     if (!HOSTLESS.has(first.reason)) throw new CliError(first.message || 'Could not connect to the OrgAI host.', first.reason === 'auth_failed' ? EXIT.auth : EXIT.failure)
     return watchHostless(ctx, ref, first.reason as HostlessReason, first.message)
@@ -272,7 +272,7 @@ export const runWatch: CommandFn = async (ctx: CliContext, args: string[]): Prom
 
   const stream = new RunStream({
     client,
-    connect: () => ctx.connect(['read'], { clientKind: 'cli', waitStartingMs: 2000 }),
+    connect: () => ctx.connect(['read'], { clientKind: 'cli', waitStartingMs: HOST_STARTING_WAIT_MS }),
     subscribeInput: () => ({ runIds: [...followed], followChains: follow, includeActiveRunRecord: newest }),
     onEvent: onRunsEvent,
     onSnapshot: applySnapshot,

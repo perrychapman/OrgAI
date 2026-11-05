@@ -76,9 +76,14 @@ describe('environment secrets per command (cli-standalone.md 4.1, round 6 item 8
   }
 
   it('commands that never run their own in-process host', () => {
-    for (const line of ['status', 'runs list', 'runs show R1', 'runs stop R1', 'runs send R1 hi', 'runs interrupt R1', 'watch', 'inbox', 'decide d1', 'daemon start', 'daemon restart', 'daemon stop', 'daemon logs', 'app', 'doctor', 'completions bash', 'projects list', 'projects show p1', 'terminal-access on']) {
+    for (const line of ['status', 'runs list', 'runs show R1', 'runs stop R1', 'runs send R1 hi', 'runs interrupt R1', 'watch', 'inbox', 'decide d1', 'daemon start', 'daemon restart', 'daemon stop', 'daemon logs', 'app', 'doctor', 'completions bash', 'terminal-access on']) {
       expect(cls(line), line).toBe('never-inproc')
     }
+  })
+
+  it('projects list|show: hostless in the spec, host-backed here (listing)', () => {
+    for (const line of ['projects list', 'projects show p1', 'projects list --json']) expect(cls(line), line).toBe('listing')
+    expect(cls('projects create')).toBe('host')
   })
 
   it('the secret-using table: runs, the Architect, assistants, credential probes and model calls', () => {
@@ -130,7 +135,12 @@ describe('environment secrets per command (cli-standalone.md 4.1, round 6 item 8
     expect(planSecretEnv('daemon', 'never-inproc', {}, flag)).toEqual({ collect: false, refusal: SECRET_ENV_REFUSAL })
     expect(planSecretEnv('auto', 'never-inproc', {}, flag)).toEqual({ collect: false, refusal: SECRET_ENV_REFUSAL })
     expect(planSecretEnv('auto', 'never-inproc', ambient, flag)).toEqual({ collect: false, refusal: SECRET_ENV_REFUSAL })
-    expect(planSecretEnv('auto', 'never-inproc', ambient, [])).toEqual({ collect: true, warning: SECRET_ENV_IGNORED_WARNING })
+    // An ignored ambient secret is scrubbed but its overlay dropped (review round 1: daemon start --foreground).
+    expect(planSecretEnv('auto', 'never-inproc', ambient, [])).toEqual({ collect: true, dropOverlay: true, warning: SECRET_ENV_IGNORED_WARNING })
+    // listing: explicit refused, ambient like 'host'.
+    expect(planSecretEnv('auto', 'listing', {}, flag)).toEqual({ collect: false, refusal: SECRET_ENV_REFUSAL })
+    expect(planSecretEnv('auto', 'listing', ambient, [])).toEqual({ collect: true, use: { explicit: false, ambient: true, usesSecrets: false } })
+    expect(planSecretEnv('inproc', 'listing', ambient, flag)).toEqual({ collect: true })
     expect(planSecretEnv('auto', 'host', ambient, [])).toEqual({ collect: true, use: { explicit: false, ambient: true, usesSecrets: false } })
     expect(planSecretEnv('auto', 'secret-using', {}, flag)).toEqual({ collect: true, use: { explicit: true, ambient: false, usesSecrets: true } })
   })

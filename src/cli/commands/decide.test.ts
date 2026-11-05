@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type { CardKind, DecisionLookup, DecisionOutcome, HostScope, PendingCards } from '../../shared/types'
 import { TERMINAL_FULL_ACCESS_HINT } from '../client/ensureHost'
 import { FakeHostClient, fakeContext, noHost, rpcError, type FakeContextOptions } from '../testing/fakeContext'
-import { EXIT } from '../types'
+import { EXIT, HOST_STARTING_WAIT_MS } from '../types'
 import { decideDeps, runDecide } from './decide'
 
 const RUN = 'run_abc123'
@@ -97,6 +97,8 @@ describe('orgai decide: payloads per kind and verb (cli-spec 5.3)', () => {
       expect(await runDecide(f.ctx, [REQ, ...argv])).toBe(EXIT.ok)
       expect(sent()).toEqual([[payload]])
       expect(f.connectCalls[0].scopes).toEqual(['read', 'decide'])
+      // A starting host is waited for as long as ensureHost waits (cli-standalone.md 4.1 step 2).
+      expect(f.connectCalls[0].opts).toMatchObject({ waitStartingMs: HOST_STARTING_WAIT_MS })
       expect(host.callsOf('runs:findDecision')).toEqual([[REQ]])
       expect(host.callsOf('runs:pendingCards')).toEqual([[RUN]])
       expect(host.closed).toBe(true)

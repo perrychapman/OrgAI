@@ -216,7 +216,7 @@ describe('launcher: packaged app (cli-spec 7, Wave 6)', () => {
    * A fake macOS bundle: OrgAI.app/Contents/{MacOS/OrgAI, Resources/app.asar.unpacked/out/cli}, with the install.json
    * the app builder writes (channel 'app') unless `channel` says otherwise (null: no file).
    */
-  function fakeApp(withBinary = true, channel: string | null = 'app'): { bundleDir: string; binary: string } {
+  function fakeApp(withBinary = true, channel: string | null = 'app', withAsar = true): { bundleDir: string; binary: string; asar: string } {
     const contents = join(base, 'Apps', 'OrgAI.app', 'Contents')
     const bundleDir = join(contents, 'Resources', 'app.asar.unpacked', 'out', 'cli')
     mkdirSync(bundleDir, { recursive: true })
@@ -224,7 +224,9 @@ describe('launcher: packaged app (cli-spec 7, Wave 6)', () => {
     mkdirSync(join(contents, 'MacOS'), { recursive: true })
     const binary = join(contents, 'MacOS', 'OrgAI')
     if (withBinary) writeFileSync(binary, '')
-    return { bundleDir, binary }
+    const asar = join(contents, 'Resources', 'app.asar')
+    if (withAsar) writeFileSync(asar, '')
+    return { bundleDir, binary, asar }
   }
 
   it('resolves the app binary next to a packaged bundle, with no arguments', () => {
@@ -266,8 +268,27 @@ describe('launcher: packaged app (cli-spec 7, Wave 6)', () => {
     expect(l.resolve()).toMatchObject({ source: 'dev', args: [root] })
   })
 
-  it('the packaged layout counts only when install.json says app (Wave 7, 4.1 step 3)', () => {
-    for (const channel of [null, 'npm', 'archive']) {
+  it('a missing app.asar is broken naming it, even under the running app binary (4.1 step 3; review round 1)', () => {
+    const { bundleDir, binary, asar } = fakeApp(true, 'app', false)
+    for (const runtime of [{ execPath: '/usr/bin/node' }, { execPath: binary, electron: '45.1.0' }]) {
+      const l = createLauncher({ dataDir, userDataDir: '', userChoseDataDir: false, env: {}, bundleDir, platform: 'darwin', runtime })
+      expect(l.resolve()).toEqual({ error: packagedAppMissing(asar), path: asar })
+      expect(l.locate()).toEqual({ status: 'broken', path: asar, message: packagedAppMissing(asar) })
+    }
+  })
+
+  it('no install.json: the packaged layout still counts (only an app has that path shape; until WP-A writes the file)', () => {
+    const { bundleDir, binary } = fakeApp(true, null)
+    const l = createLauncher({ dataDir, userDataDir: '', userChoseDataDir: false, env: {}, bundleDir, platform: 'darwin', runtime: { execPath: '/usr/bin/node' } })
+    expect(l.resolve()).toEqual({ command: binary, args: [], source: 'packaged' })
+    expect(l.locate()).toMatchObject({ status: 'found', source: 'packaged' })
+    // An unreadable install.json never takes it.
+    const bad = createLauncher({ dataDir, userDataDir: '', userChoseDataDir: false, env: {}, bundleDir, platform: 'linux', installInfo: { channel: 'dev', source: 'invalid', problem: 'x' } })
+    expect(bad.locate().status).toBe('absent')
+  })
+
+  it('the packaged layout is never used when install.json names another channel (Wave 7, 4.1 step 3)', () => {
+    for (const channel of ['npm', 'archive']) {
       rmSync(join(base, 'Apps'), { recursive: true, force: true })
       const { bundleDir } = fakeApp(true, channel)
       const l = createLauncher({ dataDir, userDataDir: '', userChoseDataDir: false, env: {}, bundleDir, platform: 'linux', runtime: { execPath: '/usr/bin/node' } })
