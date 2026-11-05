@@ -1002,8 +1002,10 @@ export function pickLabels(input: {
   const obstacles = candidates.filter((c) => !c.quiet)
   const placed: PlacedLabel[] = []
   let counted = 0
+  // In a dense cloud most names fit nowhere; each try scans every obstacle, so the tries are bounded too.
+  let tried = 0
   for (const { c, must } of ordered) {
-    if (!must && counted >= budget) break
+    if (!must && (counted >= budget || ++tried > budget * 6)) break
     if (c.x + c.r < 0 || c.x - c.r > stage.w || c.y + c.r < 0 || c.y - c.r > stage.h) continue
     const w = Math.ceil(measure(c.text))
     for (const side of LABEL_SIDES) {

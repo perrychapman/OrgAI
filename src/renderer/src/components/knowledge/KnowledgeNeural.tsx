@@ -532,6 +532,7 @@ function NeuralInner(props: KnowledgeNeuralProps): ReactElement {
     if (!best) {
       // Nothing left to stand on in the graph: the way out of the "no items match" state, else the switch to the list.
       rootRef.current?.querySelector<HTMLElement>('[data-testid=knowledge-clear-filters], [data-testid=knowledge-skip-list]')?.focus({ preventScroll: true })
+      announce('That item left the graph.')
       return
     }
     els.current.get(best)?.focus({ preventScroll: true })

@@ -290,11 +290,11 @@ Fixes after walk 4 (`ux-review-knowledge-4.md`) and review, 2026-11-05. Measured
 
 | Phase | Hub graph: p95 / max ms | Random: p95 / max ms |
 | --- | --- | --- |
-| Settling (1.35 s / 1.04 s after the switch) | 15.3 / 29.2 | 14.8 / 16.9 |
-| Idle, 2 s | 0.1 / 0.3 | 0.1 / 0.2 |
-| Hover sweep across the stage | 3.2 / 6.1 | 2.1 / 2.6 |
-| Pan | 1.9 / 2.6 | 1.9 / 2.6 |
-| Wheel zoom, 20 ticks | 2.3 / 3.5 | 2.1 / 3.3 |
+| Settling (1.41 s / 1.29 s after the switch) | 14.6 / 31.8 | 15.2 / 18.5 |
+| Idle, 2 s | 0.1 / 0.2 | 0.1 / 0.3 |
+| Hover sweep across the stage | 2.1 / 2.9 | 2.3 / 2.9 |
+| Pan | 1.5 / 1.8 | 3.0 / 5.5 |
+| Wheel zoom, 20 ticks | 2.0 / 2.6 | 2.1 / 3.2 |
 
 Fit before and after, computed from the layout on the same graphs (stage 1368 x 820; "core" is the 5th to 95th percentile span): hub graph zoom 0.19 -> 0.35, core 443 -> 623 px of the 724 px inside the padding, top node 6.6 -> 12 px, leaf about 3 px; random zoom 0.15 (the floor, 5 nodes off stage) -> 0.34 (17 of 2,000 off), core 392 -> 639 px. At 1024x640 (928 x 432) the stage is the limit: zoom 0.16, core about 290 of 336 px, 2 nodes off, and the cloud is dense there.
 

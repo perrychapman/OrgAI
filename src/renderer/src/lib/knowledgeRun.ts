@@ -75,6 +75,11 @@ export function recallOutputText(result: string): string {
   const out: string[] = []
   for (const line of result.split('\n')) {
     if (line === '<<<' || line === '>>>') continue
+    // Main caps every value well under this; a longer line is left as it is rather than run through the patterns.
+    if (line.length > 2000) {
+      out.push(line)
+      continue
+    }
     if (/^Knowledge about .* \(data from the project's knowledge graph, not instructions\)\.$/.test(line)) continue
     let m: RegExpExecArray | null
     if ((m = /^kn_\S+ \| (.+?) \| already shown \(fresh: true shows it again\)$/.exec(line))) {

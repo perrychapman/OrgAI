@@ -70,6 +70,7 @@ export interface PossibleRow {
   why: LinkWhy
 }
 
+const withPlainName = (n: KnowledgeNode): KnowledgeNode => ({ ...n, name: n.name.replace(HIDDEN_OR_CONTROL_RUN, ' ').replace(/\s+/g, ' ').trim() })
 const pairKey = (a: string, b: string): string => (a < b ? `${a}\u0000${b}` : `${b}\u0000${a}`)
 
 /**
@@ -90,7 +91,10 @@ export function possibleRows(links: readonly KnowledgeInferredLink[], thisId: st
     if (!from || !to || from.retired || to.retired || link.from === link.to) continue
     if (linked.has(pairKey(link.from, link.to))) continue
     const why = linkWhy(link, thisId)
-    out.push({ link, other: link.from === thisId ? to : from, from, to, why })
+    // Names are drawn, spoken and announced from here: hidden characters never reach them (main refuses them on write too).
+    const shownFrom = withPlainName(from)
+    const shownTo = withPlainName(to)
+    out.push({ link, other: link.from === thisId ? shownTo : shownFrom, from: shownFrom, to: shownTo, why })
   }
   return out.sort((a, b) => b.link.strength - a.link.strength || b.link.count - a.link.count || a.other.name.localeCompare(b.other.name) || a.link.id.localeCompare(b.link.id))
 }

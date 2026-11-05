@@ -13,6 +13,14 @@ describe('the blank word field', () => {
   })
 })
 
+describe('names in a row', () => {
+  it('drops hidden characters from the names it shows', () => {
+    const rows = possibleRows([link('kl_1', 'a', 'b')], 'a', [node('a', 'Jane‮ Doe'), node('b', 'Acme​')], [])
+    expect(rows[0].from.name).toBe('Jane Doe')
+    expect(rows[0].other.name).toBe('Acme')
+  })
+})
+
 describe('possiblePartialNote', () => {
   it('says the list is partial only when the matcher stopped early', () => {
     expect(possiblePartialNote(undefined)).toBeNull()
