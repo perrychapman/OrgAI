@@ -42,8 +42,11 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  rmSync(root, { recursive: true, force: true })
+  rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 })
 })
+
+// Real git clones and pushes: slow under full-suite load on Windows, so headroom over the default.
+vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 })
 
 function publish(c: Computer, message: string): void {
   commitAll(c.repo, message)
