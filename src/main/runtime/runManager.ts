@@ -682,7 +682,7 @@ export class RunManager {
   private quitting = false
   /** adapter.start() calls not yet settled; stopAll waits for them so a session that opens during a quit is stopped. */
   private startsInFlight = new Set<Promise<unknown>>()
-  /** Auto-resumes between their timer firing and the successor run being registered (activity lease; the activity task increments it). */
+  /** Resumes (timer or manual) between their start and the successor run being registered (activity lease; withResumeLease). */
   private resumesInFlight = 0
 
   constructor(
@@ -2543,13 +2543,21 @@ export class RunManager {
     if (this.quitting) return
     const delay = Math.max(0, at - Date.now())
     const timer = setTimeout(() => {
-      this.resumeTimers.delete(runId)
-      this.resumeNow(runId).catch((err) => {
-        const message = `Could not resume the paused run: ${(err as Error).message}`
-        this.broadcast({ type: 'log', runId, level: 'error', message })
-        const s = this.patchSummary(runId, { autoResume: false })
-        if (s) this.broadcast({ type: 'run.status', runId, status: s.status, pausedUntil: s.pausedUntil, pauseReason: s.pauseReason, autoResume: false })
-      })
+      // Activity lease (cli-spec 3.2(4)): taken BEFORE the timer entry goes, so a host never sees neither a timer, an
+      // in-flight resume nor a live run. The timer path calls resumeUnleased (the lease is already held here) and
+      // drops the lease once, after the error handling below, when the resume settles.
+      this.withResumeLease(() => {
+        this.resumeTimers.delete(runId)
+        return this.resumeUnleased(runId).then(
+          () => undefined,
+          (err: unknown) => {
+            const message = `Could not resume the paused run: ${(err as Error).message}`
+            this.broadcast({ type: 'log', runId, level: 'error', message })
+            const s = this.patchSummary(runId, { autoResume: false })
+            if (s) this.broadcast({ type: 'run.status', runId, status: s.status, pausedUntil: s.pausedUntil, pauseReason: s.pauseReason, autoResume: false })
+          }
+        )
+      }).catch((err: unknown) => log.warn(`Run ${runId}: auto-resume failed: ${(err as Error)?.message ?? err}`))
     }, delay)
     this.resumeTimers.set(runId, timer)
   }
@@ -2589,8 +2597,39 @@ export class RunManager {
     return next
   }
 
-  /** Continue a paused run now, with the harness's resume message. */
-  async resumeNow(runId: string): Promise<RunSummary> {
+  /**
+   * Hold one in-flight resume lease (inFlightResumeCount) while fn runs: taken before fn is called, dropped exactly
+   * once when its promise settles, or at once when fn throws synchronously. continueRun -> start() registers the
+   * successor ActiveRun in `this.runs` before its first await, so by the time the lease drops the successor is live.
+   */
+  private withResumeLease<T>(fn: () => Promise<T>): Promise<T> {
+    this.resumesInFlight++
+    let released = false
+    const release = (): void => {
+      if (released) return
+      released = true
+      this.resumesInFlight--
+    }
+    let p: Promise<T>
+    try {
+      p = fn()
+    } catch (e) {
+      release()
+      return Promise.reject(e)
+    }
+    return p.finally(release)
+  }
+
+  /**
+   * Continue a paused run now, with the harness's resume message. A manual resume (Desktop or RPC) holds its own
+   * resume lease across the async setup.prepare gap; the timer path takes the lease itself and calls resumeUnleased.
+   */
+  resumeNow(runId: string): Promise<RunSummary> {
+    return this.withResumeLease(() => this.resumeUnleased(runId))
+  }
+
+  /** resumeNow's body, without the activity lease (the caller holds it). */
+  private async resumeUnleased(runId: string): Promise<RunSummary> {
     this.clearResume(runId)
     this.refuseWhileQuitting()
     const from = this.summary(runId)
