@@ -524,10 +524,12 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   and what is unverified):
   - Wave 3: adapters call `ctx.onRootTurnEnded` on every root turn end before 'idle' and expose `settlement()`;
     `ContinuationDriver.isSettledForTurn(gen)`; RunManager `trySettleExecRun` (pure `execSettle.ts`), stall watchdog,
-    idempotent `finalizeExecRun` -> one `run.finalized` with `RunSummary.execOutcome`, chain budget (`maxBudgetUsd` 0 is
-    real), headless decision policy (`decisionPolicy.ts`), `expectedRevision` / `DecisionOutcome` on every decision
+    idempotent `finalizeExecRun` -> one `run.finalized` with `RunSummary.execOutcome`, chain budget (an override `maxBudgetUsd` 0
+    is real; a stored project cap <= 0 is no cap, `projectBudgetUsd`), headless decision policy (`decisionPolicy.ts`), `expectedRevision` / `DecisionOutcome` on every decision
     method, tombstones (`decisionIndex.ts`, socket-only `runs:findDecision`). Widening overrides need 'configure'
-    (`allowWidening`, never persisted; the automatic waitForReset resume keeps it). CLI `orgai exec` / `-p`,
+    (`allowWidening`, never persisted; only the timer-driven waitForReset resume keeps it, and an operate-only
+    `resume --exec` drops carried allowPeerMessages / allowUnpricedBudget). `runs:stop` ends a paused run (an exec
+    one in flight finalizes 'interrupted'); a waitForReset run that can no longer resume finalizes 'rate-limited'. CLI `orgai exec` / `-p`,
     `resume --exec`, `decide`, `runs send / interrupt / stop`; exec followers subscribe `nonInteractive` so they never
     hold `humanGraceMs`. Mock markers `[mock:exec-plan|exec-blocked|exec-question|turn-fail|rate-limit|exec-slow]`.
     Unit tests with fake adapters / query() / app-server and e2e `cli-exec.mjs` (macOS); nothing live.

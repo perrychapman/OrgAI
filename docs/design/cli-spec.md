@@ -829,8 +829,21 @@ Resolved `R1`–`R10` (single-host daemon vs Desktop ownership, socket authentic
     picks the real id; their price is checked from usage reports). The live new-agent model check skips the mock
     adapter (fake ids priced by its own provider cost); unpriced usage entries are still checked there.
   - Widening overrides apply only with a 'configure' caller (`allowWidening`, never persisted). A later
-    `resume --exec` by an 'operate'-only client re-clamps the chain's stored overrides to the project. The automatic
-    waitForReset resume keeps the grant of the run it resumes (in memory, like the resume timers).
+    `resume --exec` by an 'operate'-only client re-clamps the chain's stored overrides to the project and drops the
+    carried `allowPeerMessages` / `allowUnpricedBudget`. The automatic waitForReset resume (the timer path only, never
+    a manual Resume now) keeps the grant of the run it resumes (in memory, like the resume timers; dropped with the
+    timer, on Cancel auto-resume and at teardown).
+  - Review fixes (2026-11-05, 958bb75): `runs:stop` on a paused run with no live session cancels its auto-resume and
+    finishes it as the user's end; a waitForReset exec run still in flight is finalized 'interrupted'. A waitForReset
+    exec run that can no longer resume by itself (adapter `autoResume: false`, a failed resume, Cancel auto-resume) is
+    finalized 'rate-limited'. A manual Resume now keeps the exec fields only for a waitForReset chain with no
+    `execOutcome` yet; a finalized exec run resumed by hand continues as a desktop run. `resume --exec` merges a partial
+    `decisionPolicy` per field over the chain's (runs:continue keeps the client's fields; defaults fill the rest).
+    Claude reports a result after `interrupt()` as `RootTurnEnd.interrupted`. A stored `Project.maxBudgetUsd` <= 0 is
+    "No cap" for desktop and exec runs (`projectBudgetUsd`); only an override budget of 0 is a real $0 budget.
+    `execStallTimeoutMs` must be > 0 at the host boundary too. A finalizer-claimed exec run stays live until its
+    final status is written. Unit-tested only (runManagerExec.test.ts, claudeExec.test.ts, runOverrides.test.ts);
+    which result subtype the live SDK sends after an interrupt is unverified.
   - Proposal decline from `orgai decide` is not limited to work runs in the CLI; the host decides.
   - Codex has no deferred-turn-end path and no Claude-style query restart ('restart' activity comes only from its
     app-server restart). The mock's `settlement()` has nothing to report on integration or restarts.
