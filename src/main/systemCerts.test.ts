@@ -117,7 +117,8 @@ function fakeDarwin(defaults: string[] = [PEM('def')]) {
       ev,
       killed: 0,
       stdout: { on: (_e, cb) => out.on('data', cb) },
-      on: ((e: string, cb: (...a: never[]) => void) => ev.on(e, cb)) as CertChild['on'],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      on: ((e: string, cb: (...a: any[]) => void) => ev.on(e, cb)) as CertChild['on'],
       kill: () => {
         c.killed++
       },
