@@ -250,7 +250,7 @@ describe('HostActivityTracker requestDrain', () => {
     expect(onDrained).not.toHaveBeenCalled()
   })
 
-  it('with force, calls forceStop and then drains, even when forceStop throws', async () => {
+  it('with force, marks draining, calls forceStop and then releases, even when forceStop throws', async () => {
     const order: string[] = []
     const own = fakeOwnership(order)
     const forceStop = vi.fn(async () => {
@@ -260,9 +260,73 @@ describe('HostActivityTracker requestDrain', () => {
     const { a, logs } = tracker({ ownership: own, forceStop, onDrained: () => order.push('onDrained') })
     a.acquire('liveRuns')
     await expect(a.requestDrain({ force: true })).resolves.toEqual({ stopping: true })
-    expect(order).toEqual(['forceStop', 'markDraining', 'release', 'onDrained'])
+    expect(order).toEqual(['markDraining', 'forceStop', 'release', 'onDrained'])
     expect(logs.some((l) => l.includes('stop failed'))).toBe(true)
     expect(a.state()).toBe('draining')
+  })
+
+  it('a forced drain is draining while forceStop runs, joins concurrent stops and calls forceStop once', async () => {
+    const order: string[] = []
+    const own = fakeOwnership(order)
+    let finishStop!: () => void
+    const forceStop = vi.fn(() => new Promise<void>((r) => (finishStop = r)))
+    const { a } = tracker({ ownership: own, forceStop, onDrained: () => order.push('onDrained') })
+    a.acquire('liveRuns')
+    const first = a.requestDrain({ force: true })
+    // Synchronously draining: new mutations are refused from here on.
+    expect(a.state()).toBe('draining')
+    expect(own.markDraining).toHaveBeenCalledTimes(1)
+    const second = a.requestDrain({ force: true })
+    const plain = a.requestDrain()
+    await Promise.resolve()
+    expect(forceStop).toHaveBeenCalledTimes(1)
+    expect(own.release).not.toHaveBeenCalled()
+    finishStop()
+    await expect(Promise.all([first, second, plain])).resolves.toEqual([{ stopping: true }, { stopping: true }, { stopping: true }])
+    expect(order).toEqual(['markDraining', 'release', 'onDrained'])
+  })
+
+  it('a forced drain waits for in-flight writers before it releases ownership', async () => {
+    vi.useFakeTimers()
+    const order: string[] = []
+    const own = fakeOwnership(order)
+    const { a } = tracker({ ownership: own, forceStop: async () => {}, forceSettlePollMs: 10, forceSettleMs: 60_000 })
+    const mutation = a.acquire('inFlightRpcMutations', 'projects:remove')
+    let tasks = 1
+    a.addSource('backgroundTasks', () => tasks)
+    a.acquire('activeOAuthFlows') // never waited on: a sign-in can wait on the user forever
+    let settled = false
+    const p = a.requestDrain({ force: true }).then((r) => {
+      settled = true
+      return r
+    })
+    await vi.advanceTimersByTimeAsync(50)
+    expect(own.release).not.toHaveBeenCalled()
+    mutation()
+    await vi.advanceTimersByTimeAsync(50)
+    expect(own.release).not.toHaveBeenCalled()
+    tasks = 0
+    await vi.advanceTimersByTimeAsync(20)
+    expect(own.release).toHaveBeenCalledTimes(1)
+    expect(settled).toBe(true)
+    await expect(p).resolves.toEqual({ stopping: true })
+  })
+
+  it('a forced drain releases anyway (logged) once the writer wait times out', async () => {
+    vi.useFakeTimers()
+    let t = 0
+    const own = fakeOwnership()
+    const logs: string[] = []
+    const a = new HostActivityTracker({ ownership: own, now: () => t, log: (m) => logs.push(m), forceStop: async () => {}, forceSettleMs: 100, forceSettlePollMs: 10 })
+    a.acquire('activeWorktreeOps')
+    const p = a.requestDrain({ force: true })
+    for (let i = 0; i < 12; i++) {
+      t += 10
+      await vi.advanceTimersByTimeAsync(10)
+    }
+    await expect(p).resolves.toEqual({ stopping: true })
+    expect(own.release).toHaveBeenCalledTimes(1)
+    expect(logs.some((l) => l.includes('activeWorktreeOps 1'))).toBe(true)
   })
 
   it('drains once: markDraining, release, onDrained, even with concurrent calls', async () => {

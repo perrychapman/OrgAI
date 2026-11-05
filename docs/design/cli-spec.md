@@ -667,3 +667,38 @@ Resolved `R1`–`R10` (single-host daemon vs Desktop ownership, socket authentic
 - **Unverified.** Windows named pipes and their ACLs, Windows / Linux process start times (reclaim relies on them),
   packaged builds, the startup dialogs by eye. No producer exists yet for `HOST_IPC`, `run.finalized` or
   `endedBy` 'policy' / 'budget'; the renderer Knowledge tab does not send `expectedUpdatedAt` / `appendFacts` yet.
+
+### Wave 1 (landed on dev, 2026-11-04; commits 75b3e25..a88d438 plus the review fix-up)
+
+- **Landed.** `src/main/host/registry.ts` (the exhaustive channel registry with scope, bulk flag, transport and
+  `gateRequest`), `params.ts` (shallow positional param specs; the handlers' arg builders still validate deeply),
+  `args.ts` (Electron-free arg builders moved out of ipc.ts), `dispatcher.ts` (`HostDispatcher` owns every request
+  handler: `invoke` for the desktop, `invokeRpc` for the wire with the gate, `host_draining` and the
+  `inFlightRpcMutations` lease), `events.ts` (`HostEventBus` for the 8 socket-subscribable pushes), `activity.ts`
+  (`HostActivityTracker`), `bootstrap.ts` (`bootOrgAIHost`, Electron-free). `src/main/ipc.ts` is a thin adapter over
+  the dispatcher plus the 11 `DESKTOP_ONLY_CHANNELS`; `src/main/index.ts` is the Electron shell over `bootOrgAIHost`.
+- **Gate.** `registry.test.ts` (every IPC constant and `HOST_IPC` channel mapped; dispatcher channels equal the
+  registry's socket-invokable set), the existing `ipc*.test.ts` unchanged, a booted mock host served over `invokeRpc`
+  through the real gate (runs:start / runs:list, host.stop), `npm run typecheck`, `npm test`, `npm run build` and
+  `e2e:free` on macOS.
+- **Deviations / decisions beyond the spec.**
+  - `host.status` and `host.stop` are answered by the dispatcher from `HostControl` (bootstrap); `runs:subscribe` and
+    `host.subscribe` are transport methods left to the Wave 2 socket server (`invokeRpc` refuses them).
+  - `host.stop` is in the 'configure' scope but holds no `inFlightRpcMutations` lease and is never refused while
+    draining (review fix: its own lease made every stop without force refuse itself; a second stop joins the drain).
+  - Forced drain (review fix): the host turns 'draining' (and daemon.json `draining`) synchronously before
+    `forceStop` (RunManager.stopAll quit), so new mutations get `host_draining`; concurrent stops share one drain and
+    one `forceStop`; after it the drain waits up to 10 s (`forceSettleMs`) for `inFlightRpcMutations`,
+    `activeWorktreeOps` and `backgroundTasks` to reach 0 before `ownership.release()`, then releases anyway with a
+    log line. Not waited on: `activeOAuthFlows` (a sign-in may wait on the user forever) and `interactiveClients`.
+  - Names: the spec's `runManager.hasActiveResumeTimers()` and the timer path's `inFlightStarts` lease are
+    `RunManager.activeResumeTimerCount()` and `inFlightResumeCount()` (a private `resumesInFlight` counter, separate
+    from `startsInFlight`, which tracks adapter.start calls); bootstrap sums the two into the `pausedAutoResumes`
+    source. Same behaviour: the lease is taken before the timer entry is deleted and dropped once `continueRun` has
+    registered the successor.
+  - The desktop host never arms idle exit in Wave 1; `interactiveClients` counts open BrowserWindows only (no TUI
+    sockets until Wave 2).
+- **Unverified / open.** No socket server, so nothing outside the process reaches `invokeRpc` yet. The desktop
+  `invoke` path does not check the draining state (renderer writes during a quit after ownership release are as in
+  Wave 0). A forced drain that hits its 10 s bound still releases ownership with writers in flight (logged). Windows
+  named pipes, packaged builds.

@@ -246,16 +246,22 @@ export class HostDispatcher {
     return handler(ctx, ...args)
   }
 
-  /** RPC path: gate (scope, params), refuse while draining, hold an inFlightRpcMutations lease for mutations. */
+  /**
+   * RPC path: gate (scope, params), refuse while draining, hold an inFlightRpcMutations lease for mutations (host.stop
+   * excepted).
+   */
   async invokeRpc(channel: string, params: unknown, ctx: RpcInvokeContext): Promise<unknown> {
     const g = this.gate(channel, params, { grantedScopes: ctx.grantedScopes, hostKind: this.env.hostKind ?? 'desktop' })
     if (g.entry.transport) throw new HostRpcFailure('bad_request', `${channel} is handled by the socket server.`)
-    if (g.mutation && this.activity.state() === 'draining') {
+    // host.stop is a lifecycle call, not store work: it holds no inFlightRpcMutations lease (its own lease would make
+    // every drain without force refuse itself) and is never refused while draining (requestDrain joins the drain).
+    const leased = g.mutation && g.channel !== HOST_METHODS.hostStop
+    if (leased && this.activity.state() === 'draining') {
       throw new HostRpcFailure('host_draining', 'OrgAI is shutting down; try again in a moment.', DRAINING_RETRY_MS)
     }
     const handler = this.lookup(g.channel)
     if (!handler) throw new HostRpcFailure('unknown_channel', `Unknown channel: ${channel}`)
-    const release = g.mutation ? this.activity.acquire('inFlightRpcMutations', channel) : undefined
+    const release = leased ? this.activity.acquire('inFlightRpcMutations', channel) : undefined
     try {
       return await handler(ctx, ...g.args)
     } catch (err) {

@@ -20,11 +20,29 @@ export interface HostActivityOptions {
   forceStop?: () => Promise<void>
   /** Called once the drain finished (the process may exit). */
   onDrained?: () => void
+  /**
+   * A forced drain, after forceStop: the longest it waits for in-flight store writers (FORCE_SETTLE_KINDS) to reach 0
+   * before it releases ownership anyway (logged). Default DEFAULT_FORCE_SETTLE_MS.
+   */
+  forceSettleMs?: number
+  /** How often a forced drain re-reads the writer counts while it waits. Default DEFAULT_FORCE_SETTLE_POLL_MS. */
+  forceSettlePollMs?: number
   log?: (m: string) => void
 }
 
 /** Default interval of the idle-exit poll. */
 export const DEFAULT_ACTIVITY_POLL_MS = 15_000
+
+/** A forced drain waits at most this long for in-flight writers before it releases ownership anyway. */
+export const DEFAULT_FORCE_SETTLE_MS = 10_000
+export const DEFAULT_FORCE_SETTLE_POLL_MS = 50
+
+/**
+ * What a forced drain waits on after forceStop, before it gives up the data folder: work that writes the stores and
+ * finishes by itself. Not liveRuns / pausedAutoResumes (forceStop stopped and wrote them), not activeOAuthFlows (a
+ * sign-in can wait on the user forever), not interactiveClients (open windows).
+ */
+export const FORCE_SETTLE_KINDS: readonly ActivityLeaseKind[] = ['inFlightRpcMutations', 'activeWorktreeOps', 'backgroundTasks']
 
 function zeroCounts(): Record<ActivityLeaseKind, number> {
   const counts = {} as Record<ActivityLeaseKind, number>
@@ -51,8 +69,9 @@ interface Source {
  * Leases (acquire / track) and polled sources (addSource) per ActivityLeaseKind. The host is idle when every count is
  * 0; `idleSince` is when it last became idle (sources are re-read on every poll and every snapshot). An armed idle
  * exit drains once the host has been idle for idleMs without a break. The drain (requestDrain or idle exit) is one
- * shared promise: state 'draining', ownership.markDraining, ownership.release (HostOwnership removes only this host's
- * own files), then onDrained once. Leases still work after the drain (in-flight work finishes); the state stays.
+ * shared promise: state 'draining', ownership.markDraining, (forced: forceStop, then a bounded wait for in-flight
+ * writers), ownership.release (HostOwnership removes only this host's own files), then onDrained once. Leases still
+ * work after the drain; the state stays.
  */
 export class HostActivityTracker implements HostActivityTrackerApi {
   private readonly leases = zeroCounts()
@@ -109,19 +128,14 @@ export class HostActivityTracker implements HostActivityTrackerApi {
     return this.hostState
   }
 
+  /**
+   * Without force: refused (with the busy counts) unless every count is 0. With force: the host is 'draining' at once
+   * (new mutations get host_draining), forceStop runs, in-flight writers get up to forceSettleMs to finish, then
+   * ownership is released. A call made while a drain (forced or not) is under way joins it.
+   */
   requestDrain(input: HostStopInput = {}): Promise<HostStopResult> {
     if (this.draining) return this.draining.then(() => ({ stopping: true }))
-    if (input.force) {
-      const forced = (async () => {
-        try {
-          await this.opts.forceStop?.()
-        } catch (e) {
-          this.log(`Activity: force stop failed, draining anyway: ${errText(e)}`)
-        }
-        await this.drain()
-      })()
-      return forced.then(() => ({ stopping: true }))
-    }
+    if (input.force) return this.drain(true).then(() => ({ stopping: true }))
     const { counts } = this.take().snap
     const busy: Partial<Record<ActivityLeaseKind, number>> = {}
     let refused = false
@@ -168,32 +182,67 @@ export class HostActivityTracker implements HostActivityTrackerApi {
     if (this.now() - snap.idleSince >= idleMs) void this.drain()
   }
 
-  /** The shared drain: concurrent and repeated calls get the same promise. Each step's throw is logged, never fatal. */
-  private drain(): Promise<void> {
+  /**
+   * The shared drain: concurrent and repeated calls get the same promise. The state turns 'draining' synchronously,
+   * before any await, so a mutation that arrives while forceStop runs is refused. Each step's throw is logged, never
+   * fatal.
+   */
+  private drain(force = false): Promise<void> {
     if (this.draining) return this.draining
-    this.draining = (async () => {
-      this.disarmIdleExit()
-      this.hostState = 'draining'
-      this.notify()
-      try {
-        this.opts.ownership?.markDraining()
-      } catch (e) {
-        this.log(`Activity: marking the host draining failed: ${errText(e)}`)
-      }
-      try {
-        // HostOwnership.release takes startup.mkdir and removes daemon.json / daemon.secret only while daemon.json
-        // still names this host, then closes its own socket and releases the mutex.
-        this.opts.ownership?.release()
-      } catch (e) {
-        this.log(`Activity: releasing host ownership failed: ${errText(e)}`)
-      }
-      try {
-        this.opts.onDrained?.()
-      } catch (e) {
-        this.log(`Activity: onDrained failed: ${errText(e)}`)
-      }
-    })()
+    this.disarmIdleExit()
+    this.hostState = 'draining'
+    let done!: () => void
+    this.draining = new Promise<void>((r) => (done = r))
+    // runDrain never rejects; this.draining is set before its synchronous part runs.
+    void this.runDrain(force).finally(done)
     return this.draining
+  }
+
+  private async runDrain(force: boolean): Promise<void> {
+    this.notify()
+    try {
+      this.opts.ownership?.markDraining()
+    } catch (e) {
+      this.log(`Activity: marking the host draining failed: ${errText(e)}`)
+    }
+    if (force) {
+      try {
+        await this.opts.forceStop?.()
+      } catch (e) {
+        this.log(`Activity: force stop failed, draining anyway: ${errText(e)}`)
+      }
+      await this.settleWriters()
+    }
+    try {
+      // HostOwnership.release takes startup.mkdir and removes daemon.json / daemon.secret only while daemon.json
+      // still names this host, then closes its own socket and releases the mutex.
+      this.opts.ownership?.release()
+    } catch (e) {
+      this.log(`Activity: releasing host ownership failed: ${errText(e)}`)
+    }
+    try {
+      this.opts.onDrained?.()
+    } catch (e) {
+      this.log(`Activity: onDrained failed: ${errText(e)}`)
+    }
+  }
+
+  /** Forced drain: wait (bounded) until no FORCE_SETTLE_KINDS work is in flight, so nothing writes after the release. */
+  private async settleWriters(): Promise<void> {
+    const limit = this.opts.forceSettleMs ?? DEFAULT_FORCE_SETTLE_MS
+    const pollMs = this.opts.forceSettlePollMs ?? DEFAULT_FORCE_SETTLE_POLL_MS
+    const start = this.now()
+    for (;;) {
+      const { counts } = this.take().snap
+      const busy = FORCE_SETTLE_KINDS.filter((k) => counts[k] > 0)
+      if (!busy.length) return
+      if (this.now() - start >= limit) {
+        this.log(`Activity: forced drain releasing ownership with work still in flight: ${busy.map((k) => `${k} ${counts[k]}`).join(', ')}`)
+        return
+      }
+      // Through globalThis at call time, so vi.useFakeTimers() replaces it.
+      await new Promise<void>((r) => globalThis.setTimeout(r, pollMs))
+    }
   }
 
   /** Read every count (sources re-read) and update idleSince; `flipped` when idle changed. */

@@ -236,6 +236,37 @@ describe('bootOrgAIHost', () => {
     expect(drain).toHaveBeenCalledWith({ force: false })
   })
 
+  it('host.stop over invokeRpc drains an idle host: its own call holds no lease, a later mutation gets host_draining', async () => {
+    const own = fakeOwnership()
+    const onDrained = vi.fn()
+    const h = boot({ ownership: own, onDrained })
+    expect(h.activity.snapshot().total).toBe(0)
+    const ctx = { surface: 'inproc' as const, grantedScopes: ['read', 'operate', 'decide', 'configure'] as const }
+    await expect(h.dispatcher.invokeRpc('host.stop', [{}], ctx)).resolves.toEqual({ stopping: true })
+    expect(own.markDraining).toHaveBeenCalledTimes(1)
+    expect(own.release).toHaveBeenCalledTimes(1)
+    expect(onDrained).toHaveBeenCalledTimes(1)
+    expect(h.activity.state()).toBe('draining')
+    // A second stop joins the drain instead of being refused as a mutation.
+    await expect(h.dispatcher.invokeRpc('host.stop', [{}], ctx)).resolves.toEqual({ stopping: true })
+    await expect(h.dispatcher.invokeRpc(IPC.settingsSet, [{}], ctx)).rejects.toMatchObject({ code: 'host_draining' })
+    expect(h.activity.snapshot().counts.inFlightRpcMutations).toBe(0)
+  })
+
+  it('host.stop without force over invokeRpc is refused while a run is live, naming liveRuns only', async () => {
+    const h = boot()
+    const folder = join(root, 'repo-stop')
+    mkdirSync(folder)
+    const project = h.services.projects.create({ name: 'Stop', path: folder, brief: '', setupKind: 'existing', mock: true }, h.settings.get(), { mockAvailable: true })
+    const ctx = { surface: 'inproc' as const, grantedScopes: ['read', 'operate', 'configure'] as const }
+    await h.dispatcher.invokeRpc(IPC.runsStart, [{ projectId: project.id, prompt: 'keep me live' }], ctx)
+    const res = (await h.dispatcher.invokeRpc('host.stop', [{}], ctx)) as { stopping: boolean; refusedBecause?: Record<string, number> }
+    expect(res.stopping).toBe(false)
+    expect(res.refusedBecause?.inFlightRpcMutations).toBeUndefined()
+    expect(h.activity.state()).toBe('ready')
+    await h.runs.stopAll({ reason: 'quit' })
+  })
+
   it('registers polled activity sources for the five host-owned kinds', () => {
     const addSource = vi.spyOn(HostActivityTracker.prototype, 'addSource')
     const armIdle = vi.spyOn(HostActivityTracker.prototype, 'armIdleExit')
