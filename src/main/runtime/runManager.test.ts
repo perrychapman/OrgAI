@@ -3192,7 +3192,8 @@ describe('approved installs and proposals keep the run current (setLive)', () =>
     const path = ctx.project.path
     expect(ctx.skills!()).toEqual([])
     const callsBefore = forRun.mock.calls.length
-    const pending = ctx.requestProposal({ kind, agentId: 'root', title: 't', payload: { upsert: [], items: [], roles: [], rationale: 'r', scope: 'project' } as never })
+    // The proposal names its own items: only those move onto the live project.
+    const pending = ctx.requestProposal({ kind, agentId: 'root', title: 't', payload: { upsert: [{ id: 'm1', name: 'docs' }], items: [{ action: 'create', scope: 'project', draft: { name: 'triage', description: 'Triage', body: 'b' } }], roles: [], rationale: 'r', scope: 'project' } as never })
     const req = await waitFor(isType('proposal.request', (e) => e.proposal.kind === kind))
     m.decideProposal(run.id, req.proposal.id, { behavior: 'approve' })
     expect(await pending).toEqual({ behavior: 'approve' })
@@ -3243,7 +3244,7 @@ describe('approved installs and proposals keep the run current (setLive)', () =>
     })
     const run = await m.start({ project: p, prompt: 'go' })
     const ctx = ctxs[0]
-    const spec: McpServerSpec = { id: 'mcp-new', name: 'github', transport: 'stdio', command: 'npx', args: ['-y', 'gh-mcp@1.2.3'], enabled: true, source: 'agent', addedAt: '' }
+    const spec: McpServerSpec = { id: 'mcp-new', name: 'docs', transport: 'stdio', command: 'npx', args: ['-y', 'gh-mcp@1.2.3'], enabled: true, source: 'agent', addedAt: '' }
     const pending = ctx.requestMcpInstall!({ agentId: 'root', reason: 'r', spec, requiredSecrets: [] })
     const req = await waitFor(isType('mcpInstall.request'))
     m.answerMcpInstall(run.id, req.request.id, { approved: true, scope: 'project' })

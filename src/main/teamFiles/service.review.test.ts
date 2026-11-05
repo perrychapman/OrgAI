@@ -35,7 +35,8 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  rmSync(root, { recursive: true, force: true })
+  // A focus pass's git status may still hold the repo open for a moment on Windows (EBUSY).
+  rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
 })
 
 const state = (cc: Computer, id: string) => (cc.svc as unknown as { store: { readState(id: string): { dirtyBefore?: unknown } } }).store.readState(id)

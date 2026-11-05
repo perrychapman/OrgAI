@@ -20,6 +20,7 @@ import type {
   McpLibraryEntry,
   McpServerSpec,
   McpServersProposalPayload,
+  SkillsProposalPayload,
   MergeDecision,
   PendingCards,
   MergeReview,
@@ -703,6 +704,61 @@ export interface StartInput {
  */
 type LiveSettle = 'mcpServers' | 'skills' | 'orgChart' | 'folders' | 'permissionMode'
 
+/** The items an approved change named itself: only these move onto a live run's project (setLive). */
+export interface LiveOwnItems {
+  /** Server or skill ids, library entry ids included. */
+  ids: readonly string[]
+  /** Server or skill names. */
+  names: readonly string[]
+}
+
+/**
+ * The live list with only the change's own items taken from the saved project, in place, new ones at the end, gone ones
+ * removed; the roles' grants to those items follow and every other grant stays. A team-file change the same save
+ * ingested may touch the same list, but it names other items, so it stays out of the live run. Pure.
+ */
+export function overlayOwnItems<T extends { id: string; name: string; libraryId?: string }>(
+  live: readonly T[] | undefined,
+  saved: readonly T[] | undefined,
+  liveRoles: readonly Role[],
+  savedRoles: readonly Role[],
+  field: 'mcpServers' | 'skills',
+  own: LiveOwnItems
+): { items: T[] | undefined; roles: Role[] } {
+  const ids = new Set(own.ids)
+  const names = new Set(own.names)
+  const isOwn = (x: T): boolean => ids.has(x.id) || names.has(x.name) || (!!x.libraryId && ids.has(x.libraryId))
+  const savedById = new Map((saved ?? []).filter(isOwn).map((x) => [x.id, x]))
+  const savedByName = new Map((saved ?? []).filter(isOwn).map((x) => [x.name, x]))
+  const used = new Set<string>()
+  const items: T[] = []
+  for (const x of live ?? []) {
+    if (!isOwn(x)) {
+      items.push(x)
+      continue
+    }
+    const replacement = savedById.get(x.id) ?? savedByName.get(x.name)
+    if (replacement && !used.has(replacement.id)) {
+      used.add(replacement.id)
+      items.push(replacement)
+    }
+  }
+  for (const x of saved ?? []) if (isOwn(x) && !used.has(x.id)) items.push(x)
+  const ownIds = new Set([...(live ?? []).filter(isOwn), ...(saved ?? []).filter(isOwn)].map((x) => x.id))
+  const savedRole = new Map(savedRoles.map((r) => [r.id, r]))
+  const roles = liveRoles.map((r) => {
+    const s = savedRole.get(r.id)
+    if (!s || !ownIds.size) return r
+    const mine = (r[field] ?? []).filter((id) => !ownIds.has(id))
+    const theirs = (s[field] ?? []).filter((id) => ownIds.has(id))
+    const merged = [...mine, ...theirs]
+    const out: Role = { ...r }
+    if (merged.length || r[field] !== undefined) out[field] = merged
+    return out
+  })
+  return { items: live === undefined && saved === undefined ? undefined : items, roles }
+}
+
 export function refreshRoleGrants(running: Role[], saved: readonly Role[]): void {
   const byId = new Map(saved.map((r) => [r.id, r]))
   for (const role of running) {
@@ -1270,7 +1326,7 @@ export class RunManager {
       // `settle` says what the approved change itself touched; only that moves onto the live project. The saved project
       // also carries whatever the same save ingested from the team files (a pull), and a file change never reaches a
       // live run. An approved org chart (review M1) says it applies from the next run, so this run's grants stay.
-      const setLive = (saved: Project, settle: LiveSettle = 'mcpServers'): void => {
+      const setLive = (saved: Project, settle: LiveSettle = 'mcpServers', own?: LiveOwnItems): void => {
         const next: Project = { ...live }
         const overlay = <K extends keyof Project>(key: K): void => {
           if (saved[key] === undefined) delete next[key]
@@ -1288,7 +1344,20 @@ export class RunManager {
             return out
           })
         }
-        if (settle === 'mcpServers') {
+        if ((settle === 'mcpServers' || settle === 'skills') && own) {
+          // Named items only: a pulled change to another server or skill in this same save stays out of the run.
+          if (settle === 'mcpServers') {
+            const o = overlayOwnItems(live.mcpServers, saved.mcpServers, next.roles, saved.roles, 'mcpServers', own)
+            if (o.items) next.mcpServers = o.items
+            else delete next.mcpServers
+            next.roles = o.roles
+          } else {
+            const o = overlayOwnItems(live.skills, saved.skills, next.roles, saved.roles, 'skills', own)
+            if (o.items) next.skills = o.items
+            else delete next.skills
+            next.roles = o.roles
+          }
+        } else if (settle === 'mcpServers') {
           overlay('mcpServers')
           grants('mcpServers')
         } else if (settle === 'skills') {
@@ -1380,12 +1449,18 @@ export class RunManager {
         requestProposal: (req) =>
           this.requestProposal(active, req, (saved) => {
             // Keep the harness tools' view of the project (and the run's skills) current after an approved change.
-            if (req.kind === 'mcpServers' || req.kind === 'skills' || req.kind === 'orgChart') setLive(saved, req.kind)
+            if (req.kind === 'mcpServers') {
+              const payload = req.payload as McpServersProposalPayload
+              setLive(saved, 'mcpServers', { ids: [...payload.upsert.map((s) => s.id), ...(payload.remove ?? [])], names: payload.upsert.map((s) => s.name) })
+            } else if (req.kind === 'skills') {
+              const payload = req.payload as SkillsProposalPayload
+              setLive(saved, 'skills', { ids: payload.items.flatMap((i) => (i.libraryId ? [i.libraryId] : [])), names: payload.items.map((i) => i.draft.name) })
+            } else if (req.kind === 'orgChart') setLive(saved, 'orgChart')
           }),
         // Setup-like runs (setup, mcp-assist, the harness project) change servers through proposals only.
         ...(bare
           ? {}
-          : { requestMcpInstall: (req: Omit<McpInstallRequest, 'id' | 'runId' | 'createdAt'>) => this.requestMcpInstall(active, req, () => live, setLive) }),
+          : { requestMcpInstall: (req: Omit<McpInstallRequest, 'id' | 'runId' | 'createdAt'>) => this.requestMcpInstall(active, req, () => live, (saved) => setLive(saved, 'mcpServers', { ids: [req.spec.id], names: [req.spec.name] })) }),
         ...(mcp ? { searchMcpRegistry: (input: McpRegistrySearchInput) => mcp.searchRegistry(input) } : {}),
         mcpServers: allServers,
         // Setup-like runs and work runs of a real project (not quick runs) read the library; work runs link from it.
