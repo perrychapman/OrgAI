@@ -93,6 +93,7 @@ import type {
 import type { QuickRunInput, QuickRunPromoteInput, QuickRunPromoteResult } from '@shared/types'
 import type { ConnectorPresetRemoveInput, McpCopyFromLibraryInput, McpProjectOverridesInput } from '@shared/types'
 import { KIT_IPC, MCP_SCOPE_IPC } from '@shared/types'
+import { KNOWLEDGE_FACT_MAX_CHARS, KNOWLEDGE_NODE_FACTS_MAX } from '@shared/types'
 import type { KitApplyResult, KitExportResult, KitImportPreview } from '@shared/types'
 import { applyArgs as kitApplyArgs, exportArgs as kitExportArgs, type KitService } from './kit/service'
 import { PickedPaths, kitExportTarget } from './kit/pickedPaths'
@@ -883,6 +884,20 @@ export const knowledgeArgs = {
         return { ...(id ? { id } : {}), text: f.text, ...(flag !== undefined ? { retired: flag } : {}) }
       })
     }
+    // cli-spec 3.6 item 3: atomic fact append and compare-and-set, validated again by the store.
+    let appendFacts: string[] | undefined
+    if (i.appendFacts !== undefined && i.appendFacts !== null) {
+      const list = i.appendFacts
+      if (!Array.isArray(list) || list.length > KNOWLEDGE_NODE_FACTS_MAX || list.some((s) => typeof s !== 'string' || s.length > KNOWLEDGE_FACT_MAX_CHARS)) {
+        throw new Error(`Facts to add must be a list of at most ${KNOWLEDGE_NODE_FACTS_MAX} texts of at most ${KNOWLEDGE_FACT_MAX_CHARS} characters.`)
+      }
+      appendFacts = [...(list as string[])]
+    }
+    let expectedUpdatedAt: number | undefined
+    if (i.expectedUpdatedAt !== undefined && i.expectedUpdatedAt !== null) {
+      if (typeof i.expectedUpdatedAt !== 'number' || !Number.isFinite(i.expectedUpdatedAt)) throw new Error('expectedUpdatedAt must be a finite number.')
+      expectedUpdatedAt = i.expectedUpdatedAt
+    }
     return {
       projectId,
       ...(nodeId ? { nodeId } : {}),
@@ -892,7 +907,9 @@ export const knowledgeArgs = {
       ...(summary !== undefined ? { summary } : {}),
       ...(facts ? { facts } : {}),
       ...(noteIds ? { noteIds } : {}),
-      ...(retired !== undefined ? { retired } : {})
+      ...(retired !== undefined ? { retired } : {}),
+      ...(appendFacts ? { appendFacts } : {}),
+      ...(expectedUpdatedAt !== undefined ? { expectedUpdatedAt } : {})
     }
   },
   /** projectId plus exactly one of nodeId / edgeId. */

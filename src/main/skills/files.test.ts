@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { childPath, digestFiles, fileInfos, readStoredFolder, safeRelPath, writeFolder } from './files'
+import { bundleArgs, childPath, digestFiles, fileInfos, readBundle, readStoredFolder, safeRelPath, writeFolder } from './files'
 
 const dirs: string[] = []
 function temp(): string {
@@ -69,5 +69,73 @@ describe('writeFolder / readStoredFolder', () => {
     mkdirSync(join(d, 'a'))
     writeFileSync(join(d, 'a', 'SKILL.md'), 'x')
     expect(readStoredFolder(join(d, 'a'))).toHaveLength(1)
+  })
+})
+
+describe('readBundle', () => {
+  const b64 = (s: string | Buffer) => Buffer.from(s).toString('base64')
+  const MD = '---\nname: demo\ndescription: A demo skill.\n---\nDo the thing.\n'
+  const bundle = (files: { relPath: string; base64: string }[]) => ({ name: 'demo', files })
+  const ok = (extra: { relPath: string; base64: string }[] = []) => bundle([{ relPath: 'SKILL.md', base64: b64(MD) }, ...extra])
+  const refused = (input: ReturnType<typeof bundle>): string => {
+    const r = readBundle(input)
+    expect(r.ok).toBe(false)
+    return r.ok ? '' : r.reason
+  }
+
+  it('returns the decoded files of a valid bundle', () => {
+    const r = readBundle(ok([{ relPath: 'ref/notes.md', base64: b64('notes') }]))
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.files.map((x) => [x.path, x.data.toString()])).toEqual([
+      ['SKILL.md', MD],
+      ['ref/notes.md', 'notes']
+    ])
+  })
+
+  it('refuses unsafe paths', () => {
+    const bad = ['..', 'a/../b', '/abs', 'C:\\x', 'C:/x', '\\\\host\\s', '//host/s', 'a\\b', 'a\u0001b', 'a\u202eb.md', 'a\u200bb.md', 'CON', 'con.txt', 'sub/LPT9.md', 'nul', 'a:b', '.git/config', 'a/b/c/d/e/f.md', 'x.', '']
+    for (const p of bad) expect(refused(ok([{ relPath: p, base64: b64('x') }])), p).not.toBe('')
+    expect(readBundle(ok([{ relPath: 'a/b/c/d/f.md', base64: b64('x') }])).ok).toBe(true)
+    expect(readBundle(ok([{ relPath: 'console.md', base64: b64('x') }])).ok).toBe(true)
+  })
+
+  it('refuses case-insensitive duplicates and too many files', () => {
+    expect(refused(ok([{ relPath: 'a.md', base64: b64('1') }, { relPath: 'A.MD', base64: b64('2') }]))).toMatch(/same path/)
+    const many = Array.from({ length: 50 }, (_, i) => ({ relPath: `f${i}.md`, base64: b64('x') }))
+    expect(refused(ok(many))).toMatch(/More than 50/)
+  })
+
+  it('enforces the size caps', () => {
+    const big = (n: number) => b64(Buffer.alloc(n, 0x61))
+    expect(refused(bundle([{ relPath: 'SKILL.md', base64: big(256 * 1024 + 3) }]))).toMatch(/SKILL.md is larger than 256 KB/)
+    expect(refused(bundle([{ relPath: 'SKILL.md', base64: big(256 * 1024 + 1) }]))).toMatch(/SKILL.md is larger than 256 KB/)
+    expect(readBundle(bundle([{ relPath: 'SKILL.md', base64: big(256 * 1024) }])).ok).toBe(true)
+    expect(refused(ok([{ relPath: 'r.md', base64: big(64 * 1024 + 1) }]))).toMatch(/r.md is larger than 64 KB/)
+    expect(refused(ok([{ relPath: 'r.md', base64: big(64 * 1024 + 3) }]))).toMatch(/larger than 64 KB/)
+    const parts = Array.from({ length: 17 }, (_, i) => ({ relPath: `p${i}.md`, base64: big(64 * 1024) }))
+    expect(refused(ok(parts))).toMatch(/larger than 1 MB/)
+  })
+
+  it('refuses invalid base64, binary content and a missing SKILL.md', () => {
+    expect(refused(ok([{ relPath: 'r.md', base64: 'ab$c' }]))).toMatch(/base64/)
+    expect(refused(ok([{ relPath: 'r.md', base64: 'abc' }]))).toMatch(/base64/)
+    expect(refused(ok([{ relPath: 'r.md', base64: 'a===' }]))).toMatch(/base64/)
+    expect(refused(ok([{ relPath: 'r.md', base64: 'YR==' }]))).toMatch(/base64/)
+    expect(refused(ok([{ relPath: 'r.bin', base64: b64(Buffer.from([0x61, 0, 0x62])) }]))).toMatch(/not a text file/)
+    expect(refused(ok([{ relPath: 'r.bin', base64: b64(Buffer.from([0xff, 0xfe, 0x41])) }]))).toMatch(/not a text file/)
+    expect(refused(bundle([{ relPath: 'notes.md', base64: b64('x') }]))).toMatch(/no SKILL.md/)
+    expect(refused(bundle([{ relPath: 'sub/SKILL.md', base64: b64(MD) }]))).toMatch(/no SKILL.md/)
+    expect(refused(bundle([]))).toMatch(/no files/)
+  })
+})
+
+describe('bundleArgs', () => {
+  it('rebuilds the input and drops extra fields', () => {
+    expect(bundleArgs({ name: 'demo', extra: 1, files: [{ relPath: 'SKILL.md', base64: 'eA==', mode: 0o777 }] })).toEqual({ name: 'demo', files: [{ relPath: 'SKILL.md', base64: 'eA==' }] })
+  })
+  it('refuses non-objects and bad shapes', () => {
+    const bad = [null, 'x', 1, [], new Date(), { files: [] }, { name: 'a' }, { name: 'a', files: [{ relPath: 1, base64: '' }] }, { name: 'a', files: Array.from({ length: 51 }, () => ({ relPath: 'a', base64: '' })) }]
+    for (const b of bad) expect(() => bundleArgs(b)).toThrow()
   })
 })

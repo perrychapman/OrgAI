@@ -531,6 +531,21 @@ export function upsertNode(dataDir: string, projectId: string, input: KnowledgeN
   return { node: target, created: false, factsAdded: newTexts.length, aliasesSkipped, ...(summaryKept ? { summaryKept: true } : {}) }
 }
 
+/** The refusal of a compare-and-set save whose expectedUpdatedAt no longer matches (code 'stale'). */
+export const STALE_NODE_MESSAGE = 'This item changed since you opened it. Reload it and try again.'
+
+function staleError(): Error {
+  return Object.assign(new Error(STALE_NODE_MESSAGE), { code: 'stale' })
+}
+
+/** saveNodeForUser's appendFacts: undefined = none; a list of at most KNOWLEDGE_NODE_FACTS_MAX fact texts. */
+function checkAppendFacts(raw: unknown): string[] {
+  if (raw === undefined) return []
+  if (!Array.isArray(raw)) throw new Error('appendFacts must be a list of texts.')
+  checkFactCount(raw.length)
+  return raw.map(checkFactText)
+}
+
 /** Texts not already present (by knowledgeNameKey) in `existing`, without repeats among themselves. */
 function dedupeFactTexts(texts: string[], existing: string[]): string[] {
   const seen = new Set(existing.map(knowledgeNameKey))
@@ -550,6 +565,12 @@ function dedupeFactTexts(texts: string[], existing: string[]): string[] {
  * re-checked); `facts` given = the full list (an id keeps that fact's source, and its retired flag unless given; an
  * unknown id is refused; no id = a new user fact), omitted = unchanged; `aliases`, `summary`, `noteIds` given replace,
  * omitted keep; `retired` given sets it. The source stamp is the user's.
+ *
+ * cli-spec 3.6 item 3: `expectedUpdatedAt` (only with nodeId; a finite number) refuses the save with code 'stale'
+ * when the stored node's updatedAt differs. `appendFacts` adds each text as a new user fact (after `facts`, when both
+ * are given) unless a live fact with the same text (knowledgeNameKey, the agent upsert's rule) is already on the node
+ * or earlier in the list; it works on create and update, and the KNOWLEDGE_NODE_FACTS_MAX cap counts the result.
+ * The whole read-check-modify-write is one synchronous call (loadForWrite to writeGraph), so it is atomic in-process.
  */
 export function saveNodeForUser(dataDir: string, projectId: string, input: Omit<KnowledgeNodeSaveInput, 'projectId'>): KnowledgeNode {
   const graph = loadForWrite(dataDir, projectId)
@@ -565,20 +586,36 @@ export function saveNodeForUser(dataDir: string, projectId: string, input: Omit<
     if (f.id !== undefined && !isFactId(f.id)) throw new Error(`Unknown fact id ${typeof f.id === 'string' ? JSON.stringify(f.id) : '(not text)'}.`)
     return { ...(f.id !== undefined ? { id: f.id } : {}), text: checkFactText(f.text), ...(f.retired !== undefined ? { retired: checkRetired(f.retired) } : {}) }
   })
+  const appendTexts = checkAppendFacts(input.appendFacts)
+  const expected = input.expectedUpdatedAt
+  if (expected !== undefined) {
+    if (typeof expected !== 'number' || !Number.isFinite(expected)) throw new Error('expectedUpdatedAt must be a finite number.')
+    if (input.nodeId === undefined) throw new Error('expectedUpdatedAt needs the nodeId of the item being edited.')
+  }
   const source = userSource()
   const now = source.at
+  /** appendFacts as new user facts after `facts` (cli-spec 3.6 item 3), deduped like the agent upsert's facts. */
+  const appended = (facts: KnowledgeFact[], factIds: Set<string>): KnowledgeFact[] => {
+    const texts = dedupeFactTexts(appendTexts, facts.filter((f) => !f.retired).map((f) => f.text))
+    return texts.map((text) => {
+      const id = newId(FACT_PREFIX, factIds)
+      factIds.add(id)
+      return { id, text, source }
+    })
+  }
 
   if (input.nodeId === undefined) {
     const found = matches(graph, kind, name, aliases ?? [])
     if (found.length) throw duplicateRefusal(kind, found[0])
     checkNodeCap(graph)
     const factIds = factIdsOf(graph)
-    const facts = (factInputs ?? []).map((f): KnowledgeFact => {
+    const given = (factInputs ?? []).map((f): KnowledgeFact => {
       if (f.id !== undefined) throw new Error(`Unknown fact id ${JSON.stringify(f.id)}.`)
       const id = newId(FACT_PREFIX, factIds)
       factIds.add(id)
       return { id, text: f.text, source, ...(f.retired ? { retired: true } : {}) }
     })
+    const facts = [...given, ...appended(given, factIds)]
     checkFactCount(facts.length)
     const node: KnowledgeNode = {
       id: newId(NODE_PREFIX, new Set(graph.nodes.map((n) => n.id))),
@@ -599,12 +636,14 @@ export function saveNodeForUser(dataDir: string, projectId: string, input: Omit<
   }
 
   const node = nodeById(graph, input.nodeId)
+  // Compare-and-set: checked on the graph just read, in the same synchronous call as the write below.
+  if (expected !== undefined && node.updatedAt !== expected) throw staleError()
   const keptAliases = aliases ?? dedupeAliases(node.aliases ?? [], name, KNOWLEDGE_ALIASES_MAX)
   const found = matches(graph, kind, name, keptAliases, node.id)
   if (found.length) throw duplicateRefusal(kind, found[0])
   let facts = node.facts
+  const factIds = factIdsOf(graph)
   if (factInputs) {
-    const factIds = factIdsOf(graph)
     const seen = new Set<string>()
     facts = factInputs.map((f): KnowledgeFact => {
       if (f.id !== undefined) {
@@ -619,6 +658,10 @@ export function saveNodeForUser(dataDir: string, projectId: string, input: Omit<
       factIds.add(id)
       return { id, text: f.text, source, ...(f.retired ? { retired: true } : {}) }
     })
+    checkFactCount(facts.length)
+  }
+  if (appendTexts.length) {
+    facts = [...facts, ...appended(facts, factIds)]
     checkFactCount(facts.length)
   }
   node.kind = kind
