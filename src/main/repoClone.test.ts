@@ -44,7 +44,21 @@ let root = ''
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'orgai-repo-'))
 })
+/** Every timer a fake runner starts; afterEach clears them so none can fire after its test and temp dir are gone. */
+const timers = new Set<ReturnType<typeof setTimeout>>()
+const later = (fn: () => void): void => {
+  const t = setTimeout(() => {
+    timers.delete(t)
+    fn()
+  }, 0)
+  timers.add(t)
+}
 afterEach(() => {
+  for (const t of timers) {
+    clearTimeout(t)
+    clearInterval(t)
+  }
+  timers.clear()
   vi.restoreAllMocks()
   rmSync(root, { recursive: true, force: true })
 })
@@ -131,7 +145,7 @@ function makeSpawn(script?: (h: FakeGit, args: string[], n: number) => void) {
     const h = new FakeGit()
     spawned.push({ h, args, env: opts.env, cwd: opts.cwd })
     const n = spawned.length
-    setTimeout(() => script?.(h, args, n), 0)
+    later(() => script?.(h, args, n))
     return h
   }
   return { spawnGit, spawned }
@@ -144,14 +158,18 @@ function makeKill(spawned: { h: FakeGit }[]) {
     killed,
     killTree: (pid: number) => {
       killed.push(pid)
-      for (const s of spawned) if (s.h.pid === pid) setTimeout(() => s.h.finish(null), 0)
+      for (const s of spawned) if (s.h.pid === pid) later(() => s.h.finish(null))
     }
   }
 }
 
 const cloneOk = (h: FakeGit, args: string[]): void => {
   const dest = args[args.length - 1]
-  writeFileSync(join(dest, 'README.md'), '# x\n')
+  try {
+    writeFileSync(join(dest, 'README.md'), '# x\n')
+  } catch {
+    // The test's temp dir is already gone (a cancelled or failed run): nothing to write.
+  }
   h.emit('Cloning into...\r\nReceiving objects:  50% (1/2)\r')
   h.finish(0)
 }
@@ -996,15 +1014,15 @@ describe('clone()', () => {
   })
 
   it('stops after nothing arrives for the inactivity time, and bytes reset it', async () => {
-    const hang = service({ inactivityMs: 40, spawnGit: makeSpawn().spawnGit })
+    // Silence half: nothing to race, any short time fires.
     const sp = makeSpawn()
     const kill = makeKill(sp.spawned)
     const s = service({ inactivityMs: 40, spawnGit: sp.spawnGit, killTree: kill.killTree })
     await expect(s.svc.clone(input(), noop)).rejects.toThrow('The download stopped: nothing arrived for 5 minutes. Check your connection and try again.')
     expect(kill.killed).toEqual([4242])
     expect(existsSync(join(root, 'out'))).toBe(false)
-    void hang
 
+    // Bytes half: the gap between bytes (10 ms) is 300x under the inactivity time, so a loaded machine cannot starve it into a stop.
     const sp2 = makeSpawn((h, args) => {
       let n = 0
       const tick = setInterval(() => {
@@ -1013,10 +1031,11 @@ describe('clone()', () => {
           clearInterval(tick)
           cloneOk(h, args)
         }
-      }, 25)
+      }, 10)
+      timers.add(tick)
     })
     const k2 = makeKill(sp2.spawned)
-    const s2 = service({ inactivityMs: 40, spawnGit: sp2.spawnGit, killTree: k2.killTree })
+    const s2 = service({ inactivityMs: 3_000, spawnGit: sp2.spawnGit, killTree: k2.killTree })
     await expect(s2.svc.clone(input({ destination: join(root, 'other') }), noop)).resolves.toMatchObject({ branch: 'main' })
     expect(k2.killed).toEqual([])
   })
@@ -1417,7 +1436,11 @@ describe.skipIf(!gitPresent)('mock mode', () => {
   })
 
   it('slow can be cancelled and leaves nothing', async () => {
-    const { svc } = mockService({}, (_ms, signal) => new Promise<void>((res) => signal?.addEventListener('abort', () => res())))
+    // A cancel that lands before the first sleep starts has already aborted the signal: resolve at once instead of waiting for an event that never comes.
+    const { svc } = mockService({}, (_ms, signal) => new Promise<void>((res) => {
+      if (signal?.aborted) return res()
+      signal?.addEventListener('abort', () => res())
+    }))
     const events: RepoCloneProgress[] = []
     const p = svc.clone(input({ source: 'mock-org/slow' }), (e) => events.push(e)).catch((e: Error) => e)
     await waitUntil(() => expect(existsSync(dest())).toBe(true))
