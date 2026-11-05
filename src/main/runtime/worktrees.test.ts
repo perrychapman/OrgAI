@@ -14,6 +14,7 @@ import {
   pendingWorktrees,
   prepareRepo,
   removeExcludeLine,
+  setIndexLockRetryDelays,
   UnfinishedGitStateError,
   withRepoLock
 } from './worktrees'
@@ -388,7 +389,11 @@ describe('discardWorktree', () => {
 })
 
 describe('unfinished git state after a crash (spec 3.2 (5) 4)', () => {
-  afterEach(() => configureRepoLock({ reset: true }))
+  beforeEach(() => setIndexLockRetryDelays([5, 5]))
+  afterEach(() => {
+    configureRepoLock({ reset: true })
+    setIndexLockRetryDelays()
+  })
 
   /** A lock dir with no owner file, older than the grace period: what a holder that crashed after mkdir leaves. */
   async function staleRepoLock(): Promise<void> {
@@ -454,6 +459,39 @@ describe('unfinished git state after a crash (spec 3.2 (5) 4)', () => {
     rmSync(lockFile)
     await discardWorktree(root, wt)
     expect(existsSync(wt.path)).toBe(false)
+  })
+
+  it("waits out a transient index.lock (the user's own git) before refusing (review M5)", async () => {
+    await prepareRepo(root)
+    setIndexLockRetryDelays([50, 50, 50, 50, 50, 50])
+    const wt = addWorktree('transient')
+    put(wt.path, 'src/t.js', 'export const t = 1\n')
+    const lockFile = join(root, '.git', 'index.lock')
+    writeFileSync(lockFile, '')
+    // The user's git finishes a moment later.
+    setTimeout(() => rmSync(lockFile, { force: true }), 80)
+    const res = await integrateWorktree(root, { ...wt, status: 'merging' }, 'Implementer: transient')
+    expect(res.info.status).toBe('merged')
+    expect(existsSync(join(root, 'src/t.js'))).toBe(true)
+  })
+
+  it('an index.lock that stays is refused after the re-checks, without claiming a crash (review M5)', async () => {
+    await prepareRepo(root)
+    const wt = addWorktree('stays')
+    put(wt.path, 'src/s.js', 'x\n')
+    const lockFile = join(root, '.git', 'index.lock')
+    writeFileSync(lockFile, '')
+    const res = await integrateWorktree(root, { ...wt, status: 'merging' }, 'Implementer: stays')
+    expect(res.info.status).toBe('conflict')
+    expect(res.message).toMatch(/busy or has an unfinished operation/)
+    expect(res.message).toMatch(/waited a moment/)
+    expect(res.message).toMatch(/an editor, a terminal/)
+    expect(res.message).not.toMatch(/crash/i)
+    expect(existsSync(lockFile)).toBe(true)
+    // Nothing was committed or removed over it.
+    expect(existsSync(wt.path)).toBe(true)
+    expect(branches()).toContain(wt.branch)
+    rmSync(lockFile)
   })
 })
 

@@ -89,7 +89,7 @@ export function offerableByRealPath(dir: string, opts: Parameters<typeof isOffer
 }
 import { tmpdir } from 'node:os'
 import { scrubControlEnv } from './childEnv'
-import { SELF_CONTROL_REFUSAL_TEXT, checkSelfControlDenial, selfControlLogLine } from './selfControlGate'
+import { SELF_CONTROL_PATHS_UNAVAILABLE_LOG, SELF_CONTROL_REFUSAL_TEXT, checkSelfControlDenial, readControlProtectedPaths, selfControlLogLine } from './selfControlGate'
 import type { ResolvedMcpServer } from './types'
 
 /**
@@ -377,24 +377,19 @@ class CodexSession implements RuntimeSession {
   /**
    * The pre-mode self-control gate (selfControlGate.ts, cli-spec 3.4(1)) for one approval request: true when it must
    * be declined (the orgai command, OrgAI's control files). On a hit it logs a warning and writes one harness row on
-   * the calling agent. An empty or unreadable protected list skips the path check (logged once per run); the orgai
-   * command check needs no list. Commands Codex runs inside its own sandbox without an approval request never reach
-   * this gate: they are governed by Codex's sandbox policy (policyFor in codexProtocol.ts), not by OrgAI.
+   * the calling agent. An empty or unreadable protected list declines every shell command (review M2: it cannot be
+   * checked against the control files) and leaves file changes to the normal flow (logged once per run). Commands
+   * Codex runs inside its own sandbox without an approval request never reach this gate: they are governed by Codex's
+   * sandbox policy (policyFor in codexProtocol.ts), not by OrgAI.
    */
   private selfControlDenied(agentId: string, checks: ReadonlyArray<{ toolName: string; input: unknown; label?: string }>, cwd: string): boolean {
-    let paths: string[] | undefined
-    try {
-      paths = this.ctx.controlProtectedPaths?.()
-    } catch {
-      paths = undefined
-    }
-    if (this.ctx.controlProtectedPaths && (!Array.isArray(paths) || !paths.length) && !this.selfControlSkipLogged) {
+    const { paths: protectedPaths, unavailable } = readControlProtectedPaths(this.ctx.controlProtectedPaths?.bind(this.ctx))
+    if (unavailable && !this.selfControlSkipLogged) {
       this.selfControlSkipLogged = true
-      this.log('warn', 'OrgAI control paths are unavailable for this run; the self-control gate checks only for the orgai command')
+      this.log('warn', SELF_CONTROL_PATHS_UNAVAILABLE_LOG)
     }
-    const protectedPaths = Array.isArray(paths) ? paths : []
     const shell = process.platform === 'win32' ? 'powershell' : 'bash'
-    const hit = checks.find((c) => checkSelfControlDenial(c.toolName, c.input, { protectedPaths, cwd, shell }))
+    const hit = checks.find((c) => checkSelfControlDenial(c.toolName, c.input, { protectedPaths, pathsUnavailable: unavailable, cwd, shell }))
     if (!hit) return false
     this.log('warn', selfControlLogLine(hit.label ?? hit.toolName, this.agents.get(agentId)?.name ?? agentId))
     this.transcript(agentId, { kind: 'system', text: SELF_CONTROL_REFUSAL_TEXT }, { source: 'harness' })

@@ -10,11 +10,16 @@ import { MAX_AUTO_CONTINUES_LIMIT } from '@shared/defaults'
 import { DEFAULT_HEADLESS_DECISION_POLICY, DEFAULT_MAX_AUTO_CONTINUES, MAX_TIMER_DELAY_MS, isPermissionMode } from '@shared/types'
 import type { HeadlessDecisionPolicy, PermissionMode, Project, RunOverrides } from '@shared/types'
 
-/** Which project modes each override mode narrows (besides being equal; 'plan' narrows every mode). */
+/**
+ * Which project modes each override mode narrows (besides being equal; 'plan' narrows every mode). 'default' does NOT
+ * narrow 'dontAsk' (review M1): "never ask" denies anything not pre-approved, while 'default' asks, and an operate
+ * client that can answer its own cards could then approve what the project denies. Moving a dontAsk project to
+ * 'default' therefore needs 'configure'.
+ */
 const NARROWS_FROM: Record<PermissionMode, readonly PermissionMode[] | 'any'> = {
   plan: 'any',
   dontAsk: ['default', 'acceptEdits', 'auto', 'bypassPermissions'],
-  default: ['acceptEdits', 'auto', 'dontAsk', 'bypassPermissions'],
+  default: ['acceptEdits', 'auto', 'bypassPermissions'],
   acceptEdits: ['auto', 'bypassPermissions'],
   auto: ['bypassPermissions'],
   bypassPermissions: []

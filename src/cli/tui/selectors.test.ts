@@ -205,15 +205,15 @@ describe('statusSummary', () => {
     expect(st).toMatchObject({ projectName: 'Shop', runTag: 'R1', runTitle: 'Add cache', statusWord: 'Needs you', tone: 'warn', needsYou: 2, liveRuns: 2, connection: 'live' })
   })
 
-  it('Ended when OrgAI closed; policy and budget read Finished; unknown cost never $0', () => {
+  it('Ended when OrgAI closed; policy and budget read Stopped, never Finished; unknown cost never $0', () => {
     let s = base()
     s = applySnapshot(s, snap([], [summary('r1', { status: 'finished', endedBy: 'app', endedAt: 5 })]), { activeRunId: 'r1' })
     expect(statusSummary(s).statusWord).toBe('Ended when OrgAI closed')
     s = applyEvent(s, ev({ type: 'run.finalized', runId: 'r1', outcome: 'completed' as never, summary: summary('r1', { status: 'finished', endedBy: 'policy', usage: { costUsd: null, costSource: 'unknown' } as never }) }))
-    expect(statusSummary(s).statusWord).toBe('Finished')
+    expect(statusSummary(s).statusWord).toBe('Stopped by its exec policy')
     expect(statusSummary(s).costText).toBe('unknown')
     s = applyEvent(s, ev({ type: 'run.finalized', runId: 'r1', outcome: 'budget-exceeded' as never, summary: summary('r1', { status: 'finished', endedBy: 'budget' }) }))
-    expect(statusSummary(s).statusWord).toBe('Finished')
+    expect(statusSummary(s).statusWord).toBe('Stopped at its budget limit')
     s = applyEvent(s, ev({ type: 'run.status', runId: 'r1', status: 'error' }))
     expect(statusSummary(s).statusWord).toBe('Failed')
   })

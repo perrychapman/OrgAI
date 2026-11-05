@@ -55,7 +55,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', async (importOriginal) => {
 })
 
 import { ClaudeSession } from './claude'
-import { SELF_CONTROL_DENIAL_MESSAGE, SELF_CONTROL_REFUSAL_TEXT, controlProtectedPaths } from './selfControlGate'
+import { SELF_CONTROL_DENIAL_MESSAGE, SELF_CONTROL_REFUSAL_TEXT, SELF_CONTROL_UNCHECKED_MESSAGE, controlProtectedPaths } from './selfControlGate'
 import { fakeCtx, project } from './testHelpers'
 import type { RuntimeContext } from './types'
 
@@ -142,16 +142,20 @@ describe('ClaudeSession self-control gate (fake query)', () => {
     expect(refusalRows(ctx)).toHaveLength(2)
   })
 
-  it('an empty protected list still denies the orgai command and logs the skip once', async () => {
+  it('an empty protected list denies shell commands unchecked under bypassPermissions, leaves file tools, logs once (review M2)', async () => {
     const { ctx, data, repo } = start('bypassPermissions', { controlProtectedPaths: () => [] })
     const q = await firstQuery()
     expect((await hook(q, 'Read', { file_path: join(data, 'run', 'daemon.json') }, repo)).hookSpecificOutput?.permissionDecisionReason).not.toBe(SELF_CONTROL_DENIAL_MESSAGE)
     await hook(q, 'Read', { file_path: join(data, 'run', 'x') }, repo)
     expect((await hook(q, 'Bash', { command: 'orgai status' }, repo)).hookSpecificOutput?.permissionDecisionReason).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+    const shell = await hook(q, 'Bash', { command: `cat ${join(data, 'run', 'daemon.secret')}` }, repo)
+    expect(shell.hookSpecificOutput?.permissionDecision).toBe('deny')
+    expect(shell.hookSpecificOutput?.permissionDecisionReason).toBe(SELF_CONTROL_UNCHECKED_MESSAGE)
+    expect((await hook(q, 'Bash', { command: 'ls' }, repo)).hookSpecificOutput?.permissionDecisionReason).toBe(SELF_CONTROL_UNCHECKED_MESSAGE)
     expect(ctx.events.filter((e) => e.type === 'log' && (e as { message?: string }).message?.includes('control paths are unavailable'))).toHaveLength(1)
   })
 
-  it('an unreadable protected list is caught and skips the path check', async () => {
+  it('an unreadable protected list is caught: shell commands are denied unchecked, file tools are not (review M2)', async () => {
     const { data, repo } = start('bypassPermissions', {
       controlProtectedPaths: () => {
         throw new Error('boom')
@@ -159,5 +163,6 @@ describe('ClaudeSession self-control gate (fake query)', () => {
     })
     const q = await firstQuery()
     expect((await hook(q, 'Read', { file_path: join(data, 'run', 'daemon.json') }, repo)).hookSpecificOutput?.permissionDecisionReason).not.toBe(SELF_CONTROL_DENIAL_MESSAGE)
+    expect((await hook(q, 'Bash', { command: `cat ${join(data, 'run', 'daemon.secret')}` }, repo)).hookSpecificOutput?.permissionDecisionReason).toBe(SELF_CONTROL_UNCHECKED_MESSAGE)
   })
 })

@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentInstance, RunEvent, RunOverrides, RunPlan, RunSummary } from '@shared/types'
 import { DEFAULT_EXEC_STALL_TIMEOUT_MS, EXEC_FINALIZE_STOP_TIMEOUT_MS, MAX_TIMER_DELAY_MS } from '@shared/types'
-import { RunManager, continuedOverrides, timerDelay, type RunManagerOptions } from './runManager'
+import { EXEC_STALL_BUSY_ROUNDS, RunManager, continuedOverrides, timerDelay, type RunManagerOptions } from './runManager'
 import { RunStore } from '../store/runs'
 import type { SetupService } from '../setup/service'
 import type { CompletionInput, RootTurnEnd, RuntimeAdapter, RuntimeContext, SessionSettlement } from './types'
@@ -260,6 +260,33 @@ describe('exec settlement', () => {
     expect(finalized()).toHaveLength(0)
     fakes[0].settle.rootIdle = true
     await flush(DEFAULT_EXEC_STALL_TIMEOUT_MS + 1000)
+    expect(m.summary(run.id)?.execOutcome).toBe('stalled')
+  })
+
+  it('the stall watchdog has a hard ceiling while the root stays busy with no activity (review M4)', async () => {
+    const { m, fakes } = rig()
+    const run = await m.start({ project: proj(), prompt: 'go', overrides: exec({ execStallTimeoutMs: 10_000 }) })
+    fakes[0].settle.rootIdle = false
+    // Busy, silent: re-armed up to EXEC_STALL_BUSY_ROUNDS periods.
+    await flush(10_000 * (EXEC_STALL_BUSY_ROUNDS - 1) + 1000)
+    expect(finalized()).toHaveLength(0)
+    // Activity starts the count again.
+    fakes[0].ctx.noteActivity?.('message')
+    await flush(10_000 * (EXEC_STALL_BUSY_ROUNDS - 1) + 1000)
+    expect(finalized()).toHaveLength(0)
+    await flush(10_000 * 2)
+    expect(m.summary(run.id)).toMatchObject({ execOutcome: 'stalled', endedBy: 'policy' })
+  })
+
+  it('a non-positive execStallTimeoutMs falls back to the default (no re-arm loop)', async () => {
+    const { m, fakes } = rig()
+    const run = await m.start({ project: proj(), prompt: 'go', overrides: exec({ autoContinue: false }) })
+    // As if read from an old record: cleanRunOverrides now drops it, but the watchdog never trusts it either.
+    ;(m.summary(run.id)!.overrides as RunOverrides).execStallTimeoutMs = 0
+    endTurn(fakes[0], {}, { quiescent: false })
+    await flush(5_000)
+    expect(finalized()).toHaveLength(0)
+    await flush(DEFAULT_EXEC_STALL_TIMEOUT_MS)
     expect(m.summary(run.id)?.execOutcome).toBe('stalled')
   })
 

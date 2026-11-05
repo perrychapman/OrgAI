@@ -221,10 +221,25 @@ export async function inspectPending(root: string): Promise<PendingWorktree[]> {
 
 /**
  * Files in a checkout's git dir that mean a git operation is unfinished there: a merge, cherry-pick, revert or rebase
- * in progress, or an index.lock (a git process running now, or one that crashed). With the repository lock held none
- * of them is OrgAI's own work in progress, so they belong to the user or to a crashed holder.
+ * in progress, or an index.lock (a git process running now, such as the user's editor or terminal, or one that stopped
+ * without cleaning up). With the repository lock held none of them is OrgAI's own work in progress.
  */
 const UNFINISHED_GIT_STATE = ['index.lock', 'MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'rebase-merge', 'rebase-apply']
+
+/**
+ * How long to wait (ms, one entry per re-check) when the only unfinished state is an index.lock (review M5): the
+ * user's own git (an editor's status poll, a commit in a terminal) holds it for a moment, so it is re-checked a few
+ * times before a refusal. About 2 s in all, spent holding the repository lock.
+ */
+export const INDEX_LOCK_RETRY_DELAYS_MS: readonly number[] = [100, 250, 500, 1000]
+let indexLockRetryDelays: readonly number[] = INDEX_LOCK_RETRY_DELAYS_MS
+
+/** Tests: the index.lock re-check delays (undefined restores INDEX_LOCK_RETRY_DELAYS_MS). */
+export function setIndexLockRetryDelays(delays?: readonly number[]): void {
+  indexLockRetryDelays = delays ?? INDEX_LOCK_RETRY_DELAYS_MS
+}
+
+const isIndexLock = (p: string): boolean => basename(p).toLowerCase() === 'index.lock'
 
 /** Thrown by a git step that refused to run over an unfinished git operation (spec 3.2 (5) 4). */
 export class UnfinishedGitStateError extends Error {
@@ -258,21 +273,32 @@ async function unfinishedGitState(checkouts: string[]): Promise<string[]> {
 
 /**
  * Null when git may run destructive steps (merge --abort, worktree remove --force, branch -D, reset) in `checkouts`;
- * else the sentence telling the user what was left and that nothing was changed. Call it holding the repository lock.
+ * else the sentence telling the user what was found and that nothing was changed. Call it holding the repository lock.
+ * An index.lock alone is usually a git process running right now (the user's editor or terminal), so it is re-checked
+ * after each of indexLockRetryDelays before a refusal; MERGE_HEAD and the other operation files refuse at once.
  */
 async function unfinishedGitStateRefusal(checkouts: string[], kept: string): Promise<{ message: string; files: string[] } | null> {
-  const files = await unfinishedGitState(checkouts)
+  let files = await unfinishedGitState(checkouts)
+  let waited = false
+  for (const delay of indexLockRetryDelays) {
+    if (!files.length || !files.every(isIndexLock)) break
+    waited = true
+    await new Promise((r) => setTimeout(r, delay))
+    files = await unfinishedGitState(checkouts)
+  }
   if (!files.length) return null
   const reclaimed = repoLockRecovery()
     .map((n) => (n.previousOwner ? ` OrgAI took over the repository lock from process ${n.previousOwner.pid}, which is gone.` : ' OrgAI took over a stale repository lock.'))
     .slice(0, 1)
     .join('')
+  const lock = files.some(isIndexLock)
   return {
     files,
     message:
-      `Git left an unfinished operation in this repository (${files.join(', ')}).${reclaimed} ` +
-      `OrgAI ran no destructive git command and changed nothing; ${kept}. ` +
-      'Finish or abort that operation yourself (for example git merge --abort, or delete a stale index.lock once no git process is running), then integrate again.'
+      `Git is busy or has an unfinished operation in this repository (${files.join(', ')}).${reclaimed} ` +
+      `OrgAI ${waited ? 'waited a moment, ' : ''}ran no destructive git command and changed nothing; ${kept}. ` +
+      (lock ? 'If git is running elsewhere (an editor, a terminal or another tool), let it finish and integrate again. ' : '') +
+      'If an operation was left half done, finish or abort it yourself (for example git merge --abort, or delete index.lock once no git process is running), then integrate again.'
   }
 }
 
@@ -306,7 +332,7 @@ async function commitLeftoversUnlocked(wt: string, message: string): Promise<{ c
 
 /**
  * Remove a worktree and its branch, discarding any work on it. Throws UnfinishedGitStateError, changing nothing, when
- * the worktree's git dir holds an unfinished operation (a crashed holder's index.lock or MERGE_HEAD).
+ * the worktree's git dir holds an unfinished operation (an index.lock that does not go away, or MERGE_HEAD).
  */
 export async function discardWorktree(root: string, wt: { path: string; branch: string }): Promise<void> {
   await withRepoLock(root, async () => {
@@ -350,7 +376,7 @@ export async function integrateWorktree(
     if (!existsSync(wt)) {
       return { info: { ...info, status: 'removed' }, message: 'Worktree was already removed; nothing to integrate.' }
     }
-    // A crashed holder (or the user) left a merge or an index.lock: never commit, merge, abort or remove over it.
+    // The user's git (or one that stopped half way) holds a merge or an index.lock: never commit, merge, abort or remove over it.
     const refusal = await unfinishedGitStateRefusal([root, wt], `branch ${info.branch} is kept at ${wt}`)
     if (refusal) return { info: { ...info, status: 'conflict' }, message: refusal.message }
 

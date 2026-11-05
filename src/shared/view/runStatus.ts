@@ -30,7 +30,10 @@ export type EndedBy = 'user' | 'app'
 
 /** The summary fields that say how a run ended. `endedBy` is RunSummary.endedBy (older records only have endedWithApp). */
 export interface EndFacts {
-  /** 'policy' / 'budget' (host-finalized exec runs) are neither 'user' nor 'app': endedByOf gives undefined and they read Finished. */
+  /**
+   * 'policy' / 'budget' (host-finalized exec runs) are neither 'user' nor 'app': endedByOf gives undefined, and
+   * runStatus reads them Stopped with HOST_END_NOTE (a policy or budget stop is never a plain success).
+   */
   endedBy?: RunEndedBy
   endedWithApp?: boolean
 }
@@ -44,6 +47,16 @@ export function endedByOf(s: EndFacts): EndedBy | undefined {
 /** The note (and statusText) of a run cut off by OrgAI closing. */
 export const ENDED_WITH_APP = 'Ended when OrgAI closed'
 
+/**
+ * The note (and statusText) of a headless exec run the host ended (review Low): 'policy' (blocked, an unfinished plan,
+ * unmerged conflicts, stalled, a decision nobody could make) and 'budget' (the spend cap). Neither is a success, so
+ * they read Stopped, never Finished.
+ */
+export const HOST_END_NOTE: Readonly<Record<'policy' | 'budget', string>> = {
+  policy: 'Stopped by its exec policy',
+  budget: 'Stopped at its budget limit'
+}
+
 export interface RunStatusOptions {
   /** A card, question or blocked plan waits on the user; wins over the status. */
   waiting?: boolean
@@ -51,6 +64,8 @@ export interface RunStatusOptions {
   endedBy?: EndedBy
   /** Old records: the run was still live when OrgAI quit (same as endedBy 'app'). */
   endedWithApp?: boolean
+  /** RunSummary.endedBy 'policy' / 'budget' (a host-finalized exec run): reads Stopped with HOST_END_NOTE. */
+  endedByHost?: 'policy' | 'budget'
   /** Fallback for old records without endedBy only: the root agent was labelled Stopped (see isStoppedRun). */
   stopped?: boolean
   /** The harness is auto-continuing an active plan: idle between turns reads Running, not Idle. */
@@ -77,6 +92,7 @@ export function runStatus(status: RunStatus, opts: RunStatusOptions = {}): RunSt
       const by = endedByOf(opts)
       if (by === 'app') return make('Stopped', ENDED_WITH_APP)
       if (by === 'user') return make('Stopped', 'You ended this session')
+      if (opts.endedByHost === 'policy' || opts.endedByHost === 'budget') return make('Stopped', HOST_END_NOTE[opts.endedByHost])
       // Old records carry no endedBy: the root agent's label is the only trace of an End session.
       if (opts.stopped) return make('Stopped', 'You ended this session')
       return make('Finished')
@@ -112,9 +128,12 @@ export function autoContinueState(input: AutoContinueInput, defaultMax = 40): { 
   return { active, count, max }
 }
 
-/** The words to show for a status: a run cut off by the app closing says so instead of "Stopped". Use it wherever a status is shown as text. */
+/**
+ * The words to show for a status: a run cut off by the app closing, or ended by an exec run's policy or budget, says
+ * so instead of a bare "Stopped". Use it wherever a status is shown as text.
+ */
 export function statusText(view: RunStatusView): string {
-  return view.note === ENDED_WITH_APP ? view.note : view.word
+  return view.note === ENDED_WITH_APP || view.note === HOST_END_NOTE.policy || view.note === HOST_END_NOTE.budget ? view.note : view.word
 }
 
 /** The shared status of a run held in the store, so tab, header, pill, sidebar and history never disagree. */
@@ -135,9 +154,11 @@ export function statusOfRun(
     kind: run.summary.kind
   })
   const endedBy = endedByOf(run.summary)
+  const host = run.summary.endedBy === 'policy' || run.summary.endedBy === 'budget' ? run.summary.endedBy : undefined
   return runStatus(run.summary.status, {
     waiting,
     endedBy,
+    ...(host ? { endedByHost: host } : {}),
     // The summary decides; the root agent's label is read only for old records that carry no end reason.
     stopped: endedBy === undefined && run.summary.endedBy === undefined && isStoppedRun(run.agents),
     autoContinuing: auto.active

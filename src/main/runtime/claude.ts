@@ -59,7 +59,7 @@ import { firstMessageHiddenContext, spawnKnowledge, userMessageKnowledge, withSp
 import { HandleNamer, mapSendMessage, messageTranscriptText, spawnHandle } from './network'
 import { authFailureMessage, describeTool, isAuthFailure, scrubAuthDetail } from './activity'
 import { isolateClaudeEnv, scrubControlEnv } from './childEnv'
-import { SELF_CONTROL_REFUSAL_TEXT, checkSelfControlDenial, selfControlLogLine } from './selfControlGate'
+import { SELF_CONTROL_PATHS_UNAVAILABLE_LOG, SELF_CONTROL_REFUSAL_TEXT, checkSelfControlDenial, readControlProtectedPaths, selfControlLogLine } from './selfControlGate'
 import { WorktreeIntegrator } from './integration'
 import { resolveParent } from './agentTree'
 import {
@@ -1237,11 +1237,14 @@ export class ClaudeSession implements RuntimeSession {
     this.transcript(ROOT_ID, userBlock(text, images))
     const body = withUserMessageKnowledge(text, userMessageKnowledge(this.ctx, text, (m) => this.log('warn', m)))
     const composed = note ? (body ? `${note}\n\n---\n${body}` : note) : body
-    this.pushInput({
-      type: 'user',
-      message: { role: 'user', content: userContent(composed, images) },
-      parent_tool_use_id: null
-    })
+    this.pushInput(
+      {
+        type: 'user',
+        message: { role: 'user', content: userContent(composed, images) },
+        parent_tool_use_id: null
+      },
+      { userTurn: true }
+    )
     this.setState(ROOT_ID, 'thinking', 'Thinking…')
   }
 
@@ -1479,9 +1482,15 @@ export class ClaudeSession implements RuntimeSession {
     if (root && (root.state === 'idle' || root.state === 'done')) this.setState(ROOT_ID, 'thinking', activity)
   }
 
-  /** Push to the current input stream; before the query's init the message is also kept for a restart replay (N2). */
-  private pushInput(message: SDKUserMessage): void {
-    this.turnInFlight = true
+  /**
+   * Push to the current input stream; before the query's init the message is also kept for a restart replay (N2).
+   * Only a user's message marks a root turn in flight at once (review M4): a harness notice counts as a turn once the
+   * query's init for it arrives, so a notice the SDK drops leaves turnInFlight clear (an interrupt then is not taken
+   * for that turn's end). The root shows 'thinking' meanwhile; RunManager's stall watchdog ceiling
+   * (EXEC_STALL_BUSY_ROUNDS) ends an exec run that stays busy with no activity.
+   */
+  private pushInput(message: SDKUserMessage, opts: { userTurn?: boolean } = {}): void {
+    if (opts.userTurn) this.turnInFlight = true
     this.input.push(message)
     if (!this.queryInitSeen) this.preInit.push(message)
   }
@@ -1687,24 +1696,19 @@ export class ClaudeSession implements RuntimeSession {
    * The pre-mode self-control gate (selfControlGate.ts, cli-spec 3.4(1)): the gate's denial (SELF_CONTROL_DENIAL_MESSAGE,
    * or SELF_CONTROL_UNCHECKED_MESSAGE for a command too long to check) when this call runs the orgai command or opens
    * OrgAI's control files, else null. On a hit it logs a warning and writes one harness
-   * row on the calling agent. An empty or unreadable protected list skips the gate (logged once per run).
+   * row on the calling agent. An empty or unreadable protected list denies shell commands (review M2: they cannot be
+   * checked against the control files) and leaves file tools to the normal flow; logged once per run.
    */
   private selfControlDenial(agentId: string, toolName: string, toolInput: unknown, cwd: string): string | null {
-    let paths: string[] | undefined
-    try {
-      paths = this.ctx.controlProtectedPaths?.()
-    } catch {
-      paths = undefined
-    }
     // A context without the hook (tests, drafts) skips the path check quietly.
-    if (this.ctx.controlProtectedPaths && (!Array.isArray(paths) || !paths.length)) {
-      if (!this.selfControlSkipLogged) {
-        this.selfControlSkipLogged = true
-        this.log('warn', 'OrgAI control paths are unavailable for this run; the self-control gate checks only for the orgai command')
-      }
+    const { paths, unavailable } = readControlProtectedPaths(this.ctx.controlProtectedPaths?.bind(this.ctx))
+    if (unavailable && !this.selfControlSkipLogged) {
+      this.selfControlSkipLogged = true
+      this.log('warn', SELF_CONTROL_PATHS_UNAVAILABLE_LOG)
     }
     const denial = checkSelfControlDenial(toolName, toolInput, {
-      protectedPaths: Array.isArray(paths) ? paths : [],
+      protectedPaths: paths,
+      pathsUnavailable: unavailable,
       cwd,
       shell: toolName === 'PowerShell' ? 'powershell' : 'bash'
     })

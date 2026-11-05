@@ -3039,7 +3039,7 @@ export type RunEvent =
       autoResume?: boolean
       /**
        * Who ended the run (RunSummary.endedBy). 'user': End session (RunManager.stop). 'app': OrgAI quit or crashed while
-       * it was live. 'policy' / 'budget': a host-finalized headless exec run (reads 'Finished'). Set by RunManager on a
+       * it was live. 'policy' / 'budget': a host-finalized headless exec run (reads Stopped with a policy or budget note, never Finished). Set by RunManager on a
        * terminal status ('finished' / 'error') of a cut run, and on 'stopping' with 'user'. Absent: the run ended on its
        * own. Adapters never set it. Structured-clone safe.
        */

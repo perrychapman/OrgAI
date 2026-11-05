@@ -83,7 +83,7 @@ const EXEC_RUN_FLAGS: readonly CommandFlag[] = [
   { name: 'on-permission', takesValue: true, values: ['deny', 'fail', 'wait'], summary: 'Permission cards: deny (default), fail or wait' },
   { name: 'on-rules', takesValue: true, values: ['deny', 'fail', 'wait'], summary: 'Permission rule requests: deny (default), fail or wait' },
   { name: 'on-mcp-install', takesValue: true, values: ['deny', 'fail', 'wait'], summary: 'MCP install requests: deny (default), fail or wait' },
-  { name: 'on-question', takesValue: true, values: ['fail', 'conservative', 'wait'], summary: 'Questions: fail (default), conservative (the recommended option) or wait' },
+  { name: 'on-question', takesValue: true, values: ['fail', 'conservative', 'wait'], summary: 'Questions: fail (default), conservative (no option picked; the agent is told to take the most cautious path) or wait' },
   { name: 'on-proposal', takesValue: true, values: ['decline', 'fail', 'wait'], summary: 'Proposals: decline (default), fail or wait' },
   { name: 'on-merge', takesValue: true, values: ['hold', 'fail', 'wait'], summary: 'Merge reviews: hold (default), fail or wait' },
   { name: 'max-auto-denials', takesValue: true, summary: 'Automatic denials before the run ends as needs-decision (default 5)' },

@@ -472,6 +472,10 @@ describe('RunStore exec fields (cli-spec Wave 0)', () => {
     expect(cleanRunOverrides({ maxAutoContinues: 500 })).toEqual({ maxAutoContinues: 500 })
     expect(cleanRunOverrides({ maxAutoContinues: 2.5 })).toBeUndefined()
     expect(cleanRunOverrides({ decisionPolicy: { nope: true } })).toBeUndefined()
+    // A stall timeout of 0 (or below) would re-arm the watchdog every tick: dropped, the default applies (review Low).
+    expect(cleanRunOverrides({ execMode: true, execStallTimeoutMs: 0 })).toEqual({ execMode: true })
+    expect(cleanRunOverrides({ execMode: true, execStallTimeoutMs: -5 })).toEqual({ execMode: true })
+    expect(cleanRunOverrides({ execStallTimeoutMs: 1 })).toEqual({ execStallTimeoutMs: 1 })
   })
 
   it('normalizeCrashedRunSummary does not mutate its input and matches the constructor', () => {

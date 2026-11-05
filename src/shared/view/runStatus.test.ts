@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { RunEndedBy, RunStatus } from '@shared/types'
-import { endedByOf, runStatus, statusOfRun, statusText } from './runStatus'
+import { HOST_END_NOTE, endedByOf, runStatus, statusOfRun, statusText } from './runStatus'
 import { continuationDivider, endedComposerCopy } from './runChains'
 
 describe('runStatus', () => {
@@ -50,23 +50,24 @@ describe('host-finalized end reasons (policy, budget)', () => {
   const summary = (endedBy: RunEndedBy) => ({ status: 'finished' as const, kind: 'work' as const, endedBy })
   const rootStopped = { r: { parentId: null, activity: 'Stopped' } }
 
-  it('reads Finished for a finished run ended by policy', () => {
+  it('a run ended by its exec policy reads Stopped, never a plain Finished (review Low)', () => {
     expect(endedByOf({ endedBy: 'policy' })).toBeUndefined()
     const view = statusOfRun({ summary: summary('policy') }, undefined, false)
-    expect(view).toEqual({ word: 'Finished', tone: 'ok' })
-    expect(statusText(view)).toBe('Finished')
+    expect(view).toEqual({ word: 'Stopped', tone: 'stopped', note: HOST_END_NOTE.policy })
+    expect(statusText(view)).toBe('Stopped by its exec policy')
   })
 
-  it('reads Finished for a finished run ended by budget', () => {
+  it('a run ended at its budget reads Stopped at its budget limit (review Low)', () => {
     expect(endedByOf({ endedBy: 'budget' })).toBeUndefined()
     const view = statusOfRun({ summary: summary('budget') }, undefined, false)
-    expect(view).toEqual({ word: 'Finished', tone: 'ok' })
-    expect(statusText(view)).toBe('Finished')
+    expect(view).toEqual({ word: 'Stopped', tone: 'stopped', note: HOST_END_NOTE.budget })
+    expect(statusText(view)).toBe('Stopped at its budget limit')
   })
 
-  it('never falls back to the root agent label when the summary carries policy or budget', () => {
+  it('a failed exec run still reads Failed; the root agent label is never the source', () => {
+    expect(statusOfRun({ summary: { ...summary('policy'), status: 'error' } }, undefined, false).word).toBe('Failed')
     for (const by of ['policy', 'budget'] as RunEndedBy[]) {
-      expect(statusText(statusOfRun({ summary: summary(by), agents: rootStopped }, undefined, false))).toBe('Finished')
+      expect(statusText(statusOfRun({ summary: summary(by), agents: rootStopped }, undefined, false))).toBe(HOST_END_NOTE[by as 'policy' | 'budget'])
     }
   })
 

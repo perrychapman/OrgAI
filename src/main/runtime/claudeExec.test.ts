@@ -141,6 +141,26 @@ describe('ClaudeSession exec settlement (fake query)', () => {
     expect(ends[1].interrupted).toBeUndefined()
   })
 
+  it('only a user message marks a root turn in flight before init; a harness notice waits for its init (review M4)', async () => {
+    const { session } = start()
+    const q = await firstQuery()
+    q.emit(init)
+    q.emit(result())
+    await vi.waitFor(() => expect(session.settlement().rootTurnGen).toBe(1))
+    const inFlight = (): boolean => (session as unknown as { turnInFlight: boolean }).turnInFlight
+    expect(inFlight()).toBe(false)
+    ;(session as unknown as { notifyOrchestrator(t: string): void }).notifyOrchestrator('A harness notice')
+    expect(inFlight()).toBe(false)
+    // The SDK starts the notice's turn: now it is in flight.
+    q.emit(init)
+    await vi.waitFor(() => expect(inFlight()).toBe(true))
+    q.emit(result())
+    await vi.waitFor(() => expect(session.settlement().rootTurnGen).toBe(2))
+    expect(inFlight()).toBe(false)
+    await session.send('next, please')
+    expect(inFlight()).toBe(true)
+  })
+
   it('reports every root turn end before run.status idle, failed ones included, with increasing turnGen', async () => {
     const { log, ends } = start()
     const q = await firstQuery()

@@ -123,6 +123,13 @@ const MAX_NEST = 3
 const MAX_PARTS = 2000
 /** Longest command text checked; past this the check fails closed with no file-system access. */
 const MAX_COMMAND_CHARS = 32 * 1024
+/**
+ * The self-control gate's limits (definite mode) are higher (review M3): there a limit denies the command outright, so
+ * a long `git add` of many files must not hit it. Each new path costs one cached real-path lookup.
+ */
+const DEFINITE_MAX_WORDS = 20_000
+const DEFINITE_MAX_PARTS = 40_000
+const DEFINITE_MAX_COMMAND_CHARS = 256 * 1024
 const CD_NAMES: ReadonlySet<string> = new Set(['cd', 'pushd', 'push-location', 'set-location', 'sl', 'chdir'])
 /** These make the working folder unknown (the previous folder is not tracked). */
 const POP_NAMES: ReadonlySet<string> = new Set(['popd', 'pop-location'])
@@ -438,7 +445,7 @@ function scanCommand(s: CheckState, text: string, startCwd: string | undefined, 
     // Definite mode goes on with no working folder: relative words resolve to nothing, absolute ones are checked.
     if (unknown && !s.definite && !(isCd && !POP_NAMES.has(head) && trackedTarget(s, words, cwd))) return { folder: first, how: 'runs-in' }
     for (const word of scanned) {
-      if (++s.words > MAX_WORDS) return limitHit(s, { folder: first, how: 'names' })
+      if (++s.words > (s.definite ? DEFINITE_MAX_WORDS : MAX_WORDS)) return limitHit(s, { folder: first, how: 'names' })
       if (/\s/.test(word)) {
         if (depth < MAX_NEST) {
           const nested = scanCommand(s, word, cwd, depth + 1, unknown)
@@ -450,7 +457,7 @@ function scanCommand(s: CheckState, text: string, startCwd: string | undefined, 
       }
       // `${HOME}` would be split at its braces (PUNCTUATION); definite mode reads it as `$HOME` (HOME_VARIABLE).
       for (const part of partsOf(s.definite ? word.replace(/\$\{HOME\}/gi, () => '$HOME') : word)) {
-        if (++s.parts > MAX_PARTS) return limitHit(s, { folder: first, how: 'names' })
+        if (++s.parts > (s.definite ? DEFINITE_MAX_PARTS : MAX_PARTS)) return limitHit(s, { folder: first, how: 'names' })
         const hit = checkPart(s, part, cwd)
         if (hit) return { folder: hit, how: 'names' }
       }
@@ -528,7 +535,7 @@ function scanReferenceTouch(
     limited: false
   }
   const done = (touch: Touch | null): { touch: Touch | null; limited: boolean } => ({ touch, limited: s.limited })
-  if (command.length > MAX_COMMAND_CHARS) return done(limitHit(s, { folder: entries[0].ref, how: 'names' }))
+  if (command.length > (s.definite ? DEFINITE_MAX_COMMAND_CHARS : MAX_COMMAND_CHARS)) return done(limitHit(s, { folder: entries[0].ref, how: 'names' }))
   const startCwd = typeof cwd === 'string' && cwd !== '' && p.isAbsolute(cwd) ? p.resolve(cwd) : undefined
   if (startCwd && platform === 'win32' && isUncLike(startCwd)) return done(stopOr(s, { folder: entries[0].ref, how: 'runs-in' }))
   if (startCwd) {
