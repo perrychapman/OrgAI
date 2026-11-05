@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import type { McpTestResult } from '@shared/types'
 import type { ResolvedMcpServer } from '../runtime/types'
 import { parseWwwAuthenticate, redactOAuth } from './oauth'
+import { systemCertTrust, type CertTrustState } from '../systemCerts'
 
 /**
  * Starts an MCP server (or connects to it) just far enough to list its tools: initialize, initialized
@@ -98,13 +99,18 @@ function isCertificateCode(code: string): boolean {
 }
 
 const CERT_CAUSE = 'A proxy, VPN or antivirus that inspects HTTPS can cause this.'
-const CERT_STORE_HINT = " OrgAI trusts your system's certificate store, so the root certificate of that proxy must be installed there."
-/** Chain failures a missing root certificate causes; expired and altname failures are not one. */
-const UNTRUSTED_CHAIN_CODES = new Set(['UNABLE_TO_GET_ISSUER_CERT_LOCALLY', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'SELF_SIGNED_CERT_IN_CHAIN', 'DEPTH_ZERO_SELF_SIGNED_CERT'])
+/** What the hint says about the system store; it never claims more than OrgAI knows. */
+function certStoreHint(trust: CertTrustState): string {
+  if (trust === 'pending') return ' OrgAI is still reading the system certificate store; try again in a moment.'
+  if (trust === 'unavailable') return ' OrgAI could not read the system certificate store, so a root certificate installed there is not used.'
+  return " If this network inspects HTTPS, its root certificate must be in your system's certificate store. Otherwise the server's own certificate chain may be incomplete or self-signed."
+}
+/** Chain failures a missing root certificate can cause (or an incomplete or self-signed server chain); expired and altname failures are not one. */
+const UNTRUSTED_CHAIN_CODES = new Set(['UNABLE_TO_GET_ISSUER_CERT_LOCALLY', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'SELF_SIGNED_CERT_IN_CHAIN', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'CERT_UNTRUSTED'])
 
 function untrustedChain(code: string | undefined, message: string | undefined): boolean {
   if (code && UNTRUSTED_CHAIN_CODES.has(code)) return true
-  return !!message && /unable to verify|self[- ]signed|unable to get (local )?issuer/i.test(message)
+  return !!message && /unable to verify|self[- ]signed|unable to get (local )?issuer|certificate not trusted/i.test(message)
 }
 
 /** True for undici's "fetch failed" whose cause is a socket the other side closed or reset before answering. */
@@ -122,7 +128,7 @@ export function isClosedSocketFailure(e: unknown): boolean {
  * own message. `host` names the server; the caller still redacts the result. A sentence that already starts with
  * "Could not" needs no "Could not reach the server:" prefix (see `reachabilityMessage`).
  */
-export function describeFetchFailure(e: unknown, host = 'the server'): string | null {
+export function describeFetchFailure(e: unknown, host = 'the server', trust: CertTrustState = systemCertTrust()): string | null {
   if (!e || typeof e !== 'object') return null
   const chain = causeChain(e)
   const top = chain[0]
@@ -133,10 +139,10 @@ export function describeFetchFailure(e: unknown, host = 'the server'): string | 
     if (code && DNS_CODES.has(code)) return `Could not look up ${host}. Check your internet connection, VPN or DNS.`
     if (code && CONNECT_CODES.has(code)) return `Could not connect to ${host} (${code}). Check your internet connection, VPN, firewall or proxy.`
     if (code && isCertificateCode(code)) {
-      return `The TLS certificate of ${host} could not be verified (${code}). ${CERT_CAUSE}${untrustedChain(code, message) ? CERT_STORE_HINT : ''}`
+      return `The TLS certificate of ${host} could not be verified (${code}). ${CERT_CAUSE}${untrustedChain(code, message) ? certStoreHint(trust) : ''}`
     }
     if (message && /certificate/i.test(message)) {
-      return `The TLS certificate of ${host} could not be verified${code ? ` (${code})` : ''}. ${CERT_CAUSE}${untrustedChain(code, message) ? CERT_STORE_HINT : ''}`
+      return `The TLS certificate of ${host} could not be verified${code ? ` (${code})` : ''}. ${CERT_CAUSE}${untrustedChain(code, message) ? certStoreHint(trust) : ''}`
     }
     if (message && /unexpected redirect/i.test(message)) return `${host} redirected the request; OrgAI does not follow redirects for MCP servers. Check the URL.`
     if ((code && CLOSED_SOCKET_CODES.has(code)) || (message && /other side closed/i.test(message))) return `${host} closed the connection before answering.`
