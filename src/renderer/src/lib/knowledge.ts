@@ -96,8 +96,8 @@ export function kindLabel(kind: string): string {
 /** "People", "Open questions", "Notes", or a free-form kind as typed in sentence case ("Vendor"). */
 export function kindGroupLabel(kind: string): string {
   if (kind === NOTE_KIND) return 'Notes'
-  const common = (COMMON_PLURAL as Record<string, string>)[kind]
-  return common ?? sentenceCase(keyWords(kind))
+  // Own keys only: a kind is agent-written, and 'constructor' passes KNOWLEDGE_KEY_RE.
+  return Object.hasOwn(COMMON_PLURAL, kind) ? (COMMON_PLURAL as Record<string, string>)[kind] : sentenceCase(keyWords(kind))
 }
 
 /** Group order: the common kinds in order, then free-form kinds alphabetically by label, then Notes last. */
@@ -108,14 +108,48 @@ export function kindOrder(kinds: Iterable<string>): string[] {
   return [...common, ...free, ...(set.has(NOTE_KIND) ? [NOTE_KIND] : [])]
 }
 
+/** How a kind's dot is drawn beside its colour: eight colours cannot cover the kinds, so the shape is part of the key. */
+export type KindMark = 'solid' | 'ring' | 'ring-dot'
+
+/** Common kinds' colour slot (an index into ROLE_COLORS) and mark (docs/design/knowledge-graph-2.md section 1.4). Slot 6 is unused: nearly slot 1. */
+const COMMON_KIND_KEY: Record<string, { slot: number; mark: KindMark }> = {
+  person: { slot: 0, mark: 'solid' },
+  organisation: { slot: 1, mark: 'solid' },
+  system: { slot: 2, mark: 'solid' },
+  decision: { slot: 3, mark: 'solid' },
+  risk: { slot: 4, mark: 'solid' },
+  requirement: { slot: 5, mark: 'solid' },
+  document: { slot: 7, mark: 'solid' },
+  deadline: { slot: 3, mark: 'ring' },
+  meeting: { slot: 0, mark: 'ring' },
+  'open-question': { slot: 4, mark: 'ring' }
+}
+/** Slots a free-form kind may take. */
+const FREE_KIND_SLOTS = [0, 1, 2, 3, 4, 5, 7]
+
+/** A small stable hash of a kind key (FNV-1a), so a free-form kind keeps its colour whatever else is in the graph. */
+function kindHash(kind: string): number {
+  let h = 0x811c9dc5
+  for (let i = 0; i < kind.length; i++) {
+    h ^= kind.charCodeAt(i)
+    h = Math.imul(h, 0x01000193)
+  }
+  return h >>> 0
+}
+
 /**
- * The colour slot of a kind (the role colour slots, so Person and System differ as roles do; rec 19): common kinds
- * take fixed slots in their order, free-form kinds the slots after them in `kindOrder` order, wrapping round.
+ * The colour of a kind (the role colour slots): common kinds take fixed slots, free-form kinds a slot from a hash of
+ * their key, so a new kind never recolours another. Two kinds may share a colour; `kindMark` tells them apart and the
+ * legend, card and spoken name always say the kind.
  */
-export function kindColor(kind: string, kindsInUse: Iterable<string> = []): string {
-  const order = kindOrder(new Set([...KNOWLEDGE_COMMON_KINDS, ...kindsInUse, kind]))
-  const at = Math.max(0, order.indexOf(kind))
-  return ROLE_COLORS[at % ROLE_COLORS.length]
+export function kindColor(kind: string): string {
+  const slot = Object.hasOwn(COMMON_KIND_KEY, kind) ? COMMON_KIND_KEY[kind].slot : FREE_KIND_SLOTS[kindHash(kind) % FREE_KIND_SLOTS.length]
+  return ROLE_COLORS[slot % ROLE_COLORS.length]
+}
+
+/** The mark of a kind: the common kinds' from the table, free-form kinds 'ring-dot'. */
+export function kindMark(kind: string): KindMark {
+  return Object.hasOwn(COMMON_KIND_KEY, kind) ? COMMON_KIND_KEY[kind].mark : 'ring-dot'
 }
 
 // ---- filters, order and groups ----

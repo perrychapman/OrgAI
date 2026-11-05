@@ -167,9 +167,9 @@ export function flushRecorded(batch: RecordedBatch, now: number): { batch: Recor
   return { batch: { pending: 0, lastAt: now }, announce: recordedText(batch.pending) }
 }
 
-/** The item ids of a push event: nodes (`kn_`) and notes; relation ids (`ke_`) are not items. */
+/** The item ids of a push event: nodes (`kn_`) and notes; relation ids (`ke_`) and dismissed connections (`kl_`) are not items. */
 export function eventItemIds(ids: readonly string[] | undefined): string[] {
-  return (ids ?? []).filter((id) => !id.startsWith('ke_'))
+  return (ids ?? []).filter((id) => !id.startsWith('ke_') && !id.startsWith('kl_'))
 }
 
 /** How long an id of the tab's own write counts as its own. */

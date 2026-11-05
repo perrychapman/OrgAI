@@ -165,6 +165,84 @@
   color: var(--text-tertiary);
 }
 
+/* Chips carry the kind's 10 px mark (KindMark) in both layouts. */
+.knowledge-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1h);
+}
+.knowledge-note-dot {
+  background: var(--text-tertiary);
+}
+
+/* ---------- Filter band (Graph view, docs/design/knowledge-graph-2.md section 1.2) ---------- */
+/* The column becomes a band above the canvas: row 1 search and switches, row 2 the kind chips (two rows, then they scroll). */
+.knowledge[data-view='graph'] {
+  grid-template-columns: minmax(0, 1fr) var(--side-panel-w, 360px);
+  grid-template-areas:
+    'toolbar toolbar'
+    'filters side'
+    'main side';
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+.knowledge[data-view='graph']:has(> .side-panel[data-collapsed='true']) {
+  grid-template-columns: minmax(0, 1fr) 40px;
+}
+.knowledge-filters[data-layout='band'] {
+  width: auto;
+  overflow: visible;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1h) var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-right: 0;
+  border-bottom: 1px solid var(--border-default);
+}
+.knowledge-filters[data-layout='band'] .knowledge-search {
+  flex: 0 0 200px;
+}
+.knowledge-filters[data-layout='band'][data-compact='true'] .knowledge-search {
+  flex: 1 1 140px;
+  min-width: 0;
+}
+.knowledge-filters[data-layout='band'] .knowledge-origins .knowledge-chips {
+  flex-wrap: nowrap;
+}
+.knowledge-filters[data-layout='band'] .knowledge-origins {
+  flex: none;
+}
+.knowledge-inline-switch {
+  flex: none;
+}
+.knowledge-inline-switch .knowledge-switch-row {
+  justify-content: flex-start;
+  gap: var(--space-1h);
+  white-space: nowrap;
+}
+.knowledge-filters[data-layout='band'] .knowledge-count {
+  order: 1;
+  margin-left: auto;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+}
+.knowledge-filters[data-layout='band'] .knowledge-kinds {
+  order: 2;
+  flex: 1 0 100%;
+  max-height: 64px;
+  overflow-y: auto;
+}
+.knowledge-more-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  min-width: 14rem;
+}
+.knowledge-more-panel .knowledge-switch-row {
+  justify-content: space-between;
+}
+
 /* ---------- Main column: list, empty states, graph ---------- */
 .knowledge-main {
   grid-area: main;
@@ -583,6 +661,58 @@
   font-size: var(--text-caption);
   color: var(--text-tertiary);
 }
+/* Possible connections (docs/design/knowledge-graph-2.md section 2.2). */
+.knowledge-possible-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.knowledge-possible-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1h);
+  min-width: 0;
+}
+.knowledge-possible-other,
+.knowledge-possible-why {
+  margin: 0;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.knowledge-possible-other {
+  font-size: var(--text-body);
+  line-height: var(--text-body-lh);
+  color: var(--text-primary);
+}
+.knowledge-possible-statement {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1h);
+  font-size: var(--text-body);
+  line-height: var(--text-body-lh);
+  min-width: 0;
+}
+.knowledge-possible-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.knowledge-possible-statement .input {
+  flex: 1 1 8rem;
+  min-width: 6rem;
+  max-width: 14rem;
+}
+.knowledge-possible-failed {
+  margin: 0;
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}
+
 .knowledge-detail-actions {
   display: flex;
   flex-wrap: wrap;

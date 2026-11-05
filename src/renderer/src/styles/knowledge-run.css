@@ -1,0 +1,195 @@
+/* The run side tab "Knowledge" (components/knowledge/RunKnowledge.tsx), the transcript's read rows and the usage list. */
+.run-knowledge {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  min-width: 0;
+}
+.run-knowledge-search {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.run-knowledge-search label {
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+}
+.run-knowledge-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.run-knowledge-section h3 {
+  margin: 0;
+  font-size: var(--text-body);
+  line-height: var(--text-body-lh);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+.run-knowledge-caption,
+.run-knowledge-more,
+.run-knowledge-free,
+.run-knowledge-history,
+.run-knowledge-window-note {
+  margin: 0;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-tertiary);
+}
+.run-knowledge-list,
+.run-knowledge-lines {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+.run-knowledge-lines li {
+  padding: var(--space-1) 0;
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.run-knowledge-row {
+  all: unset;
+  box-sizing: border-box;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  width: 100%;
+  min-height: 44px;
+  padding: var(--space-2) var(--space-2);
+  border-bottom: 1px solid var(--border-subtle);
+  cursor: pointer;
+}
+.run-knowledge-row .knowledge-kind-mark {
+  margin-top: var(--space-1h);
+}
+.run-knowledge-row:hover {
+  background: var(--surface-2);
+}
+.run-knowledge-row:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.run-knowledge-row-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0h);
+  min-width: 0;
+  flex: 1;
+}
+.run-knowledge-row-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.run-knowledge-row-name {
+  min-width: 0;
+  font-size: var(--text-body);
+  line-height: var(--text-body-lh);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.run-knowledge-row-kind {
+  flex: none;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-secondary);
+}
+.run-knowledge-row-excerpt {
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.run-knowledge-row-extra {
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-tertiary);
+}
+.run-knowledge-detail {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.run-knowledge-detail > * {
+  max-width: 100%;
+}
+.run-knowledge-name {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  font-size: var(--text-title-sm);
+  line-height: var(--text-title-sm-lh);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+.run-knowledge-name:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
+}
+.run-knowledge-badges {
+  display: flex;
+  gap: var(--space-1);
+  margin: 0;
+}
+.run-knowledge-summary {
+  margin: 0;
+  font-size: var(--text-body);
+  line-height: var(--text-body-lh);
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+.run-knowledge-detail h4 {
+  margin: 0 0 var(--space-1);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  font-weight: var(--weight-semibold);
+  color: var(--text-secondary);
+}
+.run-knowledge-facts,
+.run-knowledge-related {
+  margin: 0;
+  padding-left: var(--space-4);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+.run-knowledge-error {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+
+/* A knowledge read row in the transcript: the look of a write row, without the Open link. */
+.knowledge-read-row .entry-plain {
+  color: var(--text-secondary);
+}
+
+/* Usage panel > Knowledge */
+.usage-knowledge-head {
+  margin: var(--space-3) 0 0;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  font-weight: var(--weight-regular);
+  color: var(--text-tertiary);
+}

@@ -1,0 +1,25 @@
+/* A kind's 10 px mark (components/knowledge/KindMark.tsx). The colour is the kind's slot mixed like the graph's nodes. */
+.knowledge-kind-mark {
+  --kind-ink: color-mix(in srgb, var(--kind-color) var(--neural-node-mix), var(--neural-node-ink));
+  display: inline-block;
+  flex: none;
+  box-sizing: border-box;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--kind-ink);
+}
+.knowledge-kind-mark[data-mark='ring'],
+.knowledge-kind-mark[data-mark='ring-dot'] {
+  background: transparent;
+  border: 2px solid var(--kind-ink);
+}
+.knowledge-kind-mark[data-mark='ring-dot'] {
+  background: radial-gradient(circle, var(--kind-ink) 0 1.5px, transparent 1.6px);
+}
+@media (forced-colors: active) {
+  .knowledge-kind-mark {
+    forced-color-adjust: none;
+    --kind-ink: CanvasText;
+  }
+}
