@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { newRunLead, projectKindCopy, projectNoun } from './projectKindCopy'
+import { newRunLead, projectKindCopy, projectNoun, settingsApplyNoteFor } from './projectKindCopy'
 
 describe('projectKindCopy', () => {
   it('keeps the code words', () => {
@@ -17,6 +17,12 @@ describe('projectKindCopy', () => {
   it('leads the engagement new-run page only', () => {
     expect(newRunLead('code', 'Lead')).toBeNull()
     expect(newRunLead('engagement', 'Lead')).toMatch(/^Give Lead a task\./)
+  })
+  it('says where allowed commands are saved by rules location', () => {
+    expect(settingsApplyNoteFor('code', 'folder')).toContain('.claude/settings.local.json')
+    expect(settingsApplyNoteFor('code', 'app')).toContain('saves any allowed commands in OrgAI, not in your folder.')
+    expect(settingsApplyNoteFor('code', 'app')).not.toContain('settings.local')
+    expect(settingsApplyNoteFor('engagement', 'app')).not.toContain('settings.local')
   })
   it('names the project per kind', () => {
     expect(projectNoun('engagement')).toBe('engagement')
