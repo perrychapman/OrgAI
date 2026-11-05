@@ -41,6 +41,7 @@ import {
   type UserQuestion
 } from '../../shared/types'
 import { parseFlags, type FlagValues } from '../flags'
+import { manageDeps } from '../manage'
 import { emit, isJsonOutput, safeLine, type Json } from '../output'
 import { warnVersionSkew } from '../runRef'
 import { CliError, EXIT, type CliContext, type CommandFn, type ConnectResult, type HostCallError, type HostClient } from '../types'
@@ -84,45 +85,9 @@ const KIND_LABEL: Record<CardKind, string> = {
 const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/
 const REQUEST_ID_RE = /^[A-Za-z0-9_-]{1,128}$/
 
-/** Replaceable for tests: the y/N confirmation a durable verb asks on the terminal. */
+/** Replaceable for tests: the y/N confirmation a durable verb asks on the terminal (manage.ts by default). */
 export const decideDeps = {
-  confirm: (question: string): Promise<boolean> => ttyConfirm(question)
-}
-
-/** Ask `question [y/N]` on /dev/tty (the console on Windows) and read one line; only y / yes is a yes. */
-async function ttyConfirm(question: string): Promise<boolean> {
-  const readline = await import('node:readline')
-  if (process.platform === 'win32') {
-    const rl = readline.createInterface({ input: process.stdin, output: process.stderr, terminal: true })
-    try {
-      const answer = await new Promise<string>((resolve) => rl.question(`${question} [y/N] `, resolve))
-      return /^y(es)?$/i.test(answer.trim())
-    } finally {
-      rl.close()
-    }
-  }
-  const fs = await import('node:fs')
-  const tty = await import('node:tty')
-  let fd: number
-  try {
-    fd = fs.openSync('/dev/tty', 'r+')
-  } catch {
-    return false
-  }
-  const input = new tty.ReadStream(fd)
-  const output = new tty.WriteStream(fd)
-  const rl = readline.createInterface({ input, output, terminal: false })
-  try {
-    output.write(`${question} [y/N] `)
-    const answer = await new Promise<string>((resolve) => {
-      rl.once('line', resolve)
-      rl.once('close', () => resolve(''))
-    })
-    return /^y(es)?$/i.test(answer.trim())
-  } finally {
-    rl.close()
-    input.destroy()
-  }
+  confirm: (question: string): Promise<boolean> => manageDeps.ttyConfirm(question)
 }
 
 /** Who resolved a card, in words. */

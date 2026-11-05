@@ -322,6 +322,12 @@ export type ConnectionEvent =
   | { type: 'models.updated'; connection: ConnectionId; models: ProviderModel[]; changed?: boolean; refreshedAt?: number }
   /** A connection change remapped role models. Only projects with at least one change are listed; reload them. */
   | { type: 'projects.remapped'; results: RemapResult[] }
+  /**
+   * An mcp:authorize with `announceUrl` is about to wait for its callback. Sent on the 'connections' host.subscribe
+   * topic only when announceUrl was set (the CLI's `orgai mcp auth`). It carries no token or PKCE verifier; every
+   * read-scope subscriber sees it (accepted risk, like connection.login's device code).
+   */
+  | { type: 'mcp.authorize'; authorize: McpAuthorizeUrlUpdate }
 
 /** Model choices are provider-scoped aliases or full model IDs. */
 export type ModelRef = string
@@ -666,7 +672,32 @@ export type McpAuthTarget = { libraryId: string } | { projectId: string; serverI
  * mcp:authorize input. clientId / clientSecret are write-only: stored (the secret in safeStorage) and never
  * echoed. A linked project server is authorized through its library entry ({ libraryId }).
  */
-export type McpAuthorizeInput = McpAuthTarget & { clientId?: string; clientSecret?: string }
+export type McpAuthorizeInput = McpAuthTarget & {
+  clientId?: string
+  clientSecret?: string
+  /**
+   * CLI only (`orgai mcp auth`, cli-spec 6.3(5)): false = the host does not open a browser itself (an SSH session, where
+   * the user opens the URL on their own computer). Default true.
+   */
+  openBrowser?: boolean
+  /**
+   * CLI only: true = before waiting for the callback the host sends the authorization URL as a connections:event
+   * `mcp.authorize` (McpAuthorizeUrlUpdate) on the 'connections' host.subscribe topic.
+   */
+  announceUrl?: boolean
+}
+
+/** connections:event `mcp.authorize`: the OAuth authorization URL of an mcp:authorize that set announceUrl. */
+export interface McpAuthorizeUrlUpdate {
+  target: McpAuthTarget
+  /** The authorization URL the user opens (it carries the PKCE challenge and state, never the verifier or a token). */
+  url: string
+  /** The loopback redirect the authorization server calls back (for the SSH port-forward hint). */
+  redirectUri?: string
+  /** True when the host opened a browser itself. */
+  openedBrowser: boolean
+  at: number
+}
 
 /** The MCP Registry package a server was installed from. */
 export interface McpRegistryRef {

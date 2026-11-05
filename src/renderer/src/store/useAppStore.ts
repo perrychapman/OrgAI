@@ -1633,6 +1633,9 @@ export const useAppStore = create<AppState>((set, get) => ({
           .catch(() => undefined)
         return
       }
+      case 'mcp.authorize':
+        // Only the CLI asks for it (announceUrl); the app opens the browser itself.
+        return
     }
   },
 

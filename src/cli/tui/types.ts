@@ -525,4 +525,13 @@ export interface TuiLaunch {
   readOnlyReason?: string
   /** No project for the folder: show onboarding. */
   onboarding?: { folder: string }
+  /**
+   * Wave 5 (commands/interactive.ts runInteractiveRun): exit the TUI once the launched run's chain ends, with exit code
+   * 0 when it ended finished and 1 when it ended in error.
+   */
+  exitWhenEnded?: boolean
+  /** Wave 5: quitting (Ctrl+C) stops the open run (runs:stop) first, then the TUI exits 130. */
+  stopOnQuit?: boolean
+  /** Wave 5: a heading for the launched session (e.g. "Setup interview", "MCP assistant"). */
+  title?: string
 }

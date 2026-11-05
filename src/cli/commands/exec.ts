@@ -47,6 +47,7 @@ import { ensureHost, connectFailure, type EnsuredHost } from '../client/ensureHo
 import { RunStream, defaultRunStreamTimers, type RunStreamTimers, type SnapshotResult } from '../client/runStream'
 import { TUI_FLAGS, findCommand } from '../commandTable'
 import { parseFlags, type FlagSpec } from '../flags'
+import { readStdinText } from '../manage'
 import { emit, emitLine, isJsonOutput, note, printText, safeLine, styleFor, styleStatus, warn, type Json } from '../output'
 import { agentLabel, costText, pendingItems, planUpdateLine, recordWithoutImages, statusViewOf, statusWordOfSummary, transcriptLine } from '../render'
 import { resolveRunFromSource, warnVersionSkew } from '../runRef'
@@ -63,7 +64,7 @@ const MAX_SECONDS = Math.floor(MAX_TIMER_DELAY_MS / 1000)
 
 /** Swappable in tests: stdin, the reconnect timers and the stop wait. */
 export const execIo = {
-  readStdin: (maxBytes: number): Promise<string> => readProcessStdin(maxBytes),
+  readStdin: (maxBytes: number): Promise<string> => readStdinText(maxBytes, 'The prompt on stdin'),
   timers: defaultRunStreamTimers as RunStreamTimers,
   stopWaitMs: EXEC_STOP_WAIT_MS
 }
@@ -153,21 +154,6 @@ export function overridesFromFlags(v: Values): RunOverrides {
 export function overridesNeedConfigure(project: Project | undefined, o: RunOverrides): boolean {
   const p = project ?? ({ permissionMode: 'default' } as unknown as Project)
   return overridesWidening(p, o).length > 0
-}
-
-async function readProcessStdin(maxBytes: number): Promise<string> {
-  const chunks: Buffer[] = []
-  let size = 0
-  for await (const chunk of process.stdin) {
-    const b = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk))
-    size += b.length
-    if (size > maxBytes) {
-      process.stdin.destroy()
-      throw usage(`The prompt on stdin is larger than ${Math.round(maxBytes / 1024)} KB.`)
-    }
-    chunks.push(b)
-  }
-  return Buffer.concat(chunks).toString('utf8')
 }
 
 /** The prompt: `text` (a positional or --prompt), '-' reads stdin, none reads a non-TTY stdin. Empty is exit 2. */

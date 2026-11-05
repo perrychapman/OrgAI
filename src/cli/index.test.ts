@@ -35,8 +35,9 @@ vi.mock('./commands/tui', () => ({
   })
 }))
 
-const { main, editDistance, generalHelp } = await import('./index')
+const { main, editDistance, generalHelp, ROUTES } = await import('./index')
 const { CLI_VERSION } = await import('./version')
+const { COMMANDS } = await import('./commandTable')
 const { SECRET_ENV_REFUSAL } = await import('./secretOverlay')
 
 function io() {
@@ -132,10 +133,29 @@ describe('orgai routing', () => {
     expect(h).toMatch(/^ {2}attach\s/m)
   })
 
-  it('an unavailable command exits 2', async () => {
-    const r = await run(['org', 'list'])
+  it.each(COMMANDS.filter((c) => !c.available).map((c) => c.name))('an unavailable command (%s) exits 2 before routing', async (name) => {
+    const r = await run([name, 'list'])
     expect(r.code).toBe(2)
-    expect(r.err).toContain('`orgai org` is not available in this build yet.')
+    expect(r.err).toContain(`\`orgai ${name}\` is not available in this build yet.`)
+    expect(calls).toHaveLength(0)
+  })
+
+  it('the Coming later line lists exactly the unavailable commands (none, one or several)', () => {
+    const later = COMMANDS.filter((c) => !c.available).map((c) => c.name)
+    const line = generalHelp()
+      .split('\n')
+      .find((l) => l.startsWith('Coming later'))
+    if (later.length === 0) expect(line).toBeUndefined()
+    else expect(line).toBe(`Coming later: ${later.join(', ')}.`)
+  })
+
+  it('every command has a route and its help', async () => {
+    for (const c of COMMANDS) {
+      expect(typeof ROUTES[c.name], c.name).toBe('function')
+      const r = await run(['help', c.name])
+      expect(r.code, c.name).toBe(0)
+      expect(r.out, c.name).toContain(`Usage: orgai ${c.usage}`)
+    }
   })
 
   it('routes tui and attach, and prompts to the terminal UI', async () => {

@@ -7,15 +7,29 @@ import { realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { runApp } from './commands/app'
 import { runCompletions } from './commands/completions'
+import { runConnections } from './commands/connections'
 import { runDaemon } from './commands/daemon'
 import { runDecide } from './commands/decide'
 import { runDoctor } from './commands/doctor'
 import { runExec, runResume } from './commands/exec'
 import { runInbox } from './commands/inbox'
+import { runInit } from './commands/init'
+import { runKit } from './commands/kit'
+import { runKnowledge } from './commands/knowledge'
+import { runMcp } from './commands/mcp'
+import { runModels } from './commands/models'
+import { runNotes } from './commands/notes'
+import { runOrg } from './commands/org'
+import { runPermissions } from './commands/permissions'
+import { runProjects } from './commands/projects'
 import { runRuns } from './commands/runs'
+import { runSkills } from './commands/skills'
 import { runStatus } from './commands/status'
+import { runTeam } from './commands/team'
 import { defaultTuiPrintsHelp, PROMPT_HINT, runAttach, runDefaultTui, runTuiCommand } from './commands/tui'
+import { runUsage } from './commands/usage'
 import { runWatch } from './commands/watch'
+import { runWorktrees } from './commands/worktrees'
 import { COMMANDS, DEFAULT_TUI_FLAGS, GLOBAL_FLAGS, findCommand, type CommandEntry, type CommandFlag } from './commandTable'
 import { buildContext } from './context'
 import { splitGlobalFlags } from './flags'
@@ -24,7 +38,8 @@ import { collectSecretOverlay, scrubSecretEnv, secretEnvRefusal } from './secret
 import { CliError, EXIT, type CliIo, type CommandFn } from './types'
 import { CLI_VERSION } from './version'
 
-const ROUTES: Record<string, CommandFn> = {
+/** Command name -> its CommandFn; every COMMANDS entry has one (index.test.ts). */
+export const ROUTES: Record<string, CommandFn> = {
   status: runStatus,
   runs: runRuns,
   watch: runWatch,
@@ -37,7 +52,21 @@ const ROUTES: Record<string, CommandFn> = {
   resume: runResume,
   decide: runDecide,
   tui: runTuiCommand,
-  attach: runAttach
+  attach: runAttach,
+  init: runInit,
+  org: runOrg,
+  team: runTeam,
+  worktrees: runWorktrees,
+  permissions: runPermissions,
+  connections: runConnections,
+  models: runModels,
+  mcp: runMcp,
+  skills: runSkills,
+  knowledge: runKnowledge,
+  notes: runNotes,
+  usage: runUsage,
+  kit: runKit,
+  projects: runProjects
 }
 
 export interface MainOverrides {

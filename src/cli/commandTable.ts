@@ -1,8 +1,24 @@
 /**
  * The CLI's command table (cli-spec 6.1, 6.3): what `orgai --help`, routing (index.ts) and `orgai completions` read.
  * Entries with `available: false` belong to later waves; index.ts answers them with a "not available yet" usage error.
+ * The Wave 5 management commands each live in their own file under ./entries (one per domain, so parallel work never
+ * collides here).
  */
 import { PERMISSION_MODES } from '../shared/types'
+import { ENTRY as INIT_ENTRY } from './entries/init'
+import { ENTRY as ORG_ENTRY } from './entries/org'
+import { ENTRY as TEAM_ENTRY } from './entries/team'
+import { ENTRY as WORKTREES_ENTRY } from './entries/worktrees'
+import { ENTRY as PERMISSIONS_ENTRY } from './entries/permissions'
+import { ENTRY as CONNECTIONS_ENTRY } from './entries/connections'
+import { ENTRY as MODELS_ENTRY } from './entries/models'
+import { ENTRY as MCP_ENTRY } from './entries/mcp'
+import { ENTRY as SKILLS_ENTRY } from './entries/skills'
+import { ENTRY as KNOWLEDGE_ENTRY } from './entries/knowledge'
+import { ENTRY as NOTES_ENTRY } from './entries/notes'
+import { ENTRY as USAGE_ENTRY } from './entries/usage'
+import { ENTRY as KIT_ENTRY } from './entries/kit'
+import { ENTRY as PROJECTS_ENTRY } from './entries/projects'
 
 export interface CommandFlag {
   /** Long name without the dashes. */
@@ -51,15 +67,6 @@ export const DEFAULT_TUI_FLAGS: readonly CommandFlag[] = [
   ...TUI_FLAGS,
   { name: 'team', takesValue: true, values: ['default', 'single'], summary: 'With a prompt: the org chart (default) or one assistant (single)' }
 ]
-
-const later = (name: string, summary: string, usage: string, subcommands?: readonly string[]): CommandEntry => ({
-  name,
-  summary,
-  usage,
-  ...(subcommands ? { subcommands } : {}),
-  flags: [],
-  available: false
-})
 
 /** Exec flags shared by `orgai exec` and `orgai resume --exec` (cli-spec 6.2). */
 const EXEC_RUN_FLAGS: readonly CommandFlag[] = [
@@ -215,20 +222,20 @@ export const COMMANDS: readonly CommandEntry[] = [
     ],
     available: true
   },
-  later('init', 'Set up a project in the current folder', 'init [options]'),
-  later('org', 'Org chart and Team assistant', 'org <subcommand>'),
-  later('team', 'Team templates and roles', 'team <subcommand>'),
-  later('worktrees', 'Agent worktrees', 'worktrees <subcommand>'),
-  later('permissions', 'Saved permission rules', 'permissions <subcommand>'),
-  later('connections', 'Model connections', 'connections <subcommand>'),
-  later('models', 'Models and prices', 'models <subcommand>'),
-  later('mcp', 'MCP servers and connectors', 'mcp <subcommand>'),
-  later('skills', 'Skills', 'skills <subcommand>'),
-  later('knowledge', 'Engagement knowledge', 'knowledge <subcommand>'),
-  later('notes', 'Engagement context notes', 'notes <subcommand>'),
-  later('usage', 'Usage and cost', 'usage <subcommand>'),
-  later('kit', 'Practice kits', 'kit <subcommand>'),
-  later('projects', 'Projects', 'projects <subcommand>')
+  INIT_ENTRY,
+  ORG_ENTRY,
+  TEAM_ENTRY,
+  WORKTREES_ENTRY,
+  PERMISSIONS_ENTRY,
+  CONNECTIONS_ENTRY,
+  MODELS_ENTRY,
+  MCP_ENTRY,
+  SKILLS_ENTRY,
+  KNOWLEDGE_ENTRY,
+  NOTES_ENTRY,
+  USAGE_ENTRY,
+  KIT_ENTRY,
+  PROJECTS_ENTRY
 ]
 
 export function findCommand(name: string): CommandEntry | undefined {
