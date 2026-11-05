@@ -1,6 +1,6 @@
 # Standalone `orgai` (cli-spec Wave 7): design spec
 
-Status: draft 6, 2026-11-05. Revised after review rounds 1-5 (GPT Astra, Gemini Argon; resolutions in section
+Status: draft 7, 2026-11-05. Revised after review rounds 1-5; round 6 folded in as binding implementation rules (13) (GPT Astra, Gemini Argon; resolutions in section
 13). Builds on `docs/design/cli-spec.md` (Waves 0-6, landed on dev). Owner decisions
 are marked **D1..D8**; each has a recommended default.
 
@@ -984,3 +984,56 @@ code that is not there and were not taken; the rest were checked against the cod
 | Ambient `ORGAI_SECRET_*` refused `decide`, `stop` and others against a live host (Argon 11) | 4.1 refused only by commands that use a secret there; only those skip spawning the app |
 | Probe and runs could disagree about the Claude binary (Argon 12) | 6.1 the probe uses the resolver's binary; a PATH `claude` is named, not used |
 | `sameOrInside` cannot match `vault.json.*` siblings (Argon 13) | 8.4 basename-prefix rule in `<data>`, globs included |
+
+### Round 6 (draft 6 -> draft 7): resolutions binding on the implementation
+
+Astra 7 findings (3 High), Argon 8 (5 High), both REVISE; the owner asked to execute the spec, so round 6 is folded in
+here as rules the implementation follows rather than a further rewrite. Argon's 8 (desktop-only `ipcMain` channels) was
+already covered by 4.3.
+
+1. **One post-retirement baseline** (Astra 1, Argon 3). After retirement `legacyRetired.keys` is the only baseline.
+   Every vault write that supersedes a legacy value (a Node write over a `pending-legacy` key, an import, a delete)
+   updates `keys[K]` in the same vault write; delete step 3 drops `keys[K]`. Tombstone matching on `T.legacyHash`
+   (rows 1-2) stays on after retirement, and runs before any post-retirement import.
+2. **Delete recovery without a key** (Astra 4, Argon 2). Rows 1 and 2 need no DEK and run whenever `vault.json` parses
+   (`open`, `locked`, `missing-key`, `key-mismatch`), at open and in failure recovery; a failed delete keeps the store
+   in a recovery-required state until they have run. The legacy read rule also refuses L when H = `T.legacyHash`.
+   Delete step 1 clears `pending-legacy` for K.
+3. **Tombstones that hold the only copy** (Argon 1). A tombstone with `prevLegacy` is never collected; the first app
+   host with the vault open and safeStorage available decrypts it and re-stores it as `prev` (under the DEK), after
+   which the normal 30-day rule applies. A tombstone stays while its key is still in `secrets.json` (pre-retirement).
+4. **OAuth commit order** (Astra 2, Astra 5). `McpService.authorize` awaits `prepareWrite()` before its final
+   cancellation, owner-existence and resource checks, re-reads the owner after the await, then saves the OAuth
+   configuration and every credential synchronously with no further await. The mock authorize path prepares before its
+   synthetic token commit. The channel-coverage test distinguishes dispatcher preparation (predicate) from internal
+   preparation (the writer awaited `prepareWrite` itself) and accepts either.
+5. **Process trees at the hard limit** (Astra 3). Killing "tracked children" is not enough: at the 60 s limit the host
+   enumerates every descendant of its own pid from the process table (POSIX `ps -A -o pid=,ppid=`, Windows the
+   CIM `Win32_Process` table through PowerShell), sends SIGTERM (Windows `taskkill /T`), waits 5 s, sends SIGKILL
+   (`taskkill /T /F`), and releases only once none of them is alive; if the table cannot be read, it waits in 1 s
+   steps up to another 60 s before exiting anyway (logged). Tests: a git hook descendant, an agent shell that ignores
+   SIGTERM, an MCP server child.
+6. **Peer check self-pid shortcut** (Astra 6). `checkPeerAncestry` returns ok for `claimedPid === hostPid` before the
+   macOS OS mapping, so a client claiming the host's pid skips the check. The shortcut moves after the OS mapping on
+   macOS (only a real peer equal to the host pid passes); the inproc owner is recognised by the owner proof the
+   parallel PR #18 work adds (`RpcHelloParams.ownerProof`), not by pid. D9's note about macOS descendant refusal reads
+   "after this fix".
+7. **Section 2 wording** (Astra 7): the release workflow has three desktop jobs on two OSes (Windows x64, macOS arm64
+   and x64), no Linux leg; Linux coverage comes only from the new verify-npm job.
+8. **Env secrets with no live host** (Argon 4). When `ORGAI_SECRET_*` or `--secret-env` is present and no host is live,
+   every host-backed command except `daemon start` and `app` runs in-process (never spawns a background host in the
+   middle of such a session). The refusal list for a live host adds `org draft`, `team review|recommend`, `skills
+   evaluate` and `usage refresh`.
+9. **Long operations and the drain** (Argon 5). `mcp:authorize` holds a mutation lease only around its final commit;
+   the interactive wait is tracked by the existing OAuth-flow activity source. Quiesce aborts pending OAuth flows
+   (`McpService.dispose()`), repository clones and Team assistant / evaluation model calls, so Quit and handoff do not
+   wait 60 s for a browser the user never finished.
+10. **Secrets before other stores** (Argon 6). `McpService.persistInstall` and the proposal path store secrets before
+    changing `mcp-library.json` / `projects.json` (or roll those back on a secret-write failure, as `copyFromLibrary`
+    does), and `RunManager.storeProposalSecrets` no longer swallows a vault error: the card stays waiting for secrets.
+11. **Terminal access choice** (Argon 7). `terminalAccessLevel` is stored explicitly with a `terminalAccessLevelChosen`
+    marker, so `daemon start` asks only once; `orgai terminal-access` sets `terminalServerChosen` with
+    `terminalServer`, and writes under the `<data>/run/startup.mkdir` mutex after re-checking `daemon.json` inside it.
+12. **Inproc owner** (parallel PR #18 work in progress on dev: `ownerProof`). 4.2.1's "inproc always enabled and full"
+    becomes: an inproc host always accepts its owner's client (owner proof) with every scope, whatever the stored
+    choice; other clients of that host follow Terminal access like any host. Reconcile with that change at merge.
