@@ -29,7 +29,7 @@ import { SkillEvaluationService } from './skills/evaluation'
 import { CapabilityService } from './capabilities/service'
 import { seedMockHome } from './capabilities/mockHome'
 import { applyShellPath } from './shellEnv'
-import { trustSystemCertificates } from './systemCerts'
+import { stopSystemCertRead, trustSystemCertificates } from './systemCerts'
 import { installAppMenu, menuActionSender } from './appMenu'
 import { MockAdapter } from './runtime/mock'
 import { sweepStaleSkillDirs } from './runtime/claudeSkills'
@@ -62,7 +62,9 @@ installLogging()
 // Finder/Dock launches on macOS get a minimal PATH; take the login shell's before anything spawns claude, codex or MCP servers.
 applyShellPath()
 // Trust the OS certificate store too (corporate / inspecting root CAs), before anything can fetch (issue #16).
+// On macOS the store is read in a child process (it can stall) and applied when that finishes; quit kills it.
 trustSystemCertificates()
+app.on('before-quit', () => stopSystemCertRead())
 if (process.platform === 'win32') app.setAppUserModelId('com.orgai.app')
 
 let runManager: RunManager | undefined
