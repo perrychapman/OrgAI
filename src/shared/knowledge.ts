@@ -1,5 +1,11 @@
 import type { KnowledgeEdge, KnowledgeGraph, KnowledgeNode, KnowledgeSearchHit, KnowledgeSearchQuery, KnowledgeVocabulary } from './types'
 import { KNOWLEDGE_KEY_RE, KNOWLEDGE_SEARCH_LIMIT } from './types'
+import { rankKnowledgeOrSubstring } from './knowledgeIndex'
+
+/** Automatic knowledge context for incoming messages is on unless the project says exactly `false`. */
+export function knowledgeAutoContextOn(project: { knowledgeAutoContext?: boolean } | null | undefined): boolean {
+  return project?.knowledgeAutoContext !== false
+}
 
 /**
  * Pure helpers over an engagement's knowledge graph (types.ts "Engagement knowledge graph"). No I/O, no validation of
@@ -89,29 +95,29 @@ export function knowledgeSearchLimit(limit: unknown): number {
 }
 
 /**
- * Case-insensitive substring search over name, aliases, summary and live fact texts, optionally within one kind.
- * Name / alias hits first, then the most recently updated. Without a query (and with or without a kind) the most
+ * Ranked search over name, aliases, kind, summary and live fact texts, optionally within one kind: the query is split
+ * into words, any word may hit (3+ characters by prefix, shorter ones exactly), most words covered first, then the best
+ * field (name > alias > kind > summary > fact), then the most recently updated (knowledgeIndex.ts `rankKnowledge`).
+ * Only when no word matches anything the old whole-query case-insensitive substring match runs (non-Latin text, word fragments). Without a query (and with or without a kind) the most
  * recently updated nodes. Retired nodes are left out unless `includeRetired`. At most `limit` hits.
  */
 export function searchKnowledge(graph: Pick<KnowledgeGraph, 'nodes' | 'edges'>, q: KnowledgeSearchQuery = {}): KnowledgeSearchHit[] {
   const text = knowledgeNameKey(q.query ?? '')
   const kind = q.kind === undefined || q.kind === '' ? undefined : q.kind
   const limit = knowledgeSearchLimit(q.limit)
-  const matched: { node: KnowledgeNode; nameHit: boolean }[] = []
-  for (const node of graph.nodes) {
-    if (node.retired && !q.includeRetired) continue
-    if (kind !== undefined && node.kind !== kind) continue
-    let nameHit = false
-    if (text) {
-      nameHit = knowledgeNameKey(node.name).includes(text) || (node.aliases ?? []).some((a) => knowledgeNameKey(a).includes(text))
-      const other =
-        !nameHit &&
-        ((node.summary !== undefined && knowledgeNameKey(node.summary).includes(text)) || node.facts.some((f) => !f.retired && knowledgeNameKey(f.text).includes(text)))
-      if (!nameHit && !other) continue
+  let matched: { node: KnowledgeNode; nameHit: boolean }[]
+  if (text) {
+    // Ranked per term (OR, prefix for 3+ characters); the old whole-query substring match only when that finds nothing.
+    matched = rankKnowledgeOrSubstring(graph, q.query ?? '', { kind, includeRetired: q.includeRetired }).map((r) => ({ node: r.node, nameHit: r.nameHit }))
+  } else {
+    matched = []
+    for (const node of graph.nodes) {
+      if (node.retired && !q.includeRetired) continue
+      if (kind !== undefined && node.kind !== kind) continue
+      matched.push({ node, nameHit: false })
     }
-    matched.push({ node, nameHit })
+    matched.sort((a, b) => b.node.updatedAt - a.node.updatedAt || a.node.name.localeCompare(b.node.name))
   }
-  matched.sort((a, b) => Number(b.nameHit) - Number(a.nameHit) || b.node.updatedAt - a.node.updatedAt || a.node.name.localeCompare(b.node.name))
   // Edge counts only for the hits returned, through one pass over the edges (a full graph is 2,000 x 5,000 otherwise).
   const top = matched.slice(0, limit)
   const counts = new Map<string, number>(top.map((h) => [h.node.id, 0]))

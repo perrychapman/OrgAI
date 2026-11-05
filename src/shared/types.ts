@@ -4885,11 +4885,11 @@ export interface KnowledgeRecallInput {
 
 /**
  * What an inferred link rests on. See docs/design/knowledge-connections.md for the evaluation; only what passed it is
- * built. 'mention': the `from` entity's summary or a live fact names `to`. 'same-target': both entities have the same
- * relation to one non-hub entity (`evidence` names it). 'shared-note': both link one context note. 'same-name': equal
- * name or alias across different kinds, a possible duplicate.
+ * built. 'mention': the `from` entity's summary or a live fact names `to`. 'same-name': equal name or alias across
+ * different kinds, a possible duplicate or a pair worth linking. Shared context notes and same-relation siblings were
+ * evaluated and rejected (they are not offered).
  */
-export type KnowledgeLinkBasis = 'mention' | 'same-target' | 'shared-note' | 'same-name'
+export type KnowledgeLinkBasis = 'mention' | 'same-name'
 
 /**
  * A connection OrgAI derived from the graph (src/shared/knowledgeLinks.ts). Never stored as an edge and never reported
@@ -4899,7 +4899,7 @@ export type KnowledgeLinkBasis = 'mention' | 'same-target' | 'shared-note' | 'sa
 export interface KnowledgeInferredLink {
   /** `kl_` + a stable hash of basis and endpoints (KNOWLEDGE_LINK_ID_RE); survives edits to the evidence text. */
   id: string
-  /** Node ids. For symmetric bases (same-target, shared-note, same-name) `from` is the smaller id. */
+  /** Node ids. For the symmetric basis (same-name) `from` is the smaller id. */
   from: string
   to: string
   basis: KnowledgeLinkBasis
@@ -4909,7 +4909,7 @@ export interface KnowledgeInferredLink {
   evidence: string
   /** The fact the evidence came from ('mention' in a fact). */
   evidenceFactId?: string
-  /** The context note the evidence came from ('shared-note'). */
+  /** Reserved: the context note the evidence came from. No current basis sets it (shared-note was rejected). */
   evidenceNoteId?: string
   /** 0..1, comparable within a result; higher is stronger. Not a probability. */
   strength: number
