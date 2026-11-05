@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { EngagementNote, KnowledgeEdge, KnowledgeGraph, KnowledgeNode, KnowledgeNodeUpsertInput, KnowledgeRetireInput, KnowledgeRetireResult, KnowledgeSource } from '@shared/types'
-import { KNOWLEDGE_COMMON_KINDS, KNOWLEDGE_SEARCH_LIMIT, KNOWLEDGE_TOOL, QUICK_PROJECT_ID } from '@shared/types'
+import { KNOWLEDGE_COMMON_KINDS, KNOWLEDGE_COMMON_RELATIONS, KNOWLEDGE_RECALL_QUERY_MAX_CHARS, KNOWLEDGE_RECALL_TOOL, KNOWLEDGE_SEARCH_LIMIT, KNOWLEDGE_TOOL, QUICK_PROJECT_ID } from '@shared/types'
 import { normalizeKnowledgeKey } from '@shared/knowledge'
 import { harnessToolsFor, isBlockingHarnessTool, type HarnessTool } from './harnessTools'
 import type { KnowledgeCaller, RuntimeContext } from './types'
@@ -375,5 +375,65 @@ describe('engagement_knowledge: content is data', () => {
     const text = await tool(engagementCtx({ knowledge: kg.api })).call({ action: 'get', nodeId: 'kn_1' })
     expect(text).toContain('summary: line one line two')
     expect(text).toContain('  kf_1 | x ››› y')
+  })
+})
+
+describe('knowledge_recall', () => {
+  const names = (tools: HarnessTool[]): string[] => tools.map((t) => t.name)
+  const recall = (ctx: RuntimeContext): HarnessTool => byName(harnessToolsFor(ctx, {}, { nativeSkills: true }), KNOWLEDGE_RECALL_TOOL)
+  const quick = { folder: '/w', team: 'single' as const, allowEdits: false, gitRepo: false }
+
+  it('is offered on engagement work runs and single engagement runs, never on code, setup, Chat or the assistants', () => {
+    expect(names(harnessToolsFor(engagementCtx()))).toContain(KNOWLEDGE_RECALL_TOOL)
+    expect(names(harnessToolsFor(fakeCtx({ project: project({ kind: 'engagement' }), run: runSummary({ kind: 'work', team: 'single' }) })))).toContain(KNOWLEDGE_RECALL_TOOL)
+    // A single run offers the read-only recall but not the writing tool.
+    expect(names(harnessToolsFor(fakeCtx({ project: project({ kind: 'engagement' }), run: runSummary({ kind: 'work', team: 'single' }) })))).not.toContain(KNOWLEDGE_TOOL)
+    expect(names(harnessToolsFor(fakeCtx({ run: runSummary({ kind: 'work' }) })))).not.toContain(KNOWLEDGE_RECALL_TOOL)
+    expect(names(harnessToolsFor(fakeCtx({ run: runSummary({ kind: 'work', team: 'single' }) })))).not.toContain(KNOWLEDGE_RECALL_TOOL)
+    for (const kind of ['setup', 'mcp-assist', 'skill-assist'] as const) {
+      expect(names(harnessToolsFor(fakeCtx({ project: project({ kind: 'engagement' }), run: runSummary({ kind }) })))).not.toContain(KNOWLEDGE_RECALL_TOOL)
+    }
+    expect(names(harnessToolsFor(fakeCtx({ project: project({ id: QUICK_PROJECT_ID, kind: 'engagement' }), run: runSummary({ kind: 'work', quick }) })))).not.toContain(KNOWLEDGE_RECALL_TOOL)
+    expect(byName(harnessToolsFor(engagementCtx()), KNOWLEDGE_RECALL_TOOL).audience).toBe('all')
+    expect(isBlockingHarnessTool(KNOWLEDGE_RECALL_TOOL)).toBe(false)
+  })
+
+  it('says so when the run has no knowledge graph', async () => {
+    expect(await recall(engagementCtx()).call({ query: 'x' })).toBe('No knowledge graph is available in this run.')
+  })
+
+  it('refuses a blank, over-long or hidden-character query before the context is called', async () => {
+    const knowledgeRecall = vi.fn(() => 'ok')
+    const t = recall(engagementCtx({ knowledgeRecall }))
+    expect(await t.call({ query: '   ' })).toMatch(/^REFUSED: /)
+    expect(await t.call({ query: 'x'.repeat(KNOWLEDGE_RECALL_QUERY_MAX_CHARS + 1) })).toMatch(/^REFUSED: /)
+    expect(await t.call({ query: 'a‮b' })).toMatch(/^REFUSED: /)
+    expect(await t.call({ query: 'a​b' })).toMatch(/^REFUSED: /)
+    expect(knowledgeRecall).not.toHaveBeenCalled()
+  })
+
+  it('passes the trimmed query, the budget and fresh, and the calling agent, and returns the context text as is', async () => {
+    const knowledgeRecall = vi.fn((_input: unknown, _caller: unknown) => 'FENCED ANSWER')
+    const t = recall(engagementCtx({ knowledgeRecall }))
+    expect(await t.call({ query: '  Acme  ', budget: 900, fresh: true }, { agentId: 'a-1', roleId: 'r-1' })).toBe('FENCED ANSWER')
+    expect(knowledgeRecall).toHaveBeenCalledWith({ query: 'Acme', budget: 900, fresh: true }, { agentId: 'a-1', roleId: 'r-1' })
+    await t.call({ query: 'Acme' })
+    expect(knowledgeRecall).toHaveBeenLastCalledWith({ query: 'Acme' }, { agentId: undefined, roleId: undefined })
+  })
+
+  it('a throw from the context comes back as a REFUSED line, never as an exception', async () => {
+    const t = recall(
+      engagementCtx({
+        knowledgeRecall: () => {
+          throw new Error('boom <<<')
+        }
+      })
+    )
+    expect(await t.call({ query: 'x' })).toBe('REFUSED: boom ‹‹‹')
+  })
+
+  it('the vocabulary action lists the common relations after the common kinds', async () => {
+    const text = await tool(engagementCtx({ knowledge: fakeKnowledge().api })).call({ action: 'vocabulary' })
+    expect(text).toContain(`Common relations: ${KNOWLEDGE_COMMON_RELATIONS.join(', ')}.`)
   })
 })
