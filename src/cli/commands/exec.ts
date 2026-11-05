@@ -6,7 +6,9 @@
  *   --max-auto-continues, --max-budget / --max-cost (USD, finite >= 0; not both), --allow-unpriced-budget,
  *   --allow-unmerged, --allow-peer-messages, --wait-for-reset, --stall-timeout s, --on-* (decisionPolicy),
  *   --max-auto-denials, --wait-timeout s, --human-grace s. Bad values are usage errors (exit 2).
- * - The prompt is the positional, else stdin ('-', or no positional with a non-TTY stdin; at most 1 MB). Empty: exit 2.
+ * - The prompt is the positional, else --prompt-file <path|-> (resume: --prompt, --prompt-file), else stdin ('-', or no
+ *   positional with a non-TTY stdin); at most 1 MB. Empty: exit 2. Untrusted text belongs in --prompt-file or stdin,
+ *   never argv: on Windows the .cmd shim hands arguments to cmd.exe (review M12).
  * - Project: --project, else the folder (cli-spec 4). Inside an OrgAI-managed agent worktree: exit 2 naming the main
  *   checkout. An unregistered folder is exit 2 unless --quick (a Chat run in this folder) or --create-project
  *   (projects:create, needs 'configure').
@@ -20,7 +22,8 @@
  *   then exits 130 / 143; a second signal exits at once.
  * - --host inproc: the in-process host is stopped (force) before the command returns.
  */
-import { basename } from 'node:path'
+import { readFileSync, statSync } from 'node:fs'
+import { basename, resolve } from 'node:path'
 import { MAX_AUTO_CONTINUES_LIMIT } from '../../shared/defaults'
 import {
   EXEC_OUTCOME_EXIT_CODE,
@@ -156,10 +159,40 @@ export function overridesNeedConfigure(project: Project | undefined, o: RunOverr
   return overridesWidening(p, o).length > 0
 }
 
-/** The prompt: `text` (a positional or --prompt), '-' reads stdin, none reads a non-TTY stdin. Empty is exit 2. */
-async function readPrompt(ctx: CliContext, text: string | undefined, emptyMessage: string): Promise<string> {
+/**
+ * The text of `--prompt-file <path>` (relative to the cwd; a regular file of at most EXEC_STDIN_MAX_BYTES, read as
+ * UTF-8, a leading BOM dropped). Untrusted text goes here or on stdin, never on argv: on Windows the `orgai` .cmd shim
+ * passes arguments through cmd.exe (review M12). Any read failure is a usage error naming the file.
+ */
+export function readPromptFile(ctx: CliContext, file: string): string {
+  const p = resolve(ctx.cwd, file)
+  let size: number
+  try {
+    const st = statSync(p)
+    if (!st.isFile()) throw usage(`--prompt-file: ${safeLine(p)} is not a file.`)
+    size = st.size
+  } catch (e) {
+    if (e instanceof CliError) throw e
+    throw usage(`--prompt-file: could not read ${safeLine(p)}: ${safeLine(e instanceof Error ? e.message : String(e))}`)
+  }
+  if (size > EXEC_STDIN_MAX_BYTES) throw usage('The prompt is larger than 1024 KB.')
+  let text: string
+  try {
+    text = readFileSync(p, 'utf8')
+  } catch (e) {
+    throw usage(`--prompt-file: could not read ${safeLine(p)}: ${safeLine(e instanceof Error ? e.message : String(e))}`)
+  }
+  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text
+}
+
+/**
+ * The prompt: `text` (a positional or --prompt), else `file` (--prompt-file; '-' reads stdin), '-' reads stdin, none
+ * reads a non-TTY stdin. The caller refuses giving both. Empty is exit 2.
+ */
+async function readPrompt(ctx: CliContext, text: string | undefined, file: string | undefined, emptyMessage: string): Promise<string> {
   let prompt: string
-  if (text === '-' || (text === undefined && !ctx.io.stdinIsTTY)) prompt = await execIo.readStdin(EXEC_STDIN_MAX_BYTES)
+  if (file !== undefined && file !== '-') prompt = readPromptFile(ctx, file)
+  else if (file === '-' || text === '-' || (text === undefined && !ctx.io.stdinIsTTY)) prompt = await execIo.readStdin(EXEC_STDIN_MAX_BYTES)
   else prompt = text ?? ''
   if (Buffer.byteLength(prompt, 'utf8') > EXEC_STDIN_MAX_BYTES) throw usage('The prompt is larger than 1024 KB.')
   if (!prompt.trim()) throw usage(emptyMessage)
@@ -263,14 +296,16 @@ export const runExec: CommandFn = async (ctx: CliContext, args: string[]): Promi
   const { values, positionals } = parseFlags(args, specOf('exec'))
   const v = values as Values
   const overrides = overridesFromFlags(v)
-  if (positionals.length > 1) throw usage('Give the prompt as one argument (quote it), or - to read it from stdin.')
+  if (positionals.length > 1) throw usage('Give the prompt as one argument (quote it), --prompt-file <path>, or - to read it from stdin.')
+  const promptFile = str(v, 'prompt-file')
+  if (promptFile !== undefined && positionals.length) throw usage('Give the prompt as an argument or with --prompt-file, not both.')
   const quick = v.quick === true
   const create = v['create-project'] === true
   const team = choice(v, 'team') as 'default' | 'single' | undefined
   if (quick && create) throw usage('Use --quick or --create-project, not both.')
   if (v['allow-edits'] === true && !quick) throw usage('--allow-edits applies to --quick runs only.')
   if (quick && ctx.globals.project !== undefined) throw usage('--quick runs in the current folder; leave out --project.')
-  const prompt = await readPrompt(ctx, positionals[0], 'Give a prompt: orgai exec "<prompt>", or - to read it from stdin.')
+  const prompt = await readPrompt(ctx, positionals[0], promptFile, 'Give a prompt: orgai exec "<prompt>", --prompt-file <path>, or - to read it from stdin.')
 
   // cwd checks before any host is started: an agent worktree, and (while no host runs) an unregistered folder.
   if (ctx.globals.project === undefined) refuseManagedWorktree(ctx.resolveProject([]).managedWorktree)
@@ -327,8 +362,9 @@ export const runResume: CommandFn = async (ctx: CliContext, args: string[]): Pro
   const refs = positionals.filter((p) => p !== '-')
   if (refs.length > 1 || dash.length > 1) throw usage('Use: orgai resume [runId-or-R#] [--prompt <text> | -] --exec')
   const flagPrompt = str(v, 'prompt')
-  if (flagPrompt !== undefined && dash.length) throw usage('Give --prompt <text> or -, not both.')
-  const prompt = await readPrompt(ctx, flagPrompt ?? (dash.length ? '-' : undefined), 'Give a message to continue with: --prompt "<text>", or - to read it from stdin.')
+  const promptFile = str(v, 'prompt-file')
+  if ([flagPrompt !== undefined, promptFile !== undefined, dash.length > 0].filter(Boolean).length > 1) throw usage('Give one of --prompt <text>, --prompt-file <path> or -.')
+  const prompt = await readPrompt(ctx, flagPrompt ?? (dash.length ? '-' : undefined), promptFile, 'Give a message to continue with: --prompt "<text>", --prompt-file <path>, or - to read it from stdin.')
   if (ctx.globals.project === undefined) refuseManagedWorktree(ctx.resolveProject([]).managedWorktree)
 
   const session = await openSession(ctx, false)

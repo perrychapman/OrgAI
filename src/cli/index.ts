@@ -129,7 +129,9 @@ export function generalHelp(): string {
     'Global options:',
     table(GLOBAL_FLAGS.map((f) => [flagLabel(f), f.summary])),
     '',
-    "Run 'orgai help <command>' for a command's options."
+    "Run 'orgai help <command>' for a command's options.",
+    "Untrusted text (an issue title, a web page) goes in a file or on stdin: orgai exec --prompt-file <path>. On Windows",
+    'the orgai command is a .cmd file and cmd.exe re-reads its arguments.'
   ].join('\n')
 }
 
@@ -138,7 +140,22 @@ export function commandHelp(c: CommandEntry): string {
   const lines = [`Usage: orgai ${c.usage}`, '', c.summary]
   if (!c.available) lines.push('', `Not available in this build yet.`)
   if (c.flags.length) lines.push('', 'Options:', table(c.flags.map((f) => [flagLabel(f), f.summary])))
+  for (const n of c.notes ?? []) lines.push('', wrap(n, 100))
   return lines.join('\n')
+}
+
+/** Word-wraps a paragraph at `width` columns (a word longer than that keeps its own line). */
+function wrap(text: string, width: number): string {
+  const out: string[] = []
+  let line = ''
+  for (const word of text.split(/\s+/).filter(Boolean)) {
+    if (line && line.length + 1 + word.length > width) {
+      out.push(line)
+      line = word
+    } else line = line ? `${line} ${word}` : word
+  }
+  if (line) out.push(line)
+  return out.join('\n')
 }
 
 /** Arguments before `--` ask for this command's help. */

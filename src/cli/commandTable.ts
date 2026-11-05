@@ -42,6 +42,8 @@ export interface CommandEntry {
   flags: readonly CommandFlag[]
   /** false: listed for help and completion, but not built yet (a later wave). */
   available: boolean
+  /** Extra paragraphs `orgai help <command>` prints after the options. */
+  notes?: readonly string[]
 }
 
 /** Flags valid anywhere before `--` (flags.ts splitGlobalFlags). */
@@ -90,6 +92,17 @@ const EXEC_RUN_FLAGS: readonly CommandFlag[] = [
   { name: 'wait-timeout', takesValue: true, summary: 'Seconds a "wait" policy waits for a person (default 900)' },
   { name: 'human-grace', takesValue: true, summary: 'Seconds to leave a card to an open app or terminal UI first (default 60)' }
 ]
+
+/**
+ * `--prompt-file`, on `orgai exec` / `-p` and `orgai resume --exec`. Untrusted text belongs in a file or on stdin: on
+ * Windows the `orgai` command is a .cmd file, so cmd.exe re-reads every argument and a quote the caller did not escape
+ * (PowerShell 5.1, a CI step building the prompt from an issue title) can end it and run `&` / `|` (review M12).
+ */
+const PROMPT_FILE_FLAG: CommandFlag = { name: 'prompt-file', takesValue: true, summary: 'Read the prompt from this file ("-" reads stdin); use it for text you did not write' }
+
+/** The Windows argument note of `orgai help exec` / `orgai help resume` (review M12). */
+export const UNTRUSTED_PROMPT_NOTE =
+  'Text you did not write (an issue title, a web page, agent output) goes in a file or on stdin, never on the command line: --prompt-file <path>, or - with the text piped in. On Windows orgai is a .cmd file, so cmd.exe re-reads its arguments and a quote that was not escaped can end the prompt and run & or | as a command.'
 
 /** Flags only `orgai exec` takes (how the run starts). */
 const EXEC_START_FLAGS: readonly CommandFlag[] = [
@@ -182,21 +195,24 @@ export const COMMANDS: readonly CommandEntry[] = [
   {
     name: 'exec',
     summary: 'Run headless, non-interactively (alias: orgai -p <prompt>)',
-    usage: 'exec [options] [--] [prompt|-]',
-    flags: [...EXEC_RUN_FLAGS, ...EXEC_START_FLAGS],
-    available: true
+    usage: 'exec [options] [--prompt-file <path|->] [--] [prompt|-]',
+    flags: [PROMPT_FILE_FLAG, ...EXEC_RUN_FLAGS, ...EXEC_START_FLAGS],
+    available: true,
+    notes: [UNTRUSTED_PROMPT_NOTE]
   },
   {
     name: 'resume',
     summary: 'Continue a session chain in the terminal UI, or headless with --exec',
-    usage: 'resume [runId-or-R#] [--prompt <text> | -] [--exec [exec options]]',
+    usage: 'resume [runId-or-R#] [--prompt <text> | --prompt-file <path|-> | -] [--exec [exec options]]',
     flags: [
       { name: 'prompt', takesValue: true, summary: 'The message to continue with ("-" reads stdin, --exec only)' },
+      { ...PROMPT_FILE_FLAG, summary: 'Read the message from this file ("-" reads stdin, --exec only); use it for text you did not write' },
       { name: 'exec', takesValue: false, summary: 'Continue headless, keeping the chain\'s exec settings' },
       ...TUI_FLAGS,
       ...EXEC_RUN_FLAGS
     ],
-    available: true
+    available: true,
+    notes: [UNTRUSTED_PROMPT_NOTE]
   },
   {
     name: 'attach',

@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { EXEC_OUTCOMES, EXEC_OUTCOME_EXIT_CODE, type ExecOutcome, type Project, type RunEvent, type RunRecord, type RunsSubscribeResult, type RunSummary, type TranscriptEntry } from '../../shared/types'
 import { resetSkewWarning } from '../runRef'
@@ -156,6 +159,48 @@ describe('orgai exec: prompt and project', () => {
       expect(h.callsOf('runs:start')[0]).toMatchObject([{ projectId: 'p1', prompt: 'from stdin' }])
       // The follower never counts as an interactive client (it must not hold a policy's humanGraceMs window).
       expect(h.callsOf('runs:subscribe')[0]).toMatchObject([{ followChains: true, nonInteractive: true }])
+    }
+  })
+
+  it('--prompt-file reads the prompt from a file (BOM dropped) or "-" from stdin, never from argv (review M12)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'orgai-exec-prompt-'))
+    try {
+      const file = join(dir, 'prompt.txt')
+      // Text a cmd.exe command line would break on: quotes, & and |.
+      const hostile = '\ufeffFix "issue" & echo pwned | more\n'
+      writeFileSync(file, hostile, 'utf8')
+      for (const [argv, want] of [
+        [['--prompt-file', file], hostile.slice(1)],
+        [['--prompt-file', '-'], 'from stdin']
+      ] as const) {
+        stdin = 'from stdin'
+        const h = execHost({ answers: { 'runs:subscribe': () => snapshotOf(record(finalSummary('completed'))) } })
+        // A non-TTY stdin is not read when a file is given.
+        const f = live({ connect: [h] })
+        expect(await runExec(f.ctx, [...argv]), argv.join(' ')).toBe(EXIT.ok)
+        expect(h.callsOf('runs:start')[0], argv.join(' ')).toMatchObject([{ projectId: 'p1', prompt: want }])
+      }
+      // Relative to the cwd.
+      const h = execHost({ answers: { 'runs:subscribe': () => snapshotOf(record(finalSummary('completed'))) } })
+      const rel = fakeContext({ cwd: dir, store: { hostState: 'ready', projects: [p1] }, connect: [h], resolveProject: () => ({ via: 'flag', project: p1 }) })
+      expect(await runExec(rel.ctx, ['--prompt-file', 'prompt.txt'])).toBe(EXIT.ok)
+      expect(h.callsOf('runs:start')[0]).toMatchObject([{ prompt: hostile.slice(1) }])
+
+      const refused = async (argv: string[], message: string) => {
+        const f = live({ stdinIsTTY: true })
+        await expect(runExec(f.ctx, argv), argv.join(' ')).rejects.toMatchObject({ exitCode: EXIT.usage, message: expect.stringContaining(message) })
+        expect(f.connectCalls, argv.join(' ')).toEqual([])
+      }
+      await refused(['--prompt-file', file, 'also argv'], 'not both')
+      await refused(['--prompt-file', file, '-'], 'not both')
+      await refused(['--prompt-file', join(dir, 'missing.txt')], 'could not read')
+      await refused(['--prompt-file', dir], 'is not a file')
+      writeFileSync(join(dir, 'empty.txt'), '  \n')
+      await refused(['--prompt-file', join(dir, 'empty.txt')], 'Give a prompt')
+      writeFileSync(join(dir, 'big.txt'), Buffer.alloc(1024 * 1024 + 1, 0x61))
+      await refused(['--prompt-file', join(dir, 'big.txt')], 'larger than 1024 KB')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
     }
   })
 
@@ -413,6 +458,34 @@ describe('orgai resume', () => {
     const f = live({ connect: [h] })
     expect(await runResume(f.ctx, ['-', '--exec'])).toBe(3)
     expect(h.callsOf('runs:continue')[0]).toMatchObject([{ runId: 'run_end002', text: 'piped', exec: true }])
+  })
+
+  it('--prompt-file gives the message; with --prompt or - it is refused, and without --exec it needs --exec', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'orgai-resume-prompt-'))
+    try {
+      const file = join(dir, 'more.txt')
+      writeFileSync(file, 'more "from" a file & co')
+      const old = summary('run_old001', { startedAt: 50, status: 'finished', execOutcome: 'completed' })
+      const h = execHost({ answers: { 'runs:list': () => [old], 'runs:continue': () => started({ resumedFrom: 'run_old001' }) } })
+      const f = live({ connect: [h] })
+      const done = runResume(f.ctx, ['R1', '--exec', '--prompt-file', file])
+      await subscribed(h)
+      expect(h.callsOf('runs:continue')[0]).toEqual([{ runId: 'run_old001', text: 'more "from" a file & co', overrides: { execMode: true }, exec: true }])
+      h.push('runs:event', finalized(11, 'completed'))
+      expect(await done).toBe(0)
+
+      const g = live()
+      for (const argv of [
+        ['R1', '--exec', '--prompt-file', file, '--prompt', 'x'],
+        ['R1', '-', '--exec', '--prompt-file', file]
+      ]) {
+        await expect(runResume(g.ctx, argv), argv.join(' ')).rejects.toMatchObject({ exitCode: EXIT.usage, message: expect.stringContaining('Give one of') })
+      }
+      await expect(runResume(g.ctx, ['R1', '--prompt-file', file])).rejects.toMatchObject({ exitCode: EXIT.usage, message: expect.stringContaining('--prompt-file needs --exec') })
+      expect(g.connectCalls).toEqual([])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   it('refuses inside a managed worktree and without a message', async () => {

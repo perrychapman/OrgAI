@@ -418,7 +418,9 @@ orgai                                              # Start interactive TUI in cw
 orgai [options] [--] <prompt>                      # Start TUI and begin a work run with <prompt>
 orgai tui [--run <runId-or-R#>]                    # Explicitly start TUI (optionally focused on a run)
 orgai exec [options] [--] [prompt]                 # Headless non-interactive run (alias: orgai -p <prompt>)
+orgai exec --prompt-file <path|-> [options]        # The same, the prompt from a file or stdin (untrusted text)
 orgai resume [runId-or-R#] [--prompt <text> | -]   # Continue a session chain (TUI, or headless with --exec)
+                                                   # (--exec also takes --prompt-file <path|->)
 orgai attach <runId-or-R#>                         # Attach TUI to a live or ended run
 orgai watch <runId-or-R#> [--output-format ...]    # Stream run events to stdout (Ctrl+C detaches cleanly)
 orgai inbox [--all-projects]                       # List all pending decisions ("Needs you")
@@ -585,7 +587,7 @@ Because `claude.ts:3155-3165` and `codex.ts:765-766` emit `run.status: 'idle'` b
 2. **Packaged Standalone Executable (Node SEA / Bundled Node Runtime)**:
    - Because end users of the packaged Desktop app (`.dmg`, `.exe`, `.AppImage`) may not have a system `node` installed (OrgAI bundles native `claude` and `codex` binaries directly), the packaged app ships a signed thin CLI launcher binary (`orgai` / `orgai.exe`, built as a Node Single Executable Application or bundled Node runtime) in `Resources/bin/` so `RunAsNode` fuse can be disabled on the main Electron binary.
 3. **Safe Shim Management & `userDataDir` Precedence**:
-   - "Install `orgai` command in PATH" writes `~/.local/bin/orgai` (macOS/Linux) or `%LOCALAPPDATA%\OrgAI\bin\orgai.cmd` (Windows).
+   - "Install `orgai` command in PATH" writes `~/.local/bin/orgai` (macOS/Linux) or `%LOCALAPPDATA%\OrgAI\bin\orgai.cmd` (Windows). *As built (Wave 6): Linux refuses the shim, because AppImage, the only Linux target, mounts its resources at a new path on every run (`transientInstallReason`); the App settings row reads unavailable there and the orgai command exists only inside the AppImage (owner decision 2026-11-05: acceptable for now).*
    - Desktop refreshes an existing OrgAI shim on launch **only** when `app.isPackaged === true` and `ORGAI_DATA_DIR` is unset (so `npm run dev` and `e2e:free` runs never overwrite the user's installed shim!).
    - Precedence for `userDataDir` (from which `dataDir = join(userDataDir, 'data')` is derived, matching `src/main/log.ts:31-36` and `src/main/index.ts:250`): `--data-dir <dir>` flag (resolved to absolute path by CLI) > `ORGAI_DATA_DIR` env var (resolved to absolute path by CLI) > platform default `userDataDir` (`~/Library/Application Support/OrgAI` on macOS, `%APPDATA%\OrgAI` on Windows, `${XDG_CONFIG_HOME:-~/.config}/OrgAI` on Linux).
 
@@ -1036,6 +1038,22 @@ Resolved `R1`–`R10` (single-host daemon vs Desktop ownership, socket authentic
     is left for the user's Install (review fix-up).
   - The Windows shim runs the launcher without `call` (review fix-up: `call` expanded `%` in the user's arguments a
     second time and doubled carets); older shims with the `call` line still parse and are rewritten at launch.
+  - **Warning (Windows, review M12): never put untrusted text on the orgai command line.** `orgai.cmd` and the PATH
+    shim pass `%*` through cmd.exe, which re-reads the arguments: a double quote the caller did not escape (PowerShell
+    5.1's native-argument passing, a CI step building the prompt from an issue title or a web page) can end the
+    argument and run `&` / `|` / `>` as commands. Pass such text through `--prompt-file <path>` (`orgai exec`, `-p`,
+    `orgai resume --exec`; a regular file of at most 1 MB, UTF-8, a leading BOM dropped) or stdin (`-`, or no prompt
+    with a piped stdin), and notes / plans through `--file <path|->`. `orgai help exec` and `orgai help resume` say so,
+    and `orgai --help` has a one-line pointer. A small exe stub (no cmd.exe in the path) is the real fix and a
+    follow-up. The `.cmd` itself and this warning's scenario are unverified on Windows (macOS only here).
+  - The Linux PATH shim stays refused for AppImage (above); the owner accepted that on 2026-11-05.
+  - CI (review H4): `npm run pack:verify` runs with `continue-on-error: true` in the pack job until it has passed on
+    both windows-latest and macos-14. `e2e/cli-exec.mjs` skips its SIGINT case on win32 (`child.kill('SIGINT')` is
+    TerminateProcess there, so the handler never runs) with a log line and drives the same stop through `orgai runs
+    stop` on a fresh exec run, and ends its foreground daemon with `daemon stop --force` instead of SIGINT. The other
+    cli-*.mjs scripts were audited for POSIX-only steps: cli-tui.mjs and the pty parts of cli-projects.mjs already skip
+    on win32; cli-host.mjs, cli-readonly.mjs, cli-org.mjs, cli-connections.mjs, cli-mcp.mjs and cli-skills-kit.mjs use
+    no signals (only SIGKILL timeouts), pty, shell, socket paths or mode checks. None of them has run on Windows yet.
   - `orgai doctor` reports a symlink at the shim path that reads through to a packaged launcher as that launcher (ok for
     this install), not as another program's file; the installer still never replaces a symlink (review fix-up).
   - Review fix-up for the gate: a POSIX shell's option that may take a value (`-O`, `+O`, `-o`, ksh `-R`, any long
