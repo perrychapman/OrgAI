@@ -112,7 +112,7 @@ Node's standard library does not expose `flock()`/`fcntl()`, and `RunStore`'s co
    - While holding `startup.mkdir`, if `<dataDir>/run/daemon.json` exists, check `isLiveProcess(daemon.pid, daemon.processStartTime)` and attempt a `1,500 ms` connection to `daemon.endpoint`:
      - If the socket connects, fails with `EACCES`, or times out (`ETIMEDOUT`) while `isLiveProcess` is `true`, a live host owns `dataDir`: remove our `startup.mkdir` and abort boot with `HostAlreadyRunningError` (exit code `6`).
      - Only when the socket returns `ENOENT` or `ECONNREFUSED` **and** `isLiveProcess` is `false`, unlink the dead instance's specific socket path `daemon.endpoint` (if it lies inside `<dataDir>/run/` or a `tmpdir/orgai-*` runtime dir) and sweep any orphaned `orgai-*` runtime directories whose owner PID is dead.
-   - Generate a fresh 32-byte hex secret in `<dataDir>/run/daemon.secret` (`mode: 0o600`; on Windows, if `userDataDir` is outside `%APPDATA%` / `%LOCALAPPDATA%`, apply an explicit current-user-only DACL via `icacls`; the socket server additionally restricts it to the user's SID before it answers the first `host.hello`, `protocol.ts` `restrictDaemonSecretAcl`, and refuses every hello when that fails).
+   - Generate a fresh 32-byte hex secret in `<dataDir>/run/daemon.secret` (`mode: 0o600`; on Windows, if `userDataDir` is outside `%APPDATA%` / `%LOCALAPPDATA%`, apply an explicit current-user-only DACL via `icacls`; ownership restricts the run folder and the secret to the user's SID before any listener is bound, `protocol.ts` `restrictDaemonSecretAcl` through `protectSecretOnWindows`, and the socket server refuses every hello while ownership reports the secret unprotected).
    - Bind a **unique per-instance listener** so no host ever unlinks another host's socket path:
      - **macOS / Linux**: `<dataDir>/run/d-<hostInstanceId>.sock` (`mode: 0o600`, where `hostInstanceId` is a 12-hex-char random ID). If `Buffer.byteLength(sockPath) >= 100` (leaving headroom under macOS's 104-byte and Linux's 108-byte `sun_path` limits), create `<runtimeBase>/orgai-<hostInstanceId>` (`mode: 0o700`, verified via `lstatSync`) under `$XDG_RUNTIME_DIR` or `os.tmpdir()` and bind `d.sock` inside it.
      - **Windows**: Named Pipe `\\.\pipe\orgai-<sha256(canonicalPath(dataDir)).slice(0, 20)>-<hostInstanceId>`. (Because each host instance uses a unique pipe suffix to prevent cross-user pipe squatting, single-instance exclusivity on Windows is enforced by the `startup.mkdir` + `daemon.json` liveness protocol above.)
@@ -1114,14 +1114,16 @@ Resolved `R1`–`R10` (single-host daemon vs Desktop ownership, socket authentic
   the secret), the proof, and the scope cap. An explicit pipe DACL needs a native addon (or a pipe created by another
   runtime) and is a follow-up. UNVERIFIED on Windows (read from libuv's pipe.c and Microsoft's CreateNamedPipe docs, not
   run).
-- **daemon.secret ACL on win32 (H2 (3)).** Before answering the first `host.hello` (and when Terminal access is on at
-  attach or turned on), the socket server runs `protocol.ts` `restrictDaemonSecretAcl`: `whoami /user /fo csv /nh` for
-  the user's SID, then `icacls <secret> /inheritance:r /grant:r *<SID>:F`, both by absolute `%SystemRoot%\System32`
-  path with `cwd: os.tmpdir()`. A failure is logged once and refuses every hello (`auth_failed`, "OrgAI could not
-  restrict its terminal access secret to your Windows account ..."); the desktop app is not affected. UNVERIFIED on
-  Windows (unit-tested with an injected runner). Open for `ownership.ts` (group A): call `restrictDaemonSecretAcl`
-  instead of its bare `icacls` with `USERDOMAIN\USERNAME`, and restrict the `run` folder before writing the secret, so
-  the file never exists with an inherited ACL.
+- **daemon.secret ACL on win32 (H2 (3)).** `ownership.ts` `protectSecretOnWindows` runs `protocol.ts`
+  `restrictDaemonSecretAcl` (`whoami /user /fo csv /nh` for the user's SID, then `icacls ... /inheritance:r /grant:r
+  *<SID>:F`, both by absolute `%SystemRoot%\System32` path with `cwd: os.tmpdir()`) on the run folder, writes the
+  secret, then restricts the file, before any listener is bound: 'required' (fail closed, no listener) for
+  setListening(true) and for headless / inproc acquires. Only a best-effort acquire that binds at once could leave it
+  unprotected; ownership then sets `secretAclWarning`, and the socket server (`secretAclProblem`, read at every hello)
+  refuses every hello (`auth_failed`, "OrgAI could not restrict its terminal access secret to your Windows account
+  ..."). Review follow-up: the socket server used to run its own icacls on the file at attach / when Terminal access
+  turned on. That raced ownership's write (the file did not exist yet) and cached the failure, refusing every hello
+  until a restart; it is gone. UNVERIFIED on Windows (unit-tested with injected runners).
 - **Handshake detail only after the proof (Low).** Only `protocol_mismatch` (the challenge names the version anyway)
   and a generic `auth_failed` are answered before the clientProof verifies; the proof is computed over the fields as
   sent, and the field checks with their messages run after it.

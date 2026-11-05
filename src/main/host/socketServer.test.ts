@@ -442,21 +442,25 @@ describe.runIf(posix)('HostSocketServer handshake', () => {
     expect((await plain.response(2)).result).toBeDefined()
   })
 
-  it('win32: restricts daemon.secret once before answering, and refuses every hello when that fails', async () => {
-    const calls: string[] = []
-    await start({ platform: 'win32', restrictSecret: async (path) => (calls.push(path), undefined) })
-    expect((await hello(await client())).res.result).toBeDefined()
-    expect((await hello(await client())).res.result).toBeDefined()
-    expect(calls).toEqual([join(dataDir, 'run', 'daemon.secret')])
-    server.close()
-    await new Promise<void>((r) => netServer.close(() => r()))
-    logs = []
-    await start({ platform: 'win32', restrictSecret: async () => 'icacls failed: access denied' })
+  it('refuses every hello while the owner reports an unprotected daemon.secret, and runs no ACL step of its own (review follow-up)', async () => {
+    let problem: string | undefined = 'icacls failed: access denied'
+    await start({ secretAclProblem: () => problem })
     const { res } = await hello(await client())
     expect(res.error.data).toEqual({ code: 'auth_failed', message: SECRET_ACL_MESSAGE })
-    expect(logs.filter((l) => l.includes('icacls failed')).length).toBe(1)
     expect((await hello(await client())).res.error.data.code).toBe('auth_failed')
     expect(logs.filter((l) => l.includes('icacls failed')).length).toBe(1)
+    // Read at every hello, never cached: once the owner reports nothing, hellos succeed (no restart needed).
+    problem = undefined
+    expect((await hello(await client())).res.result).toBeDefined()
+    server.close()
+    await new Promise<void>((r) => netServer.close(() => r()))
+    // A throwing getter refuses too.
+    await start({
+      secretAclProblem: () => {
+        throw new Error('boom')
+      }
+    })
+    expect((await hello(await client())).res.error.data).toEqual({ code: 'auth_failed', message: SECRET_ACL_MESSAGE })
   })
 
   it('anything but host.hello id 1 before auth is bad_request and closes', async () => {

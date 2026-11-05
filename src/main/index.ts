@@ -301,6 +301,8 @@ app.whenReady().then(async () => {
     hostInstanceId: currentHostInstanceId(),
     appVersion: app.getVersion(),
     mock: process.env.ORGAI_MOCK === '1',
+    // Ownership restricts daemon.secret before it binds; the server only refuses while that reported a problem.
+    secretAclProblem: () => ownership?.secretAclWarning,
     log: (m) => log.info(m)
   })
   const socketServer = server

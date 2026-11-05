@@ -116,12 +116,16 @@ export async function startInprocHost(opts: StartInprocHostOptions): Promise<Inp
     appVersion: CLI_VERSION,
     mock: opts.mock,
     ownerKey,
+    // Ownership restricts daemon.secret before it binds; the server only refuses while that reported a problem.
+    secretAclProblem: () => ownershipRef?.secretAclWarning,
     ...(opts.log ? { log: opts.log } : {})
   })
 
+  let ownershipRef: HostOwnership | undefined
   let ownership: HostOwnership
   try {
     ownership = await acquireHostOwnership({ dataDir, hostKind: 'inproc', appVersion: CLI_VERSION, hostInstanceId, onConnection: (s) => server.accept(s) })
+    ownershipRef = ownership
   } catch (e) {
     server.close()
     if (e instanceof HostOwnershipError) throw new CliError(e.message, EXIT.hostBusy)

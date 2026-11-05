@@ -15,7 +15,9 @@
  *   deadline, and at most RPC_MAX_CLIENT_SOCKETS authenticated ones (else 'too_many_connections').
  * - host.hello (id HELLO_REQUEST_ID) is checked in this order: protocolVersion ('protocol_mismatch'; the challenge
  *   names it anyway), a hex clientProof and clientNonce and a requestedScopes array (else a generic 'auth_failed'), on
- *   win32 daemon.secret's ACL (restrictDaemonSecretAcl, once per server), the clientProof over the fields as sent
+ *   a daemon.secret the owner could not protect (secretAclProblem: ownership's best-effort ACL warning; review
+ *   follow-up: the server runs no icacls of its own, since every listener-binding path in ownership.ts restricts the
+ *   run folder and the secret first and fails closed), the clientProof over the fields as sent
  *   against readDaemonSecret(dataDir) ('auth_failed'); only then the field checks with their detail (clientKind,
  *   clientVersion, pid, cwd, requestedScopes: 'bad_request'), so an unauthenticated peer learns nothing about the
  *   expected format. Then before attach() 'host_starting' (retryAfterMs 250), while the host drains 'host_draining',
@@ -99,9 +101,7 @@ import {
   newNonce,
   parseFrame,
   proofMatches,
-  daemonSecretPath,
   readDaemonSecret,
-  restrictDaemonSecretAcl,
   rpcError,
   rpcNotification,
   rpcParseError,
@@ -129,13 +129,14 @@ export interface HostSocketServerOptions {
   log?: (m: string) => void
   /** Clock for deadlines; tests pass a fake. */
   now?: () => number
-  /** Platform override (tests): win32 restricts daemon.secret's ACL before the first hello is answered. */
-  platform?: NodeJS.Platform
   /**
-   * win32: give daemon.secret an explicit current-user-only DACL (protocol.ts restrictDaemonSecretAcl). Resolves
-   * undefined on success, else the reason. Missing = restrictDaemonSecretAcl. Tests inject one.
+   * Why daemon.secret is not protected, read at every hello (wired to HostOwnership.secretAclWarning: set only when a
+   * best-effort acquire bound the listener after the win32 ACL step failed). A string refuses the hello with
+   * SECRET_ACL_MESSAGE. The server runs no icacls itself (review follow-up): ownership restricts the run folder and the
+   * secret before any listener exists ('required' for setListening and for headless / inproc hosts), and a second,
+   * concurrent ACL run here raced that write and cached its failure for the server's life.
    */
-  restrictSecret?: (secretPath: string) => Promise<string | undefined>
+  secretAclProblem?: () => string | undefined
   /**
    * `--host inproc` only: a 32-byte hex key kept in memory by the CLI process that started this host (never on disk,
    * never logged). A hello carrying a matching ownerProof (protocol.ts ownerProof) is that process and gets every
@@ -274,7 +275,8 @@ export class HostSocketServer {
   /** The Terminal access level as last read (attach, settings:changed); a lower one closes over-scoped sockets. */
   private accessLevel: TerminalAccessLevel = 'operate'
   /** win32: daemon.secret's ACL restriction, run once (before the first hello is answered). */
-  private secretAcl: Promise<string | undefined> | undefined
+  /** secretAclProblem's refusal is logged once per server. */
+  private secretAclLogged = false
   /** Run events are going unjournaled (see terminalOn); the journal's gap is marked once per such stretch. */
   private journalPaused = false
   private nextId = 1
@@ -352,7 +354,6 @@ export class HostSocketServer {
     const access = accessOf(host)
     this.terminalOn = access.enabled
     this.accessLevel = access.level
-    if (access.enabled) void this.ensureSecretAcl()
     this.detach.push(host.activity.addSource('interactiveClients', () => this.attachedClientCount()))
     this.detach.push(host.events.on((channel, payload) => this.onHostEvent(channel, payload)))
   }
@@ -571,22 +572,20 @@ export class HostSocketServer {
 
   private secretCache: string | undefined
 
-  /**
-   * win32 only: restrict daemon.secret to the current user once per server (protocol.ts restrictDaemonSecretAcl). A
-   * failure is logged once and refuses every hello (SECRET_ACL_MESSAGE): Node cannot give the named pipe a DACL of its
-   * own (see the file header), so on Windows the secret's ACL and the scope cap are what keep other accounts out.
-   */
-  private ensureSecretAcl(): Promise<string | undefined> {
-    if ((this.opts.platform ?? process.platform) !== 'win32') return Promise.resolve(undefined)
-    const note = (problem: string): string => {
-      this.log(`Could not restrict daemon.secret to the current Windows user (${problem}); terminal connections are refused.`)
-      return problem
+  /** The owner's reason daemon.secret is unprotected (logged once), else undefined. Never throws. */
+  private secretAclRefusal(): string | undefined {
+    let problem: string | undefined
+    try {
+      problem = this.opts.secretAclProblem?.()
+    } catch (e) {
+      problem = e instanceof Error ? e.message : String(e)
     }
-    this.secretAcl ??= (this.opts.restrictSecret ?? ((path: string) => restrictDaemonSecretAcl(path)))(daemonSecretPath(this.opts.dataDir)).then(
-      (problem) => (problem ? note(problem) : undefined),
-      (e: unknown) => note(e instanceof Error ? e.message : String(e))
-    )
-    return this.secretAcl
+    if (!problem) return undefined
+    if (!this.secretAclLogged) {
+      this.secretAclLogged = true
+      this.log(`daemon.secret is not restricted to the current user (${problem}); terminal connections are refused.`)
+    }
+    return problem
   }
 
   /** True when this server has an owner key and the hello's ownerProof verifies against it (constant time). */
@@ -610,8 +609,7 @@ export class HostSocketServer {
       return fail({ code: 'protocol_mismatch', message: `This OrgAI speaks protocol version ${HOST_PROTOCOL_VERSION}; update the CLI or the app so they match.` })
     }
     if (!isHexNonce(raw.clientProof) || !isHexNonce(raw.clientNonce) || !Array.isArray(raw.requestedScopes)) return fail(authFailed)
-    if (await this.ensureSecretAcl()) return fail({ code: 'auth_failed', message: SECRET_ACL_MESSAGE })
-    if (conn.state !== 'hello') return
+    if (this.secretAclRefusal()) return fail({ code: 'auth_failed', message: SECRET_ACL_MESSAGE })
     const secret = this.secretCache ?? readDaemonSecret(this.opts.dataDir)
     if (!secret) return fail({ code: 'auth_failed', message: 'The host secret could not be read.' })
     let expected: string
@@ -864,7 +862,6 @@ export class HostSocketServer {
       this.accessLevel = access.level
       if (!this.terminalOn) this.dropAuthenticated()
       else {
-        void this.ensureSecretAcl()
         // A lower level takes effect at once: sockets holding scopes it no longer allows are closed, as when Terminal
         // access is turned off; the client reconnects with what it may have now.
         if (lowered) this.dropAuthenticated((c) => !c.owner && c.scopes.some((s) => !scopesForAccessLevel(access.level).includes(s)), 'Terminal access was narrowed')

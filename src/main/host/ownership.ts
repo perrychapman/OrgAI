@@ -1090,8 +1090,8 @@ export interface ProtectSecretOptions {
  * win32 only: give the run folder a current-user-only DACL inherited by new files, call `write` (daemon.secret is then
  * born with that ACL, never an inherited broader one), then restrict the secret file itself too. The grant names the
  * user's SID from `whoami /user` (never USERDOMAIN / USERNAME from the environment), run by absolute path from the temp
- * folder (review H1, H2 (3)). This runs wherever the data folder lives, %APPDATA% included, like the socket server's
- * own check before the first hello. A failure (whoami or icacls missing or refusing: a junctioned profile, FAT / exFAT,
+ * folder (review H1, H2 (3)). This runs wherever the data folder lives, %APPDATA% included; it is the only ACL step
+ * (the socket server runs none and refuses hellos while secretAclWarning is set). A failure (whoami or icacls missing or refusing: a junctioned profile, FAT / exFAT,
  * a network drive) throws HostOwnershipError('secret_acl_failed') in 'required' mode; in 'best-effort' mode it is
  * logged and returned as a warning sentence (review M8), and the secret is written regardless. Same-user programs are
  * not kept out by any ACL: the Terminal access level and the self-control gate are for those.
