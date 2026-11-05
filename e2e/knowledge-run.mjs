@@ -449,6 +449,37 @@ try {
   check(/^Searching here does not call a model\.$/.test(clean(await page.locator('[data-testid=run-knowledge-free]').innerText())), 'the quiet line says searching does not call a model')
   check((await page.locator('[data-testid=run-knowledge-recalled-row] [data-testid=knowledge-kind-mark]').count()) === rids.length, 'every row carries a kind mark')
 
+  // Rows reorder live without moving focus (3.1): an item further down is recalled again while the top row has focus.
+  // The event comes from main's own channel, so it takes the store's real path; React then moves the rows above the recalled one.
+  const reRecall = async (nodeId) => {
+    const runId = await page.evaluate((id) => window.orgai.runs.list(id).then((l) => l[0]?.id), c.id)
+    await app.evaluate(({ BrowserWindow }, ev) => BrowserWindow.getAllWindows()[0].webContents.send('runs:event', ev), { type: 'knowledge.recalled', runId, agentId: 'root', nodeIds: [nodeId], at: Date.now(), via: 'recall' })
+  }
+  const rowOrder = () => rrows.evaluateAll((els) => els.map((e) => e.getAttribute('data-id')))
+  if (rids.length >= 3) {
+    await rrows.first().focus()
+    const topId = rids[0]
+    const lowId = rids[rids.length - 1]
+    await reRecall(lowId)
+    check(await until(async () => (await rowOrder())[0] === lowId), 'a re-recalled item moves to the top of the list', JSON.stringify(await rowOrder()))
+    const afterMove = await active()
+    check(afterMove.tid === 'run-knowledge-recalled-row' && afterMove.id === topId, 'the row with focus keeps it while the rows reorder', JSON.stringify(afterMove))
+  } else check(false, 'three recalled rows to reorder', JSON.stringify(rids))
+  // An open item that goes away while the detail has focus: focus lands on Back, never on the page.
+  const brief = await page.evaluate((id) => window.orgai.knowledge.saveNode({ projectId: id, kind: 'risk', name: 'Short lived risk' }), c.id)
+  await search.fill('Short lived')
+  const shortHit = page.locator(`[data-testid=run-knowledge-result][data-id="${brief.id}"]`)
+  await shortHit.waitFor({ state: 'visible', timeout: 8000 })
+  await shortHit.click()
+  await page.locator('[data-testid=run-knowledge-detail]').waitFor({ state: 'visible' })
+  check(await until(async () => (await active()).tag === 'H3'), 'the detail heading has focus')
+  await page.evaluate(({ id, nodeId }) => window.orgai.knowledge.removeNode({ projectId: id, nodeId }), { id: c.id, nodeId: brief.id })
+  check(await until(async () => (await page.locator('[data-testid=run-knowledge-gone]').count()) === 1), 'the detail says the item no longer exists')
+  check(await until(async () => (await active()).tid === 'run-knowledge-back'), 'focus moves to Back when the open item vanishes', JSON.stringify(await active()))
+  await page.keyboard.press('Enter')
+  check(await until(async () => (await page.locator('[data-testid=run-knowledge-detail]').count()) === 0), 'Back returns')
+  await search.fill('')
+
   // Search: ranked, kind mark, keyboard.
   const before = JSON.stringify(await page.evaluate((id) => window.orgai.knowledge.get(id), c.id))
   await search.fill('Acme')
@@ -508,8 +539,13 @@ try {
   await page.locator('.side-run .transcript .entry').first().waitFor({ state: 'visible' })
   const reads = page.locator('[data-testid=knowledge-read-row]')
   const readTexts = (await reads.evaluateAll((els) => els.map((e) => e.querySelector('.entry-plain')?.textContent?.trim() ?? ''))).filter(Boolean)
-  check(readTexts.filter((t) => /^Recalled \d+ items? about Acme billing$/.test(t)).length === 2, 'the root transcript has two "Recalled N items about Acme billing" rows', JSON.stringify(readTexts))
+  check(readTexts.filter((t) => /^Recalled \d+ items? about Acme billing \(2 times\)$/.test(t)).length === 1, 'the same recall twice in a row is one row with a count', JSON.stringify(readTexts))
   check((await reads.first().locator('details summary').innerText()) === 'Show output', 'the recall result sits under "Show output"')
+  await reads.first().locator('details summary').click()
+  const recallOutput = await reads.first().locator('details pre').innerText()
+  check(/Acme Corp, organisation/.test(recallOutput) && /Headquartered in Leeds/.test(recallOutput), 'the output reads in plain words', recallOutput.slice(0, 200))
+  check(!/kn_|kf_|<<<|>>>|not instructions/.test(recallOutput), 'the output has no raw ids, fence or note to the model', recallOutput.slice(0, 200))
+  await reads.first().locator('details summary').click()
   const crows = await rowTexts()
   check(!crows.some((t) => /knowledge recall|knowledge_recall|Used knowledge/i.test(t)), 'no call or result row for knowledge_recall is left', JSON.stringify(crows.filter((t) => /recall/i.test(t))))
   check(!crows.some((t) => /not instructions/.test(t)), 'no row says "not instructions"')

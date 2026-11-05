@@ -39,11 +39,12 @@ The filter column becomes a band above the canvas at every size; List view keeps
 `lib/knowledgeNeural.ts`, pure, no dependency, unit-tested: `initLayout`, `stepLayout`, `placeNew`, `neuralRadius`, `kindMark`, `lodFor`, `pickLabels`, `spatialTarget`, `cardPlacement`.
 
 - **Seeded force layout.** Start: a phyllotaxis spiral in `orderItems` order; all random draws from a PRNG seeded with the project id. Same graph = same positions.
-- **Forces.** Repulsion -220 per node (Barnes-Hut, theta 0.9, above 200 nodes), link length `70 + ra + rb`, collision `ra + rb + 10`, gravity 0.04, velocity decay 0.6.
+- **Forces.** Repulsion -220 per node (Barnes-Hut, theta 0.9, above 200 nodes), link length `70 + ra + rb`, collision `ra + rb + 10`, gravity 0.04 up to 400 nodes and `0.04 * n / 400` above, at most 0.2 (the cloud's radius is about `sqrt(220 n / gravity)`, so the base value left 2,000 nodes 6,600 units wide and fit at its floor), velocity decay 0.6.
 - **Cools and stops.** Alpha 1, decay 0.02, stop under 0.02 or at 300 ticks (`data-settled=true`). Ticks run in slices of at most 8 ms per frame, so settling is visible.
 - **Positions survive**, per project, in memory and in localStorage `orgai.knowledgeLayout.<pid>` (ids and whole-number coordinates only, written when settled; junk ignored). A stored layout starts settled. Filter and selection never affect layout.
 - **A new node** starts at its neighbours' centroid plus a seeded 24-unit offset (no neighbours: the layout's rim) and gets 60 ticks with every other node pinned. Removing or retiring a node moves nothing.
-- **View.** Wheel zooms at the pointer (0.15-3), drag pans (under 4 px is a click), fit uses 48 px padding and zoom 1.4 at most. It auto-fits during the first settle until the user pans or zooms. **Resizes never refit** (1.5).
+- **View.** Wheel zooms at the pointer (0.15-3), drag pans (under 4 px is a click), fit uses 48 px padding and zoom 1.4 at most. Up to 300 drawn nodes a fit shows them all; above that it fits the dense core, the middle 95% of the x and y distributions, so a few far outliers sit off the stage instead of shrinking everything. It auto-fits during the first settle until the user pans or zooms.
+- **Resizes.** The view is "the user's" from a pan, a wheel zoom or a zoom key or button until Fit to view hands it back (`data-user-view`). **A window resize** (the window's size changed; stage changes within 300 ms of the last one belong to it, since the panel, sidebar and band fold frames later): untouched, the view refits; the user's, a shrink scales the view with the stage and keeps the world point at the centre, so the same part of the graph stays on the stage, and a grow keeps the zoom. **A panel opening or closing, a notice, the band rewrapping** move nothing (`offsetView` holds nodes in place in the window). A selected node within 48 px of the new edge pans the minimum in every case.
 
 ### 1.4 Look
 
@@ -52,7 +53,7 @@ Canvas for field and synapses, canvas above for pulses; nodes and labels are the
 | Part | Dark | Light |
 | --- | --- | --- |
 | Field | `--neural-field`, soft central wash of `--neural-field-glow`, no pattern | The same tokens |
-| Node | Glowing soma: kind colour, lighter core, soft halo to 2.4 r, `--neural-composite` (`lighter`) | Inked disc, 1 px darker outline, tinted halo to 1.8 r, `source-over`, never additive |
+| Node | Glowing soma: kind colour, lighter core, soft halo to 2.4 r, `--neural-composite` (`lighter`) | Inked disc, 1 px darker outline, soft lighter nucleus (0.42 r, opacity 0.5), tinted halo to 2.2 r, `source-over`, never additive |
 | Synapse | 1 px curve, seeded bend up to 8% of its length, `--neural-synapse` at `--neural-synapse-opacity` | The same tokens |
 | Active synapse | 1.5 px `--neural-synapse-active`, opacity 0.9 | The same |
 | Name | 12 px `--text-primary`, 3 px `--neural-field` text stroke, never scaled with zoom | The same |
@@ -60,7 +61,9 @@ Canvas for field and synapses, canvas above for pulses; nodes and labels are the
 
 Node colour: `color-mix(in srgb, <slot> var(--neural-node-mix), var(--neural-node-ink))`. Targets, **to be measured on the running app and recorded here**: name on field 4.5:1, every node colour to field 3:1, both themes. A failing pair changes through the token.
 
-**Size.** `r = 6 + 28 * log2(1 + total) / log2(1 + max(maxTotal, 16))`, world px at zoom 1, `total = appearances[id].total`, `maxTotal` over drawn nodes. Floor 6, ceiling 34; at least 3 px on screen. Top total 16: 0 -> 6, 1 -> 13, 4 -> 22, 9 -> 29, 16 -> 34. Top total 1,500: 1 -> 9, 5 -> 13, 50 -> 21. Changes ease over 300 ms. Without `appearances`, `total` is the node's live edges.
+**Size.** `r = 6 + 28 * log2(1 + total) / log2(1 + max(maxTotal, 16))`, world px at zoom 1, `total = appearances[id].total`, `maxTotal` over drawn nodes. Floor 6, ceiling 34. Top total 16: 0 -> 6, 1 -> 13, 4 -> 22, 9 -> 29, 16 -> 34. Top total 1,500: 1 -> 9, 5 -> 13, 50 -> 21. Changes ease over 300 ms. Without `appearances`, `total` is the node's live edges.
+
+On screen (`screenRadius(r, k)`): below zoom 1, `max(r * k, 3 + 9 * ((r - 6) / 28) ^ 1.5)`, so at any low zoom a leaf is about 3 px and the largest node 12 px and size still reads. Above zoom 1, `r * (1 + (k - 1) * 0.35)`, so zooming in opens the gaps between nodes and their synapses instead of filling the stage with discs. Hit radius and the option's DOM box follow it.
 
 **Colour by kind.** `kindColor` stops depending on `kindsInUse`, so a new kind never recolours another; new `kindMark(kind)`. Slots index `ROLE_COLORS`. Eight colours cannot cover the kinds, so the shape is part of the key. Slot 6 is unused (nearly slot 1).
 
@@ -80,9 +83,11 @@ Free-form kinds: stable hash of the key over slots 0-5 and 7, mark `ring-dot`; t
 | --- | --- | --- | --- | --- | --- | --- |
 | `full` | up to 300 | all | curved | all | 12 at once | 30 fps |
 | `medium` | 301-800 | top 100 by size | straight | top 100 | 8 | 30 fps |
-| `low` | 801-2,000 | none | straight, one batched path, opacity 0.2 | none | 4 | 20 fps |
+| `low` | 801-2,000 | top 24 by size | straight, one batched path, opacity 0.2 | none | 4 | 20 fps |
 
-**Names at rest** (`pickLabels`): `N = clamp(floor(stage area / 40,000), 4, 28)`, about 10 at 1024x640 and 28 at 1600x1000; 60 at zoom 1.6 or above. Take nodes by `total` descending, then creation order; place the name under the node, cut to 24 characters with an ellipsis; skip it if its box plus 4 px hits a placed name or a larger node. Recomputed 150 ms after pan or zoom stops. Search matches, the selected node and up to 12 active neighbours by size go first.
+**Names at rest** (`pickLabels`): `N = clamp(floor(stage area / 40,000), 4, 28)`, about 10 at 1024x640 and 28 at 1600x1000; 60 at zoom 1.6 or above. Take nodes by `total` descending, then creation order; the name goes below the node, else above, right, left, the first place whose box plus 4 px hits no placed name and no larger undimmed node; cut to 24 characters with an ellipsis. Recomputed 150 ms after pan or zoom stops. The selected node and up to 12 active neighbours by size go first.
+
+**Names with a filter or search** (`LABELS_LIT`): the lit items go first, largest first, up to 40 names however small the stage (60 at zoom 1.6 or above). Dimmed nodes never block a name. A name with no free place of the four stays off until hover or zoom, so a filter of 196 risks names 40 and a filter of 4 names all 4 (`data-named-lit`).
 
 **Emphasis, strongest first:**
 
@@ -112,7 +117,7 @@ Filtered-out nodes dim and never move, as do their synapses; they are not hit-te
 - **Placement** (`cardPlacement`): right of the node with a 12 px gap, then left, below, above; 8 px inside the stage; never covers the disc.
 - **Timing:** appears 60 ms after landing, 80 ms fade. Moving to another node while shown switches at once with no fade. The current node holds until the pointer is over `r + 6` px away and on another node. Hit radius `max(r, 8)` screen px. Hides 120 ms after leaving, at once on pan or wheel.
 - **Click on a node:** selects it and opens the existing detail `SidePanel`. Nothing re-roots, re-lays or refits. Focus goes to the node's DOM element (`openItem` gains `{ focus: false }`); only Enter sends it to the heading. A double click does the same.
-- **Panel opening, notices, window resizes:** the stage changes size and every node keeps its screen position. Only a selected node within 48 px of the new edge pans the view, the minimum needed, over 200 ms.
+- **Panel opening, notices:** the stage changes size and every node keeps its screen position. Only a selected node within 48 px of the new edge pans the view, the minimum needed, over 200 ms. A window resize is different (1.3).
 - **Activation spread:** from the selected node pulses run along up to 12 recorded synapses (largest neighbours); on arrival each neighbour flashes and sends one pulse on, 12 more at most, about 900 ms in all.
 - **Empty space click** clears the selection (`knowledge-detail-empty` in the panel). A selected item off-stage (list, deep link) pans into view over 300 ms. A note selected in the list selects no node.
 - **`onEngagementChanged` 'knowledge':** refetch graph and `inferredLinks`. A new node scales in over 400 ms and fires; a removed one fades over 200 ms. Selection and focus never move. `knowledge.md` section 6 announcements stand.
@@ -155,20 +160,20 @@ Skip controls stay clipped until focused. `knowledge-skip-list` reads "Show as l
 
 ### 1.9 Testable state
 
-Root `knowledge-neural`: `data-drawn`, `data-edges`, `data-lit` (not dimmed), `data-lod`, `data-settled`, `data-animating` (`true|false`), `data-frames` (written at most every 10 frames and when the loop stops), `data-fired` (since mount), `data-fired-ids` (newest 12, comma-separated), `data-inferred` (inferred lines drawn), `data-zoom` (2 decimals). e2e reads no pixels and asserts: `data-radius` follows `data-total`; `data-color` + `data-mark` per kind; `[mock:knowledge-recall]` raises `data-fired` and names the ids; reduced motion, a hidden tab and List view give `data-animating=false` with `data-frames` constant over 500 ms; `data-x` / `data-y` unchanged after a save, click, filter and panel opening, and `data-zoom` unchanged after a click.
+Root `knowledge-neural`: `data-drawn`, `data-edges`, `data-lit` (not dimmed), `data-lod`, `data-settled`, `data-animating` (`true|false`), `data-frames` (written at most every 10 frames and when the loop stops), `data-fired` (since mount), `data-fired-ids` (newest 12, comma-separated), `data-inferred` (inferred lines drawn), `data-zoom` (2 decimals), `data-user-view` (the user has panned or zoomed since the last fit), `data-named` and `data-named-lit` (names placed, and those on lit nodes). e2e reads no pixels and asserts: `data-radius` follows `data-total`; `data-color` + `data-mark` per kind; `[mock:knowledge-recall]` raises `data-fired` and names the ids; reduced motion, a hidden tab and List view give `data-animating=false` with `data-frames` constant over 500 ms; `data-x` / `data-y` unchanged after a save, click, filter and panel opening, and `data-zoom` unchanged after a click.
 
 ## 2. Connections
 
 ### 2.1 Canvas
 
-Inferred links are suggestions, never facts. 'mention' and 'same-name' look alike: straight 1 px dotted line (dash `2 5`), `--neural-synapse-inferred`, opacity 0.7, no pulses, no spread, not hit-testable, not neighbours for emphasis or Ctrl+Arrow. Drawn for the hovered, focused or selected node, or for every kept pair with `knowledge-inferred-links` on (`Switch` "Inferred links", default off, `orgai.knowledgeInferred.<pid>`; status "Showing N inferred links."). Rejected kinds (shared notes, same organisation, same run) are never drawn. Recorded relation words stay in their normal form.
+Inferred links are suggestions, never facts. 'mention' and 'same-name' look alike: straight line of round 1.75 px dots 5 px apart, `--neural-synapse-inferred`, opacity 0.95, no pulses, no spread, not hit-testable, not neighbours for emphasis or Ctrl+Arrow. Drawn for the hovered, focused or selected node, or for every kept pair with `knowledge-inferred-links` on (`Switch` "Inferred links", default off, `orgai.knowledgeInferred.<pid>`; status "Showing N inferred links."). Rejected kinds (shared notes, same organisation, same run) are never drawn. Recorded relation words stay in their normal form.
 
 ### 2.2 Detail panel: Possible connections
 
 `knowledge-possible`, `h3` "Possible connections", directly under Related, on live items with a link; never on notes or retired items. Quiet line: "OrgAI found these by matching names in the text. They may be wrong." Five rows by `strength`, then `knowledge-possible-more` "Show N more". Row `knowledge-possible-row[data-link][data-basis]`:
 
 - **Why** (`knowledge-possible-why`). Evidence is shaped `Fact: "..."` / `Summary: "..."`; a pure `linkWhy` strips the label. This item is `from`: **Other** (a link selecting it, like `knowledge-relation-link`), "Named in a fact: <snippet>" / "Named in the summary: <snippet>". This item is `to`: **Other**, "Names this in a fact: <snippet>" / "Names this in its summary: <snippet>". Same-name: "Same name as **Other**: might be the same thing", evidence not shown.
-- **Statement.** Always `from` then `to`, since for a mention `from` names `to`: "<from name> [word] <to name>". `[word]` is `knowledge-possible-word` (`Input`, label "Relation", `datalist` of relations in use, value `keyWords(suggestedRelation)` or blank, placeholder "works at"). Same-name reads the same with the smaller id first.
+- **Statement.** Always `from` then `to`, since for a mention `from` names `to`: "<from name> [word] <to name>". `[word]` is `knowledge-possible-word` (`Input`, label "Relation", `datalist` of relations in use, value `keyWords(suggestedRelation)` or blank, placeholder "How they relate": an instruction, because a relation word as a placeholder read as a suggestion for a pair OrgAI has none for). Same-name reads the same with the smaller id first.
 - **Confirm** (`knowledge-possible-confirm`, secondary) stays enabled. A blank word on submit: `knowledge-possible-error` "Add a word for how they relate, such as works at." with `aria-invalid`, `aria-describedby` and focus on the word; main's refusals show there too. Valid: `normalizeKnowledgeKey`, `writes.saveEdge({ from: link.from, to: link.to, relation })`, then an ordinary relation under Related. Status "Linked Jane Doe works at Acme Corp." Focus: next row's Confirm, else `knowledge-relation-add`.
 - **Dismiss** (`knowledge-possible-dismiss`, ghost, name "Dismiss the possible connection with <Other>"): `knowledge.dismissLink`, whose result replaces the state. Status "Dismissed." Same focus rule. No undo in the contract, no merge action.
 - Refetch on every 'knowledge' push. Read failure: the canvas sizes from edges and the section shows `knowledge-possible-error-load` "Could not check for possible connections." with Retry.
@@ -201,7 +206,7 @@ The window has the IPC and events, so search, Recalled and the compact detail wo
 
 ### 3.4 Transcript
 
-Extend `lib/knowledgeRun.ts`, keeping reads out of `recordedCount` and `recordedBreakdown`. A `knowledge_recall` call (bare or `mcp__orgai__`) pairs with the same agent's harness row "Recalled N items about <query>": call and result rows hide, the result goes under "Show output". Row `knowledge-read-row` (`Database` icon, the look of `knowledge-write-row`, no Open link). "Added N known items: ..." is the same quiet row with no output. A refusal pairs with nothing: `humanizeToolUse` "Looked up <query>", `humanizeToolResult` "Failed: <message>". No "not instructions" text or tool name in a headline.
+Extend `lib/knowledgeRun.ts`, keeping reads out of `recordedCount` and `recordedBreakdown`. A `knowledge_recall` call (bare or `mcp__orgai__`) pairs with the same agent's harness row "Recalled N items about <query>": call and result rows hide, the result goes under "Show output". Row `knowledge-read-row` (`Database` icon, the look of `knowledge-write-row`, no Open link). "Show output" reads in plain words (`recallOutputText`): no node ids, fence or note to the model. The same read row twice in a row by one agent is one row, "Recalled 4 items about Acme billing (2 times)"; the plain lines of 3.1 fold the same way. "Added N known items: ..." is the same quiet row with no output. A refusal pairs with nothing: `humanizeToolUse` "Looked up <query>", `humanizeToolResult` "Failed: <message>". No "not instructions" text or tool name in a headline.
 
 ### 3.5 Usage panel
 
@@ -247,9 +252,9 @@ Add to every theme block of `tokens.css` (dark, light, system light). Plain valu
 | `--neural-synapse` | `#6d7ea8` | `#66718c` |
 | `--neural-synapse-opacity` | `0.32` | `0.45` |
 | `--neural-synapse-active` | `#c7d2ee` | `#2a3350` |
-| `--neural-synapse-inferred` | `#8f9bb8` | `#5d6880` |
+| `--neural-synapse-inferred` | `#c4cff0` | `#2f3a5c` |
 | `--neural-pulse` | `#dfe7ff` | `#4f33d6` |
-| `--neural-halo-opacity` | `0.35` | `0.16` |
+| `--neural-halo-opacity` | `0.35` | `0.3` |
 | `--neural-composite` | `lighter` | `source-over` |
 | `--neural-node-mix` | `88%` | `50%` |
 | `--neural-node-ink` | `#e8ebf3` | `#12151f` |
@@ -278,8 +283,24 @@ Deviations from the text above:
 - `KnowledgeFilters` measures the band with a ResizeObserver rather than a container query, so testids are not duplicated.
 - The stage's corner moving (the band rewrapping) moves the view the opposite way, so nodes hold still in the window, not just in the stage.
 - Options carry `aria-setsize` / `aria-posinset` for the whole graph, since above 300 nodes only some are in the DOM. The node holding focus leaving the graph moves focus to the nearest kept option with "That item left the graph. Now on <name>."
-- `knowledge-possible-partial` shows when `KnowledgeInferredResult.partial` is set (the matcher stopped at its budget). Reads the field through a local cast until the merged contract removes the need.
+- `knowledge-possible-partial` shows when `KnowledgeInferredResult.partial` is set (the matcher stopped at its budget).
 - The auto-context note says "an item you added yourself": main's automatic block matches user-created entities only.
+
+Fixes after walk 4 (`ux-review-knowledge-4.md`) and review, 2026-11-05. Measured again on the running app, same machine and size, on 2,000 items and 5,000 relations, both a hub graph (eight client organisations, top total 453, preferential attachment for the rest) and a uniform random one (top total 15). Frame JS time, `low` tier; every rAF callback timed, no long task over 50 ms in any phase; GPU raster not measured:
+
+| Phase | Hub graph: p95 / max ms | Random: p95 / max ms |
+| --- | --- | --- |
+| Settling (1.41 s / 1.29 s after the switch) | 14.6 / 31.8 | 15.2 / 18.5 |
+| Idle, 2 s | 0.1 / 0.2 | 0.1 / 0.3 |
+| Hover sweep across the stage | 2.1 / 2.9 | 2.3 / 2.9 |
+| Pan | 1.5 / 1.8 | 3.0 / 5.5 |
+| Wheel zoom, 20 ticks | 2.0 / 2.6 | 2.1 / 3.2 |
+
+Fit before and after, computed from the layout on the same graphs (stage 1368 x 820; "core" is the 5th to 95th percentile span): hub graph zoom 0.19 -> 0.35, core 443 -> 623 px of the 724 px inside the padding, top node 6.6 -> 12 px, leaf about 3 px; random zoom 0.15 (the floor, 5 nodes off stage) -> 0.34 (17 of 2,000 off), core 392 -> 639 px. At 1024x640 (928 x 432) the stage is the limit: zoom 0.16, core about 290 of 336 px, 2 nodes off, and the cloud is dense there.
+
+Contrast of the inferred dots on the field, computed from the tokens at opacity 0.95: dark about 12:1, light about 9.5:1 (`--neural-synapse-inferred`). Node colours and names are unchanged from the figures above. The light theme's nucleus sits inside the disc and its outline, so a node's edge still meets the figures above; it, the larger halo and the dots were judged by eye in screenshots, with no additive blending on white.
+
+The light theme reads closer to cells than before, at 67 items and at 2,000; it is still calmer than dark, and that is the honest limit without a glow on white.
 
 ## 9. Verification owed
 

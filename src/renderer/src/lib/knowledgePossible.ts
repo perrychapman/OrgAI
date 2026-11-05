@@ -1,4 +1,4 @@
-import type { KnowledgeEdge, KnowledgeInferredLink, KnowledgeNode } from '@shared/types'
+import type { KnowledgeEdge, KnowledgeInferencePartial, KnowledgeInferredLink, KnowledgeNode } from '@shared/types'
 import { normalizeKnowledgeKey } from '@shared/knowledge'
 import { HIDDEN_OR_CONTROL_RUN } from './hiddenChars'
 import { keyWords } from './knowledge'
@@ -9,17 +9,16 @@ import { keyWords } from './knowledge'
 export const POSSIBLE_VISIBLE = 5
 export const POSSIBLE_QUIET = 'OrgAI found these by matching names in the text. They may be wrong.'
 export const POSSIBLE_BLANK_WORD = 'Add a word for how they relate, such as works at.'
+/**
+ * The empty word field. An instruction, never an example: a relation word here would read as OrgAI's suggestion for this
+ * pair ("Jane Doe [works at] Tom Okafor") when it has none. A real suggestion is the field's value (`initialWord`).
+ */
+export const POSSIBLE_WORD_PLACEHOLDER = 'How they relate'
 export const POSSIBLE_BAD_WORD = 'Use letters, digits, spaces and hyphens, at most 40 characters.'
 export const POSSIBLE_LOAD_FAILED = 'Could not check for possible connections.'
 
-/** KnowledgeInferredResult.partial: the name matcher stopped at its budget. Optional until every build has the field. */
-export interface PossiblePartial {
-  scannedEntities: number
-  totalEntities: number
-}
-
 /** The honest line when the matcher stopped early; null when it read everything or the counts are not usable. */
-export function possiblePartialNote(partial: PossiblePartial | null | undefined): string | null {
+export function possiblePartialNote(partial: KnowledgeInferencePartial | null | undefined): string | null {
   if (!partial) return null
   const { scannedEntities: s, totalEntities: t } = partial
   if (!Number.isFinite(s) || !Number.isFinite(t) || s < 0 || t <= 0) return null
@@ -71,6 +70,7 @@ export interface PossibleRow {
   why: LinkWhy
 }
 
+const withPlainName = (n: KnowledgeNode): KnowledgeNode => ({ ...n, name: n.name.replace(HIDDEN_OR_CONTROL_RUN, ' ').replace(/\s+/g, ' ').trim() })
 const pairKey = (a: string, b: string): string => (a < b ? `${a}\u0000${b}` : `${b}\u0000${a}`)
 
 /**
@@ -91,7 +91,10 @@ export function possibleRows(links: readonly KnowledgeInferredLink[], thisId: st
     if (!from || !to || from.retired || to.retired || link.from === link.to) continue
     if (linked.has(pairKey(link.from, link.to))) continue
     const why = linkWhy(link, thisId)
-    out.push({ link, other: link.from === thisId ? to : from, from, to, why })
+    // Names are drawn, spoken and announced from here: hidden characters never reach them (main refuses them on write too).
+    const shownFrom = withPlainName(from)
+    const shownTo = withPlainName(to)
+    out.push({ link, other: link.from === thisId ? shownTo : shownFrom, from: shownFrom, to: shownTo, why })
   }
   return out.sort((a, b) => b.link.strength - a.link.strength || b.link.count - a.link.count || a.other.name.localeCompare(b.other.name) || a.link.id.localeCompare(b.link.id))
 }

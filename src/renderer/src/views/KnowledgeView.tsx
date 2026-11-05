@@ -1,5 +1,5 @@
 import type { ReactElement } from 'react'
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Plus } from 'lucide-react'
 import type { EngagementNote, EngagementNoteContent, KnowledgeGraph as KnowledgeGraphData, KnowledgeInferredResult, KnowledgeNode, Project } from '@shared/types'
 import { ENGAGEMENT_NOTES_MAX, KNOWLEDGE_NODES_MAX } from '@shared/types'
@@ -8,7 +8,8 @@ import type { KnowledgeFilter, KnowledgeItem, RunFacts } from '../lib/knowledge'
 import { EMPTY_FILTER, countLine, groupItems, idAfterRemoval, isFilterActive, itemName, itemsOf, kindCounts, originCounts, resolveFocus, runNamesOf, searchItems } from '../lib/knowledge'
 import type { RecordedBatch } from '../lib/knowledgeList'
 import { EMPTY_BATCH, NOTICE_MS, addRecorded, emptyKind, eventItemIds, flushRecorded, hiddenNewIds, isOwnEvent, itemsCapText, notesCapText, restoreReady, retireNoticeText } from '../lib/knowledgeList'
-import { inferredStatus, possiblePartialNote, visibleLinkCount, type PossiblePartial } from '../lib/knowledgePossible'
+import { inferredStatus, possiblePartialNote, visibleLinkCount } from '../lib/knowledgePossible'
+import { KNOWLEDGE_INFERRED_KEY, KNOWLEDGE_RETIRED_KEY, KNOWLEDGE_VIEW_KEY } from '../lib/knowledgePrefs'
 import { cleanIpcError } from '../lib/ipcError'
 import { useAppStore, useProjectSummaries, useRunIndexes } from '../store/useAppStore'
 import { SidePanel } from '../components/layout/SidePanel'
@@ -28,9 +29,9 @@ import '../styles/knowledge.css'
 
 type ViewMode = 'list' | 'graph'
 
-const VIEW_KEY = 'orgai.knowledgeView.'
-const RETIRED_KEY = 'orgai.knowledgeRetired.'
-const INFERRED_KEY = 'orgai.knowledgeInferred.'
+const VIEW_KEY = KNOWLEDGE_VIEW_KEY
+const RETIRED_KEY = KNOWLEDGE_RETIRED_KEY
+const INFERRED_KEY = KNOWLEDGE_INFERRED_KEY
 
 function readPref(key: string): string | null {
   try {
@@ -236,7 +237,8 @@ export default function KnowledgeView({ project }: { project: Project }): ReactE
   }, [filter.query, filter.kinds, filter.origins])
   const groups = useMemo(() => groupItems(shown), [shown])
   const kinds = useMemo(() => kindCounts(items, filter.showRetired), [items, filter.showRetired])
-  const origins = useMemo(() => originCounts(items, filter.showRetired), [items, filter.showRetired])
+  // Graph view counts what it draws: nodes, not notes, the same as its count line.
+  const origins = useMemo(() => originCounts(graphView ? items.filter((i) => i.type === 'node') : items, filter.showRetired), [items, filter.showRetired, graphView])
   const total = filter.showRetired ? items.length : items.filter((i) => !(i.type === 'node' ? i.node.retired : i.note.retired)).length
   // Graph view counts the items it draws: nodes only (notes are not drawn).
   const nodeTotal = items.filter((i) => i.type === 'node' && (filter.showRetired || !i.node.retired)).length
@@ -310,6 +312,14 @@ export default function KnowledgeView({ project }: { project: Project }): ReactE
     setReveal(`${id}:${Date.now()}`)
   }, [])
   const neuralRef = useRef<KnowledgeNeuralHandle>(null)
+  // The last node leaving takes the whole canvas with it: focus lands on what replaces it, never on the page.
+  const neuralHadFocus = useRef(false)
+  neuralHadFocus.current = !!document.activeElement?.closest('[data-testid=knowledge-neural]')
+  useLayoutEffect(() => {
+    if (!neuralHadFocus.current || neuralRef.current || document.activeElement !== document.body) return
+    const target = ['[data-testid=knowledge-add-note]:not(:disabled)', '[data-testid=knowledge-show-retired]', '[data-testid=knowledge-view-switch] input:checked'].map((s) => document.querySelector<HTMLElement>(s)).find(Boolean)
+    target?.focus({ preventScroll: true })
+  })
   const selectItem = useCallback((id: string | null): void => {
     setCreating(false)
     setSelectedId(id)
@@ -753,7 +763,7 @@ export default function KnowledgeView({ project }: { project: Project }): ReactE
           onError={(m) => setError(cleanIpcError(m))}
           announce={announce}
           inferredLinks={inferred?.links ?? null}
-          inferredPartialNote={possiblePartialNote((inferred as (KnowledgeInferredResult & { partial?: PossiblePartial }) | null)?.partial)}
+          inferredPartialNote={possiblePartialNote(inferred?.partial)}
           inferredFailed={inferredFailed}
           onRetryInferred={reloadInferred}
           onDismissLink={dismissLink}

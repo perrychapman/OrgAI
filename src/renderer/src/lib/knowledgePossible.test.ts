@@ -1,9 +1,25 @@
 import { describe, expect, it } from 'vitest'
 import type { KnowledgeInferredLink, KnowledgeNode } from '@shared/types'
-import { confirmWord, dismissLabel, inferredStatus, initialWord, linkWhy, linkedStatus, possiblePartialNote, possibleRows, rowAfterRemoval, splitEvidence, visibleLinkCount, whyText } from './knowledgePossible'
+import { POSSIBLE_WORD_PLACEHOLDER, confirmWord, dismissLabel, inferredStatus, initialWord, linkWhy, linkedStatus, possiblePartialNote, possibleRows, rowAfterRemoval, splitEvidence, visibleLinkCount, whyText } from './knowledgePossible'
 
 const node = (id: string, name: string, extra: Partial<KnowledgeNode> = {}): KnowledgeNode => ({ id, name, kind: 'person', aliases: [], facts: [], noteIds: [], createdAt: 1, updatedAt: 1, ...extra }) as unknown as KnowledgeNode
 const link = (id: string, from: string, to: string, extra: Partial<KnowledgeInferredLink> = {}): KnowledgeInferredLink => ({ id, from, to, basis: 'mention', evidence: 'Fact: "Works at Acme"', strength: 0.5, count: 1, ...extra })
+
+describe('the blank word field', () => {
+  it('starts blank without a suggestion and its placeholder is no relation word', () => {
+    expect(initialWord({})).toBe('')
+    expect(POSSIBLE_WORD_PLACEHOLDER).toBe('How they relate')
+    expect(POSSIBLE_WORD_PLACEHOLDER).not.toMatch(/works at/)
+  })
+})
+
+describe('names in a row', () => {
+  it('drops hidden characters from the names it shows', () => {
+    const rows = possibleRows([link('kl_1', 'a', 'b')], 'a', [node('a', 'Jane‮ Doe'), node('b', 'Acme​')], [])
+    expect(rows[0].from.name).toBe('Jane Doe')
+    expect(rows[0].other.name).toBe('Acme')
+  })
+})
 
 describe('possiblePartialNote', () => {
   it('says the list is partial only when the matcher stopped early', () => {

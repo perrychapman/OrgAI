@@ -659,7 +659,7 @@ try {
   check(why === 'Named in a fact: Leads the migration at Globex Industries', 'the why strips the Fact label and says where it is named', why)
   const linkId = await mrow.getAttribute('data-link')
   const wordIn = mrow.locator('[data-testid=knowledge-possible-word]')
-  check((await wordIn.getAttribute('placeholder')) === 'works at', 'the word field has the placeholder "works at"')
+  check((await wordIn.getAttribute('placeholder')) === 'How they relate', 'the blank word field gives an instruction, never an example that reads as a suggestion')
   check((await mrow.locator('label.sr-only', { hasText: 'Relation' }).count()) === 1, 'the word field is labelled "Relation"')
   const names = clean(await mrow.locator('.knowledge-possible-statement').innerText())
   check(names.startsWith('Priya Nair') && names.endsWith('Globex Industries'), 'the statement reads from, word, to', names)

@@ -32,6 +32,16 @@ import {
   typeAheadTarget,
   zoomAt,
   drawnMask,
+  CORE_FIT_FROM,
+  LABELS_LIT,
+  RADIUS_MAX,
+  RADIUS_MIN,
+  coreBox,
+  gravityFor,
+  remapByEdge,
+  screenFloor,
+  screenRadius,
+  viewAfterWindowResize,
   type LabelCandidate
 } from './knowledgeNeural'
 
@@ -60,6 +70,31 @@ describe('radius', () => {
     expect(neuralRadius(-3, 0)).toBe(6)
     expect(neuralRadius(5000, 10)).toBeLessThanOrEqual(34)
     expect(neuralRadius(5, 100)).toBeGreaterThan(neuralRadius(2, 100))
+  })
+})
+
+describe('size on screen', () => {
+  it('keeps hubs and leaves apart at any low zoom', () => {
+    expect(screenFloor(RADIUS_MIN)).toBe(3)
+    expect(screenFloor(RADIUS_MAX)).toBe(12)
+    for (const k of [0.15, 0.2, 0.3, 0.5]) {
+      expect(screenRadius(RADIUS_MAX, k) - screenRadius(RADIUS_MIN, k)).toBeGreaterThanOrEqual(9)
+      expect(screenRadius(RADIUS_MAX, k)).toBeGreaterThanOrEqual(12)
+    }
+  })
+  it('follows the world radius once it is past the floor and never shrinks as zoom grows', () => {
+    expect(screenRadius(34, 0.9)).toBeCloseTo(30.6)
+    let last = 0
+    for (let k = 0.15; k <= 3; k += 0.05) {
+      const r = screenRadius(20, k)
+      expect(r).toBeGreaterThanOrEqual(last - 1e-9)
+      last = r
+    }
+  })
+  it('grows slower than the zoom above 1, so zooming in opens the gaps', () => {
+    expect(screenRadius(34, 1)).toBe(34)
+    expect(screenRadius(34, 3)).toBeCloseTo(34 * 1.7)
+    expect(screenRadius(34, 3) / 3).toBeLessThan(34)
   })
 })
 
@@ -146,6 +181,87 @@ describe('force layout', () => {
   })
 })
 
+describe('gravity by graph size', () => {
+  it('leaves small graphs alone and pulls large ones in, up to five times', () => {
+    expect([10, 400].map(gravityFor)).toEqual([0.04, 0.04])
+    expect(gravityFor(800)).toBeCloseTo(0.08)
+    expect(gravityFor(2000)).toBeCloseTo(0.2)
+    expect(gravityFor(5000)).toBeCloseTo(0.2)
+  })
+  it('a 2,000-node layout with a hub fits well above the zoom floor, with most nodes on the stage', () => {
+    const ids = Array.from({ length: 2000 }, (_, i) => `kn_${i}`)
+    const rnd = prng(seedOf('hubs'))
+    const links: [string, string][] = []
+    for (let i = 1; i < 2000; i++) links.push([ids[i], ids[rnd() < 0.2 ? 0 : Math.floor(rnd() * i)]])
+    const radii = ids.map((_, i) => (i === 0 ? 34 : 9))
+    const s = initLayout({ ids, links, radii, seed: 'p' })
+    stepLayout(s, Infinity)
+    const pts = ids.map((_, i) => ({ x: s.x[i], y: s.y[i], r: radii[i] }))
+    const stage = { w: 1368, h: 820 }
+    const v = fitView(coreBox(pts), stage)
+    expect(v.k).toBeGreaterThan(0.25)
+    const off = pts.filter((p) => {
+      const x = p.x * v.k + v.x
+      const y = p.y * v.k + v.y
+      return x < 0 || x > stage.w || y < 0 || y > stage.h
+    }).length
+    expect(off / pts.length).toBeLessThan(0.05)
+  })
+})
+
+describe('fit', () => {
+  const ring = (n: number) => Array.from({ length: n }, (_, i) => ({ x: i - n / 2, y: 0, r: 5 }))
+  it('shows everything up to the limit', () => {
+    const pts = [...ring(CORE_FIT_FROM - 1), { x: 100000, y: 0, r: 5 }]
+    expect(coreBox(pts)!.x1).toBe(100005)
+  })
+  it('fits the dense core above it, leaving a far outlier off the stage', () => {
+    const pts = [...ring(1000), { x: 100000, y: 100000, r: 5 }]
+    const box = coreBox(pts)!
+    expect(box.x1).toBeLessThan(600)
+    expect(box.y1).toBeLessThan(10)
+    expect(coreBox([])).toBeNull()
+  })
+})
+
+describe('window resize with the user\'s view', () => {
+  const from = { w: 1368, h: 820 }
+  const to = { w: 928, h: 430 }
+  it('scales for a shrink and keeps the world point at the stage centre', () => {
+    const v = { x: 200, y: 100, k: 0.8 }
+    const after = viewAfterWindowResize(v, from, to, null)
+    expect(after.k).toBeCloseTo(0.8 * (430 / 820))
+    const wx = (from.w / 2 - v.x) / v.k
+    expect((to.w / 2 - after.x) / after.k).toBeCloseTo(wx)
+  })
+  it('keeps the zoom when the stage grows', () => {
+    const v = { x: 0, y: 0, k: 0.5 }
+    expect(viewAfterWindowResize(v, to, from, null).k).toBe(0.5)
+  })
+  it('never below the zoom floor, and pans the graph back when it would leave', () => {
+    expect(viewAfterWindowResize({ x: 0, y: 0, k: 0.16 }, from, to, null).k).toBe(0.15)
+    const graph = { x0: 0, y0: 0, x1: 100, y1: 100 }
+    const lost = viewAfterWindowResize({ x: 5000, y: 0, k: 1 }, from, to, graph)
+    expect(graph.x0 * lost.k + lost.x).toBeLessThan(to.w)
+  })
+  it('leaves the view alone with no stage to measure', () => {
+    const v = { x: 1, y: 2, k: 1 }
+    expect(viewAfterWindowResize(v, { w: 0, h: 0 }, to, null)).toBe(v)
+  })
+})
+
+describe('effects across a data change', () => {
+  const e = (id: string) => ({ id })
+  it('re-points items by edge id and drops those whose edge left', () => {
+    const before = [e('a'), e('b'), e('c')]
+    const after = [e('c'), e('a')]
+    const out = remapByEdge([{ edge: 0, t: 1 }, { edge: 1, t: 2 }, { edge: 2, t: 3 }], before, after)
+    expect(out).toEqual([{ edge: 1, t: 1 }, { edge: 0, t: 3 }])
+    expect(remapByEdge([{ edge: 9 }], before, after)).toEqual([])
+    expect(remapByEdge([], before, after)).toEqual([])
+  })
+})
+
 describe('stored layout', () => {
   it('round-trips whole numbers for valid ids', () => {
     const text = serializeLayout(new Map([['kn_ab12', { x: 10.6, y: -3.2 }]]))
@@ -219,6 +335,29 @@ describe('labels', () => {
     expect(base[0].id).toBe('kn_0')
     const forced = pickLabels({ candidates: cands, stage: { w: 1368, h: 820 }, zoom: 1, measure, must: ['kn_39'], priority: ['kn_38'] })
     expect(forced[0].id).toBe('kn_39')
+  })
+  it('moves a name to another side rather than dropping it', () => {
+    const a = { id: 'a', text: 'Alpha item', x: 200, y: 100, r: 8, total: 5, order: 0 }
+    const blocker = { id: 'b', text: 'Beta item', x: 200, y: 124, r: 14, total: 9, order: 1 }
+    const placed = pickLabels({ candidates: [a, blocker], stage: { w: 600, h: 400 }, zoom: 1, measure })
+    expect(placed.find((p) => p.id === 'b')?.side).toBe('below')
+    expect(placed.find((p) => p.id === 'a')?.side).toBe('above')
+  })
+  it('a dimmed node never blocks a lit name', () => {
+    const lit = { id: 'lit', text: 'Risk one', x: 200, y: 100, r: 8, total: 1, order: 0 }
+    const hubs = [
+      { id: 'h1', text: 'x', x: 200, y: 122, r: 30, total: 50, order: 1, quiet: true },
+      { id: 'h2', text: 'y', x: 200, y: 78, r: 30, total: 50, order: 2, quiet: true }
+    ]
+    const placed = pickLabels({ candidates: [lit, ...hubs], stage: { w: 600, h: 400 }, zoom: 1, measure, priority: ['lit'] })
+    expect(placed.map((p) => p.id)).toEqual(['lit'])
+    expect(placed[0].side).toBe('below')
+  })
+  it('a filter may name more than the resting budget, to a stated limit', () => {
+    const cands = Array.from({ length: 60 }, (_, i) => ({ id: `kn_${i}`, text: `N${i}`, x: 20 + (i % 10) * 90, y: 20 + Math.floor(i / 10) * 60, r: 6, total: 1, order: i }))
+    const stage = { w: 928, h: 430 }
+    expect(pickLabels({ candidates: cands, stage, zoom: 1, measure }).length).toBe(labelBudget(stage, 1))
+    expect(pickLabels({ candidates: cands, stage, zoom: 1, measure, minBudget: LABELS_LIT }).length).toBe(LABELS_LIT)
   })
   it('skips nodes off the stage and cuts long names', () => {
     const off = pickLabels({ candidates: [{ id: 'a', x: -100, y: 10, r: 8, total: 1, order: 0, text: 'x' }], stage: { w: 300, h: 300 }, zoom: 1, measure })

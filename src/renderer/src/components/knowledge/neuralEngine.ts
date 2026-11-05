@@ -1,13 +1,17 @@
 import { keyWords, kindMark } from '../../lib/knowledge'
 import {
+  LABELS_LIT,
+  LABEL_HEIGHT,
   LOD_SPECS,
-  MIN_SCREEN_RADIUS,
+  RADIUS_MAX,
   boundsOf,
+  coreBox,
   cutLabel,
   drawnMask,
   edgeDrawn,
   fitView,
   initLayout,
+  labelSpot,
   layoutFromPositions,
   layoutKey,
   lodFor,
@@ -16,12 +20,14 @@ import {
   parseStoredLayout,
   pickLabels,
   placeNew,
-  positionsOf,
   prng,
   radiiOf,
+  remapByEdge,
+  screenRadius,
   seedOf,
   serializeLayout,
   stepLayout,
+  viewAfterWindowResize,
   zoomAt,
   type Emphasis,
   type LabelCandidate,
@@ -148,6 +154,9 @@ export class NeuralEngine {
   // view
   private v: View = { x: 0, y: 0, k: 1 }
   private autoFit = true
+  /** The user panned or zoomed since the last fit: a window resize keeps their view instead of refitting. */
+  private userView = false
+  private resizeBase: { view: View; w: number; h: number } | null = null
   private anim: { from: View; to: View; t0: number; dur: number } | null = null
 
   // screen cache
@@ -285,25 +294,47 @@ export class NeuralEngine {
     this.kick()
   }
 
-  resize(w: number, h: number, dpr: number): void {
-    const sameDpr = dpr === this.dpr
-    if (w === this.w && h === this.h && sameDpr) return
-    this.w = Math.max(0, Math.round(w))
-    this.h = Math.max(0, Math.round(h))
+  /** The stage changed size. Nodes hold still, unless the first fit is still pending: returns true when it refitted. */
+  resize(w: number, h: number, dpr: number): boolean {
+    const rw = Math.max(0, Math.round(w))
+    const rh = Math.max(0, Math.round(h))
+    if (rw === this.w && rh === this.h && dpr === this.dpr) return false
+    this.w = rw
+    this.h = rh
     this.dpr = dpr
     for (const cv of [this.cvA, this.cvB]) {
       cv.width = Math.max(1, Math.round(this.w * dpr))
       cv.height = Math.max(1, Math.round(this.h * dpr))
     }
     this.fieldGrad = null
+    let fitted = false
     if (this.autoFit && this.n > 0 && this.w > 0) {
       this.fit(false)
+      fitted = true
       if (this.settledOnce) this.autoFit = false
     }
     this.labelsDirty = true
     this.dirtyA = true
     this.dirtyB = true
     this.kick()
+    this.writeAttrs()
+    return fitted
+  }
+
+  /**
+   * The window changed size (a panel opening is `resize` + `offsetView`). Until the user has panned or zoomed the view
+   * refits; after that it keeps showing the same part of the graph, scaled down for a shrink.
+   */
+  resizeWindow(w: number, h: number, dpr: number, burstStart: boolean): void {
+    // One drag or one maximise reaches here several times (the panel and sidebar fold frames later): always measured from where it began.
+    if (burstStart || !this.resizeBase) this.resizeBase = { view: this.v, w: this.w, h: this.h }
+    const base = this.resizeBase
+    if (this.resize(w, h, dpr) || this.n === 0 || this.w <= 0 || this.h <= 0) return
+    if (!this.userView) this.fit(false)
+    else {
+      this.anim = null
+      this.setView(viewAfterWindowResize(base.view, base, { w: this.w, h: this.h }, boundsOf(this.drawnDiscs())))
+    }
     this.writeAttrs()
   }
 
@@ -315,8 +346,8 @@ export class NeuralEngine {
     const prevKinds = new Map<string, string>()
     if (prevModel) prevModel.nodes.forEach((nd) => prevKinds.set(nd.id, nd.kind))
     const wasUnsettled = !!this.lay && !this.lay.settled
-    // Pulses and rings point at edge and node indexes of the old model: pulses end here, rings follow their node.
-    this.pulses = []
+    // Pulses and rings point at edge and node indexes of the old model: they follow their edge and node by id.
+    this.pulses = prevModel ? remapByEdge(this.pulses, prevModel.edges, model.edges) : []
     if (prevModel && this.rings.length > 0) {
       this.rings = this.rings.flatMap((r) => {
         const at = model.index.get(prevModel.ids[r.idx])
@@ -475,33 +506,39 @@ export class NeuralEngine {
 
   fit(animate: boolean): void {
     if (!this.model || this.n === 0 || this.w <= 0) return
-    const pts: { x: number; y: number; r: number }[] = []
-    for (let i = 0; i < this.n; i++) if (this.drawn[i] === 1) pts.push({ x: this.px[i], y: this.py[i], r: this.rad[i] + 4 })
-    const target = fitView(boundsOf(pts), { w: this.w, h: this.h })
+    const target = fitView(coreBox(this.drawnDiscs()), { w: this.w, h: this.h })
     this.moveTo(target, animate)
   }
 
-  /** The Fit to view button: animated, and the view is the user's from here on. */
+  private drawnDiscs(): { x: number; y: number; r: number }[] {
+    const pts: { x: number; y: number; r: number }[] = []
+    for (let i = 0; i < this.n; i++) if (this.drawn[i] === 1) pts.push({ x: this.px[i], y: this.py[i], r: this.rad[i] + 4 })
+    return pts
+  }
+
+  /** The Fit to view button: animated, and the next window resize refits again. */
   fitNow(): void {
     this.autoFit = false
+    this.userView = false
     this.host.userMoved()
     this.fit(true)
   }
 
   zoomBy(factor: number): void {
     this.autoFit = false
+    this.userView = true
     this.host.userMoved()
     const target = zoomAt(this.v, this.v.k * factor, this.w / 2, this.h / 2)
     this.moveTo(target, true)
   }
 
-  /** Bring a node within 48 px of the inside of the stage with the smallest pan. */
   /** The stage's corner moved in the window by minus (dx, dy): move the view the same way, so nodes hold still on screen. */
   offsetView(dx: number, dy: number): void {
     this.anim = null
     this.setView({ x: this.v.x + dx, y: this.v.y + dy, k: this.v.k })
   }
 
+  /** Bring a node within 48 px of the inside of the stage with the smallest pan. */
   reveal(id: string, ms: number): void {
     if (!this.model) return
     const i = this.model.index.get(id)
@@ -522,7 +559,7 @@ export class NeuralEngine {
     if (!this.model) return null
     const i = this.model.index.get(id)
     if (i === undefined || this.drawn[i] !== 1) return null
-    return { id, x: this.px[i] * this.v.k + this.v.x, y: this.py[i] * this.v.k + this.v.y, r: Math.max(this.rad[i] * this.v.k, MIN_SCREEN_RADIUS) }
+    return { id, x: this.px[i] * this.v.k + this.v.x, y: this.py[i] * this.v.k + this.v.y, r: screenRadius(this.rad[i], this.v.k) }
   }
 
   /** World positions in model order, only for the model the engine holds. */
@@ -646,7 +683,8 @@ export class NeuralEngine {
     }
     const order = [...Array(this.n).keys()].filter((i) => this.drawn[i] === 1).sort((a, b) => model.totals[b] - model.totals[a] || a - b)
     this.topSize = new Uint8Array(this.n)
-    const top = Math.max(LOD_SPECS.medium.halos, LOD_SPECS.medium.drift)
+    const spec = this.tierSpec()
+    const top = spec.halos === Infinity ? 0 : Math.max(spec.halos, spec.drift)
     for (const i of order.slice(0, top)) this.topSize[i] = 1
   }
 
@@ -775,6 +813,7 @@ export class NeuralEngine {
       if (!d.moved && Math.hypot(dx, dy) >= 4) {
         d.moved = true
         this.autoFit = false
+        this.userView = true
         this.anim = null
         this.host.userMoved()
         if (this.hoverIdx >= 0) this.setHover(-1)
@@ -808,6 +847,7 @@ export class NeuralEngine {
     const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 400 : 1
     const factor = Math.exp(-e.deltaY * unit * 0.0015)
     this.autoFit = false
+    this.userView = true
     this.anim = null
     this.host.userMoved()
     if (this.hoverIdx >= 0) this.setHover(-1)
@@ -844,7 +884,7 @@ export class NeuralEngine {
     const k = this.v.k
     const wx = (sx - this.v.x) / k
     const wy = (sy - this.v.y) / k
-    const reach = Math.max(34, 8 / k) + 2
+    const reach = Math.max(screenRadius(RADIUS_MAX, k), 8) / k + 2
     const x0 = Math.floor((wx - reach) / GRID)
     const x1 = Math.floor((wx + reach) / GRID)
     const y0 = Math.floor((wy - reach) / GRID)
@@ -860,7 +900,7 @@ export class NeuralEngine {
           const dx = (this.px[i] - wx) * k
           const dy = (this.py[i] - wy) * k
           const d = Math.hypot(dx, dy)
-          const hit = Math.max(this.rad[i] * k, 8)
+          const hit = Math.max(screenRadius(this.rad[i], k), 8)
           if (d > hit) continue
           const score = d / hit
           if (score < bestScore) {
@@ -1046,6 +1086,9 @@ export class NeuralEngine {
     set('data-fired-ids', this.firedIds.join(','))
     set('data-inferred', String(this.inferredDrawn))
     set('data-zoom', this.v.k.toFixed(2))
+    set('data-user-view', String(this.userView))
+    set('data-named', String(this.labels.length))
+    set('data-named-lit', String(em ? this.labels.reduce((s, l) => s + (em.kept[this.model?.index.get(l.id) ?? -1] === 1 ? 1 : 0), 0) : this.labels.length))
   }
 
   // ------------------------------------------------------------ screen cache and drawing
@@ -1071,7 +1114,7 @@ export class NeuralEngine {
       let scale = 1
       const b = this.born[i]
       if (b > 0) scale = easeOut((now - b) / NEW_MS)
-      this.sr[i] = Math.max(this.rad[i] * k * scale, MIN_SCREEN_RADIUS * scale)
+      this.sr[i] = screenRadius(this.rad[i], k) * scale
     }
   }
 
@@ -1173,7 +1216,7 @@ export class NeuralEngine {
         ctx.globalAlpha = 1 - (now - g.t0) / GHOST_MS
         ctx.fillStyle = rgbCss(g.rgb)
         ctx.beginPath()
-        ctx.arc(g.x * this.v.k + this.v.x, g.y * this.v.k + this.v.y, Math.max(g.r * this.v.k, MIN_SCREEN_RADIUS), 0, Math.PI * 2)
+        ctx.arc(g.x * this.v.k + this.v.x, g.y * this.v.k + this.v.y, screenRadius(g.r, this.v.k), 0, Math.PI * 2)
         ctx.fill()
       }
       ctx.globalAlpha = 1
@@ -1250,12 +1293,15 @@ export class NeuralEngine {
       }
       this.inferredDrawn = count
       if (count > 0) {
-        ctx.globalAlpha = 0.7
-        ctx.lineWidth = 1
-        ctx.setLineDash([2, 5])
+        // Round dots: bright enough to find on either field, and nothing like a recorded relation's thin solid curve.
+        ctx.globalAlpha = 0.95
+        ctx.lineWidth = 1.75
+        ctx.lineCap = 'round'
+        ctx.setLineDash([0.01, 5])
         ctx.strokeStyle = rgbCss(th.inferred)
         ctx.stroke(p)
         ctx.setLineDash([])
+        ctx.lineCap = 'butt'
       }
     }
     ctx.globalAlpha = 1
@@ -1297,7 +1343,7 @@ export class NeuralEngine {
       const near = !!em && em.near[i] === 1
       const wantHalo = spec.halos === Infinity || near || this.topSize[i] === 1
       if (wantHalo && r >= 3 && a0 > dim + 0.001 && spec.halos !== 0) {
-        const hr = r * (dark ? 2.4 : 1.8)
+        const hr = r * (dark ? 2.4 : 2.2)
         ctx.globalAlpha = th.haloOpacity * a * (dark ? 1.6 : 1.2)
         ctx.globalCompositeOperation = th.composite
         ctx.drawImage(this.sprite(rgb, !dark), x - hr, y - hr, hr * 2, hr * 2)
@@ -1321,6 +1367,15 @@ export class NeuralEngine {
           ctx.lineWidth = 1
           ctx.strokeStyle = rgbCss(mixRgb(rgb, { r: 0, g: 0, b: 0 }, 0.4))
           ctx.stroke()
+          // The same soft nucleus as on dark, over the ink: a cell, not a flat dot in a diagram. Never additive here.
+          if (r >= 5) {
+            ctx.globalAlpha = a * 0.5
+            ctx.fillStyle = rgbCss(mixRgb(rgb, { r: 255, g: 255, b: 255 }, 0.6))
+            ctx.beginPath()
+            ctx.arc(x, y, r * 0.42, 0, Math.PI * 2)
+            ctx.fill()
+            ctx.globalAlpha = a
+          }
         }
       } else {
         const lw = Math.max(2, r * 0.28)
@@ -1368,13 +1423,13 @@ export class NeuralEngine {
     for (const l of this.labels) {
       const i = model.index.get(l.id)
       if (i === undefined || this.drawn[i] !== 1) continue
-      const x = Math.max(2, Math.min(this.sx[i] - l.w / 2, this.w - l.w - 2))
-      const y = this.sy[i] + this.sr[i] + 3
+      const spot = labelSpot(l.side, { x: this.sx[i], y: this.sy[i], r: this.sr[i] }, l.w, this.w)
+      const y = spot.y + LABEL_HEIGHT - 3
       ctx.globalAlpha = Math.max(alpha ? alpha[i] : 1, 0.85) * (model.nodes[i].retired ? 0.6 : 1)
       ctx.strokeStyle = rgbCss(th.field)
-      ctx.strokeText(l.text, x, y + 11)
+      ctx.strokeText(l.text, spot.x, y)
       ctx.fillStyle = rgbCss(th.textPrimary)
-      ctx.fillText(l.text, x, y + 11)
+      ctx.fillText(l.text, spot.x, y)
     }
     ctx.globalAlpha = 1
   }
@@ -1396,18 +1451,21 @@ export class NeuralEngine {
     const priority: string[] = []
     if (em && em.active >= 0) must.push(model.ids[em.active])
     if (this.selected >= 0 && this.drawn[this.selected] === 1) must.push(model.ids[this.selected])
-    if (em && em.searching) {
+    // A search or filter: the lit items get names first, largest first, and dimmed nodes never block them.
+    const litOnly = !!em && (em.searching || em.lit < this.drawn.reduce((s, v) => s + v, 0))
+    if (em && litOnly) {
       const matches: number[] = []
       for (let i = 0; i < this.n; i++) if (em.kept[i] === 1) matches.push(i)
       matches.sort((a, b) => model.totals[b] - model.totals[a] || a - b)
-      for (const i of matches.slice(0, 60)) priority.push(model.ids[i])
+      for (const i of matches.slice(0, LABELS_LIT)) priority.push(model.ids[i])
     }
     const focus = em && em.active >= 0 ? em.active : this.selected
     if (focus >= 0) {
       const near = [...this.nbrs[focus]].sort((a, b) => model.totals[b] - model.totals[a] || a - b).slice(0, 12)
       for (const i of near) priority.push(model.ids[i])
     }
-    this.labels = pickLabels({ candidates: cands, stage: { w: this.w, h: this.h }, zoom: this.v.k, measure: (t) => this.measure(t), must, priority })
+    this.labels = pickLabels({ candidates: cands, stage: { w: this.w, h: this.h }, zoom: this.v.k, measure: (t) => this.measure(t), must, priority, minBudget: litOnly ? LABELS_LIT : 0 })
+    this.writeAttrs()
   }
 
   // ------------------------------------------------------------ pulses and rings (the top canvas)

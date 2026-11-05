@@ -45,19 +45,23 @@
   transform-origin: 0 0;
   pointer-events: none;
   --k: 1;
+  --grow: 1;
 }
+/* A node's box matches its disc: world radius (--r) with the zoom-in growth, never under its on-screen floor (--floor px). */
 .neural-node {
   position: absolute;
   box-sizing: border-box;
-  min-width: 2px;
+  width: calc(2px * max(var(--r) * var(--grow), var(--floor) / var(--k)));
+  height: calc(2px * max(var(--r) * var(--grow), var(--floor) / var(--k)));
+  transform: translate(-50%, -50%);
   border-radius: 50%;
   background: transparent;
   pointer-events: none;
   outline: none;
 }
 .neural-node:focus-visible {
-  outline: calc(2px / var(--k)) solid var(--focus-ring);
-  outline-offset: calc(4px / var(--k));
+  outline: calc(3px / var(--k)) solid var(--focus-ring);
+  outline-offset: calc(3px / var(--k));
 }
 
 /* Skip links stay clipped until focused. */
@@ -245,6 +249,10 @@
   display: flex;
   align-items: center;
   gap: var(--space-3);
+  /* Names and nodes pass behind it when zoomed in. */
+  padding-right: var(--space-2);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--neural-field) 82%, transparent);
 }
 .neural-legend-row > .btn,
 .neural-legend-row > button {
@@ -311,7 +319,7 @@
   border-top: 1px solid var(--neural-synapse);
 }
 .neural-key-dotted::after {
-  border-top: 1px dotted var(--neural-synapse-inferred);
+  border-top: 2px dotted var(--neural-synapse-inferred);
 }
 .neural-key-retired::after {
   content: '';
