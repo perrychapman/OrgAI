@@ -676,8 +676,11 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     hold `humanGraceMs`. Mock markers `[mock:exec-plan|exec-blocked|exec-question|turn-fail|rate-limit|exec-slow]`.
     Unit tests with fake adapters / query() / app-server and e2e `cli-exec.mjs` (macOS); nothing live.
   - Wave 2: `src/main/host/socketServer.ts` serves every host's socket; `AppSettings.terminalServer` ("Terminal access")
-    gates host.hello and closes authenticated sockets when turned off; a headless / inproc boot turns it on only while
-    `terminalServerChosen` (main-owned, set by a settings:set that changes it) is unset. A `--headless-host` launch
+    gates host.hello and closes authenticated sockets when turned off; a headless / inproc boot opens it for that
+    session only (never saved) while `terminalServerChosen` (main-owned, set by a settings:set that changes it) is
+    unset. host.hello grants at most what `AppSettings.terminalAccessLevel` allows ('operate' default: read + operate;
+    'full' adds decide + configure; raised only in the desktop window); on an inproc host only the CLI process that
+    started it gets every scope (`ownerProof`, an in-memory key). A `--headless-host` launch
     stays in the background after its last window closes and leaves through its idle exit, unless runs are working:
     then it asks like a desktop launch (Windows / Linux) or stays (macOS). `runtime/selfControlGate.ts`
     (before every rule and mode in claude.ts, codex.ts, mock.ts) denies the orgai CLI (file names, this install's
@@ -744,8 +747,9 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     keeps the refusal), or an unconfirmed startup.mkdir owner past
     60 s, is reclaimed; an unreadable daemon.json refuses
     (`daemon_json_unreadable`) unless it names a dead pid; refusals name `<data>/run`; renames retry transient win32
-    EPERM / EBUSY / EACCES (`host/fsRetry.ts`); icacls is fatal only for headless / inproc (`secretAcl`, desktop gets
-    `secretAclWarning`); system programs run by absolute path from the temp dir and git through
+    EPERM / EBUSY / EACCES (`host/fsRetry.ts`); icacls is fatal only for headless / inproc and for setListening(true)
+    (`secretAcl`; a best-effort desktop acquire gets `secretAclWarning`, which the socket server reads at every hello
+    through `secretAclProblem` and refuses while set, never cached; the server runs no icacls of its own); system programs run by absolute path from the temp dir and git through
     `host/systemBinaries.ts` `gitExecutable` (never a cwd); the repo lock also counts a fresh heartbeat as live; win32
     shims write non-ASCII paths as `%LOCALAPPDATA%\...` (`batchPath`). Crash injection at every boundary
     (`OWNERSHIP_BOUNDARIES` / `RELEASE_BOUNDARIES`) in ownership.test.ts.
@@ -768,6 +772,15 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     (`kit/bundle.test.ts`); `knowledge:saveNode` takes `expectedUpdatedAt` (stale -> `stale_revision`) and
     `appendFacts`, and with `nodeId` may omit kind and name (an append-only save that never reverts a rename).
     Unit-tested only (serviceBundle.test.ts, knowledgeAppend.test.ts).
+  - PR #18 review fixes (2026-11-05, cli-spec "Review fixes, PR #18"; unit tests on macOS, e2e:free on macOS, nothing
+    run on Windows): window close asks before working runs go to the background (`RunManager.workingRunCount`; the
+    `liveRuns` source is `busyRunCount`, runs waiting on the user do not count); `NARROWS_FROM.default` drops
+    'dontAsk' (M1); stall watchdog ceiling `EXEC_STALL_BUSY_ROUNDS` (M4); a transient index.lock is re-checked before
+    a merge refusal (M5); `--prompt-file` for untrusted prompts (M12; the .cmd passes %* through cmd.exe);
+    `--from-env` secrets leave the environment before a host is spawned (M13); JSON output escapes C1 / bidi / U+2028
+    (M15); `trustSystemCertificates` after the single-instance lock and in `--host inproc` (M16); cli-exec.mjs drives
+    the win32 interrupt through `runs stop` (H4, unrun on Windows); dev's 7 channels in the registry and dev's
+    knowledge / transcriptRows bodies in `shared/view`, reexports.test compares export names (H5, H6).
   - Unverified: Windows named pipes and their ACLs, Windows / Linux process start times, packaged builds, the startup
     dialogs by eye.
 - Repository clone (`src/main/repoClone.ts`, ARCHITECTURE.md "Start a project from a repository"; no renderer yet): `window.orgai.repos.parseSource / tools / clone / cancelClone`, `onRepoCloneProgress`. The four request channels and the `projects:cloneProgress` push are `desktop_only` in the host registry (the IPC sender carries progress and cancel-on-close; served by ipc.ts `registerRepoIpc`, the service built in index.ts and passed as `IpcServices.repoClone`). Mock (`ORGAI_MOCK=1`, local git only, no gh): `mock-org/with-agents` (.claude/agents, .claude/settings.json, .mcp.json, AGENTS.md), `mock-org/slow` (about 20 s, for cancel), `mock-org/missing`, `mock-org/private`, `mock-org/unreachable`, `mock-org/no-fork`, `mock-org/fork-clone-fails`, `mock-org/fork-exists`, `mock-org/fork-slow`, `mock-user/<anything>` (own repository on fork); env `ORGAI_MOCK_GH=missing|logged-out`, `ORGAI_MOCK_GIT=missing`. `gh auth status` reaches api.github.com (checked on gh 2.93.0 through a dead proxy: `state: 'error'`, login kept) and `--json hosts` always exits 0 (`{"hosts":{}}` when logged out, checked with an empty GH_CONFIG_DIR). Checked by unit tests, mock tests with real local git, and on Windows real git against 127.0.0.1 (closed port maps to "Could not reach"; cancel closes the helper's socket, so the taskkill tree kill works). Unverified: a real gh fork and gh's HTTP error wording, a real private clone, a real clone into a pre-created folder over a remote, POSIX process-group kill, macOS and Linux. Before a UI ships this: repository config is listed, not gated, and a run on a cloned folder loads it (ARCHITECTURE.md Risks).
