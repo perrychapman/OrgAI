@@ -376,7 +376,8 @@ export interface TuiSessionApi {
   /** Re-subscribe after SIGCONT or a reconnect. */
   resync(): Promise<void>
   notify(text: string, tone?: Tone): void
-  close(opts?: { stopInproc?: boolean }): Promise<void>
+  /** Closes this session's run stream only; the shared TuiHostConnection stays open (runTui closes it). */
+  close(): Promise<void>
 }
 
 // ---------- Layout ----------

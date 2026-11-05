@@ -190,7 +190,8 @@ function locate(t, re) {
   const lines = t.screenLines()
   for (let row = 0; row < lines.length; row++) {
     const m = lines[row].match(re)
-    if (m) return { row, col: m.index }
+    // lineStart: where the text on that row begins (a transcript row may carry an agent prefix before the match).
+    if (m) return { row, col: m.index, lineStart: lines[row].search(/\S/) }
   }
   return null
 }
@@ -242,7 +243,7 @@ try {
       await sleep(900)
       const stackedAt = locate(t, /E2E-MARK-(ALPHA|OMEGA)/)
       const treeAt = locate(t, UI.treeHeading)
-      check(!!stackedAt && stackedAt.col < 10, 'b: at 100 columns the transcript starts at the left edge (stacked)', esc(t.screen()))
+      check(!!stackedAt && stackedAt.lineStart < 10, 'b: at 100 columns the transcript starts at the left edge (stacked)', esc(t.screen()))
       check(!treeAt || !stackedAt || treeAt.row < stackedAt.row, 'b: stacked: the agents pane is above the transcript', esc(t.screen()))
       await t.resize(120, 30)
       await sleep(900)
@@ -463,7 +464,7 @@ try {
       await t.waitFor('E2E-CARDS-DONE', 30_000).catch(() => undefined)
 
       const e = await quit(t)
-      check(e?.code === 0, 'g: the daemon-client TUI quits with 0 and leaves runs running', JSON.stringify(e))
+      check(e?.code === 0, 'g: the daemon-client TUI quits with 0 and leaves runs running', `${JSON.stringify(e)} ${esc(t.screen())}`)
     } finally {
       watch?.child.kill('SIGINT')
       await t.close()

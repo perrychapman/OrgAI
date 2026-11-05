@@ -55,6 +55,11 @@ export interface RunStreamOptions {
   onReconnecting?: () => void
   /** A (re)subscribe answered and was applied (optional; after a reconnect, `firstTime` is false). */
   onSubscribed?: (mode: RunsSubscribeResult['mode'], firstTime: boolean) => void
+  /**
+   * The first client belongs to the caller (the TUI shares one connection between sessions): close() and a reconnect
+   * leave it open. A replacement client from a reconnect is the stream's own and is still closed.
+   */
+  keepClient?: boolean
 }
 
 export class RunStream {
@@ -154,12 +159,17 @@ export class RunStream {
     void this.resubscribe().catch(() => undefined)
   }
 
-  /** Remove the listeners and close the client. Idempotent. */
+  /** Remove the listeners and close the client (not the caller's, with keepClient). Idempotent. */
   close(): void {
     this.closed = true
     this.offNote()
     this.offClose()
-    this.current.close()
+    this.closeOwned(this.current)
+  }
+
+  private closeOwned(c: HostClient): void {
+    if (this.o.keepClient && c === this.o.client) return
+    c.close()
   }
 
   private onRunsEvent(p: RunsEventParams): void {
@@ -234,7 +244,7 @@ export class RunStream {
           // The old client is closed before it is replaced, so no socket outlives the command.
           const previous = this.current
           this.current = res.client
-          if (previous !== this.current) previous.close()
+          if (previous !== this.current) this.closeOwned(previous)
           try {
             this.watchClose(this.current)
             await this.subscribe(this.current, false)

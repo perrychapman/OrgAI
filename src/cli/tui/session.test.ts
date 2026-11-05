@@ -105,6 +105,26 @@ describe('connectTuiHost', () => {
   })
 })
 
+describe('session switching (onboarding, another project)', () => {
+  it('closing the old session leaves the shared connection and the new session live', async () => {
+    const r1 = summary('r1', { status: 'running', startedAt: 1 })
+    const h = host({ live: [r1], answers: { 'runs:send': () => undefined } })
+    const { conn, session: first } = await open(h)
+    const second = await openTuiSession(conn, { folder: '/work', project: P })
+    await first.close()
+    expect(h.closed).toBe(false)
+    // The new session still hears the host and can still call it.
+    const before = h.callsOf('runs:subscribe').length
+    await second.resync()
+    expect(h.callsOf('runs:subscribe').length).toBe(before + 1)
+    expect((await second.listRuns()).map((r) => r.id)).toEqual(['r1'])
+    await second.close()
+    expect(h.closed).toBe(false)
+    await conn.close()
+    expect(h.closed).toBe(true)
+  })
+})
+
 describe('openTuiSession', () => {
   it('subscribes to the project with followChains and no nonInteractive, then focuses the run that needs you', async () => {
     const r1 = summary('r1', { status: 'running', startedAt: 1 })

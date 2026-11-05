@@ -176,7 +176,7 @@ describe('runTui', () => {
     expect(await done).toBe(0)
     expect(h.unmounted).toBe(1)
     expect(out.text).toContain('\x1b[?1049l')
-    expect(sessionClose).toHaveBeenCalledWith({ stopInproc: false })
+    expect(sessionClose).toHaveBeenCalled()
     expect(connClose).toHaveBeenCalledWith({ stopInproc: false })
     expect(err.text).toContain(DETACHED_MESSAGE)
     expect(stdin.listenerCount('data')).toBe(0)

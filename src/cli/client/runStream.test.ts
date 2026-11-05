@@ -14,7 +14,7 @@ const snap = (seq: number, runs: RunSummary[] = []): RunsSubscribeResult => ({
   snapshot: { liveRuns: runs, pendingCards: {}, recentEndedRuns: [] }
 })
 
-function harness(clients: (FakeHostClient | ConnectResult)[], o: { windowMs?: number } = {}) {
+function harness(clients: (FakeHostClient | ConnectResult)[], o: { windowMs?: number; keepClient?: boolean } = {}) {
   const events: RunsEventParams[] = []
   const snapshots: { res: SnapshotResult; firstTime: boolean }[] = []
   const followed = new Set(['run_a'])
@@ -39,7 +39,8 @@ function harness(clients: (FakeHostClient | ConnectResult)[], o: { windowMs?: nu
     onGone: () => void gone++,
     stopped: () => stopped,
     timers: { sleep: async (ms) => void (t += ms), now: () => t },
-    ...(o.windowMs !== undefined ? { reconnectWindowMs: o.windowMs } : {})
+    ...(o.windowMs !== undefined ? { reconnectWindowMs: o.windowMs } : {}),
+    ...(o.keepClient ? { keepClient: true } : {})
   })
   return {
     stream,
@@ -223,5 +224,23 @@ describe('RunStream', () => {
     const y = harness([g])
     await y.stream.start()
     await expect(y.stream.resubscribe()).rejects.toThrow('refused')
+  })
+
+  it('keepClient: close() leaves the caller\'s client open but closes a replacement from a reconnect', async () => {
+    const h1 = new FakeHostClient({ 'runs:subscribe': () => snap(10) })
+    const x = harness([h1], { keepClient: true })
+    await x.stream.start()
+    x.stream.close()
+    expect(h1.closed).toBe(false)
+
+    const k1 = new FakeHostClient({ 'runs:subscribe': () => snap(10) })
+    const k2 = new FakeHostClient({ 'runs:subscribe': () => snap(20) })
+    const y = harness([k1, k2], { keepClient: true })
+    await y.stream.start()
+    k1.hostClose()
+    for (let i = 0; i < 4; i++) await flush()
+    expect(y.stream.client).toBe(k2)
+    y.stream.close()
+    expect(k2.closed).toBe(true)
   })
 })

@@ -35,6 +35,7 @@ vi.mock('./layout', () => ({
 
 vi.mock('./input/keys', () => ({
   KeyParser: class {},
+  PASTE_MAX_CHARS: 10,
   isTrayFocusKey: (e: { type: string; name?: string; ch?: string; ctrl?: boolean; alt?: boolean }) =>
     e.type === 'key' && (e.name === 'f2' || (e.name === 'char' && e.alt === true && e.ch === 'd') || (e.name === 'char' && e.ctrl === true && e.ch === '.'))
 }))
@@ -132,7 +133,7 @@ vi.mock('./TranscriptPane', async () => {
   }
 })
 
-const { App, CTRL_C_QUIT_MS, NOTHING_NEEDS_YOU, PRESS_AGAIN, runForRef } = await import('./App')
+const { App, CTRL_C_QUIT_MS, NOTHING_NEEDS_YOU, PASTE_CUT_NOTICE, PRESS_AGAIN, runForRef } = await import('./App')
 const { DEFAULT_TUI_ENV } = await import('./context')
 type Ev = import('./types').InputEvent
 type KeyEv = import('./types').KeyEvent
@@ -251,6 +252,16 @@ function mount(opts: { session?: ReturnType<typeof fakeSession>; inline?: boolea
 const card = (k: string) => ({ key: k, ref: { runId: 'run_1' } })
 
 describe('App focus and routing', () => {
+  it('says so when a paste reached the paste cap (KeyParser cut it)', async () => {
+    const m = mount()
+    await tick()
+    await m.send({ type: 'paste', text: 'short' } as Ev)
+    expect(m.s.api.notify).not.toHaveBeenCalledWith(PASTE_CUT_NOTICE, 'warn')
+    await m.send({ type: 'paste', text: 'x'.repeat(10) } as Ev)
+    expect(m.s.api.notify).toHaveBeenLastCalledWith(PASTE_CUT_NOTICE, 'warn')
+    m.r.unmount()
+  })
+
   it('focuses the tray with Alt+D / F2 / Ctrl+. only when cards exist', async () => {
     const m = mount()
     await tick()
@@ -391,6 +402,16 @@ describe('App quitting', () => {
     const s = fakeSession({ testLive: 1, activeRunId: 'run_1', runs: { run_1: { summary: { id: 'run_1', status: 'running' } } } })
     const m = mount({ session: s })
     await m.send(ctrlKey('d'))
+    expect(m.exits).toHaveLength(1)
+    expect(m.exits[0][1]).toMatchObject({ detachedLive: true })
+    m.r.unmount()
+  })
+
+  it('a client of a daemon started with --host inproc (hostKind inproc) quits at once: the runs live in the daemon', async () => {
+    const s = fakeSession({ testLive: 1, activeRunId: 'run_1', runs: { run_1: { summary: { id: 'run_1', status: 'running' } } } }, 'inproc')
+    const m = mount({ session: s })
+    await m.send(ctrlKey('d'))
+    expect(m.frame()).not.toContain('Quitting stops')
     expect(m.exits).toHaveLength(1)
     expect(m.exits[0][1]).toMatchObject({ detachedLive: true })
     m.r.unmount()

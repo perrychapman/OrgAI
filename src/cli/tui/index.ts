@@ -198,7 +198,7 @@ export async function runTui(ctx: CliContext, launch: TuiLaunch, flags: TuiFlags
   for (const line of held) stderr.write(`orgai: ${sanitizeTty(line)}\n`)
   if (error) stderr.write(`orgai: ${sanitizeTty(error instanceof Error ? error.message : String(error))}\n`)
   const last = info?.session ?? session
-  await last.close({ stopInproc }).catch(() => undefined)
+  await last.close().catch(() => undefined)
   if (last !== session) await session.close().catch(() => undefined)
   await conn.close({ stopInproc }).catch((e: unknown) => {
     stderr.write(`orgai: Could not stop the in-process host: ${sanitizeTty(e instanceof Error ? e.message : String(e))}\n`)

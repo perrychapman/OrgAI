@@ -13,7 +13,7 @@ import { Composer } from './Composer'
 import { InputBus, InputBusContext, TuiEnvContext } from './context'
 import { DecisionTray } from './DecisionTray'
 import { cardDetailLines } from './decisions'
-import { isTrayFocusKey } from './input/keys'
+import { isTrayFocusKey, PASTE_MAX_CHARS } from './input/keys'
 import { computeLayout } from './layout'
 import { Onboarding, type OnboardingChoice } from './Onboarding'
 import { OrgTreePane } from './OrgTreePane'
@@ -53,6 +53,7 @@ export const PANE_ORDER: readonly PaneId[] = ['tree', 'transcript', 'plan', 'wor
 
 export const NOTHING_NEEDS_YOU = 'Nothing needs you'
 export const PRESS_AGAIN = 'Press Ctrl+C again to quit'
+export const PASTE_CUT_NOTICE = 'The paste was cut at 1 MB.'
 
 export interface ExitInfo {
   /** The session the App ended on (onboarding may have replaced the first one). */
@@ -225,7 +226,7 @@ export function App(props: AppProps) {
       exiting.current = true
       const s = session.getState()
       const active = s.activeRunId ? s.runs[s.activeRunId]?.summary.status : undefined
-      const inproc = conn.inproc !== undefined || session.hostKind === 'inproc'
+      const inproc = conn.inproc !== undefined
       props.onExit(code, { session, detachedLive: !inproc && isOpen(active) })
     },
     [session, conn, props]
@@ -234,7 +235,7 @@ export function App(props: AppProps) {
   const confirm = useCallback((question: string): Promise<boolean> => new Promise<boolean>((resolve) => setOverlay({ kind: 'confirm', question, resolve })), [])
 
   const requestQuit = useCallback(() => {
-    const inproc = conn.inproc !== undefined || session.hostKind === 'inproc'
+    const inproc = conn.inproc !== undefined
     const live = statusSummary(session.getState()).liveRuns
     if (inproc && live > 0) {
       void confirm(`Quitting stops ${live} live run${live === 1 ? '' : 's'} in this in-process host. Quit?`).then((yes) => {
@@ -418,6 +419,8 @@ export function App(props: AppProps) {
 
   const dispatch = (e: InputEvent): void => {
     if (exiting.current) return
+    // KeyParser keeps the first PASTE_MAX_CHARS of a paste and drops the rest.
+    if (e.type === 'paste' && e.text.length >= PASTE_MAX_CHARS) notify(PASTE_CUT_NOTICE, 'warn')
     if (overlay) {
       overlayKey(e)
       return

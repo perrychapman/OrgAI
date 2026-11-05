@@ -114,8 +114,16 @@ class TuiConnection implements TuiHostConnection {
     return this.ctx.connect(this.scopes, { clientKind: 'tui', waitStartingMs: ENSURE_HOST_STARTING_WAIT_MS })
   }
 
-  follow(stream: RunStream | undefined): void {
+  /** The newest session's stream; returns the one it replaced (restored when that session fails to start). */
+  follow(stream: RunStream | undefined): RunStream | undefined {
+    const previous = this.follower
     this.follower = stream
+    return previous
+  }
+
+  /** A closing session lets go of its stream (a newer session's stream stays followed). */
+  unfollow(stream: RunStream): void {
+    if (this.follower === stream) this.follower = undefined
   }
 
   async projects(): Promise<Project[]> {
@@ -363,6 +371,8 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
   const c = conn instanceof TuiConnection ? conn : undefined
   stream = new RunStream({
     client: conn.client,
+    // The connection is shared with later sessions (onboarding, project switches): only runTui closes it.
+    keepClient: true,
     connect: () => (c ? c.reconnect() : Promise.resolve({ ok: false, reason: 'unreachable', message: 'No reconnect for this connection.' } as ConnectResult)),
     subscribeInput,
     onEvent: (p) => {
@@ -384,11 +394,15 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
     stopped: () => closed,
     ...(internals.timers ? { timers: internals.timers } : {})
   })
-  c?.follow(stream)
+  const own = stream
+  const previousFollower = c?.follow(own)
   try {
     await stream.start()
   } catch (e) {
-    c?.follow(undefined)
+    if (c) {
+      c.unfollow(own)
+      if (previousFollower) c.follow(previousFollower)
+    }
     throw hostError(e)
   }
   set(setConnection(state, 'live'))
@@ -523,13 +537,14 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
     notify(text: string, tone?: Tone) {
       set(addNotice(state, text, tone, now()))
     },
-    async close(o = {}) {
+    /** Closes this session's stream only; the shared connection (and an in-process host) is closed by runTui. */
+    async close() {
       if (closed) return
       closed = true
       if (timer) clearTimeout(timer)
       listeners.clear()
       stream?.close()
-      await conn.close(o)
+      c?.unfollow(own)
     }
   }
   return api
