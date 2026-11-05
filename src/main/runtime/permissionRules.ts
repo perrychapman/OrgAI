@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import type { PermissionDecision, PermissionRuleSpec, PermissionSuggestion } from '@shared/types'
+import type { IgnoredPermissionRule, PermissionDecision, PermissionRuleSpec, PermissionSuggestion } from '@shared/types'
 import { isWholeToolRule } from '@shared/types'
 import { hiddenCharProblem } from '../capabilities/sanitize'
 import { posix, win32 } from 'node:path'
@@ -75,6 +75,40 @@ export function readableRule(rule: string): boolean {
 export function listRules(target: RulesTarget): string[] {
   try {
     return uniqueRules(allowOf(readLocalSettings(target))).filter(readableRule)
+  } catch {
+    return []
+  }
+}
+
+/** At most this many ignored rules are listed, and a longer rule text is cut (and marked `cut`). */
+export const IGNORED_RULES_MAX = 200
+export const IGNORED_RULE_MAX_CHARS = 1000
+export const HIDDEN_CHAR_RULE_REASON = 'This rule contains a hidden or control character, so OrgAI ignores it.'
+
+/**
+ * Saved rules in the file that listRules drops, with OrgAI's own sentence for why (never text from the file; a refusal
+ * that quotes the rule has the quote replaced). Same trim/dedupe as listRules, at most IGNORED_RULES_MAX, rule text
+ * cut at IGNORED_RULE_MAX_CHARS (`cut: true`; a cut rule cannot be removed through permissions:remove). An unreadable
+ * file yields [].
+ */
+export function listIgnoredRules(target: RulesTarget): IgnoredPermissionRule[] {
+  try {
+    const out: IgnoredPermissionRule[] = []
+    for (const rule of uniqueRules(allowOf(readLocalSettings(target)))) {
+      const hidden = hiddenCharProblem('Permission rule', rule) !== null
+      const refusal = hidden ? null : allowRuleRefusal(rule)
+      if (!hidden && refusal === null) continue
+      if (out.length >= IGNORED_RULES_MAX) break
+      const reason = hidden ? HIDDEN_CHAR_RULE_REASON : `${refusal!.split(`"${rule}"`).join('This rule')}`
+      const item: IgnoredPermissionRule = { rule, reason }
+      if (rule.length > IGNORED_RULE_MAX_CHARS) {
+        item.rule = rule.slice(0, IGNORED_RULE_MAX_CHARS)
+        item.cut = true
+      }
+      if (hidden) item.hiddenChar = true
+      out.push(item)
+    }
+    return out
   } catch {
     return []
   }

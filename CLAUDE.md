@@ -296,6 +296,7 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     without a card (L6). The SKILL.md body is not checked for hidden characters. Verified by unit tests only.
 
 - Permissions (prompt fatigue, GitHub issue #14; ARCHITECTURE.md "Permissions and prompt fatigue"):
+  - Ignored saved rules: `permissions:ignored` (`window.orgai.permissions.ignored`, `listIgnoredRules`) lists rules `listRules` drops as `IgnoredPermissionRule { rule, reason, hiddenChar?, cut? }` (max 200, rule cut at 1,000 chars, OrgAI's own reason); `permissions:remove` deletes one by exact text, hidden characters included. No renderer yet; unit-tested only.
   - Allowed folders: `Project.allowedDirectories` (max 20, 1,024 chars each) are extra folders agents may read and
     edit like the project. ProjectStore drops on save and at boot (`cleanAllowedDirectories`, silent, logged at
     debug): relative, roots, UNC/device, the data dir either way, and through `runtime/allowedDirectories.ts`

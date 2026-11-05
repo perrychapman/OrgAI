@@ -18,6 +18,7 @@ const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('node:fs'
 const { tmpdir } = await import('node:os')
 const { join } = await import('node:path')
 
+const { listIgnoredRules, removeRule, addRules } = await import('./runtime/permissionRules')
 const { mcpCopyArgs } = await import('./ipc')
 const { repoCloneArgs, repoCancelArg, watchSenderGone } = await import('./ipc')
 const { EventEmitter } = await import('node:events')
@@ -230,6 +231,24 @@ describe('permissionRuleArgs (permissions:add / permissions:remove, review re-ch
     for (const rule of [undefined, null, 5, {}, ['WebSearch']]) expect(() => permissionRuleArgs({ projectId: 'p1', rule })).toThrow('must be text')
     expect(() => permissionRuleArgs({ projectId: 'p1', rule: '   ' })).toThrow('empty')
     expect(() => permissionRuleArgs({ projectId: 'p1', rule: 'x'.repeat(PERMISSION_RULE_MAX_CHARS + 1) })).toThrow('too long')
+  })
+
+  it('keeps a hidden-character rule intact so permissions:remove can name an ignored rule exactly; add never saves it', () => {
+    const hidden = 'Bash(npm test)‮'
+    expect(permissionRuleArgs({ projectId: 'p1', rule: hidden }).rule).toBe(hidden)
+    const dir = mkdtempSync(join(tmpdir(), 'orgai-ign-'))
+    try {
+      const file = join(dir, 'rules.json')
+      writeFileSync(file, JSON.stringify({ permissions: { allow: ['Bash(npm:*)', hidden, 'Bash(npm test:*)'] } }))
+      expect(listIgnoredRules({ file }).map((i) => i.rule)).toEqual(['Bash(npm:*)', hidden])
+      expect(removeRule({ file }, permissionRuleArgs({ projectId: 'p1', rule: hidden }).rule)).toEqual(['Bash(npm test:*)'])
+      expect(removeRule({ file }, 'Bash(npm:*)')).toEqual(['Bash(npm test:*)'])
+      expect(listIgnoredRules({ file })).toEqual([])
+      expect(addRules({ file }, [hidden])).toEqual(['Bash(npm test:*)'])
+      expect(listIgnoredRules({ file })).toEqual([])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
 

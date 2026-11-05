@@ -2799,6 +2799,17 @@ export interface PermissionRequest {
 export type PermissionScope = 'once' | 'session' | 'project'
 
 /** One permission rule: a tool name plus optional content, written as `Tool(content)`. */
+/**
+ * A saved allow rule OrgAI ignores (permissions:ignored): `reason` is OrgAI's own sentence, never file text. `rule` is
+ * the stored text, cut at 1,000 chars (`cut: true`, then not removable); `hiddenChar` when it holds a hidden character.
+ */
+export interface IgnoredPermissionRule {
+  rule: string
+  reason: string
+  hiddenChar?: true
+  cut?: true
+}
+
 export interface PermissionRuleSpec {
   toolName: string
   ruleContent?: string
@@ -4225,7 +4236,9 @@ export interface OrgAIApi {
   permissions: {
     /** Allow rules saved in the project's .claude/settings.local.json, e.g. "Bash(npm:*)". */
     list(projectId: string): Promise<string[]>
-    /** Remove one saved allow rule; returns the remaining rules. */
+    /** Saved rules OrgAI ignores (too broad, destructive or with a hidden character) with why; remove() deletes them. */
+    ignored(projectId: string): Promise<IgnoredPermissionRule[]>
+    /** Remove one saved allow rule (also an ignored one, by its exact text); returns the remaining usable rules. */
     remove(input: { projectId: string; rule: string }): Promise<string[]>
     /** Save one allow rule (validated); returns the full list. Live runs of the project honour it at once. */
     add(input: { projectId: string; rule: string }): Promise<string[]>
@@ -5110,6 +5123,7 @@ export const IPC = {
   appLogPath: 'app:logPath',
   appInfo: 'app:info',
   permissionsList: 'permissions:list',
+  permissionsIgnored: 'permissions:ignored',
   permissionsRemove: 'permissions:remove',
   permissionsAdd: 'permissions:add',
   permissionsDecideRequest: 'permissions:decideRequest',

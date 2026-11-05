@@ -19,6 +19,10 @@ import {
   tooBroadRuleRefusal,
   isWithinDir,
   listRules,
+  listIgnoredRules,
+  IGNORED_RULES_MAX,
+  IGNORED_RULE_MAX_CHARS,
+  HIDDEN_CHAR_RULE_REASON,
   pathRuleRefusal,
   removeRule,
   ruleLabel,
@@ -182,6 +186,55 @@ describe('H3: listRules drops rules OrgAI would not save', () => {
       expect(stored.other).toBe(1)
       for (const r of allow) expect(stored.permissions.allow).toContain(r)
       expect(removeRule({ file }, 'Bash(ls:*)')).toEqual(['Bash(npm test:*)', 'Bash(curl https://example.com)'])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('listIgnoredRules: what listRules drops, with OrgAI\'s own reason', () => {
+  const hidden = 'Bash(npm test)‮'
+  const mk = (allow: unknown[]) => {
+    const dir = mkdtempSync(join(tmpdir(), 'orgai-rules-'))
+    const file = join(dir, 'rules.json')
+    writeFileSync(file, JSON.stringify({ other: 1, permissions: { allow } }))
+    return { dir, file }
+  }
+  it('lists the legacy broad, hidden-character rules; list and ignored partition the file; each can be removed', () => {
+    const { dir, file } = mk(['Bash(npm:*)', 'Bash(python:*)', hidden, ' Bash(python:*) ', 'Bash(npm test:*)', 7])
+    try {
+      expect(listRules({ file })).toEqual(['Bash(npm test:*)'])
+      const ignored = listIgnoredRules({ file })
+      expect(ignored.map((i) => i.rule)).toEqual(['Bash(npm:*)', 'Bash(python:*)', hidden])
+      expect(ignored[2]).toEqual({ rule: hidden, reason: HIDDEN_CHAR_RULE_REASON, hiddenChar: true })
+      for (const i of ignored.slice(0, 2)) {
+        expect(i.hiddenChar).toBeUndefined()
+        expect(i.reason.length).toBeGreaterThan(10)
+        expect(i.reason).not.toContain(i.rule)
+      }
+      for (const i of ignored) expect(removeRule({ file }, i.rule)).toEqual(['Bash(npm test:*)'])
+      expect(listIgnoredRules({ file })).toEqual([])
+      const stored = JSON.parse(readFileSync(file, 'utf8')) as { other: number; permissions: { allow: unknown[] } }
+      expect(stored.other).toBe(1)
+      expect(stored.permissions.allow).toEqual(['Bash(npm test:*)', 7].filter((x) => typeof x === 'string'))
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+  it('caps the count and the rule length; an unreadable or missing file gives []', () => {
+    const many = Array.from({ length: 300 }, (_, i) => `Bash(c${i}:*)`).map((r) => r.replace('Bash(', 'Bash(rm '))
+    const long = `Bash(rm ${'x'.repeat(1500)}:*)`
+    const { dir, file } = mk([long, ...many])
+    try {
+      const ignored = listIgnoredRules({ file })
+      expect(ignored).toHaveLength(IGNORED_RULES_MAX)
+      expect(ignored[0]!.rule).toHaveLength(IGNORED_RULE_MAX_CHARS)
+      expect(ignored[0]!.cut).toBe(true)
+      expect(ignored[0]!.reason).not.toContain('xxxxx')
+      expect(ignored[1]!.cut).toBeUndefined()
+      writeFileSync(file, '{not json')
+      expect(listIgnoredRules({ file })).toEqual([])
+      expect(listIgnoredRules({ file: join(dir, 'missing.json') })).toEqual([])
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
