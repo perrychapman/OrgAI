@@ -1,6 +1,6 @@
 import type { ReactElement } from 'react'
 import { useMemo } from 'react'
-import { CircleAlert, FileDiff, GitMerge, ListChecks, MessageCircleQuestion, Plug, ShieldQuestion, type LucideIcon } from 'lucide-react'
+import { CircleAlert, FileDiff, GitMerge, ListChecks, MessageCircleQuestion, Plug, ShieldQuestion, Users, type LucideIcon } from 'lucide-react'
 import { isVirtualProjectId, type Project, type RunSummary } from '@shared/types'
 import { projectKindOf } from '@shared/defaults'
 import { useAppStore, type RunState } from '../../store/useAppStore'
@@ -14,6 +14,7 @@ import { runCostInput } from '../../lib/cost'
 import { NEEDS_CAP, PAUSED_CAP, RUNNING_CAP, SINCE_LAST_SEEN_CAP, elapsedLabel, errorFirstLine, pausedRuns, planStepLabel, sinceLastSeen } from '../../lib/dashboard'
 import { locationLabel, runKindLabel } from '../../lib/assistants'
 import { waitingItems, type WaitingItem, type WaitingKind } from '../../lib/needsYou'
+import { openTeamFilesDecision, useTeamAttentionItems } from '../../lib/menuActions'
 import { canContinue, relativeTime } from '../../lib/runChains'
 import { runName } from '../../lib/runLabels'
 import { statusOfRun, statusText } from '../../lib/runStatus'
@@ -45,21 +46,34 @@ function useProjectLookup(): (id: string) => Project | undefined {
   }, [projects, virtual])
 }
 
-interface NeedsItem extends WaitingItem {
+interface RunNeedsItem extends WaitingItem {
   projectId: string
   run: RunState
 }
+/** A team-files approval: no run behind it (lib/teamFiles.ts). */
+interface TeamNeedsItem {
+  kind: 'team'
+  key: string
+  runId?: undefined
+  projectId: string
+  label: string
+  projectName: string
+}
+type NeedsItem = RunNeedsItem | TeamNeedsItem
 
 function NeedsYouSection(): ReactElement {
   const waiting = useWaitingRuns()
   const projects = useAppStore((s) => s.projects)
   const jumpToDecision = useAppStore((s) => s.jumpToDecision)
+  const teamItems = useTeamAttentionItems()
   const items = useMemo<NeedsItem[]>(
-    () =>
-      waiting.flatMap((run) =>
-        waitingItems(run, projectKindOf(projects.find((p) => p.id === run.summary.projectId))).map((it) => ({ ...it, projectId: run.summary.projectId, run }))
+    () => [
+      ...waiting.flatMap((run) =>
+        waitingItems(run, projectKindOf(projects.find((p) => p.id === run.summary.projectId))).map((it): NeedsItem => ({ ...it, projectId: run.summary.projectId, run }))
       ),
-    [waiting, projects]
+      ...teamItems.map((t): NeedsItem => ({ kind: 'team', key: t.key, projectId: t.projectId, label: t.label, projectName: t.projectName }))
+    ],
+    [waiting, projects, teamItems]
   )
   return (
     <AttentionSection
@@ -68,28 +82,29 @@ function NeedsYouSection(): ReactElement {
       count={items.length}
       items={items}
       cap={NEEDS_CAP}
-      itemKey={(it) => `${it.runId}/${it.key}`}
+      itemKey={(it) => (it.kind === 'team' ? it.key : `${it.runId}/${it.key}`)}
       empty="Nothing needs you."
-      renderItem={(it) => (
-        <li key={`${it.runId}/${it.key}`} className="dash-row dash-row-needs" data-testid="dash-needs-row" data-kind={it.kind} data-row-key={`${it.runId}/${it.key}`}>
-          <button
-            type="button"
-            className="dash-row-main"
-            data-row-main=""
-            onClick={() => void jumpToDecision(it.projectId, it.runId, it.kind === 'plan' ? undefined : it.key)}
-          >
-            <span className="dash-row-icon">
-              <Icon icon={KIND_ICON[it.kind]} />
-            </span>
-            <span className="dash-row-text">
-              <span className="dash-row-line">{it.label}</span>
-              <span className="dash-row-cap">
-                {locationLabel(it.projectId, projects)} · {runName(it.run.summary)}
+      renderItem={(it) => {
+        const rowKey = it.kind === 'team' ? it.key : `${it.runId}/${it.key}`
+        return (
+          <li key={rowKey} className="dash-row dash-row-needs" data-testid="dash-needs-row" data-kind={it.kind} data-row-key={rowKey}>
+            <button
+              type="button"
+              className="dash-row-main"
+              data-row-main=""
+              onClick={() => (it.kind === 'team' ? openTeamFilesDecision(it.projectId) : void jumpToDecision(it.projectId, it.runId, it.kind === 'plan' ? undefined : it.key))}
+            >
+              <span className="dash-row-icon">
+                <Icon icon={it.kind === 'team' ? Users : KIND_ICON[it.kind]} />
               </span>
-            </span>
-          </button>
-        </li>
-      )}
+              <span className="dash-row-text">
+                <span className="dash-row-line">{it.label}</span>
+                <span className="dash-row-cap">{it.kind === 'team' ? `${it.projectName} · Team` : `${locationLabel(it.projectId, projects)} · ${runName(it.run.summary)}`}</span>
+              </span>
+            </button>
+          </li>
+        )
+      }}
     />
   )
 }

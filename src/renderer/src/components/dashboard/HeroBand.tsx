@@ -5,7 +5,8 @@ import { Badge } from '../ui/Badge'
 import { Cost } from '../ui/Cost'
 import { costView, runCostInput, sumCosts } from '../../lib/cost'
 import { isDevBuild } from '../../lib/buildChannel'
-import { decisionCount } from '../../lib/needsYou'
+import { combinedDecisionCount } from '../../lib/needsYou'
+import { useTeamAttentionItems } from '../../lib/menuActions'
 import { FIRST_LAUNCH_LINE, WEEK_MS, heroFigure, heroSublineParts, pausedRuns, sinceLastSeen } from '../../lib/dashboard'
 import { useAllSummaries, useLiveRuns, useNow, useWaitingRuns } from './useDashboardData'
 
@@ -40,7 +41,8 @@ export function HeroBand({
   const summaries = useAllSummaries()
   const now = useNow()
 
-  const decisions = decisionCount(waiting)
+  const teamItems = useTeamAttentionItems()
+  const decisions = combinedDecisionCount(waiting, teamItems)
   const paused = useMemo(() => pausedRuns(summaries).length, [summaries])
   const { figure } = heroFigure({ decisions, running: live.length, paused, projects: projectCount })
   const closedWaiting = useMemo(

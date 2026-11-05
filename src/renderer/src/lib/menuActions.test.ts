@@ -11,7 +11,9 @@ const store = {
   interrupt: vi.fn(async () => undefined),
   stopRun: vi.fn(async () => undefined),
   jumpToDecision: vi.fn(async () => undefined),
-  openAssistant: vi.fn(async () => undefined)
+  openAssistant: vi.fn(async () => undefined),
+  selectProject: vi.fn(),
+  requestTeamFilesFocus: vi.fn()
 }
 
 vi.stubGlobal('window', { orgai: { window: { openRun: vi.fn(async () => undefined) } }, dispatchEvent: vi.fn(), addEventListener: vi.fn(), removeEventListener: vi.fn() })
@@ -152,6 +154,20 @@ describe('routeMenuAction', () => {
     actions.routeMenuAction('show-needs-you')
     vi.advanceTimersByTime(100)
     expect(actions.currentMenuAnnouncement()).toBe('Nothing needs you right now.')
+  })
+
+  it('team-files approvals count as a decision and open the Team tab', () => {
+    const teamFilesByProject = { p1: { projectId: 'p1', projectName: 'P', state: 'pending', changes: [{ needsApproval: true }], problems: [] } }
+    setState({ selectedProjectId: 'p1', projects: PROJECTS, view: 'history', teamFilesByProject })
+    expect(actions.menuStateFor(useAppStore.getState()).hasDecision).toBe(true)
+    actions.routeMenuAction('go-to-decision')
+    expect(store.setView).toHaveBeenCalledWith('team')
+    expect(store.requestTeamFilesFocus).toHaveBeenCalledWith('p1')
+    store.setView.mockClear()
+    setState({ selectedProjectId: null, projects: PROJECTS, view: 'projects', teamFilesByProject })
+    actions.routeMenuAction('show-needs-you')
+    expect(store.selectProject).toHaveBeenCalledWith('p1')
+    expect(store.setView).toHaveBeenCalledWith('team')
   })
 
   it('screen-only actions fall back to a sentence', () => {

@@ -42,7 +42,8 @@ export function projectAttentionOrder<T extends { id: string; name: string }>(pr
  */
 export function buildAttentionCtx(
   runs: readonly (WaitRun & { summary: { projectId: string } })[],
-  historyByProject: Readonly<Record<string, readonly { id: string; startedAt: number }[]>>
+  historyByProject: Readonly<Record<string, readonly { id: string; startedAt: number }[]>>,
+  teamItems: readonly { projectId: string }[] = []
 ): Record<string, ProjectAttention> {
   const ctx: Record<string, ProjectAttention> = {}
   const at = (id: string): ProjectAttention => (ctx[id] ??= { decisions: 0, liveRuns: 0 })
@@ -56,6 +57,7 @@ export function buildAttentionCtx(
     c.decisions += waitingItems(r).length
     newest(r.summary.projectId, r.summary.startedAt)
   }
+  for (const t of teamItems) at(t.projectId).decisions += 1
   for (const [projectId, list] of Object.entries(historyByProject)) {
     at(projectId)
     for (const h of list) newest(projectId, h.startedAt)
