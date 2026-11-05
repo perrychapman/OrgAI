@@ -187,6 +187,17 @@ const PAYLOADS: Record<string, unknown[]> = {
   'kit:export': [{ path: '/tmp/x.orgai-kit.json', include: { skills: ['skl_1'] } }],
   'kit:previewImport': [{ path: '/tmp/x.orgai-kit.json' }],
   'kit:applyImport': [{ path: '/tmp/x.orgai-kit.json', digest: 'd'.repeat(64), choices: [] }],
+  // Dev's later channels
+  'permissions:ignored': ['p_abc123'],
+  'projects:folderConfig': ['p_abc123'],
+  'projects:setFolderConfigTrust': [{ projectId: 'p_abc123', trust: true, digest: 'a'.repeat(64) }],
+  'teamFiles:status': [{ projectId: 'p_abc123' }],
+  'teamFiles:listAttention': [],
+  'teamFiles:approve': [{ projectId: 'p_abc123', digest: 'a'.repeat(64) }],
+  'teamFiles:reject': [{ projectId: 'p_abc123', digest: 'a'.repeat(64) }],
+  'teamFiles:undo': [{ projectId: 'p_abc123' }],
+  'teamFiles:commit': [{ projectId: 'p_abc123' }],
+  'teamFiles:enable': [{ projectId: 'p_abc123' }],
   // HOST_IPC
   'runs:subscribe': [{ projectIds: ['p_abc123'], followChains: true, sinceSeq: 12 }],
   'skillLibrary:addFromBundle': [{ name: 'review', files: [{ path: 'SKILL.md', base64: 'IyBSZXZpZXc=' }] }],

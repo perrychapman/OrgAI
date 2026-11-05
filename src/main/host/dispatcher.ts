@@ -39,9 +39,6 @@ import type {
   EngagementNote,
   EngagementNoteContent,
   FolderConfigReview,
-  FolderConfigTrustResult,
-  TeamFilesActionResult,
-  TeamFilesCommitResult,
   TeamFilesStatus,
   FocusRunTarget,
   HostRpcErrorCode,
@@ -128,7 +125,7 @@ import { assistPrompt, harnessProject as buildHarnessProject } from '../mcp/assi
 import type { McpService } from '../mcp/service'
 import type { QuickRunService } from '../quick/quickRuns'
 import { createScratchDir } from '../quick/scratch'
-import { applyFolderConfigTrust, folderConfigReview } from '../runtime/folderConfigTrust'
+import { folderConfigReview } from '../runtime/folderConfigTrust'
 import { addRules, listIgnoredRules, listRules, removeRule } from '../runtime/permissionRules'
 import type { RunManager } from '../runtime/runManager'
 import { overridesWidening } from '../runtime/runOverrides'
@@ -167,7 +164,6 @@ import {
   checkQuickContinue,
   connectionIdArg,
   folderConfigProjectArg,
-  folderConfigTrustArgs,
   pathCheckWithTeamFiles,
   projectCreateInput,
   teamFilesArgs,
@@ -414,19 +410,12 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
     if (typeof project?.id === 'string' && isVirtualProjectId(project.id)) throw new Error('This assistant project cannot be saved.')
     return projects.saveFromRenderer(project)
   })
-  // Folder config trust: what the folder's own agent config would do (read from disk now), and the user's decision on it.
-  // The decision is desktop only (registry): no socket client can set folderConfigTrust.
+  // Folder config trust: what the folder's own agent config would do (read from disk now). The user's decision
+  // (projects:setFolderConfigTrust) is desktop only and is served by ipc.ts alone: no socket handler exists for it.
   handle(IPC.projectsFolderConfig, (_e, id: unknown): FolderConfigReview => {
     const project = projects.get(folderConfigProjectArg(id))
     if (!project) throw new Error('Project not found')
     return folderConfigReview(project)
-  })
-  handle(IPC.projectsSetFolderConfigTrust, (_e, raw: unknown): FolderConfigTrustResult => {
-    const input = folderConfigTrustArgs(raw)
-    if (!projects.get(input.projectId)) throw new Error('Project not found')
-    // A gated project keeps its saved rules in the data folder (projectRulesFile), never in the folder being judged.
-    const saved = projects.update(input.projectId, (p) => applyFolderConfigTrust(p, input, { rulesFile: projectRulesFile(p, settings.dataDir) }))
-    return { project: saved, review: folderConfigReview(saved) }
   })
   // A string id or ProjectRemoveInput. Facts are gathered before anything is deleted (removalFacts).
   handle(IPC.projectsRemove, async (_e, input: unknown): Promise<ProjectRemoveResult> => {
@@ -992,16 +981,13 @@ function registerMcpIpc(
  * kit:*Bundle (socket only, cli-spec 3.6): the kit's bytes travel with the call as base64, so no main-process file
  * dialog is involved; the inputs are rebuilt by kit/service.ts. The dialog-backed kit channels stay in ipc.ts.
  */
-/** Team files (src/main/teamFiles/service.ts). No service = the channels are not served. */
+/**
+ * Team files (src/main/teamFiles/service.ts), the reads and the first-call write. The review decisions (approve, reject,
+ * undo, enable, commit) are desktop only and live in ipc.ts. No service = the channels are not served.
+ */
 function registerTeamFilesIpc(handle: Register, svc: TeamFilesService): void {
-  const filled = async (r: TeamFilesActionResult): Promise<TeamFilesActionResult> => ({ project: r.project, status: await svc.withGit(r.status) })
   handle(TEAM_FILES_IPC.teamFilesStatus, async (_e, input: unknown): Promise<TeamFilesStatus> => svc.withGit(svc.status(teamFilesArgs(input).projectId)))
   handle(TEAM_FILES_IPC.teamFilesListAttention, async (): Promise<TeamFilesStatus[]> => Promise.all(svc.listAttention().map((s) => svc.withGit(s))))
-  handle(TEAM_FILES_IPC.teamFilesApprove, async (_e, input: unknown) => filled(svc.approve(teamFilesArgs(input, true))))
-  handle(TEAM_FILES_IPC.teamFilesReject, async (_e, input: unknown) => filled(svc.reject(teamFilesArgs(input, true))))
-  handle(TEAM_FILES_IPC.teamFilesUndo, async (_e, input: unknown) => filled(svc.undo(teamFilesArgs(input))))
-  handle(TEAM_FILES_IPC.teamFilesCommit, async (_e, input: unknown): Promise<TeamFilesCommitResult> => svc.commit(teamFilesArgs(input)))
-  handle(TEAM_FILES_IPC.teamFilesEnable, async (_e, input: unknown) => filled(svc.enable(teamFilesArgs(input))))
 }
 
 function registerKitBundleIpc(handle: Register, kit: KitService): void {

@@ -11,6 +11,7 @@ import {
   IPC,
   KIT_IPC,
   MCP_SCOPE_IPC,
+  TEAM_FILES_IPC,
   type AppSettings,
   type DecisionOutcome,
   type KitBundleApplyInput,
@@ -43,17 +44,17 @@ function dropUndefined(v: unknown): unknown {
 }
 
 describe('(a) completeness', () => {
-  const existing: string[] = [...Object.values(IPC), ...Object.values(MCP_SCOPE_IPC), ...Object.values(KIT_IPC)]
+  const existing: string[] = [...Object.values(IPC), ...Object.values(MCP_SCOPE_IPC), ...Object.values(KIT_IPC), ...Object.values(TEAM_FILES_IPC)]
   const host: string[] = Object.values(HOST_IPC)
 
-  it('matches the spec counts: 166 existing channels (155 request + 11 push) plus 6 HOST_IPC', () => {
+  it('matches the spec counts: 177 existing channels (165 request + 12 push) plus 6 HOST_IPC', () => {
     const push = new Set(PUSH_CHANNELS)
     expect(new Set(existing).size).toBe(existing.length)
-    expect(existing.length).toBe(166)
-    expect(existing.filter((c) => push.has(c)).length).toBe(11)
-    expect(existing.filter((c) => !push.has(c)).length).toBe(155)
+    expect(existing.length).toBe(177)
+    expect(existing.filter((c) => push.has(c)).length).toBe(12)
+    expect(existing.filter((c) => !push.has(c)).length).toBe(165)
     expect(host.length).toBe(6)
-    expect(requestChannels().length).toBe(161)
+    expect(requestChannels().length).toBe(171)
   })
 
   it('every channel is either in CHANNEL_JSON_FIELDS or a push channel, never both', () => {
