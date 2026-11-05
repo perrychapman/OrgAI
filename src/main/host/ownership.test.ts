@@ -34,6 +34,7 @@ import {
   readDaemonFileState,
   protectSecretOnWindows,
   socketPathFor,
+  withStartupMutex,
   type HostOwnership,
   type OwnershipOptions
 } from './ownership'
@@ -672,6 +673,71 @@ describe.skipIf(!posix)('acquireHostOwnership', () => {
       expect(err).toBeInstanceOf(HostStartingOrBusyError)
       expect(existsSync(startup)).toBe(true)
     })
+  })
+})
+
+describe.skipIf(!posix)('withStartupMutex (Wave 7, round 6 item 11)', () => {
+  it('runs fn under startup.mkdir with no host, publishes nothing and releases the mutex', async () => {
+    const env = tempEnv()
+    let sawMutex = false
+    const value = await withStartupMutex({ dataDir: env.dataDir, runtimeBase: env.runtimeBase }, () => {
+      sawMutex = existsSync(join(env.runDir, 'startup.mkdir', 'owner.json'))
+      return 42
+    })
+    expect(value).toBe(42)
+    expect(sawMutex).toBe(true)
+    expect(existsSync(join(env.runDir, 'startup.mkdir'))).toBe(false)
+    expect(existsSync(join(env.runDir, 'daemon.json'))).toBe(false)
+    expect(existsSync(join(env.runDir, 'daemon.secret'))).toBe(false)
+    // A host can take the folder right after.
+    await acquire(env)
+  })
+
+  it('refuses while a live host owns the folder, without calling fn', async () => {
+    const env = tempEnv()
+    await acquire(env, { hostKind: 'node' })
+    let called = false
+    await expect(
+      withStartupMutex({ dataDir: env.dataDir, runtimeBase: env.runtimeBase }, () => {
+        called = true
+      })
+    ).rejects.toBeInstanceOf(HostAlreadyRunningError)
+    expect(called).toBe(false)
+    expect(existsSync(join(env.runDir, 'startup.mkdir'))).toBe(false)
+  })
+
+  it('releases the mutex when fn throws', async () => {
+    const env = tempEnv()
+    await expect(
+      withStartupMutex({ dataDir: env.dataDir, runtimeBase: env.runtimeBase }, () => {
+        throw new Error('boom')
+      })
+    ).rejects.toThrow('boom')
+    expect(existsSync(join(env.runDir, 'startup.mkdir'))).toBe(false)
+  })
+
+  it('a host starting meanwhile waits for fn to finish', async () => {
+    const env = tempEnv()
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    const order: string[] = []
+    const held = withStartupMutex({ dataDir: env.dataDir, runtimeBase: env.runtimeBase }, async () => {
+      order.push('fn-start')
+      await gate
+      order.push('fn-end')
+    })
+    await new Promise((r) => setTimeout(r, 50))
+    const host = acquireHostOwnership(opts(env, { retryMs: 10 })).then((own) => {
+      order.push('host')
+      cleanups.push(() => own.release())
+      return own
+    })
+    await new Promise((r) => setTimeout(r, 100))
+    expect(order).toEqual(['fn-start'])
+    release()
+    await held
+    await host
+    expect(order).toEqual(['fn-start', 'fn-end', 'host'])
   })
 })
 

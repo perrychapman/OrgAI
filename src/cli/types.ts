@@ -204,6 +204,14 @@ export interface HostLauncher {
   waitForReady(opts: { timeoutMs: number; notInstanceId?: string; hostKinds?: readonly HostKind[] }): Promise<DaemonInfo | null>
   /** Poll until no host (or not that hostInstanceId) advertises. false on timeout. */
   waitForGone(opts: { timeoutMs: number; hostInstanceId?: string }): Promise<boolean>
+  /**
+   * Wave 7 (cli-standalone.md 4.2, WP-E): start a background host of this runtime, detached. 'app': the app headless
+   * (as spawn({ headless: true, app })). 'node': `process.execPath <orgai.mjs> daemon run-node`, detached (setsid on
+   * POSIX, windowsHide on Windows), stdio to `<userDataDir>/logs/node-host.log`; throws when this CLI runs on Electron
+   * (no real Node) or the orgai.mjs bundle is not found. `hostKinds`: what waitForReady should wait for. A failed spawn
+   * or early exit makes the next waitForReady reject, as for spawn(). Optional so test fakes may leave it out.
+   */
+  startBackground?(runtime: DaemonRuntime, opts?: { app?: HostLauncherFound }): { pid?: number; hostKinds: readonly HostKind[] }
 }
 
 /** A pure-Node host running inside the CLI (`--host inproc`, src/cli/inprocHost.ts, W2-T4). */
@@ -236,8 +244,11 @@ export interface CliContext {
   /** cli-spec 4 resolution over these projects (globals.project, then cwd). */
   resolveProject(projects: Project[]): ProjectResolution
   launcher: HostLauncher
-  /** Start a `--host inproc` host (lazy-loads the inprocHost chunk). */
-  startInproc(): Promise<InprocHostHandle>
+  /**
+   * Start a `--host inproc` host (lazy-loads the inprocHost chunk). `hostKind: 'node'` (Wave 7, `orgai daemon run-node`
+   * only) starts it as the detached Node host. One host per process: a later call returns the first one.
+   */
+  startInproc(opts?: { hostKind?: 'inproc' | 'node' }): Promise<InprocHostHandle>
   /** SIGINT / SIGTERM listeners; returns an unsubscribe function. */
   signals: { onInterrupt(fn: (sig: 'SIGINT' | 'SIGTERM') => void): () => void }
 }

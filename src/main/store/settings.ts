@@ -255,8 +255,9 @@ export function normalizeSettings(raw: Partial<AppSettings> | null | undefined):
     // Only an explicit boolean true opens the terminal server.
     terminalServer: r.terminalServer === true,
     ...(r.terminalServerChosen === true ? { terminalServerChosen: true } : {}),
-    // Missing (or anything but 'full') is 'operate': read and operate only.
-    ...(r.terminalAccessLevel === 'full' ? { terminalAccessLevel: 'full' as const } : {})
+    // Missing (or junk) is 'operate': read and operate only. An explicit 'operate' is kept (Wave 7: a stored choice).
+    ...(r.terminalAccessLevel === 'full' || r.terminalAccessLevel === 'operate' ? { terminalAccessLevel: r.terminalAccessLevel } : {}),
+    ...(r.terminalAccessLevelChosen === true ? { terminalAccessLevelChosen: true } : {})
   }
 }
 

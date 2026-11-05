@@ -9,9 +9,11 @@ import type {
   CliContext,
   CliGlobals,
   ConnectResult,
+  DaemonRuntime,
   HostCallError,
   HostClient,
   HostLauncher,
+  HostLauncherFound,
   InprocHostHandle,
   ProjectResolution,
   ReadOnlySnapshot
@@ -120,7 +122,7 @@ export interface FakeContextOptions {
   /** Override project resolution; default: --project by id or path, else the deepest project containing cwd. */
   resolveProject?: (projects: Project[]) => ProjectResolution
   launcher?: Partial<HostLauncher>
-  inproc?: () => Promise<InprocHostHandle>
+  inproc?: (opts?: { hostKind?: 'inproc' | 'node' }) => Promise<InprocHostHandle>
   /** io.stdinIsTTY (default false). */
   stdinIsTTY?: boolean
 }
@@ -239,7 +241,16 @@ export function fakeContext(o: FakeContextOptions = {}): FakeContext {
     waitForGone: async (args) => {
       launcherCalls.push({ method: 'waitForGone', args })
       return o.launcher?.waitForGone ? o.launcher.waitForGone(args) : true
-    }
+    },
+    // Wave 7 (WP-E): present only when the test gives one, as the optional member it is.
+    ...(o.launcher?.startBackground
+      ? {
+          startBackground: (runtime: DaemonRuntime, opts?: { app?: HostLauncherFound }) => {
+            launcherCalls.push({ method: 'startBackground', args: runtime })
+            return o.launcher!.startBackground!(runtime, opts)
+          }
+        }
+      : {})
   }
   const ctx: CliContext = {
     globals,
@@ -271,9 +282,9 @@ export function fakeContext(o: FakeContextOptions = {}): FakeContext {
     },
     resolveProject: (projects) => (o.resolveProject ? o.resolveProject(projects) : defaultResolve(globals, cwd, projects)),
     launcher,
-    startInproc: async () => {
+    startInproc: async (opts) => {
       if (!o.inproc) throw new Error('no inproc host in this test')
-      return o.inproc()
+      return o.inproc(opts)
     },
     signals: {
       onInterrupt: (fn) => {

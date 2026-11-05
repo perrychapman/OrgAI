@@ -3,21 +3,31 @@
  * ('configure') work across app versions, so these commands work even with a version skew.
  *
  * - status: host.status, or the daemon.json facts when no host answers. Exit 0 only when a ready host answers.
- * - start [--host daemon|inproc] [--foreground] [--timeout S]: a live host is reported as is (exit 0). --host inproc
- *   (also --foreground) runs a pure-Node host in this terminal until Ctrl+C. Otherwise the app starts headless
- *   (launcher), and the command waits for it to be ready (exit 6 on timeout).
+ * - start [--host daemon|inproc] [--runtime app|node] [--foreground] [--timeout S]: a live host is reported as is (exit
+ *   0; exit 1 when --runtime names the other kind). --host inproc (also --foreground) runs a pure-Node host in this
+ *   terminal until Ctrl+C. Otherwise a background host starts and the command waits for it to be ready (exit 6 on
+ *   timeout): the app headless (launcher) with --runtime app, or the detached Node host (Wave 7, cli-standalone.md 4.2)
+ *   with --runtime node; without --runtime, the app when the launcher finds one, else Node. A Node host is refused when
+ *   install.json says 'app' or Terminal access is stored off, and asks once on a terminal for the Terminal access level
+ *   when none was chosen (nodeHost.ts, 4.2.1).
  * - stop [--force] [--timeout S]: host.stop; a refusal lists the leases that block it (exit 1).
- * - restart [--force]: stop, then start.
- * - logs [--lines N] [--follow]: the tail of main.log (sanitized).
+ * - restart [--force] [--runtime app|node]: stop, then start (the kind that ran, unless --runtime says otherwise).
+ * - logs [--lines N] [--follow]: the tail of the newest log: the host's own, else `<userData>/logs/main.log` /
+ *   `node-host.log` and, on macOS with the default data folder, `~/Library/Logs/OrgAI/main.log` (sanitized).
+ * - run-node (hidden): the detached Node host itself (`startBackground('node')` spawns it); runs until it drains.
  */
 import { closeSync, existsSync, openSync, readSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import type { ActivityLeaseKind, DaemonInfo, HostStatusResult, HostStopResult } from '../../shared/types'
+import type { ActivityLeaseKind, DaemonInfo, HostKind, HostStatusResult, HostStopResult, TerminalAccessLevel } from '../../shared/types'
+import { NODE_HOST_LOG } from '../client/launcher'
 import { parseFlags } from '../flags'
-import { emit, isJsonOutput, safe, safeLine, shortDuration, styleFor, warn, type Json } from '../output'
+import { manageDeps } from '../manage'
+import { nodeHostDeps, nodeHostRefusal } from '../nodeHost'
+import { emit, isJsonOutput, note, safe, safeLine, shortDuration, styleFor, warn, type Json } from '../output'
 import { warnVersionSkew } from '../runRef'
-import { CliError, EXIT, type CliContext, type CommandFn, type HostClient } from '../types'
+import { LEVEL_QUESTION, levelNote, parseLevelAnswer, writeTerminalAccess } from '../terminalAccessSettings'
+import { CliError, EXIT, type CliContext, type CommandFn, type DaemonRuntime, type HostClient } from '../types'
 import { activityText } from './status'
 import { intFlag } from './runs'
 
@@ -33,6 +43,20 @@ export const daemonTimers = {
   sleep: (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 }
 
+/** How long `daemon run-node` lets the event loop empty after its drain before it exits anyway. */
+export const NODE_HOST_EXIT_GRACE_MS = 2000
+
+/** Process effects of the Node host and its level question, swappable in tests. */
+export const daemonDeps = {
+  ask: (prompt: string): Promise<string> => manageDeps.ttyAsk(prompt),
+  writeLevel: (dataDir: string, level: TerminalAccessLevel): Promise<unknown> => writeTerminalAccess(dataDir, { level }),
+  /** After a Node host drained: exit once the loop is empty, or after the grace even if a handle lingers. */
+  exitSoon: (code: number): void => {
+    process.exitCode = code
+    setTimeout(() => process.exit(code), NODE_HOST_EXIT_GRACE_MS).unref()
+  }
+}
+
 export const runDaemon: CommandFn = async (ctx: CliContext, args: string[]): Promise<number> => {
   const [sub, ...rest] = args
   switch (sub) {
@@ -46,6 +70,9 @@ export const runDaemon: CommandFn = async (ctx: CliContext, args: string[]): Pro
       return daemonRestart(ctx, rest)
     case 'logs':
       return daemonLogs(ctx, rest)
+    case 'run-node':
+      // Hidden (not in help or completions): what startBackground('node') runs.
+      return runNodeHost(ctx, rest)
     default:
       throw new CliError(`${sub ? `Unknown daemon command "${sub}". ` : ''}Use: orgai daemon status | start | stop [--force] | restart [--force] | logs`, EXIT.usage)
   }
@@ -103,24 +130,61 @@ async function daemonStatus(ctx: CliContext, args: string[]): Promise<number> {
   return EXIT.failure
 }
 
-/** Start (or report) a host. `notInstanceId`: wait for a host other than this one (restart). */
-async function startHost(ctx: CliContext, o: { timeoutS: number; foreground: boolean; notInstanceId?: string }): Promise<number> {
+/** --runtime: 'app' | 'node', else a usage error; undefined when not given. */
+export function runtimeFlag(raw: string | undefined): DaemonRuntime | undefined {
+  if (raw === undefined) return undefined
+  if (raw === 'app' || raw === 'node') return raw
+  throw new CliError('--runtime must be app or node.', EXIT.usage)
+}
+
+/** The runtime a running host kind belongs to ('inproc' belongs to none). */
+export function runtimeOfKind(kind: HostKind | undefined): DaemonRuntime | 'inproc' | undefined {
+  if (kind === 'node') return 'node'
+  if (kind === 'inproc') return 'inproc'
+  return kind ? 'app' : undefined
+}
+
+/** "A Node host is already running; use `orgai daemon restart --runtime app`" (cli-standalone.md 4.2). */
+export function otherKindRunning(kind: HostKind, wanted: DaemonRuntime): string {
+  const words = kind === 'node' ? 'A Node' : kind === 'inproc' ? 'An in-process' : kind === 'headless-host' ? 'An app (headless)' : 'An app'
+  return `${words} host is already running; use \`orgai daemon restart --runtime ${wanted}\``
+}
+
+/** Exit 1 when --runtime was given and a host of the other kind runs. */
+function checkRuntime(explicit: DaemonRuntime | undefined, kind: HostKind | undefined): void {
+  if (!explicit || !kind) return
+  if (runtimeOfKind(kind) !== explicit) throw new CliError(otherKindRunning(kind, explicit), EXIT.failure)
+}
+
+/**
+ * Start (or report) a host. `notInstanceId`: wait for a host other than this one (restart). `runtime`: --runtime as
+ * given (checked against a running host); `runtimeDefault`: what to start when --runtime was not given (restart: the
+ * kind that ran), else the app when the launcher finds one, else Node.
+ */
+async function startHost(
+  ctx: CliContext,
+  o: { timeoutS: number; foreground: boolean; notInstanceId?: string; runtime?: DaemonRuntime; runtimeDefault?: DaemonRuntime }
+): Promise<number> {
   const mode = ctx.globals.host
   const inproc = mode === 'inproc' || (o.foreground && mode !== 'daemon')
   if (o.foreground && mode === 'daemon') throw new CliError('--foreground runs the host in this terminal; it needs --host inproc.', EXIT.usage)
+  if (inproc && o.runtime) throw new CliError('--runtime starts a background host; it cannot be combined with --host inproc or --foreground.', EXIT.usage)
 
   if (!o.notInstanceId) {
     const res = await ctx.connect(['read'], { clientKind: 'cli', waitStartingMs: 0 })
     if (res.ok) {
       try {
         warnVersionSkew(ctx, res.client)
-        printHostStatus(ctx, await fetchStatus(res.client), { alreadyRunning: true })
+        const s = await fetchStatus(res.client)
+        checkRuntime(o.runtime, s.hostKind)
+        printHostStatus(ctx, s, { alreadyRunning: true })
         return EXIT.ok
       } finally {
         res.client.close()
       }
     }
     if (res.reason === 'disabled' || res.reason === 'draining' || res.reason === 'starting') {
+      checkRuntime(o.runtime, res.daemon?.hostKind)
       if (res.reason === 'starting') {
         const ready = await ctx.launcher.waitForReady({ timeoutMs: o.timeoutS * 1000 })
         if (ready) return reportStarted(ctx, ready, true)
@@ -148,6 +212,9 @@ async function startHost(ctx: CliContext, o: { timeoutS: number; foreground: boo
 
   if (inproc) return runInproc(ctx)
 
+  const runtime = o.runtime ?? o.runtimeDefault ?? defaultRuntime(ctx)
+  if (runtime === 'node') return startNodeHost(ctx, o)
+
   const app = ctx.launcher.resolve()
   if ('error' in app) throw new CliError(app.error, EXIT.failure)
   let ready: DaemonInfo | null
@@ -165,6 +232,97 @@ async function startHost(ctx: CliContext, o: { timeoutS: number; foreground: boo
   if (!ready) throw new CliError(`The OrgAI host did not become ready within ${o.timeoutS} s. See \`orgai daemon logs\`.`, EXIT.hostBusy)
   return reportStarted(ctx, ready, false)
 }
+
+/** No --runtime: the app when the launcher finds one, Node when there is none; a broken app is an error naming it. */
+function defaultRuntime(ctx: CliContext): DaemonRuntime {
+  const found = ctx.launcher.locate()
+  if (found.status === 'found') return 'app'
+  if (found.status === 'absent') return 'node'
+  throw new CliError(found.message, EXIT.failure)
+}
+
+/**
+ * The Terminal access level a Node host will grant, asked once (4.2.1, round 6 item 11): on a terminal with no stored
+ * choice the question is asked and the answer stored (Enter keeps 'operate'); otherwise a note names the level and how
+ * to change it. Runs while no host owns the data folder, so the write (under the startup mutex) never races a host.
+ */
+async function chooseLevelOnce(ctx: CliContext): Promise<void> {
+  const stored = nodeHostDeps.terminalAccess(ctx.paths.dataDir)
+  if (stored.levelChosen) return
+  if (!ctx.io.stdinIsTTY || isJsonOutput(ctx)) {
+    note(ctx, levelNote(stored.level))
+    return
+  }
+  let level: TerminalAccessLevel | undefined
+  for (let i = 0; i < 3 && !level; i++) {
+    const answer = await daemonDeps.ask(LEVEL_QUESTION)
+    level = answer.trim() === '' ? 'operate' : parseLevelAnswer(answer)
+    if (!level) ctx.io.stderr.write('Answer full or operate.\n')
+  }
+  level ??= 'operate'
+  await daemonDeps.writeLevel(ctx.paths.dataDir, level)
+  note(ctx, levelNote(level))
+}
+
+/** Start the detached Node host (4.2) and wait for it. */
+async function startNodeHost(ctx: CliContext, o: { timeoutS: number; notInstanceId?: string }): Promise<number> {
+  const refusal = nodeHostRefusal(ctx)
+  if (refusal) throw refusal
+  if (!ctx.launcher.startBackground) throw new CliError('This orgai cannot start a Node background host.', EXIT.failure)
+  await chooseLevelOnce(ctx)
+  let ready: DaemonInfo | null
+  try {
+    const started = ctx.launcher.startBackground('node')
+    ready = await ctx.launcher.waitForReady({
+      timeoutMs: o.timeoutS * 1000,
+      hostKinds: started.hostKinds,
+      ...(o.notInstanceId ? { notInstanceId: o.notInstanceId } : {})
+    })
+  } catch (e) {
+    throw new CliError(`Could not start the OrgAI Node host: ${e instanceof Error ? e.message : String(e)}`, EXIT.failure)
+  }
+  if (!ready) throw new CliError(`The OrgAI Node host did not become ready within ${o.timeoutS} s. See \`orgai daemon logs\`.`, EXIT.hostBusy)
+  return reportStarted(ctx, ready, false)
+}
+
+/**
+ * `daemon run-node` (hidden): the detached Node host (HostKind 'node') in this process: the inproc host plus the idle
+ * exit (bootstrap arms it for every background kind; ORGAI_DAEMON_IDLE_MINUTES, default 30) and the stored Terminal
+ * access. Its stdio is node-host.log; it exits once it drained (host.stop, idle exit, SIGINT / SIGTERM).
+ */
+async function runNodeHost(ctx: CliContext, args: string[]): Promise<number> {
+  noArgs(parseFlags(args, {}).positionals)
+  if (!nodeHostDeps.terminalAccess(ctx.paths.dataDir).enabledForBackground) throw new CliError(NODE_HOST_TERMINAL_OFF_RUN, EXIT.failure)
+  const handle = await ctx.startInproc({ hostKind: 'node' })
+  const s = handle.status()
+  ctx.io.stderr.write(`OrgAI Node host ${s.hostInstanceId} (pid ${s.pid}) ready for ${safeLine(s.dataDir)}.\n`)
+  let offSignal: () => void = () => undefined
+  const code = await new Promise<number>((resolve) => {
+    let stopping = false
+    offSignal = ctx.signals.onInterrupt((sig) => {
+      if (stopping) return
+      stopping = true
+      handle.stop(true).then(
+        () => resolve(EXIT.ok),
+        (e: unknown) => {
+          ctx.io.stderr.write(`Could not stop the host cleanly: ${safeLine(e instanceof Error ? e.message : String(e))}\n`)
+          resolve(sig === 'SIGINT' ? EXIT.sigint : EXIT.sigterm)
+        }
+      )
+    })
+    handle.closed.then(
+      () => resolve(EXIT.ok),
+      () => resolve(EXIT.failure)
+    )
+  })
+  offSignal()
+  ctx.io.stderr.write('OrgAI Node host stopped.\n')
+  daemonDeps.exitSoon(code)
+  return code
+}
+
+/** run-node's own refusal (it is never started that way by orgai; someone ran it by hand). */
+export const NODE_HOST_TERMINAL_OFF_RUN = 'Terminal access is off, so nothing could talk to a Node host; turn it on with `orgai terminal-access on`'
 
 async function reportStarted(ctx: CliContext, d: DaemonInfo, wasStarting: boolean): Promise<number> {
   const res = await ctx.connect(['read'], { clientKind: 'cli', waitStartingMs: 2000 })
@@ -213,9 +371,14 @@ async function runInproc(ctx: CliContext): Promise<number> {
 }
 
 async function daemonStart(ctx: CliContext, args: string[]): Promise<number> {
-  const { values, positionals } = parseFlags(args, { foreground: { type: 'boolean' }, timeout: { type: 'string' } })
+  const { values, positionals } = parseFlags(args, { foreground: { type: 'boolean' }, timeout: { type: 'string' }, runtime: { type: 'string' } })
   noArgs(positionals)
-  return startHost(ctx, { timeoutS: intFlag('timeout', values.timeout, DEFAULT_START_TIMEOUT_S, 3600) || DEFAULT_START_TIMEOUT_S, foreground: !!values.foreground })
+  const runtime = runtimeFlag(values.runtime)
+  return startHost(ctx, {
+    timeoutS: intFlag('timeout', values.timeout, DEFAULT_START_TIMEOUT_S, 3600) || DEFAULT_START_TIMEOUT_S,
+    foreground: !!values.foreground,
+    ...(runtime ? { runtime } : {})
+  })
 }
 
 const LEASE_WORDS: Record<ActivityLeaseKind, string> = {
@@ -282,23 +445,68 @@ async function daemonStop(ctx: CliContext, args: string[]): Promise<number> {
 }
 
 async function daemonRestart(ctx: CliContext, args: string[]): Promise<number> {
-  const { values, positionals } = parseFlags(args, { force: { type: 'boolean' }, timeout: { type: 'string' }, foreground: { type: 'boolean' } })
+  const { values, positionals } = parseFlags(args, { force: { type: 'boolean' }, timeout: { type: 'string' }, foreground: { type: 'boolean' }, runtime: { type: 'string' } })
   noArgs(positionals)
   const timeoutS = intFlag('timeout', values.timeout, DEFAULT_START_TIMEOUT_S, 3600) || DEFAULT_START_TIMEOUT_S
+  const runtime = runtimeFlag(values.runtime)
+  const background = !values.foreground && ctx.globals.host !== 'inproc'
+  if (!background && runtime) throw new CliError('--runtime starts a background host; it cannot be combined with --host inproc or --foreground.', EXIT.usage)
+  // Without --runtime, the kind that runs now comes back (a Node host stays a Node host).
+  const was = runtimeOfKind(ctx.launcher.current()?.hostKind)
+  const target = runtime ?? (was === 'node' || was === 'app' ? was : undefined)
+  // A Node host that could not start is refused before the running host is stopped.
+  if (background && target === 'node') {
+    const refusal = nodeHostRefusal(ctx)
+    if (refusal) throw refusal
+  }
   const stopped = await stopHost(ctx, { force: !!values.force, timeoutS: DEFAULT_STOP_TIMEOUT_S, quiet: true })
   if (stopped.code !== EXIT.ok) return stopped.code
   if (stopped.wasRunning && !isJsonOutput(ctx)) ctx.io.stderr.write('OrgAI host stopped; starting it again.\n')
   // The old host is gone (waitForGone), so the next ready host is the new one.
-  return startHost(ctx, { timeoutS, foreground: !!values.foreground, ...(stopped.stoppedId ? { notInstanceId: stopped.stoppedId } : {}) })
+  return startHost(ctx, {
+    timeoutS,
+    foreground: !!values.foreground,
+    ...(stopped.stoppedId ? { notInstanceId: stopped.stoppedId } : {}),
+    ...(runtime ? { runtime } : target ? { runtimeDefault: target } : {})
+  })
 }
 
 // ---------- logs ----------
 
-/** main.log's path when no host tells us: darwin ~/Library/Logs/OrgAI (default data dir only), else <userDataDir>/logs. */
-export function guessLogPath(ctx: CliContext): string {
+/**
+ * The log files a host of this data folder may write, without asking it (Wave 7, cli-standalone.md 4.2):
+ * `<userDataDir>/logs/main.log` (Node, inproc and a chosen data folder's app), `<userDataDir>/logs/node-host.log` (the
+ * Node host's stdio) and, on macOS with the default data folder, the app's `~/Library/Logs/OrgAI/main.log`.
+ */
+export function logCandidates(ctx: CliContext): string[] {
   const chosen = !!ctx.globals.dataDir || !!ctx.env.ORGAI_DATA_DIR
-  if (ctx.platform === 'darwin' && !chosen) return join(ctx.env.HOME || homedir(), 'Library', 'Logs', 'OrgAI', 'main.log')
-  return join(ctx.paths.userDataDir, 'logs', 'main.log')
+  const out = [join(ctx.paths.userDataDir, 'logs', 'main.log'), join(ctx.paths.userDataDir, 'logs', NODE_HOST_LOG)]
+  if (ctx.platform === 'darwin' && !chosen) out.push(join(ctx.env.HOME || homedir(), 'Library', 'Logs', 'OrgAI', 'main.log'))
+  return out
+}
+
+/** The existing candidates, newest (last modified) first. */
+export function existingLogs(paths: readonly string[]): string[] {
+  const found: { path: string; mtime: number }[] = []
+  for (const path of paths) {
+    try {
+      const st = statSync(path)
+      if (st.isFile()) found.push({ path, mtime: st.mtimeMs })
+    } catch {
+      // missing
+    }
+  }
+  return found.sort((a, b) => b.mtime - a.mtime).map((f) => f.path)
+}
+
+/**
+ * The log to show when no host tells us: the newest existing candidate, else the one a host of this kind of install
+ * would write first (darwin's ~/Library/Logs/OrgAI with the default data folder, else `<userDataDir>/logs/main.log`).
+ */
+export function guessLogPath(ctx: CliContext): string {
+  const all = logCandidates(ctx)
+  const macDefault = all.length > 2 ? all[2] : undefined
+  return existingLogs(all)[0] ?? macDefault ?? all[0]
 }
 
 /** The last `n` lines of a file (reads at most the last 4 MB). */
@@ -340,7 +548,7 @@ async function daemonLogs(ctx: CliContext, args: string[]): Promise<number> {
     path = await res.client.call<string>('app:logPath', []).catch(() => undefined)
     res.client.close()
   }
-  if (typeof path !== 'string' || !path) path = guessLogPath(ctx)
+  if (typeof path !== 'string' || !path || !existsSync(path)) path = guessLogPath(ctx)
   if (!existsSync(path)) throw new CliError(`No log file at ${safeLine(path)}.`, EXIT.failure)
   const tail = tailFile(path, n)
   if (isJsonOutput(ctx) && !values.follow) {

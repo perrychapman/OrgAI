@@ -1,8 +1,12 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import type { DaemonInfo } from '../../shared/types'
 import { FakeHostClient, fakeContext, fakeInproc, noHost } from '../testing/fakeContext'
 import { EXIT } from '../types'
 import { ENSURE_HOST_READY_TIMEOUT_MS, ensureHost } from './ensureHost'
+import { NODE_HOST_TERMINAL_OFF, nodeHostDeps } from '../nodeHost'
+
+const realNodeDeps = { ...nodeHostDeps }
+afterEach(() => Object.assign(nodeHostDeps, realNodeDeps))
 
 const ready: DaemonInfo = { hostInstanceId: 'bbbbbbbbbbbb', pid: 77, endpoint: '/tmp/y.sock', state: 'ready', startedAt: 1, hostKind: 'headless-host' }
 
@@ -86,5 +90,29 @@ describe('ensureHost', () => {
     const g = fakeContext({ globals: { host: 'inproc' }, connect: [h], inproc: async () => inproc })
     await ensureHost(g.ctx, ['read'], { clientKind: 'tui' })
     expect(g.connectCalls[0].opts).toEqual({ clientKind: 'tui', waitStartingMs: 2000 })
+  })
+
+  it('--host daemon with no app anywhere starts the Node host and waits for kind node (Wave 7, 4.1 / 4.2)', async () => {
+    nodeHostDeps.installInfo = () => ({ channel: 'npm', source: 'file' })
+    nodeHostDeps.terminalAccess = () => ({ terminalServer: false, terminalServerChosen: false, level: 'operate', levelChosen: false, enabledForBackground: true })
+    const node: DaemonInfo = { ...ready, hostKind: 'node' }
+    const h = new FakeHostClient()
+    const absent = { locate: () => ({ status: 'absent' as const, message: 'none' }) }
+    const f = fakeContext({ globals: { host: 'daemon' }, connect: [noHost(), h], launcher: { ...absent, startBackground: () => ({ hostKinds: ['node'] }), waitForReady: async () => node } })
+    const r = await ensureHost(f.ctx, ['read'])
+    expect(r).toEqual({ client: h, started: true })
+    expect(f.launcherCalls).toEqual([
+      { method: 'startBackground', args: 'node' },
+      { method: 'waitForReady', args: { timeoutMs: ENSURE_HOST_READY_TIMEOUT_MS, hostKinds: ['node'] } }
+    ])
+    // Terminal access stored off: refused, nothing started.
+    nodeHostDeps.terminalAccess = () => ({ terminalServer: false, terminalServerChosen: true, level: 'operate', levelChosen: false, enabledForBackground: false })
+    const g = fakeContext({ globals: { host: 'daemon' }, launcher: { ...absent, startBackground: () => ({ hostKinds: ['node'] }) } })
+    await expect(ensureHost(g.ctx, ['read'])).rejects.toMatchObject({ exitCode: EXIT.failure, message: NODE_HOST_TERMINAL_OFF })
+    expect(g.launcherCalls).toEqual([])
+    // An app found: the app, as before.
+    const a = fakeContext({ globals: { host: 'daemon' }, connect: [noHost(), new FakeHostClient()], launcher: { startBackground: () => ({ hostKinds: ['node'] }), waitForReady: async () => ready } })
+    await ensureHost(a.ctx, ['read'])
+    expect(a.launcherCalls.map((c) => c.method)).toEqual(['resolve', 'spawn', 'waitForReady'])
   })
 })

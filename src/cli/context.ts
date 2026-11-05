@@ -76,7 +76,7 @@ export function buildContext(input: BuildContextInput): CliContext {
     readStore: () => readOnlySnapshot({ dataDir: paths.dataDir }),
     resolveProject: (projects) => resolveProject(projects, { flag: globals.project, cwd, platform }),
     launcher,
-    startInproc: () => {
+    startInproc: (opts = {}) => {
       // One in-process host per CLI process.
       inproc ??= import('./inprocHost').then((m) =>
         m.startInprocHost({
@@ -85,6 +85,8 @@ export function buildContext(input: BuildContextInput): CliContext {
           env,
           mock: env.ORGAI_MOCK === '1',
           overlay: input.overlay ?? new Map(),
+          // The detached Node host (daemon run-node) writes to main.log only; its stdio file keeps what escapes that.
+          ...(opts.hostKind === 'node' ? { hostKind: 'node' as const, quiet: true } : {}),
           ...(quietContexts.has(ctx) ? { quiet: true } : {})
         })
       )

@@ -15,6 +15,7 @@
  * `decidedBy.surface` 'tui' on the decisions it sends.
  */
 import type { HostClientKind, HostKind, HostScope } from '../../shared/types'
+import { nodeHostRefusal } from '../nodeHost'
 import { CliError, EXIT, type CliContext, type ConnectResult, type HostClient, type InprocHostHandle } from '../types'
 
 export const ENSURE_HOST_READY_TIMEOUT_MS = 30_000
@@ -104,9 +105,26 @@ export async function ensureHost(ctx: CliContext, scopes: HostScope[], opts: Ens
   if (first.ok) return { client: first.client, started: false }
   if (first.reason !== 'no_host') throw connectFailure(first)
 
+  let ready
+  // Wave 7 (cli-standalone.md 4.1, 4.2): `--host daemon` never runs a host in-process; with no app anywhere it starts the
+  // detached Node host (refused when install.json says app or Terminal access is stored off; nodeHost.ts).
+  if (ctx.globals.host === 'daemon' && ctx.launcher.startBackground && ctx.launcher.locate().status === 'absent') {
+    const refusal = nodeHostRefusal(ctx)
+    if (refusal) throw refusal
+    try {
+      const started = ctx.launcher.startBackground('node')
+      ready = await ctx.launcher.waitForReady({ timeoutMs: ENSURE_HOST_READY_TIMEOUT_MS, hostKinds: started.hostKinds })
+    } catch (e) {
+      throw new CliError(`Could not start the OrgAI Node host: ${e instanceof Error ? e.message : String(e)}`, EXIT.failure)
+    }
+    if (!ready) throw new CliError(`The OrgAI Node host did not become ready within ${ENSURE_HOST_READY_TIMEOUT_MS / 1000} s. See \`orgai daemon logs\`.`, EXIT.hostBusy)
+    const second = await connect()
+    if (!second.ok) throw connectFailure(second)
+    return { client: second.client, started: true }
+  }
+
   const app = ctx.launcher.resolve()
   if ('error' in app) throw new CliError(app.error, EXIT.failure)
-  let ready
   try {
     ctx.launcher.spawn({ headless: true })
     // Only an Electron host counts (a running desktop app takes the hand-off); an inproc host's daemon.json never does.

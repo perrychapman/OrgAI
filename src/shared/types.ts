@@ -1762,7 +1762,8 @@ export interface AppSettings {
    * 'full' adds decide (answer decision cards) and configure (settings, projects, MCP, permissions, connections).
    * Only the desktop window changes it in practice: settings:set needs 'configure', which a socket client gets only
    * when this is already 'full', so the socket can lower it but never raise it. A `--host inproc` host (the CLI process
-   * owns it) always grants full. Normalized: only 'full' is stored.
+   * owns it) always grants full. Normalized: 'full' and an explicit 'operate' are stored (Wave 7: the choice is kept
+   * with terminalAccessLevelChosen); anything else is dropped.
    */
   terminalAccessLevel?: TerminalAccessLevel
   /**
@@ -1771,6 +1772,13 @@ export interface AppSettings {
    * it directly (args.ts settingsSetArgs).
    */
   terminalServerChosen?: boolean
+  /**
+   * Main-owned (Wave 7, cli-standalone.md round 6 item 11): true once the user chose terminalAccessLevel (a settings:set
+   * that changed it, `orgai terminal-access --level`, or the answer to `orgai daemon start --runtime node`'s one
+   * question). While it is unset that question is asked once on an interactive terminal. settings:set never writes it
+   * directly (args.ts settingsSetArgs).
+   */
+  terminalAccessLevelChosen?: boolean
 }
 
 /**

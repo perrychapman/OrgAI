@@ -14,12 +14,15 @@
  *   layout's app binary (`<Resources>/../MacOS/OrgAI`, `OrgAI.exe`, `orgai`). No arguments: the packaged app loads its
  *   own app.asar. Checked on a local unsigned macOS pack only; Windows and Linux packs are UNVERIFIED.
  *
+ * Wave 7 (cli-standalone.md 4.2): startBackground('node') starts the detached Node host instead, `process.execPath
+ * <orgai.mjs> daemon run-node` with stdio appended to `<userDataDir>/logs/node-host.log` (refused on Electron).
+ *
  * Order: env > packaged > dev checkout. The spawned app never inherits ELECTRON_RUN_AS_NODE (hostSpawnEnv), nor the
  * caller's cwd (hostSpawnCwd, review H1): the CLI often runs in an untrusted clone, Windows searches a spawn's cwd for
  * bare program names first, and a long-lived host would otherwise also keep that folder busy.
  */
 import { spawn as nodeSpawn, type SpawnOptions } from 'node:child_process'
-import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
@@ -28,11 +31,23 @@ import type { DaemonInfo, HostKind } from '../../shared/types'
 import { readDaemonInfo } from '../../main/host/ownership'
 import { packagedLayout, resourcesDirOfCliBundle } from '../../main/host/packagedLayout'
 import { isLiveProcessCached } from '../../main/host/processInfo'
-import type { HostLauncher } from '../types'
+import type { DaemonRuntime, HostLauncher } from '../types'
 import { SECRET_ENV_PREFIX } from '../secretOverlay'
 
 export const APP_NOT_FOUND = 'OrgAI app not found; set ORGAI_ELECTRON_PATH or use --host inproc'
 const POLL_MS = 150
+
+/** The Node host's stdio file under `<userDataDir>/logs` (Wave 7, cli-standalone.md 4.2). */
+export const NODE_HOST_LOG = 'node-host.log'
+/** The hidden command line a Node host runs: `<execPath> <orgai.mjs> daemon run-node`. */
+export const NODE_HOST_ARGS = ['daemon', 'run-node'] as const
+/** What `--runtime node` needs (cli-standalone.md 4.2). */
+export const NODE_HOST_NEEDS_NODE = 'The Node background host comes with the npm package: npm i -g orgai'
+/** Host kinds each background runtime becomes. */
+export const RUNTIME_HOST_KINDS: Readonly<Record<DaemonRuntime, readonly HostKind[]>> = {
+  app: ['headless-host', 'desktop'],
+  node: ['node']
+}
 
 /**
  * What a spawn returns (a ChildProcess fits). `on` is used for 'error' (the command could not be executed: Node emits
@@ -64,6 +79,20 @@ export interface LauncherOptions {
   platform?: NodeJS.Platform
   /** The spawned host's cwd (tests); default {@link hostSpawnCwd}. */
   cwd?: (command: string) => string
+  /** The orgai.mjs a Node host runs (tests); default {@link cliBundleEntry}. */
+  cliEntry?: string
+}
+
+/**
+ * The orgai.mjs bundle a Node host runs: `<bundleDir>/orgai.mjs` (the bundle, whose chunks all sit in out/cli), else a
+ * dev checkout's built `out/cli/orgai.mjs` (sources under vitest), else undefined.
+ */
+export function cliBundleEntry(bundleDir: string): string | undefined {
+  const here = join(bundleDir, 'orgai.mjs')
+  if (existsSync(here)) return here
+  const root = devAppRoot(bundleDir)
+  const built = root ? join(root, 'out', 'cli', 'orgai.mjs') : undefined
+  return built && existsSync(built) ? built : undefined
 }
 
 function isDir(p: string): boolean {
@@ -246,6 +275,29 @@ export function createLauncher(opts: LauncherOptions): HostLauncher {
     return ex.code !== null ? `OrgAI exited (code ${ex.code}) before it was ready. See \`orgai daemon logs\`.` : `OrgAI was stopped (${ex.signal ?? 'signal'}) before it was ready.`
   }
 
+  /** Spawn detached with the host environment and cwd, and track the child for waitForReady. */
+  const launch = (command: string, args: string[], stdio: SpawnOptions['stdio']): { pid?: number } => {
+    const state: NonNullable<typeof child> = {}
+    child = state
+    const proc = spawnFn(command, args, {
+      detached: true,
+      stdio,
+      windowsHide: true,
+      shell: false,
+      cwd: (opts.cwd ?? hostSpawnCwd)(command),
+      env: hostSpawnEnv(env, opts)
+    })
+    // Listen before the next tick: Node emits 'error' asynchronously, and with no listener it would crash the CLI.
+    proc.on?.('error', (e) => {
+      state.error ??= e instanceof Error ? e : new Error(String(e))
+    })
+    proc.on?.('exit', (code, signal) => {
+      state.exited = { code: typeof code === 'number' ? code : null, signal: typeof signal === 'string' ? signal : null }
+    })
+    proc.unref()
+    return proc.pid !== undefined ? { pid: proc.pid } : {}
+  }
+
   return {
     resolve: resolveApp,
 
@@ -261,25 +313,31 @@ export function createLauncher(opts: LauncherOptions): HostLauncher {
       const app = located ?? resolveApp()
       if ('error' in app) throw new Error(app.error)
       const args = [...app.args, ...(headless ? ['--headless-host'] : []), ...(run ? ['--run', run] : [])]
-      const state: NonNullable<typeof child> = {}
-      child = state
-      const proc = spawnFn(app.command, args, {
-        detached: true,
-        stdio: 'ignore',
-        windowsHide: true,
-        shell: false,
-        cwd: (opts.cwd ?? hostSpawnCwd)(app.command),
-        env: hostSpawnEnv(env, opts)
-      })
-      // Listen before the next tick: Node emits 'error' asynchronously, and with no listener it would crash the CLI.
-      proc.on?.('error', (e) => {
-        state.error ??= e instanceof Error ? e : new Error(String(e))
-      })
-      proc.on?.('exit', (code, signal) => {
-        state.exited = { code: typeof code === 'number' ? code : null, signal: typeof signal === 'string' ? signal : null }
-      })
-      proc.unref()
-      return proc.pid !== undefined ? { pid: proc.pid } : {}
+      return launch(app.command, args, 'ignore')
+    },
+
+    startBackground(runtime, o = {}) {
+      if (runtime === 'app') {
+        const app = o.app ?? resolveApp()
+        if ('error' in app) throw new Error(app.error)
+        return { ...launch(app.command, [...app.args, '--headless-host'], 'ignore'), hostKinds: RUNTIME_HOST_KINDS.app }
+      }
+      const rt = opts.runtime ?? { execPath: process.execPath, electron: process.versions.electron }
+      // Under the packaged launcher execPath is the Electron binary, and index.ts strips ELECTRON_RUN_AS_NODE.
+      if (rt.electron) throw new Error(NODE_HOST_NEEDS_NODE)
+      const entry = opts.cliEntry ?? cliBundleEntry(opts.bundleDir ?? moduleDir())
+      if (!entry) throw new Error('The orgai bundle (orgai.mjs) was not found next to this command; build it with npm run build, or reinstall orgai.')
+      const logsDir = join(opts.userDataDir, 'logs')
+      mkdirSync(logsDir, { recursive: true, mode: 0o700 })
+      const fd = openSync(join(logsDir, NODE_HOST_LOG), 'a', 0o600)
+      try {
+        // detached: setsid() on POSIX (no controlling terminal, no SIGHUP when this terminal closes); on Windows a new
+        // process group, hidden.
+        return { ...launch(rt.execPath, [entry, ...NODE_HOST_ARGS], ['ignore', fd, fd]), hostKinds: RUNTIME_HOST_KINDS.node }
+      } finally {
+        // The child holds its own copy of the descriptor.
+        closeSync(fd)
+      }
     },
 
     current() {

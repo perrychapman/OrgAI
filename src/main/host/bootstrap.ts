@@ -13,7 +13,7 @@
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { AppSettings, ConnectionId, HostKind, HostStatusResult, Project, RunEvent, RunSummary, TerminalAccessLevel } from '../../shared/types'
-import { DEFAULT_KEEP_RUNS, HARNESS_PROJECT_ID, HOST_PROTOCOL_VERSION, IPC, QUICK_PROJECT_ID, SKILLS_PROJECT_ID, isVirtualProjectId } from '../../shared/types'
+import { DEFAULT_KEEP_RUNS, HARNESS_PROJECT_ID, HOST_KIND_CAPABILITIES, HOST_PROTOCOL_VERSION, IPC, QUICK_PROJECT_ID, SKILLS_PROJECT_ID, isVirtualProjectId } from '../../shared/types'
 import { buildSettingsInfo } from '../appInfo'
 import { CapabilityService } from '../capabilities/service'
 import { seedMockHome } from '../capabilities/mockHome'
@@ -210,8 +210,9 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     const s = settings.get()
     return {
       enabled: s.terminalServer === true || (sessionTerminal && s.terminalServerChosen !== true),
-      // The in-process host belongs to the CLI process that started it; its own commands need every scope.
-      level: hostKind === 'inproc' || s.terminalAccessLevel === 'full' ? 'full' : 'operate'
+      // The in-process host belongs to the CLI process that started it; its own commands need every scope. Every other
+      // kind (the detached Node host included, cli-standalone.md 4.2.1) follows the stored level.
+      level: HOST_KIND_CAPABILITIES[hostKind].inProcess || s.terminalAccessLevel === 'full' ? 'full' : 'operate'
     }
   }
   // `adapters` is declared below and only read when discovery runs.
