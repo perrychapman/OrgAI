@@ -1,7 +1,7 @@
-import { AsyncLocalStorage } from 'node:async_hooks'
 import { execFile } from 'node:child_process'
-import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
-import { basename, dirname, isAbsolute, join } from 'node:path'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { basename, dirname, join } from 'node:path'
+import { gitPath, gitPathSync, pathKey, withRepoLock as repoLock } from './repoLock'
 import type { MergeDecision, PendingWorktree, WorktreeDiff, WorktreeInfo } from '@shared/types'
 
 /**
@@ -24,8 +24,9 @@ import type { MergeDecision, PendingWorktree, WorktreeDiff, WorktreeInfo } from 
  * anchors agent worktrees at the main repository root, findWorktree still finds them, and a
  * child cut from the main HEAD still merges into its parent's branch (only with an older base).
  *
- * The exclude line lives in .git/info/exclude, which belongs to the common git dir and so
- * applies to every worktree. The pattern ".claude/worktrees/" has a slash in the middle, so it
+ * The exclude line lives in the common git dir's info/exclude (resolved with `git rev-parse --git-path
+ * info/exclude`, so a linked worktree or a `.git`-file checkout writes the same file) and so applies to every
+ * worktree. The pattern ".claude/worktrees/" has a slash in the middle, so it
  * is anchored at each worktree's toplevel (not at any depth); nested agent worktrees always
  * sit at <some worktree>/.claude/worktrees/, which it matches. commitLeftovers additionally
  * never stages .claude/worktrees at any depth.
@@ -58,34 +59,42 @@ function git(root: string, args: string[]): Promise<{ ok: boolean; out: string; 
   })
 }
 
-/** Tail of each checkout's lock queue, by pathKey. Removed when the last holder releases. */
-const repoLocks = new Map<string, Promise<void>>()
-/** Keys the current async call chain already holds, so nested calls (integrate -> discard) do not wait on themselves. */
-const heldLocks = new AsyncLocalStorage<ReadonlySet<string>>()
+/**
+ * Run `fn` while holding the repository lock of `root` (the main checkout or any linked worktree). Delegates to
+ * repoLock.ts: the lock is keyed by the repository's common git dir, so it serializes ALL git operations per
+ * repository, across processes (`<commonDir>/orgai-repo.lock`, so the app and a CLI host never run git on one
+ * repository at the same time), reentrant within one async call chain (integrateWorktree(root) ->
+ * commitLeftovers(wt) / discardWorktree(root) reuse the outer lease), and never held across a merge review.
+ * A worktree and the main checkout of one repository therefore queue behind each other; different repositories do
+ * not. Callers queue in arrival order; a rejected fn releases the lock.
+ *
+ * Lock hierarchy: `WorktreeIntegrator.exclusive(dir)` (integration.ts, a per-directory in-process queue) is always
+ * taken first, outside this lock, and nothing in this file calls back into integration.ts while holding it, so the
+ * order exclusive -> repo lock is the only one. integrateWorktree releases the repo lock before awaiting `review`
+ * (the user's merge card) and takes it again for the merge.
+ */
+export function withRepoLock<T>(root: string, fn: () => Promise<T>): Promise<T> {
+  return repoLock(root, fn)
+}
 
 /**
- * Run `fn` while holding the lock of one checkout (the main checkout or a worktree), keyed by pathKey(root).
- * Two runs of one project, or a run and the maintenance panel, then never merge, commit or remove worktrees in
- * the same checkout at the same time. Different checkouts do not block each other. Re-entrant within one call
- * chain. Callers queue in arrival order; a rejected fn releases the lock.
- * Concurrent runs: two live runs of one project share the repo's lock, so their merges and commits queue per
- * checkout (never refuse); runs of different projects, or a worktree vs the main checkout, do not block each other.
+ * The exclude file `git rev-parse --git-path info/exclude` names, made absolute: the common dir's info/exclude, also
+ * from a linked worktree or a checkout whose `.git` is a file. Falls back to <root>/.git/info/exclude only when
+ * .git is a real directory.
  */
-export async function withRepoLock<T>(root: string, fn: () => Promise<T>): Promise<T> {
-  const key = pathKey(root)
-  const held = heldLocks.getStore()
-  if (held?.has(key)) return fn()
-  const prev = repoLocks.get(key) ?? Promise.resolve()
-  let release!: () => void
-  const mine = new Promise<void>((r) => (release = r))
-  const tail = prev.then(() => mine)
-  repoLocks.set(key, tail)
-  await prev
+async function excludeFileOf(root: string): Promise<string | null> {
+  return (await gitPath(root, 'info/exclude')) ?? fallbackExclude(root)
+}
+
+function excludeFileOfSync(root: string): string | null {
+  return gitPathSync(root, 'info/exclude') ?? fallbackExclude(root)
+}
+
+function fallbackExclude(root: string): string | null {
   try {
-    return await heldLocks.run(new Set([...(held ?? []), key]), fn)
-  } finally {
-    release()
-    if (repoLocks.get(key) === tail) repoLocks.delete(key)
+    return statSync(join(root, '.git')).isDirectory() ? join(root, '.git', 'info', 'exclude') : null
+  } catch {
+    return null
   }
 }
 
@@ -96,10 +105,10 @@ export async function prepareRepo(root: string): Promise<void> {
 }
 
 async function prepareRepoUnlocked(root: string): Promise<void> {
-  const infoDir = join(root, '.git', 'info')
+  const excludeFile = await excludeFileOf(root)
   try {
-    mkdirSync(infoDir, { recursive: true })
-    const excludeFile = join(infoDir, 'exclude')
+    if (!excludeFile) throw new Error('no exclude file')
+    mkdirSync(dirname(excludeFile), { recursive: true })
     const existing = existsSync(excludeFile) ? readFileSync(excludeFile, 'utf8') : ''
     if (!existing.split(/\r?\n/).includes(EXCLUDE_LINE)) appendFileSync(excludeFile, `${existing.endsWith('\n') || !existing ? '' : '\n'}${EXCLUDE_LINE}\n`)
   } catch {
@@ -108,10 +117,10 @@ async function prepareRepoUnlocked(root: string): Promise<void> {
   await git(root, ['worktree', 'prune'])
 }
 
-/** Undo what prepareRepo added to .git/info/exclude. */
+/** Undo what prepareRepo added to the repository's info/exclude (synchronous: maintenance.ts calls it inline). */
 export function removeExcludeLine(root: string): boolean {
-  const excludeFile = join(root, '.git', 'info', 'exclude')
-  if (!existsSync(excludeFile)) return false
+  const excludeFile = excludeFileOfSync(root)
+  if (!excludeFile || !existsSync(excludeFile)) return false
   const lines = readFileSync(excludeFile, 'utf8').split(/\r?\n/)
   if (!lines.includes(EXCLUDE_LINE)) return false
   writeFileSync(excludeFile, lines.filter((l) => l !== EXCLUDE_LINE).join('\n'), 'utf8')
@@ -139,35 +148,7 @@ async function listAgentWorktrees(root: string): Promise<{ path: string; branch:
   return (await listAllWorktrees(root)).flatMap((e) => (e.branch?.startsWith(BRANCH_PREFIX) ? [{ path: e.path, branch: e.branch }] : []))
 }
 
-/**
- * Real path of `p`, or for a path that does not exist (yet) the real path of its nearest existing ancestor plus
- * the rest, so /tmp/proj/.claude/worktrees/new keys like /private/tmp/proj/.claude/worktrees/new.
- */
-function realpathOfNearest(p: string): string {
-  if (!isAbsolute(p)) return p
-  const rest: string[] = []
-  let cur = p
-  // Stop below the filesystem root: resolving "/" alone would turn a foreign path into C:\... on Windows.
-  for (let parent = dirname(cur); parent !== cur; cur = parent, parent = dirname(cur)) {
-    try {
-      const real = realpathSync.native(cur)
-      return rest.length ? join(real, ...rest.reverse()) : real
-    } catch {
-      rest.push(basename(cur))
-    }
-  }
-  return p
-}
-
-/**
- * Path comparison key:forward slashes, no trailing slash. Case-folded on Windows and macOS, whose default
- * file systems are case-insensitive, but not on Linux. Symlinks are resolved when the path exists: git prints
- * real paths (/private/var/... for /var/...) while a project folder may have been picked through a symlink.
- */
-export function pathKey(p: string, platform: string = process.platform): string {
-  const key = realpathOfNearest(p).replace(/\\/g, '/').replace(/\/+$/, '')
-  return platform === 'win32' || platform === 'darwin' ? key.toLowerCase() : key
-}
+export { pathKey }
 
 /**
  * Move agent worktrees nested inside `parentPath` to the main checkout's .claude/worktrees, so
