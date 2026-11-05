@@ -46,6 +46,21 @@ tmux capture-pane -p -t orgai | tail -20
 
 `ORGAI_APP_DIR` and `ORGAI_SHOTS_DIR` override the app and screenshot directories.
 
+## Keep the window off your main monitor
+
+Two opt-in variables (read by the app at startup, every window; the driver and `e2e/lib.mjs` pass the environment on):
+
+- `ORGAI_WINDOW_DISPLAY=secondary` opens windows centred on the first display that is not the primary one; a number
+  (`2`) picks that display counting left-to-right, top-to-bottom. Anything else, or a missing display, is ignored
+  (one line in main.log).
+- `ORGAI_WINDOW_INACTIVE=1` shows windows without taking focus.
+
+Set them for good on Windows with `setx ORGAI_WINDOW_DISPLAY secondary` and `setx ORGAI_WINDOW_INACTIVE 1`, then
+restart the app or terminal that launches agents (setx affects new processes only). Caveats: a second monitor with a
+different scale factor can shift pixel-based e2e checks; and some checks focus the window on purpose (e2e/menu.mjs
+`waitEnabled` calls `win.focus()`, because the menu follows the OS-focused window), so inactive mode can still steal
+focus there.
+
 ## Gotchas
 
 - Never junction or symlink node_modules from a worktree to the main checkout; run `npm ci` inside the worktree instead. A worktree removal follows the link and empties the main checkout's node_modules.

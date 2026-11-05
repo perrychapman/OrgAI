@@ -1410,6 +1410,7 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
     the window.
   - These pieces are unit-tested where they are pure. Packaging (`dist:mac`, `dist:mac:unsigned`,
     `build/entitlements.mac.plist`) is unverified.
+  - Opt-in window placement for tests and walkthroughs (`src/main/windowPlacement.ts`, read once at startup, every window): `ORGAI_WINDOW_DISPLAY=secondary` (first non-primary display) or a 1-based number (displays ordered left-to-right, top-to-bottom) centres the window in that display's work area, unknown value or missing display logs once and falls back; `ORGAI_WINDOW_INACTIVE=1` uses `showInactive()`. Only those exact forms count. Unit-tested; a different scale factor on the second monitor can shift pixel-based e2e checks.
   - `ORGAI_DATA_DIR` replaces userData and puts the logs under it. e2e (a fresh temp dir per script) and CI use it to
     keep off the real profile. Since 18070b8 the e2e scripts ignore an ambient `ORGAI_DATA_DIR` (`E2E_DATA_DIR` is the
     override): CI's one shared dir let connections.mjs's leftover library entry open a different dialog in team.mjs.
