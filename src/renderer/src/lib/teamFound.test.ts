@@ -1,6 +1,22 @@
 import { describe, expect, it } from 'vitest'
 import type { TeamFileChange, TeamFilesFound } from '@shared/types'
-import { approvalChanges, changeForServer, teamFoundAnnouncement, teamFoundBlocker, teamFoundCounts } from './teamFound'
+import { approvalChanges, changeForServer, foundSummary, repeatedReasons, setSettings, teamFoundAnnouncement, teamFoundBlocker, teamFoundCounts } from './teamFound'
+
+describe('found team wording', () => {
+  it('words settings as what the files set, not as changes', () => {
+    expect(foundSummary({ kind: 'settings', summary: 'The project brief changed.' })).toBe('The files set the project brief.')
+    expect(foundSummary({ kind: 'settings', summary: 'Permission mode changes from not set to default.' })).toBe('Permission mode is set to default.')
+    expect(foundSummary({ kind: 'role', summary: 'Dev gains Bash.' })).toBe('Dev gains Bash.')
+  })
+  it('names a repeated reason once', () => {
+    expect(repeatedReasons([{ reason: 'A' }, { reason: 'A' }, { reason: 'B' }, {}])).toEqual(['A'])
+  })
+  it('leaves out settings that are not set and counts them', () => {
+    const r = setSettings([{ label: 'Mode', value: 'default' }, { label: 'Depth', value: 'not set' }, { label: 'Limit', value: 'Not set' }])
+    expect(r.shown).toEqual([{ label: 'Mode', value: 'default' }])
+    expect(r.unset).toBe(2)
+  })
+})
 
 const base: TeamFilesFound = { digest: 'd1', roleCount: 1, roles: [], skills: [], mcpServers: [], changes: [], problems: [], warnings: [] }
 const change = (over: Partial<TeamFileChange>): TeamFileChange => ({ id: 'x', kind: 'role', name: 'r', file: 'f', action: 'added', summary: 's', needsApproval: false, ...over })

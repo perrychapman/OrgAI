@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import type { TeamFileChange, TeamFilesStatus } from '@shared/types'
 import {
+  PROBLEM_NEXT,
+  statusKey,
+  teamPointerText,
+  undoIsApplied,
+  undoNoticeLead,
   appliedSummaries,
   approveBlockedReason,
   approvalCount,
@@ -165,5 +170,33 @@ describe('teamAttentionItems', () => {
     const [item] = teamAttentionItems([status({ projectName: 'P‮Q', state: 'problem', problems: [{ file: 'a‮b.md', message: 'm' }] })])
     expect(item.label).toBe('Team files: a\\u202eb.md cannot be read')
     expect(item.projectName).toBe('P\\u202eQ')
+  })
+})
+
+describe('status messages and the Live pointer', () => {
+  it('statusKey changes with state, digest and commit state, not with identical pushes', () => {
+    const a = status({ state: 'pending', digest: 'd1', changes: [change()] })
+    expect(statusKey(a)).toBe(statusKey(status({ state: 'pending', digest: 'd1', changes: [change()] })))
+    expect(statusKey(a)).not.toBe(statusKey(status({ state: 'pending', digest: 'd2', changes: [change()] })))
+    expect(statusKey(a)).not.toBe(statusKey(status({ state: 'in-sync' })))
+    expect(statusKey(undefined)).toBe('')
+  })
+  it('a problem line names a next step', () => {
+    const l = teamFilesLine(status({ state: 'problem', problems: [{ file: 'f.md', message: 'It has merge conflict markers.' }] }))
+    expect(l?.detail).toContain('It has merge conflict markers.')
+    expect(l?.detail).toContain(PROBLEM_NEXT)
+  })
+  it('the undo lead follows the undo, not the older applied batch', () => {
+    const s = status({ undo: { at: 't', label: 'Undo approving 1 change', files: ['.orgai/agents/lead.md'] }, applied: [change()] })
+    expect(undoNoticeLead(s)).toBe('Approved 1 change.')
+    expect(undoIsApplied(s)).toBe(false)
+    const t = status({ undo: { at: 't', label: 'Undo the 1 change applied from the files', files: ['x'] }, applied: [change()] })
+    expect(undoIsApplied(t)).toBe(true)
+    expect(undoNoticeLead(t)).toBe('1 change applied from the team files.')
+  })
+  it('the pointer speaks only while something waits', () => {
+    expect(teamPointerText(status({ state: 'in-sync' }))).toBeNull()
+    expect(teamPointerText(status({ state: 'pending', changes: [change()] }))).toContain('needs your approval')
+    expect(teamPointerText(status({ state: 'problem' }))).toContain('cannot be read')
   })
 })

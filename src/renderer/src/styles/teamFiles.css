@@ -22,9 +22,28 @@
   font-size: var(--text-small);
   line-height: var(--text-small-lh);
 }
-.team-files-line[data-wrap='true'] {
+.team-files-line[data-wrap='true'],
+.team-files-line:has(.team-files-notice) {
   flex: 1 1 100%;
   margin-left: 0;
+}
+/* The applied / undone notice shares the line's row: words, then Undo and Dismiss. */
+.team-files-notice {
+  flex: 1 1 100%;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  color: var(--text-primary);
+}
+.team-files-notice-text {
+  flex: 1 1 14rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.team-files-notice[data-tone='success'] .team-files-notice-text {
+  color: var(--text-secondary);
 }
 /* No detail or message: one row, the text clips (its full words stay in the page for assistive tech). */
 .team-files-line[data-wrap='false'] .team-files-line-main {
@@ -37,7 +56,10 @@
 }
 .team-files-line .btn.sm {
   flex: none;
-  /* The 28 px button must not set the row's height: it is the note's row, and the tray gives up that room. */
+}
+/* One-row line (beside the note): the 28 px button must not set the row's height; the tray gives up that room. A wrapped
+   line has other text above the button, so there it takes its own height instead of overlapping that text. */
+.team-files-line[data-wrap='false']:not(:has(.team-files-notice)) > .btn.sm {
   margin-block: -7px;
 }
 .team-files-line:focus-visible {
@@ -76,14 +98,58 @@
   gap: var(--space-0h);
 }
 
-/* Approval card (the DecisionCard shell classes are reused; there is no run to name). While it is open the chart may
-   shrink to about a quarter of the frame, so the card's Approve and Reject stay in view at 1024x640 beside the
-   toolbar rows and the applied notice. */
-.frame-grid:has(> .frame-tray .decision-card.team-files-card.kind-proposal) {
-  --stage-min: 24cqh;
+/* Approval card (the DecisionCard shell classes are reused; there is no run to name). In a roomy frame it is the plain
+   proposal card (stage 40%, body up to 55%). In a short frame (under 720 px high, 1024x640 is 592) the change list is
+   what the user must read, so it gets the room the toolbar and the notice no longer take: the stage keeps 30% (about
+   180 px, still a readable chart), the card fills the rest of the tray and only its body scrolls, with head and
+   Approve / Reject fixed. Approve itself waits until the list was scrolled to its end (TeamFilesCard). */
+@container frame (max-height: 719px) {
+  .frame-grid:has(> .frame-tray .decision-card.team-files-card.kind-proposal) {
+    --stage-min: 30cqh;
+  }
+  .team-files-card {
+    flex: 1 1 auto;
+    /* A floor: with the Team assistant open under it the tray scrolls instead of clipping Approve and Reject. */
+    min-height: 200px;
+  }
+  .team-files-card .decision-body {
+    /* Content-sized, so the tray asks for the whole list; the grid clamps the tray and this shrinks to fit. */
+    flex: 0 1 auto;
+    min-height: 72px;
+    max-height: none;
+  }
+  /* The drag hint under the chart is not needed while a decision is open; its two lines go to the change list. */
+  .frame-grid:has(> .frame-tray .team-files-card) > .frame-footer {
+    display: none;
+  }
+  /* The lead sentence repeats the title; it stays for assistive tech. */
+  .team-files-card .decision-summary {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .team-files-card .decision-head {
+    padding-block: var(--space-1h) var(--space-1);
+    gap: var(--space-0h);
+  }
+  .team-files-card .decision-footer {
+    padding-block: var(--space-1h);
+  }
 }
-.team-files-card .decision-body {
-  max-height: min(34cqh, 240px);
+/* Live pointer: a quiet sentence with a link, in run meta and above the New run page. */
+.new-run-inner > .team-files-pointer {
+  display: block;
+  margin-bottom: var(--space-3);
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+  text-align: center;
+}
+.team-files-assistant-link {
+  margin-left: auto;
+  font-size: var(--text-small);
 }
 .team-files-card:focus-visible {
   outline: 2px solid var(--focus-ring, var(--accent));
@@ -190,25 +256,4 @@
   margin: 0;
   font-size: var(--text-small);
   color: var(--text-secondary);
-}
-/* The notice sits above the chart: keep it to a title row and one row of words with Undo beside them. */
-[data-testid='team-files-applied'] .banner-main {
-  display: flex;
-  flex-direction: row;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: flex-start;
-  text-align: left;
-  gap: var(--space-1) var(--space-3);
-}
-[data-testid='team-files-applied'] .banner-title {
-  flex: 1 0 100%;
-}
-[data-testid='team-files-applied'] .banner-body {
-  flex: 1 1 16rem;
-  min-width: 0;
-  margin: 0;
-}
-[data-testid='team-files-applied'] .banner-actions {
-  margin: 0;
 }

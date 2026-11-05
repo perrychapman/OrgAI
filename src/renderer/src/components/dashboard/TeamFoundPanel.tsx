@@ -9,6 +9,9 @@ import {
   anyHidden,
   approvalChanges,
   changeForServer,
+  foundSummary,
+  repeatedReasons,
+  setSettings,
   roleElevated,
   teamFoundCounts
 } from '../../lib/teamFound'
@@ -46,7 +49,8 @@ export function TeamFoundPanel({
 }): ReactElement {
   const uid = useId()
   const power = approvalChanges(found)
-  const settings = found.settings ?? []
+  const { shown: settings, unset: unsetSettings } = setSettings(found.settings ?? [])
+  const repeated = repeatedReasons(power)
   return (
     <section className="team-found" data-testid="team-found" aria-labelledby={`${uid}-h`}>
       <h3 id={`${uid}-h`} className="team-found-title">
@@ -100,13 +104,18 @@ export function TeamFoundPanel({
           {power.length > 0 && (
             <div className="team-found-block">
               <h4>What you are agreeing to</h4>
+              {repeated.map((r) => (
+                <p key={r} className="hint" data-testid="team-found-reason">
+                  <Data text={r} />. This applies to several items below.
+                </p>
+              ))}
               <ul className="team-found-list team-found-scroll" tabIndex={0} aria-label="Changes that need your approval, most powerful first" data-testid="team-found-changes">
                 {power.map((c) => (
                   <li key={c.id} className="team-found-change" data-testid="team-found-change" data-kind={c.kind}>
                     <span>
-                      <Data text={c.summary} />
+                      <Data text={foundSummary(c)} />
                     </span>
-                    {c.reason && (
+                    {c.reason && !repeated.includes(c.reason) && (
                       <span className="chip warn">
                         <Data text={c.reason} />
                       </span>
@@ -219,7 +228,7 @@ export function TeamFoundPanel({
                       {change?.usesStoredSignIn && <span className="chip">Uses the sign-in stored on this computer</span>}
                       {change?.summary && (
                         <span className="muted">
-                          <Data text={change.summary} />
+                          <Data text={foundSummary(change)} />
                         </span>
                       )}
                     </li>
@@ -229,9 +238,10 @@ export function TeamFoundPanel({
             </div>
           )}
 
-          {settings.length > 0 && (
+          {(settings.length > 0 || unsetSettings > 0) && (
             <div className="team-found-block">
               <h4>Settings</h4>
+              {settings.length === 0 && <p className="hint">The files set none of the project settings.</p>}
               <dl className="team-found-settings" data-testid="team-found-settings">
                 {settings.map((s, i) => (
                   <div key={`${s.label}-${i}`} className="team-found-setting">
@@ -244,6 +254,11 @@ export function TeamFoundPanel({
                   </div>
                 ))}
               </dl>
+              {unsetSettings > 0 && settings.length > 0 && (
+                <p className="hint" data-testid="team-found-unset">
+                  {unsetSettings} other {unsetSettings === 1 ? 'setting is' : 'settings are'} not set in the files and keep OrgAI's defaults.
+                </p>
+              )}
             </div>
           )}
 

@@ -17,6 +17,7 @@ import { chainOf, relativeTime } from '../lib/runChains'
 import { shortPrompt } from '../lib/runLabels'
 import { autoContinueState } from '../lib/runStatus'
 import { Icon } from './ui/Icon'
+import TeamFilesPointer from './team/TeamFilesPointer'
 import { quickAccessLabel, quickFolderLabel } from '../lib/assistants'
 
 /**
@@ -114,6 +115,7 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
           </button>
         </span>
       )}
+      {!isVirtualProjectId(project.id) && <TeamFilesPointer projectId={project.id} />}
       {summary.kind === 'setup' && <span className="run-meta-item">Setup session</span>}
       {summary.quick && (
         <>

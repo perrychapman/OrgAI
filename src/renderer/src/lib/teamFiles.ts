@@ -76,7 +76,7 @@ export function teamFilesLine(s: TeamFilesStatus): TeamLine | null {
       return {
         tone: 'danger',
         text: p ? `Team files: ${p.file} cannot be read` : 'Team files: a file cannot be read',
-        detail: p ? `${p.message} The last approved team stays in use.` : 'The last approved team stays in use.',
+        detail: p ? `${p.message} ${PROBLEM_NEXT} The last approved team stays in use.` : `${PROBLEM_NEXT} The last approved team stays in use.`,
         ...(s.changes.length > 0 ? { action: 'review' as const, actionLabel: 'See changes' } : {})
       }
     }
@@ -101,6 +101,22 @@ export function teamFilesLine(s: TeamFilesStatus): TeamLine | null {
       return { tone: 'quiet', text: 'Team files: in sync', detail: s.isGitRepo ? '.orgai/ in this repository.' : '.orgai/ in this folder.' }
   }
 }
+
+/** What to do about a file OrgAI cannot read. Main's own problem text comes first; this is the next step. */
+export const PROBLEM_NEXT = 'Fix or remove the problem in that file, then come back to OrgAI: it checks again.'
+
+/**
+ * Identity of what a status says. A message or error from an action belongs to the status it left behind; when this
+ * changes (new files, another state, a new commit state) the message is gone.
+ */
+export function statusKey(s: TeamFilesStatus | undefined): string {
+  if (!s) return ''
+  return [s.state, s.digest ?? '', s.uncommitted ? 'u' : '', s.uncommittedFiles.join('\n'), s.undo?.at ?? '', s.lastUndo?.at ?? '', s.problems.map((p) => `${p.file}:${p.message}`).join('\n')].join('|')
+}
+
+/** Why Approve waits until the change list has been read to its end. */
+export const READ_FIRST_TEXT = 'Scroll to the end of the changes to approve.'
+export const READ_FIRST_COMPACT_TEXT = 'Open Details and scroll to the end of the changes to approve.'
 
 /** "a, b and 2 more" for file lists (at most 3 named). */
 export function listFiles(files: readonly string[], max = 3): string {
@@ -134,6 +150,17 @@ export function cardVisible(s: TeamFilesStatus | undefined): s is TeamFilesStatu
 
 export const CHANGE_KIND_LABEL: Record<TeamFileChange['kind'], string> = { role: 'Role', skill: 'Skill', mcp: 'Server', settings: 'Setting' }
 export const CHANGE_ACTION_LABEL: Record<TeamFileChange['action'], string> = { added: 'New', changed: 'Changed', removed: 'Removed' }
+
+/** The Live pointer's words, or null when nothing waits on the user. */
+export function teamPointerText(s: TeamFilesStatus | undefined): string | null {
+  if (!s) return null
+  if (s.state === 'pending') {
+    const n = Math.max(1, approvalCount(s))
+    return `Team files: ${pluralChanges(n)} ${n === 1 ? 'needs' : 'need'} your approval.`
+  }
+  if (s.state === 'problem') return 'Team files: a file cannot be read.'
+  return null
+}
 
 /** The card's lead sentence. */
 export function cardLead(s: TeamFilesStatus): string {
@@ -197,6 +224,23 @@ export function appliedSummaries(s: TeamFilesStatus, max = 4): string[] {
   const out = s.applied.slice(0, max).map((c) => c.summary)
   if (s.applied.length > max) out.push(`and ${s.applied.length - max} more.`)
   return out
+}
+
+/**
+ * The words of the Undo notice. Main keeps `applied` (the last batch applied at once) and `undo` (the newest thing Undo
+ * can revert) apart, and an Approve replaces `undo` but not `applied`. So the applied summaries belong to the notice only
+ * when `undo.label` is the applied batch's; after an Approve it speaks for the approval, with the files `undo` names.
+ */
+export function undoNoticeLead(s: TeamFilesStatus): string {
+  const label = s.undo?.label ?? ''
+  const approving = /^Undo approving (.+)$/.exec(label)
+  if (approving) return `Approved ${approving[1]}.`
+  return `${appliedTitle(s)}.`
+}
+
+/** True when the undo is for the batch applied at once (so `applied` summaries describe it). */
+export function undoIsApplied(s: TeamFilesStatus): boolean {
+  return !!s.undo && !/^Undo approving /.test(s.undo.label)
 }
 
 export function undoRewritesLine(files: readonly string[]): string {

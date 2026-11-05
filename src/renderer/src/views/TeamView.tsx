@@ -654,7 +654,9 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
               onCommit={() => void filesActions.commit().then(settleFocus)}
               onEnable={() => void filesActions.enable().then(settleFocus)}
               onReview={() => setCardFocusN((n) => n + 1)}
-            />
+            >
+              {filesStatus && <TeamFilesAppliedNotice status={filesStatus} busy={filesActions.busy} onUndo={() => void filesActions.undo().then(settleFocus)} />}
+            </TeamFilesLine>
             {undo && (
               <span className="toolbar-undo" role="status">
                 Role removed.
@@ -772,7 +774,6 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
               }
             />
           )}
-          {filesStatus && <TeamFilesAppliedNotice status={filesStatus} busy={filesActions.busy} onUndo={() => void filesActions.undo().then(settleFocus)} />}
         </div>
         </div>
         <FrameStage>
