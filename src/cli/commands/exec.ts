@@ -54,7 +54,7 @@ import { readStdinText } from '../manage'
 import { emit, emitLine, isJsonOutput, note, printText, safeLine, styleFor, styleStatus, warn, type Json } from '../output'
 import { agentLabel, costText, pendingItems, planUpdateLine, recordWithoutImages, statusViewOf, statusWordOfSummary, transcriptLine } from '../render'
 import { resolveRunFromSource, warnVersionSkew } from '../runRef'
-import { CliError, EXIT, type CliContext, type CommandFn, type HostCallError, type HostClient } from '../types'
+import { CliError, EXIT, HOST_STARTING_WAIT_MS, type CliContext, type CommandFn, type HostCallError, type HostClient } from '../types'
 import { intFlag } from './runs'
 import { runResumeTui } from './tui'
 import { liveSource } from './watch'
@@ -260,7 +260,7 @@ class Session {
   async needConfigure(): Promise<void> {
     if (this.scopes.includes('configure')) return
     const scopes: HostScope[] = [...this.scopes, 'configure']
-    const res = await this.ctx.connect(scopes, { clientKind: 'cli', waitStartingMs: 2000 })
+    const res = await this.ctx.connect(scopes, { clientKind: 'cli', waitStartingMs: HOST_STARTING_WAIT_MS })
     if (!res.ok) throw connectFailure(res)
     this.base.close()
     this.base = res.client
@@ -701,7 +701,7 @@ async function runAndFollow(ctx: CliContext, session: Session, start: () => Prom
     if (signal) requestStop()
     follower = new RunStream({
       client: session.client,
-      connect: () => ctx.connect(session.scopes, { clientKind: 'cli', waitStartingMs: 2000 }),
+      connect: () => ctx.connect(session.scopes, { clientKind: 'cli', waitStartingMs: HOST_STARTING_WAIT_MS }),
       subscribeInput: () => ({ runIds: [...followed], followChains: true, nonInteractive: true, ...(newest ? { includeActiveRunRecord: newest } : {}) }),
       onEvent,
       onSnapshot,

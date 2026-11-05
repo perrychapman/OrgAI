@@ -10,7 +10,7 @@
 import { projectKindOf } from '../shared/defaults'
 import type { HostScope, HostSubscribeTopic, Project } from '../shared/types'
 import { pushChannelsForTopic } from '../main/host/registry'
-import { ensureHost, missingScopesError, TERMINAL_ACCESS_HINT, VERSION_SKEW_SCOPE_HINT } from './client/ensureHost'
+import { ensureHost, MANAGEMENT_INPROC, missingScopesError, TERMINAL_ACCESS_HINT, VERSION_SKEW_SCOPE_HINT } from './client/ensureHost'
 import { consumeSecretEnv } from './client/launcher'
 import { note, safeLine, warn } from './output'
 import { checkProjectResolution, warnVersionSkew } from './runRef'
@@ -91,12 +91,14 @@ export function readStdinText(maxBytes: number, label?: string): Promise<string>
 // ---------- Host connection ----------
 
 /**
- * Connect (ensureHost: --host inproc starts the in-process host; auto / daemon connect, or start the headless app),
- * check every requested scope was granted, run `fn`, and always clean up: close the client and stop an in-process host
- * this call started (stop(true), a warning when that fails).
+ * Connect (ensureHost: --host inproc starts the in-process host; auto connects, or starts the headless app, or runs
+ * in-process when there is no app or environment secrets are set; daemon connects or starts a background host), check
+ * every requested scope was granted, run `fn`, and always clean up: close the client and stop an in-process host this
+ * call started (stop(true), a warning when that fails). An in-process host here boots with MANAGEMENT_INPROC: connection
+ * probes and system certificates on, model discovery, community prices and the usage monitor off.
  */
 export async function withHost<T>(ctx: CliContext, scopes: HostScope[], fn: (client: HostClient) => Promise<T>): Promise<T> {
-  const host = await ensureHost(ctx, scopes, { interactive: false })
+  const host = await ensureHost(ctx, scopes, { interactive: false, inproc: MANAGEMENT_INPROC })
   const cleanup = async (): Promise<void> => {
     host.client.close()
     if (host.inproc) await host.inproc.stop(true).catch((e: unknown) => warn(ctx, `Could not stop the in-process host: ${e instanceof Error ? e.message : String(e)}`))

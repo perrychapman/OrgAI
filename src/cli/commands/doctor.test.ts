@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { FakeHostClient, fakeContext } from '../testing/fakeContext'
 import { EXIT } from '../types'
 import { renderCliShim } from '../../main/host/packagedLayout'
-import { DAEMON_JSON_MAX_BYTES, PACKAGED_LAUNCHER_MARK, doctorProbes, installCheck, runDoctor, shimCheck } from './doctor'
+import { DAEMON_JSON_MAX_BYTES, LAUNCHER_ABSENT_DETAIL, PACKAGED_LAUNCHER_MARK, doctorProbes, installCheck, runDoctor, shimCheck } from './doctor'
 
 const realProbes = { ...doctorProbes }
 let dir: string
@@ -65,6 +65,19 @@ describe('orgai doctor', () => {
     expect(await runDoctor(f.ctx, [])).toBe(EXIT.ok)
     expect(f.out()).toMatch(/^ok {4}socket +Skipped: no host is running/m)
     expect(f.connectCalls).toHaveLength(0)
+  })
+
+  it('launcher (Wave 7, 4.1 step 3): found is ok, no app is ok (in-process fallback), a broken install fails naming its path', async () => {
+    const paths = { userDataDir: dir, dataDir: join(dir, 'data') }
+    const found = fakeContext({ paths, launcher: { locate: () => ({ status: 'found', command: '/Applications/OrgAI.app/Contents/MacOS/OrgAI', args: [], source: 'installed' }) } })
+    expect(await runDoctor(found.ctx, [])).toBe(EXIT.ok)
+    expect(found.out()).toMatch(/^ok {4}launcher +\/Applications\/OrgAI\.app\/Contents\/MacOS\/OrgAI \(installed\)/m)
+    const absent = fakeContext({ paths, launcher: { locate: () => ({ status: 'absent', message: 'OrgAI app not found' }) } })
+    expect(await runDoctor(absent.ctx, [])).toBe(EXIT.ok)
+    expect(absent.out()).toContain(LAUNCHER_ABSENT_DETAIL)
+    const broken = fakeContext({ paths, launcher: { locate: () => ({ status: 'broken', path: '/Applications/OrgAI.app/Contents/MacOS/OrgAI', message: 'The OrgAI app at /Applications/OrgAI.app is incomplete' }) } })
+    expect(await runDoctor(broken.ctx, [])).toBe(EXIT.failure)
+    expect(broken.out()).toMatch(/^fail {2}launcher +The OrgAI app at \/Applications\/OrgAI\.app is incomplete/m)
   })
 
   it('never reads an oversized or odd daemon.json whole (review Low)', async () => {

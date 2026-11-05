@@ -240,13 +240,47 @@ describe('orgai routing', () => {
     expect(editDistance('daemn', 'daemon')).toBe(1)
   })
 
-  it('refuses secret overrides outside --host inproc with exit 2, but not for completions', async () => {
-    const r = await run(['status'], { ORGAI_SECRET_LITELLM_API_KEY: 'sk' })
-    expect(r.code).toBe(2)
-    expect(r.err).toContain(SECRET_ENV_REFUSAL)
+  it('secret overrides (4.1, round 6 item 8): --host daemon refuses any; auto refuses an explicit one on commands that never run in-process and warns about an ambient one', async () => {
+    // --host daemon: refused, explicit or ambient (unchanged).
+    const d = await run(['--host', 'daemon', 'status'], { ORGAI_SECRET_LITELLM_API_KEY: 'sk' })
+    expect(d.code).toBe(2)
+    expect(d.err).toContain(SECRET_ENV_REFUSAL)
     expect(calls).toHaveLength(0)
-    expect((await run(['--secret-env', 'mcp:p:s:env:X=V', 'runs', 'list'])).code).toBe(2)
+    // auto, explicit --secret-env, a hostless or attach-only command, daemon start: refused before anything runs.
+    for (const argv of [['runs', 'list'], ['status'], ['decide', 'x'], ['daemon', 'start'], ['daemon', 'restart'], ['app'], ['watch']]) {
+      const r = await run(['--secret-env', 'mcp:p:s:env:X=V', ...argv], { V: 'v' })
+      expect(r.code, argv.join(' ')).toBe(2)
+      expect(r.err).toContain(SECRET_ENV_REFUSAL)
+    }
+    expect(calls).toHaveLength(0)
+    // auto, ambient only: one warning, scrubbed, and the command goes on (daemon start too).
+    for (const argv of [['status'], ['runs', 'stop', 'R1'], ['daemon', 'start']]) {
+      const env: NodeJS.ProcessEnv = { ORGAI_SECRET_LITELLM_API_KEY: 'sk', PATH: '/bin' }
+      const r = await run(argv, env)
+      expect(r.code, argv.join(' ')).toBe(0)
+      expect(r.err).toBe('ORGAI_SECRET_* ignored: a running OrgAI host keeps its own secrets\n')
+      expect(env).toEqual({ PATH: '/bin' })
+      expect(calls.at(-1)?.ctx.secretEnv).toBeUndefined()
+    }
     expect((await run(['completions', 'bash'], { ORGAI_SECRET_X: '1' })).code).toBe(0)
+  })
+
+  it('auto: commands that may run in-process collect and scrub the secrets and hand ensureHost what it needs', async () => {
+    const env: NodeJS.ProcessEnv = { ORGAI_SECRET_LITELLM_API_KEY: 'sk', TOKEN: 't', PATH: '/bin' }
+    const r = await run(['--secret-env', 'mcp:p:s:env:X=TOKEN', 'exec', 'hello'], env)
+    expect(r.code).toBe(0)
+    expect(r.err).toBe('')
+    expect(env).toEqual({ PATH: '/bin' })
+    expect(calls.at(-1)).toMatchObject({ name: 'exec', ctx: { secretEnv: { explicit: true, ambient: true, usesSecrets: true } } })
+    await run(['tui'], { ORGAI_SECRET_LITELLM_API_KEY: 'sk' })
+    expect(calls.at(-1)).toMatchObject({ name: 'tui', ctx: { secretEnv: { explicit: false, ambient: true, usesSecrets: true } } })
+    await run(['--', 'fix the bug'], { ORGAI_SECRET_LITELLM_API_KEY: 'sk' })
+    expect(calls.at(-1)).toMatchObject({ name: 'default', ctx: { secretEnv: { usesSecrets: true } } })
+    // No secrets: nothing set.
+    await run(['exec', 'hello'], { PATH: '/bin' })
+    expect(calls.at(-1)?.ctx.secretEnv).toBeUndefined()
+    // A --secret-env naming an unset variable is still a usage error.
+    expect((await run(['--secret-env', 'mcp:p:s:env:X=NOPE', 'exec', 'hello'], {})).code).toBe(2)
   })
 
   it('bare orgai that only prints help (no terminal) does so before the secret refusal and the inproc scrub', async () => {

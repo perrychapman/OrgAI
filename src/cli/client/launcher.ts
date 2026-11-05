@@ -14,7 +14,18 @@
  *   layout's app binary (`<Resources>/../MacOS/OrgAI`, `OrgAI.exe`, `orgai`). No arguments: the packaged app loads its
  *   own app.asar. Checked on a local unsigned macOS pack only; Windows and Linux packs are UNVERIFIED.
  *
- * Order: env > packaged > dev checkout. The spawned app never inherits ELECTRON_RUN_AS_NODE (hostSpawnEnv), nor the
+ * - Installed app discovery (Wave 7, cli-standalone.md 4.1 step 3): macOS /Applications/OrgAI.app, then
+ *   ~/Applications/OrgAI.app; Windows the NSIS per-user %LOCALAPPDATA%\Programs\OrgAI\OrgAI.exe, then the per-machine
+ *   %ProgramFiles%\OrgAI\OrgAI.exe (default paths, UNVERIFIED for oneClick: false); Linux none (an AppImage has no fixed
+ *   place). Source 'installed'. A candidate folder that exists but lacks its binary or app.asar is 'broken' (an error
+ *   naming the path) unless a later candidate is complete.
+ *
+ * Which of these apply follows install.json (installInfo.ts, 3.5): the packaged layout only when it says 'app'; the dev
+ * checkout only when there is no install.json at all AND the candidate root has electron.vite.config.ts and electron in
+ * its devDependencies (an npm install's own package folder, also named orgai, is never a checkout; neither is a root
+ * under node_modules). locate() answers found / absent / broken; only absent lets `--host auto` run in-process.
+ *
+ * Order: env > packaged > dev checkout > installed. The spawned app never inherits ELECTRON_RUN_AS_NODE (hostSpawnEnv), nor the
  * caller's cwd (hostSpawnCwd, review H1): the CLI often runs in an untrusted clone, Windows searches a spawn's cwd for
  * bare program names first, and a long-lived host would otherwise also keep that folder busy.
  */
@@ -22,13 +33,14 @@ import { spawn as nodeSpawn, type SpawnOptions } from 'node:child_process'
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
-import { dirname, isAbsolute, join, resolve } from 'node:path'
+import { dirname, isAbsolute, join, posix, resolve, win32 } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import type { DaemonInfo, HostKind } from '../../shared/types'
+import type { DaemonInfo, HostKind, InstallInfo } from '../../shared/types'
 import { readDaemonInfo } from '../../main/host/ownership'
-import { packagedLayout, resourcesDirOfCliBundle } from '../../main/host/packagedLayout'
+import { PACKAGED_PRODUCT_NAME, packagedLayout, resourcesDirOfCliBundle } from '../../main/host/packagedLayout'
 import { isLiveProcessCached } from '../../main/host/processInfo'
-import type { HostLauncher } from '../types'
+import { readInstallInfo } from '../installInfo'
+import type { HostLauncher, HostLauncherFound } from '../types'
 import { SECRET_ENV_PREFIX } from '../secretOverlay'
 
 export const APP_NOT_FOUND = 'OrgAI app not found; set ORGAI_ELECTRON_PATH or use --host inproc'
@@ -64,6 +76,12 @@ export interface LauncherOptions {
   platform?: NodeJS.Platform
   /** The spawned host's cwd (tests); default {@link hostSpawnCwd}. */
   cwd?: (command: string) => string
+  /** install.json as read (tests); default readInstallInfo next to the bundle. */
+  installInfo?: InstallInfo
+  /** The home folder for ~/Applications (tests); default env.HOME, else os.homedir(). */
+  home?: string
+  /** File existence for installed-app discovery and the checkout markers (tests); default fs.existsSync. */
+  exists?: (path: string) => boolean
 }
 
 function isDir(p: string): boolean {
@@ -95,22 +113,108 @@ function moduleDir(): string {
   }
 }
 
-function isOrgAIRoot(dir: string): boolean {
+/** The marker file only a source checkout has (the npm package never ships it). */
+export const CHECKOUT_MARKER = 'electron.vite.config.ts'
+
+/** True when any segment of `dir` is node_modules (an installed package, never a checkout). */
+function underNodeModules(dir: string): boolean {
+  return resolve(dir)
+    .split(/[\\/]+/)
+    .some((part) => part.toLowerCase() === 'node_modules')
+}
+
+/**
+ * An OrgAI source checkout (cli-standalone.md 4.1 step 3): package.json named orgai with electron in its
+ * devDependencies, electron.vite.config.ts beside it, and not inside node_modules. The npm package is also named orgai
+ * but has neither marker.
+ */
+export function isOrgAICheckout(dir: string, exists: (p: string) => boolean = existsSync): boolean {
+  if (underNodeModules(dir)) return false
+  if (!exists(join(dir, CHECKOUT_MARKER))) return false
   try {
-    const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')) as { name?: unknown }
-    return pkg.name === 'orgai'
+    const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')) as { name?: unknown; devDependencies?: unknown }
+    const dev = pkg.devDependencies
+    return pkg.name === 'orgai' && !!dev && typeof dev === 'object' && !Array.isArray(dev) && Object.hasOwn(dev, 'electron')
   } catch {
     return false
   }
 }
 
 /** The repo root of a dev checkout: two levels up from out/cli, three from src/cli/client. */
-export function devAppRoot(bundleDir: string): string | undefined {
+export function devAppRoot(bundleDir: string, exists?: (p: string) => boolean): string | undefined {
   for (const up of [['..', '..'], ['..', '..', '..']]) {
     const dir = resolve(bundleDir, ...up)
-    if (isOrgAIRoot(dir)) return dir
+    if (isOrgAICheckout(dir, exists)) return dir
   }
   return undefined
+}
+
+/** One place an installed OrgAI may live. */
+export interface InstalledAppCandidate {
+  /** The folder whose presence means "installed here" (OrgAI.app, or the install folder on Windows). */
+  root: string
+  /** The app executable. */
+  binary: string
+  /** <resources>/app.asar */
+  asar: string
+}
+
+/** An environment variable, matched case-insensitively on Windows (an injected env is a plain object). */
+function envValue(env: NodeJS.ProcessEnv, name: string, platform: NodeJS.Platform): string | undefined {
+  const direct = env[name]
+  if (direct !== undefined || platform !== 'win32') return direct?.trim() || undefined
+  const key = Object.keys(env).find((k) => k.toUpperCase() === name.toUpperCase())
+  return key ? env[key]?.trim() || undefined : undefined
+}
+
+/**
+ * Where installed-app discovery looks, in order (4.1 step 3): macOS /Applications then ~/Applications; Windows the
+ * per-user NSIS folder then Program Files (only absolute values of LOCALAPPDATA / ProgramFiles); Linux none.
+ */
+export function installedAppCandidates(platform: NodeJS.Platform, env: NodeJS.ProcessEnv, home: string): InstalledAppCandidate[] {
+  if (platform === 'darwin') {
+    const p = posix
+    const roots = ['/Applications', ...(home && p.isAbsolute(home) ? [p.join(home, 'Applications')] : [])].map((d) => p.join(d, `${PACKAGED_PRODUCT_NAME}.app`))
+    return roots.map((root) => {
+      const layout = packagedLayout('darwin', p.join(root, 'Contents', 'Resources'))
+      return { root, binary: layout.appBinary, asar: p.join(layout.resourcesDir, 'app.asar') }
+    })
+  }
+  if (platform === 'win32') {
+    const bases = [
+      envValue(env, 'LOCALAPPDATA', platform) && win32.join(envValue(env, 'LOCALAPPDATA', platform)!, 'Programs'),
+      envValue(env, 'ProgramFiles', platform)
+    ].filter((b): b is string => !!b && win32.isAbsolute(b))
+    return bases.map((base) => {
+      const root = win32.join(base, PACKAGED_PRODUCT_NAME)
+      const layout = packagedLayout('win32', win32.join(root, 'resources'))
+      return { root, binary: layout.appBinary, asar: win32.join(layout.resourcesDir, 'app.asar') }
+    })
+  }
+  return []
+}
+
+/** The installed app's broken-install error. */
+export function installedAppBroken(root: string, missing: string): string {
+  return `The OrgAI app at ${root} is incomplete (${missing} is missing); reinstall OrgAI, set ORGAI_ELECTRON_PATH or use --host inproc`
+}
+
+/**
+ * Installed-app discovery: the first complete candidate is found; else the first candidate folder that exists but
+ * lacks its binary or app.asar is broken (naming the missing path); else undefined (absent).
+ */
+export function discoverInstalledApp(
+  candidates: readonly InstalledAppCandidate[],
+  exists: (p: string) => boolean = existsSync
+): HostLauncherFound | { error: string; path: string } | undefined {
+  let broken: { error: string; path: string } | undefined
+  for (const c of candidates) {
+    if (!exists(c.root)) continue
+    const missing = !exists(c.binary) ? c.binary : !exists(c.asar) ? c.asar : undefined
+    if (missing === undefined) return { command: c.binary, args: [], source: 'installed' }
+    broken ??= { error: installedAppBroken(c.root, missing), path: missing }
+  }
+  return broken
 }
 
 /** The Electron binary of the app root's electron package, or undefined when it is not installed. */
@@ -204,6 +308,10 @@ export function createLauncher(opts: LauncherOptions): HostLauncher {
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)))
   const spawnFn: SpawnFn = opts.spawn ?? ((c, a, o) => nodeSpawn(c, a, o))
 
+  const exists = opts.exists ?? existsSync
+  const platform = opts.platform ?? process.platform
+  let installInfo: InstallInfo | undefined = opts.installInfo
+
   const resolveApp: HostLauncher['resolve'] = () => {
     const electronPath = env.ORGAI_ELECTRON_PATH?.trim()
     if (electronPath) {
@@ -211,9 +319,14 @@ export function createLauncher(opts: LauncherOptions): HostLauncher {
       return { command: electronPath, args: appRoot ? [resolve(appRoot)] : [], source: 'env' }
     }
     const bundleDir = opts.bundleDir ?? moduleDir()
-    const packaged = packagedApp(bundleDir, opts.platform ?? process.platform, opts.runtime ?? { execPath: process.execPath, electron: process.versions.electron })
-    if (packaged) return packaged
-    const root = devAppRoot(bundleDir)
+    installInfo ??= readInstallInfo({ bundleDir })
+    // The packaged layout only for a bundle install.json marks as the app's own (4.1 step 3).
+    if (installInfo.source === 'file' && installInfo.channel === 'app') {
+      const packaged = packagedApp(bundleDir, platform, opts.runtime ?? { execPath: process.execPath, electron: process.versions.electron })
+      if (packaged) return packaged
+    }
+    // A dev checkout only without any install.json (an unreadable one is never a checkout).
+    const root = installInfo.source === 'absent' ? devAppRoot(bundleDir, exists) : undefined
     if (root) {
       if (!existsSync(join(root, 'out', 'main', 'index.js'))) {
         return { error: `The OrgAI app in ${root} is not built (run npm run build); set ORGAI_ELECTRON_PATH or use --host inproc`, path: root }
@@ -221,6 +334,9 @@ export function createLauncher(opts: LauncherOptions): HostLauncher {
       const bin = electronBinaryOf(root, env)
       if (bin) return { command: bin, args: [root], source: 'dev' }
     }
+    const home = opts.home ?? (env.HOME?.trim() || homedir())
+    const installed = discoverInstalledApp(installedAppCandidates(platform, env, home), exists)
+    if (installed) return installed
     return { error: APP_NOT_FOUND }
   }
 

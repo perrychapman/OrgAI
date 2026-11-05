@@ -38,7 +38,7 @@ describe('connections, models, usage and notes against a real inproc host', () =
     dataDir = join(userDataDir, 'data')
     engDir = join(userDataDir, 'engagement')
     mkdirSync(engDir)
-    host = await startInprocHost({ userDataDir, dataDir, env: { ORGAI_MOCK: '1', ORGAI_DAEMON_IDLE_MINUTES: '0' }, mock: true, overlay: new Map(), logging: false, startBackground: false })
+    host = await startInprocHost({ userDataDir, dataDir, env: { ORGAI_MOCK: '1', ORGAI_DAEMON_IDLE_MINUTES: '0' }, mock: true, overlay: new Map(), logging: false, startBackground: false, systemCertificates: false })
     const res = await connectHost({ dataDir, scopes: ['read', 'operate', 'configure'], clientVersion: CLI_VERSION, cwd: userDataDir, pid: process.pid })
     if (!res.ok) throw new Error(res.message)
     seed = res.client

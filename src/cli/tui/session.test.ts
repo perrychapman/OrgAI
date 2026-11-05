@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { HostScope, PendingCards, RunsSubscribeInput, RunsSubscribeResult, RunSummary } from '../../shared/types'
 import { FakeHostClient, fakeContext, fakeInproc, flush, project, record, rpcError, summary } from '../testing/fakeContext'
-import { EXIT } from '../types'
+import { EXIT, HOST_STARTING_WAIT_MS } from '../types'
 import { DESKTOP_UNAVAILABLE_NOTICE, connectTuiHost, openTuiSession, TUI_DECIDE_TIMEOUT_MS, TUI_NO_DECIDE_NOTICE } from './session'
 
 const P = project('p1', '/work', { name: 'Shop' })
@@ -58,7 +58,7 @@ describe('connectTuiHost', () => {
     const f = fakeContext({ connect: [h] })
     const warned: string[] = []
     const conn = await connectTuiHost(f.ctx, { warn: (m) => warned.push(m) })
-    expect(f.connectCalls).toEqual([{ scopes: SCOPES, opts: { clientKind: 'tui', waitStartingMs: 2000 } }])
+    expect(f.connectCalls).toEqual([{ scopes: SCOPES, opts: { clientKind: 'tui', waitStartingMs: HOST_STARTING_WAIT_MS } }])
     expect(conn.client).toBe(h)
     expect(conn.started).toBe(false)
     expect(warned).toEqual(['App 1.2, CLI 1.1'])
@@ -83,7 +83,7 @@ describe('connectTuiHost', () => {
     const conn = await connectTuiHost(f.ctx)
     const made = await conn.createProject({ name: 'New', path: '/work' } as never)
     expect(made.name).toBe('New')
-    expect(f.connectCalls[1]).toEqual({ scopes: [...SCOPES, 'configure'], opts: { clientKind: 'tui', waitStartingMs: 2000 } })
+    expect(f.connectCalls[1]).toEqual({ scopes: [...SCOPES, 'configure'], opts: { clientKind: 'tui', waitStartingMs: HOST_STARTING_WAIT_MS } })
     // The shared client stays open; the configure connection is closed after the call.
     expect(h1.closed).toBe(false)
     expect(h2.closed).toBe(true)

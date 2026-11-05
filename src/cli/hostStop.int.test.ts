@@ -26,7 +26,7 @@ afterEach(async () => {
 describe('host.stop over the socket', () => {
   for (const force of [false, true]) {
     it(`answers { stopping: true } before the drain closes the socket (force ${force})`, async () => {
-      const h = await startInprocHost({ userDataDir, dataDir, env: { ORGAI_MOCK: '1', ORGAI_DAEMON_IDLE_MINUTES: '0' }, mock: true, overlay: new Map(), logging: false, startBackground: false })
+      const h = await startInprocHost({ userDataDir, dataDir, env: { ORGAI_MOCK: '1', ORGAI_DAEMON_IDLE_MINUTES: '0' }, mock: true, overlay: new Map(), logging: false, startBackground: false, systemCertificates: false })
       started.push(h)
       const res = await connectHost({ dataDir, scopes: ['read', 'configure'], clientVersion: CLI_VERSION, cwd: userDataDir, pid: process.pid })
       if (!res.ok) throw new Error(res.message)

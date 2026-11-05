@@ -1,7 +1,16 @@
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+// The real reader would spawn a child that reads the OS certificate store; every test here injects or turns it off,
+// except the default check below, which sees these spies.
+const certs = vi.hoisted(() => ({ trust: [] as unknown[], stops: 0 }))
+vi.mock('../main/systemCerts', () => ({
+  trustSystemCertificates: (o: unknown) => void certs.trust.push(o),
+  stopSystemCertRead: () => void certs.stops++
+}))
+
 import { LITELLM_KEY, READ_ONLY_SECRETS_MESSAGE, type SecretStore } from '../main/store/secrets'
 import { inprocCliRoots, startInprocHost, type InprocHost } from './inprocHost'
 import { CliError } from './types'
@@ -20,7 +29,7 @@ afterEach(async () => {
 })
 
 const start = async (overlay: Map<string, string> = new Map()): Promise<InprocHost> => {
-  const h = await startInprocHost({ userDataDir, dataDir, env: { ORGAI_MOCK: '1', ORGAI_DAEMON_IDLE_MINUTES: '0' }, mock: true, overlay, logging: false, startBackground: false })
+  const h = await startInprocHost({ userDataDir, dataDir, env: { ORGAI_MOCK: '1', ORGAI_DAEMON_IDLE_MINUTES: '0' }, mock: true, overlay, logging: false, startBackground: false, systemCertificates: false })
   started.push(h)
   return h
 }
@@ -43,7 +52,7 @@ describe('startInprocHost', () => {
 
   it('a second host on the same data dir is refused with exit 6', async () => {
     await start()
-    const err = await startInprocHost({ userDataDir, dataDir, env: {}, mock: true, overlay: new Map(), logging: false, startBackground: false }).catch((e: unknown) => e)
+    const err = await startInprocHost({ userDataDir, dataDir, env: {}, mock: true, overlay: new Map(), logging: false, startBackground: false, systemCertificates: false }).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(CliError)
     expect((err as CliError).exitCode).toBe(6)
   })
@@ -96,6 +105,16 @@ describe('startInprocHost system certificates (issue #16)', () => {
     expect(calls).toEqual(['trust:true:true'])
     await h.stop(true)
     expect(calls).toEqual(['trust:true:true', 'stop'])
+  })
+
+  it('trusts the system certificates by default even with background work off (Wave 7, 4.1 step 4)', async () => {
+    certs.trust.length = 0
+    certs.stops = 0
+    const env = { ORGAI_MOCK: '1', ORGAI_DAEMON_IDLE_MINUTES: '0' }
+    const h = await startInprocHost({ userDataDir, dataDir, env, mock: true, overlay: new Map(), logging: false, startBackground: false })
+    expect(certs.trust).toEqual([{ env }])
+    await h.stop(true)
+    expect(certs.stops).toBeGreaterThanOrEqual(1)
   })
 
   it('does nothing with systemCertificates false, and a host that fails to take ownership never starts the read', async () => {

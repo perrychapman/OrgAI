@@ -49,8 +49,9 @@ export interface StartInprocHostOptions {
   quiet?: boolean
   /**
    * Trust the OS certificate store too (corporate / inspecting root CAs, issue #16), as the desktop app does: taken once
-   * this process owns the data folder, stopped when the host ends. Default: on unless `startBackground` is false
-   * (tests); hooks may be injected.
+   * this process owns the data folder, stopped when the host ends. Default on (Wave 7, cli-standalone.md 4.1 step 4: it
+   * no longer follows `startBackground`, so a management command's host still trusts a corporate root CA); tests pass
+   * false or inject hooks.
    */
   systemCertificates?: boolean | SystemCertHooks
 }
@@ -126,7 +127,7 @@ export async function startInprocHost(opts: StartInprocHostOptions): Promise<Inp
     throw e
   }
   // After ownership (the in-process twin of the desktop's single-instance lock), before anything can fetch.
-  const certOpt = opts.systemCertificates ?? opts.startBackground !== false
+  const certOpt = opts.systemCertificates ?? true
   const certs = certOpt === true ? SYSTEM_CERTS : certOpt === false ? undefined : certOpt
   const stopCerts = (): void => {
     try {

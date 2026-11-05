@@ -1,9 +1,22 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { EventEmitter } from 'node:events'
 import { dirname, join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { APP_NOT_FOUND, createLauncher, hostSpawnCwd, hostSpawnEnv, packagedAppMissing, type SpawnFn } from './launcher'
+import {
+  APP_NOT_FOUND,
+  CHECKOUT_MARKER,
+  createLauncher,
+  devAppRoot,
+  discoverInstalledApp,
+  hostSpawnCwd,
+  hostSpawnEnv,
+  installedAppBroken,
+  installedAppCandidates,
+  isOrgAICheckout,
+  packagedAppMissing,
+  type SpawnFn
+} from './launcher'
 
 let base: string
 let dataDir: string
@@ -14,12 +27,16 @@ beforeEach(() => {
 })
 afterEach(() => rmSync(base, { recursive: true, force: true }))
 
-/** A fake dev checkout: package.json name orgai, out/main and out/cli, an installed electron package. */
-function fakeRepo(): string {
-  const root = join(base, 'repo')
+/**
+ * A fake dev checkout: package.json name orgai with electron in devDependencies, electron.vite.config.ts, out/main and
+ * out/cli, an installed electron package.
+ */
+function fakeRepo(at = join(base, 'repo')): string {
+  const root = at
   mkdirSync(join(root, 'out', 'main'), { recursive: true })
   mkdirSync(join(root, 'out', 'cli'), { recursive: true })
-  writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'orgai' }))
+  writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'orgai', devDependencies: { electron: '45.1.0' } }))
+  writeFileSync(join(root, CHECKOUT_MARKER), '')
   writeFileSync(join(root, 'out', 'main', 'index.js'), '')
   const el = join(root, 'node_modules', 'electron')
   mkdirSync(join(el, 'dist'), { recursive: true })
@@ -49,14 +66,14 @@ describe('launcher', () => {
   })
 
   it('reports a missing app', () => {
-    const l = createLauncher({ dataDir, userDataDir: '', userChoseDataDir: false, env: {}, bundleDir: join(base, 'nowhere', 'a') })
+    const l = createLauncher({ dataDir, userDataDir: '', userChoseDataDir: false, env: {}, bundleDir: join(base, 'nowhere', 'a'), platform: 'linux' })
     expect(l.resolve()).toEqual({ error: APP_NOT_FOUND })
   })
 
   it('locate (Wave 7 contract) maps resolve(): found, absent for APP_NOT_FOUND, broken for an unbuilt checkout', () => {
     const env = createLauncher({ dataDir, userDataDir: '', userChoseDataDir: false, env: { ORGAI_ELECTRON_PATH: '/opt/electron' } })
     expect(env.locate()).toEqual({ status: 'found', command: '/opt/electron', args: [], source: 'env' })
-    const none = createLauncher({ dataDir, userDataDir: '', userChoseDataDir: false, env: {}, bundleDir: join(base, 'nowhere', 'a') })
+    const none = createLauncher({ dataDir, userDataDir: '', userChoseDataDir: false, env: {}, bundleDir: join(base, 'nowhere', 'a'), platform: 'linux' })
     expect(none.locate()).toEqual({ status: 'absent', message: APP_NOT_FOUND })
     const root = fakeRepo()
     rmSync(join(root, 'out', 'main', 'index.js'))
@@ -195,11 +212,15 @@ describe('launcher', () => {
 })
 
 describe('launcher: packaged app (cli-spec 7, Wave 6)', () => {
-  /** A fake macOS bundle: OrgAI.app/Contents/{MacOS/OrgAI, Resources/app.asar.unpacked/out/cli}. */
-  function fakeApp(withBinary = true): { bundleDir: string; binary: string } {
+  /**
+   * A fake macOS bundle: OrgAI.app/Contents/{MacOS/OrgAI, Resources/app.asar.unpacked/out/cli}, with the install.json
+   * the app builder writes (channel 'app') unless `channel` says otherwise (null: no file).
+   */
+  function fakeApp(withBinary = true, channel: string | null = 'app'): { bundleDir: string; binary: string } {
     const contents = join(base, 'Apps', 'OrgAI.app', 'Contents')
     const bundleDir = join(contents, 'Resources', 'app.asar.unpacked', 'out', 'cli')
     mkdirSync(bundleDir, { recursive: true })
+    if (channel !== null) writeFileSync(join(bundleDir, 'install.json'), JSON.stringify({ channel, version: '0.2.0' }))
     mkdirSync(join(contents, 'MacOS'), { recursive: true })
     const binary = join(contents, 'MacOS', 'OrgAI')
     if (withBinary) writeFileSync(binary, '')
@@ -245,6 +266,20 @@ describe('launcher: packaged app (cli-spec 7, Wave 6)', () => {
     expect(l.resolve()).toMatchObject({ source: 'dev', args: [root] })
   })
 
+  it('the packaged layout counts only when install.json says app (Wave 7, 4.1 step 3)', () => {
+    for (const channel of [null, 'npm', 'archive']) {
+      rmSync(join(base, 'Apps'), { recursive: true, force: true })
+      const { bundleDir } = fakeApp(true, channel)
+      const l = createLauncher({ dataDir, userDataDir: '', userChoseDataDir: false, env: {}, bundleDir, platform: 'linux', runtime: { execPath: '/usr/bin/node' } })
+      expect(l.resolve()).toEqual({ error: APP_NOT_FOUND })
+      expect(l.locate()).toEqual({ status: 'absent', message: APP_NOT_FOUND })
+    }
+    // A missing binary is not 'broken' either when install.json does not claim the layout.
+    rmSync(join(base, 'Apps'), { recursive: true, force: true })
+    const { bundleDir } = fakeApp(false, 'npm')
+    expect(createLauncher({ dataDir, userDataDir: '', userChoseDataDir: false, env: {}, bundleDir, platform: 'linux' }).locate().status).toBe('absent')
+  })
+
   it('the packaged spawn never passes ELECTRON_RUN_AS_NODE on', () => {
     const { bundleDir, binary } = fakeApp()
     const calls: { command: string; args: string[]; env?: NodeJS.ProcessEnv }[] = []
@@ -257,5 +292,107 @@ describe('launcher: packaged app (cli-spec 7, Wave 6)', () => {
     l.spawn({ headless: true })
     expect(calls[0]).toEqual({ command: binary, args: ['--headless-host'], env: { PATH: '/bin' } })
     expect(hostSpawnEnv({ ELECTRON_RUN_AS_NODE: '1' }, { userDataDir: '', userChoseDataDir: false })).toEqual({})
+  })
+})
+
+describe('launcher: dev checkout rule (Wave 7, 4.1 step 3)', () => {
+  it('needs electron.vite.config.ts and electron in devDependencies; an npm package folder is never a checkout', () => {
+    const root = fakeRepo()
+    expect(isOrgAICheckout(root)).toBe(true)
+    expect(devAppRoot(join(root, 'out', 'cli'))).toBe(root)
+    rmSync(join(root, CHECKOUT_MARKER))
+    expect(isOrgAICheckout(root)).toBe(false)
+    expect(devAppRoot(join(root, 'out', 'cli'))).toBeUndefined()
+    writeFileSync(join(root, CHECKOUT_MARKER), '')
+    // The npm package: name orgai, electron only as a dependency (or not at all).
+    writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'orgai', dependencies: { electron: '45.1.0' } }))
+    expect(isOrgAICheckout(root)).toBe(false)
+    writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'other', devDependencies: { electron: '45.1.0' } }))
+    expect(isOrgAICheckout(root)).toBe(false)
+    // Even with both markers, a root inside node_modules is an installed package.
+    const pkg = fakeRepo(join(base, 'g', 'lib', 'node_modules', 'orgai'))
+    expect(isOrgAICheckout(pkg)).toBe(false)
+    const l = createLauncher({ dataDir, userDataDir: '', userChoseDataDir: false, env: {}, bundleDir: join(pkg, 'out', 'cli'), platform: 'linux', installInfo: { channel: 'dev', source: 'absent' } })
+    expect(l.locate()).toEqual({ status: 'absent', message: APP_NOT_FOUND })
+  })
+
+  it('is used only when install.json is absent: a written or unreadable one never makes a checkout', () => {
+    const root = fakeRepo()
+    const bundleDir = join(root, 'out', 'cli')
+    const mk = (info?: Parameters<typeof createLauncher>[0]['installInfo']) =>
+      createLauncher({ dataDir, userDataDir: '', userChoseDataDir: false, env: {}, bundleDir, platform: 'linux', ...(info ? { installInfo: info } : {}) })
+    expect(mk().resolve()).toMatchObject({ source: 'dev', args: [root] })
+    expect(mk({ channel: 'npm', source: 'file' }).resolve()).toEqual({ error: APP_NOT_FOUND })
+    expect(mk({ channel: 'dev', source: 'invalid', problem: 'install.json is not JSON' }).resolve()).toEqual({ error: APP_NOT_FOUND })
+    // The real reader: an install.json next to the bundle switches the checkout off.
+    writeFileSync(join(bundleDir, 'install.json'), JSON.stringify({ channel: 'npm', version: '0.2.0' }))
+    expect(mk().resolve()).toEqual({ error: APP_NOT_FOUND })
+    writeFileSync(join(bundleDir, 'install.json'), '{not json')
+    expect(mk().resolve()).toEqual({ error: APP_NOT_FOUND })
+  })
+})
+
+describe('launcher: installed app discovery (Wave 7, 4.1 step 3)', () => {
+  const MAC_SYS = '/Applications/OrgAI.app'
+  const MAC_USER = '/Users/me/Applications/OrgAI.app'
+  const macFiles = (root: string): string[] => [root, `${root}/Contents/MacOS/OrgAI`, `${root}/Contents/Resources/app.asar`]
+  const has = (files: string[]) => (p: string): boolean => files.includes(p)
+
+  it('candidates per platform: macOS /Applications then ~/Applications, Windows LOCALAPPDATA then ProgramFiles, Linux none', () => {
+    expect(installedAppCandidates('darwin', {}, '/Users/me')).toEqual([
+      { root: MAC_SYS, binary: `${MAC_SYS}/Contents/MacOS/OrgAI`, asar: `${MAC_SYS}/Contents/Resources/app.asar` },
+      { root: MAC_USER, binary: `${MAC_USER}/Contents/MacOS/OrgAI`, asar: `${MAC_USER}/Contents/Resources/app.asar` }
+    ])
+    expect(installedAppCandidates('darwin', {}, '')).toHaveLength(1)
+    const win = installedAppCandidates('win32', { localappdata: 'C:\\Users\\me\\AppData\\Local', ProgramFiles: 'C:\\Program Files' }, 'C:\\Users\\me')
+    expect(win).toEqual([
+      { root: 'C:\\Users\\me\\AppData\\Local\\Programs\\OrgAI', binary: 'C:\\Users\\me\\AppData\\Local\\Programs\\OrgAI\\OrgAI.exe', asar: 'C:\\Users\\me\\AppData\\Local\\Programs\\OrgAI\\resources\\app.asar' },
+      { root: 'C:\\Program Files\\OrgAI', binary: 'C:\\Program Files\\OrgAI\\OrgAI.exe', asar: 'C:\\Program Files\\OrgAI\\resources\\app.asar' }
+    ])
+    // A relative or empty variable is ignored.
+    expect(installedAppCandidates('win32', { LOCALAPPDATA: 'relative', ProgramFiles: '' }, '')).toEqual([])
+    expect(installedAppCandidates('linux', { HOME: '/home/me' }, '/home/me')).toEqual([])
+  })
+
+  it('found, broken (naming the missing path) and absent', () => {
+    const c = installedAppCandidates('darwin', {}, '/Users/me')
+    expect(discoverInstalledApp(c, has(macFiles(MAC_SYS)))).toEqual({ command: `${MAC_SYS}/Contents/MacOS/OrgAI`, args: [], source: 'installed' })
+    expect(discoverInstalledApp(c, has(macFiles(MAC_USER)))).toEqual({ command: `${MAC_USER}/Contents/MacOS/OrgAI`, args: [], source: 'installed' })
+    expect(discoverInstalledApp(c, has([MAC_SYS, `${MAC_SYS}/Contents/Resources/app.asar`]))).toEqual({
+      error: installedAppBroken(MAC_SYS, `${MAC_SYS}/Contents/MacOS/OrgAI`),
+      path: `${MAC_SYS}/Contents/MacOS/OrgAI`
+    })
+    expect(discoverInstalledApp(c, has([MAC_SYS, `${MAC_SYS}/Contents/MacOS/OrgAI`]))).toMatchObject({ path: `${MAC_SYS}/Contents/Resources/app.asar` })
+    // A broken /Applications copy does not hide a complete ~/Applications one.
+    expect(discoverInstalledApp(c, has([MAC_SYS, ...macFiles(MAC_USER)]))).toMatchObject({ source: 'installed', command: `${MAC_USER}/Contents/MacOS/OrgAI` })
+    expect(discoverInstalledApp(c, has([]))).toBeUndefined()
+  })
+
+  it('locate() reports an installed app as found (source installed) and an incomplete one as broken, after env and checkout', () => {
+    const mk = (files: string[], env: NodeJS.ProcessEnv = {}) =>
+      createLauncher({ dataDir, userDataDir: '', userChoseDataDir: false, env, bundleDir: join(base, 'npm', 'out', 'cli'), platform: 'darwin', home: '/Users/me', exists: has(files), installInfo: { channel: 'npm', source: 'file' } })
+    expect(mk(macFiles(MAC_SYS)).locate()).toEqual({ status: 'found', command: `${MAC_SYS}/Contents/MacOS/OrgAI`, args: [], source: 'installed' })
+    expect(mk([MAC_SYS]).locate()).toEqual({ status: 'broken', path: `${MAC_SYS}/Contents/MacOS/OrgAI`, message: installedAppBroken(MAC_SYS, `${MAC_SYS}/Contents/MacOS/OrgAI`) })
+    expect(mk([]).locate()).toEqual({ status: 'absent', message: APP_NOT_FOUND })
+    expect(mk(macFiles(MAC_SYS), { ORGAI_ELECTRON_PATH: '/e' }).locate()).toMatchObject({ status: 'found', source: 'env' })
+    // Windows through the env, case-insensitively.
+    const w = createLauncher({
+      dataDir,
+      userDataDir: '',
+      userChoseDataDir: false,
+      env: { programfiles: 'C:\\Program Files' },
+      bundleDir: join(base, 'npm', 'out', 'cli'),
+      platform: 'win32',
+      home: 'C:\\Users\\me',
+      exists: has(['C:\\Program Files\\OrgAI', 'C:\\Program Files\\OrgAI\\OrgAI.exe', 'C:\\Program Files\\OrgAI\\resources\\app.asar']),
+      installInfo: { channel: 'npm', source: 'file' }
+    })
+    expect(w.locate()).toEqual({ status: 'found', command: 'C:\\Program Files\\OrgAI\\OrgAI.exe', args: [], source: 'installed' })
+  })
+
+  it('a dev checkout wins over an installed app', () => {
+    const root = fakeRepo()
+    const l = createLauncher({ dataDir, userDataDir: '', userChoseDataDir: false, env: {}, bundleDir: join(root, 'out', 'cli'), platform: 'darwin', home: '/Users/me', exists: (p) => macFiles(MAC_SYS).includes(p) || existsSync(p) })
+    expect(l.resolve()).toMatchObject({ source: 'dev' })
   })
 })
