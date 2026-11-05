@@ -6,7 +6,9 @@ import {
   collapseKnowledgeWrites,
   entityNameOfResult,
   humanizeKnowledgeRow,
+  isKnowledgeReadRow,
   isKnowledgeWriteRow,
+  knowledgeReadLines,
   noteTitleOfResult,
   parseBreakdownKey,
   parseBreakdownPartial,
@@ -198,6 +200,51 @@ describe('collapseKnowledgeWrites', () => {
     expect(c.labels.get(read.id)).toBe('Read the note Kickoff call summary')
     expect(c.labels.has(read2.id)).toBe(false)
     expect(c.hidden.size).toBe(0)
+  })
+})
+
+describe('knowledge reads (section 3.4)', () => {
+  it('folds a knowledge_recall call (bare or prefixed) into its Recalled row, the result under Show output', () => {
+    const bare = call('knowledge_recall', { query: 'Acme billing' })
+    const pre = call('mcp__orgai__knowledge_recall', { query: 'Acme billing' })
+    const entries = [
+      bare,
+      result(bare, 'Acme Corp\n<<<\n...\n>>>'),
+      harness('Recalled 2 items about Acme billing'),
+      pre,
+      result(pre, 'Already shown'),
+      harness('Recalled 2 items about Acme billing')
+    ]
+    const c = collapseKnowledgeWrites(entries)
+    expect(c.hidden.has(bare.id)).toBe(true)
+    expect(c.hidden.has(entries[1].id)).toBe(true)
+    expect(c.hidden.has(pre.id)).toBe(true)
+    expect(c.body.get(entries[2].id)).toBe('Acme Corp\n<<<\n...\n>>>')
+    expect(c.body.get(entries[5].id)).toBe('Already shown')
+    expect(c.reads.has(entries[2].id) && c.reads.has(entries[5].id)).toBe(true)
+    expect(c.rows.size).toBe(0)
+  })
+  it('keeps "Added N known items" as a quiet row with no output', () => {
+    const added = harness('Added 1 known item: Jane Doe', 'a-sub')
+    const c = collapseKnowledgeWrites([added])
+    expect(c.reads.has(added.id)).toBe(true)
+    expect(c.body.has(added.id)).toBe(false)
+  })
+  it('pairs only within the same agent and leaves a refusal unpaired', () => {
+    const refused = call('knowledge_recall', { query: '' })
+    const other = harness('Recalled 1 item about x', 'a-sub')
+    const c = collapseKnowledgeWrites([refused, result(refused, 'REFUSED: knowledge_recall needs a query.'), other])
+    expect(c.hidden.size).toBe(0)
+    const own = call('knowledge_recall', { query: 'x' })
+    const c2 = collapseKnowledgeWrites([own, result(own, 'x'), other])
+    expect(c2.hidden.size).toBe(0)
+  })
+  it('keeps reads out of the recorded count and breakdown', () => {
+    const entries = [harness('Recalled 3 items about Acme'), harness('Added 2 known items: Acme Corp, Jane Doe'), harness('Recorded person Jane Doe')]
+    expect(recordedCount(entries)).toBe(1)
+    expect(recordedBreakdown(entries)).toEqual({ items: 1, updates: 0, relations: 0, notes: 0, retired: 0 })
+    expect(isKnowledgeReadRow(entries[0]) && isKnowledgeReadRow(entries[1]) && !isKnowledgeReadRow(entries[2])).toBe(true)
+    expect(knowledgeReadLines(entries)).toEqual(['Recalled 3 items about Acme', 'Added 2 known items: Acme Corp, Jane Doe'])
   })
 })
 

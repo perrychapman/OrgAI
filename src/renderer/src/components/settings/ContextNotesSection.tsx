@@ -1,7 +1,10 @@
 import type { ReactElement } from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Project } from '@shared/types'
+import { knowledgeAutoContextOn } from '@shared/knowledge'
 import { cleanIpcError } from '../../lib/ipcError'
+import { SettingRow, settingDescId } from '../ui/SettingRow'
+import { Switch } from '../ui/Switch'
 import { knowledgeSummaryLine } from '../../lib/knowledge'
 import { PROJECT_SETTINGS_SECTIONS } from '../../lib/settingsTarget'
 import { useAppStore } from '../../store/useAppStore'
@@ -42,6 +45,18 @@ export function ContextNotesSection({ project }: { project: Project }): ReactEle
     })
   }, [project.id, load])
 
+  // Off saves false; on removes the field (unset = on). Saved at once, like the other switches.
+  const [autoError, setAutoError] = useState<string | null>(null)
+  const setAutoContext = (on: boolean): void => {
+    const st = useAppStore.getState()
+    const current = st.projects.find((p) => p.id === project.id) ?? project
+    const { knowledgeAutoContext: _drop, ...rest } = current
+    const updated: Project = on ? rest : { ...rest, knowledgeAutoContext: false }
+    setAutoError(null)
+    st.updateProject(updated)
+    st.saveProjectNow(updated).catch((e: unknown) => setAutoError(`Could not save: ${cleanIpcError(e)}`))
+  }
+
   return (
     <SettingsSection
       id={PROJECT_SETTINGS_SECTIONS.contextNotes}
@@ -61,6 +76,17 @@ export function ContextNotesSection({ project }: { project: Project }): ReactEle
           Open Knowledge
         </button>
       </p>
+      <SettingRow
+        id="knowledge-auto-context-title"
+        title="Add known items to what agents receive"
+        description="When a message or brief names something the team recorded, OrgAI adds a short note about it. This adds a little text to agents' messages."
+        control={<Switch checked={knowledgeAutoContextOn(project)} onChange={setAutoContext} label="Add known items to what agents receive" describedBy={settingDescId('knowledge-auto-context-title')} testId="knowledge-auto-context" />}
+      />
+      {autoError && (
+        <p className="field-msg error" role="alert" data-testid="knowledge-auto-context-error">
+          {autoError}
+        </p>
+      )}
     </SettingsSection>
   )
 }

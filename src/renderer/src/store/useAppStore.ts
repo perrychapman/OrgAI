@@ -9,6 +9,7 @@ import { defaultRunToOpen } from '../lib/needsYou'
 import { assistantRunToOpen } from '../lib/assistantNav'
 import { secretsNextFor, type ProposalNext } from '../lib/proposalNext'
 import type { KnowledgeFocusRequest } from '../lib/knowledge'
+import { addRecalled, cleanRecalledEvent, type RecalledEvent } from '../lib/runKnowledge'
 import { adoptEndFacts, statusEventEndFacts, CHAIN_EAGER_MEMBERS, CHAIN_FETCH_CONCURRENCY, CHAIN_WALK_MAX_HOPS, chainGroups, chainIdsToLoad, chainKeyOf, chainOf, needsYou, runBatched, type ChainGroup } from '../lib/runChains'
 import { cutWhile, settleEndedAgents } from '../lib/runStatus'
 import { readOpenTabs, sameRunSummaries, tabsSignature, writeOpenTabs } from '../lib/openTabs'
@@ -75,7 +76,29 @@ export interface ImportNotice {
 
 export type View = 'projects' | 'team' | 'settings' | 'run' | 'history' | 'knowledge' | 'appSettings'
 /** Tabs of the live view's side panel. The side tab is remembered per run. */
-export type SideTab = 'transcript' | 'plan' | 'usage' | 'logs'
+export type SideTab = 'transcript' | 'plan' | 'usage' | 'knowledge' | 'logs'
+
+/** What a request to open one item in a run's Knowledge side tab names (ids first, else kind and name, else a note title). */
+export interface RunKnowledgeRequest {
+  nodeId?: string
+  kind?: string
+  name?: string
+  noteTitle?: string
+}
+
+/**
+ * The run side tab's own state, per conversation chain (docs/design/knowledge-graph-2.md section 3.1): the search text,
+ * the open item and the Back stack survive a tab switch. `request` is a pending open from a transcript link or RunMeta
+ * in a run window; the tab resolves and clears it.
+ */
+export interface RunKnowledgeUi {
+  query: string
+  openId: string | null
+  stack: string[]
+  request?: RunKnowledgeRequest
+}
+
+export const EMPTY_RUN_KNOWLEDGE: RunKnowledgeUi = { query: '', openId: null, stack: [] }
 
 /** A half-typed message. Kept per run (and per project for the New run page) so it survives tab switches. */
 export interface ComposerDraft {
@@ -220,6 +243,14 @@ interface AppState {
   setRunLayout(runId: string, layout: RunLayout): void
   /** Select the side tab of the viewed run. */
   setSideTab(tab: SideTab): void
+  /** `knowledge.recalled` events per run (ids and time only), in arrival order; not saved with the run, so empty after a relaunch. */
+  knowledgeRecalledByRun: Record<string, RecalledEvent[]>
+  /** The run Knowledge side tab's state per chain (the key is the chain's first run id). */
+  runKnowledgeByChain: Record<string, RunKnowledgeUi>
+  /** Merge a change into the chain's side-tab state (the chain of `runId`). */
+  patchRunKnowledge(runId: string, patch: Partial<RunKnowledgeUi>): void
+  /** Show the run's Knowledge side tab, on one item when `request` names it (a run window's stand-in for the Knowledge tab). */
+  openRunKnowledge(runId: string, request?: RunKnowledgeRequest): void
   /** Short inline message next to the run tabs (e.g. after hiding a tab). */
   tabNotice: string | null
   setTabNotice(message: string): void
@@ -775,6 +806,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   draftPage: {},
   composerDrafts: {},
   sideTabByRun: {},
+  knowledgeRecalledByRun: {},
+  runKnowledgeByChain: {},
   runLayoutByRun: {},
   tabNotice: null,
   unreadByRun: {},
@@ -1007,6 +1040,20 @@ export const useAppStore = create<AppState>((set, get) => ({
   setSideTab(tab) {
     const runId = activeRun(get())?.summary.id
     if (runId) set((s) => ({ sideTabByRun: { ...s.sideTabByRun, [runId]: tab } }))
+  },
+
+  patchRunKnowledge(runId, patch) {
+    set((s) => {
+      const projectId = s.runs[runId]?.summary.projectId ?? ''
+      const key = chainKeyOf(summariesOf(s, projectId), runId)
+      const cur = s.runKnowledgeByChain[key] ?? EMPTY_RUN_KNOWLEDGE
+      return { runKnowledgeByChain: { ...s.runKnowledgeByChain, [key]: { ...cur, ...patch } } }
+    })
+  },
+
+  openRunKnowledge(runId, request) {
+    get().patchRunKnowledge(runId, request ? { request, query: '', openId: null, stack: [] } : {})
+    set((s) => ({ sideTabByRun: { ...s.sideTabByRun, [runId]: 'knowledge' } }))
   },
 
   setComposerDraft(key, draft) {
@@ -1641,6 +1688,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (rulesProject) set((s) => ({ rulesChangedByProject: { ...s.rulesChangedByProject, [rulesProject]: (s.rulesChangedByProject[rulesProject] ?? 0) + 1 } }))
     if (e.type === 'project.updated') {
       set((s) => ({ projects: s.projects.map((p) => (p.id === e.project.id ? e.project : p)) }))
+      return
+    }
+    // What agents looked up or were given: ids and time only, kept per run for the Knowledge side tab.
+    if (e.type === 'knowledge.recalled') {
+      const ev = cleanRecalledEvent(e)
+      if (ev) set((s) => ({ knowledgeRecalledByRun: { ...s.knowledgeRecalledByRun, [e.runId]: addRecalled(s.knowledgeRecalledByRun[e.runId], ev) } }))
       return
     }
     // Plan usage is account-wide: keep the latest, whichever run reported it.
