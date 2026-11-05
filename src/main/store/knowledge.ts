@@ -563,7 +563,7 @@ function dedupeFactTexts(texts: string[], existing: string[]): string[] {
 /**
  * The user's editor save (knowledge:saveNode; see KnowledgeNodeSaveInput). Without nodeId: a new node, refused when a
  * (kind, name / alias) match exists. With nodeId: field by field replacement (kind and name may change; uniqueness is
- * re-checked); `facts` given = the full list (an id keeps that fact's source, and its retired flag unless given; an
+ * re-checked; omitted = kept as stored, so `{ nodeId, appendFacts }` is a pure append); `facts` given = the full list (an id keeps that fact's source, and its retired flag unless given; an
  * unknown id is refused; no id = a new user fact), omitted = unchanged; `aliases`, `summary`, `noteIds` given replace,
  * omitted keep; `retired` given sets it. The source stamp is the user's.
  *
@@ -575,8 +575,10 @@ function dedupeFactTexts(texts: string[], existing: string[]): string[] {
  */
 export function saveNodeForUser(dataDir: string, projectId: string, input: Omit<KnowledgeNodeSaveInput, 'projectId'>): KnowledgeNode {
   const graph = loadForWrite(dataDir, projectId)
-  const kind = checkKey('kind', input.kind)
-  const name = checkName('The name', input.name)
+  // With nodeId, an omitted kind or name keeps the stored one (an append-only save; cli-spec 3.6 item 3).
+  const stored = input.nodeId === undefined ? undefined : nodeById(graph, input.nodeId)
+  const kind = stored && input.kind === undefined ? stored.kind : checkKey('kind', input.kind)
+  const name = stored && input.name === undefined ? stored.name : checkName('The name', input.name)
   const aliases = input.aliases === undefined ? undefined : checkAliases(input.aliases, name)
   const summary = checkOptionalText('The summary', input.summary, KNOWLEDGE_SUMMARY_MAX_CHARS)
   const noteIds = input.noteIds === undefined ? undefined : checkNoteIds(input.noteIds, new Set(listNotes(dataDir, projectId).map((n) => n.id)))
@@ -636,12 +638,15 @@ export function saveNodeForUser(dataDir: string, projectId: string, input: Omit<
     return node
   }
 
-  const node = nodeById(graph, input.nodeId)
+  const node = stored ?? nodeById(graph, input.nodeId)
   // Compare-and-set: checked on the graph just read, in the same synchronous call as the write below.
   if (expected !== undefined && node.updatedAt !== expected) throw staleError()
   const keptAliases = aliases ?? dedupeAliases(node.aliases ?? [], name, KNOWLEDGE_ALIASES_MAX)
-  const found = matches(graph, kind, name, keptAliases, node.id)
-  if (found.length) throw duplicateRefusal(kind, found[0])
+  // Identity is re-checked only when it can change: a save that leaves kind, name and aliases out keeps them as stored.
+  if (input.kind !== undefined || input.name !== undefined || input.aliases !== undefined) {
+    const found = matches(graph, kind, name, keptAliases, node.id)
+    if (found.length) throw duplicateRefusal(kind, found[0])
+  }
   let facts = node.facts
   const factIds = factIdsOf(graph)
   if (factInputs) {

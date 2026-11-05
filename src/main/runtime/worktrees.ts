@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
-import { basename, dirname, join } from 'node:path'
-import { gitPath, gitPathSync, pathKey, withRepoLock as repoLock } from './repoLock'
+import { basename, dirname, join, resolve } from 'node:path'
+import { gitPath, gitPathSync, pathKey, repoLockRecovery, withRepoLock as repoLock } from './repoLock'
 import type { MergeDecision, PendingWorktree, WorktreeDiff, WorktreeInfo } from '@shared/types'
 
 /**
@@ -219,6 +219,63 @@ export async function inspectPending(root: string): Promise<PendingWorktree[]> {
   return out
 }
 
+/**
+ * Files in a checkout's git dir that mean a git operation is unfinished there: a merge, cherry-pick, revert or rebase
+ * in progress, or an index.lock (a git process running now, or one that crashed). With the repository lock held none
+ * of them is OrgAI's own work in progress, so they belong to the user or to a crashed holder.
+ */
+const UNFINISHED_GIT_STATE = ['index.lock', 'MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'rebase-merge', 'rebase-apply']
+
+/** Thrown by a git step that refused to run over an unfinished git operation (spec 3.2 (5) 4). */
+export class UnfinishedGitStateError extends Error {
+  readonly files: string[]
+  constructor(message: string, files: string[]) {
+    super(message)
+    this.name = 'UnfinishedGitStateError'
+    this.files = files
+  }
+}
+
+/** The unfinished-operation files of each existing checkout, deduplicated. Read-only; one git call per checkout. */
+async function unfinishedGitState(checkouts: string[]): Promise<string[]> {
+  const found: string[] = []
+  const seen = new Set<string>()
+  for (const checkout of checkouts) {
+    if (!existsSync(checkout)) continue
+    const res = await git(checkout, ['rev-parse', ...UNFINISHED_GIT_STATE.flatMap((rel) => ['--git-path', rel])])
+    if (!res.ok) continue
+    for (const line of res.out.split(/\r?\n/)) {
+      if (!line.trim()) continue
+      const p = resolve(checkout, line.trim())
+      const k = pathKey(p)
+      if (seen.has(k)) continue
+      seen.add(k)
+      if (existsSync(p)) found.push(p)
+    }
+  }
+  return found
+}
+
+/**
+ * Null when git may run destructive steps (merge --abort, worktree remove --force, branch -D, reset) in `checkouts`;
+ * else the sentence telling the user what was left and that nothing was changed. Call it holding the repository lock.
+ */
+async function unfinishedGitStateRefusal(checkouts: string[], kept: string): Promise<{ message: string; files: string[] } | null> {
+  const files = await unfinishedGitState(checkouts)
+  if (!files.length) return null
+  const reclaimed = repoLockRecovery()
+    .map((n) => (n.previousOwner ? ` OrgAI took over the repository lock from process ${n.previousOwner.pid}, which is gone.` : ' OrgAI took over a stale repository lock.'))
+    .slice(0, 1)
+    .join('')
+  return {
+    files,
+    message:
+      `Git left an unfinished operation in this repository (${files.join(', ')}).${reclaimed} ` +
+      `OrgAI ran no destructive git command and changed nothing; ${kept}. ` +
+      'Finish or abort that operation yourself (for example git merge --abort, or delete a stale index.lock once no git process is running), then integrate again.'
+  }
+}
+
 /** Stage and commit whatever a report left behind. Returns true when a commit was made. */
 export async function commitLeftovers(wt: string, message: string): Promise<{ committed: boolean; error?: string }> {
   return withRepoLock(wt, () => commitLeftoversUnlocked(wt, message))
@@ -229,6 +286,9 @@ const IDENTITY_ERROR = /user\.name|user\.email|identity|tell me who you are/i
 const FALLBACK_IDENTITY = ['-c', 'user.name=OrgAI', '-c', 'user.email=orgai@localhost']
 
 async function commitLeftoversUnlocked(wt: string, message: string): Promise<{ committed: boolean; error?: string }> {
+  // `git add` / `reset` / `commit` over a half-finished merge in the worktree would conclude or unstage it.
+  const refusal = await unfinishedGitStateRefusal([wt], `its files stay as they are in ${wt}`)
+  if (refusal) return { committed: false, error: refusal.message }
   const status = await git(wt, ['status', '--porcelain'])
   if (!status.ok || !status.out) return { committed: false }
   await git(wt, ['add', '-A', ...ADD_PATHSPEC])
@@ -244,9 +304,14 @@ async function commitLeftoversUnlocked(wt: string, message: string): Promise<{ c
   return commit.ok ? { committed: true } : { committed: false, error: commit.err.slice(0, 300) }
 }
 
-/** Remove a worktree and its branch, discarding any work on it. */
+/**
+ * Remove a worktree and its branch, discarding any work on it. Throws UnfinishedGitStateError, changing nothing, when
+ * the worktree's git dir holds an unfinished operation (a crashed holder's index.lock or MERGE_HEAD).
+ */
 export async function discardWorktree(root: string, wt: { path: string; branch: string }): Promise<void> {
   await withRepoLock(root, async () => {
+    const refusal = await unfinishedGitStateRefusal([wt.path], `branch ${wt.branch} is kept at ${wt.path}`)
+    if (refusal) throw new UnfinishedGitStateError(refusal.message, refusal.files)
     await removeWorktree(root, wt.path)
     await git(root, ['branch', '-D', wt.branch])
   })
@@ -285,6 +350,9 @@ export async function integrateWorktree(
     if (!existsSync(wt)) {
       return { info: { ...info, status: 'removed' }, message: 'Worktree was already removed; nothing to integrate.' }
     }
+    // A crashed holder (or the user) left a merge or an index.lock: never commit, merge, abort or remove over it.
+    const refusal = await unfinishedGitStateRefusal([root, wt], `branch ${info.branch} is kept at ${wt}`)
+    if (refusal) return { info: { ...info, status: 'conflict' }, message: refusal.message }
 
     const commit = await commitLeftovers(wt, commitMessage)
     if (commit.error) {
@@ -311,7 +379,12 @@ export async function integrateWorktree(
   if (review) {
     const decision = await review(changedFiles)
     if (decision.behavior === 'discard') {
-      await discardWorktree(root, info)
+      try {
+        await discardWorktree(root, info)
+      } catch (e) {
+        if (e instanceof UnfinishedGitStateError) return { info: { ...info, status: 'conflict', changedFiles }, message: e.message }
+        throw e
+      }
       return { info: { ...info, status: 'removed', changedFiles }, message: `The user discarded ${info.branch}; its changes were deleted.` }
     }
     if (decision.behavior === 'hold') {
@@ -327,6 +400,8 @@ export async function integrateWorktree(
     if (!existsSync(wt)) {
       return { info: { ...info, status: 'removed', changedFiles }, message: `${info.branch} was removed during the review; nothing was merged.` }
     }
+    const refusal = await unfinishedGitStateRefusal([root, wt], `branch ${info.branch} is kept at ${wt}`)
+    if (refusal) return { info: { ...info, status: 'conflict', changedFiles }, message: refusal.message }
     return mergeInto(root, info, commitMessage, changedFiles)
   })
 }

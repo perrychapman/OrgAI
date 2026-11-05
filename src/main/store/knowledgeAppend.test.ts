@@ -100,6 +100,27 @@ describe('saveNodeForUser appendFacts', () => {
     expect(() => saveNodeForUser(dir, P, { kind: 'person', name: 'Ada', appendFacts: 'x' as unknown as string[] })).toThrow(/list/)
     expect(readKnowledge(dir, P).nodes).toEqual([])
   })
+
+  it('appends with only nodeId and appendFacts, keeping a rename and facts written in between', () => {
+    const created = saveNodeForUser(dir, P, { kind: 'organisation', name: 'Acme Corp', aliases: ['Acme'], summary: 'S' })
+    // While the CLI prepares its append: the user renames the node in Desktop and an agent appends a fact.
+    saveNodeForUser(dir, P, { nodeId: created.id, kind: 'organisation', name: 'Acme Ltd' })
+    upsertNode(dir, P, { nodeId: created.id, kind: 'organisation', name: 'Acme Ltd', facts: ['HQ in Leeds'] }, agent)
+    const saved = saveNodeForUser(dir, P, { nodeId: created.id, appendFacts: ['hq in leeds', 'FY ends March'] })
+    expect(saved).toMatchObject({ kind: 'organisation', name: 'Acme Ltd', aliases: ['Acme'], summary: 'S' })
+    expect(saved.facts.map((f) => [f.text, f.source.by])).toEqual([
+      ['HQ in Leeds', 'agent'],
+      ['FY ends March', 'user']
+    ])
+    expect(readKnowledge(dir, P).nodes[0]).toEqual(saved)
+  })
+
+  it('still needs kind and name for a new node, and refuses an unknown nodeId', () => {
+    expect(() => saveNodeForUser(dir, P, { appendFacts: ['A'] })).toThrow()
+    expect(() => saveNodeForUser(dir, P, { kind: 'person', appendFacts: ['A'] })).toThrow()
+    expect(() => saveNodeForUser(dir, P, { nodeId: 'kn_missing', appendFacts: ['A'] })).toThrow(/No entity/)
+    expect(readKnowledge(dir, P).nodes).toEqual([])
+  })
 })
 
 describe('saveNodeForUser expectedUpdatedAt', () => {
@@ -144,6 +165,13 @@ describe('knowledgeArgs.saveNode appendFacts / expectedUpdatedAt', () => {
   it('passes them through', () => {
     expect(knowledgeArgs.saveNode({ ...base, nodeId: 'kn_ab12', appendFacts: ['A', 'B'], expectedUpdatedAt: 123 })).toEqual({ ...base, nodeId: 'kn_ab12', appendFacts: ['A', 'B'], expectedUpdatedAt: 123 })
     expect(knowledgeArgs.saveNode({ ...base, appendFacts: null, expectedUpdatedAt: null })).toEqual(base)
+  })
+  it('lets an append with a nodeId leave kind and name out, but not a create', () => {
+    expect(knowledgeArgs.saveNode({ projectId: 'proj_a', nodeId: 'kn_ab12', appendFacts: ['A'] })).toEqual({ projectId: 'proj_a', nodeId: 'kn_ab12', appendFacts: ['A'] })
+    expect(knowledgeArgs.saveNode({ projectId: 'proj_a', nodeId: 'kn_ab12', kind: null, name: null, appendFacts: ['A'] })).toEqual({ projectId: 'proj_a', nodeId: 'kn_ab12', appendFacts: ['A'] })
+    expect(() => knowledgeArgs.saveNode({ projectId: 'proj_a', appendFacts: ['A'] })).toThrow(/kind must be text/)
+    expect(() => knowledgeArgs.saveNode({ projectId: 'proj_a', kind: 'person', appendFacts: ['A'] })).toThrow(/name must be text/)
+    expect(() => knowledgeArgs.saveNode({ projectId: 'proj_a', nodeId: 'kn_ab12', kind: 5 })).toThrow(/kind must be text/)
   })
   it('refuses bad shapes', () => {
     const bad: unknown[] = [

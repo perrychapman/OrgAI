@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { execSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import {
@@ -14,9 +14,10 @@ import {
   pendingWorktrees,
   prepareRepo,
   removeExcludeLine,
+  UnfinishedGitStateError,
   withRepoLock
 } from './worktrees'
-import { repoLockActivity } from './repoLock'
+import { commonGitDir, configureRepoLock, lockDirOf, repoLockActivity } from './repoLock'
 
 const ID = '-c user.name=OrgAI-Test -c user.email=test@orgai.local'
 let root: string
@@ -383,6 +384,76 @@ describe('discardWorktree', () => {
     expect(existsSync(wt.path)).toBe(false)
     expect(branches()).toEqual(['main'])
     expect(await inspectPending(root)).toEqual([])
+  })
+})
+
+describe('unfinished git state after a crash (spec 3.2 (5) 4)', () => {
+  afterEach(() => configureRepoLock({ reset: true }))
+
+  /** A lock dir with no owner file, older than the grace period: what a holder that crashed after mkdir leaves. */
+  async function staleRepoLock(): Promise<void> {
+    const lockDir = lockDirOf((await commonGitDir(root))!)
+    mkdirSync(lockDir)
+    const past = new Date(Date.now() - 60_000)
+    utimesSync(lockDir, past, past)
+  }
+
+  it('reclaims the lock but never aborts a crashed merge left in the target checkout', async () => {
+    await prepareRepo(root)
+    // A crashed holder stopped inside `git merge`: MERGE_HEAD plus a conflicted index in the main checkout.
+    git(root, 'checkout -q -b other')
+    put(root, 'src/app.js', 'export const a = "other"\n')
+    git(root, 'commit -q -am "other edit"')
+    git(root, 'checkout -q main')
+    put(root, 'src/app.js', 'export const a = "main"\n')
+    git(root, 'commit -q -am "main edit"')
+    expect(() => git(root, 'merge --no-edit other')).toThrow()
+    const mergeHead = join(root, '.git', 'MERGE_HEAD')
+    expect(existsSync(mergeHead)).toBe(true)
+    await staleRepoLock()
+    const notices: unknown[] = []
+    configureRepoLock({ onRecovery: (n) => notices.push(n) })
+
+    const wt = addWorktree('after-crash')
+    put(wt.path, 'src/report.js', 'export const r = 1\n')
+    const res = await integrateWorktree(root, { ...wt, status: 'merging' }, 'Implementer: report')
+    expect(notices).toHaveLength(1)
+    expect(res.info.status).toBe('conflict')
+    expect(res.message).toMatch(/unfinished operation/)
+    expect(res.message).toContain('MERGE_HEAD')
+    expect(res.message).toMatch(/stale repository lock/)
+    // Nothing destructive ran: the merge state, the conflicted index, the worktree and its branch are all still there.
+    expect(existsSync(mergeHead)).toBe(true)
+    expect(git(root, 'diff --name-only --diff-filter=U')).toBe('src/app.js')
+    expect(existsSync(wt.path)).toBe(true)
+    expect(branches()).toContain(wt.branch)
+    // The report's files were not committed over the half-finished state either.
+    expect(git(wt.path, 'status --porcelain')).toContain('src/report.js')
+  })
+
+  it('refuses to discard a worktree whose git dir holds a crashed index.lock', async () => {
+    await prepareRepo(root)
+    const wt = addWorktree('locked1')
+    put(wt.path, 'src/x.js', 'x\n')
+    const indexLock = execSync('git rev-parse --git-path index.lock', { cwd: wt.path, encoding: 'utf8' }).trim()
+    const lockFile = indexLock.startsWith('/') || /^[A-Za-z]:/.test(indexLock) ? indexLock : join(wt.path, indexLock)
+    writeFileSync(lockFile, '')
+    await staleRepoLock()
+    const err = await discardWorktree(root, wt).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(UnfinishedGitStateError)
+    expect((err as UnfinishedGitStateError).files.map((f) => pathKey(f))).toEqual([pathKey(lockFile)])
+    expect(existsSync(lockFile)).toBe(true)
+    expect(existsSync(wt.path)).toBe(true)
+    expect(branches()).toContain(wt.branch)
+    // commitLeftovers refuses too instead of running add / reset over it.
+    const c = await commitLeftovers(wt.path, 'leftovers')
+    expect(c.committed).toBe(false)
+    expect(c.error).toMatch(/index\.lock/)
+    expect(existsSync(join(wt.path, 'src/x.js'))).toBe(true)
+    // Once the user clears it, the discard goes through.
+    rmSync(lockFile)
+    await discardWorktree(root, wt)
+    expect(existsSync(wt.path)).toBe(false)
   })
 })
 

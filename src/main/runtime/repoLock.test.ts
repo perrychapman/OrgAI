@@ -11,6 +11,7 @@ import {
   lockDirOf,
   pathKey,
   repoLockActivity,
+  repoLockRecovery,
   RepoLockTimeoutError,
   withRepoLock,
   type RepoLockRecoveryNotice
@@ -184,6 +185,19 @@ describe('withRepoLock (repoLock.ts)', () => {
       expect(existsSync(f)).toBe(true)
     }
     expect(staleDirs()).toEqual([])
+  })
+
+  it('hands the reclaim notice to the scope that took the lock, and to no later scope', async () => {
+    const lockDir = lockDirOf(common)
+    mkdirSync(lockDir)
+    const past = new Date(Date.now() - 60_000)
+    utimesSync(lockDir, past, past)
+    expect(repoLockRecovery()).toEqual([])
+    const seen = await withRepoLock(repo, async () => withRepoLock(repo, async () => repoLockRecovery()))
+    expect(seen).toHaveLength(1)
+    expect(seen[0]).toMatchObject({ reason: 'missing-owner', commonDir: common })
+    expect(await withRepoLock(repo, async () => repoLockRecovery())).toEqual([])
+    expect(repoLockRecovery()).toEqual([])
   })
 
   it('waits on a fresh lock dir with no owner file yet instead of reclaiming it', async () => {

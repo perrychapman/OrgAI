@@ -25,6 +25,12 @@ export interface RepoLockLease {
   commonDir: string
   /** Set when the scope that took the lease exits; detached work that outlives it must queue again. */
   released: boolean
+  /**
+   * Set when taking this lease reclaimed a stale lock left by a process that is gone. Git callers read it through
+   * `repoLockRecovery()` and refuse destructive steps while its `leftovers` (or their target's own state) show an
+   * unfinished git operation (spec 3.2 (5) 4).
+   */
+  recovery?: RepoLockRecoveryNotice
 }
 
 /** What owner.json in `<commonDir>/orgai-repo.lock` holds. */
@@ -301,6 +307,8 @@ function sameLock(judged: RepoLockOwner | undefined, moved: string): boolean {
 
 interface DirLock {
   release(): void
+  /** The reclaim notice of this acquisition, when it took over a stale lock. */
+  recovery?: RepoLockRecoveryNotice
 }
 
 /**
@@ -311,6 +319,7 @@ async function acquireDirLock(common: CommonDir, checkout: string): Promise<DirL
   const lockDir = join(common.path, LOCK_DIR_NAME)
   const started = Date.now()
   const self = { pid: process.pid, hostInstanceId: currentHostInstanceId() }
+  let recovery: RepoLockRecoveryNotice | undefined
   for (;;) {
     try {
       mkdirSync(lockDir)
@@ -369,6 +378,7 @@ async function acquireDirLock(common: CommonDir, checkout: string): Promise<DirL
         } catch {
           /* a listener never breaks the lock */
         }
+        recovery = notice
         continue
       }
       const waited = Date.now() - started
@@ -407,6 +417,7 @@ async function acquireDirLock(common: CommonDir, checkout: string): Promise<DirL
     }, config.heartbeatMs)
     beat.unref?.()
     return {
+      ...(recovery ? { recovery } : {}),
       release() {
         clearInterval(beat)
         heldDirs.delete(common.key)
@@ -454,7 +465,7 @@ export async function withRepoLock<T>(checkoutPath: string, fn: () => Promise<T>
     await prev
     if (common) dir = await acquireDirLock(common, checkoutPath)
     // Step 3: run with a lease that ends with this scope.
-    const lease: RepoLockLease = { commonDir: common?.path ?? checkoutPath, released: false }
+    const lease: RepoLockLease = { commonDir: common?.path ?? checkoutPath, released: false, ...(dir?.recovery ? { recovery: dir.recovery } : {}) }
     try {
       return await heldLocks.run(new Map([...(current ?? []), [key, lease]]), fn)
     } finally {
@@ -469,6 +480,16 @@ export async function withRepoLock<T>(checkoutPath: string, fn: () => Promise<T>
       active--
     }
   }
+}
+
+/**
+ * Reclaim notices of the repository leases the current async call chain holds (normally at most one): what a crashed
+ * holder left behind, for git callers that must not run destructive commands over it.
+ */
+export function repoLockRecovery(): RepoLockRecoveryNotice[] {
+  const out: RepoLockRecoveryNotice[] = []
+  for (const lease of heldLocks.getStore()?.values() ?? []) if (!lease.released && lease.recovery) out.push(lease.recovery)
+  return out
 }
 
 /** Test helper: the lock dir path for a common dir. */

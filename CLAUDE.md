@@ -522,10 +522,15 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
 - Repository lock: `worktrees.ts` `withRepoLock` (delegating to `runtime/repoLock.ts`) serializes ALL git operations
   per repository, keyed by the common git dir, across processes through `<commonDir>/orgai-repo.lock` (owner.json with
   pid, start time and host instance id, 2 s heartbeat, 60 s `RepoLockTimeoutError`, dead or leftover owners reclaimed
-  with a read-only index.lock / MERGE_HEAD notice), reentrant per async call chain (`RepoLockLease.released` stops
+  with a read-only index.lock / MERGE_HEAD notice, carried on the lease as `repoLockRecovery()`), reentrant per async call chain (`RepoLockLease.released` stops
   detached work from reusing an ended scope) and never held across a merge review. A worktree and the main checkout of
   one repo now queue behind each other; different repos do not. The info/exclude line follows
   `git rev-parse --git-path info/exclude`, so linked worktrees and `.git`-file checkouts write the common dir's file.
+  Unfinished git state (spec 3.2 (5) 4): under the lock, integrateWorktree (target and worktree), commitLeftovers and
+  discardWorktree (the worktree) first look for index.lock, MERGE_HEAD, CHERRY_PICK_HEAD, REVERT_HEAD, rebase-merge /
+  rebase-apply in the checkout's git dir; if any is there they run no git command (no merge --abort, worktree remove,
+  branch -D, add or reset): integrate answers 'conflict' with a message naming the files (and the reclaimed lock),
+  commitLeftovers an error, discardWorktree throws `UnfinishedGitStateError` (maintenance answers ok: false).
   Unit-tested with real git repos on macOS only.
 - CLI groundwork (Wave 0, docs/design/cli-spec.md section 8; no CLI yet): shared contracts in types.ts (HOST_IPC,
   RunOverrides, HeadlessDecisionPolicy, DecisionOutcome, ExecOutcome, endedBy 'policy' / 'budget', run.finalized,

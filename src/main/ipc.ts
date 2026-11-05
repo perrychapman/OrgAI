@@ -867,8 +867,11 @@ export const knowledgeArgs = {
     const i = obj<Record<string, unknown>>(input)
     const projectId = storedIdArg(i.projectId)
     const nodeId = optionalKnowledgeId(i.nodeId, 'kn_', 'Entity not found')
-    if (typeof i.kind !== 'string') throw new Error('The kind must be text.')
-    if (typeof i.name !== 'string') throw new Error('The name must be text.')
+    // With nodeId, kind and name may be left out (kept from the stored node): an append-only save (cli-spec 3.6).
+    const kind = i.kind === undefined || i.kind === null ? undefined : i.kind
+    const name = i.name === undefined || i.name === null ? undefined : i.name
+    if (kind !== undefined ? typeof kind !== 'string' : !nodeId) throw new Error('The kind must be text.')
+    if (name !== undefined ? typeof name !== 'string' : !nodeId) throw new Error('The name must be text.')
     const aliases = optionalTextList(i.aliases, 'Aliases')
     const summary = optionalText(i.summary, 'The summary')
     const noteIds = optionalTextList(i.noteIds, 'Note links')
@@ -901,8 +904,8 @@ export const knowledgeArgs = {
     return {
       projectId,
       ...(nodeId ? { nodeId } : {}),
-      kind: i.kind,
-      name: i.name,
+      ...(typeof kind === 'string' ? { kind } : {}),
+      ...(typeof name === 'string' ? { name } : {}),
       ...(aliases ? { aliases } : {}),
       ...(summary !== undefined ? { summary } : {}),
       ...(facts ? { facts } : {}),

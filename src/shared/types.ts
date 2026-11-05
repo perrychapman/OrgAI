@@ -4713,8 +4713,14 @@ export interface KnowledgeFactInput {
 export interface KnowledgeNodeSaveInput {
   projectId: string
   nodeId?: string
-  kind: string
-  name: string
+  /**
+   * Required without nodeId. With nodeId, omitted keeps the stored value, so an append-only save
+   * (`{ projectId, nodeId, appendFacts }`, `orgai knowledge upsert --fact`; cli-spec 3.6) needs no client-side read
+   * and never reverts a concurrent rename.
+   */
+  kind?: string
+  /** As `kind`: required without nodeId, omitted with nodeId keeps the stored name. */
+  name?: string
   aliases?: string[]
   summary?: string
   facts?: KnowledgeFactInput[]
@@ -4722,7 +4728,10 @@ export interface KnowledgeNodeSaveInput {
   retired?: boolean
   /** User facts appended atomically inside the store (deduplicated against the node's facts and each other); cli-spec 3.6. */
   appendFacts?: string[]
-  /** Only with nodeId: refuse the save when the stored node's updatedAt differs (compare-and-set). */
+  /**
+   * Only with nodeId: refuse the save when the stored node's updatedAt differs (compare-and-set). Any write to the
+   * node bumps updatedAt (an agent's fact append included), so leave it out of a pure append: appends commute.
+   */
   expectedUpdatedAt?: number
 }
 
