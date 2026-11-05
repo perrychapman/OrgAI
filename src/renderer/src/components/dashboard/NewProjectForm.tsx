@@ -1,7 +1,7 @@
 import type { ReactElement } from 'react'
 import { useEffect, useId, useRef, useState } from 'react'
 import { FolderOpen, Lock, Plus, X } from 'lucide-react'
-import type { Project, ProjectKind, ProjectPathCheck, SetupKind } from '@shared/types'
+import type { Project, ProjectKind, ProjectPathCheck, RepoSourceParse, SetupKind } from '@shared/types'
 import { PROJECT_CLIENT_MAX_CHARS } from '@shared/types'
 import { useAppStore } from '../../store/useAppStore'
 import { cleanIpcError } from '../../lib/ipcError'
@@ -10,7 +10,9 @@ import { effectiveSetupChoice, foundLine, setupChoiceLabel, setupSubmitLabel, te
 import { groupTemplatesByKind, initialTemplateId, readLastTemplateId, templateOptionLabel, writeLastTemplateId } from '../../lib/templates'
 import { REFERENCE_FOLDERS_HINT } from '../settings/AllowedDirectoriesSection'
 import { firstWorkingFolderConflict } from '../../lib/folderLists'
-import { addReferenceFolder,effectiveName, newProjectConnectionView, pathStatus, readLastProjectKind, submitBlocker, writeLastProjectKind } from '../../lib/projectsForm'
+import { addReferenceFolder, effectiveName, isFullPath, newProjectConnectionView, pathStatus, readLastProjectKind, submitBlocker, writeLastProjectKind } from '../../lib/projectsForm'
+import { cloneTarget, emptyRepoFields, readLastCloneParent, repoBridge, setupChoiceAnnouncement, type RepoFields, type StartKind } from '../../lib/repoStart'
+import { clearRepoFailure, forgetRepoClone, repoSession, useRepoSession } from '../../lib/repoCloneSession'
 import { Button } from '../ui/Button'
 import { Checkbox } from '../ui/Checkbox'
 import { IconButton } from '../ui/IconButton'
@@ -19,10 +21,12 @@ import { SegmentedControl } from '../ui/SegmentedControl'
 import { Icon } from '../ui/Icon'
 import { Textarea } from '../ui/Textarea'
 import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../../lib/settingsTarget'
+import { RepoStartPanel } from './RepoStartPanel'
 
-const KINDS: { value: SetupKind; label: string }[] = [
+const KINDS: { value: StartKind; label: string }[] = [
   { value: 'new', label: 'New idea' },
-  { value: 'existing', label: 'Existing code' }
+  { value: 'existing', label: 'Existing code' },
+  { value: 'github', label: 'From GitHub' }
 ]
 
 const PROJECT_KIND_CARDS: { value: ProjectKind; title: string; text: string }[] = [
@@ -40,19 +44,25 @@ const PROJECT_KIND_CARDS: { value: ProjectKind; title: string; text: string }[] 
 
 /**
  * The New project form's typed values, kept while its "Change" / "Connect" link visits App settings > Connections
- * (the view unmounts the form). Read once by the next form mount, then cleared. Session memory only.
+ * (the view unmounts the form), or while the view changes under a running clone. Read once by the next form mount, then
+ * cleared. Session memory only.
  */
 interface NewProjectDraft {
   projectKind: ProjectKind | null
   client: string
   refs: string[]
-  kind: SetupKind
+  kind: StartKind
   name: string
   path: string
   brief: string
   architect: boolean
   picked: SetupChoice | null
   useMock: boolean
+  repo: RepoFields
+  /** The form is using the finished clone. */
+  adopted: boolean
+  /** A clone was running when the form went away; when it finishes the reopened form uses it. */
+  cloneRunning: boolean
 }
 let parkedDraft: NewProjectDraft | null = null
 
@@ -108,9 +118,16 @@ export function NewProjectForm({
   /** Set when the project was created but its client / reference folders did not save: the form waits for the user. */
   const [pending, setPending] = useState<{ project: Project; message: string } | null>(null)
   const engagement = projectKind === 'engagement'
-  const [pickedKind, setKind] = useState<SetupKind>(draft?.kind ?? 'new')
-  // An engagement always works on an existing folder (main profiles it either way).
-  const kind: SetupKind = engagement ? 'existing' : pickedKind
+  const session = useRepoSession()
+  const cloning = session.status === 'running'
+  const [pickedKind, setKind] = useState<StartKind>(draft?.kind ?? (cloning ? 'github' : 'new'))
+  // An engagement always works on an existing folder (main profiles it either way). A clone becomes one.
+  const kind: SetupKind = engagement || pickedKind === 'github' ? 'existing' : pickedKind
+  const github = projectKind === 'code' && pickedKind === 'github'
+  const [repo, setRepo] = useState<RepoFields>(() => draft?.repo ?? emptyRepoFields(readLastCloneParent()))
+  const [adopted, setAdopted] = useState(draft ? draft.adopted || draft.cloneRunning : false)
+  const cloned = adopted && session.status === 'done' ? session.result : null
+  const [liveText, setLiveText] = useState('')
   const [name, setName] = useState(draft?.name ?? '')
   const [path, setPath] = useState(draft?.path ?? '')
   const [brief, setBrief] = useState(draft?.brief ?? '')
@@ -121,6 +138,10 @@ export function NewProjectForm({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [check, setCheck] = useState<{ path: string; result: ProjectPathCheck } | null>(null)
+  // The folder checkPath looks at: the typed path, or for From GitHub the clone's target and then the clone itself.
+  const folder = github ? (cloned?.path ?? cloneTarget(repo) ?? '') : path
+  // A clone changes what is at that same path, so an answer from before it says nothing about after it, and vice versa.
+  const checkKey = `${cloned ? 'cloned' : session.status === 'done' ? 'kept' : 'typed'}|${folder.trim()}`
 
   // The form opens with the cursor in the kind choice: the checked card, else the first.
   const kindRef = useRef<HTMLFieldSetElement>(null)
@@ -134,14 +155,14 @@ export function NewProjectForm({
 
   // Debounced live check of the folder; stale answers are dropped.
   useEffect(() => {
-    const p = path.trim()
+    const p = folder.trim()
     if (!p) return undefined
     let live = true
     const t = setTimeout(() => {
       window.orgai.projects
         .checkPath(p)
         .then((result) => {
-          if (live) setCheck({ path: p, result })
+          if (live) setCheck({ path: checkKey, result })
         })
         .catch(() => {})
     }, 300)
@@ -149,14 +170,63 @@ export function NewProjectForm({
       live = false
       clearTimeout(t)
     }
-  }, [path])
+  }, [checkKey])
 
-  const current = check && check.path === path.trim() ? check.result : null
-  const status = pathStatus(kind, path, current, projectKind ?? 'code')
-  const agentTotal = totalAgents(current)
+  // A failure from an earlier form is not this form's. Then a clone still running when the form goes away (an in-app
+  // view change does not cancel it) brings the form back with what was typed, and its result lands there.
+  const snapshot = useRef<NewProjectDraft | null>(null)
+  useEffect(() => {
+    if (!draft) clearRepoFailure()
+    parkedDraft = null
+    return () => {
+      const now = repoSession()
+      if (now.status === 'running' && !now.cancelling) parkedDraft = snapshot.current
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+  const prevSessionStatus = useRef(session.status)
+  const focusCloned = useRef(false)
+  useEffect(() => {
+    const was = prevSessionStatus.current
+    prevSessionStatus.current = session.status
+    if (was === 'running' && session.status === 'done') {
+      focusCloned.current = true
+      setAdopted(true)
+    }
+  }, [session.status])
+  // Focus lands on the success line in the commit that shows it.
+  useEffect(() => {
+    if (!cloned || !focusCloned.current) return
+    focusCloned.current = false
+    document.getElementById(`${uid}-repo-cloned`)?.focus()
+  }, [cloned, uid])
+
+  // Offer the clone when the folder field holds a repository address instead of a folder.
+  const bridgeText = projectKind === 'code' && pickedKind === 'existing' && !isFullPath(path) ? path.trim() : ''
+  const [bridgeParse, setBridgeParse] = useState<{ text: string; result: RepoSourceParse } | null>(null)
+  useEffect(() => {
+    if (!bridgeText) return undefined
+    let live = true
+    const t = setTimeout(() => {
+      void window.orgai.repos.parseSource(bridgeText).then((result) => {
+        if (live) setBridgeParse({ text: bridgeText, result })
+      })
+    }, 300)
+    return () => {
+      live = false
+      clearTimeout(t)
+    }
+  }, [bridgeText])
+  const bridge = bridgeText ? repoBridge(bridgeText, bridgeParse?.text === bridgeText ? bridgeParse.result : null) : null
+
+  const current = check && check.path === checkKey ? check.result : null
+  // Before the clone exists the check only answers "may it go there": no setup choice, name or status from it.
+  const folderCheck = github && !cloned ? null : current
+  const status = github && !cloned ? null : pathStatus(kind, folder, folderCheck, projectKind ?? 'code')
+  const agentTotal = totalAgents(folderCheck)
   const hasAgents = agentTotal > 0
   // An engagement hides instruction-file talk (CLAUDE.md, AGENTS.md) unless saved team members were found.
-  const found = engagement && !hasAgents ? null : foundLine(current)
+  const found = engagement && !hasAgents ? null : foundLine(folderCheck)
   const templateList = templates ?? []
   const hasTemplates = templateList.length > 0
   const choice = effectiveSetupChoice(hasAgents, picked, architect, hasTemplates)
@@ -170,7 +240,31 @@ export function NewProjectForm({
     : choice === 'import'
       ? 'The agent files are read, not changed. You review the roles before they join the chart.'
       : 'Nothing in the folder is modified.'
-  const blocker = projectKind ? submitBlocker({ kind, name, path, brief, status, projectKind }) : 'Choose what this project is for.'
+  const existingId = current?.existingProjectId
+  const blocker = !projectKind
+    ? 'Choose what this project is for.'
+    : github && !cloned
+      ? // A target that is already a project opens it, as in Existing code.
+        existingId && !cloning
+        ? null
+        : 'Clone the repository first.'
+      : bridge?.replacesError
+        ? 'Choose a folder on this computer, or clone it instead.'
+        : submitBlocker({ kind, name, path: folder, brief, status, projectKind })
+
+  // The setup choice grows after a check, out of sight of someone waiting on a clone: say so (one polite region).
+  const hadAgents = useRef<boolean | null>(null)
+  const saidCloned = useRef(false)
+  useEffect(() => {
+    if (!cloned) saidCloned.current = false
+    if (!folderCheck) return
+    const text = setupChoiceAnnouncement({ found, hasAgents, hadAgents: hadAgents.current, afterClone: !!cloned && !saidCloned.current })
+    if (cloned) saidCloned.current = true
+    hadAgents.current = hasAgents
+    if (text) setLiveText(text)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [folderCheck, cloned])
+  snapshot.current = { projectKind, client, refs, kind: pickedKind, name, path, brief, architect, picked, useMock, repo, adopted, cloneRunning: cloning }
 
   const setPathValue = (v: string): void => {
     setPath(v)
@@ -228,7 +322,6 @@ export function NewProjectForm({
     }
   }
 
-  const existingId = current?.existingProjectId
   const openExisting = (): void => {
     useAppStore.getState().selectProject(existingId ?? null)
     useAppStore.getState().setView('run')
@@ -260,8 +353,8 @@ export function NewProjectForm({
     try {
       const trimmedClient = client.trim()
       const input = {
-        name: effectiveName(name, path, current),
-        path: path.trim(),
+        name: effectiveName(name, folder, folderCheck),
+        path: folder.trim(),
         brief: brief.trim(),
         setupKind: choice === 'architect' ? kind : undefined,
         kind: projectKind,
@@ -273,6 +366,8 @@ export function NewProjectForm({
       const extras: { failed: string | null } = { failed: null }
       const created = await createProject(input, { onExtrasError: (err) => void (extras.failed = cleanIpcError(err)) })
       writeLastProjectKind(projectKind)
+      // The clone is a project now: nothing left to offer next time.
+      if (cloned) forgetRepoClone()
       if (input.templateId) writeLastTemplateId(window.localStorage, input.templateId)
       if (extras.failed) {
         // The project exists; wait for the user rather than leaving the form with the problem unseen.
@@ -282,10 +377,28 @@ export function NewProjectForm({
       await finish(created)
     } catch (err) {
       setError(cleanIpcError(err))
-      document.getElementById(ids.path)?.focus()
+      // From GitHub has no folder field to land on; the message itself takes focus there.
+      if (github) requestAnimationFrame(() => document.getElementById(ids.pathErr)?.focus())
+      else document.getElementById(ids.path)?.focus()
     } finally {
       setBusy(false)
     }
+  }
+
+  const cloneInstead = (): void => {
+    const source = path.trim()
+    setRepo((r) => ({ ...r, source }))
+    setPath('')
+    setError(null)
+    setKind('github')
+    setLiveText('From GitHub. The repository address is filled in.')
+    requestAnimationFrame(() => document.getElementById(`${uid}-repo-source`)?.focus())
+  }
+  const useClonedFolder = (): void => {
+    focusCloned.current = true
+    setAdopted(true)
+    setKind('github')
+    setError(null)
   }
 
   const pathField = (label: string, placeholder: string, hint: string): ReactElement => (
@@ -299,8 +412,8 @@ export function NewProjectForm({
             value={path}
             onChange={setPathValue}
             placeholder={placeholder}
-            invalid={!!error || status?.tone === 'error'}
-            aria-describedby={[error ? ids.pathErr : '', status ? ids.pathMsg : '', found ? ids.foundMsg : '', current?.existingProjectId ? ids.dupMsg : ''].filter(Boolean).join(' ') || undefined}
+            invalid={!!error || (status?.tone === 'error' && !bridge?.replacesError)}
+            aria-describedby={[error ? ids.pathErr : '', status && !bridge?.replacesError ? ids.pathMsg : '', bridge ? `${uid}-bridge` : '', found ? ids.foundMsg : '', current?.existingProjectId ? ids.dupMsg : ''].filter(Boolean).join(' ') || undefined}
           />
         </div>
         <Button icon={FolderOpen} onClick={() => void pick()}>
@@ -312,9 +425,17 @@ export function NewProjectForm({
           {error}
         </span>
       )}
-      {status && (
+      {status && !bridge?.replacesError && (
         <span id={ids.pathMsg} className={`field-msg ${status.tone}`}>
           {status.text}
+        </span>
+      )}
+      {bridge && (
+        <span id={`${uid}-bridge`} className="field-msg info" data-testid="repo-bridge">
+          {bridge.line}{' '}
+          <button type="button" className="link-btn" data-testid="repo-bridge-clone" onClick={cloneInstead}>
+            Clone it instead
+          </button>
         </span>
       )}
       {found && (
@@ -327,7 +448,8 @@ export function NewProjectForm({
           This folder is already a project: {current.existingProjectName}.
         </span>
       )}
-      <span className="hint">{hint}</span>
+      {/* The hint talks about a folder that is there; under a blocking error or an address it would contradict the line above. */}
+      {!bridge && !(pickedKind === 'existing' && !engagement && status?.blocking) && <span className="hint">{hint}</span>}
     </div>
   )
 
@@ -344,6 +466,9 @@ export function NewProjectForm({
       aria-label={variant === 'inline' ? 'New project' : undefined}
       onSubmit={submit}
     >
+      <span className="sr-only" role="status" data-testid="new-project-status">
+        {liveText}
+      </span>
       {variant === 'card' && (
         <div className="row between">
           <h2 className="form-title">New project</h2>
@@ -354,7 +479,7 @@ export function NewProjectForm({
           )}
         </div>
       )}
-      <fieldset className="project-kind" data-testid="project-kind" ref={kindRef} disabled={!!pending}>
+      <fieldset className="project-kind" data-testid="project-kind" ref={kindRef} disabled={!!pending || cloning}>
         <legend>What is this project for?</legend>
         <div className="project-kind-options">
           {PROJECT_KIND_CARDS.map((c) => (
@@ -383,15 +508,29 @@ export function NewProjectForm({
       </fieldset>
 
       {projectKind === 'code' && (
-        <SegmentedControl
-          label="Project type"
-          value={kind}
-          options={KINDS}
-          onChange={(k) => {
-            setKind(k)
-            setError(null)
-          }}
-        />
+        <fieldset className="repo-lock" disabled={cloning}>
+          <SegmentedControl
+            label="Project type"
+            value={pickedKind}
+            options={KINDS}
+            onChange={(k) => {
+              setKind(k)
+              setError(null)
+            }}
+          />
+        </fieldset>
+      )}
+
+      {projectKind === 'code' && session.status === 'done' && !cloned && (
+        <p className="repo-offer" data-testid="repo-offer">
+          <span className="field-msg">
+            You cloned {session.display} to <span className="repo-path">{session.result.path}</span>. It is still there.
+          </span>
+          <Button size="sm" onClick={useClonedFolder} testId="repo-use-cloned">
+            Use the folder you cloned
+          </Button>
+          <IconButton icon={X} size="sm" label="Dismiss this suggestion" onClick={forgetRepoClone} testId="repo-use-cloned-dismiss" />
+        </p>
       )}
 
       {engagement ? (
@@ -465,7 +604,58 @@ export function NewProjectForm({
             </div>
           )}
         </>
-      ) : projectKind === null ? null : kind === 'new' ? (
+      ) : projectKind === null ? null : github ? (
+        <>
+          <RepoStartPanel
+            uid={uid}
+            fields={repo}
+            onFields={(patch) => setRepo((r) => ({ ...r, ...patch }))}
+            check={current}
+            existingProjectName={current?.existingProjectName}
+            adopted={adopted}
+            onForgetAdopted={() => setAdopted(false)}
+            announce={setLiveText}
+          >
+            {error && (
+              <span id={ids.pathErr} className="field-msg error repo-error" role="alert" tabIndex={-1}>
+                {error}
+              </span>
+            )}
+            {status?.tone === 'error' && (
+              <span id={ids.pathMsg} className="field-msg error" data-testid="repo-cloned-problem">
+                {status.text}
+              </span>
+            )}
+            {found && (
+              <span id={ids.foundMsg} className="field-msg info" data-testid="agents-found">
+                {found}
+              </span>
+            )}
+            {current?.existingProjectId && (
+              <span id={ids.dupMsg} className="field-msg warn" data-testid="already-project">
+                This folder is already a project: {current.existingProjectName}.
+              </span>
+            )}
+          </RepoStartPanel>
+          {cloned && (
+            <>
+              {nameField('Defaults to the folder name')}
+              {(!hasAgents || choice === 'architect') && (
+                <div className="field">
+                  <label htmlFor={ids.brief}>Anything the Architect should know? (optional)</label>
+                  <Textarea
+                    id={ids.brief}
+                    value={brief}
+                    onChange={setBrief}
+                    placeholder="e.g. the kind of work you mostly do here, areas to leave alone, or team conventions not written down."
+                  />
+                </div>
+              )}
+              <p className="hint repo-tail-hint">{repoHint}</p>
+            </>
+          )}
+        </>
+      ) : kind === 'new' ? (
         <>
           {nameField('My app')}
           <div className="field">
@@ -498,7 +688,7 @@ export function NewProjectForm({
         </>
       )}
 
-      {projectKind && (
+      {projectKind && !(github && !cloned) && (
       <div className="stack-2 form-options">
         {hasAgents || hasTemplates ? (
           <fieldset className="import-choice" data-testid="setup-choice">
@@ -585,7 +775,7 @@ export function NewProjectForm({
               className="link-btn"
               data-testid="new-project-connection-change"
               onClick={() => {
-                parkedDraft = { projectKind, client, refs, kind: pickedKind, name, path, brief, architect, picked, useMock }
+                parkedDraft = snapshot.current
                 requestAppSettingsSection(APP_SETTINGS_SECTIONS.connections)
                 useAppStore.getState().setView('appSettings')
               }}
@@ -622,7 +812,7 @@ export function NewProjectForm({
             Cancel
           </Button>
         )}
-        {existingId && !pending && (
+        {existingId && !pending && (!github || cloned) && (
           <Button onClick={() => void submit(null, true)} disabled={!!blocker || busy}>
             {setupSubmitLabel(choice, busy, projectKind ?? 'code')} anyway
           </Button>
