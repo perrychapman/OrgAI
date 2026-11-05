@@ -1,22 +1,33 @@
+import { randomBytes } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import { dpapiEntropy } from '../vaultTypes'
-import { DPAPI_ARGS, DPAPI_CLM_REASON, DpapiCustodian } from './dpapi'
+import { DPAPI_ARGS, DPAPI_CLM_REASON, DpapiCustodian, dpapiProtectScript, dpapiUnprotectScript } from './dpapi'
 import { fakeSpawner, type FakeAnswer } from './fakeSpawner'
 
 const ID = '0123456789abcdef0123456789abcdef'
 const env = { SystemRoot: 'D:\\WINDOWS', PATH: 'C:\\bin', NODE_OPTIONS: '--x', ORGAI_SECRET_A: 'v', USERPROFILE: 'C:\\Users\\me' }
 const PS = 'D:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
 
-/** A fake PowerShell whose "protection" is reversing the bytes (only the plumbing is under test). */
+/**
+ * A fake PowerShell whose "protection" is reversing the bytes (only the plumbing is under test). Create draws its own
+ * key, as the real script does with RandomNumberGenerator, and records it in `drawn`.
+ */
 function fakePs(override?: (stdin: string) => FakeAnswer | undefined) {
-  return fakeSpawner(({ stdin }) => {
+  const drawn: Buffer[] = []
+  const f = fakeSpawner(({ stdin }) => {
     const o = override?.(stdin)
     if (o) return o
+    if (stdin.includes('ProtectedData]::Protect(')) {
+      const k = randomBytes(32)
+      drawn.push(Buffer.from(k))
+      return { code: 0, stdout: `OK:${Buffer.from(k).reverse().toString('base64')}:${k.toString('base64')}\r\n` }
+    }
     if (!stdin.includes('FromBase64String')) return { code: 0, stdout: 'OK\r\n' }
     const m = /FromBase64String\('([A-Za-z0-9+/=]+)'\)/.exec(stdin)!
     const data = Buffer.from(m[1]!, 'base64').reverse()
     return { code: 0, stdout: `OK:${data.toString('base64')}\r\n` }
   })
+  return { ...f, drawn }
 }
 
 describe('DpapiCustodian (cli-standalone.md 5.3, Windows)', () => {
@@ -54,19 +65,50 @@ describe('DpapiCustodian (cli-standalone.md 5.3, Windows)', () => {
     expect(DPAPI_CLM_REASON).toContain('Constrained Language Mode')
   })
 
-  it('creates with Protect(dek, entropy, CurrentUser) and returns the blob for custody.wrapped', async () => {
+  it('creates with Protect(key, entropy, CurrentUser) and returns the blob for custody.wrapped', async () => {
     const f = fakePs()
     const c = new DpapiCustodian({ spawner: f.spawner, env, platform: 'win32' })
     const { dek, wrapped } = await c.create(ID)
     expect(dek.length).toBe(32)
+    expect(dek.equals(f.drawn[0]!)).toBe(true)
     expect(wrapped).toBe(Buffer.from(dek).reverse().toString('base64'))
     const s = f.calls[0]!.stdin
     expect(s).toContain('ProtectedData]::Protect(')
     expect(s).toContain('DataProtectionScope]::CurrentUser')
+    expect(s).toContain('RandomNumberGenerator]::Create()')
     expect(s).toContain(`'${dpapiEntropy(ID)}'`)
     expect(s).toContain(`'orgai.vault/1:${ID}'`)
-    expect(s).toContain(dek.toString('base64'))
-    expect(f.calls[0]!.args.join(' ')).not.toContain(dek.toString('base64'))
+  })
+
+  it('never puts the data key in script text, and writes it only through [Console]::Out (review round 1 blocker)', async () => {
+    const f = fakePs()
+    const c = new DpapiCustodian({ spawner: f.spawner, env, platform: 'win32' })
+    const { dek, wrapped } = await c.create(ID)
+    await c.open(ID, { scheme: 'dpapi-user', wrapped: wrapped! })
+    for (const call of f.calls) {
+      for (const text of [call.stdin, call.args.join(' ')]) {
+        expect(text).not.toContain(dek.toString('base64'))
+        expect(text).not.toContain(dek.toString('hex'))
+      }
+    }
+    // The create script is the same whatever key it makes: nothing in it depends on a value but the vault id.
+    expect(f.calls[0]!.stdin).toBe(dpapiProtectScript(ID))
+    expect(f.calls[0]!.stdin).not.toContain('FromBase64String')
+    for (const script of [dpapiProtectScript(ID), dpapiUnprotectScript('AAAA', ID)]) {
+      // A key leaves PowerShell only through [Console]::Out.Write, never Write-Output (formatting, transcription).
+      expect(script).not.toMatch(/Write-Output \('OK:/)
+      expect(script).toContain("[Console]::Out.Write('OK:' + [Convert]::ToBase64String(")
+    }
+  })
+
+  it.each([
+    ['no key', 'OK:AAAA\r\n'],
+    ['a short key', `OK:AAAA:${Buffer.alloc(16).toString('base64')}\r\n`],
+    ['an extra field', `OK:AAAA:${Buffer.alloc(32).toString('base64')}:x\r\n`],
+    ['a blob that is not base64', `OK:A*AA:${Buffer.alloc(32).toString('base64')}\r\n`]
+  ])('refuses a create answer with %s', async (_label, stdout) => {
+    const f = fakePs(() => ({ code: 0, stdout }))
+    await expect(new DpapiCustodian({ spawner: f.spawner, env, platform: 'win32' }).create(ID)).rejects.toMatchObject({ kind: 'denied' })
   })
 
   it('opens with Unprotect and the same entropy', async () => {

@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import { CustodyError } from '../vaultTypes'
 import { fakeSpawner, type FakeAnswer } from './fakeSpawner'
-import { KEYCHAIN_LOCKED_REASON, KeychainCustodian, SECURITY_PATH, addGenericPasswordLine, securityInteractiveArg } from './keychain'
+import { KEYCHAIN_LOCKED_REASON, KeychainCustodian, SECURITY_PATH, addGenericPasswordLine, parseDefaultKeychain, securityInteractiveArg } from './keychain'
 
 const ID = '0123456789abcdef0123456789abcdef'
+const LOGIN = '/Users/me/Library/Keychains/login.keychain-db'
 const env = { HOME: '/Users/me', PATH: '/usr/bin', NODE_OPTIONS: '--x', ORGAI_VAULT_KEY_FILE: '/k' }
 
 /** A fake `security` with an in-memory keychain. */
@@ -15,6 +16,7 @@ function fakeSecurity(opts: { items?: Map<string, string>; override?: (args: str
       const o = opts.override?.(args, stdin)
       if (o) return o
       const acct = args[args.indexOf('-a') + 1] ?? ''
+      if (args[0] === 'default-keychain') return { code: 0, stdout: `    "${LOGIN}"\n` }
       if (args[0] === 'show-keychain-info') return { code: 0, stdout: 'Keychain "login.keychain-db" no-timeout\n' }
       if (args[0] === 'find-generic-password') {
         const v = items.get(acct)
@@ -42,9 +44,32 @@ describe('KeychainCustodian (cli-standalone.md 5.3, macOS)', () => {
     const f = fakeSecurity()
     const c = new KeychainCustodian({ spawner: f.spawner, env, platform: 'darwin' })
     await expect(c.probe()).resolves.toEqual({ ok: true })
-    expect(f.calls[0]!.file).toBe(SECURITY_PATH)
-    expect(f.calls[0]!.args).toEqual(['show-keychain-info'])
+    for (const call of f.calls) expect(call.file).toBe(SECURITY_PATH)
+    // The default keychain by path: a bare show-keychain-info asks about a NULL keychain (review round 1).
+    expect(f.calls.map((x) => x.args)).toEqual([['default-keychain'], ['show-keychain-info', LOGIN]])
     expect(f.calls[0]!.options.env).toEqual({ HOME: '/Users/me', PATH: '/usr/bin' })
+  })
+
+  it('reports the default keychain locked when show-keychain-info on its path says so', async () => {
+    const f = fakeSecurity({
+      override: (args) => (args[0] === 'show-keychain-info' && args[1] === LOGIN ? { code: 36, stderr: 'security: SecKeychainCopySettings: User interaction is not allowed.' } : undefined)
+    })
+    await expect(new KeychainCustodian({ spawner: f.spawner, env, platform: 'darwin' }).probe()).resolves.toMatchObject({ ok: false, kind: 'locked' })
+  })
+
+  it('is unavailable when default-keychain names no single path, and never asks show-keychain-info without one', async () => {
+    for (const stdout of ['', 'garbage\n', `    "${LOGIN}"\n    "/other.keychain-db"\n`, '    "relative.keychain"\n']) {
+      const f = fakeSecurity({ override: (args) => (args[0] === 'default-keychain' ? { code: 0, stdout } : undefined) })
+      await expect(new KeychainCustodian({ spawner: f.spawner, env, platform: 'darwin' }).probe()).resolves.toMatchObject({ ok: false, kind: 'unavailable' })
+      expect(f.calls.some((x) => x.args[0] === 'show-keychain-info')).toBe(false)
+    }
+  })
+
+  it('parses security default-keychain output', () => {
+    expect(parseDefaultKeychain(`    "${LOGIN}"\n`)).toBe(LOGIN)
+    expect(parseDefaultKeychain('    "/Users/a b/Library/Keychains/login.keychain-db"\n')).toBe('/Users/a b/Library/Keychains/login.keychain-db')
+    expect(parseDefaultKeychain('    "<NULL>"\n')).toBeUndefined()
+    expect(parseDefaultKeychain('')).toBeUndefined()
   })
 
   it.each([

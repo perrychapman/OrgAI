@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { DpapiCustodian, KeyFileCustodian, KeychainCustodian, SecretServiceCustodian, chooseCustodyScheme, createCustodianFactory, custodianFor, platformCustodyScheme } from './index'
 
@@ -40,5 +43,21 @@ describe('custodian factory (cli-standalone.md 5.3 choice of scheme)', () => {
     expect(custodianFor({ ...dirs, env: {}, platform: 'darwin', keyFile: '/keys/b' })).toBeInstanceOf(KeyFileCustodian)
     expect(custodianFor({ ...dirs, env: {}, platform: 'linux' })).toBeInstanceOf(SecretServiceCustodian)
     expect(custodianFor({ ...dirs, env: {}, platform: 'aix' })).toBeNull()
+  })
+
+  it('tells a key-file custodian that a vault exists, so a gone key file probes as missing (review round 1)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'orgai-factory-'))
+    try {
+      const gone = join(root, 'gone.key')
+      const d = { dataDir: join(root, 'u', 'data'), userDataDir: join(root, 'u') }
+      const existing = custodianFor({ ...d, env: { ORGAI_VAULT_KEY_FILE: gone }, recorded: { scheme: 'key-file', keyFile: join(root, 'old.key') } })
+      await expect(existing!.probe()).resolves.toMatchObject({ ok: false, kind: 'missing' })
+      const viaFactory = createCustodianFactory({ ...d, env: { ORGAI_VAULT_KEY_FILE: gone }, vaultExists: true })('key-file')
+      await expect(viaFactory.probe()).resolves.toMatchObject({ ok: false, kind: 'missing' })
+      const fresh = custodianFor({ ...d, env: { ORGAI_VAULT_KEY_FILE: gone } })
+      await expect(fresh!.probe()).resolves.toEqual({ ok: true })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })

@@ -64,6 +64,8 @@ export interface CustodianFactoryOptions {
   importKeyFile?: boolean
   /** custody.keyFile of the vault on disk, for a key-file probe. */
   recordedKeyFile?: string
+  /** A vault exists on disk: a key-file probe reports a missing file as 'missing'. */
+  vaultExists?: boolean
 }
 
 /** One custodian per scheme (the store asks for the recorded scheme, or for chooseCustodyScheme's answer). */
@@ -88,7 +90,8 @@ export function createCustodian(scheme: VaultCustodyScheme, opts: CustodianFacto
         userDataDir: opts.userDataDir,
         ...(opts.keyFile !== undefined ? { keyFile: opts.keyFile } : {}),
         ...(opts.importKeyFile ? { importExisting: true } : {}),
-        ...(opts.recordedKeyFile !== undefined ? { recordedKeyFile: opts.recordedKeyFile } : {})
+        ...(opts.recordedKeyFile !== undefined ? { recordedKeyFile: opts.recordedKeyFile } : {}),
+        ...(opts.vaultExists ? { vaultExists: true } : {})
       })
   }
 }
@@ -107,5 +110,9 @@ export function custodianFor(opts: CustodianFactoryOptions & { recorded?: VaultC
     ...(opts.platform ? { platform: opts.platform } : {})
   })
   if (!scheme) return null
-  return createCustodian(scheme, { ...opts, ...(opts.recorded?.keyFile ? { recordedKeyFile: opts.recorded.keyFile } : {}) })
+  return createCustodian(scheme, {
+    ...opts,
+    ...(opts.recorded ? { vaultExists: true } : {}),
+    ...(opts.recorded?.keyFile ? { recordedKeyFile: opts.recorded.keyFile } : {})
+  })
 }

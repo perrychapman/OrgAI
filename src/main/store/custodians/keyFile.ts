@@ -10,17 +10,24 @@
  *   (`openssl rand -base64 32 > file` works). A file OrgAI creates holds base64 text and a newline.
  * - POSIX: created with O_CREAT | O_EXCL | O_NOFOLLOW, mode 0o600; opened with O_NOFOLLOW | O_NONBLOCK (a FIFO never
  *   blocks) then fstat: a regular file owned by the current uid with no group or other bits.
- * - Windows: create the empty file exclusively, set a protected DACL for the current user's SID (from
- *   `whoami /user /fo csv /nh`, never from environment variables) with `icacls <file> /inheritance:r /grant:r *<SID>:F`,
- *   verify with `icacls <file>` that this user is the only principal left, then write and flush the key; any failure
- *   deletes the empty file and fails closed. Open refuses a symbolic link (lstat) and checks the same DACL.
+ * - Windows: refuse a folder in which a new file would inherit access for anyone but this user, SYSTEM, Administrators
+ *   or CREATOR OWNER (that principal could open the new file before it is restricted and keep the handle), then create
+ *   the empty file exclusively, set a protected DACL for the current user's SID (from `whoami /user /fo csv /nh`, never
+ *   from environment variables) with `icacls <file> /inheritance:r /grant:r *<SID>:F`, verify that this SID is the only
+ *   principal left, then write and flush the key; any failure deletes the empty file and fails closed. Open refuses a
+ *   symbolic link (lstat) and checks the same DACL; a refusal names the exact icacls command that fixes it.
+ * - ACLs are read as SDDL through `icacls <path> /save <temp file>` (UTF-16LE) and compared by SID only, so neither the
+ *   console code page (whoami and icacls print in the OEM code page when piped) nor a path echo matters.
+ * - A path that comes from ORGAI_VAULT_KEY_FILE (not from `--key-file`) and already exists is taken as an import when a
+ *   new vault is made (a provisioned CI key); nothing is ever overwritten.
  *
- * UNVERIFIED: the Windows steps were never run (parsing follows Microsoft's documented English output; other locales'
- * account names are compared as printed, and a format we do not recognise fails closed). The lstat-then-open sequence
- * on Windows leaves a small window in which the path could be swapped; the DACL check runs on the same path.
+ * UNVERIFIED: the Windows steps were never run (the `/save` file format, its encoding and that a folder path saves the
+ * folder's own ACL follow Microsoft's documentation; a format we do not recognise fails closed). The lstat-then-open
+ * sequence on Windows leaves a small window in which the path could be swapped; the DACL check runs on the same path.
  */
-import { closeSync, constants as fsConstants, fstatSync, fsyncSync, lstatSync, openSync, readSync, realpathSync, statSync, unlinkSync, writeSync, existsSync } from 'node:fs'
-import { posix, win32 } from 'node:path'
+import { closeSync, constants as fsConstants, existsSync, fstatSync, fsyncSync, lstatSync, mkdtempSync, openSync, readFileSync, readSync, realpathSync, rmSync, statSync, unlinkSync, writeSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join, posix, win32 } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { system32Path } from '../../host/systemBinaries'
 import { CustodyError, VAULT_DEK_BYTES, VAULT_KEY_FILE_ENV, type CustodianCreated, type CustodianProbe, type VaultCustody } from '../vaultTypes'
@@ -34,6 +41,10 @@ type Env = Readonly<Record<string, string | undefined>>
 const KEY_FILE_READ_MAX = 4096
 
 export const KEY_FILE_NOT_CONFIGURED = `No key file is configured: set ${VAULT_KEY_FILE_ENV} or run \`orgai secrets init --key-file <path>\`.`
+/** A new key file was asked for where a file already exists (names the exact import command). */
+export function keyFileExistsReason(path: string): string {
+  return `A file already exists at ${path}; OrgAI never overwrites a key file. To use it as the vault's key, run \`orgai secrets init --key-file "${path}" --import\`.`
+}
 export const KEY_FILE_BAD_CONTENT = 'The key file must hold exactly 32 bytes, or base64 text of 32 bytes (for example from `openssl rand -base64 32`).'
 
 export interface KeyFileCustodianOptions {
@@ -45,8 +56,13 @@ export interface KeyFileCustodianOptions {
   keyFile?: string
   /** `--import`: create() takes the existing file instead of creating one. */
   importExisting?: boolean
-  /** custody.keyFile of the vault on disk, for probe() (open() gets custody itself). */
+  /** custody.keyFile of the vault on disk, for probe() (open() gets custody itself). Implies vaultExists. */
   recordedKeyFile?: string
+  /**
+   * A vault already exists (its custody is key-file): probe() then reports a missing key file as 'missing' instead of
+   * checking that one could be created.
+   */
+  vaultExists?: boolean
   /** ORGAI_VAULT_KEY_FILE is read from here. Default process.env. */
   env?: Env
   platform?: NodeJS.Platform
@@ -142,57 +158,137 @@ export function parseKeyFileContent(buf: Buffer): Buffer | undefined {
 
 // ---------- Windows DACL ----------
 
-/** `whoami /user /fo csv /nh` -> the account name and SID, or undefined. */
+/** `whoami /user /fo csv /nh` -> the account name and SID, or undefined. Only the SID (ASCII) is ever compared. */
 export function parseWhoamiUser(text: string): { name: string; sid: string } | undefined {
   for (const line of text.split(/\r?\n/)) {
     const m = /^\s*"([^"]+)","(S-1-\d+(?:-\d+){1,14})"\s*$/.exec(line)
-    if (m) return { name: m[1]!, sid: m[2]! }
+    if (m) return { name: m[1]!, sid: m[2]!.toUpperCase() }
   }
   return undefined
 }
 
-/**
- * The ACEs `icacls <path>` prints for `path`: the first line starts with the path, continuation lines are indented,
- * and a blank line ends the list. Each entry is the principal and its permission text. Undefined when the output does
- * not have that shape (fail closed).
- */
-export function parseIcaclsAces(output: string, path: string): Array<{ principal: string; perms: string }> | undefined {
-  const lines = output.split(/\r?\n/)
-  const first = lines.findIndex((l) => l.trim() !== '')
-  if (first < 0) return undefined
-  const head = lines[first]!
-  if (!head.toLowerCase().startsWith(path.toLowerCase())) return undefined
-  const raw = [head.slice(path.length)]
-  for (let i = first + 1; i < lines.length; i++) {
-    const l = lines[i]!
-    if (l.trim() === '') break
-    if (!/^\s/.test(l)) break
-    raw.push(l)
-  }
-  const out: Array<{ principal: string; perms: string }> = []
-  for (const r of raw) {
-    const t = r.trim()
-    if (!t) continue
-    const at = t.lastIndexOf(':(')
-    if (at <= 0) return undefined
-    out.push({ principal: t.slice(0, at), perms: t.slice(at + 1) })
-  }
-  return out.length ? out : undefined
+/** The SDDL aliases of well-known SIDs icacls may print instead of the SID string. */
+const SDDL_ALIASES: Readonly<Record<string, string>> = {
+  SY: 'S-1-5-18',
+  BA: 'S-1-5-32-544',
+  BU: 'S-1-5-32-545',
+  BG: 'S-1-5-32-546',
+  PU: 'S-1-5-32-547',
+  AU: 'S-1-5-11',
+  WD: 'S-1-1-0',
+  AN: 'S-1-5-7',
+  IU: 'S-1-5-4',
+  NU: 'S-1-5-2',
+  SU: 'S-1-5-6',
+  PS: 'S-1-5-10',
+  CO: 'S-1-3-0',
+  CG: 'S-1-3-1',
+  OW: 'S-1-3-4',
+  LS: 'S-1-5-19',
+  NS: 'S-1-5-20',
+  AC: 'S-1-15-2-1'
 }
 
-/** True when the ACL is exactly one explicit full-control entry for this user (by name or SID). */
-export function daclIsOwnerOnly(aces: Array<{ principal: string; perms: string }>, user: { name: string; sid: string }): boolean {
-  if (aces.length !== 1) return false
-  const { principal, perms } = aces[0]!
-  const p = principal.replace(/^\*/, '').toLowerCase()
-  const mine = p === user.name.toLowerCase() || p === user.sid.toLowerCase()
-  return mine && !/\(I\)/i.test(perms) && /\(F\)/i.test(perms)
+/** SYSTEM, Administrators and CREATOR OWNER (the creator, this user) may be in a key file's folder. */
+const TRUSTED_FOLDER_SIDS = new Set(['S-1-5-18', 'S-1-5-32-544', 'S-1-3-0'])
+
+export interface SddlAce {
+  /** A, D, OA, OD, XA... */
+  type: string
+  /** Two-letter flags: OI, CI, NP, IO, ID... */
+  flags: string[]
+  rights: string
+  /** A SID string (upper case), or `alias:<XX>` for an alias this table does not know, or `LA` (the local admin). */
+  sid: string
+}
+
+export interface SddlDacl {
+  /** `D:P...`: inheritance from the parent is blocked. */
+  protected: boolean
+  /** `D:NO_ACCESS_CONTROL`: a null DACL, everyone has full access. */
+  nullDacl: boolean
+  aces: SddlAce[]
+}
+
+function sddlSid(raw: string): string {
+  if (/^S-1-\d+(?:-\d+)*$/i.test(raw)) return raw.toUpperCase()
+  if (raw === 'LA') return 'LA'
+  return SDDL_ALIASES[raw] ?? `alias:${raw}`
+}
+
+function sameSid(aceSid: string, userSid: string): boolean {
+  // LA is the machine's built-in Administrator account (RID 500).
+  return aceSid === userSid.toUpperCase() || (aceSid === 'LA' && /-500$/.test(userSid))
+}
+
+/**
+ * One DACL in SDDL (`D:PAI(A;OICI;FA;;;SY)(A;;FA;;;S-1-5-21-...)`), optionally after `O:` / `G:` and before `S:`.
+ * Undefined for anything else, conditional ACEs included (fail closed).
+ */
+export function parseSddlDacl(text: string): SddlDacl | undefined {
+  const m = /^(?:O:[A-Za-z0-9-]+)?(?:G:[A-Za-z0-9-]+)?D:([A-Z_]*)((?:\([^()]*\))*)(?:S:.*)?$/.exec(text.trim())
+  if (!m) return undefined
+  const nullDacl = m[1]!.includes('NO_ACCESS_CONTROL')
+  const flags = m[1]!.replace('NO_ACCESS_CONTROL', '')
+  if (!/^(?:P|AI|AR)*$/.test(flags)) return undefined
+  const aces: SddlAce[] = []
+  for (const a of m[2]!.matchAll(/\(([^()]*)\)/g)) {
+    const parts = a[1]!.split(';')
+    if (parts.length !== 6) return undefined
+    const [type, aceFlags, rights, , , sid] = parts as [string, string, string, string, string, string]
+    if (!/^[A-Z]{1,2}$/.test(type) || !/^(?:[A-Z]{2})*$/.test(aceFlags) || !sid) return undefined
+    aces.push({ type, flags: aceFlags.match(/[A-Z]{2}/g) ?? [], rights, sid: sddlSid(sid) })
+  }
+  return { protected: /P/.test(flags.replace(/AI|AR/g, '')), nullDacl, aces }
+}
+
+/**
+ * The DACL in an `icacls <path> /save <file>` file (UTF-16LE, usually with a BOM: the object's name, then its SDDL), or
+ * undefined. The name line is never compared, so no code page or path echo matters (review round 1).
+ */
+export function parseIcaclsSave(buf: Buffer): SddlDacl | undefined {
+  let text: string
+  if (buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xfe) text = buf.subarray(2).toString('utf16le')
+  else if (buf.length >= 2 && buf.length % 2 === 0 && buf[1] === 0) text = buf.toString('utf16le')
+  else text = buf.toString('latin1')
+  const dacls = text
+    .split(/\r?\n/)
+    .map((l) => parseSddlDacl(l))
+    .filter((d): d is SddlDacl => d !== undefined)
+  return dacls.length === 1 ? dacls[0] : undefined
+}
+
+const FULL_ACCESS = new Set(['FA', 'GA'])
+
+/** True when the DACL is protected and exactly one explicit full-control allow entry for this user's SID. */
+export function daclIsOwnerOnly(dacl: SddlDacl, user: { sid: string }): boolean {
+  if (dacl.nullDacl || !dacl.protected || dacl.aces.length !== 1) return false
+  const a = dacl.aces[0]!
+  const full = FULL_ACCESS.has(a.rights) || /^0x0*1f01ff$/i.test(a.rights)
+  return a.type === 'A' && !a.flags.includes('ID') && full && sameSid(a.sid, user.sid)
+}
+
+/**
+ * True when a file created in the folder would inherit access for a principal other than this user, SYSTEM,
+ * Administrators or CREATOR OWNER: such a principal could open the new key file in the moment before OrgAI restricts
+ * it and keep the handle (review round 1). Deny entries do not count; any other entry type counts as an allow.
+ */
+export function folderLetsOthersIn(dacl: SddlDacl, user: { sid: string }): boolean {
+  if (dacl.nullDacl) return true
+  return dacl.aces.some(
+    (a) => !['D', 'OD', 'XD'].includes(a.type) && a.flags.includes('OI') && !TRUSTED_FOLDER_SIDS.has(a.sid) && !sameSid(a.sid, user.sid)
+  )
 }
 
 interface WinDeps {
   env: Env
   spawner: CustodianSpawner
   timeoutMs?: number
+}
+
+interface WinUser {
+  name: string
+  sid: string
 }
 
 async function winRun(deps: WinDeps, exe: string, args: string[]): Promise<string> {
@@ -209,21 +305,75 @@ async function winRun(deps: WinDeps, exe: string, args: string[]): Promise<strin
   return stdoutText(r)
 }
 
-async function winUser(deps: WinDeps): Promise<{ name: string; sid: string }> {
+async function winUser(deps: WinDeps): Promise<WinUser> {
   const user = parseWhoamiUser(await winRun(deps, 'whoami.exe', ['/user', '/fo', 'csv', '/nh']))
   if (!user) throw new CustodyError('denied', 'whoami named no user SID, so the key file cannot be restricted to this user.')
   return user
 }
 
-async function winVerifyDacl(deps: WinDeps, path: string, user: { name: string; sid: string }): Promise<void> {
-  const aces = parseIcaclsAces(await winRun(deps, 'icacls.exe', [path]), path)
-  if (!aces || !daclIsOwnerOnly(aces, user)) {
-    throw new CustodyError('denied', `The key file ${path} can be read by other accounts; it must allow only ${user.name}.`)
+/** How to name the user: whoami prints in the OEM code page, so a name that did not decode is left out. */
+function userLabel(user: WinUser): string {
+  return /^[\x20-\x7e]+$/.test(user.name) ? `${user.name} (${user.sid})` : user.sid
+}
+
+/** The exact command that restricts a key file to this user (shown with every refusal of its access list). */
+export function icaclsRemedy(path: string, sid: string): string {
+  return `icacls "${path}" /inheritance:r /grant:r "*${sid}:F"`
+}
+
+/** `icacls <path> /save <temp file> /q`, read back as SDDL; a temp folder of its own, removed again. */
+async function winDacl(deps: WinDeps, path: string): Promise<SddlDacl | undefined> {
+  const dir = mkdtempSync(join(tmpdir(), 'orgai-acl-'))
+  try {
+    const out = join(dir, 'acl.txt')
+    await winRun(deps, 'icacls.exe', [path, '/save', out, '/q'])
+    let buf: Buffer
+    try {
+      buf = readFileSync(out)
+    } catch {
+      return undefined
+    }
+    return parseIcaclsSave(buf)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
   }
 }
 
-/** Windows create (5.3.1): empty exclusive file, protected DACL, verify, then write and flush; any failure deletes it. */
+async function winVerifyDacl(deps: WinDeps, path: string, user: WinUser, phase: 'create' | 'open'): Promise<void> {
+  const dacl = await winDacl(deps, path)
+  if (!dacl) {
+    throw new CustodyError('denied', `OrgAI could not read the access list of the key file ${path} (icacls answered in a form OrgAI does not recognise), so it cannot tell who may read it.`)
+  }
+  if (daclIsOwnerOnly(dacl, user)) return
+  if (phase === 'create') throw new CustodyError('denied', `OrgAI could not restrict the new key file ${path} to ${userLabel(user)}, so it deleted it.`)
+  throw new CustodyError(
+    'denied',
+    `The key file ${path} is not limited to ${userLabel(user)} (other accounts or inherited entries may read it). Restrict it with \`${icaclsRemedy(path, user.sid)}\` and try again.`
+  )
+}
+
+/** Refuses a folder whose new files other accounts could open before OrgAI restricts them. */
+async function winCheckFolder(deps: WinDeps, dir: string, user: WinUser): Promise<void> {
+  const dacl = await winDacl(deps, dir)
+  if (!dacl) {
+    throw new CustodyError('denied', `OrgAI could not read the access list of the folder ${dir} (icacls answered in a form OrgAI does not recognise), so it does not create a key file there.`)
+  }
+  if (folderLetsOthersIn(dacl, user)) {
+    throw new CustodyError(
+      'denied',
+      `Other accounts can open new files in ${dir}, so a new key file there could be read before OrgAI restricts it. Choose a folder only you can read (for example under your user profile), or create the key file yourself, restrict it with \`${icaclsRemedy(join(dir, '<file>'), user.sid)}\` and use --import.`
+    )
+  }
+}
+
+/**
+ * Windows create (5.3.1): refuse a folder other accounts can read new files in, then the empty file exclusively, the
+ * protected DACL, verify, then write and flush; any failure after the file exists deletes it.
+ */
 export async function createKeyFileWindows(path: string, content: Buffer, deps: WinDeps): Promise<void> {
+  if (pathExists(path)) throw createError(Object.assign(new Error('exists'), { code: 'EEXIST' }), path)
+  const user = await winUser(deps)
+  await winCheckFolder(deps, dirname(path), user)
   let fd: number
   try {
     fd = openSync(path, 'wx')
@@ -232,9 +382,8 @@ export async function createKeyFileWindows(path: string, content: Buffer, deps: 
   }
   closeSync(fd)
   try {
-    const user = await winUser(deps)
     await winRun(deps, 'icacls.exe', [path, '/inheritance:r', '/grant:r', `*${user.sid}:F`])
-    await winVerifyDacl(deps, path, user)
+    await winVerifyDacl(deps, path, user, 'create')
     const w = openSync(path, 'r+')
     try {
       writeSync(w, content)
@@ -263,7 +412,7 @@ export async function readKeyFileWindows(path: string, deps: WinDeps): Promise<B
   }
   if (st.isSymbolicLink()) throw new CustodyError('denied', `The key file ${path} is a link; OrgAI reads only a regular file.`)
   if (!st.isFile()) throw new CustodyError('denied', `The key file ${path} is not a regular file.`)
-  await winVerifyDacl(deps, path, await winUser(deps))
+  await winVerifyDacl(deps, path, await winUser(deps), 'open')
   let fd: number
   try {
     fd = openSync(path, 'r')
@@ -283,7 +432,7 @@ export async function readKeyFileWindows(path: string, deps: WinDeps): Promise<B
 
 function createError(e: unknown, path: string): CustodyError {
   const code = (e as NodeJS.ErrnoException).code
-  if (code === 'EEXIST') return new CustodyError('denied', `A file already exists at ${path}; OrgAI never overwrites a key file. Use --import to use it.`)
+  if (code === 'EEXIST') return new CustodyError('denied', keyFileExistsReason(path))
   if (code === 'ENOENT' || code === 'ENOTDIR') return new CustodyError('unavailable', `The folder for the key file ${path} does not exist.`)
   if (code === 'EACCES' || code === 'EPERM' || code === 'EROFS') return new CustodyError('denied', `OrgAI may not create the key file ${path} (${code}).`)
   return new CustodyError('unavailable', `The key file ${path} could not be created (${code ?? 'error'}).`)
@@ -425,14 +574,25 @@ export class KeyFileCustodian implements RemovableKeyCustodian {
     return this.platform === 'win32' ? readKeyFileWindows(path, this.winDeps()) : Promise.resolve().then(() => readKeyFilePosix(path, this.uid()))
   }
 
+  private existingVault(): boolean {
+    return this.opts.vaultExists === true || this.opts.recordedKeyFile !== undefined
+  }
+
+  /**
+   * The same checks as open for a file that is there; for a path that is not, 'missing' when it should already hold
+   * the key (an existing vault, `--import`), else whether its folder exists so create() can make it.
+   */
   async probe(): Promise<CustodianProbe> {
     try {
-      const path = this.checkedPath('unavailable')
+      const path = this.checkedPath(this.existingVault() ? 'missing' : 'unavailable')
+      const askedNow = this.opts.keyFile !== undefined
       if (pathExists(path)) {
+        // `secrets init --key-file` (no --import) for a new vault would refuse this file: say so now.
+        if (askedNow && !this.opts.importExisting && !this.existingVault()) throw new CustodyError('denied', keyFileExistsReason(path))
         ;(await this.read(path)).fill(0)
         return { ok: true }
       }
-      if (this.opts.importExisting) throw new CustodyError('missing', `The key file ${path} does not exist.`)
+      if (this.opts.importExisting || (this.existingVault() && !askedNow)) throw new CustodyError('missing', `The key file ${path} does not exist.`)
       const dir = pathApi(this.platform).dirname(path)
       if (!isDirectory(dir)) throw new CustodyError('unavailable', `The folder for the key file ${path} does not exist.`)
       return { ok: true }
@@ -446,6 +606,9 @@ export class KeyFileCustodian implements RemovableKeyCustodian {
     void vaultId
     const path = this.checkedPath('unavailable')
     if (this.opts.importExisting) return { dek: await this.read(path) }
+    // ORGAI_VAULT_KEY_FILE naming a provisioned key (CI, a moved file): use it as it is, never overwrite it. A path
+    // asked for now with `--key-file` still creates a new file only.
+    if (this.opts.keyFile === undefined && pathExists(path)) return { dek: await this.read(path) }
     const dek = randomBytes(VAULT_DEK_BYTES)
     const content = Buffer.from(`${dek.toString('base64')}\n`, 'latin1')
     try {

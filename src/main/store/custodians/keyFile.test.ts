@@ -9,9 +9,12 @@ import {
   KeyFileCustodian,
   createKeyFileWindows,
   daclIsOwnerOnly,
+  folderLetsOthersIn,
+  icaclsRemedy,
   keyFilePathProblem,
-  parseIcaclsAces,
+  parseIcaclsSave,
   parseKeyFileContent,
+  parseSddlDacl,
   parseWhoamiUser,
   readKeyFileWindows
 } from './keyFile'
@@ -198,8 +201,52 @@ describe('KeyFileCustodian on POSIX (5.3.1)', () => {
     const loose = join(outside, 'loose.key')
     writeFileSync(loose, Buffer.alloc(32), { mode: 0o644 })
     chmodSync(loose, 0o644)
-    expect(await custodian({ keyFile: loose }).probe()).toMatchObject({ ok: false, kind: 'denied' })
-    expect(await custodian({ recordedKeyFile: loose }).probe()).toMatchObject({ ok: false, kind: 'denied' })
+    expect(await custodian({ keyFile: loose, importExisting: true }).probe()).toMatchObject({ ok: false, kind: 'denied', reason: expect.stringMatching(/chmod 600/) })
+    expect(await custodian({ recordedKeyFile: loose }).probe()).toMatchObject({ ok: false, kind: 'denied', reason: expect.stringMatching(/chmod 600/) })
+  })
+
+  posixOnly('probes an existing vault whose key file is gone as missing, even when its folder exists (review round 1)', async () => {
+    const gone = join(outside, 'gone.key')
+    // The recorded path, the variable naming it, or a factory that only knows a vault exists: all 'missing'.
+    expect(await custodian({ recordedKeyFile: gone }).probe()).toMatchObject({ ok: false, kind: 'missing' })
+    expect(await custodian({ vaultExists: true, env: { ORGAI_VAULT_KEY_FILE: gone } }).probe()).toMatchObject({ ok: false, kind: 'missing' })
+    expect(await custodian({ recordedKeyFile: join(outside, 'old.key'), env: { ORGAI_VAULT_KEY_FILE: gone } }).probe()).toMatchObject({ ok: false, kind: 'missing' })
+    expect(await custodian({ vaultExists: true }).probe()).toMatchObject({ ok: false, kind: 'missing' })
+    // And --import of a file that is not there.
+    expect(await custodian({ keyFile: gone, importExisting: true }).probe()).toMatchObject({ ok: false, kind: 'missing' })
+    // A new vault through the variable: the file will be created, so its folder is what counts.
+    expect(await custodian({ env: { ORGAI_VAULT_KEY_FILE: gone } }).probe()).toEqual({ ok: true })
+    // The probe agrees with open.
+    expect((await failure(custodian().open(ID, { scheme: 'key-file', keyFile: gone }))).kind).toBe('missing')
+  })
+
+  posixOnly('probe of `init --key-file` on an existing file names the --import command', async () => {
+    const path = join(outside, 'there.key')
+    writeFileSync(path, Buffer.alloc(32, 3), { mode: 0o600 })
+    const p = await custodian({ keyFile: path }).probe()
+    expect(p).toMatchObject({ ok: false, kind: 'denied' })
+    expect((p as { reason: string }).reason).toContain(`orgai secrets init --key-file "${path}" --import`)
+    const e = await failure(custodian({ keyFile: path }).create(ID))
+    expect(e.reason).toContain(`orgai secrets init --key-file "${path}" --import`)
+  })
+
+  posixOnly('a new vault takes an existing file named by ORGAI_VAULT_KEY_FILE as an import, never overwriting it (review round 1)', async () => {
+    const path = join(outside, 'ci.key')
+    const key = Buffer.alloc(32, 0x5a)
+    writeFileSync(path, `${key.toString('base64')}\n`, { mode: 0o600 })
+    const c = custodian({ env: { ORGAI_VAULT_KEY_FILE: path } })
+    expect(await c.probe()).toEqual({ ok: true })
+    const { dek } = await c.create(ID)
+    expect(dek.equals(key)).toBe(true)
+    expect(readFileSync(path, 'latin1')).toBe(`${key.toString('base64')}\n`)
+    // Still checked like open: a loose file is refused, not imported.
+    chmodSync(path, 0o644)
+    expect((await failure(c.create(ID))).reason).toMatch(/chmod 600/)
+    // A missing file named by the variable is created.
+    const fresh = join(outside, 'fresh.key')
+    const made = await custodian({ env: { ORGAI_VAULT_KEY_FILE: fresh } }).create(ID)
+    expect(readFileSync(fresh, 'latin1')).toBe(`${made.dek.toString('base64')}\n`)
+    expect(statSync(fresh).mode & 0o777).toBe(0o600)
   })
 
   posixOnly('open with nothing configured is missing', async () => {
@@ -211,85 +258,177 @@ describe('Windows key file DACL steps (5.3.1; fake whoami / icacls)', () => {
   const env = { SystemRoot: 'C:\\Windows', TEMP: 'C:\\t', ORGAI_SECRET_X: 'v' }
   const SID = 'S-1-5-21-111-222-333-1001'
   const whoami = `"desktop-1\\me","${SID}"\r\n`
+  const OWNER_ONLY = `D:PAI(A;;FA;;;${SID})`
+  const PROFILE_FOLDER = `D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;${SID})`
 
-  function fakeWin(path: string, aces: string, overrides: { set?: FakeAnswer; whoami?: FakeAnswer } = {}) {
+  /** What `icacls <path> /save <file>` writes: UTF-16LE with a BOM, the name line, then the SDDL. */
+  const saveFile = (name: string, sddl: string): Buffer => Buffer.from(`\ufeff${name}\r\n${sddl}\r\n`, 'utf16le')
+
+  function fakeWin(
+    path: string,
+    fileSddl: string,
+    overrides: { set?: FakeAnswer; whoami?: FakeAnswer; folderSddl?: string; saved?: (target: string) => Buffer | undefined } = {}
+  ) {
     return fakeSpawner(({ file, args }) => {
       if (file.endsWith('whoami.exe')) return overrides.whoami ?? { code: 0, stdout: whoami }
-      if (file.endsWith('icacls.exe') && args.length > 1) return overrides.set ?? { code: 0, stdout: `processed file: ${path}\r\n` }
-      if (file.endsWith('icacls.exe')) return { code: 0, stdout: `${path} ${aces}\r\n\r\nSuccessfully processed 1 files; Failed processing 0 files\r\n` }
+      if (file.endsWith('icacls.exe') && args[1] === '/save') {
+        const target = args[0]!
+        const custom = overrides.saved?.(target)
+        writeFileSync(args[2]!, custom ?? saveFile('x', target === path ? fileSddl : (overrides.folderSddl ?? PROFILE_FOLDER)))
+        return { code: 0 }
+      }
+      if (file.endsWith('icacls.exe')) return overrides.set ?? { code: 0, stdout: `processed file: ${path}\r\n` }
       return { code: 9 }
     })
   }
 
-  it('creates the empty file, restricts it to the SID, verifies, then writes', async () => {
+  it('checks the folder, creates the empty file, restricts it to the SID, verifies, then writes', async () => {
     const path = join(outside, 'win.key')
-    const f = fakeWin(path, 'desktop-1\\me:(F)')
+    const f = fakeWin(path, OWNER_ONLY)
     const content = Buffer.from('k\n')
     await createKeyFileWindows(path, content, { env, spawner: f.spawner })
     expect(readFileSync(path, 'utf8')).toBe('k\n')
-    expect(f.calls.map((c) => [c.file, c.args])).toEqual([
+    const calls = f.calls.map((c) => [c.file, c.args.map((a, i) => (c.args[1] === '/save' && i === 2 ? '<tmp>' : a))])
+    expect(calls).toEqual([
       ['C:\\Windows\\System32\\whoami.exe', ['/user', '/fo', 'csv', '/nh']],
+      ['C:\\Windows\\System32\\icacls.exe', [outside, '/save', '<tmp>', '/q']],
       ['C:\\Windows\\System32\\icacls.exe', [path, '/inheritance:r', '/grant:r', `*${SID}:F`]],
-      ['C:\\Windows\\System32\\icacls.exe', [path]]
+      ['C:\\Windows\\System32\\icacls.exe', [path, '/save', '<tmp>', '/q']]
     ])
     for (const c of f.calls) expect(c.options.env).toEqual({ SystemRoot: 'C:\\Windows', TEMP: 'C:\\t' })
     for (const c of f.calls) expect(c.stdin).toBe('')
+    // The temp ACL files are gone again.
+    for (const c of f.calls.filter((x) => x.args[1] === '/save')) expect(existsSync(c.args[2]!)).toBe(false)
   })
 
   it('deletes the empty file and fails closed when another principal remains or a step fails', async () => {
     const path = join(outside, 'win.key')
-    const extra = fakeWin(path, 'desktop-1\\me:(F)\r\n                 BUILTIN\\Administrators:(F)')
+    const extra = fakeWin(path, `D:PAI(A;;FA;;;${SID})(A;;FA;;;BA)`)
     expect((await failure(createKeyFileWindows(path, Buffer.from('k'), { env, spawner: extra.spawner }))).kind).toBe('denied')
     expect(existsSync(path)).toBe(false)
 
-    const setFails = fakeWin(path, 'desktop-1\\me:(F)', { set: { code: 5, stderr: 'Access is denied.' } })
+    const setFails = fakeWin(path, OWNER_ONLY, { set: { code: 5, stderr: 'Access is denied.' } })
     expect((await failure(createKeyFileWindows(path, Buffer.from('k'), { env, spawner: setFails.spawner }))).kind).toBe('denied')
     expect(existsSync(path)).toBe(false)
 
-    const noSid = fakeWin(path, 'desktop-1\\me:(F)', { whoami: { code: 0, stdout: 'nothing' } })
+    const noSid = fakeWin(path, OWNER_ONLY, { whoami: { code: 0, stdout: 'nothing' } })
     expect((await failure(createKeyFileWindows(path, Buffer.from('k'), { env, spawner: noSid.spawner }))).kind).toBe('denied')
     expect(existsSync(path)).toBe(false)
 
-    const inherited = fakeWin(path, 'desktop-1\\me:(I)(F)')
+    const inherited = fakeWin(path, `D:AI(A;ID;FA;;;${SID})`)
     expect((await failure(createKeyFileWindows(path, Buffer.from('k'), { env, spawner: inherited.spawner }))).kind).toBe('denied')
     expect(existsSync(path)).toBe(false)
+  })
+
+  it('refuses a folder whose new files other accounts could open, before creating anything (review round 1)', async () => {
+    const path = join(outside, 'win.key')
+    // C:\ci under C:\: Authenticated Users (M) and Users (RX) inherited onto files.
+    const shared = fakeWin(path, OWNER_ONLY, { folderSddl: 'D:AI(A;OICIID;FA;;;BA)(A;OICIID;FA;;;SY)(A;OICIID;0x1200a9;;;BU)(A;OICIID;0x1301bf;;;AU)' })
+    const e = await failure(createKeyFileWindows(path, Buffer.from('k'), { env, spawner: shared.spawner }))
+    expect(e.kind).toBe('denied')
+    expect(e.reason).toMatch(/Other accounts can open new files/)
+    expect(e.reason).toContain('--import')
+    expect(existsSync(path)).toBe(false)
+    expect(shared.calls.some((c) => c.args.includes('/grant:r'))).toBe(false)
+    // A null DACL, and an unreadable answer, fail closed too.
+    const open = fakeWin(path, OWNER_ONLY, { folderSddl: 'D:NO_ACCESS_CONTROL' })
+    expect((await failure(createKeyFileWindows(path, Buffer.from('k'), { env, spawner: open.spawner }))).kind).toBe('denied')
+    const junk = fakeWin(path, OWNER_ONLY, { saved: (t) => (t === outside ? Buffer.from('garbage') : undefined) })
+    expect((await failure(createKeyFileWindows(path, Buffer.from('k'), { env, spawner: junk.spawner }))).reason).toMatch(/could not read the access list of the folder/)
+    expect(existsSync(path)).toBe(false)
+    // An entry for others that applies to subfolders only (CI without OI) does not reach a new file.
+    const subdirsOnly = fakeWin(path, OWNER_ONLY, { folderSddl: `${PROFILE_FOLDER}(A;CI;0x1200a9;;;BU)` })
+    await createKeyFileWindows(path, Buffer.from('k'), { env, spawner: subdirsOnly.spawner })
+    expect(existsSync(path)).toBe(true)
   })
 
   it('never overwrites an existing file', async () => {
     const path = join(outside, 'win.key')
     writeFileSync(path, 'old')
-    const f = fakeWin(path, 'desktop-1\\me:(F)')
-    expect((await failure(createKeyFileWindows(path, Buffer.from('k'), { env, spawner: f.spawner }))).kind).toBe('denied')
+    const f = fakeWin(path, OWNER_ONLY)
+    const e = await failure(createKeyFileWindows(path, Buffer.from('k'), { env, spawner: f.spawner }))
+    expect(e.kind).toBe('denied')
+    expect(e.reason).toContain('--import')
     expect(readFileSync(path, 'utf8')).toBe('old')
     expect(f.calls).toHaveLength(0)
   })
 
-  it('opens only after the DACL check passes', async () => {
+  it('opens only after the DACL check passes, and names the icacls fix when it does not (review round 1)', async () => {
     const path = join(outside, 'win.key')
     const key = Buffer.alloc(32, 4)
     writeFileSync(path, key.toString('base64'))
-    const ok = fakeWin(path, `*${SID}:(F)`)
+    const ok = fakeWin(path, OWNER_ONLY)
     expect((await readKeyFileWindows(path, { env, spawner: ok.spawner })).equals(key)).toBe(true)
-    const everyone = fakeWin(path, 'desktop-1\\me:(F)\r\n          Everyone:(R)')
-    expect((await failure(readKeyFileWindows(path, { env, spawner: everyone.spawner }))).reason).toMatch(/other accounts/)
+    // `openssl rand -base64 32 > key` in a profile folder: inherited SYSTEM, Administrators and the user.
+    const editorMade = fakeWin(path, `D:AI(A;ID;FA;;;SY)(A;ID;FA;;;BA)(A;ID;FA;;;${SID})`)
+    const e = await failure(readKeyFileWindows(path, { env, spawner: editorMade.spawner }))
+    expect(e.kind).toBe('denied')
+    expect(e.reason).toContain(`icacls "${path}" /inheritance:r /grant:r "*${SID}:F"`)
+    expect(icaclsRemedy(path, SID)).toBe(`icacls "${path}" /inheritance:r /grant:r "*${SID}:F"`)
     expect((await failure(readKeyFileWindows(join(outside, 'none'), { env, spawner: ok.spawner }))).kind).toBe('missing')
   })
 
-  it('parses whoami and icacls output', () => {
+  it('reads a non-ASCII path and account name, comparing SIDs only (review round 1)', async () => {
+    const path = join(outside, 'José', 'orgai.key')
+    mkdirSync(join(outside, 'José'))
+    const key = Buffer.alloc(32, 6)
+    writeFileSync(path, key.toString('base64'))
+    // whoami prints in the OEM code page (cp850 "é" = 0x82), which does not decode as UTF-8; the name is then left out
+    // of messages and only the SID is compared. icacls /save's name line is never read.
+    const oem = Buffer.concat([Buffer.from('"desktop-1\\Jos'), Buffer.from([0x82]), Buffer.from(`","${SID}"\r\n`)])
+    const f = fakeWin(path, OWNER_ONLY, { whoami: { code: 0, stdout: oem.toString('latin1') } })
+    expect((await readKeyFileWindows(path, { env, spawner: f.spawner })).equals(key)).toBe(true)
+    const other = fakeWin(path, `D:PAI(A;;FA;;;S-1-5-21-9-9-9-1002)`, { whoami: { code: 0, stdout: oem.toString('latin1') } })
+    const e = await failure(readKeyFileWindows(path, { env, spawner: other.spawner }))
+    expect(e.reason).toContain(SID)
+    expect(e.reason).not.toContain('desktop-1')
+  })
+
+  it('gives an unreadable access list its own message', async () => {
+    const path = join(outside, 'win.key')
+    writeFileSync(path, Buffer.alloc(32, 4).toString('base64'))
+    const f = fakeWin(path, OWNER_ONLY, { saved: () => Buffer.from('not sddl at all') })
+    const e = await failure(readKeyFileWindows(path, { env, spawner: f.spawner }))
+    expect(e.reason).toMatch(/could not read the access list of the key file/)
+    expect(e.reason).not.toMatch(/other accounts/)
+  })
+
+  it('parses whoami, icacls /save files and SDDL', () => {
     expect(parseWhoamiUser(whoami)).toEqual({ name: 'desktop-1\\me', sid: SID })
     expect(parseWhoamiUser('"User Name","SID"\r\n"a\\b","S-1-5-18"\r\n')).toEqual({ name: 'a\\b', sid: 'S-1-5-18' })
     expect(parseWhoamiUser('')).toBeUndefined()
-    const p = 'C:\\keys\\orgai.key'
-    expect(parseIcaclsAces(`${p} NT AUTHORITY\\SYSTEM:(I)(F)\r\n    BUILTIN\\Users:(I)(RX)\r\n\r\nSuccessfully processed 1 files`, p)).toEqual([
-      { principal: 'NT AUTHORITY\\SYSTEM', perms: '(I)(F)' },
-      { principal: 'BUILTIN\\Users', perms: '(I)(RX)' }
+
+    expect(parseIcaclsSave(saveFile('orgai.key', OWNER_ONLY))).toEqual({ protected: true, nullDacl: false, aces: [{ type: 'A', flags: [], rights: 'FA', sid: SID }] })
+    // Without a BOM, and as plain text.
+    expect(parseIcaclsSave(Buffer.from(`orgai.key\r\n${OWNER_ONLY}\r\n`, 'utf16le'))?.aces).toHaveLength(1)
+    expect(parseIcaclsSave(Buffer.from(`orgai.key\r\n${OWNER_ONLY}\r\n`, 'latin1'))?.aces).toHaveLength(1)
+    // Two objects (a folder saved with its contents) or none: unknown.
+    expect(parseIcaclsSave(saveFile('a', `${OWNER_ONLY}\r\nb\r\n${OWNER_ONLY}`))).toBeUndefined()
+    expect(parseIcaclsSave(Buffer.from('garbage'))).toBeUndefined()
+
+    expect(parseSddlDacl('D:AI(A;OICIID;FA;;;SY)(A;OICIID;0x1301bf;;;AU)')?.aces).toEqual([
+      { type: 'A', flags: ['OI', 'CI', 'ID'], rights: 'FA', sid: 'S-1-5-18' },
+      { type: 'A', flags: ['OI', 'CI', 'ID'], rights: '0x1301bf', sid: 'S-1-5-11' }
     ])
-    expect(parseIcaclsAces('something else entirely', p)).toBeUndefined()
-    expect(parseIcaclsAces(`${p} junk`, p)).toBeUndefined()
-    const user = { name: 'host\\me', sid: SID }
-    expect(daclIsOwnerOnly([{ principal: 'HOST\\ME', perms: '(F)' }], user)).toBe(true)
-    expect(daclIsOwnerOnly([{ principal: SID, perms: '(F)' }], user)).toBe(true)
-    expect(daclIsOwnerOnly([{ principal: 'host\\me', perms: '(RX)' }], user)).toBe(false)
-    expect(daclIsOwnerOnly([{ principal: 'host\\other', perms: '(F)' }], user)).toBe(false)
+    expect(parseSddlDacl(`O:BAG:SYD:PAI(A;;FA;;;${SID})`)?.protected).toBe(true)
+    expect(parseSddlDacl('D:(XA;;FA;;;WD;(@User.x == 1))')).toBeUndefined()
+    expect(parseSddlDacl('nonsense')).toBeUndefined()
+
+    const user = { sid: SID }
+    const dacl = (t: string) => parseSddlDacl(t)!
+    expect(daclIsOwnerOnly(dacl(OWNER_ONLY), user)).toBe(true)
+    expect(daclIsOwnerOnly(dacl(`D:P(A;;0x1f01ff;;;${SID.toLowerCase()})`), user)).toBe(true)
+    expect(daclIsOwnerOnly(dacl(`D:AI(A;;FA;;;${SID})`), user)).toBe(false)
+    expect(daclIsOwnerOnly(dacl(`D:P(A;;FR;;;${SID})`), user)).toBe(false)
+    expect(daclIsOwnerOnly(dacl('D:P(A;;FA;;;S-1-5-21-1-2-3-1002)'), user)).toBe(false)
+    expect(daclIsOwnerOnly(dacl(`D:P(A;;FA;;;${SID})(D;;FA;;;WD)`), user)).toBe(false)
+    expect(daclIsOwnerOnly(dacl('D:PNO_ACCESS_CONTROL'), user)).toBe(false)
+    expect(daclIsOwnerOnly(dacl('D:P(A;;FA;;;LA)'), { sid: 'S-1-5-21-1-2-3-500' })).toBe(true)
+
+    expect(folderLetsOthersIn(dacl(PROFILE_FOLDER), user)).toBe(false)
+    expect(folderLetsOthersIn(dacl(`${PROFILE_FOLDER}(A;OICI;FA;;;CO)(D;OICI;FA;;;WD)`), user)).toBe(false)
+    expect(folderLetsOthersIn(dacl(`${PROFILE_FOLDER}(A;OICIIO;0x1200a9;;;BU)`), user)).toBe(true)
+    expect(folderLetsOthersIn(dacl(`${PROFILE_FOLDER}(A;OI;FR;;;S-1-5-21-1-2-3-1002)`), user)).toBe(true)
+    expect(folderLetsOthersIn(dacl(`${PROFILE_FOLDER}(A;OI;FR;;;ZZ)`), user)).toBe(true)
   })
 })

@@ -11,8 +11,14 @@
  *                 a new file in a temp folder unless --key-file is given)
  *   3. open()   - in a FRESH node process (the custody record goes over the child's stdin), which prints only the
  *                 sha256 of the key, never the key; the parent compares it with its own
- *   4. removeItem() - deletes the item (or key file) again, whatever happened before
- * It also reports how a missing item reads: open() on a second throwaway id that was never created.
+ *   4. removeItem() - deletes the item again in a finally block, whatever happened before: for the OS stores
+ *                 (keychain, secret-service) always, because create() can store the item and then fail (a read-back
+ *                 that times out at an unlock prompt, a key mismatch), with 'missing' counted as fine; for key-file only
+ *                 when this run created the file (a file given with --key-file that already existed is never touched)
+ * It also reports how a missing item reads: open() on a second throwaway id that was never created. On macOS it records
+ * the raw answers of `security default-keychain` and `security show-keychain-info <default keychain>` (exit codes and
+ * the non-secret settings line), so a run with the login keychain locked (over SSH, or after `security lock-keychain`)
+ * shows what a locked keychain returns.
  *
  * Nothing it prints holds a key: only step results, failure kinds, the custodian's reason sentences and timings. The
  * custodian code is bundled from src/main/store/custodians/index.ts with esbuild into a temp folder (deleted at the end).
@@ -26,7 +32,7 @@
  *   --key-file  for key-file: the path to create (must not exist; deleted at the end). Default: a temp folder.
  *   --json      print the report as JSON only
  */
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -119,6 +125,17 @@ function openInFreshProcess(bundlePath, payload) {
   })
 }
 
+/** The raw keychain answers the probe classifies (no item is read; show-keychain-info prints only settings). */
+function keychainInfo() {
+  const run = (args) => {
+    const r = spawnSync('/usr/bin/security', args, { cwd: tmpdir(), encoding: 'utf8', timeout: 10_000, stdio: ['ignore', 'pipe', 'pipe'] })
+    return { args: args.join(' '), exit: r.status, signal: r.signal ?? undefined, stdout: (r.stdout ?? '').trim().slice(0, 200), stderr: (r.stderr ?? '').trim().slice(0, 200) }
+  }
+  const def = run(['default-keychain'])
+  const m = /^\s*"(\/[^"]*)"\s*$/.exec(def.stdout)
+  return { defaultKeychain: def, showKeychainInfo: m ? run(['show-keychain-info', m[1]]) : 'no default keychain path', bareShowKeychainInfo: run(['show-keychain-info']) }
+}
+
 async function main() {
   if (process.argv.includes('--child-open')) return childOpen()
   const jsonOnly = process.argv.includes('--json')
@@ -135,59 +152,75 @@ async function main() {
     const vaultId = randomBytes(16).toString('hex')
     report.vaultId = vaultId
     const custodian = makeCustodian(mod, work, scheme, keyFile)
-
-    await step(report, 'probe', async () => {
-      const p = await custodian.probe()
-      if (!p.ok) throw p
-      return {}
-    })
-
+    const osStore = scheme === 'keychain' || scheme === 'secret-service'
     let custody = { scheme, ...(keyFile ? { keyFile } : {}) }
-    let dekHash
-    const created = await step(report, 'create', async () => {
-      const { dek, wrapped } = await custodian.create(vaultId)
-      dekHash = sha(dek)
-      dek.fill(0)
-      if (wrapped) custody = { ...custody, wrapped }
-      if (scheme === 'key-file') custody = { ...custody, keyFile: custodian.canonicalPath() }
-      return { bytes: 32, wrapped: wrapped ? `${wrapped.length} chars` : undefined }
-    })
+    let fileCreated = false
 
-    if (created !== undefined) {
-      await step(report, 'create-again-refused', async () => {
-        try {
-          const again = await custodian.create(vaultId)
-          again.dek.fill(0)
-        } catch (e) {
-          return { refused: true, ...failureOf(e), ok: true }
-        }
-        // dpapi-user stores nothing in the OS, so a second create is expected to succeed there.
-        return { refused: false }
-      })
-      await step(report, 'open-fresh-process', async () => {
-        const r = await openInFreshProcess(bundlePath, { scheme, vaultId, custody, work, keyFile })
-        if (!r.ok) throw r
-        return { sameKey: r.sha256 === dekHash, bytes: r.bytes }
-      })
-    }
-
-    await step(report, 'open-missing-item', async () => {
-      const other = randomBytes(16).toString('hex')
-      const missingCustody = scheme === 'key-file' ? { scheme, keyFile: join(work, 'keys', 'never.key') } : { scheme, ...(custody.wrapped ? { wrapped: 'AAAA' } : {}) }
-      try {
-        const k = await makeCustodian(mod, work, scheme, scheme === 'key-file' ? missingCustody.keyFile : undefined).open(other, missingCustody)
-        k.fill(0)
-        return { unexpected: 'opened' }
-      } catch (e) {
-        return { reportedAs: failureOf(e).kind, reason: failureOf(e).reason }
+    try {
+      if (scheme === 'keychain' && process.platform === 'darwin') {
+        await step(report, 'keychain-info', async () => keychainInfo())
       }
-    })
 
-    if (created !== undefined) {
-      await step(report, 'remove', async () => {
-        await custodian.removeItem(vaultId, custody)
+      await step(report, 'probe', async () => {
+        const p = await custodian.probe()
+        if (!p.ok) throw p
         return {}
       })
+
+      let dekHash
+      const created = await step(report, 'create', async () => {
+        const { dek, wrapped } = await custodian.create(vaultId)
+        if (scheme === 'key-file') fileCreated = true
+        dekHash = sha(dek)
+        dek.fill(0)
+        if (wrapped) custody = { ...custody, wrapped }
+        if (scheme === 'key-file') custody = { ...custody, keyFile: custodian.canonicalPath() }
+        return { bytes: 32, wrapped: wrapped ? `${wrapped.length} chars` : undefined }
+      })
+
+      if (created !== undefined) {
+        await step(report, 'create-again-refused', async () => {
+          try {
+            const again = await custodian.create(vaultId)
+            again.dek.fill(0)
+          } catch (e) {
+            return { refused: true, ...failureOf(e), ok: true }
+          }
+          // dpapi-user stores nothing in the OS, so a second create is expected to succeed there.
+          return { refused: false }
+        })
+        await step(report, 'open-fresh-process', async () => {
+          const r = await openInFreshProcess(bundlePath, { scheme, vaultId, custody, work, keyFile })
+          if (!r.ok) throw r
+          return { sameKey: r.sha256 === dekHash, bytes: r.bytes }
+        })
+      }
+
+      await step(report, 'open-missing-item', async () => {
+        const other = randomBytes(16).toString('hex')
+        const missingCustody = scheme === 'key-file' ? { scheme, keyFile: join(work, 'keys', 'never.key') } : { scheme, ...(custody.wrapped ? { wrapped: 'AAAA' } : {}) }
+        try {
+          const k = await makeCustodian(mod, work, scheme, scheme === 'key-file' ? missingCustody.keyFile : undefined).open(other, missingCustody)
+          k.fill(0)
+          return { unexpected: 'opened' }
+        } catch (e) {
+          return { reportedAs: failureOf(e).kind, reason: failureOf(e).reason }
+        }
+      })
+    } finally {
+      // An OS store may hold the item even when create() failed after storing it; a key file is removed only when this
+      // run made it. dpapi-user stores nothing.
+      if (osStore || fileCreated) {
+        await step(report, 'remove', async () => {
+          try {
+            await custodian.removeItem(vaultId, custody)
+          } catch (e) {
+            if (e && e.kind === 'missing') return { wasThere: false }
+            throw e
+          }
+          return {}
+        })
+      }
     }
   } catch (e) {
     report.steps.push({ step: 'setup', ...failureOf(e) })

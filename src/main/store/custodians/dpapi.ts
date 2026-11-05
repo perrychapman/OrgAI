@@ -3,19 +3,27 @@
  * `ProtectedData.Protect(dek, entropy, CurrentUser)` and the blob is kept in vault.json `custody.wrapped`; nothing is
  * stored in the OS. Every call is one Windows PowerShell 5.1 by absolute path
  * (`%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -NonInteractive -Command -`) with the
- * whole script, the key or blob inside it, on stdin as one line. The script answers with markers on stdout (`OK`,
- * `OK:<b64>`, `LANG:<mode>`, `ADDTYPE`, `ERR:crypto`, `ERR:other`), so the result never depends on how PowerShell maps
- * `exit` codes when it reads commands from stdin.
+ * whole script on stdin as one line. The script answers with markers on stdout (`OK`, `OK:<b64>`, `OK:<b64>:<b64>`,
+ * `LANG:<mode>`, `ADDTYPE`, `ERR:crypto`, `ERR:other`), so the result never depends on how PowerShell maps `exit` codes
+ * when it reads commands from stdin.
+ *
+ * The data key NEVER appears in script text (review round 1 blocker): PowerShell 5.1 logs any script block holding
+ * words such as `Add-Type` or `FromBase64String` as event 4104 in Microsoft-Windows-PowerShell/Operational even with
+ * Script Block Logging off, and the same text goes to AMSI. So create lets PowerShell draw the key itself
+ * (`RandomNumberGenerator`), protects it and hands back the blob and the key; open puts only the protected blob (also
+ * in vault.json, useless without the user's DPAPI credentials) in the script. A key leaves PowerShell only through
+ * `[Console]::Out.Write`, never Write-Output, so neither the formatting system nor a transcription GPO
+ * (Start-Transcript) copies it.
  *
  * - probe: LanguageMode must be FullLanguage (else 'denied', naming Constrained Language Mode) and
  *   `Add-Type -AssemblyName System.Security` must load (else 'denied').
- * - create: a fresh key, Protect with entropy UTF-8 `orgai.vault/1:<vaultId>` (dpapiEntropy).
+ * - create: a fresh key from .NET's CSPRNG, Protect with entropy UTF-8 `orgai.vault/1:<vaultId>` (dpapiEntropy).
  * - open: Unprotect; a CryptographicException is 'missing' (another user or machine).
  *
  * UNVERIFIED on Windows (never run from this code): the scripts themselves, the latency (estimated 0.3-3 s cold),
- * AppLocker policies, and whether a one-line script on stdin always runs (it ends with CRLF).
+ * AppLocker policies, whether a one-line script on stdin always runs (it ends with CRLF), and that `[Console]::Out`
+ * bypasses transcription in every host configuration.
  */
-import { randomBytes } from 'node:crypto'
 import { windowsPowerShellPath } from '../../host/systemBinaries'
 import { CustodyError, VAULT_DEK_BYTES, dpapiEntropy, type CustodianCreated, type CustodianProbe, type CustodyFailureKind, type VaultCustody } from '../vaultTypes'
 import { BAD_VAULT_ID_REASON, KEY_FILE_HINT, wrongPlatform, type HelperCustodianOptions, type RemovableKeyCustodian } from './common'
@@ -44,24 +52,36 @@ export function dpapiProbeScript(): string {
   return `${PRELUDE}Write-Output 'OK'\r\n`
 }
 
-function cryptoScript(op: 'Protect' | 'Unprotect', dataB64: string, vaultId: string): string {
+/** Writes one marker line straight to stdout (not Write-Output: a transcript never sees it). */
+const OUT = (expr: string): string => `[Console]::Out.Write(${expr} + [char]13 + [char]10); [Console]::Out.Flush()`
+
+const ENTROPY = (vaultId: string): string => `$e=[Text.Encoding]::UTF8.GetBytes(${psLiteral(dpapiEntropy(vaultId))}); `
+const SCOPE = '[Security.Cryptography.DataProtectionScope]::CurrentUser'
+const CATCH = `catch [Security.Cryptography.CryptographicException] { ${OUT("'ERR:crypto'")} } catch { ${OUT("'ERR:other'")} }\r\n`
+
+/**
+ * The create script: PowerShell draws the key, protects it and writes `OK:<blob b64>:<key b64>`. It holds no key; the
+ * only value in it is the vault id (inside the entropy).
+ */
+export function dpapiProtectScript(vaultId: string): string {
   return (
     PRELUDE +
-    `try { $d=[Convert]::FromBase64String(${psLiteral(dataB64)}); $e=[Text.Encoding]::UTF8.GetBytes(${psLiteral(dpapiEntropy(vaultId))}); ` +
-    `$r=[Security.Cryptography.ProtectedData]::${op}($d,$e,[Security.Cryptography.DataProtectionScope]::CurrentUser); ` +
-    `[Array]::Clear($d,0,$d.Length); Write-Output ('OK:' + [Convert]::ToBase64String($r)); [Array]::Clear($r,0,$r.Length) } ` +
-    `catch [Security.Cryptography.CryptographicException] { Write-Output 'ERR:crypto' } catch { Write-Output 'ERR:other' }\r\n`
+    `try { ${ENTROPY(vaultId)}$k=New-Object byte[] ${VAULT_DEK_BYTES}; $g=[Security.Cryptography.RandomNumberGenerator]::Create(); $g.GetBytes($k); $g.Dispose(); ` +
+    `$r=[Security.Cryptography.ProtectedData]::Protect($k,$e,${SCOPE}); ` +
+    `${OUT("'OK:' + [Convert]::ToBase64String($r) + ':' + [Convert]::ToBase64String($k)")}; [Array]::Clear($k,0,$k.Length) } ` +
+    CATCH
   )
 }
 
-/** The create script (contains the key: never log it). */
-export function dpapiProtectScript(dekB64: string, vaultId: string): string {
-  return cryptoScript('Protect', dekB64, vaultId)
-}
-
-/** The open script. */
+/** The open script: only the protected blob (checked strict base64 first) and the entropy are in it. */
 export function dpapiUnprotectScript(wrapped: string, vaultId: string): string {
-  return cryptoScript('Unprotect', wrapped, vaultId)
+  return (
+    PRELUDE +
+    `try { $d=[Convert]::FromBase64String(${psLiteral(wrapped)}); ${ENTROPY(vaultId)}` +
+    `$r=[Security.Cryptography.ProtectedData]::Unprotect($d,$e,${SCOPE}); ` +
+    `${OUT("'OK:' + [Convert]::ToBase64String($r)")}; [Array]::Clear($r,0,$r.Length) } ` +
+    CATCH
+  )
 }
 
 type Parsed = { ok: true; value?: string } | { ok: false; kind: CustodyFailureKind; reason: string }
@@ -136,17 +156,15 @@ export class DpapiCustodian implements RemovableKeyCustodian {
     if (this.platform !== 'win32') throw wrongPlatform('Windows data protection', this.platform, 'create')
     if (!isVaultId(vaultId)) throw new CustodyError('denied', BAD_VAULT_ID_REASON)
     // Nothing is stored in the OS, so no item can already exist: the blob lives only in the new vault.json.
-    const dek = randomBytes(VAULT_DEK_BYTES)
-    const r = await this.run(dpapiProtectScript(dek.toString('base64'), vaultId))
+    const r = await this.run(dpapiProtectScript(vaultId))
     const p = parseDpapiResult(r, 'protect')
-    if (!p.ok) {
-      dek.fill(0)
-      throw new CustodyError(p.kind, p.reason)
-    }
-    const wrapped = p.value ?? ''
-    if (!isStrictBase64(wrapped)) {
-      dek.fill(0)
-      throw new CustodyError('denied', 'Windows data protection returned an unexpected blob; the vault was not created.')
+    r.stdout.fill(0)
+    if (!p.ok) throw new CustodyError(p.kind, p.reason)
+    const [wrapped = '', keyB64 = '', ...rest] = (p.value ?? '').split(':')
+    const dek = rest.length === 0 ? decodeKeyBase64(keyB64) : undefined
+    if (!dek || !isStrictBase64(wrapped)) {
+      dek?.fill(0)
+      throw new CustodyError('denied', 'Windows data protection returned an unexpected answer; the vault was not created.')
     }
     return { dek, wrapped }
   }

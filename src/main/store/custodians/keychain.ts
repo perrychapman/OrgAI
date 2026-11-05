@@ -2,7 +2,10 @@
  * macOS keychain custodian (cli-standalone.md 5.3): the vault's data key is a generic password item, service
  * "OrgAI Vault", account <vaultId>, in the user's default keychain, written and read through `/usr/bin/security`.
  *
- * - probe: `security show-keychain-info` (exit 0 = usable; 36 / "User interaction is not allowed" / a timeout = locked).
+ * - probe: `security default-keychain` names the default keychain (its quoted path on stdout), then
+ *   `security show-keychain-info <path>` (exit 0 = usable; 36 / "User interaction is not allowed" / a timeout = locked).
+ *   Without a path show-keychain-info asks about a NULL keychain reference (`Keychain "<NULL>" no-timeout`, exit 0,
+ *   seen on macOS 26), which says nothing about the default keychain's lock state (review round 1).
  * - create: refuses when an item for vaultId exists (find-generic-password without -w), then `security -i -q` with the
  *   add-generic-password command on stdin (never argv, no -U), then reads the item back and compares it, because the
  *   exit status of an interactive session is not a reliable signal of one command's failure.
@@ -49,6 +52,22 @@ export function classifyKeychain(r: HelperResult): Classified | null {
   return { kind: 'unavailable', reason: `The macOS keychain tool failed (exit ${r.code ?? 'signal'}); ${KEY_FILE_HINT}.` }
 }
 
+/**
+ * The default keychain's path from `security default-keychain` stdout (`    "/Users/me/Library/Keychains/login.keychain-db"`),
+ * else undefined: exactly one quoted absolute path, no control characters.
+ */
+export function parseDefaultKeychain(stdout: string): string | undefined {
+  const paths = stdout
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean)
+  if (paths.length !== 1) return undefined
+  const m = /^"(\/[^"]*)"$/.exec(paths[0]!)
+  // eslint-disable-next-line no-control-regex
+  if (!m || /[\u0000-\u001f\u007f]/.test(m[1]!)) return undefined
+  return m[1]!
+}
+
 /** One `security -i` argument, double-quoted. Only a safe alphabet is accepted, so nothing needs escaping. */
 export function securityInteractiveArg(v: string): string {
   if (!/^[A-Za-z0-9 +/=._-]+$/.test(v)) throw new CustodyError('denied', 'A keychain argument held a character OrgAI does not pass to `security`.')
@@ -88,7 +107,12 @@ export class KeychainCustodian implements RemovableKeyCustodian {
       const e = wrongPlatform('the macOS keychain', this.platform, 'probe')
       return { ok: false, kind: e.kind, reason: e.reason }
     }
-    const c = classifyKeychain(await this.run(['show-keychain-info']))
+    const d = await this.run(['default-keychain'])
+    const dc = classifyKeychain(d)
+    const path = dc ? undefined : parseDefaultKeychain(stdoutText(d))
+    if (dc && dc.kind !== 'exists' && dc.kind !== 'missing') return { ok: false, kind: dc.kind, reason: dc.reason }
+    if (path === undefined) return { ok: false, kind: 'unavailable', reason: `There is no default macOS keychain for this user; ${KEY_FILE_HINT}.` }
+    const c = classifyKeychain(await this.run(['show-keychain-info', path]))
     if (!c) return { ok: true }
     // No item is read here, so 'missing' or 'exists' can only mean the keychain itself is not usable.
     return { ok: false, kind: c.kind === 'exists' || c.kind === 'missing' ? 'unavailable' : c.kind, reason: c.reason }
