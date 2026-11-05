@@ -14,7 +14,7 @@ import { _electron as electron } from 'playwright-core'
 import { spawn } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { APP_DIR, DATA_DIR, check, createProject, electronBinary, finish, launch, log, makeFixtureRepo, openAppSettings, removeFixture, sleep } from './lib.mjs'
+import { APP_DIR, DATA_DIR, SHOTS_DIR, check, createProject, electronBinary, finish, launch, log, makeFixtureRepo, openAppSettings, removeFixture, sleep, windowShift } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const NAME = 'E2E cli host'
@@ -175,6 +175,45 @@ try {
   await sw.click()
   const on = await waitFor(async () => (await p3.evaluate(() => window.orgai.settings.get().then((s) => s.terminalServer))) === true, 5000)
   check(on === true, 'turning it back on saves terminalServer true')
+
+  // orgai command row (cli-spec 7(3), Wave 6), right under Terminal access. A dev build always reports 'unavailable',
+  // so only that state is driven here; install, update and remove are covered by the unit tests in lib/cliShim.test.ts.
+  for (const [w, h] of [[1024, 640], [1600, 1000]]) {
+    await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), [w, h])
+    await sleep(300)
+    for (const theme of ['dark', 'light']) {
+      await p3.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme)
+      const at = `${w}x${h} ${theme}`
+      const row = p3.locator('[data-testid=cli-shim-row]')
+      await row.waitFor({ timeout: 10_000 }).catch(() => {})
+      check(await row.isVisible(), `orgai command row is visible (${at})`)
+      const order = await p3.evaluate(() => {
+        const sw = document.querySelector('[data-testid=terminal-server-switch]')
+        const r = document.querySelector('[data-testid=cli-shim-row]')
+        return !!sw && !!r && (sw.compareDocumentPosition(r) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0 && sw.closest('.settings-card') === r.closest('.settings-card')
+      })
+      check(order, `the row sits under Terminal access in the same card (${at})`)
+      const status = p3.locator('[data-testid=cli-shim-status]')
+      const state = await waitFor(async () => (await status.getAttribute('data-state').catch(() => null)) === 'unavailable', 5000)
+      check(state === true, `the status line says unavailable in a dev build (${at})`, String(await status.getAttribute('data-state').catch(() => null)))
+      const text = (await status.textContent().catch(() => '')) ?? ''
+      check(text.trim().length > 0 && !/undefined|null/.test(text), `the status line has a plain sentence (${at})`, text)
+      check((await p3.locator('[data-testid=cli-shim-install]').count()) === 0, `no Install button when unavailable (${at})`)
+      check((await p3.locator('[data-testid=cli-shim-remove]').count()) === 0, `no Remove button when unavailable (${at})`)
+      check((await p3.locator('[data-testid=cli-shim-path-hint]').count()) === 0, `no PATH hint when unavailable (${at})`)
+      // Bring the row into view through the settings scroller only (scrollIntoView could shift its ancestors).
+      await row.evaluate((el) => {
+        const sc = el.closest('.settings-scroll')
+        if (sc) sc.scrollTop += el.getBoundingClientRect().top - sc.getBoundingClientRect().top - 40
+      })
+      await sleep(100)
+      await p3.screenshot({ path: path.join(SHOTS_DIR, `cli-shim-${w}x${h}-${theme}.png`) }).catch(() => {})
+      const shift = await windowShift(p3)
+      check(shift.ok, `the window did not scroll (${at})`, JSON.stringify(shift))
+      const fits = await row.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)
+      check(fits, `the row does not overflow sideways (${at})`)
+    }
+  }
 
   // Leave the data dir clean: forget the project made in scenario 2.
   const projects = await p3.evaluate(() => window.orgai.projects.list())
