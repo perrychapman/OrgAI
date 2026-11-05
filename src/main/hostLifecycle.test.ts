@@ -78,7 +78,7 @@ describe('secondInstanceAction', () => {
 describe('windowAllClosedAction (review H3)', () => {
   const expected = (platform: string, launchedHeadless: boolean, quitting: boolean, workingRuns: number): string => {
     if (quitting) return 'quit'
-    if (launchedHeadless) return 'background'
+    if (launchedHeadless && workingRuns === 0) return 'background'
     if (platform === 'darwin') return 'stay'
     return workingRuns > 0 ? 'ask' : 'quit'
   }
@@ -103,11 +103,20 @@ describe('windowAllClosedAction (review H3)', () => {
     expect(windowAllClosedAction({ platform: 'darwin', launchedHeadless: false, quitting: false, workingRuns: 0 })).toBe('stay')
     expect(windowAllClosedAction({ platform: 'darwin', launchedHeadless: false, quitting: false, workingRuns: 3 })).toBe('stay')
   })
-  it('a --headless-host launch goes back to the background (daemon mode, idle exit decides)', () => {
+  it('a --headless-host launch goes back to the background while no run is working (daemon mode, idle exit decides)', () => {
     for (const platform of ['darwin', 'win32', 'linux']) {
       expect(windowAllClosedAction({ platform, launchedHeadless: true, quitting: false, workingRuns: 0 })).toBe('background')
       expect(windowAllClosedAction({ platform, launchedHeadless: true, quitting: true, workingRuns: 1 })).toBe('quit')
     }
+  })
+  it('a --headless-host launch with working runs never sends them to the background unasked (review follow-up)', () => {
+    // `orgai status` spawned the host, the user opened OrgAI from the Start menu (a window in that host), started a
+    // run and closed the window.
+    for (const platform of ['win32', 'linux']) {
+      expect(windowAllClosedAction({ platform, launchedHeadless: true, quitting: false, workingRuns: 1 })).toBe('ask')
+      expect(windowAllClosedAction({ platform, launchedHeadless: true, quitting: false, workingRuns: 4 })).toBe('ask')
+    }
+    expect(windowAllClosedAction({ platform: 'darwin', launchedHeadless: true, quitting: false, workingRuns: 2 })).toBe('stay')
   })
 })
 

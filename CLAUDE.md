@@ -678,7 +678,8 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   - Wave 2: `src/main/host/socketServer.ts` serves every host's socket; `AppSettings.terminalServer` ("Terminal access")
     gates host.hello and closes authenticated sockets when turned off; a headless / inproc boot turns it on only while
     `terminalServerChosen` (main-owned, set by a settings:set that changes it) is unset. A `--headless-host` launch
-    stays in the background after its last window closes and leaves through its idle exit. `runtime/selfControlGate.ts`
+    stays in the background after its last window closes and leaves through its idle exit, unless runs are working:
+    then it asks like a desktop launch (Windows / Linux) or stays (macOS). `runtime/selfControlGate.ts`
     (before every rule and mode in claude.ts, codex.ts, mock.ts) denies the orgai CLI (file names, this install's
     `out/cli` / `src/cli` via `setOrgaiCliRoots`, ELECTRON_RUN_AS_NODE assignments) and reads, searches or shell words
     reaching `<data>/run`, `<data>/secrets.json`, `<data>/codex` (home variables and globs followed; Grep rooted at or

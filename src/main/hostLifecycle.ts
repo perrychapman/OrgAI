@@ -69,7 +69,11 @@ export type WindowAllClosedAction = 'quit' | 'background' | 'stay' | 'ask'
 /**
  * The last window closed (review H3).
  * - A host launched with --headless-host (launchedHeadless: the background daemon, cli-spec 3.2(1)) goes back to the
- *   background and leaves through its ORGAI_DAEMON_IDLE_MINUTES idle exit (or host.stop).
+ *   background and leaves through its ORGAI_DAEMON_IDLE_MINUTES idle exit (or host.stop) while no run is working.
+ *   Such a host also owns the windows of later desktop launches (an `orgai` command started it, then the user opened
+ *   OrgAI from the Start menu: secondInstanceAction 'window'), so with runs working it treats that window like a
+ *   desktop one (review follow-up): macOS 'stay' (Dock icon visible), Windows / Linux 'ask'. The last window closing
+ *   means one was shown, so no extra flag is needed.
  * - macOS keeps the app running (Dock behaviour): 'stay', whatever its runs do; the Dock icon stays visible.
  * - Windows and Linux quit (through quitGate, which stops the runs), as before the host work. Only while runs are
  *   working without the user (workingRuns: RunManager.workingRunCount, so idle runs, runs with an open card and paused
@@ -83,7 +87,7 @@ export function windowAllClosedAction(input: {
   workingRuns: number
 }): WindowAllClosedAction {
   if (input.quitting) return 'quit'
-  if (input.launchedHeadless) return 'background'
+  if (input.launchedHeadless && input.workingRuns <= 0) return 'background'
   if (input.platform === 'darwin') return 'stay'
   return input.workingRuns > 0 ? 'ask' : 'quit'
 }

@@ -594,8 +594,10 @@ async function askClose(workingRuns: number): Promise<void> {
   }
 }
 
-// The last window closed (review H3): a --headless-host launch goes back to the background, macOS stays (Dock), and
-// Windows / Linux quit through quitGate, asking first only while runs are working without the user.
+// The last window closed (review H3): a --headless-host launch goes back to the background while no run is working,
+// macOS stays (Dock), and Windows / Linux quit through quitGate, asking first only while runs are working without the
+// user. That ask covers a --headless-host launch too (an `orgai` command started it and the user later opened its
+// window from the Start menu): working runs never go to the background unasked.
 app.on('window-all-closed', () => {
   const workingRuns = host ? host.runs.workingRunCount() : 0
   const action = windowAllClosedAction({ platform: process.platform, launchedHeadless: hostArgs.headless, quitting, workingRuns })
