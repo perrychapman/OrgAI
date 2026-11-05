@@ -28,7 +28,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-14]
+        os: [windows-latest, macos-15]
     env:
       # Fresh runners have no git identity; the e2e fixtures and OrgAI's merge commits need one.
       GIT_AUTHOR_NAME: OrgAI CI
@@ -68,7 +68,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-14]
+        os: [windows-latest, macos-15]
     env:
       # Unsigned: never look for a signing identity on the runner.
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
