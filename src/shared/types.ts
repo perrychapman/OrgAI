@@ -4855,7 +4855,10 @@ export interface KnowledgeRetireResult {
 
 /** engagement_knowledge search input (knowledge.ts `searchKnowledge`). */
 export interface KnowledgeSearchQuery {
-  /** Case-insensitive substring over name, aliases, summary and live fact texts. Empty = no text filter. */
+  /**
+   * Matched per word over name, aliases, kind, summary and live fact texts, ranked (knowledgeIndex.ts rankKnowledge),
+   * with the old whole-query case-insensitive substring match only when the ranked result is empty. Empty = no text filter.
+   */
   query?: string
   /** A normalised kind; empty = every kind. */
   kind?: string
