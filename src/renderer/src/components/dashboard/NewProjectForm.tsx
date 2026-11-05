@@ -6,7 +6,9 @@ import { PROJECT_CLIENT_MAX_CHARS } from '@shared/types'
 import { useAppStore } from '../../store/useAppStore'
 import { cleanIpcError } from '../../lib/ipcError'
 import { examplePath } from '../../lib/platform'
-import { effectiveSetupChoice, foundLine, setupChoiceLabel, setupSubmitLabel, templateChoiceHint, totalAgents, type SetupChoice } from '../../lib/agentImport'
+import { effectiveSetupChoice, foundLine, otherToolAgents, setupChoiceLabel, setupSubmitLabel, templateChoiceHint, totalAgents, type SetupChoice } from '../../lib/agentImport'
+import { teamFoundAnnouncement, teamFoundBlocker } from '../../lib/teamFound'
+import { TeamFoundPanel } from './TeamFoundPanel'
 import { groupTemplatesByKind, initialTemplateId, readLastTemplateId, templateOptionLabel, writeLastTemplateId } from '../../lib/templates'
 import { REFERENCE_FOLDERS_HINT } from '../settings/AllowedDirectoriesSection'
 import { firstWorkingFolderConflict } from '../../lib/folderLists'
@@ -230,25 +232,34 @@ export function NewProjectForm({
   // Before the clone exists the check only answers "may it go there": no setup choice, name or status from it.
   const folderCheck = github && !cloned ? null : current
   const status = github && !cloned ? null : pathStatus(kind, folder, folderCheck, projectKind ?? 'code')
+  // A team in the folder's .orgai/ replaces the import path (totalAgents is 0 then) and the default chart.
+  const team = projectKind === 'code' && folderCheck?.teamFiles ? folderCheck.teamFiles : null
+  const [teamArchitect, setTeamArchitect] = useState(false)
   const agentTotal = totalAgents(folderCheck)
   const hasAgents = agentTotal > 0
   // An engagement hides instruction-file talk (CLAUDE.md, AGENTS.md) unless saved team members were found.
   const found = engagement && !hasAgents ? null : foundLine(folderCheck)
   const templateList = templates ?? []
   const hasTemplates = templateList.length > 0
-  const choice = effectiveSetupChoice(hasAgents, picked, architect, hasTemplates)
+  const choice: SetupChoice = team ? (teamArchitect ? 'architect' : 'team') : effectiveSetupChoice(hasAgents, picked, architect, hasTemplates)
+  // The Brief field is for the Architect; a team that is used as it is needs none.
+  const askBrief = team ? choice === 'architect' : !hasAgents || choice === 'architect'
   const formKind: ProjectKind = projectKind ?? 'code'
   const [templatePick, setTemplatePick] = useState<string | null>(null)
   // The pick while that template still exists, else the last one used, else this kind's first.
   const templateId = templateList.some((t) => t.id === templatePick) ? (templatePick as string) : initialTemplateId(templateList, formKind, readLastTemplateId(window.localStorage))
   const templateGroups = groupTemplatesByKind(templateList, formKind)
-  const repoHint = !hasAgents || choice === 'architect'
-    ? 'The Architect scans it and reads the code before proposing anything. Nothing is modified until you approve.'
-    : choice === 'import'
-      ? 'The agent files are read, not changed. You review the roles before they join the chart.'
-      : 'Nothing in the folder is modified.'
+  const repoHint = choice === 'team'
+    ? "The team is read from the folder's .orgai files. Review it below, then create the project."
+    : !hasAgents || choice === 'architect'
+      ? 'The Architect scans it and reads the code before proposing anything. Nothing is modified until you approve.'
+      : choice === 'import'
+        ? 'The agent files are read, not changed. You review the roles before they join the chart.'
+        : 'Nothing in the folder is modified.'
   const existingId = current?.existingProjectId
-  const blocker = !projectKind
+  // An existing project opens instead of creating, so a problem in the folder's team never blocks Open.
+  const teamBlocker = team && !existingId && choice === 'team' ? teamFoundBlocker(team) : null
+  const baseBlocker = !projectKind
     ? 'Choose what this project is for.'
     : github && !cloned
       ? // A target that is already a project opens it, as in Existing code.
@@ -258,13 +269,24 @@ export function NewProjectForm({
       : bridge?.replacesError
         ? 'Choose a folder on this computer, or clone it instead.'
         : submitBlocker({ kind, name, path: folder, brief, status, projectKind })
+  const blocker = baseBlocker ?? teamBlocker
 
   // The setup choice grows after a check, out of sight of someone waiting on a clone: say so (one polite region).
   const hadAgents = useRef<boolean | null>(null)
+  const hadTeam = useRef(false)
   const saidCloned = useRef(false)
   useEffect(() => {
     if (!cloned) saidCloned.current = false
     if (!folderCheck) return
+    if (team) {
+      // The team panel has its own sentence; the import-choice announcement does not apply.
+      if (!hadTeam.current || cloned) setLiveText(teamFoundAnnouncement(team, existingId ? current?.existingProjectName : null, existingId ? null : teamFoundBlocker(team)))
+      hadTeam.current = true
+      hadAgents.current = false
+      if (cloned) saidCloned.current = true
+      return
+    }
+    hadTeam.current = false
     const text = setupChoiceAnnouncement({ found, hasAgents, hadAgents: hadAgents.current, afterClone: !!cloned && !saidCloned.current })
     if (cloned) saidCloned.current = true
     hadAgents.current = hasAgents
@@ -366,6 +388,8 @@ export function NewProjectForm({
         setupKind: choice === 'architect' ? kind : undefined,
         kind: projectKind,
         ...(choice === 'template' && templateId ? { templateId } : {}),
+        // The digest of the team the user was shown; main refuses it when the files changed since.
+        ...(choice === 'team' && team?.digest ? { teamFiles: { digest: team.digest } } : {}),
         ...(engagement && trimmedClient ? { client: trimmedClient } : {}),
         ...(engagement && refs.length > 0 ? { referenceDirectories: refs } : {}),
         ...(mockAvailable && useMock ? { mock: true } : {})
@@ -466,6 +490,10 @@ export function NewProjectForm({
       <Input id={ids.name} value={name} onChange={setName} placeholder={placeholder} />
     </div>
   )
+
+  const teamPanel = team ? (
+    <TeamFoundPanel found={team} existingName={existingId ? current?.existingProjectName : undefined} blocker={teamBlocker} otherToolAgents={otherToolAgents(folderCheck)} />
+  ) : null
 
   return (
     <form
@@ -599,7 +627,7 @@ export function NewProjectForm({
               {REFERENCE_FOLDERS_HINT}
             </span>
           </div>
-          {(!hasAgents || choice === 'architect') && (
+          {askBrief && (
             <div className="field">
               <label htmlFor={ids.brief}>What is the engagement about? (optional)</label>
               <Textarea
@@ -647,7 +675,8 @@ export function NewProjectForm({
           {cloned && (
             <>
               {nameField('Defaults to the folder name')}
-              {(!hasAgents || choice === 'architect') && (
+              {teamPanel}
+              {askBrief && (
                 <div className="field">
                   <label htmlFor={ids.brief}>Anything the Architect should know? (optional)</label>
                   <Textarea
@@ -681,7 +710,8 @@ export function NewProjectForm({
         <>
           {pathField('Repository folder', examplePath('repo'), repoHint)}
           {nameField('Defaults to the folder name')}
-          {(!hasAgents || choice === 'architect') && (
+          {teamPanel}
+          {askBrief && (
             <div className="field">
               <label htmlFor={ids.brief}>Anything the Architect should know? (optional)</label>
               <Textarea
@@ -697,7 +727,18 @@ export function NewProjectForm({
 
       {projectKind && !(github && !cloned) && (
       <div className="stack-2 form-options">
-        {hasAgents || hasTemplates ? (
+        {team ? (
+          // A found team is the start. The Architect stays as one secondary choice; there is no default chart or import here.
+          !existingId && (
+            <Checkbox
+              checked={teamArchitect}
+              onChange={setTeamArchitect}
+              label="Let the Architect review the team instead"
+              description="Skips the files' team and starts the setup interview on this folder."
+              testId="team-architect"
+            />
+          )
+        ) : hasAgents || hasTemplates ? (
           <fieldset className="import-choice" data-testid="setup-choice">
             <legend>How should the team start?</legend>
             {(hasTemplates
@@ -819,7 +860,8 @@ export function NewProjectForm({
             Cancel
           </Button>
         )}
-        {existingId && !pending && (!github || cloned) && (
+        {/* A folder with a team files project holds its .orgai/: a second project on it would be a second writer. */}
+        {existingId && !pending && !team && (!github || cloned) && (
           <Button onClick={() => void submit(null, true)} disabled={!!blocker || busy}>
             {setupSubmitLabel(choice, busy, projectKind ?? 'code')} anyway
           </Button>
