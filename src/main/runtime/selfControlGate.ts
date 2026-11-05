@@ -82,7 +82,7 @@ export function selfControlLogLine(toolName: string, agent: string): string {
  * nearest existing ancestor plus the rest) spelling, deduped, in a stable order.
  */
 export function controlProtectedPaths(dataDir: string, runtimeSocketDir?: string): string[] {
-  const roots = [join(dataDir, 'run'), join(dataDir, 'secrets.json'), join(dataDir, 'codex')]
+  const roots = [join(dataDir, 'run'), join(dataDir, 'secrets.json'), join(dataDir, 'codex'), join(dataDir, 'settings.json')]
   if (runtimeSocketDir) roots.push(runtimeSocketDir)
   const out: string[] = []
   for (const p of roots) {
@@ -828,8 +828,22 @@ const INTERPRETER_VALUE_OPTIONS: ReadonlySet<string> = new Set([
 /** Interpreter options whose value is code to run (the program then has no script file; stdin may be read). */
 const INTERPRETER_EVAL_OPTIONS = /^(?:-e|-p|-pe|-ep|--eval|--print)(?:=|$)/
 
+/** A word naming stdin as a file (`/dev/stdin`, `/dev/fd/N`, `/proc/<pid|self>/fd/N`) or a bare `-`. */
+const STDIN_WORD = /^(?:-|\/dev\/stdin|\/dev\/fd\/\d+|\/proc\/(?:self|\d+|thread-self)\/fd\/\d+)$/
+/** An inline-code option anywhere in the words: `-e`, `-c`, `-p`, `--eval`, `--print` (also `=value` and `-e'code'` forms). */
+const INLINE_CODE_WORD = /^(?:-[A-Za-z]*[ecp][A-Za-z]*|--eval|--print|--command)(?:=|$)/
+
+/**
+ * Stdin or inline code anywhere in the words means the program reads its code from there, whatever else looks like a
+ * script (an unknown option's value can never pass as the script file).
+ */
+function readsStdinOrInline(rest: readonly string[]): boolean {
+  return rest.some((w) => STDIN_WORD.test(w) || INLINE_CODE_WORD.test(w))
+}
+
 /** True when the interpreter runs a script file (or a subcommand such as `bun test`), so stdin is data to it. */
 function interpreterHasScript(bare: string, rest: readonly string[]): boolean {
+  if (readsStdinOrInline(rest.filter((w) => !/^\d*[<>]/.test(w)))) return false
   for (let k = 0; k < rest.length; k++) {
     const w = rest[k]
     if (w === '-') return false
@@ -853,6 +867,7 @@ function interpreterHasScript(bare: string, rest: readonly string[]): boolean {
 
 /** True when a POSIX shell's words name a script file to run (no -c, no -s, not `-`), so stdin is data to it. */
 function shellHasScriptFile(rest: readonly string[]): boolean {
+  if (rest.some((w) => STDIN_WORD.test(w) || NESTING_FLAGS.test(w))) return false
   let valueNext = false
   for (let k = 0; k < rest.length; k++) {
     const w = rest[k]

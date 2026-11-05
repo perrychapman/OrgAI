@@ -26,7 +26,8 @@ describe('controlProtectedPaths', () => {
     const data = join(base, 'data')
     mkdirSync(data)
     const paths = controlProtectedPaths(data)
-    expect(paths).toEqual([join(data, 'run'), join(data, 'secrets.json'), join(data, 'codex')])
+    expect(paths).toEqual([join(data, 'run'), join(data, 'secrets.json'), join(data, 'codex'), join(data, 'settings.json')])
+    expect(paths).toContain(join(data, 'settings.json'))
     const rt = join(base, 'rt')
     expect(controlProtectedPaths(data, rt)).toContain(rt)
   })
@@ -39,12 +40,12 @@ describe('controlProtectedPaths', () => {
     const link = join(base, 'link')
     symlinkSync(real, link, process.platform === 'win32' ? 'junction' : 'dir')
     const paths = controlProtectedPaths(link)
-    for (const p of ['run', 'secrets.json', 'codex']) {
+    for (const p of ['run', 'secrets.json', 'codex', 'settings.json']) {
       expect(paths).toContain(join(link, p))
       expect(paths).toContain(join(real, p))
     }
     expect(new Set(paths).size).toBe(paths.length)
-    expect(paths).toHaveLength(6)
+    expect(paths).toHaveLength(8)
   })
 
   it('never includes the data dir itself, quick/, project-skills/ or skills/', () => {
@@ -793,6 +794,29 @@ describe('stdin, here-strings, substitutions, find -exec, globs, braces and esca
       'if [ -f x ]; then echo y; fi',
       'printf "%s" "${HOME}"'
     ]) {
+      expect(deny(command), command).toBeNull()
+    }
+  })
+
+  it('treats stdin paths and inline code anywhere in the words as code from the pipe', () => {
+    for (const command of [
+      "echo 'orgai runs stop R1' | bash /dev/stdin",
+      "echo 'orgai runs stop R1' | node /dev/stdin",
+      "echo 'orgai runs stop R1' | sh /dev/fd/0",
+      "echo 'orgai runs stop R1' | sh /proc/self/fd/0",
+      "echo 'orgai runs stop R1' | bash /proc/123/fd/0",
+      "echo 'orgai runs stop R1' | node --max-old-space-size 4096 /dev/stdin",
+      "echo 'orgai runs stop R1' | node --max-old-space-size 4096 -e \"eval(require('fs').readFileSync(0,'utf8'))\"",
+      "echo 'orgai runs stop R1' | node --max-old-space-size 4096 --eval x",
+      "echo 'orgai runs stop R1' | node script.mjs -e x",
+      "echo 'orgai runs stop R1' | bash script.sh -c x"
+    ]) {
+      expect(deny(command), command).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+    }
+  })
+
+  it('still reads stdin as data for a real script file', () => {
+    for (const command of ['cat x | node script.mjs', 'echo orgai | node --max-old-space-size 4096 script.mjs', 'echo orgai status | bash scripts/check.sh']) {
       expect(deny(command), command).toBeNull()
     }
   })
