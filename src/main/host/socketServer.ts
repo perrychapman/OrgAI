@@ -62,7 +62,8 @@ import {
   RPC_MAX_CLIENT_SOCKETS,
   RPC_MAX_INFLIGHT_PER_SOCKET,
   RPC_MAX_UNAUTH_SOCKETS,
-  RPC_PRE_AUTH_FRAME_MAX_BYTES
+  RPC_PRE_AUTH_FRAME_MAX_BYTES,
+  HOST_CLIENT_KINDS
 } from '../../shared/types'
 import type {
   HostClientKind,
@@ -156,6 +157,11 @@ export const TERMINAL_ACCESS_OFF_MESSAGE =
 /** scope_denied for a scope host.hello withheld because of AppSettings.terminalAccessLevel. */
 export const TERMINAL_ACCESS_LEVEL_MESSAGE =
   'Terminal access lets terminal clients watch and run work only. To answer decisions or change settings from a terminal, allow it in OrgAI: App settings > General > Advanced settings > Terminal access.'
+/**
+ * A `clientKind: 'desktop'` hello (the OrgAI app asking a Node host to hand over; cli-standalone.md 4.4) is refused
+ * until the handoff grant lands (WP-F): the app then shows the busy-folder message and the `orgai daemon stop` hint.
+ */
+export const DESKTOP_HANDOFF_UNAVAILABLE_MESSAGE = 'This OrgAI host does not serve the app hand-off yet; stop it with `orgai daemon stop`.'
 /** hello refused on win32 when daemon.secret could not be restricted to the current user. */
 export const SECRET_ACL_MESSAGE =
   'OrgAI could not restrict its terminal access secret to your Windows account, so it refuses terminal connections. See main.log.'
@@ -545,7 +551,7 @@ export class HostSocketServer {
    */
   private helloProblem(p: Record<string, unknown>): HostRpcError | undefined {
     const badReq = (message: string): HostRpcError => ({ code: 'bad_request', message })
-    if (p.clientKind !== 'cli' && p.clientKind !== 'tui') return badReq("host.hello clientKind must be 'cli' or 'tui'.")
+    if (!HOST_CLIENT_KINDS.includes(p.clientKind as HostClientKind)) return badReq("host.hello clientKind must be 'cli', 'tui' or 'desktop'.")
     if (typeof p.clientVersion !== 'string' || p.clientVersion.length > CLIENT_VERSION_MAX) return badReq('host.hello clientVersion must be a string of at most 200 characters.')
     if (typeof p.pid !== 'number' || !Number.isSafeInteger(p.pid) || p.pid <= 0) return badReq('host.hello pid must be a positive integer.')
     if (typeof p.cwd !== 'string' || p.cwd.length > CWD_MAX || p.cwd.includes('\u0000')) return badReq('host.hello cwd must be a path of at most 4096 characters.')
@@ -614,6 +620,8 @@ export class HostSocketServer {
     this.secretCache = secret
     const problem = this.helloProblem(raw)
     if (problem) return fail(problem)
+    // Wave 7 contracts: the handoff grant (RpcHelloResult.handoff, HOST_HANDOFF_METHODS) is WP-F's; refuse until then.
+    if (raw.clientKind === 'desktop') return fail({ code: 'bad_request', message: DESKTOP_HANDOFF_UNAVAILABLE_MESSAGE })
     const p = raw as Record<string, unknown> & {
       clientKind: HostClientKind
       clientVersion: string

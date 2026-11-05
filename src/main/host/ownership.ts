@@ -14,7 +14,7 @@ import {
 import { connect, createServer, type Server, type Socket } from 'node:net'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
-import type { DaemonInfo, HostKind, HostState } from '@shared/types'
+import { HOST_KINDS, type DaemonInfo, type HostKind, type HostState } from '../../shared/types'
 import { HOST_INSTANCE_ID_RE, currentHostInstanceId } from './identity'
 import { renameSyncRetry } from './fsRetry'
 import { processLivenessCachedAsync, selfStartTime, type Liveness } from './processInfo'
@@ -270,7 +270,6 @@ const SOCKET_PATH_MAX = 100
 const DAEMON_JSON_MAX_BYTES = 64 * 1024
 const RUNTIME_DIR_RE = /^orgai-[0-9a-f]{12}$/
 const HOST_STATES: readonly HostState[] = ['starting', 'ready', 'draining']
-const HOST_KINDS: readonly HostKind[] = ['desktop', 'headless-host', 'inproc']
 
 export function runDirOf(dataDir: string): string {
   return join(dataDir, 'run')

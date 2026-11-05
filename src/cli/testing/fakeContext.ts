@@ -217,6 +217,12 @@ export function fakeContext(o: FakeContextOptions = {}): FakeContext {
       launcherCalls.push({ method: 'resolve', args: undefined })
       return o.launcher?.resolve ? o.launcher.resolve() : { command: '/bin/orgai-app', args: [], source: 'dev' }
     },
+    // Wave 7: found / absent / broken; default derived from resolve() (not recorded in launcherCalls).
+    locate: () => {
+      if (o.launcher?.locate) return o.launcher.locate()
+      const app = o.launcher?.resolve ? o.launcher.resolve() : { command: '/bin/orgai-app', args: [], source: 'dev' as const }
+      return 'error' in app ? { status: 'absent', message: app.error } : { status: 'found', ...app }
+    },
     spawn: (args) => {
       launcherCalls.push({ method: 'spawn', args })
       return o.launcher?.spawn ? o.launcher.spawn(args) : { pid: 999 }

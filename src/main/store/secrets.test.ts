@@ -16,8 +16,11 @@ import {
   mcpSecretKey,
   mcpSecretPrefix,
   READ_ONLY_SECRETS_MESSAGE,
+  VAULT_NOT_AVAILABLE_MESSAGE,
+  openSecretStore,
   type SecretCipher
 } from './secrets'
+import type { SecretStoreApi } from './vaultTypes'
 
 /** Reversible fake of safeStorage: not encryption, but never stores the plain text. */
 const fakeCipher = (available = true): SecretCipher => ({
@@ -161,5 +164,46 @@ describe('SecretStore overlay and read-only mode (cli-spec 3.5)', () => {
     expect(store.get(LITELLM_KEY)).toBe('stored')
     store.delete(LITELLM_KEY)
     expect(store.has(LITELLM_KEY)).toBe(false)
+  })
+})
+
+describe('SecretStore Wave 7 contract stubs (cli-standalone.md 5.4, 5.6)', () => {
+  it('implements SecretStoreApi: status set / unset / unreadable, state absent, prepareWrite resolves, no key files', async () => {
+    const dir = dataDir()
+    new SecretStore(dir, fakeCipher()).set(LITELLM_KEY, 'sk-1')
+    const store: SecretStoreApi = new SecretStore(dir, fakeCipher())
+    expect(store.status(LITELLM_KEY)).toBe('set')
+    expect(store.status('mcp:p:s:env:NOPE')).toBe('unset')
+    expect(store.state()).toBe('absent')
+    await expect(store.prepareWrite()).resolves.toBeUndefined()
+    expect(store.vaultKeyFiles()).toEqual([])
+    store.attachLeases(() => () => undefined)
+    // A value this host cannot decrypt is unreadable, never "unset".
+    const other = new SecretStore(dir, { ...fakeCipher(), decryptString: () => { throw new Error('no') } })
+    expect(other.status(LITELLM_KEY)).toEqual({ unreadable: expect.any(String) })
+  })
+
+  it('statusReport describes the legacy file without a vault; init / reset / undelete refuse until the vault lands', async () => {
+    const dir = dataDir()
+    const empty = new SecretStore(dir, fakeCipher(), { overlay: new Map([['k', 'v']]) })
+    expect(await empty.statusReport()).toMatchObject({ state: 'absent', scheme: null, legacyFile: 'missing', counts: { vault: 0, legacy: 0, overlay: 1 }, canWriteBack: true })
+    empty.set(LITELLM_KEY, 'sk-2')
+    const report = await empty.statusReport({ probe: true })
+    expect(report).toMatchObject({ legacyFile: 'ok', counts: { legacy: 1 }, pendingLegacy: 0, softDeletes: [], orphanedKeys: 0, orphanedVaults: [] })
+    expect(JSON.stringify(report)).not.toContain('sk-2')
+    await expect(empty.initVault({})).rejects.toThrow(VAULT_NOT_AVAILABLE_MESSAGE)
+    await expect(empty.resetVault({ confirm: true })).rejects.toThrow(VAULT_NOT_AVAILABLE_MESSAGE)
+    expect(() => empty.undelete({ key: LITELLM_KEY })).toThrow(VAULT_NOT_AVAILABLE_MESSAGE)
+  })
+
+  it('openSecretStore returns today\'s store (read-only and overlay honoured)', async () => {
+    const dir = dataDir()
+    const store = await openSecretStore({ dataDir: dir, userDataDir: dir, hostKind: 'inproc', cipher: fakeCipher(), readOnly: true, overlay: new Map([['k', 'v']]) })
+    expect(store).toBeInstanceOf(SecretStore)
+    expect(store.get('k')).toBe('v')
+    expect(store.available()).toBe(false)
+    const rw = await openSecretStore({ dataDir: dir, userDataDir: dir, hostKind: 'desktop', cipher: fakeCipher() })
+    rw.set(LITELLM_KEY, 'sk-3')
+    expect(existsSync(join(dir, 'secrets.json'))).toBe(true)
   })
 })

@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { HOST_IPC, HOST_METHODS, IPC, KIT_IPC } from '@shared/types'
+import { HOST_IPC, HOST_METHODS, IPC, KIT_IPC, SECRETS_IPC } from '@shared/types'
 import type { ActivityLeaseKind, HostScope, HostState, Project, RunSummary } from '@shared/types'
 import { DEFAULT_APP_SETTINGS } from '@shared/defaults'
 
@@ -325,7 +325,24 @@ describe('host-specific handlers', () => {
     await d.invokeRpc(HOST_METHODS.hostStop, [{ force: true, evil: 1 }], RPC)
     await d.invokeRpc(HOST_METHODS.hostStop, [{ force: 'yes' }], RPC)
     await d.invokeRpc(HOST_METHODS.hostStop, [], RPC)
-    expect(host.stop.mock.calls).toEqual([[{ force: true }], [{ force: false }], [{ force: false }]])
+    // Wave 7: handoff passes through only as literal true.
+    await d.invokeRpc(HOST_METHODS.hostStop, [{ handoff: true }], RPC)
+    await d.invokeRpc(HOST_METHODS.hostStop, [{ handoff: 'yes', force: true }], RPC)
+    expect(host.stop.mock.calls).toEqual([[{ force: true }], [{ force: false }], [{ force: false }], [{ force: false, handoff: true }], [{ force: true }]])
+  })
+
+  it('secrets:* (Wave 7 contracts): status answers the store report, the others refuse until built; no store refuses all', async () => {
+    const report = { state: 'absent' }
+    const statusReport = vi.fn(async () => report)
+    const d = new HostDispatcher(services({ secrets: { statusReport } as never }), { gate: fakeGate() })
+    await expect(d.invokeRpc(SECRETS_IPC.secretsStatus, [], RPC)).resolves.toBe(report)
+    await expect(d.invokeRpc(SECRETS_IPC.secretsStatus, [{ probe: true }], RPC)).resolves.toBe(report)
+    expect(statusReport.mock.calls).toEqual([[{}], [{ probe: true }]])
+    for (const c of [SECRETS_IPC.secretsInit, SECRETS_IPC.secretsReset, SECRETS_IPC.secretsUndelete]) {
+      await expect(d.invokeRpc(c, [{}], RPC), c).rejects.toMatchObject({ code: 'bad_request', message: `${c} is not available in this build yet.` })
+    }
+    const bare = new HostDispatcher(services(), { gate: fakeGate() })
+    await expect(bare.invokeRpc(SECRETS_IPC.secretsStatus, [], RPC)).rejects.toMatchObject({ code: 'bad_request' })
   })
 
   it('skillLibrary:addFromBundle validates through bundleArgs', () => {

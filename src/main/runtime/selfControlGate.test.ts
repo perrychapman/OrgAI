@@ -31,6 +31,17 @@ describe('controlProtectedPaths', () => {
     expect(controlProtectedPaths(data, rt)).toContain(rt)
   })
 
+  it('Wave 7: appends the vault key files as exact paths, after the others', () => {
+    const base = realpathSync(mkdtempSync(join(tmpdir(), 'orgai-scg-')))
+    dirs.push(base)
+    const data = join(base, 'data')
+    mkdirSync(data)
+    const key = join(base, 'keys', 'orgai.key')
+    const paths = controlProtectedPaths(data, undefined, { vaultKeyFiles: [key, ''] })
+    expect(paths).toEqual([join(data, 'run'), join(data, 'secrets.json'), join(data, 'codex'), key])
+    expect(controlProtectedPaths(data, undefined, { vaultKeyFiles: [] })).toEqual(controlProtectedPaths(data))
+  })
+
   it('carries both spellings through a dir symlink, deduped', () => {
     const base = realpathSync(mkdtempSync(join(tmpdir(), 'orgai-scg-')))
     dirs.push(base)

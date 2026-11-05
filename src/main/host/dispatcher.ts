@@ -78,6 +78,11 @@ import type {
   RemapResult,
   RunOverrides,
   RunSummary,
+  SecretsInitResult,
+  SecretsResetResult,
+  SecretsStatusInput,
+  SecretsStatusResult,
+  SecretsUndeleteResult,
   SetupStartInput,
   SkillApplySuggestionInput,
   SkillContent,
@@ -106,6 +111,7 @@ import {
   IPC,
   MCP_SCOPE_IPC,
   QUICK_PROJECT_ID,
+  SECRETS_IPC,
   SKILLS_PROJECT_ID,
   isVirtualProjectId
 } from '../../shared/types'
@@ -144,6 +150,7 @@ import {
 } from '../store/projectData'
 import { checkProjectPath, type ProjectStore } from '../store/projects'
 import type { SettingsStore } from '../store/settings'
+import type { SecretStoreApi } from '../store/vaultTypes'
 import { checkRunTarget, isValidId } from '../windowScope'
 import { noopActivity } from './activity'
 import {
@@ -644,6 +651,7 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
   registerSkillIpc(handle, skills, skillEvaluation)
   registerCapabilityIpc(handle, capabilities)
   if (kit) registerKitBundleIpc(handle, kit)
+  registerSecretsIpc(handle, services.secrets)
 
   // ---- Host protocol methods the dispatcher answers (socket only; runs:subscribe / host.subscribe are transport) ----
   handle(HOST_METHODS.hostStatus, () => {
@@ -652,8 +660,9 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
   })
   handle(HOST_METHODS.hostStop, (ctx, input?: unknown) => {
     if (!host) throw new HostRpcFailure('desktop_unavailable', 'This host cannot be stopped over RPC.')
-    const i = input && typeof input === 'object' && !Array.isArray(input) ? (input as { force?: unknown }) : {}
-    const stopping = host.stop({ force: i.force === true })
+    const i = input && typeof input === 'object' && !Array.isArray(input) ? (input as { force?: unknown; handoff?: unknown }) : {}
+    // handoff (Wave 7, cli-standalone.md 4.4): passed through; the stricter predicate is WP-F's (activity.ts).
+    const stopping = host.stop({ force: i.force === true, ...(i.handoff === true ? { handoff: true } : {}) })
     // Over the socket, answer as soon as the drain has started: the drain ends by closing the socket server (inproc)
     // or quitting the app, so a reply sent only after it would never reach the client (it waits for daemon.json to
     // go instead). A refusal is answered as before; in-process callers still get the answer once the drain is done.
@@ -949,6 +958,28 @@ function registerMcpIpc(
   handle(MCP_SCOPE_IPC.connectorPresetsRemove, (_e, input: unknown) => mcp.connectorPresetsRemove(presetRemoveArgs(input)))
 }
 
+
+/**
+ * secrets:* (Wave 7, cli-standalone.md 5.6). Contracts only: secrets:status answers the store's report (a host without
+ * a vault reports the legacy file), the others refuse until WP-H builds them (argument builders, the reset refusal
+ * while a write, an OAuth flow or a token refresh is in flight) over WP-G's store. Never a secret value.
+ */
+function registerSecretsIpc(handle: Register, secrets: SecretStoreApi | undefined): void {
+  const store = (): SecretStoreApi => {
+    if (!secrets) throw new HostRpcFailure('bad_request', 'This OrgAI host has no secret store.')
+    return secrets
+  }
+  const notYet = (channel: string): never => {
+    throw new HostRpcFailure('bad_request', `${channel} is not available in this build yet.`)
+  }
+  handle(SECRETS_IPC.secretsStatus, (_e, input?: unknown): Promise<SecretsStatusResult> => {
+    const probe = input && typeof input === 'object' && (input as SecretsStatusInput).probe === true
+    return store().statusReport(probe ? { probe: true } : {})
+  })
+  handle(SECRETS_IPC.secretsInit, (): Promise<SecretsInitResult> => notYet(SECRETS_IPC.secretsInit))
+  handle(SECRETS_IPC.secretsReset, (): Promise<SecretsResetResult> => notYet(SECRETS_IPC.secretsReset))
+  handle(SECRETS_IPC.secretsUndelete, (): SecretsUndeleteResult => notYet(SECRETS_IPC.secretsUndelete))
+}
 
 /**
  * kit:*Bundle (socket only, cli-spec 3.6): the kit's bytes travel with the call as base64, so no main-process file

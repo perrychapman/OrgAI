@@ -58,6 +58,18 @@ export const CLI_JSON_SCHEMA_VERSION = 1
  */
 export type HostMode = 'auto' | 'daemon' | 'inproc'
 
+/**
+ * `orgai daemon start --runtime` (Wave 7, cli-standalone.md 4.2): 'app' starts the OrgAI app headless, 'node' a
+ * detached pure-Node host (HostKind 'node'). Default 'app' when HostLauncher finds an app, else 'node'.
+ */
+export type DaemonRuntime = 'app' | 'node'
+
+/**
+ * How long a 'starting' host is waited for (Wave 7, cli-standalone.md 5.6): ensureHost, daemon.ts, doctor.ts and
+ * exec.ts grow from 2 s to this, to cover the 10 s custodian timeout while a host opens its vault.
+ */
+export const HOST_STARTING_WAIT_MS = 15_000
+
 /** --output-format. 'stream-json' is one JSON document per line. */
 export type OutputFormat = 'text' | 'json' | 'stream-json'
 
@@ -147,6 +159,16 @@ export interface ProjectResolution {
   error?: string
 }
 
+/**
+ * HostLauncher.locate (Wave 7, cli-standalone.md 4.1 step 3). 'found': an app to spawn ('installed' is the new
+ * /Applications, ~/Applications or Program Files discovery). 'absent': nothing anywhere; `--host auto` then runs an
+ * in-process host. 'broken': found, but its binary or app.asar is missing; an error naming `path`, never a fallback.
+ */
+export type HostLauncherResolution =
+  | { status: 'found'; command: string; args: string[]; source: 'env' | 'packaged' | 'dev' | 'installed' }
+  | { status: 'absent'; message: string }
+  | { status: 'broken'; path: string; message: string }
+
 /** Finds and starts the OrgAI app as a host (src/cli/launcher.ts, W2-T4). */
 export interface HostLauncher {
   /**
@@ -154,6 +176,11 @@ export interface HostLauncher {
    * `<Resources>/app.asar.unpacked/out/cli`) or the dev checkout's electron + out/main ('dev'), in that order.
    */
   resolve(): { command: string; args: string[]; source: 'env' | 'packaged' | 'dev' } | { error: string }
+  /**
+   * Wave 7: the same lookup as found / absent / broken (HostLauncherResolution). Until WP-B adds installed-app
+   * discovery and the checkout marker, it maps resolve(): APP_NOT_FOUND is 'absent', any other error 'broken'.
+   */
+  locate(): HostLauncherResolution
   /** Spawn it detached: `--headless-host` when headless, else a desktop window; `run` focuses that run id. */
   spawn(opts: { headless: boolean; run?: string }): { pid?: number }
   /** The daemon.json of the live host that owns the data folder (any state), else null. */

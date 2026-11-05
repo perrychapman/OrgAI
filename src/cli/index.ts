@@ -23,9 +23,11 @@ import { runOrg } from './commands/org'
 import { runPermissions } from './commands/permissions'
 import { runProjects } from './commands/projects'
 import { runRuns } from './commands/runs'
+import { runSecrets } from './commands/secrets'
 import { runSkills } from './commands/skills'
 import { runStatus } from './commands/status'
 import { runTeam } from './commands/team'
+import { runTerminalAccess } from './commands/terminalAccess'
 import { defaultTuiPrintsHelp, PROMPT_HINT, runAttach, runDefaultTui, runTuiCommand } from './commands/tui'
 import { runUsage } from './commands/usage'
 import { runWatch } from './commands/watch'
@@ -66,7 +68,9 @@ export const ROUTES: Record<string, CommandFn> = {
   notes: runNotes,
   usage: runUsage,
   kit: runKit,
-  projects: runProjects
+  projects: runProjects,
+  secrets: runSecrets,
+  'terminal-access': runTerminalAccess
 }
 
 export interface MainOverrides {

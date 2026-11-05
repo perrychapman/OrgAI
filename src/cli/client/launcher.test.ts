@@ -53,6 +53,17 @@ describe('launcher', () => {
     expect(l.resolve()).toEqual({ error: APP_NOT_FOUND })
   })
 
+  it('locate (Wave 7 contract) maps resolve(): found, absent for APP_NOT_FOUND, broken for an unbuilt checkout', () => {
+    const env = createLauncher({ dataDir, userDataDir: '', userChoseDataDir: false, env: { ORGAI_ELECTRON_PATH: '/opt/electron' } })
+    expect(env.locate()).toEqual({ status: 'found', command: '/opt/electron', args: [], source: 'env' })
+    const none = createLauncher({ dataDir, userDataDir: '', userChoseDataDir: false, env: {}, bundleDir: join(base, 'nowhere', 'a') })
+    expect(none.locate()).toEqual({ status: 'absent', message: APP_NOT_FOUND })
+    const root = fakeRepo()
+    rmSync(join(root, 'out', 'main', 'index.js'))
+    const unbuilt = createLauncher({ dataDir, userDataDir: '', userChoseDataDir: false, env: {}, bundleDir: join(root, 'out', 'cli') })
+    expect(unbuilt.locate()).toMatchObject({ status: 'broken', path: root })
+  })
+
   it('spawns detached with the flags and a cleaned environment', () => {
     const calls: { command: string; args: string[]; options: Parameters<SpawnFn>[2] }[] = []
     let unrefs = 0

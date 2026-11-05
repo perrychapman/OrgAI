@@ -249,6 +249,14 @@ export function createLauncher(opts: LauncherOptions): HostLauncher {
   return {
     resolve: resolveApp,
 
+    locate() {
+      const app = resolveApp()
+      if (!('error' in app)) return { status: 'found', ...app }
+      if (app.error === APP_NOT_FOUND) return { status: 'absent', message: app.error }
+      // The only other refusal today: a dev checkout that is not built.
+      return { status: 'broken', path: devAppRoot(opts.bundleDir ?? moduleDir()) ?? '', message: app.error }
+    },
+
     spawn({ headless, run }) {
       const app = resolveApp()
       if ('error' in app) throw new Error(app.error)

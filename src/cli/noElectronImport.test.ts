@@ -25,7 +25,11 @@ const CLI_MODULES = [
   './commands/daemon',
   './commands/app',
   './commands/doctor',
-  './commands/completions'
+  './commands/completions',
+  // Wave 7 contracts
+  './installInfo',
+  './commands/secrets',
+  './commands/terminalAccess'
 ]
 
 describe('CLI modules load without electron', () => {

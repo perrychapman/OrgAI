@@ -77,13 +77,23 @@ export function selfControlLogLine(toolName: string, agent: string): string {
   return `Blocked ${toolName} by ${agent}: OrgAI control files or the orgai command`
 }
 
+/** Extra protected paths (Wave 7, cli-standalone.md 8.4). */
+export interface ControlProtectedExtras {
+  /**
+   * The vault's key file(s): ORGAI_VAULT_KEY_FILE and custody.keyFile (SecretStoreApi.vaultKeyFiles), protected as
+   * exact files. The `vault.json*` / `secrets.json*` basename rule and the ORGAI_VAULT_* word rule are WP-D's.
+   */
+  vaultKeyFiles?: readonly string[]
+}
+
 /**
  * The paths the gate protects, each in its lexical (path.resolve) and canonical (canonicalDeep: real path of the
  * nearest existing ancestor plus the rest) spelling, deduped, in a stable order.
  */
-export function controlProtectedPaths(dataDir: string, runtimeSocketDir?: string): string[] {
+export function controlProtectedPaths(dataDir: string, runtimeSocketDir?: string, extras: ControlProtectedExtras = {}): string[] {
   const roots = [join(dataDir, 'run'), join(dataDir, 'secrets.json'), join(dataDir, 'codex')]
   if (runtimeSocketDir) roots.push(runtimeSocketDir)
+  for (const f of extras.vaultKeyFiles ?? []) if (typeof f === 'string' && f !== '') roots.push(f)
   const out: string[] = []
   for (const p of roots) {
     for (const spelling of [resolve(p), canonicalDeep(p)]) if (!out.includes(spelling)) out.push(spelling)

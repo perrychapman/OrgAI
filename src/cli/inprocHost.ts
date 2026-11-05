@@ -8,7 +8,7 @@
  */
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { bootOrgAIHost, type OrgAIHost } from '../main/host/bootstrap'
+import { bootOrgAIHost, type HostBackgroundOptions, type OrgAIHost } from '../main/host/bootstrap'
 import { currentHostInstanceId } from '../main/host/identity'
 import { HostOwnershipError, acquireHostOwnership, type HostOwnership } from '../main/host/ownership'
 import { HostSocketServer } from '../main/host/socketServer'
@@ -32,6 +32,16 @@ export interface StartInprocHostOptions {
   logging?: boolean
   /** bootOrgAIHost's background probes and discovery. Default true; tests turn it off. */
   startBackground?: boolean
+  /**
+   * Wave 7 (cli-standalone.md 4.1 step 4): per-kind overrides of startBackground (bootOrgAIHost `background`). A
+   * management command's fallback host keeps connection probes and turns off discovery, prices and the usage monitor.
+   */
+  background?: HostBackgroundOptions
+  /**
+   * Wave 7 (cli-standalone.md 4.2): 'node' for the detached Node host (`orgai daemon run-node`), which is this host plus
+   * the idle exit and the stored Terminal access (WP-E). Default 'inproc'.
+   */
+  hostKind?: 'inproc' | 'node'
   /**
    * The terminal UI owns the screen: console output goes to main.log only, never to the terminal (installLogging's
    * console mirror writes to stderr too). Default false.
@@ -104,11 +114,12 @@ export async function startInprocHost(opts: StartInprocHostOptions): Promise<Inp
   if (opts.logging !== false) installLogging({ userDataDir, logsDir, appVersion: CLI_VERSION, isPackaged: false })
   if (opts.quiet) quietConsole()
   const hostInstanceId = currentHostInstanceId()
-  const server = new HostSocketServer({ dataDir, hostKind: 'inproc', hostInstanceId, appVersion: CLI_VERSION, mock: opts.mock, ...(opts.log ? { log: opts.log } : {}) })
+  const hostKind = opts.hostKind ?? 'inproc'
+  const server = new HostSocketServer({ dataDir, hostKind, hostInstanceId, appVersion: CLI_VERSION, mock: opts.mock, ...(opts.log ? { log: opts.log } : {}) })
 
   let ownership: HostOwnership
   try {
-    ownership = await acquireHostOwnership({ dataDir, hostKind: 'inproc', appVersion: CLI_VERSION, hostInstanceId, onConnection: (s) => server.accept(s) })
+    ownership = await acquireHostOwnership({ dataDir, hostKind, appVersion: CLI_VERSION, hostInstanceId, onConnection: (s) => server.accept(s) })
   } catch (e) {
     server.close()
     if (e instanceof HostOwnershipError) throw new CliError(e.message, EXIT.hostBusy)
@@ -158,7 +169,7 @@ export async function startInprocHost(opts: StartInprocHostOptions): Promise<Inp
     host = bootOrgAIHost({
       env: { userDataDir, logsDir, appVersion: CLI_VERSION, isPackaged: false },
       dataDir,
-      hostKind: 'inproc',
+      hostKind,
       ownership,
       safeStorage: NO_CIPHER,
       secrets: { readOnly: true, overlay: opts.overlay },
@@ -166,6 +177,7 @@ export async function startInprocHost(opts: StartInprocHostOptions): Promise<Inp
       mock: opts.mock,
       processEnv: opts.env,
       ...(opts.startBackground === false ? { startBackground: false } : {}),
+      ...(opts.background ? { background: opts.background } : {}),
       onDrained: cleanup
     })
   } catch (e) {

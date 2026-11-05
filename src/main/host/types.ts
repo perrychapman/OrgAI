@@ -30,6 +30,7 @@ import type { TemplateService } from '../setup/templates'
 import type { SkillEvaluationApi, SkillServiceApi } from '../skills/types'
 import type { ProjectStore } from '../store/projects'
 import type { SettingsStore } from '../store/settings'
+import type { SecretStoreApi } from '../store/vaultTypes'
 import type { HostEventBus } from './events'
 
 /** What the host needs from its environment to answer app:info / app:logPath without Electron. */
@@ -97,6 +98,11 @@ export interface HostServices {
   desktop?: DesktopHooks
   /** host.status / host.stop. */
   host?: HostControl
+  /**
+   * Wave 7 (cli-standalone.md 5.6): the host's opened SecretStore, for the secrets:* channels and invokeRpc's
+   * prepareWrite (registry storesSecret). Absent = secrets:* answer that this host has no secret store.
+   */
+  secrets?: SecretStoreApi
 }
 
 /** How a call reached the dispatcher. */

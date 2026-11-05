@@ -1,6 +1,20 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import type { McpSecretKind } from '@shared/types'
+import type {
+  HostKind,
+  McpSecretKind,
+  SecretStatus,
+  SecretsInitInput,
+  SecretsInitResult,
+  SecretsResetInput,
+  SecretsResetResult,
+  SecretsStatusInput,
+  SecretsStatusResult,
+  SecretsUndeleteInput,
+  SecretsUndeleteResult,
+  VaultState
+} from '@shared/types'
+import type { CustodianFactory, SecretStoreApi } from './vaultTypes'
 
 /**
  * Encrypted secrets (the LiteLLM key, MCP server env vars and headers). Values are encrypted with Electron
@@ -93,7 +107,13 @@ export interface SecretStoreOptions {
 /** set() refusal of a read-only store. */
 export const READ_ONLY_SECRETS_MESSAGE = 'This OrgAI host runs inside the CLI (--host inproc) and cannot save secrets.'
 
-export class SecretStore {
+/** What the Wave 7 vault channels answer until the vault lands (cli-standalone.md 5.6; WP-G). */
+export const VAULT_NOT_AVAILABLE_MESSAGE = 'The secret vault is not available in this build yet.'
+
+/** Reason status() gives for a stored value this host cannot decrypt (until WP-G's vault reasons replace it). */
+const UNDECRYPTABLE_REASON = 'Saved by the OrgAI app and cannot be read here'
+
+export class SecretStore implements SecretStoreApi {
   private file: string
   /** key -> base64 ciphertext */
   private values: Record<string, string> = {}
@@ -211,4 +231,107 @@ export class SecretStore {
     this.persist()
     return removed.size
   }
+
+  // ---------- Wave 7 (cli-standalone.md 5.4, 5.6): minimal stubs until the vault lands (WP-G) ----------
+
+  /** 'set' when readable here, unreadable when stored but not decryptable, else 'unset'. */
+  status(key: string): SecretStatus {
+    if (!this.has(key)) return 'unset'
+    return this.get(key) !== undefined ? 'set' : { unreadable: UNDECRYPTABLE_REASON }
+  }
+
+  /** No vault yet: always 'absent'. */
+  state(): VaultState {
+    return 'absent'
+  }
+
+  /** Nothing to prepare before the vault exists: set() behaves as before. */
+  prepareWrite(): Promise<void> {
+    return Promise.resolve()
+  }
+
+  /** No vault, so no key file. */
+  vaultKeyFiles(): string[] {
+    return []
+  }
+
+  /** No background vault work yet. */
+  attachLeases(acquire: (label: string) => () => void): void {
+    // Nothing runs in the background before the vault lands (WP-G).
+    void acquire
+  }
+
+  /** secrets:status of a host without a vault: the legacy file and the overlay only. */
+  statusReport(input?: SecretsStatusInput): Promise<SecretsStatusResult> {
+    // No custodian to probe before the vault lands (WP-G).
+    void input
+    const stored = Object.keys(this.values)
+    let legacyFile: SecretsStatusResult['legacyFile'] = 'missing'
+    try {
+      if (existsSync(this.file)) legacyFile = 'ok'
+    } catch {
+      legacyFile = 'missing'
+    }
+    const unreadable = this.keys().filter((k) => typeof this.status(k) === 'object').length
+    return Promise.resolve({
+      state: 'absent',
+      scheme: null,
+      counts: { vault: 0, legacy: stored.length, unreadable, overlay: this.overlay.size },
+      pendingLegacy: 0,
+      softDeletes: [],
+      orphanedKeys: 0,
+      orphanedVaults: [],
+      legacyFile,
+      canWriteBack: this.available()
+    })
+  }
+
+  initVault(input: SecretsInitInput): Promise<SecretsInitResult> {
+    void input
+    return Promise.reject(new Error(VAULT_NOT_AVAILABLE_MESSAGE))
+  }
+
+  resetVault(input: SecretsResetInput): Promise<SecretsResetResult> {
+    void input
+    return Promise.reject(new Error(VAULT_NOT_AVAILABLE_MESSAGE))
+  }
+
+  undelete(input: SecretsUndeleteInput): SecretsUndeleteResult {
+    void input
+    throw new Error(VAULT_NOT_AVAILABLE_MESSAGE)
+  }
+}
+
+/** openSecretStore's inputs (cli-standalone.md 5.6). */
+export interface OpenSecretStoreOptions {
+  /** `<userDataDir>/data`. */
+  dataDir: string
+  /** `<userDataDir>`: a key file anywhere inside it is refused (5.3.1). */
+  userDataDir: string
+  /** Decides the reconcile column (5.5 "can write back": an app host whose cipher works) and lazy creation (Node, inproc). */
+  hostKind: HostKind
+  /** Electron safeStorage in the app; NO_CIPHER in Node hosts. */
+  cipher: SecretCipher
+  /** The custodian of a scheme (default: the platform's helpers, WP-G); tests inject fakes. */
+  custodian?: CustodianFactory
+  /** The CLI's ORGAI_SECRET_* / --secret-env values (inproc only); they win over stored values and are never saved. */
+  overlay?: ReadonlyMap<string, string>
+  /** ORGAI_VAULT_KEY_FILE is read from here. Default process.env. */
+  env?: NodeJS.ProcessEnv
+  platform?: NodeJS.Platform
+  log?: (m: string) => void
+  /** Today's `--host inproc` store (never writes). WP-G drops it once Node hosts write the vault. */
+  readOnly?: boolean
+}
+
+/**
+ * The async open step every host runs after acquireHostOwnership and before bootOrgAIHost (5.6): open an existing vault
+ * (decrypting `check`), reconcile with secrets.json, create one at once on an app host, and only then hand the store to
+ * BootOrgAIHostOptions.secretStore. Today (contracts only) it returns the existing store unchanged.
+ */
+export async function openSecretStore(opts: OpenSecretStoreOptions): Promise<SecretStore> {
+  return new SecretStore(opts.dataDir, opts.cipher, {
+    ...(opts.readOnly ? { readOnly: true } : {}),
+    ...(opts.overlay ? { overlay: opts.overlay } : {})
+  })
 }

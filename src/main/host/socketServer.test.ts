@@ -9,6 +9,7 @@ import { HostEventBus } from './events'
 import { LineReader, clientProof, encodeFrame, hostProof, newNonce, proofMatches, rpcRequest } from './protocol'
 import { gateRequest } from './registry'
 import {
+  DESKTOP_HANDOFF_UNAVAILABLE_MESSAGE,
   HostSocketServer,
   SECRET_ACL_MESSAGE,
   TERMINAL_ACCESS_LEVEL_MESSAGE,
@@ -95,7 +96,7 @@ class TestClient {
 interface HelloOpts {
   scopes?: HostScope[]
   version?: string
-  kind?: 'cli' | 'tui'
+  kind?: 'cli' | 'tui' | 'desktop'
   pid?: number
   secret?: string
   /** After the proof is computed (the proof no longer covers the change). */
@@ -309,6 +310,16 @@ describe.runIf(posix)('HostSocketServer handshake', () => {
       const c = await client()
       expect((await hello(c, { mutate })).res.error.data).toEqual({ code: 'auth_failed', message: 'The handshake proof did not verify.' })
     }
+  })
+
+  it("a proven 'desktop' hello (Wave 7 handoff) is a known kind but refused until the handoff grant lands", async () => {
+    await start()
+    const c = await client()
+    const res = (await hello(c, { kind: 'desktop', scopes: ['read', 'configure'] })).res
+    expect(res.error.data).toEqual({ code: 'bad_request', message: DESKTOP_HANDOFF_UNAVAILABLE_MESSAGE })
+    // Unproven, it is the generic answer as for every other field.
+    const d = await client()
+    expect((await hello(d, { mutate: (p) => (p.clientKind = 'desktop') })).res.error.data.code).toBe('auth_failed')
   })
 
   it("grants at most read and operate unless Terminal access is 'full' (review H2)", async () => {

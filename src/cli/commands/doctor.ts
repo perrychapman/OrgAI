@@ -13,6 +13,10 @@ import { cliShimPath, packagedLayout, parseCliShim, resourcesDirOfCliBundle, tra
 import { gitExecutable, neutralCwd } from '../../main/host/systemBinaries'
 import type { AuthStatusResult, ConnectionInfo, DaemonInfo } from '../../shared/types'
 import { devAppRoot } from '../client/launcher'
+import { installChecks } from '../doctor/installChecks'
+import { runtimeChecks } from '../doctor/runtimeChecks'
+import { secretsChecks } from '../doctor/secretsChecks'
+import type { DoctorCheckGroup } from '../doctor/types'
 import { parseFlags } from '../flags'
 import { emit, safeLine, styleFor } from '../output'
 import { CliError, EXIT, type CliContext, type CommandFn, type ConnectResult } from '../types'
@@ -264,6 +268,16 @@ export const runDoctor: CommandFn = async (ctx: CliContext, args: string[]): Pro
   const mock = ctx.env.ORGAI_MOCK === '1'
   const hostMock = conn?.ok ? conn.client.hello.mock : undefined
   add('mock', 'ok', mock || hostMock ? `Mock mode${hostMock ? ' (the host runs the mock adapter)' : ''}: no tokens are spent` : 'Off')
+
+  // Wave 7 groups (src/cli/doctor): install channel and PATH, agent runtimes, the secret vault. Each never throws.
+  const groups: DoctorCheckGroup[] = [installChecks, runtimeChecks, secretsChecks]
+  for (const group of groups) {
+    try {
+      checks.push(...(await group({ ctx, ...(conn?.ok ? { client: conn.client } : {}) })))
+    } catch (e) {
+      add('doctor', 'warn', `A check failed to run: ${(e as Error)?.message ?? String(e)}`)
+    }
+  }
 
   // Auth and connections (read scope; states only)
   if (conn?.ok) {

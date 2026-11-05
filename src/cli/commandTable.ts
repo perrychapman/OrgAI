@@ -19,6 +19,8 @@ import { ENTRY as NOTES_ENTRY } from './entries/notes'
 import { ENTRY as USAGE_ENTRY } from './entries/usage'
 import { ENTRY as KIT_ENTRY } from './entries/kit'
 import { ENTRY as PROJECTS_ENTRY } from './entries/projects'
+import { ENTRY as SECRETS_ENTRY } from './entries/secrets'
+import { ENTRY as TERMINAL_ACCESS_ENTRY } from './entries/terminalAccess'
 
 export interface CommandFlag {
   /** Long name without the dashes. */
@@ -251,7 +253,10 @@ export const COMMANDS: readonly CommandEntry[] = [
   NOTES_ENTRY,
   USAGE_ENTRY,
   KIT_ENTRY,
-  PROJECTS_ENTRY
+  PROJECTS_ENTRY,
+  // Wave 7 (standalone CLI): listed as "Coming later" until WP-H / WP-E build them.
+  SECRETS_ENTRY,
+  TERMINAL_ACCESS_ENTRY
 ]
 
 export function findCommand(name: string): CommandEntry | undefined {

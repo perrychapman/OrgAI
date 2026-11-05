@@ -22,8 +22,20 @@ import {
   DEFAULT_HEADLESS_DECISION_POLICY,
   EXEC_OUTCOMES,
   EXEC_OUTCOME_EXIT_CODE,
+  BACKGROUND_HOST_KINDS,
+  HOST_CLIENT_KINDS,
+  HOST_HANDOFF_BLOCKERS,
+  HOST_HANDOFF_METHODS,
   HOST_IPC,
+  HOST_KINDS,
+  HOST_KIND_CAPABILITIES,
+  HOST_METHODS,
   HOST_SCOPES,
+  INSTALL_CHANNELS,
+  SECRETS_IPC,
+  VAULT_CUSTODY_SCHEMES,
+  VAULT_STATES,
+  hostCanOpenWindows,
   IPC,
   KIT_IPC,
   KNOWLEDGE_IPC,
@@ -221,6 +233,33 @@ describe('IPC names', () => {
   it('are unique', () => {
     const names = Object.values(IPC)
     expect(new Set(names).size).toBe(names.length)
+  })
+})
+
+describe('Wave 7 (standalone CLI) contracts', () => {
+  it('SECRETS_IPC values are unique and collide with no IPC, HOST_IPC channel or host.* method', () => {
+    const names = Object.values(SECRETS_IPC)
+    expect(names.sort()).toEqual(['secrets:init', 'secrets:reset', 'secrets:status', 'secrets:undelete'])
+    const taken = new Set<string>([IPC, TEMPLATE_ENGAGEMENT_IPC, KNOWLEDGE_IPC, MCP_SCOPE_IPC, KIT_IPC, HOST_IPC, HOST_METHODS].flatMap((o) => Object.values(o)))
+    for (const n of names) expect(taken.has(n), n).toBe(false)
+  })
+
+  it('host kinds: every kind has capabilities; only desktop and headless-host open windows; background never inproc', () => {
+    expect([...HOST_KINDS].sort()).toEqual(Object.keys(HOST_KIND_CAPABILITIES).sort())
+    expect(HOST_KINDS).toContain('node')
+    expect(HOST_KINDS.filter((k) => hostCanOpenWindows(k)).sort()).toEqual(['desktop', 'headless-host'])
+    expect(HOST_KINDS.filter((k) => HOST_KIND_CAPABILITIES[k].inProcess)).toEqual(['inproc'])
+    expect(hostCanOpenWindows('__proto__' as never)).toBe(false)
+    expect([...BACKGROUND_HOST_KINDS].sort()).toEqual(['desktop', 'headless-host', 'node'])
+    expect(HOST_CLIENT_KINDS).toEqual(['cli', 'tui', 'desktop'])
+  })
+
+  it('handoff connections reach host.status and host.stop only; blockers and enums are unique', () => {
+    expect([...HOST_HANDOFF_METHODS].sort()).toEqual([HOST_METHODS.hostStatus, HOST_METHODS.hostStop].sort())
+    for (const list of [HOST_HANDOFF_BLOCKERS, VAULT_STATES, VAULT_CUSTODY_SCHEMES, INSTALL_CHANNELS] as readonly (readonly string[])[]) {
+      expect(new Set(list).size).toBe(list.length)
+    }
+    expect(INSTALL_CHANNELS).toEqual(['npm', 'app', 'archive', 'dev'])
   })
 })
 

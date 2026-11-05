@@ -91,6 +91,22 @@ export const defaultHousekeeping: HousekeepingSteps = {
   }
 }
 
+/**
+ * Which background work a boot starts (Wave 7, cli-standalone.md 4.1 step 4). Each flag defaults to
+ * `BootOrgAIHostOptions.startBackground !== false`. A management command's in-process host keeps connection status
+ * probes on and turns off model discovery, community prices and the usage monitor.
+ */
+export interface HostBackgroundOptions {
+  /** connections.init(): probe each enabled connection's status at boot. */
+  connectionProbes?: boolean
+  /** connections.startDiscovery(): model discovery (first run 20 s after boot, then hourly). */
+  modelDiscovery?: boolean
+  /** communityPrices.start() (never under mock). */
+  communityPrices?: boolean
+  /** usageMonitor.start(): plan usage at boot and every 10 minutes while idle. */
+  usageMonitor?: boolean
+}
+
 export interface BootOrgAIHostOptions {
   env: HostRuntimeEnv
   /** `<userDataDir>/data`. */
@@ -102,6 +118,11 @@ export interface BootOrgAIHostOptions {
   safeStorage: SecretCipher
   /** SecretStore options: `--host inproc` passes { readOnly: true, overlay } (cli-spec 3.5). Default: read-write. */
   secrets?: SecretStoreOptions
+  /**
+   * Wave 7 (cli-standalone.md 5.6): the store openSecretStore opened (and reconciled) after acquireHostOwnership and
+   * before this boot. When given, `safeStorage` and `secrets` are not used to build one.
+   */
+  secretStore?: SecretStore
   openExternal(url: string): Promise<void> | void
   desktop?: DesktopHooks
   /** ORGAI_MOCK === '1': registers the scripted mock adapter and keeps discovery off the real home. */
@@ -111,6 +132,8 @@ export interface BootOrgAIHostOptions {
   processEnv?: NodeJS.ProcessEnv
   /** connections.init / startDiscovery, communityPrices.start (not under mock), usageMonitor.start. Default true. */
   startBackground?: boolean
+  /** Per-kind overrides of startBackground (Wave 7). */
+  background?: HostBackgroundOptions
   housekeeping?: Partial<HousekeepingSteps>
   /** Called once a drain finished (the desktop shell quits the app). */
   onDrained?: () => void
@@ -170,7 +193,7 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
   settings.onChange(broadcastSettings)
 
   const runStore = new RunStore(dataDir)
-  const secrets = new SecretStore(dataDir, opts.safeStorage, opts.secrets)
+  const secrets = opts.secretStore ?? new SecretStore(dataDir, opts.safeStorage, opts.secrets)
   // A headless or in-process host exists to serve the CLI: it accepts terminal clients for this session (cli-spec 1 /
   // 3.3, "enabled when ... launches via orgai"; AppSettings.terminalServer) without saving that, so the desktop app
   // never inherits an open socket nobody chose (review H2). A choice made in App settings (terminalServerChosen)
@@ -309,7 +332,8 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
   const rm = new RunManager(adapters, runBroadcast, runStore, setup, keepRunsFor, {
     dataDir,
     // cli-spec 3.4(1): the control socket dir, daemon secret, secrets.json and CODEX_HOME are off limits to agent tools.
-    controlProtectedPaths: () => controlProtectedPaths(dataDir, ownership.runtimeDir),
+    // Wave 7: plus the vault's key file, re-read per call (the vault may change; cli-standalone.md 8.4).
+    controlProtectedPaths: () => controlProtectedPaths(dataDir, ownership.runtimeDir, { vaultKeyFiles: secrets.vaultKeyFiles() }),
     // cli-spec 6.2(1) humanGraceMs: open windows (index.ts source) plus TUI / interactive sockets (socketServer's
     // attachedClientCount, which leaves non-interactive CLI exec sockets out). `activity` is created further down;
     // before that (never during a run) there is nobody to count.
@@ -434,11 +458,15 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
   const kit = new KitService({ appVersion: env.appVersion, platform, skills, mcp, templates })
 
   const startBackground = opts.startBackground !== false
-  if (startBackground) {
-    connections.init()
-    connections.startDiscovery()
-    if (!mockAdapter) communityPrices.start()
+  const background: Required<HostBackgroundOptions> = {
+    connectionProbes: opts.background?.connectionProbes ?? startBackground,
+    modelDiscovery: opts.background?.modelDiscovery ?? startBackground,
+    communityPrices: opts.background?.communityPrices ?? startBackground,
+    usageMonitor: opts.background?.usageMonitor ?? startBackground
   }
+  if (background.connectionProbes) connections.init()
+  if (background.modelDiscovery) connections.startDiscovery()
+  if (background.communityPrices && !mockAdapter) communityPrices.start()
 
   // Plan usage without a run: at boot, every 10 minutes while idle, and on request from the meter.
   const monitor = new UsageMonitor({
@@ -453,7 +481,7 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     if (channel === IPC.runEvent) monitor.observe(payload as RunEvent)
   })
   refreshLiteLLMSpend = () => void monitor.refreshProbe('litellm')
-  if (startBackground) monitor.start()
+  if (background.usageMonitor) monitor.start()
 
   // Housekeeping: runs of projects that no longer exist, runs past retention, record files nobody indexes.
   // The virtual projects (harness, quick, skills) own runs without being stored: their runs survive restarts.
@@ -486,6 +514,8 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     log: (m) => log.info(m)
   })
   activityRef = activity
+  // Wave 7 (cli-standalone.md 4.3): background vault work (creation, reconciliation, write-back) holds a lease.
+  secrets.attachLeases((label) => activity.acquire('backgroundTasks', label))
   // Runs that only wait on the user (idle, a card open, held) do not keep a host busy (review H3; runActivity.ts).
   activity.addSource('liveRuns', () => rm.busyRunCount())
   activity.addSource('pausedAutoResumes', () => rm.activeResumeTimerCount() + rm.inFlightResumeCount())
@@ -536,7 +566,8 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
       hostKind
     },
     ...(opts.desktop ? { desktop: opts.desktop } : {}),
-    host: hostControl
+    host: hostControl,
+    secrets
   }
   const dispatcher = new HostDispatcher(services)
 

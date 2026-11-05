@@ -5768,10 +5768,20 @@ export const HOST_SCOPES: readonly HostScope[] = ['read', 'operate', 'decide', '
 /** AppSettings.terminalAccessLevel: 'operate' grants read + operate, 'full' every scope. */
 export type TerminalAccessLevel = 'operate' | 'full'
 
-export type HostClientKind = 'tui' | 'cli'
+/**
+ * Who says host.hello. 'cli' and 'tui': the orgai command (the terminal UI counts as interactive). 'desktop' (Wave 7,
+ * docs/design/cli-standalone.md 4.4): the OrgAI app asking a Node host to hand over the data folder; such a connection
+ * gets the handoff grant only (RpcHelloResult.handoff, HOST_HANDOFF_METHODS), whatever Terminal access is.
+ */
+export type HostClientKind = 'tui' | 'cli' | 'desktop'
 
-/** 'desktop': the Electron app with a window. 'headless-host': the Electron app started with --headless-host. 'inproc': pure Node inside the CLI. */
-export type HostKind = 'desktop' | 'headless-host' | 'inproc'
+/**
+ * 'desktop': the Electron app with a window. 'headless-host': the Electron app started with --headless-host. 'inproc':
+ * pure Node inside the CLI command that started it. 'node' (Wave 7, cli-standalone.md 4.2): a detached pure-Node
+ * background host (`orgai daemon start --runtime node`, hidden `orgai daemon run-node`). Capabilities per kind:
+ * HOST_KIND_CAPABILITIES.
+ */
+export type HostKind = 'desktop' | 'headless-host' | 'inproc' | 'node'
 
 export type HostState = 'starting' | 'ready' | 'draining'
 
@@ -5845,6 +5855,12 @@ export interface RpcHelloResult {
   grantedScopes: HostScope[]
   /** Populated when clientVersion !== appVersion; 'read', 'operate', and 'decide' still work when protocolVersion matches. */
   versionSkewWarning?: string
+  /**
+   * Wave 7 (cli-standalone.md 4.4 step 5, D8): true for a `clientKind: 'desktop'` hello. The socket server then refuses
+   * every method on this connection before dispatch except HOST_HANDOFF_METHODS (host.status, host.stop, forced
+   * included). WP-F decides whether it is bound into hostProof (an older host never sets it; an older client ignores it).
+   */
+  handoff?: true
   /**
    * Canonical structured full-transcript HMAC (binds all host fields):
    * HMAC-SHA256(daemon.secret,
@@ -6256,17 +6272,30 @@ export interface HostStatusResult {
   /** Epoch ms. */
   startedAt: number
   activity: HostActivitySnapshot
+  /**
+   * Wave 7 (cli-standalone.md 4.4 step 4): what a `host.stop({ handoff: true })` would wait for, for the app's waiting
+   * window. Absent from hosts older than Wave 7 (and until WP-F fills it).
+   */
+  handoff?: HostHandoffFacts
 }
 
 /** host.stop input (scope 'configure'). Without force the host refuses while any lease is held. */
 export interface HostStopInput {
   force?: boolean
+  /**
+   * Wave 7 (cli-standalone.md 4.4 step 4): the OrgAI app asks a Node host to hand over the data folder. Without force
+   * the stricter handoff predicate applies: refused while any run is live in any form (working, idle, waiting on a
+   * card, held, paused with a resume pending) or any card is open, besides the leases. Ignored with force.
+   */
+  handoff?: boolean
 }
 
 export interface HostStopResult {
   stopping: boolean
   /** Set when the stop was refused: the non-zero lease counts that blocked it. */
   refusedBecause?: Partial<Record<ActivityLeaseKind, number>>
+  /** Wave 7: set when a handoff stop was refused: the non-zero HostHandoffFacts counts that blocked it. */
+  handoffBlockers?: Partial<Record<HostHandoffBlocker, number>>
 }
 
 /** host.subscribe input (scope 'read'). */
@@ -6292,6 +6321,256 @@ export interface RunsEventParams {
 
 /** ORGAI_DAEMON_IDLE_MINUTES default: an idle background host exits after this long. */
 export const DEFAULT_DAEMON_IDLE_MINUTES = 30
+
+// ---------- Wave 7 (standalone CLI) ----------
+//
+// Contracts of docs/design/cli-standalone.md (cli-spec Wave 7): the Node background host, host capabilities, the
+// app's handoff from a Node host, the install channel and the secret vault's host channels. Everything here is
+// structured-clone and JSON safe; no secret value or data key ever appears in these shapes. The vault file format,
+// the key custodians and the SecretStore API live in src/main/store/vaultTypes.ts (main only).
+
+/** Every HostKind, in a stable order (ownership.ts parseDaemonInfo, hostClient.ts parseHelloResult). */
+export const HOST_KINDS: readonly HostKind[] = ['desktop', 'headless-host', 'inproc', 'node']
+
+/** Every HostClientKind (socketServer.ts helloProblem). */
+export const HOST_CLIENT_KINDS: readonly HostClientKind[] = ['cli', 'tui', 'desktop']
+
+/**
+ * Hosts that run in the background, detached from the command that asked for them (cli-standalone.md 4.1): what
+ * `--host daemon` and `orgai daemon start` wait for. Never 'inproc', whose daemon.json belongs to another command.
+ */
+export const BACKGROUND_HOST_KINDS: readonly HostKind[] = ['headless-host', 'desktop', 'node']
+
+/** What a host kind can do (cli-standalone.md 4.2): replaces `hostKind === 'inproc'` checks. */
+export interface HostKindCapabilities {
+  /** It can open an OrgAI window: registry entries with `desktopRequired` (window:openRun) are served. */
+  canOpenWindows: boolean
+  /** It is the CLI command's own host: it lives only as long as that command and serves it every scope. */
+  inProcess: boolean
+}
+
+export const HOST_KIND_CAPABILITIES: Readonly<Record<HostKind, HostKindCapabilities>> = {
+  desktop: { canOpenWindows: true, inProcess: false },
+  'headless-host': { canOpenWindows: true, inProcess: false },
+  inproc: { canOpenWindows: false, inProcess: true },
+  node: { canOpenWindows: false, inProcess: false }
+}
+
+/** HOST_KIND_CAPABILITIES[kind].canOpenWindows; false for an unknown value. */
+export function hostCanOpenWindows(kind: HostKind): boolean {
+  return Object.prototype.hasOwnProperty.call(HOST_KIND_CAPABILITIES, kind) ? HOST_KIND_CAPABILITIES[kind].canOpenWindows : false
+}
+
+// ---- Install channel (cli-standalone.md 3.5) ----
+
+/**
+ * How this orgai was installed: 'npm' (`npm i -g orgai`), 'app' (bundled with the OrgAI app), 'archive' (the portable
+ * archive, phase C), 'dev' (no install.json: a checkout or a hand-made bundle).
+ */
+export type InstallChannel = 'npm' | 'app' | 'archive' | 'dev'
+
+export const INSTALL_CHANNELS: readonly InstallChannel[] = ['npm', 'app', 'archive', 'dev']
+
+/** The file each builder writes next to the CLI bundle: `out/cli/install.json`. Absent means channel 'dev'. */
+export const INSTALL_INFO_FILE = 'install.json'
+
+/** `out/cli/install.json` as read (src/cli/installInfo.ts readInstallInfo). */
+export interface InstallInfo {
+  channel: InstallChannel
+  /** The version the builder stamped (the app's version of the same commit). */
+  version?: string
+  /** The commit the builder stamped (short or full sha). */
+  commit?: string
+  /**
+   * 'file': read from install.json. 'absent': no file (channel 'dev'). 'invalid': a file that could not be read or
+   * did not validate (channel 'dev' with `problem`): HostLauncher must not treat that as a dev checkout (4.1 step 3).
+   */
+  source: 'file' | 'absent' | 'invalid'
+  /** Why an 'invalid' file was refused. */
+  problem?: string
+}
+
+// ---- Handoff from a Node host to the app (cli-standalone.md 4.4) ----
+
+/** The only methods a handoff connection (RpcHelloResult.handoff) may call. */
+export const HOST_HANDOFF_METHODS: readonly HostMethod[] = ['host.status', 'host.stop']
+
+/** The peer-check budget of a `clientKind: 'desktop'` hello (the others keep the shorter default). */
+export const DESKTOP_HELLO_PEER_CHECK_MS = 2_000
+
+/** What a non-forced `host.stop({ handoff: true })` waits for, besides the activity leases. */
+export type HostHandoffBlocker = 'workingRuns' | 'waitingRuns' | 'heldRuns' | 'pausedRuns' | 'openCards'
+
+export const HOST_HANDOFF_BLOCKERS: readonly HostHandoffBlocker[] = ['workingRuns', 'waitingRuns', 'heldRuns', 'pausedRuns', 'openCards']
+
+/** host.status `handoff`: every count the app's waiting window shows. */
+export interface HostHandoffFacts {
+  /** Runs starting, running or stopping. */
+  workingRuns: number
+  /** Live runs waiting on the user: idle or with a card open. */
+  waitingRuns: number
+  /** Live runs held by an interrupt or a usage limit. */
+  heldRuns: number
+  /** Paused runs with an auto-resume pending. */
+  pausedRuns: number
+  /** Open decision cards across every run. */
+  openCards: number
+  /** Authenticated terminal sessions (cli and tui sockets), handoff connections excluded. */
+  terminalSessions: number
+}
+
+// ---- Secret vault (cli-standalone.md 5) ----
+
+/**
+ * The vault's state on this host (5.4). 'absent': no vault.json. 'open': the data key is in memory and `check`
+ * passed. 'locked': the custodian answered locked, timeout or unavailable. 'missing-key': missing or denied.
+ * 'key-mismatch': a key was found but `check` failed (another key, or a damaged check record). 'corrupt': vault.json
+ * does not parse or validate.
+ */
+export type VaultState = 'absent' | 'open' | 'locked' | 'missing-key' | 'key-mismatch' | 'corrupt'
+
+export const VAULT_STATES: readonly VaultState[] = ['absent', 'open', 'locked', 'missing-key', 'key-mismatch', 'corrupt']
+
+/** Who holds the vault's data key (5.3). A vault opens only with its recorded scheme. */
+export type VaultCustodyScheme = 'keychain' | 'dpapi-user' | 'secret-service' | 'key-file'
+
+export const VAULT_CUSTODY_SCHEMES: readonly VaultCustodyScheme[] = ['keychain', 'dpapi-user', 'secret-service', 'key-file']
+
+/** A custodian's classified failure (5.3 CustodyFailure.kind). */
+export type CustodyFailureKind = 'unavailable' | 'locked' | 'missing' | 'denied' | 'timeout'
+
+/**
+ * SecretStore.status(key) (5.4): 'set' (readable here), 'unset' (stored nowhere, or deleted), or unreadable with the
+ * reason to show ("Saved by the OrgAI app and not yet shared with the orgai command: open the app once", "The secret
+ * vault is locked: ..."). Never the value.
+ */
+export type SecretStatus = 'set' | 'unset' | { unreadable: string }
+
+/**
+ * The legacy `<data>/secrets.json` (5.5 Legacy file states): 'ok' parses with a `secrets` object, 'missing' no file,
+ * 'corrupt' anything else (never rewritten by a host of this wave), 'retired' gone after retirement
+ * (`legacyRetired` set; retirement stays off this release).
+ */
+export type LegacySecretsFileState = 'ok' | 'missing' | 'corrupt' | 'retired'
+
+/** A deleted secret kept for `orgai secrets undelete` (key name only, never a value). */
+export interface SecretsSoftDelete {
+  key: string
+  /** 'vault': a delete made through this wave. 'legacy': it disappeared from secrets.json (an older app). */
+  by: 'vault' | 'legacy'
+  /** Epoch ms of the delete. */
+  at: number
+  /**
+   * 'here': this host can restore it. 'app': only the OrgAI app can (the kept value is a secrets.json ciphertext,
+   * `prevLegacy`). 'none': nothing restorable is kept.
+   */
+  restorable: 'here' | 'app' | 'none'
+  /** Epoch ms after which a `by: 'vault'` delete's kept value goes (30 days); absent for 'legacy' (never on a timer). */
+  expiresAt?: number
+}
+
+/** An OS key item left behind by `secrets reset` (5.6): the moved-aside vault names it. Never a key. */
+export interface SecretsOrphanVault {
+  vaultId: string
+  scheme: VaultCustodyScheme
+  /** The moved-aside file's name in the data folder (`vault.json.reset-<time>` / `vault.json.corrupt-<time>`). */
+  file: string
+}
+
+/** secrets:status input (optional). */
+export interface SecretsStatusInput {
+  /** Also run the custodian's probe (a child process, up to 10 s) and report it in `probe`. */
+  probe?: boolean
+}
+
+/** secrets:status (scope 'read'): everything `orgai secrets status` and doctor print. Never a value or a key. */
+export interface SecretsStatusResult {
+  state: VaultState
+  /** The vault's recorded scheme; for an absent vault the scheme a new one would use; null when none is usable. */
+  scheme: VaultCustodyScheme | null
+  /** Why the vault is not open (states other than 'open' and 'absent'); a sentence to show as is. */
+  reason?: string
+  /** The custodian's probe for `scheme`, when this call ran one. */
+  probe?: { ok: true } | { ok: false; kind: CustodyFailureKind; reason: string }
+  /** custody.keyFile (canonical) or ORGAI_VAULT_KEY_FILE, for the key-file scheme. A path, never the key. */
+  keyFile?: string
+  /** The vault id, when vault.json parses. */
+  vaultId?: string
+  counts: {
+    /** Entries in vault.json. */
+    vault: number
+    /** Keys in secrets.json (0 when it is missing, corrupt or retired). */
+    legacy: number
+    /** Keys whose status() is unreadable here (pending-legacy included). */
+    unreadable: number
+    /** ORGAI_SECRET_* / --secret-env values in memory (inproc only). */
+    overlay: number
+  }
+  /** Keys in secrets.json this host cannot read and the vault does not hold yet ("open the app once"). */
+  pendingLegacy: number
+  /** Deleted secrets kept for undelete, newest first. Key names only. */
+  softDeletes: SecretsSoftDelete[]
+  /** Keys a removal had to leave where they were (5.5 Deletes), counted by doctor. */
+  orphanedKeys: number
+  /** OS key items of moved-aside vaults (5.6 Reset). */
+  orphanedVaults: SecretsOrphanVault[]
+  legacyFile: LegacySecretsFileState
+  /** This host can encrypt with the app's safeStorage (5.5 "can write back"). */
+  canWriteBack: boolean
+}
+
+/**
+ * secrets:init (scope 'configure'): create a vault (absent), or retry opening it (locked, or missing-key with a key
+ * file). Without keyFile the platform's OS scheme (or ORGAI_VAULT_KEY_FILE when set).
+ */
+export interface SecretsInitInput {
+  /** Absolute path of a key file (5.3.1). Created new (O_EXCL) unless `importKeyFile`. */
+  keyFile?: string
+  /** `--import`: use an existing key file instead of creating one. Only with keyFile. */
+  importKeyFile?: boolean
+}
+
+export interface SecretsInitResult {
+  /** 'created' a new vault, 'opened' an existing one that was not open, 'unchanged' it was already open. */
+  action: 'created' | 'opened' | 'unchanged'
+  status: SecretsStatusResult
+}
+
+/** secrets:reset (scope 'configure', served in every vault state). The CLI asks first (`--yes`). */
+export interface SecretsResetInput {
+  /** Must be true: the caller confirmed that secrets saved only through the orgai command are lost. */
+  confirm: true
+}
+
+export interface SecretsResetResult {
+  /** The moved-aside file's name (`vault.json.reset-<time>` or `vault.json.corrupt-<time>`), or null when no vault existed. */
+  movedTo: string | null
+  status: SecretsStatusResult
+}
+
+/** secrets:undelete (scope 'configure'): restore one soft-deleted key. */
+export interface SecretsUndeleteInput {
+  key: string
+}
+
+export interface SecretsUndeleteResult {
+  restored: boolean
+  /** Why it was not restored ("This deleted secret was saved by the OrgAI app; open the app to restore it"). */
+  reason?: string
+}
+
+/**
+ * Channels of the secret vault (cli-standalone.md 5.6). Served by the host dispatcher on every surface (the app's
+ * window and the socket); `secrets:status` needs 'read', the others 'configure'. None ever returns a value.
+ */
+export const SECRETS_IPC = {
+  secretsStatus: 'secrets:status',
+  secretsInit: 'secrets:init',
+  secretsReset: 'secrets:reset',
+  secretsUndelete: 'secrets:undelete'
+} as const
+
+export type SecretsIpcChannel = (typeof SECRETS_IPC)[keyof typeof SECRETS_IPC]
 
 // ---- Start a project from a repository (clone or fork) ----
 //
