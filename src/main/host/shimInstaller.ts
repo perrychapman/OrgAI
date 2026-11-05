@@ -47,7 +47,10 @@ export interface CliShimDeps {
    * shell was asked and printed nothing: onPath is then unknown. Undefined = fall back to env.PATH / env.Path.
    */
   loginPath?: string
-  /** Called after a successful install (index.ts turns Terminal access on). Its errors are logged, never fatal. */
+  /**
+   * Called after a successful install; its errors are logged, never fatal. It must not turn Terminal access on (review
+   * H2): the App settings row asks the user instead (index.ts only logs).
+   */
   onInstalled?: () => void | Promise<void>
   /** Defaults to node:fs. */
   fs?: Partial<CliShimFs>

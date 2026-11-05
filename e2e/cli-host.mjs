@@ -3,13 +3,19 @@
 //
 // 1. Headless host: no window, daemon.json ready with hostKind 'headless-host'; a plain second launch opens one window
 //    in the incumbent; a second --headless-host launch opens none. Both losers exit 0.
-// 2. window-all-closed while busy (a live idle mock run): the host stays up and ready; a plain launch brings a window
-//    back with the run still live; after End session closing the window sends the host (it started headless, so it is
-//    the background daemon) back to the background, and it quits through its idle exit (6 s here), never at once.
-// 3. Desktop first: a --headless-host launch against a running desktop host opens no window.
+// 2. window-all-closed while a run works ([mock:exec-slow], about 30 s of steps): the host stays up and ready; a plain
+//    launch brings a window back with the run still live; after End session a run that only waits on the user (the
+//    default script, idle) no longer keeps it busy (review H3): closing the window sends the host (it started
+//    headless, so it is the background daemon) back to the background, and it quits through its idle exit (6 s here),
+//    never at once, ending that waiting run.
+// 3. Desktop first: a --headless-host launch against a running desktop host opens no window. Terminal access off
+//    removes the listener and daemon.secret and daemon.json says `listening: false`; on brings them back (review M11).
+//    The Terminal access text names the same-user trust model and the access level choice is shown (review H2). On
+//    macOS closing the desktop host's last window keeps the app (Dock behaviour, review H3).
 //
 // macOS-only observations: Dock hide / show are not checked here (not visible to the driver). Windows and Linux are
-// unverified on this machine.
+// unverified on this machine (the close prompt "Keep working in the background / Stop and quit" is Windows / Linux only
+// and is not driven).
 import { _electron as electron } from 'playwright-core'
 import { spawn } from 'node:child_process'
 import * as fs from 'node:fs'
@@ -103,21 +109,19 @@ try {
   await page.getByRole('tablist', { name: 'Project sections' }).getByRole('tab', { name: 'Live', exact: true }).click()
   const ta = page.locator('.composer textarea')
   await ta.waitFor({ timeout: 15_000 })
-  await ta.fill('Background host task')
+  // [mock:exec-slow]: about 30 one-second steps, so the run is working (not waiting on the user) while the window is gone.
+  await ta.fill('Background host task [mock:exec-slow]')
   await page.locator('.composer .btn.primary').click()
-  // The default mock script settles waiting on the user (idle, or a permission card open): live, nothing to do.
-  const first = await waitFor(async () => (await page.evaluate(() => window.orgai.runs.listLive()))[0], 30_000, 300)
-  await sleep(4000)
-  const settled = (await page.evaluate(() => window.orgai.runs.listLive())).find((r) => r.id === first?.id)
-  check(!!settled, 'the mock run settles and stays live', JSON.stringify(settled?.status))
-  const runId = settled?.id
+  const first = await waitFor(async () => (await page.evaluate(() => window.orgai.runs.listLive())).find((r) => r.status === 'running'), 30_000, 300)
+  check(!!first, 'the mock run is working', JSON.stringify(first?.status))
+  const runId = first?.id
 
   await app.evaluate(({ BrowserWindow }) => {
     for (const w of BrowserWindow.getAllWindows()) w.close()
   })
   await sleep(3000)
   const proc = app.process()
-  check(proc.exitCode === null && proc.signalCode === null, 'the host stays up after the last window closed while a run is live')
+  check(proc.exitCode === null && proc.signalCode === null, 'the host stays up after the last window closed while a run is working')
   check(readDaemon()?.state === 'ready', 'daemon.json stays ready in the background', JSON.stringify(readDaemon()?.state))
   check((await windowCount(app)) === 0, 'no window is left')
 
@@ -133,6 +137,20 @@ try {
   await page2.evaluate((id) => window.orgai.runs.stop(id), runId)
   const ended = await waitFor(async () => (await page2.evaluate(() => window.orgai.runs.listLive())).length === 0, 20_000, 300)
   check(ended, 'End session ends the run')
+  // A run that only waits on the user (the default script settles idle or on a card) keeps nothing busy (review H3).
+  const waiting = await page2.evaluate(async (pid) => (await window.orgai.runs.start({ projectId: pid, prompt: 'Waiting host task' }))?.id, project?.id).catch(() => undefined)
+  const waitingLive = await waitFor(async () => (await page2.evaluate(() => window.orgai.runs.listLive())).some((r) => r.id === waiting), 20_000, 300)
+  check(!!waiting && waitingLive, 'a second mock run starts', String(waiting))
+  // Waiting on the user: idle, or a decision card open (the default script asks for a permission).
+  const isWaiting = async () =>
+    page2.evaluate(async (id) => {
+      const run = (await window.orgai.runs.listLive()).find((r) => r.id === id)
+      if (!run) return false
+      if (run.status === 'idle') return true
+      const cards = await window.orgai.runs.pendingCards(id)
+      return Object.values(cards).some((list) => Array.isArray(list) && list.length > 0)
+    }, waiting)
+  check((await waitFor(isWaiting, 45_000, 500)) === true, 'the second run settles waiting on the user (idle or a card open)')
   await sleep(2000)
   const quitStarted = Date.now()
   const gone = exited(app)
@@ -170,12 +188,26 @@ try {
   await sw.waitFor({ timeout: 10_000 })
   const before = await p3.evaluate(() => window.orgai.settings.get().then((s) => s.terminalServer))
   check(before === false && (await sw.getAttribute('aria-checked')) === 'false', 'Terminal access stays off (not saved) after a headless boot', String(before))
+  // Review M11: the listener and daemon.secret exist only while Terminal access is on.
+  const SECRET = path.join(DATA_DIR, 'data', 'run', 'daemon.secret')
+  const endpoint = readDaemon()?.endpoint
+  const listenerUp = () => readDaemon()?.listening === undefined && fs.existsSync(SECRET) && (process.platform === 'win32' || (!!endpoint && fs.existsSync(endpoint)))
+  const listenerDown = () => readDaemon()?.listening === false && !fs.existsSync(SECRET) && (process.platform === 'win32' || (!!endpoint && !fs.existsSync(endpoint)))
+  check((await waitFor(listenerDown, 5000)) === true, 'Terminal access off: no listener, no daemon.secret, daemon.json says listening false', JSON.stringify(readDaemon()))
   await sw.click()
   const on = await waitFor(async () => (await p3.evaluate(() => window.orgai.settings.get().then((s) => s.terminalServer))) === true, 5000)
   check(on === true && (await sw.getAttribute('aria-checked')) === 'true', 'turning Terminal access on saves terminalServer true')
+  check((await waitFor(listenerUp, 5000)) === true, 'with Terminal access on the desktop host listens and has daemon.secret', JSON.stringify(readDaemon()))
   await sw.click()
   const off = await waitFor(async () => (await p3.evaluate(() => window.orgai.settings.get().then((s) => s.terminalServer))) === false, 5000)
   check(off === true && (await sw.getAttribute('aria-checked')) === 'false', 'turning it off again saves terminalServer false')
+  check((await waitFor(listenerDown, 5000)) === true, 'Terminal access off again: the listener and daemon.secret are gone', JSON.stringify(readDaemon()))
+  check(readDaemon()?.state === 'ready' && readDaemon()?.endpoint === endpoint, 'daemon.json stays ready and keeps naming the endpoint')
+  // Review H2: the row names the same-user trust model; the access level choice sits under it.
+  const desc = (await p3.locator('#terminal-server-row-desc').textContent().catch(() => '')) ?? ''
+  check(/any program you run/.test(desc) && /agent shells/.test(desc), 'the Terminal access text says any program you run, agent shells included, can control OrgAI', desc)
+  const level = p3.locator('[data-testid=terminal-access-level] select')
+  check((await level.count()) === 1 && (await level.inputValue().catch(() => '')) === 'operate', "the access level choice is shown and starts at 'operate'")
 
   // orgai command row (cli-spec 7(3), Wave 6), right under Terminal access. A dev build always reports 'unavailable',
   // so only that state is driven here; install, update and remove are covered by the unit tests in lib/cliShim.test.ts.
@@ -219,6 +251,15 @@ try {
   // Leave the data dir clean: forget the project made in scenario 2.
   const projects = await p3.evaluate(() => window.orgai.projects.list())
   for (const p of projects.filter((x) => x.name === NAME)) await p3.evaluate((id) => window.orgai.projects.remove(id), p.id).catch(() => {})
+  if (process.platform === 'darwin') {
+    // Review H3: on macOS closing the desktop host's last window keeps the app running (Dock), never the background.
+    await app.evaluate(({ BrowserWindow }) => {
+      for (const w of BrowserWindow.getAllWindows()) w.close()
+    })
+    await sleep(2000)
+    const up = app.process().exitCode === null && app.process().signalCode === null
+    check(up && (await windowCount(app)) === 0, 'macOS: closing the last desktop window keeps OrgAI running')
+  }
   const gone3 = exited(app)
   await app.close().catch(() => {})
   check((await Promise.race([gone3, sleep(20_000).then(() => false)])) === true, 'the desktop host quits')

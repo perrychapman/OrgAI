@@ -304,5 +304,6 @@ describe('restrictDaemonSecretAcl (win32, review H2 (3); UNVERIFIED on Windows)'
     expect(parseWhoamiSid('"a\\b","S-1-12-1-2-3"')).toBe('S-1-12-1-2-3')
     expect(parseWhoamiSid('S-x')).toBeUndefined()
     expect(secretAclArgs('f', 'S-1-5-18')).toEqual(['f', '/inheritance:r', '/grant:r', '*S-1-5-18:F'])
+    expect(secretAclArgs('d', 'S-1-5-18', true)).toEqual(['d', '/inheritance:r', '/grant:r', '*S-1-5-18:(OI)(CI)F'])
   })
 })

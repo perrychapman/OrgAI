@@ -486,7 +486,8 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     log: (m) => log.info(m)
   })
   activityRef = activity
-  activity.addSource('liveRuns', () => rm.liveRuns().length)
+  // Runs that only wait on the user (idle, a card open, held) do not keep a host busy (review H3; runActivity.ts).
+  activity.addSource('liveRuns', () => rm.busyRunCount())
   activity.addSource('pausedAutoResumes', () => rm.activeResumeTimerCount() + rm.inFlightResumeCount())
   activity.addSource('activeWorktreeOps', () => repoLockActivity())
   activity.addSource('backgroundTasks', () => rm.titleTaskCount() + caps.inFlightCount() + skillEvaluation.inFlightCount())

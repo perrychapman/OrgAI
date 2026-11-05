@@ -1,17 +1,52 @@
 import { describe, expect, it } from 'vitest'
-import type { CliShimStatus } from '@shared/types'
+import type { CliShimResult, CliShimStatus } from '@shared/types'
 import {
+  CLI_SHIM_CHECKING,
   CLI_SHIM_INSTALL_LABEL,
+  CLI_SHIM_LOAD_FAILED,
+  CLI_SHIM_PATH_HINT_ID,
   CLI_SHIM_UNAVAILABLE,
   CLI_SHIM_UPDATE_LABEL,
+  TERMINAL_ACCESS_TRUST,
+  askTerminalAccessAfter,
   cleanShown,
+  cliShimDescribedBy,
   cliShimFocusAfter,
+  cliShimLine,
   cliShimNotice,
   cliShimView,
   displayPath,
   hasCliShimApi,
   singleFlight
 } from './cliShim'
+
+describe('row wiring (review Lows, H2)', () => {
+  const view = { line: 'Installed at ~/.local/bin/orgai.', remove: true }
+  it('names the PATH hint in aria-describedby only while it is shown', () => {
+    expect(cliShimDescribedBy('cli-shim-row-desc', null)).toBe('cli-shim-row-desc')
+    expect(cliShimDescribedBy('cli-shim-row-desc', view)).toBe('cli-shim-row-desc')
+    expect(cliShimDescribedBy('cli-shim-row-desc', { ...view, pathHint: 'Add it' })).toBe(`cli-shim-row-desc ${CLI_SHIM_PATH_HINT_ID}`)
+  })
+  it('says Checking while loading and a failure once the status could not be read', () => {
+    expect(cliShimLine(null, false)).toBe(CLI_SHIM_CHECKING)
+    expect(cliShimLine(null, true)).toBe(CLI_SHIM_LOAD_FAILED)
+    expect(cliShimLine(view, true)).toBe(view.line)
+  })
+  it('asks to turn Terminal access on only after a successful install or update while it is off', () => {
+    const ok = { ok: true, message: 'Installed.', status: { state: 'installed' } } as unknown as CliShimResult
+    const bad = { ...ok, ok: false } as CliShimResult
+    expect(askTerminalAccessAfter('install', ok, false)).toBe(true)
+    expect(askTerminalAccessAfter('update', ok, false)).toBe(true)
+    expect(askTerminalAccessAfter('install', ok, true)).toBe(false)
+    expect(askTerminalAccessAfter('install', bad, false)).toBe(false)
+    expect(askTerminalAccessAfter('install', null, false)).toBe(false)
+    expect(askTerminalAccessAfter('remove', ok, false)).toBe(false)
+  })
+  it('the trust sentence names agent shells', () => {
+    expect(TERMINAL_ACCESS_TRUST).toMatch(/any program you run/)
+    expect(TERMINAL_ACCESS_TRUST).toMatch(/agent shells/)
+  })
+})
 
 const PLATFORMS = ['darwin', 'linux', 'win32'] as const
 type Platform = (typeof PLATFORMS)[number]

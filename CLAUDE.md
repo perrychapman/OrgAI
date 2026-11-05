@@ -654,8 +654,10 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     unpacked imports, `--version`, doctor, a mock exec on `--host inproc` and through the spawned background app
     (passes on macOS arm64 only). Desktop-only IPC `app:cliShimStatus` / `installCliShim` / `uninstallCliShim`
     (`CliShimStatus` / `CliShimResult`, never reject, refused over the socket); App settings > General > Advanced >
-    Terminal `CliShimRow` (`cli-shim-row`, `-status[data-state]`, `-path-hint`, `-notice`; `lib/cliShim.ts`); an
-    install turns Terminal access on and `lib/settingsMerge.ts` keeps a queued App settings save from undoing it.
+    Terminal `CliShimRow` (`cli-shim-row`, `-status[data-state]` (a live region), `-path-hint` (named by the buttons'
+    aria-describedby), `-notice`; `lib/cliShim.ts`); an install never turns Terminal access on by itself (review H2):
+    while it is off the row asks (`cli-shim-terminal-confirm`). The Terminal access text names the same-user trust
+    model and `terminal-access-level` picks `AppSettings.terminalAccessLevel` (`lib/terminalAccess.ts`).
     `orgai doctor` adds install and shim checks. Unit-tested (packagedLayout, shimInstaller, cliShim, doctor,
     launcher, packaging.test.ts keeps `asarUnpack` in step with `CLI_RUNTIME_PACKAGES`); unverified: Windows
     (orgai.cmd, its argument passing, the shim), Linux, signed / notarized and x64 macOS builds, the row by eye.

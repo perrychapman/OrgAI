@@ -11,8 +11,7 @@
 import { execFile } from 'node:child_process'
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 import { closeSync, constants as fsConstants, fstatSync, lstatSync, openSync, readSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join, win32 } from 'node:path'
+import { join } from 'node:path'
 import {
   RPC_PRE_AUTH_FRAME_MAX_BYTES,
   type HostClientKind,
@@ -23,6 +22,7 @@ import {
   type RpcChallengeFrame
 } from '../../shared/types'
 import { parseJsonSafe, stringifyJson } from './jsonCodec'
+import { neutralCwd, system32Path } from './systemBinaries'
 
 // ---------- Nonces and proofs ----------
 
@@ -163,7 +163,7 @@ export function readDaemonSecret(dataDir: string, platform: NodeJS.Platform = pr
 
 /** `%SystemRoot%\System32\<exe>` (never a bare name: Windows searches the cwd before PATH, review H1). */
 export function system32Exe(exe: string, env: NodeJS.ProcessEnv = process.env): string {
-  return win32.join(env.SystemRoot || env.windir || 'C:\\Windows', 'System32', exe)
+  return system32Path(exe, env)
 }
 
 /** The user SID in `whoami /user /fo csv /nh` output (`"host\user","S-1-5-21-..."`); undefined when there is none. */
@@ -177,12 +177,16 @@ export function parseWhoamiSid(text: string): string | undefined {
  * from the folder stays; `/grant:r` replaces any explicit grant of that SID). The SID form (`*S-1-...`) never depends on
  * USERDOMAIN / USERNAME.
  */
-export function secretAclArgs(path: string, sid: string): string[] {
-  return [path, '/inheritance:r', '/grant:r', `*${sid}:F`]
+export function secretAclArgs(path: string, sid: string, directory = false): string[] {
+  // A folder's grant is inherited by the files created in it afterwards ((OI)(CI)), so a file written there never
+  // exists with a broader ACL, even for a moment.
+  return [path, '/inheritance:r', '/grant:r', directory ? `*${sid}:(OI)(CI)F` : `*${sid}:F`]
 }
 
 export interface RestrictSecretAclOptions {
   env?: NodeJS.ProcessEnv
+  /** `path` is a folder (the run folder): grant with object and container inheritance. */
+  directory?: boolean
   /** execFile; tests inject one. Resolves stdout, rejects on a failure. */
   run?: (file: string, args: string[], opts: { cwd: string; timeoutMs: number }) => Promise<string>
 }
@@ -206,7 +210,7 @@ function runFile(file: string, args: string[], opts: { cwd: string; timeoutMs: n
 export async function restrictDaemonSecretAcl(path: string, opts: RestrictSecretAclOptions = {}): Promise<string | undefined> {
   const env = opts.env ?? process.env
   const run = opts.run ?? runFile
-  const cwd = tmpdir()
+  const cwd = neutralCwd()
   let sid: string | undefined
   try {
     sid = parseWhoamiSid(await run(system32Exe('whoami.exe', env), ['/user', '/fo', 'csv', '/nh'], { cwd, timeoutMs: 10_000 }))
@@ -215,7 +219,7 @@ export async function restrictDaemonSecretAcl(path: string, opts: RestrictSecret
   }
   if (!sid) return 'whoami named no user SID'
   try {
-    await run(system32Exe('icacls.exe', env), secretAclArgs(path, sid), { cwd, timeoutMs: 10_000 })
+    await run(system32Exe('icacls.exe', env), secretAclArgs(path, sid, opts.directory === true), { cwd, timeoutMs: 10_000 })
   } catch (e) {
     return `icacls failed: ${(e as Error).message}`.slice(0, 300)
   }

@@ -1,4 +1,3 @@
-import { execFile } from 'node:child_process'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import {
   chmodSync,
@@ -14,12 +13,12 @@ import {
 } from 'node:fs'
 import { connect, createServer, type Server, type Socket } from 'node:net'
 import { tmpdir } from 'node:os'
-import { basename, dirname, join, resolve, win32 } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import type { DaemonInfo, HostKind, HostState } from '@shared/types'
 import { HOST_INSTANCE_ID_RE, currentHostInstanceId } from './identity'
 import { renameSyncRetry } from './fsRetry'
 import { processLivenessCachedAsync, selfStartTime, type Liveness } from './processInfo'
-import { neutralCwd, system32Path } from './systemBinaries'
+import { restrictDaemonSecretAcl } from './protocol'
 
 /**
  * Pre-store host ownership of a data dir (cli-spec 3.2(2), Step 0 of booting a host). Runs before any store
@@ -193,16 +192,20 @@ export interface OwnershipOptions {
    */
   unconfirmedStaleMs?: number
   /**
-   * win32: what an icacls failure on daemon.secret does. 'required' throws HostOwnershipError('secret_acl_failed');
-   * 'best-effort' warns, goes on and sets HostOwnership.secretAclWarning. Default: 'best-effort' for the desktop host
-   * (Terminal access is off by default and the secret serves only terminals, review M8), 'required' for headless and
-   * inproc hosts, which exist to serve the orgai command.
+   * win32: what an icacls failure on daemon.secret does when the listener is bound at once (listen not false).
+   * 'required' throws HostOwnershipError('secret_acl_failed'); 'best-effort' warns, goes on and sets
+   * HostOwnership.secretAclWarning. Default: 'best-effort' for the desktop host, 'required' for headless and inproc
+   * hosts, which exist to serve the orgai command. setListening(true) is always 'required' (a failure keeps the
+   * listener off; the Electron hosts acquire with listen: false, so a desktop launch never fails on it, review M8).
    */
   secretAcl?: 'required' | 'best-effort'
   /** Where warnings go (default console.warn). */
   warn?: (message: string) => void
-  /** win32 icacls stand-in (tests; default {@link runIcacls}). */
-  icacls?: (args: string[]) => Promise<void>
+  /**
+   * win32 whoami + icacls stand-in (tests; default protocol.ts restrictDaemonSecretAcl): restrict `path` (a folder when
+   * `directory`) to the current user's SID. Resolves undefined on success, else the reason.
+   */
+  restrictAcl?: (path: string, directory: boolean) => Promise<string | undefined>
   now?: () => number
   sleep?: (ms: number) => Promise<void>
   connectProbe?: (endpoint: string, timeoutMs: number) => Promise<ProbeResult>
@@ -220,19 +223,36 @@ export interface OwnershipOptions {
   faultAt?: OwnershipBoundary | ReleaseBoundary
   /** Platform override (tests only; the win32 pipe path is UNVERIFIED and not exercised live). */
   platform?: NodeJS.Platform
+  /**
+   * Write daemon.secret and bind the listener now (default true). false (review M11; the Electron hosts, whose
+   * Terminal access may be off): neither exists until setListening(true); daemon.json carries `listening: false` and
+   * the endpoint the listener will use.
+   */
+  listen?: boolean
 }
 
 export interface HostOwnership {
   readonly info: DaemonInfo
+  /** The listener's socket path or pipe name (the same whether or not it is bound right now). */
   readonly endpoint: string
   readonly secretPath: string
-  /** The long-path runtime dir, when the socket lives there. */
+  /** The long-path runtime dir, when the socket lives (or will live) there. */
   readonly runtimeDir?: string
   /**
-   * win32: why daemon.secret could not be given a current-user-only DACL (best-effort mode, review M8); undefined when
-   * it was protected or needed no explicit ACL. A host should not serve terminals while this is set.
+   * win32: why daemon.secret could not be given a current-user-only DACL when acquireHostOwnership bound the listener
+   * at once in best-effort mode (review M8); undefined when it was protected. setListening(true) never sets it: there
+   * an ACL failure rejects and the listener stays off.
    */
   readonly secretAclWarning?: string
+  /** True while daemon.secret exists and the listener is bound. */
+  readonly listening: boolean
+  /**
+   * Bind the listener and write daemon.secret (on), or close the listener and remove daemon.secret (off), then rewrite
+   * daemon.json's `listening` (review M11: only while Terminal access is on). Calls run one at a time in call order; a
+   * call that matches the current state does nothing. The secret keeps its value for this host instance. Rejects when
+   * the bind (or, on Windows, the secret's ACL) fails; the listener is then off. After release() it does nothing.
+   */
+  setListening(on: boolean): Promise<void>
   /** Rewrite daemon.json with state 'ready' (only while it still carries our hostInstanceId). True when written. */
   markReady(): boolean
   /** Rewrite daemon.json with state 'draining' (same rule). */
@@ -290,7 +310,7 @@ function isObject(v: unknown): v is Record<string, unknown> {
 /** A validated DaemonInfo, or null for anything else (unknown fields dropped). */
 export function parseDaemonInfo(raw: unknown): DaemonInfo | null {
   if (!isObject(raw)) return null
-  const { hostInstanceId, pid, processStartTime: start, endpoint, state, startedAt, hostKind, appVersion } = raw
+  const { hostInstanceId, pid, processStartTime: start, endpoint, listening, state, startedAt, hostKind, appVersion } = raw
   if (typeof hostInstanceId !== 'string' || !HOST_INSTANCE_ID_RE.test(hostInstanceId)) return null
   if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0) return null
   if (typeof endpoint !== 'string' || !endpoint || endpoint.length > 1024 || endpoint.includes('\0')) return null
@@ -304,6 +324,8 @@ export function parseDaemonInfo(raw: unknown): DaemonInfo | null {
     pid,
     ...(start !== undefined ? { processStartTime: start } : {}),
     endpoint,
+    // Only an explicit false means "not listening"; anything else reads as listening (older hosts never write it).
+    ...(listening === false ? { listening: false as const } : {}),
     state: state as HostState,
     startedAt,
     ...(hostKind !== undefined ? { hostKind: hostKind as HostKind } : {}),
@@ -478,6 +500,9 @@ export async function acquireHostOwnership(opts: OwnershipOptions): Promise<Host
   const secretPath = join(runDir, DAEMON_SECRET)
   const pid = process.pid
   const myStart = opts.startTimeOf ? opts.startTimeOf(pid) : selfStartTime()
+  const listenNow = opts.listen !== false
+  /** This host instance's handshake secret: written while the listener is bound, the same value each time. */
+  const secretValue = randomBytes(32).toString('hex')
 
   // (1) <dataDir>/run, 0700, a real dir owned by us.
   mkdirSync(runDir, { recursive: true, mode: 0o700 })
@@ -527,26 +552,30 @@ export async function acquireHostOwnership(opts: OwnershipOptions): Promise<Host
     await sweepLeftovers()
     fault('after-probe')
 
-    // The handshake secret.
-    writeAtomic(secretPath, randomBytes(32).toString('hex'), 0o600, id)
-    wroteSecret = true
-    if (platform === 'win32') {
-      secretAclWarning = await protectSecretOnWindows(secretPath, dataDir, { mode: secretAclMode, warn, ...(opts.icacls ? { icacls: opts.icacls } : {}) })
-    }
-    fault('after-secret')
+    if (listenNow) {
+      // The handshake secret (win32: the run folder and the file restricted to the current user first, review H2 / M8).
+      secretAclWarning = await writeSecret(secretAclMode, () => (wroteSecret = true))
+      fault('after-secret')
 
-    // The per-instance listener.
-    const bound = await bindListener()
-    server = bound.server
-    endpoint = bound.endpoint
-    runtimeDir = bound.runtimeDir
-    fault('after-listen')
+      // The per-instance listener.
+      const bound = await bindListener()
+      server = bound.server
+      endpoint = bound.endpoint
+      runtimeDir = bound.runtimeDir
+      fault('after-listen')
+    } else {
+      // Review M11: no secret and no listener until setListening(true); daemon.json names the endpoint it will use.
+      const planned = plannedEndpoint()
+      endpoint = planned.endpoint
+      runtimeDir = planned.runtimeDir
+    }
 
     const info: DaemonInfo = {
       hostInstanceId: id,
       pid,
       ...(myStart ? { processStartTime: myStart } : {}),
       endpoint,
+      ...(listenNow ? {} : { listening: false }),
       state: 'starting',
       startedAt: now(),
       hostKind: opts.hostKind,
@@ -757,6 +786,17 @@ export async function acquireHostOwnership(opts: OwnershipOptions): Promise<Host
     }
   }
 
+  /** Where bindListener will listen, computed without touching the disk (review M11: daemon.json names it while off). */
+  function plannedEndpoint(): { endpoint: string; runtimeDir?: string } {
+    if (platform === 'win32') return { endpoint: pipeNameFor(dataDir, id, platform) }
+    const path = socketPathFor(dataDir, id)
+    if (Buffer.byteLength(path) < SOCKET_PATH_MAX) return { endpoint: path }
+    const rtDir = runtimeDirFor(id, runtimeBase)
+    const inRt = join(rtDir, 'd.sock')
+    if (Buffer.byteLength(inRt) >= SOCKET_PATH_MAX) throw new HostOwnershipError('socket_path_too_long', `The socket path ${inRt} is too long.`)
+    return { endpoint: inRt, runtimeDir: rtDir }
+  }
+
   async function bindListener(): Promise<{ server: Server; endpoint: string; runtimeDir?: string }> {
     let path: string
     let rtDir: string | undefined
@@ -821,15 +861,85 @@ export async function acquireHostOwnership(opts: OwnershipOptions): Promise<Host
     }
   }
 
-  function ownershipHandle(info: DaemonInfo, srv: Server, rtDir: string | undefined, aclWarning: string | undefined): HostOwnership {
+  /**
+   * Write daemon.secret (this instance's value). win32: the run folder, then the file, get a current-user-only DACL
+   * (protectSecretOnWindows); 'required' throws on a failure, 'best-effort' returns the warning.
+   */
+  async function writeSecret(mode: 'required' | 'best-effort', onWritten: () => void = () => {}): Promise<string | undefined> {
+    const write = (): void => {
+      writeAtomic(secretPath, secretValue, 0o600, id)
+      onWritten()
+    }
+    if (platform !== 'win32') {
+      write()
+      return undefined
+    }
+    return protectSecretOnWindows(runDir, write, { mode, warn, ...(opts.restrictAcl ? { restrict: opts.restrictAcl } : {}) })
+  }
+
+  function ownershipHandle(info: DaemonInfo, initialServer: Server | undefined, rtDir: string | undefined, aclWarning: string | undefined): HostOwnership {
     let current = info
     let released = false
-    const rewrite = (state: HostState): boolean => {
+    /** The bound listener; undefined while Terminal access is off (review M11). */
+    let srv = initialServer
+    /** setListening calls, one at a time. */
+    let listenChain: Promise<void> = Promise.resolve()
+    const write = (next: DaemonInfo): boolean => {
       if (released) return false
       if (readDaemonInfo(dataDir)?.hostInstanceId !== id) return false
-      current = { ...current, state }
+      current = next
       writeAtomic(daemonPath, JSON.stringify(current, null, 2), 0o600, id)
       return true
+    }
+    const rewrite = (state: HostState): boolean => write({ ...current, state })
+    const withListening = (on: boolean): DaemonInfo => {
+      const { listening: _was, ...rest } = current
+      return on ? rest : { ...rest, listening: false }
+    }
+    const removeSecretIfOurs = (): void => {
+      try {
+        if (readDaemonInfo(dataDir)?.hostInstanceId === id) rmSync(secretPath, { force: true })
+      } catch {
+        /* best effort */
+      }
+    }
+    const removeEndpointFiles = (): void => {
+      try {
+        if (platform !== 'win32') rmSync(info.endpoint, { force: true })
+        if (rtDir) rmSync(rtDir, { recursive: true, force: true })
+      } catch {
+        /* best effort */
+      }
+    }
+    async function openListener(): Promise<void> {
+      if (released || srv) return
+      let bound: Awaited<ReturnType<typeof bindListener>>
+      try {
+        // Terminal access is being turned on: an ACL failure keeps the listener off (never a fatal launch, review M8).
+        await writeSecret('required')
+        bound = await bindListener()
+      } catch (e) {
+        removeSecretIfOurs()
+        throw e
+      }
+      if (released) {
+        // Released while binding: undo it.
+        await new Promise<void>((r) => bound.server.close(() => r()))
+        removeEndpointFiles()
+        return
+      }
+      srv = bound.server
+      write(withListening(true))
+    }
+    async function closeListener(): Promise<void> {
+      if (released || !srv) return
+      const closing = srv
+      srv = undefined
+      // daemon.json first, so a client from now on reads "Terminal access is off" instead of a dead socket.
+      write(withListening(false))
+      removeSecretIfOurs()
+      await new Promise<void>((r) => closing.close(() => r()))
+      removeEndpointFiles()
     }
     return {
       get info() {
@@ -839,6 +949,14 @@ export async function acquireHostOwnership(opts: OwnershipOptions): Promise<Host
       secretPath,
       ...(rtDir ? { runtimeDir: rtDir } : {}),
       ...(aclWarning ? { secretAclWarning: aclWarning } : {}),
+      get listening() {
+        return !!srv && !released
+      },
+      setListening(on: boolean) {
+        const step = listenChain.then(() => (on ? openListener() : closeListener()))
+        listenChain = step.catch(() => {})
+        return step
+      },
       markReady() {
         const wrote = rewrite('ready')
         try {
@@ -915,10 +1033,11 @@ export async function acquireHostOwnership(opts: OwnershipOptions): Promise<Host
       }
       fault('release-after-daemon-unlink')
       try {
-        srv.close()
+        srv?.close()
       } catch {
         /* already closed */
       }
+      srv = undefined
       fault('release-after-close')
       try {
         if (platform !== 'win32') rmSync(info.endpoint, { force: true })
@@ -938,65 +1057,42 @@ export async function acquireHostOwnership(opts: OwnershipOptions): Promise<Host
   }
 }
 
-/** The account icacls grants: `DOMAIN\user`, or `user` without a domain; undefined when USERNAME is unset or odd. */
-export function windowsAccountName(env: Readonly<Record<string, string | undefined>> = process.env): string | undefined {
-  const user = env.USERNAME?.trim()
-  if (!user || /[\\/"%:\0\r\n]/.test(user)) return undefined
-  const domain = env.USERDOMAIN?.trim()
-  return domain && !/[\\/"%:\0\r\n]/.test(domain) ? `${domain}\\${user}` : user
-}
-
-/**
- * True when `dataDir` lies in %APPDATA% / %LOCALAPPDATA%, whose inherited ACLs already exclude other users. Compared
- * case-insensitively on resolved win32 paths.
- */
-export function insideWindowsProfileData(dataDir: string, env: Readonly<Record<string, string | undefined>> = process.env): boolean {
-  const lower = win32.resolve(dataDir).toLowerCase()
-  const roots = [env.APPDATA, env.LOCALAPPDATA].filter((r): r is string => !!r?.trim()).map((r) => win32.resolve(r.trim()).toLowerCase().replace(/\\+$/, ''))
-  return roots.some((r) => lower === r || lower.startsWith(`${r}\\`))
-}
-
-/** icacls by absolute path (`%SystemRoot%\System32\icacls.exe`), cwd the temp dir (review H1). Rejects on failure. */
-export function runIcacls(args: string[], env: Readonly<Record<string, string | undefined>> = process.env): Promise<void> {
-  return new Promise((ok, fail) => {
-    try {
-      execFile(system32Path('icacls.exe', env), args, { windowsHide: true, timeout: 10_000, cwd: neutralCwd(), shell: false }, (err) => (err ? fail(err) : ok()))
-    } catch (e) {
-      fail(e)
-    }
-  })
-}
-
 export interface ProtectSecretOptions {
   mode: 'required' | 'best-effort'
   warn?: (message: string) => void
-  env?: Readonly<Record<string, string | undefined>>
-  icacls?: (args: string[]) => Promise<void>
+  env?: NodeJS.ProcessEnv
+  /** whoami + icacls stand-in (tests). Default: protocol.ts restrictDaemonSecretAcl (absolute System32 paths, H1). */
+  restrict?: (path: string, directory: boolean) => Promise<string | undefined>
 }
 
 /**
- * win32 only: when the data dir is outside %APPDATA% / %LOCALAPPDATA%, give the secret file an explicit
- * current-user-only DACL. A failure (no account name, icacls missing or refusing: a junctioned profile, FAT / exFAT, a
- * network drive) throws HostOwnershipError('secret_acl_failed') in 'required' mode; in 'best-effort' mode it is logged
- * and returned as a warning sentence (review M8). Undefined when the secret is protected or needs no explicit ACL.
+ * win32 only: give the run folder a current-user-only DACL inherited by new files, call `write` (daemon.secret is then
+ * born with that ACL, never an inherited broader one), then restrict the secret file itself too. The grant names the
+ * user's SID from `whoami /user` (never USERDOMAIN / USERNAME from the environment), run by absolute path from the temp
+ * folder (review H1, H2 (3)). This runs wherever the data folder lives, %APPDATA% included, like the socket server's
+ * own check before the first hello. A failure (whoami or icacls missing or refusing: a junctioned profile, FAT / exFAT,
+ * a network drive) throws HostOwnershipError('secret_acl_failed') in 'required' mode; in 'best-effort' mode it is
+ * logged and returned as a warning sentence (review M8), and the secret is written regardless. Same-user programs are
+ * not kept out by any ACL: the Terminal access level and the self-control gate are for those.
  * UNVERIFIED: never run on Windows from this code.
  */
-export async function protectSecretOnWindows(secretPath: string, dataDir: string, opts: ProtectSecretOptions): Promise<string | undefined> {
-  const env = opts.env ?? process.env
-  if (insideWindowsProfileData(dataDir, env)) return undefined
-  const account = windowsAccountName(env)
-  let problem: string | undefined
-  if (!account) problem = 'Could not name the current user to protect daemon.secret.'
-  else {
+export async function protectSecretOnWindows(runDir: string, write: () => void, opts: ProtectSecretOptions): Promise<string | undefined> {
+  const restrict = opts.restrict ?? ((path: string, directory: boolean) => restrictDaemonSecretAcl(path, { directory, ...(opts.env ? { env: opts.env } : {}) }))
+  const attempt = async (path: string, directory: boolean): Promise<string | undefined> => {
     try {
-      await (opts.icacls ?? ((a: string[]) => runIcacls(a, env)))([secretPath, '/inheritance:r', '/grant:r', `${account}:F`])
+      return await restrict(path, directory)
     } catch (e) {
-      problem = `Could not restrict daemon.secret: ${e instanceof Error ? e.message : String(e)}`
+      return e instanceof Error ? e.message : String(e)
     }
   }
+  let problem = await attempt(runDir, true)
+  if (problem && opts.mode === 'required') throw new HostOwnershipError('secret_acl_failed', `Could not restrict the run folder: ${problem}`)
+  write()
+  if (!problem) problem = await attempt(join(runDir, DAEMON_SECRET), false)
   if (!problem) return undefined
-  if (opts.mode === 'required') throw new HostOwnershipError('secret_acl_failed', problem)
-  const warning = `${problem} Terminal access should stay off for this data folder (${dataDir}) until it is on a disk that keeps file permissions.`
+  const sentence = `Could not restrict daemon.secret to the current Windows user: ${problem}`
+  if (opts.mode === 'required') throw new HostOwnershipError('secret_acl_failed', sentence)
+  const warning = `${sentence} Terminal access should stay off for this data folder (${dirname(runDir)}) until it is on a disk that keeps file permissions.`
   ;(opts.warn ?? ((m: string) => console.warn(m)))(`OrgAI host ownership: ${warning}`)
   return warning
 }

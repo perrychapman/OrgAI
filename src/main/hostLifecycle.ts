@@ -64,27 +64,62 @@ export function secondInstanceAction(input: { argv: readonly string[]; additiona
   return args.run !== undefined ? { kind: 'window', run: args.run } : { kind: 'window' }
 }
 
-export type WindowAllClosedAction = 'quit' | 'background' | 'stay'
+export type WindowAllClosedAction = 'quit' | 'background' | 'stay' | 'ask'
 
 /**
- * The last window closed. busy = the host's activity is not idle (live runs, paused auto-resumes, OAuth flows,
- * worktree ops, attached terminal clients...): keep serving in the background. A host launched with --headless-host
- * (launchedHeadless: the background daemon, cli-spec 3.2(1) "background daemon mode") also goes back to the
- * background when idle and leaves only through its ORGAI_DAEMON_IDLE_MINUTES idle exit (or host.stop). Otherwise,
- * idle: a desktop host that already went to the background once (startedHeadless) quits, and so does a desktop host
- * off macOS; a desktop host on macOS stays (Dock behaviour).
+ * The last window closed (review H3).
+ * - A host launched with --headless-host (launchedHeadless: the background daemon, cli-spec 3.2(1)) goes back to the
+ *   background and leaves through its ORGAI_DAEMON_IDLE_MINUTES idle exit (or host.stop).
+ * - macOS keeps the app running (Dock behaviour): 'stay', whatever its runs do; the Dock icon stays visible.
+ * - Windows and Linux quit (through quitGate, which stops the runs), as before the host work. Only while runs are
+ *   working without the user (workingRuns: RunManager.workingRunCount, so idle runs, runs with an open card and paused
+ *   runs waiting for an auto-resume do not count) the user is asked first ('ask'): keep working in the background or
+ *   stop and quit. A desktop-launched host never goes to the background without that answer.
  */
 export function windowAllClosedAction(input: {
   platform: NodeJS.Platform | string
-  busy: boolean
-  startedHeadless: boolean
-  launchedHeadless?: boolean
+  launchedHeadless: boolean
   quitting: boolean
+  workingRuns: number
 }): WindowAllClosedAction {
   if (input.quitting) return 'quit'
-  if (input.busy || input.launchedHeadless) return 'background'
-  if (input.startedHeadless || input.platform !== 'darwin') return 'quit'
-  return 'stay'
+  if (input.launchedHeadless) return 'background'
+  if (input.platform === 'darwin') return 'stay'
+  return input.workingRuns > 0 ? 'ask' : 'quit'
+}
+
+export type ClosePromptChoice = 'background' | 'quit' | 'cancel'
+
+/** The close prompt's buttons, in order (index.ts maps the response index back through closePromptChoice). */
+export const CLOSE_PROMPT_BUTTONS: readonly [background: string, quit: string, cancel: string] = ['Keep working in the background', 'Stop and quit', 'Cancel']
+
+/** The close prompt's cancel index (Esc, closing the dialog): a window comes back; never quit or go to the background. */
+export const CLOSE_PROMPT_CANCEL_ID = 2
+
+/** The close prompt's text for `workingRuns` runs that are still working. */
+export function closePromptText(workingRuns: number): { message: string; detail: string } {
+  const n = Math.max(1, Math.floor(Number.isFinite(workingRuns) ? workingRuns : 1))
+  return {
+    message: n === 1 ? 'A run is still working.' : `${n} runs are still working.`,
+    detail:
+      'OrgAI can keep working in the background without a window; start OrgAI again to see it. Once nothing is working and ' +
+      'nothing has happened for a while, it quits by itself. Stop and quit ends every run; you can continue them later.'
+  }
+}
+
+/** The close prompt's response index as a choice; anything unexpected is 'cancel'. */
+export function closePromptChoice(response: number): ClosePromptChoice {
+  if (response === 0) return 'background'
+  if (response === 1) return 'quit'
+  return 'cancel'
+}
+
+/**
+ * A quit the user cancelled from a prompt while no window is open: off macOS a window comes back, so the app is
+ * never left running with nothing on screen. macOS keeps its Dock icon.
+ */
+export function reopenAfterCancel(input: { platform: NodeJS.Platform | string; liveWindows: number; quitting: boolean }): boolean {
+  return !input.quitting && input.platform !== 'darwin' && input.liveWindows === 0
 }
 
 /**
