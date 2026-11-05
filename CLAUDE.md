@@ -461,8 +461,7 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     (`KNOWLEDGE_MEASURE_FULL=1`; 1,100 entities x 50 facts x 1,000 chars, 58.8 MB; 2,000 x 50 is 106.9 MB and the store
     refuses it): index 2.1 s, inference 0.3 s (partial), one write 0.4 s, on the main thread. Slow, not a hang; a worker
     thread is the real fix and is not built (docs/design/knowledge-connections.md section 8).
-    Verified by unit tests and that measurement only; our own fixture is a weak test, and no adapter calls
-    `knowledgeContext` or `knowledgeBrief` yet (Adapter Engineer next). Nothing ran live.
+    Verified by unit tests and that measurement only; our own fixture is a weak test. Nothing ran live.
   - Round 2, inferred links (`docs/design/knowledge-connections.md`; `src/shared/knowledgeLinks.ts`, pure):
     `inferKnowledgeLinks` builds only what the evaluation passed, `KnowledgeLinkBasis` 'mention' and 'same-name'. Shared
     source, same target, same run, across engagements, co-occurrence and embeddings were rejected; temporal, contradiction,
