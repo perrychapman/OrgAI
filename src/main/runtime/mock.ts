@@ -72,8 +72,14 @@ import { countUsage, setModelTokens, usageOf } from './runUsage'
  */
 
 export type MockStep =
-  /** Assistant text from an agent (default: the root). */
-  | { type: 'text'; agent?: string; text: string }
+  /**
+   * Assistant text from an agent (default: the root). It streams as one agent.partial with the first half of `text`,
+   * then the transcript entry, then an agent.partial '' clear. With `partials` (cli-spec Wave 4, e2e/cli-tui.mjs splits
+   * an escape sequence across two chunks), each string is emitted in order as a cumulative agent.partial instead of the
+   * half-text one, with the script's `delayMs` between them; an interrupt or stop during those waits cuts them short:
+   * the remaining partials are skipped, the '' clear is still emitted and no transcript entry is written.
+   */
+  | { type: 'text'; agent?: string; text: string; partials?: string[] }
   | { type: 'thinking'; agent?: string; text: string }
   /**
    * A tool call. With `ask`, it first needs the user's approval through ctx.requestPermission. With
@@ -1222,7 +1228,19 @@ export class MockSession implements RuntimeSession {
       case 'text': {
         const agentId = step.agent ?? ROOT_AGENT_ID
         const a = this.ensureAgent(agentId)
-        this.emit({ type: 'agent.partial', runId: this.ctx.run.id, agentId, text: step.text.slice(0, Math.ceil(step.text.length / 2)) })
+        if (Array.isArray(step.partials)) {
+          let first = true
+          for (const chunk of step.partials) {
+            if (!first) await this.pause(this.script.delayMs)
+            first = false
+            if (this.stopped || this.interrupted) break
+            this.emit({ type: 'agent.partial', runId: this.ctx.run.id, agentId, text: String(chunk) })
+          }
+          if (this.stopped || this.interrupted) {
+            this.emit({ type: 'agent.partial', runId: this.ctx.run.id, agentId, text: '' })
+            return
+          }
+        } else this.emit({ type: 'agent.partial', runId: this.ctx.run.id, agentId, text: step.text.slice(0, Math.ceil(step.text.length / 2)) })
         a.lastText = step.text.trim().slice(0, 200)
         this.charge(agentId, step.text)
         this.transcript(agentId, { kind: 'text', text: step.text })
