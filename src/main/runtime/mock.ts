@@ -26,6 +26,7 @@ import { resolveParent } from './agentTree'
 import { HandleNamer, mapSendMessage, messageTranscriptText, spawnHandle } from './network'
 import { SHELL_TOOLS, isFreeCdTarget, matchOptionsFor, matchingRule, type MatchOptions } from './ruleMatch'
 import { countUsage, setModelTokens, usageOf } from './runUsage'
+import { cliProjectSettings, projectSettingsLoad } from './claude'
 
 /**
  * A scripted, token-free provider. It plays a script of steps and emits the same normalized RunEvents a
@@ -44,6 +45,10 @@ import { countUsage, setModelTokens, usageOf } from './runUsage'
  * reference folder (read only)"; the run goes on to its usual end. [mock:reference-shell] (referenceShellSteps): the
  * root runs Bash `del "<first reference folder>/brief.md"` with no `ask` on the step; the reference shell guard forces
  * a card with referenceFolder and no suggestions (allow: result 'ok', nothing runs; deny: the deny text).
+ * [mock:folder-config] (folderConfigSteps): folder config trust. When ctx.folderConfigLoads() is not false the root
+ * reads `<project>/.claude/settings.json` permissions.allow (same reader as the Claude adapter) and says "Folder config
+ * loaded."; otherwise it says "Folder config ignored." and reads nothing. Then Bash `npm test` runs with no card when a
+ * loaded rule covers it, else it asks through the normal permission card.
  * [mock:knowledge] (knowledgeSteps, engagement work runs): before the default script the root reads the graph's
  * vocabulary, records Acme Corp (organisation), Jane Doe (person), a decision and a risk with facts, links them,
  * saves the context note "Kickoff call summary", searches "Acme", reads Acme Corp back and retires its fact "Fiscal
@@ -395,6 +400,23 @@ export function referenceShellSteps(ref: string | undefined): MockStep[] {
     { type: 'text', text: 'Tidying the client material.' },
     ...(ref ? ([{ type: 'tool', name: 'Bash', input: { command: `del "${join(ref, 'brief.md')}"` } }] satisfies MockStep[]) : []),
     { type: 'text', text: 'Mock: the reference-shell script is done.' }
+  ]
+}
+
+/** Trigger token (work runs, default script): the folder's own settings.json decides whether `npm test` asks (folderConfigSteps). */
+export const FOLDER_CONFIG_TOKEN = '[mock:folder-config]'
+export const MOCK_FOLDER_CONFIG_LOADED = 'Folder config loaded.'
+export const MOCK_FOLDER_CONFIG_IGNORED = 'Folder config ignored.'
+
+/**
+ * The [mock:folder-config] turn: says whether the folder's config loaded, then runs Bash `npm test`. `covered` (a loaded
+ * rule matches the command) leaves out the card; otherwise the step asks. Pure.
+ */
+export function folderConfigSteps(loaded: boolean, covered: boolean): MockStep[] {
+  return [
+    { type: 'text', text: loaded ? MOCK_FOLDER_CONFIG_LOADED : MOCK_FOLDER_CONFIG_IGNORED },
+    { type: 'tool', name: 'Bash', input: { command: 'npm test' }, ...(covered ? {} : { ask: true }), result: 'Tests passed.' },
+    { type: 'text', text: 'Mock: the folder-config script is done.' }
   ]
 }
 
@@ -1000,6 +1022,13 @@ export class MockSession implements RuntimeSession {
     if (!this.isSetup && this.ctx.run.kind === 'work' && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(MCP_MIDRUN_TOKEN)) return MCP_MIDRUN_STEPS
     if (!this.isSetup && this.ctx.run.kind === 'work' && !this.ctx.run.quick && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(CONFIG_CHANGE_TOKEN)) return configChangeSteps(this.root.slug)
     if (!this.isSetup && this.ctx.run.kind === 'work' && !this.ctx.run.quick && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(FATIGUE_TOKEN)) return fatigueSteps(this.ctx.project.path)
+    if (!this.isSetup && this.ctx.run.kind === 'work' && !this.ctx.run.quick && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(FOLDER_CONFIG_TOKEN)) {
+      // One read of the gate for the turn, like the Claude adapter's per-query snapshot.
+      const loaded = projectSettingsLoad(this.ctx)
+      const rules = loaded ? cliProjectSettings(this.ctx, true).rules : []
+      const covered = rules.length > 0 && matchingRule('Bash', { command: 'npm test' }, rules, this.safeMatchOptions('Bash') ?? undefined) !== undefined
+      return folderConfigSteps(loaded, covered)
+    }
     if (!this.isSetup && this.ctx.run.kind === 'work' && !this.ctx.run.quick && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(REFERENCE_EDIT_TOKEN)) {
       const list = this.referenceList()
       const ref = Array.isArray(list) ? list[0] : undefined
