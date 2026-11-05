@@ -1761,8 +1761,9 @@ export interface AppSettings {
    * scopesForAccessLevel). Missing = 'operate': read and operate (watch, start, send to, interrupt and stop runs);
    * 'full' adds decide (answer decision cards) and configure (settings, projects, MCP, permissions, connections).
    * Only the desktop window changes it in practice: settings:set needs 'configure', which a socket client gets only
-   * when this is already 'full', so the socket can lower it but never raise it. A `--host inproc` host (the CLI process
-   * owns it) always grants full. Normalized: only 'full' is stored.
+   * when this is already 'full', so the socket can lower it but never raise it. A `--host inproc` host applies it to
+   * every client too; only the CLI process that started it gets every scope, through RpcHelloParams.ownerProof (an
+   * in-memory key). Normalized: only 'full' is stored.
    */
   terminalAccessLevel?: TerminalAccessLevel
   /**
@@ -5824,6 +5825,13 @@ export interface RpcHelloParams {
    *   JSON.stringify(['client:v1', protocolVersion, hostInstanceId, hostNonce, clientNonce, clientKind, clientVersion, pid, cwd, requestedScopes]))
    */
   clientProof: string
+  /**
+   * Only from the CLI process that started a `--host inproc` host: HMAC-SHA256(that host's in-memory owner key,
+   * JSON.stringify(['owner:v1', hostInstanceId, hostNonce, clientNonce, clientProof])) (protocol.ts ownerProof). A
+   * matching one is granted every requested scope; any other client of that host is capped by Terminal access like
+   * on every other host. Never on disk, so a process that read daemon.secret still cannot make it.
+   */
+  ownerProof?: string
 }
 
 /** Step 2: client -> host. */

@@ -23,7 +23,7 @@
 import { spawn } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { APP_DIR, DATA_DIR, check, finish, log, makeFixtureRepo, removeFixture, sleep } from './lib.mjs'
+import { APP_DIR, DATA_DIR, allowFullTerminalAccess, check, finish, log, makeFixtureRepo, removeFixture, sleep } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const CLI = path.join(APP_DIR, 'out', 'cli', 'orgai.mjs')
@@ -132,6 +132,9 @@ try {
   check(sl.some((l) => l?.type === 'event' && l.event?.type === 'run.finalized'), 'stream-json carries run.finalized', '')
 
   // ---------- 2. A long-lived host ----------
+  // Its clients are other processes: decide needs Terminal access 'full', the user's choice (review H2). The
+  // per-command `--host inproc` runs above needed nothing: their own process proves itself with the owner key.
+  allowFullTerminalAccess()
   daemon = start(['--host', 'inproc', 'daemon', 'start', '--foreground'], { cwd: repo })
   await until('the inproc daemon to be ready', () => readDaemon()?.state === 'ready')
 

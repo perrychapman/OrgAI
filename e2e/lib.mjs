@@ -57,6 +57,25 @@ export function electronBinary() {
 const failures = []
 
 /** Record a check. Failures are collected and reported by `finish()`. */
+/**
+ * Record the user's choice of Terminal access 'full' in `<DATA_DIR>/data/settings.json` (merged into what is there),
+ * as App settings does. A `--host inproc` host gives decide / configure only to the CLI process that started it (its
+ * in-memory owner key, review H2); a long-lived `daemon start --host inproc` serves other CLI processes, which then
+ * need this to answer cards or change settings.
+ */
+export function allowFullTerminalAccess() {
+  const dir = path.join(DATA_DIR, 'data')
+  fs.mkdirSync(dir, { recursive: true })
+  const file = path.join(dir, 'settings.json')
+  let doc = {}
+  try {
+    if (fs.existsSync(file)) doc = JSON.parse(fs.readFileSync(file, 'utf8')) ?? {}
+  } catch {
+    doc = {}
+  }
+  fs.writeFileSync(file, JSON.stringify({ version: 1, ...doc, settings: { ...(doc.settings ?? {}), terminalAccessLevel: 'full' } }, null, 2))
+}
+
 export function check(ok, what, detail = '') {
   if (ok) log(`PASS ${what}`)
   else {

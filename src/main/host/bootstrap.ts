@@ -129,7 +129,7 @@ export interface OrgAIHost {
   /**
    * Whether host.hello accepts terminal clients now and the most it grants (socketServer.ts): AppSettings.terminalServer,
    * or this session of a headless / in-process boot while the user has made no choice; the level from
-   * AppSettings.terminalAccessLevel, always 'full' on an in-process host.
+   * AppSettings.terminalAccessLevel on every host kind (an in-process host's own CLI proves itself with the owner key).
    */
   terminalAccess(): HostTerminalAccess
   /** Stop background timers and probes (before-quit). Idempotent. */
@@ -187,8 +187,9 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     const s = settings.get()
     return {
       enabled: s.terminalServer === true || (sessionTerminal && s.terminalServerChosen !== true),
-      // The in-process host belongs to the CLI process that started it; its own commands need every scope.
-      level: hostKind === 'inproc' || s.terminalAccessLevel === 'full' ? 'full' : 'operate'
+      // The same on every host kind (review H2): an in-process host's own CLI gets every scope through its in-memory
+      // owner key (socketServer.ts ownerKey), never through this level, so another client of it is capped too.
+      level: s.terminalAccessLevel === 'full' ? 'full' : 'operate'
     }
   }
   // `adapters` is declared below and only read when discovery runs.

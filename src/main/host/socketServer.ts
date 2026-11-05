@@ -22,9 +22,12 @@
  *   Terminal access off (OrgAIHost.terminalAccess) 'terminal_server_disabled', the socket quota, and the peer check
  *   ('descendant' -> 'agent_descendant_refused'; 'unavailable' is logged and accepted). On success it grants the
  *   requested scopes the Terminal access level allows (grantScopes: 'operate' = read + operate, the default; 'full' =
- *   all; an in-process host is always full) and remembers the rest as withheld: their channels answer 'scope_denied'
- *   with TERMINAL_ACCESS_LEVEL_MESSAGE, except host.stop for a client that asked for 'configure'. Lowering the level
- *   closes sockets holding scopes it no longer allows. It answers an RpcHelloResult with hostProof (and
+ *   all) and remembers the rest as withheld: their channels answer 'scope_denied' with TERMINAL_ACCESS_LEVEL_MESSAGE,
+ *   except host.stop for a client that asked for 'configure'. The one exception to the cap is the owner of a
+ *   `--host inproc` host: a hello whose ownerProof verifies against the server's in-memory `ownerKey` (only the CLI
+ *   process that started the host holds it; it is never written to disk) gets every requested scope. Every other
+ *   client of an in-process host, one holding daemon.secret included, is capped like on any host (review H2).
+ *   Lowering the level closes sockets holding scopes it no longer allows (never the owner's). It answers an RpcHelloResult with hostProof (and
  *   versionSkewWarning when clientVersion !== appVersion) and raises the line cap to RPC_BULK_FRAME_MAX_BYTES. A
  *   refused hello closes the socket once the error frame is flushed.
  * - Windows named pipe (review H2 (1)): Node's net.Server cannot give a pipe a security descriptor or the
@@ -89,6 +92,7 @@ import {
   clientProof,
   encodeFrame,
   hostProof,
+  ownerProof,
   isHexNonce,
   isNotification,
   isRequest,
@@ -132,6 +136,12 @@ export interface HostSocketServerOptions {
    * undefined on success, else the reason. Missing = restrictDaemonSecretAcl. Tests inject one.
    */
   restrictSecret?: (secretPath: string) => Promise<string | undefined>
+  /**
+   * `--host inproc` only: a 32-byte hex key kept in memory by the CLI process that started this host (never on disk,
+   * never logged). A hello carrying a matching ownerProof (protocol.ts ownerProof) is that process and gets every
+   * requested scope; everyone else is capped by Terminal access (review H2).
+   */
+  ownerKey?: string
 }
 
 /** The scopes each Terminal access level grants at most (AppSettings.terminalAccessLevel). */
@@ -184,6 +194,8 @@ interface Conn {
   scopes: HostScope[]
   /** Requested scopes host.hello withheld (AppSettings.terminalAccessLevel); their channels answer the level message. */
   withheld: HostScope[]
+  /** The in-process host's own CLI (ownerProof verified): not capped by Terminal access, never closed when it narrows. */
+  owner?: boolean
   inflight: number
   /**
    * Targets (authorizeKey) of this socket's mcp:authorize calls with announceUrl still in flight, with their counts:
@@ -214,14 +226,15 @@ const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object
 
 /**
  * The host's Terminal access (OrgAIHost.terminalAccess; a host without it reads AppSettings directly); off with the
- * lowest level when it cannot be read. An in-process host always grants full.
+ * lowest level when it cannot be read. The same on every host kind: an in-process host's own CLI is recognised by its
+ * ownerProof, never by the host kind (review H2).
  */
-function accessOf(host: OrgAIHost, hostKind: HostKind): HostTerminalAccess {
+function accessOf(host: OrgAIHost): HostTerminalAccess {
   try {
     const fromHost = typeof host.terminalAccess === 'function' ? host.terminalAccess() : undefined
     const s = fromHost ? undefined : host.settings.get()
     const enabled = fromHost ? fromHost.enabled === true : s?.terminalServer === true
-    const level: TerminalAccessLevel = hostKind === 'inproc' || (fromHost ? fromHost.level : s?.terminalAccessLevel) === 'full' ? 'full' : 'operate'
+    const level: TerminalAccessLevel = (fromHost ? fromHost.level : s?.terminalAccessLevel) === 'full' ? 'full' : 'operate'
     return { enabled, level }
   } catch {
     return { enabled: false, level: 'operate' }
@@ -336,7 +349,7 @@ export class HostSocketServer {
   attach(host: OrgAIHost): void {
     if (this.closed || this.host) return
     this.host = host
-    const access = accessOf(host, this.opts.hostKind)
+    const access = accessOf(host)
     this.terminalOn = access.enabled
     this.accessLevel = access.level
     if (access.enabled) void this.ensureSecretAcl()
@@ -576,6 +589,14 @@ export class HostSocketServer {
     return this.secretAcl
   }
 
+  /** True when this server has an owner key and the hello's ownerProof verifies against it (constant time). */
+  private isOwnerHello(conn: Conn, raw: Record<string, unknown>, clientProofHex: string): boolean {
+    const key = this.opts.ownerKey
+    if (!key || !isHexNonce(key) || !isHexNonce(raw.ownerProof)) return false
+    const expected = ownerProof(key, { hostInstanceId: this.opts.hostInstanceId, hostNonce: conn.hostNonce, clientNonce: raw.clientNonce as string, clientProof: clientProofHex })
+    return proofMatches(expected, raw.ownerProof)
+  }
+
   private async hello(conn: Conn, req: JsonRpcRequest): Promise<void> {
     const fail = (err: HostRpcError): void => {
       if (conn.state === 'closed') return
@@ -627,7 +648,7 @@ export class HostSocketServer {
       const host = this.host
       if (!host) return { code: 'host_starting', message: 'OrgAI is starting; try again in a moment.', retryAfterMs: HOST_STARTING_RETRY_MS }
       if (host.activity.state() === 'draining') return { code: 'host_draining', message: 'OrgAI is shutting down.', retryAfterMs: HOST_DRAINING_RETRY_MS }
-      if (!accessOf(host, this.opts.hostKind).enabled) return { code: 'terminal_server_disabled', message: TERMINAL_ACCESS_OFF_MESSAGE }
+      if (!accessOf(host).enabled) return { code: 'terminal_server_disabled', message: TERMINAL_ACCESS_OFF_MESSAGE }
       if (this.authCount >= RPC_MAX_CLIENT_SOCKETS) return { code: 'too_many_connections', message: `OrgAI already serves ${RPC_MAX_CLIENT_SOCKETS} terminal clients.` }
       return undefined
     }
@@ -650,8 +671,10 @@ export class HostSocketServer {
     const after = gateProblem()
     if (after) return fail(after)
     // Never more than Terminal access allows (review H2): decide and configure need AppSettings.terminalAccessLevel
-    // 'full', which only the desktop window sets; an in-process host (the CLI's own) always grants full.
-    const { granted: grantedScopes, withheld } = grantScopes(p.requestedScopes, accessOf(this.host!, this.opts.hostKind).level)
+    // 'full', which only the desktop window sets. The one exception is an in-process host's own CLI, proven by the
+    // in-memory owner key (a client that only read daemon.secret cannot make that proof).
+    const owner = this.isOwnerHello(conn, raw, p.clientProof)
+    const { granted: grantedScopes, withheld } = grantScopes(p.requestedScopes, owner ? 'full' : accessOf(this.host!).level)
     const result: RpcHelloResult = {
       protocolVersion: 1,
       hostInstanceId: this.opts.hostInstanceId,
@@ -682,11 +705,12 @@ export class HostSocketServer {
     conn.pid = p.pid
     conn.scopes = grantedScopes
     conn.withheld = withheld
+    if (owner) conn.owner = true
     if (result.versionSkewWarning) conn.versionSkew = true
     conn.reader.maxLineBytes = RPC_BULK_FRAME_MAX_BYTES
     this.send(conn, rpcResult(HELLO_REQUEST_ID, result))
     const held = withheld.length ? `; withheld by Terminal access: ${withheld.join(', ')}` : ''
-    this.log(`Client ${conn.id} connected (${p.clientKind} ${p.clientVersion.slice(0, 40)}, scopes ${grantedScopes.join(', ') || 'none'}${held}).`)
+    this.log(`Client ${conn.id} connected (${owner ? 'in-process owner, ' : ''}${p.clientKind} ${p.clientVersion.slice(0, 40)}, scopes ${grantedScopes.join(', ') || 'none'}${held}).`)
     for (const line of conn.pendingLines.splice(0)) {
       if (conn.state !== 'auth') break
       this.onLine(conn, line)
@@ -834,7 +858,7 @@ export class HostSocketServer {
     // only new handshakes (AppSettings.terminalServer, cli-spec invariant 2). In-flight answers (the settings:set that
     // turned it off) still go out first.
     if (channel === 'settings:changed' && this.host) {
-      const access = accessOf(this.host, this.opts.hostKind)
+      const access = accessOf(this.host)
       this.terminalOn = access.enabled
       const lowered = this.accessLevel === 'full' && access.level !== 'full'
       this.accessLevel = access.level
@@ -843,7 +867,7 @@ export class HostSocketServer {
         void this.ensureSecretAcl()
         // A lower level takes effect at once: sockets holding scopes it no longer allows are closed, as when Terminal
         // access is turned off; the client reconnects with what it may have now.
-        if (lowered) this.dropAuthenticated((c) => c.scopes.some((s) => !scopesForAccessLevel(access.level).includes(s)), 'Terminal access was narrowed')
+        if (lowered) this.dropAuthenticated((c) => !c.owner && c.scopes.some((s) => !scopesForAccessLevel(access.level).includes(s)), 'Terminal access was narrowed')
       }
     }
     if (channel === 'runs:event') {

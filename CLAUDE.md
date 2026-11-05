@@ -735,7 +735,9 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     (darwin `ps -o lstart=` under LC_ALL=C TZ=UTC; `processLiveness` 'same' / 'unconfirmed' / 'dead'; the async
     cached form in ownership and the repo lock; win32 self start time from Node's time origin, compared within 10 s),
     ids `host/identity.ts` (12 hex). Review fixes (Group A, unit-tested; Windows UNVERIFIED): an unconfirmed pid with a
-    dead endpoint, or an unconfirmed startup.mkdir owner past 60 s, is reclaimed; an unreadable daemon.json refuses
+    dead endpoint (unless its daemon.json says `listening: false`: an Electron host with Terminal access off has no
+    listener, so it counts as running and only a 'dead' pid is reclaimed), or an unconfirmed startup.mkdir owner past
+    60 s, is reclaimed; an unreadable daemon.json refuses
     (`daemon_json_unreadable`) unless it names a dead pid; refusals name `<data>/run`; renames retry transient win32
     EPERM / EBUSY / EACCES (`host/fsRetry.ts`); icacls is fatal only for headless / inproc (`secretAcl`, desktop gets
     `secretAclWarning`); system programs run by absolute path from the temp dir and git through

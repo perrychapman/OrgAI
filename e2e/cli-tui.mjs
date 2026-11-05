@@ -36,7 +36,7 @@
 import { spawn } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { APP_DIR, DATA_DIR, check, finish, log, makeFixtureRepo, removeFixture, sleep } from './lib.mjs'
+import { APP_DIR, DATA_DIR, allowFullTerminalAccess, check, finish, log, makeFixtureRepo, removeFixture, sleep } from './lib.mjs'
 import { probePty, spawnTui } from './ptyDriver.mjs'
 
 const CLI = path.join(APP_DIR, 'out', 'cli', 'orgai.mjs')
@@ -340,6 +340,8 @@ try {
   }
 
   // ---------- f, g: a daemon host ----------
+  // `--host daemon` TUIs are other processes: answering cards needs Terminal access 'full' (review H2).
+  allowFullTerminalAccess()
   daemon = start(['--host', 'inproc', 'daemon', 'start', '--foreground'], { cwd: repo, env: baseEnv(SCRIPTS.cards) })
   await until('the inproc daemon to be ready', () => json(fs.existsSync(DAEMON_JSON) ? fs.readFileSync(DAEMON_JSON, 'utf8') : '')?.state === 'ready', 60_000)
   {

@@ -175,6 +175,12 @@ export interface InprocHostHandle {
   stop(force: boolean): Promise<void>
   /** Resolves once the host drained and released the data dir. */
   readonly closed: Promise<void>
+  /**
+   * The host's in-memory owner key and instance id (inprocHost.ts): CliContext.connect proves with them that it is the
+   * process that started the host, which alone gets decide / configure past Terminal access (review H2). Never on disk.
+   */
+  readonly ownerKey?: string
+  readonly hostInstanceId?: string
 }
 
 /** Everything a command may use. Built once per process by index.ts; tests build fakes. */

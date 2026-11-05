@@ -354,8 +354,10 @@ describe('bootOrgAIHost', () => {
     }
   })
 
-  it('an in-process host always grants full; a choice made during a headless session wins at once', () => {
+  it('an in-process host follows the stored level like any host (its own CLI proves itself with the owner key); a choice made during a headless session wins at once', () => {
     const inproc = boot({ hostKind: 'inproc' })
+    expect(inproc.terminalAccess()).toEqual({ enabled: true, level: 'operate' })
+    inproc.settings.set({ ...inproc.settings.get(), terminalAccessLevel: 'full' })
     expect(inproc.terminalAccess()).toEqual({ enabled: true, level: 'full' })
     inproc.dispose()
     const headless = boot({ hostKind: 'headless-host' })

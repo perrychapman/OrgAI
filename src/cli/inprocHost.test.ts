@@ -1,10 +1,12 @@
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { LITELLM_KEY, READ_ONLY_SECRETS_MESSAGE, type SecretStore } from '../main/store/secrets'
+import { connectHost } from './client/hostClient'
 import { inprocCliRoots, startInprocHost, type InprocHost } from './inprocHost'
 import { CliError } from './types'
+import { CLI_VERSION } from './version'
 
 let userDataDir: string
 let dataDir: string
@@ -32,13 +34,41 @@ describe('startInprocHost', () => {
     const h = await start(new Map([[LITELLM_KEY, 'sk-overlay']]))
     const daemon = JSON.parse(readFileSync(join(dataDir, 'run', 'daemon.json'), 'utf8')) as Record<string, unknown>
     expect(daemon).toMatchObject({ hostKind: 'inproc', state: 'ready', pid: process.pid })
-    // For this session only (never saved), with every scope: the CLI process owns this host.
+    // For this session only (never saved). The level is the stored one like on any host: only the CLI process that
+    // started the host gets every scope, through its in-memory owner key (review H2).
     expect(h.host.settings.get().terminalServer).toBe(false)
-    expect(h.host.terminalAccess()).toEqual({ enabled: true, level: 'full' })
+    expect(h.host.terminalAccess()).toEqual({ enabled: true, level: 'operate' })
     expect(h.status()).toMatchObject({ hostKind: 'inproc', state: 'ready', mock: true, dataDir })
     const secrets = secretsOf(h)
     expect(secrets.get(LITELLM_KEY)).toBe('sk-overlay')
     expect(() => secrets.set(LITELLM_KEY, 'other')).toThrow(READ_ONLY_SECRETS_MESSAGE)
+  })
+
+  it('grants decide and configure over its socket only to the hello proven with its in-memory owner key (review H2)', async () => {
+    const h = await start()
+    expect(h.ownerKey).toMatch(/^[0-9a-f]{64}$/)
+    expect(h.hostInstanceId).toBe(JSON.parse(readFileSync(join(dataDir, 'run', 'daemon.json'), 'utf8')).hostInstanceId)
+    // The key is never written to the run folder.
+    for (const f of readdirSync(join(dataDir, 'run'))) {
+      const p = join(dataDir, 'run', f)
+      if (statSync(p).isFile()) expect(readFileSync(p, 'utf8'), f).not.toContain(h.ownerKey!)
+    }
+    const all = ['read', 'operate', 'decide', 'configure'] as const
+    const base = { dataDir, scopes: [...all], clientVersion: CLI_VERSION, cwd: userDataDir, pid: process.pid }
+    // Another process that read daemon.secret (an agent's shell): capped at the stored level, 'operate'.
+    const other = await connectHost(base)
+    if (!other.ok) throw new Error(other.message)
+    expect(other.client.hello.grantedScopes).toEqual(['read', 'operate'])
+    other.client.close()
+    // The owner key only counts for the host it belongs to.
+    const wrongHost = await connectHost({ ...base, ownerKey: h.ownerKey!, ownerHostInstanceId: 'ffffffffffff' })
+    if (!wrongHost.ok) throw new Error(wrongHost.message)
+    expect(wrongHost.client.hello.grantedScopes).toEqual(['read', 'operate'])
+    wrongHost.client.close()
+    const owner = await connectHost({ ...base, ownerKey: h.ownerKey!, ownerHostInstanceId: h.hostInstanceId! })
+    if (!owner.ok) throw new Error(owner.message)
+    expect(owner.client.hello.grantedScopes).toEqual([...all])
+    owner.client.close()
   })
 
   it('a second host on the same data dir is refused with exit 6', async () => {

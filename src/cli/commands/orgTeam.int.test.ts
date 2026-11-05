@@ -7,6 +7,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { allowFullTerminalAccess } from '../testing/terminalAccess'
 import type { Project } from '../../shared/types'
 import { connectHost } from '../client/hostClient'
 import { main } from '../index'
@@ -26,6 +27,8 @@ beforeAll(async () => {
   dataDir = join(userDataDir, 'data')
   projectDir = join(userDataDir, 'repo')
   mkdirSync(projectDir)
+  // Clients of this host other than its starting context have no owner key: allow them decide / configure (review H2).
+  allowFullTerminalAccess(join(userDataDir, 'data'))
   host = await startInprocHost({ userDataDir, dataDir, env: { ...env }, mock: true, overlay: new Map(), logging: false, startBackground: false })
   const res = await connectHost({ dataDir, scopes: ['read', 'configure'], clientVersion: CLI_VERSION, cwd: userDataDir, pid: process.pid })
   if (!res.ok) throw new Error(res.message)

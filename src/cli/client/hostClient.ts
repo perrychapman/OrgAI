@@ -29,6 +29,7 @@ import {
   isNotification,
   isResponse,
   newNonce,
+  ownerProof,
   parseFrame,
   proofMatches,
   readDaemonSecret,
@@ -67,6 +68,13 @@ export interface ConnectHostOptions {
   platform?: NodeJS.Platform
   /** Default call timeout of the returned client. Default 30000. */
   callTimeoutMs?: number
+  /**
+   * The in-memory owner key of the `--host inproc` host this process started (InprocHostHandle.ownerKey): the hello
+   * then carries an ownerProof, the only way to get decide / configure from an in-process host past its Terminal
+   * access level. Sent only to a host whose hostInstanceId equals `ownerHostInstanceId`.
+   */
+  ownerKey?: string
+  ownerHostInstanceId?: string
 }
 
 const CHALLENGE_TIMEOUT_MS = 2000
@@ -273,6 +281,9 @@ async function attemptOnce(opts: ConnectHostOptions, daemon: DaemonInfo, isLive:
   const params: RpcHelloParams = {
     ...base,
     clientProof: clientProof(secret, { ...base, hostInstanceId: daemon.hostInstanceId, hostNonce })
+  }
+  if (opts.ownerKey && opts.ownerHostInstanceId === daemon.hostInstanceId) {
+    params.ownerProof = ownerProof(opts.ownerKey, { hostInstanceId: daemon.hostInstanceId, hostNonce, clientNonce, clientProof: params.clientProof })
   }
   try {
     socket.write(encodeFrame(rpcRequest(HELLO_REQUEST_ID, 'host.hello', params as unknown as Record<string, unknown>)))

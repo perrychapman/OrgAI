@@ -488,7 +488,7 @@ export interface RunOverrides {
   - `overrideMode === 'default'` and `projectMode` is `'acceptEdits' | 'auto' | 'bypassPermissions'` (never from `'dontAsk'`: "never ask" denies what `'default'` would ask about, and an `operate` client could answer those cards itself; review M1), OR
   - `overrideMode === 'acceptEdits'` and `projectMode` is `'auto' | 'bypassPermissions'`, OR
   - `overrideMode === 'auto'` and `projectMode === 'bypassPermissions'`.
-  - Any widening override (`permissionMode` outside the matrix above, `autoContinue: true` when project is `false`, `maxAutoContinues > project.maxAutoContinues`, `maxBudgetUsd > project.maxBudgetUsd`, or `allowUnpricedBudget: true` when the project enforces a budget) requires `'configure'` scope (granted only when Terminal access is `'full'`, or by a `--host inproc` host, which belongs to the CLI process).
+  - Any widening override (`permissionMode` outside the matrix above, `autoContinue: true` when project is `false`, `maxAutoContinues > project.maxAutoContinues`, `maxBudgetUsd > project.maxBudgetUsd`, or `allowUnpricedBudget: true` when the project enforces a budget) requires `'configure'` scope (granted only when Terminal access is `'full'`, or to the CLI process that started a `--host inproc` host, proven by its in-memory owner key).
 - **Conservative Question Policy (`question: 'conservative'`)**:
   - Default `HeadlessDecisionPolicy.question` is `'fail'`. When `'conservative'` is explicitly requested (`--on-question conservative`), `RunManager` answers every question with no option selected and the fixed text `HEADLESS_CONSERVATIVE_ANSWER` (decisionPolicy.ts `conservativeAnswer`: nobody can answer, no option was chosen, take the most cautious path that needs no decision or stop and say what is needed), also on cards that do not allow free text. The options (label, description, a `(Recommended)` mark, `isDefault`) are agent-authored, so they are never followed (PR #18 review Low; earlier drafts picked the `(Recommended)` option).
 - **Preservation Across Initial `ctx` Construction, `setLive`, `continueRun`, and `autoResume`**:
@@ -789,7 +789,10 @@ Resolved `R1`–`R10` (single-host daemon vs Desktop ownership, socket authentic
     none (`readControlProtectedPaths`, all three adapters; logged once). RunManager passes the source only when it has
     `controlProtectedPaths` or a data dir.
   - PR #18 review M3 (false positives): Bash here-documents whose body is only data (`stripDataHeredocs`: a data-sink
-    program such as cat / tee, `git commit -F -`, or `cat` inside a `git` / `gh` message substitution; a quoted
+    program such as cat / tee (never jq, whose program can come from stdin and import files), `git commit -F -` with the
+    message subcommand in git's or gh's subcommand position (after `git` only `-C <dir>` / `--no-pager` may precede
+    it), or `cat` inside a `git` / `gh` message substitution; no word such as `--files0-from`, `--pathspec-from-file`
+    or `--stdin-paths` that makes stdin name files; a quoted
     delimiter or a body with no `$(` / backtick; no pipe on the operator's line; nothing in the rest of the command
     runs code, eval, xargs or parallel) are left out of the scan; anything the parser is unsure of (arithmetic `((`,
     backticks, `$'...'`, `case`, a continued or unterminated body) is scanned whole as before. A pipe into an
@@ -1084,8 +1087,15 @@ Resolved `R1`–`R10` (single-host daemon vs Desktop ownership, socket authentic
   channels answer `scope_denied` with "Terminal access lets terminal clients watch and run work only. To answer
   decisions or change settings from a terminal, allow it in OrgAI: App settings > General > Advanced settings >
   Terminal access." `host.stop` stays callable by a client that asked for `configure` (`orgai daemon stop`): it does
-  nothing a same-user `kill` of the pid in daemon.json could not. A `--host inproc` host always grants full (the CLI
-  process owns it). Lowering the level closes the sockets that hold scopes it no longer allows. The level is raised
+  nothing a same-user `kill` of the pid in daemon.json could not. A `--host inproc` host caps its socket clients the same
+  way; only the CLI process that started it gets every scope, by adding `ownerProof` to its hello: an HMAC with a
+  32-byte key the host keeps in memory (`HostSocketServerOptions.ownerKey`, never in daemon.json, daemon.secret or a log)
+  over the hostInstanceId, both nonces and the clientProof (protocol.ts `ownerProof`; `CliContext.connect` adds it once
+  `startInproc` resolved, only for that host's instance id). A process that read daemon.secret (an agent shell under
+  Codex danger-full-access, say) is therefore capped by the stored level on an in-process host too (review H2
+  follow-up). A long-lived `daemon start --host inproc` serves other CLI processes, so `decide` / `configure` from them
+  need the stored level `'full'` (App settings, or `"terminalAccessLevel": "full"` in settings.json; the e2e and
+  integration tests write it). The owner is never closed when the level is lowered. Lowering the level closes the sockets that hold scopes it no longer allows. The level is raised
   only in the desktop window: `settings:set` needs `configure`, which a socket client holds only when the level is
   already `'full'`, so the socket can lower it but never raise it. The App settings control for it and its wording
   ("any program you run, agent shells included, can then control OrgAI") are the desktop part of this fix (group C).

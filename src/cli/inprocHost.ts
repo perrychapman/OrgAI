@@ -1,16 +1,18 @@
 /**
  * `--host inproc` (cli-spec 3.2(1), 3.5): a pure-Node OrgAI host inside the CLI process. Same ownership protocol as
  * the Electron host (refuses with exit 6 when another host owns the data dir), its own per-instance socket so
- * `orgai watch` and later `orgai decide` can attach, and a read-only SecretStore with the CLI's environment overlay
- * (no safeStorage outside Electron: stored secrets cannot be decrypted and nothing is ever saved). There is no desktop,
- * so window:openRun answers desktop_unavailable. Always loaded through a dynamic import (its own chunk,
- * out/cli/inprocHost.mjs). Electron-free; relative imports only.
+ * `orgai watch` and later `orgai decide` can attach (capped by the stored Terminal access level like on any host;
+ * only this process gets every scope, through the in-memory `ownerKey`, review H2), and a read-only SecretStore with
+ * the CLI's environment overlay (no safeStorage outside Electron: stored secrets cannot be decrypted and nothing is
+ * ever saved). There is no desktop, so window:openRun answers desktop_unavailable. Always loaded through a dynamic
+ * import (its own chunk, out/cli/inprocHost.mjs). Electron-free; relative imports only.
  */
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { bootOrgAIHost, type OrgAIHost } from '../main/host/bootstrap'
 import { currentHostInstanceId } from '../main/host/identity'
 import { HostOwnershipError, acquireHostOwnership, type HostOwnership } from '../main/host/ownership'
+import { newNonce } from '../main/host/protocol'
 import { HostSocketServer } from '../main/host/socketServer'
 import { installLogging, log } from '../main/log'
 import { stopSystemCertRead, trustSystemCertificates } from '../main/systemCerts'
@@ -104,7 +106,18 @@ export async function startInprocHost(opts: StartInprocHostOptions): Promise<Inp
   if (opts.logging !== false) installLogging({ userDataDir, logsDir, appVersion: CLI_VERSION, isPackaged: false })
   if (opts.quiet) quietConsole()
   const hostInstanceId = currentHostInstanceId()
-  const server = new HostSocketServer({ dataDir, hostKind: 'inproc', hostInstanceId, appVersion: CLI_VERSION, mock: opts.mock, ...(opts.log ? { log: opts.log } : {}) })
+  // In memory only (never daemon.json, daemon.secret or a log): this process's proof that it started the host, so its
+  // own commands get every scope while any other client of the socket stays capped by Terminal access (review H2).
+  const ownerKey = newNonce()
+  const server = new HostSocketServer({
+    dataDir,
+    hostKind: 'inproc',
+    hostInstanceId,
+    appVersion: CLI_VERSION,
+    mock: opts.mock,
+    ownerKey,
+    ...(opts.log ? { log: opts.log } : {})
+  })
 
   let ownership: HostOwnership
   try {
@@ -180,6 +193,8 @@ export async function startInprocHost(opts: StartInprocHostOptions): Promise<Inp
     server,
     ownership,
     closed,
+    ownerKey,
+    hostInstanceId,
     status: () => booted.hostControl.status(),
     async stop(force: boolean): Promise<void> {
       if (cleaned) return closed
