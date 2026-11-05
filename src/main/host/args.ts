@@ -31,6 +31,7 @@ import type {
   PermissionDecision,
   PermissionRuleDecision,
   QuestionAnswer,
+  ContinueRunInput,
   SendRunInput,
   StartRunInput,
   McpLibrarySecretInput,
@@ -45,6 +46,7 @@ import type {
   ProposalDecision,
   QuickRunInput,
   QuickRunPromoteInput,
+  RunOverrides,
   RunSummary,
   TeamDismissInput,
   TeamRestoreInput,
@@ -64,6 +66,7 @@ import { hiddenCharIn } from '../capabilities/sanitize'
 import { harnessProject as buildHarnessProject } from '../mcp/assist'
 import { scratchDirFor, validateQuickFolder } from '../quick/scratch'
 import { sanitizeImages } from '../runtime/attachments'
+import { runOverridesArgs } from '../runtime/runOverrides'
 import { allowRuleRefusal, ruleSaveRefusal } from '../runtime/permissionRules'
 import { isValidRule } from '../runtime/ruleMatch'
 import { knowledgeNodeCount } from '../store/knowledge'
@@ -135,6 +138,10 @@ export const quickArgs = {
       out.folder = i.folder
     }
     if (images.length) out.images = images
+    // Headless exec overrides (cli-spec 6.2(1)), strictly: a bad value is refused as bad_request. The dispatcher drops
+    // them on the desktop surface and checks the scope on the others.
+    const overrides = runOverridesArgs(i.overrides)
+    if (overrides) out.overrides = overrides
     return out
   },
   promote(input: unknown): QuickRunPromoteInput {
@@ -777,7 +784,7 @@ const PROPOSAL_SECRET_VALUE_MAX = 4000
  * (keys at most 300 chars, values at most 4,000); revise: `feedback` text; decline: optional `note` text (both at
  * most PROPOSAL_NOTE_MAX_CHARS). Every other field is dropped and a wrong shape is refused. Exported for tests.
  */
-export function proposalDecideArgs(input: unknown): { runId: string; proposalId: string; decision: ProposalDecision } {
+export function proposalDecideArgs(input: unknown): { runId: string; proposalId: string; decision: ProposalDecision } & ExpectedRevision {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Unknown proposal decision.')
   const i = input as Record<string, unknown>
   if (typeof i.runId !== 'string' || !i.runId || i.runId.length > 200) throw new Error('Unknown run.')
@@ -790,7 +797,7 @@ export function proposalDecideArgs(input: unknown): { runId: string; proposalId:
     if (v.length > PROPOSAL_NOTE_MAX_CHARS) throw new Error(`The ${what} is too long (at most ${PROPOSAL_NOTE_MAX_CHARS} characters).`)
     return v
   }
-  const head = { runId: i.runId, proposalId: i.proposalId }
+  const head = { runId: i.runId, proposalId: i.proposalId, ...expectedRevisionArg(i) }
   if (dec.behavior === 'approve') {
     if (dec.secrets === undefined) return { ...head, decision: { behavior: 'approve' } }
     if (!dec.secrets || typeof dec.secrets !== 'object' || Array.isArray(dec.secrets)) throw new Error('Secrets must be name-value pairs.')
@@ -820,6 +827,22 @@ export function proposalDecideArgs(input: unknown): { runId: string; proposalId:
 /** A refusal of a malformed input: the dispatcher's invokeRpc reports it as `bad_request`. */
 export function badInput(message: string): Error {
   return Object.assign(new Error(message), { code: 'bad_request' })
+}
+
+/** The optional card revision a decision is bound to (cli-spec 5.3(2)); RunManager answers 'stale-revision' on a mismatch. */
+export interface ExpectedRevision {
+  expectedRevision?: number
+}
+
+/**
+ * A decision input's `expectedRevision`: absent when undefined or null, else a non-negative safe integer (anything
+ * else is refused as bad_request). Returned as a spreadable object so an absent revision adds no key.
+ */
+export function expectedRevisionArg(i: Record<string, unknown>): ExpectedRevision {
+  const v = i.expectedRevision
+  if (v === undefined || v === null) return {}
+  if (typeof v !== 'number' || !Number.isSafeInteger(v) || v < 0) throw badInput('expectedRevision must be a whole number >= 0.')
+  return { expectedRevision: v }
 }
 
 /** Longest free text on a decision (a deny message, a question note, an install note). */
@@ -859,9 +882,9 @@ function cardInput(input: unknown, what: string): { i: Record<string, unknown>; 
 }
 
 /** runs:decide: { runId, requestId, decision: PermissionDecision }, rebuilt; extra fields dropped. */
-export function permissionDecideArgs(input: unknown): { runId: string; requestId: string; decision: PermissionDecision } {
+export function permissionDecideArgs(input: unknown): { runId: string; requestId: string; decision: PermissionDecision } & ExpectedRevision {
   const { i, decision: d } = cardInput(input, 'permission decision')
-  const head = { runId: refField(i, 'runId', 'run'), requestId: refField(i, 'requestId', 'permission request') }
+  const head = { runId: refField(i, 'runId', 'run'), requestId: refField(i, 'requestId', 'permission request'), ...expectedRevisionArg(i) }
   if (d.behavior === 'allow') {
     if (d.scope === undefined || d.scope === null) return { ...head, decision: { behavior: 'allow' } }
     if (d.scope !== 'once' && d.scope !== 'session' && d.scope !== 'project') throw badInput('Unknown permission scope.')
@@ -876,9 +899,9 @@ export function permissionDecideArgs(input: unknown): { runId: string; requestId
 }
 
 /** permissions:decideRequest: { runId, requestId, decision: PermissionRuleDecision }, rebuilt. */
-export function ruleDecideArgs(input: unknown): { runId: string; requestId: string; decision: PermissionRuleDecision } {
+export function ruleDecideArgs(input: unknown): { runId: string; requestId: string; decision: PermissionRuleDecision } & ExpectedRevision {
   const { i, decision: d } = cardInput(input, 'rule decision')
-  const head = { runId: refField(i, 'runId', 'run'), requestId: refField(i, 'requestId', 'rule request') }
+  const head = { runId: refField(i, 'runId', 'run'), requestId: refField(i, 'requestId', 'rule request'), ...expectedRevisionArg(i) }
   if (d.behavior === 'grant') {
     if (d.scope !== 'run' && d.scope !== 'project') throw badInput('Unknown grant scope.')
     return { ...head, decision: { behavior: 'grant', scope: d.scope } }
@@ -891,18 +914,18 @@ export function ruleDecideArgs(input: unknown): { runId: string; requestId: stri
 }
 
 /** merges:decide: { runId, reviewId, decision: MergeDecision }, rebuilt. */
-export function mergeDecideArgs(input: unknown): { runId: string; reviewId: string; decision: MergeDecision } {
+export function mergeDecideArgs(input: unknown): { runId: string; reviewId: string; decision: MergeDecision } & ExpectedRevision {
   const { i, decision: d } = cardInput(input, 'merge decision')
-  const head = { runId: refField(i, 'runId', 'run'), reviewId: refField(i, 'reviewId', 'merge review') }
+  const head = { runId: refField(i, 'runId', 'run'), reviewId: refField(i, 'reviewId', 'merge review'), ...expectedRevisionArg(i) }
   if (d.behavior === 'merge' || d.behavior === 'discard' || d.behavior === 'hold') return { ...head, decision: { behavior: d.behavior } }
   throw badInput('Unknown merge decision.')
 }
 
 /** setup:answer: { runId, questionId, answer: QuestionAnswer }, rebuilt (RunManager keeps only the offered labels). */
-export function questionAnswerArgs(input: unknown): { runId: string; questionId: string; answer: QuestionAnswer } {
+export function questionAnswerArgs(input: unknown): { runId: string; questionId: string; answer: QuestionAnswer } & ExpectedRevision {
   if (!isPlain(input) || !isPlain(input.answer)) throw badInput('Unknown answer.')
   const a = input.answer
-  const head = { runId: refField(input, 'runId', 'run'), questionId: refField(input, 'questionId', 'question') }
+  const head = { runId: refField(input, 'runId', 'run'), questionId: refField(input, 'questionId', 'question'), ...expectedRevisionArg(input) }
   if (!Array.isArray(a.selected)) throw badInput('The answer must list the chosen options.')
   if (a.selected.length > QUESTION_SELECTED_MAX) throw badInput(`At most ${QUESTION_SELECTED_MAX} options.`)
   if (!a.selected.every((l) => typeof l === 'string')) throw badInput('Every chosen option must be text.')
@@ -914,9 +937,9 @@ export function questionAnswerArgs(input: unknown): { runId: string; questionId:
  * mcp:answerInstall: { runId, requestId, decision: McpInstallDecision }, rebuilt by type. RunManager.settleInstall
  * still decides what an approval may change (the edited spec is allowlisted onto the request there).
  */
-export function installAnswerArgs(input: unknown): McpAnswerInstallInput {
+export function installAnswerArgs(input: unknown): McpAnswerInstallInput & ExpectedRevision {
   const { i, decision: d } = cardInput(input, 'install answer')
-  const head = { runId: refField(i, 'runId', 'run'), requestId: refField(i, 'requestId', 'install request') }
+  const head = { runId: refField(i, 'runId', 'run'), requestId: refField(i, 'requestId', 'install request'), ...expectedRevisionArg(i) }
   if (typeof d.approved !== 'boolean') throw badInput('An install answer must say whether it is approved.')
   let scope: McpInstallDecision['scope'] = 'run'
   if (d.scope !== undefined && d.scope !== null) {
@@ -961,19 +984,34 @@ export function startRunArgs(input: unknown): StartRunInput {
   if (!isValidId(input.projectId)) throw badInput('Project not found')
   const { text, images } = messageParts(input.prompt, input.images, 'prompt')
   if (input.scaffold !== undefined && input.scaffold !== null && typeof input.scaffold !== 'boolean') throw badInput('scaffold must be true or false.')
+  const overrides: RunOverrides | undefined = runOverridesArgs(input.overrides)
   return {
     projectId: input.projectId,
     prompt: text,
     ...(input.scaffold === true ? { scaffold: true } : {}),
     ...(images ? { images } : {}),
-    ...(input.team === 'single' ? { team: 'single' as const } : {})
+    ...(input.team === 'single' ? { team: 'single' as const } : {}),
+    ...(overrides ? { overrides } : {})
   }
 }
 
-/** runs:send / runs:continue: { runId, text, images? }, rebuilt. */
+/** runs:send: { runId, text, images? }, rebuilt; every other field (overrides, exec included) is dropped. */
 export function runMessageArgs(input: unknown): SendRunInput {
   if (!isPlain(input)) throw badInput('Unknown run message.')
   const runId = refField(input, 'runId', 'run')
   const { text, images } = messageParts(input.text, input.images, 'message')
   return { runId, text, ...(images ? { images } : {}) }
+}
+
+/**
+ * runs:continue: runMessageArgs plus the headless fields (cli-spec 6.2(1)): `overrides` strictly through
+ * runOverridesArgs and `exec` only as a literal boolean (anything else but undefined / null is bad_request). The
+ * dispatcher drops both on the desktop surface.
+ */
+export function continueRunArgs(input: unknown): ContinueRunInput {
+  const base = runMessageArgs(input)
+  const i = input as Record<string, unknown>
+  const overrides = runOverridesArgs(i.overrides)
+  if (i.exec !== undefined && i.exec !== null && typeof i.exec !== 'boolean') throw badInput('exec must be true or false.')
+  return { ...base, ...(overrides ? { overrides } : {}), ...(typeof i.exec === 'boolean' ? { exec: i.exec } : {}) }
 }
