@@ -1,10 +1,8 @@
 import { exec, execFile } from 'node:child_process'
-import { existsSync, realpathSync } from 'node:fs'
-import { createRequire } from 'node:module'
-import { homedir, tmpdir } from 'node:os'
-import { dirname, join, posix, win32 } from 'node:path'
+import { tmpdir } from 'node:os'
 import type { ConnectionStatus, ProviderAuth } from '@shared/types'
 import { isolateClaudeEnv } from '../runtime/childEnv'
+import { claudeExecutable, claudeResolutionMessage, type ClaudeExecutableResolution } from '../runtime/claudeBinary'
 
 export type ClaudeAuthStatus = {
   loggedIn: boolean
@@ -35,8 +33,10 @@ export type RunCli = (bin: string, args: string[], opts: { shell: boolean; env: 
 
 export interface AuthStatusDeps {
   run?: RunCli
-  /** Candidate list override (tests). Default: the bundled CLI, then the PATH candidates. */
+  /** Candidate list override (tests). Default: the one binary claudeExecutable resolves (the one runs use). */
   candidates?: () => Promise<{ bin: string; shell: boolean }[]>
+  /** The resolver (tests). Default: claudeBinary.ts claudeExecutable over `env`. */
+  executable?: () => ClaudeExecutableResolution
   env?: NodeJS.ProcessEnv
   cwd?: string
 }
@@ -61,19 +61,6 @@ export const defaultRunCli: RunCli = (bin, args, opts) =>
     }
   })
 
-/** The CLI the SDK runs use, shipped beside the SDK. Dev and packaged (app.asar.unpacked). Existing files only. */
-export function bundledClaudeBinary(): string | undefined {
-  try {
-    const req = createRequire(import.meta.url)
-    const pkgJson = req.resolve(`@anthropic-ai/claude-agent-sdk-${process.platform}-${process.arch}/package.json`)
-    const dir = dirname(pkgJson).replace(/app\.asar(?!\.unpacked)/, 'app.asar.unpacked')
-    const bin = join(dir, process.platform === 'win32' ? 'claude.exe' : 'claude')
-    return existsSync(bin) ? bin : undefined
-  } catch {
-    return undefined
-  }
-}
-
 /** Characters cmd.exe would still interpret inside double quotes, plus other metacharacters. Parentheses stay allowed ("Program Files (x86)"). */
 const SHELL_UNSAFE = /["%!&|<>^`$;\r\n]/
 
@@ -87,21 +74,23 @@ export function candidateLaunch(bin: string, platform: NodeJS.Platform = process
   return SHELL_UNSAFE.test(bin) ? null : { bin, shell: true }
 }
 
-async function defaultCandidates(): Promise<{ bin: string; shell: boolean }[]> {
-  const bundled = bundledClaudeBinary()
-  const path = await listClaudeBinaries()
-  const rest = path.filter((p) => p !== bundled).map((p) => candidateLaunch(p)).filter((c): c is { bin: string; shell: boolean } => !!c)
-  return [...(bundled ? [{ bin: bundled, shell: false }] : []), ...rest]
-}
-
 /**
- * Whether OrgAI runs can authenticate with the Anthropic connection. Token-free (`claude auth status`). The bundled
- * CLI (the one runs use) is tried first, then the PATH candidates; the first that answers wins. The CLI runs with
- * user settings excluded and an isolated env, in a temp dir (never the home dir: its .claude/settings.json would
- * load as project settings), so a login or gateway that only lives in ~/.claude/settings.json does not count.
+ * Whether OrgAI runs can authenticate with the Anthropic connection. Token-free (`claude auth status`), with the one
+ * binary claudeBinary.ts resolves, so the probe and runs never disagree (cli-standalone 6.1). A claude on PATH is only
+ * named in the error, never run. The CLI runs with user settings excluded and an isolated env, in a temp dir (never
+ * the home dir: its .claude/settings.json would load as project settings), so a login or gateway that only lives in
+ * ~/.claude/settings.json does not count.
  */
 export async function claudeAuthStatus(deps: AuthStatusDeps = {}): Promise<ClaudeAuthStatus> {
-  const candidates = await (deps.candidates ?? defaultCandidates)()
+  let candidates: { bin: string; shell: boolean }[]
+  if (deps.candidates) candidates = await deps.candidates()
+  else {
+    const resolved = deps.executable ? deps.executable() : claudeExecutable(deps.env ?? process.env)
+    if (!resolved.ok) return { loggedIn: false, unavailable: true, detail: claudeResolutionMessage(resolved) }
+    const launch = candidateLaunch(resolved.path)
+    if (!launch) return { loggedIn: false, unavailable: true, detail: `The Claude runtime at ${resolved.path} cannot be run safely (its path holds shell characters).` }
+    candidates = [launch]
+  }
   for (const c of candidates) {
     const result = await runAuthStatus(c.bin, { ...deps, shell: c.shell })
     if (result) return result
@@ -109,7 +98,9 @@ export async function claudeAuthStatus(deps: AuthStatusDeps = {}): Promise<Claud
   return {
     loggedIn: false,
     unavailable: true,
-    detail: `Claude Code CLI not found (looked in ${claudeLookupLocations().join(', ')}). Install it and run claude /login, set an API key, or choose another default connection.`
+    detail: candidates.length
+      ? `The Claude runtime at ${candidates.map((c) => c.bin).join(', ')} gave no answer to auth status. Try again, set an API key, or choose another default connection.`
+      : 'No Claude runtime was found. Set an API key, or choose another default connection.'
   }
 }
 
@@ -122,95 +113,17 @@ export async function anthropicStatus(
   const checkedAt = Date.now()
   if (auth.kind === 'apiKey') {
     const set = !!env[auth.envVar]?.trim()
-    return set
-      ? { state: 'connected', detail: `Using ${auth.envVar}`, checkedAt }
-      : { state: 'disconnected', detail: `${auth.envVar} is not set in OrgAI's environment`, checkedAt }
+    if (!set) return { state: 'disconnected', detail: `${auth.envVar} is not set in OrgAI's environment`, checkedAt }
+    // An API key still runs through the Claude runtime: without one, runs fail, so the probe says so too (6.1).
+    const resolved = deps.executable ? deps.executable() : claudeExecutable(deps.env ?? env)
+    if (!resolved.ok) return { state: 'error', detail: claudeResolutionMessage(resolved), checkedAt }
+    return { state: 'connected', detail: `Using ${auth.envVar}`, checkedAt }
   }
   const s = await claudeAuthStatus(deps)
   if (s.loggedIn) return { state: 'connected', detail: s.detail ?? s.method ?? 'Claude Code login', checkedAt }
   // No CLI answered (missing, timed out, no JSON): not a definite logout, so never 'disconnected' (it would move an
   // automatic default connection away).
   return { state: s.unavailable ? 'error' : 'disconnected', detail: s.detail ?? NOT_LOGGED_IN, checkedAt }
-}
-
-/**
- * Where the Claude Code CLI usually lives on macOS and Linux when it is not on the PATH a GUI app inherits:
- * the native installer (~/.claude/local, ~/.local/bin) and Homebrew (Apple silicon, Intel). Existing files only.
- */
-export function claudeCandidatePaths(
-  platform: NodeJS.Platform = process.platform,
-  home: string = homedir(),
-  exists: (p: string) => boolean = existsSync
-): string[] {
-  if (platform === 'win32') return []
-  const paths = [join(home, '.claude', 'local', 'claude'), join(home, '.local', 'bin', 'claude'), '/opt/homebrew/bin/claude', '/usr/local/bin/claude']
-  return paths.filter((p) => {
-    try {
-      return exists(p)
-    } catch {
-      return false
-    }
-  })
-}
-
-/**
- * Drop entries that resolve to a file already listed (Homebrew's /opt/homebrew/bin/claude symlink and its Cellar
- * target, ~/.local/bin/claude and ~/.claude/local/claude). The first spelling wins; unresolvable paths stay as given.
- */
-export function dedupeByRealpath(paths: string[], realpath: (p: string) => string = (p) => realpathSync.native(p)): string[] {
-  const seen = new Set<string>()
-  const out: string[] = []
-  for (const p of paths) {
-    let key = p
-    try {
-      key = realpath(p)
-    } catch {
-      /* not a file path (bare "claude") or gone: compare as given */
-    }
-    if (seen.has(key)) continue
-    seen.add(key)
-    out.push(p)
-  }
-  return out
-}
-
-/** Absolute paths from `where` / `which -a` output, one per line. A relative answer is never trusted. */
-export function parseWhichOutput(stdout: string, platform: NodeJS.Platform = process.platform): string[] {
-  const absolute = platform === 'win32' ? win32.isAbsolute : posix.isAbsolute
-  return stdout.split(/\r?\n/).map((l) => l.trim()).filter((l) => l && absolute(l))
-}
-
-/** Runs the PATH lookup without a shell (`where claude` / `which -a claude`); '' when it fails. */
-export type WhichRunner = (cmd: string, args: string[]) => Promise<string>
-
-const defaultWhich: WhichRunner = (cmd, args) =>
-  new Promise((resolve) => {
-    // Pass process.env explicitly: on macOS applyShellPath has already merged the login shell's PATH into it,
-    // which is what lets a Finder-launched app see Homebrew, nvm and ~/.local/bin.
-    // cwd is the temp dir, never the app's cwd: Windows resolves executables from the cwd first.
-    execFile(cmd, args, { timeout: 8000, windowsHide: true, env: process.env, cwd: tmpdir() }, (err, stdout) => resolve(err ? '' : String(stdout ?? '')))
-  })
-
-/** where.exe by absolute path, so a planted where.exe in the cwd is never run. */
-function whereExe(): string {
-  return join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'where.exe')
-}
-
-/**
- * The Claude Code CLIs on PATH plus the well-known install paths, as absolute paths only. Empty when none was
- * found: there is no bare 'claude' fallback, so nothing is ever resolved from the (temp) cwd.
- */
-export async function listClaudeBinaries(platform: NodeJS.Platform = process.platform, which: WhichRunner = defaultWhich): Promise<string[]> {
-  // `$PATH:claude` restricts where.exe to PATH (plain `where claude` searches the cwd first).
-  const out = platform === 'win32' ? await which(whereExe(), ['$PATH:claude']) : await which('which', ['-a', 'claude'])
-  return dedupeByRealpath([...new Set([...parseWhichOutput(out, platform), ...claudeCandidatePaths(platform)])])
-}
-
-/** Where the not-found message says OrgAI looked. */
-export function claudeLookupLocations(platform: NodeJS.Platform = process.platform, home: string = homedir()): string[] {
-  const always = ['the bundled CLI', 'PATH']
-  if (platform === 'win32') return always
-  return [...always, join(home, '.claude', 'local'), join(home, '.local', 'bin'), '/opt/homebrew/bin', '/usr/local/bin']
 }
 
 interface CliAuthJson {

@@ -1,6 +1,9 @@
-import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { anthropicStatus, candidateLaunch, claudeAuthStatus, claudeCandidatePaths, dedupeByRealpath, listClaudeBinaries, parseWhichOutput, runAuthStatus, type CliResult, type RunCli } from './anthropicAuth'
+import { anthropicStatus, candidateLaunch, claudeAuthStatus, runAuthStatus, type CliResult, type RunCli } from './anthropicAuth'
+import { claudeRuntimeMissingMessage, type ClaudeExecutableResolution } from '../runtime/claudeBinary'
+
+const found = (path = '/opt/orgai/claude'): (() => ClaudeExecutableResolution) => () => ({ ok: true, path, source: 'sdk' })
+const missing = (pathCandidate?: string): (() => ClaudeExecutableResolution) => () => ({ ok: false, reason: claudeRuntimeMissingMessage('linux', 'x64'), ...(pathCandidate ? { pathCandidate } : {}) })
 
 describe('candidateLaunch', () => {
   it('runs every non-shim candidate without a shell, metacharacters included', () => {
@@ -16,70 +19,51 @@ describe('candidateLaunch', () => {
   })
 })
 
-describe('listClaudeBinaries', () => {
-  it('runs where/which without a shell and keeps absolute paths only, with no bare fallback', async () => {
-    const calls: [string, string[]][] = []
-    const which = async (cmd: string, args: string[]): Promise<string> => {
-      calls.push([cmd, args])
-      return 'C:\\Users\\me\\AppData\\Roaming\\npm\\claude.cmd\r\nclaude.cmd\r\n.\\claude\r\n'
+describe('claudeAuthStatus with the resolver (cli-standalone 6.1)', () => {
+  it('runs auth status only on the resolved binary, never on a PATH claude', async () => {
+    const seen: string[] = []
+    const run: RunCli = async (bin) => {
+      seen.push(bin)
+      return { stdout: JSON.stringify({ loggedIn: true, authMethod: 'claude.ai' }), stderr: '', code: 0 }
     }
-    expect(await listClaudeBinaries('win32', which)).toEqual(['C:\\Users\\me\\AppData\\Roaming\\npm\\claude.cmd'])
-    expect(calls).toHaveLength(1)
-    expect(calls[0][0]).toMatch(/System32[\\/]where\.exe$/i)
-    expect(calls[0][1]).toEqual(['$PATH:claude'])
-    expect(await listClaudeBinaries('win32', async () => '')).toEqual([])
-  })
-  it('parses which -a output on POSIX', () => {
-    expect(parseWhichOutput('/usr/local/bin/claude\nclaude\n\n', 'darwin')).toEqual(['/usr/local/bin/claude'])
-  })
-  it('names the places it looked in the not-found message', async () => {
-    const none = await claudeAuthStatus({ candidates: async () => [], env: {} })
-    expect(none.detail).toMatch(/CLI not found \(looked in the bundled CLI, PATH/)
-  })
-})
-
-describe('claudeCandidatePaths', () => {
-  it('lists the native installer and Homebrew locations that exist on macOS', () => {
-    const home = '/Users/me'
-    const present = new Set([join(home, '.claude', 'local', 'claude'), '/opt/homebrew/bin/claude'])
-    expect(claudeCandidatePaths('darwin', home, (p) => present.has(p))).toEqual([join(home, '.claude', 'local', 'claude'), '/opt/homebrew/bin/claude'])
+    expect(await claudeAuthStatus({ run, executable: found('/opt/orgai/claude'), env: {} })).toMatchObject({ loggedIn: true })
+    expect(seen).toEqual(['/opt/orgai/claude'])
   })
 
-  it('is empty on Windows and survives a throwing exists()', () => {
-    expect(claudeCandidatePaths('win32', 'C:/Users/me', () => true)).toEqual([])
-    expect(
-      claudeCandidatePaths('linux', '/home/me', () => {
-        throw new Error('EACCES')
-      })
-    ).toEqual([])
+  it('without a runtime: unavailable, the resolver sentence, and a PATH claude only named', async () => {
+    const seen: string[] = []
+    const run: RunCli = async (bin) => {
+      seen.push(bin)
+      return { stdout: '{}', stderr: '', code: 0 }
+    }
+    const none = await claudeAuthStatus({ run, executable: missing('/usr/local/bin/claude'), env: {} })
+    expect(none).toMatchObject({ loggedIn: false, unavailable: true })
+    expect(none.detail).toBe(
+      'The Claude runtime for linux-x64 is not installed; reinstall orgai without --omit=optional, or set ORGAI_CLAUDE_PATH. A claude on PATH at /usr/local/bin/claude is not used; set ORGAI_CLAUDE_PATH to use it.'
+    )
+    expect(seen).toEqual([])
+    const st = await anthropicStatus({ kind: 'subscription' }, {}, { run, executable: missing(), env: {} })
+    expect(st.state).toBe('error')
+    expect(st.detail).toBe(claudeRuntimeMissingMessage('linux', 'x64'))
   })
-})
 
-describe('dedupeByRealpath', () => {
-  it('keeps the first spelling of paths that resolve to the same file', () => {
-    const links: Record<string, string> = {
-      '/opt/homebrew/bin/claude': '/opt/homebrew/Cellar/claude/1.0/bin/claude',
-      '/opt/homebrew/Cellar/claude/1.0/bin/claude': '/opt/homebrew/Cellar/claude/1.0/bin/claude',
-      '/Users/me/.local/bin/claude': '/Users/me/.claude/local/claude',
-      '/Users/me/.claude/local/claude': '/Users/me/.claude/local/claude'
-    }
-    const real = (p: string): string => {
-      if (!(p in links)) throw new Error('ENOENT')
-      return links[p]
-    }
-    expect(
-      dedupeByRealpath(
-        ['/opt/homebrew/bin/claude', '/Users/me/.local/bin/claude', '/opt/homebrew/Cellar/claude/1.0/bin/claude', '/Users/me/.claude/local/claude', 'claude'],
-        real
-      )
-    ).toEqual(['/opt/homebrew/bin/claude', '/Users/me/.local/bin/claude', 'claude'])
+  it('reads ORGAI_CLAUDE_PATH from the env it is given', async () => {
+    const st = await claudeAuthStatus({ env: { ORGAI_CLAUDE_PATH: 'relative/claude' }, run: async () => ({ stdout: '', stderr: '', code: 1 }) })
+    expect(st.unavailable).toBe(true)
+    expect(st.detail).toMatch(/^ORGAI_CLAUDE_PATH must be an absolute path/)
   })
 })
 
 describe('anthropicStatus (API key)', () => {
   it('is connected only when the env var is set', async () => {
-    expect((await anthropicStatus({ kind: 'apiKey', envVar: 'K' }, { K: 'x' })).state).toBe('connected')
-    expect((await anthropicStatus({ kind: 'apiKey', envVar: 'K' }, {})).state).toBe('disconnected')
+    expect((await anthropicStatus({ kind: 'apiKey', envVar: 'K' }, { K: 'x' }, { executable: found() })).state).toBe('connected')
+    expect((await anthropicStatus({ kind: 'apiKey', envVar: 'K' }, {}, { executable: found() })).state).toBe('disconnected')
+  })
+
+  it('is an error, never disconnected, when the Claude runtime is missing', async () => {
+    const st = await anthropicStatus({ kind: 'apiKey', envVar: 'K' }, { K: 'x' }, { executable: missing() })
+    expect(st.state).toBe('error')
+    expect(st.detail).toMatch(/Claude runtime for linux-x64 is not installed/)
   })
 })
 
@@ -150,7 +134,8 @@ describe('claudeAuthStatus', () => {
     expect(seen).toEqual(['a', 'b'])
     const none = await claudeAuthStatus({ run: async () => ({ stdout: '', stderr: '', code: 1 }), candidates, env: {} })
     expect(none.loggedIn).toBe(false)
-    expect(none.detail).toMatch(/CLI not found/)
+    expect(none.unavailable).toBe(true)
+    expect(none.detail).toMatch(/^The Claude runtime at a, b gave no answer to auth status/)
   })
 
   it('anthropicStatus uses the truthful detail', async () => {
@@ -161,9 +146,9 @@ describe('claudeAuthStatus', () => {
   })
 
   it('anthropicStatus reports a missing or timed-out CLI as error, never disconnected', async () => {
-    const missing = await anthropicStatus({ kind: 'subscription' }, {}, { candidates: async () => [], env: {} })
-    expect(missing.state).toBe('error')
-    expect(missing.detail).toMatch(/CLI not found/)
+    const none = await anthropicStatus({ kind: 'subscription' }, {}, { candidates: async () => [], env: {} })
+    expect(none.state).toBe('error')
+    expect(none.detail).toMatch(/No Claude runtime was found/)
     // A timeout surfaces as a failed run with no JSON on stdout.
     const timedOut: RunCli = async () => ({ stdout: '', stderr: 'ETIMEDOUT', code: 1 })
     const st = await anthropicStatus({ kind: 'subscription' }, {}, { run: timedOut, candidates: async () => [{ bin: 'x', shell: false }], env: {} })

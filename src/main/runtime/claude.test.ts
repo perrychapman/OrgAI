@@ -633,6 +633,49 @@ describe('buildAgents with run-scoped installs', () => {
   })
 })
 
+describe('Claude runtime resolution in runs and probes (cli-standalone 6.1)', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs()
+    sdk.queries.length = 0
+  })
+
+  it('every query passes the resolved executable explicitly', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'orgai-claude-bin-'))
+    try {
+      const bin = join(dir, 'claude')
+      writeFileSync(bin, '')
+      vi.stubEnv('ORGAI_CLAUDE_PATH', bin)
+      expect(probeQueryOptions(new AbortController(), {}).pathToClaudeCodeExecutable).toBe(bin)
+      expect(buildCompletionOptions({ cwd: dir, system: 's', prompt: 'p' } as Parameters<typeof buildCompletionOptions>[0]).pathToClaudeCodeExecutable).toBe(bin)
+      const session = new ClaudeSession(fakeCtx({ project: project({ path: dir }), autoContinue: false }))
+      await vi.waitFor(() => expect(sdk.queries).toHaveLength(1))
+      expect(sdk.queries[0]!.options.pathToClaudeCodeExecutable).toBe(bin)
+      await session.stop()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('no runtime: the run fails with the resolver sentence and no query starts; probes and completions throw it', async () => {
+    const missing = join(tmpdir(), 'orgai-definitely-not-claude')
+    vi.stubEnv('ORGAI_CLAUDE_PATH', missing)
+    const sentence = `ORGAI_CLAUDE_PATH names ${missing}, which does not exist.`
+    expect(() => probeQueryOptions(new AbortController(), {})).toThrow(sentence)
+    expect(() => buildCompletionOptions({ cwd: tmpdir(), system: 's', prompt: 'p' } as Parameters<typeof buildCompletionOptions>[0])).toThrow(sentence)
+    const dir = mkdtempSync(join(tmpdir(), 'orgai-claude-nobin-'))
+    try {
+      const ctx = fakeCtx({ project: project({ path: dir }), autoContinue: false })
+      const session = new ClaudeSession(ctx)
+      await vi.waitFor(() => expect(ctx.events.some((e) => e.type === 'run.status' && e.status === 'error')).toBe(true))
+      expect(ctx.events).toContainEqual(expect.objectContaining({ type: 'run.status', status: 'error', error: sentence }))
+      expect(sdk.queries).toHaveLength(0)
+      await session.stop()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('ClaudeSession MCP mid-run attach (fake query)', () => {
   type Fake = InstanceType<typeof sdk.FakeQuery>
   type HookOut = { hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string } }

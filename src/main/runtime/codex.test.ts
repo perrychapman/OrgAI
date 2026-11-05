@@ -164,6 +164,18 @@ describe('CodexAdapter session', () => {
     expect(lastAgent(ctx, 'root')).toMatchObject({ roleSlug: 'lead', model: 'gpt-test', state: 'thinking' })
   })
 
+  it('a Codex version warning from the app-server becomes one run warning per session (cli-standalone 6.2)', async () => {
+    const { adapter, servers } = setup()
+    const ctx = ctxFor()
+    session = await adapter.start(ctx)
+    const s = servers[0]
+    await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+    s.options.onWarning?.('Codex 0.170.0 at /x/codex (ORGAI_CODEX_PATH) is not a tested version.')
+    s.options.onWarning?.('Codex 0.170.0 at /x/codex (ORGAI_CODEX_PATH) is not a tested version.')
+    const warned = ctx.events.filter((e) => e.type === 'log' && e.level === 'warn' && e.message.includes('is not a tested version'))
+    expect(warned).toHaveLength(1)
+  })
+
   it('runs a spawn, delivers the child report to the parent, then nudges on plan steps left', async () => {
     const { adapter, servers } = setup()
     const ctx = ctxFor()

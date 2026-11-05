@@ -178,6 +178,8 @@ class CodexSession implements RuntimeSession {
   readonly finished: Promise<void>
   private server!: CodexServerLike
   private unsubscribers: (() => void)[] = []
+  /** The Codex version warning (ORGAI_CODEX_PATH outside the tested range) was shown for this session. */
+  private versionWarned = false
   private agents = new Map<string, AgentInstance>()
   private threads = new Map<string, ThreadInfo>()
   private agentThread = new Map<string, string>()
@@ -637,6 +639,13 @@ class CodexSession implements RuntimeSession {
       onStderr: (line) => {
         // The CLI's tracing output is chatty; only surface real problems.
         if (/\b(error|fatal|panic)\b/i.test(line)) this.log('warn', `codex: ${line.slice(0, 300)}`)
+      },
+      // Codex chosen through ORGAI_CODEX_PATH outside the tested version (cli-standalone 6.2): one run warning, not one
+      // per app-server restart.
+      onWarning: (message) => {
+        if (this.versionWarned) return
+        this.versionWarned = true
+        this.log('warn', message)
       }
     }
     return this.options.createServer ? this.options.createServer(options) : new CodexAppServer(options)

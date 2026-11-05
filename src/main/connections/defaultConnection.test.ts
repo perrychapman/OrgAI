@@ -46,6 +46,8 @@ function setup(anthropic: { state: ConnectionStatus['state'] } = { state: 'conne
     },
     onDefaultChanged: defaultChanged,
     openExternal: vi.fn(async () => {}),
+    // Never look for or run a real codex (cli-standalone 6.2 runtime check).
+    codexRuntime: async () => ({ ok: true, binary: { path: '/fake/codex' } }),
     fetch: (async (url: string | URL | Request) => {
       if (fetchImpl.fail) throw new Error('proxy down')
       return proxyFetch(url as string)
