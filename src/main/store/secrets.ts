@@ -72,16 +72,43 @@ export function mcpOwnerOAuthKey(owner: McpSecretOwner, slot: McpOAuthSlot): str
   return `${mcpOwnerPrefix(owner)}oauth:${slot}`
 }
 
+/**
+ * Optional SecretStore behaviour for the pure-Node `--host inproc` host (cli-spec 3.5). Without options the store is
+ * the desktop / headless host's read-write store, unchanged.
+ */
+export interface SecretStoreOptions {
+  /**
+   * Never write secrets.json: available() is false, set() with a value throws, and delete / deletePrefix / set(null)
+   * only drop overlay entries (a value on disk stays readable). Stored values are still read (and decrypted, when the
+   * cipher can).
+   */
+  readOnly?: boolean
+  /**
+   * Plain values kept in memory only (the CLI's ORGAI_SECRET_* / --secret-env secrets); they win over disk values in
+   * get / has / keys and are never persisted. The map is copied at construction.
+   */
+  overlay?: ReadonlyMap<string, string>
+}
+
+/** set() refusal of a read-only store. */
+export const READ_ONLY_SECRETS_MESSAGE = 'This OrgAI host runs inside the CLI (--host inproc) and cannot save secrets.'
+
 export class SecretStore {
   private file: string
   /** key -> base64 ciphertext */
   private values: Record<string, string> = {}
+  private readonly readOnly: boolean
+  /** key -> plain value, memory only. */
+  private readonly overlay = new Map<string, string>()
 
   constructor(
     dataDir: string,
-    private cipher: SecretCipher
+    private cipher: SecretCipher,
+    opts: SecretStoreOptions = {}
   ) {
     this.file = join(dataDir, 'secrets.json')
+    this.readOnly = opts.readOnly === true
+    for (const [k, v] of opts.overlay ?? []) if (typeof k === 'string' && typeof v === 'string' && v !== '') this.overlay.set(k, v)
     this.load()
   }
 
@@ -101,6 +128,7 @@ export class SecretStore {
   }
 
   private persist(): void {
+    if (this.readOnly) return
     mkdirSync(dirname(this.file), { recursive: true })
     const tmp = `${this.file}.tmp`
     writeFileSync(tmp, JSON.stringify({ version: 1, secrets: this.values }, null, 2), { encoding: 'utf8', mode: 0o600 })
@@ -109,6 +137,7 @@ export class SecretStore {
 
   /** False when the OS offers no encryption (e.g. Linux without a keyring); set() then throws. */
   available(): boolean {
+    if (this.readOnly) return false
     try {
       return this.cipher.isEncryptionAvailable()
     } catch {
@@ -117,11 +146,14 @@ export class SecretStore {
   }
 
   has(key: string): boolean {
-    return Object.hasOwn(this.values, key)
+    return this.overlay.has(key) || Object.hasOwn(this.values, key)
   }
 
   /** The decrypted value, or undefined when none is stored or it cannot be decrypted (another user, a new OS keyring). */
   get(key: string): string | undefined {
+    const o = this.overlay.get(key)
+    if (o !== undefined) return o
+    if (!Object.hasOwn(this.values, key)) return undefined
     const v = this.values[key]
     if (v === undefined) return undefined
     try {
@@ -137,28 +169,46 @@ export class SecretStore {
       this.delete(key)
       return
     }
+    if (this.readOnly) throw new Error(READ_ONLY_SECRETS_MESSAGE)
     if (!this.available()) throw new Error('Secure storage is not available on this system, so OrgAI cannot store secrets.')
     this.values[key] = this.cipher.encryptString(value).toString('base64')
+    // The stored value is the newest; an overlay value must not shadow it.
+    this.overlay.delete(key)
     this.persist()
   }
 
+  /** Delete a value (read-only store: the overlay entry only). */
   delete(key: string): void {
-    if (!this.has(key)) return
+    this.overlay.delete(key)
+    if (this.readOnly || !Object.hasOwn(this.values, key)) return
     delete this.values[key]
     this.persist()
   }
 
-  /** Stored keys starting with a prefix. */
+  /** Keys (stored and overlay) starting with a prefix. */
   keys(prefix = ''): string[] {
-    return Object.keys(this.values).filter((k) => k.startsWith(prefix))
+    const out = new Set<string>()
+    for (const k of this.overlay.keys()) if (k.startsWith(prefix)) out.add(k)
+    for (const k of Object.keys(this.values)) if (k.startsWith(prefix)) out.add(k)
+    return [...out]
   }
 
-  /** Delete every key starting with a prefix; returns how many were removed. */
+  /** Delete every key starting with a prefix (read-only store: overlay entries only); returns how many were removed. */
   deletePrefix(prefix: string): number {
-    const doomed = this.keys(prefix)
-    if (!doomed.length) return 0
-    for (const k of doomed) delete this.values[k]
+    const removed = new Set<string>()
+    for (const k of [...this.overlay.keys()]) {
+      if (!k.startsWith(prefix)) continue
+      this.overlay.delete(k)
+      removed.add(k)
+    }
+    if (this.readOnly) return removed.size
+    const doomed = Object.keys(this.values).filter((k) => k.startsWith(prefix))
+    if (!doomed.length) return removed.size
+    for (const k of doomed) {
+      delete this.values[k]
+      removed.add(k)
+    }
     this.persist()
-    return doomed.length
+    return removed.size
   }
 }

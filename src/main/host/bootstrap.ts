@@ -32,6 +32,7 @@ import { CodexAdapter } from '../runtime/codex'
 import { MockAdapter } from '../runtime/mock'
 import { repoLockActivity } from '../runtime/repoLock'
 import { RunManager } from '../runtime/runManager'
+import { controlProtectedPaths } from '../runtime/selfControlGate'
 import type { RunConnection, RuntimeAdapter } from '../runtime/types'
 import { AgentImportService } from '../setup/import/importer'
 import { SetupService } from '../setup/service'
@@ -44,7 +45,7 @@ import { McpLibraryStore } from '../store/mcpLibrary'
 import { listNotes, orphanRunProjects, readNote, readRetainedRunProjects, saveNote } from '../store/projectData'
 import { ProjectStore } from '../store/projects'
 import { RunStore } from '../store/runs'
-import { SecretStore, type SecretCipher } from '../store/secrets'
+import { SecretStore, type SecretCipher, type SecretStoreOptions } from '../store/secrets'
 import { SettingsStore } from '../store/settings'
 import { UsageMonitor } from '../usageMonitor'
 import { HostActivityTracker, daemonIdleMs } from './activity'
@@ -96,9 +97,11 @@ export interface BootOrgAIHostOptions {
   dataDir: string
   hostKind: HostKind
   /** Acquired by the entry point before boot (acquireHostOwnership). */
-  ownership: Pick<HostOwnership, 'info' | 'markReady' | 'markDraining' | 'release'>
+  ownership: Pick<HostOwnership, 'info' | 'markReady' | 'markDraining' | 'release' | 'runtimeDir'>
   /** Electron's safeStorage in the desktop shell; anything SecretCipher-shaped elsewhere. */
   safeStorage: SecretCipher
+  /** SecretStore options: `--host inproc` passes { readOnly: true, overlay } (cli-spec 3.5). Default: read-write. */
+  secrets?: SecretStoreOptions
   openExternal(url: string): Promise<void> | void
   desktop?: DesktopHooks
   /** ORGAI_MOCK === '1': registers the scripted mock adapter and keeps discovery off the real home. */
@@ -155,7 +158,12 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
   settings.onChange(broadcastSettings)
 
   const runStore = new RunStore(dataDir)
-  const secrets = new SecretStore(dataDir, opts.safeStorage)
+  const secrets = new SecretStore(dataDir, opts.safeStorage, opts.secrets)
+  // A headless or in-process host exists to serve the CLI: terminal access is on (cli-spec 3.3; AppSettings.terminalServer).
+  if (hostKind !== 'desktop' && settings.get().terminalServer !== true) {
+    settings.set({ ...settings.get(), terminalServer: true })
+    log.info(`Terminal access turned on for this ${hostKind} host.`)
+  }
   // `adapters` is declared below and only read when discovery runs.
   let adapters: { claude: ClaudeAdapter; codex: CodexAdapter; mock?: MockAdapter }
   const connections = new ConnectionService({
@@ -270,6 +278,8 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
   }
   const rm = new RunManager(adapters, runBroadcast, runStore, setup, keepRunsFor, {
     dataDir,
+    // cli-spec 3.4(1): the control socket dir, daemon secret, secrets.json and CODEX_HOME are off limits to agent tools.
+    controlProtectedPaths: () => controlProtectedPaths(dataDir, ownership.runtimeDir),
     // "Always allow for project" cards: append folders / switch to Accept edits on the stored project (the store cleans them).
     saveProjectPermissions: (projectId, patch) =>
       projects.update(projectId, (p) => ({

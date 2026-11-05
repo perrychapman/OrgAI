@@ -373,6 +373,12 @@ export interface RuntimeContext {
    * MatchOptions.deniedDirs. Missing = only the built-in refusals (roots, UNC, home and its config folders).
    */
   protectedDirectories?(): string[]
+  /**
+   * Paths the self-control gate protects (selfControlGate.ts `controlProtectedPaths`, cli-spec 3.4(1)): the host's
+   * `<dataDir>/run`, `secrets.json`, `codex` (CODEX_HOME) and a fallback runtime socket dir, both spellings. Read live
+   * on every check (the runtime dir is known only once ownership is acquired). Missing = no self-control paths.
+   */
+  controlProtectedPaths?(): string[]
   /** Work runs: an agent edited the architecture document; record the time on the project. */
   noteArchitectureUpdated(): Promise<void>
   /**

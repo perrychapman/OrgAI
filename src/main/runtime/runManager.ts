@@ -87,6 +87,7 @@ function noFolderWrites(p: Project): Project {
 }
 import { allowedDirectoryRisk } from './allowedDirectories'
 import { isValidRule } from './ruleMatch'
+import { controlProtectedPaths } from './selfControlGate'
 import { validateSpec } from '../mcp/validate'
 import { assistContext, buildToolsFor } from '../mcp/assist'
 import { skillAssistContext } from '../skills/assist'
@@ -465,6 +466,11 @@ function excerpt(prompt: string, max = 60): string {
 export interface RunManagerOptions {
   /** OrgAI's data dir, for the allowed-folder checks. Tests may omit it (the data-dir check is then skipped). */
   dataDir?: string
+  /**
+   * RuntimeContext.controlProtectedPaths (bootstrap: controlProtectedPaths(dataDir, ownership.runtimeDir)). Missing =
+   * controlProtectedPaths(dataDir) when dataDir is set, else none.
+   */
+  controlProtectedPaths?: () => string[]
   /**
    * Save permission changes made from a card onto the stored project (index.ts: ProjectStore.update, which cleans
    * allowedDirectories). `addDirectories` are appended, never replacing; `acceptEdits` sets permissionMode
@@ -1324,6 +1330,7 @@ export class RunManager {
         // A quick run works in a folder the user never made a project: only this run's own grants count, never the
         // folder's saved rules file (it is untrusted), and nothing is ever written there (decideRules).
         protectedDirectories: () => protectedDirsOf(this.options.dataDir),
+        controlProtectedPaths: () => this.options.controlProtectedPaths?.() ?? (this.options.dataDir ? controlProtectedPaths(this.options.dataDir) : []),
         allowedRules: () => [...new Set([...(restricted ? [] : listRules({ file: this.rulesFileFor(live) })), ...active.runRules])],
         // Where the project keeps its saved rules: the folder file for code projects, OrgAI's data folder for engagements.
         ...(restricted

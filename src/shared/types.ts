@@ -1705,6 +1705,13 @@ export interface AppSettings {
    * runs re-price on their next usage update); persisted runs keep the cost they were saved with.
    */
   modelPrices?: ModelPriceOverride[]
+  /**
+   * Terminal access: external CLI / TUI clients (host.hello from clientKind 'cli' | 'tui' over the host socket,
+   * cli-spec 3.3) are accepted only while this is true; otherwise host.hello answers 'terminal_server_disabled'.
+   * Default false (normalized: only a boolean true stays true). A host booted as 'headless-host' or 'inproc' turns it
+   * on (bootstrap.ts), since such a host exists only to serve the CLI.
+   */
+  terminalServer: boolean
 }
 
 /**
@@ -5536,6 +5543,14 @@ export type HostRpcErrorCode =
   | 'scope_denied'
   | 'frame_too_large'
   | 'bad_request'
+  /** host.hello: the clientProof did not verify (or the daemon secret could not be read). */
+  | 'auth_failed'
+  /** host.hello: protocolVersion differs from HOST_PROTOCOL_VERSION. */
+  | 'protocol_mismatch'
+  /** Socket quota (RPC_MAX_UNAUTH_SOCKETS / RPC_MAX_CLIENT_SOCKETS) reached. */
+  | 'too_many_connections'
+  /** More than RPC_MAX_INFLIGHT_PER_SOCKET requests in flight on one socket. */
+  | 'too_many_requests'
 
 /** The `data` of a JSON-RPC error answered by the host. */
 export interface HostRpcError {
@@ -5882,6 +5897,22 @@ export interface HostStopResult {
 /** host.subscribe input (scope 'read'). */
 export interface HostSubscribeInput {
   topics: HostSubscribeTopic[]
+}
+
+/** host.subscribe result: the topics the socket is now subscribed to (deduped, known topics only). */
+export interface HostSubscribeResult {
+  topics: HostSubscribeTopic[]
+}
+
+/**
+ * Params of a socket `runs:event` notification (pushed after runs:subscribe). Durable events carry `seq` (their slot
+ * in the host's replay ring); a transient agent.partial carries `atSeq` instead (the current durable watermark, not a
+ * ring slot). Exactly one of the two is set.
+ */
+export interface RunsEventParams {
+  seq?: number
+  atSeq?: number
+  event: RunEvent
 }
 
 /** ORGAI_DAEMON_IDLE_MINUTES default: an idle background host exits after this long. */

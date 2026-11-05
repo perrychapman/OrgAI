@@ -199,7 +199,11 @@ const RPC_ERROR_CODES: ReadonlySet<string> = new Set<HostRpcErrorCode>([
   'stale_revision',
   'scope_denied',
   'frame_too_large',
-  'bad_request'
+  'bad_request',
+  'auth_failed',
+  'protocol_mismatch',
+  'too_many_connections',
+  'too_many_requests'
 ])
 
 /** How long a client should wait before retrying a mutation refused while the host drains. */

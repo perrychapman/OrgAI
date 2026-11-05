@@ -251,7 +251,9 @@ export function normalizeSettings(raw: Partial<AppSettings> | null | undefined):
     defaultMaxAutoContinues:
       r.defaultMaxAutoContinues != null && Number.isFinite(maxContinues) && maxContinues >= 0
         ? Math.min(MAX_AUTO_CONTINUES_LIMIT, Math.floor(maxContinues))
-        : d.defaultMaxAutoContinues
+        : d.defaultMaxAutoContinues,
+    // Only an explicit boolean true opens the terminal server.
+    terminalServer: r.terminalServer === true
   }
 }
 

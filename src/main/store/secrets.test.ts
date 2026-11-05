@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -15,6 +15,7 @@ import {
   mcpProjectPrefix,
   mcpSecretKey,
   mcpSecretPrefix,
+  READ_ONLY_SECRETS_MESSAGE,
   type SecretCipher
 } from './secrets'
 
@@ -94,5 +95,71 @@ describe('SecretStore', () => {
     const broken = new SecretStore(dir, { ...fakeCipher(), decryptString: () => { throw new Error('keyring changed') } })
     expect(broken.has(LITELLM_KEY)).toBe(true)
     expect(broken.get(LITELLM_KEY)).toBeUndefined()
+  })
+})
+
+describe('SecretStore overlay and read-only mode (cli-spec 3.5)', () => {
+  it('lets overlay values win in get, has and keys, without writing them to disk', () => {
+    const dir = dataDir()
+    new SecretStore(dir, fakeCipher()).set(LITELLM_KEY, 'disk-value')
+    const before = readFileSync(join(dir, 'secrets.json'), 'utf8')
+    const extra = mcpLibrarySecretKey('lib1', 'env', 'TOKEN')
+    const store = new SecretStore(dir, fakeCipher(), { overlay: new Map([[LITELLM_KEY, 'overlay-value'], [extra, 'tok']]) })
+    expect(store.get(LITELLM_KEY)).toBe('overlay-value')
+    expect(store.has(extra)).toBe(true)
+    expect(store.get(extra)).toBe('tok')
+    expect(store.keys().sort()).toEqual([LITELLM_KEY, extra].sort())
+    expect(store.keys('mcplib:')).toEqual([extra])
+    expect(readFileSync(join(dir, 'secrets.json'), 'utf8')).toBe(before)
+  })
+
+  it('a read-only store reads disk values, is never available and refuses to save', () => {
+    const dir = dataDir()
+    new SecretStore(dir, fakeCipher()).set(LITELLM_KEY, 'disk-value')
+    const store = new SecretStore(dir, fakeCipher(), { readOnly: true })
+    expect(store.available()).toBe(false)
+    expect(store.get(LITELLM_KEY)).toBe('disk-value')
+    expect(() => store.set(LITELLM_KEY, 'new')).toThrow(READ_ONLY_SECRETS_MESSAGE)
+    expect(store.get(LITELLM_KEY)).toBe('disk-value')
+  })
+
+  it('read-only deletes drop overlay entries only and never touch secrets.json', () => {
+    const dir = dataDir()
+    const disk = new SecretStore(dir, fakeCipher())
+    const a = mcpSecretKey('p1', 's1', 'env', 'A')
+    const b = mcpSecretKey('p1', 's1', 'env', 'B')
+    disk.set(a, 'disk-a')
+    const file = join(dir, 'secrets.json')
+    const before = readFileSync(file, 'utf8')
+    const mtime = statSync(file).mtimeMs
+    const store = new SecretStore(dir, fakeCipher(), { readOnly: true, overlay: new Map([[a, 'over-a'], [b, 'over-b']]) })
+    expect(store.get(a)).toBe('over-a')
+    store.delete(a)
+    expect(store.get(a)).toBe('disk-a')
+    store.set(b, null)
+    expect(store.has(b)).toBe(false)
+    store.set(b, '')
+    expect(new SecretStore(dir, fakeCipher(), { readOnly: true, overlay: new Map([[b, 'x']]) }).deletePrefix(mcpSecretPrefix('p1', 's1'))).toBe(1)
+    expect(store.deletePrefix(mcpSecretPrefix('p1', 's1'))).toBe(0)
+    expect(store.get(a)).toBe('disk-a')
+    expect(readFileSync(file, 'utf8')).toBe(before)
+    expect(statSync(file).mtimeMs).toBe(mtime)
+  })
+
+  it('a read-only store over an empty data dir never creates secrets.json', () => {
+    const dir = dataDir()
+    const store = new SecretStore(dir, fakeCipher(), { readOnly: true, overlay: new Map([[LITELLM_KEY, 'k']]) })
+    store.delete(LITELLM_KEY)
+    store.deletePrefix('')
+    expect(existsSync(join(dir, 'secrets.json'))).toBe(false)
+  })
+
+  it('without read-only, a stored value replaces the overlay one and delete clears both', () => {
+    const dir = dataDir()
+    const store = new SecretStore(dir, fakeCipher(), { overlay: new Map([[LITELLM_KEY, 'over']]) })
+    store.set(LITELLM_KEY, 'stored')
+    expect(store.get(LITELLM_KEY)).toBe('stored')
+    store.delete(LITELLM_KEY)
+    expect(store.has(LITELLM_KEY)).toBe(false)
   })
 })

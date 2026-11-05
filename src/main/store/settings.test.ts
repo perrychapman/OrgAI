@@ -348,3 +348,13 @@ describe('defaultConnectionReplaced', () => {
     }
   })
 })
+
+describe('terminalServer', () => {
+  it('defaults to false and keeps only a boolean true', () => {
+    expect(normalizeSettings(undefined).terminalServer).toBe(false)
+    expect(normalizeSettings({}).terminalServer).toBe(false)
+    expect(normalizeSettings({ terminalServer: true }).terminalServer).toBe(true)
+    expect(normalizeSettings({ terminalServer: false }).terminalServer).toBe(false)
+    for (const junk of ['true', 1, null, {}, []]) expect(normalizeSettings({ terminalServer: junk } as never).terminalServer).toBe(false)
+  })
+})
