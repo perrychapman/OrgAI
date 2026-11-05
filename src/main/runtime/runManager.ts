@@ -5,6 +5,7 @@ import type {
   AgentInstance,
   EngagementChangedEvent,
   EngagementNoteWriter,
+  FolderConfigState,
   RunUsage,
   UsageStats,
   UsageStatsQuery,
@@ -55,7 +56,7 @@ import type {
   SkillUseCount,
   UserQuestion
 } from '@shared/types'
-import { QUICK_ASSISTANT_SLUG, adapterForProject, agentProducedNothing, isolateWritersOn, mcpSecretNames, mixedFamilyRefusal, modelFamily, newId, projectConnection, projectKindOf, runMessagingOn, settingTier, singleRunProject, writesToProjectFolder } from '@shared/defaults'
+import { QUICK_ASSISTANT_SLUG, adapterForProject, agentProducedNothing, isolateWritersOn, mcpSecretNames, mixedFamilyRefusal, modelFamily, newId, projectConnection, projectKindOf, projectRulesLocation, runMessagingOn, settingTier, singleRunProject, writesToProjectFolder } from '@shared/defaults'
 import { referenceFolderOf } from './referenceDirectories'
 import { aliasesFor, priceAgentUsage, type PricingContext } from './pricing'
 import { IntervalTimer, buildUsageCsv, buildUsageStats, computeRunUsage, emptyAgentUsage, legacySummaryUsage, monthRange, normalizeRunRecord } from './runUsage'
@@ -80,6 +81,7 @@ import { isLiveAgent, runOutcome, settleAgent, withSkillActivity, type RunOutcom
 import { cancelPending, cleanProposalDecision, emptyPending, listPending, proposalEffect, proposalOutcome, type PendingCardMaps } from './pendingCards'
 import { addRules, addRulesReport, isBlanketAllowRule, isUnsafeAllowRule, listRules, tooBroadRuleRefusal } from './permissionRules'
 import { projectRulesFile, readEngagementDocument } from '../store/projectData'
+import { folderConfigStateOf, folderConfigWarning, presentConfigPaths } from './folderConfigTrust'
 
 /**
  * The project the adapters see. Adapters read `isolateWriters !== false`, so the value is made explicit: an
@@ -889,8 +891,9 @@ export class RunManager {
   }
 
   /** Where the project's saved rules live (projectRulesFile). An engagement needs the data dir: never falls back to a relative path. */
-  private rulesFileFor(p: Pick<Project, 'id' | 'path' | 'kind'>): string {
-    if (!writesToProjectFolder(p) && !this.options.dataDir) throw new Error('OrgAI has no data folder to keep this engagement\'s rules in.')
+  private rulesFileFor(p: Pick<Project, 'id' | 'path' | 'kind' | 'folderConfigTrust'>): string {
+    // An engagement or a project behind the folder config gate keeps its rules in the data folder, never in the folder.
+    if (projectRulesLocation(p) === 'app' && !this.options.dataDir) throw new Error('OrgAI has no data folder to keep this project\'s rules in.')
     return projectRulesFile(p, this.options.dataDir ?? '')
   }
 
@@ -987,7 +990,7 @@ export class RunManager {
       pendingRules: new Map(),
       runRules: [],
       projectPath: project.path,
-      ...(writesToProjectFolder(project) ? {} : { rulesTarget: { file: this.rulesFileFor(project) } }),
+      ...(projectRulesLocation(project) === 'app' ? { rulesTarget: { file: this.rulesFileFor(project) } } : {}),
       runServers: new Map(),
       emit: () => {},
       skills: [],
@@ -1305,9 +1308,45 @@ export class RunManager {
         resolveFolders()
         resolveReferences()
       }
+      // Folder config gate (folderConfigTrust.ts): decided at run start and latched. A run that started without the
+      // folder's own agent config never gains it mid-run (accepting applies from the next run); one that started with
+      // it loses it for good when the folder changes. Omitted for projects with no gate field (legacy, virtual,
+      // trust-restricted), whose behaviour is unchanged. A scan that fails counts as "do not load".
+      let folderLoads: (() => boolean) | undefined
+      if (!restricted && !isVirtualProjectId(project.id) && project.folderConfigTrust !== undefined) {
+        const gateProject = (): Project => this.options.resolveProject?.(project.id) ?? live
+        const stateNow = (): FolderConfigState => {
+          try {
+            return folderConfigStateOf(gateProject())
+          } catch {
+            return 'changed'
+          }
+        }
+        const warnNotLoaded = (state: FolderConfigState): void => {
+          let paths: string[] = []
+          try {
+            paths = presentConfigPaths(live.path)
+          } catch {
+            /* the sentence still reads right without a list */
+          }
+          emit({ type: 'log', runId: summary.id, level: 'warn', message: folderConfigWarning(state, paths) })
+        }
+        const first = stateNow()
+        let latched = first === 'none' || first === 'trusted'
+        if (!latched) warnNotLoaded(first)
+        folderLoads = () => {
+          if (!latched) return false
+          const now = stateNow()
+          if (now === 'none' || now === 'trusted') return true
+          latched = false
+          warnNotLoaded(now)
+          return false
+        }
+      }
       const ctx: RuntimeContext = {
         run: summary,
         project,
+        ...(folderLoads ? { folderConfigLoads: folderLoads } : {}),
         roles:
           kind === 'setup' ? [architectRole(builtinModel, { kind: projectKindOf(project) })]
           : kind === 'mcp-assist' ? [withBuildTools(mcpAssistantRole(builtinModel), summary)]

@@ -708,3 +708,70 @@ describe('ProjectStore referenceDirectories and kind', () => {
     expect(projectKindOf(store.create({ name: 'C', path: d, brief: '' }))).toBe('code')
   })
 })
+
+describe('ProjectStore folder config gate', () => {
+  function folderWith(files: string[]): string {
+    const f = mkdtempSync(join(tmpdir(), 'orgai-gate-'))
+    dirs.push(f)
+    for (const rel of files) {
+      mkdirSync(dirname(join(f, rel)), { recursive: true })
+      writeFileSync(join(f, rel), '{}')
+    }
+    return f
+  }
+
+  it('create gates a code folder that holds agent config, even only instruction files', () => {
+    const store = new ProjectStore(dataDir())
+    expect(store.create({ name: 'A', path: folderWith(['.claude/settings.json']), brief: '' }).folderConfigTrust).toEqual({ state: 'untrusted' })
+    expect(store.create({ name: 'B', path: folderWith(['CLAUDE.md']), brief: '' }).folderConfigTrust).toEqual({ state: 'untrusted' })
+    expect('folderConfigTrust' in store.create({ name: 'C', path: folderWith(['README.md']), brief: '' })).toBe(false)
+  })
+
+  it('an engagement is never gated', () => {
+    const store = new ProjectStore(dataDir())
+    const p = store.create({ name: 'E', path: folderWith(['.claude/settings.json']), brief: '', kind: 'engagement' })
+    expect(p.folderConfigTrust).toBeUndefined()
+  })
+
+  it('a renderer save can neither set, change nor clear the field', () => {
+    const store = new ProjectStore(dataDir())
+    const gated = store.create({ name: 'A', path: folderWith(['.mcp.json']), brief: '' })
+    const trusted = { state: 'trusted' as const, digest: 'a'.repeat(64) }
+    expect(store.saveFromRenderer({ ...gated, folderConfigTrust: trusted }).folderConfigTrust).toEqual({ state: 'untrusted' })
+    const stripped = { ...gated }
+    delete stripped.folderConfigTrust
+    expect(store.saveFromRenderer(stripped).folderConfigTrust).toEqual({ state: 'untrusted' })
+    const plain = store.create({ name: 'P', path: folderWith(['README.md']), brief: '' })
+    expect('folderConfigTrust' in store.saveFromRenderer({ ...plain, folderConfigTrust: trusted })).toBe(false)
+  })
+
+  it('changing the path judges the new folder afresh', () => {
+    const store = new ProjectStore(dataDir())
+    const plain = store.create({ name: 'P', path: folderWith(['README.md']), brief: '' })
+    const withConfig = folderWith(['.claude/hooks/x.sh'])
+    expect(store.saveFromRenderer({ ...plain, path: withConfig }).folderConfigTrust).toEqual({ state: 'untrusted' })
+    const back = folderWith(['README.md'])
+    expect('folderConfigTrust' in store.saveFromRenderer({ ...store.get(plain.id)!, path: back })).toBe(false)
+  })
+
+  it('update (the trust channel) can set the field and it survives a reload', () => {
+    const d = dataDir()
+    const store = new ProjectStore(d)
+    const gated = store.create({ name: 'A', path: folderWith(['.mcp.json']), brief: '' })
+    const digest = 'b'.repeat(64)
+    store.update(gated.id, (p) => ({ ...p, folderConfigTrust: { state: 'trusted', digest, decidedAt: '2026-11-05T10:00:00.000Z' } }))
+    expect(new ProjectStore(d).get(gated.id)?.folderConfigTrust).toEqual({ state: 'trusted', digest, decidedAt: '2026-11-05T10:00:00.000Z' })
+  })
+
+  it('a junk field fails closed on load, a legacy project keeps no field', () => {
+    const d = dataDir()
+    const base = project({ id: 'junk' })
+    const legacy = project({ id: 'legacy' })
+    const badDigest = project({ id: 'bad', folderConfigTrust: { state: 'trusted', digest: 'nope' } as never })
+    writeFileSync(join(d, 'projects.json'), JSON.stringify({ version: 2, projects: [{ ...base, folderConfigTrust: 'yes' }, legacy, badDigest] }))
+    const store = new ProjectStore(d)
+    expect(store.get('junk')?.folderConfigTrust).toEqual({ state: 'untrusted' })
+    expect(store.get('bad')?.folderConfigTrust).toEqual({ state: 'untrusted' })
+    expect('folderConfigTrust' in store.get('legacy')!).toBe(false)
+  })
+})

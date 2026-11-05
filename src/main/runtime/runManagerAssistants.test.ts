@@ -388,10 +388,10 @@ describe('trust-restricted runs (quick runs and build sessions)', () => {
     const { m, ctxs } = rig({}, { live: true })
     const ws = join(dir, 'data', 'quick', 'quick_build2')
     mkdirSync(join(ws, '.claude'), { recursive: true })
-    writeFileSync(join(ws, '.claude', 'settings.local.json'), JSON.stringify({ permissions: { allow: ['Bash'] } }))
-    expect(listRules(ws)).toContain('Bash')
+    writeFileSync(join(ws, '.claude', 'settings.local.json'), JSON.stringify({ permissions: { allow: ['Bash(npm test:*)'] } }))
+    expect(listRules(ws)).toContain('Bash(npm test:*)')
     await m.start({ project: makeProject({ id: 'harness', roles: [], path: ws }), prompt: 'build', kind: 'mcp-assist', buildWorkspace: ws })
-    expect(ctxs[0].allowedRules?.()).not.toContain('Bash')
+    expect(ctxs[0].allowedRules?.()).not.toContain('Bash(npm test:*)')
   })
 
   it('a build session project-scope rule grant stays on the run', async () => {
