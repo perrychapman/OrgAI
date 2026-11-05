@@ -1,11 +1,14 @@
-/** `orgai worktrees` (cli-spec 6.3, Wave 5). Pure data; the owning Wave 5 task fills in flags and sets `available`. */
+/** `orgai worktrees` (cli-spec 6.3, Wave 5): leftover report branches. Pure data. */
 import type { CommandEntry } from '../commandTable'
 
 export const ENTRY: CommandEntry = {
   name: 'worktrees',
-  summary: 'Agent worktrees',
-  usage: 'worktrees <subcommand> [options]',
+  summary: 'Agent worktrees (pending report branches)',
+  usage: 'worktrees list | diff <branch> [--pager] | merge <branch> | discard <branch> [--yes] | uninstall [--yes]',
   subcommands: ['list', 'diff', 'merge', 'discard', 'uninstall'],
-  flags: [],
-  available: false
+  flags: [
+    { name: 'pager', takesValue: false, summary: 'diff: show it in $PAGER (or less / more)' },
+    { name: 'yes', short: 'y', takesValue: false, summary: 'discard / uninstall: confirm without asking' }
+  ],
+  available: true
 }
