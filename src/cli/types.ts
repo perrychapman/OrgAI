@@ -149,8 +149,11 @@ export interface ProjectResolution {
 
 /** Finds and starts the OrgAI app as a host (src/cli/launcher.ts, W2-T4). */
 export interface HostLauncher {
-  /** The app binary: ORGAI_APP_BINARY ('env') or the dev checkout's electron + out/main ('dev'). */
-  resolve(): { command: string; args: string[]; source: 'env' | 'dev' } | { error: string }
+  /**
+   * The app binary: ORGAI_ELECTRON_PATH ('env'), the packaged app next to this bundle ('packaged': the bundle sits in
+   * `<Resources>/app.asar.unpacked/out/cli`) or the dev checkout's electron + out/main ('dev'), in that order.
+   */
+  resolve(): { command: string; args: string[]; source: 'env' | 'packaged' | 'dev' } | { error: string }
   /** Spawn it detached: `--headless-host` when headless, else a desktop window; `run` focuses that run id. */
   spawn(opts: { headless: boolean; run?: string }): { pid?: number }
   /** The daemon.json of the live host that owns the data folder (any state), else null. */

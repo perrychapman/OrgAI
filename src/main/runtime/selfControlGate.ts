@@ -18,7 +18,9 @@
  * with SELF_CONTROL_UNCHECKED_MESSAGE, since bypassPermissions would otherwise run it unread. The scanner's other
  * fail-closed answers (untrackable cds, UNC words) give null so the normal permission flow decides. Running the CLI by
  * interpreter is matched on an `orgai` / `orgai.mjs` / `orgai.js` argument, or on an argument inside this install's
- * own CLI folders (setOrgaiCliRoots: `<app>/out/cli`, `<app>/src/cli`), never on any project's `src/cli`; the
+ * own CLI folders (setOrgaiCliRoots: `<app>/out/cli`, `<app>/src/cli`, and in a packaged app
+ * `<Resources>/app.asar.unpacked/out/cli` and `<Resources>/bin`), never on any project's `src/cli`; sh / bash / zsh /
+ * dash / ksh given such a file (or an `orgai`-named one) as their script count the same way; the
  * ELECTRON_RUN_AS_NODE check needs an assignment (`X=1` before a program or after env / export / set, `$env:X`,
  * Set-Item env:X, SetEnvironmentVariable('X'), never a quoted argument that only mentions it. Honest limits: other
  * variables, a script or program that opens the file itself, an `orgai` reached through an alias, a shell function or
@@ -27,6 +29,7 @@
  * policy, not this gate.
  */
 import { join, posix, resolve, win32 } from 'node:path'
+import { packagedCliRoots } from '../host/packagedLayout'
 import { canonicalDeep } from '../quick/scratch'
 import { commandControlScan, pathAtOrUnder, searchReaches } from './referenceDirectories'
 import { segmentWords } from './ruleMatch'
@@ -87,9 +90,15 @@ export function setOrgaiCliRoots(roots: readonly string[]): void {
   configuredCliRoots = roots.filter((r) => typeof r === 'string' && r !== '').map((r) => resolve(r))
 }
 
-/** The CLI folders of an app root: `<root>/out/cli` (the bundle) and `<root>/src/cli` (sources, dev). */
-export function orgaiCliRootsOf(appRoot: string): string[] {
-  return [join(appRoot, 'out', 'cli'), join(appRoot, 'src', 'cli')]
+/**
+ * The CLI folders of an app root: `<root>/out/cli` (the bundle) and `<root>/src/cli` (sources, dev), plus for a
+ * packaged app (`<Resources>/app.asar` or `app.asar.unpacked`) the unpacked bundle `<Resources>/app.asar.unpacked/out/cli`
+ * and the launcher folder `<Resources>/bin` (packagedLayout.ts `packagedCliRoots`).
+ */
+export function orgaiCliRootsOf(appRoot: string, platform: NodeJS.Platform = process.platform): string[] {
+  const out = [join(appRoot, 'out', 'cli'), join(appRoot, 'src', 'cli')]
+  for (const r of packagedCliRoots(appRoot, platform)) if (!out.includes(r)) out.push(r)
+  return out
 }
 
 interface CliCheck {
@@ -110,6 +119,8 @@ const PATHISH = /[\\/]|\.(?:m?[jt]sx?|c[jt]s)$/i
 /** Shells whose -c / -Command text is scanned as a nested command. */
 const NESTING_SHELLS: ReadonlySet<string> = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'fish', 'pwsh', 'powershell', 'cmd'])
 const NESTING_FLAGS = /^(?:-[a-z]*c|-command|\/c|\/k)$/i
+/** POSIX shells that run a script file given as their first non-option argument (`sh <res>/bin/orgai status`). */
+const SCRIPT_SHELLS: ReadonlySet<string> = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh'])
 /** ELECTRON_RUN_AS_NODE set by PowerShell: `$env:X = 1`, `Set-Item env:X`, `SetEnvironmentVariable('X'`. */
 const ELECTRON_AS_NODE_PS = [/\$env:ELECTRON_RUN_AS_NODE\s*=/i, /\bset-item\b[^;|&\n]*\benv:ELECTRON_RUN_AS_NODE\b/i, /SetEnvironmentVariable\s*\(\s*["']ELECTRON_RUN_AS_NODE/i]
 const ELECTRON_AS_NODE_ASSIGN = /^ELECTRON_RUN_AS_NODE=/i
@@ -256,6 +267,8 @@ function segmentRunsCli(segment: string, depth: number, budget: CliBudget, check
   if (CLI_NAME.test(name)) return true
   const bare = stripExe(name)
   if (INTERPRETERS.has(bare) && words.slice(at + 1).some((w) => interpreterArgIsCli(w, check))) return true
+  // `sh <file>`, `bash -e <file>`: a POSIX shell runs its first non-option argument as a script.
+  if (SCRIPT_SHELLS.has(bare) && shellScriptIsCli(words.slice(at + 1), check)) return true
   if (NESTING_SHELLS.has(bare) || bare === 'eval') {
     const rest = words.slice(at + 1)
     for (let k = 0; k < rest.length; k++) {
@@ -273,7 +286,34 @@ function segmentRunsCli(segment: string, depth: number, budget: CliBudget, check
 }
 
 /**
- * An interpreter argument that is the CLI: an `orgai` / `orgai.mjs` / `orgai.js` file, or a path (relative against the
+ * A POSIX shell's script argument is the CLI: the first word that is not an option (`-e`, `+x`, `-o name` / `+o name`
+ * take their value) is an `orgai`-named file or a file inside a CLI root (the packaged Resources/bin launcher). A -c
+ * text is left to the nesting scan.
+ */
+function shellScriptIsCli(rest: readonly string[], check: CliCheck): boolean {
+  for (let k = 0; k < rest.length; k++) {
+    const w = rest[k]
+    if (w === '--') {
+      const next = rest[k + 1]
+      return next !== undefined && scriptWordIsCli(next, check)
+    }
+    if (NESTING_FLAGS.test(w)) return false
+    if (/^[-+]o$/.test(w)) {
+      k++
+      continue
+    }
+    if (/^[-+]/.test(w)) continue
+    return scriptWordIsCli(w, check)
+  }
+  return false
+}
+
+function scriptWordIsCli(word: string, check: CliCheck): boolean {
+  return CLI_NAME.test(binName(word)) || interpreterArgIsCli(word, check)
+}
+
+/**
+ * An interpreter argument that is the CLI:an `orgai` / `orgai.mjs` / `orgai.js` file, or a path (relative against the
  * cwd) inside one of this install's CLI folders.
  */
 function interpreterArgIsCli(word: string, check: CliCheck): boolean {

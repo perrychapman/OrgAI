@@ -4,7 +4,8 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { FakeHostClient, fakeContext } from '../testing/fakeContext'
 import { EXIT } from '../types'
-import { doctorProbes, runDoctor } from './doctor'
+import { renderCliShim } from '../../main/host/packagedLayout'
+import { doctorProbes, installCheck, runDoctor, shimCheck } from './doctor'
 
 const realProbes = { ...doctorProbes }
 let dir: string
@@ -12,6 +13,8 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'orgai-doctor-'))
   doctorProbes.gitVersion = async () => 'git version 2.50.0'
   doctorProbes.nodeVersion = () => '22.11.0'
+  // Never read the real home folder's shim.
+  doctorProbes.homeDir = () => dir
 })
 afterEach(() => {
   Object.assign(doctorProbes, realProbes)
@@ -38,7 +41,7 @@ describe('orgai doctor', () => {
     const j = JSON.parse(f.out())
     expect(j.ok).toBe(true)
     const ids = j.checks.map((c: { id: string }) => c.id)
-    expect(ids).toEqual(['node', 'data-dir', 'run-dir', 'daemon-json', 'socket', 'terminal-access', 'version', 'launcher', 'git', 'mock', 'auth', 'connections'])
+    expect(ids).toEqual(['node', 'install', 'data-dir', 'run-dir', 'daemon-json', 'socket', 'terminal-access', 'version', 'launcher', 'shim', 'git', 'mock', 'auth', 'connections'])
     expect(j.checks.every((c: { status: string }) => c.status !== 'fail')).toBe(true)
     expect(j.checks.find((c: { id: string }) => c.id === 'connections').detail).toBe('Anthropic connected (default)')
     expect(f.out()).not.toContain('sk-secret')
@@ -62,5 +65,108 @@ describe('orgai doctor', () => {
     expect(await runDoctor(f.ctx, [])).toBe(EXIT.ok)
     expect(f.out()).toMatch(/^ok {4}socket +Skipped: no host is running/m)
     expect(f.connectCalls).toHaveLength(0)
+  })
+})
+
+describe('orgai doctor: install and shim (cli-spec 7, Wave 6)', () => {
+  const RES = '/Applications/OrgAI.app/Contents/Resources'
+  const LAUNCHER = `${RES}/bin/orgai`
+  const SHIM = () => join(dir, '.local', 'bin', 'orgai')
+  /** Fake file system for the shim reads: path -> text. */
+  let files: Map<string, string>
+  beforeEach(() => {
+    files = new Map()
+    doctorProbes.readText = (p) => {
+      const t = files.get(p)
+      if (t === undefined) throw Object.assign(new Error(`ENOENT: ${p}`), { code: 'ENOENT' })
+      return t
+    }
+    doctorProbes.exists = (p) => files.has(p) || p === LAUNCHER
+    doctorProbes.realpath = (p) => p
+  })
+  const packaged = (): void => {
+    doctorProbes.bundleDir = () => `${RES}/app.asar.unpacked/out/cli`
+    doctorProbes.electronVersion = () => '45.1.0'
+    doctorProbes.nodeVersion = () => '24.22.1'
+  }
+  const shimText = (launcher: string): string => renderCliShim({ platform: 'darwin', launcher })
+  const pathEnv = (): NodeJS.ProcessEnv => ({ PATH: `/usr/bin:${join(dir, '.local', 'bin')}` })
+
+  it('install: packaged, dev checkout, standalone bundle and a transient copy', () => {
+    packaged()
+    expect(installCheck('darwin', {})).toEqual({ id: 'install', status: 'ok', detail: `Packaged OrgAI at ${RES} (Electron 45.1.0, Node 24.22.1)` })
+    doctorProbes.bundleDir = () => '/Volumes/OrgAI/OrgAI.app/Contents/Resources/app.asar.unpacked/out/cli'
+    const transient = installCheck('darwin', {})
+    expect(transient.status).toBe('warn')
+    expect(transient.detail).toContain('Move OrgAI to your Applications folder first')
+    doctorProbes.bundleDir = realProbes.bundleDir
+    const dev = installCheck('darwin', {})
+    expect(dev.status).toBe('ok')
+    expect(dev.detail).toMatch(/^Development checkout /)
+    doctorProbes.bundleDir = () => join(dir, 'somewhere', 'cli')
+    expect(installCheck('linux', {})).toEqual({ id: 'install', status: 'ok', detail: `Standalone bundle ${join(dir, 'somewhere', 'cli')}` })
+  })
+
+  it('the node check passes on Electron 45 Node 24', async () => {
+    packaged()
+    const f = fakeContext({ paths: { userDataDir: dir, dataDir: join(dir, 'data') }, platform: 'darwin', env: pathEnv(), globals: { outputFormat: 'json' } })
+    expect(await runDoctor(f.ctx, [])).toBe(EXIT.ok)
+    const checks = JSON.parse(f.out()).checks as { id: string; status: string; detail: string }[]
+    expect(checks.find((c) => c.id === 'node')).toEqual({ id: 'node', status: 'ok', detail: 'Node 24.22.1' })
+  })
+
+  it('shim: missing is ok and names where to install it', () => {
+    packaged()
+    expect(shimCheck('darwin', pathEnv())).toEqual({ id: 'shim', status: 'ok', detail: 'The orgai command is not installed (App settings > General > Advanced settings > Terminal)' })
+  })
+
+  it('shim: a foreign file warns and names the path', () => {
+    packaged()
+    files.set(SHIM(), '#!/bin/sh\nexec /opt/other/orgai "$@"\n')
+    const c = shimCheck('darwin', pathEnv())
+    expect(c.status).toBe('warn')
+    expect(c.detail).toContain(SHIM())
+    expect(c.detail).toContain('not an OrgAI shim')
+  })
+
+  it("shim: this install's launcher on PATH is ok", () => {
+    packaged()
+    files.set(SHIM(), shimText(LAUNCHER))
+    expect(shimCheck('darwin', pathEnv())).toEqual({ id: 'shim', status: 'ok', detail: `${SHIM()} runs this OrgAI (${LAUNCHER})` })
+  })
+
+  it('shim: another install or a missing launcher warns with Open OrgAI to update it', () => {
+    packaged()
+    const other = '/Users/me/Downloads/OrgAI.app/Contents/Resources/bin/orgai'
+    files.set(other, '')
+    files.set(SHIM(), shimText(other))
+    const c = shimCheck('darwin', pathEnv())
+    expect(c.status).toBe('warn')
+    expect(c.detail).toContain('runs another OrgAI')
+    expect(c.detail).toContain('Open OrgAI to update it')
+    files.set(SHIM(), shimText('/gone/OrgAI.app/Contents/Resources/bin/orgai'))
+    const gone = shimCheck('darwin', pathEnv())
+    expect(gone.status).toBe('warn')
+    expect(gone.detail).toContain('is gone')
+    expect(gone.detail).toContain('Open OrgAI to update it')
+  })
+
+  it('shim: a folder that is not on PATH warns with the export hint (never edits a profile)', () => {
+    packaged()
+    files.set(SHIM(), shimText(LAUNCHER))
+    const c = shimCheck('darwin', { PATH: '/usr/bin:/bin' })
+    expect(c.status).toBe('warn')
+    expect(c.detail).toContain(`export PATH="${join(dir, '.local', 'bin')}:$PATH"`)
+    // A trailing slash on the PATH entry still counts.
+    expect(shimCheck('darwin', { PATH: `${join(dir, '.local', 'bin')}/` }).status).toBe('ok')
+  })
+
+  it('doctor lists the shim check and never writes the shim', async () => {
+    packaged()
+    const f = fakeContext({ paths: { userDataDir: dir, dataDir: join(dir, 'data') }, platform: 'darwin', env: { PATH: '/usr/bin' } })
+    expect(await runDoctor(f.ctx, [])).toBe(EXIT.ok)
+    expect(f.out()).toMatch(/^ok {4}install +Packaged OrgAI at /m)
+    expect(f.out()).toMatch(/^ok {4}shim +The orgai command is not installed/m)
+    expect(files.size).toBe(0)
   })
 })

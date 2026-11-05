@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { LITELLM_KEY, READ_ONLY_SECRETS_MESSAGE, type SecretStore } from '../main/store/secrets'
-import { startInprocHost, type InprocHost } from './inprocHost'
+import { inprocCliRoots, startInprocHost, type InprocHost } from './inprocHost'
 import { CliError } from './types'
 
 let userDataDir: string
@@ -53,5 +53,20 @@ describe('startInprocHost', () => {
     expect(existsSync(join(dataDir, 'run', 'daemon.json'))).toBe(false)
     // Stopping again is a no-op.
     await h.stop(true)
+  })
+})
+
+describe('inprocCliRoots (cli-spec 7, Wave 6)', () => {
+  it('covers the packaged layout from the unpacked bundle folder', () => {
+    const res = '/Applications/OrgAI.app/Contents/Resources'
+    const roots = inprocCliRoots(`${res}/app.asar.unpacked/out/cli`, 'darwin')
+    expect(roots).toContain(`${res}/app.asar.unpacked/out/cli`)
+    expect(roots).toContain(`${res}/bin`)
+    expect(new Set(roots).size).toBe(roots.length)
+  })
+
+  it('a dev checkout keeps out/cli and src/cli only', () => {
+    expect(inprocCliRoots('/repo/out/cli', 'linux')).toEqual(['/repo/out/cli', '/repo/src/cli'])
+    expect(inprocCliRoots('/repo/src/cli', 'linux')).toEqual(['/repo/out/cli', '/repo/src/cli'])
   })
 })
