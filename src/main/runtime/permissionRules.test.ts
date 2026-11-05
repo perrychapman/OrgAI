@@ -169,6 +169,25 @@ describe('engagements: a { file } target round trip', () => {
   })
 })
 
+describe('H3: listRules drops rules OrgAI would not save', () => {
+  it('drops bare shells, destructive, too-broad and hidden-character rules, keeps safe ones, and leaves them in the file', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'orgai-rules-'))
+    try {
+      const file = join(dir, 'rules.json')
+      const allow = ['Bash', 'Bash(rm:*)', 'Bash(python:*)', 'Bash(curl:*)', 'Bash(npm test)‮', 'Bash(npm test:*)', 'Bash(curl https://example.com)']
+      writeFileSync(file, JSON.stringify({ other: 1, permissions: { allow } }))
+      expect(listRules({ file })).toEqual(['Bash(npm test:*)', 'Bash(curl https://example.com)'])
+      expect(addRules({ file }, ['Bash(ls:*)'])).toEqual(['Bash(npm test:*)', 'Bash(curl https://example.com)', 'Bash(ls:*)'])
+      const stored = JSON.parse(readFileSync(file, 'utf8')) as { other: number; permissions: { allow: string[] } }
+      expect(stored.other).toBe(1)
+      for (const r of allow) expect(stored.permissions.allow).toContain(r)
+      expect(removeRule({ file }, 'Bash(ls:*)')).toEqual(['Bash(npm test:*)', 'Bash(curl https://example.com)'])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('issue #14: saving dedupes and reports only new rules', () => {
   it('listRules and addRules dedupe a bloated file; removeRule drops every copy', () => {
     const dir = mkdtempSync(join(tmpdir(), 'orgai-rules-'))
