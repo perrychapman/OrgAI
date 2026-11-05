@@ -196,9 +196,11 @@ try {
         body.scrollTop = body.scrollHeight
         await new Promise((r) => setTimeout(r, 100))
         const aside = body.closest('aside')
-        return { y0, y1: tab.getBoundingClientRect().top, scrolled: body.scrollTop > 0, asideScroll: aside ? aside.scrollTop : 0 }
+        return { y0, y1: tab.getBoundingClientRect().top, scrolled: body.scrollTop > 0, asideScroll: aside ? aside.scrollTop : 0, asideOverflow: aside ? aside.scrollHeight - aside.clientHeight : 0, asideOverflowX: aside ? aside.scrollWidth - aside.clientWidth : 0, bodyOv: getComputedStyle(body).overflowY }
       })
       check(!!pin && pin.scrolled && Math.abs(pin.y1 - pin.y0) < 0.5 && pin.asideScroll === 0, 'the side panel header stays fixed while the transcript body scrolls', JSON.stringify(pin))
+      // Issue #17: only the tab panel scrolls; the outer aside never grows a second scrollbar.
+      check(!!pin && pin.asideOverflow <= 1 && pin.asideOverflowX <= 1 && pin.bodyOv === 'auto', 'the side panel aside has no scroll of its own (only the tab panel scrolls)', JSON.stringify(pin))
     } else {
       check(false, 'the side panel tabs are reachable on the Live view')
     }

@@ -350,6 +350,9 @@
 .run-body > .side-panel {
   grid-row: 1 / span 2;
   grid-column: 2;
+  /* The run panel is a bounded column: its tab panel is the only scroller. The outer .side must never grow a
+     second scrollbar of its own (sub-pixel rounding or an escaping positioned box would otherwise cause one). */
+  overflow: hidden;
 }
 /* Wide panel (SidePanel sets data-side-wide from 480 px): the composer moves under the transcript, in the panel column.
    Same element, so the draft and attachments survive; the canvas frame takes both rows. */

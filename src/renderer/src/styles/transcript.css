@@ -545,6 +545,7 @@
   position: static;
 }
 .side-run > [role='tabpanel'] {
+  position: relative; /* positioned descendants are clipped by this scroller, not by .side-panel */
   flex: 1;
   min-height: 0;
   overflow-y: auto;
