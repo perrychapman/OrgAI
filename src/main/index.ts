@@ -47,6 +47,8 @@ import { dataDirOverride, installLogging, log } from './log'
 import { buildSettingsInfo, windowBackground } from './appInfo'
 import { quitGate } from './quitGate'
 
+// The certificate-reader child runs this binary with ELECTRON_RUN_AS_NODE=1; if a RunAsNode fuse is off it would boot a full app here.
+if (process.env.ELECTRON_RUN_AS_NODE) process.exit(0)
 // Before anything reads a path: ORGAI_DATA_DIR (CI, e2e) replaces userData and moves logs under it, so a run never
 // touches the real profile or ~/Library/Logs. app.setPath throws for a missing directory, so create it first.
 const dataOverride = dataDirOverride()
