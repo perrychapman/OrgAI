@@ -86,6 +86,30 @@ async function layoutOk(label) {
   if (r.stepBottom !== null) check(r.stepClear === true, `${label}: the clone step's button is in view above the submit row`, JSON.stringify(r))
 }
 
+/** H1: the element (an error or status) is the topmost thing at its own centre, so no sticky row sits over it. */
+async function topmostAt(testId, label) {
+  const r = await page.evaluate((id) => {
+    const el = document.querySelector(`[data-testid=${id}]`)
+    if (!el) return { found: false }
+    const b = el.getBoundingClientRect()
+    const x = b.left + b.width / 2
+    const y = b.top + b.height / 2
+    const top = document.elementFromPoint(x, y)
+    return { found: true, y, h: window.innerHeight, ok: !!top && el.contains(top), over: top ? `${top.tagName}.${String(top.className).slice(0, 40)}[${top.getAttribute('data-testid') ?? ''}]` : null }
+  }, testId)
+  check(r.found && r.ok, `${label}: ${testId} is the topmost element at its centre`, JSON.stringify(r))
+}
+
+/** M3: the setup choice sits fully above the sticky Create row after a clone. */
+async function choiceInView(label, sel = '[data-testid=setup-choice]') {
+  const r = await page.evaluate((s) => {
+    const c = document.querySelector(s)?.getBoundingClientRect()
+    const bar = document.querySelector('.form-submit')?.getBoundingClientRect()
+    return { top: c?.top ?? null, bottom: c?.bottom ?? null, barTop: bar?.top ?? null, h: window.innerHeight }
+  }, sel)
+  check(r.top !== null && r.top >= 0 && r.bottom <= r.barTop + 1, `${label}: the setup choice is in view above Create`, JSON.stringify(r))
+}
+
 try {
   await size(1024, 640, 'dark')
 
@@ -107,6 +131,28 @@ try {
     check((await form.locator('.form-submit .hint').innerText()).includes('Clone the repository first.'), 'submit says why')
     check((await tid('use-mock').count()) === 0 && (await tid('architect-setup').count()) === 0, 'no setup choice before the clone')
 
+    // H1: a failed fork-and-clone on the inline form keeps its error (with the fork's address) above the sticky rows.
+    for (const theme of ['dark', 'light']) {
+      await size(1024, 640, theme)
+      if (theme === 'dark') {
+        await page.waitForFunction(() => document.querySelector('[data-testid=repo-mode-fork]')?.getAttribute('aria-disabled') !== 'true', null, { timeout: 10_000 })
+        // At 1024x640 on first launch the radios sit under the sticky rows (M4, open): click through the DOM.
+        await tid('repo-mode-fork').evaluate((el) => el.click())
+        await fillRepo('mock-org/fork-clone-fails', base)
+        await tid('repo-clone').click()
+        await tid('repo-clone-error').waitFor({ timeout: 30_000 })
+        await sleep(200)
+        check((await textOf('repo-clone-error')).includes('github.com/mock-user/fork-clone-fails'), 'inline fork failure names the fork')
+      }
+      await topmostAt('repo-clone-error', `inline fork failure 1024 ${theme}`)
+      await layoutOk(`inline fork failure 1024 ${theme}`)
+      if (theme === 'light') await screenshot(page, 'clone-start-inline-fork-failure-light')
+      else await screenshot(page, 'clone-start-inline-fork-failure-dark')
+    }
+    await size(1024, 640, 'dark')
+    await tid('repo-mode-clone').evaluate((el) => el.click())
+    await tid('repo-source').fill('')
+    await tid('repo-source').focus()
     await page.keyboard.type('octo/first')
     await sleep(400)
     check((await tid('repo-folder').inputValue()) === 'first', 'folder name follows the repository')
@@ -125,6 +171,7 @@ try {
     check((await textOf('new-project-status')).startsWith('Cloned.'), 'the polite status says it was cloned', await textOf('new-project-status'))
     check((await page.locator('input[placeholder*="Defaults to the folder name"]').count()) === 1, 'the name field appears')
     await layoutOk('inline after clone 1024')
+    await choiceInView('inline after clone 1024', '.form-options')
     await page.locator('[data-testid=architect-setup]').waitFor()
     await page.locator('label.checkbox', { hasText: 'Set up with the Architect' }).click()
     await tid('new-project-submit').click()
@@ -184,6 +231,8 @@ try {
     await sleep(300)
     check((await textOf('new-project-status')).includes('Choose how the team starts'), `${tag}: the setup choice is announced`, await textOf('new-project-status'))
     await layoutOk(`${tag} after clone with agents`)
+    await choiceInView(`${tag} after clone with agents`)
+    check((await activeTestId()) === 'repo-cloned-line', `${tag}: focus still on the cloned line after the reveal`, String(await activeTestId()))
     await screenshot(page, `clone-start-${tag}-cloned`)
     const importRadio = form.locator('[data-testid=setup-choice] input[value=import]')
     if (!(await importRadio.isChecked())) await importRadio.check({ force: true })
@@ -210,6 +259,7 @@ try {
   check(await tid('repo-mode-clone').isChecked(), 'gh missing: choosing it does nothing')
   check((await tid('repo-clone').innerText()).trim() === 'Clone', 'gh missing: the button stays Clone')
   check((await textOf('repo-fork-reason')).includes('Install the GitHub CLI'), 'gh missing: says why', await textOf('repo-fork-reason'))
+  check((await tid('repo-gh-install-link').getAttribute('href')) === 'https://cli.github.com', 'gh missing: cli.github.com is a real link')
   check((await tid('repo-mode-fork').getAttribute('aria-describedby')) !== null, 'gh missing: the reason is tied to the radio')
   check(!(await isInert(tid('repo-clone'))), 'gh missing: a plain clone still works')
 
@@ -336,7 +386,15 @@ try {
     check(!(await isInert(tid('repo-clone'))), `${source} ${mode}: a retry is possible`)
     check(!fs.existsSync(path.join(base, `fail-${source.replace('/', '-')}-${mode}`)), `${source} ${mode}: no folder left`)
     await layoutOk(`${source} ${mode} error`)
+    await topmostAt('repo-clone-error', `${source} ${mode} (dialog 1024 dark)`)
   }
+  for (const theme of ['light', 'dark']) {
+    await size(1024, 640, theme)
+    await topmostAt('repo-clone-error', `fork-clone-fails (dialog 1024 ${theme})`)
+  }
+  await size(1600, 1000, 'dark')
+  await topmostAt('repo-clone-error', 'fork-clone-fails (dialog 1600 dark)')
+  await size(1024, 640, 'dark')
   // Retry forks again: same failure, same sentence, still no crash.
   await tid('repo-clone').click()
   await sleep(300)

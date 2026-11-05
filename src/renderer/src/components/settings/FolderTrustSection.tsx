@@ -26,17 +26,20 @@ import {
   isLongText,
   itemBadges,
   reviewSections,
+  sectionFiles,
+  FILE_CHECKED_TEXT,
+  FILE_UNCHECKED_TEXT,
   takeFolderTrustRequest,
   type ReviewSectionKey
 } from '../../lib/folderTrust'
 import type { FolderTrustReviewState } from './useFolderTrustReview'
 
 /** Plain text only: hidden characters are written out, long text is clamped behind a toggle. */
-function TrustText({ text, label }: { text: string; label: string }): ReactElement {
+function TrustText({ text, label, noClamp = false }: { text: string; label: string; noClamp?: boolean }): ReactElement {
   const [open, setOpen] = useState(false)
   const id = useId()
   const shown = showHidden(text)
-  const long = isLongText(shown)
+  const long = !noClamp && isLongText(shown)
   return (
     <>
       <pre id={id} className={`trust-text${long && !open ? ' clamped' : ''}`}>
@@ -86,18 +89,17 @@ function Item({ testId, head, source, badges, data, children }: { testId: string
   )
 }
 
-function FileRow({ file }: { file: FolderConfigFile }): ReactElement {
-  const [open, setOpen] = useState(false)
+function FileRow({ file, open, team }: { file: FolderConfigFile; open: boolean; team: boolean }): ReactElement {
   const id = useId()
   const path = showHidden(file.path)
   return (
     <Item
-      testId="folder-trust-file"
+      testId={team ? 'folder-trust-team-file' : 'folder-trust-file'}
       data={{ digested: String(file.digested) }}
       head={<span className="trust-mono">{path}</span>}
       badges={
         <>
-          <Badge tone={file.digested ? 'neutral' : 'attention'}>{file.digested ? 'Checked for changes' : 'Not checked'}</Badge>
+          {!team && <Badge tone={file.digested ? 'neutral' : 'attention'}>{file.digested ? FILE_CHECKED_TEXT : FILE_UNCHECKED_TEXT}</Badge>}
           <Badges item={file} />
         </>
       }
@@ -107,17 +109,32 @@ function FileRow({ file }: { file: FolderConfigFile }): ReactElement {
         {file.truncated && ` · Only the first ${Math.round(FOLDER_CONFIG_FILE_TEXT_MAX / 1024)} KB of text is shown.`}
       </p>
       {file.text !== undefined && (
-        <>
-          <button type="button" className="btn ghost sm" aria-expanded={open} aria-controls={id} onClick={() => setOpen((o) => !o)}>
-            {open ? 'Hide text' : 'Show text'}
-            <span className="sr-only"> of {path}</span>
-          </button>
-          <div id={id} hidden={!open}>
-            {open && <TrustText text={file.text} label={path} />}
-          </div>
-        </>
+        <div id={id} hidden={!open}>
+          {open && <TrustText text={file.text} label={path} noClamp />}
+        </div>
       )}
     </Item>
+  )
+}
+
+/** Files of one section behind a single "Show all text" toggle: one tab stop instead of one per file. */
+function FilesList({ files, team }: { files: FolderConfigFile[]; team: boolean }): ReactElement {
+  const [open, setOpen] = useState(false)
+  const hasText = files.some((f) => f.text !== undefined)
+  return (
+    <>
+      {hasText && (
+        <button type="button" className="btn ghost sm trust-files-toggle" aria-expanded={open} data-testid={team ? 'folder-trust-team-text-toggle' : 'folder-trust-text-toggle'} onClick={() => setOpen((o) => !o)}>
+          {open ? 'Hide all text' : 'Show all text'}
+          <span className="sr-only">{team ? ' of the OrgAI team files' : ' of these files'}</span>
+        </button>
+      )}
+      <ul className="trust-list">
+        {files.map((f, i) => (
+          <FileRow key={i} file={f} open={open} team={team} />
+        ))}
+      </ul>
+    </>
   )
 }
 
@@ -202,13 +219,7 @@ function SectionList({ review, k }: { review: FolderConfigReview; k: ReviewSecti
         </ul>
       )
     default:
-      return (
-        <ul className="trust-list">
-          {review.files.map((f, i) => (
-            <FileRow key={i} file={f} />
-          ))}
-        </ul>
-      )
+      return <FilesList files={sectionFiles(review, k === 'teamFiles' ? 'teamFiles' : 'files')} team={k === 'teamFiles'} />
   }
 }
 
@@ -240,7 +251,10 @@ function ReviewBody({ review, message, messageRef }: { review: FolderConfigRevie
           <h3 id={`trust-h-${s.key}`} className="trust-h">
             {s.title} <span className="trust-count">({s.count})</span>
           </h3>
-          {s.key === 'files' && <p className="trust-meta">{filesSummary(review)}</p>}
+          <p className="trust-meta" data-testid="folder-trust-section-summary">
+            {s.summary}
+            {s.key === 'files' && ` ${filesSummary(review)}`}
+          </p>
           <SectionList review={review} k={s.key} />
         </section>
       ))}

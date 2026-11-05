@@ -12,6 +12,7 @@ import { noRuleLine, permissionLocation, permissionOffer, referenceEffect, refer
 import { PROJECT_SETTINGS_SECTIONS } from '../lib/settingsTarget'
 import { openProjectSettings } from '../lib/openProjectSettings'
 import { useAppStore } from '../store/useAppStore'
+import { FolderTrustCardLine } from './FolderTrustNotice'
 
 export type PermissionChoice = { behavior: 'allow'; scope: 'once' | 'session' | 'project' } | { behavior: 'deny'; message: string }
 
@@ -216,6 +217,8 @@ export default function PermissionCard({ runId, request, who, onDecide }: Props)
             {location.detail && <span className="perm-location-detail">{location.detail}</span>}
           </p>
         )}
+        {/* Right under the location so it stays in the compact glance; renders nothing unless the folder's settings are ignored. */}
+        {project && <FolderTrustCardLine project={project} />}
         {showEffect && (
           <div className="perm-effect">
             <p className="perm-effect-text" data-testid="perm-scope-project" title={copy.project}>

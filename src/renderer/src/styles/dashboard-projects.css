@@ -471,11 +471,12 @@ html[data-reduce-motion='on'] .project-tile-dot.live {
 .repo-tail-hint {
   margin: 0 0 var(--space-3);
 }
-/* The step's own button stays in view too, just above the sticky submit row (about 56 px high). */
+/* The step's own button (with its errors and status) stays in view too, just above the sticky submit row. NewProjectForm
+   measures that row into --form-submit-h; the fallback is only for the first frame. */
 .repo-progress-block,
 .repo-action {
   position: sticky;
-  bottom: calc(var(--space-8) + var(--space-6));
+  bottom: var(--form-submit-h, calc(var(--space-8) + var(--space-6)));
   padding-block: var(--space-2);
   background: var(--surface-2);
 }
@@ -501,6 +502,11 @@ html[data-reduce-motion='on'] .project-tile-dot.live {
   visibility: hidden;
 }
 .repo-action {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.repo-action-row {
   gap: var(--space-3);
 }
 .repo-action .hint {

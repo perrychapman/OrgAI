@@ -5,6 +5,9 @@ import {
   canRevoke,
   filesSummary,
   folderTrustDismissKey,
+  folderTrustIgnored,
+  folderTrustNoticeText,
+  settingsCounts,
   folderTrustState,
   folderTrustSentence,
   folderTrustSummary,
@@ -45,7 +48,7 @@ describe('state', () => {
     expect(hasFolderTrustField(null)).toBe(false)
   })
   it('has a sentence per state', () => {
-    expect(folderTrustSentence('untrusted')).toBe("Agents are ignoring this folder's own settings until you allow them.")
+    expect(folderTrustSentence('untrusted')).toBe("Agents ignore this folder's own settings until you review and allow them. Allow lets agents use them from the next run.")
     expect(folderTrustSentence('changed')).toMatch(/changed since you allowed them/)
     expect(folderTrustSentence('trusted', '2026-11-04T10:00:00.000Z')).toMatch(/^Agents use this folder's own settings\. Allowed \d{1,2} \w{3} 2026\.$/)
     expect(folderTrustSentence('trusted')).toBe("Agents use this folder's own settings.")
@@ -109,8 +112,29 @@ describe('review parts', () => {
   })
   it('says which files are not checked', () => {
     const f = (digested: boolean) => ({ path: 'p', effect: 'tools' as const, kind: 'file' as const, sizeBytes: 1, digested })
-    expect(filesSummary({ files: [f(true), f(false)] })).toMatch(/1 checked.*other 1.*can change while you trust/)
-    expect(filesSummary({ files: [f(true)] })).toBe('1 file, 1 checked for changes.')
+    expect(filesSummary({ files: [f(true), f(false)] })).toMatch(/1 of them asks you again.*other 1 is instructions only.*don't ask again/)
+    expect(filesSummary({ files: [f(true)] })).toBe('1 file. A change to it asks you again.')
+    expect(filesSummary({ files: [f(true), { ...f(true), path: '.orgai/team.json' }] })).toBe('1 file. A change to it asks you again.')
+  })
+  it('groups OrgAI team files apart and uses the present tense once allowed', () => {
+    const file = (path: string) => ({ path, effect: 'tools' as const, kind: 'file' as const, sizeBytes: 1, digested: true })
+    const r = review({ files: [file('.mcp.json'), file('.orgai/team.json'), file('.orgai/agents/a.md')], allowRules: [{ source: 's', rule: 'Bash(ls:*)' }] })
+    const s = reviewSections(r)
+    expect(s.map((x) => [x.key, x.count])).toEqual([['allowRules', 1], ['files', 1], ['teamFiles', 2]])
+    expect(s.find((x) => x.key === 'allowRules')?.title).toBe('Permission rules it would add')
+    expect(reviewSections({ ...r, state: 'trusted' }).find((x) => x.key === 'allowRules')?.title).toBe('Permission rules it adds')
+    expect(s.every((x) => x.summary.length > 10)).toBe(true)
+    expect(s.find((x) => x.key === 'teamFiles')?.title).toMatch(/reviewed in Team/)
+  })
+  it('counts the folder settings without team files and words the notice', () => {
+    const file = (path: string) => ({ path, effect: 'tools' as const, kind: 'file' as const, sizeBytes: 1, digested: true })
+    const r = review({ allowRules: [{ source: 's', rule: 'Bash(ls:*)' }], mcpServers: [{ source: 's', name: 'x', target: 't' }], files: [file('.orgai/agents/a.md')] })
+    expect(settingsCounts(r)).toEqual(['1 command rule', '1 server'])
+    expect(folderTrustNoticeText('untrusted', r)).toBe("This folder came with its own agent settings (1 command rule, 1 server). Agents ignore them until you review and allow them.")
+    expect(folderTrustNoticeText('untrusted', null)).toBe('This folder came with its own agent settings. Agents ignore them until you review and allow them.')
+    expect(folderTrustNoticeText('changed', r)).toMatch(/changed since you allowed them/)
+    expect(folderTrustIgnored('changed')).toBe(true)
+    expect(folderTrustIgnored('trusted')).toBe(false)
   })
   it('clamps long text', () => {
     expect(isLongText('short')).toBe(false)

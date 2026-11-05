@@ -19,7 +19,6 @@ import {
   takeProjectSettingsSection,
   type ProjectSettingsSection
 } from '../../lib/settingsTarget'
-import { folderTrustState, folderTrustSummary } from '../../lib/folderTrust'
 import { FolderTrustSection } from './FolderTrustSection'
 import { useFolderTrustReview } from './useFolderTrustReview'
 import { AllowedDirectoriesSection } from './AllowedDirectoriesSection'
@@ -160,9 +159,8 @@ export function PermissionsSection({ project, patch }: { project: Project; patch
   const showIsolation = !engagement || isoSeenOn || project.isolateWriters === true
   const isoLabel = engagement ? 'Give each writer its own copy (git worktrees)' : copy.isolateWriters.label
   const trust = useFolderTrustReview(project)
-  const trustLine = folderTrustSummary(folderTrustState(project, trust.review))
-  const rulesSummary = allowedSummary(ruleCount, folderCount, referenceCount)
-  const summary = rulesSummary && trustLine ? `${rulesSummary}. ${trustLine}` : rulesSummary
+  // The folder's own settings have their own row below (FolderTrustSection); this row is only the saved rules and folders.
+  const summary = allowedSummary(ruleCount, folderCount, referenceCount)
   const bodyId = row('summary-body')
 
   return (
