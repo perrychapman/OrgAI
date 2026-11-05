@@ -1,9 +1,21 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
-import { SKILL_MAX_FILES, SKILL_MAX_FILE_BYTES, SKILL_MAX_TOTAL_BYTES, type SkillFileInfo } from '@shared/types'
+import {
+  SKILL_BUNDLE_FILE_MAX_BYTES,
+  SKILL_BUNDLE_MAX_BYTES,
+  SKILL_BUNDLE_MAX_FILES,
+  SKILL_BUNDLE_SKILL_MD_MAX_BYTES,
+  SKILL_MAX_FILES,
+  SKILL_MAX_FILE_BYTES,
+  SKILL_MAX_TOTAL_BYTES,
+  type SkillBundleFile,
+  type SkillBundleInput,
+  type SkillFileInfo
+} from '@shared/types'
 import { isSafeId } from '@shared/defaults'
 import { inGitDir } from '../setup/import/scan'
+import { hiddenCharIn } from '../capabilities/sanitize'
 
 /**
  * Confined skill-folder I/O: reading an untrusted folder (never following links, never entering .git, capped),
@@ -261,6 +273,140 @@ export function writeFolder(dest: string, files: FileData[]): void {
   } catch (e) {
     rmSync(tmp, { recursive: true, force: true })
     throw e
+  }
+}
+
+// ---------- skill bundles (cli-spec 3.6 item 1) ----------
+
+/** Longest relPath a bundle may carry (the kit format's limit). */
+export const SKILL_BUNDLE_PATH_MAX = 200
+/** Longest bundle name bundleArgs accepts (the folder-name fallback for a SKILL.md without a name). */
+const SKILL_BUNDLE_NAME_MAX = 200
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return false
+  const proto = Object.getPrototypeOf(v)
+  return proto === Object.prototype || proto === null
+}
+
+/**
+ * Rebuilds a skillLibrary:addFromBundle input field by field: a plain object with a string `name` and at most
+ * SKILL_BUNDLE_MAX_FILES `{ relPath, base64 }` string pairs. Extra fields are dropped. Throws a readable Error.
+ * Content checks (paths, sizes, base64, text) are readBundle's.
+ */
+export function bundleArgs(input: unknown): SkillBundleInput {
+  if (!isPlainObject(input)) throw new Error('The skill bundle is not valid.')
+  const name = input.name
+  if (typeof name !== 'string' || name.length > SKILL_BUNDLE_NAME_MAX) throw new Error('The skill bundle needs a name.')
+  const raw = input.files
+  if (!Array.isArray(raw)) throw new Error('The skill bundle has no files.')
+  if (raw.length > SKILL_BUNDLE_MAX_FILES) throw new Error(`The skill bundle has more than ${SKILL_BUNDLE_MAX_FILES} files.`)
+  const files: SkillBundleFile[] = []
+  for (const f of raw) {
+    if (!isPlainObject(f) || typeof f.relPath !== 'string' || typeof f.base64 !== 'string') throw new Error('A file of the skill bundle is not valid.')
+    files.push({ relPath: f.relPath, base64: f.base64 })
+  }
+  return { name, files }
+}
+
+const STRICT_BASE64 = /^[A-Za-z0-9+/]*={0,2}$/
+
+/** The longest base64 string that can decode to at most `maxBytes` (4 chars carry 3 bytes). */
+export function base64MaxChars(maxBytes: number): number {
+  return Math.ceil(maxBytes / 3) * 4
+}
+
+/**
+ * Strictly decoded base64, or null: the alphabet and padding regex, length % 4 == 0, the length bounded by
+ * `maxBytes` before anything is decoded, and a canonical encoding (Node silently ignores stray trailing bits).
+ */
+export function strictBase64(s: unknown, maxBytes: number): Buffer | null {
+  if (typeof s !== 'string' || s.length % 4 !== 0 || s.length > base64MaxChars(maxBytes)) return null
+  if (!STRICT_BASE64.test(s)) return null
+  const data = Buffer.from(s, 'base64')
+  if (data.length > maxBytes || data.toString('base64') !== s) return null
+  return data
+}
+
+/**
+ * Why a bundle relPath is refused, or null. `safeKitRelPath` (no '..', '.' or empty segments; no absolute, drive or
+ * backslash paths; no ':' so no drive or alternate data stream syntax; no Windows reserved device names CON, PRN, AUX,
+ * NUL, COM1-9, LPT1-9 with any extension in any segment, case-insensitive; no trailing dot or space; none of <>"|?*)
+ * plus control and hidden characters, UNC / device prefixes, git internals and the SKILL_MAX_DEPTH cap.
+ */
+export function bundlePathProblem(p: unknown): string | null {
+  if (typeof p !== 'string' || !p || p.length > SKILL_BUNDLE_PATH_MAX) return 'The file path is empty or too long.'
+  if (/^[\\/]{2}/.test(p)) return 'Network and device paths are not allowed.'
+  if (hiddenCharIn(p)) return 'The file path contains a control or hidden character.'
+  if (!safeKitRelPath(p)) return 'The file path is not allowed.'
+  if (inGitDir(p)) return 'Git internals are not allowed.'
+  if (p.split('/').length - 1 > SKILL_MAX_DEPTH) return `Folders nested deeper than ${SKILL_MAX_DEPTH} levels.`
+  return null
+}
+
+function pathLabel(p: unknown): string {
+  if (typeof p !== 'string') return 'not a string'
+  return JSON.stringify(p.replace(/[^\x20-\x7e]/g, '?').slice(0, 60))
+}
+
+export type BundleRead = { ok: true; files: FileData[]; notes: string[] } | { ok: false; reason: string }
+
+/**
+ * Decodes and validates a skill bundle with the rules FolderReader applies to a picked folder, plus cli-spec 3.6(1).
+ * Differences from FolderReader, on purpose:
+ *  - caps: SKILL.md at most SKILL_BUNDLE_SKILL_MD_MAX_BYTES (256 KB) and every other file at most
+ *    SKILL_BUNDLE_FILE_MAX_BYTES (64 KB); FolderReader allows SKILL_MAX_FILE_BYTES (256 KB) for every file. 50 files
+ *    and 1 MB in all are the same numbers as SKILL_MAX_FILES / SKILL_MAX_TOTAL_BYTES;
+ *  - binary refusal: a file with a NUL byte or invalid UTF-8 is refused. FolderReader copies binaries; the kit format
+ *    refuses them the same way as here (skillToKit / parseSkill);
+ *  - git internals are refused (FolderReader skips them with a note), case-insensitive duplicate paths are refused
+ *    (a folder cannot hold them on Windows / macOS), and a bundle has no links to follow;
+ *  - SKILL.md must be at the root (FolderReader's caller, buildScannedSkill, requires the same).
+ * Pure; never throws.
+ */
+export function readBundle(input: SkillBundleInput): BundleRead {
+  try {
+    const list = input?.files
+    if (!Array.isArray(list) || list.length === 0) return { ok: false, reason: 'The skill bundle has no files.' }
+    if (list.length > SKILL_BUNDLE_MAX_FILES) return { ok: false, reason: `More than ${SKILL_BUNDLE_MAX_FILES} files.` }
+    const decoder = new TextDecoder('utf-8', { fatal: true })
+    const seen = new Set<string>()
+    const files: FileData[] = []
+    let total = 0
+    for (const f of list) {
+      const rel = f?.relPath
+      const problem = bundlePathProblem(rel)
+      if (problem) return { ok: false, reason: `${problem} (${pathLabel(rel)})` }
+      const key = rel.toLowerCase()
+      if (seen.has(key)) return { ok: false, reason: `Two files have the same path (${pathLabel(rel)}).` }
+      seen.add(key)
+      const cap = rel === 'SKILL.md' ? SKILL_BUNDLE_SKILL_MD_MAX_BYTES : SKILL_BUNDLE_FILE_MAX_BYTES
+      const b64: unknown = f?.base64
+      if (typeof b64 !== 'string') return { ok: false, reason: `${rel} is not valid base64.` }
+      // Bounded by length before decoding: a string that would decode past the cap is refused as too large.
+      if (b64.length > base64MaxChars(cap)) return { ok: false, reason: `${rel} is larger than ${cap / 1024} KB.` }
+      // The length bound above leaves up to 2 bytes of slack; those are reported as too large, not as bad base64.
+      const data = strictBase64(b64, cap + 2)
+      if (!data) return { ok: false, reason: `${rel} is not valid base64.` }
+      if (data.length > cap) return { ok: false, reason: `${rel} is larger than ${cap / 1024} KB.` }
+      total += data.length
+      if (total > SKILL_BUNDLE_MAX_BYTES) return { ok: false, reason: `The skill is larger than ${SKILL_BUNDLE_MAX_BYTES / 1024 / 1024} MB.` }
+      let text = true
+      if (data.includes(0)) text = false
+      else {
+        try {
+          decoder.decode(data)
+        } catch {
+          text = false
+        }
+      }
+      if (!text) return { ok: false, reason: `${rel} is not a text file; bundles carry text files only.` }
+      files.push({ path: rel, data })
+    }
+    if (!files.some((f) => f.path === 'SKILL.md')) return { ok: false, reason: 'There is no SKILL.md at the root of the bundle.' }
+    return { ok: true, files, notes: [] }
+  } catch (e) {
+    return { ok: false, reason: e instanceof Error ? e.message : 'The skill bundle could not be read.' }
   }
 }
 
