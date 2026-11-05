@@ -1171,6 +1171,8 @@ export class TeamFilesService {
     this.applyAndSave(project, parsed.doc)
     if (approved && !sameTeam(approved, parsed.doc)) {
       this.store.writeUndo(id, approved)
+      // The applied-at-once batch belonged to the Undo this replaces: one record, one batch.
+      delete st.applied
       st.undo = { at: this.nowIso(), label: `Undo approving ${plural(pending.length, 'change', 'changes')}`, files: cap(unique(pending.map((c) => c.file))) }
     }
     this.store.writeApproved(id, parsed.doc)
