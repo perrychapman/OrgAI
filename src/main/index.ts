@@ -33,6 +33,7 @@ import {
 import type { HostRuntimeEnv } from './host/runtimeEnv'
 import { windowBackground } from './appInfo'
 import { quitGate } from './quitGate'
+import { focusedOrPrimaryWindow, hiddenWindows } from './testWindows'
 import { orgaiCliRootsOf, setOrgaiCliRoots } from './runtime/selfControlGate'
 import { createCliShimService, type CliShimService } from './host/shimInstaller'
 import { RepoCloneService } from './repoClone'
@@ -124,6 +125,8 @@ const gotLock = app.requestSingleInstanceLock(
 if (!gotLock) app.exit(0)
 // A terminal host never shows a Dock icon (macOS); a later window brings it back.
 if (gotLock && hostArgs.headless && process.platform === 'darwin') app.dock?.hide()
+// e2e runs (ORGAI_E2E_HIDDEN=1, testWindows.ts) never show a Dock icon, so the app never becomes the active app.
+if (gotLock && hiddenWindows() && process.platform === 'darwin') app.dock?.hide()
 
 // Unpackaged (npm run dev, e2e) the name comes from package.json ("orgai"); on macOS that names ~/Library/Logs/<name>
 // and the About entry. userData was set above, so it does not move.
@@ -185,13 +188,14 @@ function refuseExternal(url: string): void {
 }
 
 function showWindow(win: BrowserWindow): void {
+  if (hiddenWindows()) return
   if (win.isMinimized()) win.restore()
   win.show()
   win.focus()
 }
 
 function showDockIcon(): void {
-  if (process.platform !== 'darwin') return
+  if (process.platform !== 'darwin' || hiddenWindows()) return
   void Promise.resolve(app.dock?.show()).catch(() => {})
 }
 
@@ -253,13 +257,17 @@ function createWindow(scope?: FocusRunTarget): BrowserWindow {
       // shared code bundled in, so it requires only 'electron' and runs in the sandboxed renderer.
       preload: join(__dirname, '../preload/index.cjs'),
       sandbox: true,
-      contextIsolation: true
+      contextIsolation: true,
+      // e2e (testWindows.ts): the window is never shown, so keep its timers and animation frames running.
+      ...(hiddenWindows() ? { backgroundThrottling: false } : {})
     }
   })
 
   windowScopes.set(win, scope)
   win.on('closed', () => windowScopes.delete(win))
-  win.on('ready-to-show', () => win.show())
+  win.on('ready-to-show', () => {
+    if (!hiddenWindows()) win.show()
+  })
   notifier?.attach(win)
   // window.open and target=_blank never create a window: http(s) links go to the user's browser, anything else
   // (file:, custom protocols, javascript:) is refused.
@@ -424,7 +432,7 @@ app.whenReady().then(async () => {
   // `events` given: registerIpc leaves forwarding the bus to windows to the listener above.
   registerIpc({ ...h.services, openRunWindow, events: h.events, dispatcher: h.dispatcher, cliShim, repoClone: clones })
   installAppMenu(
-    menuActionSender(() => BrowserWindow.getFocusedWindow(), liveWindowScopes, () => createWindow())
+    menuActionSender(() => focusedOrPrimaryWindow(), liveWindowScopes, () => createWindow())
   )
   // A terminal host opens no window; the first plain launch (second-instance) or a Dock click (activate) does.
   if (!hostArgs.headless) {
