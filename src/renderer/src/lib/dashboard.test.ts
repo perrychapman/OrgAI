@@ -55,6 +55,13 @@ describe('projectAttentionOrder', () => {
   })
 })
 
+describe('buildAttentionCtx team files', () => {
+  it('counts a team-files item as one decision of its project', () => {
+    const ctx = buildAttentionCtx([], {}, [{ projectId: 'p9' }])
+    expect(ctx.p9?.decisions).toBe(1)
+  })
+})
+
 describe('buildAttentionCtx', () => {
   it('counts live runs, decisions and the newest start from runs and history', () => {
     const ctx = buildAttentionCtx(

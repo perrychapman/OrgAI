@@ -6,7 +6,8 @@ import { BellRing, Briefcase, ChevronDown, ChevronRight, LayoutDashboard,Message
 import { ASSISTANT_ORDER, assistantLabel, displayProject, locationLabel } from '../lib/assistants'
 import { useShallow } from 'zustand/react/shallow'
 import { isRunLive, useAppStore, useRunIndexes, waitingRuns, type RunState } from '../store/useAppStore'
-import { decisionCount, waitingItems } from '../lib/needsYou'
+import { combinedDecisionCount, teamDecisionsFor, waitingItems } from '../lib/needsYou'
+import { openTeamFilesDecision, useTeamAttentionItems } from '../lib/menuActions'
 import { groupByClient, readCollapsedClients, writeCollapsedClients } from '../lib/clientGroups'
 import { needsYou } from '../lib/runChains'
 import { oneLine } from '../lib/decisionTitle'
@@ -165,7 +166,9 @@ export default function Sidebar({
   }, [selectedId, holderKey])
 
   const allRuns = useMemo(() => Object.values(runs), [runs])
+  const teamItems = useTeamAttentionItems()
   const items = waiting.flatMap((r) => waitingItems(r))
+  const needsCount = items.length + teamItems.length
   const projectName = (id: string): string => locationLabel(id, projects)
   const inProject = (v: string): boolean => v !== 'projects' && v !== 'appSettings'
   const names = projects.map((p) => p.name)
@@ -176,7 +179,7 @@ export default function Sidebar({
   /** The full row's tooltip: the LiteLLM spend sentence (the one-figure label can clip at narrow widths); other rows keep none. */
   const rowTitle = rail ? railName : current === 'litellm' && !mockAdapter ? account.title : undefined
   const tight = mockAdapter || current === 'litellm' ? null : tightestWindow(currentUsage)
-  const needsLabel = `Needs you · ${items.length}`
+  const needsLabel = `Needs you · ${needsCount}`
   const sidebarKey = isMacPlatform(currentPlatform()) ? '⌘B' : `${modKeyLabel(currentPlatform())}+B`
 
   const newChatKey = isMacPlatform(currentPlatform()) ? '⌘⇧N' : 'Ctrl+Shift+N'
@@ -198,7 +201,7 @@ export default function Sidebar({
       for (const g of chainGroups([...known.values()])) for (const m of g.members) firstOf.set(m.id, g.first)
     }
     // One unit per level: decisions (the same count as the Needs-you row and the bell), with the run count beside it.
-    const st = projectStatus({ open: open.length, decisions: decisionCount(projectRuns), newest: newest && last ? { startedAt: newest.startedAt, status: last } : undefined })
+    const st = projectStatus({ open: open.length, decisions: combinedDecisionCount(projectRuns, teamDecisionsFor(teamItems, id)), newest: newest && last ? { startedAt: newest.startedAt, status: last } : undefined })
     const active = selectedId === id && inProject(view)
     const viewedId = draftPage[id] ? undefined : viewedByProject[id]
     const baseName = entry.accessibleName ? entry.accessibleName(st.decisions, st.needsLabel) : st.needsLabel ? `${name}, ${st.needsLabel}` : name
@@ -372,12 +375,12 @@ export default function Sidebar({
           <Icon icon={LayoutDashboard} size="sm" />
           {!rail && 'Dashboard'}
         </button>
-        {items.length > 0 && (
+        {needsCount > 0 && (
           <Popover
             trigger={
               <>
                 <Icon icon={BellRing} size="sm" />
-                {rail ? <span className="nav-rail-count">{items.length}</span> : <span className="nav-text">{needsLabel}</span>}
+                {rail ? <span className="nav-rail-count">{needsCount}</span> : <span className="nav-text">{needsLabel}</span>}
                 {!rail && <Icon icon={ChevronDown} size="xs" />}
               </>
             }
@@ -412,6 +415,23 @@ export default function Sidebar({
                     </li>
                   ))
                 )}
+                {teamItems.map((t) => (
+                  <li key={t.key}>
+                    <button
+                      type="button"
+                      className="needs-item"
+                      data-kind="team"
+                      title={`${t.label}\n${t.projectName}`}
+                      onClick={() => {
+                        close()
+                        openTeamFilesDecision(t.projectId)
+                      }}
+                    >
+                      <span className="needs-what">{t.label}</span>
+                      <span className="needs-where">{t.projectName} · Team</span>
+                    </button>
+                  </li>
+                ))}
               </ul>
             )}
           </Popover>
@@ -449,7 +469,7 @@ export default function Sidebar({
                 )
               }
               const closed = collapsedClients.has(g.key)
-              const need = g.items.reduce((n, p) => n + decisionCount(allRuns.filter((r) => r.summary.projectId === p.id)), 0)
+              const need = g.items.reduce((n, p) => n + combinedDecisionCount(allRuns.filter((r) => r.summary.projectId === p.id), teamDecisionsFor(teamItems, p.id)), 0)
               const panelId = `nav-client-rows-${gi}`
               return (
                 <div key={g.key} className="nav-client-group">
