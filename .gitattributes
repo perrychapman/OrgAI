@@ -1,0 +1,5 @@
+# The packaged orgai launchers are copied into the app as they are checked out (electron-builder extraResources), so
+# their line endings must not depend on core.autocrlf: sh fails on CRLF ("\r: command not found"), and cmd.exe
+# misreads labels and lines of a batch file with bare LF.
+build/bin/orgai text eol=lf
+build/bin/*.cmd text eol=crlf

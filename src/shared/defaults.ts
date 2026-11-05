@@ -608,7 +608,8 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   defaultPreferSonnetNearLimit: false,
   communityPrices: true,
   defaultAutoContinue: true,
-  defaultMaxAutoContinues: DEFAULT_MAX_AUTO_CONTINUES
+  defaultMaxAutoContinues: DEFAULT_MAX_AUTO_CONTINUES,
+  terminalServer: false
 }
 
 // ---------- Quick runs (Chat) ----------

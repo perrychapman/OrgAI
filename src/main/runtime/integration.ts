@@ -47,6 +47,18 @@ interface MergeTarget {
   parent?: { id: string; name: string; branch: string; path: string }
 }
 
+function errorText(e: unknown): string {
+  return e instanceof Error ? e.message : String(e)
+}
+
+/** A merge attempt that threw before git could answer: the branch stays pending, reported as a conflict. */
+function integrationFailure(info: WorktreeInfo, e: unknown): { info: WorktreeInfo; message: string } {
+  return {
+    info: { ...info, status: 'conflict' },
+    message: `The merge of ${info.branch} could not run (${errorText(e)}). Its changes are still on that branch.`
+  }
+}
+
 export class WorktreeIntegrator {
   /** Isolated agents by agent id. */
   private worktrees = new Map<string, WorktreeInfo>()
@@ -54,6 +66,10 @@ export class WorktreeIntegrator {
   private briefs = new Map<string, string>()
   /** Per working directory: the tail of the queue of git operations that write to it. */
   private locks = new Map<string, Promise<unknown>>()
+  /** exclusive() calls queued or running. */
+  private exclusiveInFlight = 0
+  /** Integrations (and finished-report handling) started and not settled. */
+  private busy = 0
 
   constructor(
     private ctx: RuntimeContext,
@@ -81,13 +97,48 @@ export class WorktreeIntegrator {
   private exclusive<T>(dir: string, fn: () => Promise<T>): Promise<T> {
     const key = dir.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
     const prev = this.locks.get(key) ?? Promise.resolve()
+    this.exclusiveInFlight += 1
     const next = prev.then(fn, fn)
     const tail = next.catch(() => undefined)
     this.locks.set(key, tail)
     void tail.then(() => {
+      this.exclusiveInFlight -= 1
       if (this.locks.get(key) === tail) this.locks.delete(key)
     })
     return next
+  }
+
+  /** Count `fn` as pending work until it settles (hasPendingWork); `integration` also notes exec activity at both ends. */
+  private async counted<T>(fn: () => Promise<T>, integration = false): Promise<T> {
+    this.busy += 1
+    if (integration) this.noteIntegration()
+    try {
+      return await fn()
+    } finally {
+      this.busy -= 1
+      if (integration) this.noteIntegration()
+    }
+  }
+
+  private noteIntegration(): void {
+    try {
+      this.ctx.noteActivity?.('integration')
+    } catch {
+      /* a listener never breaks integration */
+    }
+  }
+
+  /**
+   * Headless exec settlement (cli-spec 6.2(2)): true while any exclusive git operation (commit, merge) is queued or
+   * running, or an integration has started and not settled (including one waiting on a merge review card).
+   */
+  hasPendingWork(): boolean {
+    return this.exclusiveInFlight > 0 || this.busy > 0
+  }
+
+  /** Branches of tracked worktrees left in 'conflict' (exec outcome 'unmerged-conflicts'). */
+  unmergedConflictBranches(): string[] {
+    return [...this.worktrees.values()].filter((w) => w.status === 'conflict').map((w) => w.branch)
   }
 
   /**
@@ -140,7 +191,11 @@ export class WorktreeIntegrator {
    * A finished isolated report gets its branch committed and merged exactly once. If its own
    * isolated reports are still running or merging, it waits for them first.
    */
-  async onSubagentFinished(agentId: string): Promise<void> {
+  onSubagentFinished(agentId: string): Promise<void> {
+    return this.counted(() => this.subagentFinished(agentId))
+  }
+
+  private async subagentFinished(agentId: string): Promise<void> {
     const wt = this.worktrees.get(agentId)
     if (!wt || wt.status !== 'active') return
     const waitingOn = this.unsettledChildren(agentId)
@@ -154,7 +209,9 @@ export class WorktreeIntegrator {
     // Commit the parent's own work now, so its reports merge into a clean, committed worktree.
     const path = (await findWorktree(this.root, agentId))?.path ?? wt.path
     const brief = this.briefs.get(agentId) ?? this.host.agent(agentId)?.activity ?? ''
-    const commit = await this.exclusive(path, () => commitLeftovers(path, `${name}: ${brief}`.slice(0, 120)))
+    const commit = await this.exclusive(path, () => commitLeftovers(path, `${name}: ${brief}`.slice(0, 120))).catch(
+      (e: unknown): { committed: boolean; error?: string } => ({ committed: false, error: errorText(e) })
+    )
     if (commit.error) this.log('warn', `${name}: could not commit its own changes before its reports merge: ${commit.error}`)
     // Children may have settled while we were committing.
     await this.settle(agentId)
@@ -182,16 +239,23 @@ export class WorktreeIntegrator {
     return { root: path, parent: { id: parentId, name: this.nameOf(parentId), branch: located?.branch ?? parent.branch, path } }
   }
 
-  private async integrate(agentId: string): Promise<void> {
+  private integrate(agentId: string): Promise<void> {
+    return this.counted(() => this.integrateNow(agentId), true)
+  }
+
+  private async integrateNow(agentId: string): Promise<void> {
     const located = await findWorktree(this.root, agentId)
     const info: WorktreeInfo = { ...this.worktrees.get(agentId)!, ...(located ?? {}), status: 'merging' }
     const target = await this.targetFor(info)
     const agent = this.host.agent(agentId)
     const name = agent?.name ?? agentId
     const brief = this.briefs.get(agentId) ?? agent?.activity ?? ''
+    // The git layer can throw now (the cross-process repository lock: a timeout against another OrgAI process, an
+    // unwritable owner file). Callers fire and forget, so a throw would leave the worktree 'merging' for good and its
+    // parent waiting forever: settle it as a conflict the orchestrator can retry with the integrate tool.
     const result = await this.exclusive(target.root, () =>
       integrateWorktree(target.root, info, `${name}: ${brief}`.slice(0, 120), this.reviewGate(agentId, info, target.root))
-    )
+    ).catch((e: unknown) => integrationFailure(info, e))
     this.set(agentId, result.info)
     const level = result.info.status === 'conflict' ? 'warn' : 'info'
     this.log(level, `${name}: ${result.message}`)
@@ -261,7 +325,11 @@ export class WorktreeIntegrator {
   }
 
   /** Retry from the orchestrator's integrate tool: find the agent that owns the branch, or integrate anonymously. */
-  async integratePending(wt: { path: string; branch: string }): Promise<string> {
+  integratePending(wt: { path: string; branch: string }): Promise<string> {
+    return this.counted(() => this.integratePendingNow(wt), true)
+  }
+
+  private async integratePendingNow(wt: { path: string; branch: string }): Promise<string> {
     const ownerId = [...this.worktrees].find(([, info]) => info.branch === wt.branch)?.[0]
     const tracked = ownerId ? this.worktrees.get(ownerId) : undefined
     if (tracked && UNSETTLED.has(tracked.status)) {
@@ -285,7 +353,7 @@ export class WorktreeIntegrator {
     const brief = ownerId ? this.briefs.get(ownerId) ?? owner?.activity ?? '' : wt.branch
     const result = await this.exclusive(target.root, () =>
       integrateWorktree(target.root, info, `${name ?? 'report'}: ${brief}`.slice(0, 120), this.reviewGate(ownerId ?? null, info, target.root))
-    )
+    ).catch((e: unknown) => integrationFailure(info, e))
     if (ownerId) this.set(ownerId, result.info)
     this.log(result.info.status === 'conflict' ? 'warn' : 'info', `${name ?? wt.branch}: ${result.message}`)
     if (ownerId && !target.parent && GONE.has(result.info.status)) await this.retarget(ownerId)
@@ -336,7 +404,9 @@ export class WorktreeIntegrator {
     for (const wt of pending) {
       let note = ''
       if (wt.exists && wt.uncommittedFiles > 0) {
-        const c = await commitLeftovers(wt.path, 'OrgAI: uncommitted work left by an earlier run')
+        const c = await commitLeftovers(wt.path, 'OrgAI: uncommitted work left by an earlier run').catch(
+          (e: unknown): { committed: boolean; error?: string } => ({ committed: false, error: errorText(e) })
+        )
         note = c.committed ? ' (uncommitted work was just committed to keep it safe)' : c.error ? ` (could not commit leftovers: ${c.error})` : ''
       }
       const files = wt.changedFiles.length ? `, touches ${wt.changedFiles.slice(0, 8).join(', ')}${wt.changedFiles.length > 8 ? ', …' : ''}` : ''

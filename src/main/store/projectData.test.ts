@@ -31,6 +31,7 @@ import {
   removeProjectData,
   removeSkillEvaluation,
   saveNote,
+  NOTE_STALE_MESSAGE,
   skillEvaluationFile,
   teamReviewFile,
   engagementMetaFile,
@@ -219,6 +220,20 @@ describe('context notes', () => {
     expect(rest.map((n) => n.id)).toEqual([b.id])
     expect(readNote(dir, 'p1', a.id)).toBeNull()
     expect(removeNote(dir, 'p1', 'note_nope').map((n) => n.id)).toEqual([b.id])
+  })
+
+  it('refuses a replace whose expectedUpdatedAt is stale with code stale_revision', () => {
+    const a = saveNote(dir, 'p1', { title: 'First', text: 'alpha' })
+    let caught: unknown
+    try {
+      saveNote(dir, 'p1', { noteId: a.id, title: 'First', text: 'beta', expectedUpdatedAt: a.updatedAt - 1 })
+    } catch (e) {
+      caught = e
+    }
+    expect(caught).toMatchObject({ code: 'stale_revision', message: NOTE_STALE_MESSAGE })
+    expect(readNote(dir, 'p1', a.id)!.text).toBe('alpha')
+    const a2 = saveNote(dir, 'p1', { noteId: a.id, title: 'First', text: 'beta', expectedUpdatedAt: a.updatedAt })
+    expect(readNote(dir, 'p1', a2.id)!.text).toBe('beta')
   })
 
   it('throws for an unknown noteId on save', () => {

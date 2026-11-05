@@ -1,5 +1,100 @@
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { isClaudeRoutingVar, isolateClaudeEnv } from './childEnv'
+import { testServer } from '../mcp/probe'
+import { buildEnv, completionEnv, toClaudeMcpServers } from './claude'
+import { CodexAppServer } from './codexAppServer'
+import { fakeCtx } from './testHelpers'
+import type { RunConnection } from './types'
+import { ORGAI_CONTROL_ENV_PATTERNS, isClaudeRoutingVar, isolateClaudeEnv, scrubControlEnv } from './childEnv'
+
+describe('scrubControlEnv (cli-spec 3.4(3))', () => {
+  const control = {
+    ORGAI_DATA_DIR: '/data',
+    orgai_data_dir: '/data2',
+    ORGAI_DAEMON_SOCKET: '/s',
+    Orgai_Daemon_Secret: 'x',
+    ORGAI_SECRET_OVERLAY: 'y',
+    orgai_secret_file: 'z',
+    ELECTRON_RUN_AS_NODE: '1',
+    electron_run_as_node: '1'
+  }
+  const kept = { PATH: '/bin', ORGAI_MOCK: '1', ORGAI_CODEX_PATH: '/c', ORGAI_CODEX_API_KEY: 'k', ORGAI_DATA_DIRX: 'q', MY_ORGAI_DATA_DIR: 'r', HOME: '/h' }
+
+  it('drops each name and pattern case-insensitively and keeps the rest (ORGAI_MOCK included)', () => {
+    const input = { ...control, ...kept, UNDEF: undefined }
+    const copy = { ...input }
+    const out = scrubControlEnv(input)
+    expect(out).toEqual({ ...kept, UNDEF: undefined })
+    expect(input).toEqual(copy)
+    for (const name of Object.keys(control)) expect(ORGAI_CONTROL_ENV_PATTERNS.some((re) => re.test(name))).toBe(true)
+  })
+
+  it('Claude child envs drop them, connection-set values and MCP specs included', () => {
+    const base = { ...control, ...kept }
+    const conn = { connection: 'anthropic', adapter: 'claude', env: { ORGAI_DATA_DIR: '/evil', ELECTRON_RUN_AS_NODE: '1', ANTHROPIC_API_KEY: 'k' } } as unknown as RunConnection
+    const ctx = fakeCtx({ connection: conn })
+    for (const env of [buildEnv(ctx, base), completionEnv(conn, base), completionEnv(undefined, base)]) {
+      for (const name of Object.keys(control)) expect(name in env, name).toBe(false)
+      expect(env.ORGAI_MOCK).toBe('1')
+    }
+    expect(buildEnv(ctx, base).ANTHROPIC_API_KEY).toBe('k')
+    const mcp = toClaudeMcpServers([
+      { spec: { id: 'm', name: 'srv', transport: 'stdio', command: 'node', enabled: true, source: 'user', addedAt: '' }, env: { ORGAI_DAEMON_X: '1', A: '1' }, headers: {} },
+      { spec: { id: 'n', name: 'bare', transport: 'stdio', command: 'node', enabled: true, source: 'user', addedAt: '' }, env: { ELECTRON_RUN_AS_NODE: '1' }, headers: {} }
+    ])
+    expect((mcp.srv as { env?: Record<string, string> }).env).toEqual({ A: '1' })
+    expect('env' in mcp.bare!).toBe(false)
+  })
+
+  it('the Codex app-server and an MCP probe spawn without them', async () => {
+    const dir = realpathSync.native(mkdtempSync(join(tmpdir(), 'orgai-childenv-')))
+    const saved: Record<string, string | undefined> = {}
+    for (const [k, v] of Object.entries({ ORGAI_DATA_DIR: '/data', ORGAI_DAEMON_SOCKET: '/s', ORGAI_SECRET_OVERLAY: 'y', ELECTRON_RUN_AS_NODE: '1' })) {
+      saved[k] = process.env[k]
+      process.env[k] = v
+    }
+    try {
+      // A fake `codex` that is Node itself: start() runs `node app-server ...` in cwd; the script records its env.
+      const codexOut = join(dir, 'codex-env.json')
+      writeFileSync(join(dir, 'app-server'), `require('fs').writeFileSync(${JSON.stringify(codexOut)}, JSON.stringify(process.env)); process.exit(1)`)
+      const server = new CodexAppServer({ cwd: dir, env: { CODEX_HOME: join(dir, 'home'), ORGAI_SECRET_X: 'conn' }, binary: { path: process.execPath } })
+      await expect(server.start()).rejects.toThrow()
+      server.close()
+      const codexEnv = JSON.parse(readFileSync(codexOut, 'utf8')) as Record<string, string>
+      for (const name of ['ORGAI_DATA_DIR', 'ORGAI_DAEMON_SOCKET', 'ORGAI_SECRET_OVERLAY', 'ORGAI_SECRET_X', 'ELECTRON_RUN_AS_NODE']) expect(name in codexEnv, name).toBe(false)
+      expect(codexEnv.CODEX_HOME).toBe(join(dir, 'home'))
+      // An MCP probe: a stdio "server" that records its env and exits.
+      const probeOut = join(dir, 'probe-env.json')
+      const script = join(dir, 'probe.js')
+      writeFileSync(script, `require('fs').writeFileSync(${JSON.stringify(probeOut)}, JSON.stringify(process.env)); process.exit(1)`)
+      const result = await testServer(
+        { spec: { id: 'p', name: 'p', transport: 'stdio', command: process.execPath, args: [script], enabled: true, source: 'user', addedAt: '' }, env: { ORGAI_DATA_DIR: '/spec', B: '2' }, headers: {} },
+        5000
+      )
+      expect(result.ok).toBe(false)
+      const probeEnv = JSON.parse(readFileSync(probeOut, 'utf8')) as Record<string, string>
+      for (const name of ['ORGAI_DATA_DIR', 'ORGAI_DAEMON_SOCKET', 'ORGAI_SECRET_OVERLAY']) expect(name in probeEnv, name).toBe(false)
+      expect(probeEnv.B).toBe('2')
+    } finally {
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k]
+        else process.env[k] = v
+      }
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+    }
+  })
+
+  it('isolateClaudeEnv drops them too, whatever the options', () => {
+    for (const opts of [{}, { keepApiKey: true }, { proxy: true }]) {
+      const out = isolateClaudeEnv({ ...control, ...kept }, opts)
+      for (const name of Object.keys(control)) expect(name in out).toBe(false)
+      expect(out.ORGAI_MOCK).toBe('1')
+      expect(out.PATH).toBe('/bin')
+    }
+  })
+})
 
 const leaky = {
   PATH: '/bin',

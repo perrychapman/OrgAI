@@ -1,10 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import type { ImageAttachment, RunRecord, RunSummary, RunUsage, TranscriptEntry } from '@shared/types'
-import { RunStore } from './runs'
+import { RunStore, cleanRunOverrides, normalizeCrashedRunSummary } from './runs'
 
 let dataDir: string
 
@@ -364,5 +364,149 @@ describe('RunStore usage', () => {
     expect(new RunStore(dataDir).get('a')!.projectId).toBe('p9')
     expect(s.all().length).toBe(2)
     expect(s.get('a')!.quick).toBeUndefined() // a promoted run is a project run
+  })
+})
+
+describe('RunStore exec fields (cli-spec Wave 0)', () => {
+  const writeIndex = (runs: unknown[]): void => writeFileSync(join(dataDir, 'runs.json'), JSON.stringify({ version: 1, runs }), 'utf8')
+
+  it("keeps endedBy 'policy' and 'budget' across a reload, and a live one still finishes with it", () => {
+    const s = new RunStore(dataDir)
+    s.upsert(run('policy', { status: 'finished', endedBy: 'policy' }))
+    s.upsert(run('budget', { status: 'error', endedBy: 'budget' }))
+    s.upsert(run('live-policy', { status: 'running', endedBy: 'policy', endedWhile: 'working', endedWithApp: true }))
+    s.upsert(run('stopping-budget', { status: 'stopping', endedBy: 'budget' }))
+    const reloaded = new RunStore(dataDir)
+    expect(reloaded.get('policy')!.endedBy).toBe('policy')
+    expect(reloaded.get('budget')).toMatchObject({ status: 'error', endedBy: 'budget' })
+    for (const id of ['live-policy', 'stopping-budget']) {
+      const r = reloaded.get(id)!
+      expect(r.status).toBe('finished')
+      expect(r.endedAt).toBeTypeOf('number')
+      expect('endedWithApp' in r).toBe(false)
+      expect('endedWhile' in r).toBe(false)
+    }
+    expect(reloaded.get('live-policy')!.endedBy).toBe('policy')
+    expect(reloaded.get('stopping-budget')!.endedBy).toBe('budget')
+  })
+
+  it('drops a junk endedBy', () => {
+    writeIndex([run('a', { endedBy: 'robot' as never }), run('b', { endedBy: 7 as never }), run('c', { status: 'idle', endedBy: 'POLICY' as never })])
+    const s = new RunStore(dataDir)
+    expect('endedBy' in s.get('a')!).toBe(false)
+    expect('endedBy' in s.get('b')!).toBe(false)
+    // A live run with a junk endedBy is treated like any crashed run: OrgAI cut it.
+    expect(s.get('c')).toMatchObject({ status: 'finished', endedBy: 'app', endedWithApp: true, endedWhile: 'waiting' })
+  })
+
+  it('keeps valid execOutcome values and drops junk', () => {
+    writeIndex([
+      run('ok', { execOutcome: 'completed' }),
+      run('int', { execOutcome: 'interrupted' }),
+      run('junk', { execOutcome: 'exploded' as never }),
+      run('num', { execOutcome: 3 as never })
+    ])
+    const s = new RunStore(dataDir)
+    expect(s.get('ok')!.execOutcome).toBe('completed')
+    expect(s.get('int')!.execOutcome).toBe('interrupted')
+    expect('execOutcome' in s.get('junk')!).toBe(false)
+    expect('execOutcome' in s.get('num')!).toBe(false)
+  })
+
+  it('rebuilds overrides: unknown keys and bad types dropped, an empty result removed', () => {
+    writeIndex([
+      run('good', {
+        overrides: {
+          permissionMode: 'plan',
+          autoContinue: false,
+          maxAutoContinues: 10,
+          maxBudgetUsd: 0,
+          allowUnpricedBudget: true,
+          allowUnmerged: false,
+          allowPeerMessages: false,
+          execMode: true,
+          execChainId: 'chain-1',
+          waitForReset: true,
+          execStallTimeoutMs: 1000,
+          decisionPolicy: { permission: 'wait', rules: 'fail', mcpInstall: 'deny', question: 'conservative', proposal: 'decline', merge: 'hold', maxAutoDenials: 2 },
+          evil: 'x'
+        } as never
+      }),
+      run('bad', {
+        overrides: {
+          permissionMode: 'yolo',
+          autoContinue: 'yes',
+          maxAutoContinues: 501,
+          maxBudgetUsd: -1,
+          execStallTimeoutMs: Number.POSITIVE_INFINITY,
+          execChainId: 'x'.repeat(101),
+          execMode: true,
+          decisionPolicy: { permission: 'allow', question: 'fail', maxAutoDenials: 1.5, waitTimeoutMs: -3, humanGraceMs: 10 }
+        } as never
+      }),
+      run('empty', { overrides: { nope: 1, permissionMode: 'everything' } as never }),
+      run('array', { overrides: [] as never }),
+      run('null', { overrides: null as never })
+    ])
+    const s = new RunStore(dataDir)
+    expect(s.get('good')!.overrides).toEqual({
+      permissionMode: 'plan',
+      autoContinue: false,
+      maxAutoContinues: 10,
+      maxBudgetUsd: 0,
+      allowUnpricedBudget: true,
+      allowUnmerged: false,
+      allowPeerMessages: false,
+      execMode: true,
+      execChainId: 'chain-1',
+      waitForReset: true,
+      execStallTimeoutMs: 1000,
+      decisionPolicy: { permission: 'wait', rules: 'fail', mcpInstall: 'deny', question: 'conservative', proposal: 'decline', merge: 'hold', maxAutoDenials: 2 }
+    })
+    // Bad choice fields fall back to the conservative defaults; bad numbers are dropped.
+    expect(s.get('bad')!.overrides).toEqual({
+      execMode: true,
+      decisionPolicy: { permission: 'deny', rules: 'deny', mcpInstall: 'deny', question: 'fail', proposal: 'decline', merge: 'hold', humanGraceMs: 10 }
+    })
+    for (const id of ['empty', 'array', 'null']) expect('overrides' in s.get(id)!).toBe(false)
+    expect(cleanRunOverrides({ maxAutoContinues: 500 })).toEqual({ maxAutoContinues: 500 })
+    expect(cleanRunOverrides({ maxAutoContinues: 2.5 })).toBeUndefined()
+    expect(cleanRunOverrides({ decisionPolicy: { nope: true } })).toBeUndefined()
+    // A stall timeout of 0 (or below) would re-arm the watchdog every tick: dropped, the default applies (review Low).
+    expect(cleanRunOverrides({ execMode: true, execStallTimeoutMs: 0 })).toEqual({ execMode: true })
+    expect(cleanRunOverrides({ execMode: true, execStallTimeoutMs: -5 })).toEqual({ execMode: true })
+    expect(cleanRunOverrides({ execStallTimeoutMs: 1 })).toEqual({ execStallTimeoutMs: 1 })
+  })
+
+  it('normalizeCrashedRunSummary does not mutate its input and matches the constructor', () => {
+    vi.useFakeTimers({ toFake: ['Date'], now: 777_000 })
+    try {
+      const inputs: RunSummary[] = []
+      for (const status of ['starting', 'running', 'idle', 'paused', 'stopping', 'finished', 'error'] as const) {
+        inputs.push(run(`${status}`, { status, autoResume: true, pausedUntil: 5 }))
+        inputs.push(run(`${status}-user`, { status, endedBy: 'user', endedWhile: 'waiting' }))
+        inputs.push(run(`${status}-policy`, { status, endedBy: 'policy', execOutcome: 'stalled' }))
+      }
+      const snapshot = JSON.parse(JSON.stringify(inputs)) as RunSummary[]
+      const pure = inputs.map((r) => normalizeCrashedRunSummary(r, 777_000))
+      expect(inputs).toEqual(snapshot)
+      writeIndex(inputs)
+      const s = new RunStore(dataDir)
+      for (const r of pure) expect(s.get(r.id)).toEqual(r)
+      // Spot checks of the rules themselves.
+      const byId = Object.fromEntries(pure.map((r) => [r.id, r]))
+      expect(byId.idle).toMatchObject({ status: 'finished', endedBy: 'app', endedWithApp: true, endedWhile: 'waiting', endedAt: 777_000 })
+      expect(byId.running).toMatchObject({ endedBy: 'app', endedWhile: 'working' })
+      expect(byId.paused).toMatchObject({ endedBy: 'app', endedWithApp: true, pausedUntil: 5 })
+      expect('endedWhile' in byId.paused).toBe(false)
+      expect('autoResume' in byId.paused).toBe(false)
+      expect(byId['stopping-user']).toMatchObject({ status: 'finished', endedBy: 'user' })
+      expect('endedWhile' in byId['stopping-user']).toBe(false)
+      expect('endedWithApp' in byId['stopping-user']).toBe(false)
+      expect(byId['running-policy']).toMatchObject({ status: 'finished', endedBy: 'policy', execOutcome: 'stalled' })
+      expect(byId.finished.endedBy).toBeUndefined()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

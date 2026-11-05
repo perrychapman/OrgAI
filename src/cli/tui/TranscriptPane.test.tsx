@@ -1,0 +1,174 @@
+import { render } from 'ink-testing-library'
+import { describe, expect, it } from 'vitest'
+import { InputBus } from './context'
+import { TranscriptPane, dividerLine } from './TranscriptPane'
+import { ESC_RE, Providers, env, key, press, withInkColor } from './panes/testUtil'
+import { textWidth } from './panes/text'
+import type { BufferMode, PartialRow, TranscriptPaneProps, TranscriptRow, TuiEnv } from './types'
+
+const r = (key: string, over: Partial<TranscriptRow> = {}): TranscriptRow => ({
+  key,
+  runId: 'r1',
+  agentId: 'root',
+  agentLabel: 'orchestrator',
+  kind: 'text',
+  text: `text of ${key}`,
+  ...over
+})
+
+const numbered = (n: number, from = 0): TranscriptRow[] => Array.from({ length: n }, (_, i) => r(`k${from + i}`, { text: `line ${from + i}` }))
+
+type Props = TranscriptPaneProps & { mode: BufferMode }
+
+function mount(props: Partial<Props> = {}, e: TuiEnv = env()) {
+  const bus = new InputBus()
+  let current: Props = { width: 60, height: 10, focused: false, rows: [], partials: [], mode: 'fullscreen', ...props }
+  const tree = (p: Props) => (
+    <Providers env={e} bus={bus}>
+      <TranscriptPane {...p} />
+    </Providers>
+  )
+  const out = render(tree(current))
+  const rerender = (p: Partial<Props>): void => {
+    current = { ...current, ...p }
+    out.rerender(tree(current))
+  }
+  return { ...out, bus, rerender }
+}
+
+const lines = (frame: string | undefined): string[] => (frame ?? '').split('\n')
+
+describe('TranscriptPane (full-screen)', () => {
+  it('styles each row kind', () => {
+    const rows: TranscriptRow[] = [
+      r('u', { kind: 'user', text: 'please fix the bug', agentLabel: undefined }),
+      r('t', { kind: 'text', text: 'On it.' }),
+      r('th', { kind: 'thinking', text: 'considering' }),
+      r('tool', { kind: 'tool', text: 'Read src/a.ts' }),
+      r('res', { kind: 'result', text: 'ok' }),
+      r('err', { kind: 'error', text: 'boom' }),
+      r('div', { kind: 'divider', text: 'Continued 3 min later' }),
+      r('h', { kind: 'harness', text: 'Loaded skill review' })
+    ]
+    const t = mount({ rows, height: 20 })
+    const out = lines(t.lastFrame())
+    expect(out).toContain('you: please fix the bug')
+    expect(out).toContain('orchestrator: On it.')
+    expect(out).toContain('orchestrator (thinking): considering')
+    expect(out).toContain('→ orchestrator: Read src/a.ts')
+    expect(out).toContain('  ok')
+    expect(out).toContain('✗ orchestrator: boom')
+    const div = out.find((l) => l.includes('Continued 3 min later'))!
+    expect(div.startsWith('── Continued 3 min later ─')).toBe(true)
+    expect(textWidth(div)).toBe(60)
+    expect(out).toContain('Loaded skill review')
+    t.unmount()
+  })
+
+  it('wraps long and multi-line rows to the width, wide characters as two columns', () => {
+    const rows = [r('a', { text: 'first line\nsecond line that is quite a bit longer than the pane' }), r('w', { text: '漢字'.repeat(20) })]
+    const t = mount({ rows, width: 24, height: 20 })
+    const out = lines(t.lastFrame())
+    expect(out[0]).toBe('orchestrator: first line')
+    expect(out[1]).toBe('second line that is')
+    for (const l of out) expect(textWidth(l)).toBeLessThanOrEqual(24)
+    t.unmount()
+  })
+
+  it('shows the omitted line and dim partials after the rows', () => {
+    const partials: PartialRow[] = [{ key: 'p1', runId: 'r1', agentId: 'dev', agentLabel: 'dev-1', text: 'streaming…' }]
+    const t = mount({ rows: [r('a')], partials, omitted: 1200 })
+    const out = lines(t.lastFrame())
+    expect(out[0]).toBe('1,200 earlier entries not shown')
+    expect(out[1]).toBe('orchestrator: text of a')
+    expect(out[2]).toBe('dev-1: streaming…')
+    t.unmount()
+  })
+
+  it('stays pinned to the bottom, and holds its place with a "new rows below" line after scrolling up', () => {
+    const t = mount({ rows: numbered(30), height: 5 })
+    expect(lines(t.lastFrame()).at(-1)).toBe('orchestrator: line 29')
+    t.rerender({ rows: numbered(31) })
+    expect(lines(t.lastFrame()).at(-1)).toBe('orchestrator: line 30')
+    // Not focused: keys are not consumed.
+    expect(press(t.bus, 'transcript', key('pageup'))).toEqual([false])
+    t.rerender({ focused: true })
+    press(t.bus, 'transcript', key('up'), key('up'))
+    t.rerender({})
+    let out = lines(t.lastFrame())
+    expect(out.at(-1)).toBe('More below; End to jump')
+    const firstShown = out[0]
+    t.rerender({ rows: numbered(34) })
+    out = lines(t.lastFrame())
+    expect(out[0]).toBe(firstShown)
+    expect(out.at(-1)).toBe('3 new rows below; End to jump')
+    // Rows trimmed at the front keep the view on the same row.
+    t.rerender({ rows: numbered(30, 4) })
+    expect(lines(t.lastFrame())[0]).toBe(firstShown)
+    press(t.bus, 'transcript', key('end'))
+    t.rerender({})
+    out = lines(t.lastFrame())
+    expect(out.at(-1)).toBe('orchestrator: line 33')
+    expect(out.join('\n')).not.toContain('End to jump')
+    press(t.bus, 'transcript', key('home'))
+    t.rerender({})
+    expect(lines(t.lastFrame())[0]).toBe('orchestrator: line 4')
+    press(t.bus, 'transcript', ...Array.from({ length: 12 }, () => key('pagedown')))
+    t.rerender({})
+    expect(lines(t.lastFrame()).at(-1)).toBe('orchestrator: line 33')
+    t.unmount()
+  })
+
+  it('uses ASCII and no colour codes in screen-reader or colour-off mode', async () => {
+    const rows = [r('tool', { kind: 'tool', text: 'Bash ls' }), r('err', { kind: 'error', text: 'bad' }), r('d', { kind: 'divider', text: 'x' })]
+    await withInkColor(() => {
+      const c = mount({ rows }, env())
+      expect(c.lastFrame()).toMatch(ESC_RE)
+      c.unmount()
+      const plain = mount({ rows }, env({ color: false }))
+      expect(plain.lastFrame()).not.toMatch(ESC_RE)
+      plain.unmount()
+      const sr = mount({ rows }, env({ screenReader: true, color: false }))
+      const out = sr.lastFrame() ?? ''
+      expect(out).toContain('orchestrator: tool: Bash ls')
+      expect(out).toContain('orchestrator: error: bad')
+      expect(out).toContain('-- x ---')
+      expect(out).not.toMatch(/[→✗─]/)
+      sr.unmount()
+    })
+  })
+
+  it('survives width or height 0 and 1', () => {
+    for (const [width, height] of [
+      [0, 0],
+      [1, 1],
+      [0, 4],
+      [4, 0],
+      [1, 5]
+    ]) {
+      const t = mount({ width, height, rows: numbered(5), omitted: 2, focused: true })
+      press(t.bus, 'transcript', key('up'), key('pageup'), key('home'), key('end'))
+      t.unmount()
+    }
+    expect(dividerLine('long text here', 3, env())).toHaveLength(3)
+    expect(dividerLine('x', 0, env())).toBe('')
+  })
+})
+
+describe('TranscriptPane (inline)', () => {
+  it('writes each row to scrollback once across re-renders and a resync with the same keys, never partials', () => {
+    const t = mount({ mode: 'inline', rows: [r('a'), r('b')] })
+    t.rerender({ rows: [r('a'), r('b')], partials: [{ key: 'p', runId: 'r1', agentId: 'x', agentLabel: 'x', text: 'PARTIAL' }] })
+    t.rerender({ rows: [r('a'), r('b'), r('c')] })
+    // A resync: a fresh array with the same keys plus one new row, and a trimmed front.
+    t.rerender({ rows: [r('b'), r('c'), r('d')] })
+    t.rerender({ rows: [r('b'), r('c'), r('d')] })
+    // ink-testing-library renders in debug mode, where every frame carries all <Static> output written so far.
+    const all = t.lastFrame() ?? ''
+    for (const k of ['a', 'b', 'c', 'd']) {
+      expect(all.split(`text of ${k}`).length - 1).toBe(1)
+    }
+    expect(t.frames.join('\n')).not.toContain('PARTIAL')
+    t.unmount()
+  })
+})

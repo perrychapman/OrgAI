@@ -377,6 +377,8 @@ export function readNote(dataDir: string, projectId: string, noteId: string): En
 
 /** The refusal when an agent tries to replace a note it may not change. */
 export const NOTE_USER_ONLY_MESSAGE = 'Only the user can change that note; save a new one instead.'
+/** A replace whose `expectedUpdatedAt` no longer matches the stored note (code 'stale_revision'). */
+export const NOTE_STALE_MESSAGE = 'The note changed since it was read. Read it again and redo the edit.'
 
 /**
  * Create a note (no noteId) or replace one (a known noteId; an unknown one throws "Note not found"). Title 1..120
@@ -385,12 +387,14 @@ export const NOTE_USER_ONLY_MESSAGE = 'Only the user can change that note; save 
  * an agent may replace only a note whose source is 'agent' and that the user has not saved since (updatedBy !==
  * 'user'), else NOTE_USER_ONLY_MESSAGE. A new note records who created it (`source` 'agent' with `recordedBy`; a user
  * note stores no source); a replace sets `updatedBy` and keeps source and recordedBy. `retired` is the user's only
- * (ignored for agent writers; omitted = unchanged). Returns the index entry.
+ * (ignored for agent writers; omitted = unchanged). `expectedUpdatedAt` (replace only) refuses the save with code
+ * 'stale_revision' when the stored note's updatedAt differs; the check and the write run synchronously, so nothing in
+ * this process writes the note in between. Returns the index entry.
  */
 export function saveNote(
   dataDir: string,
   projectId: string,
-  input: { noteId?: string; title: string; text: string; retired?: boolean },
+  input: { noteId?: string; title: string; text: string; retired?: boolean; expectedUpdatedAt?: number },
   writer: EngagementNoteWriter = { by: 'user' }
 ): EngagementNote {
   if (typeof input.title !== 'string') throw new Error('The title must be text.')
@@ -408,6 +412,9 @@ export function saveNote(
     existing = isNoteId(input.noteId) ? notes.find((n) => n.id === input.noteId) : undefined
     if (!existing) throw new Error('Note not found')
     if (agent && (existing.source !== 'agent' || existing.updatedBy === 'user')) throw new Error(NOTE_USER_ONLY_MESSAGE)
+    if (input.expectedUpdatedAt !== undefined && existing.updatedAt !== input.expectedUpdatedAt) {
+      throw Object.assign(new Error(NOTE_STALE_MESSAGE), { code: 'stale_revision' })
+    }
     id = existing.id
   } else {
     if (notes.length >= ENGAGEMENT_NOTES_MAX) throw new Error(`A project keeps at most ${ENGAGEMENT_NOTES_MAX} notes. Remove or merge notes first.`)

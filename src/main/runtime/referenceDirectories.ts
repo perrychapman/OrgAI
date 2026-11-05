@@ -103,6 +103,16 @@ export interface ReferenceCheckOptions {
   shell?: 'bash' | 'powershell'
   /** The home folder `~` expands to; default os.homedir(). */
   home?: string
+  /**
+   * 'reference' (default): the reference-folder rules above (a word naming a parent counts, limits and untrackable
+   * cds fail closed). 'self-control' (selfControlGate.ts): only definite hits count. A word must name a path AT or
+   * UNDER a folder (a parent such as the home folder or the data dir never counts), and the fail-closed answers
+   * (an untrackable cd, UNC / device words, provider-qualified words) give null so the normal permission flow decides.
+   * A scan limit (command over 32 KB, too many words or parts, a quoted word nested deeper than three levels) also
+   * gives null here, but commandControlScan reports it as 'limit' and the gate denies the command. cd tracking stays on; after an untrackable cd relative words are
+   * not resolved, absolute ones still are.
+   */
+  mode?: 'reference' | 'self-control'
 }
 
 /** Words checked per command; past this the check fails closed (asks). */
@@ -113,6 +123,13 @@ const MAX_NEST = 3
 const MAX_PARTS = 2000
 /** Longest command text checked; past this the check fails closed with no file-system access. */
 const MAX_COMMAND_CHARS = 32 * 1024
+/**
+ * The self-control gate's limits (definite mode) are higher (review M3): there a limit denies the command outright, so
+ * a long `git add` of many files must not hit it. Each new path costs one cached real-path lookup.
+ */
+const DEFINITE_MAX_WORDS = 20_000
+const DEFINITE_MAX_PARTS = 40_000
+const DEFINITE_MAX_COMMAND_CHARS = 256 * 1024
 const CD_NAMES: ReadonlySet<string> = new Set(['cd', 'pushd', 'push-location', 'set-location', 'sl', 'chdir'])
 /** These make the working folder unknown (the previous folder is not tracked). */
 const POP_NAMES: ReadonlySet<string> = new Set(['popd', 'pop-location'])
@@ -137,6 +154,15 @@ interface CheckState {
   cache: Map<string, string>
   words: number
   parts: number
+  /** mode 'self-control': only definite AT-or-UNDER hits, never a fail-closed answer. */
+  definite: boolean
+  /** Set (definite mode) when a fail-closed answer was reached: scanning stops and the command answers null. */
+  stopped: boolean
+  /**
+   * Set (definite mode) when a scan limit was hit (command over 32 KB, too many words or parts, a quoted word nested
+   * deeper than MAX_NEST): the scanner did not read the whole command, so selfControlGate.ts denies it.
+   */
+  limited: boolean
 }
 
 function fold(s: CheckState, v: string): string {
@@ -165,7 +191,8 @@ function realOf(s: CheckState, abs: string): string {
 }
 
 /** The reference folder `abs` is at or under (or, with `ancestor`, above), lexically and through real paths. */
-function touchOf(s: CheckState, abs: string, ancestor: boolean): string | null {
+function touchOf(s: CheckState, abs: string, ancestorWanted: boolean): string | null {
+  const ancestor = ancestorWanted && !s.definite
   for (const r of s.refs) {
     if (within(s, r.abs, abs) || (ancestor && within(s, abs, r.abs))) return r.ref
   }
@@ -186,10 +213,25 @@ function trimDotsSpaces(part: string): string {
   return end === part.length ? part : part.slice(0, end)
 }
 
+/**
+ * Definite mode (self-control): a leading home variable read as the home folder: `$HOME`, `${HOME}`, PowerShell
+ * `$env:HOME` / `$env:USERPROFILE` / `$HOME`, cmd `%USERPROFILE%` / `%HOME%`. These expand to a known
+ * value, and `$HOME/...` is the ordinary way to spell OrgAI's default data folder. Reference mode keeps its documented
+ * limit (variables are not followed).
+ */
+const HOME_VARIABLE = /^(?:\$\{HOME\}|\$HOME|\$env:(?:HOME|USERPROFILE)|%USERPROFILE%|%HOME%)(?=$|[\\/])/i
+
 /** One word as an absolute path against `cwd`, or null when it names no resolvable path. */
 function resolveWord(s: CheckState, raw: string, cwd: string | undefined): string | null {
   let w = raw
   if (!w || w.includes('\0')) return null
+  if (s.definite) {
+    const v = HOME_VARIABLE.exec(w)
+    if (v) {
+      if (!s.home || !s.p.isAbsolute(s.home)) return null
+      w = s.p.join(s.home, w.slice(v[0].length))
+    }
+  }
   if (w === '~' || /^~[\\/]/.test(w)) {
     if (!s.home || !s.p.isAbsolute(s.home)) return null
     w = s.p.join(s.home, w.slice(1))
@@ -257,13 +299,71 @@ function variantsOf(s: CheckState, raw: string): string[] | 'touch' {
 function checkPart(s: CheckState, raw: string, cwd: string | undefined): string | null {
   if (!raw) return null
   const variants = variantsOf(s, raw)
-  if (variants === 'touch') return s.refs[0].ref
+  if (variants === 'touch') return s.definite ? null : s.refs[0].ref
   for (const v of variants) {
     if (v.includes('://')) continue
     // A UNC or device word is never resolved (that would touch the network): it counts as naming a reference folder.
-    if (s.platform === 'win32' && isUncLike(v)) return s.refs[0].ref
+    if (s.platform === 'win32' && isUncLike(v)) {
+      if (s.definite) continue
+      return s.refs[0].ref
+    }
     const hit = checkWord(s, v, cwd)
     if (hit) return hit
+  }
+  return null
+}
+
+/** One glob component as an anchored RegExp source (`*`, `?`, `[...]` / `[!...]`; everything else literal). */
+function globComponentSource(c: string): string {
+  let out = ''
+  for (let i = 0; i < c.length; i++) {
+    const ch = c[i]
+    if (ch === '*') out += '[^\\\\/]*'
+    else if (ch === '?') out += '[^\\\\/]'
+    else if (ch === '[') {
+      const close = c.indexOf(']', i + 2)
+      if (close < 0) {
+        out += '\\['
+        continue
+      }
+      let body = c.slice(i + 1, close)
+      const negate = body.startsWith('!') || body.startsWith('^')
+      if (negate) body = body.slice(1)
+      out += `[${negate ? '^' : ''}${body.replace(/[\\\]^]/g, (m) => `\\${m}`)}]`
+      i = close
+    } else out += ch.replace(/[.*+?^${}()|[\]\\/]/g, (m) => `\\${m}`)
+  }
+  return out
+}
+
+/**
+ * Definite mode: the protected folder a glob word can reach, else null. The glob's components are matched one by one
+ * against each folder's: a glob as deep as the folder (or deeper) whose leading components all match names a path AT
+ * or UNDER it (`<data>/r?n/daemon.secret`, `<data>/r*`); a `**` component reaches anything below. A shallower glob
+ * only names a parent, which never counts.
+ */
+function globReaches(s: CheckState, full: string): string | null {
+  const parts = (v: string): string[] => fold(s, v).split(/[\\/]+/).filter((x, i) => x !== '' || i === 0)
+  const g = parts(full)
+  for (const r of s.refs) {
+    for (const spelling of r.real && r.real !== r.abs ? [r.abs, r.real] : [r.abs]) {
+      const rc = parts(spelling)
+      let ok = true
+      let k = 0
+      for (; k < rc.length; k++) {
+        const gc = g[k]
+        if (gc === undefined) {
+          ok = false
+          break
+        }
+        if (gc === '**') break
+        if (!GLOB_CHAR.test(gc) ? gc !== rc[k] : !new RegExp(`^${globComponentSource(gc)}$`).test(rc[k])) {
+          ok = false
+          break
+        }
+      }
+      if (ok) return r.ref
+    }
   }
   return null
 }
@@ -273,7 +373,7 @@ function checkWord(s: CheckState, part: string, cwd: string | undefined): string
   const full = resolveWord(s, part, cwd)
   if (GLOB_CHAR.test(part)) {
     if (full) {
-      const hit = touchOf(s, full, false)
+      const hit = touchOf(s, full, false) ?? (s.definite ? globReaches(s, full) : null)
       if (hit) return hit
     }
     const dir = resolveWord(s, globDir(s, part), cwd)
@@ -318,6 +418,19 @@ function trackedTarget(s: CheckState, words: readonly string[], cwd: string | un
   return target && !(s.platform === 'win32' && isUncLike(target)) ? target : null
 }
 
+/** A fail-closed answer: as given, or (definite mode) null with scanning stopped. */
+function stopOr(s: CheckState, touch: Touch): Touch | null {
+  if (!s.definite) return touch
+  s.stopped = true
+  return null
+}
+
+/** A scan limit: as stopOr, and (definite mode) `limited` set so the self-control gate denies the command. */
+function limitHit(s: CheckState, touch: Touch): Touch | null {
+  if (s.definite) s.limited = true
+  return stopOr(s, touch)
+}
+
 function scanCommand(s: CheckState, text: string, startCwd: string | undefined, depth: number, startUnknown = false): Touch | null {
   let cwd = startCwd
   let unknown = startUnknown
@@ -329,15 +442,22 @@ function scanCommand(s: CheckState, text: string, startCwd: string | undefined, 
     const isCd = CD_NAMES.has(head) || POP_NAMES.has(head)
     const scanned = isCd ? words.slice(1) : words
     // Once the working folder is unknown (an untracked cd), every later segment fails closed until a tracked cd.
-    if (unknown && !(isCd && !POP_NAMES.has(head) && trackedTarget(s, words, cwd))) return { folder: first, how: 'runs-in' }
+    // Definite mode goes on with no working folder: relative words resolve to nothing, absolute ones are checked.
+    if (unknown && !s.definite && !(isCd && !POP_NAMES.has(head) && trackedTarget(s, words, cwd))) return { folder: first, how: 'runs-in' }
     for (const word of scanned) {
-      if (++s.words > MAX_WORDS) return { folder: first, how: 'names' }
-      if (depth < MAX_NEST && /\s/.test(word)) {
-        const nested = scanCommand(s, word, cwd, depth + 1, unknown)
-        if (nested) return nested
+      if (++s.words > (s.definite ? DEFINITE_MAX_WORDS : MAX_WORDS)) return limitHit(s, { folder: first, how: 'names' })
+      if (/\s/.test(word)) {
+        if (depth < MAX_NEST) {
+          const nested = scanCommand(s, word, cwd, depth + 1, unknown)
+          if (nested || s.stopped) return nested
+        } else if (s.definite) {
+          // A quoted word deeper than MAX_NEST is not split again, so a path inside it would go unread.
+          return limitHit(s, { folder: first, how: 'names' })
+        }
       }
-      for (const part of partsOf(word)) {
-        if (++s.parts > MAX_PARTS) return { folder: first, how: 'names' }
+      // `${HOME}` would be split at its braces (PUNCTUATION); definite mode reads it as `$HOME` (HOME_VARIABLE).
+      for (const part of partsOf(s.definite ? word.replace(/\$\{HOME\}/gi, () => '$HOME') : word)) {
+        if (++s.parts > (s.definite ? DEFINITE_MAX_PARTS : MAX_PARTS)) return limitHit(s, { folder: first, how: 'names' })
         const hit = checkPart(s, part, cwd)
         if (hit) return { folder: hit, how: 'names' }
       }
@@ -368,14 +488,38 @@ export function commandReferenceTouch(
   refs: readonly string[],
   opts: ReferenceCheckOptions = {}
 ): Touch | null {
-  if (typeof command !== 'string' || !command.trim() || !Array.isArray(refs)) return null
+  return scanReferenceTouch(command, cwd, refs, opts).touch
+}
+
+/**
+ * The self-control gate's shell check (mode 'self-control'): 'touch' when the command definitely names (or runs
+ * inside) a protected path, 'limit' when the scanner hit a limit before reading all of it (over 32 KB, over 2,000 words
+ * or parts, a quoted word nested deeper than three levels), else null.
+ */
+export function commandControlScan(
+  command: string,
+  cwd: string | undefined,
+  refs: readonly string[],
+  opts: Omit<ReferenceCheckOptions, 'mode'> = {}
+): 'touch' | 'limit' | null {
+  const r = scanReferenceTouch(command, cwd, refs, { ...opts, mode: 'self-control' })
+  return r.touch ? 'touch' : r.limited ? 'limit' : null
+}
+
+function scanReferenceTouch(
+  command: string,
+  cwd: string | undefined,
+  refs: readonly string[],
+  opts: ReferenceCheckOptions
+): { touch: Touch | null; limited: boolean } {
+  if (typeof command !== 'string' || !command.trim() || !Array.isArray(refs)) return { touch: null, limited: false }
   const platform = opts.platform ?? process.platform
   const p: PathModule = platform === 'win32' ? win32 : posix
   const entries: RefEntry[] = []
   for (const r of refs) {
     if (typeof r === 'string' && r !== '' && !r.includes('\0') && p.isAbsolute(r)) entries.push({ ref: r, abs: p.resolve(r) })
   }
-  if (!entries.length) return null
+  if (!entries.length) return { touch: null, limited: false }
   const s: CheckState = {
     p,
     platform,
@@ -385,23 +529,132 @@ export function commandReferenceTouch(
     real: platform === process.platform,
     cache: new Map(),
     words: 0,
-    parts: 0
+    parts: 0,
+    definite: opts.mode === 'self-control',
+    stopped: false,
+    limited: false
   }
-  if (command.length > MAX_COMMAND_CHARS) return { folder: entries[0].ref, how: 'names' }
+  const done = (touch: Touch | null): { touch: Touch | null; limited: boolean } => ({ touch, limited: s.limited })
+  if (command.length > (s.definite ? DEFINITE_MAX_COMMAND_CHARS : MAX_COMMAND_CHARS)) return done(limitHit(s, { folder: entries[0].ref, how: 'names' }))
   const startCwd = typeof cwd === 'string' && cwd !== '' && p.isAbsolute(cwd) ? p.resolve(cwd) : undefined
-  if (startCwd && platform === 'win32' && isUncLike(startCwd)) return { folder: entries[0].ref, how: 'runs-in' }
+  if (startCwd && platform === 'win32' && isUncLike(startCwd)) return done(stopOr(s, { folder: entries[0].ref, how: 'runs-in' }))
   if (startCwd) {
     const hit = touchOf(s, startCwd, false)
-    if (hit) return { folder: hit, how: 'runs-in' }
+    if (hit) return done({ folder: hit, how: 'runs-in' })
   }
   const texts = [command]
   const unwrapped = unwrapShellCommand(command)
   if (unwrapped && unwrapped !== command.trim()) texts.push(unwrapped)
   for (const text of texts) {
     const hit = scanCommand(s, text, startCwd, 0)
-    if (hit) return hit
+    if (hit || s.stopped) return done(hit)
+  }
+  return done(null)
+}
+
+/** A definite-mode CheckState over `refs` (absolute ones only), or null when none is usable. */
+function definiteState(refs: readonly string[], opts: Pick<ReferenceCheckOptions, 'platform' | 'home'>): CheckState | null {
+  if (!Array.isArray(refs)) return null
+  const platform = opts.platform ?? process.platform
+  const p: PathModule = platform === 'win32' ? win32 : posix
+  const entries: RefEntry[] = []
+  for (const r of refs) {
+    if (typeof r === 'string' && r !== '' && !r.includes('\0') && p.isAbsolute(r)) entries.push({ ref: r, abs: p.resolve(r) })
+  }
+  if (!entries.length) return null
+  return {
+    p,
+    platform,
+    shell: 'bash',
+    home: opts.home ?? homedir(),
+    refs: entries,
+    real: platform === process.platform,
+    cache: new Map(),
+    words: 0,
+    parts: 0,
+    definite: true,
+    stopped: false,
+    limited: false
+  }
+}
+
+/** `target` as an absolute path (`~` expanded, relative against cwd), or null (none, UNC / device, NUL). */
+function definiteAbs(s: CheckState, target: unknown, cwd: string | undefined): string | null {
+  if (typeof target !== 'string' || !target || target.includes('\0') || isUncLike(target)) return null
+  const p = s.p
+  let w = target
+  if (w === '~' || /^~[\\/]/.test(w)) {
+    if (!s.home || !p.isAbsolute(s.home)) return null
+    w = p.join(s.home, w.slice(1))
+  }
+  const base = typeof cwd === 'string' && cwd !== '' && p.isAbsolute(cwd) ? p.resolve(cwd) : undefined
+  const abs = p.isAbsolute(w) ? p.resolve(w) : base ? p.resolve(base, w) : null
+  return !abs || isUncLike(abs) ? null : abs
+}
+
+/** The folder of `refs` that is at or under `abs`, or inside its tree (`abs` an ancestor), lexically and through real paths. */
+function reachesBelow(s: CheckState, abs: string): string | null {
+  const hit = touchOf(s, abs, false)
+  if (hit) return hit
+  for (const r of s.refs) if (within(s, abs, r.abs)) return r.ref
+  if (!s.real) return null
+  const ra = realOf(s, abs)
+  for (const r of s.refs) {
+    r.real ??= realOf(s, r.abs)
+    if (within(s, ra, r.abs) || within(s, abs, r.real) || within(s, ra, r.real)) return r.ref
   }
   return null
+}
+
+/**
+ * The folder of `refs` that `target` is AT or UNDER (never above), else null: the definite check selfControlGate.ts
+ * uses for file tools. `~` expands to opts.home, a relative target resolves against `cwd` (none: null), and the
+ * comparison is lexical and through real paths, case folded on win32 and darwin. A UNC or device target, a NUL
+ * character or a non-string gives null (never touched on disk).
+ */
+export function pathAtOrUnder(
+  target: unknown,
+  refs: readonly string[],
+  cwd: string | undefined,
+  opts: Pick<ReferenceCheckOptions, 'platform' | 'home'> = {}
+): string | null {
+  const s = definiteState(refs, opts)
+  if (!s) return null
+  const abs = definiteAbs(s, target, cwd)
+  return abs ? touchOf(s, abs, false) : null
+}
+
+/**
+ * The folder of `refs` a file search can reach (selfControlGate.ts, Grep and Glob), else null. `root` is the search
+ * folder (`~` expanded, relative against cwd). `pattern` undefined = a recursive search (Grep): it reaches every folder
+ * at, under or BELOW the root, so a root that is the data dir or any ancestor of a protected path reaches it. A Glob
+ * `pattern` (relative to the root, or absolute) reaches a folder when its components match the folder's (`*`, `?`,
+ * `[...]`), or anything below its static folder once a `**` component appears; a glob shallower than the folder only
+ * lists a parent and never counts.
+ */
+export function searchReaches(
+  root: unknown,
+  pattern: string | undefined,
+  refs: readonly string[],
+  cwd: string | undefined,
+  opts: Pick<ReferenceCheckOptions, 'platform' | 'home'> = {}
+): string | null {
+  const s = definiteState(refs, opts)
+  if (!s) return null
+  const base = definiteAbs(s, root, cwd)
+  if (pattern === undefined) return base ? reachesBelow(s, base) : null
+  const full = definiteAbs(s, pattern, base ?? undefined)
+  if (!full) return null
+  if (!GLOB_CHAR.test(pattern) && !/[{}]/.test(pattern)) return touchOf(s, full, false)
+  const parts = full.split(/[\\/]+/)
+  const deep = parts.findIndex((c) => c.includes('**') || /[{}]/.test(c))
+  if (deep >= 0) {
+    // Everything below the static folder before the first `**` (or brace set, not expanded here) may be reached.
+    const staticDir = s.p.resolve(parts.slice(0, deep).join(s.p.sep) || s.p.sep)
+    const head = parts.slice(0, deep).some((c) => GLOB_CHAR.test(c))
+    return head ? (globReaches(s, full) ?? reachesBelow(s, s.p.resolve(globDir(s, full)))) : reachesBelow(s, staticDir)
+  }
+  return touchOf(s, full, false) ?? globReaches(s, full)
 }
 
 /** The reference folder a shell command touches (commandReferenceTouch's folder, as given in `refs`), else null. */

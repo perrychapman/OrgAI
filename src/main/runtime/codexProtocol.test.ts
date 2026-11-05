@@ -341,15 +341,61 @@ describe('buildLaunchConfig', () => {
     expect(l.config).toContain('mcp_servers.r.env_http_headers={ X-Key = "ORGAI_MCP_0_H0" }')
   })
 
-  it('falls back to inline env on a secret name clash between servers and says so', () => {
+  it('refuses a stdio server whose secret name clashes with another server at a different value', () => {
+    const a = spec({ name: 'a', command: 'a', secretEnv: ['TOKEN'] })
+    const b = spec({ name: 'b', command: 'b', args: ['--x'], env: { MODE: 'ro' }, secretEnv: ['TOKEN'] })
+    const l = buildLaunchConfig(conn(), [resolved(a, { TOKEN: 'secret-one' }), resolved(b, { MODE: 'ro', TOKEN: 'secret-two' })])
+    expect(l.skipped).toHaveLength(1)
+    expect(l.skipped[0].name).toBe('b')
+    expect(l.skipped[0].reason).toContain('TOKEN')
+    expect(l.skipped[0].reason).toContain('"a"')
+    expect(l.config.some((c) => c.startsWith('mcp_servers.b.'))).toBe(false)
+    expect(l.config).toContain('mcp_servers.a.env_vars=["TOKEN"]')
+    const all = l.config.join('\n') + l.summary.join('\n') + JSON.stringify(l.skipped)
+    expect(all).not.toContain('secret-one')
+    expect(all).not.toContain('secret-two')
+    expect(l.env.TOKEN).toBe('secret-one')
+    expect(Object.values(l.env)).not.toContain('secret-two')
+  })
+
+  it('shares a secret name with the same value through env_vars on both servers', () => {
     const a = spec({ name: 'a', command: 'a', secretEnv: ['TOKEN'] })
     const b = spec({ name: 'b', command: 'b', secretEnv: ['TOKEN'] })
-    const l = buildLaunchConfig(conn(), [resolved(a, { TOKEN: 'one' }), resolved(b, { TOKEN: 'two' })])
-    expect(l.env.TOKEN).toBe('one')
+    const l = buildLaunchConfig(conn(), [resolved(a, { TOKEN: 'same' }), resolved(b, { TOKEN: 'same' })])
+    expect(l.skipped).toEqual([])
     expect(l.config).toContain('mcp_servers.a.env_vars=["TOKEN"]')
-    expect(l.config).toContain('mcp_servers.b.env={ TOKEN = "two" }')
-    expect(l.summary.join('\n')).toContain('WARNING TOKEN passed inline')
-    expect(l.summary.join('\n')).not.toContain('two')
+    expect(l.config).toContain('mcp_servers.b.env_vars=["TOKEN"]')
+    expect(l.config.join('\n')).not.toContain('same')
+    expect(l.env.TOKEN).toBe('same')
+  })
+
+  it('ignores a disabled server whose secret name would clash', () => {
+    const a = spec({ name: 'a', command: 'a', secretEnv: ['TOKEN'], enabled: false })
+    const b = spec({ name: 'b', command: 'b', secretEnv: ['TOKEN'] })
+    const l = buildLaunchConfig(conn(), [resolved(a, { TOKEN: 'one' }), resolved(b, { TOKEN: 'two' })])
+    expect(l.skipped).toEqual([])
+    expect(l.config).toContain('mcp_servers.b.env_vars=["TOKEN"]')
+    expect(l.config.some((c) => c.startsWith('mcp_servers.a.'))).toBe(false)
+    expect(l.env.TOKEN).toBe('two')
+  })
+
+  it('keeps the first of three servers, skips the clashing one and configures a non-clashing one', () => {
+    const a = spec({ name: 'a', command: 'a', secretEnv: ['TOKEN'] })
+    const b = spec({ name: 'b', command: 'b', secretEnv: ['TOKEN', 'OTHER'] })
+    const c = spec({ name: 'c', command: 'c', secretEnv: ['OTHER'] })
+    const d = spec({ name: 'd', command: 'd', secretEnv: ['TOKEN'] })
+    const l = buildLaunchConfig(conn(), [
+      resolved(a, { TOKEN: 'one' }),
+      resolved(b, { TOKEN: 'two', OTHER: 'b-other' }),
+      resolved(c, { OTHER: 'c-other' }),
+      resolved(d, { TOKEN: 'three' })
+    ])
+    expect(l.skipped.map((s) => s.name)).toEqual(['b', 'd'])
+    expect(l.skipped.every((s) => s.reason.includes('TOKEN') && s.reason.includes('"a"'))).toBe(true)
+    // The refused server forwarded nothing, so c's OTHER is its own.
+    expect(l.config).toContain('mcp_servers.c.env_vars=["OTHER"]')
+    expect(l.env).toMatchObject({ TOKEN: 'one', OTHER: 'c-other' })
+    expect(l.config.some((x) => x.startsWith('mcp_servers.b.') || x.startsWith('mcp_servers.d.'))).toBe(false)
   })
 
   it('skips disabled servers and servers without a command or url', () => {

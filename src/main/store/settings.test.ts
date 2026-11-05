@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_APPEARANCE } from '@shared/defaults'
-import { SettingsStore, normalizeAppearance, normalizeSettings, reconcileAnthropicAuth, reconcileNearLimit } from './settings'
+import { SettingsStore, normalizeAppearance, normalizeSettings, reconcileAnthropicAuth, reconcileNearLimit, withoutUnchosenTerminalAccess } from './settings'
 
 describe('tier model validation', () => {
   it('drops renderer or file tier models that are not valid model ids', () => {
@@ -345,6 +345,40 @@ describe('defaultConnectionReplaced', () => {
     expect(normalizeSettings({ defaultConnection: 'openai', defaultConnectionChosen: false, defaultConnectionReplaced: 'openai' })).not.toHaveProperty('defaultConnectionReplaced')
     for (const v of ['bogus', 'toString', 1, null, {}]) {
       expect(normalizeSettings({ defaultConnection: 'openai', defaultConnectionChosen: false, defaultConnectionReplaced: v } as never)).not.toHaveProperty('defaultConnectionReplaced')
+    }
+  })
+})
+
+describe('terminalServer', () => {
+  it('defaults to false and keeps only a boolean true', () => {
+    expect(normalizeSettings(undefined).terminalServer).toBe(false)
+    expect(normalizeSettings({}).terminalServer).toBe(false)
+    expect(normalizeSettings({ terminalServer: true }).terminalServer).toBe(true)
+    expect(normalizeSettings({ terminalServer: false }).terminalServer).toBe(false)
+    for (const junk of ['true', 1, null, {}, []]) expect(normalizeSettings({ terminalServer: junk } as never).terminalServer).toBe(false)
+  })
+
+  it("terminalAccessLevel keeps only 'full' (missing = operate)", () => {
+    expect(normalizeSettings({})).not.toHaveProperty('terminalAccessLevel')
+    expect(normalizeSettings({ terminalAccessLevel: 'full' }).terminalAccessLevel).toBe('full')
+    for (const junk of ['operate', 'FULL', true, 1, null, {}]) expect(normalizeSettings({ terminalAccessLevel: junk } as never)).not.toHaveProperty('terminalAccessLevel')
+  })
+
+  it('reads Terminal access saved on without a choice (an older headless boot) as off; a chosen one stays (review H2)', () => {
+    const on = normalizeSettings({ terminalServer: true })
+    expect(withoutUnchosenTerminalAccess(on).terminalServer).toBe(false)
+    const chosen = normalizeSettings({ terminalServer: true, terminalServerChosen: true })
+    expect(withoutUnchosenTerminalAccess(chosen)).toBe(chosen)
+    const dir = mkdtempSync(join(tmpdir(), 'orgai-term-'))
+    try {
+      writeFileSync(join(dir, 'settings.json'), JSON.stringify({ version: 1, settings: { terminalServer: true, terminalAccessLevel: 'full' } }))
+      const s = new SettingsStore(dir).get()
+      expect(s.terminalServer).toBe(false)
+      expect(s.terminalAccessLevel).toBe('full')
+      writeFileSync(join(dir, 'settings.json'), JSON.stringify({ version: 1, settings: { terminalServer: true, terminalServerChosen: true } }))
+      expect(new SettingsStore(dir).get().terminalServer).toBe(true)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
     }
   })
 })

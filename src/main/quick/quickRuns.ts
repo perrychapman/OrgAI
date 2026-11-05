@@ -9,6 +9,7 @@ import type {
   QuickRunPromoteResult,
   Role,
   RunEvent,
+  RunOverrides,
   RunSummary
 } from '@shared/types'
 import { PROJECT_PEEK_BRIEF_CHARS, QUICK_PROJECT_ID, isVirtualProjectId, QUICK_RUN_MAX_PROMPT_CHARS, VIRTUAL_PROJECT_LABELS } from '@shared/types'
@@ -154,7 +155,15 @@ export interface QuickRunDeps {
   dataDir: string
   settings: () => AppSettings
   runs: {
-    start(input: { project: Project; prompt: string; kind: 'work'; quick: QuickRunInfo; images?: QuickRunInput['images'] }): Promise<RunSummary>
+    start(input: {
+      project: Project
+      prompt: string
+      kind: 'work'
+      quick: QuickRunInfo
+      images?: QuickRunInput['images']
+      overrides?: RunOverrides
+      allowWidening?: boolean
+    }): Promise<RunSummary>
     summary(runId: string): RunSummary | null
     /** The run's session chain with live runs' current summaries (RunManager.chain). */
     chain(runId: string): RunSummary[]
@@ -176,6 +185,17 @@ export interface QuickRunDeps {
   broadcast: (e: RunEvent) => void
   /** ORGAI_MOCK=1. */
   mock?: boolean
+}
+
+/** QuickRunService.start options (the host dispatcher's RPC path). */
+export interface QuickStartOptions {
+  /**
+   * Called with the quick project the run will see when `input.overrides` is set, before the run starts: throws to
+   * refuse them (the dispatcher's scope check, cli-spec 6.2(1)) and answers whether widening values may apply (the
+   * caller holds 'configure'). Without it, overrides pass with allowWidening false. Quick runs stay trust-restricted:
+   * the project's mode is 'default', so only narrowing values can matter.
+   */
+  checkOverrides?: (project: Project) => boolean
 }
 
 /** Chat: start, rebuild the project of a continued run, and promote a run chain to a project. */
@@ -201,7 +221,7 @@ export class QuickRunService {
    * Start a quick run. Validation here is the authority (the folder in particular): a bad folder or prompt rejects
    * before any directory or run exists. A scratch dir made for a start that then fails is removed again.
    */
-  async start(input: QuickRunInput): Promise<RunSummary> {
+  async start(input: QuickRunInput, opts: QuickStartOptions = {}): Promise<RunSummary> {
     const prompt = typeof input?.prompt === 'string' ? input.prompt.trim() : ''
     const hasImages = Array.isArray(input?.images) && input.images.length > 0
     if (!prompt && !hasImages) throw new Error('Type what you want done.')
@@ -217,7 +237,16 @@ export class QuickRunService {
     }
     try {
       const project = quickProject(this.deps.settings(), info, this.projectOpts())
-      return await this.deps.runs.start({ project, prompt, kind: 'work', quick: info, ...(hasImages ? { images: input.images } : {}) })
+      const overrides = input.overrides
+      const allowWidening = overrides ? (opts.checkOverrides?.(project) ?? false) : false
+      return await this.deps.runs.start({
+        project,
+        prompt,
+        kind: 'work',
+        quick: info,
+        ...(hasImages ? { images: input.images } : {}),
+        ...(overrides ? { overrides, allowWidening } : {})
+      })
     } catch (e) {
       if (info.scratch) this.removeScratch(info.folder)
       throw e

@@ -5,7 +5,7 @@ import type { MaintenanceResult, PendingWorktree, Project, WorktreeDiff } from '
 import { writesToProjectFolder } from '@shared/defaults'
 import type { ProjectStore } from './store/projects'
 import { ARCHITECTURE_PATH, CLAUDE_MD_MARKER } from './setup/service'
-import { diffWorktree, discardWorktree, inspectPending, integrateWorktree, isGitRepo, removeExcludeLine } from './runtime/worktrees'
+import { diffWorktree, discardWorktree, inspectPending, integrateWorktree, isGitRepo, removeExcludeLine, UnfinishedGitStateError } from './runtime/worktrees'
 
 /**
  * Cleanup that happens outside a run: leftover report branches, and removing OrgAI's
@@ -49,7 +49,12 @@ export class MaintenanceService {
 
   async discardWorktree(projectId: string, branch: string): Promise<MaintenanceResult> {
     const { root, wt } = await this.find(projectId, branch)
-    await discardWorktree(root, wt)
+    try {
+      await discardWorktree(root, wt)
+    } catch (e) {
+      if (e instanceof UnfinishedGitStateError) return { ok: false, message: e.message }
+      throw e
+    }
     return { ok: true, message: `Discarded ${branch}.` }
   }
 
@@ -74,7 +79,12 @@ export class MaintenanceService {
           message: `${holding.length} report branch${holding.length === 1 ? ' still holds' : 'es still hold'} unmerged work (${holding.map((w) => w.branch).join(', ')}). Integrate or discard them first.`
         }
       }
-      for (const w of await inspectPending(root)) await discardWorktree(root, w)
+      try {
+        for (const w of await inspectPending(root)) await discardWorktree(root, w)
+      } catch (e) {
+        if (e instanceof UnfinishedGitStateError) return { ok: false, message: e.message }
+        throw e
+      }
     }
 
     const removed: string[] = []

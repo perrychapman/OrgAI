@@ -2,7 +2,7 @@ import type { AgentInstance, AgentMessage, ImageAttachment, McpServerSpec, Role,
 import { KNOWLEDGE_RECALL_TOOL, SKILL_HARNESS_TOOLS, isModelTier } from '@shared/types'
 import { effectiveSubagentLimits, isolateWritersOn, newId, projectKindOf } from '@shared/defaults'
 import { validModelId } from '../connections/codexAccount'
-import { ROOT_AGENT_ID, isSetupLikeRun, type CompletionInput, type PeerMessage, type RunConnection, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
+import { ROOT_AGENT_ID, isSetupLikeRun, type CompletionInput, type PeerMessage, type RunConnection, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type RootTurnEnd, type SessionSettlement, type ExecActivityReason } from './types'
 import { CodexAppServer, CodexRpcError, codexExitMessage, type CodexAppServerOptions } from './codexAppServer'
 import {
   METHOD,
@@ -49,7 +49,7 @@ import { SETUP_TOOLS_INSTRUCTIONS, harnessToolsFor, isBlockingHarnessTool, type 
 import { ContinuationDriver, stepActivity } from './continuation'
 import { buildRolePrompt, peerMessageText, canWrite, composeFirstMessage, isArchitectureFile } from './prompts'
 import { firstMessageHiddenContext, spawnKnowledge, userMessageKnowledge, withSpawnKnowledge, withUserMessageKnowledge } from './knowledgeDelivery'
-import { describeTool } from './activity'
+import { describeTool, isAuthFailure } from './activity'
 import { WorktreeIntegrator } from './integration'
 import { allowRuleStrings, applyAllowScope, chooseSuggestions, isOfferableDirectory, listRules, suggestionLabels } from './permissionRules'
 import { isFreeCdTarget, matchOptionsFor, type MatchOptions } from './ruleMatch'
@@ -161,6 +161,17 @@ export function offerableByRealPath(dir: string, opts: Parameters<typeof isOffer
   }
 }
 import { tmpdir } from 'node:os'
+import { scrubControlEnv } from './childEnv'
+import { SELF_CONTROL_PATHS_UNAVAILABLE_LOG, SELF_CONTROL_REFUSAL_TEXT, checkSelfControlDenial, readControlProtectedPaths, selfControlLogLine } from './selfControlGate'
+import type { ResolvedMcpServer } from './types'
+
+/**
+ * MCP servers without OrgAI's control variables in their env (cli-spec 3.4(3)): plain values go into the `-c
+ * mcp_servers.<name>.env` config, which the app-server env scrub never sees.
+ */
+function withoutControlEnv(servers: ResolvedMcpServer[]): ResolvedMcpServer[] {
+  return servers.map((s) => ({ ...s, env: scrubControlEnv(s.env ?? {}) }))
+}
 
 /**
  * The Codex adapter: drives `codex app-server` (JSON-RPC over stdio, codexAppServer.ts) and maps its threads,
@@ -274,6 +285,10 @@ class CodexSession implements RuntimeSession {
   private ended = false
   private launch: LaunchConfig = { config: [], env: {}, summary: [], skipped: [] }
   private mcpRestartPending = false
+  /** Root turn ends so far (completed, failed and interrupted): RootTurnEnd.turnGen. */
+  private rootTurnGen = 0
+  /** thread/start or thread/resume requests in flight. */
+  private threadStarts = 0
   private restarting = false
   private pendingMcpPrefixes: string[] = []
   private closeSignal!: () => void
@@ -328,8 +343,13 @@ class CodexSession implements RuntimeSession {
     this.continuation = new ContinuationDriver({
       kind: ctx.run.kind,
       projectKind: projectKindOf(ctx.project),
-      autoContinue: ctx.autoContinue,
-      maxAutoContinues: ctx.maxAutoContinues,
+      // Getters: RunManager's setLive re-clamp of ctx reaches the live driver.
+      get autoContinue() {
+        return ctx.autoContinue
+      },
+      get maxAutoContinues() {
+        return ctx.maxAutoContinues
+      },
       delayMs: ctx.continuationDelayMs,
       getPlan: () => ctx.getPlan(),
       updatePlan: (plan) => ctx.updatePlan(plan),
@@ -346,7 +366,8 @@ class CodexSession implements RuntimeSession {
         this.emit({ type: 'run.status', runId: ctx.run.id, status: 'running' })
       },
       log: (level, message) => this.log(level, message),
-      tellUser: (text) => this.transcript(ROOT_AGENT_ID, { kind: 'system', text }, { source: 'harness' })
+      tellUser: (text) => this.transcript(ROOT_AGENT_ID, { kind: 'system', text }, { source: 'harness' }),
+      onSettled: () => this.noteActivity('continuation')
     })
     this.finished = this.run()
   }
@@ -375,6 +396,22 @@ class CodexSession implements RuntimeSession {
     this.notifyOrchestrator(peerMessageText(message), 'Reading a message from another run…', { transcript: false })
   }
 
+  /** Headless exec settlement view (cli-spec 6.2(2)). */
+  settlement(): SessionSettlement {
+    const root = this.agents.get(ROOT_AGENT_ID)
+    const rootIdle =
+      (!this.rootThreadId || !this.activeTurn.has(this.rootThreadId)) && (!root || root.state === 'idle' || root.state === 'done' || root.state === 'error')
+    const quiescent =
+      !this.mcpRestartPending && !this.restarting && this.queues.size === 0 && this.threadStarts === 0 && this.earlySends.length === 0 && !this.integrator.hasPendingWork()
+    return {
+      rootTurnGen: this.rootTurnGen,
+      rootIdle,
+      continuationSettled: this.continuation.isSettledForTurn(this.rootTurnGen),
+      nudgeTurn1Sent: this.continuation.nudgeTurn1Sent,
+      quiescent
+    }
+  }
+
   async stop(): Promise<void> {
     if (this.ending) return
     this.ending = true
@@ -394,8 +431,42 @@ class CodexSession implements RuntimeSession {
     this.emit({ type: 'log', runId: this.ctx.run.id, level, message })
   }
 
+  /** Exec settlement: adapter-internal activity (a listener's throw never breaks the session). */
+  private noteActivity(reason: ExecActivityReason): void {
+    try {
+      this.ctx.noteActivity?.(reason)
+    } catch {
+      /* ignore */
+    }
+  }
+
   private transcript(agentId: string, block: TranscriptBlock, opts?: { source?: 'harness' }): void {
     this.emit({ type: 'transcript', runId: this.ctx.run.id, entry: { id: newId('t'), agentId, at: Date.now(), block, ...(opts?.source ? { source: opts.source } : {}) } })
+  }
+
+  /** Set once the "self-control gate skipped" line was logged for this run. */
+  private selfControlSkipLogged = false
+
+  /**
+   * The pre-mode self-control gate (selfControlGate.ts, cli-spec 3.4(1)) for one approval request: true when it must
+   * be declined (the orgai command, OrgAI's control files). On a hit it logs a warning and writes one harness row on
+   * the calling agent. An empty or unreadable protected list declines every shell command (review M2: it cannot be
+   * checked against the control files) and leaves file changes to the normal flow (logged once per run). Commands
+   * Codex runs inside its own sandbox without an approval request never reach this gate: they are governed by Codex's
+   * sandbox policy (policyFor in codexProtocol.ts), not by OrgAI.
+   */
+  private selfControlDenied(agentId: string, checks: ReadonlyArray<{ toolName: string; input: unknown; label?: string }>, cwd: string): boolean {
+    const { paths: protectedPaths, unavailable } = readControlProtectedPaths(this.ctx.controlProtectedPaths?.bind(this.ctx))
+    if (unavailable && !this.selfControlSkipLogged) {
+      this.selfControlSkipLogged = true
+      this.log('warn', SELF_CONTROL_PATHS_UNAVAILABLE_LOG)
+    }
+    const shell = process.platform === 'win32' ? 'powershell' : 'bash'
+    const hit = checks.find((c) => checkSelfControlDenial(c.toolName, c.input, { protectedPaths, pathsUnavailable: unavailable, cwd, shell }))
+    if (!hit) return false
+    this.log('warn', selfControlLogLine(hit.label ?? hit.toolName, this.agents.get(agentId)?.name ?? agentId))
+    this.transcript(agentId, { kind: 'system', text: SELF_CONTROL_REFUSAL_TEXT }, { source: 'harness' })
+    return true
   }
 
   /**
@@ -507,6 +578,7 @@ class CodexSession implements RuntimeSession {
       return
     }
     void this.sendToThread(this.rootThreadId, text).catch((e) => this.log('warn', `Could not deliver a harness message to the orchestrator: ${(e as Error).message}`))
+    this.noteActivity('message')
   }
 
   private async interruptAll(): Promise<void> {
@@ -593,6 +665,15 @@ class CodexSession implements RuntimeSession {
 
   /** thread/start; when the server rejects the unstable approvalsReviewer field, retry without it. */
   private async startThread(params: Record<string, unknown>, method: string = METHOD.threadStart): Promise<{ threadId: string; model?: string }> {
+    this.threadStarts += 1
+    try {
+      return await this.startThreadNow(params, method)
+    } finally {
+      this.threadStarts -= 1
+    }
+  }
+
+  private async startThreadNow(params: Record<string, unknown>, method: string): Promise<{ threadId: string; model?: string }> {
     let res: unknown
     // Codex discovers skills itself (repo .agents/skills, the user's and the admin folders); OrgAI hands out only the
     // granted ones through load_skill, so every thread's native skills are switched off first (best effort, warned).
@@ -689,7 +770,7 @@ class CodexSession implements RuntimeSession {
         const leftover = await this.integrator.start()
         if (leftover) firstMessage += `\n\n---\n${leftover}`
       }
-      const servers = ctx.resolvedMcpServers ? await ctx.resolvedMcpServers() : []
+      const servers = withoutControlEnv(ctx.resolvedMcpServers ? await ctx.resolvedMcpServers() : [])
       this.launch = buildLaunchConfig(ctx.connection, servers, { ...trustLaunchOpts(ctx), writableRoots: codexWritableRoots(ctx) })
       for (const s of this.launch.skipped) this.log('warn', `MCP server ${s.name} was skipped: ${s.reason}`)
       for (const line of this.launch.summary) this.log('info', `Codex: ${line}`)
@@ -840,8 +921,23 @@ class CodexSession implements RuntimeSession {
       root.activity = u.status === 'interrupted' ? 'Interrupted' : reportsRunning ? 'Waiting on reports…' : 'Waiting for you'
     }
     this.upsert(root)
+    // Exec settlement (cli-spec 6.2(2)): every root turn end is reported before 'idle', failed and interrupted ones included.
+    this.rootTurnGen += 1
+    const turnGen = this.rootTurnGen
+    const end: RootTurnEnd =
+      u.status === 'failed'
+        ? { turnGen, ok: false, errorSubtype: 'failed', isAuthError: isAuthFailure({ text: u.error?.message ?? '', isError: true }) }
+        : { turnGen, ok: true, ...(u.status === 'interrupted' ? { interrupted: true } : {}) }
+    if (this.limited) end.limited = true
+    try {
+      this.ctx.onRootTurnEnded?.(end)
+    } catch (e) {
+      this.log('warn', `Root turn end listener failed: ${(e as Error)?.message ?? String(e)}`)
+    }
     this.emit({ type: 'run.status', runId: this.ctx.run.id, status: 'idle' })
-    if (u.status === 'completed' && !this.setupLike) this.continuation.turnEnded()
+    // Only a completed turn may be nudged; a failed or interrupted one is settled at once.
+    if (u.status === 'completed') this.continuation.turnEnded(turnGen)
+    else this.continuation.skipTurn(turnGen)
     if (this.limited && !this.ending) {
       this.log('info', 'Ending the session at the usage limit; it continues when the window resets.')
       void this.stop()
@@ -865,6 +961,7 @@ class CodexSession implements RuntimeSession {
     }
     child.endedAt = Date.now()
     this.upsert(child)
+    this.noteActivity('report')
     if (u.status === 'completed') void this.integrator.onSubagentFinished(agentId)
     if (u.status === 'interrupted') return
     const text = reportMessage(child, u.status === 'failed' ? { status: 'failed', result: u.result, error: u.error?.message } : { status: 'completed', result: u.result })
@@ -1086,6 +1183,11 @@ class CodexSession implements RuntimeSession {
     const req = parseCommandApproval(params)
     if (!req) return { decision: 'decline' }
     const agentId = this.agentOf(req.threadId)
+    // Self-control gate first (cli-spec 3.4(1)): declined without a card before the policy, reference checks and rules.
+    const selfCwd = typeof req.cwd === 'string' && req.cwd && isAbsolute(req.cwd) ? req.cwd : this.ctx.project.path
+    if (this.selfControlDenied(agentId, [{ toolName: process.platform === 'win32' ? 'PowerShell' : 'Bash', input: { command: req.command } }], selfCwd)) {
+      return { decision: 'decline' }
+    }
     const policy = this.threads.get(req.threadId)?.policy
     if (policy?.denyApprovals) {
       this.log('info', `Declined a command in ${this.ctx.project.permissionMode} mode: ${req.command.slice(0, 120)}`)
@@ -1182,10 +1284,18 @@ class CodexSession implements RuntimeSession {
     const req = parseFileApproval(params)
     if (!req) return { decision: 'decline' }
     const agentId = this.agentOf(req.threadId)
-    const policy = this.threads.get(req.threadId)?.policy
-    if (policy?.denyApprovals) return { decision: 'decline' }
     const item = this.mapper.item(req.itemId)
     const changes = item ? fileChanges(item) : []
+    // Self-control gate first (cli-spec 3.4(1)): every changed path and the grantRoot as edit targets, declined without
+    // a card. A change with no usable path is left to the checks below.
+    const selfChecks = [...changes.map((c) => c.path), ...(req.grantRoot ? [req.grantRoot] : [])]
+      .filter((p): p is string => typeof p === 'string' && p.length > 0)
+      .map((p) => ({ toolName: 'Edit', input: { file_path: p } }))
+    if (selfChecks.length && this.selfControlDenied(agentId, selfChecks, this.integrator.worktreeOf(agentId)?.path ?? this.ctx.project.path)) {
+      return { decision: 'decline' }
+    }
+    const policy = this.threads.get(req.threadId)?.policy
+    if (policy?.denyApprovals) return { decision: 'decline' }
     // Reference folders are read-only: declined without a card, before the accept-edits auto-accept and any rule.
     const refDenial = this.referenceChangeDenial(agentId, changes, req.grantRoot)
     if (refDenial) {
@@ -1242,6 +1352,14 @@ class CodexSession implements RuntimeSession {
     const agentId = this.agentOf(req.threadId)
     const policy = this.threads.get(req.threadId)?.policy
     if (policy?.denyApprovals) return { permissions: {}, scope: 'turn' }
+    // Self-control gate (cli-spec 3.4(1)): a requested folder at, under or above OrgAI's control files (the data dir,
+    // home...) would let Codex read or write them inside its own sandbox with no further approval. Declined without a
+    // card; the search-root rule (Grep: at, under or an ancestor) is the one that fits a granted root.
+    const paths = requestedPaths(req.requested)
+    const cwd = this.integrator.worktreeOf(agentId)?.path ?? this.ctx.project.path
+    if (paths.length && this.selfControlDenied(agentId, paths.map((path) => ({ toolName: 'Grep', input: { pattern: '.', path }, label: 'extra permissions' })), cwd)) {
+      return { permissions: {}, scope: 'turn' }
+    }
     const input = { command: `Extra permissions: ${req.reason ?? JSON.stringify(req.requested)}`, permissions: req.requested }
     const { decision } = await this.ask(agentId, 'Bash', input)
     if (decision.behavior === 'deny') return { permissions: {}, scope: 'turn' }
@@ -1308,6 +1426,7 @@ class CodexSession implements RuntimeSession {
       const params = this.threadParams(req.role, false, cwd, parent?.model)
       const started = await this.startThread(params)
       this.bindThread(started.threadId, req.id, policy)
+      this.noteActivity('subagent')
       this.newAgent(req.id, req.role, {
         parentId: req.parentId,
         spawnToolUseId: req.callId || null,
@@ -1373,8 +1492,9 @@ class CodexSession implements RuntimeSession {
     if (!this.mcpRestartPending || this.restarting || this.ending || this.activeTurn.size > 0) return
     this.restarting = true
     this.mcpRestartPending = false
+    this.noteActivity('restart')
     try {
-      const servers = await this.ctx.resolvedMcpServers!()
+      const servers = withoutControlEnv(await this.ctx.resolvedMcpServers!())
       const launch = buildLaunchConfig(this.ctx.connection, servers, {
         ...trustLaunchOpts(this.ctx),
         writableRoots: codexWritableRoots(this.ctx)
@@ -1418,6 +1538,7 @@ class CodexSession implements RuntimeSession {
       return
     }
     this.restarting = false
+    this.noteActivity('restart')
   }
 }
 
@@ -1522,4 +1643,23 @@ export class CodexAdapter implements RuntimeAdapter {
       server.close()
     }
   }
+}
+
+/**
+ * The path-looking strings anywhere in a Codex permissions request (absolute, `~`), at most 64 of them and 8 levels
+ * deep: the folders a granted profile would open (writable or readable roots).
+ */
+export function requestedPaths(requested: unknown): string[] {
+  const out: string[] = []
+  const visit = (v: unknown, depth: number): void => {
+    if (out.length >= 64 || depth > 8) return
+    if (typeof v === 'string') {
+      if (/^(?:\/|~(?:$|[\\/])|[a-zA-Z]:[\\/]|\\\\)/.test(v)) out.push(v)
+      return
+    }
+    if (Array.isArray(v)) for (const x of v) visit(x, depth + 1)
+    else if (v && typeof v === 'object') for (const x of Object.values(v as Record<string, unknown>)) visit(x, depth + 1)
+  }
+  visit(requested, 0)
+  return out
 }

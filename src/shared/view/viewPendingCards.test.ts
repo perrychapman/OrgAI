@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { mergeById, mergePendingCards } from './pendingCards'
+import { mergeById, mergePendingCards } from './viewPendingCards'
 
 describe('pendingCards', () => {
   it('keeps held cards and appends only unseen ids', () => {

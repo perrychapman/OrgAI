@@ -1,0 +1,236 @@
+import { describe, expect, it } from 'vitest'
+import type { RunRecord, TranscriptEntry } from '../../shared/types'
+import { FakeHostClient, fakeContext, noHost, project, record, summary } from '../testing/fakeContext'
+import { EXIT } from '../types'
+import { afterEach } from 'vitest'
+import { runRuns, runsDeps } from './runs'
+
+const p1 = project('p1', '/work/app', { name: 'App' })
+const usageUnknown = { costUsd: null, costSource: 'unknown' } as never
+
+const runs = [
+  summary('run_one111', { startedAt: 1000, title: 'Oldest', endedBy: 'user' }),
+  summary('run_two222', { startedAt: 2000, title: 'Cut by quit', endedBy: 'app', endedWithApp: true }),
+  summary('run_three3', { startedAt: 3000, title: 'Unpriced', usage: usageUnknown }),
+  summary('run_four44', { startedAt: 4000, title: 'Broken', status: 'error', error: 'boom' }),
+  summary('run_five55', { startedAt: 5000, title: 'Continued', resumedFrom: 'run_four44', sessionId: 's1', totalCostUsd: 0.42 })
+]
+runs[3].sessionId = 's1'
+
+const entry = (id: string, block: TranscriptEntry['block'], agentId = 'root', source?: 'harness'): TranscriptEntry => ({ id, agentId, at: 1, block, ...(source ? { source } : {}) })
+
+describe('orgai runs list', () => {
+  it('lists newest first with status words from statusText and unknown cost never $0', async () => {
+    const f = fakeContext({ cwd: '/work/app', store: { projects: [p1], runs } })
+    expect(await runRuns(f.ctx, ['list'])).toBe(EXIT.ok)
+    const lines = f.out().trimEnd().split('\n')
+    expect(lines[0]).toMatch(/^RUN\s+STATUS\s+NAME\s+KIND\s+STARTED\s+COST$/)
+    expect(lines.slice(1).map((l) => l.slice(0, 3).trim())).toEqual(['R5', 'R4', 'R3', 'R2', 'R1'])
+    expect(lines[1]).toContain('Finished')
+    expect(lines[1]).toMatch(/\$0\.42$/)
+    expect(lines[2]).toContain('Failed')
+    expect(lines[3]).toMatch(/unknown$/)
+    expect(lines[3]).not.toContain('$0')
+    expect(lines[4]).toContain('Ended when OrgAI closed')
+    expect(lines[5]).toContain('Stopped')
+    expect(f.err()).toContain('No OrgAI host is running; showing saved data.')
+  })
+
+  it('--limit and --status', async () => {
+    const f = fakeContext({ cwd: '/work/app', store: { projects: [p1], runs } })
+    await runRuns(f.ctx, ['list', '--limit', '2'])
+    expect(f.out().trimEnd().split('\n')).toHaveLength(4)
+    expect(f.out()).toContain('3 more')
+    const g = fakeContext({ cwd: '/work/app', store: { projects: [p1], runs } })
+    await runRuns(g.ctx, ['list', '--status', 'stopped'])
+    const body = g.out().trimEnd().split('\n').slice(1)
+    expect(body).toHaveLength(2)
+    await expect(runRuns(g.ctx, ['list', '--status', 'sleeping'])).rejects.toMatchObject({ exitCode: EXIT.usage })
+    await expect(runRuns(g.ctx, ['list', '--limit', 'x'])).rejects.toMatchObject({ exitCode: EXIT.usage })
+  })
+
+  it('needs a project unless --all-projects', async () => {
+    const f = fakeContext({ cwd: '/elsewhere', store: { projects: [p1], runs } })
+    await expect(runRuns(f.ctx, ['list'])).rejects.toMatchObject({ exitCode: EXIT.usage })
+    await runRuns(f.ctx, ['list', '--all-projects'])
+    expect(f.out()).toMatch(/^PROJECT\s+RUN/)
+  })
+
+  it('live host: runs:list and the waiting word for open runs', async () => {
+    const host = new FakeHostClient({
+      'projects:list': () => [p1],
+      'runs:list': () => [summary('run_live01', { status: 'running', startedAt: 10 })],
+      'runs:pendingCards': () => ({ permissions: [], questions: [{ id: 'q1', runId: 'run_live01', agentId: 'root', question: 'Which DB?', options: [], allowMultiple: false, allowFreeText: true, createdAt: 1 }], proposals: [], ruleRequests: [], mergeReviews: [], mcpInstalls: [] })
+    })
+    const f = fakeContext({ cwd: '/work/app', connect: [host], globals: { outputFormat: 'json' } })
+    await runRuns(f.ctx, ['list'])
+    const j = JSON.parse(f.out())
+    expect(j.hostState).toBe('ready')
+    expect(j.runs[0]).toMatchObject({ tag: 'R1', status: 'Needs you' })
+    expect(host.callsOf('runs:list')).toEqual([['p1']])
+  })
+})
+
+describe('orgai runs show', () => {
+  const big = 'A'.repeat(4000)
+  const rec: RunRecord = record(runs[4], {
+    transcript: [
+      entry('e1', { kind: 'user', text: 'Look at this', images: [{ mediaType: 'image/png', data: big }] }),
+      entry('e2', { kind: 'text', text: 'On it.' }),
+      entry('e3', { kind: 'tool_use', id: 't1', name: 'Bash', input: { command: 'npm test' } }),
+      entry('e4', { kind: 'tool_result', toolUseId: 't1', content: 'ok', isError: false }),
+      entry('e5', { kind: 'system', text: 'Continued by the harness' }, 'root', 'harness'),
+      entry('e6', { kind: 'text', text: 'Done \x1b]52;c;ZXZpbA==\x07 now' })
+    ],
+    plan: { goal: 'Fix it', steps: [{ id: 'p1', title: 'Find bug', status: 'done' }, { id: 'p2', title: 'Patch', status: 'in_progress' }], status: 'active', autoContinues: 0, updatedAt: 1 }
+  })
+  rec.agents.w1 = { ...rec.agents.root, id: 'w1', name: 'Implementer', handle: 'impl-1', parentId: 'root', roleSlug: 'impl', startedAt: 2 }
+
+  it('shows summary, chain position, plan, agents and images as labels', async () => {
+    const f = fakeContext({ cwd: '/work/app', store: { projects: [p1], runs, records: { run_five55: rec } } })
+    expect(await runRuns(f.ctx, ['show', 'R5'])).toBe(EXIT.ok)
+    const out = f.out()
+    expect(out).toContain('R5  Finished  Continued')
+    expect(out).toContain('Chain: session 2 of 2 (continues R4)')
+    expect(out).toContain('[x] Find bug')
+    expect(out).toContain('[>] Patch')
+    expect(out).toContain('Orchestrator')
+    expect(out).toContain('└ impl-1 (Implementer)')
+    expect(out).toContain('You: Look at this [image image/png 3000 bytes]')
+    expect(out).not.toContain(big)
+    expect(out).toContain('Orchestrator → Ran')
+    expect(out).toContain('· Continued by the harness')
+    expect(out).toContain('Cost: $0.42')
+  })
+
+  it('--tail limits the rows; --transcript shows all', async () => {
+    const f = fakeContext({ cwd: '/work/app', store: { projects: [p1], runs, records: { run_five55: rec } } })
+    await runRuns(f.ctx, ['show', 'run_five55', '--tail', '2'])
+    expect(f.out()).toContain('Transcript (last 2 of 5')
+    expect(f.out()).not.toContain('Look at this')
+    const g = fakeContext({ cwd: '/work/app', store: { projects: [p1], runs, records: { run_five55: rec } } })
+    await runRuns(g.ctx, ['show', 'run_fiv', '--transcript'])
+    expect(g.out()).toContain('Transcript:')
+    expect(g.out()).toContain('Look at this')
+  })
+
+  it('JSON omits image bytes', async () => {
+    const f = fakeContext({ cwd: '/work/app', globals: { outputFormat: 'json' }, store: { projects: [p1], runs, records: { run_five55: rec } } })
+    await runRuns(f.ctx, ['show', 'R5', '--transcript'])
+    const j = JSON.parse(f.out())
+    expect(j.status).toBe('Finished')
+    expect(j.chain).toMatchObject({ index: 2, count: 2 })
+    expect(f.out()).not.toContain(big)
+    expect(j.record.transcript[0].block.images[0]).toEqual({ mediaType: 'image/png', byteLength: 3000, omittedBase64: true })
+  })
+
+  it('unknown refs are exit 2', async () => {
+    const f = fakeContext({ cwd: '/work/app', store: { projects: [p1], runs } })
+    await expect(runRuns(f.ctx, ['show', 'R42'])).rejects.toMatchObject({ exitCode: EXIT.usage })
+    await expect(runRuns(f.ctx, ['show'])).rejects.toMatchObject({ exitCode: EXIT.usage })
+    await expect(runRuns(f.ctx, ['nope'])).rejects.toMatchObject({ exitCode: EXIT.usage })
+  })
+})
+
+describe('orgai runs send / interrupt / stop', () => {
+  const older = summary('run_old111', { startedAt: 100, status: 'finished', sessionId: 'sx', title: 'First' })
+  const newer = summary('run_new222', { startedAt: 200, status: 'idle', sessionId: 'sx', resumedFrom: 'run_old111', title: 'Second' })
+  const ended = summary('run_end333', { startedAt: 50, status: 'finished', endedBy: 'user' })
+  /** A live host that several commands in one test can reuse: close() only counts. */
+  const liveHost = (list = [older, newer, ended]) => {
+    const host = new FakeHostClient({
+      'projects:list': () => [p1],
+      'runs:list': () => list,
+      'runs:send': () => undefined,
+      'runs:interrupt': () => undefined,
+      'runs:stop': () => undefined
+    })
+    let closes = 0
+    host.close = () => void closes++
+    return Object.assign(host, { closeCount: () => closes })
+  }
+  const realRead = runsDeps.readStdin
+  afterEach(() => {
+    runsDeps.readStdin = realRead
+  })
+
+  it('send with argv text goes to the chain newest member, read + operate scopes', async () => {
+    const host = liveHost()
+    const f = fakeContext({ cwd: '/work/app', connect: [host] })
+    expect(await runRuns(f.ctx, ['send', 'run_old111', 'Please add tests'])).toBe(EXIT.ok)
+    expect(host.callsOf('runs:send')).toEqual([[{ runId: 'run_new222', text: 'Please add tests' }]])
+    expect(f.connectCalls[0].scopes).toEqual(['read', 'operate'])
+    expect(f.out()).toContain('Sent to')
+    expect(f.launcherCalls).toEqual([])
+    expect(host.closeCount()).toBe(1)
+  })
+
+  it('send reads stdin for - and for a missing text when stdin is not a TTY', async () => {
+    let asked = 0
+    runsDeps.readStdin = async (max) => {
+      asked++
+      expect(max).toBe(1024 * 1024)
+      return 'from stdin\n'
+    }
+    const host = liveHost()
+    const f = fakeContext({ cwd: '/work/app', connect: [host] })
+    await runRuns(f.ctx, ['send', 'R2', '-'])
+    await runRuns(f.ctx, ['send', 'R2'])
+    expect(asked).toBe(2)
+    expect(host.callsOf('runs:send')).toEqual([[{ runId: 'run_new222', text: 'from stdin\n' }], [{ runId: 'run_new222', text: 'from stdin\n' }]])
+    const g = fakeContext({ cwd: '/work/app', connect: [liveHost()] })
+    g.ctx.io.stdinIsTTY = true
+    await expect(runRuns(g.ctx, ['send', 'R2'])).rejects.toMatchObject({ exitCode: EXIT.usage })
+    runsDeps.readStdin = async () => '   '
+    await expect(runRuns(f.ctx, ['send', 'R2', '-'])).rejects.toMatchObject({ exitCode: EXIT.usage })
+  })
+
+  it('send refuses a message over 1 MB', async () => {
+    const f = fakeContext({ cwd: '/work/app', connect: [liveHost()] })
+    await expect(runRuns(f.ctx, ['send', 'R2', 'x'.repeat(1024 * 1024 + 1)])).rejects.toMatchObject({ exitCode: EXIT.usage })
+  })
+
+  it('interrupt and stop call their channels with the newest member; json shape', async () => {
+    const host = liveHost()
+    const f = fakeContext({ cwd: '/work/app', connect: [host], globals: { outputFormat: 'json' } })
+    expect(await runRuns(f.ctx, ['interrupt', 'R2'])).toBe(EXIT.ok)
+    expect(host.callsOf('runs:interrupt')).toEqual([['run_new222']])
+    expect(JSON.parse(f.out())).toEqual({ schemaVersion: 1, runId: 'run_new222', action: 'interrupt' })
+    const g = fakeContext({ cwd: '/work/app', connect: [host], globals: { outputFormat: 'json' } })
+    expect(await runRuns(g.ctx, ['stop', 'run_old111'])).toBe(EXIT.ok)
+    expect(host.callsOf('runs:stop')).toEqual([['run_new222']])
+    expect(JSON.parse(g.out())).toEqual({ schemaVersion: 1, runId: 'run_new222', action: 'stop' })
+  })
+
+  it('a run that is not live is exit 1 with its status word', async () => {
+    const host = liveHost()
+    const f = fakeContext({ cwd: '/work/app', connect: [host] })
+    await expect(runRuns(f.ctx, ['stop', 'run_end333'])).rejects.toMatchObject({ exitCode: EXIT.failure, message: expect.stringContaining('Stopped') })
+    await expect(runRuns(f.ctx, ['send', 'run_end333', 'hi'])).rejects.toMatchObject({ exitCode: EXIT.failure, message: expect.stringContaining('not live') })
+    expect(host.callsOf('runs:stop')).toEqual([])
+    expect(host.callsOf('runs:send')).toEqual([])
+  })
+
+  it('a paused run can be stopped but not interrupted', async () => {
+    const paused = summary('run_pau444', { startedAt: 300, status: 'paused' })
+    const host = liveHost([paused])
+    const f = fakeContext({ cwd: '/work/app', connect: [host] })
+    await expect(runRuns(f.ctx, ['interrupt', 'run_pau444'])).rejects.toMatchObject({ exitCode: EXIT.failure, message: expect.stringContaining('Paused') })
+    expect(await runRuns(f.ctx, ['stop', 'run_pau444'])).toBe(EXIT.ok)
+  })
+
+  it('no host is exit 1 and never starts one', async () => {
+    const f = fakeContext({ cwd: '/work/app', connect: [noHost()], store: { projects: [p1], runs } })
+    for (const argv of [['send', 'R1', 'x'], ['interrupt', 'R1'], ['stop', 'R1']]) {
+      await expect(runRuns(f.ctx, argv)).rejects.toMatchObject({ exitCode: EXIT.failure })
+    }
+    expect(f.launcherCalls).toEqual([])
+  })
+
+  it('usage errors', async () => {
+    const f = fakeContext({ cwd: '/work/app', connect: [liveHost()] })
+    await expect(runRuns(f.ctx, ['stop'])).rejects.toMatchObject({ exitCode: EXIT.usage })
+    await expect(runRuns(f.ctx, ['interrupt', 'R1', 'extra'])).rejects.toMatchObject({ exitCode: EXIT.usage })
+    await expect(runRuns(f.ctx, ['send'])).rejects.toMatchObject({ exitCode: EXIT.usage })
+  })
+})

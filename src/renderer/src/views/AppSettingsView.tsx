@@ -36,6 +36,11 @@ import SkillLibrarySection from '../components/skills/SkillLibrarySection'
 import TemplatesSection from '../components/templates/TemplatesSection'
 import KitSection from '../components/kit/KitSection'
 import { CanvasSection } from '../components/settings/CanvasSection'
+import { CliShimRow } from '../components/settings/CliShimRow'
+import { Select } from '../components/ui/Select'
+import { TERMINAL_ACCESS_TRUST } from '../lib/cliShim'
+import { TERMINAL_ACCESS_LEVEL_HINT, TERMINAL_ACCESS_LEVEL_OPTIONS, isTerminalAccessLevel, terminalAccessLevelOf, terminalAccessLevelPatch } from '../lib/terminalAccess'
+import { mergePendingSettings } from '../lib/settingsMerge'
 import { focusCheckedPreset } from '../components/canvas/CanvasPresetGroup'
 
 /** Same debounce the project store uses for project saves. */
@@ -86,6 +91,8 @@ export default function AppSettingsView(): ReactElement {
   const [focusTick, setFocusTick] = useState(0)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pending = useRef<AppSettings | null>(null)
+  /** The fields the queued save changed; a settings:changed from elsewhere keeps only these from `pending`. */
+  const pendingKeys = useRef<Set<keyof AppSettings>>(new Set())
   const appInfo = useAppStore((s) => s.appInfo)
   const mcpFocus = useAppStore((st) => st.mcpFocus)
   const [pane, setPane] = useState<string>(() => (useAppStore.getState().mcpFocus?.kind === 'library' ? APP_SETTINGS_PANES.mcpLibrary : APP_SETTINGS_PANES.general))
@@ -189,13 +196,18 @@ export default function AppSettingsView(): ReactElement {
     // Another window or the sidebar mirror changed a setting: follow it unless we have an unsaved edit.
     return window.orgai.onSettingsChanged((s) => {
       if (!pending.current) setInfo(s)
-      else pending.current = { ...pending.current, notifications: s.notifications }
+      else {
+        const merged = mergePendingSettings(pending.current, s, pendingKeys.current)
+        pending.current = merged
+        setInfo({ ...merged, dataDir: s.dataDir, appVersion: s.appVersion })
+      }
     })
   }, [])
 
   const flush = async (): Promise<void> => {
     const next = pending.current
     pending.current = null
+    pendingKeys.current = new Set()
     timer.current = null
     if (!next) return
     try {
@@ -235,10 +247,11 @@ export default function AppSettingsView(): ReactElement {
 
   /** Queue a save. `immediate` skips the debounce (switches, segmented choices, the theme). */
   const patch = (p: Partial<AppSettings>, immediate = false): void => {
-    const next: AppSettings = { ...stripInfo(info), ...p }
+    const next: AppSettings = { ...(pending.current ?? stripInfo(info)), ...p }
     setInfo({ ...next, dataDir: info.dataDir, appVersion: info.appVersion })
     useAppStore.getState().setSaveStatus({ state: 'saving' })
     pending.current = next
+    for (const key of Object.keys(p) as (keyof AppSettings)[]) pendingKeys.current.add(key)
     if (timer.current) clearTimeout(timer.current)
     if (immediate) void flush()
     else timer.current = setTimeout(() => void flush(), SAVE_DELAY_MS)
@@ -248,6 +261,7 @@ export default function AppSettingsView(): ReactElement {
   const saveModelPrices = async (modelPrices: ModelPriceOverride[]): Promise<void> => {
     const base = pending.current ?? stripInfo(info)
     pending.current = null
+    pendingKeys.current = new Set()
     if (timer.current) clearTimeout(timer.current)
     timer.current = null
     const result = await useAppStore.getState().trackSave(() => window.orgai.settings.set({ ...base, modelPrices }))
@@ -256,6 +270,7 @@ export default function AppSettingsView(): ReactElement {
   }
 
   const appearance: AppearanceSettings = info.appearance ?? DEFAULT_APPEARANCE
+  const terminalLevel = terminalAccessLevelOf(info)
   const patchAppearance = (p: Partial<AppearanceSettings>, canvas?: Partial<AppearanceSettings['canvas']>): void => {
     const next: AppearanceSettings = { ...appearance, ...p, canvas: { ...appearance.canvas, ...canvas } }
     setAppearance(next)
@@ -494,6 +509,49 @@ export default function AppSettingsView(): ReactElement {
                     width="select"
                     control={modelSelect('Report starting tier', 'default-report-model-row', info.defaultReportModel, true, (defaultReportModel) => patch({ defaultReportModel }))}
                   />
+                </SettingsCard>
+              </SettingsGroup>
+              <SettingsGroup title="Terminal">
+                <SettingsCard>
+                  <SettingRow
+                    id="terminal-server-row"
+                    title="Terminal access"
+                    description={`Lets the orgai command in a terminal on this computer see and control OrgAI. ${TERMINAL_ACCESS_TRUST} Off, OrgAI opens no connection point for terminals at all.`}
+                    control={
+                      <Switch
+                        checked={info.terminalServer === true}
+                        label="Terminal access"
+                        testId="terminal-server-switch"
+                        describedBy={settingDescId('terminal-server-row')}
+                        onChange={(terminalServer) => patch({ terminalServer }, true)}
+                      />
+                    }
+                  />
+                  <SettingRow
+                    id="terminal-access-level-row"
+                    title="What terminals may do"
+                    description={
+                      info.terminalServer === true
+                        ? TERMINAL_ACCESS_LEVEL_HINT[terminalLevel]
+                        : `${TERMINAL_ACCESS_LEVEL_HINT[terminalLevel]} Applies once Terminal access is on.`
+                    }
+                    width="select"
+                    control={
+                      <span data-testid="terminal-access-level">
+                        <Select
+                          id="terminal-access-level-select"
+                          label="What terminals may do"
+                          value={terminalLevel}
+                          options={TERMINAL_ACCESS_LEVEL_OPTIONS}
+                          describedBy={settingDescId('terminal-access-level-row')}
+                          onChange={(v) => {
+                            if (isTerminalAccessLevel(v)) patch(terminalAccessLevelPatch(v), true)
+                          }}
+                        />
+                      </span>
+                    }
+                  />
+                  <CliShimRow terminalAccessOn={info.terminalServer === true} onTurnOnTerminalAccess={() => patch({ terminalServer: true }, true)} />
                 </SettingsCard>
               </SettingsGroup>
             </SettingsAdvanced>
