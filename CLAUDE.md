@@ -532,7 +532,9 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   host wire-protocol and bundle/CAS types) with RunStore normalization; host primitives `src/main/host/processInfo.ts`
   and `identity.ts`; the host ownership protocol (`requestSingleInstanceLock`, startup.mkdir, daemon.json, per-instance
   socket) and an electron-free log.ts; the single-order cross-process `withRepoLock` and the info/exclude fix; the
-  pure view-models moved to `src/shared/view/`; refused colliding MCP secret env names on Codex launch; host-side
+  pure view-models moved to `src/shared/view/` (no renderer, DOM or React imports there, `noRendererImports.test.ts`;
+  the old `src/renderer/src/lib/<name>.ts` paths stay as thin `export * from '@shared/view/<name>'` re-exports, so
+  renderer callers keep their imports and new pure view logic the CLI also needs goes in `src/shared/view/`); refused colliding MCP secret env names on Codex launch; host-side
   bundle validation and knowledge appendFacts / expectedUpdatedAt; the safe JSON codec. Each is verified by unit tests
   only; Windows named pipes / ACLs and Windows / Linux process start times are unverified.
 
