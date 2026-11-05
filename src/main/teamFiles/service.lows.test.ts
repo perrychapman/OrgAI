@@ -18,7 +18,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+  rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 })
 })
 
 const mcpFile = (r = repo): string => join(r, '.orgai', 'mcp.json')

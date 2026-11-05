@@ -24,7 +24,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  rmSync(root, { recursive: true, force: true })
+  rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 })
 })
 
 describe('first open', () => {

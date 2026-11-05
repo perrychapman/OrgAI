@@ -9,14 +9,17 @@ import { readTeamFolder } from './disk'
 import { parseTeamFiles } from './parse'
 
 // Counts the git status calls the focus pass makes (the real function still runs).
-const gitCalls = vi.hoisted(() => ({ n: 0 }))
+// Every started call is remembered so afterEach can await it before the repo is removed.
+const gitCalls = vi.hoisted(() => ({ n: 0, pending: [] as Promise<unknown>[] }))
 vi.mock('../runtime/worktrees', async (orig) => {
   const real = await orig<typeof import('../runtime/worktrees')>()
   return {
     ...real,
     teamFilesStatusGit: (root: string) => {
       gitCalls.n++
-      return real.teamFilesStatusGit(root)
+      const p = real.teamFilesStatusGit(root)
+      gitCalls.pending.push(p)
+      return p
     }
   }
 })
@@ -34,9 +37,10 @@ beforeEach(() => {
   gitCalls.n = 0
 })
 
-afterEach(() => {
-  // A focus pass's git status may still hold the repo open for a moment on Windows (EBUSY).
-  rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+afterEach(async () => {
+  // A focus pass's git status may still be running in the repo (EBUSY on Windows): wait for every one started.
+  await Promise.allSettled(gitCalls.pending.splice(0))
+  rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 })
 })
 
 const state = (cc: Computer, id: string) => (cc.svc as unknown as { store: { readState(id: string): { dirtyBefore?: unknown } } }).store.readState(id)
