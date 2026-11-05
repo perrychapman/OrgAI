@@ -92,9 +92,11 @@ import type {
 } from '@shared/types'
 import type { QuickRunInput, QuickRunPromoteInput, QuickRunPromoteResult } from '@shared/types'
 import type { ConnectorPresetRemoveInput, McpCopyFromLibraryInput, McpProjectOverridesInput } from '@shared/types'
-import { KIT_IPC, MCP_SCOPE_IPC, REPO_DESTINATION_MAX_CHARS, REPO_SOURCE_MAX_CHARS } from '@shared/types'
+import { KIT_IPC, MCP_SCOPE_IPC, REPO_DESTINATION_MAX_CHARS, REPO_SOURCE_MAX_CHARS, TEAM_FILES_IPC } from '@shared/types'
 import type { RepoCloneInput, RepoCloneProgress, RepoCloneResult, RepoSourceParse, RepoTools } from '@shared/types'
 import { REPO_REQUEST_ID_RE, parseRepoSource, scrubStderr, type RepoCloneService } from './repoClone'
+import type { TeamFilesActionResult, TeamFilesCommitResult, TeamFilesStatus } from '@shared/types'
+import type { TeamFilesService } from './teamFiles/service'
 import type { KitApplyResult, KitExportResult, KitImportPreview } from '@shared/types'
 import { applyArgs as kitApplyArgs, exportArgs as kitExportArgs, type KitService } from './kit/service'
 import { PickedPaths, kitExportTarget } from './kit/pickedPaths'
@@ -206,6 +208,45 @@ export interface IpcServices {
   kit?: KitService
   /** Start a project from a repository: parse, tools, clone or fork, cancel (src/main/repoClone.ts). Absent = the channels are not registered. */
   repoClone?: RepoCloneService
+  /** Team files (src/main/teamFiles/service.ts). Absent = the teamFiles channels are not registered (older tests). */
+  teamFiles?: TeamFilesService
+}
+
+// ---- Team files ----
+
+const TEAM_DIGEST_RE = /^[0-9a-f]{64}$/
+
+/**
+ * Rebuilds a teamFiles:* input field by field: a plain object, a safe non-virtual project id, a 64-hex digest where one is
+ * needed; extra fields are dropped. Exported for tests.
+ */
+export function teamFilesArgs(input: unknown, withDigest: true): { projectId: string; digest: string }
+export function teamFilesArgs(input: unknown, withDigest?: false): { projectId: string }
+export function teamFilesArgs(input: unknown, withDigest = false): { projectId: string; digest?: string } {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Project not found')
+  const i = input as Record<string, unknown>
+  if (!isSafeId(i.projectId) || isVirtualProjectId(i.projectId)) throw new Error('Project not found')
+  if (!withDigest) return { projectId: i.projectId }
+  if (typeof i.digest !== 'string' || !TEAM_DIGEST_RE.test(i.digest)) throw new Error('The team files changed since you looked. Review them again.')
+  return { projectId: i.projectId, digest: i.digest }
+}
+
+/** ProjectCreateInput.teamFiles rebuilt: `{ digest }` with a 64-hex digest, else dropped. Exported for tests. */
+export function teamFilesCreateArg(input: unknown): { digest: string } | undefined {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined
+  const d = (input as Record<string, unknown>).digest
+  return typeof d === 'string' && TEAM_DIGEST_RE.test(d) ? { digest: d } : undefined
+}
+
+function registerTeamFilesIpc(svc: TeamFilesService): void {
+  const filled = async (r: TeamFilesActionResult): Promise<TeamFilesActionResult> => ({ project: r.project, status: await svc.withGit(r.status) })
+  ipcMain.handle(TEAM_FILES_IPC.teamFilesStatus, async (_e, input: unknown): Promise<TeamFilesStatus> => svc.withGit(svc.status(teamFilesArgs(input).projectId)))
+  ipcMain.handle(TEAM_FILES_IPC.teamFilesListAttention, async (): Promise<TeamFilesStatus[]> => Promise.all(svc.listAttention().map((s) => svc.withGit(s))))
+  ipcMain.handle(TEAM_FILES_IPC.teamFilesApprove, async (_e, input: unknown) => filled(svc.approve(teamFilesArgs(input, true))))
+  ipcMain.handle(TEAM_FILES_IPC.teamFilesReject, async (_e, input: unknown) => filled(svc.reject(teamFilesArgs(input, true))))
+  ipcMain.handle(TEAM_FILES_IPC.teamFilesUndo, async (_e, input: unknown) => filled(svc.undo(teamFilesArgs(input))))
+  ipcMain.handle(TEAM_FILES_IPC.teamFilesCommit, async (_e, input: unknown): Promise<TeamFilesCommitResult> => svc.commit(teamFilesArgs(input)))
+  ipcMain.handle(TEAM_FILES_IPC.teamFilesEnable, async (_e, input: unknown) => filled(svc.enable(teamFilesArgs(input))))
 }
 
 /** Longest instruction accepted for the MCP and Skill assistants; longer is cut. */
@@ -307,7 +348,7 @@ export function mcpAssistArgs(input: unknown): { library: boolean; projectId: st
   return { library, projectId: library ? HARNESS_PROJECT_ID : typeof i.projectId === 'string' ? i.projectId : '', allowBuild, ...(instruction ? { instruction } : {}) }
 }
 
-export function registerIpc({ projects, runs, setup, maintenance, settings, connections, mcp, adapterIds, harnessProject, openRunWindow, importer, skills, skillEvaluation, capabilities, quick, templates, kit, repoClone }: IpcServices): void {
+export function registerIpc({ projects, runs, setup, maintenance, settings, connections, mcp, adapterIds, harnessProject, openRunWindow, importer, skills, skillEvaluation, capabilities, quick, templates, kit, repoClone, teamFiles }: IpcServices): void {
   const mock = adapterIds.includes('mock')
   /**
    * A stored project, or the display project of a virtual id (harness, quick = "Chat", skills). Never listed by
@@ -321,20 +362,41 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
   ipcMain.handle(IPC.projectsList, () => projects.list())
   ipcMain.handle(IPC.projectsGet, (_e, id: string) => projectOrHarness(id))
   // Throws a readable message for a bad path (the form shows it) or a mock project without the mock adapter.
-  ipcMain.handle(IPC.projectsCreate, (_e, input: ProjectCreateInput) =>
-    projects.create(input, settings.get(), {
+  ipcMain.handle(IPC.projectsCreate, (_e, rawInput: ProjectCreateInput) => {
+    // teamFiles is rebuilt to `{ digest }` (64 hex) and wins over importAgents and templateId, which it then ignores.
+    const teamArg = teamFilesCreateArg((rawInput as { teamFiles?: unknown } | null)?.teamFiles)
+    const input: ProjectCreateInput = rawInput && typeof rawInput === 'object' ? { ...rawInput } : rawInput
+    if (teamArg && input?.kind === 'engagement') throw new Error('Team files are for code projects only.')
+    if (input && typeof input === 'object') {
+      if (teamArg) input.teamFiles = teamArg
+      else delete input.teamFiles
+      // A folder with team files gets them only through the reviewed teamFiles path: importAgents may still bring other
+      // sources the user chose, but never the `.orgai/` agents, which would skip the approval card (project.ts is
+      // unchanged for the other sources).
+      if (Array.isArray(input.importAgents) && teamFiles) {
+        try {
+          const dir = checkProjectPath(input.path)
+          if (dir.isDirectory && teamFiles.found(input.path, dir)) input.importAgents = input.importAgents.filter((s) => s !== 'orgai')
+        } catch {
+          input.importAgents = input.importAgents.filter((s) => s !== 'orgai')
+        }
+      }
+    }
+    return projects.create(input, settings.get(), {
       mockAvailable: adapterIds.includes('mock'),
       prepare: (p) => connections.prepareNewProject(p),
       // After prepare: imported models map to the connection the project was put on.
       importRoles: (p, sources) => importer.rolesForNewProject(p, sources),
       // Only when importAgents produced no roles; after prepare so the template's models map to the project's connection.
-      fromTemplate: (p, templateId) => templates.rolesForNewProject(p, templateId)
+      fromTemplate: (p, templateId) => templates.rolesForNewProject(p, templateId),
+      // The team in the folder's .orgai as previewed; a stale digest or a problem rejects with a readable message.
+      ...(teamArg && teamFiles ? { teamFiles: { build: (p: Project) => teamFiles.createFromFolder(p, teamArg.digest), adopted: (p: Project) => teamFiles.adopted(p.id) } } : {})
     })
-  )
+  })
   // Never rejects: the agent scan and the existing-project lookup add fields only when they succeed.
   ipcMain.handle(IPC.projectsCheckPath, (_e, path: string): ProjectPathCheck => {
     const check = checkProjectPath(path)
-    return { ...check, ...importer.pathCheckExtras(path, check) }
+    return pathCheckWithTeamFiles(check, importer.pathCheckExtras(path, check), teamFiles?.found(path, check))
   })
   // Agent import: read-only scans of the stored project's folder; the renderer supplies choices, never roles.
   ipcMain.handle(IPC.projectsScanAgents, (_e, path: string): AgentImportScan => importer.scan(path))
@@ -600,6 +662,7 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
   registerCapabilityIpc(capabilities)
   if (kit) registerKitIpc(kit)
   if (repoClone) registerRepoIpc(repoClone)
+  if (teamFiles) registerTeamFilesIpc(teamFiles)
 }
 
 // ---- Start a project from a repository (clone or fork) ----
@@ -695,6 +758,22 @@ function registerRepoIpc(repoClone: RepoCloneService): void {
       // an invalid id names no clone
     }
   })
+}
+
+/**
+ * projects:checkPath's answer: the basic check, the agent-import extras and the team found in the folder. While a team
+ * is found, agent source 'orgai' is left out (the `.orgai` agents are the team files, never counted twice). Exported for tests.
+ */
+export function pathCheckWithTeamFiles(check: ProjectPathCheck, extras: Partial<ProjectPathCheck>, found: ProjectPathCheck['teamFiles']): ProjectPathCheck {
+  const out: ProjectPathCheck = { ...check, ...extras }
+  if (!found) return out
+  out.teamFiles = found
+  if (out.agentSources) {
+    const rest = out.agentSources.filter((s) => s.source !== 'orgai')
+    if (rest.length) out.agentSources = rest
+    else delete out.agentSources
+  }
+  return out
 }
 
 // ---- Practice kit ----

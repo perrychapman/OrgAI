@@ -3,7 +3,9 @@ import { mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import type { AppSettings, CapabilityProgressEvent, TeamReviewSummary, ConnectionEvent, ConnectionId,FocusRunTarget, McpLibraryInfo, RunEvent, SkillLibraryInfo } from '@shared/types'
+import type { AppSettings, CapabilityProgressEvent, TeamReviewSummary, ConnectionEvent, ConnectionId,FocusRunTarget, McpLibraryInfo, RunEvent, SkillLibraryInfo, TeamFilesStatus } from '@shared/types'
+import { TEAM_FILES_IPC as IPC_TEAM_FILES } from '@shared/types'
+import { TeamFilesService } from './teamFiles/service'
 import { HARNESS_PROJECT_ID, IPC, QUICK_PROJECT_ID, SKILLS_PROJECT_ID, isVirtualProjectId, runWindowHash } from '@shared/types'
 import { appUrlMatcher, isExternalWebUrl, scopedWindow, shouldBlockNavigation } from './windowScope'
 import { ProjectStore } from './store/projects'
@@ -130,6 +132,12 @@ function broadcastCapabilityProgress(event: CapabilityProgressEvent): void {
 function broadcastTeamReview(summary: TeamReviewSummary): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send(IPC.capabilitiesReviewUpdated, summary)
+  }
+}
+
+function broadcastTeamFiles(status: TeamFilesStatus): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send(IPC_TEAM_FILES.teamFilesChanged, status)
   }
 }
 
@@ -319,6 +327,30 @@ app.whenReady().then(() => {
     onLibraryChanged: broadcastSkillLibrary,
     onProjectChanged: (project) => broadcast({ type: 'project.updated', runId: '', project })
   })
+  // Team files: a code project's team as plain files under .orgai/ (the project cache stays what runs read). Every
+  // ProjectStore.save passes through its hook; the folders are checked at boot, on window focus and at project open / run start.
+  const teamFiles = new TeamFilesService({
+    dataDir,
+    projects,
+    modelContext: (id) => connections.importModelContext(id),
+    withAdapter: (project) => connections.withAdapter(project),
+    skills: {
+      readFiles: (projectId, spec) => skills.teamReadFiles(projectId, spec),
+      storeFiles: (projectId, skillId, files) => skills.teamStoreFiles(projectId, skillId, files),
+      removeFiles: (projectId, skillId) => skills.teamRemoveFiles(projectId, skillId)
+    },
+    mcp: {
+      libraryEntries: () => mcp.libraryEntries(),
+      connectorEntry: (connectorId, variant) => mcp.connectorEntryForTeam(connectorId, variant),
+      connectorPreview: (connectorId, variant) => mcp.connectorPreviewForTeam(connectorId, variant),
+      discardConnectorEntry: (entryId) => mcp.discardConnectorEntryForTeam(entryId),
+      removeServerSecrets: (projectId, serverId) => mcp.removeServerSecrets(projectId, serverId)
+    },
+    broadcastStatus: broadcastTeamFiles,
+    broadcastProject: (project) => broadcast({ type: 'project.updated', runId: '', project }),
+    warn: (m) => log.warn(`Team files: ${m}`)
+  })
+  projects.setTeamFilesHook(teamFiles)
   const templates = new TemplateService({
     dataDir,
     projects,
@@ -378,6 +410,7 @@ app.whenReady().then(() => {
   }
   runManager = new RunManager(adapters, runBroadcast, runStore, setup, keepRunsFor, {
     dataDir,
+    teamFiles,
     // "Always allow for project" cards: append folders / switch to Accept edits on the stored project (the store cleans them).
     saveProjectPermissions: (projectId, patch) =>
       projects.update(projectId, (p) => ({
@@ -498,7 +531,7 @@ app.whenReady().then(() => {
     projects,
     runs: runManager,
     setup,
-    maintenance: new MaintenanceService(projects),
+    maintenance: new MaintenanceService(projects, teamFiles),
     settings,
     connections,
     mcp,
@@ -517,8 +550,12 @@ app.whenReady().then(() => {
     quick,
     templates,
     kit: new KitService({ appVersion: app.getVersion(), platform: process.platform, skills, mcp, templates }),
-    repoClone
+    repoClone,
+    teamFiles
   })
+  // Pending and problem states exist before the first focus; later checks run on window focus, at most once per 2 s.
+  void teamFiles.checkAll().catch((e) => log.warn(`Team files boot check failed: ${e instanceof Error ? e.message : String(e)}`))
+  app.on('browser-window-focus', () => teamFiles.focused())
   connections.init()
   connections.startDiscovery()
   if (process.env.ORGAI_MOCK !== '1') communityPrices.start()

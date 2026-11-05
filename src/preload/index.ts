@@ -19,10 +19,11 @@ import type {
   RunEvent,
   SendRunInput,
   StartRunInput,
+  TeamFilesStatus,
   TeamReviewSummary
 } from '../shared/types'
 import { IPC, isMenuAction } from '../shared/types'
-import { KIT_IPC, MCP_SCOPE_IPC } from '../shared/types'
+import { KIT_IPC, MCP_SCOPE_IPC, TEAM_FILES_IPC } from '../shared/types'
 
 const api: OrgAIApi = {
   projects: {
@@ -309,6 +310,21 @@ const api: OrgAIApi = {
     const listener = (_e: IpcRendererEvent, event: RepoCloneProgress): void => cb(event)
     ipcRenderer.on(IPC.projectsCloneProgress, listener)
     return () => ipcRenderer.removeListener(IPC.projectsCloneProgress, listener)
+  },
+  // ---- Team files ----
+  teamFiles: {
+    status: (input) => ipcRenderer.invoke(TEAM_FILES_IPC.teamFilesStatus, input),
+    listAttention: () => ipcRenderer.invoke(TEAM_FILES_IPC.teamFilesListAttention),
+    approve: (input) => ipcRenderer.invoke(TEAM_FILES_IPC.teamFilesApprove, input),
+    reject: (input) => ipcRenderer.invoke(TEAM_FILES_IPC.teamFilesReject, input),
+    undo: (input) => ipcRenderer.invoke(TEAM_FILES_IPC.teamFilesUndo, input),
+    commit: (input) => ipcRenderer.invoke(TEAM_FILES_IPC.teamFilesCommit, input),
+    enable: (input) => ipcRenderer.invoke(TEAM_FILES_IPC.teamFilesEnable, input)
+  },
+  onTeamFilesChanged: (cb) => {
+    const listener = (_e: IpcRendererEvent, status: TeamFilesStatus): void => cb(status)
+    ipcRenderer.on(TEAM_FILES_IPC.teamFilesChanged, listener)
+    return () => ipcRenderer.removeListener(TEAM_FILES_IPC.teamFilesChanged, listener)
   }
 }
 
