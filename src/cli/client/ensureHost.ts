@@ -15,7 +15,9 @@
  * `decidedBy.surface` 'tui' on the decisions it sends.
  */
 import type { HostClientKind, HostKind, HostScope } from '../../shared/types'
-import { nodeHostRefusal } from '../nodeHost'
+import { nodeHostDeps, nodeHostRefusal } from '../nodeHost'
+import { note } from '../output'
+import { levelNote } from '../terminalAccessSettings'
 import { CliError, EXIT, type CliContext, type ConnectResult, type HostClient, type InprocHostHandle } from '../types'
 
 export const ENSURE_HOST_READY_TIMEOUT_MS = 30_000
@@ -31,18 +33,27 @@ export const TERMINAL_ACCESS_HINT = 'Terminal access is off. Turn it on in OrgAI
 export const TERMINAL_FULL_ACCESS_HINT =
   'Terminal access lets terminal clients watch and run work only. To answer decisions or change settings from a terminal, allow it in OrgAI: App settings > General > Advanced settings > Terminal access, or use `--host inproc`.'
 
+/** TERMINAL_FULL_ACCESS_HINT for a Node host: no App settings on an npm-only machine (Wave 7, review round 1). */
+export const NODE_TERMINAL_FULL_ACCESS_HINT =
+  'Terminal access lets terminal clients watch and run work only. To answer decisions or change settings from a terminal, stop the Node host (`orgai daemon stop`), then run `orgai terminal-access --level full`, or use `--host inproc`.'
+
 /** A host of another version grants this CLI only read, operate, decide and host.stop. */
 export const VERSION_SKEW_SCOPE_HINT = 'A host of another version accepts only read, operate and decide from this CLI.'
 
 /**
  * The CliError when a host granted fewer scopes than asked (`missing`), or undefined when nothing is missing: the
- * version-skew hint for a skewed host, else the Terminal access level hint.
+ * version-skew hint for a skewed host, else the Terminal access level hint (for a Node host, the orgai commands that
+ * change it).
  */
 export function missingScopesError(client: Pick<HostClient, 'hello'>, wanted: readonly HostScope[]): CliError | undefined {
   const granted = client.hello.grantedScopes
   const missing = Array.isArray(granted) ? wanted.filter((s) => !granted.includes(s)) : []
   if (!missing.length) return undefined
-  const hint = client.hello.versionSkewWarning ? VERSION_SKEW_SCOPE_HINT : TERMINAL_FULL_ACCESS_HINT
+  const hint = client.hello.versionSkewWarning
+    ? VERSION_SKEW_SCOPE_HINT
+    : client.hello.hostKind === 'node'
+      ? NODE_TERMINAL_FULL_ACCESS_HINT
+      : TERMINAL_FULL_ACCESS_HINT
   return new CliError(`The OrgAI host did not grant the ${missing.map((s) => `'${s}'`).join(', ')} access this needs. ${hint}`, EXIT.failure)
 }
 
@@ -111,6 +122,9 @@ export async function ensureHost(ctx: CliContext, scopes: HostScope[], opts: Ens
   if (ctx.globals.host === 'daemon' && ctx.launcher.startBackground && ctx.launcher.locate().status === 'absent') {
     const refusal = nodeHostRefusal(ctx)
     if (refusal) throw refusal
+    // Nothing asks here (exec and scripts are not interactive): say which level the new host grants and how to change it.
+    const stored = nodeHostDeps.terminalAccess(ctx.paths.dataDir)
+    if (!stored.levelChosen) note(ctx, levelNote(stored.level))
     try {
       const started = ctx.launcher.startBackground('node')
       ready = await ctx.launcher.waitForReady({ timeoutMs: ENSURE_HOST_READY_TIMEOUT_MS, hostKinds: started.hostKinds })

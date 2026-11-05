@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { DaemonInfo } from '../../shared/types'
 import { resetSkewWarning } from '../runRef'
 import { FakeHostClient, fakeContext, flush, hostStatus, noHost } from '../testing/fakeContext'
-import { EXIT, type InprocHostHandle } from '../types'
+import { CliError, EXIT, type InprocHostHandle } from '../types'
 import { NODE_HOST_NEEDS_NODE } from '../client/launcher'
 import { NODE_HOST_TERMINAL_OFF, nodeHostDeps } from '../nodeHost'
 import type { StoredTerminalAccess } from '../terminalAccessSettings'
@@ -37,6 +37,7 @@ const access = (extra: Partial<StoredTerminalAccess> = {}): StoredTerminalAccess
 function nodeMachine(stored: StoredTerminalAccess = access()): { asked: string[]; written: string[]; exits: number[] } {
   const rec = { asked: [] as string[], written: [] as string[], exits: [] as number[] }
   nodeHostDeps.installInfo = () => ({ channel: 'npm', source: 'file' })
+  nodeHostDeps.onElectron = () => false
   nodeHostDeps.terminalAccess = () => stored
   daemonDeps.ask = async (q) => {
     rec.asked.push(q)
@@ -226,6 +227,36 @@ describe('orgai daemon start --runtime (Wave 7, cli-standalone.md 4.2)', () => {
     expect(chosen.asked).toEqual([])
   })
 
+  it('no terminal answer (none could be opened, or Ctrl+D) and three unclear answers store nothing (review round 1)', async () => {
+    const rec = nodeMachine(access({ levelChosen: false }))
+    const opts = () => ({ connect: [noHost(), nodeStatus()], launcher: { ...absent, startBackground: () => ({ hostKinds: ['node'] as const }), waitForReady: async () => nodeReady } })
+    daemonDeps.ask = async (q) => {
+      rec.asked.push(q)
+      return undefined
+    }
+    const eof = fakeContext({ ...opts(), stdinIsTTY: true })
+    expect(await runDaemon(eof.ctx, ['start'])).toBe(EXIT.ok)
+    expect(rec.asked).toHaveLength(1)
+    expect(rec.written).toEqual([])
+    expect(eof.err()).toContain('Allow more with: orgai terminal-access --level full')
+    daemonDeps.ask = async () => 'maybe'
+    const unclear = fakeContext({ ...opts(), stdinIsTTY: true })
+    expect(await runDaemon(unclear.ctx, ['start'])).toBe(EXIT.ok)
+    expect(rec.written).toEqual([])
+    expect(unclear.err().match(/Answer full or operate\./g)).toHaveLength(3)
+  })
+
+  it('a CLI running on Electron is refused before the level question or any write (review round 1)', async () => {
+    const rec = nodeMachine(access({ levelChosen: false }))
+    nodeHostDeps.installInfo = () => ({ channel: 'dev', source: 'absent' })
+    nodeHostDeps.onElectron = () => true
+    const f = fakeContext({ stdinIsTTY: true, launcher: { ...absent, startBackground: () => ({ hostKinds: ['node'] }) } })
+    await expect(runDaemon(f.ctx, ['start', '--runtime', 'node'])).rejects.toMatchObject({ exitCode: EXIT.failure, message: NODE_HOST_NEEDS_NODE })
+    expect(rec.asked).toEqual([])
+    expect(rec.written).toEqual([])
+    expect(f.launcherCalls.filter((c) => c.method === 'startBackground')).toEqual([])
+  })
+
   it('a Node host that fails or times out: exit 1 with the reason, exit 6 on timeout', async () => {
     nodeMachine()
     const f = fakeContext({ launcher: { ...absent, startBackground: () => ({ hostKinds: ['node'] }), waitForReady: async () => Promise.reject(new Error('OrgAI exited (code 1)')) } })
@@ -259,6 +290,23 @@ describe('orgai daemon run-node (hidden)', () => {
     expect(await done).toBe(EXIT.ok)
     expect(rec.exits).toEqual([0])
     expect(f.signalListeners()).toBe(0)
+  })
+
+  it('losing the data folder to another live host is a quiet hand-off, exit 0, never the delete-run advice (review round 1)', async () => {
+    const rec = nodeMachine()
+    const busy = new CliError('OrgAI is already running for this data folder (pid 88, node cccccccccccc). If you are sure ... delete the folder /d/run', EXIT.hostBusy)
+    const f = fakeContext({ inproc: async () => Promise.reject(busy), launcher: { current: () => nodeReady } })
+    expect(await runDaemon(f.ctx, ['run-node'])).toBe(EXIT.ok)
+    expect(rec.exits).toEqual([0])
+    expect(f.err()).toContain('Another OrgAI host owns this data folder (node, pid 88)')
+    expect(f.err()).not.toContain('delete')
+    // No live owner (a real ownership failure): the error stands.
+    const g = fakeContext({ inproc: async () => Promise.reject(busy) })
+    await expect(runDaemon(g.ctx, ['run-node'])).rejects.toBe(busy)
+    // Any other failure stands too.
+    const other = new CliError('boom', EXIT.failure)
+    const h = fakeContext({ inproc: async () => Promise.reject(other), launcher: { current: () => nodeReady } })
+    await expect(runDaemon(h.ctx, ['run-node'])).rejects.toBe(other)
   })
 
   it('refuses while Terminal access is stored off', async () => {

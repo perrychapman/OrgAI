@@ -107,5 +107,10 @@ describe('orgai terminal-access', () => {
     await expect(writeTerminalAccess(dataDir, { on: true })).rejects.toMatchObject({ exitCode: EXIT.failure, message: expect.stringContaining('App settings > General > Advanced settings > Terminal access') })
     // Reading still works while a host runs.
     expect(await runTerminalAccess(ctxFor().ctx, [])).toBe(EXIT.ok)
+    held.release()
+    // An in-process host is the user's own orgai command, not a background host (review round 1).
+    held = await acquireHostOwnership({ dataDir, hostKind: 'inproc', appVersion: 't', hostInstanceId: newHostInstanceId() })
+    const refusal = runTerminalAccess(ctxFor().ctx, ['--level', 'full'])
+    await expect(refusal).rejects.toMatchObject({ exitCode: EXIT.failure, message: `An orgai command (pid ${process.pid}) is running its own host for this data folder; finish it, then try again.` })
   })
 })

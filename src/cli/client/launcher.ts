@@ -22,7 +22,7 @@
  * bare program names first, and a long-lived host would otherwise also keep that folder busy.
  */
 import { spawn as nodeSpawn, type SpawnOptions } from 'node:child_process'
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, statSync } from 'node:fs'
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
@@ -39,6 +39,27 @@ const POLL_MS = 150
 
 /** The Node host's stdio file under `<userDataDir>/logs` (Wave 7, cli-standalone.md 4.2). */
 export const NODE_HOST_LOG = 'node-host.log'
+/** Past this size node-host.log is moved to {@link NODE_HOST_OLD_LOG} before the next Node host starts (review round 1). */
+export const NODE_HOST_LOG_MAX_BYTES = 5 * 1024 * 1024
+/** The one older generation of node-host.log (replaced at each rotation). */
+export const NODE_HOST_OLD_LOG = 'node-host.old.log'
+
+/**
+ * Keep node-host.log bounded: when it is past `maxBytes`, rename it to node-host.old.log (replacing the older one). A
+ * failure (a missing file, Windows refusing to rename a file a host still has open, a concurrent starter that rotated
+ * first) leaves things as they are. Returns whether it rotated.
+ */
+export function rotateNodeHostLog(logsDir: string, maxBytes = NODE_HOST_LOG_MAX_BYTES): boolean {
+  const file = join(logsDir, NODE_HOST_LOG)
+  try {
+    if (statSync(file).size <= maxBytes) return false
+    renameSync(file, join(logsDir, NODE_HOST_OLD_LOG))
+    return true
+  } catch {
+    return false
+  }
+}
+
 /** The hidden command line a Node host runs: `<execPath> <orgai.mjs> daemon run-node`. */
 export const NODE_HOST_ARGS = ['daemon', 'run-node'] as const
 /** What `--runtime node` needs (cli-standalone.md 4.2). */
@@ -264,12 +285,20 @@ export function createLauncher(opts: LauncherOptions): HostLauncher {
   /** The last spawned app: a spawn error, or how it exited (code / signal) once it did. */
   let child: { error?: Error; exited?: { code: number | null; signal: string | null } } | undefined
 
-  /** Why the spawned app can no longer become ready, or undefined while it may. */
-  const childFailure = (): string | undefined => {
+  /**
+   * Why the spawned app can no longer become ready, or undefined while it may. `d`: daemon.json as just read and
+   * `hostKinds` the kinds the caller waits for.
+   */
+  const childFailure = (d: DaemonInfo | null, hostKinds?: readonly HostKind[]): string | undefined => {
     if (!child) return undefined
     if (child.error) return child.error.message
     const ex = child.exited
-    // Exit 0 is a hand-off: the single-instance lock went to a running OrgAI, which answers instead.
+    // Exit 0 is a hand-off: the single-instance lock (or, for a Node host, the data folder) went to a running OrgAI,
+    // which answers instead. A ready host of a kind the caller does not wait for never will: say so now, not at the
+    // timeout.
+    if (ex?.code === 0 && hostKinds && d?.state === 'ready' && d.hostKind !== undefined && !hostKinds.includes(d.hostKind) && isLive(d.pid, d.processStartTime)) {
+      return `Another OrgAI host (${d.hostKind}, pid ${d.pid}) took this data folder first. See \`orgai daemon status\`.`
+    }
     if (!ex || ex.code === 0) return undefined
     if (ex.code === 6) return 'OrgAI exited (code 6): another OrgAI host owns this data folder. See `orgai daemon status`.'
     return ex.code !== null ? `OrgAI exited (code ${ex.code}) before it was ready. See \`orgai daemon logs\`.` : `OrgAI was stopped (${ex.signal ?? 'signal'}) before it was ready.`
@@ -329,6 +358,7 @@ export function createLauncher(opts: LauncherOptions): HostLauncher {
       if (!entry) throw new Error('The orgai bundle (orgai.mjs) was not found next to this command; build it with npm run build, or reinstall orgai.')
       const logsDir = join(opts.userDataDir, 'logs')
       mkdirSync(logsDir, { recursive: true, mode: 0o700 })
+      rotateNodeHostLog(logsDir)
       const fd = openSync(join(logsDir, NODE_HOST_LOG), 'a', 0o600)
       try {
         // detached: setsid() on POSIX (no controlling terminal, no SIGHUP when this terminal closes); on Windows a new
@@ -350,7 +380,7 @@ export function createLauncher(opts: LauncherOptions): HostLauncher {
       for (;;) {
         const d = readDaemonInfo(opts.dataDir)
         if (ready(d, notInstanceId, hostKinds)) return d
-        const failure = childFailure()
+        const failure = childFailure(d, hostKinds)
         if (failure) throw new Error(failure)
         if (now() >= deadline) return null
         await sleep(Math.min(POLL_MS, Math.max(1, deadline - now())))

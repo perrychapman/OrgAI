@@ -158,6 +158,25 @@ export const TERMINAL_ACCESS_OFF_MESSAGE =
 export const TERMINAL_ACCESS_LEVEL_MESSAGE =
   'Terminal access lets terminal clients watch and run work only. To answer decisions or change settings from a terminal, allow it in OrgAI: App settings > General > Advanced settings > Terminal access.'
 /**
+ * The same two refusals from a Node host (Wave 7, cli-standalone.md 4.2.1): a machine with only the npm CLI has no App
+ * settings, so they name the commands that change the stored Terminal access (review round 1).
+ */
+export const NODE_TERMINAL_ACCESS_OFF_MESSAGE =
+  'Terminal access is off. Once this Node host has stopped (its idle exit), turn it on with `orgai terminal-access on`.'
+export const NODE_TERMINAL_ACCESS_LEVEL_MESSAGE =
+  'Terminal access lets terminal clients watch and run work only. To answer decisions or change settings from a terminal, stop this Node host (`orgai daemon stop`), then run `orgai terminal-access --level full`.'
+
+/** TERMINAL_ACCESS_OFF_MESSAGE, or its Node host wording. */
+export function terminalAccessOffMessage(hostKind: HostKind): string {
+  return hostKind === 'node' ? NODE_TERMINAL_ACCESS_OFF_MESSAGE : TERMINAL_ACCESS_OFF_MESSAGE
+}
+
+/** TERMINAL_ACCESS_LEVEL_MESSAGE, or its Node host wording. */
+export function terminalAccessLevelMessage(hostKind: HostKind): string {
+  return hostKind === 'node' ? NODE_TERMINAL_ACCESS_LEVEL_MESSAGE : TERMINAL_ACCESS_LEVEL_MESSAGE
+}
+
+/**
  * A `clientKind: 'desktop'` hello (the OrgAI app asking a Node host to hand over; cli-standalone.md 4.4) is refused
  * until the handoff grant lands (WP-F): the app then shows the busy-folder message and the `orgai daemon stop` hint.
  * The grant WP-F builds (contract, RpcHelloResult.handoff): grantedScopes exactly HOST_HANDOFF_SCOPES whatever Terminal
@@ -638,7 +657,7 @@ export class HostSocketServer {
       const host = this.host
       if (!host) return { code: 'host_starting', message: 'OrgAI is starting; try again in a moment.', retryAfterMs: HOST_STARTING_RETRY_MS }
       if (host.activity.state() === 'draining') return { code: 'host_draining', message: 'OrgAI is shutting down.', retryAfterMs: HOST_DRAINING_RETRY_MS }
-      if (!accessOf(host, this.opts.hostKind).enabled) return { code: 'terminal_server_disabled', message: TERMINAL_ACCESS_OFF_MESSAGE }
+      if (!accessOf(host, this.opts.hostKind).enabled) return { code: 'terminal_server_disabled', message: terminalAccessOffMessage(this.opts.hostKind) }
       if (this.authCount >= RPC_MAX_CLIENT_SOCKETS) return { code: 'too_many_connections', message: `OrgAI already serves ${RPC_MAX_CLIENT_SOCKETS} terminal clients.` }
       return undefined
     }
@@ -731,7 +750,7 @@ export class HostSocketServer {
     // access level: it does nothing a same-user `kill` of the pid in daemon.json could not (`orgai daemon stop`).
     const stopOnly = method === HOST_METHODS.hostStop && conn.withheld.includes('configure')
     if (scope !== undefined && conn.withheld.includes(scope as HostScope) && !stopOnly) {
-      return this.send(conn, rpcError(id, { code: 'scope_denied', message: `${method} needs the '${scope}' scope. ${TERMINAL_ACCESS_LEVEL_MESSAGE}` }))
+      return this.send(conn, rpcError(id, { code: 'scope_denied', message: `${method} needs the '${scope}' scope. ${terminalAccessLevelMessage(this.opts.hostKind)}` }))
     }
     const grantedScopes: HostScope[] = stopOnly ? [...conn.scopes, 'configure'] : conn.scopes
     const authorizing = method === IPC.mcpAuthorize ? this.trackAuthorize(conn, req.params) : undefined

@@ -14,7 +14,8 @@
  * - restart [--force] [--runtime app|node]: stop, then start (the kind that ran, unless --runtime says otherwise).
  * - logs [--lines N] [--follow]: the tail of the newest log: the host's own, else `<userData>/logs/main.log` /
  *   `node-host.log` and, on macOS with the default data folder, `~/Library/Logs/OrgAI/main.log` (sanitized).
- * - run-node (hidden): the detached Node host itself (`startBackground('node')` spawns it); runs until it drains.
+ * - run-node (hidden): the detached Node host itself (`startBackground('node')` spawns it); runs until it drains. One
+ *   that loses the data folder to a live host (two starters at once) exits 0 as a hand-off, never with exit 6.
  */
 import { closeSync, existsSync, openSync, readSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -27,7 +28,7 @@ import { nodeHostDeps, nodeHostRefusal } from '../nodeHost'
 import { emit, isJsonOutput, note, safe, safeLine, shortDuration, styleFor, warn, type Json } from '../output'
 import { warnVersionSkew } from '../runRef'
 import { LEVEL_QUESTION, levelNote, parseLevelAnswer, writeTerminalAccess } from '../terminalAccessSettings'
-import { CliError, EXIT, type CliContext, type CommandFn, type DaemonRuntime, type HostClient } from '../types'
+import { CliError, EXIT, type CliContext, type CommandFn, type DaemonRuntime, type HostClient, type InprocHostHandle } from '../types'
 import { activityText } from './status'
 import { intFlag } from './runs'
 
@@ -48,7 +49,8 @@ export const NODE_HOST_EXIT_GRACE_MS = 2000
 
 /** Process effects of the Node host and its level question, swappable in tests. */
 export const daemonDeps = {
-  ask: (prompt: string): Promise<string> => manageDeps.ttyAsk(prompt),
+  /** One line from the terminal; undefined when there is none or it closed (Ctrl+D). */
+  ask: (prompt: string): Promise<string | undefined> => manageDeps.ttyAsk(prompt),
   writeLevel: (dataDir: string, level: TerminalAccessLevel): Promise<unknown> => writeTerminalAccess(dataDir, { level }),
   /** After a Node host drained: exit once the loop is empty, or after the grace even if a handle lingers. */
   exitSoon: (code: number): void => {
@@ -243,8 +245,10 @@ function defaultRuntime(ctx: CliContext): DaemonRuntime {
 
 /**
  * The Terminal access level a Node host will grant, asked once (4.2.1, round 6 item 11): on a terminal with no stored
- * choice the question is asked and the answer stored (Enter keeps 'operate'); otherwise a note names the level and how
- * to change it. Runs while no host owns the data folder, so the write (under the startup mutex) never races a host.
+ * choice the question is asked and the answer stored (an empty line keeps 'operate'); otherwise a note names the level
+ * and how to change it. Only a real answer is stored: no terminal, a closed one (Ctrl+D) or three unclear answers store
+ * nothing, so the question comes again next time. Runs while no host owns the data folder, so the write (under the
+ * startup mutex) never races a host.
  */
 async function chooseLevelOnce(ctx: CliContext): Promise<void> {
   const stored = nodeHostDeps.terminalAccess(ctx.paths.dataDir)
@@ -256,10 +260,14 @@ async function chooseLevelOnce(ctx: CliContext): Promise<void> {
   let level: TerminalAccessLevel | undefined
   for (let i = 0; i < 3 && !level; i++) {
     const answer = await daemonDeps.ask(LEVEL_QUESTION)
+    if (answer === undefined) break
     level = answer.trim() === '' ? 'operate' : parseLevelAnswer(answer)
     if (!level) ctx.io.stderr.write('Answer full or operate.\n')
   }
-  level ??= 'operate'
+  if (!level) {
+    note(ctx, levelNote(stored.level))
+    return
+  }
   await daemonDeps.writeLevel(ctx.paths.dataDir, level)
   note(ctx, levelNote(level))
 }
@@ -293,7 +301,19 @@ async function startNodeHost(ctx: CliContext, o: { timeoutS: number; notInstance
 async function runNodeHost(ctx: CliContext, args: string[]): Promise<number> {
   noArgs(parseFlags(args, {}).positionals)
   if (!nodeHostDeps.terminalAccess(ctx.paths.dataDir).enabledForBackground) throw new CliError(NODE_HOST_TERMINAL_OFF_RUN, EXIT.failure)
-  const handle = await ctx.startInproc({ hostKind: 'node' })
+  let handle: InprocHostHandle
+  try {
+    handle = await ctx.startInproc({ hostKind: 'node' })
+  } catch (e) {
+    // Two starters at once (two `daemon start`, two `--host daemon` commands): the one that lost the data folder hands
+    // off to the live host that owns it, exit 0, as the app's single-instance lock does; the launcher keeps waiting
+    // for that host (review round 1). Never the "delete the run folder" advice while a live host owns it.
+    const owner = e instanceof CliError && e.exitCode === EXIT.hostBusy ? ctx.launcher.current() : null
+    if (!owner) throw e
+    ctx.io.stderr.write(`Another OrgAI host owns this data folder (${owner.hostKind ?? 'host'}, pid ${owner.pid}); this Node host is not needed and exits.\n`)
+    daemonDeps.exitSoon(EXIT.ok)
+    return EXIT.ok
+  }
   const s = handle.status()
   ctx.io.stderr.write(`OrgAI Node host ${s.hostInstanceId} (pid ${s.pid}) ready for ${safeLine(s.dataDir)}.\n`)
   let offSignal: () => void = () => undefined

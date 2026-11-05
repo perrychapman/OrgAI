@@ -3,8 +3,10 @@
  * `node out/cli/orgai.mjs daemon run-node`, the test talks to it over its socket, then stops it (host.stop) or lets the
  * idle exit end it, and checks the process is gone and the data folder released. Mock adapter only, no tokens.
  *
- * Needs the built bundle (`npm run build`): skipped when out/cli/orgai.mjs is missing (CI runs vitest before the build).
- * A stale bundle tests the old code. POSIX only (Windows named pipes and detached spawns are not exercised here).
+ * Needs the built bundle (`npm run build`): skipped when out/cli/orgai.mjs is missing, because `npm test` runs before the
+ * build in CI. CI runs this file again after the build with ORGAI_REQUIRE_NODE_HOST_INT=1, which turns a missing bundle
+ * into a failure instead of a skip. A stale bundle tests the old code. POSIX only (Windows named pipes and detached
+ * spawns are not exercised here).
  */
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -21,6 +23,8 @@ import { CLI_VERSION } from './version'
 const here = dirname(fileURLToPath(import.meta.url))
 const bundle = resolve(here, '..', '..', 'out', 'cli', 'orgai.mjs')
 const posix = process.platform !== 'win32'
+/** Set by CI's post-build step: the bundle must be there (review round 1). */
+const required = process.env.ORGAI_REQUIRE_NODE_HOST_INT === '1'
 
 let userDataDir: string
 let dataDir: string
@@ -66,6 +70,12 @@ afterEach(() => {
   rmSync(userDataDir, { recursive: true, force: true })
 })
 
+describe.runIf(posix && required)('Node background host bundle (CI after the build)', () => {
+  it('out/cli/orgai.mjs is built, so the real-process tests below run', () => {
+    expect(existsSync(bundle)).toBe(true)
+  })
+})
+
 describe.skipIf(!posix || !existsSync(bundle))('Node background host (real process)', () => {
   it('starts detached as kind node, serves the socket at the stored level, and exits after host.stop', async () => {
     const l = launcher({ ORGAI_DAEMON_IDLE_MINUTES: '0' })
@@ -81,6 +91,8 @@ describe.skipIf(!posix || !existsSync(bundle))('Node background host (real proce
     // No stored level: 'operate' (never 'full' as an in-process host would grant).
     expect(res.client.hello.hostKind).toBe('node')
     expect([...res.client.hello.grantedScopes].sort()).toEqual(['operate', 'read'])
+    // A withheld scope names the orgai commands, not the app's settings (review round 1).
+    await expect(res.client.call('runs:decide', [{}])).rejects.toThrow(/orgai terminal-access --level full/)
     const status = await res.client.call<HostStatusResult>('host.status', [])
     expect(status).toMatchObject({ hostKind: 'node', state: 'ready', mock: true })
     await expect(res.client.call('host.stop', [{ force: false }])).resolves.toMatchObject({ stopping: true })
@@ -107,5 +119,29 @@ describe.skipIf(!posix || !existsSync(bundle))('Node background host (real proce
     res.client.close()
     expect(await l.waitForGone({ timeoutMs: 30_000, hostInstanceId: ready!.hostInstanceId })).toBe(true)
     expect(await until(() => !alive(ready!.pid), 10_000)).toBe(true)
+  }, 90_000)
+
+  it('two starters at once: one host wins, the other Node process hands off with exit 0, both waits see the winner (review round 1)', async () => {
+    const a = launcher({ ORGAI_DAEMON_IDLE_MINUTES: '0' })
+    const b = launcher({ ORGAI_DAEMON_IDLE_MINUTES: '0' })
+    const sa = a.startBackground!('node')
+    const sb = b.startBackground!('node')
+    for (const p of [sa.pid, sb.pid]) if (p) pids.push(p)
+    const [ra, rb] = await Promise.all([a.waitForReady({ timeoutMs: 45_000, hostKinds: ['node'] }), b.waitForReady({ timeoutMs: 45_000, hostKinds: ['node'] })])
+    expect(ra).not.toBeNull()
+    expect(rb?.hostInstanceId).toBe(ra!.hostInstanceId)
+    expect([sa.pid, sb.pid]).toContain(ra!.pid)
+    const loser = ra!.pid === sa.pid ? sb.pid! : sa.pid!
+    expect(await until(() => !alive(loser), 15_000)).toBe(true)
+    const log = readFileSync(join(userDataDir, 'logs', 'node-host.log'), 'utf8')
+    expect(log).toContain('Another OrgAI host owns this data folder (node')
+    expect(log).not.toContain('delete the folder')
+
+    const res = await connectHost({ dataDir, scopes: ['read', 'configure'], clientVersion: CLI_VERSION, cwd: userDataDir, pid: process.pid })
+    if (!res.ok) throw new Error(`${res.reason}: ${res.message}`)
+    await res.client.call('host.stop', [{ force: false }])
+    res.client.close()
+    expect(await a.waitForGone({ timeoutMs: 20_000, hostInstanceId: ra!.hostInstanceId })).toBe(true)
+    expect(await until(() => !alive(ra!.pid), 10_000)).toBe(true)
   }, 90_000)
 })

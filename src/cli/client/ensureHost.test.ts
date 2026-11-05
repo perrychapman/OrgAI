@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type { DaemonInfo } from '../../shared/types'
 import { FakeHostClient, fakeContext, fakeInproc, noHost } from '../testing/fakeContext'
 import { EXIT } from '../types'
-import { ENSURE_HOST_READY_TIMEOUT_MS, ensureHost } from './ensureHost'
+import { ENSURE_HOST_READY_TIMEOUT_MS, ensureHost, missingScopesError, NODE_TERMINAL_FULL_ACCESS_HINT, TERMINAL_FULL_ACCESS_HINT } from './ensureHost'
 import { NODE_HOST_TERMINAL_OFF, nodeHostDeps } from '../nodeHost'
 
 const realNodeDeps = { ...nodeHostDeps }
@@ -101,6 +101,9 @@ describe('ensureHost', () => {
     const f = fakeContext({ globals: { host: 'daemon' }, connect: [noHost(), h], launcher: { ...absent, startBackground: () => ({ hostKinds: ['node'] }), waitForReady: async () => node } })
     const r = await ensureHost(f.ctx, ['read'])
     expect(r).toEqual({ client: h, started: true })
+    // No level chosen: nothing asks here, so a note names the level and how to change it (review round 1).
+    expect(f.err()).toContain('Terminal access: operate')
+    expect(f.err()).toContain('orgai terminal-access --level full')
     expect(f.launcherCalls).toEqual([
       { method: 'startBackground', args: 'node' },
       { method: 'waitForReady', args: { timeoutMs: ENSURE_HOST_READY_TIMEOUT_MS, hostKinds: ['node'] } }
@@ -114,5 +117,14 @@ describe('ensureHost', () => {
     const a = fakeContext({ globals: { host: 'daemon' }, connect: [noHost(), new FakeHostClient()], launcher: { startBackground: () => ({ hostKinds: ['node'] }), waitForReady: async () => ready } })
     await ensureHost(a.ctx, ['read'])
     expect(a.launcherCalls.map((c) => c.method)).toEqual(['resolve', 'spawn', 'waitForReady'])
+  })
+
+  it('a Node host that withheld a scope names the orgai commands, not App settings (review round 1)', () => {
+    const node = new FakeHostClient({}, { hello: { hostKind: 'node', grantedScopes: ['read', 'operate'] } })
+    const e = missingScopesError(node, ['read', 'decide'])
+    expect(e?.message).toBe(`The OrgAI host did not grant the 'decide' access this needs. ${NODE_TERMINAL_FULL_ACCESS_HINT}`)
+    expect(e?.message).not.toContain('App settings')
+    const app = new FakeHostClient({}, { hello: { hostKind: 'headless-host', grantedScopes: ['read'] } })
+    expect(missingScopesError(app, ['configure'])?.message).toContain(TERMINAL_FULL_ACCESS_HINT)
   })
 })

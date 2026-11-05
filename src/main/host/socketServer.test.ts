@@ -13,6 +13,8 @@ import {
   HostSocketServer,
   SECRET_ACL_MESSAGE,
   TERMINAL_ACCESS_LEVEL_MESSAGE,
+  NODE_TERMINAL_ACCESS_LEVEL_MESSAGE,
+  NODE_TERMINAL_ACCESS_OFF_MESSAGE,
   TERMINAL_ACCESS_OFF_MESSAGE,
   authorizeKey,
   grantScopes,
@@ -422,6 +424,23 @@ describe.runIf(posix)('HostSocketServer handshake', () => {
     const res = await c.response(2)
     expect(res.error.data.code).toBe('bad_request')
     await c.waitClosed()
+  })
+
+  it('a Node host names the orgai commands in its level and off refusals, never App settings (review round 1)', async () => {
+    st.accessLevel = undefined
+    await start({ hostKind: 'node' })
+    const c = await client()
+    const { res } = await hello(c, { scopes: ['read', 'operate', 'decide'] })
+    expect(res.result.grantedScopes).toEqual(['read', 'operate'])
+    c.send(rpcRequest(2, 'runs:decide', [{}]))
+    const denied = await c.response(2)
+    expect(denied.error.data.code).toBe('scope_denied')
+    expect(denied.error.data.message).toContain(NODE_TERMINAL_ACCESS_LEVEL_MESSAGE)
+    expect(denied.error.data.message).toContain('orgai terminal-access --level full')
+    expect(denied.error.data.message).not.toContain('App settings')
+    st.terminalServer = false
+    const { res: off } = await hello(await client())
+    expect(off.error.data).toMatchObject({ code: 'terminal_server_disabled', message: NODE_TERMINAL_ACCESS_OFF_MESSAGE })
   })
 
   it('host_starting before attach', async () => {

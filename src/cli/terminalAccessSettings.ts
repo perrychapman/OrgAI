@@ -115,6 +115,10 @@ export function hostOwnsFolderMessage(d: DaemonInfo): string {
   if (d.hostKind === 'desktop') {
     return `The OrgAI app is running for this data folder (${hostWords(d)}). Change Terminal access there: App settings > General > Advanced settings > Terminal access.`
   }
+  if (d.hostKind === 'inproc') {
+    // The user's own `orgai --host inproc` command (TUI, exec, daemon start --foreground), not a background host.
+    return `An orgai command (pid ${d.pid}) is running its own host for this data folder; finish it, then try again.`
+  }
   return `An OrgAI host owns this data folder (${hostWords(d)}). Stop the background host first: orgai daemon stop (or change Terminal access in the OrgAI app).`
 }
 
