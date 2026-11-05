@@ -57,6 +57,9 @@ import type {
 
 export const TUI_SCOPES: readonly HostScope[] = ['read', 'operate', 'decide']
 export const TUI_CONFIGURE_SCOPES: readonly HostScope[] = ['read', 'operate', 'decide', 'configure']
+/** Shown when host.hello withheld 'decide' (Terminal access level 'operate'). */
+export const TUI_NO_DECIDE_NOTICE =
+  "Decisions can't be answered from this terminal: set App settings > Terminal access > What terminals may do to Full control."
 /** How long a decision call may take (a proposal approval applies changes before it answers). */
 export const TUI_DECIDE_TIMEOUT_MS = 120_000
 /** Listeners are notified at most this often. */
@@ -256,6 +259,11 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
     ...(opts.readOnlyReason ? { readOnlyReason: opts.readOnlyReason } : {})
   }
   if (conn.hello.versionSkewWarning) state = addNotice(state, conn.hello.versionSkewWarning, 'warn', now())
+  // Review H2: the default Terminal access level grants read + operate only; say so up front instead of letting the
+  // first card answer fail with scope_denied.
+  if (Array.isArray(conn.hello.grantedScopes) && !conn.hello.grantedScopes.includes('decide')) {
+    state = addNotice(state, TUI_NO_DECIDE_NOTICE, 'warn', now())
+  }
 
   const fire = (): void => {
     scheduled = false

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { HostScope, PendingCards, RunsSubscribeInput, RunsSubscribeResult, RunSummary } from '../../shared/types'
 import { FakeHostClient, fakeContext, fakeInproc, flush, project, record, rpcError, summary } from '../testing/fakeContext'
 import { EXIT } from '../types'
-import { DESKTOP_UNAVAILABLE_NOTICE, connectTuiHost, openTuiSession, TUI_DECIDE_TIMEOUT_MS } from './session'
+import { DESKTOP_UNAVAILABLE_NOTICE, connectTuiHost, openTuiSession, TUI_DECIDE_TIMEOUT_MS, TUI_NO_DECIDE_NOTICE } from './session'
 
 const P = project('p1', '/work', { name: 'Shop' })
 const SCOPES: HostScope[] = ['read', 'operate', 'decide']
@@ -66,6 +66,14 @@ describe('connectTuiHost', () => {
     // The session turns the same warning into a notice.
     const session = await openTuiSession(conn, { folder: '/work' })
     expect(session.getState().notices.map((n) => n.text)).toEqual(['App 1.2, CLI 1.1'])
+  })
+
+  it("warns once up front when the host withheld 'decide' (Terminal access level 'operate', review H2)", async () => {
+    const h = host({ hello: { grantedScopes: ['read', 'operate'] } })
+    const f = fakeContext({ connect: [h] })
+    const conn = await connectTuiHost(f.ctx, {})
+    const session = await openTuiSession(conn, { folder: '/work' })
+    expect(session.getState().notices.map((n) => n.text)).toEqual([TUI_NO_DECIDE_NOTICE])
   })
 
   it('createProject reconnects with configure, then creates; refuses with exit 1 when not granted', async () => {
