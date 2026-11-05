@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { AgentInstance, ConnectionId, ImageAttachment, McpServerSpec, PermissionSuggestion, PluginSpec, ProviderId, Role, RunEvent, RunPlan, TokenUsage, TranscriptBlock } from '@shared/types'
-import { CHAT_HARNESS_TOOLS, ENGAGEMENT_CONTEXT_TOOL, HARNESS_PROJECT_ID, KNOWLEDGE_FACT_MAX_CHARS, KNOWLEDGE_TOOL, MCP_HARNESS_TOOLS, SKILLS_PROJECT_ID, SKILL_ASSIST_HARNESS_TOOLS, SKILL_HARNESS_TOOLS, SPAWN_TOOL } from '@shared/types'
+import { CHAT_HARNESS_TOOLS, ENGAGEMENT_CONTEXT_TOOL, HARNESS_PROJECT_ID, KNOWLEDGE_FACT_MAX_CHARS, KNOWLEDGE_RECALL_TOOL, KNOWLEDGE_TOOL, MCP_HARNESS_TOOLS, SKILLS_PROJECT_ID, SKILL_ASSIST_HARNESS_TOOLS, SKILL_HARNESS_TOOLS, SPAWN_TOOL } from '@shared/types'
 import { mcpServersForRole, newId, projectKindOf } from '@shared/defaults'
 import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo, type CompletionInput, type PeerMessage, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
 import { datum, harnessToolsFor, isBlockingHarnessTool, type ConfigChange, type ConfigChangeResult, type HarnessTool, type HarnessToolAudience, type HarnessToolHooks, type McpAttachResult } from './harnessTools'
@@ -21,6 +21,7 @@ import { authFailureMessage, describeTool, harnessToolActivity } from './activit
 import { EDIT_TOOLS, allowRuleStrings, applyAllowScope, chooseSuggestions, editTargetOf, isOfferableDirectory, listRules, suggestionLabels, type AllowScopePersist } from './permissionRules'
 import { isTrustRestrictedRun, isWorkspaceConfigPath } from '../quick/scratch'
 import { composeFirstMessage, peerMessageText } from './prompts'
+import { firstMessageHiddenContext, spawnKnowledge, userMessageKnowledge, withSpawnKnowledge, withUserMessageKnowledge } from './knowledgeDelivery'
 import { resolveParent } from './agentTree'
 import { HandleNamer, mapSendMessage, messageTranscriptText, spawnHandle } from './network'
 import { SHELL_TOOLS, isFreeCdTarget, matchOptionsFor, matchingRule, type MatchOptions } from './ruleMatch'
@@ -48,6 +49,14 @@ import { countUsage, setModelTokens, usageOf } from './runUsage'
  * saves the context note "Kickoff call summary", searches "Acme", reads Acme Corp back and retires its fact "Fiscal
  * year ends in March" (skipped when the fact cannot be read back), then says MOCK_KNOWLEDGE_DONE; without a knowledge
  * graph (a code project) it says MOCK_KNOWLEDGE_NONE instead and the default script follows either way.
+ * [mock:knowledge-recall] (knowledgeRecallSteps, engagement work runs): the same seeding steps, then knowledge_recall
+ * "Acme billing" twice (the second shows the dedupe path), says MOCK_KNOWLEDGE_RECALLED, and plays the default script
+ * with the first report's brief naming Jane Doe so knowledgeContext fires with purpose 'spawn'; MOCK_KNOWLEDGE_NONE
+ * without a knowledge graph.
+ *
+ * Every user message and spawn brief goes through ctx.knowledgeContext like the other adapters (knowledgeDelivery.ts);
+ * the mock has no model, so what a model would receive is kept in `deliveredMessages` and scripted replies echo only
+ * what the user typed.
  *
  * Reference folders (same as the Claude adapter): a shell step touching one always asks, never through a rule, a
  * suggestion shortcut or acceptEdits; a Read / Glob / Grep card under one carries referenceFolder and no suggestions.
@@ -80,7 +89,7 @@ export type MockStep =
       suggestions?: PermissionSuggestion[]
     }
   /** Spawn a report. `role` is a slug; default: the first role the parent may spawn. */
-  | { type: 'spawn'; id: string; role?: string; description: string; parent?: string; /** Handle; default <role>-<n>. */ name?: string }
+  | { type: 'spawn'; id: string; role?: string; description: string; parent?: string; /** Handle; default <role>-<n>. */ name?: string; /** The brief it receives; default `description`. */ brief?: string }
   /** An agent messages another by handle or role slug (SendMessage). `from` defaults to the root. */
   | { type: 'message'; from?: string; to: string; text: string }
   /** A report finishes and reports back to its parent. */
@@ -434,6 +443,13 @@ export const MOCK_KNOWLEDGE = {
 export const MOCK_KNOWLEDGE_DONE = 'I recorded what I learned about the engagement.'
 /** The root's sentence when [mock:knowledge] is set but the run has no knowledge graph (not an engagement work run). */
 export const MOCK_KNOWLEDGE_NONE = 'No knowledge graph is available in this run.'
+/** Trigger token (engagement work runs, default script): the root seeds the graph, recalls from it twice, then spawns (knowledgeRecallSteps). */
+export const KNOWLEDGE_RECALL_TOKEN = '[mock:knowledge-recall]'
+export const MOCK_KNOWLEDGE_RECALL_QUERY = 'Acme billing'
+/** The root's sentence after the two recalls. */
+export const MOCK_KNOWLEDGE_RECALLED = 'I recalled what the team knows.'
+/** The first report's brief on a [mock:knowledge-recall] run; it names a recorded person so knowledgeContext fires. */
+export const MOCK_KNOWLEDGE_RECALL_BRIEF = 'Implement the requested change. Check the billing wording with Jane Doe.'
 
 /**
  * The [mock:knowledge] steps, each a real harness tool call through the mock's tool path (RunManager counts the
@@ -478,6 +494,23 @@ export function knowledgeSteps(): MockStep[] {
     kg({ action: 'search', query: 'Acme' }),
     { type: 'retireFact', node: MOCK_KNOWLEDGE.client, fact: MOCK_KNOWLEDGE.retiredFact, reason: 'Corrected: fiscal year ends in April' },
     { type: 'text', text: MOCK_KNOWLEDGE_DONE }
+  ]
+}
+
+/**
+ * The [mock:knowledge-recall] steps after the seeding ones: knowledge_recall twice with one query through the real
+ * harness tool (RunManager counts both, writes the rows and answers the repeat from its "already shown" state), the
+ * done sentence, then the default script with the first report's brief naming Jane Doe.
+ */
+export function knowledgeRecallSteps(): MockStep[] {
+  const recall: MockStep = { type: 'harness', name: KNOWLEDGE_RECALL_TOOL, args: { query: MOCK_KNOWLEDGE_RECALL_QUERY } }
+  const firstSpawn = DEFAULT_WORK.findIndex((s) => s.type === 'spawn')
+  return [
+    ...knowledgeSteps(),
+    recall,
+    recall,
+    { type: 'text', text: MOCK_KNOWLEDGE_RECALLED },
+    ...DEFAULT_WORK.map((s, i) => (i === firstSpawn && s.type === 'spawn' ? { ...s, brief: MOCK_KNOWLEDGE_RECALL_BRIEF } : s))
   ]
 }
 
@@ -569,6 +602,10 @@ export class MockSession implements RuntimeSession {
   readonly addedMcpServers: McpServerSpec[] = []
   /** Changes reported through the harness's configChanged hook (approved propose_mcp_servers / propose_skills), in order. For tests. */
   readonly configChanges: ConfigChange[] = []
+  /** What a real adapter would hand the model for user messages and spawn briefs, knowledge blocks included. For tests. */
+  readonly deliveredMessages: { agentId: string; text: string }[] = []
+  /** The standing knowledge index each agent's system prompt would carry (PromptFlags.knowledgeBrief), in spawn order. For tests. */
+  readonly promptKnowledgeBriefs: { agentId: string; brief: string | undefined }[] = []
   private hooks: HarnessToolHooks
   private agents = new Map<string, AgentInstance>()
   private rolesBySlug: Map<string, Role>
@@ -650,6 +687,7 @@ export class MockSession implements RuntimeSession {
   async send(text: string, images?: ImageAttachment[]): Promise<void> {
     this.continuation.userMessage()
     this.transcript(ROOT_AGENT_ID, images?.length ? { kind: 'user', text, images } : { kind: 'user', text })
+    this.deliveredMessages.push({ agentId: ROOT_AGENT_ID, text: withUserMessageKnowledge(text, userMessageKnowledge(this.ctx, text, (m) => this.log('warn', m))) })
     this.setState(ROOT_AGENT_ID, 'thinking', 'Thinking…')
     // An image-only message is still a turn; give the scripted reply something to echo.
     const n = images?.length ?? 0
@@ -874,7 +912,9 @@ export class MockSession implements RuntimeSession {
     const sessionId = this.ctx.resumeSessionId ?? `mock-${runId}`
     try {
       this.emit({ type: 'run.status', runId, status: 'running', sessionId })
-      const first = composeFirstMessage(this.ctx.prompt, this.ctx.hiddenContext)
+      this.promptKnowledgeBriefs.push({ agentId: ROOT_AGENT_ID, brief: this.ctx.knowledgeBrief?.() })
+      const first = composeFirstMessage(this.ctx.prompt, firstMessageHiddenContext(this.ctx, (m) => this.log('warn', m)))
+      this.deliveredMessages.push({ agentId: ROOT_AGENT_ID, text: first })
       this.log('info', `Mock session ${sessionId} started (${this.ctx.run.kind} script, first message ${first.length} chars)`)
       if (this.ctx.prompt.includes(AUTH_FAIL_TOKEN)) return this.failAuth()
       await this.skillStep(ROOT_AGENT_ID, this.root)
@@ -975,6 +1015,12 @@ export class MockSession implements RuntimeSession {
     if (!this.isSetup && this.ctx.run.kind === 'work' && !this.ctx.run.quick && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(DEEP_TREE_TOKEN)) {
       const lead = this.firstSpawnableSlug(this.root)
       return deepTreeSteps(lead, this.firstSpawnableSlug(this.rolesBySlug.get(lead), lead))
+    }
+    if (!this.isSetup && this.ctx.run.kind === 'work' && !this.ctx.run.quick && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(KNOWLEDGE_RECALL_TOKEN)) {
+      const available = !!this.ctx.knowledge && !!this.ctx.knowledgeRecall && this.tools.some((t) => t.name === KNOWLEDGE_RECALL_TOOL)
+      if (available) return knowledgeRecallSteps()
+      this.log('info', 'Mock [mock:knowledge-recall]: this run has no knowledge graph (not an engagement work run), so the recall steps are skipped.')
+      return [{ type: 'text', text: MOCK_KNOWLEDGE_NONE }, ...DEFAULT_WORK]
     }
     if (!this.isSetup && this.ctx.run.kind === 'work' && !this.ctx.run.quick && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(KNOWLEDGE_TOKEN)) {
       // The tool is bound on engagement work runs only, and answers the same sentence itself without ctx.knowledge.
@@ -1355,7 +1401,8 @@ export class MockSession implements RuntimeSession {
     const parent = this.ensureAgent(parentId)
     const slug = step.role ?? this.firstSpawnableSlug(this.rolesBySlug.get(parent.roleSlug))
     const { handle } = spawnHandle(this.handles, slug, step.name)
-    const input = { subagent_type: slug, description: step.description, prompt: step.description, name: handle }
+    const brief = step.brief ?? step.description
+    const input = { subagent_type: slug, description: step.description, prompt: brief, name: handle }
     const toolUseId = newId('tu')
     this.transcript(parentId, { kind: 'tool_use', id: toolUseId, name: SPAWN_TOOL, input })
     countUsage(parent, 'toolCalls')
@@ -1374,7 +1421,10 @@ export class MockSession implements RuntimeSession {
       state: 'thinking',
       activity: step.description.slice(0, 90) || 'Reading the brief…'
     })
-    this.transcript(step.id, { kind: 'user', text: step.description })
+    this.transcript(step.id, { kind: 'user', text: brief })
+    // After the upsert, so the row lands on the report (like Codex); the block stays out of its transcript entry.
+    this.promptKnowledgeBriefs.push({ agentId: step.id, brief: this.ctx.knowledgeBrief?.() })
+    this.deliveredMessages.push({ agentId: step.id, text: withSpawnKnowledge(brief, spawnKnowledge(this.ctx, brief, step.id, (m) => this.log('warn', m))) })
     if (role) await this.skillStep(step.id, role)
   }
 

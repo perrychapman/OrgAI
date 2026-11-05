@@ -7,8 +7,9 @@ import type { AgentInstance, RunEvent } from '@shared/types'
 import { CodexAdapter, codexModelFor, codexWritableRoots, offerableByRealPath, type CodexServerLike } from './codex'
 import type { CodexAppServerOptions } from './codexAppServer'
 import { fakeCtx, project, role, runSummary } from './testHelpers'
-import type { RuntimeContext, RuntimeSession } from './types'
+import { ROOT_AGENT_ID, type RuntimeContext, type RuntimeSession } from './types'
 import { buildRolePrompt } from './prompts'
+import { RESUME_TEXT } from './runManager'
 import { harnessToolsFor } from './harnessTools'
 import { z } from 'zod'
 
@@ -311,6 +312,127 @@ describe('CodexAdapter session', () => {
     doc = undefined
     await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c2', namespace: null, tool: 'spawn_agent', arguments: { role: 'reviewer', brief: 'y' } })
     expect('engagementDocument' in vi.mocked(buildRolePrompt).mock.calls.at(-1)![3]!).toBe(false)
+  })
+
+  describe('knowledge retrieval', () => {
+    const BLOCK = 'KNOWN-ITEMS-BLOCK'
+    const inputText = (r: { params: any }): string => r.params.input.map((i: { text?: string }) => i.text ?? '').join('\n')
+    const known = () => vi.fn<NonNullable<RuntimeContext['knowledgeContext']>>((t) => (t.includes('Acme') ? BLOCK : null))
+    const engagementCtx = (over: Partial<RuntimeContext> = {}) => ctxFor({ project: project({ path: dir, isolateWriters: false, kind: 'engagement' }), autoContinue: false, ...over })
+    const userEntries = (ctx: ReturnType<typeof fakeCtx>, agentId: string) => ctx.events.flatMap((e) => (e.type === 'transcript' && e.entry.agentId === agentId && e.entry.block.kind === 'user' ? [e.entry.block.text] : []))
+
+    it('passes the brief to the root and every report thread', async () => {
+      const { adapter, servers } = setup()
+      vi.mocked(buildRolePrompt).mockClear()
+      session = await adapter.start(engagementCtx({ knowledgeBrief: () => 'INDEX' }))
+      const s = servers[0]!
+      await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+      await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c1', namespace: null, tool: 'spawn_agent', arguments: { role: 'engineer', brief: 'x' } })
+      const flags = vi.mocked(buildRolePrompt).mock.calls.map((c) => c[3]!)
+      expect(new Set(flags.map((f) => f.knowledgeBrief))).toEqual(new Set(['INDEX']))
+      expect(s.of('thread/start').map((r) => r.params.developerInstructions).every((i: string) => i.includes('INDEX'))).toBe(true)
+    })
+
+    it('a spawn names the new agent and adds the block to its first message, not to its transcript entry', async () => {
+      const knowledgeContext = known()
+      const { adapter, servers } = setup()
+      const ctx = engagementCtx({ knowledgeContext, prompt: 'Start' })
+      session = await adapter.start(ctx)
+      const s = servers[0]!
+      await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+      await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c1', namespace: null, tool: 'spawn_agent', arguments: { role: 'engineer', brief: 'Ask Acme' } })
+      await vi.waitFor(() => expect(s.turnStarts('th-2')).toHaveLength(1))
+      const child = [...ctx.events].flatMap((e) => (e.type === 'agent.upsert' && e.agent.handle === 'engineer-1' ? [e.agent.id] : []))[0]!
+      expect(knowledgeContext).toHaveBeenLastCalledWith('Ask Acme', { agentId: child, purpose: 'spawn' })
+      const first = inputText(s.turnStarts('th-2')[0]!)
+      expect(first.startsWith('Ask Acme')).toBe(true)
+      expect(first).toContain(BLOCK)
+      expect(first).toContain('You were spawned by')
+      expect(userEntries(ctx, child)).toEqual(['Ask Acme'])
+    })
+
+    it('a spawn survives a throwing context and warns', async () => {
+      const { adapter, servers } = setup()
+      const ctx = engagementCtx({
+        knowledgeContext: () => {
+          throw new Error('graph gone')
+        }
+      })
+      session = await adapter.start(ctx)
+      const s = servers[0]!
+      await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+      const out = await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c1', namespace: null, tool: 'spawn_agent', arguments: { role: 'engineer', brief: 'Ask Acme' } })
+      expect(out.success).toBe(true)
+      expect(ctx.events.some((e) => e.type === 'log' && e.level === 'warn' && e.message.includes('graph gone'))).toBe(true)
+    })
+
+    it('user messages carry the block beside the text and name the root; the transcript shows what was typed', async () => {
+      const knowledgeContext = known()
+      const { adapter, servers } = setup()
+      const ctx = engagementCtx({ knowledgeContext, prompt: 'Tell me about Acme' })
+      session = await adapter.start(ctx)
+      const s = servers[0]!
+      await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+      const first = inputText(s.turnStarts('th-1')[0]!)
+      expect(first.startsWith('Tell me about Acme')).toBe(true)
+      expect(first).toContain(BLOCK)
+      await session.send('And Acme now?')
+      await vi.waitFor(() => expect(s.of('turn/steer').length + s.turnStarts('th-1').length).toBe(2))
+      const second = s.of('turn/steer')[0] ?? s.turnStarts('th-1')[1]!
+      expect(inputText(second)).toContain('And Acme now?')
+      expect(inputText(second)).toContain(BLOCK)
+      expect(knowledgeContext).toHaveBeenLastCalledWith('And Acme now?', { agentId: ROOT_AGENT_ID, purpose: 'message' })
+      expect(userEntries(ctx, ROOT_AGENT_ID)).toEqual(['Tell me about Acme', 'And Acme now?'])
+      expect(JSON.stringify(ctx.events)).not.toContain(BLOCK)
+    })
+
+    it('a throwing context does not break a send; peer messages, harness messages and RESUME_TEXT get no block', async () => {
+      const knowledgeContext = vi.fn<NonNullable<RuntimeContext['knowledgeContext']>>(() => {
+        throw new Error('graph gone')
+      })
+      const { adapter, servers } = setup()
+      const ctx = engagementCtx({ knowledgeContext, prompt: RESUME_TEXT })
+      session = await adapter.start(ctx)
+      const s = servers[0]!
+      await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+      expect(inputText(s.turnStarts('th-1')[0]!)).toBe(RESUME_TEXT)
+      expect(knowledgeContext).not.toHaveBeenCalled()
+
+      await session.receive!({ fromRunId: 'r2', fromProjectName: 'Other', fromPrompt: 'x', text: 'Acme is on fire' })
+      ;(session as unknown as { notifyOrchestrator(t: string): void }).notifyOrchestrator('Harness: Acme report')
+      await vi.waitFor(() => expect(s.of('turn/steer').length).toBe(2))
+      expect(knowledgeContext).not.toHaveBeenCalled()
+
+      await expect(session.send('And Acme?')).resolves.toBeUndefined()
+      await vi.waitFor(() => expect(s.of('turn/steer').length).toBe(3))
+      expect(inputText(s.of('turn/steer')[2]!)).toBe('And Acme?')
+      expect(ctx.events.some((e) => e.type === 'log' && e.level === 'warn' && e.message.includes('graph gone'))).toBe(true)
+    })
+
+    it('offers knowledge_recall to the root and to reports, on team and single runs, and tells it the caller', async () => {
+      const knowledgeRecall = vi.fn<NonNullable<RuntimeContext['knowledgeRecall']>>(() => 'FENCED')
+      const { adapter, servers } = setup()
+      session = await adapter.start(engagementCtx({ knowledgeRecall }))
+      const s = servers[0]!
+      await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+      await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c1', namespace: null, tool: 'spawn_agent', arguments: { role: 'reviewer', brief: 'x' } })
+      for (const r of s.of('thread/start')) expect(r.params.dynamicTools.map((t: { name: string }) => t.name)).toContain('knowledge_recall')
+
+      await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c2', namespace: null, tool: 'knowledge_recall', arguments: { query: 'a' } })
+      expect(knowledgeRecall).toHaveBeenLastCalledWith({ query: 'a' }, { agentId: ROOT_AGENT_ID, roleId: 'r-lead' })
+      await s.ask('item/tool/call', { threadId: 'th-2', turnId: 'tu-2', callId: 'c3', namespace: null, tool: 'knowledge_recall', arguments: { query: 'b' } })
+      expect(knowledgeRecall).toHaveBeenLastCalledWith({ query: 'b' }, { agentId: expect.stringMatching(/^cx/), roleId: 'r-rev' })
+      // A thread OrgAI never bound is unknown, not the root.
+      await s.ask('item/tool/call', { threadId: 'th-other', turnId: 'tu-9', callId: 'c4', namespace: null, tool: 'knowledge_recall', arguments: { query: 'c' } })
+      expect(knowledgeRecall).toHaveBeenLastCalledWith({ query: 'c' }, { agentId: undefined, roleId: undefined })
+      await session.stop()
+
+      const roles = [role({ id: 'r-a', slug: 'assistant', name: 'Assistant', tools: ['Read'] })]
+      const single = setup()
+      session = await single.adapter.start(ctxFor({ run: runSummary({ team: 'single' }), project: project({ path: dir, isolateWriters: false, kind: 'engagement', roles }), roles, autoContinue: false, knowledgeRecall }))
+      await vi.waitFor(() => expect(single.servers[0]!.turnStarts('th-1')).toHaveLength(1))
+      expect(single.servers[0]!.of('thread/start')[0]!.params.dynamicTools.map((t: { name: string }) => t.name)).toContain('knowledge_recall')
+    })
   })
 
   it('a single-agent run (team single) passes the team flag and gives the root no spawn or messaging tools', async () => {

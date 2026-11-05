@@ -383,6 +383,26 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     goes on with the default script; on a code project (or without `ctx.knowledge`) it says "No knowledge graph is
     available in this run." instead. Each call goes through the real harness tools, so RunManager counts the writes
     and writes the harness rows. Unit-tested with fake `knowledge` / `engagementNotes` contexts (mock.test.ts).
+  - Mock marker `[mock:knowledge-recall]` (mock.ts `knowledgeRecallSteps`, default script, engagement work runs): the
+    `[mock:knowledge]` seeding steps, `knowledge_recall` "Acme billing" twice (the second answers "already shown"), "I
+    recalled what the team knows.", then the default script with `mock-report-1`'s brief naming Jane Doe, so the row "Added
+    1 known item: Jane Doe" lands on that report; "No knowledge graph is available in this run." plus the default script on a
+    code project. `MockSession.deliveredMessages` holds what a model would receive (blocks included), and replies echo
+    only the typed text. Unit-tested (mock.test.ts) and under the real RunManager and store (mockKnowledgeRecall.test.ts).
+  - Adapter wiring of retrieval (`runtime/knowledgeDelivery.ts`, used by all three adapters): `knowledgeBrief` goes in every
+    role prompt beside `engagementDocument`. `purpose: 'message'` on the first message (with hiddenContext) and each `send()`,
+    `agentId` ROOT_AGENT_ID, the block beside the text and never in the transcript entry; empty text and `RESUME_TEXT` are
+    skipped, `receive()` and harness messages never call it, a throw is caught and logged at warn. `purpose: 'spawn'`: Codex
+    and the mock name the child after it is registered, so the row lands on it; Claude's PreToolUse appends the block to
+    `updatedInput.prompt` with no `agentId` (the child's id arrives later with `task_started`), so no dedupe and the row
+    lands on the root, and a later recall by that report may repeat what the block gave it. `knowledge_recall` caller:
+    `caller.agentId` is ROOT_AGENT_ID for a known root, the agent id for a known report, undefined for unknown. On Claude
+    (`HarnessCallerTracker.resolveKnown`) a tool_use id match is known; a first-in-first-out match counts only as the
+    root and only with no report live; other tools keep `resolve`. On Codex an unbound thread is unknown. The bundled
+    CLI 2.1.312 sets `_meta["claudecode/toolUseId"]` on tools/call (read from the binary's text). Unit-tested with a fake
+    `query()` (claudeKnowledge.test.ts), a fake Codex server (codex.test.ts) and the mock. Unverified live: that the
+    `_meta` key reaches the in-process server (without it, recalls with reports live read as unknown), and that a
+    rewritten `updatedInput.prompt` reaches the subagent (only `name` and `isolation` were smoke-checked).
   - Round 2, retrieval (2026-11-05; ARCHITECTURE.md "Knowledge retrieval and inferred links"). `src/shared/knowledgeIndex.ts`
     (pure): `tokenizeKnowledge`, a ranked inverted index (`knowledgeIndexFor`, memo by graph object), `rankKnowledge` (per
     term, OR; name > alias > kind > summary > live facts; prefix for terms of 3+ chars; stopwords dropped),
@@ -414,8 +434,7 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     1,482 (6 -> 1, 4/4), 3,574 -> 1,142 (5 -> 1, 3/3). Asking again at the default budget: 806, 383, 442, 688, 475 chars.
     Synthetic 2,000 nodes / 5,000 edges / 2.2 MB: index about 70 ms, a broad rank about 80 ms, recall about 5 ms, inferred
     links about 100 ms once, store read about 32 ms cold and 0.3 ms cached (logged, not asserted; a 64 MB file not measured).
-    Verified by unit tests and that measurement only; our own fixture is a weak test, and no adapter calls
-    `knowledgeContext` or `knowledgeBrief` yet (Adapter Engineer next). Nothing ran live.
+    Verified by unit tests and that measurement only; our own fixture is a weak test. Nothing ran live.
   - Round 2, inferred links (`docs/design/knowledge-connections.md`; `src/shared/knowledgeLinks.ts`, pure):
     `inferKnowledgeLinks` builds only what the evaluation passed, `KnowledgeLinkBasis` 'mention' and 'same-name'. Shared
     source, same target, same run, across engagements, co-occurrence and embeddings were rejected; temporal, contradiction,

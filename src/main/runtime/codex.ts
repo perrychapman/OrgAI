@@ -1,5 +1,5 @@
 import type { AgentInstance, AgentMessage, ImageAttachment, McpServerSpec, Role, RunEvent, TranscriptBlock, WorktreeInfo } from '@shared/types'
-import { SKILL_HARNESS_TOOLS, isModelTier } from '@shared/types'
+import { KNOWLEDGE_RECALL_TOOL, SKILL_HARNESS_TOOLS, isModelTier } from '@shared/types'
 import { effectiveSubagentLimits, isolateWritersOn, newId, projectKindOf } from '@shared/defaults'
 import { validModelId } from '../connections/codexAccount'
 import { ROOT_AGENT_ID, isSetupLikeRun, type CompletionInput, type PeerMessage, type RunConnection, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
@@ -47,6 +47,7 @@ import {
 import { SETUP_TOOLS_INSTRUCTIONS, harnessToolsFor, isBlockingHarnessTool, type ConfigChange, type ConfigChangeResult, type HarnessTool, type HarnessToolHooks, type McpAttachResult } from './harnessTools'
 import { ContinuationDriver, stepActivity } from './continuation'
 import { buildRolePrompt, peerMessageText, canWrite, composeFirstMessage, isArchitectureFile } from './prompts'
+import { firstMessageHiddenContext, spawnKnowledge, userMessageKnowledge, withSpawnKnowledge, withUserMessageKnowledge } from './knowledgeDelivery'
 import { describeTool } from './activity'
 import { WorktreeIntegrator } from './integration'
 import { allowRuleStrings, applyAllowScope, chooseSuggestions, isOfferableDirectory, listRules, suggestionLabels } from './permissionRules'
@@ -283,8 +284,10 @@ class CodexSession implements RuntimeSession {
     this.continuation.userMessage()
     this.transcript(ROOT_AGENT_ID, userBlock(text, images))
     this.setState(ROOT_AGENT_ID, 'thinking', 'Thinking…')
-    if (this.rootThreadId) await this.sendToThread(this.rootThreadId, text, images)
-    else this.earlySends.push({ text, images })
+    // The transcript entry above is what the user typed; the knowledge block goes only to the model.
+    const body = withUserMessageKnowledge(text, userMessageKnowledge(this.ctx, text, (m) => this.log('warn', m)))
+    if (this.rootThreadId) await this.sendToThread(this.rootThreadId, body, images)
+    else this.earlySends.push({ text: body, images })
   }
 
   async interrupt(): Promise<void> {
@@ -485,7 +488,9 @@ class CodexSession implements RuntimeSession {
     const skills = hasSkillTool && !isSetup ? (this.ctx.skills?.() ?? []).filter((s) => s.roleIds.includes(role.id)).map((s) => ({ name: s.name, description: s.description })) : []
     // Engagements: the approved engagement document, read at prompt-build time (each new thread re-reads it).
     const engagementDocument = this.ctx.engagementDocument?.()
-    const base = buildRolePrompt(role, this.ctx.roles, this.ctx.project, { isSetup, isolation: this.isolation, ...(this.ctx.run.quick ? { quick: this.ctx.run.quick } : {}), ...(this.ctx.run.team ? { team: this.ctx.run.team } : {}), ...(this.ctx.allowedDirectories?.().length ? { allowedDirectories: this.ctx.allowedDirectories() } : {}), ...(this.ctx.referenceDirectories?.().length ? { referenceDirectories: this.ctx.referenceDirectories() } : {}), ...(engagementDocument ? { engagementDocument } : {}), ...(skills.length ? { skills, skillTool: 'load_skill' as const } : {}) })
+    // Constant for the run (RunManager computes it once), so every thread's instructions carry the same index.
+    const knowledgeBrief = this.ctx.knowledgeBrief?.()
+    const base = buildRolePrompt(role, this.ctx.roles, this.ctx.project, { isSetup, isolation: this.isolation, ...(this.ctx.run.quick ? { quick: this.ctx.run.quick } : {}), ...(this.ctx.run.team ? { team: this.ctx.run.team } : {}), ...(this.ctx.allowedDirectories?.().length ? { allowedDirectories: this.ctx.allowedDirectories() } : {}), ...(this.ctx.referenceDirectories?.().length ? { referenceDirectories: this.ctx.referenceDirectories() } : {}), ...(engagementDocument ? { engagementDocument } : {}), ...(knowledgeBrief ? { knowledgeBrief } : {}), ...(skills.length ? { skills, skillTool: 'load_skill' as const } : {}) })
     const { names } = this.toolsFor(role, isRoot)
     const notes = codexToolNotes(names, { renamedPlanTool: names.includes('orgai_update_plan') })
     const parts = [base]
@@ -606,7 +611,7 @@ class CodexSession implements RuntimeSession {
     this.transcript(ROOT_AGENT_ID, userBlock(ctx.prompt, ctx.images))
 
     try {
-      let firstMessage = composeFirstMessage(ctx.prompt, ctx.hiddenContext)
+      let firstMessage = composeFirstMessage(ctx.prompt, firstMessageHiddenContext(ctx, (m) => this.log('warn', m)))
       if (this.isolation) {
         const leftover = await this.integrator.start()
         if (leftover) firstMessage += `\n\n---\n${leftover}`
@@ -869,7 +874,9 @@ class CodexSession implements RuntimeSession {
     try {
       // The role id is passed only when the thread resolves to a role (or is the root): skills never fall back to the root's.
       const resolved = agentId === ROOT_AGENT_ID ? this.root : this.net.roleOf(agentId)
-      const text = await tool.call(call.arguments, resolved ? { agentId, roleId: resolved.id } : { agentId })
+      // knowledge_recall dedupes per agent, so a thread OrgAI never bound reads as unknown (no agentId), not as the root.
+      const unknownCaller = tool.name === KNOWLEDGE_RECALL_TOOL && !this.threads.has(call.threadId)
+      const text = await tool.call(call.arguments, unknownCaller ? {} : resolved ? { agentId, roleId: resolved.id } : { agentId })
       return toolResponse(text, true)
     } catch (e) {
       return toolResponse(`${tool.name} failed: ${(e as Error).message}`, false)
@@ -1239,7 +1246,9 @@ class CodexSession implements RuntimeSession {
       })
       this.transcript(req.id, { kind: 'user', text: req.brief })
       const effort = req.role.effort && ['low', 'medium', 'high'].includes(req.role.effort) ? { effort: req.role.effort } : {}
-      await this.sendToThread(started.threadId, childFirstMessage(parentLabel, req.brief), undefined, effort)
+      // After newAgent, so the "Added N known items" row lands on the report; the block stays out of its transcript entry.
+      const knownItems = spawnKnowledge(this.ctx, req.brief, req.id, (m) => this.log('warn', m))
+      await this.sendToThread(started.threadId, childFirstMessage(parentLabel, withSpawnKnowledge(req.brief, knownItems)), undefined, effort)
     } catch (e) {
       if (this.agents.delete(req.id)) this.emit({ type: 'agent.remove', runId: this.ctx.run.id, agentId: req.id })
       if (worktree) void this.integrator.onSubagentFinished(req.id)

@@ -3,8 +3,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import type { EngagementNote, ImageAttachment, KnowledgeEdge, KnowledgeGraph, KnowledgeNode, KnowledgeSource, McpServerSpec, RunEvent, TranscriptBlock } from '@shared/types'
-import { ENGAGEMENT_CONTEXT_TOOL, KNOWLEDGE_TOOL } from '@shared/types'
-import { DEEP_TREE_TOKEN, FATIGUE_TOKEN, KNOWLEDGE_TOKEN, MCP_MIDRUN_TOKEN, MOCK_KNOWLEDGE, MOCK_KNOWLEDGE_DONE, MOCK_KNOWLEDGE_NONE, MOCK_REFERENCE_COPY_HINT, MOCK_REFERENCE_REPORT, REFERENCE_EDIT_TOKEN, REFERENCE_SHELL_TOKEN,MOCK_MIDRUN_REPORT, MOCK_MIDRUN_SERVER, MOCK_MIDRUN_TOOL, MockAdapter, fatigueSteps, knowledgeFactId, type MockSession } from './mock'
+import { ENGAGEMENT_CONTEXT_TOOL, KNOWLEDGE_RECALL_TOOL, KNOWLEDGE_TOOL } from '@shared/types'
+import { RESUME_TEXT } from './runManager'
+import { DEEP_TREE_TOKEN, FATIGUE_TOKEN, KNOWLEDGE_RECALL_TOKEN, KNOWLEDGE_TOKEN, MCP_MIDRUN_TOKEN, MOCK_KNOWLEDGE, MOCK_KNOWLEDGE_DONE, MOCK_KNOWLEDGE_NONE, MOCK_KNOWLEDGE_RECALLED, MOCK_KNOWLEDGE_RECALL_BRIEF, MOCK_KNOWLEDGE_RECALL_QUERY, UNPRICED_REPORT_ID, MOCK_REFERENCE_COPY_HINT, MOCK_REFERENCE_REPORT, REFERENCE_EDIT_TOKEN, REFERENCE_SHELL_TOKEN,MOCK_MIDRUN_REPORT, MOCK_MIDRUN_SERVER, MOCK_MIDRUN_TOOL, MockAdapter, fatigueSteps, knowledgeFactId, type MockSession } from './mock'
 import { ROOT_AGENT_ID, type KnowledgeCaller, type PeerMessage, type RunSkill, type RuntimeContext } from './types'
 import { parseSuggestions } from '../skills/suggest'
 import { peerMessageText } from './prompts'
@@ -1265,6 +1266,108 @@ describe('mock [mock:knowledge]', () => {
     expect(notes.save).not.toHaveBeenCalled()
     expect(rootTexts(ctx)).not.toContain(MOCK_KNOWLEDGE_DONE)
     expect(rootTexts(ctx)).not.toContain(MOCK_KNOWLEDGE_NONE)
+  })
+
+  describe('[mock:knowledge-recall] and the knowledge context', () => {
+    const BLOCK = 'KNOWN-ITEMS-BLOCK'
+    const known = () => vi.fn<NonNullable<RuntimeContext['knowledgeContext']>>((t) => (t.includes('Jane Doe') || t.includes('Acme') ? BLOCK : null))
+    async function live(over: Parameters<typeof fakeCtx>[0] = {}) {
+      const ctx = fakeCtx({ autoContinue: false, project: project({ kind: 'engagement' }), ...over })
+      const session = (await new MockAdapter({ script: { delayMs: 0 } }).start(ctx)) as MockSession
+      const statuses = (): string[] => ctx.events.flatMap((e) => (e.type === 'run.status' ? [e.status] : []))
+      await vi.waitFor(() => expect(statuses()).toContain('idle'), { timeout: 3000 })
+      return { ctx, session }
+    }
+    const userEntries = (ctx: ReturnType<typeof fakeCtx>, agentId: string) => ctx.events.flatMap((e) => (e.type === 'transcript' && e.entry.agentId === agentId && e.entry.block.kind === 'user' ? [e.entry.block.text] : []))
+
+    it('seeds the graph, recalls twice through the harness tool, says so, then spawns its report with a brief naming Jane Doe', async () => {
+      const knowledgeRecall = vi.fn<NonNullable<RuntimeContext['knowledgeRecall']>>(() => 'FENCED')
+      const knowledgeContext = known()
+      const kg = fakeKnowledge()
+      const { ctx, session } = await live({ prompt: `Check the billing ${KNOWLEDGE_RECALL_TOKEN}`, knowledge: kg, engagementNotes: fakeNotes(), knowledgeRecall, knowledgeContext })
+      // The seeding ran first.
+      expect(kg.calls.map((c) => c.fn)).toContain('upsertNode')
+      expect(rootTexts(ctx)).toContain(MOCK_KNOWLEDGE_DONE)
+      expect(knowledgeRecall.mock.calls).toEqual([
+        [{ query: MOCK_KNOWLEDGE_RECALL_QUERY }, { agentId: ROOT_AGENT_ID, roleId: 'r-lead' }],
+        [{ query: MOCK_KNOWLEDGE_RECALL_QUERY }, { agentId: ROOT_AGENT_ID, roleId: 'r-lead' }]
+      ])
+      const texts = rootTexts(ctx)
+      expect(texts.indexOf(MOCK_KNOWLEDGE_RECALLED)).toBeGreaterThan(texts.indexOf(MOCK_KNOWLEDGE_DONE))
+      expect(rootCalls(ctx).filter((c) => c.name === KNOWLEDGE_RECALL_TOOL)).toHaveLength(2)
+      // The spawn: purpose 'spawn' with the child's id; the block goes to the child, never into its transcript entry.
+      expect(knowledgeContext).toHaveBeenCalledWith(MOCK_KNOWLEDGE_RECALL_BRIEF, { agentId: 'mock-report-1', purpose: 'spawn' })
+      expect(session.deliveredMessages.find((m) => m.agentId === 'mock-report-1')?.text).toContain(BLOCK)
+      expect(userEntries(ctx, 'mock-report-1')).toEqual([MOCK_KNOWLEDGE_RECALL_BRIEF])
+      expect(rootCalls(ctx).find((c) => c.name === 'Agent')?.input).toMatchObject({ prompt: MOCK_KNOWLEDGE_RECALL_BRIEF })
+      expect(JSON.stringify(ctx.events)).not.toContain(BLOCK)
+      // The second report's brief names nobody: no block.
+      expect(session.deliveredMessages.find((m) => m.agentId === 'mock-report-2')?.text).toBe('Look for related tests')
+      await session.stop()
+      await session.finished
+    })
+
+    it('says no knowledge graph is available on a code project and plays the default script', async () => {
+      const { ctx, session } = await live({ prompt: `Check ${KNOWLEDGE_RECALL_TOKEN}`, project: project() })
+      expect(rootTexts(ctx)[0]).toBe(MOCK_KNOWLEDGE_NONE)
+      expect(rootCalls(ctx).filter((c) => c.name === KNOWLEDGE_RECALL_TOOL)).toEqual([])
+      expect(rootTexts(ctx)).not.toContain(MOCK_KNOWLEDGE_RECALLED)
+      expect(rootTexts(ctx).at(-1)).toBe('The report finished: src/example.ts was updated. Anything else?')
+      await session.stop()
+      await session.finished
+    })
+
+    it('[mock:knowledge] alone never recalls', async () => {
+      const knowledgeRecall = vi.fn(() => 'FENCED')
+      const { session } = await live({ prompt: `x ${KNOWLEDGE_TOKEN}`, knowledge: fakeKnowledge(), engagementNotes: fakeNotes(), knowledgeRecall })
+      expect(knowledgeRecall).not.toHaveBeenCalled()
+      await session.stop()
+      await session.finished
+    })
+
+    it('user messages go through purpose message with the root named; the reply and the transcript hold only what was typed', async () => {
+      const knowledgeContext = known()
+      const { ctx, session } = await live({ prompt: 'Tell me about Acme', knowledgeContext })
+      expect(knowledgeContext).toHaveBeenCalledWith('Tell me about Acme', { agentId: ROOT_AGENT_ID, purpose: 'message' })
+      expect(session.deliveredMessages[0]!.text).toContain(BLOCK)
+      await session.send('And Acme now?')
+      await vi.waitFor(() => expect(rootTexts(ctx).some((t) => t.includes('And Acme now?'))).toBe(true))
+      expect(knowledgeContext).toHaveBeenLastCalledWith('And Acme now?', { agentId: ROOT_AGENT_ID, purpose: 'message' })
+      expect(session.deliveredMessages.at(-1)!.text).toContain(BLOCK)
+      expect(userEntries(ctx, ROOT_AGENT_ID)).toEqual(['Tell me about Acme', 'And Acme now?'])
+      expect(JSON.stringify(ctx.events)).not.toContain(BLOCK)
+      await session.stop()
+      await session.finished
+    })
+
+    it('nudges, peer messages, RESUME_TEXT and images-only messages get none, and a throw breaks nothing', async () => {
+      const knowledgeContext = vi.fn<NonNullable<RuntimeContext['knowledgeContext']>>(() => {
+        throw new Error('graph gone')
+      })
+      const { ctx, session } = await live({ prompt: RESUME_TEXT, knowledgeContext })
+      // The default spawns' briefs are the only calls so far; they threw and the script still finished.
+      expect(knowledgeContext.mock.calls.every(([, o]) => o.purpose === 'spawn')).toBe(true)
+      expect(ctx.events.some((e) => e.type === 'log' && e.level === 'warn' && e.message.includes('graph gone'))).toBe(true)
+      knowledgeContext.mockClear()
+      await session.receive({ fromRunId: 'r2', fromProjectName: 'Other', fromPrompt: 'x', text: 'Acme is on fire' })
+      ;(session as unknown as { deliverHarness(t: string, a: string): void }).deliverHarness('Harness: continue with Acme', 'Thinking…')
+      await session.send('', [{ mediaType: 'image/png', data: 'AA==', name: 'a.png' } as never])
+      expect(knowledgeContext).not.toHaveBeenCalled()
+      await expect(session.send('And Acme?')).resolves.toBeUndefined()
+      expect(knowledgeContext).toHaveBeenCalledTimes(1)
+      expect(session.deliveredMessages.at(-1)!.text).toBe('And Acme?')
+      await session.stop()
+      await session.finished
+    })
+
+    it('reads the standing brief for the root and every spawned agent', async () => {
+      const knowledgeBrief = vi.fn(() => 'INDEX')
+      const { session } = await live({ prompt: 'x', knowledgeBrief })
+      expect(session.promptKnowledgeBriefs.map((b) => b.agentId)).toEqual([ROOT_AGENT_ID, 'mock-report-1', UNPRICED_REPORT_ID])
+      expect(session.promptKnowledgeBriefs.every((b) => b.brief === 'INDEX')).toBe(true)
+      await session.stop()
+      await session.finished
+    })
   })
 
   it('knowledgeFactId reads a live fact id from a get result and ignores retired, missing or foreign lines', () => {
