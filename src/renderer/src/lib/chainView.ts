@@ -3,13 +3,13 @@
  * nodes, the root carries the tokens and cost of every member, and each earlier member folds into one "Earlier: N
  * agents" group of settled agents. Pure: no store, no IPC.
  */
-import type { AgentInstance, AgentUsage, RunSummary } from '@shared/types'
+import type { AgentInstance, AgentUsage, RunEndedBy, RunSummary } from '@shared/types'
 import { agentCostInput, sumCosts } from './cost'
 import { settleEndedAgents } from './runStatus'
 
 /** A loaded chain member as the canvas needs it. */
 export interface ChainMemberView {
-  summary: Pick<RunSummary, 'id' | 'status' | 'endedAt' | 'endedWithApp'> & { endedBy?: 'user' | 'app' }
+  summary: Pick<RunSummary, 'id' | 'status' | 'endedAt' | 'endedWithApp'> & { endedBy?: RunEndedBy }
   agents: Record<string, AgentInstance>
 }
 

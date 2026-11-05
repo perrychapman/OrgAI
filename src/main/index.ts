@@ -1,157 +1,161 @@
-import { app, BrowserWindow, ipcMain, nativeImage, nativeTheme, safeStorage, screen, shell } from 'electron'
+import { app, BrowserWindow, dialog, nativeImage, nativeTheme, safeStorage, screen, shell } from 'electron'
 import { parseWindowInactive, windowPlacement } from './windowPlacement'
-import { mkdirSync } from 'node:fs'
+import { mkdirSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import type { AppSettings, CapabilityProgressEvent, TeamReviewSummary, ConnectionEvent, ConnectionId,FocusRunTarget, McpLibraryInfo, RunEvent, SkillLibraryInfo, TeamFilesStatus } from '@shared/types'
-import { TEAM_FILES_IPC as IPC_TEAM_FILES } from '@shared/types'
-import { TeamFilesService } from './teamFiles/service'
-import { HARNESS_PROJECT_ID, IPC, QUICK_PROJECT_ID, SKILLS_PROJECT_ID, isVirtualProjectId, runWindowHash } from '@shared/types'
+import type { AppSettings, FocusRunTarget, HostKind, RunEvent } from '@shared/types'
+import { IPC, TEAM_FILES_IPC, runWindowHash } from '@shared/types'
 import { appUrlMatcher, isExternalWebUrl, scopedWindow, shouldBlockNavigation } from './windowScope'
-import { ProjectStore } from './store/projects'
-import { SettingsStore } from './store/settings'
-import { UsageMonitor } from './usageMonitor'
-import { RunStore } from './store/runs'
-import { RunManager } from './runtime/runManager'
-import { ClaudeAdapter } from './runtime/claude'
-import { CodexAdapter } from './runtime/codex'
-import type { RunConnection } from './runtime/types'
-import { SecretStore } from './store/secrets'
-import { ConnectionService } from './connections/service'
-import { CommunityPrices } from './connections/communityPrices'
-import type { RuntimeAdapter } from './runtime/types'
-import { McpService } from './mcp/service'
-import { harnessProject } from './mcp/assist'
-import { skillsProject } from './skills/assist'
-import { QuickRunService, projectPeeks } from './quick/quickRuns'
-import { sweepScratchDirs } from './quick/scratch'
-import { McpLibraryStore } from './store/mcpLibrary'
-import { SkillService } from './skills/service'
-import { SkillEvaluationService } from './skills/evaluation'
-import { CapabilityService } from './capabilities/service'
-import { seedMockHome } from './capabilities/mockHome'
 import { applyShellPath } from './shellEnv'
 import { stopSystemCertRead, trustSystemCertificates } from './systemCerts'
 import { installAppMenu, menuActionSender } from './appMenu'
-import { MockAdapter } from './runtime/mock'
-import { sweepStaleSkillDirs } from './runtime/claudeSkills'
-import { SetupService } from './setup/service'
-import { MaintenanceService } from './maintenance'
-import { registerIpc, harnessProjectFor, withEffectiveDefault, broadcastEngagementChanged } from './ipc'
-import { AgentImportService } from './setup/import/importer'
-import { TemplateService } from './setup/templates'
-import { KitService } from './kit/service'
-import { RepoCloneService } from './repoClone'
-import { listNotes, orphanRunProjects, readNote, readRetainedRunProjects, saveNote } from './store/projectData'
-import { knowledgeStore } from './store/knowledge'
+import { registerIpc } from './ipc'
 import { Notifier } from './notifications'
-import { DEFAULT_KEEP_RUNS } from '@shared/types'
-import { dataDirOverride, installLogging, log } from './log'
-import { buildSettingsInfo, windowBackground } from './appInfo'
+import { canWriteDir, dataDirOverride, installLogging, log, pickLogsDir } from './log'
+import { installElectronLogHooks } from './electronLogHooks'
+import { acquireHostOwnership, HostAlreadyRunningError, HostStartingOrBusyError, type HostOwnership } from './host/ownership'
+import { bootOrgAIHost, type OrgAIHost } from './host/bootstrap'
+import { HostSocketServer } from './host/socketServer'
+import { currentHostInstanceId } from './host/identity'
+import {
+  CLOSE_PROMPT_BUTTONS,
+  CLOSE_PROMPT_CANCEL_ID,
+  closePromptChoice,
+  closePromptText,
+  parseHostArgs,
+  quitPromptButtons,
+  quitPromptNeeded,
+  reopenAfterCancel,
+  secondInstanceAction,
+  windowAllClosedAction,
+  type ClosePromptChoice
+} from './hostLifecycle'
+import type { HostRuntimeEnv } from './host/runtimeEnv'
+import { windowBackground } from './appInfo'
 import { quitGate } from './quitGate'
+import { orgaiCliRootsOf, setOrgaiCliRoots } from './runtime/selfControlGate'
+import { createCliShimService, type CliShimService } from './host/shimInstaller'
+import { RepoCloneService } from './repoClone'
 
 // The certificate-reader child runs this binary with ELECTRON_RUN_AS_NODE=1; if a RunAsNode fuse is off it would boot a full app here.
 if (process.env.ELECTRON_RUN_AS_NODE) process.exit(0)
 // Before anything reads a path: ORGAI_DATA_DIR (CI, e2e) replaces userData and moves logs under it, so a run never
-// touches the real profile or ~/Library/Logs. app.setPath throws for a missing directory, so create it first.
+// touches the real profile or ~/Library/Logs. app.setPath throws for a missing directory, so create it first. The
+// folder is canonicalized (realpath) so the single-instance lock, the data dir and the host's run/ folder always
+// name it one way (macOS /var vs /private/var, a symlinked profile).
 const dataOverride = dataDirOverride()
+const userDataDir = canonicalUserData(dataOverride?.userData ?? app.getPath('userData'))
+app.setPath('userData', userDataDir)
 if (dataOverride) {
-  mkdirSync(dataOverride.logs, { recursive: true })
-  app.setPath('userData', dataOverride.userData)
-  app.setAppLogsPath(dataOverride.logs)
+  const overrideLogs = join(userDataDir, 'logs')
+  mkdirSync(overrideLogs, { recursive: true })
+  app.setAppLogsPath(overrideLogs)
 }
-// Unpackaged (npm run dev, e2e) the name comes from package.json ("orgai"); on macOS that names ~/Library/Logs/<name>
-// and the About entry. userData was fixed by Electron before this runs, so it does not move.
-if (!app.isPackaged) app.setName('OrgAI')
-installLogging()
-// Finder/Dock launches on macOS get a minimal PATH; take the login shell's before anything spawns claude, codex or MCP servers.
-applyShellPath()
-// Trust the OS certificate store too (corporate / inspecting root CAs), before anything can fetch (issue #16).
-// On macOS the store is read in a child process (it can stall) and applied when that finishes; quit kills it.
-trustSystemCertificates()
-app.on('before-quit', () => stopSystemCertRead())
-if (process.platform === 'win32') app.setAppUserModelId('com.orgai.app')
 
-let runManager: RunManager | undefined
+function canonicalUserData(dir: string): string {
+  try {
+    mkdirSync(dir, { recursive: true })
+    return realpathSync(dir)
+  } catch {
+    return dir
+  }
+}
+
+/** The booted host (stores, services, runs, the event bus; host/bootstrap.ts); set once whenReady has built it. */
+let host: OrgAIHost | undefined
 let notifier: Notifier | undefined
-let settingsStore: SettingsStore | undefined
-/** Set once constructed; broadcast() feeds it every usage.status so the idle probe merges onto a run's report. */
-let usageMonitor: UsageMonitor | null = null
+/** This process's ownership of <dataDir>/run (cli-spec 3.2(2)); released on will-quit and process exit. */
+let ownership: HostOwnership | undefined
+/** True once whenReady has built the stores and the first window: the window handlers below wait for it. */
+let booted = false
+/** Set on the first before-quit that goes ahead: a second launch during a quit must not open a window in the quitting app. */
+let quitting = false
+/** The host's socket server (cli-spec 3.3); created before ownership so every accepted connection reaches it. */
+let server: HostSocketServer | undefined
+/** Clones started from a window (desktop only); cancelled when the quit goes ahead. */
+let repoClone: RepoCloneService | undefined
+
+// cli-spec 3.2(1): --headless-host (started by the orgai command: no window, no Dock icon) and --run <id>. Parsed once;
+// every lifecycle decision lives in hostLifecycle.ts.
+const hostArgs = parseHostArgs(process.argv)
+const hostKind: HostKind = hostArgs.headless ? 'headless-host' : 'desktop'
+// The self-control gate treats an interpreter run of a file in this install's out/cli or src/cli as the orgai CLI.
+setOrgaiCliRoots(orgaiCliRootsOf(app.getAppPath()))
+/** In background mode (no windows, kept alive for its activity); logged once per entry. */
+let inBackground = false
+/** A prompt was answered "Stop all runs and quit" / "Stop and quit": the next quit goes through without asking. */
+let quitAnswered = false
+/** The quit comes from the activity drain (idle exit, host.stop): never prompt. */
+let drainQuit = false
+let quitPromptOpen = false
+/** The last-window close prompt (review H3) is showing. */
+let closePromptOpen = false
+
+// A second launch on the same userData (Electron's single-instance lock) is answered by the incumbent: a terminal
+// host launch (--headless-host) only logs, anything else brings a window forward (and opens --run's run window).
+app.on('second-instance', (_event, argv, _cwd, additionalData) => {
+  const action = secondInstanceAction({ argv, additionalData, booted, quitting })
+  if (action.kind === 'ignore') {
+    if (quitting) log.info('A second launch arrived while OrgAI is quitting; ignored (start OrgAI again once it has closed).')
+    return
+  }
+  if (action.kind === 'headless') {
+    log.info('A terminal host launch found OrgAI already running.')
+    return
+  }
+  showDockIcon()
+  const main = liveWindowScopes().find(([, scope]) => scope === undefined)?.[0]
+  if (main) showWindow(main)
+  else createWindow()
+  if (action.run) openRunById(action.run)
+})
+app.on('activate', () => {
+  if (!booted || quitting) return
+  showDockIcon()
+  if (BrowserWindow.getAllWindows().length === 0) createWindow()
+})
+// The lock is keyed by userData, so it is taken after setPath. An unpackaged dev build ('orgai') and the packaged
+// 'OrgAI' share one userData folder on case-insensitive macOS, so the lock correctly makes them exclusive. The losing
+// process exits at once, without touching <dataDir>/run. additionalData tells the incumbent what this launch was
+// (Chromium may reorder argv on some platforms).
+const gotLock = app.requestSingleInstanceLock(
+  hostArgs.run !== undefined ? { headless: hostArgs.headless, run: hostArgs.run } : { headless: hostArgs.headless }
+)
+if (!gotLock) app.exit(0)
+// A terminal host never shows a Dock icon (macOS); a later window brings it back.
+if (gotLock && hostArgs.headless && process.platform === 'darwin') app.dock?.hide()
+
+// Unpackaged (npm run dev, e2e) the name comes from package.json ("orgai"); on macOS that names ~/Library/Logs/<name>
+// and the About entry. userData was set above, so it does not move.
+if (!app.isPackaged) app.setName('OrgAI')
+/** Where main.log goes; picked below once the lock is ours. */
+let logsDir = join(userDataDir, 'logs')
+/** What the host is told about this process (logging, app:info, settings:changed). */
+function runtimeEnv(): HostRuntimeEnv {
+  return { userDataDir, logsDir, appVersion: app.getVersion(), isPackaged: app.isPackaged, electronVersion: process.versions.electron }
+}
+if (gotLock) {
+  // app.getPath('logs') is ~/Library/Logs/<name> on macOS (where Console.app looks); on Windows and Linux it is
+  // <userData>/logs. If it throws or is read-only (sandboxed or managed Macs), use <userData>/logs.
+  logsDir = pickLogsDir([() => app.getPath('logs'), () => join(userDataDir, 'logs')], canWriteDir)
+  installLogging(runtimeEnv())
+  installElectronLogHooks(app)
+}
+// Finder/Dock launches on macOS get a minimal PATH; take the login shell's before anything spawns claude, codex or MCP servers.
+// The login shell's own PATH (without OrgAI's additions) is kept for the orgai command shim's "on your PATH" check.
+const shellPathResult = applyShellPath()
+if (gotLock) {
+  // Trust the OS certificate store too (corporate / inspecting root CAs), before anything can fetch (issue #16). Only
+  // once the lock is ours, so a second launch that exits at once never starts the macOS certificate-reader child.
+  // On macOS the store is read in a child process (it can stall) and applied when that finishes; the quit below kills it.
+  trustSystemCertificates()
+}
+if (process.platform === 'win32') app.setAppUserModelId('com.orgai.app')
 
 /** Native menus, scrollbars, dialogs and prefers-color-scheme in the renderer follow AppSettings.appearance.theme. */
 function applyTheme(s: AppSettings): void {
   if (nativeTheme.themeSource !== s.appearance.theme) nativeTheme.themeSource = s.appearance.theme
-}
-
-/** The effective default connection (ConnectionService.effectiveDefault); set once the service exists. */
-let effectiveDefaultOf: (() => ConnectionId) | undefined
-/** The defaultConnection last sent with settings:changed, so a moved effective default is re-broadcast once. */
-let lastBroadcastDefault: ConnectionId | undefined
-
-/**
- * Every window hears about a save, so a second window and the deprecated notifications mirror stay in step. The
- * payload's defaultConnection is the effective default (withEffectiveDefault), never the stored value.
- */
-function broadcastSettings(s: AppSettings): void {
-  if (!settingsStore) return
-  const effective = effectiveDefaultOf?.() ?? s.defaultConnection
-  lastBroadcastDefault = effective
-  const info = buildSettingsInfo(withEffectiveDefault(s, effective), { dataDir: settingsStore.dataDir, appVersion: app.getVersion() })
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (!win.isDestroyed()) win.webContents.send(IPC.settingsChanged, info)
-  }
-}
-
-/** How long after a LiteLLM run ends its key's spend is re-read (the proxy batches spend writes, ~10 s by default). */
-const LITELLM_SPEND_DELAY_MS = 15_000
-
-function broadcast(event: RunEvent): void {
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (!win.isDestroyed()) win.webContents.send(IPC.runEvent, event)
-  }
-  usageMonitor?.observe(event)
-  try {
-    notifier?.handle(event)
-  } catch (e) {
-    console.error('Notification failed:', e)
-  }
-}
-
-function broadcastMcpLibrary(entries: McpLibraryInfo[]): void {
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (!win.isDestroyed()) win.webContents.send(IPC.mcpLibraryChanged, entries)
-  }
-}
-
-function broadcastCapabilityProgress(event: CapabilityProgressEvent): void {
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (!win.isDestroyed()) win.webContents.send(IPC.capabilitiesProgress, event)
-  }
-}
-
-function broadcastTeamReview(summary: TeamReviewSummary): void {
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (!win.isDestroyed()) win.webContents.send(IPC.capabilitiesReviewUpdated, summary)
-  }
-}
-
-function broadcastTeamFiles(status: TeamFilesStatus): void {
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (!win.isDestroyed()) win.webContents.send(IPC_TEAM_FILES.teamFilesChanged, status)
-  }
-}
-
-function broadcastSkillLibrary(entries: SkillLibraryInfo[]): void {
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (!win.isDestroyed()) win.webContents.send(IPC.skillLibraryChanged, entries)
-  }
-}
-
-function broadcastConnection(event: ConnectionEvent): void {
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (!win.isDestroyed()) win.webContents.send(IPC.connectionsEvent, event)
-  }
 }
 
 /**
@@ -185,6 +189,39 @@ function showWindow(win: BrowserWindow): void {
   if (win.isMinimized()) win.restore()
   win.show()
   win.focus()
+}
+
+function showDockIcon(): void {
+  if (process.platform !== 'darwin') return
+  void Promise.resolve(app.dock?.show()).catch(() => {})
+}
+
+/** A run id from --run: open its window when the host knows the run. */
+function openRunById(runId: string): void {
+  const summary = host?.runs.summary(runId)
+  if (summary) openRunWindow({ projectId: summary.projectId, runId: summary.id })
+  else log.info(`Asked to open run ${runId}, which this data folder does not have.`)
+}
+
+/**
+ * No windows, and the host keeps serving in the background (cli-spec 3.2(1)): a --headless-host launch (daemon mode),
+ * or a desktop launch whose user chose "Keep working in the background" (review H3: never without that answer). The
+ * idle exit then quits once nothing keeps the host busy for ORGAI_DAEMON_IDLE_MINUTES.
+ */
+function goBackground(): void {
+  windowScopes.clear()
+  if (process.platform === 'darwin') app.dock?.hide()
+  host?.activity.armIdleExit()
+  if (!inBackground) {
+    inBackground = true
+    const counts = host?.activity.snapshot().counts ?? {}
+    const busy = Object.entries(counts)
+      .filter(([, n]) => typeof n === 'number' && n > 0)
+      .map(([k, n]) => `${k} ${n}`)
+      .join(', ')
+    if (busy) log.info(`All windows closed while OrgAI is busy (${busy}); it keeps running in the background until its work is done.`)
+    else log.info('All windows closed; this background host keeps serving terminal clients until its idle exit.')
+  }
 }
 
 /** window:openRun (already validated): focus the window scoped to this run, or open one. */
@@ -222,6 +259,7 @@ function windowPlacementFor(width: number, height: number): { x: number; y: numb
  * `#/run/<projectId>/<runId>`.
  */
 function createWindow(scope?: FocusRunTarget): BrowserWindow {
+  inBackground = false
   const width = scope ? 1280 : 1440
   const height = scope ? 840 : 920
   const placement = windowPlacementFor(width, height)
@@ -233,16 +271,15 @@ function createWindow(scope?: FocusRunTarget): BrowserWindow {
     minHeight: 680,
     show: false,
     autoHideMenuBar: false,
-    backgroundColor: windowBackground(settingsStore?.get().appearance.theme ?? 'dark', nativeTheme.shouldUseDarkColors),
+    backgroundColor: windowBackground(host?.settings.get().appearance.theme ?? 'dark', nativeTheme.shouldUseDarkColors),
     title: 'OrgAI',
     // Packaged builds take the icon from the executable; in development use the generated ICO (Windows) or PNG.
     ...(app.isPackaged ? {} : { icon: join(app.getAppPath(), 'build', process.platform === 'win32' ? 'icon.ico' : 'icon.png') }),
     webPreferences: {
-      preload: join(__dirname, '../preload/index.mjs'),
-      // The preload is built as an ES module (index.mjs, package.json "type": "module"), which Electron cannot load
-      // in a sandboxed renderer. It uses only contextBridge and ipcRenderer, so a CommonJS preload could run sandboxed
-      // (see Risks in .orgai/ARCHITECTURE.md).
-      sandbox: false,
+      // The preload is built as CommonJS (out/preload/index.cjs, electron.vite.config.ts; cli-spec 7(1)) with the
+      // shared code bundled in, so it requires only 'electron' and runs in the sandboxed renderer.
+      preload: join(__dirname, '../preload/index.cjs'),
+      sandbox: true,
       contextIsolation: true
     }
   })
@@ -281,7 +318,53 @@ function createWindow(scope?: FocusRunTarget): BrowserWindow {
   return win
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  if (!gotLock) return
+  const dataDir = join(app.getPath('userData'), 'data')
+  // Step 0 (cli-spec 3.2(2)): own <dataDir>/run before any store constructor, since RunStore rewrites live runs.
+  server = new HostSocketServer({
+    dataDir,
+    hostKind,
+    hostInstanceId: currentHostInstanceId(),
+    appVersion: app.getVersion(),
+    mock: process.env.ORGAI_MOCK === '1',
+    // Ownership restricts daemon.secret before it binds; the server only refuses while that reported a problem.
+    secretAclProblem: () => ownership?.secretAclWarning,
+    log: (m) => log.info(m)
+  })
+  const socketServer = server
+  try {
+    // Review M11: no listener and no daemon.secret yet; they exist only while Terminal access is on (syncTerminalListener).
+    // singleInstanceLockHeld: gotLock is true here (whenReady returns at once without it), and the lock is keyed by
+    // userData, so a stale Electron daemon.json whose pid cannot be confirmed never locks the user out (review M9).
+    ownership = await acquireHostOwnership({
+      dataDir,
+      hostKind,
+      appVersion: app.getVersion(),
+      listen: false,
+      singleInstanceLockHeld: gotLock,
+      onConnection: (s) => socketServer.accept(s)
+    })
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e)
+    log.error(`Host ownership failed: ${message}`)
+    socketServer.close()
+    if (hostArgs.headless) {
+      // A terminal host has nobody to show a dialog to: the orgai command reads the exit code and the log.
+    } else if (e instanceof HostAlreadyRunningError || e instanceof HostStartingOrBusyError) {
+      dialog.showErrorBox('OrgAI is already running', `${message}\n\nQuit the other OrgAI (or the terminal host using this data folder), then start OrgAI again.`)
+    } else {
+      // Every other failure (an unsafe or unwritable run folder, a socket that cannot be created there, a full disk)
+      // would otherwise quit with no window at all.
+      dialog.showErrorBox(
+        'OrgAI could not start',
+        `OrgAI could not take ownership of its data folder:\n${message}\n\nData folder: ${dataDir}\nCheck that the folder is on a local disk you can write to, then start OrgAI again.`
+      )
+    }
+    app.exit(6)
+    return
+  }
+  const owned = ownership
   // In development the Dock would show Electron's icon; packaged builds take it from the bundle.
   if (process.platform === 'darwin' && !app.isPackaged) {
     try {
@@ -290,374 +373,286 @@ app.whenReady().then(() => {
       log.warn(`Could not set the Dock icon: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
-  const dataDir = join(app.getPath('userData'), 'data')
-  const projects = new ProjectStore(dataDir)
-  const settings = new SettingsStore(dataDir)
-  settingsStore = settings
-  applyTheme(settings.get())
-  settings.onChange((s) => {
-    applyTheme(s)
-    broadcastSettings(s)
-  })
-  const runStore = new RunStore(dataDir)
-  const secrets = new SecretStore(dataDir, safeStorage)
-  const connections = new ConnectionService({
-    dataDir,
-    settings,
-    projects,
-    secrets,
-    broadcast: broadcastConnection,
-    logInfo: (m) => log.info(m),
-    // The effective default moved without a settings write (e.g. chosen mode, a removed key): re-broadcast once.
-    onDefaultChanged: () => {
-      if (effectiveDefaultOf && effectiveDefaultOf() !== lastBroadcastDefault) broadcastSettings(settings.get())
+  // Stores, services, adapters, background probes and housekeeping (cli-spec 3.2(2) step 4). The boot's markReady is
+  // held back: daemon.json turns 'ready' below, once the listener matches Terminal access, so a client that waits for
+  // 'ready' never reads "listening: false" from a host about to listen.
+  const bootOwnership = {
+    get info() {
+      return owned.info
     },
+    ...(owned.runtimeDir ? { runtimeDir: owned.runtimeDir } : {}),
+    markReady: () => true,
+    markDraining: () => owned.markDraining(),
+    release: () => owned.release()
+  }
+  const h = bootOrgAIHost({
+    env: runtimeEnv(),
+    dataDir,
+    hostKind,
+    ownership: bootOwnership,
+    safeStorage,
     openExternal: (url) => shell.openExternal(url),
-    // Models the Claude login offers (SDK supportedModels); the scripted mock answers its own list. `adapters` is
-    // declared below and only read when discovery runs.
-    anthropicModels: (auth) => {
-      const adapter = process.env.ORGAI_MOCK === '1' ? (adapters as { mock?: RuntimeAdapter }).mock : (adapters.claude as RuntimeAdapter)
-      return adapter?.listModels?.(auth) ?? Promise.resolve(null)
-    }
-  })
-  effectiveDefaultOf = () => connections.effectiveDefault()
-  lastBroadcastDefault = connections.effectiveDefault()
-  // Community model prices (LiteLLM's public list): a cached fallback after the builtin table; AppSettings.communityPrices turns it off.
-  const communityPrices = new CommunityPrices({ dataDir, enabled: () => settings.get().communityPrices !== false })
-  const mockAdapter = process.env.ORGAI_MOCK === '1'
-  /** The virtual project of harness-level runs (library MCP assistant), from the current settings. */
-  const harness = () => harnessProject(connections.effectiveSettings(), dataDir, { mock: mockAdapter })
-  // Set once RunManager exists (below); only read when a run or a window asks for a project.
-  let quickRuns: QuickRunService | undefined
-  let skillEvaluationService: SkillEvaluationService | undefined
-  /** A stored project, or the display project of a virtual id (harness, quick, skills). */
-  const projectOrHarness = (projectId: string) =>
-    projectId === HARNESS_PROJECT_ID ? harness()
-    : projectId === QUICK_PROJECT_ID ? quickRuns?.displayProject()
-    : projectId === SKILLS_PROJECT_ID ? skillsProject(connections.effectiveSettings(), dataDir, { mock: mockAdapter })
-    : projects.get(projectId)
-  const mcp = new McpService({
-    projects,
-    secrets,
-    library: new McpLibraryStore(dataDir),
-    dataDir,
-    openExternal: (url) => shell.openExternal(url),
-    // ORGAI_MOCK=1 only: connector entries authorize and test without network (walkthroughs, e2e).
-    mock: mockAdapter,
-    onLibraryChanged: broadcastMcpLibrary,
-    // Library changes that save a project (unlink on remove, promote) reach every window like a run's project update.
-    onProjectChanged: (project) => broadcast({ type: 'project.updated', runId: '', project })
-  })
-  const skills = new SkillService({
-    dataDir,
-    projects,
-    onLibraryChanged: broadcastSkillLibrary,
-    onProjectChanged: (project) => broadcast({ type: 'project.updated', runId: '', project })
-  })
-  // Team files: a code project's team as plain files under .orgai/ (the project cache stays what runs read). Every
-  // ProjectStore.save passes through its hook; the folders are checked at boot, on window focus and at project open / run start.
-  const teamFiles = new TeamFilesService({
-    dataDir,
-    projects,
-    modelContext: (id) => connections.importModelContext(id),
-    withAdapter: (project) => connections.withAdapter(project),
-    skills: {
-      readFiles: (projectId, spec) => skills.teamReadFiles(projectId, spec),
-      storeFiles: (projectId, skillId, files) => skills.teamStoreFiles(projectId, skillId, files),
-      removeFiles: (projectId, skillId) => skills.teamRemoveFiles(projectId, skillId)
-    },
-    mcp: {
-      libraryEntries: () => mcp.libraryEntries(),
-      connectorEntry: (connectorId, variant) => mcp.connectorEntryForTeam(connectorId, variant),
-      connectorPreview: (connectorId, variant) => mcp.connectorPreviewForTeam(connectorId, variant),
-      discardConnectorEntry: (entryId) => mcp.discardConnectorEntryForTeam(entryId),
-      removeServerSecrets: (projectId, serverId) => mcp.removeServerSecrets(projectId, serverId)
-    },
-    broadcastStatus: broadcastTeamFiles,
-    broadcastProject: (project) => broadcast({ type: 'project.updated', runId: '', project }),
-    warn: (m) => log.warn(`Team files: ${m}`)
-  })
-  projects.setTeamFilesHook(teamFiles)
-  const templates = new TemplateService({
-    dataDir,
-    projects,
-    modelContext: (id) => connections.importModelContext(id),
-    withAdapter: (project) => connections.withAdapter(project),
-    onProjectChanged: (project) => broadcast({ type: 'project.updated', runId: '', project })
-  })
-  const setup = new SetupService(projects, {
-    dataDir,
-    removeMcpSecrets: (projectId, serverId) => mcp.removeServerSecrets(projectId, serverId),
-    mcp: {
-      libraryEntries: () => mcp.libraryEntries(),
-      applyProposal: (projectId, payload, opts) => mcp.applyProposal(projectId, payload, opts),
-      applyLibraryProposal: (payload, opts) => mcp.applyLibraryProposal(payload, opts)
-    },
-    skills: { applyProposal: (projectId, payload, opts) => skills.applyProposal(projectId, payload, opts) },
-    templates: () => templates.list()
-  })
-  const keepRunsFor = (projectId: string): number => projects.get(projectId)?.keepRuns ?? DEFAULT_KEEP_RUNS
-  // complete() (org chart drafts) has no project: use the enabled Codex-capable connection, OpenAI first.
-  const codexCompletion = (): RunConnection | undefined => {
-    const c = settings.get().connections
-    const connection = c.openai.enabled ? 'openai' : c.litellm.enabled ? 'litellm' : undefined
-    if (!connection) return undefined
-    try {
-      return connections.runConnection(undefined, { adapter: 'codex', connection, mismatched: [] })
-    } catch (e) {
-      console.warn(`Codex completion connection unavailable: ${(e as Error).message}`)
-      return undefined
-    }
-  }
-  // The scripted mock adapter (no tokens) is opt-in; a project uses it only when its provider.id is "mock".
-  const adapters = {
-    claude: new ClaudeAdapter(),
-    codex: new CodexAdapter({ completionConnection: codexCompletion }),
-    ...(mockAdapter ? { mock: new MockAdapter() } : {})
-  }
-  // A LiteLLM run that ends changed the key's spend: re-read it once the proxy has written it (it batches spend
-  // writes); each end restarts the one timer, so the last run's spend is read. Set once the usage monitor exists.
-  let refreshLiteLLMSpend: (() => void) | undefined
-  let spendTimer: ReturnType<typeof setTimeout> | undefined
-  // Set once RunManager exists; work-run ends feed the proactive Team review (never setup-like or harness runs).
-  let capabilities: CapabilityService | undefined
-  const runBroadcast = (event: RunEvent): void => {
-    broadcast(event)
-    if (event.type !== 'run.status' || !['finished', 'error', 'paused'].includes(event.status)) return
-    if (event.status !== 'paused') {
-      const summary = runManager?.summaryOf(event.runId)
-      if (summary?.kind === 'work' && !isVirtualProjectId(summary.projectId)) capabilities?.runEnded(summary.projectId, event.runId)
-    }
-    if (runManager?.summaryOf(event.runId)?.connection !== 'litellm') return
-    clearTimeout(spendTimer)
-    spendTimer = setTimeout(() => {
-      spendTimer = undefined
-      refreshLiteLLMSpend?.()
-    }, LITELLM_SPEND_DELAY_MS)
-  }
-  runManager = new RunManager(adapters, runBroadcast, runStore, setup, keepRunsFor, {
-    dataDir,
-    teamFiles,
-    // "Always allow for project" cards: append folders / switch to Accept edits on the stored project (the store cleans them).
-    saveProjectPermissions: (projectId, patch) =>
-      projects.update(projectId, (p) => ({
-        ...p,
-        ...(patch.addDirectories?.length ? { allowedDirectories: [...(p.allowedDirectories ?? []), ...patch.addDirectories] } : {}),
-        // Re-checked on the stored copy: the user may have changed the mode since the run started.
-        ...(patch.acceptEdits && p.permissionMode === 'default' ? { permissionMode: 'acceptEdits' as const } : {})
-      })),
-    resolveProject: (projectId) => projectOrHarness(projectId),
-    // Context notes for engagement_context (agent saves carry the run and role as the writer); the knowledge graph for
-    // engagement_knowledge; both agent write paths push projects:engagementChanged. propose_org_chart fromTemplate.
-    engagementNotes: {
-      list: (projectId) => listNotes(dataDir, projectId),
-      read: (projectId, noteId) => readNote(dataDir, projectId, noteId),
-      save: (projectId, input, writer) => saveNote(dataDir, projectId, input, writer)
-    },
-    knowledge: knowledgeStore(dataDir),
-    engagementChanged: broadcastEngagementChanged,
-    orgTemplate: (templateId, project) => templates.forRun(templateId, project),
-    // An auto-resumed build session gets its checked workspace back; a vanished one throws (resumeNow reports it).
-    buildProject: (summary) => harnessProjectFor(summary, connections.effectiveSettings(), dataDir, mockAdapter),
-    opusGuardThreshold: () => settings.get().opusGuardThreshold,
-    catalog: () => connections.catalog(),
-    appSettings: () => settings.get(),
-    communityPrices: () => communityPrices.get(),
-    resolveConnection: (project, choice) => connections.runConnection(project, choice),
-    fastModel: (_project, choice) => connections.fastModel(choice),
-    mcp: {
-      enabledServers: (project) => mcp.enabledServers(project),
-      resolve: (projectId, spec, extra) => mcp.resolve(projectId, spec, extra),
-      persistInstall: (projectId, spec, values, scope) => mcp.persistInstall(projectId, spec, values, scope),
-      withLibrary: (project) => mcp.withLibrary(project),
-      prepareForRun: (projectId, specs) => mcp.prepareForRun(projectId, specs),
-      skippedServers: (project) => mcp.skippedServers(project),
-      libraryEntries: () => mcp.libraryEntries(),
-      storeProposalSecrets: (projectId, payload, values) => mcp.storeProposalSecrets(projectId, payload, values),
-      searchRegistry: (input) => mcp.registrySearch(input)
-    },
-    skills,
-    // Chat: a continued or resumed quick run rebuilds its project from summary.quick.
-    quickProject: (summary) => quickRuns?.projectFor(summary),
-    // list_projects (quick runs only): stored projects with their newest run; never virtual ids, never secrets.
-    listProjects: () => projectPeeks(projects.list(), (projectId) => runStore.list(projectId)[0]),
-    // Skill assistant: the library plus (in a project session) the project's skills; reads never throw.
-    skillAssist: {
-      catalog: (projectId) => {
-        try {
-          return {
-            library: skills.libraryList(),
-            project: projectId ? skills.list(projectId) : [],
-            ...(projectId ? { evaluation: skillEvaluationService?.last(projectId) ?? null } : {})
-          }
-        } catch (e) {
-          console.warn(`Skill catalog unavailable: ${(e as Error).message}`)
-          return { library: [], project: [] }
+    desktop: {
+      openRunWindow,
+      teamFilesChanged: (status) => {
+        for (const win of BrowserWindow.getAllWindows()) {
+          if (!win.isDestroyed()) win.webContents.send(TEAM_FILES_IPC.teamFilesChanged, status)
         }
-      },
-      read: (projectId, ref) => {
-        try {
-          if (typeof ref?.libraryId === 'string') return skills.libraryRead({ libraryId: ref.libraryId })
-          if (typeof ref?.skillId === 'string' && projectId) return skills.read({ projectId, skillId: ref.skillId })
-        } catch {
-          /* unknown id: the tool reports it */
-        }
-        return null
       }
+    },
+    mock: process.env.ORGAI_MOCK === '1',
+    onDrained: () => {
+      drainQuit = true
+      socketServer.close()
+      app.quit()
     }
   })
-  const rm = runManager
-  quickRuns = new QuickRunService({
-    dataDir,
-    settings: () => connections.effectiveSettings(),
-    runs: rm,
-    store: runStore,
-    projects,
-    prepare: (p) => connections.prepareNewProject(p),
-    broadcast,
-    mock: mockAdapter
+  host = h
+  socketServer.attach(h)
+  const settings = h.settings
+  applyTheme(settings.get())
+  settings.onChange((s) => applyTheme(s))
+  // Review M11: the listener and daemon.secret exist only while Terminal access is on; daemon.json turns 'ready' once
+  // the first sync settled. Not awaited: on Windows the secret's ACL step may take a while and the window need not wait.
+  // terminalAccess() is the stored switch, or this session of a --headless-host boot while the user has not chosen
+  // (review H2: never saved), so a headless host listens without turning the desktop's Terminal access on.
+  void syncTerminalListener(owned, h.terminalAccess().enabled).then((ok) => {
+    if (!ok && hostArgs.headless) {
+      // A terminal host without a listener serves nobody; the orgai command reads the exit code and the log.
+      log.error('The terminal host could not open its connection point; quitting.')
+      app.exit(6)
+      return
+    }
+    owned.markReady()
   })
-  const quick = quickRuns
-  // A pruned or deleted quick run takes its scratch dir with it when no other run uses it.
-  runStore.onRunsRemoved = (removed) => quick.runsRemoved(removed)
-  const skillEvaluation = new SkillEvaluationService({
-    dataDir,
-    project: (projectId) => projects.get(projectId),
-    listRuns: (projectId) => rm.list(projectId),
-    getRun: (runId) => rm.get(runId),
-    skills,
-    complete: (project, input) => rm.completeForProject(project, input)
-  })
-  skillEvaluationService = skillEvaluation
-  if (mockAdapter) seedMockHome(join(dataDir, 'mock-home'))
-  capabilities = new CapabilityService({
-    projects,
-    skills,
-    mcp,
-    dataDir,
-    complete: (project, input) => rm.completeForProject(project, input),
-    listRuns: (projectId) => rm.list(projectId),
-    getRun: (runId) => rm.get(runId),
-    progress: broadcastCapabilityProgress,
-    reviewUpdated: broadcastTeamReview,
-    onProjectChanged: (project) => broadcast({ type: 'project.updated', runId: '', project }),
-    // ORGAI_MOCK=1 only: local discovery reads seeded fixtures under the data dir, never the real home.
-    homeDir: mockAdapter ? join(dataDir, 'mock-home') : homedir(),
-    env: mockAdapter ? {} : process.env,
-    platform: process.platform,
-    mock: mockAdapter
-  })
-  const caps = capabilities
-  const repoClone = new RepoCloneService({
-    dataDir,
-    mock: Object.keys(adapters).includes('mock'),
-    // A clone never lands in a folder an existing project already uses (its folder, allowed or reference folders).
-    projectFolders: () => projects.list().flatMap((p) => [p.path, ...(p.allowedDirectories ?? []), ...(p.referenceDirectories ?? [])]).filter((f): f is string => typeof f === 'string' && f.length > 0)
-  })
-  registerIpc({
-    projects,
-    runs: runManager,
-    setup,
-    maintenance: new MaintenanceService(projects, teamFiles),
-    settings,
-    connections,
-    mcp,
-    adapterIds: Object.keys(adapters),
-    harnessProject: harness,
-    openRunWindow,
-    importer: new AgentImportService({
-      projects,
-      modelContext: (id) => connections.importModelContext(id),
-      withAdapter: (project) => connections.withAdapter(project),
-      onProjectChanged: (project) => broadcast({ type: 'project.updated', runId: '', project })
-    }),
-    skills,
-    skillEvaluation,
-    capabilities: caps,
-    quick,
-    templates,
-    kit: new KitService({ appVersion: app.getVersion(), platform: process.platform, skills, mcp, templates }),
-    repoClone,
-    teamFiles
-  })
-  // Pending and problem states exist before the first focus; later checks run on window focus, at most once per 2 s.
-  void teamFiles.checkAll().catch((e) => log.warn(`Team files boot check failed: ${e instanceof Error ? e.message : String(e)}`))
-  app.on('browser-window-focus', () => teamFiles.focused())
-  connections.init()
-  connections.startDiscovery()
-  if (process.env.ORGAI_MOCK !== '1') communityPrices.start()
-  app.on('before-quit', () => {
-    repoClone.dispose()
-    caps.dispose()
-    connections.dispose()
-    communityPrices.dispose()
+  settings.onChange(() => void syncTerminalListener(owned, h.terminalAccess().enabled))
+  // Every push on the host's bus reaches every window (so a second window and the deprecated notifications mirror
+  // stay in step); run events also go to the notifier.
+  h.events.on((channel, payload) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) win.webContents.send(channel, payload)
+    }
+    if (channel !== IPC.runEvent) return
+    try {
+      notifier?.handle(payload as RunEvent)
+    } catch (e) {
+      console.error('Notification failed:', e)
+    }
   })
   notifier = new Notifier({
     projectOfRun: (runId) => {
-      const summary = runManager?.summaryOf(runId)
+      const summary = h.runs.summaryOf(runId)
       if (!summary) return undefined
-      const project = projectOrHarness(summary.projectId)
+      const project = h.projectOrHarness(summary.projectId)
       return { projectId: summary.projectId, kind: summary.kind, autoContinue: project?.autoContinue !== false, maxAutoContinues: project?.maxAutoContinues }
     },
-    projectName: (projectId) => projectOrHarness(projectId)?.name,
+    projectName: (projectId) => h.projectOrHarness(projectId)?.name,
     windows: liveWindowScopes,
     // AppSettings.notifications is the single source of truth, read fresh at every decision.
     enabled: () => settings.get().notifications !== false
   })
-
-  // Plan usage without a run: at boot, every 10 minutes while idle, and on request from the meter.
-  const monitor = new UsageMonitor({
-    adapter: adapters.claude,
-    auth: () => settings.get().providerAuth,
-    broadcast,
-    liveRuns: () => runManager?.liveRunCount() ?? 0,
-    extraProbes: [() => connections.probeCodexUsage(), { key: 'litellm', probe: () => connections.probeLiteLLMUsage() }]
+  // Open windows keep the desktop host busy (cli-spec 3.2(4) interactiveClients).
+  h.activity.addSource('interactiveClients', () => BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed()).length)
+  const cliShim = buildCliShim(h)
+  // Start a project from a repository (desktop only: progress goes to the calling window, a closed window cancels).
+  const clones = new RepoCloneService({
+    dataDir,
+    mock: h.services.adapterIds.includes('mock'),
+    // A clone never lands in a folder an existing project already uses (its folder, allowed or reference folders).
+    projectFolders: () =>
+      h.services.projects
+        .list()
+        .flatMap((p) => [p.path, ...(p.allowedDirectories ?? []), ...(p.referenceDirectories ?? [])])
+        .filter((f): f is string => typeof f === 'string' && f.length > 0)
   })
-  usageMonitor = monitor
-  refreshLiteLLMSpend = () => void monitor.refreshProbe('litellm')
-  app.on('before-quit', () => clearTimeout(spendTimer))
-  ipcMain.handle(IPC.usageRefresh, () => monitor.refresh())
-  monitor.start()
-  app.on('before-quit', () => monitor.stop())
-
-  // Housekeeping: runs of projects that no longer exist, runs past retention, record files nobody indexes.
-  // The virtual projects (harness, quick, skills) own runs without being stored: their runs survive restarts.
-  const knownProjects = new Set([...projects.list().map((p) => p.id), HARNESS_PROJECT_ID, QUICK_PROJECT_ID, SKILLS_PROJECT_ID])
-  let dropped = 0
-  for (const projectId of orphanRunProjects(runStore.allProjectIds(), knownProjects, readRetainedRunProjects(dataDir))) dropped += runStore.removeProject(projectId)
-  dropped += runStore.prune(keepRunsFor)
-  dropped += runStore.sweepOrphans()
-  // Scratch dirs (Chat without a folder, MCP build workspaces) that no remaining run record points to.
-  dropped += sweepScratchDirs(dataDir, runStore.all())
-  sweepStaleSkillDirs()
-  if (dropped) console.log(`Housekeeping removed ${dropped} stale run(s) or record file(s).`)
+  repoClone = clones
+  // Team files: pending and problem states exist before the first focus; later checks run on window focus, at most once per 2 s.
+  const teamFiles = h.services.teamFiles
+  if (teamFiles) {
+    void teamFiles.checkAll().catch((e) => log.warn(`Team files boot check failed: ${e instanceof Error ? e.message : String(e)}`))
+    app.on('browser-window-focus', () => teamFiles.focused())
+  }
+  // `events` given: registerIpc leaves forwarding the bus to windows to the listener above.
+  registerIpc({ ...h.services, openRunWindow, events: h.events, dispatcher: h.dispatcher, cliShim, repoClone: clones })
   installAppMenu(
     menuActionSender(() => BrowserWindow.getFocusedWindow(), liveWindowScopes, () => createWindow())
   )
-  createWindow()
-
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
-  })
+  // A terminal host opens no window; the first plain launch (second-instance) or a Dock click (activate) does.
+  if (!hostArgs.headless) {
+    createWindow()
+    if (hostArgs.run) openRunById(hostArgs.run)
+  }
+  booted = true
+  // cli-spec 7(3): point an existing orgai command shim at this install when it runs an older form of this launcher or
+  // a launcher that is gone (an app move or update); a newer or other-install shim stays. Every launch
+  // kind, headless included; never blocks boot, never creates a shim, never touches a foreign file.
+  if (app.isPackaged && !process.env.ORGAI_DATA_DIR) {
+    void cliShim
+      .refreshOnLaunch()
+      .then((outcome) => log.info(`orgai command shim at launch: ${outcome}`))
+      .catch((e: unknown) => log.warn(`orgai command shim refresh failed: ${e instanceof Error ? e.message : String(e)}`))
+  }
 })
+
+/**
+ * Bind or close the host's listener (and write or remove daemon.secret) to match Terminal access (review M11). Calls
+ * are serialized by the ownership handle. False when the listener could not be put in that state (logged).
+ */
+async function syncTerminalListener(owned: HostOwnership, on: boolean): Promise<boolean> {
+  const was = owned.listening
+  try {
+    await owned.setListening(on)
+    if (owned.listening !== was) log.info(on ? 'Terminal access is on: listening for terminal clients.' : 'Terminal access is off: stopped listening for terminal clients.')
+    return true
+  } catch (e) {
+    log.warn(`Terminal access: could not ${on ? 'start' : 'stop'} listening for terminal clients: ${e instanceof Error ? e.message : String(e)}`)
+    return false
+  }
+}
+
+/**
+ * The orgai command shim service (cli-spec 7(3)). Installing it never turns Terminal access on by itself (review H2):
+ * the App settings row asks the user to turn it on after an install.
+ */
+function buildCliShim(h: OrgAIHost): CliShimService {
+  const shellPath = shellPathResult?.shellPath ?? []
+  return createCliShimService({
+    platform: process.platform,
+    isPackaged: app.isPackaged,
+    dataDirOverride: !!dataOverride,
+    resourcesPath: process.resourcesPath,
+    userDataDir,
+    home: homedir(),
+    env: process.env,
+    // POSIX: the login shell's own PATH, '' (unknown) when it printed none; process.env.PATH holds OrgAI's merged
+    // additions (~/.local/bin among them), so it would always answer yes. Windows: the inherited user Path.
+    ...(process.platform === 'win32' ? {} : { loginPath: shellPath.join(':') }),
+    onInstalled: () => {
+      if (!h.terminalAccess().enabled) log.info('Installed the orgai command; Terminal access stays off until the user turns it on.')
+    }
+  })
+}
+
+// Give up <dataDir>/run ownership on the way out; the exit hook covers app.exit and paths that skip will-quit.
+// release() is synchronous and idempotent.
+app.on('will-quit', () => {
+  server?.close()
+  ownership?.release()
+})
+process.on('exit', () => ownership?.release())
 
 /** Longest a quit waits for live runs to record their end (RunManager.stopAll) before it goes ahead anyway. */
 const QUIT_STOP_DEADLINE_MS = 3000
 // Live runs are cut by the app, not the user (RunSummary.endedBy 'app'): the first quit is held until stopAll has
 // written them, or the deadline passes (then markQuit writes them synchronously). A re-entrant quit while stopAll is
 // pending is held too and never calls stopAll again; one after the deadline is forced through. See quitGate.ts.
-app.on(
-  'before-quit',
-  quitGate({
-    liveCount: () => runManager?.liveRunCount() ?? 0,
-    stopAll: () => runManager?.stopAll({ reason: 'quit' }) ?? Promise.resolve(),
-    markQuit: () => runManager?.markQuit(),
-    deadlineMs: QUIT_STOP_DEADLINE_MS,
-    quit: () => app.quit(),
-    warn: (m) => console.warn(m)
-  })
-)
+const gate = quitGate({
+  liveCount: () => host?.runs.liveRunCount() ?? 0,
+  stopAll: () => host?.runs.stopAll({ reason: 'quit' }) ?? Promise.resolve(),
+  markQuit: () => host?.runs.markQuit(),
+  deadlineMs: QUIT_STOP_DEADLINE_MS,
+  quit: () => app.quit(),
+  warn: (m) => console.warn(m)
+})
+// One before-quit handler, so the order is fixed: the terminal-clients prompt first (a cancelled or kept quit never
+// reaches the gate, never marks the app quitting and never disposes the host), then the gate, then dispose.
+app.on('before-quit', (event) => {
+  const terminalClients = server?.attachedClientCount() ?? 0
+  if (quitPromptNeeded({ terminalClients, drainQuit, alreadyAnswered: quitAnswered || quitting })) {
+    event.preventDefault()
+    if (!quitPromptOpen) void askQuit(terminalClients)
+    return
+  }
+  quitting = true
+  repoClone?.dispose()
+  // A macOS certificate read still running is killed once the quit goes ahead (a kept quit leaves it alone).
+  stopSystemCertRead()
+  gate(event)
+  host?.dispose()
+})
 
+/**
+ * An explicit quit while terminal clients are attached (cli-spec 3.2(1)). The spec's "N terminal run(s)" is counted as
+ * attached terminal clients: no run is marked as started from the terminal yet.
+ */
+async function askQuit(terminalClients: number): Promise<void> {
+  quitPromptOpen = true
+  let response = 2
+  try {
+    const opts = {
+      type: 'question' as const,
+      buttons: quitPromptButtons(terminalClients),
+      defaultId: 0,
+      cancelId: 2,
+      message: 'Terminals are still connected to OrgAI.',
+      detail: 'OrgAI can keep running in the background for them, or stop every run and quit.'
+    }
+    const parent = BrowserWindow.getFocusedWindow()
+    response = (parent ? await dialog.showMessageBox(parent, opts) : await dialog.showMessageBox(opts)).response
+  } catch (e) {
+    log.warn(`The quit prompt failed: ${e instanceof Error ? e.message : String(e)}`)
+  } finally {
+    quitPromptOpen = false
+  }
+  if (response === 0) {
+    for (const win of BrowserWindow.getAllWindows()) if (!win.isDestroyed()) win.close()
+    goBackground()
+  } else if (response === 1) {
+    quitAnswered = true
+    app.quit()
+  } else if (reopenAfterCancel({ platform: process.platform, liveWindows: liveWindowScopes().length, quitting })) {
+    // Cancel after the last window closed (Windows, Linux): never leave OrgAI running with nothing on screen.
+    createWindow()
+  }
+}
+
+/**
+ * The last window closed on Windows or Linux while runs are working without the user (review H3): ask before going
+ * to the background. Cancel (or Esc) brings a window back.
+ */
+async function askClose(workingRuns: number): Promise<void> {
+  if (closePromptOpen) return
+  closePromptOpen = true
+  let choice: ClosePromptChoice = 'cancel'
+  try {
+    const { message, detail } = closePromptText(workingRuns)
+    const { response } = await dialog.showMessageBox({
+      type: 'question',
+      buttons: [...CLOSE_PROMPT_BUTTONS],
+      defaultId: 0,
+      cancelId: CLOSE_PROMPT_CANCEL_ID,
+      noLink: true,
+      title: 'OrgAI',
+      message,
+      detail
+    })
+    choice = closePromptChoice(response)
+  } catch (e) {
+    log.warn(`The close prompt failed: ${e instanceof Error ? e.message : String(e)}`)
+  } finally {
+    closePromptOpen = false
+  }
+  // A quit started meanwhile, or a window came back (a second launch): nothing left to decide.
+  if (quitting || liveWindowScopes().length > 0) return
+  if (choice === 'background') {
+    log.info('The user chose to keep OrgAI working in the background after closing its last window.')
+    goBackground()
+  } else if (choice === 'quit') {
+    quitAnswered = true
+    app.quit()
+  } else {
+    createWindow()
+  }
+}
+
+// The last window closed (review H3): a --headless-host launch goes back to the background while no run is working,
+// macOS stays (Dock), and Windows / Linux quit through quitGate, asking first only while runs are working without the
+// user. That ask covers a --headless-host launch too (an `orgai` command started it and the user later opened its
+// window from the Start menu): working runs never go to the background unasked.
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit()
+  const workingRuns = host ? host.runs.workingRunCount() : 0
+  const action = windowAllClosedAction({ platform: process.platform, launchedHeadless: hostArgs.headless, quitting, workingRuns })
+  if (action === 'quit') app.quit()
+  else if (action === 'background') goBackground()
+  else if (action === 'ask') void askClose(workingRuns)
 })

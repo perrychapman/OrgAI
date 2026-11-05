@@ -24,8 +24,8 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   `RUN_MESSAGE_RECEIVE_TIMEOUT_MS` (30 s): on timeout both runs get a warning, the chain moves on and a direct sender
   gets refusal `timeout`. Caps: 40 per sender per target, 100 inbound per run. A direct `RuntimeSession.receive()`
   call is ungated, so always deliver through RunManager.
-- Windows run with `sandbox: false` because the preload is ESM (`index.mjs`) and Electron cannot sandbox an ESM
-  preload. The fix is building the preload as CommonJS and enabling the sandbox. Navigation guards
+- Windows run with `sandbox: true`: the preload is CommonJS (`out/preload/index.cjs`, cli-spec Wave 6) and may require
+  only 'electron' (shared code is bundled in). Navigation guards
   (`shouldBlockNavigation` in `windowScope.ts`) cover will-navigate, will-redirect and will-frame-navigate and fail closed.
 - Application menu (`src/main/appMenu.ts`, all platforms; the window menu bar is always shown, `autoHideMenuBar: false`):
   File, Edit, View, Run, Window, Help (plus an app menu first on macOS, where App settings lives as "Settings…"). Contract:
@@ -626,6 +626,173 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
 
 - Repository clone (`src/main/repoClone.ts`, ARCHITECTURE.md "Start a project from a repository"; renderer: "From GitHub" under Renderer): `window.orgai.repos.parseSource / tools / clone / cancelClone`, `onRepoCloneProgress`. Mock (`ORGAI_MOCK=1`, local git only, no gh): `mock-org/with-agents` (.claude/agents, .claude/settings.json, .mcp.json, AGENTS.md), `mock-org/slow` (about 20 s, for cancel), `mock-org/missing`, `mock-org/private`, `mock-org/unreachable`, `mock-org/no-fork`, `mock-org/fork-clone-fails`, `mock-org/fork-exists`, `mock-org/fork-slow`, `mock-user/<anything>` (own repository on fork); env `ORGAI_MOCK_GH=missing|logged-out`, `ORGAI_MOCK_GIT=missing`. `gh auth status` reaches api.github.com (checked on gh 2.93.0 through a dead proxy: `state: 'error'`, login kept) and `--json hosts` always exits 0 (`{"hosts":{}}` when logged out, checked with an empty GH_CONFIG_DIR). Checked by unit tests, mock tests with real local git, and on Windows real git against 127.0.0.1 (closed port maps to "Could not reach"; cancel closes the helper's socket, so the taskkill tree kill works). Unverified: a real gh fork and gh's HTTP error wording, a real private clone, a real clone into a pre-created folder over a remote, POSIX process-group kill, macOS and Linux. Repository config is gated by folder config trust (next item); its review UI is not built yet, so a gated project cannot be accepted from the app.
 - Folder config trust (`src/main/runtime/folderConfigTrust.ts`, types.ts section "Folder config trust", ARCHITECTURE.md "Folder config trust"; no renderer yet): `Project.folderConfigTrust` is main-written. projects:create sets `{ state: 'untrusted' }` on a code project whose folder holds anything from REPO_CONFIG_PATHS (a network path too); `saveFromRenderer` keeps the stored value and re-judges only when the path changes; junk fails closed. Absent = 'none': projects stored before this, and folders with no such config at creation, are NOT gated, and a config added to them later is not noticed. Engagements never get the field (they never load folder config). IPC `projects:folderConfig` (`FolderConfigReview`: `state`, `digest`, `files`, `commands`, `env`, `allowRules`, `mcpServers`, `otherSettings`, `truncated`, `unreviewable`) and `projects:setFolderConfigTrust` (`FolderConfigTrustInput { projectId, trust, digest }`, both directions refuse a missing or stale digest, accept refuses `unreviewable`), preload `window.orgai.folderConfig.review / setTrust`. Runs: `RuntimeContext.folderConfigLoads()` is RunManager's sticky latch (false for 'untrusted' / 'changed'; one warn per run; an edit mid-run flips it with a second warn; accepting mid-run does not), it re-hashes, so read it only when building a query. Off: Claude `settingSources: []`, Codex `projects={ "<path>" = { trust_level = "untrusted" } }` plus `project_doc_max_bytes=0`, imported rules left out of `allowedRules` / `savedRules`. Codex engagements and trust-restricted runs get that pin too; an accepted project is pinned "trusted". Digest: everything under 'runs-commands' and 'tools' paths (names, kinds, bytes, link targets, exec bit off Windows); regular instruction files and `.orgai/org.json` add nothing because setup and agents rewrite them, so they can change while trusted. Saved rules of a project with the field live in the data folder in every state (`projectRulesLocation`), so OrgAI never writes `settings.local.json` there; accept copies its readable rules across (`importedRules`), revoke removes them. `listRules` drops what `readableRule` refuses on EVERY project, legacy too (`allowRuleRefusal`: `isUnsafeAllowRule` alone passes `Bash(python:*)`), so a legacy project's old `Bash(npm:*)` or `Bash(python:*)` asks again and stays in the file; the rules panel cannot show it. Mock: `[mock:folder-config]` says "Folder config loaded." or "Folder config ignored.", then Bash `npm test` asks unless a loaded `.claude/settings.json` rule covers it; the clone fixture `mock-org/with-agents` drives it. Checked: unit tests with fake `query()` and a fake Codex server, the mock under the real RunManager (`folderConfigMock.test.ts`), and `scripts/probe-codex-trust.mjs` (token-free, real codex 0.166.0, Windows; starts no turn): the dotted `-c projects."<p>".trust_level=` form is ignored, the whole-table form works (with dots in the path, over a stale trusted entry in CODEX_HOME, for a worktree thread, in a subfolder), an unset cwd under danger-full-access writes trust to CODEX_HOME and loads the repo's model and mcp_servers, workspace-write on Windows does not, and project hooks list as `untrusted` even in a trusted folder so they did not run there. Source-read at rust-v0.166.0 only: workspace-write writing trust elsewhere, AGENTS.md skipped on explicit untrusted. UNVERIFIED live: that `settingSources: []` stops project hooks, env, CLAUDE.md, agents and skills, and whether settings `env` beats `options.env` (`scripts/smoke-folder-trust.mjs`, spends tokens, needs consent, never run); whether a running CLI hot-reloads settings.json mid-run; macOS and Linux.
+- PR #18 merged with dev: see ARCHITECTURE.md Risks "Merge of PR #18 with dev" (team files, folder config trust and permissions:ignored are host-layer channels; `projects:create` rebuilds `teamFiles` and never imports `.orgai` agents through `importAgents` on any surface; `<data>/settings.json` is a control-protected path; shared view-models for the renderer live in `src/shared/view/` with one-line stubs in `renderer/src/lib/`, pinned by `reexports.test.ts`).
+- CLI & host (docs/design/cli-spec.md; Waves 0-5 landed: the socket server, `--headless-host` / `--host inproc` hosts, the
+  self-control gate, the read-only `orgai` CLI, headless exec, the terminal UI and the management commands; see the
+  spec's "Implementation status" for deviations and what is unverified):
+  - Wave 5: `init`, `projects`, `org`, `team`, `worktrees`, `permissions`, `connections`, `models`, `usage`, `notes`,
+    `mcp`, `skills`, `knowledge`, `kit` in `src/cli/commands/` over `src/cli/manage.ts` (`confirm` asks on /dev/tty
+    whenever stdin is a terminal, else exit 2 without --yes). Contracts: `McpAuthorizeInput.openBrowser` /
+    `announceUrl` with the `connections:event` 'mcp.authorize' variant (the browser is opened first; a failed open is
+    logged and the flow keeps waiting), `EngagementNoteSaveInput.expectedUpdatedAt` (`stale_revision`). Exit rules
+    beyond the spec: kit import is 1 when any item is refused; init is 1 when /stop ends the Architect before
+    complete_setup; `mcp overrides` merges onto the stored map and a dropped name is 1. worktrees calls wait 10 min
+    (the repo lock alone may take 60 s); `usage csv` to a terminal is sanitized. Org import / template replace never promise
+    Desktop Undo (they say it cannot be undone; --json carries `previousRoles`); the TUI's `stopOnQuit` exits 130 only
+    when the run ended or runs:stop succeeded, else 1 ("Could not stop ... The run keeps going."). Unit, inproc integration and e2e
+    (`cli-projects`, `cli-org`, `cli-connections`, `cli-mcp`, `cli-skills-kit`) on macOS; SSH forward, device-code login
+    against a real server and the Windows / Linux URL openers are unverified.
+  - Wave 4: the Ink TUI in `src/cli/tui/` (ink 8.0.0, loaded only through `await import('../tui/index')`, the
+    `out/cli/tui.mjs` chunk; lazyTui.test.ts): `orgai tui [--run]`, `attach`, bare `orgai` / `orgai [--] <prompt>`,
+    `resume` without --exec. `terminal.ts` owns raw mode, paste, cursor and the alternate screen (mode chosen once;
+    TERM=dumb is inline) and holds SIGINT / SIGTSTP / SIGCONT while the pager owns the terminal (`suspendForChild`);
+    `session.ts` `TuiConnection` owns the one shared client and every reconnect replacement (streams `keepClient: () =>
+    true`), 'configure' only on a separate per-call connection for createProject. `DecisionTray` sends the exact 5.3
+    payloads (revise `feedback`, rules deny `message`) with a 750 ms swap guard; `pager.ts` spawns the absolute path,
+    shell-free; while the pager or a stop owns the terminal the App drops notifications, renders the last shown state,
+    defers resizes to resume and Ink's stdout is wrapped in `terminal.ts` `gateWrites`. `orgai [--] <prompt>` aims the
+    composer at a new run first (`App.tsx` `startLaunchRun`; never a runs:send to a focused live run, `--team` kept).
+    Unit tests (ink-testing-library) and e2e `cli-tui.mjs` through a python3 pty on macOS (SKIP on win32);
+    Merge Review, the real pager and CSI-u Ctrl+. on real terminals are not driven.
+  - Wave 6 (packaged CLI; spec "Implementation status, Wave 6"): `build/bin/orgai` / `orgai.cmd` in `<Resources>/bin` run
+    the OrgAI binary with ELECTRON_RUN_AS_NODE=1 on `app.asar.unpacked/out/cli/orgai.mjs`, so the RunAsNode fuse stays
+    on (accepted deviation from spec 7(2), recorded with its risk); `host/packagedLayout.ts` (layout, shim render /
+    parse) and `host/shimInstaller.ts` (PATH shim, never over a foreign file or symlink; launch refresh only for an
+    older-format shim of this install or a vanished launcher); Linux AppImage cannot install the shim;
+    `npm run pack:verify` (`scripts/verify-pack.mjs`, CI pack job) checks a local unpacked pack token-free: files,
+    unpacked imports, `--version`, doctor, a mock exec on `--host inproc` and through the spawned background app
+    (passes on macOS arm64 only). Desktop-only IPC `app:cliShimStatus` / `installCliShim` / `uninstallCliShim`
+    (`CliShimStatus` / `CliShimResult`, never reject, refused over the socket); App settings > General > Advanced >
+    Terminal `CliShimRow` (`cli-shim-row`, `-status[data-state]` (a live region), `-path-hint` (named by the buttons'
+    aria-describedby), `-notice`; `lib/cliShim.ts`); an install never turns Terminal access on by itself (review H2):
+    while it is off the row asks (`cli-shim-terminal-confirm`). The Terminal access text names the same-user trust
+    model and `terminal-access-level` picks `AppSettings.terminalAccessLevel` (`lib/terminalAccess.ts`).
+    `orgai doctor` adds install and shim checks. Unit-tested (packagedLayout, shimInstaller, cliShim, doctor,
+    launcher, packaging.test.ts keeps `asarUnpack` in step with `CLI_RUNTIME_PACKAGES`); unverified: Windows
+    (orgai.cmd, its argument passing, the shim), Linux, signed / notarized and x64 macOS builds, the row by eye.
+  - Wave 3: adapters call `ctx.onRootTurnEnded` on every root turn end before 'idle' and expose `settlement()`;
+    `ContinuationDriver.isSettledForTurn(gen)`; RunManager `trySettleExecRun` (pure `execSettle.ts`), stall watchdog,
+    idempotent `finalizeExecRun` -> one `run.finalized` with `RunSummary.execOutcome`, chain budget (an override `maxBudgetUsd` 0
+    is real; a stored project cap <= 0 is no cap, `projectBudgetUsd`), headless decision policy (`decisionPolicy.ts`), `expectedRevision` / `DecisionOutcome` on every decision
+    method, tombstones (`decisionIndex.ts`, socket-only `runs:findDecision`). Widening overrides need 'configure'
+    (`allowWidening`, never persisted; only the timer-driven waitForReset resume keeps it, and an operate-only
+    `resume --exec` drops carried allowPeerMessages / allowUnpricedBudget). `runs:stop` ends a paused run (an exec
+    one in flight finalizes 'interrupted'); a waitForReset run that can no longer resume finalizes 'rate-limited', and one
+    continued as a desktop run finalizes 'interrupted' first; a Claude report's hand-back (until the next root init or
+    `REPORT_HANDBACK_GRACE_MS`) keeps the session unsettled; policy merge holds never count as denials; exec timer
+    overrides are capped at `MAX_TIMER_DELAY_MS` (2^31 - 1 ms). CLI `orgai exec` / `-p`,
+    `resume --exec`, `decide`, `runs send / interrupt / stop`; exec followers subscribe `nonInteractive` so they never
+    hold `humanGraceMs`. Mock markers `[mock:exec-plan|exec-blocked|exec-question|turn-fail|rate-limit|exec-slow]`.
+    Unit tests with fake adapters / query() / app-server and e2e `cli-exec.mjs` (macOS); nothing live.
+  - Wave 2: `src/main/host/socketServer.ts` serves every host's socket; `AppSettings.terminalServer` ("Terminal access")
+    gates host.hello and closes authenticated sockets when turned off; a headless / inproc boot opens it for that
+    session only (never saved) while `terminalServerChosen` (main-owned, set by a settings:set that changes it) is
+    unset. host.hello grants at most what `AppSettings.terminalAccessLevel` allows ('operate' default: read + operate;
+    'full' adds decide + configure; raised only in the desktop window); on an inproc host only the CLI process that
+    started it gets every scope (`ownerProof`, an in-memory key). A `--headless-host` launch
+    stays in the background after its last window closes and leaves through its idle exit, unless runs are working:
+    then it asks like a desktop launch (Windows / Linux) or stays (macOS). `runtime/selfControlGate.ts`
+    (before every rule and mode in claude.ts, codex.ts, mock.ts) denies the orgai CLI (file names, this install's
+    `out/cli` / `src/cli` via `setOrgaiCliRoots`, ELECTRON_RUN_AS_NODE assignments) and reads, searches or shell words
+    reaching `<data>/run`, `<data>/secrets.json`, `<data>/codex` (home variables and globs followed; Grep rooted at or
+    above them denied, unless every Grep filter given (`glob` and `type` both, a `glob` with no whitespace and no comma
+    outside braces) or the Glob pattern only matches source / document extensions).
+    A shell command the gate cannot read to the end (over 256 KB, 20,000 words, 40,000 parts or 2,000 segments, shells
+    or quoting nested past three levels), an internal gate error, or a run whose protected paths are unavailable is
+    denied (`SELF_CONTROL_UNCHECKED_MESSAGE`), never handed to bypassPermissions. Data-only Bash here-documents are
+    left out of the scan (`stripDataHeredocs`; never next to an option, or its GNU / git prefix, that reads file names
+    from stdin or runs a program, and never for sort, whose `--compress-program` runs it), a pipe into an interpreter running a script file is data, and test
+    runners over this install's own `src/cli` test files are allowed (PR #18 review M2 / M3; cli-spec Wave 2 notes). Program and script words are read after brace expansion, backslash escapes and globs (`<Resources>/bin/orga?`),
+    and pipes / here-strings into a shell and `$(...)` bodies are scanned (Wave 6 review; limits in the file header). The CLI is `src/cli/` (bundled `out/cli/orgai.mjs`, `npm run cli`); its help and completions
+    read `commandTable.ts`; host text goes through `sanitizeTty`. The launcher hears the spawned app's 'error' and
+    non-zero exit (waitForReady rejects) and filters by `hostKinds`; `orgai app` refuses (exit 6) while a `--host
+    inproc` host owns the folder, and `daemon start` never spawns over a live host that refused or did not answer.
+    Unit, integration (real inproc host) and e2e (`cli-host.mjs`, `cli-readonly.mjs`) on macOS only.
+  - Wave 1 (`src/main/host/`, Electron-free): `bootstrap.ts` `bootOrgAIHost` builds every store and service and runs
+    housekeeping; `index.ts` is the Electron shell over it (windows, menu, notifications, quit gate). `dispatcher.ts`
+    `HostDispatcher` owns every request handler (`invoke` desktop path; `invokeRpc` wire path: `registry.ts`
+    `gateRequest` -> `unknown_channel` / `scope_denied` / `bad_request`, mutations refused `host_draining` while
+    draining, an `inFlightRpcMutations` lease each, `host.status` / `host.stop` served here, `host.stop` holds no lease
+    and a second stop joins the drain); `ipc.ts` is a thin adapter (one handle per dispatcher channel plus the 18
+    `DESKTOP_ONLY_CHANNELS`; arg builders moved to `host/args.ts`, re-exported, deep validators added for the decision
+    and run-message channels). `HOST_CHANNEL_REGISTRY` maps every channel (registry.test.ts: dispatcher channels equal
+    the socket-invokable set); `params.ts` is shallow. `events.ts` `HostEventBus` carries the 8 socket-subscribable
+    pushes (the shell forwards them to windows; `app:focusRun` / `menu:action` / `projects:cloneProgress` stay window-only). `activity.ts`
+    `HostActivityTracker`: `ACTIVITY_LEASE_KINDS` leases and polled sources (RunManager `activeResumeTimerCount` /
+    `inFlightResumeCount`, MCP / connection OAuth flows, Team assistant and skill evaluation in-flight counts, repo
+    locks), idle exit (`ORGAI_DAEMON_IDLE_MINUTES`, default 30, 0 = never) never armed on the desktop host; one shared
+    drain: 'draining' at once, quiesce (CapabilityService.dispose), forced: RunManager.stopAll quit within 3 s else
+    `markQuit`, then up to 10 s for writers, then `ownership.release()`. Unit-tested only (registry, params, args,
+    dispatcher, activity, events, bootstrap, ipcAdapter, runManagerActivity, a booted mock host over `invokeRpc`).
+    Open: desktop `invoke` ignores draining; a forced drain past 10 s releases with writers in flight (logged).
+  - Repository lock: `worktrees.ts` `withRepoLock` (delegating to `runtime/repoLock.ts`) serializes ALL git operations
+    per repository, keyed by the common git dir, across processes through `<commonDir>/orgai-repo.lock` (owner.json with
+    pid, start time and host instance id, 2 s heartbeat, 60 s `RepoLockTimeoutError`, dead or leftover owners reclaimed
+    with a read-only index.lock / MERGE_HEAD notice, carried on the lease as `repoLockRecovery()`), reentrant per async
+    call chain (`RepoLockLease.released` stops detached work from reusing an ended scope) and never held across a merge
+    review. A worktree and the main checkout of one repo now queue behind each other; different repos do not. The
+    info/exclude line follows `git rev-parse --git-path info/exclude`, so linked worktrees and `.git`-file checkouts
+    write the common dir's file. Unfinished git state (spec 3.2 (5) 4): under the lock, integrateWorktree (target and
+    worktree), commitLeftovers and discardWorktree (the worktree) first look for index.lock, MERGE_HEAD,
+    CHERRY_PICK_HEAD, REVERT_HEAD, rebase-merge / rebase-apply in the checkout's git dir; if any is there they run no git
+    command (no merge --abort, worktree remove, branch -D, add or reset): integrate answers 'conflict' with a message
+    naming the files (and the reclaimed lock), commitLeftovers an error, discardWorktree throws `UnfinishedGitStateError`
+    (maintenance answers ok: false). A git-layer throw settles the worktree 'conflict', never stuck 'merging'.
+    Unit-tested with real git repos (repoLock.test.ts, worktrees.test.ts, incl. the contended 2-actor test) on macOS only.
+  - Host ownership (`src/main/host/ownership.ts` `acquireHostOwnership`, pure Node): index.ts calls
+    `app.requestSingleInstanceLock()` after the userData override, then takes `<data>/run/` before any store is built
+    (RunStore's constructor rewrites live runs): `startup.mkdir` mutex (a live holder is never robbed; a dead one is
+    reclaimed by rename to `.stale-<uuid>`), `daemon.json` (`DaemonInfo`, tmp + rename, starting -> ready -> draining,
+    rewritten only by its own hostInstanceId), `daemon.secret` (0600, for the later handshake) and a per-instance
+    listener `d-<hostInstanceId>.sock` (runtime-dir fallback past 100 bytes; it accepts and drops connections until the
+    host server lands). A confirmed live pid in daemon.json is never robbed (HostAlreadyRunningError); a failure shows
+    a startup dialog and quits; released on will-quit and process exit. Liveness and start times: `host/processInfo.ts`
+    (darwin `ps -o lstart=` under LC_ALL=C TZ=UTC; `processLiveness` 'same' / 'unconfirmed' / 'dead'; the async
+    cached form in ownership and the repo lock; win32 self start time from Node's time origin, compared within 10 s),
+    ids `host/identity.ts` (12 hex). Review fixes (Group A, unit-tested; Windows UNVERIFIED): an unconfirmed pid with a
+    dead endpoint (unless its daemon.json says `listening: false`: an Electron host with Terminal access off has no
+    listener, so it counts as running and only a 'dead' pid is reclaimed, except by an Electron launch, which holds the
+    single-instance lock and so reclaims an Electron incumbent's record, `singleInstanceLockHeld`; `--host inproc`
+    keeps the refusal), or an unconfirmed startup.mkdir owner past
+    60 s, is reclaimed; an unreadable daemon.json refuses
+    (`daemon_json_unreadable`) unless it names a dead pid; refusals name `<data>/run`; renames retry transient win32
+    EPERM / EBUSY / EACCES (`host/fsRetry.ts`); icacls is fatal only for headless / inproc and for setListening(true)
+    (`secretAcl`; a best-effort desktop acquire gets `secretAclWarning`, which the socket server reads at every hello
+    through `secretAclProblem` and refuses while set, never cached; the server runs no icacls of its own); system programs run by absolute path from the temp dir and git through
+    `host/systemBinaries.ts` `gitExecutable` (never a cwd); the repo lock also counts a fresh heartbeat as live; win32
+    shims write non-ASCII paths as `%LOCALAPPDATA%\...` (`batchPath`). Crash injection at every boundary
+    (`OWNERSHIP_BOUNDARIES` / `RELEASE_BOUNDARIES`) in ownership.test.ts.
+  - `log.ts` no longer imports electron (app hooks in `electronLogHooks.ts`); `host/noElectronImport.test.ts` imports log.ts,
+    the host modules, the stores, RunManager, the adapters and services with electron mocked to throw.
+  - Pure view-models moved to `src/shared/view/` (no renderer, DOM or React imports, `noRendererImports.test.ts`); the old
+    `src/renderer/src/lib/<name>.ts` paths are thin `export * from '@shared/view/<name>'` re-exports (reexports.test.ts),
+    so renderer imports are unchanged and new pure view logic the CLI also needs goes in `src/shared/view/`.
+  - Contracts in types.ts: `HOST_IPC`, host wire-protocol types, `RunOverrides`, `HeadlessDecisionPolicy`,
+    `DecisionOutcome`, `ExecOutcome`, `RunEndedBy` 'policy' / 'budget', `run.finalized`, bundle / CAS inputs. RunStore
+    keeps 'policy' / 'budget' and a finalized exec run's endedBy on read (runs.test.ts). Nothing emits them yet.
+  - `host/jsonCodec.ts`: safe reviver (`parseJsonSafe` drops `__proto__` / `constructor` / `prototype` keys) and a per-channel codec
+    (`CHANNEL_JSON_FIELDS`) that carries undefined / clearable optional fields over JSON; `jsonRoundTrip.test.ts` walks
+    every request and push channel. Not wired to any transport yet.
+  - MCP secret env clashes (`shared/mcpSecretClash.ts` `secretEnvClashes`): `codexProtocol.ts` refuses a later stdio
+    server whose secret env name another enabled server uses with a different value (a run summary line, no config
+    line); MCP Settings rows show `secretClashLine`. Unit-tested; the Codex side is not run live.
+  - Bundles and CAS: `SkillServiceApi.libraryAddFromBundle` / skills `readBundle` (host-validated relative paths,
+    caps, shell-injection refusal), kit export / import from a bundle with an optional `targetDigest` compare-and-set
+    (`kit/bundle.test.ts`); `knowledge:saveNode` takes `expectedUpdatedAt` (stale -> `stale_revision`) and
+    `appendFacts`, and with `nodeId` may omit kind and name (an append-only save that never reverts a rename).
+    Unit-tested only (serviceBundle.test.ts, knowledgeAppend.test.ts).
+  - PR #18 review fixes (2026-11-05, cli-spec "Review fixes, PR #18"; unit tests on macOS, e2e:free on macOS, nothing
+    run on Windows): window close asks before working runs go to the background (`RunManager.workingRunCount`; the
+    `liveRuns` source is `busyRunCount`, runs waiting on the user do not count); `NARROWS_FROM.default` drops
+    'dontAsk' (M1); stall watchdog ceiling `EXEC_STALL_BUSY_ROUNDS` (M4); a transient index.lock is re-checked before
+    a merge refusal (M5); `--prompt-file` for untrusted prompts (M12; the .cmd passes %* through cmd.exe);
+    `--from-env` secrets leave the environment before a host is spawned (M13); JSON output escapes C1 / bidi / U+2028
+    (M15); `trustSystemCertificates` after the single-instance lock and in `--host inproc` (M16); cli-exec.mjs drives
+    the win32 interrupt through `runs stop` (H4, unrun on Windows); dev's 7 channels in the registry and dev's
+    knowledge / transcriptRows bodies in `shared/view`, reexports.test compares export names (H5, H6).
+  - Unverified: Windows named pipes and their ACLs, Windows / Linux process start times, packaged builds, the startup
+    dialogs by eye.
+- Repository clone (`src/main/repoClone.ts`, ARCHITECTURE.md "Start a project from a repository"; no renderer yet): `window.orgai.repos.parseSource / tools / clone / cancelClone`, `onRepoCloneProgress`. The four request channels and the `projects:cloneProgress` push are `desktop_only` in the host registry (the IPC sender carries progress and cancel-on-close; served by ipc.ts `registerRepoIpc`, the service built in index.ts and passed as `IpcServices.repoClone`). Mock (`ORGAI_MOCK=1`, local git only, no gh): `mock-org/with-agents` (.claude/agents, .claude/settings.json, .mcp.json, AGENTS.md), `mock-org/slow` (about 20 s, for cancel), `mock-org/missing`, `mock-org/private`, `mock-org/unreachable`, `mock-org/no-fork`, `mock-org/fork-clone-fails`, `mock-org/fork-exists`, `mock-org/fork-slow`, `mock-user/<anything>` (own repository on fork); env `ORGAI_MOCK_GH=missing|logged-out`, `ORGAI_MOCK_GIT=missing`. `gh auth status` reaches api.github.com (checked on gh 2.93.0 through a dead proxy: `state: 'error'`, login kept) and `--json hosts` always exits 0 (`{"hosts":{}}` when logged out, checked with an empty GH_CONFIG_DIR). Checked by unit tests, mock tests with real local git, and on Windows real git against 127.0.0.1 (closed port maps to "Could not reach"; cancel closes the helper's socket, so the taskkill tree kill works). Unverified: a real gh fork and gh's HTTP error wording, a real private clone, a real clone into a pre-created folder over a remote, POSIX process-group kill, macOS and Linux. Before a UI ships this: repository config is listed, not gated, and a run on a cloned folder loads it (ARCHITECTURE.md Risks).
 
 ## Renderer
 
@@ -835,7 +1002,7 @@ and the frontend-design skill is not vendored in `.claude/skills` (only `run-des
     custom round trip (skipped when the mock catalog has no id outside the tiers). Unit tests: scrollWithin,
     settingsCopy, roleModels, assistantModels, settingsTarget, permissionCopy. Non-Anthropic connections are not
     driven. Open: N7, N9, N13 and the Lows in ARCHITECTURE.md Risks.
-- e2e:free is `e2e/layout.mjs`, `dashboard.mjs`, `runs.mjs`, `proposals.mjs`, `maintenance.mjs`, `connections.mjs`, `connectors.mjs`, `import.mjs`, `skills.mjs`, `usage.mjs`, `team.mjs`, `canvas.mjs`, `assistants.mjs`, `permissions.mjs`, `menu.mjs`, `engagement.mjs`, `engagement2.mjs`, `per-project.mjs`, `presets.mjs`, the three `knowledge*.mjs` and `clone-start.mjs` (package.json). Update selectors in the same change.
+- e2e:free is `e2e/layout.mjs`, `dashboard.mjs`, `runs.mjs`, `proposals.mjs`, `maintenance.mjs`, `connections.mjs`, `connectors.mjs`, `import.mjs`, `skills.mjs`, `usage.mjs`, `team.mjs`, `canvas.mjs`, `assistants.mjs`, `permissions.mjs`, `menu.mjs`, `engagement.mjs`, `engagement2.mjs`, `per-project.mjs`, `presets.mjs`, the three `knowledge*.mjs`, `clone-start.mjs`, `team-files.mjs`, `folder-trust.mjs` and the PR 18 `cli-*.mjs` scripts: `cli-host`, `cli-readonly`, `cli-exec`, `cli-tui`, `cli-projects`, `cli-org`, `cli-connections`, `cli-mcp`, `cli-skills-kit` (package.json). Update selectors in the same change.
 - Engagement phases 2-3, renderer (2026-11-04; `docs/design/engagement-2.md` "Implementation notes"): Team tab
   Templates menu (`team-templates`, save / apply dialogs, `template-notice` with Undo through `undoImport` and
   `ImportNotice.source: 'template'`), New project "Start from a template" (`setup-choice-template`,
@@ -903,8 +1070,9 @@ and the frontend-design skill is not vendored in `.claude/skills` (only `run-des
   notes, kit and template lines. `ConfirmDialog` / `useConfirm` take `confirmTestId`. e2e (in e2e:free; mock
   `[mock:knowledge]`, both sizes and themes, keyboard pass): `e2e/knowledge.mjs`, `e2e/knowledge-graph.mjs`,
   `e2e/knowledge-run.mjs`; engagement2.mjs drives the note dialog from the tab. Reviewer (two passes): no Critical or
-  High after fixes. Post-landing walk: `docs/design/ux-review-knowledge-2.md`. Open: `knowledge:saveNode` has no
-  `expectedUpdatedAt` (an agent's fact appended between the tab's fetch and the user's save is dropped), run-scoped
+  High after fixes. Post-landing walk: `docs/design/ux-review-knowledge-2.md`. Open: main's `knowledge:saveNode`
+  now takes `expectedUpdatedAt` / `appendFacts` (cli-spec Wave 0) but the tab sends neither, so an agent's fact
+  appended between the tab's fetch and the user's save is still dropped, run-scoped
   windows (Open link and RunMeta button do nothing visible there), no application-menu item, "Checked by you" and
   "Retire all agent items from R3" not built, the Lows in knowledge.md section 13.
 - Knowledge graph 2 (2026-11-05, spec `docs/design/knowledge-graph-2.md`, replaces knowledge.md section 5): Graph view is `components/knowledge/KnowledgeNeural.tsx` (DOM, keyboard, card), `neuralEngine.ts` (two canvases, one rAF loop, hit grid, pulses), `neuralColors.ts`, `NeuralCard`, `NeuralLegend`, pure `lib/knowledgeNeural.ts` (seeded force layout in slices, `neuralRadius`, `lodFor` tiers at 300 / 800 nodes, `pickLabels`, `spatialTarget`, `cardPlacement`, `spokenName`). No React Flow, and it reads none of App settings > Canvas; `lib/canvas.ts` is used only for `useReducedMotion`. `--neural-*` tokens in every theme block. Whole graph always, positions survive updates (localStorage `orgai.knowledgeLayout.<pid>`, ids and coordinates only), filter and selection never move anything, a click opens the panel with focus staying on the node, a panel or band change moves nothing (`offsetView`), a window resize refits until the user pans or zooms (`data-user-view`; then `viewAfterWindowResize` scales a shrink so the same part stays on the stage; Fit hands the view back). Fit above 300 nodes aims at the dense core (`coreBox`, middle 95% per axis), gravity grows above 400 nodes (`gravityFor`, at most 0.2), and `screenRadius` keeps hubs at 12 px and leaves about 3 px at low zoom and slows growth above zoom 1. A filter or search names its lit items first (`LABELS_LIT` 40, 60 from zoom 1.6; below, above, right or left; dimmed nodes never block a name; `data-named-lit`). One Tab stop: `knowledge-neural-nodes` listbox of `knowledge-node[data-id][data-kind][data-color][data-mark][data-radius][data-total][data-x][data-y][data-active][data-dim]` options with a roving tabindex (all up to 300 drawn nodes, above that focused, selected, active, their neighbours and the 50 largest); root `knowledge-neural[data-drawn][data-edges][data-lit][data-lod][data-settled][data-animating][data-frames][data-fired][data-fired-ids][data-inferred][data-zoom]` is what e2e reads. `lib/knowledge.ts` `kindColor(kind)` no longer takes kinds in use (a new kind never recolours another; free-form kinds hash) and `kindMark(kind)` (solid, ring, ring-dot) is the shape half of the key, drawn through `KindMark`. Band: `knowledge-filters[data-layout=band]` in Graph view, `knowledge-filters-more` under 720 px, `knowledge-inferred-links` (`orgai.knowledgeInferred.<pid>`). Possible connections: `KnowledgePossible` (`knowledge-possible-*`), pure `lib/knowledgePossible.ts`; Confirm is an ordinary `saveEdge`, Dismiss `dismissLink`, `knowledge-possible-partial` when `KnowledgeInferredResult.partial` is set. Run: side tab `side-tab-knowledge` on work runs of engagements (`components/knowledge/RunKnowledge.tsx`, `run-knowledge-*`, pure `lib/runKnowledge.ts`), store `knowledgeRecalledByRun` (ids and time only, 500 events per run, not persisted, so after a relaunch the transcript's lines stand in) and `runKnowledgeByChain`; `knowledge-read-row` folds `knowledge_recall` calls into the harness row; `usage-knowledge`; `knowledge-auto-context` in `ContextNotesSection`. In a run-scoped window the tab works and `run-knowledge-window-note` replaces the deep link. How checked: unit tests; e2e (mock, 1024x640 and 1600x1000, both themes): `knowledge-graph.mjs` (hover card, click moves nothing, size order, colour per kind, filter dims, retired, inferred switch, recall fires, reduced motion, hidden tab and List view stop the loop by frame count, keyboard), `knowledge.mjs` (band, confirm, blank word, dismiss), `knowledge-run.mjs`; screenshots looked at by eye. Measured at 2,000 nodes and 5,000 edges on Windows at 1600x1000 after the walk-4 fixes, hub and random graphs, spec section 8: settle 1.3-1.4 s, frame JS p95 15 / max 32 ms while settling, p95 at most 3.0 / max 5.5 ms while interacting, no long task; GPU raster not measured. Fixes after walk 4 (`ux-review-knowledge-4.md`): transcript `recallOutputText` and repeats folded into one row (`KnowledgeCollapse.repeats`, `readRowText`), `POSSIBLE_WORD_PLACEHOLDER` "How they relate" (the old "works at" was a placeholder, never a value), round inferred dots and brighter tokens, light-theme nucleus and larger halo, `remapByEdge` keeps pulses across a new model, `lib/knowledgePrefs.ts` `clearKnowledgePrefs` (from `removeProject`), origin chips count nodes only in Graph view, focus lands on Add a note when the last node leaves and on Back when an open run-detail item vanishes, `RunKnowledge` reads focus during render instead of listening (reviewer N1 did not reproduce on the old code; e2e re-recalls while a row has focus, passes on both). Unverified: drift, ambient pulses and activation spread by eye or test, window blur, a real hidden window (faked `visibilityState`), macOS, Linux, DPR above 1, System theme, forced colours, a screen reader, `partial` with main's real field, an agent retiring the focused node, inferred dots at 2,000 nodes, a UX walk on the fixes. Open Lows: `revealKnowledgeTab` clicks the rail's DOM button (a choice gets saved), names in `KnowledgePossible` and `RunKnowledge` are not stripped of hidden characters (main refuses them on write), `-` `0` `+` always act as commands so type-ahead cannot match "Q-3", 2,000 nodes at 1024x640 is a dense ball (zoom 0.16, the stage's height limits it), walk-4 L1, L2, L4.
@@ -1401,7 +1569,7 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
     only: no sign-in was attempted, so DCR plus loopback acceptance is still unverified everywhere.
 - macOS is untested; nobody has run it on a Mac yet (`docs/macos-testing.md` is the checklist).
   - App icon: `npm run icon` (`scripts/make-icon.mjs`, pure parts in `scripts/lib/icon.mjs`, tested in `src/main/icon/makeIcon.test.ts`) writes `build/icon.png` (1024), `build/icon.ico` (16-256, Windows) and `build/icon.icns` (macOS, mark inset to ~80% with a transparent margin); commit all three together. In dev, `index.ts` sets the window icon (ico on Windows, png elsewhere) and on darwin `app.dock.setIcon` (never packaged). Verified by unit tests and file inspection; the Dock, Finder and taskbar rendering is unverified on a Mac.
-  - `trustSystemCertificates(options?)` (`src/main/systemCerts.ts`, issue #16) runs after `applyShellPath()`: `tls.setDefaultCACertificates` gets the defaults plus the OS store's certificates (deduplicated, fail-open) so main-process `fetch` trusts a corporate / inspecting root CA. Windows and Linux read the store synchronously. macOS never reads it on the main thread, except in launches with `--use-system-ca` where `getCACertificates('default')` reads the store (`getCACertificates('system')` can stall in the Security framework, nodejs/node#63313; public reports of 5 s to about 10 s, one of 107 s, anthropics/claude-code#76079): a child `process.execPath -e <script>` with `ELECTRON_RUN_AS_NODE=1` and a minimal env (`childEnvFor`: HOME, PATH, user and temp vars; no tokens, no NODE_OPTIONS) prints the system certificates as a JSON array of PEM strings, started with `cwd: os.tmpdir()`, killed at `SYSTEM_CERT_READ_TIMEOUT_MS` (120 s; the child costs main nothing while it waits), on `before-quit` (`stopSystemCertRead`; the child is unref'd, so after a crashed main it can outlive it until its native call returns) or past 8 MB of output; index.ts exits at once when `ELECTRON_RUN_AS_NODE` is set in the main script (a RunAsNode fuse turned off would otherwise boot a full app in the child); non-zero exit, spawn error or malformed output fail open; main merges and sets. `systemCertTrust()` is 'pending' (darwin read running; fetches use defaults), 'applied' (store consulted, even when it adds nothing, logged at info) or 'unavailable' (reading failed, one warn). `probe.ts` `describeFetchFailure(e, host, trust)` words the certificate hint by that state ("If this network inspects HTTPS, its root certificate must be in your system's certificate store. Otherwise the server's own certificate chain may be incomplete or self-signed."; pending says try again in a moment; unavailable says OrgAI could not read the store); only chain codes get it (UNABLE_TO_GET_ISSUER_CERT_LOCALLY, UNABLE_TO_VERIFY_LEAF_SIGNATURE, SELF_SIGNED_CERT_IN_CHAIN, DEPTH_ZERO_SELF_SIGNED_CERT, CERT_UNTRUSTED), never expiry, altname or ERR_TLS_* codes. Verified by fake-spawner unit tests; on Windows with the repo's Electron 45.1.0 (Node 24.22.1) the real child script was run through the darwin path by injecting the platform: it returned 64 certificates in about 73 ms (that run, not an app boot), `setDefaultCACertificates` accepted them and the child exited 0; a hanging child was killed at an injected 1.5 s timeout. Earlier: the setter makes global `fetch` accept a local self-signed server (DEPTH_ZERO_SELF_SIGNED_CERT before, success after). The hint decides by the error code when there is one (the message regex only without a code). UNVERIFIED: the real macOS Keychain path, a packaged build, a certificate from an OS store reaching `fetch`, a real inspecting proxy, Linux, a real Electron quit. Child CLIs (Claude, Codex) are not covered by it.
+  - `trustSystemCertificates(options?)` (`src/main/systemCerts.ts`, issue #16) runs after `applyShellPath()`, only once the single-instance lock is ours (a second launch that exits never starts the macOS reader), and `--host inproc` (`src/cli/inprocHost.ts`, option `systemCertificates`, default on unless `startBackground: false`) calls it right after taking `<data>/run/` ownership and stops the read when the host ends or the process exits (unit-tested with injected hooks; the real CLI path is unverified): `tls.setDefaultCACertificates` gets the defaults plus the OS store's certificates (deduplicated, fail-open) so main-process `fetch` trusts a corporate / inspecting root CA. Windows and Linux read the store synchronously. macOS never reads it on the main thread, except in launches with `--use-system-ca` where `getCACertificates('default')` reads the store (`getCACertificates('system')` can stall in the Security framework, nodejs/node#63313; public reports of 5 s to about 10 s, one of 107 s, anthropics/claude-code#76079): a child `process.execPath -e <script>` with `ELECTRON_RUN_AS_NODE=1` and a minimal env (`childEnvFor`: HOME, PATH, user and temp vars; no tokens, no NODE_OPTIONS) prints the system certificates as a JSON array of PEM strings, started with `cwd: os.tmpdir()`, killed at `SYSTEM_CERT_READ_TIMEOUT_MS` (120 s; the child costs main nothing while it waits), on a quit that goes ahead (`stopSystemCertRead` inside the one before-quit handler, after the terminal-clients prompt; the child is unref'd, so after a crashed main it can outlive it until its native call returns) or past 8 MB of output; index.ts exits at once when `ELECTRON_RUN_AS_NODE` is set in the main script (a RunAsNode fuse turned off would otherwise boot a full app in the child); non-zero exit, spawn error or malformed output fail open; main merges and sets. `systemCertTrust()` is 'pending' (darwin read running; fetches use defaults), 'applied' (store consulted, even when it adds nothing, logged at info) or 'unavailable' (reading failed, one warn). `probe.ts` `describeFetchFailure(e, host, trust)` words the certificate hint by that state ("If this network inspects HTTPS, its root certificate must be in your system's certificate store. Otherwise the server's own certificate chain may be incomplete or self-signed."; pending says try again in a moment; unavailable says OrgAI could not read the store); only chain codes get it (UNABLE_TO_GET_ISSUER_CERT_LOCALLY, UNABLE_TO_VERIFY_LEAF_SIGNATURE, SELF_SIGNED_CERT_IN_CHAIN, DEPTH_ZERO_SELF_SIGNED_CERT, CERT_UNTRUSTED), never expiry, altname or ERR_TLS_* codes. Verified by fake-spawner unit tests; on Windows with the repo's Electron 45.1.0 (Node 24.22.1) the real child script was run through the darwin path by injecting the platform: it returned 64 certificates in about 73 ms (that run, not an app boot), `setDefaultCACertificates` accepted them and the child exited 0; a hanging child was killed at an injected 1.5 s timeout. Earlier: the setter makes global `fetch` accept a local self-signed server (DEPTH_ZERO_SELF_SIGNED_CERT before, success after). The hint decides by the error code when there is one (the message regex only without a code). UNVERIFIED: the real macOS Keychain path, a packaged build, a certificate from an OS store reaching `fetch`, a real inspecting proxy, Linux, a real Electron quit. Child CLIs (Claude, Codex) are not covered by it.
   - `applyShellPath()` runs right after `installLogging()` and merges the login shell's PATH with well-known dirs.
     GUI launches otherwise miss Homebrew, nvm and similar.
   - `listClaudeBinaries` also tries `~/.claude/local/claude`, `~/.local/bin/claude`, `/opt/homebrew/bin/claude` and
@@ -1422,8 +1590,9 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
     'macos-14-arm64-us-default' is not supported"; the same jobs passed at 18:25 UTC that day), so CI and release moved
     to macos-15 (unrun: the first macos-15 CI run has not happened). Nothing in CI spends tokens. A push that changes only `docs/**` or Markdown
     files does not trigger it (`paths-ignore`); pull requests always run.
-  - Local builds: `npm run pack` (`scripts/pack-local.mjs`, `--dry-run` prints the plan) keeps only `release/win-unpacked`
-    (current, `release/BUILD.txt`: version, short sha, time) and `release/previous` (the build before); never create
+  - Local builds: `npm run pack` (`scripts/pack-local.mjs`, `--dry-run` prints the plan; builds the CLI bundle too, and
+    on macOS never signs: `CSC_IDENTITY_AUTO_DISCOVERY=false` unless set) keeps only `release/<unpacked>` (win-unpacked,
+    mac-arm64 / mac, linux-unpacked; current, `release/BUILD.txt`: version, short sha, time) and `release/previous` (the build before); never create
     other `release-*` folders, and delete old ones rather than archive them. The real pack was not run by its author;
     the dry run and the rotation on a fake build were.
   - Branches: `dev` is integration (agent runs, PRs, dependabot), `main` is stable and protected. CI runs on both;

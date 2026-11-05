@@ -29,13 +29,14 @@ import type { AgentInstance, ImageAttachment, McpServerSpec, PluginSpec, Project
 import type { PermissionDecision, PermissionSuggestion, ProviderAuth } from '@shared/types'
 import { KNOWLEDGE_RECALL_TOOL, SPAWN_TOOL } from '@shared/types'
 import { ANTHROPIC_BUILTIN_MODELS, effectiveSubagentLimits, isolateWritersOn, mcpServersForRole, newId, planGuardEngaged, planGuardOf, projectKindOf, settingTier, tierForModel } from '@shared/defaults'
-import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo, type RunSkill, type CompletionInput, type RunConnection, type ResolvedMcpServer, type RuntimeAdapter, type PeerMessage, type RuntimeContext, type RuntimeSession } from './types'
+import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo, type RunSkill, type CompletionInput, type RunConnection, type ResolvedMcpServer, type RuntimeAdapter, type PeerMessage, type RuntimeContext, type RuntimeSession, type RootTurnEnd, type SessionSettlement, type ExecActivityReason } from './types'
 import { isTrustRestrictedRun, isWorkspaceConfigPath } from '../quick/scratch'
 import { hiddenCharIn } from '../capabilities/sanitize'
 import { allowRuleStrings, applyAllowScope, chooseSuggestions, listRules, suggestionLabels, type AllowScopePersist, type SuggestOptions } from './permissionRules'
 import { isGitRepo } from './worktrees'
 import { costOf, rateFor, ratesFromModelUsage, sumByModel, weighted, type CostRates, type TokenMix } from './claudeCost'
 import { costFromPrice, priceFor } from './pricing'
+import { projectBudgetUsd } from './runOverrides'
 import { countUsage, setModelTokens } from './runUsage'
 import { PartialText } from './claudePartial'
 import { buildSkillPlugin, livePluginNames, pluginStale, skillGate, type SkillPlugin } from './claudeSkills'
@@ -57,7 +58,8 @@ import { LIST_AGENTS_TOOL, MESSAGE_TOOL, buildRolePrompt, peerMessageText, canWr
 import { firstMessageHiddenContext, spawnKnowledge, userMessageKnowledge, withSpawnKnowledge, withUserMessageKnowledge } from './knowledgeDelivery'
 import { HandleNamer, mapSendMessage, messageTranscriptText, spawnHandle } from './network'
 import { authFailureMessage, describeTool, isAuthFailure, scrubAuthDetail } from './activity'
-import { isolateClaudeEnv } from './childEnv'
+import { isolateClaudeEnv, scrubControlEnv } from './childEnv'
+import { SELF_CONTROL_PATHS_UNAVAILABLE_LOG, SELF_CONTROL_REFUSAL_TEXT, checkSelfControlDenial, readControlProtectedPaths, selfControlLogLine } from './selfControlGate'
 import { WorktreeIntegrator } from './integration'
 import { resolveParent } from './agentTree'
 import {
@@ -225,6 +227,12 @@ export function mcpToolRule(serverName: string): string {
 
 /** Wait after the orchestrator's turn ends before an MCP restart, so a report hand-back the SDK is about to resume with goes first. */
 export const MCP_RESTART_DELAY_MS = 1500
+/**
+ * Exec settlement: after a report finishes, the SDK resumes the orchestrator with its result by itself (no input from
+ * OrgAI). Until that turn's init arrives, or this long after the report (or after the root turn that ended later), the
+ * session is not quiescent, so an exec run never settles in that gap. Matches DEFAULT_CONTINUATION_DELAY_MS.
+ */
+export const REPORT_HANDBACK_GRACE_MS = 1500
 /** How long addMcpServer polls mcpServerStatus for the new server's tool names. */
 const MCP_STATUS_WAIT_MS = 5000
 /** If the old query has not ended this long after its input closed for a restart, it is closed. */
@@ -423,7 +431,7 @@ export function toClaudeMcpServers(resolved: ResolvedMcpServer[]): Record<string
         type: 'stdio',
         command: spec.command,
         ...(spec.args?.length ? { args: [...spec.args] } : {}),
-        ...(Object.keys(r.env).length ? { env: { ...r.env } } : {})
+        ...(Object.keys(scrubControlEnv(r.env)).length ? { env: scrubControlEnv(r.env) } : {})
       }
     } else {
       if (!spec.url) continue
@@ -484,7 +492,7 @@ export function completionEnv(connection: RunConnection | undefined, base: NodeJ
   // No connection (drafts): isolated from routing vars, but the legacy inherited key still works.
   if (!connection) return isolateClaudeEnv(base, { keepApiKey: true })
   // The anthropic API key arrives through connection.env; nothing inherited authenticates.
-  return { ...isolateClaudeEnv(base, { proxy: connection.connection !== 'anthropic', keepApiKey: false }), ...connection.env }
+  return { ...isolateClaudeEnv(base, { proxy: connection.connection !== 'anthropic', keepApiKey: false }), ...scrubControlEnv(connection.env ?? {}) }
 }
 
 /**
@@ -511,7 +519,8 @@ export function buildEnv(ctx: RuntimeContext, base: NodeJS.ProcessEnv = process.
     const key = base[project.provider.auth.envVar]
     if (key) env.ANTHROPIC_API_KEY = key
   }
-  Object.assign(env, ctx.connection?.env)
+  // OrgAI's control variables stay out even when the connection names one (cli-spec 3.4(3)).
+  if (ctx.connection?.env) Object.assign(env, scrubControlEnv(ctx.connection.env))
   return env
 }
 
@@ -1061,6 +1070,19 @@ export class ClaudeSession implements RuntimeSession {
   private authFailed = false
   /** Unattended execution: re-engages the orchestrator when a turn ends with plan steps left. */
   private continuation: ContinuationDriver
+  /** Root turn ends so far (every result, failures and auth failures included): RootTurnEnd.turnGen. */
+  private rootTurnGen = 0
+  /** A root turn is running (a message was pushed, or the query emitted init, and no result since). */
+  private turnInFlight = false
+  /** interrupt() was called during a root turn; the next root result is that turn's (interrupted) end. */
+  private interruptPending = false
+  /**
+   * A report finished and the SDK has not started the root turn that reads it: when (ms) the grace window started.
+   * Cleared by the next root init; restarted when a root turn ends with it still set (REPORT_HANDBACK_GRACE_MS).
+   */
+  private handBackSince?: number
+  /** The generation of the turn end held back in turnEndDeferred. */
+  private deferredTurnGen = 0
   /** The run-scoped orgai skills plugin of the current query (work runs with granted skills). */
   private skillPlugin?: SkillPlugin
   /**
@@ -1174,8 +1196,13 @@ export class ClaudeSession implements RuntimeSession {
     this.continuation = new ContinuationDriver({
       kind: ctx.run.kind,
       projectKind: projectKindOf(ctx.project),
-      autoContinue: ctx.autoContinue,
-      maxAutoContinues: ctx.maxAutoContinues,
+      // Getters: RunManager's setLive re-clamp of ctx reaches the live driver.
+      get autoContinue() {
+        return ctx.autoContinue
+      },
+      get maxAutoContinues() {
+        return ctx.maxAutoContinues
+      },
       delayMs: ctx.continuationDelayMs,
       getPlan: () => ctx.getPlan(),
       updatePlan: (plan) => ctx.updatePlan(plan),
@@ -1193,7 +1220,8 @@ export class ClaudeSession implements RuntimeSession {
         this.emit({ type: 'run.status', runId: this.ctx.run.id, status: 'running' })
       },
       log: (level, message) => this.log(level, message),
-      tellUser: (text) => this.transcript(ROOT_ID, { kind: 'system', text }, { source: 'harness' })
+      tellUser: (text) => this.transcript(ROOT_ID, { kind: 'system', text }, { source: 'harness' }),
+      onSettled: () => this.noteActivity('continuation')
     })
     this.finished = this.run()
   }
@@ -1217,11 +1245,14 @@ export class ClaudeSession implements RuntimeSession {
     this.transcript(ROOT_ID, userBlock(text, images))
     const body = withUserMessageKnowledge(text, userMessageKnowledge(this.ctx, text, (m) => this.log('warn', m)))
     const composed = note ? (body ? `${note}\n\n---\n${body}` : note) : body
-    this.pushInput({
-      type: 'user',
-      message: { role: 'user', content: userContent(composed, images) },
-      parent_tool_use_id: null
-    })
+    this.pushInput(
+      {
+        type: 'user',
+        message: { role: 'user', content: userContent(composed, images) },
+        parent_tool_use_id: null
+      },
+      { userTurn: true }
+    )
     this.setState(ROOT_ID, 'thinking', 'Thinking…')
   }
 
@@ -1229,6 +1260,8 @@ export class ClaudeSession implements RuntimeSession {
     // An interrupted turn waits for the user; no automatic continue (and no MCP restart) until they reply.
     this.continuation.hold()
     this.held = true
+    // The result that ends this turn reports it as interrupted (RootTurnEnd.interrupted), never as a failed turn.
+    if (this.turnInFlight) this.interruptPending = true
     try {
       await this.q?.interrupt()
     } catch (e) {
@@ -1240,6 +1273,32 @@ export class ClaudeSession implements RuntimeSession {
   async receive(message: PeerMessage): Promise<void> {
     if (this.abort.signal.aborted) return
     this.notifyOrchestrator(peerMessageText(message), 'Reading a message from another run…', { transcript: false })
+  }
+
+  /** Headless exec settlement view (cli-spec 6.2(2)). */
+  settlement(): SessionSettlement {
+    const root = this.agents.get(ROOT_ID)
+    const rootIdle = !this.turnInFlight && (!root || root.state === 'idle' || root.state === 'done' || root.state === 'error')
+    const quiescent =
+      !this.turnEndDeferred &&
+      !this.restartTimer &&
+      !this.restartCloseTimer &&
+      this.pendingMcp.size === 0 &&
+      !this.pendingConfig.due &&
+      !this.restarting &&
+      !this.nextQuery &&
+      this.backgroundTasks.size === 0 &&
+      this.heldNotices.length === 0 &&
+      this.input.peek().length === 0 &&
+      !this.integrator.hasPendingWork() &&
+      !this.handBackPending()
+    return {
+      rootTurnGen: this.rootTurnGen,
+      rootIdle,
+      continuationSettled: this.continuation.isSettledForTurn(this.rootTurnGen),
+      nudgeTurn1Sent: this.continuation.nudgeTurn1Sent,
+      quiescent
+    }
   }
 
   async stop(): Promise<void> {
@@ -1259,6 +1318,48 @@ export class ClaudeSession implements RuntimeSession {
 
   private log(level: 'info' | 'warn' | 'error', message: string): void {
     this.emit({ type: 'log', runId: this.ctx.run.id, level, message })
+  }
+
+  /** A finished report's result may still be on its way to the orchestrator (REPORT_HANDBACK_GRACE_MS). */
+  private handBackPending(): boolean {
+    if (this.handBackSince === undefined) return false
+    const grace = this.ctx.continuationDelayMs ?? REPORT_HANDBACK_GRACE_MS
+    if (Date.now() - this.handBackSince < grace) return true
+    this.handBackSince = undefined
+    return false
+  }
+
+  /** A report finished: the SDK will hand its result to the orchestrator in a turn of its own. */
+  private reportFinished(): void {
+    this.handBackSince = Date.now()
+    this.noteActivity('report')
+  }
+
+  /** Exec settlement: adapter-internal activity (a listener's throw never breaks the session). */
+  private noteActivity(reason: ExecActivityReason): void {
+    try {
+      this.ctx.noteActivity?.(reason)
+    } catch {
+      /* ignore */
+    }
+  }
+
+  /**
+   * A root turn ended (any outcome): count it and tell RunManager BEFORE run.status 'idle' is emitted (cli-spec
+   * 6.2(2)). Returns the new generation; the caller hands it to the continuation driver (turnEnded or skipTurn).
+   */
+  private reportRootTurnEnd(e: Omit<RootTurnEnd, 'turnGen'>): number {
+    this.turnInFlight = false
+    // A report that finished during this turn is handed back in the next one, which the SDK starts after this result.
+    if (this.handBackSince !== undefined) this.handBackSince = Date.now()
+    this.rootTurnGen += 1
+    const turnGen = this.rootTurnGen
+    try {
+      this.ctx.onRootTurnEnded?.({ turnGen, ...e })
+    } catch (err) {
+      this.log('warn', `Root turn end listener failed: ${(err as Error)?.message ?? String(err)}`)
+    }
+    return turnGen
   }
 
   private transcript(agentId: string, block: TranscriptBlock, opts?: { source?: 'harness' }): void {
@@ -1381,6 +1482,7 @@ export class ClaudeSession implements RuntimeSession {
     const message: SDKUserMessage = { type: 'user', message: { role: 'user', content: text }, parent_tool_use_id: null }
     this.harnessMessages.set(message, { nudge: !!opts.nudge, text, ...(opts.restart ? { restart: true } : {}) })
     this.pushInput(message)
+    this.noteActivity('message')
     if (opts.transcript !== false) {
       this.transcript(ROOT_ID, { kind: 'system', text: opts.summary ?? text, ...(opts.summary ? { detail: text } : {}) }, { source: 'harness' })
     }
@@ -1388,8 +1490,15 @@ export class ClaudeSession implements RuntimeSession {
     if (root && (root.state === 'idle' || root.state === 'done')) this.setState(ROOT_ID, 'thinking', activity)
   }
 
-  /** Push to the current input stream; before the query's init the message is also kept for a restart replay (N2). */
-  private pushInput(message: SDKUserMessage): void {
+  /**
+   * Push to the current input stream; before the query's init the message is also kept for a restart replay (N2).
+   * Only a user's message marks a root turn in flight at once (review M4): a harness notice counts as a turn once the
+   * query's init for it arrives, so a notice the SDK drops leaves turnInFlight clear (an interrupt then is not taken
+   * for that turn's end). The root shows 'thinking' meanwhile; RunManager's stall watchdog ceiling
+   * (EXEC_STALL_BUSY_ROUNDS) ends an exec run that stays busy with no activity.
+   */
+  private pushInput(message: SDKUserMessage, opts: { userTurn?: boolean } = {}): void {
+    if (opts.userTurn) this.turnInFlight = true
     this.input.push(message)
     if (!this.queryInitSeen) this.preInit.push(message)
   }
@@ -1588,6 +1697,35 @@ export class ClaudeSession implements RuntimeSession {
     return this.integrator.worktreeOf(agentId)?.path ?? this.ctx.project.path
   }
 
+  /** Set once the "self-control gate skipped" line was logged for this run. */
+  private selfControlSkipLogged = false
+
+  /**
+   * The pre-mode self-control gate (selfControlGate.ts, cli-spec 3.4(1)): the gate's denial (SELF_CONTROL_DENIAL_MESSAGE,
+   * or SELF_CONTROL_UNCHECKED_MESSAGE for a command too long to check) when this call runs the orgai command or opens
+   * OrgAI's control files, else null. On a hit it logs a warning and writes one harness
+   * row on the calling agent. An empty or unreadable protected list denies shell commands (review M2: they cannot be
+   * checked against the control files) and leaves file tools to the normal flow; logged once per run.
+   */
+  private selfControlDenial(agentId: string, toolName: string, toolInput: unknown, cwd: string): string | null {
+    // A context without the hook (tests, drafts) skips the path check quietly.
+    const { paths, unavailable } = readControlProtectedPaths(this.ctx.controlProtectedPaths?.bind(this.ctx))
+    if (unavailable && !this.selfControlSkipLogged) {
+      this.selfControlSkipLogged = true
+      this.log('warn', SELF_CONTROL_PATHS_UNAVAILABLE_LOG)
+    }
+    const denial = checkSelfControlDenial(toolName, toolInput, {
+      protectedPaths: paths,
+      pathsUnavailable: unavailable,
+      cwd,
+      shell: toolName === 'PowerShell' ? 'powershell' : 'bash'
+    })
+    if (!denial) return null
+    this.log('warn', selfControlLogLine(toolName, this.agents.get(agentId)?.name ?? agentId))
+    this.transcript(agentId, { kind: 'system', text: SELF_CONTROL_REFUSAL_TEXT }, { source: 'harness' })
+    return denial
+  }
+
   /**
    * referenceDirectories.ts referenceEditDenial for an edit tool call, with the deny text the agent gets (plus
    * REFERENCE_COPY_HINT) and the harness transcript row (referenceRefusalEntry). An unreadable list refuses an edit tool.
@@ -1652,6 +1790,11 @@ export class ClaudeSession implements RuntimeSession {
     const preToolUse: HookCallback = async (raw) => {
       const input = raw as PreToolUseHookInput
       const agentId = input.agent_id ?? ROOT_ID
+      // Self-control gate first (cli-spec 3.4(1)): the orgai command and OrgAI's control files are denied before every
+      // other check, rule, hook-allow path and permission mode (bypassPermissions included).
+      const selfCwd = typeof input.cwd === 'string' && input.cwd ? input.cwd : this.agentCwd(agentId)
+      const selfDenial = this.selfControlDenial(agentId, input.tool_name, input.tool_input, selfCwd)
+      if (selfDenial) return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: selfDenial } }
       // Build sessions never write their own .claude settings (hooks, rules): denied before any allow rule or hook-allow path.
       const configDenial = buildConfigWriteDenial(this.ctx.run, input.tool_name, input.tool_input)
       if (configDenial) {
@@ -1876,6 +2019,7 @@ export class ClaudeSession implements RuntimeSession {
       const input = raw as SubagentStartHookInput
       const role = this.rolesBySlug.get(input.agent_type)
       const existing = this.agents.get(input.agent_id)
+      if (!existing) this.noteActivity('subagent')
       this.upsert({
         ...(existing ?? this.ensureAgent(input.agent_id, { roleSlug: input.agent_type, parentId: ROOT_ID })),
         roleId: role?.id ?? null,
@@ -1896,6 +2040,7 @@ export class ClaudeSession implements RuntimeSession {
       a.endedAt = Date.now()
       this.partial.clear(a.id, true)
       this.upsert(a)
+      this.reportFinished()
       void this.integrator.onSubagentFinished(a.id)
       return {}
     }
@@ -2247,13 +2392,14 @@ export class ClaudeSession implements RuntimeSession {
    * re-engages the orchestrator instead, and the turn after it nudges normally. If the restart then does not happen,
    * the held turn end is handed to the driver (releaseTurnEnd), so the run never stalls.
    */
-  private onTurnEnded(): void {
+  private onTurnEnded(turnGen: number): void {
     if (this.restartDue() && !mcpRestartBlocker(this.restartState())) {
       this.turnEndDeferred = true
+      this.deferredTurnGen = turnGen
       return
     }
     this.turnEndDeferred = false
-    this.continuation.turnEnded()
+    this.continuation.turnEnded(turnGen)
   }
 
   /** A non-subagent task ended; the last one to end lets a waiting MCP restart go ahead. */
@@ -2266,7 +2412,7 @@ export class ClaudeSession implements RuntimeSession {
   private releaseTurnEnd(): void {
     if (!this.turnEndDeferred) return
     this.turnEndDeferred = false
-    this.continuation.turnEnded()
+    this.continuation.turnEnded(this.deferredTurnGen)
   }
 
   /** Check for an MCP restart shortly after a turn ends (a report hand-back the SDK resumes with goes first). */
@@ -2290,8 +2436,10 @@ export class ClaudeSession implements RuntimeSession {
    * would otherwise get the whole budget again, review M2). undefined = no budget set; null = nothing is left.
    */
   private restartBudget(): number | undefined | null {
-    const max = this.ctx.project.maxBudgetUsd
-    if (!max || this.isSetup) return undefined
+    // An exec run's budget (ctx.budgetUsd, 0 allowed) replaces the project's; 0 is a real budget, never "none".
+    // A project cap <= 0 is "no cap" (projectBudgetUsd), as it always was for desktop runs.
+    const max = this.ctx.budgetUsd !== undefined ? this.ctx.budgetUsd : projectBudgetUsd(this.ctx.project)
+    if (max === undefined || this.isSetup) return undefined
     const left = max - Math.max(0, this.lastRunCost, this.lastPricedTotal)
     // Below the minimum counts as nothing left: rounding it up would overshoot the budget (review N7).
     if (!(left >= MCP_RESTART_MIN_BUDGET_USD)) return null
@@ -2361,6 +2509,7 @@ export class ClaudeSession implements RuntimeSession {
     this.restarting = false
     if (config) this.log('info', `Resuming the session to apply the approved configuration change${servers.length ? ` (MCP server${servers.length === 1 ? '' : 's'} ${servers.join(', ')})` : ''}.`)
     else this.log('info', `Resuming the session to attach the MCP server${servers.length === 1 ? '' : 's'} ${servers.join(', ')}.`)
+    this.noteActivity('restart')
     // Close the old query's input: it ends once the CLI exits; anything pushed but unread moves to the next query.
     this.swapInput()
     const oldQ = this.q
@@ -2544,6 +2693,7 @@ export class ClaudeSession implements RuntimeSession {
     this.queryGrants = this.optionGrants.get(next.options)
     this.liveGrants = this.queryGrants
     this.q = query({ prompt: this.input, options: next.options })
+    this.noteActivity('restart')
     const config = next.config
     if (next.dropped?.length || next.droppedSkills) {
       const why = `the resumed session would not start with ${(next.dropped?.length ?? 0) + (next.droppedSkills ? 1 : 0) === 1 ? 'it' : 'them'}`
@@ -2723,6 +2873,9 @@ export class ClaudeSession implements RuntimeSession {
         const key = permissionKey(toolName, input)
         const agentId = this.takeIssuer(key) ?? this.lastToolAgent.get(toolName) ?? ROOT_ID
         const cwd = this.agentCwd(agentId)
+        // Backstop for the PreToolUse self-control gate (a call that reached canUseTool without the hook).
+        const selfDenial = this.selfControlDenial(agentId, toolName, input, cwd)
+        if (selfDenial) return { behavior: 'deny', message: selfDenial }
         // Backstop for the PreToolUse reference gate: never a card for an edit under a reference folder. The refusal row
         // is written here only when the hook did not already refuse (and write it for) this call.
         const edit = this.referenceEditRefusal(toolName, input, cwd)
@@ -2802,7 +2955,12 @@ export class ClaudeSession implements RuntimeSession {
       else this.log('warn', 'The root role has an invalid model id; using the CLI default.')
     }
     if (opts.maxBudgetUsd !== undefined) options.maxBudgetUsd = opts.maxBudgetUsd
-    else if (project.maxBudgetUsd && !this.isSetup) options.maxBudgetUsd = project.maxBudgetUsd
+    else if (!this.isSetup) {
+      // ctx.budgetUsd (exec runs, the chain's prior cost already taken off) wins; 0 is a real budget (cli-spec 6.2(3)).
+      // A project cap <= 0 means no cap (projectBudgetUsd).
+      const budget = this.ctx.budgetUsd !== undefined ? this.ctx.budgetUsd : projectBudgetUsd(project)
+      if (budget !== undefined) options.maxBudgetUsd = budget
+    }
     const resumeId = resume ?? this.ctx.resumeSessionId
     if (resumeId) options.resume = resumeId
     if (options.agents) this.optionGrants.set(options, grantSnapshot(options.agents))
@@ -2965,6 +3123,8 @@ export class ClaudeSession implements RuntimeSession {
     this.log('error', `Authentication failed${detail ? `: ${detail}` : ''}`)
     this.partial.clearAll()
     this.setState(ROOT_ID, 'error', 'Connection refused')
+    // Every root turn end is reported, an auth failure included (the result that follows is ignored).
+    this.continuation.skipTurn(this.reportRootTurnEnd({ ok: false, isAuthError: true, ...(this.limited ? { limited: true } : {}) }))
     this.ending = true
     void this.stop()
   }
@@ -2979,6 +3139,8 @@ export class ClaudeSession implements RuntimeSession {
           root.model = msg.model
           this.upsert(root)
           this.sessionId = msg.session_id
+          this.turnInFlight = true
+          this.handBackSince = undefined
           this.queryInitSeen = true
           this.preInit = []
           // A restarted query that starts clears the failure count, so a later restart gets its own retries.
@@ -2993,6 +3155,7 @@ export class ClaudeSession implements RuntimeSession {
           }
           this.startUsagePolling()
         } else if (msg.subtype === 'task_started') {
+          if ((!msg.task_type || msg.task_type === 'local_agent') && !this.agents.has(msg.task_id)) this.noteActivity('subagent')
           // Background shell commands and MCP calls are tasks too; only subagents belong on the chart. The others are
           // counted until they end, because an MCP restart would kill them (review M5). Ambient tasks (watchers,
           // housekeeping) are left out: the SDK says they are not activity, and some never end.
@@ -3049,11 +3212,15 @@ export class ClaudeSession implements RuntimeSession {
           this.backgroundTaskEnded(msg.task_id)
           const a = this.agents.get(msg.task_id)
           if (a) {
+            // SubagentStop usually marked it done already; only a first finish opens the hand-back window.
+            const firstFinish = a.state !== 'done' && a.state !== 'error'
             a.state = msg.status === 'completed' ? 'done' : 'error'
             a.activity = msg.status === 'completed' ? 'Reported back' : `Task ${msg.status}`
             a.result = a.result ?? msg.summary
             a.endedAt = Date.now()
             this.upsert(a)
+            if (firstFinish) this.reportFinished()
+            else this.noteActivity('report')
             void this.integrator.onSubagentFinished(a.id)
           }
         }
@@ -3189,6 +3356,8 @@ export class ClaudeSession implements RuntimeSession {
           break
         }
         const root = this.ensureAgent(ROOT_ID)
+        const interrupted = this.interruptPending
+        this.interruptPending = false
         if (msg.subtype === 'success') {
           root.result = msg.result
           root.state = 'idle'
@@ -3196,17 +3365,34 @@ export class ClaudeSession implements RuntimeSession {
             (x) => x.id !== ROOT_ID && x.state !== 'done' && x.state !== 'error'
           )
           root.activity = reportsRunning ? 'Waiting on reports…' : 'Waiting for you'
+        } else if (interrupted && msg.subtype !== 'error_max_budget_usd') {
+          // The user's interrupt ends the turn with a non-success subtype (unverified live which one); not an error.
+          root.state = 'idle'
+          root.activity = 'Interrupted'
+          this.log('info', `Turn interrupted (${msg.subtype})`)
         } else {
           root.state = 'error'
           root.activity = msg.subtype.replace(/^error_/, '').replace(/_/g, ' ')
           this.log('error', `Run ended: ${msg.subtype}`)
         }
         this.upsert(root)
+        // Exec settlement (cli-spec 6.2(2)): every root turn end is reported before 'idle', failed and interrupted
+        // ones included (an interrupted turn is held by RunManager, never finalized as failed).
+        const ok = msg.subtype === 'success'
+        const turnGen = this.reportRootTurnEnd({
+          ok,
+          ...(ok ? {} : { errorSubtype: msg.subtype }),
+          ...(interrupted ? { interrupted: true } : {}),
+          ...(this.limited ? { limited: true } : {})
+        })
         this.emit({ type: 'run.status', runId, status: 'idle' })
         // Unattended execution: after a short delay (a report that just landed wakes the orchestrator
         // first), remind it of the plan's remaining steps. The driver re-checks every condition then.
         // With an MCP restart due, the restart's notice re-engages the orchestrator instead (onTurnEnded, review H1).
-        if (msg.subtype === 'success' && !this.isSetup) this.onTurnEnded()
+        // A failed turn is never nudged; its generation is settled at once (skipTurn).
+        if (!ok) this.continuation.skipTurn(turnGen)
+        else if (this.isSetup) this.continuation.turnEnded(turnGen)
+        else this.onTurnEnded(turnGen)
         // MCP servers approved this turn reach the agents through a restart once everything is idle.
         if (this.restartDue()) this.scheduleMcpRestart()
         if (this.limited && !this.ending) {

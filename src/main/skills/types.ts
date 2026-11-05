@@ -11,6 +11,7 @@ import type {
   SkillImportInput,
   SkillImportPreview,
   SkillInfo,
+  SkillBundleInput,
   SkillLibraryFolderInput,
   SkillLibraryInfo,
   SkillLinkLibraryInput,
@@ -64,6 +65,11 @@ export interface SkillServiceApi {
   libraryRead(input: { libraryId: string }): SkillContent
   libraryCreate(draft: SkillDraft): SkillLibraryInfo[]
   libraryAddFromFolder(input: SkillLibraryFolderInput): SkillLibraryInfo[]
+  /**
+   * Add a library skill from host-validated bundle bytes (cli-spec 3.6: the CLI's skillLibrary:addFromBundle, in
+   * place of the desktop-only folder picker). Paths, SKILL.md and shell-injection bodies are checked like a folder.
+   */
+  libraryAddFromBundle(input: SkillBundleInput): SkillLibraryInfo[]
   libraryUpdate(input: { libraryId: string; draft: SkillDraft }): SkillLibraryInfo[]
   libraryRemove(input: { libraryId: string }): SkillLibraryInfo[]
   /** The project with linked skills refreshed from the library (like McpService.withLibrary). */

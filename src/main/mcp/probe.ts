@@ -2,7 +2,9 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import type { McpTestResult } from '@shared/types'
 import type { ResolvedMcpServer } from '../runtime/types'
+import { scrubControlEnv } from '../runtime/childEnv'
 import { parseWwwAuthenticate, redactOAuth } from './oauth'
+import { system32Path } from '../host/systemBinaries'
 import { systemCertTrust, type CertTrustState } from '../systemCerts'
 
 /**
@@ -170,7 +172,7 @@ export function killTree(child: ChildProcess): void {
   if (!pid) return
   try {
     if (process.platform === 'win32') {
-      spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }).on('error', () => {})
+      spawn(system32Path('taskkill.exe'), ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }).on('error', () => {})
     } else {
       try {
         process.kill(-pid, 'SIGKILL')
@@ -214,7 +216,8 @@ class StdioClient implements RpcClient {
     const spec = resolved.spec
     const command = spec.command ?? ''
     const args = spec.args ?? []
-    const env = { ...process.env, ...resolved.env }
+    // OrgAI's control variables never reach a probed server, inherited or set by its spec (cli-spec 3.4(3)).
+    const env = scrubControlEnv({ ...process.env, ...resolved.env })
     const winShell = usesWindowsShell(command)
     if (winShell && [command, ...args].some((a) => /["%\r\n]/.test(a))) {
       throw new Error('Arguments with quotes or % cannot be tested on Windows; run the server by hand to check it.')

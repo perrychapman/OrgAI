@@ -1,0 +1,134 @@
+// `orgai org`, `team`, `worktrees` and `permissions` end to end (cli-spec 6.3, Wave 5). Run `npm run build` first.
+// Mock adapter only (ORGAI_MOCK=1): no tokens, no network. One `--host inproc` daemon for the whole script; the
+// project is seeded over the raw authenticated RPC client (e2e/cliLib.mjs).
+//
+// Fixture: a git repo with a Claude Code agent definition (.claude/agents/backend-dev.md) and two leftover report
+// worktrees planted the way e2e/maintenance.mjs plants them (one clean, one that conflicts with main).
+// Checks: org show (text, JSON), permissions add / list / remove / mode, team templates save / list, team roles /
+// role, worktrees list / diff / merge (clean ok, conflict exit 1) / discard (exit 2 without --yes, then --yes),
+// org import --yes (the agent lands in the chart), org recommend (keyword fallback under mock).
+import * as fs from 'node:fs'
+import * as path from 'node:path'
+import { check, finish, git, gitSafe, log, makeFixtureRepo, removeFixture, writeFile } from './lib.mjs'
+import { cli, json, requireBuild, seedProject, show, startDaemon, stopDaemon } from './cliLib.mjs'
+
+requireBuild()
+
+const repo = makeFixtureRepo('cliorg')
+fs.appendFileSync(path.join(repo, '.git', 'info', 'exclude'), '.claude/worktrees/\n')
+writeFile(repo, '.claude/agents/backend-dev.md', '---\nname: backend-dev\ndescription: Builds the API\ntools: Read, Edit, Bash\nmodel: sonnet\n---\nYou build the backend. Keep handlers small.\n')
+git(repo, ['add', '-A'])
+git(repo, ['commit', '-q', '-m', 'agent definition'])
+const plant = (id) => {
+  const rel = `.claude/worktrees/agent-${id}`
+  git(repo, ['worktree', 'add', '-q', '-b', `worktree-agent-${id}`, rel])
+  return path.join(repo, rel)
+}
+const wtA = plant('cleanA')
+writeFile(wtA, 'src/health.js', 'export const health = () => ({ ok: true })\n')
+git(wtA, ['add', '-A'])
+git(wtA, ['commit', '-q', '-m', 'Implementer: add health helper'])
+const wtB = plant('conflictB')
+writeFile(wtB, 'README.md', '# tiny-notes-api (from the report)\n')
+git(wtB, ['add', '-A'])
+git(wtB, ['commit', '-q', '-m', 'Implementer: retitle README'])
+writeFile(repo, 'README.md', '# tiny-notes-api (from main)\n')
+git(repo, ['add', '-A'])
+git(repo, ['commit', '-q', '-m', 'main: retitle README'])
+log('fixture at', repo)
+
+/** The CLI in the fixture folder (project resolution by cwd). */
+const at = (args, opts = {}) => cli(args, { cwd: repo, ...opts })
+const jsonOf = async (args) => {
+  const r = await at(['--output-format', 'json', ...args])
+  return { r, v: json(r.out) }
+}
+
+try {
+  await startDaemon()
+  const project = await seedProject(repo, { name: 'CLI org e2e' })
+  check(!!project?.id, 'project seeded over hostRpc', JSON.stringify(project).slice(0, 200))
+  const roleCount = project.roles.length
+
+  // ---------- org show ----------
+  let r = await at(['org', 'show'])
+  check(r.code === 0 && r.out.includes(`CLI org e2e: ${roleCount} role`) && r.out.includes('Subagent limits:'), 'org show prints the tree and limits', show(r))
+  let j = await jsonOf(['org', 'show'])
+  check(j.r.code === 0 && j.v?.roles?.length === roleCount && j.v.roles[0].depth === 0 && typeof j.v.roles[0].model === 'string', 'org show JSON: roles with depth and model id', show(j.r))
+
+  // ---------- permissions ----------
+  r = await at(['permissions', 'add', 'Bash(npm test:*)'])
+  check(r.code === 0 && r.out.includes('Saved Bash(npm test:*)'), 'permissions add saves the rule', show(r))
+  j = await jsonOf(['permissions', 'list'])
+  check(j.r.code === 0 && j.v?.rules?.some((x) => x.rule === 'Bash(npm test:*)') && j.v.location === 'folder', 'permissions list JSON has the rule (folder location)', show(j.r))
+  r = await at(['permissions', 'list'])
+  check(r.code === 0 && r.out.includes('.claude/settings.local.json'), 'permissions list text names where rules live', show(r))
+  r = await at(['permissions', 'add', 'Bash(curl:*)'])
+  check(r.code === 2 && /orgai: /.test(r.err), 'a too-broad rule is refused with the host sentence (exit 2)', show(r))
+  r = await at(['permissions', 'remove', 'Bash(npm test:*)'])
+  check(r.code === 0, 'permissions remove', show(r))
+  j = await jsonOf(['permissions', 'list'])
+  check(j.v?.rules?.length === 0, 'the rule is gone', show(j.r))
+  r = await at(['permissions', 'mode', 'acceptEdits'])
+  check(r.code === 0 && r.out.includes('acceptEdits'), 'permissions mode acceptEdits', show(r))
+  r = await at(['permissions', 'mode', 'default'])
+  j = await jsonOf(['permissions', 'mode'])
+  check(r.code === 0 && j.v?.mode === 'default', 'permissions mode default (JSON shows it)', show(j.r))
+  r = await at(['permissions', 'mode', 'yolo'])
+  check(r.code === 2, 'an unknown mode is exit 2', show(r))
+
+  // ---------- team ----------
+  r = await at(['team', 'templates', 'save', '--name', 'E2E team'])
+  check(r.code === 0 && r.out.includes('Saved template E2E team'), 'team templates save', show(r))
+  j = await jsonOf(['team', 'templates', 'list'])
+  check(j.r.code === 0 && j.v?.templates?.some((t) => t.name === 'E2E team'), 'team templates list JSON has it', show(j.r))
+  r = await at(['team', 'roles'])
+  check(r.code === 0 && r.out.includes(`${roleCount} role`), 'team roles', show(r))
+  r = await at(['team', 'role', project.roles[0].slug])
+  check(r.code === 0 && r.out.includes('prompt:'), 'team role shows the prompt', show(r))
+
+  // ---------- worktrees ----------
+  j = await jsonOf(['worktrees', 'list'])
+  const branches = (j.v?.worktrees ?? []).map((w) => w.branch).sort()
+  check(j.r.code === 0 && branches.join(',') === 'worktree-agent-cleanA,worktree-agent-conflictB', 'worktrees list JSON shows both branches', show(j.r))
+  r = await at(['worktrees', 'list'])
+  check(r.code === 0 && r.out.includes('2 pending report branches'), 'worktrees list text', show(r))
+  r = await at(['worktrees', 'diff', 'worktree-agent-cleanA'])
+  check(r.code === 0 && r.out.includes('+export const health') && !r.out.includes('\x1b'), 'worktrees diff prints the plain patch', show(r))
+  j = await jsonOf(['worktrees', 'diff', 'worktree-agent-cleanA'])
+  check(j.r.code === 0 && typeof j.v?.patch === 'string' && j.v.patch.includes('health'), 'worktrees diff JSON', show(j.r))
+  r = await at(['worktrees', 'merge', 'worktree-agent-cleanA'])
+  check(r.code === 0, 'worktrees merge of the clean branch', show(r))
+  r = await at(['worktrees', 'merge', 'worktree-agent-conflictB'])
+  check(r.code === 1 && r.err.length > 0, 'worktrees merge of the conflicting branch is exit 1 with the message', show(r))
+  r = await at(['worktrees', 'discard', 'worktree-agent-conflictB'])
+  check(r.code === 2 && r.err.includes('--yes'), 'worktrees discard without --yes and without a terminal is exit 2', show(r))
+  r = await at(['worktrees', 'discard', 'worktree-agent-conflictB', '--yes'])
+  check(r.code === 0, 'worktrees discard --yes', show(r))
+  j = await jsonOf(['worktrees', 'list'])
+  check(j.v?.worktrees?.length === 0, 'no pending branches left', show(j.r))
+  check(!/worktree-agent-/.test(gitSafe(repo, ['branch', '--list'])), 'no report branches in git', gitSafe(repo, ['branch', '--list']))
+  check(gitSafe(repo, ['ls-files', 'src/health.js']) === 'src/health.js', 'the clean branch was merged into main')
+
+  // ---------- org import ----------
+  r = await at(['org', 'import'])
+  check(r.code === 2 && r.out.includes('backend-dev') && r.err.includes('--yes'), 'org import previews and asks for --yes without a terminal', show(r))
+  r = await at(['org', 'import', '--yes'])
+  check(r.code === 0 && r.out.includes('Imported 1 role') && !r.out.includes('Desktop Team tab'), 'org import --yes applies (and never promises a Desktop Undo)', show(r))
+  j = await jsonOf(['org', 'show'])
+  check(j.v?.roles?.some((x) => x.slug.startsWith('backend-dev')), 'the imported role is in the chart', show(j.r))
+
+  // ---------- Team assistant ----------
+  j = await jsonOf(['org', 'recommend'])
+  check(j.r.code === 0 && j.v?.recommendations?.projectId === project.id && Array.isArray(j.v.recommendations.recommendations), 'org recommend under mock', show(j.r))
+  r = await at(['org', 'review'])
+  check(r.code === 0, 'org review shows the last review', show(r))
+} catch (e) {
+  check(false, 'cli-org ran to the end', e?.stack ?? String(e))
+} finally {
+  const s = await stopDaemon().catch((e) => ({ code: -1, out: '', err: String(e) }))
+  check(s.code === 0, 'daemon stop', show(s))
+  removeFixture(repo)
+}
+
+finish('cli-org')

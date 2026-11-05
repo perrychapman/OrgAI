@@ -8,6 +8,7 @@ import { NETWORK_TOOLS } from './codexEvents'
 import { HandleNamer, mapSendMessage, messageTranscriptText, resolveRecipient, spawnHandle } from './network'
 import { LIST_AGENTS_TOOL, MESSAGE_TOOL } from './prompts'
 import { ROOT_AGENT_ID } from './types'
+import { gitExecutable } from '../host/systemBinaries'
 
 /**
  * Harness-side subagents for providers without a native spawn: Codex has no Agent tool the harness can
@@ -308,8 +309,11 @@ export function childFirstMessage(parentLabel: string, brief: string): string {
 // ---------- worktrees ----------
 
 function git(cwd: string, args: string[]): Promise<{ ok: boolean; out: string; err: string }> {
+  // By absolute path (review H1): a bare 'git' is searched in the cwd (the checkout) first on Windows.
+  const bin = gitExecutable()
+  if (!bin) return Promise.resolve({ ok: false, out: '', err: 'git was not found on PATH.' })
   return new Promise((resolve) => {
-    execFile('git', args, { cwd, windowsHide: true, timeout: 60_000, maxBuffer: 8 * 1024 * 1024 }, (error, stdout, stderr) => {
+    execFile(bin, args, { cwd, windowsHide: true, timeout: 60_000, maxBuffer: 8 * 1024 * 1024 }, (error, stdout, stderr) => {
       resolve({ ok: !error, out: String(stdout).trim(), err: String(stderr ?? error?.message ?? '').trim() })
     })
   })

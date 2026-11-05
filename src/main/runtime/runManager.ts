@@ -11,6 +11,14 @@ import type {
   UsageStatsQuery,
   AppSettings,
   AdapterChoice,
+  CardKind,
+  DecisionLookup,
+  DecisionOptions,
+  DecisionOutcome,
+  DecidedBy,
+  ExecOutcome,
+  RunEndedBy,
+  RunOverrides,
   ModelPrice,
   ImageAttachment,
   McpInstallDecision,
@@ -58,19 +66,19 @@ import type {
   SkillUseCount,
   UserQuestion
 } from '@shared/types'
-import { QUICK_ASSISTANT_SLUG, adapterForProject, agentProducedNothing, isolateWritersOn, mcpSecretNames, mixedFamilyRefusal, modelFamily, newId, projectConnection, projectKindOf, projectRulesLocation, runMessagingOn, settingTier, singleRunProject, writesToProjectFolder } from '@shared/defaults'
+import { QUICK_ASSISTANT_SLUG, adapterForProject, agentProducedNothing, isolateWritersOn, mcpSecretNames, mixedFamilyRefusal, modelFamily, newId, projectConnection, projectKindOf, projectRulesLocation, resolveModelSetting, runMessagingOn, settingTier, singleRunProject, writesToProjectFolder } from '@shared/defaults'
 import { referenceFolderOf } from './referenceDirectories'
-import { aliasesFor, priceAgentUsage, type PricingContext } from './pricing'
+import { aliasesFor, priceAgentUsage, resolvePrice, type PricingContext } from './pricing'
 import { IntervalTimer, buildUsageCsv, buildUsageStats, computeRunUsage, emptyAgentUsage, legacySummaryUsage, monthRange, normalizeRunRecord } from './runUsage'
 import { knowledgeAutoContextOn } from '@shared/knowledge'
 import { RESUME_TEXT } from './prompts'
 import { dropLoneHighSurrogate, fenceDatum, knowledgeBrief, knowledgeContextBlock, knowledgeListItem, recallKnowledge } from '@shared/knowledgeIndex'
 import { strongMentionLinks } from '@shared/knowledgeLinks'
-import { DEFAULT_MAX_AUTO_CONTINUES, HARNESS_PROJECT_ID, KNOWLEDGE_RECALLED_IDS_MAX, KNOWLEDGE_RUN_WRITES_MAX, QUICK_PROJECT_ID, RUN_MESSAGE_MAX_CHARS, RUN_PEER_PROMPT_CHARS, SKILLS_PROJECT_ID, USAGE_STATS_DEFAULT_LIMIT, USAGE_STATS_MAX_LIMIT, isVirtualProjectId } from '@shared/types'
+import { DEFAULT_EXEC_STALL_TIMEOUT_MS, DEFAULT_HEADLESS_DECISION_POLICY, DEFAULT_MAX_AUTO_CONTINUES, EXEC_FINALIZE_STOP_TIMEOUT_MS, EXEC_SETTLE_DEBOUNCE_MS, EXEC_TITLE_JOIN_MS, HARNESS_PROJECT_ID, KNOWLEDGE_RECALLED_IDS_MAX, KNOWLEDGE_RUN_WRITES_MAX, MAX_TIMER_DELAY_MS, QUICK_PROJECT_ID, RUN_MESSAGE_MAX_CHARS, RUN_PEER_PROMPT_CHARS, SKILLS_PROJECT_ID, USAGE_STATS_DEFAULT_LIMIT, USAGE_STATS_MAX_LIMIT, isVirtualProjectId } from '@shared/types'
 import { architectRole, mcpAssistantRole, skillAssistantRole } from '@shared/setup'
 import { isTrustRestrictedRun, isInsideEither, samePath, canonicalDeep } from '../quick/scratch'
 import { MCP_ASSIST_MODEL_LABEL, QUICK_RUN_MODEL_LABEL, SETUP_MODEL_LABEL, SKILL_ASSIST_MODEL_LABEL, resolveBuiltinModel, type ResolvedBuiltinModel } from './builtinModel'
-import { ROOT_AGENT_ID, isSetupLikeRun, type CompletionInput, type KnowledgeCaller, type KnowledgeStoreApi, type ResolvedMcpServer, type RunMessageOutcome, type RunConnection, type RunSkill, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type SkillAssistCatalog } from './types'
+import { ROOT_AGENT_ID, isSetupLikeRun, type RootTurnEnd, type CompletionInput, type KnowledgeCaller, type KnowledgeStoreApi, type ResolvedMcpServer, type RunMessageOutcome, type RunConnection, type RunSkill, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type SessionSettlement, type SkillAssistCatalog } from './types'
 import { datum } from './harnessTools'
 import type { SkillRunSource } from '../skills/types'
 import { RunStore } from '../store/runs'
@@ -79,7 +87,12 @@ import { log, logPermission, logRunEvent } from '../log'
 import { hasContent, sanitizeImages } from './attachments'
 import { breakParentCycles } from './agentTree'
 import { describePlanChange, peerDeliveryBlocked, planNudgesApply } from './continuation'
-import { isLiveAgent, runOutcome, settleAgent, withSkillActivity, type RunOutcome } from './activity'
+import { isAuthFailure, isLiveAgent, runOutcome, settleAgent, withSkillActivity, type RunOutcome } from './activity'
+import { effectiveRunProject, execBudgetUsd } from './runOverrides'
+import { defaultEndedBy, execOutcomeFor, execQuiescent } from './execSettle'
+import { keepsHostBusy, runActivityState, type RunActivityState } from './runActivity'
+import { countsAsDenial, fullPolicy, policyAction, type PolicyDecisions } from './decisionPolicy'
+import { DecisionIndex } from './decisionIndex'
 import { cancelPending, cleanProposalDecision, emptyPending, listPending, proposalEffect, proposalOutcome, type PendingCardMaps } from './pendingCards'
 import { addRules, addRulesReport, isBlanketAllowRule, isUnsafeAllowRule, listRules, tooBroadRuleRefusal } from './permissionRules'
 import { projectRulesFile, readEngagementDocument } from '../store/projectData'
@@ -97,6 +110,7 @@ function noFolderWrites(p: Project): Project {
 }
 import { allowedDirectoryRisk } from './allowedDirectories'
 import { isValidRule } from './ruleMatch'
+import { controlProtectedPaths } from './selfControlGate'
 import { validateSpec } from '../mcp/validate'
 import { assistContext, buildToolsFor } from '../mcp/assist'
 import { skillAssistContext } from '../skills/assist'
@@ -191,6 +205,35 @@ export function resolveAllowedDirectories(raw: readonly unknown[] | undefined, o
 const FLUSH_INTERVAL_MS = 1500
 /** How long a 'trusted' folder-config answer is reused before the folder is scanned again. */
 const FOLDER_CHECK_MS = 2000
+
+/** Exec settlement re-check while the root is idle but the adapter is not settled yet (a continuation timer...). */
+export const EXEC_SETTLE_POLL_MS = 1000
+/**
+ * The stall watchdog's hard ceiling (review M4): an exec run whose adapter keeps reporting a busy root with no activity
+ * at all ends 'stalled' after this many execStallTimeoutMs periods (30 min at the 5 min default).
+ */
+export const EXEC_STALL_BUSY_ROUNDS = 6
+
+/**
+ * A delay setTimeout honours: setTimeout runs anything above MAX_TIMER_DELAY_MS (about 24.8 days) after 1 ms, so a
+ * longer exec timer (a record saved before the host refused such values) is capped there; non-finite or negative is 0.
+ */
+export function timerDelay(ms: number): number {
+  return Number.isFinite(ms) && ms > 0 ? Math.min(ms, MAX_TIMER_DELAY_MS) : 0
+}
+
+/** Wait for `p` at most `ms`; true when the time ran out first. Never rejects. */
+async function raceTimeout(p: Promise<unknown>, ms: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<true>((resolve) => {
+    timer = setTimeout(() => resolve(true), ms)
+  })
+  try {
+    return await Promise.race([p.then(() => false as const, () => false as const), timeout])
+  } finally {
+    clearTimeout(timer)
+  }
+}
 /** Most skill loads one run counts (RunUsage.skills, transcript rows); later skill.used events are dropped. */
 export const RUN_SKILL_LOAD_LIMIT = 1000
 /** run.usage events (and the index save that goes with them) are published at most this often per run. */
@@ -293,8 +336,11 @@ interface ActiveRun {
   limitHold?: boolean
   /** The user ended the session; never pause it. */
   userStopped?: boolean
-  /** Who cut the session (RunSummary.endedBy): 'user' from stop(), 'app' from stopAll({ reason: 'quit' }). The first one wins. */
-  endedBy?: 'user' | 'app'
+  /**
+   * Who cut the session (RunSummary.endedBy): 'user' from stop(), 'app' from stopAll({ reason: 'quit' }), 'policy' /
+   * 'budget' from finalizeExecRun. The first one wins.
+   */
+  endedBy?: RunEndedBy
   /** With endedBy 'app': what the run was doing when the quit began (RunSummary.endedWhile). Read before stopping. */
   endedWhile?: 'working' | 'waiting'
   /** The session.stop() call in flight (stopSession), so End session, quit and a late start share one stop. */
@@ -366,6 +412,47 @@ interface ActiveRun {
   held: boolean
   /** The inbox flush in progress; flushes chain on it so concurrent flushes never reorder peer messages. */
   flushing?: Promise<void>
+  // ---------- headless exec (cli-spec 6.2) ----------
+  /** The run's RuntimeContext (exec settlement reads ctx.autoContinue). Set before adapter.start. */
+  ctx?: RuntimeContext
+  /** The caller held the 'configure' scope: widening overrides apply (effectiveRunProject). Never persisted. */
+  allowWidening?: boolean
+  /** The newest root turn generation the adapter reported (ctx.onRootTurnEnded). */
+  rootTurnGen: number
+  /** Bumped on every activity that may keep an exec run from settling (and that resets the stall watchdog). */
+  activityGen: number
+  lastTurnEnd?: RootTurnEnd
+  settleTimer?: ReturnType<typeof setTimeout>
+  stallTimer?: ReturnType<typeof setTimeout>
+  /** finalizeExecRun in flight or done (the first outcome claimed it). */
+  finalizing?: Promise<void>
+  /** The outcome finalizeExecRun claimed. */
+  finalOutcome?: ExecOutcome
+  /** The finalizer wrote the final status (or gave up): teardown no longer waits for it. */
+  finalizeDone?: boolean
+  /** The finalizer's own run.status is going through emit (late adapter statuses are dropped otherwise). */
+  finalEmitting?: boolean
+  /** run.finalized was broadcast (by the finalizer, or best effort by a quit). */
+  finalizedSent?: boolean
+  /** The adapter reported run.status 'error' after the finalizer claimed the run (its text, or ''). */
+  adapterError?: string
+  /** Decision cards the headless policy resolved as a refusal (maxAutoDenials). */
+  autoDenials: number
+  /** Headless policy timers per card id (grace before acting, or the 'wait' timeout). */
+  policyTimers: Map<string, ReturnType<typeof setTimeout>>
+  /** The run-title task (finalizeExecRun joins it). */
+  titleTask?: Promise<void>
+  /** adapter.start() in flight (finalizeExecRun waits for it before stopping). */
+  opening?: Promise<unknown>
+  /** Exec budget (execBudgetUsd of the effective project) and the exec chain's cost before this run. */
+  execBudget?: number
+  chainPriorCostUsd: number
+  /** Agents already checked for an unpriced model (exec budget). */
+  priceChecked: Set<string>
+  /** Whether a model setting or id has a known price on this run's connection (exec budget). Set in start(). */
+  modelPriced?: (model: string) => boolean
+  /** teardown ran (it may be reached from both the finalizer and session.finished). */
+  tornDown?: boolean
 }
 
 /** A message_run message held for a run that is waiting on its user. */
@@ -499,6 +586,11 @@ function excerpt(prompt: string, max = 60): string {
 }
 
 export interface RunManagerOptions {
+  /**
+   * Interactive clients right now: open desktop windows plus attached TUI or interactive sockets. The headless decision
+   * policy waits humanGraceMs before auto-resolving a card while this is above 0. Missing = 0.
+   */
+  interactiveClients?: () => number
   /** OrgAI's data dir, for the allowed-folder checks. Tests may omit it (the data-dir check is then skipped). */
   dataDir?: string
   /**
@@ -507,6 +599,11 @@ export interface RunManagerOptions {
    * Never throws; virtual and engagement projects come back unchanged.
    */
   teamFiles?: { beforeRun(project: Project): { project: Project; warning?: string } }
+  /**
+   * RuntimeContext.controlProtectedPaths (bootstrap: controlProtectedPaths(dataDir, ownership.runtimeDir)). Missing =
+   * controlProtectedPaths(dataDir) when dataDir is set, else none.
+   */
+  controlProtectedPaths?: () => string[]
   /**
    * Save permission changes made from a card onto the stored project (index.ts: ProjectStore.update, which cleans
    * allowedDirectories). `addDirectories` are appended, never replacing; `acceptEdits` sets permissionMode
@@ -592,7 +689,7 @@ export interface RunManagerOptions {
   knowledge?: KnowledgeStoreApi
   /**
    * Push projects:engagementChanged to every window after an agent wrote a note ('notes') or the knowledge graph
-   * ('knowledge') (index.ts passes ipc.ts broadcastEngagementChanged). Missing = no push.
+   * ('knowledge') (bootstrap.ts emits it on the host's HostEventBus). Missing = no push.
    */
   engagementChanged?: (event: EngagementChangedEvent) => void
   /**
@@ -656,6 +753,34 @@ const CONNECTION_LABEL: Record<string, string> = { anthropic: 'Anthropic', opena
 /** A project or role name for one log line: control characters become spaces, at most 80 chars. */
 const logText = (s: string): string => s.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, ' ').slice(0, 80)
 
+/** A decision method's 'applied' outcome. */
+function applied(runId: string, requestId: string, effectiveDecision: string | undefined, opts: DecisionOptions): DecisionOutcome {
+  return {
+    status: 'applied',
+    runId,
+    requestId,
+    ...(effectiveDecision ? { effectiveDecision } : {}),
+    ...(opts.decidedBy ? { decidedBy: opts.decidedBy } : {})
+  }
+}
+
+/** The pending card `id` in one run's maps, with its kind and revision. */
+function findPendingCard(cards: PendingCardMaps, id: string): { kind: CardKind; revision?: number } | undefined {
+  const permission = cards.pending.get(id)
+  if (permission) return { kind: 'permission', revision: permission.request.revision }
+  const question = cards.pendingQuestions.get(id)
+  if (question) return { kind: 'question', revision: question.question.revision }
+  const proposal = cards.pendingProposals.get(id)
+  if (proposal) return { kind: 'proposal', revision: proposal.proposal.revision }
+  const rules = cards.pendingRules.get(id)
+  if (rules) return { kind: 'rules', revision: rules.request.revision }
+  const merge = cards.pendingMerges.get(id)
+  if (merge) return { kind: 'merge', revision: merge.review.revision }
+  const install = cards.pendingInstalls.get(id)
+  if (install) return { kind: 'mcpInstall', revision: install.request.revision }
+  return undefined
+}
+
 export interface StartInput {
   project: Project
   prompt: string
@@ -693,6 +818,63 @@ export interface StartInput {
    * Refused on setup-like runs, quick runs and virtual projects. Continuations carry it from the run they continue.
    */
   team?: RunTeam
+  /** Headless exec overrides (cli-spec 6.2(1)); host clients only. Refused on setup-like runs; stored on RunSummary.overrides. */
+  overrides?: RunOverrides
+  /** The caller holds the 'configure' scope: widening overrides apply (runOverrides.ts effectiveRunProject). */
+  allowWidening?: boolean
+}
+
+/** Internal ContinueRunOptions key: the automatic rate-limit resume (keeps the exec fields like `exec`). */
+const AUTO_RESUME = Symbol('autoResume')
+
+/** continueRun options (cli-spec 6.2(1)). */
+export interface ContinueRunOptions {
+  /** Merged over the overrides carried from the continued run. */
+  overrides?: RunOverrides
+  /** `orgai resume --exec`: keep the chain's execMode / execChainId / waitForReset / decisionPolicy. */
+  exec?: boolean
+  /** The caller holds the 'configure' scope. */
+  allowWidening?: boolean
+  /** Set only by RunManager's own auto-resume. */
+  [AUTO_RESUME]?: true
+}
+
+/** Narrowing overrides a continuation always keeps. */
+const NARROWING_KEYS = ['permissionMode', 'maxBudgetUsd', 'autoContinue', 'maxAutoContinues'] as const
+/** Exec fields a continuation keeps only with `exec` or on the automatic resume. */
+const EXEC_KEYS = ['execMode', 'execChainId', 'waitForReset', 'decisionPolicy', 'allowUnmerged', 'allowUnpricedBudget', 'execStallTimeoutMs', 'allowPeerMessages'] as const
+
+/** Carried exec fields that only a 'configure' caller can set (overridesWidening): kept only with allowWidening. */
+const CONFIGURE_ONLY_EXEC_KEYS: ReadonlySet<string> = new Set(['allowPeerMessages', 'allowUnpricedBudget'])
+
+/**
+ * The overrides of a continuation (cli-spec 6.2(1)): the continued run's narrowing overrides always, its exec fields
+ * only for `orgai resume --exec` or the automatic resume (a later desktop continue strips them), then opts.overrides
+ * on top. allowPeerMessages / allowUnpricedBudget carry over only with allowWidening (an 'operate'-only resume never
+ * inherits a 'configure' grant). A decisionPolicy merges per field over the carried one (opts.overrides may give only
+ * the fields the client set) and the remaining choices take the defaults. undefined when nothing is left.
+ */
+export function continuedOverrides(prev: RunOverrides | undefined, opts: ContinueRunOptions): RunOverrides | undefined {
+  const out: Record<string, unknown> = {}
+  const keepExec = opts.exec === true || opts[AUTO_RESUME] === true
+  for (const k of [...NARROWING_KEYS, ...(keepExec ? EXEC_KEYS : [])]) {
+    if (CONFIGURE_ONLY_EXEC_KEYS.has(k) && opts.allowWidening !== true) continue
+    const v = prev?.[k]
+    if (v !== undefined) out[k] = typeof v === 'object' ? structuredClone(v) : v
+  }
+  for (const [k, v] of Object.entries(opts.overrides ?? {})) {
+    if (v === undefined) continue
+    if (k === 'decisionPolicy') {
+      const merged: Record<string, unknown> = { ...((out.decisionPolicy as object | undefined) ?? {}) }
+      for (const [pk, pv] of Object.entries(v as object)) if (pv !== undefined) merged[pk] = pv
+      out.decisionPolicy = merged
+    } else out[k] = v
+  }
+  if (out.decisionPolicy) {
+    const policy = out.decisionPolicy as Record<string, unknown>
+    for (const k of ['permission', 'rules', 'mcpInstall', 'question', 'proposal', 'merge'] as const) policy[k] ??= DEFAULT_HEADLESS_DECISION_POLICY[k]
+  }
+  return Object.keys(out).length ? (out as RunOverrides) : undefined
 }
 
 /**
@@ -811,10 +993,20 @@ export class RunManager {
   /** Every pending title query, live run or not, with its project id; stopAll and removeProject abort them. */
   private titleAborts = new Map<AbortController, string>()
   private resumeTimers =new Map<string, ReturnType<typeof setTimeout>>()
+  /**
+   * waitForReset exec runs started by a 'configure' caller (allowWidening). The automatic rate-limit resume (the timer
+   * path only) is the same invocation, so it keeps widening overrides; like the resume timers this lives only in this
+   * process. Dropped with the timer (clearResume), at teardown without an armed timer, and when the resume consumes it.
+   */
+  private widenedRuns = new Set<string>()
   /** Set by stopAll({ reason: 'quit' }) and markQuit: no run starts, continues, resumes or takes a message after it. */
   private quitting = false
   /** adapter.start() calls not yet settled; stopAll waits for them so a session that opens during a quit is stopped. */
   private startsInFlight = new Set<Promise<unknown>>()
+  /** Resumes (timer or manual) between their start and the successor run being registered (activity lease; withResumeLease). */
+  private resumesInFlight = 0
+  /** Pending decision cards across runs and tombstones of resolved ones (runs:findDecision, DecisionOutcome). */
+  private decisions = new DecisionIndex()
 
   constructor(
     private adapters: Partial<Record<ProviderId, RuntimeAdapter>>,
@@ -847,6 +1039,7 @@ export class RunManager {
     for (const r of this.runs.values()) {
       if (r.summary.projectId === projectId) {
         r.userStopped = true
+        this.clearExecTimers(r)
         await r.session?.stop().catch(() => {})
         if (r.flushTimer) clearTimeout(r.flushTimer)
         if (r.usageTimer) clearTimeout(r.usageTimer)
@@ -872,6 +1065,8 @@ export class RunManager {
    * the adapter's default. Never for the harness project.
    */
   async completeForProject(project: Project, input: ProjectCompletionInput): Promise<{ text: string; model?: string }> {
+    // A quitting app (or draining host) spends no tokens on helpers.
+    if (this.quitting) throw new Error('OrgAI is quitting; no model calls start now.')
     if (isVirtualProjectId(project.id)) throw new Error('The harness and the built-in assistant projects have no model connection for completions.')
     const { adapter, choice } = this.choose(project, 'setup')
     const connection = this.options.resolveConnection?.(project, choice)
@@ -1022,10 +1217,15 @@ export class RunManager {
     surface,
     quick,
     buildWorkspace,
-    team
+    team,
+    overrides: rawOverrides,
+    allowWidening
   }: StartInput): Promise<RunSummary> {
     this.refuseWhileQuitting()
     if (team !== undefined && team !== 'single') throw new Error('Unknown team for this run.')
+    // Headless exec overrides (cli-spec 6.2(1)) shape work runs only.
+    const overrides: RunOverrides | undefined = rawOverrides && Object.keys(rawOverrides).length ? { ...rawOverrides } : undefined
+    if (overrides && isSetupLikeRun(kind)) throw new Error('Run overrides apply to work runs only.')
     if (team === 'single') {
       if (kind !== 'work') throw new Error('Only a work run can use the single assistant.')
       if (isVirtualProjectId(project.id) || quick || buildWorkspace) throw new Error('The single assistant runs on a saved project only.')
@@ -1091,6 +1291,11 @@ export class RunManager {
     if (quick) summary.quick = { ...quick }
     if (buildWorkspace) summary.buildWorkspace = buildWorkspace
     if (team === 'single') summary.team = 'single'
+    if (overrides) {
+      if (overrides.execMode && !overrides.execChainId) overrides.execChainId = summary.id
+      summary.overrides = overrides
+    }
+    const exec = !!overrides?.execMode
     const active: ActiveRun = {
       summary,
       adapter: choice.adapter,
@@ -1126,9 +1331,18 @@ export class RunManager {
       lastUsageAt: 0,
       usageDirty: false,
       record: { summary, agents: {}, transcript: [], logs: [] },
-      ...(resumeSessionId ? { resumeSessionId } : {})
+      ...(resumeSessionId ? { resumeSessionId } : {}),
+      ...(allowWidening ? { allowWidening: true } : {}),
+      rootTurnGen: 0,
+      activityGen: 0,
+      autoDenials: 0,
+      policyTimers: new Map(),
+      chainPriorCostUsd: overrides?.execChainId ? this.chainPriorCost(project.id, overrides.execChainId, summary.id) : 0,
+      priceChecked: new Set()
     }
     this.runs.set(summary.id, active)
+    // Only the automatic resume of a waitForReset chain is the same invocation; nothing else re-applies the grant.
+    if (allowWidening && overrides?.execMode && overrides.waitForReset) this.widenedRuns.add(summary.id)
     this.store.upsert(summary)
 
     // Settings are read at each pricing call, so a saved override applies to a live run on its next usage update.
@@ -1144,14 +1358,35 @@ export class RunManager {
         ...(community ? { community } : {})
       }
     }
+    // Exec budgets (cli-spec 6.2(3)): a role's model setting is read like the pricing aliases (tier name -> the
+    // connection's tier model) before its price is looked up. 'inherit' has no model of its own and is not checked.
+    active.modelPriced = (setting: string): boolean => {
+      const tierModels = this.options.appSettings?.().connections?.[choice.connection]?.tierModels ?? {}
+      // An empty catalog means "not discovered yet": the connection's builtin list answers then (modelForTier).
+      const catalog = this.options.catalog?.() ?? []
+      const resolved = resolveModelSetting(setting, { connection: choice.connection, tierModels, ...(catalog.length ? { catalog } : {}) })
+      if (!resolved || resolved.model === 'inherit') return true
+      const ctx = pricing()
+      if (resolvePrice(resolved.model, ctx) !== null) return true
+      // A bare tier name or Claude alias the connection does not map is resolved by the CLI itself (latest model of the
+      // family): its real id is only known from usage reports, which checkExecBudget prices live.
+      return !!settingTier(resolved.model) && !Object.hasOwn(ctx.aliases ?? {}, resolved.model)
+    }
 
     const emit = (raw: RunEvent): void => {
       // Usage is computed by the host; an adapter's run.usage is dropped.
       if (raw.type === 'run.usage') return
       if (raw.type === 'skill.used' && !this.noteSkillUsed(active, raw)) return
       let e = raw
+      // An exec run the finalizer claimed (cli-spec 6.2(2)): it writes the final status itself; later adapter statuses
+      // (the abort's 'finished' / 'error', a stray 'idle') never change status, execOutcome or endedBy.
+      if (e.type === 'run.status' && active.finalizing && !active.finalEmitting) {
+        if (e.sessionId) summary.sessionId = e.sessionId
+        if (e.status === 'error') active.adapterError = e.error ?? active.adapterError ?? ''
+        return
+      }
       // A session that ends after a usage-limit rejection is paused, not finished.
-      if (e.type === 'run.status' && (e.status === 'finished' || e.status === 'error') && active.limited && !active.userStopped) {
+      if (e.type === 'run.status' && (e.status === 'finished' || e.status === 'error') && active.limited && !active.userStopped && !active.finalizing) {
         const now = Date.now()
         const until = active.limited.until && active.limited.until > now ? active.limited.until : now + DEFAULT_PAUSE_MS
         e = { ...e, status: 'paused', pausedUntil: until, pauseReason: pauseReasonText(active.limited.window, e.error), autoResume: true }
@@ -1164,7 +1399,7 @@ export class RunManager {
         active.cutOff = new Set(Object.values(active.record.agents).filter(isLiveAgent).map((a) => a.id))
       }
       // No card outlives its run: cancel every pending card before a terminal (or paused) status goes out.
-      if (outcome || (e.type === 'run.status' && e.status === 'paused')) cancelPending(active, summary.id, this.broadcast)
+      if (outcome || (e.type === 'run.status' && e.status === 'paused')) this.cancelCards(active)
       if (e.type === 'agent.upsert') {
         let agent = e.agent
         if (active.outcome) {
@@ -1191,6 +1426,9 @@ export class RunManager {
           }
         }
         if (e.status === 'paused') {
+          // An exec run without waitForReset ends 'rate-limited' here: no resume timer is armed (a reset already in the
+          // past would otherwise resume it before the finalizer runs), and it waits for the user like autoResume false.
+          if (exec && !overrides?.waitForReset) e = { ...e, autoResume: false }
           summary.pausedUntil = e.pausedUntil
           summary.pauseReason = e.pauseReason
           summary.autoResume = e.autoResume
@@ -1221,6 +1459,7 @@ export class RunManager {
           if (settled !== agent) emit({ type: 'agent.upsert', runId: summary.id, agent: settled })
         }
       }
+      if (exec) this.execEventSeen(active, e)
     }
 
     active.emit = emit
@@ -1230,7 +1469,7 @@ export class RunManager {
     // Advisory title from the fast model; never awaited, never fails the run.
     // The harness's own resume message is never titled (the continued run's title is carried instead).
     if (kind === 'work' && !summary.title && prompt.trim() && prompt.trim() !== RESUME_TEXT.trim()) {
-      void this.titleRun(active, adapter, {
+      active.titleTask = this.titleRun(active, adapter, {
         prompt,
         cwd: project.path,
         model: this.options.fastModel?.(project, choice),
@@ -1406,7 +1645,11 @@ export class RunManager {
         else if (settle === 'folders') overlay('allowedDirectories')
         else overlay('permissionMode')
         live = noFolderWrites({ ...next, path: live.path })
-        ctx.project = live
+        // The run's overrides are re-applied to the saved project (cli-spec 6.2(1)): a tightened project re-clamps them.
+        ctx.project = effectiveRunProject(live, summary.overrides, { allowWidening: active.allowWidening })
+        ctx.autoContinue = ctx.project.autoContinue !== false && planNudgesApply(summary)
+        ctx.maxAutoContinues = ctx.project.maxAutoContinues ?? DEFAULT_MAX_AUTO_CONTINUES
+        this.applyExecBudget(active, ctx)
         const skills = settle === 'mcpServers' || settle === 'skills'
         // Grant changes reach the live run's roles (review M1): the adapters' gates, restarts and role lookups read these
         // objects. An org chart approval (skills false) leaves them as they started.
@@ -1522,9 +1765,12 @@ export class RunManager {
         }
         return imported.length ? rules.filter((r) => !imported.includes(r)) : rules
       }
+      // What the run sees (cli-spec 6.2(1)): the project with its overrides applied, before ctx exists, so the adapter's
+      // permission mode and continuation host read the effective values from turn 1.
+      const runProject = effectiveRunProject(project, summary.overrides, { allowWidening: active.allowWidening })
       const ctx: RuntimeContext = {
         run: summary,
-        project,
+        project: runProject,
         ...(folderLoads ? { folderConfigLoads: folderLoads } : {}),
         roles:
           kind === 'setup' ? [architectRole(builtinModel, { kind: projectKindOf(project) })]
@@ -1585,6 +1831,10 @@ export class RunManager {
         // A quick run works in a folder the user never made a project: only this run's own grants count, never the
         // folder's saved rules file (it is untrusted), and nothing is ever written there (decideRules).
         protectedDirectories: () => protectedDirsOf(this.options.dataDir),
+        // Only with a source: an empty answer from one makes the adapters' gate refuse shell commands (review M2).
+        ...(this.options.controlProtectedPaths || this.options.dataDir
+          ? { controlProtectedPaths: () => this.options.controlProtectedPaths?.() ?? (this.options.dataDir ? controlProtectedPaths(this.options.dataDir) : []) }
+          : {}),
         allowedRules: () => [...new Set([...(restricted ? [] : withoutUnloadedImports(listRules({ file: this.rulesFileFor(live) }))), ...active.runRules])],
         // Where the project keeps its saved rules: the folder file for code projects, OrgAI's data folder for engagements.
         ...(restricted
@@ -1691,24 +1941,41 @@ export class RunManager {
         updatePlan,
         pendingInteractions: () => pendingCount(active),
         // A Chat with the single assistant is a conversation: no plan nudges (planNudgesApply).
-        autoContinue: project.autoContinue !== false && planNudgesApply(summary),
-        maxAutoContinues: project.maxAutoContinues ?? DEFAULT_MAX_AUTO_CONTINUES,
+        autoContinue: runProject.autoContinue !== false && planNudgesApply(summary),
+        maxAutoContinues: runProject.maxAutoContinues ?? DEFAULT_MAX_AUTO_CONTINUES,
+        onRootTurnEnded: (e: RootTurnEnd) => this.rootTurnEnded(active, e),
+        noteActivity: () => this.bumpActivity(active),
         ...(this.options.continuationDelayMs !== undefined ? { continuationDelayMs: this.options.continuationDelayMs } : {}),
         completeSetup: async (text) => {
           const updated = this.setup.complete(project.id, text)
           this.broadcast({ type: 'project.updated', runId: summary.id, project: updated })
         }
       }
+      active.ctx = ctx
+      if (exec) {
+        // Budget before launch (cli-spec 6.2(3)): a spent chain (maxBudgetUsd 0 included) or an unpriced role model
+        // ends the run as 'budget-exceeded' without ever starting the adapter.
+        this.applyExecBudget(active, ctx)
+        const refusal = this.preLaunchBudgetRefusal(active, ctx)
+        if (refusal) {
+          emit({ type: 'log', runId: summary.id, level: 'warn', message: refusal })
+          await this.finalizeExecRun(summary.id, 'budget-exceeded', { endedBy: 'budget' })
+          return summary
+        }
+      }
       const opening = adapter.start(ctx)
       this.startsInFlight.add(opening)
+      active.opening = opening
       try {
         active.session = await opening
       } finally {
         this.startsInFlight.delete(opening)
+        active.opening = undefined
       }
       void active.session.finished.finally(() => this.teardown(active))
+      if (exec) this.armStall(active)
       // The run was ended (End session or the app quitting) while its session was still opening: stop it at once.
-      if (active.userStopped) {
+      if (active.userStopped || active.finalizing) {
         this.stopSession(active)?.catch((err: unknown) => log.warn(`Run ${summary.id}: stopping a session that opened after its end failed: ${(err as Error)?.message ?? err}`))
       }
     } catch (e) {
@@ -1717,6 +1984,398 @@ export class RunManager {
       this.teardown(active)
     }
     return summary
+  }
+
+  // ---------- headless exec: budget, settlement and the finalizer (cli-spec 6.2) ----------
+
+  /** The cost of the exec chain's other runs (stored and live), for the chain budget. */
+  private chainPriorCost(projectId: string, chainId: string, excludeId: string): number {
+    const byId = new Map<string, RunSummary>()
+    for (const r of this.store.list(projectId)) byId.set(r.id, r)
+    for (const a of this.runs.values()) if (a.summary.projectId === projectId) byId.set(a.summary.id, a.summary)
+    let sum = 0
+    for (const r of byId.values()) {
+      if (r.id === excludeId || r.overrides?.execChainId !== chainId) continue
+      const cost = r.usage?.costUsd ?? r.totalCostUsd
+      if (typeof cost === 'number' && Number.isFinite(cost) && cost > 0) sum += cost
+    }
+    return sum
+  }
+
+  /** The exec budget of the run's effective project and what is left of it for the adapter (ctx.budgetUsd). */
+  private applyExecBudget(a: ActiveRun, ctx: RuntimeContext): void {
+    const o = a.summary.overrides
+    if (!o?.execMode) return
+    a.execBudget = execBudgetUsd(ctx.project, o)
+    if (a.execBudget !== undefined) ctx.budgetUsd = Math.max(0, a.execBudget - a.chainPriorCostUsd)
+    else delete ctx.budgetUsd
+  }
+
+  /** Why an exec run may not start under its budget, or null. */
+  private preLaunchBudgetRefusal(a: ActiveRun, ctx: RuntimeContext): string | null {
+    const budget = a.execBudget
+    if (budget === undefined) return null
+    if (a.chainPriorCostUsd >= budget) {
+      return `The budget of $${budget.toFixed(2)} is spent ($${a.chainPriorCostUsd.toFixed(2)} so far in this exec chain); the run did not start.`
+    }
+    if (a.summary.overrides?.allowUnpricedBudget || !a.modelPriced) return null
+    for (const role of ctx.roles) {
+      if (a.modelPriced(role.model)) continue
+      const name = logText(String(role.model))
+      log.warn(`Run ${a.summary.id}: model ${name} (role ${logText(role.name)}) has no known price; a budget cannot be enforced.`)
+      return `Model ${name} (role ${logText(role.name)}) has no known price, so the budget cannot be enforced; the run did not start. Set a model price in App settings or allow unpriced models.`
+    }
+    return null
+  }
+
+  /** Synchronous budget check on every agent.upsert of an exec run (after pricing). */
+  private checkExecBudget(a: ActiveRun, agent: AgentInstance): void {
+    const budget = a.execBudget
+    if (budget === undefined || a.finalizing) return
+    const runId = a.summary.id
+    if (!a.summary.overrides?.allowUnpricedBudget) {
+      const unpriced = agent.usage?.models.find((m) => m.costUsd === null)
+      let model = unpriced?.model
+      if (!model && !a.priceChecked.has(agent.id)) {
+        a.priceChecked.add(agent.id)
+        // Mock models are fake ids priced by the mock's own provider cost; only their usage entries are checked.
+        if (a.adapter !== 'mock' && agent.model && a.modelPriced && !a.modelPriced(agent.model)) model = agent.model
+      }
+      if (model) {
+        const message = `Model ${logText(model)} has no known price, so the budget cannot be enforced; the run ends.`
+        log.warn(`Run ${runId}: ${message}`)
+        a.emit({ type: 'log', runId, level: 'warn', message })
+        void this.finalizeExecRun(runId, 'budget-exceeded', { endedBy: 'budget' })
+        return
+      }
+    }
+    const cost = a.summary.usage?.costUsd ?? 0
+    if (a.chainPriorCostUsd + cost >= budget) {
+      a.emit({ type: 'log', runId, level: 'warn', message: `The budget of $${budget.toFixed(2)} is reached ($${(a.chainPriorCostUsd + cost).toFixed(2)} estimated); the run ends.` })
+      void this.finalizeExecRun(runId, 'budget-exceeded', { endedBy: 'budget' })
+    }
+  }
+
+  /** RunManager's view of an exec run's own events (after they were recorded and broadcast). */
+  private execEventSeen(a: ActiveRun, e: RunEvent): void {
+    if (e.type === 'agent.upsert') {
+      this.bumpActivity(a)
+      this.checkExecBudget(a, e.agent)
+      return
+    }
+    if (e.type !== 'run.status') return
+    if (e.status === 'running') this.bumpActivity(a)
+    if (a.finalizing || a.finalEmitting) return
+    const runId = a.summary.id
+    if (e.status === 'paused') {
+      // waitForReset leaves the outcome to the auto-resume, unless none is armed (an adapter's autoResume false).
+      if (!a.summary.overrides?.waitForReset || e.autoResume === false) void this.finalizeExecRun(runId, 'rate-limited')
+    } else if (e.status === 'error') {
+      const auth = !!a.lastTurnEnd?.isAuthError || isAuthFailure({ text: e.error, isError: true })
+      void this.finalizeExecRun(runId, auth ? 'auth-error' : 'failed')
+    } else if (e.status === 'finished') {
+      // The session ended without the finalizer: a cut (End session, quit) is 'interrupted', else judge the plan.
+      if (a.userStopped) {
+        void this.finalizeExecRun(runId, 'interrupted', { endedBy: a.endedBy ?? 'user' })
+      } else {
+        const r = execOutcomeFor({ plan: a.record.plan, agents: Object.values(a.record.agents), allowUnmerged: a.summary.overrides?.allowUnmerged })
+        void this.finalizeExecRun(runId, r.outcome, { endedBy: r.endedBy })
+      }
+    }
+  }
+
+  /** ctx.onRootTurnEnded: every root turn end, failed ones included, before the adapter's 'idle'. */
+  private rootTurnEnded(a: ActiveRun, e: RootTurnEnd): void {
+    if (typeof e?.turnGen === 'number' && Number.isFinite(e.turnGen)) a.rootTurnGen = e.turnGen
+    a.lastTurnEnd = e
+    a.activityGen++
+    if (!a.summary.overrides?.execMode || a.finalizing) return
+    const runId = a.summary.id
+    if (e.errorSubtype === 'error_max_budget_usd') {
+      void this.finalizeExecRun(runId, 'budget-exceeded', { endedBy: 'budget' })
+      return
+    }
+    if (!e.ok && !e.limited && !e.interrupted) {
+      void this.finalizeExecRun(runId, e.isAuthError ? 'auth-error' : 'failed')
+      return
+    }
+    this.armSettle(a)
+    this.armStall(a)
+  }
+
+  /** Activity that may keep an exec run from settling: bump activityGen, re-arm the settle check and the stall watchdog. */
+  private bumpActivity(a: ActiveRun): void {
+    a.activityGen++
+    if (!a.summary.overrides?.execMode || a.finalizing) return
+    this.armSettle(a)
+    this.armStall(a)
+  }
+
+  private armSettle(a: ActiveRun, delay: number = EXEC_SETTLE_DEBOUNCE_MS): void {
+    if (a.settleTimer) clearTimeout(a.settleTimer)
+    const gen = a.activityGen
+    const turn = a.rootTurnGen
+    a.settleTimer = setTimeout(() => {
+      a.settleTimer = undefined
+      // A later activity re-armed it; this one is stale.
+      if (gen !== a.activityGen || turn !== a.rootTurnGen) return
+      this.trySettleExecRun(a)
+    }, delay)
+  }
+
+  /** At a stable (rootTurnGen, activityGen): finalize the exec run if it is quiescent (execSettle.ts). */
+  private trySettleExecRun(a: ActiveRun): void {
+    if (!a.summary.overrides?.execMode || a.finalizing || this.runs.get(a.summary.id) !== a) return
+    const st = a.summary.status
+    if (st !== 'running' && st !== 'idle') return
+    const settlement = a.session?.settlement?.()
+    const input = {
+      settlement,
+      rootTurnGen: a.rootTurnGen,
+      limitHold: !!a.limitHold,
+      held: a.held,
+      agents: Object.values(a.record.agents),
+      openCards: pendingCount(a),
+      inboxLength: a.inbox.length,
+      flushing: !!a.flushing,
+      plan: a.record.plan,
+      autoContinue: a.ctx?.autoContinue === true
+    }
+    if (execQuiescent(input)) {
+      const r = execOutcomeFor({ plan: a.record.plan, agents: input.agents, allowUnmerged: a.summary.overrides.allowUnmerged })
+      void this.finalizeExecRun(a.summary.id, r.outcome, { endedBy: r.endedBy })
+      return
+    }
+    // Adapter-side state (a continuation timer, a deferred restart) can change without any event: poll while idle.
+    if (settlement?.rootIdle) this.armSettle(a, EXEC_SETTLE_POLL_MS)
+  }
+
+  /**
+   * The stall watchdog: reset on every activity; fires after execStallTimeoutMs without any. While the adapter says
+   * the root is busy it re-arms, but only EXEC_STALL_BUSY_ROUNDS times in a row with no activity at all (review M4):
+   * a lost harness notice or a hung turn that never reports back must not keep an exec run alive forever. Any activity
+   * (bumpActivity, a root turn end) starts the count again; a card under a policy timer never counts.
+   */
+  private armStall(a: ActiveRun, busyRounds = 0): void {
+    if (a.stallTimer) clearTimeout(a.stallTimer)
+    a.stallTimer = undefined
+    const o = a.summary.overrides
+    if (!o?.execMode || a.finalizing) return
+    const gen = a.activityGen
+    // A non-positive timeout (a record from before cleanRunOverrides refused one) would re-arm every tick: use the default.
+    const set = o.execStallTimeoutMs
+    const ms = timerDelay(typeof set === 'number' && set > 0 ? set : DEFAULT_EXEC_STALL_TIMEOUT_MS)
+    a.stallTimer = setTimeout(() => {
+      a.stallTimer = undefined
+      if (a.finalizing || this.runs.get(a.summary.id) !== a) return
+      if (gen !== a.activityGen) return this.armStall(a)
+      // A paused run waits for its reset (waitForReset); a card under the policy's grace or 'wait' timer suspends it.
+      if (a.summary.status === 'paused') return
+      if (a.policyTimers.size > 0) return this.armStall(a)
+      const settlement = a.session?.settlement?.()
+      // Without a settlement view the adapter cannot say it is busy: only this watchdog ends such a run.
+      if (settlement && !settlement.rootIdle) {
+        if (busyRounds + 1 < EXEC_STALL_BUSY_ROUNDS) return this.armStall(a, busyRounds + 1)
+        log.warn(`Run ${a.summary.id}: busy with no activity for ${ms * EXEC_STALL_BUSY_ROUNDS} ms; ending it as stalled.`)
+        void this.finalizeExecRun(a.summary.id, 'stalled', { endedBy: 'policy' })
+        return
+      }
+      log.warn(`Run ${a.summary.id}: no activity for ${ms} ms while not settled; ending it as stalled.`)
+      void this.finalizeExecRun(a.summary.id, 'stalled', { endedBy: 'policy' })
+    }, ms)
+  }
+
+  private clearExecTimers(a: ActiveRun): void {
+    if (a.settleTimer) clearTimeout(a.settleTimer)
+    if (a.stallTimer) clearTimeout(a.stallTimer)
+    a.settleTimer = undefined
+    a.stallTimer = undefined
+    for (const t of a.policyTimers.values()) clearTimeout(t)
+    a.policyTimers.clear()
+  }
+
+  /** A run.status from the finalizer itself (late adapter statuses are dropped). */
+  private finalEmit(a: ActiveRun, e: Extract<RunEvent, { type: 'run.status' }>): void {
+    a.finalEmitting = true
+    try {
+      a.emit(e)
+    } finally {
+      a.finalEmitting = false
+    }
+  }
+
+  /**
+   * End an exec run with `outcome` (cli-spec 6.2(2) item 4). Idempotent: the first call claims the outcome and later
+   * calls return the same promise. Stops the session and waits for it (EXEC_FINALIZE_STOP_TIMEOUT_MS), joins the title
+   * (EXEC_TITLE_JOIN_MS), flushes usage, writes the final status, execOutcome and endedBy, persists, and broadcasts
+   * exactly one run.finalized. RunManager never calls stop() for policy, budget or completion finishes.
+   */
+  finalizeExecRun(runId: string, outcome: ExecOutcome, opts: { endedBy?: RunEndedBy } = {}): Promise<void> {
+    const a = this.runs.get(runId)
+    if (!a) return Promise.resolve()
+    if (a.finalizing) return a.finalizing
+    a.finalOutcome = outcome
+    const endedBy = opts.endedBy !== undefined ? opts.endedBy : defaultEndedBy(outcome)
+    const run = this.runFinalizer(a, outcome, endedBy)
+      .catch((err: unknown) => log.warn(`Run ${runId}: finalizing failed: ${(err as Error)?.message ?? err}`))
+      .finally(() => {
+        a.finalizeDone = true
+      })
+    a.finalizing = run
+    return run
+  }
+
+  private async runFinalizer(a: ActiveRun, outcome: ExecOutcome, endedBy: RunEndedBy | undefined): Promise<void> {
+    // Claimed synchronously by finalizeExecRun; the body starts on a microtask so the caller's emit finishes first.
+    await Promise.resolve()
+    const s = a.summary
+    this.clearExecTimers(a)
+    // A finalized run never resumes by itself (a waitForReset pause stopped by the user included).
+    this.clearResume(s.id)
+    if (s.status === 'paused') s.autoResume = false
+    if (endedBy) a.endedBy ??= endedBy
+    if (outcome === 'interrupted') {
+      a.userStopped = true
+      if (endedBy === 'user') s.endedBy = 'user'
+      if (s.status === 'starting' || s.status === 'running' || s.status === 'idle') this.finalEmit(a, { type: 'run.status', runId: s.id, status: 'stopping' })
+      this.flush(a)
+    }
+    // A session still opening is waited for, then stopped with the rest.
+    if (!a.session && a.opening) await raceTimeout(a.opening.catch(() => undefined), EXEC_FINALIZE_STOP_TIMEOUT_MS)
+    let timedOut = false
+    if (a.session) {
+      const stopping = this.stopSession(a)?.catch((err: unknown) => log.warn(`Run ${s.id}: stop failed while finalizing: ${(err as Error)?.message ?? err}`))
+      timedOut = await raceTimeout(Promise.all([stopping, a.session.finished.catch(() => undefined)]), EXEC_FINALIZE_STOP_TIMEOUT_MS)
+      if (timedOut) log.warn(`Run ${s.id}: the session did not finish within ${EXEC_FINALIZE_STOP_TIMEOUT_MS} ms of being stopped; finalizing anyway.`)
+    }
+    // The title may still land within EXEC_TITLE_JOIN_MS; after that it is cancelled so it cannot race persistence.
+    if (a.titleTask) await raceTimeout(a.titleTask, EXEC_TITLE_JOIN_MS)
+    a.titleAbort?.abort()
+    // The final status, unless the run already reached one (an adapter error, a natural end, the pause).
+    // A paused run the user stopped ('interrupted') is finished, not left paused.
+    const terminal = s.status === 'finished' || s.status === 'error' || (s.status === 'paused' && outcome !== 'interrupted')
+    if (!terminal) {
+      const status = outcome === 'failed' || outcome === 'auth-error' ? 'error' : outcome === 'rate-limited' ? 'paused' : 'finished'
+      const error =
+        status === 'error' ? a.adapterError || s.error || (a.lastTurnEnd?.errorSubtype ? `The turn ended with ${logText(a.lastTurnEnd.errorSubtype)}.` : 'The run failed.') : undefined
+      this.finalEmit(a, { type: 'run.status', runId: s.id, status, ...(error ? { error } : {}), ...(status === 'paused' ? { autoResume: false } : {}) })
+    }
+    this.closeTimers(a)
+    this.refreshUsage(a, true)
+    s.execOutcome = outcome
+    if (endedBy) s.endedBy = endedBy
+    else if (s.endedBy !== 'app') delete s.endedBy
+    try {
+      this.store.upsert(s)
+    } catch (e) {
+      log.warn(`Run ${s.id}: could not persist the finalized summary: ${(e as Error).message}`)
+    }
+    this.flush(a)
+    a.finalizeDone = true
+    // The run leaves the live set here once its final status is written (session.finished's teardown waited for it).
+    if (this.runs.get(s.id) === a) this.teardown(a)
+    if (!a.finalizedSent) {
+      a.finalizedSent = true
+      this.broadcast({ type: 'run.finalized', runId: s.id, ...(s.overrides?.execChainId ? { execChainId: s.overrides.execChainId } : {}), outcome, summary: { ...s } })
+    }
+  }
+
+  // ---------- decision cards: index, tombstones and the headless policy ----------
+
+  /** A card was raised (after its *.request broadcast): index it, count the activity and apply the headless policy. */
+  private cardCreated(a: ActiveRun, kind: CardKind, id: string, card: unknown): void {
+    this.decisions.add(id, { runId: a.summary.id, projectId: a.summary.projectId, kind, revision: 1 })
+    this.bumpActivity(a)
+    this.applyPolicy(a, kind, id, card)
+  }
+
+  /** A card left the pending set: tombstone it, drop its policy timer, count the activity. */
+  private cardResolved(a: ActiveRun, kind: CardKind, id: string, status: 'applied' | 'cancelled', effectiveDecision?: string, decidedBy?: DecidedBy): void {
+    const t = a.policyTimers.get(id)
+    if (t) clearTimeout(t)
+    a.policyTimers.delete(id)
+    this.decisions.resolve(id, { status, kind, runId: a.summary.id, ...(effectiveDecision ? { effectiveDecision } : {}), ...(decidedBy ? { decidedBy } : {}) })
+    this.bumpActivity(a)
+  }
+
+  /** Cancel every open card of a run (its end or pause) and record 'cancelled' tombstones. */
+  private cancelCards(a: ActiveRun): void {
+    cancelPending(a, a.summary.id, this.broadcast, (id, kind) => this.cardResolved(a, kind, id, 'cancelled'))
+  }
+
+  /** The 'not pending' answer of a decision method: from the tombstones, else not-found. */
+  private decisionMiss(requestId: string): DecisionOutcome {
+    return this.decisions.missOutcome(requestId)
+  }
+
+  /** expectedRevision given and different from the card's revision. */
+  private staleRevision(revision: number | undefined, opts: DecisionOptions): boolean {
+    return opts.expectedRevision !== undefined && opts.expectedRevision !== (revision ?? 1)
+  }
+
+  /** The decision method for a card kind (the headless policy answers through the same paths as a human). */
+  private decideCard<K extends CardKind>(kind: K, runId: string, id: string, decision: PolicyDecisions[K], opts: DecisionOptions): DecisionOutcome {
+    switch (kind) {
+      case 'permission':
+        return this.decide(runId, id, decision as PolicyDecisions['permission'], opts)
+      case 'rules':
+        return this.decideRules(runId, id, decision as PolicyDecisions['rules'], opts)
+      case 'proposal':
+        return this.decideProposal(runId, id, decision as PolicyDecisions['proposal'], opts)
+      case 'question':
+        return this.answerQuestion(runId, id, decision as PolicyDecisions['question'], opts)
+      case 'merge':
+        return this.decideMerge(runId, id, decision as PolicyDecisions['merge'], opts)
+      default:
+        return this.answerMcpInstall(runId, id, decision as PolicyDecisions['mcpInstall'], opts)
+    }
+  }
+
+  /**
+   * Headless decision policy (cli-spec 6.2(1)) on an exec run: act after a 0 ms timer (so the *.request event goes out
+   * first), or after humanGraceMs while an interactive client is attached. A human answer clears the timer.
+   */
+  private applyPolicy(a: ActiveRun, kind: CardKind, id: string, card: unknown): void {
+    const o = a.summary.overrides
+    if (!o?.execMode || a.finalizing) return
+    const policy = fullPolicy(o.decisionPolicy)
+    const runId = a.summary.id
+    let interactive = 0
+    try {
+      interactive = this.options.interactiveClients?.() ?? 0
+    } catch {
+      interactive = 0
+    }
+    const act = (): void => {
+      a.policyTimers.delete(id)
+      if (a.finalizing || this.runs.get(runId) !== a || !findPendingCard(a, id)) return
+      const action = policyAction(kind, card, policy)
+      if (action.kind === 'fail') {
+        a.emit({ type: 'log', runId, level: 'warn', message: `A ${kind} card needs a decision and the headless policy fails the run on it.` })
+        void this.finalizeExecRun(runId, 'needs-decision', { endedBy: 'policy' })
+        return
+      }
+      if (action.kind === 'wait') {
+        a.policyTimers.set(
+          id,
+          setTimeout(() => {
+            a.policyTimers.delete(id)
+            if (a.finalizing || this.runs.get(runId) !== a || !findPendingCard(a, id)) return
+            a.emit({ type: 'log', runId, level: 'warn', message: `Nobody answered a ${kind} card within ${policy.waitTimeoutMs} ms; the run ends.` })
+            void this.finalizeExecRun(runId, 'needs-decision', { endedBy: 'policy' })
+          }, timerDelay(policy.waitTimeoutMs))
+        )
+        return
+      }
+      this.decideCard(kind, runId, id, action.decision, { decidedBy: { surface: 'policy' } })
+      if (!countsAsDenial(kind)) return
+      a.autoDenials++
+      if (a.autoDenials >= policy.maxAutoDenials) {
+        a.emit({ type: 'log', runId, level: 'warn', message: `The headless policy refused ${a.autoDenials} decision${a.autoDenials === 1 ? '' : 's'} (limit ${policy.maxAutoDenials}); the run ends.` })
+        void this.finalizeExecRun(runId, 'needs-decision', { endedBy: 'policy' })
+      }
+    }
+    a.policyTimers.set(id, setTimeout(act, interactive > 0 ? timerDelay(policy.humanGraceMs) : 0))
   }
 
   /** Close the open wait / limit / idle intervals (the run ended or paused). */
@@ -2065,11 +2724,24 @@ export class RunManager {
    * peer messages, persist the record and drop the run from the live set.
    */
   private teardown(active: ActiveRun): void {
+    // Reached from session.finished and, for an exec run that never started or never finished, from the finalizer.
+    if (active.tornDown) return
+    // An exec run the finalizer claimed stays live until its final status is written (it may still wait for the
+    // title), so listLive, continueRun and a quit's writeCut never see it gone while it still reads 'idle'.
+    if (active.finalizing && !active.finalizeDone) {
+      void active.finalizing.finally(() => this.teardown(active))
+      return
+    }
+    active.tornDown = true
     const runId = active.summary.id
+    // A widened chain's grant lives only until its own automatic resume (an armed timer); any other end drops it.
+    if (!this.resumeTimers.has(runId)) this.widenedRuns.delete(runId)
     // Every waiting card (permissions, proposals, questions, rules, merges, installs) is settled as cancelled.
-    cancelPending(active, runId, this.broadcast)
+    this.cancelCards(active)
     // Waiting knowledge.recalled events are sent once and their timers stop (nothing is emitted after this).
     this.flushRecalled(active)
+    // After the cards and the recalled events: their cancellation counts as activity and would re-arm the exec timers.
+    this.clearExecTimers(active)
     // The final usage goes out and is saved with the record, whatever the throttle still holds.
     // Always recompute after the timers close so waitingMs / idleMs / limitHoldMs are final (publish skips no-op changes).
     this.closeTimers(active)
@@ -2175,6 +2847,50 @@ export class RunManager {
     return this.runs.size
   }
 
+  /** What a live run is doing (runActivity.ts): working without the user, ending, or only waiting on the user. */
+  private activityStateOf(a: ActiveRun): RunActivityState {
+    let settlement: SessionSettlement | undefined
+    try {
+      settlement = a.session?.settlement?.()
+    } catch {
+      settlement = undefined
+    }
+    return runActivityState({
+      status: a.summary.status,
+      openCards: pendingCount(a),
+      held: a.held,
+      limitHold: !!a.limitHold,
+      agents: Object.values(a.record.agents),
+      peerMessagesPending: a.inbox.length > 0 || !!a.flushing,
+      ...(settlement ? { settlement } : {})
+    })
+  }
+
+  /**
+   * Live runs doing work without the user right now (review H3): the desktop asks before closing its last window
+   * only for these. Idle runs, runs with an open card and runs held by an interrupt or a usage limit do not count.
+   */
+  workingRunCount(): number {
+    let n = 0
+    for (const a of this.runs.values()) if (this.activityStateOf(a) === 'working') n++
+    return n
+  }
+
+  /**
+   * Activity ('liveRuns', cli-spec 3.2(4)): live runs that keep a host from going idle. Working and ending runs, and
+   * exec runs still in flight (their follower, stall watchdog and decision policy own their end). A run that only
+   * waits on its user does not: a background host's idle exit then ends it like a quit would (continuable).
+   */
+  busyRunCount(): number {
+    let n = 0
+    for (const a of this.runs.values()) {
+      const s = a.summary
+      if (!LIVE_STATUSES.has(s.status)) continue
+      if (keepsHostBusy(this.activityStateOf(a), !!s.overrides?.execMode && !s.execOutcome)) n++
+    }
+    return n
+  }
+
   /** runs:listLive: every live run (session open or opening) across all projects, every kind, oldest first. Copies. */
   liveRuns(): RunSummary[] {
     return [...this.runs.values()]
@@ -2269,6 +2985,10 @@ export class RunManager {
     if (isSetupLikeRun(targetSummary.kind) || isVirtualProjectId(targetSummary.projectId) || targetSummary.team === 'single') return { result: 'refused', refusal: 'not-work' }
     // An ended run is just not live; checking its project's flag would name a project the caller cannot list.
     if (!target) return { result: 'not-live' }
+    // A headless exec run takes no peer messages unless its caller allowed them (RunOverrides.allowPeerMessages).
+    if (target.summary.overrides?.execMode && !target.summary.overrides.allowPeerMessages) {
+      return { result: 'refused', refusal: 'messaging-off', offProjects: [target.projectName] }
+    }
     // Opt-in per project (Project.runMessaging): both ends must allow it; one project only needs its own flag.
     const off: string[] = []
     if (!this.messagingOn(sender)) off.push(sender.projectName)
@@ -2370,9 +3090,14 @@ export class RunManager {
   /** Deliver held peer messages, oldest first, while nothing makes the run wait on its user. */
   private flushInbox(a: ActiveRun): Promise<void> {
     const drain = async (): Promise<void> => {
-      while (a.inbox.length && this.deliveryBlocked(a) === null && this.runs.get(a.summary.id) === a) {
-        const m = a.inbox.shift()!
-        m.delivered = await this.deliverPeerMessage(a, m)
+      this.bumpActivity(a)
+      try {
+        while (a.inbox.length && this.deliveryBlocked(a) === null && this.runs.get(a.summary.id) === a) {
+          const m = a.inbox.shift()!
+          m.delivered = await this.deliverPeerMessage(a, m)
+        }
+      } finally {
+        this.bumpActivity(a)
       }
     }
     // Chained: a flush started while another runs waits for it, so messages leave strictly oldest first.
@@ -2422,6 +3147,7 @@ export class RunManager {
       delete request.suggestions
       delete request.ruleLabels
     } else if ('referenceFolder' in request) delete request.referenceFolder
+    request.revision = 1
     logPermission(active.summary, request)
     return new Promise((resolve) => {
       active.pending.set(request.id, {
@@ -2432,6 +3158,7 @@ export class RunManager {
         }
       })
       this.broadcast({ type: 'permission.request', runId: active.summary.id, request })
+      this.cardCreated(active, 'permission', request.id, request)
     })
   }
 
@@ -2440,10 +3167,12 @@ export class RunManager {
     return summary.projectId === QUICK_PROJECT_ID || isTrustRestrictedRun(summary)
   }
 
-  decide(runId: string, requestId: string, decision: PermissionDecision): void {
+  decide(runId: string, requestId: string, decision: PermissionDecision, opts: DecisionOptions = {}): DecisionOutcome {
     const active = this.runs.get(runId)
     const pending = active?.pending.get(requestId)
-    if (!active || !pending) return
+    if (!active || !pending) return this.decisionMiss(requestId)
+    if (this.staleRevision(pending.request.revision, opts)) return { status: 'stale-revision', runId, requestId }
+    // pending -> resolving: out of the map before anything else runs, so a second answer finds a tombstone.
     active.pending.delete(requestId)
     // A quick run or build session works in a folder that is not a project: a 'project' grant would let the adapter
     // save rules into it. Narrow to the session here so every adapter is covered.
@@ -2454,10 +3183,13 @@ export class RunManager {
       log.info(`Narrowed a ${narrowed.scope} grant to once: the call touches a reference folder`)
       narrowed = { ...narrowed, scope: 'once' }
     }
+    const effective = narrowed?.behavior === 'allow' ? 'allow' : 'deny'
+    this.cardResolved(active, 'permission', requestId, 'applied', effective, opts.decidedBy)
     pending.resolve(narrowed)
     const savedToProject = narrowed?.behavior === 'allow' && narrowed.scope === 'project'
-    this.broadcast({ type: 'permission.resolved', runId, requestId, ...(savedToProject ? { savedToProject: true as const } : {}) })
+    this.broadcast({ type: 'permission.resolved', runId, requestId, ...(savedToProject ? { savedToProject: true as const } : {}), ...(opts.decidedBy ? { decidedBy: opts.decidedBy } : {}) })
     this.cardSettled(active)
+    return applied(runId, requestId, effective, opts)
   }
 
   private requestProposal(
@@ -2466,7 +3198,7 @@ export class RunManager {
     onApplied?: (saved: Project) => void
   ): Promise<ProposalOutcome> {
     const effect = proposalEffect(req.kind, active.summary, active.adapter)
-    const proposal = { ...req, id: newId('prop'), runId: active.summary.id, createdAt: Date.now(), effect } as Proposal
+    const proposal = { ...req, id: newId('prop'), runId: active.summary.id, createdAt: Date.now(), effect, revision: 1 } as Proposal
     return new Promise((resolve) => {
       active.pendingProposals.set(proposal.id, { proposal, resolve: (raw) => {
         // Secrets stop here: the tool and the proposal.resolved event only ever get the outcome.
@@ -2513,6 +3245,7 @@ export class RunManager {
         return outcome
       } })
       this.broadcast({ type: 'proposal.request', runId: active.summary.id, proposal })
+      this.cardCreated(active, 'proposal', proposal.id, proposal)
     })
   }
 
@@ -2527,63 +3260,79 @@ export class RunManager {
     }
   }
 
-  decideProposal(runId: string, proposalId: string, decision: ProposalDecision): void {
+  decideProposal(runId: string, proposalId: string, decision: ProposalDecision, opts: DecisionOptions = {}): DecisionOutcome {
     const active = this.runs.get(runId)
     const pending = active?.pendingProposals.get(proposalId)
-    if (!active || !pending) return
+    if (!active || !pending) return this.decisionMiss(proposalId)
+    if (this.staleRevision(pending.proposal.revision, opts)) return { status: 'stale-revision', runId, requestId: proposalId }
     active.pendingProposals.delete(proposalId)
     // The broadcast carries the secret-free outcome (with waitingForSecrets), never decision.secrets.
     const outcome = pending.resolve(decision) ?? proposalOutcome(cleanProposalDecision(decision))
-    this.broadcast({ type: 'proposal.resolved', runId, proposalId, decision: outcome })
+    // An approval the harness could not apply came back as a revise: say so (applyError).
+    const applyError = cleanProposalDecision(decision).behavior === 'approve' && outcome.behavior === 'revise' ? outcome.feedback : undefined
+    this.cardResolved(active, 'proposal', proposalId, 'applied', outcome.behavior, opts.decidedBy)
+    this.broadcast({ type: 'proposal.resolved', runId, proposalId, decision: outcome, ...(opts.decidedBy ? { decidedBy: opts.decidedBy } : {}) })
     this.cardSettled(active)
+    return { ...applied(runId, proposalId, outcome.behavior, opts), ...(applyError ? { applyError } : {}) }
   }
 
   private requestQuestion(
     active: ActiveRun,
     req: Omit<UserQuestion, 'id' | 'runId' | 'createdAt'>
   ): Promise<QuestionAnswer> {
-    const question: UserQuestion = { ...req, id: newId('q'), runId: active.summary.id, createdAt: Date.now() }
+    const question: UserQuestion = { ...req, id: newId('q'), runId: active.summary.id, createdAt: Date.now(), revision: 1 }
     return new Promise((resolve) => {
       active.pendingQuestions.set(question.id, { question, resolve })
       this.broadcast({ type: 'question.request', runId: active.summary.id, question })
+      this.cardCreated(active, 'question', question.id, question)
     })
   }
 
-  answerQuestion(runId: string, questionId: string, answer: QuestionAnswer): void {
+  answerQuestion(runId: string, questionId: string, answer: QuestionAnswer, opts: DecisionOptions = {}): DecisionOutcome {
     const active = this.runs.get(runId)
     const pending = active?.pendingQuestions.get(questionId)
-    if (!active || !pending) return
+    if (!active || !pending) return this.decisionMiss(questionId)
+    if (this.staleRevision(pending.question.revision, opts)) return { status: 'stale-revision', runId, requestId: questionId }
     active.pendingQuestions.delete(questionId)
     // Only labels that were offered count; a single-choice question keeps the first.
     const labels = new Set(pending.question.options.map((o) => o.label))
     let selected = (Array.isArray(answer?.selected) ? answer.selected : []).filter((l) => typeof l === 'string' && labels.has(l))
     if (!pending.question.allowMultiple) selected = selected.slice(0, 1)
-    const text = pending.question.allowFreeText && typeof answer?.text === 'string' && answer.text.trim() ? answer.text.trim() : undefined
+    // The headless policy's conservative answer is text only (decisionPolicy.ts conservativeAnswer), whatever the card allows.
+    const textAllowed = pending.question.allowFreeText || opts.decidedBy?.surface === 'policy'
+    const text = textAllowed && typeof answer?.text === 'string' && answer.text.trim() ? answer.text.trim() : undefined
     const clean: QuestionAnswer = text ? { selected, text } : { selected }
+    this.cardResolved(active, 'question', questionId, 'applied', 'answer', opts.decidedBy)
     pending.resolve(clean)
-    this.broadcast({ type: 'question.resolved', runId, questionId, answer: clean })
+    this.broadcast({ type: 'question.resolved', runId, questionId, answer: clean, ...(opts.decidedBy ? { decidedBy: opts.decidedBy } : {}) })
     this.cardSettled(active)
+    return applied(runId, questionId, 'answer', opts)
   }
 
   private requestMergeReview(
     active: ActiveRun,
     req: Omit<MergeReview, 'id' | 'runId' | 'createdAt'>
   ): Promise<MergeDecision> {
-    const review: MergeReview = { ...req, id: newId('merge'), runId: active.summary.id, createdAt: Date.now() }
+    const review: MergeReview = { ...req, id: newId('merge'), runId: active.summary.id, createdAt: Date.now(), revision: 1 }
     return new Promise((resolve) => {
       active.pendingMerges.set(review.id, { review, resolve })
       this.broadcast({ type: 'merge.request', runId: active.summary.id, review })
+      this.cardCreated(active, 'merge', review.id, review)
     })
   }
 
-  decideMerge(runId: string, reviewId: string, decision: MergeDecision): void {
+  decideMerge(runId: string, reviewId: string, decision: MergeDecision, opts: DecisionOptions = {}): DecisionOutcome {
     const active = this.runs.get(runId)
     const pending = active?.pendingMerges.get(reviewId)
-    if (!active || !pending) return
+    if (!active || !pending) return this.decisionMiss(reviewId)
+    if (this.staleRevision(pending.review.revision, opts)) return { status: 'stale-revision', runId, requestId: reviewId }
     active.pendingMerges.delete(reviewId)
+    const effective = decision?.behavior === 'merge' || decision?.behavior === 'discard' ? decision.behavior : 'hold'
+    this.cardResolved(active, 'merge', reviewId, 'applied', effective, opts.decidedBy)
     pending.resolve(decision)
-    this.broadcast({ type: 'merge.resolved', runId, reviewId, decision })
+    this.broadcast({ type: 'merge.resolved', runId, reviewId, decision, ...(opts.decidedBy ? { decidedBy: opts.decidedBy } : {}) })
     this.cardSettled(active)
+    return applied(runId, reviewId, effective, opts)
   }
 
   // ---------- permission rule requests ----------
@@ -2600,12 +3349,14 @@ export class RunManager {
       flagged: rules.filter((r) => isUnsafeAllowRule(r) || tooBroadRuleRefusal(r) !== null),
       id: newId('rule'),
       runId: active.summary.id,
-      createdAt: Date.now()
+      createdAt: Date.now(),
+      revision: 1
     }
     if (!rules.length) return Promise.resolve({ behavior: 'deny', message: 'no valid rules' })
     return new Promise((resolve) => {
       active.pendingRules.set(request.id, { request, resolve })
       this.broadcast({ type: 'rules.request', runId: active.summary.id, request })
+      this.cardCreated(active, 'rules', request.id, request)
     })
   }
 
@@ -2615,10 +3366,11 @@ export class RunManager {
    * chose the rules knowingly, so flagged destructive rules are saved too; blanket rules and too-broad shell prefixes
    * (tooBroadRuleRefusal) stay run grants.
    */
-  decideRules(runId: string, requestId: string, decision: PermissionRuleDecision): void {
+  decideRules(runId: string, requestId: string, decision: PermissionRuleDecision, opts: DecisionOptions = {}): DecisionOutcome {
     const active = this.runs.get(runId)
     const pending = active?.pendingRules.get(requestId)
-    if (!active || !pending) return
+    if (!active || !pending) return this.decisionMiss(requestId)
+    if (this.staleRevision(pending.request.revision, opts)) return { status: 'stale-revision', runId, requestId }
     active.pendingRules.delete(requestId)
     const { rules } = pending.request
     let clean: PermissionRuleDecision
@@ -2655,9 +3407,11 @@ export class RunManager {
       clean = message ? { behavior: 'deny', message } : { behavior: 'deny' }
       this.broadcast({ type: 'log', runId, level: 'info', message: `Denied the permission request for ${rules.join(', ')}.` })
     }
+    this.cardResolved(active, 'rules', requestId, 'applied', clean.behavior, opts.decidedBy)
     pending.resolve(clean)
-    this.broadcast({ type: 'rules.resolved', runId, requestId, decision: clean })
+    this.broadcast({ type: 'rules.resolved', runId, requestId, decision: clean, ...(opts.decidedBy ? { decidedBy: opts.decidedBy } : {}) })
     this.cardSettled(active)
+    return applied(runId, requestId, clean.behavior, opts)
   }
 
   // ---------- MCP install requests ----------
@@ -2668,11 +3422,11 @@ export class RunManager {
     getProject: () => Project,
     setProject: (saved: Project) => void
   ): Promise<McpInstallDecision> {
-    const request: McpInstallRequest = { ...req, id: newId('mcpi'), runId: active.summary.id, createdAt: Date.now() }
+    const request: McpInstallRequest = { ...req, id: newId('mcpi'), runId: active.summary.id, createdAt: Date.now(), revision: 1 }
     return new Promise((resolve) => {
       active.pendingInstalls.set(request.id, {
         request,
-        resolve: (raw, cancelled) => {
+        resolve: (raw, cancelled, decidedBy) => {
           const decision = this.settleInstall(active, request, raw, getProject(), setProject)
           // Secrets stop here: the agent and the renderer only ever see the outcome.
           const outcome: McpInstallOutcome = {
@@ -2681,11 +3435,20 @@ export class RunManager {
             ...(decision.note ? { note: decision.note } : {}),
             ...(decision.spec ? { spec: decision.spec } : {})
           }
-          this.broadcast({ type: 'mcpInstall.resolved', runId: active.summary.id, requestId: request.id, outcome, ...(cancelled ? { cancelled: true as const } : {}) })
+          this.broadcast({
+            type: 'mcpInstall.resolved',
+            runId: active.summary.id,
+            requestId: request.id,
+            outcome,
+            ...(cancelled ? { cancelled: true as const } : {}),
+            ...(decidedBy ? { decidedBy } : {})
+          })
           resolve(outcome)
+          return outcome
         }
       })
       this.broadcast({ type: 'mcpInstall.request', runId: active.summary.id, request })
+      this.cardCreated(active, 'mcpInstall', request.id, request)
     })
   }
 
@@ -2727,13 +3490,41 @@ export class RunManager {
   }
 
   /** Answer a request_mcp_install card (mcp:answerInstall). Unknown or already answered requests are ignored. */
-  answerMcpInstall(runId: string, requestId: string, decision: McpInstallDecision): void {
+  answerMcpInstall(runId: string, requestId: string, decision: McpInstallDecision, opts: DecisionOptions = {}): DecisionOutcome {
     const active = this.runs.get(runId)
     const pending = active?.pendingInstalls.get(requestId)
-    if (!active || !pending) return
+    if (!active || !pending) return this.decisionMiss(requestId)
+    if (this.staleRevision(pending.request.revision, opts)) return { status: 'stale-revision', runId, requestId }
     active.pendingInstalls.delete(requestId)
-    pending.resolve(decision)
+    // The install's own resolve validates and applies it; the outcome says whether it was really installed.
+    const outcome = pending.resolve(decision, false, opts.decidedBy)
+    const effective = (outcome ? outcome.approved : !!decision?.approved) ? 'approve' : 'deny'
+    this.cardResolved(active, 'mcpInstall', requestId, 'applied', effective, opts.decidedBy)
     this.cardSettled(active)
+    return applied(runId, requestId, effective, opts)
+  }
+
+  /**
+   * runs:findDecision: which live run holds the pending card `requestId` (its kind and revision), or how a recently
+   * resolved one ended (tombstones, at most DECISION_TOMBSTONES_MAX), else 'not-found'.
+   */
+  findDecision(requestId: string): DecisionLookup {
+    const indexed = this.decisions.lookup(requestId)
+    if (indexed.status !== 'not-found') return indexed
+    for (const active of this.runs.values()) {
+      const hit = findPendingCard(active, requestId)
+      if (hit) {
+        return {
+          status: 'pending',
+          requestId,
+          runId: active.summary.id,
+          projectId: active.summary.projectId,
+          kind: hit.kind,
+          revision: hit.revision ?? 1
+        }
+      }
+    }
+    return { status: 'not-found', requestId }
   }
 
   async send(runId: string, text: string, rawImages?: ImageAttachment[]): Promise<void> {
@@ -2763,9 +3554,12 @@ export class RunManager {
 
   async stop(runId: string): Promise<void> {
     const active = this.runs.get(runId)
-    if (!active) return
+    if (!active) return this.stopPaused(runId)
     const st = active.summary.status
     if (st === 'finished' || st === 'error') return
+    // A headless exec run ends through its finalizer (outcome 'interrupted', endedBy 'user'); an outcome already
+    // claimed (budget, policy, completion) stands.
+    if (active.summary.overrides?.execMode) return this.finalizeExecRun(runId, 'interrupted', { endedBy: 'user' })
     active.userStopped = true
     active.endedBy ??= 'user'
     // Saved with the 'stopping' status, so a quit or crash before the session ends still reads as the user's end.
@@ -2775,6 +3569,45 @@ export class RunManager {
     this.flush(active)
     // A session still opening is stopped by start() as soon as adapter.start resolves (userStopped is set).
     await this.stopSession(active)
+  }
+
+  /**
+   * End a paused run that has no live session (it left `runs` when its session finished; only its resume timer may be
+   * left): the auto-resume is cancelled and the run is finished as ended by the user. An exec run still waiting for its
+   * reset (no execOutcome yet) is finalized as 'interrupted' (cli-spec 6.2(3)), so its follower gets run.finalized.
+   */
+  private stopPaused(runId: string): void {
+    const s = this.store.get(runId)
+    if (!s || s.status !== 'paused') return
+    this.clearResume(runId)
+    const exec = !!s.overrides?.execMode && !s.execOutcome
+    const done = this.patchSummary(runId, { status: 'finished', autoResume: false, endedBy: 'user', ...(exec ? { execOutcome: 'interrupted' as const } : {}) })
+    if (!done) return
+    this.broadcast(withEndFacts({ type: 'run.status', runId, status: 'finished', pausedUntil: done.pausedUntil, pauseReason: done.pauseReason, autoResume: false }, done))
+    if (exec) this.broadcastFinalized(done, 'interrupted')
+  }
+
+  /**
+   * A paused exec run of a waitForReset chain that will no longer resume by itself (no timer: an adapter's autoResume
+   * false, a resume that failed, Cancel auto-resume) is finalized as 'rate-limited', so its follower never waits
+   * forever. A live run goes through the finalizer; a stored one is patched and run.finalized broadcast. Idempotent.
+   */
+  private finalizeStrandedExec(runId: string): void {
+    if (this.resumeTimers.has(runId)) return
+    const a = this.runs.get(runId)
+    if (a) {
+      const o = a.summary.overrides
+      if (o?.execMode && o.waitForReset && a.summary.status === 'paused') void this.finalizeExecRun(runId, 'rate-limited')
+      return
+    }
+    const s = this.store.get(runId)
+    if (!s?.overrides?.execMode || !s.overrides.waitForReset || s.execOutcome || s.status !== 'paused') return
+    const done = this.patchSummary(runId, { execOutcome: 'rate-limited', autoResume: false })
+    if (done) this.broadcastFinalized(done, 'rate-limited')
+  }
+
+  private broadcastFinalized(s: RunSummary, outcome: ExecOutcome): void {
+    this.broadcast({ type: 'run.finalized', runId: s.id, ...(s.overrides?.execChainId ? { execChainId: s.overrides.execChainId } : {}), outcome, summary: { ...s } })
   }
 
   /** The run's session.stop(), one call at a time (End session, quit and a late start share it; a failed stop can be retried). */
@@ -2829,6 +3662,9 @@ export class RunManager {
         if (r.endedWhile) s.endedWhile = r.endedWhile
       }
     }
+    // A headless exec run cut before its finalizer finished (best effort): its claimed outcome, else 'interrupted'.
+    const execCut = !!s.overrides?.execMode && !r.finalizedSent && (forced || s.status === 'finished' || s.status === 'error' || s.status === 'paused')
+    if (execCut) s.execOutcome ??= r.finalOutcome ?? 'interrupted'
     try {
       this.store.upsert(s)
     } catch (e) {
@@ -2837,6 +3673,10 @@ export class RunManager {
     this.flush(r)
     // The session never reported its end: tell the renderer it is finished, and who cut it.
     if (forced) this.broadcast(withEndFacts({ type: 'run.status', runId: s.id, status: 'finished' }, s))
+    if (execCut && s.execOutcome) {
+      r.finalizedSent = true
+      this.broadcast({ type: 'run.finalized', runId: s.id, ...(s.overrides?.execChainId ? { execChainId: s.overrides.execChainId } : {}), outcome: s.execOutcome, summary: { ...s } })
+    }
   }
 
   /**
@@ -2894,7 +3734,7 @@ export class RunManager {
    * its memory. Same kind as the old run: setup runs keep the Architect (with its hidden profile
    * context), work runs use the project's roles. `project` must be the old run's project.
    */
-  async continueRun(project: Project, fromRunId: string, text: string, rawImages?: ImageAttachment[]): Promise<RunSummary> {
+  async continueRun(project: Project, fromRunId: string, text: string, rawImages?: ImageAttachment[], opts: ContinueRunOptions = {}): Promise<RunSummary> {
     this.refuseWhileQuitting()
     const from = this.summary(fromRunId)
     if (!from) throw new Error('Run not found')
@@ -2923,18 +3763,28 @@ export class RunManager {
       .reduce((best, r) => (r.startedAt > best.startedAt || (r.startedAt === best.startedAt && r.resumedFrom === best.id) ? r : best), from)
     const sessionId = target.sessionId ?? from.sessionId
 
-    // A paused run is handed over to its continuation; it stays in history as finished.
+    const overrides = continuedOverrides(target.overrides ?? from.overrides, opts)
+    // A paused run is handed over to its continuation; it stays in history as finished. An exec run still waiting for
+    // its reset (no execOutcome) whose continuation is not an exec run (the Desktop composer, `orgai resume` without
+    // --exec) is finalized as 'interrupted' by the user, so its `orgai exec` follower ends instead of adopting the
+    // desktop continuation (which never sends run.finalized) and waiting forever.
+    const handedToExec = !!overrides?.execMode
     for (const r of target.id === from.id ? [from] : [target, from]) {
       if (r.status !== 'paused') continue
       this.clearResume(r.id)
-      const done = this.patchSummary(r.id, { status: 'finished', autoResume: false })
-      if (done) this.broadcast({ type: 'run.status', runId: done.id, status: 'finished', pausedUntil: done.pausedUntil, pauseReason: done.pauseReason, autoResume: false })
+      const strand = !!r.overrides?.execMode && !r.execOutcome && !handedToExec
+      const done = this.patchSummary(r.id, { status: 'finished', autoResume: false, ...(strand ? { execOutcome: 'interrupted' as const, endedBy: 'user' as const } : {}) })
+      if (!done) continue
+      this.broadcast(withEndFacts({ type: 'run.status', runId: done.id, status: 'finished', pausedUntil: done.pausedUntil, pauseReason: done.pauseReason, autoResume: false }, done))
+      if (strand) this.broadcastFinalized(done, 'interrupted')
     }
     return this.start({
       project,
       prompt,
       images,
       kind: target.kind,
+      ...(overrides ? { overrides } : {}),
+      ...(opts.allowWidening ? { allowWidening: true } : {}),
       // The harness's own resume message is not a new task: keep the title of the run it continues.
       // A follow-up is titled with the task it continues as context, so it stays recognisable.
       ...(prompt === RESUME_TEXT.trim() && target.title
@@ -2969,27 +3819,51 @@ export class RunManager {
   // ---------- pause and auto-resume ----------
 
   private scheduleResume(runId: string, at: number): void {
-    this.clearResume(runId)
+    this.clearResumeTimer(runId)
     // No auto-resume is armed while the app quits (resumeNow would refuse); the boot normalization ends the pause.
     if (this.quitting) return
     const delay = Math.max(0, at - Date.now())
     const timer = setTimeout(() => {
-      this.resumeTimers.delete(runId)
-      this.resumeNow(runId).catch((err) => {
-        const message = `Could not resume the paused run: ${(err as Error).message}`
-        this.broadcast({ type: 'log', runId, level: 'error', message })
-        const s = this.patchSummary(runId, { autoResume: false })
-        if (s) this.broadcast({ type: 'run.status', runId, status: s.status, pausedUntil: s.pausedUntil, pauseReason: s.pauseReason, autoResume: false })
-      })
+      // Activity lease (cli-spec 3.2(4)): taken BEFORE the timer entry goes, so a host never sees neither a timer, an
+      // in-flight resume nor a live run. The timer path calls resumeUnleased (the lease is already held here) and
+      // drops the lease once, after the error handling below, when the resume settles.
+      this.withResumeLease(() => {
+        this.resumeTimers.delete(runId)
+        return this.resumeUnleased(runId, { auto: true }).then(
+          () => undefined,
+          (err: unknown) => {
+            const message = `Could not resume the paused run: ${(err as Error).message}`
+            this.broadcast({ type: 'log', runId, level: 'error', message })
+            const s = this.patchSummary(runId, { autoResume: false })
+            if (s) this.broadcast({ type: 'run.status', runId, status: s.status, pausedUntil: s.pausedUntil, pauseReason: s.pauseReason, autoResume: false })
+            this.finalizeStrandedExec(runId)
+          }
+        )
+      }).catch((err: unknown) => log.warn(`Run ${runId}: auto-resume failed: ${(err as Error)?.message ?? err}`))
     }, delay)
     this.resumeTimers.set(runId, timer)
   }
 
-  private clearResume(runId: string): void {
+  private clearResumeTimer(runId: string): void {
     const t = this.resumeTimers.get(runId)
     if (t) clearTimeout(t)
     this.resumeTimers.delete(runId)
   }
+
+  /** Cancel a run's auto-resume: its timer and the widening grant that only that resume may use. */
+  private clearResume(runId: string): void {
+    this.clearResumeTimer(runId)
+    this.widenedRuns.delete(runId)
+  }
+
+  /** Activity (pausedAutoResumes): auto-resume timers still armed. */
+  activeResumeTimerCount(): number { return this.resumeTimers.size }
+
+  /** Activity (pausedAutoResumes): auto-resumes whose timer fired and whose successor run is not registered yet. */
+  inFlightResumeCount(): number { return this.resumesInFlight }
+
+  /** Activity (backgroundTasks): pending run-title queries, live run or not. */
+  titleTaskCount(): number { return this.titleAborts.size }
 
   /** Is an auto-resume timer pending for this run? */
   hasAutoResume(runId: string): boolean {
@@ -3011,8 +3885,43 @@ export class RunManager {
     return next
   }
 
-  /** Continue a paused run now, with the harness's resume message. */
-  async resumeNow(runId: string): Promise<RunSummary> {
+  /**
+   * Hold one in-flight resume lease (inFlightResumeCount) while fn runs: taken before fn is called, dropped exactly
+   * once when its promise settles, or at once when fn throws synchronously. continueRun -> start() registers the
+   * successor ActiveRun in `this.runs` before its first await, so by the time the lease drops the successor is live.
+   */
+  private withResumeLease<T>(fn: () => Promise<T>): Promise<T> {
+    this.resumesInFlight++
+    let released = false
+    const release = (): void => {
+      if (released) return
+      released = true
+      this.resumesInFlight--
+    }
+    let p: Promise<T>
+    try {
+      p = fn()
+    } catch (e) {
+      release()
+      return Promise.reject(e)
+    }
+    return p.finally(release)
+  }
+
+  /**
+   * Continue a paused run now, with the harness's resume message. A manual resume (Desktop or RPC) holds its own
+   * resume lease across the async setup.prepare gap; the timer path takes the lease itself and calls resumeUnleased.
+   */
+  resumeNow(runId: string): Promise<RunSummary> {
+    return this.withResumeLease(() => this.resumeUnleased(runId))
+  }
+
+  /**
+   * resumeNow's body, without the activity lease (the caller holds it). `auto` is the timer path only: a manual
+   * Resume now (Desktop or RPC) never re-applies a 'configure' caller's widening.
+   */
+  private async resumeUnleased(runId: string, opts: { auto?: boolean } = {}): Promise<RunSummary> {
+    const widened = opts.auto === true && this.widenedRuns.has(runId)
     this.clearResume(runId)
     this.refuseWhileQuitting()
     const from = this.summary(runId)
@@ -3023,7 +3932,15 @@ export class RunManager {
     // Setup runs re-profile the repo like setup:start so the Architect's hidden context is current.
     const project = from.kind === 'setup' ? await this.setup.prepare(current) : current
     try {
-      return await this.continueRun(project, runId, RESUME_TEXT)
+      // A waitForReset exec chain still in flight (no execOutcome: its follower waits) keeps its exec fields, on the
+      // timer or an early Resume now. A finalized exec run (e.g. 'rate-limited', its client gone) resumed by hand
+      // continues as a desktop run, with the exec fields stripped (cli-spec 6.2(1)).
+      // A chain a 'configure' caller widened stays widened across its own automatic resume only.
+      const o = from.overrides
+      const keepExec = !!o?.execMode && !!o.waitForReset && !from.execOutcome
+      return await (keepExec
+        ? this.continueRun(project, runId, RESUME_TEXT, undefined, { [AUTO_RESUME]: true, ...(widened ? { allowWidening: true } : {}) })
+        : this.continueRun(project, runId, RESUME_TEXT))
     } catch (e) {
       // The timer is gone; a run still paused must not claim it will resume by itself.
       const s = this.summary(runId)
@@ -3038,6 +3955,8 @@ export class RunManager {
     const s = this.patchSummary(runId, { autoResume: false })
     if (s && s.status === 'paused') {
       this.broadcast({ type: 'run.status', runId, status: 'paused', pausedUntil: s.pausedUntil, pauseReason: s.pauseReason, autoResume: false })
+      // A waitForReset exec chain will not resume now: it ends 'rate-limited' (its follower would wait forever).
+      this.finalizeStrandedExec(runId)
     }
   }
 }

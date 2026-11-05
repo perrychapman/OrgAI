@@ -2,13 +2,17 @@ import { accessSync, appendFileSync, constants, existsSync, mkdirSync, renameSyn
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { format } from 'node:util'
-import { app } from 'electron'
+import type { HostRuntimeEnv } from './host/runtimeEnv'
 import type { PermissionDecision, PermissionRequest, RunEvent, RunSummary } from '@shared/types'
 
 /**
- * Main-process log at app.getPath('logs')/main.log (<userData>/logs on Windows and Linux, ~/Library/Logs/<name> on
- * macOS), falling back to <userData>/logs when that is unavailable. Rotates to main.1.log at 2 MB (two files kept).
- * Writes are synchronous so the last lines before a crash make it to disk.
+ * Main-process log at <logsDir>/main.log. The entry point picks logsDir and passes it to installLogging: the Electron
+ * entry (index.ts) uses app.getPath('logs') (<userData>/logs on Windows and Linux, ~/Library/Logs/<name> on macOS),
+ * falling back to <userData>/logs. Rotates to main.1.log at 2 MB (two files kept). Writes are synchronous so the last
+ * lines before a crash make it to disk.
+ *
+ * Pure Node: this module never imports electron (cli-spec 3.1.1; src/main/host/noElectronImport.test.ts), so stores,
+ * RunManager and services that log through it load in plain Node. The Electron app hooks live in electronLogHooks.ts.
  */
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error'
@@ -70,10 +74,9 @@ export function pickLogsDir(candidates: Array<() => string>, canWrite: (dir: str
   return firstResolved ?? fallback
 }
 
+/** Where the log goes: the dir installLogging received, else (before it ran, or in plain Node tests) <tmpdir>/orgai-logs. */
 export function logsDir(): string {
-  // app.getPath('logs') is ~/Library/Logs/<name> on macOS (where Console.app looks); on Windows and Linux it is
-  // <userData>/logs. If it throws or is read-only (sandboxed or managed Macs), use <userData>/logs.
-  if (!dir) dir = pickLogsDir([() => app.getPath('logs'), () => join(app.getPath('userData'), 'logs')], canWriteDir)
+  if (!dir) dir = join(tmpdir(), 'orgai-logs')
   return dir
 }
 
@@ -124,10 +127,23 @@ export const log = {
   error: (...args: unknown[]): void => write('error', args)
 }
 
-/** Install crash handlers and mirror console.error/warn into the log. Safe to call once, before app ready. */
-export function installLogging(): void {
+/**
+ * Point the log at env.logsDir (created if missing), install crash handlers and mirror console.error/warn into the
+ * log. Safe to call once, before app ready. The Electron-only hooks (render/child process gone, unresponsive web
+ * contents) are installed separately by electronLogHooks.ts.
+ */
+export function installLogging(env: HostRuntimeEnv): void {
   if (installed) return
   installed = true
+  if (env.logsDir) {
+    dir = env.logsDir
+    file = undefined
+    try {
+      mkdirSync(dir, { recursive: true })
+    } catch {
+      // logPath() retries; a failed write is swallowed like any other.
+    }
+  }
 
   console.error = (...args: unknown[]): void => {
     original.error(...args)
@@ -147,30 +163,17 @@ export function installLogging(): void {
     write('error', ['Unhandled rejection:', reason])
   })
 
-  app.on('render-process-gone', (_e, contents, details) => {
-    write('error', [`Renderer gone (${details.reason}, exit ${details.exitCode}) url=${safeUrl(contents)}`])
-  })
-  app.on('child-process-gone', (_e, details) => {
-    const name = details.name ?? details.serviceName ?? ''
-    write('error', [`Child process gone: ${details.type} ${name} (${details.reason}, exit ${details.exitCode})`])
-  })
-  app.on('web-contents-created', (_e, contents) => {
-    contents.on('unresponsive', () => write('warn', [`WebContents unresponsive url=${safeUrl(contents)}`]))
-    contents.on('responsive', () => write('info', [`WebContents responsive again url=${safeUrl(contents)}`]))
-  })
-
-  write('info', [
-    `OrgAI ${app.getVersion()} starting (electron ${process.versions.electron}, node ${process.versions.node}, ` +
-      `chrome ${process.versions.chrome}, ${process.platform} ${process.arch}, packaged=${app.isPackaged})`
-  ])
+  write('info', [startupLine(env)])
 }
 
-function safeUrl(contents: Electron.WebContents): string {
-  try {
-    return contents.getURL()
-  } catch {
-    return '?'
-  }
+/** The first line of every session: version, runtimes, platform and whether this is a packaged build. */
+export function startupLine(env: HostRuntimeEnv): string {
+  const electron = env.electronVersion ? `electron ${env.electronVersion}, ` : ''
+  const chrome = env.electronVersion && process.versions.chrome ? `chrome ${process.versions.chrome}, ` : ''
+  return (
+    `OrgAI ${env.appVersion} starting (${electron}node ${process.versions.node}, ${chrome}` +
+    `${process.platform} ${process.arch}, packaged=${env.isPackaged})`
+  )
 }
 
 /** Run lifecycle and warn/error run logs, called for every event a run emits. */

@@ -385,6 +385,18 @@ export interface ProjectSaveHook {
   beforeSave(before: Project | null, next: Project): Project
 }
 
+/**
+ * The projects and format version of a parsed `projects.json` (pure; ProjectStore's load and the CLI's read-only
+ * reader). Not migrated. A null file throws, as the store's load always did (it then starts empty).
+ */
+export function parseProjectsFile(parsed: unknown): { projects: Project[]; version: number } {
+  const p = parsed as { version?: unknown; projects?: Project[] }
+  return {
+    projects: Array.isArray(p.projects) ? p.projects : [],
+    version: typeof p.version === 'number' && Number.isFinite(p.version) ? p.version : 1
+  }
+}
+
 /** Simple JSON-file store. Projects are small and few, so a database is overkill for now. */
 export class ProjectStore {
   private saveHook?: ProjectSaveHook
@@ -412,9 +424,9 @@ export class ProjectStore {
   private load(): void {
     try {
       if (existsSync(this.file)) {
-        const parsed = JSON.parse(readFileSync(this.file, 'utf8')) as { version?: unknown; projects?: Project[] }
-        this.projects = Array.isArray(parsed.projects) ? parsed.projects : []
-        this.fileVersion = typeof parsed.version === 'number' && Number.isFinite(parsed.version) ? parsed.version : 1
+        const parsed = parseProjectsFile(JSON.parse(readFileSync(this.file, 'utf8')))
+        this.projects = parsed.projects
+        this.fileVersion = parsed.version
       }
     } catch (e) {
       console.error('Failed to read projects.json, starting empty:', e)

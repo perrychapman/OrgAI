@@ -78,6 +78,8 @@ function readableError(e: unknown): string {
  */
 export class SkillEvaluationService implements SkillEvaluationApi {
   private inflight = new Map<string, Promise<SkillEvaluationReport>>()
+  /** Activity (backgroundTasks): skill evaluations in flight (one per project at most). */
+  inFlightCount(): number { return this.inflight.size }
 
   constructor(private deps: SkillEvaluationDeps) {}
 

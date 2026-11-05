@@ -15,6 +15,7 @@ import {
   type SkillImportInput,
   type SkillImportPreview,
   type SkillInfo,
+  type SkillBundleInput,
   type SkillLibraryEntry,
   type SkillLibraryFolderInput,
   type SkillLibraryInfo,
@@ -30,7 +31,7 @@ import type { ProjectStore } from '../store/projects'
 import { SkillLibraryStore } from '../store/skillLibrary'
 import type { RunSkill } from '../runtime/types'
 import type { SkillRunSource, SkillServiceApi, SkillSnapshotInput } from './types'
-import { childPath, digestFiles, fileInfos, readStoredFolder, removeFolder, writeFolder, type FileData } from './files'
+import { childPath, digestFiles, fileInfos, readBundle, readStoredFolder, removeFolder, writeFolder, type FileData } from './files'
 import { composeSkillMd, parseSkillMd, skillFromMd, validDraft } from './skillMd'
 import { skillProposalProblem } from './assist'
 import { buildScannedSkill, planImport, scanRepoSkills, scanSkillFolder, type ScannedSkill } from './scan'
@@ -592,6 +593,29 @@ export class SkillService implements SkillServiceApi, SkillRunSource {
     if ('invalid' in scanned) throw new Error(scanned.invalid)
     const s = scanned.skill
     this.addEntry(this.newEntry(s.name, s.description, 'user', s.data), s.data)
+    this.notifyLibrary()
+    return this.libraryList()
+  }
+
+  /**
+   * skillLibrary:addFromBundle (cli-spec 3.6 item 1): the folder path's twin for files sent as base64 (Wave 1 socket
+   * channel; the input has been through files.ts `bundleArgs`). No filesystem path is taken from the caller.
+   * readBundle decodes and checks every file, buildScannedSkill parses SKILL.md (skillFromMd: name and description
+   * only re-emitted, shell-injection bodies refused) with `input.name` as the folder-name fallback, and addEntry
+   * installs it through writeFolder: a temp staging dir beside the entry under the library dir, renamed into place
+   * (removed on any failure), then the index is saved.
+   *
+   * Library mutation mutex: every SkillService method is synchronous, so this read-validate-write sequence cannot
+   * interleave with another library mutation in this process (the name check and the install happen in one turn of
+   * the event loop).
+   */
+  libraryAddFromBundle(input: SkillBundleInput): SkillLibraryInfo[] {
+    const read = readBundle(input)
+    if (!read.ok) throw new Error(read.reason)
+    const name = typeof input?.name === 'string' ? input.name : ''
+    const skill = buildScannedSkill(read.files, name, name, null)
+    if (typeof skill === 'string') throw new Error(skill)
+    this.addEntry(this.newEntry(skill.name, skill.description, 'user', skill.data), skill.data)
     this.notifyLibrary()
     return this.libraryList()
   }
