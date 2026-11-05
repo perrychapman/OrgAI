@@ -19,7 +19,7 @@ import {
 } from '@shared/types'
 import { clampText, hiddenCharIn } from './capabilities/sanitize'
 import { cleanProjectPath } from './store/projects'
-import { canonicalDeep, isInsideEither, isNetworkPath, pathKey } from './quick/scratch'
+import { canonicalDeep, isInside, isInsideEither, isNetworkPath, pathKey } from './quick/scratch'
 import { allowedDirectoryRisk } from './runtime/allowedDirectories'
 import { maskKeyLike } from './runtime/codexAppServer'
 
@@ -208,6 +208,7 @@ function stripGit(name: string): string {
 }
 
 function ghNames(ownerRaw: string, repoRaw: string): { owner: string; repo: string } | { problem: string } {
+  if (tokenShaped(ownerRaw) || tokenShaped(repoRaw)) return { problem: P_TOKEN }
   if (!GH_OWNER_RE.test(ownerRaw)) return { problem: P_GH_OWNER }
   const repo = stripGit(repoRaw)
   if (!repo || repo === '.' || repo.includes('..') || repo.startsWith('-') || !GH_REPO_RE.test(repo)) return { problem: P_GH_REPO }
@@ -335,7 +336,8 @@ export function suggestedFolderFor(repo: string): string {
   const name = repo.replace(/^[. ]+|[. ]+$/g, '')
   if (!name) return 'repo'
   const base = name.split('.')[0].trimEnd()
-  return WINDOWS_RESERVED_RE.test(base) ? `${name}-repo` : name
+  // A prefix: `con.txt-repo` still has the device name before its first dot, which the destination rules refuse.
+  return WINDOWS_RESERVED_RE.test(base) ? `repo-${name}` : name
 }
 
 // ---- Destination ----
@@ -536,7 +538,8 @@ export function prepareDestination(dest: string): DestRecord {
     }
   }
   try {
-    rec.real = realpathSync(dest)
+    // Native, like fsp.realpath: the JS realpath keeps 8.3 names and subst drives, and every comparison would then fail.
+    rec.real = realpathSync.native(dest)
   } catch {
     fail()
   }
@@ -589,7 +592,7 @@ function isRealDir(path: string): 'dir' | 'gone' | 'other' {
 
 function realMatches(rec: DestRecord): boolean {
   try {
-    return sameReal(rec, realpathSync(rec.dest))
+    return sameReal(rec, realpathSync.native(rec.dest))
   } catch {
     return false
   }
@@ -793,7 +796,8 @@ export function cloneErrorKind(stderr: string): CloneErrorKind {
 /** True when git's own `fatal:` line says `dest` already exists and is not empty. Remote text never counts. */
 export function gitSaysNotEmpty(tail: string, dest: string): boolean {
   for (const raw of String(tail ?? '').split(/[\r\n]+/)) {
-    const m = /^fatal: destination path '([^']{1,2000})' already exists and is not an empty directory\.?$/.exec(raw.trim())
+    // Greedy, not [^']: git prints the path unescaped, so it may hold an apostrophe (C:\Users\O'Brien\repo).
+    const m = /^fatal: destination path '(.{1,2000})' already exists and is not an empty directory\.?$/.exec(raw.trim())
     if (!m) continue
     try {
       if (pathKey(m[1]) === pathKey(dest)) return true
@@ -1012,7 +1016,8 @@ export class CloneOutputReader {
         return
       }
     }
-    this.lines.push(line.slice(0, 1000))
+    // Longer than a destination (REPO_DESTINATION_MAX_CHARS) plus git's wording, so gitSaysNotEmpty sees the whole line.
+    this.lines.push(line.slice(0, 2200))
     this.size += line.length + 1
     while (this.size > STDERR_TAIL_MAX && this.lines.length > 1) this.size -= (this.lines.shift() as string).length + 1
   }
@@ -1260,7 +1265,9 @@ export class RepoCloneService {
     } catch {
       throw new Error(D_UNCHECKED)
     }
-    if (keys.some((k) => this.folderLocks.has(k))) throw new Error('A clone into that folder is already running.')
+    // Nested counts too: the outer job's cleanup would remove the inner job's running clone.
+    const held = [...this.folderLocks]
+    if (keys.some((k) => held.some((l) => isInside(l, k) || isInside(k, l)))) throw new Error('A clone into that folder is already running.')
     for (const k of keys) this.folderLocks.add(k)
     const job: Job = { id: i.requestId, controller: new AbortController(), cancelled: false, disposed: false, forkInFlight: false, contentsAdded: false }
     this.jobs.set(job.id, job)

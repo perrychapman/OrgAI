@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process'
 import net from 'node:net'
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, promises as fsp, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -298,20 +298,26 @@ describe('parseRepoSource', () => {
   })
 
   it('names a folder that is safe on Windows', () => {
-    expect(suggestedFolderFor('con')).toBe('con-repo')
-    expect(suggestedFolderFor('NUL.txt')).toBe('NUL.txt-repo')
-    expect(suggestedFolderFor('lpt1')).toBe('lpt1-repo')
+    expect(suggestedFolderFor('con')).toBe('repo-con')
+    expect(suggestedFolderFor('NUL.txt')).toBe('repo-NUL.txt')
+    expect(suggestedFolderFor('lpt1')).toBe('repo-lpt1')
     expect(suggestedFolderFor('x.')).toBe('x')
     expect(suggestedFolderFor('...')).toBe('repo')
     expect(suggestedFolderFor('console')).toBe('console')
-    expect(suggestedFolderFor('com¹')).toBe('com¹-repo')
-    expect(suggestedFolderFor('LPT².txt')).toBe('LPT².txt-repo')
-    expect(suggestedFolderFor('conin$')).toBe('conin$-repo')
-    expect(suggestedFolderFor('CONOUT$')).toBe('CONOUT$-repo')
+    expect(suggestedFolderFor('com¹')).toBe('repo-com¹')
+    expect(suggestedFolderFor('LPT².txt')).toBe('repo-LPT².txt')
+    expect(suggestedFolderFor('conin$')).toBe('repo-conin$')
+    expect(suggestedFolderFor('CONOUT$')).toBe('repo-CONOUT$')
     expect(suggestedFolderFor('.ssh')).toBe('ssh')
     expect(suggestedFolderFor('.github')).toBe('github')
     expect(suggestedFolderFor('..x.')).toBe('x')
-    expect((parseRepoSource('o/aux') as { suggestedFolder: string }).suggestedFolder).toBe('aux-repo')
+    expect((parseRepoSource('o/aux') as { suggestedFolder: string }).suggestedFolder).toBe('repo-aux')
+  })
+
+  it.each(['owner/ghp_abc123', 'https://github.com/owner/ghp_abc123', 'github_pat_abc/repo', 'git@github.com:owner/gho_abc123.git'])('refuses a token-shaped GitHub name: %s', (text) => {
+    const r = parseRepoSource(text)
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.problem).not.toMatch(/ghp_|gho_|github_pat_/)
   })
 })
 
@@ -533,9 +539,11 @@ describe('prepareDestination and cleanup', () => {
     expect(readFileSync(file, 'utf8')).toBe('x')
   })
 
-  it('records the real path at prepare', () => {
-    const rec = prepareDestination(join(root, 'r1', 'repo'))
-    expect(rec.real).toBeTruthy()
+  it('records the real path at prepare, spelled as the async check reads it', async () => {
+    const dest = join(root, 'r1', 'repo')
+    const rec = prepareDestination(dest)
+    // The runner's temp dir is an 8.3 path (RUNNER~1): a JS realpath here would never match fsp.realpath in cleanup.
+    expect(rec.real).toBe(await fsp.realpath(dest))
   })
 
   it('empties the folder between attempts and keeps the record', () => {
@@ -923,6 +931,20 @@ describe('clone()', () => {
     expect(existsSync(dest)).toBe(false)
     expect(gitSaysNotEmpty("remote: fatal: destination path 'x' already exists and is not an empty directory.", 'x')).toBe(false)
     expect(gitSaysNotEmpty("fatal: destination path '/somewhere/else' already exists and is not an empty directory.", join(root, 'x'))).toBe(false)
+    const apostrophe = join(root, "O'Brien", 'repo')
+    expect(gitSaysNotEmpty(`fatal: destination path '${apostrophe}' already exists and is not an empty directory.`, apostrophe)).toBe(true)
+  })
+
+  it('refuses a clone nested in or around a running one', async () => {
+    const sp = makeSpawn()
+    const kill = makeKill(sp.spawned)
+    const { svc } = service({ spawnGit: sp.spawnGit, killTree: kill.killTree })
+    const a = svc.clone(input({ requestId: 'a', destination: join(root, 'out', 'repo') }), noop).catch((e: Error) => e)
+    await vi.waitFor(() => expect(sp.spawned.length).toBe(1))
+    await expect(svc.clone(input({ requestId: 'inner', destination: join(root, 'out', 'repo', 'sub') }), noop)).rejects.toThrow('A clone into that folder is already running.')
+    await expect(svc.clone(input({ requestId: 'outer', destination: join(root, 'out') }), noop)).rejects.toThrow()
+    svc.cancel('a')
+    expect(((await a) as Error).message).toBe('Cancelled.')
   })
 
   it('refuses a second clone into the same folder and frees it afterwards', async () => {
