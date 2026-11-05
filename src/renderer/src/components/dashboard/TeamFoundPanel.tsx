@@ -6,6 +6,7 @@ import {
   OTHER_TOOLS_LINE,
   TEAM_EXISTING_REASON,
   TEAM_FOUND_TITLE,
+  anyHidden,
   approvalChanges,
   changeForServer,
   roleElevated,
@@ -154,6 +155,11 @@ export function TeamFoundPanel({
                             <span className="muted">No tools granted.</span>
                           )}
                         </p>
+                        {anyHidden([r.prompt]) && (
+                          <span className="chip warn tf-hidden" title="This text holds characters that cannot be seen. They are shown as \\u codes.">
+                            Hidden characters shown
+                          </span>
+                        )}
                         <ClampText text={r.prompt} label={`${r.name} prompt`} />
                       </div>
                     </details>
@@ -195,7 +201,7 @@ export function TeamFoundPanel({
               <h4>Connected services</h4>
               <ul className="team-found-list" data-testid="team-found-servers">
                 {found.mcpServers.map((m, i) => {
-                  const change = changeForServer(found.changes, m.name)
+                  const change = changeForServer(found.changes, m.name, m.target, found.mcpServers.filter((x) => x.name === m.name).length)
                   return (
                     <li key={`${m.name}-${i}`} className="team-found-server" data-testid="team-found-server" data-name={m.name}>
                       <strong>

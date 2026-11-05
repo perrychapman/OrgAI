@@ -161,4 +161,9 @@ describe('teamAttentionItems', () => {
     const items = teamAttentionItems([status({ projectName: 'Zed', projectId: 'z', state: 'pending', changes: [change()] }), status({ projectName: 'Alpha', state: 'problem', problems: [{ file: 'f', message: 'm' }] })])
     expect(items.map((i) => i.projectName)).toEqual(['Alpha', 'Zed'])
   })
+  it('shows hidden characters escaped in the label and the project name', () => {
+    const [item] = teamAttentionItems([status({ projectName: 'P‮Q', state: 'problem', problems: [{ file: 'a‮b.md', message: 'm' }] })])
+    expect(item.label).toBe('Team files: a\\u202eb.md cannot be read')
+    expect(item.projectName).toBe('P\\u202eQ')
+  })
 })

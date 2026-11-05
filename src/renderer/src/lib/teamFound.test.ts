@@ -34,6 +34,12 @@ describe('helpers', () => {
     expect(approvalChanges({ changes: cs }).map((c) => c.id)).toEqual(['1'])
     expect(changeForServer(cs, 'gh')?.id).toBe('3')
     expect(changeForServer(cs, 'zz')).toBeUndefined()
+    // Repeated names match by target, never by name alone.
+    const dup = [change({ id: '4', kind: 'mcp', name: 'gh', target: 'a' }), change({ id: '5', kind: 'mcp', name: 'gh', target: 'b' })]
+    expect(changeForServer(dup, 'gh', 'b', 2)?.id).toBe('5')
+    expect(changeForServer(dup, 'gh', 'c', 2)).toBeUndefined()
+    expect(changeForServer(dup, 'gh')).toBeUndefined()
+    expect(changeForServer(cs, 'gh', 'x', 2)).toBeUndefined()
   })
   it('announces by state', () => {
     expect(teamFoundAnnouncement(base, 'Acme', null)).toContain('Acme already holds it')

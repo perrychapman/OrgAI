@@ -247,10 +247,11 @@ function fallback(action: MenuAction): string | void {
       const runId = pid ? st.activeRunByProject[pid] : undefined
       const run = runId ? st.runs[runId] : undefined
       const first = run ? waitingItems(run)[0] : undefined
-      if (pid && (!run || !first)) {
+      if (!pid || !run || !first) {
         // No run decision here: a team-files approval of this project, else any project's (run decisions come first).
+        // With no project selected the first team item is the fallback.
         const team = teamItemsOf(st.teamFilesByProject, st.projects)
-        const mine = team.find((t) => t.projectId === pid) ?? (anyDecision(st.runs) ? undefined : team[0])
+        const mine = (pid ? team.find((t) => t.projectId === pid) : undefined) ?? (anyDecision(st.runs) ? undefined : team[0])
         if (mine) return openTeamFilesDecision(mine.projectId)
       }
       if (!pid || !run || !first) return 'No decision is waiting on this run.'

@@ -86,6 +86,8 @@ export function useTeamFilesActions(projectId: string): {
           if (isStaleDecision(e)) {
             await useAppStore.getState().refreshTeamFiles(projectId)
             setError(TEAM_FILES_STALE_TEXT)
+            // The card may be gone after the re-fetch; the polite status line says it too.
+            setMessage(TEAM_FILES_STALE_TEXT)
           } else {
             setError(cleanIpcError(e, kind === 'approve' ? 'The changes could not be approved.' : 'The changes could not be rejected.'))
           }
