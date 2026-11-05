@@ -895,11 +895,20 @@ export function commandRunsOrgaiCli(command: string, opts: CliScanOptions = {}):
   return cliScan(command, opts) !== null
 }
 
-/** Programs that read a here-document's body only as data: never as code, file names or arguments to run. */
+/**
+ * Programs that read a here-document's body only as data: never as code, file names or arguments to run. Not jq: it
+ * takes its program from stdin (`jq -f /dev/stdin`) and a program's `import ... {search: "<dir>"}` reads files there.
+ */
 const HEREDOC_DATA_SINKS: ReadonlySet<string> = new Set([
   'cat', 'tee', 'git', 'gh', 'wc', 'head', 'tail', 'sort', 'uniq', 'tr', 'cut', 'grep', 'egrep', 'fgrep', 'rg', 'diff',
-  'jq', 'column', 'fold', 'fmt', 'nl', 'rev', 'paste', 'expand', 'unexpand', 'base64', 'iconv'
+  'column', 'fold', 'fmt', 'nl', 'rev', 'paste', 'expand', 'unexpand', 'base64', 'iconv'
 ])
+/**
+ * Options that make a program read its stdin as file names or paths (`sort --files0-from=-`, `wc --files0-from=-`,
+ * `git commit --pathspec-from-file=-`, `git hash-object --stdin-paths`): a here-document next to one is never stripped,
+ * whatever the program.
+ */
+const STDIN_NAMES_FILES = /^-{1,2}[A-Za-z0-9-]*(?:files0?-from|from-file|stdin-paths)(?:=|$)/
 /** Words that may open a command before its program (`{ cat <<EOF ... }`, `then cat <<EOF`). */
 const HEREDOC_LEADERS: ReadonlySet<string> = new Set(['{', '!', 'then', 'do', 'else'])
 /** A `$(cat <<'EOF' ...)` substitution that is the value of a git / gh message option. */
@@ -930,15 +939,33 @@ function commandName(cmd: string): { name: string; words: string[] } | null {
   return { name, words: words.slice(k) }
 }
 
+/**
+ * True for `git <message subcommand> ...` / `gh <message subcommand> ...` with the subcommand in its own position: the
+ * first word after `git` (only `-C <dir>` and `--no-pager` may come before it) or after `gh`. A message subcommand's
+ * name later in the line (`git --namespace commit hash-object ...`, `git apply --exclude commit ...`) does not count.
+ */
+function messageCommand(cmd: { name: string; words: string[] }): boolean {
+  const w = cmd.words
+  if (cmd.name === 'gh') return GH_MESSAGE_SUBCOMMANDS.has(w[1] ?? '')
+  if (cmd.name !== 'git') return false
+  let k = 1
+  for (;;) {
+    if (w[k] === '-C' && w[k + 1] !== undefined) k += 2
+    else if (w[k] === '--no-pager') k++
+    else break
+  }
+  return GIT_MESSAGE_SUBCOMMANDS.has(w[k] ?? '')
+}
+
 /** May the here-document whose operator starts at `op` (inside `frames`) be read as data only? (body checks aside) */
 function heredocEligible(text: string, frames: readonly HeredocFrame[], op: number): boolean {
   const f = frames[frames.length - 1]
   const cmd = commandName(text.slice(f.cmdStart, op))
   if (!cmd) return false
+  if (cmd.words.some((w) => STDIN_NAMES_FILES.test(w.replace(/^['"]|['"]$/g, '')))) return false
   if (frames.length === 1) {
     // git / gh only as a message (`git commit -F -`, `gh pr create --body-file -`): never `git apply`, whose patch names files.
-    if (cmd.name === 'git') return cmd.words.some((w) => GIT_MESSAGE_SUBCOMMANDS.has(w))
-    if (cmd.name === 'gh') return cmd.words.some((w) => GH_MESSAGE_SUBCOMMANDS.has(w))
+    if (cmd.name === 'git' || cmd.name === 'gh') return messageCommand(cmd)
     return HEREDOC_DATA_SINKS.has(cmd.name)
   }
   // `git commit -m "$(cat <<'EOF' ... EOF)"`: only plain cat, one level deep, as a git / gh message value.
@@ -947,9 +974,8 @@ function heredocEligible(text: string, frames: readonly HeredocFrame[], op: numb
   if (!MESSAGE_OPTION_TAIL.test(outerText)) return false
   const outer = commandName(outerText)
   if (!outer) return false
-  if (outer.name === 'git') return outer.words.some((w) => GIT_MESSAGE_SUBCOMMANDS.has(w))
-  if (outer.name === 'gh') return outer.words.some((w) => GH_MESSAGE_SUBCOMMANDS.has(w))
-  return false
+  if (outer.words.some((w) => STDIN_NAMES_FILES.test(w.replace(/^['"]|['"]$/g, '')))) return false
+  return messageCommand(outer)
 }
 
 /** True when `segment` (the operator's line) pipes anywhere outside quotes. */
@@ -971,8 +997,9 @@ function pipesOnLine(segment: string): boolean {
 /**
  * A Bash command with the bodies of its data-only here-documents left out (review M3), so a large `cat <<'EOF' >
  * file` or a `git commit -m "$(cat <<'EOF' ...)"` message is neither denied for its size nor read as commands. A body
- * is left out only when all of these hold: its program is a data sink (HEREDOC_DATA_SINKS; inside a substitution only
- * `cat` as a git / gh message value), its delimiter is quoted or its body has no `$(` / backtick, its operator's line
+ * is left out only when all of these hold: its program is a data sink (HEREDOC_DATA_SINKS; git / gh only with a message
+ * subcommand in the subcommand position; inside a substitution only `cat` as a git / gh message value), no word of its
+ * command makes stdin name files (STDIN_NAMES_FILES), its delimiter is quoted or its body has no `$(` / backtick, its operator's line
  * pipes nowhere, and no piece of the rest of the command is a shell, an interpreter, `.` / `source`, eval, xargs or
  * parallel, nor a program run by its path (any of which could run the written text). Anything this parser is not sure bash reads the same way (arithmetic
  * `((`, backticks, `$'...'`, `case`, an unterminated or continued body, an odd delimiter) returns the text unchanged,

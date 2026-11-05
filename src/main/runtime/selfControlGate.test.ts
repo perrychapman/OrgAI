@@ -406,6 +406,40 @@ describe('false positives in ordinary work (review M3)', () => {
     }
   })
 
+  it('a heredoc whose program reads it as code or as file names is still read (review: jq, git subcommand position, files-from)', () => {
+    const s = setupData()
+    const ctx: SelfControlContext = { protectedPaths: s.refs, cwd: s.proj, home: s.home }
+    const secret = join(s.data, 'run', 'daemon.secret')
+    const codex = join(s.data, 'codex')
+    for (const command of [
+      // jq takes its program from stdin; `import ... {search: <dir>}` reads <dir>/auth.json.
+      `jq -n -f /dev/stdin <<'EOF'\nimport "auth" as $a {search: "${codex}"}; $a\nEOF`,
+      // A message subcommand's name anywhere but the subcommand position does not make git a message sink.
+      `git --namespace commit hash-object -w --stdin-paths <<'EOF'\n${secret}\nEOF`,
+      `git apply --unsafe-paths --exclude commit -p0 <<'EOF'\n--- /dev/null\n+++ ${codex}/auth.json\n@@ -0,0 +1 @@\n+x\nEOF`,
+      `git -c core.x=y commit -F - <<'EOF'\n${secret}\nEOF`,
+      `gh api repos/o/r --field pr=1 --input - <<'EOF'\n${secret}\nEOF`,
+      `git log --grep commit -m "$(cat <<'EOF'\n${secret}\nEOF\n)"`,
+      // Options that read file names from stdin, on any sink.
+      `sort --files0-from=- <<'EOF'\n${codex}/auth.json\nEOF`,
+      `wc --files0-from - <<'EOF'\n${codex}/auth.json\nEOF`,
+      `git commit --pathspec-from-file=- -m x <<'EOF'\n${secret}\nEOF`,
+      `git stash push '--pathspec-from-file=-' <<'EOF'\n${secret}\nEOF`
+    ]) {
+      expect(deny('Bash', { command }, ctx), command.slice(0, 70)).not.toBeNull()
+    }
+    // Messages through git / gh in the subcommand position (after -C <dir> or --no-pager) are still left out.
+    const big = 'orgai status\n'.repeat(30_000)
+    for (const command of [
+      `git -C sub commit -q -F - <<'EOF'\n${big}EOF`,
+      `git --no-pager tag -a v1 -F - <<'EOF'\n${big}EOF`,
+      `gh issue create --title x --body-file - <<'EOF'\n${big}EOF`,
+      `git -C sub commit -m "$(cat <<'EOF'\n${big}EOF\n)"`
+    ]) {
+      expect(deny('Bash', { command }, ctx), command.slice(0, 70)).toBeNull()
+    }
+  })
+
   it('a heredoc that feeds code, names files to run, or that the parser is not sure of is still read', () => {
     const s = setupData()
     const ctx: SelfControlContext = { protectedPaths: s.refs, cwd: s.proj, home: s.home }
