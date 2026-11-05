@@ -174,7 +174,7 @@ describe('recorded announcements', () => {
   })
 
   it('counts nodes and notes as items, never relations', () => {
-    expect(eventItemIds(['kn_1', 'ke_2', 'n3'])).toEqual(['kn_1', 'n3'])
+    expect(eventItemIds(['kn_1', 'ke_2', 'kl_4', 'n3'])).toEqual(['kn_1', 'n3'])
     expect(eventItemIds(undefined)).toEqual([])
   })
 

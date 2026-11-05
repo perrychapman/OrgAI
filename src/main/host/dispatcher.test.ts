@@ -37,7 +37,11 @@ const DESKTOP_ONLY = [
   'app:setNotifications',
   'app:cliShimStatus',
   'app:installCliShim',
-  'app:uninstallCliShim'
+  'app:uninstallCliShim',
+  'projects:parseRepoSource',
+  'projects:repoTools',
+  'projects:cloneRepo',
+  'projects:cancelClone'
 ]
 
 const DESKTOP = { surface: 'desktop' as const, senderId: 1 }

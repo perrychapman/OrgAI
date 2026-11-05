@@ -49,6 +49,8 @@ export const CHANNEL_PARAMS: Readonly<Record<string, readonly ParamSpec[]>> = {
   [IPC.knowledgeSaveEdge]: OBJECT,
   [IPC.knowledgeRemoveEdge]: OBJECT,
   [IPC.knowledgeClear]: ID,
+  [IPC.knowledgeInferredLinks]: ID,
+  [IPC.knowledgeDismissLink]: OBJECT,
 
   // ---- projects ----
   [IPC.projectsList]: NONE,
@@ -113,6 +115,12 @@ export const CHANNEL_PARAMS: Readonly<Record<string, readonly ParamSpec[]>> = {
   [IPC.appCliShimStatus]: NONE,
   [IPC.appInstallCliShim]: NONE,
   [IPC.appUninstallCliShim]: NONE,
+  // Desktop only (REPO_CLONE_IPC, ipc.ts registerRepoIpc); the socket refuses them before params. The handlers coerce
+  // or rebuild their input (parseSource takes any value, repoCloneArgs / repoCancelArg refuse a bad one).
+  [IPC.projectsParseRepoSource]: [{ kind: 'any' }],
+  [IPC.projectsRepoTools]: NONE,
+  [IPC.projectsCloneRepo]: OBJECT,
+  [IPC.projectsCancelClone]: [{ kind: 'any' }],
 
   // ---- permissions ----
   [IPC.permissionsList]: ID,

@@ -15,6 +15,7 @@ import type {
   SkillLibraryInfo,
   PermissionDecision,
   Project,
+  RepoCloneProgress,
   RunEvent,
   SendRunInput,
   StartRunInput,
@@ -273,7 +274,9 @@ const api: OrgAIApi = {
     removeNode: (ref) => ipcRenderer.invoke(IPC.knowledgeRemoveNode, ref),
     saveEdge: (input) => ipcRenderer.invoke(IPC.knowledgeSaveEdge, input),
     removeEdge: (ref) => ipcRenderer.invoke(IPC.knowledgeRemoveEdge, ref),
-    clear: (projectId: string) => ipcRenderer.invoke(IPC.knowledgeClear, projectId)
+    clear: (projectId: string) => ipcRenderer.invoke(IPC.knowledgeClear, projectId),
+    inferredLinks: (projectId: string) => ipcRenderer.invoke(IPC.knowledgeInferredLinks, projectId),
+    dismissLink: (input) => ipcRenderer.invoke(IPC.knowledgeDismissLink, input)
   },
   onEngagementChanged: (cb) => {
     const listener = (_e: IpcRendererEvent, event: EngagementChangedEvent): void => cb(event)
@@ -297,6 +300,18 @@ const api: OrgAIApi = {
     export: (input) => ipcRenderer.invoke(KIT_IPC.kitExport, input),
     previewImport: (input) => ipcRenderer.invoke(KIT_IPC.kitPreviewImport, input),
     applyImport: (input) => ipcRenderer.invoke(KIT_IPC.kitApplyImport, input)
+  },
+  // ---- Start a project from a repository (clone or fork) ----
+  repos: {
+    parseSource: (text: string) => ipcRenderer.invoke(IPC.projectsParseRepoSource, text),
+    tools: () => ipcRenderer.invoke(IPC.projectsRepoTools),
+    clone: (input) => ipcRenderer.invoke(IPC.projectsCloneRepo, input),
+    cancelClone: (requestId: string) => ipcRenderer.invoke(IPC.projectsCancelClone, requestId)
+  },
+  onRepoCloneProgress: (cb) => {
+    const listener = (_e: IpcRendererEvent, event: RepoCloneProgress): void => cb(event)
+    ipcRenderer.on(IPC.projectsCloneProgress, listener)
+    return () => ipcRenderer.removeListener(IPC.projectsCloneProgress, listener)
   }
 }
 

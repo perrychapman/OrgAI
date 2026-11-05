@@ -65,7 +65,7 @@ export interface ChannelJsonFields {
 }
 
 /**
- * The 10 main -> renderer push channels (cli-spec 3.3(3)). They carry no request; Wave 1 routes them through
+ * The 11 main -> renderer push channels (cli-spec 3.3(3)). They carry no request; Wave 1 routes them through
  * host.subscribe / runs:subscribe (or keeps them desktop-only).
  */
 export const PUSH_CHANNELS: readonly string[] = [
@@ -78,7 +78,8 @@ export const PUSH_CHANNELS: readonly string[] = [
   IPC.capabilitiesReviewUpdated,
   IPC.projectsEngagementChanged,
   IPC.appFocusRun,
-  IPC.menuAction
+  IPC.menuAction,
+  IPC.projectsCloneProgress
 ]
 
 /** Every channel value the host knows: IPC (with TEMPLATE_ENGAGEMENT_IPC and KNOWLEDGE_IPC), MCP_SCOPE_IPC, KIT_IPC, HOST_IPC. */
@@ -186,6 +187,8 @@ export const CHANNEL_JSON_FIELDS: Readonly<Record<string, ChannelJsonFields>> = 
   'knowledge:saveEdge': {}, // knowledgeArgs.saveEdge
   'knowledge:removeEdge': {}, // knowledgeArgs.itemRef
   'knowledge:clear': {}, // knowledgeArgs.projectId
+  'knowledge:inferredLinks': {}, // knowledgeArgs.projectId -> KnowledgeInferredResult
+  'knowledge:dismissLink': {}, // knowledgeArgs.dismissLink
 
   // ---- projects ----
   'projects:list': {}, // projects.list()
@@ -195,6 +198,11 @@ export const CHANNEL_JSON_FIELDS: Readonly<Record<string, ChannelJsonFields>> = 
   'projects:save': { clearable: PROJECT_CLEARABLE, nullable: ['roles.[].reportsTo'] },
   'projects:remove': {}, // projectRemoveArgs (string id or ProjectRemoveInput)
   'projects:pickDirectory': { note: 'Opens a native dialog in the desktop app; returns a path or null.' },
+  // REPO_CLONE_IPC (ipc.ts registerRepoIpc): desktop only; progress and cancel-on-close use the IPC sender.
+  'projects:parseRepoSource': { note: 'Desktop only.' }, // text -> RepoSourceParse
+  'projects:repoTools': { note: 'Desktop only.' }, // -> RepoTools
+  'projects:cloneRepo': { note: 'Desktop only; progress arrives on projects:cloneProgress to the calling window.' }, // repoCloneArgs
+  'projects:cancelClone': { note: 'Desktop only.' }, // repoCancelArg
   'projects:checkPath': {}, // importer / checkPath(path)
   'projects:scanAgents': {}, // importer.scan(path)
   'projects:previewImport': {}, // importer.preview(AgentImportInput)

@@ -24,7 +24,11 @@ import {
   type LucideIcon
 } from 'lucide-react'
 import type { AgentInstance, PlanStep, RunPlan, TranscriptEntry } from '@shared/types'
-import { DEFAULT_MAX_AUTO_CONTINUES } from '@shared/types'
+import { DEFAULT_MAX_AUTO_CONTINUES, isVirtualProjectId } from '@shared/types'
+import { projectKindOf } from '@shared/defaults'
+import RunKnowledge from './knowledge/RunKnowledge'
+import { isRunWindow } from '../lib/runKnowledge'
+import '../styles/knowledge-run.css'
 import { selectedProject, useAppStore, useRunIndexes, type LogLine, type SideTab } from '../store/useAppStore'
 import { runTag } from '../lib/runLabels'
 import { parsePeerNote, type PeerNote } from '../lib/peerNotes'
@@ -41,7 +45,7 @@ import { Checkbox } from './ui/Checkbox'
 import { Icon } from './ui/Icon'
 import { TabPanel, Tabs, type TabItem } from './ui/Tabs'
 import { autoContinueLine, bareToolName, humanizeToolResult, humanizeToolUse, omittedLabel, type FeedItem, type ToolKind } from '../lib/transcriptRows'
-import { collapseKnowledgeWrites, type KnowledgeRow } from '../lib/knowledgeRun'
+import { collapseKnowledgeWrites, readRowText, recallOutputText, type KnowledgeRow } from '../lib/knowledgeRun'
 
 /** Distance from the end of the conversation under which it still counts as scrolled to the end. */
 const STICK_PX = 48
@@ -237,10 +241,12 @@ export function collapseSkillLoads(entries: TranscriptEntry[]): { hidden: Set<st
  * The harness row that stands for a knowledge write (section 7): the humanised headline, an "Open" link to the item on
  * the Knowledge tab and the tool's result behind "Show output".
  */
-function KnowledgeWriteRow({ row, body, projectId }: { row: KnowledgeRow; body: string | undefined; projectId: string | undefined }): ReactElement {
+function KnowledgeWriteRow({ row, body, projectId, runId }: { row: KnowledgeRow; body: string | undefined; projectId: string | undefined; runId: string }): ReactElement {
   const open = (): void => {
     if (!projectId || !row.focus) return
-    useAppStore.getState().openKnowledgeItem({ projectId, ...row.focus })
+    // A run window cannot reach the project's Knowledge tab: its side tab shows the item instead (spec 3.3).
+    if (isRunWindow() && runId) useAppStore.getState().openRunKnowledge(runId, row.focus)
+    else useAppStore.getState().openKnowledgeItem({ projectId, ...row.focus })
   }
   return (
     <div className="entry system harness knowledge-write-row" data-testid="knowledge-write-row">
@@ -266,6 +272,27 @@ function KnowledgeWriteRow({ row, body, projectId }: { row: KnowledgeRow; body: 
   )
 }
 
+/**
+ * A knowledge read (spec 3.4): "Recalled N items about <query>" with the tool's answer under "Show output", or the quiet
+ * "Added N known items: ..." row. The look of a write row, no Open link.
+ */
+function KnowledgeReadRow({ text, body }: { text: string; body: string | undefined }): ReactElement {
+  return (
+    <div className="entry system harness knowledge-write-row knowledge-read-row" data-testid="knowledge-read-row">
+      <Icon icon={Database} size="sm" />
+      <div className="tool-main">
+        <span className="entry-plain">{text}</span>
+        {body && (
+          <details className="entry-detail">
+            <summary>Show output</summary>
+            <pre>{recallOutputText(body)}</pre>
+          </details>
+        )}
+      </div>
+    </div>
+  )
+}
+
 export default function TranscriptPanel({ runId, agent, entries: ownEntries, feed, logs, finished, variant = 'panel', tagRunId, lead }: Props): ReactElement {
   const selectedTab = useAppStore((s) => s.sideTabByRun[runId] ?? 'transcript')
   const projectId = useAppStore((s) => s.runs[runId]?.summary.projectId)
@@ -278,7 +305,14 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
   const index = useRunIndexes().get(tagRunId ?? runId)
   // Setup runs have no plan tab; fall back to the transcript there.
   const planTab = selectedTab === 'plan' && !isWork && !plan ? 'transcript' : selectedTab
-  const tab: SideTab = planTab
+  // The Knowledge tab: work runs of engagements (Ask runs too), never setup runs or the assistants.
+  const showKnowledgeTab = useAppStore((s) => {
+    const run = s.runs[runId]?.summary
+    if (!run || run.kind !== 'work' || run.quick || isVirtualProjectId(run.projectId)) return false
+    const project = s.projects.find((p) => p.id === run.projectId)
+    return !!project && projectKindOf(project) === 'engagement'
+  })
+  const tab: SideTab = planTab === 'knowledge' && !showKnowledgeTab ? 'transcript' : planTab
 
   // One list for both shapes: the merged feed, or this run's entries as feed items.
   const items = useMemo<FeedItem[]>(() => feed ?? ownEntries.map((entry) => ({ kind: 'entry' as const, runId, entry })), [feed, ownEntries, runId])
@@ -358,7 +392,8 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
         if (peer) return <PeerNoteRow key={e.id} note={peer} at={e.at} />
         const harness = e.source === 'harness'
         const kRow = harness ? knowledge.rows.get(e.id) : undefined
-        if (kRow) return <KnowledgeWriteRow key={e.id} row={kRow} body={knowledge.body.get(e.id)} projectId={projectId} />
+        if (kRow) return <KnowledgeWriteRow key={e.id} row={kRow} body={knowledge.body.get(e.id)} projectId={projectId} runId={runId} />
+        if (harness && knowledge.reads.has(e.id)) return <KnowledgeReadRow key={e.id} text={readRowText(b.text, knowledge.repeats.get(e.id))} body={knowledge.body.get(e.id)} />
         const skillName = harness ? b.text.match(/^Loaded skill (.+)$/)?.[1] : undefined
         const skillBody = skillName ? skillLoads.body.get(e.id) : undefined
         // Harness lines (nudges, hand-offs, limit notices) and in-run agent messages are quiet rows; the full text sits behind a disclosure.
@@ -464,6 +499,7 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
     { id: 'transcript', label: 'Transcript', testId: 'side-tab-transcript' },
     ...(showPlanTab ? [{ id: 'plan', label: 'Plan', icon: plan?.status === 'blocked' ? AlertTriangle : undefined, testId: 'side-tab-plan' }] : []),
     { id: 'usage', label: 'Usage', testId: 'side-tab-usage' },
+    ...(showKnowledgeTab ? [{ id: 'knowledge', label: 'Knowledge', testId: 'side-tab-knowledge' }] : []),
     { id: 'logs', label: 'Logs', count: errorCount, testId: 'side-tab-logs' }
   ]
   const idPrefix = `side-${runId}`
@@ -493,6 +529,11 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
           <UsagePanel runId={runId} agent={agent} />
         </TabPanel>
       )}
+      {tab === 'knowledge' && projectId && (
+        <TabPanel idPrefix={idPrefix} id="knowledge" value={tab} className="run-knowledge-panel">
+          <RunKnowledge runId={runId} projectId={projectId} />
+        </TabPanel>
+      )}
       {tab === 'transcript' && finished && !agent && (
         <TabPanel idPrefix={idPrefix} id="transcript" value={tab}>
           <FinishedList group={finished} />
@@ -519,7 +560,7 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
           <Checkbox checked={showThinking} onChange={setShowThinking} label="Show thinking" />
         </div>
       )}
-      {tab === 'plan' || tab === 'usage' || (tab === 'transcript' && finished && !agent) ? null : tab === 'transcript' ? (
+      {tab === 'plan' || tab === 'usage' || tab === 'knowledge' || (tab === 'transcript' && finished && !agent) ? null : tab === 'transcript' ? (
         <TabPanel idPrefix={idPrefix} id="transcript" value={tab} className="transcript">
           {!agent && <p className="panel-note">Select an agent on the chart to read its transcript.</p>}
           {agent && visible.length === 0 && !partial && <p className="panel-note">Nothing yet.</p>}

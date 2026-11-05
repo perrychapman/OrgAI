@@ -18,6 +18,7 @@ import type {
   EngagementDocumentUpdate,
   EngagementNoteRef,
   EngagementNoteSaveInput,
+  KnowledgeDismissLinkInput,
   KnowledgeEdgeSaveInput,
   KnowledgeFactInput,
   KnowledgeItemRef,
@@ -55,6 +56,7 @@ import type {
 import {
   HARNESS_PROJECT_ID,
   KNOWLEDGE_FACT_MAX_CHARS,
+  KNOWLEDGE_LINK_ID_RE,
   KNOWLEDGE_NODE_FACTS_MAX,
   PROPOSAL_NOTE_MAX_CHARS,
   QUICK_RUN_MAX_PROMPT_CHARS,
@@ -424,6 +426,13 @@ export const knowledgeArgs = {
       ...(note !== undefined ? { note } : {}),
       ...(retired !== undefined ? { retired } : {})
     }
+  },
+  /** projectId plus a link id of the KNOWLEDGE_LINK_ID_RE shape; extra fields dropped. */
+  dismissLink(input: unknown): KnowledgeDismissLinkInput {
+    const i = obj<Record<string, unknown>>(input)
+    const projectId = storedIdArg(i.projectId)
+    if (typeof i.linkId !== 'string' || !KNOWLEDGE_LINK_ID_RE.test(i.linkId)) throw new Error('That is not a connection id.')
+    return { projectId, linkId: i.linkId }
   }
 }
 

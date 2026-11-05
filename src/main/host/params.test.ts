@@ -38,6 +38,8 @@ const PAYLOADS: Record<string, unknown[]> = {
   'knowledge:saveEdge': [{ projectId: 'p_abc123', from: 'kn_1', to: 'kn_2', relation: 'works-at' }],
   'knowledge:removeEdge': [{ projectId: 'p_abc123', id: 'ke_1' }],
   'knowledge:clear': ['p_abc123'],
+  'knowledge:inferredLinks': ['p_abc123'],
+  'knowledge:dismissLink': [{ projectId: 'p_abc123', linkId: 'kl_0123456789abcdef' }],
   // projects
   'projects:list': [],
   'projects:get': ['quick'],
@@ -93,6 +95,11 @@ const PAYLOADS: Record<string, unknown[]> = {
   'app:cliShimStatus': [],
   'app:installCliShim': [],
   'app:uninstallCliShim': [],
+  // REPO_CLONE_IPC (desktop only)
+  'projects:parseRepoSource': ['octo/repo'],
+  'projects:repoTools': [],
+  'projects:cloneRepo': [{ requestId: 'req_1', source: 'octo/repo', mode: 'clone', destination: '/tmp/repo' }],
+  'projects:cancelClone': ['req_1'],
   'app:logPath': [],
   'app:info': [],
   // permissions

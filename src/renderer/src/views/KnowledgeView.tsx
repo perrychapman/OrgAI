@@ -1,13 +1,15 @@
 import type { ReactElement } from 'react'
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Plus } from 'lucide-react'
-import type { EngagementNote, EngagementNoteContent, KnowledgeGraph as KnowledgeGraphData, KnowledgeNode, Project } from '@shared/types'
+import type { EngagementNote, EngagementNoteContent, KnowledgeGraph as KnowledgeGraphData, KnowledgeInferredResult, KnowledgeNode, Project } from '@shared/types'
 import { ENGAGEMENT_NOTES_MAX, KNOWLEDGE_NODES_MAX } from '@shared/types'
 import { emptyKnowledgeGraph } from '@shared/knowledge'
 import type { KnowledgeFilter, KnowledgeItem, RunFacts } from '../lib/knowledge'
 import { EMPTY_FILTER, countLine, groupItems, idAfterRemoval, isFilterActive, itemName, itemsOf, kindCounts, originCounts, resolveFocus, runNamesOf, searchItems } from '../lib/knowledge'
 import type { RecordedBatch } from '../lib/knowledgeList'
 import { EMPTY_BATCH, NOTICE_MS, addRecorded, emptyKind, eventItemIds, flushRecorded, hiddenNewIds, isOwnEvent, itemsCapText, notesCapText, restoreReady, retireNoticeText } from '../lib/knowledgeList'
+import { inferredStatus, possiblePartialNote, visibleLinkCount } from '../lib/knowledgePossible'
+import { KNOWLEDGE_INFERRED_KEY, KNOWLEDGE_RETIRED_KEY, KNOWLEDGE_VIEW_KEY } from '../lib/knowledgePrefs'
 import { cleanIpcError } from '../lib/ipcError'
 import { useAppStore, useProjectSummaries, useRunIndexes } from '../store/useAppStore'
 import { SidePanel } from '../components/layout/SidePanel'
@@ -19,7 +21,7 @@ import { SegmentedControl } from '../components/ui/SegmentedControl'
 import { KnowledgeFilters } from '../components/knowledge/KnowledgeFilters'
 import { KnowledgeList, type KnowledgeListHandle } from '../components/knowledge/KnowledgeList'
 import { DETAIL_HEADING_ID, KnowledgeDetail, type DetailMode } from '../components/knowledge/KnowledgeDetail'
-import KnowledgeGraph from '../components/knowledge/KnowledgeGraph'
+import KnowledgeNeural, { type KnowledgeNeuralHandle } from '../components/knowledge/KnowledgeNeural'
 import NoteDialog from '../components/knowledge/NoteDialog'
 import type { KnowledgeWrites } from '../components/knowledge/knowledgeWrites'
 import { focusLater } from '../components/knowledge/knowledgeWrites'
@@ -27,8 +29,9 @@ import '../styles/knowledge.css'
 
 type ViewMode = 'list' | 'graph'
 
-const VIEW_KEY = 'orgai.knowledgeView.'
-const RETIRED_KEY = 'orgai.knowledgeRetired.'
+const VIEW_KEY = KNOWLEDGE_VIEW_KEY
+const RETIRED_KEY = KNOWLEDGE_RETIRED_KEY
+const INFERRED_KEY = KNOWLEDGE_INFERRED_KEY
 
 function readPref(key: string): string | null {
   try {
@@ -171,7 +174,52 @@ export default function KnowledgeView({ project }: { project: Project }): ReactE
     void reload('notes')
   }, [projectId, reload])
   const loaded = graph !== null && notes !== null
+  // Inferred links and appearance counts follow each graph revision (main computes them once per revision).
+  const [inferred, setInferred] = useState<KnowledgeInferredResult | null>(null)
+  const [inferredFailed, setInferredFailed] = useState(false)
+  const inferredSeq = useRef(0)
+  const reloadInferred = useCallback((): void => {
+    const seq = ++inferredSeq.current
+    window.orgai.knowledge.inferredLinks(projectId).then(
+      (r) => {
+        if (seq !== inferredSeq.current) return
+        setInferred(r)
+        setInferredFailed(false)
+      },
+      () => {
+        if (seq === inferredSeq.current) setInferredFailed(true)
+      }
+    )
+  }, [projectId])
+  useEffect(() => {
+    if (graph) reloadInferred()
+    else setInferred(null)
+  }, [graph, reloadInferred])
+  const dismissLink = useCallback(
+    async (linkId: string): Promise<void> => {
+      const seq = ++inferredSeq.current
+      const r = await window.orgai.knowledge.dismissLink({ projectId, linkId })
+      if (seq === inferredSeq.current) setInferred(r)
+    },
+    [projectId]
+  )
+  const [showInferred, setShowInferredState] = useState(() => readPref(INFERRED_KEY + projectId) === 'on')
+  const setShowInferred = useCallback(
+    (on: boolean): void => {
+      setShowInferredState(on)
+      writePref(INFERRED_KEY + projectId, on ? 'on' : 'off')
+    },
+    [projectId]
+  )
   const items = useMemo(() => itemsOf(graph ?? emptyKnowledgeGraph(), notes ?? []), [graph, notes])
+
+  // ---- view switch ----
+  const [view, setView] = useState<ViewMode>(() => (readPref(VIEW_KEY + projectId) === 'graph' ? 'graph' : 'list'))
+  const changeView = (v: ViewMode): void => {
+    setView(v)
+    writePref(VIEW_KEY + projectId, v)
+  }
+  const graphView = view === 'graph'
 
   // ---- filter ----
   const [filter, setFilter] = useState<KnowledgeFilter>(() => ({ ...EMPTY_FILTER, showRetired: readPref(RETIRED_KEY + projectId) === 'on' }))
@@ -189,10 +237,15 @@ export default function KnowledgeView({ project }: { project: Project }): ReactE
   }, [filter.query, filter.kinds, filter.origins])
   const groups = useMemo(() => groupItems(shown), [shown])
   const kinds = useMemo(() => kindCounts(items, filter.showRetired), [items, filter.showRetired])
-  const origins = useMemo(() => originCounts(items, filter.showRetired), [items, filter.showRetired])
+  // Graph view counts what it draws: nodes, not notes, the same as its count line.
+  const origins = useMemo(() => originCounts(graphView ? items.filter((i) => i.type === 'node') : items, filter.showRetired), [items, filter.showRetired, graphView])
   const total = filter.showRetired ? items.length : items.filter((i) => !(i.type === 'node' ? i.node.retired : i.note.retired)).length
-  const countText = countLine(shown.length, total)
+  // Graph view counts the items it draws: nodes only (notes are not drawn).
+  const nodeTotal = items.filter((i) => i.type === 'node' && (filter.showRetired || !i.node.retired)).length
+  const countText = graphView ? countLine(shown.filter((i) => i.type === 'node').length, nodeTotal) : countLine(shown.length, total)
   const empty = loaded ? emptyKind(total, shown.length, isFilterActive(filter), hasWorkRun) : null
+  /** Graph view with nothing to draw but notes. */
+  const onlyNotes = graphView && loaded && empty !== 'none' && empty !== 'none-runs' && empty !== 'retired' && nodeTotal === 0
 
   // ---- status region ----
   const [status, setStatus] = useState('')
@@ -204,6 +257,12 @@ export default function KnowledgeView({ project }: { project: Project }): ReactE
       if (seq === statusSeq.current) setStatus(text)
     }, 40)
   }, [])
+  /** The Inferred links switch: lines between the kept items, spoken as a count. */
+  const keptIds = useMemo(() => new Set(shown.filter((i) => i.type === 'node').map((i) => i.id)), [shown])
+  const changeShowInferred = (on: boolean): void => {
+    setShowInferred(on)
+    announce(on ? inferredStatus(visibleLinkCount(inferred?.links ?? [], keptIds)) : 'Inferred links hidden.')
+  }
   // The count line is spoken after a filter change, never on load: the flag is armed once the data is in.
   const countArmed = useRef(false)
   useEffect(() => {
@@ -217,13 +276,6 @@ export default function KnowledgeView({ project }: { project: Project }): ReactE
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filter.query, filter.kinds, filter.origins, filter.showRetired])
 
-  // ---- view switch ----
-  const [view, setView] = useState<ViewMode>(() => (readPref(VIEW_KEY + projectId) === 'graph' ? 'graph' : 'list'))
-  const changeView = (v: ViewMode): void => {
-    setView(v)
-    writePref(VIEW_KEY + projectId, v)
-  }
-
   // ---- selection and the pane ----
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
@@ -231,8 +283,16 @@ export default function KnowledgeView({ project }: { project: Project }): ReactE
   const [reveal, setReveal] = useState<string | null>(null)
   const listRef = useRef<KnowledgeListHandle>(null)
   const selected = selectedId ? (items.find((i) => i.id === selectedId) ?? null) : null
+  /** The detail heading, else the pane body, else (the panel is a rail) the rail's Show button: never body. */
   const focusHeading = useCallback((): void => {
-    focusLater(() => document.getElementById(DETAIL_HEADING_ID))
+    focusLater(() => {
+      const visible = (el: HTMLElement | null): el is HTMLElement => !!el && el.getClientRects().length > 0
+      const heading = document.getElementById(DETAIL_HEADING_ID)
+      if (visible(heading)) return heading
+      const body = document.getElementById('knowledge-detail-body')
+      if (visible(body)) return body
+      return document.querySelector<HTMLElement>('[data-testid=knowledge-detail] .side-rail button')
+    })
   }, [])
   const openItem = useCallback(
     (id: string): void => {
@@ -244,6 +304,22 @@ export default function KnowledgeView({ project }: { project: Project }): ReactE
     },
     [focusHeading]
   )
+  /** A click on a graph node: the panel opens on the item and focus stays where it is. */
+  const openPanel = useCallback((id: string): void => {
+    setCreating(false)
+    setSelectedId(id)
+    setPaneOpen(true)
+    setReveal(`${id}:${Date.now()}`)
+  }, [])
+  const neuralRef = useRef<KnowledgeNeuralHandle>(null)
+  // The last node leaving takes the whole canvas with it: focus lands on what replaces it, never on the page.
+  const neuralHadFocus = useRef(false)
+  neuralHadFocus.current = !!document.activeElement?.closest('[data-testid=knowledge-neural]')
+  useLayoutEffect(() => {
+    if (!neuralHadFocus.current || neuralRef.current || document.activeElement !== document.body) return
+    const target = ['[data-testid=knowledge-add-note]:not(:disabled)', '[data-testid=knowledge-show-retired]', '[data-testid=knowledge-view-switch] input:checked'].map((s) => document.querySelector<HTMLElement>(s)).find(Boolean)
+    target?.focus({ preventScroll: true })
+  })
   const selectItem = useCallback((id: string | null): void => {
     setCreating(false)
     setSelectedId(id)
@@ -271,13 +347,11 @@ export default function KnowledgeView({ project }: { project: Project }): ReactE
     setNotice(null)
     setPendingRestore(null)
   }, [projectId])
-  /** Focus a node of the graph once React Flow has mounted it (bounded wait on the element, no fixed delay). */
-  const focusGraphNode = (tries = 40): void => {
+  /** Focus a node of the graph once it has mounted (bounded wait, no fixed delay). */
+  const focusGraphNode = (id: string | null = null, tries = 40): void => {
     requestAnimationFrame(() => {
-      const root = document.querySelector('[data-testid=knowledge-graph]')
-      const node = root?.querySelector<HTMLElement>('.react-flow__node.selected') ?? root?.querySelector<HTMLElement>('.react-flow__node')
-      if (node) node.focus({ preventScroll: true })
-      else if (tries > 0) focusGraphNode(tries - 1)
+      if (neuralRef.current?.focusNode(id)) return
+      if (tries > 0) focusGraphNode(id, tries - 1)
       else focusAddNote()
     })
   }
@@ -298,13 +372,14 @@ export default function KnowledgeView({ project }: { project: Project }): ReactE
   useEffect(() => {
     if (!pendingRestore || !restoreReady(shown, pendingRestore)) return
     setPendingRestore(null)
-    if (view === 'graph') focusAddNote()
+    if (view === 'graph') focusGraphNode(pendingRestore)
     else focusRow(pendingRestore)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingRestore, shown, view])
   const dismissNotice = (): void => {
     setNotice(null)
-    if (view === 'graph' || shown.length === 0) focusAddNote()
+    if (view === 'graph') focusGraphNode(selectedId)
+    else if (shown.length === 0) focusAddNote()
     else focusRow(selectedId)
   }
 
@@ -451,7 +526,8 @@ export default function KnowledgeView({ project }: { project: Project }): ReactE
     if (!live) {
       setNotice(null)
       announce('That item no longer exists.')
-      if (view === 'graph' || shown.length === 0) focusAddNote()
+      if (view === 'graph') focusGraphNode()
+      else if (shown.length === 0) focusAddNote()
       else focusRow(selectedId)
       return
     }
@@ -472,7 +548,7 @@ export default function KnowledgeView({ project }: { project: Project }): ReactE
       setNotice({ id: item.id, item, text: retireNoticeText(name, 'deleted'), undoable: false })
       const next = idAfterRemoval(shownIds, item.id)
       selectItem(next)
-      if (view === 'graph') focusAddNote()
+      if (view === 'graph') focusGraphNode()
       else if (next) focusRow(next)
       else focusAddNote()
     } catch (e) {
@@ -536,7 +612,19 @@ export default function KnowledgeView({ project }: { project: Project }): ReactE
         <span className="spacer" />
         {addButtons}
       </div>
-      <KnowledgeFilters domId={filtersDomId} filter={filter} kinds={kinds} origins={origins} onChange={changeFilter} countText={countText} hiddenNew={hiddenNew.length} onShowNew={showNew} />
+      <KnowledgeFilters
+        domId={filtersDomId}
+        layout={graphView ? 'band' : 'column'}
+        filter={filter}
+        kinds={kinds}
+        origins={origins}
+        onChange={changeFilter}
+        countText={countText}
+        hiddenNew={hiddenNew.length}
+        onShowNew={showNew}
+        showInferred={showInferred}
+        onShowInferred={changeShowInferred}
+      />
       <div className="knowledge-main" data-testid="knowledge-main">
         {notice && <WriteNotice text={notice.text} undoable={notice.undoable} onUndo={() => undoRetire(notice.id)} onDismiss={dismissNotice} onExpire={() => setNotice(null)} />}
         {(loadError || error) && (
@@ -567,8 +655,6 @@ export default function KnowledgeView({ project }: { project: Project }): ReactE
         )}
         {!loaded ? (
           !loadError && <p className="panel-note knowledge-loading">Looking…</p>
-        ) : view === 'graph' ? (
-          <KnowledgeGraph projectId={projectId} graph={graph ?? emptyKnowledgeGraph()} filter={filter} selectedId={selectedId} onSelect={selectItem} onOpen={openItem} listDomId={filtersDomId} detailDomId="knowledge-detail-body" announce={announce} />
         ) : empty === 'none' || empty === 'none-runs' ? (
           <EmptyState
             compact
@@ -576,6 +662,51 @@ export default function KnowledgeView({ project }: { project: Project }): ReactE
             title={empty === 'none' ? 'Nothing recorded yet' : 'The team has not recorded anything yet'}
             description={empty === 'none' ? 'Add a note for the team, or run the team and it records people, systems, decisions and risks here as it works.' : 'Notes you add here are read at the start of every run.'}
             actions={addButtons}
+          />
+        ) : empty === 'retired' ? (
+          <EmptyState compact testId="knowledge-empty-retired" title="Only retired items." description="Show retired to see them." />
+        ) : onlyNotes ? (
+          <EmptyState
+            compact
+            testId="knowledge-neural-only-notes"
+            title="Only notes so far"
+            description="Notes show in the list. Items the team records show here."
+            actions={
+              <Button
+                size="sm"
+                testId="knowledge-only-notes-list"
+                onClick={() => {
+                  changeView('list')
+                  focusRow(selectedId)
+                }}
+              >
+                Show as list
+              </Button>
+            }
+          />
+        ) : graphView ? (
+          <KnowledgeNeural
+            ref={neuralRef}
+            projectId={projectId}
+            graph={graph ?? emptyKnowledgeGraph()}
+            inferred={inferred}
+            filter={filter}
+            showInferred={showInferred}
+            selectedId={selectedId}
+            onSelect={selectItem}
+            onOpenPanel={openPanel}
+            onOpen={openItem}
+            onShowList={() => {
+              changeView('list')
+              requestAnimationFrame(() => {
+                if (listRef.current) focusRow(selectedId)
+                // Everything filtered out: no rows to land on.
+                else focusLater(() => document.querySelector<HTMLElement>('[data-testid=knowledge-clear-filters]') ?? document.querySelector<HTMLElement>('[data-testid=knowledge-add-note]:not(:disabled)'))
+              })
+            }}
+            onSkipToDetail={focusHeading}
+            onClearFilters={() => changeFilter({ query: '', kinds: [], origins: [] })}
+            announce={announce}
           />
         ) : empty === 'filter' ? (
           <EmptyState
@@ -588,8 +719,6 @@ export default function KnowledgeView({ project }: { project: Project }): ReactE
               </Button>
             }
           />
-        ) : empty === 'retired' ? (
-          <EmptyState compact testId="knowledge-empty-retired" title="Only retired items." description="Show retired to see them." />
         ) : (
           <KnowledgeList
             ref={listRef}
@@ -627,9 +756,17 @@ export default function KnowledgeView({ project }: { project: Project }): ReactE
             setCreating(false)
             focusLater(() => document.querySelector<HTMLElement>('[data-testid=knowledge-add-item]'))
           }}
-          onEscape={() => focusRow(selectedId)}
+          onEscape={() => {
+            if (view === 'graph') focusGraphNode(selectedId)
+            else focusRow(selectedId)
+          }}
           onError={(m) => setError(cleanIpcError(m))}
           announce={announce}
+          inferredLinks={inferred?.links ?? null}
+          inferredPartialNote={possiblePartialNote(inferred?.partial)}
+          inferredFailed={inferredFailed}
+          onRetryInferred={reloadInferred}
+          onDismissLink={dismissLink}
         />
       </SidePanel>
       <p className="sr-only" role="status" data-testid="knowledge-status">

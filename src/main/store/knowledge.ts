@@ -8,6 +8,7 @@ import type {
   KnowledgeFact,
   KnowledgeFactInput,
   KnowledgeGraph,
+  KnowledgeInferredResult,
   KnowledgeNode,
   KnowledgeNodeSaveInput,
   KnowledgeNodeUpsertInput,
@@ -22,8 +23,10 @@ import {
   KNOWLEDGE_EDGES_MAX,
   KNOWLEDGE_EDGE_NOTE_MAX_CHARS,
   KNOWLEDGE_FACT_MAX_CHARS,
+  KNOWLEDGE_DISMISSED_LINKS_MAX,
   KNOWLEDGE_FILE_MAX_BYTES,
   KNOWLEDGE_KEY_RE,
+  KNOWLEDGE_LINK_ID_RE,
   KNOWLEDGE_NAME_MAX_CHARS,
   KNOWLEDGE_NODES_MAX,
   KNOWLEDGE_NODE_FACTS_MAX,
@@ -31,6 +34,7 @@ import {
   KNOWLEDGE_SUMMARY_MAX_CHARS
 } from '@shared/types'
 import { emptyKnowledgeGraph, knowledgeNameKey, knowledgeNodeNamed, matchKnowledgeNodes, normalizeKnowledgeKey } from '@shared/knowledge'
+import { knowledgeInferredResult } from '@shared/knowledgeLinks'
 import { isSafeId } from '@shared/defaults'
 import type { KnowledgeStoreApi } from '../runtime/types'
 import { hiddenCharIn, hiddenCharProblem } from '../capabilities/sanitize'
@@ -84,7 +88,7 @@ function cleanSource(x: unknown): KnowledgeSource | undefined {
   return out
 }
 
-/** A name or alias as stored: 1..KNOWLEDGE_NAME_MAX_CHARS, not blank, one line (no hidden characters). */
+/** A name or alias as stored: 1..KNOWLEDGE_NAME_MAX_CHARS, not blank, one line (hiddenCharIn refuses every line break, U+2028 and U+2029 included). */
 function cleanName(x: unknown): string | undefined {
   const s = cleanString(x, KNOWLEDGE_NAME_MAX_CHARS)
   return s !== undefined && knowledgeNameKey(s) ? s : undefined
@@ -204,14 +208,28 @@ function cleanGraph(parsed: unknown, noteIndex: ReadonlySet<string>): KnowledgeG
     }
   }
   if (finite(g.updatedAt)) graph.updatedAt = g.updatedAt
+  if (Array.isArray(g.dismissedLinks)) {
+    // Tolerant: strings of the id shape only, deduped (the last position wins), the newest KNOWLEDGE_DISMISSED_LINKS_MAX kept.
+    const kept = [...new Set(g.dismissedLinks.filter((x): x is string => typeof x === 'string' && KNOWLEDGE_LINK_ID_RE.test(x)).reverse())].reverse()
+    const list = kept.slice(-KNOWLEDGE_DISMISSED_LINKS_MAX)
+    if (list.length) graph.dismissedLinks = list
+  }
   return graph
 }
 
 /**
  * The file cap (KNOWLEDGE_FILE_MAX_BYTES) as the store applies it on read and write. Tests lower `maxBytes` to
- * exercise the over-size refusals without writing 64 MB files; nothing else assigns it.
+ * exercise the over-size refusals without writing 64 MB files, and set `freezeCached` so a reader that mutates the
+ * shared cached graph throws, and lower the two size thresholds below; nothing else assigns them.
  */
-export const knowledgeFileLimits = { maxBytes: KNOWLEDGE_FILE_MAX_BYTES }
+export const knowledgeFileLimits = {
+  maxBytes: KNOWLEDGE_FILE_MAX_BYTES,
+  freezeCached: false,
+  /** The read cache holds at most this much file size. */
+  cacheMaxBytes: 96 * 1024 * 1024,
+  /** A knowledge.json at least this large is debounced for recall (readRecallView): indexing it takes hundreds of milliseconds. */
+  recallDebounceMinBytes: 8 * 1024 * 1024
+}
 
 /**
  * How knowledge.json stands: 'missing' (no file; writes create it), 'ok' (a graph; junk inside dropped item by
@@ -227,14 +245,13 @@ function isGraphRoot(parsed: unknown): parsed is { version: 1; nodes: unknown[];
   return g.version === 1 && Array.isArray(g.nodes) && Array.isArray(g.edges)
 }
 
-/** The stored graph with the file's state. Throws only on an unsafe project id. */
-function loadGraph(dataDir: string, projectId: string): { graph: KnowledgeGraph; state: KnowledgeFileState } {
-  const file = knowledgeFile(dataDir, projectId)
-  try {
-    lstatSync(file)
-  } catch {
-    return { graph: emptyKnowledgeGraph(), state: 'missing' }
-  }
+interface Loaded {
+  graph: KnowledgeGraph
+  state: KnowledgeFileState
+}
+
+/** Parse the file now (no cache). `noteIds` = the note index's ids, which decide which note links survive. */
+function parseGraph(file: string, noteIds: ReadonlySet<string>): Loaded {
   const unreadable = { graph: emptyKnowledgeGraph(), state: 'unreadable' as const }
   const raw = readPlain(file, knowledgeFileLimits.maxBytes)
   if (!raw) return unreadable
@@ -245,7 +262,110 @@ function loadGraph(dataDir: string, projectId: string): { graph: KnowledgeGraph;
     return unreadable
   }
   if (!isGraphRoot(parsed)) return unreadable
-  return { graph: cleanGraph(parsed, new Set(listNotes(dataDir, projectId).map((n) => n.id))), state: 'ok' }
+  return { graph: cleanGraph(parsed, noteIds), state: 'ok' }
+}
+
+// ---------- Read cache ----------
+
+/**
+ * A parsed graph per file (a full graph is up to 64 MB on disk, so reads must not re-parse it). The stamp is the file's
+ * lstat (mtime, size, inode, kind: lstat so a swap to a link shows), the size cap in force and the note index's ids
+ * (cleanGraph drops note links whose note is gone, which depends on the notes, not on the graph file). Reads hand out
+ * the cached object BY REFERENCE and nothing may mutate it (the pure layer's memos key on object identity); every write
+ * re-reads the file uncached and builds a new object. Tests freeze what is cached (knowledgeFileLimits.freezeCached), so
+ * a mutating reader throws there. Bounded by KNOWLEDGE_CACHE_MAX projects and by knowledgeFileLimits.cacheMaxBytes of file size
+ * (a parsed graph takes several times its file size, and the pure layer's indexes hang off it), least recently used out;
+ * the newest entry always stays, so a single huge graph is still cached.
+ */
+interface CacheEntry extends Loaded {
+  stamp: string
+  bytes: number
+}
+const KNOWLEDGE_CACHE_MAX = 4
+const cache = new Map<string, CacheEntry>()
+
+function deepFreeze<T>(value: T): T {
+  if (value && typeof value === 'object' && !Object.isFrozen(value)) {
+    Object.freeze(value)
+    for (const v of Object.values(value)) deepFreeze(v)
+  }
+  return value
+}
+
+function fileStat(file: string): { stamp: string; bytes: number } | null {
+  try {
+    const st = lstatSync(file)
+    return { stamp: `${st.mtimeMs}:${st.size}:${st.ino}:${st.isFile() ? 'f' : 'x'}`, bytes: st.size }
+  } catch {
+    return null
+  }
+}
+
+const stampOf = (fileStampText: string, noteIds: readonly string[]): string => `${fileStampText}|${knowledgeFileLimits.maxBytes}|${[...noteIds].sort().join(',')}`
+
+function remember(file: string, entry: CacheEntry): void {
+  if (knowledgeFileLimits.freezeCached) deepFreeze(entry.graph)
+  cache.delete(file)
+  cache.set(file, entry)
+  let total = 0
+  for (const e of cache.values()) total += e.bytes
+  while (cache.size > 1 && (cache.size > KNOWLEDGE_CACHE_MAX || total > knowledgeFileLimits.cacheMaxBytes)) {
+    const oldest = cache.keys().next().value
+    if (oldest === undefined) break
+    total -= cache.get(oldest)?.bytes ?? 0
+    cache.delete(oldest)
+    recallSnapshots.delete(oldest)
+  }
+}
+
+/** How many held recall revisions there are (tests): never more than the graph cache holds. */
+export function knowledgeRecallSnapshotCount(): number {
+  return recallSnapshots.size
+}
+
+/** What the cache holds now, oldest first (tests). */
+export function knowledgeCacheFiles(): string[] {
+  return [...cache.keys()]
+}
+
+/** The stored graph with the file's state, from the cache when the stamp is unchanged. Throws only on an unsafe project id. */
+function loadGraph(dataDir: string, projectId: string): Loaded {
+  const file = knowledgeFile(dataDir, projectId)
+  const fs = fileStat(file)
+  if (fs === null) {
+    cache.delete(file)
+    recallSnapshots.delete(file)
+    return { graph: emptyKnowledgeGraph(), state: 'missing' }
+  }
+  const noteIds = listNotes(dataDir, projectId).map((n) => n.id)
+  const stamp = stampOf(fs.stamp, noteIds)
+  const hit = cache.get(file)
+  if (hit && hit.stamp === stamp) {
+    cache.delete(file)
+    cache.set(file, hit)
+    return hit
+  }
+  const loaded = parseGraph(file, new Set(noteIds))
+  remember(file, { ...loaded, stamp, bytes: fs.bytes })
+  return loaded
+}
+
+/** After a successful write: the written graph becomes the cached one (stamp of the file as it is now). */
+function rememberWritten(dataDir: string, projectId: string, graph: KnowledgeGraph): void {
+  const file = knowledgeFile(dataDir, projectId)
+  const fs = fileStat(file)
+  if (fs === null) {
+    cache.delete(file)
+    recallSnapshots.delete(file)
+    return
+  }
+  remember(file, { graph, state: 'ok', stamp: stampOf(fs.stamp, listNotes(dataDir, projectId).map((n) => n.id)), bytes: fs.bytes })
+}
+
+/** Drop every cached graph (tests). */
+export function resetKnowledgeCache(): void {
+  cache.clear()
+  recallSnapshots.clear()
 }
 
 /**
@@ -273,8 +393,11 @@ export function unreadableMessage(file: string): string {
 
 /** The graph for a write: a missing file is an empty graph, an unreadable one refuses (never overwritten). */
 function loadForWrite(dataDir: string, projectId: string): KnowledgeGraph {
-  const { graph, state } = loadGraph(dataDir, projectId)
-  if (state === 'unreadable') throw new Error(unreadableMessage(knowledgeFile(dataDir, projectId)))
+  const file = knowledgeFile(dataDir, projectId)
+  if (fileStat(file) === null) return emptyKnowledgeGraph()
+  // Always from disk and always a new object: the cached one is shared with readers and never mutated.
+  const { graph, state } = parseGraph(file, new Set(listNotes(dataDir, projectId).map((n) => n.id)))
+  if (state === 'unreadable') throw new Error(unreadableMessage(file))
   return graph
 }
 
@@ -429,6 +552,7 @@ function writeGraph(dataDir: string, projectId: string, graph: KnowledgeGraph): 
   if (Buffer.byteLength(text, 'utf8') > knowledgeFileLimits.maxBytes) throw new Error(FILE_FULL_MESSAGE)
   atomicWrite(knowledgeFile(dataDir, projectId), text)
   graph.updatedAt = updatedAt
+  rememberWritten(dataDir, projectId, graph)
 }
 
 /** The user's source stamp. */
@@ -438,7 +562,7 @@ export function userSource(): KnowledgeSource {
 
 /**
  * Agent upsert (KnowledgeStoreApi.upsertNode). Identity: `nodeId` when given (unknown = throw; a `kind` other than
- * the stored one is refused: "That entity is a <stored>, not a <given> ..."), else the first non-retired (kind, name /
+ * the stored one is refused: "That entity is not a <given> ..."), else the first non-retired (kind, name /
  * alias) match (else the first match), else a new node. On a merge the stored name and kind stay (the input name
  * becomes an alias when it differs), new aliases are added (an alias naming another entity of the kind is skipped and
  * listed in `aliasesSkipped`), the summary is replaced when given and not blank unless the node is user-created
@@ -460,7 +584,8 @@ export function upsertNode(dataDir: string, projectId: string, input: KnowledgeN
   let target: KnowledgeNode | undefined
   if (input.nodeId !== undefined) {
     target = nodeById(graph, input.nodeId)
-    if (target.kind !== kind) throw new Error(`That entity is a ${target.kind}, not a ${kind}. Retire it and create a new one, or pass its kind.`)
+    // The stored kind stays out of the message: it is agent-written text and a refusal is not fenced. `get` shows it.
+    if (target.kind !== kind) throw new Error(`That entity is not a ${kind}. Read its kind with get and pass it, or retire it and create a new one.`)
   } else {
     const found = matches(graph, kind, name, aliases)
     target = found.find((n) => !n.retired) ?? found[0]
@@ -708,6 +833,9 @@ export function removeNode(dataDir: string, projectId: string, nodeId: string): 
  * edgeId a (from, to, relation) match is updated (note when given, retired when given; nothing else touched) and
  * reported as not created, else a new edge with the caller's source. With edgeId only that edge's note / retired
  * change, and from / to / relation must equal the stored edge's (refused otherwise: "That relation id names ...").
+ * An agent never changes a relation the user wrote, same rule as summaries and retire: its note is dropped, the user's
+ * stands (`noteKept`, no write), and asking to change its retired flag is refused. A user's edit of the note on an
+ * agent-written relation leaves the source alone, so an agent can still replace that note (edges carry no updatedBy).
  */
 export function saveEdge(dataDir: string, projectId: string, input: Omit<KnowledgeEdgeSaveInput, 'projectId'>, source: KnowledgeSource): KnowledgeEdgeWriteResult {
   const graph = loadForWrite(dataDir, projectId)
@@ -716,6 +844,11 @@ export function saveEdge(dataDir: string, projectId: string, input: Omit<Knowled
   const retired = checkRetired(input.retired)
   const nameOf = (id: string): string => graph.nodes.find((n) => n.id === id)?.name ?? id
   const apply = (edge: KnowledgeEdge): KnowledgeEdgeWriteResult => {
+    if (edge.source.by === 'user' && source.by !== 'user') {
+      if (retired !== undefined && retired !== !!edge.retired) throw new Error('Only the user can change that.')
+      const noteKept = note !== undefined && note !== (edge.note ?? '')
+      return { edge, created: false, ...(noteKept ? { noteKept: true } : {}) }
+    }
     if (note !== undefined) {
       if (note) edge.note = note
       else delete edge.note
@@ -770,8 +903,81 @@ export function removeEdge(dataDir: string, projectId: string, edgeId: string): 
 /** Delete the graph file (a link is removed, never followed; an unreadable file too: this is the user's start-over). Returns the empty graph. */
 export function clearKnowledge(dataDir: string, projectId: string): KnowledgeGraph {
   const file = knowledgeFile(dataDir, projectId)
+  cache.delete(file)
+  recallSnapshots.delete(file)
   if (isLink(file) || existsSync(file)) rmSync(file, { force: true })
   return emptyKnowledgeGraph()
+}
+
+/**
+ * The inferred links and appearances of the stored graph (knowledgeInferredResult, memoized by the cached graph
+ * object). Never throws: an empty result on any failure.
+ */
+export function readKnowledgeInferred(dataDir: string, projectId: string): KnowledgeInferredResult {
+  try {
+    return knowledgeInferredResult(readKnowledge(dataDir, projectId))
+  } catch {
+    return { links: [], appearances: {} }
+  }
+}
+
+/** How long a large graph's recall keeps ranking on the same revision (measured: 2.1 s to index a 59 MB graph). */
+const RECALL_DEBOUNCE_MS = 30_000
+const recallSnapshots = new Map<string, { graph: KnowledgeGraph; at: number }>()
+
+/**
+ * What a recall ranks on and its inferred links, computed on the main thread. Every write makes a new graph object, so
+ * without this each write on a very large graph would rebuild the text index and the inference at the next recall. A
+ * file under knowledgeFileLimits.recallDebounceMinBytes always uses the current revision. A larger one keeps the same revision for
+ * RECALL_DEBOUNCE_MS: an entity written since is not found by a recall until then, while printed text always comes from
+ * the current graph (recallKnowledge `rankOn`). Search and the IPC reads stay exact. Never throws.
+ */
+export function readRecallView(dataDir: string, projectId: string): { rankOn: KnowledgeGraph; inferred: KnowledgeInferredResult } {
+  try {
+    const file = knowledgeFile(dataDir, projectId)
+    const graph = loadGraph(dataDir, projectId).graph
+    const now = Date.now()
+    const snap = recallSnapshots.get(file)
+    const large = (cache.get(file)?.bytes ?? 0) >= knowledgeFileLimits.recallDebounceMinBytes
+    const rankOn = large && snap && now - snap.at < RECALL_DEBOUNCE_MS ? snap.graph : graph
+    if (rankOn === graph) {
+      if (large) {
+        if (snap?.graph !== graph) {
+          // Refresh the entry (newest last) and keep the map no larger than the graph cache.
+          recallSnapshots.delete(file)
+          recallSnapshots.set(file, { graph, at: now })
+          while (recallSnapshots.size > KNOWLEDGE_CACHE_MAX) {
+            const oldest = recallSnapshots.keys().next().value
+            if (oldest === undefined) break
+            recallSnapshots.delete(oldest)
+          }
+        }
+      } else recallSnapshots.delete(file)
+    }
+    const inferred = knowledgeInferredResult(rankOn)
+    if (rankOn === graph) return { rankOn, inferred }
+    // An older revision's links: a dismissal made since must not show again (the id list is the current graph's).
+    const dismissed = new Set(graph.dismissedLinks ?? [])
+    return { rankOn, inferred: dismissed.size ? { ...inferred, links: inferred.links.filter((l) => !dismissed.has(l.id)) } : inferred }
+  } catch {
+    const empty = emptyKnowledgeGraph()
+    return { rankOn: empty, inferred: { links: [], appearances: {} } }
+  }
+}
+
+/**
+ * The user's "not a connection" (knowledge:dismissLink): the link id joins graph.dismissedLinks (the newest
+ * KNOWLEDGE_DISMISSED_LINKS_MAX kept) through the normal write path. A malformed id is refused; an id already listed is
+ * a no-op with no write. Returns the inferred result afterwards. An id whose link is gone stays harmless.
+ */
+export function dismissKnowledgeLink(dataDir: string, projectId: string, linkId: unknown): KnowledgeInferredResult {
+  if (typeof linkId !== 'string' || !KNOWLEDGE_LINK_ID_RE.test(linkId)) throw new Error('That is not a connection id.')
+  const graph = loadForWrite(dataDir, projectId)
+  const list = graph.dismissedLinks ?? []
+  if (list.includes(linkId)) return readKnowledgeInferred(dataDir, projectId)
+  graph.dismissedLinks = [...list, linkId].slice(-KNOWLEDGE_DISMISSED_LINKS_MAX)
+  writeGraph(dataDir, projectId, graph)
+  return knowledgeInferredResult(graph)
 }
 
 /**
@@ -819,6 +1025,8 @@ export function retireItem(dataDir: string, projectId: string, input: KnowledgeR
 export function knowledgeStore(dataDir: string): KnowledgeStoreApi {
   return {
     get: (projectId) => readKnowledge(dataDir, projectId),
+    inferred: (projectId) => readKnowledgeInferred(dataDir, projectId),
+    recallView: (projectId) => readRecallView(dataDir, projectId),
     upsertNode: (projectId, input, source) => upsertNode(dataDir, projectId, input, source),
     saveEdge: (projectId, input, source) => saveEdge(dataDir, projectId, input, source),
     retire: (projectId, input, source) => retireItem(dataDir, projectId, input, source)

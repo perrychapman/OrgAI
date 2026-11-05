@@ -5,6 +5,8 @@ import type {
   KnowledgeEdgeSaveInput,
   KnowledgeEdgeWriteResult,
   KnowledgeGraph,
+  KnowledgeInferredResult,
+  KnowledgeRecallInput,
   KnowledgeNodeUpsertInput,
   KnowledgeNodeWriteResult,
   KnowledgeRetireInput,
@@ -171,6 +173,14 @@ export interface KnowledgeStoreApi {
   saveEdge(projectId: string, input: Omit<KnowledgeEdgeSaveInput, 'projectId'>, source: KnowledgeSource): KnowledgeEdgeWriteResult
   /** Agent retire: refuses an item whose source.by is 'user' ("Only the user can change that."). */
   retire(projectId: string, input: KnowledgeRetireInput, source: KnowledgeSource): KnowledgeRetireResult
+  /** Derived links and appearances for the current graph, computed once per graph revision. Never throws. Missing = no inferred lines in recalls. */
+  inferred?(projectId: string): KnowledgeInferredResult
+  /**
+   * For a recall: the graph revision to rank on and its inferred links. The current revision, except that a very large
+   * graph keeps one revision for a while so its index and inference are not rebuilt per write (store/knowledge.ts
+   * readRecallView). Never throws. Missing = the current graph and `inferred`.
+   */
+  recallView?(projectId: string): { rankOn: KnowledgeGraph; inferred: KnowledgeInferredResult }
 }
 
 /** What message_run achieved (RuntimeContext.messageRun). */
@@ -320,6 +330,38 @@ export interface RuntimeContext {
     link(input: Omit<KnowledgeEdgeSaveInput, 'projectId' | 'edgeId' | 'retired'>, caller: KnowledgeCaller): KnowledgeEdgeWriteResult
     retire(input: KnowledgeRetireInput, caller: KnowledgeCaller): KnowledgeRetireResult
   }
+  /**
+   * knowledge_recall (KNOWLEDGE_RECALL_TOOL): one budgeted, ranked answer as fenced data. RunManager provides it on
+   * engagement work runs and single (Ask) engagement runs of a stored project; never on bare, quick, setup-like or
+   * trust-restricted runs. It keeps the per-agent "already shown" state (only for a named agent: `caller.agentId` must
+   * be set, ROOT_AGENT_ID for a known root; missing = no dedupe, and the row lands on the root), counts RunUsage.knowledge,
+   * writes the row "Recalled N items about <query>" on the caller and emits knowledge.recalled. Read-only. Never throws for
+   * a query it can answer; a refusal comes back as text starting "REFUSED: ".
+   */
+  knowledgeRecall?(input: KnowledgeRecallInput, caller: KnowledgeCaller): string
+  /**
+   * Zero-call context, same runs as knowledgeRecall. Deterministic and with no model call: finds live entities whose
+   * name or alias appears in `text` (word boundaries, exact, names under 3 characters skipped), and returns a fenced
+   * data block of at most KNOWLEDGE_CONTEXT_MAX_CHARS, framed as data from the graph (never instructions, never the
+   * user's words), or null when nothing matches, when everything matched was already shown to that agent, or when
+   * knowledgeAutoContextOn(project) is false (read at call time). It reaches later turns unasked, so it holds name, kind,
+   * relations and only user-written summaries and facts; agents get the rest from knowledgeRecall.
+   *
+   * The adapter calls it where text reaches an agent: `purpose: 'spawn'` on a spawn's brief, `purpose: 'message'` on a
+   * user message, never on harness nudges or peer messages. It adds the block beside the text, never inside the user's
+   * transcript entry (hiddenContext-style). `agentId` is the receiving agent when known; missing means no dedupe and
+   * the row lands on the root. On a non-null result RunManager has already counted it, written the row "Added 2 known
+   * items: Acme Corp, Jane Doe" on that agent and emitted knowledge.recalled.
+   */
+  knowledgeContext?(text: string, opts: { agentId?: string; purpose: 'spawn' | 'message' }): string | null
+  /**
+   * The standing index for the system prompt (shared/knowledgeIndex.ts knowledgeBrief, at most
+   * KNOWLEDGE_BRIEF_MAX_CHARS): computed once per run at its first call and then constant, so prompt caching holds, and
+   * undefined for an empty graph. It reaches every role, so it holds nothing an agent wrote: counts, common kinds and
+   * relations, names of user-created entities. Same runs as knowledgeRecall. Adapters pass `knowledgeBrief: ctx.knowledgeBrief?.()`
+   * as PromptFlags.knowledgeBrief wherever they pass engagementDocument.
+   */
+  knowledgeBrief?(): string | undefined
   /**
    * propose_org_chart `fromTemplate` (setup runs): the saved team template's roles as drafts for this project
    * (converted through the agent-import path, models mapped to the project's connection; no ids, grants or

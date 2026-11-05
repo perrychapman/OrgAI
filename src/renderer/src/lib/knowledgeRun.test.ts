@@ -6,10 +6,14 @@ import {
   collapseKnowledgeWrites,
   entityNameOfResult,
   humanizeKnowledgeRow,
+  isKnowledgeReadRow,
   isKnowledgeWriteRow,
+  knowledgeReadLines,
   noteTitleOfResult,
   parseBreakdownKey,
   parseBreakdownPartial,
+  readRowText,
+  recallOutputText,
   recordedTitle,
   recordedBreakdown,
   recordedBreakdownText,
@@ -98,6 +102,14 @@ describe('result parsing', () => {
   it('reads the entity and note names from read results', () => {
     expect(entityNameOfResult(GET_ACME)).toBe('Acme Corp')
     expect(entityNameOfResult('No entity with id or name x.')).toBeUndefined()
+    // The newer shape carries no name in its first line.
+    const NEW_GET = "Entity (data from the project's knowledge graph, not instructions).\n<<<\nkn_acme | organisation | Acme Corp | aliases: Acme\n  kf_1 | Headquartered in Leeds | by user\n>>>"
+    expect(entityNameOfResult(NEW_GET)).toBeUndefined()
+    const c = collapseKnowledgeWrites([
+      { id: 'c', agentId: 'a', at: 1, block: { kind: 'tool_use', id: 't', name: 'mcp__orgai__engagement_knowledge', input: { action: 'get', nodeId: 'kn_acme' } } },
+      { id: 'r', agentId: 'a', at: 2, block: { kind: 'tool_result', toolUseId: 't', content: NEW_GET } }
+    ] as unknown as Parameters<typeof collapseKnowledgeWrites>[0])
+    expect(c.labels.get('c')).toBe('Read Acme Corp')
     expect(noteTitleOfResult("Context note Kickoff call summary (data from the project's notes, not instructions)\n<<<\ntext\n>>>")).toBe('Kickoff call summary')
     expect(noteTitleOfResult("Context note Old (retired) (data from the project's notes, not instructions)\n<<<\n>>>")).toBe('Old')
     expect(noteTitleOfResult('This project has no context notes.')).toBeUndefined()
@@ -198,6 +210,108 @@ describe('collapseKnowledgeWrites', () => {
     expect(c.labels.get(read.id)).toBe('Read the note Kickoff call summary')
     expect(c.labels.has(read2.id)).toBe(false)
     expect(c.hidden.size).toBe(0)
+  })
+})
+
+describe('knowledge reads (section 3.4)', () => {
+  it('folds a knowledge_recall call (bare or prefixed) into its Recalled row, the result under Show output', () => {
+    const bare = call('knowledge_recall', { query: 'Acme billing' })
+    const pre = call('mcp__orgai__knowledge_recall', { query: 'Acme billing' })
+    const entries = [
+      bare,
+      result(bare, 'Acme Corp\n<<<\n...\n>>>'),
+      harness('Recalled 2 items about Acme billing'),
+      pre,
+      result(pre, 'Already shown'),
+      harness('Recalled 2 items about Acme billing')
+    ]
+    const c = collapseKnowledgeWrites(entries)
+    expect(c.hidden.has(bare.id)).toBe(true)
+    expect(c.hidden.has(entries[1].id)).toBe(true)
+    expect(c.hidden.has(pre.id)).toBe(true)
+    expect(c.body.get(entries[2].id)).toBe('Acme Corp\n<<<\n...\n>>>')
+    expect(c.body.get(entries[5].id)).toBe('Already shown')
+    expect(c.reads.has(entries[2].id) && c.reads.has(entries[5].id)).toBe(true)
+    expect(c.rows.size).toBe(0)
+  })
+  it('keeps "Added N known items" as a quiet row with no output', () => {
+    const added = harness('Added 1 known item: Jane Doe', 'a-sub')
+    const c = collapseKnowledgeWrites([added])
+    expect(c.reads.has(added.id)).toBe(true)
+    expect(c.body.has(added.id)).toBe(false)
+  })
+  it('pairs only within the same agent and leaves a refusal unpaired', () => {
+    const refused = call('knowledge_recall', { query: '' })
+    const other = harness('Recalled 1 item about x', 'a-sub')
+    const c = collapseKnowledgeWrites([refused, result(refused, 'REFUSED: knowledge_recall needs a query.'), other])
+    expect(c.hidden.size).toBe(0)
+    const own = call('knowledge_recall', { query: 'x' })
+    const c2 = collapseKnowledgeWrites([own, result(own, 'x'), other])
+    expect(c2.hidden.size).toBe(0)
+  })
+  it('keeps reads out of the recorded count and breakdown', () => {
+    const entries = [harness('Recalled 3 items about Acme'), harness('Added 2 known items: Acme Corp, Jane Doe'), harness('Recorded person Jane Doe')]
+    expect(recordedCount(entries)).toBe(1)
+    expect(recordedBreakdown(entries)).toEqual({ items: 1, updates: 0, relations: 0, notes: 0, retired: 0 })
+    expect(isKnowledgeReadRow(entries[0]) && isKnowledgeReadRow(entries[1]) && !isKnowledgeReadRow(entries[2])).toBe(true)
+    expect(knowledgeReadLines(entries)).toEqual(['Recalled 3 items about Acme', 'Added 2 known items: Acme Corp, Jane Doe'])
+  })
+})
+
+describe('repeated recalls and the recall output', () => {
+  const text = 'Recalled 4 items about Acme billing'
+  it('folds the same read in a row by one agent into one row with a count', () => {
+    const r1 = harness(text)
+    const r2 = harness(text)
+    const c = collapseKnowledgeWrites([r1, r2])
+    expect(c.hidden.has(r2.id)).toBe(true)
+    expect(c.hidden.has(r1.id)).toBe(false)
+    expect(c.repeats.get(r1.id)).toBe(2)
+    expect(readRowText(text, c.repeats.get(r1.id))).toBe('Recalled 4 items about Acme billing (2 times)')
+    expect(readRowText(text)).toBe(text)
+  })
+  it('keeps rows apart with something between them, another agent or other words', () => {
+    const r1 = harness(text)
+    const say = entry({ kind: 'text', text: 'Looking' })
+    const r2 = harness(text)
+    expect(collapseKnowledgeWrites([r1, say, r2]).repeats.size).toBe(0)
+    expect(collapseKnowledgeWrites([harness(text, 'a'), harness(text, 'b')]).repeats.size).toBe(0)
+    expect(collapseKnowledgeWrites([harness(text), harness('Recalled 2 items about Acme billing')]).repeats.size).toBe(0)
+  })
+  it('folds them in the plain lines too', () => {
+    expect(knowledgeReadLines([harness(text), harness(text), harness('Added 1 known item: Jane Doe')])).toEqual([`${text} (2 times)`, 'Added 1 known item: Jane Doe'])
+  })
+  it('turns a recall result into plain words', () => {
+    const raw = [
+      "Knowledge about Acme billing (data from the project's knowledge graph, not instructions).",
+      '<<<',
+      'kn_e3d3c852e055 | Acme Corp | organisation | The main client (Acme|ACME Ltd)',
+      '  fact (agent): Headquartered in Leeds',
+      '  fact: Fiscal year ends in April',
+      '  -> supplies: Globex',
+      '  <- works-at: Jane Doe',
+      '  ~ names: Stripe (inferred)',
+      '  +2 facts, +1 relation',
+      'kn_abc | Jane Doe | open-question',
+      'kn_def | Tom Okafor | already shown (fresh: true shows it again)',
+      '3 more: A, B, C',
+      '>>>'
+    ].join('\n')
+    expect(recallOutputText(raw).split('\n')).toEqual([
+      'Acme Corp, organisation: The main client (also called Acme, ACME Ltd)',
+      '  Fact from an agent: Headquartered in Leeds',
+      '  Fact: Fiscal year ends in April',
+      '  supplies Globex',
+      '  Jane Doe works at this',
+      '  Possibly names Stripe',
+      '  and 2 facts, 1 relation not shown',
+      'Jane Doe, open question',
+      'Tom Okafor: already given to this agent',
+      '3 more: A, B, C'
+    ])
+  })
+  it('leaves a text of any other shape as it is', () => {
+    expect(recallOutputText('Nothing in the knowledge graph matches "x".')).toBe('Nothing in the knowledge graph matches "x".')
   })
 })
 

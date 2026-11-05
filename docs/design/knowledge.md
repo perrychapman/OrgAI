@@ -160,6 +160,9 @@ Rules:
 
 ## 5. Graph view (rec 5, 17, 19)
 
+**Superseded by `docs/design/knowledge-graph-2.md` (the neural canvas, filter band, possible connections and knowledge
+during a run).** What follows described the React Flow graph, which is gone; it is kept only as history.
+
 `components/knowledge/KnowledgeGraph.tsx` (props `KnowledgeGraphProps`: `graph`, `filter`, `selectedId`,
 `onSelect`, `onOpen`, `listDomId`, `detailDomId`, `announce`) renders in place of the list when the switch is "Graph".
 

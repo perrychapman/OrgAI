@@ -1,12 +1,15 @@
 /**
  * The Electron adapter over the host dispatcher (cli-spec Wave 1). Every request handler lives in host/dispatcher.ts;
- * this module registers them with ipcMain, keeps the 11 desktop-only channels (native dialogs, picked paths, the
- * menu, the OS shell, the notifications mirror) and forwards the host's push bus to windows when it made the bus
+ * this module registers them with ipcMain, keeps the desktop-only channels (DESKTOP_ONLY_CHANNELS: native dialogs, picked
+ * paths, the menu, the OS shell, the notifications mirror, the orgai command shim, and starting a project from a
+ * repository, whose progress and cancel-on-close use the IPC sender) and forwards the host's push bus to windows when it made the bus
  * itself. The pure argument builders live in host/args.ts and are re-exported here for the existing tests.
  */
 import { app, BrowserWindow, dialog, ipcMain, shell, type IpcMainInvokeEvent, type WebContents } from 'electron'
 import type { CliShimResult, CliShimStatus, FocusRunTarget, KitApplyResult, KitExportResult, KitImportPreview, SkillLibraryFolderInput, SkillLibraryInfo } from '@shared/types'
-import { HOST_IPC, HOST_METHODS, IPC, KIT_IPC } from '@shared/types'
+import { HOST_IPC, HOST_METHODS, IPC, KIT_IPC, REPO_DESTINATION_MAX_CHARS, REPO_SOURCE_MAX_CHARS } from '@shared/types'
+import type { RepoCloneInput, RepoCloneProgress, RepoCloneResult, RepoSourceParse, RepoTools } from '@shared/types'
+import { REPO_REQUEST_ID_RE, parseRepoSource, scrubStderr, type RepoCloneService } from './repoClone'
 import { applyArgs as kitApplyArgs, exportArgs as kitExportArgs, type KitService } from './kit/service'
 import { PickedPaths, kitExportTarget } from './kit/pickedPaths'
 import { isInsideEither, samePath } from './quick/scratch'
@@ -35,6 +38,11 @@ export interface IpcServices extends Omit<HostServices, 'desktop'> {
   dispatcher?: HostDispatcher
   /** The orgai command shim (cli-spec 7(3)); absent = app:cliShim* answer CLI_SHIM_UNAVAILABLE. */
   cliShim?: CliShimService
+  /**
+   * Start a project from a repository: parse, tools, clone or fork, cancel (src/main/repoClone.ts). Desktop only: the
+   * progress goes to the calling window and a closed window cancels its clone. Absent = the channels are not registered.
+   */
+  repoClone?: RepoCloneService
 }
 
 export { harnessProjectFor, withEffectiveDefault } from './host/args'
@@ -86,7 +94,11 @@ export const DESKTOP_ONLY_CHANNELS: readonly string[] = [
   IPC.appSetNotifications,
   IPC.appCliShimStatus,
   IPC.appInstallCliShim,
-  IPC.appUninstallCliShim
+  IPC.appUninstallCliShim,
+  IPC.projectsParseRepoSource,
+  IPC.projectsRepoTools,
+  IPC.projectsCloneRepo,
+  IPC.projectsCancelClone
 ]
 
 /** Served over the socket only: HOST_IPC channels and host.* methods never get an ipcMain handler. */
@@ -166,6 +178,102 @@ export function registerIpc(services: IpcServices): void {
   })
   registerCliShimIpc(services.cliShim)
   if (kit) registerKitIpc(kit)
+  if (services.repoClone) registerRepoIpc(services.repoClone)
+}
+
+// ---- Start a project from a repository (clone or fork); desktop only ----
+
+/**
+ * projects:cloneRepo input rebuilt field by field: a plain object, requestId 1..64 of letters, digits, '_' and '-',
+ * source and destination text within their limits (refused, never cut), mode exactly 'clone' or 'fork'; extra fields
+ * are dropped. The refusals are one fixed line and never quote the input. Exported for tests.
+ */
+export function repoCloneArgs(input: unknown): RepoCloneInput {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid clone request.')
+  const proto = Object.getPrototypeOf(input)
+  if (proto !== Object.prototype && proto !== null) throw new Error('Invalid clone request.')
+  const i = input as Record<string, unknown>
+  if (typeof i.requestId !== 'string' || !REPO_REQUEST_ID_RE.test(i.requestId)) throw new Error('Invalid clone request.')
+  if (typeof i.source !== 'string') throw new Error('Type or paste a repository address.')
+  if (i.source.length > REPO_SOURCE_MAX_CHARS * 2) throw new Error('That address is too long.')
+  if (i.mode !== 'clone' && i.mode !== 'fork') throw new Error('Choose clone or fork.')
+  if (typeof i.destination !== 'string' || !i.destination.trim()) throw new Error('Choose a folder for the new project.')
+  if (i.destination.length > REPO_DESTINATION_MAX_CHARS * 2) throw new Error('That folder path is too long.')
+  return { requestId: i.requestId, source: i.source, mode: i.mode, destination: i.destination }
+}
+
+/** projects:cancelClone argument: a valid request id, else refused. Exported for tests. */
+export function repoCancelArg(input: unknown): string {
+  if (typeof input !== 'string' || !REPO_REQUEST_ID_RE.test(input)) throw new Error('Invalid clone request.')
+  return input
+}
+
+/** The slice of WebContents that watchSenderGone uses. */
+export interface GoneWatchable {
+  on(event: string, listener: (...args: unknown[]) => void): unknown
+  removeListener(event: string, listener: (...args: unknown[]) => void): unknown
+}
+
+/**
+ * Calls `onGone` (once) when the window is destroyed, its renderer process is gone, or its main frame starts a new
+ * navigation to another document. Returns a function that removes every listener; call it when the work ends.
+ */
+export function watchSenderGone(sender: GoneWatchable, onGone: () => void): () => void {
+  const fire = (): void => onGone()
+  const onNavigate = (...args: unknown[]): void => {
+    const d = args[0] as { isMainFrame?: boolean; isSameDocument?: boolean } | undefined
+    if (d && d.isMainFrame === true && d.isSameDocument !== true) onGone()
+  }
+  sender.on('destroyed', fire)
+  sender.on('render-process-gone', fire)
+  sender.on('did-start-navigation', onNavigate)
+  return () => {
+    sender.removeListener('destroyed', fire)
+    sender.removeListener('render-process-gone', fire)
+    sender.removeListener('did-start-navigation', onNavigate)
+  }
+}
+
+function registerRepoIpc(repoClone: RepoCloneService): void {
+  ipcMain.handle(IPC.projectsParseRepoSource, (_e, text: unknown): RepoSourceParse => {
+    try {
+      return typeof text === 'string' ? repoClone.parse(text) : parseRepoSource(undefined)
+    } catch {
+      return parseRepoSource(undefined)
+    }
+  })
+  ipcMain.handle(IPC.projectsRepoTools, async (): Promise<RepoTools> => {
+    try {
+      return await repoClone.tools()
+    } catch {
+      return { git: { available: false }, gh: { available: false, loggedIn: false, detail: 'OrgAI could not check your GitHub CLI sign-in.' } }
+    }
+  })
+  ipcMain.handle(IPC.projectsCloneRepo, async (e, raw: unknown): Promise<RepoCloneResult> => {
+    const input = repoCloneArgs(raw)
+    const sender = e.sender
+    const onProgress = (event: RepoCloneProgress): void => {
+      if (!sender.isDestroyed()) sender.send(IPC.projectsCloneProgress, event)
+    }
+    // A closed, crashed or navigated window cancels its own clone.
+    const stopWatching = watchSenderGone(sender as unknown as GoneWatchable, () => repoClone.cancel(input.requestId))
+    try {
+      return await repoClone.clone(input, onProgress)
+    } catch (err) {
+      const message = err instanceof Error && err.message ? err.message : 'The clone failed.'
+      log.warn(`Clone request failed: ${scrubStderr(message)}`)
+      throw new Error(message)
+    } finally {
+      stopWatching()
+    }
+  })
+  ipcMain.handle(IPC.projectsCancelClone, (_e, id: unknown): void => {
+    try {
+      repoClone.cancel(repoCancelArg(id))
+    } catch {
+      // an invalid id names no clone
+    }
+  })
 }
 
 // ---- orgai command shim (cli-spec 7(3)); desktop only, never throws to the renderer ----

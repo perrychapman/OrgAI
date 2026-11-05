@@ -346,14 +346,47 @@ describe('describeFetchFailure', () => {
   })
 
   it('names certificate failures', () => {
-    for (const code of ['UNABLE_TO_GET_ISSUER_CERT_LOCALLY', 'SELF_SIGNED_CERT_IN_CHAIN', 'CERT_HAS_EXPIRED', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'ERR_TLS_CERT_ALTNAME_INVALID', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE']) {
-      expect(describeFetchFailure(fetchFailed(coded('tls', code)), host)).toBe(
-        `The TLS certificate of mcp.example.com could not be verified (${code}). A proxy, VPN or antivirus that inspects HTTPS can cause this.`
+    const store = " If this network inspects HTTPS, its root certificate must be in your system's certificate store. Otherwise the server's own certificate chain may be incomplete or self-signed."
+    const base = 'A proxy, VPN or antivirus that inspects HTTPS can cause this.'
+    for (const code of ['UNABLE_TO_GET_ISSUER_CERT_LOCALLY', 'SELF_SIGNED_CERT_IN_CHAIN', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'CERT_UNTRUSTED']) {
+      expect(describeFetchFailure(fetchFailed(coded('tls', code)), host, 'applied')).toBe(
+        `The TLS certificate of mcp.example.com could not be verified (${code}). ${base}${store}`
       )
     }
-    expect(describeFetchFailure(fetchFailed(coded('unable to verify the first certificate')), host)).toBe(
-      'The TLS certificate of mcp.example.com could not be verified. A proxy, VPN or antivirus that inspects HTTPS can cause this.'
+    for (const code of ['CERT_HAS_EXPIRED', 'ERR_TLS_CERT_ALTNAME_INVALID', 'ERR_TLS_HANDSHAKE_TIMEOUT', 'ERR_TLS_INVALID_PROTOCOL_VERSION']) {
+      for (const state of ['applied', 'pending', 'unavailable'] as const) {
+        expect(describeFetchFailure(fetchFailed(coded('tls', code)), host, state)).toBe(
+          `The TLS certificate of mcp.example.com could not be verified (${code}). ${base}`
+        )
+      }
+    }
+    expect(describeFetchFailure(fetchFailed(coded('unable to verify the first certificate')), host, 'applied')).toBe(
+      `The TLS certificate of mcp.example.com could not be verified. ${base}${store}`
     )
+    expect(describeFetchFailure(fetchFailed(coded('certificate not trusted')), host, 'applied')).toBe(
+      `The TLS certificate of mcp.example.com could not be verified. ${base}${store}`
+    )
+    expect(describeFetchFailure(fetchFailed(coded('certificate has expired')), host, 'applied')).toBe(
+      `The TLS certificate of mcp.example.com could not be verified. ${base}`
+    )
+  })
+
+  it('decides the store hint by the code alone when there is one', () => {
+    const altname = describeFetchFailure(fetchFailed(coded("Host: a. is not in the cert's altnames: DNS:self-signed.example", 'ERR_TLS_CERT_ALTNAME_INVALID')), host, 'applied')!
+    expect(altname).toContain('(ERR_TLS_CERT_ALTNAME_INVALID)')
+    expect(altname).not.toContain('system certificate store')
+    expect(altname).not.toContain('incomplete or self-signed')
+  })
+
+  it('does not claim store trust while the system store is still being read or could not be read', () => {
+    const err = fetchFailed(coded('tls', 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY'))
+    const pending = describeFetchFailure(err, host, 'pending')!
+    expect(pending).toContain('still reading the system certificate store')
+    expect(pending).toContain('try again in a moment')
+    expect(pending).not.toContain('incomplete or self-signed')
+    const unavailable = describeFetchFailure(err, host, 'unavailable')!
+    expect(unavailable).toContain('could not read the system certificate store')
+    expect(unavailable).not.toContain('must be in your')
   })
 
   it('names a refused redirect', () => {

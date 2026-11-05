@@ -37,6 +37,8 @@ open release/
 
 Open the `.dmg`, drag OrgAI to Applications, then right-click the app and choose Open (needed for an unsigned build; if macOS says it is damaged, run `xattr -dr com.apple.quarantine /Applications/OrgAI.app`). Launch it from Finder or the Dock, not from a terminal: that is the case where PATH is minimal.
 
+Launch time and certificates (issue #16): from Finder, time the launch to a usable window with a stopwatch and note it. In `main.log` look for one line starting "System certificates:" (N added, with ms) or "System certificates not added:" (a reason). The Keychain is read by a child process after launch, so the window must not wait for it; report the ms in the line. If the machine sits behind an HTTPS-inspecting proxy whose root is in the Keychain, add a remote MCP server in the Team Catalog and press Test: it should connect. If it fails with a certificate message, copy the exact text; "still reading" means try again in a moment, "could not read" means the child failed (see the log line). A green MCP test does not prove a Claude or Codex run connects. Also check: no second Dock icon appears during the read; no Keychain or Gatekeeper prompt appears; after quitting OrgAI during the read (first seconds after launch), `ps aux | grep -i orgai` shows no OrgAI process left; and, if an endpoint security tool is installed, whether it flags the helper process (the app's own executable run with `-e` and ELECTRON_RUN_AS_NODE=1). Nothing here has been run on a Mac yet.
+
 Icon checks: Finder shows the OrgAI mark (from `build/icon.icns`, with its margin) on OrgAI.app and on the dmg volume/file, and the running app's Dock icon is the same mark, not Electron's.
 
 ## 5. PATH discovery (packaged app, launched from Finder)

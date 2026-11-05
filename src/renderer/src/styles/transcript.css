@@ -569,6 +569,12 @@
 .side-header .tabs-list {
   margin-inline: calc(var(--space-1) * -1);
 }
+/* Five tabs (Transcript, Plan, Usage, Knowledge, Logs) must fit a 280 px panel without clipping the last. */
+@container (max-width: 340px) {
+  .side-header .tabs-list.compact {
+    gap: var(--space-1);
+  }
+}
 .transcript-bar {
   padding: var(--space-1) var(--space-3);
   border-bottom: 1px solid var(--border-subtle);

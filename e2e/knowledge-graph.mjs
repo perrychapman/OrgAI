@@ -1,27 +1,25 @@
-// Token-free. Mock adapter, temp ORGAI_DATA_DIR. The Knowledge tab's Graph view (docs/design/knowledge.md section 5):
-// an engagement runs "[mock:knowledge]" (Acme Corp, Jane Doe, a decision and a risk; Jane works at Acme, the decision
-// is decided by Jane), then the tab's Graph view is checked: the neighbourhood at Depth 1 and 2, each node's spoken
-// name, Tab order in list order, Enter opening the detail pane, edge labels at zoom 1, the legend, Show all, the skip
-// links, the retired fold (Acme retired through the knowledge API and restored), reduced motion, the four node styles,
-// and both sizes and themes without page scroll. The list view, the detail pane and the view switch are the list
-// engineer's (e2e/knowledge.mjs); this script only drives them to reach the graph.
+// Token-free. Mock adapter, temp ORGAI_DATA_DIR. The Knowledge tab's Graph view, the neural canvas
+// (docs/design/knowledge-graph-2.md section 1; testable state in 1.9). An engagement gets a seeded graph of about 65 items
+// through the knowledge API (facts name other items, so inferred links exist), then the Graph view is checked: it is a
+// canvas and not React Flow, hover card, click, size by appearances, colour and mark per kind, kind chips and search dim in
+// place, retired only with the switch, the inferred-links switch, a recall firing nodes (`[mock:knowledge-recall]`),
+// reduced motion and List view stopping the loop, the one Tab stop and the keyboard table, no page scroll, and the colour
+// contrast of the resolved theme. Screenshots go to e2e/shots/neural/ (gitignored).
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { TMP, check, findProject, finish, gotoProjects, launch, openProject, openProjectForm, projectTab, sleep, windowShift } from './lib.mjs'
+import { SHOTS_DIR, TMP, check, findProject, finish, gotoProjects, launch, log, openProject, openProjectForm, projectTab, sleep, windowShift } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
-const base = fs.mkdtempSync(path.join(TMP, 'orgai-e2e-kg-'))
+const base = fs.mkdtempSync(path.join(TMP, 'orgai-e2e-neural-'))
 const wf = path.join(base, 'acme-kickoff')
 fs.mkdirSync(wf, { recursive: true })
+const SHOT_DIR = path.join(SHOTS_DIR, 'neural')
+fs.mkdirSync(SHOT_DIR, { recursive: true })
 
-const NAME = 'E2E Knowledge graph (orgai test)'
-const PROMPT = 'Summarise the kickoff [mock:knowledge]'
-const JANE = 'Jane Doe'
-const ACME = 'Acme Corp'
-const DECISION = 'Migrate billing to Stripe'
-const RISK = 'Legacy export format undocumented'
+const NAME = 'E2E Neural graph (orgai test)'
+const RECALL_PROMPT = 'Summarise the kickoff [mock:knowledge-recall]'
 
-const { app, page, shot } = await launch({ shotPrefix: 'knowledge-graph' })
+const { app, page } = await launch({ shotPrefix: 'knowledge-neural' })
 page.setDefaultTimeout(8000)
 
 const setSize = async (w, h) => {
@@ -33,13 +31,11 @@ const setSize = async (w, h) => {
 const setAppearance = async (patch) => {
   await page.evaluate(async (p) => {
     const s = await window.orgai.settings.get()
-    const canvas = { ...s.appearance.canvas, ...(p.canvas ?? {}) }
-    await window.orgai.settings.set({ ...s, appearance: { ...s.appearance, ...p, canvas } })
+    await window.orgai.settings.set({ ...s, appearance: { ...s.appearance, ...p } })
   }, patch)
   await sleep(500)
 }
 const setTheme = (theme) => setAppearance({ theme })
-const clean = (s) => (s ?? '').replace(/\s+/g, ' ').trim()
 const until = async (fn, ms = 10_000) => {
   const end = Date.now() + ms
   while (Date.now() < end) {
@@ -48,18 +44,23 @@ const until = async (fn, ms = 10_000) => {
     } catch {
       /* keep polling */
     }
-    await sleep(200)
+    await sleep(150)
   }
   return false
 }
-const noPageScroll = () => page.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth, sh: document.documentElement.scrollHeight, ch: document.documentElement.clientHeight }))
-const fitsWindow = async (what) => {
-  const o = await noPageScroll()
+const shot = async (name) => {
+  const file = path.join(SHOT_DIR, `${name}.png`)
+  await page.screenshot({ path: file })
+  log('shot', path.relative(path.join(SHOTS_DIR, '..'), file))
+  return file
+}
+const noPageScroll = async (what) => {
+  const o = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth, sh: document.documentElement.scrollHeight, ch: document.documentElement.clientHeight }))
   check(o.sw <= o.cw && o.sh <= o.ch + 1, `${what}: the page does not scroll`, JSON.stringify(o))
 }
 const activeTestId = () => page.evaluate(() => document.activeElement?.getAttribute('data-testid') ?? `${document.activeElement?.tagName.toLowerCase() ?? 'none'}#${document.activeElement?.id ?? ''}`)
 
-/** Create an engagement through the form (first launch inline form or the dialog). Setup interview is switched off (token-free). */
+// ---------------------------------------------------------------- setup
 async function createEngagement({ name, dir }) {
   await gotoProjects(page)
   const form = await openProjectForm(page)
@@ -72,424 +73,652 @@ async function createEngagement({ name, dir }) {
   await page.waitForSelector('[data-testid=dashboard]', { state: 'detached', timeout: 60_000 })
   return findProject(page, name)
 }
-const startRun = async (text) => {
-  await projectTab(page, 'Live').click()
-  if (!(await page.locator('.new-run').count())) {
-    await page.keyboard.press('Control+t')
-    await page.locator('.new-run').waitFor({ timeout: 8000 })
-  }
-  const ta = page.locator('.composer textarea')
-  await ta.waitFor({ timeout: 10_000 })
-  await ta.fill(text)
-  await page.locator('.composer .btn.primary').click()
-}
-const runTabText = async () => {
-  const tab = page.locator('[data-testid=run-strip] .run-tab[aria-selected=true]').first()
-  if (!(await tab.count())) return ''
-  return `${await tab.getAttribute('aria-label')} ${clean(await tab.innerText().catch(() => ''))}`
+
+/** About 65 items in 11 kinds. Facts name other items (inferred links); relations tie people to organisations and systems. */
+function seedPlan() {
+  const items = []
+  const add = (kind, name, facts = [], summary) => items.push({ kind, name, facts, summary })
+  const orgs = ['Acme Corp', 'Globex Industries', 'Initech', 'Umbrella Holdings']
+  orgs.forEach((o) => add('organisation', o, [`${o} is a client of the engagement`]))
+  const people = ['Jane Doe', 'Tom Okafor', 'Mara Lindqvist', 'Priya Nair', 'Luis Ortega', 'Hanna Berg', 'Sam Whitfield', 'Chen Wei', 'Olu Adeyemi', 'Rosa Marin', 'Ivan Petrov', 'Keiko Tanaka', 'Noah Fischer', 'Aisha Khan', 'Dmitri Volkov', 'Elena Rossi', 'Felix Braun', 'Grace Lee', 'Hugo Martin', 'Ines Costa', 'Jonas Weber', 'Kara Singh', 'Leo Novak', 'Maya Patel']
+  people.forEach((p, i) => add('person', p, i % 3 === 0 ? [`Works closely with ${people[(i + 1) % people.length]} on the billing rollout`] : []))
+  const systems = ['Billing platform', 'Data warehouse', 'Customer portal', 'Identity provider', 'Ticketing system', 'Legacy export', 'Reporting stack', 'Payment gateway', 'Mail relay', 'Audit log']
+  systems.forEach((s, i) => add('system', s, i % 2 === 0 ? [`Owned by ${orgs[i % orgs.length]}`] : []))
+  ;['Kickoff call summary', 'Statement of work', 'Data protection addendum', 'Architecture overview', 'Interview notes', 'Rollout checklist'].forEach((d) => add('document', d))
+  ;['Migrate billing to Stripe', 'Keep the legacy export for a year', 'Move reporting to the warehouse', 'Adopt single sign-on', 'Freeze changes in December', 'Retire the mail relay'].forEach((d) => add('decision', d))
+  ;['Legacy export format undocumented', 'Single admin account', 'Vendor lock-in on the gateway', 'Staff turnover in finance'].forEach((r) => add('risk', r))
+  ;['Invoices must be exportable as CSV', 'Audit trail for every change', 'Portal available in French', 'Single sign-on for staff'].forEach((r) => add('requirement', r))
+  ;['Go-live date', 'Contract renewal'].forEach((d) => add('deadline', d))
+  ;['Weekly steering committee', 'Architecture review'].forEach((m) => add('meeting', m))
+  ;['Who signs off the migration?', 'Is the French portal in scope?'].forEach((q) => add('open-question', q))
+  ;['Stripe', 'Okta', 'Snowflake'].forEach((v) => add('vendor', v))
+  return { items, orgs, people, systems }
 }
 
-// ---- graph helpers (the spec's selectors) ----
-const GRAPH = '[data-testid=knowledge-graph]'
-const NODE = `${GRAPH} .react-flow__node`
-const nodeNames = async () =>
-  page.evaluate((sel) => [...document.querySelectorAll(`${sel} [data-testid=knowledge-node]`)].map((n) => n.querySelector('.knowledge-name-text, .hex-name')?.textContent?.trim() ?? ''), GRAPH)
-const nodeCount = () => page.locator(`${GRAPH} [data-testid=knowledge-node]`).count()
-// The selected node's name (the node renders an aria-hidden avatar with initials before the name, so innerText is "JD Jane Doe ...").
-const selectedNodes = async () =>
-  page.evaluate((sel) => [...document.querySelectorAll(`${sel} .react-flow__node.selected [data-testid=knowledge-node]`)].map((n) => n.querySelector('.knowledge-name-text, .hex-name')?.textContent?.trim() ?? ''), GRAPH)
-const waitNodes = (n, ms = 15_000) => until(async () => (await nodeCount()) === n, ms)
-const zoomOf = () =>
-  page.evaluate((sel) => {
-    const vp = document.querySelector(`${sel} .react-flow__viewport`)
-    const m = /scale\(([\d.]+)\)/.exec(vp?.style.transform ?? '')
-    return m ? Number(m[1]) : 0
-  }, GRAPH)
-const edgeLabels = () => page.evaluate((sel) => [...document.querySelectorAll(`${sel} .react-flow__edge-text`)].map((t) => t.textContent?.trim() ?? ''), GRAPH)
-const edgeTitles = () => page.evaluate((sel) => [...document.querySelectorAll(`${sel} .knowledge-edge > title`)].map((t) => t.textContent?.trim() ?? ''), GRAPH)
-const openGraph = async () => {
-  await page.locator('[data-testid=knowledge-view-switch]').getByRole('radio', { name: 'Graph', exact: true }).check({ force: true })
-  await page.locator(GRAPH).waitFor({ timeout: 10_000 })
+async function seedGraph(projectId) {
+  const plan = seedPlan()
+  const out = await page.evaluate(
+    async ({ pid, items, orgs, people, systems }) => {
+      const ids = new Map()
+      for (const it of items) {
+        const n = await window.orgai.knowledge.saveNode({ projectId: pid, kind: it.kind, name: it.name, summary: it.summary, facts: it.facts.map((text) => ({ text })) })
+        ids.set(it.name, n.id)
+      }
+      let edges = 0
+      const link = async (a, b, relation) => {
+        if (!ids.get(a) || !ids.get(b)) return
+        await window.orgai.knowledge.saveEdge({ projectId: pid, from: ids.get(a), to: ids.get(b), relation })
+        edges++
+      }
+      for (let i = 0; i < people.length; i++) await link(people[i], orgs[i % orgs.length], 'works-at')
+      for (let i = 0; i < systems.length; i++) await link(systems[i], orgs[(i + 1) % orgs.length], 'owned-by')
+      for (let i = 1; i < systems.length; i++) await link(systems[i], systems[Math.floor(i / 3)], 'depends-on')
+      await link('Migrate billing to Stripe', 'Jane Doe', 'decided-by')
+      await link('Keep the legacy export for a year', 'Tom Okafor', 'decided-by')
+      await link('Move reporting to the warehouse', 'Mara Lindqvist', 'decided-by')
+      await link('Legacy export format undocumented', 'Legacy export', 'affects')
+      await link('Single admin account', 'Identity provider', 'affects')
+      await link('Vendor lock-in on the gateway', 'Payment gateway', 'affects')
+      await link('Stripe', 'Payment gateway', 'owns')
+      await link('Okta', 'Identity provider', 'owns')
+      await link('Snowflake', 'Data warehouse', 'owns')
+      await link('Invoices must be exportable as CSV', 'Billing platform', 'affects')
+      await link('Go-live date', 'Billing platform', 'affects')
+      await link('Weekly steering committee', 'Jane Doe', 'raised-by')
+      await link('Architecture review', 'Priya Nair', 'raised-by')
+      await link('Who signs off the migration?', 'Acme Corp', 'can-answer')
+      return { nodes: ids.size, edges, janeId: ids.get('Jane Doe'), acmeId: ids.get('Acme Corp') }
+    },
+    { pid: projectId, ...plan }
+  )
+  return out
 }
-const openList = async () => {
-  await page.locator('[data-testid=knowledge-view-switch]').getByRole('radio', { name: 'List', exact: true }).check({ force: true })
-  await page.locator('[data-testid=knowledge-list]').waitFor({ timeout: 10_000 })
-}
-const selectRow = async (name) => {
-  const row = page.locator('[data-testid=knowledge-row][data-id]', { hasText: name }).first()
-  await row.waitFor({ timeout: 10_000 })
-  await row.click()
-  await sleep(300)
-  return row.getAttribute('data-id')
-}
+
+const NEURAL = '[data-testid=knowledge-neural]'
+const attr = (name) => page.locator(NEURAL).getAttribute(name)
+const num = async (name) => Number(await attr(name))
 const openKnowledgeTab = async () => {
   await page.locator('[data-testid=tab-knowledge]').click()
   await page.locator('[data-testid=knowledge-view]').waitFor({ timeout: 10_000 })
   await sleep(400)
 }
+const openGraph = async () => {
+  await page.locator('[data-testid=knowledge-view-switch]').getByRole('radio', { name: 'Graph', exact: true }).check({ force: true })
+  await page.locator(NEURAL).waitFor({ timeout: 10_000 })
+}
+const openList = async () => {
+  await page.locator('[data-testid=knowledge-view-switch]').getByRole('radio', { name: 'List', exact: true }).check({ force: true })
+  await page.locator('[data-testid=knowledge-list]').waitFor({ timeout: 10_000 })
+}
+const settled = () => until(async () => (await attr('data-settled')) === 'true', 30_000)
+/** The option data of every drawn node: id, name (from the spoken label), world position, radius, total, colour and mark. */
+const nodeData = () =>
+  page.evaluate(() =>
+    Object.fromEntries(
+      [...document.querySelectorAll('[data-testid=knowledge-node]')].map((n) => [
+        n.getAttribute('data-id'),
+        { name: (n.getAttribute('aria-label') ?? '').split(', ')[0], kind: n.getAttribute('data-kind'), x: Number(n.dataset.x), y: Number(n.dataset.y), r: Number(n.dataset.radius), total: Number(n.dataset.total), color: n.dataset.color, mark: n.dataset.mark, dim: n.dataset.dim, retired: n.dataset.retired }
+      ])
+    )
+  )
+const byName = (data, name) => Object.entries(data).find(([, v]) => v.name === name)
+/** Screen position (page coordinates) of a node's centre, for pointer moves. */
+const screenOfNode = (id) =>
+  page.evaluate((nid) => {
+    const el = document.querySelector(`[data-testid=knowledge-node][data-id="${nid}"]`)
+    if (!el) return null
+    const b = el.getBoundingClientRect()
+    return { x: b.x + b.width / 2, y: b.y + b.height / 2, r: b.width / 2 }
+  }, id)
+const stageBox = () => page.locator('.neural-stage').boundingBox()
+/** Frame counting for the honest-loop checks. */
+const framesOver = async (ms) => {
+  const a = await num('data-frames')
+  await sleep(ms)
+  return (await num('data-frames')) - a
+}
+
+/** Resolved colours from the live tokens (probe element + canvas pixel), as the engine reads them. */
+const measureContrast = () =>
+  page.evaluate(() => {
+    const root = document.querySelector('[data-testid=knowledge-neural]')
+    const cv = document.createElement('canvas')
+    cv.width = cv.height = 1
+    const ctx = cv.getContext('2d', { willReadFrequently: true })
+    const rgb = (css) => {
+      const probe = document.createElement('span')
+      probe.style.color = css
+      root.appendChild(probe)
+      const c = getComputedStyle(probe).color
+      probe.remove()
+      ctx.clearRect(0, 0, 1, 1)
+      ctx.fillStyle = '#808080'
+      ctx.fillStyle = c
+      ctx.fillRect(0, 0, 1, 1)
+      const d = ctx.getImageData(0, 0, 1, 1).data
+      return [d[0], d[1], d[2]]
+    }
+    const lum = ([r, g, b]) => {
+      const f = (v) => ((v /= 255) <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4)
+      return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b)
+    }
+    const ratio = (a, b) => {
+      const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x)
+      return (hi + 0.05) / (lo + 0.05)
+    }
+    const field = rgb('var(--neural-field)')
+    const slots = {}
+    for (const n of document.querySelectorAll('[data-testid=knowledge-node]')) slots[n.dataset.kind] = n.dataset.color
+    const nodes = Object.entries(slots).map(([kind, slot]) => ({ kind, slot, ratio: ratio(rgb(`color-mix(in srgb, ${slot} var(--neural-node-mix), var(--neural-node-ink))`), field) }))
+    return { name: ratio(rgb('var(--text-primary)'), field), synapse: ratio(rgb('var(--neural-synapse)'), field), nodes }
+  })
 
 try {
-  // ======== Setup: an engagement with the mock knowledge run ========
+  // ======== Setup ========
   await setSize(1600, 1000)
   await setTheme('dark')
   const project = await createEngagement({ name: NAME, dir: wf })
   check(!!project && project.kind === 'engagement', 'engagement created')
   const pid = project.id
+  const seeded = await seedGraph(pid)
+  check(seeded.nodes >= 60 && seeded.edges >= 30, 'seeded about 65 items and 40 relations through the knowledge API', JSON.stringify(seeded))
   await openProject(page, NAME)
-  await startRun(PROMPT)
-  const recorded = await until(async () => {
-    const g = await page.evaluate((id) => window.orgai.knowledge.get(id), pid)
-    return g.nodes.length >= 4 && g.edges.length >= 2
-  }, 120_000)
-  check(recorded, 'the mock run recorded 4 items and 2 relations', await page.evaluate((id) => window.orgai.knowledge.get(id).then((g) => `${g.nodes.length} nodes, ${g.edges.length} edges`), pid))
-  // The default script then asks for one Edit: allow it so the run reaches Idle (the graph does not depend on it).
-  const card = page.locator('section.frame-tray article.decision-card[data-kind="permission"]')
-  if (await until(() => card.count().then((n) => n > 0), 30_000)) await card.first().getByRole('button', { name: 'Allow once', exact: true }).click().catch(() => {})
-  const idle = await until(async () => /Idle/.test(await runTabText()), 90_000)
-  check(idle, 'the run reaches Idle', await runTabText())
-
-  // ======== 1. The neighbourhood of Jane Doe ========
   await openKnowledgeTab()
-  const janeId = await selectRow(JANE)
-  check(!!janeId, 'Jane Doe is selected in the list', String(janeId))
   await openGraph()
-  check(await waitNodes(3), 'Depth 1 draws 3 nodes', String(await nodeCount()))
-  const names1 = await nodeNames()
-  check(names1.length === 3 && [JANE, ACME, DECISION].every((n) => names1.includes(n)), 'Depth 1 draws Jane Doe, Acme Corp and the decision', names1.join(' | '))
-  check(names1.join('|') === [ACME, JANE, DECISION].join('|'), 'the nodes come in list order (creation order: Acme, Jane, the decision)', names1.join(' | '))
-  check((await page.locator(`${GRAPH} [data-testid=knowledge-retired-group]`).count()) === 0, 'no retired group: nothing is retired', '')
-  check((await page.locator(`${GRAPH} .react-flow[aria-label="Knowledge graph"]`).count()) === 1, 'the flow is labelled "Knowledge graph"')
-  const selected1 = await selectedNodes()
-  check(selected1.length === 1 && selected1[0] === JANE, 'the selected node is Jane Doe (the canvas selection cue)', selected1.join(' | '))
-  // Spoken names.
-  const labels = await page.evaluate((sel) => [...document.querySelectorAll(`${sel} .react-flow__node`)].map((n) => n.getAttribute('aria-label') ?? ''), GRAPH)
-  const jane = labels.find((l) => l.startsWith('Jane Doe, person.')) ?? ''
-  check(/^Jane Doe, person\. 2 facts, 2 relations: works at Acme Corp, Migrate billing to Stripe decided by\. Press Enter to open\.$/.test(jane), 'Jane Doe speaks her kind, counts, relations and the Enter hint', jane)
-  check(labels.some((l) => /^Acme Corp, organisation\. 1 fact, 1 relation: Jane Doe works at\. Press Enter to open\.$/.test(l)), 'Acme Corp speaks one live fact (the retired one is left out) and its relation', labels.join(' || '))
-  check(labels.some((l) => /^Migrate billing to Stripe, decision\. 1 fact, 1 relation: decided by Jane Doe\. Press Enter to open\.$/.test(l)), 'the decision speaks its relation', labels.join(' || '))
-  // Depth 2: the same three for this data.
-  const depth = page.locator('[data-testid=knowledge-graph-depth]')
-  await depth.getByRole('radio', { name: '2', exact: true }).check({ force: true })
+
+  // ======== 1. It is a canvas, not React Flow ========
+  check(await settled(), 'the layout settles', String(await attr('data-settled')))
+  check((await page.locator('.react-flow').count()) === 0, 'no React Flow in the Graph view')
+  check((await page.locator(`${NEURAL} canvas`).count()) === 2, 'two stacked canvases draw the field and the pulses')
+  check((await num('data-drawn')) === seeded.nodes, 'data-drawn counts every live item', `${await attr('data-drawn')} of ${seeded.nodes}`)
+  check((await num('data-edges')) >= 30, 'data-edges counts the recorded relations', String(await attr('data-edges')))
+  check((await attr('data-lod')) === 'full', 'about 65 items are the full tier', String(await attr('data-lod')))
+  await shot('01-graph-1600-dark')
+  await noPageScroll('1600x1000 dark')
+
+  const data0 = await nodeData()
+  const [janeId] = byName(data0, 'Jane Doe') ?? []
+  const [acmeId] = byName(data0, 'Acme Corp') ?? []
+  check(!!janeId && !!acmeId, 'Jane Doe and Acme Corp are options', String(Object.keys(data0).length))
+  check(Object.keys(data0).length === seeded.nodes, 'every item has one DOM option up to 300 nodes', `${Object.keys(data0).length}`)
+
+  // ======== 2. Hover shows the card ========
+  const jp = await screenOfNode(janeId)
+  await page.mouse.move(jp.x + 60, jp.y + 160)
+  await page.mouse.move(jp.x, jp.y, { steps: 4 })
+  const card = page.locator('[data-testid=knowledge-neural-card]')
+  check(await until(async () => (await card.count()) === 1, 3000), 'hovering Jane Doe shows the card')
+  await sleep(150)
+  check((await card.getAttribute('data-id')) === janeId, 'the card names the hovered node')
+  const cardText = (await card.innerText()).replace(/\s+/g, ' ')
+  check(/Jane Doe/.test(cardText) && /Person/.test(cardText), 'the card holds the name and the kind', cardText)
+  const countText = ((await page.locator('[data-testid=knowledge-neural-card-count]').innerText()) ?? '').trim()
+  check(/^Comes up (once|\d+ times): /.test(countText) && /relation/.test(countText), 'the card says how often it comes up', countText)
+  check((await card.getAttribute('aria-hidden')) === 'true' && (await card.evaluate((el) => getComputedStyle(el).pointerEvents)) === 'none', 'the card is aria-hidden and takes no pointer events')
+  const sb = await stageBox()
+  const cb = await card.boundingBox()
+  const disc = await screenOfNode(janeId)
+  const nearest = (b, p) => Math.hypot(p.x - Math.max(b.x, Math.min(p.x, b.x + b.width)), p.y - Math.max(b.y, Math.min(p.y, b.y + b.height)))
+  check(cb.x >= sb.x + 7 && cb.y >= sb.y + 7 && cb.x + cb.width <= sb.x + sb.width - 7 && cb.y + cb.height <= sb.y + sb.height - 7, 'the card sits inside the stage', JSON.stringify({ cb, sb }))
+  check(nearest(cb, disc) >= disc.r - 0.5, 'the card never covers the node disc', `${nearest(cb, disc)} vs r ${disc.r}`)
+  await shot('02-hover-jane-1600-dark')
+  await page.mouse.move(sb.x + 8, sb.y + 8, { steps: 6 })
+  check(await until(async () => (await card.count()) === 0, 3000), 'leaving the node hides the card')
+
+  // ======== 3. Click opens the detail; nothing moves ========
+  const before = await nodeData()
+  const zoomBefore = await attr('data-zoom')
+  const screenBefore = await screenOfNode(janeId)
+  await page.mouse.click(screenBefore.x, screenBefore.y)
+  check(await until(async () => (await page.locator('[data-testid=knowledge-detail-name]').count()) === 1, 4000), 'a click opens the detail panel')
+  check(((await page.locator('[data-testid=knowledge-detail-name]').innerText()) ?? '').trim() === 'Jane Doe', 'the detail shows Jane Doe')
   await sleep(500)
-  check(await waitNodes(3), 'Depth 2 draws the same 3 nodes for this data', String(await nodeCount()))
-  check((await page.locator(GRAPH).getAttribute('data-depth')) === '2', 'the graph records depth 2')
-  await depth.getByRole('radio', { name: '1', exact: true }).check({ force: true })
-  await sleep(300)
-  await shot('graph-depth1-1600-dark')
+  const after = await nodeData()
+  check(Object.keys(before).every((id) => before[id].x === after[id]?.x && before[id].y === after[id]?.y), 'no node moved (data-x / data-y) after a click')
+  check((await attr('data-zoom')) === zoomBefore, 'data-zoom is unchanged after a click', `${zoomBefore} -> ${await attr('data-zoom')}`)
+  const screenAfter = await screenOfNode(janeId)
+  check(Math.abs(screenAfter.x - screenBefore.x) <= 1 && Math.abs(screenAfter.y - screenBefore.y) <= 1, 'the clicked node keeps its screen position', `${JSON.stringify(screenBefore)} -> ${JSON.stringify(screenAfter)}`)
+  check((await page.locator(`[data-testid=knowledge-node][data-id="${janeId}"]`).getAttribute('aria-selected')) === 'true', 'the clicked node is the selected option')
+  check((await page.evaluate(() => document.activeElement?.getAttribute('data-testid'))) === 'knowledge-node', 'focus stays on the node after a click', await activeTestId())
+  await shot('03-selected-jane-1600-dark')
+  await page.mouse.click(sb.x + 12, sb.y + 12)
+  check(await until(async () => (await page.locator('[data-testid=knowledge-detail-empty]').count()) === 1, 3000), 'a click on empty space clears the selection (knowledge-detail-empty)')
 
-  // ======== 2. Edge labels at zoom 1 and the titles ========
-  for (let i = 0; i < 6 && (await zoomOf()) < 1; i++) {
-    await page.locator('[data-testid=knowledge-graph-zoom-in]').click()
-    await sleep(250)
+  // ======== 4. Size follows appearances ========
+  const rows = Object.values(await nodeData()).sort((a, b) => a.total - b.total)
+  const maxTotal = Math.max(...rows.map((r) => r.total))
+  const expected = (t) => Math.min(34, 6 + (28 * Math.log2(1 + t)) / Math.log2(1 + Math.max(maxTotal, 16)))
+  check(rows.every((r) => Math.abs(r.r - expected(r.total)) <= 0.11), 'every data-radius follows 6 + 28 log2(1 + total) / log2(1 + max(top, 16))', rows.slice(-3).map((r) => `${r.name} ${r.total} -> ${r.r}`).join('; '))
+  check(rows.every((r, i) => i === 0 || r.r >= rows[i - 1].r - 0.001), 'radius never decreases as data-total grows')
+  check(rows[rows.length - 1].total > rows[0].total && rows[rows.length - 1].r > rows[0].r, 'the largest total has the largest node', `${rows[0].total} -> ${rows[rows.length - 1].total}`)
+
+  // ======== 5. Colour and mark per kind ========
+  const byKind = {}
+  for (const r of rows) (byKind[r.kind] ??= new Set()).add(`${r.color}|${r.mark}`)
+  check(Object.values(byKind).every((set) => set.size === 1), 'one data-color and data-mark per kind', JSON.stringify(Object.fromEntries(Object.entries(byKind).map(([k, v]) => [k, [...v]]))))
+  const markOf = (k) => [...byKind[k]][0].split('|')[1]
+  check(markOf('person') === 'solid' && markOf('deadline') === 'ring' && markOf('vendor') === 'ring-dot', 'person is solid, deadline a ring, a free-form kind ring-dot', `${markOf('person')} ${markOf('deadline')} ${markOf('vendor')}`)
+  check(new Set(['person', 'organisation', 'system', 'document', 'decision'].map((k) => [...byKind[k]][0].split('|')[0])).size === 5, 'five common kinds, five slot colours')
+  const colorsBefore = Object.fromEntries(Object.entries(byKind).map(([k, v]) => [k, [...v][0]]))
+  await page.evaluate(async (id) => {
+    await window.orgai.knowledge.saveNode({ projectId: id, kind: 'regulator', name: 'Financial Conduct Authority' })
+  }, pid)
+  check(await until(async () => (await num('data-drawn')) === seeded.nodes + 1, 8000), 'a new node arrives after a refetch', String(await attr('data-drawn')))
+  await sleep(700)
+  const data1 = await nodeData()
+  const colorsAfter = {}
+  for (const r of Object.values(data1)) colorsAfter[r.kind] = `${r.color}|${r.mark}`
+  check(Object.entries(colorsBefore).every(([k, v]) => colorsAfter[k] === v), 'a new kind recolours no other kind')
+  check(Object.keys(before).every((id) => before[id].x === data1[id]?.x && before[id].y === data1[id]?.y), 'a new node moves no other node (pinned placement)')
+  check(Object.values(data1).some((r) => r.name === 'Financial Conduct Authority'), 'the new node is drawn')
+  check((await num('data-fired')) >= 1, 'a new node fires', String(await attr('data-fired')))
+  await page.reload()
+  await page.waitForSelector('.sidebar')
+  await openProject(page, NAME)
+  await openKnowledgeTab()
+  await openGraph()
+  check(await settled(), 'the layout is settled again after a reload')
+  const data2 = await nodeData()
+  check(Object.keys(data1).every((id) => data1[id].x === data2[id]?.x && data1[id].y === data2[id]?.y), 'the stored layout gives the same positions after a reload (localStorage)')
+
+  // ======== 6. Kind chip and search dim in place ========
+  const litAll = await num('data-lit')
+  const posBefore = await nodeData()
+  await page.locator('[data-testid=knowledge-kind][data-kind=person]').click()
+  check(await until(async () => (await num('data-lit')) === 24, 4000), 'the People chip lights 24 nodes (data-lit)', String(await attr('data-lit')))
+  const dimmed = await page.locator('[data-testid=knowledge-node][data-dim=true]').count()
+  check(dimmed === litAll - 24, 'every other node is dimmed (data-dim)', `${dimmed} of ${litAll}`)
+  const posChip = await nodeData()
+  check(Object.keys(posBefore).every((id) => posBefore[id].x === posChip[id].x && posBefore[id].y === posChip[id].y), 'a kind filter moves no node')
+  await shot('04-kind-people-1600-dark')
+  await page.locator('[data-testid=knowledge-kind][data-kind=person]').click()
+  check(await until(async () => (await num('data-lit')) === litAll, 4000), 'clearing the chip lights everything again')
+  // A filter names what it keeps, dimmed nodes never block a name (limit: 40 names at most, 60 at zoom 1.6 or above).
+  await page.locator('[data-testid=knowledge-kind][data-kind=risk]').click()
+  check(await until(async () => (await num('data-lit')) === 4, 4000), 'the Risks chip lights 4 nodes')
+  check(await until(async () => (await num('data-named-lit')) === 4, 4000), 'all 4 lit risks show their names', `${await attr('data-named-lit')} of 4`)
+  await shot('04b-kind-risks-1600-dark')
+  await page.locator('[data-testid=knowledge-kind][data-kind=risk]').click()
+  await page.locator('[data-testid=knowledge-kind][data-kind=person]').click()
+  check(await until(async () => (await num('data-lit')) === 24, 4000), 'the People chip lights 24 nodes again')
+  const namedPeople = await (async () => {
+    await sleep(500)
+    return num('data-named-lit')
+  })()
+  check(namedPeople >= 20, 'most of 24 lit people show names at fit zoom', `${namedPeople} of 24`)
+  await page.locator('[data-testid=knowledge-kind][data-kind=person]').click()
+  check(await until(async () => (await num('data-lit')) === litAll, 4000), 'clearing the chip lights everything again (2)')
+  await page.locator('[data-testid=knowledge-search]').fill('acme')
+  check(await until(async () => (await num('data-lit')) >= 1 && (await num('data-lit')) < 10, 4000), 'search lights the matches only', String(await attr('data-lit')))
+  const litNames = await page.evaluate(() => [...document.querySelectorAll('[data-testid=knowledge-node][data-dim=false]')].map((n) => (n.getAttribute('aria-label') ?? '').split(', ')[0]))
+  check(litNames.includes('Acme Corp'), 'Acme Corp is among the lit matches', litNames.join(' | '))
+  await shot('05-search-acme-1600-dark')
+  await page.locator('[data-testid=knowledge-search]').fill('zzzzz-nothing')
+  check(await until(async () => (await page.locator('[data-testid=knowledge-neural-none]').count()) === 1, 4000), 'nothing matching shows knowledge-neural-none')
+  check(/No items match zzzzz-nothing\./.test((await page.locator('[data-testid=knowledge-neural-none]').innerText()) ?? ''), 'it names the query')
+  await shot('06-none-1600-dark')
+  await page.locator('[data-testid=knowledge-clear-filters]').click()
+  check(await until(async () => (await num('data-lit')) === litAll && (await page.locator('[data-testid=knowledge-neural-none]').count()) === 0, 4000), 'Clear filters brings everything back', `lit ${await attr('data-lit')} of ${litAll}, none ${await page.locator('[data-testid=knowledge-neural-none]').count()}`)
+
+  // ======== 7. Retired only with the switch ========
+  await page.evaluate(async (id) => {
+    const g = await window.orgai.knowledge.get(id)
+    const n = g.nodes.find((x) => x.name === 'Mail relay')
+    await window.orgai.knowledge.saveNode({ projectId: id, nodeId: n.id, kind: n.kind, name: n.name, retired: true })
+  }, pid)
+  check(await until(async () => (await num('data-drawn')) === seeded.nodes, 8000), 'a retired item leaves the drawn count', String(await attr('data-drawn')))
+  const sw = page.locator('[data-testid=knowledge-show-retired]')
+  await sw.click()
+  check(await until(async () => (await num('data-drawn')) === seeded.nodes + 1, 4000), 'Show retired draws it again', String(await attr('data-drawn')))
+  const dataRet = await nodeData()
+  check(Object.values(dataRet).some((r) => r.name === 'Mail relay' && r.retired === 'true'), 'the retired option carries data-retired')
+  check(Object.keys(data2).every((id) => !dataRet[id] || (data2[id].x === dataRet[id].x && data2[id].y === dataRet[id].y)), 'showing retired moves nothing')
+  await shot('07-retired-shown-1600-dark')
+  await sw.click()
+  check(await until(async () => (await num('data-drawn')) === seeded.nodes, 4000), 'switching it off hides it again')
+
+  // ======== 8. Inferred links ========
+  check((await num('data-inferred')) === 0, 'no inferred line is drawn at rest', String(await attr('data-inferred')))
+  const sw2 = page.locator('[data-testid=knowledge-inferred-links]')
+  const hasSwitch = (await sw2.count()) > 0
+  if (hasSwitch) await sw2.click()
+  else {
+    await page.evaluate((id) => localStorage.setItem(`orgai.knowledgeInferred.${id}`, 'on'), pid)
+    await projectTab(page, 'Live').click()
+    await openKnowledgeTab()
+    await openGraph()
   }
-  const z = await zoomOf()
-  check(z >= 1, 'the canvas zooms to 1 or more', String(z))
-  const labelsAt1 = await edgeLabels()
-  check(labelsAt1.includes('works at') && labelsAt1.includes('decided by'), 'the edge labels read "works at" and "decided by" at zoom 1', labelsAt1.join(' | '))
-  const titles = await edgeTitles()
-  check(titles.includes('Jane Doe works at Acme Corp') && titles.some((t) => t.startsWith('Migrate billing to Stripe decided by Jane Doe')), 'every edge carries its sentence as the SVG title', titles.join(' | '))
-  for (let i = 0; i < 8 && (await zoomOf()) >= 1; i++) {
-    await page.locator('[data-testid=knowledge-graph-zoom-out]').click()
-    await sleep(250)
+  check(await until(async () => (await num('data-inferred')) > 0, 8000), 'the inferred-links switch draws the suggestions (data-inferred)', String(await attr('data-inferred')))
+  await shot('08-inferred-on-1600-dark')
+  if (hasSwitch) await sw2.click()
+  else {
+    await page.evaluate((id) => localStorage.removeItem(`orgai.knowledgeInferred.${id}`), pid)
+    await projectTab(page, 'Live').click()
+    await openKnowledgeTab()
+    await openGraph()
   }
-  check((await zoomOf()) < 1 && (await edgeLabels()).length === 0, 'under zoom 1 the labels are hidden and only the titles remain', `${await zoomOf()} ${(await edgeLabels()).join('|')}`)
-  await page.locator('[data-testid=knowledge-graph-fit]').click()
-  await sleep(400)
+  check(await until(async () => (await num('data-inferred')) === 0, 6000), 'and off again clears them', String(await attr('data-inferred')))
+  await settled()
 
-  // ======== 3. The legend ========
-  await page.locator('[data-testid=knowledge-graph-legend-trigger]').click()
-  const legend = page.locator('[data-testid=knowledge-graph-legend]')
-  await legend.waitFor({ state: 'visible', timeout: 5000 })
-  const kinds = await legend.locator('[data-testid=knowledge-legend-kind]').allInnerTexts()
-  check(kinds.map(clean).join('|') === 'Person|Organisation|Decision', 'the legend lists Person, Organisation and Decision in kind order', kinds.join(' | '))
-  const rels = await legend.locator('[data-testid=knowledge-legend-relation]').allInnerTexts()
-  check(rels.map(clean).join('|') === 'decided by|works at', 'the legend lists the two relations as words', rels.join(' | '))
-  check((await legend.locator('[data-testid=knowledge-legend-retired]').count()) === 1 && (await legend.locator('[data-testid=knowledge-legend-group]').count()) === 1, 'the legend has the Retired and the folded group entries')
-  const swatchColors = await legend.locator('.knowledge-legend-swatch').evaluateAll((els) => els.map((e) => getComputedStyle(e).backgroundColor))
-  check(new Set(swatchColors).size === 3, 'the three kinds have three different colours', swatchColors.join(' | '))
-  await shot('graph-legend-1600-dark')
-  await page.keyboard.press('Escape')
+  // ======== 9. A recall fires nodes ========
+  const firedBefore = await num('data-fired')
+  const run = await page.evaluate(({ id, prompt }) => window.orgai.runs.start({ projectId: id, prompt }), { id: pid, prompt: RECALL_PROMPT })
+  const rose = await until(async () => (await num('data-fired')) > firedBefore, 60_000)
+  check(rose, 'a recall during a run raises data-fired', `${firedBefore} -> ${await attr('data-fired')}`)
+  const firedIds = ((await attr('data-fired-ids')) ?? '').split(',').filter(Boolean)
+  const allIds = new Set(Object.keys(await nodeData()))
+  check(firedIds.length >= 1 && firedIds.length <= 12 && firedIds.every((id) => allIds.has(id)), 'data-fired-ids holds real node ids (at most 12)', firedIds.join(','))
+  await shot('09-recall-fired-1600-dark')
+  await page.evaluate((rid) => window.orgai.runs.stop(rid), run.id).catch(() => {})
+
+  // ======== 10. The loop is honest ========
+  const rising = await framesOver(1200)
+  const animating = await attr('data-animating')
+  log('frames in 1.2 s with motion:', rising, 'animating', animating)
+  check(animating === 'false' || rising > 5, 'while animating, data-frames rises', `${rising} frames, animating ${animating}`)
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true })
+    document.dispatchEvent(new Event('visibilitychange'))
+  })
   await sleep(300)
-  check(await until(async () => (await activeTestId()) === 'knowledge-graph-legend-trigger'), 'Esc closes the legend and focus returns to its button', await activeTestId())
+  check((await attr('data-animating')) === 'false', 'a hidden tab stops the loop (data-animating=false)', String(await attr('data-animating')))
+  check((await framesOver(500)) === 0, 'and no frame is drawn while hidden')
+  await page.evaluate(() => {
+    delete document.visibilityState
+    document.dispatchEvent(new Event('visibilitychange'))
+  })
+  await sleep(300)
+  await setAppearance({ reduceMotion: 'on' })
+  await sleep(500)
+  check((await page.locator('html').getAttribute('data-reduce-motion')) === 'on', 'reduce motion is on')
+  check((await attr('data-animating')) === 'false', 'reduced motion: data-animating=false', String(await attr('data-animating')))
+  // A fire from the run just stopped may still clear its static ring (one draw, 2 s later), so this waits for a quiet stretch.
+  check(await until(async () => (await framesOver(500)) === 0, 6000), 'reduced motion: data-frames is constant over 500 ms')
+  await page.locator('[data-testid=knowledge-neural-zoom-in]').click()
+  await sleep(300)
+  check((await attr('data-animating')) === 'false' && (await num('data-frames')) > 0, 'a zoom in reduced motion draws once and stops', String(await attr('data-animating')))
+  await shot('10-reduced-1600-dark')
+  await page.locator('[data-testid=knowledge-neural-fit]').click()
+  await sleep(300)
+  await setAppearance({ reduceMotion: 'system' })
+  await sleep(500)
+  await openList()
+  await sleep(300)
+  check((await page.locator(NEURAL).count()) === 0, 'List view: no canvas is mounted')
+  const rafs = await page.evaluate(
+    () =>
+      new Promise((resolve) => {
+        let n = 0
+        const orig = window.requestAnimationFrame
+        window.requestAnimationFrame = (cb) => {
+          n++
+          return orig(cb)
+        }
+        setTimeout(() => {
+          window.requestAnimationFrame = orig
+          resolve(n)
+        }, 600)
+      })
+  )
+  check(rafs <= 2, 'List view: no animation frame loop runs (frames requested in 600 ms)', String(rafs))
+  await openGraph()
+  check(await settled(), 'the Graph view comes back settled')
 
-  // ======== 4. Show all ========
-  const all = page.locator('[data-testid=knowledge-graph-all]')
-  await all.click()
-  check(await waitNodes(4), 'Show all draws 4 nodes (the risk too)', String(await nodeCount()))
-  check((await nodeNames()).includes(RISK), 'the risk is drawn with Show all', (await nodeNames()).join(' | '))
-  check((await page.locator('[data-testid=knowledge-graph-warn]').count()) === 0, 'no warning under 150 items')
-  await shot('graph-all-1600-dark')
-  await all.click()
-  check(await waitNodes(3), 'Show all off returns to the neighbourhood', String(await nodeCount()))
-
-  // ======== 5. Keyboard: skip links, Tab order, Enter, Space, Ctrl+Arrow ========
-  await page.locator('[data-testid=knowledge-show-retired]').focus()
-  await page.keyboard.press('Tab')
-  check((await activeTestId()) === 'knowledge-skip-list', 'Tab after Show retired lands on Skip to list', await activeTestId())
-  const skipBox = await page.locator('[data-testid=knowledge-skip-list]').boundingBox()
-  check(!!skipBox && skipBox.y >= 0 && skipBox.y < 1000 && skipBox.width > 0, 'the focused skip link is visible', JSON.stringify(skipBox))
-  await page.keyboard.press('Tab')
-  check((await activeTestId()) === 'knowledge-skip-detail', 'then Skip to detail', await activeTestId())
-  await page.keyboard.press('Tab')
-  const onDepth = await page.evaluate(() => document.activeElement?.closest('[data-testid=knowledge-graph-depth]') !== null)
-  check(onDepth, 'then the Depth control', await activeTestId())
-  await page.keyboard.press('Tab')
-  check((await activeTestId()) === 'knowledge-graph-all', 'then Show all', await activeTestId())
-  await page.keyboard.press('Tab')
-  check((await activeTestId()) === 'knowledge-graph-zoom-out', 'then Zoom out', await activeTestId())
-  await page.keyboard.press('Tab')
-  await page.keyboard.press('Tab')
-  check((await activeTestId()) === 'knowledge-graph-fit', 'then Zoom in and Fit to view', await activeTestId())
-  await page.keyboard.press('Tab')
-  check((await activeTestId()) === 'knowledge-graph-legend-trigger', 'then the legend', await activeTestId())
-  const focusedNodeName = () => page.evaluate(() => (document.activeElement?.classList.contains('react-flow__node') ? document.activeElement.querySelector('.knowledge-name-text, .hex-name')?.textContent?.trim() : null) ?? null)
-  await page.keyboard.press('Tab')
-  check((await focusedNodeName()) === ACME, 'Tab reaches the first node in list order (Acme Corp)', String(await focusedNodeName()))
+  // ======== 11. Keyboard ========
+  // The band's controls come first (their order depends on the band's width); the graph's own stops start at the skip links.
+  await page.locator('[data-testid=knowledge-skip-list]').focus()
+  const tabs = []
+  for (let i = 0; i < 3; i++) {
+    tabs.push(await activeTestId())
+    if (i < 2) await page.keyboard.press('Tab')
+  }
+  check(tabs[0] === 'knowledge-skip-list' && tabs[1] === 'knowledge-skip-detail' && tabs[2] === 'knowledge-node', 'Tab: skip to list, skip to detail, then one graph option', tabs.join(' > '))
+  const firstNode = await page.evaluate(() => document.activeElement?.getAttribute('data-id'))
+  const tabStopCount = await page.locator('[data-testid=knowledge-node][tabindex="0"]').count()
+  check(tabStopCount === 1, 'exactly one option is a Tab stop (roving tabindex)', String(tabStopCount))
+  check((await page.locator('[data-testid=knowledge-neural-nodes]').getAttribute('aria-label')) === 'Knowledge graph', 'the listbox is named "Knowledge graph"')
   const ring = await page.evaluate(() => {
-    const el = document.activeElement?.querySelector('[data-testid=knowledge-node]')
-    if (!el) return ''
-    const s = getComputedStyle(el)
+    const s = getComputedStyle(document.activeElement)
     return `${s.outlineStyle} ${s.outlineWidth}`
   })
-  check(/solid 2px/.test(ring), 'a focused node shows the 2 px focus ring on the node', ring)
+  check(/solid/.test(ring), 'the focused option shows a focus outline', ring)
+  check(await until(async () => (await card.count()) === 1, 2000), 'keyboard focus shows the card')
+  const rowsNow = Object.values(await nodeData()).sort((a, b) => a.total - b.total)
+  const largest = rowsNow[rowsNow.length - 1]
+  const data3 = await nodeData()
+  check(data3[firstNode]?.total === largest.total, 'focus lands on the largest node when nothing was focused', `${data3[firstNode]?.name}`)
   await page.keyboard.press('Tab')
-  check((await focusedNodeName()) === JANE, 'then Jane Doe', String(await focusedNodeName()))
+  check((await activeTestId()) === 'knowledge-neural-zoom-out', 'the next Tab leaves the graph for Zoom out', await activeTestId())
   await page.keyboard.press('Tab')
-  check((await focusedNodeName()) === DECISION, 'then the decision', String(await focusedNodeName()))
-  // Space selects the focused node; the list shares it.
-  await page.keyboard.press('Space')
-  await sleep(300)
-  const sel = await selectedNodes()
-  check(sel.length === 1 && sel[0] === DECISION, 'Space selects the decision', sel.join(' | '))
-  // Ctrl+Arrow follows a relation (optional in the spec; built): from the decision towards Jane.
-  const before = await focusedNodeName()
-  for (const key of ['Control+ArrowUp', 'Control+ArrowLeft', 'Control+ArrowRight', 'Control+ArrowDown']) {
-    await page.keyboard.press(key)
-    await sleep(100)
-    if ((await focusedNodeName()) !== before) break
-  }
-  check((await focusedNodeName()) === JANE, 'Ctrl+Arrow moves focus along a relation to Jane Doe', String(await focusedNodeName()))
-  // Enter opens the detail pane with its heading focused.
+  await page.keyboard.press('Tab')
+  check((await activeTestId()) === 'knowledge-neural-fit', 'Zoom in, then Fit to view', await activeTestId())
+  await page.keyboard.press('Tab')
+  check((await activeTestId()) === 'knowledge-neural-legend-trigger', 'then the Legend button', await activeTestId())
   await page.keyboard.press('Enter')
-  const opened = await until(() => page.evaluate(() => document.activeElement?.id === 'knowledge-detail-heading'), 5000)
-  check(opened, 'Enter on a node opens the detail pane and focuses its heading', await activeTestId())
-  const detailName = clean(await page.locator('#knowledge-detail-heading').innerText().catch(() => ''))
-  check(detailName.includes(JANE), 'the detail pane shows Jane Doe', detailName)
-  const sel2 = await selectedNodes()
-  check(sel2.length === 1 && sel2[0] === JANE, 'the graph selection follows: Jane Doe is selected', sel2.join(' | '))
-  // The Skip to list link focuses the list.
+  const legend = page.locator('[data-testid=knowledge-neural-legend]')
+  await legend.waitFor({ state: 'visible', timeout: 4000 })
+  const kindsLegend = await legend.locator('[data-testid=knowledge-neural-legend-kind]').count()
+  check(kindsLegend === 12, 'the legend lists the kinds in use (12 with the new one)', String(kindsLegend))
+  check(/Dotted line: an inferred link, found by matching names in text; it may be wrong/.test((await legend.innerText()) ?? ''), 'the legend explains inferred links')
+  await shot('11-legend-1600-dark')
+  await page.keyboard.press('Escape')
+  await sleep(300)
+  check((await activeTestId()) === 'knowledge-neural-legend-trigger', 'Esc closes the legend and focus returns to its button')
+  for (let i = 0; i < 4; i++) await page.keyboard.press('Shift+Tab')
+  const idOf = () => page.evaluate(() => document.activeElement?.getAttribute('data-id'))
+  check((await idOf()) === firstNode, 'Shift+Tab returns to the same option', await activeTestId())
+  let moved = 0
+  for (const [key, test] of [
+    ['ArrowRight', (a, b) => b.x > a.x],
+    ['ArrowLeft', (a, b) => b.x < a.x],
+    ['ArrowDown', (a, b) => b.y > a.y],
+    ['ArrowUp', (a, b) => b.y < a.y]
+  ]) {
+    const from = await idOf()
+    await page.keyboard.press(key)
+    await sleep(120)
+    const to = await idOf()
+    if (to !== from) {
+      moved++
+      const d = await nodeData()
+      check(test(d[from], d[to]), `${key} moves to a node in that direction`, `${d[from].name} -> ${d[to].name}`)
+    }
+  }
+  check(moved >= 2, 'arrows move between nodes', String(moved))
+  await page.keyboard.press('Control+ArrowRight')
+  await page.keyboard.press('Control+ArrowLeft')
+  check((await page.evaluate(() => document.activeElement?.getAttribute('data-testid'))) === 'knowledge-node', 'Ctrl+Arrow keeps focus on an option')
+  await page.keyboard.press('Home')
+  check((await nodeData())[await idOf()].total === largest.total, 'Home goes to the largest node')
+  await page.keyboard.press('End')
+  check((await nodeData())[await idOf()].total === rowsNow[0].total, 'End goes to the smallest node')
+  for (const ch of 'jane') await page.keyboard.press(ch)
+  await sleep(100)
+  check((await idOf()) === janeId, 'typing "jane" goes to Jane Doe (type-ahead)', String((await nodeData())[await idOf()]?.name))
+  await page.keyboard.press('Space')
+  const sel = () => page.locator(`[data-testid=knowledge-node][data-id="${janeId}"]`).getAttribute('aria-selected')
+  check(await until(async () => (await sel()) === 'true', 2000), 'Space selects the node')
+  await page.keyboard.press('Escape')
+  check(await until(async () => (await card.count()) === 0, 2000), 'Esc first hides the card')
+  check((await sel()) === 'true', 'the selection is still there after the first Esc')
+  await page.keyboard.press('Escape')
+  check(await until(async () => (await sel()) === 'false', 2000), 'the second Esc clears the selection')
+  check((await idOf()) === janeId, 'focus stays on the node after Esc')
+  const z0 = await attr('data-zoom')
+  await page.keyboard.press('+')
+  await sleep(500)
+  const z1 = await attr('data-zoom')
+  check(Number(z1) > Number(z0), '+ zooms in', `${z0} -> ${z1}`)
+  await page.keyboard.press('-')
+  await sleep(500)
+  check(Number(await attr('data-zoom')) < Number(z1), '- zooms out', `${z1} -> ${await attr('data-zoom')}`)
+  await page.keyboard.press('0')
+  await sleep(500)
+  await page.keyboard.press('Enter')
+  check(await until(async () => (await page.evaluate(() => document.activeElement?.id)) === 'knowledge-detail-heading', 3000), 'Enter opens the detail and focuses its heading', await activeTestId())
+  await page.keyboard.press('Escape')
+  check(await until(async () => (await idOf()) === janeId, 3000), 'Esc on the heading returns to the node', await activeTestId())
+  await shot('12-keyboard-1600-dark')
+
+  // ======== 12. Skip to list ========
   await page.locator('[data-testid=knowledge-skip-list]').focus()
   await page.keyboard.press('Enter')
-  await sleep(200)
-  const listTarget = await page.evaluate(() => {
-    const href = document.querySelector('[data-testid=knowledge-skip-list]')?.getAttribute('href') ?? ''
-    const id = href.startsWith('#') ? href.slice(1) : ''
-    return { id, hit: !!id && (document.activeElement?.id === id || !!document.activeElement?.closest(`#${CSS.escape(id)}`)) }
-  })
-  check(listTarget.hit, 'Skip to list moves focus into the list', JSON.stringify(listTarget))
-  await page.locator('[data-testid=knowledge-skip-detail]').focus()
-  await page.keyboard.press('Enter')
-  await sleep(200)
-  const detailTarget = await page.evaluate(() => {
-    const href = document.querySelector('[data-testid=knowledge-skip-detail]')?.getAttribute('href') ?? ''
-    const id = href.startsWith('#') ? href.slice(1) : ''
-    return { id, hit: !!id && (document.activeElement?.id === id || !!document.activeElement?.closest(`#${CSS.escape(id)}`)) }
-  })
-  check(detailTarget.hit, 'Skip to detail moves focus into the detail pane', JSON.stringify(detailTarget))
-
-  // ======== 6. The retired fold: retire Acme Corp through the knowledge API, expand, restore ========
-  const acme = await page.evaluate((id) => window.orgai.knowledge.get(id).then((g) => g.nodes.find((n) => n.name === 'Acme Corp')), pid)
-  check(!!acme, 'Acme Corp is in the graph', '')
-  if (acme) {
-    await page.evaluate(({ id, n }) => window.orgai.knowledge.saveNode({ projectId: id, nodeId: n.id, kind: n.kind, name: n.name, retired: true }), { id: pid, n: acme })
-    const group = page.locator(`${GRAPH} [data-testid=knowledge-retired-group]`)
-    const folded = await until(async () => (await group.count()) === 1 && (await group.first().getAttribute('data-count')) === '1', 15_000)
-    check(folded, 'a retired Acme folds into a "1 retired" group under Jane Doe', `${await group.count()}`)
-    check(await waitNodes(2), 'the retired node is not drawn one by one (2 nodes left)', String(await nodeCount()))
-    check(clean(await group.first().innerText().catch(() => '')).includes('1 retired'), 'the group reads "1 retired"', clean(await group.first().innerText().catch(() => '')))
-    const groupLabel = await page.locator(`${NODE}[data-id^="retired:"]`).first().getAttribute('aria-label').catch(() => '')
-    check(groupLabel === '1 retired item under Jane Doe. Press Enter to show them.', 'the group speaks its count and parent', String(groupLabel))
-    await shot('graph-retired-fold-1600-dark')
-    await group.first().locator('[data-testid=knowledge-retired-expand]').click()
-    check(await waitNodes(3), 'expanding the group draws Acme Corp again', String(await nodeCount()))
-    const retiredNode = page.locator(`${GRAPH} [data-testid=knowledge-node][data-retired=true]`)
-    check((await retiredNode.count()) === 1 && clean(await retiredNode.innerText()).includes('Retired'), 'the retired node carries the word Retired', clean(await retiredNode.innerText().catch(() => '')))
-    const dashed = await page.evaluate((sel) => [...document.querySelectorAll(`${sel} .react-flow__edge.knowledge-edge-retired .react-flow__edge-path`)].map((p) => getComputedStyle(p).strokeDasharray), GRAPH)
-    check(dashed.length >= 1 && dashed.every((d) => d && d !== 'none'), 'the retired relation is dashed', dashed.join(' | '))
-    await shot('graph-retired-expanded-1600-dark')
-    // Show retired draws it as a node without a group too.
-    await openList()
-    await page.locator('[data-testid=knowledge-show-retired]').click()
-    await sleep(300)
-    await openGraph()
-    check(await waitNodes(3), 'with Show retired on, the retired node draws as a node', String(await nodeCount()))
-    check((await page.locator(`${GRAPH} [data-testid=knowledge-retired-group]`).count()) === 0, 'and no group is drawn')
-    await openList()
-    await page.locator('[data-testid=knowledge-show-retired]').click()
-    await sleep(300)
-    await page.evaluate(({ id, n }) => window.orgai.knowledge.saveNode({ projectId: id, nodeId: n.id, kind: n.kind, name: n.name, retired: false }), { id: pid, n: acme })
-    await sleep(500)
-    await openGraph()
-    check(await waitNodes(3), 'restoring Acme draws the three nodes again', String(await nodeCount()))
-  }
-
-  // ======== 7. A note selected shows the empty message ========
-  await openList()
-  await selectRow('Kickoff call summary')
+  check(await until(async () => (await page.locator('[data-testid=knowledge-list]').count()) === 1, 4000), 'Show as list switches to the list')
   await openGraph()
-  const emptyMsg = page.locator('[data-testid=knowledge-graph-empty]')
-  check(await until(() => emptyMsg.count().then((n) => n === 1), 5000), 'a selected note shows the empty message', '')
-  check(clean(await emptyMsg.innerText().catch(() => '')).startsWith('Select an item in the list to see its relations.'), 'the empty message copy', clean(await emptyMsg.innerText().catch(() => '')))
-  await emptyMsg.locator('[data-testid=knowledge-graph-empty-all]').click()
-  check(await waitNodes(4), 'its Show all button draws everything', String(await nodeCount()))
-  await page.locator('[data-testid=knowledge-graph-all]').click()
-  await openList()
-  await selectRow(JANE)
-  await openGraph()
-  check(await waitNodes(3), 'back to the neighbourhood of Jane Doe', String(await nodeCount()))
+  check(await settled(), 'the graph is back')
 
-  // ======== 8. Reduced motion ========
-  await setAppearance({ reduceMotion: 'on' })
-  check((await page.evaluate(() => document.documentElement.getAttribute('data-reduce-motion'))) === 'on', 'reduced motion is on')
-  await depth.getByRole('radio', { name: '2', exact: true }).check({ force: true })
-  await sleep(400)
-  check(await waitNodes(3), 'the graph re-lays out under reduced motion (no animated fit)', String(await nodeCount()))
-  const transitions = await page.evaluate((sel) => [...document.querySelectorAll(`${sel} [data-testid=knowledge-node]`)].map((n) => getComputedStyle(n).transitionProperty), GRAPH)
-  check(transitions.every((t) => t === 'none' || t === ''), 'nodes have no transition under reduced motion', transitions.join(' | '))
-  await depth.getByRole('radio', { name: '1', exact: true }).check({ force: true })
-  await setAppearance({ reduceMotion: 'system' })
-
-  // ======== 9. The four node styles ========
-  for (const style of ['compact', 'station', 'hex', 'card']) {
-    await setAppearance({ canvas: { nodeStyle: style } })
-    const styled = await until(() => page.locator(`${GRAPH} [data-testid=knowledge-node][data-style=${style}]`).count().then((n) => n === 3), 8000)
-    check(styled, `node style ${style} draws 3 nodes`, String(await page.locator(`${GRAPH} [data-testid=knowledge-node][data-style=${style}]`).count()))
-    const box = await page.locator(`${GRAPH} [data-testid=knowledge-node][data-style=${style}]`).first().boundingBox()
-    if (style === 'compact') check(!!box && Math.abs(box.width - 160) <= 1 && Math.abs(box.height - 40) <= 1, 'name tags are 160 x 40', JSON.stringify(box))
-    if (style === 'hex') check(!!box && Math.abs(box.width - 120) <= 1 && Math.abs(box.height - 104) <= 1, 'hex tiles are 120 x 104', JSON.stringify(box))
-    if (style === 'card') check(!!box && Math.abs(box.width - 220) <= 1 && box.height >= 80, 'cards are 220 wide', JSON.stringify(box))
-    await shot(`graph-style-${style}-1600-dark`)
-  }
-
-  // Edge geometry (M3): every relation path stays inside the drawn nodes' bounding box, and each path ends on the side of
-  // its target that faces its source. Screen coordinates; the box is grown by a few px for stroke and arrow.
-  const edgeGeometry = () =>
-    page.evaluate((sel) => {
-      const root = document.querySelector(sel)
-      const rects = new Map([...root.querySelectorAll('[data-testid=knowledge-node]')].map((n) => [n.getAttribute('data-id'), n.getBoundingClientRect()]))
-      const all = [...rects.values()]
-      const box = { l: Math.min(...all.map((r) => r.left)), t: Math.min(...all.map((r) => r.top)), r: Math.max(...all.map((r) => r.right)), b: Math.max(...all.map((r) => r.bottom)) }
-      const edges = [...root.querySelectorAll('.react-flow__edge.knowledge-edge-retired, .react-flow__edge')].filter((e, i, a) => a.indexOf(e) === i).map((e) => {
-        const path = e.querySelector('.react-flow__edge-path')
-        const len = path.getTotalLength()
-        const m = path.getScreenCTM()
-        const pt = (at) => {
-          const p = path.getPointAtLength(at)
-          return { x: m.a * p.x + m.c * p.y + m.e, y: m.b * p.x + m.d * p.y + m.f }
-        }
-        const pts = Array.from({ length: 41 }, (_, i) => pt((len * i) / 40))
-        return { relation: e.querySelector('.knowledge-edge')?.getAttribute('data-relation') ?? '', title: e.querySelector('title')?.textContent ?? '', pts, end: pt(len), start: pt(0) }
-      })
-      return { box, edges, rects: [...rects.entries()].map(([id, r]) => ({ id, name: document.querySelector(`${sel} [data-testid=knowledge-node][data-id="${id}"] .knowledge-name-text, ${sel} [data-testid=knowledge-node][data-id="${id}"] .hex-name`)?.textContent ?? '', l: r.left, t: r.top, r: r.right, b: r.bottom })) }
-    }, GRAPH)
-  const checkEdges = async (tag) => {
-    const g = await edgeGeometry()
-    const pad = 6
-    const out = g.edges.filter((e) => e.pts.some((p) => p.x < g.box.l - pad || p.x > g.box.r + pad || p.y < g.box.t - pad || p.y > g.box.b + pad))
-    check(g.edges.length >= 2 && out.length === 0, `no edge leaves the drawn nodes' bounding box at ${tag}`, JSON.stringify({ n: g.edges.length, out: out.map((e) => e.title) }))
-    const jane = g.rects.find((r) => r.name === JANE)
-    const decided = g.edges.find((e) => e.relation === 'decided by')
-    check(!!decided && !!jane, `the "decided by" edge is drawn at ${tag}`, JSON.stringify(g.edges.map((e) => e.relation)))
-    return { g, jane, decided }
-  }
-  const checkSkipLinks = async (tag) => {
-    await page.evaluate(() => document.activeElement instanceof HTMLElement && document.activeElement.blur())
-    const hit = await page.evaluate(() => {
-      const bar = document.querySelector('[data-testid=knowledge-graph-toolbar]').getBoundingClientRect()
-      const hits = []
-      for (let y = Math.floor(bar.top) + 1; y < bar.bottom; y += 4) {
-        for (let x = Math.floor(bar.left) + 1; x < bar.right; x += 8) {
-          const el = document.elementFromPoint(x, y)
-          if (el?.closest('.knowledge-skip')) hits.push([x, y])
-        }
-      }
-      const above = []
-      for (let y = Math.max(0, Math.floor(bar.top) - 60); y < bar.top; y += 4) for (let x = 0; x < innerWidth; x += 16) if (document.elementFromPoint(x, y)?.closest('.knowledge-skip')) above.push([x, y])
-      return { hits: hits.length, above: above.length }
-    })
-    check(hit.hits === 0 && hit.above === 0, `unfocused skip links are never under the pointer at ${tag}`, JSON.stringify(hit))
-    for (const id of ['knowledge-skip-list', 'knowledge-skip-detail']) {
-      await page.locator(`[data-testid=${id}]`).focus()
-      const r = await page.locator(`[data-testid=${id}]`).boundingBox()
-      const vis = await page.evaluate(() => ({ w: innerWidth, h: innerHeight }))
-      check(!!r && r.width > 40 && r.height > 12 && r.x >= 0 && r.y >= 0 && r.x + r.width <= vis.w && r.y + r.height <= vis.h, `${id} is fully visible when focused at ${tag}`, JSON.stringify(r))
-    }
-    await page.evaluate(() => document.activeElement instanceof HTMLElement && document.activeElement.blur())
-  }
-
-  // ======== 10. Both sizes and themes: no page scroll, the window did not shift ========
-  for (const [w, h] of [[1600, 1000], [1024, 640]]) {
+  // ======== 13. Sizes and themes: look, no scroll, no shift, contrast ========
+  const contrastRows = []
+  for (const [w, h] of [
+    [1600, 1000],
+    [1024, 640]
+  ]) {
+    await setSize(w, h)
     for (const theme of ['dark', 'light']) {
-      await setSize(w, h)
       await setTheme(theme)
-      await sleep(400)
-      const tag = `${w}x${h} ${theme}`
-      check(await waitNodes(3), `graph drawn at ${tag}`, String(await nodeCount()))
       await sleep(600)
-      {
-        const { jane, decided } = await checkEdges(tag)
-        if (jane && decided) {
-          const e = decided.end
-          check(Math.abs(e.y - jane.b) <= 8 && e.x >= jane.l && e.x <= jane.r, `"decided by" enters Jane Doe from below at ${tag}`, JSON.stringify({ end: e, jane }))
-        }
-        await checkSkipLinks(tag)
+      await settled()
+      await noPageScroll(`${w}x${h} ${theme}`)
+      const shift = await windowShift(page)
+      check(shift.html === 0 && shift.body === 0 && shift.appTop === 0, `${w}x${h} ${theme}: the window does not shift`, JSON.stringify(shift))
+      const nb = await stageBox()
+      check(nb.width > 400 && nb.height > 300, `${w}x${h} ${theme}: the stage has room`, JSON.stringify(nb))
+      await shot(`20-graph-${w}-${theme}`)
+      const jp2 = await screenOfNode(janeId)
+      if (jp2 && jp2.x > nb.x + 20 && jp2.x < nb.x + nb.width - 20 && jp2.y > nb.y + 20 && jp2.y < nb.y + nb.height - 20) {
+        await page.mouse.move(jp2.x + 30, jp2.y + 120)
+        await page.mouse.move(jp2.x, jp2.y, { steps: 3 })
+        await sleep(350)
+        const c2 = await card.boundingBox()
+        check(!!c2 && c2.x >= nb.x + 7 && c2.x + c2.width <= nb.x + nb.width - 7 && c2.y >= nb.y + 7 && c2.y + c2.height <= nb.y + nb.height - 7, `${w}x${h} ${theme}: the card stays inside the stage`, JSON.stringify({ c2, nb }))
+        await shot(`21-hover-${w}-${theme}`)
+        await page.mouse.move(nb.x + 6, nb.y + 6, { steps: 3 })
+        await sleep(300)
       }
-      await fitsWindow(`graph ${tag}`)
-      const ws = await windowShift(page)
-      check(ws.ok, `the window did not shift at ${tag}`, JSON.stringify(ws))
-      const stage = await page.locator(`${GRAPH} .knowledge-graph-stage`).boundingBox()
-      check(!!stage && stage.width >= 480, `the canvas is at least 480 px wide at ${tag}`, JSON.stringify(stage))
-      const toolbar = await page.locator('[data-testid=knowledge-graph-toolbar]').boundingBox()
-      check(!!toolbar && toolbar.height <= 72, `the toolbar is at most two rows at ${tag}`, JSON.stringify(toolbar))
-      await shot(`graph-${w}x${h}-${theme}`)
+      contrastRows.push({ w, theme, ...(await measureContrast()) })
     }
   }
+  for (const c of contrastRows.filter((c) => c.w === 1600)) {
+    log(`contrast ${c.theme}: name on field ${c.name.toFixed(2)}:1; synapse ${c.synapse.toFixed(2)}; nodes ${c.nodes.map((n) => `${n.kind} ${n.ratio.toFixed(2)}`).join(', ')}`)
+    check(c.name >= 4.5, `${c.theme}: the name colour on the field is at least 4.5:1`, c.name.toFixed(2))
+    check(c.nodes.every((n) => n.ratio >= 3), `${c.theme}: every node colour is at least 3:1 to the field`, c.nodes.filter((n) => n.ratio < 3).map((n) => `${n.kind} ${n.ratio.toFixed(2)}`).join(', '))
+  }
+  await setSize(1024, 640)
+  await setTheme('dark')
+  await settled()
+  const j3 = await screenOfNode(janeId)
+  await page.mouse.click(j3.x, j3.y)
+  await sleep(800)
+  const j4 = await screenOfNode(janeId)
+  const nb2 = await stageBox()
+  check(j3.x > nb2.x + nb2.width - 60 || (Math.abs(j4.x - j3.x) <= 1 && Math.abs(j4.y - j3.y) <= 1), 'opening the panel keeps every node where it was (no refit)', `${JSON.stringify(j3)} -> ${JSON.stringify(j4)}`)
+  await shot('22-panel-open-1024-dark')
+  await noPageScroll('1024x640 panel open')
+
+  // ======== 14. Resizing: a window resize refits an untouched view and keeps a moved one; a panel moves nothing ========
+  await page.mouse.click(nb2.x + 4, nb2.y + 4)
+  await sleep(300)
+  /** Nodes outside the stage, and how far off-centre the graph sits. */
+  const offStage = () =>
+    page.evaluate(() => {
+      const st = document.querySelector('.neural-stage').getBoundingClientRect()
+      const rects = [...document.querySelectorAll('[data-testid=knowledge-node]')].map((n) => n.getBoundingClientRect())
+      const cx = rects.map((b) => b.x + b.width / 2)
+      const cy = rects.map((b) => b.y + b.height / 2)
+      const outside = rects.filter((b, i) => cx[i] < st.left || cx[i] > st.right || cy[i] < st.top || cy[i] > st.bottom).length
+      const midX = (Math.min(...cx) + Math.max(...cx)) / 2 - (st.left + st.width / 2)
+      const midY = (Math.min(...cy) + Math.max(...cy)) / 2 - (st.top + st.height / 2)
+      return { outside, total: rects.length, midX, midY, stageW: st.width, stageH: st.height }
+    })
+  const centred = (o) => Math.abs(o.midX) <= 8 && Math.abs(o.midY) <= 8
   await setSize(1600, 1000)
+  await page.locator('[data-testid=knowledge-neural-fit]').click()
+  await sleep(500)
+  check((await attr('data-user-view')) === 'false', 'after Fit the view is not the user\'s (data-user-view)', String(await attr('data-user-view')))
+  // The panel opening and closing moves nothing.
+  const j5 = await screenOfNode(janeId)
+  await page.mouse.click(j5.x, j5.y)
+  await sleep(700)
+  const j6 = await screenOfNode(janeId)
+  check(Math.abs(j6.x - j5.x) <= 1 && Math.abs(j6.y - j5.y) <= 1, 'the panel opening at 1600x1000 moves no node', `${JSON.stringify(j5)} -> ${JSON.stringify(j6)}`)
+  const st5 = await stageBox()
+  await page.mouse.click(st5.x + 4, st5.y + 4)
+  await sleep(400)
+  for (const theme of ['dark', 'light']) {
+    await setTheme(theme)
+    await setSize(1600, 1000)
+    await page.locator('[data-testid=knowledge-neural-fit]').click()
+    await sleep(500)
+    // Shrink, untouched: a refit. The band and sidebar change in the same resize, so the stage's corner moves too (review N3).
+    await setSize(1024, 640)
+    await sleep(300)
+    const small = await offStage()
+    check(small.outside === 0, `${theme}: a window shrink from 1600 to 1024 leaves no node off the stage`, JSON.stringify(small))
+    check(centred(small), `${theme}: the refit is centred`, JSON.stringify(small))
+    await shot(`30-shrunk-1024-${theme}`)
+    await noPageScroll(`1024x640 ${theme} after a shrink`)
+    // Grow, untouched: a refit again.
+    await setSize(1600, 1000)
+    await sleep(300)
+    const big = await offStage()
+    check(big.outside === 0 && centred(big), `${theme}: growing again refits too`, JSON.stringify(big))
+    // After the user moved the view: the same part of the graph stays on the stage, scaled down for a shrink.
+    await page.locator('[data-testid=knowledge-neural-zoom-in]').click()
+    await sleep(450)
+    check((await attr('data-user-view')) === 'true', `${theme}: a zoom makes the view the user's`)
+    const before14 = await offStage()
+    const k0 = Number(await attr('data-zoom'))
+    const s0 = await stageBox()
+    await setSize(1024, 640)
+    await sleep(300)
+    const after14 = await offStage()
+    const k1 = Number(await attr('data-zoom'))
+    const s1 = await stageBox()
+    const ratio = Math.min(s1.width / s0.width, s1.height / s0.height)
+    check(Math.abs(k1 - k0 * ratio) <= 0.05,`${theme}: a shrink scales the user's view with the stage`, `${k0} -> ${k1}, stage ratio ${ratio.toFixed(3)}`)
+    check(after14.outside <= before14.outside + 2, `${theme}: a shrink loses no more of the graph than the view already left out`, `${before14.outside} -> ${after14.outside}`)
+    check((await attr('data-user-view')) === 'true', `${theme}: the view stays the user's`)
+    await shot(`31-shrunk-moved-1024-${theme}`)
+    // Fit hands the view back: the next resize refits.
+    await page.locator('[data-testid=knowledge-neural-fit]').click()
+    await sleep(500)
+    check((await attr('data-user-view')) === 'false', `${theme}: Fit hands the view back`)
+  }
   await setTheme('dark')
 
-  // ======== 11. Left to right: the same edge rules, and every node style still connects ========
-  await setAppearance({ canvas: { layout: 'left-right' } })
-  await sleep(800)
-  check(await waitNodes(3), 'left to right draws 3 nodes', String(await nodeCount()))
-  {
-    const { g, jane, decided } = await checkEdges('left to right')
-    if (jane && decided) {
-      const e = decided.end
-      const onSide = Math.abs(e.x - jane.l) <= 8 || Math.abs(e.x - jane.r) <= 8 || Math.abs(e.y - jane.b) <= 8 || Math.abs(e.y - jane.t) <= 8
-      check(onSide && e.x >= jane.l - 8 && e.x <= jane.r + 8 && e.y >= jane.t - 8 && e.y <= jane.b + 8, 'left to right: "decided by" ends on Jane Doe\'s outline', JSON.stringify({ end: e, jane }))
-    }
-    await shot('graph-left-right-1600-dark')
-    void g
-  }
-  for (const style of ['compact', 'station', 'hex', 'card']) {
-    await setAppearance({ canvas: { nodeStyle: style } })
-    await sleep(800)
-    check(await waitNodes(3), `left to right ${style} draws 3 nodes`, String(await nodeCount()))
-    await checkEdges(`left to right ${style}`)
-  }
-  await setAppearance({ canvas: { layout: 'top-down' } })
-  await sleep(600)
-  for (const style of ['compact', 'station', 'hex', 'card']) {
-    await setAppearance({ canvas: { nodeStyle: style } })
-    await sleep(800)
-    check(await waitNodes(3), `top down ${style} draws 3 nodes`, String(await nodeCount()))
-    await checkEdges(`top down ${style}`)
-  }
+  // ======== 15. The last node leaving takes the canvas away: focus lands on what replaces it ========
+  const wfLast = path.join(base, 'last-node')
+  fs.mkdirSync(wfLast, { recursive: true })
+  const lastName = 'E2E Neural last node (orgai test)'
+  const lastProject = await createEngagement({ name: lastName, dir: wfLast })
+  const only = await page.evaluate((id) => window.orgai.knowledge.saveNode({ projectId: id, kind: 'person', name: 'Only Person' }), lastProject.id)
+  await openProject(page, lastName)
+  await openKnowledgeTab()
+  await openGraph()
+  await settled()
+  await page.locator(`[data-testid=knowledge-node][data-id="${only.id}"]`).focus()
+  await page.evaluate(({ id, nodeId }) => window.orgai.knowledge.removeNode({ projectId: id, nodeId }), { id: lastProject.id, nodeId: only.id })
+  check(await until(async () => (await page.locator(NEURAL).count()) === 0, 6000), 'the canvas goes with the last node')
+  check(await until(async () => (await activeTestId()) === 'knowledge-add-note', 3000), 'focus lands on Add a note, not the page', await activeTestId())
+  // A removed project leaves no layout or switch behind.
+  const lastKeys = await page.evaluate(async (id) => {
+    localStorage.setItem(`orgai.knowledgeInferred.${id}`, 'on')
+    localStorage.setItem(`orgai.knowledgeLayout.${id}`, '{}')
+    return id
+  }, lastProject.id)
+  await projectTab(page, 'Settings').click()
+  await page.getByRole('tab', { name: 'Maintenance', exact: true }).click()
+  await page.locator('[data-testid=forget-engagement]').click()
+  await page.getByRole('button', { name: 'Forget engagement', exact: true }).click()
+  await page.locator('[data-testid=forget-notice]').waitFor({ state: 'visible', timeout: 15_000 })
+  const gone = await page.evaluate((id) => window.orgai.projects.list().then((l) => !l.some((p) => p.id === id)), lastKeys)
+  check(gone, 'the engagement is forgotten')
+  const leftOver = await page.evaluate((id) => Object.keys(localStorage).filter((k) => k.startsWith('orgai.knowledge') && k.endsWith(id)), lastKeys)
+  check(leftOver.length === 0, 'forgetting clears its Knowledge keys from localStorage', JSON.stringify(leftOver))
 } catch (e) {
-  check(false, 'script error', String(e?.stack ?? e))
+  console.error(e)
+  process.exitCode = 1
 } finally {
-  await shot('graph-final').catch(() => {})
   await app.close().catch(() => {})
-  fs.rmSync(base, { recursive: true, force: true })
 }
 finish('knowledge-graph')

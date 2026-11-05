@@ -13,6 +13,7 @@ import {
   itemsOf,
   keyWords,
   kindColor,
+  kindMark,
   kindCounts,
   kindGroupLabel,
   kindLabel,
@@ -85,8 +86,17 @@ describe('kinds', () => {
   it('gives kinds a role colour slot, common ones fixed', () => {
     expect(kindColor('person')).toBe(ROLE_COLORS[0])
     expect(kindColor('organisation')).toBe(ROLE_COLORS[1])
-    expect(kindColor('vendor', ['vendor'])).toBe(ROLE_COLORS[10 % ROLE_COLORS.length])
-    expect(kindColor('zoo', ['apple', 'zoo'])).toBe(ROLE_COLORS[11 % ROLE_COLORS.length])
+    // A free-form kind's colour depends only on its own key.
+    expect(ROLE_COLORS).toContain(kindColor('vendor'))
+    expect(kindColor('vendor')).toBe(kindColor('vendor'))
+    expect(kindColor('constructor')).toBeDefined()
+    expect(kindMark('person')).toBe('solid')
+    expect(kindMark('meeting')).toBe('ring')
+    expect(kindMark('vendor')).toBe('ring-dot')
+    expect(kindMark('constructor')).toBe('ring-dot')
+    // Prototype keys are plain free-form kinds everywhere: no throw while sorting or labelling.
+    expect(kindGroupLabel('constructor')).toBe('Constructor')
+    expect(kindOrder(['constructor', 'vendor', 'to-string'])).toEqual(expect.arrayContaining(['constructor', 'vendor', 'to-string']))
   })
 })
 

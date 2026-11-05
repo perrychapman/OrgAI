@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { IPC } from '@shared/types'
-import type { EngagementChangedEvent, EngagementNote, KnowledgeEdge, KnowledgeGraph, KnowledgeNode, Project, ProjectRemoveResult } from '@shared/types'
+import type { EngagementChangedEvent, EngagementNote, KnowledgeEdge, KnowledgeGraph, KnowledgeInferredResult, KnowledgeNode, Project, ProjectRemoveResult } from '@shared/types'
 import { DEFAULT_APP_SETTINGS } from '@shared/defaults'
 
 const handlers = new Map<string, (...args: unknown[]) => unknown>()
@@ -326,6 +326,37 @@ describe('registered engagement and removal handlers', () => {
     expect(sent.slice(sentBefore)).toEqual([{ channel: IPC.projectsEngagementChanged, payload: { projectId: 'proj_e', what: 'knowledge' } }])
     expect(await call(IPC.knowledgeGet, 'proj_e')).toEqual({ version: 1, nodes: [], edges: [] })
     expect(readKnowledge(dir, 'proj_c').nodes).toHaveLength(1)
+  })
+
+  it('knowledge:inferredLinks reads any stored project (empty for code); knowledge:dismissLink is engagements only and pushes one change', async () => {
+    const eng = makeProject({ id: 'proj_e', kind: 'engagement' })
+    const code = makeProject({ id: 'proj_c' })
+    const { call } = register([eng, code])
+    const a = (await call(IPC.knowledgeSaveNode, { projectId: 'proj_e', kind: 'person', name: 'Ada' })) as KnowledgeNode
+    upsertNode(dir, 'proj_c', { kind: 'person', name: 'Hidden' }, AGENT)
+    const LINK = 'kl_0123456789abcdef'
+    expect(await call(IPC.knowledgeInferredLinks, 'proj_c')).toEqual({ links: [], appearances: {} })
+    const result = (await call(IPC.knowledgeInferredLinks, 'proj_e')) as KnowledgeInferredResult
+    expect(Object.keys(result.appearances)).toEqual([a.id])
+    await expect(call(IPC.knowledgeInferredLinks, 'proj_zzz')).rejects.toThrow(/not found/)
+    await expect(call(IPC.knowledgeInferredLinks, 'quick')).rejects.toThrow(/not found/)
+    const before = sent.length
+    await expect(call(IPC.knowledgeDismissLink, { projectId: 'proj_c', linkId: LINK })).rejects.toThrow('Only engagements keep a knowledge graph.')
+    await expect(call(IPC.knowledgeDismissLink, { projectId: 'proj_e', linkId: 'kl_nope' })).rejects.toThrow('That is not a connection id.')
+    await expect(call(IPC.knowledgeDismissLink, { projectId: 'proj_e', linkId: 5 })).rejects.toThrow('That is not a connection id.')
+    expect(sent).toHaveLength(before)
+    const after = (await call(IPC.knowledgeDismissLink, { projectId: 'proj_e', linkId: LINK, extra: 1 })) as KnowledgeInferredResult
+    expect(Object.keys(after.appearances)).toEqual([a.id])
+    expect(sent.slice(before)).toEqual([{ channel: IPC.projectsEngagementChanged, payload: { projectId: 'proj_e', what: 'knowledge', ids: [LINK] } }])
+    expect(readKnowledge(dir, 'proj_e').dismissedLinks).toEqual([LINK])
+    expect(readKnowledge(dir, 'proj_c').dismissedLinks).toBeUndefined()
+  })
+
+  it('knowledgeArgs.dismissLink rebuilds its input field by field', () => {
+    expect(knowledgeArgs.dismissLink({ projectId: 'proj_a', linkId: 'kl_0123456789abcdef', x: 1 })).toEqual({ projectId: 'proj_a', linkId: 'kl_0123456789abcdef' })
+    for (const bad of [null, 'x', { projectId: 'proj_a' }, { projectId: 'proj_a', linkId: 'kn_0123456789abcdef' }, { projectId: 'proj_a', linkId: 'kl_0123456789ABCDEF' }, { projectId: 'harness', linkId: 'kl_0123456789abcdef' }]) {
+      expect(() => knowledgeArgs.dismissLink(bad), JSON.stringify(bad)).toThrow()
+    }
   })
 
   it('unused writer import is exercised', () => {

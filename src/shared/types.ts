@@ -575,6 +575,12 @@ export interface Project {
    * target's projects both have it on; read it with runMessagingOn() from defaults.ts. Saved through projects:save.
    */
   runMessaging?: boolean
+  /**
+   * Engagements: add known knowledge-graph items to what an agent receives (RuntimeContext.knowledgeContext, no model
+   * call). Unset = on; only an explicit false turns it off. Read it with knowledgeAutoContextOn() from
+   * shared/knowledge.ts; never fill a default in a store or newProject. Saved through projects:save.
+   */
+  knowledgeAutoContext?: boolean
   roles: Role[]
   /**
    * MCP servers this project's agents may use (mcp__<name>__* tools). Missing = none. Secret values are
@@ -2226,7 +2232,21 @@ export interface RunUsage {
   legacy?: true
   /** Skills loaded in the run (skill.used events), most loaded first. Missing = none (or a run before skills existed). */
   skills?: SkillUseCount[]
+  /** Knowledge graph reads served to agents (knowledge_recall and auto context). Missing = none (or an older run). */
+  knowledge?: KnowledgeServedUsage
   updatedAt: number
+}
+
+/** RunUsage.knowledge: counted by RunManager, never by an adapter. */
+export interface KnowledgeServedUsage {
+  /** knowledge_recall calls answered. */
+  recalls: number
+  /** knowledgeContext blocks added to what an agent received (nulls are not counted). */
+  autoContexts: number
+  /** Entities served in full across both paths ("already shown" lines are not counted). */
+  itemsServed: number
+  /** Characters of tool results and context blocks served. */
+  charsServed: number
 }
 
 /** runs:usageStats input. */
@@ -3115,6 +3135,12 @@ export type RunEvent =
    * ("Loaded skill <name>", source 'harness') on that agent. `at` is epoch ms.
    */
   | { type: 'skill.used'; runId: string; agentId: string; skillId: string; name: string; at: number }
+  /**
+   * Knowledge graph items just reached an agent, so the renderer can light those nodes up. RunManager emits it (at most
+   * one per agent per second, trailing, ids merged, at most KNOWLEDGE_RECALLED_IDS_MAX ids). `via` 'recall' =
+   * knowledge_recall, 'auto' = knowledgeContext; a merged event carries the newest call's `via`. `at` is epoch ms.
+   */
+  | { type: 'knowledge.recalled'; runId: string; agentId: string; nodeIds: string[]; at: number; via: 'recall' | 'auto' }
   /** An agent asked to install an MCP server (request_mcp_install); the run waits for mcp:answerInstall. */
   | { type: 'mcpInstall.request'; runId: string; request: McpInstallRequest }
   /** The install request was answered (or dropped when the run ended: approved false). Never carries secrets. */
@@ -4685,8 +4711,49 @@ export const KNOWLEDGE_KEY_RE = /^[a-z0-9][a-z0-9-]{0,39}$/
  * KNOWLEDGE_KEY_RE is accepted).
  */
 export const KNOWLEDGE_COMMON_KINDS = ['person', 'organisation', 'system', 'document', 'decision', 'risk', 'requirement', 'deadline', 'meeting', 'open-question'] as const
+/**
+ * Relations the tool suggests so agents pick consistent names (a hint like KNOWLEDGE_COMMON_KINDS, not a closed list).
+ * The judgement-based connections of docs/design/knowledge-connections.md are recorded by agents under these names.
+ */
+export const KNOWLEDGE_COMMON_RELATIONS = ['works-at', 'reports-to', 'owns', 'depends-on', 'affects', 'decided-by', 'evidence-for', 'mitigates', 'supersedes', 'contradicts', 'can-answer', 'raised-by'] as const
 /** Harness tool of engagement work runs (every role): vocabulary, search, get, upsert_node, link, retire. */
 export const KNOWLEDGE_TOOL = 'engagement_knowledge'
+/**
+ * Read-only harness tool of engagement work runs and single (Ask) engagement runs, every role: one budgeted, ranked
+ * answer in place of vocabulary + search + get. On no other kind of run.
+ */
+export const KNOWLEDGE_RECALL_TOOL = 'knowledge_recall'
+/** knowledge_recall budget in characters of the whole result: default, floor and ceiling. */
+export const KNOWLEDGE_RECALL_BUDGET_DEFAULT = 1500
+export const KNOWLEDGE_RECALL_BUDGET_MIN = 400
+export const KNOWLEDGE_RECALL_BUDGET_MAX = 6000
+/** Longest knowledge_recall query; longer is refused, never cut. */
+export const KNOWLEDGE_RECALL_QUERY_MAX_CHARS = 500
+/** The standing index in the prompt (knowledgeBrief): at most this many characters, omitted for an empty graph. */
+export const KNOWLEDGE_BRIEF_MAX_CHARS = 600
+/** One knowledgeContext block, framing and fences included. */
+export const KNOWLEDGE_CONTEXT_MAX_CHARS = 800
+/** knowledgeContext reads at most this many characters of the incoming text when it looks for names. */
+export const KNOWLEDGE_CONTEXT_SCAN_MAX_CHARS = 64 * 1024
+/** Most node ids on one knowledge.recalled event (the newest are kept). */
+export const KNOWLEDGE_RECALLED_IDS_MAX = 50
+/** Most links inferKnowledgeLinks returns, strongest first. */
+export const KNOWLEDGE_INFERRED_LINKS_MAX = 500
+/** A name or alias of more tokens than this is not matched as a mention of its entity (it stays searchable and resolvable). */
+export const KNOWLEDGE_NAME_TOKENS_MAX = 8
+/** Most characters between two tokens of a name in matched text ("Billing - Core"); a longer gap breaks the name. */
+export const KNOWLEDGE_NAME_GAP_MAX = 8
+/** Most entities one name matches at a span (past it the span is ambiguous anyway and is never suggested). */
+export const KNOWLEDGE_SAME_NAME_MAX = 16
+/**
+ * Work one inference pass may do on the main thread, in tokens scanned plus trie steps plus matches (a pair seen for the
+ * first time counts more: it costs an evidence snippet). Past it the pass stops and KnowledgeInferredResult.partial says so.
+ */
+export const KNOWLEDGE_MATCH_BUDGET = 4_000_000
+/** Most dismissed inferred link ids a graph keeps (oldest dropped). */
+export const KNOWLEDGE_DISMISSED_LINKS_MAX = 2000
+/** An inferred link id: stable hash of basis and endpoints. */
+export const KNOWLEDGE_LINK_ID_RE = /^kl_[a-f0-9]{16}$/
 /** engagement_knowledge actions. */
 export const KNOWLEDGE_TOOL_ACTIONS = ['vocabulary', 'search', 'get', 'upsert_node', 'link', 'retire'] as const
 export type KnowledgeToolAction = (typeof KNOWLEDGE_TOOL_ACTIONS)[number]
@@ -4769,6 +4836,12 @@ export interface KnowledgeGraph {
   version: 1
   nodes: KnowledgeNode[]
   edges: KnowledgeEdge[]
+  /**
+   * Inferred link ids (KnowledgeInferredLink.id) the user dismissed: ids only, shape KNOWLEDGE_LINK_ID_RE, at most
+   * KNOWLEDGE_DISMISSED_LINKS_MAX (oldest dropped). Tolerant on read: junk entries are dropped, an id whose link no
+   * longer exists is harmless. Absent when none.
+   */
+  dismissedLinks?: string[]
   /** Epoch ms of the last write. */
   updatedAt?: number
 }
@@ -4872,6 +4945,8 @@ export interface KnowledgeEdgeSaveInput {
 export interface KnowledgeEdgeWriteResult {
   edge: KnowledgeEdge
   created: boolean
+  /** An agent's note was not applied because the relation is the user's: the user's note stands (same rule as summaryKept). */
+  noteKept?: boolean
 }
 
 /** knowledge:removeNode / knowledge:removeEdge input. Removing a node removes its edges. Unknown ids are refused. */
@@ -4904,7 +4979,10 @@ export interface KnowledgeRetireResult {
 
 /** engagement_knowledge search input (knowledge.ts `searchKnowledge`). */
 export interface KnowledgeSearchQuery {
-  /** Case-insensitive substring over name, aliases, summary and live fact texts. Empty = no text filter. */
+  /**
+   * Matched per word over name, aliases, kind, summary and live fact texts, ranked (knowledgeIndex.ts rankKnowledge),
+   * with the old whole-query case-insensitive substring match only when the ranked result is empty. Empty = no text filter.
+   */
   query?: string
   /** A normalised kind; empty = every kind. */
   kind?: string
@@ -4923,6 +5001,88 @@ export interface KnowledgeSearchHit {
   edgeCount: number
 }
 
+/** knowledge_recall input (RuntimeContext.knowledgeRecall). */
+export interface KnowledgeRecallInput {
+  query: string
+  /** Characters of the whole result, clamped to KNOWLEDGE_RECALL_BUDGET_MIN..MAX. Default KNOWLEDGE_RECALL_BUDGET_DEFAULT. */
+  budget?: number
+  /** Show entities this agent already received in full again (it may have lost context). */
+  fresh?: boolean
+}
+
+/**
+ * What an inferred link rests on. See docs/design/knowledge-connections.md for the evaluation; only what passed it is
+ * built. 'mention': the `from` entity's summary or a live fact names `to`. 'same-name': equal name or alias across
+ * different kinds, a possible duplicate or a pair worth linking. Shared context notes and same-relation siblings were
+ * evaluated and rejected (they are not offered).
+ */
+export type KnowledgeLinkBasis = 'mention' | 'same-name'
+
+/**
+ * A connection OrgAI derived from the graph (src/shared/knowledgeLinks.ts). Never stored as an edge and never reported
+ * as a fact: the user can confirm it (an ordinary user edge through knowledge:saveEdge) or dismiss it
+ * (knowledge:dismissLink). Pairs that already have an edge are not suggested: any live edge and a retired edge the user
+ * wrote. A retired edge an agent wrote does not hold a suggestion back (an agent could otherwise silence one by linking
+ * and retiring).
+ */
+export interface KnowledgeInferredLink {
+  /** `kl_` + a stable hash of basis and endpoints (KNOWLEDGE_LINK_ID_RE); survives edits to the evidence text. */
+  id: string
+  /** Node ids. For the symmetric basis (same-name) `from` is the smaller id. */
+  from: string
+  to: string
+  basis: KnowledgeLinkBasis
+  /** A suggested relation word for confirming (a KNOWLEDGE_KEY_RE key), when the kind pair has one. */
+  suggestedRelation?: string
+  /** One short line of plain text saying why (at most 200 characters). User- or agent-written text: render as text only. */
+  evidence: string
+  /** The fact the evidence came from ('mention' in a fact). */
+  evidenceFactId?: string
+  /** Reserved: the context note the evidence came from. No current basis sets it (shared-note was rejected). */
+  evidenceNoteId?: string
+  /** 0..1, comparable within a result; higher is stronger. Not a probability. */
+  strength: number
+  /** How many separate texts or shared items back it (1 or more). */
+  count: number
+}
+
+/**
+ * How often an entity shows up, for sizing graph nodes. Derived only, never stored, and agent recalls are not counted.
+ * `relations`: live edges touching it whose other end is live. `mentions`: live entities' summaries and live facts that
+ * name it, with no hub cutoff (a large client organisation being the largest node is correct); dismissed mentions do
+ * not count. `notes`: context notes it links. `total` is their sum.
+ */
+export interface KnowledgeAppearance {
+  relations: number
+  mentions: number
+  notes: number
+  total: number
+}
+
+/**
+ * The name-matching pass stopped at KNOWLEDGE_MATCH_BUDGET (a graph with more text than one pass may scan on the main
+ * thread): entities are scanned in graph order, so `links` and the mention counts in `appearances` cover only the first
+ * `scannedEntities` of `totalEntities` live entities. The UI should say the list is partial.
+ */
+export interface KnowledgeInferencePartial {
+  scannedEntities: number
+  totalEntities: number
+}
+
+/** knowledge:inferredLinks result, computed once per graph revision. `appearances` has one entry per node id. */
+export interface KnowledgeInferredResult {
+  links: KnowledgeInferredLink[]
+  appearances: Record<string, KnowledgeAppearance>
+  /** Only when the pass stopped early; absent = every live entity's text was scanned. */
+  partial?: KnowledgeInferencePartial
+}
+
+/** knowledge:dismissLink input (engagements only). The id must have the KNOWLEDGE_LINK_ID_RE shape; dismissing twice is a no-op. */
+export interface KnowledgeDismissLinkInput {
+  projectId: string
+  linkId: string
+}
+
 /** Channels of this section; spread into IPC. */
 export const KNOWLEDGE_IPC = {
   /** (projectId) -> KnowledgeGraph. Empty for code projects. */
@@ -4936,7 +5096,11 @@ export const KNOWLEDGE_IPC = {
   /** (KnowledgeItemRef with edgeId) -> KnowledgeGraph. Engagements only. */
   knowledgeRemoveEdge: 'knowledge:removeEdge',
   /** (projectId) -> KnowledgeGraph (empty): the user's "start over". Engagements only. */
-  knowledgeClear: 'knowledge:clear'
+  knowledgeClear: 'knowledge:clear',
+  /** (projectId) -> KnowledgeInferredResult. Empty for code projects. */
+  knowledgeInferredLinks: 'knowledge:inferredLinks',
+  /** (KnowledgeDismissLinkInput) -> KnowledgeInferredResult afterwards. Engagements only. */
+  knowledgeDismissLink: 'knowledge:dismissLink'
 } as const
 
 /** window.orgai additions of this section (declaration-merged into OrgAIApi). Every write pushes onEngagementChanged 'knowledge'. */
@@ -4951,6 +5115,10 @@ export interface OrgAIApi {
     removeEdge(ref: KnowledgeItemRef): Promise<KnowledgeGraph>
     /** Removes every node and edge; resolves to the empty graph. */
     clear(projectId: string): Promise<KnowledgeGraph>
+    /** Derived connections and appearance counts for the current graph; nothing is written. */
+    inferredLinks(projectId: string): Promise<KnowledgeInferredResult>
+    /** Resolves to the result afterwards. */
+    dismissLink(input: KnowledgeDismissLinkInput): Promise<KnowledgeInferredResult>
   }
 }
 
@@ -5004,9 +5172,23 @@ export interface CliShimResult {
   status: CliShimStatus
 }
 
+/**
+ * Channels of "Start a project from a repository" (section near the end of this file). Declared here because IPC
+ * spreads it and a const must be initialised first.
+ */
+export const REPO_CLONE_IPC = {
+  projectsParseRepoSource: 'projects:parseRepoSource',
+  projectsRepoTools: 'projects:repoTools',
+  projectsCloneRepo: 'projects:cloneRepo',
+  projectsCancelClone: 'projects:cancelClone',
+  /** main -> renderer push channel carrying RepoCloneProgress. */
+  projectsCloneProgress: 'projects:cloneProgress'
+} as const
+
 export const IPC = {
   ...TEMPLATE_ENGAGEMENT_IPC,
   ...KNOWLEDGE_IPC,
+  ...REPO_CLONE_IPC,
   projectsList: 'projects:list',
   projectsGet: 'projects:get',
   projectsCreate: 'projects:create',
@@ -6091,3 +6273,180 @@ export interface RunsEventParams {
 
 /** ORGAI_DAEMON_IDLE_MINUTES default: an idle background host exits after this long. */
 export const DEFAULT_DAEMON_IDLE_MINUTES = 30
+
+// ---- Start a project from a repository (clone or fork) ----
+//
+// The renderer asks main to clone a repository into a folder, optionally forking it first through the user's own gh
+// login, then creates the project through the existing projects:create with that folder. Renderer only: agents get no
+// tool for this. Service: src/main/repoClone.ts. Main re-parses `source` itself and never takes a URL from the renderer.
+
+/** Longest repository source text accepted, and longest destination path. */
+export const REPO_SOURCE_MAX_CHARS = 512
+export const REPO_DESTINATION_MAX_CHARS = 1024
+/** How many clones may run at once; one more is refused with a sentence. */
+export const REPO_CLONES_MAX = 3
+
+/** projects:parseRepoSource when the text names a repository OrgAI can clone. */
+export interface RepoSourceOk {
+  ok: true
+  /**
+   * The canonical URL git receives: https://github.com/<owner>/<repo>.git for an https URL or the shorthand; the
+   * ssh forms stay ssh (git@github.com:<owner>/<repo>.git, ssh://git@github.com/<owner>/<repo>.git). No password or token, ever.
+   */
+  url: string
+  /** Lowercase host, with the port when one was given. 'github.com' when canFork. */
+  host: string
+  /** Absent only when another host's path has a single segment; on those hosts it may hold several segments (group/sub). */
+  owner?: string
+  /** Repository name without `.git`. */
+  repo: string
+  /** What to show: `owner/repo` on GitHub, `host/group/repo` elsewhere. */
+  display: string
+  /** A folder name for the repository, safe on every platform. Never a path. */
+  suggestedFolder: string
+  /** True only for github.com. */
+  canFork: boolean
+}
+/** `problem` is a fixed sentence. It never quotes the input, so a pasted token is not echoed. */
+export interface RepoSourceRefused {
+  ok: false
+  problem: string
+}
+export type RepoSourceParse = RepoSourceOk | RepoSourceRefused
+
+/**
+ * projects:repoTools. Never rejects. Spends no model tokens, but `gh auth status` DOES reach the network: it tests the
+ * account against api.github.com (seen on gh 2.93.0 through a dead proxy: state 'error', "Get https://api.github.com/ ...").
+ * When GitHub cannot be reached the account still counts as logged in and `detail` says the check could not finish.
+ */
+export interface RepoTools {
+  git: { available: boolean; version?: string }
+  gh: {
+    available: boolean
+    loggedIn: boolean
+    /** The active github.com account. */
+    login?: string
+    /** A sentence for the user: how to install or sign in, or why the check could not finish. */
+    detail?: string
+  }
+}
+
+export type RepoCloneMode = 'clone' | 'fork'
+
+/** projects:cloneRepo input. Rebuilt field by field in ipc.ts. */
+export interface RepoCloneInput {
+  /** Chosen by the renderer: 1 to 64 of letters, digits, '_' and '-'. The same id is refused while it is running. */
+  requestId: string
+  /** The text the user typed; main parses it again. */
+  source: string
+  mode: RepoCloneMode
+  /**
+   * The new folder: absolute, on this computer (no UNC or device path), not a drive root, outside OrgAI's data folder,
+   * and either missing or an empty real directory.
+   */
+  destination: string
+}
+
+/** What is known about the fork when mode was 'fork'. */
+export interface RepoCloneFork {
+  /** `owner/repo` of the fork (GitHub may have renamed it to avoid a clash). */
+  fullName: string
+  htmlUrl: string
+  /** The source repository, as remote `upstream`. */
+  upstreamUrl: string
+  /** False when `git remote add upstream` failed; the clone is still good. */
+  upstreamAdded: boolean
+  /** True when GitHub returned a fork older than this request, so nothing new was made. A best guess from created_at. */
+  alreadyExisted?: boolean
+}
+
+export interface RepoCloneResult {
+  /** The folder that now holds the clone; pass it to projects:create. */
+  path: string
+  /** The URL it was cloned from. */
+  url: string
+  /** The checked-out branch; absent when it could not be read. */
+  branch?: string
+  fork?: RepoCloneFork
+  /**
+   * What the clone contains from REPO_CONFIG_PATHS, as '/'-relative paths in that order. These come from whoever wrote
+   * the repository. See REPO_CONFIG_PATHS for what each does.
+   */
+  repoConfig: string[]
+}
+
+/** What a repository file can do once a run works in the folder. */
+export type RepoConfigEffect =
+  /** Can run commands on this computer or change what agents may do without asking. */
+  | 'runs-commands'
+  /** Starts tool servers or defines agents, skills or commands for the run. */
+  | 'tools'
+  /** Text agents read as instructions. */
+  | 'instructions'
+
+/**
+ * Files in a repository that agents would load or that can run commands, checked in this order. A file or folder that
+ * is a link still counts: it is listed, never followed. Claude work runs on code projects load `.claude/settings.json`
+ * (settingSources ['project']), so its hooks can run on the user's computer. From the docs, not confirmed by a live
+ * run: `.mcp.json` does not load on Claude runs (strictMcpConfig) and is listed because Codex and the importers may
+ * read it; `.claude/settings.local.json` is listed because OrgAI itself reads its permission rules
+ * (permissionRules listRules), not because the CLI loads it; nested CLAUDE.md files and `@` imports inside
+ * instruction files cannot be listed here.
+ */
+export const REPO_CONFIG_PATHS: readonly { path: string; effect: RepoConfigEffect }[] = [
+  { path: '.claude/settings.json', effect: 'runs-commands' },
+  { path: '.claude/settings.local.json', effect: 'runs-commands' },
+  { path: '.claude/hooks', effect: 'runs-commands' },
+  { path: '.codex', effect: 'runs-commands' },
+  { path: '.mcp.json', effect: 'tools' },
+  { path: '.claude/agents', effect: 'tools' },
+  { path: '.claude/commands', effect: 'tools' },
+  { path: '.claude/skills', effect: 'tools' },
+  { path: '.claude/rules', effect: 'tools' },
+  { path: '.claude/workflows', effect: 'tools' },
+  { path: '.claude/routines', effect: 'tools' },
+  { path: '.claude/output-styles', effect: 'tools' },
+  { path: '.orgai/org.json', effect: 'tools' },
+  { path: '.agents', effect: 'tools' },
+  { path: 'CLAUDE.md', effect: 'instructions' },
+  { path: 'CLAUDE.local.md', effect: 'instructions' },
+  { path: '.claude/CLAUDE.md', effect: 'instructions' },
+  { path: 'AGENTS.md', effect: 'instructions' },
+  { path: 'AGENTS.override.md', effect: 'instructions' },
+  // prompts.ts tells agents to read .orgai/ARCHITECTURE.md and follow it.
+  { path: '.orgai/ARCHITECTURE.md', effect: 'instructions' }
+]
+
+export type RepoClonePhase = 'forking' | 'waiting-for-fork' | 'cloning' | 'finishing'
+
+/**
+ * main -> the renderer that asked, at most about 4 a second per request (a phase change always goes through). `percent`
+ * is 0-100 over the whole cloning phase and never moves back within an attempt; `text` is a fixed label, never remote text.
+ */
+export interface RepoCloneProgress {
+  requestId: string
+  phase: RepoClonePhase
+  percent?: number
+  text?: string
+}
+
+/** A cancelled projects:cloneRepo rejects with a message starting with this. */
+export const REPO_CLONE_CANCELLED_PREFIX = 'Cancelled.'
+
+export interface OrgAIApi {
+  /** Start a project from a repository. Create the project afterwards with projects.create and the returned path. */
+  repos: {
+    /** Never rejects. */
+    parseSource(text: string): Promise<RepoSourceParse>
+    /** Never rejects. Reaches GitHub when gh is logged in (see RepoTools). */
+    tools(): Promise<RepoTools>
+    /**
+     * Rejects with one readable line. A failure removes only what this call created; a pre-existing empty folder stays,
+     * empty. When the fork was made and the clone failed, the message names the fork's URL: a fork is never rolled back.
+     */
+    clone(input: RepoCloneInput): Promise<RepoCloneResult>
+    /** Unknown ids are ignored. The clone call then rejects with REPO_CLONE_CANCELLED_PREFIX. */
+    cancelClone(requestId: string): Promise<void>
+  }
+  onRepoCloneProgress(cb: (event: RepoCloneProgress) => void): () => void
+}

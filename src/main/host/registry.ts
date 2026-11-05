@@ -111,7 +111,7 @@ const SCOPE_TABLE: Readonly<Record<ChannelScope, readonly string[]>> = {
     'models:list', 'models:prices', 'mcp:list', 'mcp:registrySearch', 'mcpLibrary:list', 'connectors:list',
     'connectorPresets:list', 'skills:list', 'skills:read', 'skills:previewImport', 'skills:lastEvaluation', 'skillLibrary:list',
     'skillLibrary:read', 'capabilities:lastReview', 'maintenance:listWorktrees', 'maintenance:diff', 'templates:list',
-    'knowledge:get', 'kit:previewBundle'
+    'knowledge:get', 'knowledge:inferredLinks', 'kit:previewBundle'
   ],
   operate: [
     'runs:start', 'runs:startQuick', 'runs:continue', 'runs:send', 'runs:interrupt', 'runs:stop', 'runs:resumeNow',
@@ -134,12 +134,13 @@ const SCOPE_TABLE: Readonly<Record<ChannelScope, readonly string[]>> = {
     'capabilities:undo', 'capabilities:dismiss', 'capabilities:restore', 'maintenance:integrateWorktree',
     'maintenance:discardWorktree', 'maintenance:uninstallRepo', 'templates:saveFromProject', 'templates:remove',
     'templates:apply', 'knowledge:saveNode', 'knowledge:removeNode', 'knowledge:saveEdge', 'knowledge:removeEdge',
-    'knowledge:clear', 'kit:exportBundle', 'kit:applyBundle'
+    'knowledge:clear', 'knowledge:dismissLink', 'kit:exportBundle', 'kit:applyBundle'
   ],
   desktop_only: [
     'projects:pickDirectory', 'skillLibrary:addFromFolder', 'kit:pickExportPath', 'kit:pickImportPath', 'kit:export',
     'kit:previewImport', 'kit:applyImport', 'menu:setState', 'app:openPath', 'app:openLogs', 'app:setNotifications',
-    'app:cliShimStatus', 'app:installCliShim', 'app:uninstallCliShim'
+    'app:cliShimStatus', 'app:installCliShim', 'app:uninstallCliShim', 'projects:parseRepoSource', 'projects:repoTools',
+    'projects:cloneRepo', 'projects:cancelClone'
   ]
 }
 
@@ -154,13 +155,15 @@ const PUSH_TABLE: Readonly<Record<string, Omit<PushChannelEntry, 'direction'>>> 
   [IPC.capabilitiesReviewUpdated]: { delivery: 'socket_subscribable', topic: 'capabilities', source: 'index.ts CapabilityService onReviewUpdated -> host/events.ts' },
   [IPC.projectsEngagementChanged]: { delivery: 'socket_subscribable', topic: 'engagement', source: 'host/dispatcher.ts + RunManager engagementChanged -> host/events.ts' },
   [IPC.appFocusRun]: { delivery: 'desktop_only', source: 'notifications.ts (notification click focuses a run)' },
-  [IPC.menuAction]: { delivery: 'desktop_only', source: 'appMenu.ts (application menu item click)' }
+  [IPC.menuAction]: { delivery: 'desktop_only', source: 'appMenu.ts (application menu item click)' },
+  [IPC.projectsCloneProgress]: { delivery: 'desktop_only', source: 'ipc.ts registerRepoIpc (progress of a clone the window started)' }
 }
 
 /** Where each request channel is handled today (ipc.ts register functions; HOST_IPC and host.* are Wave 1 / 2). */
 const SOURCE_TABLE: Readonly<Record<string, readonly string[]>> = {
   'ipc.ts registerKnowledgeIpc': [
-    IPC.knowledgeGet, IPC.knowledgeSaveNode, IPC.knowledgeRemoveNode, IPC.knowledgeSaveEdge, IPC.knowledgeRemoveEdge, IPC.knowledgeClear
+    IPC.knowledgeGet, IPC.knowledgeSaveNode, IPC.knowledgeRemoveNode, IPC.knowledgeSaveEdge, IPC.knowledgeRemoveEdge, IPC.knowledgeClear,
+    IPC.knowledgeInferredLinks, IPC.knowledgeDismissLink
   ],
   'ipc.ts registerTemplateEngagementIpc': [
     IPC.templatesList, IPC.templatesSaveFromProject, IPC.templatesRemove, IPC.templatesApply, IPC.projectsEngagementDocument,
@@ -192,6 +195,9 @@ const SOURCE_TABLE: Readonly<Record<string, readonly string[]>> = {
   'ipc.ts registerKitIpc': [KIT_IPC.kitPickExportPath, KIT_IPC.kitPickImportPath, KIT_IPC.kitExport, KIT_IPC.kitPreviewImport, KIT_IPC.kitApplyImport],
   'ipc.ts registerIpc (UsageMonitor.refresh)': [IPC.usageRefresh],
   'ipc.ts desktop-only (shimInstaller.ts)': [IPC.appCliShimStatus, IPC.appInstallCliShim, IPC.appUninstallCliShim],
+  'ipc.ts registerRepoIpc (desktop-only; repoClone.ts, progress and cancel-on-close use the IPC sender)': [
+    IPC.projectsParseRepoSource, IPC.projectsRepoTools, IPC.projectsCloneRepo, IPC.projectsCancelClone
+  ],
   'host dispatcher (HOST_IPC, socket only; skills/service.ts libraryAddFromBundle)': [HOST_IPC.skillLibraryAddFromBundle],
   'host dispatcher (HOST_IPC, socket only; kit/service.ts bundle channels)': [HOST_IPC.kitExportBundle, HOST_IPC.kitPreviewBundle, HOST_IPC.kitApplyBundle],
   'host dispatcher (HOST_IPC, socket only; RunManager.findDecision, cli-spec Wave 3)': [HOST_IPC.runsFindDecision],

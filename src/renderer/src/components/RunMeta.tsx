@@ -6,6 +6,7 @@ import { isVirtualProjectId } from '@shared/types'
 import { projectKindOf } from '@shared/defaults'
 import { folderName } from '../lib/paths'
 import { breakdownKey, breakdownTotal, EMPTY_BREAKDOWN, parseBreakdownKey, parseBreakdownPartial, recordedBreakdown, recordedBreakdownText, recordedLabel, recordedTitle } from '../lib/knowledgeRun'
+import { isRunWindow, revealKnowledgeTab } from '../lib/runKnowledge'
 import { PROPOSAL_NEXT_COPY, proposalNextLead } from '../lib/proposalNext'
 import { APP_SETTINGS_PANES, requestAppSettingsSection, requestSkillLibrary } from '../lib/settingsTarget'
 import { useAppStore, useProjectSummaries, type RunState } from '../store/useAppStore'
@@ -67,6 +68,13 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
   const recordedPartial = parseBreakdownPartial(recordedKey)
   const recorded = breakdownTotal(breakdown)
   const recordedText = recordedBreakdownText(breakdown)
+  // A run window cannot reach the project's Knowledge tab: the run's own Knowledge side tab opens instead (spec 3.3).
+  const openRecorded = (runId: string): void => {
+    if (isRunWindow()) {
+      useAppStore.getState().openRunKnowledge(runId)
+      revealKnowledgeTab()
+    } else useAppStore.getState().openKnowledgeItem({ projectId: project.id })
+  }
   const progress = run.plan ? planProgress(run.plan) : undefined
   const auto = autoContinueState({
     status: summary.status,
@@ -127,7 +135,7 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
         {agentCount} agent{agentCount === 1 ? '' : 's'}
       </span>
       {recorded > 0 && (
-        <button type="button" className="run-meta-item run-meta-recorded" data-testid="run-meta-recorded" title={recordedTitle(recordedText, sessions, recordedPartial)} onClick={() => useAppStore.getState().openKnowledgeItem({ projectId: project.id })}>
+        <button type="button" className="run-meta-item run-meta-recorded" data-testid="run-meta-recorded" title={recordedTitle(recordedText, sessions, recordedPartial)} onClick={() => openRecorded(summary.id)}>
           <Icon icon={Database} size="xs" />
           {recordedLabel(recorded, recordedPartial)}
           <span className="sr-only"> ({recordedText}{recordedPartial ? ', at least; some sessions are not loaded' : ''}; opens Knowledge)</span>

@@ -7,6 +7,7 @@ import type { AppSettings, FocusRunTarget, HostKind, RunEvent } from '@shared/ty
 import { IPC, runWindowHash } from '@shared/types'
 import { appUrlMatcher, isExternalWebUrl, scopedWindow, shouldBlockNavigation } from './windowScope'
 import { applyShellPath } from './shellEnv'
+import { stopSystemCertRead, trustSystemCertificates } from './systemCerts'
 import { installAppMenu, menuActionSender } from './appMenu'
 import { registerIpc } from './ipc'
 import { Notifier } from './notifications'
@@ -22,7 +23,10 @@ import { windowBackground } from './appInfo'
 import { quitGate } from './quitGate'
 import { orgaiCliRootsOf, setOrgaiCliRoots } from './runtime/selfControlGate'
 import { createCliShimService, type CliShimService } from './host/shimInstaller'
+import { RepoCloneService } from './repoClone'
 
+// The certificate-reader child runs this binary with ELECTRON_RUN_AS_NODE=1; if a RunAsNode fuse is off it would boot a full app here.
+if (process.env.ELECTRON_RUN_AS_NODE) process.exit(0)
 // Before anything reads a path: ORGAI_DATA_DIR (CI, e2e) replaces userData and moves logs under it, so a run never
 // touches the real profile or ~/Library/Logs. app.setPath throws for a missing directory, so create it first. The
 // folder is canonicalized (realpath) so the single-instance lock, the data dir and the host's run/ folder always
@@ -56,6 +60,8 @@ let booted = false
 let quitting = false
 /** The host's socket server (cli-spec 3.3); created before ownership so every accepted connection reaches it. */
 let server: HostSocketServer | undefined
+/** Clones started from a window (desktop only); cancelled when the quit goes ahead. */
+let repoClone: RepoCloneService | undefined
 
 // cli-spec 3.2(1): --headless-host (started by the orgai command: no window, no Dock icon) and --run <id>. Parsed once;
 // every lifecycle decision lives in hostLifecycle.ts.
@@ -130,6 +136,12 @@ if (gotLock) {
 // Finder/Dock launches on macOS get a minimal PATH; take the login shell's before anything spawns claude, codex or MCP servers.
 // The login shell's own PATH (without OrgAI's additions) is kept for the orgai command shim's "on your PATH" check.
 const shellPathResult = applyShellPath()
+if (gotLock) {
+  // Trust the OS certificate store too (corporate / inspecting root CAs), before anything can fetch (issue #16). Only
+  // once the lock is ours, so a second launch that exits at once never starts the macOS certificate-reader child.
+  // On macOS the store is read in a child process (it can stall) and applied when that finishes; the quit below kills it.
+  trustSystemCertificates()
+}
 if (process.platform === 'win32') app.setAppUserModelId('com.orgai.app')
 
 /** Native menus, scrollbars, dialogs and prefers-color-scheme in the renderer follow AppSettings.appearance.theme. */
@@ -364,8 +376,20 @@ app.whenReady().then(async () => {
   // Open windows keep the desktop host busy (cli-spec 3.2(4) interactiveClients).
   h.activity.addSource('interactiveClients', () => BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed()).length)
   const cliShim = buildCliShim(h)
+  // Start a project from a repository (desktop only: progress goes to the calling window, a closed window cancels).
+  const clones = new RepoCloneService({
+    dataDir,
+    mock: process.env.ORGAI_MOCK === '1',
+    // A clone never lands in a folder an existing project already uses (its folder, allowed or reference folders).
+    projectFolders: () =>
+      h.services.projects
+        .list()
+        .flatMap((p) => [p.path, ...(p.allowedDirectories ?? []), ...(p.referenceDirectories ?? [])])
+        .filter((f): f is string => typeof f === 'string' && f.length > 0)
+  })
+  repoClone = clones
   // `events` given: registerIpc leaves forwarding the bus to windows to the listener above.
-  registerIpc({ ...h.services, openRunWindow, events: h.events, dispatcher: h.dispatcher, cliShim })
+  registerIpc({ ...h.services, openRunWindow, events: h.events, dispatcher: h.dispatcher, cliShim, repoClone: clones })
   installAppMenu(
     menuActionSender(() => BrowserWindow.getFocusedWindow(), liveWindowScopes, () => createWindow())
   )
@@ -444,6 +468,9 @@ app.on('before-quit', (event) => {
     return
   }
   quitting = true
+  repoClone?.dispose()
+  // A macOS certificate read still running is killed once the quit goes ahead (a kept quit leaves it alone).
+  stopSystemCertRead()
   gate(event)
   host?.dispose()
 })

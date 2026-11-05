@@ -30,13 +30,13 @@ import {
 
 /** cli-spec 3.3(3), the scope table, copied literally (a second, independent copy of what registry.ts holds). */
 const SPEC_TABLE = {
-  read: `host.status, host.subscribe, app:info, app:logPath, settings:get, auth:status, projects:list, projects:get, projects:checkPath, projects:previewRemap, projects:scanAgents, projects:previewImport, projects:removePreview, projects:engagementDocument, projects:listNotes, projects:getNote, runs:list, runs:get, runs:listLive, runs:pendingCards, runs:usageStats, runs:usageCsv, runs:subscribe, runs:findDecision, permissions:list, connections:list, models:list, models:prices, mcp:list, mcp:registrySearch, mcpLibrary:list, connectors:list, connectorPresets:list, skills:list, skills:read, skills:previewImport, skills:lastEvaluation, skillLibrary:list, skillLibrary:read, capabilities:lastReview, maintenance:listWorktrees, maintenance:diff, templates:list, knowledge:get, kit:previewBundle`,
+  read: `host.status, host.subscribe, app:info, app:logPath, settings:get, auth:status, projects:list, projects:get, projects:checkPath, projects:previewRemap, projects:scanAgents, projects:previewImport, projects:removePreview, projects:engagementDocument, projects:listNotes, projects:getNote, runs:list, runs:get, runs:listLive, runs:pendingCards, runs:usageStats, runs:usageCsv, runs:subscribe, runs:findDecision, permissions:list, connections:list, models:list, models:prices, mcp:list, mcp:registrySearch, mcpLibrary:list, connectors:list, connectorPresets:list, skills:list, skills:read, skills:previewImport, skills:lastEvaluation, skillLibrary:list, skillLibrary:read, capabilities:lastReview, maintenance:listWorktrees, maintenance:diff, templates:list, knowledge:get, knowledge:inferredLinks, kit:previewBundle`,
   operate: `runs:start, runs:startQuick, runs:continue, runs:send, runs:interrupt, runs:stop, runs:resumeNow, runs:cancelAutoResume, setup:start, setup:retro, mcp:startAssist, skills:startAssist, usage:refresh, connections:test, models:refresh, mcp:test, mcpLibrary:test, capabilities:discover, capabilities:recommend, capabilities:cancel, capabilities:review, skills:evaluate, draft:orgChart, window:openRun`,
   decide: `runs:decide, permissions:decideRequest, setup:decide, setup:answer, merges:decide, mcp:answerInstall`,
-  configure: `host.stop, settings:set, projects:create, projects:save, projects:remove, projects:remapModels, projects:applyImport, projects:exportOrg, projects:updateEngagementDocument, projects:saveNote, projects:removeNote, runs:promoteQuick, permissions:add, permissions:remove, connections:connect, connections:update, connections:setSecret, connections:login, connections:cancelLogin, connections:logout, connections:setDefault, mcp:upsert, mcp:remove, mcp:setSecret, mcp:linkLibrary, mcp:promote, mcp:authorize, mcp:cancelAuthorize, mcp:revokeAuth, mcp:copyFromLibrary, mcp:setProjectOverrides, mcpLibrary:upsert, mcpLibrary:remove, mcpLibrary:setSecret, connectors:add, connectors:setToken, connectorPresets:upsert, connectorPresets:remove, plugins:upsert, plugins:remove, skills:create, skills:update, skills:remove, skills:linkLibrary, skills:promote, skills:applyImport, skills:undoImport, skills:applySuggestion, skillLibrary:create, skillLibrary:addFromBundle, skillLibrary:update, skillLibrary:remove, capabilities:apply, capabilities:undo, capabilities:dismiss, capabilities:restore, maintenance:integrateWorktree, maintenance:discardWorktree, maintenance:uninstallRepo, templates:saveFromProject, templates:remove, templates:apply, knowledge:saveNode, knowledge:removeNode, knowledge:saveEdge, knowledge:removeEdge, knowledge:clear, kit:exportBundle, kit:applyBundle`,
-  desktop_only: `projects:pickDirectory, skillLibrary:addFromFolder, kit:pickExportPath, kit:pickImportPath, kit:export, kit:previewImport, kit:applyImport, menu:setState, app:openPath, app:openLogs, app:setNotifications, app:cliShimStatus, app:installCliShim, app:uninstallCliShim`,
+  configure: `host.stop, settings:set, projects:create, projects:save, projects:remove, projects:remapModels, projects:applyImport, projects:exportOrg, projects:updateEngagementDocument, projects:saveNote, projects:removeNote, runs:promoteQuick, permissions:add, permissions:remove, connections:connect, connections:update, connections:setSecret, connections:login, connections:cancelLogin, connections:logout, connections:setDefault, mcp:upsert, mcp:remove, mcp:setSecret, mcp:linkLibrary, mcp:promote, mcp:authorize, mcp:cancelAuthorize, mcp:revokeAuth, mcp:copyFromLibrary, mcp:setProjectOverrides, mcpLibrary:upsert, mcpLibrary:remove, mcpLibrary:setSecret, connectors:add, connectors:setToken, connectorPresets:upsert, connectorPresets:remove, plugins:upsert, plugins:remove, skills:create, skills:update, skills:remove, skills:linkLibrary, skills:promote, skills:applyImport, skills:undoImport, skills:applySuggestion, skillLibrary:create, skillLibrary:addFromBundle, skillLibrary:update, skillLibrary:remove, capabilities:apply, capabilities:undo, capabilities:dismiss, capabilities:restore, maintenance:integrateWorktree, maintenance:discardWorktree, maintenance:uninstallRepo, templates:saveFromProject, templates:remove, templates:apply, knowledge:saveNode, knowledge:removeNode, knowledge:saveEdge, knowledge:removeEdge, knowledge:clear, knowledge:dismissLink, kit:exportBundle, kit:applyBundle`,
+  desktop_only: `projects:pickDirectory, skillLibrary:addFromFolder, kit:pickExportPath, kit:pickImportPath, kit:export, kit:previewImport, kit:applyImport, menu:setState, app:openPath, app:openLogs, app:setNotifications, app:cliShimStatus, app:installCliShim, app:uninstallCliShim, projects:parseRepoSource, projects:repoTools, projects:cloneRepo, projects:cancelClone`,
   socket_subscribable: `runs:event, settings:changed, connections:event, mcpLibrary:changed, skillLibrary:changed, capabilities:progress, capabilities:reviewUpdated, projects:engagementChanged`,
-  push_desktop_only: `app:focusRun, menu:action`
+  push_desktop_only: `app:focusRun, menu:action, projects:cloneProgress`
 } as const
 
 const specSet = (row: keyof typeof SPEC_TABLE): string[] => SPEC_TABLE[row].split(',').map((s) => s.trim()).sort()
@@ -57,25 +57,25 @@ function failure(fn: () => unknown): HostRpcFailure {
 const existing = [...new Set([...Object.values(IPC), ...Object.values(MCP_SCOPE_IPC), ...Object.values(KIT_IPC)])]
 
 describe('HOST_CHANNEL_REGISTRY coverage (Wave 1 gate)', () => {
-  it('has an entry for each of the 159 existing channels, the 6 HOST_IPC channels and the 5 HOST_METHODS, nothing else', () => {
-    expect(existing).toHaveLength(159)
+  it('has an entry for each of the 166 existing channels, the 6 HOST_IPC channels and the 5 HOST_METHODS, nothing else', () => {
+    expect(existing).toHaveLength(166)
     expect(Object.values(HOST_IPC)).toHaveLength(6)
     expect(Object.values(HOST_METHODS)).toHaveLength(5)
     for (const c of existing) expect(channelEntry(c), c).toBeDefined()
     for (const c of Object.values(HOST_IPC)) expect(channelEntry(c), c).toBeDefined()
     for (const c of Object.values(HOST_METHODS)) expect(channelEntry(c), c).toBeDefined()
     const expected = [...allChannels(), ...Object.values(HOST_METHODS)].sort()
-    expect(new Set(allChannels()).size).toBe(165)
+    expect(new Set(allChannels()).size).toBe(172)
     expect(Object.keys(HOST_CHANNEL_REGISTRY).sort()).toEqual(expected)
   })
 
-  it('splits the existing channels into 149 requests and 10 pushes (8 socket_subscribable, 2 desktop_only)', () => {
+  it('splits the existing channels into 155 requests and 11 pushes (8 socket_subscribable, 3 desktop_only)', () => {
     const entries = existing.map((c) => HOST_CHANNEL_REGISTRY[c])
-    expect(entries.filter((e) => e.direction === 'request')).toHaveLength(149)
+    expect(entries.filter((e) => e.direction === 'request')).toHaveLength(155)
     const push = entries.filter((e): e is PushChannelEntry => e.direction === 'push')
-    expect(push).toHaveLength(10)
+    expect(push).toHaveLength(11)
     expect(push.filter((e) => e.delivery === 'socket_subscribable')).toHaveLength(8)
-    expect(push.filter((e) => e.delivery === 'desktop_only')).toHaveLength(2)
+    expect(push.filter((e) => e.delivery === 'desktop_only')).toHaveLength(3)
     expect(existing.filter((c) => HOST_CHANNEL_REGISTRY[c].direction === 'push').sort()).toEqual([...PUSH_CHANNELS].sort())
   })
 
@@ -123,6 +123,7 @@ describe('scope classification (cli-spec 3.3(3) table)', () => {
     expect(push.filter(([, e]) => e.delivery === 'desktop_only').map(([c]) => c).sort()).toEqual(specSet('push_desktop_only'))
     expect(HOST_CHANNEL_REGISTRY[IPC.appFocusRun].source).toMatch(/notifications\.ts/)
     expect(HOST_CHANNEL_REGISTRY[IPC.menuAction].source).toMatch(/appMenu\.ts/)
+    expect(HOST_CHANNEL_REGISTRY[IPC.projectsCloneProgress].source).toMatch(/registerRepoIpc/)
   })
 
   it('names the points the wave plan calls out', () => {
@@ -134,9 +135,12 @@ describe('scope classification (cli-spec 3.3(3) table)', () => {
     expect(scopeOf('host.status')).toBe('read')
     expect(scopeOf('host.subscribe')).toBe('read')
     expect(scopeOf('host.stop')).toBe('configure')
+    expect(scopeOf('knowledge:inferredLinks')).toBe('read')
+    expect(scopeOf('knowledge:dismissLink')).toBe('configure')
+    expect(scopeOf('projects:cloneRepo')).toBe('desktop_only')
   })
 
-  it('exactly the 14 desktop_only request channels', () => {
+  it('exactly the 18 desktop_only request channels', () => {
     expect(desktopOnlyChannels().sort()).toEqual(
       [
         'projects:pickDirectory',
@@ -152,7 +156,11 @@ describe('scope classification (cli-spec 3.3(3) table)', () => {
         'app:setNotifications',
         'app:cliShimStatus',
         'app:installCliShim',
-        'app:uninstallCliShim'
+        'app:uninstallCliShim',
+        'projects:parseRepoSource',
+        'projects:repoTools',
+        'projects:cloneRepo',
+        'projects:cancelClone'
       ].sort()
     )
   })
@@ -193,7 +201,7 @@ describe('entry flags', () => {
 
   it('socketInvokableChannels leaves out desktop_only and transport channels', () => {
     const invokable = socketInvokableChannels()
-    expect(invokable).toHaveLength(requestEntries().length - 14 - 2)
+    expect(invokable).toHaveLength(requestEntries().length - 18 - 2)
     expect(invokable).toContain('runs:start')
     expect(invokable).toContain('host.status')
     expect(invokable).toContain('window:openRun')

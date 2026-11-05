@@ -45,6 +45,7 @@ import type {
   KitImportPreview,
   KnowledgeEdge,
   KnowledgeGraph,
+  KnowledgeInferredResult,
   KnowledgeNode,
   McpAssistInput,
   McpAuthStatus,
@@ -128,7 +129,7 @@ import type { TemplateService } from '../setup/templates'
 import { skillAssistPrompt, skillsProject } from '../skills/assist'
 import { bundleArgs } from '../skills/files'
 import { applySuggestion, type SkillEvaluationApi, type SkillServiceApi } from '../skills/types'
-import { clearKnowledge, readKnowledge, removeEdge, removeNode, saveEdge, saveNodeForUser, userSource } from '../store/knowledge'
+import { clearKnowledge, dismissKnowledgeLink, readKnowledge, readKnowledgeInferred, removeEdge, removeNode, saveEdge, saveNodeForUser, userSource } from '../store/knowledge'
 import {
   listNotes,
   projectRulesFile,
@@ -716,6 +717,16 @@ function registerKnowledgeIpc(handle: Register, { projects, dataDir, events }: {
     const graph = clearKnowledge(dataDir, project.id)
     changed(project.id)
     return graph
+  })
+  handle(IPC.knowledgeInferredLinks, (_e, id: unknown): KnowledgeInferredResult => {
+    const project = stored(knowledgeArgs.projectId(id))
+    return projectKindOf(project) === 'engagement' ? readKnowledgeInferred(dataDir, project.id) : { links: [], appearances: {} }
+  })
+  handle(IPC.knowledgeDismissLink, (_e, input: unknown): KnowledgeInferredResult => {
+    const { projectId, linkId } = knowledgeArgs.dismissLink(input)
+    const result = dismissKnowledgeLink(dataDir, engagement(projectId).id, linkId)
+    changed(projectId, [linkId])
+    return result
   })
 }
 

@@ -11,6 +11,13 @@ describe('hiddenCharIn / hiddenCharProblem', () => {
     expect(hiddenCharIn('a\u0007b', { multiline: true })).toBe('U+0007')
     expect(hiddenCharIn('plain')).toBeNull()
     expect(hiddenCharIn(42)).toBeNull()
+    // Unicode line and paragraph separators end a line: refused on one line, allowed like LF in multi-line fields and prose.
+    const [ls, ps] = [String.fromCodePoint(0x2028), String.fromCodePoint(0x2029)]
+    expect(hiddenCharIn(`a${ls}b`)).toBe('U+2028')
+    expect(hiddenCharIn(`a${ps}b`)).toBe('U+2029')
+    expect(hiddenCharIn(`a${ls}${ps}b`, { multiline: true })).toBeNull()
+    expect(hiddenCharIn(`a${ls}${ps}b`, { prose: true })).toBeNull()
+    expect(clampText(`a${ls}b${ps}c`)).toBe('a b c')
     // Prose keeps emoji and Persian joiners and soft hyphens, refuses bidi, zero-width space and controls.
     expect(hiddenCharIn('\u{1F469}‍\u{1F4BB} می‌ co­op\n\t', { prose: true })).toBeNull()
     expect(hiddenCharIn('a‮b', { prose: true })).toBe('U+202E')

@@ -6,7 +6,7 @@
 // and empties the graph; the forget confirm counts recorded items. Both sizes and themes, with screenshots.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { TMP, check, deleteProject, findProject, finish, launch, openProject, openProjectForm, gotoProjects, projectTab, sleep, windowShift } from './lib.mjs'
+import { SHOTS_DIR, TMP, check, deleteProject, endSession, findProject, finish, launch, openProject, openProjectForm, gotoProjects, projectTab, relaunch, screenshot, sleep, windowShift } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const base = fs.mkdtempSync(path.join(TMP, 'orgai-e2e-knrun-'))
@@ -21,9 +21,10 @@ const A = 'E2EK Acme kickoff (orgai test)'
 const B = 'E2EK Birch kickoff (orgai test)'
 const PROMPT = 'Summarise the kickoff [mock:knowledge]'
 
-const { app, page, shot } = await launch({ shotPrefix: 'knowledge-run' })
+let { app, page, shot } = await launch({ shotPrefix: 'knowledge-run' })
 page.setDefaultTimeout(8000)
 
+const snap = (name) => screenshot(page, name)
 const setSize = async (w, h) => {
   await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), [w, h])
   await page.waitForFunction((cw) => Math.abs(window.innerWidth - cw) <= 1, w, { timeout: 10_000 }).catch(() => {})
@@ -392,6 +393,309 @@ try {
   const noticeB = clean(await notice.innerText())
   check(/4 recorded items/.test(noticeB), 'the Dashboard forget-notice counts "4 recorded items"', noticeB)
   await shot('forget-notice')
+
+  // ======== 8. Knowledge during a run (docs/design/knowledge-graph-2.md section 3) ========
+  fs.mkdirSync(path.join(SHOTS_DIR, 'run'), { recursive: true })
+  const wfC = mk('cedar-recall')
+  const C = 'E2EK Cedar recall (orgai test)'
+  const c = await createEngagement({ name: C, dir: wfC })
+  check(!!c, 'engagement C created')
+  await setSize(1600, 1000)
+  await setTheme('dark')
+  await openProject(page, C)
+  // The automatic block matches items the user created: a user-owned Jane Doe makes a report's brief add her.
+  await page.evaluate((id) => window.orgai.knowledge.saveNode({ projectId: id, kind: 'person', name: 'Jane Doe' }), c.id)
+  await startRun('Check the billing wording [mock:knowledge-recall]')
+  const settledC = await until(async () => {
+    const card = page.locator('section.frame-tray article.decision-card[data-kind="permission"]').first()
+    if (await card.count()) await card.getByRole('button', { name: 'Allow once', exact: true }).click().catch(() => {})
+    return /Idle/.test(await tabStatus())
+  }, 60_000)
+  check(settledC, 'the [mock:knowledge-recall] run reaches Idle', clean(await tabStatus()))
+  const graphC = await page.evaluate((id) => window.orgai.knowledge.get(id), c.id)
+  const acmeC = graphC.nodes.find((n) => n.name === 'Acme Corp')
+  const janeC = graphC.nodes.find((n) => n.name === 'Jane Doe')
+  check(!!acmeC && !!janeC, 'the recall run recorded Acme Corp and Jane Doe')
+
+  const active = () =>
+    page.evaluate(() => {
+      const a = document.activeElement
+      return { tid: a?.getAttribute('data-testid') ?? '', id: a?.getAttribute('data-id') ?? '', rid: a?.getAttribute('data-return-id') ?? '', tag: a?.tagName ?? '' }
+    })
+  const kTab = page.locator('[data-testid=side-tab-knowledge]')
+  const openKnowledgeTab = async () => {
+    await showRootTranscript()
+    await page.locator('[data-testid=side-tab-knowledge]').click()
+    await page.locator('[data-testid=run-knowledge]').waitFor({ state: 'visible', timeout: 8000 })
+  }
+  const search = page.locator('[data-testid=run-knowledge-search]')
+  const liveSelected = async () => (await projectTab(page, 'Live').getAttribute('aria-selected')) === 'true'
+
+  await openKnowledgeTab()
+  const tabOrder = await page.locator('.side-header [role=tab]').evaluateAll((els) => els.map((e) => e.getAttribute('data-testid')))
+  check(tabOrder.indexOf('side-tab-knowledge') > tabOrder.indexOf('side-tab-usage') && tabOrder.indexOf('side-tab-knowledge') === tabOrder.indexOf('side-tab-logs') - 1, 'the Knowledge tab sits before Logs', JSON.stringify(tabOrder))
+  check((await kTab.innerText()).trim() === 'Knowledge', 'the tab reads "Knowledge"')
+
+  // Recalled in this run: de-duplicated, with counts.
+  const rrows = page.locator('[data-testid=run-knowledge-recalled-row]')
+  check(await until(async () => (await rrows.count()) >= 2), 'Recalled lists at least two items', String(await rrows.count()))
+  const rids = await rrows.evaluateAll((els) => els.map((e) => e.getAttribute('data-id')))
+  check(new Set(rids).size === rids.length, 'Recalled has one row per item', JSON.stringify(rids))
+  const givens = await page.locator('[data-testid=run-knowledge-recalled-row-given]').allInnerTexts()
+  check(givens.every((g) => /^Given (once|\d+ times)$/.test(g.trim())), 'each row says how often it was given', JSON.stringify(givens))
+  check(givens.some((g) => /^Given [2-9]\d* times$/.test(g.trim())), 'the repeated recall counts twice, not two rows', JSON.stringify(givens))
+  check(rids.includes(janeC.id), 'Jane Doe (named in a report brief) is among the recalled items')
+  check((await page.locator('[data-testid=run-knowledge-recalled] h3').innerText()) === 'Recalled in this run', 'the section is headed "Recalled in this run"')
+  check(/^Searching here does not call a model\.$/.test(clean(await page.locator('[data-testid=run-knowledge-free]').innerText())), 'the quiet line says searching does not call a model')
+  check((await page.locator('[data-testid=run-knowledge-recalled-row] [data-testid=knowledge-kind-mark]').count()) === rids.length, 'every row carries a kind mark')
+
+  // Rows reorder live without moving focus (3.1): an item further down is recalled again while the top row has focus.
+  // The event comes from main's own channel, so it takes the store's real path; React then moves the rows above the recalled one.
+  const reRecall = async (nodeId) => {
+    const runId = await page.evaluate((id) => window.orgai.runs.list(id).then((l) => l[0]?.id), c.id)
+    await app.evaluate(({ BrowserWindow }, ev) => BrowserWindow.getAllWindows()[0].webContents.send('runs:event', ev), { type: 'knowledge.recalled', runId, agentId: 'root', nodeIds: [nodeId], at: Date.now(), via: 'recall' })
+  }
+  const rowOrder = () => rrows.evaluateAll((els) => els.map((e) => e.getAttribute('data-id')))
+  if (rids.length >= 3) {
+    await rrows.first().focus()
+    const topId = rids[0]
+    const lowId = rids[rids.length - 1]
+    await reRecall(lowId)
+    check(await until(async () => (await rowOrder())[0] === lowId), 'a re-recalled item moves to the top of the list', JSON.stringify(await rowOrder()))
+    const afterMove = await active()
+    check(afterMove.tid === 'run-knowledge-recalled-row' && afterMove.id === topId, 'the row with focus keeps it while the rows reorder', JSON.stringify(afterMove))
+  } else check(false, 'three recalled rows to reorder', JSON.stringify(rids))
+  // An open item that goes away while the detail has focus: focus lands on Back, never on the page.
+  const brief = await page.evaluate((id) => window.orgai.knowledge.saveNode({ projectId: id, kind: 'risk', name: 'Short lived risk' }), c.id)
+  await search.fill('Short lived')
+  const shortHit = page.locator(`[data-testid=run-knowledge-result][data-id="${brief.id}"]`)
+  await shortHit.waitFor({ state: 'visible', timeout: 8000 })
+  await shortHit.click()
+  await page.locator('[data-testid=run-knowledge-detail]').waitFor({ state: 'visible' })
+  check(await until(async () => (await active()).tag === 'H3'), 'the detail heading has focus')
+  await page.evaluate(({ id, nodeId }) => window.orgai.knowledge.removeNode({ projectId: id, nodeId }), { id: c.id, nodeId: brief.id })
+  check(await until(async () => (await page.locator('[data-testid=run-knowledge-gone]').count()) === 1), 'the detail says the item no longer exists')
+  check(await until(async () => (await active()).tid === 'run-knowledge-back'), 'focus moves to Back when the open item vanishes', JSON.stringify(await active()))
+  await page.keyboard.press('Enter')
+  check(await until(async () => (await page.locator('[data-testid=run-knowledge-detail]').count()) === 0), 'Back returns')
+  await search.fill('')
+
+  // Search: ranked, kind mark, keyboard.
+  const before = JSON.stringify(await page.evaluate((id) => window.orgai.knowledge.get(id), c.id))
+  await search.fill('Acme')
+  const results = page.locator('[data-testid=run-knowledge-result]')
+  check(await until(async () => (await results.count()) >= 1), 'searching "Acme" shows results')
+  check(clean(await results.first().locator('.run-knowledge-row-name').innerText()) === 'Acme Corp', 'Acme Corp ranks first')
+  check((await results.first().locator('[data-testid=knowledge-kind-mark]').count()) === 1 && /Organisation/.test(await results.first().innerText()), 'a result shows its kind mark and kind')
+  check(await until(async () => /^\d+ items? found\.$/.test(clean(await page.locator('[data-testid=run-knowledge-status]').innerText()))), 'the status region says "N items found."', clean(await page.locator('[data-testid=run-knowledge-status]').innerText()))
+  check((await page.locator('[data-testid=run-knowledge-recalled]').count()) === 0, 'results replace the Recalled list while there is a query')
+  await search.focus()
+  await page.keyboard.press('ArrowDown')
+  const a1 = await active()
+  check(a1.tid === 'run-knowledge-result', 'Down from the search box enters the results', JSON.stringify(a1))
+  await page.keyboard.press('Enter')
+  const detail = page.locator('[data-testid=run-knowledge-detail]')
+  await detail.waitFor({ state: 'visible' })
+  check((await detail.getAttribute('data-id')) === acmeC.id, 'Enter opens the compact detail of Acme Corp')
+  check(await until(async () => (await active()).tag === 'H3'), 'focus moves to the detail heading', JSON.stringify(await active()))
+  check(await liveSelected(), 'the Live tab is still selected (no navigation away)')
+  check((await page.locator('[data-testid=knowledge-view]').count()) === 0, 'the project Knowledge tab did not open')
+  const dtext = clean(await detail.innerText())
+  check(/Headquartered in Leeds/.test(dtext) && /Facts/.test(dtext) && /Related/.test(dtext), 'the detail lists facts and related items', dtext.slice(0, 200))
+  check(!/Fiscal year ends in March/.test(dtext), 'a retired fact is not listed')
+  check((await page.locator('[data-testid=run-knowledge-open-tab]').count()) === 1, '"Open in Knowledge" is offered in the main window')
+  await snap('run/kr-detail-1600-dark')
+  // Related link opens the neighbour; Back twice returns to the link, then the row.
+  await detail.locator('[data-testid=run-knowledge-related-link]', { hasText: 'Jane Doe' }).first().click()
+  check(await until(async () => (await detail.getAttribute('data-id')) === janeC.id), 'a related link opens the neighbour here')
+  await page.locator('[data-testid=run-knowledge-back]').click()
+  check(await until(async () => (await detail.getAttribute('data-id')) === acmeC.id), 'Back returns to the previous item')
+  check(await until(async () => (await active()).rid === janeC.id), 'focus returns to the link it came from', JSON.stringify(await active()))
+  await page.locator('[data-testid=run-knowledge-back]').click()
+  check(await until(async () => (await results.count()) >= 1), 'Back from the first item returns to the results')
+  check(await until(async () => { const a = await active(); return a.tid === 'run-knowledge-result' && a.id === acmeC.id }), 'focus returns to the result row', JSON.stringify(await active()))
+  await page.keyboard.press('Enter')
+  await detail.waitFor({ state: 'visible' })
+  await page.keyboard.press('Escape')
+  check(await until(async () => (await results.count()) >= 1 && (await detail.count()) === 0), 'Esc goes back')
+  check(await until(async () => (await active()).id === acmeC.id), 'Esc returns focus to the row', JSON.stringify(await active()))
+  check(JSON.stringify(await page.evaluate((id) => window.orgai.knowledge.get(id), c.id)) === before, 'browsing the tab wrote nothing')
+  // Query and open item survive a tab switch; Esc clears and keeps focus.
+  await page.locator('[data-testid=side-tab-usage]').click()
+  await page.locator('[data-testid=usage-panel]').waitFor({ state: 'visible' })
+  await kTab.click()
+  check((await search.inputValue()) === 'Acme' && (await results.count()) >= 1, 'the query survives a tab switch')
+  await search.focus()
+  await page.keyboard.press('Escape')
+  check((await search.inputValue()) === '' && (await active()).tid === 'run-knowledge-search', 'Esc clears the query and keeps focus')
+  check(await until(async () => (await page.locator('[data-testid=run-knowledge-recalled]').count()) === 1), 'the Recalled list returns')
+  await search.fill('zzzz-nothing')
+  check(await until(async () => /Nothing recorded matches zzzz-nothing\./.test(clean(await page.locator('[data-testid=run-knowledge-none]').innerText().catch(() => '')))), 'no match reads "Nothing recorded matches <query>."')
+  await search.fill('')
+  check(await until(async () => (await page.locator('[data-testid=run-knowledge-recalled]').count()) === 1), 'clearing the box brings the Recalled list back')
+
+  // Transcript rows (3.4).
+  await page.locator('[data-testid=side-tab-transcript]').click()
+  await page.locator('.side-run .transcript .entry').first().waitFor({ state: 'visible' })
+  const reads = page.locator('[data-testid=knowledge-read-row]')
+  const readTexts = (await reads.evaluateAll((els) => els.map((e) => e.querySelector('.entry-plain')?.textContent?.trim() ?? ''))).filter(Boolean)
+  check(readTexts.filter((t) => /^Recalled \d+ items? about Acme billing \(2 times\)$/.test(t)).length === 1, 'the same recall twice in a row is one row with a count', JSON.stringify(readTexts))
+  check((await reads.first().locator('details summary').innerText()) === 'Show output', 'the recall result sits under "Show output"')
+  await reads.first().locator('details summary').click()
+  const recallOutput = await reads.first().locator('details pre').innerText()
+  check(/Acme Corp, organisation/.test(recallOutput) && /Headquartered in Leeds/.test(recallOutput), 'the output reads in plain words', recallOutput.slice(0, 200))
+  check(!/kn_|kf_|<<<|>>>|not instructions/.test(recallOutput), 'the output has no raw ids, fence or note to the model', recallOutput.slice(0, 200))
+  await reads.first().locator('details summary').click()
+  const crows = await rowTexts()
+  check(!crows.some((t) => /knowledge recall|knowledge_recall|Used knowledge/i.test(t)), 'no call or result row for knowledge_recall is left', JSON.stringify(crows.filter((t) => /recall/i.test(t))))
+  check(!crows.some((t) => /not instructions/.test(t)), 'no row says "not instructions"')
+  // The report that was handed the brief gets the quiet "Added" row.
+  const nodes = page.locator('.react-flow__node')
+  let addedText = ''
+  for (let i = 0; i < (await nodes.count()) && !addedText; i++) {
+    await nodes.nth(i).click().catch(() => {})
+    await sleep(300)
+    const t = (await page.locator('[data-testid=knowledge-read-row] .entry-plain').allInnerTexts()).find((x) => /^Added \d+ known items?: /.test(x.trim()))
+    if (t) addedText = t.trim()
+  }
+  check(/^Added 1 known item: .*Jane Doe/.test(addedText), 'a report has the quiet "Added 1 known item: Jane Doe" row', addedText)
+  if (addedText) check((await page.locator('[data-testid=knowledge-read-row]:has-text("Added") details').count()) === 0, 'the Added row has no output')
+
+  // Usage (3.5) and RunMeta (reads are not recorded changes).
+  await page.locator('.react-flow__node:has(.agent-node.is-root)').first().click()
+  await page.locator('[data-testid=side-tab-usage]').click()
+  const uk = page.locator('[data-testid=usage-knowledge]')
+  await uk.waitFor({ state: 'visible', timeout: 8000 })
+  check(clean(await page.locator('[data-testid=usage-knowledge-recalls]').innerText()).endsWith('2 times'), 'usage: "Looked up by agents" reads 2 times', clean(await page.locator('[data-testid=usage-knowledge-recalls]').innerText()))
+  check(/times?$/.test(clean(await page.locator('[data-testid=usage-knowledge-auto]').innerText())), 'usage: "Added automatically" reads N times')
+  check(/\d characters?$/.test(clean(await page.locator('[data-testid=usage-knowledge-chars]').innerText())), 'usage: "Text given to agents" reads N characters')
+  check((await page.locator('[data-testid=usage-knowledge-items]').count()) === 1, 'usage: items given row')
+  check(!/saved/i.test(await page.locator('[data-testid=usage-panel]').innerText()), 'the usage panel never says "saved"')
+  await snap('run/kr-usage-1600-dark')
+  check((await metaText()) === 'Recorded 8 changes', 'RunMeta still counts only the 8 writes (reads are not changes)', await metaText())
+
+  // Settings (3.6): the switch round-trips through projects:save.
+  const savedField = () => page.evaluate(async (id) => { const p = (await window.orgai.projects.list()).find((x) => x.id === id); return p && 'knowledgeAutoContext' in p ? p.knowledgeAutoContext : 'absent' }, c.id)
+  await openSettingsPane('General')
+  const sw = page.locator('[data-testid=knowledge-auto-context]')
+  await sw.waitFor({ state: 'visible' })
+  check((await sw.getAttribute('aria-checked')) === 'true' && (await savedField()) === 'absent', 'auto context is on by default and stores nothing')
+  check((await sw.getAttribute('aria-label')) === 'Add known items to what agents receive', 'the switch is named "Add known items to what agents receive"')
+  await sw.focus()
+  await page.keyboard.press('Space')
+  check(await until(async () => (await savedField()) === false), 'turning it off saves false', String(await savedField()))
+  check((await sw.getAttribute('aria-checked')) === 'false', 'the switch reads off')
+  await snap('run/kr-settings-1600-dark')
+  await sw.focus()
+  await page.keyboard.press('Space')
+  check(await until(async () => (await savedField()) === 'absent'), 'turning it on removes the field', String(await savedField()))
+  // Off again; the reload check at the end proves it was saved.
+  await page.keyboard.press('Space')
+  check(await until(async () => (await savedField()) === false), 'off again saves false')
+
+  // A run window (3.3): the tab works, the deep link says so.
+  const runC = (await page.evaluate((id) => window.orgai.runs.list(id), c.id))[0]
+  await page.evaluate((t) => window.orgai.window.openRun(t), { projectId: c.id, runId: runC.id })
+  let win2
+  for (let i = 0; i < 30 && !win2; i++) {
+    win2 = app.windows().find((w) => w !== page)
+    if (!win2) await sleep(500)
+  }
+  check(!!win2, 'a run-scoped window opens')
+  if (win2) {
+    await win2.waitForSelector('[data-testid=run-meta]', { timeout: 20_000 })
+    await sleep(800)
+    const w2meta = win2.locator('[data-testid=run-meta-recorded]')
+    await w2meta.waitFor({ state: 'visible', timeout: 10_000 })
+    await w2meta.click()
+    await win2.locator('[data-testid=run-knowledge]').waitFor({ state: 'visible', timeout: 8000 })
+    check(true, 'in a run window "Recorded N changes" opens the Knowledge side tab')
+    check((await win2.locator('[data-testid=side-tab-knowledge]').getAttribute('aria-selected')) === 'true', 'the Knowledge side tab is selected there')
+    check(await until(async () => (await win2.locator('[data-testid=run-knowledge-recalled-line]').count()) >= 2), 'with no live events the transcript lines stand in', String(await win2.locator('[data-testid=run-knowledge-recalled-line]').count()))
+    check(/kept only while OrgAI is open/.test(clean(await win2.locator('[data-testid=run-knowledge-recalled-note]').innerText())), 'the lines carry the "kept only while OrgAI is open" note')
+    await win2.locator('[data-testid=run-knowledge-search]').fill('Acme')
+    await win2.locator('[data-testid=run-knowledge-result]').first().waitFor({ state: 'visible', timeout: 8000 })
+    await win2.locator('[data-testid=run-knowledge-result]').first().click()
+    await win2.locator('[data-testid=run-knowledge-detail]').waitFor({ state: 'visible' })
+    check(clean(await win2.locator('[data-testid=run-knowledge-window-note]').innerText()) === 'To edit this item, open Knowledge in the main OrgAI window.', 'the window shows the note instead of "Open in Knowledge"')
+    check((await win2.locator('[data-testid=run-knowledge-open-tab]').count()) === 0, 'no deep link in the window')
+    await win2.locator('[data-testid=side-tab-transcript]').click()
+    await win2.locator('[data-testid=knowledge-row-open]').first().click()
+    await win2.locator('[data-testid=run-knowledge-detail]').waitFor({ state: 'visible', timeout: 8000 })
+    check((await win2.locator('[data-testid=side-tab-knowledge]').getAttribute('aria-selected')) === 'true', 'in a window an Open link opens the item in the side tab')
+    await screenshot(win2, 'run/kr-window')
+    await win2.close().catch(() => {})
+  }
+  check((await page.locator('[data-testid=knowledge-view]').count()) === 0, 'the main window stayed where it was')
+
+  // Both sizes and themes: the tab, its states, no page scroll.
+  for (const [w, h, theme] of [[1600, 1000, 'dark'], [1600, 1000, 'light'], [1024, 640, 'dark'], [1024, 640, 'light']]) {
+    const tag = `${w}x${h} ${theme}`
+    await setSize(w, h)
+    await setTheme(theme)
+    await openProject(page, C)
+    await openKnowledgeTab()
+    check(await until(async () => (await rrows.count()) >= 2), `${tag}: Recalled shows`)
+    await fitsWindow(`${tag} Knowledge tab`)
+    const tl = await page.locator('.side-header [role=tablist]').evaluate((el) => ({ sw: el.scrollWidth, cw: el.clientWidth }))
+    const kb = await kTab.boundingBox()
+    check(tl.sw <= tl.cw + 1 || (!!kb && kb.width > 0), `${tag}: the tab bar fits or scrolls`, JSON.stringify(tl))
+    await snap(`run/kr-recalled-${w}-${theme}`)
+    await search.fill('Acme')
+    await results.first().waitFor({ state: 'visible' })
+    const overflow = await page.locator('[data-testid=run-knowledge]').evaluate((el) => el.scrollWidth <= el.clientWidth + 1)
+    check(overflow, `${tag}: results do not overflow the panel sideways`)
+    await fitsWindow(`${tag} results`)
+    await snap(`run/kr-results-${w}-${theme}`)
+    await results.first().click()
+    await detail.waitFor({ state: 'visible' })
+    await fitsWindow(`${tag} detail`)
+    await snap(`run/kr-detail-${w}-${theme}`)
+    await page.keyboard.press('Escape')
+    await search.fill('')
+  }
+  // 280 px panel: does "Knowledge" fit or scroll?
+  await setSize(1600, 1000)
+  const narrow = await page.evaluate(() => {
+    const body = document.querySelector('.run-body') ?? document.querySelector('.live')
+    const list = document.querySelector('.side-header [role=tablist]')
+    if (!body || !list) return null
+    const prev = body.style.getPropertyValue('--side-panel-w')
+    body.style.setProperty('--side-panel-w', '280px')
+    const r = { cw: list.clientWidth, sw: list.scrollWidth, panel: document.querySelector('aside.side-panel')?.getBoundingClientRect().width ?? 0 }
+    if (prev) body.style.setProperty('--side-panel-w', prev)
+    else body.style.removeProperty('--side-panel-w')
+    return r
+  })
+  check(!!narrow, 'measured the tab bar at a 280 px panel', JSON.stringify(narrow))
+  console.log('tab bar at 280 px panel:', JSON.stringify(narrow), narrow && narrow.sw > narrow.cw ? '(scrolls)' : '(fits)')
+
+  // A reload drops the events (the main process keeps the run): the transcript lines stand in, and the switch stayed off.
+  await page.reload()
+  await page.waitForSelector('.sidebar')
+  await openProject(page, C)
+  await openSettingsPane('General')
+  check((await page.locator('[data-testid=knowledge-auto-context]').getAttribute('aria-checked')) === 'false', 'off survives a reload')
+  await page.locator('[data-testid=knowledge-auto-context]').focus()
+  await page.keyboard.press('Space')
+  check(await until(async () => (await savedField()) === 'absent'), 'on again removes the field')
+  await openKnowledgeTab()
+  check(await until(async () => (await page.locator('[data-testid=run-knowledge-recalled-line]').count()) >= 2), 'after a reload the Recalled lines come from the transcript', String(await page.locator('[data-testid=run-knowledge-recalled-line]').count()))
+  check((await page.locator('[data-testid=run-knowledge-recalled-row]').count()) === 0 && (await page.locator('[data-testid=run-knowledge-recalled-note]').count()) === 1, 'after a reload there are no recalled rows and the note shows')
+  await snap('run/kr-reload-lines')
+
+  // Same after a relaunch of the app.
+  await endSession(page).catch(() => {})
+  await sleep(800)
+  ;({ app, page, shot } = await relaunch(app, { shotPrefix: 'knowledge-run' }))
+  page.setDefaultTimeout(8000)
+  await setSize(1600, 1000)
+  await openProject(page, C)
+  await projectTab(page, 'Live').click()
+  await page.locator('.react-flow__node').first().waitFor({ state: 'visible', timeout: 15_000 }).catch(() => {})
+  await openKnowledgeTab().catch((e) => check(false, 'relaunch: open the Knowledge tab', e.message))
+  check(await until(async () => (await page.locator('[data-testid=run-knowledge-recalled-line]').count()) >= 2), 'after a relaunch the Recalled lines come from the transcript', String(await page.locator('[data-testid=run-knowledge-recalled-line]').count()))
+  await snap('run/kr-relaunch')
 } finally {
   try {
     if (!page.isClosed()) {
@@ -399,7 +703,7 @@ try {
       const end = page.getByRole('button', { name: 'End session' })
       if (await end.count()) await end.first().click().catch(() => {})
       await sleep(800)
-      for (const name of [A, B]) {
+      for (const name of [A, B, 'E2EK Cedar recall (orgai test)']) {
         const left = await deleteProject(page, name).catch(() => -1)
         check(left === 0, `project "${name}" removed`, String(left))
       }

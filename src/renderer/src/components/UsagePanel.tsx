@@ -1,7 +1,9 @@
 import type { ReactElement } from 'react'
 import { useMemo } from 'react'
 import { ArrowLeft, Info } from 'lucide-react'
-import type { AgentInstance, RunUsage } from '@shared/types'
+import type { AgentInstance, KnowledgeServedUsage, RunUsage } from '@shared/types'
+import { knowledgeUsageRows } from '../lib/runKnowledge'
+import '../styles/knowledge-run.css'
 import { totalTokens } from '@shared/defaults'
 import { useAppStore } from '../store/useAppStore'
 import { formatTokens, sumCosts, unpricedModels, type CostInput } from '../lib/cost'
@@ -178,6 +180,24 @@ function SkillsLoaded({ rows }: { rows: ReturnType<typeof skillRows> }): ReactEl
   )
 }
 
+/** Section 3.5: what the knowledge graph gave agents in this run. Counts only; it never claims a saving. */
+function KnowledgeServed({ usage }: { usage: KnowledgeServedUsage }): ReactElement {
+  return (
+    <>
+      <h3 className="usage-knowledge-head" id="usage-knowledge-head">
+        Knowledge
+      </h3>
+      <dl className="usage-list" data-testid="usage-knowledge" aria-labelledby="usage-knowledge-head">
+        {knowledgeUsageRows(usage).map((r) => (
+          <Stat key={r.id} label={r.label} testId={`usage-knowledge-${r.id}`}>
+            {r.text}
+          </Stat>
+        ))}
+      </dl>
+    </>
+  )
+}
+
 function RoleTable({ run, rows: agentRowsList }: { run: RunUsage; rows: AgentRow[] }): ReactElement | null {
   const rows = roleRows(run, agentRowsList)
   if (rows.length === 0) return null
@@ -278,6 +298,7 @@ export default function UsagePanel({ runId, agent }: { runId: string; agent: Age
       )}
       {rows.length > 0 && <AgentTable rows={rows} selectedId={scoped?.id} onSelect={selectAgent} />}
       <SkillsLoaded rows={skills} />
+      {usage?.knowledge && !scoped && <KnowledgeServed usage={usage.knowledge} />}
       {usage && !scoped && <RoleTable run={usage} rows={rows} />}
       {scoped && scopedRow ? <Totals row={scopedRow} part="more" /> : usage ? <Totals run={usage} part="more" /> : null}
     </div>

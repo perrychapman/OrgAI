@@ -2,8 +2,9 @@
  * The host's push event bus (cli-spec 3.3(3) "push: socket_subscribable", Wave 1).
  *
  * Every main -> client push that a socket client may subscribe to goes through one HostEventBus: the desktop shell
- * forwards it to windows (webContents.send), and the Wave 2 socket server to subscribed sockets. The two
- * window-targeted push channels (app:focusRun, menu:action) never go on the bus: they address one window.
+ * forwards it to windows (webContents.send), and the Wave 2 socket server to subscribed sockets. The three
+ * window-targeted push channels (app:focusRun, menu:action, projects:cloneProgress) never go on the bus: they address
+ * one window.
  *
  * Electron-free (noElectronImport.test.ts); relative imports only.
  */

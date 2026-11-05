@@ -27,6 +27,7 @@ const { HostDispatcher } = await import('./host/dispatcher')
 const { HostEventBus } = await import('./host/events')
 const { project: makeProject } = await import('./runtime/testHelpers')
 const { CLI_SHIM_UNAVAILABLE } = await import('./host/shimInstaller')
+const { desktopOnlyChannels } = await import('./host/registry')
 type IpcServices = import('./ipc').IpcServices
 
 const SOCKET_ONLY = new Set<string>([...Object.values(HOST_IPC), ...Object.values(HOST_METHODS)])
@@ -67,22 +68,45 @@ function services(over: Partial<IpcServices> = {}): IpcServices {
 }
 
 const kit = { exportBundle: vi.fn(), previewBundle: vi.fn(), applyBundle: vi.fn(), export: vi.fn(), previewImport: vi.fn(), applyImport: vi.fn() }
+const REPO_CHANNELS: string[] = [IPC.projectsParseRepoSource, IPC.projectsRepoTools, IPC.projectsCloneRepo, IPC.projectsCancelClone]
+const repoClone = { parse: vi.fn(), tools: vi.fn(async () => ({})), clone: vi.fn(), cancel: vi.fn() }
 const call = (channel: string, ...args: unknown[]): unknown => handlers.get(channel)!({ sender: { id: 7 } }, ...args)
 
 describe('registerIpc (thin adapter)', () => {
   it.each([
-    ['with a kit', true],
-    ['without a kit', false]
-  ])('registers exactly the dispatcher channels that are not socket-only plus the desktop-only ones (%s)', (_label, withKit) => {
-    const svc = services(withKit ? { kit: kit as never } : {})
+    ['with a kit and repository clones', true],
+    ['without either', false]
+  ])('registers exactly the dispatcher channels that are not socket-only plus the desktop-only ones (%s)', (_label, withOptional) => {
+    const svc = services(withOptional ? { kit: kit as never, repoClone: repoClone as never } : {})
     registerIpc(svc)
     const reference = new HostDispatcher({ ...svc, desktop: { openRunWindow: svc.openRunWindow } })
-    const desktopOnly = withKit ? DESKTOP_ONLY_CHANNELS : DESKTOP_ONLY_CHANNELS.filter((c) => !c.startsWith('kit:'))
+    const desktopOnly = withOptional ? DESKTOP_ONLY_CHANNELS : DESKTOP_ONLY_CHANNELS.filter((c) => !c.startsWith('kit:') && !REPO_CHANNELS.includes(c))
     const expected = [...reference.channels().filter((c) => !SOCKET_ONLY.has(c)), ...desktopOnly]
     expect([...handlers.keys()].sort()).toEqual([...expected].sort())
     for (const ch of handlers.keys()) expect(SOCKET_ONLY.has(ch), ch).toBe(false)
     expect(handlers.has(IPC.usageRefresh)).toBe(true)
-    expect(DESKTOP_ONLY_CHANNELS).toHaveLength(14)
+    expect(DESKTOP_ONLY_CHANNELS).toHaveLength(18)
+  })
+
+  it('DESKTOP_ONLY_CHANNELS is exactly the registry desktop_only request set', () => {
+    expect([...DESKTOP_ONLY_CHANNELS].sort()).toEqual([...desktopOnlyChannels()].sort())
+  })
+
+  it('serves the repository channels through the clone service, progress to the calling window only', async () => {
+    registerIpc(services({ repoClone: repoClone as never }))
+    const progress: unknown[] = []
+    const sender = { id: 7, isDestroyed: () => false, send: (_c: string, p: unknown) => void progress.push(p), on: vi.fn(), removeListener: vi.fn() }
+    repoClone.clone.mockImplementationOnce(async (_input: unknown, onProgress: (p: unknown) => void) => {
+      onProgress({ requestId: 'req_1', step: 'cloning' })
+      return { path: '/tmp/x' }
+    })
+    const input = { requestId: 'req_1', source: 'octo/repo', mode: 'clone', destination: '/tmp/x', extra: 1 }
+    await expect(handlers.get(IPC.projectsCloneRepo)!({ sender }, input)).resolves.toEqual({ path: '/tmp/x' })
+    expect(repoClone.clone.mock.calls[0][0]).toEqual({ requestId: 'req_1', source: 'octo/repo', mode: 'clone', destination: '/tmp/x' })
+    expect(progress).toEqual([{ requestId: 'req_1', step: 'cloning' }])
+    expect(sent.filter((s) => s.channel === IPC.projectsCloneProgress)).toEqual([])
+    expect(sender.removeListener).toHaveBeenCalled()
+    await expect(Promise.resolve(handlers.get(IPC.projectsCloneRepo)!({ sender }, { requestId: '../x' }))).rejects.toThrow('Invalid clone request.')
   })
 
   it('serves usage:refresh through the given monitor; without one the channel is not registered', async () => {
