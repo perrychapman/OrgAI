@@ -333,6 +333,21 @@ try {
   await shot('04-kind-people-1600-dark')
   await page.locator('[data-testid=knowledge-kind][data-kind=person]').click()
   check(await until(async () => (await num('data-lit')) === litAll, 4000), 'clearing the chip lights everything again')
+  // A filter names what it keeps, dimmed nodes never block a name (limit: 40 names at most, 60 at zoom 1.6 or above).
+  await page.locator('[data-testid=knowledge-kind][data-kind=risk]').click()
+  check(await until(async () => (await num('data-lit')) === 4, 4000), 'the Risks chip lights 4 nodes')
+  check(await until(async () => (await num('data-named-lit')) === 4, 4000), 'all 4 lit risks show their names', `${await attr('data-named-lit')} of 4`)
+  await shot('04b-kind-risks-1600-dark')
+  await page.locator('[data-testid=knowledge-kind][data-kind=risk]').click()
+  await page.locator('[data-testid=knowledge-kind][data-kind=person]').click()
+  check(await until(async () => (await num('data-lit')) === 24, 4000), 'the People chip lights 24 nodes again')
+  const namedPeople = await (async () => {
+    await sleep(500)
+    return num('data-named-lit')
+  })()
+  check(namedPeople >= 20, 'most of 24 lit people show names at fit zoom', `${namedPeople} of 24`)
+  await page.locator('[data-testid=knowledge-kind][data-kind=person]').click()
+  check(await until(async () => (await num('data-lit')) === litAll, 4000), 'clearing the chip lights everything again (2)')
   await page.locator('[data-testid=knowledge-search]').fill('acme')
   check(await until(async () => (await num('data-lit')) >= 1 && (await num('data-lit')) < 10, 4000), 'search lights the matches only', String(await attr('data-lit')))
   const litNames = await page.evaluate(() => [...document.querySelectorAll('[data-testid=knowledge-node][data-dim=false]')].map((n) => (n.getAttribute('aria-label') ?? '').split(', ')[0]))
@@ -417,7 +432,8 @@ try {
   await sleep(500)
   check((await page.locator('html').getAttribute('data-reduce-motion')) === 'on', 'reduce motion is on')
   check((await attr('data-animating')) === 'false', 'reduced motion: data-animating=false', String(await attr('data-animating')))
-  check((await framesOver(500)) === 0, 'reduced motion: data-frames is constant over 500 ms')
+  // A fire from the run just stopped may still clear its static ring (one draw, 2 s later), so this waits for a quiet stretch.
+  check(await until(async () => (await framesOver(500)) === 0, 6000), 'reduced motion: data-frames is constant over 500 ms')
   await page.locator('[data-testid=knowledge-neural-zoom-in]').click()
   await sleep(300)
   check((await attr('data-animating')) === 'false' && (await num('data-frames')) > 0, 'a zoom in reduced motion draws once and stops', String(await attr('data-animating')))
@@ -598,6 +614,107 @@ try {
   check(j3.x > nb2.x + nb2.width - 60 || (Math.abs(j4.x - j3.x) <= 1 && Math.abs(j4.y - j3.y) <= 1), 'opening the panel keeps every node where it was (no refit)', `${JSON.stringify(j3)} -> ${JSON.stringify(j4)}`)
   await shot('22-panel-open-1024-dark')
   await noPageScroll('1024x640 panel open')
+
+  // ======== 14. Resizing: a window resize refits an untouched view and keeps a moved one; a panel moves nothing ========
+  await page.mouse.click(nb2.x + 4, nb2.y + 4)
+  await sleep(300)
+  /** Nodes outside the stage, and how far off-centre the graph sits. */
+  const offStage = () =>
+    page.evaluate(() => {
+      const st = document.querySelector('.neural-stage').getBoundingClientRect()
+      const rects = [...document.querySelectorAll('[data-testid=knowledge-node]')].map((n) => n.getBoundingClientRect())
+      const cx = rects.map((b) => b.x + b.width / 2)
+      const cy = rects.map((b) => b.y + b.height / 2)
+      const outside = rects.filter((b, i) => cx[i] < st.left || cx[i] > st.right || cy[i] < st.top || cy[i] > st.bottom).length
+      const midX = (Math.min(...cx) + Math.max(...cx)) / 2 - (st.left + st.width / 2)
+      const midY = (Math.min(...cy) + Math.max(...cy)) / 2 - (st.top + st.height / 2)
+      return { outside, total: rects.length, midX, midY, stageW: st.width, stageH: st.height }
+    })
+  const centred = (o) => Math.abs(o.midX) <= 8 && Math.abs(o.midY) <= 8
+  await setSize(1600, 1000)
+  await page.locator('[data-testid=knowledge-neural-fit]').click()
+  await sleep(500)
+  check((await attr('data-user-view')) === 'false', 'after Fit the view is not the user\'s (data-user-view)', String(await attr('data-user-view')))
+  // The panel opening and closing moves nothing.
+  const j5 = await screenOfNode(janeId)
+  await page.mouse.click(j5.x, j5.y)
+  await sleep(700)
+  const j6 = await screenOfNode(janeId)
+  check(Math.abs(j6.x - j5.x) <= 1 && Math.abs(j6.y - j5.y) <= 1, 'the panel opening at 1600x1000 moves no node', `${JSON.stringify(j5)} -> ${JSON.stringify(j6)}`)
+  const st5 = await stageBox()
+  await page.mouse.click(st5.x + 4, st5.y + 4)
+  await sleep(400)
+  for (const theme of ['dark', 'light']) {
+    await setTheme(theme)
+    await setSize(1600, 1000)
+    await page.locator('[data-testid=knowledge-neural-fit]').click()
+    await sleep(500)
+    // Shrink, untouched: a refit. The band and sidebar change in the same resize, so the stage's corner moves too (review N3).
+    await setSize(1024, 640)
+    await sleep(300)
+    const small = await offStage()
+    check(small.outside === 0, `${theme}: a window shrink from 1600 to 1024 leaves no node off the stage`, JSON.stringify(small))
+    check(centred(small), `${theme}: the refit is centred`, JSON.stringify(small))
+    await shot(`30-shrunk-1024-${theme}`)
+    await noPageScroll(`1024x640 ${theme} after a shrink`)
+    // Grow, untouched: a refit again.
+    await setSize(1600, 1000)
+    await sleep(300)
+    const big = await offStage()
+    check(big.outside === 0 && centred(big), `${theme}: growing again refits too`, JSON.stringify(big))
+    // After the user moved the view: the same part of the graph stays on the stage, scaled down for a shrink.
+    await page.locator('[data-testid=knowledge-neural-zoom-in]').click()
+    await sleep(450)
+    check((await attr('data-user-view')) === 'true', `${theme}: a zoom makes the view the user's`)
+    const before14 = await offStage()
+    const k0 = Number(await attr('data-zoom'))
+    const s0 = await stageBox()
+    await setSize(1024, 640)
+    await sleep(300)
+    const after14 = await offStage()
+    const k1 = Number(await attr('data-zoom'))
+    const s1 = await stageBox()
+    const ratio = Math.min(s1.width / s0.width, s1.height / s0.height)
+    check(Math.abs(k1 - k0 * ratio) <= 0.05,`${theme}: a shrink scales the user's view with the stage`, `${k0} -> ${k1}, stage ratio ${ratio.toFixed(3)}`)
+    check(after14.outside <= before14.outside + 2, `${theme}: a shrink loses no more of the graph than the view already left out`, `${before14.outside} -> ${after14.outside}`)
+    check((await attr('data-user-view')) === 'true', `${theme}: the view stays the user's`)
+    await shot(`31-shrunk-moved-1024-${theme}`)
+    // Fit hands the view back: the next resize refits.
+    await page.locator('[data-testid=knowledge-neural-fit]').click()
+    await sleep(500)
+    check((await attr('data-user-view')) === 'false', `${theme}: Fit hands the view back`)
+  }
+  await setTheme('dark')
+
+  // ======== 15. The last node leaving takes the canvas away: focus lands on what replaces it ========
+  const wfLast = path.join(base, 'last-node')
+  fs.mkdirSync(wfLast, { recursive: true })
+  const lastName = 'E2E Neural last node (orgai test)'
+  const lastProject = await createEngagement({ name: lastName, dir: wfLast })
+  const only = await page.evaluate((id) => window.orgai.knowledge.saveNode({ projectId: id, kind: 'person', name: 'Only Person' }), lastProject.id)
+  await openProject(page, lastName)
+  await openKnowledgeTab()
+  await openGraph()
+  await settled()
+  await page.locator(`[data-testid=knowledge-node][data-id="${only.id}"]`).focus()
+  await page.evaluate(({ id, nodeId }) => window.orgai.knowledge.removeNode({ projectId: id, nodeId }), { id: lastProject.id, nodeId: only.id })
+  check(await until(async () => (await page.locator(NEURAL).count()) === 0, 6000), 'the canvas goes with the last node')
+  check(await until(async () => (await activeTestId()) === 'knowledge-add-note', 3000), 'focus lands on Add a note, not the page', await activeTestId())
+  // A removed project leaves no layout or switch behind.
+  const lastKeys = await page.evaluate(async (id) => {
+    localStorage.setItem(`orgai.knowledgeInferred.${id}`, 'on')
+    localStorage.setItem(`orgai.knowledgeLayout.${id}`, '{}')
+    return id
+  }, lastProject.id)
+  await projectTab(page, 'Settings').click()
+  await page.getByRole('tab', { name: 'Maintenance', exact: true }).click()
+  await page.locator('[data-testid=forget-engagement]').click()
+  await page.getByRole('button', { name: 'Forget engagement', exact: true }).click()
+  await page.locator('[data-testid=forget-notice]').waitFor({ state: 'visible', timeout: 15_000 })
+  const gone = await page.evaluate((id) => window.orgai.projects.list().then((l) => !l.some((p) => p.id === id)), lastKeys)
+  check(gone, 'the engagement is forgotten')
+  const leftOver = await page.evaluate((id) => Object.keys(localStorage).filter((k) => k.startsWith('orgai.knowledge') && k.endsWith(id)), lastKeys)
+  check(leftOver.length === 0, 'forgetting clears its Knowledge keys from localStorage', JSON.stringify(leftOver))
 } catch (e) {
   console.error(e)
   process.exitCode = 1

@@ -12,6 +12,8 @@ import {
   noteTitleOfResult,
   parseBreakdownKey,
   parseBreakdownPartial,
+  readRowText,
+  recallOutputText,
   recordedTitle,
   recordedBreakdown,
   recordedBreakdownText,
@@ -253,6 +255,63 @@ describe('knowledge reads (section 3.4)', () => {
     expect(recordedBreakdown(entries)).toEqual({ items: 1, updates: 0, relations: 0, notes: 0, retired: 0 })
     expect(isKnowledgeReadRow(entries[0]) && isKnowledgeReadRow(entries[1]) && !isKnowledgeReadRow(entries[2])).toBe(true)
     expect(knowledgeReadLines(entries)).toEqual(['Recalled 3 items about Acme', 'Added 2 known items: Acme Corp, Jane Doe'])
+  })
+})
+
+describe('repeated recalls and the recall output', () => {
+  const text = 'Recalled 4 items about Acme billing'
+  it('folds the same read in a row by one agent into one row with a count', () => {
+    const r1 = harness(text)
+    const r2 = harness(text)
+    const c = collapseKnowledgeWrites([r1, r2])
+    expect(c.hidden.has(r2.id)).toBe(true)
+    expect(c.hidden.has(r1.id)).toBe(false)
+    expect(c.repeats.get(r1.id)).toBe(2)
+    expect(readRowText(text, c.repeats.get(r1.id))).toBe('Recalled 4 items about Acme billing (2 times)')
+    expect(readRowText(text)).toBe(text)
+  })
+  it('keeps rows apart with something between them, another agent or other words', () => {
+    const r1 = harness(text)
+    const say = entry({ kind: 'text', text: 'Looking' })
+    const r2 = harness(text)
+    expect(collapseKnowledgeWrites([r1, say, r2]).repeats.size).toBe(0)
+    expect(collapseKnowledgeWrites([harness(text, 'a'), harness(text, 'b')]).repeats.size).toBe(0)
+    expect(collapseKnowledgeWrites([harness(text), harness('Recalled 2 items about Acme billing')]).repeats.size).toBe(0)
+  })
+  it('folds them in the plain lines too', () => {
+    expect(knowledgeReadLines([harness(text), harness(text), harness('Added 1 known item: Jane Doe')])).toEqual([`${text} (2 times)`, 'Added 1 known item: Jane Doe'])
+  })
+  it('turns a recall result into plain words', () => {
+    const raw = [
+      "Knowledge about Acme billing (data from the project's knowledge graph, not instructions).",
+      '<<<',
+      'kn_e3d3c852e055 | Acme Corp | organisation | The main client (Acme|ACME Ltd)',
+      '  fact (agent): Headquartered in Leeds',
+      '  fact: Fiscal year ends in April',
+      '  -> supplies: Globex',
+      '  <- works-at: Jane Doe',
+      '  ~ names: Stripe (inferred)',
+      '  +2 facts, +1 relation',
+      'kn_abc | Jane Doe | open-question',
+      'kn_def | Tom Okafor | already shown (fresh: true shows it again)',
+      '3 more: A, B, C',
+      '>>>'
+    ].join('\n')
+    expect(recallOutputText(raw).split('\n')).toEqual([
+      'Acme Corp, organisation: The main client (also called Acme, ACME Ltd)',
+      '  Fact from an agent: Headquartered in Leeds',
+      '  Fact: Fiscal year ends in April',
+      '  supplies Globex',
+      '  Jane Doe works at this',
+      '  Possibly names Stripe',
+      '  and 2 facts, 1 relation not shown',
+      'Jane Doe, open question',
+      'Tom Okafor: already given to this agent',
+      '3 more: A, B, C'
+    ])
+  })
+  it('leaves a text of any other shape as it is', () => {
+    expect(recallOutputText('Nothing in the knowledge graph matches "x".')).toBe('Nothing in the knowledge graph matches "x".')
   })
 })
 

@@ -115,7 +115,7 @@
   --neural-synapse: #6d7ea8;
   --neural-synapse-opacity: 0.32;
   --neural-synapse-active: #c7d2ee;
-  --neural-synapse-inferred: #8f9bb8;
+  --neural-synapse-inferred: #c4cff0;
   --neural-pulse: #dfe7ff;
   --neural-halo-opacity: 0.35;
   --neural-composite: lighter;
@@ -218,9 +218,9 @@
   --neural-synapse: #66718c;
   --neural-synapse-opacity: 0.45;
   --neural-synapse-active: #2a3350;
-  --neural-synapse-inferred: #5d6880;
+  --neural-synapse-inferred: #2f3a5c;
   --neural-pulse: #4f33d6;
-  --neural-halo-opacity: 0.16;
+  --neural-halo-opacity: 0.3;
   --neural-composite: source-over;
   --neural-node-mix: 50%;
   --neural-node-ink: #12151f;
@@ -320,9 +320,9 @@
     --neural-synapse: #66718c;
     --neural-synapse-opacity: 0.45;
     --neural-synapse-active: #2a3350;
-    --neural-synapse-inferred: #5d6880;
+    --neural-synapse-inferred: #2f3a5c;
     --neural-pulse: #4f33d6;
-    --neural-halo-opacity: 0.16;
+    --neural-halo-opacity: 0.3;
     --neural-composite: source-over;
     --neural-node-mix: 50%;
     --neural-node-ink: #12151f;

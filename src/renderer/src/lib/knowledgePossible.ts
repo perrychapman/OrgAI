@@ -1,4 +1,4 @@
-import type { KnowledgeEdge, KnowledgeInferredLink, KnowledgeNode } from '@shared/types'
+import type { KnowledgeEdge, KnowledgeInferencePartial, KnowledgeInferredLink, KnowledgeNode } from '@shared/types'
 import { normalizeKnowledgeKey } from '@shared/knowledge'
 import { HIDDEN_OR_CONTROL_RUN } from './hiddenChars'
 import { keyWords } from './knowledge'
@@ -9,17 +9,16 @@ import { keyWords } from './knowledge'
 export const POSSIBLE_VISIBLE = 5
 export const POSSIBLE_QUIET = 'OrgAI found these by matching names in the text. They may be wrong.'
 export const POSSIBLE_BLANK_WORD = 'Add a word for how they relate, such as works at.'
+/**
+ * The empty word field. An instruction, never an example: a relation word here would read as OrgAI's suggestion for this
+ * pair ("Jane Doe [works at] Tom Okafor") when it has none. A real suggestion is the field's value (`initialWord`).
+ */
+export const POSSIBLE_WORD_PLACEHOLDER = 'How they relate'
 export const POSSIBLE_BAD_WORD = 'Use letters, digits, spaces and hyphens, at most 40 characters.'
 export const POSSIBLE_LOAD_FAILED = 'Could not check for possible connections.'
 
-/** KnowledgeInferredResult.partial: the name matcher stopped at its budget. Optional until every build has the field. */
-export interface PossiblePartial {
-  scannedEntities: number
-  totalEntities: number
-}
-
 /** The honest line when the matcher stopped early; null when it read everything or the counts are not usable. */
-export function possiblePartialNote(partial: PossiblePartial | null | undefined): string | null {
+export function possiblePartialNote(partial: KnowledgeInferencePartial | null | undefined): string | null {
   if (!partial) return null
   const { scannedEntities: s, totalEntities: t } = partial
   if (!Number.isFinite(s) || !Number.isFinite(t) || s < 0 || t <= 0) return null

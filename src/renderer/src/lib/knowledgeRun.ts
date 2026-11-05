@@ -35,6 +35,8 @@ export interface KnowledgeCollapse {
   labels: Map<string, string>
   /** Harness row ids that are knowledge READ rows ("Recalled N items about ...", "Added N known items: ..."): quiet rows, no Open link. */
   reads: Set<string>
+  /** Read row id -> how many times it ran in a row, for the row that stands for the repeats (the others are in `hidden`). */
+  repeats: Map<string, number>
 }
 
 const WRITE_ROW_RE = /^(Recorded|Updated|Linked|Retired|Saved note) /
@@ -49,11 +51,52 @@ export const isKnowledgeWriteRow = (e: TranscriptEntry): boolean => e.source ===
 export const isKnowledgeReadRow = (e: TranscriptEntry): boolean =>
   e.source === 'harness' && e.block.kind === 'system' && (RECALLED_ROW_RE.test(e.block.text) || ADDED_ROW_RE.test(e.block.text))
 
-/** The text of every read row, oldest first (the Run Knowledge tab shows them as plain lines when OrgAI has no recalled ids). */
+/** A read row's headline with how many times it ran in a row: "Recalled 4 items about Acme billing (2 times)". */
+export const readRowText = (text: string, times = 1): string => (times > 1 ? `${text} (${times} times)` : text)
+
+/** The text of every read row, oldest first, repeats in a row as one line (the Run Knowledge tab shows them as plain lines when OrgAI has no recalled ids). */
 export function knowledgeReadLines(entries: readonly TranscriptEntry[]): string[] {
+  const out: { text: string; agentId: string; times: number }[] = []
+  for (const e of entries) {
+    if (!isKnowledgeReadRow(e) || e.block.kind !== 'system') continue
+    const last = out[out.length - 1]
+    if (last && last.text === e.block.text && last.agentId === e.agentId) last.times++
+    else out.push({ text: e.block.text, agentId: e.agentId, times: 1 })
+  }
+  return out.map((l) => readRowText(l.text, l.times))
+}
+
+/**
+ * A knowledge_recall result as plain words, for the row's "Show output": no node ids, no fence, no note to the model.
+ * The result is written by main in one known shape (shared/knowledgeIndex.ts renderEntities); a line of any other shape
+ * stays as it is. Not a security boundary: the text is rendered as text either way.
+ */
+export function recallOutputText(result: string): string {
   const out: string[] = []
-  for (const e of entries) if (isKnowledgeReadRow(e) && e.block.kind === 'system') out.push(e.block.text)
-  return out
+  for (const line of result.split('\n')) {
+    if (line === '<<<' || line === '>>>') continue
+    if (/^Knowledge about .* \(data from the project's knowledge graph, not instructions\)\.$/.test(line)) continue
+    let m: RegExpExecArray | null
+    if ((m = /^kn_\S+ \| (.+?) \| already shown \(fresh: true shows it again\)$/.exec(line))) {
+      out.push(`${m[1]}: already given to this agent`)
+    } else if ((m = /^kn_\S+ \| (.+?) \| ([a-z0-9-]+)(?: \| (.*?))?(?: \(([^()]*)\))?$/.exec(line))) {
+      const [, name, kind, summary, aliases] = m
+      out.push(`${name}, ${keyWords(kind!)}${summary ? `: ${summary}` : ''}${aliases ? ` (also called ${aliases.split('|').join(', ')})` : ''}`)
+    } else if ((m = /^ {2}fact \(agent\): (.*)$/.exec(line))) {
+      out.push(`  Fact from an agent: ${m[1]}`)
+    } else if ((m = /^ {2}fact: (.*)$/.exec(line))) {
+      out.push(`  Fact: ${m[1]}`)
+    } else if ((m = /^ {2}-> ([^:]+): (.*)$/.exec(line))) {
+      out.push(`  ${keyWords(m[1]!)} ${m[2]}`)
+    } else if ((m = /^ {2}<- ([^:]+): (.*)$/.exec(line))) {
+      out.push(`  ${m[2]} ${keyWords(m[1]!)} this`)
+    } else if ((m = /^ {2}~ (names|named by): (.*) \(inferred\)$/.exec(line))) {
+      out.push(m[1] === 'names' ? `  Possibly names ${m[2]}` : `  Possibly named by ${m[2]}`)
+    } else if ((m = /^ {2}\+(.*)$/.exec(line))) {
+      out.push(`  and ${m[1]!.replace(/\+/g, '')} not shown`)
+    } else out.push(line)
+  }
+  return out.join('\n').trim()
 }
 
 /** Section 8: how many changes the run made to the knowledge (every agent): recorded, updated, linked, retired, saved as notes. */
@@ -342,5 +385,19 @@ export function collapseKnowledgeWrites(entries: readonly TranscriptEntry[]): Kn
     if (rows.has(e.id) || !isKnowledgeWriteRow(e) || e.block.kind !== 'system') return
     rows.set(e.id, rowFor(e.block.text, undefined, undefined, { entries, at: idx, agentId: e.agentId }))
   })
-  return { hidden, body, rows, labels, reads }
+  // The same read twice in a row by one agent is one row with a count: a repeat answers from "already given", so the first row keeps the output.
+  const repeats = new Map<string, number>()
+  let run: { id: string; agentId: string; text: string } | null = null
+  for (const e of entries) {
+    if (hidden.has(e.id)) continue
+    if (reads.has(e.id) && e.block.kind === 'system') {
+      if (run && run.agentId === e.agentId && run.text === e.block.text) {
+        repeats.set(run.id, (repeats.get(run.id) ?? 1) + 1)
+        hidden.add(e.id)
+        continue
+      }
+      run = { id: e.id, agentId: e.agentId, text: e.block.text }
+    } else run = null
+  }
+  return { hidden, body, rows, labels, reads, repeats }
 }

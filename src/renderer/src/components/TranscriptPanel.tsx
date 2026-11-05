@@ -45,7 +45,7 @@ import { Checkbox } from './ui/Checkbox'
 import { Icon } from './ui/Icon'
 import { TabPanel, Tabs, type TabItem } from './ui/Tabs'
 import { autoContinueLine, bareToolName, humanizeToolResult, humanizeToolUse, omittedLabel, type FeedItem, type ToolKind } from '../lib/transcriptRows'
-import { collapseKnowledgeWrites, type KnowledgeRow } from '../lib/knowledgeRun'
+import { collapseKnowledgeWrites, readRowText, recallOutputText, type KnowledgeRow } from '../lib/knowledgeRun'
 
 /** Distance from the end of the conversation under which it still counts as scrolled to the end. */
 const STICK_PX = 48
@@ -285,7 +285,7 @@ function KnowledgeReadRow({ text, body }: { text: string; body: string | undefin
         {body && (
           <details className="entry-detail">
             <summary>Show output</summary>
-            <pre>{body}</pre>
+            <pre>{recallOutputText(body)}</pre>
           </details>
         )}
       </div>
@@ -393,7 +393,7 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
         const harness = e.source === 'harness'
         const kRow = harness ? knowledge.rows.get(e.id) : undefined
         if (kRow) return <KnowledgeWriteRow key={e.id} row={kRow} body={knowledge.body.get(e.id)} projectId={projectId} runId={runId} />
-        if (harness && knowledge.reads.has(e.id)) return <KnowledgeReadRow key={e.id} text={b.text} body={knowledge.body.get(e.id)} />
+        if (harness && knowledge.reads.has(e.id)) return <KnowledgeReadRow key={e.id} text={readRowText(b.text, knowledge.repeats.get(e.id))} body={knowledge.body.get(e.id)} />
         const skillName = harness ? b.text.match(/^Loaded skill (.+)$/)?.[1] : undefined
         const skillBody = skillName ? skillLoads.body.get(e.id) : undefined
         // Harness lines (nudges, hand-offs, limit notices) and in-run agent messages are quiet rows; the full text sits behind a disclosure.

@@ -4,7 +4,7 @@ import type { KnowledgeGraph, KnowledgeInferredLink, KnowledgeNode } from '@shar
 import { keyWords } from '../../lib/knowledge'
 import { relationsInUse } from '../../lib/knowledgeList'
 import { cleanIpcError } from '../../lib/ipcError'
-import { POSSIBLE_LOAD_FAILED, POSSIBLE_QUIET, POSSIBLE_VISIBLE, confirmWord, dismissLabel, initialWord, linkedStatus, moreLabel, possibleRows, rowAfterRemoval } from '../../lib/knowledgePossible'
+import { POSSIBLE_LOAD_FAILED, POSSIBLE_QUIET, POSSIBLE_VISIBLE, POSSIBLE_WORD_PLACEHOLDER, confirmWord, dismissLabel, initialWord, linkedStatus, moreLabel, possibleRows, rowAfterRemoval } from '../../lib/knowledgePossible'
 import type { PossibleRow } from '../../lib/knowledgePossible'
 import { Button } from '../ui/Button'
 import { Input } from '../ui/Input'
@@ -187,7 +187,7 @@ export function KnowledgePossible({
                     list={relations.length ? `${uid}-rels` : undefined}
                     invalid={!!err}
                     aria-describedby={err ? `${uid}-e-${id}` : undefined}
-                    placeholder="works at"
+                    placeholder={POSSIBLE_WORD_PLACEHOLDER}
                     autoComplete="off"
                     spellCheck={false}
                     data-testid="knowledge-possible-word"

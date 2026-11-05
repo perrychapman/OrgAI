@@ -233,31 +233,17 @@ export default function RunKnowledge({ runId, projectId }: { runId: string; proj
     } else patch({ request: undefined, query: req.name ?? req.noteTitle ?? '', openId: null, stack: [] })
   }, [ui.request, graph, patch])
 
-  // Rows reorder as agents recall things; if the focused row moved and lost focus, put it back.
-  const lastFocusedId = useRef<string | null>(null)
-  useEffect(() => {
-    const onIn = (e: FocusEvent): void => {
-      const t = e.target
-      if (t instanceof HTMLElement && t.dataset.returnId && root.current?.contains(t)) lastFocusedId.current = t.dataset.returnId
-      else lastFocusedId.current = null
-    }
-    // The user leaving a row that is still on the page ends the watch; a row being moved stays watched.
-    const onOut = (e: FocusEvent): void => {
-      if (e.target instanceof HTMLElement && e.target.isConnected && e.target.dataset.returnId === lastFocusedId.current) lastFocusedId.current = null
-    }
-    document.addEventListener('focusin', onIn)
-    document.addEventListener('focusout', onOut)
-    return () => {
-      document.removeEventListener('focusin', onIn)
-      document.removeEventListener('focusout', onOut)
-    }
-  }, [])
+  // Rows reorder as agents recall things, and a row or the open item can leave altogether. Where focus was just before
+  // this commit is read here; if the commit dropped it to the page, it goes back to that row, else to Back or the search.
+  const focusBefore = useRef<{ returnId: string | null } | null>(null)
+  const activeNow = document.activeElement
+  focusBefore.current = activeNow instanceof HTMLElement && root.current?.contains(activeNow) ? { returnId: activeNow.dataset.returnId ?? null } : null
   useLayoutEffect(() => {
+    const was = focusBefore.current
     const active = document.activeElement
-    if ((active !== document.body && active !== null) || !lastFocusedId.current) return
-    Array.from(root.current?.querySelectorAll<HTMLElement>('[data-return-id]') ?? [])
-      .find((el) => el.dataset.returnId === lastFocusedId.current)
-      ?.focus({ preventScroll: true })
+    if (!was || (active !== document.body && active !== null)) return
+    const row = was.returnId ? Array.from(root.current?.querySelectorAll<HTMLElement>('[data-return-id]') ?? []).find((el) => el.dataset.returnId === was.returnId) : undefined
+    ;(row ?? root.current?.querySelector<HTMLElement>('[data-testid=run-knowledge-back], [data-testid=run-knowledge-search]'))?.focus({ preventScroll: true })
   })
 
   const resultsRef = useRef<HTMLUListElement>(null)

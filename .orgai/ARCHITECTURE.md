@@ -390,8 +390,10 @@ components/layout:
   (filters, one-listbox grouped list with roving focus and windowing, `SidePanel` detail pane with inline fields, facts,
   relations, possible connections (`KnowledgePossible`), note links and history, `NoteDialog`; the Graph view is the
   neural canvas `KnowledgeNeural.tsx` + `neuralEngine.ts` / `neuralColors.ts` / `NeuralCard` / `NeuralLegend`, spec
-  `docs/design/knowledge-graph-2.md`, which uses no React Flow and none of the App settings canvas options; the run
-  side panel's Knowledge tab is `RunKnowledge.tsx`), pure helpers in `lib/knowledge.ts` (item model over
+  `docs/design/knowledge-graph-2.md`, which uses no React Flow and none of the App settings canvas options; a window
+  resize refits or scales the view while a panel or band change moves nothing; the run
+  side panel's Knowledge tab is `RunKnowledge.tsx`), per-project preferences in `lib/knowledgePrefs.ts` (cleared on
+  remove), pure helpers in `lib/knowledge.ts` (item model over
   `KnowledgeGraph` nodes and `EngagementNote`s, kind order and colour slots, creation order, search rank, provenance /
   history lines, `resolveFocus`), `lib/knowledgeList.ts` (windowing, type-ahead, announcement batching, fact list
   edits), `lib/knowledgeNeural.ts` (seeded force layout, radius, level of detail, labels, card placement, keyboard targets, spoken names), `lib/knowledgePossible.ts`, `lib/runKnowledge.ts`,

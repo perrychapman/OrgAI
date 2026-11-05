@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import type { KeyboardEvent, ReactElement, Ref } from 'react'
+import type { CSSProperties, KeyboardEvent, ReactElement, Ref } from 'react'
 import { flushSync } from 'react-dom'
 import { Maximize, ZoomIn, ZoomOut } from 'lucide-react'
 import type { KnowledgeGraph as KnowledgeGraphData, KnowledgeInferredResult } from '@shared/types'
@@ -22,6 +22,8 @@ import {
   radiiOf,
   relationRows,
   safeNodeId,
+  screenFloor,
+  screenRadius,
   sharedNeighbourLine,
   spatialTarget,
   spokenName,
@@ -78,6 +80,8 @@ const OPTIONS_LARGEST = 50
 const TYPE_AHEAD_MS = 500
 const CARD_SHOW_MS = 60
 const CARD_HIDE_MS = 120
+/** Stage changes within this time of the last one are part of a window resize: the panel, sidebar and filter band follow a few frames later. */
+const WINDOW_RESIZE_MS = 300
 
 /** The keyed wrapper: a new project starts a new canvas. */
 export default function KnowledgeNeural(props: KnowledgeNeuralProps): ReactElement {
@@ -134,7 +138,7 @@ const NeuralOption = memo(function NeuralOption(p: OptionProps): ReactElement {
       aria-label={p.label}
       tabIndex={p.tabbable ? 0 : -1}
       className="neural-node"
-      style={{ left: p.x - r, top: p.y - r, width: r * 2, height: r * 2 }}
+      style={{ left: p.x, top: p.y, '--r': r, '--floor': screenFloor(r) } as CSSProperties}
       onFocus={(e) => p.onFocusOption(p.id, e.currentTarget.matches(':focus-visible'))}
       onBlur={() => p.onBlurOption(p.id)}
     />
@@ -269,6 +273,8 @@ function NeuralInner(props: KnowledgeNeuralProps): ReactElement {
     if (ul) {
       ul.style.transform = `translate(${v.x}px, ${v.y}px) scale(${v.k})`
       ul.style.setProperty('--k', String(v.k))
+      // What a world radius becomes above zoom 1, in this parent's scaled px, so an option stays the size of its disc.
+      ul.style.setProperty('--grow', String(v.k > 1 ? screenRadius(1, v.k) / v.k : 1))
     }
   }, [])
 
@@ -305,21 +311,32 @@ function NeuralInner(props: KnowledgeNeuralProps): ReactElement {
     }
     const engine = new NeuralEngine(root, stage, field, pulses, host)
     engineRef.current = engine
-    // Every node keeps its place in the window when the stage's own corner moves (the filter band rewrapping).
+    // A panel opening or the filter band rewrapping moves nothing: every node keeps its place in the window, also when
+    // the stage's own corner moves. A window resize (and whatever follows from it, the panel folding to its rail, the
+    // sidebar to its rail) is a different case: the engine refits or keeps the user's view, so the corner is not added on top.
     let corner = stage.getBoundingClientRect()
-    const ro = new ResizeObserver(() => {
-      const r = stage.getBoundingClientRect()
-      engine.resize(r.width, r.height, window.devicePixelRatio || 1)
-      if (r.left !== corner.left || r.top !== corner.top) engine.offsetView(corner.left - r.left, corner.top - r.top)
-      corner = r
-      const sel = propsRef.current.selectedId
-      if (sel) engine.reveal(sel, 200)
-    })
-    ro.observe(stage)
+    let win = { w: window.innerWidth, h: window.innerHeight }
+    let windowUntil = 0
     const measure = (): void => {
       const r = stage.getBoundingClientRect()
-      engine.resize(r.width, r.height, window.devicePixelRatio || 1)
+      const dpr = window.devicePixelRatio || 1
+      const now = performance.now()
+      const burstStart = now >= windowUntil
+      if (window.innerWidth !== win.w || window.innerHeight !== win.h || !burstStart) {
+        win = { w: window.innerWidth, h: window.innerHeight }
+        windowUntil = now + WINDOW_RESIZE_MS
+      }
+      if (now < windowUntil) engine.resizeWindow(r.width, r.height, dpr, burstStart)
+      else {
+        const fitted = engine.resize(r.width, r.height, dpr)
+        if (!fitted && (r.left !== corner.left || r.top !== corner.top)) engine.offsetView(corner.left - r.left, corner.top - r.top)
+      }
+      corner = r
+      const sel = propsRef.current.selectedId
+      if (sel) engine.reveal(sel, now < windowUntil ? 0 : 200)
     }
+    const ro = new ResizeObserver(measure)
+    ro.observe(stage)
     // A change of device pixel ratio (another monitor, app zoom) does not resize the stage in CSS px.
     window.addEventListener('resize', measure)
     measure()
@@ -512,7 +529,11 @@ function NeuralInner(props: KnowledgeNeuralProps): ReactElement {
         best = id
       }
     }
-    if (!best) return
+    if (!best) {
+      // Nothing left to stand on in the graph: the way out of the "no items match" state, else the switch to the list.
+      rootRef.current?.querySelector<HTMLElement>('[data-testid=knowledge-clear-filters], [data-testid=knowledge-skip-list]')?.focus({ preventScroll: true })
+      return
+    }
     els.current.get(best)?.focus({ preventScroll: true })
     announce(`That item left the graph. Now on ${cleanLabel(m.names[m.index.get(best)!])}.`)
   })

@@ -1,6 +1,7 @@
 import { normalizeView } from '../lib/teamView'
 import { droppedExtrasMessage } from '../lib/folderLists'
 import { rulesChangedProject } from '../lib/rulesChange'
+import { clearKnowledgePrefs } from '../lib/knowledgePrefs'
 import { isTeamSurfaceRun } from '../lib/runSurface'
 import { useTeamAssistantStore } from './teamAssistant'
 import { create } from 'zustand'
@@ -1354,6 +1355,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   async removeProject(id) {
     const result = await window.orgai.projects.remove(id)
+    clearKnowledgePrefs(id)
     set((s) => {
       // H2: the project's runs go with it, so the Dashboard (attention column, hero, tiles, Cost card) stops counting them.
       const gone = new Set<string>()

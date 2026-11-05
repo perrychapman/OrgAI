@@ -244,6 +244,20 @@ export function neuralRadius(total: number, maxTotal: number): number {
   return Math.min(RADIUS_MAX, Math.max(RADIUS_MIN, r))
 }
 
+/** How far above the 3 px floor the largest node stays on screen, at any zoom. */
+export const SCREEN_FLOOR_SPAN = 9
+/** Above zoom 1 a disc grows at this share of the zoom, so zooming in opens the gaps between nodes instead of filling them. */
+export const ZOOM_IN_GROWTH = 0.35
+
+/** The on-screen floor of a node of world radius r: about 3 px for a leaf, up to 12 px for the largest node, so size still reads at low zoom. Curved, so a dense cloud of leaves stays small. */
+export const screenFloor = (r: number): number => MIN_SCREEN_RADIUS + SCREEN_FLOOR_SPAN * (Math.max(0, r - RADIUS_MIN) / (RADIUS_MAX - RADIUS_MIN)) ** 1.5
+
+/** The radius a node of world radius r draws at on screen at zoom k. */
+export function screenRadius(r: number, k: number): number {
+  if (k >= 1) return r * (1 + (k - 1) * ZOOM_IN_GROWTH)
+  return Math.max(r * k, screenFloor(r))
+}
+
 /** Radii of every node (world px) over the drawn ones' maximum total. */
 export function radiiOf(totals: readonly number[], drawn?: Uint8Array): number[] {
   let max = 0
@@ -269,7 +283,7 @@ export interface LodSpec {
 export const LOD_SPECS: Record<Lod, LodSpec> = {
   full: { halos: Infinity, curved: true, drift: Infinity, ambient: 12, fps: 30 },
   medium: { halos: 100, curved: false, drift: 100, ambient: 8, fps: 30 },
-  low: { halos: 0, curved: false, drift: 0, ambient: 4, fps: 20 }
+  low: { halos: 24, curved: false, drift: 0, ambient: 4, fps: 20 }
 }
 
 /** The tier for the number of drawn nodes: up to 300 full, 301-800 medium, more low. */
@@ -293,11 +307,19 @@ export interface LayoutState {
   /** Flat pairs of node indexes. */
   links: Uint32Array
   degree: Uint16Array
+  /** Pull towards the centre, from the node count (`gravityFor`). */
+  gravity: number
   alpha: number
   ticks: number
   maxTicks: number
   settled: boolean
 }
+
+/**
+ * Repulsion against gravity sets the cloud's radius at about sqrt(220 n / gravity), which at the base gravity leaves a
+ * 2,000-node graph some 6,600 units wide: fit then sits at the zoom floor. Above 400 nodes gravity grows with the count, up to five times.
+ */
+export const gravityFor = (nodes: number): number => LAYOUT.gravity * Math.min(5, Math.max(1, nodes / 400))
 
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5))
 
@@ -347,7 +369,7 @@ export function initLayout(input: LayoutInput): LayoutState {
     y[i] = rad * Math.sin(ang) + (rnd() - 0.5) * 4
   }
   const links = linkArray(index, input.links)
-  return { ids: [...input.ids], x, y, vx: new Float64Array(n), vy: new Float64Array(n), r: Float64Array.from(input.radii), pinned: new Uint8Array(n), links, degree: degreeOf(n, links), alpha: 1, ticks: 0, maxTicks: LAYOUT.maxTicks, settled: n === 0 }
+  return { ids: [...input.ids], x, y, vx: new Float64Array(n), vy: new Float64Array(n), r: Float64Array.from(input.radii), pinned: new Uint8Array(n), links, degree: degreeOf(n, links), gravity: gravityFor(n), alpha: 1, ticks: 0, maxTicks: LAYOUT.maxTicks, settled: n === 0 }
 }
 
 /** A layout from stored positions: settled at once. Ids without a position start at the origin (use `placeNew`). */
@@ -610,8 +632,8 @@ function tick(s: LayoutState): void {
       s.vy[i] = 0
       continue
     }
-    s.vx[i] -= s.x[i] * LAYOUT.gravity * alpha
-    s.vy[i] -= s.y[i] * LAYOUT.gravity * alpha
+    s.vx[i] -= s.x[i] * s.gravity * alpha
+    s.vy[i] -= s.y[i] * s.gravity * alpha
     s.vx[i] *= keep
     s.vy[i] *= keep
     s.x[i] += s.vx[i]
@@ -706,7 +728,7 @@ export function placeNew(prev: LayoutState, adds: readonly PlaceInput[], links: 
   }
   const pinned = new Uint8Array(n)
   for (let i = 0; i < n0; i++) pinned[i] = 1
-  const s: LayoutState = { ids, x, y, vx: new Float64Array(n), vy: new Float64Array(n), r, pinned, links: flat, degree: degreeOf(n, flat), alpha: 1, ticks: 0, maxTicks: n > 800 ? LAYOUT.placeTicksLarge : LAYOUT.placeTicks, settled: false }
+  const s: LayoutState = { ids, x, y, vx: new Float64Array(n), vy: new Float64Array(n), r, pinned, links: flat, degree: degreeOf(n, flat), gravity: gravityFor(n), alpha: 1, ticks: 0, maxTicks: n > 800 ? LAYOUT.placeTicksLarge : LAYOUT.placeTicks, settled: false }
   while (!s.settled) tick(s)
   s.pinned = new Uint8Array(n)
   s.alpha = 0
@@ -729,7 +751,7 @@ export function positionsOf(s: LayoutState): Map<string, { x: number; y: number 
 export const STORED_LAYOUT_MAX = 5000
 const COORD_LIMIT = 1_000_000
 
-export const layoutKey = (projectId: string): string => `orgai.knowledgeLayout.${projectId}`
+export { layoutKey } from './knowledgePrefs'
 
 /** The text stored for a settled layout: ids and whole-number coordinates only. */
 export function serializeLayout(positions: ReadonlyMap<string, { x: number; y: number }>): string {
@@ -800,6 +822,49 @@ export function boundsOf(points: readonly { x: number; y: number; r: number }[])
   return b
 }
 
+/** Up to this many discs a fit shows every one; above it, the far edge of the cloud may sit off the stage. */
+export const CORE_FIT_FROM = 300
+/** The share cut from each end of each axis above CORE_FIT_FROM. */
+export const CORE_TRIM = 0.025
+
+/**
+ * The box a fit aims for. Small graphs: all of it. Large ones: the dense core, the middle of the x and y distributions,
+ * so a few far outliers do not shrink everything else.
+ */
+export function coreBox(points: readonly { x: number; y: number; r: number }[]): Box | null {
+  if (points.length <= CORE_FIT_FROM) return boundsOf(points)
+  const xs = Float64Array.from(points, (p) => p.x).sort()
+  const ys = Float64Array.from(points, (p) => p.y).sort()
+  const cut = Math.floor(points.length * CORE_TRIM)
+  const last = points.length - 1 - cut
+  let maxR = 0
+  for (const p of points) if (p.r > maxR) maxR = p.r
+  return { x0: xs[cut] - maxR, y0: ys[cut] - maxR, x1: xs[last] + maxR, y1: ys[last] + maxR }
+}
+
+/**
+ * The view after the window changed size while the view is the user's. A shrink scales it so the same part of the world
+ * stays on the stage; a grow keeps the zoom. Either way the world point at the stage's centre stays at the centre. If
+ * the graph would then be off the stage altogether, the smallest pan brings its nearest edge back in.
+ */
+export function viewAfterWindowResize(view: View, from: { w: number; h: number }, to: { w: number; h: number }, graph: Box | null): View {
+  if (from.w <= 0 || from.h <= 0 || to.w <= 0 || to.h <= 0) return view
+  const shrink = Math.min(1, to.w / from.w, to.h / from.h)
+  const k = clampZoom(view.k * shrink)
+  const wx = (from.w / 2 - view.x) / view.k
+  const wy = (from.h / 2 - view.y) / view.k
+  let x = to.w / 2 - wx * k
+  let y = to.h / 2 - wy * k
+  if (graph) {
+    const keep = Math.min(FIT_PADDING, to.w / 4, to.h / 4)
+    if (graph.x1 * k + x < keep) x += keep - (graph.x1 * k + x)
+    else if (graph.x0 * k + x > to.w - keep) x -= graph.x0 * k + x - (to.w - keep)
+    if (graph.y1 * k + y < keep) y += keep - (graph.y1 * k + y)
+    else if (graph.y0 * k + y > to.h - keep) y -= graph.y0 * k + y - (to.h - keep)
+  }
+  return { x, y, k }
+}
+
 /** The view that fits `box` in the stage with 48 px of padding and zoom 1.4 at most (centred). */
 export function fitView(box: Box | null, stage: { w: number; h: number }, pad = FIT_PADDING, maxZoom = FIT_ZOOM_MAX): View {
   if (!box || stage.w <= 0 || stage.h <= 0) return { x: stage.w / 2, y: stage.h / 2, k: 1 }
@@ -821,7 +886,7 @@ export function zoomAt(view: View, k: number, sx: number, sy: number): View {
 export function panIntoView(view: View, node: { x: number; y: number; r: number }, stage: { w: number; h: number }, margin = FIT_PADDING): View {
   const sx = node.x * view.k + view.x
   const sy = node.y * view.k + view.y
-  const rr = Math.max(node.r * view.k, MIN_SCREEN_RADIUS)
+  const rr = screenRadius(node.r, view.k)
   const m = Math.min(margin, Math.max(0, stage.w / 2 - rr - 1), Math.max(0, stage.h / 2 - rr - 1))
   let dx = 0
   let dy = 0
@@ -838,9 +903,14 @@ export const screenOf = (view: View, wx: number, wy: number): { x: number; y: nu
 
 /** How many names rest on the stage: floor(area / 40,000) between 4 and 28; 60 at zoom 1.6 or above. */
 export function labelBudget(stage: { w: number; h: number }, zoom: number): number {
-  if (zoom >= 1.6) return 60
+  if (zoom >= 1.6) return LABELS_ZOOMED
   return Math.min(28, Math.max(4, Math.floor((stage.w * stage.h) / 40000)))
 }
+
+/** The most names at zoom 1.6 or above. */
+export const LABELS_ZOOMED = 60
+/** The names a filter or search may place on its lit items, however small the stage. */
+export const LABELS_LIT = 40
 
 export interface LabelCandidate {
   id: string
@@ -853,9 +923,13 @@ export interface LabelCandidate {
   order: number
   /** The text to draw (already cleaned and cut). */
   text: string
-  /** Only an obstacle: no name unless it is in `must` or `priority` (dimmed nodes). */
+  /** A dimmed node: no name unless it is in `must` or `priority`, and it never blocks another node's name. */
   quiet?: boolean
 }
+
+/** Where a name sits around its node: under it when it can, else above, right, left. */
+export type LabelSide = 'below' | 'above' | 'right' | 'left'
+const LABEL_SIDES: readonly LabelSide[] = ['below', 'above', 'right', 'left']
 
 export interface PlacedLabel {
   id: string
@@ -865,10 +939,26 @@ export interface PlacedLabel {
   w: number
   h: number
   text: string
+  side: LabelSide
 }
 
 export const LABEL_HEIGHT = 14
 const LABEL_PAD = 4
+
+/** The top-left of a name's box on one side of a disc; a name above or below stays inside the stage across its width. */
+export function labelSpot(side: LabelSide, c: { x: number; y: number; r: number }, w: number, stageW: number): { x: number; y: number } {
+  const across = Math.max(2, Math.min(c.x - w / 2, stageW - w - 2))
+  switch (side) {
+    case 'below':
+      return { x: across, y: c.y + c.r + 3 }
+    case 'above':
+      return { x: across, y: c.y - c.r - 3 - LABEL_HEIGHT }
+    case 'right':
+      return { x: c.x + c.r + 4, y: c.y - LABEL_HEIGHT / 2 }
+    case 'left':
+      return { x: c.x - c.r - 4 - w, y: c.y - LABEL_HEIGHT / 2 }
+  }
+}
 
 const rectsTouch = (a: { x: number; y: number; w: number; h: number }, b: { x: number; y: number; w: number; h: number }, pad: number): boolean =>
   a.x < b.x + b.w + pad && b.x < a.x + a.w + pad && a.y < b.y + b.h + pad && b.y < a.y + a.h + pad
@@ -880,10 +970,10 @@ function circleHitsRect(cx: number, cy: number, r: number, b: { x: number; y: nu
 }
 
 /**
- * Chooses the names to draw under their nodes. `must` ids (hovered, selected) are always tried first and are not
- * counted; `priority` ids (search matches, active neighbours) follow, then the rest by total descending and creation
- * order, until the budget is used. A name is skipped when its box plus 4 px hits a placed name or a larger node, or when
- * the node is off the stage.
+ * Chooses the names to draw beside their nodes. `must` ids (hovered, selected) are always tried first and are not
+ * counted; `priority` ids (search and filter matches, active neighbours) follow, then the rest by total descending and
+ * creation order, until the budget (at least `minBudget`) is used. A name takes the first of below, above, right, left
+ * where its box plus 4 px hits no placed name and no larger undimmed node and stays on the stage; with none it is skipped.
  */
 export function pickLabels(input: {
   candidates: readonly LabelCandidate[]
@@ -892,9 +982,10 @@ export function pickLabels(input: {
   measure: (text: string) => number
   must?: readonly string[]
   priority?: readonly string[]
+  minBudget?: number
 }): PlacedLabel[] {
   const { candidates, stage, measure } = input
-  const budget = labelBudget(stage, input.zoom)
+  const budget = Math.max(labelBudget(stage, input.zoom), input.minBudget ?? 0)
   const byId = new Map(candidates.map((c) => [c.id, c]))
   const ordered: { c: LabelCandidate; must: boolean }[] = []
   const used = new Set<string>()
@@ -908,30 +999,23 @@ export function pickLabels(input: {
   for (const id of input.priority ?? []) take(id, false)
   const rest = candidates.filter((c) => !used.has(c.id) && !c.quiet).sort((a, b) => b.total - a.total || a.order - b.order)
   for (const c of rest) ordered.push({ c, must: false })
+  const obstacles = candidates.filter((c) => !c.quiet)
   const placed: PlacedLabel[] = []
   let counted = 0
   for (const { c, must } of ordered) {
     if (!must && counted >= budget) break
     if (c.x + c.r < 0 || c.x - c.r > stage.w || c.y + c.r < 0 || c.y - c.r > stage.h) continue
     const w = Math.ceil(measure(c.text))
-    let x = c.x - w / 2
-    x = Math.max(2, Math.min(x, stage.w - w - 2))
-    const y = c.y + c.r + 3
-    if (y + LABEL_HEIGHT > stage.h) continue
-    const box = { x, y, w, h: LABEL_HEIGHT }
-    if (placed.some((p) => rectsTouch(p, box, LABEL_PAD))) continue
-    let blocked = false
-    for (const o of candidates) {
-      if (o.id === c.id) continue
-      // A larger node keeps 4 px of air. A smaller one may sit under the name (the name's stroke keeps it readable), or a hub in a cluster would never carry its name.
-      if (o.r > c.r && circleHitsRect(o.x, o.y, o.r, box, LABEL_PAD)) {
-        blocked = true
-        break
-      }
+    for (const side of LABEL_SIDES) {
+      const box = { ...labelSpot(side, c, w, stage.w), w, h: LABEL_HEIGHT }
+      if (box.y < 0 || box.y + LABEL_HEIGHT > stage.h || box.x < 0 || box.x + w > stage.w) continue
+      if (placed.some((p) => rectsTouch(p, box, LABEL_PAD))) continue
+      // A larger node keeps 4 px of air. A smaller one may sit under the name (the name's stroke keeps it readable), or a hub in a cluster would never carry its name; a dimmed one may too.
+      if (obstacles.some((o) => o.id !== c.id && o.r > c.r && circleHitsRect(o.x, o.y, o.r, box, LABEL_PAD))) continue
+      placed.push({ id: c.id, ...box, text: c.text, side })
+      if (!must) counted++
+      break
     }
-    if (blocked) continue
-    placed.push({ id: c.id, ...box, text: c.text })
-    if (!must) counted++
   }
   return placed
 }
@@ -1204,6 +1288,23 @@ export function newestIds(ids: readonly string[]): string[] {
     if (out.length >= RECALL_IDS_MAX) break
   }
   return out
+}
+
+// ---------------------------------------------------------------- effects across a data change
+
+/**
+ * Items that point at an edge by index, re-pointed when the model changes: an edge's id survives a refetch, its index may
+ * not. Items whose edge left are dropped. A push and then its inferred result make two models; pulses live through both.
+ */
+export function remapByEdge<T extends { edge: number }>(items: readonly T[], before: readonly { id: string }[], after: readonly { id: string }[]): T[] {
+  if (items.length === 0) return []
+  const at = new Map<string, number>()
+  after.forEach((e, i) => at.set(e.id, i))
+  return items.flatMap((p) => {
+    const id = before[p.edge]?.id
+    const edge = id === undefined ? undefined : at.get(id)
+    return edge === undefined ? [] : [{ ...p, edge }]
+  })
 }
 
 // ---------------------------------------------------------------- node colour
