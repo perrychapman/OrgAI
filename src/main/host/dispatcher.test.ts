@@ -14,7 +14,7 @@ vi.mock('../log', () => ({ log: { debug: () => {}, info: () => {}, warn: () => {
 
 const { HostDispatcher } = await import('./dispatcher')
 const { HostEventBus } = await import('./events')
-const { HostRpcFailure } = await import('./registry')
+const { HostRpcFailure, socketInvokableChannels, desktopOnlyChannels } = await import('./registry')
 const { requestChannels } = await import('./jsonCodec')
 const { project: makeProject } = await import('../runtime/testHelpers')
 type GateFn = import('./registry').GateFn
@@ -131,6 +131,13 @@ describe('HostDispatcher.invoke (desktop path)', () => {
     const p = d.invoke(IPC.runsStart, [{ projectId: 'nope', prompt: 'x' }], DESKTOP)
     expect(p).toBeInstanceOf(Promise)
     await expect(p).rejects.toThrow('Project not found')
+  })
+
+  it('agrees with the registry: serves exactly its socket-invokable channels (with a kit), none of its desktop-only ones', () => {
+    const kit = { exportBundle: vi.fn(), previewBundle: vi.fn(), applyBundle: vi.fn() }
+    const d = new HostDispatcher(services({ kit: kit as never }))
+    expect([...d.channels()].sort()).toEqual([...socketInvokableChannels()].sort())
+    expect([...desktopOnlyChannels()].sort()).toEqual([...DESKTOP_ONLY].sort())
   })
 
   it('an unknown channel throws with code unknown_channel', () => {
