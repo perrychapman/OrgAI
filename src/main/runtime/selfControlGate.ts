@@ -900,15 +900,36 @@ export function commandRunsOrgaiCli(command: string, opts: CliScanOptions = {}):
  * takes its program from stdin (`jq -f /dev/stdin`) and a program's `import ... {search: "<dir>"}` reads files there.
  */
 const HEREDOC_DATA_SINKS: ReadonlySet<string> = new Set([
-  'cat', 'tee', 'git', 'gh', 'wc', 'head', 'tail', 'sort', 'uniq', 'tr', 'cut', 'grep', 'egrep', 'fgrep', 'rg', 'diff',
+  'cat', 'tee', 'git', 'gh', 'wc', 'head', 'tail', 'uniq', 'tr', 'cut', 'grep', 'egrep', 'fgrep', 'rg', 'diff',
   'column', 'fold', 'fmt', 'nl', 'rev', 'paste', 'expand', 'unexpand', 'base64', 'iconv'
 ])
+// Not sort (review follow-up): `sort --compress-program=sh` runs the body as a shell script.
 /**
  * Options that make a program read its stdin as file names or paths (`sort --files0-from=-`, `wc --files0-from=-`,
  * `git commit --pathspec-from-file=-`, `git hash-object --stdin-paths`): a here-document next to one is never stripped,
  * whatever the program.
  */
 const STDIN_NAMES_FILES = /^-{1,2}[A-Za-z0-9-]*(?:files0?-from|from-file|stdin-paths)(?:=|$)/
+/**
+ * Long options that read file names from stdin or run another program (`--compress-program`, ripgrep's `--pre` /
+ * `--pre-glob`). GNU getopt and git's parse-options take any unambiguous prefix (`wc --files0=-`, `sort --compress=sh`,
+ * `git commit --pathspec-from=-`), so a long option that is a prefix of one of these counts too.
+ */
+const STDIN_OR_PROGRAM_OPTIONS: readonly string[] = ['files0-from', 'files-from', 'pathspec-from-file', 'stdin-paths', 'compress-program', 'pre', 'pre-glob']
+
+/**
+ * True when a command word makes a here-document next to it more than data: stdin names files or an option runs a
+ * program. git's own `--file` (`git commit --file -`, the message) is an exact option, never an abbreviation.
+ */
+function stdinNotData(word: string, program: string): boolean {
+  const w = word.replace(/^['"]|['"]$/g, '')
+  if (STDIN_NAMES_FILES.test(w)) return true
+  const m = /^--([A-Za-z0-9][A-Za-z0-9-]*)(?:=|$)/.exec(w)
+  if (!m) return false
+  const name = m[1].toLowerCase()
+  if (program === 'git' && name === 'file') return false
+  return STDIN_OR_PROGRAM_OPTIONS.some((o) => o.startsWith(name))
+}
 /** Words that may open a command before its program (`{ cat <<EOF ... }`, `then cat <<EOF`). */
 const HEREDOC_LEADERS: ReadonlySet<string> = new Set(['{', '!', 'then', 'do', 'else'])
 /** A `$(cat <<'EOF' ...)` substitution that is the value of a git / gh message option. */
@@ -962,7 +983,7 @@ function heredocEligible(text: string, frames: readonly HeredocFrame[], op: numb
   const f = frames[frames.length - 1]
   const cmd = commandName(text.slice(f.cmdStart, op))
   if (!cmd) return false
-  if (cmd.words.some((w) => STDIN_NAMES_FILES.test(w.replace(/^['"]|['"]$/g, '')))) return false
+  if (cmd.words.some((w) => stdinNotData(w, cmd.name))) return false
   if (frames.length === 1) {
     // git / gh only as a message (`git commit -F -`, `gh pr create --body-file -`): never `git apply`, whose patch names files.
     if (cmd.name === 'git' || cmd.name === 'gh') return messageCommand(cmd)
@@ -974,7 +995,7 @@ function heredocEligible(text: string, frames: readonly HeredocFrame[], op: numb
   if (!MESSAGE_OPTION_TAIL.test(outerText)) return false
   const outer = commandName(outerText)
   if (!outer) return false
-  if (outer.words.some((w) => STDIN_NAMES_FILES.test(w.replace(/^['"]|['"]$/g, '')))) return false
+  if (outer.words.some((w) => stdinNotData(w, outer.name))) return false
   return messageCommand(outer)
 }
 
@@ -999,7 +1020,7 @@ function pipesOnLine(segment: string): boolean {
  * file` or a `git commit -m "$(cat <<'EOF' ...)"` message is neither denied for its size nor read as commands. A body
  * is left out only when all of these hold: its program is a data sink (HEREDOC_DATA_SINKS; git / gh only with a message
  * subcommand in the subcommand position; inside a substitution only `cat` as a git / gh message value), no word of its
- * command makes stdin name files (STDIN_NAMES_FILES), its delimiter is quoted or its body has no `$(` / backtick, its operator's line
+ * command makes stdin name files or runs another program (stdinNotData), its delimiter is quoted or its body has no `$(` / backtick, its operator's line
  * pipes nowhere, and no piece of the rest of the command is a shell, an interpreter, `.` / `source`, eval, xargs or
  * parallel, nor a program run by its path (any of which could run the written text). Anything this parser is not sure bash reads the same way (arithmetic
  * `((`, backticks, `$'...'`, `case`, an unterminated or continued body, an odd delimiter) returns the text unchanged,
@@ -1184,7 +1205,10 @@ function searchDenied(toolName: string, input: Record<string, unknown>, refs: re
   // source or text files with a known extension (review M3): no protected file has one.
   if (root !== undefined && pathAtOrUnder(root, refs, ctx.cwd, opts)) return true
   if (toolName === 'Grep') {
-    const safeFilter = safeFileGlob(input.glob) || safeSearchType(input.type)
+    // Every filter given must be safe (review follow-up): ripgrep lets a positive --glob win over --type, so a safe
+    // `type` next to `glob: '*'` still searches every file.
+    const has = (v: unknown): boolean => v !== undefined && v !== null && v !== ''
+    const safeFilter = (has(input.glob) || has(input.type)) && (!has(input.glob) || safeGrepGlob(input.glob)) && (!has(input.type) || safeSearchType(input.type))
     if (root !== undefined && !safeFilter && searchReaches(root, undefined, refs, ctx.cwd, opts)) return true
     return pattern !== undefined && isRootedPattern(pattern, platform) && pathAtOrUnder(pattern, refs, ctx.cwd, opts) !== null
   }
@@ -1237,6 +1261,22 @@ function safeFileGlob(v: unknown): boolean {
     const m = /\.([A-Za-z0-9]+)$/.exec(base)
     return !!m && SAFE_SEARCH_EXTS.has(m[1].toLowerCase()) && !a.startsWith('!')
   })
+}
+
+/**
+ * A Grep `glob` that is safe as ripgrep receives it. Claude Code's Grep splits `glob` on whitespace, and a piece
+ * without braces on commas, into several --glob flags (`'* *.ts'`, `'*,x.ts'` would pass `*`), so whitespace and a
+ * comma outside braces are refused; what is left must be a safeFileGlob.
+ */
+function safeGrepGlob(v: unknown): boolean {
+  if (typeof v !== 'string' || /\s/.test(v)) return false
+  let depth = 0
+  for (const ch of v) {
+    if (ch === '{') depth++
+    else if (ch === '}') depth = Math.max(0, depth - 1)
+    else if (ch === ',' && depth === 0) return false
+  }
+  return safeFileGlob(v)
 }
 
 function safeSearchType(v: unknown): boolean {

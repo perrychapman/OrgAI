@@ -424,7 +424,16 @@ describe('false positives in ordinary work (review M3)', () => {
       `sort --files0-from=- <<'EOF'\n${codex}/auth.json\nEOF`,
       `wc --files0-from - <<'EOF'\n${codex}/auth.json\nEOF`,
       `git commit --pathspec-from-file=- -m x <<'EOF'\n${secret}\nEOF`,
-      `git stash push '--pathspec-from-file=-' <<'EOF'\n${secret}\nEOF`
+      `git stash push '--pathspec-from-file=-' <<'EOF'\n${secret}\nEOF`,
+      // Options that run the body as a program, and GNU / git unambiguous prefixes of the options above.
+      `sort -S 1 --compress-program=sh <<'EOF'\ncat "${secret}" > /tmp/x\norgai decide --all\nEOF`,
+      `sort --compress=sh <<'EOF'\ncat "${secret}"\nEOF`,
+      `sort --files0=- <<'EOF'\n${codex}/auth.json\nEOF`,
+      `wc --files0=- <<'EOF'\n${codex}/auth.json\nEOF`,
+      `wc --f=- <<'EOF'\n${codex}/auth.json\nEOF`,
+      `git commit --pathspec-from=- -m x <<'EOF'\n${secret}\nEOF`,
+      `rg --pre sh x - <<'EOF'\n${secret}\nEOF`,
+      `rg --pre-glob '*' x - <<'EOF'\n${secret}\nEOF`
     ]) {
       expect(deny('Bash', { command }, ctx), command.slice(0, 70)).not.toBeNull()
     }
@@ -434,7 +443,10 @@ describe('false positives in ordinary work (review M3)', () => {
       `git -C sub commit -q -F - <<'EOF'\n${big}EOF`,
       `git --no-pager tag -a v1 -F - <<'EOF'\n${big}EOF`,
       `gh issue create --title x --body-file - <<'EOF'\n${big}EOF`,
-      `git -C sub commit -m "$(cat <<'EOF'\n${big}EOF\n)"`
+      `git -C sub commit -m "$(cat <<'EOF'\n${big}EOF\n)"`,
+      // git's own --file is the message (-F), never an abbreviation.
+      `git commit -q --file - <<'EOF'\n${big}EOF`,
+      `git commit -q --file=- <<'EOF'\n${big}EOF`
     ]) {
       expect(deny('Bash', { command }, ctx), command.slice(0, 70)).toBeNull()
     }
@@ -568,7 +580,9 @@ describe('false positives in ordinary work (review M3)', () => {
       { pattern: 'TODO', path: '~', glob: '**/*.{ts,tsx}' },
       { pattern: 'TODO', path: s.home, type: 'ts' },
       { pattern: 'TODO', path: s.home, type: 'markdown' },
-      { pattern: 'TODO', path: s.data, glob: '*.md' }
+      { pattern: 'TODO', path: s.data, glob: '*.md' },
+      { pattern: 'TODO', path: s.home, type: 'ts', glob: '*.tsx' },
+      { pattern: 'TODO', path: s.home, glob: '*.{ts,tsx}', type: 'ts' }
     ]) {
       expect(deny('Grep', input, ctx), JSON.stringify(input)).toBeNull()
     }
@@ -588,7 +602,17 @@ describe('false positives in ordinary work (review M3)', () => {
       { pattern: 'x', path: s.home, glob: '*.ts*' },
       { pattern: 'x', path: s.home, type: 'json' },
       { pattern: 'x', path: join(s.data, 'run'), glob: '*.ts' },
-      { pattern: 'x', path: join(s.data, 'secrets.json'), type: 'ts' }
+      { pattern: 'x', path: join(s.data, 'secrets.json'), type: 'ts' },
+      // Review follow-up: a safe type never makes an unsafe glob safe (ripgrep's positive --glob wins over --type).
+      { pattern: '.', path: s.home, type: 'ts', glob: '*' },
+      { pattern: '.', path: s.data, type: 'ts', glob: 'daemon.secret' },
+      { pattern: '.', path: s.home, type: 'json', glob: '*.ts' },
+      { pattern: '.', path: s.home, type: 'ts', glob: 7 },
+      // Claude Code's Grep splits glob on whitespace and (outside braces) commas into several --glob flags.
+      { pattern: '.', path: s.home, glob: '* *.ts' },
+      { pattern: '.', path: s.home, glob: '*,x.ts' },
+      { pattern: '.', path: s.home, glob: '*\t*.ts' },
+      { pattern: '.', path: s.home, type: 'ts', glob: '*,x.ts' }
     ]) {
       expect(deny('Grep', input, ctx), JSON.stringify(input)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
     }
