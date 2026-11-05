@@ -42,8 +42,10 @@ import { restrictDaemonSecretAcl } from './protocol'
  * live pid is never robbed. Likewise a socket that connects while the pid reads dead counts as running (something
  * answers there). A pid that exists but whose start time cannot be compared (unknown on either side; on Windows
  * another user's process, or a pid reused quickly) is 'unconfirmed' (review M9): with a dead endpoint it is reclaimed
- * (a host publishes daemon.json only after it listens and removes it before it closes, so a published host with no
- * listener is gone), and an unconfirmed startup.mkdir owner is reclaimed once the mutex is older than
+ * only when daemon.json says the endpoint is bound (no `listening: false`; a listening host publishes daemon.json only
+ * after it listens and writes `listening: false` before it closes, so a published listening host with no listener is
+ * gone). An unconfirmed pid whose daemon.json says `listening: false` (an Electron host with Terminal access off,
+ * review M11) is a running host whatever the probe says: only a 'dead' pid is reclaimed then. An unconfirmed startup.mkdir owner is reclaimed once the mutex is older than
  * `unconfirmedStaleMs`. A daemon.json that exists but cannot be read or parsed is never taken for "no host": it is
  * reclaimed only when it still names a dead pid, else ownership is refused with the file named. The user's way out of
  * a wedged state is quitting that process, or deleting `<dataDir>/run` by hand (every refusal names it).
@@ -527,8 +529,12 @@ export async function acquireHostOwnership(opts: OwnershipOptions): Promise<Host
       const answer = await probe(incumbent.endpoint, probeTimeoutMs)
       const reachable = answer === 'connected' || answer === 'eacces' || answer === 'timeout'
       // A dead pid with a dead endpoint is reclaimed, and so is an unconfirmed pid (it may be a stranger that reused
-      // the pid, review M9) with a dead endpoint. A confirmed live pid, or an endpoint that answers, is a running host.
-      if (live === 'same' || reachable) {
+      // the pid, review M9) with a dead endpoint that daemon.json says is bound. A confirmed live pid, or an endpoint
+      // that answers, is a running host. So is an unconfirmed pid whose daemon.json says `listening: false` (review
+      // M11: an Electron host with Terminal access off has no listener at all, so a dead endpoint proves nothing; a
+      // slow or unreadable start time must never let a second host write the same data folder).
+      const unboundButMaybeLive = live === 'unconfirmed' && incumbent.listening === false
+      if (live === 'same' || reachable || unboundButMaybeLive) {
         removeStartupDir()
         throw new HostAlreadyRunningError(incumbent, runDir)
       }

@@ -582,6 +582,27 @@ describe.skipIf(!posix)('acquireHostOwnership', () => {
       expect(warnings.join('\n')).toMatch(/could not be confirmed/)
     })
 
+    it.each(['refused', 'enoent'] as const)(
+      'never takes over from an unconfirmed pid whose daemon.json says listening: false, endpoint %s (Terminal access off, review M9 + M11)',
+      async (answer) => {
+        const env = tempEnv()
+        daemonJson(env, { hostInstanceId: '0d0d0d0d0d0d', pid: process.pid, endpoint: socketPathFor(env.dataDir, '0d0d0d0d0d0d'), hostKind: 'desktop', listening: false })
+        const err = await acquireHostOwnership(opts(env, { liveness: () => 'unconfirmed', connectProbe: async () => answer })).catch((e: unknown) => e)
+        expect(err).toBeInstanceOf(HostAlreadyRunningError)
+        expect((err as HostAlreadyRunningError).message).toContain(env.runDir)
+        expect(readDaemonInfo(env.dataDir)?.hostInstanceId).toBe('0d0d0d0d0d0d')
+        // The startup mutex is not left behind.
+        expect(existsSync(join(env.runDir, 'startup.mkdir'))).toBe(false)
+      }
+    )
+
+    it('takes over from a dead pid whose daemon.json says listening: false', async () => {
+      const env = tempEnv()
+      daemonJson(env, { hostInstanceId: '0e0e0e0e0e0e', pid: process.pid, endpoint: socketPathFor(env.dataDir, '0e0e0e0e0e0e'), hostKind: 'desktop', listening: false })
+      const own = await acquire(env, { liveness: () => 'dead', connectProbe: async () => 'enoent' })
+      expect(readDaemonInfo(env.dataDir)?.hostInstanceId).toBe(own.info.hostInstanceId)
+    })
+
     it.each(['connected', 'timeout', 'eacces'] as const)('never takes over from an unconfirmed pid whose endpoint answers (%s)', async (answer) => {
       const env = tempEnv()
       daemonJson(env, { hostInstanceId: '0b0b0b0b0b0b', pid: process.pid, endpoint: socketPathFor(env.dataDir, '0b0b0b0b0b0b') })
