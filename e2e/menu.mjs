@@ -37,6 +37,12 @@ const enabled = (id) => app.evaluate(({ Menu }, itemId) => Menu.getApplicationMe
 /** Poll main's menu state: the renderer pushes it asynchronously. */
 const waitEnabled = async (id, want) => {
   let last = null
+  // Run items are driven by the FOCUSED window's state (appMenu.ts); with other Electron apps on the desktop (other e2e
+  // runs) the OS can take focus away and main then greys them out, so make sure this window has it first.
+  await app.evaluate(({ BrowserWindow }) => {
+    const w = BrowserWindow.getAllWindows()[0]
+    if (w && !w.isFocused()) w.focus()
+  })
   for (let i = 0; i < 30; i++) {
     last = await enabled(id)
     if (last === want) return true
