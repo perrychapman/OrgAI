@@ -2,7 +2,7 @@ import { app, BrowserWindow, dialog, nativeImage, nativeTheme, safeStorage, shel
 import { mkdirSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import type { AppSettings, FocusRunTarget, RunEvent } from '@shared/types'
+import type { AppSettings, FocusRunTarget, HostKind, RunEvent } from '@shared/types'
 import { IPC, runWindowHash } from '@shared/types'
 import { appUrlMatcher, isExternalWebUrl, scopedWindow, shouldBlockNavigation } from './windowScope'
 import { applyShellPath } from './shellEnv'
@@ -13,6 +13,9 @@ import { canWriteDir, dataDirOverride, installLogging, log, pickLogsDir } from '
 import { installElectronLogHooks } from './electronLogHooks'
 import { acquireHostOwnership, HostAlreadyRunningError, HostStartingOrBusyError, type HostOwnership } from './host/ownership'
 import { bootOrgAIHost, type OrgAIHost } from './host/bootstrap'
+import { HostSocketServer } from './host/socketServer'
+import { currentHostInstanceId } from './host/identity'
+import { parseHostArgs, quitPromptButtons, quitPromptNeeded, secondInstanceAction, windowAllClosedAction } from './hostLifecycle'
 import type { HostRuntimeEnv } from './host/runtimeEnv'
 import { windowBackground } from './appInfo'
 import { quitGate } from './quitGate'
@@ -46,32 +49,61 @@ let notifier: Notifier | undefined
 let ownership: HostOwnership | undefined
 /** True once whenReady has built the stores and the first window: the window handlers below wait for it. */
 let booted = false
-/** Set on the first before-quit: a second launch during a quit must not open a window in the quitting app. */
+/** Set on the first before-quit that goes ahead: a second launch during a quit must not open a window in the quitting app. */
 let quitting = false
+/** The host's socket server (cli-spec 3.3); created before ownership so every accepted connection reaches it. */
+let server: HostSocketServer | undefined
 
-// A second launch on the same userData (Electron's single-instance lock) brings the running app forward instead.
-// Wave 0: restore and focus the main window, or open one. (--headless-host argv handling comes with Wave 2.)
-app.on('before-quit', () => {
-  quitting = true
-})
-app.on('second-instance', () => {
-  if (!booted) return
-  if (quitting) {
-    log.info('A second launch arrived while OrgAI is quitting; ignored (start OrgAI again once it has closed).')
+// cli-spec 3.2(1): --headless-host (started by the orgai command: no window, no Dock icon) and --run <id>. Parsed once;
+// every lifecycle decision lives in hostLifecycle.ts.
+const hostArgs = parseHostArgs(process.argv)
+const hostKind: HostKind = hostArgs.headless ? 'headless-host' : 'desktop'
+/**
+ * True for a --headless-host boot, and once a desktop-started host has gone to the background: closing the last
+ * window of such a host while it is idle quits it (windowAllClosedAction).
+ */
+let startedHeadless = hostArgs.headless
+/** In background mode (no windows, kept alive for its activity); logged once per entry. */
+let inBackground = false
+/** The quit prompt was answered "Stop all runs and quit": the next quit goes through without asking. */
+let quitAnswered = false
+/** The quit comes from the activity drain (idle exit, host.stop): never prompt. */
+let drainQuit = false
+let quitPromptOpen = false
+
+// A second launch on the same userData (Electron's single-instance lock) is answered by the incumbent: a terminal
+// host launch (--headless-host) only logs, anything else brings a window forward (and opens --run's run window).
+app.on('second-instance', (_event, argv, _cwd, additionalData) => {
+  const action = secondInstanceAction({ argv, additionalData, booted, quitting })
+  if (action.kind === 'ignore') {
+    if (quitting) log.info('A second launch arrived while OrgAI is quitting; ignored (start OrgAI again once it has closed).')
     return
   }
+  if (action.kind === 'headless') {
+    log.info('A terminal host launch found OrgAI already running.')
+    return
+  }
+  showDockIcon()
   const main = liveWindowScopes().find(([, scope]) => scope === undefined)?.[0]
   if (main) showWindow(main)
   else createWindow()
+  if (action.run) openRunById(action.run)
 })
 app.on('activate', () => {
-  if (booted && !quitting && BrowserWindow.getAllWindows().length === 0) createWindow()
+  if (!booted || quitting) return
+  showDockIcon()
+  if (BrowserWindow.getAllWindows().length === 0) createWindow()
 })
 // The lock is keyed by userData, so it is taken after setPath. An unpackaged dev build ('orgai') and the packaged
 // 'OrgAI' share one userData folder on case-insensitive macOS, so the lock correctly makes them exclusive. The losing
-// process exits at once, without touching <dataDir>/run.
-const gotLock = app.requestSingleInstanceLock()
+// process exits at once, without touching <dataDir>/run. additionalData tells the incumbent what this launch was
+// (Chromium may reorder argv on some platforms).
+const gotLock = app.requestSingleInstanceLock(
+  hostArgs.run !== undefined ? { headless: hostArgs.headless, run: hostArgs.run } : { headless: hostArgs.headless }
+)
 if (!gotLock) app.exit(0)
+// A terminal host never shows a Dock icon (macOS); a later window brings it back.
+if (gotLock && hostArgs.headless && process.platform === 'darwin') app.dock?.hide()
 
 // Unpackaged (npm run dev, e2e) the name comes from package.json ("orgai"); on macOS that names ~/Library/Logs/<name>
 // and the About entry. userData was set above, so it does not move.
@@ -131,6 +163,38 @@ function showWindow(win: BrowserWindow): void {
   win.focus()
 }
 
+function showDockIcon(): void {
+  if (process.platform !== 'darwin') return
+  void Promise.resolve(app.dock?.show()).catch(() => {})
+}
+
+/** A run id from --run: open its window when the host knows the run. */
+function openRunById(runId: string): void {
+  const summary = host?.runs.summaryOf(runId)
+  if (summary) openRunWindow({ projectId: summary.projectId, runId: summary.id })
+  else log.info(`Asked to open run ${runId}, which this data folder does not have.`)
+}
+
+/**
+ * No windows, but the host is still busy (runs, resumes, sign-ins, terminal clients...): keep serving in the
+ * background until idle (cli-spec 3.2(1)). From now on an idle close of the last window quits.
+ */
+function goBackground(): void {
+  windowScopes.clear()
+  if (process.platform === 'darwin') app.dock?.hide()
+  startedHeadless = true
+  host?.activity.armIdleExit()
+  if (!inBackground) {
+    inBackground = true
+    const counts = host?.activity.snapshot().counts ?? {}
+    const busy = Object.entries(counts)
+      .filter(([, n]) => typeof n === 'number' && n > 0)
+      .map(([k, n]) => `${k} ${n}`)
+      .join(', ')
+    log.info(`All windows closed while OrgAI is busy (${busy || 'no work counted'}); it keeps running in the background until its work is done.`)
+  }
+}
+
 /** window:openRun (already validated): focus the window scoped to this run, or open one. */
 function openRunWindow(target: FocusRunTarget): void {
   const existing = scopedWindow(liveWindowScopes(), target.runId)
@@ -144,6 +208,7 @@ function openRunWindow(target: FocusRunTarget): void {
  * `#/run/<projectId>/<runId>`.
  */
 function createWindow(scope?: FocusRunTarget): BrowserWindow {
+  inBackground = false
   const win = new BrowserWindow({
     width: scope ? 1280 : 1440,
     height: scope ? 840 : 920,
@@ -203,12 +268,24 @@ app.whenReady().then(async () => {
   if (!gotLock) return
   const dataDir = join(app.getPath('userData'), 'data')
   // Step 0 (cli-spec 3.2(2)): own <dataDir>/run before any store constructor, since RunStore rewrites live runs.
+  server = new HostSocketServer({
+    dataDir,
+    hostKind,
+    hostInstanceId: currentHostInstanceId(),
+    appVersion: app.getVersion(),
+    mock: process.env.ORGAI_MOCK === '1',
+    log: (m) => log.info(m)
+  })
+  const socketServer = server
   try {
-    ownership = await acquireHostOwnership({ dataDir, hostKind: 'desktop', appVersion: app.getVersion() })
+    ownership = await acquireHostOwnership({ dataDir, hostKind, appVersion: app.getVersion(), onConnection: (s) => socketServer.accept(s) })
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e)
     log.error(`Host ownership failed: ${message}`)
-    if (e instanceof HostAlreadyRunningError || e instanceof HostStartingOrBusyError) {
+    socketServer.close()
+    if (hostArgs.headless) {
+      // A terminal host has nobody to show a dialog to: the orgai command reads the exit code and the log.
+    } else if (e instanceof HostAlreadyRunningError || e instanceof HostStartingOrBusyError) {
       dialog.showErrorBox('OrgAI is already running', `${message}\n\nQuit the other OrgAI (or the terminal host using this data folder), then start OrgAI again.`)
     } else {
       // Every other failure (an unsafe or unwritable run folder, a socket that cannot be created there, a full disk)
@@ -234,15 +311,20 @@ app.whenReady().then(async () => {
   const h = bootOrgAIHost({
     env: runtimeEnv(),
     dataDir,
-    hostKind: 'desktop',
+    hostKind,
     ownership: owned,
     safeStorage,
     openExternal: (url) => shell.openExternal(url),
     desktop: { openRunWindow },
     mock: process.env.ORGAI_MOCK === '1',
-    onDrained: () => app.quit()
+    onDrained: () => {
+      drainQuit = true
+      socketServer.close()
+      app.quit()
+    }
   })
   host = h
+  socketServer.attach(h)
   const settings = h.settings
   applyTheme(settings.get())
   settings.onChange((s) => applyTheme(s))
@@ -275,17 +357,23 @@ app.whenReady().then(async () => {
   h.activity.addSource('interactiveClients', () => BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed()).length)
   // `events` given: registerIpc leaves forwarding the bus to windows to the listener above.
   registerIpc({ ...h.services, openRunWindow, events: h.events, dispatcher: h.dispatcher })
-  app.on('before-quit', () => h.dispose())
   installAppMenu(
     menuActionSender(() => BrowserWindow.getFocusedWindow(), liveWindowScopes, () => createWindow())
   )
-  createWindow()
+  // A terminal host opens no window; the first plain launch (second-instance) or a Dock click (activate) does.
+  if (!hostArgs.headless) {
+    createWindow()
+    if (hostArgs.run) openRunById(hostArgs.run)
+  }
   booted = true
 })
 
 // Give up <dataDir>/run ownership on the way out; the exit hook covers app.exit and paths that skip will-quit.
 // release() is synchronous and idempotent.
-app.on('will-quit', () => ownership?.release())
+app.on('will-quit', () => {
+  server?.close()
+  ownership?.release()
+})
 process.on('exit', () => ownership?.release())
 
 /** Longest a quit waits for live runs to record their end (RunManager.stopAll) before it goes ahead anyway. */
@@ -293,18 +381,64 @@ const QUIT_STOP_DEADLINE_MS = 3000
 // Live runs are cut by the app, not the user (RunSummary.endedBy 'app'): the first quit is held until stopAll has
 // written them, or the deadline passes (then markQuit writes them synchronously). A re-entrant quit while stopAll is
 // pending is held too and never calls stopAll again; one after the deadline is forced through. See quitGate.ts.
-app.on(
-  'before-quit',
-  quitGate({
-    liveCount: () => host?.runs.liveRunCount() ?? 0,
-    stopAll: () => host?.runs.stopAll({ reason: 'quit' }) ?? Promise.resolve(),
-    markQuit: () => host?.runs.markQuit(),
-    deadlineMs: QUIT_STOP_DEADLINE_MS,
-    quit: () => app.quit(),
-    warn: (m) => console.warn(m)
-  })
-)
+const gate = quitGate({
+  liveCount: () => host?.runs.liveRunCount() ?? 0,
+  stopAll: () => host?.runs.stopAll({ reason: 'quit' }) ?? Promise.resolve(),
+  markQuit: () => host?.runs.markQuit(),
+  deadlineMs: QUIT_STOP_DEADLINE_MS,
+  quit: () => app.quit(),
+  warn: (m) => console.warn(m)
+})
+// One before-quit handler, so the order is fixed: the terminal-clients prompt first (a cancelled or kept quit never
+// reaches the gate, never marks the app quitting and never disposes the host), then the gate, then dispose.
+app.on('before-quit', (event) => {
+  const terminalClients = server?.attachedClientCount() ?? 0
+  if (quitPromptNeeded({ terminalClients, drainQuit, alreadyAnswered: quitAnswered || quitting })) {
+    event.preventDefault()
+    if (!quitPromptOpen) void askQuit(terminalClients)
+    return
+  }
+  quitting = true
+  gate(event)
+  host?.dispose()
+})
 
+/**
+ * An explicit quit while terminal clients are attached (cli-spec 3.2(1)). The spec's "N terminal run(s)" is counted as
+ * attached terminal clients: no run is marked as started from the terminal yet.
+ */
+async function askQuit(terminalClients: number): Promise<void> {
+  quitPromptOpen = true
+  let response = 2
+  try {
+    const opts = {
+      type: 'question' as const,
+      buttons: quitPromptButtons(terminalClients),
+      defaultId: 0,
+      cancelId: 2,
+      message: 'Terminals are still connected to OrgAI.',
+      detail: 'OrgAI can keep running in the background for them, or stop every run and quit.'
+    }
+    const parent = BrowserWindow.getFocusedWindow()
+    response = (parent ? await dialog.showMessageBox(parent, opts) : await dialog.showMessageBox(opts)).response
+  } catch (e) {
+    log.warn(`The quit prompt failed: ${e instanceof Error ? e.message : String(e)}`)
+  } finally {
+    quitPromptOpen = false
+  }
+  if (response === 0) {
+    for (const win of BrowserWindow.getAllWindows()) if (!win.isDestroyed()) win.close()
+    goBackground()
+  } else if (response === 1) {
+    quitAnswered = true
+    app.quit()
+  }
+}
+
+// The last window closed: keep serving in the background while busy, else quit (or stay: a desktop host on macOS).
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit()
+  const busy = host ? !host.activity.isIdle() : false
+  const action = windowAllClosedAction({ platform: process.platform, busy, startedHeadless, quitting })
+  if (action === 'quit') app.quit()
+  else if (action === 'background') goBackground()
 })
