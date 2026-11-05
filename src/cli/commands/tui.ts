@@ -40,7 +40,7 @@ export interface TuiFlags {
 
 const flagsOf = (v: { inline?: boolean; 'ax-screen-reader'?: boolean }): TuiFlags => ({ inline: v.inline === true, screenReader: v['ax-screen-reader'] === true })
 
-const hasTty = (ctx: CliContext): boolean => ctx.io.stdinIsTTY && ctx.io.stdout.isTTY === true
+export const hasTty = (ctx: CliContext): boolean => ctx.io.stdinIsTTY && ctx.io.stdout.isTTY === true
 
 function requireTty(ctx: CliContext): void {
   if (!hasTty(ctx)) throw usage(NO_TTY_MESSAGE)
@@ -53,7 +53,8 @@ function hostFailure(e: unknown): CliError {
   return new CliError(e instanceof Error ? e.message : String(e), data?.code === 'bad_request' ? EXIT.usage : EXIT.failure)
 }
 
-const managedOf = (ctx: CliContext): { mainCheckout: string } | undefined =>
+/** The managed agent worktree cwd is in (cli-spec 4.2), unless --project names the project. */
+export const managedOf = (ctx: CliContext): { mainCheckout: string } | undefined =>
   ctx.globals.project === undefined ? ctx.resolveProject([]).managedWorktree : undefined
 
 /** Starting or continuing a run from an agent worktree is refused (exit 2). */
@@ -62,8 +63,8 @@ function refuseManaged(ctx: CliContext): void {
   if (m) throw usage(worktreeRefusal(m.mainCheckout))
 }
 
-/** Hand off to the lazily loaded TUI. */
-async function launchTui(ctx: CliContext, flags: TuiFlags, prepare: (conn: TuiHostConnection) => Promise<TuiLaunch>): Promise<number> {
+/** Hand off to the lazily loaded TUI (quietInproc first). Shared with commands/interactive.ts. */
+export async function launchTui(ctx: CliContext, flags: TuiFlags, prepare: (conn: TuiHostConnection) => Promise<TuiLaunch>): Promise<number> {
   quietInproc(ctx)
   const { runTui } = await import('../tui/index')
   return runTui(ctx, {}, flags, { prepare })

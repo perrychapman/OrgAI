@@ -7,8 +7,9 @@
 import { Box, Text } from 'ink'
 import { basename } from 'node:path'
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
-import type { ProjectPathCheck, RunStatus } from '../../shared/types'
+import type { Project, ProjectPathCheck, RunStatus, RunSummary } from '../../shared/types'
 import { isOpenStatus } from '../../shared/view/runChains'
+import { statusOfRun, statusText } from '../../shared/view/runStatus'
 import { Composer } from './Composer'
 import { InputBus, InputBusContext, TuiEnvContext } from './context'
 import { DecisionTray } from './DecisionTray'
@@ -46,6 +47,9 @@ import type {
 } from './types'
 import { WorktreesPane } from './WorktreesPane'
 
+/** 128 + SIGINT: a stopOnQuit session that was quit (types.ts EXIT.sigint; not imported to keep this file pure TUI). */
+const EXIT_SIGINT = 130
+
 /** Two Ctrl+C presses within this window quit. */
 export const CTRL_C_QUIT_MS = 1500
 export const COMPOSER_ROWS = 3
@@ -53,6 +57,10 @@ export const PANE_ORDER: readonly PaneId[] = ['tree', 'transcript', 'plan', 'wor
 
 export const NOTHING_NEEDS_YOU = 'Nothing needs you'
 export const PRESS_AGAIN = 'Press Ctrl+C again to quit'
+/** The Ctrl+C notice of a stopOnQuit session (orgai init and the assistants). */
+export const PRESS_AGAIN_STOP = 'Press Ctrl+C again to stop the session and quit'
+/** stopOnQuit: how long quitting waits for the stopped run's status before it exits anyway. */
+export const STOP_WAIT_MS = 5000
 export const PASTE_CUT_NOTICE = 'The paste was cut at 1 MB.'
 
 export interface ExitInfo {
@@ -60,6 +68,8 @@ export interface ExitInfo {
   session: TuiSessionApi
   /** The followed run was still live and keeps going (a daemon or desktop host). */
   detachedLive: boolean
+  /** One line runTui prints after restoring the terminal (exitWhenEnded / stopOnQuit sessions). */
+  message?: string
 }
 
 /** Raw input after KeyParser (runTui feeds it; tests push events directly). */
@@ -102,12 +112,11 @@ export const PLACEHOLDERS: Record<ComposerMode, string> = {
   readOnly: ''
 }
 
-export function hintsFor(focus: FocusTarget, readOnly: boolean): string {
+export function hintsFor(focus: FocusTarget, readOnly: boolean, stopOnQuit = false): string {
+  const quit = stopOnQuit ? 'Ctrl+C twice stops and quits' : 'Ctrl+C twice quits'
   switch (focus) {
     case 'composer':
-      return readOnly
-        ? 'Alt+D decisions · Tab panes · Ctrl+C twice quits'
-        : 'Enter sends · / commands · Alt+D decisions · Tab panes · Esc interrupts · Ctrl+C twice quits'
+      return readOnly ? `Alt+D decisions · Tab panes · ${quit}` : `Enter sends · / commands · Alt+D decisions · Tab panes · Esc interrupts · ${quit}`
     case 'tray':
       return 'Keys on the card · Esc back'
     case 'palette':
@@ -165,6 +174,42 @@ function useScrollback(enabled: boolean, rows: TranscriptRow[], card: TrayCard |
   return st.list
 }
 
+/** The launched run's chain is the one followed (TuiLaunch.runId is a member of it). */
+export function followsLaunch(s: TuiState, launchRunId: string | undefined): boolean {
+  return launchRunId !== undefined && (s.activeRunId === launchRunId || s.activeChain.includes(launchRunId))
+}
+
+/** How an exitWhenEnded session's run was ended: by this TUI's quit, by complete_setup, or by its /stop. */
+export type EndedHere = 'quit' | 'complete' | 'slash'
+
+/**
+ * The exit code and closing line of an exitWhenEnded session whose run is no longer open: 130 when this TUI's quit
+ * stopped it, or someone else stopped it (endedBy 'user') unless this TUI ended it on purpose (complete_setup or
+ * /stop); 0 for finished; 1 for error and for a paused run.
+ */
+export function launchedRunExit(summary: Pick<RunSummary, 'status' | 'kind' | 'endedWithApp' | 'endedBy' | 'error'>, label: string, endedHere: EndedHere | undefined): { code: number; message: string } {
+  const what = sanitizeTty(label).replace(/\s+/g, ' ').trim() || 'The run'
+  if (endedHere === 'quit') return { code: 130, message: `${what} stopped.` }
+  const word = statusText(statusOfRun({ summary }, undefined, false))
+  if (summary.status === 'error') {
+    const why = summary.error ? sanitizeTty(summary.error).replace(/\s+/g, ' ').trim().slice(0, 200) : ''
+    return { code: 1, message: why ? `${what} failed: ${why}` : `${what} failed.` }
+  }
+  if (summary.status === 'finished') {
+    if (endedHere === 'complete') return { code: 0, message: `${what} finished.` }
+    if (endedHere === 'slash') return { code: 0, message: `${what} ended.` }
+    if (summary.endedBy === 'user') return { code: 130, message: `${what}: ${word}.` }
+    return { code: 0, message: `${what} finished.` }
+  }
+  return { code: 1, message: `${what}: ${word}. Continue it with orgai resume.` }
+}
+
+/** The project's setup completed after the session opened (complete_setup sets setup.completedAt). */
+export function setupCompletedSince(project: Pick<Project, 'setup'> | undefined, completedAtAtLaunch: string | undefined): boolean {
+  const at = project?.setup?.state === 'complete' ? project.setup.completedAt : undefined
+  return typeof at === 'string' && at !== completedAtAtLaunch
+}
+
 /**
  * `orgai [--] <prompt>` begins a work run (cli-spec 6.1). The session may have focused one of the project's live runs
  * (openTuiSession's default pick), so aim the composer at a new run first, as /new does; else the prompt would go to
@@ -206,12 +251,16 @@ export function App(props: AppProps) {
   const lastCtrlC = useRef<number | undefined>(undefined)
   const exiting = useRef(false)
   const started = useRef(false)
+  // exitWhenEnded / stopOnQuit (Wave 5): who ended the launched run, and the setup state it started from.
+  const endedHere = useRef<EndedHere | undefined>(undefined)
+  const setupAtLaunch = useRef(launch.project?.setup?.state === 'complete' ? launch.project.setup.completedAt : undefined)
+  const label = launch.title ?? 'The run'
 
   const notify = useCallback((text: string, tone?: Parameters<TuiSessionApi['notify']>[1]) => session.notify(text, tone), [session])
 
   const cards = trayCards(state)
   const top = topCard(state)
-  const summary = statusSummary(state)
+  const summary = { ...statusSummary(state), ...(launch.title ? { title: sanitizeTty(launch.title).replace(/\s+/g, ' ').trim() } : {}) }
   const activeStatus = state.activeRunId ? state.runs[state.activeRunId]?.summary.status : undefined
   const inline = env.bufferMode === 'inline'
   const readOnly = state.readOnlyReason !== undefined
@@ -243,20 +292,58 @@ export function App(props: AppProps) {
   // ---------- Exit ----------
 
   const doExit = useCallback(
-    (code: number) => {
+    (code: number, message?: string) => {
       if (exiting.current) return
       exiting.current = true
       const s = session.getState()
       const active = s.activeRunId ? s.runs[s.activeRunId]?.summary.status : undefined
       const inproc = conn.inproc !== undefined
-      props.onExit(code, { session, detachedLive: !inproc && isOpen(active) })
+      props.onExit(code, { session, detachedLive: !inproc && isOpen(active), ...(message ? { message } : {}) })
     },
     [session, conn, props]
   )
 
+  // stopOnQuit: end the launched run (runs:stop on the chain's newest member), wait for its status (bounded), exit 130.
+  const stopAndExit = useCallback(() => {
+    if (endedHere.current === 'quit' || exiting.current) return
+    endedHere.current = 'quit'
+    notify('Stopping the session...')
+    const ended = (): boolean => {
+      const s = session.getState()
+      const st = s.activeRunId ? s.runs[s.activeRunId]?.summary.status : undefined
+      return !isOpen(st)
+    }
+    const settle = new Promise<void>((resolve) => {
+      if (ended()) return resolve()
+      const timer = setTimeout(() => {
+        off()
+        resolve()
+      }, STOP_WAIT_MS)
+      const off = session.subscribe(() => {
+        if (!ended()) return
+        clearTimeout(timer)
+        off()
+        resolve()
+      })
+    })
+    session
+      .stop()
+      .catch((e: unknown) => notify(`Could not stop the run: ${errText(e)}`, 'danger'))
+      .then(() => settle)
+      .then(() => doExit(EXIT_SIGINT, `${sanitizeTty(label).replace(/\s+/g, ' ').trim() || 'The run'} stopped.`))
+  }, [session, notify, doExit, label])
+
   const confirm = useCallback((question: string): Promise<boolean> => new Promise<boolean>((resolve) => setOverlay({ kind: 'confirm', question, resolve })), [])
 
   const requestQuit = useCallback(() => {
+    if (launch.stopOnQuit) {
+      const s = session.getState()
+      const st = s.activeRunId ? s.runs[s.activeRunId]?.summary.status : undefined
+      if (followsLaunch(s, launch.runId) && isOpen(st)) {
+        stopAndExit()
+        return
+      }
+    }
     const inproc = conn.inproc !== undefined
     const live = statusSummary(session.getState()).liveRuns
     if (inproc && live > 0) {
@@ -266,7 +353,7 @@ export function App(props: AppProps) {
       return
     }
     doExit(0)
-  }, [conn, session, confirm, doExit])
+  }, [conn, session, confirm, doExit, launch, stopAndExit])
 
   // ---------- Text views ----------
 
@@ -375,10 +462,43 @@ export function App(props: AppProps) {
     else if (launch.resumeText) session.submitPrompt(launch.resumeText).catch((e: unknown) => notify(errText(e), 'danger'))
   }, [launch, conn, session, notify])
 
+  // exitWhenEnded: leave once the launched chain's newest member is no longer open; a setup run is ended here once its
+  // project's setup completed and it is idle with no open card.
+  useEffect(() => {
+    if (!launch.exitWhenEnded || exiting.current || !followsLaunch(state, launch.runId) || !state.activeRunId) return
+    const run = state.runs[state.activeRunId]
+    if (!run) return
+    const status = run.summary.status
+    if (!isOpen(status)) {
+      const { code, message } = launchedRunExit(run.summary, label, endedHere.current)
+      doExit(code, message)
+      return
+    }
+    if (endedHere.current === undefined && run.summary.kind === 'setup' && status === 'idle' && cards.length === 0 && setupCompletedSince(state.project, setupAtLaunch.current)) {
+      endedHere.current = 'complete'
+      notify('Setup is complete. Ending the session...')
+      session.stop().catch((e: unknown) => notify(`Could not end the session: ${errText(e)}`, 'danger'))
+    }
+  }, [state, launch, label, cards.length, doExit, notify, session])
+
   // ---------- Slash commands ----------
 
+  // A /stop from this TUI ends an exitWhenEnded session on purpose (exit 0, not 130).
+  const slashSession = useMemo<TuiSessionApi>(
+    () =>
+      Object.create(session, {
+        stop: {
+          value: async () => {
+            if (endedHere.current === undefined) endedHere.current = 'slash'
+            return session.stop()
+          }
+        }
+      }) as TuiSessionApi,
+    [session]
+  )
+
   const slashCtx: SlashContext = {
-    session,
+    session: slashSession,
     state: () => session.getState(),
     notify,
     setFocus,
@@ -495,7 +615,7 @@ export function App(props: AppProps) {
         return
       }
       lastCtrlC.current = t
-      notify(PRESS_AGAIN)
+      notify(launch.stopOnQuit ? PRESS_AGAIN_STOP : PRESS_AGAIN)
       return
     }
     if (ctrl(e, 'd')) {
@@ -527,7 +647,7 @@ export function App(props: AppProps) {
   const transcript = transcriptRows(state)
   const scrollback = useScrollback(inline, transcript.rows, top, size.cols)
   const notice = state.notices.at(-1)
-  const hints = hintsFor(focus, readOnly)
+  const hints = hintsFor(focus, readOnly, launch.stopOnQuit === true)
   const dim = toneColor('dim', env)
 
   const paneNode = (box: PaneBox) => {

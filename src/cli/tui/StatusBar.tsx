@@ -24,6 +24,7 @@ export function needsYouText(n: number): string {
 /** The status segments (without separators). */
 export function statusSegments(s: StatusSummary): Seg[] {
   const out: Seg[] = []
+  if (s.title) out.push({ text: s.title, tone: 'accent', bold: true })
   if (s.projectName) out.push({ text: s.projectName, bold: true })
   const run = [s.runTag, s.runTitle].filter(Boolean).join(' ')
   if (run) out.push({ text: run })
