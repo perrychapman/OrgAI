@@ -14,10 +14,12 @@ import {
 } from 'node:fs'
 import { connect, createServer, type Server, type Socket } from 'node:net'
 import { tmpdir } from 'node:os'
-import { basename, dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve, win32 } from 'node:path'
 import type { DaemonInfo, HostKind, HostState } from '@shared/types'
 import { HOST_INSTANCE_ID_RE, currentHostInstanceId } from './identity'
-import { isLiveProcessCached as realIsLiveProcess, processStartTime, selfStartTime } from './processInfo'
+import { renameSyncRetry } from './fsRetry'
+import { processLivenessCachedAsync, selfStartTime, type Liveness } from './processInfo'
+import { neutralCwd, system32Path } from './systemBinaries'
 
 /**
  * Pre-store host ownership of a data dir (cli-spec 3.2(2), Step 0 of booting a host). Runs before any store
@@ -36,10 +38,20 @@ import { isLiveProcessCached as realIsLiveProcess, processStartTime, selfStartTi
  *   socket lives in `<XDG_RUNTIME_DIR or tmpdir>/orgai-<hostInstanceId>/d.sock` instead (a 0700 dir with its own
  *   owner.json). Windows uses the named pipe from {@link pipeNameFor} (UNVERIFIED: never run on Windows).
  *
- * Decided here where the spec leaves room: a daemon.json whose pid is live but whose endpoint answers ENOENT or
- * ECONNREFUSED is still treated as a running host (HostAlreadyRunningError): a live pid is never robbed. Likewise a
- * socket that connects while the pid reads dead counts as running (something answers there). The user's way out of a
- * wedged state is quitting that process, or deleting `<dataDir>/run/daemon.json` by hand.
+ * Decided here where the spec leaves room: a daemon.json whose pid is live with a matching start time but whose
+ * endpoint answers ENOENT or ECONNREFUSED is still treated as a running host (HostAlreadyRunningError): a confirmed
+ * live pid is never robbed. Likewise a socket that connects while the pid reads dead counts as running (something
+ * answers there). A pid that exists but whose start time cannot be compared (unknown on either side; on Windows
+ * another user's process, or a pid reused quickly) is 'unconfirmed' (review M9): with a dead endpoint it is reclaimed
+ * (a host publishes daemon.json only after it listens and removes it before it closes, so a published host with no
+ * listener is gone), and an unconfirmed startup.mkdir owner is reclaimed once the mutex is older than
+ * `unconfirmedStaleMs`. A daemon.json that exists but cannot be read or parsed is never taken for "no host": it is
+ * reclaimed only when it still names a dead pid, else ownership is refused with the file named. The user's way out of
+ * a wedged state is quitting that process, or deleting `<dataDir>/run` by hand (every refusal names it).
+ *
+ * Windows (UNVERIFIED on Windows): renames retry transient EPERM / EBUSY / EACCES (fsRetry.ts, review M6); icacls runs
+ * by absolute path from the temp dir (review H1), and its failure is fatal only for hosts that serve terminals (review
+ * M8, `secretAcl`).
  *
  * Pure Node (fs, net, crypto, path): never imports electron, so a pure-Node host can use it.
  */
@@ -101,6 +113,7 @@ export type HostOwnershipErrorCode =
   | 'secret_acl_failed'
   | 'already_running'
   | 'starting_or_busy'
+  | 'daemon_json_unreadable'
 
 /** Any failure to take ownership. The host exits with `exitCode` (6, cli-spec exit codes). */
 export class HostOwnershipError extends Error {
@@ -114,18 +127,35 @@ export class HostOwnershipError extends Error {
   }
 }
 
+/** The way out a refusal names (review M9): the run folder, deleted only when no OrgAI uses the data folder. */
+export function runDirHint(runDir: string): string {
+  return `If you are sure no OrgAI (and no orgai terminal host) is running for this data folder, delete the folder ${runDir}, then start OrgAI again.`
+}
+
 /** A live host already owns the data dir (its daemon.json pid is live, or its endpoint answers). */
 export class HostAlreadyRunningError extends HostOwnershipError {
-  constructor(readonly info: DaemonInfo) {
-    super('already_running', `OrgAI is already running for this data folder (pid ${info.pid}, ${info.hostKind ?? 'host'} ${info.hostInstanceId}).`)
+  constructor(
+    readonly info: DaemonInfo,
+    readonly runDir?: string
+  ) {
+    super(
+      'already_running',
+      `OrgAI is already running for this data folder (pid ${info.pid}, ${info.hostKind ?? 'host'} ${info.hostInstanceId}).${runDir ? ` ${runDirHint(runDir)}` : ''}`
+    )
     this.name = 'HostAlreadyRunningError'
   }
 }
 
 /** Another live process has held the startup mutex for longer than liveWaitMs. */
 export class HostStartingOrBusyError extends HostOwnershipError {
-  constructor(readonly ownerPid: number | undefined) {
-    super('starting_or_busy', `Another OrgAI process${ownerPid ? ` (pid ${ownerPid})` : ''} is still starting for this data folder.`)
+  constructor(
+    readonly ownerPid: number | undefined,
+    readonly runDir?: string
+  ) {
+    super(
+      'starting_or_busy',
+      `Another OrgAI process${ownerPid ? ` (pid ${ownerPid})` : ''} is still starting for this data folder.${runDir ? ` ${runDirHint(runDir)}` : ''}`
+    )
     this.name = 'HostStartingOrBusyError'
   }
 }
@@ -150,8 +180,29 @@ export interface OwnershipOptions {
   /** Base for the long-path runtime dir; defaults to $XDG_RUNTIME_DIR, else os.tmpdir(). */
   runtimeBase?: string
   // Injectable for tests.
+  /** Boolean liveness (true = the recorded process, 'same'; false = 'dead'). `liveness` wins when both are given. */
   isLiveProcess?: (pid: number, startTime?: string) => boolean
+  /** Three-way liveness ({@link Liveness}); default processLivenessCachedAsync (never blocks the event loop, M10). */
+  liveness?: (pid: number, startTime?: string) => Liveness | Promise<Liveness>
+  /** This process's start time stand-in (only ever asked for process.pid). */
   startTimeOf?: (pid: number) => string | undefined
+  /**
+   * An unconfirmed startup.mkdir owner (pid exists, start time not comparable) is reclaimed once the mutex is this
+   * old (default 60000): startup holds it for seconds, and a stranger that reused the pid would otherwise block every
+   * launch (review M9).
+   */
+  unconfirmedStaleMs?: number
+  /**
+   * win32: what an icacls failure on daemon.secret does. 'required' throws HostOwnershipError('secret_acl_failed');
+   * 'best-effort' warns, goes on and sets HostOwnership.secretAclWarning. Default: 'best-effort' for the desktop host
+   * (Terminal access is off by default and the secret serves only terminals, review M8), 'required' for headless and
+   * inproc hosts, which exist to serve the orgai command.
+   */
+  secretAcl?: 'required' | 'best-effort'
+  /** Where warnings go (default console.warn). */
+  warn?: (message: string) => void
+  /** win32 icacls stand-in (tests; default {@link runIcacls}). */
+  icacls?: (args: string[]) => Promise<void>
   now?: () => number
   sleep?: (ms: number) => Promise<void>
   connectProbe?: (endpoint: string, timeoutMs: number) => Promise<ProbeResult>
@@ -177,6 +228,11 @@ export interface HostOwnership {
   readonly secretPath: string
   /** The long-path runtime dir, when the socket lives there. */
   readonly runtimeDir?: string
+  /**
+   * win32: why daemon.secret could not be given a current-user-only DACL (best-effort mode, review M8); undefined when
+   * it was protected or needed no explicit ACL. A host should not serve terminals while this is set.
+   */
+  readonly secretAclWarning?: string
   /** Rewrite daemon.json with state 'ready' (only while it still carries our hostInstanceId). True when written. */
   markReady(): boolean
   /** Rewrite daemon.json with state 'draining' (same rule). */
@@ -270,6 +326,47 @@ export function readDaemonInfo(dataDir: string): DaemonInfo | null {
   return parseDaemonInfo(readJsonFile(join(runDirOf(dataDir), DAEMON_JSON), DAEMON_JSON_MAX_BYTES))
 }
 
+/**
+ * What `<dataDir>/run/daemon.json` holds, telling a missing file apart from one that exists but is unusable (review
+ * M9: an unreadable file must never count as "no incumbent"). For an unusable file, `pid` / `processStartTime` /
+ * `endpoint` are whatever plausible values could still be read from it (a newer or damaged record), so a caller can
+ * still tell a dead holder. Never throws.
+ */
+export type DaemonFileState =
+  | { kind: 'missing' }
+  | { kind: 'ok'; info: DaemonInfo }
+  | { kind: 'unusable'; reason: string; pid?: number; processStartTime?: string; endpoint?: string }
+
+export function readDaemonFileState(dataDir: string): DaemonFileState {
+  const path = join(runDirOf(dataDir), DAEMON_JSON)
+  let st
+  try {
+    st = lstatSync(path)
+  } catch (e) {
+    if (errCode(e) === 'ENOENT') return { kind: 'missing' }
+    return { kind: 'unusable', reason: `it could not be checked (${errCode(e) ?? (e as Error).message})` }
+  }
+  if (!st.isFile()) return { kind: 'unusable', reason: 'it is not a regular file' }
+  // An empty file names no host (an interrupted write on a file system that lost the data); it is replaced.
+  if (st.size === 0) return { kind: 'missing' }
+  if (st.size > DAEMON_JSON_MAX_BYTES) return { kind: 'unusable', reason: `it is larger than ${DAEMON_JSON_MAX_BYTES} bytes` }
+  let raw: unknown
+  try {
+    raw = JSON.parse(readFileSync(path, 'utf8'))
+  } catch (e) {
+    return { kind: 'unusable', reason: e instanceof SyntaxError ? 'it is not valid JSON' : `it could not be read (${errCode(e) ?? (e as Error).message})` }
+  }
+  const info = parseDaemonInfo(raw)
+  if (info) return { kind: 'ok', info }
+  const loose: { pid?: number; processStartTime?: string; endpoint?: string } = {}
+  if (isObject(raw)) {
+    if (typeof raw.pid === 'number' && Number.isInteger(raw.pid) && raw.pid > 0) loose.pid = raw.pid
+    if (typeof raw.processStartTime === 'string' && raw.processStartTime.length <= 200) loose.processStartTime = raw.processStartTime
+    if (typeof raw.endpoint === 'string' && raw.endpoint && raw.endpoint.length <= 1024 && !raw.endpoint.includes('\0')) loose.endpoint = raw.endpoint
+  }
+  return { kind: 'unusable', reason: 'it does not hold a host record this OrgAI understands', ...loose }
+}
+
 interface OwnerRecord {
   pid: number
   processStartTime?: string
@@ -303,7 +400,7 @@ function writeAtomic(path: string, body: string, mode: number, tmpTag: string, f
   writeFileSync(tmp, body, { mode })
   chmodSync(tmp, mode)
   fault?.()
-  renameSync(tmp, path)
+  renameSyncRetry(tmp, path)
 }
 
 /** A real, non-symlink directory owned by this user (POSIX), else throws HostOwnershipError(code). */
@@ -353,8 +450,15 @@ export async function acquireHostOwnership(opts: OwnershipOptions): Promise<Host
   const platform = opts.platform ?? process.platform
   const id = opts.hostInstanceId ?? currentHostInstanceId()
   if (!HOST_INSTANCE_ID_RE.test(id)) throw new Error(`Invalid host instance id: ${id}`)
-  const isLive = opts.isLiveProcess ?? ((pid: number, start?: string) => realIsLiveProcess(pid, start))
-  const startTimeOf = opts.startTimeOf ?? processStartTime
+  const boolLive = opts.isLiveProcess
+  const liveness = async (p: number, start?: string): Promise<Liveness> => {
+    if (opts.liveness) return opts.liveness(p, start)
+    if (boolLive) return boolLive(p, start) ? 'same' : 'dead'
+    return processLivenessCachedAsync(p, start)
+  }
+  const warn = opts.warn ?? ((m: string) => console.warn(m))
+  const secretAclMode = opts.secretAcl ?? (opts.hostKind === 'desktop' ? 'best-effort' : 'required')
+  const unconfirmedStaleMs = opts.unconfirmedStaleMs ?? 60_000
   const now = opts.now ?? Date.now
   const sleep = opts.sleep ?? defaultSleep
   const probe = opts.connectProbe ?? connectProbe
@@ -388,19 +492,36 @@ export async function acquireHostOwnership(opts: OwnershipOptions): Promise<Host
   let runtimeDir: string | undefined
   let wroteSecret = false
   let published = false
+  let secretAclWarning: string | undefined
   try {
     // (3) The incumbent.
-    const incumbent = readDaemonInfo(dataDir)
-    if (incumbent) {
-      const live = isLive(incumbent.pid, incumbent.processStartTime)
+    const file = readDaemonFileState(dataDir)
+    if (file.kind === 'ok') {
+      const incumbent = file.info
+      const live = await liveness(incumbent.pid, incumbent.processStartTime)
       const answer = await probe(incumbent.endpoint, probeTimeoutMs)
       const reachable = answer === 'connected' || answer === 'eacces' || answer === 'timeout'
-      // Only a dead pid AND a dead endpoint is reclaimed; every other combination is a running host.
-      if (live || reachable) {
+      // A dead pid with a dead endpoint is reclaimed, and so is an unconfirmed pid (it may be a stranger that reused
+      // the pid, review M9) with a dead endpoint. A confirmed live pid, or an endpoint that answers, is a running host.
+      if (live === 'same' || reachable) {
         removeStartupDir()
-        throw new HostAlreadyRunningError(incumbent)
+        throw new HostAlreadyRunningError(incumbent, runDir)
+      }
+      if (live === 'unconfirmed') {
+        warn(`OrgAI host ownership: daemon.json names pid ${incumbent.pid}, which exists but could not be confirmed as that host, and its endpoint does not answer (${answer}); taking over.`)
       }
       unlinkStaleEndpoint(incumbent.endpoint)
+    } else if (file.kind === 'unusable') {
+      // Never "no incumbent" (review M9): reclaimed only while it still names a pid that is provably gone and an
+      // endpoint (if any) that does not answer.
+      const dead = file.pid !== undefined && (await liveness(file.pid, file.processStartTime)) === 'dead'
+      const answer = dead && file.endpoint ? await probe(file.endpoint, probeTimeoutMs) : undefined
+      if (!dead || answer === 'connected' || answer === 'eacces' || answer === 'timeout') {
+        removeStartupDir()
+        throw new HostOwnershipError('daemon_json_unreadable', `${daemonPath} could not be used: ${file.reason}. ${runDirHint(runDir)}`)
+      }
+      warn(`OrgAI host ownership: replacing an unusable daemon.json (${file.reason}) that names pid ${file.pid}, which is gone.`)
+      if (file.endpoint) unlinkStaleEndpoint(file.endpoint)
     }
     // No live host owns the data dir from here on, and we hold the mutex.
     await sweepLeftovers()
@@ -409,7 +530,9 @@ export async function acquireHostOwnership(opts: OwnershipOptions): Promise<Host
     // The handshake secret.
     writeAtomic(secretPath, randomBytes(32).toString('hex'), 0o600, id)
     wroteSecret = true
-    if (platform === 'win32') await restrictWindowsAcl(secretPath, dataDir)
+    if (platform === 'win32') {
+      secretAclWarning = await protectSecretOnWindows(secretPath, dataDir, { mode: secretAclMode, warn, ...(opts.icacls ? { icacls: opts.icacls } : {}) })
+    }
     fault('after-secret')
 
     // The per-instance listener.
@@ -434,7 +557,7 @@ export async function acquireHostOwnership(opts: OwnershipOptions): Promise<Host
     fault('after-daemon-starting')
     fault('before-startup-release')
     removeStartupDir()
-    return ownershipHandle(info, server, runtimeDir)
+    return ownershipHandle(info, server, runtimeDir, secretAclWarning)
   } catch (e) {
     if (e instanceof OwnershipFaultError) {
       const srv = server
@@ -444,6 +567,7 @@ export async function acquireHostOwnership(opts: OwnershipOptions): Promise<Host
       throw e
     }
     if (e instanceof HostAlreadyRunningError) throw e
+    if (e instanceof HostOwnershipError && e.code === 'daemon_json_unreadable') throw e
     // A real failure after the mutex: undo what we made, then let go of the mutex.
     try {
       server?.close()
@@ -467,10 +591,18 @@ export async function acquireHostOwnership(opts: OwnershipOptions): Promise<Host
         if (errCode(e) !== 'EEXIST') throw e
         const owner = parseOwner(readJsonFile(join(startupDir, OWNER_JSON), 4096))
         if (owner) {
-          if (isLive(owner.pid, owner.processStartTime)) {
+          const state = await liveness(owner.pid, owner.processStartTime)
+          if (state === 'unconfirmed' && mutexAge(owner) >= unconfirmedStaleMs) {
+            // Startup holds the mutex for seconds; a pid that cannot be confirmed holding it this long is most likely a
+            // stranger that reused a crashed holder's pid (review M9).
+            warn(`OrgAI host ownership: startup.mkdir has been held by pid ${owner.pid} (not confirmed as an OrgAI host) for over ${Math.round(unconfirmedStaleMs / 1000)} s; reclaiming it.`)
+            reclaimStartupDir({ owner })
+            continue
+          }
+          if (state !== 'dead') {
             // Never steal from a live owner, however long it takes; give up after liveWaitMs.
             liveSince ??= now()
-            if (now() - liveSince >= liveWaitMs) throw new HostStartingOrBusyError(owner.pid)
+            if (now() - liveSince >= liveWaitMs) throw new HostStartingOrBusyError(owner.pid, runDir)
             await sleep(retryMs)
             continue
           }
@@ -497,9 +629,19 @@ export async function acquireHostOwnership(opts: OwnershipOptions): Promise<Host
       const ownerTmp = join(startupDir, `${OWNER_JSON}.tmp`)
       writeFileSync(ownerTmp, JSON.stringify(record), { mode: 0o600 })
       fault('after-owner-tmp')
-      renameSync(ownerTmp, join(startupDir, OWNER_JSON))
+      renameSyncRetry(ownerTmp, join(startupDir, OWNER_JSON))
       fault('after-owner-rename')
       return
+    }
+  }
+
+  /** How long `owner` has held startup.mkdir: from its createdAt, else the owner file's mtime (0 when unknown). */
+  function mutexAge(owner: OwnerRecord): number {
+    if (owner.createdAt !== undefined && Number.isFinite(owner.createdAt)) return now() - owner.createdAt
+    try {
+      return Date.now() - statSync(join(startupDir, OWNER_JSON)).mtimeMs
+    } catch {
+      return 0
     }
   }
 
@@ -511,7 +653,7 @@ export async function acquireHostOwnership(opts: OwnershipOptions): Promise<Host
   function reclaimStartupDir(judged?: { owner: OwnerRecord | null }): void {
     const stale = `${startupDir}.stale-${randomUUID()}`
     try {
-      renameSync(startupDir, stale)
+      renameSyncRetry(startupDir, stale)
     } catch (e) {
       if (errCode(e) === 'ENOENT') return // another contender won the rename; loop
       throw e
@@ -607,7 +749,7 @@ export async function acquireHostOwnership(opts: OwnershipOptions): Promise<Host
         if (typeof process.getuid === 'function' && st.uid !== process.getuid()) continue
         const owner = parseOwner(readJsonFile(join(dir, OWNER_JSON), 4096))
         // No owner.json: maybe a host between mkdir and rename; leave it.
-        if (!owner || isLive(owner.pid, owner.processStartTime)) continue
+        if (!owner || (await liveness(owner.pid, owner.processStartTime)) !== 'dead') continue
         rmSync(dir, { recursive: true, force: true })
       } catch {
         /* best effort */
@@ -679,7 +821,7 @@ export async function acquireHostOwnership(opts: OwnershipOptions): Promise<Host
     }
   }
 
-  function ownershipHandle(info: DaemonInfo, srv: Server, rtDir: string | undefined): HostOwnership {
+  function ownershipHandle(info: DaemonInfo, srv: Server, rtDir: string | undefined, aclWarning: string | undefined): HostOwnership {
     let current = info
     let released = false
     const rewrite = (state: HostState): boolean => {
@@ -696,6 +838,7 @@ export async function acquireHostOwnership(opts: OwnershipOptions): Promise<Host
       endpoint: info.endpoint,
       secretPath,
       ...(rtDir ? { runtimeDir: rtDir } : {}),
+      ...(aclWarning ? { secretAclWarning: aclWarning } : {}),
       markReady() {
         const wrote = rewrite('ready')
         try {
@@ -740,7 +883,7 @@ export async function acquireHostOwnership(opts: OwnershipOptions): Promise<Host
           const ownerTmp = join(startupDir, `${OWNER_JSON}.tmp`)
           writeFileSync(ownerTmp, JSON.stringify({ pid, ...(myStart ? { processStartTime: myStart } : {}), hostInstanceId: id, createdAt: now() }), { mode: 0o600 })
           fault('release-after-owner-tmp')
-          renameSync(ownerTmp, join(startupDir, OWNER_JSON))
+          renameSyncRetry(ownerTmp, join(startupDir, OWNER_JSON))
         } catch (e) {
           if (e instanceof OwnershipFaultError) throw e
           /* unwritable: the dir alone still marks the mutex taken */
@@ -795,20 +938,65 @@ export async function acquireHostOwnership(opts: OwnershipOptions): Promise<Host
   }
 }
 
+/** The account icacls grants: `DOMAIN\user`, or `user` without a domain; undefined when USERNAME is unset or odd. */
+export function windowsAccountName(env: Readonly<Record<string, string | undefined>> = process.env): string | undefined {
+  const user = env.USERNAME?.trim()
+  if (!user || /[\\/"%:\0\r\n]/.test(user)) return undefined
+  const domain = env.USERDOMAIN?.trim()
+  return domain && !/[\\/"%:\0\r\n]/.test(domain) ? `${domain}\\${user}` : user
+}
+
 /**
- * win32 only: when the data dir is outside %APPDATA% / %LOCALAPPDATA% (whose ACLs already exclude other users),
- * give the secret file an explicit current-user-only DACL. UNVERIFIED: never run on Windows from this code.
+ * True when `dataDir` lies in %APPDATA% / %LOCALAPPDATA%, whose inherited ACLs already exclude other users. Compared
+ * case-insensitively on resolved win32 paths.
  */
-async function restrictWindowsAcl(secretPath: string, dataDir: string): Promise<void> {
-  const lower = dataDir.toLowerCase()
-  const roots = [process.env.APPDATA, process.env.LOCALAPPDATA].filter((r): r is string => !!r).map((r) => resolve(r).toLowerCase())
-  if (roots.some((r) => lower === r || lower.startsWith(`${r}\\`))) return
-  const user = process.env.USERNAME
-  if (!user) throw new HostOwnershipError('secret_acl_failed', 'Could not name the current user to protect daemon.secret.')
-  const account = process.env.USERDOMAIN ? `${process.env.USERDOMAIN}\\${user}` : user
-  await new Promise<void>((ok, fail) => {
-    execFile('icacls', [secretPath, '/inheritance:r', '/grant:r', `${account}:F`], { windowsHide: true, timeout: 10_000 }, (err) =>
-      err ? fail(new HostOwnershipError('secret_acl_failed', `Could not restrict daemon.secret: ${err.message}`)) : ok()
-    )
+export function insideWindowsProfileData(dataDir: string, env: Readonly<Record<string, string | undefined>> = process.env): boolean {
+  const lower = win32.resolve(dataDir).toLowerCase()
+  const roots = [env.APPDATA, env.LOCALAPPDATA].filter((r): r is string => !!r?.trim()).map((r) => win32.resolve(r.trim()).toLowerCase().replace(/\\+$/, ''))
+  return roots.some((r) => lower === r || lower.startsWith(`${r}\\`))
+}
+
+/** icacls by absolute path (`%SystemRoot%\System32\icacls.exe`), cwd the temp dir (review H1). Rejects on failure. */
+export function runIcacls(args: string[], env: Readonly<Record<string, string | undefined>> = process.env): Promise<void> {
+  return new Promise((ok, fail) => {
+    try {
+      execFile(system32Path('icacls.exe', env), args, { windowsHide: true, timeout: 10_000, cwd: neutralCwd(), shell: false }, (err) => (err ? fail(err) : ok()))
+    } catch (e) {
+      fail(e)
+    }
   })
+}
+
+export interface ProtectSecretOptions {
+  mode: 'required' | 'best-effort'
+  warn?: (message: string) => void
+  env?: Readonly<Record<string, string | undefined>>
+  icacls?: (args: string[]) => Promise<void>
+}
+
+/**
+ * win32 only: when the data dir is outside %APPDATA% / %LOCALAPPDATA%, give the secret file an explicit
+ * current-user-only DACL. A failure (no account name, icacls missing or refusing: a junctioned profile, FAT / exFAT, a
+ * network drive) throws HostOwnershipError('secret_acl_failed') in 'required' mode; in 'best-effort' mode it is logged
+ * and returned as a warning sentence (review M8). Undefined when the secret is protected or needs no explicit ACL.
+ * UNVERIFIED: never run on Windows from this code.
+ */
+export async function protectSecretOnWindows(secretPath: string, dataDir: string, opts: ProtectSecretOptions): Promise<string | undefined> {
+  const env = opts.env ?? process.env
+  if (insideWindowsProfileData(dataDir, env)) return undefined
+  const account = windowsAccountName(env)
+  let problem: string | undefined
+  if (!account) problem = 'Could not name the current user to protect daemon.secret.'
+  else {
+    try {
+      await (opts.icacls ?? ((a: string[]) => runIcacls(a, env)))([secretPath, '/inheritance:r', '/grant:r', `${account}:F`])
+    } catch (e) {
+      problem = `Could not restrict daemon.secret: ${e instanceof Error ? e.message : String(e)}`
+    }
+  }
+  if (!problem) return undefined
+  if (opts.mode === 'required') throw new HostOwnershipError('secret_acl_failed', problem)
+  const warning = `${problem} Terminal access should stay off for this data folder (${dataDir}) until it is on a disk that keeps file permissions.`
+  ;(opts.warn ?? ((m: string) => console.warn(m)))(`OrgAI host ownership: ${warning}`)
+  return warning
 }

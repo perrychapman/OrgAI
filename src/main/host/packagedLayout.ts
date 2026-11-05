@@ -155,6 +155,55 @@ export interface RenderCliShimInput {
    * folder itself (cli-spec 7(3)). Given = the shim sets ORGAI_DATA_DIR when the caller has not.
    */
   userDataDir?: string
+  /**
+   * win32: the environment the shim will run in (LOCALAPPDATA, APPDATA, USERPROFILE, ProgramFiles). A path with
+   * characters outside printable ASCII is written relative to one of them (review M14), see {@link batchPath}.
+   */
+  env?: Readonly<Record<string, string | undefined>>
+}
+
+/**
+ * win32: the variables a shim line may start with. cmd.exe reads a batch file in the console's OEM code page, so a
+ * UTF-8 `C:\Users\Jürgen\...` would be mangled; `%LOCALAPPDATA%\...` keeps the bytes ASCII and cmd expands the
+ * variable from the (UTF-16) environment. Longest match first.
+ */
+export const SHIM_PATH_VARS = ['LOCALAPPDATA', 'APPDATA', 'USERPROFILE', 'ProgramFiles'] as const
+
+const PRINTABLE_ASCII = /^[\x20-\x7e]*$/
+
+/**
+ * The text a win32 shim line holds for `value`: the path itself when it is printable ASCII, else the path relative to
+ * the longest {@link SHIM_PATH_VARS} value it starts with (at a folder boundary, case-insensitively), as `%NAME%\rest`.
+ * Throws a plain sentence when no variable makes it ASCII. UNVERIFIED on Windows (cmd's code-page handling is from its
+ * documentation; unit-tested only).
+ */
+export function batchPath(label: string, value: string, env: Readonly<Record<string, string | undefined>> = {}): string {
+  if (PRINTABLE_ASCII.test(value)) return value
+  let best: { name: string; length: number } | undefined
+  for (const name of SHIM_PATH_VARS) {
+    const v = env[name]?.trim().replace(/[\\/]+$/, '')
+    if (!v || !/^[A-Za-z]:[\\/]/.test(v) || /["%\0\r\n]/.test(v)) continue
+    const head = value.slice(0, v.length)
+    const next = value.charAt(v.length)
+    if (head.toLowerCase() !== v.toLowerCase() || (next !== '' && next !== '\\' && next !== '/')) continue
+    if (!best || v.length > best.length) best = { name, length: v.length }
+  }
+  const out = best ? `%${best.name}%${value.slice(best.length)}` : value
+  if (!PRINTABLE_ASCII.test(out)) {
+    throw new Error(
+      `The ${label} path (${value}) has characters a Windows command file cannot hold. Install OrgAI and its data folder in folders whose names use only plain letters, or run orgai.cmd from OrgAI's resources\\bin folder directly.`
+    )
+  }
+  return out
+}
+
+/** Reverses {@link batchPath}: a leading `%NAME%` of {@link SHIM_PATH_VARS} is replaced by its value in `env`. */
+function expandBatchPath(value: string, env: Readonly<Record<string, string | undefined>> | undefined): string {
+  const m = /^%([A-Za-z]+)%/.exec(value)
+  if (!m || !env) return value
+  const name = SHIM_PATH_VARS.find((n) => n.toLowerCase() === m[1].toLowerCase())
+  const v = name ? env[name]?.trim().replace(/[\\/]+$/, '') : undefined
+  return v ? v + value.slice(m[0].length) : value
 }
 
 function checkShimPath(label: string, value: string, platform: NodeJS.Platform | string): void {
@@ -197,12 +246,15 @@ export function renderCliShim(input: RenderCliShimInput): string {
   checkShimPath('launcher', launcher, platform)
   if (userDataDir !== undefined) checkShimPath('OrgAI data', userDataDir, platform)
   if (platform === 'win32') {
+    // Plain ASCII bytes only (review M14): a non-ASCII path is written relative to %LOCALAPPDATA% and the like.
+    const launcherText = batchPath('launcher', launcher, input.env)
+    const dataText = userDataDir !== undefined ? batchPath('OrgAI data', userDataDir, input.env) : undefined
     const lines = ['@echo off', `rem ${CLI_SHIM_MARKER}: ${SHIM_SENTENCE}`, 'setlocal']
-    if (userDataDir !== undefined) lines.push(`if not defined ORGAI_DATA_DIR set "ORGAI_DATA_DIR=${userDataDir}"`)
+    if (dataText !== undefined) lines.push(`if not defined ORGAI_DATA_DIR set "ORGAI_DATA_DIR=${dataText}"`)
     // The launcher is the last command and runs without CALL: CALL would expand % in the user's arguments a second
     // time ("10% and 20%" loses its middle) and double their carets. A batch file started without CALL replaces this
     // one, keeps the SETLOCAL environment and its exit code is the command's.
-    lines.push(`"${launcher}" %*`)
+    lines.push(`"${launcherText}" %*`)
     return lines.join('\r\n') + '\r\n'
   }
   const lines = ['#!/bin/sh', `# ${CLI_SHIM_MARKER}: ${SHIM_SENTENCE}`]
@@ -234,8 +286,11 @@ export interface ParsedCliShim {
   userDataDir?: string
 }
 
-/** Reads an OrgAI shim back (`renderCliShim` round-trips exactly); undefined for a foreign or unreadable file. */
-export function parseCliShim(text: string, platform: NodeJS.Platform | string): ParsedCliShim | undefined {
+/**
+ * Reads an OrgAI shim back (`renderCliShim` round-trips exactly, given the same `env` on win32, where a leading
+ * `%LOCALAPPDATA%`-style variable is expanded from it); undefined for a foreign or unreadable file.
+ */
+export function parseCliShim(text: string, platform: NodeJS.Platform | string, env?: Readonly<Record<string, string | undefined>>): ParsedCliShim | undefined {
   if (!isOrgaiShim(text)) return undefined
   const lines = text.split(/\r?\n/)
   let launcher: string | undefined
@@ -244,9 +299,9 @@ export function parseCliShim(text: string, platform: NodeJS.Platform | string): 
     for (const line of lines) {
       // `"<launcher>" %*`; shims written before the Wave 6 review used `call "<launcher>" %*`.
       const call = /^(?:call )?"([^"]+)" %\*$/.exec(line)
-      if (call) launcher = call[1]
+      if (call) launcher = expandBatchPath(call[1], env)
       const data = /^if not defined ORGAI_DATA_DIR set "ORGAI_DATA_DIR=([^"]+)"$/.exec(line)
-      if (data) userDataDir = data[1]
+      if (data) userDataDir = expandBatchPath(data[1], env)
     }
   } else {
     const dataPrefix = 'if [ -z "${ORGAI_DATA_DIR:-}" ]; then ORGAI_DATA_DIR='

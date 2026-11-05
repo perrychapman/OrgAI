@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -68,5 +69,19 @@ describe('resolveProject', () => {
     expect(r).toEqual({ project: projects[0], via: 'cwd', managedWorktree: { mainCheckout: '/repo' } })
     const r2 = resolveProject(projects, { cwd: '/repo/.claude/worktrees/agent-y', platform: 'linux', git: noGit })
     expect(r2).toMatchObject({ project: { id: 'p' }, managedWorktree: { mainCheckout: '/repo' } })
+  })
+
+  it.skipIf(process.platform === 'win32')('the default git runner asks about the folder with -C, from the temp dir (review H1)', () => {
+    const base = temp()
+    const repo = join(base, 'main')
+    mkdirSync(repo)
+    const run = (cwd: string, args: string[]): void => void execFileSync('git', args, { cwd, stdio: 'ignore' })
+    run(repo, ['init', '-q'])
+    run(repo, ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'x'])
+    const wt = join(repo, '.claude', 'worktrees', 'agent-z')
+    run(repo, ['worktree', 'add', '-q', '-b', 'wt-z', wt])
+    // A different main checkout path from the lexical fallback would only come from git's answer.
+    const r = resolveProject([proj('p', repo)], { cwd: wt })
+    expect(r).toMatchObject({ project: { id: 'p' }, managedWorktree: { mainCheckout: realpathSync(repo) } })
   })
 })

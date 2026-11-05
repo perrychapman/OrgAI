@@ -181,6 +181,28 @@ describe('renderCliShim / parseCliShim', () => {
     expect(parseCliShim(old, 'win32')).toEqual({ launcher })
   })
 
+  it('win32: a non-ASCII profile path is written relative to an environment variable, never as UTF-8 bytes (review M14)', () => {
+    const env = { USERPROFILE: 'C:\\Users\\Jürgen', LOCALAPPDATA: 'C:\\Users\\Jürgen\\AppData\\Local', APPDATA: 'C:\\Users\\Jürgen\\AppData\\Roaming\\' }
+    const launcher = 'C:\\Users\\Jürgen\\AppData\\Local\\Programs\\OrgAI\\resources\\bin\\orgai.cmd'
+    const userDataDir = 'c:\\users\\jürgen\\appdata\\roaming\\OrgAI'
+    const text = renderCliShim({ platform: 'win32', launcher, userDataDir, env })
+    expect(text).toMatch(/^[\x20-\x7e\r\n]*$/)
+    expect(text).toContain('"%LOCALAPPDATA%\\Programs\\OrgAI\\resources\\bin\\orgai.cmd" %*')
+    expect(text).toContain('set "ORGAI_DATA_DIR=%APPDATA%\\OrgAI"')
+    // Read back with the same environment it names the original folders (case as stored in the environment).
+    expect(parseCliShim(text, 'win32', env)).toEqual({ launcher, userDataDir: 'C:\\Users\\Jürgen\\AppData\\Roaming\\OrgAI' })
+    // An ASCII path is written as is, whatever the environment holds.
+    const ascii = 'C:\\Program Files\\OrgAI\\resources\\bin\\orgai.cmd'
+    expect(renderCliShim({ platform: 'win32', launcher: ascii, env })).toContain(`"${ascii}" %*`)
+    // Only at a folder boundary: C:\Users\Jürgenx is not under C:\Users\Jürgen.
+    expect(() => renderCliShim({ platform: 'win32', launcher: 'C:\\Users\\Jürgenx\\orgai.cmd', env })).toThrow(/cannot hold/)
+    // No variable covers it: a plain sentence, never a mangled file.
+    expect(() => renderCliShim({ platform: 'win32', launcher: 'D:\\Ünïcode\\orgai.cmd', env })).toThrow(/plain letters/)
+    expect(() => renderCliShim({ platform: 'win32', launcher, env: {} })).toThrow(/cannot hold/)
+    // POSIX shims are UTF-8 and keep the path.
+    expect(renderCliShim({ platform: 'linux', launcher: '/home/jürgen/OrgAI/bin/orgai' })).toContain("exec '/home/jürgen/OrgAI/bin/orgai'")
+  })
+
   it('shimMarkerVersion reads the marker number', () => {
     expect(shimMarkerVersion(renderCliShim({ platform: 'darwin', launcher: '/a/bin/orgai' }))).toBe(CLI_SHIM_VERSION)
     expect(shimMarkerVersion('#!/bin/sh\n# orgai-shim v2: future\n')).toBe(2)

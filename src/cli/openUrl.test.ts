@@ -12,12 +12,22 @@ describe('openUrl', () => {
     for (const [platform, expected] of [
       ['darwin', ['open', [url]]],
       ['linux', ['xdg-open', [url]]],
-      ['win32', ['rundll32.exe', ['url.dll,FileProtocolHandler', url]]]
+      ['win32', ['D:\\Win\\System32\\rundll32.exe', ['url.dll,FileProtocolHandler', url]]]
     ] as const) {
       const r = recorder()
-      await openUrl(url, { platform, execFile: r.execFile })
+      await openUrl(url, { platform, execFile: r.execFile, env: { SystemRoot: 'D:\\Win' } })
       expect(r.calls).toEqual([expected])
     }
+  })
+
+  it('never runs a bare rundll32.exe on Windows, even without SystemRoot (review H1)', async () => {
+    const r = recorder()
+    await openUrl('https://example.com/', { platform: 'win32', execFile: r.execFile, env: {} })
+    expect(r.calls[0][0]).toBe('C:\\Windows\\System32\\rundll32.exe')
+    const r2 = recorder()
+    // A relative or root-relative SystemRoot is not trusted.
+    await openUrl('https://example.com/', { platform: 'win32', execFile: r2.execFile, env: { SystemRoot: 'evil', windir: '\\x' } })
+    expect(r2.calls[0][0]).toBe('C:\\Windows\\System32\\rundll32.exe')
   })
 
   it('refuses anything but http(s)', async () => {

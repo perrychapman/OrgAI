@@ -725,10 +725,18 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     reclaimed by rename to `.stale-<uuid>`), `daemon.json` (`DaemonInfo`, tmp + rename, starting -> ready -> draining,
     rewritten only by its own hostInstanceId), `daemon.secret` (0600, for the later handshake) and a per-instance
     listener `d-<hostInstanceId>.sock` (runtime-dir fallback past 100 bytes; it accepts and drops connections until the
-    host server lands). A live pid in daemon.json is never robbed (HostAlreadyRunningError); a failure shows a startup
-    dialog and quits; released on will-quit and process exit. Liveness and start times: `host/processInfo.ts`
-    (darwin `ps -o lstart=` under LC_ALL=C TZ=UTC, `isLiveProcessCached` 5 s), ids `host/identity.ts` (12 hex).
-    Crash injection at every boundary (`OWNERSHIP_BOUNDARIES` / `RELEASE_BOUNDARIES`) in ownership.test.ts.
+    host server lands). A confirmed live pid in daemon.json is never robbed (HostAlreadyRunningError); a failure shows
+    a startup dialog and quits; released on will-quit and process exit. Liveness and start times: `host/processInfo.ts`
+    (darwin `ps -o lstart=` under LC_ALL=C TZ=UTC; `processLiveness` 'same' / 'unconfirmed' / 'dead'; the async
+    cached form in ownership and the repo lock; win32 self start time from Node's time origin, compared within 10 s),
+    ids `host/identity.ts` (12 hex). Review fixes (Group A, unit-tested; Windows UNVERIFIED): an unconfirmed pid with a
+    dead endpoint, or an unconfirmed startup.mkdir owner past 60 s, is reclaimed; an unreadable daemon.json refuses
+    (`daemon_json_unreadable`) unless it names a dead pid; refusals name `<data>/run`; renames retry transient win32
+    EPERM / EBUSY / EACCES (`host/fsRetry.ts`); icacls is fatal only for headless / inproc (`secretAcl`, desktop gets
+    `secretAclWarning`); system programs run by absolute path from the temp dir and git through
+    `host/systemBinaries.ts` `gitExecutable` (never a cwd); the repo lock also counts a fresh heartbeat as live; win32
+    shims write non-ASCII paths as `%LOCALAPPDATA%\...` (`batchPath`). Crash injection at every boundary
+    (`OWNERSHIP_BOUNDARIES` / `RELEASE_BOUNDARIES`) in ownership.test.ts.
   - `log.ts` no longer imports electron (app hooks in `electronLogHooks.ts`); `host/noElectronImport.test.ts` imports log.ts,
     the host modules, the stores, RunManager, the adapters and services with electron mocked to throw.
   - Pure view-models moved to `src/shared/view/` (no renderer, DOM or React imports, `noRendererImports.test.ts`); the old

@@ -1,9 +1,9 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { EventEmitter } from 'node:events'
-import { join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { APP_NOT_FOUND, createLauncher, hostSpawnEnv, packagedAppMissing, type SpawnFn } from './launcher'
+import { APP_NOT_FOUND, createLauncher, hostSpawnCwd, hostSpawnEnv, packagedAppMissing, type SpawnFn } from './launcher'
 
 let base: string
 let dataDir: string
@@ -67,11 +67,21 @@ describe('launcher', () => {
     expect(calls[0].args).toEqual(['--headless-host', '--run', 'run_1'])
     expect(calls[0].options).toMatchObject({ detached: true, stdio: 'ignore', windowsHide: true, shell: false })
     expect(calls[0].options.env).toEqual({ ORGAI_ELECTRON_PATH: '/e', PATH: '/bin' })
+    // Never the caller's cwd (review H1): the app's own folder.
+    expect(calls[0].options.cwd).toBe(dirname(resolve('/e')))
+    expect(calls[0].options.cwd).not.toBe(process.cwd())
     expect(unrefs).toBe(1)
     const chosen = createLauncher({ dataDir, userDataDir: '/ud', userChoseDataDir: true, env, spawn })
     chosen.spawn({ headless: false })
     expect(calls[1].args).toEqual([])
     expect(calls[1].options.env?.ORGAI_DATA_DIR).toBe('/ud')
+  })
+
+  it('hostSpawnCwd is the binary folder for an absolute command, else home; never the cwd', () => {
+    expect(hostSpawnCwd(join(base, 'bin', 'OrgAI'), { home: '/home/me', isDir: () => true })).toBe(join(base, 'bin'))
+    expect(hostSpawnCwd(join(base, 'gone', 'OrgAI'), { home: '/home/me', isDir: () => false })).toBe('/home/me')
+    expect(hostSpawnCwd('electron', { home: '/home/me', isDir: () => true })).toBe('/home/me')
+    expect(hostSpawnCwd('./electron', { home: '/home/me', isDir: () => true })).toBe('/home/me')
   })
 
   it('hostSpawnEnv drops an inherited ORGAI_DATA_DIR unless chosen', () => {

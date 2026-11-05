@@ -14,12 +14,15 @@
  *   layout's app binary (`<Resources>/../MacOS/OrgAI`, `OrgAI.exe`, `orgai`). No arguments: the packaged app loads its
  *   own app.asar. Checked on a local unsigned macOS pack only; Windows and Linux packs are UNVERIFIED.
  *
- * Order: env > packaged > dev checkout. The spawned app never inherits ELECTRON_RUN_AS_NODE (hostSpawnEnv).
+ * Order: env > packaged > dev checkout. The spawned app never inherits ELECTRON_RUN_AS_NODE (hostSpawnEnv), nor the
+ * caller's cwd (hostSpawnCwd, review H1): the CLI often runs in an untrusted clone, Windows searches a spawn's cwd for
+ * bare program names first, and a long-lived host would otherwise also keep that folder busy.
  */
 import { spawn as nodeSpawn, type SpawnOptions } from 'node:child_process'
-import { existsSync, readFileSync, realpathSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { dirname, join, resolve } from 'node:path'
+import { homedir } from 'node:os'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { DaemonInfo, HostKind } from '../../shared/types'
 import { readDaemonInfo } from '../../main/host/ownership'
@@ -59,6 +62,29 @@ export interface LauncherOptions {
   runtime?: { execPath: string; electron?: string }
   /** Default process.platform (tests). */
   platform?: NodeJS.Platform
+  /** The spawned host's cwd (tests); default {@link hostSpawnCwd}. */
+  cwd?: (command: string) => string
+}
+
+function isDir(p: string): boolean {
+  try {
+    return statSync(p).isDirectory()
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Where the spawned host runs: the app binary's own folder when the command is an absolute path to an existing
+ * folder's file, else the home folder. Never the caller's cwd (review H1).
+ */
+export function hostSpawnCwd(command: string, deps: { home?: string; isDir?: (p: string) => boolean } = {}): string {
+  const dirOk = deps.isDir ?? isDir
+  if (isAbsolute(command)) {
+    const dir = dirname(command)
+    if (dirOk(dir)) return dir
+  }
+  return deps.home ?? homedir()
 }
 
 function moduleDir(): string {
@@ -209,6 +235,7 @@ export function createLauncher(opts: LauncherOptions): HostLauncher {
         stdio: 'ignore',
         windowsHide: true,
         shell: false,
+        cwd: (opts.cwd ?? hostSpawnCwd)(app.command),
         env: hostSpawnEnv(env, opts)
       })
       // Listen before the next tick: Node emits 'error' asynchronously, and with no listener it would crash the CLI.

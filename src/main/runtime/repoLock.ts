@@ -3,8 +3,10 @@ import { execFile, execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
+import { renameSyncRetry } from '../host/fsRetry'
 import { currentHostInstanceId } from '../host/identity'
-import { isLiveProcessCached as defaultIsLiveProcess, selfStartTime } from '../host/processInfo'
+import { processLivenessCachedAsync, selfStartTime } from '../host/processInfo'
+import { gitExecutable } from '../host/systemBinaries'
 
 /**
  * The repository lock (cli-spec 3.2 (5)). One lock per git repository, keyed by its common git dir, so the main
@@ -17,6 +19,12 @@ import { isLiveProcessCached as defaultIsLiveProcess, selfStartTime } from '../h
  *
  * Callers above this lock (`WorktreeIntegrator.exclusive()` in integration.ts) are always taken first, outside it;
  * nothing inside a withRepoLock scope waits for a user (merge reviews run between two separate scopes).
+ *
+ * Liveness of a foreign owner (review M7): its pid must be dead (by the OS or a differing start time) AND its heartbeat
+ * (the newest mtime of the lock dir and owner.json, touched every `heartbeatMs`) older than `heartbeatStaleMs`; a
+ * holder in another PID namespace (WSL, a container) looks dead by pid but keeps beating. The pid check never blocks
+ * the event loop (M10). Renames retry transient Windows errors (M6), and git runs by absolute path on Windows, never
+ * from the checkout (H1).
  *
  * Pure Node: no electron import.
  */
@@ -74,18 +82,29 @@ export interface RepoLockConfig {
   /** Age after which a lock dir without a readable owner.json counts as stale. */
   missingOwnerGraceMs?: number
   onRecovery?: (notice: RepoLockRecoveryNotice) => void
-  isLiveProcess?: (pid: number, startTime?: string) => boolean
+  /** May answer asynchronously; the default never blocks the event loop. */
+  isLiveProcess?: (pid: number, startTime?: string) => boolean | Promise<boolean>
+  /**
+   * A foreign owner whose heartbeat (newest mtime of the lock dir and owner.json) is younger than this counts as live
+   * whatever its pid says (review M7). 0 (the default) means 4 x heartbeatMs.
+   */
+  heartbeatStaleMs?: number
 }
 
-const DEFAULTS = { timeoutMs: 60_000, pollMs: 100, heartbeatMs: 2000, missingOwnerGraceMs: 2000 }
+const defaultIsLive = async (pid: number, start?: string): Promise<boolean> => (await processLivenessCachedAsync(pid, start)) !== 'dead'
+const DEFAULTS = { timeoutMs: 60_000, pollMs: 100, heartbeatMs: 2000, missingOwnerGraceMs: 2000, heartbeatStaleMs: 0 }
 let config: Required<Omit<RepoLockConfig, 'onRecovery'>> & Pick<RepoLockConfig, 'onRecovery'> = {
   ...DEFAULTS,
-  isLiveProcess: (pid, start) => defaultIsLiveProcess(pid, start)
+  isLiveProcess: defaultIsLive
+}
+
+function heartbeatStaleMs(): number {
+  return config.heartbeatStaleMs > 0 ? config.heartbeatStaleMs : 4 * config.heartbeatMs
 }
 
 /** Change the lock's timings and hooks (tests, Wave 1 host). Fields left out keep their value; `reset` restores defaults. */
 export function configureRepoLock(next: RepoLockConfig & { reset?: boolean }): void {
-  const base = next.reset ? { ...DEFAULTS, isLiveProcess: (pid: number, start?: string) => defaultIsLiveProcess(pid, start), onRecovery: undefined } : config
+  const base = next.reset ? { ...DEFAULTS, isLiveProcess: defaultIsLive, onRecovery: undefined } : config
   const { reset: _reset, ...rest } = next
   const defined = Object.fromEntries(Object.entries(rest).filter(([, v]) => v !== undefined))
   config = { ...base, ...defined }
@@ -124,8 +143,11 @@ function realpathOfNearest(p: string): string {
 }
 
 function gitOut(cwd: string, args: string[]): Promise<string | null> {
+  // By absolute path on Windows: a bare 'git' is searched in the cwd (the checkout, an untrusted clone) first.
+  const git = gitExecutable()
+  if (!git) return Promise.resolve(null)
   return new Promise((done) => {
-    execFile('git', args, { cwd, windowsHide: true, timeout: 10_000, maxBuffer: 1024 * 1024 }, (error, stdout) => {
+    execFile(git, args, { cwd, windowsHide: true, timeout: 10_000, maxBuffer: 1024 * 1024 }, (error, stdout) => {
       done(error ? null : String(stdout).trim())
     })
   })
@@ -133,8 +155,10 @@ function gitOut(cwd: string, args: string[]): Promise<string | null> {
 
 /** `git rev-parse --git-path <rel>` made absolute against the checkout, synchronously (null outside a repository). */
 export function gitPathSync(checkout: string, rel: string): string | null {
+  const git = gitExecutable()
+  if (!git) return null
   try {
-    const out = execFileSync('git', ['rev-parse', '--git-path', rel], {
+    const out = execFileSync(git, ['rev-parse', '--git-path', rel], {
       cwd: checkout,
       windowsHide: true,
       timeout: 10_000,
@@ -266,6 +290,12 @@ function newestMtime(lockDir: string): number | undefined {
   return newest
 }
 
+/** True while the lock's heartbeat (newest mtime) is younger than heartbeatStaleMs: its holder is still beating. */
+function heartbeatFresh(lockDir: string): boolean {
+  const mtime = newestMtime(lockDir)
+  return mtime !== undefined && Date.now() - mtime < heartbeatStaleMs()
+}
+
 /** index.lock and MERGE_HEAD files a crashed holder may have left. Read-only. */
 function inspectLeftovers(commonDir: string, checkout: string): string[] {
   const found: string[] = []
@@ -335,7 +365,7 @@ async function acquireDirLock(common: CommonDir, checkout: string): Promise<DirL
       if (owner) {
         if (owner.pid === self.pid && owner.hostInstanceId === self.hostInstanceId) {
           if (!heldDirs.has(common.key)) reason = 'leftover'
-        } else if (!config.isLiveProcess(owner.pid, owner.processStartTime)) reason = 'dead-owner'
+        } else if (!(await config.isLiveProcess(owner.pid, owner.processStartTime)) && !heartbeatFresh(lockDir)) reason = 'dead-owner'
       } else {
         const mtime = newestMtime(lockDir)
         if (mtime === undefined) continue // vanished meanwhile: try mkdir again
@@ -344,7 +374,7 @@ async function acquireDirLock(common: CommonDir, checkout: string): Promise<DirL
       if (reason) {
         const stale = `${lockDir}.stale-${randomUUID()}`
         try {
-          renameSync(lockDir, stale)
+          renameSyncRetry(lockDir, stale)
         } catch (re) {
           if ((re as NodeJS.ErrnoException).code === 'ENOENT') continue // another process reclaimed it first
           throw re
@@ -398,7 +428,7 @@ async function acquireDirLock(common: CommonDir, checkout: string): Promise<DirL
     const ownerFile = join(lockDir, OWNER_FILE)
     try {
       writeFileSync(`${ownerFile}.tmp`, JSON.stringify(mine), 'utf8')
-      renameSync(`${ownerFile}.tmp`, ownerFile)
+      renameSyncRetry(`${ownerFile}.tmp`, ownerFile)
     } catch (e) {
       // ENOENT: a contender moved our fresh dir away (it judged the previous lock); whatever is at the path now is
       // not ours, so never remove it: start over.
@@ -429,7 +459,7 @@ async function acquireDirLock(common: CommonDir, checkout: string): Promise<DirL
         try {
           // Rename first so a concurrent reader never sees a half-removed dir as a lock without an owner.
           const gone = `${lockDir}.stale-${randomUUID()}`
-          renameSync(lockDir, gone)
+          renameSyncRetry(lockDir, gone)
           rmSync(gone, { recursive: true, force: true })
         } catch {
           rmSync(lockDir, { recursive: true, force: true })

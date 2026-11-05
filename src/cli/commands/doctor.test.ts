@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { FakeHostClient, fakeContext } from '../testing/fakeContext'
 import { EXIT } from '../types'
 import { renderCliShim } from '../../main/host/packagedLayout'
-import { PACKAGED_LAUNCHER_MARK, doctorProbes, installCheck, runDoctor, shimCheck } from './doctor'
+import { DAEMON_JSON_MAX_BYTES, PACKAGED_LAUNCHER_MARK, doctorProbes, installCheck, runDoctor, shimCheck } from './doctor'
 
 const realProbes = { ...doctorProbes }
 let dir: string
@@ -65,6 +65,21 @@ describe('orgai doctor', () => {
     expect(await runDoctor(f.ctx, [])).toBe(EXIT.ok)
     expect(f.out()).toMatch(/^ok {4}socket +Skipped: no host is running/m)
     expect(f.connectCalls).toHaveLength(0)
+  })
+
+  it('never reads an oversized or odd daemon.json whole (review Low)', async () => {
+    const data = liveDataDir()
+    const daemon = join(data, 'run', 'daemon.json')
+    writeFileSync(daemon, `{"pid":1,"hostInstanceId":"aaaaaaaaaaaa","pad":"${'x'.repeat(DAEMON_JSON_MAX_BYTES)}"}`)
+    const f = fakeContext({ paths: { userDataDir: dir, dataDir: data } })
+    expect(await runDoctor(f.ctx, [])).toBe(EXIT.failure)
+    expect(f.out()).toMatch(/^fail {2}daemon-json +daemon\.json could not be read: it is larger than 64 KB/m)
+    expect(f.connectCalls).toHaveLength(0)
+    rmSync(daemon)
+    mkdirSync(daemon)
+    const g = fakeContext({ paths: { userDataDir: dir, dataDir: data } })
+    expect(await runDoctor(g.ctx, [])).toBe(EXIT.failure)
+    expect(g.out()).toMatch(/daemon\.json could not be read: it is not a regular file/)
   })
 })
 
