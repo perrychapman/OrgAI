@@ -114,7 +114,7 @@ try {
   r = await at(['org', 'import'])
   check(r.code === 2 && r.out.includes('backend-dev') && r.err.includes('--yes'), 'org import previews and asks for --yes without a terminal', show(r))
   r = await at(['org', 'import', '--yes'])
-  check(r.code === 0 && r.out.includes('Imported 1 role') && r.out.includes('Desktop Team tab'), 'org import --yes applies', show(r))
+  check(r.code === 0 && r.out.includes('Imported 1 role') && !r.out.includes('Desktop Team tab'), 'org import --yes applies (and never promises a Desktop Undo)', show(r))
   j = await jsonOf(['org', 'show'])
   check(j.v?.roles?.some((x) => x.slug.startsWith('backend-dev')), 'the imported role is in the chart', show(j.r))
 
