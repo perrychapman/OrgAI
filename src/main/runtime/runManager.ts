@@ -187,6 +187,8 @@ export function resolveAllowedDirectories(raw: readonly unknown[] | undefined, o
 }
 
 const FLUSH_INTERVAL_MS = 1500
+/** How long a 'trusted' folder-config answer is reused before the folder is scanned again. */
+const FOLDER_CHECK_MS = 2000
 /** Most skill loads one run counts (RunUsage.skills, transcript rows); later skill.used events are dropped. */
 export const RUN_SKILL_LOAD_LIMIT = 1000
 /** run.usage events (and the index save that goes with them) are published at most this often per run. */
@@ -1338,9 +1340,15 @@ export class RunManager {
         const first = stateNow()
         let latched = first === 'none' || first === 'trusted'
         if (!latched) warnNotLoaded(first)
+        // This is asked on every permission check and a check scans the whole config, so a 'trusted' answer is reused
+        // for FOLDER_CHECK_MS; a change shows up within that window. A latched-false run never scans again.
+        let checkedAt = Date.now()
         folderLoads = () => {
           if (!latched) return false
+          const at = Date.now()
+          if (at >= checkedAt && at - checkedAt < FOLDER_CHECK_MS) return true
           const now = stateNow()
+          checkedAt = at
           if (now === 'none' || now === 'trusted') return true
           latched = false
           warnNotLoaded(now)
