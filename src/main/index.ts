@@ -306,7 +306,16 @@ app.whenReady().then(async () => {
   const socketServer = server
   try {
     // Review M11: no listener and no daemon.secret yet; they exist only while Terminal access is on (syncTerminalListener).
-    ownership = await acquireHostOwnership({ dataDir, hostKind, appVersion: app.getVersion(), listen: false, onConnection: (s) => socketServer.accept(s) })
+    // singleInstanceLockHeld: gotLock is true here (whenReady returns at once without it), and the lock is keyed by
+    // userData, so a stale Electron daemon.json whose pid cannot be confirmed never locks the user out (review M9).
+    ownership = await acquireHostOwnership({
+      dataDir,
+      hostKind,
+      appVersion: app.getVersion(),
+      listen: false,
+      singleInstanceLockHeld: gotLock,
+      onConnection: (s) => socketServer.accept(s)
+    })
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e)
     log.error(`Host ownership failed: ${message}`)

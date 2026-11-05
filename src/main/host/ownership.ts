@@ -45,7 +45,9 @@ import { restrictDaemonSecretAcl } from './protocol'
  * only when daemon.json says the endpoint is bound (no `listening: false`; a listening host publishes daemon.json only
  * after it listens and writes `listening: false` before it closes, so a published listening host with no listener is
  * gone). An unconfirmed pid whose daemon.json says `listening: false` (an Electron host with Terminal access off,
- * review M11) is a running host whatever the probe says: only a 'dead' pid is reclaimed then. An unconfirmed startup.mkdir owner is reclaimed once the mutex is older than
+ * review M11) is a running host whatever the probe says: only a 'dead' pid is reclaimed then, unless the incumbent is
+ * an Electron host and this launch holds Electron's single-instance lock (`singleInstanceLockHeld`; review M9
+ * follow-up: the lock proves no Electron host runs here, so a crash record is never a lockout). An unconfirmed startup.mkdir owner is reclaimed once the mutex is older than
  * `unconfirmedStaleMs`. A daemon.json that exists but cannot be read or parsed is never taken for "no host": it is
  * reclaimed only when it still names a dead pid, else ownership is refused with the file named. The user's way out of
  * a wedged state is quitting that process, or deleting `<dataDir>/run` by hand (every refusal names it).
@@ -178,6 +180,15 @@ export interface OwnershipOptions {
   appVersion: string
   /** Defaults to currentHostInstanceId(). */
   hostInstanceId?: string
+  /**
+   * The caller holds Electron's single-instance lock (`app.requestSingleInstanceLock()`, keyed by userData, and dataDir
+   * is `<userData>/data`): no other Electron host (desktop / headless-host) runs on this data folder. An Electron
+   * incumbent whose pid is 'unconfirmed', whose daemon.json says `listening: false` and whose endpoint does not
+   * answer is then known to be stale and is reclaimed (review M9 follow-up: a crashed desktop host with Terminal access
+   * off whose pid Windows reused for an elevated process). Only the Electron hosts pass it; `--host inproc` takes no
+   * such lock and keeps the conservative refusal.
+   */
+  singleInstanceLockHeld?: boolean
   /** Base for the long-path runtime dir; defaults to $XDG_RUNTIME_DIR, else os.tmpdir(). */
   runtimeBase?: string
   // Injectable for tests.
@@ -533,13 +544,17 @@ export async function acquireHostOwnership(opts: OwnershipOptions): Promise<Host
       // that answers, is a running host. So is an unconfirmed pid whose daemon.json says `listening: false` (review
       // M11: an Electron host with Terminal access off has no listener at all, so a dead endpoint proves nothing; a
       // slow or unreadable start time must never let a second host write the same data folder).
-      const unboundButMaybeLive = live === 'unconfirmed' && incumbent.listening === false
+      // Unless this launch holds Electron's single-instance lock and the incumbent is an Electron host: the lock
+      // proves no Electron host runs on this data folder, so the record is stale (review M9 follow-up).
+      const lockProvesGone = opts.singleInstanceLockHeld === true && (incumbent.hostKind === 'desktop' || incumbent.hostKind === 'headless-host')
+      const unboundButMaybeLive = live === 'unconfirmed' && incumbent.listening === false && !lockProvesGone
       if (live === 'same' || reachable || unboundButMaybeLive) {
         removeStartupDir()
         throw new HostAlreadyRunningError(incumbent, runDir)
       }
       if (live === 'unconfirmed') {
-        warn(`OrgAI host ownership: daemon.json names pid ${incumbent.pid}, which exists but could not be confirmed as that host, and its endpoint does not answer (${answer}); taking over.`)
+        const why = incumbent.listening === false ? 'it is an OrgAI app host and this launch holds the single-instance lock' : `its endpoint does not answer (${answer})`
+        warn(`OrgAI host ownership: daemon.json names pid ${incumbent.pid}, which exists but could not be confirmed as that host, and ${why}; taking over.`)
       }
       unlinkStaleEndpoint(incumbent.endpoint)
     } else if (file.kind === 'unusable') {
