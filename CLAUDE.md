@@ -519,29 +519,52 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   `KitPreviewItem.roles` shows prompts and elevated tools, skill paths use `safeKitRelPath`, skill export drops private-looking
   files, and an export target whose suffix was added here is refused when it exists (`kitExportTarget`).
 
-- Repository lock: `worktrees.ts` `withRepoLock` (delegating to `runtime/repoLock.ts`) serializes ALL git operations
-  per repository, keyed by the common git dir, across processes through `<commonDir>/orgai-repo.lock` (owner.json with
-  pid, start time and host instance id, 2 s heartbeat, 60 s `RepoLockTimeoutError`, dead or leftover owners reclaimed
-  with a read-only index.lock / MERGE_HEAD notice, carried on the lease as `repoLockRecovery()`), reentrant per async call chain (`RepoLockLease.released` stops
-  detached work from reusing an ended scope) and never held across a merge review. A worktree and the main checkout of
-  one repo now queue behind each other; different repos do not. The info/exclude line follows
-  `git rev-parse --git-path info/exclude`, so linked worktrees and `.git`-file checkouts write the common dir's file.
-  Unfinished git state (spec 3.2 (5) 4): under the lock, integrateWorktree (target and worktree), commitLeftovers and
-  discardWorktree (the worktree) first look for index.lock, MERGE_HEAD, CHERRY_PICK_HEAD, REVERT_HEAD, rebase-merge /
-  rebase-apply in the checkout's git dir; if any is there they run no git command (no merge --abort, worktree remove,
-  branch -D, add or reset): integrate answers 'conflict' with a message naming the files (and the reclaimed lock),
-  commitLeftovers an error, discardWorktree throws `UnfinishedGitStateError` (maintenance answers ok: false).
-  Unit-tested with real git repos on macOS only.
-- CLI groundwork (Wave 0, docs/design/cli-spec.md section 8; no CLI yet): shared contracts in types.ts (HOST_IPC,
-  RunOverrides, HeadlessDecisionPolicy, DecisionOutcome, ExecOutcome, endedBy 'policy' / 'budget', run.finalized,
-  host wire-protocol and bundle/CAS types) with RunStore normalization; host primitives `src/main/host/processInfo.ts`
-  and `identity.ts`; the host ownership protocol (`requestSingleInstanceLock`, startup.mkdir, daemon.json, per-instance
-  socket) and an electron-free log.ts; the single-order cross-process `withRepoLock` and the info/exclude fix; the
-  pure view-models moved to `src/shared/view/` (no renderer, DOM or React imports there, `noRendererImports.test.ts`;
-  the old `src/renderer/src/lib/<name>.ts` paths stay as thin `export * from '@shared/view/<name>'` re-exports, so
-  renderer callers keep their imports and new pure view logic the CLI also needs goes in `src/shared/view/`); refused colliding MCP secret env names on Codex launch; host-side
-  bundle validation and knowledge appendFacts / expectedUpdatedAt; the safe JSON codec. Each is verified by unit tests
-  only; Windows named pipes / ACLs and Windows / Linux process start times are unverified.
+- CLI & host (docs/design/cli-spec.md; Wave 0 landed: groundwork only, no CLI, no host server, no new IPC handlers yet):
+  - Repository lock: `worktrees.ts` `withRepoLock` (delegating to `runtime/repoLock.ts`) serializes ALL git operations
+    per repository, keyed by the common git dir, across processes through `<commonDir>/orgai-repo.lock` (owner.json with
+    pid, start time and host instance id, 2 s heartbeat, 60 s `RepoLockTimeoutError`, dead or leftover owners reclaimed
+    with a read-only index.lock / MERGE_HEAD notice, carried on the lease as `repoLockRecovery()`), reentrant per async
+    call chain (`RepoLockLease.released` stops detached work from reusing an ended scope) and never held across a merge
+    review. A worktree and the main checkout of one repo now queue behind each other; different repos do not. The
+    info/exclude line follows `git rev-parse --git-path info/exclude`, so linked worktrees and `.git`-file checkouts
+    write the common dir's file. Unfinished git state (spec 3.2 (5) 4): under the lock, integrateWorktree (target and
+    worktree), commitLeftovers and discardWorktree (the worktree) first look for index.lock, MERGE_HEAD,
+    CHERRY_PICK_HEAD, REVERT_HEAD, rebase-merge / rebase-apply in the checkout's git dir; if any is there they run no git
+    command (no merge --abort, worktree remove, branch -D, add or reset): integrate answers 'conflict' with a message
+    naming the files (and the reclaimed lock), commitLeftovers an error, discardWorktree throws `UnfinishedGitStateError`
+    (maintenance answers ok: false). A git-layer throw settles the worktree 'conflict', never stuck 'merging'.
+    Unit-tested with real git repos (repoLock.test.ts, worktrees.test.ts, incl. the contended 2-actor test) on macOS only.
+  - Host ownership (`src/main/host/ownership.ts` `acquireHostOwnership`, pure Node): index.ts calls
+    `app.requestSingleInstanceLock()` after the userData override, then takes `<data>/run/` before any store is built
+    (RunStore's constructor rewrites live runs): `startup.mkdir` mutex (a live holder is never robbed; a dead one is
+    reclaimed by rename to `.stale-<uuid>`), `daemon.json` (`DaemonInfo`, tmp + rename, starting -> ready -> draining,
+    rewritten only by its own hostInstanceId), `daemon.secret` (0600, for the later handshake) and a per-instance
+    listener `d-<hostInstanceId>.sock` (runtime-dir fallback past 100 bytes; it accepts and drops connections until the
+    host server lands). A live pid in daemon.json is never robbed (HostAlreadyRunningError); a failure shows a startup
+    dialog and quits; released on will-quit and process exit. Liveness and start times: `host/processInfo.ts`
+    (darwin `ps -o lstart=` under LC_ALL=C TZ=UTC, `isLiveProcessCached` 5 s), ids `host/identity.ts` (12 hex).
+    Crash injection at every boundary (`OWNERSHIP_BOUNDARIES` / `RELEASE_BOUNDARIES`) in ownership.test.ts.
+  - `log.ts` no longer imports electron (app hooks in `electronLogHooks.ts`); `host/noElectronImport.test.ts` imports log.ts,
+    the host modules, the stores, RunManager, the adapters and services with electron mocked to throw.
+  - Pure view-models moved to `src/shared/view/` (no renderer, DOM or React imports, `noRendererImports.test.ts`); the old
+    `src/renderer/src/lib/<name>.ts` paths are thin `export * from '@shared/view/<name>'` re-exports (reexports.test.ts),
+    so renderer imports are unchanged and new pure view logic the CLI also needs goes in `src/shared/view/`.
+  - Contracts in types.ts: `HOST_IPC`, host wire-protocol types, `RunOverrides`, `HeadlessDecisionPolicy`,
+    `DecisionOutcome`, `ExecOutcome`, `RunEndedBy` 'policy' / 'budget', `run.finalized`, bundle / CAS inputs. RunStore
+    keeps 'policy' / 'budget' and a finalized exec run's endedBy on read (runs.test.ts). Nothing emits them yet.
+  - `host/jsonCodec.ts`: safe reviver (`parseJsonSafe` drops `__proto__` / `constructor` / `prototype` keys) and a per-channel codec
+    (`CHANNEL_JSON_FIELDS`) that carries undefined / clearable optional fields over JSON; `jsonRoundTrip.test.ts` walks
+    every request and push channel. Not wired to any transport yet.
+  - MCP secret env clashes (`shared/mcpSecretClash.ts` `secretEnvClashes`): `codexProtocol.ts` refuses a later stdio
+    server whose secret env name another enabled server uses with a different value (a run summary line, no config
+    line); MCP Settings rows show `secretClashLine`. Unit-tested; the Codex side is not run live.
+  - Bundles and CAS: `SkillServiceApi.libraryAddFromBundle` / skills `readBundle` (host-validated relative paths,
+    caps, shell-injection refusal), kit export / import from a bundle with an optional `targetDigest` compare-and-set
+    (`kit/bundle.test.ts`); `knowledge:saveNode` takes `expectedUpdatedAt` (stale -> `stale_revision`) and
+    `appendFacts`, and with `nodeId` may omit kind and name (an append-only save that never reverts a rename).
+    Unit-tested only (serviceBundle.test.ts, knowledgeAppend.test.ts).
+  - Unverified: Windows named pipes and their ACLs, Windows / Linux process start times, packaged builds, the startup
+    dialogs by eye.
 
 ## Renderer
 
@@ -825,8 +848,9 @@ and the frontend-design skill is not vendored in `.claude/skills` (only `run-des
   notes, kit and template lines. `ConfirmDialog` / `useConfirm` take `confirmTestId`. e2e (in e2e:free; mock
   `[mock:knowledge]`, both sizes and themes, keyboard pass): `e2e/knowledge.mjs`, `e2e/knowledge-graph.mjs`,
   `e2e/knowledge-run.mjs`; engagement2.mjs drives the note dialog from the tab. Reviewer (two passes): no Critical or
-  High after fixes. Post-landing walk: `docs/design/ux-review-knowledge-2.md`. Open: `knowledge:saveNode` has no
-  `expectedUpdatedAt` (an agent's fact appended between the tab's fetch and the user's save is dropped), run-scoped
+  High after fixes. Post-landing walk: `docs/design/ux-review-knowledge-2.md`. Open: main's `knowledge:saveNode`
+  now takes `expectedUpdatedAt` / `appendFacts` (cli-spec Wave 0) but the tab sends neither, so an agent's fact
+  appended between the tab's fetch and the user's save is still dropped, run-scoped
   windows (Open link and RunMeta button do nothing visible there), no application-menu item, "Checked by you" and
   "Retire all agent items from R3" not built, the Lows in knowledge.md section 13.
 - Agent import (renderer): the New project form shows `foundLine` ("Found 2 Claude Code agents and AGENTS.md.") and an "already a project" line from `checkPath` (debounced 300 ms), and with agents present swaps the Architect checkbox for a radio group (`[data-testid=setup-choice]`: import / architect / default; submit "Create project and review import", or "Open <name>" when the folder is already a project, with a secondary "... anyway"). Import creates the project with the default chart and sets `importRequest` in the store; `views/OrgChartView.tsx` then opens `components/import/ImportAgentsDialog.tsx` (mount-only-while-open, re-previews on every choice, always sends the preview digest, ConfirmDialog whenever replacedRoleIds is non-empty on a non-fresh chart; the apply error shows in the footer with Refresh preview and takes focus; `lib/ipcError.ts` strips the IPC wrapper). The Org chart tab has Import agents and Export to repo buttons and, in the `.frame-top` region above the canvas, a "not imported" Banner (remembered in localStorage per project, `lib/agentImport.ts`), the apply notice with Undo (`importNotices` in the store: undo saves `previousRoles` and expires on the first chart edit, comparing against `importedRoles`; the chart is fitted after an import and an Undo) and the export path notice. Project settings > General > Connection has a read-only "Role models" disclosure. Pure logic and tests are in `lib/agentImport.ts`; e2e is `e2e/import.mjs` (in e2e:free). Not built: a file/folder chooser in the dialog (the contract scans the project folder only), the Architect-setup "sees the agents" note, and a link to Connection settings from the dialog.

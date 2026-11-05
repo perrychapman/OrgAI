@@ -635,3 +635,35 @@ Resolved `R1`–`R10` (single-host daemon vs Desktop ownership, socket authentic
 | **R3-7** | Astra R3-7; Opus M3 | **High** | Section 5.3's decision card payload table flattened `decision` / `answer` instead of using the nested objects in `src/main/ipc.ts` and `src/shared/types.ts` (e.g. `PermissionRuleDecision.behavior` is `'grant'`, `setup:answer` takes `answer: { selected, text }`, `mcp:answerInstall` takes `decision: { approved, scope }` including `'library'`), and lacked server-side `expectedRevision` checking. | **Section 3.4 (4) & 5.3 (2–3)**: Updated Section 5.3's table to match the exact nested IPC payload types in `src/shared/types.ts` and `src/main/ipc.ts`, and added `expectedRevision?: number` validated atomically inside `RunManager`'s `pending -> resolving` transition. |
 | **R3-8** | Astra R3-8; Opus M4, Low | **Medium** | `runs:get` can return `RunRecord`s with ~67 MB of base64 user images (exceeding a 16 MB cap), and `runs:subscribe` snapshots or ring events with inline images could overflow 16 MB; `JSON.stringify` drops `undefined` keys needed to clear optional fields in `settings:set` and `projects:save`. | **Section 3.3 (1 & 4)**: Included `runs:get` in the `80 MB` bulk response cap; kept `runs:subscribe` snapshots lightweight (`RunSummary[]` + active run with inline base64 images replaced by `{ omittedBase64: true, byteLength }` when `> 512 KB`); added a `256 MB` global host bulk-frame memory semaphore; added an explicit clearable-optional-field codec (`null -> { key: undefined }`) in `registry.ts`. |
 | **R3-9** | Astra R3-9; Opus M8, M9, Low | **Medium** | `connections:connect` persistently enables a connection and remaps project models (`service.ts:588`), so it belongs in `'configure'`; handshake HMAC omitted `cwd` on client proof and `hostKind`/`appVersion`/`dataDir`/`mock` on host proof; `matchingRule` returning `undefined` means "no rule matched" (falling through to mode/card), so `selfControlGate` must run pre-mode; Node `net` has no native `LOCAL_PEERPID`. | **Section 3.3 (2–3), 3.4 (1–2), 3.6, 5.1–5.2**: Moved `connections:connect` to `'configure'`; bound all client and host handshake fields in structured JSON-array HMACs; anchored `checkSelfControlDenial` as a pre-mode check before `matchingRule` and mode checks in `claude.ts`, `codex.ts`, and `mock.ts`; documented best-effort zero-addon peer-PID inspection and CAS mutex serialization. |
+
+## Implementation status
+
+### Wave 0 (landed on dev, 2026-11-04; commits 011c59c..c46483c)
+
+- **Landed.** `app.requestSingleInstanceLock()` after the userData override, then pre-store host ownership
+  (`src/main/host/ownership.ts`: `run/startup.mkdir` with non-stealing live-PID check and rename-to-`.stale-<uuid>`
+  recovery, `daemon.json` starting -> ready -> draining, `daemon.secret`, per-instance `d-<hostInstanceId>.sock` with a
+  runtime-dir fallback for long paths, startup error dialogs). Single-order reentrant cross-process `withRepoLock`
+  keyed by `commonGitDir` (`src/main/runtime/repoLock.ts`, `RepoLockLease.released`, 2 s heartbeat, 60 s timeout) plus
+  the `--git-path info/exclude` fix in `prepareRepo` and `removeExcludeLine`. Pure view-models in `src/shared/view/`
+  with renderer re-exports. Electron-free `log.ts` (`electronLogHooks.ts`). Codex launch refuses colliding MCP secret
+  env names (`src/shared/mcpSecretClash.ts`) with a Settings row warning. Contracts in `src/shared/types.ts`
+  (`HOST_IPC`, wire-protocol types, `RunOverrides`, `HeadlessDecisionPolicy`, `DecisionOutcome`, `ExecOutcome`,
+  `endedBy: 'policy' | 'budget'`, `run.finalized`, bundle / CAS inputs) with RunStore normalization. Host-validated
+  skill and kit bundles with `targetDigest` CAS; knowledge `appendFacts` / `expectedUpdatedAt` (`stale_revision`).
+  Safe JSON reviver and per-channel clearable-field codec (`src/main/host/jsonCodec.ts`).
+- **Gate.** Contended 2-actor `withRepoLock` test, crash injection at every `startup.mkdir` / `daemon.json` boundary and
+  release point, `.git`-file worktree tests, `noElectronImport.test.ts`, `jsonRoundTrip.test.ts`: all unit tests pass
+  (250 files, 4469 tests), `npm run typecheck` and `npm run build` clean on macOS. `e2e:free` was not run in the
+  documentation pass.
+- **Deviations / decisions beyond the spec.** A `daemon.json` whose pid is live but whose endpoint answers ENOENT or
+  ECONNREFUSED counts as a running host (never robbed); a socket that answers while the pid reads dead counts as
+  running too. The listener accepts and drops connections until the Wave 1 host server lands. Review additions:
+  under the repo lock, integrate / commitLeftovers / discard run no git command over unfinished git state
+  (index.lock, MERGE_HEAD, CHERRY_PICK_HEAD, REVERT_HEAD, rebase-*), surfacing it as 'conflict' /
+  `UnfinishedGitStateError`; process start times are read locale- and TZ-independently with a 5 s liveness cache;
+  reclaims re-check the moved copy and put back a fresh lock (TOCTOU); `knowledge:saveNode` with `nodeId` may omit
+  kind and name (append-only save). `SkillServiceApi.libraryAddFromBundle` added.
+- **Unverified.** Windows named pipes and their ACLs, Windows / Linux process start times (reclaim relies on them),
+  packaged builds, the startup dialogs by eye. No producer exists yet for `HOST_IPC`, `run.finalized` or
+  `endedBy` 'policy' / 'budget'; the renderer Knowledge tab does not send `expectedUpdatedAt` / `appendFacts` yet.

@@ -246,7 +246,8 @@ Three sessions shown in the main window like projects, each on a virtual project
 
 - `src/main/index.ts`
 - `src/main/ipc.ts`
-- `src/main/log.ts`
+- `src/main/log.ts` (pure Node, never imports electron; the app hooks are `src/main/electronLogHooks.ts`)
+- `src/main/host/` (cli-spec Wave 0, pure Node, guarded by `noElectronImport.test.ts`): `ownership.ts` (pre-store ownership of `<data>/run/`: startup.mkdir mutex, daemon.json, daemon.secret, per-instance `d-<hostInstanceId>.sock` listener that drops connections until the host server lands; index.ts takes it after `requestSingleInstanceLock()` and before any store), `processInfo.ts` (pid start times, `isLiveProcessCached`), `identity.ts` (host instance id), `runtimeEnv.ts`, `jsonCodec.ts` (safe reviver, per-channel clearable-field codec over `CHANNEL_JSON_FIELDS`; no transport uses it yet). Crash-injection and round-trip unit tests; Windows named pipes unverified.
 - `src/main/appInfo.ts`
 - `src/main/notifications.ts`
 - `src/main/windowScope.ts`
@@ -652,5 +653,7 @@ components/layout:
 - Self-configuration (2026-11-03), open: the LiteLLM probe (`probeLiteLLM`) only lists `/v1/models` and does not check the key's authorization, so a proxy that serves the list to a wrong key reads as 'connected' and can become the automatic default (only when it is the only connected connection). Verified by unit tests only; the automatic plan guard has not been checked against real plan windows and boot-time probe timing is not covered live. The automatic subagent limit is computed from the roles when propose_settings is applied, so an org chart approved later in the same setup run changes what "equal to automatic" meant (a dropped limit follows the new chart; a kept one may now equal the new automatic value); accepted. The 2026-11-03 review hardening (id guards, effective default in the settings payload, tentative LiteLLM statuses, undecryptable key as error, settings:set kind check) is verified by unit tests only; boot-time probe timing and the live CLI timeout path are not covered.
 - Mixed model families on LiteLLM (2026-11-03): unverified live that the Claude CLI drives tool calls correctly against a non-Claude model behind the proxy, and that LiteLLM serves /v1/responses for non-OpenAI models on the Codex side; a report whose model is a bare Claude alias on a Codex-root project inherits its parent's model (codexModelFor). `scripts/smoke-litellm.mjs` can check the routes later, with consent.
 - LiteLLM spend by period (2026-11-04): `/user/daily/activity(/aggregated)`, the `api_key=<hash>` filter, `breakdown.api_keys`, the 403 for service-account keys and `info.total_spend` are unverified live (read from v1.108.0 source); a proxy that ignores the filter would show the whole user's spend only when no breakdown is returned. The hash is a credential on LiteLLM and may land in the proxy's access log query string.
+
+- CLI & host Wave 0 (cli-spec.md): groundwork only. Unverified: Windows named pipes / ACLs (`pipeNameFor`), Windows and Linux process start times the repo-lock and startup-mutex reclaims rely on, packaged builds. The knowledge tab does not yet send `expectedUpdatedAt` / `appendFacts`, so its save can still drop a concurrent agent fact. The `HOST_IPC` contracts, `run.finalized` and `endedBy` 'policy' / 'budget' have no producer yet.
 
 _Maintained by OrgAI. Approved by the project owner during setup._
