@@ -4,6 +4,7 @@ import type {
   McpAuthStatus,
   McpAuthTarget,
   McpAuthorizeInput,
+  McpAuthorizeUrlUpdate,
   McpCopyFromLibraryInput,
   McpLibraryEntry,
   McpLibraryInfo,
@@ -207,6 +208,16 @@ function checkClientCredential(value: string, label: string, max: number): void 
   if (value.length > max) throw new Error(`The ${label} is too long (at most ${max} characters).`)
 }
 
+/** ORGAI_MOCK=1: the authorization URL mockAuthorize announces (no network; the CLI and e2e see the flow). */
+export const MOCK_AUTHORIZE_URL = 'https://mock.invalid/oauth/authorize?redirect_uri=http%3A%2F%2F127.0.0.1%3A38917%2Fcallback&state=mock'
+
+/** The McpAuthTarget an mcp:authorize input names, rebuilt with only the target fields (for the announcement). */
+function announceTarget(input: McpAuthorizeInput): McpAuthTarget {
+  if ('libraryId' in input && typeof input.libraryId === 'string') return { libraryId: input.libraryId }
+  const i = input as { projectId?: unknown; serverId?: unknown }
+  return { projectId: String(i.projectId ?? ''), serverId: String(i.serverId ?? '') }
+}
+
 /**
  * The main-process side of MCP servers, the app-wide library and OAuth: persists Project.mcpServers /
  * Project.plugins and the library, keeps secret values and tokens in the SecretStore and nowhere else, and hands
@@ -221,6 +232,8 @@ export class McpService {
   private openExternal: (url: string) => Promise<void>
   private onLibraryChanged?: (entries: McpLibraryInfo[]) => void
   private onProjectChanged?: (project: Project) => void
+  /** CLI `orgai mcp auth` (announceUrl): the authorization URL, sent before the flow waits for its callback. */
+  private onAuthorizeUrl?: (u: McpAuthorizeUrlUpdate) => void
   private oauth: McpOAuthFns
   private now: () => number
   /** ORGAI_MOCK=1: connector entries authorize and test without network (see mockAuthorize). Never set otherwise. */
@@ -254,6 +267,11 @@ export class McpService {
     onLibraryChanged?: (entries: McpLibraryInfo[]) => void
     /** Called with each project a library change saved (unlink on remove, promote), for project.updated pushes. */
     onProjectChanged?: (project: Project) => void
+    /**
+     * Called with the authorization URL of an mcp:authorize that set announceUrl (the CLI's `orgai mcp auth`, cli-spec
+     * 6.3(5)), right before the flow waits for its callback. bootstrap.ts sends it as connections:event `mcp.authorize`.
+     */
+    onAuthorizeUrl?: (u: McpAuthorizeUrlUpdate) => void
     /** Tests inject fakes for the OAuth flow and refresh. */
     oauth?: Partial<McpOAuthFns>
     now?: () => number
@@ -275,6 +293,7 @@ export class McpService {
     this.openExternal = deps.openExternal ?? (async () => { throw new Error('No browser is available to open the authorization page.') })
     this.onLibraryChanged = deps.onLibraryChanged
     this.onProjectChanged = deps.onProjectChanged
+    this.onAuthorizeUrl = deps.onAuthorizeUrl
     this.oauth = { runAuthorization, refreshTokens, ...deps.oauth }
     this.now = deps.now ?? Date.now
   }
@@ -965,6 +984,10 @@ export class McpService {
 
   async authorize(input: McpAuthorizeInput): Promise<McpAuthStatus> {
     const ref = this.targetRef(input)
+    // CLI-only flags (cli-spec 6.3(5)); only literal booleans count, so the desktop (which never sets them) is unchanged.
+    const announceUrl = input.announceUrl === true
+    const openBrowser = input.openBrowser !== false
+    const target = announceTarget(input)
     if (!mcpSupportsOAuth(ref.spec)) throw new Error('Only http and sse servers can use OAuth.')
     const clientId = typeof input.clientId === 'string' ? input.clientId.trim() : ''
     const enteredSecret = typeof input.clientSecret === 'string' && input.clientSecret ? input.clientSecret : undefined
@@ -1010,7 +1033,10 @@ export class McpService {
           )
         }
       }
-      if (this.mock && connector) return this.mockAuthorize(ref, connector.variant.auth.kind === 'oauthClient', clientId)
+      if (this.mock && connector) {
+        if (announceUrl) this.announceAuthorizeUrl(target, MOCK_AUTHORIZE_URL, false)
+        return this.mockAuthorize(ref, connector.variant.auth.kind === 'oauthClient', clientId)
+      }
       if (preset?.redirectPort) {
         // One sign-in on the fixed port at a time: the newer one wins, the older resolves 'error'.
         const prev = this.fixedPortFlow
@@ -1031,7 +1057,12 @@ export class McpService {
         ...(enteredSecret ? { clientSecret: enteredSecret } : {}),
         ...(storedSecret ? { storedClientSecret: storedSecret } : {}),
         fetch: this.fetchImpl,
-        openExternal: this.openExternal,
+        openExternal: announceUrl || !openBrowser
+          ? async (url: string) => {
+              if (announceUrl) this.announceAuthorizeUrl(target, url, openBrowser)
+              if (openBrowser) await this.openExternal(url)
+            }
+          : this.openExternal,
         signal: ac.signal,
         now: this.now,
         ...(preset ? { preset } : {})
@@ -1071,6 +1102,22 @@ export class McpService {
       if (this.fixedPortFlow?.ac === ac) this.fixedPortFlow = undefined
       settled()
       if (ref.library) this.notifyLibrary()
+    }
+  }
+
+  /** Send the authorization URL to onAuthorizeUrl (a listener failure never breaks the flow). */
+  private announceAuthorizeUrl(target: McpAuthTarget, url: string, openedBrowser: boolean): void {
+    if (!this.onAuthorizeUrl) return
+    let redirectUri: string | undefined
+    try {
+      redirectUri = new URL(url).searchParams.get('redirect_uri') ?? undefined
+    } catch {
+      redirectUri = undefined
+    }
+    try {
+      this.onAuthorizeUrl({ target, url, ...(redirectUri ? { redirectUri } : {}), openedBrowser, at: this.now() })
+    } catch (e) {
+      log.warn(`Could not announce the authorization URL: ${e instanceof Error ? e.message : String(e)}`)
     }
   }
 

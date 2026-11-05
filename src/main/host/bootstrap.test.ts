@@ -178,6 +178,21 @@ describe('bootOrgAIHost', () => {
     expect(seen[0]).toMatchObject({ notifications: false, appVersion: '9.9.9-test', dataDir, defaultConnection: h.services.connections.effectiveDefault() })
   })
 
+  it('emits connections:event mcp.authorize on the bus for an mcp:authorize with announceUrl (mock, no network)', async () => {
+    // Secrets need encryption: the mock authorize stores a fake token.
+    const h = boot({ safeStorage: { isEncryptionAvailable: () => true, encryptString: (s: string) => Buffer.from(`enc:${s}`), decryptString: (b: Buffer) => b.toString().slice(4) } })
+    const seen: unknown[] = []
+    h.events.on((channel, payload) => {
+      if (channel === IPC.connectionsEvent) seen.push(payload)
+    })
+    const info = h.services.mcp.connectorsAdd({ connectorId: 'linear' })
+    const status = await h.services.mcp.authorize({ libraryId: info.entry.id, announceUrl: true, openBrowser: false })
+    expect(status).toMatchObject({ state: 'authorized' })
+    const ev = seen.find((e) => (e as { type?: string }).type === 'mcp.authorize') as { authorize: { target: unknown; url: string; openedBrowser: boolean } } | undefined
+    expect(ev?.authorize).toMatchObject({ target: { libraryId: info.entry.id }, openedBrowser: false })
+    expect(ev?.authorize.url).toMatch(/^https:\/\/mock\.invalid\//)
+  })
+
   it('emits runs:event on the bus for a mock work run (no tokens)', async () => {
     const h = boot()
     const events: RunEvent[] = []
