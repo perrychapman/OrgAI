@@ -1,5 +1,6 @@
 import { app, BrowserWindow, dialog, nativeImage, nativeTheme, safeStorage, shell } from 'electron'
 import { mkdirSync, realpathSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type { AppSettings, FocusRunTarget, HostKind, RunEvent } from '@shared/types'
@@ -20,6 +21,7 @@ import type { HostRuntimeEnv } from './host/runtimeEnv'
 import { windowBackground } from './appInfo'
 import { quitGate } from './quitGate'
 import { orgaiCliRootsOf, setOrgaiCliRoots } from './runtime/selfControlGate'
+import { createCliShimService, type CliShimService } from './host/shimInstaller'
 
 // Before anything reads a path: ORGAI_DATA_DIR (CI, e2e) replaces userData and moves logs under it, so a run never
 // touches the real profile or ~/Library/Logs. app.setPath throws for a missing directory, so create it first. The
@@ -126,7 +128,8 @@ if (gotLock) {
   installElectronLogHooks(app)
 }
 // Finder/Dock launches on macOS get a minimal PATH; take the login shell's before anything spawns claude, codex or MCP servers.
-applyShellPath()
+// The login shell's own PATH (without OrgAI's additions) is kept for the orgai command shim's "on your PATH" check.
+const shellPathResult = applyShellPath()
 if (process.platform === 'win32') app.setAppUserModelId('com.orgai.app')
 
 /** Native menus, scrollbars, dialogs and prefers-color-scheme in the renderer follow AppSettings.appearance.theme. */
@@ -227,11 +230,10 @@ function createWindow(scope?: FocusRunTarget): BrowserWindow {
     // Packaged builds take the icon from the executable; in development use the generated ICO (Windows) or PNG.
     ...(app.isPackaged ? {} : { icon: join(app.getAppPath(), 'build', process.platform === 'win32' ? 'icon.ico' : 'icon.png') }),
     webPreferences: {
-      preload: join(__dirname, '../preload/index.mjs'),
-      // The preload is built as an ES module (index.mjs, package.json "type": "module"), which Electron cannot load
-      // in a sandboxed renderer. It uses only contextBridge and ipcRenderer, so a CommonJS preload could run sandboxed
-      // (see Risks in .orgai/ARCHITECTURE.md).
-      sandbox: false,
+      // The preload is built as CommonJS (out/preload/index.cjs, electron.vite.config.ts; cli-spec 7(1)) with the
+      // shared code bundled in, so it requires only 'electron' and runs in the sandboxed renderer.
+      preload: join(__dirname, '../preload/index.cjs'),
+      sandbox: true,
       contextIsolation: true
     }
   })
@@ -361,8 +363,9 @@ app.whenReady().then(async () => {
   })
   // Open windows keep the desktop host busy (cli-spec 3.2(4) interactiveClients).
   h.activity.addSource('interactiveClients', () => BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed()).length)
+  const cliShim = buildCliShim(h)
   // `events` given: registerIpc leaves forwarding the bus to windows to the listener above.
-  registerIpc({ ...h.services, openRunWindow, events: h.events, dispatcher: h.dispatcher })
+  registerIpc({ ...h.services, openRunWindow, events: h.events, dispatcher: h.dispatcher, cliShim })
   installAppMenu(
     menuActionSender(() => BrowserWindow.getFocusedWindow(), liveWindowScopes, () => createWindow())
   )
@@ -372,7 +375,42 @@ app.whenReady().then(async () => {
     if (hostArgs.run) openRunById(hostArgs.run)
   }
   booted = true
+  // cli-spec 7(3): point an existing orgai command shim at this install (after an app move or update). Every launch
+  // kind, headless included; never blocks boot, never creates a shim, never touches a foreign file.
+  if (app.isPackaged && !process.env.ORGAI_DATA_DIR) {
+    void cliShim
+      .refreshOnLaunch()
+      .then((outcome) => log.info(`orgai command shim at launch: ${outcome}`))
+      .catch((e: unknown) => log.warn(`orgai command shim refresh failed: ${e instanceof Error ? e.message : String(e)}`))
+  }
 })
+
+/**
+ * The orgai command shim service (cli-spec 7(3)). After an install, Terminal access is turned on through the same
+ * settings:set path a window takes, so the socket server and the settings:changed broadcast react and the main-owned
+ * terminalServerChosen is set.
+ */
+function buildCliShim(h: OrgAIHost): CliShimService {
+  const shellPath = shellPathResult?.shellPath ?? []
+  return createCliShimService({
+    platform: process.platform,
+    isPackaged: app.isPackaged,
+    dataDirOverride: !!dataOverride,
+    resourcesPath: process.resourcesPath,
+    userDataDir,
+    home: homedir(),
+    env: process.env,
+    // POSIX: the login shell's own PATH, '' (unknown) when it printed none; process.env.PATH holds OrgAI's merged
+    // additions (~/.local/bin among them), so it would always answer yes. Windows: the inherited user Path.
+    ...(process.platform === 'win32' ? {} : { loginPath: shellPath.join(':') }),
+    onInstalled: () => {
+      const current = h.settings.get()
+      if (current.terminalServer === true) return
+      h.dispatcher.invoke(IPC.settingsSet, [{ ...current, terminalServer: true }], { surface: 'desktop' })
+      log.info('Terminal access turned on after installing the orgai command.')
+    }
+  })
+}
 
 // Give up <dataDir>/run ownership on the way out; the exit hook covers app.exit and paths that skip will-quit.
 // release() is synchronous and idempotent.
