@@ -338,8 +338,10 @@ async function commitLeftoversUnlocked(wt: string, message: string): Promise<{ c
 
 /** git output exactly as printed (the trimming `git()` does would eat the leading space of a porcelain line). */
 function gitRaw(root: string, args: string[]): Promise<{ ok: boolean; out: string; err: string; overflow?: boolean }> {
+  const bin = gitExecutable()
+  if (!bin) return Promise.resolve({ ok: false, out: '', err: 'git was not found on PATH.' })
   return new Promise((resolve) => {
-    execFile(gitExecutable(), args, { cwd: root, windowsHide: true, timeout: 60_000, maxBuffer: 8 * 1024 * 1024 }, (error, stdout, stderr) => {
+    execFile(bin, args, { cwd: root, windowsHide: true, timeout: 60_000, maxBuffer: 8 * 1024 * 1024 }, (error, stdout, stderr) => {
       const overflow = (error as { code?: unknown } | null)?.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'
       resolve({ ok: !error, out: String(stdout ?? ''), err: String(stderr ?? error?.message ?? '').trim(), ...(overflow ? { overflow: true } : {}) })
     })
