@@ -86,13 +86,13 @@ afterEach(() => {
 })
 
 describe('mcp:authorize announceUrl / openBrowser', () => {
-  it('announceUrl sends target, url and redirectUri before the flow waits, then opens the browser', async () => {
+  it('announceUrl opens the browser, then sends target, url and redirectUri before the flow waits', async () => {
     const svc = build()
     const f = waitingFlow()
     const p = svc.authorize({ libraryId: 'mcpl_1', announceUrl: true })
     await f.opened
     expect(announced).toEqual([{ target: { libraryId: 'mcpl_1' }, url: AUTH_URL, redirectUri: 'http://127.0.0.1:40123/callback', openedBrowser: true, at: NOW }])
-    expect(order).toEqual(['announce', 'open', 'waiting'])
+    expect(order).toEqual(['open', 'announce', 'waiting'])
     f.callback()
     expect((await p).state).toBe('authorized')
     expect(JSON.stringify(announced)).not.toContain('AT-1')
@@ -122,17 +122,28 @@ describe('mcp:authorize announceUrl / openBrowser', () => {
     expect((runAuthorization.mock.calls[0][0] as AuthorizeFlowInput).openExternal).toBe(openExternal)
   })
 
-  it('an opener failure with openBrowser true is unchanged (the flow sees the throw)', async () => {
+  it('with announceUrl an opener failure is not fatal: the URL is announced as not opened and the flow keeps waiting', async () => {
+    const svc = build()
+    openExternal.mockRejectedValueOnce(new Error('no browser'))
+    const f = waitingFlow()
+    const p = svc.authorize({ libraryId: 'mcpl_1', announceUrl: true })
+    await f.opened
+    expect(announced).toEqual([expect.objectContaining({ url: AUTH_URL, openedBrowser: false })])
+    f.callback()
+    expect((await p).state).toBe('authorized')
+  })
+
+  it('without announceUrl an opener failure still fails the flow (nobody has the URL)', async () => {
     const svc = build()
     openExternal.mockRejectedValueOnce(new Error('no browser'))
     runAuthorization.mockImplementation(async (i: AuthorizeFlowInput) => {
       await i.openExternal(AUTH_URL)
       return flowResult
     })
-    const status = await svc.authorize({ libraryId: 'mcpl_1', announceUrl: true })
+    const status = await svc.authorize({ libraryId: 'mcpl_1' })
     expect(status.state).toBe('error')
     expect(status.error).toContain('no browser')
-    expect(announced).toHaveLength(1)
+    expect(announced).toHaveLength(0)
   })
 
   it('ignores non-boolean flag values', async () => {

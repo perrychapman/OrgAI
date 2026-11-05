@@ -540,6 +540,8 @@ describe('App exitWhenEnded / stopOnQuit (Wave 5 interactive runs)', async () =>
     expect(launchedRunExit({ status: 'error', kind: 'setup', error: 'bad\nthing' }, 'Architect setup', undefined)).toEqual({ code: 1, message: 'Architect setup failed: bad thing' })
     expect(launchedRunExit({ status: 'finished', kind: 'setup', endedBy: 'user' }, 'X', 'quit').code).toBe(130)
     expect(launchedRunExit({ status: 'finished', kind: 'setup', endedBy: 'user' }, 'X', 'slash').code).toBe(0)
+    expect(launchedRunExit({ status: 'finished', kind: 'setup', endedBy: 'user' }, 'X', 'slash', false)).toEqual({ code: 1, message: 'X ended before the setup was complete. Run orgai init again to finish it.' })
+    expect(launchedRunExit({ status: 'finished', kind: 'mcp-assist', endedBy: 'user' }, 'X', 'slash', false).code).toBe(0)
     expect(launchedRunExit({ status: 'finished', kind: 'setup', endedBy: 'user' }, 'X', 'complete').code).toBe(0)
     expect(launchedRunExit({ status: 'finished', kind: 'setup', endedBy: 'user' }, 'X', undefined).message).toBe('X: Stopped.')
   })

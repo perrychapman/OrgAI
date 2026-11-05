@@ -5,7 +5,7 @@ export const ENTRY: CommandEntry = {
   name: 'mcp',
   summary: 'MCP servers and connectors',
   usage:
-    'mcp list | show <server> | add <name> (--command <cmd> [--arg <a>]... | --url <url>) | remove <server> | enable <server> | disable <server> | set-secret <server> <NAME> (--from-env <VAR> | --stdin | --clear) | test <server> | link <library-entry> | promote <server> | copy <server> | overrides <server> | auth <server> | --library <id> | revoke <server> | search <query> | library <list|show|add|remove|set-secret|test> | connectors <list|add|set-token> | presets <list|add|remove> | assist ["<goal>"] [--build] [--library]',
+    'mcp list | show <server> | add <name> (--command <cmd> [--arg <a>]... | --url <url>) | remove <server> | enable <server> | disable <server> | set-secret <server> <NAME> (--from-env <VAR> | --stdin | --clear) | test <server> | link <library-entry> | promote <server> | copy <server> | overrides <server> [--env|--header NAME=VALUE]... [--unset NAME]... [--clear] | auth <server> | --library <id> | revoke <server> | search <query> | library <list|show|add|remove|set-secret|test> | connectors <list|add|set-token> | presets <list|add|remove> | assist ["<goal>"] [--build] [--library]',
   subcommands: ['list', 'show', 'add', 'remove', 'enable', 'disable', 'set-secret', 'test', 'link', 'promote', 'copy', 'overrides', 'auth', 'revoke', 'search', 'library', 'connectors', 'presets', 'assist'],
   flags: [
     { name: 'command', takesValue: true, summary: 'add: the program a stdio server runs' },
@@ -22,6 +22,7 @@ export const ENTRY: CommandEntry = {
     { name: 'from-env', takesValue: true, summary: 'set-secret / set-token: read the value from this environment variable' },
     { name: 'stdin', takesValue: false, summary: 'set-secret / set-token: read the value from stdin' },
     { name: 'clear', takesValue: false, summary: 'set-secret / set-token / overrides: delete the stored value' },
+    { name: 'unset', takesValue: true, summary: 'overrides: remove this one per-project value (repeatable)' },
     { name: 'yes', short: 'y', takesValue: false, summary: 'remove / revoke: do not ask for confirmation' },
     { name: 'role', takesValue: true, summary: 'link: a role slug allowed to use it (repeatable; default every role)' },
     { name: 'copy-secrets', takesValue: false, summary: "copy: also copy the library entry's secret values" },

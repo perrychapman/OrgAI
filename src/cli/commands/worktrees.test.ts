@@ -139,4 +139,22 @@ describe('worktrees merge / discard / uninstall', () => {
     expect(await runWorktrees(f.ctx, ['uninstall', '--yes'])).toBe(0)
     expect(client.callsOf('maintenance:uninstallRepo')).toEqual([['p1']])
   })
+
+  it('every git call waits longer than the host repo lock (60 s), not the 30 s default', async () => {
+    const answers: Record<string, Answer> = {
+      'maintenance:listWorktrees': () => [],
+      'maintenance:diff': () => ({ stat: '', patch: '' }),
+      'maintenance:integrateWorktree': () => ({ ok: true, message: 'Merged.' }),
+      'maintenance:discardWorktree': () => ({ ok: true, message: 'Discarded.' }),
+      'maintenance:uninstallRepo': () => ({ ok: true, message: 'Removed.' })
+    }
+    const git: { method: string; timeoutMs?: number }[] = []
+    for (const args of [['list'], ['diff', 'worktree-agent-a1'], ['merge', 'worktree-agent-a1'], ['discard', 'worktree-agent-a1', '--yes'], ['uninstall', '--yes']]) {
+      const { f, client } = setup(answers)
+      expect(await runWorktrees(f.ctx, args)).toBe(0)
+      git.push(...client.timeouts.filter((t) => t.method.startsWith('maintenance:')))
+    }
+    expect(git.map((t) => t.method)).toEqual(['maintenance:listWorktrees', 'maintenance:diff', 'maintenance:integrateWorktree', 'maintenance:discardWorktree', 'maintenance:uninstallRepo'])
+    for (const t of git) expect(t.timeoutMs).toBeGreaterThan(60_000)
+  })
 })

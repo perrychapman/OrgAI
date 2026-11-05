@@ -1057,10 +1057,21 @@ export class McpService {
         ...(enteredSecret ? { clientSecret: enteredSecret } : {}),
         ...(storedSecret ? { storedClientSecret: storedSecret } : {}),
         fetch: this.fetchImpl,
+        // With announceUrl the user is handed the URL, so a browser that cannot be opened (no GUI session, opener
+        // missing) is logged and the flow keeps waiting for the callback; openedBrowser says whether it really opened.
         openExternal: announceUrl || !openBrowser
           ? async (url: string) => {
-              if (announceUrl) this.announceAuthorizeUrl(target, url, openBrowser)
-              if (openBrowser) await this.openExternal(url)
+              let opened = false
+              if (openBrowser) {
+                try {
+                  await this.openExternal(url)
+                  opened = true
+                } catch (e) {
+                  if (!announceUrl) throw e
+                  log.warn(`Could not open the browser for the MCP sign-in; the URL was handed to the terminal: ${e instanceof Error ? e.message : String(e)}`)
+                }
+              }
+              if (announceUrl) this.announceAuthorizeUrl(target, url, opened)
             }
           : this.openExternal,
         signal: ac.signal,

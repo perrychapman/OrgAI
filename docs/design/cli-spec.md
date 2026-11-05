@@ -918,3 +918,43 @@ Resolved `R1`–`R10` (single-host daemon vs Desktop ownership, socket authentic
   the two-step discard), `v` through the real pager, permission `s` and a confirmed `a` are unit-tested only
   (decisions.test.ts, DecisionTray.test.tsx, pager.test.ts). The pager signal handling is unit-tested with a fake
   process, not with a real `less` in a PTY.
+
+### Wave 5 (landed on dev, 2026-11-05; contracts c2e7a1a, merges db3de45..dd33778, integration fix 565c479, review fix-up after it)
+
+- **Landed.** The management commands in `src/cli/commands/` over the shared helpers in `src/cli/manage.ts` (withHost,
+  hostCall / hostError, requireProject, requireEngagement, confirm, readSecretValue, runSubcommands, subscribeTopics,
+  isRemoteSession, sshForwardCommand): `init` and `projects`, `org` and `team`, `worktrees`, `permissions`,
+  `connections`, `models`, `usage`, `notes`, `mcp` (servers, library, connectors, presets, registry search, auth,
+  revoke, assist), `skills`, `knowledge` and `kit`. `runInteractiveRun` opens the TUI on a launched run with
+  `exitWhenEnded` / `stopOnQuit`. e2e: `cli-projects.mjs`, `cli-org.mjs`, `cli-connections.mjs`, `cli-mcp.mjs`,
+  `cli-skills-kit.mjs` (in e2e:free, over `e2e/cliLib.mjs`).
+- **Gate.** `npm run typecheck`, `npm test`, `npm run build`, `npm run e2e:free` on macOS.
+- **Wire contract changes.** `McpAuthorizeInput.openBrowser` / `announceUrl`, the `connections:event` variant
+  `{ type: 'mcp.authorize', authorize: McpAuthorizeUrlUpdate }` (sent on the 'connections' topic before the flow
+  waits for its callback), and `EngagementNoteSaveInput.expectedUpdatedAt` (projects:saveNote compare-and-set in the
+  store; a stale save is `code: 'stale_revision'`).
+- **Deviations / decisions beyond the spec.**
+  - `kit import` exits 1 when the kit holds any refused item (6.3(4)), even though refused items are skipped by default
+    and the rest is applied; a kit with only refused or same items prints "Nothing to import; N items refused." and
+    exits 1. The JSON carries `refused` (every refused item) and `refusedChosen` (refused items given another action).
+  - `mcp assist` without `--library` / `--project` uses project scope when the cwd resolves to a project, else the
+    library (6.3(2) lists both scopes and no default).
+  - `confirm()` asks on /dev/tty whenever stdin is a terminal, so `orgai kit import k | tee log` still asks; only a
+    non-terminal stdin is exit 2 ("Pass --yes"). `orgai decide`'s own --yes check (Wave 3) is unchanged.
+  - `orgai init` exits 1 (not 0) when the Architect is ended with /stop before complete_setup marked the setup complete
+    ("... ended before the setup was complete. Run orgai init again to finish it."), so `orgai init && ...` never goes
+    on with a half-configured project.
+  - `mcp overrides` merges the given `--env` / `--header` pairs onto the stored map (`--unset NAME` removes one,
+    `--clear` all), because mcp:setProjectOverrides replaces the whole map; a name the host dropped (not in the entry's
+    perProjectEnv) is exit 1.
+  - `worktrees` calls wait `LONG_CALL_TIMEOUT_MS` (10 min), not the 30 s default, because the host may wait 60 s for the
+    repository lock before the git work; otherwise a timed-out discard or merge would still go through on the host.
+  - `usage csv` to a terminal goes through `sanitizeTty` (run prompts reach the CSV unchecked); piped output, `--out`
+    files and JSON stay byte-exact.
+  - mcp:authorize with `announceUrl`: the browser is opened first and the URL is then announced with `openedBrowser`
+    saying whether it really opened; a failure to open is logged and the flow keeps waiting for the callback (without
+    `announceUrl` an opener failure still fails the flow).
+- **Unverified / open.** Not run on this Mac: the SSH `ssh -L 38917:127.0.0.1:38917 <host>` forward flow and device-code
+  login against a real OpenAI or OAuth server (unit-tested with fakes; e2e drives only the mock and a read-only secret
+  store), the Windows (`rundll32.exe url.dll,FileProtocolHandler`) and Linux (`xdg-open`) URL openers, Windows /dev/tty
+  confirmation (the console path), and every command on Windows or Linux.

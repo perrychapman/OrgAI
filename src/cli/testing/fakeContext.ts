@@ -23,6 +23,8 @@ export class FakeHostClient implements HostClient {
   readonly hello: RpcHelloResult
   readonly daemon: DaemonInfo
   readonly calls: { method: string; params: unknown }[] = []
+  /** The timeoutMs each call passed (undefined = the client's default), in call order. */
+  readonly timeouts: { method: string; timeoutMs?: number }[] = []
   closed = false
   private notes = new Set<(m: string, p: unknown) => void>()
   private closes = new Set<(err?: Error) => void>()
@@ -45,8 +47,9 @@ export class FakeHostClient implements HostClient {
     this.daemon = { hostInstanceId: this.hello.hostInstanceId, pid: 4242, endpoint: '/tmp/x.sock', state: 'ready', startedAt: 1, ...opts.daemon }
   }
 
-  async call<T = unknown>(method: string, params?: unknown[] | Record<string, unknown>): Promise<T> {
+  async call<T = unknown>(method: string, params?: unknown[] | Record<string, unknown>, opts?: { timeoutMs?: number }): Promise<T> {
     this.calls.push({ method, params })
+    this.timeouts.push({ method, timeoutMs: opts?.timeoutMs })
     if (this.closed) throw new Error('The connection to the OrgAI host closed.')
     const a = this.answers[method]
     if (!a) throw rpcError({ code: 'unknown_channel', message: `No fake answer for ${method}` })

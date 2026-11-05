@@ -172,12 +172,12 @@ export function requireEngagement(project: Project, what: string): void {
 // ---------- Confirmation ----------
 
 /**
- * true with --yes. Otherwise a y/N on /dev/tty when stdin and stdout are terminals; without a terminal, exit 2 telling
- * the user to pass --yes.
+ * true with --yes. Otherwise a y/N on /dev/tty (cli-spec 6.3(4)) whenever stdin is a terminal, so a piped or tee'd
+ * stdout still asks; without a terminal on stdin (CI, scripts), exit 2 telling the user to pass --yes.
  */
 export async function confirm(ctx: CliContext, question: string, yes: boolean): Promise<boolean> {
   if (yes) return true
-  if (!(ctx.io.stdinIsTTY && ctx.io.stdout.isTTY)) throw new CliError(`${question} Pass --yes to confirm without a terminal.`, EXIT.usage)
+  if (!ctx.io.stdinIsTTY) throw new CliError(`${question} Pass --yes to confirm without a terminal.`, EXIT.usage)
   return manageDeps.ttyConfirm(question)
 }
 

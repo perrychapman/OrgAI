@@ -134,6 +134,21 @@ describe('usage csv', () => {
     expect(f.err()).toContain('Raw CSV follows')
   })
 
+  it('strips terminal control sequences on a terminal only; piped output stays byte-exact', async () => {
+    const evil = 'project,title\r\nApp,"Fix\x1b]52;c;QUJD\x07 it \x1b[2J now"\r\n'
+    const t = setup({ 'runs:usageCsv': () => evil })
+    ;(t.f.ctx.io.stdout as { isTTY?: boolean }).isTTY = true
+    expect(await run(t.f, ['csv'])).toBe(0)
+    expect(t.f.out()).not.toContain('\x1b')
+    expect(t.f.out()).not.toContain('\x07')
+    expect(t.f.out()).toContain('project,title')
+    expect(t.f.out()).toContain('now"')
+    expect(t.f.out().split('\n')).toHaveLength(3)
+    const p = setup({ 'runs:usageCsv': () => evil })
+    expect(await run(p.f, ['csv'])).toBe(0)
+    expect(p.f.out()).toBe(evil)
+  })
+
   it('--out writes the file and refuses to overwrite without --force', async () => {
     const out = join(dir, 'u.csv')
     const { f } = setup({ 'runs:usageCsv': () => CSV }, { cwd: '/work' })

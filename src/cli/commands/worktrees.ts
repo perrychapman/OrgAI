@@ -20,7 +20,14 @@ import { emit, note, safe, safeLine, styleFor, table, termWidth } from '../outpu
 import { showInPager } from '../tui/pager'
 import { sanitizeDiffForPager } from '../tui/sanitizeTty'
 import { CliError, EXIT, type CommandFn } from '../types'
-import { checkArg, onlyPositionals, projectJson } from './org'
+import { checkArg, LONG_CALL_TIMEOUT_MS, onlyPositionals, projectJson } from './org'
+
+/**
+ * Every maintenance call runs git under the per-repository lock (runtime/repoLock.ts waits up to 60 s for it) and then
+ * does the git work itself, so the client's 30 s default would give up while the host still goes on and, for merge or
+ * discard, really changes the branch. Wait as long as other long host calls do.
+ */
+const GIT_CALL = { timeoutMs: LONG_CALL_TIMEOUT_MS }
 
 const USAGE = 'worktrees list | diff <branch> [--pager] | merge <branch> | discard <branch> [--yes] | uninstall [--yes]'
 
@@ -43,7 +50,7 @@ const wtList: SubcommandFn = async (ctx, args) => {
   onlyPositionals(positionals, 0, 'worktrees list')
   return withHost(ctx, ['read'], async (client) => {
     const project = await requireProject(ctx, client)
-    const list = await hostCall<PendingWorktree[]>(client, 'maintenance:listWorktrees', [project.id])
+    const list = await hostCall<PendingWorktree[]>(client, 'maintenance:listWorktrees', [project.id], GIT_CALL)
     emit(ctx, { project: projectJson(project), worktrees: list.map((w) => ({ ...w, state: worktreeState(w) })) }, () => {
       if (list.length === 0) return 'No pending report branches.'
       const st = styleFor(ctx)
@@ -74,7 +81,7 @@ const wtDiff: SubcommandFn = async (ctx, args) => {
   const branch = checkArg('branch', positionals[0])
   return withHost(ctx, ['read'], async (client) => {
     const project = await requireProject(ctx, client)
-    const diff = await hostCall<WorktreeDiff>(client, 'maintenance:diff', [{ projectId: project.id, branch }])
+    const diff = await hostCall<WorktreeDiff>(client, 'maintenance:diff', [{ projectId: project.id, branch }], GIT_CALL)
     if (ctx.globals.outputFormat !== 'text') {
       emit(ctx, { project: projectJson(project), branch, stat: diff.stat, patch: diff.patch }, () => '')
       return EXIT.ok
@@ -101,7 +108,7 @@ const wtMerge: SubcommandFn = async (ctx, args) => {
   const branch = checkArg('branch', positionals[0])
   return withHost(ctx, ['read', 'configure'], async (client) => {
     const project = await requireProject(ctx, client)
-    const res = await hostCall<MaintenanceResult>(client, 'maintenance:integrateWorktree', [{ projectId: project.id, branch }])
+    const res = await hostCall<MaintenanceResult>(client, 'maintenance:integrateWorktree', [{ projectId: project.id, branch }], GIT_CALL)
     if (!res.ok) throw new CliError(safe(res.message) || `Could not merge ${safeLine(branch)}.`, EXIT.failure)
     emit(ctx, { project: projectJson(project), branch, ok: true, message: res.message }, () => safeLine(res.message) || `Merged ${safeLine(branch)}.`)
     return EXIT.ok
@@ -118,7 +125,7 @@ const wtDiscard: SubcommandFn = async (ctx, args) => {
       note(ctx, 'Nothing discarded.')
       return EXIT.failure
     }
-    const res = await hostCall<MaintenanceResult>(client, 'maintenance:discardWorktree', [{ projectId: project.id, branch }])
+    const res = await hostCall<MaintenanceResult>(client, 'maintenance:discardWorktree', [{ projectId: project.id, branch }], GIT_CALL)
     if (!res.ok) throw new CliError(safe(res.message) || `Could not discard ${safeLine(branch)}.`, EXIT.failure)
     emit(ctx, { project: projectJson(project), branch, ok: true, message: res.message }, () => safeLine(res.message))
     return EXIT.ok
@@ -135,7 +142,7 @@ const wtUninstall: SubcommandFn = async (ctx, args) => {
       note(ctx, 'Nothing removed.')
       return EXIT.failure
     }
-    const res = await hostCall<MaintenanceResult>(client, 'maintenance:uninstallRepo', [project.id])
+    const res = await hostCall<MaintenanceResult>(client, 'maintenance:uninstallRepo', [project.id], GIT_CALL)
     if (!res.ok) throw new CliError(safe(res.message) || 'Could not remove OrgAI files.', EXIT.failure)
     emit(ctx, { project: projectJson(project), ok: true, message: res.message }, () => safeLine(res.message))
     return EXIT.ok

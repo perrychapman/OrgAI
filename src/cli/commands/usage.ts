@@ -16,7 +16,7 @@ import { formatDateTime } from '../../shared/view/dates'
 import { costView, formatTokens, sumCosts, type CostInput } from '../../shared/view/cost'
 import { parseFlags } from '../flags'
 import { hostCall, requireProject, withHost } from '../manage'
-import { emit, isJsonOutput, safeLine, styleFor, table, termWidth, warn, type Json } from '../output'
+import { emit, isJsonOutput, safe, safeLine, styleFor, table, termWidth, warn, type Json } from '../output'
 import { kindLabel } from '../render'
 import { CliError, EXIT, type CliContext, type CommandFn, type HostClient } from '../types'
 import { OPERATE, READ } from './connections'
@@ -240,7 +240,13 @@ const runCsv = async (ctx: CliContext, args: string[]): Promise<number> => {
       emit(ctx, { csv }, () => [])
       return EXIT.ok
     }
-    if (ctx.io.stdout.isTTY) warn(ctx, 'Raw CSV follows; use --out <file> to save it.')
+    // Run prompts and names reach the CSV unchecked: on a terminal it is untrusted text like every other host string
+    // (cli-spec 2.5), so control sequences are stripped there. Piped output, --out files and JSON stay byte-exact.
+    if (ctx.io.stdout.isTTY) {
+      warn(ctx, 'Raw CSV follows; use --out <file> to save it.')
+      ctx.io.stdout.write(safe(csv))
+      return EXIT.ok
+    }
     ctx.io.stdout.write(csv)
     return EXIT.ok
   })

@@ -185,9 +185,16 @@ export type EndedHere = 'quit' | 'complete' | 'slash'
 /**
  * The exit code and closing line of an exitWhenEnded session whose run is no longer open: 130 when this TUI's quit
  * stopped it, or someone else stopped it (endedBy 'user') unless this TUI ended it on purpose (complete_setup or
- * /stop); 0 for finished; 1 for error and for a paused run.
+ * /stop); 0 for finished; 1 for error and for a paused run. A setup run ended by /stop before complete_setup marked
+ * the project's setup complete (`setupComplete` false) is exit 1, so `orgai init && ...` never goes on with a
+ * half-configured project (cli-spec 6.3(1): init exits 0 when complete_setup finishes).
  */
-export function launchedRunExit(summary: Pick<RunSummary, 'status' | 'kind' | 'endedWithApp' | 'endedBy' | 'error'>, label: string, endedHere: EndedHere | undefined): { code: number; message: string } {
+export function launchedRunExit(
+  summary: Pick<RunSummary, 'status' | 'kind' | 'endedWithApp' | 'endedBy' | 'error'>,
+  label: string,
+  endedHere: EndedHere | undefined,
+  setupComplete = true
+): { code: number; message: string } {
   const what = sanitizeTty(label).replace(/\s+/g, ' ').trim() || 'The run'
   if (endedHere === 'quit') return { code: 130, message: `${what} stopped.` }
   const word = statusText(statusOfRun({ summary }, undefined, false))
@@ -197,7 +204,10 @@ export function launchedRunExit(summary: Pick<RunSummary, 'status' | 'kind' | 'e
   }
   if (summary.status === 'finished') {
     if (endedHere === 'complete') return { code: 0, message: `${what} finished.` }
-    if (endedHere === 'slash') return { code: 0, message: `${what} ended.` }
+    if (endedHere === 'slash') {
+      if (summary.kind === 'setup' && !setupComplete) return { code: 1, message: `${what} ended before the setup was complete. Run orgai init again to finish it.` }
+      return { code: 0, message: `${what} ended.` }
+    }
     if (summary.endedBy === 'user') return { code: 130, message: `${what}: ${word}.` }
     return { code: 0, message: `${what} finished.` }
   }
@@ -470,7 +480,7 @@ export function App(props: AppProps) {
     if (!run) return
     const status = run.summary.status
     if (!isOpen(status)) {
-      const { code, message } = launchedRunExit(run.summary, label, endedHere.current)
+      const { code, message } = launchedRunExit(run.summary, label, endedHere.current, setupCompletedSince(state.project, setupAtLaunch.current))
       doExit(code, message)
       return
     }

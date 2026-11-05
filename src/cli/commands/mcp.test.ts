@@ -387,6 +387,137 @@ describe('mcp library', () => {
   })
 })
 
+describe('mcp test / promote / copy / overrides', () => {
+  const linked = (over: Partial<McpServerSpec> = {}) => spec({ id: 'mcp_2', name: 'pg', libraryId: 'mcpl_1', source: 'library', secretEnv: [], ...over })
+
+  it('test sends { projectId, serverId } to mcp:test; ok is 0, needs authorization is the auth exit, a failure 1', async () => {
+    const { client, f } = setup({ 'mcp:list': () => [info(spec())], 'mcp:test': () => ({ ok: true, tools: ['search'], durationMs: 12 }) })
+    const r = await run(f, ['test', 'github'])
+    expect(r.code).toBe(0)
+    expect(client.callsOf('mcp:test')).toEqual([[{ projectId: 'p1', serverId: 'mcp_1' }]])
+    expect(r.out).toContain('github answered in 12 ms with 1 tool.')
+    const auth = await run(setup({ 'mcp:list': () => [info(spec())], 'mcp:test': () => ({ ok: false, needsAuthorization: true }) }).f, ['test', 'github'])
+    expect(auth.code).toBe(EXIT.auth)
+    expect(auth.out).toContain('orgai mcp auth github')
+    const bad = await run(setup({ 'mcp:list': () => [info(spec())], 'mcp:test': () => ({ ok: false, error: 'spawn \x1b[2Jnpx ENOENT' }) }).f, ['test', 'github'])
+    expect(bad.code).toBe(1)
+    expect(bad.out).not.toContain('\x1b')
+  })
+
+  it('promote sends { projectId, serverId } to mcp:promote; a linked server is refused before the call', async () => {
+    const { client, f } = setup({ 'mcp:list': () => [info(spec())], 'mcp:promote': () => ({ project: P, servers: [info(spec({ libraryId: 'mcpl_9', source: 'library' }))] }) })
+    const r = await run(f, ['promote', 'github'])
+    expect(r.code).toBe(0)
+    expect(client.callsOf('mcp:promote')).toEqual([[{ projectId: 'p1', serverId: 'mcp_1' }]])
+    expect(r.out).toContain('Moved github to your MCP library')
+    const g = setup({ 'mcp:list': () => [info(linked())], 'mcp:promote': () => ({ project: P, servers: [] }) })
+    expect((await run(g.f, ['promote', 'pg'])).code).toBe(EXIT.usage)
+    expect(g.client.callsOf('mcp:promote')).toEqual([])
+  })
+
+  it('copy sends { projectId, serverId, copySecrets } to mcp:copyFromLibrary and reports the new copy', async () => {
+    const copy = spec({ id: 'mcp_3', name: 'pg', secretEnv: [] })
+    const { client, f } = setup({ 'mcp:list': () => [info(linked())], 'mcp:copyFromLibrary': () => ({ project: P, servers: [info(copy)] }) }, { globals: { outputFormat: 'json' } })
+    expect((await run(f, ['copy', 'pg', '--copy-secrets'])).code).toBe(0)
+    expect(client.callsOf('mcp:copyFromLibrary')).toEqual([[{ projectId: 'p1', serverId: 'mcp_2', copySecrets: true }]])
+    expect(JSON.parse(f.out()).server.id).toBe('mcp_3')
+    const g = setup({ 'mcp:list': () => [info(linked())], 'mcp:copyFromLibrary': () => ({ project: P, servers: [info(copy)] }) })
+    expect((await run(g.f, ['copy', 'pg'])).code).toBe(0)
+    expect(g.client.callsOf('mcp:copyFromLibrary')[0]).toEqual([{ projectId: 'p1', serverId: 'mcp_2', copySecrets: false }])
+    const h = setup({ 'mcp:list': () => [info(spec())], 'mcp:copyFromLibrary': () => ({ project: P, servers: [] }) })
+    expect((await run(h.f, ['copy', 'github'])).code).toBe(EXIT.usage)
+    expect(h.client.callsOf('mcp:copyFromLibrary')).toEqual([])
+  })
+
+  /** A fake mcp:setProjectOverrides that keeps only the names the entry allows, like McpService does. */
+  const overridesHost = (stored: McpServerSpec, allowed: string[]) => ({
+    'mcp:list': () => [info(stored)],
+    'mcp:setProjectOverrides': (p: unknown) => {
+      const [input] = p as [{ env?: Record<string, string>; headers?: Record<string, string> }]
+      const keep = (m?: Record<string, string>) => (m ? Object.fromEntries(Object.entries(m).filter(([k]) => allowed.includes(k))) : undefined)
+      const env = keep(input.env)
+      return { project: P, servers: [info({ ...stored, envOverrides: env && Object.keys(env).length ? env : undefined })] }
+    }
+  })
+
+  it('overrides merges the given pairs onto the stored ones; --unset removes one; --clear sends {}', async () => {
+    const stored = linked({ envOverrides: { A: '1', B: '2' } })
+    const { client, f } = setup(overridesHost(stored, ['A', 'B', 'C']))
+    const r = await run(f, ['overrides', 'pg', '--env', 'A=3', '--env', 'C=4'])
+    expect(r.code).toBe(0)
+    expect(client.callsOf('mcp:setProjectOverrides')).toEqual([[{ projectId: 'p1', serverId: 'mcp_2', env: { A: '3', B: '2', C: '4' } }]])
+    expect(r.out).toContain('Saved the overrides of pg.')
+    const g = setup(overridesHost(stored, ['A', 'B']))
+    expect((await run(g.f, ['overrides', 'pg', '--unset', 'B'])).code).toBe(0)
+    expect(g.client.callsOf('mcp:setProjectOverrides')[0]).toEqual([{ projectId: 'p1', serverId: 'mcp_2', env: { A: '1' } }])
+    const h = setup(overridesHost(stored, ['A', 'B']))
+    expect((await run(h.f, ['overrides', 'pg', '--clear'])).code).toBe(0)
+    expect(h.client.callsOf('mcp:setProjectOverrides')[0]).toEqual([{ projectId: 'p1', serverId: 'mcp_2', env: {} }])
+    const show = setup(overridesHost(stored, []))
+    const shown = await run(show.f, ['overrides', 'pg'])
+    expect(shown.out).toContain('A=1')
+    expect(show.client.callsOf('mcp:setProjectOverrides')).toEqual([])
+  })
+
+  it('overrides: a name the host dropped is exit 1, an unknown --unset or the wrong kind is exit 2, project-only servers are refused', async () => {
+    const stored = linked({ envOverrides: { A: '1' } })
+    const { f } = setup(overridesHost(stored, ['A']))
+    const r = await run(f, ['overrides', 'pg', '--env', 'NOPE=x'])
+    expect(r.code).toBe(1)
+    expect(r.err).toContain('does not take NOPE per project')
+    for (const args of [['overrides', 'pg', '--unset', 'Z'], ['overrides', 'pg', '--header', 'X=1'], ['overrides', 'pg', '--env', 'A=1', '--unset', 'A'], ['overrides', 'pg', '--clear', '--env', 'A=2']]) {
+      const g = setup(overridesHost(stored, ['A']))
+      expect((await run(g.f, args)).code).toBe(EXIT.usage)
+      expect(g.client.callsOf('mcp:setProjectOverrides')).toEqual([])
+    }
+    expect((await run(setup(overridesHost(spec(), [])).f, ['overrides', 'github', '--env', 'A=1'])).code).toBe(EXIT.usage)
+  })
+
+  it('overrides on a remote server sends headers', async () => {
+    const remote = linked({ transport: 'http', command: undefined, args: undefined, url: 'https://x.example/mcp', headerOverrides: { 'X-Team': 'a' } })
+    const { client, f } = setup({ 'mcp:list': () => [info(remote)], 'mcp:setProjectOverrides': (p) => ({ project: P, servers: [info({ ...remote, headerOverrides: (p as [{ headers: Record<string, string> }])[0].headers })] }) })
+    expect((await run(f, ['overrides', 'pg', '--header', 'X-Org=b'])).code).toBe(0)
+    expect(client.callsOf('mcp:setProjectOverrides')[0]).toEqual([{ projectId: 'p1', serverId: 'mcp_2', headers: { 'X-Team': 'a', 'X-Org': 'b' } }])
+  })
+})
+
+describe('mcp library test / set-secret and presets remove', () => {
+  const lib = (over: Record<string, unknown> = {}): McpLibraryInfo =>
+    ({ entry: { id: 'mcpl_1', name: 'pg', transport: 'stdio', command: 'npx', secretEnv: ['PG_URL'], secretHeaders: [], source: 'user', addedAt: '2026-01-01T00:00:00.000Z', ...over }, envSet: [], headersSet: [], missingSecrets: ['PG_URL'], auth: { state: 'notRequired' }, usedBy: [] }) as unknown as McpLibraryInfo
+
+  it('library test sends { libraryId } to mcpLibrary:test', async () => {
+    const { client, f } = setup({ 'mcpLibrary:list': () => [lib()], 'mcpLibrary:test': () => ({ ok: true, tools: [] }) })
+    expect((await run(f, ['library', 'test', 'pg'])).code).toBe(0)
+    expect(client.callsOf('mcpLibrary:test')).toEqual([[{ libraryId: 'mcpl_1' }]])
+    const g = setup({ 'mcpLibrary:list': () => [lib()], 'mcpLibrary:test': () => ({ ok: false, needsAuthorization: true }) })
+    const r = await run(g.f, ['library', 'test', 'pg'])
+    expect(r.code).toBe(EXIT.auth)
+    expect(r.out).toContain('orgai mcp auth --library pg')
+  })
+
+  it('library set-secret sends { libraryId, kind, name, value } from the environment and never prints the value; --clear sends null', async () => {
+    const { client, f } = setup({ 'mcpLibrary:list': () => [lib()], 'mcpLibrary:setSecret': () => [lib()] }, { env: { MY_PG: 'postgres://u:pw@h/db' } })
+    const r = await run(f, ['library', 'set-secret', 'pg', 'PG_URL', '--from-env', 'MY_PG'])
+    expect(r.code).toBe(0)
+    expect(client.callsOf('mcpLibrary:setSecret')).toEqual([[{ libraryId: 'mcpl_1', kind: 'env', name: 'PG_URL', value: 'postgres://u:pw@h/db' }]])
+    expect(r.out + r.err).not.toContain('pw@h')
+    const g = setup({ 'mcpLibrary:list': () => [lib({ secretEnv: [], secretHeaders: ['Authorization'] })], 'mcpLibrary:setSecret': () => [] })
+    expect((await run(g.f, ['library', 'set-secret', 'pg', 'Authorization', '--clear'])).code).toBe(0)
+    expect(g.client.callsOf('mcpLibrary:setSecret')[0]).toEqual([{ libraryId: 'mcpl_1', kind: 'header', name: 'Authorization', value: null }])
+    expect((await run(setup({}).f, ['library', 'set-secret', 'pg'])).code).toBe(EXIT.usage)
+  })
+
+  it('presets remove needs --yes without a terminal and sends { id } to connectorPresets:remove', async () => {
+    const { client, f } = setup({ 'connectorPresets:remove': () => [] })
+    expect((await run(f, ['presets', 'remove', 'acme-crm'])).code).toBe(EXIT.usage)
+    expect(client.callsOf('connectorPresets:remove')).toEqual([])
+    const g = setup({ 'connectorPresets:remove': () => [] })
+    expect((await run(g.f, ['presets', 'remove', 'acme-crm', '--yes'])).code).toBe(0)
+    expect(g.client.callsOf('connectorPresets:remove')).toEqual([[{ id: 'acme-crm' }]])
+    expect((await run(setup({}).f, ['presets', 'remove', 'Acme_CRM', '--yes'])).code).toBe(EXIT.usage)
+  })
+})
+
 describe('mcp assist', () => {
   it('builds McpAssistInput and calls runInteractiveRun (library scope by default outside a project)', async () => {
     const calls: unknown[] = []

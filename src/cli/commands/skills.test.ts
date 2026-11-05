@@ -313,6 +313,75 @@ describe('skills library', () => {
   })
 })
 
+describe('skills promote / undo-import / apply-suggestion', () => {
+  it('promote sends { projectId, skillId } to skills:promote', async () => {
+    const f = setup({ 'skills:promote': mutation })
+    expect((await run(f.ctx, ['promote', 'pdf'])).code).toBe(0)
+    expect(f.client.callsOf('skills:promote')).toEqual([[{ projectId: 'p1', skillId: 's1' }]])
+    expect(f.out()).toContain('Copied pdf to the skill library')
+    expect(f.connectCalls[0].scopes).toEqual(['read', 'configure'])
+    const g = setup({ 'skills:promote': mutation })
+    expect((await run(g.ctx, ['promote', 'nope'])).code).toBe(EXIT.usage)
+    expect(g.client.callsOf('skills:promote')).toEqual([])
+  })
+
+  it('undo-import sends { projectId, undoId } to skills:undoImport; a host refusal is exit 1', async () => {
+    const f = setup({ 'skills:undoImport': mutation })
+    expect((await run(f.ctx, ['undo-import', 'u_123'])).code).toBe(0)
+    expect(f.client.callsOf('skills:undoImport')).toEqual([[{ projectId: 'p1', undoId: 'u_123' }]])
+    expect(f.out()).toContain('Undid the skill import.')
+    const g = setup({ 'skills:undoImport': () => Promise.reject(rpcError({ code: 'bad_request', message: 'Nothing to undo' })) })
+    const r = await run(g.ctx, ['undo-import', 'u_123'])
+    expect(r.code).toBe(1)
+    expect(r.message).toContain('Nothing to undo')
+    expect((await run(setup().ctx, ['undo-import'])).code).toBe(EXIT.usage)
+  })
+
+  it('apply-suggestion sends { projectId, suggestionId, roleIds } to skills:applySuggestion', async () => {
+    const f = setup({ 'skills:applySuggestion': mutation })
+    expect((await run(f.ctx, ['apply-suggestion', 'sg_1', '--role', 'writer'])).code).toBe(0)
+    expect(f.client.callsOf('skills:applySuggestion')).toEqual([[{ projectId: 'p1', suggestionId: 'sg_1', roleIds: ['r2'] }]])
+    const g = setup({ 'skills:applySuggestion': mutation })
+    expect((await run(g.ctx, ['apply-suggestion', 'sg_1'])).code).toBe(0)
+    expect(g.client.callsOf('skills:applySuggestion')).toEqual([[{ projectId: 'p1', suggestionId: 'sg_1' }]])
+    const h = setup({ 'skills:applySuggestion': mutation })
+    expect((await run(h.ctx, ['apply-suggestion', 'sg_1', '--role', 'ghost'])).code).toBe(EXIT.usage)
+    expect(h.client.callsOf('skills:applySuggestion')).toEqual([])
+  })
+})
+
+describe('skills library create / update', () => {
+  const entry = (id: string, name: string, usedBy: SkillLibraryInfo['usedBy'] = []): SkillLibraryInfo => ({
+    entry: { id, name, description: 'd', source: 'user', digest: 'x', files: [{ path: 'SKILL.md', bytes: 1 }], addedAt: '', updatedAt: '' },
+    usedBy
+  })
+
+  it('create sends a SkillDraft { name, description, body } to skillLibrary:create', async () => {
+    const f = setup({ 'skillLibrary:create': () => [entry('L1', 'tidy')] }, { globals: { outputFormat: 'json' } })
+    expect((await run(f.ctx, ['library', 'create', '--name', 'tidy', '--description', 'Tidy up', '--text', 'Do it'])).code).toBe(0)
+    expect(f.client.callsOf('skillLibrary:create')).toEqual([[{ name: 'tidy', description: 'Tidy up', body: 'Do it' }]])
+    expect(JSON.parse(f.out()).entry.id).toBe('L1')
+    for (const args of [['library', 'create', '--description', 'd', '--text', 'b'], ['library', 'create', '--name', 'n', '--text', 'b'], ['library', 'create', '--name', 'n', '--description', 'd']]) {
+      const g = setup({ 'skillLibrary:create': () => [] })
+      expect((await run(g.ctx, args)).code).toBe(EXIT.usage)
+      expect(g.connectCalls).toEqual([])
+    }
+  })
+
+  it('update sends { libraryId, draft } keeping unchanged fields; without a new body it reads the current one', async () => {
+    const f = setup({ 'skillLibrary:list': () => [entry('L1', 'tidy', [{ projectId: 'p1', projectName: 'Proj', skillId: 's', roleNames: [] }])], 'skillLibrary:read': () => ({ skillMd: '', body: 'Old body', files: [] }), 'skillLibrary:update': () => [entry('L1', 'tidy')] })
+    expect((await run(f.ctx, ['library', 'update', 'tidy', '--description', 'New'])).code).toBe(0)
+    expect(f.client.callsOf('skillLibrary:read')).toEqual([[{ libraryId: 'L1' }]])
+    expect(f.client.callsOf('skillLibrary:update')).toEqual([[{ libraryId: 'L1', draft: { name: 'tidy', description: 'New', body: 'Old body' } }]])
+    expect(f.out()).toContain('1 project linking it see the change')
+    const g = setup({ 'skillLibrary:list': () => [entry('L1', 'tidy')], 'skillLibrary:update': () => [entry('L1', 'neat')] })
+    expect((await run(g.ctx, ['library', 'update', 'L1', '--name', 'neat', '--text', 'New body'])).code).toBe(0)
+    expect(g.client.callsOf('skillLibrary:read')).toEqual([])
+    expect(g.client.callsOf('skillLibrary:update')).toEqual([[{ libraryId: 'L1', draft: { name: 'neat', description: 'd', body: 'New body' } }]])
+    expect((await run(setup().ctx, ['library', 'update', 'tidy'])).code).toBe(EXIT.usage)
+  })
+})
+
 describe('skills assist', () => {
   it('calls runInteractiveRun with skills:startAssist for the project', async () => {
     const calls: unknown[] = []

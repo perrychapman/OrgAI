@@ -242,21 +242,29 @@ export async function mcpCopy(ctx: CliContext, args: string[]): Promise<number> 
   })
 }
 
+/**
+ * `mcp overrides <server>`: show, change or clear a linked server's per-project env / header values. Given pairs are
+ * merged onto the stored ones (`--unset NAME` removes one, `--clear` all), since mcp:setProjectOverrides replaces the
+ * whole map. The host keeps only names the library entry lists in perProjectEnv and drops others without an error, so
+ * the saved map is compared with what was sent and a dropped name is exit 1.
+ */
 export async function mcpOverrides(ctx: CliContext, args: string[]): Promise<number> {
-  const { values, positionals } = parseFlags(args, { env: { type: 'string', multiple: true }, header: { type: 'string', multiple: true }, clear: { type: 'boolean' } })
-  if (!positionals[0]) throw usage('Usage: orgai mcp overrides <server> [--env NAME=VALUE]... [--header NAME=VALUE]... [--clear]')
+  const { values, positionals } = parseFlags(args, { env: { type: 'string', multiple: true }, header: { type: 'string', multiple: true }, unset: { type: 'string', multiple: true }, clear: { type: 'boolean' } })
+  if (!positionals[0]) throw usage('Usage: orgai mcp overrides <server> [--env NAME=VALUE]... [--header NAME=VALUE]... [--unset NAME]... [--clear]')
   noMore(positionals, 1)
   const env = parsePairs(values.env, 'env')
   const headers = parsePairs(values.header, 'header')
-  const given = Object.keys(env).length + Object.keys(headers).length > 0
-  if (values.clear && given) throw usage('--clear takes no values; drop --env / --header.')
+  const unset = [...new Set(values.unset ?? [])]
+  for (const n of unset) if (Object.hasOwn(env, n) || Object.hasOwn(headers, n)) throw usage(`${safeLine(n).slice(0, 60)} is both set and unset.`)
+  const given = Object.keys(env).length + Object.keys(headers).length + unset.length > 0
+  if (values.clear && given) throw usage('--clear takes no values; drop --env / --header / --unset.')
   return withHost(ctx, [...(given || values.clear ? CONFIGURE : READ)], async (client) => {
     const project = await requireProject(ctx, client)
     const s = await findServer(client, project.id, positionals[0])
     if (!s.spec.libraryId) throw usage(`${safeLine(s.spec.name)} is a project-only server; overrides are for linked library servers.`)
     const stdio = s.spec.transport === 'stdio'
+    const current = stdio ? (s.spec.envOverrides ?? {}) : (s.spec.headerOverrides ?? {})
     if (!given && !values.clear) {
-      const current = stdio ? (s.spec.envOverrides ?? {}) : (s.spec.headerOverrides ?? {})
       emit(ctx, { serverId: s.spec.id, ...(stdio ? { env: current } : { headers: current }) }, () => {
         const entries = Object.entries(current)
         return entries.length ? entries.map(([k, v]) => `${safeLine(k)}${stdio ? '=' : ': '}${safeLine(v)}`) : [`${safeLine(s.spec.name)} has no overrides in ${safeLine(project.name)}.`]
@@ -265,8 +273,24 @@ export async function mcpOverrides(ctx: CliContext, args: string[]): Promise<num
     }
     if (stdio && Object.keys(headers).length) throw usage(`${safeLine(s.spec.name)} is a stdio server; use --env.`)
     if (!stdio && Object.keys(env).length) throw usage(`${safeLine(s.spec.name)} is a remote server; use --header.`)
-    const input = { projectId: project.id, serverId: s.spec.id, ...(stdio ? { env: values.clear ? {} : env } : { headers: values.clear ? {} : headers }) }
+    const missing = unset.filter((n) => !Object.hasOwn(current, n))
+    if (missing.length) throw usage(`${safeLine(s.spec.name)} has no override ${missing.map((n) => safeLine(n).slice(0, 60)).join(', ')} in ${safeLine(project.name)}.`)
+    const sent: Record<string, string> = {}
+    if (!values.clear) {
+      for (const [k, v] of Object.entries(current)) if (!unset.includes(k)) sent[k] = v
+      Object.assign(sent, stdio ? env : headers)
+    }
+    const input = { projectId: project.id, serverId: s.spec.id, ...(stdio ? { env: sent } : { headers: sent }) }
     const res = await hostCall<McpMutationResult>(client, 'mcp:setProjectOverrides', [input])
+    const saved = res.servers.find((x) => x.spec.id === s.spec.id)?.spec
+    const kept = (stdio ? saved?.envOverrides : saved?.headerOverrides) ?? {}
+    const dropped = Object.keys(sent).filter((k) => kept[k] !== sent[k])
+    if (dropped.length) {
+      throw new CliError(
+        `${safeLine(s.spec.name)} does not take ${dropped.map(safeLine).join(', ')} per project (its library entry lists the names a project may override); ${dropped.length === 1 ? 'it was' : 'they were'} not saved. The other values were saved.`,
+        EXIT.failure
+      )
+    }
     return emitMutation(ctx, project, res, s.spec.id, values.clear ? `Cleared the overrides of ${safeLine(s.spec.name)}.` : `Saved the overrides of ${safeLine(s.spec.name)}.`)
   })
 }

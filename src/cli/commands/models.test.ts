@@ -84,6 +84,22 @@ describe('models list', () => {
   })
 })
 
+describe('models refresh', () => {
+  it('calls models:refresh with no query (every connection) or { connection } and counts per connection', async () => {
+    const { f, client } = setup({ 'models:refresh': () => [model('a'), model('b'), model('g', { connection: 'openai' })] })
+    expect(await run(f, ['refresh'])).toBe(0)
+    expect(client.callsOf('models:refresh')).toEqual([[]])
+    expect(client.timeouts.find((t) => t.method === 'models:refresh')?.timeoutMs).toBe(120_000)
+    expect(f.out()).toContain('Anthropic: 2 models')
+    expect(f.out()).toContain('OpenAI: 1 model')
+    const g = setup({ 'models:refresh': () => [] }, { globals: { outputFormat: 'json' } })
+    expect(await run(g.f, ['refresh', '--connection', 'openai'])).toBe(0)
+    expect(g.client.callsOf('models:refresh')).toEqual([[{ connection: 'openai' }]])
+    expect(JSON.parse(g.f.out())).toMatchObject({ counts: {}, models: [] })
+    expect(await run(setup({}).f, ['refresh', '--connection', 'bedrock'])).toBe(EXIT.usage)
+  })
+})
+
 describe('models prices', () => {
   it('formats every row per MTok and says when no overrides exist', async () => {
     const { f } = setup({ 'models:prices': () => [{ model: 'opus-x', source: 'builtin', price: { inputPerToken: 15e-6, outputPerToken: 75e-6, cacheReadPerToken: 1.5e-6 } }] })

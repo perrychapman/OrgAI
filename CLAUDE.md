@@ -519,9 +519,19 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   `KitPreviewItem.roles` shows prompts and elevated tools, skill paths use `safeKitRelPath`, skill export drops private-looking
   files, and an export target whose suffix was added here is refused when it exists (`kitExportTarget`).
 
-- CLI & host (docs/design/cli-spec.md; Waves 0-4 landed: the socket server, `--headless-host` / `--host inproc` hosts, the
-  self-control gate, the read-only `orgai` CLI, headless exec and the terminal UI; see the spec's "Implementation status"
-  for deviations and what is unverified):
+- CLI & host (docs/design/cli-spec.md; Waves 0-5 landed: the socket server, `--headless-host` / `--host inproc` hosts, the
+  self-control gate, the read-only `orgai` CLI, headless exec, the terminal UI and the management commands; see the
+  spec's "Implementation status" for deviations and what is unverified):
+  - Wave 5: `init`, `projects`, `org`, `team`, `worktrees`, `permissions`, `connections`, `models`, `usage`, `notes`,
+    `mcp`, `skills`, `knowledge`, `kit` in `src/cli/commands/` over `src/cli/manage.ts` (`confirm` asks on /dev/tty
+    whenever stdin is a terminal, else exit 2 without --yes). Contracts: `McpAuthorizeInput.openBrowser` /
+    `announceUrl` with the `connections:event` 'mcp.authorize' variant (the browser is opened first; a failed open is
+    logged and the flow keeps waiting), `EngagementNoteSaveInput.expectedUpdatedAt` (`stale_revision`). Exit rules
+    beyond the spec: kit import is 1 when any item is refused; init is 1 when /stop ends the Architect before
+    complete_setup; `mcp overrides` merges onto the stored map and a dropped name is 1. worktrees calls wait 10 min
+    (the repo lock alone may take 60 s); `usage csv` to a terminal is sanitized. Unit, inproc integration and e2e
+    (`cli-projects`, `cli-org`, `cli-connections`, `cli-mcp`, `cli-skills-kit`) on macOS; SSH forward, device-code login
+    against a real server and the Windows / Linux URL openers are unverified.
   - Wave 4: the Ink TUI in `src/cli/tui/` (ink 8.0.0, loaded only through `await import('../tui/index')`, the
     `out/cli/tui.mjs` chunk; lazyTui.test.ts): `orgai tui [--run]`, `attach`, bare `orgai` / `orgai [--] <prompt>`,
     `resume` without --exec. `terminal.ts` owns raw mode, paste, cursor and the alternate screen (mode chosen once;

@@ -200,6 +200,27 @@ describe('kit import', () => {
     expect(g.out()).toContain('Failed: x')
   })
 
+  it('a refused item skipped by default still makes the import exit 1 (cli-spec 6.3(4))', async () => {
+    const f = setup(
+      { 'kit:previewBundle': () => preview([item('skill:0', 'new'), item('server:0', 'refused', { refusal: 'credential-looking argument' })]), 'kit:applyBundle': () => result() },
+      { globals: { outputFormat: 'json' } }
+    )
+    expect((await run(f.ctx, ['import', file(), '--yes'])).code).toBe(1)
+    expect((f.client.callsOf('kit:applyBundle')[0] as unknown[])[0]).toMatchObject({ choices: [{ key: 'skill:0', action: 'add' }, { key: 'server:0', action: 'skip' }] })
+    const j = JSON.parse(f.out())
+    expect(j.ok).toBe(false)
+    expect(j.refused).toEqual([{ key: 'server:0', name: 'name-server:0', reason: 'credential-looking argument' }])
+    expect(j.refusedChosen).toEqual([])
+
+    const g = setup({ 'kit:previewBundle': () => preview([item('skill:0', 'same'), item('server:0', 'refused')]), 'kit:applyBundle': () => result() })
+    expect((await run(g.ctx, ['import', file(), '--yes'])).code).toBe(1)
+    expect(g.out()).toContain('Nothing to import; 1 item refused.')
+    expect(g.client.callsOf('kit:applyBundle')).toEqual([])
+
+    const h = setup({ 'kit:previewBundle': () => preview([item('skill:0', 'same')]), 'kit:applyBundle': () => result() })
+    expect((await run(h.ctx, ['import', file(), '--yes'])).code).toBe(EXIT.ok)
+  })
+
   it('a file over 50 MB is exit 2 before anything is sent', async () => {
     kitFs.stat = (async () => ({ isFile: () => true, size: 50 * 1024 * 1024 + 1 })) as unknown as typeof kitFs.stat
     const f = setup()

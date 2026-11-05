@@ -8,8 +8,8 @@
  *   addresses, scripts, secret slots, template roles and elevated tools), the choices are built from --action and
  *   --item, the user confirms on /dev/tty unless --yes (which skips only the prompt), and kit:applyBundle runs with the
  *   preview's `digest` and `targetDigest`: the host refuses a changed file and, under its library mutex,
- *   stale_target_digest when the destination moved since the preview. Exit 1 when the target moved, an item failed or a
- *   chosen item was refused.
+ *   stale_target_digest when the destination moved since the preview. Exit 1 when the target moved, an item failed or the
+ *   kit holds any refused item (cli-spec 6.3(4): refused items are skipped by default, but the import is then partial).
  *
  * Kits never carry secret values; only secret slot names are printed. Every name, command and URL from a kit file is
  * untrusted and sanitized before printing.
@@ -236,7 +236,9 @@ const importCmd: SubcommandFn = async (ctx, args) => {
     const preview = await hostCall<KitImportPreview>(client, 'kit:previewBundle', [{ fileName: basename(file), rawBytesBase64 }], { timeoutMs: BULK_TIMEOUT_MS })
     const choices = kitChoices(preview, defaultAction, itemOverrides(preview, values.item))
     const actionOf = (key: string): KitAction => choices.find((c) => c.key === key)?.action ?? 'skip'
-    const refusedChosen = preview.items.filter((i) => i.status === 'refused' && actionOf(i.key) !== 'skip')
+    const refusedItems = preview.items.filter((i) => i.status === 'refused')
+    const refusedChosen = refusedItems.filter((i) => actionOf(i.key) !== 'skip')
+    const refusedJson = (list: KitPreviewItem[]): Json[] => list.map((i) => ({ key: i.key, name: i.name, reason: i.refusal ?? 'Refused.' }))
     const applying = choices.filter((c) => c.action !== 'skip')
     const previewJson: Json = { fileName: preview.fileName, digest: preview.digest, targetDigest: preview.targetDigest ?? null, items: preview.items as unknown as Json[], notes: preview.notes, choices }
     printText(ctx, [
@@ -245,8 +247,10 @@ const importCmd: SubcommandFn = async (ctx, args) => {
       ...preview.notes.map((n) => styleFor(ctx).dim(safeLine(n)))
     ])
     if (applying.length === 0) {
-      emit(ctx, { preview: previewJson, applied: false }, () => 'Nothing to import.')
-      return refusedChosen.length ? EXIT.failure : EXIT.ok
+      emit(ctx, { preview: previewJson, applied: false, ok: refusedItems.length === 0, refused: refusedJson(refusedItems) }, () =>
+        refusedItems.length ? `Nothing to import; ${plural(refusedItems.length, 'item')} refused.` : 'Nothing to import.'
+      )
+      return refusedItems.length ? EXIT.failure : EXIT.ok
     }
     if (preview.targetDigest === undefined) throw new CliError('The OrgAI host did not return a target digest for this kit; update OrgAI.', EXIT.failure)
     if (!(await confirm(ctx, `Import ${plural(applying.length, 'item')} from ${safeLine(preview.fileName)}?`, !!values.yes))) {
@@ -264,11 +268,14 @@ const importCmd: SubcommandFn = async (ctx, args) => {
       throw changeError(e)
     }
     const failed = result.failed
-    const ok = failed.length === 0 && refusedChosen.length === 0
-    emit(ctx, { preview: previewJson, applied: true, ok, result: result as unknown as Json, refusedChosen: refusedChosen.map((i) => ({ key: i.key, name: i.name, reason: i.refusal ?? 'Refused.' })) }, () => {
+    const ok = failed.length === 0 && refusedItems.length === 0
+    const json = { preview: previewJson, applied: true, ok, result: result as unknown as Json, refused: refusedJson(refusedItems), refusedChosen: refusedJson(refusedChosen) }
+    emit(ctx, json, () => {
       const st = styleFor(ctx)
       const lines = [`Imported: ${result.added} added, ${result.replaced} replaced, ${result.copied} copied, ${result.skipped} skipped.`]
       for (const f of failed) lines.push(st.red(`Failed: ${safeLine(f.name)} (${safeLine(f.key)}): ${safeLine(f.reason)}`))
+      const notImported = refusedItems.filter((i) => !failed.some((f) => f.key === i.key))
+      if (notImported.length) lines.push(st.red(`Refused, not imported: ${notImported.map((i) => `${safeLine(i.name)} (${safeLine(i.key)})`).join(', ')}`))
       for (const n of result.needsSecrets) {
         const slots = [...n.env, ...n.headers].map(safeLine)
         lines.push(`${safeLine(n.name)} needs ${slots.join(', ')}${n.perProject ? ' (per project)' : ''}: set ${slots.length === 1 ? 'it' : 'them'} with \`orgai mcp library set-secret ${safeLine(n.name)} <NAME>\`.`)

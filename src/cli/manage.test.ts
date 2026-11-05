@@ -161,9 +161,18 @@ describe('confirm', () => {
     expect(await confirm(tty(false, false), 'Remove it?', true)).toBe(true)
   })
 
-  it('no terminal is exit 2', async () => {
-    const e = await caught(confirm(tty(true, false), 'Remove it?', false))
-    expect(e).toMatchObject({ exitCode: EXIT.usage, message: 'Remove it? Pass --yes to confirm without a terminal.' })
+  it('no terminal on stdin is exit 2', async () => {
+    for (const ctx of [tty(false, false), tty(false, true)]) {
+      const e = await caught(confirm(ctx, 'Remove it?', false))
+      expect(e).toMatchObject({ exitCode: EXIT.usage, message: 'Remove it? Pass --yes to confirm without a terminal.' })
+    }
+  })
+
+  it('a piped stdout still asks on /dev/tty (cli-spec 6.3(4))', async () => {
+    const asked: string[] = []
+    manageDeps.ttyConfirm = async (q) => (asked.push(q), true)
+    expect(await confirm(tty(true, false), 'Import it?', false)).toBe(true)
+    expect(asked).toEqual(['Import it?'])
   })
 
   it('asks on the terminal', async () => {
