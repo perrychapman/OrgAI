@@ -496,6 +496,12 @@ export interface RunManagerOptions {
   /** OrgAI's data dir, for the allowed-folder checks. Tests may omit it (the data-dir check is then skipped). */
   dataDir?: string
   /**
+   * Team files (teamFiles/service.ts): called at the top of start() for work and setup runs. Returns the fresh stored
+   * project (the team is fixed for the run from here on) and a warning when the files hold changes waiting for approval.
+   * Never throws; virtual and engagement projects come back unchanged.
+   */
+  teamFiles?: { beforeRun(project: Project): { project: Project; warning?: string } }
+  /**
    * Save permission changes made from a card onto the stored project (index.ts: ProjectStore.update, which cleans
    * allowedDirectories). `addDirectories` are appended, never replacing; `acceptEdits` sets permissionMode
    * 'acceptEdits'. Returns the saved project. Missing = RuntimeContext.allowDirectories / acceptEditsForProject absent.
@@ -932,6 +938,17 @@ export class RunManager {
     if (project.id === QUICK_PROJECT_ID && (kind !== 'work' || !quick)) throw new Error('Only a quick run can run on the quick project.')
     if (quick && project.id !== QUICK_PROJECT_ID) throw new Error('Quick run details belong to the quick project only.')
     if (buildWorkspace && kind !== 'mcp-assist') throw new Error('A build workspace belongs to an MCP assistant run.')
+    // Team files: the folder is checked first (a pulled change is gated), so the run starts on the last approved team.
+    let teamWarning: string | undefined
+    if (this.options.teamFiles && (kind === 'work' || kind === 'setup') && !isVirtualProjectId(project.id) && !quick && !buildWorkspace) {
+      try {
+        const fresh = this.options.teamFiles.beforeRun(project)
+        if (fresh.project?.id === project.id) project = fresh.project
+        teamWarning = fresh.warning
+      } catch (e) {
+        log.warn(`Team files could not be checked before the run: ${(e as Error).message}`)
+      }
+    }
     // Linked MCP servers come from the library as it is now (a deleted entry disables its links).
     project = this.options.mcp?.withLibrary?.(project) ?? project
     // The Chat's single assistant settles its model before the adapter is chosen.
@@ -1238,6 +1255,7 @@ export class RunManager {
       const builtinModel = this.builtinRoleModel(kind, project, choice)
       if (builtinModel?.warning) emit({ type: 'log', runId: summary.id, level: 'warn', message: builtinModel.warning })
       if (quickWarning) emit({ type: 'log', runId: summary.id, level: 'warn', message: quickWarning })
+      if (teamWarning) emit({ type: 'log', runId: summary.id, level: 'warn', message: teamWarning })
       /**
        * The project as saved after an install or an approved proposal on this run's own project: the canonical path is
        * kept, the harness tools' view (ctx.project) follows, and a work run's skills are recomputed from the new grants.

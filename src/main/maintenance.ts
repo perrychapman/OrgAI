@@ -1,5 +1,6 @@
-import { existsSync, readdirSync, readFileSync, rmSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { removeOrgaiIfEmpty, removeTeamFolderFiles } from './teamFiles/disk'
 import type { MaintenanceResult, PendingWorktree, Project, WorktreeDiff } from '@shared/types'
 import { writesToProjectFolder } from '@shared/defaults'
 import type { ProjectStore } from './store/projects'
@@ -11,7 +12,11 @@ import { diffWorktree, discardWorktree, inspectPending, integrateWorktree, isGit
  * footprint from a repository.
  */
 export class MaintenanceService {
-  constructor(private projects: ProjectStore) {}
+  /** `teamFiles.markRemoved` keeps the team files from coming back on a later save (teamFiles:enable turns them on again). */
+  constructor(
+    private projects: ProjectStore,
+    private teamFiles?: { markRemoved(projectId: string): void }
+  ) {}
 
   private project(id: string): Project {
     const p = this.projects.get(id)
@@ -82,17 +87,12 @@ export class MaintenanceService {
         removedDoc = true
       }
     }
-    if (removedDoc) {
-      const dir = join(root, '.orgai')
-      try {
-        if (existsSync(dir) && readdirSync(dir).filter((n) => n !== '.DS_Store').length === 0) {
-          rmSync(join(dir, '.DS_Store'), { force: true }) // Finder litter on macOS
-          rmdirSync(dir)
-        }
-      } catch {
-        /* leave it */
-      }
-    }
+    // The team files (team.json, mcp.json, agents, skills) go too; org.json stays. Links are unlinked, never followed.
+    // The service is told first so no later save recreates them.
+    this.teamFiles?.markRemoved(project.id)
+    const team = removeTeamFolderFiles(root)
+    removed.push(...team)
+    if (removedDoc || team.length) removeOrgaiIfEmpty(root) // a folder with only OS litter left (Finder's .DS_Store)
 
     const claudeMd = join(root, 'CLAUDE.md')
     if (existsSync(claudeMd)) {

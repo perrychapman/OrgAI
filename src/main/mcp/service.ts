@@ -1375,6 +1375,23 @@ export class McpService {
     return this.libraryInfo(saved, this.projects.list())
   }
 
+  /**
+   * Team files: the library entry of a catalog connector (never a custom preset), added when the library has none yet.
+   * An existing entry on another variant is NOT rewritten (it is shared with other projects): undefined then, so the
+   * caller keeps a project-only copy. Undefined for an unknown connector. Never signs in.
+   */
+  connectorEntryForTeam(connectorId: string, variant?: string): McpLibraryEntry | undefined {
+    if (!connectorById(connectorId)) return undefined
+    const existing = this.connectorEntry(connectorId)
+    if (existing) return variant === undefined || existing.connectorVariant === variant ? existing : undefined
+    try {
+      this.connectorsAdd({ connectorId, ...(variant !== undefined ? { variant } : {}) })
+    } catch {
+      return undefined
+    }
+    return this.connectorEntry(connectorId)
+  }
+
   /** connectors:setToken: store (or clear with null) a 'token' connector's secret header, prefix added. */
   connectorsSetToken(input: ConnectorTokenInput): McpLibraryInfo {
     const curated = connectorById(input?.connectorId)
