@@ -9,20 +9,46 @@
 //   release/BUILD.txt                         version, commit and time of the current build
 //   release/previous/<unpacked>/ + BUILD.txt  the build before it
 //
-// Never touches anything outside release/. Spawns only node (the local electron-vite and electron-builder CLI
-// entries, so no .cmd shim and no shell on Windows) and git, with execFileSync. Token-free.
+// Steps: electron-vite build (main, preload, renderer), vite build -c vite.cli.config.ts (the orgai CLI bundle in
+// out/cli, which electron-builder unpacks from app.asar), then electron-builder --dir --publish never. On macOS the
+// children get CSC_IDENTITY_AUTO_DISCOVERY=false unless the caller set it, so a local pack never signs, never
+// contacts a timestamp server and never notarizes. Check the result with `npm run pack:verify`.
+//
+// Never touches anything outside release/ (and out/, which the builds write). Spawns only node (the local
+// electron-vite, vite and electron-builder CLI entries, so no .cmd shim and no shell on Windows) and git, with
+// execFileSync. Token-free.
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { unpackedLayout } from './lib/packLayout.mjs'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
-/** Where electron-builder --dir puts the app for this platform, and the entry that proves a build is there. */
-export function unpackedLayout(platform, arch) {
-  if (platform === 'win32') return { dir: 'win-unpacked', marker: 'OrgAI.exe' }
-  if (platform === 'darwin') return { dir: arch === 'arm64' ? 'mac-arm64' : 'mac', marker: 'OrgAI.app' }
-  return { dir: 'linux-unpacked', marker: 'orgai' }
+export { unpackedLayout }
+
+/** The build steps in order: [package, bin name, args]. Pure. */
+export function buildSteps() {
+  return [
+    ['electron-vite', 'electron-vite', ['build']],
+    // The orgai CLI bundle (out/cli); `npm run build` runs the same step.
+    ['vite', 'vite', ['build', '-c', 'vite.cli.config.ts']],
+    ['electron-builder', 'electron-builder', ['--dir', '--publish', 'never']]
+  ]
+}
+
+/**
+ * The children's environment and a sentence saying what was chosen. On darwin CSC_IDENTITY_AUTO_DISCOVERY is set to
+ * false unless the caller set it (any value the caller set is kept). Pure.
+ */
+export function childEnv(platform, env) {
+  const out = { ...env }
+  if (platform !== 'darwin') return { env: out, note: undefined }
+  if (env.CSC_IDENTITY_AUTO_DISCOVERY !== undefined) {
+    return { env: out, note: `CSC_IDENTITY_AUTO_DISCOVERY=${env.CSC_IDENTITY_AUTO_DISCOVERY} (set by the caller, kept)` }
+  }
+  out.CSC_IDENTITY_AUTO_DISCOVERY = 'false'
+  return { env: out, note: 'CSC_IDENTITY_AUTO_DISCOVERY=false (no signing, no timestamp server, no notarization)' }
 }
 
 /** BUILD.txt contents. Pure; `builtAt` is a Date or an ISO string. */
@@ -150,45 +176,50 @@ function rotate(p, { dryRun, log, root }) {
   log(`Kept the previous build in ${rel(p.previous)}`)
 }
 
-export function main(argv = process.argv.slice(2), root = ROOT, log = console.log) {
+/**
+ * `options.platform` / `options.env` are for tests (default: this process); `options.exec` replaces execFileSync.
+ */
+export function main(argv = process.argv.slice(2), root = ROOT, log = console.log, options = {}) {
+  const { platform = process.platform, env = process.env, exec = execFileSync } = options
   const unknown = argv.filter((a) => a !== '--dry-run')
   if (unknown.length) throw new Error(`Unknown argument(s): ${unknown.join(' ')}. Only --dry-run is supported.`)
   const dryRun = argv.includes('--dry-run')
-  const p = plan(root)
+  const p = plan(root, platform)
   const rel = (x) => path.relative(root, x)
   if (dryRun) log('Dry run: nothing is changed.')
 
-  const steps = [
-    ['electron-vite', ['build']],
-    ['electron-builder', ['--dir', '--publish', 'never']]
-  ]
+  const steps = buildSteps()
+  const child = childEnv(platform, env)
   // Check the tools are installed before moving anything, so a broken install keeps the current build in place.
-  if (!dryRun) for (const [pkg] of steps) localBin(root, pkg, pkg)
+  if (!dryRun) for (const [pkg, bin] of steps) localBin(root, pkg, bin)
 
   rotate(p, { dryRun, log, root })
 
-  for (const [pkg, args] of steps) {
+  if (child.note) log(`${dryRun ? 'Would set' : 'Setting'} for every step: ${child.note}`)
+  for (const [pkg, bin, args] of steps) {
     if (dryRun) {
       let shown
       try {
-        shown = rel(localBin(root, pkg, pkg))
+        shown = rel(localBin(root, pkg, bin))
       } catch (e) {
         shown = `node_modules/${pkg} (${e.message})`
       }
       log(`Would run: node ${shown} ${args.join(' ')}`)
       continue
     }
-    execFileSync(process.execPath, [localBin(root, pkg, pkg), ...args], { cwd: root, stdio: 'inherit', windowsHide: true })
+    exec(process.execPath, [localBin(root, pkg, bin), ...args], { cwd: root, stdio: 'inherit', windowsHide: true, env: child.env })
   }
 
   const info = formatBuildInfo({ version: readVersion(root), commit: gitShortSha(root), builtAt: new Date() })
   if (dryRun) {
     log(`Would write ${rel(p.buildTxt)} (time taken when the pack finishes):\n${indent(info)}`)
+    log('Then check it with npm run pack:verify')
     return
   }
   if (!fs.existsSync(p.marker)) throw new Error(`The pack finished but ${rel(p.marker)} is missing`)
   fs.writeFileSync(p.buildTxt, info)
   log(`Current build: ${rel(p.current)} (${rel(p.buildTxt)})`)
+  log('Check it with npm run pack:verify')
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
