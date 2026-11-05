@@ -4,15 +4,19 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   REFERENCE_EDIT_TOOLS,
+  commandControlScan,
   commandReferenceTouch,
   commandTouchesReference,
   editTargetOf,
+  globMayStartWith,
+  pathAtOrUnder,
   referenceCommandMessage,
   referenceEditDenial,
   referenceFolderMessage,
   referenceFolderOf,
   referenceRefusalEntry,
-  referenceTouchOf
+  referenceTouchOf,
+  searchReaches
 } from './referenceDirectories'
 
 let root: string
@@ -228,5 +232,35 @@ describe('referenceRefusalEntry', () => {
     expect(e.text).toContain('…')
     expect(e.detail.split('\n')[0].length).toBe(1024)
     expect(referenceRefusalEntry({ file: 1 }, '/srv/acme').detail).toBe(referenceFolderMessage('/srv/acme'))
+  })
+})
+
+describe('prefix protection (definite mode, selfControlGate.ts Wave 7)', () => {
+  it('globMayStartWith runs the prefix through the glob', () => {
+    for (const g of ['*', 'v*', 'vault*', '*.json', '*.json*', 'v?ult.json.tmp', '[uv]ault.json', '[!x]ault*', '*.tmp', '*corrupt*', 'vault.json', 'vault.json.reset-*', 'vault.jso[n]x']) {
+      expect(globMayStartWith(g, 'vault.json'), g).toBe(true)
+    }
+    for (const g of ['p*', 'x*', 'w*.json', 'vault', 'vault.js', '[!v]*', 'valut*', '?', 'vault.jsox*']) {
+      expect(globMayStartWith(g, 'vault.json'), g).toBe(false)
+    }
+  })
+
+  it('pathAtOrUnder / searchReaches / commandControlScan honour `prefixed`, and only in definite mode', () => {
+    const prefixed = [{ dir: '/d', prefixes: ['vault.json'], safeExtensions: new Set(['md']) }]
+    const opts = { platform: 'linux' as const, home: '/h', prefixed }
+    expect(pathAtOrUnder('/d/vault.json.tmp', [], undefined, opts)).toBe('/d')
+    expect(pathAtOrUnder('/d/vault.json/x', [], undefined, opts)).toBe('/d')
+    expect(pathAtOrUnder('/d', [], undefined, opts)).toBeNull()
+    expect(pathAtOrUnder('/d/other.json', [], undefined, opts)).toBeNull()
+    expect(pathAtOrUnder('/d/sub/vault.json', [], undefined, opts)).toBeNull()
+    expect(searchReaches('/d', 'v*', [], undefined, opts)).toBe('/d')
+    expect(searchReaches('/d', '*.md', [], undefined, opts)).toBeNull()
+    expect(searchReaches('/', undefined, [], undefined, opts)).toBe('/d')
+    expect(commandControlScan('cat /d/vault.json.corrupt-1', '/w', [], opts)).toBe('touch')
+    expect(commandControlScan('cat /d/*', '/w', [], opts)).toBe('touch')
+    expect(commandControlScan('cat /d/*.md /d/p*', '/w', [], opts)).toBeNull()
+    expect(commandControlScan('cd /d && cat vault.json', '/w', [], opts)).toBe('touch')
+    // Reference mode ignores it.
+    expect(commandReferenceTouch('cat /d/vault.json', '/w', ['/r'], { platform: 'linux', prefixed })).toBeNull()
   })
 })

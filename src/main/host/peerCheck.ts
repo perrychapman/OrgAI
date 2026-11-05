@@ -22,7 +22,13 @@
  * - win32 answers 'unavailable' (no ps; GetNamedPipeClientProcessId needs a native addon). The socket server accepts
  *   such a client, so on Windows an agent holding daemon.secret is told apart from the user by nothing here: the scope
  *   cap is what keeps it from 'decide' / 'configure' unless the user chose full Terminal access (review H2).
- * - The claimed pid itself equal to the host's pid is 'ok' (only strict descendants count): an in-process client.
+ * - A client claiming the host's own pid (cli-standalone.md round 6 item 6): on macOS the claim proves nothing, so the
+ *   shortcut sits after the OS mapping. Only a mapped peer equal to the host's pid (an in-process client: the host holds
+ *   both ends of the socket) passes; a claim of the host's pid with no mapped peer (no socket fd, lsof failed or found
+ *   none) is 'unavailable', never 'ok', and the mapped peers are walked as for any claim, so an agent's shell claiming
+ *   the host's pid is 'descendant'. Linux and other platforms keep the shortcut: a claimed pid equal to the host's is
+ *   'ok' (only strict descendants count), since nothing there maps the socket to its peer. The inproc host's own client
+ *   is recognised by its owner proof (RpcHelloParams.ownerProof), never by pid.
  */
 import { execFile } from 'node:child_process'
 
@@ -148,7 +154,8 @@ export async function checkPeerAncestry(claimedPid: number, opts: PeerCheckOptio
   const platform = opts.platform ?? process.platform
   const timeoutMs = opts.timeoutMs ?? 150
   if (!Number.isSafeInteger(claimedPid) || claimedPid <= 0) return 'unavailable'
-  if (claimedPid === hostPid) return 'ok'
+  // Off macOS the claim of the host's own pid is taken as an in-process client (no OS mapping exists there).
+  if (platform !== 'darwin' && claimedPid === hostPid) return 'ok'
   if (!opts.psTable && platform !== 'darwin' && platform !== 'linux') return 'unavailable'
   const mapping =
     platform === 'darwin' && opts.socketFd !== undefined && Number.isSafeInteger(opts.socketFd) && opts.socketFd >= 0
@@ -159,7 +166,9 @@ export async function checkPeerAncestry(claimedPid: number, opts: PeerCheckOptio
       : Promise.resolve([] as number[])
   try {
     const [table, peers] = await Promise.all([withTimeout(opts.psTable ? opts.psTable() : psTableOf(timeoutMs), timeoutMs), mapping])
-    // The OS-mapped peers when known (an in-process client is the host itself: ok), else the claimed pid.
+    // macOS: a claim of the host's pid passes only through a mapped peer equal to it (below), never on its own.
+    if (peers.length === 0 && claimedPid === hostPid) return 'unavailable'
+    // The OS-mapped peers when known (a mapped peer that is the host itself is an in-process client: ok), else the claimed pid.
     const pids = peers.length > 0 ? peers : [claimedPid]
     let result: PeerCheckResult = 'ok'
     for (const pid of pids) {

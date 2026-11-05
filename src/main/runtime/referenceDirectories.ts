@@ -113,6 +113,26 @@ export interface ReferenceCheckOptions {
    * not resolved, absolute ones still are.
    */
   mode?: 'reference' | 'self-control'
+  /**
+   * Definite mode only (selfControlGate.ts, cli-standalone.md 8.4): protected by base name rather than as a folder. A
+   * path counts when its first component below `dir` starts with one of `prefixes` (`<data>/vault.json.tmp`,
+   * `<data>/secrets.json.corrupt-1`, and anything below such a name), lexically and through real paths, case folded on
+   * win32 and darwin; `dir` itself and its other children never count. A glob counts when its components match `dir`'s
+   * and the next one may match a name with such a prefix (`<data>/v*`, `<data>/*.json`, `<data>/*`), or a `**` comes
+   * first. Ignored in reference mode.
+   */
+  prefixed?: readonly PrefixProtection[]
+}
+
+/** A folder whose direct children are protected by base-name prefix (ReferenceCheckOptions.prefixed). */
+export interface PrefixProtection {
+  dir: string
+  prefixes: readonly string[]
+  /**
+   * Lowercase extensions no protected name ends with: a glob component ending in `.<ext>` with one of these (`*.md`)
+   * never counts, though `*` could in principle match `vault.json.md`. Literal names are still matched by prefix.
+   */
+  safeExtensions?: ReadonlySet<string>
 }
 
 /** Words checked per command; past this the check fails closed (asks). */
@@ -142,6 +162,10 @@ interface RefEntry {
   ref: string
   abs: string
   real?: string
+  /** A PrefixProtection entry: `abs` is the folder, and only children whose first component has one of these prefixes count. */
+  prefixes?: readonly string[]
+  /** PrefixProtection.safeExtensions. */
+  safeExtensions?: ReadonlySet<string>
 }
 
 interface CheckState {
@@ -190,18 +214,30 @@ function realOf(s: CheckState, abs: string): string {
   return real
 }
 
+/**
+ * True when `child` is covered by entry `r` read at `base` (its lexical or real spelling): at or under the folder, or
+ * for a prefix entry a path whose first component below `base` starts with one of its prefixes.
+ */
+function covers(s: CheckState, r: RefEntry, base: string, child: string): boolean {
+  if (!r.prefixes) return within(s, base, child)
+  const rel = s.p.relative(fold(s, base), fold(s, child))
+  if (rel === '' || rel === '..' || rel.startsWith(`..${s.p.sep}`) || s.p.isAbsolute(rel)) return false
+  const first = rel.split(s.p.sep)[0]
+  return r.prefixes.some((pre) => pre !== '' && first.startsWith(fold(s, pre)))
+}
+
 /** The reference folder `abs` is at or under (or, with `ancestor`, above), lexically and through real paths. */
 function touchOf(s: CheckState, abs: string, ancestorWanted: boolean): string | null {
   const ancestor = ancestorWanted && !s.definite
   for (const r of s.refs) {
-    if (within(s, r.abs, abs) || (ancestor && within(s, abs, r.abs))) return r.ref
+    if (covers(s, r, r.abs, abs) || (ancestor && within(s, abs, r.abs))) return r.ref
   }
   if (!s.real) return null
   const ra = realOf(s, abs)
   for (const r of s.refs) {
     r.real ??= realOf(s, r.abs)
     const rr = r.real
-    if (within(s, r.abs, ra) || within(s, rr, abs) || within(s, rr, ra)) return r.ref
+    if (covers(s, r, r.abs, ra) || covers(s, r, rr, abs) || covers(s, r, rr, ra)) return r.ref
     if (ancestor && (within(s, ra, r.abs) || within(s, abs, rr) || within(s, ra, rr))) return r.ref
   }
   return null
@@ -337,10 +373,56 @@ function globComponentSource(c: string): string {
 }
 
 /**
+ * True when one glob component (`*`, `?`, `[...]` / `[!...]`, literals) may match some name that starts with
+ * `prefix`: the prefix is run through the pattern as a small NFA, and any state left alive means the rest of the name
+ * can still match. Both are already case folded. An unreadable class counts as matching any character (fail closed).
+ */
+export function globMayStartWith(glob: string, prefix: string): boolean {
+  type Tok = { kind: 'star' } | { kind: 'one'; test: (ch: string) => boolean }
+  const toks: Tok[] = []
+  for (let i = 0; i < glob.length; i++) {
+    const ch = glob[i]
+    if (ch === '*') toks.push({ kind: 'star' })
+    else if (ch === '?') toks.push({ kind: 'one', test: () => true })
+    else if (ch === '[' && glob.indexOf(']', i + 2) >= 0) {
+      const close = glob.indexOf(']', i + 2)
+      let re: RegExp | null = null
+      try {
+        re = new RegExp(`^${globComponentSource(glob.slice(i, close + 1))}$`)
+      } catch {
+        re = null
+      }
+      toks.push({ kind: 'one', test: (c) => (re ? re.test(c) : true) })
+      i = close
+    } else toks.push({ kind: 'one', test: (c) => c === ch })
+  }
+  const closure = (set: Set<number>): Set<number> => {
+    for (const i of [...set].sort((a, b) => a - b)) {
+      for (let j = i; j < toks.length && toks[j].kind === 'star'; j++) set.add(j + 1)
+    }
+    return set
+  }
+  let states = closure(new Set([0]))
+  for (const c of prefix) {
+    const next = new Set<number>()
+    for (const i of states) {
+      const t = toks[i]
+      if (!t) continue
+      if (t.kind === 'star') next.add(i)
+      else if (t.test(c)) next.add(i + 1)
+    }
+    if (!next.size) return false
+    states = closure(next)
+  }
+  return states.size > 0
+}
+
+/**
  * Definite mode: the protected folder a glob word can reach, else null. The glob's components are matched one by one
  * against each folder's: a glob as deep as the folder (or deeper) whose leading components all match names a path AT
  * or UNDER it (`<data>/r?n/daemon.secret`, `<data>/r*`); a `**` component reaches anything below. A shallower glob
- * only names a parent, which never counts.
+ * only names a parent, which never counts. A prefix entry also needs the component after the folder's to be a `**`
+ * or able to match a name with one of its prefixes (globMayStartWith).
  */
 function globReaches(s: CheckState, full: string): string | null {
   const parts = (v: string): string[] => fold(s, v).split(/[\\/]+/).filter((x, i) => x !== '' || i === 0)
@@ -349,6 +431,7 @@ function globReaches(s: CheckState, full: string): string | null {
     for (const spelling of r.real && r.real !== r.abs ? [r.abs, r.real] : [r.abs]) {
       const rc = parts(spelling)
       let ok = true
+      let deep = false
       let k = 0
       for (; k < rc.length; k++) {
         const gc = g[k]
@@ -356,11 +439,20 @@ function globReaches(s: CheckState, full: string): string | null {
           ok = false
           break
         }
-        if (gc === '**') break
+        if (gc === '**') {
+          deep = true
+          break
+        }
         if (!GLOB_CHAR.test(gc) ? gc !== rc[k] : !new RegExp(`^${globComponentSource(gc)}$`).test(rc[k])) {
           ok = false
           break
         }
+      }
+      if (ok && r.prefixes && !deep) {
+        const gc = g[k]
+        const ext = gc === undefined ? null : /\.([A-Za-z0-9]+)$/.exec(gc)
+        const safe = ext !== null && !!r.safeExtensions?.has(ext[1].toLowerCase())
+        ok = gc !== undefined && (gc === '**' || (!safe && r.prefixes.some((pre) => pre !== '' && globMayStartWith(gc, fold(s, pre)))))
       }
       if (ok) return r.ref
     }
@@ -515,10 +607,7 @@ function scanReferenceTouch(
   if (typeof command !== 'string' || !command.trim() || !Array.isArray(refs)) return { touch: null, limited: false }
   const platform = opts.platform ?? process.platform
   const p: PathModule = platform === 'win32' ? win32 : posix
-  const entries: RefEntry[] = []
-  for (const r of refs) {
-    if (typeof r === 'string' && r !== '' && !r.includes('\0') && p.isAbsolute(r)) entries.push({ ref: r, abs: p.resolve(r) })
-  }
+  const entries = refEntries(p, refs, opts.mode === 'self-control' ? opts.prefixed : undefined)
   if (!entries.length) return { touch: null, limited: false }
   const s: CheckState = {
     p,
@@ -552,15 +641,26 @@ function scanReferenceTouch(
   return done(null)
 }
 
-/** A definite-mode CheckState over `refs` (absolute ones only), or null when none is usable. */
-function definiteState(refs: readonly string[], opts: Pick<ReferenceCheckOptions, 'platform' | 'home'>): CheckState | null {
-  if (!Array.isArray(refs)) return null
-  const platform = opts.platform ?? process.platform
-  const p: PathModule = platform === 'win32' ? win32 : posix
+/** The usable entries: absolute `refs` as folders, then (definite mode) absolute `prefixed` folders with their prefixes. */
+function refEntries(p: PathModule, refs: readonly string[], prefixed: readonly PrefixProtection[] | undefined): RefEntry[] {
   const entries: RefEntry[] = []
   for (const r of refs) {
     if (typeof r === 'string' && r !== '' && !r.includes('\0') && p.isAbsolute(r)) entries.push({ ref: r, abs: p.resolve(r) })
   }
+  for (const x of Array.isArray(prefixed) ? prefixed : []) {
+    const dir = x?.dir
+    const prefixes = Array.isArray(x?.prefixes) ? x.prefixes.filter((v: unknown): v is string => typeof v === 'string' && v !== '') : []
+    if (typeof dir === 'string' && dir !== '' && !dir.includes('\0') && p.isAbsolute(dir) && prefixes.length) entries.push({ ref: dir, abs: p.resolve(dir), prefixes, ...(x.safeExtensions ? { safeExtensions: x.safeExtensions } : {}) })
+  }
+  return entries
+}
+
+/** A definite-mode CheckState over `refs` (absolute ones only) and `opts.prefixed`, or null when none is usable. */
+function definiteState(refs: readonly string[], opts: Pick<ReferenceCheckOptions, 'platform' | 'home' | 'prefixed'>): CheckState | null {
+  if (!Array.isArray(refs)) return null
+  const platform = opts.platform ?? process.platform
+  const p: PathModule = platform === 'win32' ? win32 : posix
+  const entries = refEntries(p, refs, opts.prefixed)
   if (!entries.length) return null
   return {
     p,
@@ -616,7 +716,7 @@ export function pathAtOrUnder(
   target: unknown,
   refs: readonly string[],
   cwd: string | undefined,
-  opts: Pick<ReferenceCheckOptions, 'platform' | 'home'> = {}
+  opts: Pick<ReferenceCheckOptions, 'platform' | 'home' | 'prefixed'> = {}
 ): string | null {
   const s = definiteState(refs, opts)
   if (!s) return null
@@ -637,7 +737,7 @@ export function searchReaches(
   pattern: string | undefined,
   refs: readonly string[],
   cwd: string | undefined,
-  opts: Pick<ReferenceCheckOptions, 'platform' | 'home'> = {}
+  opts: Pick<ReferenceCheckOptions, 'platform' | 'home' | 'prefixed'> = {}
 ): string | null {
   const s = definiteState(refs, opts)
   if (!s) return null
