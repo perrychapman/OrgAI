@@ -21,6 +21,8 @@ export function teamFoundCounts(found: Pick<TeamFilesFound, 'roleCount' | 'roles
 }
 
 /** The heading of the panel. */
+/** Tooltip of the hidden-characters chip; the user sees a single backslash-u. */
+export const HIDDEN_SHOWN_TITLE = 'This text holds characters that cannot be seen. They are shown as \\u codes.'
 export const TEAM_FOUND_TITLE = 'This folder already has a team'
 
 /** Why the folder's team cannot be used to create the project, or null when it can. Names files; never quotes them. */
