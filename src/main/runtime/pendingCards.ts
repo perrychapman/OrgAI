@@ -1,5 +1,8 @@
 import type {
+  CardKind,
+  DecidedBy,
   McpInstallDecision,
+  McpInstallOutcome,
   McpInstallRequest,
   MergeDecision,
   MergeReview,
@@ -30,8 +33,11 @@ export interface PendingCardMaps {
   pendingProposals: Map<string, { proposal: Proposal; resolve: (d: ProposalDecision) => ProposalOutcome | void }>
   pendingQuestions: Map<string, { question: UserQuestion; resolve: (a: QuestionAnswer) => void }>
   pendingMerges: Map<string, { review: MergeReview; resolve: (d: MergeDecision) => void }>
-  /** The install's own resolve broadcasts mcpInstall.resolved; `cancelled` adds the flag. */
-  pendingInstalls: Map<string, { request: McpInstallRequest; resolve: (d: McpInstallDecision, cancelled?: boolean) => void }>
+  /**
+   * The install's own resolve broadcasts mcpInstall.resolved; `cancelled` adds the flag, `decidedBy` rides on the event.
+   * Returns the secret-free outcome (RunManager's DecisionOutcome reads whether it was really installed).
+   */
+  pendingInstalls: Map<string, { request: McpInstallRequest; resolve: (d: McpInstallDecision, cancelled?: boolean, decidedBy?: DecidedBy) => McpInstallOutcome | void }>
   pendingRules: Map<string, { request: PermissionRuleRequest; resolve: (d: PermissionRuleDecision) => void }>
 }
 
@@ -61,47 +67,51 @@ export function emptyPending(): PendingCards {
  * denied, proposals revised, questions answered with nothing, merge reviews held (the branch stays for the
  * maintenance panel or a later run), MCP installs denied. Each gets its *.resolved event with `cancelled: true`
  * (installs through their own resolve, which keeps secrets out of the event). Idempotent: a second call finds
- * nothing. Returns how many cards it cancelled.
+ * nothing. Returns how many cards it cancelled. `onCancelled` hears each card (RunManager records 'cancelled' tombstones).
  */
-export function cancelPending(cards: PendingCardMaps, runId: string, broadcast: (e: RunEvent) => void): number {
+export function cancelPending(cards: PendingCardMaps, runId: string, broadcast: (e: RunEvent) => void, onCancelled?: (requestId: string, kind: CardKind) => void): number {
   let count = 0
+  const note = (id: string, kind: CardKind): void => {
+    count++
+    onCancelled?.(id, kind)
+  }
   for (const [requestId, { resolve }] of cards.pending) {
     resolve({ behavior: 'deny', message: RUN_ENDED })
     broadcast({ type: 'permission.resolved', runId, requestId, cancelled: true })
-    count++
+    note(requestId, 'permission')
   }
   cards.pending.clear()
   for (const [proposalId, { resolve }] of cards.pendingProposals) {
     const decision: ProposalDecision = { behavior: 'revise', feedback: RUN_ENDED }
     resolve(decision)
     broadcast({ type: 'proposal.resolved', runId, proposalId, decision, cancelled: true })
-    count++
+    note(proposalId, 'proposal')
   }
   cards.pendingProposals.clear()
   for (const [questionId, q] of cards.pendingQuestions) {
     q.resolve({ selected: [] })
     broadcast({ type: 'question.resolved', runId, questionId, answer: { selected: [] }, cancelled: true })
-    count++
+    note(questionId, 'question')
   }
   cards.pendingQuestions.clear()
   for (const [requestId, r] of cards.pendingRules) {
     r.resolve({ behavior: 'deny', message: RUN_ENDED })
     broadcast({ type: 'rules.resolved', runId, requestId, decision: { behavior: 'deny', message: RUN_ENDED }, cancelled: true })
-    count++
+    note(requestId, 'rules')
   }
   cards.pendingRules.clear()
   for (const [reviewId, { resolve }] of cards.pendingMerges) {
     resolve({ behavior: 'hold' })
     broadcast({ type: 'merge.resolved', runId, reviewId, decision: { behavior: 'hold' }, cancelled: true })
-    count++
+    note(reviewId, 'merge')
   }
   cards.pendingMerges.clear()
   // Cleared first so an mcp:answerInstall racing the end cannot resolve twice.
-  const installs = [...cards.pendingInstalls.values()]
+  const installs = [...cards.pendingInstalls.entries()]
   cards.pendingInstalls.clear()
-  for (const p of installs) {
+  for (const [requestId, p] of installs) {
     p.resolve({ approved: false, scope: 'run' }, true)
-    count++
+    note(requestId, 'mcpInstall')
   }
   return count
 }

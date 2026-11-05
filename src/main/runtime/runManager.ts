@@ -14,6 +14,9 @@ import type {
   DecisionLookup,
   DecisionOptions,
   DecisionOutcome,
+  DecidedBy,
+  ExecOutcome,
+  RunEndedBy,
   RunOverrides,
   ModelPrice,
   ImageAttachment,
@@ -58,15 +61,15 @@ import type {
   SkillUseCount,
   UserQuestion
 } from '@shared/types'
-import { QUICK_ASSISTANT_SLUG, adapterForProject, agentProducedNothing, isolateWritersOn, mcpSecretNames, mixedFamilyRefusal, modelFamily, newId, projectConnection, projectKindOf, runMessagingOn, settingTier, singleRunProject, writesToProjectFolder } from '@shared/defaults'
+import { QUICK_ASSISTANT_SLUG, adapterForProject, agentProducedNothing, isolateWritersOn, mcpSecretNames, mixedFamilyRefusal, modelFamily, newId, projectConnection, projectKindOf, resolveModelSetting, runMessagingOn, settingTier, singleRunProject, writesToProjectFolder } from '@shared/defaults'
 import { referenceFolderOf } from './referenceDirectories'
-import { aliasesFor, priceAgentUsage, type PricingContext } from './pricing'
+import { aliasesFor, priceAgentUsage, resolvePrice, type PricingContext } from './pricing'
 import { IntervalTimer, buildUsageCsv, buildUsageStats, computeRunUsage, emptyAgentUsage, legacySummaryUsage, monthRange, normalizeRunRecord } from './runUsage'
-import { DEFAULT_MAX_AUTO_CONTINUES, HARNESS_PROJECT_ID, KNOWLEDGE_RUN_WRITES_MAX, QUICK_PROJECT_ID, RUN_MESSAGE_MAX_CHARS, RUN_PEER_PROMPT_CHARS, SKILLS_PROJECT_ID, USAGE_STATS_DEFAULT_LIMIT, USAGE_STATS_MAX_LIMIT, isVirtualProjectId } from '@shared/types'
+import { DEFAULT_EXEC_STALL_TIMEOUT_MS, DEFAULT_MAX_AUTO_CONTINUES, EXEC_FINALIZE_STOP_TIMEOUT_MS, EXEC_SETTLE_DEBOUNCE_MS, EXEC_TITLE_JOIN_MS, HARNESS_PROJECT_ID, KNOWLEDGE_RUN_WRITES_MAX, QUICK_PROJECT_ID, RUN_MESSAGE_MAX_CHARS, RUN_PEER_PROMPT_CHARS, SKILLS_PROJECT_ID, USAGE_STATS_DEFAULT_LIMIT, USAGE_STATS_MAX_LIMIT, isVirtualProjectId } from '@shared/types'
 import { architectRole, mcpAssistantRole, skillAssistantRole } from '@shared/setup'
 import { isTrustRestrictedRun, isInsideEither, samePath, canonicalDeep } from '../quick/scratch'
 import { MCP_ASSIST_MODEL_LABEL, QUICK_RUN_MODEL_LABEL, SETUP_MODEL_LABEL, SKILL_ASSIST_MODEL_LABEL, resolveBuiltinModel, type ResolvedBuiltinModel } from './builtinModel'
-import { ROOT_AGENT_ID, isSetupLikeRun, type CompletionInput, type KnowledgeCaller, type KnowledgeStoreApi, type ResolvedMcpServer, type RunMessageOutcome, type RunConnection, type RunSkill, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type SkillAssistCatalog } from './types'
+import { ROOT_AGENT_ID, isSetupLikeRun, type RootTurnEnd, type CompletionInput, type KnowledgeCaller, type KnowledgeStoreApi, type ResolvedMcpServer, type RunMessageOutcome, type RunConnection, type RunSkill, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type SkillAssistCatalog } from './types'
 import { datum } from './harnessTools'
 import type { SkillRunSource } from '../skills/types'
 import { RunStore } from '../store/runs'
@@ -75,7 +78,11 @@ import { log, logPermission, logRunEvent } from '../log'
 import { hasContent, sanitizeImages } from './attachments'
 import { breakParentCycles } from './agentTree'
 import { describePlanChange, peerDeliveryBlocked, planNudgesApply } from './continuation'
-import { isLiveAgent, runOutcome, settleAgent, withSkillActivity, type RunOutcome } from './activity'
+import { isAuthFailure, isLiveAgent, runOutcome, settleAgent, withSkillActivity, type RunOutcome } from './activity'
+import { effectiveRunProject, execBudgetUsd } from './runOverrides'
+import { defaultEndedBy, execOutcomeFor, execQuiescent } from './execSettle'
+import { countsAsDenial, fullPolicy, policyAction, type PolicyDecisions } from './decisionPolicy'
+import { DecisionIndex } from './decisionIndex'
 import { cancelPending, cleanProposalDecision, emptyPending, listPending, proposalEffect, proposalOutcome, type PendingCardMaps } from './pendingCards'
 import { addRules, addRulesReport, isBlanketAllowRule, isUnsafeAllowRule, listRules, tooBroadRuleRefusal } from './permissionRules'
 import { projectRulesFile, readEngagementDocument } from '../store/projectData'
@@ -185,6 +192,21 @@ export function resolveAllowedDirectories(raw: readonly unknown[] | undefined, o
 }
 
 const FLUSH_INTERVAL_MS = 1500
+/** Exec settlement re-check while the root is idle but the adapter is not settled yet (a continuation timer...). */
+export const EXEC_SETTLE_POLL_MS = 1000
+
+/** Wait for `p` at most `ms`; true when the time ran out first. Never rejects. */
+async function raceTimeout(p: Promise<unknown>, ms: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<true>((resolve) => {
+    timer = setTimeout(() => resolve(true), ms)
+  })
+  try {
+    return await Promise.race([p.then(() => false as const, () => false as const), timeout])
+  } finally {
+    clearTimeout(timer)
+  }
+}
 /** Most skill loads one run counts (RunUsage.skills, transcript rows); later skill.used events are dropped. */
 export const RUN_SKILL_LOAD_LIMIT = 1000
 /** run.usage events (and the index save that goes with them) are published at most this often per run. */
@@ -274,8 +296,11 @@ interface ActiveRun {
   limitHold?: boolean
   /** The user ended the session; never pause it. */
   userStopped?: boolean
-  /** Who cut the session (RunSummary.endedBy): 'user' from stop(), 'app' from stopAll({ reason: 'quit' }). The first one wins. */
-  endedBy?: 'user' | 'app'
+  /**
+   * Who cut the session (RunSummary.endedBy): 'user' from stop(), 'app' from stopAll({ reason: 'quit' }), 'policy' /
+   * 'budget' from finalizeExecRun. The first one wins.
+   */
+  endedBy?: RunEndedBy
   /** With endedBy 'app': what the run was doing when the quit began (RunSummary.endedWhile). Read before stopping. */
   endedWhile?: 'working' | 'waiting'
   /** The session.stop() call in flight (stopSession), so End session, quit and a late start share one stop. */
@@ -336,6 +361,45 @@ interface ActiveRun {
   held: boolean
   /** The inbox flush in progress; flushes chain on it so concurrent flushes never reorder peer messages. */
   flushing?: Promise<void>
+  // ---------- headless exec (cli-spec 6.2) ----------
+  /** The run's RuntimeContext (exec settlement reads ctx.autoContinue). Set before adapter.start. */
+  ctx?: RuntimeContext
+  /** The caller held the 'configure' scope: widening overrides apply (effectiveRunProject). Never persisted. */
+  allowWidening?: boolean
+  /** The newest root turn generation the adapter reported (ctx.onRootTurnEnded). */
+  rootTurnGen: number
+  /** Bumped on every activity that may keep an exec run from settling (and that resets the stall watchdog). */
+  activityGen: number
+  lastTurnEnd?: RootTurnEnd
+  settleTimer?: ReturnType<typeof setTimeout>
+  stallTimer?: ReturnType<typeof setTimeout>
+  /** finalizeExecRun in flight or done (the first outcome claimed it). */
+  finalizing?: Promise<void>
+  /** The outcome finalizeExecRun claimed. */
+  finalOutcome?: ExecOutcome
+  /** The finalizer's own run.status is going through emit (late adapter statuses are dropped otherwise). */
+  finalEmitting?: boolean
+  /** run.finalized was broadcast (by the finalizer, or best effort by a quit). */
+  finalizedSent?: boolean
+  /** The adapter reported run.status 'error' after the finalizer claimed the run (its text, or ''). */
+  adapterError?: string
+  /** Decision cards the headless policy resolved as a refusal (maxAutoDenials). */
+  autoDenials: number
+  /** Headless policy timers per card id (grace before acting, or the 'wait' timeout). */
+  policyTimers: Map<string, ReturnType<typeof setTimeout>>
+  /** The run-title task (finalizeExecRun joins it). */
+  titleTask?: Promise<void>
+  /** adapter.start() in flight (finalizeExecRun waits for it before stopping). */
+  opening?: Promise<unknown>
+  /** Exec budget (execBudgetUsd of the effective project) and the exec chain's cost before this run. */
+  execBudget?: number
+  chainPriorCostUsd: number
+  /** Agents already checked for an unpriced model (exec budget). */
+  priceChecked: Set<string>
+  /** Whether a model setting or id has a known price on this run's connection (exec budget). Set in start(). */
+  modelPriced?: (model: string) => boolean
+  /** teardown ran (it may be reached from both the finalizer and session.finished). */
+  tornDown?: boolean
 }
 
 /** A message_run message held for a run that is waiting on its user. */
@@ -695,19 +759,46 @@ export interface StartInput {
    * Refused on setup-like runs, quick runs and virtual projects. Continuations carry it from the run they continue.
    */
   team?: RunTeam
-  /** Headless exec overrides (cli-spec 6.2(1)); host clients only. Accepted, not used yet (Wave 3 T2). */
+  /** Headless exec overrides (cli-spec 6.2(1)); host clients only. Refused on setup-like runs; stored on RunSummary.overrides. */
   overrides?: RunOverrides
   /** The caller holds the 'configure' scope: widening overrides apply (runOverrides.ts effectiveRunProject). */
   allowWidening?: boolean
 }
 
-/** continueRun options (cli-spec 6.2(1)). Accepted, not used yet (Wave 3 T2). */
+/** Internal ContinueRunOptions key: the automatic rate-limit resume (keeps the exec fields like `exec`). */
+const AUTO_RESUME = Symbol('autoResume')
+
+/** continueRun options (cli-spec 6.2(1)). */
 export interface ContinueRunOptions {
+  /** Merged over the overrides carried from the continued run. */
   overrides?: RunOverrides
   /** `orgai resume --exec`: keep the chain's execMode / execChainId / waitForReset / decisionPolicy. */
   exec?: boolean
   /** The caller holds the 'configure' scope. */
   allowWidening?: boolean
+  /** Set only by RunManager's own auto-resume. */
+  [AUTO_RESUME]?: true
+}
+
+/** Narrowing overrides a continuation always keeps. */
+const NARROWING_KEYS = ['permissionMode', 'maxBudgetUsd', 'autoContinue', 'maxAutoContinues'] as const
+/** Exec fields a continuation keeps only with `exec` or on the automatic resume. */
+const EXEC_KEYS = ['execMode', 'execChainId', 'waitForReset', 'decisionPolicy', 'allowUnmerged', 'allowUnpricedBudget', 'execStallTimeoutMs', 'allowPeerMessages'] as const
+
+/**
+ * The overrides of a continuation (cli-spec 6.2(1)): the continued run's narrowing overrides always, its exec fields
+ * only for `orgai resume --exec` or the automatic resume (a later desktop continue strips them), then opts.overrides
+ * on top. undefined when nothing is left.
+ */
+export function continuedOverrides(prev: RunOverrides | undefined, opts: ContinueRunOptions): RunOverrides | undefined {
+  const out: Record<string, unknown> = {}
+  const keepExec = opts.exec === true || opts[AUTO_RESUME] === true
+  for (const k of [...NARROWING_KEYS, ...(keepExec ? EXEC_KEYS : [])]) {
+    const v = prev?.[k]
+    if (v !== undefined) out[k] = typeof v === 'object' ? structuredClone(v) : v
+  }
+  for (const [k, v] of Object.entries(opts.overrides ?? {})) if (v !== undefined) out[k] = v
+  return Object.keys(out).length ? (out as RunOverrides) : undefined
 }
 
 /**
@@ -741,6 +832,8 @@ export class RunManager {
   private startsInFlight = new Set<Promise<unknown>>()
   /** Resumes (timer or manual) between their start and the successor run being registered (activity lease; withResumeLease). */
   private resumesInFlight = 0
+  /** Pending decision cards across runs and tombstones of resolved ones (runs:findDecision, DecisionOutcome). */
+  private decisions = new DecisionIndex()
 
   constructor(
     private adapters: Partial<Record<ProviderId, RuntimeAdapter>>,
@@ -773,6 +866,7 @@ export class RunManager {
     for (const r of this.runs.values()) {
       if (r.summary.projectId === projectId) {
         r.userStopped = true
+        this.clearExecTimers(r)
         await r.session?.stop().catch(() => {})
         if (r.flushTimer) clearTimeout(r.flushTimer)
         if (r.usageTimer) clearTimeout(r.usageTimer)
@@ -947,10 +1041,15 @@ export class RunManager {
     surface,
     quick,
     buildWorkspace,
-    team
+    team,
+    overrides: rawOverrides,
+    allowWidening
   }: StartInput): Promise<RunSummary> {
     this.refuseWhileQuitting()
     if (team !== undefined && team !== 'single') throw new Error('Unknown team for this run.')
+    // Headless exec overrides (cli-spec 6.2(1)) shape work runs only.
+    const overrides: RunOverrides | undefined = rawOverrides && Object.keys(rawOverrides).length ? { ...rawOverrides } : undefined
+    if (overrides && isSetupLikeRun(kind)) throw new Error('Run overrides apply to work runs only.')
     if (team === 'single') {
       if (kind !== 'work') throw new Error('Only a work run can use the single assistant.')
       if (isVirtualProjectId(project.id) || quick || buildWorkspace) throw new Error('The single assistant runs on a saved project only.')
@@ -1005,6 +1104,11 @@ export class RunManager {
     if (quick) summary.quick = { ...quick }
     if (buildWorkspace) summary.buildWorkspace = buildWorkspace
     if (team === 'single') summary.team = 'single'
+    if (overrides) {
+      if (overrides.execMode && !overrides.execChainId) overrides.execChainId = summary.id
+      summary.overrides = overrides
+    }
+    const exec = !!overrides?.execMode
     const active: ActiveRun = {
       summary,
       adapter: choice.adapter,
@@ -1036,7 +1140,14 @@ export class RunManager {
       lastUsageAt: 0,
       usageDirty: false,
       record: { summary, agents: {}, transcript: [], logs: [] },
-      ...(resumeSessionId ? { resumeSessionId } : {})
+      ...(resumeSessionId ? { resumeSessionId } : {}),
+      ...(allowWidening ? { allowWidening: true } : {}),
+      rootTurnGen: 0,
+      activityGen: 0,
+      autoDenials: 0,
+      policyTimers: new Map(),
+      chainPriorCostUsd: overrides?.execChainId ? this.chainPriorCost(project.id, overrides.execChainId, summary.id) : 0,
+      priceChecked: new Set()
     }
     this.runs.set(summary.id, active)
     this.store.upsert(summary)
@@ -1054,14 +1165,35 @@ export class RunManager {
         ...(community ? { community } : {})
       }
     }
+    // Exec budgets (cli-spec 6.2(3)): a role's model setting is read like the pricing aliases (tier name -> the
+    // connection's tier model) before its price is looked up. 'inherit' has no model of its own and is not checked.
+    active.modelPriced = (setting: string): boolean => {
+      const tierModels = this.options.appSettings?.().connections?.[choice.connection]?.tierModels ?? {}
+      // An empty catalog means "not discovered yet": the connection's builtin list answers then (modelForTier).
+      const catalog = this.options.catalog?.() ?? []
+      const resolved = resolveModelSetting(setting, { connection: choice.connection, tierModels, ...(catalog.length ? { catalog } : {}) })
+      if (!resolved || resolved.model === 'inherit') return true
+      const ctx = pricing()
+      if (resolvePrice(resolved.model, ctx) !== null) return true
+      // A bare tier name or Claude alias the connection does not map is resolved by the CLI itself (latest model of the
+      // family): its real id is only known from usage reports, which checkExecBudget prices live.
+      return !!settingTier(resolved.model) && !Object.hasOwn(ctx.aliases ?? {}, resolved.model)
+    }
 
     const emit = (raw: RunEvent): void => {
       // Usage is computed by the host; an adapter's run.usage is dropped.
       if (raw.type === 'run.usage') return
       if (raw.type === 'skill.used' && !this.noteSkillUsed(active, raw)) return
       let e = raw
+      // An exec run the finalizer claimed (cli-spec 6.2(2)): it writes the final status itself; later adapter statuses
+      // (the abort's 'finished' / 'error', a stray 'idle') never change status, execOutcome or endedBy.
+      if (e.type === 'run.status' && active.finalizing && !active.finalEmitting) {
+        if (e.sessionId) summary.sessionId = e.sessionId
+        if (e.status === 'error') active.adapterError = e.error ?? active.adapterError ?? ''
+        return
+      }
       // A session that ends after a usage-limit rejection is paused, not finished.
-      if (e.type === 'run.status' && (e.status === 'finished' || e.status === 'error') && active.limited && !active.userStopped) {
+      if (e.type === 'run.status' && (e.status === 'finished' || e.status === 'error') && active.limited && !active.userStopped && !active.finalizing) {
         const now = Date.now()
         const until = active.limited.until && active.limited.until > now ? active.limited.until : now + DEFAULT_PAUSE_MS
         e = { ...e, status: 'paused', pausedUntil: until, pauseReason: pauseReasonText(active.limited.window, e.error), autoResume: true }
@@ -1072,7 +1204,7 @@ export class RunManager {
         active.cutOff = new Set(Object.values(active.record.agents).filter(isLiveAgent).map((a) => a.id))
       }
       // No card outlives its run: cancel every pending card before a terminal (or paused) status goes out.
-      if (outcome || (e.type === 'run.status' && e.status === 'paused')) cancelPending(active, summary.id, this.broadcast)
+      if (outcome || (e.type === 'run.status' && e.status === 'paused')) this.cancelCards(active)
       if (e.type === 'agent.upsert') {
         let agent = e.agent
         if (active.outcome) {
@@ -1099,6 +1231,9 @@ export class RunManager {
           }
         }
         if (e.status === 'paused') {
+          // An exec run without waitForReset ends 'rate-limited' here: no resume timer is armed (a reset already in the
+          // past would otherwise resume it before the finalizer runs), and it waits for the user like autoResume false.
+          if (exec && !overrides?.waitForReset) e = { ...e, autoResume: false }
           summary.pausedUntil = e.pausedUntil
           summary.pauseReason = e.pauseReason
           summary.autoResume = e.autoResume
@@ -1129,6 +1264,7 @@ export class RunManager {
           if (settled !== agent) emit({ type: 'agent.upsert', runId: summary.id, agent: settled })
         }
       }
+      if (exec) this.execEventSeen(active, e)
     }
 
     active.emit = emit
@@ -1138,7 +1274,7 @@ export class RunManager {
     // Advisory title from the fast model; never awaited, never fails the run.
     // The harness's own resume message is never titled (the continued run's title is carried instead).
     if (kind === 'work' && !summary.title && prompt.trim() && prompt.trim() !== RESUME_TEXT.trim()) {
-      void this.titleRun(active, adapter, {
+      active.titleTask = this.titleRun(active, adapter, {
         prompt,
         cwd: project.path,
         model: this.options.fastModel?.(project, choice),
@@ -1268,7 +1404,11 @@ export class RunManager {
       // skills false (an approved org chart, review M1): the card says it applies from the next run, so this run's grants stay.
       const setLive = (saved: Project, skills = true): void => {
         live = noFolderWrites({ ...saved, path: live.path })
-        ctx.project = live
+        // The run's overrides are re-applied to the saved project (cli-spec 6.2(1)): a tightened project re-clamps them.
+        ctx.project = effectiveRunProject(live, summary.overrides, { allowWidening: active.allowWidening })
+        ctx.autoContinue = ctx.project.autoContinue !== false && planNudgesApply(summary)
+        ctx.maxAutoContinues = ctx.project.maxAutoContinues ?? DEFAULT_MAX_AUTO_CONTINUES
+        this.applyExecBudget(active, ctx)
         // Grant changes reach the live run's roles (review M1): the adapters' gates, restarts and role lookups read these
         // objects. An org chart approval (skills false) leaves them as they started.
         if (skills && !bare) refreshRoleGrants(ctx.roles, live.roles)
@@ -1328,9 +1468,12 @@ export class RunManager {
         resolveFolders()
         resolveReferences()
       }
+      // What the run sees (cli-spec 6.2(1)): the project with its overrides applied, before ctx exists, so the adapter's
+      // permission mode and continuation host read the effective values from turn 1.
+      const runProject = effectiveRunProject(project, summary.overrides, { allowWidening: active.allowWidening })
       const ctx: RuntimeContext = {
         run: summary,
-        project,
+        project: runProject,
         roles:
           kind === 'setup' ? [architectRole(builtinModel, { kind: projectKindOf(project) })]
           : kind === 'mcp-assist' ? [withBuildTools(mcpAssistantRole(builtinModel), summary)]
@@ -1484,24 +1627,41 @@ export class RunManager {
         updatePlan,
         pendingInteractions: () => pendingCount(active),
         // A Chat with the single assistant is a conversation: no plan nudges (planNudgesApply).
-        autoContinue: project.autoContinue !== false && planNudgesApply(summary),
-        maxAutoContinues: project.maxAutoContinues ?? DEFAULT_MAX_AUTO_CONTINUES,
+        autoContinue: runProject.autoContinue !== false && planNudgesApply(summary),
+        maxAutoContinues: runProject.maxAutoContinues ?? DEFAULT_MAX_AUTO_CONTINUES,
+        onRootTurnEnded: (e: RootTurnEnd) => this.rootTurnEnded(active, e),
+        noteActivity: () => this.bumpActivity(active),
         ...(this.options.continuationDelayMs !== undefined ? { continuationDelayMs: this.options.continuationDelayMs } : {}),
         completeSetup: async (text) => {
           const updated = this.setup.complete(project.id, text)
           this.broadcast({ type: 'project.updated', runId: summary.id, project: updated })
         }
       }
+      active.ctx = ctx
+      if (exec) {
+        // Budget before launch (cli-spec 6.2(3)): a spent chain (maxBudgetUsd 0 included) or an unpriced role model
+        // ends the run as 'budget-exceeded' without ever starting the adapter.
+        this.applyExecBudget(active, ctx)
+        const refusal = this.preLaunchBudgetRefusal(active, ctx)
+        if (refusal) {
+          emit({ type: 'log', runId: summary.id, level: 'warn', message: refusal })
+          await this.finalizeExecRun(summary.id, 'budget-exceeded', { endedBy: 'budget' })
+          return summary
+        }
+      }
       const opening = adapter.start(ctx)
       this.startsInFlight.add(opening)
+      active.opening = opening
       try {
         active.session = await opening
       } finally {
         this.startsInFlight.delete(opening)
+        active.opening = undefined
       }
       void active.session.finished.finally(() => this.teardown(active))
+      if (exec) this.armStall(active)
       // The run was ended (End session or the app quitting) while its session was still opening: stop it at once.
-      if (active.userStopped) {
+      if (active.userStopped || active.finalizing) {
         this.stopSession(active)?.catch((err: unknown) => log.warn(`Run ${summary.id}: stopping a session that opened after its end failed: ${(err as Error)?.message ?? err}`))
       }
     } catch (e) {
@@ -1510,6 +1670,376 @@ export class RunManager {
       this.teardown(active)
     }
     return summary
+  }
+
+  // ---------- headless exec: budget, settlement and the finalizer (cli-spec 6.2) ----------
+
+  /** The cost of the exec chain's other runs (stored and live), for the chain budget. */
+  private chainPriorCost(projectId: string, chainId: string, excludeId: string): number {
+    const byId = new Map<string, RunSummary>()
+    for (const r of this.store.list(projectId)) byId.set(r.id, r)
+    for (const a of this.runs.values()) if (a.summary.projectId === projectId) byId.set(a.summary.id, a.summary)
+    let sum = 0
+    for (const r of byId.values()) {
+      if (r.id === excludeId || r.overrides?.execChainId !== chainId) continue
+      const cost = r.usage?.costUsd ?? r.totalCostUsd
+      if (typeof cost === 'number' && Number.isFinite(cost) && cost > 0) sum += cost
+    }
+    return sum
+  }
+
+  /** The exec budget of the run's effective project and what is left of it for the adapter (ctx.budgetUsd). */
+  private applyExecBudget(a: ActiveRun, ctx: RuntimeContext): void {
+    const o = a.summary.overrides
+    if (!o?.execMode) return
+    a.execBudget = execBudgetUsd(ctx.project, o)
+    if (a.execBudget !== undefined) ctx.budgetUsd = Math.max(0, a.execBudget - a.chainPriorCostUsd)
+    else delete ctx.budgetUsd
+  }
+
+  /** Why an exec run may not start under its budget, or null. */
+  private preLaunchBudgetRefusal(a: ActiveRun, ctx: RuntimeContext): string | null {
+    const budget = a.execBudget
+    if (budget === undefined) return null
+    if (a.chainPriorCostUsd >= budget) {
+      return `The budget of $${budget.toFixed(2)} is spent ($${a.chainPriorCostUsd.toFixed(2)} so far in this exec chain); the run did not start.`
+    }
+    if (a.summary.overrides?.allowUnpricedBudget || !a.modelPriced) return null
+    for (const role of ctx.roles) {
+      if (a.modelPriced(role.model)) continue
+      const name = logText(String(role.model))
+      log.warn(`Run ${a.summary.id}: model ${name} (role ${logText(role.name)}) has no known price; a budget cannot be enforced.`)
+      return `Model ${name} (role ${logText(role.name)}) has no known price, so the budget cannot be enforced; the run did not start. Set a model price in App settings or allow unpriced models.`
+    }
+    return null
+  }
+
+  /** Synchronous budget check on every agent.upsert of an exec run (after pricing). */
+  private checkExecBudget(a: ActiveRun, agent: AgentInstance): void {
+    const budget = a.execBudget
+    if (budget === undefined || a.finalizing) return
+    const runId = a.summary.id
+    if (!a.summary.overrides?.allowUnpricedBudget) {
+      const unpriced = agent.usage?.models.find((m) => m.costUsd === null)
+      let model = unpriced?.model
+      if (!model && !a.priceChecked.has(agent.id)) {
+        a.priceChecked.add(agent.id)
+        // Mock models are fake ids priced by the mock's own provider cost; only their usage entries are checked.
+        if (a.adapter !== 'mock' && agent.model && a.modelPriced && !a.modelPriced(agent.model)) model = agent.model
+      }
+      if (model) {
+        const message = `Model ${logText(model)} has no known price, so the budget cannot be enforced; the run ends.`
+        log.warn(`Run ${runId}: ${message}`)
+        a.emit({ type: 'log', runId, level: 'warn', message })
+        void this.finalizeExecRun(runId, 'budget-exceeded', { endedBy: 'budget' })
+        return
+      }
+    }
+    const cost = a.summary.usage?.costUsd ?? 0
+    if (a.chainPriorCostUsd + cost >= budget) {
+      a.emit({ type: 'log', runId, level: 'warn', message: `The budget of $${budget.toFixed(2)} is reached ($${(a.chainPriorCostUsd + cost).toFixed(2)} estimated); the run ends.` })
+      void this.finalizeExecRun(runId, 'budget-exceeded', { endedBy: 'budget' })
+    }
+  }
+
+  /** RunManager's view of an exec run's own events (after they were recorded and broadcast). */
+  private execEventSeen(a: ActiveRun, e: RunEvent): void {
+    if (e.type === 'agent.upsert') {
+      this.bumpActivity(a)
+      this.checkExecBudget(a, e.agent)
+      return
+    }
+    if (e.type !== 'run.status') return
+    if (e.status === 'running') this.bumpActivity(a)
+    if (a.finalizing || a.finalEmitting) return
+    const runId = a.summary.id
+    if (e.status === 'paused') {
+      if (!a.summary.overrides?.waitForReset) void this.finalizeExecRun(runId, 'rate-limited')
+    } else if (e.status === 'error') {
+      const auth = !!a.lastTurnEnd?.isAuthError || isAuthFailure({ text: e.error, isError: true })
+      void this.finalizeExecRun(runId, auth ? 'auth-error' : 'failed')
+    } else if (e.status === 'finished') {
+      // The session ended without the finalizer: a cut (End session, quit) is 'interrupted', else judge the plan.
+      if (a.userStopped) {
+        void this.finalizeExecRun(runId, 'interrupted', { endedBy: a.endedBy ?? 'user' })
+      } else {
+        const r = execOutcomeFor({ plan: a.record.plan, agents: Object.values(a.record.agents), allowUnmerged: a.summary.overrides?.allowUnmerged })
+        void this.finalizeExecRun(runId, r.outcome, { endedBy: r.endedBy })
+      }
+    }
+  }
+
+  /** ctx.onRootTurnEnded: every root turn end, failed ones included, before the adapter's 'idle'. */
+  private rootTurnEnded(a: ActiveRun, e: RootTurnEnd): void {
+    if (typeof e?.turnGen === 'number' && Number.isFinite(e.turnGen)) a.rootTurnGen = e.turnGen
+    a.lastTurnEnd = e
+    a.activityGen++
+    if (!a.summary.overrides?.execMode || a.finalizing) return
+    const runId = a.summary.id
+    if (e.errorSubtype === 'error_max_budget_usd') {
+      void this.finalizeExecRun(runId, 'budget-exceeded', { endedBy: 'budget' })
+      return
+    }
+    if (!e.ok && !e.limited && !e.interrupted) {
+      void this.finalizeExecRun(runId, e.isAuthError ? 'auth-error' : 'failed')
+      return
+    }
+    this.armSettle(a)
+    this.armStall(a)
+  }
+
+  /** Activity that may keep an exec run from settling: bump activityGen, re-arm the settle check and the stall watchdog. */
+  private bumpActivity(a: ActiveRun): void {
+    a.activityGen++
+    if (!a.summary.overrides?.execMode || a.finalizing) return
+    this.armSettle(a)
+    this.armStall(a)
+  }
+
+  private armSettle(a: ActiveRun, delay: number = EXEC_SETTLE_DEBOUNCE_MS): void {
+    if (a.settleTimer) clearTimeout(a.settleTimer)
+    const gen = a.activityGen
+    const turn = a.rootTurnGen
+    a.settleTimer = setTimeout(() => {
+      a.settleTimer = undefined
+      // A later activity re-armed it; this one is stale.
+      if (gen !== a.activityGen || turn !== a.rootTurnGen) return
+      this.trySettleExecRun(a)
+    }, delay)
+  }
+
+  /** At a stable (rootTurnGen, activityGen): finalize the exec run if it is quiescent (execSettle.ts). */
+  private trySettleExecRun(a: ActiveRun): void {
+    if (!a.summary.overrides?.execMode || a.finalizing || this.runs.get(a.summary.id) !== a) return
+    const st = a.summary.status
+    if (st !== 'running' && st !== 'idle') return
+    const settlement = a.session?.settlement?.()
+    const input = {
+      settlement,
+      rootTurnGen: a.rootTurnGen,
+      limitHold: !!a.limitHold,
+      held: a.held,
+      agents: Object.values(a.record.agents),
+      openCards: pendingCount(a),
+      inboxLength: a.inbox.length,
+      flushing: !!a.flushing,
+      plan: a.record.plan,
+      autoContinue: a.ctx?.autoContinue === true
+    }
+    if (execQuiescent(input)) {
+      const r = execOutcomeFor({ plan: a.record.plan, agents: input.agents, allowUnmerged: a.summary.overrides.allowUnmerged })
+      void this.finalizeExecRun(a.summary.id, r.outcome, { endedBy: r.endedBy })
+      return
+    }
+    // Adapter-side state (a continuation timer, a deferred restart) can change without any event: poll while idle.
+    if (settlement?.rootIdle) this.armSettle(a, EXEC_SETTLE_POLL_MS)
+  }
+
+  /** The stall watchdog: reset on every activity; fires after execStallTimeoutMs without any. */
+  private armStall(a: ActiveRun): void {
+    if (a.stallTimer) clearTimeout(a.stallTimer)
+    a.stallTimer = undefined
+    const o = a.summary.overrides
+    if (!o?.execMode || a.finalizing) return
+    const gen = a.activityGen
+    const ms = o.execStallTimeoutMs ?? DEFAULT_EXEC_STALL_TIMEOUT_MS
+    a.stallTimer = setTimeout(() => {
+      a.stallTimer = undefined
+      if (a.finalizing || this.runs.get(a.summary.id) !== a) return
+      if (gen !== a.activityGen) return this.armStall(a)
+      // A paused run waits for its reset (waitForReset); a card under the policy's grace or 'wait' timer suspends it.
+      if (a.summary.status === 'paused') return
+      if (a.policyTimers.size > 0) return this.armStall(a)
+      const settlement = a.session?.settlement?.()
+      // Without a settlement view the adapter cannot say it is busy: only this watchdog ends such a run.
+      if (settlement && !settlement.rootIdle) return this.armStall(a)
+      log.warn(`Run ${a.summary.id}: no activity for ${ms} ms while not settled; ending it as stalled.`)
+      void this.finalizeExecRun(a.summary.id, 'stalled', { endedBy: 'policy' })
+    }, ms)
+  }
+
+  private clearExecTimers(a: ActiveRun): void {
+    if (a.settleTimer) clearTimeout(a.settleTimer)
+    if (a.stallTimer) clearTimeout(a.stallTimer)
+    a.settleTimer = undefined
+    a.stallTimer = undefined
+    for (const t of a.policyTimers.values()) clearTimeout(t)
+    a.policyTimers.clear()
+  }
+
+  /** A run.status from the finalizer itself (late adapter statuses are dropped). */
+  private finalEmit(a: ActiveRun, e: Extract<RunEvent, { type: 'run.status' }>): void {
+    a.finalEmitting = true
+    try {
+      a.emit(e)
+    } finally {
+      a.finalEmitting = false
+    }
+  }
+
+  /**
+   * End an exec run with `outcome` (cli-spec 6.2(2) item 4). Idempotent: the first call claims the outcome and later
+   * calls return the same promise. Stops the session and waits for it (EXEC_FINALIZE_STOP_TIMEOUT_MS), joins the title
+   * (EXEC_TITLE_JOIN_MS), flushes usage, writes the final status, execOutcome and endedBy, persists, and broadcasts
+   * exactly one run.finalized. RunManager never calls stop() for policy, budget or completion finishes.
+   */
+  finalizeExecRun(runId: string, outcome: ExecOutcome, opts: { endedBy?: RunEndedBy } = {}): Promise<void> {
+    const a = this.runs.get(runId)
+    if (!a) return Promise.resolve()
+    if (a.finalizing) return a.finalizing
+    a.finalOutcome = outcome
+    const endedBy = opts.endedBy !== undefined ? opts.endedBy : defaultEndedBy(outcome)
+    const run = this.runFinalizer(a, outcome, endedBy).catch((err: unknown) => log.warn(`Run ${runId}: finalizing failed: ${(err as Error)?.message ?? err}`))
+    a.finalizing = run
+    return run
+  }
+
+  private async runFinalizer(a: ActiveRun, outcome: ExecOutcome, endedBy: RunEndedBy | undefined): Promise<void> {
+    // Claimed synchronously by finalizeExecRun; the body starts on a microtask so the caller's emit finishes first.
+    await Promise.resolve()
+    const s = a.summary
+    this.clearExecTimers(a)
+    if (endedBy) a.endedBy ??= endedBy
+    if (outcome === 'interrupted') {
+      a.userStopped = true
+      if (endedBy === 'user') s.endedBy = 'user'
+      if (s.status === 'starting' || s.status === 'running' || s.status === 'idle') this.finalEmit(a, { type: 'run.status', runId: s.id, status: 'stopping' })
+      this.flush(a)
+    }
+    // A session still opening is waited for, then stopped with the rest.
+    if (!a.session && a.opening) await raceTimeout(a.opening.catch(() => undefined), EXEC_FINALIZE_STOP_TIMEOUT_MS)
+    let timedOut = false
+    if (a.session) {
+      const stopping = this.stopSession(a)?.catch((err: unknown) => log.warn(`Run ${s.id}: stop failed while finalizing: ${(err as Error)?.message ?? err}`))
+      timedOut = await raceTimeout(Promise.all([stopping, a.session.finished.catch(() => undefined)]), EXEC_FINALIZE_STOP_TIMEOUT_MS)
+      if (timedOut) log.warn(`Run ${s.id}: the session did not finish within ${EXEC_FINALIZE_STOP_TIMEOUT_MS} ms of being stopped; finalizing anyway.`)
+    }
+    // The title may still land within EXEC_TITLE_JOIN_MS; after that it is cancelled so it cannot race persistence.
+    if (a.titleTask) await raceTimeout(a.titleTask, EXEC_TITLE_JOIN_MS)
+    a.titleAbort?.abort()
+    // The final status, unless the run already reached one (an adapter error, a natural end, the pause).
+    const terminal = s.status === 'finished' || s.status === 'error' || s.status === 'paused'
+    if (!terminal) {
+      const status = outcome === 'failed' || outcome === 'auth-error' ? 'error' : outcome === 'rate-limited' ? 'paused' : 'finished'
+      const error =
+        status === 'error' ? a.adapterError || s.error || (a.lastTurnEnd?.errorSubtype ? `The turn ended with ${logText(a.lastTurnEnd.errorSubtype)}.` : 'The run failed.') : undefined
+      this.finalEmit(a, { type: 'run.status', runId: s.id, status, ...(error ? { error } : {}), ...(status === 'paused' ? { autoResume: false } : {}) })
+    }
+    this.closeTimers(a)
+    this.refreshUsage(a, true)
+    s.execOutcome = outcome
+    if (endedBy) s.endedBy = endedBy
+    else if (s.endedBy !== 'app') delete s.endedBy
+    try {
+      this.store.upsert(s)
+    } catch (e) {
+      log.warn(`Run ${s.id}: could not persist the finalized summary: ${(e as Error).message}`)
+    }
+    this.flush(a)
+    // No session (never started) or one that never finished: the run leaves the live set here.
+    if (this.runs.get(s.id) === a && (!a.session || timedOut)) this.teardown(a)
+    if (!a.finalizedSent) {
+      a.finalizedSent = true
+      this.broadcast({ type: 'run.finalized', runId: s.id, ...(s.overrides?.execChainId ? { execChainId: s.overrides.execChainId } : {}), outcome, summary: { ...s } })
+    }
+  }
+
+  // ---------- decision cards: index, tombstones and the headless policy ----------
+
+  /** A card was raised (after its *.request broadcast): index it, count the activity and apply the headless policy. */
+  private cardCreated(a: ActiveRun, kind: CardKind, id: string, card: unknown): void {
+    this.decisions.add(id, { runId: a.summary.id, projectId: a.summary.projectId, kind, revision: 1 })
+    this.bumpActivity(a)
+    this.applyPolicy(a, kind, id, card)
+  }
+
+  /** A card left the pending set: tombstone it, drop its policy timer, count the activity. */
+  private cardResolved(a: ActiveRun, kind: CardKind, id: string, status: 'applied' | 'cancelled', effectiveDecision?: string, decidedBy?: DecidedBy): void {
+    const t = a.policyTimers.get(id)
+    if (t) clearTimeout(t)
+    a.policyTimers.delete(id)
+    this.decisions.resolve(id, { status, kind, runId: a.summary.id, ...(effectiveDecision ? { effectiveDecision } : {}), ...(decidedBy ? { decidedBy } : {}) })
+    this.bumpActivity(a)
+  }
+
+  /** Cancel every open card of a run (its end or pause) and record 'cancelled' tombstones. */
+  private cancelCards(a: ActiveRun): void {
+    cancelPending(a, a.summary.id, this.broadcast, (id, kind) => this.cardResolved(a, kind, id, 'cancelled'))
+  }
+
+  /** The 'not pending' answer of a decision method: from the tombstones, else not-found. */
+  private decisionMiss(requestId: string): DecisionOutcome {
+    return this.decisions.missOutcome(requestId)
+  }
+
+  /** expectedRevision given and different from the card's revision. */
+  private staleRevision(revision: number | undefined, opts: DecisionOptions): boolean {
+    return opts.expectedRevision !== undefined && opts.expectedRevision !== (revision ?? 1)
+  }
+
+  /** The decision method for a card kind (the headless policy answers through the same paths as a human). */
+  private decideCard<K extends CardKind>(kind: K, runId: string, id: string, decision: PolicyDecisions[K], opts: DecisionOptions): DecisionOutcome {
+    switch (kind) {
+      case 'permission':
+        return this.decide(runId, id, decision as PolicyDecisions['permission'], opts)
+      case 'rules':
+        return this.decideRules(runId, id, decision as PolicyDecisions['rules'], opts)
+      case 'proposal':
+        return this.decideProposal(runId, id, decision as PolicyDecisions['proposal'], opts)
+      case 'question':
+        return this.answerQuestion(runId, id, decision as PolicyDecisions['question'], opts)
+      case 'merge':
+        return this.decideMerge(runId, id, decision as PolicyDecisions['merge'], opts)
+      default:
+        return this.answerMcpInstall(runId, id, decision as PolicyDecisions['mcpInstall'], opts)
+    }
+  }
+
+  /**
+   * Headless decision policy (cli-spec 6.2(1)) on an exec run: act after a 0 ms timer (so the *.request event goes out
+   * first), or after humanGraceMs while an interactive client is attached. A human answer clears the timer.
+   */
+  private applyPolicy(a: ActiveRun, kind: CardKind, id: string, card: unknown): void {
+    const o = a.summary.overrides
+    if (!o?.execMode || a.finalizing) return
+    const policy = fullPolicy(o.decisionPolicy)
+    const runId = a.summary.id
+    let interactive = 0
+    try {
+      interactive = this.options.interactiveClients?.() ?? 0
+    } catch {
+      interactive = 0
+    }
+    const act = (): void => {
+      a.policyTimers.delete(id)
+      if (a.finalizing || this.runs.get(runId) !== a || !findPendingCard(a, id)) return
+      const action = policyAction(kind, card, policy)
+      if (action.kind === 'fail') {
+        a.emit({ type: 'log', runId, level: 'warn', message: `A ${kind} card needs a decision and the headless policy fails the run on it.` })
+        void this.finalizeExecRun(runId, 'needs-decision', { endedBy: 'policy' })
+        return
+      }
+      if (action.kind === 'wait') {
+        a.policyTimers.set(
+          id,
+          setTimeout(() => {
+            a.policyTimers.delete(id)
+            if (a.finalizing || this.runs.get(runId) !== a || !findPendingCard(a, id)) return
+            a.emit({ type: 'log', runId, level: 'warn', message: `Nobody answered a ${kind} card within ${policy.waitTimeoutMs} ms; the run ends.` })
+            void this.finalizeExecRun(runId, 'needs-decision', { endedBy: 'policy' })
+          }, policy.waitTimeoutMs)
+        )
+        return
+      }
+      this.decideCard(kind, runId, id, action.decision, { decidedBy: { surface: 'policy' } })
+      if (!countsAsDenial(kind)) return
+      a.autoDenials++
+      if (a.autoDenials >= policy.maxAutoDenials) {
+        a.emit({ type: 'log', runId, level: 'warn', message: `The headless policy refused ${a.autoDenials} decision${a.autoDenials === 1 ? '' : 's'} (limit ${policy.maxAutoDenials}); the run ends.` })
+        void this.finalizeExecRun(runId, 'needs-decision', { endedBy: 'policy' })
+      }
+    }
+    a.policyTimers.set(id, setTimeout(act, interactive > 0 ? policy.humanGraceMs : 0))
   }
 
   /** Close the open wait / limit / idle intervals (the run ended or paused). */
@@ -1696,9 +2226,14 @@ export class RunManager {
    * peer messages, persist the record and drop the run from the live set.
    */
   private teardown(active: ActiveRun): void {
+    // Reached from session.finished and, for an exec run that never started or never finished, from the finalizer.
+    if (active.tornDown) return
+    active.tornDown = true
     const runId = active.summary.id
     // Every waiting card (permissions, proposals, questions, rules, merges, installs) is settled as cancelled.
-    cancelPending(active, runId, this.broadcast)
+    this.cancelCards(active)
+    // After the cards: their cancellation counts as activity and would re-arm the exec timers.
+    this.clearExecTimers(active)
     // The final usage goes out and is saved with the record, whatever the throttle still holds.
     // Always recompute after the timers close so waitingMs / idleMs / limitHoldMs are final (publish skips no-op changes).
     this.closeTimers(active)
@@ -1898,6 +2433,10 @@ export class RunManager {
     if (isSetupLikeRun(targetSummary.kind) || isVirtualProjectId(targetSummary.projectId) || targetSummary.team === 'single') return { result: 'refused', refusal: 'not-work' }
     // An ended run is just not live; checking its project's flag would name a project the caller cannot list.
     if (!target) return { result: 'not-live' }
+    // A headless exec run takes no peer messages unless its caller allowed them (RunOverrides.allowPeerMessages).
+    if (target.summary.overrides?.execMode && !target.summary.overrides.allowPeerMessages) {
+      return { result: 'refused', refusal: 'messaging-off', offProjects: [target.projectName] }
+    }
     // Opt-in per project (Project.runMessaging): both ends must allow it; one project only needs its own flag.
     const off: string[] = []
     if (!this.messagingOn(sender)) off.push(sender.projectName)
@@ -1999,9 +2538,14 @@ export class RunManager {
   /** Deliver held peer messages, oldest first, while nothing makes the run wait on its user. */
   private flushInbox(a: ActiveRun): Promise<void> {
     const drain = async (): Promise<void> => {
-      while (a.inbox.length && this.deliveryBlocked(a) === null && this.runs.get(a.summary.id) === a) {
-        const m = a.inbox.shift()!
-        m.delivered = await this.deliverPeerMessage(a, m)
+      this.bumpActivity(a)
+      try {
+        while (a.inbox.length && this.deliveryBlocked(a) === null && this.runs.get(a.summary.id) === a) {
+          const m = a.inbox.shift()!
+          m.delivered = await this.deliverPeerMessage(a, m)
+        }
+      } finally {
+        this.bumpActivity(a)
       }
     }
     // Chained: a flush started while another runs waits for it, so messages leave strictly oldest first.
@@ -2051,6 +2595,7 @@ export class RunManager {
       delete request.suggestions
       delete request.ruleLabels
     } else if ('referenceFolder' in request) delete request.referenceFolder
+    request.revision = 1
     logPermission(active.summary, request)
     return new Promise((resolve) => {
       active.pending.set(request.id, {
@@ -2061,6 +2606,7 @@ export class RunManager {
         }
       })
       this.broadcast({ type: 'permission.request', runId: active.summary.id, request })
+      this.cardCreated(active, 'permission', request.id, request)
     })
   }
 
@@ -2072,7 +2618,9 @@ export class RunManager {
   decide(runId: string, requestId: string, decision: PermissionDecision, opts: DecisionOptions = {}): DecisionOutcome {
     const active = this.runs.get(runId)
     const pending = active?.pending.get(requestId)
-    if (!active || !pending) return { status: 'not-found', requestId }
+    if (!active || !pending) return this.decisionMiss(requestId)
+    if (this.staleRevision(pending.request.revision, opts)) return { status: 'stale-revision', runId, requestId }
+    // pending -> resolving: out of the map before anything else runs, so a second answer finds a tombstone.
     active.pending.delete(requestId)
     // A quick run or build session works in a folder that is not a project: a 'project' grant would let the adapter
     // save rules into it. Narrow to the session here so every adapter is covered.
@@ -2083,11 +2631,13 @@ export class RunManager {
       log.info(`Narrowed a ${narrowed.scope} grant to once: the call touches a reference folder`)
       narrowed = { ...narrowed, scope: 'once' }
     }
+    const effective = narrowed?.behavior === 'allow' ? 'allow' : 'deny'
+    this.cardResolved(active, 'permission', requestId, 'applied', effective, opts.decidedBy)
     pending.resolve(narrowed)
     const savedToProject = narrowed?.behavior === 'allow' && narrowed.scope === 'project'
-    this.broadcast({ type: 'permission.resolved', runId, requestId, ...(savedToProject ? { savedToProject: true as const } : {}) })
+    this.broadcast({ type: 'permission.resolved', runId, requestId, ...(savedToProject ? { savedToProject: true as const } : {}), ...(opts.decidedBy ? { decidedBy: opts.decidedBy } : {}) })
     this.cardSettled(active)
-    return applied(runId, requestId, narrowed?.behavior === 'allow' ? 'allow' : 'deny', opts)
+    return applied(runId, requestId, effective, opts)
   }
 
   private requestProposal(
@@ -2096,7 +2646,7 @@ export class RunManager {
     onApplied?: (saved: Project) => void
   ): Promise<ProposalOutcome> {
     const effect = proposalEffect(req.kind, active.summary, active.adapter)
-    const proposal = { ...req, id: newId('prop'), runId: active.summary.id, createdAt: Date.now(), effect } as Proposal
+    const proposal = { ...req, id: newId('prop'), runId: active.summary.id, createdAt: Date.now(), effect, revision: 1 } as Proposal
     return new Promise((resolve) => {
       active.pendingProposals.set(proposal.id, { proposal, resolve: (raw) => {
         // Secrets stop here: the tool and the proposal.resolved event only ever get the outcome.
@@ -2143,6 +2693,7 @@ export class RunManager {
         return outcome
       } })
       this.broadcast({ type: 'proposal.request', runId: active.summary.id, proposal })
+      this.cardCreated(active, 'proposal', proposal.id, proposal)
     })
   }
 
@@ -2160,30 +2711,36 @@ export class RunManager {
   decideProposal(runId: string, proposalId: string, decision: ProposalDecision, opts: DecisionOptions = {}): DecisionOutcome {
     const active = this.runs.get(runId)
     const pending = active?.pendingProposals.get(proposalId)
-    if (!active || !pending) return { status: 'not-found', requestId: proposalId }
+    if (!active || !pending) return this.decisionMiss(proposalId)
+    if (this.staleRevision(pending.proposal.revision, opts)) return { status: 'stale-revision', runId, requestId: proposalId }
     active.pendingProposals.delete(proposalId)
     // The broadcast carries the secret-free outcome (with waitingForSecrets), never decision.secrets.
     const outcome = pending.resolve(decision) ?? proposalOutcome(cleanProposalDecision(decision))
-    this.broadcast({ type: 'proposal.resolved', runId, proposalId, decision: outcome })
+    // An approval the harness could not apply came back as a revise: say so (applyError).
+    const applyError = cleanProposalDecision(decision).behavior === 'approve' && outcome.behavior === 'revise' ? outcome.feedback : undefined
+    this.cardResolved(active, 'proposal', proposalId, 'applied', outcome.behavior, opts.decidedBy)
+    this.broadcast({ type: 'proposal.resolved', runId, proposalId, decision: outcome, ...(opts.decidedBy ? { decidedBy: opts.decidedBy } : {}) })
     this.cardSettled(active)
-    return applied(runId, proposalId, outcome.behavior, opts)
+    return { ...applied(runId, proposalId, outcome.behavior, opts), ...(applyError ? { applyError } : {}) }
   }
 
   private requestQuestion(
     active: ActiveRun,
     req: Omit<UserQuestion, 'id' | 'runId' | 'createdAt'>
   ): Promise<QuestionAnswer> {
-    const question: UserQuestion = { ...req, id: newId('q'), runId: active.summary.id, createdAt: Date.now() }
+    const question: UserQuestion = { ...req, id: newId('q'), runId: active.summary.id, createdAt: Date.now(), revision: 1 }
     return new Promise((resolve) => {
       active.pendingQuestions.set(question.id, { question, resolve })
       this.broadcast({ type: 'question.request', runId: active.summary.id, question })
+      this.cardCreated(active, 'question', question.id, question)
     })
   }
 
   answerQuestion(runId: string, questionId: string, answer: QuestionAnswer, opts: DecisionOptions = {}): DecisionOutcome {
     const active = this.runs.get(runId)
     const pending = active?.pendingQuestions.get(questionId)
-    if (!active || !pending) return { status: 'not-found', requestId: questionId }
+    if (!active || !pending) return this.decisionMiss(questionId)
+    if (this.staleRevision(pending.question.revision, opts)) return { status: 'stale-revision', runId, requestId: questionId }
     active.pendingQuestions.delete(questionId)
     // Only labels that were offered count; a single-choice question keeps the first.
     const labels = new Set(pending.question.options.map((o) => o.label))
@@ -2191,8 +2748,9 @@ export class RunManager {
     if (!pending.question.allowMultiple) selected = selected.slice(0, 1)
     const text = pending.question.allowFreeText && typeof answer?.text === 'string' && answer.text.trim() ? answer.text.trim() : undefined
     const clean: QuestionAnswer = text ? { selected, text } : { selected }
+    this.cardResolved(active, 'question', questionId, 'applied', 'answer', opts.decidedBy)
     pending.resolve(clean)
-    this.broadcast({ type: 'question.resolved', runId, questionId, answer: clean })
+    this.broadcast({ type: 'question.resolved', runId, questionId, answer: clean, ...(opts.decidedBy ? { decidedBy: opts.decidedBy } : {}) })
     this.cardSettled(active)
     return applied(runId, questionId, 'answer', opts)
   }
@@ -2201,22 +2759,26 @@ export class RunManager {
     active: ActiveRun,
     req: Omit<MergeReview, 'id' | 'runId' | 'createdAt'>
   ): Promise<MergeDecision> {
-    const review: MergeReview = { ...req, id: newId('merge'), runId: active.summary.id, createdAt: Date.now() }
+    const review: MergeReview = { ...req, id: newId('merge'), runId: active.summary.id, createdAt: Date.now(), revision: 1 }
     return new Promise((resolve) => {
       active.pendingMerges.set(review.id, { review, resolve })
       this.broadcast({ type: 'merge.request', runId: active.summary.id, review })
+      this.cardCreated(active, 'merge', review.id, review)
     })
   }
 
   decideMerge(runId: string, reviewId: string, decision: MergeDecision, opts: DecisionOptions = {}): DecisionOutcome {
     const active = this.runs.get(runId)
     const pending = active?.pendingMerges.get(reviewId)
-    if (!active || !pending) return { status: 'not-found', requestId: reviewId }
+    if (!active || !pending) return this.decisionMiss(reviewId)
+    if (this.staleRevision(pending.review.revision, opts)) return { status: 'stale-revision', runId, requestId: reviewId }
     active.pendingMerges.delete(reviewId)
+    const effective = decision?.behavior === 'merge' || decision?.behavior === 'discard' ? decision.behavior : 'hold'
+    this.cardResolved(active, 'merge', reviewId, 'applied', effective, opts.decidedBy)
     pending.resolve(decision)
-    this.broadcast({ type: 'merge.resolved', runId, reviewId, decision })
+    this.broadcast({ type: 'merge.resolved', runId, reviewId, decision, ...(opts.decidedBy ? { decidedBy: opts.decidedBy } : {}) })
     this.cardSettled(active)
-    return applied(runId, reviewId, decision?.behavior, opts)
+    return applied(runId, reviewId, effective, opts)
   }
 
   // ---------- permission rule requests ----------
@@ -2233,12 +2795,14 @@ export class RunManager {
       flagged: rules.filter((r) => isUnsafeAllowRule(r) || tooBroadRuleRefusal(r) !== null),
       id: newId('rule'),
       runId: active.summary.id,
-      createdAt: Date.now()
+      createdAt: Date.now(),
+      revision: 1
     }
     if (!rules.length) return Promise.resolve({ behavior: 'deny', message: 'no valid rules' })
     return new Promise((resolve) => {
       active.pendingRules.set(request.id, { request, resolve })
       this.broadcast({ type: 'rules.request', runId: active.summary.id, request })
+      this.cardCreated(active, 'rules', request.id, request)
     })
   }
 
@@ -2251,7 +2815,8 @@ export class RunManager {
   decideRules(runId: string, requestId: string, decision: PermissionRuleDecision, opts: DecisionOptions = {}): DecisionOutcome {
     const active = this.runs.get(runId)
     const pending = active?.pendingRules.get(requestId)
-    if (!active || !pending) return { status: 'not-found', requestId }
+    if (!active || !pending) return this.decisionMiss(requestId)
+    if (this.staleRevision(pending.request.revision, opts)) return { status: 'stale-revision', runId, requestId }
     active.pendingRules.delete(requestId)
     const { rules } = pending.request
     let clean: PermissionRuleDecision
@@ -2288,8 +2853,9 @@ export class RunManager {
       clean = message ? { behavior: 'deny', message } : { behavior: 'deny' }
       this.broadcast({ type: 'log', runId, level: 'info', message: `Denied the permission request for ${rules.join(', ')}.` })
     }
+    this.cardResolved(active, 'rules', requestId, 'applied', clean.behavior, opts.decidedBy)
     pending.resolve(clean)
-    this.broadcast({ type: 'rules.resolved', runId, requestId, decision: clean })
+    this.broadcast({ type: 'rules.resolved', runId, requestId, decision: clean, ...(opts.decidedBy ? { decidedBy: opts.decidedBy } : {}) })
     this.cardSettled(active)
     return applied(runId, requestId, clean.behavior, opts)
   }
@@ -2302,11 +2868,11 @@ export class RunManager {
     getProject: () => Project,
     setProject: (saved: Project) => void
   ): Promise<McpInstallDecision> {
-    const request: McpInstallRequest = { ...req, id: newId('mcpi'), runId: active.summary.id, createdAt: Date.now() }
+    const request: McpInstallRequest = { ...req, id: newId('mcpi'), runId: active.summary.id, createdAt: Date.now(), revision: 1 }
     return new Promise((resolve) => {
       active.pendingInstalls.set(request.id, {
         request,
-        resolve: (raw, cancelled) => {
+        resolve: (raw, cancelled, decidedBy) => {
           const decision = this.settleInstall(active, request, raw, getProject(), setProject)
           // Secrets stop here: the agent and the renderer only ever see the outcome.
           const outcome: McpInstallOutcome = {
@@ -2315,11 +2881,20 @@ export class RunManager {
             ...(decision.note ? { note: decision.note } : {}),
             ...(decision.spec ? { spec: decision.spec } : {})
           }
-          this.broadcast({ type: 'mcpInstall.resolved', runId: active.summary.id, requestId: request.id, outcome, ...(cancelled ? { cancelled: true as const } : {}) })
+          this.broadcast({
+            type: 'mcpInstall.resolved',
+            runId: active.summary.id,
+            requestId: request.id,
+            outcome,
+            ...(cancelled ? { cancelled: true as const } : {}),
+            ...(decidedBy ? { decidedBy } : {})
+          })
           resolve(outcome)
+          return outcome
         }
       })
       this.broadcast({ type: 'mcpInstall.request', runId: active.summary.id, request })
+      this.cardCreated(active, 'mcpInstall', request.id, request)
     })
   }
 
@@ -2364,18 +2939,24 @@ export class RunManager {
   answerMcpInstall(runId: string, requestId: string, decision: McpInstallDecision, opts: DecisionOptions = {}): DecisionOutcome {
     const active = this.runs.get(runId)
     const pending = active?.pendingInstalls.get(requestId)
-    if (!active || !pending) return { status: 'not-found', requestId }
+    if (!active || !pending) return this.decisionMiss(requestId)
+    if (this.staleRevision(pending.request.revision, opts)) return { status: 'stale-revision', runId, requestId }
     active.pendingInstalls.delete(requestId)
-    pending.resolve(decision)
+    // The install's own resolve validates and applies it; the outcome says whether it was really installed.
+    const outcome = pending.resolve(decision, false, opts.decidedBy)
+    const effective = (outcome ? outcome.approved : !!decision?.approved) ? 'approve' : 'deny'
+    this.cardResolved(active, 'mcpInstall', requestId, 'applied', effective, opts.decidedBy)
     this.cardSettled(active)
-    return applied(runId, requestId, decision?.approved ? 'approve' : 'deny', opts)
+    return applied(runId, requestId, effective, opts)
   }
 
   /**
-   * runs:findDecision: which live run holds the pending card `requestId`, its kind and revision. Resolved-card
-   * tombstones ('applied' / 'cancelled') come with Wave 3 T2; until then anything not pending is 'not-found'.
+   * runs:findDecision: which live run holds the pending card `requestId` (its kind and revision), or how a recently
+   * resolved one ended (tombstones, at most DECISION_TOMBSTONES_MAX), else 'not-found'.
    */
   findDecision(requestId: string): DecisionLookup {
+    const indexed = this.decisions.lookup(requestId)
+    if (indexed.status !== 'not-found') return indexed
     for (const active of this.runs.values()) {
       const hit = findPendingCard(active, requestId)
       if (hit) {
@@ -2422,6 +3003,9 @@ export class RunManager {
     if (!active) return
     const st = active.summary.status
     if (st === 'finished' || st === 'error') return
+    // A headless exec run ends through its finalizer (outcome 'interrupted', endedBy 'user'); an outcome already
+    // claimed (budget, policy, completion) stands.
+    if (active.summary.overrides?.execMode) return this.finalizeExecRun(runId, 'interrupted', { endedBy: 'user' })
     active.userStopped = true
     active.endedBy ??= 'user'
     // Saved with the 'stopping' status, so a quit or crash before the session ends still reads as the user's end.
@@ -2485,6 +3069,9 @@ export class RunManager {
         if (r.endedWhile) s.endedWhile = r.endedWhile
       }
     }
+    // A headless exec run cut before its finalizer finished (best effort): its claimed outcome, else 'interrupted'.
+    const execCut = !!s.overrides?.execMode && !r.finalizedSent && (forced || s.status === 'finished' || s.status === 'error' || s.status === 'paused')
+    if (execCut) s.execOutcome ??= r.finalOutcome ?? 'interrupted'
     try {
       this.store.upsert(s)
     } catch (e) {
@@ -2493,6 +3080,10 @@ export class RunManager {
     this.flush(r)
     // The session never reported its end: tell the renderer it is finished, and who cut it.
     if (forced) this.broadcast(withEndFacts({ type: 'run.status', runId: s.id, status: 'finished' }, s))
+    if (execCut && s.execOutcome) {
+      r.finalizedSent = true
+      this.broadcast({ type: 'run.finalized', runId: s.id, ...(s.overrides?.execChainId ? { execChainId: s.overrides.execChainId } : {}), outcome: s.execOutcome, summary: { ...s } })
+    }
   }
 
   /**
@@ -2550,8 +3141,7 @@ export class RunManager {
    * its memory. Same kind as the old run: setup runs keep the Architect (with its hidden profile
    * context), work runs use the project's roles. `project` must be the old run's project.
    */
-  // `opts` (exec overrides) is accepted and not used yet (Wave 3 T2).
-  async continueRun(project: Project, fromRunId: string, text: string, rawImages?: ImageAttachment[], _opts: ContinueRunOptions = {}): Promise<RunSummary> {
+  async continueRun(project: Project, fromRunId: string, text: string, rawImages?: ImageAttachment[], opts: ContinueRunOptions = {}): Promise<RunSummary> {
     this.refuseWhileQuitting()
     const from = this.summary(fromRunId)
     if (!from) throw new Error('Run not found')
@@ -2587,11 +3177,14 @@ export class RunManager {
       const done = this.patchSummary(r.id, { status: 'finished', autoResume: false })
       if (done) this.broadcast({ type: 'run.status', runId: done.id, status: 'finished', pausedUntil: done.pausedUntil, pauseReason: done.pauseReason, autoResume: false })
     }
+    const overrides = continuedOverrides(target.overrides ?? from.overrides, opts)
     return this.start({
       project,
       prompt,
       images,
       kind: target.kind,
+      ...(overrides ? { overrides } : {}),
+      ...(opts.allowWidening ? { allowWidening: true } : {}),
       // The harness's own resume message is not a new task: keep the title of the run it continues.
       // A follow-up is titled with the task it continues as context, so it stays recognisable.
       ...(prompt === RESUME_TEXT.trim() && target.title
@@ -2728,7 +3321,8 @@ export class RunManager {
     // Setup runs re-profile the repo like setup:start so the Architect's hidden context is current.
     const project = from.kind === 'setup' ? await this.setup.prepare(current) : current
     try {
-      return await this.continueRun(project, runId, RESUME_TEXT)
+      // The automatic resume keeps an exec chain going (waitForReset): its exec fields carry over.
+      return await (from.overrides?.execMode ? this.continueRun(project, runId, RESUME_TEXT, undefined, { [AUTO_RESUME]: true }) : this.continueRun(project, runId, RESUME_TEXT))
     } catch (e) {
       // The timer is gone; a run still paused must not claim it will resume by itself.
       const s = this.summary(runId)
