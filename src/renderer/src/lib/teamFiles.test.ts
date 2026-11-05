@@ -11,6 +11,7 @@ import {
   approvalCount,
   cardTitle,
   cardVisible,
+  APPROVE_UNLOCKED_TEXT,
   changeHasHidden,
   dismissedUndoAt,
   elevatedLine,
@@ -132,6 +133,13 @@ describe('change wording', () => {
     expect(changeHasHidden(change(), hasHidden)).toBe(false)
     expect(changeHasHidden(change({ kind: 'mcp', target: 'npx‮ server' }), hasHidden)).toBe(true)
     expect(changeHasHidden(change({ after: 'ok​prompt' }), hasHidden)).toBe(true)
+    expect(changeHasHidden(change({ toolsBefore: ['Read', 'Ba‮sh'] }), hasHidden)).toBe(true)
+    expect(changeHasHidden(change({ toolsAfter: ['Wri​te'] }), hasHidden)).toBe(true)
+    expect(changeHasHidden(change({ elevatedAdded: ['Ba‮sh'] }), hasHidden)).toBe(true)
+    expect(changeHasHidden(change({ toolsBefore: ['Read'], toolsAfter: ['Read', 'Bash'], elevatedAdded: ['Bash'] }), hasHidden)).toBe(false)
+  })
+  it('says once that Approve is available', () => {
+    expect(APPROVE_UNLOCKED_TEXT).toBe('You have seen every change. Approve is available.')
   })
 })
 

@@ -3,6 +3,7 @@ import { useEffect, useId, useRef, useState } from 'react'
 import { ChevronDown, ChevronRight, TriangleAlert } from 'lucide-react'
 import type { TeamFileChange, TeamFilesStatus } from '@shared/types'
 import {
+  APPROVE_UNLOCKED_TEXT,
   CHANGE_ACTION_LABEL,
   CHANGE_KIND_LABEL,
   approveBlockedReason,
@@ -161,6 +162,8 @@ export default function TeamFilesCard({
   const title = cardTitle(status)
   const omitted = status.omittedChanges ?? 0
   useAnnounceOnce(`team-files:${status.projectId}`, `${title}. They need your approval in the tray below the chart.`)
+  // Approve unlocking after the list was scrolled to its end is said once (a list that fits never locked it).
+  useAnnounceOnce(`team-files-read:${readKey}`, readFor === readKey ? APPROVE_UNLOCKED_TEXT : null)
   const problem = status.state === 'problem' ? status.problems[0] : undefined
   return (
     <article

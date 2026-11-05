@@ -155,6 +155,10 @@
   outline: 2px solid var(--focus-ring, var(--accent));
   outline-offset: -2px;
 }
+.team-files-card .decision-body:focus-visible {
+  outline: 2px solid var(--focus-ring, var(--accent));
+  outline-offset: -2px;
+}
 .team-files-changes {
   list-style: none;
   margin: 0;

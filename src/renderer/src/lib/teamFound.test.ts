@@ -1,8 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import type { TeamFileChange, TeamFilesFound } from '@shared/types'
-import { approvalChanges, changeForServer, foundSummary, repeatedReasons, setSettings, teamFoundAnnouncement, teamFoundBlocker, teamFoundCounts } from './teamFound'
+import { HIDDEN_SHOWN_TITLE, approvalChanges, changeForServer, foundSummary, repeatedReasons, setSettings, teamFoundAnnouncement, teamFoundBlocker, teamFoundCounts } from './teamFound'
 
 describe('found team wording', () => {
+  it('shows a single backslash-u in the hidden characters tooltip', () => {
+    const bs = String.fromCharCode(92)
+    expect(HIDDEN_SHOWN_TITLE).toContain(` as ${bs}u codes.`)
+    expect(HIDDEN_SHOWN_TITLE).not.toContain(bs + bs)
+  })
   it('words settings as what the files set, not as changes', () => {
     expect(foundSummary({ kind: 'settings', summary: 'The project brief changed.' })).toBe('The files set the project brief.')
     expect(foundSummary({ kind: 'settings', summary: 'Permission mode changes from not set to default.' })).toBe('Permission mode is set to default.')

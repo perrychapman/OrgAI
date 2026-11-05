@@ -3,6 +3,7 @@ import { useId } from 'react'
 import type { TeamFilesFound } from '@shared/types'
 import { hasHidden, showHidden } from '../../lib/hiddenChars'
 import {
+  HIDDEN_SHOWN_TITLE,
   OTHER_TOOLS_LINE,
   TEAM_EXISTING_REASON,
   TEAM_FOUND_TITLE,
@@ -24,7 +25,7 @@ function Data({ text, mono }: { text: string; mono?: boolean }): ReactElement {
     <>
       <span className={mono ? 'mono' : undefined}>{showHidden(text)}</span>
       {hasHidden(text) && (
-        <span className="chip warn tf-hidden" title="This text holds characters that cannot be seen. They are shown as \\u codes.">
+        <span className="chip warn tf-hidden" title={HIDDEN_SHOWN_TITLE}>
           Hidden characters shown
         </span>
       )}
@@ -165,7 +166,7 @@ export function TeamFoundPanel({
                           )}
                         </p>
                         {anyHidden([r.prompt]) && (
-                          <span className="chip warn tf-hidden" title="This text holds characters that cannot be seen. They are shown as \\u codes.">
+                          <span className="chip warn tf-hidden" title={HIDDEN_SHOWN_TITLE}>
                             Hidden characters shown
                           </span>
                         )}

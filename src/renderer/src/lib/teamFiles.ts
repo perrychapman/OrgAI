@@ -115,6 +115,7 @@ export function statusKey(s: TeamFilesStatus | undefined): string {
 }
 
 /** Why Approve waits until the change list has been read to its end. */
+export const APPROVE_UNLOCKED_TEXT = 'You have seen every change. Approve is available.'
 export const READ_FIRST_TEXT = 'Scroll to the end of the changes to approve.'
 export const READ_FIRST_COMPACT_TEXT = 'Open Details and scroll to the end of the changes to approve.'
 
@@ -203,7 +204,7 @@ export function secretsLine(c: TeamFileChange): string | null {
 
 /** True when any text of a change holds a hidden or control character (shown escaped, with a badge). */
 export function changeHasHidden(c: TeamFileChange, has: (s: string) => boolean): boolean {
-  const strings = [c.name, c.file, c.summary, c.reason, c.before, c.after, c.target, ...(c.toolsAdded ?? []), ...(c.scripts ?? []), ...(c.secretNames ?? []), ...(c.reachesRoles ?? [])]
+  const strings = [c.name, c.file, c.summary, c.reason, c.before, c.after, c.target, ...(c.toolsAdded ?? []), ...(c.toolsBefore ?? []), ...(c.toolsAfter ?? []), ...(c.elevatedAdded ?? []), ...(c.scripts ?? []), ...(c.secretNames ?? []), ...(c.reachesRoles ?? [])]
   return strings.some((s) => typeof s === 'string' && has(s))
 }
 

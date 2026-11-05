@@ -35,8 +35,13 @@ export default function TeamFilesAppliedNotice({
   const doneAt = status.lastUndo?.at
   const appliedGone = !appliedAt || dismissed[`a:${appliedAt}`] || dismissedUndoAt(window.localStorage, status.projectId) === appliedAt
   // An Undo from an earlier visit is not news: only one that happened since this notice mounted shows.
-  const firstDone = useRef(doneAt)
-  const doneGone = !doneAt || doneAt === firstDone.current || dismissed[`u:${doneAt}`] || dismissedUndoAt(window.localStorage, `${status.projectId}:undone`) === doneAt
+  // Keyed by project: switching projects makes the new project's current Undo the baseline too.
+  const firstDone = useRef<{ projectId: string; at: string | undefined }>({ projectId: status.projectId, at: doneAt })
+  if (firstDone.current.projectId !== status.projectId) {
+    firstDone.current = { projectId: status.projectId, at: doneAt }
+    if (Object.keys(dismissed).length > 0) setDismissed({})
+  }
+  const doneGone = !doneAt || doneAt === firstDone.current.at || dismissed[`u:${doneAt}`] || dismissedUndoAt(window.localStorage, `${status.projectId}:undone`) === doneAt
   // The applied batch's summaries only describe an Undo that reverts that batch; after an Approve the lead speaks for it.
   const showApplied = !appliedGone && !!status.undo && (status.applied.length > 0 || !undoIsApplied(status))
   // A fresh undo replaces the applied notice (there is nothing left to undo).
