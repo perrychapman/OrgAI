@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { execFile } from 'node:child_process'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { devNull } from 'node:os'
 import { basename, dirname, isAbsolute, join } from 'node:path'
 import type { MergeDecision, PendingWorktree, WorktreeDiff, WorktreeInfo } from '@shared/types'
 
@@ -263,6 +264,63 @@ async function commitLeftoversUnlocked(wt: string, message: string): Promise<{ c
   return commit.ok ? { committed: true } : { committed: false, error: commit.err.slice(0, 300) }
 }
 
+/** git output exactly as printed (the trimming `git()` does would eat the leading space of a porcelain line). */
+function gitRaw(root: string, args: string[]): Promise<{ ok: boolean; out: string; err: string }> {
+  return new Promise((resolve) => {
+    execFile('git', args, { cwd: root, windowsHide: true, timeout: 60_000, maxBuffer: 8 * 1024 * 1024 }, (error, stdout, stderr) => {
+      resolve({ ok: !error, out: String(stdout), err: String(stderr ?? error?.message ?? '').trim() })
+    })
+  })
+}
+
+/** The paths team files live at, relative to the project folder. */
+const TEAM_PATHSPEC = ['.orgai/team.json', '.orgai/mcp.json', '.orgai/agents', '.orgai/skills']
+
+/**
+ * What git has not committed under the team files: every changed or untracked file (folders listed file by file;
+ * a rename gives both names), folder-relative with '/'. `ok` false when `root` is not a git work tree git can read.
+ */
+export async function teamFilesStatusGit(root: string): Promise<{ ok: boolean; files: string[]; error?: string }> {
+  if (!isGitRepo(root)) return { ok: false, files: [] }
+  const res = await gitRaw(root, ['status', '--porcelain', '-z', '--untracked-files=all', '--', ...TEAM_PATHSPEC])
+  if (!res.ok) return { ok: false, files: [], error: res.err }
+  const parts = res.out.split('\0')
+  const files: string[] = []
+  for (let i = 0; i < parts.length; i++) {
+    const entry = parts[i]
+    if (entry.length < 4) continue
+    const x = entry[0]
+    const y = entry[1]
+    files.push(entry.slice(3))
+    // With -z a rename or copy is "XY new" followed by a separate "old" entry.
+    if (x === 'R' || x === 'C' || y === 'R' || y === 'C') {
+      const old = parts[++i]
+      if (old) files.push(old)
+    }
+  }
+  return { ok: true, files: [...new Set(files)].sort() }
+}
+
+/**
+ * Commit exactly `paths` (relative to `root`) and nothing else: `git add -A -- <paths>` then `git commit --only --no-verify
+ * -- <paths>`, so another file the user already staged stays staged and out of the commit. Hooks are switched off with
+ * core.hooksPath (a repository's hooks are code from the repository; OrgAI does not run them on its own initiative, and
+ * --no-verify alone leaves post-commit and prepare-commit-msg hooks running). Never pushes. The message is fixed text by
+ * the caller (it never starts with a dash). Uses the same identity fallback as every other OrgAI commit.
+ */
+export async function commitPaths(root: string, paths: string[], message: string): Promise<{ committed: boolean; error?: string }> {
+  if (!paths.length) return { committed: false }
+  return withRepoLock(root, async () => {
+    const noHooks = ['-c', `core.hooksPath=${devNull}`]
+    const add = await git(root, [...noHooks, 'add', '-A', '--', ...paths])
+    if (!add.ok) return { committed: false, error: add.err }
+    const args = ['commit', '--only', '--no-verify', '-q', '-m', message, '--', ...paths]
+    let commit = await git(root, [...noHooks, ...args])
+    if (!commit.ok && IDENTITY_ERROR.test(commit.err)) commit = await git(root, [...noHooks, ...FALLBACK_IDENTITY, ...args])
+    return commit.ok ? { committed: true } : { committed: false, error: commit.err }
+  })
+}
+
 /** Remove a worktree and its branch, discarding any work on it. */
 export async function discardWorktree(root: string, wt: { path: string; branch: string }): Promise<void> {
   await withRepoLock(root, async () => {
@@ -365,9 +423,11 @@ async function mergeInto(root: string, info: WorktreeInfo, commitMessage: string
     const conflictFiles = conflicts.ok ? conflicts.out.split(/\r?\n/).filter(Boolean) : []
     await git(root, ['merge', '--abort'])
     const reason = conflictFiles.length ? `conflicts in ${conflictFiles.join(', ')}` : merge.err.slice(0, 300)
+    // Team files changed in the main checkout and not committed: git refuses a merge that would overwrite them.
+    const teamBlock = !conflictFiles.length && /\.orgai\//.test(merge.err) ? ' Uncommitted team files in .orgai block this merge; commit them and integrate again.' : ''
     return {
       info: { ...info, status: 'conflict', changedFiles },
-      message: `Branch ${info.branch} could not be merged automatically (${reason}). It is kept at ${wt}.`
+      message: `Branch ${info.branch} could not be merged automatically (${reason}). It is kept at ${wt}.${teamBlock}`
     }
   }
 
