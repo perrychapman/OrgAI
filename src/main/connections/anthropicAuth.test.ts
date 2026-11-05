@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { anthropicStatus, candidateLaunch, claudeAuthStatus, runAuthStatus, type CliResult, type RunCli } from './anthropicAuth'
 import { claudeRuntimeMissingMessage, type ClaudeExecutableResolution } from '../runtime/claudeBinary'
@@ -28,6 +31,32 @@ describe('claudeAuthStatus with the resolver (cli-standalone 6.1)', () => {
     }
     expect(await claudeAuthStatus({ run, executable: found('/opt/orgai/claude'), env: {} })).toMatchObject({ loggedIn: true })
     expect(seen).toEqual(['/opt/orgai/claude'])
+  })
+
+  it('runs the resolved binary as the SDK does, never through a shell (review round 1)', async () => {
+    const shells: boolean[] = []
+    const run: RunCli = async (_bin, _args, opts) => {
+      shells.push(opts.shell)
+      return { stdout: JSON.stringify({ loggedIn: true, authMethod: 'claude.ai' }), stderr: '', code: 0 }
+    }
+    // Even a path that looks like a Windows shim (the resolver refuses one; this is the second line of defence).
+    await claudeAuthStatus({ run, executable: found('C:\\npm\\claude.cmd'), env: {} })
+    expect(shells).toEqual([false])
+  })
+
+  it('an ORGAI_CLAUDE_PATH shim is refused before anything runs (review round 1)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'orgai-claude-shim-'))
+    try {
+      const shim = join(dir, 'claude.cmd')
+      writeFileSync(shim, '@echo off')
+      const seen: string[] = []
+      const st = await claudeAuthStatus({ env: { ORGAI_CLAUDE_PATH: shim }, run: async (bin) => (seen.push(bin), { stdout: '{"loggedIn":true}', stderr: '', code: 0 }) })
+      expect(st).toMatchObject({ loggedIn: false, unavailable: true })
+      expect(st.detail).toMatch(/a script shim OrgAI cannot run/)
+      expect(seen).toEqual([])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   it('without a runtime: unavailable, the resolver sentence, and a PATH claude only named', async () => {

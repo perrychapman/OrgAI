@@ -89,6 +89,36 @@ describe('request plumbing without a process', () => {
     }
   })
 
+  it('a close() during the version check spawns nothing: start() rejects and exited resolves (review round 1)', async () => {
+    clearCodexVersionCache()
+    const dir = mkdtempSync(join(tmpdir(), 'orgai-codex-close-'))
+    const marker = join(dir, 'spawned')
+    try {
+      // If the app-server were spawned it would write the marker and stay up (2 s, so a regression leaves no orphan).
+      writeFileSync(join(dir, 'app-server'), `require('fs').writeFileSync(${JSON.stringify(marker)}, 'x'); setTimeout(() => process.exit(0), 2000)`)
+      let release!: (v: string) => void
+      const versionRunner = (): Promise<string> => new Promise((resolve) => (release = resolve))
+      const exits: unknown[] = []
+      const s = new CodexAppServer({ cwd: dir, binary: { path: process.execPath, source: 'package' }, versionRunner })
+      s.onExit((code) => exits.push(code))
+      const started = s.start()
+      await new Promise((r) => setTimeout(r, 10))
+      s.close()
+      release('codex-cli 0.166.0')
+      await expect(started).rejects.toThrow('codex app-server was closed before it started')
+      await expect(s.exited).resolves.toBeUndefined()
+      expect(s.running).toBe(false)
+      await new Promise((r) => setTimeout(r, 300))
+      expect(existsSync(marker)).toBe(false)
+      expect(exits).toEqual([])
+      // A start() after close() rejects at once as well.
+      await expect(s.start()).rejects.toThrow('closed before it started')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+      clearCodexVersionCache()
+    }
+  })
+
   it('exposes the rpc error code', () => {
     const e = new CodexRpcError('thread/start', { code: -32600, message: 'bad' })
     expect(e.message).toBe('thread/start: bad')

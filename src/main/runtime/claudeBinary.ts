@@ -3,8 +3,8 @@
  * completions) and anthropicAuth.ts (the connection probe) so the two never disagree. Evaluated per call, never at
  * import.
  *
- * Order: ORGAI_CLAUDE_PATH (an absolute path to an existing regular file; when set it decides, a bad value is refused
- * and never falls through), the app.asar.unpacked native package of a packaged app, the SDK's per-platform package
+ * Order: ORGAI_CLAUDE_PATH (an absolute path to an existing regular file, not a .cmd / .bat / .ps1 shim; when set it
+ * decides, a bad value is refused and never falls through), the app.asar.unpacked native package of a packaged app, the SDK's per-platform package
  * through createRequire from the bundle (a hit inside app.asar is rewritten to app.asar.unpacked and counts as the
  * app's), else none. When resolved, callers always pass `pathToClaudeCodeExecutable`. A `claude` found on PATH (or
  * in a well-known install folder) is named in the error, never used.
@@ -65,15 +65,35 @@ export function claudeResolutionMessage(r: Extract<ClaudeExecutableResolution, {
 
 const SDK_PACKAGE = '@anthropic-ai/claude-agent-sdk'
 
-/** The SDK's own rule (sdk.mjs 0.3.312): on Linux musl is preferred when the process report shows no glibc. */
-function detectMusl(platform: NodeJS.Platform): boolean {
-  if (platform !== 'linux' || process.platform !== 'linux') return false
+/** Windows shims that only run through a shell. */
+const SCRIPT_SHIM = /\.(cmd|bat|ps1)$/i
+
+/** The process's libc cannot change while it runs: getReport (a full diagnostic report) is built at most once. */
+let processIsMusl: boolean | undefined
+
+/**
+ * The SDK's own rule (sdk.mjs 0.3.312): on Linux musl is preferred when the process report shows no glibc. The report
+ * is read once per process (`report` and `host` stand in for process.report and process.platform in tests).
+ */
+export function detectMusl(
+  platform: NodeJS.Platform,
+  report: { getReport?: () => unknown } | undefined = process.report,
+  host: NodeJS.Platform = process.platform
+): boolean {
+  if (platform !== 'linux' || host !== 'linux') return false
+  if (processIsMusl !== undefined) return processIsMusl
   try {
-    const report = typeof process.report?.getReport === 'function' ? (process.report.getReport() as { header?: { glibcVersionRuntime?: string } }) : null
-    return report != null && report.header?.glibcVersionRuntime === undefined
+    const r = typeof report?.getReport === 'function' ? (report.getReport() as { header?: { glibcVersionRuntime?: string } }) : null
+    processIsMusl = r != null && r.header?.glibcVersionRuntime === undefined
   } catch {
-    return false
+    processIsMusl = false
   }
+  return processIsMusl
+}
+
+/** Forget the memoized musl decision (tests). */
+export function resetMuslCache(): void {
+  processIsMusl = undefined
 }
 
 /** The SDK's per-platform native package names, in the order the SDK tries them (sdk.mjs 0.3.312). */
@@ -122,6 +142,9 @@ export function claudeExecutable(env: NodeJS.ProcessEnv = process.env, opts: Cla
     const st = fs.stat(chosen)
     if (!st) return { ok: false, reason: `${CLAUDE_PATH_ENV} names ${chosen}, which does not exist.` }
     if (!st.isFile) return { ok: false, reason: `${CLAUDE_PATH_ENV} names ${chosen}, which is not a regular file.` }
+    // The SDK spawns the path without a shell (a .js / .mjs file through node), which a .cmd / .bat / .ps1 shim cannot
+    // survive; the probe runs it the same way, so the two never disagree.
+    if (SCRIPT_SHIM.test(chosen)) return { ok: false, reason: `${CLAUDE_PATH_ENV} names ${chosen}, a script shim OrgAI cannot run; name the claude executable itself (claude.exe on Windows).` }
     return { ok: true, path: chosen, source: 'env' }
   }
 

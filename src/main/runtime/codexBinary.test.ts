@@ -103,6 +103,41 @@ describe('lookupCodexBinary (cli-standalone 6.2)', () => {
     expect(lookupCodexBinary({ ...win, fs, env: { Path: npm } }).binary).toEqual({ path: `${npm}\\codex.exe`, source: 'path' })
   })
 
+  it('a native launcher on PATH is followed to the real codex: Scoop shim.exe and Volta volta-shim (review round 1)', () => {
+    const win = { platform: 'win32' as const, arch: 'x64', resolveModule: noModules, bundleDir: 'C:\\b' }
+    // Scoop: shims\codex.exe is shim.exe; codex.shim names the real program.
+    const shims = 'C:\\Users\\me\\scoop\\shims'
+    const app = 'C:\\Users\\me\\scoop\\apps\\codex\\current\\codex.exe'
+    let fs = new FakeLookupFs({ [`${shims}\\codex.exe`]: PE, [`${shims}\\codex.shim`]: `path = "${app}"\r\n`, [app]: PE })
+    expect(lookupCodexBinary({ ...win, fs, env: { Path: shims } }).binary).toEqual({ path: app, source: 'path', via: `${shims}\\codex.exe` })
+    // Older Scoop writes the path unquoted; a target that is itself an npm shim maps to the native package.
+    const npm = 'C:\\Users\\me\\AppData\\Roaming\\npm'
+    const vendorExe = `${npm}\\node_modules\\@openai\\codex\\node_modules\\@openai\\codex-win32-x64\\vendor\\x86_64-pc-windows-msvc\\bin\\codex.exe`
+    fs = new FakeLookupFs({ [`${shims}\\codex.exe`]: PE, [`${shims}\\codex.shim`]: `path = ${npm}\\codex.cmd\n`, [`${npm}\\codex.cmd`]: CMD_SHIM, [vendorExe]: PE })
+    expect(lookupCodexBinary({ ...win, fs, env: { Path: shims } }).binary).toEqual({ path: vendorExe, source: 'path', via: `${shims}\\codex.exe` })
+    // A .shim naming nothing usable leaves the hit as it was.
+    fs = new FakeLookupFs({ [`${shims}\\codex.exe`]: PE, [`${shims}\\codex.shim`]: 'path = C:\\gone\\codex.exe\n' })
+    expect(lookupCodexBinary({ ...win, fs, env: { Path: shims } }).binary).toEqual({ path: `${shims}\\codex.exe`, source: 'path' })
+
+    // Volta on Windows: bin\codex.exe is volta-shim; the package image holds the real binary.
+    const volta = 'C:\\Users\\me\\AppData\\Local\\Volta'
+    const image = `${volta}\\tools\\image\\packages\\@openai\\codex`
+    const voltaExe = `${image}\\node_modules\\@openai\\codex\\node_modules\\@openai\\codex-win32-x64\\vendor\\x86_64-pc-windows-msvc\\bin\\codex.exe`
+    fs = new FakeLookupFs({ [`${volta}\\bin\\codex.exe`]: PE, [voltaExe]: PE }, [image])
+    expect(lookupCodexBinary({ ...win, fs, env: { Path: `${volta}\\bin` } }).binary).toEqual({ path: voltaExe, source: 'path', via: `${volta}\\bin\\codex.exe` })
+    // Volta on macOS: ~/.volta/bin/codex links to volta-shim; lib/node_modules layout, hoisted platform package.
+    const home = '/Users/me/.volta'
+    const macImage = `${home}/tools/image/packages/@openai/codex`
+    const macExe = `${macImage}/lib/node_modules/@openai/codex-darwin-arm64/${MAC_VENDOR}/bin/codex`
+    fs = new FakeLookupFs({ [`${home}/bin/volta-shim`]: MACHO, [macExe]: MACHO }, [macImage]).link(`${home}/bin/codex`, `${home}/bin/volta-shim`)
+    expect(lookupCodexBinary({ ...mac, fs, env: { PATH: `${home}/bin` } }).binary).toEqual({ path: macExe, source: 'path', via: `${home}/bin/codex` })
+    // ORGAI_CODEX_PATH naming the launcher is the user's choice: used as is.
+    expect(lookupCodexBinary({ ...mac, fs, env: { ORGAI_CODEX_PATH: `${home}/bin/codex` } }).binary).toEqual({ path: `${home}/bin/volta-shim`, source: 'env', via: `${home}/bin/codex` })
+    // An ordinary native codex in a bin folder without a Volta image is used as is.
+    fs = new FakeLookupFs({ '/usr/local/bin/codex': MACHO })
+    expect(lookupCodexBinary({ ...mac, fs, env: { PATH: '/usr/local/bin' } }).binary).toEqual({ path: '/usr/local/bin/codex', source: 'path' })
+  })
+
   it('never the cwd; an unmappable shim is named in the problem; nothing found says how to install', () => {
     const fs = new FakeLookupFs({ codex: MACHO, '/s/codex': '#!/bin/sh\nexec something-else "$@"\n', '/t/codex': 'plain text' })
     const r = lookupCodexBinary({ ...mac, fs, env: { PATH: ':.:rel:/s:/t' } })

@@ -6,9 +6,11 @@ import {
   claudeResolutionMessage,
   claudeRuntimeMissingMessage,
   claudeWellKnownPaths,
-  requireClaudeExecutable
+  detectMusl,
+  requireClaudeExecutable,
+  resetMuslCache
 } from './claudeBinary'
-import { FakeLookupFs, MACHO } from './fakeLookupFs'
+import { FakeLookupFs, MACHO, PE } from './fakeLookupFs'
 import type { ModuleResolver } from './executableLookup'
 
 const RES = '/Applications/OrgAI.app/Contents/Resources'
@@ -22,6 +24,33 @@ const resolver = (table: Record<string, string>, calls: [string, string][] = [])
 
 describe('claudeExecutable (cli-standalone 6.1)', () => {
   const base = { platform: 'darwin' as const, arch: 'arm64', home: '/Users/me' }
+
+  it('refuses an ORGAI_CLAUDE_PATH that names a .cmd / .bat / .ps1 shim: the SDK spawns without a shell (review round 1)', () => {
+    for (const shim of ['C:\\npm\\claude.cmd', 'C:\\npm\\claude.BAT', 'C:\\npm\\claude.ps1']) {
+      const fs = new FakeLookupFs({ [shim]: new Uint8Array([0x40, 0x65]) })
+      const r = claudeExecutable({ [CLAUDE_PATH_ENV]: shim }, { platform: 'win32', arch: 'x64', fs, resolveModule: resolver({}) })
+      expect(r).toEqual({ ok: false, reason: `ORGAI_CLAUDE_PATH names ${shim}, a script shim OrgAI cannot run; name the claude executable itself (claude.exe on Windows).` })
+    }
+    // A native claude.exe chosen the same way is fine.
+    const exe = 'C:\\tools\\claude.exe'
+    const fs = new FakeLookupFs({ [exe]: PE })
+    expect(claudeExecutable({ [CLAUDE_PATH_ENV]: exe }, { platform: 'win32', arch: 'x64', fs, resolveModule: resolver({}) })).toEqual({ ok: true, path: exe, source: 'env' })
+  })
+
+  it('reads the process report for musl at most once per process (review round 1)', () => {
+    resetMuslCache()
+    let reads = 0
+    const report = { getReport: () => (reads++, { header: {} }) }
+    expect(detectMusl('linux', report, 'linux')).toBe(true)
+    expect(detectMusl('linux', report, 'linux')).toBe(true)
+    expect(reads).toBe(1)
+    // Other platforms never read it.
+    expect(detectMusl('darwin', report, 'darwin')).toBe(false)
+    expect(reads).toBe(1)
+    resetMuslCache()
+    expect(detectMusl('linux', { getReport: () => ({ header: { glibcVersionRuntime: '2.39' } }) }, 'linux')).toBe(false)
+    resetMuslCache()
+  })
 
   it('ORGAI_CLAUDE_PATH wins when it is an absolute regular file, and is never passed over when it is not', () => {
     const fs = new FakeLookupFs({ '/opt/claude': MACHO, [APP_BIN]: MACHO }, ['/opt/dir'])

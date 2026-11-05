@@ -14,7 +14,8 @@
  * `codex-path` folder when present; an npm shim (.cmd, .ps1, a '#!' script, or a link to bin/codex.js) is mapped to its
  * package folder and then to `@openai/codex-<platform>-<arch>/vendor/<triple>/bin/codex[.exe]` and its `codex-path`
  * (nested or hoisted). A shim is never spawned: `spawn` of a .cmd without a shell fails and a shell would mangle the
- * `-c` TOML arguments.
+ * `-c` TOML arguments. A native PATH hit that is a known launcher (Scoop's shim.exe, Volta's volta-shim) is followed to
+ * the real binary (`launcherTarget`); other native launchers are not recognised and are used as is.
  *
  * Version (`checkCodexBinary`): `codex --version` (async, cached by realpath + mtime + size), run by
  * CodexAppServer.start and by the OpenAI connection probe, never by the synchronous resolver. Outside 0.166.x a binary
@@ -177,11 +178,46 @@ class Resolver {
     return [...new Set(out)]
   }
 
-  /** Classify one candidate (ORGAI_CODEX_PATH or a PATH hit) by content. */
-  classify(hit: string, source: CodexBinarySource): { binary?: CodexBinary; problem?: string } {
+  /**
+   * A native PATH hit that is a launcher, not Codex: Scoop's shim.exe (a `codex.shim` beside it names the program) and
+   * Volta's volta-shim (`<volta>/bin/codex`, the package in `<volta>/tools/image/packages/@openai/codex`). Each starts
+   * node codex.js, which spawns the real codex as a child; on Windows killing the launcher leaves that child running,
+   * so the real binary is used instead. Undefined when the hit is not a known launcher (it is then used as is).
+   * Layouts from the tools' docs, never seen on a real install (unverified).
+   */
+  launcherTarget(hit: string): CodexBinary | undefined {
+    if (this.platform === 'win32' && /\.exe$/i.test(hit)) {
+      const shimFile = hit.replace(/\.exe$/i, '.shim')
+      if (this.fs.stat(shimFile)?.isFile) {
+        const head = this.fs.readHead(shimFile, 4096)
+        const text = head ? new TextDecoder('utf-8', { fatal: false }).decode(head) : ''
+        const target = /^\s*path\s*=\s*"?([^"\r\n]+?)"?\s*$/m.exec(text)?.[1]
+        if (target && target !== hit && this.p.isAbsolute(target) && this.fs.stat(target)?.isFile) {
+          const c = this.classify(target, 'path', false)
+          if (c.binary) return { ...c.binary, via: hit }
+        }
+      }
+    }
+    const dir = this.p.dirname(hit)
+    if (this.p.basename(dir) === 'bin') {
+      const image = this.p.join(this.p.dirname(dir), 'tools', 'image', 'packages', '@openai', 'codex')
+      if (this.isDir(image)) {
+        for (const pkgDir of [this.p.join(image, 'lib', 'node_modules', '@openai', 'codex'), this.p.join(image, 'node_modules', '@openai', 'codex')]) {
+          const b = this.fromCodexPackage(pkgDir, 'path', hit)
+          if (b) return b
+        }
+      }
+    }
+    return undefined
+  }
+
+  /** Classify one candidate (ORGAI_CODEX_PATH or a PATH hit) by content. PATH hits follow known launchers once. */
+  classify(hit: string, source: CodexBinarySource, followLaunchers = source === 'path'): { binary?: CodexBinary; problem?: string } {
     const real = this.fs.realpath(hit) ?? hit
     const kind = fileKindOf(this.fs.readHead(real, 8))
     if (kind === 'native') {
+      const launched = followLaunchers ? this.launcherTarget(hit) : undefined
+      if (launched) return { binary: launched }
       const dir = this.p.dirname(real)
       const dirs = [this.p.join(dir, 'codex-path'), ...(this.p.basename(dir) === 'bin' ? [this.p.join(this.p.dirname(dir), 'codex-path')] : [])]
       const pathDir = dirs.find((d) => this.isDir(d))

@@ -87,9 +87,8 @@ export async function claudeAuthStatus(deps: AuthStatusDeps = {}): Promise<Claud
   else {
     const resolved = deps.executable ? deps.executable() : claudeExecutable(deps.env ?? process.env)
     if (!resolved.ok) return { loggedIn: false, unavailable: true, detail: claudeResolutionMessage(resolved) }
-    const launch = candidateLaunch(resolved.path)
-    if (!launch) return { loggedIn: false, unavailable: true, detail: `The Claude runtime at ${resolved.path} cannot be run safely (its path holds shell characters).` }
-    candidates = [launch]
+    // Run exactly as the SDK runs it: execFile, never a shell (a shim that needs one would fail every run).
+    candidates = [{ bin: resolved.path, shell: false }]
   }
   for (const c of candidates) {
     const result = await runAuthStatus(c.bin, { ...deps, shell: c.shell })

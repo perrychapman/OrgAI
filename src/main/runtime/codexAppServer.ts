@@ -39,6 +39,9 @@ export function resolveCodexBinary(
   return lookupCodexBinary({ ...opts, platform, arch }).binary
 }
 
+/** start() after (or during) close(): nothing was spawned. */
+export const CODEX_CLOSED_BEFORE_START = 'codex app-server was closed before it started'
+
 /** How many non-empty stderr lines CodexAppServer keeps for exit errors, and their total length cap. */
 export const STDERR_TAIL_LINES = 10
 export const STDERR_TAIL_MAX_CHARS = 2_000
@@ -140,6 +143,7 @@ export class CodexAppServer {
 
   /** Spawn the process and run the initialize handshake. Rejects when codex is missing or does not answer. */
   async start(clientVersion = '0.0.0'): Promise<unknown> {
+    if (this.closed) throw new Error(CODEX_CLOSED_BEFORE_START)
     let binary = this.options.binary
     if (!binary) {
       const found = lookupCodexBinary()
@@ -149,6 +153,8 @@ export class CodexAppServer {
     // The version check covers every start: login, logout, discovery and runs (cli-standalone 6.2). Cached per binary.
     const check = await checkCodexBinary(binary, { run: this.options.versionRunner })
     if (!check.ok) throw new Error(check.reason)
+    // close() may land while the version check runs (End session, a cancelled completion): never spawn after it.
+    if (this.closed) throw new Error(CODEX_CLOSED_BEFORE_START)
     if (check.warning) this.options.onWarning?.(check.warning)
     // codex app-server exits 1 at once when CODEX_HOME names a folder that does not exist.
     // Owner-only: it holds the ChatGPT login (auth.json). The path is used exactly as the child will see it.
@@ -250,9 +256,17 @@ export class CodexAppServer {
     this.markExited()
   }
 
-  /** Kill the process. Pending requests reject. */
+  /**
+   * Kill the process. Pending requests reject. Before the process exists (start() still checking the version) it marks
+   * the server closed so start() spawns nothing and rejects; `exited` resolves and no exit handler fires.
+   */
   close(): void {
-    if (!this.child || this.closed) return
+    if (this.closed) return
+    if (!this.child) {
+      this.closed = true
+      this.markExited()
+      return
+    }
     try {
       this.child.stdin.end()
       this.child.kill()

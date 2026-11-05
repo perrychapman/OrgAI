@@ -176,6 +176,31 @@ describe('CodexAdapter session', () => {
     expect(warned).toHaveLength(1)
   })
 
+  it('End session while the app-server starts: no thread, no prompt to the model, no running status (review round 1)', async () => {
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    class SlowStart extends FakeServer {
+      // Resolves even after close(), so the session's own check is what stops the thread.
+      override async start(): Promise<unknown> {
+        await gate
+        return super.start()
+      }
+    }
+    const servers: FakeServer[] = []
+    const adapter = new CodexAdapter({ createServer: (o) => { const s = new SlowStart(o); servers.push(s); return s } })
+    const ctx = ctxFor()
+    const s0 = await adapter.start(ctx)
+    await vi.waitFor(() => expect(servers).toHaveLength(1))
+    await s0.stop()
+    release()
+    await new Promise((r) => setTimeout(r, 30))
+    expect(servers[0].of('thread/start')).toHaveLength(0)
+    expect(servers[0].of('turn/start')).toHaveLength(0)
+    expect(ctx.events.some((e) => e.type === 'run.status' && e.status === 'running')).toBe(false)
+    expect(ctx.events.some((e) => e.type === 'run.status' && e.status === 'error')).toBe(false)
+    expect(servers[0].closed).toBe(true)
+  })
+
   it('runs a spawn, delivers the child report to the parent, then nudges on plan steps left', async () => {
     const { adapter, servers } = setup()
     const ctx = ctxFor()

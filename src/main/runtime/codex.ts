@@ -713,6 +713,8 @@ class CodexSession implements RuntimeSession {
       this.server = this.createServer(this.launch)
       this.wire(this.server)
       await this.server.start(this.options.clientVersion)
+      // End session during the start (the version check, the handshake): no thread, no prompt to the model.
+      if (this.ending) return
 
       const policy = this.policyFor(this.root)
       const params = this.threadParams(this.root, true, ctx.project.path)
@@ -1443,6 +1445,10 @@ class CodexSession implements RuntimeSession {
       this.server = this.createServer(launch)
       this.wire(this.server)
       await this.server.start(this.options.clientVersion)
+      if (this.ending) {
+        this.restarting = false
+        return
+      }
       for (const [threadId, info] of this.threads) {
         const role = this.net.roleOf(info.agentId) ?? this.root
         const wt = this.integrator.worktreeOf(info.agentId)
@@ -1470,6 +1476,8 @@ class CodexSession implements RuntimeSession {
       )
     } catch (e) {
       this.restarting = false
+      // stop() closed the new server while it started: the run is ending, not failing.
+      if (this.ending) return
       this.fail(`Could not restart Codex to attach the MCP server: ${(e as Error).message}`)
       return
     }
