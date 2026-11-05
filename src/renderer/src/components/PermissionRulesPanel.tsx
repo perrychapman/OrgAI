@@ -1,7 +1,9 @@
 import type { ReactElement } from 'react'
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { RefreshCw } from 'lucide-react'
-import type { Project } from '@shared/types'
+import type { IgnoredPermissionRule, Project } from '@shared/types'
+import { IGNORED_NOTE, IGNORED_REMOVED, IGNORED_TITLE, IGNORED_CUT_TEXT, cleanIgnored, ignoredDisplay, ignoredRemovable, ignoredRemoveLabel } from '../lib/ignoredRules'
+import { hasHidden } from '../lib/hiddenChars'
 import { Button } from './ui/Button'
 import { IconButton } from './ui/IconButton'
 import { Input } from './ui/Input'
@@ -29,6 +31,10 @@ export default function PermissionRulesPanel({ project, onRulesChange }: { proje
   const errorId = `${inputId}-error`
   const kindId = `${inputId}-kind`
   const listRef = useRef<HTMLUListElement>(null)
+  const ignoredRef = useRef<HTMLUListElement>(null)
+  const pendingIgnoredFocus = useRef<number | undefined>(undefined)
+  const [ignored, setIgnored] = useState<IgnoredPermissionRule[]>([])
+  const [removedNote, setRemovedNote] = useState('')
 
   /**
    * Focus to restore once the save settles and controls are enabled again: a remove button index (clamped to the last
@@ -51,8 +57,24 @@ export default function PermissionRulesPanel({ project, onRulesChange }: { proje
   /** Latest request wins: refresh, add and remove each take a number, and a response with an older one is dropped. */
   const seq = useRef(0)
 
+  const ignoredSeq = useRef(0)
+  /** Rules OrgAI ignores. A missing API or a failure leaves the group out (the saved list shows its own errors). */
+  const refreshIgnored = useCallback(async (): Promise<void> => {
+    const mine = ++ignoredSeq.current
+    try {
+      const fn = window.orgai.permissions?.ignored
+      const list = typeof fn === 'function' ? cleanIgnored(await fn(project.id)) : []
+      if (mine !== ignoredSeq.current) return
+      setIgnored(list)
+    } catch {
+      if (mine !== ignoredSeq.current) return
+      setIgnored([])
+    }
+  }, [project.id])
+
   const refresh = useCallback(async () => {
     const mine = ++seq.current
+    void refreshIgnored()
     try {
       const list = await window.orgai.permissions.list(project.id)
       if (mine !== seq.current) return
@@ -63,15 +85,45 @@ export default function PermissionRulesPanel({ project, onRulesChange }: { proje
       setListError(cleanError(e))
       setRules([])
     }
-  }, [project.id])
+  }, [project.id, refreshIgnored])
 
   useEffect(() => {
     void refresh()
     // A project switch (or unmount) invalidates every response still in flight.
     return () => {
       seq.current++
+      ignoredSeq.current++
     }
   }, [refresh])
+
+  const removeIgnored = async (item: IgnoredPermissionRule, index: number): Promise<void> => {
+    setBusy(item.rule)
+    setListError(null)
+    setRemovedNote('')
+    const mine = ++seq.current
+    try {
+      const list = await window.orgai.permissions.remove({ projectId: project.id, rule: item.rule })
+      if (mine === seq.current) setRules(list)
+      await refreshIgnored()
+      setRemovedNote(IGNORED_REMOVED)
+    } catch (e) {
+      setListError(cleanError(e))
+    } finally {
+      pendingIgnoredFocus.current = index
+      setBusy(null)
+    }
+  }
+
+  // After a Remove in the "Not used" group: the next row's Remove (the previous for the last), else the rule input.
+  useEffect(() => {
+    if (busy !== null || pendingIgnoredFocus.current === undefined) return
+    const index = pendingIgnoredFocus.current
+    pendingIgnoredFocus.current = undefined
+    const buttons = ignoredRef.current?.querySelectorAll<HTMLElement>('[data-testid=rule-ignored-remove]')
+    const target = !buttons?.length ? null : buttons[Math.min(index, buttons.length - 1)]
+    if (target) target.focus()
+    else document.getElementById(inputId)?.focus()
+  }, [busy, ignored, inputId])
 
   // Rules granted or saved from a run: refresh when the store's counter moves after mount (never a second fetch on mount or on a project switch).
   const changeCount = useAppStore((s) => s.rulesChangedByProject[project.id] ?? 0)
@@ -261,6 +313,56 @@ export default function PermissionRulesPanel({ project, onRulesChange }: { proje
           </details>
         </div>
       </SettingsCard>
+      <span className="sr-only" role="status" data-testid="rules-ignored-status">
+        {removedNote}
+      </span>
+      {ignored.length > 0 && (
+        <SettingsCard>
+          <div className="rules-ignored" data-testid="rules-ignored">
+            <h4 className="rules-ignored-title">{IGNORED_TITLE}</h4>
+            <p className="settings-card-note" data-testid="rules-ignored-note">
+              {IGNORED_NOTE}
+            </p>
+            <ul className="settings-card-list" aria-label="Rules OrgAI does not use" ref={ignoredRef}>
+              {ignored.map((item, index) => (
+                <li key={`${index}:${item.rule}`} className="settings-card-item" data-testid="rule-ignored-row" data-rule={item.rule}>
+                  <div className="rule-main">
+                    <div className="rule-main-line">
+                      <code className="rule-code">{ignoredDisplay(item)}</code>
+                      {(item.hiddenChar || hasHidden(item.rule)) && (
+                        <span className="chip" data-testid="rule-ignored-hidden">
+                          Hidden characters shown
+                        </span>
+                      )}
+                    </div>
+                    <span className="rule-explain" data-testid="rule-ignored-reason">
+                      {item.reason}
+                    </span>
+                    {!ignoredRemovable(item) && (
+                      <span className="rule-explain" data-testid="rule-ignored-cut">
+                        {IGNORED_CUT_TEXT}
+                      </span>
+                    )}
+                  </div>
+                  {ignoredRemovable(item) && (
+                    <Button
+                      size="sm"
+                      variant="danger"
+                      testId="rule-ignored-remove"
+                      ariaLabel={ignoredRemoveLabel(item, busy === item.rule)}
+                      loading={busy === item.rule}
+                      disabled={busy !== null}
+                      onClick={() => void removeIgnored(item, index)}
+                    >
+                      {busy === item.rule ? 'Removing…' : 'Remove'}
+                    </Button>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+        </SettingsCard>
+      )}
     </SettingsSection>
   )
 }
