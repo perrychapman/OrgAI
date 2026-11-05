@@ -1392,6 +1392,37 @@ export class McpService {
     return this.connectorEntry(connectorId)
   }
 
+  /**
+   * Team files: the entry `connectorEntryForTeam` would hand back, with nothing added or changed. An existing entry (when
+   * it is on the asked variant), else the entry the catalog would build. Used to show the user where a connector server of
+   * a repository would really connect, and to compare the file's address with it, before anything is linked.
+   */
+  connectorPreviewForTeam(connectorId: string, variant?: string): McpLibraryEntry | undefined {
+    const def = connectorById(connectorId)
+    if (!def) return undefined
+    const existing = this.connectorEntry(connectorId)
+    if (existing) return variant === undefined || existing.connectorVariant === variant ? existing : undefined
+    try {
+      const v = connectorVariant(def, variant)
+      return buildConnectorEntry(def, v, 'preview', [], new Date(this.now()))
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
+   * Team files: takes back a connector entry `connectorEntryForTeam` added for an apply that then failed. Only an entry that
+   * is still unused and unsigned: no project server links it, no secret or sign-in is stored for it, never connected.
+   */
+  discardConnectorEntryForTeam(entryId: string): void {
+    const entry = this.lib().get(entryId)
+    if (!entry?.connectorId || entry.connectedAt !== undefined || entry.oauth) return
+    if (this.projects.list().some((p) => (p.mcpServers ?? []).some((s) => s.libraryId === entryId))) return
+    if (this.secrets.keys(mcpLibraryPrefix(entryId)).length) return
+    this.removeEntry(entryId)
+    this.notifyLibrary()
+  }
+
   /** connectors:setToken: store (or clear with null) a 'token' connector's secret header, prefix added. */
   connectorsSetToken(input: ConnectorTokenInput): McpLibraryInfo {
     const curated = connectorById(input?.connectorId)

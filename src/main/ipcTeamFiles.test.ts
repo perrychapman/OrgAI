@@ -28,6 +28,7 @@ const inert = (): never => new Proxy({}, { get: () => () => undefined }) as neve
 
 let root: string
 let repo: string
+let lastSources: unknown
 
 beforeEach(() => {
   handlers.clear()
@@ -91,7 +92,10 @@ describe('the registered handlers', () => {
     const c = makeComputer(root, 'a', repo)
     const importer = {
       pathCheckExtras: () => ({ agentSources: [{ source: 'orgai', label: 'OrgAI export', agentCount: 2 }] }),
-      rolesForNewProject: (p: Project) => p
+      rolesForNewProject: (p: Project, sources?: unknown) => {
+        lastSources = sources
+        return p
+      }
     }
     registerIpc({
       projects: c.projects,
@@ -149,6 +153,21 @@ describe('the registered handlers', () => {
     expect(created.roles.find((r) => r.slug === 'reviewer')!.prompt).toBe('The folder\'s reviewer.')
     expect(created.roles.length).toBe(found.roleCount)
     expect(listOrgai(repo).length).toBeGreaterThan(0)
+  })
+
+  it('projects:create drops source orgai from importAgents while the folder has team files, and keeps the others', () => {
+    const { c, call } = setup()
+    const first = createProject(c)
+    c.svc.status(first.id)
+    lastSources = undefined
+    call(IPC.projectsCreate, { name: 'Imp', path: repo, brief: '', importAgents: ['orgai', 'claude'] })
+    expect(lastSources).toEqual(['claude'])
+    // A folder without team files is not touched by this.
+    const plainDir = join(root, 'plain')
+    mkdirSync(plainDir)
+    lastSources = undefined
+    call(IPC.projectsCreate, { name: 'Imp2', path: plainDir, brief: '', importAgents: ['orgai', 'claude'] })
+    expect(lastSources).toEqual(['orgai', 'claude'])
   })
 
   it('projects:create refuses team files for an engagement and ignores a junk teamFiles value', () => {

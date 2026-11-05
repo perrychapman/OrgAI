@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { TeamFileChange } from '@shared/types'
 import type { TeamDoc } from './doc'
 import { normalizeDoc } from './digest'
-import { CHART_REASON, FIRST_SEEN_REASON, describeChanges, gateTeam, permissionRank } from './gate'
+import { CHART_REASON, FIRST_SEEN_REASON, describeChanges, gateTeam, isElevatedTool, permissionRank, type LinkResolver } from './gate'
 import { role, sampleDoc } from './doc.fixture'
 
 const clone = <T>(v: T): T => structuredClone(v)
@@ -135,7 +135,8 @@ describe('skills and grants', () => {
       d.skills.push({ name: 'fresh', description: 'New one.', body: 'Do it.', files: [{ path: 'run.sh', text: 'echo hi\n' }], enabled: true })
       reviewer(d).skills = ['fresh']
     })
-    expect(r.ids.pending).toEqual(['role:reviewer:skills', 'skill:fresh'])
+    // Most powerful first: skills before the rest, then by id.
+    expect(r.ids.pending).toEqual(['skill:fresh', 'role:reviewer:skills'])
     expect(r.effective.skills.map((s) => s.name)).not.toContain('fresh')
     expect(reviewer(r.effective).skills).toEqual([])
     const c = r.pending.find((x) => x.id === 'skill:fresh')!
@@ -338,7 +339,15 @@ describe('settings', () => {
       ['budget raised', (d) => (d.settings.maxBudgetUsd = 50), true],
       ['budget removed', (d) => delete d.settings.maxBudgetUsd, true],
       ['budget lowered', (d) => (d.settings.maxBudgetUsd = 1), false],
-      ['depth set', (d) => (d.settings.maxSubagentDepth = 9), false],
+      // Effective values: unset depth is automatic (here 2 from the chart), an explicit one clamps to the limit (5).
+      ['depth set above the automatic value', (d) => (d.settings.maxSubagentDepth = 5), true],
+      ['depth set to the automatic value', (d) => (d.settings.maxSubagentDepth = 2), false],
+      ['depth 0 reads as automatic', (d) => (d.settings.maxSubagentDepth = 0), false],
+      ['concurrency set high over unset', (d) => (d.settings.maxConcurrentSubagents = 20), true],
+      ['concurrency set low over unset', (d) => (d.settings.maxConcurrentSubagents = 4), false],
+      ['budget 0 means no cap', (d) => (d.settings.maxBudgetUsd = 0), true],
+      ['auto-continue limit raised over unset', (d) => (d.settings.maxAutoContinues = 1000), true],
+      ['auto-continue limit lowered under unset', (d) => (d.settings.maxAutoContinues = 10), false],
       ['window share set', (d) => (d.settings.maxWindowShare = 50), false],
       ['plan guard off', (d) => (d.settings.preferEverydayNearLimit = false), true],
       ['team review spends more', (d) => (d.settings.teamReview = { auto: 'ai', tokenBudget: 90000, everyRuns: 3 }), true],
@@ -436,5 +445,113 @@ describe('first seen and previews', () => {
     expect(ids).toContain('mcp:docs')
     expect(changes.filter((c) => c.kind === 'role').every((c) => c.action === 'added')).toBe(true)
     expect(changes.find((c) => c.id === 'mcp:docs')!.target).toBe('MODE=read npx -y docs-server@1.2.3')
+  })
+})
+
+describe('security review fixes', () => {
+  const plain = (slug = 'tester', over = {}) => role(slug, { reportsTo: 'lead', ...over })
+
+  it('a new role is trivial only with allowlisted tools: shell, MultiEdit and unknown tools pend', () => {
+    for (const tools of [['PowerShell'], ['MultiEdit'], ['SomeNewTool'], ['Read', 'WebFetch'], ['Bash']]) {
+      const r = gate((d) => d.roles.push(plain('tester', { tools })))
+      expect(r.ids.pending, tools.join()).toEqual(['role:tester'])
+      expect(r.effective.roles.map((x) => x.slug)).not.toContain('tester')
+    }
+    const ok = gate((d) => d.roles.push(plain('tester', { tools: ['Glob', 'Grep', 'Read', 'TodoWrite'] })))
+    expect(ok.pending).toEqual([])
+    expect(isElevatedTool('PowerShell')).toBe(true)
+    expect(isElevatedTool('MultiEdit')).toBe(true)
+    expect(isElevatedTool('Mystery')).toBe(true)
+    expect(isElevatedTool('WebFetch')).toBe(false)
+    expect(isElevatedTool('Read')).toBe(false)
+  })
+
+  it('added PowerShell and MultiEdit count as elevated on an existing role', () => {
+    const r = gate((d) => (reviewer(d).tools = ['Glob', 'Grep', 'MultiEdit', 'PowerShell', 'Read']))
+    expect(r.pending[0].elevatedAdded).toEqual(['MultiEdit', 'PowerShell'])
+  })
+
+  it('a new root always pends, and a root swap stays at the approved root', () => {
+    const newRoot = gate((d) => d.roles.push(role('x', { reportsTo: null })))
+    expect(newRoot.ids.pending).toEqual(['role:x'])
+    expect(newRoot.pending[0].reason).toBe('New top of the chart')
+    // new x.md root plus the old root reporting to x
+    const swap = gate((d) => {
+      d.roles.push(role('x', { reportsTo: null }))
+      lead(d).reportsTo = 'x'
+    })
+    expect(swap.ids.pending).toEqual(['role:lead:root', 'role:x'])
+    expect(lead(swap.effective).reportsTo).toBeNull()
+    expect(swap.effective.roles.map((r) => r.slug)).toEqual(['dev', 'lead', 'reviewer'])
+    // an existing role becoming the root pends; moving under a different parent applies
+    const promote = gate((d) => (dev(d).reportsTo = null))
+    expect(promote.ids.pending).toEqual(['role:dev:root'])
+    expect(dev(promote.effective).reportsTo).toBe('lead')
+    const move = gate((d) => (dev(d).reportsTo = 'reviewer'))
+    expect(move.pending).toEqual([])
+    expect(dev(move.effective).reportsTo).toBe('reviewer')
+  })
+
+  it('a model that may spend more or a raised effort pends; a lower tier applies', () => {
+    const cases: [string, (d: TeamDoc) => void, boolean][] = [
+      ['tier raised', (d) => (dev(d).tier = 'top'), true],
+      ['tier lowered', (d) => (dev(d).tier = 'fast'), false],
+      ['pinned model', (d) => ((dev(d).tier = undefined), (dev(d).model = 'some-model-1')), true],
+      ['inherit', (d) => ((dev(d).tier = undefined), (dev(d).model = 'inherit')), true],
+      ['effort raised', (d) => (lead(d).effort = 'max'), true],
+      ['effort lowered', (d) => (lead(d).effort = 'low'), false],
+      ['effort set over unset', (d) => (dev(d).effort = 'low'), true]
+    ]
+    for (const [label, mutate, pends] of cases) {
+      const r = gate(mutate)
+      expect(r.pending.length > 0, label).toBe(pends)
+      if (pends) expect(r.pending[0].reason).toBe('May spend more')
+    }
+    const pinned = sampleDoc()
+    dev(pinned).tier = undefined
+    dev(pinned).model = 'one-model'
+    const between = gate((d) => (dev(d).model = 'other-model'), { approved: pinned })
+    expect(between.ids.pending).toEqual(['role:dev:model'])
+    expect(dev(between.effective).model).toBe('one-model')
+  })
+
+  it('turning fromLibrary on or off is a launch change and waits', () => {
+    const on = gate((d) => (d.mcp[0].fromLibrary = true))
+    expect(on.ids.pending).toEqual(['mcp:docs:launch'])
+    expect(on.effective.mcp[0].fromLibrary).toBeUndefined()
+    const base = sampleDoc()
+    base.mcp[0].fromLibrary = true
+    const off = gate((d) => delete d.mcp[0].fromLibrary, { approved: base })
+    expect(off.ids.pending).toEqual(['mcp:docs:launch'])
+  })
+
+  it('a linked server shows the ENTRY target, says it uses the stored sign-in and names the roles that reach it', () => {
+    const link: LinkResolver = (m) => (m.name === 'gh' || m.name === 'any' ? { target: 'https://entry.example/mcp' } : null)
+    const approved = sampleDoc()
+    const disk = clone(approved)
+    disk.mcp.push({ name: 'gh', transport: 'http', url: 'https://entry.example/mcp', enabled: true, connectorId: 'github', roles: ['dev'] })
+    disk.mcp.push({ name: 'any', transport: 'http', url: 'https://entry.example/mcp', enabled: true, connectorId: 'github' })
+    const r = gateTeam(approved, disk, { link })
+    const gh = r.pending.find((c) => c.id === 'mcp:gh')!
+    expect(gh).toMatchObject({ target: 'https://entry.example/mcp', usesStoredSignIn: true, reachesRoles: ['dev'] })
+    expect(gh.summary).toContain('sign-in stored on this computer')
+    expect(gh.summary).toContain('Available to dev')
+    const any = r.pending.find((c) => c.id === 'mcp:any')!
+    expect(any.summary).toContain('Available to every role')
+    expect(any.reachesRoles).toBeUndefined()
+    // Without a resolved link the file's own target is shown and nothing claims a stored sign-in.
+    const plainLink = gateTeam(approved, disk).pending.find((c) => c.id === 'mcp:gh')!
+    expect(plainLink.usesStoredSignIn).toBeUndefined()
+  })
+
+  it('lists the most powerful changes first: loosening settings, elevated roles, services, skills, the rest', () => {
+    const r = gate((d) => {
+      d.settings.permissionMode = 'bypassPermissions'
+      d.skills.push({ name: 'aaa', description: 'x', body: 'y', files: [], enabled: true })
+      d.mcp.push({ name: 'zzz', transport: 'stdio', command: 'npx', args: ['-y', 'zzz@1.0.0'], enabled: true })
+      d.roles.push(plain('boss', { tools: ['Bash'] }))
+      d.roles.push(plain('mere', { tools: ['Read', 'WebFetch'] }))
+    })
+    expect(r.ids.pending).toEqual(['settings:permissionMode', 'role:boss', 'mcp:zzz', 'skill:aaa', 'role:mere'])
   })
 })

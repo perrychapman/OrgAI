@@ -696,6 +696,13 @@ export interface StartInput {
  * changes mid-run: a role an org change added joins on the next run, and a role it removed keeps its start-time
  * definition (and grants) until this run ends. Every other field stays as the run started.
  */
+/**
+ * What an approved change touched, for the live run's project view (setLive): servers and their role grants, skills and
+ * their role grants, the org chart, the allowed folders or the permission mode. Nothing else moves, so team-file changes
+ * the same save ingested stay out of a live run.
+ */
+type LiveSettle = 'mcpServers' | 'skills' | 'orgChart' | 'folders' | 'permissionMode'
+
 export function refreshRoleGrants(running: Role[], saved: readonly Role[]): void {
   const byId = new Map(saved.map((r) => [r.id, r]))
   for (const role of running) {
@@ -1260,10 +1267,39 @@ export class RunManager {
        * The project as saved after an install or an approved proposal on this run's own project: the canonical path is
        * kept, the harness tools' view (ctx.project) follows, and a work run's skills are recomputed from the new grants.
        */
-      // skills false (an approved org chart, review M1): the card says it applies from the next run, so this run's grants stay.
-      const setLive = (saved: Project, skills = true): void => {
-        live = noFolderWrites({ ...saved, path: live.path })
+      // `settle` says what the approved change itself touched; only that moves onto the live project. The saved project
+      // also carries whatever the same save ingested from the team files (a pull), and a file change never reaches a
+      // live run. An approved org chart (review M1) says it applies from the next run, so this run's grants stay.
+      const setLive = (saved: Project, settle: LiveSettle = 'mcpServers'): void => {
+        const next: Project = { ...live }
+        const overlay = <K extends keyof Project>(key: K): void => {
+          if (saved[key] === undefined) delete next[key]
+          else next[key] = saved[key]
+        }
+        const savedRoles = new Map(saved.roles.map((r) => [r.id, r]))
+        /** The grant field of live roles taken from the saved roles (by id); every other role field stays. */
+        const grants = (field: 'mcpServers' | 'skills'): void => {
+          next.roles = next.roles.map((r) => {
+            const s = savedRoles.get(r.id)
+            if (!s) return r
+            const out: Role = { ...r }
+            if (s[field]) out[field] = [...(s[field] as string[])]
+            else delete out[field]
+            return out
+          })
+        }
+        if (settle === 'mcpServers') {
+          overlay('mcpServers')
+          grants('mcpServers')
+        } else if (settle === 'skills') {
+          overlay('skills')
+          grants('skills')
+        } else if (settle === 'orgChart') overlay('roles')
+        else if (settle === 'folders') overlay('allowedDirectories')
+        else overlay('permissionMode')
+        live = noFolderWrites({ ...next, path: live.path })
         ctx.project = live
+        const skills = settle === 'mcpServers' || settle === 'skills'
         // Grant changes reach the live run's roles (review M1): the adapters' gates, restarts and role lookups read these
         // objects. An org chart approval (skills false) leaves them as they started.
         if (skills && !bare) refreshRoleGrants(ctx.roles, live.roles)
@@ -1344,7 +1380,7 @@ export class RunManager {
         requestProposal: (req) =>
           this.requestProposal(active, req, (saved) => {
             // Keep the harness tools' view of the project (and the run's skills) current after an approved change.
-            if (req.kind === 'mcpServers' || req.kind === 'skills' || req.kind === 'orgChart') setLive(saved, req.kind !== 'orgChart')
+            if (req.kind === 'mcpServers' || req.kind === 'skills' || req.kind === 'orgChart') setLive(saved, req.kind)
           }),
         // Setup-like runs (setup, mcp-assist, the harness project) change servers through proposals only.
         ...(bare
@@ -1432,7 +1468,7 @@ export class RunManager {
                       })
                       if (!dirs.length) return []
                       const saved = folderSave(live.id, { addDirectories: dirs })
-                      setLive(saved, false)
+                      setLive(saved, 'folders')
                       this.broadcast({ type: 'project.updated', runId: summary.id, project: saved })
                       resolveFolders()
                       resolveReferences()
@@ -1444,7 +1480,7 @@ export class RunManager {
                     acceptEditsForProject: () => {
                       if (live.permissionMode !== 'default') return false
                       const saved = folderSave(live.id, { acceptEdits: true })
-                      setLive(saved, false)
+                      setLive(saved, 'permissionMode')
                       if (saved.permissionMode !== 'acceptEdits') return false
                       this.broadcast({ type: 'project.updated', runId: summary.id, project: saved })
                       emit({ type: 'log', runId: summary.id, level: 'info', message: 'Permission mode set to Accept edits for this project.' })

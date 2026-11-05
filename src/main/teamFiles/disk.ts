@@ -12,7 +12,8 @@ import {
   TEAM_FILES_SKILLS_DIR,
   type TeamFileProblem
 } from '@shared/types'
-import { FolderReader, safeRelPath } from '../skills/files'
+import { isPrivateLooking } from '../capabilities/localSkills'
+import { FolderReader, safeKitRelPath, safeRelPath } from '../skills/files'
 import { isNetworkOrDevicePath } from '../skills/scan'
 import type { TeamFile, TeamFilesStamp } from './doc'
 
@@ -36,6 +37,8 @@ export interface TeamFolderRead {
   orgaiOk: boolean
   /** The stamp taken before reading. */
   stamp: TeamFilesStamp
+  /** Plain-language notes from reading (private-looking skill files left out). */
+  notes: string[]
 }
 
 const lower = (p: string): string => (CASE_INSENSITIVE ? p.toLowerCase() : p)
@@ -81,6 +84,14 @@ function boundedRead(abs: string, max: number): Buffer | null {
       }
     }
   }
+}
+
+/**
+ * Whether the folder holds anything that is, or was meant to be, a team: a team file, an agents folder or a read problem
+ * (a team that is too large or unreadable counts). A write that cannot tell what it would overwrite must not run then.
+ */
+export function hasTeamContent(read: Pick<TeamFolderRead, 'files' | 'agentsDirExists' | 'readProblems'>): boolean {
+  return read.files.length > 0 || read.agentsDirExists || read.readProblems.length > 0
 }
 
 /** Real path of the project folder, or null (missing, unreadable, network or device path). */
@@ -180,7 +191,7 @@ function folderMessage(reason: string): string {
  */
 export function readTeamFolder(projectPath: string): TeamFolderRead {
   const stamp = teamFilesStampOf(projectPath)
-  const out: TeamFolderRead = { files: [], readProblems: [], agentsDirExists: false, orgaiOk: true, stamp }
+  const out: TeamFolderRead = { files: [], readProblems: [], agentsDirExists: false, orgaiOk: true, stamp, notes: [] }
   const problem = (file: string, message: string): void => {
     out.readProblems.push({ file, message })
   }
@@ -303,7 +314,13 @@ export function readTeamFolder(projectPath: string): TeamFolderRead {
           problem(rel, folderMessage(r.reason))
           continue
         }
+        let privateFiles = 0
         for (const f of r.files) {
+          // A .env, key or dot-file in a skill folder is not part of the team: dropped on read, never ingested or digested.
+          if (isPrivateLooking(f.path)) {
+            privateFiles++
+            continue
+          }
           total += f.data.length
           if (total > TEAM_FILES_MAX_TOTAL_BYTES) {
             tooBig = true
@@ -313,6 +330,7 @@ export function readTeamFolder(projectPath: string): TeamFolderRead {
           if (!safeRelPath(f.path)) continue
           out.files.push({ path: `${TEAM_FILES_SKILLS_DIR}/${name}/${f.path}`, data: f.data })
         }
+        if (privateFiles) out.notes.push(`${rel}: ${privateFiles} private-looking file${privateFiles === 1 ? ' was' : 's were'} left out (.env files, keys and dot-files are not part of a team).`)
       }
     }
   }
@@ -335,11 +353,19 @@ export interface WriteTeamResult {
   skipped: string[]
 }
 
-const isHeld = (path: string, held: readonly string[]): boolean => held.some((h) => path === h || path.startsWith(`${h}/`) || h.startsWith(`${path}/`))
+/** Held paths compare case-folded where the file system does (Windows, macOS): `Dev.md` is the held `dev.md`. */
+export const isHeldPath = (path: string, held: readonly string[]): boolean => {
+  const p = lower(path)
+  return held.some((raw) => {
+    const h = lower(raw)
+    return p === h || p.startsWith(`${h}/`) || h.startsWith(`${p}/`)
+  })
+}
+const isHeld = isHeldPath
 
-/** `.orgai/...` paths only, safe segments. */
+/** `.orgai/...` paths only, safe segments (no Windows device names, trailing dots, colons...). */
 function safeTeamPath(p: string): boolean {
-  return typeof p === 'string' && p.startsWith(`${ORGAI}/`) && safeRelPath(p) && !p.split('/').some((seg) => seg.length > 200)
+  return typeof p === 'string' && p.startsWith(`${ORGAI}/`) && safeKitRelPath(p) && !p.split('/').some((seg) => seg.length > 200)
 }
 
 /** Makes sure every folder on the way to `rel`'s parent exists as a plain folder (never through a link). False when one is not. */
@@ -454,7 +480,8 @@ export function writeTeamFiles(projectPath: string, write: TeamFile[], remove: s
         const st = lstatOrNull(a)
         if (!st) continue
         if (st.isDirectory()) collect(a, r)
-        else if (st.isFile() && !keep.has(r) && !r.endsWith('.tmp')) strays.push(r)
+        // A private-looking file (.env, key.pem) is the user's own and never ours to delete.
+        else if (st.isFile() && !keep.has(r) && !r.endsWith('.tmp') && !isPrivateLooking(r.slice(folder.length + 1))) strays.push(r)
       }
     }
     try {

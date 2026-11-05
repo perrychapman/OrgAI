@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { TEAM_FILES_MAX_ROLE_BYTES } from '@shared/types'
-import { readTeamFolder, removeOrgaiIfEmpty, removeTeamFolderFiles, teamFilesStampOf, writeTeamFiles } from './disk'
+import { isHeldPath, readTeamFolder, removeOrgaiIfEmpty, removeTeamFolderFiles, teamFilesStampOf, writeTeamFiles } from './disk'
 import { parseTeamFiles } from './parse'
 import { serializeTeam } from './serialize'
 import { sampleDoc } from './doc.fixture'
@@ -260,5 +260,38 @@ describe('removal for maintenance', () => {
     removeTeamFolderFiles(proj)
     expect(readFileSync(join(outside, 'keep.md'), 'utf8')).toBe('keep')
     expect(existsSync(join(proj, '.orgai', 'agents'))).toBe(false)
+  })
+})
+
+describe('security review fixes', () => {
+  it('held paths compare case-folded where the file system does', () => {
+    const folds = process.platform === 'win32' || process.platform === 'darwin'
+    expect(isHeldPath('.orgai/agents/Dev.md', ['.orgai/agents/dev.md'])).toBe(folds)
+    expect(isHeldPath('.orgai/agents/dev.md', ['.orgai/agents/dev.md'])).toBe(true)
+    expect(isHeldPath('.orgai/agents/other.md', ['.orgai/agents/dev.md'])).toBe(false)
+    expect(isHeldPath('.orgai/skills/x/SKILL.md', ['.orgai/skills/x'])).toBe(true)
+  })
+
+  it('a team file path with a Windows device name is never written', () => {
+    const r = writeTeamFiles(proj, [{ path: '.orgai/agents/con.md', data: Buffer.from('x') }, { path: '.orgai/agents/nul.md', data: Buffer.from('x') }, { path: '.orgai/agents/dev.md', data: Buffer.from('x') }], [], [])
+    expect(r.written).toEqual(['.orgai/agents/dev.md'])
+    expect(r.skipped.sort()).toEqual(['.orgai/agents/con.md', '.orgai/agents/nul.md'])
+  })
+
+  it('private-looking files in a skill folder are dropped on read with a note and survive a rewrite of the skill', () => {
+    const skill = join(proj, '.orgai', 'skills', 'x')
+    mkdirSync(skill, { recursive: true })
+    writeFileSync(join(skill, 'SKILL.md'), '---\nname: x\ndescription: d\n---\nBody\n', 'utf8')
+    writeFileSync(join(skill, '.env'), 'K=1', 'utf8')
+    writeFileSync(join(skill, 'a.pem'), 'k', 'utf8')
+    writeFileSync(join(skill, 'ok.txt'), 'fine', 'utf8')
+    const read = readTeamFolder(proj)
+    expect(read.files.map((f) => f.path).sort()).toEqual(['.orgai/skills/x/SKILL.md', '.orgai/skills/x/ok.txt'])
+    expect(read.notes.some((n) => /2 private-looking files/.test(n))).toBe(true)
+    // Rewriting the skill as a unit removes strays of the old version but never a private file the user keeps there.
+    writeTeamFiles(proj, [{ path: '.orgai/skills/x/SKILL.md', data: Buffer.from('---\nname: x\ndescription: d\n---\nNew\n') }], [], [])
+    expect(existsSync(join(skill, 'ok.txt'))).toBe(false)
+    expect(readFileSync(join(skill, '.env'), 'utf8')).toBe('K=1')
+    expect(existsSync(join(skill, 'a.pem'))).toBe(true)
   })
 })
