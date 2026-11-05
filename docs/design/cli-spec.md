@@ -792,7 +792,7 @@ Resolved `R1`–`R10` (single-host daemon vs Desktop ownership, socket authentic
   program that opens a protected file itself, aliases or renamed copies of `orgai`, and Codex commands that run inside
   its own sandbox without an approval request.
 
-### Wave 3 (landed on dev, 2026-11-05; merges d6d0c3b..e365461 on the contracts 2e12759, integration fix e6206c6)
+### Wave 3 (landed on dev, 2026-11-05; merges d6d0c3b..e365461 on the contracts 2e12759, integration fix e6206c6, review fixes 958bb75 and 7ce195a)
 
 - **Landed.** Adapters (`claude.ts`, `codex.ts`, `mock.ts`): every root turn end (failed, interrupted, auth failures
   and `error_max_budget_usd` included) calls `ctx.onRootTurnEnded({ turnGen, ok, errorSubtype, isAuthError })` before
