@@ -1,8 +1,12 @@
 /**
  * `orgai runs list [--all-projects] [--limit N] [--status <word>]` and `orgai runs show <runId|R#> [--transcript]
  * [--tail N]` (cli-spec 6.1, 3.2(3)). Live host first, else the saved data. Status words come from statusText only.
+ *
+ * `orgai runs send <ref> <text|->`, `runs interrupt <ref>` and `runs stop <ref>` act on a live run through the host
+ * (scopes read + operate); they never start a host. The ref resolves to its chain's newest run, the only member that
+ * can be live.
  */
-import { VIRTUAL_PROJECT_LABELS, isVirtualProjectId, type PendingCards, type Project, type RunSummary } from '../../shared/types'
+import { VIRTUAL_PROJECT_LABELS, isVirtualProjectId, type PendingCards, type Project, type RunRecord, type RunSummary } from '../../shared/types'
 import { formatDate } from '../../shared/view/dates'
 import { chainOf, isOpenStatus } from '../../shared/view/runChains'
 import { runIndexMap, runName, runTag } from '../../shared/view/runLabels'
@@ -22,8 +26,8 @@ import {
   summaryLines,
   tailRows
 } from '../render'
-import { checkProjectResolution, openReadSource, resolveRunFromSource, searchableProjectIds, type ReadSource } from '../runRef'
-import { CliError, EXIT, type CliContext, type CommandFn } from '../types'
+import { checkProjectResolution, openReadSource, resolveRunFromSource, searchableProjectIds, warnVersionSkew, type ReadSource } from '../runRef'
+import { CliError, EXIT, type CliContext, type CommandFn, type HostCallError } from '../types'
 
 const DEFAULT_LIMIT = 20
 const DEFAULT_TAIL = 20
@@ -41,8 +45,12 @@ export const runRuns: CommandFn = async (ctx: CliContext, args: string[]): Promi
   const [sub, ...rest] = args
   if (sub === 'list') return runsList(ctx, rest)
   if (sub === 'show') return runsShow(ctx, rest)
-  throw new CliError(sub ? `Unknown runs command "${sub}". Use: orgai runs list | runs show <runId-or-R#>` : 'Use: orgai runs list | runs show <runId-or-R#>', EXIT.usage)
+  if (sub === 'send') return runsSend(ctx, rest)
+  if (sub === 'interrupt' || sub === 'stop') return runsControl(ctx, sub, rest)
+  throw new CliError(sub ? `Unknown runs command "${sub}". ${RUNS_USAGE}` : RUNS_USAGE, EXIT.usage)
 }
+
+const RUNS_USAGE = 'Use: orgai runs list | show <runId-or-R#> | send <runId-or-R#> <text|-> | interrupt <runId-or-R#> | stop <runId-or-R#>'
 
 function projectName(projects: readonly Project[], id: string): string {
   if (isVirtualProjectId(id)) return VIRTUAL_PROJECT_LABELS[id]
@@ -218,3 +226,138 @@ async function runsShow(ctx: CliContext, args: string[]): Promise<number> {
   }
 }
 
+
+// ---------- send / interrupt / stop ----------
+
+/** The most a message read from stdin may hold (bytes). */
+export const RUN_SEND_STDIN_MAX_BYTES = 1024 * 1024
+
+export const NO_HOST_FOR_RUNS = 'No OrgAI host is running; only a running host can reach a live run.'
+
+/** Replaceable for tests: read all of stdin, refusing more than `max` bytes. */
+export const runsDeps = {
+  readStdin: (max: number): Promise<string> => readProcessStdin(max)
+}
+
+async function readProcessStdin(max: number): Promise<string> {
+  const chunks: Buffer[] = []
+  let size = 0
+  for await (const chunk of process.stdin as AsyncIterable<Buffer | string>) {
+    const b = typeof chunk === 'string' ? Buffer.from(chunk) : chunk
+    size += b.length
+    if (size > max) throw new CliError(`The message on stdin is longer than ${max >= 1024 * 1024 ? `${max / (1024 * 1024)} MB` : `${max} bytes`}.`, EXIT.usage)
+    chunks.push(b)
+  }
+  return Buffer.concat(chunks).toString('utf8')
+}
+
+/** connect with ['read', 'operate']; never starts a host. */
+async function connectOperate(ctx: CliContext): Promise<ReadSource> {
+  const res = await ctx.connect(['read', 'operate'], { clientKind: 'cli', waitStartingMs: 2000 })
+  if (!res.ok) {
+    if (res.reason === 'no_host') throw new CliError(NO_HOST_FOR_RUNS, EXIT.failure)
+    if (res.reason === 'auth_failed') throw new CliError(safeLine(res.message) || 'The OrgAI host refused the handshake.', EXIT.auth)
+    if (res.reason === 'starting' || res.reason === 'draining') {
+      throw new CliError(res.reason === 'starting' ? 'OrgAI is still starting; try again in a moment.' : 'OrgAI is shutting down.', EXIT.hostBusy)
+    }
+    throw new CliError(safeLine(res.message) || `Could not connect to the OrgAI host (${res.reason}).`, EXIT.failure)
+  }
+  // Reuse the read source's run lookups over this (read + operate) connection.
+  warnVersionSkew(ctx, res.client)
+  const client = res.client
+  const runs = async (projectId: string): Promise<RunSummary[]> => {
+    const list = await client.call<RunSummary[]>('runs:list', [projectId])
+    return (Array.isArray(list) ? list : []).slice().sort((a, b) => b.startedAt - a.startedAt || b.id.localeCompare(a.id))
+  }
+  return {
+    live: true,
+    client,
+    hostState: 'ready',
+    liveInboxAvailable: true,
+    projects: async () => {
+      const list = await client.call<Project[]>('projects:list', [])
+      return Array.isArray(list) ? list : []
+    },
+    runs,
+    allRuns: async (projectIds) => {
+      const lists = await Promise.all(projectIds.map((id) => runs(id).catch(() => [] as RunSummary[])))
+      const seen = new Set<string>()
+      return lists
+        .flat()
+        .filter((r) => (seen.has(r.id) ? false : (seen.add(r.id), true)))
+        .sort((a, b) => b.startedAt - a.startedAt || b.id.localeCompare(a.id))
+    },
+    record: async (runId) => (await client.call<RunRecord | null>('runs:get', [runId], { timeoutMs: 60_000 })) ?? null,
+    close: () => client.close()
+  }
+}
+
+/** The chain's newest run for `ref`, refused (exit 1, its status word) unless it can take the action. */
+async function liveTarget(ctx: CliContext, src: ReadSource, ref: string, action: 'send' | 'interrupt' | 'stop'): Promise<RunSummary> {
+  const { runId, runs } = await resolveRunFromSource(ctx, src, ref)
+  let list = runs
+  if (!list.some((r) => r.id === runId)) {
+    const rec = await src.record(runId).catch(() => null)
+    if (rec) list = [...list, rec.summary]
+  }
+  const own = list.find((r) => r.id === runId)
+  const projectRuns = own ? list.filter((r) => r.projectId === own.projectId) : list
+  const chain = chainOf(projectRuns, runId)
+  const newest = chain.length > 0 ? chain[chain.length - 1] : own
+  if (!newest) throw new CliError(`Run ${safeLine(runId)} was not found.`, EXIT.failure)
+  // stop also ends a paused run (it cancels the auto-resume); send and interrupt need an open session.
+  const ok = isOpenStatus(newest.status) || (action === 'stop' && newest.status === 'paused')
+  if (!ok) {
+    const word = statusText(statusViewOf({ summary: newest }))
+    throw new CliError(`Run ${safeLine(newest.id)} is not live (${word}).${action === 'send' ? ' Continue it with orgai resume.' : ''}`, EXIT.failure)
+  }
+  return newest
+}
+
+function hostRefusal(e: unknown): CliError {
+  if (e instanceof CliError) return e
+  const data = (e as Partial<HostCallError>)?.data
+  const message = data?.message ?? (e instanceof Error ? e.message : String(e))
+  return new CliError(safeLine(message) || 'The OrgAI host refused.', EXIT.failure)
+}
+
+async function runsSend(ctx: CliContext, args: string[]): Promise<number> {
+  const { positionals } = parseFlags(args, {})
+  if (positionals.length < 1 || positionals.length > 2) throw new CliError('Use: orgai runs send <runId-or-R#> <text|->', EXIT.usage)
+  const [ref, given] = positionals
+  let text: string
+  if (given === '-' || (given === undefined && !ctx.io.stdinIsTTY)) text = await runsDeps.readStdin(RUN_SEND_STDIN_MAX_BYTES)
+  else if (given === undefined) throw new CliError('Give the message text, or - to read it from stdin.', EXIT.usage)
+  else text = given
+  if (Buffer.byteLength(text, 'utf8') > RUN_SEND_STDIN_MAX_BYTES) throw new CliError('The message is longer than 1 MB.', EXIT.usage)
+  if (!text.trim()) throw new CliError('The message is empty.', EXIT.usage)
+  const src = await connectOperate(ctx)
+  try {
+    const target = await liveTarget(ctx, src, ref, 'send')
+    await src.client!.call('runs:send', [{ runId: target.id, text }], { timeoutMs: 60_000 }).catch((e: unknown) => {
+      throw hostRefusal(e)
+    })
+    emit(ctx, { runId: target.id, action: 'send' }, () => `Sent to ${safeLine(runName(target))} (${safeLine(target.id)}).`)
+    return EXIT.ok
+  } finally {
+    src.close()
+  }
+}
+
+async function runsControl(ctx: CliContext, action: 'interrupt' | 'stop', args: string[]): Promise<number> {
+  const { positionals } = parseFlags(args, {})
+  if (positionals.length !== 1) throw new CliError(`Use: orgai runs ${action} <runId-or-R#>`, EXIT.usage)
+  const src = await connectOperate(ctx)
+  try {
+    const target = await liveTarget(ctx, src, positionals[0], action)
+    await src.client!.call(action === 'stop' ? 'runs:stop' : 'runs:interrupt', [target.id], { timeoutMs: 60_000 }).catch((e: unknown) => {
+      throw hostRefusal(e)
+    })
+    emit(ctx, { runId: target.id, action }, () =>
+      action === 'stop' ? `Ended the session of ${safeLine(runName(target))} (${safeLine(target.id)}).` : `Interrupted ${safeLine(runName(target))} (${safeLine(target.id)}).`
+    )
+    return EXIT.ok
+  } finally {
+    src.close()
+  }
+}
