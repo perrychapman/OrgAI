@@ -144,4 +144,84 @@ describe('RunStream', () => {
     await expect(x.stream.start()).rejects.toThrow('refused')
     expect(h.closed).toBe(true)
   })
+
+  it('resubscribe queues notifications during the call, keeps seq dedupe and resumes with sinceSeq', async () => {
+    let n = 0
+    const h: FakeHostClient = new FakeHostClient({
+      'runs:subscribe': () => {
+        n++
+        if (n === 1) return snap(10)
+        // During the resubscribe: one already applied (11), one new (13).
+        h.push('runs:event', ev(11, status('run_a', 'running')))
+        h.push('runs:event', ev(13, status('run_a', 'finished')))
+        return { mode: 'replay', hostInstanceId: 'aaaaaaaaaaaa', fromSeq: 11, toSeq: 12, filterKey: 'fk1', events: [ev(12, status('run_a', 'idle'))] }
+      }
+    })
+    const subscribed: string[] = []
+    const x = harness([h])
+    ;(x.stream as unknown as { o: { onSubscribed: (m: string) => void } }).o.onSubscribed = (m) => subscribed.push(m)
+    await x.stream.start()
+    h.push('runs:event', ev(11, status('run_a', 'running')))
+    await x.stream.resubscribe()
+    expect(h.callsOf('runs:subscribe')[1]).toEqual([{ runIds: ['run_a'], followChains: true, includeActiveRunRecord: 'run_a', sinceSeq: 11, hostInstanceId: 'aaaaaaaaaaaa', filterKey: 'fk1' }])
+    expect(x.events.map((e) => e.seq)).toEqual([11, 12, 13])
+    expect(x.stream.lastSeq).toBe(13)
+    expect(subscribed).toEqual(['snapshot', 'replay'])
+    // After the call, pushes apply at once again.
+    h.push('runs:event', ev(14, status('run_a', 'idle')))
+    expect(x.events.map((e) => e.seq)).toEqual([11, 12, 13, 14])
+  })
+
+  it('a resubscribe asked for while one is in flight runs once more with the newest input', async () => {
+    let release: (() => void) | undefined
+    let n = 0
+    const h = new FakeHostClient({
+      'runs:subscribe': async () => {
+        n++
+        if (n === 2) await new Promise<void>((r) => (release = r))
+        return snap(10 + n)
+      }
+    })
+    const x = harness([h])
+    await x.stream.start()
+    const first = x.stream.resubscribe()
+    await flush()
+    x.followed.add('run_z')
+    await x.stream.resubscribe()
+    release?.()
+    await first
+    for (let i = 0; i < 3; i++) await flush()
+    const subs = h.callsOf('runs:subscribe') as { runIds: string[] }[][]
+    expect(subs).toHaveLength(3)
+    expect(subs[2][0].runIds).toEqual(['run_a', 'run_z'])
+  })
+
+  it('a socket that closes during a resubscribe starts the reconnect loop; a refused one rejects', async () => {
+    let n = 0
+    const h1: FakeHostClient = new FakeHostClient({
+      'runs:subscribe': () => {
+        n++
+        if (n === 1) return snap(10)
+        h1.hostClose()
+        throw new Error('closed')
+      }
+    })
+    const h2 = new FakeHostClient({ 'runs:subscribe': () => snap(20) })
+    const x = harness([h1, h2])
+    await x.stream.start()
+    await x.stream.resubscribe()
+    for (let i = 0; i < 4; i++) await flush()
+    expect(x.stream.client).toBe(h2)
+    expect(x.snapshots.map((s) => s.firstTime)).toEqual([true, false])
+
+    const g = new FakeHostClient({
+      'runs:subscribe': () => {
+        if (g.calls.length > 1) throw new Error('refused')
+        return snap(10)
+      }
+    })
+    const y = harness([g])
+    await y.stream.start()
+    await expect(y.stream.resubscribe()).rejects.toThrow('refused')
+  })
 })
