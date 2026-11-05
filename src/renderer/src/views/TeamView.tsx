@@ -641,7 +641,15 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
               busy={filesActions.busy}
               message={filesActions.message}
               lineRef={lineRef}
-              onCommit={() => void filesActions.commit()}
+              onCommit={() =>
+                void filesActions.commit().then(() =>
+                  // The Commit button leaves once the files are committed; keep focus on the status line then.
+                  window.requestAnimationFrame(() => {
+                    const a = document.activeElement
+                    if (!a || a === document.body) lineRef.current?.focus()
+                  })
+                )
+              }
               onEnable={() => void filesActions.enable()}
               onReview={() => setCardFocusN((n) => n + 1)}
             />
