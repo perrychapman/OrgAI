@@ -6,6 +6,7 @@ import type { KnowledgeGraph, KnowledgeSource } from '@shared/types'
 import {
   KNOWLEDGE_ALIASES_MAX,
   KNOWLEDGE_EDGES_MAX,
+  KNOWLEDGE_DISMISSED_LINKS_MAX,
   KNOWLEDGE_EDGE_NOTE_MAX_CHARS,
   KNOWLEDGE_FACT_MAX_CHARS,
   KNOWLEDGE_FILE_MAX_BYTES,
@@ -15,9 +16,12 @@ import {
   KNOWLEDGE_NODE_NOTES_MAX,
   KNOWLEDGE_SUMMARY_MAX_CHARS
 } from '@shared/types'
+import { knowledgeFixture } from '@shared/knowledge.fixture'
 import {
   FILE_FULL_MESSAGE,
   clearKnowledge,
+  dismissKnowledgeLink,
+  readKnowledgeInferred,
   knowledgeFile,
   knowledgeFileLimits,
   knowledgeFileState,
@@ -33,7 +37,6 @@ import {
   upsertNode
 } from './knowledge'
 import { projectDataDir, removeNote, saveNote } from './projectData'
-
 let dir: string
 const P = 'proj_a'
 const agent: KnowledgeSource = { by: 'agent', at: 1000, runId: 'run_1', agentId: 'agent_1', role: 'Analyst' }
@@ -657,5 +660,209 @@ describe('clearKnowledge and the bound store', () => {
     expect(store.get(P).nodes).toHaveLength(2)
     expect(store.get(P)).toEqual(graphOf())
     expect(store.get('proj_zzz')).toEqual({ version: 1, nodes: [], edges: [] })
+  })
+})
+
+describe('read cache', () => {
+  it('hands out the same graph object until the file, the note index or the size cap changes', () => {
+    person('Ada')
+    const a = graphOf()
+    expect(graphOf()).toBe(a)
+    // An outside edit (new size / mtime / inode) is seen at once.
+    writeRaw({ ...a, nodes: [...a.nodes, { ...a.nodes[0], id: 'kn_extra', name: 'Extra' }] })
+    const b = graphOf()
+    expect(b).not.toBe(a)
+    expect(b.nodes.map((n) => n.name)).toEqual(['Ada', 'Extra'])
+    expect(graphOf()).toBe(b)
+    // The size cap is part of the stamp: lowering it turns the same file unreadable, restoring it reads again.
+    const before = knowledgeFileLimits.maxBytes
+    try {
+      knowledgeFileLimits.maxBytes = 10
+      expect(graphOf().nodes).toEqual([])
+      expect(knowledgeFileState(dir, P)).toBe('unreadable')
+    } finally {
+      knowledgeFileLimits.maxBytes = before
+    }
+    expect(graphOf().nodes).toHaveLength(2)
+    expect(knowledgeFileState(dir, P)).toBe('ok')
+  })
+
+  it('note links follow the note index even though the graph file did not change', () => {
+    const note = saveNote(dir, P, { title: 'Brief', text: 'b' })
+    person('Ada', { noteIds: [note.id] })
+    const a = graphOf()
+    expect(a.nodes[0].noteIds).toEqual([note.id])
+    removeNote(dir, P, note.id)
+    const b = graphOf()
+    expect(b).not.toBe(a)
+    expect(b.nodes[0].noteIds).toBeUndefined()
+  })
+
+  it('a write leaves the next read on the written graph (a new object, no re-read) and never mutates the one handed out earlier', () => {
+    const ada = person('Ada').node
+    const before = graphOf()
+    const snapshot = structuredClone(before)
+    const org = upsertNode(dir, P, { kind: 'organisation', name: 'Acme' }, agent).node
+    expect(before).toEqual(snapshot)
+    const after = graphOf()
+    expect(after).not.toBe(before)
+    expect(after.nodes).toHaveLength(2)
+    expect(graphOf()).toBe(after)
+    const edge = saveEdge(dir, P, { from: ada.id, to: org.id, relation: 'works-at' }, agent).edge
+    const withEdge = graphOf()
+    expect(withEdge).not.toBe(after)
+    expect(after.edges).toEqual([])
+    // removeNode / removeEdge return the new graph, which is the cached one; it is a new object each time.
+    const afterRemoveEdge = removeEdge(dir, P, edge.id)
+    expect(afterRemoveEdge).not.toBe(withEdge)
+    expect(withEdge.edges).toHaveLength(1)
+    expect(graphOf()).toBe(afterRemoveEdge)
+    const afterRemoveNode = removeNode(dir, P, org.id)
+    expect(afterRemoveNode).not.toBe(afterRemoveEdge)
+    expect(afterRemoveEdge.nodes).toHaveLength(2)
+    expect(graphOf()).toBe(afterRemoveNode)
+    // An in-place edit (retire, user save) also yields a new object.
+    const pre = graphOf()
+    retireItem(dir, P, { nodeId: ada.id }, agent)
+    expect(graphOf()).not.toBe(pre)
+    expect(pre.nodes[0].retired).toBeUndefined()
+    expect(graphOf().nodes[0].retired).toBe(true)
+    // What the cache serves is exactly what a fresh read of the file gives.
+    const cached = graphOf()
+    expect(cached).toEqual(JSON.parse(fileText()))
+  })
+
+  it('a refused write leaves the cached graph and the file as they were', () => {
+    person('Ada')
+    const a = graphOf()
+    const text = fileText()
+    expect(() => upsertNode(dir, P, { kind: 'person', name: 'Bad<' + ZWSP }, agent)).toThrow()
+    expect(() => saveEdge(dir, P, { from: 'kn_nope', to: 'kn_nope2', relation: 'x' }, agent)).toThrow()
+    expect(graphOf()).toBe(a)
+    expect(fileText()).toBe(text)
+  })
+
+  it('clearing, deleting the file and a missing project drop the entry', () => {
+    person('Ada')
+    expect(graphOf().nodes).toHaveLength(1)
+    clearKnowledge(dir, P)
+    expect(graphOf()).toEqual({ version: 1, nodes: [], edges: [] })
+    person('Grace')
+    expect(graphOf().nodes.map((n) => n.name)).toEqual(['Grace'])
+    rmSync(knowledgeFile(dir, P))
+    expect(graphOf().nodes).toEqual([])
+    expect(knowledgeFileState(dir, P)).toBe('missing')
+  })
+
+  it('an unreadable file stays unreadable from the cache and keeps refusing writes', () => {
+    writeRaw('{ not json')
+    expect(graphOf().nodes).toEqual([])
+    expect(graphOf().nodes).toEqual([])
+    expect(knowledgeFileState(dir, P)).toBe('unreadable')
+    expect(() => person('Ada')).toThrow(unreadableMessage(knowledgeFile(dir, P)))
+    expect(fileText()).toBe('{ not json')
+    // Repairing the file is seen without a restart.
+    writeRaw({ version: 1, nodes: [], edges: [] })
+    expect(knowledgeFileState(dir, P)).toBe('ok')
+    expect(() => person('Ada')).not.toThrow()
+  })
+
+  it('keeps working past the cache size, with several projects read in turn', () => {
+    const ids = ['proj_1', 'proj_2', 'proj_3', 'proj_4', 'proj_5', 'proj_6']
+    for (const id of ids) upsertNode(dir, id, { kind: 'person', name: `P ${id}` }, agent)
+    for (let round = 0; round < 2; round++) for (const id of ids) expect(readKnowledge(dir, id).nodes.map((n) => n.name)).toEqual([`P ${id}`])
+  })
+})
+
+describe('dismissed inferred links', () => {
+  const L1 = 'kl_0123456789abcdef'
+  const L2 = 'kl_fedcba9876543210'
+
+  it('reads the list tolerantly: shapes checked, deduped (last wins), the newest kept, absent when empty', () => {
+    const base = { version: 1, nodes: [], edges: [] }
+    writeRaw({ ...base, dismissedLinks: [L1, 'junk', 5, null, L2, L1, 'kl_ABC'] })
+    expect(graphOf().dismissedLinks).toEqual([L2, L1])
+    writeRaw({ ...base, dismissedLinks: 'nope' })
+    expect(graphOf().dismissedLinks).toBeUndefined()
+    writeRaw({ ...base, dismissedLinks: [] })
+    expect(graphOf().dismissedLinks).toBeUndefined()
+    const many = Array.from({ length: KNOWLEDGE_DISMISSED_LINKS_MAX + 5 }, (_, i) => `kl_${i.toString(16).padStart(16, '0')}`)
+    writeRaw({ ...base, dismissedLinks: many })
+    const kept = graphOf().dismissedLinks!
+    expect(kept).toHaveLength(KNOWLEDGE_DISMISSED_LINKS_MAX)
+    expect(kept.at(-1)).toBe(many.at(-1))
+    expect(kept[0]).toBe(many[5])
+  })
+
+  it('dismissing refuses a bad id, adds a good one through the normal write, and a repeat is a no-op with no write', () => {
+    for (const bad of ['', 'kl_123', 'kn_0123456789abcdef', 'kl_0123456789ABCDEF', 5, null, undefined]) {
+      expect(() => dismissKnowledgeLink(dir, P, bad)).toThrow('That is not a connection id.')
+    }
+    expect(existsSync(knowledgeFile(dir, P))).toBe(false)
+    person('Ada')
+    const r = dismissKnowledgeLink(dir, P, L1)
+    expect(r).toEqual({ links: [], appearances: expect.any(Object) })
+    expect(graphOf().dismissedLinks).toEqual([L1])
+    expect(JSON.parse(fileText()).dismissedLinks).toEqual([L1])
+    noTmp()
+    const text = fileText()
+    const g = graphOf()
+    dismissKnowledgeLink(dir, P, L1)
+    expect(fileText()).toBe(text)
+    expect(graphOf()).toBe(g)
+    dismissKnowledgeLink(dir, P, L2)
+    expect(graphOf().dismissedLinks).toEqual([L1, L2])
+  })
+
+  it('drops the oldest id past the cap', () => {
+    person('Ada')
+    const ids = Array.from({ length: KNOWLEDGE_DISMISSED_LINKS_MAX }, (_, i) => `kl_${i.toString(16).padStart(16, '0')}`)
+    const g = JSON.parse(fileText())
+    writeRaw({ ...g, dismissedLinks: ids })
+    dismissKnowledgeLink(dir, P, L1)
+    const list = graphOf().dismissedLinks!
+    expect(list).toHaveLength(KNOWLEDGE_DISMISSED_LINKS_MAX)
+    expect(list[0]).toBe(ids[1])
+    expect(list.at(-1)).toBe(L1)
+  })
+
+  it('refuses on an unreadable file and leaves it alone', () => {
+    writeRaw('{ nope')
+    expect(() => dismissKnowledgeLink(dir, P, L1)).toThrow(unreadableMessage(knowledgeFile(dir, P)))
+    expect(fileText()).toBe('{ nope')
+  })
+
+  it('keeps other writes intact: ids of links that are gone stay harmless, and removing nodes or edges still reads fine', () => {
+    const a = person('Ada').node
+    const b = upsertNode(dir, P, { kind: 'organisation', name: 'Acme' }, agent).node
+    const e = saveEdge(dir, P, { from: a.id, to: b.id, relation: 'works-at' }, agent).edge
+    dismissKnowledgeLink(dir, P, L1)
+    removeEdge(dir, P, e.id)
+    removeNode(dir, P, b.id)
+    expect(graphOf().dismissedLinks).toEqual([L1])
+    expect(graphOf().nodes.map((n) => n.name)).toEqual(['Ada'])
+    expect(readKnowledgeInferred(dir, P)).toEqual({ links: [], appearances: expect.any(Object) })
+  })
+
+  it('hides a real inferred link once dismissed, from the cached graph, and the store exposes it', () => {
+    const fixture = knowledgeFixture()
+    writeRaw(fixture)
+    const store = knowledgeStore(dir)
+    const before = store.inferred!(P)
+    expect(before.links.length).toBeGreaterThan(0)
+    expect(store.inferred!(P)).toBe(before)
+    const target = before.links[0].id
+    const after = dismissKnowledgeLink(dir, P, target)
+    expect(after.links.map((l) => l.id)).not.toContain(target)
+    expect(after.links).toHaveLength(before.links.length - 1)
+    expect(store.inferred!(P)).toBe(after)
+    expect(Object.keys(after.appearances)).toHaveLength(fixture.nodes.length)
+  })
+
+  it('readKnowledgeInferred never throws: empty for an unsafe id, a missing project or an unreadable file', () => {
+    expect(readKnowledgeInferred(dir, '../x')).toEqual({ links: [], appearances: {} })
+    expect(readKnowledgeInferred(dir, 'proj_none')).toEqual({ links: [], appearances: {} })
+    writeRaw('garbage')
+    expect(readKnowledgeInferred(dir, P)).toEqual({ links: [], appearances: {} })
   })
 })

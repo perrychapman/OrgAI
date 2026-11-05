@@ -311,6 +311,13 @@ function withCleanAllowedDirectories(project: Project, dataDir: string, home: st
     delete next.kind
     changed = true
   }
+  // Project.knowledgeAutoContext is a boolean or unset; anything else is dropped (unset = on). Never filled in here.
+  if ('knowledgeAutoContext' in project && typeof project.knowledgeAutoContext !== 'boolean') {
+    console.debug('knowledgeAutoContext: dropped a value that is not true or false')
+    next = { ...next }
+    delete next.knowledgeAutoContext
+    changed = true
+  }
   if ('client' in project) {
     const client = cleanClient(project.client)
     if (client !== project.client) {

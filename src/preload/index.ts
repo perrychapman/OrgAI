@@ -270,7 +270,9 @@ const api: OrgAIApi = {
     removeNode: (ref) => ipcRenderer.invoke(IPC.knowledgeRemoveNode, ref),
     saveEdge: (input) => ipcRenderer.invoke(IPC.knowledgeSaveEdge, input),
     removeEdge: (ref) => ipcRenderer.invoke(IPC.knowledgeRemoveEdge, ref),
-    clear: (projectId: string) => ipcRenderer.invoke(IPC.knowledgeClear, projectId)
+    clear: (projectId: string) => ipcRenderer.invoke(IPC.knowledgeClear, projectId),
+    inferredLinks: (projectId: string) => ipcRenderer.invoke(IPC.knowledgeInferredLinks, projectId),
+    dismissLink: (input) => ipcRenderer.invoke(IPC.knowledgeDismissLink, input)
   },
   onEngagementChanged: (cb) => {
     const listener = (_e: IpcRendererEvent, event: EngagementChangedEvent): void => cb(event)

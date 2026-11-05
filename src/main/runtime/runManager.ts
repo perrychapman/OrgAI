@@ -32,6 +32,8 @@ import type {
   QuickRunInfo,
   SkillContent,
   KnowledgeNode,
+  KnowledgeRecallInput,
+  KnowledgeServedUsage,
   KnowledgeSource,
   EngagementNote,
   EngagementNoteContent,
@@ -57,7 +59,10 @@ import { QUICK_ASSISTANT_SLUG, adapterForProject, agentProducedNothing, isolateW
 import { referenceFolderOf } from './referenceDirectories'
 import { aliasesFor, priceAgentUsage, type PricingContext } from './pricing'
 import { IntervalTimer, buildUsageCsv, buildUsageStats, computeRunUsage, emptyAgentUsage, legacySummaryUsage, monthRange, normalizeRunRecord } from './runUsage'
-import { DEFAULT_MAX_AUTO_CONTINUES, HARNESS_PROJECT_ID, KNOWLEDGE_RUN_WRITES_MAX, QUICK_PROJECT_ID, RUN_MESSAGE_MAX_CHARS, RUN_PEER_PROMPT_CHARS, SKILLS_PROJECT_ID, USAGE_STATS_DEFAULT_LIMIT, USAGE_STATS_MAX_LIMIT, isVirtualProjectId } from '@shared/types'
+import { knowledgeAutoContextOn } from '@shared/knowledge'
+import { fenceDatum, knowledgeBrief, knowledgeContextBlock, recallKnowledge } from '@shared/knowledgeIndex'
+import { strongMentionLinks } from '@shared/knowledgeLinks'
+import { DEFAULT_MAX_AUTO_CONTINUES, HARNESS_PROJECT_ID, KNOWLEDGE_RECALLED_IDS_MAX, KNOWLEDGE_RUN_WRITES_MAX, QUICK_PROJECT_ID, RUN_MESSAGE_MAX_CHARS, RUN_PEER_PROMPT_CHARS, SKILLS_PROJECT_ID, USAGE_STATS_DEFAULT_LIMIT, USAGE_STATS_MAX_LIMIT, isVirtualProjectId } from '@shared/types'
 import { architectRole, mcpAssistantRole, skillAssistantRole } from '@shared/setup'
 import { isTrustRestrictedRun, isInsideEither, samePath, canonicalDeep } from '../quick/scratch'
 import { MCP_ASSIST_MODEL_LABEL, QUICK_RUN_MODEL_LABEL, SETUP_MODEL_LABEL, SKILL_ASSIST_MODEL_LABEL, resolveBuiltinModel, type ResolvedBuiltinModel } from './builtinModel'
@@ -183,6 +188,19 @@ const FLUSH_INTERVAL_MS = 1500
 export const RUN_SKILL_LOAD_LIMIT = 1000
 /** run.usage events (and the index save that goes with them) are published at most this often per run. */
 export const USAGE_THROTTLE_MS = 1000
+/** knowledge.recalled events go out at most this often per agent (leading edge at once, the rest merged and trailing). */
+export const KNOWLEDGE_RECALLED_THROTTLE_MS = 1000
+/** Most agents whose "already shown" knowledge state a run keeps (a bug-proofing bound; more agents just get no dedupe). */
+const KNOWLEDGE_SHOWN_AGENTS_MAX = 500
+/** Most entity names one "Added N known items" row lists. */
+const KNOWLEDGE_ROW_NAMES = 3
+
+/** One agent's knowledge.recalled throttle: when it last went out and what is waiting. */
+interface RecalledThrottle {
+  lastAt: number
+  timer?: ReturnType<typeof setTimeout>
+  pending?: { ids: string[]; via: 'recall' | 'auto' }
+}
 /** When a usage limit gives no reset time, try again after this long. */
 export const DEFAULT_PAUSE_MS = 5 * 60 * 1000
 /** Sent to the orchestrator when a paused run continues. */
@@ -297,6 +315,15 @@ interface ActiveRun {
   knowledgeWrites: number
   /** The writes cap was reached and logged once. */
   knowledgeCapWarned?: boolean
+  /** Per receiving agent: node id -> the signature last served in full (knowledge_recall and auto context). In memory only. */
+  knowledgeShown: Map<string, Map<string, string>>
+  /** RunUsage.knowledge: recalls, auto context blocks, entities and characters served. */
+  knowledgeUsage: KnowledgeServedUsage
+  /** Per agent: knowledge.recalled throttle state (last emit, trailing timer, ids and `via` waiting to go out). */
+  knowledgeRecalled: Map<string, RecalledThrottle>
+  /** knowledgeBrief() was computed (also when it was undefined); the text is constant for the run. */
+  knowledgeBriefDone?: boolean
+  knowledgeBriefText?: string
   /** Time with at least one decision card open. */
   waiting: IntervalTimer
   /** Time held on a usage limit, until the user's next send or the run's end. */
@@ -717,6 +744,8 @@ export class RunManager {
         await r.session?.stop().catch(() => {})
         if (r.flushTimer) clearTimeout(r.flushTimer)
         if (r.usageTimer) clearTimeout(r.usageTimer)
+        for (const st of r.knowledgeRecalled.values()) if (st.timer) clearTimeout(st.timer)
+        r.knowledgeRecalled.clear()
         this.runs.delete(r.summary.id)
       }
     }
@@ -962,6 +991,9 @@ export class RunManager {
       skillCounts: new Map(),
       skillLoads: 0,
       knowledgeWrites: 0,
+      knowledgeShown: new Map(),
+      knowledgeUsage: { recalls: 0, autoContexts: 0, itemsServed: 0, charsServed: 0 },
+      knowledgeRecalled: new Map(),
       projectName: project.name,
       rootRole: (project.roles.find((r) => r.reportsTo === null) ?? project.roles[0])?.name ?? '',
       messagesSent: new Map(),
@@ -1005,6 +1037,8 @@ export class RunManager {
         const until = active.limited.until && active.limited.until > now ? active.limited.until : now + DEFAULT_PAUSE_MS
         e = { ...e, status: 'paused', pausedUntil: until, pauseReason: pauseReasonText(active.limited.window, e.error), autoResume: true }
       }
+      // Knowledge items still waiting in the per-second throttle go out before the run's end, never after it.
+      if (e.type === 'run.status' && (e.status === 'finished' || e.status === 'error' || e.status === 'paused')) this.flushRecalled(active)
       const outcome = e.type === 'run.status' && !active.outcome ? runOutcome(e.status, !!active.userStopped) : null
       if (outcome) {
         active.outcome = outcome
@@ -1349,8 +1383,12 @@ export class RunManager {
             }
           : {}),
         // The knowledge graph: work runs of an engagement (any team); never Chat, setup-like or trust-restricted runs.
+        // The same gate covers the read side (recall, automatic context, the standing brief); it is read-only.
         ...(this.options.knowledge && kind === 'work' && !bare && !restricted && projectKindOf(project) === 'engagement'
-          ? { knowledge: this.bindKnowledge(active, this.options.knowledge, project.id, () => ctx.roles) }
+          ? {
+              knowledge: this.bindKnowledge(active, this.options.knowledge, project.id, () => ctx.roles),
+              ...this.bindKnowledgeReads(active, this.options.knowledge, project.id, () => this.options.resolveProject?.(project.id) ?? live)
+            }
           : {}),
         // Saved team templates: Architect setup runs only.
         ...(this.options.orgTemplate && kind === 'setup' && !isVirtualProjectId(project.id)
@@ -1467,7 +1505,8 @@ export class RunManager {
       limitHoldMs: a.limitTimer.elapsed(now),
       idleMs: a.idleTimer.elapsed(now),
       now,
-      skills: [...a.skillCounts.values()]
+      skills: [...a.skillCounts.values()],
+      knowledge: a.knowledgeUsage
     })
   }
 
@@ -1594,6 +1633,147 @@ export class RunManager {
     }
   }
 
+  // ---------- knowledge reads: recall, automatic context, brief (read-only, in-memory state per run) ----------
+
+  /** The agent a row or event lands on: the agent when the run record knows it, else the root (like knowledgeRow). */
+  private visibleAgent(a: ActiveRun, agentId: string): string {
+    return agentId === ROOT_AGENT_ID || a.record.agents[agentId] ? agentId : ROOT_AGENT_ID
+  }
+
+  /**
+   * The "already shown" map of one agent (created on first use), or undefined for a missing / over-long id and once the
+   * run tracks KNOWLEDGE_SHOWN_AGENTS_MAX agents (those just get no dedupe). Keyed by the id the adapter reports, so a
+   * spawned agent that is not in the run record yet still has its own state.
+   */
+  private shownFor(a: ActiveRun, agentId: string | undefined): Map<string, string> | undefined {
+    if (typeof agentId !== 'string' || !agentId || agentId.length > 128) return undefined
+    let m = a.knowledgeShown.get(agentId)
+    if (!m) {
+      if (a.knowledgeShown.size >= KNOWLEDGE_SHOWN_AGENTS_MAX) return undefined
+      m = new Map()
+      a.knowledgeShown.set(agentId, m)
+    }
+    return m
+  }
+
+  /** Count what was served, refresh the usage and (for a non-empty answer) tell the renderer which nodes were touched. */
+  private noteServed(a: ActiveRun, kind: 'recalls' | 'autoContexts', items: number, chars: number): void {
+    a.knowledgeUsage[kind]++
+    a.knowledgeUsage.itemsServed += items
+    a.knowledgeUsage.charsServed += chars
+    if (this.runs.get(a.summary.id) === a) this.refreshUsage(a, false)
+  }
+
+  /**
+   * knowledge.recalled for one agent: at most one per KNOWLEDGE_RECALLED_THROTTLE_MS. The first call goes out at once
+   * (leading edge); calls inside the window merge their ids (deduped, the newest KNOWLEDGE_RECALLED_IDS_MAX kept, the
+   * newest call's `via`) into one trailing event when the window ends. Nothing is queued after the run's outcome.
+   */
+  private noteRecalled(a: ActiveRun, agentId: string, ids: string[], via: 'recall' | 'auto'): void {
+    if (!ids.length || a.outcome) return
+    const key = this.visibleAgent(a, agentId)
+    let st = a.knowledgeRecalled.get(key)
+    if (!st) {
+      st = { lastAt: 0 }
+      a.knowledgeRecalled.set(key, st)
+    }
+    const fresh = new Set(ids)
+    st.pending = { ids: [...(st.pending?.ids ?? []).filter((id) => !fresh.has(id)), ...fresh].slice(-KNOWLEDGE_RECALLED_IDS_MAX), via }
+    if (st.timer) return
+    const wait = Math.max(0, st.lastAt + KNOWLEDGE_RECALLED_THROTTLE_MS - Date.now())
+    if (wait === 0) {
+      this.sendRecalled(a, key, st)
+      return
+    }
+    st.timer = setTimeout(() => this.sendRecalled(a, key, st), wait)
+    st.timer.unref?.()
+  }
+
+  private sendRecalled(a: ActiveRun, agentId: string, st: RecalledThrottle, force = false): void {
+    if (st.timer) clearTimeout(st.timer)
+    st.timer = undefined
+    const pending = st.pending
+    st.pending = undefined
+    if (!pending || !pending.ids.length) return
+    if (!force && (a.outcome || this.runs.get(a.summary.id) !== a)) return
+    st.lastAt = Date.now()
+    a.emit({ type: 'knowledge.recalled', runId: a.summary.id, agentId, nodeIds: pending.ids, at: st.lastAt, via: pending.via })
+  }
+
+  /** Send every waiting knowledge.recalled now and stop the timers (the run is ending; called before the terminal status goes out). */
+  private flushRecalled(a: ActiveRun): void {
+    for (const [agentId, st] of a.knowledgeRecalled) this.sendRecalled(a, agentId, st, true)
+    a.knowledgeRecalled.clear()
+  }
+
+  /**
+   * RuntimeContext.knowledgeRecall / knowledgeContext / knowledgeBrief over the store. Read-only: no write counts toward
+   * KNOWLEDGE_RUN_WRITES_MAX and the graph file is never touched. Dedupe state lives on the ActiveRun only.
+   * `project` is the project as saved now (falls back to the run's own copy), for Project.knowledgeAutoContext.
+   */
+  private bindKnowledgeReads(
+    a: ActiveRun,
+    store: KnowledgeStoreApi,
+    projectId: string,
+    project: () => Project
+  ): Pick<RuntimeContext, 'knowledgeRecall' | 'knowledgeContext' | 'knowledgeBrief'> {
+    return {
+      knowledgeRecall: (input: KnowledgeRecallInput, caller: KnowledgeCaller): string => {
+        try {
+          const agentId = caller.agentId ?? ROOT_AGENT_ID
+          const query = String(input.query)
+          const graph = store.get(projectId)
+          const inferred = strongMentionLinks(store.inferred?.(projectId) ?? [])
+          const shown = this.shownFor(a, agentId)
+          const r = recallKnowledge(graph, query, { budget: input.budget, fresh: input.fresh === true, ...(shown ? { shown } : {}), inferred })
+          const ids = [...r.served.map((s) => s.id), ...r.alreadyShown]
+          if (shown) for (const s of r.served) if (s.complete) shown.set(s.id, s.signature)
+          this.noteServed(a, 'recalls', r.served.length, r.text.length)
+          this.knowledgeRow(a, agentId, `Recalled ${ids.length} item${ids.length === 1 ? '' : 's'} about ${datum(query, 80)}`)
+          this.noteRecalled(a, agentId, ids, 'recall')
+          if (r.text) return r.text
+          const q = fenceDatum(query, 120)
+          return r.cut.length ? `${r.cut.length} entities match "${q}" but none fit the budget. Ask again with a larger budget.` : `Nothing in the knowledge graph matches "${q}".`
+        } catch (e) {
+          log.warn(`Run ${a.summary.id}: knowledge recall failed: ${e instanceof Error ? e.message : String(e)}`)
+          return 'The knowledge graph could not be read right now.'
+        }
+      },
+      knowledgeContext: (text: string, opts: { agentId?: string; purpose: 'spawn' | 'message' }): string | null => {
+        try {
+          if (typeof text !== 'string' || !text) return null
+          if (!knowledgeAutoContextOn(project())) return null
+          const agentId = typeof opts?.agentId === 'string' && opts.agentId ? opts.agentId : undefined
+          const shown = this.shownFor(a, agentId)
+          const r = knowledgeContextBlock(store.get(projectId), text, shown ? { shown } : {})
+          if (!r) return null
+          if (shown) for (const s of r.served) if (s.complete) shown.set(s.id, s.signature)
+          this.noteServed(a, 'autoContexts', r.served.length, r.text.length)
+          const names = r.served.map((s) => datum(s.name, 60))
+          const n = names.length
+          const list = names.slice(0, KNOWLEDGE_ROW_NAMES).join(', ') + (n > KNOWLEDGE_ROW_NAMES ? `, and ${n - KNOWLEDGE_ROW_NAMES} more` : '')
+          const row = `Added ${n} known item${n === 1 ? '' : 's'}: ${list}`
+          this.knowledgeRow(a, agentId ?? ROOT_AGENT_ID, row.length > 200 ? `${row.slice(0, 199)}…` : row)
+          this.noteRecalled(a, agentId ?? ROOT_AGENT_ID, r.served.map((s) => s.id), 'auto')
+          return r.text
+        } catch (e) {
+          log.warn(`Run ${a.summary.id}: knowledge context failed: ${e instanceof Error ? e.message : String(e)}`)
+          return null
+        }
+      },
+      knowledgeBrief: (): string | undefined => {
+        if (a.knowledgeBriefDone) return a.knowledgeBriefText
+        a.knowledgeBriefDone = true
+        try {
+          a.knowledgeBriefText = knowledgeBrief(store.get(projectId))
+        } catch (e) {
+          log.warn(`Run ${a.summary.id}: knowledge brief failed: ${e instanceof Error ? e.message : String(e)}`)
+        }
+        return a.knowledgeBriefText
+      }
+    }
+  }
+
   /**
    * Recompute summary.usage (and totalCostUsd) now; publish run.usage and save the index at most once per
    * USAGE_THROTTLE_MS (trailing), or immediately when `immediate` (terminal status, teardown).
@@ -1637,6 +1817,8 @@ export class RunManager {
     const runId = active.summary.id
     // Every waiting card (permissions, proposals, questions, rules, merges, installs) is settled as cancelled.
     cancelPending(active, runId, this.broadcast)
+    // Waiting knowledge.recalled events are sent once and their timers stop (nothing is emitted after this).
+    this.flushRecalled(active)
     // The final usage goes out and is saved with the record, whatever the throttle still holds.
     // Always recompute after the timers close so waitingMs / idleMs / limitHoldMs are final (publish skips no-op changes).
     this.closeTimers(active)

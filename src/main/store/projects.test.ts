@@ -88,6 +88,38 @@ describe('Project.client normalization', () => {
   })
 })
 
+describe('Project.knowledgeAutoContext', () => {
+  it('stays unset through boot, save, renderer save and newProject; only a boolean is kept', () => {
+    const dir = dataDir()
+    const unset = project({ id: 'p_unset' })
+    expect('knowledgeAutoContext' in unset).toBe(false)
+    writeFileSync(
+      join(dir, 'projects.json'),
+      JSON.stringify({ version: 2, projects: [unset, { ...project({ id: 'p_off' }), knowledgeAutoContext: false }, { ...project({ id: 'p_junk' }), knowledgeAutoContext: 'yes' }, { ...project({ id: 'p_null' }), knowledgeAutoContext: null }] })
+    )
+    const store = new ProjectStore(dir)
+    expect('knowledgeAutoContext' in store.get('p_unset')!).toBe(false)
+    expect(store.get('p_off')?.knowledgeAutoContext).toBe(false)
+    expect('knowledgeAutoContext' in store.get('p_junk')!).toBe(false)
+    expect('knowledgeAutoContext' in store.get('p_null')!).toBe(false)
+    // Saves never fill it in.
+    expect('knowledgeAutoContext' in store.save(store.get('p_unset')!)).toBe(false)
+    expect('knowledgeAutoContext' in store.saveFromRenderer({ ...store.get('p_unset')!, name: 'Renamed' })).toBe(false)
+    expect(store.saveFromRenderer({ ...store.get('p_unset')!, knowledgeAutoContext: true }).knowledgeAutoContext).toBe(true)
+    expect(store.saveFromRenderer({ ...store.get('p_unset')!, knowledgeAutoContext: false }).knowledgeAutoContext).toBe(false)
+    expect(store.saveFromRenderer({ ...store.get('p_unset')!, knowledgeAutoContext: 1 as unknown as boolean }).knowledgeAutoContext).toBeUndefined()
+    // A renderer that sends it unset clears it back to automatic.
+    const { knowledgeAutoContext: _gone, ...without } = store.get('p_off')!
+    expect('knowledgeAutoContext' in store.saveFromRenderer(without as Project)).toBe(false)
+    // A new project starts without it.
+    const created = new ProjectStore(dataDir()).create({ name: 'New', path: dataDir(), brief: '' } as never, undefined, { mockAvailable: true, fs: { statSync: () => ({ isDirectory: () => true }), existsSync: () => true, readdirSync: () => [] } })
+    expect('knowledgeAutoContext' in created).toBe(false)
+    // And a reload keeps all of it.
+    const again = new ProjectStore(dir)
+    expect('knowledgeAutoContext' in again.get('p_junk')!).toBe(false)
+  })
+})
+
 describe('ProjectStore.save virtual ids (L4)', () => {
   it('refuses the harness, Chat and Skill assistant ids', () => {
     const store = new ProjectStore(dataDir())

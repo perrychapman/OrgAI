@@ -96,7 +96,7 @@ import { KIT_IPC, MCP_SCOPE_IPC } from '@shared/types'
 import type { KitApplyResult, KitExportResult, KitImportPreview } from '@shared/types'
 import { applyArgs as kitApplyArgs, exportArgs as kitExportArgs, type KitService } from './kit/service'
 import { PickedPaths, kitExportTarget } from './kit/pickedPaths'
-import { CONNECTION_IDS, HARNESS_PROJECT_ID, IPC, QUICK_PROJECT_ID, PROPOSAL_NOTE_MAX_CHARS, QUICK_RUN_MAX_PROMPT_CHARS, SKILLS_PROJECT_ID, isVirtualProjectId } from '@shared/types'
+import { CONNECTION_IDS, HARNESS_PROJECT_ID, IPC, KNOWLEDGE_LINK_ID_RE, QUICK_PROJECT_ID, PROPOSAL_NOTE_MAX_CHARS, QUICK_RUN_MAX_PROMPT_CHARS, SKILLS_PROJECT_ID, isVirtualProjectId } from '@shared/types'
 import { isConnectionId, isSafeId } from '@shared/defaults'
 import { sanitizeImages } from './runtime/attachments'
 import { skillAssistPrompt, skillsProject } from './skills/assist'
@@ -138,7 +138,7 @@ import {
   teamReviewFile,
   updateEngagementDocument
 } from './store/projectData'
-import { clearKnowledge, knowledgeNodeCount, readKnowledge, removeEdge, removeNode, saveEdge, saveNodeForUser, userSource } from './store/knowledge'
+import { clearKnowledge, dismissKnowledgeLink, knowledgeNodeCount, readKnowledge, readKnowledgeInferred, removeEdge, removeNode, saveEdge, saveNodeForUser, userSource } from './store/knowledge'
 import { emptyKnowledgeGraph } from '@shared/knowledge'
 import type { TemplateService } from './setup/templates'
 import type {
@@ -150,9 +150,11 @@ import type {
   EngagementNoteRef,
   EngagementNoteSaveInput,
   KnowledgeEdge,
+  KnowledgeDismissLinkInput,
   KnowledgeEdgeSaveInput,
   KnowledgeFactInput,
   KnowledgeGraph,
+  KnowledgeInferredResult,
   KnowledgeItemRef,
   KnowledgeNode,
   KnowledgeNodeSaveInput,
@@ -921,6 +923,13 @@ export const knowledgeArgs = {
       ...(note !== undefined ? { note } : {}),
       ...(retired !== undefined ? { retired } : {})
     }
+  },
+  /** projectId plus a link id of the KNOWLEDGE_LINK_ID_RE shape; extra fields dropped. */
+  dismissLink(input: unknown): KnowledgeDismissLinkInput {
+    const i = obj<Record<string, unknown>>(input)
+    const projectId = storedIdArg(i.projectId)
+    if (typeof i.linkId !== 'string' || !KNOWLEDGE_LINK_ID_RE.test(i.linkId)) throw new Error('That is not a connection id.')
+    return { projectId, linkId: i.linkId }
   }
 }
 
@@ -975,6 +984,16 @@ function registerKnowledgeIpc({ projects, dataDir }: { projects: ProjectStore; d
     const graph = clearKnowledge(dataDir, project.id)
     changed(project.id)
     return graph
+  })
+  ipcMain.handle(IPC.knowledgeInferredLinks, (_e, id: unknown): KnowledgeInferredResult => {
+    const project = stored(knowledgeArgs.projectId(id))
+    return projectKindOf(project) === 'engagement' ? readKnowledgeInferred(dataDir, project.id) : { links: [], appearances: {} }
+  })
+  ipcMain.handle(IPC.knowledgeDismissLink, (_e, input: unknown): KnowledgeInferredResult => {
+    const { projectId, linkId } = knowledgeArgs.dismissLink(input)
+    const result = dismissKnowledgeLink(dataDir, engagement(projectId).id, linkId)
+    changed(projectId, [linkId])
+    return result
   })
 }
 
