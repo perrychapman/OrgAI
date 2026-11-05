@@ -82,3 +82,7 @@ jobs:
       # Unpacked app only, no installers: catches electron-builder config and asarUnpack breakage.
       # (`npm run pack`, not `npm pack`, which is npm's own tarball command.)
       - run: npm run pack
+      # The packaged orgai command (cli-spec 7): --version, doctor, and a mock exec (ORGAI_MOCK=1, no tokens) in-process
+      # and through the spawned background app, on a temp data folder. UNVERIFIED until CI runs it: the Windows
+      # launcher (cmd.exe running orgai.cmd) and the default-host step (the packaged app spawned with --headless-host).
+      - run: npm run pack:verify
