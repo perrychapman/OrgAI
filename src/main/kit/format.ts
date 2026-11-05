@@ -274,7 +274,7 @@ function remoteAddressRefusal(f: Pick<McpLibraryEntry, 'url' | 'headers'>): stri
 }
 
 /** Slot names that would change what runs or where a request goes (NODE_OPTIONS as a secret variable, Host as a secret header). */
-function slotRefusal(transport: McpLibraryEntry['transport'], env: readonly string[] | undefined, headers: readonly string[] | undefined): string | null {
+export function slotRefusal(transport: McpLibraryEntry['transport'], env: readonly string[] | undefined, headers: readonly string[] | undefined): string | null {
   const name = (k: string): string => (/^[\w.-]{1,64}$/.test(k) ? ` (${k})` : '')
   for (const k of env ?? []) if (riskyEnvName(k)) return `A secret variable${name(k)} changes what runs and cannot be part of a kit.`
   for (const k of headers ?? []) if (ROUTING_HEADER.test(k)) return `A secret header${name(k)} changes where requests go and cannot be part of a kit.`
