@@ -50,6 +50,16 @@ const ENGAGEMENT: ProjectKindCopy = {
   setupLead: 'The Architect looks through the folder and proposes a plan, a team and settings. You approve each one.'
 }
 
+/** Where a project's saved rules live: its folder's .claude/settings.local.json, or OrgAI's own data folder. */
+export type RulesLocation = 'folder' | 'app'
+
+/** What approving the settings proposal does, by kind and where the project's rules live. */
+export function settingsApplyNoteFor(kind: ProjectKind, location: RulesLocation): string {
+  if (kind === 'engagement') return ENGAGEMENT.settingsApplyNote
+  if (location === 'app') return 'Approving updates the project settings and brief, and saves any allowed commands in OrgAI, not in your folder.'
+  return CODE.settingsApplyNote
+}
+
 export function projectKindCopy(kind: ProjectKind): ProjectKindCopy {
   return kind === 'engagement' ? ENGAGEMENT : CODE
 }

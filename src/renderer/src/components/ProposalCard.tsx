@@ -20,8 +20,8 @@ import { SkillsProposalBody } from './proposals/SkillsProposalBody'
 import { useMcpCurrent } from './proposals/useCurrent'
 import { ClampText } from './proposals/ClampText'
 import { clampLabel } from '../lib/clampLabel'
-import { projectKindOf } from '@shared/defaults'
-import { projectKindCopy, type ArchitectureHeadings } from '../lib/projectKindCopy'
+import { projectKindOf, projectRulesLocation } from '@shared/defaults'
+import { projectKindCopy, settingsApplyNoteFor, type ArchitectureHeadings } from '../lib/projectKindCopy'
 
 interface Props {
   proposal: Proposal
@@ -39,7 +39,7 @@ interface Props {
 const APPLY_NOTE: Record<Proposal['kind'], string> = {
   architecture: 'Approving writes .orgai/ARCHITECTURE.md into the working directory and references it from CLAUDE.md.',
   orgChart: 'Approving replaces the project’s org chart with these roles. You can still edit them by hand afterwards.',
-  settings: 'Approving updates the project settings and brief, and saves any allowed commands to .claude/settings.local.json.',
+  settings: 'Approving updates the project settings and brief, and saves any allowed commands for this project.',
   mcpServers: 'Approving saves these MCP servers to the project. Secrets are stored encrypted.',
   // The skills card picks its own note by scope (skillsApplyNote).
   skills: 'Approving writes these skills to this project and grants them to the listed roles.'
@@ -109,7 +109,7 @@ export default function ProposalCard({ proposal, runId, currentRoles, who, agent
         : proposal.kind === 'architecture'
           ? kindCopy.architectureApplyNote
           : proposal.kind === 'settings'
-            ? kindCopy.settingsApplyNote
+            ? settingsApplyNoteFor(kind, projectRulesLocation(project))
             : APPLY_NOTE[proposal.kind]
 
   const setSecret = (index: number, v: string): void => setSecretValues((cur) => ({ ...cur, [index]: v }))

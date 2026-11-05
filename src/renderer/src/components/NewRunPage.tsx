@@ -12,6 +12,7 @@ import { Button } from './ui/Button'
 import { EmptyState } from './ui/EmptyState'
 import Composer from './Composer'
 import McpAuthNotice from './mcp/McpAuthNotice'
+import FolderTrustNotice from './FolderTrustNotice'
 
 const SCAFFOLD_PROMPT =
   'The project folder is empty or nearly empty. If it is not a git repository yet, run git init and make an initial commit before delegating, so reports can work in isolated worktrees. Then scaffold the project according to .orgai/ARCHITECTURE.md: create the structure, tooling, build and test commands, and a minimal end-to-end slice that runs. Keep every decision consistent with the architecture document, and report what you created.'
@@ -125,6 +126,7 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
         )}
 
         <McpAuthNotice project={project} />
+        <FolderTrustNotice project={project} />
 
         <Composer
           draftKey={newRunDraftKey(project.id)}

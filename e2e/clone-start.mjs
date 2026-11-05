@@ -179,7 +179,7 @@ try {
     await tid('setup-choice').waitFor({ timeout: 10_000 })
     const cfg = await textOf('repo-config-line')
     check(cfg.indexOf('.claude/settings.json') < cfg.indexOf('.mcp.json') && cfg.indexOf('.mcp.json') < cfg.indexOf('AGENTS.md') && cfg.includes('subfolders'), `${tag}: repo config ranked by effect, with the nested note`, cfg)
-    check(!/until you allow|will not use/i.test(cfg), `${tag}: repo config promises no gate`)
+    check(/until you allow them in the project's Settings/.test(cfg), `${tag}: repo config says agents wait for the user's allow`, cfg)
     check((await textOf('agents-found')).includes('Claude Code'), `${tag}: agents found from the clone`, await textOf('agents-found'))
     await sleep(300)
     check((await textOf('new-project-status')).includes('Choose how the team starts'), `${tag}: the setup choice is announced`, await textOf('new-project-status'))

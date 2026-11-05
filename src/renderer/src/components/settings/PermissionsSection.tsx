@@ -19,6 +19,9 @@ import {
   takeProjectSettingsSection,
   type ProjectSettingsSection
 } from '../../lib/settingsTarget'
+import { folderTrustState, folderTrustSummary } from '../../lib/folderTrust'
+import { FolderTrustSection } from './FolderTrustSection'
+import { useFolderTrustReview } from './useFolderTrustReview'
 import { AllowedDirectoriesSection } from './AllowedDirectoriesSection'
 import { ReferenceDirectoriesSection } from './ReferenceDirectoriesSection'
 import { ClampedNumber } from './ClampedNumber'
@@ -156,7 +159,10 @@ export function PermissionsSection({ project, patch }: { project: Project; patch
   }, [project.isolateWriters])
   const showIsolation = !engagement || isoSeenOn || project.isolateWriters === true
   const isoLabel = engagement ? 'Give each writer its own copy (git worktrees)' : copy.isolateWriters.label
-  const summary = allowedSummary(ruleCount, folderCount, referenceCount)
+  const trust = useFolderTrustReview(project)
+  const trustLine = folderTrustSummary(folderTrustState(project, trust.review))
+  const rulesSummary = allowedSummary(ruleCount, folderCount, referenceCount)
+  const summary = rulesSummary && trustLine ? `${rulesSummary}. ${trustLine}` : rulesSummary
   const bodyId = row('summary-body')
 
   return (
@@ -215,6 +221,7 @@ export function PermissionsSection({ project, patch }: { project: Project; patch
             />
           </div>
         </SettingsCard>
+        <FolderTrustSection project={project} trust={trust} />
         <div id={bodyId} className="perm-summary-body" hidden={!summaryOpen}>
           <p>{MODE_MORE}</p>
           <ReferenceDirectoriesSection project={project} />

@@ -246,11 +246,12 @@ export function repoConfigGroups(list: readonly string[]): Record<RepoConfigEffe
   return groups
 }
 
-const NESTED_NOTE = 'CLAUDE.md files in subfolders are not listed.'
+const GATE_NOTE = "Agents won't use these settings until you allow them in the project's Settings."
+const NESTED_NOTE ='CLAUDE.md files in subfolders are not listed.'
 
 /**
- * The quiet lines about what the repository ships. They describe the files only and say nothing about what OrgAI will
- * or will not let them do, so they stay true when a trust gate lands.
+ * The quiet lines about what the repository ships. When any is listed, one more line says agents do not use them until
+ * the user allows them (the folder config trust gate: Project settings > Permissions).
  */
 export function repoConfigLines(list: readonly string[]): string[] {
   if (list.length === 0) return [`No agent settings or instruction files at the top of this repository. ${NESTED_NOTE}`]
@@ -259,7 +260,7 @@ export function repoConfigLines(list: readonly string[]): string[] {
   if (g['runs-commands'].length) lines.push(`Can run commands or change what agents may do: ${g['runs-commands'].join(', ')}`)
   if (g.tools.length) lines.push(`Can add tools, agents or skills: ${g.tools.join(', ')}`)
   if (g.instructions.length) lines.push(`Instructions agents read: ${g.instructions.join(', ')}`)
-  lines.push(NESTED_NOTE)
+  lines.push(GATE_NOTE, NESTED_NOTE)
   return lines
 }
 
