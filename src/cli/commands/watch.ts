@@ -16,10 +16,11 @@
  *
  * `--output-format json` streams like stream-json (one compact object per line): a stream has no single document.
  */
-import type { AgentInstance, PendingCards, RunEvent, RunRecord, RunsEventParams, RunsSubscribeInput, RunsSubscribeResult, RunSummary, TranscriptEntry } from '../../shared/types'
+import type { AgentInstance, PendingCards, RunEvent, RunRecord, RunsEventParams, RunSummary, TranscriptEntry } from '../../shared/types'
 import { newestOf } from '../../shared/view/runChains'
 import { runIndexMap, runName, runTag } from '../../shared/view/runLabels'
 import { statusText } from '../../shared/view/runStatus'
+import { RUN_STREAM_RECONNECT_WINDOW_MS, RunStream, type SnapshotResult } from '../client/runStream'
 import { parseFlags } from '../flags'
 import { emitLine, isJsonOutput, printText, safeLine, styleFor, styleStatus, warn } from '../output'
 import { agentLabel, pendingItems, planUpdateLine, recordWithoutImages, statusViewOf, statusWordOfSummary, tailRows, transcriptLine } from '../render'
@@ -28,9 +29,7 @@ import { CliError, EXIT, type CliContext, type CommandFn, type HostClient, type 
 
 export const WATCH_SNAPSHOT_ROWS = 20
 /** Give up reconnecting after this long without a successful resubscribe. */
-export const WATCH_RECONNECT_WINDOW_MS = 30_000
-const BACKOFF_START_MS = 250
-const BACKOFF_MAX_MS = 5_000
+export const WATCH_RECONNECT_WINDOW_MS = RUN_STREAM_RECONNECT_WINDOW_MS
 
 /** Timers, swappable in tests. */
 export const watchTimers = {
@@ -62,7 +61,7 @@ export const runWatch: CommandFn = async (ctx: CliContext, args: string[]): Prom
   }
 
   // Resolve the ref through the live host, then watch the chain's newest member.
-  let client: HostClient = first.client
+  const client: HostClient = first.client
   warnVersionSkew(ctx, client)
   const hostSrc = liveSource(client)
   const resolved = await resolveRunFromSource(ctx, hostSrc, ref).catch((e: unknown) => {
@@ -84,9 +83,6 @@ export const runWatch: CommandFn = async (ctx: CliContext, args: string[]): Prom
   const followed = new Set<string>([target])
   let newest = target
   const printed = new Set<string>()
-  let lastSeq: number | undefined
-  let hostInstanceId: string | undefined
-  let filterKey: string | undefined
   let finished = false
   let exitCode: number = EXIT.ok
 
@@ -209,10 +205,7 @@ export const runWatch: CommandFn = async (ctx: CliContext, args: string[]): Prom
   }
 
   const onRunsEvent = (p: RunsEventParams): void => {
-    if (finished || !p || typeof p !== 'object' || !p.event) return
     if (typeof p.seq === 'number') {
-      if (lastSeq !== undefined && p.seq <= lastSeq) return
-      lastSeq = p.seq
       if (json) emitLine(ctx, { type: 'event', seq: p.seq, event: p.event })
     } else if (p.event.type === 'agent.partial') {
       if (follow) adopt(p.event.runId)
@@ -222,17 +215,9 @@ export const runWatch: CommandFn = async (ctx: CliContext, args: string[]): Prom
     applyEvent(p.event)
   }
 
-  /** Apply a subscribe result: a snapshot resyncs, a replay applies events after lastSeq. */
-  const applySubscribe = (res: RunsSubscribeResult, firstTime: boolean): void => {
-    hostInstanceId = res.hostInstanceId
-    filterKey = res.filterKey
-    if (res.mode === 'replay') {
-      for (const e of res.events) onRunsEvent({ seq: e.seq, event: e.event })
-      if (typeof res.toSeq === 'number' && (lastSeq === undefined || res.toSeq > lastSeq)) lastSeq = res.toSeq
-      return
-    }
+  /** Apply a snapshot: it resyncs (the first one prints the tail). */
+  const applySnapshot = (res: SnapshotResult, firstTime: boolean): void => {
     const snap = res.snapshot
-    lastSeq = res.seq
     if (json) {
       const active = snap.activeRun ? recordWithoutImages(snap.activeRun) : undefined
       emitLine(ctx, { type: 'snapshot', hostInstanceId: res.hostInstanceId, seq: res.seq, filterKey: res.filterKey, snapshot: { ...snap, ...(active ? { activeRun: active } : {}) } })
@@ -285,113 +270,30 @@ export const runWatch: CommandFn = async (ctx: CliContext, args: string[]): Prom
     finish(EXIT.ok)
   })
 
-  let offNote: () => void = () => undefined
-  let offClose: () => void = () => undefined
-
-  /** Subscribe on `c`; notifications that arrive before the result is applied are queued, then applied in order. */
-  const subscribe = async (c: HostClient, firstTime: boolean): Promise<void> => {
-    let queue: RunsEventParams[] | null = []
-    offNote()
-    offNote = c.onNotification((method, params) => {
-      if (method !== 'runs:event') return
-      if (queue) queue.push(params as RunsEventParams)
-      else onRunsEvent(params as RunsEventParams)
-    })
-    const input: RunsSubscribeInput = {
-      runIds: [...followed],
-      followChains: follow,
-      includeActiveRunRecord: newest,
-      ...(lastSeq !== undefined && hostInstanceId ? { sinceSeq: lastSeq, hostInstanceId, ...(filterKey ? { filterKey } : {}) } : {})
-    }
-    const res = await c.call<RunsSubscribeResult>('runs:subscribe', [input], { timeoutMs: 60_000 })
-    applySubscribe(res, firstTime)
-    const pending = queue
-    queue = null
-    for (const p of pending) onRunsEvent(p)
-  }
-
-  /**
-   * One reconnect loop at a time. Set while a (re)subscribe is in flight too: a socket that closes during
-   * runs:subscribe rejects that call (the loop, or the first subscribe, handles it), so its close listener must not
-   * start a second loop.
-   */
-  let reconnecting = false
-  /** The client whose socket closed while a (re)subscribe was in flight; checked once that subscribe settles. */
-  let closedWhileBusy: HostClient | undefined
-
-  const watchClose = (c: HostClient): void => {
-    offClose()
-    offClose = c.onClose(() => {
-      if (finished) return
-      if (reconnecting) closedWhileBusy = c
-      else void reconnect()
-    })
-  }
-
-  const reconnect = async (): Promise<void> => {
-    if (reconnecting) return
-    reconnecting = true
-    try {
-      const started = watchTimers.now()
-      let delay = BACKOFF_START_MS
-      while (!finished) {
-        await watchTimers.sleep(delay)
-        if (finished) return
-        const res = await ctx.connect(['read'], { clientKind: 'cli', waitStartingMs: 2000 }).catch(() => undefined)
-        if (res?.ok) {
-          if (finished) {
-            res.client.close()
-            return
-          }
-          // The old client is closed before it is replaced, so no socket outlives the command.
-          const previous = client
-          client = res.client
-          if (previous !== client) previous.close()
-          try {
-            watchClose(client)
-            await subscribe(client, false)
-            if (closedWhileBusy !== client) return
-          } catch {
-            // closed or refused: try again
-          }
-          closedWhileBusy = undefined
-          client.close()
-        }
-        if (watchTimers.now() - started >= WATCH_RECONNECT_WINDOW_MS) {
-          warn(ctx, 'Lost the connection to the OrgAI host.')
-          finish(EXIT.failure)
-          return
-        }
-        delay = Math.min(BACKOFF_MAX_MS, delay * 2)
-      }
-    } finally {
-      reconnecting = false
-    }
-  }
+  const stream = new RunStream({
+    client,
+    connect: () => ctx.connect(['read'], { clientKind: 'cli', waitStartingMs: 2000 }),
+    subscribeInput: () => ({ runIds: [...followed], followChains: follow, includeActiveRunRecord: newest }),
+    onEvent: onRunsEvent,
+    onSnapshot: applySnapshot,
+    onGone: () => {
+      warn(ctx, 'Lost the connection to the OrgAI host.')
+      finish(EXIT.failure)
+    },
+    stopped: () => finished,
+    timers: watchTimers,
+    reconnectWindowMs: WATCH_RECONNECT_WINDOW_MS
+  })
 
   try {
-    reconnecting = true
-    watchClose(client)
-    await subscribe(client, true)
+    await stream.start()
   } catch (e) {
     offSignal()
-    offNote()
-    offClose()
-    client.close()
     throw e
-  } finally {
-    reconnecting = false
-  }
-  // The socket closed right after the first subscribe answered: reconnect now that the loop may start.
-  if (closedWhileBusy === client) {
-    closedWhileBusy = undefined
-    void reconnect()
   }
   const code = await done
   offSignal()
-  offNote()
-  offClose()
-  client.close()
+  stream.close()
   return code ?? exitCode
 }
 
@@ -400,8 +302,8 @@ function resolvedProjectOf(runs: readonly RunSummary[], id: string): string {
   return runs.find((r) => r.id === id)?.projectId ?? ''
 }
 
-/** A minimal ReadSource over a connected client (projects, runs, records). */
-function liveSource(client: HostClient): Parameters<typeof resolveRunFromSource>[1] {
+/** A minimal ReadSource over a connected client (projects, runs, records); exec and resume use it too. */
+export function liveSource(client: HostClient): Parameters<typeof resolveRunFromSource>[1] {
   const newestFirst = (a: RunSummary, b: RunSummary): number => b.startedAt - a.startedAt || b.id.localeCompare(a.id)
   const runs = async (projectId: string): Promise<RunSummary[]> => {
     if (!projectId) return []
