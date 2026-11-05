@@ -15,7 +15,7 @@ import { App, type ExitInfo, type InputSource } from './App'
 import { KeyParser } from './input/keys'
 import { sanitizeTty } from './sanitizeTty'
 import { connectTuiHost, openTuiSession } from './session'
-import { SEQ, chooseBufferMode, createTerminal } from './terminal'
+import { SEQ, chooseBufferMode, createTerminal, gateWrites } from './terminal'
 import type { BufferMode, InputEvent, OpenTuiSessionOptions, TuiEnv, TuiHostConnection, TuiLaunch } from './types'
 
 export const NO_TTY_MESSAGE = 'The terminal UI needs a terminal; use orgai exec for scripts.'
@@ -165,7 +165,8 @@ export async function runTui(ctx: CliContext, launch: TuiLaunch, flags: TuiFlags
       onExit: (code: number, info?: ExitInfo) => finish({ code, ...(info ? { info } : {}) })
     }),
     {
-      stdout,
+      // Ink never paints while the pager (or a stop) owns the terminal; see gateWrites.
+      stdout: gateWrites(stdout, () => terminal.suspended),
       stdin: inkStdin,
       stderr: stdout,
       exitOnCtrlC: false,

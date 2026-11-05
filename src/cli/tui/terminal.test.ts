@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events'
 import { describe, expect, it, vi } from 'vitest'
-import { SEQ, chooseBufferMode, createTerminal } from './terminal'
+import { SEQ, chooseBufferMode, createTerminal, gateWrites } from './terminal'
 import type { BufferMode } from './types'
 
 class FakeStdout extends EventEmitter {
@@ -261,5 +261,40 @@ describe('createTerminal', () => {
     stdout.out = ''
     proc.emit('exit', 0)
     expect(stdout.out).toContain(SEQ.altLeave)
+  })
+})
+
+describe('gateWrites', () => {
+  it('drops writes while held (calling their callback) and passes everything else through', async () => {
+    const written: string[] = []
+    const stream = Object.assign(new EventEmitter(), {
+      columns: 100,
+      rows: 30,
+      isTTY: true,
+      write(chunk: string, cb?: () => void) {
+        written.push(chunk)
+        cb?.()
+        return true
+      }
+    })
+    let held = false
+    const gated = gateWrites(stream as unknown as NodeJS.WriteStream, () => held)
+    gated.write('a')
+    held = true
+    const cb = vi.fn()
+    expect(gated.write('b', cb)).toBe(true)
+    await Promise.resolve()
+    expect(cb).toHaveBeenCalledTimes(1)
+    held = false
+    gated.write('c')
+    expect(written).toEqual(['a', 'c'])
+    expect(gated.columns).toBe(100)
+    expect(gated.isTTY).toBe(true)
+    const onResize = vi.fn()
+    gated.on('resize', onResize)
+    stream.emit('resize')
+    expect(onResize).toHaveBeenCalledTimes(1)
+    gated.off('resize', onResize)
+    expect(stream.listenerCount('resize')).toBe(0)
   })
 })

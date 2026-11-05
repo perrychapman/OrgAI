@@ -69,7 +69,7 @@ export interface InputSource {
 
 export interface AppProps {
   session: TuiSessionApi
-  terminal: TerminalController & Partial<Pick<TuiTerminal, 'onResume' | 'stopSelf' | 'suspendForChild' | 'resumeFromChild'>>
+  terminal: TerminalController & Partial<Pick<TuiTerminal, 'onResume' | 'stopSelf' | 'suspendForChild' | 'resumeFromChild' | 'suspended'>>
   env: TuiEnv
   launch: TuiLaunch
   conn: TuiHostConnection
@@ -165,13 +165,34 @@ function useScrollback(enabled: boolean, rows: TranscriptRow[], card: TrayCard |
   return st.list
 }
 
+/**
+ * `orgai [--] <prompt>` begins a work run (cli-spec 6.1). The session may have focused one of the project's live runs
+ * (openTuiSession's default pick), so aim the composer at a new run first, as /new does; else the prompt would go to
+ * that run as a message (runs:send) and `--team` would be dropped.
+ */
+export function startLaunchRun(session: TuiSessionApi, launch: Pick<TuiLaunch, 'prompt' | 'team'>): void {
+  if (!launch.prompt) return
+  session.setComposeTarget('new')
+  session.submitPrompt(launch.prompt, launch.team ? { team: launch.team } : undefined).catch((e: unknown) => session.notify(errText(e), 'danger'))
+}
+
 export function App(props: AppProps) {
   const { terminal, env, launch, conn } = props
   const processEnv = props.processEnv ?? process.env
   const now = props.now ?? Date.now
   const bus = useMemo(() => new InputBus(), [])
   const [session, setSession] = useState<TuiSessionApi>(props.session)
-  const state = useSyncExternalStore(session.subscribe, session.getState, session.getState)
+  // While the terminal is suspended (the $PAGER owns it, or SIGTSTP) the view holds still: notifications are dropped
+  // and every render reads the state last shown, so no frame and no <Static> transcript row is written over the
+  // child. The resume listener below redraws from the current state (runTui's stdout gate covers stray frames).
+  const shown = useRef<TuiState | undefined>(undefined)
+  const subscribe = useCallback((cb: () => void) => session.subscribe(() => (terminal.suspended === true ? undefined : cb())), [session, terminal])
+  const getSnapshot = useCallback((): TuiState => {
+    if (terminal.suspended === true && shown.current !== undefined) return shown.current
+    shown.current = session.getState()
+    return shown.current
+  }, [session, terminal])
+  const state = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
   const [onboarding, setOnboarding] = useState<boolean>(launch.onboarding !== undefined)
   const [check, setCheck] = useState<ProjectPathCheck | undefined>(undefined)
   const [quickEdits, setQuickEdits] = useState<boolean | undefined>(undefined)
@@ -208,7 +229,8 @@ export function App(props: AppProps) {
     if (PANE_ORDER.includes(focus as PaneId) && !panes.some((p) => p.pane === focus)) setFocusState('composer')
   }, [focus, cards.length, panes])
 
-  useEffect(() => terminal.onResize((cols, rows) => setSize({ cols, rows })), [terminal])
+  // A resize while suspended is picked up by the resume listener (setSize(terminal.size())).
+  useEffect(() => terminal.onResize((cols, rows) => (terminal.suspended === true ? undefined : setSize({ cols, rows }))), [terminal])
   useEffect(() => {
     if (!terminal.onResume) return undefined
     return terminal.onResume(() => {
@@ -327,7 +349,7 @@ export function App(props: AppProps) {
           await switchSession({ project, runId: run.id, folder })
         } else {
           const next = await switchSession({ project, folder })
-          if (launch.prompt) next.submitPrompt(launch.prompt, launch.team ? { team: launch.team } : undefined).catch((e: unknown) => next.notify(errText(e), 'danger'))
+          if (launch.prompt) startLaunchRun(next, launch)
         }
         setOnboarding(false)
         setFocusState('composer')
@@ -349,7 +371,7 @@ export function App(props: AppProps) {
         .catch(() => undefined)
       return
     }
-    if (launch.prompt) session.submitPrompt(launch.prompt, launch.team ? { team: launch.team } : undefined).catch((e: unknown) => notify(errText(e), 'danger'))
+    if (launch.prompt) startLaunchRun(session, launch)
     else if (launch.resumeText) session.submitPrompt(launch.resumeText).catch((e: unknown) => notify(errText(e), 'danger'))
   }, [launch, conn, session, notify])
 

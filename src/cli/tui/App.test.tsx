@@ -179,8 +179,8 @@ function fakeSession(initial: Partial<TestState> = {}, hostKind: 'daemon' | 'inp
     hostKind,
     hostInstanceId: 'h1',
     focusRun: vi.fn(async () => undefined),
-    setComposeTarget: vi.fn(),
-    submitPrompt: vi.fn(async () => undefined),
+    setComposeTarget: vi.fn((_t: string) => undefined),
+    submitPrompt: vi.fn(async (_text: string, _o?: unknown) => undefined),
     startQuick: vi.fn(async () => ({}) as RunSummary),
     interrupt: vi.fn(async () => undefined),
     stop: vi.fn(async () => undefined),
@@ -195,11 +195,17 @@ function fakeSession(initial: Partial<TestState> = {}, hostKind: 'daemon' | 'inp
   return { api, set, state: () => state }
 }
 
-function mount(opts: { session?: ReturnType<typeof fakeSession>; inline?: boolean; inproc?: boolean; onboarding?: boolean; now?: () => number } = {}) {
+function mount(opts: { session?: ReturnType<typeof fakeSession>; inline?: boolean; inproc?: boolean; onboarding?: boolean; now?: () => number; launch?: import('./types').TuiLaunch } = {}) {
   const s = opts.session ?? fakeSession()
   const listeners = new Set<(e: Ev) => void>()
   const input = { subscribe: (fn: (e: Ev) => void) => (listeners.add(fn), () => void listeners.delete(fn)) }
+  const resumeFns = new Set<() => void>()
   const terminal = {
+    suspended: false,
+    resumeNow() {
+      this.suspended = false
+      for (const fn of [...resumeFns]) fn()
+    },
     bufferMode: opts.inline ? ('inline' as const) : ('fullscreen' as const),
     bracketedPaste: true,
     enter: vi.fn(),
@@ -208,7 +214,7 @@ function mount(opts: { session?: ReturnType<typeof fakeSession>; inline?: boolea
     restore: vi.fn(),
     size: () => ({ cols: 120, rows: 40 }),
     onResize: () => () => undefined,
-    onResume: () => () => undefined,
+    onResume: (fn: () => void) => (resumeFns.add(fn), () => void resumeFns.delete(fn)),
     stopSelf: vi.fn()
   }
   const P = { id: 'p_new', name: 'repo', path: '/work/repo' } as Project
@@ -231,7 +237,7 @@ function mount(opts: { session?: ReturnType<typeof fakeSession>; inline?: boolea
       session={s.api as never}
       terminal={terminal}
       env={{ ...DEFAULT_TUI_ENV, bufferMode: opts.inline ? 'inline' : 'fullscreen' }}
-      launch={opts.onboarding ? { onboarding: { folder: '/work/repo' } } : {}}
+      launch={opts.launch ?? (opts.onboarding ? { onboarding: { folder: '/work/repo' } } : {})}
       conn={conn as never}
       input={input}
       openSession={openSession}
@@ -250,6 +256,41 @@ function mount(opts: { session?: ReturnType<typeof fakeSession>; inline?: boolea
 }
 
 const card = (k: string) => ({ key: k, ref: { runId: 'run_1' } })
+
+describe('App launch prompt and suspension', () => {
+  it('orgai -- <prompt> starts a new run even when the session focused a live run (cli-spec 6.1)', async () => {
+    const s = fakeSession({ activeRunId: 'run_live', runs: { run_live: { summary: { id: 'run_live', status: 'idle' } } }, runOrder: ['run_live'], activeChain: ['run_live'] })
+    const order: string[] = []
+    s.api.setComposeTarget.mockImplementation((t: string) => void order.push(`target:${t}`))
+    s.api.submitPrompt.mockImplementation(async (text: string) => void order.push(`submit:${text}`))
+    mount({ session: s, launch: { prompt: 'fix the login bug', team: 'single' } })
+    await tick()
+    expect(order).toEqual(['target:new', 'submit:fix the login bug'])
+    expect(s.api.submitPrompt).toHaveBeenCalledWith('fix the login bug', { team: 'single' })
+  })
+
+  it('resume text still goes to the focused chain (no new-run target)', async () => {
+    const s = fakeSession()
+    mount({ session: s, launch: { resumeText: 'carry on' } })
+    await tick()
+    expect(s.api.setComposeTarget).not.toHaveBeenCalled()
+    expect(s.api.submitPrompt).toHaveBeenCalledWith('carry on')
+  })
+
+  it('holds the view still while the terminal is suspended and redraws on resume', async () => {
+    const s = fakeSession({ testRows: [{ key: 'a', runId: 'r', kind: 'text', text: 'first' }] })
+    const m = mount({ session: s })
+    await tick()
+    expect(m.frame()).toContain('first')
+    m.terminal.suspended = true
+    s.set({ testRows: [{ key: 'a', runId: 'r', kind: 'text', text: 'first' }, { key: 'b', runId: 'r', kind: 'text', text: 'second' }] })
+    await tick()
+    expect(m.frame()).not.toContain('second')
+    m.terminal.resumeNow()
+    await tick()
+    expect(m.frame()).toContain('second')
+  })
+})
 
 describe('App focus and routing', () => {
   it('says so when a paste reached the paste cap (KeyParser cut it)', async () => {
