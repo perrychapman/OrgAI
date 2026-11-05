@@ -275,18 +275,24 @@ function fakeRelease(unpacked) {
   return { base, release, paths: p }
 }
 
+/**
+ * Does this command carry the word? On Windows the launcher runs through cmd.exe, so the args are one quoted string
+ * (`/d /s /c ""...orgai.cmd" "exec" ..."`), not one element per argument; match by substring in any element.
+ */
+const hasArg = (cmd, word) => cmd.args.some((x) => x.includes(word))
+
 /** Canned answers per command; records each call. */
 function fakeRunner(calls, overrides = {}) {
   return async (cmd) => {
     calls.push(cmd)
-    const a = cmd.args
-    if (a.includes('--version')) return { code: 0, stdout: `${VERSION}\n`, stderr: '' }
-    if (a.includes('doctor')) return { code: 0, stdout: overrides.doctor ?? doctorDoc(), stderr: '' }
-    if (a.includes('exec')) {
-      const inproc = a.includes('inproc')
+    const has = (w) => hasArg(cmd, w)
+    if (has('--version')) return { code: 0, stdout: `${VERSION}\n`, stderr: '' }
+    if (has('doctor')) return { code: 0, stdout: overrides.doctor ?? doctorDoc(), stderr: '' }
+    if (has('exec')) {
+      const inproc = has('inproc')
       return overrides[inproc ? 'inproc' : 'host'] ?? { code: 0, stdout: JSON.stringify({ outcome: 'completed', exitCode: 0 }), stderr: '' }
     }
-    if (a.includes('daemon')) return { code: 0, stdout: '', stderr: '' }
+    if (has('daemon')) return { code: 0, stdout: '', stderr: '' }
     return { code: 9, stdout: '', stderr: 'unexpected command' }
   }
 }
@@ -330,9 +336,9 @@ test('main: a complete fake release passes every check and cleans its temp dirs'
       assert.ok(c.env.ORGAI_DATA_DIR.includes('orgai-verify-data-'))
       assert.equal(c.timeoutMs, 90_000)
     }
-    const inproc = r.calls.find((c) => c.args.includes('inproc'))
-    assert.ok(inproc.args.includes('--create-project') && inproc.args.some((x) => x.includes('[mock:exec-plan]')))
-    const host = r.calls.filter((c) => c.args.includes('exec') && !c.args.includes('inproc'))
+    const inproc = r.calls.find((c) => hasArg(c, 'inproc'))
+    assert.ok(hasArg(inproc, '--create-project') && hasArg(inproc, '[mock:exec-plan]'))
+    const host = r.calls.filter((c) => hasArg(c, 'exec') && !hasArg(c, 'inproc'))
     assert.equal(host.length, 1)
     assert.equal(host[0].cwd, inproc.cwd, 'both execs run in the fixture repo')
     assert.ok(r.gitCalls.some((g) => g.a[0] === 'commit') && r.gitCalls.every((g) => g.cwd === inproc.cwd))
