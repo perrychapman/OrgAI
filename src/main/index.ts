@@ -39,6 +39,7 @@ import { registerIpc, harnessProjectFor, withEffectiveDefault, broadcastEngageme
 import { AgentImportService } from './setup/import/importer'
 import { TemplateService } from './setup/templates'
 import { KitService } from './kit/service'
+import { RepoCloneService } from './repoClone'
 import { listNotes, orphanRunProjects, readNote, readRetainedRunProjects, saveNote } from './store/projectData'
 import { knowledgeStore } from './store/knowledge'
 import { Notifier } from './notifications'
@@ -487,6 +488,12 @@ app.whenReady().then(() => {
     mock: mockAdapter
   })
   const caps = capabilities
+  const repoClone = new RepoCloneService({
+    dataDir,
+    mock: Object.keys(adapters).includes('mock'),
+    // A clone never lands in a folder an existing project already uses (its folder, allowed or reference folders).
+    projectFolders: () => projects.list().flatMap((p) => [p.path, ...(p.allowedDirectories ?? []), ...(p.referenceDirectories ?? [])]).filter((f): f is string => typeof f === 'string' && f.length > 0)
+  })
   registerIpc({
     projects,
     runs: runManager,
@@ -509,12 +516,14 @@ app.whenReady().then(() => {
     capabilities: caps,
     quick,
     templates,
-    kit: new KitService({ appVersion: app.getVersion(), platform: process.platform, skills, mcp, templates })
+    kit: new KitService({ appVersion: app.getVersion(), platform: process.platform, skills, mcp, templates }),
+    repoClone
   })
   connections.init()
   connections.startDiscovery()
   if (process.env.ORGAI_MOCK !== '1') communityPrices.start()
   app.on('before-quit', () => {
+    repoClone.dispose()
     caps.dispose()
     connections.dispose()
     communityPrices.dispose()
