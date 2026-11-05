@@ -87,6 +87,18 @@ describe('commonGitDir', () => {
   })
 })
 
+/** Moves the lock dir's and owner.json's mtimes `ms` into the past: a heartbeat that stopped that long ago. */
+function backdate(lockDir: string, ms: number): void {
+  const past = new Date(Date.now() - ms)
+  for (const p of [join(lockDir, 'owner.json'), lockDir]) {
+    try {
+      utimesSync(p, past, past)
+    } catch {
+      /* missing */
+    }
+  }
+}
+
 describe('withRepoLock (repoLock.ts)', () => {
   it('holds <commonDir>/orgai-repo.lock with an owner file while running and removes it after', async () => {
     await withRepoLock(repo, async () => {
@@ -153,6 +165,8 @@ describe('withRepoLock (repoLock.ts)', () => {
     const exited = new Promise((r) => child.once('exit', r))
     child.kill('SIGKILL')
     await exited
+    // A dead holder stops beating: its heartbeat ages past heartbeatStaleMs (review M7).
+    backdate(lockDir, 60_000)
     await withRepoLock(repo, async () => {
       ran = true
     })
@@ -211,6 +225,7 @@ describe('withRepoLock (repoLock.ts)', () => {
     const lockDir = lockDirOf(common)
     mkdirSync(lockDir)
     writeFileSync(join(lockDir, 'owner.json'), JSON.stringify({ pid: 999_999, hostInstanceId: 'dddddddddddd', acquiredAt: Date.now(), token: 'dead' }))
+    backdate(lockDir, 60_000)
     let calls = 0
     configureRepoLock({
       timeoutMs: 200,
@@ -222,6 +237,7 @@ describe('withRepoLock (repoLock.ts)', () => {
         rmSync(lockDir, { recursive: true, force: true })
         mkdirSync(lockDir)
         writeFileSync(join(lockDir, 'owner.json'), JSON.stringify({ pid: 4242, hostInstanceId: 'eeeeeeeeeeee', acquiredAt: Date.now(), token: 'fresh' }))
+        backdate(lockDir, 60_000)
         return false
       }
     })
@@ -230,6 +246,42 @@ describe('withRepoLock (repoLock.ts)', () => {
     expect(JSON.parse(readFileSync(join(lockDir, 'owner.json'), 'utf8')).token).toBe('fresh')
     expect(notices).toEqual([])
     expect(staleDirs()).toEqual([])
+  })
+
+  it('(M7) a dead-looking pid with a fresh heartbeat is live (another PID namespace); a stale heartbeat is reclaimed', async () => {
+    const lockDir = lockDirOf(common)
+    mkdirSync(lockDir)
+    writeFileSync(join(lockDir, 'owner.json'), JSON.stringify({ pid: 999_997, hostInstanceId: 'aaaaaaaaaaaa', acquiredAt: Date.now() - 600_000, token: 'wsl' }))
+    configureRepoLock({ timeoutMs: 200, pollMs: 20, heartbeatStaleMs: 10_000, isLiveProcess: () => false })
+    // A holder in WSL or a container keeps touching owner.json while its pid means nothing here.
+    const beat = setInterval(() => {
+      const now = new Date()
+      utimesSync(join(lockDir, 'owner.json'), now, now)
+    }, 20)
+    try {
+      await expect(withRepoLock(repo, async () => {})).rejects.toBeInstanceOf(RepoLockTimeoutError)
+    } finally {
+      clearInterval(beat)
+    }
+    expect(notices).toEqual([])
+    expect(JSON.parse(readFileSync(join(lockDir, 'owner.json'), 'utf8')).token).toBe('wsl')
+    // It stops beating: once the heartbeat is older than heartbeatStaleMs the lock is reclaimed.
+    backdate(lockDir, 11_000)
+    await withRepoLock(repo, async () => {})
+    expect(notices).toHaveLength(1)
+    expect(notices[0]).toMatchObject({ reason: 'dead-owner', previousOwner: { pid: 999_997 } })
+  })
+
+  it('awaits an asynchronous liveness answer', async () => {
+    const lockDir = lockDirOf(common)
+    mkdirSync(lockDir)
+    writeFileSync(join(lockDir, 'owner.json'), JSON.stringify({ pid: 999_996, hostInstanceId: 'bbbbbbbbbbbb', acquiredAt: Date.now(), token: 't' }))
+    backdate(lockDir, 60_000)
+    configureRepoLock({ timeoutMs: 200, pollMs: 20, isLiveProcess: async () => true })
+    await expect(withRepoLock(repo, async () => {})).rejects.toBeInstanceOf(RepoLockTimeoutError)
+    configureRepoLock({ isLiveProcess: async () => false })
+    await withRepoLock(repo, async () => {})
+    expect(notices).toHaveLength(1)
   })
 
   it('reclaims a leftover lock owned by this very process when no lease holds it', async () => {

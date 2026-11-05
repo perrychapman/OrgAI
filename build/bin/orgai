@@ -5,9 +5,16 @@
 # (~/.local/bin/orgai, written by OrgAI) or a symlink may point here: links are followed to find <Resources>.
 
 self=$0
-# Follow symlinks (relative ones against the link's own folder) to the real file.
+# Follow symlinks (relative ones against the link's own folder) to the real file, at most 40 hops (the kernel's own
+# limit is about the same): a link loop must end in an error, never hang the shell.
+hops=0
 while [ -h "$self" ]; do
-  link=$(readlink "$self")
+  hops=$((hops + 1))
+  if [ "$hops" -gt 40 ]; then
+    echo "orgai: too many symbolic links while looking for the OrgAI app ($0)." >&2
+    exit 1
+  fi
+  link=$(readlink "$self") || exit 1
   case $link in
     /*) self=$link ;;
     *) self=$(dirname "$self")/$link ;;

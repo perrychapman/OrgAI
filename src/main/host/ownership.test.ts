@@ -31,6 +31,10 @@ import {
   parseDaemonInfo,
   pipeNameFor,
   readDaemonInfo,
+  readDaemonFileState,
+  insideWindowsProfileData,
+  protectSecretOnWindows,
+  windowsAccountName,
   socketPathFor,
   type HostOwnership,
   type OwnershipOptions
@@ -464,6 +468,178 @@ describe.skipIf(!posix)('acquireHostOwnership', () => {
     writeFileSync(env.runDir, 'x')
     const err = await acquireHostOwnership(opts(env)).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(Error)
+  })
+
+  describe('unconfirmed liveness and unusable daemon.json (review M9)', () => {
+    const warnings: string[] = []
+    const warn = (m: string): void => void warnings.push(m)
+
+    it.each(['refused', 'enoent'] as const)('takes over from an unconfirmed pid whose endpoint is dead (%s)', async (answer) => {
+      const env = tempEnv()
+      daemonJson(env, { hostInstanceId: '0a0a0a0a0a0a', pid: process.pid, endpoint: socketPathFor(env.dataDir, '0a0a0a0a0a0a') })
+      warnings.length = 0
+      let probed = 0
+      const own = await acquire(env, {
+        warn,
+        liveness: () => 'unconfirmed',
+        connectProbe: async () => (probed++ === 0 ? answer : 'refused')
+      })
+      expect(readDaemonInfo(env.dataDir)?.hostInstanceId).toBe(own.info.hostInstanceId)
+      expect(warnings.join('\n')).toMatch(/could not be confirmed/)
+    })
+
+    it.each(['connected', 'timeout', 'eacces'] as const)('never takes over from an unconfirmed pid whose endpoint answers (%s)', async (answer) => {
+      const env = tempEnv()
+      daemonJson(env, { hostInstanceId: '0b0b0b0b0b0b', pid: process.pid, endpoint: socketPathFor(env.dataDir, '0b0b0b0b0b0b') })
+      const err = await acquireHostOwnership(opts(env, { liveness: () => 'unconfirmed', connectProbe: async () => answer })).catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(HostAlreadyRunningError)
+      expect(readDaemonInfo(env.dataDir)?.hostInstanceId).toBe('0b0b0b0b0b0b')
+    })
+
+    it('names the run folder in the refusal', async () => {
+      const env = tempEnv()
+      daemonJson(env, { hostInstanceId: '0c0c0c0c0c0c', pid: process.pid, endpoint: socketPathFor(env.dataDir, '0c0c0c0c0c0c') })
+      const err = await acquireHostOwnership(opts(env, { liveness: () => 'same', connectProbe: async () => 'refused' })).catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(HostAlreadyRunningError)
+      expect((err as HostAlreadyRunningError).message).toContain(`delete the folder ${env.runDir}`)
+      expect((err as HostAlreadyRunningError).runDir).toBe(env.runDir)
+    })
+
+    it('refuses (never "no incumbent") a daemon.json that is not JSON, and leaves it in place', async () => {
+      const env = tempEnv()
+      mkdirSync(env.runDir, { recursive: true, mode: 0o700 })
+      writeFileSync(join(env.runDir, 'daemon.json'), '{"pid": 12, "endp')
+      const err = await acquireHostOwnership(opts(env)).catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(HostOwnershipError)
+      expect((err as HostOwnershipError).code).toBe('daemon_json_unreadable')
+      expect((err as HostOwnershipError).exitCode).toBe(6)
+      expect((err as Error).message).toContain('not valid JSON')
+      expect((err as Error).message).toContain(env.runDir)
+      expect(readFileSync(join(env.runDir, 'daemon.json'), 'utf8')).toBe('{"pid": 12, "endp')
+      expect(existsSync(join(env.runDir, 'startup.mkdir'))).toBe(false)
+      expect(existsSync(join(env.runDir, 'daemon.secret'))).toBe(false)
+    })
+
+    it('refuses an oversized daemon.json', async () => {
+      const env = tempEnv()
+      mkdirSync(env.runDir, { recursive: true, mode: 0o700 })
+      writeFileSync(join(env.runDir, 'daemon.json'), ' '.repeat(65 * 1024))
+      const err = await acquireHostOwnership(opts(env)).catch((e: unknown) => e)
+      expect((err as HostOwnershipError).code).toBe('daemon_json_unreadable')
+    })
+
+    it('replaces a record it cannot fully read only when it still names a dead pid with a dead endpoint', async () => {
+      const env = tempEnv()
+      mkdirSync(env.runDir, { recursive: true, mode: 0o700 })
+      // A newer OrgAI's record (an unknown state): its pid and endpoint are still read.
+      const newer = { hostInstanceId: '0d0d0d0d0d0d', pid: 999_990, endpoint: join(env.runDir, 'd-0d0d0d0d0d0d.sock'), state: 'paused', startedAt: 1 }
+      writeFileSync(join(env.runDir, 'daemon.json'), JSON.stringify(newer))
+      const live = await acquireHostOwnership(opts(env, { liveness: () => 'unconfirmed', connectProbe: async () => 'refused' })).catch((e: unknown) => e)
+      expect((live as HostOwnershipError).code).toBe('daemon_json_unreadable')
+      const answering = await acquireHostOwnership(opts(env, { liveness: () => 'dead', connectProbe: async () => 'connected' })).catch((e: unknown) => e)
+      expect((answering as HostOwnershipError).code).toBe('daemon_json_unreadable')
+      warnings.length = 0
+      const own = await acquire(env, { warn, liveness: () => 'dead', connectProbe: async () => 'refused' })
+      expect(readDaemonInfo(env.dataDir)?.hostInstanceId).toBe(own.info.hostInstanceId)
+      expect(warnings.join('\n')).toMatch(/unusable daemon\.json/)
+    })
+
+    it('treats an empty daemon.json as no host', async () => {
+      const env = tempEnv()
+      mkdirSync(env.runDir, { recursive: true, mode: 0o700 })
+      writeFileSync(join(env.runDir, 'daemon.json'), '')
+      const own = await acquire(env)
+      expect(readDaemonInfo(env.dataDir)?.hostInstanceId).toBe(own.info.hostInstanceId)
+    })
+
+    it('reclaims startup.mkdir from an unconfirmed owner once it is older than unconfirmedStaleMs, and waits while it is younger', async () => {
+      const env = tempEnv()
+      const startup = join(env.runDir, 'startup.mkdir')
+      mkdirSync(startup, { recursive: true, mode: 0o700 })
+      writeFileSync(join(startup, 'owner.json'), JSON.stringify({ pid: 4242, hostInstanceId: '0e0e0e0e0e0e', createdAt: Date.now() }))
+      const young = await acquireHostOwnership(opts(env, { liveness: () => 'unconfirmed', liveWaitMs: 100, retryMs: 10, unconfirmedStaleMs: 60_000 })).catch((e: unknown) => e)
+      expect(young).toBeInstanceOf(HostStartingOrBusyError)
+      expect((young as Error).message).toContain(env.runDir)
+      expect(existsSync(startup)).toBe(true)
+      writeFileSync(join(startup, 'owner.json'), JSON.stringify({ pid: 4242, hostInstanceId: '0e0e0e0e0e0e', createdAt: Date.now() - 61_000 }))
+      warnings.length = 0
+      const own = await acquire(env, { warn, liveness: () => 'unconfirmed', unconfirmedStaleMs: 60_000 })
+      expect(readDaemonInfo(env.dataDir)?.hostInstanceId).toBe(own.info.hostInstanceId)
+      expect(warnings.join('\n')).toMatch(/not confirmed as an OrgAI host/)
+      expect(leftovers(env.runDir)).toEqual([])
+    })
+
+    it('never reclaims startup.mkdir from a confirmed owner, however old', async () => {
+      const env = tempEnv()
+      const startup = join(env.runDir, 'startup.mkdir')
+      mkdirSync(startup, { recursive: true, mode: 0o700 })
+      writeFileSync(join(startup, 'owner.json'), JSON.stringify({ pid: 4242, hostInstanceId: '0f0f0f0f0f0f', createdAt: Date.now() - 3_600_000 }))
+      const err = await acquireHostOwnership(opts(env, { liveness: () => 'same', liveWaitMs: 60, retryMs: 10, unconfirmedStaleMs: 1 })).catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(HostStartingOrBusyError)
+      expect(existsSync(startup)).toBe(true)
+    })
+  })
+})
+
+describe('readDaemonFileState', () => {
+  it('tells missing, ok and unusable apart', () => {
+    const base = mkdtempSync(join(tmpdir(), 'orgai-own-state-'))
+    cleanups.push(() => rmSync(base, { recursive: true, force: true }))
+    expect(readDaemonFileState(base)).toEqual({ kind: 'missing' })
+    mkdirSync(join(base, 'run'))
+    const path = join(base, 'run', 'daemon.json')
+    const good = { hostInstanceId: '0123456789ab', pid: 42, endpoint: '/x/d.sock', state: 'ready', startedAt: 1 }
+    writeFileSync(path, JSON.stringify(good))
+    expect(readDaemonFileState(base)).toEqual({ kind: 'ok', info: good })
+    writeFileSync(path, JSON.stringify({ ...good, state: 'gone', processStartTime: 'p' }))
+    expect(readDaemonFileState(base)).toMatchObject({ kind: 'unusable', pid: 42, endpoint: '/x/d.sock', processStartTime: 'p' })
+    writeFileSync(path, '[]')
+    expect(readDaemonFileState(base)).toEqual({ kind: 'unusable', reason: 'it does not hold a host record this OrgAI understands' })
+    writeFileSync(path, '')
+    expect(readDaemonFileState(base)).toEqual({ kind: 'missing' })
+  })
+})
+
+describe('protectSecretOnWindows (review M8, H1; UNVERIFIED on Windows)', () => {
+  const env = { USERNAME: 'me', USERDOMAIN: 'BOX', APPDATA: 'C:\\Users\\me\\AppData\\Roaming', LOCALAPPDATA: 'C:\\Users\\me\\AppData\\Local' }
+
+  it('skips icacls inside %APPDATA% / %LOCALAPPDATA%', async () => {
+    let calls = 0
+    const icacls = async (): Promise<void> => void calls++
+    expect(insideWindowsProfileData('c:\\users\\ME\\appdata\\roaming\\OrgAI\\data', env)).toBe(true)
+    expect(await protectSecretOnWindows('x', 'C:\\Users\\me\\AppData\\Local\\OrgAI\\data', { mode: 'required', env, icacls })).toBeUndefined()
+    expect(calls).toBe(0)
+    expect(insideWindowsProfileData('C:\\Users\\me\\AppData\\Roamingx\\data', env)).toBe(false)
+  })
+
+  it('grants the current user outside them', async () => {
+    const seen: string[][] = []
+    expect(await protectSecretOnWindows('D:\\data\\run\\daemon.secret', 'D:\\data', { mode: 'required', env, icacls: async (a) => void seen.push(a) })).toBeUndefined()
+    expect(seen).toEqual([['D:\\data\\run\\daemon.secret', '/inheritance:r', '/grant:r', 'BOX\\me:F']])
+  })
+
+  it('a failure is fatal only when required; best-effort warns and returns the reason', async () => {
+    const icacls = async (): Promise<void> => {
+      throw new Error('No mapping between account names and security IDs was done.')
+    }
+    const err = await protectSecretOnWindows('D:\\s', 'D:\\data', { mode: 'required', env, icacls }).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(HostOwnershipError)
+    expect((err as HostOwnershipError).code).toBe('secret_acl_failed')
+    const warned: string[] = []
+    const w = await protectSecretOnWindows('D:\\s', 'D:\\data', { mode: 'best-effort', env, icacls, warn: (m) => void warned.push(m) })
+    expect(w).toMatch(/Could not restrict daemon\.secret: No mapping/)
+    expect(w).toMatch(/Terminal access should stay off/)
+    expect(warned).toHaveLength(1)
+    // No account name at all: same rule.
+    const noUser = await protectSecretOnWindows('D:\\s', 'D:\\data', { mode: 'best-effort', env: { ...env, USERNAME: '' }, icacls, warn: () => {} })
+    expect(noUser).toMatch(/Could not name the current user/)
+  })
+
+  it('names the account safely', () => {
+    expect(windowsAccountName({ USERNAME: 'me' })).toBe('me')
+    expect(windowsAccountName({ USERNAME: 'me', USERDOMAIN: 'BOX' })).toBe('BOX\\me')
+    expect(windowsAccountName({ USERNAME: 'a"b' })).toBeUndefined()
+    expect(windowsAccountName({})).toBeUndefined()
   })
 })
 

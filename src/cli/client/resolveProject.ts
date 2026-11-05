@@ -11,6 +11,7 @@ import { execFileSync } from 'node:child_process'
 import path from 'node:path'
 import type { Project } from '../../shared/types'
 import { canonicalDeep } from '../../main/quick/scratch'
+import { gitExecutable, neutralCwd } from '../../main/host/systemBinaries'
 import type { ProjectResolution } from '../types'
 
 export interface ResolveProjectOptions {
@@ -26,9 +27,15 @@ export interface ResolveProjectOptions {
 
 const GIT_TIMEOUT_MS = 3000
 
+/**
+ * `git -C <cwd> <args>` run from the temp dir with the binary from `gitExecutable` (review H1): on Windows a bare 'git'
+ * is searched in the spawn's cwd first, and `cwd` here is wherever the user ran orgai (often an untrusted clone).
+ */
 function defaultGit(cwd: string, args: string[]): string | undefined {
+  const bin = gitExecutable()
+  if (!bin) return undefined
   try {
-    const out = execFileSync('git', args, { cwd, timeout: GIT_TIMEOUT_MS, encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] })
+    const out = execFileSync(bin, ['-C', cwd, ...args], { cwd: neutralCwd(), timeout: GIT_TIMEOUT_MS, encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] })
     const t = out.trim()
     return t || undefined
   } catch {

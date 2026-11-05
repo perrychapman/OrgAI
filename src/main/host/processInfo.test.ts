@@ -1,6 +1,19 @@
 import { spawn } from 'node:child_process'
 import { describe, expect, it } from 'vitest'
-import { isLiveProcess, isLiveProcessCached, processStartTime, selfStartTime } from './processInfo'
+import {
+  START_TIME_RECHECK_MS,
+  WIN32_START_TIME_TOLERANCE_MS,
+  isLiveProcess,
+  isLiveProcessCached,
+  processLiveness,
+  processLivenessAsync,
+  processLivenessCachedAsync,
+  processStartTime,
+  processStartTimeAsync,
+  resetSelfStartTimeForTests,
+  sameStartTime,
+  selfStartTime
+} from './processInfo'
 
 function errno(code: string): Error {
   return Object.assign(new Error(code), { code })
@@ -122,5 +135,79 @@ describe('isLiveProcessCached', () => {
     expect(isLiveProcessCached(7002, 'start-b', deps)).toBe(false)
     expect(isLiveProcessCached(7002, 'start-b', deps)).toBe(false)
     expect(reads).toBe(2)
+  })
+})
+
+describe('processLiveness (review M9)', () => {
+  const kill = (): void => {}
+  it('tells a confirmed match, an unconfirmed pid and a dead one apart', () => {
+    expect(processLiveness(4242, 'a', { kill, startTimeOf: () => 'a' })).toBe('same')
+    expect(processLiveness(4242, 'a', { kill, startTimeOf: () => 'b' })).toBe('dead')
+    expect(processLiveness(4242, 'a', { kill, startTimeOf: () => undefined })).toBe('unconfirmed')
+    expect(processLiveness(4242, undefined, { kill, startTimeOf: () => 'a' })).toBe('unconfirmed')
+    expect(processLiveness(4242, 'a', { kill: () => { throw errno('EPERM') }, startTimeOf: () => undefined })).toBe('unconfirmed')
+    expect(processLiveness(4242, 'a', { kill: () => { throw errno('ESRCH') } })).toBe('dead')
+    expect(processLiveness(0)).toBe('dead')
+  })
+
+  it('has an async twin that never rejects', async () => {
+    expect(await processLivenessAsync(4242, 'a', { kill, startTimeOf: async () => 'a' })).toBe('same')
+    expect(await processLivenessAsync(4242, 'a', { kill, startTimeOf: async () => 'b' })).toBe('dead')
+    expect(await processLivenessAsync(4242, 'a', { kill, startTimeOf: async () => { throw new Error('boom') } })).toBe('unconfirmed')
+    expect(await processLivenessAsync(process.pid, selfStartTime())).not.toBe('dead')
+  })
+
+  it.runIf(process.platform === 'darwin' || process.platform === 'linux')('processStartTimeAsync reads what processStartTime reads', async () => {
+    expect(await processStartTimeAsync(process.pid)).toBe(processStartTime(process.pid))
+    expect(await processStartTimeAsync(0)).toBeUndefined()
+  })
+
+  it('caches an answer with its state (unconfirmed stays unconfirmed; never cached as a match)', async () => {
+    let reads = 0
+    let t = 1
+    const deps = { kill, startTimeOf: async () => (reads++, undefined), now: () => t }
+    expect(await processLivenessCachedAsync(7101, 'x', deps)).toBe('unconfirmed')
+    expect(await processLivenessCachedAsync(7101, 'x', deps)).toBe('unconfirmed')
+    expect(reads).toBe(1)
+    t += START_TIME_RECHECK_MS
+    expect(await processLivenessCachedAsync(7101, 'x', { ...deps, startTimeOf: async () => (reads++, 'x') })).toBe('same')
+    expect(reads).toBe(2)
+    expect(await processLivenessCachedAsync(7101, 'x', { ...deps, kill: () => { throw errno('ESRCH') } })).toBe('dead')
+    let sameReads = 0
+    const same = { kill, startTimeOf: async () => (sameReads++, 'x'), now: () => 1 }
+    expect(await processLivenessCachedAsync(7102, 'x', same)).toBe('same')
+    expect(await processLivenessCachedAsync(7102, 'x', same)).toBe('same')
+    expect(sameReads).toBe(1)
+  })
+})
+
+describe('sameStartTime / win32 self start time (review M10)', () => {
+  const kill = (): void => {}
+  it('compares exactly off win32', () => {
+    expect(sameStartTime('Thu Nov  5 10:00:00 2026', 'Thu Nov  5 10:00:00 2026', 'darwin')).toBe(true)
+    expect(sameStartTime('2026-11-05T10:00:00.000Z', '2026-11-05T10:00:00.400Z', 'darwin')).toBe(false)
+    expect(sameStartTime('123', '124', 'linux')).toBe(false)
+  })
+
+  it('compares ISO instants within the tolerance on win32', () => {
+    // PowerShell's "o" format (7 fraction digits) against this process's own in-process value.
+    expect(sameStartTime('2026-11-05T10:00:00.1234567Z', '2026-11-05T10:00:01.900Z', 'win32')).toBe(true)
+    const later = new Date(Date.parse('2026-11-05T10:00:00.000Z') + WIN32_START_TIME_TOLERANCE_MS + 1).toISOString()
+    expect(sameStartTime('2026-11-05T10:00:00.000Z', later, 'win32')).toBe(false)
+    expect(sameStartTime('2026-11-05T10:00:00Z', 'not a time', 'win32')).toBe(false)
+    expect(processLiveness(4242, '2026-11-05T10:00:01.000Z', { kill, platform: 'win32', startTimeOf: () => '2026-11-05T10:00:00.5000000Z' })).toBe('same')
+  })
+
+  it('computes the win32 self start time in process (no PowerShell), as an ISO instant before now', () => {
+    resetSelfStartTimeForTests()
+    try {
+      const v = selfStartTime('win32')
+      expect(v).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/)
+      const t = Date.parse(v!)
+      expect(t).toBeLessThanOrEqual(Date.now())
+      expect(Date.now() - t).toBeLessThan(process.uptime() * 1000 + 60_000)
+    } finally {
+      resetSelfStartTimeForTests()
+    }
   })
 })

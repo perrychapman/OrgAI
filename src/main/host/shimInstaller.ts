@@ -188,7 +188,7 @@ export function createCliShimService(deps: CliShimDeps): CliShimService {
   }
 
   function render(r: Ready): string {
-    return renderCliShim({ platform, launcher: r.launcher, ...(r.userDataDir !== undefined ? { userDataDir: r.userDataDir } : {}) })
+    return renderCliShim({ platform, launcher: r.launcher, env: deps.env, ...(r.userDataDir !== undefined ? { userDataDir: r.userDataDir } : {}) })
   }
 
   type Found = { kind: 'none' } | { kind: 'foreign' } | { kind: 'ours'; text: string }
@@ -227,7 +227,7 @@ export function createCliShimService(deps: CliShimDeps): CliShimService {
     const found = inspect(r.path)
     if (found.kind === 'none') return { state: 'not-installed', ...base, ...withPath }
     if (found.kind === 'foreign') return { state: 'foreign', ...base, ...withPath, reason: foreignReason(r.path) }
-    const parsed = parseCliShim(found.text, platform)
+    const parsed = parseCliShim(found.text, platform, deps.env)
     if (parsed && parsed.launcher === r.launcher && parsed.userDataDir === r.userDataDir) {
       return { state: 'installed', ...base, target: parsed.launcher, ...withPath }
     }
@@ -327,7 +327,7 @@ export function createCliShimService(deps: CliShimDeps): CliShimService {
       // install's (an older format, another data folder line) or is gone (the app moved or was replaced) is rewritten.
       const version = shimMarkerVersion(found.text)
       if (version === undefined || version > CLI_SHIM_VERSION) return 'skipped'
-      const parsed = parseCliShim(found.text, platform)
+      const parsed = parseCliShim(found.text, platform, deps.env)
       if (!parsed) return 'skipped'
       const sameLauncher = pathEntryKey(parsed.launcher, platform, deps.home) === pathEntryKey(r.launcher, platform, deps.home)
       if (!sameLauncher && launcherExists(parsed.launcher)) return 'skipped'

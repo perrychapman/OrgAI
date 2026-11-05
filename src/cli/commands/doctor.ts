@@ -10,6 +10,7 @@ import { homedir } from 'node:os'
 import { dirname, join, posix, resolve, win32 } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { cliShimPath, packagedLayout, parseCliShim, resourcesDirOfCliBundle, transientInstallReason } from '../../main/host/packagedLayout'
+import { gitExecutable, neutralCwd } from '../../main/host/systemBinaries'
 import type { AuthStatusResult, ConnectionInfo, DaemonInfo } from '../../shared/types'
 import { devAppRoot } from '../client/launcher'
 import { parseFlags } from '../flags'
@@ -17,6 +18,9 @@ import { emit, safeLine, styleFor } from '../output'
 import { CliError, EXIT, type CliContext, type CommandFn, type ConnectResult } from '../types'
 
 export type CheckStatus = 'ok' | 'warn' | 'fail'
+
+/** The largest daemon.json doctor reads (the host's own cap, ownership.ts DAEMON_JSON_MAX_BYTES). */
+export const DAEMON_JSON_MAX_BYTES = 64 * 1024
 
 export interface DoctorCheck {
   id: string
@@ -36,9 +40,15 @@ export const doctorProbes = {
       return (e as NodeJS.ErrnoException).code === 'EPERM'
     }
   },
+  /** git by the path from gitExecutable, run from the temp dir: never a planted git.exe in the cwd (review H1). */
   gitVersion: (): Promise<string> =>
     new Promise((resolve, reject) => {
-      execFile('git', ['--version'], { timeout: 5000, windowsHide: true }, (err, stdout) => (err ? reject(err) : resolve(String(stdout).trim())))
+      const bin = gitExecutable()
+      if (!bin) {
+        reject(new Error('git.exe was not found on PATH'))
+        return
+      }
+      execFile(bin, ['--version'], { timeout: 5000, windowsHide: true, cwd: neutralCwd() }, (err, stdout) => (err ? reject(err) : resolve(String(stdout).trim())))
     }),
   /** The Electron version when this CLI runs on the app's own binary (ELECTRON_RUN_AS_NODE), else undefined. */
   electronVersion: (): string | undefined => process.versions.electron,
@@ -103,7 +113,7 @@ export function shimCheck(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): Do
   const ownLauncher = res !== undefined ? packagedLayout(platform, res).launcher : undefined
   const fold = (p: string): string => (platform === 'win32' || platform === 'darwin' ? p.toLowerCase() : p)
   const same = (a: string, b: string): boolean => fold(doctorProbes.realpath(a)) === fold(doctorProbes.realpath(b))
-  const parsed = parseCliShim(text, platform)
+  const parsed = parseCliShim(text, platform, env)
   let target: string
   let viaLink = false
   if (parsed) target = parsed.launcher
@@ -199,7 +209,12 @@ export const runDoctor: CommandFn = async (ctx: CliContext, args: string[]): Pro
   let daemon: DaemonInfo | undefined
   let daemonAlive = false
   try {
-    const raw = readFileSync(join(runDir, 'daemon.json'), 'utf8')
+    // Capped like the host's own reader (ownership.ts): a huge or odd file is reported, never read whole.
+    const daemonPath = join(runDir, 'daemon.json')
+    const st = lstatSync(daemonPath)
+    if (!st.isFile()) throw new Error('it is not a regular file')
+    if (st.size > DAEMON_JSON_MAX_BYTES) throw new Error(`it is larger than ${DAEMON_JSON_MAX_BYTES / 1024} KB`)
+    const raw = readFileSync(daemonPath, 'utf8')
     const parsed = JSON.parse(raw) as DaemonInfo
     if (!parsed || typeof parsed !== 'object' || typeof parsed.pid !== 'number' || typeof parsed.hostInstanceId !== 'string') throw new Error('unexpected shape')
     daemon = parsed
