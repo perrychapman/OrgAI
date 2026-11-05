@@ -5640,6 +5640,11 @@ export interface RunsSubscribeInput {
   includeActiveRunRecord?: string
   /** Follow continuations / auto-resumes and run.moved promotions of subscribed runs. */
   followChains?: boolean
+  /**
+   * true: this subscriber never counts toward the host's interactiveClients, even with includeActiveRunRecord
+   * (headless `orgai exec` followers must not hold a decision policy's humanGraceMs window). Not part of filterKey.
+   */
+  nonInteractive?: boolean
   /** Last seq the client applied; a valid one in the ring buffer gets a replay. */
   sinceSeq?: number
   filterKey?: string

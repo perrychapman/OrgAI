@@ -140,6 +140,8 @@ describe('orgai exec: prompt and project', () => {
       const f = live({ connect: [h] })
       expect(await runExec(f.ctx, argv)).toBe(EXIT.ok)
       expect(h.callsOf('runs:start')[0]).toMatchObject([{ projectId: 'p1', prompt: 'from stdin' }])
+      // The follower never counts as an interactive client (it must not hold a policy's humanGraceMs window).
+      expect(h.callsOf('runs:subscribe')[0]).toMatchObject([{ followChains: true, nonInteractive: true }])
     }
   })
 

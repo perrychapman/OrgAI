@@ -21,6 +21,8 @@ vi.mock('./commands/doctor', () => ({
   })
 }))
 vi.mock('./commands/completions', () => ({ runCompletions: stub('completions') }))
+vi.mock('./commands/exec', () => ({ runExec: stub('exec'), runResume: stub('resume') }))
+vi.mock('./commands/decide', () => ({ runDecide: stub('decide') }))
 
 const { main, editDistance, TUI_LATER_NOTE } = await import('./index')
 const { CLI_VERSION } = await import('./version')
@@ -110,18 +112,20 @@ describe('orgai routing', () => {
     expect(r.err).toContain('`orgai attach` is not available in this build yet.')
   })
 
-  it('exec, -p / --print, resume and decide route to their Wave 3 stubs (exit 1, not built yet)', async () => {
-    for (const [argv, name] of [
-      [['exec', 'hi'], 'exec'],
-      [['-p', 'hi'], 'exec'],
-      [['--print', 'hi'], 'exec'],
-      [['--project', 'p1', '-p', 'hi'], 'exec'],
-      [['resume', 'R1', '--exec'], 'resume'],
-      [['decide', 'perm_1', 'allow'], 'decide']
+  it('exec, -p / --print, resume and decide route to their Wave 3 commands with their arguments', async () => {
+    for (const [argv, name, args] of [
+      [['exec', 'hi'], 'exec', ['hi']],
+      [['-p', 'hi'], 'exec', ['hi']],
+      [['--print', 'hi'], 'exec', ['hi']],
+      [['--project', 'p1', '-p', 'hi'], 'exec', ['hi']],
+      [['resume', 'R1', '--exec'], 'resume', ['R1', '--exec']],
+      [['decide', 'perm_1', 'allow'], 'decide', ['perm_1', 'allow']]
     ] as const) {
+      calls.length = 0
       const r = await run([...argv])
-      expect(r.code, argv.join(' ')).toBe(1)
-      expect(r.err, argv.join(' ')).toContain(`\`orgai ${name}\` is not built yet.`)
+      expect(r.code, argv.join(' ')).toBe(0)
+      expect(calls.map((c) => c.name), argv.join(' ')).toEqual([name])
+      expect(calls[0].args, argv.join(' ')).toEqual(args)
     }
     const h = await run(['-p', '--help'])
     expect(h.code).toBe(0)

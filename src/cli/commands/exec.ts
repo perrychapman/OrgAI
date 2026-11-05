@@ -671,7 +671,7 @@ async function runAndFollow(ctx: CliContext, session: Session, start: () => Prom
     follower = new RunStream({
       client: session.client,
       connect: () => ctx.connect(session.scopes, { clientKind: 'cli', waitStartingMs: 2000 }),
-      subscribeInput: () => ({ runIds: [...followed], followChains: true, ...(newest ? { includeActiveRunRecord: newest } : {}) }),
+      subscribeInput: () => ({ runIds: [...followed], followChains: true, nonInteractive: true, ...(newest ? { includeActiveRunRecord: newest } : {}) }),
       onEvent,
       onSnapshot,
       onGone: () => {

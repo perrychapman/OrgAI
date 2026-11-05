@@ -6,7 +6,7 @@
 //    it and completes ([mock:exec-plan], 0 'completed'); then one exec per outcome: --team single (0
 //    'completed-unplanned'), [mock:exec-blocked] (3 'blocked'), --max-budget 0 (3 'budget-exceeded'), the default
 //    script with --on-permission fail (3 'needs-decision'), [mock:turn-fail] (1 'failed'), [mock:rate-limit] (4
-//    'rate-limited'), [mock:exec-question] with --on-question conservative (0). stream-json lines all parse and end
+//    'rate-limited'), [mock:exec-question] with --on-question conservative (0 'completed-unplanned'). stream-json lines all parse and end
 //    with a `result` line.
 // 2. A long-lived host (`daemon start --host inproc --foreground`): `--host daemon exec --on-permission wait` on the
 //    default script waits on a card; `inbox --output-format json` shows its request id; `decide <id> deny` exits 0
@@ -107,7 +107,11 @@ try {
   await execCase('default script with --on-permission fail', ['--on-permission', 'fail', 'Do the default work'], 3, 'needs-decision')
   await execCase('[mock:turn-fail]', ['[mock:turn-fail] do it'], 1, 'failed')
   await execCase('[mock:rate-limit]', ['[mock:rate-limit] do it'], 4, 'rate-limited')
-  await execCase('[mock:exec-question] --on-question conservative', ['--on-question', 'conservative', '[mock:exec-question] do it'], 0, 'completed')
+  // No plan: the turn-1 set-plan nudge runs, then the run settles unplanned. No window or TUI is open, so the
+  // policy answers at once (an exec follower never holds the humanGraceMs window).
+  const t0 = Date.now()
+  await execCase('[mock:exec-question] --on-question conservative', ['--on-question', 'conservative', '[mock:exec-question] do it'], 0, 'completed-unplanned')
+  check(Date.now() - t0 < 45_000, 'the conservative answer does not wait for the human grace window', `${Date.now() - t0} ms`)
 
   const streamed = await cli(['--host', 'inproc', 'exec', '--output-format', 'stream-json', '--team', 'single', 'hello again'], { cwd: repo })
   const sl = lines(streamed.out)

@@ -298,6 +298,21 @@ describe('exec rate limits', () => {
     expect(next.resumedFrom).toBe(run.id)
     expect(next.overrides).toMatchObject({ execMode: true, execChainId: run.id, waitForReset: true, decisionPolicy: policy })
   })
+
+  it("the automatic resume keeps a 'configure' caller's widening overrides; without the grant they stay clamped", async () => {
+    for (const allowWidening of [true, false]) {
+      const p = proj({ permissionMode: 'default' })
+      const { m, fakes } = rig({ resolveProject: () => p })
+      const run = await m.start({ project: p, prompt: 'go', overrides: exec({ waitForReset: true, permissionMode: 'bypassPermissions' }), ...(allowWidening ? { allowWidening } : {}) })
+      expect(fakes[0].ctx.project.permissionMode).toBe(allowWidening ? 'bypassPermissions' : 'default')
+      fakes[0].ctx.rateLimited?.({ until: Date.now() + 10_000 })
+      fakes[0].ctx.emit({ type: 'run.status', runId: run.id, status: 'finished' })
+      fakes[0].end()
+      await flush(11_200)
+      expect(fakes).toHaveLength(2)
+      expect(fakes[1].ctx.project.permissionMode, `allowWidening ${allowWidening}`).toBe(allowWidening ? 'bypassPermissions' : 'default')
+    }
+  })
 })
 
 describe('exec budget', () => {

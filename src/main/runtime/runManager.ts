@@ -826,6 +826,11 @@ export class RunManager {
   /** Every pending title query, live run or not, with its project id; stopAll and removeProject abort them. */
   private titleAborts = new Map<AbortController, string>()
   private resumeTimers =new Map<string, ReturnType<typeof setTimeout>>()
+  /**
+   * Exec runs started by a 'configure' caller (allowWidening). The automatic rate-limit resume (waitForReset) is the
+   * same invocation, so it keeps widening overrides; like the resume timers this lives only in this process.
+   */
+  private widenedRuns = new Set<string>()
   /** Set by stopAll({ reason: 'quit' }) and markQuit: no run starts, continues, resumes or takes a message after it. */
   private quitting = false
   /** adapter.start() calls not yet settled; stopAll waits for them so a session that opens during a quit is stopped. */
@@ -1150,6 +1155,7 @@ export class RunManager {
       priceChecked: new Set()
     }
     this.runs.set(summary.id, active)
+    if (allowWidening && overrides?.execMode) this.widenedRuns.add(summary.id)
     this.store.upsert(summary)
 
     // Settings are read at each pricing call, so a saved override applies to a live run on its next usage update.
@@ -3322,7 +3328,11 @@ export class RunManager {
     const project = from.kind === 'setup' ? await this.setup.prepare(current) : current
     try {
       // The automatic resume keeps an exec chain going (waitForReset): its exec fields carry over.
-      return await (from.overrides?.execMode ? this.continueRun(project, runId, RESUME_TEXT, undefined, { [AUTO_RESUME]: true }) : this.continueRun(project, runId, RESUME_TEXT))
+      // A chain a 'configure' caller widened stays widened across its own automatic resume.
+      const widened = this.widenedRuns.delete(runId)
+      return await (from.overrides?.execMode
+        ? this.continueRun(project, runId, RESUME_TEXT, undefined, { [AUTO_RESUME]: true, ...(widened ? { allowWidening: true } : {}) })
+        : this.continueRun(project, runId, RESUME_TEXT))
     } catch (e) {
       // The timer is gone; a run still paused must not claim it will resume by itself.
       const s = this.summary(runId)

@@ -13,7 +13,7 @@ import { checkProjectResolution, openReadSource } from '../runRef'
 import { CliError, EXIT, type CliContext, type CommandFn } from '../types'
 
 export const NO_LIVE_DECISIONS = 'No live decisions: the OrgAI host is not running.'
-export const DECIDE_LATER = 'Answer them in the OrgAI app; `orgai decide <requestId> <action>` comes in a later version.'
+export const DECIDE_LATER = 'Answer them with `orgai decide <requestId> <action>` or in the OrgAI app.'
 
 export const runInbox: CommandFn = async (ctx: CliContext, args: string[]): Promise<number> => {
   const { values, positionals } = parseFlags(args, { 'all-projects': { type: 'boolean' } })

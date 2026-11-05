@@ -53,6 +53,20 @@ describe('parseRunsSubscribeInput', () => {
   })
 })
 
+describe('interactive subscribers (cli-spec 3.2(4))', () => {
+  it('an active-record subscriber counts unless it says nonInteractive (exec followers), which the filter key ignores', () => {
+    const v = new FakeView()
+    expect(new RunSubscription(parseRunsSubscribeInput({ runIds: ['r1'], includeActiveRunRecord: 'r1' }), v).interactive).toBe(true)
+    expect(new RunSubscription(parseRunsSubscribeInput({ runIds: ['r1'] }), v).interactive).toBe(false)
+    const exec = parseRunsSubscribeInput({ runIds: ['r1'], includeActiveRunRecord: 'r1', nonInteractive: true })
+    expect(exec.nonInteractive).toBe(true)
+    expect(new RunSubscription(exec, v).interactive).toBe(false)
+    expect(parseRunsSubscribeInput({ nonInteractive: false })).toEqual({})
+    expect(() => parseRunsSubscribeInput({ nonInteractive: 'yes' })).toThrow(HostRpcFailure)
+    expect(filterKeyOf(exec)).toBe(filterKeyOf({ runIds: ['r1'], includeActiveRunRecord: 'r1' }))
+  })
+})
+
 describe('filterKeyOf', () => {
   it('is 16 hex chars, stable under order and duplicates, and changes with the filter', () => {
     const a = filterKeyOf({ runIds: ['r2', 'r1'], projectIds: ['p'], followChains: true })

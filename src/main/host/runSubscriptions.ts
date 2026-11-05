@@ -99,6 +99,10 @@ export function parseRunsSubscribeInput(raw: unknown): RunsSubscribeInput {
     if (typeof raw.followChains !== 'boolean') throw bad('runs:subscribe followChains must be a boolean')
     out.followChains = raw.followChains
   }
+  if (raw.nonInteractive !== undefined && raw.nonInteractive !== null) {
+    if (typeof raw.nonInteractive !== 'boolean') throw bad('runs:subscribe nonInteractive must be a boolean')
+    if (raw.nonInteractive) out.nonInteractive = true
+  }
   if (raw.sinceSeq !== undefined && raw.sinceSeq !== null) {
     if (typeof raw.sinceSeq !== 'number' || !Number.isSafeInteger(raw.sinceSeq) || raw.sinceSeq < 0) throw bad('runs:subscribe sinceSeq must be a non-negative integer')
     out.sinceSeq = raw.sinceSeq
@@ -183,9 +187,9 @@ export class RunSubscription {
     this.followed = input.followChains ? followedRunsOf(input.runIds ?? [], view) : new Set(input.runIds ?? [])
   }
 
-  /** Counts toward the host's interactiveClients (cli-spec 3.2(4)). */
+  /** Counts toward the host's interactiveClients (cli-spec 3.2(4)); a nonInteractive (exec) follower never does. */
   get interactive(): boolean {
-    return this.input.includeActiveRunRecord !== undefined
+    return this.input.includeActiveRunRecord !== undefined && this.input.nonInteractive !== true
   }
 
   private projectOf(runId: string): string | undefined {
