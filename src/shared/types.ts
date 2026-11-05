@@ -5547,3 +5547,239 @@ export interface OrgAIApi {
     applyImport(input: KitApplyInput): Promise<KitApplyResult>
   }
 }
+
+// ---- Team files ----
+//
+// A code project's team as plain files under `.orgai/` in its folder, so git carries it between computers. The
+// ProjectStore's Project stays the cache every reader and adapter uses; files win, through an approval gate because the
+// repository is untrusted. Logic: src/main/teamFiles/. Never for engagements or the virtual assistant projects. Nothing
+// in the files is secret: names of secrets only, and no ids, timestamps or absolute paths.
+
+/** team.json and mcp.json `format`. Another value is a problem naming the file, never a guess. */
+export const TEAM_FILES_FORMAT = 'orgai.team/1'
+/** Folder-relative, '/'-separated. */
+export const TEAM_FILES_JSON = '.orgai/team.json'
+export const TEAM_FILES_MCP_JSON = '.orgai/mcp.json'
+export const TEAM_FILES_AGENTS_DIR = '.orgai/agents'
+export const TEAM_FILES_SKILLS_DIR = '.orgai/skills'
+/** Most roles read from `.orgai/agents`. */
+export const TEAM_FILES_MAX_ROLES = 200
+/** Largest role file, bytes. */
+export const TEAM_FILES_MAX_ROLE_BYTES = 1024 * 1024
+/** Largest team.json or mcp.json, bytes. */
+export const TEAM_FILES_MAX_JSON_BYTES = 1024 * 1024
+/** Most servers read from mcp.json. */
+export const TEAM_FILES_MAX_SERVERS = 200
+/** Largest whole team (every file together), bytes. Past it the team files are a problem and nothing is read or written. */
+export const TEAM_FILES_MAX_TOTAL_BYTES = 32 * 1024 * 1024
+/** How many files one status may list per list; the rest are counted in the plain-words text. */
+export const TEAM_FILES_LIST_MAX = 200
+
+/**
+ * 'off': the project does not use team files (see offReason). 'in-sync': the team in use is what the files say.
+ * 'pending': the files hold changes that need approval; runs use the last approved team and get one warning.
+ * 'rejected': the user refused the files' current content; runs quietly keep the last approved team until the files
+ * change. 'problem': something in the folder could not be read (problems names it); the last approved team stays and
+ * the file is not overwritten. A folder with both a problem and pending changes is 'problem' (approve refuses until it
+ * is fixed) and still lists `changes`.
+ */
+export type TeamFilesState = 'off' | 'in-sync' | 'pending' | 'rejected' | 'problem'
+
+/**
+ * Why state is 'off'. 'engagement' and 'virtual': never. 'shared-folder': another OrgAI project owns this folder's team
+ * files (the oldest project with that folder, TeamFilesStatus.sharedWith), so this one neither reads nor writes them
+ * and its team stays in OrgAI's data folder. 'removed': the user ran "Remove OrgAI files" (teamFiles:enable turns it
+ * back on). 'no-folder': the folder does not exist yet. 'not-written': a code project not opened since team files
+ * landed; teamFiles:status writes its files, teamFiles:listAttention never does.
+ */
+export type TeamFilesOffReason = 'engagement' | 'virtual' | 'shared-folder' | 'removed' | 'no-folder' | 'not-written'
+
+export type TeamFileChangeKind = 'role' | 'skill' | 'mcp' | 'settings'
+
+/**
+ * One difference between the last approved team and the files, in plain words. Text comes from the repository:
+ * untrusted, show it as data (every string is length-capped and has hidden characters replaced).
+ */
+export interface TeamFileChange {
+  /** Stable for one digest, e.g. "role:reviewer:tools". */
+  id: string
+  kind: TeamFileChangeKind
+  /** What the change is about: a role name, skill name, server name or setting label. */
+  name: string
+  /** Folder-relative path of the file that holds it, e.g. ".orgai/agents/reviewer.md". */
+  file: string
+  action: 'added' | 'removed' | 'changed'
+  /** One sentence, e.g. "Reviewer gains Bash and Write." */
+  summary: string
+  /** Needs teamFiles:approve before use. False: applied at once, undoable. */
+  needsApproval: boolean
+  /** With needsApproval: why, e.g. "New tools", "First time this repository's team is seen on this computer". */
+  reason?: string
+  /** Prompts and other text: the old and new whole text. Absent on an added or removed side. */
+  before?: string
+  after?: string
+  /** Roles: the whole tool list on each side, and what is new. */
+  toolsBefore?: string[]
+  toolsAfter?: string[]
+  toolsAdded?: string[]
+  /** Tools newly held among Bash, Edit, Write, NotebookEdit, plus 'canSpawn'. */
+  elevatedAdded?: string[]
+  /** Skills: files that look like scripts. */
+  scripts?: string[]
+  /** MCP: what would run or connect, in full (never clamped; capabilities/sanitize.ts reviewTarget form). */
+  target?: string
+  /** MCP: secret slot names this computer must fill in before the server starts. */
+  secretNames?: string[]
+}
+
+/** A file or folder that could not be used. The last approved content stays and the file is never overwritten. */
+export interface TeamFileProblem {
+  /** Folder-relative path. */
+  file: string
+  /** Plain words, e.g. "It has merge conflict markers." Never quotes file text. */
+  message: string
+}
+
+/** Text that looks like a key and would be committed. Names the file, never the value. */
+export interface TeamFileWarning {
+  file: string
+  message: string
+}
+
+/** What Undo would restore, or last restored. */
+export interface TeamFilesUndoInfo {
+  /** ISO time of the change it reverts (or of the undo, on lastUndo). */
+  at: string
+  /** Plain words, e.g. "Undo the 3 changes applied from the files". */
+  label: string
+  /** Folder-relative paths Undo rewrites (or rewrote): undoing changes the files, which then show as uncommitted. */
+  files: string[]
+}
+
+/** teamFiles:status, the teamFiles:changed payload and every action's result. Readable with no run open. */
+export interface TeamFilesStatus {
+  projectId: string
+  projectName: string
+  state: TeamFilesState
+  offReason?: TeamFilesOffReason
+  /** offReason 'shared-folder': the project that owns this folder's team files. */
+  sharedWith?: { projectId: string; projectName: string }
+  /** The files' content digest (parsed content, never bytes). teamFiles:approve and teamFiles:reject send it back. */
+  digest?: string
+  /** No team of this folder was ever approved on this computer, so every difference needs approval. */
+  firstSeen?: true
+  /** The folder holds a .git. False: teamFiles:commit refuses. */
+  isGitRepo: boolean
+  /** Team files have changes git has not committed. Always false outside git. */
+  uncommitted: boolean
+  /** Those files, folder-relative, at most TEAM_FILES_LIST_MAX. */
+  uncommittedFiles: string[]
+  /** The changes waiting for approval (or refused, on 'rejected'). Empty when in sync. */
+  changes: TeamFileChange[]
+  /** The changes last applied at once from the files; what `undo` reverts. */
+  applied: TeamFileChange[]
+  problems: TeamFileProblem[]
+  /** Plain-language notes: items left out of the files and why, plugins staying on this computer. */
+  notes: string[]
+  warnings: TeamFileWarning[]
+  /** One level of Undo, when there is something to undo. */
+  undo?: TeamFilesUndoInfo
+  /** The last Undo that ran: which files it rewrote. */
+  lastUndo?: TeamFilesUndoInfo
+}
+
+/** teamFiles:approve and teamFiles:reject input. A digest other than the current one is refused ("Review them again."). */
+export interface TeamFilesDecisionInput {
+  projectId: string
+  digest: string
+}
+
+/** Input of teamFiles:status, teamFiles:undo, teamFiles:commit and teamFiles:enable. */
+export interface TeamFilesProjectInput {
+  projectId: string
+}
+
+/** approve, reject, undo and enable: the saved project (its team is the cache) and the fresh status. */
+export interface TeamFilesActionResult {
+  project: Project
+  status: TeamFilesStatus
+}
+
+/** teamFiles:commit never rejects for a folder that is not git or a git refusal: ok false with a readable message. */
+export interface TeamFilesCommitResult {
+  ok: boolean
+  message: string
+  /** Folder-relative paths committed. */
+  committed: string[]
+  status: TeamFilesStatus
+}
+
+/** ProjectPathCheck.teamFiles: a team found in the folder, read without touching anything. Untrusted text, as above. */
+export interface TeamFilesFound {
+  /** Send back as ProjectCreateInput.teamFiles.digest. Absent when problems make the team unusable. */
+  digest?: string
+  roleCount: number
+  /** Whole list, root first, at most TEAM_FILES_MAX_ROLES. */
+  roles: { name: string; slug: string; prompt: string; tools: string[]; elevated: string[]; reportsTo: string | null }[]
+  skills: { name: string; description: string; scripts: string[] }[]
+  mcpServers: { name: string; target: string; secretNames: string[]; connectorId?: string }[]
+  /** Every difference from nothing, for a review that matches the approval card. */
+  changes: TeamFileChange[]
+  problems: TeamFileProblem[]
+  warnings: TeamFileWarning[]
+}
+
+/** ProjectCreateInput.teamFiles: start from the folder's team as previewed. Refused when the digest is stale. */
+export interface TeamFilesCreateInput {
+  digest: string
+}
+
+export interface ProjectCreateInput {
+  /**
+   * Start from the team in the folder's `.orgai/` as shown in ProjectPathCheck.teamFiles, approved by this call: the
+   * project is stored with that team and never holds the default chart. Wins over importAgents and templateId. Code
+   * projects only. Rejects with a readable message when the digest is stale or the files have a problem.
+   */
+  teamFiles?: TeamFilesCreateInput
+}
+
+export interface ProjectPathCheck {
+  /**
+   * A team in the folder (`.orgai/team.json` exists). While it is set, agentSources leaves out source 'orgai', so
+   * `.orgai/` agents are never counted twice next to other sources.
+   */
+  teamFiles?: TeamFilesFound
+}
+
+export const TEAM_FILES_IPC = {
+  /** Checks the folder (and writes a code project's files the first time) and returns TeamFilesStatus. Call it when a project opens. */
+  teamFilesStatus: 'teamFiles:status',
+  /** Every project with state 'pending' or 'problem', without a run and without writing anything: for Needs-you at boot. */
+  teamFilesListAttention: 'teamFiles:listAttention',
+  teamFilesApprove: 'teamFiles:approve',
+  teamFilesReject: 'teamFiles:reject',
+  teamFilesUndo: 'teamFiles:undo',
+  teamFilesCommit: 'teamFiles:commit',
+  /** Turn team files back on after "Remove OrgAI files": writes them from the current team. */
+  teamFilesEnable: 'teamFiles:enable',
+  /** main -> renderer push carrying TeamFilesStatus whenever a project's status changes. */
+  teamFilesChanged: 'teamFiles:changed'
+} as const
+
+export interface OrgAIApi {
+  /** A code project's team as files under `.orgai/`. Everything here works with no run open. */
+  teamFiles: {
+    status(input: TeamFilesProjectInput): Promise<TeamFilesStatus>
+    listAttention(): Promise<TeamFilesStatus[]>
+    /** Use the files' team. Rejects for a stale digest or while state is 'problem'. */
+    approve(input: TeamFilesDecisionInput): Promise<TeamFilesActionResult>
+    /** Keep the last approved team until the files change. Rejects for a stale digest. */
+    reject(input: TeamFilesDecisionInput): Promise<TeamFilesActionResult>
+    /** One level: rewrites the files back. Rejects when there is nothing to undo. */
+    undo(input: TeamFilesProjectInput): Promise<TeamFilesActionResult>
+    /** Stage and commit only the team files. Never pushes. */
+    commit(input: TeamFilesProjectInput): Promise<TeamFilesCommitResult>
+    enable(input: TeamFilesProjectInput): Promise<TeamFilesActionResult>
+  }
+  onTeamFilesChanged(cb: (status: TeamFilesStatus) => void): () => void
+}
