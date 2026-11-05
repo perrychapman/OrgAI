@@ -293,12 +293,19 @@ export const templateEngagementArgs = {
       noteId = i.noteId
     }
     if (i.retired !== undefined && i.retired !== null && typeof i.retired !== 'boolean') throw new Error('retired must be true or false.')
+    let expectedUpdatedAt: number | undefined
+    if (i.expectedUpdatedAt !== undefined && i.expectedUpdatedAt !== null) {
+      if (typeof i.expectedUpdatedAt !== 'number' || !Number.isFinite(i.expectedUpdatedAt)) throw new Error('expectedUpdatedAt must be a number.')
+      if (!noteId) throw new Error('expectedUpdatedAt needs a noteId.')
+      expectedUpdatedAt = i.expectedUpdatedAt
+    }
     return {
       projectId: storedIdArg(i.projectId),
       ...(noteId ? { noteId } : {}),
       title: i.title,
       text: i.text,
-      ...(typeof i.retired === 'boolean' ? { retired: i.retired } : {})
+      ...(typeof i.retired === 'boolean' ? { retired: i.retired } : {}),
+      ...(expectedUpdatedAt !== undefined ? { expectedUpdatedAt } : {})
     }
   }
 }

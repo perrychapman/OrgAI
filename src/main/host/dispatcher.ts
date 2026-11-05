@@ -751,7 +751,7 @@ function registerTemplateEngagementIpc(handle: Register, { projects, templates, 
   })
   handle(IPC.projectsSaveNote, (_e, input: unknown): EngagementNote => {
     const i = templateEngagementArgs.saveNote(input)
-    const note = saveNote(dataDir, stored(i.projectId).id, { noteId: i.noteId, title: i.title, text: i.text, retired: i.retired })
+    const note = saveNote(dataDir, stored(i.projectId).id, { noteId: i.noteId, title: i.title, text: i.text, retired: i.retired, expectedUpdatedAt: i.expectedUpdatedAt })
     events.emit(IPC.projectsEngagementChanged, { projectId: i.projectId, what: 'notes', ids: [note.id] })
     return note
   })

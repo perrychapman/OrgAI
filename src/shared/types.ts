@@ -4497,6 +4497,11 @@ export interface EngagementNoteSaveInput {
   text: string
   /** Sets or clears the user's retired flag (omitted = unchanged). */
   retired?: boolean
+  /**
+   * Only with noteId: refuse the save when the stored note's updatedAt differs (compare-and-set, code
+   * 'stale_revision'; cli-spec Wave 5 `orgai notes edit`). Omitted = no check (the app's note dialog).
+   */
+  expectedUpdatedAt?: number
 }
 
 /**

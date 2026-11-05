@@ -9,9 +9,10 @@
  *   notes plan [show] | notes plan set (--text <t> | --file <path|->) [--expected-updated-at <ms>]
  *
  * Revisions: `plan set` sends the document's updatedAt as expectedUpdatedAt (the read's, or --expected-updated-at), so
- * the host refuses a save over a newer document (exit 1, like the app's stale banner). projects:saveNote has no
- * revision check on the host, so `notes edit` compares the note's updatedAt itself (the read's, or
- * --expected-updated-at) right before saving: "The note changed since you read it." (exit 1). That check is not atomic.
+ * the host refuses a save over a newer document (exit 1, like the app's stale banner). `notes edit` sends the note's
+ * updatedAt (the read's, or --expected-updated-at) as projects:saveNote expectedUpdatedAt; the host compares it with
+ * the stored note in the same synchronous step as the write and refuses with 'stale_revision':
+ * "The note changed since you read it." (exit 1).
  * Caps are checked before anything is sent (exit 2).
  */
 import * as fs from 'node:fs'
@@ -28,9 +29,9 @@ import {
 } from '../../shared/types'
 import { formatDateTime } from '../../shared/view/dates'
 import { parseFlags } from '../flags'
-import { confirm, hostCall, readStdinText, requireEngagement, requireProject, runSubcommands, withHost } from '../manage'
+import { confirm, hostCall, hostError, readStdinText, requireEngagement, requireProject, runSubcommands, withHost } from '../manage'
 import { emit, printText, safe, safeLine, styleFor, table, termWidth, type Json } from '../output'
-import { CliError, EXIT, type CliContext, type CommandFn, type HostClient } from '../types'
+import { CliError, EXIT, type CliContext, type CommandFn, type HostCallError, type HostClient } from '../types'
 import { CONFIGURE, READ, refusable } from './connections'
 
 const USAGE = 'notes <list|show|add|edit|remove|plan> [options]'
@@ -205,20 +206,26 @@ const runEdit = async (ctx: CliContext, args: string[]): Promise<number> => {
   return withHost(ctx, CONFIGURE, async (client) => {
     const project = await engagement(ctx, client)
     const n = resolveNote(await listNotes(client, project.id), ref)
-    // The read just before the save (best effort, not atomic: projects:saveNote has no revision on the host).
+    // The read supplies the unchanged fields; the host's expectedUpdatedAt check makes the save a compare-and-set.
     const latest = await hostCall<EngagementNoteContent>(client, 'projects:getNote', [{ projectId: project.id, noteId: n.id }])
     const base = expected ?? latest.updatedAt
     if (latest.updatedAt !== base) throw new CliError(NOTE_STALE_MESSAGE, EXIT.failure)
-    const input: EngagementNoteSaveInput & { expectedUpdatedAt: number } = {
+    const input: EngagementNoteSaveInput = {
       projectId: project.id,
       noteId: n.id,
       title: title ?? latest.title,
       text: text ?? latest.text,
       ...(values.retire ? { retired: true } : values.restore ? { retired: false } : {}),
-      // Not read by today's host (saveNote has no revision); sent so a host that checks it refuses a stale save.
       expectedUpdatedAt: base
     }
-    const note = await refusable<EngagementNote>(client, 'projects:saveNote', [input])
+    let note: EngagementNote
+    try {
+      note = await client.call<EngagementNote>('projects:saveNote', [input])
+    } catch (e) {
+      if ((e as Partial<HostCallError> | undefined)?.data?.code === 'stale_revision') throw new CliError(NOTE_STALE_MESSAGE, EXIT.failure)
+      const err = hostError(e)
+      throw err.exitCode === EXIT.usage ? new CliError(err.message, EXIT.failure) : err
+    }
     emit(ctx, { note: noteJson(note), previousUpdatedAt: base }, () => `Saved note ${safeLine(note.title)} (${note.id}).`)
     return EXIT.ok
   })

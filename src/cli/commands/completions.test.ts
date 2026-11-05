@@ -37,7 +37,10 @@ describe('orgai completions', () => {
 
   it('offers available commands only', () => {
     expect(completionCommands().map((c) => c.entry.name)).toEqual(COMMANDS.filter((x) => x.available).map((x) => x.name))
-    expect(completionScript('bash')).not.toMatch(/compgen -W "[^"]*\bknowledge\b/)
+    const bash = completionScript('bash')
+    for (const c of COMMANDS.filter((x) => !x.available)) {
+      expect(bash).not.toMatch(new RegExp(`compgen -W "[^"]*\\b${c.name}\\b`))
+    }
   })
 
   it('offers the terminal UI commands and their flags', () => {

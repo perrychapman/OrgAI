@@ -118,6 +118,17 @@ describe('notes add / edit', () => {
     expect(await run(f, ['edit', 'n1', '--text', 'x', '--expected-updated-at', 'yesterday'])).toBe(EXIT.usage)
   })
 
+  it('edit maps the host\'s stale_revision refusal (a write between the read and the save) to exit 1', async () => {
+    const stored = { ...note('n1', { title: 'Kickoff', updatedAt: 100 }), text: 'old text' }
+    const { f } = setup({
+      'projects:listNotes': () => [stored],
+      'projects:getNote': () => stored,
+      'projects:saveNote': () => Promise.reject(rpcError({ code: 'stale_revision', message: 'The note changed since it was read.' }))
+    })
+    expect(await run(f, ['edit', 'n1', '--text', 'new text'])).toBe(1)
+    expect(f.err()).toContain(NOTE_STALE_MESSAGE)
+  })
+
   it('remove asks unless --yes', async () => {
     const { f, client } = setup({ 'projects:listNotes': () => [note('n1')], 'projects:removeNote': () => [] })
     expect(await run(f, ['remove', 'n1'])).toBe(EXIT.usage)
