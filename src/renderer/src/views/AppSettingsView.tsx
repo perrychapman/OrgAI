@@ -496,6 +496,24 @@ export default function AppSettingsView(): ReactElement {
                   />
                 </SettingsCard>
               </SettingsGroup>
+              <SettingsGroup title="Terminal">
+                <SettingsCard>
+                  <SettingRow
+                    id="terminal-server-row"
+                    title="Terminal access"
+                    description="Lets the orgai command in a terminal on this computer see and control OrgAI. Turned on automatically when OrgAI is started from the orgai command."
+                    control={
+                      <Switch
+                        checked={info.terminalServer === true}
+                        label="Terminal access"
+                        testId="terminal-server-switch"
+                        describedBy={settingDescId('terminal-server-row')}
+                        onChange={(terminalServer) => patch({ terminalServer }, true)}
+                      />
+                    }
+                  />
+                </SettingsCard>
+              </SettingsGroup>
             </SettingsAdvanced>
           </>
         )}
