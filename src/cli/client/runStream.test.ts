@@ -226,6 +226,49 @@ describe('RunStream', () => {
     await expect(y.stream.resubscribe()).rejects.toThrow('refused')
   })
 
+  it('a refused resubscribe goes back to direct delivery: queued and later events still arrive', async () => {
+    let n = 0
+    const g: FakeHostClient = new FakeHostClient({
+      'runs:subscribe': () => {
+        n++
+        if (n === 1) return snap(10)
+        // The old subscription is still live on the host: an event arrives during the failing call.
+        g.push('runs:event', ev(11, status('run_a', 'running')))
+        throw new Error('timed out')
+      }
+    })
+    const y = harness([g])
+    await y.stream.start()
+    await expect(y.stream.resubscribe()).rejects.toThrow('timed out')
+    expect(y.events.map((e) => e.seq)).toEqual([11])
+    g.push('runs:event', ev(12, status('run_a', 'idle')))
+    expect(y.events.map((e) => e.seq)).toEqual([11, 12])
+  })
+
+  it('keepClient as a function: no client it claims is closed, replacements from a reconnect included', async () => {
+    const k1 = new FakeHostClient({ 'runs:subscribe': () => snap(10) })
+    const k2 = new FakeHostClient({ 'runs:subscribe': () => snap(20) })
+    const events: RunsEventParams[] = []
+    const queue = [k2]
+    const stream = new RunStream({
+      client: k1,
+      connect: async () => ({ ok: true, client: queue[0] }),
+      subscribeInput: () => ({ runIds: ['run_a'], followChains: true }),
+      onEvent: (p) => void events.push(p),
+      onSnapshot: () => undefined,
+      onGone: () => undefined,
+      stopped: () => false,
+      timers: { sleep: async () => undefined, now: () => 0 },
+      keepClient: () => true
+    })
+    await stream.start()
+    k1.hostClose()
+    for (let i = 0; i < 4; i++) await flush()
+    expect(stream.client).toBe(k2)
+    stream.close()
+    expect(k2.closed).toBe(false)
+  })
+
   it('keepClient: close() leaves the caller\'s client open but closes a replacement from a reconnect', async () => {
     const h1 = new FakeHostClient({ 'runs:subscribe': () => snap(10) })
     const x = harness([h1], { keepClient: true })

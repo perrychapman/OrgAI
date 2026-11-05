@@ -27,6 +27,7 @@ vi.mock('./commands/tui', () => ({
   PROMPT_HINT: 'To start the terminal UI with a prompt: orgai -- "<prompt>"',
   runTuiCommand: stub('tui'),
   runAttach: stub('attach'),
+  defaultTuiPrintsHelp: vi.fn(() => false),
   runDefaultTui: vi.fn(async (ctx: CliContext, args: string[], opts?: { help?: () => string }) => {
     calls.push({ name: 'default', args, ctx })
     if (opts?.help) ctx.io.stdout.write(`${opts.help()}\n`)
@@ -208,6 +209,22 @@ describe('orgai routing', () => {
     expect(calls).toHaveLength(0)
     expect((await run(['--secret-env', 'mcp:p:s:env:X=V', 'runs', 'list'])).code).toBe(2)
     expect((await run(['completions', 'bash'], { ORGAI_SECRET_X: '1' })).code).toBe(0)
+  })
+
+  it('bare orgai that only prints help (no terminal) does so before the secret refusal and the inproc scrub', async () => {
+    const tui = await import('./commands/tui')
+    vi.mocked(tui.defaultTuiPrintsHelp).mockReturnValue(true)
+    try {
+      const r = await run([], { ORGAI_SECRET_LITELLM_API_KEY: 'sk' })
+      expect(r.code).toBe(0)
+      expect(r.out).toContain('orgai <command> [options]')
+      expect(calls).toHaveLength(0)
+      const env: NodeJS.ProcessEnv = { ORGAI_SECRET_LITELLM_API_KEY: 'sk' }
+      expect((await run(['--host', 'inproc'], env)).code).toBe(0)
+      expect(env).toEqual({ ORGAI_SECRET_LITELLM_API_KEY: 'sk' })
+    } finally {
+      vi.mocked(tui.defaultTuiPrintsHelp).mockReturnValue(false)
+    }
   })
 
   it('with --host inproc, collects and scrubs the secrets', async () => {

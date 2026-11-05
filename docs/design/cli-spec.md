@@ -864,3 +864,49 @@ Resolved `R1`–`R10` (single-host daemon vs Desktop ownership, socket authentic
   unpriced models when a tier is remapped mid-run, except through usage entries. The `/dev/tty` y/N prompt was never
   run by hand (its Windows readline fallback neither). Windows named pipes and signals, packaged builds and the auto
   mode that spawns the headless Electron host (fake launcher in unit tests only).
+
+### Wave 4 (landed on dev, 2026-11-05; contracts fa9676c, merges e538e40..38a5705, integration fix 3cbd3fd, review fix-up after it)
+
+- **Landed.** The Ink TUI in `src/cli/tui/` (ink 8.0.0 and ink-testing-library 4.0.0, exact pins), reached only through
+  `await import('../tui/index')` (the `out/cli/tui.mjs` chunk; lazyTui.test.ts keeps ink and react out of the static
+  graph). `terminal.ts` (buffer mode chosen once: inline under 100x24, `--inline`, `--ax-screen-reader`, TERM=dumb or a
+  non-TTY; raw mode, bracketed paste, cursor and alternate screen owned here, kept across SIGTSTP / SIGCONT, resize and
+  the pager; synchronous idempotent restore; exit 1 / 143 / 130 / 129). `session.ts` (one `clientKind: 'tui'`
+  connection with read / operate / decide, a RunStream with followChains and never nonInteractive, 16 ms notify
+  coalescing), the pure reducer `state.ts` and `selectors.ts`, the panes and `layout.ts`, `input/keys.ts` (chunk-safe
+  keys, CSI-u / modifyOtherKeys, bracketed paste as one sanitized event), Composer, slash palette and commands,
+  `DecisionTray.tsx` + `decisions.ts` (5.3 payloads with `expectedRevision`, parity with `orgai decide`; 750 ms swap
+  guard `cardGuard.ts`; two-step confirmations bound to the card key; masked secrets), `pager.ts` (`spawn(..., {
+  shell: false })` over `sanitizeDiffForPager`), Onboarding. CLI: `orgai tui [--run]`, `orgai attach`, bare `orgai` /
+  `orgai [--] <prompt>`, `orgai resume` without `--exec`. e2e `e2e/cli-tui.mjs` (in e2e:free) through a pseudo-terminal
+  (`e2e/ptyDriver.mjs` + `pty-helper.py`, no native addon; macOS uses the python3 backend because `script` fails the
+  stop check).
+- **Gate.** `npm run typecheck`, `npm test`, `npm run build`, `npm run e2e:free` with `e2e/cli-tui.mjs` on macOS.
+- **Deviations / decisions beyond the spec.**
+  - Code truth where the 5.3 table differs: a proposal revise sends `feedback`, a rules deny sends `message` (types.ts),
+    not `note`.
+  - TERM=dumb forces inline mode, turns bracketed paste off and makes every single-key decision pending until Enter.
+  - The TUI shares one host connection across sessions (onboarding, project switches). `TuiConnection` owns it and every
+    client a stream's reconnect brings (`reconnect` adopts it and closes the old one; streams use `keepClient: () =>
+    true`), so closing a session never closes a socket the next one uses. `createProject` (onboarding) asks for
+    'configure' on a separate connection closed after the call (review High).
+  - A failed `RunStream.resubscribe()` (timeout, refusal) delivers what it queued and goes back to direct delivery: the
+    host keeps the socket's earlier subscription, so the stream keeps hearing it (review M).
+  - While the pager runs (`suspendForChild` / `resumeFromChild`), SIGINT is ignored, SIGTSTP stops without touching the
+    terminal and SIGCONT does not resume: the pager shares the process group (review M). The pager is spawned by the
+    absolute path `whichOnPath` found; a bare `$PAGER` word is resolved the same way and a relative path or a name not
+    on PATH falls back to the default (the cwd is an untrusted repo; Windows searches the cwd first).
+  - A bound confirmation closed by any recorded decision (another terminal UI included) reads "Resolved in another
+    window (...)"; the tray leaves its own confirmation before it sends.
+  - `orgai resume --prompt -` without `--exec` is refused like a positional `-`; bare `orgai` without a terminal prints
+    help before the secret-env refusal or the inproc scrub.
+  - The crash handler (uncaughtException / unhandledRejection) sanitizes its text before writing. Like every other
+    command (index.ts), an unhandled rejection ends the TUI; under `--host inproc` that skips the host's drain.
+  - Windows has no SIGTSTP / SIGCONT: those handlers are skipped and Ctrl+Z is ignored; the PTY tests SKIP on win32.
+- **Unverified / open.** Ctrl+. through CSI-u / modifyOtherKeys on real terminals (Kitty, iTerm2, WezTerm, Windows
+  Terminal) was not tried by hand; only the parser is tested. Windows behaviour (console raw mode, no job control, the
+  pager lookup) is not run. e2e drives permission y / n, question, rules r, MCP install n, proposal d, a two-step `a`
+  resolved elsewhere and the swap guard (the key goes in once the tray has drawn card 2); Merge Review (m / h / x and
+  the two-step discard), `v` through the real pager, permission `s` and a confirmed `a` are unit-tested only
+  (decisions.test.ts, DecisionTray.test.tsx, pager.test.ts). The pager signal handling is unit-tested with a fake
+  process, not with a real `less` in a PTY.

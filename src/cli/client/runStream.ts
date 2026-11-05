@@ -56,10 +56,11 @@ export interface RunStreamOptions {
   /** A (re)subscribe answered and was applied (optional; after a reconnect, `firstTime` is false). */
   onSubscribed?: (mode: RunsSubscribeResult['mode'], firstTime: boolean) => void
   /**
-   * The first client belongs to the caller (the TUI shares one connection between sessions): close() and a reconnect
-   * leave it open. A replacement client from a reconnect is the stream's own and is still closed.
+   * true: the first client belongs to the caller: close() and a reconnect leave it open; a replacement client from a
+   * reconnect is the stream's own and is still closed. A function: every client it answers true for belongs to the
+   * caller and is never closed by the stream (the TUI's connection owns the clients its `connect` hands out too).
    */
-  keepClient?: boolean
+  keepClient?: boolean | ((c: HostClient) => boolean)
 }
 
 export class RunStream {
@@ -168,7 +169,8 @@ export class RunStream {
   }
 
   private closeOwned(c: HostClient): void {
-    if (this.o.keepClient && c === this.o.client) return
+    const keep = this.o.keepClient
+    if (typeof keep === 'function' ? keep(c) : keep === true && c === this.o.client) return
     c.close()
   }
 
@@ -207,7 +209,17 @@ export class RunStream {
         ? { sinceSeq: this.lastSeqValue, hostInstanceId: this.hostInstanceId, ...(this.filterKey ? { filterKey: this.filterKey } : {}) }
         : {})
     }
-    const res = await c.call<RunsSubscribeResult>('runs:subscribe', [input], { timeoutMs: 60_000 })
+    let res: RunsSubscribeResult
+    try {
+      res = await c.call<RunsSubscribeResult>('runs:subscribe', [input], { timeoutMs: 60_000 })
+    } catch (e) {
+      // The host keeps the socket's earlier subscription when a resubscribe fails (a timeout, a refusal): deliver what
+      // was queued and go back to direct delivery, so the stream never stays deaf with an ever-growing queue.
+      const pending = queue
+      queue = null
+      for (const p of pending) this.onRunsEvent(p)
+      throw e
+    }
     this.apply(res, firstTime)
     const pending = queue
     queue = null
@@ -238,7 +250,7 @@ export class RunStream {
         const res = await this.o.connect().catch(() => undefined)
         if (res?.ok) {
           if (this.done()) {
-            res.client.close()
+            this.closeOwned(res.client)
             return
           }
           // The old client is closed before it is replaced, so no socket outlives the command.
@@ -253,7 +265,7 @@ export class RunStream {
             // closed or refused: try again
           }
           this.closedWhileBusy = undefined
-          this.current.close()
+          this.closeOwned(this.current)
         }
         if (this.timers.now() - started >= window) {
           if (!this.done()) this.o.onGone()

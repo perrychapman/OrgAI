@@ -65,7 +65,9 @@ export function boundCardClosedStatus(bound: Pick<TrayCard, 'key' | 'ref'>, reso
     newestFirst.find((r) => r.ref.runId === bound.ref.runId && r.ref.kind === bound.ref.kind && r.ref.requestId === bound.ref.requestId)
   if (info) {
     if (info.cancelled) return { text: 'The card was cancelled; its run ended', tone: 'dim' }
-    if (info.decidedBy && info.decidedBy.surface !== 'tui') return { text: `Resolved in another window (${surfaceWords(info.decidedBy)})`, tone: 'dim' }
+    // This tray leaves a bound mode before it sends its own decision, so a decision that closes one always came from
+    // elsewhere: another window, or another terminal UI attached to the same host (surface 'tui' included).
+    if (info.decidedBy) return { text: `Resolved in another window (${surfaceWords(info.decidedBy)})`, tone: 'dim' }
   }
   return { text: 'The card changed', tone: 'dim' }
 }

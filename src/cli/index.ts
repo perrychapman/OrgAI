@@ -14,7 +14,7 @@ import { runExec, runResume } from './commands/exec'
 import { runInbox } from './commands/inbox'
 import { runRuns } from './commands/runs'
 import { runStatus } from './commands/status'
-import { PROMPT_HINT, runAttach, runDefaultTui, runTuiCommand } from './commands/tui'
+import { defaultTuiPrintsHelp, PROMPT_HINT, runAttach, runDefaultTui, runTuiCommand } from './commands/tui'
 import { runWatch } from './commands/watch'
 import { COMMANDS, DEFAULT_TUI_FLAGS, GLOBAL_FLAGS, findCommand, type CommandEntry, type CommandFlag } from './commandTable'
 import { buildContext } from './context'
@@ -150,6 +150,11 @@ export async function main(argv: string[] = process.argv.slice(2), overrides: Ma
     // Bare `orgai`, `orgai [tui options] [--] <prompt>` or a quoted prompt (an unknown first word with whitespace).
     if (name === undefined || name === '--' || isDefaultTuiFlag(name) || (findCommand(name) === undefined && !name.startsWith('-') && /\s/.test(name))) {
       if (asksHelp(rest)) {
+        out(generalHelp())
+        return EXIT.ok
+      }
+      // No terminal and no prompt: help, before the context (no secret-env refusal or scrub just to print it).
+      if (defaultTuiPrintsHelp(io, rest)) {
         out(generalHelp())
         return EXIT.ok
       }

@@ -190,6 +190,19 @@ describe('DecisionTray: two-step confirmations', () => {
     h.unmount()
   })
 
+  it("another terminal UI's decision closes a confirmation with 'Resolved in another window' too", async () => {
+    const a = tray('permission', 'a', permission('a'))
+    const h = await mount({ cards: [a] })
+    h.clock.t += 1000
+    await h.press('a')
+    expect(h.frame()).toContain('to confirm')
+    const resolved: ResolvedCardInfo[] = [{ key: a.key, ref: a.ref, cancelled: false, decidedBy: { surface: 'tui' }, at: h.clock.t }]
+    await h.set({ cards: [], resolved })
+    expect(h.frame()).toContain('Resolved in another window (the terminal UI)')
+    expect(h.calls).toHaveLength(0)
+    h.unmount()
+  })
+
   it('closes when the bound card changes revision and never sends to the new revision', async () => {
     const h = await mount({ cards: [tray('merge', 'm', { id: 'm', runId: RUN, agentId: 'x', agentName: 'impl', branch: 'b', path: '/p', changedFiles: [], stat: '', patch: '', createdAt: 1 })] })
     h.clock.t += 1000

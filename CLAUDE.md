@@ -519,9 +519,18 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   `KitPreviewItem.roles` shows prompts and elevated tools, skill paths use `safeKitRelPath`, skill export drops private-looking
   files, and an export target whose suffix was added here is refused when it exists (`kitExportTarget`).
 
-- CLI & host (docs/design/cli-spec.md; Waves 0-3 landed: the socket server, `--headless-host` / `--host inproc` hosts, the
-  self-control gate, the read-only `orgai` CLI and headless exec; see the spec's "Implementation status" for deviations
-  and what is unverified):
+- CLI & host (docs/design/cli-spec.md; Waves 0-4 landed: the socket server, `--headless-host` / `--host inproc` hosts, the
+  self-control gate, the read-only `orgai` CLI, headless exec and the terminal UI; see the spec's "Implementation status"
+  for deviations and what is unverified):
+  - Wave 4: the Ink TUI in `src/cli/tui/` (ink 8.0.0, loaded only through `await import('../tui/index')`, the
+    `out/cli/tui.mjs` chunk; lazyTui.test.ts): `orgai tui [--run]`, `attach`, bare `orgai` / `orgai [--] <prompt>`,
+    `resume` without --exec. `terminal.ts` owns raw mode, paste, cursor and the alternate screen (mode chosen once;
+    TERM=dumb is inline) and holds SIGINT / SIGTSTP / SIGCONT while the pager owns the terminal (`suspendForChild`);
+    `session.ts` `TuiConnection` owns the one shared client and every reconnect replacement (streams `keepClient: () =>
+    true`), 'configure' only on a separate per-call connection for createProject. `DecisionTray` sends the exact 5.3
+    payloads (revise `feedback`, rules deny `message`) with a 750 ms swap guard; `pager.ts` spawns the absolute path,
+    shell-free. Unit tests (ink-testing-library) and e2e `cli-tui.mjs` through a python3 pty on macOS (SKIP on win32);
+    Merge Review, the real pager and CSI-u Ctrl+. on real terminals are not driven.
   - Wave 3: adapters call `ctx.onRootTurnEnded` on every root turn end before 'idle' and expose `settlement()`;
     `ContinuationDriver.isSettledForTurn(gen)`; RunManager `trySettleExecRun` (pure `execSettle.ts`), stall watchdog,
     idempotent `finalizeExecRun` -> one `run.finalized` with `RunSummary.execOutcome`, chain budget (an override `maxBudgetUsd` 0

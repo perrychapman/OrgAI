@@ -150,7 +150,7 @@ export const runAttach: CommandFn = async (ctx, args) => {
  * without a prompt this prints `help()` (today's behaviour); a prompt without a terminal is exit 2 pointing at exec.
  * Before `--`, a prompt must contain whitespace (one bare word is a mistyped command).
  */
-export async function runDefaultTui(ctx: CliContext, args: string[], opts: { help?: () => string } = {}): Promise<number> {
+export function parseDefaultTuiArgs(args: string[]): { flags: TuiFlags; prompt: string; team?: RunTeam } {
   const dashed = args.includes('--')
   const { values, positionals } = parseFlags(args, { ...TUI_FLAGS, team: { type: 'string' } })
   const team = values.team
@@ -158,6 +158,20 @@ export async function runDefaultTui(ctx: CliContext, args: string[], opts: { hel
   const prompt = positionals.join(' ')
   if (!dashed && prompt && !/\s/.test(prompt.trim())) throw usage(`Unknown command '${prompt}'. ${PROMPT_HINT}`)
   if (team !== undefined && !prompt.trim()) throw usage('--team applies to a prompt: orgai --team single -- "<prompt>"')
+  return { flags: flagsOf(values), prompt, ...(team ? { team: team as RunTeam } : {}) }
+}
+
+/**
+ * True when bare `orgai` only prints help: no terminal on both ends and no prompt. index.ts checks it before it builds
+ * the context, so the secret-env refusal and the --host inproc scrub never run just to print help.
+ */
+export function defaultTuiPrintsHelp(io: Pick<CliContext['io'], 'stdinIsTTY' | 'stdout'>, args: string[]): boolean {
+  if (io.stdinIsTTY && io.stdout.isTTY === true) return false
+  return !parseDefaultTuiArgs(args).prompt.trim()
+}
+
+export async function runDefaultTui(ctx: CliContext, args: string[], opts: { help?: () => string } = {}): Promise<number> {
+  const { flags, prompt, team } = parseDefaultTuiArgs(args)
   if (!hasTty(ctx)) {
     if (!prompt.trim()) {
       if (opts.help) ctx.io.stdout.write(`${opts.help()}\n`)
@@ -166,8 +180,8 @@ export async function runDefaultTui(ctx: CliContext, args: string[], opts: { hel
     throw usage(PROMPT_NO_TTY_MESSAGE)
   }
   refuseManaged(ctx)
-  const extra: Pick<TuiLaunch, 'prompt' | 'team'> = prompt.trim() ? { prompt, ...(team ? { team: team as RunTeam } : {}) } : {}
-  return launchTui(ctx, flagsOf(values), (conn) => prepareFolder(ctx, conn, extra))
+  const extra: Pick<TuiLaunch, 'prompt' | 'team'> = prompt.trim() ? { prompt, ...(team ? { team } : {}) } : {}
+  return launchTui(ctx, flags, (conn) => prepareFolder(ctx, conn, extra))
 }
 
 // ---------- orgai resume (no --exec) ----------
@@ -175,7 +189,8 @@ export async function runDefaultTui(ctx: CliContext, args: string[], opts: { hel
 /** `orgai resume [ref] [--prompt <text>] [--inline] [--ax-screen-reader]`: the TUI on that chain. */
 export async function runResumeTui(ctx: CliContext, args: string[]): Promise<number> {
   const { values, positionals } = parseFlags(args, { ...TUI_FLAGS, prompt: { type: 'string' } })
-  if (positionals.includes('-')) throw usage('Reading the message from stdin needs --exec; in the terminal UI give --prompt "<text>" or type it.')
+  // `-` (positional or `--prompt -`) means stdin in `resume [ref] [--prompt <text> | -]`; only --exec reads it.
+  if (positionals.includes('-') || values.prompt === '-') throw usage('Reading the message from stdin needs --exec; in the terminal UI give --prompt "<text>" or type it.')
   if (positionals.length > 1) throw usage('Use: orgai resume [runId-or-R#] [--prompt <text>]')
   const text = values.prompt
   if (text !== undefined && !text.trim()) throw usage('Give a message to continue with: --prompt "<text>".')

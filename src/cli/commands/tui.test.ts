@@ -18,7 +18,7 @@ vi.mock('../tui/index', () => ({
   }
 }))
 
-const { runAttach, runDefaultTui, runResumeTui, runTuiCommand, PROMPT_HINT } = await import('./tui')
+const { defaultTuiPrintsHelp, runAttach, runDefaultTui, runResumeTui, runTuiCommand, PROMPT_HINT } = await import('./tui')
 
 const P1 = project('p1', '/work')
 
@@ -63,6 +63,15 @@ describe('bare orgai / orgai <prompt>', () => {
     expect(f.out()).toContain('HELP TEXT')
     expect(tui.calls).toEqual([])
     expect(f.connectCalls).toEqual([])
+  })
+
+  it('defaultTuiPrintsHelp: only without a terminal on both ends and without a prompt', () => {
+    const io = (stdin: boolean, stdout: boolean) => ({ stdinIsTTY: stdin, stdout: { write: () => true, isTTY: stdout } as never })
+    expect(defaultTuiPrintsHelp(io(false, false), [])).toBe(true)
+    expect(defaultTuiPrintsHelp(io(true, false), ['--inline'])).toBe(true)
+    expect(defaultTuiPrintsHelp(io(false, true), ['--', 'fix the bug'])).toBe(false)
+    expect(defaultTuiPrintsHelp(io(true, true), [])).toBe(false)
+    expect(() => defaultTuiPrintsHelp(io(false, false), ['--team', 'x'])).toThrow()
   })
 
   it('a prompt without a terminal is a usage error pointing at exec', async () => {
@@ -160,6 +169,8 @@ describe('orgai resume (terminal UI)', () => {
     const f = ttyCtx()
     await expect(runResumeTui(f.ctx, ['-'])).rejects.toMatchObject({ exitCode: EXIT.usage, message: expect.stringContaining('--exec') })
     await expect(runResumeTui(f.ctx, ['--prompt', ' '])).rejects.toMatchObject({ exitCode: EXIT.usage })
+    await expect(runResumeTui(f.ctx, ['--prompt', '-'])).rejects.toMatchObject({ exitCode: EXIT.usage, message: expect.stringContaining('--exec') })
+    await expect(runResumeTui(f.ctx, ['R1', '--prompt=-'])).rejects.toMatchObject({ exitCode: EXIT.usage, message: expect.stringContaining('--exec') })
     tui.conn = fakeConn({ runs: [summary('run_live0003', { status: 'running' })] })
     await expect(runResumeTui(f.ctx, [])).rejects.toMatchObject({ exitCode: EXIT.usage, message: 'This project has no ended run to resume.' })
     const g = ttyCtx()

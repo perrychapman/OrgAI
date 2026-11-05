@@ -76,7 +76,10 @@ describe('connectTuiHost', () => {
     const made = await conn.createProject({ name: 'New', path: '/work' } as never)
     expect(made.name).toBe('New')
     expect(f.connectCalls[1]).toEqual({ scopes: [...SCOPES, 'configure'], opts: { clientKind: 'tui', waitStartingMs: 2000 } })
-    expect(h1.closed).toBe(true)
+    // The shared client stays open; the configure connection is closed after the call.
+    expect(h1.closed).toBe(false)
+    expect(h2.closed).toBe(true)
+    expect(conn.client).toBe(h1)
     expect(h2.callsOf('projects:create')).toEqual([[{ name: 'New', path: '/work' }]])
 
     const g1 = host()
@@ -122,6 +125,54 @@ describe('session switching (onboarding, another project)', () => {
     expect(h.closed).toBe(false)
     await conn.close()
     expect(h.closed).toBe(true)
+  })
+})
+
+describe('onboarding with a session open', () => {
+  it('createProject leaves the open session and the shared client alone: startSetup and the next session work', async () => {
+    const h1 = host({ answers: { 'setup:start': () => summary('s1', { kind: 'setup', projectId: 'p1' }) } })
+    const h2 = new FakeHostClient({ 'projects:create': () => P }, { hello: { grantedScopes: [...SCOPES, 'configure'] } })
+    const f = fakeContext({ connect: [h1, h2] })
+    const conn = await connectTuiHost(f.ctx)
+    // Onboarding: a session with no project is open before the App renders.
+    const onboarding = await openTuiSession(conn, { folder: '/work' })
+    const made = await conn.createProject({ name: 'Shop', path: '/work' } as never)
+    expect(made.id).toBe('p1')
+    expect(h1.closed).toBe(false)
+    expect((await conn.startSetup(made.id)).id).toBe('s1')
+    // The default / import choice: a session on the new project, then the onboarding one closes.
+    const next = await openTuiSession(conn, { folder: '/work', project: P })
+    await onboarding.close()
+    expect(h1.closed).toBe(false)
+    const before = h1.callsOf('runs:subscribe').length
+    await next.resync()
+    expect(h1.callsOf('runs:subscribe').length).toBe(before + 1)
+    await next.close()
+    await conn.close()
+    expect(h1.closed).toBe(true)
+  })
+
+  it('after a reconnect the new client is shared: switching sessions never closes it', async () => {
+    const h1 = host()
+    const r = host({ answers: { 'runs:send': () => undefined } })
+    const f = fakeContext({ connect: [h1, r] })
+    const conn = await connectTuiHost(f.ctx)
+    let t = 0
+    const first = await openTuiSession(conn, { folder: '/work', project: P }, { schedule: (fn) => fn(), timers: { sleep: async (ms) => void (t += ms), now: () => t } })
+    h1.hostClose()
+    for (let i = 0; i < 20; i++) await flush()
+    expect(first.getState().connection).toBe('live')
+    expect(conn.client).toBe(r)
+    const second = await openTuiSession(conn, { folder: '/work', project: P })
+    await first.close()
+    expect(r.closed).toBe(false)
+    const before = r.callsOf('runs:subscribe').length
+    await second.resync()
+    expect(r.callsOf('runs:subscribe').length).toBe(before + 1)
+    await second.close()
+    expect(r.closed).toBe(false)
+    await conn.close()
+    expect(r.closed).toBe(true)
   })
 })
 

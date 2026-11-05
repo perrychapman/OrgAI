@@ -4,8 +4,14 @@
  * screen (\x1b[?1049h/l), and the crash, exit and signal cleanup. Ink never touches any of them (types.ts INK_NOTES).
  *
  * Windows has no SIGTSTP / SIGCONT: those handlers are skipped there (and Ctrl+Z is ignored); unverified on Windows.
+ *
+ * While a child owns the terminal (the $PAGER, `suspendForChild`), the child shares our foreground process group, so
+ * its Ctrl+C / Ctrl+Z reach us too: SIGINT is ignored (git does the same while its pager runs), SIGTSTP takes the
+ * default stop without touching the terminal, and SIGCONT does not resume (the child still owns the screen); the
+ * terminal comes back only with `resumeFromChild` once the child has exited.
  */
 import { writeSync } from 'node:fs'
+import { sanitizeTty } from './sanitizeTty'
 import { FULLSCREEN_MIN_COLS, FULLSCREEN_MIN_ROWS, type BufferMode, type TerminalController } from './types'
 
 export const SEQ = {
@@ -44,6 +50,10 @@ export interface TuiTerminal extends TerminalController {
   stopSelf(): void
   /** Whether the terminal is currently suspended (SIGTSTP or the pager). */
   readonly suspended: boolean
+  /** Suspend for a child that takes the foreground terminal (the pager); signals are held until resumeFromChild. */
+  suspendForChild(): void
+  /** The child exited: resume and handle signals again. */
+  resumeFromChild(): void
 }
 
 type Proc = Pick<NodeJS.Process, 'on' | 'off' | 'kill' | 'pid' | 'exit' | 'platform'> & { stderr?: { write(s: string): unknown; fd?: number } }
@@ -63,6 +73,8 @@ export function createTerminal(opts: {
   let entered = false
   let restored = false
   let suspended = false
+  /** A child (the pager) owns the terminal: signals are held (see the header). */
+  let childOwns = false
   const resumeListeners = new Set<() => void>()
   const resizeListeners = new Set<(cols: number, rows: number) => void>()
 
@@ -125,28 +137,34 @@ export function createTerminal(opts: {
   }
 
   const onTstp = (): void => {
-    suspend()
+    // With a child in the foreground the terminal is the child's: stop with it, leave the modes alone.
+    const held = childOwns
+    if (!held) suspend()
     proc.off('SIGTSTP', onTstp)
     try {
       proc.kill(proc.pid, 'SIGTSTP')
     } catch {
       // Could not stop: carry on as if resumed.
       proc.on('SIGTSTP', onTstp)
-      resume()
+      if (!held) resume()
     }
   }
   const onCont = (): void => {
     proc.off('SIGTSTP', onTstp)
     proc.on('SIGTSTP', onTstp)
-    resume()
+    if (!childOwns) resume()
   }
   const onTerm = (): void => exitWith(SIGNAL_EXIT.SIGTERM)
-  const onInt = (): void => exitWith(SIGNAL_EXIT.SIGINT)
+  // Ctrl+C typed into the pager reaches the whole process group; the pager handles it, we ignore it.
+  const onInt = (): void => {
+    if (!childOwns) exitWith(SIGNAL_EXIT.SIGINT)
+  }
   const onHup = (): void => exitWith(SIGNAL_EXIT.SIGHUP)
   const onExit = (): void => restore()
   const onCrash = (err: unknown): void => {
     restore()
-    const text = err instanceof Error ? (err.stack ?? err.message) : String(err)
+    // Error text can carry external words (an MCP server's stderr under --host inproc): sanitized like every exit path.
+    const text = sanitizeTty(err instanceof Error ? (err.stack ?? err.message) : String(err))
     try {
       const fd = proc.stderr?.fd
       if (typeof fd === 'number') writeSync(fd, `orgai: ${text}\n`)
@@ -215,6 +233,19 @@ export function createTerminal(opts: {
     if (!suspended) modeOff(true)
     else writeNow(SEQ.sgrReset)
     suspended = false
+    childOwns = false
+  }
+
+  function suspendForChild(): void {
+    if (!entered || restored || suspended) return
+    suspend()
+    childOwns = true
+  }
+
+  function resumeFromChild(): void {
+    if (!childOwns) return
+    childOwns = false
+    resume()
   }
 
   return {
@@ -225,6 +256,8 @@ export function createTerminal(opts: {
     resume,
     restore,
     size,
+    suspendForChild,
+    resumeFromChild,
     get suspended() {
       return suspended
     },

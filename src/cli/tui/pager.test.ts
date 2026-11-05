@@ -23,12 +23,20 @@ describe('pagerCommand', () => {
     expect(parsePagerEnv(undefined)).toBeNull()
   })
 
-  it('falls back to less -R, then more, then null', () => {
-    expect(pagerCommand({ PAGER: 'less; id' }, onPath('less', 'more'))).toEqual({ file: 'less', args: ['-R'] })
-    expect(pagerCommand({}, onPath('less', 'more'))).toEqual({ file: 'less', args: ['-R'] })
-    expect(pagerCommand({}, onPath('more'))).toEqual({ file: 'more', args: [] })
+  it('falls back to less -R, then more, then null, always by the absolute path found', () => {
+    expect(pagerCommand({ PAGER: 'less; id' }, onPath('less', 'more'))).toEqual({ file: '/usr/bin/less', args: ['-R'] })
+    expect(pagerCommand({}, onPath('less', 'more'))).toEqual({ file: '/usr/bin/less', args: ['-R'] })
+    expect(pagerCommand({}, onPath('more'))).toEqual({ file: '/usr/bin/more', args: [] })
     expect(pagerCommand({}, onPath())).toBeNull()
-    expect(pagerCommand({ PAGER: 'most -s' }, onPath())).toEqual({ file: 'most', args: ['-s'] })
+  })
+
+  it('resolves a bare PAGER word on PATH; a name not found or a relative path is not used', () => {
+    expect(pagerCommand({ PAGER: 'most -s' }, onPath('most'))).toEqual({ file: '/usr/bin/most', args: ['-s'] })
+    expect(pagerCommand({ PAGER: 'most -s' }, onPath('less'))).toEqual({ file: '/usr/bin/less', args: ['-R'] })
+    expect(pagerCommand({ PAGER: 'most -s' }, onPath())).toBeNull()
+    expect(pagerCommand({ PAGER: './most' }, onPath('less'))).toEqual({ file: '/usr/bin/less', args: ['-R'] })
+    expect(pagerCommand({ PAGER: 'bin\\most' }, onPath('less'))).toEqual({ file: '/usr/bin/less', args: ['-R'] })
+    expect(pagerCommand({ PAGER: '/opt/most -s' }, onPath())).toEqual({ file: '/opt/most', args: ['-s'] })
   })
 })
 
@@ -81,7 +89,7 @@ describe('showInPager', () => {
     expect(res).toBe('shown')
     expect(order).toEqual(['suspend', 'resume'])
     expect(f.calls).toHaveLength(1)
-    expect(f.calls[0].file).toBe('less')
+    expect(f.calls[0].file).toBe('/usr/bin/less')
     expect(f.calls[0].args).toEqual(['-R'])
     expect(f.calls[0].options).toMatchObject({ stdio: ['pipe', 'inherit', 'inherit'], shell: false })
     const written = f.child()!.stdin.written

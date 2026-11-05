@@ -24,7 +24,9 @@ export interface PagerDeps {
 /** The first executable called `name` on env.PATH, else null. Never runs anything. */
 export function whichOnPath(name: string, env: NodeJS.ProcessEnv): string | null {
   const path = env.PATH ?? env.Path ?? ''
-  const exts = process.platform === 'win32' ? (env.PATHEXT ?? '.EXE;.CMD;.BAT;.COM').split(';').filter(Boolean) : ['']
+  const pathExt = (env.PATHEXT ?? '.EXE;.CMD;.BAT;.COM').split(';').filter(Boolean)
+  // On Windows a name that already has an extension (PAGER=less.exe) is tried as given first.
+  const exts = process.platform === 'win32' ? [...(/\.[^\\/.]+$/.test(name) ? [''] : []), ...pathExt] : ['']
   for (const dir of path.split(delimiter)) {
     if (!dir || !isAbsolute(dir)) continue
     for (const ext of exts) {
@@ -49,11 +51,22 @@ export function parsePagerEnv(value: string | undefined): { file: string; args: 
   return { file: words[0], args: words.slice(1) }
 }
 
+/**
+ * The pager to run, always as an absolute path: a bare name is spawned from the TUI's cwd (the project folder, an
+ * untrusted repo), and Windows looks in the cwd before PATH, as does execvp for an empty or '.' PATH entry. So a bare
+ * $PAGER word is resolved through whichOnPath (absolute PATH entries only); a relative path with a separator, or a name
+ * not found, is not used and the default applies.
+ */
 export function pagerCommand(env: NodeJS.ProcessEnv, which: (name: string, env: NodeJS.ProcessEnv) => string | null = whichOnPath): { file: string; args: string[] } | null {
   const fromEnv = parsePagerEnv(env.PAGER)
-  if (fromEnv) return fromEnv
-  if (which('less', env)) return { file: 'less', args: ['-R'] }
-  if (which('more', env)) return { file: 'more', args: [] }
+  if (fromEnv) {
+    const file = isAbsolute(fromEnv.file) ? fromEnv.file : /[\\/]/.test(fromEnv.file) ? null : which(fromEnv.file, env)
+    if (file) return { file, args: fromEnv.args }
+  }
+  const less = which('less', env)
+  if (less) return { file: less, args: ['-R'] }
+  const more = which('more', env)
+  if (more) return { file: more, args: [] }
   return null
 }
 

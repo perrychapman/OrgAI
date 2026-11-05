@@ -21,7 +21,7 @@
 // f. Paste safety (daemon host): with a permission card open, a bracketed paste of "y\na\n" into the composer leaves
 //    the card pending (inbox) and resolves nothing; the composer shows the text.
 // g. Card-swap guard and exact payloads (daemon host, plus `watch <run> --output-format stream-json`): two permission
-//    cards back to back: `y` allows card 1; a `y` within 200 ms of card 2 appearing is ignored (still pending, no
+//    cards back to back: `y` allows card 1; a `y` within 200 ms of the tray drawing card 2 is ignored (still pending, no
 //    second permission.resolved); after 1 s `n` + Enter denies it with message 'Denied by user'. Then a question
 //    (`2` + Enter: selected [second label]), a rules request (`r`: grant, scope run), an MCP install (`n`: not
 //    approved) and a skills proposal (`d`: declined), each resolved with decidedBy.surface 'tui'. Two-step: `a` on a
@@ -388,14 +388,20 @@ try {
       const ok1 = await waitEv('card 1 tool result', 'transcript', (e) => e.entry?.block?.kind === 'tool_result' && e.entry.block.content === 'card one ran', 10_000).then(() => true, () => false)
       check(ok1, 'g: card 1 ran as allowed (tool result "card one ran")')
 
-      // The swap guard: a `y` right after card 2 appears is ignored.
+      // The swap guard: a `y` right after card 2 appears is ignored. The key goes in only once the tray has drawn card 2
+      // (its "Allow once" hint back on screen after card 1's left), so a guard-less tray would allow it; a key sent
+      // before the card is drawn would only prove the card was not there yet.
+      const card1Gone = await t.waitFor((s) => !s.includes('Allow once'), 10_000).then(() => true, () => false)
+      check(card1Gone, "g: card 1's hints leave the tray once it is allowed", esc(t.screen()))
       const req2ev = await waitEv('card 2', 'permission.request', (e) => cmdOf(e) === 'npm run card-two')
-      t.write('\x1bOQy') // F2 (in case focus moved while the tray was empty) and `y`, within 200 ms of the card
-      const lag = Date.now() - req2ev.at
+      await t.waitFor((s) => s.includes('Allow once') && s.includes('card-two'), 10_000)
+      const drawnAt = Date.now()
+      t.write('\x1bOQy') // F2 (in case focus moved while the tray was empty) and `y`, right after card 2 is drawn
+      const lag = Date.now() - drawnAt
       await sleep(1000)
       const req2 = req2ev.e.request
       const pending2 = (await inbox()).some((x) => x.requestId === req2.id)
-      check(lag < 200 && pending2 && !ev('permission.resolved', (e) => e.requestId === req2.id), 'g: a key within 750 ms of a card swap is ignored (card 2 still pending)', `lag ${lag} ms, pending ${pending2}`)
+      check(lag < 200 && pending2 && !ev('permission.resolved', (e) => e.requestId === req2.id), 'g: a key within 750 ms of a card swap is ignored (card 2 drawn and still pending)', `lag ${lag} ms, pending ${pending2}`)
       t.key('f2')
       await sleep(200)
       t.write('n')

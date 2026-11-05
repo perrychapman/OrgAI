@@ -219,6 +219,42 @@ describe('createTerminal', () => {
     }
   })
 
+  it('the crash text is sanitized before it reaches the terminal', () => {
+    const { proc, term } = setup('fullscreen')
+    term.enter()
+    proc.emit('unhandledRejection', new Error('bad \u001b]52;c;aGk=\u0007 \u001b[2Jthing'))
+    expect(proc.errText).toContain('bad')
+    expect(proc.errText).not.toContain('\u001b')
+    expect(proc.errText).not.toContain('\u0007')
+  })
+
+  it('while the pager owns the terminal: Ctrl+C is ignored, Ctrl+Z stops without touching the modes, SIGCONT waits for the pager', () => {
+    const { stdout, stdin, proc, term } = setup('fullscreen')
+    term.enter()
+    const resumed = vi.fn()
+    term.onResume(resumed)
+    term.suspendForChild()
+    expect(term.suspended).toBe(true)
+    stdout.out = ''
+    const rawBefore = stdin.raw.length
+    proc.emit('SIGINT')
+    expect(proc.exits).toEqual([])
+    proc.emit('SIGTSTP')
+    expect(proc.kills).toEqual([[4242, 'SIGTSTP']])
+    proc.emit('SIGCONT')
+    expect(stdout.out).toBe('')
+    expect(stdin.raw.length).toBe(rawBefore)
+    expect(resumed).not.toHaveBeenCalled()
+    expect(proc.listenerCount('SIGTSTP')).toBe(1)
+    term.resumeFromChild()
+    expect(term.suspended).toBe(false)
+    expect(stdout.out).toContain(SEQ.altEnter)
+    expect(resumed).toHaveBeenCalledTimes(1)
+    // Signals are handled again once the pager is gone.
+    proc.emit('SIGINT')
+    expect(proc.exits).toEqual([130])
+  })
+
   it('the exit event restores', () => {
     const { stdout, proc, term } = setup('fullscreen')
     term.enter()

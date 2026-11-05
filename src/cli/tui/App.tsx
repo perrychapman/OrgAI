@@ -69,7 +69,7 @@ export interface InputSource {
 
 export interface AppProps {
   session: TuiSessionApi
-  terminal: TerminalController & Partial<Pick<TuiTerminal, 'onResume' | 'stopSelf'>>
+  terminal: TerminalController & Partial<Pick<TuiTerminal, 'onResume' | 'stopSelf' | 'suspendForChild' | 'resumeFromChild'>>
   env: TuiEnv
   launch: TuiLaunch
   conn: TuiHostConnection
@@ -252,7 +252,12 @@ export function App(props: AppProps) {
     async (title: string, text: string): Promise<void> => {
       let shown: 'shown' | 'no-pager' = 'no-pager'
       try {
-        shown = await showInPager(text, { env: processEnv, suspend: () => terminal.suspend(), resume: () => terminal.resume() })
+        shown = await showInPager(text, {
+          env: processEnv,
+          // The pager shares our process group: hold Ctrl+C / Ctrl+Z handling while it owns the terminal.
+          suspend: () => (terminal.suspendForChild ? terminal.suspendForChild() : terminal.suspend()),
+          resume: () => (terminal.resumeFromChild ? terminal.resumeFromChild() : terminal.resume())
+        })
       } catch (e) {
         notify(`Could not open the pager: ${errText(e)}`, 'warn')
       }

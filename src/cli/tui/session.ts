@@ -2,7 +2,8 @@
  * The TUI's host connection and session (W4-T1, cli-spec 3.3(4), 5.1, 5.2).
  *
  * - connectTuiHost: ensureHost with scopes read / operate / decide and clientKind 'tui' (the host counts the socket as
- *   an interactive client). 'configure' is asked for only by createProject (onboarding), on a fresh connection.
+ *   an interactive client). 'configure' is asked for only by createProject (onboarding), on a separate connection
+ *   closed after the call, so the shared client and the open session's stream are never touched.
  * - openTuiSession: one RunStream (runs:subscribe with followChains, never nonInteractive) feeding the pure reducer
  *   in state.ts; listeners are notified at most once per 16 ms. Runs the state has not seen (an auto-resume, another
  *   window's run) are fetched with runs:get; earlier chain members (up to 5) are fetched after a focus.
@@ -84,9 +85,13 @@ export interface ConnectTuiOptions {
 }
 
 class TuiConnection implements TuiHostConnection {
+  /**
+   * The one read / operate / decide client every session's stream and call goes through. The connection owns it and
+   * every client a stream's reconnect brings (`reconnect` adopts it as the new base and closes the old one), so a
+   * session switch never closes a socket the next session uses (streams are built with keepClient: () => true).
+   */
   private base: HostClient
   private follower: RunStream | undefined
-  private scopes: HostScope[]
   readonly inproc?: InprocHostHandle
   readonly started: boolean
 
@@ -95,23 +100,28 @@ class TuiConnection implements TuiHostConnection {
     host: EnsuredHost
   ) {
     this.base = host.client
-    this.scopes = [...TUI_SCOPES]
     if (host.inproc) this.inproc = host.inproc
     this.started = host.started
   }
 
-  /** The client calls go through: the follower's (it replaces its client after a reconnect), else the base one. */
+  /** The client calls go through (a stream's reconnect replaces it). */
   get client(): HostClient {
-    return this.follower?.client ?? this.base
+    return this.base
   }
 
   get hello(): HostClient['hello'] {
     return this.client.hello
   }
 
-  /** A fresh connection with the same scopes (RunStream reconnects). */
-  reconnect(): Promise<ConnectResult> {
-    return this.ctx.connect(this.scopes, { clientKind: 'tui', waitStartingMs: ENSURE_HOST_STARTING_WAIT_MS })
+  /** A fresh connection with the same scopes (RunStream reconnects); on success it becomes the shared client. */
+  async reconnect(): Promise<ConnectResult> {
+    const res = await this.ctx.connect([...TUI_SCOPES], { clientKind: 'tui', waitStartingMs: ENSURE_HOST_STARTING_WAIT_MS })
+    if (res.ok && res.client !== this.base) {
+      const previous = this.base
+      this.base = res.client
+      previous.close()
+    }
+    return res
   }
 
   /** The newest session's stream; returns the one it replaced (restored when that session fails to start). */
@@ -139,27 +149,31 @@ class TuiConnection implements TuiHostConnection {
     })
   }
 
-  /** Reconnect with 'configure' (like exec's Session.needConfigure): refused with exit 1 when the host does not grant it. */
-  private async needConfigure(): Promise<void> {
-    if (this.scopes.includes('configure')) return
-    const scopes = [...TUI_CONFIGURE_SCOPES]
-    const res = await this.ctx.connect(scopes, { clientKind: 'tui', waitStartingMs: ENSURE_HOST_STARTING_WAIT_MS })
+  /**
+   * A separate connection with 'configure' (like exec's Session.needConfigure), used for one call and closed after
+   * it: the shared client (and the open session's stream on it) is never touched. Refused with exit 1 when the host
+   * does not grant it.
+   */
+  private async withConfigure<T>(fn: (client: HostClient) => Promise<T>): Promise<T> {
+    const res = await this.ctx.connect([...TUI_CONFIGURE_SCOPES], { clientKind: 'tui', waitStartingMs: ENSURE_HOST_STARTING_WAIT_MS })
     if (!res.ok) throw connectFailure(res)
-    this.base.close()
-    this.base = res.client
-    this.scopes = scopes
-    const granted = res.client.hello.grantedScopes
-    if (Array.isArray(granted) && !granted.includes('configure')) {
-      throw new CliError("The OrgAI host did not grant the 'configure' access this needs.", EXIT.failure)
+    try {
+      const granted = res.client.hello.grantedScopes
+      if (Array.isArray(granted) && !granted.includes('configure')) {
+        throw new CliError("The OrgAI host did not grant the 'configure' access this needs.", EXIT.failure)
+      }
+      return await fn(res.client)
+    } finally {
+      res.client.close()
     }
   }
 
   async createProject(input: ProjectCreateInput): Promise<Project> {
-    await this.needConfigure()
-    // The base client holds 'configure'; a follower (if any) does not.
-    return this.base.call<Project>('projects:create', [input]).catch((e: unknown) => {
-      throw hostError(e)
-    })
+    return this.withConfigure((client) =>
+      client.call<Project>('projects:create', [input]).catch((e: unknown) => {
+        throw hostError(e)
+      })
+    )
   }
 
   async startSetup(projectId: string): Promise<RunSummary> {
@@ -371,8 +385,9 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
   const c = conn instanceof TuiConnection ? conn : undefined
   stream = new RunStream({
     client: conn.client,
-    // The connection is shared with later sessions (onboarding, project switches): only runTui closes it.
-    keepClient: true,
+    // The connection (and every client a reconnect brings, adopted by TuiConnection.reconnect) is shared with later
+    // sessions (onboarding, project switches): the stream closes none of them; only runTui closes the connection.
+    keepClient: c ? () => true : true,
     connect: () => (c ? c.reconnect() : Promise.resolve({ ok: false, reason: 'unreachable', message: 'No reconnect for this connection.' } as ConnectResult)),
     subscribeInput,
     onEvent: (p) => {
