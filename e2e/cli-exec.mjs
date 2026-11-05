@@ -12,7 +12,14 @@
 //    default script waits on a card; `inbox --output-format json` shows its request id; `decide <id> deny` exits 0
 //    ('applied'), a second decide exits 1, `decide nope deny` exits 2. On a [mock:exec-slow] exec run, `runs send`,
 //    `runs interrupt` and `runs stop` exit 0 and the exec process ends 130 'interrupted'. SIGINT to an exec process
-//    ends it 130 'interrupted'. `resume R1 --exec --prompt more` exits 0.
+//    ends it 130 'interrupted'. `resume R1 --exec --prompt more` exits 0, and `resume --exec --prompt-file` exits 0.
+// 1 also runs `exec --prompt-file` with a file holding quotes, & and | (the way untrusted text is passed on Windows,
+// review M12).
+//
+// win32 (review H4): child.kill('SIGINT') is TerminateProcess there, so no handler would run and the exit code would
+// not be 130. The SIGINT case is skipped with a log line and the same stop is driven through `orgai runs stop` on a
+// fresh exec run (no interrupt first); the long-lived daemon is ended with `daemon stop --force`, not SIGINT. The script
+// has not been run on Windows yet.
 import { spawn } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
@@ -113,6 +120,11 @@ try {
   await execCase('[mock:exec-question] --on-question conservative', ['--on-question', 'conservative', '[mock:exec-question] do it'], 0, 'completed-unplanned')
   check(Date.now() - t0 < 45_000, 'the conservative answer does not wait for the human grace window', `${Date.now() - t0} ms`)
 
+  // Untrusted text goes through --prompt-file (or stdin), never argv (review M12).
+  const promptFile = path.join(DATA_DIR, 'cli-exec-prompt.txt')
+  fs.writeFileSync(promptFile, '\ufeffSay "hi" & echo not-a-command | more\n', 'utf8')
+  await execCase('exec --prompt-file (quotes, & and |)', ['--team', 'single', '--prompt-file', promptFile], 0, 'completed-unplanned')
+
   const streamed = await cli(['--host', 'inproc', 'exec', '--output-format', 'stream-json', '--team', 'single', 'hello again'], { cwd: repo })
   const sl = lines(streamed.out)
   check(streamed.code === 0 && sl.length > 1 && sl.every((l) => l && l.schemaVersion === 1), 'stream-json: every line parses with schemaVersion', show(streamed))
@@ -157,21 +169,37 @@ try {
   const slowLast = lines(slowDone.out).at(-1)
   check(slowDone.code === 130 && slowLast?.outcome === 'interrupted', 'runs stop ends the exec process 130, interrupted', show(slowDone))
 
-  // SIGINT to an exec process: runs:stop, then 130.
-  let sawEvent = false
-  const sig = start(['--host', 'daemon', 'exec', '--output-format', 'stream-json', '[mock:exec-slow] wait for the signal'], { cwd: repo, onOut: (o) => (sawEvent ||= o.includes('"type":"event"')) })
-  await until('the exec run to stream', () => sawEvent)
-  sig.child.kill('SIGINT')
-  const sigDone = await sig.done
-  check(sigDone.code === 130 && lines(sigDone.out).at(-1)?.outcome === 'interrupted', 'SIGINT ends exec 130 with outcome interrupted', show(sigDone))
+  if (process.platform === 'win32') {
+    // No POSIX signals on Windows: kill('SIGINT') would TerminateProcess the CLI before its handler runs.
+    log('SKIP SIGINT to an exec process on win32 (kill is TerminateProcess there); driving the stop through `orgai runs stop` instead')
+    let stopOut = ''
+    const viaStop = start(['--host', 'daemon', 'exec', '--output-format', 'stream-json', '[mock:exec-slow] stop me from another terminal'], { cwd: repo, onOut: (o) => (stopOut = o) })
+    const stopRun = await until('the exec run to stream', () => lines(stopOut).find((l) => l?.type === 'event')?.event?.runId, 30_000)
+    const stoppedOnly = await cli(['runs', 'stop', stopRun], { cwd: repo })
+    check(stoppedOnly.code === 0, 'win32: runs stop exits 0', show(stoppedOnly))
+    const stopDone = await viaStop.done
+    check(stopDone.code === 130 && lines(stopDone.out).at(-1)?.outcome === 'interrupted', 'win32: runs stop (no interrupt first) ends exec 130 with outcome interrupted', show(stopDone))
+  } else {
+    // SIGINT to an exec process: runs:stop, then 130.
+    let sawEvent = false
+    const sig = start(['--host', 'daemon', 'exec', '--output-format', 'stream-json', '[mock:exec-slow] wait for the signal'], { cwd: repo, onOut: (o) => (sawEvent ||= o.includes('"type":"event"')) })
+    await until('the exec run to stream', () => sawEvent)
+    sig.child.kill('SIGINT')
+    const sigDone = await sig.done
+    check(sigDone.code === 130 && lines(sigDone.out).at(-1)?.outcome === 'interrupted', 'SIGINT ends exec 130 with outcome interrupted', show(sigDone))
+  }
 
   const resumed = await cli(['--host', 'daemon', 'resume', 'R1', '--exec', '--prompt', 'more', '--output-format', 'json'], { cwd: repo })
   check(resumed.code === 0 && json(resumed.out)?.exitCode === 0, 'resume R1 --exec --prompt more exits 0', show(resumed))
+  const resumedFromFile = await cli(['--host', 'daemon', 'resume', 'R1', '--exec', '--prompt-file', promptFile, '--output-format', 'json'], { cwd: repo })
+  check(resumedFromFile.code === 0 && json(resumedFromFile.out)?.exitCode === 0, 'resume R1 --exec --prompt-file exits 0', show(resumedFromFile))
 } catch (e) {
   check(false, 'cli-exec ran to the end', e instanceof Error ? e.stack : String(e))
 } finally {
   if (daemon) {
-    daemon.child.kill('SIGINT')
+    // win32: SIGINT would TerminateProcess the foreground daemon and leave daemon.json behind; ask it to stop instead.
+    if (process.platform === 'win32') await cli(['daemon', 'stop', '--force'], { cwd: APP_DIR, timeoutMs: 30_000 }).catch(() => undefined)
+    else daemon.child.kill('SIGINT')
     const t = setTimeout(() => daemon.child.kill('SIGKILL'), 20_000)
     await daemon.done
     clearTimeout(t)

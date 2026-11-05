@@ -119,7 +119,25 @@ describe('orgai routing', () => {
     expect(await helpOf('status')).toContain('--all-projects')
     for (const f of ['--run', '--inline', '--ax-screen-reader']) expect(await helpOf('tui')).toContain(f)
     expect(await helpOf('attach')).toContain('--inline')
-    expect(await helpOf('resume')).toContain('resume [runId-or-R#] [--prompt <text> | -] [--exec [exec options]]')
+    expect(await helpOf('resume')).toContain('resume [runId-or-R#] [--prompt <text> | --prompt-file <path|-> | -] [--exec [exec options]]')
+    expect(calls).toHaveLength(0)
+  })
+
+  it('exec, -p and resume help offer --prompt-file and say untrusted text goes in a file or on stdin (review M12)', async () => {
+    for (const argv of [['help', 'exec'], ['-p', '--help'], ['help', 'resume']]) {
+      const r = await run(argv)
+      expect(r.code, argv.join(' ')).toBe(0)
+      expect(r.out, argv.join(' ')).toContain('--prompt-file <value>')
+      // The note is wrapped; compare it with the line breaks folded.
+      const flat = r.out.replace(/\s+/g, ' ')
+      expect(flat, argv.join(' ')).toContain('goes in a file or on stdin, never on the command line')
+      expect(flat, argv.join(' ')).toContain('On Windows orgai is a .cmd file, so cmd.exe re-reads its arguments')
+      // The note is the last paragraph, wrapped at 100 columns.
+      const note = r.out.trimEnd().split('\n\n').at(-1) ?? ''
+      expect(note.startsWith('Text you did not write'), argv.join(' ')).toBe(true)
+      expect(note.split('\n').every((l) => l.length <= 100), argv.join(' ')).toBe(true)
+    }
+    expect(generalHelp().replace(/\s+/g, ' ')).toContain('orgai exec --prompt-file <path>. On Windows the orgai command is a .cmd file')
     expect(calls).toHaveLength(0)
   })
 
