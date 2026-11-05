@@ -111,6 +111,11 @@ describe('sanitizeArgs', () => {
     expect(isCredentialArg('Authorization=x')).toBe(true)
     expect(isCredentialArg('https://h.example/path')).toBe(false)
   })
+  it('stays linear on hostile long input', () => {
+    const start = Date.now()
+    for (const s of ['a'.repeat(300_000), `${'a'.repeat(100_000)}://${'b'.repeat(100_000)}`, 'x://'.repeat(50_000), `a:${'/'.repeat(100_000)}`, `${'a='.repeat(50_000)}@@@@`]) isCredentialArg(s)
+    expect(Date.now() - start).toBeLessThan(2000)
+  })
   it('drops secret flags with their value and names them without values', () => {
     const r = sanitizeArgs(['run', '--header=Foo: SECRETV', '-H', 'SECRETV2', '--keep'])
     expect(r.kept).toEqual(['run', '--keep'])
