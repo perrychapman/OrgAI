@@ -442,7 +442,13 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     dedupe, while the row still lands on the root; at most 500 agents; `complete` means everything live was printed,
     so an entity with a capped fact or relation list, hidden aliases or text the automatic block left out is never
     "already shown"; signature over the untrimmed content), `fresh: true` is the escape. A second per-agent map keeps an
-    automatic block from repeating an entity it already gave. Rows: "Recalled N items about <query>", "Added 2 known items:
+    automatic block from repeating an entity it already gave. The automatic block matches only user-created entities by
+    stored name (no alias, no agent-created entity) and prints a relation only when the edge and its other end are
+    user-written (else "+N relations"), so on a graph mostly written by agents it rarely fires and agents call
+    `knowledge_recall`; in a user message it follows the text under its own `---` separator (`withKnowledgeBlock`,
+    first message via `KNOWLEDGE_BLOCK_MARK`), RESUME_TEXT lives in prompts.ts, and a recall on an 8 MB+ graph says
+    "(Search index up to 30 s old.)". Open: L5 (undelivered message marks items shown), L7 (Agent card would show the
+    block). Rows: "Recalled N items about <query>", "Added 2 known items:
     Acme Corp, Jane Doe" (a comma inside a name becomes a look-alike). `RunUsage.knowledge { recalls, autoContexts,
     itemsServed, charsServed }`; `knowledge.recalled` per agent: first at once, then one trailing per second, ids merged,
     newest 50, flushed before a terminal or paused status and at teardown. Store: per-file parsed cache, at most 4

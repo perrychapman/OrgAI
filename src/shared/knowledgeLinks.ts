@@ -73,6 +73,9 @@ function mentionStrength(a: MentionAgg): number {
   return a.ambiguous >= a.count ? Math.min(AMBIGUOUS_STRENGTH_MAX, Math.max(0, strength - 0.3)) : strength
 }
 
+/** The least one entity may spend of a pass (matcher units), whatever the graph's size. */
+const ENTITY_SHARE_MIN = 20_000
+
 /** The first time a pair is seen also builds its evidence snippet, so it counts for more than a plain match. */
 const NEW_PAIR_COST = 8
 
@@ -92,11 +95,19 @@ function mentionAggregates(graph: GraphLike, rules?: KnowledgeMatcherRules, budg
   const matcher = knowledgeNameMatcher(live, rules)
   if (matcher.size === 0) return { aggs: [] }
   const budget: KnowledgeMatchBudget = { left: budgetTotal }
+  // Each entity may spend only its even share of the pass (at least ENTITY_SHARE_MIN), so an agent that fills some
+  // entities with text cannot starve the ones after it; what an entity does not use stays for the rest. With more than
+  // budget / ENTITY_SHARE_MIN entities the floor lets the sum pass the budget, and the last ones can go unscanned (the
+  // user's own entities come first, so they are not those).
+  const share = Math.max(ENTITY_SHARE_MIN, Math.ceil(budgetTotal / Math.max(1, live.length)))
+  let own: KnowledgeMatchBudget = { left: 0 }
   const agg = new Map<string, MentionAgg>()
   const scan = (owner: KnowledgeNode, text: string | undefined, label: string, factId?: string): void => {
     if (!text) return
     const seen = new Set<string>()
-    const found = matcher.find(text, budget)
+    const before = own.left
+    const found = matcher.find(text, own)
+    budget.left -= before - own.left
     // A span that names the owner itself ("Stripe" in Stripe's own text) is not also a mention of an entity that shares the name.
     const selfAt = new Set(found.filter((m) => m.id === owner.id).map((m) => m.charStart))
     const idsAt = new Map<number, Set<string>>()
@@ -114,15 +125,22 @@ function mentionAggregates(graph: GraphLike, rules?: KnowledgeMatcherRules, budg
         hit.multi = hit.multi || multi
       } else {
         budget.left -= NEW_PAIR_COST
+        own.left -= NEW_PAIR_COST
         agg.set(key, { from: owner.id, to: m.id, count: 1, multi, ambiguous: amb, evidence: clip(`${label}: "${snippet(text, m.charStart, m.charEnd)}"`, EVIDENCE_MAX), ...(factId ? { factId } : {}) })
       }
     }
   }
+  // The user's own entities first: whatever an agent wrote is scanned only with what they leave.
+  const ordered = [...live.filter((n) => n.source.by === 'user'), ...live.filter((n) => n.source.by !== 'user')]
   let scanned = 0
-  for (const n of live) {
+  for (const n of ordered) {
+    own = { left: Math.min(share, Math.max(0, budget.left)) }
     scan(n, n.summary, 'Summary')
     for (const f of n.facts) if (!f.retired) scan(n, f.text, 'Fact', f.id)
-    if (budget.exhausted) break
+    if (budget.left <= 0) {
+      budget.exhausted = true
+      break
+    }
     scanned++
   }
   return { aggs: [...agg.values()], ...(budget.exhausted ? { partial: { scannedEntities: scanned, totalEntities: live.length } } : {}) }

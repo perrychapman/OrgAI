@@ -515,8 +515,8 @@ describe('knowledge context through RunManager', () => {
     const { m, ctxs } = rig({ knowledge })
     const run = await m.start({ project: engagement(), prompt: 'go' })
     const ctx = ctxs[0]
-    const block = ctx.knowledgeContext!('Please ask Priya Raman.', { agentId: 'a-new', purpose: 'spawn' })
-    expect(block).toContain('Priya Raman')
+    const block = ctx.knowledgeContext!('Please ask Ines Duarte.', { agentId: 'a-new', purpose: 'spawn' })
+    expect(block).toContain('Ines Duarte')
     expect(block).toContain('<<<')
     const row = rows().at(-1)!
     expect(row.text).toMatch(/^Added \d+ known items?: /)
@@ -525,12 +525,12 @@ describe('knowledge context through RunManager', () => {
     expect(m.summaryOf(run.id)?.usage?.knowledge).toMatchObject({ autoContexts: 1, recalls: 0 })
     // The same agent hears the same names again: nothing new, no row.
     const rowsBefore = rows().length
-    expect(ctx.knowledgeContext!('Priya Raman again', { agentId: 'a-new', purpose: 'message' })).toBeNull()
+    expect(ctx.knowledgeContext!('Ines Duarte again', { agentId: 'a-new', purpose: 'message' })).toBeNull()
     expect(rows()).toHaveLength(rowsBefore)
     // Another agent, and calls with no agent id (no dedupe), still get it.
-    expect(ctx.knowledgeContext!('Priya Raman', { agentId: 'a-other', purpose: 'spawn' })).not.toBeNull()
-    expect(ctx.knowledgeContext!('Priya Raman', { purpose: 'message' })).not.toBeNull()
-    expect(ctx.knowledgeContext!('Priya Raman', { purpose: 'message' })).not.toBeNull()
+    expect(ctx.knowledgeContext!('Ines Duarte', { agentId: 'a-other', purpose: 'spawn' })).not.toBeNull()
+    expect(ctx.knowledgeContext!('Ines Duarte', { purpose: 'message' })).not.toBeNull()
+    expect(ctx.knowledgeContext!('Ines Duarte', { purpose: 'message' })).not.toBeNull()
     // Nothing known in the text, or not text at all.
     expect(ctx.knowledgeContext!('hello there', { purpose: 'message' })).toBeNull()
     expect(ctx.knowledgeContext!(undefined as unknown as string, { purpose: 'message' })).toBeNull()
@@ -543,14 +543,46 @@ describe('knowledge context through RunManager', () => {
     const { m, ctxs } = rig({ knowledge })
     await m.start({ project: engagement(), prompt: 'go' })
     const ctx = ctxs[0]
-    ctx.knowledgeContext!('Lena Koster', { agentId: 'a1', purpose: 'message' })
-    expect(rows().at(-1)!.text).toBe('Added 1 known item: Lena Koster')
-    // The block held only part of her (an agent wrote the rest), so a recall still gives the detail ...
-    const recall = ctx.knowledgeRecall!({ query: 'Lena Koster' }, { agentId: 'a1' })
-    expect(recall).toContain('Lena Koster')
-    expect(recall).not.toContain(`${fixtureId('Lena Koster')} | Lena Koster | already shown`)
-    // ... and the next block does not repeat her either.
-    expect(ctx.knowledgeContext!('Lena Koster', { agentId: 'a1', purpose: 'message' })).toBeNull()
+    ctx.knowledgeContext!('Ines Duarte', { agentId: 'a1', purpose: 'message' })
+    expect(rows().at(-1)!.text).toBe('Added 1 known item: Ines Duarte')
+    // The block left out his aliases and anything an agent wrote, so a recall still gives the detail ...
+    const recall = ctx.knowledgeRecall!({ query: 'Ines Duarte' }, { agentId: 'a1' })
+    expect(recall).toContain('Ines Duarte')
+    expect(recall).not.toContain(`${fixtureId('Ines Duarte')} | Ines Duarte | already shown`)
+    // ... and the next block does not repeat him either.
+    expect(ctx.knowledgeContext!('Ines Duarte', { agentId: 'a1', purpose: 'message' })).toBeNull()
+    await m.stopAll()
+  })
+
+  it('an agent-created entity is never matched: no block, no row, no count, no event, and the row names only what the block printed', async () => {
+    const knowledge = fakeStore(knowledgeFixture())
+    const { m, ctxs } = rig({ knowledge })
+    const run = await m.start({ project: engagement(), prompt: 'go' })
+    const ctx = ctxs[0]
+    const before = rows().length
+    // Priya Raman, Lena Koster and their aliases are agent-written in the fixture.
+    for (const text of ['Priya Raman', 'Lena Koster and Lena', 'Mark Ellis, ask Mark']) expect(ctx.knowledgeContext!(text, { purpose: 'message' })).toBeNull()
+    expect(rows()).toHaveLength(before)
+    expect(m.summaryOf(run.id)?.usage?.knowledge?.autoContexts ?? 0).toBe(0)
+    // A mixed message: the row and the block carry the user's entity only.
+    const block = ctx.knowledgeContext!('Priya Raman and Ines Duarte', { purpose: 'message' })!
+    expect(block).toContain('Ines Duarte')
+    expect(block).not.toContain('Priya')
+    expect(rows().at(-1)!.text).toBe('Added 1 known item: Ines Duarte')
+    await m.stopAll()
+  })
+
+  it('a recall on a stale revision says so in a few words (even for "nothing matches")', async () => {
+    const graph = knowledgeFixture()
+    const knowledge = fakeStore(graph)
+    const older: KnowledgeGraph = { version: 1, nodes: graph.nodes.filter((n) => n.name !== 'Lena Koster'), edges: [] }
+    knowledge.recallView = vi.fn(() => ({ rankOn: older, inferred: { links: [], appearances: {} } }))
+    const { m, ctxs } = rig({ knowledge })
+    await m.start({ project: engagement(), prompt: 'go' })
+    expect(ctxs[0].knowledgeRecall!({ query: 'Lena Koster' }, {})).toContain('Search index up to 30 s old')
+    expect(ctxs[0].knowledgeRecall!({ query: 'Priya Raman' }, {})).toContain('Search index up to 30 s old')
+    knowledge.recallView = vi.fn(() => ({ rankOn: graph, inferred: { links: [], appearances: {} } }))
+    expect(ctxs[0].knowledgeRecall!({ query: 'Priya Raman', fresh: true }, {})).not.toContain('Search index up to 30 s old')
     await m.stopAll()
   })
 
@@ -565,12 +597,12 @@ describe('knowledge context through RunManager', () => {
   })
 
   it('a long row never cuts a surrogate pair and a comma in a name does not read as two items', async () => {
-    const agent = { by: 'agent' as const, at: 1 }
+    const agent = { by: 'user' as const, at: 1 }
     const mk = (id: string, name: string, aliases?: string[]) => ({ id, kind: 'person', name, ...(aliases ? { aliases } : {}), facts: [], source: agent, createdAt: 1, updatedAt: 1 })
     // Three names of 60 characters make a 217-character row. With the 'x' offset the cut at 199 falls inside a pair of astral letters.
     const astral = (i: number, pad: string): string => `${pad}${'𠀀'.repeat(28)} word${i}`
     const nameSets = ['', 'x'].map((pad) => Array.from({ length: 5 }, (_, i) => astral(i, pad)))
-    const nodes = [mk('kn_c', 'Acme, Beta', ['Zedcorp']), ...nameSets.flatMap((names, s) => names.map((n, i) => mk(`kn_${s}_${i}`, n)))]
+    const nodes = [mk('kn_c', 'Acme, Beta'), ...nameSets.flatMap((names, s) => names.map((n, i) => mk(`kn_${s}_${i}`, n)))]
     const { m, ctxs } = rig({ knowledge: fakeStore({ version: 1, nodes, edges: [] }) })
     await m.start({ project: engagement(), prompt: 'go' })
     for (const names of nameSets) {
@@ -580,7 +612,7 @@ describe('knowledge context through RunManager', () => {
       expect(row.length).toBeLessThanOrEqual(200)
       expect(row).not.toMatch(/[\ud800-\udbff](?![\udc00-\udfff])/)
     }
-    expect(ctxs[0].knowledgeContext!('Ask Zedcorp', { purpose: 'message' })).not.toBeNull()
+    expect(ctxs[0].knowledgeContext!('Ask Acme Beta', { purpose: 'message' })).not.toBeNull()
     expect(rows().at(-1)!.text).toBe('Added 1 known item: Acme‚ Beta')
     await m.stopAll()
   })
@@ -591,11 +623,11 @@ describe('knowledge context through RunManager', () => {
     const { m, ctxs } = rig({ knowledge, resolveProject: () => saved })
     await m.start({ project: engagement(), prompt: 'go' })
     const ctx = ctxs[0]
-    expect(ctx.knowledgeContext!('Lena Koster', { purpose: 'message' })).not.toBeNull()
+    expect(ctx.knowledgeContext!('Ines Duarte', { purpose: 'message' })).not.toBeNull()
     saved = { ...saved, knowledgeAutoContext: false }
-    expect(ctx.knowledgeContext!('Lena Koster', { purpose: 'message' })).toBeNull()
+    expect(ctx.knowledgeContext!('Ines Duarte', { purpose: 'message' })).toBeNull()
     saved = { ...saved, knowledgeAutoContext: true }
-    expect(ctx.knowledgeContext!('Lena Koster', { purpose: 'message' })).not.toBeNull()
+    expect(ctx.knowledgeContext!('Ines Duarte', { purpose: 'message' })).not.toBeNull()
     await m.stopAll()
   })
 
@@ -606,7 +638,7 @@ describe('knowledge context through RunManager', () => {
     vi.mocked(knowledge.get).mockImplementationOnce(() => {
       throw new Error('disk gone')
     })
-    expect(ctxs[0].knowledgeContext!('Lena Koster', { purpose: 'message' })).toBeNull()
+    expect(ctxs[0].knowledgeContext!('Ines Duarte', { purpose: 'message' })).toBeNull()
     expect(warn).toHaveBeenCalled()
     await m.stopAll()
   })

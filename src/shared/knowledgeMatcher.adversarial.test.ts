@@ -79,11 +79,45 @@ describe('the name matcher under the 500-write attack', () => {
     expect(ms).toBeLessThan(15_000)
   })
 
-  it('the automatic context block over the same names stays fast', () => {
+  it('the automatic context block over the same names stays fast, and agent-created names are not even in its matcher', () => {
     const graph = attackGraph(500, 1, atCap)
     const t = performance.now()
     expect(knowledgeContextBlock(graph, 'a '.repeat(30_000))).toBeNull()
     expect(performance.now() - t).toBeLessThan(5_000)
+    // The same names written by the user (the worst case the block can still be asked to match) stay bounded too.
+    const mine: KnowledgeGraph = { ...graph, nodes: graph.nodes.map((n) => ({ ...n, aliases: [], source: { by: 'user' as const, at: 1 } })) }
+    const t2 = performance.now()
+    expect(knowledgeContextBlock(mine, 'a '.repeat(30_000))).toBeNull()
+    expect(performance.now() - t2).toBeLessThan(5_000)
+  })
+
+  it('agent-written text cannot use up the pass: the user\'s entities are scanned first and no entity takes more than its share', () => {
+    const user = { by: 'user' as const, at: 1 }
+    const small = (id: string, name: string, summary: string | undefined, source: KnowledgeNode['source']): KnowledgeNode => ({
+      id,
+      kind: 'person',
+      name,
+      ...(summary ? { summary } : {}),
+      facts: [],
+      source,
+      createdAt: 1,
+      updatedAt: 1
+    })
+    // 1) 400 agent entities whose facts would each cost about 800,000 units (the pass is 4,000,000): even capped at the
+    //    20,000 floor they exhaust it, so the agent tail goes unscanned and the pass says so. The user's pair sits LAST in
+    //    graph order and is still found because user entities are scanned first.
+    const big = attackGraph(400, 50, atCap)
+    const pair = [small('kn_u1', 'Quill Rowe', undefined, user), small('kn_u2', 'Ines Duarte', 'Engagement lead at Quill Rowe.', user)]
+    const withUser = knowledgeInferredResult({ ...big, nodes: [...big.nodes, ...pair] })
+    expect(withUser.partial).toBeDefined()
+    expect(withUser.links.some((l) => l.basis === 'mention' && l.from === 'kn_u2' && l.to === 'kn_u1')).toBe(true)
+    // 2) Ten big agent entities then an agent pair, last: each big entity is capped at its even share (4,000,000 / 12), so
+    //    ten of them leave room and the pass reaches the pair as well (uncapped, ten would cost 8,000,000).
+    const ten = attackGraph(10, 50, atCap)
+    const agentPair = [small('kn_a1', 'Zed Corp', undefined, { by: 'agent', at: 1 }), small('kn_a2', 'Ola Hart', 'Works with Zed Corp.', { by: 'agent', at: 1 })]
+    const withAgent = knowledgeInferredResult({ ...ten, nodes: [...ten.nodes, ...agentPair] })
+    expect(withAgent.partial).toBeUndefined()
+    expect(withAgent.links.some((l) => l.basis === 'mention' && l.from === 'kn_a2' && l.to === 'kn_a1')).toBe(true)
   })
 
   it('a pile of equal names is capped per span and bounded by the budget', () => {

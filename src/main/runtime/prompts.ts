@@ -426,9 +426,31 @@ export function buildRolePrompt(role: Role, roles: Role[], project: Project, fla
   return parts.join('\n\n')
 }
 
-/** The first user message: the prompt plus hidden harness context (repo profile, project facts). */
+/** Sent to the orchestrator when a paused run continues (RunManager sends it; the delivery helpers recognise it). */
+export const RESUME_TEXT =
+  'The usage window has reset. Continue exactly where you left off; the harness has reconciled any report branches left in progress.'
+
+/**
+ * Marks where knowledgeDelivery's first-message hidden context hands over to the knowledge block. The block is about the
+ * user's own text, which the user can see on screen, so it does not sit under the "not visible to the user" heading:
+ * composeFirstMessage splits at the LAST mark and gives the block its own plain separator, as a spawn brief has. The mark
+ * holds a line break, which no stored value can carry (every value in the block has its line breaks folded away).
+ */
+export const KNOWLEDGE_BLOCK_MARK = '\n⁣orgai-knowledge-block⁣\n'
+
+/** The knowledge block after a user's text (and after a spawn brief): its own separator, the block's label says it is data. */
+export function withKnowledgeBlock(text: string, block: string): string {
+  return `${text}\n\n---\n${block}`
+}
+
+/** The first user message: the prompt plus hidden harness context (repo profile, project facts), then any knowledge block. */
 export function composeFirstMessage(prompt: string, hiddenContext?: string): string {
-  return hiddenContext ? `${prompt}\n\n---\nContext from the harness (not visible to the user):\n${hiddenContext}` : prompt
+  if (!hiddenContext) return prompt
+  const at = hiddenContext.lastIndexOf(KNOWLEDGE_BLOCK_MARK)
+  const hidden = at < 0 ? hiddenContext : hiddenContext.slice(0, at).trim()
+  const block = at < 0 ? '' : hiddenContext.slice(at + KNOWLEDGE_BLOCK_MARK.length)
+  const head = hidden ? `${prompt}\n\n---\nContext from the harness (not visible to the user):\n${hidden}` : prompt
+  return block ? withKnowledgeBlock(head, block) : head
 }
 
 /** True when a tool's file_path points at the project's architecture document (in the main checkout or a worktree). */

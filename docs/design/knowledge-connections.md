@@ -235,8 +235,18 @@ detailed; that trade-off is untested beyond this fixture.
   "Grant" at the start of a sentence is refused only because it is in the list).
 - The edge cases of the matcher on non-Latin scripts are tested for tokenisation only.
 - Crowding of the 500-link cap by a very large hub is unmeasured.
-- A graph with more text than one pass may scan is scanned in graph order, so an agent writing a lot of early text can
-  starve the later entities of suggestions (`partial` says so; nothing is wrong, only missing).
+- A graph with more text than one pass may scan: the user's own entities are scanned first and each entity may spend at
+  most its even share of `KNOWLEDGE_MATCH_BUDGET` (at least 20,000 units), so an agent's early text cannot starve the
+  later entities. Past budget / 20,000 (200) entities the floor lets the sum pass the budget and the agent-written tail
+  goes unscanned (`partial` says so; nothing is wrong, only missing). Pinned numbers did not move (names at the token cap:
+  199 of 2,000 entities scanned before and after).
+- The automatic context block matches only user-created entities, by their stored name, and prints a relation only when
+  the edge and the other end are user-written (else "+N relations"). Aliases carry no provenance, so none is matched.
+  Cost: on a graph mostly written by agents the automatic block rarely fires, and agents call `knowledge_recall`
+  (which finds agent-written entities too, marks their text `fact (agent):` and fences it). An agent-created entity an
+  agent mentions in a spawn brief gets nothing automatically.
+- A recall on a graph of 8 MB or more ranks on a revision up to 30 s old: it can say "Nothing matches" for an entity just
+  written (the answer ends "(Search index up to 30 s old.)"); inferred links dismissed since are left out.
 - The renderer (confirm, dismiss, node size) and the adapters' calls to `knowledgeContext` and `knowledgeBrief` land
   separately.
 
