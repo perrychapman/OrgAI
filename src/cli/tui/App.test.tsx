@@ -506,4 +506,108 @@ describe('runForRef', () => {
   })
 })
 
+describe('App exitWhenEnded / stopOnQuit (Wave 5 interactive runs)', async () => {
+  const { PRESS_AGAIN_STOP, launchedRunExit, setupCompletedSince } = await import('./App')
+  const open = (status: RunSummary['status'], extra: Partial<RunSummary> = {}) => ({
+    activeRunId: 'run_s',
+    activeChain: ['run_s'],
+    runOrder: ['run_s'],
+    runs: { run_s: { summary: { id: 'run_s', kind: 'setup' as const, status, ...extra } } }
+  })
+  const LAUNCH = { runId: 'run_s', exitWhenEnded: true, stopOnQuit: true, title: 'Architect setup' }
+
+  it('exits 0 when the launched run finishes, 1 on error or pause, 130 when someone else stopped it', async () => {
+    for (const [patch, code] of [
+      [{ status: 'finished' }, 0],
+      [{ status: 'error', error: 'boom' }, 1],
+      [{ status: 'finished', endedBy: 'user' }, 130],
+      [{ status: 'paused' }, 1]
+    ] as [Partial<RunSummary>, number][]) {
+      const s = fakeSession(open('running'))
+      const m = mount({ session: s, launch: LAUNCH })
+      await tick()
+      expect(m.exits).toEqual([])
+      s.set({ runs: { run_s: { summary: { id: 'run_s', kind: 'setup', ...patch } } } })
+      await tick()
+      expect(m.exits.map((e) => e[0])).toEqual([code])
+      expect(m.exits[0][1]).toMatchObject({ detachedLive: false })
+      m.r.unmount()
+    }
+  })
+
+  it('a finished run prints a closing line; errors carry the reason', () => {
+    expect(launchedRunExit({ status: 'finished', kind: 'setup' }, 'Architect setup', undefined)).toEqual({ code: 0, message: 'Architect setup finished.' })
+    expect(launchedRunExit({ status: 'error', kind: 'setup', error: 'bad\nthing' }, 'Architect setup', undefined)).toEqual({ code: 1, message: 'Architect setup failed: bad thing' })
+    expect(launchedRunExit({ status: 'finished', kind: 'setup', endedBy: 'user' }, 'X', 'quit').code).toBe(130)
+    expect(launchedRunExit({ status: 'finished', kind: 'setup', endedBy: 'user' }, 'X', 'slash').code).toBe(0)
+    expect(launchedRunExit({ status: 'finished', kind: 'setup', endedBy: 'user' }, 'X', 'complete').code).toBe(0)
+    expect(launchedRunExit({ status: 'finished', kind: 'setup', endedBy: 'user' }, 'X', undefined).message).toBe('X: Stopped.')
+  })
+
+  it('ends a setup run once complete_setup marked the setup complete and it is idle, then exits 0', async () => {
+    const before = { id: 'p1', name: 'P', setup: { kind: 'existing', state: 'complete', completedAt: 'old' } } as unknown as Project
+    expect(setupCompletedSince(before, 'old')).toBe(false)
+    const s = fakeSession({ ...open('running'), project: before })
+    const m = mount({ session: s, launch: { ...LAUNCH, project: before } })
+    await tick()
+    const after = { ...before, setup: { kind: 'existing', state: 'complete', completedAt: 'new' } } as unknown as Project
+    expect(setupCompletedSince(after, 'old')).toBe(true)
+    s.set({ project: after })
+    await tick()
+    expect(s.api.stop).not.toHaveBeenCalled() // still running: the closing message comes first
+    s.set({ ...open('idle'), project: after })
+    await tick()
+    expect(s.api.stop).toHaveBeenCalledTimes(1)
+    s.set({ ...open('finished', { endedBy: 'user' }), project: after })
+    await tick()
+    expect(m.exits.map((e) => e[0])).toEqual([0])
+    expect(m.exits[0][1]).toMatchObject({ message: 'Architect setup finished.' })
+    m.r.unmount()
+  })
+
+  it('stopOnQuit: Ctrl+C twice stops the run (runs:stop), waits for it, exits 130', async () => {
+    const s = fakeSession(open('idle'))
+    s.api.stop.mockImplementation(async () => {
+      s.set(open('finished', { endedBy: 'user' }))
+    })
+    let t = 1000
+    const m = mount({ session: s, launch: LAUNCH, now: () => t })
+    await m.send(ctrlKey('c'))
+    expect(s.api.notify).toHaveBeenLastCalledWith(PRESS_AGAIN_STOP, undefined)
+    t += 100
+    await m.send(ctrlKey('c'))
+    await tick()
+    expect(s.api.stop).toHaveBeenCalledTimes(1)
+    expect(m.exits.map((e) => e[0])).toEqual([130])
+    expect(m.exits[0][1]).toMatchObject({ detachedLive: false, message: 'Architect setup stopped.' })
+    m.r.unmount()
+  })
+
+  it('stopOnQuit on an in-process host stops without the quit confirmation', async () => {
+    const s = fakeSession({ ...open('running'), testLive: 1 }, 'inproc')
+    s.api.stop.mockImplementation(async () => {
+      s.set(open('finished', { endedBy: 'user' }))
+    })
+    const m = mount({ session: s, launch: LAUNCH, inproc: true })
+    await m.send(ctrlKey('d'))
+    await tick()
+    expect(m.frame()).not.toContain('Quitting stops')
+    expect(s.api.stop).toHaveBeenCalledTimes(1)
+    expect(m.exits.map((e) => e[0])).toEqual([130])
+    m.r.unmount()
+  })
+
+  it('a normal session still detaches on quit (no stop)', async () => {
+    const s = fakeSession(open('running'))
+    const m = mount({ session: s, launch: { runId: 'run_s' } })
+    await m.send(ctrlKey('d'))
+    expect(s.api.stop).not.toHaveBeenCalled()
+    expect(m.exits).toEqual([[0, expect.objectContaining({ detachedLive: true })]])
+    s.set(open('finished'))
+    await tick()
+    expect(m.exits).toHaveLength(1)
+    m.r.unmount()
+  })
+})
+
 void Text

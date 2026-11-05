@@ -204,6 +204,7 @@ export async function runTui(ctx: CliContext, launch: TuiLaunch, flags: TuiFlags
   await conn.close({ stopInproc }).catch((e: unknown) => {
     stderr.write(`orgai: Could not stop the in-process host: ${sanitizeTty(e instanceof Error ? e.message : String(e))}\n`)
   })
-  if (info?.detachedLive && !stopInproc) stderr.write(`${DETACHED_MESSAGE}\n`)
+  if (info?.message) stderr.write(`${sanitizeTty(info.message).replace(/\s+/g, ' ').trim()}\n`)
+  else if (info?.detachedLive && !stopInproc) stderr.write(`${DETACHED_MESSAGE}\n`)
   return code
 }

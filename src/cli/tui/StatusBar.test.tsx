@@ -37,6 +37,10 @@ describe('StatusBar', () => {
     expect(f).toBe('Shop · R2 Fix checkout · Needs you · $0.42 · 2 need you · 1 live   Tab focus  / commands')
   })
 
+  it('shows the launch title first (orgai init, the assistants)', () => {
+    expect(frame({ summary: { ...SUMMARY, title: 'Architect setup' } })).toMatch(/^Architect setup · Shop · R2/)
+  })
+
   it('shows the connection state and the read-only reason', () => {
     expect(frame({ summary: { ...SUMMARY, connection: 'reconnecting' } })).toContain('Reconnecting')
     expect(frame({ summary: { ...SUMMARY, connection: 'gone' } })).toContain('Connection lost')

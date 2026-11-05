@@ -218,6 +218,8 @@ export interface WorktreeRow {
 }
 
 export interface StatusSummary {
+  /** TuiLaunch.title (sanitized), shown first. */
+  title?: string
   projectName?: string
   runTag?: string
   runTitle?: string
@@ -527,7 +529,9 @@ export interface TuiLaunch {
   onboarding?: { folder: string }
   /**
    * Wave 5 (commands/interactive.ts runInteractiveRun): exit the TUI once the launched run's chain ends, with exit code
-   * 0 when it ended finished and 1 when it ended in error.
+   * 0 when it ended finished and 1 when it ended in error (or paused), 130 when the user stopped it from elsewhere. A
+   * setup run (kind 'setup') whose project's setup completes (complete_setup) is ended (runs:stop) once it is idle with
+   * no open card, then exits 0.
    */
   exitWhenEnded?: boolean
   /** Wave 5: quitting (Ctrl+C) stops the open run (runs:stop) first, then the TUI exits 130. */
