@@ -21,8 +21,11 @@ export function Button({
   autoFocusDialog,
   ariaLabel,
   inert,
-  ariaDescribedBy
+  ariaDescribedBy,
+  id
 }: {
+  /** DOM id, for code that moves focus here. */
+  id?: string
   /** Looks disabled and ignores click, Enter and Space, but stays focusable so its reason can be heard (aria-disabled). */
   inert?: boolean
   /** Id of the element that says why (read after the name). */
@@ -47,6 +50,7 @@ export function Button({
   const cls = ['btn', variant === 'secondary' ? '' : variant, size === 'sm' ? 'sm' : '', className ?? ''].filter(Boolean).join(' ')
   return (
     <button
+      id={id}
       type={type}
       className={cls}
       disabled={disabled || loading}
