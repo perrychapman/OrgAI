@@ -7,6 +7,7 @@ import { TEAM_FILES_JSON } from '@shared/types'
 import { teamDigest } from './digest'
 import { listOrgai, makeComputer, createProject, readOrgai, rolePath, setRole, type Computer } from './service.fixture'
 import { STALE_MESSAGE } from './service'
+import { writeTeamFiles } from './disk'
 import { removeProjectData } from '../store/projectData'
 
 vi.mock('../log', () => ({ logRunEvent: () => {}, logPermission: () => {}, log: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} } }))
@@ -128,6 +129,24 @@ describe('write through', () => {
     expect(stored.mcpServers!.map((m) => m.name).sort()).toEqual(['docs', 'local-one'])
     const reviewer = stored.roles.find((r) => r.slug === 'reviewer')!
     expect(reviewer.mcpServers).toContain('mcp-local')
+  })
+
+  it('a write that fails never fails the save; the change is written at the next check', () => {
+    let fail = false
+    const d = makeComputer(root, 'flaky', repo, {
+      writeFiles: (...a) => (fail ? { written: [], removed: [], skipped: a[1].map((f) => f.path) } : writeTeamFiles(...a))
+    })
+    const p = createProject(d)
+    d.svc.status(p.id)
+    fail = true
+    const saved = setRole(d, p.id, 'reviewer', () => ({ prompt: 'Saved while the folder refuses writes.' }))
+    expect(saved.roles.find((r) => r.slug === 'reviewer')!.prompt).toBe('Saved while the folder refuses writes.')
+    expect(readOrgai(d, 'agents/reviewer.md')).not.toContain('Saved while')
+    fail = false
+    const s = d.svc.check(p.id)
+    expect(readOrgai(d, 'agents/reviewer.md')).toContain('Saved while the folder refuses writes.')
+    expect(s.state).toBe('in-sync')
+    expect(d.projects.get(p.id)!.roles.find((r) => r.slug === 'reviewer')!.prompt).toBe('Saved while the folder refuses writes.')
   })
 
   it('blocked teams (a role name that cannot be a file name) are not written and show a problem', () => {
@@ -329,6 +348,45 @@ describe('skills and servers', () => {
     const spec = c.projects.get(p.id)!.skills!.find((x) => x.name === 'code-style')!
     expect(spec.files.map((f) => f.path)).toContain('run.sh')
     expect(c.skills.teamReadFiles(p.id, spec)!.some((f) => f.path === 'run.sh')).toBe(true)
+  })
+
+  it('a linked skill is written as a copy; a changed file drops the link and stores the file\'s copy; the library entry is untouched', () => {
+    const p = createProject(c)
+    c.svc.status(p.id)
+    c.skills.libraryCreate({ name: 'house-style', description: 'Use for house style.', body: 'Original body.' })
+    const lib = c.skills.libraryList()[0].entry
+    c.skills.linkLibrary({ projectId: p.id, libraryId: lib.id })
+    expect(readOrgai(c, 'skills/house-style/SKILL.md')).toContain('Original body.')
+    const file = join(repo, '.orgai', 'skills', 'house-style', 'SKILL.md')
+    writeFileSync(file, readFileSync(file, 'utf8').replace('Original body.', 'Edited in the file.'), 'utf8')
+    const s = c.svc.check(p.id)
+    expect(s.state).toBe('pending')
+    expect(c.projects.get(p.id)!.skills![0].libraryId).toBe(lib.id)
+    c.svc.approve({ projectId: p.id, digest: s.digest! })
+    const spec = c.projects.get(p.id)!.skills!.find((x) => x.name === 'house-style')!
+    expect(spec.libraryId).toBeUndefined()
+    expect(spec.source).toBe('repo')
+    expect(c.skills.teamReadFiles(p.id, spec)!.find((f) => f.path === 'SKILL.md')!.data.toString()).toContain('Edited in the file.')
+    expect(c.skills.libraryRead({ libraryId: lib.id }).body).toContain('Original body.')
+  })
+
+  it('a fromLibrary server links the library entry with the same name and identical definition, else keeps a project copy', () => {
+    const p = createProject(c)
+    c.svc.status(p.id)
+    c.library.push({ id: 'mcpl-docs', name: 'docs', transport: 'stdio', command: 'npx', args: ['-y', 'docs-mcp@1.0.0'], source: 'user', addedAt: '' } as never)
+    const file = join(repo, '.orgai', 'mcp.json')
+    const servers = [
+      { name: 'docs', transport: 'stdio', command: 'npx', args: ['-y', 'docs-mcp@1.0.0'], enabled: true, fromLibrary: true },
+      { name: 'other', transport: 'stdio', command: 'npx', args: ['-y', 'other-mcp@1.0.0'], enabled: true, fromLibrary: true }
+    ]
+    writeFileSync(file, `${JSON.stringify({ format: 'orgai.team/1', servers }, null, 2)}\n`, 'utf8')
+    const s = c.svc.check(p.id)
+    expect(s.state).toBe('pending')
+    c.svc.approve({ projectId: p.id, digest: s.digest! })
+    const by = Object.fromEntries(c.projects.get(p.id)!.mcpServers!.map((m) => [m.name, m]))
+    expect(by.docs.libraryId).toBe('mcpl-docs')
+    expect(by.other.libraryId).toBeUndefined()
+    expect(by.other.command).toBe('npx')
   })
 
   it('a pulled url change gets a new server id and never carries this computer\'s secrets to the new target', () => {

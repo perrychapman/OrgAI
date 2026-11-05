@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import type { McpLibraryEntry, Project, ProjectCreateInput, TeamFilesStatus } from '@shared/types'
 import { ProjectStore } from '../store/projects'
 import { SkillService } from '../skills/service'
-import { TeamFilesService } from './service'
+import { TeamFilesService, type TeamFilesDeps } from './service'
 
 /** Test scaffolding for the team files service: a "computer" is a data dir, a store, a skill service and the service. */
 
@@ -47,7 +47,7 @@ export interface Computer {
   updated: Project[]
 }
 
-export function makeComputer(root: string, name: string, repo: string): Computer {
+export function makeComputer(root: string, name: string, repo: string, extra: Partial<TeamFilesDeps> = {}): Computer {
   const data = join(root, `data-${name}`)
   mkdirSync(data, { recursive: true })
   const projects = new ProjectStore(data, { home: join(root, 'home') })
@@ -73,7 +73,8 @@ export function makeComputer(root: string, name: string, repo: string): Computer
     },
     broadcastStatus: (s) => void statuses.push(s),
     broadcastProject: (p) => void updated.push(p),
-    warn: () => undefined
+    warn: () => undefined,
+    ...extra
   })
   projects.setTeamFilesHook(svc)
   return { name, repo, data, projects, skills, svc, library, secrets, statuses, updated }

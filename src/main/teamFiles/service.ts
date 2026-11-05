@@ -79,6 +79,8 @@ export interface TeamFilesDeps {
   broadcastProject?(project: Project): void
   now?(): number
   warn?(message: string): void
+  /** Tests replace the file writer to make a write fail. */
+  writeFiles?: typeof writeTeamFiles
 }
 
 interface Applied {
@@ -202,6 +204,10 @@ export class TeamFilesService {
 
   private now(): number {
     return this.deps.now ? this.deps.now() : Date.now()
+  }
+
+  private writeFiles(projectPath: string, write: TeamFile[], remove: string[], held: string[]): ReturnType<typeof writeTeamFiles> {
+    return (this.deps.writeFiles ?? writeTeamFiles)(projectPath, write, remove, held)
   }
 
   private warn(message: string): void {
@@ -521,7 +527,7 @@ export class TeamFilesService {
       if (parsed.digest) st.lastKnownDigest = parsed.digest
       return { ok: true, written: [] }
     }
-    const res = writeTeamFiles(folder, plan.write, plan.remove, parsed.heldPaths)
+    const res = this.writeFiles(folder, plan.write, plan.remove, parsed.heldPaths)
     const failed = res.skipped.filter((p) => !isHeldPath(p, parsed.heldPaths))
     const reparsed = this.load(folder, base).parsed
     if (st.rejectedDigest && st.rejectedDigest === parsed.digest && reparsed.digest) st.rejectedDigest = reparsed.digest
@@ -589,7 +595,7 @@ export class TeamFilesService {
         if (anything) return this.problemStatus(project, [...parsed.problems, ...blockedProblem], st, notes(), warnings())
         if (!opts.firstWrite) return this.off(project, 'not-written')
         if (d.blocked) return this.problemStatus(project, blockedProblem, st, notes(), warnings())
-        const res = writeTeamFiles(folder, serializeTeam(d.doc), [], [])
+        const res = this.writeFiles(folder, serializeTeam(d.doc), [], [])
         if (res.skipped.length) return this.problemStatus(project, [{ file: res.skipped[0], message: 'It could not be written.' }], st, notes(), warnings())
         approved = d.doc
         this.store.writeApproved(id, approved)
@@ -927,7 +933,7 @@ export class TeamFilesService {
     const d = this.docOf(project)
     if (d.blocked) throw new Error(d.blocked)
     const { parsed } = this.load(project.path, null)
-    const res = writeTeamFiles(project.path, serializeTeam(d.doc), [], parsed.heldPaths)
+    const res = this.writeFiles(project.path, serializeTeam(d.doc), [], parsed.heldPaths)
     const failed = res.skipped.filter((p) => !isHeldPath(p, parsed.heldPaths))
     if (failed.length) throw new Error(`Could not write ${failed[0]}.`)
     delete st.removed
