@@ -1,8 +1,8 @@
 import { execFile, execFileSync, spawn } from 'node:child_process'
-import { lstatSync, mkdirSync, readdirSync, rmSync, rmdirSync, statSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { lstatSync, mkdirSync, promises as fsp, readdirSync, realpathSync, rmSync, rmdirSync, statSync, writeFileSync } from 'node:fs'
+import { homedir, tmpdir } from 'node:os'
 import * as nodePath from 'node:path'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
 import {
   REPO_CLONES_MAX,
   REPO_CLONE_CANCELLED_PREFIX,
@@ -19,7 +19,8 @@ import {
 } from '@shared/types'
 import { clampText, hiddenCharIn } from './capabilities/sanitize'
 import { cleanProjectPath } from './store/projects'
-import { canonicalDeep, isInsideEither, isNetworkPath } from './quick/scratch'
+import { canonicalDeep, isInsideEither, isNetworkPath, pathKey } from './quick/scratch'
+import { allowedDirectoryRisk } from './runtime/allowedDirectories'
 import { maskKeyLike } from './runtime/codexAppServer'
 
 // ---- Constants ----
@@ -72,7 +73,8 @@ const P_SSH_USER = 'An ssh address needs a user name, for example ssh://git@host
 const P_HOST = 'That is not a valid host name.'
 const P_PORT = 'That is not a valid port.'
 const P_PATH = 'That repository path has a part OrgAI does not accept.'
-const P_SCHEME_HINT = 'Start the address with https://, for example https://github.com/owner/repo.'
+const P_TOKEN = 'That address holds something that looks like a sign-in token. Remove it; git will use your saved sign-in.'
+const P_SCHEME_HINT ='Start the address with https://, for example https://github.com/owner/repo.'
 
 const MSG_NO_GIT = 'Git is not installed. Install it from git-scm.com, then try again.'
 const MSG_FORK_NEEDS_GH = 'Forking needs the GitHub CLI: install gh from cli.github.com, then run gh auth login. A plain clone still works.'
@@ -100,6 +102,8 @@ export interface RunResult {
   spawnError?: string
   timedOut?: boolean
   aborted?: boolean
+  /** The program started but was stopped or overran its output limit (signal kill, maxBuffer); never "not installed". */
+  failed?: boolean
 }
 /** One-shot process: no shell, never rejects. */
 export type RunFn = (file: string, args: string[], opts: RunOptions) => Promise<RunResult>
@@ -126,6 +130,10 @@ export interface RepoCloneOptions {
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>
   now?: () => number
   platform?: NodeJS.Platform
+  /** The user's home folder for the destination rules (default os.homedir()); tests inject one. */
+  home?: string
+  /** Folders of existing projects (path, allowed and reference folders); a destination in one is refused. Throwing fails closed. */
+  projectFolders?: () => string[]
   inactivityMs?: number
   closeGraceMs?: number
   killWaitMs?: number
@@ -143,6 +151,12 @@ export function parseRepoSource(input: unknown): RepoSourceParse {
 
 function refuse(problem: string): RepoSourceParse {
   return { ok: false, problem }
+}
+
+/** A name that looks like a credential (GitHub, GitLab token prefixes, x-access-token). Never quoted in a refusal. */
+const TOKEN_SHAPE_RE = /(?<![A-Za-z0-9])(?:gh[pousr]_[A-Za-z0-9]|github_pat_|glpat-|x-access-token)/i
+function tokenShaped(s: string): boolean {
+  return TOKEN_SHAPE_RE.test(s)
 }
 
 function parseInner(input: unknown): RepoSourceParse {
@@ -229,6 +243,7 @@ function pathSegments(tail: string): string[] | { problem: string } {
   if (!p) return { problem: P_NEEDS_REPO }
   const segs = p.split('/')
   if (segs.some((s) => s === '')) return { problem: P_MALFORMED }
+  if (segs.some(tokenShaped)) return { problem: P_TOKEN }
   return segs
 }
 
@@ -273,6 +288,7 @@ function parseSshUrl(afterColon: string): RepoSourceParse {
   if (at === -1) return refuse(P_SSH_USER)
   const user = authority.slice(0, at)
   if (user.includes(':')) return refuse(P_USERINFO)
+  if (tokenShaped(user)) return refuse(P_TOKEN)
   if (!SSH_USER_RE.test(user)) return refuse(P_SSH_USER)
   const hostPart = authority.slice(at + 1)
   if (hostPart.includes('@')) return refuse(P_MALFORMED)
@@ -290,6 +306,7 @@ function parseSshUrl(afterColon: string): RepoSourceParse {
 }
 
 function parseScp(user: string, hostRaw: string, path: string): RepoSourceParse {
+  if (tokenShaped(user)) return refuse(P_TOKEN)
   if (!SSH_USER_RE.test(user)) return refuse(P_SSH_USER)
   const host = hostRaw.toLowerCase() === 'www.github.com' ? 'github.com' : hostRaw.toLowerCase()
   if (!HOST_RE.test(host) || host.includes('..')) return refuse(P_HOST)
@@ -297,6 +314,7 @@ function parseScp(user: string, hostRaw: string, path: string): RepoSourceParse 
   if (p.endsWith('/')) p = p.slice(0, -1)
   const segs = p.split('/')
   if (!p || segs.some((s) => s === '')) return refuse(P_MALFORMED)
+  if (segs.some(tokenShaped)) return refuse(P_TOKEN)
   if (host === 'github.com') {
     if (user !== 'git') return refuse(P_GH_SSH_USER)
     return githubFromSegments(segs, 'scp')
@@ -310,11 +328,11 @@ function parseShorthand(owner: string, repo: string): RepoSourceParse {
   return githubOk(names.owner, names.repo, null)
 }
 
-const WINDOWS_RESERVED_RE = /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/i
+const WINDOWS_RESERVED_RE = /^(?:CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|(?:COM|LPT)[1-9¹²³])$/i
 
-/** A folder name for the repository: no trailing dots or spaces, never a Windows device name. */
+/** A folder name for the repository: no leading or trailing dots or spaces, never a Windows device name. */
 export function suggestedFolderFor(repo: string): string {
-  const name = repo.replace(/[. ]+$/, '')
+  const name = repo.replace(/^[. ]+|[. ]+$/g, '')
   if (!name) return 'repo'
   const base = name.split('.')[0].trimEnd()
   return WINDOWS_RESERVED_RE.test(base) ? `${name}-repo` : name
@@ -338,9 +356,22 @@ const D_FILE = 'That path is a file, not a folder.'
 const D_NOT_EMPTY = 'That folder is not empty. Choose an empty or new folder.'
 const D_UNREADABLE = 'OrgAI could not read that folder.'
 const D_ANCESTOR = 'Part of that path is a file, not a folder.'
+const D_UNSAFE = 'That folder is one OrgAI will not clone into: files there can run or sign in later. Choose another folder.'
+const D_PROJECT = 'That folder belongs to an existing project. Choose a new folder.'
+const PROTECTED_SEGMENTS = new Set(['.git', '.claude', '.codex'])
+
+function hasProtectedSegment(path: string): boolean {
+  return path.split(/[\\/]+/).some((s) => PROTECTED_SEGMENTS.has(s.toLowerCase()))
+}
+
+/** Context for the destination rules; both parts are injectable for tests. */
+export interface DestinationContext {
+  home?: string
+  projectFolders?: () => string[]
+}
 
 /** The path to use, or the one-line problem. Pure checks first; the file system only after they pass. */
-export function checkDestination(raw: unknown, dataDir: string, platform: NodeJS.Platform = process.platform): { path: string } | { problem: string } {
+export function checkDestination(raw: unknown, dataDir: string, platform: NodeJS.Platform = process.platform, ctx: DestinationContext = {}): { path: string } | { problem: string } {
   if (typeof raw !== 'string') return { problem: D_BAD }
   if (raw.length > REPO_DESTINATION_MAX_CHARS * 2) return { problem: D_LONG }
   const cleaned = cleanProjectPath(raw)
@@ -354,6 +385,7 @@ export function checkDestination(raw: unknown, dataDir: string, platform: NodeJS
   const segs = (win ? cleaned.slice(2).split(/[\\/]+/) : cleaned.split('/')).filter((s) => s !== '')
   for (const seg of segs) {
     if (seg === '.' || seg === '..') return { problem: D_DOTS }
+    if (PROTECTED_SEGMENTS.has(seg.toLowerCase())) return { problem: D_UNSAFE }
     if (win) {
       if (/[. ]$/.test(seg)) return { problem: D_NAME }
       if (WINDOWS_RESERVED_RE.test(seg.split('.')[0].trimEnd())) return { problem: D_NAME }
@@ -361,23 +393,44 @@ export function checkDestination(raw: unknown, dataDir: string, platform: NodeJS
   }
   const dest = resolve(cleaned)
   if (dirname(dest) === dest) return { problem: D_ROOT }
-  const fsProblem = destinationFsProblem(dest, dataDir)
+  const fsProblem = destinationFsProblem(dest, dataDir, platform, ctx)
   return fsProblem ? { problem: fsProblem } : { path: dest }
 }
 
 /** The one-line problem with a destination, or null when it is usable. */
-export function destinationProblem(raw: unknown, dataDir: string, platform: NodeJS.Platform = process.platform): string | null {
-  const r = checkDestination(raw, dataDir, platform)
+export function destinationProblem(raw: unknown, dataDir: string, platform: NodeJS.Platform = process.platform, ctx: DestinationContext = {}): string | null {
+  const r = checkDestination(raw, dataDir, platform, ctx)
   return 'problem' in r ? r.problem : null
 }
 
-function destinationFsProblem(dest: string, dataDir: string): string | null {
+function destinationFsProblem(dest: string, dataDir: string, platform: NodeJS.Platform, ctx: DestinationContext): string | null {
   try {
     if (dataDir && (isInsideEither(dataDir, dest) || isInsideEither(dest, dataDir))) return D_DATA
     const real = canonicalDeep(dest)
     if (/^[\\/]{2}/.test(real) || isNetworkPath(real)) return D_NETWORK
+    // Folders that run or sign in later: judged on the typed and the real spelling, against both spellings of home.
+    const spellings = real === dest ? [dest] : [dest, real]
+    if (hasProtectedSegment(real)) return D_UNSAFE
+    const home = ctx.home ?? homedir()
+    const homes = home ? [...new Set([home, canonicalDeep(home)])] : ['']
+    for (const s of spellings) {
+      for (const h of homes) {
+        if (allowedDirectoryRisk(s, { home: h, platform }) === 'unsafe') return D_UNSAFE
+      }
+    }
   } catch {
     return D_UNCHECKED
+  }
+  if (ctx.projectFolders) {
+    try {
+      const list = ctx.projectFolders()
+      if (!Array.isArray(list)) return D_UNCHECKED
+      for (const f of list) {
+        if (typeof f === 'string' && f && isAbsolute(f) && isInsideEither(f, dest)) return D_PROJECT
+      }
+    } catch {
+      return D_UNCHECKED
+    }
   }
   let st
   try {
@@ -420,6 +473,8 @@ export interface DestRecord {
   createdDirs: string[]
   /** True when dest existed already (an empty directory). */
   preexisting: boolean
+  /** The real path of dest when it was prepared; cleanup removes nothing when dest no longer resolves to it. */
+  real?: string
 }
 
 const RM_OPTS = { recursive: true, force: true, maxRetries: 5, retryDelay: 200 } as const
@@ -435,7 +490,10 @@ export function prepareDestination(dest: string): DestRecord {
     try {
       lstatSync(probe)
       break
-    } catch {
+    } catch (e) {
+      // Only "does not exist" means missing; any other error and the folder is not touched.
+      const code = (e as NodeJS.ErrnoException).code
+      if (code !== 'ENOENT') throw new Error(code === 'ENOTDIR' ? D_ANCESTOR : D_UNCHECKED)
       missing.unshift(probe)
       const parent = dirname(probe)
       if (parent === probe) break
@@ -444,7 +502,14 @@ export function prepareDestination(dest: string): DestRecord {
   }
   const rec: DestRecord = { dest, createdDirs: [], preexisting: missing.length === 0 }
   const fail = (): never => {
-    cleanupDestination(rec)
+    // Only directories this call made, innermost first, never recursive.
+    for (const dir of [...rec.createdDirs].reverse()) {
+      try {
+        rmdirSync(dir)
+      } catch {
+        // not empty or already gone: not ours to force
+      }
+    }
     throw new Error(`OrgAI could not create the folder ${dest}. Check that you can write there.`)
   }
   for (const dir of missing) {
@@ -470,7 +535,17 @@ export function prepareDestination(dest: string): DestRecord {
       throw new Error(D_NOT_EMPTY)
     }
   }
+  try {
+    rec.real = realpathSync(dest)
+  } catch {
+    fail()
+  }
   return rec
+}
+
+/** True when dest still resolves to the place it was prepared at (no link or swapped ancestor since). */
+function sameReal(rec: DestRecord, real: string): boolean {
+  return rec.real === undefined || pathKey(real) === pathKey(rec.real)
 }
 
 function removeCreatedParents(rec: DestRecord): void {
@@ -512,28 +587,100 @@ function isRealDir(path: string): 'dir' | 'gone' | 'other' {
   }
 }
 
+function realMatches(rec: DestRecord): boolean {
+  try {
+    return sameReal(rec, realpathSync(rec.dest))
+  } catch {
+    return false
+  }
+}
+
+async function realMatchesAsync(rec: DestRecord): Promise<boolean> {
+  try {
+    return sameReal(rec, await fsp.realpath(rec.dest))
+  } catch {
+    return false
+  }
+}
+
+async function isRealDirAsync(path: string): Promise<'dir' | 'gone' | 'other'> {
+  try {
+    const st = await fsp.lstat(path)
+    return !st.isSymbolicLink() && st.isDirectory() ? 'dir' : 'other'
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === 'ENOENT' ? 'gone' : 'other'
+  }
+}
+
+async function removeChildrenAsync(dir: string): Promise<boolean> {
+  let ok = true
+  let names: string[]
+  try {
+    names = await fsp.readdir(dir)
+  } catch {
+    return false
+  }
+  for (const name of names) {
+    try {
+      await fsp.rm(join(dir, name), RM_OPTS)
+    } catch {
+      ok = false
+    }
+  }
+  return ok
+}
+
 /** Empty dest between fork attempts (keeps the folder). False when something could not be removed. */
 export function emptyDestination(rec: DestRecord): boolean {
-  if (isRealDir(rec.dest) !== 'dir') return false
+  if (isRealDir(rec.dest) !== 'dir' || !realMatches(rec)) return false
   return removeChildren(rec.dest)
+}
+
+/** emptyDestination without blocking the main thread. */
+export async function emptyDestinationAsync(rec: DestRecord): Promise<boolean> {
+  if ((await isRealDirAsync(rec.dest)) !== 'dir' || !(await realMatchesAsync(rec))) return false
+  return removeChildrenAsync(rec.dest)
 }
 
 /**
  * Remove what this call made. A pre-existing dest stays, emptied. A dest we created is removed with the parents we
  * created (innermost first, non-recursive, stopping at the first that is not empty). Nothing is removed when git said
- * the folder was not empty (someone else's content) or when dest has become a link or file. Returns false when
- * something remains that should not.
+ * the folder was not empty (someone else's content), when dest has become a link or file, or when it no longer
+ * resolves to where it was prepared. Returns false when something remains that should not.
  */
 export function cleanupDestination(rec: DestRecord, opts: { contentsAdded?: boolean } = {}): boolean {
   if (opts.contentsAdded) return true
   const state = isRealDir(rec.dest)
-  if (state === 'other') return true
+  if (state === 'other') return false
   let ok = true
   if (state === 'dir') {
+    if (!realMatches(rec)) return false
     if (rec.preexisting) ok = removeChildren(rec.dest)
     else {
       try {
         rmSync(rec.dest, RM_OPTS)
+      } catch {
+        ok = false
+      }
+    }
+  }
+  if (!ok) return false
+  removeCreatedParents(rec)
+  return true
+}
+
+/** cleanupDestination without blocking the main thread (same rules, line for line). */
+export async function cleanupDestinationAsync(rec: DestRecord, opts: { contentsAdded?: boolean } = {}): Promise<boolean> {
+  if (opts.contentsAdded) return true
+  const state = await isRealDirAsync(rec.dest)
+  if (state === 'other') return false
+  let ok = true
+  if (state === 'dir') {
+    if (!(await realMatchesAsync(rec))) return false
+    if (rec.preexisting) ok = await removeChildrenAsync(rec.dest)
+    else {
+      try {
+        await fsp.rm(rec.dest, RM_OPTS)
       } catch {
         ok = false
       }
@@ -571,7 +718,8 @@ export function scanRepoConfig(dest: string): string[] {
 
 // ---- Environment and arguments ----
 
-const GIT_ENV_DROP = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_COMMON_DIR', 'GIT_CONFIG_PARAMETERS', 'GIT_CONFIG_COUNT', 'GIT_TEMPLATE_DIR']
+/** The only GIT_* names that reach git: ssh and certificate settings. Every other GIT_* name is dropped. */
+const GIT_ENV_ALLOW = new Set(['GIT_SSH', 'GIT_SSH_COMMAND', 'GIT_SSH_VARIANT', 'GIT_SSL_CAINFO', 'GIT_SSL_CAPATH'])
 const GH_ENV_DROP = ['GH_HOST', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN', 'GH_DEBUG', 'DEBUG', 'GH_REPO']
 
 function buildEnv(base: NodeJS.ProcessEnv, drop: string[], set: Record<string, string>): NodeJS.ProcessEnv {
@@ -584,8 +732,13 @@ function buildEnv(base: NodeJS.ProcessEnv, drop: string[], set: Record<string, s
   return Object.assign(out, set)
 }
 
-export function gitEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  return buildEnv(base, GIT_ENV_DROP, {
+export function gitEnv(base: NodeJS.ProcessEnv, platform: NodeJS.Platform = process.platform): NodeJS.ProcessEnv {
+  const fold = platform === 'win32'
+  const drop = Object.keys(base).filter((k) => {
+    const name = fold ? k.toUpperCase() : k
+    return name.startsWith('GIT_') && !GIT_ENV_ALLOW.has(name)
+  })
+  return buildEnv(base, drop, {
     GIT_TERMINAL_PROMPT: '0',
     GIT_ALLOW_PROTOCOL: 'https:ssh',
     SSH_ASKPASS_REQUIRE: 'never',
@@ -615,9 +768,11 @@ export const GH_AUTH_ARGS_OLD: readonly string[] = ['auth', 'status', '--hostnam
 /** Strip anything that could be a credential from text that came from git, gh or the remote. */
 export function scrubStderr(text: string): string {
   return maskKeyLike(String(text ?? ''))
-    .replace(/([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^\s/@]*@/g, '$1')
+    .replace(/([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^\s@]*@/g, '$1')
+    .replace(/\bx-access-token:[^\s@]*/gi, '[redacted]')
     .replace(/\bgh[pousr]_[A-Za-z0-9]+/g, '[redacted]')
     .replace(/\bgithub_pat_[A-Za-z0-9_]+/g, '[redacted]')
+    .replace(/\bglpat-[A-Za-z0-9_-]+/g, '[redacted]')
 }
 
 export type CloneErrorKind = 'spawn' | 'disk' | 'folder' | 'hostkey' | 'not-found' | 'signin' | 'network' | 'other'
@@ -633,6 +788,20 @@ export function cloneErrorKind(stderr: string): CloneErrorKind {
   if (/could not resolve host|could not resolve hostname|failed to connect|connection timed out|connection refused|network is unreachable|connection reset|\bssl\b|unable to access|timed out/i.test(s)) return 'network'
   if (/could not read from remote repository/i.test(s)) return 'signin'
   return 'other'
+}
+
+/** True when git's own `fatal:` line says `dest` already exists and is not empty. Remote text never counts. */
+export function gitSaysNotEmpty(tail: string, dest: string): boolean {
+  for (const raw of String(tail ?? '').split(/[\r\n]+/)) {
+    const m = /^fatal: destination path '([^']{1,2000})' already exists and is not an empty directory\.?$/.exec(raw.trim())
+    if (!m) continue
+    try {
+      if (pathKey(m[1]) === pathKey(dest)) return true
+    } catch {
+      // unreadable path: not a match
+    }
+  }
+  return false
 }
 
 export interface CloneErrorContext {
@@ -724,6 +893,7 @@ export function validateForkResponse(stdout: unknown, source: { owner: string; r
   if (!GH_OWNER_RE.test(owner) || !GH_REPO_RE.test(repo) || repo === '.' || repo.includes('..') || repo.startsWith('-')) return bad
   if (b.clone_url !== `https://github.com/${fullName}.git` || b.html_url !== `https://github.com/${fullName}`) return bad
   if (fullName.toLowerCase() === `${source.owner}/${source.repo}`.toLowerCase()) return { ok: false, problem: MSG_OWN_REPO, own: true }
+  if (b.fork !== true) return bad
   let alreadyExisted = false
   if (typeof b.created_at === 'string') {
     const t = Date.parse(b.created_at)
@@ -826,7 +996,9 @@ export class CloneOutputReader {
   private line(raw: string): void {
     const line = raw.trim()
     if (!line) return
-    if (!/^remote:/i.test(line)) {
+    // Text the remote sent never enters the tail: it must not steer a decision or a message.
+    if (/^remote:/i.test(line)) return
+    {
       const p = parseProgressLine(line)
       if (p) {
         let overall = this.last
@@ -852,7 +1024,7 @@ export class CloneOutputReader {
 export const MOCK_REPO_MARKERS: readonly { repo: string; behaviour: string }[] = [
   { repo: 'mock-org/with-agents', behaviour: 'A repository with .claude/agents/mock-reviewer.md, .claude/settings.json, .mcp.json, AGENTS.md and README.md.' },
   { repo: 'mock-org/slow', behaviour: 'The cloning phase takes about 20 seconds with a tick every 500 ms; for driving cancel.' },
-  { repo: 'mock-org/missing', behaviour: 'Fails after a short delay with the not-found sentence.' },
+  { repo: 'mock-org/missing', behaviour: 'Fails after a short delay with the not-found sentence (in fork mode at the fork step, so it never waits for the fork).' },
   { repo: 'mock-org/private', behaviour: 'Fails with the sign-in sentence.' },
   { repo: 'mock-org/unreachable', behaviour: 'Fails with the could-not-reach sentence.' },
   { repo: 'mock-org/no-fork', behaviour: 'Fork mode answers the does-not-allow-forking sentence; clone mode works.' },
@@ -915,6 +1087,8 @@ export class RepoCloneService {
   private readonly sleep: (ms: number, signal?: AbortSignal) => Promise<void>
   private readonly now: () => number
   private readonly platform: NodeJS.Platform
+  private readonly destCtx: DestinationContext
+  private readonly folderLocks = new Set<string>()
   private readonly inactivityMs: number
   private readonly closeGraceMs: number
   private readonly killWaitMs: number
@@ -924,6 +1098,7 @@ export class RepoCloneService {
     this.mock = opts.mock === true
     this.envBase = opts.env
     this.platform = opts.platform ?? process.platform
+    this.destCtx = { ...(opts.home !== undefined ? { home: opts.home } : {}), ...(opts.projectFolders ? { projectFolders: opts.projectFolders } : {}) }
     this.run = opts.run ?? defaultRun
     this.spawnGit = opts.spawnGit ?? defaultSpawnGit(this.platform)
     this.killTree = opts.killTree ?? defaultKillTree(this.platform)
@@ -1007,12 +1182,12 @@ export class RepoCloneService {
     if (!bin) return { available: false }
     const opts: RunOptions = { cwd: tmpdir(), env: ghEnv(this.env), timeoutMs: GH_STATUS_TIMEOUT_MS, signal }
     const res = await this.run(bin, [...GH_AUTH_ARGS], opts)
-    if (res.spawnError || res.timedOut || res.aborted) return { available: true, bin, loggedIn: false, detail: D_UNCHECKED_GH, uncertain: true }
+    if (res.spawnError || res.timedOut || res.aborted || res.failed) return { available: true, bin, loggedIn: false, detail: D_UNCHECKED_GH, uncertain: true }
     const parsed = readGhAuthJson(res.stdout)
     if (parsed) return { available: true, bin, ...parsed }
     if (/unknown flag|unknown shorthand/i.test(res.stderr)) {
       const old = await this.run(bin, [...GH_AUTH_ARGS_OLD], opts)
-      if (old.spawnError || old.timedOut || old.aborted) return { available: true, bin, loggedIn: false, detail: D_UNCHECKED_GH, uncertain: true }
+      if (old.spawnError || old.timedOut || old.aborted || old.failed) return { available: true, bin, loggedIn: false, detail: D_UNCHECKED_GH, uncertain: true }
       if (old.code === 0) {
         const m = /account (\S+)/.exec(`${old.stdout}\n${old.stderr}`)
         const login = m && GH_OWNER_RE.test(m[1]) ? m[1] : undefined
@@ -1076,12 +1251,24 @@ export class RepoCloneService {
     if (!source.ok) throw new Error(source.problem)
     if (i.mode !== 'clone' && i.mode !== 'fork') throw new Error('Choose clone or fork.')
     if (i.mode === 'fork' && !source.canFork) throw new Error(MSG_FORK_ONLY_GITHUB)
+    const dest = checkDestination(i.destination, this.dataDir, this.platform, this.destCtx)
+    if ('problem' in dest) throw new Error(dest.problem)
+    // One job per folder, taken before any await: both spellings, so a link or 8.3 name cannot get around it.
+    let keys: string[]
+    try {
+      keys = [...new Set([pathKey(dest.path), pathKey(canonicalDeep(dest.path))])]
+    } catch {
+      throw new Error(D_UNCHECKED)
+    }
+    if (keys.some((k) => this.folderLocks.has(k))) throw new Error('A clone into that folder is already running.')
+    for (const k of keys) this.folderLocks.add(k)
     const job: Job = { id: i.requestId, controller: new AbortController(), cancelled: false, disposed: false, forkInFlight: false, contentsAdded: false }
     this.jobs.set(job.id, job)
     try {
-      return await this.execute(job, source, i.mode, i.destination, this.makeEmit(job.id, onProgress))
+      return await this.execute(job, source, i.mode, dest.path, this.makeEmit(job.id, onProgress))
     } finally {
       this.jobs.delete(job.id)
+      for (const k of keys) this.folderLocks.delete(k)
     }
   }
 
@@ -1109,11 +1296,7 @@ export class RepoCloneService {
     if (job.cancelled) throw new Error(this.cancelMessage(job))
   }
 
-  private async execute(job: Job, source: RepoSourceOk, mode: 'clone' | 'fork', destination: unknown, emit: Emit): Promise<RepoCloneResult> {
-    const dest = checkDestination(destination, this.dataDir, this.platform)
-    if ('problem' in dest) throw new Error(dest.problem)
-    const path = dest.path
-
+  private async execute(job: Job, source: RepoSourceOk, mode: 'clone' | 'fork', path: string, emit: Emit): Promise<RepoCloneResult> {
     const gitBin = await this.resolveGit(job)
     this.check(job)
     if (!gitBin) throw new Error(MSG_NO_GIT)
@@ -1146,7 +1329,7 @@ export class RepoCloneService {
         const retryable = mode === 'fork' && (attempt.kind === 'not-found' || attempt.kind === 'empty') && this.now() < deadline
         if (!retryable) throw new Error(this.failureMessage(job, attempt, source, displayForClone, path))
         emit({ phase: 'waiting-for-fork' })
-        if (!emptyDestination(record)) throw new Error(`OrgAI could not clear the folder ${path} for the next attempt.`)
+        if (!(await emptyDestinationAsync(record))) throw new Error(`OrgAI could not clear the folder ${path} for the next attempt.`)
         await this.sleep(delay, job.controller.signal)
         this.check(job)
         delay = Math.min(FORK_RETRY_MAX_MS, delay * 2)
@@ -1168,10 +1351,12 @@ export class RepoCloneService {
       return result
     } catch (err) {
       let message = err instanceof Error ? err.message : String(err)
+      // Every failure after the fork was made names it (the cancel message and failureMessage already do).
+      if (job.fork && !message.includes(job.fork.htmlUrl)) message += ` The fork exists at ${job.fork.htmlUrl}.`
       if (record) {
         let ok = true
         try {
-          ok = cleanupDestination(record, { contentsAdded: job.contentsAdded })
+          ok = await cleanupDestinationAsync(record, { contentsAdded: job.contentsAdded })
         } catch {
           ok = false
         }
@@ -1208,7 +1393,7 @@ export class RepoCloneService {
     if (out.spawnError) return { ok: false, kind: 'spawn', stderr: '' }
     if (out.inactive) return { ok: false, kind: 'inactive', stderr: '' }
     if (out.code !== 0) {
-      if (/already exists and is not an empty directory/i.test(out.tail)) job.contentsAdded = true
+      if (gitSaysNotEmpty(out.tail, dest)) job.contentsAdded = true
       return { ok: false, kind: cloneErrorKind(scrubStderr(out.tail)), stderr: out.tail }
     }
     if (checkEmpty) {
@@ -1303,10 +1488,12 @@ export class RepoCloneService {
       throw new Error(MSG_FORK_NEEDS_GH)
     }
     if (res.timedOut) throw new Error('GitHub did not answer in time. The fork may still have been made on GitHub.')
+    // Stopped or over its output limit: not "gh is missing", and the fork request may have gone through.
+    if (res.failed) throw new Error('The GitHub CLI stopped before it answered. The fork may still have been made on GitHub.')
     job.forkInFlight = false
     if (res.code !== 0) throw new Error(forkErrorMessage(res.stderr, source.display))
     const valid = validateForkResponse(res.stdout, { owner, repo: source.repo }, this.now())
-    if (!valid.ok) throw new Error(valid.problem)
+    if (!valid.ok) throw new Error(valid.own ? valid.problem : `${valid.problem} A fork may exist on GitHub.`)
     job.fork = { htmlUrl: valid.htmlUrl }
     return valid
   }
@@ -1320,6 +1507,7 @@ export class RepoCloneService {
     await this.sleep(400, job.controller.signal)
     this.check(job)
     if ((source.owner ?? '').toLowerCase() === MOCK_USER) throw new Error(MSG_OWN_REPO)
+    if (key === 'mock-org/missing') throw new Error(`${source.display} was not found, or your GitHub account has no access to it.`)
     if (key === 'mock-org/no-fork') throw new Error(`${source.display} does not allow forking. Clone it instead.`)
     job.forkInFlight = false
     const fullName = `${MOCK_USER}/${source.repo}`
@@ -1399,11 +1587,16 @@ export const defaultRun: RunFn = (file, args, opts) =>
           const out = String(stdout ?? '')
           const errText = String(stderr ?? '')
           if (!err) return resolveRun({ code: 0, stdout: out, stderr: errText })
-          const e = err as NodeJS.ErrnoException & { killed?: boolean }
+          const e = err as NodeJS.ErrnoException & { killed?: boolean; signal?: string | null }
           if (typeof e.code === 'number') return resolveRun({ code: e.code, stdout: out, stderr: errText })
           if (e.name === 'AbortError' || e.code === 'ABORT_ERR') return resolveRun({ code: null, stdout: out, stderr: errText, aborted: true })
+          // The program ran but was stopped from outside or produced too much: never "not installed".
+          if (e.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') return resolveRun({ code: null, stdout: out, stderr: errText, failed: true })
           if (e.killed) return resolveRun({ code: null, stdout: out, stderr: errText, timedOut: true })
-          resolveRun({ code: null, stdout: out, stderr: errText, spawnError: typeof e.code === 'string' ? e.code : 'ERR' })
+          if (e.signal) return resolveRun({ code: null, stdout: out, stderr: errText, failed: true })
+          // Only a program that could not start (ENOENT, EACCES ...) is a spawn error.
+          if (typeof e.code === 'string' && /^spawn/.test(String((e as { syscall?: string }).syscall ?? 'spawn'))) return resolveRun({ code: null, stdout: out, stderr: errText, spawnError: e.code })
+          resolveRun({ code: null, stdout: out, stderr: errText, failed: true })
         }
       )
     } catch (e) {

@@ -5675,7 +5675,11 @@ export type RepoConfigEffect =
 /**
  * Files in a repository that agents would load or that can run commands, checked in this order. A file or folder that
  * is a link still counts: it is listed, never followed. Claude work runs on code projects load `.claude/settings.json`
- * (settingSources ['project']), so its hooks can run on the user's computer.
+ * (settingSources ['project']), so its hooks can run on the user's computer. From the docs, not confirmed by a live
+ * run: `.mcp.json` does not load on Claude runs (strictMcpConfig) and is listed because Codex and the importers may
+ * read it; `.claude/settings.local.json` is listed because OrgAI itself reads its permission rules
+ * (permissionRules listRules), not because the CLI loads it; nested CLAUDE.md files and `@` imports inside
+ * instruction files cannot be listed here.
  */
 export const REPO_CONFIG_PATHS: readonly { path: string; effect: RepoConfigEffect }[] = [
   { path: '.claude/settings.json', effect: 'runs-commands' },
@@ -5686,12 +5690,19 @@ export const REPO_CONFIG_PATHS: readonly { path: string; effect: RepoConfigEffec
   { path: '.claude/agents', effect: 'tools' },
   { path: '.claude/commands', effect: 'tools' },
   { path: '.claude/skills', effect: 'tools' },
+  { path: '.claude/rules', effect: 'tools' },
+  { path: '.claude/workflows', effect: 'tools' },
+  { path: '.claude/routines', effect: 'tools' },
+  { path: '.claude/output-styles', effect: 'tools' },
+  { path: '.orgai/org.json', effect: 'tools' },
   { path: '.agents', effect: 'tools' },
   { path: 'CLAUDE.md', effect: 'instructions' },
   { path: 'CLAUDE.local.md', effect: 'instructions' },
   { path: '.claude/CLAUDE.md', effect: 'instructions' },
   { path: 'AGENTS.md', effect: 'instructions' },
-  { path: 'AGENTS.override.md', effect: 'instructions' }
+  { path: 'AGENTS.override.md', effect: 'instructions' },
+  // prompts.ts tells agents to read .orgai/ARCHITECTURE.md and follow it.
+  { path: '.orgai/ARCHITECTURE.md', effect: 'instructions' }
 ]
 
 export type RepoClonePhase = 'forking' | 'waiting-for-fork' | 'cloning' | 'finishing'

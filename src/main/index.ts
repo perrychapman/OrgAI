@@ -484,7 +484,12 @@ app.whenReady().then(() => {
     mock: mockAdapter
   })
   const caps = capabilities
-  const repoClone = new RepoCloneService({ dataDir, mock: Object.keys(adapters).includes('mock') })
+  const repoClone = new RepoCloneService({
+    dataDir,
+    mock: Object.keys(adapters).includes('mock'),
+    // A clone never lands in a folder an existing project already uses (its folder, allowed or reference folders).
+    projectFolders: () => projects.list().flatMap((p) => [p.path, ...(p.allowedDirectories ?? []), ...(p.referenceDirectories ?? [])]).filter((f): f is string => typeof f === 'string' && f.length > 0)
+  })
   registerIpc({
     projects,
     runs: runManager,

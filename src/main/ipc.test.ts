@@ -19,7 +19,37 @@ const { tmpdir } = await import('node:os')
 const { join } = await import('node:path')
 
 const { mcpCopyArgs } = await import('./ipc')
-const { repoCloneArgs, repoCancelArg } = await import('./ipc')
+const { repoCloneArgs, repoCancelArg, watchSenderGone } = await import('./ipc')
+const { EventEmitter } = await import('node:events')
+
+describe('watchSenderGone (projects:cloneRepo)', () => {
+  it('fires once per gone-event: destroyed, render-process-gone and a main-frame navigation', () => {
+    for (const [event, args, fires] of [
+      ['destroyed', [], true],
+      ['render-process-gone', [{}, { reason: 'crashed' }], true],
+      ['did-start-navigation', [{ isMainFrame: true, isSameDocument: false }], true],
+      ['did-start-navigation', [{ isMainFrame: false, isSameDocument: false }], false],
+      ['did-start-navigation', [{ isMainFrame: true, isSameDocument: true }], false],
+      ['did-start-navigation', [], false]
+    ] as [string, unknown[], boolean][]) {
+      const sender = new EventEmitter()
+      const onGone = vi.fn()
+      watchSenderGone(sender, onGone)
+      sender.emit(event, ...args)
+      expect(onGone, event).toHaveBeenCalledTimes(fires ? 1 : 0)
+    }
+  })
+  it('removes every listener when the clone ends', () => {
+    const sender = new EventEmitter()
+    const onGone = vi.fn()
+    const stop = watchSenderGone(sender, onGone)
+    expect(sender.eventNames().length).toBe(3)
+    stop()
+    expect(sender.eventNames().length).toBe(0)
+    sender.emit('destroyed')
+    expect(onGone).not.toHaveBeenCalled()
+  })
+})
 
 describe('repoCloneArgs / repoCancelArg (projects:cloneRepo)', () => {
   const good = { requestId: 'req_1-A', source: 'https://github.com/o/r', mode: 'clone', destination: '/x/y' }
