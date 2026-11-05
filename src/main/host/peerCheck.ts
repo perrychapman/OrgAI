@@ -10,8 +10,13 @@
  * - The pid is client-asserted (host.hello params.pid). An agent can claim any pid, and a process that double-forks
  *   (reparented to init / launchd) is no longer a descendant. This check is defence in depth only; the real gates are
  *   AppSettings.terminalServer and the self-control denial gate (checkSelfControlDenial).
- * - The spec's socket-to-PID mapping (`lsof -nP -U -a -p <pid>` on macOS, `/proc/<pid>/fd` on Linux) is NOT
- *   implemented: nothing here proves the claimed pid owns the socket.
+ * - Socket-to-PID mapping (macOS only): with the accepted socket's fd, one `lsof -nP -U -F pfdn` (same 150 ms budget,
+ *   run beside ps) finds the kernel address of the host's end of the socket (`d0x...` on that fd) and every process
+ *   holding the other end (`n->0x...` naming that address). Those are the real peers; the ancestry walk then runs on
+ *   them instead of the claimed pid (any descendant refuses). When lsof fails, times out or finds no peer, the claimed
+ *   pid is walked as before. Linux has no such mapping here (`/proc/<pid>/fd` gives inodes but not the peer; that needs
+ *   sock_diag / `ss -xp`), so it walks the claimed pid only. The lsof field format was checked on this Mac (Darwin 25);
+ *   other macOS versions are unverified.
  * - win32 answers 'unavailable' (no ps; GetNamedPipeClientProcessId needs a native addon).
  * - The claimed pid itself equal to the host's pid is 'ok' (only strict descendants count): an in-process client.
  */
@@ -25,6 +30,10 @@ export interface PeerCheckOptions {
   timeoutMs?: number
   /** pid -> ppid table; default: `ps -A -o pid=,ppid=`. Tests inject one. */
   psTable?: () => Promise<Map<number, number>>
+  /** The host's fd of the accepted socket (darwin socket-to-PID mapping); absent = walk the claimed pid only. */
+  socketFd?: number
+  /** `lsof -nP -U -F pfdn` output; default runs lsof. Tests inject one. */
+  lsofText?: () => Promise<string>
 }
 
 /** Max parent hops walked from the client. */
@@ -48,6 +57,54 @@ function psTableOf(timeoutMs: number): Promise<Map<number, number>> {
       else resolve(parsePsTable(String(stdout)))
     })
   })
+}
+
+function lsofTextOf(timeoutMs: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile('lsof', ['-nP', '-U', '-F', 'pfdn'], { timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024, windowsHide: true }, (err, stdout) => {
+      // lsof exits 1 when some process could not be read but still prints the rest.
+      const text = String(stdout ?? '')
+      if (err && !text) reject(err)
+      else resolve(text)
+    })
+  })
+}
+
+/**
+ * The pids holding the other end of the host's socket `fd` (lsof -F pfdn output: `p<pid>`, `f<fd>`, `d<device>`,
+ * `n<name>` lines). Empty when the host's fd or any peer is missing.
+ */
+export function socketPeersOf(lsof: string, hostPid: number, fd: number): number[] {
+  interface Entry {
+    pid: number
+    fd: string
+    device?: string
+    name?: string
+  }
+  const entries: Entry[] = []
+  let pid = -1
+  let cur: Entry | undefined
+  for (const line of lsof.split('\n')) {
+    const tag = line[0]
+    const value = line.slice(1)
+    if (tag === 'p') {
+      pid = Number(value)
+      cur = undefined
+    } else if (tag === 'f') {
+      cur = { pid, fd: value }
+      entries.push(cur)
+    } else if (tag === 'd' && cur) cur.device = value
+    else if (tag === 'n' && cur) cur.name = value
+  }
+  const own = entries.find((e) => e.pid === hostPid && e.fd === String(fd))
+  const device = own?.device?.toLowerCase()
+  if (!device || !/^0x[0-9a-f]+$/.test(device)) return []
+  const peers = new Set<number>()
+  for (const e of entries) {
+    if (e === own || !Number.isSafeInteger(e.pid) || e.pid <= 0) continue
+    if (e.name?.toLowerCase() === `->${device}`) peers.add(e.pid)
+  }
+  return [...peers]
 }
 
 function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
@@ -89,10 +146,32 @@ export async function checkPeerAncestry(claimedPid: number, opts: PeerCheckOptio
   if (!Number.isSafeInteger(claimedPid) || claimedPid <= 0) return 'unavailable'
   if (claimedPid === hostPid) return 'ok'
   if (!opts.psTable && platform !== 'darwin' && platform !== 'linux') return 'unavailable'
+  const mapping =
+    platform === 'darwin' && opts.socketFd !== undefined && Number.isSafeInteger(opts.socketFd) && opts.socketFd >= 0
+      ? withTimeout(opts.lsofText ? opts.lsofText() : lsofTextOf(timeoutMs), timeoutMs).then(
+          (text) => socketPeersOf(text, hostPid, opts.socketFd!),
+          () => [] as number[]
+        )
+      : Promise.resolve([] as number[])
   try {
-    const table = await withTimeout(opts.psTable ? opts.psTable() : psTableOf(timeoutMs), timeoutMs)
-    return ancestryOf(table, claimedPid, hostPid)
+    const [table, peers] = await Promise.all([withTimeout(opts.psTable ? opts.psTable() : psTableOf(timeoutMs), timeoutMs), mapping])
+    // The OS-mapped peers when known (an in-process client is the host itself: ok), else the claimed pid.
+    const pids = peers.length > 0 ? peers : [claimedPid]
+    let result: PeerCheckResult = 'ok'
+    for (const pid of pids) {
+      if (pid === hostPid) continue
+      const r = ancestryOf(table, pid, hostPid)
+      if (r === 'descendant') return 'descendant'
+      if (r === 'unavailable') result = 'unavailable'
+    }
+    return result
   } catch {
     return 'unavailable'
   }
+}
+
+/** The OS fd of a net.Socket (unix only; undefined when Node does not expose one). */
+export function socketFdOf(socket: unknown): number | undefined {
+  const fd = (socket as { _handle?: { fd?: unknown } } | null)?._handle?.fd
+  return typeof fd === 'number' && Number.isSafeInteger(fd) && fd >= 0 ? fd : undefined
 }

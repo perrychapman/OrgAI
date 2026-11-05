@@ -88,7 +88,7 @@ try {
   check(terminalOn, 'Terminal access is on')
 
   const project = await page.evaluate((dir) => window.orgai.projects.create({ name: 'CLI readonly', path: dir, brief: '', mock: true }), repo)
-  const run = await page.evaluate((projectId) => window.orgai.runs.start({ projectId, prompt: 'Hello from the CLI e2e' }), project.id)
+  const run = await page.evaluate((projectId) => window.orgai.runs.start({ projectId, prompt: 'Hello from the CLI e2e', team: 'single' }), project.id)
   await until('the mock run to go idle', async () => (await page.evaluate((id) => window.orgai.runs.get(id), run.id))?.summary.status === 'idle')
 
   const status = await cli(['--project', repo, 'status', '--output-format', 'json'])

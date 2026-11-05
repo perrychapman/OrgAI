@@ -149,7 +149,7 @@ describe.skipIf(!wave2Merged)('orgai read-only commands against a real inproc ho
     })
     seed = await SeedClient.open(join(userDataDir, 'data'), info)
     project = await seed.call<Project>('projects:create', [{ name: 'Int project', path: projectDir, brief: '', mock: true }])
-    run = await seed.call<RunSummary>('runs:start', [{ projectId: project.id, prompt: 'Hello from the integration test' }])
+    run = await seed.call<RunSummary>('runs:start', [{ projectId: project.id, prompt: 'Hello from the integration test', team: 'single' }])
     await until('the mock run to go idle', async () => (await seed.call<RunRecord | null>('runs:get', [run.id]))?.summary.status === 'idle')
   }, 60_000)
 

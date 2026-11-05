@@ -64,7 +64,7 @@ import { BulkBudget, type BulkReservation } from './bulkBudget'
 import { EventJournal } from './eventJournal'
 import type { HostPushChannel } from './events'
 import { OutboundQueue, frameKey, type FrameMeta } from './outboundQueue'
-import { checkPeerAncestry } from './peerCheck'
+import { checkPeerAncestry, socketFdOf } from './peerCheck'
 import {
   HELLO_REQUEST_ID,
   LineReader,
@@ -99,9 +99,10 @@ export interface HostSocketServerOptions {
   mock: boolean
   /**
    * Best-effort peer ancestry check of host.hello's pid (cli-spec 3.4(2)): 'descendant' refuses the client with
-   * 'agent_descendant_refused', 'unavailable' is logged and allowed. Missing = peerCheck.ts checkPeerAncestry.
+   * 'agent_descendant_refused', 'unavailable' is logged and allowed. Missing = peerCheck.ts checkPeerAncestry with
+   * the accepted socket's fd (macOS maps the socket to its real peer pids through lsof).
    */
-  peerCheck?: (pid: number) => Promise<'ok' | 'descendant' | 'unavailable'>
+  peerCheck?: (pid: number, socketFd?: number) => Promise<'ok' | 'descendant' | 'unavailable'>
   log?: (m: string) => void
   /** Clock for deadlines; tests pass a fake. */
   now?: () => number
@@ -247,8 +248,12 @@ export class HostSocketServer {
         // ignore
       }
     }
-    for (const c of [...this.conns]) this.kill(c)
-    this.conns.clear()
+    // Flush what is already queued (a host.stop reply), then end each socket; a client that stops reading cannot
+    // hold it open past REFUSE_FLUSH_MS. Each connection is cleaned up on its socket's 'close'.
+    for (const c of [...this.conns]) {
+      if (c.socket.destroyed) this.kill(c)
+      else this.refuseQueued(c)
+    }
   }
 
   // ---------- Connection plumbing ----------
@@ -267,6 +272,11 @@ export class HostSocketServer {
   /** Send a last frame, then end the socket once it is flushed. */
   private refuse(conn: Conn, msg: unknown): void {
     this.send(conn, msg)
+    this.refuseQueued(conn)
+  }
+
+  /** Stop reading, flush the queued frames, then end the socket. */
+  private refuseQueued(conn: Conn): void {
     this.markClosing(conn)
     conn.socket.once('finish', () => conn.socket.destroy())
     // A client that stops reading cannot hold the socket open.
@@ -443,7 +453,8 @@ export class HostSocketServer {
     if (before) return fail(before)
     let peer: 'ok' | 'descendant' | 'unavailable'
     try {
-      peer = await (this.opts.peerCheck ?? ((pid: number) => checkPeerAncestry(pid)))(p.pid)
+      const fd = socketFdOf(conn.socket)
+      peer = await (this.opts.peerCheck ?? ((pid: number, socketFd?: number) => checkPeerAncestry(pid, socketFd === undefined ? {} : { socketFd })))(p.pid, fd)
     } catch {
       peer = 'unavailable'
     }

@@ -577,10 +577,18 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
     if (!host) throw new HostRpcFailure('desktop_unavailable', 'This host does not report its status.')
     return host.status()
   })
-  handle(HOST_METHODS.hostStop, (_e, input?: unknown) => {
+  handle(HOST_METHODS.hostStop, (ctx, input?: unknown) => {
     if (!host) throw new HostRpcFailure('desktop_unavailable', 'This host cannot be stopped over RPC.')
     const i = input && typeof input === 'object' && !Array.isArray(input) ? (input as { force?: unknown }) : {}
-    return host.stop({ force: i.force === true })
+    const stopping = host.stop({ force: i.force === true })
+    // Over the socket, answer as soon as the drain has started: the drain ends by closing the socket server (inproc)
+    // or quitting the app, so a reply sent only after it would never reach the client (it waits for daemon.json to
+    // go instead). A refusal is answered as before; in-process callers still get the answer once the drain is done.
+    if (ctx.surface === 'socket' && host.status().state === 'draining') {
+      stopping.catch(() => undefined)
+      return { stopping: true }
+    }
+    return stopping
   })
   return table
 }
