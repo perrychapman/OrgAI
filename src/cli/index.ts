@@ -262,6 +262,18 @@ function unknownCommandMessage(word: string): string {
   return `${base} ${PROMPT_HINT}`
 }
 
+/**
+ * The packaged launcher (build/bin/orgai) runs this bundle on the app's own binary with ELECTRON_RUN_AS_NODE=1. Under
+ * Electron (`versions.electron` set) that variable is taken out of `env` before anything spawns, so pagers, git,
+ * `orgai app`, MCP servers and the inproc adapters never inherit it (an inherited one would turn any Electron app they
+ * start into Node). Plain Node keeps the environment as it is. True when it removed the variable.
+ */
+export function scrubElectronRunAsNode(env: NodeJS.ProcessEnv, versions: Partial<Record<string, string | undefined>> = process.versions): boolean {
+  if (!versions.electron || !('ELECTRON_RUN_AS_NODE' in env)) return false
+  delete env.ELECTRON_RUN_AS_NODE
+  return true
+}
+
 /** True when this module is the process entry (also through a symlinked bin shim). False when imported (tests). */
 function isEntry(): boolean {
   const entry = process.argv[1]
@@ -274,6 +286,8 @@ function isEntry(): boolean {
 }
 
 if (isEntry()) {
+  // Before main() builds the context (which reads process.env) and before anything can spawn.
+  scrubElectronRunAsNode(process.env)
   process.on('unhandledRejection', (reason: unknown) => {
     process.stderr.write(`orgai: ${safe(reason instanceof Error ? reason.message : String(reason))}\n`)
     if (process.env.ORGAI_CLI_DEBUG === '1' && reason instanceof Error && reason.stack) process.stderr.write(`${safe(reason.stack)}\n`)

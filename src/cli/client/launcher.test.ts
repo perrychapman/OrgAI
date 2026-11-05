@@ -1,9 +1,9 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { EventEmitter } from 'node:events'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { APP_NOT_FOUND, createLauncher, hostSpawnEnv, type SpawnFn } from './launcher'
+import { APP_NOT_FOUND, createLauncher, hostSpawnEnv, packagedAppMissing, type SpawnFn } from './launcher'
 
 let base: string
 let dataDir: string
@@ -166,5 +166,69 @@ describe('launcher', () => {
     expect(await l.waitForGone({ timeoutMs: 300, hostInstanceId: 'cccccccccccc' })).toBe(true)
     alive = false
     expect(await l.waitForGone({ timeoutMs: 300, hostInstanceId: 'aaaaaaaaaaaa' })).toBe(true)
+  })
+})
+
+describe('launcher: packaged app (cli-spec 7, Wave 6)', () => {
+  /** A fake macOS bundle: OrgAI.app/Contents/{MacOS/OrgAI, Resources/app.asar.unpacked/out/cli}. */
+  function fakeApp(withBinary = true): { bundleDir: string; binary: string } {
+    const contents = join(base, 'Apps', 'OrgAI.app', 'Contents')
+    const bundleDir = join(contents, 'Resources', 'app.asar.unpacked', 'out', 'cli')
+    mkdirSync(bundleDir, { recursive: true })
+    mkdirSync(join(contents, 'MacOS'), { recursive: true })
+    const binary = join(contents, 'MacOS', 'OrgAI')
+    if (withBinary) writeFileSync(binary, '')
+    return { bundleDir, binary }
+  }
+
+  it('resolves the app binary next to a packaged bundle, with no arguments', () => {
+    const { bundleDir, binary } = fakeApp()
+    const l = createLauncher({ dataDir, userDataDir: '', userChoseDataDir: false, env: {}, bundleDir, platform: 'darwin', runtime: { execPath: '/usr/bin/node' } })
+    expect(l.resolve()).toEqual({ command: binary, args: [], source: 'packaged' })
+  })
+
+  it('prefers the running binary under Electron when it is the layout app binary (compared real-path-wise)', () => {
+    const { bundleDir, binary } = fakeApp()
+    const link = join(base, 'OrgAI-link')
+    symlinkSync(binary, link)
+    const l = createLauncher({ dataDir, userDataDir: '', userChoseDataDir: false, env: {}, bundleDir, platform: 'darwin', runtime: { execPath: link, electron: '45.1.0' } })
+    expect(l.resolve()).toEqual({ command: link, args: [], source: 'packaged' })
+    // Another Electron (not this app's binary) does not count; the layout binary is used.
+    const other = createLauncher({ dataDir, userDataDir: '', userChoseDataDir: false, env: {}, bundleDir, platform: 'darwin', runtime: { execPath: '/opt/electron', electron: '45.1.0' } })
+    expect(other.resolve()).toEqual({ command: binary, args: [], source: 'packaged' })
+  })
+
+  it('a missing app binary is an error naming it (never a fall-through to dev)', () => {
+    const { bundleDir, binary } = fakeApp(false)
+    const l = createLauncher({ dataDir, userDataDir: '', userChoseDataDir: false, env: {}, bundleDir, platform: 'darwin', runtime: { execPath: '/usr/bin/node' } })
+    const r = l.resolve()
+    expect(r).toEqual({ error: packagedAppMissing(binary) })
+    expect('error' in r && r.error).toContain('reinstall OrgAI or set ORGAI_ELECTRON_PATH')
+  })
+
+  it('ORGAI_ELECTRON_PATH still wins over the packaged app', () => {
+    const { bundleDir } = fakeApp()
+    const l = createLauncher({ dataDir, userDataDir: '', userChoseDataDir: false, env: { ORGAI_ELECTRON_PATH: '/e' }, bundleDir, platform: 'darwin' })
+    expect(l.resolve()).toEqual({ command: '/e', args: [], source: 'env' })
+  })
+
+  it('a dev checkout is unchanged (its out/cli is not a packaged layout)', () => {
+    const root = fakeRepo()
+    const l = createLauncher({ dataDir, userDataDir: '', userChoseDataDir: false, env: {}, bundleDir: join(root, 'out', 'cli'), platform: 'darwin', runtime: { execPath: '/x', electron: '45.1.0' } })
+    expect(l.resolve()).toMatchObject({ source: 'dev', args: [root] })
+  })
+
+  it('the packaged spawn never passes ELECTRON_RUN_AS_NODE on', () => {
+    const { bundleDir, binary } = fakeApp()
+    const calls: { command: string; args: string[]; env?: NodeJS.ProcessEnv }[] = []
+    const spawn: SpawnFn = (command, args, options) => {
+      calls.push({ command, args, env: options.env })
+      return { pid: 1, unref: () => undefined }
+    }
+    const env = { ELECTRON_RUN_AS_NODE: '1', PATH: '/bin' }
+    const l = createLauncher({ dataDir, userDataDir: '', userChoseDataDir: false, env, bundleDir, platform: 'darwin', runtime: { execPath: binary, electron: '45.1.0' }, spawn })
+    l.spawn({ headless: true })
+    expect(calls[0]).toEqual({ command: binary, args: ['--headless-host'], env: { PATH: '/bin' } })
+    expect(hostSpawnEnv({ ELECTRON_RUN_AS_NODE: '1' }, { userDataDir: '', userChoseDataDir: false })).toEqual({})
   })
 })

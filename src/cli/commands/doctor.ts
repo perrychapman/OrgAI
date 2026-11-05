@@ -1,12 +1,17 @@
 /**
- * `orgai doctor` (cli-spec 6.1): checks of the install, the data folder, the host and the connections, printed as
+ * `orgai doctor` (cli-spec 6.1): checks of the install (how this CLI runs, the orgai shim on PATH; cli-spec 7), the
+ * data folder, the host and the connections, printed as
  * ok / warn / fail lines (json: an array of { id, status, detail }). Exit 1 when any check fails, else 0. Never
  * prints a secret: auth and connection checks report states and labels only.
  */
 import { execFile } from 'node:child_process'
-import { lstatSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, lstatSync, readFileSync, realpathSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { dirname, join, posix, resolve, win32 } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { cliShimPath, packagedLayout, parseCliShim, resourcesDirOfCliBundle, transientInstallReason } from '../../main/host/packagedLayout'
 import type { AuthStatusResult, ConnectionInfo, DaemonInfo } from '../../shared/types'
+import { devAppRoot } from '../client/launcher'
 import { parseFlags } from '../flags'
 import { emit, safeLine, styleFor } from '../output'
 import { CliError, EXIT, type CliContext, type CommandFn, type ConnectResult } from '../types'
@@ -34,7 +39,100 @@ export const doctorProbes = {
   gitVersion: (): Promise<string> =>
     new Promise((resolve, reject) => {
       execFile('git', ['--version'], { timeout: 5000, windowsHide: true }, (err, stdout) => (err ? reject(err) : resolve(String(stdout).trim())))
-    })
+    }),
+  /** The Electron version when this CLI runs on the app's own binary (ELECTRON_RUN_AS_NODE), else undefined. */
+  electronVersion: (): string | undefined => process.versions.electron,
+  /** Where this module sits: out/cli in a bundle (packaged: `<Resources>/app.asar.unpacked/out/cli`). */
+  bundleDir: (): string => {
+    try {
+      return dirname(fileURLToPath(import.meta.url))
+    } catch {
+      return process.cwd()
+    }
+  },
+  homeDir: (): string => homedir(),
+  /** Reads a text file (throws as fs does: ENOENT when missing). */
+  readText: (path: string): string => readFileSync(path, 'utf8'),
+  exists: (path: string): boolean => existsSync(path),
+  realpath: (path: string): string => {
+    try {
+      return realpathSync(path)
+    } catch {
+      return resolve(path)
+    }
+  }
+}
+
+const SHIM_NOT_INSTALLED = 'The orgai command is not installed (App settings > General > Advanced settings > Terminal)'
+
+/** How this CLI runs (cli-spec 7): packaged app, dev checkout or a standalone bundle; warns for a transient app copy. */
+export function installCheck(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): DoctorCheck {
+  const bundleDir = doctorProbes.bundleDir()
+  const res = resourcesDirOfCliBundle(bundleDir, platform)
+  if (res !== undefined) {
+    const electron = doctorProbes.electronVersion()
+    const runtime = `${electron ? `Electron ${electron}, ` : ''}Node ${doctorProbes.nodeVersion()}`
+    const transient = transientInstallReason(platform, res, env)
+    return transient
+      ? { id: 'install', status: 'warn', detail: `Packaged OrgAI at ${res} (${runtime}). ${transient}` }
+      : { id: 'install', status: 'ok', detail: `Packaged OrgAI at ${res} (${runtime})` }
+  }
+  const root = devAppRoot(bundleDir)
+  if (root) return { id: 'install', status: 'ok', detail: `Development checkout ${root}` }
+  return { id: 'install', status: 'ok', detail: `Standalone bundle ${bundleDir}` }
+}
+
+/**
+ * The user-level orgai shim (cli-spec 7(3)), read only: never written or repaired here. Missing is fine; a foreign
+ * file, a shim pointing at another install or at a missing launcher, and a shim folder that is not on PATH warn.
+ */
+export function shimCheck(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): DoctorCheck {
+  const shim = cliShimPath(platform, env, doctorProbes.homeDir())
+  let text: string
+  try {
+    text = doctorProbes.readText(shim)
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code
+    if (code === 'ENOENT' || code === 'ENOTDIR') return { id: 'shim', status: 'ok', detail: SHIM_NOT_INSTALLED }
+    return { id: 'shim', status: 'warn', detail: `${shim} could not be read: ${(e as Error).message}` }
+  }
+  const parsed = parseCliShim(text, platform)
+  if (!parsed) return { id: 'shim', status: 'warn', detail: `${shim} is not an OrgAI shim (another program's file); OrgAI leaves it alone` }
+  const res = resourcesDirOfCliBundle(doctorProbes.bundleDir(), platform)
+  const ownLauncher = res !== undefined ? packagedLayout(platform, res).launcher : undefined
+  const same = (a: string, b: string): boolean => {
+    const fold = (p: string): string => (platform === 'win32' || platform === 'darwin' ? p.toLowerCase() : p)
+    return fold(doctorProbes.realpath(a)) === fold(doctorProbes.realpath(b))
+  }
+  if (!doctorProbes.exists(parsed.launcher)) {
+    return { id: 'shim', status: 'warn', detail: `${shim} points at an OrgAI that is gone (${parsed.launcher}). Open OrgAI to update it` }
+  }
+  if (ownLauncher !== undefined && !same(parsed.launcher, ownLauncher)) {
+    return { id: 'shim', status: 'warn', detail: `${shim} runs another OrgAI (${parsed.launcher}), not this one. Open OrgAI to update it` }
+  }
+  const dir = (platform === 'win32' ? win32 : posix).dirname(shim)
+  if (!onPath(dir, env, platform)) {
+    const hint =
+      platform === 'win32'
+        ? `add ${dir} to your user Path (Settings > System > About > Advanced system settings > Environment Variables)`
+        : `add it to your shell profile: export PATH="${dir}:$PATH"`
+    return { id: 'shim', status: 'warn', detail: `${shim} is installed, but ${dir} is not on PATH; ${hint}` }
+  }
+  return { id: 'shim', status: 'ok', detail: `${shim} runs ${ownLauncher !== undefined ? 'this OrgAI' : 'OrgAI'} (${parsed.launcher})` }
+}
+
+/** True when `dir` is one of the PATH entries (case folded on Windows and macOS, trailing separators ignored). */
+function onPath(dir: string, env: NodeJS.ProcessEnv, platform: NodeJS.Platform): boolean {
+  const p = platform === 'win32' ? win32 : posix
+  const raw = platform === 'win32' ? (env.Path ?? env.PATH ?? Object.entries(env).find(([k]) => k.toLowerCase() === 'path')?.[1]) : env.PATH
+  if (!raw) return false
+  const norm = (v: string): string => {
+    let out = p.normalize(v.replace(/^"(.*)"$/, '$1'))
+    while (out.length > 1 && /[\\/]$/.test(out) && !/^[A-Za-z]:\\$/.test(out)) out = out.slice(0, -1)
+    return platform === 'win32' || platform === 'darwin' ? out.toLowerCase() : out
+  }
+  const want = norm(dir)
+  return raw.split(platform === 'win32' ? ';' : ':').some((entry) => entry.trim() !== '' && norm(entry.trim()) === want)
 }
 
 const MIN_NODE_MAJOR = 22
@@ -52,6 +150,9 @@ export const runDoctor: CommandFn = async (ctx: CliContext, args: string[]): Pro
   const nodeV = doctorProbes.nodeVersion()
   const major = Number(nodeV.split('.')[0])
   add('node', major >= MIN_NODE_MAJOR ? 'ok' : 'fail', major >= MIN_NODE_MAJOR ? `Node ${nodeV}` : `Node ${nodeV}; OrgAI needs Node ${MIN_NODE_MAJOR} or later`)
+
+  // How this CLI runs (packaged app, dev checkout, standalone bundle)
+  checks.push(installCheck(ctx.platform, ctx.env))
 
   // Data folder
   const via = ctx.globals.dataDir ? '--data-dir' : ctx.env.ORGAI_DATA_DIR ? 'ORGAI_DATA_DIR' : 'the platform default'
@@ -121,6 +222,9 @@ export const runDoctor: CommandFn = async (ctx: CliContext, args: string[]): Pro
   // Launcher
   const app = ctx.launcher.resolve()
   add('launcher', 'error' in app ? 'fail' : 'ok', 'error' in app ? app.error : `${app.command}${app.args.length ? ` ${app.args.join(' ')}` : ''} (${app.source})`)
+
+  // The orgai command on PATH (read only)
+  checks.push(shimCheck(ctx.platform, ctx.env))
 
   // git
   try {

@@ -65,11 +65,18 @@ export const NO_CIPHER: SecretCipher = {
   }
 }
 
+/**
+ * The self-control gate's CLI folders for a chunk in `moduleDir`: it sits in out/cli (bundled) or src/cli (sources),
+ * two levels below the app root either way. In a packaged app that root is `<Resources>/app.asar.unpacked`, so
+ * orgaiCliRootsOf adds the unpacked bundle and `<Resources>/bin` (the launcher) too.
+ */
+export function inprocCliRoots(moduleDir: string, platform: NodeJS.Platform = process.platform): string[] {
+  return orgaiCliRootsOf(resolve(moduleDir, '..', '..'), platform)
+}
+
 export async function startInprocHost(opts: StartInprocHostOptions): Promise<InprocHost> {
-  // The self-control gate's CLI folders: this chunk sits in out/cli (bundled) or src/cli (sources), two levels below
-  // the app root either way.
   try {
-    setOrgaiCliRoots(orgaiCliRootsOf(resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')))
+    setOrgaiCliRoots(inprocCliRoots(dirname(fileURLToPath(import.meta.url))))
   } catch {
     // No module URL (an unusual loader): the gate still matches the orgai file names.
   }

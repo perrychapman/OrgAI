@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { SELF_CONTROL_DENIAL_MESSAGE, SELF_CONTROL_UNCHECKED_MESSAGE, checkSelfControlDenial, commandRunsOrgaiCli, controlProtectedPaths, type SelfControlContext } from './selfControlGate'
+import { SELF_CONTROL_DENIAL_MESSAGE, SELF_CONTROL_UNCHECKED_MESSAGE, checkSelfControlDenial, commandRunsOrgaiCli, controlProtectedPaths, orgaiCliRootsOf, type SelfControlContext } from './selfControlGate'
 
 const dirs: string[] = []
 afterEach(() => {
@@ -328,6 +328,60 @@ describe('checkSelfControlDenial', () => {
     expect(checkSelfControlDenial('Read', { file_path: '/x' }, null as unknown as SelfControlContext)).toBeNull()
     expect(checkSelfControlDenial('Bash', { command: 'orgai' }, { protectedPaths: null as unknown as string[] })).toBe(SELF_CONTROL_DENIAL_MESSAGE)
     expect(checkSelfControlDenial('Read', null, { protectedPaths: ['/x'] })).toBeNull()
+  })
+})
+
+describe('packaged app CLI roots (cli-spec 7, Wave 6)', () => {
+  const res = '/Applications/OrgAI.app/Contents/Resources'
+  const roots = orgaiCliRootsOf(`${res}/app.asar`, 'darwin')
+  const ctx: SelfControlContext = { protectedPaths: [], cwd: '/work/repo', platform: 'darwin', cliRoots: roots }
+  const deny = (command: string, c: SelfControlContext = ctx): string | null => checkSelfControlDenial('Bash', { command }, c)
+
+  it('orgaiCliRootsOf(<res>/app.asar) covers the unpacked bundle and the launcher folder', () => {
+    expect(roots).toContain(`${res}/app.asar.unpacked/out/cli`)
+    expect(roots).toContain(`${res}/bin`)
+    expect(orgaiCliRootsOf(`${res}/app.asar.unpacked`, 'darwin')).toContain(`${res}/bin`)
+    // A dev root gets no packaged entries.
+    expect(orgaiCliRootsOf('/repo', 'darwin')).toEqual(['/repo/out/cli', '/repo/src/cli'])
+  })
+
+  it('denies every way of running the packaged CLI', () => {
+    for (const command of [
+      `"${res}/bin/orgai" status`,
+      `node "${res}/app.asar.unpacked/out/cli/orgai.mjs" runs list`,
+      `node ${res}/app.asar.unpacked/out/cli/inprocHost.mjs`,
+      `sh "${res}/bin/orgai" status`,
+      `bash ${res}/bin/orgai`,
+      `bash -e -o pipefail ${res}/bin/orgai runs list`,
+      `zsh -- ${res}/bin/orgai`,
+      `dash ${res}/bin/launcher-copy`,
+      'sh ./orgai status',
+      `ELECTRON_RUN_AS_NODE=1 "${res}/../MacOS/OrgAI" "${res}/app.asar.unpacked/out/cli/orgai.mjs" status`
+    ]) {
+      expect(deny(command), command).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+    }
+  })
+
+  it('denies cmd /c orgai.cmd on win32', () => {
+    const wres = 'C:\\Users\\me\\AppData\\Local\\Programs\\OrgAI\\resources'
+    const wctx: SelfControlContext = { protectedPaths: [], cwd: 'C:\\work\\repo', platform: 'win32', shell: 'powershell', cliRoots: orgaiCliRootsOf(`${wres}\\app.asar`, 'win32') }
+    expect(wctx.cliRoots).toContain(`${wres}\\bin`)
+    expect(checkSelfControlDenial('PowerShell', { command: `cmd /c "${wres}\\bin\\orgai.cmd" status` }, wctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+    expect(checkSelfControlDenial('Bash', { command: `cmd /c "${wres}\\bin\\orgai.cmd" status` }, { ...wctx, shell: 'bash' })).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+    expect(checkSelfControlDenial('PowerShell', { command: `node "${wres}\\app.asar.unpacked\\out\\cli\\tui.mjs"` }, wctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+  })
+
+  it("keeps a project's own scripts and CLI folders allowed", () => {
+    for (const command of [
+      'node out/cli/server.mjs',
+      'node src/cli/index.ts',
+      'bash scripts/build.sh',
+      'sh -c "echo hi"',
+      'bash -x ./run-tests.sh --watch',
+      'sh out/cli/start'
+    ]) {
+      expect(deny(command), command).toBeNull()
+    }
   })
 })
 

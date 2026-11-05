@@ -81,6 +81,30 @@ describe('lazy TUI import graph', () => {
     expect(bad).toEqual([])
   })
 
+  // Wave 6: ink and react are bundled (src/cli/packaging.ts isCliExternal), so the built check reads the chunks
+  // orgai.mjs loads statically: none of them may carry ink / react code or a bare import of them.
+  const outCli = resolve(here, '..', '..', 'out', 'cli')
+  it.skipIf(!existsSync(resolve(outCli, 'orgai.mjs')))('the built orgai.mjs never statically loads ink or react', () => {
+    const seen = new Set<string>()
+    const stack = ['orgai.mjs']
+    const bad: string[] = []
+    while (stack.length) {
+      const file = stack.pop() as string
+      if (seen.has(file)) continue
+      seen.add(file)
+      const text = readFileSync(resolve(outCli, file), 'utf8')
+      // The bundler marks each bundled module with a `// <path>` line; bare imports would name the package.
+      if (/^\/\/ .*node_modules\/(?:ink|react|react-reconciler|yoga-layout)\//m.test(text)) bad.push(`${file} bundles ink or react`)
+      if (/^import[^;'"]*from\s*"(?:ink|react|react\/[^"]*|react-reconciler)";?$/m.test(text)) bad.push(`${file} imports ink or react`)
+      for (const m of text.matchAll(/^(?:import|export)[^;'"]*?from\s*"\.\/([^"]+)";?$/gm)) stack.push(m[1])
+      for (const m of text.matchAll(/^import\s*"\.\/([^"]+)";?$/gm)) stack.push(m[1])
+    }
+    expect(seen.has('tui.mjs')).toBe(false)
+    expect(bad).toEqual([])
+    // The TUI chunk does carry them (bundled, not external).
+    expect(readFileSync(resolve(outCli, 'tui.mjs'), 'utf8')).toMatch(/^\/\/ .*node_modules\/ink\//m)
+  })
+
   it('commands/tui.ts reaches the TUI only through a dynamic import', () => {
     const { bad } = walk(resolve(here, 'commands/tui.ts'))
     expect(bad).toEqual([])

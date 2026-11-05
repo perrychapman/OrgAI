@@ -1,32 +1,24 @@
 /**
- * The CLI bundle (cli-spec 7): src/cli/index.ts -> out/cli/orgai.mjs, an ESM file plain `node` runs. Node builtins
- * and every package.json dependency stay external; electron is never bundled (and the CLI never imports it).
+ * The CLI bundle (cli-spec 7): src/cli/index.ts -> out/cli/orgai.mjs, an ESM file plain `node` (or the packaged app's
+ * own binary with ELECTRON_RUN_AS_NODE=1, build/bin/orgai) runs. Only src/cli/packaging.ts `isCliExternal` stays a bare
+ * import: Node builtins, electron (never imported by the CLI), the Claude Agent SDK, Codex and zod (unpacked from
+ * app.asar by electron-builder.yml). Every other dependency (ink, react, react/jsx-runtime, react-reconciler, ...) is
+ * bundled, so a packaged app needs no node_modules tree for the CLI beyond those three.
  * Dynamic imports become their own chunks under out/cli/ (inprocHost.mjs); the TUI (src/cli/tui/index.ts) is a second
- * input emitted as tui.mjs. .tsx uses React's automatic runtime; react, react/jsx-runtime and
- * ink are dependencies, so they stay external and load only when tui.mjs does. Built after
- * electron-vite (`npm run build`) and never empties out/, so out/main, out/preload and out/renderer survive.
+ * input emitted as tui.mjs, and ink / react land only in chunks tui.mjs reaches (lazyTui.test.ts, packaging.test.ts).
+ * .tsx uses React's automatic runtime. Bundled CommonJS dependencies (signal-exit, stack-utils, ...) `require` Node
+ * builtins; with the node SSR target the bundler emits its own `__require = createRequire(import.meta.url)` for them,
+ * so no banner is needed. yoga-layout (ink) embeds its wasm as base64, so no file is loaded at run time.
+ * Built after electron-vite (`npm run build`); it empties out/cli only, so out/main, out/preload and out/renderer survive.
  */
-import { builtinModules } from 'node:module'
-import { chmodSync, readFileSync } from 'node:fs'
+import { chmodSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vite'
+import { isCliExternal } from './src/cli/packaging.js'
 
 const root = fileURLToPath(new URL('.', import.meta.url))
-
-const pkg = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8')) as {
-  dependencies?: Record<string, string>
-  devDependencies?: Record<string, string>
-}
-const packages = [...Object.keys(pkg.dependencies ?? {}), 'electron']
 const tuiEntry = resolve(root, 'src/cli/tui/index.ts')
-const builtins = new Set([...builtinModules, ...builtinModules.map((m) => `node:${m}`)])
-
-/** A bare import of a dependency (or a subpath of one) or a Node builtin stays an import. */
-function isExternal(id: string): boolean {
-  if (builtins.has(id) || id.startsWith('node:')) return true
-  return packages.some((p) => id === p || id.startsWith(`${p}/`))
-}
 
 export default defineConfig({
   plugins: [
@@ -46,7 +38,8 @@ export default defineConfig({
   logLevel: 'warn',
   build: {
     outDir: 'out/cli',
-    emptyOutDir: false,
+    // Empties out/cli only (the outDir), so stale hashed chunks never ship in a pack; out/main and the rest survive.
+    emptyOutDir: true,
     target: 'node22',
     // Two inputs: the CLI and the TUI entry, so out/cli/tui.mjs always exists (commands/tui.ts reaches it only through a
     // dynamic import, which then resolves to this same chunk; lazyTui.test.ts keeps ink and react out of orgai.mjs).
@@ -56,7 +49,7 @@ export default defineConfig({
     reportCompressedSize: false,
     rollupOptions: {
       input: { orgai: resolve(root, 'src/cli/index.ts'), tui: tuiEntry },
-      external: isExternal,
+      external: isCliExternal,
       output: {
         format: 'es',
         entryFileNames: (chunk) => (chunk.name === 'tui' ? 'tui.mjs' : 'orgai.mjs'),

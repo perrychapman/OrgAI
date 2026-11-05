@@ -8,15 +8,22 @@
  *   repo's package.json must be OrgAI's and `out/main/index.js` must be built. The Electron binary is read the way the
  *   electron package computes it (path.txt under node_modules/electron, ELECTRON_OVERRIDE_DIST_PATH honoured) but
  *   without requiring the package, which would download a missing binary with inherited stdio.
- * - A packaged app (Resources/bin launcher) is Wave 6: UNVERIFIED, not built.
+ * - A packaged app (cli-spec 7, Wave 6): the bundle sits in `<Resources>/app.asar.unpacked/out/cli`
+ *   (packagedLayout.ts `resourcesDirOfCliBundle`), source 'packaged'. Under the packaged launcher the CLI already runs
+ *   on the app's own binary (ELECTRON_RUN_AS_NODE=1, build/bin/orgai), so that execPath is the command; else the
+ *   layout's app binary (`<Resources>/../MacOS/OrgAI`, `OrgAI.exe`, `orgai`). No arguments: the packaged app loads its
+ *   own app.asar. Checked on a local unsigned macOS pack only; Windows and Linux packs are UNVERIFIED.
+ *
+ * Order: env > packaged > dev checkout. The spawned app never inherits ELECTRON_RUN_AS_NODE (hostSpawnEnv).
  */
 import { spawn as nodeSpawn, type SpawnOptions } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { DaemonInfo, HostKind } from '../../shared/types'
 import { readDaemonInfo } from '../../main/host/ownership'
+import { packagedLayout, resourcesDirOfCliBundle } from '../../main/host/packagedLayout'
 import { isLiveProcessCached } from '../../main/host/processInfo'
 import type { HostLauncher } from '../types'
 import { SECRET_ENV_PREFIX } from '../secretOverlay'
@@ -48,6 +55,10 @@ export interface LauncherOptions {
   isLive?: (pid: number, startTime?: string) => boolean
   now?: () => number
   sleep?: (ms: number) => Promise<void>
+  /** The runtime this CLI runs on (tests): default process.execPath and process.versions.electron. */
+  runtime?: { execPath: string; electron?: string }
+  /** Default process.platform (tests). */
+  platform?: NodeJS.Platform
 }
 
 function moduleDir(): string {
@@ -91,6 +102,39 @@ export function electronBinaryOf(appRoot: string, env: NodeJS.ProcessEnv): strin
   }
 }
 
+/** The packaged app's missing-binary error. */
+export function packagedAppMissing(path: string): string {
+  return `The OrgAI app next to this orgai command is missing (${path}); reinstall OrgAI or set ORGAI_ELECTRON_PATH`
+}
+
+function samePath(a: string, b: string): boolean {
+  const real = (p: string): string => {
+    try {
+      return realpathSync(p)
+    } catch {
+      return resolve(p)
+    }
+  }
+  return real(a) === real(b)
+}
+
+/**
+ * The packaged app for a bundle in `<Resources>/app.asar.unpacked/out/cli`, undefined for any other bundle folder.
+ * The running binary wins when this CLI runs on Electron and that binary is the layout's app binary.
+ */
+export function packagedApp(
+  bundleDir: string,
+  platform: NodeJS.Platform,
+  runtime: { execPath: string; electron?: string }
+): { command: string; args: string[]; source: 'packaged' } | { error: string } | undefined {
+  const res = resourcesDirOfCliBundle(bundleDir, platform)
+  if (res === undefined) return undefined
+  const { appBinary } = packagedLayout(platform, res)
+  if (runtime.electron && runtime.execPath && samePath(runtime.execPath, appBinary)) return { command: runtime.execPath, args: [], source: 'packaged' }
+  if (existsSync(appBinary)) return { command: appBinary, args: [], source: 'packaged' }
+  return { error: packagedAppMissing(appBinary) }
+}
+
 /** The environment a spawned host gets: no ORGAI_SECRET_*, no ELECTRON_RUN_AS_NODE, ORGAI_DATA_DIR only when chosen. */
 export function hostSpawnEnv(env: NodeJS.ProcessEnv, opts: { userDataDir: string; userChoseDataDir: boolean }): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = {}
@@ -115,7 +159,10 @@ export function createLauncher(opts: LauncherOptions): HostLauncher {
       const appRoot = env.ORGAI_APP_ROOT?.trim()
       return { command: electronPath, args: appRoot ? [resolve(appRoot)] : [], source: 'env' }
     }
-    const root = devAppRoot(opts.bundleDir ?? moduleDir())
+    const bundleDir = opts.bundleDir ?? moduleDir()
+    const packaged = packagedApp(bundleDir, opts.platform ?? process.platform, opts.runtime ?? { execPath: process.execPath, electron: process.versions.electron })
+    if (packaged) return packaged
+    const root = devAppRoot(bundleDir)
     if (root) {
       if (!existsSync(join(root, 'out', 'main', 'index.js'))) {
         return { error: `The OrgAI app in ${root} is not built (run npm run build); set ORGAI_ELECTRON_PATH or use --host inproc` }

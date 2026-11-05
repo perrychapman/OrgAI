@@ -277,3 +277,27 @@ describe('orgai routing', () => {
     }
   })
 })
+
+describe('ELECTRON_RUN_AS_NODE under the packaged launcher (cli-spec 7, Wave 6)', () => {
+  it('is scrubbed under an Electron runtime and kept under plain Node', async () => {
+    const { scrubElectronRunAsNode } = await import('./index')
+    const env: NodeJS.ProcessEnv = { ELECTRON_RUN_AS_NODE: '1', PATH: '/bin' }
+    expect(scrubElectronRunAsNode(env, { node: '24.22.1', electron: '45.1.0' })).toBe(true)
+    expect(env).toEqual({ PATH: '/bin' })
+    expect(scrubElectronRunAsNode(env, { node: '24.22.1', electron: '45.1.0' })).toBe(false)
+    const plain: NodeJS.ProcessEnv = { ELECTRON_RUN_AS_NODE: '1' }
+    expect(scrubElectronRunAsNode(plain, { node: '24.22.1' })).toBe(false)
+    expect(plain).toEqual({ ELECTRON_RUN_AS_NODE: '1' })
+  })
+
+  it('importing the module never touches process.env', async () => {
+    // index.ts scrubs only in its entry path (isEntry), never on a plain import.
+    process.env.ELECTRON_RUN_AS_NODE = '1'
+    try {
+      await import('./index')
+      expect(process.env.ELECTRON_RUN_AS_NODE).toBe('1')
+    } finally {
+      delete process.env.ELECTRON_RUN_AS_NODE
+    }
+  })
+})
