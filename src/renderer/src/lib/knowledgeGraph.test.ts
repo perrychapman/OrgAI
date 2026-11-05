@@ -223,7 +223,7 @@ describe('legend, warning and zoom', () => {
     const d = drawnGraph({ graph: g, filter: EMPTY_FILTER, depth: 1, showAll: false, selectedId: 'kn_jane' })
     const l = legendEntries(d, kindsInUse)
     expect(l.kinds.map((k) => k.label)).toEqual(['Person', 'Organisation', 'Decision'])
-    expect(l.kinds[0].color).toBe(kindColor('person', kindsInUse))
+    expect(l.kinds[0].color).toBe(kindColor('person'))
     expect(ROLE_COLORS).toContain(l.kinds[0].color)
     expect(l.relations.map((r) => r.label)).toEqual(['decided by', 'works at'])
     expect(l.retired).toBe(false)

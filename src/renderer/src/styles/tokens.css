@@ -108,6 +108,20 @@
   --elev-1: 0 1px 0 rgb(255 255 255 / 0.03) inset, 0 1px 2px rgb(0 0 0 / 0.4);
   --elev-2: 0 8px 24px rgb(0 0 0 / 0.5), 0 0 0 1px var(--border-default);
   --elev-3: 0 24px 64px rgb(0 0 0 / 0.6), 0 0 0 1px var(--border-strong);
+
+  /* Knowledge graph (docs/design/knowledge-graph-2.md): plain values the canvas reads. */
+  --neural-field: #070a12;
+  --neural-field-glow: #111830;
+  --neural-synapse: #6d7ea8;
+  --neural-synapse-opacity: 0.32;
+  --neural-synapse-active: #c7d2ee;
+  --neural-synapse-inferred: #8f9bb8;
+  --neural-pulse: #dfe7ff;
+  --neural-halo-opacity: 0.35;
+  --neural-composite: lighter;
+  --neural-node-mix: 88%;
+  --neural-node-ink: #e8ebf3;
+  --neural-dim-opacity: 0.22;
 }
 
 /* ---------- 2. Light ---------- */
@@ -198,6 +212,19 @@
   --elev-1: 0 1px 2px rgb(16 24 40 / 0.06), 0 1px 1px rgb(16 24 40 / 0.04);
   --elev-2: 0 8px 24px rgb(16 24 40 / 0.12), 0 0 0 1px var(--border-default);
   --elev-3: 0 24px 64px rgb(16 24 40 / 0.2), 0 0 0 1px var(--border-default);
+
+  --neural-field: #f3f5fb;
+  --neural-field-glow: #ffffff;
+  --neural-synapse: #66718c;
+  --neural-synapse-opacity: 0.45;
+  --neural-synapse-active: #2a3350;
+  --neural-synapse-inferred: #5d6880;
+  --neural-pulse: #4f33d6;
+  --neural-halo-opacity: 0.16;
+  --neural-composite: source-over;
+  --neural-node-mix: 50%;
+  --neural-node-ink: #12151f;
+  --neural-dim-opacity: 0.25;
 }
 
 /* ---------- 3. System: light values when the OS prefers light ---------- */
@@ -287,6 +314,19 @@
     --elev-1: 0 1px 2px rgb(16 24 40 / 0.06), 0 1px 1px rgb(16 24 40 / 0.04);
     --elev-2: 0 8px 24px rgb(16 24 40 / 0.12), 0 0 0 1px var(--border-default);
     --elev-3: 0 24px 64px rgb(16 24 40 / 0.2), 0 0 0 1px var(--border-default);
+
+    --neural-field: #f3f5fb;
+    --neural-field-glow: #ffffff;
+    --neural-synapse: #66718c;
+    --neural-synapse-opacity: 0.45;
+    --neural-synapse-active: #2a3350;
+    --neural-synapse-inferred: #5d6880;
+    --neural-pulse: #4f33d6;
+    --neural-halo-opacity: 0.16;
+    --neural-composite: source-over;
+    --neural-node-mix: 50%;
+    --neural-node-ink: #12151f;
+    --neural-dim-opacity: 0.25;
   }
 }
 

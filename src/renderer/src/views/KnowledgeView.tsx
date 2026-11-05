@@ -1,7 +1,7 @@
 import type { ReactElement } from 'react'
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { Plus } from 'lucide-react'
-import type { EngagementNote, EngagementNoteContent, KnowledgeGraph as KnowledgeGraphData, KnowledgeNode, Project } from '@shared/types'
+import type { EngagementNote, EngagementNoteContent, KnowledgeGraph as KnowledgeGraphData, KnowledgeInferredResult, KnowledgeNode, Project } from '@shared/types'
 import { ENGAGEMENT_NOTES_MAX, KNOWLEDGE_NODES_MAX } from '@shared/types'
 import { emptyKnowledgeGraph } from '@shared/knowledge'
 import type { KnowledgeFilter, KnowledgeItem, RunFacts } from '../lib/knowledge'
@@ -19,7 +19,7 @@ import { SegmentedControl } from '../components/ui/SegmentedControl'
 import { KnowledgeFilters } from '../components/knowledge/KnowledgeFilters'
 import { KnowledgeList, type KnowledgeListHandle } from '../components/knowledge/KnowledgeList'
 import { DETAIL_HEADING_ID, KnowledgeDetail, type DetailMode } from '../components/knowledge/KnowledgeDetail'
-import KnowledgeGraph from '../components/knowledge/KnowledgeGraph'
+import KnowledgeNeural, { type KnowledgeNeuralHandle } from '../components/knowledge/KnowledgeNeural'
 import NoteDialog from '../components/knowledge/NoteDialog'
 import type { KnowledgeWrites } from '../components/knowledge/knowledgeWrites'
 import { focusLater } from '../components/knowledge/knowledgeWrites'
@@ -29,6 +29,7 @@ type ViewMode = 'list' | 'graph'
 
 const VIEW_KEY = 'orgai.knowledgeView.'
 const RETIRED_KEY = 'orgai.knowledgeRetired.'
+const INFERRED_KEY = 'orgai.knowledgeInferred.'
 
 function readPref(key: string): string | null {
   try {
@@ -171,6 +172,43 @@ export default function KnowledgeView({ project }: { project: Project }): ReactE
     void reload('notes')
   }, [projectId, reload])
   const loaded = graph !== null && notes !== null
+  // Inferred links and appearance counts follow each graph revision (main computes them once per revision).
+  const [inferred, setInferred] = useState<KnowledgeInferredResult | null>(null)
+  const [inferredFailed, setInferredFailed] = useState(false)
+  const inferredSeq = useRef(0)
+  const reloadInferred = useCallback((): void => {
+    const seq = ++inferredSeq.current
+    window.orgai.knowledge.inferredLinks(projectId).then(
+      (r) => {
+        if (seq !== inferredSeq.current) return
+        setInferred(r)
+        setInferredFailed(false)
+      },
+      () => {
+        if (seq === inferredSeq.current) setInferredFailed(true)
+      }
+    )
+  }, [projectId])
+  useEffect(() => {
+    if (graph) reloadInferred()
+    else setInferred(null)
+  }, [graph, reloadInferred])
+  const dismissLink = useCallback(
+    async (linkId: string): Promise<void> => {
+      const seq = ++inferredSeq.current
+      const r = await window.orgai.knowledge.dismissLink({ projectId, linkId })
+      if (seq === inferredSeq.current) setInferred(r)
+    },
+    [projectId]
+  )
+  const [showInferred, setShowInferredState] = useState(() => readPref(INFERRED_KEY + projectId) === 'on')
+  const setShowInferred = useCallback(
+    (on: boolean): void => {
+      setShowInferredState(on)
+      writePref(INFERRED_KEY + projectId, on ? 'on' : 'off')
+    },
+    [projectId]
+  )
   const items = useMemo(() => itemsOf(graph ?? emptyKnowledgeGraph(), notes ?? []), [graph, notes])
 
   // ---- filter ----
@@ -244,6 +282,14 @@ export default function KnowledgeView({ project }: { project: Project }): ReactE
     },
     [focusHeading]
   )
+  /** A click on a graph node: the panel opens on the item and focus stays where it is. */
+  const openPanel = useCallback((id: string): void => {
+    setCreating(false)
+    setSelectedId(id)
+    setPaneOpen(true)
+    setReveal(`${id}:${Date.now()}`)
+  }, [])
+  const neuralRef = useRef<KnowledgeNeuralHandle>(null)
   const selectItem = useCallback((id: string | null): void => {
     setCreating(false)
     setSelectedId(id)
@@ -271,13 +317,11 @@ export default function KnowledgeView({ project }: { project: Project }): ReactE
     setNotice(null)
     setPendingRestore(null)
   }, [projectId])
-  /** Focus a node of the graph once React Flow has mounted it (bounded wait on the element, no fixed delay). */
-  const focusGraphNode = (tries = 40): void => {
+  /** Focus a node of the graph once it has mounted (bounded wait, no fixed delay). */
+  const focusGraphNode = (id: string | null = null, tries = 40): void => {
     requestAnimationFrame(() => {
-      const root = document.querySelector('[data-testid=knowledge-graph]')
-      const node = root?.querySelector<HTMLElement>('.react-flow__node.selected') ?? root?.querySelector<HTMLElement>('.react-flow__node')
-      if (node) node.focus({ preventScroll: true })
-      else if (tries > 0) focusGraphNode(tries - 1)
+      if (neuralRef.current?.focusNode(id)) return
+      if (tries > 0) focusGraphNode(id, tries - 1)
       else focusAddNote()
     })
   }
@@ -568,7 +612,25 @@ export default function KnowledgeView({ project }: { project: Project }): ReactE
         {!loaded ? (
           !loadError && <p className="panel-note knowledge-loading">Looking…</p>
         ) : view === 'graph' ? (
-          <KnowledgeGraph projectId={projectId} graph={graph ?? emptyKnowledgeGraph()} filter={filter} selectedId={selectedId} onSelect={selectItem} onOpen={openItem} listDomId={filtersDomId} detailDomId="knowledge-detail-body" announce={announce} />
+          <KnowledgeNeural
+            ref={neuralRef}
+            projectId={projectId}
+            graph={graph ?? emptyKnowledgeGraph()}
+            inferred={inferred}
+            filter={filter}
+            showInferred={showInferred}
+            selectedId={selectedId}
+            onSelect={selectItem}
+            onOpenPanel={openPanel}
+            onOpen={openItem}
+            onShowList={() => {
+              changeView('list')
+              focusRow(selectedId)
+            }}
+            onSkipToDetail={focusHeading}
+            onClearFilters={() => changeFilter({ query: '', kinds: [], origins: [] })}
+            announce={announce}
+          />
         ) : empty === 'none' || empty === 'none-runs' ? (
           <EmptyState
             compact
@@ -627,7 +689,10 @@ export default function KnowledgeView({ project }: { project: Project }): ReactE
             setCreating(false)
             focusLater(() => document.querySelector<HTMLElement>('[data-testid=knowledge-add-item]'))
           }}
-          onEscape={() => focusRow(selectedId)}
+          onEscape={() => {
+            if (view === 'graph') focusGraphNode(selectedId)
+            else focusRow(selectedId)
+          }}
           onError={(m) => setError(cleanIpcError(m))}
           announce={announce}
         />

@@ -314,8 +314,8 @@ export interface LegendEntries {
 
 /** What the legend lists for the drawing: kinds on the canvas with their colour, relation types on it, then the retired cues that apply. */
 export function legendEntries(d: Pick<DrawnGraph, 'nodes' | 'edges' | 'groups'>, kindsInUse: Iterable<string>): LegendEntries {
-  const inUse = [...kindsInUse]
-  const kinds = kindOrder(new Set(d.nodes.map((n) => n.kind))).map((kind) => ({ kind, label: kindLabel(kind), color: kindColor(kind, inUse) }))
+  void kindsInUse
+  const kinds = kindOrder(new Set(d.nodes.map((n) => n.kind))).map((kind) => ({ kind, label: kindLabel(kind), color: kindColor(kind) }))
   const relations = [...new Set(d.edges.map((e) => e.relation))].map((relation) => ({ relation, label: keyWords(relation) })).sort((a, b) => a.label.localeCompare(b.label))
   return { kinds, relations, retired: d.nodes.some((n) => n.retired) || d.edges.some((e) => e.retired), groups: d.groups.length > 0 }
 }
