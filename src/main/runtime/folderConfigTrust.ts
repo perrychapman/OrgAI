@@ -447,13 +447,20 @@ function secretLooking(name: string, value: string): boolean {
 
 const VALUE_PARENTS = new Set(['env', 'headers', 'http_headers', 'environment', 'env_http_headers'])
 
+/** A display string: URL userinfo and key-like fragments masked. */
+function maskString(v: string): string {
+  return maskKeyLike(v.replace(/([a-z][a-z0-9+.-]*:\/\/)[^/@\s?#]*@/gi, `$1${MASK}@`))
+}
+
 function maskJson(v: unknown, key: string | undefined, parent: string | undefined, depth: number): unknown {
   if (typeof v === 'string') {
     if (parent && VALUE_PARENTS.has(parent.toLowerCase()) && key !== undefined && credentialLikeName(key, true)) return MASK
     if (isKeyLikeValue(v)) return MASK
-    return maskKeyLike(v)
+    return maskString(v)
   }
   if (depth > 50) return '[too deep]'
+  // An args list: a value after a secret flag, or a credential-looking argument, is masked like an MCP target's.
+  if (Array.isArray(v) && key === 'args' && v.every((x) => typeof x === 'string')) return maskedArgs(v as string[])
   if (Array.isArray(v)) return v.map((x) => maskJson(x, undefined, key, depth + 1))
   if (isObj(v)) {
     const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>
@@ -470,8 +477,23 @@ function maskLines(text: string): string {
       let out = line
       const m = /^(\s*[\w."'-]{1,80}\s*[=:]\s*)(.+)$/.exec(line)
       if (m && credentialLikeName(m[1].replace(/[\s=:"']/g, ''), true) && /\S/.test(m[2])) return m[1] + MASK
+      if (/^\s*args\s*=\s*\[/.test(out)) {
+        // A TOML args array: mask the way an MCP target does (the value after a secret flag, credential-looking items).
+        let maskNext = false
+        out = out.replace(/"((?:[^"\\\n]|\\.)*)"/g, (all, inner: string) => {
+          if (maskNext) {
+            maskNext = false
+            return `"${MASK}"`
+          }
+          if (isSecretFlag(inner)) {
+            maskNext = true
+            return all
+          }
+          return isKeyLikeArg(inner) || isCredentialArg(inner) ? `"${MASK}"` : all
+        })
+      }
       out = out.replace(/"([^"\n]{8,})"|'([^'\n]{8,})'/g, (all, a?: string, b?: string) => (isKeyLikeValue(a ?? b ?? '') ? `"${MASK}"` : all))
-      return maskKeyLike(out)
+      return maskString(out)
     })
     .join('\n')
 }
@@ -511,7 +533,7 @@ function handlerText(h: unknown): string {
 
 function pushCommand(out: Collected, source: string, kind: 'hook' | 'helper', label: string, command: string): void {
   const hidden = hiddenCharIn(`${label}\n${command}`, { multiline: true })
-  out.commands.push({ source, kind, label: clip(label), command: clip(maskKeyLike(command)), ...(hidden ? { hiddenChar: hidden } : {}) })
+  out.commands.push({ source, kind, label: clip(label), command: clip(maskString(command)), ...(hidden ? { hiddenChar: hidden } : {}) })
 }
 
 function collectHooks(out: Collected, source: string, hooks: unknown): void {
@@ -583,7 +605,7 @@ function maskedArgs(args: string[]): string[] {
       out.push(eq ? `${eq[1]}=${MASK}` : MASK)
       continue
     }
-    out.push(maskKeyLike(a))
+    out.push(maskString(a))
   }
   return out
 }
