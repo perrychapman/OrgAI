@@ -121,6 +121,8 @@ export class ConnectionService {
   /** The started lease; cleared synchronously when the server is released or exits. */
   private codexLease: CodexLease | null = null
   private pendingLogins = new Map<string, PendingLogin>()
+  /** Activity (activeOAuthFlows): provider logins (ChatGPT browser / device code) still waiting for the user. */
+  pendingLoginCount(): number { return this.pendingLogins.size }
   private disposed = false
   /**
    * Connections whose current 'disconnected' status is tentative (a LiteLLM base URL change or a saved key waiting

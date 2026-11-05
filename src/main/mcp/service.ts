@@ -235,6 +235,8 @@ export class McpService {
    * with SUPERSEDED and waits for `done` (the port released) before listening.
    */
   private fixedPortFlow?: { ac: AbortController; done: Promise<void> }
+  /** Activity (activeOAuthFlows): interactive authorizations in flight, plus a fixed-port flow not (or no longer) in flows. */
+  activeAuthorizationCount(): number { return this.flows.size + (this.fixedPortFlow && ![...this.flows.values()].includes(this.fixedPortFlow.ac) ? 1 : 0) }
   /** In-flight refreshes per owner: refresh tokens rotate, so a second concurrent refresh would be fatal. */
   private refreshing = new Map<string, Promise<void>>()
   /** The last failed authorization per owner, shown as state 'error' until it succeeds or is revoked. */

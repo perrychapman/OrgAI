@@ -102,7 +102,7 @@ import { isConnectionId, isSafeId } from '@shared/defaults'
 import { sanitizeImages } from './runtime/attachments'
 import { skillAssistPrompt, skillsProject } from './skills/assist'
 import { harnessProject as buildHarnessProject } from './mcp/assist'
-import { createScratchDir, isInsideEither, samePath, scratchDirFor, validateQuickFolder } from './quick/scratch'
+import { createScratchDir, isInsideEither, samePath, validateQuickFolder } from './quick/scratch'
 import { existsSync, lstatSync } from 'node:fs'
 import { isAbsolute } from 'node:path'
 import { hiddenCharIn, hiddenCharProblem } from './capabilities/sanitize'
@@ -169,61 +169,29 @@ import { isValidRule } from './runtime/ruleMatch'
 import { buildAppInfo, buildSettingsInfo, stripSettingsInfo } from './appInfo'
 import { checkProjectPath } from './store/projects'
 import { checkRunTarget, isValidId } from './windowScope'
+import { harnessProjectFor, withEffectiveDefault } from './host/args'
+import type { HostServices } from './host/types'
+import type { HostDispatcher } from './host/dispatcher'
 
-export interface IpcServices {
-  projects: ProjectStore
-  runs: RunManager
-  setup: SetupService
-  maintenance: MaintenanceService
-  settings: SettingsStore
-  connections: ConnectionService
-  mcp: McpService
-  /** Ids of the adapters handed to RunManager; `app:info` reports `mockAdapter` from it. */
-  adapterIds: readonly string[]
-  /** The virtual harness project (HARNESS_PROJECT_ID), built fresh from the current settings (mcp/assist.ts harnessProject). */
-  harnessProject(): Project
+/**
+ * What registerIpc serves: the host services (host/types.ts HostServices; the shared field docs live there) plus the
+ * Electron-only window opener. The optional Wave 1 fields: `usage` registers usage:refresh; events, activity, env,
+ * host and dispatcher are not read yet.
+ */
+export interface IpcServices extends Omit<HostServices, 'desktop'> {
   /**
    * window:openRun after validation: focus the window already scoped to this run, or open a new one at
    * `#/run/<projectId>/<runId>` (index.ts window factory).
    */
   openRunWindow(target: FocusRunTarget): void
-  /** Agent import and org export (src/main/setup/import/importer.ts). */
-  importer: AgentImportService
-  /** Project skills, the skill library and the repo skill import (src/main/skills/service.ts). */
-  skills: SkillServiceApi
-  /** Skill evaluation (src/main/skills/evaluation.ts). */
-  skillEvaluation: SkillEvaluationApi
-  /** The Team assistant: discovery, recommendations, apply and grants (src/main/capabilities/service.ts). */
-  capabilities: CapabilityServiceApi
-  /** Chat (quick runs): start, promote, the project of a continued run and the display project (src/main/quick/quickRuns.ts). */
-  quick: QuickRunService
-  /** Saved team templates (src/main/setup/templates.ts). */
-  templates: TemplateService
-  /** The practice kit (src/main/kit/service.ts). Absent = the kit channels are not registered (older tests). */
-  kit?: KitService
+  /** The host dispatcher, once ipc.ts is a thin adapter over it (Wave 1 dispatcher task). Not read yet. */
+  dispatcher?: HostDispatcher
 }
+
+export { harnessProjectFor, withEffectiveDefault } from './host/args'
 
 /** Longest instruction accepted for the MCP and Skill assistants; longer is cut. */
 export const ASSIST_INSTRUCTION_MAX_CHARS = 8000
-/**
- * The project a harness-level run continues or auto-resumes in. A build session (summary.buildWorkspace) gets its
- * workspace back (harnessProject allowBuild) only when the recorded path is exactly a <data>/quick/quick_<id> scratch
- * dir that still exists; a forged or vanished path throws instead of running without the workspace. Exported for tests.
- */
-export function harnessProjectFor(
-  summary: Pick<RunSummary, 'buildWorkspace'>,
-  settings: AppSettings,
-  dataDir: string,
-  mock: boolean,
-  exists: (p: string) => boolean = existsSync
-): Project {
-  const ws = summary.buildWorkspace
-  if (ws === undefined) return buildHarnessProject(settings, dataDir, { mock })
-  const dir = scratchDirFor(dataDir, ws)
-  if (!dir || !exists(dir)) throw new Error("This build session's workspace is gone; start a new one.")
-  return buildHarnessProject(settings, dataDir, { mock, allowBuild: true, workspace: dir })
-}
-
 /**
  * Checks a continued or messaged quick run: prompt at most QUICK_RUN_MAX_PROMPT_CHARS (refused, never cut) and, for a
  * non-scratch folder, validateQuickFolder again (it may have become a link into the data dir). Exported for tests.
@@ -302,8 +270,9 @@ export function mcpAssistArgs(input: unknown): { library: boolean; projectId: st
   return { library, projectId: library ? HARNESS_PROJECT_ID : typeof i.projectId === 'string' ? i.projectId : '', allowBuild, ...(instruction ? { instruction } : {}) }
 }
 
-export function registerIpc({ projects, runs, setup, maintenance, settings, connections, mcp, adapterIds, harnessProject, openRunWindow, importer, skills, skillEvaluation, capabilities, quick, templates, kit }: IpcServices): void {
+export function registerIpc({ projects, runs, setup, maintenance, settings, connections, mcp, adapterIds, harnessProject, openRunWindow, importer, skills, skillEvaluation, capabilities, quick, templates, kit, usage }: IpcServices): void {
   const mock = adapterIds.includes('mock')
+  if (usage) ipcMain.handle(IPC.usageRefresh, () => usage.refresh())
   /**
    * A stored project, or the display project of a virtual id (harness, quick = "Chat", skills). Never listed by
    * projects:list. The Chat's display project has no roles and creates no directory.
@@ -1322,15 +1291,6 @@ function registerMcpIpc(
   // The service validates the whole definition (validateUserPreset); the handler passes the raw structured-clone input.
   ipcMain.handle(MCP_SCOPE_IPC.connectorPresetsUpsert, (_e, input: unknown) => mcp.connectorPresetsUpsert(input))
   ipcMain.handle(MCP_SCOPE_IPC.connectorPresetsRemove, (_e, input: unknown) => mcp.connectorPresetsRemove(presetRemoveArgs(input)))
-}
-
-/**
- * The settings the renderer sees (settings:get / settings:set results, the settings:changed push): defaultConnection
- * is the effective default, never the stored value (defaultConnectionChosen still says whether the user picked it;
- * settings:set keeps the stored value whatever is echoed back). Pure; exported for tests and index.ts.
- */
-export function withEffectiveDefault(s: AppSettings, effective: ConnectionId): AppSettings {
-  return { ...s, defaultConnection: effective }
 }
 
 /**

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, nativeImage, nativeTheme, safeStorage, shell } from 'electron'
+import { app, BrowserWindow, dialog, nativeImage, nativeTheme, safeStorage, shell } from 'electron'
 import { mkdirSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -575,7 +575,9 @@ app.whenReady().then(async () => {
     capabilities: caps,
     quick,
     templates,
-    kit: new KitService({ appVersion: app.getVersion(), platform: process.platform, skills, mcp, templates })
+    kit: new KitService({ appVersion: app.getVersion(), platform: process.platform, skills, mcp, templates }),
+    // Lazy: the monitor is created after registerIpc.
+    usage: { refresh: () => usageMonitor?.refresh() ?? Promise.resolve(null) }
   })
   connections.init()
   connections.startDiscovery()
@@ -609,7 +611,6 @@ app.whenReady().then(async () => {
   usageMonitor = monitor
   refreshLiteLLMSpend = () => void monitor.refreshProbe('litellm')
   app.on('before-quit', () => clearTimeout(spendTimer))
-  ipcMain.handle(IPC.usageRefresh, () => monitor.refresh())
   monitor.start()
   app.on('before-quit', () => monitor.stop())
 

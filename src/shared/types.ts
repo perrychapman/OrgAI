@@ -5799,3 +5799,90 @@ export interface KitBundleApplyInput {
   targetDigest: string
   choices: KitImportChoice[]
 }
+
+// ---------- CLI and host (cli-spec Wave 1) ----------
+//
+// Host protocol methods, activity leases and host.status / host.stop shapes (cli-spec 3.2(4), 3.3(3)). Outside IPC:
+// the preload API is unchanged, and none of these is an ipcMain channel.
+//
+// RPC params convention: a channel method's JSON-RPC `params` is the positional argument array, exactly what
+// ipcRenderer.invoke passes after the channel (`runs:get` with `["run_1"]`, `settings:set` with `[settings]`, a
+// zero-argument channel with `[]`). A host.* method also accepts a single object as `params`; the host normalizes it
+// to `[object]` before validation.
+
+/** JSON-RPC methods of the host protocol itself (not channels; never in IPC). */
+export const HOST_METHODS = {
+  hostChallenge: 'host.challenge',
+  hostHello: 'host.hello',
+  hostStatus: 'host.status',
+  hostSubscribe: 'host.subscribe',
+  hostStop: 'host.stop'
+} as const
+
+export type HostMethod = (typeof HOST_METHODS)[keyof typeof HOST_METHODS]
+
+/** What keeps a host from going idle (cli-spec 3.2(4) "Tracked Leases"). */
+export type ActivityLeaseKind =
+  | 'liveRuns'
+  | 'pausedAutoResumes'
+  | 'inFlightRpcMutations'
+  | 'activeWorktreeOps'
+  | 'backgroundTasks'
+  | 'activeOAuthFlows'
+  | 'interactiveClients'
+
+export const ACTIVITY_LEASE_KINDS: readonly ActivityLeaseKind[] = [
+  'liveRuns',
+  'pausedAutoResumes',
+  'inFlightRpcMutations',
+  'activeWorktreeOps',
+  'backgroundTasks',
+  'activeOAuthFlows',
+  'interactiveClients'
+]
+
+/** HostActivityTracker's view at one moment: held leases plus polled sources, per kind. */
+export interface HostActivitySnapshot {
+  counts: Record<ActivityLeaseKind, number>
+  /** Sum of counts. */
+  total: number
+  /** total === 0. */
+  idle: boolean
+  /** Epoch ms since which the host has been idle (absent while busy). */
+  idleSince?: number
+  state: HostState
+}
+
+/** host.status result (scope 'read'). */
+export interface HostStatusResult {
+  protocolVersion: 1
+  hostInstanceId: string
+  hostKind: HostKind
+  state: HostState
+  appVersion: string
+  dataDir: string
+  mock: boolean
+  pid: number
+  /** Epoch ms. */
+  startedAt: number
+  activity: HostActivitySnapshot
+}
+
+/** host.stop input (scope 'configure'). Without force the host refuses while any lease is held. */
+export interface HostStopInput {
+  force?: boolean
+}
+
+export interface HostStopResult {
+  stopping: boolean
+  /** Set when the stop was refused: the non-zero lease counts that blocked it. */
+  refusedBecause?: Partial<Record<ActivityLeaseKind, number>>
+}
+
+/** host.subscribe input (scope 'read'). */
+export interface HostSubscribeInput {
+  topics: HostSubscribeTopic[]
+}
+
+/** ORGAI_DAEMON_IDLE_MINUTES default: an idle background host exits after this long. */
+export const DEFAULT_DAEMON_IDLE_MINUTES = 30

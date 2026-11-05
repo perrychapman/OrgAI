@@ -682,6 +682,8 @@ export class RunManager {
   private quitting = false
   /** adapter.start() calls not yet settled; stopAll waits for them so a session that opens during a quit is stopped. */
   private startsInFlight = new Set<Promise<unknown>>()
+  /** Auto-resumes between their timer firing and the successor run being registered (activity lease; the activity task increments it). */
+  private resumesInFlight = 0
 
   constructor(
     private adapters: Partial<Record<ProviderId, RuntimeAdapter>>,
@@ -2557,6 +2559,15 @@ export class RunManager {
     if (t) clearTimeout(t)
     this.resumeTimers.delete(runId)
   }
+
+  /** Activity (pausedAutoResumes): auto-resume timers still armed. */
+  activeResumeTimerCount(): number { return this.resumeTimers.size }
+
+  /** Activity (pausedAutoResumes): auto-resumes whose timer fired and whose successor run is not registered yet. */
+  inFlightResumeCount(): number { return this.resumesInFlight }
+
+  /** Activity (backgroundTasks): pending run-title queries, live run or not. */
+  titleTaskCount(): number { return this.titleAborts.size }
 
   /** Is an auto-resume timer pending for this run? */
   hasAutoResume(runId: string): boolean {
