@@ -519,7 +519,24 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   `KitPreviewItem.roles` shows prompts and elevated tools, skill paths use `safeKitRelPath`, skill export drops private-looking
   files, and an export target whose suffix was added here is refused when it exists (`kitExportTarget`).
 
-- CLI & host (docs/design/cli-spec.md; Wave 0 landed: groundwork only, no CLI, no host server, no new IPC handlers yet):
+- CLI & host (docs/design/cli-spec.md; Waves 0-1 landed: no CLI and no socket server yet, so nothing outside the process reaches the host):
+  - Wave 1 (`src/main/host/`, Electron-free): `bootstrap.ts` `bootOrgAIHost` builds every store and service and runs
+    housekeeping; `index.ts` is the Electron shell over it (windows, menu, notifications, quit gate). `dispatcher.ts`
+    `HostDispatcher` owns every request handler (`invoke` desktop path; `invokeRpc` wire path: `registry.ts`
+    `gateRequest` -> `unknown_channel` / `scope_denied` / `bad_request`, mutations refused `host_draining` while
+    draining, an `inFlightRpcMutations` lease each, `host.status` / `host.stop` served here, `host.stop` holds no lease
+    and a second stop joins the drain); `ipc.ts` is a thin adapter (one handle per dispatcher channel plus the 11
+    `DESKTOP_ONLY_CHANNELS`; arg builders moved to `host/args.ts`, re-exported, deep validators added for the decision
+    and run-message channels). `HOST_CHANNEL_REGISTRY` maps every channel (registry.test.ts: dispatcher channels equal
+    the socket-invokable set); `params.ts` is shallow. `events.ts` `HostEventBus` carries the 8 socket-subscribable
+    pushes (the shell forwards them to windows; `app:focusRun` / `menu:action` stay window-only). `activity.ts`
+    `HostActivityTracker`: `ACTIVITY_LEASE_KINDS` leases and polled sources (RunManager `activeResumeTimerCount` /
+    `inFlightResumeCount`, MCP / connection OAuth flows, Team assistant and skill evaluation in-flight counts, repo
+    locks), idle exit (`ORGAI_DAEMON_IDLE_MINUTES`, default 30, 0 = never) never armed on the desktop host; one shared
+    drain: 'draining' at once, quiesce (CapabilityService.dispose), forced: RunManager.stopAll quit within 3 s else
+    `markQuit`, then up to 10 s for writers, then `ownership.release()`. Unit-tested only (registry, params, args,
+    dispatcher, activity, events, bootstrap, ipcAdapter, runManagerActivity, a booted mock host over `invokeRpc`).
+    Open: desktop `invoke` ignores draining; a forced drain past 10 s releases with writers in flight (logged).
   - Repository lock: `worktrees.ts` `withRepoLock` (delegating to `runtime/repoLock.ts`) serializes ALL git operations
     per repository, keyed by the common git dir, across processes through `<commonDir>/orgai-repo.lock` (owner.json with
     pid, start time and host instance id, 2 s heartbeat, 60 s `RepoLockTimeoutError`, dead or leftover owners reclaimed

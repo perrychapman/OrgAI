@@ -668,7 +668,7 @@ Resolved `R1`–`R10` (single-host daemon vs Desktop ownership, socket authentic
   packaged builds, the startup dialogs by eye. No producer exists yet for `HOST_IPC`, `run.finalized` or
   `endedBy` 'policy' / 'budget'; the renderer Knowledge tab does not send `expectedUpdatedAt` / `appendFacts` yet.
 
-### Wave 1 (landed on dev, 2026-11-04; commits 75b3e25..a88d438 plus the review fix-up)
+### Wave 1 (landed on dev, 2026-11-04/05; commits 75b3e25..5e5d726, two review fix-ups included)
 
 - **Landed.** `src/main/host/registry.ts` (the exhaustive channel registry with scope, bulk flag, transport and
   `gateRequest`), `params.ts` (shallow positional param specs; the handlers' arg builders still validate deeply),
