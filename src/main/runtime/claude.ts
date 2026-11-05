@@ -27,7 +27,7 @@ import {
 } from '@anthropic-ai/claude-agent-sdk'
 import type { AgentInstance, ImageAttachment, McpServerSpec, PluginSpec, Project, RunSummary, Role, RunEvent, TranscriptBlock, UsageStatus, WorktreeInfo } from '@shared/types'
 import type { PermissionDecision, PermissionSuggestion, ProviderAuth } from '@shared/types'
-import { SPAWN_TOOL } from '@shared/types'
+import { KNOWLEDGE_RECALL_TOOL, SPAWN_TOOL } from '@shared/types'
 import { ANTHROPIC_BUILTIN_MODELS, effectiveSubagentLimits, isolateWritersOn, mcpServersForRole, newId, planGuardEngaged, planGuardOf, projectKindOf, settingTier, tierForModel } from '@shared/defaults'
 import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo, type RunSkill, type CompletionInput, type RunConnection, type ResolvedMcpServer, type RuntimeAdapter, type PeerMessage, type RuntimeContext, type RuntimeSession } from './types'
 import { isTrustRestrictedRun, isWorkspaceConfigPath } from '../quick/scratch'
@@ -54,6 +54,7 @@ import {
 import { SHELL_TOOLS, isUnsafeSegment, matchOptionsFor, matchingRule, programRunsProgram, ruleCoversButRefused, splitCommand, unwrapShellCommand, type MatchOptions } from './ruleMatch'
 import { ContinuationDriver, stepActivity } from './continuation'
 import { LIST_AGENTS_TOOL, MESSAGE_TOOL, buildRolePrompt, peerMessageText, canWrite, composeFirstMessage, isArchitectureFile } from './prompts'
+import { firstMessageHiddenContext, spawnKnowledge, userMessageKnowledge, withSpawnKnowledge, withUserMessageKnowledge } from './knowledgeDelivery'
 import { HandleNamer, mapSendMessage, messageTranscriptText, spawnHandle } from './network'
 import { authFailureMessage, describeTool, isAuthFailure, scrubAuthDetail } from './activity'
 import { isolateClaudeEnv } from './childEnv'
@@ -557,6 +558,8 @@ export function buildAgents(
 ): Record<string, AgentDefinition> {
   const isSetup = isSetupLikeRun(ctx.run.kind)
   const engagementDocument = ctx.engagementDocument?.()
+  // Constant for the run (RunManager computes it once), so a restarted query's prompts stay cacheable.
+  const knowledgeBrief = ctx.knowledgeBrief?.()
   const agents: Record<string, AgentDefinition> = {}
   for (const role of ctx.roles) {
     const tools: string[] = [...role.tools]
@@ -585,6 +588,7 @@ export function buildAgents(
         ...(ctx.referenceDirectories?.().length ? { referenceDirectories: ctx.referenceDirectories() } : {}),
         // Engagements: the approved engagement document, read now (a restart rebuilds agents and re-reads it).
         ...(engagementDocument ? { engagementDocument } : {}),
+        ...(knowledgeBrief ? { knowledgeBrief } : {}),
         ...(granted.length ? { skills: granted.map(([q, s]) => ({ name: q, description: s.description })), skillTool: 'Skill' as const } : {})
       }),
       tools,
@@ -884,6 +888,21 @@ export class HarnessCallerTracker {
 
   /** Resolve and consume the caller; undefined means the root (or unknown). Never throws. */
   resolve(toolName: string, meta?: unknown): string | undefined {
+    return this.take(toolName, meta).agentId
+  }
+
+  /**
+   * Like resolve, for a tool that must tell a real root call from an unknown caller: ROOT_AGENT_ID for a known root,
+   * the agent id for a known report, undefined for unknown. A tool_use id match is known. A first-in-first-out match is
+   * a guess: it counts only as the root, and only while no report is live (nothing else could have made the call).
+   */
+  resolveKnown(toolName: string, meta: unknown, reportsLive: boolean): string | undefined {
+    const { agentId, how } = this.take(toolName, meta)
+    if (how === 'id') return agentId ?? ROOT_ID
+    return how === 'queue' && agentId === undefined && !reportsLive ? ROOT_ID : undefined
+  }
+
+  private take(toolName: string, meta: unknown): { agentId?: string; how: 'id' | 'queue' | 'none' } {
     try {
       const id = toolUseIdFromMeta(meta)
       const queue = this.queues.get(toolName) ?? []
@@ -892,18 +911,22 @@ export class HarnessCallerTracker {
         this.byToolUse.delete(id)
         const i = queue.findIndex((e) => e.toolUseId === id)
         if (i >= 0) queue.splice(i, 1)
-        return agentId
+        return { agentId, how: 'id' }
       }
       const next = queue.shift()
-      if (next?.toolUseId) this.byToolUse.delete(next.toolUseId)
-      return next?.agentId
+      if (!next) return { how: 'none' }
+      if (next.toolUseId) this.byToolUse.delete(next.toolUseId)
+      return { agentId: next.agentId, how: 'queue' }
     } catch {
-      return undefined
+      return { how: 'none' }
     }
   }
 }
 
-/** Pull a tool_use id out of MCP request _meta (key name unverified at runtime). */
+/**
+ * Pull a tool_use id out of MCP request _meta. The bundled CLI 2.1.312 sets "claudecode/toolUseId" on tools/call (read
+ * from the binary's text); that it reaches an in-process SDK server is unverified at runtime.
+ */
 export function toolUseIdFromMeta(meta: unknown): string | undefined {
   if (!meta || typeof meta !== 'object') return undefined
   const m = meta as Record<string, unknown>
@@ -921,14 +944,16 @@ function harnessServerOf(options: Options): McpSdkServerConfigWithInstance | und
 }
 
 /** The harness's tools as an in-process MCP server; the model sees them as mcp__orgai__<name>. */
-function buildHarnessServer(tools: HarnessTool[], callers: HarnessCallerTracker, instructions?: string): McpSdkServerConfigWithInstance {
+function buildHarnessServer(tools: HarnessTool[], callers: HarnessCallerTracker, reportsLive: () => boolean, instructions?: string): McpSdkServerConfigWithInstance {
   return createSdkMcpServer({
     name: ORGAI_MCP,
     version: '1.0.0',
     ...(instructions ? { instructions } : {}),
     tools: tools.map((t) =>
       tool(t.name, t.description, t.inputSchema.shape, async (args, extra) => {
-        const agentId = callers.resolve(ORGAI_TOOL_PREFIX + t.name, (extra as { _meta?: unknown } | undefined)?._meta)
+        const meta = (extra as { _meta?: unknown } | undefined)?._meta
+        // knowledge_recall dedupes per agent, so a guessed caller must read as unknown (no agentId), never as the root.
+        const agentId = t.name === KNOWLEDGE_RECALL_TOOL ? callers.resolveKnown(ORGAI_TOOL_PREFIX + t.name, meta, reportsLive()) : callers.resolve(ORGAI_TOOL_PREFIX + t.name, meta)
         return { content: [{ type: 'text' as const, text: await t.call(args, agentId ? { agentId } : undefined) }] }
       })
     )
@@ -1180,13 +1205,15 @@ export class ClaudeSession implements RuntimeSession {
       this.capTripped = false
       this.share = null
     }
-    const composed = note ? (text ? `${note}\n\n---\n${text}` : note) : text
+    // The transcript entry is what the user typed; the knowledge block's own row follows it.
+    this.transcript(ROOT_ID, userBlock(text, images))
+    const body = withUserMessageKnowledge(text, userMessageKnowledge(this.ctx, text, (m) => this.log('warn', m)))
+    const composed = note ? (body ? `${note}\n\n---\n${body}` : note) : body
     this.pushInput({
       type: 'user',
       message: { role: 'user', content: userContent(composed, images) },
       parent_tool_use_id: null
     })
-    this.transcript(ROOT_ID, userBlock(text, images))
     this.setState(ROOT_ID, 'thinking', 'Thinking…')
   }
 
@@ -1723,6 +1750,11 @@ export class ClaudeSession implements RuntimeSession {
           dropModel = false
           this.log('info', `Spawning ${target?.name ?? requested} on the everyday tier (${steer.to}) instead of ${steer.from}: the weekly usage window is near its limit.`)
         }
+        // Known items named in the brief go beside it. The new agent's id is unknown until task_started and the block
+        // must be in this input, so no id is passed: no dedupe, and the row lands on the root (RuntimeContext.knowledgeContext).
+        const brief = typeof toolInput.prompt === 'string' ? toolInput.prompt : ''
+        const knownItems = spawnKnowledge(this.ctx, brief, undefined, (m) => this.log('warn', m))
+        if (knownItems) updates.prompt = withSpawnKnowledge(brief, knownItems)
         if (!Object.keys(updates).length && !dropModel) return {}
         const updated: Record<string, unknown> = { ...toolInput, ...updates }
         if (dropModel) delete updated.model
@@ -2645,7 +2677,8 @@ export class ClaudeSession implements RuntimeSession {
     const skillMap = this.skillNamesFor(plugin)
     const skillNames = [...skillMap.keys()]
     const tools = this.harnessTools
-    const harnessServer = buildHarnessServer(tools, this.harnessCallers, this.isSetup ? SETUP_TOOLS_INSTRUCTIONS : undefined)
+    const reportsLive = (): boolean => [...this.agents.values()].some((a) => a.id !== ROOT_ID && a.state !== 'done' && a.state !== 'error')
+    const harnessServer = buildHarnessServer(tools, this.harnessCallers, reportsLive, this.isSetup ? SETUP_TOOLS_INSTRUCTIONS : undefined)
 
     // MCP servers: the project's (plus run-scoped installs) with secrets filled in, only these load (strictMcpConfig).
     // Servers a restarted query could not start with stay out of this session (recoverRestart).
@@ -2810,7 +2843,7 @@ export class ClaudeSession implements RuntimeSession {
     }
     this.transcript(ROOT_ID, userBlock(this.ctx.prompt, this.ctx.images))
 
-    let firstMessage = composeFirstMessage(this.ctx.prompt, this.ctx.hiddenContext)
+    let firstMessage = composeFirstMessage(this.ctx.prompt, firstMessageHiddenContext(this.ctx, (m) => this.log('warn', m)))
 
     try {
       if (this.isolation) {

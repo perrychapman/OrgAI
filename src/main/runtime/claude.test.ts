@@ -92,7 +92,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', async (importOriginal) => {
 import { ClaudeSession, MCP_RESTART_DELAY_MS, MCP_RESTART_MIN_BUDGET_USD, mcpAttachedNotice, safeMcpToolNames, mcpRestartBlocker, mcpToolRule, HarnessCallerTracker,everydayReplacement, isDeepOrTopModel, mapSupportedModels, authFailureDetail, authFailureFrom, agentMcpServerNames, buildAgents, buildCompletionOptions, buildEnv, claudeAllowsBypass, claudePermissionMode, claudeSavedRules, claudeSettingSources, cliProjectSettings, cliShellAskReason, CLI_SETTINGS_MAX_BYTES, CLI_SETTINGS_UNREADABLE_REASON, toSdkSessionUpdates, quickSafeDecision, restrictedSafeSuggestions, userMcpServerNames, buildConfigWriteDenial, probeQueryOptions, collectSecrets, completionEnv, linkAbortSignal, redactSecrets, toClaudeMcpServers, toClaudePlugins, usesProxy } from './claude'
 import { DEFAULT_MAX_CONCURRENT_SUBAGENTS } from '@shared/defaults'
 import { fakeCtx, mcpSpec, orgChart, project, role, runSummary } from './testHelpers'
-import type { ResolvedMcpServer, RuntimeContext } from './types'
+import { ROOT_AGENT_ID, type ResolvedMcpServer, type RuntimeContext } from './types'
 import { addRules } from './permissionRules'
 import { refreshRoleGrants } from './runManager'
 import { REFERENCE_COPY_HINT, allowScopePersist, claudeAdditionalDirectories } from './claude'
@@ -322,6 +322,38 @@ describe('HarnessCallerTracker', () => {
     const t = new HarnessCallerTracker()
     expect(t.resolve(T, 5)).toBeUndefined()
     expect(t.resolve(T, { 'claudecode/toolUseId': 'zzz' })).toBeUndefined()
+  })
+  describe('resolveKnown', () => {
+    const R = 'mcp__orgai__knowledge_recall'
+    const meta = (id: string) => ({ 'claudecode/toolUseId': id })
+    it('a tool_use id match is known, with reports live or not', () => {
+      const t = new HarnessCallerTracker()
+      t.record(R, 'root-call', undefined)
+      t.record(R, 'sub-call', 'sub-1')
+      expect(t.resolveKnown(R, meta('sub-call'), true)).toBe('sub-1')
+      expect(t.resolveKnown(R, meta('root-call'), true)).toBe(ROOT_AGENT_ID)
+    })
+    it('a first-in-first-out guess is the root only while no report is live', () => {
+      const t = new HarnessCallerTracker()
+      t.record(R, 'a', undefined)
+      t.record(R, 'b', undefined)
+      expect(t.resolveKnown(R, undefined, true)).toBeUndefined()
+      expect(t.resolveKnown(R, undefined, false)).toBe(ROOT_AGENT_ID)
+    })
+    it('a first-in-first-out guess at a report is unknown, and no sighting at all is unknown', () => {
+      const t = new HarnessCallerTracker()
+      t.record(R, 'a', 'sub-1')
+      expect(t.resolveKnown(R, undefined, false)).toBeUndefined()
+      expect(t.resolveKnown(R, undefined, false)).toBeUndefined()
+      expect(t.resolveKnown(R, meta('never-seen'), false)).toBeUndefined()
+    })
+    it('resolve keeps its behaviour for every other tool: root and unknown are both undefined, the guess stands', () => {
+      const t = new HarnessCallerTracker()
+      t.record(T, 'a', undefined)
+      t.record(T, 'b', 'sub-1')
+      expect(t.resolve(T)).toBeUndefined()
+      expect(t.resolve(T)).toBe('sub-1')
+    })
   })
 })
 
