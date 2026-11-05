@@ -564,12 +564,28 @@ const CRED_WORD = /^[\w.~+/=%@:-]+$/
 const WORD_END = /[\s;|&()<>]/
 const WORD_BODY = /[^\s;|&()<>]{0,1025}/y
 
-/** The value rule: charset-only, at least 6 characters, not a path (a path is a program, not a secret), not a URL. */
-function valueMaskable(v: string): boolean {
-  return v.length >= 6 && !/^[./~]/.test(v) && !v.includes('://') && CRED_WORD.test(v)
+/**
+ * The loose value rule, only for a value named exactly as a secret (`password=`, `token:`): charset-only, at least 6
+ * characters, not a path (a path is a program, not a secret), not a URL, no '/', '@' or ':' (a relative script path,
+ * user@host:path).
+ */
+function looseValueMaskable(v: string): boolean {
+  return v.length >= 6 && !/^[./~]/.test(v) && !v.includes('://') && !/[/@:]/.test(v) && CRED_WORD.test(v)
 }
 
-const PREFIX_SHAPE = /^(?:(?:sk|pk|rk)-[\w.*-]{3,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_\w{20,}|xox[abposr]-[\w-]{10,}|eyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]{8,})$/i
+/**
+ * The value rule everywhere else (a name that only contains a secret word, a secret flag's argument, a Bearer value):
+ * the loose rule plus a letter and a digit, which credentials have and package, program and host names mostly do not
+ * (review M-A / M-C: `--always-auth evil-pkg`, `credential.helper=evilhelper` show). An anchored key always counts.
+ */
+function valueMaskable(v: string): boolean {
+  return anchoredKey(v) || (looseValueMaskable(v) && /[A-Za-z]/.test(v) && /\d/.test(v))
+}
+
+/** A name that is exactly a secret word, optionally with a prefix (`DB_PASSWORD`, `--api-key`), never `credential.helper`. */
+const EXACT_SECRET_NAME = /(?:^|[_.-])(?:password|passwd|pwd|secret|token|api[_-]?key|apikey|access[_-]?key|private[_-]?key)$/i
+
+const PREFIX_SHAPE = /^(?:(?:sk|pk|rk)-[\w.*-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_\w{20,}|xox[abposr]-[\w-]{10,}|eyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]{8,})$/i
 const KEY32 = /^[A-Za-z0-9_+-]{32,}={0,2}$/
 
 /** A whole string that is a prefix token or a 32+ character key shape (letters and digits, no '/' or ':'). */
@@ -685,7 +701,8 @@ function maskAssignments(s: string): string {
         if (w2 === null || w2 === '') continue
         w = query ? w2.split(/[&#]/, 1)[0] : w2
         consumed = w.length
-        replacement = maskWord(w, valueMaskable)
+        // A word after an auth scheme is always the credential, never a program: the loose rule.
+        replacement = maskWord(w, (c) => valueMaskable(c) || looseValueMaskable(c))
         if (replacement === null) continue
         out += s.slice(last, start) + replacement
         last = start + consumed
@@ -693,8 +710,11 @@ function maskAssignments(s: string): string {
         continue
       }
       consumed = w.length
-      replacement = maskWord(w, (c) => valueMaskable(c) || anchoredKey(c))
+      replacement = maskWord(w, (c) => valueMaskable(c) || (EXACT_SECRET_NAME.test(name) && looseValueMaskable(c)))
     } else {
+      // A key-shaped value under any other name only as a bare `NAME=<key>`: `--require=<key>` or `--script=<key>`
+      // names what runs, so a flag's value shows (review M-B).
+      if (m[1]) continue
       KEY_VALUE.lastIndex = start
       const k = KEY_VALUE.exec(s)
       if (!k) continue
@@ -722,7 +742,7 @@ function maskFlagValues(s: string): string {
       const after = offset + all.length
       if (after < str.length && !WORD_END.test(str[after])) return all
       const bool = BOOLEAN_FLAG.test(flag)
-      const r = maskWord(word, (c) => (bool ? PREFIX_SHAPE.test(c) || (!/[/:]/.test(c) && anchoredKey(c)) : valueMaskable(c) || anchoredKey(c)))
+      const r = maskWord(word, (c) => (bool ? PREFIX_SHAPE.test(c) || (!/[/:]/.test(c) && anchoredKey(c)) : valueMaskable(c)))
       return r === null ? all : `${flag}${gap}${r}`
     }
   )
@@ -734,7 +754,8 @@ function maskBearer(s: string): string {
     if (word.length > WORD_CAP) return all
     const after = offset + all.length
     if (after < str.length && !WORD_END.test(str[after])) return all
-    const r = maskWord(word, valueMaskable)
+    // A word after Bearer is always the credential, never a program: the loose rule.
+    const r = maskWord(word, (c) => valueMaskable(c) || looseValueMaskable(c))
     return r === null ? all : `${all.slice(0, 6)}${gap}${r}`
   })
 }
@@ -771,7 +792,7 @@ function maskedArgs(args: string[]): string[] {
     if (pending && !a.startsWith('-')) {
       const bool = pending === 'switch'
       pending = null
-      const masked = bool ? PREFIX_SHAPE.test(a) || (!/[/:]/.test(a) && anchoredKey(a)) : valueMaskable(a) || anchoredKey(a)
+      const masked = bool ? PREFIX_SHAPE.test(a) || (!/[/:]/.test(a) && anchoredKey(a)) : valueMaskable(a)
       out.push(masked ? MASK : maskText(a))
       continue
     }
@@ -783,7 +804,7 @@ function maskedArgs(args: string[]): string[] {
 
 /** An env or header value shown in a review: replaced whole only under the value rule, else only its credential parts. */
 function shownValue(name: string, value: string): { text: string; masked: boolean } {
-  if ((secretLike(name) && valueMaskable(value)) || anchoredKey(value)) return { text: MASK, masked: true }
+  if ((secretLike(name) && (valueMaskable(value) || (EXACT_SECRET_NAME.test(name) && looseValueMaskable(value)))) || anchoredKey(value)) return { text: MASK, masked: true }
   const text = maskText(value)
   return { text, masked: text !== value }
 }
@@ -797,7 +818,7 @@ function maskJson(v: unknown, key: string | undefined, parent: string | undefine
       // Under a secret-named key the whole string is replaced only when it is a single credential-charset word
       // (the value rule); a command, a path or anything with other characters shows, with its credentials masked.
       const named = (parent && VALUE_PARENTS.has(parent.toLowerCase()) && credentialLikeName(key, true)) || isSecretName(key)
-      if (named && valueMaskable(v)) return MASK
+      if (named && (valueMaskable(v) || (EXACT_SECRET_NAME.test(key) && looseValueMaskable(v)))) return MASK
       // An env or header value is a value position: a whole-string anchored key shows nothing either.
       if (parent && VALUE_PARENTS.has(parent.toLowerCase()) && anchoredKey(v)) return MASK
     }

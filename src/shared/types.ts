@@ -5690,7 +5690,8 @@ export type RepoConfigEffect =
 
 /**
  * Files in a repository that agents would load or that can run commands, checked in this order. A file or folder that
- * is a link still counts: it is listed, never followed. Claude work runs on code projects load `.claude/settings.json`
+ * is a link still counts: it is listed, never followed. A code project whose folder holds any of these at creation is
+ * gated (section "Folder config trust"); once allowed, Claude runs load `.claude/settings.json`
  * (settingSources ['project']), so its hooks can run on the user's computer. From the docs, not confirmed by a live
  * run: `.mcp.json` does not load on Claude runs (strictMcpConfig) and is listed because Codex and the importers may
  * read it; `.claude/settings.local.json` is listed because OrgAI itself reads its permission rules
