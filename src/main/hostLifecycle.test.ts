@@ -88,6 +88,13 @@ describe('windowAllClosedAction', () => {
     expect(windowAllClosedAction({ platform: 'linux', busy: true, startedHeadless: false, quitting: false })).toBe('background')
     expect(windowAllClosedAction({ platform: 'darwin', busy: true, startedHeadless: true, quitting: true })).toBe('quit')
   })
+  it('a --headless-host launch goes back to the background when idle (daemon mode, idle exit decides)', () => {
+    for (const platform of ['darwin', 'win32', 'linux']) {
+      expect(windowAllClosedAction({ platform, busy: false, startedHeadless: true, launchedHeadless: true, quitting: false })).toBe('background')
+      expect(windowAllClosedAction({ platform, busy: true, startedHeadless: true, launchedHeadless: true, quitting: false })).toBe('background')
+      expect(windowAllClosedAction({ platform, busy: false, startedHeadless: true, launchedHeadless: true, quitting: true })).toBe('quit')
+    }
+  })
 })
 
 describe('quitPromptNeeded', () => {

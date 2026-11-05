@@ -118,6 +118,24 @@ describe('CodexAdapter self-control gate (fake app-server)', () => {
     })
   }
 
+  it('declines a permissions request whose folders reach OrgAI control files, with no card (review L)', async () => {
+    const { ctx, s, data, repo } = await started('default')
+    const perm = (permissions: unknown, reason?: string) => ({ threadId: 'th-1', itemId: 'p-1', permissions, ...(reason ? { reason } : {}) })
+    for (const permissions of [
+      { fileSystem: { writableRoots: [join(data, 'run')] } },
+      { fileSystem: { readableRoots: [join(data, 'codex', 'auth.json')] } },
+      { fileSystem: { writableRoots: [data] } },
+      { fileSystem: { writableRoots: [base] } }
+    ]) {
+      expect(await s.ask('item/permissions/requestApproval', perm(permissions, 'need to run the tests'))).toEqual({ permissions: {}, scope: 'turn' })
+    }
+    expect(ctx.requestPermission).not.toHaveBeenCalled()
+    expect(rows(ctx.events)).toHaveLength(4)
+    // A folder elsewhere still goes to the usual card.
+    void s.ask('item/permissions/requestApproval', perm({ fileSystem: { writableRoots: [join(repo, 'build')] } }))
+    await vi.waitFor(() => expect(ctx.requestPermission).toHaveBeenCalledTimes(1))
+  })
+
   it('leaves ordinary approvals to the usual checks', async () => {
     const { ctx, s, repo } = await started('default', { allowedRules: () => ['Bash(npm test:*)'] })
     expect(await s.ask('item/commandExecution/requestApproval', cmd('npm test', repo))).toEqual({ decision: 'accept' })

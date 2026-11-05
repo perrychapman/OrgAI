@@ -100,3 +100,18 @@ describe('scrubImages', () => {
     expect(base64ByteLength('')).toBe(0)
   })
 })
+
+describe('EventJournal.markGap', () => {
+  it('drops stored events and makes a seq from before the gap evicted', () => {
+    const j = new EventJournal()
+    const a = j.append({ type: 'log', runId: 'r', level: 'info', message: 'a' })
+    j.markGap()
+    expect(j.size).toBe(0)
+    expect(j.storedBytes).toBe(0)
+    const b = j.append({ type: 'log', runId: 'r', level: 'info', message: 'b' })
+    expect(b.seq).toBe((a.seq ?? 0) + 2)
+    expect(j.since(a.seq ?? 0)).toBe('evicted')
+    expect(j.since(b.seq ?? 0)).toEqual([])
+    expect(j.since((b.seq ?? 0) - 1)).toEqual([{ seq: b.seq, event: b.event }])
+  })
+})

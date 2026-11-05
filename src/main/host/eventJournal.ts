@@ -152,6 +152,17 @@ export class EventJournal {
   }
 
   /**
+   * Events are about to go unjournaled (no reader): drop every stored event and burn one seq, so a client that asks
+   * for events since a seq handed out before the gap gets 'evicted' (a snapshot), never a replay that skips the gap.
+   */
+  markGap(): void {
+    this.seq++
+    this.entries = []
+    this.head = 0
+    this.bytes = 0
+  }
+
+  /**
    * Stored events with seq > `seq`, oldest first, or 'evicted' when some of them are gone (or `seq` is not a seq this
    * journal could have handed out).
    */

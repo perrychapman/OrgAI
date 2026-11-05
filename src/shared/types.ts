@@ -1709,9 +1709,16 @@ export interface AppSettings {
    * Terminal access: external CLI / TUI clients (host.hello from clientKind 'cli' | 'tui' over the host socket,
    * cli-spec 3.3) are accepted only while this is true; otherwise host.hello answers 'terminal_server_disabled'.
    * Default false (normalized: only a boolean true stays true). A host booted as 'headless-host' or 'inproc' turns it
-   * on (bootstrap.ts), since such a host exists only to serve the CLI.
+   * on (bootstrap.ts), since such a host exists only to serve the CLI, unless the user has chosen a value
+   * (terminalServerChosen).
    */
   terminalServer: boolean
+  /**
+   * Main-owned: true once a settings:set changed terminalServer (the user's choice in App settings, or a configure
+   * client). A headless or in-process boot then never turns terminal access on by itself. settings:set never writes
+   * it directly (args.ts settingsSetArgs).
+   */
+  terminalServerChosen?: boolean
 }
 
 /**
@@ -5631,7 +5638,13 @@ export type RunsSubscribeResult =
         liveRuns: RunSummary[]
         /** Open cards of each live run, keyed by run id (runs:pendingCards per run). */
         pendingCards: Record<string, PendingCards>
+        /**
+         * The includeActiveRunRecord run, images scrubbed. Past ACTIVE_RUN_SNAPSHOT_MAX_BYTES its oldest transcript
+         * entries (and logs) are left out so the answer stays under the response cap; activeRunOmitted counts them.
+         */
         activeRun?: RunRecord
+        /** Oldest transcript entries left out of activeRun to fit (absent when nothing was left out). */
+        activeRunOmitted?: number
         /** Runs ended within the last 10 minutes. */
         recentEndedRuns: RunSummary[]
       }

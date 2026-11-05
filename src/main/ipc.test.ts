@@ -313,6 +313,19 @@ describe('settingsSetArgs (settings:set, self-configuration H3 / M3)', () => {
   })
 })
 
+describe('settingsSetArgs terminalServerChosen (cli-spec 3.3)', () => {
+  it('is main-owned and set once a save changes terminalServer', () => {
+    const base = { ...DEFAULT_APP_SETTINGS, terminalServer: true }
+    expect(settingsSetArgs({ terminalServerChosen: true, notifications: false }, base)).not.toHaveProperty('terminalServerChosen')
+    expect(settingsSetArgs({ terminalServer: true }, base)).not.toHaveProperty('terminalServerChosen')
+    expect(settingsSetArgs({ terminalServer: false }, base).terminalServerChosen).toBe(true)
+    expect(settingsSetArgs({ terminalServer: true }, { ...base, terminalServer: false }).terminalServerChosen).toBe(true)
+    // Sticky: a later save that leaves the switch alone (or tries to clear the flag) keeps it.
+    const chosen = { ...base, terminalServer: false, terminalServerChosen: true }
+    expect(settingsSetArgs({ notifications: false, terminalServerChosen: false }, chosen).terminalServerChosen).toBe(true)
+  })
+})
+
 describe('connection id guards (connections:test / logout, models:list / refresh)', () => {
   it('connectionIdArg accepts only known ids, never prototype keys', () => {
     for (const id of ['anthropic', 'openai', 'litellm']) expect(connectionIdArg(id)).toBe(id)

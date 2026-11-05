@@ -343,7 +343,7 @@ class CodexSession implements RuntimeSession {
    * command check needs no list. Commands Codex runs inside its own sandbox without an approval request never reach
    * this gate: they are governed by Codex's sandbox policy (policyFor in codexProtocol.ts), not by OrgAI.
    */
-  private selfControlDenied(agentId: string, checks: ReadonlyArray<{ toolName: string; input: unknown }>, cwd: string): boolean {
+  private selfControlDenied(agentId: string, checks: ReadonlyArray<{ toolName: string; input: unknown; label?: string }>, cwd: string): boolean {
     let paths: string[] | undefined
     try {
       paths = this.ctx.controlProtectedPaths?.()
@@ -358,7 +358,7 @@ class CodexSession implements RuntimeSession {
     const shell = process.platform === 'win32' ? 'powershell' : 'bash'
     const hit = checks.find((c) => checkSelfControlDenial(c.toolName, c.input, { protectedPaths, cwd, shell }))
     if (!hit) return false
-    this.log('warn', selfControlLogLine(hit.toolName, this.agents.get(agentId)?.name ?? agentId))
+    this.log('warn', selfControlLogLine(hit.label ?? hit.toolName, this.agents.get(agentId)?.name ?? agentId))
     this.transcript(agentId, { kind: 'system', text: SELF_CONTROL_REFUSAL_TEXT }, { source: 'harness' })
     return true
   }
@@ -1216,6 +1216,14 @@ class CodexSession implements RuntimeSession {
     const agentId = this.agentOf(req.threadId)
     const policy = this.threads.get(req.threadId)?.policy
     if (policy?.denyApprovals) return { permissions: {}, scope: 'turn' }
+    // Self-control gate (cli-spec 3.4(1)): a requested folder at, under or above OrgAI's control files (the data dir,
+    // home...) would let Codex read or write them inside its own sandbox with no further approval. Declined without a
+    // card; the search-root rule (Grep: at, under or an ancestor) is the one that fits a granted root.
+    const paths = requestedPaths(req.requested)
+    const cwd = this.integrator.worktreeOf(agentId)?.path ?? this.ctx.project.path
+    if (paths.length && this.selfControlDenied(agentId, paths.map((path) => ({ toolName: 'Grep', input: { pattern: '.', path }, label: 'extra permissions' })), cwd)) {
+      return { permissions: {}, scope: 'turn' }
+    }
     const input = { command: `Extra permissions: ${req.reason ?? JSON.stringify(req.requested)}`, permissions: req.requested }
     const { decision } = await this.ask(agentId, 'Bash', input)
     if (decision.behavior === 'deny') return { permissions: {}, scope: 'turn' }
@@ -1494,4 +1502,23 @@ export class CodexAdapter implements RuntimeAdapter {
       server.close()
     }
   }
+}
+
+/**
+ * The path-looking strings anywhere in a Codex permissions request (absolute, `~`), at most 64 of them and 8 levels
+ * deep: the folders a granted profile would open (writable or readable roots).
+ */
+export function requestedPaths(requested: unknown): string[] {
+  const out: string[] = []
+  const visit = (v: unknown, depth: number): void => {
+    if (out.length >= 64 || depth > 8) return
+    if (typeof v === 'string') {
+      if (/^(?:\/|~(?:$|[\\/])|[a-zA-Z]:[\\/]|\\\\)/.test(v)) out.push(v)
+      return
+    }
+    if (Array.isArray(v)) for (const x of v) visit(x, depth + 1)
+    else if (v && typeof v === 'object') for (const x of Object.values(v as Record<string, unknown>)) visit(x, depth + 1)
+  }
+  visit(requested, 0)
+  return out
 }

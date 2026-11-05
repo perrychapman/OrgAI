@@ -14,9 +14,10 @@ vi.mock('./commands/watch', () => ({ runWatch: stub('watch') }))
 vi.mock('./commands/inbox', () => ({ runInbox: stub('inbox') }))
 vi.mock('./commands/daemon', () => ({ runDaemon: stub('daemon') }))
 vi.mock('./commands/app', () => ({ runApp: stub('app') }))
+let doctorError = 'boom'
 vi.mock('./commands/doctor', () => ({
   runDoctor: vi.fn(async () => {
-    throw new Error('boom')
+    throw new Error(doctorError)
   })
 }))
 vi.mock('./commands/completions', () => ({ runCompletions: stub('completions') }))
@@ -94,6 +95,12 @@ describe('orgai routing', () => {
     expect(h.out).toContain('--data-dir')
     expect((await run(['help', 'runs'])).out).toContain('Usage: orgai runs list')
     expect((await run(['runs', '--help'])).out).toContain('--all-projects')
+    // Every flag the Wave 2 commands parse is in their help (review L).
+    const helpOf = async (c: string) => (await run(['help', c])).out
+    expect(await helpOf('watch')).toContain('--no-follow')
+    for (const f of ['--status', '--transcript', '--tail']) expect(await helpOf('runs')).toContain(f)
+    for (const f of ['--force', '--foreground', '--timeout', '--lines', '--follow']) expect(await helpOf('daemon')).toContain(f)
+    expect(await helpOf('status')).toContain('--all-projects')
     expect(calls).toHaveLength(0)
   })
 
@@ -137,5 +144,18 @@ describe('orgai routing', () => {
     expect(r.err).toBe('orgai: boom\n')
     const d = await run(['doctor'], { ORGAI_CLI_DEBUG: '1' })
     expect(d.err).toContain('at ')
+  })
+
+  it('sanitizes error text before it reaches the terminal (review L)', async () => {
+    doctorError = 'refused \u001b]52;c;ZXZpbA==\u0007now \u001b[2Jcleared'
+    try {
+      const r = await run(['doctor'])
+      expect(r.code).toBe(1)
+      expect(r.err).not.toContain('\u001b')
+      expect(r.err).not.toContain('\u0007')
+      expect(r.err.startsWith('orgai: refused')).toBe(true)
+    } finally {
+      doctorError = 'boom'
+    }
   })
 })

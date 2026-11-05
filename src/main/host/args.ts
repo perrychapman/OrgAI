@@ -565,8 +565,8 @@ export function modelsQueryArg(raw: unknown): ModelsQuery | undefined {
  * settings:set input: a plain object (anything else is refused), merged onto the stored settings (never onto the
  * defaults, so a field the renderer left out keeps its stored value). The main-owned fields always keep their stored
  * values: defaultConnection, defaultConnectionChosen and defaultConnectionReplaced (change the default only through
- * connections:setDefault), connections and its providerAuth mirror (connections:update / setSecret). The
- * AppSettingsInfo extras are dropped. Pure; exported for tests. SettingsStore.set normalizes the rest.
+ * connections:setDefault), connections and its providerAuth mirror (connections:update / setSecret), and
+ * terminalServerChosen (set here once a save changes terminalServer). The AppSettingsInfo extras are dropped. Pure; exported for tests. SettingsStore.set normalizes the rest.
  */
 export function settingsSetArgs(raw: unknown, stored: AppSettings): AppSettings {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('Settings must be an object.')
@@ -579,6 +579,7 @@ export function settingsSetArgs(raw: unknown, stored: AppSettings): AppSettings 
     defaultConnectionReplaced: _replaced,
     connections: _connections,
     providerAuth: _auth,
+    terminalServerChosen: _terminalChosen,
     ...rest
   } = incoming
   // A field whose kind differs from the stored one's (a non-array modelPrices, a string flag, null) is dropped, so a
@@ -598,6 +599,10 @@ export function settingsSetArgs(raw: unknown, stored: AppSettings): AppSettings 
   delete out.defaultConnectionReplaced
   if (stored.defaultConnectionChosen !== undefined) out.defaultConnectionChosen = stored.defaultConnectionChosen
   if (stored.defaultConnectionReplaced !== undefined) out.defaultConnectionReplaced = stored.defaultConnectionReplaced
+  // terminalServerChosen is main-owned: it sticks once a save changed Terminal access, so a later headless boot
+  // never overrides the user's choice (bootstrap.ts).
+  delete out.terminalServerChosen
+  if (stored.terminalServerChosen === true || (out.terminalServer === true) !== (stored.terminalServer === true)) out.terminalServerChosen = true
   return out
 }
 

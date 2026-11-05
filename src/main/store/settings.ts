@@ -253,7 +253,8 @@ export function normalizeSettings(raw: Partial<AppSettings> | null | undefined):
         ? Math.min(MAX_AUTO_CONTINUES_LIMIT, Math.floor(maxContinues))
         : d.defaultMaxAutoContinues,
     // Only an explicit boolean true opens the terminal server.
-    terminalServer: r.terminalServer === true
+    terminalServer: r.terminalServer === true,
+    ...(r.terminalServerChosen === true ? { terminalServerChosen: true } : {})
   }
 }
 

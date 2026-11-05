@@ -316,6 +316,21 @@ describe('bootOrgAIHost', () => {
     expect(armIdle).toHaveBeenCalledTimes(1)
   })
 
+  it('a headless boot turns Terminal access on only while the user has not chosen a value', () => {
+    const fresh = boot({ hostKind: 'headless-host' })
+    expect(fresh.settings.get().terminalServer).toBe(true)
+    expect(fresh.settings.get().terminalServerChosen).toBeUndefined()
+    // The user turns it off in App settings (settings:set marks the choice), then a later headless boot keeps it off.
+    fresh.settings.set({ ...fresh.settings.get(), terminalServer: false, terminalServerChosen: true })
+    fresh.dispose()
+    for (const hostKind of ['headless-host', 'inproc'] as const) {
+      const later = boot({ hostKind })
+      expect(later.settings.get().terminalServer, hostKind).toBe(false)
+      expect(later.settings.get().terminalServerChosen).toBe(true)
+      later.dispose()
+    }
+  })
+
   it('dispose() is idempotent and leaves no timers behind', () => {
     vi.useFakeTimers()
     const h = boot()

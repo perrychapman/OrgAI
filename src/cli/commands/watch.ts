@@ -310,40 +310,67 @@ export const runWatch: CommandFn = async (ctx: CliContext, args: string[]): Prom
     for (const p of pending) onRunsEvent(p)
   }
 
+  /**
+   * One reconnect loop at a time. Set while a (re)subscribe is in flight too: a socket that closes during
+   * runs:subscribe rejects that call (the loop, or the first subscribe, handles it), so its close listener must not
+   * start a second loop.
+   */
+  let reconnecting = false
+  /** The client whose socket closed while a (re)subscribe was in flight; checked once that subscribe settles. */
+  let closedWhileBusy: HostClient | undefined
+
   const watchClose = (c: HostClient): void => {
     offClose()
     offClose = c.onClose(() => {
-      if (!finished) void reconnect()
+      if (finished) return
+      if (reconnecting) closedWhileBusy = c
+      else void reconnect()
     })
   }
 
   const reconnect = async (): Promise<void> => {
-    const started = watchTimers.now()
-    let delay = BACKOFF_START_MS
-    while (!finished) {
-      await watchTimers.sleep(delay)
-      if (finished) return
-      const res = await ctx.connect(['read'], { clientKind: 'cli', waitStartingMs: 2000 }).catch(() => undefined)
-      if (res?.ok) {
-        try {
+    if (reconnecting) return
+    reconnecting = true
+    try {
+      const started = watchTimers.now()
+      let delay = BACKOFF_START_MS
+      while (!finished) {
+        await watchTimers.sleep(delay)
+        if (finished) return
+        const res = await ctx.connect(['read'], { clientKind: 'cli', waitStartingMs: 2000 }).catch(() => undefined)
+        if (res?.ok) {
+          if (finished) {
+            res.client.close()
+            return
+          }
+          // The old client is closed before it is replaced, so no socket outlives the command.
+          const previous = client
           client = res.client
-          watchClose(client)
-          await subscribe(client, false)
-          return
-        } catch {
+          if (previous !== client) previous.close()
+          try {
+            watchClose(client)
+            await subscribe(client, false)
+            if (closedWhileBusy !== client) return
+          } catch {
+            // closed or refused: try again
+          }
+          closedWhileBusy = undefined
           client.close()
         }
+        if (watchTimers.now() - started >= WATCH_RECONNECT_WINDOW_MS) {
+          warn(ctx, 'Lost the connection to the OrgAI host.')
+          finish(EXIT.failure)
+          return
+        }
+        delay = Math.min(BACKOFF_MAX_MS, delay * 2)
       }
-      if (watchTimers.now() - started >= WATCH_RECONNECT_WINDOW_MS) {
-        warn(ctx, 'Lost the connection to the OrgAI host.')
-        finish(EXIT.failure)
-        return
-      }
-      delay = Math.min(BACKOFF_MAX_MS, delay * 2)
+    } finally {
+      reconnecting = false
     }
   }
 
   try {
+    reconnecting = true
     watchClose(client)
     await subscribe(client, true)
   } catch (e) {
@@ -352,6 +379,13 @@ export const runWatch: CommandFn = async (ctx: CliContext, args: string[]): Prom
     offClose()
     client.close()
     throw e
+  } finally {
+    reconnecting = false
+  }
+  // The socket closed right after the first subscribe answered: reconnect now that the loop may start.
+  if (closedWhileBusy === client) {
+    closedWhileBusy = undefined
+    void reconnect()
   }
   const code = await done
   offSignal()

@@ -19,6 +19,7 @@ import { parseHostArgs, quitPromptButtons, quitPromptNeeded, secondInstanceActio
 import type { HostRuntimeEnv } from './host/runtimeEnv'
 import { windowBackground } from './appInfo'
 import { quitGate } from './quitGate'
+import { orgaiCliRootsOf, setOrgaiCliRoots } from './runtime/selfControlGate'
 
 // Before anything reads a path: ORGAI_DATA_DIR (CI, e2e) replaces userData and moves logs under it, so a run never
 // touches the real profile or ~/Library/Logs. app.setPath throws for a missing directory, so create it first. The
@@ -58,9 +59,12 @@ let server: HostSocketServer | undefined
 // every lifecycle decision lives in hostLifecycle.ts.
 const hostArgs = parseHostArgs(process.argv)
 const hostKind: HostKind = hostArgs.headless ? 'headless-host' : 'desktop'
+// The self-control gate treats an interpreter run of a file in this install's out/cli or src/cli as the orgai CLI.
+setOrgaiCliRoots(orgaiCliRootsOf(app.getAppPath()))
 /**
  * True for a --headless-host boot, and once a desktop-started host has gone to the background: closing the last
- * window of such a host while it is idle quits it (windowAllClosedAction).
+ * window of a desktop-started one while it is idle quits it; a --headless-host one (hostArgs.headless) goes back to
+ * the background and leaves through its idle exit (windowAllClosedAction).
  */
 let startedHeadless = hostArgs.headless
 /** In background mode (no windows, kept alive for its activity); logged once per entry. */
@@ -170,14 +174,15 @@ function showDockIcon(): void {
 
 /** A run id from --run: open its window when the host knows the run. */
 function openRunById(runId: string): void {
-  const summary = host?.runs.summaryOf(runId)
+  const summary = host?.runs.summary(runId)
   if (summary) openRunWindow({ projectId: summary.projectId, runId: summary.id })
   else log.info(`Asked to open run ${runId}, which this data folder does not have.`)
 }
 
 /**
  * No windows, but the host is still busy (runs, resumes, sign-ins, terminal clients...): keep serving in the
- * background until idle (cli-spec 3.2(1)). From now on an idle close of the last window quits.
+ * background until idle (cli-spec 3.2(1)); a --headless-host one also when idle (daemon mode). From now on an idle close
+ * of the last window of a desktop-started host quits.
  */
 function goBackground(): void {
   windowScopes.clear()
@@ -191,7 +196,8 @@ function goBackground(): void {
       .filter(([, n]) => typeof n === 'number' && n > 0)
       .map(([k, n]) => `${k} ${n}`)
       .join(', ')
-    log.info(`All windows closed while OrgAI is busy (${busy || 'no work counted'}); it keeps running in the background until its work is done.`)
+    if (busy) log.info(`All windows closed while OrgAI is busy (${busy}); it keeps running in the background until its work is done.`)
+    else log.info('All windows closed; this background host keeps serving terminal clients until its idle exit.')
   }
 }
 
@@ -438,7 +444,7 @@ async function askQuit(terminalClients: number): Promise<void> {
 // The last window closed: keep serving in the background while busy, else quit (or stay: a desktop host on macOS).
 app.on('window-all-closed', () => {
   const busy = host ? !host.activity.isIdle() : false
-  const action = windowAllClosedAction({ platform: process.platform, busy, startedHeadless, quitting })
+  const action = windowAllClosedAction({ platform: process.platform, busy, startedHeadless, launchedHeadless: hostArgs.headless, quitting })
   if (action === 'quit') app.quit()
   else if (action === 'background') goBackground()
 })

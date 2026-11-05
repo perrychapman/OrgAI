@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { PendingCards, Project, RunEvent, RunRecord, RunSummary } from '../../shared/types'
 import { EventJournal } from './eventJournal'
 import { HostRpcFailure } from './registry'
-import { RECENT_ENDED_MS, RunSubscription, filterKeyOf, followedRunsOf, parseRunsSubscribeInput, subscribeRuns, type RunsView } from './runSubscriptions'
+import { ACTIVE_RUN_SNAPSHOT_MAX_BYTES, RECENT_ENDED_MS, RunSubscription, boundedActiveRun, filterKeyOf, followedRunsOf, parseRunsSubscribeInput, subscribeRuns, type RunsView } from './runSubscriptions'
 
 const NOW = 1_800_000_000_000
 
@@ -208,5 +208,37 @@ describe('subscribeRuns', () => {
     if (r.result.mode !== 'replay') throw new Error('mode')
     expect(r.result.events.map((e) => e.seq)).toEqual([1, 2, 3])
     expect(r.subscription.followed.has('r2')).toBe(true)
+  })
+})
+
+describe('boundedActiveRun (review L: the snapshot fits the response cap)', () => {
+  const rec = (n: number, chars: number): RunRecord =>
+    ({
+      summary: { id: 'r1', projectId: 'p', kind: 'work', prompt: '', status: 'running', startedAt: 1, totalCostUsd: 0 },
+      agents: {},
+      transcript: Array.from({ length: n }, (_, i) => ({ id: `e${i}`, agentId: 'root', at: i, block: { kind: 'text', text: `${i}:${'x'.repeat(chars)}` } })),
+      logs: Array.from({ length: 500 }, (_, i) => ({ at: i, level: 'info' as const, message: `log ${i}` }))
+    }) as RunRecord
+
+  it('keeps a record that fits as is', () => {
+    const r = rec(10, 10)
+    expect(boundedActiveRun(r)).toEqual({ record: r, omitted: 0 })
+  })
+
+  it('leaves out the oldest entries and logs past the budget, never cutting an entry', () => {
+    const r = rec(5000, 4000)
+    const { record, omitted } = boundedActiveRun(r, 1_000_000)
+    expect(Buffer.byteLength(JSON.stringify(record))).toBeLessThanOrEqual(1_000_000)
+    expect(omitted).toBeGreaterThan(4000)
+    expect(record.transcript.length + omitted).toBe(5000)
+    expect(record.transcript.at(-1)?.id).toBe('e4999')
+    expect(record.transcript[0]).toEqual(r.transcript[omitted])
+    expect(record.logs).toHaveLength(200)
+    expect(record.logs.at(-1)?.message).toBe('log 499')
+  })
+
+  it('a worst-case run fits the default budget', () => {
+    const { record } = boundedActiveRun(rec(5000, 4000))
+    expect(Buffer.byteLength(JSON.stringify(record))).toBeLessThanOrEqual(ACTIVE_RUN_SNAPSHOT_MAX_BYTES)
   })
 })

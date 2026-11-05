@@ -16,6 +16,7 @@ import { runWatch } from './commands/watch'
 import { COMMANDS, GLOBAL_FLAGS, findCommand, type CommandEntry, type CommandFlag } from './commandTable'
 import { buildContext } from './context'
 import { splitGlobalFlags } from './flags'
+import { safe } from './output'
 import { collectSecretOverlay, scrubSecretEnv, secretEnvRefusal } from './secretOverlay'
 import { CliError, EXIT, type CliIo, type CommandFn } from './types'
 import { CLI_VERSION } from './version'
@@ -115,7 +116,9 @@ export async function main(argv: string[] = process.argv.slice(2), overrides: Ma
   const env = overrides.env ?? process.env
   const io = overrides.io ?? defaultIo()
   const out = (s: string): void => void io.stdout.write(s.endsWith('\n') ? s : `${s}\n`)
-  const err = (s: string): void => void io.stderr.write(`orgai: ${s}\n`)
+  // Error text can carry host-provided words (a hello refusal read before the hostProof check, an RPC error message):
+  // sanitizeTty before it reaches the terminal (cli-spec 5.2, error banners).
+  const err = (s: string): void => void io.stderr.write(`orgai: ${safe(s)}\n`)
   try {
     const { globals, rest } = splitGlobalFlags(argv)
     const [name, ...args] = rest
@@ -180,7 +183,7 @@ export async function main(argv: string[] = process.argv.slice(2), overrides: Ma
     }
     const message = e instanceof Error ? e.message : String(e)
     err(message)
-    if (env.ORGAI_CLI_DEBUG === '1' && e instanceof Error && e.stack) io.stderr.write(`${e.stack}\n`)
+    if (env.ORGAI_CLI_DEBUG === '1' && e instanceof Error && e.stack) io.stderr.write(`${safe(e.stack)}\n`)
     return EXIT.failure
   }
 }
@@ -203,8 +206,8 @@ function isEntry(): boolean {
 
 if (isEntry()) {
   process.on('unhandledRejection', (reason: unknown) => {
-    process.stderr.write(`orgai: ${reason instanceof Error ? reason.message : String(reason)}\n`)
-    if (process.env.ORGAI_CLI_DEBUG === '1' && reason instanceof Error && reason.stack) process.stderr.write(`${reason.stack}\n`)
+    process.stderr.write(`orgai: ${safe(reason instanceof Error ? reason.message : String(reason))}\n`)
+    if (process.env.ORGAI_CLI_DEBUG === '1' && reason instanceof Error && reason.stack) process.stderr.write(`${safe(reason.stack)}\n`)
     process.exitCode = EXIT.failure
     // Let pending output drain, then end: a rejection nobody handled leaves the process in an unknown state.
     process.stdout.write('', () => process.exit(EXIT.failure))
@@ -214,7 +217,7 @@ if (isEntry()) {
       process.exitCode = code
     },
     (e: unknown) => {
-      process.stderr.write(`orgai: ${e instanceof Error ? e.message : String(e)}\n`)
+      process.stderr.write(`orgai: ${safe(e instanceof Error ? e.message : String(e))}\n`)
       process.exitCode = EXIT.failure
     }
   )

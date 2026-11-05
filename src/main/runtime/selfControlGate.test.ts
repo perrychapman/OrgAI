@@ -119,7 +119,10 @@ describe('checkSelfControlDenial', () => {
         expect(deny('Read', { file_path: t }, ctx)).toBeNull()
         expect(deny('Write', { file_path: t, content: '' }, ctx)).toBeNull()
       }
-      expect(deny('Glob', { pattern: '**/*', path: root }, ctx)).toBeNull()
+      // A recursive search from the data dir root descends into run/ and codex/ (review M): denied.
+      expect(deny('Glob', { pattern: '**/*', path: root }, ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      expect(deny('Glob', { pattern: '**/*.md', path: join(root, 'skills') }, ctx)).toBeNull()
+      expect(deny('Grep', { pattern: 'x', path: join(root, 'quick', 'quick_x') }, ctx)).toBeNull()
     }
     expect(deny('Read', { file_path: s.home }, ctx)).toBeNull()
     // Unknown tools, missing paths and an empty list never deny.
@@ -147,8 +150,7 @@ describe('checkSelfControlDenial', () => {
       'export ELECTRON_RUN_AS_NODE=1',
       'node out/cli/orgai.mjs status',
       'node ./out/cli/orgai.mjs',
-      'tsx src/cli/index.ts',
-      'bun run src\\cli\\index.ts',
+      'node /opt/whatever/orgai.js status',
       "bash -c 'orgai x'",
       'sh -lc "orgai daemon stop"',
       'npm test && orgai status',
@@ -178,6 +180,72 @@ describe('checkSelfControlDenial', () => {
       expect(deny('Bash', { command }, ctx), command).toBe(SELF_CONTROL_DENIAL_MESSAGE)
     }
     expect(deny('Bash', { command: 'ls' }, { ...ctx, cwd: join(s.data, 'run') })).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+  })
+
+  it("matches an interpreter run of this install's CLI folders only, never a project's src/cli (review M)", () => {
+    const s = setup()
+    const app = join(s.home, 'OrgAI-app')
+    const ctx: SelfControlContext = { protectedPaths: s.refs, cwd: app, home: s.home, cliRoots: [join(app, 'out', 'cli'), join(app, 'src', 'cli')] }
+    for (const command of ['tsx src/cli/index.ts', 'bun run src/cli/index.ts', `node ${join(app, 'out', 'cli', 'x.mjs')}`, 'deno run out/cli/app.ts']) {
+      expect(deny('Bash', { command }, ctx), command).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+    }
+    const project: SelfControlContext = { ...ctx, cwd: join(s.home, 'proj') }
+    for (const command of [
+      'node src/cli/index.js --help',
+      'npx tsx src/cli/main.ts',
+      'bun test src/cli/',
+      'deno run out/cli/app.ts',
+      'npm run build && node out/cli/foo.js',
+      'grep -rn "ELECTRON_RUN_AS_NODE=" .',
+      "echo 'ELECTRON_RUN_AS_NODE=1 is set by the launcher'",
+      'echo $env:ELECTRON_RUN_AS_NODE'
+    ]) {
+      expect(deny('Bash', { command }, project), command).toBeNull()
+    }
+    // No configured roots: only the orgai file names count.
+    expect(deny('Bash', { command: 'tsx src/cli/index.ts' }, { protectedPaths: s.refs, cwd: app, cliRoots: [] })).toBeNull()
+  })
+
+  it('denies $HOME spellings and globs that reach a protected path (review M)', () => {
+    const s = setup()
+    const ctx: SelfControlContext = { protectedPaths: s.refs, cwd: join(s.home, 'proj'), home: s.home }
+    for (const command of [
+      'cat "$HOME/data/run/daemon.secret"',
+      'cat ${HOME}/data/run/daemon.secret',
+      'cat $HOME/data/codex/auth.json',
+      'cat ~/data/r*/daemon.secret',
+      `cat ${s.data}/r?n/daemon.secret`,
+      `ls ${s.data}/r*`,
+      `cat ${s.data}/[r]un/daemon.json`,
+      `cat ${s.data}/*/auth.json`,
+      `cat ${s.data}/secrets.*`
+    ]) {
+      expect(deny('Bash', { command }, ctx), command).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+    }
+    expect(deny('PowerShell', { command: 'Get-Content $env:USERPROFILE/data/secrets.json' }, ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+    for (const command of ['ls $HOME', 'ls $HOME/data', `ls ${s.data}/*.md`, `cat ${s.data}/q*/notes.md`, 'echo $HOMEDIR/run/x', `ls ${s.data}/p*`]) {
+      expect(deny('Bash', { command }, ctx), command).toBeNull()
+    }
+  })
+
+  it('denies Grep / Glob searches rooted at the data dir or an ancestor of a protected path (review M)', () => {
+    const s = setup()
+    const ctx: SelfControlContext = { protectedPaths: s.refs, cwd: join(s.home, 'proj'), home: s.home }
+    expect(deny('Grep', { pattern: '^[0-9a-f]{64}$', path: s.data, output_mode: 'content' }, ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+    expect(deny('Grep', { pattern: 'x', path: s.real }, ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+    expect(deny('Grep', { pattern: 'x', path: '~', glob: '**/run/daemon.secret' }, ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+    expect(deny('Grep', { pattern: 'x' }, { ...ctx, cwd: s.home })).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+    expect(deny('Glob', { pattern: '**/daemon.secret', path: s.home }, ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+    expect(deny('Glob', { pattern: 'data/run/*' }, { ...ctx, cwd: s.home })).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+    expect(deny('Glob', { pattern: 'd*/c*/*', path: s.home }, ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+    // secrets.json is protected itself, so a glob that can match it is denied.
+    expect(deny('Glob', { pattern: 'data/*.json', path: s.home }, ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+    // Searches that cannot reach one stay allowed.
+    expect(deny('Grep', { pattern: 'x' }, ctx)).toBeNull()
+    expect(deny('Grep', { pattern: 'x', path: join(s.data, 'skills') }, ctx)).toBeNull()
+    expect(deny('Glob', { pattern: '*.md', path: s.home }, ctx)).toBeNull()
+    expect(deny('Glob', { pattern: 'data/*.md', path: s.home }, ctx)).toBeNull()
+    expect(deny('Glob', { pattern: 'src/**/*.ts' }, ctx)).toBeNull()
   })
 
   it('denies PowerShell ELECTRON_RUN_AS_NODE and protected paths', () => {

@@ -10,33 +10,9 @@ import { CliError, EXIT, type CliContext, type CommandFn } from '../types'
 export const SHELLS = ['bash', 'zsh', 'fish'] as const
 export type Shell = (typeof SHELLS)[number]
 
-/**
- * Per-command flags the commands accept that commandTable.ts does not list yet (W2-T5 adds them here; a docs pass
- * should fold them into the table).
- */
-const EXTRA_FLAGS: Record<string, readonly CommandFlag[]> = {
-  status: [{ name: 'all-projects', takesValue: false, summary: 'Every project' }],
-  runs: [
-    { name: 'status', takesValue: true, values: ['running', 'needs you', 'idle', 'paused', 'finished', 'stopped', 'ended when orgai closed', 'failed'], summary: 'Only runs with this status' },
-    { name: 'transcript', takesValue: false, summary: 'runs show: the whole transcript' },
-    { name: 'tail', takesValue: true, summary: 'runs show: the last N transcript rows' }
-  ],
-  watch: [{ name: 'no-follow', takesValue: false, summary: 'Do not follow continuations' }],
-  daemon: [
-    { name: 'foreground', takesValue: false, summary: 'start: run the host in this terminal (inproc)' },
-    { name: 'timeout', takesValue: true, summary: 'Seconds to wait' },
-    { name: 'lines', short: 'n', takesValue: true, summary: 'logs: how many lines' },
-    { name: 'follow', short: 'f', takesValue: false, summary: 'logs: keep printing new lines' }
-  ]
-}
-
-/** The commands offered: available ones only, with their table flags plus EXTRA_FLAGS (deduped by name). */
+/** The commands offered: available ones only, with their table flags (commandTable.ts is the one list). */
 export function completionCommands(): { entry: CommandEntry; flags: CommandFlag[] }[] {
-  return COMMANDS.filter((c) => c.available).map((entry) => {
-    const flags = [...entry.flags]
-    for (const f of EXTRA_FLAGS[entry.name] ?? []) if (!flags.some((x) => x.name === f.name)) flags.push(f)
-    return { entry, flags }
-  })
+  return COMMANDS.filter((c) => c.available).map((entry) => ({ entry, flags: [...entry.flags] }))
 }
 
 const valueFlags = (flags: readonly CommandFlag[]): string[] => flags.filter((f) => f.takesValue).flatMap((f) => [`--${f.name}`, ...(f.short ? [`-${f.short}`] : [])])

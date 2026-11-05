@@ -52,26 +52,29 @@ export const COMMANDS: readonly CommandEntry[] = [
   {
     name: 'status',
     summary: 'Show the host, the current project and what needs you',
-    usage: 'status',
-    flags: [],
+    usage: 'status [--all-projects]',
+    flags: [{ name: 'all-projects', takesValue: false, summary: 'Every project' }],
     available: true
   },
   {
     name: 'runs',
     summary: 'List runs or show one run',
-    usage: 'runs list [--all-projects] [--limit <n>] | runs show <runId-or-R#>',
+    usage: 'runs list [--all-projects] [--status <status>] [--limit <n>] | runs show <runId-or-R#> [--transcript | --tail <n>]',
     subcommands: ['list', 'show'],
     flags: [
       { name: 'all-projects', takesValue: false, summary: 'Runs of every project' },
-      { name: 'limit', short: 'n', takesValue: true, summary: 'At most this many runs' }
+      { name: 'status', takesValue: true, values: ['running', 'needs you', 'idle', 'paused', 'finished', 'stopped', 'ended when orgai closed', 'failed'], summary: 'Only runs with this status' },
+      { name: 'limit', short: 'n', takesValue: true, summary: 'At most this many runs' },
+      { name: 'transcript', takesValue: false, summary: 'runs show: the whole transcript' },
+      { name: 'tail', takesValue: true, summary: 'runs show: the last N transcript rows' }
     ],
     available: true
   },
   {
     name: 'watch',
     summary: 'Stream a run’s events to stdout (Ctrl+C detaches)',
-    usage: 'watch <runId-or-R#>',
-    flags: [],
+    usage: 'watch <runId-or-R#> [--no-follow]',
+    flags: [{ name: 'no-follow', takesValue: false, summary: 'Do not follow continuations' }],
     available: true
   },
   {
@@ -84,9 +87,15 @@ export const COMMANDS: readonly CommandEntry[] = [
   {
     name: 'daemon',
     summary: 'Inspect or control the background host',
-    usage: 'daemon status | start | stop [--force] | restart [--force] | logs',
+    usage: 'daemon status | start [--foreground] [--timeout <s>] | stop [--force] [--timeout <s>] | restart [--force] [--timeout <s>] | logs [-n <lines>] [-f]',
     subcommands: ['status', 'start', 'stop', 'restart', 'logs'],
-    flags: [{ name: 'force', takesValue: false, summary: 'Stop live runs instead of refusing' }],
+    flags: [
+      { name: 'force', takesValue: false, summary: 'Stop live runs instead of refusing' },
+      { name: 'foreground', takesValue: false, summary: 'start: run the host in this terminal (inproc)' },
+      { name: 'timeout', takesValue: true, summary: 'Seconds to wait' },
+      { name: 'lines', short: 'n', takesValue: true, summary: 'logs: how many lines' },
+      { name: 'follow', short: 'f', takesValue: false, summary: 'logs: keep printing new lines' }
+    ],
     available: true
   },
   {

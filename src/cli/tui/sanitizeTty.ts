@@ -17,8 +17,11 @@ const DEFAULT_TAB_WIDTH = 4
 
 /**
  * The shared hidden class, minus ZWNJ (U+200C) and ZWJ (U+200D): they are kept so emoji sequences (family, flags with
- * modifiers, profession emoji) survive, the same choice as the main side's 'prose' rule. Everything else in the class
- * (bidi overrides and isolates, zero-width space, word joiner, BOM, tag characters ...) is dropped.
+ * modifiers, profession emoji) and ZWNJ in Persian / Indic text survive, the same choice as the main side's 'prose'
+ * rule, but only after a non-ASCII character. A joiner after ASCII text, a newline, a tab or at the start of a stream
+ * joins nothing visible there and is how look-alike strings are made (`R1` vs `R‍1`), so it is dropped
+ * (TtySanitizer.lastAscii). Everything else in the class (bidi overrides and isolates, zero-width space, word joiner,
+ * BOM, tag characters ...) is dropped.
  */
 const HIDDEN_ONE = new RegExp(HIDDEN_CLASS, 'u')
 
@@ -49,6 +52,8 @@ export class TtySanitizer {
   private col = 0
   /** A high surrogate held from the end of the previous chunk. */
   private pendingHigh = ''
+  /** The last character emitted was ASCII, a newline or a tab (or nothing yet): a ZWJ / ZWNJ now is dropped. */
+  private lastAscii = true
 
   constructor(opts: { tabWidth?: number } = {}) {
     const w = opts.tabWidth
@@ -80,6 +85,7 @@ export class TtySanitizer {
       if (state === 'normal') {
         if (c >= 0x20 && c < 0x7f) {
           if (runStart < 0) runStart = i
+          this.lastAscii = true
           i++
           continue
         }
@@ -87,11 +93,13 @@ export class TtySanitizer {
           endRun(i)
           out.push('\n')
           this.col = 0
+          this.lastAscii = true
           i++
           continue
         }
         if (c === 0x09) {
           endRun(i)
+          this.lastAscii = true
           const spaces = this.tabWidth - (this.col % this.tabWidth)
           out.push(' '.repeat(spaces))
           this.col += spaces
@@ -127,6 +135,7 @@ export class TtySanitizer {
             if (droppedNonAscii(cp)) {
               endRun(i)
             } else {
+              this.lastAscii = false
               if (runStart < 0) runStart = i
               // A pair is one column; the run adds two, so take one back.
               this.col -= 1
@@ -143,10 +152,11 @@ export class TtySanitizer {
           i++
           continue
         }
-        if (droppedNonAscii(c)) {
+        if (droppedNonAscii(c) || ((c === 0x200c || c === 0x200d) && this.lastAscii)) {
           endRun(i)
-        } else if (runStart < 0) {
-          runStart = i
+        } else {
+          this.lastAscii = false
+          if (runStart < 0) runStart = i
         }
         i++
         continue

@@ -310,6 +310,33 @@ describe.runIf(posix)('HostSocketServer handshake', () => {
     expect(res.error.data).toMatchObject({ code: 'terminal_server_disabled', message: TERMINAL_ACCESS_OFF_MESSAGE })
   })
 
+  it('turning Terminal access off closes authenticated clients; turning it on again does not (review L)', async () => {
+    const { events } = await start()
+    const c = await client()
+    await hello(c, { scopes: ['read', 'configure'] })
+    events.emit('settings:changed', { terminalServer: true } as never)
+    c.send(rpcRequest(2, 'runs:list', ['p1']))
+    expect((await c.response(2)).result).toBeDefined()
+    st.terminalServer = false
+    events.emit('settings:changed', { terminalServer: false } as never)
+    await c.waitClosed()
+    expect(logs.join('\n')).toContain('Terminal access was turned off; closed 1 terminal connection.')
+    const { res } = await hello(await client())
+    expect(res.error.data.code).toBe('terminal_server_disabled')
+  })
+
+  it('journals run events only while Terminal access is on or a client is connected (review L)', async () => {
+    st.terminalServer = false
+    const { events } = await start()
+    const journal = (server as unknown as { journal: { size: number } }).journal
+    events.emit('runs:event', { type: 'log', runId: 'r1', level: 'info', message: 'off' })
+    expect(journal.size).toBe(0)
+    st.terminalServer = true
+    events.emit('settings:changed', { terminalServer: true } as never)
+    events.emit('runs:event', { type: 'log', runId: 'r1', level: 'info', message: 'on' })
+    expect(journal.size).toBe(1)
+  })
+
   it('host_draining while the host drains', async () => {
     st.state = 'draining'
     await start()
@@ -383,6 +410,28 @@ describe.runIf(posix)('HostSocketServer requests', () => {
     const res = await c.response(7)
     expect(res.result).toEqual({ method: 'runs:list', args: ['p1'] })
     expect(st.calls[0].ctx).toMatchObject({ surface: 'socket', clientKind: 'tui', pid: 999, grantedScopes: ['read'] })
+  })
+
+  it("under version skew 'configure' covers host.stop only; read and operate still work (review L)", async () => {
+    st.result = (method) => ({ method })
+    await start()
+    const c = await client()
+    const { res } = await hello(c, { version: '0.9.0', scopes: ['read', 'operate', 'configure'] })
+    expect(res.result.grantedScopes).toEqual(['read', 'operate', 'configure'])
+    c.send(rpcRequest(2, 'settings:set', [{}]))
+    const refused = await c.response(2)
+    expect(refused.error.data.code).toBe('scope_denied')
+    expect(refused.error.data.message).toContain('same orgai and OrgAI version')
+    c.send(rpcRequest(3, 'host.stop', [{ force: false }]))
+    expect((await c.response(3)).result).toEqual({ method: 'host.stop' })
+    c.send(rpcRequest(4, 'runs:list', ['p1']))
+    expect((await c.response(4)).result).toEqual({ method: 'runs:list' })
+    expect(st.calls.map((x) => x.method)).toEqual(['host.stop', 'runs:list'])
+    // The same version gets every configure channel.
+    const d = await client()
+    await hello(d, { scopes: ['read', 'configure'] })
+    d.send(rpcRequest(5, 'settings:set', [{}]))
+    expect((await d.response(5)).result).toEqual({ method: 'settings:set' })
   })
 
   it('scope_denied through the gate (dispatcher and transport methods)', async () => {

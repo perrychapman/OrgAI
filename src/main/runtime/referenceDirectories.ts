@@ -200,10 +200,25 @@ function trimDotsSpaces(part: string): string {
   return end === part.length ? part : part.slice(0, end)
 }
 
+/**
+ * Definite mode (self-control): a leading home variable read as the home folder: `$HOME`, `${HOME}`, PowerShell
+ * `$env:HOME` / `$env:USERPROFILE` / `$HOME`, cmd `%USERPROFILE%` / `%HOME%`. These expand to a known
+ * value, and `$HOME/...` is the ordinary way to spell OrgAI's default data folder. Reference mode keeps its documented
+ * limit (variables are not followed).
+ */
+const HOME_VARIABLE = /^(?:\$\{HOME\}|\$HOME|\$env:(?:HOME|USERPROFILE)|%USERPROFILE%|%HOME%)(?=$|[\\/])/i
+
 /** One word as an absolute path against `cwd`, or null when it names no resolvable path. */
 function resolveWord(s: CheckState, raw: string, cwd: string | undefined): string | null {
   let w = raw
   if (!w || w.includes('\0')) return null
+  if (s.definite) {
+    const v = HOME_VARIABLE.exec(w)
+    if (v) {
+      if (!s.home || !s.p.isAbsolute(s.home)) return null
+      w = s.p.join(s.home, w.slice(v[0].length))
+    }
+  }
   if (w === '~' || /^~[\\/]/.test(w)) {
     if (!s.home || !s.p.isAbsolute(s.home)) return null
     w = s.p.join(s.home, w.slice(1))
@@ -285,12 +300,67 @@ function checkPart(s: CheckState, raw: string, cwd: string | undefined): string 
   return null
 }
 
+/** One glob component as an anchored RegExp source (`*`, `?`, `[...]` / `[!...]`; everything else literal). */
+function globComponentSource(c: string): string {
+  let out = ''
+  for (let i = 0; i < c.length; i++) {
+    const ch = c[i]
+    if (ch === '*') out += '[^\\\\/]*'
+    else if (ch === '?') out += '[^\\\\/]'
+    else if (ch === '[') {
+      const close = c.indexOf(']', i + 2)
+      if (close < 0) {
+        out += '\\['
+        continue
+      }
+      let body = c.slice(i + 1, close)
+      const negate = body.startsWith('!') || body.startsWith('^')
+      if (negate) body = body.slice(1)
+      out += `[${negate ? '^' : ''}${body.replace(/[\\\]^]/g, (m) => `\\${m}`)}]`
+      i = close
+    } else out += ch.replace(/[.*+?^${}()|[\]\\/]/g, (m) => `\\${m}`)
+  }
+  return out
+}
+
+/**
+ * Definite mode: the protected folder a glob word can reach, else null. The glob's components are matched one by one
+ * against each folder's: a glob as deep as the folder (or deeper) whose leading components all match names a path AT
+ * or UNDER it (`<data>/r?n/daemon.secret`, `<data>/r*`); a `**` component reaches anything below. A shallower glob
+ * only names a parent, which never counts.
+ */
+function globReaches(s: CheckState, full: string): string | null {
+  const parts = (v: string): string[] => fold(s, v).split(/[\\/]+/).filter((x, i) => x !== '' || i === 0)
+  const g = parts(full)
+  for (const r of s.refs) {
+    for (const spelling of r.real && r.real !== r.abs ? [r.abs, r.real] : [r.abs]) {
+      const rc = parts(spelling)
+      let ok = true
+      let k = 0
+      for (; k < rc.length; k++) {
+        const gc = g[k]
+        if (gc === undefined) {
+          ok = false
+          break
+        }
+        if (gc === '**') break
+        if (!GLOB_CHAR.test(gc) ? gc !== rc[k] : !new RegExp(`^${globComponentSource(gc)}$`).test(rc[k])) {
+          ok = false
+          break
+        }
+      }
+      if (ok) return r.ref
+    }
+  }
+  return null
+}
+
 function checkWord(s: CheckState, part: string, cwd: string | undefined): string | null {
   if (!part) return null
   const full = resolveWord(s, part, cwd)
   if (GLOB_CHAR.test(part)) {
     if (full) {
-      const hit = touchOf(s, full, false)
+      const hit = touchOf(s, full, false) ?? (s.definite ? globReaches(s, full) : null)
       if (hit) return hit
     }
     const dir = resolveWord(s, globDir(s, part), cwd)
@@ -361,7 +431,8 @@ function scanCommand(s: CheckState, text: string, startCwd: string | undefined, 
         const nested = scanCommand(s, word, cwd, depth + 1, unknown)
         if (nested || s.stopped) return nested
       }
-      for (const part of partsOf(word)) {
+      // `${HOME}` would be split at its braces (PUNCTUATION); definite mode reads it as `$HOME` (HOME_VARIABLE).
+      for (const part of partsOf(s.definite ? word.replace(/\$\{HOME\}/gi, () => '$HOME') : word)) {
         if (++s.parts > MAX_PARTS) return stopOr(s, { folder: first, how: 'names' })
         const hit = checkPart(s, part, cwd)
         if (hit) return { folder: hit, how: 'names' }
@@ -431,27 +502,17 @@ export function commandReferenceTouch(
   return null
 }
 
-/**
- * The folder of `refs` that `target` is AT or UNDER (never above), else null: the definite check selfControlGate.ts
- * uses for file tools. `~` expands to opts.home, a relative target resolves against `cwd` (none: null), and the
- * comparison is lexical and through real paths, case folded on win32 and darwin. A UNC or device target, a NUL
- * character or a non-string gives null (never touched on disk).
- */
-export function pathAtOrUnder(
-  target: unknown,
-  refs: readonly string[],
-  cwd: string | undefined,
-  opts: Pick<ReferenceCheckOptions, 'platform' | 'home'> = {}
-): string | null {
-  if (typeof target !== 'string' || !target || target.includes('\0') || !Array.isArray(refs)) return null
+/** A definite-mode CheckState over `refs` (absolute ones only), or null when none is usable. */
+function definiteState(refs: readonly string[], opts: Pick<ReferenceCheckOptions, 'platform' | 'home'>): CheckState | null {
+  if (!Array.isArray(refs)) return null
   const platform = opts.platform ?? process.platform
   const p: PathModule = platform === 'win32' ? win32 : posix
   const entries: RefEntry[] = []
   for (const r of refs) {
     if (typeof r === 'string' && r !== '' && !r.includes('\0') && p.isAbsolute(r)) entries.push({ ref: r, abs: p.resolve(r) })
   }
-  if (!entries.length || isUncLike(target)) return null
-  const s: CheckState = {
+  if (!entries.length) return null
+  return {
     p,
     platform,
     shell: 'bash',
@@ -464,6 +525,12 @@ export function pathAtOrUnder(
     definite: true,
     stopped: false
   }
+}
+
+/** `target` as an absolute path (`~` expanded, relative against cwd), or null (none, UNC / device, NUL). */
+function definiteAbs(s: CheckState, target: unknown, cwd: string | undefined): string | null {
+  if (typeof target !== 'string' || !target || target.includes('\0') || isUncLike(target)) return null
+  const p = s.p
   let w = target
   if (w === '~' || /^~[\\/]/.test(w)) {
     if (!s.home || !p.isAbsolute(s.home)) return null
@@ -471,8 +538,72 @@ export function pathAtOrUnder(
   }
   const base = typeof cwd === 'string' && cwd !== '' && p.isAbsolute(cwd) ? p.resolve(cwd) : undefined
   const abs = p.isAbsolute(w) ? p.resolve(w) : base ? p.resolve(base, w) : null
-  if (!abs || isUncLike(abs)) return null
-  return touchOf(s, abs, false)
+  return !abs || isUncLike(abs) ? null : abs
+}
+
+/** The folder of `refs` that is at or under `abs`, or inside its tree (`abs` an ancestor), lexically and through real paths. */
+function reachesBelow(s: CheckState, abs: string): string | null {
+  const hit = touchOf(s, abs, false)
+  if (hit) return hit
+  for (const r of s.refs) if (within(s, abs, r.abs)) return r.ref
+  if (!s.real) return null
+  const ra = realOf(s, abs)
+  for (const r of s.refs) {
+    r.real ??= realOf(s, r.abs)
+    if (within(s, ra, r.abs) || within(s, abs, r.real) || within(s, ra, r.real)) return r.ref
+  }
+  return null
+}
+
+/**
+ * The folder of `refs` that `target` is AT or UNDER (never above), else null: the definite check selfControlGate.ts
+ * uses for file tools. `~` expands to opts.home, a relative target resolves against `cwd` (none: null), and the
+ * comparison is lexical and through real paths, case folded on win32 and darwin. A UNC or device target, a NUL
+ * character or a non-string gives null (never touched on disk).
+ */
+export function pathAtOrUnder(
+  target: unknown,
+  refs: readonly string[],
+  cwd: string | undefined,
+  opts: Pick<ReferenceCheckOptions, 'platform' | 'home'> = {}
+): string | null {
+  const s = definiteState(refs, opts)
+  if (!s) return null
+  const abs = definiteAbs(s, target, cwd)
+  return abs ? touchOf(s, abs, false) : null
+}
+
+/**
+ * The folder of `refs` a file search can reach (selfControlGate.ts, Grep and Glob), else null. `root` is the search
+ * folder (`~` expanded, relative against cwd). `pattern` undefined = a recursive search (Grep): it reaches every folder
+ * at, under or BELOW the root, so a root that is the data dir or any ancestor of a protected path reaches it. A Glob
+ * `pattern` (relative to the root, or absolute) reaches a folder when its components match the folder's (`*`, `?`,
+ * `[...]`), or anything below its static folder once a `**` component appears; a glob shallower than the folder only
+ * lists a parent and never counts.
+ */
+export function searchReaches(
+  root: unknown,
+  pattern: string | undefined,
+  refs: readonly string[],
+  cwd: string | undefined,
+  opts: Pick<ReferenceCheckOptions, 'platform' | 'home'> = {}
+): string | null {
+  const s = definiteState(refs, opts)
+  if (!s) return null
+  const base = definiteAbs(s, root, cwd)
+  if (pattern === undefined) return base ? reachesBelow(s, base) : null
+  const full = definiteAbs(s, pattern, base ?? undefined)
+  if (!full) return null
+  if (!GLOB_CHAR.test(pattern) && !/[{}]/.test(pattern)) return touchOf(s, full, false)
+  const parts = full.split(/[\\/]+/)
+  const deep = parts.findIndex((c) => c.includes('**') || /[{}]/.test(c))
+  if (deep >= 0) {
+    // Everything below the static folder before the first `**` (or brace set, not expanded here) may be reached.
+    const staticDir = s.p.resolve(parts.slice(0, deep).join(s.p.sep) || s.p.sep)
+    const head = parts.slice(0, deep).some((c) => GLOB_CHAR.test(c))
+    return head ? (globReaches(s, full) ?? reachesBelow(s, s.p.resolve(globDir(s, full)))) : reachesBelow(s, staticDir)
+  }
+  return touchOf(s, full, false) ?? globReaches(s, full)
 }
 
 /** The reference folder a shell command touches (commandReferenceTouch's folder, as given in `refs`), else null. */

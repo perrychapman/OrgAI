@@ -717,3 +717,64 @@ Resolved `R1`–`R10` (single-host daemon vs Desktop ownership, socket authentic
   `invoke` path does not check the draining state (renderer writes during a quit after ownership release are as in
   Wave 0). A forced drain that hits its 10 s bound still releases ownership with writers in flight (logged). Windows
   named pipes, packaged builds.
+
+### Wave 2 (landed on dev, 2026-11-05; merges 25010f9..fe8d39a, integration fix 42ffb7b, review fix-up after it)
+
+- **Landed.** Socket server `src/main/host/socketServer.ts` (`HostSocketServer`: host.challenge / host.hello with the
+  structured HMAC proofs, 16 KB pre-auth cap, socket quotas, per-channel response caps, the 256 MB bulk budget,
+  `runs:subscribe` (`runSubscriptions.ts`: snapshot XOR replay, chain following) and `host.subscribe({ topics })`, the
+  durable ring `eventJournal.ts` (2,000 events / 16 MB, image scrubbing past 512 KB), `agent.partial` coalescing at the
+  queue tail (`outboundQueue.ts`), the peer ancestry check `peerCheck.ts`). Unified Electron host in `src/main/index.ts`
+  + `hostLifecycle.ts` (`--headless-host`, `--run <id>`, second-instance / activate, window-all-closed background mode,
+  the Keep / Stop / Cancel quit prompt while terminal clients are attached, the App settings "Terminal access" switch
+  `AppSettings.terminalServer`). Pre-mode self-control gate `src/main/runtime/selfControlGate.ts` in claude.ts, codex.ts
+  and mock.ts plus `childEnv.ts` scrubbing of `ORGAI_*` / `ELECTRON_RUN_AS_NODE`. The CLI `src/cli/` (bundled to
+  `out/cli/orgai.mjs`): entry and routing, host client, data-dir and project resolution, read-only store reader,
+  launcher, `--host inproc` host (`inprocHost.ts`, read-only secret overlay), `status`, `runs list/show`, `watch`,
+  `inbox`, `daemon status|start|stop|restart|logs`, `app`, `doctor`, `completions`; `sanitizeTty.ts` for every
+  host-provided string. Exit codes (`src/cli/types.ts` `EXIT`): 0 ok, 1 failure, 2 usage, 3 needs you, 4 rate limited,
+  5 auth, 6 host busy, 130 SIGINT.
+- **Gate.** `npm run typecheck`, `npm test` (vitest, includes `src/cli/commands/cli.int.test.ts` and
+  `src/cli/hostStop.int.test.ts` against a real inproc host over its socket), `npm run build`; e2e
+  `e2e/cli-host.mjs` and `e2e/cli-readonly.mjs` are in `e2e:free`.
+- **Deviations / decisions beyond the spec.**
+  - host.stop over the socket answers `{ stopping: true }` as soon as the drain starts; the CLI then waits for
+    daemon.json to go. `HostSocketServer.close()` flushes queued frames and ends each socket (forced after 1 s), and a
+    socket with requests in flight when it closes keeps them: the answers are queued, then the socket ends
+    (`closeAfterInflight`). This is what lets a non-forced stop, whose drain closes the server synchronously inside
+    the handler, reach `orgai daemon stop`.
+  - A host started with `--headless-host` (the background daemon) goes back to the background when its last window
+    closes, even when idle, and leaves only through its idle exit (`ORGAI_DAEMON_IDLE_MINUTES`) or host.stop. A
+    desktop-started host that went to the background while busy quits on a later idle close (as before); a desktop
+    host on macOS stays (Dock).
+  - Terminal access: a headless or inproc boot turns `terminalServer` on (the spec's "enabled when ... launches via
+    orgai") only while the user has not chosen a value; any settings:set that changes it sets the main-owned
+    `AppSettings.terminalServerChosen`, after which no boot overrides it and host.hello answers
+    `terminal_server_disabled`. Turning it off closes every authenticated socket at once (in-flight answers first).
+    While it is off and no client is connected, run events are not journaled (`EventJournal.markGap` makes older seqs
+    replay-evicted).
+  - Version skew: every requested scope is granted and `versionSkewWarning` is set, but a skewed client's
+    'configure' covers host.stop only; other configure channels answer `scope_denied`.
+  - runs:subscribe snapshots bound `activeRun` to 8 MB (`ACTIVE_RUN_SNAPSHOT_MAX_BYTES`): the oldest transcript
+    entries (and logs past the newest 200) are left out, counted in `snapshot.activeRunOmitted`.
+  - `--run <id>` opens a stored run too (cold start, ended runs), through `RunManager.summary`.
+  - Self-control gate: an interpreter run counts as the CLI only on an `orgai` / `orgai.mjs` / `orgai.js` file or a
+    file inside this install's `out/cli` / `src/cli` (`setOrgaiCliRoots`, set from `app.getAppPath()` and the inproc
+    chunk's own folder), never a project's `src/cli`; ELECTRON_RUN_AS_NODE needs an assignment outside quotes (or the
+    PowerShell forms). Shell words starting `$HOME` / `${HOME}` / `$env:USERPROFILE` / `%USERPROFILE%` expand to home,
+    and a glob whose components can match a protected path counts. Grep rooted at the data dir or any ancestor of a
+    protected path (path, else the cwd) is denied whatever its `glob`; a Glob whose pattern reaches one is denied.
+    Codex permissions approvals whose requested folders are at, under or above a protected path are declined with no
+    card.
+  - `sanitizeTty` keeps ZWJ / ZWNJ only after a non-ASCII character (emoji sequences, Persian / Indic ZWNJ); after
+    ASCII, a newline, a tab or at the start of a stream they are dropped. Wide East Asian characters count one column.
+  - `orgai watch` runs one reconnect loop at a time and closes a replaced client; a close during the first subscribe
+    reports the error and starts no background loop.
+  - Peer check: on macOS the accepted socket's peer pid comes from `lsof -nP -U -F pfdn` on the host's fd (fallback:
+    the pid the client claims).
+- **Unverified / open.** Linux socket-to-PID mapping (the claimed pid is used), Windows named pipes, their ACLs and the
+  peer check, the lsof output on other macOS versions, live Claude and Codex runs through the gate, the activate
+  handler, the `--run` window and the quit prompt by eye, fish completions, the packaged launcher and where a packaged
+  build's CLI bundle sits relative to `app.getAppPath()` (Wave 6). Honest gate limits: other variables than home, a
+  program that opens a protected file itself, aliases or renamed copies of `orgai`, and Codex commands that run inside
+  its own sandbox without an approval request.

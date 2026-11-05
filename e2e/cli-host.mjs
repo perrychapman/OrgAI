@@ -4,8 +4,8 @@
 // 1. Headless host: no window, daemon.json ready with hostKind 'headless-host'; a plain second launch opens one window
 //    in the incumbent; a second --headless-host launch opens none. Both losers exit 0.
 // 2. window-all-closed while busy (a live idle mock run): the host stays up and ready; a plain launch brings a window
-//    back with the run still live; after End session closing the window quits the host (it started headless): at
-//    once when nothing is counted busy, else through the idle exit once its background work ends.
+//    back with the run still live; after End session closing the window sends the host (it started headless, so it is
+//    the background daemon) back to the background, and it quits through its idle exit (6 s here), never at once.
 // 3. Desktop first: a --headless-host launch against a running desktop host opens no window.
 //
 // macOS-only observations: Dock hide / show are not checked here (not visible to the driver). Windows and Linux are
@@ -139,8 +139,12 @@ try {
   await app.evaluate(({ BrowserWindow }) => {
     for (const w of BrowserWindow.getAllWindows()) w.close()
   }).catch(() => {})
+  await sleep(2000)
+  const stillUp = app.process().exitCode === null && app.process().signalCode === null
+  check(stillUp, 'an idle close of the last window keeps a host that started headless running (daemon mode)')
+  check(readDaemon()?.state === 'ready', 'daemon.json stays ready after the idle close', JSON.stringify(readDaemon()?.state))
   const didExit = await Promise.race([gone, sleep(60_000).then(() => false)])
-  check(didExit === true, 'an idle close of the last window quits a host that started headless', `after ${Date.now() - quitStarted} ms`)
+  check(didExit === true, 'the background daemon then leaves through its idle exit', `after ${Date.now() - quitStarted} ms`)
   if (didExit) log(`host exited ${Date.now() - quitStarted} ms after the windows closed`)
   check((await waitFor(() => !fs.existsSync(DAEMON_JSON), 5000)) === true, 'daemon.json is removed on quit')
   app = undefined

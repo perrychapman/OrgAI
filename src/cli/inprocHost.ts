@@ -6,12 +6,14 @@
  * so window:openRun answers desktop_unavailable. Always loaded through a dynamic import (its own chunk,
  * out/cli/inprocHost.mjs). Electron-free; relative imports only.
  */
-import { join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { bootOrgAIHost, type OrgAIHost } from '../main/host/bootstrap'
 import { currentHostInstanceId } from '../main/host/identity'
 import { HostOwnershipError, acquireHostOwnership, type HostOwnership } from '../main/host/ownership'
 import { HostSocketServer } from '../main/host/socketServer'
 import { installLogging } from '../main/log'
+import { orgaiCliRootsOf, setOrgaiCliRoots } from '../main/runtime/selfControlGate'
 import type { SecretCipher } from '../main/store/secrets'
 import { openUrl } from './openUrl'
 import { CliError, EXIT, type InprocHostHandle } from './types'
@@ -50,6 +52,13 @@ export const NO_CIPHER: SecretCipher = {
 }
 
 export async function startInprocHost(opts: StartInprocHostOptions): Promise<InprocHost> {
+  // The self-control gate's CLI folders: this chunk sits in out/cli (bundled) or src/cli (sources), two levels below
+  // the app root either way.
+  try {
+    setOrgaiCliRoots(orgaiCliRootsOf(resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')))
+  } catch {
+    // No module URL (an unusual loader): the gate still matches the orgai file names.
+  }
   const { userDataDir, dataDir } = opts
   const logsDir = join(userDataDir, 'logs')
   if (opts.logging !== false) installLogging({ userDataDir, logsDir, appVersion: CLI_VERSION, isPackaged: false })

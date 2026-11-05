@@ -87,7 +87,20 @@ describe('sanitizeTty: whole strings', () => {
     expect(sanitizeTty('a‮b​c⁦d⁩')).toBe('abcd')
     const family = '\u{1f468}‍\u{1f469}‍\u{1f467}'
     expect(sanitizeTty(`hi ${family}!`)).toBe(`hi ${family}!`)
-    expect(sanitizeTty('a‌b')).toBe('a‌b') // ZWNJ kept too
+    // A joiner after ASCII (look-alike ids like R‍1) is dropped; after a non-ASCII letter it stays (ZWNJ in Persian).
+    expect(sanitizeTty('a‌b')).toBe('ab')
+    expect(sanitizeTty('R‍1 and req‌_1')).toBe('R1 and req_1')
+    expect(sanitizeTty('‍start\n‍line')).toBe('start\nline')
+    expect(sanitizeTty('می‌خواهم')).toBe('می‌خواهم')
+    const flag = '\u{1f3f3}️‍\u{1f308}'
+    expect(sanitizeTty(`x ${flag}`)).toBe(`x ${flag}`)
+  })
+
+  it('carries the joiner rule across chunks', () => {
+    const t = new TtySanitizer()
+    expect(t.write('id R') + t.write('‍1')).toBe('id R1')
+    const u = new TtySanitizer()
+    expect(u.write('\u{1f468}') + u.write('‍\u{1f469}')).toBe('\u{1f468}‍\u{1f469}')
   })
 
   it('drops tag characters and the variation selectors supplement', () => {

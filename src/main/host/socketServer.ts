@@ -86,7 +86,7 @@ import {
   type JsonRpcId,
   type JsonRpcRequest
 } from './protocol'
-import { HostRpcFailure, frameLimitFor, gateRequest, pushChannelsForTopic } from './registry'
+import { HostRpcFailure, channelEntry, frameLimitFor, gateRequest, pushChannelsForTopic } from './registry'
 import { RunSubscription, parseRunsSubscribeInput, subscribeRuns } from './runSubscriptions'
 
 export interface HostSocketServerOptions {
@@ -142,11 +142,31 @@ interface Conn {
   pendingLines: string[]
   incoming?: BulkReservation
   reservations: Set<BulkReservation>
+  /**
+   * close() ran while requests were in flight on this authenticated socket: no new request is read and no push is
+   * sent, but the in-flight answers (a host.stop reply, whose drain is what closed the server) are still queued; the
+   * socket is ended once the last one is (or after REFUSE_FLUSH_MS).
+   */
+  closeAfterInflight?: boolean
+  /**
+   * The client's version differs from the host's (versionSkewWarning sent): 'configure' channels other than host.stop
+   * are refused, since their argument shapes may differ between versions (cli-spec 3.3(2), 6.3(6)).
+   */
+  versionSkew?: boolean
 }
 
 /** Re-read after calls that may close the connection (defeats narrowing). */
 const isClosed = (c: Conn): boolean => c.state === 'closed'
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
+
+/** AppSettings.terminalServer of the host; false when it cannot be read. */
+function readTerminalServer(host: OrgAIHost): boolean {
+  try {
+    return host.settings.get().terminalServer === true
+  } catch {
+    return false
+  }
+}
 
 export class HostSocketServer {
   protected readonly opts: HostSocketServerOptions
@@ -156,6 +176,13 @@ export class HostSocketServer {
   protected readonly journal = new EventJournal()
   private closed = false
   private readonly conns = new Set<Conn>()
+  /**
+   * AppSettings.terminalServer as last read (attach, settings:changed). While it is off and no client is
+   * authenticated, run events are not journaled: a desktop user who never uses the terminal pays nothing per event.
+   */
+  private terminalOn = false
+  /** Run events are going unjournaled (see terminalOn); the journal's gap is marked once per such stretch. */
+  private journalPaused = false
   private nextId = 1
   private detach: Array<() => void> = []
   private readonly channelTopic = new Map<string, HostSubscribeTopic>()
@@ -226,8 +253,14 @@ export class HostSocketServer {
   attach(host: OrgAIHost): void {
     if (this.closed || this.host) return
     this.host = host
+    this.terminalOn = readTerminalServer(host)
     this.detach.push(host.activity.addSource('interactiveClients', () => this.attachedClientCount()))
     this.detach.push(host.events.on((channel, payload) => this.onHostEvent(channel, payload)))
+  }
+
+  private hasAuthenticated(): boolean {
+    for (const c of this.conns) if (c.state === 'auth') return true
+    return false
   }
 
   /** Authenticated sockets whose clientKind is 'tui' or whose runs:subscribe asked for an active run record. */
@@ -248,10 +281,13 @@ export class HostSocketServer {
         // ignore
       }
     }
-    // Flush what is already queued (a host.stop reply), then end each socket; a client that stops reading cannot
-    // hold it open past REFUSE_FLUSH_MS. Each connection is cleaned up on its socket's 'close'.
+    // Flush what is already queued, then end each socket; a client that stops reading cannot hold it open past
+    // REFUSE_FLUSH_MS. A socket with requests in flight first gets their answers: a non-forced host.stop drains
+    // synchronously inside its own handler, so its reply is produced only after this close. Each connection is
+    // cleaned up on its socket's 'close'.
     for (const c of [...this.conns]) {
       if (c.socket.destroyed) this.kill(c)
+      else if (c.state === 'auth' && c.inflight > 0) this.closeAfterInflight(c)
       else this.refuseQueued(c)
     }
   }
@@ -273,6 +309,32 @@ export class HostSocketServer {
   private refuse(conn: Conn, msg: unknown): void {
     this.send(conn, msg)
     this.refuseQueued(conn)
+  }
+
+  /** End every authenticated socket (Terminal access turned off); the server keeps serving new handshakes (refused). */
+  private dropAuthenticated(): void {
+    let n = 0
+    for (const c of [...this.conns]) {
+      if (c.state !== 'auth' || c.closeAfterInflight) continue
+      n++
+      if (c.socket.destroyed) this.kill(c)
+      else if (c.inflight > 0) this.closeAfterInflight(c)
+      else this.refuseQueued(c)
+    }
+    if (n) this.log(`Terminal access was turned off; closed ${n} terminal connection${n === 1 ? '' : 's'}.`)
+  }
+
+  /** close() with requests in flight: stop reading and pushing, end the socket once their answers are queued. */
+  private closeAfterInflight(conn: Conn): void {
+    conn.closeAfterInflight = true
+    if (conn.timer) clearTimeout(conn.timer)
+    conn.timer = undefined
+    conn.runs = undefined
+    conn.topics.clear()
+    conn.socket.pause()
+    setTimeout(() => {
+      if (conn.state !== 'closed') this.refuseQueued(conn)
+    }, REFUSE_FLUSH_MS).unref?.()
   }
 
   /** Stop reading, flush the queued frames, then end the socket. */
@@ -317,13 +379,13 @@ export class HostSocketServer {
   }
 
   private onData(conn: Conn, chunk: Buffer): void {
-    if (conn.state === 'closed') return
+    if (conn.state === 'closed' || conn.closeAfterInflight) return
     const r = conn.reader.push(chunk)
     for (const line of r.lines) {
-      if (isClosed(conn)) return
+      if (isClosed(conn) || conn.closeAfterInflight) return
       this.onLine(conn, line)
     }
-    if (isClosed(conn)) return
+    if (isClosed(conn) || conn.closeAfterInflight) return
     if (r.overflow) {
       this.refuse(conn, rpcError(null, { code: 'frame_too_large', message: `A frame exceeded ${conn.reader.maxLineBytes} bytes.` }))
       return
@@ -497,6 +559,7 @@ export class HostSocketServer {
     conn.clientKind = p.clientKind
     conn.pid = p.pid
     conn.scopes = grantedScopes
+    if (result.versionSkewWarning) conn.versionSkew = true
     conn.reader.maxLineBytes = RPC_BULK_FRAME_MAX_BYTES
     this.send(conn, rpcResult(HELLO_REQUEST_ID, result))
     this.log(`Client ${conn.id} connected (${p.clientKind} ${p.clientVersion.slice(0, 40)}, scopes ${grantedScopes.join(', ')}).`)
@@ -521,6 +584,13 @@ export class HostSocketServer {
     if (conn.inflight >= RPC_MAX_INFLIGHT_PER_SOCKET) {
       return this.send(conn, rpcError(id, { code: 'too_many_requests', message: `At most ${RPC_MAX_INFLIGHT_PER_SOCKET} requests may be in flight on one connection.` }))
     }
+    const entry = conn.versionSkew && method !== HOST_METHODS.hostStop ? channelEntry(method) : undefined
+    if (entry && 'scope' in entry && entry.scope === 'configure') {
+      return this.send(
+        conn,
+        rpcError(id, { code: 'scope_denied', message: `${method} needs the same orgai and OrgAI version (the 'configure' scope is limited to host.stop across versions); update them to the same version.` })
+      )
+    }
     conn.inflight++
     let p: Promise<unknown>
     try {
@@ -533,6 +603,7 @@ export class HostSocketServer {
       (err: unknown) => this.send(conn, rpcError(id, toRpcError(err)))
     ).finally(() => {
       conn.inflight--
+      if (conn.closeAfterInflight && conn.inflight === 0 && conn.state === 'auth') this.refuseQueued(conn)
     })
   }
 
@@ -611,6 +682,13 @@ export class HostSocketServer {
 
   private onHostEvent(channel: HostPushChannel, payload: unknown): void {
     if (this.closed) return
+    // Terminal access switched off: every authenticated client loses its connection (and so its scopes) at once, not
+    // only new handshakes (AppSettings.terminalServer, cli-spec invariant 2). In-flight answers (the settings:set that
+    // turned it off) still go out first.
+    if (channel === 'settings:changed' && this.host) {
+      this.terminalOn = readTerminalServer(this.host)
+      if (!this.terminalOn) this.dropAuthenticated()
+    }
     if (channel === 'runs:event') {
       this.onRunEvent(payload as RunEvent)
       return
@@ -633,6 +711,16 @@ export class HostSocketServer {
   }
 
   private onRunEvent(event: RunEvent): void {
+    // Nobody can read the journal while Terminal access is off (handshakes are refused): skip the per-event JSON
+    // encoding and the retained ring. A client connecting later gets a snapshot (its sinceSeq predates the gap).
+    if (!this.terminalOn && !this.hasAuthenticated()) {
+      if (!this.journalPaused) {
+        this.journalPaused = true
+        this.journal.markGap()
+      }
+      return
+    }
+    this.journalPaused = false
     let appended
     try {
       appended = this.journal.append(event)

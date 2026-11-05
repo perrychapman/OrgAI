@@ -10,6 +10,36 @@ import { CHAIN_WALK_MAX_HOPS } from '../../shared/view/runChains'
 import { scrubImages } from './eventJournal'
 import { HostRpcFailure } from './registry'
 
+/**
+ * Budget of a snapshot's activeRun (UTF-8 JSON bytes), well under RPC_CONTROL_RESPONSE_MAX_BYTES (16 MB) so the whole
+ * runs:subscribe answer fits with its live runs and cards (cli-spec 3.3(4).1). A run record can hold 5,000 transcript
+ * entries of up to 4,000 chars each.
+ */
+export const ACTIVE_RUN_SNAPSHOT_MAX_BYTES = 8 * 1024 * 1024
+/** Logs kept in a trimmed activeRun (newest). */
+const ACTIVE_RUN_TRIMMED_LOGS = 200
+
+const jsonBytes = (v: unknown): number => Buffer.byteLength(JSON.stringify(v) ?? '', 'utf8')
+
+/**
+ * The record as is when it fits `maxBytes`, else with its newest transcript entries that fit (oldest left out, the
+ * count in `omitted`) and its newest logs. Never cuts an entry's text. Pure; exported for tests.
+ */
+export function boundedActiveRun(rec: RunRecord, maxBytes = ACTIVE_RUN_SNAPSHOT_MAX_BYTES): { record: RunRecord; omitted: number } {
+  if (jsonBytes(rec) <= maxBytes) return { record: rec, omitted: 0 }
+  const logs = rec.logs.slice(-ACTIVE_RUN_TRIMMED_LOGS)
+  let budget = maxBytes - jsonBytes({ ...rec, transcript: [], logs })
+  let keep = 0
+  for (let i = rec.transcript.length - 1; i >= 0; i--) {
+    const size = jsonBytes(rec.transcript[i]) + 1
+    if (size > budget) break
+    budget -= size
+    keep++
+  }
+  const transcript = keep ? rec.transcript.slice(rec.transcript.length - keep) : []
+  return { record: { ...rec, transcript, logs }, omitted: rec.transcript.length - keep }
+}
+
 /** Runs ended this recently are in a snapshot's recentEndedRuns. */
 export const RECENT_ENDED_MS = 10 * 60 * 1000
 /** Caps on a subscription's id lists. */
@@ -246,7 +276,11 @@ export function subscribeRuns(input: RunsSubscribeInput, deps: SubscribeDeps): {
   const snapshot: Extract<RunsSubscribeResult, { mode: 'snapshot' }>['snapshot'] = { liveRuns, pendingCards, recentEndedRuns }
   if (input.includeActiveRunRecord) {
     const rec = view.get(input.includeActiveRunRecord)
-    if (rec) snapshot.activeRun = scrubImages(rec)
+    if (rec) {
+      const bounded = boundedActiveRun(scrubImages(rec))
+      snapshot.activeRun = bounded.record
+      if (bounded.omitted > 0) snapshot.activeRunOmitted = bounded.omitted
+    }
   }
   return { result: { mode: 'snapshot', hostInstanceId, seq: journal.currentSeq, filterKey: sub.filterKey, snapshot }, subscription: sub }
 }

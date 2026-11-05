@@ -116,6 +116,41 @@ describe('orgai watch', () => {
     for (const w of ['first', 'second', 'third', 'fourth']) expect(out.split(`Orchestrator: ${w}`).length - 1).toBe(1)
   })
 
+  it('a close during a resubscribe starts no second reconnect loop and leaves no client open (review M)', async () => {
+    const s = summary('run_live01', { status: 'running' })
+    const h1 = host([s], () => snapshotOf(record(s), 10))
+    // h2 drops while answering runs:subscribe: the call rejects and the close listeners fire at once.
+    const h2: FakeHostClient = host([s], () => {
+      h2.hostClose(new Error('draining'))
+      throw new Error('The connection to the OrgAI host closed.')
+    })
+    const h3 = host([s], () => snapshotOf(record(s), 20))
+    const f = fakeContext({ cwd: '/work/app', connect: [h1, h2, h3] })
+    const done = runWatch(f.ctx, ['R1'])
+    await flush()
+    h1.hostClose(new Error('reset'))
+    for (let i = 0; i < 6; i++) await flush()
+    // One loop: h1 (first), then h2 and h3 by that loop; no extra connect from h2's close listener.
+    expect(f.connectCalls).toHaveLength(3)
+    expect(h2.closed).toBe(true)
+    h3.push('runs:event', ev(21, { type: 'run.status', runId: s.id, status: 'finished' }))
+    expect(await done).toBe(EXIT.ok)
+    expect(f.connectCalls).toHaveLength(3)
+    for (const h of [h1, h2, h3]) expect(h.closed).toBe(true)
+  })
+
+  it('a close during the first subscribe reports the error and starts no background loop', async () => {
+    const s = summary('run_live01', { status: 'running' })
+    const h1: FakeHostClient = host([s], () => {
+      h1.hostClose(new Error('gone'))
+      throw new Error('The connection to the OrgAI host closed.')
+    })
+    const f = fakeContext({ cwd: '/work/app', connect: [h1] })
+    await expect(runWatch(f.ctx, ['R1'])).rejects.toThrow('closed')
+    for (let i = 0; i < 4; i++) await flush()
+    expect(f.connectCalls).toHaveLength(1)
+  })
+
   it('SIGINT detaches with exit 0 and leaves the run alone', async () => {
     const s = summary('run_live01', { status: 'running' })
     const h = host([s], () => snapshotOf(record(s)))

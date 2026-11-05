@@ -159,10 +159,16 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
 
   const runStore = new RunStore(dataDir)
   const secrets = new SecretStore(dataDir, opts.safeStorage, opts.secrets)
-  // A headless or in-process host exists to serve the CLI: terminal access is on (cli-spec 3.3; AppSettings.terminalServer).
+  // A headless or in-process host exists to serve the CLI: terminal access is turned on (cli-spec 1 / 3.3, "enabled
+  // when ... launches via orgai"; AppSettings.terminalServer), unless the user has chosen a value in App settings
+  // (terminalServerChosen): then their choice stands and host.hello refuses terminal clients while it is off.
   if (hostKind !== 'desktop' && settings.get().terminalServer !== true) {
-    settings.set({ ...settings.get(), terminalServer: true })
-    log.info(`Terminal access turned on for this ${hostKind} host.`)
+    if (settings.get().terminalServerChosen === true) {
+      log.info(`Terminal access is off in App settings; this ${hostKind} host refuses terminal clients until it is turned on.`)
+    } else {
+      settings.set({ ...settings.get(), terminalServer: true })
+      log.info(`Terminal access turned on for this ${hostKind} host.`)
+    }
   }
   // `adapters` is declared below and only read when discovery runs.
   let adapters: { claude: ClaudeAdapter; codex: CodexAdapter; mock?: MockAdapter }

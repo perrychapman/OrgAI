@@ -68,12 +68,21 @@ export type WindowAllClosedAction = 'quit' | 'background' | 'stay'
 
 /**
  * The last window closed. busy = the host's activity is not idle (live runs, paused auto-resumes, OAuth flows,
- * worktree ops, attached terminal clients...): keep serving in the background. Idle: a headless-started (or already
- * backgrounded) host quits, and so does a desktop host off macOS; a desktop host on macOS stays (Dock behaviour).
+ * worktree ops, attached terminal clients...): keep serving in the background. A host launched with --headless-host
+ * (launchedHeadless: the background daemon, cli-spec 3.2(1) "background daemon mode") also goes back to the
+ * background when idle and leaves only through its ORGAI_DAEMON_IDLE_MINUTES idle exit (or host.stop). Otherwise,
+ * idle: a desktop host that already went to the background once (startedHeadless) quits, and so does a desktop host
+ * off macOS; a desktop host on macOS stays (Dock behaviour).
  */
-export function windowAllClosedAction(input: { platform: NodeJS.Platform | string; busy: boolean; startedHeadless: boolean; quitting: boolean }): WindowAllClosedAction {
+export function windowAllClosedAction(input: {
+  platform: NodeJS.Platform | string
+  busy: boolean
+  startedHeadless: boolean
+  launchedHeadless?: boolean
+  quitting: boolean
+}): WindowAllClosedAction {
   if (input.quitting) return 'quit'
-  if (input.busy) return 'background'
+  if (input.busy || input.launchedHeadless) return 'background'
   if (input.startedHeadless || input.platform !== 'darwin') return 'quit'
   return 'stay'
 }
