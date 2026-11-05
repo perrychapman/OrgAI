@@ -3,13 +3,31 @@
  * - text: human lines. Every untrusted string (titles, prompts, agent names, transcript text, paths, host error
  *   messages) goes through `safe` / `safeLine` (sanitizeTty) BEFORE any ANSI styling is added, so an agent can never
  *   smuggle an escape sequence to the terminal. Colour only when ctx.globals.color.
- * - json: one pretty object with `schemaVersion` first. Never sanitized: JSON.stringify escapes every control.
- * - stream-json: one compact object per line, each with `schemaVersion`. A non-streaming command prints one line.
+ * - json: one pretty object with `schemaVersion` first, through `jsonText`: JSON.stringify escapes only U+0000-U+001F,
+ *   so DEL, the C1 controls U+0080-U+009F (U+009B is a one-byte CSI), the bidi controls, zero-width characters,
+ *   U+2028 / U+2029 and the BOM are escaped as \uXXXX too. The parsed value is unchanged; a terminal never sees them raw.
+ * - stream-json: one compact object per line, each with `schemaVersion`, through `jsonText` as well. A non-streaming
+ *   command prints one line.
  */
 import { sanitizeTty } from './tui/sanitizeTty'
 import { CLI_JSON_SCHEMA_VERSION, type CliContext } from './types'
 
 export type Json = Record<string, unknown>
+
+/**
+ * Characters JSON.stringify leaves raw that a terminal (or a reader) may act on: DEL and the C1 controls, Arabic letter
+ * mark, zero-width space / joiners and marks, line and paragraph separators, the bidi embeddings / overrides /
+ * isolates, the word joiner and invisible operators, and the BOM. They only ever occur inside JSON strings.
+ */
+const JSON_UNSAFE_RE = /[\u007f-\u009f\u061c\u200b-\u200f\u2028-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/g
+
+/**
+ * JSON.stringify(value, null, indent) with every JSON_UNSAFE_RE character written as a \uXXXX escape (review M15).
+ * JSON.parse of the result equals JSON.parse of the plain stringify.
+ */
+export function jsonText(value: unknown, indent?: number): string {
+  return JSON.stringify(value, null, indent).replace(JSON_UNSAFE_RE, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`)
+}
 
 /** True for json and stream-json. */
 export const isJsonOutput = (ctx: CliContext): boolean => ctx.globals.outputFormat !== 'text'
@@ -28,7 +46,7 @@ export function withSchema(value: Json): Json {
 export function emit(ctx: CliContext, value: Json, text: () => string | string[]): void {
   const fmt = ctx.globals.outputFormat
   if (fmt === 'json') {
-    ctx.io.stdout.write(`${JSON.stringify(withSchema(value), null, 2)}\n`)
+    ctx.io.stdout.write(`${jsonText(withSchema(value), 2)}\n`)
     return
   }
   if (fmt === 'stream-json') {
@@ -42,7 +60,7 @@ export function emit(ctx: CliContext, value: Json, text: () => string | string[]
 
 /** One compact JSON line with schemaVersion (stream-json records, and json mode of streaming commands). */
 export function emitLine(ctx: CliContext, value: Json): void {
-  ctx.io.stdout.write(`${JSON.stringify(withSchema(value))}\n`)
+  ctx.io.stdout.write(`${jsonText(withSchema(value))}\n`)
 }
 
 /** Text lines to stdout (text mode only; ignored for JSON formats). */

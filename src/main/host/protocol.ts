@@ -8,9 +8,11 @@
  * else -32000; an unparsable frame is -32700 with data.code 'bad_request'). Clients read `error.data.code`. This is a
  * deliberate deviation from the spec's string `error.code`.
  */
+import { execFile } from 'node:child_process'
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 import { closeSync, constants as fsConstants, fstatSync, lstatSync, openSync, readSync } from 'node:fs'
-import { join } from 'node:path'
+import { tmpdir } from 'node:os'
+import { join, win32 } from 'node:path'
 import {
   RPC_PRE_AUTH_FRAME_MAX_BYTES,
   type HostClientKind,
@@ -155,6 +157,69 @@ export function readDaemonSecret(dataDir: string, platform: NodeJS.Platform = pr
       }
     }
   }
+}
+
+// ---------- daemon.secret ACL (win32) ----------
+
+/** `%SystemRoot%\System32\<exe>` (never a bare name: Windows searches the cwd before PATH, review H1). */
+export function system32Exe(exe: string, env: NodeJS.ProcessEnv = process.env): string {
+  return win32.join(env.SystemRoot || env.windir || 'C:\\Windows', 'System32', exe)
+}
+
+/** The user SID in `whoami /user /fo csv /nh` output (`"host\user","S-1-5-21-..."`); undefined when there is none. */
+export function parseWhoamiSid(text: string): string | undefined {
+  const m = /"(S-1-\d+(?:-\d+){1,14})"/.exec(text) ?? /\b(S-1-\d+(?:-\d+){1,14})\b/.exec(text)
+  return m?.[1]
+}
+
+/**
+ * icacls arguments that leave `path` with one ACE: full control for `sid` (inheritance removed, so nothing inherited
+ * from the folder stays; `/grant:r` replaces any explicit grant of that SID). The SID form (`*S-1-...`) never depends on
+ * USERDOMAIN / USERNAME.
+ */
+export function secretAclArgs(path: string, sid: string): string[] {
+  return [path, '/inheritance:r', '/grant:r', `*${sid}:F`]
+}
+
+export interface RestrictSecretAclOptions {
+  env?: NodeJS.ProcessEnv
+  /** execFile; tests inject one. Resolves stdout, rejects on a failure. */
+  run?: (file: string, args: string[], opts: { cwd: string; timeoutMs: number }) => Promise<string>
+}
+
+function runFile(file: string, args: string[], opts: { cwd: string; timeoutMs: number }): Promise<string> {
+  return new Promise((ok, fail) => {
+    execFile(file, args, { cwd: opts.cwd, timeout: opts.timeoutMs, windowsHide: true, maxBuffer: 1024 * 1024 }, (err, stdout) =>
+      err ? fail(err) : ok(String(stdout))
+    )
+  })
+}
+
+/**
+ * win32: give daemon.secret an explicit DACL that admits the current user only (review H2 (3)): `whoami /user` for the
+ * SID, then `icacls <path> /inheritance:r /grant:r *<SID>:F`, both by absolute System32 path with cwd os.tmpdir() (as
+ * anthropicAuth.ts runs where.exe). Resolves undefined on success, else a short reason; never throws. This keeps other
+ * Windows accounts out even when the data folder lives outside the profile; it cannot keep out programs of the same
+ * user, which is what the Terminal access level (socketServer.ts grantScopes) and the self-control gate are for.
+ * UNVERIFIED on Windows: the whoami / icacls output was taken from Microsoft's documentation, never run from this code.
+ */
+export async function restrictDaemonSecretAcl(path: string, opts: RestrictSecretAclOptions = {}): Promise<string | undefined> {
+  const env = opts.env ?? process.env
+  const run = opts.run ?? runFile
+  const cwd = tmpdir()
+  let sid: string | undefined
+  try {
+    sid = parseWhoamiSid(await run(system32Exe('whoami.exe', env), ['/user', '/fo', 'csv', '/nh'], { cwd, timeoutMs: 10_000 }))
+  } catch (e) {
+    return `whoami failed: ${(e as Error).message}`.slice(0, 300)
+  }
+  if (!sid) return 'whoami named no user SID'
+  try {
+    await run(system32Exe('icacls.exe', env), secretAclArgs(path, sid), { cwd, timeoutMs: 10_000 })
+  } catch (e) {
+    return `icacls failed: ${(e as Error).message}`.slice(0, 300)
+  }
+  return undefined
 }
 
 // ---------- Line framing ----------

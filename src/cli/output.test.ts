@@ -8,7 +8,7 @@ vi.mock('./tui/sanitizeTty', () => ({
   sanitizeTty: (s: string) => s.replace(/\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g, '').replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '').replace(/[‪-‮⁦-⁩]/g, '').replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '')
 }))
 
-import { ellipsisEnd, ellipsisMiddle, emit, emitLine, relativeTime, safe, safeLine, styleFor, table, withSchema } from './output'
+import { ellipsisEnd, ellipsisMiddle, emit, emitLine, jsonText, relativeTime, safe, safeLine, styleFor, table, withSchema } from './output'
 import { fakeContext } from './testing/fakeContext'
 import { CLI_JSON_SCHEMA_VERSION } from './types'
 
@@ -39,6 +39,25 @@ describe('emit', () => {
     emit(f.ctx, { title: 'a\x1b]52;c;ZXZpbA==\x07b' }, () => '')
     expect(f.out()).not.toContain('\x1b')
     expect(JSON.parse(f.out()).title).toBe('a\x1b]52;c;ZXZpbA==\x07b')
+  })
+
+  it('JSON escapes C1 controls, DEL, bidi and zero-width characters and U+2028 / U+2029 too (review M15)', () => {
+    const nasty = 'a\u009b31mb\u0085c\u007fd\u202ee\u2066f\u200bg\u2028h\u2029i\ufeffj\u061ck'
+    for (const outputFormat of ['json', 'stream-json'] as const) {
+      const f = fakeContext({ globals: { outputFormat } })
+      emit(f.ctx, { title: nasty, nested: [{ name: '\u0090x\u009c' }] }, () => '')
+      emitLine(f.ctx, { t: nasty })
+      const out = f.out()
+      expect(out, outputFormat).not.toMatch(/[\u007f-\u009f\u061c\u200b-\u200f\u2028-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/)
+      expect(out).toContain('\\u009b')
+      expect(out).toContain('\\u202e')
+      const first = JSON.parse(out.trimEnd().split('\n')[0]!.startsWith('{"') ? out.trimEnd().split('\n')[0]! : out.slice(0, out.lastIndexOf('{"schemaVersion"')))
+      expect(first.title).toBe(nasty)
+      expect(first.nested[0].name).toBe('\u0090x\u009c')
+    }
+    // Ordinary text, emoji with ZWJ round-trips; only the escape spelling differs.
+    expect(JSON.parse(jsonText({ s: 'café 👩\u200d💻 日本' }))).toEqual({ s: 'café 👩\u200d💻 日本' })
+    expect(jsonText({ a: 'plain' }, 2)).toBe(JSON.stringify({ a: 'plain' }, null, 2))
   })
 
   it('text prints the renderer lines', () => {

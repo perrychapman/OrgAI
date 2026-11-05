@@ -43,7 +43,7 @@ import { isOpenStatus } from '../../shared/view/runChains'
 import { runIndexMap, runTag } from '../../shared/view/runLabels'
 import { statusText } from '../../shared/view/runStatus'
 import { overridesWidening } from '../../main/runtime/runOverrides'
-import { ensureHost, connectFailure, type EnsuredHost } from '../client/ensureHost'
+import { ensureHost, connectFailure, missingScopesError, type EnsuredHost } from '../client/ensureHost'
 import { RunStream, defaultRunStreamTimers, type RunStreamTimers, type SnapshotResult } from '../client/runStream'
 import { TUI_FLAGS, findCommand } from '../commandTable'
 import { parseFlags, type FlagSpec } from '../flags'
@@ -219,10 +219,9 @@ class Session {
   }
 
   checkGranted(scope: HostScope): void {
-    const granted = this.client.hello.grantedScopes
-    if (Array.isArray(granted) && !granted.includes(scope)) {
-      throw new CliError(`The OrgAI host did not grant the '${scope}' access this needs.`, EXIT.failure)
-    }
+    // Names the fix: the Terminal access level (review H2) or a version skew.
+    const missing = missingScopesError(this.client, [scope])
+    if (missing) throw missing
   }
 
   async needConfigure(): Promise<void> {

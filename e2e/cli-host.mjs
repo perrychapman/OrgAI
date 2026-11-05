@@ -159,7 +159,8 @@ try {
   await sleep(1500)
   check((await windowCount(app)) === 1, 'the desktop host opened no new window for it')
 
-  // Terminal access switch (App settings > General > Advanced settings). The headless boot turned it on.
+  // Terminal access switch (App settings > General > Advanced settings). The headless boots above opened it for their
+  // own session only and never saved it (review H2), so the desktop host starts with it off.
   const p3 = desktop.page
   await openAppSettings(p3)
   const adv = p3.locator('[data-testid=settings-advanced][data-pane=app-general]')
@@ -168,13 +169,13 @@ try {
   const sw = p3.locator('[data-testid=terminal-server-switch]')
   await sw.waitFor({ timeout: 10_000 })
   const before = await p3.evaluate(() => window.orgai.settings.get().then((s) => s.terminalServer))
-  check(before === true && (await sw.getAttribute('aria-checked')) === 'true', 'Terminal access shows on after a headless boot', String(before))
-  await sw.click()
-  const off = await waitFor(async () => (await p3.evaluate(() => window.orgai.settings.get().then((s) => s.terminalServer))) === false, 5000)
-  check(off === true && (await sw.getAttribute('aria-checked')) === 'false', 'turning Terminal access off saves terminalServer false')
+  check(before === false && (await sw.getAttribute('aria-checked')) === 'false', 'Terminal access stays off (not saved) after a headless boot', String(before))
   await sw.click()
   const on = await waitFor(async () => (await p3.evaluate(() => window.orgai.settings.get().then((s) => s.terminalServer))) === true, 5000)
-  check(on === true, 'turning it back on saves terminalServer true')
+  check(on === true && (await sw.getAttribute('aria-checked')) === 'true', 'turning Terminal access on saves terminalServer true')
+  await sw.click()
+  const off = await waitFor(async () => (await p3.evaluate(() => window.orgai.settings.get().then((s) => s.terminalServer))) === false, 5000)
+  check(off === true && (await sw.getAttribute('aria-checked')) === 'false', 'turning it off again saves terminalServer false')
 
   // orgai command row (cli-spec 7(3), Wave 6), right under Terminal access. A dev build always reports 'unavailable',
   // so only that state is driven here; install, update and remove are covered by the unit tests in lib/cliShim.test.ts.

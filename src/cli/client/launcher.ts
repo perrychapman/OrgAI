@@ -135,11 +135,36 @@ export function packagedApp(
   return { error: packagedAppMissing(appBinary) }
 }
 
-/** The environment a spawned host gets: no ORGAI_SECRET_*, no ELECTRON_RUN_AS_NODE, ORGAI_DATA_DIR only when chosen. */
+/** Variables a command read a secret from (consumeSecretEnv); never handed to a spawned host. */
+const consumedSecretVars = new Set<string>()
+
+/**
+ * Read a secret from the environment variable `name` (--from-env, --client-secret-from-env, decide --secret
+ * NAME=VAR) and take it out of `env` at once, so a host this command starts later, and that host's agents, never
+ * inherit it (review M13). hostSpawnEnv also leaves the name out from then on, whatever environment it is given.
+ * Commands read their secrets before they connect (withHost may start a host).
+ */
+export function consumeSecretEnv(env: NodeJS.ProcessEnv, name: string): string | undefined {
+  const value = env[name]
+  consumedSecretVars.add(name)
+  delete env[name]
+  return value
+}
+
+/** Tests: forget the consumed names. */
+export function resetConsumedSecretEnv(): void {
+  consumedSecretVars.clear()
+}
+
+/**
+ * The environment a spawned host gets: no ORGAI_SECRET_*, no variable a secret was read from (consumeSecretEnv), no
+ * ELECTRON_RUN_AS_NODE, ORGAI_DATA_DIR only when chosen.
+ */
 export function hostSpawnEnv(env: NodeJS.ProcessEnv, opts: { userDataDir: string; userChoseDataDir: boolean }): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = {}
   for (const [k, v] of Object.entries(env)) {
     if (v === undefined || k.startsWith(SECRET_ENV_PREFIX) || k === 'ELECTRON_RUN_AS_NODE' || k === 'ORGAI_DATA_DIR') continue
+    if (consumedSecretVars.has(k)) continue
     out[k] = v
   }
   if (opts.userChoseDataDir) out.ORGAI_DATA_DIR = opts.userDataDir

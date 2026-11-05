@@ -4,7 +4,7 @@ import { parseFlags } from '../../flags'
 import { confirm, hostCall, readSecretValue, runSubcommands, withHost } from '../../manage'
 import { emit, safeLine, styleFor, table, termWidth } from '../../output'
 import { CliError, EXIT, type CliContext } from '../../types'
-import { CONFIGURE, DEFINITION_FLAGS, OPERATE, READ, TEST_TIMEOUT_MS, authText, authWord, definitionLines, findLibrary, listLibrary, newLibraryEntry, noMore, targetText, testLines } from './common'
+import { CONFIGURE, DEFINITION_FLAGS, OPERATE, READ, TEST_TIMEOUT_MS, authText, authWord, definitionLines, findLibrary, listLibrary, newLibraryEntry, noMore, notePlainValues, targetText, testLines } from './common'
 
 const usage = (m: string): CliError => new CliError(m, EXIT.usage)
 
@@ -74,6 +74,7 @@ async function libAdd(ctx: CliContext, args: string[]): Promise<number> {
   if (!positionals[0]) throw usage('Usage: orgai mcp library add <name> (--command <cmd> [--arg <a>]... | --url <url>) [options]')
   noMore(positionals, 1)
   const entry = newLibraryEntry(positionals[0], values, !!values['per-project-secrets'])
+  notePlainValues(ctx, values)
   return withHost(ctx, [...CONFIGURE], async (client) => {
     const list = await hostCall<McpLibraryInfo[]>(client, 'mcpLibrary:upsert', [entry])
     const saved = (Array.isArray(list) ? list : []).find((l) => l.entry.id === entry.id)
@@ -109,10 +110,11 @@ async function libSetSecret(ctx: CliContext, args: string[]): Promise<number> {
   if (!ref || !name) throw usage('Usage: orgai mcp library set-secret <id-or-name> <NAME> (--from-env <VAR> | --stdin | --clear) [--header]')
   noMore(positionals, 2)
   if (values.clear && (values['from-env'] !== undefined || values.stdin)) throw usage('--clear takes no value; drop --from-env / --stdin.')
+  // Read (and taken out of the environment) before withHost may start a host, which would inherit it (review M13).
+  const value = values.clear ? null : await readSecretValue(ctx, { fromEnv: values['from-env'], stdin: values.stdin, what: `the value of ${safeLine(name)}` })
   return withHost(ctx, [...CONFIGURE], async (client) => {
     const l = await findLibrary(client, ref)
     const kind: McpSecretKind = values.header || (!(l.entry.secretEnv ?? []).includes(name) && (l.entry.secretHeaders ?? []).includes(name)) ? 'header' : 'env'
-    const value = values.clear ? null : await readSecretValue(ctx, { fromEnv: values['from-env'], stdin: values.stdin, what: `the value of ${safeLine(name)}` })
     await hostCall(client, 'mcpLibrary:setSecret', [{ libraryId: l.entry.id, kind, name, value }])
     emit(ctx, { id: l.entry.id, kind, name, set: value !== null }, () => (value === null ? `Cleared ${safeLine(name)} of ${safeLine(l.entry.name)}.` : `Saved ${safeLine(name)} for ${safeLine(l.entry.name)}.`))
     return EXIT.ok

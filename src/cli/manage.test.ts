@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import type { HostRpcErrorCode, HostScope } from '../shared/types'
-import { TERMINAL_ACCESS_HINT } from './client/ensureHost'
+import { TERMINAL_ACCESS_HINT, TERMINAL_FULL_ACCESS_HINT, VERSION_SKEW_SCOPE_HINT } from './client/ensureHost'
+import { hostSpawnEnv, resetConsumedSecretEnv } from './client/launcher'
 import {
   confirm,
   hostCall,
@@ -99,9 +100,20 @@ describe('withHost', () => {
     let ran = false
     const e = await caught(withHost(f.ctx, ['read', 'configure'], async () => (ran = true)))
     expect(e.exitCode).toBe(1)
-    expect(e.message).toBe('The OrgAI host did not grant the access this needs (configure). A host of another version accepts only read, operate and decide from this CLI.')
+    expect(e.message).toBe(`The OrgAI host did not grant the 'configure' access this needs. ${TERMINAL_FULL_ACCESS_HINT}`)
     expect(ran).toBe(false)
     expect(client.closed).toBe(true)
+    // A skewed host names the version instead.
+    const skewed = new FakeHostClient({}, { hello: { grantedScopes: ['read'], versionSkewWarning: 'other version' } })
+    const g = fakeContext({ connect: [skewed] })
+    const s = await caught(withHost(g.ctx, ['read', 'decide', 'configure'], async () => undefined))
+    expect(s.message).toBe(`The OrgAI host did not grant the 'decide', 'configure' access this needs. ${VERSION_SKEW_SCOPE_HINT}`)
+  })
+
+  it('a scope_denied naming Terminal access is passed on as it is (review H2)', () => {
+    const e = hostError(rpcError({ code: 'scope_denied', message: "runs:decide needs the 'decide' scope. Terminal access lets terminal clients watch and run work only." }))
+    expect(e.message).not.toContain('another version')
+    expect(e.exitCode).toBe(1)
   })
 
   it('notes a headless host it started', async () => {
@@ -189,6 +201,19 @@ describe('readSecretValue', () => {
   it('reads a set environment variable', async () => {
     const f = fakeContext({ env: { MY_TOKEN: 'tok-1' } })
     expect(await readSecretValue(f.ctx, { fromEnv: 'MY_TOKEN', what: 'the token' })).toBe('tok-1')
+  })
+
+  it('takes the variable out of the environment, so a host started afterwards never inherits it (review M13)', async () => {
+    resetConsumedSecretEnv()
+    const env: NodeJS.ProcessEnv = { MY_TOKEN: 'tok-1', PATH: '/bin' }
+    const f = fakeContext({ env })
+    expect(await readSecretValue(f.ctx, { fromEnv: 'MY_TOKEN', what: 'the token' })).toBe('tok-1')
+    expect(f.ctx.env.MY_TOKEN).toBeUndefined()
+    // Even an environment that still holds it (another copy) never passes it to a spawned host.
+    const spawned = hostSpawnEnv({ MY_TOKEN: 'tok-1', PATH: '/bin', ORGAI_SECRET_X: 'y' }, { userDataDir: '/u', userChoseDataDir: false })
+    expect(spawned).toEqual({ PATH: '/bin' })
+    resetConsumedSecretEnv()
+    expect(hostSpawnEnv({ MY_TOKEN: 'tok-1' }, { userDataDir: '/u', userChoseDataDir: false })).toEqual({ MY_TOKEN: 'tok-1' })
   })
 
   it('a missing or empty variable is exit 2 naming the variable, never a value', async () => {

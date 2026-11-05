@@ -10,7 +10,8 @@
 import { projectKindOf } from '../shared/defaults'
 import type { HostScope, HostSubscribeTopic, Project } from '../shared/types'
 import { pushChannelsForTopic } from '../main/host/registry'
-import { ensureHost, TERMINAL_ACCESS_HINT } from './client/ensureHost'
+import { ensureHost, missingScopesError, TERMINAL_ACCESS_HINT, VERSION_SKEW_SCOPE_HINT } from './client/ensureHost'
+import { consumeSecretEnv } from './client/launcher'
 import { note, safeLine, warn } from './output'
 import { checkProjectResolution, warnVersionSkew } from './runRef'
 import { CliError, EXIT, type CliContext, type HostCallError, type HostClient } from './types'
@@ -21,8 +22,6 @@ export const SECRET_STDIN_MAX_BYTES = 64 * 1024
 /** An environment variable name (as decide.ts accepts for --secret). */
 const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/
 
-/** A host of another version grants this CLI only these scopes (hello.grantedScopes). */
-const SKEW_HINT = 'A host of another version accepts only read, operate and decide from this CLI.'
 
 // ---------- Replaceable process I/O ----------
 
@@ -105,9 +104,8 @@ export async function withHost<T>(ctx: CliContext, scopes: HostScope[], fn: (cli
   try {
     warnVersionSkew(ctx, host.client)
     if (host.started && host.inproc === undefined) note(ctx, 'Started the OrgAI host in the background.')
-    const granted = host.client.hello.grantedScopes
-    const missing = Array.isArray(granted) ? scopes.filter((s) => !granted.includes(s)) : []
-    if (missing.length) throw new CliError(`The OrgAI host did not grant the access this needs (${missing.join(', ')}). ${SKEW_HINT}`, EXIT.failure)
+    const missing = missingScopesError(host.client, scopes)
+    if (missing) throw missing
     return await fn(host.client)
   } finally {
     await cleanup()
@@ -134,7 +132,8 @@ export function hostError(e: unknown): CliError {
     case 'unknown_channel':
       return new CliError(message, EXIT.usage)
     case 'scope_denied':
-      return new CliError(`${message} ${SKEW_HINT}`, EXIT.failure)
+      // A scope Terminal access withheld names its own fix; anything else is a version skew.
+      return new CliError(/Terminal access/.test(message) ? message : `${message} ${VERSION_SKEW_SCOPE_HINT}`, EXIT.failure)
     case 'stale_target_digest':
     case 'stale_revision':
       return new CliError(message, EXIT.failure)
@@ -186,7 +185,8 @@ export async function confirm(ctx: CliContext, question: string, yes: boolean): 
 /**
  * A secret value from exactly one source: the environment variable `fromEnv` (set and non-empty) or stdin (one
  * trailing newline trimmed, at most 64 KB, never an interactive terminal: the value would echo). Secrets are never
- * accepted on argv and never printed; errors name the variable, never a value.
+ * accepted on argv and never printed; errors name the variable, never a value. The variable is taken out of the
+ * environment once read (launcher.ts consumeSecretEnv): call this before withHost, which may start a host.
  */
 export async function readSecretValue(ctx: CliContext, opts: { fromEnv?: string; stdin?: boolean; what: string }): Promise<string> {
   const { fromEnv, stdin, what } = opts
@@ -194,7 +194,8 @@ export async function readSecretValue(ctx: CliContext, opts: { fromEnv?: string;
   if (fromEnv === undefined && !stdin) throw new CliError(`Give ${what} with --from-env <VAR> or --stdin; secrets are never taken as arguments.`, EXIT.usage)
   if (fromEnv !== undefined) {
     if (!ENV_NAME_RE.test(fromEnv)) throw new CliError(`--from-env needs an environment variable name, not "${safeLine(fromEnv).slice(0, 40)}".`, EXIT.usage)
-    const v = ctx.env[fromEnv]
+    // Taken out of the environment at once: a host this command starts (and its agents) never inherit it (review M13).
+    const v = consumeSecretEnv(ctx.env, fromEnv)
     if (v === undefined || v === '') throw new CliError(`The environment variable ${fromEnv} is not set or empty; it should hold ${what}.`, EXIT.usage)
     return v
   }

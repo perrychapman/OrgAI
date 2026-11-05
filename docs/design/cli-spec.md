@@ -29,7 +29,7 @@ It combines three proven workflows while preserving every runtime and security i
 
 1. **Single-owner runtime host with atomic pre-store locking.** At most one `OrgAIHost` instance owns a `userDataDir` (`dataDir = <userDataDir>/data`) at any moment. Exclusive ownership acquisition (`app.requestSingleInstanceLock()` after `userData` override + atomic `<dataDir>/run/startup.mkdir` mutex + bound per-instance kernel socket `d-<hostInstanceId>.sock` / Named Pipe + `<dataDir>/run/daemon.json`) occurs **before** any store constructor (`RunStore`, `ProjectStore`, `SettingsStore`, `SecretStore`) or boot housekeeping runs, preventing concurrent boot normalization from marking live runs `finished` (`endedBy: 'app'`).
 2. **Honest same-user threat model & defence-in-depth self-control gate.** On Unix/Windows without mandatory access control, unsandboxed code running as the user's UID (such as approved build scripts, MCP stdio servers, or commands that Codex executes inside its own `workspace-write` sandbox without consulting `onCommandApproval`) shares the user's filesystem privileges. Accordingly:
-   - Every host always binds its per-instance socket and writes `daemon.json` to enforce single-instance ownership, while **external CLI/TUI RPC access** is gated by `AppSettings.terminalServer` (enabled when the user installs the `orgai` CLI command or launches via `orgai`; when disabled, `host.hello` refuses external clients with `code: 'terminal_server_disabled'`).
+   - Every host always binds its per-instance socket and writes `daemon.json` to enforce single-instance ownership, while **external CLI/TUI RPC access** is gated by `AppSettings.terminalServer` (turned on in App settings or by installing the `orgai` command; a host that `orgai` launches headless or in process accepts terminal clients for that session only and never saves it; when disabled, `host.hello` refuses external clients with `code: 'terminal_server_disabled'`). What a client may do is capped by `AppSettings.terminalAccessLevel` (`'operate'` by default: `read` + `operate`; `'full'` adds `decide` + `configure`), which only the desktop window raises; see 3.3 (Review fixes, PR #18).
    - A built-in pre-mode denial check **`checkSelfControlDenial`** (invoked **before** `matchingRule`, `permissionMode` checks, auto-classifiers, or permission cards in `claude.ts`, `codex.ts`, and `mock.ts`) denies agent tool calls (`Bash`, `PowerShell`, `Read`, `Glob`, `Grep`, `Edit`, `Write`, `MultiEdit`, `NotebookEdit`) that invoke `orgai` or read/write `<dataDir>/run/**`, `<dataDir>/secrets.json`, `<dataDir>/codex/**`, or the runtime socket directory—while keeping `<dataDir>/quick/quick_<id>`, `<dataDir>/project-skills/`, and `<dataDir>/skills/` accessible to runs that use them.
    - Socket connections authenticate the full handshake transcript (binding all client and host fields via JSON-array HMAC-SHA256). Capability scopes (`'read'`, `'operate'`, `'decide'`, `'configure'`) act as a least-privilege guardrail for CLI subcommands (where `'operate'` `RunOverrides` can only **narrow** permissions/autonomy via an explicit transition matrix, never widen them without `'configure'`).
 3. **Zero duplicated runtime or view-model logic.** Adapters (`claude.ts`, `codex.ts`, `mock.ts`), `RunManager`, `harnessTools.ts`, `prompts.ts`, `continuation.ts`, `integration.ts`, `worktrees.ts`, `permissionRules.ts`, `ruleMatch.ts`, `pricing.ts`, `runUsage.ts`, and all stores are shared 100%. Pure renderer view-models (`runStatus.ts`, `runChains.ts`, `viewPendingCards.ts`, `needsYou.ts`, `orgDiff.ts`, `mcpProposal.ts`, `transcriptRows.ts`, `usageView.ts`, `cost.ts`, `teamView.ts`, `permissionCopy.ts`) move to `src/shared/view/` (with re-exports in `src/renderer/src/lib/`) so both `tsconfig.node.json` and `tsconfig.web.json` compile them.
@@ -112,7 +112,7 @@ Node's standard library does not expose `flock()`/`fcntl()`, and `RunStore`'s co
    - While holding `startup.mkdir`, if `<dataDir>/run/daemon.json` exists, check `isLiveProcess(daemon.pid, daemon.processStartTime)` and attempt a `1,500 ms` connection to `daemon.endpoint`:
      - If the socket connects, fails with `EACCES`, or times out (`ETIMEDOUT`) while `isLiveProcess` is `true`, a live host owns `dataDir`: remove our `startup.mkdir` and abort boot with `HostAlreadyRunningError` (exit code `6`).
      - Only when the socket returns `ENOENT` or `ECONNREFUSED` **and** `isLiveProcess` is `false`, unlink the dead instance's specific socket path `daemon.endpoint` (if it lies inside `<dataDir>/run/` or a `tmpdir/orgai-*` runtime dir) and sweep any orphaned `orgai-*` runtime directories whose owner PID is dead.
-   - Generate a fresh 32-byte hex secret in `<dataDir>/run/daemon.secret` (`mode: 0o600`; on Windows, if `userDataDir` is outside `%APPDATA%` / `%LOCALAPPDATA%`, apply an explicit current-user-only DACL via `icacls`).
+   - Generate a fresh 32-byte hex secret in `<dataDir>/run/daemon.secret` (`mode: 0o600`; on Windows, if `userDataDir` is outside `%APPDATA%` / `%LOCALAPPDATA%`, apply an explicit current-user-only DACL via `icacls`; the socket server additionally restricts it to the user's SID before it answers the first `host.hello`, `protocol.ts` `restrictDaemonSecretAcl`, and refuses every hello when that fails).
    - Bind a **unique per-instance listener** so no host ever unlinks another host's socket path:
      - **macOS / Linux**: `<dataDir>/run/d-<hostInstanceId>.sock` (`mode: 0o600`, where `hostInstanceId` is a 12-hex-char random ID). If `Buffer.byteLength(sockPath) >= 100` (leaving headroom under macOS's 104-byte and Linux's 108-byte `sun_path` limits), create `<runtimeBase>/orgai-<hostInstanceId>` (`mode: 0o700`, verified via `lstatSync`) under `$XDG_RUNTIME_DIR` or `os.tmpdir()` and bind `d.sock` inside it.
      - **Windows**: Named Pipe `\\.\pipe\orgai-<sha256(canonicalPath(dataDir)).slice(0, 20)>-<hostInstanceId>`. (Because each host instance uses a unique pipe suffix to prevent cross-user pipe squatting, single-instance exclusivity on Windows is enforced by the `startup.mkdir` + `daemon.json` liveness protocol above.)
@@ -289,9 +289,9 @@ Every single channel constant across `IPC`, `TEMPLATE_ENGAGEMENT_IPC`, `KNOWLEDG
      - *(Note: `<dataDir>/quick/quick_<id>`, `<dataDir>/project-skills/`, and `<dataDir>/skills/` are **not** blocked so Quick scratch runs, MCP build sessions, and skill loads continue to work!)*
    - Any `Read`, `Glob`, `Grep`, `Edit`, `Write`, `MultiEdit`, or `NotebookEdit` targeting `controlProtectedPaths`, or any `Bash`/`PowerShell` command segment invoking `orgai` (`orgai`, `orgai.exe`, `orgai.cmd`, `ELECTRON_RUN_AS_NODE`, or `node`/`tsx` targeting `out/cli` or `src/cli`) or referencing a path in `controlProtectedPaths`:
      - Is **denied outright** before any mode or rule check (`permissionDecision: 'deny'` in Claude `PreToolUse` with message `"OrgAI: Agent tools may not invoke the OrgAI CLI or access OrgAI's internal control and secret files."`; declined without a card in Codex `onCommandApproval` / `onFileApproval` with a harness transcript warning row).
-     - *(Documented boundary: shell commands that Codex executes inside its own OS sandbox without firing `onCommandApproval` are governed by Codex's sandbox policy rather than `onCommandApproval`.)*
+     - *(Documented boundary: shell commands that Codex executes without firing `onCommandApproval` never reach this gate. Under `workspace-write` they are confined by Codex's sandbox, which still lets them read the user's files (`cat <dataDir>/run/daemon.secret` under `untrusted` counts as a known-safe read and runs unasked). Under `bypassPermissions` the Codex adapter runs `approvalPolicy: 'never'` with `sandbox: 'danger-full-access'` (`codexProtocol.ts` `policyFor`): no approval fires and there is no sandbox at all, so nothing but OS file permissions stands between such a command and the protected paths. What bounds it is the Terminal access level: with the default `'operate'` a stolen secret yields `read` + `operate` only, never `decide` or `configure`.)*
 2. **Best-Effort Peer Process Ancestry Check (Zero Native Addon)**:
-   - Because Node's built-in `net.Socket` does not expose `LOCAL_PEERPID` / `SO_PEERCRED` / `GetNamedPipeClientProcessId` without a native addon, the host performs a best-effort (`<= 150 ms` timeout) OS socket-to-PID verification (`lsof -nP -U -a -p <hello.pid>` on macOS or `/proc/<hello.pid>/fd` on Linux, plus `ps -o pid=,ppid=` ancestry walk) when available. If the verified client PID is a descendant of any child process spawned by `RunManager` (`claude` SDK subprocesses, `codex app-server`, `mcp/probe.ts`), the connection is rejected (`code: 'agent_descendant_refused'`). When OS peer mapping is unavailable or a process double-forks, the host logs peer ancestry as unavailable and relies on `AppSettings.terminalServer` + `checkSelfControlDenial`.
+   - Because Node's built-in `net.Socket` does not expose `LOCAL_PEERPID` / `SO_PEERCRED` / `GetNamedPipeClientProcessId` without a native addon, the host performs a best-effort (`<= 150 ms` timeout) OS socket-to-PID verification (`lsof -nP -U -a -p <hello.pid>` on macOS or `/proc/<hello.pid>/fd` on Linux, plus `ps -o pid=,ppid=` ancestry walk) when available. If the verified client PID is a descendant of any child process spawned by `RunManager` (`claude` SDK subprocesses, `codex app-server`, `mcp/probe.ts`), the connection is rejected (`code: 'agent_descendant_refused'`). When OS peer mapping is unavailable (always on Windows) or a process double-forks, the host logs peer ancestry as unavailable and relies on `AppSettings.terminalServer`, the Terminal access level's scope cap and `checkSelfControlDenial`.
 3. **Child Environment Scrubbing (`src/main/runtime/childEnv.ts`)**:
    - Strips `ORGAI_DATA_DIR`, `ORGAI_DAEMON_*`, `ORGAI_SECRET_*`, and `ELECTRON_RUN_AS_NODE` from all spawned agent and MCP environments.
 4. **Atomic Decision Resolution, Revision Check & Tombstones (`DecisionOutcome`)**:
@@ -486,7 +486,7 @@ export interface RunOverrides {
   - `overrideMode === 'default'` and `projectMode` is `'acceptEdits' | 'auto' | 'dontAsk' | 'bypassPermissions'`, OR
   - `overrideMode === 'acceptEdits'` and `projectMode` is `'auto' | 'bypassPermissions'`, OR
   - `overrideMode === 'auto'` and `projectMode === 'bypassPermissions'`.
-  - Any widening override (`permissionMode` outside the matrix above, `autoContinue: true` when project is `false`, `maxAutoContinues > project.maxAutoContinues`, `maxBudgetUsd > project.maxBudgetUsd`, or `allowUnpricedBudget: true` when the project enforces a budget) requires `'configure'` scope (granted to local CLI invocations that request `'configure'`).
+  - Any widening override (`permissionMode` outside the matrix above, `autoContinue: true` when project is `false`, `maxAutoContinues > project.maxAutoContinues`, `maxBudgetUsd > project.maxBudgetUsd`, or `allowUnpricedBudget: true` when the project enforces a budget) requires `'configure'` scope (granted only when Terminal access is `'full'`, or by a `--host inproc` host, which belongs to the CLI process).
 - **Conservative Question Policy (`question: 'conservative'`)**:
   - Default `HeadlessDecisionPolicy.question` is `'fail'`. When `'conservative'` is explicitly requested (`--on-question conservative`), if a `UserQuestion` has an option whose label/description starts with `(Recommended)` or has `isDefault: true`, `RunManager` selects `{ selected: [opt.label] }`; otherwise it immediately ends the run with `outcome: 'needs-decision'`.
 - **Preservation Across Initial `ctx` Construction, `setLive`, `continueRun`, and `autoResume`**:
@@ -748,14 +748,14 @@ Resolved `R1`–`R10` (single-host daemon vs Desktop ownership, socket authentic
     closes, even when idle, and leaves only through its idle exit (`ORGAI_DAEMON_IDLE_MINUTES`) or host.stop. A
     desktop-started host that went to the background while busy quits on a later idle close (as before); a desktop
     host on macOS stays (Dock).
-  - Terminal access: a headless or inproc boot turns `terminalServer` on (the spec's "enabled when ... launches via
-    orgai") only while the user has not chosen a value; any settings:set that changes it sets the main-owned
-    `AppSettings.terminalServerChosen`, after which no boot overrides it and host.hello answers
+  - Terminal access: a headless or inproc boot opens it for that session only (`OrgAIHost.terminalAccess`; review
+    fix for PR #18 H2, never saved) while the user has not chosen a value; any settings:set that changes it sets the
+    main-owned `AppSettings.terminalServerChosen`, after which no boot overrides it and host.hello answers
     `terminal_server_disabled`. Turning it off closes every authenticated socket at once (in-flight answers first).
     While it is off and no client is connected, run events are not journaled (`EventJournal.markGap` makes older seqs
     replay-evicted).
-  - Version skew: every requested scope is granted and `versionSkewWarning` is set, but a skewed client's
-    'configure' covers host.stop only; other configure channels answer `scope_denied`.
+  - Version skew: the requested scopes the Terminal access level allows are granted and `versionSkewWarning` is set,
+    but a skewed client's 'configure' covers host.stop only; other configure channels answer `scope_denied`.
   - runs:subscribe snapshots bound `activeRun` to 8 MB (`ACTIVE_RUN_SNAPSHOT_MAX_BYTES`): the oldest transcript
     entries (and logs past the newest 200) are left out, counted in `snapshot.activeRunOmitted`.
   - `--run <id>` opens a stored run too (cold start, ended runs), through `RunManager.summary`.
@@ -932,7 +932,7 @@ Resolved `R1`–`R10` (single-host daemon vs Desktop ownership, socket authentic
 - **Gate.** `npm run typecheck`, `npm test`, `npm run build`, `npm run e2e:free` on macOS.
 - **Wire contract changes.** `McpAuthorizeInput.openBrowser` / `announceUrl`, the `connections:event` variant
   `{ type: 'mcp.authorize', authorize: McpAuthorizeUrlUpdate }` (sent on the 'connections' topic before the flow
-  waits for its callback), and `EngagementNoteSaveInput.expectedUpdatedAt` (projects:saveNote compare-and-set in the
+  waits for its callback; since the PR #18 review only to the socket whose mcp:authorize for that target is in flight), and `EngagementNoteSaveInput.expectedUpdatedAt` (projects:saveNote compare-and-set in the
   store; a stale save is `code: 'stale_revision'`).
 - **Deviations / decisions beyond the spec.**
   - `kit import` exits 1 when the kit holds any refused item (6.3(4)), even though refused items are skipped by default
@@ -1030,3 +1030,60 @@ Resolved `R1`–`R10` (single-host daemon vs Desktop ownership, socket authentic
 - **Unverified / open.** Windows end to end (orgai.cmd, the shim and its argument passing with and without `call`,
   pack:verify on windows-latest, the default-host step), Linux packaging, a signed and notarized macOS build, x64 macOS
   (macos-15-intel), the CliShimRow by eye on a packaged app, launch refresh after a real app move or update.
+
+### Review fixes, PR #18 group B (socket trust model and terminal output, 2026-11-05)
+
+- **Scopes are capped by `AppSettings.terminalAccessLevel` (H2 (2)).** `'operate'` (default, also when missing) grants
+  at most `read` + `operate`; `'full'` grants every scope. `host.hello` grants the requested scopes the level allows
+  (`socketServer.ts` `grantScopes`; the hostProof binds what was granted) and remembers the rest as withheld: their
+  channels answer `scope_denied` with "Terminal access lets terminal clients watch and run work only. To answer
+  decisions or change settings from a terminal, allow it in OrgAI: App settings > General > Advanced settings >
+  Terminal access." `host.stop` stays callable by a client that asked for `configure` (`orgai daemon stop`): it does
+  nothing a same-user `kill` of the pid in daemon.json could not. A `--host inproc` host always grants full (the CLI
+  process owns it). Lowering the level closes the sockets that hold scopes it no longer allows. The level is raised
+  only in the desktop window: `settings:set` needs `configure`, which a socket client holds only when the level is
+  already `'full'`, so the socket can lower it but never raise it. The App settings control for it and its wording
+  ("any program you run, agent shells included, can then control OrgAI") are the desktop part of this fix (group C).
+  CLI side: `withHost`, `orgai decide` (before any lookup), `orgai exec`'s `configure` reconnect and `hostError` name
+  the setting (`TERMINAL_FULL_ACCESS_HINT`) instead of the version-skew hint when no skew was reported.
+- **No unchosen Terminal access is saved (H2).** A headless or in-process boot accepts terminal clients for its own
+  session (`OrgAIHost.terminalAccess().enabled`) and never writes `terminalServer: true`. A settings.json that holds
+  `terminalServer: true` without `terminalServerChosen` (written by an earlier build's headless boot) is read as off
+  (`store/settings.ts` `withoutUnchosenTerminalAccess`, one log line). The shim install turning it on (index.ts) is
+  group C's.
+- **Windows named pipe (H2 (1)): not changed, documented.** Node's `net.Server` cannot give a pipe a security
+  descriptor or `PIPE_REJECT_REMOTE_CLIENTS`: libuv creates every instance with `CreateNamedPipeW(..., NULL)` security
+  attributes (default DACL: full control for LocalSystem, Administrators and the creator owner, read for Everyone and
+  Anonymous), and `listen({ readableAll, writableAll })` / `uv_pipe_chmod` can only widen it. Read access alone cannot
+  send `host.hello`. Compensations: the explicit DACL on daemon.secret below (a remote or other-user client still needs
+  the secret), the proof, and the scope cap. An explicit pipe DACL needs a native addon (or a pipe created by another
+  runtime) and is a follow-up. UNVERIFIED on Windows (read from libuv's pipe.c and Microsoft's CreateNamedPipe docs, not
+  run).
+- **daemon.secret ACL on win32 (H2 (3)).** Before answering the first `host.hello` (and when Terminal access is on at
+  attach or turned on), the socket server runs `protocol.ts` `restrictDaemonSecretAcl`: `whoami /user /fo csv /nh` for
+  the user's SID, then `icacls <secret> /inheritance:r /grant:r *<SID>:F`, both by absolute `%SystemRoot%\System32`
+  path with `cwd: os.tmpdir()`. A failure is logged once and refuses every hello (`auth_failed`, "OrgAI could not
+  restrict its terminal access secret to your Windows account ..."); the desktop app is not affected. UNVERIFIED on
+  Windows (unit-tested with an injected runner). Open for `ownership.ts` (group A): call `restrictDaemonSecretAcl`
+  instead of its bare `icacls` with `USERDOMAIN\USERNAME`, and restrict the `run` folder before writing the secret, so
+  the file never exists with an inherited ACL.
+- **Handshake detail only after the proof (Low).** Only `protocol_mismatch` (the challenge names the version anyway)
+  and a generic `auth_failed` are answered before the clientProof verifies; the proof is computed over the fields as
+  sent, and the field checks with their messages run after it.
+- **`mcp.authorize` URLs (Low).** The socket server tracks each socket's in-flight `mcp:authorize` calls with
+  `announceUrl` by target and pushes the `mcp.authorize` connections:event only to that socket; other `connections`
+  subscribers still get every other connections:event.
+- **Secrets read from the environment (M13).** `--from-env`, `--client-secret-from-env` and `decide --secret
+  NAME=VAR` take the variable out of the CLI's environment as they read it (`launcher.ts` `consumeSecretEnv`), the
+  commands read it before connecting (`mcp auth`, `mcp set-secret`, `mcp library set-secret` moved their read ahead of
+  `withHost`), and `hostSpawnEnv` never passes a consumed name to a spawned host.
+- **JSON output (M15).** `emit` / `emitLine` write through `output.ts` `jsonText`, which escapes DEL, U+0080-U+009F,
+  U+061C, U+200B-U+200F, U+2028-U+202E, U+2060-U+2064, U+2066-U+2069 and U+FEFF as `\uXXXX`; the parsed value is
+  unchanged.
+- **`mcp add --env` / `--header` values (Low).** A key-shaped value under any name (sk-, ghp_, JWT, `Bearer ...`, URL
+  userinfo, long tokens) or a value of 8+ characters under a credential-like name is refused (exit 2) with a pointer to
+  `--secret-var` / `--secret-header` and `orgai mcp set-secret --from-env` (also for `mcp overrides`); other plain
+  values pass with a stderr note in text output. Pattern checks, not a guarantee.
+- **Linux.** No PATH shim on Linux (AppImage), as recorded under Wave 6; accepted by the owner for now.
+- **Unverified.** Everything Windows-specific above (pipe DACL behaviour, whoami / icacls output, the ACL step's
+  timing), and the desktop surface of the access level (group C).

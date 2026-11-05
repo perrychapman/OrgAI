@@ -254,8 +254,22 @@ export function normalizeSettings(raw: Partial<AppSettings> | null | undefined):
         : d.defaultMaxAutoContinues,
     // Only an explicit boolean true opens the terminal server.
     terminalServer: r.terminalServer === true,
-    ...(r.terminalServerChosen === true ? { terminalServerChosen: true } : {})
+    ...(r.terminalServerChosen === true ? { terminalServerChosen: true } : {}),
+    // Missing (or anything but 'full') is 'operate': read and operate only.
+    ...(r.terminalAccessLevel === 'full' ? { terminalAccessLevel: 'full' as const } : {})
   }
+}
+
+/**
+ * Settings read from disk: Terminal access saved on without terminalServerChosen was turned on by an older build's
+ * headless or in-process boot, never by the user (every settings:set that changes terminalServer sets
+ * terminalServerChosen, args.ts settingsSetArgs). It is read as off; such a boot now opens it for its own session only
+ * (bootstrap.ts terminalAccess). Pure; exported for tests.
+ */
+export function withoutUnchosenTerminalAccess(s: AppSettings): AppSettings {
+  if (s.terminalServer !== true || s.terminalServerChosen === true) return s
+  console.info('Terminal access was saved on by a headless start, not by a choice in App settings; it is off until turned on there.')
+  return { ...s, terminalServer: false }
 }
 
 /** Global app settings, stored as settings.json next to projects.json. */
@@ -275,7 +289,7 @@ export class SettingsStore {
     try {
       if (existsSync(this.file)) {
         const parsed = JSON.parse(readFileSync(this.file, 'utf8')) as { settings?: Partial<AppSettings> }
-        this.settings = normalizeSettings(parsed.settings)
+        this.settings = withoutUnchosenTerminalAccess(normalizeSettings(parsed.settings))
       }
     } catch (e) {
       console.error('Failed to read settings.json, using defaults:', e)

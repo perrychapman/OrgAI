@@ -8,7 +8,16 @@ import type { OrgAIHost } from './bootstrap'
 import { HostEventBus } from './events'
 import { LineReader, clientProof, encodeFrame, hostProof, newNonce, proofMatches, rpcRequest } from './protocol'
 import { gateRequest } from './registry'
-import { HostSocketServer, TERMINAL_ACCESS_OFF_MESSAGE, type HostSocketServerOptions } from './socketServer'
+import {
+  HostSocketServer,
+  SECRET_ACL_MESSAGE,
+  TERMINAL_ACCESS_LEVEL_MESSAGE,
+  TERMINAL_ACCESS_OFF_MESSAGE,
+  authorizeKey,
+  grantScopes,
+  scopesForAccessLevel,
+  type HostSocketServerOptions
+} from './socketServer'
 
 // Real unix sockets under /tmp (macOS's os.tmpdir() is too long for sun_path). POSIX only; the win32 pipe is UNVERIFIED.
 const posix = process.platform !== 'win32'
@@ -89,7 +98,10 @@ interface HelloOpts {
   kind?: 'cli' | 'tui'
   pid?: number
   secret?: string
+  /** After the proof is computed (the proof no longer covers the change). */
   mutate?: (p: Msg) => void
+  /** Before the proof is computed (a well-proven but malformed hello). */
+  shape?: (p: Msg) => void
 }
 
 async function hello(c: TestClient, o: HelloOpts = {}): Promise<{ res: Msg; challenge: Msg; params: Msg }> {
@@ -103,6 +115,7 @@ async function hello(c: TestClient, o: HelloOpts = {}): Promise<{ res: Msg; chal
     clientNonce: newNonce(),
     requestedScopes: o.scopes ?? ['read']
   }
+  o.shape?.(params)
   params.clientProof = clientProof(o.secret ?? SECRET, {
     protocolVersion: 1,
     hostInstanceId: challenge.params.hostInstanceId,
@@ -124,6 +137,7 @@ async function hello(c: TestClient, o: HelloOpts = {}): Promise<{ res: Msg; chal
 interface FakeHostState {
   state: HostState
   terminalServer: boolean
+  accessLevel?: 'operate' | 'full'
   sources: Array<() => number>
   calls: { method: string; ctx: Msg }[]
   /** Pending dispatcher calls resolve when released. */
@@ -147,7 +161,7 @@ function fakeHost(st: FakeHostState): { host: OrgAIHost; events: HostEventBus; r
     events,
     runs,
     services: { projects: { list: () => [] } },
-    settings: { get: () => ({ terminalServer: st.terminalServer }) },
+    settings: { get: () => ({ terminalServer: st.terminalServer, ...(st.accessLevel ? { terminalAccessLevel: st.accessLevel } : {}) }) },
     activity: {
       state: () => st.state,
       addSource: (_k: string, f: () => number) => {
@@ -181,7 +195,7 @@ let clients: TestClient[]
 let logs: string[]
 
 function newState(): FakeHostState {
-  return { state: 'ready', terminalServer: true, sources: [], calls: [], hold: false, release: [], result: () => ({ ok: true }) }
+  return { state: 'ready', terminalServer: true, accessLevel: 'full', sources: [], calls: [], hold: false, release: [], result: () => ({ ok: true }) }
 }
 
 async function start(over: Partial<HostSocketServerOptions> = {}, attach = true): Promise<ReturnType<typeof fakeHost>> {
@@ -276,15 +290,117 @@ describe.runIf(posix)('HostSocketServer handshake', () => {
     expect((await hello(c)).res.error.data.code).toBe('auth_failed')
   })
 
-  it('protocol_mismatch and bad params come before the proof', async () => {
+  it('protocol_mismatch comes first; field details only after the proof verified (review Low)', async () => {
     await start()
     const a = await client()
     expect((await hello(a, { mutate: (p) => (p.protocolVersion = 2) })).res.error.data.code).toBe('protocol_mismatch')
     await a.waitClosed()
-    for (const mutate of [(p: Msg) => (p.clientKind = 'gui'), (p: Msg) => (p.pid = 0), (p: Msg) => (p.cwd = 'a\u0000b'), (p: Msg) => (p.requestedScopes = []), (p: Msg) => (p.requestedScopes = ['root'])]) {
+    const shapes = [(p: Msg) => (p.clientKind = 'gui'), (p: Msg) => (p.pid = 0), (p: Msg) => (p.cwd = 'a\u0000b'), (p: Msg) => (p.requestedScopes = []), (p: Msg) => (p.requestedScopes = ['root'])]
+    for (const shape of shapes) {
+      // Proven by the secret: the detail is given.
       const c = await client()
-      expect((await hello(c, { mutate })).res.error.data.code).toBe('bad_request')
+      expect((await hello(c, { shape })).res.error.data.code).toBe('bad_request')
+      // Not proven: one generic answer, nothing about the expected format.
+      const d = await client()
+      const res = (await hello(d, { mutate: shape })).res
+      expect(res.error.data).toEqual({ code: 'auth_failed', message: 'The handshake proof did not verify.' })
     }
+    for (const mutate of [(p: Msg) => (p.clientNonce = 'xyz'), (p: Msg) => (p.requestedScopes = 'read'), (p: Msg) => delete p.clientProof]) {
+      const c = await client()
+      expect((await hello(c, { mutate })).res.error.data).toEqual({ code: 'auth_failed', message: 'The handshake proof did not verify.' })
+    }
+  })
+
+  it("grants at most read and operate unless Terminal access is 'full' (review H2)", async () => {
+    st.accessLevel = undefined
+    st.result = (method) => ({ method })
+    await start()
+    const c = await client()
+    const { res, challenge, params } = await hello(c, { scopes: ['read', 'operate', 'decide', 'configure'] })
+    expect(res.result.grantedScopes).toEqual(['read', 'operate'])
+    // The host proof binds what was really granted.
+    const expected = hostProof(SECRET, {
+      protocolVersion: 1,
+      hostInstanceId: HOST_ID,
+      clientNonce: params.clientNonce,
+      hostNonce: challenge.params.hostNonce,
+      hostKind: 'headless-host',
+      appVersion: '1.0.0',
+      dataDir,
+      mock: true,
+      grantedScopes: ['read', 'operate']
+    })
+    expect(proofMatches(expected, res.result.hostProof)).toBe(true)
+    c.send(rpcRequest(2, 'runs:decide', [{}]))
+    const denied = await c.response(2)
+    expect(denied.error.data.code).toBe('scope_denied')
+    expect(denied.error.data.message).toContain(TERMINAL_ACCESS_LEVEL_MESSAGE)
+    c.send(rpcRequest(3, 'settings:set', [{}]))
+    expect((await c.response(3)).error.data.message).toContain("'configure'")
+    c.send(rpcRequest(4, 'runs:stop', ['r1']))
+    expect((await c.response(4)).result).toEqual({ method: 'runs:stop' })
+    // host.stop still works for a client that asked for configure (daemon stop): a same-user kill could do as much.
+    c.send(rpcRequest(5, 'host.stop', [{ force: false }]))
+    expect((await c.response(5)).result).toEqual({ method: 'host.stop' })
+    expect(st.calls.map((x) => x.method)).toEqual(['runs:stop', 'host.stop'])
+    expect(st.calls[1].ctx.grantedScopes).toEqual(['read', 'operate', 'configure'])
+    expect(logs.join('\n')).toContain('withheld by Terminal access: decide, configure')
+    // A client that never asked for configure does not get host.stop.
+    const d = await client()
+    await hello(d, { scopes: ['read'] })
+    d.send(rpcRequest(6, 'host.stop', [{ force: false }]))
+    expect((await d.response(6)).error.data.code).toBe('scope_denied')
+  })
+
+  it('an in-process host grants every requested scope whatever the level', async () => {
+    st.accessLevel = undefined
+    await start({ hostKind: 'inproc' })
+    const { res } = await hello(await client(), { scopes: ['read', 'decide', 'configure'] })
+    expect(res.result.grantedScopes).toEqual(['read', 'decide', 'configure'])
+  })
+
+  it('reads OrgAIHost.terminalAccess when the host has it (session-only Terminal access)', async () => {
+    st.terminalServer = false
+    st.accessLevel = undefined
+    const fake = await start({}, false)
+    let access = { enabled: true, level: 'operate' as 'operate' | 'full' }
+    ;(fake.host as unknown as { terminalAccess: () => typeof access }).terminalAccess = () => access
+    server.attach(fake.host)
+    const { res } = await hello(await client(), { scopes: ['read', 'decide'] })
+    expect(res.result.grantedScopes).toEqual(['read'])
+    access = { enabled: false, level: 'full' }
+    expect((await hello(await client())).res.error.data.code).toBe('terminal_server_disabled')
+  })
+
+  it('lowering the level closes sockets holding scopes it no longer allows', async () => {
+    const { events } = await start()
+    const full = await client()
+    expect((await hello(full, { scopes: ['read', 'decide'] })).res.result.grantedScopes).toEqual(['read', 'decide'])
+    const plain = await client()
+    await hello(plain, { scopes: ['read', 'operate'] })
+    st.accessLevel = undefined
+    events.emit('settings:changed', { terminalServer: true } as never)
+    await full.waitClosed()
+    expect(logs.join('\n')).toContain('Terminal access was narrowed; closed 1 terminal connection.')
+    plain.send(rpcRequest(2, 'runs:list', ['p1']))
+    expect((await plain.response(2)).result).toBeDefined()
+  })
+
+  it('win32: restricts daemon.secret once before answering, and refuses every hello when that fails', async () => {
+    const calls: string[] = []
+    await start({ platform: 'win32', restrictSecret: async (path) => (calls.push(path), undefined) })
+    expect((await hello(await client())).res.result).toBeDefined()
+    expect((await hello(await client())).res.result).toBeDefined()
+    expect(calls).toEqual([join(dataDir, 'run', 'daemon.secret')])
+    server.close()
+    await new Promise<void>((r) => netServer.close(() => r()))
+    logs = []
+    await start({ platform: 'win32', restrictSecret: async () => 'icacls failed: access denied' })
+    const { res } = await hello(await client())
+    expect(res.error.data).toEqual({ code: 'auth_failed', message: SECRET_ACL_MESSAGE })
+    expect(logs.filter((l) => l.includes('icacls failed')).length).toBe(1)
+    expect((await hello(await client())).res.error.data.code).toBe('auth_failed')
+    expect(logs.filter((l) => l.includes('icacls failed')).length).toBe(1)
   })
 
   it('anything but host.hello id 1 before auth is bad_request and closes', async () => {
@@ -535,6 +651,39 @@ describe.runIf(posix)('HostSocketServer subscriptions', () => {
     expect(c.frames).toEqual([])
   })
 
+  it('an announced mcp.authorize URL reaches only the socket whose mcp:authorize asked for it (review Low)', async () => {
+    st.hold = true
+    const { events } = await start()
+    const starter = await client()
+    await hello(starter, { scopes: ['read', 'configure'] })
+    const watcher = await client()
+    await hello(watcher, { scopes: ['read'] })
+    for (const c of [starter, watcher]) {
+      c.send(rpcRequest(2, 'host.subscribe', { topics: ['connections'] }))
+      await c.response(2)
+    }
+    starter.send(rpcRequest(3, 'mcp:authorize', [{ libraryId: 'lib1', announceUrl: true }]))
+    await vi.waitFor(() => expect(st.release.length).toBe(1))
+    const url = (libraryId: string): Msg => ({ type: 'mcp.authorize', authorize: { target: { libraryId }, url: `https://auth.example/${libraryId}`, openedBrowser: false, at: 1 } })
+    events.emit('connections:event', url('other') as never)
+    events.emit('connections:event', url('lib1') as never)
+    events.emit('connections:event', { type: 'mcp.authorize', authorize: { target: 7 } } as never)
+    events.emit('connections:event', { type: 'connection.status', connection: 'openai', status: { state: 'connected' } } as never)
+    const got = await starter.next((m) => m.method === 'connections:event')
+    expect(got.params.authorize.url).toBe('https://auth.example/lib1')
+    const next = await starter.next((m) => m.method === 'connections:event')
+    expect(next.params.type).toBe('connection.status')
+    const w = await watcher.next((m) => m.method === 'connections:event')
+    expect(w.params.type).toBe('connection.status')
+    expect(watcher.frames).toEqual([])
+    // Once the call answered, the same target's URL goes to nobody.
+    for (const r of st.release.splice(0)) r()
+    await starter.response(3)
+    events.emit('connections:event', url('lib1') as never)
+    events.emit('connections:event', { type: 'projects.remapped', results: [] } as never)
+    expect((await starter.next((m) => m.method === 'connections:event')).params.type).toBe('projects.remapped')
+  })
+
   it('runs:subscribe answers a snapshot first, then pushes with seq / atSeq', async () => {
     const { events, runs } = await start()
     runs.live = [{ id: 'r1', projectId: 'p1', status: 'running', startedAt: 1 } as RunSummary]
@@ -574,5 +723,21 @@ describe.runIf(posix)('HostSocketServer subscriptions', () => {
     server.close()
     expect(st.sources).toHaveLength(0)
     await cli.waitClosed()
+  })
+})
+
+describe('scope helpers', () => {
+  it('grantScopes caps by level, keeps order and dedupes', () => {
+    expect(scopesForAccessLevel('operate')).toEqual(['read', 'operate'])
+    expect(scopesForAccessLevel('full')).toEqual(['read', 'operate', 'decide', 'configure'])
+    expect(grantScopes(['configure', 'read', 'read', 'decide'], 'operate')).toEqual({ granted: ['read'], withheld: ['configure', 'decide'] })
+    expect(grantScopes(['configure', 'read'], 'full')).toEqual({ granted: ['configure', 'read'], withheld: [] })
+  })
+
+  it('authorizeKey names a library entry or a project server, nothing else', () => {
+    expect(authorizeKey({ libraryId: 'a', announceUrl: true })).toBe(authorizeKey({ libraryId: 'a' }))
+    expect(authorizeKey({ projectId: 'p', serverId: 's' })).not.toBe(authorizeKey({ libraryId: 'p' }))
+    expect(authorizeKey({ projectId: 'p' })).toBeUndefined()
+    expect(authorizeKey('x')).toBeUndefined()
   })
 })

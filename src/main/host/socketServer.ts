@@ -13,14 +13,29 @@
  *   through a LineReader capped at RPC_PRE_AUTH_FRAME_MAX_BYTES until host.hello succeeds; at most
  *   RPC_MAX_UNAUTH_SOCKETS unauthenticated sockets (more are destroyed at once), each with an RPC_HANDSHAKE_TIMEOUT_MS
  *   deadline, and at most RPC_MAX_CLIENT_SOCKETS authenticated ones (else 'too_many_connections').
- * - host.hello (id HELLO_REQUEST_ID) is checked in this order: protocolVersion ('protocol_mismatch'), clientKind,
- *   clientVersion, pid, cwd, clientNonce, requestedScopes ('bad_request'), the clientProof against
- *   readDaemonSecret(dataDir) ('auth_failed'); then before attach() 'host_starting' (retryAfterMs 250), while the host
- *   drains 'host_draining', AppSettings.terminalServer !== true 'terminal_server_disabled', the socket quota, and the
- *   peer check ('descendant' -> 'agent_descendant_refused'; 'unavailable' is logged once and accepted). On success it
- *   grants exactly the requested scopes, answers an RpcHelloResult with hostProof (and versionSkewWarning when
- *   clientVersion !== appVersion) and raises the line cap to RPC_BULK_FRAME_MAX_BYTES. A refused hello closes the
- *   socket once the error frame is flushed.
+ * - host.hello (id HELLO_REQUEST_ID) is checked in this order: protocolVersion ('protocol_mismatch'; the challenge
+ *   names it anyway), a hex clientProof and clientNonce and a requestedScopes array (else a generic 'auth_failed'), on
+ *   win32 daemon.secret's ACL (restrictDaemonSecretAcl, once per server), the clientProof over the fields as sent
+ *   against readDaemonSecret(dataDir) ('auth_failed'); only then the field checks with their detail (clientKind,
+ *   clientVersion, pid, cwd, requestedScopes: 'bad_request'), so an unauthenticated peer learns nothing about the
+ *   expected format. Then before attach() 'host_starting' (retryAfterMs 250), while the host drains 'host_draining',
+ *   Terminal access off (OrgAIHost.terminalAccess) 'terminal_server_disabled', the socket quota, and the peer check
+ *   ('descendant' -> 'agent_descendant_refused'; 'unavailable' is logged and accepted). On success it grants the
+ *   requested scopes the Terminal access level allows (grantScopes: 'operate' = read + operate, the default; 'full' =
+ *   all; an in-process host is always full) and remembers the rest as withheld: their channels answer 'scope_denied'
+ *   with TERMINAL_ACCESS_LEVEL_MESSAGE, except host.stop for a client that asked for 'configure'. Lowering the level
+ *   closes sockets holding scopes it no longer allows. It answers an RpcHelloResult with hostProof (and
+ *   versionSkewWarning when clientVersion !== appVersion) and raises the line cap to RPC_BULK_FRAME_MAX_BYTES. A
+ *   refused hello closes the socket once the error frame is flushed.
+ * - Windows named pipe (review H2 (1)): Node's net.Server cannot give a pipe a security descriptor or the
+ *   PIPE_REJECT_REMOTE_CLIENTS flag. libuv calls CreateNamedPipeW with no SECURITY_ATTRIBUTES (the pipe gets the
+ *   default DACL: full control for LocalSystem, Administrators and the creator owner, read for Everyone and Anonymous)
+ *   and listen({ readableAll, writableAll }) can only widen it. Read access alone cannot send host.hello, and a
+ *   client of another machine still needs daemon.secret; so on Windows the barriers are the secret's explicit DACL
+ *   (refuse every hello when it cannot be set), the proof, and the scope cap above. A native addon (or a pipe created
+ *   through another runtime) would be needed for an explicit DACL; UNVERIFIED on Windows from this code.
+ * - mcp:authorize with announceUrl: the `mcp.authorize` connections:event reaches only the socket whose call is still
+ *   in flight for that target (authorizeKey), never every 'connections' subscriber.
  * - After hello: requests go to host.dispatcher.invokeRpc (scope gate, draining, leases) with the per-channel caps of
  *   registry.ts frameLimitFor, RPC_BULK_MEMORY_BUDGET_BYTES across all sockets for frames over 2 MB (bulkBudget.ts), and
  *   RPC_MAX_INFLIGHT_PER_SOCKET in flight per socket ('too_many_requests'). A complete line over its channel's cap is
@@ -37,6 +52,7 @@
 import type { Socket } from 'node:net'
 import {
   HOST_IPC,
+  IPC,
   HOST_METHODS,
   HOST_PROTOCOL_VERSION,
   HOST_SCOPES,
@@ -56,10 +72,11 @@ import type {
   HostSubscribeResult,
   HostSubscribeTopic,
   RpcHelloResult,
-  RunEvent
+  RunEvent,
+  TerminalAccessLevel
 } from '../../shared/types'
 import { log } from '../log'
-import type { OrgAIHost } from './bootstrap'
+import type { HostTerminalAccess, OrgAIHost } from './bootstrap'
 import { BulkBudget, type BulkReservation } from './bulkBudget'
 import { EventJournal } from './eventJournal'
 import type { HostPushChannel } from './events'
@@ -78,7 +95,9 @@ import {
   newNonce,
   parseFrame,
   proofMatches,
+  daemonSecretPath,
   readDaemonSecret,
+  restrictDaemonSecretAcl,
   rpcError,
   rpcNotification,
   rpcParseError,
@@ -106,6 +125,27 @@ export interface HostSocketServerOptions {
   log?: (m: string) => void
   /** Clock for deadlines; tests pass a fake. */
   now?: () => number
+  /** Platform override (tests): win32 restricts daemon.secret's ACL before the first hello is answered. */
+  platform?: NodeJS.Platform
+  /**
+   * win32: give daemon.secret an explicit current-user-only DACL (protocol.ts restrictDaemonSecretAcl). Resolves
+   * undefined on success, else the reason. Missing = restrictDaemonSecretAcl. Tests inject one.
+   */
+  restrictSecret?: (secretPath: string) => Promise<string | undefined>
+}
+
+/** The scopes each Terminal access level grants at most (AppSettings.terminalAccessLevel). */
+export function scopesForAccessLevel(level: TerminalAccessLevel): readonly HostScope[] {
+  return level === 'full' ? HOST_SCOPES : (['read', 'operate'] as const)
+}
+
+/** The scopes host.hello grants: the requested ones (deduplicated, in order) the level allows, and the ones it withheld. */
+export function grantScopes(requested: readonly HostScope[], level: TerminalAccessLevel): { granted: HostScope[]; withheld: HostScope[] } {
+  const allowed = scopesForAccessLevel(level)
+  const granted: HostScope[] = []
+  const withheld: HostScope[] = []
+  for (const s of new Set(requested)) (allowed.includes(s) ? granted : withheld).push(s)
+  return { granted, withheld }
 }
 
 /** host.subscribe topics (HostSubscribeTopic). */
@@ -113,6 +153,12 @@ export const HOST_SUBSCRIBE_TOPICS: readonly HostSubscribeTopic[] = ['settings',
 
 export const TERMINAL_ACCESS_OFF_MESSAGE =
   'Terminal access is off. Turn it on in OrgAI: App settings > General > Advanced settings > Terminal access.'
+/** scope_denied for a scope host.hello withheld because of AppSettings.terminalAccessLevel. */
+export const TERMINAL_ACCESS_LEVEL_MESSAGE =
+  'Terminal access lets terminal clients watch and run work only. To answer decisions or change settings from a terminal, allow it in OrgAI: App settings > General > Advanced settings > Terminal access.'
+/** hello refused on win32 when daemon.secret could not be restricted to the current user. */
+export const SECRET_ACL_MESSAGE =
+  'OrgAI could not restrict its terminal access secret to your Windows account, so it refuses terminal connections. See main.log.'
 export const BULK_BUDGET_MESSAGE = 'OrgAI is handling too much data at once; try again'
 const HOST_STARTING_RETRY_MS = 250
 const HOST_DRAINING_RETRY_MS = 1000
@@ -136,7 +182,14 @@ interface Conn {
   clientKind?: HostClientKind
   pid?: number
   scopes: HostScope[]
+  /** Requested scopes host.hello withheld (AppSettings.terminalAccessLevel); their channels answer the level message. */
+  withheld: HostScope[]
   inflight: number
+  /**
+   * Targets (authorizeKey) of this socket's mcp:authorize calls with announceUrl still in flight, with their counts:
+   * only this socket hears their `mcp.authorize` URL, not every 'connections' subscriber (review Low).
+   */
+  authorizing: Map<string, number>
   runs?: RunSubscription
   topics: Set<HostSubscribeTopic>
   pendingLines: string[]
@@ -159,13 +212,37 @@ interface Conn {
 const isClosed = (c: Conn): boolean => c.state === 'closed'
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 
-/** AppSettings.terminalServer of the host; false when it cannot be read. */
-function readTerminalServer(host: OrgAIHost): boolean {
+/**
+ * The host's Terminal access (OrgAIHost.terminalAccess; a host without it reads AppSettings directly); off with the
+ * lowest level when it cannot be read. An in-process host always grants full.
+ */
+function accessOf(host: OrgAIHost, hostKind: HostKind): HostTerminalAccess {
   try {
-    return host.settings.get().terminalServer === true
+    const fromHost = typeof host.terminalAccess === 'function' ? host.terminalAccess() : undefined
+    const s = fromHost ? undefined : host.settings.get()
+    const enabled = fromHost ? fromHost.enabled === true : s?.terminalServer === true
+    const level: TerminalAccessLevel = hostKind === 'inproc' || (fromHost ? fromHost.level : s?.terminalAccessLevel) === 'full' ? 'full' : 'operate'
+    return { enabled, level }
   } catch {
-    return false
+    return { enabled: false, level: 'operate' }
   }
+}
+
+/**
+ * The authorizeKey of a connections:event `mcp.authorize` (a sentinel no socket holds when its target is malformed,
+ * so it reaches nobody); undefined for every other connections:event.
+ */
+function announcedAuthorizeKey(payload: unknown): string | undefined {
+  if (!isObj(payload) || payload.type !== 'mcp.authorize') return undefined
+  return authorizeKey(isObj(payload.authorize) ? payload.authorize.target : undefined) ?? '\u0000none'
+}
+
+/** A stable key of an McpAuthTarget-shaped value (libraryId, or projectId + serverId); undefined for anything else. */
+export function authorizeKey(target: unknown): string | undefined {
+  if (!isObj(target)) return undefined
+  if (typeof target.libraryId === 'string') return JSON.stringify(['lib', target.libraryId])
+  if (typeof target.projectId === 'string' && typeof target.serverId === 'string') return JSON.stringify(['project', target.projectId, target.serverId])
+  return undefined
 }
 
 export class HostSocketServer {
@@ -181,6 +258,10 @@ export class HostSocketServer {
    * authenticated, run events are not journaled: a desktop user who never uses the terminal pays nothing per event.
    */
   private terminalOn = false
+  /** The Terminal access level as last read (attach, settings:changed); a lower one closes over-scoped sockets. */
+  private accessLevel: TerminalAccessLevel = 'operate'
+  /** win32: daemon.secret's ACL restriction, run once (before the first hello is answered). */
+  private secretAcl: Promise<string | undefined> | undefined
   /** Run events are going unjournaled (see terminalOn); the journal's gap is marked once per such stretch. */
   private journalPaused = false
   private nextId = 1
@@ -228,7 +309,9 @@ export class HostSocketServer {
       state: 'unauth',
       hostNonce: newNonce(),
       scopes: [],
+      withheld: [],
       inflight: 0,
+      authorizing: new Map(),
       topics: new Set(),
       pendingLines: [],
       reservations: new Set()
@@ -253,7 +336,10 @@ export class HostSocketServer {
   attach(host: OrgAIHost): void {
     if (this.closed || this.host) return
     this.host = host
-    this.terminalOn = readTerminalServer(host)
+    const access = accessOf(host, this.opts.hostKind)
+    this.terminalOn = access.enabled
+    this.accessLevel = access.level
+    if (access.enabled) void this.ensureSecretAcl()
     this.detach.push(host.activity.addSource('interactiveClients', () => this.attachedClientCount()))
     this.detach.push(host.events.on((channel, payload) => this.onHostEvent(channel, payload)))
   }
@@ -311,17 +397,20 @@ export class HostSocketServer {
     this.refuseQueued(conn)
   }
 
-  /** End every authenticated socket (Terminal access turned off); the server keeps serving new handshakes (refused). */
-  private dropAuthenticated(): void {
+  /**
+   * End every authenticated socket `which` picks (default all: Terminal access turned off); the server keeps serving
+   * new handshakes. `why` starts the log line.
+   */
+  private dropAuthenticated(which: (c: Conn) => boolean = () => true, why = 'Terminal access was turned off'): void {
     let n = 0
     for (const c of [...this.conns]) {
-      if (c.state !== 'auth' || c.closeAfterInflight) continue
+      if (c.state !== 'auth' || c.closeAfterInflight || !which(c)) continue
       n++
       if (c.socket.destroyed) this.kill(c)
       else if (c.inflight > 0) this.closeAfterInflight(c)
       else this.refuseQueued(c)
     }
-    if (n) this.log(`Terminal access was turned off; closed ${n} terminal connection${n === 1 ? '' : 's'}.`)
+    if (n) this.log(`${why}; closed ${n} terminal connection${n === 1 ? '' : 's'}.`)
   }
 
   /** close() with requests in flight: stop reading and pushing, end the socket once their answers are queued. */
@@ -450,33 +539,79 @@ export class HostSocketServer {
 
   // ---------- Handshake ----------
 
+  /**
+   * Field checks of a host.hello whose proof already verified: the detailed messages go to a peer that holds the
+   * secret only (review Low: nothing about the expected format reaches an unauthenticated peer).
+   */
   private helloProblem(p: Record<string, unknown>): HostRpcError | undefined {
     const badReq = (message: string): HostRpcError => ({ code: 'bad_request', message })
-    if (p.protocolVersion !== HOST_PROTOCOL_VERSION) {
-      return { code: 'protocol_mismatch', message: `This OrgAI speaks protocol version ${HOST_PROTOCOL_VERSION}; update the CLI or the app so they match.` }
-    }
     if (p.clientKind !== 'cli' && p.clientKind !== 'tui') return badReq("host.hello clientKind must be 'cli' or 'tui'.")
     if (typeof p.clientVersion !== 'string' || p.clientVersion.length > CLIENT_VERSION_MAX) return badReq('host.hello clientVersion must be a string of at most 200 characters.')
     if (typeof p.pid !== 'number' || !Number.isSafeInteger(p.pid) || p.pid <= 0) return badReq('host.hello pid must be a positive integer.')
     if (typeof p.cwd !== 'string' || p.cwd.length > CWD_MAX || p.cwd.includes('\u0000')) return badReq('host.hello cwd must be a path of at most 4096 characters.')
-    if (!isHexNonce(p.clientNonce)) return badReq('host.hello clientNonce must be 64 lowercase hex characters.')
     if (!Array.isArray(p.requestedScopes) || p.requestedScopes.length === 0 || p.requestedScopes.length > 16) {
       return badReq('host.hello requestedScopes must be a non-empty list of scopes.')
     }
     for (const s of p.requestedScopes) if (!HOST_SCOPES.includes(s as HostScope)) return badReq(`host.hello: unknown scope ${JSON.stringify(String(s)).slice(0, 40)}.`)
-    if (typeof p.clientProof !== 'string') return { code: 'auth_failed', message: 'The handshake proof did not verify.' }
     return undefined
   }
 
   private secretCache: string | undefined
+
+  /**
+   * win32 only: restrict daemon.secret to the current user once per server (protocol.ts restrictDaemonSecretAcl). A
+   * failure is logged once and refuses every hello (SECRET_ACL_MESSAGE): Node cannot give the named pipe a DACL of its
+   * own (see the file header), so on Windows the secret's ACL and the scope cap are what keep other accounts out.
+   */
+  private ensureSecretAcl(): Promise<string | undefined> {
+    if ((this.opts.platform ?? process.platform) !== 'win32') return Promise.resolve(undefined)
+    const note = (problem: string): string => {
+      this.log(`Could not restrict daemon.secret to the current Windows user (${problem}); terminal connections are refused.`)
+      return problem
+    }
+    this.secretAcl ??= (this.opts.restrictSecret ?? ((path: string) => restrictDaemonSecretAcl(path)))(daemonSecretPath(this.opts.dataDir)).then(
+      (problem) => (problem ? note(problem) : undefined),
+      (e: unknown) => note(e instanceof Error ? e.message : String(e))
+    )
+    return this.secretAcl
+  }
 
   private async hello(conn: Conn, req: JsonRpcRequest): Promise<void> {
     const fail = (err: HostRpcError): void => {
       if (conn.state === 'closed') return
       this.refuse(conn, rpcError(HELLO_REQUEST_ID, err))
     }
+    const authFailed: HostRpcError = { code: 'auth_failed', message: 'The handshake proof did not verify.' }
     const raw = Array.isArray(req.params) && req.params.length === 1 ? req.params[0] : req.params
-    if (!isObj(raw)) return fail({ code: 'bad_request', message: 'host.hello takes one object.' })
+    if (!isObj(raw)) return fail(authFailed)
+    // The challenge already names the protocol version, so saying it differs tells an unauthenticated peer nothing new.
+    if (raw.protocolVersion !== HOST_PROTOCOL_VERSION) {
+      return fail({ code: 'protocol_mismatch', message: `This OrgAI speaks protocol version ${HOST_PROTOCOL_VERSION}; update the CLI or the app so they match.` })
+    }
+    if (!isHexNonce(raw.clientProof) || !isHexNonce(raw.clientNonce) || !Array.isArray(raw.requestedScopes)) return fail(authFailed)
+    if (await this.ensureSecretAcl()) return fail({ code: 'auth_failed', message: SECRET_ACL_MESSAGE })
+    if (conn.state !== 'hello') return
+    const secret = this.secretCache ?? readDaemonSecret(this.opts.dataDir)
+    if (!secret) return fail({ code: 'auth_failed', message: 'The host secret could not be read.' })
+    let expected: string
+    try {
+      // Over the fields exactly as sent: a malformed one fails the proof (or the checks below, once it verified).
+      expected = clientProof(secret, {
+        protocolVersion: HOST_PROTOCOL_VERSION,
+        hostInstanceId: this.opts.hostInstanceId,
+        hostNonce: conn.hostNonce,
+        clientNonce: raw.clientNonce,
+        clientKind: raw.clientKind as HostClientKind,
+        clientVersion: raw.clientVersion as string,
+        pid: raw.pid as number,
+        cwd: raw.cwd as string,
+        requestedScopes: raw.requestedScopes as HostScope[]
+      })
+    } catch {
+      return fail(authFailed)
+    }
+    if (!proofMatches(expected, raw.clientProof)) return fail(authFailed)
+    this.secretCache = secret
     const problem = this.helloProblem(raw)
     if (problem) return fail(problem)
     const p = raw as Record<string, unknown> & {
@@ -488,26 +623,11 @@ export class HostSocketServer {
       requestedScopes: HostScope[]
       clientProof: string
     }
-    const secret = this.secretCache ?? readDaemonSecret(this.opts.dataDir)
-    if (!secret) return fail({ code: 'auth_failed', message: 'The host secret could not be read.' })
-    const expected = clientProof(secret, {
-      protocolVersion: HOST_PROTOCOL_VERSION,
-      hostInstanceId: this.opts.hostInstanceId,
-      hostNonce: conn.hostNonce,
-      clientNonce: p.clientNonce,
-      clientKind: p.clientKind,
-      clientVersion: p.clientVersion,
-      pid: p.pid,
-      cwd: p.cwd,
-      requestedScopes: p.requestedScopes
-    })
-    if (!proofMatches(expected, p.clientProof)) return fail({ code: 'auth_failed', message: 'The handshake proof did not verify.' })
-    this.secretCache = secret
     const gateProblem = (): HostRpcError | undefined => {
       const host = this.host
       if (!host) return { code: 'host_starting', message: 'OrgAI is starting; try again in a moment.', retryAfterMs: HOST_STARTING_RETRY_MS }
       if (host.activity.state() === 'draining') return { code: 'host_draining', message: 'OrgAI is shutting down.', retryAfterMs: HOST_DRAINING_RETRY_MS }
-      if (host.settings.get().terminalServer !== true) return { code: 'terminal_server_disabled', message: TERMINAL_ACCESS_OFF_MESSAGE }
+      if (!accessOf(host, this.opts.hostKind).enabled) return { code: 'terminal_server_disabled', message: TERMINAL_ACCESS_OFF_MESSAGE }
       if (this.authCount >= RPC_MAX_CLIENT_SOCKETS) return { code: 'too_many_connections', message: `OrgAI already serves ${RPC_MAX_CLIENT_SOCKETS} terminal clients.` }
       return undefined
     }
@@ -529,7 +649,9 @@ export class HostSocketServer {
     // Re-check after the await: another hello may have taken the last slot, or a drain may have begun.
     const after = gateProblem()
     if (after) return fail(after)
-    const grantedScopes = [...new Set(p.requestedScopes)]
+    // Never more than Terminal access allows (review H2): decide and configure need AppSettings.terminalAccessLevel
+    // 'full', which only the desktop window sets; an in-process host (the CLI's own) always grants full.
+    const { granted: grantedScopes, withheld } = grantScopes(p.requestedScopes, accessOf(this.host!, this.opts.hostKind).level)
     const result: RpcHelloResult = {
       protocolVersion: 1,
       hostInstanceId: this.opts.hostInstanceId,
@@ -559,10 +681,12 @@ export class HostSocketServer {
     conn.clientKind = p.clientKind
     conn.pid = p.pid
     conn.scopes = grantedScopes
+    conn.withheld = withheld
     if (result.versionSkewWarning) conn.versionSkew = true
     conn.reader.maxLineBytes = RPC_BULK_FRAME_MAX_BYTES
     this.send(conn, rpcResult(HELLO_REQUEST_ID, result))
-    this.log(`Client ${conn.id} connected (${p.clientKind} ${p.clientVersion.slice(0, 40)}, scopes ${grantedScopes.join(', ')}).`)
+    const held = withheld.length ? `; withheld by Terminal access: ${withheld.join(', ')}` : ''
+    this.log(`Client ${conn.id} connected (${p.clientKind} ${p.clientVersion.slice(0, 40)}, scopes ${grantedScopes.join(', ') || 'none'}${held}).`)
     for (const line of conn.pendingLines.splice(0)) {
       if (conn.state !== 'auth') break
       this.onLine(conn, line)
@@ -584,17 +708,26 @@ export class HostSocketServer {
     if (conn.inflight >= RPC_MAX_INFLIGHT_PER_SOCKET) {
       return this.send(conn, rpcError(id, { code: 'too_many_requests', message: `At most ${RPC_MAX_INFLIGHT_PER_SOCKET} requests may be in flight on one connection.` }))
     }
-    const entry = conn.versionSkew && method !== HOST_METHODS.hostStop ? channelEntry(method) : undefined
-    if (entry && 'scope' in entry && entry.scope === 'configure') {
+    const entry = channelEntry(method)
+    const scope = entry && 'scope' in entry ? entry.scope : undefined
+    if (conn.versionSkew && method !== HOST_METHODS.hostStop && scope === 'configure') {
       return this.send(
         conn,
         rpcError(id, { code: 'scope_denied', message: `${method} needs the same orgai and OrgAI version (the 'configure' scope is limited to host.stop across versions); update them to the same version.` })
       )
     }
+    // host.stop is the one 'configure' channel any client that asked for 'configure' may call whatever the Terminal
+    // access level: it does nothing a same-user `kill` of the pid in daemon.json could not (`orgai daemon stop`).
+    const stopOnly = method === HOST_METHODS.hostStop && conn.withheld.includes('configure')
+    if (scope !== undefined && conn.withheld.includes(scope as HostScope) && !stopOnly) {
+      return this.send(conn, rpcError(id, { code: 'scope_denied', message: `${method} needs the '${scope}' scope. ${TERMINAL_ACCESS_LEVEL_MESSAGE}` }))
+    }
+    const grantedScopes: HostScope[] = stopOnly ? [...conn.scopes, 'configure'] : conn.scopes
+    const authorizing = method === IPC.mcpAuthorize ? this.trackAuthorize(conn, req.params) : undefined
     conn.inflight++
     let p: Promise<unknown>
     try {
-      p = host.dispatcher.invokeRpc(method, req.params, { surface: 'socket', clientKind: conn.clientKind, pid: conn.pid, grantedScopes: conn.scopes })
+      p = host.dispatcher.invokeRpc(method, req.params, { surface: 'socket', clientKind: conn.clientKind, pid: conn.pid, grantedScopes })
     } catch (e) {
       p = Promise.reject(e)
     }
@@ -602,9 +735,24 @@ export class HostSocketServer {
       (result) => this.sendResult(conn, id, method, result),
       (err: unknown) => this.send(conn, rpcError(id, toRpcError(err)))
     ).finally(() => {
+      authorizing?.()
       conn.inflight--
       if (conn.closeAfterInflight && conn.inflight === 0 && conn.state === 'auth') this.refuseQueued(conn)
     })
+  }
+
+  /** An mcp:authorize with announceUrl: this socket hears that target's `mcp.authorize` until it answers. */
+  private trackAuthorize(conn: Conn, params: unknown): (() => void) | undefined {
+    const input = Array.isArray(params) ? params[0] : undefined
+    if (!isObj(input) || input.announceUrl !== true) return undefined
+    const key = authorizeKey(input)
+    if (key === undefined) return undefined
+    conn.authorizing.set(key, (conn.authorizing.get(key) ?? 0) + 1)
+    return () => {
+      const n = (conn.authorizing.get(key) ?? 1) - 1
+      if (n > 0) conn.authorizing.set(key, n)
+      else conn.authorizing.delete(key)
+    }
   }
 
   /** Serialize a result within the channel's response cap and the bulk budget, else answer frame_too_large. */
@@ -686,8 +834,17 @@ export class HostSocketServer {
     // only new handshakes (AppSettings.terminalServer, cli-spec invariant 2). In-flight answers (the settings:set that
     // turned it off) still go out first.
     if (channel === 'settings:changed' && this.host) {
-      this.terminalOn = readTerminalServer(this.host)
+      const access = accessOf(this.host, this.opts.hostKind)
+      this.terminalOn = access.enabled
+      const lowered = this.accessLevel === 'full' && access.level !== 'full'
+      this.accessLevel = access.level
       if (!this.terminalOn) this.dropAuthenticated()
+      else {
+        void this.ensureSecretAcl()
+        // A lower level takes effect at once: sockets holding scopes it no longer allows are closed, as when Terminal
+        // access is turned off; the client reconnects with what it may have now.
+        if (lowered) this.dropAuthenticated((c) => c.scopes.some((s) => !scopesForAccessLevel(access.level).includes(s)), 'Terminal access was narrowed')
+      }
     }
     if (channel === 'runs:event') {
       this.onRunEvent(payload as RunEvent)
@@ -695,9 +852,12 @@ export class HostSocketServer {
     }
     const topic = this.channelTopic.get(channel)
     if (!topic) return
+    // An announced OAuth authorization URL goes only to the socket whose mcp:authorize asked for it (review Low).
+    const authorizeFor = channel === IPC.connectionsEvent ? announcedAuthorizeKey(payload) : undefined
     let frame: string | undefined
     for (const c of this.conns) {
       if (c.state !== 'auth' || !c.topics.has(topic)) continue
+      if (authorizeFor !== undefined && !c.authorizing.has(authorizeFor)) continue
       if (frame === undefined) {
         try {
           frame = encodeFrame(rpcNotification(channel, payload))

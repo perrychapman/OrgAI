@@ -32,7 +32,9 @@ describe('startInprocHost', () => {
     const h = await start(new Map([[LITELLM_KEY, 'sk-overlay']]))
     const daemon = JSON.parse(readFileSync(join(dataDir, 'run', 'daemon.json'), 'utf8')) as Record<string, unknown>
     expect(daemon).toMatchObject({ hostKind: 'inproc', state: 'ready', pid: process.pid })
-    expect(h.host.settings.get().terminalServer).toBe(true)
+    // For this session only (never saved), with every scope: the CLI process owns this host.
+    expect(h.host.settings.get().terminalServer).toBe(false)
+    expect(h.host.terminalAccess()).toEqual({ enabled: true, level: 'full' })
     expect(h.status()).toMatchObject({ hostKind: 'inproc', state: 'ready', mock: true, dataDir })
     const secrets = secretsOf(h)
     expect(secrets.get(LITELLM_KEY)).toBe('sk-overlay')
