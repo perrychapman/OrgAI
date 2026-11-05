@@ -277,6 +277,8 @@ export class NeuralEngine {
       this.anim = null
       this.rad.set(this.radT)
       this.born.fill(0)
+      // Turned on mid-settle: the frame loop no longer steps the layout, so the off-screen slicer takes over.
+      if (this.lay && !this.lay.settled) this.startArranging()
     }
     this.dirtyA = true
     this.dirtyB = true
@@ -313,6 +315,14 @@ export class NeuralEngine {
     const prevKinds = new Map<string, string>()
     if (prevModel) prevModel.nodes.forEach((nd) => prevKinds.set(nd.id, nd.kind))
     const wasUnsettled = !!this.lay && !this.lay.settled
+    // Pulses and rings point at edge and node indexes of the old model: pulses end here, rings follow their node.
+    this.pulses = []
+    if (prevModel && this.rings.length > 0) {
+      this.rings = this.rings.flatMap((r) => {
+        const at = model.index.get(prevModel.ids[r.idx])
+        return at === undefined ? [] : [{ ...r, idx: at }]
+      })
+    } else this.rings = []
     this.projectId = projectId
     this.model = model
     this.showRetired = showRetired
@@ -486,6 +496,12 @@ export class NeuralEngine {
   }
 
   /** Bring a node within 48 px of the inside of the stage with the smallest pan. */
+  /** The stage's corner moved in the window by minus (dx, dy): move the view the same way, so nodes hold still on screen. */
+  offsetView(dx: number, dy: number): void {
+    this.anim = null
+    this.setView({ x: this.v.x + dx, y: this.v.y + dy, k: this.v.k })
+  }
+
   reveal(id: string, ms: number): void {
     if (!this.model) return
     const i = this.model.index.get(id)
@@ -704,7 +720,6 @@ export class NeuralEngine {
   private setView(v: View): void {
     this.v = v
     this.host.view(v)
-    this.labelsDirty = true
     this.dirtyA = true
     this.inputDirty = true
     this.scheduleLabels()
@@ -926,6 +941,23 @@ export class NeuralEngine {
     this.inputDirty = false
     this.inFrame = true
     const now = performance.now()
+    try {
+      this.frameBody(now)
+    } finally {
+      // A draw that throws must not leave kick() refusing every later frame.
+      this.inFrame = false
+    }
+    if (this.frames % 10 === 0) this.writeAttrs()
+    if (this.busy()) {
+      this.setAnimating(true)
+      this.raf = requestAnimationFrame((t) => this.frame(t))
+    } else {
+      this.setAnimating(false)
+      this.writeAttrs()
+    }
+  }
+
+  private frameBody(now: number): void {
     // layout slice
     if (this.lay && !this.lay.settled && !this.reduced) {
       stepLayout(this.lay, 8)
@@ -951,7 +983,6 @@ export class NeuralEngine {
       this.v = { x: from.x + (to.x - from.x) * e, y: from.y + (to.y - from.y) * e, k: from.k + (to.k - from.k) * e }
       this.host.view(this.v)
       this.dirtyA = true
-      this.labelsDirty = true
       if (t >= 1) {
         this.v = to
         this.host.view(to)
@@ -987,15 +1018,6 @@ export class NeuralEngine {
       this.dirtyB = false
     }
     this.frames++
-    this.inFrame = false
-    if (this.frames % 10 === 0) this.writeAttrs()
-    if (this.busy()) {
-      this.setAnimating(true)
-      this.raf = requestAnimationFrame((t) => this.frame(t))
-    } else {
-      this.setAnimating(false)
-      this.writeAttrs()
-    }
   }
 
   private easingBorn(now: number): boolean {
@@ -1464,6 +1486,7 @@ export class NeuralEngine {
       if (t >= 1) {
         if (p.chain && this.spreadBudget > 0) {
           const e = model.edges[p.edge]
+          if (!e) continue
           const node = p.forward ? e.b : e.a
           this.rings.push({ idx: node, t0: now, dur: 360, kind: 'flash' })
           // one pulse on, along the node's largest other synapse

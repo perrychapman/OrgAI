@@ -279,7 +279,7 @@ export function lodFor(drawnNodes: number): Lod {
 
 // ---------------------------------------------------------------- force layout
 
-export const LAYOUT = { repulsion: -220, linkBase: 70, collisionPad: 10, gravity: 0.04, velocityDecay: 0.6, alphaDecay: 0.02, alphaMin: 0.02, maxTicks: 300, theta: 0.9, bhFrom: 200, placeTicks: 60 } as const
+export const LAYOUT = { repulsion: -220, linkBase: 70, collisionPad: 10, gravity: 0.04, velocityDecay: 0.6, alphaDecay: 0.02, alphaMin: 0.02, maxTicks: 300, theta: 0.9, bhFrom: 200, placeTicks: 60, placeTicksLarge: 20 } as const
 
 export interface LayoutState {
   ids: string[]
@@ -706,7 +706,7 @@ export function placeNew(prev: LayoutState, adds: readonly PlaceInput[], links: 
   }
   const pinned = new Uint8Array(n)
   for (let i = 0; i < n0; i++) pinned[i] = 1
-  const s: LayoutState = { ids, x, y, vx: new Float64Array(n), vy: new Float64Array(n), r, pinned, links: flat, degree: degreeOf(n, flat), alpha: 1, ticks: 0, maxTicks: LAYOUT.placeTicks, settled: false }
+  const s: LayoutState = { ids, x, y, vx: new Float64Array(n), vy: new Float64Array(n), r, pinned, links: flat, degree: degreeOf(n, flat), alpha: 1, ticks: 0, maxTicks: n > 800 ? LAYOUT.placeTicksLarge : LAYOUT.placeTicks, settled: false }
   while (!s.settled) tick(s)
   s.pinned = new Uint8Array(n)
   s.alpha = 0
@@ -923,8 +923,8 @@ export function pickLabels(input: {
     let blocked = false
     for (const o of candidates) {
       if (o.id === c.id) continue
-      // A larger node keeps 4 px of air; a smaller one may not sit under the name either.
-      if (circleHitsRect(o.x, o.y, o.r, box, o.r > c.r ? LABEL_PAD : 1)) {
+      // A larger node keeps 4 px of air. A smaller one may sit under the name (the name's stroke keeps it readable), or a hub in a cluster would never carry its name.
+      if (o.r > c.r && circleHitsRect(o.x, o.y, o.r, box, LABEL_PAD)) {
         blocked = true
         break
       }

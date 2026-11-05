@@ -1364,6 +1364,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       const { [id]: _draft, ...draftPage } = s.draftPage
       const runs = Object.fromEntries(Object.entries(s.runs).filter(([runId]) => !gone.has(runId)))
       const dismissedRuns = Object.fromEntries(Object.entries(s.dismissedRuns).filter(([runId]) => !gone.has(runId))) as Record<string, true>
+      const knowledgeRecalledByRun = Object.fromEntries(Object.entries(s.knowledgeRecalledByRun).filter(([runId]) => !gone.has(runId)))
+      const sideTabByRun = Object.fromEntries(Object.entries(s.sideTabByRun).filter(([runId]) => !gone.has(runId)))
+      // Keyed by the chain's oldest member, a run id of the project.
+      const runKnowledgeByChain = Object.fromEntries(Object.entries(s.runKnowledgeByChain).filter(([chain]) => !gone.has(chain)))
       const wasSelected = s.selectedProjectId === id
       return {
         projects: s.projects.filter((p) => p.id !== id),
@@ -1374,6 +1378,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         draftPage,
         runs,
         dismissedRuns,
+        knowledgeRecalledByRun,
+        sideTabByRun,
+        runKnowledgeByChain,
         ...(wasSelected ? { history: [] } : {})
       }
     })

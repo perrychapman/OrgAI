@@ -449,8 +449,8 @@ try {
   check(await settled(), 'the Graph view comes back settled')
 
   // ======== 11. Keyboard ========
-  await page.locator('[data-testid=knowledge-show-retired]').focus()
-  await page.keyboard.press('Tab')
+  // The band's controls come first (their order depends on the band's width); the graph's own stops start at the skip links.
+  await page.locator('[data-testid=knowledge-skip-list]').focus()
   const tabs = []
   for (let i = 0; i < 3; i++) {
     tabs.push(await activeTestId())

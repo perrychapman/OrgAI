@@ -688,7 +688,11 @@ export default function KnowledgeView({ project }: { project: Project }): ReactE
             onOpen={openItem}
             onShowList={() => {
               changeView('list')
-              focusRow(selectedId)
+              requestAnimationFrame(() => {
+                if (listRef.current) focusRow(selectedId)
+                // Everything filtered out: no rows to land on.
+                else focusLater(() => document.querySelector<HTMLElement>('[data-testid=knowledge-clear-filters]') ?? document.querySelector<HTMLElement>('[data-testid=knowledge-add-note]:not(:disabled)'))
+              })
             }}
             onSkipToDetail={focusHeading}
             onClearFilters={() => changeFilter({ query: '', kinds: [], origins: [] })}

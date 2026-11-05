@@ -52,6 +52,11 @@ export function KnowledgePossible({
   const relations = useMemo(() => relationsInUse(graph.edges), [graph.edges])
   const shown = expanded ? rows : rows.slice(0, POSSIBLE_VISIBLE)
 
+  // The tab's one status region says it (knowledge-graph-2.md section 1.8); the inline error stays described on its field.
+  useEffect(() => {
+    if (failed) announce(POSSIBLE_LOAD_FAILED)
+  }, [failed, announce])
+
   // Another item: a fresh list.
   useEffect(() => {
     setExpanded(false)
@@ -71,7 +76,8 @@ export function KnowledgePossible({
     if (!t || rows.some((r) => r.link.id === t.id)) return
     tracked.current = null
     const a = document.activeElement
-    if (a && a !== document.body && sectionRef.current && !sectionRef.current.contains(a)) return
+    // Focus elsewhere on the page stays there, also when the section itself just went away (its last row was removed).
+    if (a && a !== document.body && !sectionRef.current?.contains(a)) return
     const next = rowAfterRemoval(t.order, rows.map((r) => r.link.id), t.id)
     requestAnimationFrame(() => {
       const el = (next ? sectionRef.current?.querySelector<HTMLElement>(`[data-testid=knowledge-possible-row][data-link="${next}"] [data-testid=knowledge-possible-confirm]`) : null) ?? document.querySelector<HTMLElement>(ADD_RELATION)
@@ -121,7 +127,7 @@ export function KnowledgePossible({
         Possible connections
       </h3>
       {failed && (
-        <p className="knowledge-possible-failed" data-testid="knowledge-possible-error-load" role="status">
+        <p className="knowledge-possible-failed" data-testid="knowledge-possible-error-load">
           {POSSIBLE_LOAD_FAILED}{' '}
           <button type="button" className="link-btn" data-testid="knowledge-possible-retry" onClick={onRetry}>
             Retry
@@ -145,7 +151,10 @@ export function KnowledgePossible({
           )
           const word = wordOf(r)
           return (
-            <li key={id} className="knowledge-possible" data-testid="knowledge-possible-row" data-link={id} data-basis={r.link.basis} onFocus={() => (tracked.current = { id, order: orderRef.current })}>
+            <li key={id} className="knowledge-possible" data-testid="knowledge-possible-row" data-link={id} data-basis={r.link.basis} onFocus={() => (tracked.current = { id, order: orderRef.current })} onBlur={(e) => {
+              // Moving to another control ends the focus rule for this row; a blur with no target (a button going busy, a row going away) keeps it.
+              if (e.relatedTarget && !e.currentTarget.contains(e.relatedTarget as Node)) tracked.current = null
+            }}>
               <form
                 className="knowledge-possible-form"
                 aria-label={`Possible connection with ${r.other.name}`}
@@ -190,7 +199,7 @@ export function KnowledgePossible({
                   <span className="knowledge-possible-name">{r.to.name}</span>
                 </div>
                 {err && (
-                  <span id={`${uid}-e-${id}`} className="field-msg error knowledge-field-error" role="alert" data-testid="knowledge-possible-error">
+                  <span id={`${uid}-e-${id}`} className="field-msg error knowledge-field-error" data-testid="knowledge-possible-error">
                     {err}
                   </span>
                 )}
@@ -240,7 +249,7 @@ function FailedLoad({ uid, onRetry }: { uid: string; onRetry: () => void }): Rea
       <h3 id={`${uid}-h`} className="knowledge-section-title">
         Possible connections
       </h3>
-      <p className="knowledge-possible-failed" data-testid="knowledge-possible-error-load" role="status">
+      <p className="knowledge-possible-failed" data-testid="knowledge-possible-error-load">
         {POSSIBLE_LOAD_FAILED}
       </p>
       <div className="knowledge-section-actions">

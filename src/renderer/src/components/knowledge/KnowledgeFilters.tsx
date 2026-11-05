@@ -58,6 +58,9 @@ export function KnowledgeFilters({
   const uid = useId()
   const band = layout === 'band'
   const formRef = useRef<HTMLFormElement>(null)
+  const innerSearch = useRef<HTMLInputElement | null>(null)
+  // Clear search always lands in the box (its own button is about to go).
+  const searchInput = searchRef ?? innerSearch
   const [text, setText] = useState(filter.query)
   const timer = useRef<number | undefined>(undefined)
   const [narrow, setNarrow] = useState(false)
@@ -163,7 +166,7 @@ export function KnowledgeFilters({
         </span>
         <input
           id={`${uid}-search`}
-          ref={searchRef}
+          ref={searchInput}
           className="input"
           type="search"
           value={text}
@@ -189,7 +192,7 @@ export function KnowledgeFilters({
               testId="knowledge-search-clear"
               onClick={() => {
                 setQuery('', true)
-                searchRef?.current?.focus()
+                searchInput.current?.focus()
               }}
             />
           </span>

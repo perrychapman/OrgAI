@@ -106,6 +106,8 @@
   padding: 10px 12px;
   background: var(--surface-2);
   color: var(--text-primary);
+  /* Transparent normally; forced colours draw it, since the shadow disappears there. */
+  border: 1px solid transparent;
   border-radius: var(--radius-md);
   box-shadow: var(--elev-2);
   pointer-events: none;
@@ -198,6 +200,7 @@
   padding: 6px 8px 6px 12px;
   max-width: calc(100% - 24px);
   background: var(--surface-2);
+  border: 1px solid transparent;
   border-radius: var(--radius-md);
   box-shadow: var(--elev-2);
   color: var(--text-primary);

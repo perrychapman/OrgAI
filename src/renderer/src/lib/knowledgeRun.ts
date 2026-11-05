@@ -209,7 +209,7 @@ function entityRefOfResult(text: string): { nodeId: string; name: string } | und
   const at = lines.indexOf('<<<')
   const ref = at >= 0 ? lines[at + 1] : undefined
   const m = ref ? /^(kn_\S+) \| \S+ \| ([^|]+?)(?: \|.*)?$/.exec(ref) : null
-  return m ? { nodeId: m[1], name: m[2] } : undefined
+  return m && KNOWLEDGE_ID_RE.test(m[1]) ? { nodeId: m[1], name: m[2] } : undefined
 }
 
 /**

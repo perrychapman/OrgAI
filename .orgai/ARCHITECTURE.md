@@ -388,11 +388,13 @@ components/layout:
   casts. Surfaces whose API is absent are hidden.
 - Knowledge tab (engagements; `docs/design/knowledge.md`): `views/KnowledgeView.tsx` with `components/knowledge/*`
   (filters, one-listbox grouped list with roving focus and windowing, `SidePanel` detail pane with inline fields, facts,
-  relations, note links and history, `NoteDialog`, the Graph view `KnowledgeGraph.tsx` + node / edge / legend /
-  retired-group components on the shared canvas pieces), pure helpers in `lib/knowledge.ts` (item model over
+  relations, possible connections (`KnowledgePossible`), note links and history, `NoteDialog`; the Graph view is the
+  neural canvas `KnowledgeNeural.tsx` + `neuralEngine.ts` / `neuralColors.ts` / `NeuralCard` / `NeuralLegend`, spec
+  `docs/design/knowledge-graph-2.md`, which uses no React Flow and none of the App settings canvas options; the run
+  side panel's Knowledge tab is `RunKnowledge.tsx`), pure helpers in `lib/knowledge.ts` (item model over
   `KnowledgeGraph` nodes and `EngagementNote`s, kind order and colour slots, creation order, search rank, provenance /
   history lines, `resolveFocus`), `lib/knowledgeList.ts` (windowing, type-ahead, announcement batching, fact list
-  edits), `lib/knowledgeGraph.ts` (neighbourhood, retired fold, drawn graph, spoken names, layout boxes),
+  edits), `lib/knowledgeNeural.ts` (seeded force layout, radius, level of detail, labels, card placement, keyboard targets, spoken names), `lib/knowledgePossible.ts`, `lib/runKnowledge.ts`,
   `lib/knowledgeRun.ts` (transcript pairing of harness tool writes with their harness rows, `recordedCount`, id shape
   guards), `lib/dates.ts` (the one date format). Store: `View` 'knowledge', `knowledgeFocus` + `openKnowledgeItem`
   (deep links from transcript rows). Every write goes through `window.orgai.knowledge.*` / `engagement.*` and the view

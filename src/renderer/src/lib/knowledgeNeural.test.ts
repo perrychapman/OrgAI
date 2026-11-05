@@ -207,6 +207,12 @@ describe('labels', () => {
       }
     }
   })
+  it('names a hub although a smaller node sits under its name', () => {
+    const hub = { id: 'kn_hub', text: 'Acme Corp', x: 200, y: 100, r: 30, total: 20, order: 0, quiet: false }
+    const leaf = { id: 'kn_leaf', text: 'Jane', x: 200, y: 140, r: 8, total: 1, order: 1, quiet: false }
+    const placed = pickLabels({ candidates: [hub, leaf], stage: { w: 600, h: 400 }, zoom: 1, measure })
+    expect(placed.map((p) => p.id)).toContain('kn_hub')
+  })
   it('takes the largest first and puts must and priority ids ahead', () => {
     const cands = make(40)
     const base = pickLabels({ candidates: cands, stage: { w: 1368, h: 820 }, zoom: 1, measure })

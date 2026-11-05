@@ -98,6 +98,9 @@ interface OptionProps {
   retired: boolean
   fired: number
   tabbable: boolean
+  /** The whole graph's count and this node's place: above 300 nodes only some options are in the DOM. */
+  setSize: number
+  posInSet: number
   register: (id: string, el: HTMLLIElement | null) => void
   onFocusOption: (id: string, visible: boolean) => void
   onBlurOption: (id: string) => void
@@ -126,6 +129,8 @@ const NeuralOption = memo(function NeuralOption(p: OptionProps): ReactElement {
       data-fired={p.fired}
       aria-selected={p.selected}
       aria-disabled={p.dim || undefined}
+      aria-setsize={p.setSize}
+      aria-posinset={p.posInSet}
       aria-label={p.label}
       tabIndex={p.tabbable ? 0 : -1}
       className="neural-node"
@@ -300,9 +305,13 @@ function NeuralInner(props: KnowledgeNeuralProps): ReactElement {
     }
     const engine = new NeuralEngine(root, stage, field, pulses, host)
     engineRef.current = engine
+    // Every node keeps its place in the window when the stage's own corner moves (the filter band rewrapping).
+    let corner = stage.getBoundingClientRect()
     const ro = new ResizeObserver(() => {
       const r = stage.getBoundingClientRect()
       engine.resize(r.width, r.height, window.devicePixelRatio || 1)
+      if (r.left !== corner.left || r.top !== corner.top) engine.offsetView(corner.left - r.left, corner.top - r.top)
+      corner = r
       const sel = propsRef.current.selectedId
       if (sel) engine.reveal(sel, 200)
     })
@@ -442,6 +451,12 @@ function NeuralInner(props: KnowledgeNeuralProps): ReactElement {
   if (drawnCount <= OPTIONS_ALL_UP_TO && forceId !== null) {
     /* every drawn node renders already */
   }
+  const ranks = useMemo(() => {
+    const out = new Int32Array(drawn.length)
+    let n = 0
+    for (let i = 0; i < drawn.length; i++) if (drawn[i] === 1) out[i] = ++n
+    return out
+  }, [drawn])
   const spokenCache = useMemo(() => new Map<number, string>(), [model, drawn, filter.showRetired])
   const spokenOf = (i: number): string => {
     let s = spokenCache.get(i)
@@ -474,8 +489,39 @@ function NeuralInner(props: KnowledgeNeuralProps): ReactElement {
   const focusOptionRef = useRef(focusOption)
   focusOptionRef.current = focusOption
 
+  // The node holding focus may leave (an agent retires or deletes it): focus moves to the nearest option, never to the page.
+  const heldFocus = useRef<{ id: string; x: number; y: number } | null>(null)
+  const positionsRef = useRef(positions)
+  positionsRef.current = positions
+  useLayoutEffect(() => {
+    const held = heldFocus.current
+    if (!held || els.current.has(held.id)) return
+    heldFocus.current = null
+    const active = document.activeElement
+    if (active && active !== document.body) return
+    const m = modelRef.current
+    const at = positionsRef.current
+    let best: string | null = null
+    let bestD = Infinity
+    for (const id of els.current.keys()) {
+      const i = m.index.get(id)
+      if (i === undefined || emphasisRef.current.kept[i] !== 1) continue
+      const d = at ? (at.x[i] - held.x) ** 2 + (at.y[i] - held.y) ** 2 : m.totals[i] * -1
+      if (d < bestD) {
+        bestD = d
+        best = id
+      }
+    }
+    if (!best) return
+    els.current.get(best)?.focus({ preventScroll: true })
+    announce(`That item left the graph. Now on ${cleanLabel(m.names[m.index.get(best)!])}.`)
+  })
+
   const onFocusOption = useCallback(
     (id: string, visible: boolean): void => {
+      const i = modelRef.current.index.get(id)
+      const at = positionsRef.current
+      heldFocus.current = { id, x: at && i !== undefined ? at.x[i] : 0, y: at && i !== undefined ? at.y[i] : 0 }
       setLastFocused(id)
       if (visible) {
         setFocusId(id)
@@ -486,7 +532,9 @@ function NeuralInner(props: KnowledgeNeuralProps): ReactElement {
     [showCard]
   )
   const onBlurOption = useCallback(
-    (_id: string): void => {
+    (id: string): void => {
+      // A blur while the element is still on the page is the user leaving; a removal keeps the hold for the effect above.
+      if (heldFocus.current?.id === id && els.current.get(id)?.isConnected) heldFocus.current = null
       setFocusId(null)
       hideCard(0)
     },
@@ -642,6 +690,8 @@ function NeuralInner(props: KnowledgeNeuralProps): ReactElement {
                 retired={!!model.nodes[i].retired}
                 fired={fired.get(id) ?? 0}
                 tabbable={id === tabStop}
+                setSize={drawnCount}
+                posInSet={ranks[i]}
                 register={register}
                 onFocusOption={onFocusOption}
                 onBlurOption={onBlurOption}

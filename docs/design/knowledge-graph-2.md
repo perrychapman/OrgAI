@@ -268,6 +268,19 @@ Add to every theme block of `tokens.css` (dark, light, system light). Plain valu
 - Should the run tab's search include context notes? `searchKnowledge` covers items only. **Default: items only**; linked note titles show in the detail.
 - Should the recalled list survive a relaunch? It needs a `RunRecord` field. **Default: no**; the transcript lines of 3.1 stand in.
 
-## 8. Verification owed
+## 8. Implementation notes (2026-11-05)
+
+Measured on the running app (Windows, 1600x1000, dark, DPR 1) from resolved colours and a synthetic graph. Contrast on `--neural-field`: name 16.59:1 dark, 16.71:1 light; lowest node colour person and meeting 5.35:1 dark, document 4.32:1 light; every other node colour 5.4 to 13.4:1. Frame JS time at 2,000 nodes and 5,000 edges (`low` tier): layout settles about 1.4 s after switching to Graph; settling p50 14.6 / p95 18.8 / max 44.7 ms; idle max 0.3 ms; hover p95 3.7, pan p95 4.1, wheel zoom p95 3.8 ms; no long task over 50 ms; GPU raster not measured. These numbers predate the label and frame fixes below, which only remove work.
+
+Deviations from the text above:
+
+- A new node's pinned placement runs 20 ticks instead of 60 above 800 nodes (60 ticks took 97 ms at 2,000 nodes, unit-level measurement).
+- `KnowledgeFilters` measures the band with a ResizeObserver rather than a container query, so testids are not duplicated.
+- The stage's corner moving (the band rewrapping) moves the view the opposite way, so nodes hold still in the window, not just in the stage.
+- Options carry `aria-setsize` / `aria-posinset` for the whole graph, since above 300 nodes only some are in the DOM. The node holding focus leaving the graph moves focus to the nearest kept option with "That item left the graph. Now on <name>."
+- `knowledge-possible-partial` shows when `KnowledgeInferredResult.partial` is set (the matcher stopped at its budget). Reads the field through a local cast until the merged contract removes the need.
+- The auto-context note says "an item you added yourself": main's automatic block matches user-created entities only.
+
+## 9. Verification owed
 
 Unit: `lib/knowledgeNeural.ts` (determinism, pinned new node, radius, marks, tier bounds, labels without overlap, card placement, spatial and hub moves) and `linkWhy`. e2e in e2e:free, mock, both sizes and themes: `e2e/knowledge-graph.mjs` rewritten on 1.9, `e2e/knowledge-run.mjs` for section 3, `e2e/canvas.mjs` unchanged and green. Then a UX walk on a seeded graph of 60 and of 2,000 nodes. Report measured contrast, frame times at 2,000 nodes, and what was and was not seen by eye.
