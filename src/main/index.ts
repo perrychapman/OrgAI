@@ -1,5 +1,5 @@
-import { app, BrowserWindow, ipcMain, nativeImage, nativeTheme, safeStorage, shell } from 'electron'
-import { mkdirSync } from 'node:fs'
+import { app, BrowserWindow, dialog, ipcMain, nativeImage, nativeTheme, safeStorage, shell } from 'electron'
+import { mkdirSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -42,31 +42,74 @@ import { listNotes, orphanRunProjects, readNote, readRetainedRunProjects, saveNo
 import { knowledgeStore } from './store/knowledge'
 import { Notifier } from './notifications'
 import { DEFAULT_KEEP_RUNS } from '@shared/types'
-import { dataDirOverride, installLogging, log } from './log'
+import { canWriteDir, dataDirOverride, installLogging, log, pickLogsDir } from './log'
+import { installElectronLogHooks } from './electronLogHooks'
+import { acquireHostOwnership, HostAlreadyRunningError, HostStartingOrBusyError, type HostOwnership } from './host/ownership'
 import { buildSettingsInfo, windowBackground } from './appInfo'
 import { quitGate } from './quitGate'
 
 // Before anything reads a path: ORGAI_DATA_DIR (CI, e2e) replaces userData and moves logs under it, so a run never
-// touches the real profile or ~/Library/Logs. app.setPath throws for a missing directory, so create it first.
+// touches the real profile or ~/Library/Logs. app.setPath throws for a missing directory, so create it first. The
+// folder is canonicalized (realpath) so the single-instance lock, the data dir and the host's run/ folder always
+// name it one way (macOS /var vs /private/var, a symlinked profile).
 const dataOverride = dataDirOverride()
+const userDataDir = canonicalUserData(dataOverride?.userData ?? app.getPath('userData'))
+app.setPath('userData', userDataDir)
 if (dataOverride) {
-  mkdirSync(dataOverride.logs, { recursive: true })
-  app.setPath('userData', dataOverride.userData)
-  app.setAppLogsPath(dataOverride.logs)
+  const overrideLogs = join(userDataDir, 'logs')
+  mkdirSync(overrideLogs, { recursive: true })
+  app.setAppLogsPath(overrideLogs)
 }
-// Unpackaged (npm run dev, e2e) the name comes from package.json ("orgai"); on macOS that names ~/Library/Logs/<name>
-// and the About entry. userData was fixed by Electron before this runs, so it does not move.
-if (!app.isPackaged) app.setName('OrgAI')
-installLogging()
-// Finder/Dock launches on macOS get a minimal PATH; take the login shell's before anything spawns claude, codex or MCP servers.
-applyShellPath()
-if (process.platform === 'win32') app.setAppUserModelId('com.orgai.app')
+
+function canonicalUserData(dir: string): string {
+  try {
+    mkdirSync(dir, { recursive: true })
+    return realpathSync(dir)
+  } catch {
+    return dir
+  }
+}
 
 let runManager: RunManager | undefined
 let notifier: Notifier | undefined
 let settingsStore: SettingsStore | undefined
 /** Set once constructed; broadcast() feeds it every usage.status so the idle probe merges onto a run's report. */
 let usageMonitor: UsageMonitor | null = null
+/** This process's ownership of <dataDir>/run (cli-spec 3.2(2)); released on will-quit and process exit. */
+let ownership: HostOwnership | undefined
+/** True once whenReady has built the stores and the first window: the window handlers below wait for it. */
+let booted = false
+
+// A second launch on the same userData (Electron's single-instance lock) brings the running app forward instead.
+// Wave 0: restore and focus the main window, or open one. (--headless-host argv handling comes with Wave 2.)
+app.on('second-instance', () => {
+  if (!booted) return
+  const main = liveWindowScopes().find(([, scope]) => scope === undefined)?.[0]
+  if (main) showWindow(main)
+  else createWindow()
+})
+app.on('activate', () => {
+  if (booted && BrowserWindow.getAllWindows().length === 0) createWindow()
+})
+// The lock is keyed by userData, so it is taken after setPath. An unpackaged dev build ('orgai') and the packaged
+// 'OrgAI' share one userData folder on case-insensitive macOS, so the lock correctly makes them exclusive. The losing
+// process exits at once, without touching <dataDir>/run.
+const gotLock = app.requestSingleInstanceLock()
+if (!gotLock) app.exit(0)
+
+// Unpackaged (npm run dev, e2e) the name comes from package.json ("orgai"); on macOS that names ~/Library/Logs/<name>
+// and the About entry. userData was set above, so it does not move.
+if (!app.isPackaged) app.setName('OrgAI')
+if (gotLock) {
+  // app.getPath('logs') is ~/Library/Logs/<name> on macOS (where Console.app looks); on Windows and Linux it is
+  // <userData>/logs. If it throws or is read-only (sandboxed or managed Macs), use <userData>/logs.
+  const logsDir = pickLogsDir([() => app.getPath('logs'), () => join(userDataDir, 'logs')], canWriteDir)
+  installLogging({ userDataDir, logsDir, appVersion: app.getVersion(), isPackaged: app.isPackaged, electronVersion: process.versions.electron })
+  installElectronLogHooks(app)
+}
+// Finder/Dock launches on macOS get a minimal PATH; take the login shell's before anything spawns claude, codex or MCP servers.
+applyShellPath()
+if (process.platform === 'win32') app.setAppUserModelId('com.orgai.app')
 
 /** Native menus, scrollbars, dialogs and prefers-color-scheme in the renderer follow AppSettings.appearance.theme. */
 function applyTheme(s: AppSettings): void {
@@ -238,7 +281,22 @@ function createWindow(scope?: FocusRunTarget): BrowserWindow {
   return win
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  if (!gotLock) return
+  const dataDir = join(app.getPath('userData'), 'data')
+  // Step 0 (cli-spec 3.2(2)): own <dataDir>/run before any store constructor, since RunStore rewrites live runs.
+  try {
+    ownership = await acquireHostOwnership({ dataDir, hostKind: 'desktop', appVersion: app.getVersion() })
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e)
+    log.error(`Host ownership failed: ${message}`)
+    if (e instanceof HostAlreadyRunningError || e instanceof HostStartingOrBusyError) {
+      dialog.showErrorBox('OrgAI is already running', `${message}\n\nQuit the other OrgAI (or the terminal host using this data folder), then start OrgAI again.`)
+    }
+    app.exit(6)
+    return
+  }
+  const owned = ownership
   // In development the Dock would show Electron's icon; packaged builds take it from the bundle.
   if (process.platform === 'darwin' && !app.isPackaged) {
     try {
@@ -247,7 +305,6 @@ app.whenReady().then(() => {
       log.warn(`Could not set the Dock icon: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
-  const dataDir = join(app.getPath('userData'), 'data')
   const projects = new ProjectStore(dataDir)
   const settings = new SettingsStore(dataDir)
   settingsStore = settings
@@ -551,15 +608,19 @@ app.whenReady().then(() => {
   dropped += sweepScratchDirs(dataDir, runStore.all())
   sweepStaleSkillDirs()
   if (dropped) console.log(`Housekeeping removed ${dropped} stale run(s) or record file(s).`)
+  // Stores built, probes started, housekeeping done: advertise the host as ready.
+  owned.markReady()
   installAppMenu(
     menuActionSender(() => BrowserWindow.getFocusedWindow(), liveWindowScopes, () => createWindow())
   )
   createWindow()
-
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
-  })
+  booted = true
 })
+
+// Give up <dataDir>/run ownership on the way out; the exit hook covers app.exit and paths that skip will-quit.
+// release() is synchronous and idempotent.
+app.on('will-quit', () => ownership?.release())
+process.on('exit', () => ownership?.release())
 
 /** Longest a quit waits for live runs to record their end (RunManager.stopAll) before it goes ahead anyway. */
 const QUIT_STOP_DEADLINE_MS = 3000
