@@ -81,7 +81,7 @@ import { isLiveAgent, runOutcome, settleAgent, withSkillActivity, type RunOutcom
 import { cancelPending, cleanProposalDecision, emptyPending, listPending, proposalEffect, proposalOutcome, type PendingCardMaps } from './pendingCards'
 import { addRules, addRulesReport, isBlanketAllowRule, isUnsafeAllowRule, listRules, tooBroadRuleRefusal } from './permissionRules'
 import { projectRulesFile, readEngagementDocument } from '../store/projectData'
-import { folderConfigStateOf, folderConfigWarning, presentConfigPaths } from './folderConfigTrust'
+import { cleanFolderConfigTrust, folderConfigStateOf, folderConfigWarning, presentConfigPaths } from './folderConfigTrust'
 
 /**
  * The project the adapters see. Adapters read `isolateWriters !== false`, so the value is made explicit: an
@@ -1313,8 +1313,12 @@ export class RunManager {
       // it loses it for good when the folder changes. Omitted for projects with no gate field (legacy, virtual,
       // trust-restricted), whose behaviour is unchanged. A scan that fails counts as "do not load".
       let folderLoads: (() => boolean) | undefined
+      // Rules copied from the folder's settings.local.json on accept stop counting when the folder's config stops loading.
+      let importedRulesNow: () => string[] = () => []
       if (!restricted && !isVirtualProjectId(project.id) && project.folderConfigTrust !== undefined) {
-        const gateProject = (): Project => this.options.resolveProject?.(project.id) ?? live
+        // The stored record decides the trust, but the folder judged is the one this run is in.
+        const gateProject = (): Project => ({ ...(this.options.resolveProject?.(project.id) ?? live), path: live.path })
+        importedRulesNow = () => cleanFolderConfigTrust(gateProject().folderConfigTrust)?.importedRules ?? []
         const stateNow = (): FolderConfigState => {
           try {
             return folderConfigStateOf(gateProject())
@@ -1342,6 +1346,16 @@ export class RunManager {
           warnNotLoaded(now)
           return false
         }
+      }
+      const withoutUnloadedImports = (rules: string[]): string[] => {
+        if (!folderLoads || folderLoads()) return rules
+        let imported: string[] = []
+        try {
+          imported = importedRulesNow()
+        } catch {
+          /* an unreadable record drops nothing it cannot name */
+        }
+        return imported.length ? rules.filter((r) => !imported.includes(r)) : rules
       }
       const ctx: RuntimeContext = {
         run: summary,
@@ -1397,12 +1411,12 @@ export class RunManager {
         // A quick run works in a folder the user never made a project: only this run's own grants count, never the
         // folder's saved rules file (it is untrusted), and nothing is ever written there (decideRules).
         protectedDirectories: () => protectedDirsOf(this.options.dataDir),
-        allowedRules: () => [...new Set([...(restricted ? [] : listRules({ file: this.rulesFileFor(live) })), ...active.runRules])],
+        allowedRules: () => [...new Set([...(restricted ? [] : withoutUnloadedImports(listRules({ file: this.rulesFileFor(live) }))), ...active.runRules])],
         // Where the project keeps its saved rules: the folder file for code projects, OrgAI's data folder for engagements.
         ...(restricted
           ? {}
           : {
-              savedRules: () => listRules({ file: this.rulesFileFor(live) }),
+              savedRules: () => withoutUnloadedImports(listRules({ file: this.rulesFileFor(live) })),
               saveProjectRules: (rules: string[]) => addRulesReport({ file: this.rulesFileFor(live) }, rules)
             }),
         ...(!writesToProjectFolder(project) ? { engagementDocument: () => (this.options.dataDir ? readEngagementDocument(this.options.dataDir, project.id) : undefined) } : {}),

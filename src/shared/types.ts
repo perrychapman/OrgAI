@@ -5797,8 +5797,14 @@ export interface FolderConfigCommand {
   kind: 'hook' | 'helper'
   /** Hook: its event and matcher ("PreToolUse Bash"). Helper: the setting's name ("apiKeyHelper"). */
   label: string
-  /** The command, or the handler as JSON when it is not a command handler (an http or prompt hook). */
+  /**
+   * The command, or the handler as JSON when it is not a command handler (an http or prompt hook). Only the
+   * credential-looking part is replaced by '[masked]' (URL userinfo, a key-shaped word, "Bearer x", the value of
+   * `API_KEY=...` or `--token=...`); everything else, including code after it, always shows.
+   */
   command: string
+  /** Something in `command` was replaced by '[masked]'. */
+  masked?: boolean
   hiddenChar?: string
 }
 
@@ -5809,6 +5815,26 @@ export interface FolderConfigEnv {
   value: string
   /** The name or the value looked like a secret. */
   masked: boolean
+  /** The name redirects where requests go or which model or account is used (a name Claude runs strip, or ending _BASE_URL). */
+  routing?: boolean
+  hiddenChar?: string
+}
+
+/**
+ * A setting that redirects or runs things but is not a hook, env value, allow rule or MCP server of its own:
+ * `.claude/settings*.json` enabledPlugins, extraKnownMarketplaces, permissions.defaultMode,
+ * permissions.additionalDirectories, enableAllProjectMcpServers, enabledMcpjsonServers, mcpServers; and
+ * `.codex/config.toml` notify, hooks, model_provider, model_providers, profile, profiles, approval_policy, sandbox_mode.
+ */
+export interface FolderConfigOtherSetting {
+  /** The file it is declared in. */
+  source: string
+  /** The setting's name, dotted for a nested one ("permissions.defaultMode"). */
+  key: string
+  /** The value as compact JSON, secret-looking parts masked. Never cut: a value over the field cap makes the review unreviewable. */
+  value: string
+  /** Something in `value` was replaced by '[masked]'. */
+  masked?: boolean
   hiddenChar?: string
 }
 
@@ -5823,8 +5849,10 @@ export interface FolderConfigAllowRule {
 export interface FolderConfigMcpServer {
   source: string
   name: string
-  /** The whole command line or URL as it would run, secret-looking values masked. */
+  /** The whole command line or URL as it would run; only credential-looking parts are replaced by '[masked]'. */
   target: string
+  /** Something in `target` was replaced by '[masked]'. */
+  masked?: boolean
   hiddenChar?: string
 }
 
@@ -5839,11 +5867,15 @@ export interface FolderConfigReview {
   env: FolderConfigEnv[]
   allowRules: FolderConfigAllowRule[]
   mcpServers: FolderConfigMcpServer[]
-  /** A list hit FOLDER_CONFIG_LIST_MAX or the total text cap. */
+  /** Settings that redirect or run things beyond the lists above (see FolderConfigOtherSetting). */
+  otherSettings: FolderConfigOtherSetting[]
+  /** A list hit FOLDER_CONFIG_LIST_MAX or the total text cap. A file of 'tools' may be cut; anything that runs may not (see unreviewable). */
   truncated: boolean
   /**
    * Why this config cannot be accepted (too many files, too large, a link leaving the project folder, a settings file
-   * too large to read). The trust channel then refuses trust: true.
+   * too large to read, a command / helper / MCP target / env value / allow rule over 4,000 characters, a list that
+   * reached FOLDER_CONFIG_LIST_MAX, or a file that runs commands whose text could not be shown in full). Nothing is
+   * ever accepted unseen. The trust channel then refuses trust: true.
    */
   unreviewable?: string
 }

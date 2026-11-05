@@ -108,7 +108,9 @@ export function isKeyLikeArg(arg: string): boolean {
   return false
 }
 
-const USERINFO_URL = /[a-z][a-z0-9+.-]*:\/\/[^/\s]*@/i
+// The scheme is bounded (RFC 3986 allows more, no real one needs it): an unbounded run made this quadratic on a long
+// line of letters.
+const USERINFO_URL = /[a-z][a-z0-9+.-]{0,31}:\/\/[^/\s]*@/i
 const CREDENTIAL_WORDS = /(?:bearer|basic|token)\s+\S{6,}/i
 const AUTH_HEADER = /authorization\s*[:=]/i
 
