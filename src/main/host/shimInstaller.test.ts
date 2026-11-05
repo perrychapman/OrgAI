@@ -202,6 +202,32 @@ describe('outdated and refreshOnLaunch', () => {
     )
     expect(await svc.refreshOnLaunch()).toBe('skipped')
   })
+  it('leaves a newer-format shim alone (review L)', async () => {
+    mkdirSync(binDir, { recursive: true })
+    const v2 = renderCliShim({ platform: 'darwin', launcher: '/Old/orgai' }).replace(CLI_SHIM_MARKER, 'orgai-shim v2')
+    writeFileSync(shim, v2, { mode: 0o755 })
+    expect(await createCliShimService(deps()).refreshOnLaunch()).toBe('skipped')
+    expect(readFileSync(shim, 'utf8')).toBe(v2)
+  })
+  it('leaves a shim for another install that is still on disk alone (review L)', async () => {
+    const other = fakeInstall(join(root, 'UserApps'))
+    mkdirSync(binDir, { recursive: true })
+    const text = renderCliShim({ platform: 'darwin', launcher: other.launcher })
+    writeFileSync(shim, text, { mode: 0o755 })
+    const svc = createCliShimService(deps())
+    expect(await svc.refreshOnLaunch()).toBe('skipped')
+    expect(readFileSync(shim, 'utf8')).toBe(text)
+    expect(svc.status()).toMatchObject({ state: 'outdated', target: other.launcher })
+    // Once that copy is gone (moved or deleted), the next launch points the shim here.
+    rmSync(other.launcher)
+    expect(await svc.refreshOnLaunch()).toBe('refreshed')
+    expect(parseCliShim(readFileSync(shim, 'utf8'), 'darwin')).toEqual({ launcher })
+  })
+  it('a marker without a readable exec line is left alone', async () => {
+    mkdirSync(binDir, { recursive: true })
+    writeFileSync(shim, `#!/bin/sh\n# ${CLI_SHIM_MARKER}: x\nexec /unquoted "$@"\n`)
+    expect(await createCliShimService(deps()).refreshOnLaunch()).toBe('skipped')
+  })
   it('a foreign file is never touched by the refresh', async () => {
     mkdirSync(binDir, { recursive: true })
     writeFileSync(shim, 'mine\n')

@@ -965,3 +965,58 @@ Resolved `R1`–`R10` (single-host daemon vs Desktop ownership, socket authentic
   login against a real OpenAI or OAuth server (unit-tested with fakes; e2e drives only the mock and a read-only secret
   store), the Windows (`rundll32.exe url.dll,FileProtocolHandler`) and Linux (`xdg-open`) URL openers, Windows /dev/tty
   confirmation (the console path), and every command on Windows or Linux.
+
+### Wave 6 (landed on dev, 2026-11-05; contracts fa52879, merges 170e486..da8b6cd, pack:verify fix 7a60675, review fix-up after it)
+
+- **Landed.** The CLI bundle (`vite.cli.config.ts`, `out/cli/{orgai,tui,inprocHost}.mjs`) is unpacked from app.asar
+  with the packages it imports bare (`src/cli/packaging.ts` `CLI_RUNTIME_PACKAGES`, kept in step with
+  `electron-builder.yml` `asarUnpack` by packaging.test.ts). `build/bin/orgai` (POSIX sh, macOS and Linux) and
+  `build/bin/orgai.cmd` (Windows) are copied to `<Resources>/bin` (extraResources). `src/main/host/packagedLayout.ts`
+  holds the pure per-platform layout, the shim render / parse helpers and `packagedCliRoots` (the self-control gate
+  covers `<Resources>/app.asar.unpacked/out/cli` and `<Resources>/bin`); `src/main/host/shimInstaller.ts` installs,
+  removes and refreshes the PATH shim (`~/.local/bin/orgai`, `%LOCALAPPDATA%\OrgAI\bin\orgai.cmd`), only from a
+  packaged app without ORGAI_DATA_DIR, never over a file without the `orgai-shim v1` marker, a symlink or a non-regular
+  file, and turns Terminal access on after an install. App settings > General > Advanced settings > Terminal has the
+  `CliShimRow` (`lib/cliShim.ts`). The preload is CommonJS (`out/preload/index.cjs`) and every window runs with
+  `sandbox: true` (7(1)). `orgai doctor` gained the install and shim checks; the launcher finds a packaged app.
+  `npm run pack` builds the CLI bundle too; `npm run pack:verify` (`scripts/verify-pack.mjs`) checks a local unpacked
+  pack token-free: (a) files, (b) unpacked imports, (c) `--version`, (d) doctor, (e) a mock exec on `--host inproc`,
+  (f) the same exec through the spawned background app, then `daemon stop`. CI runs it in the pack job.
+- **Gate.** `npm run typecheck`, `npm test`, `npm run build`, `npm run e2e:free` and `npm run pack:verify` (a through f)
+  on macOS arm64.
+- **Deviations / decisions beyond the spec.**
+  - **The launcher is a script that runs the app binary as Node, not a standalone binary (7(2)); the RunAsNode fuse
+    stays on.** `<Resources>/bin/orgai` and `orgai.cmd` run `ELECTRON_RUN_AS_NODE=1 <OrgAI binary> <Resources>/
+    app.asar.unpacked/out/cli/orgai.mjs`, the way VS Code's `code` command works. A Node SEA or a bundled Node runtime
+    would need a second, per-arch Node binary in the app (about 100 MB), a new build dependency (postject) and its own
+    signing and notarization, none of which could be built or verified offline here. There is no `orgai.exe`, only the
+    `.cmd`. No `electronFuses` are configured, so Electron's defaults apply (RunAsNode and NODE_OPTIONS on).
+    Accepted risk: any local process can run arbitrary JS under OrgAI's signed, hardened-runtime identity
+    (`ELECTRON_RUN_AS_NODE=1 /Applications/OrgAI.app/Contents/MacOS/OrgAI script.js`), with the entitlements in
+    `build/entitlements.mac.plist` (allow-jit, allow-unsigned-executable-memory, disable-library-validation) and any
+    macOS privacy (TCC) grants the user gave OrgAI; this is the same exposure every Electron app with the default fuses
+    has. For agents it means the self-control gate (3.4(1)) is a text check that a program setting the variable itself
+    (a Python or Node script, a file the agent wrote) gets past; the child env isolation still keeps an inherited
+    ELECTRON_RUN_AS_NODE away from agent and MCP children (`ORGAI_CONTROL_ENV_PATTERNS`). Turning the fuse off silently breaks the orgai command, so the
+    fix is the spec's standalone launcher first, then `electronFuses.runAsNode: false` (follow-up, not built).
+  - **Linux cannot install the PATH shim.** The only Linux target is AppImage, whose resources live in a mount that
+    changes on every run, so `transientInstallReason` refuses it and the App settings row reads unavailable; the CLI
+    exists only inside the AppImage. A deb or tar.gz target (or an AppImage-aware launcher) is a follow-up. 7(3)'s
+    `~/.local/bin/orgai` therefore applies to macOS only for now.
+  - The launch refresh rewrites a shim only when its marker version is not newer than this app's and it runs this
+    install's launcher in an older form, or a launcher that no longer exists; a shim for another install still on disk
+    is left for the user's Install (review fix-up).
+  - The Windows shim runs the launcher without `call` (review fix-up: `call` expanded `%` in the user's arguments a
+    second time and doubled carets); older shims with the `call` line still parse and are rewritten at launch.
+  - `orgai doctor` reports a symlink at the shim path that reads through to a packaged launcher as that launcher (ok for
+    this install), not as another program's file; the installer still never replaces a symlink (review fix-up).
+  - Review fix-up for the gate: a POSIX shell's option that may take a value (`-O`, `+O`, `-o`, ksh `-R`, any long
+    option without `=`, e.g. `--rcfile FILE`) no longer hides the script word after it, an input redirect of the
+    launcher into a shell or interpreter and `.` / `source` of it are denied, and `env -S` text is read as a command.
+    Still not detected: `cat orgai | sh` from inside `<Resources>/bin` (the launcher then resolves itself by its
+    relative `$0`).
+  - App settings keeps only the fields the view edited when settings:changed arrives during a queued save, so main
+    turning Terminal access on after an install is no longer undone by a pending debounced save (review fix-up).
+- **Unverified / open.** Windows end to end (orgai.cmd, the shim and its argument passing with and without `call`,
+  pack:verify on windows-latest, the default-host step), Linux packaging, a signed and notarized macOS build, x64 macOS
+  (macos-15-intel), the CliShimRow by eye on a packaged app, launch refresh after a real app move or update.

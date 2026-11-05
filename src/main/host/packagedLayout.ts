@@ -16,6 +16,8 @@ export const LINUX_EXECUTABLE = 'orgai'
 
 /** The marker every OrgAI-written shim carries in its first lines (`isOrgaiShim`). */
 export const CLI_SHIM_MARKER = 'orgai-shim v1'
+/** The shim format version this app writes (the number in CLI_SHIM_MARKER). */
+export const CLI_SHIM_VERSION = 1
 
 const SHIM_SENTENCE =
   'written by OrgAI (App settings > General > Advanced settings > Terminal). OrgAI updates or removes this file.'
@@ -197,7 +199,10 @@ export function renderCliShim(input: RenderCliShimInput): string {
   if (platform === 'win32') {
     const lines = ['@echo off', `rem ${CLI_SHIM_MARKER}: ${SHIM_SENTENCE}`, 'setlocal']
     if (userDataDir !== undefined) lines.push(`if not defined ORGAI_DATA_DIR set "ORGAI_DATA_DIR=${userDataDir}"`)
-    lines.push(`call "${launcher}" %*`, 'exit /b %ERRORLEVEL%')
+    // The launcher is the last command and runs without CALL: CALL would expand % in the user's arguments a second
+    // time ("10% and 20%" loses its middle) and double their carets. A batch file started without CALL replaces this
+    // one, keeps the SETLOCAL environment and its exit code is the command's.
+    lines.push(`"${launcher}" %*`)
     return lines.join('\r\n') + '\r\n'
   }
   const lines = ['#!/bin/sh', `# ${CLI_SHIM_MARKER}: ${SHIM_SENTENCE}`]
@@ -210,6 +215,18 @@ export function renderCliShim(input: RenderCliShimInput): string {
 /** True when one of the first 5 lines carries an OrgAI shim marker (any version). */
 export function isOrgaiShim(text: string): boolean {
   return text.split(/\r?\n/, 5).some((line) => line.includes('orgai-shim v'))
+}
+
+/** The highest `orgai-shim v<N>` version in the first 5 lines, or undefined without a marker. */
+export function shimMarkerVersion(text: string): number | undefined {
+  let best: number | undefined
+  for (const line of text.split(/\r?\n/, 5)) {
+    for (const m of line.matchAll(/orgai-shim v(\d{1,6})/g)) {
+      const n = Number(m[1])
+      if (best === undefined || n > best) best = n
+    }
+  }
+  return best
 }
 
 export interface ParsedCliShim {
@@ -225,7 +242,8 @@ export function parseCliShim(text: string, platform: NodeJS.Platform | string): 
   let userDataDir: string | undefined
   if (platform === 'win32') {
     for (const line of lines) {
-      const call = /^call "([^"]+)" %\*$/.exec(line)
+      // `"<launcher>" %*`; shims written before the Wave 6 review used `call "<launcher>" %*`.
+      const call = /^(?:call )?"([^"]+)" %\*$/.exec(line)
       if (call) launcher = call[1]
       const data = /^if not defined ORGAI_DATA_DIR set "ORGAI_DATA_DIR=([^"]+)"$/.exec(line)
       if (data) userDataDir = data[1]

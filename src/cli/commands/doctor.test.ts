@@ -1,11 +1,11 @@
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { FakeHostClient, fakeContext } from '../testing/fakeContext'
 import { EXIT } from '../types'
 import { renderCliShim } from '../../main/host/packagedLayout'
-import { doctorProbes, installCheck, runDoctor, shimCheck } from './doctor'
+import { PACKAGED_LAUNCHER_MARK, doctorProbes, installCheck, runDoctor, shimCheck } from './doctor'
 
 const realProbes = { ...doctorProbes }
 let dir: string
@@ -143,12 +143,33 @@ describe('orgai doctor: install and shim (cli-spec 7, Wave 6)', () => {
     const c = shimCheck('darwin', pathEnv())
     expect(c.status).toBe('warn')
     expect(c.detail).toContain('runs another OrgAI')
-    expect(c.detail).toContain('Open OrgAI to update it')
+    // OrgAI's launch refresh leaves a shim for another install that is still on disk alone.
+    expect(c.detail).toContain('Install the orgai command again from App settings')
     files.set(SHIM(), shimText('/gone/OrgAI.app/Contents/Resources/bin/orgai'))
     const gone = shimCheck('darwin', pathEnv())
     expect(gone.status).toBe('warn')
     expect(gone.detail).toContain('is gone')
     expect(gone.detail).toContain('Open OrgAI to update it')
+  })
+
+  it("shim: a symlink to this install's launcher is ok, to another one warns (review L)", () => {
+    packaged()
+    const launcherText = readFileSync(join(process.cwd(), 'build', 'bin', 'orgai'), 'utf8')
+    expect(launcherText).toContain(PACKAGED_LAUNCHER_MARK)
+    files.set(SHIM(), launcherText)
+    doctorProbes.realpath = (p) => (p === SHIM() ? LAUNCHER : p)
+    expect(shimCheck('darwin', pathEnv())).toEqual({ id: 'shim', status: 'ok', detail: `${SHIM()} (a link) runs this OrgAI (${LAUNCHER})` })
+    const other = '/Users/me/Apps/OrgAI.app/Contents/Resources/bin/orgai'
+    files.set(other, launcherText)
+    doctorProbes.realpath = (p) => (p === SHIM() ? other : p)
+    const c = shimCheck('darwin', pathEnv())
+    expect(c.status).toBe('warn')
+    expect(c.detail).toContain('runs another OrgAI')
+    expect(c.detail).toContain('Point the link at this OrgAI')
+    // A link to some other program is still foreign.
+    files.set(SHIM(), '#!/bin/sh\nexec /opt/x "$@"\n')
+    doctorProbes.realpath = (p) => (p === SHIM() ? '/opt/x/orgai' : p)
+    expect(shimCheck('darwin', pathEnv()).detail).toContain('not an OrgAI shim')
   })
 
   it('shim: a folder that is not on PATH warns with the export hint (never edits a profile)', () => {

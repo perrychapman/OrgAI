@@ -24,8 +24,8 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   `RUN_MESSAGE_RECEIVE_TIMEOUT_MS` (30 s): on timeout both runs get a warning, the chain moves on and a direct sender
   gets refusal `timeout`. Caps: 40 per sender per target, 100 inbound per run. A direct `RuntimeSession.receive()`
   call is ungated, so always deliver through RunManager.
-- Windows run with `sandbox: false` because the preload is ESM (`index.mjs`) and Electron cannot sandbox an ESM
-  preload. The fix is building the preload as CommonJS and enabling the sandbox. Navigation guards
+- Windows run with `sandbox: true`: the preload is CommonJS (`out/preload/index.cjs`, cli-spec Wave 6) and may require
+  only 'electron' (shared code is bundled in). Navigation guards
   (`shouldBlockNavigation` in `windowScope.ts`) cover will-navigate, will-redirect and will-frame-navigate and fail closed.
 - Application menu (`src/main/appMenu.ts`, all platforms; the window menu bar is always shown, `autoHideMenuBar: false`):
   File, Edit, View, Run, Window, Help (plus an app menu first on macOS, where App settings lives as "Settings…"). Contract:
@@ -546,6 +546,12 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     composer at a new run first (`App.tsx` `startLaunchRun`; never a runs:send to a focused live run, `--team` kept).
     Unit tests (ink-testing-library) and e2e `cli-tui.mjs` through a python3 pty on macOS (SKIP on win32);
     Merge Review, the real pager and CSI-u Ctrl+. on real terminals are not driven.
+  - Wave 6 (packaged CLI; spec "Implementation status, Wave 6"): `build/bin/orgai` / `orgai.cmd` in `<Resources>/bin` run
+    the OrgAI binary with ELECTRON_RUN_AS_NODE=1 on `app.asar.unpacked/out/cli/orgai.mjs`, so the RunAsNode fuse stays
+    on (accepted deviation from spec 7(2), recorded with its risk); `host/packagedLayout.ts` (layout, shim render /
+    parse) and `host/shimInstaller.ts` (PATH shim, never over a foreign file or symlink; launch refresh only for an
+    older-format shim of this install or a vanished launcher); Linux AppImage cannot install the shim;
+    `npm run pack:verify` checks a local unpacked pack token-free (macOS only so far).
   - Wave 3: adapters call `ctx.onRootTurnEnded` on every root turn end before 'idle' and expose `settlement()`;
     `ContinuationDriver.isSettledForTurn(gen)`; RunManager `trySettleExecRun` (pure `execSettle.ts`), stall watchdog,
     idempotent `finalizeExecRun` -> one `run.finalized` with `RunSummary.execOutcome`, chain budget (an override `maxBudgetUsd` 0

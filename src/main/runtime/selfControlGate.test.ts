@@ -356,7 +356,30 @@ describe('packaged app CLI roots (cli-spec 7, Wave 6)', () => {
       `zsh -- ${res}/bin/orgai`,
       `dash ${res}/bin/launcher-copy`,
       'sh ./orgai status',
-      `ELECTRON_RUN_AS_NODE=1 "${res}/../MacOS/OrgAI" "${res}/app.asar.unpacked/out/cli/orgai.mjs" status`
+      `ELECTRON_RUN_AS_NODE=1 "${res}/../MacOS/OrgAI" "${res}/app.asar.unpacked/out/cli/orgai.mjs" status`,
+      // Shell options that take a value (review High): the value word is not the script.
+      `bash -O extglob ${res}/bin/orgai runs list`,
+      `bash +O extglob ${res}/bin/orgai runs list`,
+      `bash --rcfile /dev/null ${res}/bin/orgai runs list`,
+      `bash --init-file /dev/null ${res}/bin/orgai status`,
+      `bash --noprofile --rcfile /dev/null ${res}/bin/orgai`,
+      `sh -O x ${res}/bin/orgai`,
+      `bash -eo pipefail ${res}/bin/orgai`,
+      `ksh -R /tmp/x ${res}/bin/orgai`,
+      'bash -O extglob ~/.local/bin/orgai runs send r1 hi',
+      // Input redirects and sourcing.
+      `sh < ${res}/bin/orgai`,
+      `sh <${res}/bin/orgai`,
+      `bash -s status < ${res}/bin/orgai`,
+      `cd ${res}/bin && bash -c '. ./orgai runs list' orgai`,
+      `. ${res}/bin/orgai status`,
+      `source ${res}/bin/orgai decide d1`,
+      // env -S splits its string into assignments and a program.
+      `env -S 'ELECTRON_RUN_AS_NODE=1 ${res}/../MacOS/OrgAI' /tmp/x.mjs`,
+      `env --split-string='ELECTRON_RUN_AS_NODE=1 /x/OrgAI' /tmp/x.mjs`,
+      `env -u FOO -S 'ELECTRON_RUN_AS_NODE=1 /x/OrgAI' /tmp/x.mjs`,
+      `env -S 'orgai status'`,
+      `node < ${res}/app.asar.unpacked/out/cli/orgai.mjs`
     ]) {
       expect(deny(command), command).toBe(SELF_CONTROL_DENIAL_MESSAGE)
     }
@@ -378,7 +401,14 @@ describe('packaged app CLI roots (cli-spec 7, Wave 6)', () => {
       'bash scripts/build.sh',
       'sh -c "echo hi"',
       'bash -x ./run-tests.sh --watch',
-      'sh out/cli/start'
+      'sh out/cli/start',
+      'bash -e build.sh orgai',
+      'bash scripts/release.sh orgai',
+      'bash -O extglob scripts/build.sh',
+      'sh < scripts/setup.sh',
+      '. ./venv/bin/activate',
+      'source ~/.nvm/nvm.sh',
+      "env -S 'FOO=1 node' scripts/x.mjs"
     ]) {
       expect(deny(command), command).toBeNull()
     }

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
   CLI_SHIM_MARKER,
+  CLI_SHIM_VERSION,
+  shimMarkerVersion,
   cliLauncherName,
   cliShimPath,
   isOrgaiShim,
@@ -163,8 +165,7 @@ describe('renderCliShim / parseCliShim', () => {
         `rem ${CLI_SHIM_MARKER}: written by OrgAI (App settings > General > Advanced settings > Terminal). OrgAI updates or removes this file.`,
         'setlocal',
         `if not defined ORGAI_DATA_DIR set "ORGAI_DATA_DIR=${userDataDir}"`,
-        `call "${launcher}" %*`,
-        'exit /b %ERRORLEVEL%',
+        `"${launcher}" %*`,
         ''
       ].join('\r\n')
     )
@@ -173,6 +174,18 @@ describe('renderCliShim / parseCliShim', () => {
     const bare = renderCliShim({ platform: 'win32', launcher })
     expect(bare).not.toContain('ORGAI_DATA_DIR')
     expect(parseCliShim(bare, 'win32')).toEqual({ launcher })
+    // No CALL: it would expand % in the user's arguments a second time and double carets (review M2).
+    expect(text).not.toMatch(/^call /m)
+    // A shim written with the older `call` line still parses (the launch refresh rewrites it).
+    const old = `@echo off\r\nrem ${CLI_SHIM_MARKER}: x\r\nsetlocal\r\ncall "${launcher}" %*\r\nexit /b %ERRORLEVEL%\r\n`
+    expect(parseCliShim(old, 'win32')).toEqual({ launcher })
+  })
+
+  it('shimMarkerVersion reads the marker number', () => {
+    expect(shimMarkerVersion(renderCliShim({ platform: 'darwin', launcher: '/a/bin/orgai' }))).toBe(CLI_SHIM_VERSION)
+    expect(shimMarkerVersion('#!/bin/sh\n# orgai-shim v2: future\n')).toBe(2)
+    expect(shimMarkerVersion('#!/bin/sh\nexec x "$@"\n')).toBeUndefined()
+    expect(CLI_SHIM_MARKER).toBe(`orgai-shim v${CLI_SHIM_VERSION}`)
   })
 
   it('refuses unusable paths with a plain sentence', () => {

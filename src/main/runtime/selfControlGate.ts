@@ -20,10 +20,15 @@
  * interpreter is matched on an `orgai` / `orgai.mjs` / `orgai.js` argument, or on an argument inside this install's
  * own CLI folders (setOrgaiCliRoots: `<app>/out/cli`, `<app>/src/cli`, and in a packaged app
  * `<Resources>/app.asar.unpacked/out/cli` and `<Resources>/bin`), never on any project's `src/cli`; sh / bash / zsh /
- * dash / ksh given such a file (or an `orgai`-named one) as their script count the same way; the
+ * dash / ksh given such a file (or an `orgai`-named one) as their script count the same way (every word that may be
+ * an option's value is checked too: `bash -O extglob <launcher>`, `bash --rcfile F <launcher>`), as do an input
+ * redirect of such a file into a shell or interpreter and `.` / `source` of one; `env -S '<text>'` is read as a
+ * command text of its own; the
  * ELECTRON_RUN_AS_NODE check needs an assignment (`X=1` before a program or after env / export / set, `$env:X`,
  * Set-Item env:X, SetEnvironmentVariable('X'), never a quoted argument that only mentions it. Honest limits: other
- * variables, a script or program that opens the file itself, an `orgai` reached through an alias, a shell function or
+ * variables, a script or program that opens the file itself or sets ELECTRON_RUN_AS_NODE itself (a Python or Node
+ * script; the packaged app keeps Electron's RunAsNode fuse on, cli-spec Wave 6 deviations), a launcher piped into a
+ * shell's stdin from inside its own folder (`cat orgai | sh`), an `orgai` reached through an alias, a shell function or
  * a renamed copy, and a Grep `glob` filter (a Grep rooted above a protected path is denied whatever its filter).
  * Commands a provider runs without asking OrgAI (Codex inside its own sandbox) are governed by that provider's sandbox
  * policy, not this gate.
@@ -247,6 +252,26 @@ function programIndex(words: readonly string[]): number {
   return i
 }
 
+/** The text `env -S` / `--split-string` splits into words, joined with the words after it; null without one. */
+function envSplitText(words: readonly string[]): string | null {
+  for (let i = 0; i < words.length; i++) {
+    if (stripExe(binName(words[i])) !== 'env') continue
+    for (let j = i + 1; j < words.length && words[j].startsWith('-'); j++) {
+      const w = words[j]
+      let value: string | undefined
+      let after = j + 1
+      if (w === '-S' || w === '--split-string') {
+        value = words[j + 1]
+        after = j + 2
+      } else if (w.startsWith('--split-string=')) value = w.slice('--split-string='.length)
+      else if (/^-[^-]*S/.test(w)) value = w.slice(w.indexOf('S') + 1) || words[(after = j + 2) - 1]
+      if (value !== undefined) return [value, ...words.slice(after)].join(' ')
+      if (/^-[uC]$/.test(w) || /^--(?:unset|chdir)$/.test(w)) j++
+    }
+  }
+  return null
+}
+
 /** True when one segment (or a shell -c text inside it) runs the OrgAI CLI. */
 function segmentRunsCli(segment: string, depth: number, budget: CliBudget, check: CliCheck): boolean {
   // Past the budget the rest of the command goes unread: count it as running the CLI (fail closed).
@@ -260,13 +285,21 @@ function segmentRunsCli(segment: string, depth: number, budget: CliBudget, check
     const eq = /^--package=(.+)$/.exec(words[k])
     if (eq && CLI_NAME.test(binName(eq[1]))) return true
   }
+  // `env -S 'X=1 prog' args`: the split string is a command text of its own (assignments included).
+  const split = envSplitText(words)
+  if (split !== null) {
+    if (depth >= MAX_NEST) return (budget.limited = true)
+    if (textRunsCli(split, depth + 1, budget, check)) return true
+  }
   const at = programIndex(words)
   const prog = words[at]
   if (prog === undefined) return false
   const name = binName(prog)
   if (CLI_NAME.test(name)) return true
+  // `. <file>` / `source <file>` runs a script in the current shell.
+  if ((prog === '.' || name === 'source') && words[at + 1] !== undefined && scriptWordIsCli(words[at + 1], check)) return true
   const bare = stripExe(name)
-  if (INTERPRETERS.has(bare) && words.slice(at + 1).some((w) => interpreterArgIsCli(w, check))) return true
+  if (INTERPRETERS.has(bare) && (words.slice(at + 1).some((w) => interpreterArgIsCli(w, check)) || redirectFeedsCli(words.slice(at + 1), check))) return true
   // `sh <file>`, `bash -e <file>`: a POSIX shell runs its first non-option argument as a script.
   if (SCRIPT_SHELLS.has(bare) && shellScriptIsCli(words.slice(at + 1), check)) return true
   if (NESTING_SHELLS.has(bare) || bare === 'eval') {
@@ -285,25 +318,52 @@ function segmentRunsCli(segment: string, depth: number, budget: CliBudget, check
   return false
 }
 
+/** A shell option word that may take the next word as its value: a short cluster with o / O / R (`-o x`, `-eo x`,
+ * bash `-O shopt` / `+O shopt`, ksh `-R file`), or any long option without `=` (`--rcfile FILE`, `--init-file FILE`;
+ * `--noprofile` takes none, but counting it fails closed). */
+const SHELL_OPTION_WITH_VALUE = /^(?:[-+][A-Za-z]*[oOR][A-Za-z]*|--[^=]+)$/
+
 /**
- * A POSIX shell's script argument is the CLI: the first word that is not an option (`-e`, `+x`, `-o name` / `+o name`
- * take their value) is an `orgai`-named file or a file inside a CLI root (the packaged Resources/bin launcher). A -c
- * text is left to the nesting scan.
+ * A POSIX shell's script argument is the CLI: the first word that is not an option or an option's value is an
+ * `orgai`-named file or a file inside a CLI root (the packaged Resources/bin launcher). Every word that may be an
+ * option's value is checked as well (fail closed: `bash -O extglob <launcher>` and `bash --rcfile /dev/null
+ * <launcher>` run the launcher), and so is an input redirect's file (`sh < <launcher>`). A -c text is left to the
+ * nesting scan.
  */
 function shellScriptIsCli(rest: readonly string[], check: CliCheck): boolean {
+  if (redirectFeedsCli(rest, check)) return true
+  let valueNext = false
   for (let k = 0; k < rest.length; k++) {
     const w = rest[k]
-    if (w === '--') {
+    const redirect = /^\d*<(.*)$/.exec(w)
+    if (redirect) {
+      if (redirect[1] === '') k++
+      continue
+    }
+    if (w === '--' || w === '-') {
       const next = rest[k + 1]
       return next !== undefined && scriptWordIsCli(next, check)
     }
     if (NESTING_FLAGS.test(w)) return false
-    if (/^[-+]o$/.test(w)) {
-      k++
+    if (/^[-+]/.test(w)) {
+      valueNext = SHELL_OPTION_WITH_VALUE.test(w)
       continue
     }
-    if (/^[-+]/.test(w)) continue
-    return scriptWordIsCli(w, check)
+    if (scriptWordIsCli(w, check)) return true
+    // A word that is not an option's value is the script: what follows are its own arguments.
+    if (!valueNext) return false
+    valueNext = false
+  }
+  return false
+}
+
+/** An input redirect anywhere in the words (`sh < <launcher>`, `node <orgai.mjs`) that feeds the program the CLI. */
+function redirectFeedsCli(rest: readonly string[], check: CliCheck): boolean {
+  for (let k = 0; k < rest.length; k++) {
+    const redirect = /^\d*<(.*)$/.exec(rest[k])
+    if (!redirect) continue
+    const target = redirect[1] !== '' ? redirect[1] : rest[k + 1]
+    if (target !== undefined && scriptWordIsCli(target, check)) return true
   }
   return false
 }
@@ -320,7 +380,12 @@ function interpreterArgIsCli(word: string, check: CliCheck): boolean {
   const value = word.replace(/^--?[A-Za-z][\w-]*=/, '')
   if (!value || value.startsWith('-')) return false
   if (CLI_NAME.test(binName(value)) && PATHISH.test(value)) return true
-  if (!check.roots.length || !PATHISH.test(value)) return false
+  return PATHISH.test(value) && insideCliRoot(value, check)
+}
+
+/** A path (relative against the cwd) at or inside one of this install's CLI folders. */
+function insideCliRoot(value: string, check: CliCheck): boolean {
+  if (!check.roots.length) return false
   const p = check.platform === 'win32' ? win32 : posix
   const fold = (v: string): string => (check.platform === 'win32' || check.platform === 'darwin' ? v.toLowerCase() : v)
   const abs = p.isAbsolute(value) ? p.resolve(value) : check.cwd && p.isAbsolute(check.cwd) ? p.resolve(check.cwd, value) : null

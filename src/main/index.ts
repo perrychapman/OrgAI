@@ -375,7 +375,8 @@ app.whenReady().then(async () => {
     if (hostArgs.run) openRunById(hostArgs.run)
   }
   booted = true
-  // cli-spec 7(3): point an existing orgai command shim at this install (after an app move or update). Every launch
+  // cli-spec 7(3): point an existing orgai command shim at this install when it runs an older form of this launcher or
+  // a launcher that is gone (an app move or update); a newer or other-install shim stays. Every launch
   // kind, headless included; never blocks boot, never creates a shim, never touches a foreign file.
   if (app.isPackaged && !process.env.ORGAI_DATA_DIR) {
     void cliShim

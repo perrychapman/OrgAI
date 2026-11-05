@@ -15,7 +15,7 @@ import { posix, win32, type PlatformPath } from 'node:path'
 import type { CliShimResult, CliShimStatus } from '@shared/types'
 import { platformUserDataDir } from '../../cli/client/locate'
 import { log as appLog } from '../log'
-import { cliShimPath, isOrgaiShim, packagedLayout, parseCliShim, renderCliShim, transientInstallReason } from './packagedLayout'
+import { CLI_SHIM_VERSION, cliShimPath, isOrgaiShim, packagedLayout, parseCliShim, renderCliShim, shimMarkerVersion, transientInstallReason } from './packagedLayout'
 
 /** The file-system calls the service makes (sync node:fs shapes); injectable so tests can simulate failures. */
 export interface CliShimFs {
@@ -61,7 +61,10 @@ export interface CliShimService {
   status(): CliShimStatus
   install(): Promise<CliShimResult>
   uninstall(): Promise<CliShimResult>
-  /** At launch: rewrite an OrgAI shim that points at another launcher of this install. */
+  /**
+   * At launch: rewrite an OrgAI shim (format version not newer than this app's) that runs this install's launcher in
+   * an older form, or a launcher that no longer exists. A shim for another install still on disk is left alone.
+   */
   refreshOnLaunch(): Promise<'refreshed' | 'unchanged' | 'skipped'>
 }
 
@@ -150,6 +153,14 @@ export function createCliShimService(deps: CliShimDeps): CliShimService {
     }
     if (!regular) return `This OrgAI install has no orgai launcher (${launcher}).`
     return undefined
+  }
+
+  function launcherExists(launcher: string): boolean {
+    try {
+      return fs.statSync(launcher).isFile()
+    } catch {
+      return false
+    }
   }
 
   /** The userDataDir line to embed: only when it differs from the default the CLI computes itself. */
@@ -311,6 +322,15 @@ export function createCliShimService(deps: CliShimDeps): CliShimService {
       if (found.kind !== 'ours') return 'skipped'
       const text = render(r)
       if (found.text === text) return 'unchanged'
+      // A shim from a newer OrgAI, one this app cannot read, or one that runs another install that is still on disk
+      // (two copies side by side) is left alone: only the user's Install replaces it. A shim whose launcher is this
+      // install's (an older format, another data folder line) or is gone (the app moved or was replaced) is rewritten.
+      const version = shimMarkerVersion(found.text)
+      if (version === undefined || version > CLI_SHIM_VERSION) return 'skipped'
+      const parsed = parseCliShim(found.text, platform)
+      if (!parsed) return 'skipped'
+      const sameLauncher = pathEntryKey(parsed.launcher, platform, deps.home) === pathEntryKey(r.launcher, platform, deps.home)
+      if (!sameLauncher && launcherExists(parsed.launcher)) return 'skipped'
       writeShim(r, text)
       return 'refreshed'
     } catch (e) {

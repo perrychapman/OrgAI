@@ -63,6 +63,9 @@ export const doctorProbes = {
   }
 }
 
+/** A line of the packaged launcher (build/bin/orgai): a file at the shim path that reads through to it is a link to one. */
+export const PACKAGED_LAUNCHER_MARK = 'The orgai command of a packaged OrgAI'
+
 const SHIM_NOT_INSTALLED = 'The orgai command is not installed (App settings > General > Advanced settings > Terminal)'
 
 /** How this CLI runs (cli-spec 7): packaged app, dev checkout or a standalone bundle; warns for a transient app copy. */
@@ -96,19 +99,28 @@ export function shimCheck(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): Do
     if (code === 'ENOENT' || code === 'ENOTDIR') return { id: 'shim', status: 'ok', detail: SHIM_NOT_INSTALLED }
     return { id: 'shim', status: 'warn', detail: `${shim} could not be read: ${(e as Error).message}` }
   }
-  const parsed = parseCliShim(text, platform)
-  if (!parsed) return { id: 'shim', status: 'warn', detail: `${shim} is not an OrgAI shim (another program's file); OrgAI leaves it alone` }
   const res = resourcesDirOfCliBundle(doctorProbes.bundleDir(), platform)
   const ownLauncher = res !== undefined ? packagedLayout(platform, res).launcher : undefined
-  const same = (a: string, b: string): boolean => {
-    const fold = (p: string): string => (platform === 'win32' || platform === 'darwin' ? p.toLowerCase() : p)
-    return fold(doctorProbes.realpath(a)) === fold(doctorProbes.realpath(b))
+  const fold = (p: string): string => (platform === 'win32' || platform === 'darwin' ? p.toLowerCase() : p)
+  const same = (a: string, b: string): boolean => fold(doctorProbes.realpath(a)) === fold(doctorProbes.realpath(b))
+  const parsed = parseCliShim(text, platform)
+  let target: string
+  let viaLink = false
+  if (parsed) target = parsed.launcher
+  else {
+    // A link the user made to a packaged launcher (build/bin/orgai says links are followed) runs that OrgAI.
+    const real = doctorProbes.realpath(shim)
+    const linkToLauncher = fold(real) !== fold(shim) && text.includes(PACKAGED_LAUNCHER_MARK)
+    if (!linkToLauncher) return { id: 'shim', status: 'warn', detail: `${shim} is not an OrgAI shim (another program's file); OrgAI leaves it alone` }
+    target = real
+    viaLink = true
   }
-  if (!doctorProbes.exists(parsed.launcher)) {
-    return { id: 'shim', status: 'warn', detail: `${shim} points at an OrgAI that is gone (${parsed.launcher}). Open OrgAI to update it` }
+  if (!doctorProbes.exists(target)) {
+    return { id: 'shim', status: 'warn', detail: `${shim} points at an OrgAI that is gone (${target}). Open OrgAI to update it` }
   }
-  if (ownLauncher !== undefined && !same(parsed.launcher, ownLauncher)) {
-    return { id: 'shim', status: 'warn', detail: `${shim} runs another OrgAI (${parsed.launcher}), not this one. Open OrgAI to update it` }
+  if (ownLauncher !== undefined && !same(target, ownLauncher)) {
+    const fix = viaLink ? 'Point the link at this OrgAI, or remove it and install the orgai command from App settings' : 'Install the orgai command again from App settings to use this one'
+    return { id: 'shim', status: 'warn', detail: `${shim} runs another OrgAI (${target}), not this one. ${fix}` }
   }
   const dir = (platform === 'win32' ? win32 : posix).dirname(shim)
   if (!onPath(dir, env, platform)) {
@@ -118,7 +130,7 @@ export function shimCheck(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): Do
         : `add it to your shell profile: export PATH="${dir}:$PATH"`
     return { id: 'shim', status: 'warn', detail: `${shim} is installed, but ${dir} is not on PATH; ${hint}` }
   }
-  return { id: 'shim', status: 'ok', detail: `${shim} runs ${ownLauncher !== undefined ? 'this OrgAI' : 'OrgAI'} (${parsed.launcher})` }
+  return { id: 'shim', status: 'ok', detail: `${shim}${viaLink ? ' (a link)' : ''} runs ${ownLauncher !== undefined ? 'this OrgAI' : 'OrgAI'} (${target})` }
 }
 
 /** True when `dir` is one of the PATH entries (case folded on Windows and macOS, trailing separators ignored). */
