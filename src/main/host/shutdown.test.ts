@@ -13,9 +13,12 @@ import {
   killTrackedChildren,
   parseProcessTable,
   readProcessTable,
+  resetHelperProcessesForTests,
+  shutdownHelperPids,
   signalTrackedChildren,
   taskkillArgs,
   trackChildProcess,
+  trackHelperProcess,
   trackedChildCount,
   trackedChildPids,
   withoutTree,
@@ -392,6 +395,104 @@ describe('killHostDescendants (fakes)', () => {
 
 // A real process tree: an intermediate node process stands in for the host (so this test process's other children are
 // never touched); under it a child that ignores SIGTERM, and a child whose own child (a grandchild) ignores SIGTERM.
+describe("the coordinator's own helper processes (review round 2: taskkill / table readers are never targets)", () => {
+  afterEach(() => resetHelperProcessesForTests())
+
+  it('trackHelperProcess knows a helper while it runs and for a while after it exits (a read may still list it)', () => {
+    resetHelperProcessesForTests()
+    let now = 1_000
+    const child = new FakeChild()
+    child.pid = 7_001
+    trackHelperProcess(child, () => now)
+    expect(shutdownHelperPids(now)).toEqual([7_001])
+    now = 2_000
+    child.emit('exit', 0)
+    // Exited at 2000: a read that started before (or at) that may still list it; one that started later cannot.
+    expect(shutdownHelperPids(1_500)).toEqual([7_001])
+    expect(shutdownHelperPids(2_000)).toEqual([7_001])
+    expect(shutdownHelperPids(2_001)).toEqual([])
+    // A helper without a pid (spawn failed) or a non-child is ignored.
+    trackHelperProcess({ pid: undefined })
+    trackHelperProcess(null)
+    expect(shutdownHelperPids(0)).toEqual([7_001])
+  })
+
+  it('killHostDescendants never signals a helper of its own nor anything under it (Windows taskkill and its conhost)', async () => {
+    // Root 100 with an agent (200) that ignores SIGTERM. Every signal spawns a "taskkill" child of the root (with a
+    // conhost under it) that is still running at the next read, as on Windows.
+    const alive = new Map<number, ProcessRow>([
+      [100, { pid: 100, ppid: 1 }],
+      [200, { pid: 200, ppid: 100, start: 'agent' }]
+    ])
+    const helperPidsSeen: number[] = []
+    let nextPid = 9_000
+    const running: number[] = []
+    const sent: string[] = []
+    const signal = (pid: number, sig: 'SIGTERM' | 'SIGKILL'): void => {
+      sent.push(`${sig}:${pid}`)
+      if (sig === 'SIGKILL') alive.delete(pid)
+      const tk = nextPid++
+      const conhost = nextPid++
+      alive.set(tk, { pid: tk, ppid: 100, start: `tk${tk}` })
+      alive.set(conhost, { pid: conhost, ppid: tk, start: `ch${conhost}` })
+      running.push(tk)
+      helperPidsSeen.push(tk)
+    }
+    const r = await killHostDescendants({
+      rootPid: 100,
+      readTable: async () => new Map([...alive].map(([p, row]) => [p, { ...row }])),
+      signal,
+      extraPids: () => [],
+      helperPids: () => [...running],
+      sleep: () => Promise.resolve(),
+      termGraceMs: 3,
+      stepMs: 1,
+      waitMs: 5
+    })
+    expect(r).toEqual({ found: 1, remaining: 0, tableReadable: true })
+    expect(sent).toEqual(['SIGTERM:200', 'SIGKILL:200'])
+    expect(helperPidsSeen.length).toBe(2)
+  })
+
+  it('without the exclusion those helpers would have been targets (the bug the reviewer reported)', async () => {
+    const alive = new Map<number, ProcessRow>([
+      [100, { pid: 100, ppid: 1 }],
+      [200, { pid: 200, ppid: 100, start: 'agent' }]
+    ])
+    let nextPid = 9_000
+    const sent: string[] = []
+    const signal = (pid: number, sig: 'SIGTERM' | 'SIGKILL'): void => {
+      sent.push(`${sig}:${pid}`)
+      if (sig === 'SIGKILL') alive.delete(pid)
+      if (nextPid < 9_010) {
+        const tk = nextPid++
+        alive.set(tk, { pid: tk, ppid: 100, start: `tk${tk}` })
+      }
+    }
+    await killHostDescendants({
+      rootPid: 100,
+      readTable: async () => new Map([...alive].map(([p, row]) => [p, { ...row }])),
+      signal,
+      extraPids: () => [],
+      helperPids: () => [],
+      sleep: () => Promise.resolve(),
+      termGraceMs: 3,
+      stepMs: 1,
+      waitMs: 5
+    })
+    expect(sent.some((x) => x.startsWith('SIGKILL:90'))).toBe(true)
+  })
+
+  it('readProcessTable registers its reader as a helper while it runs', async () => {
+    resetHelperProcessesForTests()
+    const before = Date.now()
+    const t = await readProcessTable()
+    expect(t).not.toBeNull()
+    // The reader ran and exited during this read: it is still known for reads that started before it exited.
+    expect(shutdownHelperPids(before).length).toBeGreaterThanOrEqual(1)
+  })
+})
+
 describe.skipIf(process.platform === 'win32')('killHostDescendants (real processes)', () => {
   const started: ChildProcess[] = []
   afterEach(() => {
@@ -443,7 +544,7 @@ describe.skipIf(process.platform === 'win32')('killHostDescendants (real process
 })
 
 describe('ShutdownCoordinator (cli-standalone.md 4.3)', () => {
-  function rig(opts: { facts?: HostHandoffFacts; hardLimitMs?: number; kill?: () => Promise<KillDescendantsResult> } = {}) {
+  function rig(opts: { facts?: HostHandoffFacts; factsFn?: () => HostHandoffFacts; hardLimitMs?: number; kill?: () => Promise<KillDescendantsResult> } = {}) {
     const order: string[] = []
     const logs: string[] = []
     const onReleased = vi.fn((info: unknown) => order.push(`released:${JSON.stringify(info)}`))
@@ -451,6 +552,7 @@ describe('ShutdownCoordinator (cli-standalone.md 4.3)', () => {
       release: () => order.push('release'),
       closeSocket: async (ms) => void order.push(`closeSocket:${ms}`),
       ...(opts.facts ? { handoffFacts: () => opts.facts! } : {}),
+      ...(opts.factsFn ? { handoffFacts: opts.factsFn } : {}),
       onReleased,
       ...(opts.hardLimitMs !== undefined ? { hardLimitMs: opts.hardLimitMs } : {}),
       killDescendants: opts.kill ?? (async () => ({ found: 0, remaining: 0, tableReadable: true })),
@@ -674,6 +776,34 @@ describe('ShutdownCoordinator (cli-standalone.md 4.3)', () => {
       await expect(shutdown.stop({ handoff: true, force: true })).resolves.toEqual({ stopping: true })
       expect(forceStop).toHaveBeenCalledTimes(1)
       await shutdown.released()
+    })
+
+    it('fails closed: run facts that cannot be read refuse the handoff (empty handoffBlockers) and never drain, so no run is ended unseen', async () => {
+      const { shutdown, activity, order, forceStop, logs } = rig({
+        factsFn: () => {
+          throw new Error('settlement read failed')
+        }
+      })
+      // Even with a live run the drain would end (a non-forced drain stops live runs), nothing starts.
+      activity.acquire('interactiveClients')
+      await expect(shutdown.stop({ handoff: true })).resolves.toEqual({ stopping: false, handoffBlockers: {}, refusedBecause: { interactiveClients: 1 } })
+      const idle = rig({
+        factsFn: () => {
+          throw new Error('settlement read failed')
+        }
+      })
+      await expect(idle.shutdown.stop({ handoff: true })).resolves.toEqual({ stopping: false, handoffBlockers: {} })
+      expect(idle.activity.state()).toBe('ready')
+      expect(idle.shutdown.phase()).toBe('running')
+      expect(idle.order).toEqual([])
+      expect(idle.forceStop).not.toHaveBeenCalled()
+      expect(order).toEqual([])
+      expect(forceStop).not.toHaveBeenCalled()
+      expect(logs.some((l) => l.includes('reading the handoff facts failed'))).toBe(true)
+      // host.status leaves the facts out; a plain or forced stop is not affected by the predicate.
+      expect(idle.shutdown.handoffFacts()).toBeUndefined()
+      await expect(idle.shutdown.stop({ handoff: true, force: true })).resolves.toEqual({ stopping: true })
+      await idle.shutdown.released()
     })
 
     it('handoffBlockersOf keeps only the non-zero blockers (never terminalSessions)', () => {

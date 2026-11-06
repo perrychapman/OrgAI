@@ -247,6 +247,8 @@ export class HostDispatcher {
   private readonly env: HostDispatchEnv
   private readonly gate: GateFn
   private readonly handlers: Record<string, Handler>
+  /** Aborted by quiesce(): the model calls handlers make for a caller (draft:orgChart) stop when the host drains. */
+  private readonly quiesced = new AbortController()
 
   constructor(
     private readonly services: HostServices,
@@ -256,7 +258,17 @@ export class HostDispatcher {
     this.activity = services.activity ?? noopActivity()
     this.env = services.env ?? FALLBACK_ENV
     this.gate = opts.gate ?? gateRequest
-    this.handlers = buildHandlers(services, this.env, this.events)
+    this.handlers = buildHandlers(services, this.env, this.events, this.quiesced.signal)
+  }
+
+  /**
+   * The drain's quiesce step (bootstrap; round 6 item 9): abort the model calls a handler runs for a caller and nothing
+   * else stops (draft:orgChart: a deep-tier completion with no timeout of its own), so a Quit never waits on one; its
+   * mutation lease ends with the rejection. Later calls of those channels are refused anyway (host_draining).
+   * Idempotent.
+   */
+  quiesce(): void {
+    this.quiesced.abort()
   }
 
   /**
@@ -389,7 +401,7 @@ export function checkRunOverrides(
  * Every request handler registerIpc and its register*Ipc helpers had, moved verbatim (same sync / async shape, same
  * error messages). The first handler argument is the InvokeContext instead of the IpcMainInvokeEvent.
  */
-function buildHandlers(services: HostServices, env: HostDispatchEnv, events: HostEventBus): Record<string, Handler> {
+function buildHandlers(services: HostServices, env: HostDispatchEnv, events: HostEventBus, quiesced: AbortSignal): Record<string, Handler> {
   const table: Record<string, Handler> = Object.create(null) as Record<string, Handler>
   const handle = (channel: string, fn: Handler): void => {
     table[channel] = fn
@@ -463,7 +475,8 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
   handle(IPC.draftOrgChart, async (_e, req: DraftRequest) => {
     const project = projects.get(req.projectId)
     if (!project) throw new Error('Project not found')
-    return draftOrgChart(runs.adapterFor(project), project, req, connections.importModelContext(projectConnection(project)))
+    // Stopped by the drain's quiesce (HostDispatcher.quiesce), so Quit never waits on the model.
+    return draftOrgChart(runs.adapterFor(project), project, req, connections.importModelContext(projectConnection(project)), quiesced)
   })
 
   handle(IPC.runsStart, async (ctx, raw: unknown) => {

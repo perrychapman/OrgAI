@@ -12,7 +12,8 @@
  * entry point's exit (onReleased). While writers are in flight the host stays 'draining' and daemon.json stays, so no
  * contender can take the data folder. At SHUTDOWN_HARD_LIMIT_MS the coordinator stops waiting: it enumerates every
  * descendant of the host's pid from the process table (killHostDescendants; on Windows a row older than its claimed
- * parent is a stale-parent orphan and never a target; the desktop's own Electron helpers are excluded), sends SIGTERM
+ * parent is a stale-parent orphan and never a target; the desktop's own Electron helpers and the coordinator's own
+ * table readers and taskkill.exe children are excluded), sends SIGTERM
  * (Windows `taskkill /PID`, never `/T`, whose tree walk trusts stale parent pids), waits KILL_TERM_GRACE_MS, sends
  * SIGKILL (`taskkill /PID /F`), and releases only once none of them is alive; when the table cannot be read it signals
  * the tracked children directly, and when it cannot be read or some survive it waits in KILL_STEP_MS steps up to
@@ -164,6 +165,54 @@ export function trackedChildPids(): number[] {
   return out
 }
 
+// ---------- The coordinator's own helper processes ----------
+
+/** How long an exited helper's pid stays known (a process-table read may have listed it while it still ran). */
+export const HELPER_PID_LINGER_MS = 60_000
+
+/** pid -> when it exited (undefined while it runs): the table readers and taskkill.exe the hard limit starts. */
+const helpers = new Map<number, number | undefined>()
+
+/**
+ * Note one of the coordinator's own helper children (a process-table reader, a taskkill.exe) until it exits: it is a
+ * child of the host while it runs, so without this a later pass would count it (and on Windows its conhost) as a
+ * descendant to end, and taskkill its own helpers. Never throws.
+ */
+export function trackHelperProcess(
+  child: { readonly pid?: number; once?(event: 'exit' | 'error', listener: (...args: unknown[]) => void): unknown } | null | undefined,
+  now: () => number = Date.now
+): void {
+  const pid = child?.pid
+  if (typeof pid !== 'number' || !Number.isSafeInteger(pid) || pid <= 0) return
+  const at = now()
+  for (const [p, exited] of helpers) if (exited !== undefined && at - exited > HELPER_PID_LINGER_MS) helpers.delete(p)
+  helpers.set(pid, undefined)
+  const done = (): void => {
+    if (helpers.has(pid) && helpers.get(pid) === undefined) helpers.set(pid, now())
+  }
+  try {
+    child?.once?.('exit', done)
+    child?.once?.('error', done)
+  } catch {
+    // No events: it stays known as running (excluded) until the process exits.
+  }
+}
+
+/**
+ * The helper pids a table read that started at `since` may still list: every helper running now, and every one that
+ * exited at or after `since` (it may have exited while the table was read).
+ */
+export function shutdownHelperPids(since: number = Number.NEGATIVE_INFINITY): number[] {
+  const out: number[] = []
+  for (const [pid, exited] of helpers) if (exited === undefined || exited >= since) out.push(pid)
+  return out
+}
+
+/** Tests: forget every helper. */
+export function resetHelperProcessesForTests(): void {
+  helpers.clear()
+}
+
 // ---------- The process table and the host's descendants (round 6 item 5) ----------
 
 /** One process-table row. `start` identifies the process across pid reuse; `zombie` rows count as gone. */
@@ -306,6 +355,7 @@ export function readProcessTable(opts: { platform?: NodeJS.Platform; timeoutMs?:
         }
       )
       readerPid = child.pid
+      trackHelperProcess(child)
     } catch {
       resolve(null)
     }
@@ -326,7 +376,8 @@ export function signalProcess(pid: number, signal: 'SIGTERM' | 'SIGKILL', platfo
   if (platform === 'win32') {
     try {
       const args = taskkillArgs(pid, signal)
-      execFile(system32Path('taskkill.exe'), args, { windowsHide: true, timeout: 5_000, cwd: neutralCwd() }, () => {})
+      // taskkill (and its console host) is a child of this host while it runs: never a target of a later pass.
+      trackHelperProcess(execFile(system32Path('taskkill.exe'), args, { windowsHide: true, timeout: 5_000, cwd: neutralCwd() }, () => {}))
     } catch {
       // taskkill missing: nothing else to try.
     }
@@ -356,6 +407,13 @@ export interface KillDescendantsOptions {
    */
   excludePids?: () => number[]
   /**
+   * The coordinator's own helpers a table read that started at `since` may list (default shutdownHelperPids: table
+   * readers and taskkill.exe), left out with their subtrees like excludePids.
+   */
+  helperPids?: (since: number) => number[]
+  /** The clock for helperPids' `since` (default Date.now). */
+  now?: () => number
+  /**
    * With an unreadable table: signal the tracked children directly (default signalTrackedChildren); returns how many
    * took it. ChildProcess.kill never signals a child that already exited, so a reused pid is never hit.
    */
@@ -382,7 +440,8 @@ const defaultSleep = (ms: number): Promise<void> => new Promise((r) => globalThi
 
 /**
  * Round 6 item 5: enumerate every descendant of the host's pid (not only the tracked children, so a git hook, an
- * agent's shell or an MCP server under an agent CLI are found; excludePids and their subtrees left out), SIGTERM them,
+ * agent's shell or an MCP server under an agent CLI are found; excludePids, the coordinator's own helpers (table
+ * readers, taskkill.exe: helperPids) and their subtrees left out), SIGTERM them,
  * wait up to termGraceMs (less when all are gone), SIGKILL whatever is left (re-reading the table, so orphans that were
  * re-parented still count by pid and start time), then wait in stepMs steps up to waitMs until none is alive. When the
  * table cannot be read, the tracked children are signalled directly instead (SIGTERM at once, SIGKILL after the grace)
@@ -396,6 +455,8 @@ export async function killHostDescendants(opts: KillDescendantsOptions = {}): Pr
   const send = opts.signal ?? ((pid: number, sig: 'SIGTERM' | 'SIGKILL') => signalProcess(pid, sig, platform))
   const extraPids = opts.extraPids ?? trackedChildPids
   const excludePids = opts.excludePids
+  const helperPids = opts.helperPids ?? shutdownHelperPids
+  const now = opts.now ?? Date.now
   const signalTracked = opts.signalTracked ?? signalTrackedChildren
   const trackedCount = opts.trackedCount ?? (() => trackedChildCount())
   const termGraceMs = opts.termGraceMs ?? KILL_TERM_GRACE_MS
@@ -403,7 +464,10 @@ export async function killHostDescendants(opts: KillDescendantsOptions = {}): Pr
   const stepMs = Math.max(1, opts.stepMs ?? KILL_STEP_MS)
   const sleep = opts.sleep ?? defaultSleep
   const log = opts.log ?? (() => {})
+  /** When the newest table read started (helpers that exited after it may still be listed in it). */
+  let readStartedAt = now()
   const safeRead = async (): Promise<ProcessTable | null> => {
+    readStartedAt = now()
     try {
       return await readTable()
     } catch {
@@ -415,12 +479,17 @@ export async function killHostDescendants(opts: KillDescendantsOptions = {}): Pr
   const targets = new Map<number, string | undefined>()
   let tableReadable = false
   const excluded = (): Set<number> | undefined => {
-    if (!excludePids) return undefined
-    try {
-      return new Set(excludePids().filter((p) => Number.isSafeInteger(p) && p > 0 && p !== rootPid))
-    } catch {
-      return undefined
+    const out = new Set<number>()
+    const add = (list: () => number[]): void => {
+      try {
+        for (const p of list()) if (Number.isSafeInteger(p) && p > 0 && p !== rootPid) out.add(p)
+      } catch {
+        // An unreadable list excludes nothing.
+      }
     }
+    if (excludePids) add(excludePids)
+    add(() => helperPids(readStartedAt))
+    return out.size ? out : undefined
   }
   const absorb = (table: ProcessTable): void => {
     const skip = excluded()
@@ -641,27 +710,35 @@ export class ShutdownCoordinator implements ShutdownCoordinatorApi {
     return this.releasedP
   }
 
-  /** host.status `handoff`; undefined when the host has no run state to report. */
+  /** host.status `handoff`; undefined when the host has no run state to report (or it could not be read). */
   handoffFacts(): HostHandoffFacts | undefined {
+    return this.readHandoffFacts().facts
+  }
+
+  /** The run facts, and whether reading them threw (logged). No handoffFacts option = no facts, not a failure. */
+  private readHandoffFacts(): { facts?: HostHandoffFacts; failed: boolean } {
     try {
-      return this.opts.handoffFacts?.()
+      const facts = this.opts.handoffFacts?.()
+      return facts ? { facts, failed: false } : { failed: false }
     } catch (e) {
       this.log(`Shutdown: reading the handoff facts failed: ${errText(e)}`)
-      return undefined
+      return { failed: true }
     }
   }
 
   /**
    * HostControl.stop (host.stop). `handoff` without force applies the stricter handoff predicate first (any live,
    * held or resumable run, or an open card, refuses with handoffBlockers); the activity's lease check follows in the
-   * same synchronous step, so nothing can start in between. Resolves once the drain settled (or with the refusal).
+   * same synchronous step, so nothing can start in between. The predicate fails closed: when the run facts cannot be
+   * read the handoff is refused with an empty handoffBlockers (a drain would end runs the user never saw listed; the
+   * app then offers "Stop them and open"). Resolves once the drain settled (or with the refusal).
    */
   stop(input: HostStopInput = {}): Promise<HostStopResult> {
     const activity = this.need()
     const force = input.force === true
     if (this.current === 'running' && !force && input.handoff === true) {
-      const facts = this.handoffFacts()
-      const blockers = facts ? handoffBlockersOf(facts) : undefined
+      const read = this.readHandoffFacts()
+      const blockers = read.failed ? {} : read.facts ? handoffBlockersOf(read.facts) : undefined
       if (blockers) {
         // Refused without touching the drain; the busy leases are reported too, as a plain stop would.
         const busy = busyLeases(activity.snapshot())

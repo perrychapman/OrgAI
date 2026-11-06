@@ -7,6 +7,8 @@ import {
   handoffPageHtml,
   handoffUnavailableText,
   handoffView,
+  HANDOFF_START_TIME_RECHECK_MS,
+  ownerExitCheck,
   ownerHasExited,
   type DesktopHandoffDeps,
   type HandoffClient,
@@ -18,16 +20,41 @@ const owner = (hostKind: DaemonInfo['hostKind']): DaemonInfo => ({ hostInstanceI
 const facts = (over: Partial<HostHandoffFacts> = {}): HostHandoffFacts => ({ workingRuns: 0, waitingRuns: 0, heldRuns: 0, pausedRuns: 0, openCards: 0, terminalSessions: 0, ...over })
 
 /** A scripted owner: host.stop answers come from `stops` in order (the last repeats); `exitAt` flips exited. */
-function rig(opts: { stops?: HostStopResult[]; status?: HostHandoffFacts; connect?: () => HandoffConnect; handoff?: boolean; stopThrows?: unknown; windowDelayMs?: number } = {}) {
+function rig(
+  opts: {
+    stops?: HostStopResult[]
+    status?: HostHandoffFacts
+    connect?: () => HandoffConnect
+    handoff?: boolean
+    stopThrows?: unknown
+    windowDelayMs?: number
+    /** A forced host.stop answers only after this long (as after a real drain); the fake honours the call timeout. */
+    forcedAnswerMs?: number
+    /** A forced host.stop is answered with this error (a coded refusal or a closed connection). */
+    forcedThrows?: unknown
+  } = {}
+) {
   let gone = false
   const views: (HandoffView | undefined)[] = []
   const calls: { method: string; params: unknown }[] = []
   let stopIndex = 0
   const client = (): HandoffClient => ({
     handoff: opts.handoff ?? true,
-    call: async <T,>(method: string, params?: unknown): Promise<T> => {
+    call: async <T,>(method: string, params?: unknown, callOpts?: { timeoutMs?: number }): Promise<T> => {
       calls.push({ method, params })
       if (method === 'host.stop') {
+        const forced = Array.isArray(params) && (params[0] as { force?: boolean })?.force === true
+        if (forced && opts.forcedThrows) throw opts.forcedThrows
+        if (forced && opts.forcedAnswerMs !== undefined) {
+          const timeoutMs = callOpts?.timeoutMs ?? Infinity
+          // As hostClient.ts: no answer within the call timeout rejects with a plain Error (no code).
+          if (opts.forcedAnswerMs > timeoutMs) {
+            await wait(timeoutMs)
+            throw new Error(`The OrgAI host did not answer host.stop within ${Math.round(timeoutMs / 1000)} s.`)
+          }
+          await wait(opts.forcedAnswerMs)
+          return { stopping: true } as T
+        }
         if (opts.stopThrows) throw opts.stopThrows
         const list = opts.stops ?? [{ stopping: true }]
         const r = list[Math.min(stopIndex++, list.length - 1)]
@@ -110,6 +137,47 @@ describe('DesktopHandoff (cli-standalone.md 4.4)', () => {
     await expect(run).resolves.toBe('acquire')
   })
 
+  it('"Stop them and open": a forced host.stop that answers after the call timeout still ends in acquire, never the busy-folder error', async () => {
+    // A forced stop answers only after stopAll and every writer; here it takes 3x the call timeout (100 ms).
+    const r = rig({ stops: [{ stopping: false, handoffBlockers: { workingRuns: 1 } }], forcedAnswerMs: 300 })
+    const run = r.h.run(owner('node'))
+    await vi.waitFor(() => expect(r.h.view()?.kind).toBe('busy'))
+    r.h.choose('force')
+    // The window says it is stopping at once, before the forced stop answers.
+    await vi.waitFor(() => expect(r.h.view()?.kind).toBe('stopping'), { timeout: 60, interval: 2 })
+    // The call timed out (100 ms): still waiting for the exit, not 'unavailable'.
+    await wait(200)
+    expect(r.h.view()?.kind).toBe('stopping')
+    r.exit()
+    await expect(run).resolves.toBe('acquire')
+    expect(r.calls.filter((c) => c.method === 'host.stop').map((c) => c.params)).toEqual([[{ force: false, handoff: true }], [{ force: true }]])
+  })
+
+  it('"Stop them and open": a connection closed after the forced request counts as stopping; a coded refusal does not', async () => {
+    const closed = rig({ stops: [{ stopping: false, handoffBlockers: { workingRuns: 1 } }], forcedThrows: new Error('The connection to the OrgAI host closed.') })
+    const run = closed.h.run(owner('node'))
+    await vi.waitFor(() => expect(closed.h.view()?.kind).toBe('busy'))
+    closed.h.choose('force')
+    await vi.waitFor(() => expect(closed.h.view()?.kind).toBe('stopping'))
+    await wait(30)
+    expect(closed.h.view()?.kind).toBe('stopping')
+    closed.exit()
+    await expect(run).resolves.toBe('acquire')
+
+    const denied = rig({
+      stops: [{ stopping: false, handoffBlockers: { workingRuns: 1 } }],
+      forcedThrows: Object.assign(new Error('not allowed'), { data: { code: 'scope_denied' } })
+    })
+    const run2 = denied.h.run(owner('node'))
+    await vi.waitFor(() => expect(denied.h.view()?.kind).toBe('busy'))
+    denied.h.choose('force')
+    await expect(run2).resolves.toBe('unavailable')
+  })
+
+  it('the first, non-forced handoff stop that does not answer in time is still unavailable (the user confirmed nothing)', async () => {
+    await expect(rig({ stopThrows: new Error('The OrgAI host did not answer host.stop within 5 s.') }).h.run(owner('node'))).resolves.toBe('unavailable')
+  })
+
   it('refused: "Open when they finish" retries the handoff stop until it is accepted', async () => {
     const busy: HostStopResult = { stopping: false, handoffBlockers: { workingRuns: 1 } }
     const r = rig({ stops: [busy, busy, busy, { stopping: true }] })
@@ -176,6 +244,11 @@ describe('handoff helpers', () => {
     expect(busyLines({ stopping: false }, facts({ pausedRuns: 1, terminalSessions: 2 }))).toEqual(['1 run waiting to resume', '2 terminal sessions connected'])
   })
 
+  it('busyLines: a handoff refusal without counts (the host could not read its runs) still says something', () => {
+    expect(busyLines({ stopping: false, handoffBlockers: {} })).toEqual(['runs the background host could not count'])
+    expect(busyLines({ stopping: false, handoffBlockers: {}, refusedBecause: { activeOAuthFlows: 1 } })).toEqual(['1 sign-in in progress'])
+  })
+
   it('handoffView: every kind has a message and its buttons', () => {
     for (const kind of ['inproc', 'inproc-waiting', 'stopping', 'busy', 'busy-waiting'] as const) {
       const v = handoffView(kind, ['1 run working'])
@@ -215,6 +288,73 @@ describe('handoff helpers', () => {
         currentOwner: () => null
       })
     ).toBe(false)
+  })
+
+  it('ownerExitCheck: an hour-long wait reads the start time about once per recheck interval, not on every poll', async () => {
+    // A unique pid and start time: processInfo's cache is module-wide.
+    const o: DaemonInfo = { ...owner('inproc'), pid: 91_731, processStartTime: 'Tue Nov  4 10:00:00 2026' }
+    let now = 1_000_000
+    let reads = 0
+    let probes = 0
+    let gone = false
+    const exited = ownerExitCheck(() => o, {
+      platform: 'darwin',
+      now: () => now,
+      kill: () => {
+        probes++
+        if (gone) throw Object.assign(new Error('no such process'), { code: 'ESRCH' })
+        return true
+      },
+      startTimeOf: () => {
+        reads++
+        return o.processStartTime
+      }
+    })
+    const h = new DesktopHandoff({
+      connect: async () => ({ failed: 'unused' }),
+      exited,
+      show: () => {},
+      // Simulated time: every sleep advances the clock the cache reads.
+      sleep: async (ms) => {
+        now += ms
+        if (now - 1_000_000 >= 3_600_000) gone = true
+      },
+      exitPollMs: 250
+    })
+    await expect(h.run(o)).resolves.toBe('acquire')
+    const polls = 3_600_000 / 250
+    expect(probes).toBeGreaterThanOrEqual(polls)
+    // At most one read per recheck interval (plus the first), against one per poll before the fix.
+    expect(reads).toBeLessThanOrEqual(Math.ceil(3_600_000 / HANDOFF_START_TIME_RECHECK_MS) + 1)
+    expect(reads).toBeGreaterThanOrEqual(1)
+    expect(HANDOFF_START_TIME_RECHECK_MS).toBeGreaterThanOrEqual(5_000)
+  })
+
+  it('ownerExitCheck: a gone pid is exited at once; a reused pid (other start time) once the start time is re-read', async () => {
+    const o: DaemonInfo = { ...owner('node'), pid: 91_732, processStartTime: 'A' }
+    let now = 0
+    let start = 'A'
+    let alive = true
+    const exited = ownerExitCheck(() => o, {
+      platform: 'linux',
+      now: () => now,
+      kill: () => {
+        if (!alive) throw Object.assign(new Error('gone'), { code: 'ESRCH' })
+        return true
+      },
+      startTimeOf: () => start
+    })
+    expect(await exited(o)).toBe(false)
+    start = 'B' // the pid now names another process
+    now += 1_000
+    expect(await exited(o)).toBe(false) // cached until the recheck
+    now += HANDOFF_START_TIME_RECHECK_MS
+    expect(await exited(o)).toBe(true)
+    const o2: DaemonInfo = { ...owner('node'), pid: 91_733, processStartTime: 'A' }
+    start = 'A'
+    expect(await exited(o2)).toBe(false)
+    alive = false
+    expect(await exited(o2)).toBe(true)
   })
 
   it('handoffUnavailableText names the owner and the orgai daemon stop --force hint', () => {

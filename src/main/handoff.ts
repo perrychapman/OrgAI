@@ -8,16 +8,29 @@
  * - Owner 'node': host.stop({ force: false, handoff: true }) over a 'desktop' connection (the handoff grant).
  *   - stopping: wait for the process to exit, showing a window only if that takes more than HANDOFF_WINDOW_DELAY_MS.
  *   - refused: the window lists what is still going on (handoffBlockers, refusedBecause and host.status `handoff`) with
- *     "Open when they finish" (re-asks every HANDOFF_RETRY_MS), "Stop them and open" (host.stop({ force: true })) and
- *     "Quit".
- *   - no answer within HANDOFF_ANSWER_TIMEOUT_MS, or an owner without the handoff grant (older than Wave 7):
- *     'unavailable' (index.ts shows the existing busy-folder message with the `orgai daemon stop --force` hint).
+ *     "Open when they finish" (re-asks every HANDOFF_RETRY_MS), "Stop them and open" (host.stop({ force: true }); the
+ *     user confirmed, so once that request is sent a late answer or a closed connection counts as stopping and the
+ *     exit poll decides) and "Quit". An empty handoffBlockers is a host that could not read its run state and refused.
+ *   - no answer within HANDOFF_ANSWER_TIMEOUT_MS to the first, non-forced stop, or an owner without the handoff grant
+ *     (older than Wave 7): 'unavailable' (index.ts shows the existing busy-folder message with the
+ *     `orgai daemon stop --force` hint).
+ * - The exit poll (ownerExitCheck) runs a signal probe per poll and re-reads the start time only every
+ *   HANDOFF_START_TIME_RECHECK_MS.
  * - Any other owner kind: 'unavailable'.
  * - 'acquire' only once the owner's process has exited (pid plus start time, processInfo.ts), never on its word; the
  *   caller then takes ownership as usual and, losing the race to another contender, runs this again for the new owner.
  */
 import type { ActivityLeaseKind, DaemonInfo, HostHandoffBlocker, HostHandoffFacts, HostStatusResult, HostStopResult } from '../shared/types'
+import { processLivenessCachedAsync, type LiveProcessDepsAsync } from './host/processInfo'
 import { HANDOFF_ANSWER_TIMEOUT_MS, HANDOFF_RETRY_MS, HANDOFF_WINDOW_DELAY_MS } from './host/shutdown'
+
+/**
+ * How long the handoff trusts an answer about the owner's start time while it waits. Every exit poll still runs the
+ * cheap signal-0 probe (a pid the OS reports gone is exited at once); only re-reading the start time (darwin `ps`,
+ * win32 PowerShell, processInfo.ts) waits this long, so an hour-long wait for the orgai command starts PowerShell about
+ * 120 times, not on every 250 ms poll. The start time only matters if the owner's pid were reused between two polls.
+ */
+export const HANDOFF_START_TIME_RECHECK_MS = 30_000
 
 export type HandoffChoice = 'wait' | 'force' | 'quit'
 export type HandoffOutcome = 'acquire' | 'quit' | 'unavailable'
@@ -104,6 +117,8 @@ export function busyLines(stop: HostStopResult, facts?: HostHandoffFacts): strin
   }
   const sessions = facts?.terminalSessions ?? 0
   if (sessions > 0 && !leases.interactiveClients) lines.push(count(sessions, ['terminal session connected', 'terminal sessions connected']))
+  // A handoff refusal with no counts: the host could not read its run state, so it refused rather than end runs unseen.
+  if (lines.length === 0 && stop.handoffBlockers && !named) lines.push('runs the background host could not count')
   return lines
 }
 
@@ -242,7 +257,9 @@ export class DesktopHandoff {
       if (ev.kind === 'exited') return 'acquire'
       if (ev.kind === 'choice' && ev.choice === 'quit') return 'quit'
       if (ev.kind === 'choice' && ev.choice === 'force') {
-        // The user confirmed in this window: runs end through stopAll({ reason: 'quit' }) and stay continuable.
+        // The user confirmed in this window: runs end through stopAll({ reason: 'quit' }) and stay continuable. The
+        // window says so at once: a forced host.stop answers only after the whole drain.
+        this.setView(handoffView('stopping'))
         const forced = await this.tryStop({ force: true })
         if (forced.kind === 'stopping') return this.waitForExit(owner, true)
         if (await this.deps.exited(owner)) return 'acquire'
@@ -250,6 +267,8 @@ export class DesktopHandoff {
           this.log(`Handoff: the forced stop got no answer (${forced.reason}).`)
           return 'unavailable'
         }
+        busy = forced
+        this.setView(handoffView(waiting ? 'busy-waiting' : 'busy', busyLines(busy.stop, busy.facts)))
         continue
       }
       if (ev.kind === 'choice' && ev.choice === 'wait') {
@@ -301,8 +320,10 @@ export class DesktopHandoff {
     if ('draining' in conn) return { kind: 'stopping' }
     if ('failed' in conn) return { kind: 'unavailable', reason: conn.failed }
     const client = conn.client
+    let sent = false
     try {
       if (!client.handoff) return { kind: 'unavailable', reason: 'the owner does not offer the app hand-off' }
+      sent = true
       const stop = await client.call<HostStopResult>('host.stop', [{ force: input.force, ...(input.handoff ? { handoff: true } : {}) }], { timeoutMs })
       if (stop && stop.stopping === true) return { kind: 'stopping' }
       if (!stop || typeof stop !== 'object') return { kind: 'unavailable', reason: 'host.stop answered nothing usable' }
@@ -316,6 +337,14 @@ export class DesktopHandoff {
     } catch (e) {
       const data = (e as { data?: { code?: unknown } })?.data
       if (data?.code === 'host_draining') return { kind: 'stopping' }
+      // A forced host.stop answers only once its drain is done (stopAll for up to 3 s, then every writer, bounded only by
+      // the hard limit), and the host closes its connections as it stops. Once the user confirmed and the request went
+      // out, no answer in time (or a closed connection) means it is stopping: the exit poll decides, never a refusal.
+      // A coded answer (scope_denied, bad_request, ...) is a real refusal.
+      if (input.force && sent && typeof data?.code !== 'string') {
+        this.log(`Handoff: the forced stop has not answered yet (${(e as Error)?.message ?? String(e)}); waiting for the host to exit.`)
+        return { kind: 'stopping' }
+      }
       return { kind: 'unavailable', reason: (e as Error)?.message ?? String(e) }
     } finally {
       try {
@@ -367,6 +396,19 @@ export async function ownerHasExited(
   } catch {
     return false
   }
+}
+
+/**
+ * The handoff's `exited` check (DesktopHandoffDeps.exited) for index.ts: {@link ownerHasExited} over the cached
+ * liveness (processInfo.ts processLivenessCachedAsync with {@link HANDOFF_START_TIME_RECHECK_MS}), so a wait of hours
+ * runs the cheap signal probe per poll and reads the start time at most once per recheck interval. `deps` are for tests.
+ */
+export function ownerExitCheck(
+  currentOwner: () => DaemonInfo | null,
+  deps: LiveProcessDepsAsync & { now?: () => number; recheckMs?: number } = {}
+): (owner: DaemonInfo) => Promise<boolean> {
+  const opts = { recheckMs: HANDOFF_START_TIME_RECHECK_MS, ...deps }
+  return (owner) => ownerHasExited(owner, { liveness: (pid, start) => processLivenessCachedAsync(pid, start, opts), currentOwner })
 }
 
 // ---------- The wait window's page (no preload, no script: links only) ----------

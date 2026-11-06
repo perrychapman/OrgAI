@@ -368,6 +368,8 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     }, LITELLM_SPEND_DELAY_MS)
   }
   let activityRef: HostActivityTracker | undefined
+  /** Set once the dispatcher exists (below); the drain's quiesce aborts its model calls (draft:orgChart). */
+  let dispatcherRef: HostDispatcher | undefined
   const rm = new RunManager(adapters, runBroadcast, runStore, setup, keepRunsFor, {
     dataDir,
     // cli-spec 3.4(1): the control socket dir, daemon secret, secrets.json and CODEX_HOME are off limits to agent tools.
@@ -559,12 +561,14 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     idleMs: daemonIdleMs(processEnv),
     ...shutdown.activityHooks(),
     // A draining host starts no background work and abandons what waits on a user or a model (round 6 item 9): no
-    // Team review (every run forceStop ends would arm one), no OAuth flow, no skill evaluation model step, plus the
-    // entry point's own (the desktop's repository clones).
+    // Team review (every run forceStop ends would arm one), no OAuth flow, no skill evaluation model step, no org chart
+    // draft, plus the entry point's own (the desktop's repository clones).
     quiesce: () => {
       caps.dispose()
       mcp.dispose()
       skillEvaluation.dispose()
+      // An org chart draft's model call (no timeout of its own) would hold its mutation lease until the hard limit.
+      dispatcherRef?.quiesce()
       if (opts.quiesce) {
         try {
           opts.quiesce()
@@ -645,6 +649,7 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     secrets
   }
   const dispatcher = new HostDispatcher(services)
+  dispatcherRef = dispatcher
 
   // Stores built, probes started, housekeeping done: advertise the host as ready.
   ownership.markReady()

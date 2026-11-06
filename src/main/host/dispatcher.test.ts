@@ -185,6 +185,47 @@ describe('HostDispatcher.invoke (desktop path)', () => {
     expect(() => d.invoke(IPC.mcpAuthorize, [{ libraryId: 'x' }], DESKTOP)).toThrow(expect.objectContaining({ code: 'host_draining' }))
   })
 
+  it('quiesce aborts an org chart draft in flight, so its mutation lease ends and Quit does not wait on the model (review round 2)', async () => {
+    const activity = fakeActivity()
+    const seen: { signal?: AbortSignal }[] = []
+    const adapter = {
+      complete: vi.fn(
+        (input: { signal?: AbortSignal }) =>
+          new Promise<string>((_resolve, reject) => {
+            seen.push(input)
+            input.signal?.addEventListener('abort', () => reject(new Error('Completion cancelled')), { once: true })
+          })
+      )
+    }
+    const d = new HostDispatcher(
+      services({
+        activity,
+        runs: { adapterFor: () => adapter } as never,
+        connections: { effectiveSettings: () => DEFAULT_APP_SETTINGS, importModelContext: () => undefined } as never
+      })
+    )
+    const p = d.invoke(IPC.draftOrgChart, [{ projectId: 'proj_a', instruction: 'a team', mode: 'new' }], DESKTOP) as Promise<unknown>
+    const settled = p.then(
+      () => 'resolved',
+      (e: Error) => e.message
+    )
+    await vi.waitFor(() => expect(adapter.complete).toHaveBeenCalledTimes(1))
+    expect(seen[0].signal).toBeInstanceOf(AbortSignal)
+    expect(seen[0].signal!.aborted).toBe(false)
+    expect(activity.held).toBe(1)
+    d.quiesce()
+    await expect(settled).resolves.toBe('Completion cancelled')
+    await Promise.resolve()
+    expect(activity.held).toBe(0)
+    // Idempotent; a later draft is refused while draining (before the model) and an aborted signal never reaches one.
+    d.quiesce()
+    activity.setState('draining')
+    expect(() => d.invoke(IPC.draftOrgChart, [{ projectId: 'proj_a', instruction: 'x', mode: 'new' }], DESKTOP)).toThrow(
+      expect.objectContaining({ code: 'host_draining' })
+    )
+    expect(adapter.complete).toHaveBeenCalledTimes(1)
+  })
+
   it('async handlers reject', async () => {
     const d = new HostDispatcher(services())
     const p = d.invoke(IPC.runsStart, [{ projectId: 'nope', prompt: 'x' }], DESKTOP)

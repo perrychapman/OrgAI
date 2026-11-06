@@ -35,14 +35,13 @@ import type { HostRuntimeEnv } from './host/runtimeEnv'
 import { windowBackground } from './appInfo'
 import { installShutdownSignals, type ShutdownReason } from './host/shutdown'
 import { beforeQuitHandler, willQuitHandler } from './desktopQuit'
-import { processLivenessAsync } from './host/processInfo'
 import { connectHost } from '../cli/client/hostClient'
 import {
   DesktopHandoff,
   handoffChoiceOf,
   handoffPageHtml,
   handoffUnavailableText,
-  ownerHasExited,
+  ownerExitCheck,
   type HandoffOutcome,
   type HandoffView
 } from './handoff'
@@ -730,7 +729,9 @@ async function runHandoff(dataDir: string, owner: DaemonInfo): Promise<HandoffOu
       if (r.reason === 'draining') return { draining: true }
       return { failed: r.message }
     },
-    exited: (o) => ownerHasExited(o, { liveness: (pid, start) => processLivenessAsync(pid, start), currentOwner: () => readDaemonInfo(dataDir) }),
+    // Cached liveness: a signal probe per poll, the start time (ps / PowerShell) re-read only every 30 s (the inproc wait
+    // can last hours).
+    exited: ownerExitCheck(() => readDaemonInfo(dataDir)),
     show: (view) => showHandoffWindow(view),
     log: (m) => log.info(m)
   })

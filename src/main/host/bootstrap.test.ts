@@ -300,14 +300,16 @@ describe('bootOrgAIHost', () => {
     await h.shutdown.released()
   })
 
-  it('the drain quiesces OAuth flows, skill evaluation and the entry point\'s own work (round 6 item 9)', async () => {
+  it('the drain quiesces OAuth flows, skill evaluation, org chart drafts and the entry point\'s own work (round 6 item 9)', async () => {
     const quiesce = vi.fn()
     const h = boot({ quiesce })
     const mcp = vi.spyOn(h.services.mcp, 'dispose')
     const evaluation = vi.spyOn(h.services.skillEvaluation as unknown as { dispose(): void }, 'dispose')
     const caps = vi.spyOn(h.services.capabilities, 'dispose')
+    // An org chart draft's model call is aborted too (review round 2): it has no timeout and would hold its lease.
+    const drafts = vi.spyOn(h.dispatcher, 'quiesce')
     await h.shutdown.shutdown('desktop-quit', { force: true })
-    for (const f of [mcp, evaluation, caps, quiesce]) expect(f).toHaveBeenCalledTimes(1)
+    for (const f of [mcp, evaluation, caps, drafts, quiesce]) expect(f).toHaveBeenCalledTimes(1)
     await expect(h.services.mcp.authorize({ libraryId: 'x' })).rejects.toThrow(/shutting down/)
   })
 
