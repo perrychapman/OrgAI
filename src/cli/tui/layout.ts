@@ -23,7 +23,11 @@ const PANE_MIN = 3
 const STACKED_SHARE: Record<'tree' | 'plan' | 'worktrees', number> = { tree: 0.3, plan: 0.25, worktrees: 0.2 }
 /** Stacked: the transcript keeps at least this many rows; panes are dropped in this order until it does. */
 const STACKED_TRANSCRIPT_MIN = 5
-const STACKED_DROP_ORDER = ['worktrees', 'plan', 'tree'] as const
+/** Stacked: plan, then worktrees, go before the tree gives up a row; the tree itself is never dropped. */
+const STACKED_DROP_ORDER = ['worktrees', 'plan'] as const
+/** Stacked: the tree gets at least this many rows, and may grow to what its rows want up to this share of the body. */
+const STACKED_TREE_MIN = 6
+const STACKED_TREE_WANT_MAX = 0.5
 
 function nat(n: number): number {
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0
@@ -56,12 +60,12 @@ export function computeLayout(input: LayoutInput): LayoutPlan {
   const composer = { width: cols, height: composerH }
 
   if (cols >= SPLIT_MIN_COLS) {
-    return { mode: 'split', statusRows, panes: splitPanes(cols, body, visible), tray, composer }
+    return { mode: 'split', statusRows, panes: splitPanes(cols, body, visible, nat(input.worktreeRows ?? 0)), tray, composer }
   }
-  return { mode: 'stacked', statusRows, panes: stackedPanes(cols, body, visible), tray, composer }
+  return { mode: 'stacked', statusRows, panes: stackedPanes(cols, body, visible, nat(input.treeRows ?? 0)), tray, composer }
 }
 
-function splitPanes(cols: number, body: number, visible: Record<PaneId, boolean>): PaneBox[] {
+function splitPanes(cols: number, body: number, visible: Record<PaneId, boolean>, worktreeWanted: number): PaneBox[] {
   const left = visible.tree || visible.worktrees
   const right = visible.transcript || visible.plan
   let leftW = 0
@@ -80,6 +84,8 @@ function splitPanes(cols: number, body: number, visible: Record<PaneId, boolean>
       if (!visible.tree) wt = body
       else {
         wt = Math.floor(body * SPLIT_WORKTREES_SHARE)
+        // It takes what its rows want (a title and a line per worktree), not a fixed 40% for one line.
+        if (worktreeWanted > 0) wt = Math.min(wt, Math.max(PANE_MIN, worktreeWanted))
         if (wt < PANE_MIN || body - wt < PANE_MIN) wt = 0
       }
     }
@@ -103,7 +109,7 @@ function splitPanes(cols: number, body: number, visible: Record<PaneId, boolean>
   return out
 }
 
-function stackedPanes(cols: number, body: number, visible: Record<PaneId, boolean>): PaneBox[] {
+function stackedPanes(cols: number, body: number, visible: Record<PaneId, boolean>, treeWanted: number): PaneBox[] {
   const shown = new Set<'tree' | 'plan' | 'worktrees'>()
   for (const p of ['tree', 'plan', 'worktrees'] as const) if (visible[p]) shown.add(p)
   const transcriptMin = visible.transcript ? STACKED_TRANSCRIPT_MIN : 0
@@ -115,19 +121,29 @@ function stackedPanes(cols: number, body: number, visible: Record<PaneId, boolea
     for (const p of shown) {
       h[p] = visible.transcript ? Math.floor(body * STACKED_SHARE[p]) : total > 0 ? Math.floor((body * STACKED_SHARE[p]) / total) : 0
     }
+    if (shown.has('tree') && visible.transcript) {
+      // The tree is the pane that is never dropped: max(6, 30%), or what its rows want up to half the body ...
+      const share = Math.max(STACKED_TREE_MIN, h.tree)
+      h.tree = Math.min(body, Math.max(share, Math.min(treeWanted, Math.floor(body * STACKED_TREE_WANT_MAX))))
+    }
     return h
   }
 
   let h = heights()
   for (const p of STACKED_DROP_ORDER) {
     const used = [...shown].reduce((a, q) => a + h[q], 0)
-    const tooSmall = [...shown].some((q) => h[q] < PANE_MIN)
+    const tooSmall = [...shown].some((q) => q !== 'tree' && h[q] < PANE_MIN)
     if (body - used >= transcriptMin && !tooSmall) break
-    // Drop the next pane in order (worktrees, then plan, then tree) if it is shown.
+    // Drop the next pane in order (worktrees, then plan) if it is shown; the tree is never dropped.
     if (shown.has(p)) {
       shown.delete(p)
       h = heights()
     }
+  }
+  // ... and it gives up rows only after plan and worktrees are gone, keeping the transcript its minimum.
+  if (shown.has('tree') && visible.transcript) {
+    const others = [...shown].reduce((a, q) => (q === 'tree' ? a : a + h[q]), 0)
+    h.tree = Math.min(h.tree, Math.max(Math.min(PANE_MIN, body), body - others - transcriptMin))
   }
   // Without a transcript, give the last pane the rounding remainder.
   const out: PaneBox[] = []

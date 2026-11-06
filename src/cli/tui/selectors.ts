@@ -6,6 +6,8 @@
  */
 import type { AgentInstance, AgentState, CardKind, RunSummary, TranscriptEntry } from '../../shared/types'
 import { agentCostInput, costView, runCostInput, sumCosts } from '../../shared/view/cost'
+import { normalizeParents } from '../../shared/view/agentTree'
+import { foldFinished, isSettledAt } from '../../shared/view/foldFinished'
 import { decisionCount, type WaitRun } from '../../shared/view/needsYou'
 import { canContinueIn, isOpenStatus } from '../../shared/view/runChains'
 import { runName, runTag } from '../../shared/view/runLabels'
@@ -107,10 +109,13 @@ function cardsOfRun(s: TuiState, run: TuiRun): TrayCard[] {
     const list = run.cards[CARD_BUCKETS[kind]] as { id: string; revision?: number }[]
     for (const card of list ?? []) {
       const ref: CardRef = { hostInstanceId: s.hostInstanceId ?? '', runId: run.summary.id, requestId: card.id, kind, revision: card.revision ?? 1 }
+      const rawAgent = (card as { agentId?: unknown }).agentId
+      const agentId = typeof rawAgent === 'string' ? rawAgent : undefined
       out.push({
         key: cardKey(ref),
         ref,
         runTag: tag,
+        ...(agentId ? { agentId, agentLabel: agentLabel(run.agents[agentId]) } : {}),
         runKind: run.summary.kind,
         ...(projectKind ? { projectKind } : {}),
         arrivedSeq: cardArrivalSeq(card) ?? 0,
@@ -145,10 +150,105 @@ export function topCard(s: TuiState): TrayCard | undefined {
 
 // ---------- Org tree ----------
 
-function treeOf(run: TuiRun, depth0: number, earlier: boolean, skipRoot: boolean): OrgTreeRow[] {
+/** How the tree folds finished agents (F1). Without options nothing folds. */
+export interface OrgTreeOptions {
+  /** Hide finished agents (the app's default; the TUI's `h`). */
+  collapse?: boolean
+  /** Expanded group keys: a visible agent's id or an earlier-session key; a number is when it was expanded. */
+  expanded?: Readonly<Record<string, boolean | number>>
+  /** The clock for the settle grace (tests pass it; the App passes its own `now`). */
+  now?: number
+}
+
+/** Does the role name add anything beside the label? ("implementer-1" already says Implementer.) */
+function roleAdds(label: string, role: string): boolean {
+  const norm = (t: string): string => t.toLowerCase().replace(/[^a-z0-9]/g, '')
+  const r = norm(role)
+  if (!r) return false
+  return !norm(label).includes(r.slice(0, Math.min(5, r.length)))
+}
+
+/** The chip a worktree earns on its agent's row: files changed while it is open, else the state that needs a look. */
+function worktreeChipOf(wt: NonNullable<AgentInstance['worktree']>): string | undefined {
+  switch (wt.status) {
+    case 'review':
+      return 'review'
+    case 'conflict':
+      return 'conflict'
+    case 'held':
+      return 'held'
+    case 'active':
+    case 'merging':
+    case 'waiting-children': {
+      const n = Array.isArray(wt.changedFiles) ? wt.changedFiles.length : 0
+      return n > 0 ? `${n}f` : undefined
+    }
+    default:
+      return undefined
+  }
+}
+
+const GROUP_NAMES_MAX = 6
+
+function groupRow(runId: string, depth: number, members: AgentInstance[], over: Partial<OrgTreeRow>): OrgTreeRow {
+  const failed = members.filter((m) => m.state === 'error').length
+  const cost = costView(sumCosts(members.map((m) => agentCostInput(m))))
+  const names = members.slice(0, GROUP_NAMES_MAX).map((m) => agentLabel(m))
+  const more = members.length > GROUP_NAMES_MAX ? `, +${members.length - GROUP_NAMES_MAX} more` : ''
+  return {
+    id: `group:${runId}:${over.groupKey ?? ''}`,
+    runId,
+    depth,
+    label: `${members.length} done`,
+    role: '',
+    state: failed === members.length ? 'error' : 'done',
+    stateWord: failed > 0 ? `(${failed} failed)` : '',
+    activity: `${names.join(', ')}${more}`,
+    costText: cost.empty ? '' : cost.text,
+    isRoot: false,
+    kind: 'group',
+    count: members.length,
+    failed,
+    ...over
+  }
+}
+
+function treeOf(
+  run: TuiRun,
+  depth0: number,
+  earlier: boolean,
+  skipRoot: boolean,
+  opts: OrgTreeOptions = {},
+  waiting: Readonly<Record<string, string[]>> = {}
+): OrgTreeRow[] {
   const agents = settleEndedAgents(run.summary, run.agents)
   const list = Object.values(agents)
   const ids = new Set(list.map((a) => a.id))
+  const runId = run.summary.id
+  const earlierGroupKey = `earlier:${runId}`
+  const expanded = opts.expanded ?? {}
+
+  // Earlier sessions are over: with Hide finished on, one "N done" row until the user opens it.
+  if (earlier && opts.collapse && !expanded[earlierGroupKey]) {
+    const rest = list.filter((a) => !(skipRoot && a.parentId === null)).sort((x, y) => x.startedAt - y.startedAt || x.id.localeCompare(y.id))
+    if (rest.length === 0) return []
+    return [groupRow(runId, depth0, rest, { earlier: true, groupKey: earlierGroupKey, members: rest.map((a) => `${runId}:${a.id}`), id: `group:${earlierGroupKey}` })]
+  }
+
+  // The fold (shared with the app): settled = done or failed, worktree settled, past the grace, never an agent with an open card.
+  let hidden = new Map<string, AgentInstance[]>()
+  let visibleIds: Set<string> | undefined
+  if (!earlier && opts.collapse) {
+    const now = opts.now ?? Date.now()
+    const result = foldFinished({
+      agents: normalizeParents(list),
+      isSettled: (a) => isSettledAt(a, now) && (waiting[a.id]?.length ?? 0) === 0,
+      expanded,
+      collapse: true
+    })
+    hidden = result.groups
+    visibleIds = new Set(result.visibleAgents.map((a) => a.id))
+  }
   const children = new Map<string | null, AgentInstance[]>()
   for (const a of list) {
     const key = a.parentId !== null && ids.has(a.parentId) ? a.parentId : null
@@ -159,26 +259,40 @@ function treeOf(run: TuiRun, depth0: number, earlier: boolean, skipRoot: boolean
   for (const arr of children.values()) arr.sort((x, y) => x.startedAt - y.startedAt || x.id.localeCompare(y.id))
   const out: OrgTreeRow[] = []
   const seen = new Set<string>()
-  const runId = run.summary.id
-  const walk = (a: AgentInstance, depth: number): void => {
-    if (seen.has(a.id) || depth > 50) return
+  const shown = (a: AgentInstance): boolean => visibleIds === undefined || visibleIds.has(a.id)
+  const rowId = (a: AgentInstance): string => (earlier ? `${runId}:${a.id}` : a.id)
+  const walk = (a: AgentInstance, depth: number, parent?: string): void => {
+    if (seen.has(a.id) || depth > 50 || !shown(a)) return
     seen.add(a.id)
     const cost = costView(agentCostInput(a))
+    const role = safeLine(a.name)
+    const label = agentLabel(a)
+    const open = earlier ? 0 : (waiting[a.id]?.length ?? 0)
+    const chip = a.worktree ? worktreeChipOf(a.worktree) : undefined
     out.push({
-      id: earlier ? `${runId}:${a.id}` : a.id,
+      id: rowId(a),
       runId,
       depth,
-      label: agentLabel(a),
-      role: safeLine(a.name),
+      label,
+      role,
       state: a.state,
       stateWord: AGENT_STATE_WORD[a.state] ?? safeLine(a.state),
       activity: clipLine(safeLine(a.activity), ACTIVITY_MAX),
       costText: cost.empty ? '' : cost.text,
       isRoot: a.parentId === null,
-      ...(earlier ? { earlier: true } : {}),
+      kind: 'agent',
+      ...(roleAdds(label, role) ? {} : { roleShown: false }),
+      ...(parent ? { parentId: parent } : {}),
+      ...(earlier ? { earlier: true, earlierKey: earlierGroupKey } : {}),
+      ...(open > 0 ? { waiting: open } : {}),
+      ...(chip ? { worktreeChip: chip } : {}),
       ...(a.worktree ? { worktree: { branch: safeLine(a.worktree.branch), status: a.worktree.status } } : {})
     })
-    for (const c of children.get(a.id) ?? []) walk(c, depth + 1)
+    for (const c of children.get(a.id) ?? []) walk(c, depth + 1, rowId(a))
+    const folded = hidden.get(a.id)
+    if (folded && folded.length > 0) {
+      out.push(groupRow(runId, depth + 1, folded, { groupKey: a.id, members: folded.map((m) => m.id), parentId: rowId(a) }))
+    }
   }
   const roots = children.get(null) ?? []
   for (const r of roots) {
@@ -196,18 +310,59 @@ function treeOf(run: TuiRun, depth0: number, earlier: boolean, skipRoot: boolean
  * The active run's agents depth first (root first, reports by start order). Reports of earlier chain members follow
  * the root, under it, marked `earlier` (their ids are prefixed with the run id; the shared root is not repeated).
  */
-export function orgTreeRows(s: TuiState): OrgTreeRow[] {
+export function orgTreeRows(s: TuiState, opts: OrgTreeOptions = {}): OrgTreeRow[] {
   const run = activeRun(s)
   if (!run) return []
-  const own = treeOf(run, 0, false, false)
+  const waiting = cardsByAgent(s)
+  const own = treeOf(run, 0, false, false, opts, waiting)
   const earlier = chainRuns(s)
     .filter((r) => r.summary.id !== run.summary.id)
-    .flatMap((r) => treeOf(r, 1, true, true))
+    .flatMap((r) => treeOf(r, 1, true, true, opts))
   if (earlier.length === 0) return own
   const rootAt = own.findIndex((r) => r.isRoot)
   if (rootAt < 0) return [...earlier, ...own]
   return [...own.slice(0, rootAt + 1), ...earlier, ...own.slice(rootAt + 1)]
 }
+
+/**
+ * Open decision cards of the active run by the agent they are about, as tray card keys in tray order. Every card kind
+ * carries an agentId (checked from types.ts); one naming an agent the run does not have is attributed to the root.
+ */
+export function cardsByAgent(s: TuiState): Record<string, string[]> {
+  const run = activeRun(s)
+  if (!run) return {}
+  const root = Object.values(run.agents).find((a) => a.parentId === null)?.id
+  const out: Record<string, string[]> = {}
+  for (const c of trayCards(s)) {
+    if (c.ref.runId !== run.summary.id) continue
+    const id = c.agentId && run.agents[c.agentId] ? c.agentId : root
+    if (id === undefined) continue
+    ;(out[id] ??= []).push(c.key)
+  }
+  return out
+}
+
+/** The row to select now: the selected id itself, else the "N done" row that folded it, else undefined. */
+export function resolveSelectedRow(rows: readonly OrgTreeRow[], id: string | undefined): string | undefined {
+  if (id === undefined) return undefined
+  if (rows.some((r) => r.id === id)) return id
+  return rows.find((r) => r.kind === 'group' && r.members?.includes(id))?.id
+}
+
+/** The expanded-group key Left should fold for a row: the row's own, else its nearest expanded ancestor's. */
+export function collapseTarget(rows: readonly OrgTreeRow[], id: string, expanded: Readonly<Record<string, boolean | number>>): string | undefined {
+  const byId = new Map(rows.map((r) => [r.id, r]))
+  let cur = byId.get(id)
+  if (cur?.kind === 'group') return undefined
+  for (let hops = 0; cur && hops < 60; hops++) {
+    if (!cur.earlier && expanded[cur.id]) return cur.id
+    if (cur.earlierKey && expanded[cur.earlierKey]) return cur.earlierKey
+    cur = cur.parentId ? byId.get(cur.parentId) : undefined
+  }
+  return undefined
+}
+
+export { treeCounts } from './treeRows'
 
 // ---------- Transcript ----------
 

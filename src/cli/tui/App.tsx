@@ -8,6 +8,7 @@ import { Box, Text } from 'ink'
 import { basename } from 'node:path'
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { Project, ProjectPathCheck, RunStatus, RunSummary } from '../../shared/types'
+import { nextSettleAt, settleTimerDelay } from '../../shared/view/foldFinished'
 import { isOpenStatus } from '../../shared/view/runChains'
 import { statusOfRun, statusText } from '../../shared/view/runStatus'
 import { Composer } from './Composer'
@@ -21,7 +22,7 @@ import { OrgTreePane } from './OrgTreePane'
 import { showInPager } from './pager'
 import { PlanPane } from './PlanPane'
 import { sanitizeTty } from './sanitizeTty'
-import { composerMode, orgTreeRows, partialRows, planView, statusSummary, topCard, transcriptRows, trayCards, worktreeRows } from './selectors'
+import { cardsByAgent, collapseTarget, composerMode, orgTreeRows, partialRows, planView, resolveSelectedRow, statusSummary, topCard, transcriptRows, trayCards, worktreeRows } from './selectors'
 import { SLASH_COMMANDS } from './slashCommands'
 import { SlashPalette } from './SlashPalette'
 import { StatusBar } from './StatusBar'
@@ -128,6 +129,25 @@ export function hintsFor(focus: FocusTarget, readOnly: boolean, stopOnQuit = fal
     default:
       return 'Tab next pane · Shift+Tab previous · Esc composer'
   }
+}
+
+/**
+ * Rows the Decision Tray gets: what the top card needs (header, detail lines, a status or mode line, the key hints, the
+ * next cards), at least 5 and at most about a third of the window (12 at the most), so a short card leaves the tree room
+ * (ux-review-tui-org.md F3). Inline mode keeps its one footer line (3 = the footer's three lines).
+ */
+export function trayHeight(cards: readonly TrayCard[], cols: number, rows: number, inline: boolean): number {
+  if (cards.length === 0) return inline ? 0 : 1
+  if (inline) return 3
+  const cap = Math.max(5, Math.min(12, Math.floor(rows * 0.35)))
+  let detail = 3
+  try {
+    detail = cardDetailLines(cards[0], Math.max(18, cols - 4)).length
+  } catch {
+    detail = 3
+  }
+  const next = Math.min(3, cards.length - 1) + (cards.length - 1 > 3 ? 1 : 0)
+  return Math.min(cap, Math.max(5, 1 + detail + 1 + 2 + next))
 }
 
 /** The run a ref names in this state: R<n> by runOrder, else an exact id or a unique prefix of 6+ characters. */
@@ -254,11 +274,22 @@ export function App(props: AppProps) {
   const [check, setCheck] = useState<ProjectPathCheck | undefined>(undefined)
   const [quickEdits, setQuickEdits] = useState<boolean | undefined>(undefined)
   const [focus, setFocusState] = useState<FocusTarget>(launch.onboarding ? 'onboarding' : 'composer')
+  // Tree and transcript are on unless /tree or /transcript hide them; Plan and Worktrees follow `userPanes` when the user
+  // asked (/plan, /wt), else show only while something needs them (a blocked plan, a worktree in review or conflict).
   const [visible, setVisible] = useState<Record<PaneId, boolean>>({ tree: true, transcript: true, plan: true, worktrees: true })
+  const [userPanes, setUserPanes] = useState<{ plan?: boolean; worktrees?: boolean }>({})
   const [size, setSize] = useState(() => terminal.size())
   const [overlay, setOverlay] = useState<Overlay | undefined>(undefined)
   const [paletteQuery, setPaletteQuery] = useState('')
+  // ---- Org tree state (F1, F5). `selectedAgent` is the tree's selected row id; Enter on a plain agent row is a hook for the inspector. ----
   const [selectedAgent, setSelectedAgent] = useState<string | undefined>(undefined)
+  /** Hide finished agents (`h`, /fold). */
+  const [foldOn, setFoldOn] = useState(true)
+  /** Expanded "N done" groups: group key -> when it was expanded (agents that finish later fold again). */
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, number>>({})
+  /** Card key the tray shows first (Enter on a waiting agent row). */
+  const [trayFocusKey, setTrayFocusKey] = useState<string | undefined>(undefined)
+  const [, setFoldTick] = useState(0)
   const [, setRedraw] = useState(0)
   const lastCtrlC = useRef<number | undefined>(undefined)
   const exiting = useRef(false)
@@ -278,9 +309,44 @@ export function App(props: AppProps) {
   const readOnly = state.readOnlyReason !== undefined
   const mode: ComposerMode = readOnly ? 'readOnly' : quickEdits !== undefined && !state.project && !state.activeRunId ? 'quick' : composerMode(state)
 
-  const trayRows = cards.length ? (inline ? 3 : Math.min(12, Math.max(6, Math.floor(size.rows / 3)))) : inline ? 0 : 1
-  const plan = computeLayout({ cols: size.cols, rows: size.rows, bufferMode: env.bufferMode, visible, trayRows, composerRows: COMPOSER_ROWS })
-  const panes = plan.panes.filter((p) => visible[p.pane])
+  const focusedCard = trayFocusKey ? (cards.find((c) => c.key === trayFocusKey) ?? cards[0]) : cards[0]
+  const trayRows = trayHeight(focusedCard ? [focusedCard, ...cards.filter((c) => c !== focusedCard)] : cards, size.cols, size.rows, inline)
+
+  // Plan and Worktrees appear on their own only when something needs them.
+  const planData = planView(state)
+  const worktreeData = worktreeRows(state)
+  const activePlan = state.activeRunId ? state.runs[state.activeRunId]?.plan : undefined
+  const autoPlan = planData !== undefined && activePlan?.status === 'blocked'
+  const autoWorktrees = worktreeData.some((w) => w.status === 'review' || w.status === 'conflict' || w.reviewId !== undefined)
+  const effective: Record<PaneId, boolean> = { ...visible, plan: userPanes.plan ?? autoPlan, worktrees: userPanes.worktrees ?? autoWorktrees }
+  const effectiveRef = useRef(effective)
+  effectiveRef.current = effective
+
+  // Org tree rows: finished subtrees folded (F1). One timer to the next moment an agent settles, so reports fold while the run still runs.
+  const clock = now()
+  const treeRows = orgTreeRows(state, { collapse: foldOn, expanded: expandedGroups, now: clock })
+  const selectedRow = resolveSelectedRow(treeRows, selectedAgent)
+  const runAgents = state.activeRunId ? state.runs[state.activeRunId]?.agents : undefined
+  const settleDue = foldOn && runAgents ? nextSettleAt(Object.values(runAgents), clock) : undefined
+  useEffect(() => {
+    if (settleDue === undefined) return undefined
+    const timer = setTimeout(() => setFoldTick((n) => n + 1), settleTimerDelay(settleDue, now()))
+    return () => clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settleDue])
+
+  const treeWanted = treeRows.length + 2
+  const plan = computeLayout({
+    cols: size.cols,
+    rows: size.rows,
+    bufferMode: env.bufferMode,
+    visible: effective,
+    trayRows,
+    composerRows: COMPOSER_ROWS,
+    treeRows: treeWanted,
+    worktreeRows: worktreeData.length + 1
+  })
+  const panes = plan.panes.filter((p) => effective[p.pane])
 
   const setFocus = useCallback((t: FocusTarget) => setFocusState(t), [])
 
@@ -504,6 +570,32 @@ export function App(props: AppProps) {
     }
   }, [state, launch, label, cards.length, doExit, notify, session])
 
+  // ---------- Org tree actions (F1, F5) ----------
+
+  const toggleFold = (): void => {
+    setFoldOn((on) => !on)
+    notify(foldOn ? 'Showing every agent.' : 'Finished agents are folded into "N done" rows.')
+  }
+  const expandGroup = (row: { groupKey?: string; members?: string[] }): void => {
+    const key = row.groupKey
+    if (!key) return
+    setExpandedGroups((e) => ({ ...e, [key]: now() }))
+    const first = row.members?.[0]
+    if (first) setSelectedAgent(first)
+  }
+  const collapseGroup = (row: { id: string }): void => {
+    const key = collapseTarget(treeRows, row.id, expandedGroups)
+    if (key === undefined) return
+    setExpandedGroups(({ [key]: _gone, ...rest }) => rest)
+    setSelectedAgent(row.id)
+  }
+  const focusAgentCard = (row: { id: string }): void => {
+    const key = cardsByAgent(state)[row.id]?.[0]
+    if (!key) return
+    setTrayFocusKey(key)
+    setFocusState('tray')
+  }
+
   // ---------- Slash commands ----------
 
   // A /stop from this TUI ends an exitWhenEnded session on purpose (exit 0, not 130).
@@ -525,7 +617,11 @@ export function App(props: AppProps) {
     state: () => session.getState(),
     notify,
     setFocus,
-    togglePane: (p) => setVisible((v) => ({ ...v, [p]: !v[p] })),
+    togglePane: (p) => {
+      if (p === 'plan' || p === 'worktrees') setUserPanes((u) => ({ ...u, [p]: !effectiveRef.current[p] }))
+      else setVisible((v) => ({ ...v, [p]: !v[p] }))
+    },
+    toggleFold: () => toggleFold(),
     newRun: async ({ prompt, team }) => {
       session.setComposeTarget('new')
       if (prompt && prompt.trim()) {
@@ -557,6 +653,7 @@ export function App(props: AppProps) {
     setFocusState(r[(i < 0 ? 0 : i + dir + r.length) % r.length])
   }
   const focusTray = (): void => {
+    setTrayFocusKey(undefined)
     if (cards.length) setFocusState('tray')
     else notify(NOTHING_NEEDS_YOU)
   }
@@ -677,17 +774,34 @@ export function App(props: AppProps) {
     const common = { width: box.width, height: box.height, focused: focus === box.pane }
     switch (box.pane) {
       case 'tree':
-        return <OrgTreePane key="tree" {...common} rows={orgTreeRows(state)} selectedId={selectedAgent} onSelect={setSelectedAgent} />
+        return (
+          <OrgTreePane
+            key="tree"
+            {...common}
+            rows={treeRows}
+            {...(selectedRow ? { selectedId: selectedRow } : {})}
+            onSelect={setSelectedAgent}
+            onExpand={expandGroup}
+            onCollapse={collapseGroup}
+            onToggleFold={toggleFold}
+            onFocusCard={focusAgentCard}
+            // Enter on an agent row with no card: the inspector hooks in here (not built yet).
+            onActivate={() => undefined}
+            onNotice={(text) => notify(text)}
+            folded={foldOn}
+            {...(!effective.plan && planData && planData.total > 0 ? { planChip: `Plan ${planData.done}/${planData.total}` } : {})}
+          />
+        )
       case 'transcript':
         return <TranscriptPane key="transcript" {...common} mode={env.bufferMode} rows={transcript.rows} partials={partialRows(state)} omitted={transcript.omitted} />
       case 'plan':
-        return <PlanPane key="plan" {...common} plan={planView(state)} />
+        return <PlanPane key="plan" {...common} plan={planData} />
       case 'worktrees':
         return (
           <WorktreesPane
             key="worktrees"
             {...common}
-            rows={worktreeRows(state)}
+            rows={worktreeData}
             onViewDiff={(row) => {
               session
                 .worktreeDiff(row.branch)
@@ -710,8 +824,12 @@ export function App(props: AppProps) {
         resolved={state.resolved}
         onDecide={(_card, call) => session.decide(call)}
         onViewText={openText}
-        onLeave={() => setFocusState('composer')}
+        onLeave={() => {
+          setTrayFocusKey(undefined)
+          setFocusState('composer')
+        }}
         now={now}
+        {...(trayFocusKey ? { focusKey: trayFocusKey } : {})}
       />
     ) : null
 

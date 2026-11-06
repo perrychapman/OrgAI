@@ -165,6 +165,25 @@ export interface OrgTreeRow {
   /** An agent of an earlier chain member. */
   earlier?: boolean
   worktree?: { branch: string; status: WorktreeStatus }
+  // ---- Fold (F1) and row facts (F2, F5, F10); every field optional so plain rows stay valid ----
+  /** 'group' is a folded "N done" row (default 'agent'). */
+  kind?: 'agent' | 'group'
+  /** The role name adds nothing beside the label (false: drop it from the row). Default true. */
+  roleShown?: boolean
+  /** Row id of the visible parent (agent rows). */
+  parentId?: string
+  /** Group: how many agents it folds, and how many of those failed. */
+  count?: number
+  failed?: number
+  /** Group: the key `expanded` uses (a visible agent's id, or an earlier-session key) and the folded agent ids (direct reports first). */
+  groupKey?: string
+  members?: string[]
+  /** Agent row of an earlier session: the key of its session group (to fold it back). */
+  earlierKey?: string
+  /** Open decision cards of this agent. */
+  waiting?: number
+  /** Worktree chip text ("2f", "review", "conflict", "held"). */
+  worktreeChip?: string
 }
 
 export type TranscriptRowKind = 'user' | 'text' | 'thinking' | 'tool' | 'result' | 'system' | 'harness' | 'divider' | 'error' | 'log'
@@ -257,6 +276,9 @@ export type TrayCard = {
   projectKind?: ProjectKind
   /** Arrival order (TuiState.cardSeq at arrival). */
   arrivedSeq: number
+  /** The agent the card is about (every card kind carries one) and its sanitized label. */
+  agentId?: string
+  agentLabel?: string
 } & (
   | { kind: 'permission'; card: PermissionRequest }
   | { kind: 'rules'; card: PermissionRuleRequest }
@@ -391,6 +413,10 @@ export interface LayoutInput {
   visible: Record<PaneId, boolean>
   trayRows: number
   composerRows: number
+  /** Rows the tree would like (title, rows, footer line); the stacked layout gives it that much up to half the body. */
+  treeRows?: number
+  /** Rows the worktrees pane would like (split layout: it takes no more than that). */
+  worktreeRows?: number
 }
 
 export interface PaneBox {
@@ -434,6 +460,22 @@ export interface OrgTreePaneProps extends PaneProps {
   rows: OrgTreeRow[]
   selectedId?: string
   onSelect?(id: string): void
+  /** Right / Enter on a folded group. */
+  onExpand?(row: OrgTreeRow): void
+  /** Left: fold back the group the row (or its nearest expanded ancestor) opened. */
+  onCollapse?(row: OrgTreeRow): void
+  /** `h`: Hide finished agents on / off. */
+  onToggleFold?(): void
+  /** Whether finished agents are folded (hint text). */
+  folded?: boolean
+  /** Enter on a row whose agent has an open card: focus the tray on that agent's card. */
+  onFocusCard?(row: OrgTreeRow): void
+  /** Enter on any other agent row (hook for the inspector; a no-op until it exists). */
+  onActivate?(row: OrgTreeRow): void
+  /** A one-line notice (nothing to jump to ...). */
+  onNotice?(text: string): void
+  /** "Plan 2/5" while the plan pane is hidden. */
+  planChip?: string
 }
 
 export interface TranscriptPaneProps extends PaneProps {
@@ -469,6 +511,8 @@ export interface DecisionTrayProps {
   onViewText(title: string, text: string): Promise<void>
   onLeave(): void
   now?: () => number
+  /** Card key to show first (Enter on an agent row): the tray shows that card on top while it is open. */
+  focusKey?: string
 }
 
 export type ComposerMode = 'start' | 'send' | 'continue' | 'quick' | 'readOnly'
@@ -490,6 +534,8 @@ export interface SlashContext {
   notify(text: string, tone?: Tone): void
   setFocus(t: FocusTarget): void
   togglePane(p: PaneId): void
+  /** Hide finished agents on / off (optional: older test contexts lack it). */
+  toggleFold?(): void
   newRun(opts: { prompt?: string; team?: RunTeam }): Promise<void>
   switchRun(ref: string): Promise<void>
   confirm(question: string): Promise<boolean>

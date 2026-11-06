@@ -202,6 +202,16 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
     run: (ctx) => guarded(ctx, () => ctx.togglePane('tree'))
   },
   {
+    name: 'fold',
+    aliases: ['finished'],
+    summary: 'Fold finished agents into "N done" rows, or show every agent',
+    run: (ctx) =>
+      guarded(ctx, () => {
+        if (ctx.toggleFold) ctx.toggleFold()
+        else ctx.notify('Folding is not available here.', 'warn')
+      })
+  },
+  {
     name: 'plan',
     summary: 'Show or hide the plan',
     run: (ctx) => guarded(ctx, () => ctx.togglePane('plan'))

@@ -6,7 +6,7 @@
 import { RUN_KIND_LABELS, type AgentInstance, type ImageAttachment, type PendingCards, type ProjectKind, type RunPlan, type RunRecord, type RunSummary, type TranscriptEntry } from '../shared/types'
 import { costView, formatTokens, runCostInput, agentCostInput } from '../shared/view/cost'
 import { formatDateTime } from '../shared/view/dates'
-import { HIDDEN_OR_CONTROL_RUN } from '../shared/view/hiddenChars'
+import { AGENT_LABEL_MAX, agentLabel as sharedAgentLabel } from '../shared/view/agentTree'
 import { waitingItems, type WaitingItem } from '../shared/view/needsYou'
 import { runName } from '../shared/view/runLabels'
 import { runStatus, settleEndedAgents, statusOfRun, statusText, type RunStatusView } from '../shared/view/runStatus'
@@ -59,15 +59,13 @@ export function statusWordOfSummary(s: RunSummary): string {
 
 // ---------- Agents ----------
 
-const UNSAFE_HANDLE = new RegExp(HIDDEN_OR_CONTROL_RUN.source, 'u')
-const AGENT_LABEL_MAX = 64
-
-/** How the app names an agent: its handle (when clean), else its role name; sanitized, one line. */
+/**
+ * How the app names an agent. The rule (handle when clean, else the role name, cut at AGENT_LABEL_MAX) is the shared
+ * view-model's `agentLabel`; this wrapper only makes it terminal-safe (sanitized, one line) and names a missing agent.
+ */
 export function agentLabel(a: Pick<AgentInstance, 'name' | 'handle'> | undefined): string {
   if (!a) return 'An agent'
-  const h = a.handle?.trim()
-  const pick = h && !UNSAFE_HANDLE.test(h) ? h : a.name
-  const text = safeLine(pick) || 'An agent'
+  const text = safeLine(sharedAgentLabel(a)) || 'An agent'
   const cs = [...text]
   return cs.length > AGENT_LABEL_MAX ? `${cs.slice(0, AGENT_LABEL_MAX - 1).join('')}…` : text
 }
