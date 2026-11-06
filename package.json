@@ -31,7 +31,8 @@
     "test:scripts": "node --test scripts/pack-local.test.mjs scripts/verify-pack.test.mjs",
     "test:watch": "vitest",
     "e2e:free": "node e2e/layout.mjs && node e2e/dashboard.mjs && node e2e/runs.mjs && node e2e/proposals.mjs && node e2e/maintenance.mjs && node e2e/connections.mjs && node e2e/connectors.mjs && node e2e/import.mjs && node e2e/skills.mjs && node e2e/usage.mjs && node e2e/team.mjs && node e2e/canvas.mjs && node e2e/assistants.mjs && node e2e/permissions.mjs && node e2e/menu.mjs && node e2e/engagement.mjs && node e2e/engagement2.mjs && node e2e/per-project.mjs && node e2e/presets.mjs && node e2e/knowledge.mjs && node e2e/knowledge-graph.mjs && node e2e/knowledge-run.mjs && node e2e/clone-start.mjs && node e2e/team-files.mjs && node e2e/folder-trust.mjs && node e2e/cli-host.mjs && node e2e/cli-readonly.mjs && node e2e/cli-exec.mjs && node e2e/cli-tui.mjs && node e2e/cli-projects.mjs && node e2e/cli-org.mjs && node e2e/cli-connections.mjs && node e2e/cli-mcp.mjs && node e2e/cli-skills-kit.mjs",
-    "check": "npm run typecheck && npm test && npm run build && npm run e2e:free"
+    "check": "npm run typecheck && npm test && npm run build && npm run e2e:free",
+    "media:readme": "node scripts/readme-media.mjs"
   },
   "engines": {
     "node": ">=22"
@@ -44,6 +45,7 @@
     "electron": "45.1.0",
     "electron-builder": "^26.0.12",
     "electron-vite": "6.0.0",
+    "gifenc": "1.0.3",
     "ink-testing-library": "4.0.0",
     "playwright-core": "^1.58.2",
     "typescript": "7.0.2",
