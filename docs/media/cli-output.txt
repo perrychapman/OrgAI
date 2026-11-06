@@ -1,0 +1,9 @@
+$ orgai runs list
+RUN  STATUS   NAME                   KIND  STARTED      COST
+R1   Stopped  Add a health endpoint  Run   1m ago   $0.01001
+
+$ orgai projects list
+NAME              KIND        CLIENT     FOLDER                       ID
+Acme Corp review  Engagement  Acme Corp  C:\orgai-media\acme-review   proj_mw4ek4mlrympww4m
+acme-notes        Project                C:\orgai-media\acme-notes    proj_mw4ejc4kjq2hun4g
+acme-billing      Project                C:\orgai-media\acme-billing  proj_mw4eiy8gad4zmd8j
