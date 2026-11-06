@@ -6,8 +6,10 @@ import { FakeHostClient, fakeContext } from '../testing/fakeContext'
 import { EXIT } from '../types'
 import { renderCliShim } from '../../main/host/packagedLayout'
 import { DAEMON_JSON_MAX_BYTES, PACKAGED_LAUNCHER_MARK, doctorProbes, installCheck, runDoctor, shimCheck } from './doctor'
+import { runtimeCheckProbes } from '../doctor/runtimeChecks'
 
 const realProbes = { ...doctorProbes }
+const realRuntimeProbes = { ...runtimeCheckProbes }
 let dir: string
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'orgai-doctor-'))
@@ -15,9 +17,14 @@ beforeEach(() => {
   doctorProbes.nodeVersion = () => '22.11.0'
   // Never read the real home folder's shim.
   doctorProbes.homeDir = () => dir
+  // Never look for or run a real claude / codex (runtimeChecks.test.ts covers the group).
+  runtimeCheckProbes.claude = () => ({ ok: true, path: '/fake/claude', source: 'sdk' })
+  runtimeCheckProbes.codexLookup = () => ({ binary: { path: '/fake/codex', source: 'package' } })
+  runtimeCheckProbes.codexCheck = async (binary) => ({ ok: true, binary, version: '0.166.0' })
 })
 afterEach(() => {
   Object.assign(doctorProbes, realProbes)
+  Object.assign(runtimeCheckProbes, realRuntimeProbes)
   rmSync(dir, { recursive: true, force: true })
 })
 
@@ -41,7 +48,7 @@ describe('orgai doctor', () => {
     const j = JSON.parse(f.out())
     expect(j.ok).toBe(true)
     const ids = j.checks.map((c: { id: string }) => c.id)
-    expect(ids).toEqual(['node', 'install', 'data-dir', 'run-dir', 'daemon-json', 'socket', 'terminal-access', 'version', 'launcher', 'shim', 'git', 'mock', 'auth', 'connections'])
+    expect(ids).toEqual(['node', 'install', 'data-dir', 'run-dir', 'daemon-json', 'socket', 'terminal-access', 'version', 'launcher', 'shim', 'git', 'mock', 'claude-runtime', 'codex-runtime', 'auth', 'connections'])
     expect(j.checks.every((c: { status: string }) => c.status !== 'fail')).toBe(true)
     expect(j.checks.find((c: { id: string }) => c.id === 'connections').detail).toBe('Anthropic connected (default)')
     expect(f.out()).not.toContain('sk-secret')

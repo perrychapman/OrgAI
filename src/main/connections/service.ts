@@ -30,6 +30,7 @@ import type {
   UsageStatus
 } from '@shared/types'
 import { CodexAppServer, codexHomeDir } from '../runtime/codexAppServer'
+import { checkCodexRuntime, type CodexRuntimeCheck } from '../runtime/codexBinary'
 import { listModelPrices, sanitizeModelPrice } from '../runtime/pricing'
 import type { ProjectStore } from '../store/projects'
 import { LITELLM_KEY, type SecretStore } from '../store/secrets'
@@ -54,6 +55,11 @@ export interface ConnectionServiceDeps {
   fetch?: typeof fetch
   /** Create the (not yet started) Codex app-server client. Default: a CodexAppServer with OrgAI's CODEX_HOME. */
   codexFactory?: () => CodexAppServer
+  /**
+   * Where Codex is and whether its version is supported (cli-standalone 6.2), checked by the OpenAI probe for every
+   * auth kind. Default: codexBinary.ts checkCodexRuntime (a file-system lookup plus a cached `codex --version`).
+   */
+  codexRuntime?: () => Promise<CodexRuntimeCheck>
   now?: () => number
   /** Info-level log line (default console.info; index.ts passes the main log). */
   logInfo?: (message: string) => void
@@ -501,18 +507,23 @@ export class ConnectionService {
   private async probeOpenAI(): Promise<ConnectionStatus> {
     const auth = this.deps.settings.get().connections.openai.auth
     const checkedAt = this.now()
+    // Every auth kind runs through the Codex CLI: no supported Codex is an error (never a definite disconnect, which
+    // would move an automatic default connection), so the probe and runs agree (cli-standalone 6.2).
+    const runtime = await (this.deps.codexRuntime ?? (() => checkCodexRuntime()))()
+    if (!runtime.ok) return { state: 'error', detail: runtime.reason, checkedAt }
+    const note = runtime.warning ? ` ${runtime.warning}` : ''
     if (auth.kind === 'apiKey') {
       return this.env(auth.envVar)
-        ? { state: 'connected', detail: `Using ${auth.envVar}`, checkedAt }
+        ? { state: 'connected', detail: `Using ${auth.envVar}${note ? `.${note}` : ''}`, checkedAt }
         : { state: 'disconnected', detail: `${auth.envVar} is not set in OrgAI's environment`, checkedAt }
     }
     const state = await this.withCodex((rpc) => readAccount(rpc))
     const a = state.account
     if (a?.type === 'chatgpt') {
       const account = [a.email, a.planType].filter(Boolean).join(' · ') || 'ChatGPT'
-      return { state: 'connected', detail: 'Signed in with ChatGPT', account, checkedAt }
+      return { state: 'connected', detail: `Signed in with ChatGPT${note ? `.${note}` : ''}`, account, checkedAt }
     }
-    if (a) return { state: 'connected', detail: 'Signed in to Codex', checkedAt }
+    if (a) return { state: 'connected', detail: `Signed in to Codex${note ? `.${note}` : ''}`, checkedAt }
     return { state: 'disconnected', detail: 'Not signed in. Sign in with ChatGPT.', checkedAt }
   }
 
