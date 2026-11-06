@@ -1,0 +1,4 @@
+{
+  "comment": "Packages of the orgai npm package's installed tree allowed to run an install script (preinstall, install, postinstall, or a binding.gyp), as name@version. Reviewed with each release (cli-standalone.md 3.1); scripts/verify-npm.mjs fails on any other. Empty means the package installs with --ignore-scripts too.",
+  "allowed": []
+}

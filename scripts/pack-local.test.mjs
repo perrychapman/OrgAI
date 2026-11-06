@@ -5,7 +5,12 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { spawn } from 'node:child_process'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { formatBuildInfo, unpackedLayout, assertInside, plan, buildSteps, childEnv, main } from './pack-local.mjs'
+import { CLEANUP_SIGNALS, withInstallInfoCleanup, writeInstallInfo } from './write-install-info.mjs'
+
+const SCRIPTS = path.dirname(fileURLToPath(import.meta.url))
 
 test('formatBuildInfo writes version, commit and ISO time', () => {
   const s = formatBuildInfo({ version: '0.1.6-dev1', commit: 'abc1234', builtAt: new Date('2026-11-03T10:00:00Z') })
@@ -86,7 +91,10 @@ test('main --dry-run lists the CLI build step and the signing env choice on darw
     const eb = out.indexOf('--dir --publish never')
     assert.ok(ev >= 0 && cli > ev && eb > cli, out)
     assert.match(out, /npm run pack:verify/)
+    assert.match(out, /Would write out[\\/]cli[\\/]install\.json: \{"channel":"app","version":"9\.9\.9"/)
+    assert.ok(out.indexOf('install.json') < eb, 'install.json is written before electron-builder')
     assert.equal(fs.existsSync(path.join(root, 'release')), false, 'a dry run writes nothing')
+    assert.equal(fs.existsSync(path.join(root, 'out')), false, 'a dry run writes no install.json')
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
   }
@@ -117,13 +125,25 @@ test('main passes the darwin child env to every build step, in order', () => {
       fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: pkg, bin: { [pkg]: bin } }))
     }
     const calls = []
+    const installInfo = path.join(root, 'out', 'cli', 'install.json')
+    let seenByBuilder
     const exec = (cmd, args, opts) => {
       calls.push({ cmd, args, env: opts.env })
-      // The last step "builds" the app so the marker check passes.
-      if (args.includes('--dir')) fs.mkdirSync(path.join(root, 'release', 'mac-arm64', 'OrgAI.app'), { recursive: true })
+      // The CLI step "builds" out/cli; the last step "builds" the app so the marker check passes.
+      if (args.includes('vite.cli.config.ts')) {
+        fs.mkdirSync(path.dirname(installInfo), { recursive: true })
+        fs.writeFileSync(path.join(root, 'out', 'cli', 'orgai.mjs'), '')
+      }
+      if (args.includes('--dir')) {
+        seenByBuilder = JSON.parse(fs.readFileSync(installInfo, 'utf8'))
+        fs.mkdirSync(path.join(root, 'release', 'mac-arm64', 'OrgAI.app'), { recursive: true })
+      }
     }
     const lines = []
     main([], root, (l) => lines.push(l), { platform: 'darwin', env: { HOME: '/h' }, exec })
+    assert.equal(seenByBuilder.channel, 'app', 'electron-builder packs install.json with channel app')
+    assert.equal(seenByBuilder.version, '9.9.9')
+    assert.equal(fs.existsSync(installInfo), false, 'install.json is removed after the pack (the checkout reads as dev)')
     assert.equal(calls.length, 3)
     assert.ok(calls[0].args[0].endsWith(path.join('electron-vite', 'bin', 'ev.js')))
     assert.ok(calls[1].args[0].endsWith(path.join('vite', 'bin', 'vite.js')))
@@ -137,5 +157,137 @@ test('main passes the darwin child env to every build step, in order', () => {
     assert.equal(lines.at(-1), 'Check it with npm run pack:verify')
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+/** A process stand-in: listeners per signal, and the kills asked for. */
+function fakeProc() {
+  const listeners = new Map()
+  const kills = []
+  return {
+    pid: 4242,
+    kills,
+    on: (sig, l) => listeners.set(sig, [...(listeners.get(sig) ?? []), l]),
+    removeListener: (sig, l) => listeners.set(sig, (listeners.get(sig) ?? []).filter((x) => x !== l)),
+    emit: (sig) => (listeners.get(sig) ?? []).slice().forEach((l) => l()),
+    count: () => [...listeners.values()].reduce((n, ls) => n + ls.length, 0),
+    kill: (pid, sig) => kills.push([pid, sig])
+  }
+}
+
+test('withInstallInfoCleanup removes install.json on SIGINT / SIGTERM / SIGHUP and re-raises; no listener is left', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orgai-pack-sig-'))
+  try {
+    fs.writeFileSync(path.join(dir, 'orgai.mjs'), '')
+    for (const sig of CLEANUP_SIGNALS) {
+      const proc = fakeProc()
+      withInstallInfoCleanup(
+        dir,
+        () => {
+          writeInstallInfo(dir, { channel: 'app', version: '9.9.9' })
+          assert.equal(proc.count(), 3)
+          proc.emit(sig)
+          assert.equal(fs.existsSync(path.join(dir, 'install.json')), false, `${sig} removes it at once`)
+          assert.equal(proc.count(), 0, 'the listeners are dropped before the re-raise')
+        },
+        proc
+      )
+      assert.deepEqual(proc.kills, [[4242, sig]])
+    }
+    // a normal end and a throw both remove it and leave no listener
+    const proc = fakeProc()
+    assert.throws(() =>
+      withInstallInfoCleanup(
+        dir,
+        () => {
+          writeInstallInfo(dir, { channel: 'app', version: '9.9.9' })
+          throw new Error('builder failed')
+        },
+        proc
+      )
+    )
+    assert.equal(fs.existsSync(path.join(dir, 'install.json')), false)
+    assert.equal(proc.count(), 0)
+    assert.deepEqual(proc.kills, [])
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('main: a signal during electron-builder still removes install.json (pack-local)', () => {
+  const root = fakeRoot()
+  try {
+    for (const [pkg, bin] of [
+      ['electron-vite', 'bin/ev.js'],
+      ['vite', 'bin/vite.js'],
+      ['electron-builder', 'cli.js']
+    ]) {
+      const dir = path.join(root, 'node_modules', pkg)
+      fs.mkdirSync(dir, { recursive: true })
+      fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: pkg, bin: { [pkg]: bin } }))
+    }
+    const installInfo = path.join(root, 'out', 'cli', 'install.json')
+    const proc = fakeProc()
+    const exec = (cmd, args) => {
+      if (args.includes('vite.cli.config.ts')) {
+        fs.mkdirSync(path.dirname(installInfo), { recursive: true })
+        fs.writeFileSync(path.join(root, 'out', 'cli', 'orgai.mjs'), '')
+      }
+      if (args.includes('--dir')) {
+        assert.equal(fs.existsSync(installInfo), true)
+        proc.emit('SIGINT')
+        throw new Error('electron-builder was interrupted')
+      }
+    }
+    assert.throws(() => main([], root, () => {}, { platform: 'darwin', env: {}, exec, signalTarget: proc }), /interrupted/)
+    assert.equal(fs.existsSync(installInfo), false)
+    assert.deepEqual(proc.kills, [[4242, 'SIGINT']])
+    assert.equal(proc.count(), 0)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('withInstallInfoCleanup: a real signal to the process group during a synchronous child removes install.json', { skip: process.platform === 'win32' && 'POSIX process groups only' }, async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orgai-pack-ctrlc-'))
+  try {
+    const cli = path.join(dir, 'cli')
+    fs.mkdirSync(cli)
+    fs.writeFileSync(path.join(cli, 'orgai.mjs'), '')
+    const mod = pathToFileURL(path.join(SCRIPTS, 'write-install-info.mjs')).href
+    const script = path.join(dir, 'run.mjs')
+    fs.writeFileSync(
+      script,
+      [
+        "import { execFileSync } from 'node:child_process'",
+        `import { withInstallInfoCleanup, writeInstallInfo } from ${JSON.stringify(mod)}`,
+        `const cli = ${JSON.stringify(cli)}`,
+        'withInstallInfoCleanup(cli, () => {',
+        "  writeInstallInfo(cli, { channel: 'app', version: '9.9.9' })",
+        // the child says ready, so the signal surely lands while execFileSync blocks on it
+        "  execFileSync(process.execPath, ['-e', \"process.stdout.write('ready\\\\n'); setTimeout(() => {}, 20000)\"], { stdio: 'inherit' })",
+        '})'
+      ].join('\n')
+    )
+    const child = spawn(process.execPath, [script], { detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
+    await new Promise((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error('the script never got ready')), 10_000)
+      child.stdout.on('data', (b) => {
+        if (String(b).includes('ready')) {
+          clearTimeout(t)
+          resolve()
+        }
+      })
+    })
+    assert.equal(fs.existsSync(path.join(cli, 'install.json')), true)
+    // A terminal's Ctrl+C sends SIGINT to the whole foreground group; SIGTERM to the group is the same path (a CI
+    // cancel, `kill -TERM -<pgid>`). SIGTERM here because a test runner started without a terminal may hand its
+    // children an ignored SIGINT, which would make this test pass with no listener at all.
+    process.kill(-child.pid, 'SIGTERM')
+    const ended = await new Promise((resolve) => child.on('exit', (code, signal) => resolve({ code, signal })))
+    assert.ok(ended.code !== 0 || ended.signal, `the script did not end normally: ${JSON.stringify(ended)}`)
+    assert.equal(fs.existsSync(path.join(cli, 'install.json')), false, 'install.json was left behind')
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
   }
 })

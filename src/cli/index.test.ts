@@ -96,7 +96,7 @@ describe('orgai routing', () => {
   })
 
   it('prints the version', async () => {
-    for (const v of ['--version', '-V', 'version']) expect(await run([v])).toMatchObject({ code: 0, out: `${CLI_VERSION}\n` })
+    for (const v of ['--version', '-V', 'version']) expect(await run([v])).toMatchObject({ code: 0, out: `${CLI_VERSION} channel dev\n` })
   })
 
   it('prints help and command help; a bare orgai goes to the terminal UI (which prints help without a terminal)', async () => {

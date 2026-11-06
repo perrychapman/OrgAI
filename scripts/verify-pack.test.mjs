@@ -6,6 +6,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { bareImports, isNodeBuiltin, packageOf, packagedPaths } from './lib/packLayout.mjs'
+import { globalLayout } from './lib/npmPackage.mjs'
 import {
   checkDoctorReport,
   cleanupDaemon,
@@ -16,8 +17,12 @@ import {
   missingPackages,
   parseArgs,
   stopRefusal,
+  statusHostKind,
+  hostWasStopped,
   verifyEnv,
-  versionMatches
+  versionMatches,
+  versionChannelMatches,
+  appInstallInfoProblem
 } from './verify-pack.mjs'
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')), '..')
@@ -115,6 +120,9 @@ test('packageOf and isNodeBuiltin', () => {
 
 test('parseArgs', () => {
   assert.deepEqual(parseArgs([]), { release: undefined, skipHost: false })
+  assert.deepEqual(parseArgs(['--npm']), { release: undefined, skipHost: false, npmTarball: true })
+  assert.deepEqual(parseArgs(['--npm-tarball', 'a.tgz', '--npm']), { release: undefined, skipHost: false, npmTarball: 'a.tgz' })
+  assert.throws(() => parseArgs(['--npm-tarball']), /needs a file/)
   assert.deepEqual(parseArgs(['--release', 'x', '--skip-host']), { release: 'x', skipHost: true })
   assert.deepEqual(parseArgs(['--release=y']), { release: 'y', skipHost: false })
   assert.throws(() => parseArgs(['--release']), /needs a folder/)
@@ -267,6 +275,7 @@ function fakeRelease(unpacked) {
   fs.writeFileSync(path.join(p.cliBundleDir, 'orgai.mjs'), "import fs from 'node:fs'\nconst h = () => import('./inprocHost.mjs')\n")
   fs.writeFileSync(path.join(p.cliBundleDir, 'inprocHost.mjs'), "import { query } from '@anthropic-ai/claude-agent-sdk'\nimport { z } from 'zod'\n")
   fs.writeFileSync(path.join(p.cliBundleDir, 'tui.mjs'), "import path from 'node:path'\n")
+  fs.writeFileSync(path.join(p.cliBundleDir, 'install.json'), JSON.stringify({ channel: 'app', version: VERSION, commit: '0123456789ab' }))
   for (const pkg of unpacked) {
     const dir = path.join(p.resourcesDir, 'app.asar.unpacked', 'node_modules', ...pkg.split('/'))
     fs.mkdirSync(dir, { recursive: true })
@@ -280,13 +289,21 @@ function fakeRunner(calls, overrides = {}) {
   return async (cmd) => {
     calls.push(cmd)
     const a = cmd.args
-    if (a.includes('--version')) return { code: 0, stdout: `${VERSION}\n`, stderr: '' }
+    if (a.includes('--version')) return overrides.version ?? { code: 0, stdout: `${VERSION} channel app commit 0123456789ab\n`, stderr: '' }
     if (a.includes('doctor')) return { code: 0, stdout: overrides.doctor ?? doctorDoc(), stderr: '' }
     if (a.includes('exec')) {
       const inproc = a.includes('inproc')
       return overrides[inproc ? 'inproc' : 'host'] ?? { code: 0, stdout: JSON.stringify({ outcome: 'completed', exitCode: 0 }), stderr: '' }
     }
-    if (a.includes('daemon')) return { code: 0, stdout: '', stderr: '' }
+    if (a.includes('daemon') && a.includes('status')) return overrides.status ?? { code: 0, stdout: JSON.stringify({ running: true, status: { hostKind: 'headless-host', state: 'ready' } }), stderr: '' }
+    if (a.includes('daemon')) return overrides.stop ?? { code: 0, stdout: JSON.stringify({ stopped: true, hostInstanceId: 'abc123abc123' }), stderr: '' }
+    if (a.includes('install') && a.includes('--prefix')) {
+      if (overrides.npmInstall) return overrides.npmInstall
+      const bin = globalLayout(process.platform, a[a.indexOf('--prefix') + 1]).bin
+      fs.mkdirSync(path.dirname(bin), { recursive: true })
+      fs.writeFileSync(bin, '')
+      return { code: 0, stdout: '', stderr: '' }
+    }
     return { code: 9, stdout: '', stderr: 'unexpected command' }
   }
 }
@@ -318,10 +335,10 @@ test('main: a complete fake release passes every check and cleans its temp dirs'
   try {
     const r = await runMain(fake, [])
     assert.equal(r.code, 0, r.out)
-    for (const id of ['(a)', '(b)', '(c)', '(d)', '(e)', '(f) exec host', '(f) daemon stop']) assert.match(r.out, new RegExp(`ok +${id.replace(/[()]/g, '\\$&')}`), id)
+    for (const id of ['(a)', '(b)', '(c)', '(d)', '(e)', '(f) exec host', '(f) host kind', '(f) daemon stop']) assert.match(r.out, new RegExp(`ok +${id.replace(/[()]/g, '\\$&')}`), id)
     assert.match(r.out, /All checks passed/)
     assert.deepEqual(r.leftovers, [], 'temp dirs removed')
-    assert.equal(r.calls.length, 5)
+    assert.equal(r.calls.length, 6)
     for (const c of r.calls) {
       assert.equal(c.env.ORGAI_MOCK, '1')
       assert.equal(c.env.NO_COLOR, '1')
@@ -384,6 +401,110 @@ test('main: a wrong outcome, a dev launcher in doctor and a missing launcher eac
     assert.match(gone.out, /fail +\(a\) files {2}launcher missing/)
     assert.match(gone.out, /fail +\(c\) --version {2}skipped/)
     assert.equal(gone.calls.length, 0)
+  } finally {
+    fs.rmSync(fake.base, { recursive: true, force: true })
+  }
+})
+
+test('main --npm-tarball: the npm orgai drives the packed app (g), with ORGAI_ELECTRON_PATH at the app binary', async () => {
+  const fake = fakeRelease(['@anthropic-ai/claude-agent-sdk', 'zod'])
+  try {
+    const tgz = path.join(fake.base, 'orgai-1.0.0.tgz')
+    fs.writeFileSync(tgz, 'not really a tarball')
+    const r = await runMain(fake, ['--npm-tarball', tgz])
+    assert.equal(r.code, 0, r.out)
+    assert.match(r.out, /ok +\(g\) npm exec host/)
+    assert.match(r.out, /ok +\(g\) npm host kind/)
+    assert.match(r.out, /ok +\(g\) npm daemon stop/)
+    const install = r.calls.find((c) => c.args.includes('install'))
+    assert.ok(install.args.includes(tgz))
+    const npmExec = r.calls.filter((c) => c.env?.ORGAI_ELECTRON_PATH)
+    assert.equal(npmExec.length, 3, 'exec, daemon status and daemon stop')
+    assert.equal(npmExec[0].env.ORGAI_ELECTRON_PATH, fake.paths.appBinary)
+    assert.ok(npmExec[0].args.includes('auto') && npmExec[0].args.includes('exec'))
+    assert.ok(npmExec[0].env.ORGAI_DATA_DIR.includes('orgai-verify-npmcli-'), 'its own data folder')
+    assert.deepEqual(r.leftovers, [], 'temp dirs removed')
+
+    const failed = await runMain(fake, ['--skip-host', '--npm-tarball', tgz], { npmInstall: { code: 1, stdout: '', stderr: 'E404' } })
+    assert.equal(failed.code, 1)
+    assert.match(failed.out, /fail +\(g\) npm exec host {2}npm install -g failed: exit 1; stderr: E404/)
+    const missing = await runMain(fake, ['--skip-host', '--npm-tarball', path.join(fake.base, 'nope.tgz')])
+    assert.match(missing.out, /fail +\(g\) npm exec host {2}no npm tarball/)
+  } finally {
+    fs.rmSync(fake.base, { recursive: true, force: true })
+  }
+})
+
+test('main --npm-tarball: (g) fails when no background host ran, even though exec and stop exit 0', async () => {
+  const fake = fakeRelease(['@anthropic-ai/claude-agent-sdk', 'zod'])
+  try {
+    const tgz = path.join(fake.base, 'orgai-1.0.0.tgz')
+    fs.writeFileSync(tgz, 'not really a tarball')
+    // exec ran in-process (a --host auto fallback): no host answers status, and stop exits 0 with nothing stopped
+    const none = {
+      status: { code: 1, stdout: JSON.stringify({ running: false, reason: 'no_host', daemon: null }), stderr: '' },
+      stop: { code: 0, stdout: JSON.stringify({ stopped: false, running: false }), stderr: '' }
+    }
+    const r = await runMain(fake, ['--skip-host', '--npm-tarball', tgz], none)
+    assert.equal(r.code, 1, r.out)
+    assert.match(r.out, /ok +\(g\) npm exec host/)
+    assert.match(r.out, /fail +\(g\) npm host kind {2}expected a running headless-host host, got none/)
+    assert.match(r.out, /fail +\(g\) npm daemon stop {2}exit 0 but no host was stopped/)
+    // the same in (f)
+    const f = await runMain(fake, [], none)
+    assert.equal(f.code, 1)
+    assert.match(f.out, /fail +\(f\) daemon stop {2}exit 0 but no host was stopped/)
+    // a host of the wrong kind (an in-process host answering) fails the kind check alone
+    const inproc = await runMain(fake, ['--skip-host', '--npm-tarball', tgz], {
+      status: { code: 0, stdout: JSON.stringify({ running: true, status: { hostKind: 'inproc' } }), stderr: '' }
+    })
+    assert.match(inproc.out, /fail +\(g\) npm host kind {2}expected a running headless-host host, got inproc/)
+    assert.match(inproc.out, /ok +\(g\) npm daemon stop/)
+  } finally {
+    fs.rmSync(fake.base, { recursive: true, force: true })
+  }
+})
+
+test('statusHostKind and hostWasStopped read the daemon JSON documents', () => {
+  assert.equal(statusHostKind(JSON.stringify({ running: true, status: { hostKind: 'headless-host' } })), 'headless-host')
+  assert.equal(statusHostKind(JSON.stringify({ running: false, daemon: { hostKind: 'headless-host' } })), undefined)
+  assert.equal(statusHostKind('No OrgAI host is running.'), undefined)
+  assert.equal(statusHostKind(JSON.stringify({ running: true })), undefined)
+  assert.equal(hostWasStopped(JSON.stringify({ stopped: true, hostInstanceId: 'x' })), true)
+  assert.equal(hostWasStopped(JSON.stringify({ stopped: false, running: false })), false)
+  assert.equal(hostWasStopped('OrgAI host stopped.'), false)
+  assert.equal(hostWasStopped(''), false)
+})
+
+test('versionChannelMatches and appInstallInfoProblem', () => {
+  assert.equal(versionChannelMatches('0.1.7 channel app commit abc\n', '0.1.7'), true)
+  assert.equal(versionChannelMatches('0.1.7 channel dev', '0.1.7'), false)
+  assert.equal(versionChannelMatches('0.1.7 channel application', '0.1.7'), false)
+  assert.equal(versionChannelMatches('0.1.6 channel app', '0.1.7'), false)
+  const dir = tempDir('info')
+  try {
+    assert.match(appInstallInfoProblem(dir, '0.1.7'), /install\.json missing/)
+    fs.writeFileSync(path.join(dir, 'install.json'), '{nope')
+    assert.match(appInstallInfoProblem(dir, '0.1.7'), /not valid JSON/)
+    fs.writeFileSync(path.join(dir, 'install.json'), JSON.stringify({ channel: 'npm', version: '0.1.7' }))
+    assert.match(appInstallInfoProblem(dir, '0.1.7'), /channel "npm", expected "app"/)
+    fs.writeFileSync(path.join(dir, 'install.json'), JSON.stringify({ channel: 'app', version: '0.1.6' }))
+    assert.match(appInstallInfoProblem(dir, '0.1.7'), /version "0\.1\.6", expected 0\.1\.7/)
+    fs.writeFileSync(path.join(dir, 'install.json'), JSON.stringify({ channel: 'app', version: '0.1.7' }))
+    assert.equal(appInstallInfoProblem(dir, '0.1.7'), undefined)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('main: a pack without install.json fails (a), and a --version without channel app fails (c)', async () => {
+  const fake = fakeRelease(['@anthropic-ai/claude-agent-sdk', 'zod'])
+  try {
+    fs.rmSync(path.join(fake.paths.cliBundleDir, 'install.json'))
+    const r = await runMain(fake, ['--skip-host'], { version: { code: 0, stdout: `${VERSION} channel dev\n`, stderr: '' } })
+    assert.equal(r.code, 1)
+    assert.match(r.out, /fail +\(a\) files {2}out\/cli\/install\.json missing/)
+    assert.match(r.out, /fail +\(c\) --version {2}expected .* channel app/)
   } finally {
     fs.rmSync(fake.base, { recursive: true, force: true })
   }

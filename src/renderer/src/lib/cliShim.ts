@@ -59,28 +59,72 @@ function pathHint(binDir: string, platform: string): string {
   return `${binDir} is not on your PATH. Add this line to your shell profile: export PATH="${binDir}:$PATH"`
 }
 
+/** A version as shown: a short printable token, else nothing. */
+function shownVersion(v: string | undefined): string {
+  const t = cleanShown(v)
+  return /^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}$/.test(t) ? t : ''
+}
+
+/**
+ * The sentence for another orgai on PATH (cli-standalone.md 8.2): "The orgai command from npm (0.2.0) is on your
+ * PATH." `also` after the app's own shim line.
+ */
+export function otherCliLine(other: NonNullable<CliShimStatus['otherCli']>, platform: string, home?: string, also = false): string {
+  const v = shownVersion(other.version)
+  const ver = v ? ` (${v})` : ''
+  const where = also ? 'also on your PATH' : 'on your PATH'
+  switch (other.channel) {
+    case 'npm':
+      return `The orgai command from npm${ver} is ${where}.`
+    case 'archive':
+      return `The orgai command from the portable archive${ver} is ${where}.`
+    case 'app':
+      return `The orgai command of another OrgAI app${ver} is ${where}.`
+    default:
+      return `Another orgai command${ver} is ${where}: ${displayPath(other.path, platform, home) || 'its folder unknown'}.`
+  }
+}
+
+/** True for an orgai the user installed on purpose (npm, the portable archive): the app then offers no Install (8.2). */
+export function otherCliBlocksInstall(other: NonNullable<CliShimStatus['otherCli']>): boolean {
+  return other.channel === 'npm' || other.channel === 'archive'
+}
+
 export function cliShimView(status: CliShimStatus, platform: string, home?: string): CliShimView {
   const path = displayPath(status.path, platform, home) || 'its folder'
   const binDir = displayPath(status.binDir, platform, home)
   const hint = status.onPath === false && binDir ? { pathHint: pathHint(binDir, platform) } : {}
+  // Another orgai on PATH: always named. Only an npm or archive install blocks Install / Update (8.2: the user chose
+  // that command); an unknown file, a dev checkout or another app's shim keeps the buttons (main never refuses either).
+  const other = status.otherCli && typeof status.otherCli.path === 'string' ? status.otherCli : undefined
+  const blocking = other !== undefined && otherCliBlocksInstall(other)
+  const also = other ? ` ${otherCliLine(other, platform, home, true)}` : ''
   switch (status.state) {
     case 'not-installed':
+      if (other && blocking) return { line: otherCliLine(other, platform, home), remove: false }
       return {
-        line: binDir ? `Not installed. Adds a small orgai command in ${binDir}.` : 'Not installed. Adds a small orgai command.',
+        line: `${binDir ? `Not installed. Adds a small orgai command in ${binDir}.` : 'Not installed. Adds a small orgai command.'}${also}`,
         primary: { action: 'install', label: CLI_SHIM_INSTALL_LABEL },
         remove: false
       }
     case 'installed':
-      return { line: `Installed at ${path}.`, remove: true, ...hint }
+      return { line: `Installed at ${path}.${also}`, remove: true, ...hint }
     case 'outdated':
+      if (blocking) return { line: `Installed at ${path}, but it runs another copy of OrgAI.${also}`, remove: true, ...hint }
       return {
-        line: `Installed at ${path}, but it runs another copy of OrgAI.`,
+        line: `Installed at ${path}, but it runs another copy of OrgAI.${also}`,
         primary: { action: 'update', label: CLI_SHIM_UPDATE_LABEL },
         remove: true,
         ...hint
       }
-    case 'foreign':
-      return { line: cleanShown(status.reason) || CLI_SHIM_FOREIGN, remove: false }
+    case 'foreign': {
+      // An npm or archive orgai (often npm's own link at the shim path, npm prefix ~/.local) is named as 8.2 says,
+      // never as a file to remove. Any other other orgai is added after the reason unless it is that same file.
+      if (other && blocking) return { line: otherCliLine(other, platform, home), remove: false }
+      const reason = cleanShown(status.reason) || CLI_SHIM_FOREIGN
+      const sameFile = other !== undefined && other.path === status.path
+      return { line: `${reason}${other && !sameFile ? also : ''}`, remove: false }
+    }
     default:
       return { line: cleanShown(status.reason) || CLI_SHIM_UNAVAILABLE, remove: false }
   }

@@ -39,6 +39,8 @@ import { safe } from './output'
 import { collectSecretOverlay, scrubSecretEnv, secretEnvRefusal } from './secretOverlay'
 import { CliError, EXIT, type CliIo, type CommandFn } from './types'
 import { CLI_VERSION } from './version'
+import { readInstallInfo } from './installInfo'
+import { versionLine } from './versionLine'
 
 /** Command name -> its CommandFn; every COMMANDS entry has one (index.test.ts). */
 export const ROUTES: Record<string, CommandFn> = {
@@ -211,7 +213,7 @@ export async function main(argv: string[] = process.argv.slice(2), overrides: Ma
       return await runDefaultTui(prepareContext(true), rest, { help: generalHelp })
     }
     if (VERSION_WORDS.has(name)) {
-      out(CLI_VERSION)
+      out(versionLine(CLI_VERSION, readInstallInfo()))
       return EXIT.ok
     }
     if (HELP_WORDS.has(name)) {

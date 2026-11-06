@@ -48,7 +48,7 @@ describe('orgai doctor', () => {
     const j = JSON.parse(f.out())
     expect(j.ok).toBe(true)
     const ids = j.checks.map((c: { id: string }) => c.id)
-    expect(ids).toEqual(['node', 'install', 'data-dir', 'run-dir', 'daemon-json', 'socket', 'terminal-access', 'version', 'launcher', 'shim', 'git', 'mock', 'claude-runtime', 'codex-runtime', 'auth', 'connections'])
+    expect(ids).toEqual(['node', 'install', 'data-dir', 'run-dir', 'daemon-json', 'socket', 'terminal-access', 'version', 'launcher', 'shim', 'git', 'mock', 'install-channel', 'orgai-on-path', 'node-certs', 'claude-runtime', 'codex-runtime', 'auth', 'connections'])
     expect(j.checks.every((c: { status: string }) => c.status !== 'fail')).toBe(true)
     expect(j.checks.find((c: { id: string }) => c.id === 'connections').detail).toBe('Anthropic connected (default)')
     expect(f.out()).not.toContain('sk-secret')
