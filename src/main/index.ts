@@ -34,6 +34,7 @@ import {
 import type { HostRuntimeEnv } from './host/runtimeEnv'
 import { windowBackground } from './appInfo'
 import { installShutdownSignals, type ShutdownReason } from './host/shutdown'
+import { beforeQuitHandler, willQuitHandler } from './desktopQuit'
 import { processLivenessAsync } from './host/processInfo'
 import { connectHost } from '../cli/client/hostClient'
 import {
@@ -421,6 +422,9 @@ app.whenReady().then(async () => {
     quiesce: () => repoClone?.dispose(),
     // At the hard limit (writers still in flight after 60 s, descendants killed): leave now; the exit hook releases.
     exitAtHardLimit: () => process.exit(0),
+    // Chromium's own helpers (GPU, renderers, network and utility services) are not the host's work: killing them
+    // only makes Chromium relaunch them. app.getAppMetrics lists them, re-read on every pass of the tree kill.
+    shutdownExcludePids: () => app.getAppMetrics().map((m) => m.pid),
     onDrained: () => {
       drainQuit = true
       quitting = true
@@ -553,43 +557,35 @@ function buildCliShim(h: OrgAIHost): CliShimService {
 // Wave 7 (cli-standalone.md 4.3): will-quit no longer releases on its own; the shutdown coordinator released ownership
 // before the quit could get here. The process exit hook stays as the last resort (a crash path, app.exit before boot):
 // the process's own writes end with it. release() is synchronous and idempotent.
-app.on('will-quit', () => {
-  server?.close()
-})
+app.on('will-quit', willQuitHandler({ closeServer: () => server?.close() }))
 process.on('exit', () => ownership?.release())
 
-// One before-quit handler, so the order is fixed: the terminal-clients prompt first (a cancelled or kept quit never
-// reaches the shutdown, never marks the app quitting and never disposes the host), then the shutdown coordinator,
-// which holds the quit (preventDefault) until it released ownership: a forced drain (runs end through
-// stopAll({ reason: 'quit' }) within 3 s, else markQuit writes them), the writers settle, the terminal connections
-// close, ownership is released, then onDrained quits again and this handler lets that quit through.
-app.on('before-quit', (event) => {
-  const h = host
-  if (!h || h.shutdown.phase() === 'released') {
-    // Nothing booted (a quit while waiting for a handoff, or a failed boot: the exit hook releases) or the shutdown
-    // already released ownership: go.
-    quitting = true
-    stopSystemCertRead()
-    h?.dispose()
-    return
-  }
-  const terminalClients = server?.attachedClientCount() ?? 0
-  if (quitPromptNeeded({ terminalClients, drainQuit, alreadyAnswered: quitAnswered || quitting })) {
-    event.preventDefault()
-    if (!quitPromptOpen) void askQuit(terminalClients)
-    return
-  }
-  event.preventDefault()
-  if (quitting && h.shutdown.phase() !== 'running') return
-  quitting = true
-  // A macOS certificate read still running is killed once the quit goes ahead (a kept quit leaves it alone).
-  stopSystemCertRead()
-  void h.shutdown.shutdown(quitReason, { force: true }).catch((e: unknown) => {
-    log.warn(`Quitting failed: ${e instanceof Error ? e.message : String(e)}`)
+// One before-quit handler (desktopQuit.ts, unit-tested with a fake app), so the order is fixed: the terminal-clients
+// prompt first (a cancelled or kept quit never reaches the shutdown, never marks the app quitting and never disposes
+// the host), then the shutdown coordinator, which holds the quit (preventDefault) until it released ownership: a forced
+// drain (runs end through stopAll({ reason: 'quit' }) within 3 s, else markQuit writes them), the writers settle, the
+// terminal connections close, ownership is released, then onDrained quits again and the handler lets that quit through.
+app.on(
+  'before-quit',
+  beforeQuitHandler({
+    host: () => host,
+    terminalClients: () => server?.attachedClientCount() ?? 0,
+    promptNeeded: quitPromptNeeded,
+    drainQuit: () => drainQuit,
+    quitAnswered: () => quitAnswered,
+    quitting: () => quitting,
+    markQuitting: () => {
+      quitting = true
+    },
+    promptOpen: () => quitPromptOpen,
+    askQuit: (n) => void askQuit(n),
+    reason: () => quitReason,
+    stopCertRead: () => stopSystemCertRead(),
     // Never strand the app: the exit hook releases ownership.
-    app.exit(0)
+    exit: (code) => app.exit(code),
+    warn: (m) => log.warn(m)
   })
-})
+)
 
 /**
  * An explicit quit while terminal clients are attached (cli-spec 3.2(1)). The spec's "N terminal run(s)" is counted as

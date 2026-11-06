@@ -3,6 +3,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFil
 import { basename, dirname, join, resolve } from 'node:path'
 import { gitPath, gitPathSync, pathKey, repoLockRecovery, withRepoLock as repoLock } from './repoLock'
 import { gitExecutable } from '../host/systemBinaries'
+import { trackChildProcess } from '../host/shutdown'
 import type { MergeDecision, PendingWorktree, WorktreeDiff, WorktreeInfo } from '@shared/types'
 
 /**
@@ -58,9 +59,11 @@ function git(root: string, args: string[]): Promise<{ ok: boolean; out: string; 
   const bin = gitExecutable()
   if (!bin) return Promise.resolve({ ok: false, out: '', err: 'git was not found on PATH.' })
   return new Promise((resolve) => {
-    execFile(bin, args, { cwd: root, windowsHide: true, timeout: 60_000, maxBuffer: 8 * 1024 * 1024 }, (error, stdout, stderr) => {
+    const child = execFile(bin, args, { cwd: root, windowsHide: true, timeout: 60_000, maxBuffer: 8 * 1024 * 1024 }, (error, stdout, stderr) => {
       resolve({ ok: !error, out: String(stdout).trim(), err: String(stderr ?? error?.message ?? '').trim() })
     })
+    // Git under the repo lock is ended with the host at the shutdown's hard limit (cli-standalone.md 4.3).
+    trackChildProcess(child, 'git')
   })
 }
 

@@ -4,8 +4,12 @@
  * the way a host does, holds one leased writer, and shuts down (forced) on SIGTERM.
  *
  * - FIXTURE_MODE=late: the writer finishes FIXTURE_WRITER_MS after ready, writing `<data>/written.txt` (tmp + rename).
+ *   The drain logs "still waiting" after FIXTURE_SETTLE_LOG_MS (default: the tracker's own, 10 s, the old forced
+ *   drain's release deadline).
  * - FIXTURE_MODE=hang: the writer never finishes, and a child process standing in for git under the repo lock ignores
  *   SIGTERM and has its own child (a hook) that ignores it too; the hard limit (FIXTURE_HARD_LIMIT_MS) must end them.
+ *   A third child stands in for one of the desktop's own Electron helpers: excluded (excludePids), it must survive.
+ *   The tree kill is the coordinator's default (killHostDescendants with killTiming and excludePids).
  *
  * Prints one JSON line per event on stdout: { event: 'ready', pid, descendants }, { event: 'released', ... }.
  * Not a test; never imported by the app.
@@ -15,7 +19,7 @@ import { renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { HostActivityTracker } from '../activity'
 import { acquireHostOwnership } from '../ownership'
-import { ShutdownCoordinator, installShutdownSignals, killHostDescendants, trackChildProcess } from '../shutdown'
+import { ShutdownCoordinator, installShutdownSignals, trackChildProcess } from '../shutdown'
 
 const out = (v: Record<string, unknown>): void => void process.stdout.write(`${JSON.stringify(v)}\n`)
 const log = (m: string): void => void process.stderr.write(`[fixture] ${m}\n`)
@@ -33,10 +37,12 @@ async function main(): Promise<void> {
 
   const ownership = await acquireHostOwnership({ dataDir, hostKind: 'node', appVersion: '0.0.0-fixture', listen: false, ...(runtimeBase ? { runtimeBase } : {}) })
   process.on('exit', () => ownership.release())
+  const excluded: number[] = []
   const coordinator = new ShutdownCoordinator({
     release: () => ownership.release(),
     hardLimitMs,
-    killDescendants: () => killHostDescendants({ termGraceMs: 300, stepMs: 100, waitMs: 5_000, log }),
+    killTiming: { termGraceMs: 300, stepMs: 100, waitMs: 5_000 },
+    excludePids: () => excluded,
     onReleased: (info) => {
       out({ event: 'released', ...info })
       process.exit(0)
@@ -47,7 +53,8 @@ async function main(): Promise<void> {
     },
     log
   })
-  const activity = new HostActivityTracker({ ownership, settleLogMs: 200, settlePollMs: 20, log, ...coordinator.activityHooks() })
+  const settleLogMs = process.env.FIXTURE_SETTLE_LOG_MS ? Number(process.env.FIXTURE_SETTLE_LOG_MS) : undefined
+  const activity = new HostActivityTracker({ ownership, ...(settleLogMs !== undefined ? { settleLogMs } : {}), settlePollMs: 20, log, ...coordinator.activityHooks() })
   coordinator.attachActivity(activity)
   installShutdownSignals(coordinator, { log })
 
@@ -67,8 +74,10 @@ async function main(): Promise<void> {
     trackChildProcess(git, 'git')
     const hook = await new Promise<number>((resolve) => git.stdout.once('data', (d) => resolve(Number(String(d).trim()))))
     descendants.push(git.pid!, hook)
+    const helper = spawn(process.execPath, ['-e', IGNORE_TERM], { stdio: 'ignore' })
+    excluded.push(helper.pid!)
   }
-  out({ event: 'ready', pid: process.pid, descendants })
+  out({ event: 'ready', pid: process.pid, descendants, excluded })
   setInterval(() => {}, 1_000)
 }
 

@@ -6,6 +6,7 @@
  * so window:openRun answers desktop_unavailable. Always loaded through a dynamic import (its own chunk,
  * out/cli/inprocHost.mjs). Electron-free; relative imports only.
  */
+import { writeSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { bootOrgAIHost, type HostBackgroundOptions, type OrgAIHost } from '../main/host/bootstrap'
@@ -54,6 +55,36 @@ export interface StartInprocHostOptions {
    * (tests); hooks may be injected.
    */
   systemCertificates?: boolean | SystemCertHooks
+  /**
+   * The shutdown's hard limit (cli-standalone.md 4.3): writers still in flight after SHUTDOWN_HARD_LIMIT_MS, the host's
+   * descendants killed. Default `inprocHardLimitExit`: tell the terminal and end the process with EXIT.failure, so the
+   * process 'exit' hook releases the data folder only once no in-process writer can run any more. Tests pass their own.
+   */
+  exitAtHardLimit?: () => void
+  /** The shutdown's hard limit and tree-kill waits (bootOrgAIHost shutdownLimits); tests shorten them. */
+  shutdownLimits?: { hardLimitMs?: number; kill?: { termGraceMs?: number; waitMs?: number; stepMs?: number } }
+}
+
+/** What the terminal is told when the in-process host ends at its hard limit. */
+export const INPROC_HARD_LIMIT_MESSAGE =
+  "orgai: the in-process host's work did not finish in time; its child processes were ended and the command exits now. See main.log."
+
+/**
+ * The in-process and Node hosts' exit at the hard limit (4.3: "kills ... and exits; the exit hooks release"). The CLI
+ * only sets process.exitCode and lets the event loop drain, which a hung writer (a worktree operation behind another
+ * process's repo lock) would keep alive, still writing after a release; so the process ends here. The message is
+ * written from the last 'exit' listener, after the terminal UI restored the screen. Never returns (process.exit).
+ */
+export function inprocHardLimitExit(proc: Pick<NodeJS.Process, 'once' | 'exit'> = process, write: (s: string) => void = (s) => void writeSync(2, s)): void {
+  log.warn('In-process host: writers still in flight at the hard limit; exiting now.')
+  proc.once('exit', () => {
+    try {
+      write(`${INPROC_HARD_LIMIT_MESSAGE}\n`)
+    } catch {
+      // stderr closed: nothing left to tell.
+    }
+  })
+  proc.exit(EXIT.failure)
 }
 
 /** The certificate setup the in-process host calls (src/main/systemCerts.ts). */
@@ -154,7 +185,8 @@ export async function startInprocHost(opts: StartInprocHostOptions): Promise<Inp
   let host: OrgAIHost | undefined
   let cleaned = false
   // Wave 7 (cli-standalone.md 4.3): reached through the shutdown coordinator once it released ownership (the writers
-  // settled and the socket closed gracefully, or the hard limit passed), or directly when the boot failed.
+  // settled and the socket closed gracefully), or directly when the boot failed. At the hard limit the process exits
+  // instead (exitAtHardLimit) and onExit releases.
   const cleanup = (): void => {
     if (cleaned) return
     cleaned = true
@@ -198,6 +230,9 @@ export async function startInprocHost(opts: StartInprocHostOptions): Promise<Inp
       // The shutdown sequence: flush the host.stop reply, then release, then this cleanup.
       closeSocket: (graceMs) => server.closeGracefully(graceMs),
       terminalSessions: () => server.terminalSessionCount(),
+      // At the hard limit the process ends (its exit hook releases), never a release with writers still alive.
+      exitAtHardLimit: opts.exitAtHardLimit ?? (() => inprocHardLimitExit()),
+      ...(opts.shutdownLimits ? { shutdownLimits: opts.shutdownLimits } : {}),
       onDrained: cleanup
     })
   } catch (e) {

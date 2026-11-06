@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { AppSettingsInfo, DaemonInfo, RunEvent } from '../../shared/types'
+import type { AppSettingsInfo, DaemonInfo, RunEvent, RunSummary } from '../../shared/types'
 import { ACTIVITY_LEASE_KINDS, IPC } from '../../shared/types'
 
 // bootOrgAIHost must boot in plain Node (cli-spec 3.1): any electron import fails the whole file.
@@ -90,6 +90,7 @@ afterEach(async () => {
   hosts = []
   vi.useRealTimers()
   vi.restoreAllMocks()
+  vi.unstubAllEnvs()
   rmSync(root, { recursive: true, force: true })
 })
 
@@ -323,6 +324,40 @@ describe('bootOrgAIHost', () => {
     expect(h.activity.state()).toBe('ready')
     await h.runs.stopAll({ reason: 'quit' })
   })
+
+  it('a non-forced stop (idle exit, `orgai daemon stop`) ends a run that only waits on the user, written as cut by the app before the release', async () => {
+    const own = fakeOwnership()
+    const h = boot({ ownership: own, hostKind: 'headless-host' })
+    const atRelease: (RunSummary | null)[] = []
+    let runId = ''
+    own.release.mockImplementation(() => {
+      atRelease.push(h.runs.summary(runId))
+    })
+    const folder = join(root, 'repo-idle')
+    mkdirSync(folder)
+    const project = h.services.projects.create({ name: 'Idle', path: folder, brief: '', setupKind: 'existing', mock: true }, h.settings.get(), { mockAvailable: true })
+    const ctx = { surface: 'inproc' as const, grantedScopes: ['read', 'operate', 'configure'] as const }
+    // A one-step script: the single-agent run says one line and waits on the user (no plan nudges).
+    const script = join(root, 'idle-script.json')
+    writeFileSync(script, JSON.stringify({ delayMs: 0, work: [{ type: 'text', text: 'Ready when you are.' }] }))
+    vi.stubEnv('ORGAI_MOCK_SCRIPT', script)
+    const run = (await h.dispatcher.invokeRpc(IPC.runsStart, [{ projectId: project.id, prompt: 'wait for me', team: 'single' }], ctx)) as RunSummary
+    runId = run.id
+    // The mock work run finishes its turn and waits on the user: live, but not busy, so the host counts as idle.
+    await vi.waitFor(() => expect(h.runs.summary(runId)?.status).toBe('idle'), { timeout: 10_000 })
+    expect(h.runs.liveRunCount()).toBe(1)
+    expect(h.runs.busyRunCount()).toBe(0)
+    // As the idle exit would see it: nothing busy (the run's title is done), the run still live.
+    await vi.waitFor(() => expect(h.activity.isIdle()).toBe(true), { timeout: 10_000 })
+    expect(h.runs.liveRunCount()).toBe(1)
+    await expect(h.dispatcher.invokeRpc('host.stop', [{}], ctx)).resolves.toEqual({ stopping: true })
+    await h.shutdown.released()
+    expect(own.release).toHaveBeenCalledTimes(1)
+    // Ended before the data folder was given up, as a quit ends it: by the app, while waiting, continuable.
+    expect(atRelease[0]).toMatchObject({ endedBy: 'app', endedWithApp: true, endedWhile: 'waiting' })
+    expect(['finished', 'error']).toContain(atRelease[0]?.status)
+    expect(h.runs.liveRunCount()).toBe(0)
+  }, 30_000)
 
   it('a forced host.stop with a live work run schedules no Team review, waits on none and refuses model calls after', async () => {
     const releasedWith: number[] = []

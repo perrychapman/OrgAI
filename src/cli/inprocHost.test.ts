@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { LITELLM_KEY, READ_ONLY_SECRETS_MESSAGE, type SecretStore } from '../main/store/secrets'
-import { inprocCliRoots, startInprocHost, type InprocHost } from './inprocHost'
+import { INPROC_HARD_LIMIT_MESSAGE, inprocCliRoots, inprocHardLimitExit, startInprocHost, type InprocHost } from './inprocHost'
 import { CliError } from './types'
 
 let userDataDir: string
@@ -106,5 +106,27 @@ describe('startInprocHost system certificates (issue #16)', () => {
     const err = await startInprocHost({ userDataDir, dataDir, env: {}, mock: true, overlay: new Map(), logging: false, startBackground: false, systemCertificates: hooks }).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(CliError)
     expect(calls).toEqual([])
+  })
+})
+
+describe('inprocHardLimitExit (cli-standalone.md 4.3)', () => {
+  it('ends the process with EXIT.failure and tells the terminal from the last exit listener', () => {
+    const order: string[] = []
+    const listeners: (() => void)[] = []
+    const proc = {
+      once: (ev: string, fn: () => void) => {
+        order.push(`once:${ev}`)
+        listeners.push(fn)
+        return proc
+      },
+      exit: (code?: number) => {
+        order.push(`exit:${code}`)
+        // process.exit runs the 'exit' listeners (the terminal UI's restore was registered earlier, so it runs first).
+        for (const l of listeners) l()
+        return undefined as never
+      }
+    }
+    inprocHardLimitExit(proc as unknown as Pick<NodeJS.Process, 'once' | 'exit'>, (s) => void order.push(`write:${s.trim()}`))
+    expect(order).toEqual(['once:exit', 'exit:1', `write:${INPROC_HARD_LIMIT_MESSAGE}`])
   })
 })

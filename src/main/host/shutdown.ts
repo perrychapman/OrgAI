@@ -11,9 +11,12 @@
  * is queued first; then HostSocketServer.closeGracefully(SOCKET_CLOSE_GRACE_MS), then ownership.release(), then the
  * entry point's exit (onReleased). While writers are in flight the host stays 'draining' and daemon.json stays, so no
  * contender can take the data folder. At SHUTDOWN_HARD_LIMIT_MS the coordinator stops waiting: it enumerates every
- * descendant of the host's pid from the process table (killHostDescendants), sends SIGTERM (Windows `taskkill /T`),
- * waits KILL_TERM_GRACE_MS, sends SIGKILL (`taskkill /T /F`), and releases only once none of them is alive; when the
- * table cannot be read or some survive it waits in KILL_STEP_MS steps up to KILL_WAIT_MS before exiting anyway (logged).
+ * descendant of the host's pid from the process table (killHostDescendants; on Windows a row older than its claimed
+ * parent is a stale-parent orphan and never a target; the desktop's own Electron helpers are excluded), sends SIGTERM
+ * (Windows `taskkill /PID`, never `/T`, whose tree walk trusts stale parent pids), waits KILL_TERM_GRACE_MS, sends
+ * SIGKILL (`taskkill /PID /F`), and releases only once none of them is alive; when the table cannot be read it signals
+ * the tracked children directly, and when it cannot be read or some survive it waits in KILL_STEP_MS steps up to
+ * KILL_WAIT_MS before exiting anyway (logged). Every real host then exits (exitAtHardLimit) and its exit hook releases.
  *
  * Electron-free; relative imports only (noElectronImport.test.ts).
  */
@@ -82,7 +85,7 @@ export interface ShutdownCoordinatorApi {
 export interface TrackableChild {
   readonly pid?: number
   kill(signal?: NodeJS.Signals | number): boolean
-  once?(event: 'exit', listener: (...args: unknown[]) => void): unknown
+  once?(event: 'exit' | 'error', listener: (...args: unknown[]) => void): unknown
 }
 
 interface Tracked {
@@ -93,10 +96,13 @@ interface Tracked {
 const tracked = new Set<Tracked>()
 
 /**
- * Register a child the host must kill when it exits at the hard limit. Untracked automatically on 'exit' when the
- * child supports `once`; the returned function untracks it too (idempotent).
+ * Register a child the host must kill when it exits at the hard limit (git under the repo lock, the Codex app-server,
+ * a repository clone, custodian helpers). Untracked automatically on 'exit', and on an 'error' of a child that never got
+ * a pid (the spawn failed), when the child supports `once`; the returned function untracks it too (idempotent). Anything
+ * that is not a child (a test double returning undefined) is ignored. Never throws.
  */
-export function trackChildProcess(child: TrackableChild, label: string): () => void {
+export function trackChildProcess(child: TrackableChild | null | undefined, label: string): () => void {
+  if (!child || typeof child.kill !== 'function') return () => {}
   const entry: Tracked = { child, label }
   tracked.add(entry)
   const untrack = (): void => {
@@ -104,10 +110,26 @@ export function trackChildProcess(child: TrackableChild, label: string): () => v
   }
   try {
     child.once?.('exit', untrack)
+    child.once?.('error', () => {
+      if (child.pid === undefined) untrack()
+    })
   } catch {
-    // A child without a usable 'exit' event stays tracked until the caller untracks it.
+    // A child without usable events stays tracked until the caller untracks it.
   }
   return untrack
+}
+
+/** Signal every tracked child and keep tracking it (the hard limit's SIGTERM step); returns how many took it. */
+export function signalTrackedChildren(signal: NodeJS.Signals | number): number {
+  let n = 0
+  for (const entry of [...tracked]) {
+    try {
+      if (entry.child.kill(signal)) n++
+    } catch {
+      // Already gone.
+    }
+  }
+  return n
 }
 
 /** Kill every tracked child (SIGKILL by default) and forget them; returns how many were signalled. Never throws. */
@@ -183,8 +205,39 @@ export function parseProcessTable(text: string): Map<number, ProcessRow> {
   return out
 }
 
-/** Every live (non-zombie) descendant of `rootPid` in the table, breadth first; never the root itself. */
-export function descendantsOf(table: ProcessTable, rootPid: number): ProcessRow[] {
+/** A Windows row's creation time ("pid ppid ticks": FILETIME ticks); undefined for POSIX rows and unparsable text. */
+function windowsTicks(row: ProcessRow | undefined): bigint | undefined {
+  const s = row?.start
+  if (s === undefined || !/^\d{1,20}$/.test(s)) return undefined
+  try {
+    return BigInt(s)
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Is `child` really a child of `parent`? POSIX re-parents an orphan (to init or a subreaper), so a ppid always names a
+ * live parent. Windows never re-parents: an orphan keeps its dead parent's pid as ParentProcessId, and once that pid is
+ * reused the orphan would look like a child of the new process. So on Windows rows a child must not predate its parent
+ * (creation ticks: child >= parent; a child whose creation time reads 0 under a parent with one is refused, the safe
+ * side).
+ */
+function isChildOf(parent: ProcessRow | undefined, child: ProcessRow): boolean {
+  const parentTicks = windowsTicks(parent)
+  if (parentTicks === undefined || parentTicks <= BigInt(0)) return true
+  const childTicks = windowsTicks(child)
+  // Not a Windows row: nothing to compare (the POSIX rule applies). A Windows row reads 0 when CIM gave no CreationDate.
+  if (childTicks === undefined) return true
+  return childTicks >= parentTicks
+}
+
+/**
+ * Every live (non-zombie) descendant of `rootPid` in the table, breadth first; never the root itself. A Windows row
+ * whose creation time is older than its claimed parent's is a stale-parent orphan, not a child (isChildOf). Pids in
+ * `exclude` are left out with their whole subtree (the desktop host's own Chromium helpers).
+ */
+export function descendantsOf(table: ProcessTable, rootPid: number, exclude?: ReadonlySet<number>): ProcessRow[] {
   const children = new Map<number, ProcessRow[]>()
   for (const row of table.values()) {
     if (row.pid === row.ppid) continue
@@ -197,9 +250,12 @@ export function descendantsOf(table: ProcessTable, rootPid: number): ProcessRow[
   const queue = [rootPid]
   while (queue.length) {
     const pid = queue.shift()!
+    const parent = table.get(pid)
     for (const row of children.get(pid) ?? []) {
       if (seen.has(row.pid)) continue
+      if (!isChildOf(parent, row)) continue
       seen.add(row.pid)
+      if (exclude?.has(row.pid)) continue
       queue.push(row.pid)
       if (!row.zombie) out.push(row)
     }
@@ -256,11 +312,20 @@ export function readProcessTable(opts: { platform?: NodeJS.Platform; timeoutMs?:
   })
 }
 
-/** Send a signal to one process: POSIX process.kill, Windows `taskkill /PID <pid> /T` (/F for SIGKILL). Never throws. */
+/**
+ * The taskkill arguments for one process: `/PID <pid>` (SIGTERM), plus `/F` for SIGKILL. Never `/T`: the targets are
+ * enumerated already (descendantsOf, with the stale-parent check), and taskkill's own tree walk trusts Windows'
+ * ParentProcessId, which can name a reused pid, so it could reach an unrelated process.
+ */
+export function taskkillArgs(pid: number, signal: 'SIGTERM' | 'SIGKILL'): string[] {
+  return ['/PID', String(pid), ...(signal === 'SIGKILL' ? ['/F'] : [])]
+}
+
+/** Send a signal to one process: POSIX process.kill, Windows `taskkill /PID <pid>` (/F for SIGKILL). Never throws. */
 export function signalProcess(pid: number, signal: 'SIGTERM' | 'SIGKILL', platform: NodeJS.Platform = process.platform): void {
   if (platform === 'win32') {
     try {
-      const args = ['/PID', String(pid), '/T', ...(signal === 'SIGKILL' ? ['/F'] : [])]
+      const args = taskkillArgs(pid, signal)
       execFile(system32Path('taskkill.exe'), args, { windowsHide: true, timeout: 5_000, cwd: neutralCwd() }, () => {})
     } catch {
       // taskkill missing: nothing else to try.
@@ -284,6 +349,19 @@ export interface KillDescendantsOptions {
   signal?: (pid: number, signal: 'SIGTERM' | 'SIGKILL') => void
   /** Extra pids to treat as targets while they are in the table (default the tracked children's pids). */
   extraPids?: () => number[]
+  /**
+   * Pids that are never targets, with everything under them (re-read on every pass): the desktop host's own Electron
+   * processes (app.getAppMetrics: GPU, renderers, network and utility helpers), which Chromium would relaunch as fast as
+   * they are killed. Default none.
+   */
+  excludePids?: () => number[]
+  /**
+   * With an unreadable table: signal the tracked children directly (default signalTrackedChildren); returns how many
+   * took it. ChildProcess.kill never signals a child that already exited, so a reused pid is never hit.
+   */
+  signalTracked?: (signal: 'SIGTERM' | 'SIGKILL') => number
+  /** How many tracked children are left (default trackedChildCount). */
+  trackedCount?: () => number
   termGraceMs?: number
   waitMs?: number
   stepMs?: number
@@ -304,10 +382,12 @@ const defaultSleep = (ms: number): Promise<void> => new Promise((r) => globalThi
 
 /**
  * Round 6 item 5: enumerate every descendant of the host's pid (not only the tracked children, so a git hook, an
- * agent's shell or an MCP server under an agent CLI are found), SIGTERM them, wait up to termGraceMs (less when all are
- * gone), SIGKILL whatever is left (re-reading the table, so orphans that were re-parented still count by pid and start
- * time), then wait in stepMs steps up to waitMs until none is alive. With an unreadable table it keeps re-reading in
- * those steps for up to waitMs and gives up (remaining unknown, reported as 1). Never rejects.
+ * agent's shell or an MCP server under an agent CLI are found; excludePids and their subtrees left out), SIGTERM them,
+ * wait up to termGraceMs (less when all are gone), SIGKILL whatever is left (re-reading the table, so orphans that were
+ * re-parented still count by pid and start time), then wait in stepMs steps up to waitMs until none is alive. When the
+ * table cannot be read, the tracked children are signalled directly instead (SIGTERM at once, SIGKILL after the grace)
+ * and it keeps re-reading in those steps for up to waitMs, then gives up (remaining unknown, reported as 1). Never
+ * rejects.
  */
 export async function killHostDescendants(opts: KillDescendantsOptions = {}): Promise<KillDescendantsResult> {
   const rootPid = opts.rootPid ?? process.pid
@@ -315,6 +395,9 @@ export async function killHostDescendants(opts: KillDescendantsOptions = {}): Pr
   const readTable = opts.readTable ?? (() => readProcessTable({ platform }))
   const send = opts.signal ?? ((pid: number, sig: 'SIGTERM' | 'SIGKILL') => signalProcess(pid, sig, platform))
   const extraPids = opts.extraPids ?? trackedChildPids
+  const excludePids = opts.excludePids
+  const signalTracked = opts.signalTracked ?? signalTrackedChildren
+  const trackedCount = opts.trackedCount ?? (() => trackedChildCount())
   const termGraceMs = opts.termGraceMs ?? KILL_TERM_GRACE_MS
   const waitMs = opts.waitMs ?? KILL_WAIT_MS
   const stepMs = Math.max(1, opts.stepMs ?? KILL_STEP_MS)
@@ -331,11 +414,20 @@ export async function killHostDescendants(opts: KillDescendantsOptions = {}): Pr
   /** Every process we decided to end, by pid, with its start text when known (pid reuse guard). */
   const targets = new Map<number, string | undefined>()
   let tableReadable = false
+  const excluded = (): Set<number> | undefined => {
+    if (!excludePids) return undefined
+    try {
+      return new Set(excludePids().filter((p) => Number.isSafeInteger(p) && p > 0 && p !== rootPid))
+    } catch {
+      return undefined
+    }
+  }
   const absorb = (table: ProcessTable): void => {
-    for (const row of descendantsOf(table, rootPid)) if (!targets.has(row.pid)) targets.set(row.pid, row.start)
+    const skip = excluded()
+    for (const row of descendantsOf(table, rootPid, skip)) if (!targets.has(row.pid)) targets.set(row.pid, row.start)
     for (const pid of extraPids()) {
       const row = table.get(pid)
-      if (pid !== rootPid && row && !row.zombie && !targets.has(pid)) targets.set(pid, row.start)
+      if (pid !== rootPid && row && !row.zombie && !targets.has(pid) && !skip?.has(pid)) targets.set(pid, row.start)
     }
   }
   /** Targets still alive in this table: same pid, same start (when both are known), not a zombie. */
@@ -350,30 +442,45 @@ export async function killHostDescendants(opts: KillDescendantsOptions = {}): Pr
     return out
   }
 
+  const plural = (n: number): string => `${n} ${n === 1 ? 'process' : 'processes'}`
   // SIGTERM.
   let table = await safeRead()
+  let trackedSignalled = false
   if (table) {
     tableReadable = true
     absorb(table)
     for (const pid of targets.keys()) send(pid, 'SIGTERM')
     if (targets.size) log(`Shutdown: sent SIGTERM to ${targets.size} descendant process${targets.size === 1 ? '' : 'es'}.`)
+  } else {
+    // No table: the children this host tracks are the ones it can still reach, at once rather than after the wait.
+    trackedSignalled = true
+    const n = signalTracked('SIGTERM')
+    log(`Shutdown: the process table could not be read; sent SIGTERM to ${plural(n)} this host tracks.`)
   }
 
   // Grace: stop early once every target is gone.
-  if (targets.size) {
+  if (targets.size || (trackedSignalled && trackedCount() > 0)) {
     for (let waited = 0; waited < termGraceMs; ) {
       const step = Math.min(stepMs, termGraceMs - waited)
       await sleep(step)
       waited += step
       table = await safeRead()
-      if (table && aliveIn(table).length === 0 && descendantsOf(table, rootPid).length === 0) break
+      if (table && aliveIn(table).length === 0 && descendantsOf(table, rootPid, excluded()).length === 0) break
+      if (!table && trackedCount() === 0 && targets.size === 0) break
     }
   }
 
   // SIGKILL, then wait for the tree to be gone (or for a readable table) in steps.
   let killedOnce = false
+  let trackedKilled = false
   for (let waited = 0; ; ) {
     table = await safeRead()
+    if (!table && !trackedKilled) {
+      // Still no table: SIGKILL what is tracked (after the grace), then keep trying to read it.
+      trackedKilled = true
+      const n = signalTracked('SIGKILL')
+      if (n) log(`Shutdown: the process table could not be read; sent SIGKILL to ${plural(n)} this host tracks.`)
+    }
     if (table) {
       tableReadable = true
       absorb(table)
@@ -432,14 +539,20 @@ export interface ShutdownCoordinatorOptions {
   /**
    * At the hard limit, after the descendants are gone and the socket closed: end the process now (process.exit), so the
    * exit hooks release ownership once no JavaScript of this host can run any more (4.3: "kills ... and exits; the exit
-   * hooks release"). Desktop and Node hosts pass it; absent (the inproc host, which lives inside the CLI command) =
-   * release here, then onReleased. If it returns, the coordinator releases and calls onReleased as without it.
+   * hooks release"). Every real host passes it (desktop and headless: process.exit; inproc and Node: startInprocHost's,
+   * which tells the terminal and exits with EXIT.failure), because a hung in-process writer would otherwise still write
+   * after the release. Absent (tests) = release here, then onReleased. If it returns, the coordinator releases and
+   * calls onReleased as without it.
    */
   exitAtHardLimit?: (info: ShutdownReleaseInfo) => void
   hardLimitMs?: number
   socketGraceMs?: number
-  /** The hard limit's tree kill (default killHostDescendants of this process). */
+  /** The hard limit's tree kill (default killHostDescendants of this process, with excludePids and killTiming). */
   killDescendants?: () => Promise<KillDescendantsResult>
+  /** Never killed at the hard limit, with their subtrees (the desktop: Electron's own helper processes). */
+  excludePids?: () => number[]
+  /** The default tree kill's waits (tests shorten them). */
+  killTiming?: Pick<KillDescendantsOptions, 'termGraceMs' | 'waitMs' | 'stepMs'>
   log?: (m: string) => void
 }
 
@@ -654,7 +767,14 @@ export class ShutdownCoordinator implements ShutdownCoordinatorApi {
       this.log(`Shutdown: abandoning the writer wait failed: ${errText(e)}`)
     }
     try {
-      const kill = this.opts.killDescendants ?? (() => killHostDescendants({ log: (m) => this.log(m) }))
+      const kill =
+        this.opts.killDescendants ??
+        (() =>
+          killHostDescendants({
+            ...(this.opts.killTiming ?? {}),
+            ...(this.opts.excludePids ? { excludePids: this.opts.excludePids } : {}),
+            log: (m) => this.log(m)
+          }))
       const r = await kill()
       if (r.remaining === 0) this.log(`Shutdown: ${r.found} descendant process${r.found === 1 ? '' : 'es'} ended; releasing the data folder.`)
     } catch (e) {

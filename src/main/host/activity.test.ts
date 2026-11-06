@@ -444,6 +444,75 @@ describe('HostActivityTracker requestDrain (Wave 7: never releases, settles ever
     expect(onDrainStart).toHaveBeenCalledWith(false)
   })
 
+  it('a non-forced drain with runs only waiting on the user ends them (forceStop, fallback past the deadline) before the writers settle and onDrained', async () => {
+    vi.useFakeTimers()
+    const order: string[] = []
+    let live = 2
+    let writer: () => void = () => {}
+    const { a } = tracker({
+      ownership: fakeOwnership(order),
+      // Waiting runs do not count as busy ('liveRuns' is busyRunCount), so the non-forced drain is accepted.
+      liveRuns: () => live,
+      quiesce: () => {
+        order.push('quiesce')
+        writer = a.acquire('inFlightRpcMutations')
+      },
+      forceStop: () =>
+        new Promise<void>((r) =>
+          globalThis.setTimeout(() => {
+            order.push('forceStop done')
+            live = 0
+            r()
+          }, 100)
+        ),
+      forceStopFallback: () => order.push('fallback'),
+      settlePollMs: 10,
+      onSettling: () => order.push('settling'),
+      onDrained: () => order.push('onDrained')
+    })
+    const p = a.requestDrain()
+    await vi.advanceTimersByTimeAsync(50)
+    expect(order).toEqual(['markDraining', 'quiesce'])
+    await vi.advanceTimersByTimeAsync(60)
+    expect(order).toEqual(['markDraining', 'quiesce', 'forceStop done', 'settling'])
+    writer()
+    await vi.advanceTimersByTimeAsync(20)
+    await expect(p).resolves.toEqual({ stopping: true })
+    expect(order).toEqual(['markDraining', 'quiesce', 'forceStop done', 'settling', 'onDrained'])
+  })
+
+  it('a non-forced drain whose live-run stop hangs writes them through the fallback at forceStopMs', async () => {
+    vi.useFakeTimers()
+    const fallback = vi.fn()
+    const onDrained = vi.fn()
+    const { a } = tracker({ ownership: fakeOwnership(), liveRuns: () => 1, forceStop: () => new Promise<void>(() => {}), forceStopMs: 3_000, forceStopFallback: fallback, onDrained })
+    const p = a.requestDrain()
+    await vi.advanceTimersByTimeAsync(2_999)
+    expect(fallback).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(2)
+    expect(fallback).toHaveBeenCalledTimes(1)
+    await expect(p).resolves.toEqual({ stopping: true })
+    await vi.advanceTimersByTimeAsync(1)
+    expect(onDrained).toHaveBeenCalledTimes(1)
+  })
+
+  it('a non-forced drain with no live run never calls forceStop; a throwing liveRuns counts as live (logged)', async () => {
+    const forceStop = vi.fn(async () => {})
+    const { a } = tracker({ ownership: fakeOwnership(), liveRuns: () => 0, forceStop })
+    await a.requestDrain()
+    expect(forceStop).not.toHaveBeenCalled()
+    const second = tracker({
+      ownership: fakeOwnership(),
+      liveRuns: () => {
+        throw new Error('no runs table')
+      },
+      forceStop
+    })
+    await second.a.requestDrain()
+    expect(forceStop).toHaveBeenCalledTimes(1)
+    expect(second.logs.some((l) => l.includes('no runs table'))).toBe(true)
+  })
+
   it('abandonSettle ends the writer wait and onDrained is never called', async () => {
     vi.useFakeTimers()
     const onDrained = vi.fn()

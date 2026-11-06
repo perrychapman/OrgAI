@@ -35,8 +35,9 @@
  *   (refuse every hello when it cannot be set), the proof, and the scope cap above. A native addon (or a pipe created
  *   through another runtime) would be needed for an explicit DACL; UNVERIFIED on Windows from this code.
  * - Handoff connections (Wave 7, cli-standalone.md 4.4 step 5, D8): a proven `clientKind: 'desktop'` hello (the OrgAI
- *   app asking this host to hand over the data folder) is accepted whatever Terminal access is (off, 'operate' or
- *   'full') and across app versions, with grantedScopes exactly HOST_HANDOFF_SCOPES and `handoff: true` in the result
+ *   app asking this host to hand over the data folder) is accepted on a Node host ('node') whatever Terminal access is
+ *   (off, 'operate' or 'full') and across app versions; every other host kind refuses it after the proof
+ *   (DESKTOP_HANDOFF_REFUSED_MESSAGE), with grantedScopes exactly HOST_HANDOFF_SCOPES and `handoff: true` in the result
  *   and its hostProof. Such a connection may call only HOST_HANDOFF_METHODS (host.status, host.stop, forced included):
  *   anything else, the subscriptions included, answers scope_denied before dispatch. The peer check still refuses the
  *   host's own descendants, with DESKTOP_HELLO_PEER_CHECK_MS instead of the default budget. This does not authenticate
@@ -173,9 +174,19 @@ export const TERMINAL_ACCESS_LEVEL_MESSAGE =
   'Terminal access lets terminal clients watch and run work only. To answer decisions or change settings from a terminal, allow it in OrgAI: App settings > General > Advanced settings > Terminal access.'
 /**
  * What a handoff connection (a 'desktop' hello, cli-standalone.md 4.4) is told when it calls anything but
- * HOST_HANDOFF_METHODS. Wave 7 contracts refused the whole hello with a message of this name; the grant replaced that.
+ * HOST_HANDOFF_METHODS. Wave 7 contracts refused the whole hello with a message of this name; the grant replaced that
+ * on Node hosts, and DESKTOP_HANDOFF_REFUSED_MESSAGE keeps refusing it on every other host kind.
  */
 export const DESKTOP_HANDOFF_UNAVAILABLE_MESSAGE = 'An OrgAI app hand-off connection may only read the host status and stop the host.'
+/**
+ * A 'desktop' hello to a host that is not a Node host (4.4 steps 3-4, D8): the app hands over only from a background
+ * Node host; an inproc owner (someone's terminal) is never stopped from the app, and the desktop and headless hosts
+ * share the app's single-instance lock, so the app never asks them. The hello is refused after the proof, as before the
+ * grant existed.
+ */
+export const DESKTOP_HANDOFF_REFUSED_MESSAGE =
+  "This OrgAI host does not hand its data folder over to the app; only a background host started with `orgai daemon start` does. Stop it from its terminal, or with `orgai daemon stop --force`."
+
 /** hello refused on win32 when daemon.secret could not be restricted to the current user. */
 export const SECRET_ACL_MESSAGE =
   'OrgAI could not restrict its terminal access secret to your Windows account, so it refuses terminal connections. See main.log.'
@@ -669,7 +680,10 @@ export class HostSocketServer {
     this.secretCache = secret
     const problem = this.helloProblem(raw)
     if (problem) return fail(problem)
-    // Wave 7 (4.4 step 5, D8): a proven 'desktop' hello gets the handoff grant, whatever Terminal access is.
+    // Wave 7 (4.4 step 5, D8): a proven 'desktop' hello gets the handoff grant, whatever Terminal access is, from a
+    // Node host only. D8 accepts that any same-user process with daemon.secret can stop a Node host this way; an inproc
+    // CLI's host (someone's terminal session), a headless or a desktop host is never stopped through it.
+    if (raw.clientKind === 'desktop' && this.opts.hostKind !== 'node') return fail({ code: 'bad_request', message: DESKTOP_HANDOFF_REFUSED_MESSAGE })
     const handoff = raw.clientKind === 'desktop'
     const p = raw as Record<string, unknown> & {
       clientKind: HostClientKind

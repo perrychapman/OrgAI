@@ -9,6 +9,7 @@ import { HostEventBus } from './events'
 import { LineReader, clientProof, encodeFrame, hostProof, newNonce, proofMatches, rpcRequest } from './protocol'
 import { gateRequest } from './registry'
 import {
+  DESKTOP_HANDOFF_REFUSED_MESSAGE,
   DESKTOP_HANDOFF_UNAVAILABLE_MESSAGE,
   HostSocketServer,
   SECRET_ACL_MESSAGE,
@@ -751,19 +752,36 @@ describe('scope helpers', () => {
 
 describe.runIf(posix)('HostSocketServer handoff connections (cli-standalone.md 4.4 step 5, D8)', () => {
   /** The hostProof a handoff hello result must carry (handoff bound into it). */
-  function handoffProof(res: Msg, challenge: Msg, params: Msg, hostKind = 'headless-host'): string {
+  function handoffProof(res: Msg, challenge: Msg, params: Msg, hostKind = 'node'): string {
     return hostProof(SECRET, {
       protocolVersion: 1,
       hostInstanceId: HOST_ID,
       clientNonce: params.clientNonce,
       hostNonce: challenge.params.hostNonce,
-      hostKind: hostKind as 'headless-host',
+      hostKind: hostKind as 'node',
       appVersion: '1.0.0',
       dataDir,
       mock: true,
       grantedScopes: res.result.grantedScopes,
       handoff: true
     })
+  }
+
+  for (const hostKind of ['inproc', 'headless-host', 'desktop'] as const) {
+    for (const on of [true, false]) {
+      it(`a proven desktop hello on a ${hostKind} host is refused after the proof (only a Node host hands over; Terminal access ${on ? 'on' : 'off'})`, async () => {
+        st.terminalServer = on
+        st.accessLevel = 'full'
+        await start({ hostKind })
+        const c = await client()
+        const { res } = await hello(c, { kind: 'desktop', scopes: ['read', 'configure'] })
+        expect(res.error.data.code).toBe('bad_request')
+        expect(res.error.data.message).toBe(DESKTOP_HANDOFF_REFUSED_MESSAGE)
+        c.send(rpcRequest(2, 'host.stop', [{ force: true }]))
+        await c.waitClosed()
+        expect(st.calls).toEqual([])
+      })
+    }
   }
 
   for (const [label, terminalServer, accessLevel] of [
@@ -774,7 +792,7 @@ describe.runIf(posix)('HostSocketServer handoff connections (cli-standalone.md 4
     it(`a proven desktop hello gets exactly read + configure and handoff: true, whatever it asked (${label})`, async () => {
       st.terminalServer = terminalServer
       st.accessLevel = accessLevel
-      await start()
+      await start({ hostKind: 'node' })
       const c = await client()
       const { res, challenge, params } = await hello(c, { kind: 'desktop', scopes: ['read', 'operate', 'decide'] })
       expect(res.result).toMatchObject({ grantedScopes: ['read', 'configure'], handoff: true })
@@ -785,7 +803,7 @@ describe.runIf(posix)('HostSocketServer handoff connections (cli-standalone.md 4
         hostInstanceId: HOST_ID,
         clientNonce: params.clientNonce,
         hostNonce: challenge.params.hostNonce,
-        hostKind: 'headless-host',
+        hostKind: 'node',
         appVersion: '1.0.0',
         dataDir,
         mock: true,
@@ -797,7 +815,7 @@ describe.runIf(posix)('HostSocketServer handoff connections (cli-standalone.md 4
 
   it('a cli hello never gets the handoff grant, and is refused while Terminal access is off', async () => {
     st.terminalServer = false
-    await start()
+    await start({ hostKind: 'node' })
     const c = await client()
     expect((await hello(c, { kind: 'cli', scopes: ['read', 'configure'] })).res.error.data.code).toBe('terminal_server_disabled')
     st.terminalServer = true
@@ -809,7 +827,7 @@ describe.runIf(posix)('HostSocketServer handoff connections (cli-standalone.md 4
   it('only host.status and host.stop (forced included) reach the dispatcher; everything else is scope_denied before dispatch', async () => {
     st.terminalServer = false
     st.result = (method, args) => ({ method, args })
-    await start()
+    await start({ hostKind: 'node' })
     const c = await client()
     await hello(c, { kind: 'desktop', scopes: ['read', 'configure'] })
     c.send(rpcRequest(2, 'host.status', []))
@@ -828,7 +846,7 @@ describe.runIf(posix)('HostSocketServer handoff connections (cli-standalone.md 4
   })
 
   it('across app versions the handoff still works (host.stop stays callable)', async () => {
-    await start()
+    await start({ hostKind: 'node' })
     const c = await client()
     const { res } = await hello(c, { kind: 'desktop', version: '0.9.0', scopes: ['read', 'configure'] })
     expect(res.result.versionSkewWarning).toContain('0.9.0')
@@ -839,7 +857,7 @@ describe.runIf(posix)('HostSocketServer handoff connections (cli-standalone.md 4
   it('the peer check gets DESKTOP_HELLO_PEER_CHECK_MS for a desktop hello and still refuses the host\'s descendants', async () => {
     const budgets: (number | undefined)[] = []
     let answer: 'ok' | 'descendant' = 'descendant'
-    await start({ peerCheck: async (_pid, _fd, timeoutMs) => (budgets.push(timeoutMs), answer) })
+    await start({ hostKind: 'node', peerCheck: async (_pid, _fd, timeoutMs) => (budgets.push(timeoutMs), answer) })
     const c = await client()
     expect((await hello(c, { kind: 'desktop', scopes: ['read', 'configure'] })).res.error.data.code).toBe('agent_descendant_refused')
     answer = 'ok'
@@ -850,7 +868,7 @@ describe.runIf(posix)('HostSocketServer handoff connections (cli-standalone.md 4
 
   it('a desktop peer check that runs past the handshake deadline (to its own budget) does not close the connection', async () => {
     // RPC_HANDSHAKE_TIMEOUT_MS is 2 s from accept; the desktop check may take DESKTOP_HELLO_PEER_CHECK_MS (2 s) itself.
-    await start({ peerCheck: (_pid, _fd, timeoutMs) => new Promise((r) => setTimeout(() => r('ok'), timeoutMs === 2_000 ? 2_400 : 0)) })
+    await start({ hostKind: 'node', peerCheck: (_pid, _fd, timeoutMs) => new Promise((r) => setTimeout(() => r('ok'), timeoutMs === 2_000 ? 2_400 : 0)) })
     const c = await client()
     const { res } = await (async () => {
       const challenge = await c.next((m) => m.method === 'host.challenge')
@@ -864,7 +882,7 @@ describe.runIf(posix)('HostSocketServer handoff connections (cli-standalone.md 4
   }, 15_000)
 
   it('handoff connections are not terminal sessions and survive Terminal access being turned off or narrowed', async () => {
-    const fake = await start()
+    const fake = await start({ hostKind: 'node' })
     const h = await client()
     await hello(h, { kind: 'desktop', scopes: ['read', 'configure'] })
     const t = await client()
@@ -883,7 +901,7 @@ describe.runIf(posix)('HostSocketServer handoff connections (cli-standalone.md 4
 
   it('a draining host refuses the desktop hello with host_draining (the app then waits for the exit)', async () => {
     st.state = 'draining'
-    await start()
+    await start({ hostKind: 'node' })
     const c = await client()
     expect((await hello(c, { kind: 'desktop', scopes: ['read', 'configure'] })).res.error.data.code).toBe('host_draining')
   })

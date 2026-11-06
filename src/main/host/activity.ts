@@ -3,7 +3,8 @@
  * exit timer and the drain. Electron-free; relative imports only.
  *
  * Wave 7 (cli-standalone.md 4.3): the drain never releases ownership. It marks the host draining, quiesces background
- * work, stops runs when forced, then waits until no writer is in flight (SETTLE_KINDS) with no deadline of its own, and
+ * work, stops runs (when forced, and whenever a live run is left: a run only waiting on the user does not keep the host
+ * busy, so a non-forced drain may start with it), then waits until no writer is in flight (SETTLE_KINDS) with no deadline of its own, and
  * calls onDrained from setImmediate. The shutdown coordinator (shutdown.ts) closes the socket, releases ownership and
  * ends the process, or takes over at its hard limit (abandonSettle).
  *
@@ -29,8 +30,18 @@ export interface HostActivityOptions {
    * background work (bootstrap: CapabilityService.dispose, so a run that forceStop ends schedules no Team review).
    */
   quiesce?: () => void
-  /** host.stop with force: stop every run first. */
+  /**
+   * Stop every run (bootstrap: RunManager.stopAll({ reason: 'quit' })): a forced drain always runs it, and so does every
+   * other drain while `liveRuns` counts any, so a run that was only waiting on the user (idle, a card open, held: not
+   * busy, so a non-forced drain or the idle exit starts with it) is ended and written as cut by the app before the
+   * writers settle and the data folder is given up.
+   */
   forceStop?: () => Promise<void>
+  /**
+   * Runs the drain must end (bootstrap: RunManager.liveRunCount, waiting runs included). Read once the drain started
+   * (after quiesce); any count above 0 makes a non-forced drain run forceStop too. Absent = 0.
+   */
+  liveRuns?: () => number
   /**
    * A forced drain gives forceStop at most this long. Default DEFAULT_FORCE_STOP_MS (as the desktop quit's
    * QUIT_STOP_DEADLINE_MS).
@@ -71,9 +82,9 @@ export const DEFAULT_SETTLE_LOG_MS = 10_000
 export const DEFAULT_SETTLE_POLL_MS = 50
 
 /**
- * What every drain waits on (after forceStop when forced) before the coordinator gives up the data folder: work that
- * writes the stores and finishes by itself. Not liveRuns / pausedAutoResumes (forceStop stopped and wrote them; a
- * non-forced drain started with none busy), not activeOAuthFlows (a sign-in can wait on the user forever; quiesce
+ * What every drain waits on (after forceStop, which runs when forced or while any run is live) before the coordinator
+ * gives up the data folder: work that writes the stores and finishes by itself. Not liveRuns / pausedAutoResumes
+ * (forceStop stopped and wrote them; a non-forced drain started with none busy), not activeOAuthFlows (a sign-in can wait on the user forever; quiesce
  * aborts them, and mcp:authorize leases only its final commit), not interactiveClients (open windows).
  */
 export const SETTLE_KINDS: readonly ActivityLeaseKind[] = ['inFlightRpcMutations', 'activeWorktreeOps', 'backgroundTasks']
@@ -103,8 +114,8 @@ interface Source {
  * Leases (acquire / track) and polled sources (addSource) per ActivityLeaseKind. The host is idle when every count is
  * 0; `idleSince` is when it last became idle (sources are re-read on every poll and every snapshot). An armed idle
  * exit drains once the host has been idle for idleMs without a break. The drain (requestDrain or idle exit) is one
- * shared promise: state 'draining', onDrainStart, ownership.markDraining, quiesce, (forced: forceStop bounded by
- * forceStopMs with forceStopFallback past it), a wait with no deadline until no SETTLE_KINDS work is in flight, then
+ * shared promise: state 'draining', onDrainStart, ownership.markDraining, quiesce, (forced, or any live run left:
+ * forceStop bounded by forceStopMs with forceStopFallback past it), a wait with no deadline until no SETTLE_KINDS work is in flight, then
  * onDrained once from setImmediate. A forced request while a non-forced drain waits upgrades it (forceStop runs once).
  * Ownership is never released here (the shutdown coordinator does). Leases still work after the drain; the state stays.
  */
@@ -269,7 +280,10 @@ export class HostActivityTracker implements HostActivityTrackerApi {
     } catch (e) {
       this.log(`Activity: quiescing background work failed: ${errText(e)}`)
     }
-    if (this.forceRequested) await this.forceStopOnce()
+    // A non-forced drain starts only with no busy run, but runs that only wait on the user (idle, a card open, held) are
+    // still live: they end here too, written as cut by the app (as the desktop quit always did), before the writers
+    // settle, so no session of this host is left running or writing once the data folder is given up.
+    if (this.forceRequested || this.liveRunsLeft() > 0) await this.forceStopOnce()
     // Forced or not: nothing that writes the stores may still be running once the coordinator releases ownership.
     await this.settleWriters()
     if (this.abandoned) return
@@ -284,7 +298,20 @@ export class HostActivityTracker implements HostActivityTrackerApi {
     })
   }
 
-  /** forceStop at most once per drain (at the start of a forced drain, or when a forced request upgrades one). */
+  /** opts.liveRuns, 0 when absent; a throw or a non-count counts as 1 (end them: the safe side), logged. */
+  private liveRunsLeft(): number {
+    if (!this.opts.liveRuns) return 0
+    try {
+      const n = this.opts.liveRuns()
+      if (typeof n === 'number' && Number.isFinite(n) && n >= 0) return n
+      throw new Error(`not a count: ${String(n)}`)
+    } catch (e) {
+      this.log(`Activity: reading the live runs failed, stopping them anyway: ${errText(e)}`)
+      return 1
+    }
+  }
+
+  /** forceStop at most once per drain (at the start of a forced drain, when a forced request upgrades one, or when live runs remain). */
   private async forceStopOnce(): Promise<void> {
     if (this.forceStopped) return
     this.forceStopped = true

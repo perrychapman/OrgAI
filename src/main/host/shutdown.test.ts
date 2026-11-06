@@ -13,6 +13,8 @@ import {
   killTrackedChildren,
   parseProcessTable,
   readProcessTable,
+  signalTrackedChildren,
+  taskkillArgs,
   trackChildProcess,
   trackedChildCount,
   trackedChildPids,
@@ -61,6 +63,28 @@ describe('tracked child processes (cli-standalone.md 4.3 hard limit)', () => {
     expect(killTrackedChildren('SIGTERM')).toBe(0)
     expect(trackedChildCount()).toBe(0)
   })
+
+  it('ignores what is not a child, untracks a failed spawn on its error, and signals without forgetting', () => {
+    expect(trackChildProcess(undefined, 'git')()).toBeUndefined()
+    expect(trackChildProcess(null, 'git')()).toBeUndefined()
+    expect(trackedChildCount()).toBe(0)
+    const failed = new FakeChild()
+    ;(failed as { pid?: number }).pid = undefined
+    trackChildProcess(failed, 'git')
+    failed.emit('error', new Error('spawn git ENOENT'))
+    expect(trackedChildCount()).toBe(0)
+    // An error of a child that did start (a failed kill, an EPIPE) keeps it tracked until it exits.
+    const running = new FakeChild()
+    trackChildProcess(running, 'codex app-server')
+    running.emit('error', new Error('write EPIPE'))
+    expect(trackedChildCount()).toBe(1)
+    expect(signalTrackedChildren('SIGTERM')).toBe(1)
+    expect(trackedChildCount()).toBe(1)
+    expect(signalTrackedChildren('SIGKILL')).toBe(1)
+    expect(running.killed).toEqual(['SIGTERM', 'SIGKILL'])
+    running.emit('exit', null)
+    expect(trackedChildCount()).toBe(0)
+  })
 })
 
 describe('process table and descendants (round 6 item 5)', () => {
@@ -99,6 +123,40 @@ describe('process table and descendants (round 6 item 5)', () => {
     expect(descendantsOf(table, 10).map((r) => r.pid)).toEqual([11, 12, 14])
     expect(descendantsOf(table, 30).map((r) => r.pid)).toEqual([31])
     expect(descendantsOf(table, 99)).toEqual([])
+  })
+
+  it('Windows: a process older than its claimed parent is a stale-parent orphan whose pid was reused, never a descendant', () => {
+    // Windows never re-parents: ParentProcessId keeps a dead parent's pid. Rows are "pid ppid creationTicks".
+    const t = parseProcessTable(
+      [
+        '4 0 0', // System: no creation time
+        '100 4 1000', // the host
+        '200 100 2000', // its git child
+        '201 200 2100', // a hook under git
+        '300 100 500', // a user's app whose launcher (an earlier pid 100) exited long ago
+        '301 300 600', // that app's own child
+        '400 100 0' // no CreationDate under a parent that has one: refused (the safe side)
+      ].join('\r\n')
+    )
+    expect(descendantsOf(t, 100).map((r) => r.pid).sort()).toEqual([200, 201])
+    // A parent with no creation time accepts its children (nothing to compare); below them the check applies again.
+    expect(descendantsOf(t, 4).map((r) => r.pid).sort()).toEqual([100, 200, 201])
+  })
+
+  it('leaves excluded pids out with their whole subtree', () => {
+    const rows: ProcessRow[] = [
+      { pid: 10, ppid: 1 },
+      { pid: 11, ppid: 10 }, // Electron GPU helper
+      { pid: 12, ppid: 11 }, // its child
+      { pid: 13, ppid: 10 } // an agent CLI
+    ]
+    const table = new Map(rows.map((r) => [r.pid, r]))
+    expect(descendantsOf(table, 10, new Set([11])).map((r) => r.pid)).toEqual([13])
+  })
+
+  it('taskkill gets one pid and never /T (its own tree walk trusts stale parent pids)', () => {
+    expect(taskkillArgs(4321, 'SIGTERM')).toEqual(['/PID', '4321'])
+    expect(taskkillArgs(4321, 'SIGKILL')).toEqual(['/PID', '4321', '/F'])
   })
 
   it.skipIf(process.platform === 'win32')('reads this machine\'s process table and finds this process', async () => {
@@ -241,6 +299,83 @@ describe('killHostDescendants (fakes)', () => {
     })
     expect(r.remaining).toBe(0)
     expect(w.sent).toEqual(['SIGKILL:501'])
+  })
+
+  it('Windows: never signals a stale-parent orphan that only looks like a child of the host', async () => {
+    const w = world([
+      { pid: 100, ppid: 4, start: '1000' },
+      { pid: 200, ppid: 100, start: '2000' },
+      { pid: 300, ppid: 100, start: '500' } // a user's app: its real parent (an earlier pid 100) is long gone
+    ])
+    const r = await killHostDescendants({ rootPid: 100, platform: 'win32', readTable: w.readTable, signal: w.signal, extraPids: () => [], sleep, termGraceMs: 2, stepMs: 1, waitMs: 2 })
+    expect(r).toEqual({ found: 1, remaining: 0, tableReadable: true })
+    expect(w.sent).toEqual(['SIGTERM:200'])
+    expect(w.alive.has(300)).toBe(true)
+  })
+
+  it('never targets excluded pids (Electron helpers), even when they are relaunched under new pids, so it does not loop', async () => {
+    let gpu = 1_000
+    const w = world(
+      [
+        { pid: 100, ppid: 1 },
+        { pid: 1_000, ppid: 100, start: 'gpu1000' },
+        { pid: 151, ppid: 1_000, start: 'gpu-child' },
+        { pid: 200, ppid: 100, start: 'agent' }
+      ],
+      [200]
+    )
+    let reads = 0
+    const readTable = async () => {
+      reads++
+      // Chromium relaunches its GPU helper whenever it dies; here it simply gets a new pid on every read (the old one's
+      // child stays, re-parented to the new helper).
+      w.alive.delete(gpu)
+      gpu++
+      w.alive.get(151)!.ppid = gpu
+      w.alive.set(gpu, { pid: gpu, ppid: 100, start: `gpu${gpu}` })
+      return w.readTable()
+    }
+    const r = await killHostDescendants({ rootPid: 100, readTable, signal: w.signal, excludePids: () => [100, gpu], extraPids: () => [], sleep, termGraceMs: 3, stepMs: 1, waitMs: 1_000 })
+    expect(r).toEqual({ found: 1, remaining: 0, tableReadable: true })
+    expect(w.sent).toEqual(['SIGTERM:200', 'SIGKILL:200'])
+    expect(reads).toBeLessThan(10)
+    expect(w.alive.has(151)).toBe(true)
+  })
+
+  it('with no readable table it signals the tracked children itself: SIGTERM at once, SIGKILL after the grace', async () => {
+    const calls: string[] = []
+    let left = 1
+    const logs: string[] = []
+    const r = await killHostDescendants({
+      rootPid: 500,
+      readTable: async () => null,
+      signal: () => calls.push('table signal'),
+      signalTracked: (sig) => (calls.push(sig), left),
+      trackedCount: () => left,
+      sleep: async () => void calls.push('sleep'),
+      termGraceMs: 3,
+      stepMs: 1,
+      waitMs: 2,
+      log: (m) => logs.push(m)
+    })
+    expect(r).toEqual({ found: 0, remaining: 1, tableReadable: false })
+    // SIGTERM before any wait; SIGKILL once the grace (3 steps) is over; then the table is retried up to waitMs.
+    expect(calls).toEqual(['SIGTERM', 'sleep', 'sleep', 'sleep', 'SIGKILL', 'sleep', 'sleep'])
+    expect(logs.filter((l) => l.includes('this host tracks'))).toHaveLength(2)
+  })
+
+  it('with no readable table the grace ends early once every tracked child exited; real tracked children get both signals', async () => {
+    const child = new FakeChild()
+    child.kill = (sig) => {
+      child.killed.push(sig)
+      if (sig === 'SIGTERM') queueMicrotask(() => child.emit('exit', null))
+      return true
+    }
+    trackChildProcess(child, 'git')
+    let sleeps = 0
+    await killHostDescendants({ rootPid: 500, readTable: async () => null, sleep: async () => void sleeps++, termGraceMs: 5_000, stepMs: 1_000, waitMs: 0 })
+    expect(child.killed).toEqual(['SIGTERM'])
+    expect(sleeps).toBe(1)
   })
 
   it('survivors past waitMs are reported and logged', async () => {

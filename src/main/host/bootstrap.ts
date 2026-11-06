@@ -149,9 +149,18 @@ export interface BootOrgAIHostOptions {
   closeSocket?: (graceMs: number) => Promise<void>
   /**
    * The shutdown's hard limit (4.3): once the host's descendants are gone, end the process (its exit hook releases
-   * ownership). Desktop and Node hosts pass `process.exit`; absent (inproc) = release, then onDrained.
+   * ownership), so no writer of this host can run after the data folder is given up. Every real entry point passes one
+   * (desktop and headless: process.exit; inproc and Node hosts: startInprocHost's, which tells the terminal and exits);
+   * absent (tests) = release, then onDrained.
    */
   exitAtHardLimit?: () => void
+  /**
+   * Processes the hard limit never kills, with their subtrees (the desktop: Electron's own GPU, renderer and utility
+   * helpers from app.getAppMetrics, which Chromium would relaunch as fast as they die). Absent = none.
+   */
+  shutdownExcludePids?: () => number[]
+  /** The shutdown's hard limit and its tree-kill waits; production uses the defaults (tests shorten them). */
+  shutdownLimits?: { hardLimitMs?: number; kill?: { termGraceMs?: number; waitMs?: number; stepMs?: number } }
   /** Authenticated terminal sessions (HostSocketServer.terminalSessionCount), for host.status `handoff`. Absent = 0. */
   terminalSessions?: () => number
   /**
@@ -539,6 +548,9 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     handoffFacts: () => ({ ...rm.handoffFacts(), terminalSessions: opts.terminalSessions?.() ?? 0 }),
     ...(opts.onDrained ? { onReleased: opts.onDrained } : {}),
     ...(opts.exitAtHardLimit ? { exitAtHardLimit: opts.exitAtHardLimit } : {}),
+    ...(opts.shutdownExcludePids ? { excludePids: opts.shutdownExcludePids } : {}),
+    ...(opts.shutdownLimits?.hardLimitMs !== undefined ? { hardLimitMs: opts.shutdownLimits.hardLimitMs } : {}),
+    ...(opts.shutdownLimits?.kill ? { killTiming: opts.shutdownLimits.kill } : {}),
     log: (m) => log.info(m)
   })
   // cli-spec 3.2(4): what keeps the host from going idle and how it drains.
@@ -562,6 +574,9 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
       }
     },
     forceStop: () => rm.stopAll({ reason: 'quit' }),
+    // Every live run, waiting ones included: a non-forced drain (idle exit, `orgai daemon stop`) ends those too, as cut
+    // by the app ("Ended when OrgAI closed", continuable), before the writers settle and ownership is released.
+    liveRuns: () => rm.liveRunCount(),
     // Past the deadline (or on a throw) write every live run as cut by the app now (RunManager.markQuit).
     forceStopFallback: () => rm.markQuit(),
     log: (m) => log.info(m)

@@ -3,6 +3,7 @@ import { existsSync, mkdirSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { delimiter, dirname, join } from 'node:path'
 import { scrubControlEnv } from './childEnv'
+import { trackChildProcess } from '../host/shutdown'
 
 /**
  * A client for `codex app-server`: JSON-RPC 2.0 messages, one JSON object per line, over the child's stdio.
@@ -174,6 +175,8 @@ export class CodexAppServer {
     if (binary.pathDir) env.PATH = `${binary.pathDir}${delimiter}${env.PATH ?? env.Path ?? ''}`
     const args = ['app-server', ...(this.options.config ?? []).flatMap((c) => ['-c', c])]
     const child = spawn(binary.path, args, { cwd: this.options.cwd, env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
+    // An agent CLI: ended with the host at the shutdown's hard limit, also when the process table cannot be read (4.3).
+    trackChildProcess(child, 'codex app-server')
     this.child = child
     child.stdout.setEncoding('utf8')
     child.stdout.on('data', (chunk: string) => this.onData(chunk))
