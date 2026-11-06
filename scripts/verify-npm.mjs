@@ -672,7 +672,8 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
       proxy = await fakeProxy(synthetic)
       const outputs = [s0]
       const step = async (label, args, extra) => {
-        const r = await orgai(['--host', 'inproc', ...args], userDataDir, extra)
+        // A mock inproc host uses no OS key store without a key file (Wave 7 review), so every call names this one.
+        const r = await orgai(['--host', 'inproc', ...args], userDataDir, { ...extra, env: { ORGAI_VAULT_KEY_FILE: keyFile, ...(extra?.env ?? {}) } })
         outputs.push(r)
         if (r.code !== 0) problems6.push(`${label}: ${showRun(r)}`)
         return r
@@ -681,7 +682,7 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
       await step('base url', ['connections', 'update', 'litellm', '--base-url', proxy.url, '--enable'])
       await step('set-secret', ['connections', 'set-secret', 'litellm', '--stdin'], { input: `${synthetic}\n` })
       const testState = async () => {
-        const r = await orgai(['--host', 'inproc', '--output-format', 'json', 'connections', 'test', 'litellm'])
+        const r = await orgai(['--host', 'inproc', '--output-format', 'json', 'connections', 'test', 'litellm'], userDataDir, { env: { ORGAI_VAULT_KEY_FILE: keyFile } })
         outputs.push(r)
         return connectionTestState(r.stdout)
       }
