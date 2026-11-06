@@ -103,12 +103,9 @@ try {
   check(/chart|edit|changed|Undo/i.test(await notice.innerText()), 'banner stays but Undo is gone after a chart edit', await notice.innerText())
   await shot('undo-expired')
 
-  await page.locator('[data-testid=export-org]').click()
-  const dlg = page.locator('dialog[open]')
-  await dlg.waitFor({ timeout: 10_000 })
-  await dlg.getByRole('button', { name: 'Export to repo', exact: true }).click()
-  await page.locator('[data-testid=export-notice]').waitFor({ timeout: 10_000 })
-  check(fs.existsSync(path.join(repo, '.orgai', 'org.json')), 'export wrote .orgai/org.json')
+  // The team files are the source of truth; there is no separate export any more.
+  check((await page.locator('[data-testid=export-org]').count()) === 0, 'no Export to repo button on the Team tab')
+  check(/Import from other tools/.test(await page.locator('[data-testid=import-agents]').innerText()), 'the import button reads "Import from other tools"')
   await sleep(200)
   await shot('export')
 } catch (e) {

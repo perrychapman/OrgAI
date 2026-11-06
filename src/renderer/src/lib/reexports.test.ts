@@ -59,7 +59,8 @@ const EXPECTED_EXPORTS: Readonly<Record<string, readonly string[]>> = {
     'isPinnedVersion', 'pinnedVersionOf'
   ],
   needsYou: [
-    'decisionCount', 'defaultDecisionIndex', 'defaultRunToOpen', 'waitingItems'
+    'combinedDecisionCount', 'decisionCount', 'defaultDecisionIndex', 'defaultRunToOpen', 'teamDecisionsFor',
+    'waitingItems'
   ],
   orgDiff: [
     'RENAME_SIMILARITY', 'diffOrgChart', 'diffSummary', 'modelDisplay', 'nameSimilarity', 'promptChange',

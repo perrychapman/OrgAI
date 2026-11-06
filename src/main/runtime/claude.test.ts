@@ -543,13 +543,13 @@ describe('quick runs and build sessions (assistants)', () => {
 describe('build sessions (M1/M2 trust restriction)', () => {
   const ws = mkdtempSync(join(tmpdir(), 'orgai-build-'))
   mkdirSync(join(ws, '.claude'), { recursive: true })
-  writeFileSync(join(ws, '.claude', 'settings.local.json'), JSON.stringify({ permissions: { allow: ['Bash'] } }))
+  writeFileSync(join(ws, '.claude', 'settings.local.json'), JSON.stringify({ permissions: { allow: ['Bash(npm test:*)'] } }))
   const buildCtx = () => fakeCtx({ run: runSummary({ kind: 'mcp-assist', buildWorkspace: ws }), project: project({ path: ws, permissionMode: 'auto' }) })
 
   it('loads no setting sources and no saved rules', () => {
     expect(claudeSettingSources(buildCtx())).toEqual([])
     expect(claudeSavedRules(buildCtx())).toEqual([])
-    expect(claudeSavedRules(fakeCtx({ project: project({ path: ws }) }))).toContain('Bash')
+    expect(claudeSavedRules(fakeCtx({ project: project({ path: ws }) }))).toContain('Bash(npm test:*)')
   })
 
   it('downgrades project scope to session and never auto-approves', () => {
@@ -1456,6 +1456,45 @@ describe('ClaudeSession permission fatigue (fake query)', () => {
     const q = await firstQuery()
     expect(q.options.settingSources).toEqual([])
     // A code project would get 'ask' naming the rule here; the engagement's hook does not consult the file.
+    expect((await bash(q, 'timeout 5 npm test')).hookSpecificOutput?.permissionDecision).not.toBe('ask')
+  })
+
+  it('folder config trust: settingSources follow folderConfigLoads (absent, true, false), setup runs included', () => {
+    const dir = '/some/dir'
+    const base = { run: runSummary({}), project: project({ path: dir }) }
+    expect(claudeSettingSources(base)).toEqual(['project'])
+    expect(claudeSettingSources({ ...base, folderConfigLoads: () => true })).toEqual(['project'])
+    expect(claudeSettingSources({ ...base, folderConfigLoads: () => false })).toEqual([])
+    expect(claudeSettingSources({ run: runSummary({ kind: 'setup' }), project: base.project, folderConfigLoads: () => false })).toEqual([])
+    // The explicit snapshot wins over the context in both directions.
+    expect(cliProjectSettings({ ...base, folderConfigLoads: () => false }, true).failed).toBe(false)
+  })
+
+  it('folder config trust: the ask check uses the query snapshot and never calls folderConfigLoads per tool call', async () => {
+    let loads = true
+    const calls = vi.fn(() => loads)
+    const { dir } = start({ folderConfigLoads: calls })
+    mkdirSync(join(dir, '.claude'), { recursive: true })
+    writeFileSync(join(dir, '.claude', 'settings.json'), JSON.stringify({ permissions: { allow: ['Bash(npm test:*)'] } }))
+    const q = await firstQuery()
+    expect(q.options.settingSources).toEqual(['project'])
+    const atBuild = calls.mock.calls.length
+    expect(atBuild).toBeGreaterThan(0)
+    expect((await bash(q, 'timeout 5 npm test')).hookSpecificOutput?.permissionDecision).toBe('ask')
+    // The folder went untrusted mid-run: this CLI still holds the file's rules, so the check still asks.
+    loads = false
+    expect((await bash(q, 'timeout 5 npm test')).hookSpecificOutput?.permissionDecision).toBe('ask')
+    expect(calls.mock.calls.length).toBe(atBuild)
+    // A query built now gets no sources (what a restart does).
+    expect(claudeSettingSources({ run: runSummary({}), project: project({ path: dir }), folderConfigLoads: calls })).toEqual([])
+  })
+
+  it('folder config trust: a query built while the folder does not load gets [] and no ask from its file', async () => {
+    const { dir } = start({ folderConfigLoads: () => false })
+    mkdirSync(join(dir, '.claude'), { recursive: true })
+    writeFileSync(join(dir, '.claude', 'settings.json'), JSON.stringify({ permissions: { allow: ['Bash(npm test:*)'] } }))
+    const q = await firstQuery()
+    expect(q.options.settingSources).toEqual([])
     expect((await bash(q, 'timeout 5 npm test')).hookSpecificOutput?.permissionDecision).not.toBe('ask')
   })
 

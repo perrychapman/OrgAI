@@ -22,6 +22,7 @@ import { ConnectionService } from '../connections/service'
 import { KitService } from '../kit/service'
 import { log } from '../log'
 import { MaintenanceService } from '../maintenance'
+import { TeamFilesService } from '../teamFiles/service'
 import { harnessProject } from '../mcp/assist'
 import { McpService } from '../mcp/service'
 import { QuickRunService, projectPeeks } from '../quick/quickRuns'
@@ -188,7 +189,7 @@ export interface OrgAIHost {
   /**
    * Whether host.hello accepts terminal clients now and the most it grants (socketServer.ts): AppSettings.terminalServer,
    * or this session of a headless / in-process boot while the user has made no choice; the level from
-   * AppSettings.terminalAccessLevel, always 'full' on an in-process host.
+   * AppSettings.terminalAccessLevel on every host kind (an in-process host's own CLI proves itself with the owner key).
    */
   terminalAccess(): HostTerminalAccess
   /** Stop background timers and probes (before-quit). Idempotent. */
@@ -246,9 +247,9 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     const s = settings.get()
     return {
       enabled: s.terminalServer === true || (sessionTerminal && s.terminalServerChosen !== true),
-      // The in-process host belongs to the CLI process that started it; its own commands need every scope. Every other
-      // kind (the detached Node host included, cli-standalone.md 4.2.1) follows the stored level.
-      level: HOST_KIND_CAPABILITIES[hostKind].inProcess || s.terminalAccessLevel === 'full' ? 'full' : 'operate'
+      // The same on every host kind (review H2): an in-process host's own CLI gets every scope through its in-memory
+      // owner key (socketServer.ts ownerKey), never through this level, so another client of it is capped too.
+      level: s.terminalAccessLevel === 'full' ? 'full' : 'operate'
     }
   }
   // `adapters` is declared below and only read when discovery runs.
@@ -308,6 +309,31 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     onLibraryChanged: (entries) => events.emit(IPC.skillLibraryChanged, entries),
     onProjectChanged: emitProject
   })
+  // Team files: a code project's team as plain files under .orgai/ (the project cache stays what runs read). Every
+  // ProjectStore.save passes through its hook; the folders are checked at boot (index.ts), on window focus and at project open / run start.
+  const teamFiles = new TeamFilesService({
+    dataDir,
+    projects,
+    modelContext: (id) => connections.importModelContext(id),
+    withAdapter: (project) => connections.withAdapter(project),
+    skills: {
+      readFiles: (projectId, spec) => skills.teamReadFiles(projectId, spec),
+      storeFiles: (projectId, skillId, files) => skills.teamStoreFiles(projectId, skillId, files),
+      removeFiles: (projectId, skillId) => skills.teamRemoveFiles(projectId, skillId)
+    },
+    mcp: {
+      libraryEntries: () => mcp.libraryEntries(),
+      connectorEntry: (connectorId, variant) => mcp.connectorEntryForTeam(connectorId, variant),
+      connectorPreview: (connectorId, variant) => mcp.connectorPreviewForTeam(connectorId, variant),
+      discardConnectorEntry: (entryId) => mcp.discardConnectorEntryForTeam(entryId),
+      removeServerSecrets: (projectId, serverId) => mcp.removeServerSecrets(projectId, serverId)
+    },
+    // teamFiles:changed is desktop_only delivery (registry PUSH_TABLE): it never goes on the bus a socket client can subscribe to.
+    broadcastStatus: (status) => opts.desktop?.teamFilesChanged?.(status),
+    broadcastProject: emitProject,
+    warn: (m) => log.warn(`Team files: ${m}`)
+  })
+  projects.setTeamFilesHook(teamFiles)
   const templates = new TemplateService({
     dataDir,
     projects,
@@ -373,6 +399,7 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
   let dispatcherRef: HostDispatcher | undefined
   const rm = new RunManager(adapters, runBroadcast, runStore, setup, keepRunsFor, {
     dataDir,
+    teamFiles,
     // cli-spec 3.4(1): the control socket dir, daemon secret, secrets.json and CODEX_HOME are off limits to agent tools.
     // Wave 7: plus the vault's key file, re-read per call (the vault may change; cli-standalone.md 8.4).
     controlProtectedPaths: () => controlProtectedPaths(dataDir, ownership.runtimeDir, { vaultKeyFiles: secrets.vaultKeyFiles() }),
@@ -490,7 +517,7 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     mock: mockAdapter
   })
   capabilities = caps
-  const maintenance = new MaintenanceService(projects)
+  const maintenance = new MaintenanceService(projects, teamFiles)
   const importer = new AgentImportService({
     projects,
     modelContext: (id) => connections.importModelContext(id),
@@ -636,6 +663,7 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     quick,
     templates,
     kit,
+    teamFiles,
     events,
     activity,
     usage: { refresh: () => monitor.refresh() },

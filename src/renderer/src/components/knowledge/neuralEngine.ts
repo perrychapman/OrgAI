@@ -327,8 +327,17 @@ export class NeuralEngine {
    */
   resizeWindow(w: number, h: number, dpr: number, burstStart: boolean): void {
     // One drag or one maximise reaches here several times (the panel and sidebar fold frames later): always measured from where it began.
-    if (burstStart || !this.resizeBase) this.resizeBase = { view: this.v, w: this.w, h: this.h }
+    // The burst window is extended by every stage measure, so a later resize can look like a continuation. If anything but this
+    // method moved the view since the last call (a zoom, pan or its animation), the old base is stale: start again from here.
+    if (burstStart || !this.resizeBase || this.v !== this.resizeViewOut) this.resizeBase = { view: this.v, w: this.w, h: this.h }
     const base = this.resizeBase
+    this.resizeWindowInner(base, w, h, dpr)
+    this.resizeViewOut = this.v
+  }
+
+  private resizeViewOut: View | null = null
+
+  private resizeWindowInner(base: { view: View; w: number; h: number }, w: number, h: number, dpr: number): void {
     if (this.resize(w, h, dpr) || this.n === 0 || this.w <= 0 || this.h <= 0) return
     if (!this.userView) this.fit(false)
     else {
@@ -520,6 +529,7 @@ export class NeuralEngine {
   fitNow(): void {
     this.autoFit = false
     this.userView = false
+    this.resizeBase = null
     this.host.userMoved()
     this.fit(true)
   }
@@ -527,6 +537,7 @@ export class NeuralEngine {
   zoomBy(factor: number): void {
     this.autoFit = false
     this.userView = true
+    this.resizeBase = null
     this.host.userMoved()
     const target = zoomAt(this.v, this.v.k * factor, this.w / 2, this.h / 2)
     this.moveTo(target, true)
@@ -814,6 +825,7 @@ export class NeuralEngine {
         d.moved = true
         this.autoFit = false
         this.userView = true
+        this.resizeBase = null
         this.anim = null
         this.host.userMoved()
         if (this.hoverIdx >= 0) this.setHover(-1)
@@ -848,6 +860,7 @@ export class NeuralEngine {
     const factor = Math.exp(-e.deltaY * unit * 0.0015)
     this.autoFit = false
     this.userView = true
+    this.resizeBase = null
     this.anim = null
     this.host.userMoved()
     if (this.hoverIdx >= 0) this.setHover(-1)

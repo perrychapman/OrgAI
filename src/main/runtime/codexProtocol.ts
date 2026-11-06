@@ -427,7 +427,30 @@ function tomlTable(entries: Record<string, string>): string {
     .join(', ')} }`
 }
 
-export const API_KEY_ENV = 'ORGAI_CODEX_API_KEY'
+/** Codex project trust to force for these folders (see folderTrustEntry). */
+export interface FolderTrustConfig {
+  level: 'untrusted' | 'trusted'
+  paths: string[]
+}
+
+/**
+ * The one `-c` entry that pins Codex's project trust: `projects={ "<p1>" = { trust_level = "untrusted" }, ... }`.
+ * Checked token-free with scripts/probe-codex-trust.mjs on codex 0.166.0 (Windows, no turn started): the dotted form
+ * `projects."<path>".trust_level=...` is NOT seen by the trust lookup (danger-full-access still wrote trust and loaded
+ * the repo's model and mcp_servers), while this whole-table form keeps the project layer disabled (repo model and
+ * mcp_servers absent, nothing written to CODEX_HOME/config.toml), also for a path with dots, with the path already
+ * trusted in CODEX_HOME/config.toml and for a linked worktree thread; with "trusted" the layer loads (positive control).
+ * Keys and values are TOML basic strings (tomlString), so backslashes and quotes in a path are escaped. Not checked on
+ * macOS or Linux. Returns undefined when there is nothing to pin.
+ */
+export function folderTrustEntry(trust: FolderTrustConfig | undefined): string | undefined {
+  if (!trust) return undefined
+  const paths = [...new Set(trust.paths.filter((p) => typeof p === 'string' && p.length > 0))]
+  if (!paths.length) return undefined
+  return `projects={ ${paths.map((p) => `${tomlString(p)} = { trust_level = ${tomlString(trust.level)} }`).join(', ')} }`
+}
+
+export const API_KEY_ENV ='ORGAI_CODEX_API_KEY'
 export const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com/v1'
 
 export interface LaunchConfig {
@@ -463,9 +486,11 @@ export interface LaunchConfig {
 export function buildLaunchConfig(
   connection: RunConnection | undefined,
   servers: ResolvedMcpServer[],
-  opts: { noProjectDocs?: boolean; writableRoots?: string[] } = {}
+  opts: { noProjectDocs?: boolean; writableRoots?: string[]; folderTrust?: FolderTrustConfig } = {}
 ): LaunchConfig {
   const config: string[] = [...NATIVE_SKILL_CONFIG, ...(opts.noProjectDocs ? NO_PROJECT_DOCS_CONFIG : [])]
+  const trust = folderTrustEntry(opts.folderTrust)
+  if (trust) config.push(trust)
   // Allowed folders become extra writable roots of the workspace-write sandbox (key found in the codex 0.166.0
   // binary; whether it takes effect with thread/start's sandbox mode string is unverified live).
   const roots = (opts.writableRoots ?? []).filter((r) => typeof r === 'string' && r.length > 0)

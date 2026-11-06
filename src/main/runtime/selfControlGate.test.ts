@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync as fsRealpath, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -20,6 +20,9 @@ afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true })
 })
 
+// The gate's canonical spelling comes from the native realpath, which expands 8.3 short names (RUNNER~1) on Windows;
+// the JS realpathSync keeps them. Tests build their bases with the native one so "both spellings" means the link and its target.
+const realpathSync = (p: string): string => fsRealpath.native(p)
 describe('controlProtectedPaths', () => {
   it('lists run, secrets.json and codex, plus the runtime dir when given', () => {
     const base = realpathSync(mkdtempSync(join(tmpdir(), 'orgai-scg-')))
@@ -27,7 +30,8 @@ describe('controlProtectedPaths', () => {
     const data = join(base, 'data')
     mkdirSync(data)
     const paths = controlProtectedPaths(data)
-    expect(paths).toEqual([join(data, 'run'), join(data, 'secrets.json'), join(data, 'codex')])
+    expect(paths).toEqual([join(data, 'run'), join(data, 'secrets.json'), join(data, 'codex'), join(data, 'settings.json')])
+    expect(paths).toContain(join(data, 'settings.json'))
     const rt = join(base, 'rt')
     expect(controlProtectedPaths(data, rt)).toContain(rt)
   })
@@ -39,7 +43,7 @@ describe('controlProtectedPaths', () => {
     mkdirSync(data)
     const key = join(base, 'keys', 'orgai.key')
     const paths = controlProtectedPaths(data, undefined, { vaultKeyFiles: [key, ''] })
-    expect(paths).toEqual([join(data, 'run'), join(data, 'secrets.json'), join(data, 'codex'), key])
+    expect(paths).toEqual([join(data, 'run'), join(data, 'secrets.json'), join(data, 'codex'), join(data, 'settings.json'), key])
     expect(controlProtectedPaths(data, undefined, { vaultKeyFiles: [] })).toEqual(controlProtectedPaths(data))
   })
 
@@ -51,12 +55,12 @@ describe('controlProtectedPaths', () => {
     const link = join(base, 'link')
     symlinkSync(real, link, process.platform === 'win32' ? 'junction' : 'dir')
     const paths = controlProtectedPaths(link)
-    for (const p of ['run', 'secrets.json', 'codex']) {
+    for (const p of ['run', 'secrets.json', 'codex', 'settings.json']) {
       expect(paths).toContain(join(link, p))
       expect(paths).toContain(join(real, p))
     }
     expect(new Set(paths).size).toBe(paths.length)
-    expect(paths).toHaveLength(6)
+    expect(paths).toHaveLength(8)
   })
 
   it('never includes the data dir itself, quick/, project-skills/ or skills/', () => {
@@ -419,6 +423,52 @@ describe('false positives in ordinary work (review M3)', () => {
     }
   })
 
+  it('a heredoc whose program reads it as code or as file names is still read (review: jq, git subcommand position, files-from)', () => {
+    const s = setupData()
+    const ctx: SelfControlContext = { protectedPaths: s.refs, cwd: s.proj, home: s.home }
+    const secret = join(s.data, 'run', 'daemon.secret')
+    const codex = join(s.data, 'codex')
+    for (const command of [
+      // jq takes its program from stdin; `import ... {search: <dir>}` reads <dir>/auth.json.
+      `jq -n -f /dev/stdin <<'EOF'\nimport "auth" as $a {search: "${codex}"}; $a\nEOF`,
+      // A message subcommand's name anywhere but the subcommand position does not make git a message sink.
+      `git --namespace commit hash-object -w --stdin-paths <<'EOF'\n${secret}\nEOF`,
+      `git apply --unsafe-paths --exclude commit -p0 <<'EOF'\n--- /dev/null\n+++ ${codex}/auth.json\n@@ -0,0 +1 @@\n+x\nEOF`,
+      `git -c core.x=y commit -F - <<'EOF'\n${secret}\nEOF`,
+      `gh api repos/o/r --field pr=1 --input - <<'EOF'\n${secret}\nEOF`,
+      `git log --grep commit -m "$(cat <<'EOF'\n${secret}\nEOF\n)"`,
+      // Options that read file names from stdin, on any sink.
+      `sort --files0-from=- <<'EOF'\n${codex}/auth.json\nEOF`,
+      `wc --files0-from - <<'EOF'\n${codex}/auth.json\nEOF`,
+      `git commit --pathspec-from-file=- -m x <<'EOF'\n${secret}\nEOF`,
+      `git stash push '--pathspec-from-file=-' <<'EOF'\n${secret}\nEOF`,
+      // Options that run the body as a program, and GNU / git unambiguous prefixes of the options above.
+      `sort -S 1 --compress-program=sh <<'EOF'\ncat "${secret}" > /tmp/x\norgai decide --all\nEOF`,
+      `sort --compress=sh <<'EOF'\ncat "${secret}"\nEOF`,
+      `sort --files0=- <<'EOF'\n${codex}/auth.json\nEOF`,
+      `wc --files0=- <<'EOF'\n${codex}/auth.json\nEOF`,
+      `wc --f=- <<'EOF'\n${codex}/auth.json\nEOF`,
+      `git commit --pathspec-from=- -m x <<'EOF'\n${secret}\nEOF`,
+      `rg --pre sh x - <<'EOF'\n${secret}\nEOF`,
+      `rg --pre-glob '*' x - <<'EOF'\n${secret}\nEOF`
+    ]) {
+      expect(deny('Bash', { command }, ctx), command.slice(0, 70)).not.toBeNull()
+    }
+    // Messages through git / gh in the subcommand position (after -C <dir> or --no-pager) are still left out.
+    const big = 'orgai status\n'.repeat(30_000)
+    for (const command of [
+      `git -C sub commit -q -F - <<'EOF'\n${big}EOF`,
+      `git --no-pager tag -a v1 -F - <<'EOF'\n${big}EOF`,
+      `gh issue create --title x --body-file - <<'EOF'\n${big}EOF`,
+      `git -C sub commit -m "$(cat <<'EOF'\n${big}EOF\n)"`,
+      // git's own --file is the message (-F), never an abbreviation.
+      `git commit -q --file - <<'EOF'\n${big}EOF`,
+      `git commit -q --file=- <<'EOF'\n${big}EOF`
+    ]) {
+      expect(deny('Bash', { command }, ctx), command.slice(0, 70)).toBeNull()
+    }
+  })
+
   it('a heredoc that feeds code, names files to run, or that the parser is not sure of is still read', () => {
     const s = setupData()
     const ctx: SelfControlContext = { protectedPaths: s.refs, cwd: s.proj, home: s.home }
@@ -547,7 +597,9 @@ describe('false positives in ordinary work (review M3)', () => {
       { pattern: 'TODO', path: '~', glob: '**/*.{ts,tsx}' },
       { pattern: 'TODO', path: s.home, type: 'ts' },
       { pattern: 'TODO', path: s.home, type: 'markdown' },
-      { pattern: 'TODO', path: s.data, glob: '*.md' }
+      { pattern: 'TODO', path: s.data, glob: '*.md' },
+      { pattern: 'TODO', path: s.home, type: 'ts', glob: '*.tsx' },
+      { pattern: 'TODO', path: s.home, glob: '*.{ts,tsx}', type: 'ts' }
     ]) {
       expect(deny('Grep', input, ctx), JSON.stringify(input)).toBeNull()
     }
@@ -567,7 +619,17 @@ describe('false positives in ordinary work (review M3)', () => {
       { pattern: 'x', path: s.home, glob: '*.ts*' },
       { pattern: 'x', path: s.home, type: 'json' },
       { pattern: 'x', path: join(s.data, 'run'), glob: '*.ts' },
-      { pattern: 'x', path: join(s.data, 'secrets.json'), type: 'ts' }
+      { pattern: 'x', path: join(s.data, 'secrets.json'), type: 'ts' },
+      // Review follow-up: a safe type never makes an unsafe glob safe (ripgrep's positive --glob wins over --type).
+      { pattern: '.', path: s.home, type: 'ts', glob: '*' },
+      { pattern: '.', path: s.data, type: 'ts', glob: 'daemon.secret' },
+      { pattern: '.', path: s.home, type: 'json', glob: '*.ts' },
+      { pattern: '.', path: s.home, type: 'ts', glob: 7 },
+      // Claude Code's Grep splits glob on whitespace and (outside braces) commas into several --glob flags.
+      { pattern: '.', path: s.home, glob: '* *.ts' },
+      { pattern: '.', path: s.home, glob: '*,x.ts' },
+      { pattern: '.', path: s.home, glob: '*\t*.ts' },
+      { pattern: '.', path: s.home, type: 'ts', glob: '*,x.ts' }
     ]) {
       expect(deny('Grep', input, ctx), JSON.stringify(input)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
     }
@@ -748,6 +810,29 @@ describe('stdin, here-strings, substitutions, find -exec, globs, braces and esca
       'if [ -f x ]; then echo y; fi',
       'printf "%s" "${HOME}"'
     ]) {
+      expect(deny(command), command).toBeNull()
+    }
+  })
+
+  it('treats stdin paths and inline code anywhere in the words as code from the pipe', () => {
+    for (const command of [
+      "echo 'orgai runs stop R1' | bash /dev/stdin",
+      "echo 'orgai runs stop R1' | node /dev/stdin",
+      "echo 'orgai runs stop R1' | sh /dev/fd/0",
+      "echo 'orgai runs stop R1' | sh /proc/self/fd/0",
+      "echo 'orgai runs stop R1' | bash /proc/123/fd/0",
+      "echo 'orgai runs stop R1' | node --max-old-space-size 4096 /dev/stdin",
+      "echo 'orgai runs stop R1' | node --max-old-space-size 4096 -e \"eval(require('fs').readFileSync(0,'utf8'))\"",
+      "echo 'orgai runs stop R1' | node --max-old-space-size 4096 --eval x",
+      "echo 'orgai runs stop R1' | node script.mjs -e x",
+      "echo 'orgai runs stop R1' | bash script.sh -c x"
+    ]) {
+      expect(deny(command), command).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+    }
+  })
+
+  it('still reads stdin as data for a real script file', () => {
+    for (const command of ['cat x | node script.mjs', 'echo orgai | node --max-old-space-size 4096 script.mjs', 'echo orgai status | bash scripts/check.sh']) {
       expect(deny(command), command).toBeNull()
     }
   })

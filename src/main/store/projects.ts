@@ -8,6 +8,7 @@ import { migrateProject } from '../connections/remap'
 import { validModelId } from '../connections/codexAccount'
 import { isInsideEither, pathKey, samePath } from '../quick/scratch'
 import { allowedDirectoryRisk } from '../runtime/allowedDirectories'
+import { cleanFolderConfigTrust, initialFolderConfigTrust } from '../runtime/folderConfigTrust'
 import { homedir } from 'node:os'
 
 /** The tier mapping of a connection, for the invalid-model fallback. Default: the connection's builtin catalog only. */
@@ -318,6 +319,17 @@ function withCleanAllowedDirectories(project: Project, dataDir: string, home: st
     delete next.knowledgeAutoContext
     changed = true
   }
+  // Project.folderConfigTrust (folder config gate): rebuilt when present, junk fails closed to 'untrusted'. Never
+  // added to a project without it: projects stored before the gate stay 'none' (no gate) on purpose.
+  if ('folderConfigTrust' in project) {
+    const trust = cleanFolderConfigTrust(project.folderConfigTrust)
+    if (JSON.stringify(trust) !== JSON.stringify(project.folderConfigTrust)) {
+      next = { ...next }
+      if (trust === undefined) delete next.folderConfigTrust
+      else next.folderConfigTrust = trust
+      changed = true
+    }
+  }
   if ('client' in project) {
     const client = cleanClient(project.client)
     if (client !== project.client) {
@@ -365,6 +377,15 @@ function sameFolder(a: string, b: string): boolean {
 }
 
 /**
+ * Team files (src/main/teamFiles/service.ts) see every `save`: `beforeSave` gets the stored project (null when it is
+ * new) and the cleaned incoming one, and returns the project to store (usually `next`; a rebased copy when the files
+ * were ingested first). It must not throw. `saveInternal` bypasses it.
+ */
+export interface ProjectSaveHook {
+  beforeSave(before: Project | null, next: Project): Project
+}
+
+/**
  * The projects and format version of a parsed `projects.json` (pure; ProjectStore's load and the CLI's read-only
  * reader). Not migrated. A null file throws, as the store's load always did (it then starts empty).
  */
@@ -378,6 +399,7 @@ export function parseProjectsFile(parsed: unknown): { projects: Project[]; versi
 
 /** Simple JSON-file store. Projects are small and few, so a database is overkill for now. */
 export class ProjectStore {
+  private saveHook?: ProjectSaveHook
   private file: string
   private projects: Project[] = []
   /** Format version of the loaded projects.json; a missing file is current. */
@@ -442,6 +464,11 @@ export class ProjectStore {
     return changed
   }
 
+  /** Installed once by index.ts after the team files service exists. */
+  setTeamFilesHook(hook: ProjectSaveHook | undefined): void {
+    this.saveHook = hook
+  }
+
   list(): Project[] {
     return [...this.projects].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
   }
@@ -457,7 +484,19 @@ export class ProjectStore {
   create(
     input: ProjectCreateInput,
     settings?: AppSettings,
-    opts: { mockAvailable?: boolean; fs?: PathFs; prepare?: (p: Project) => Project; importRoles?: (p: Project, sources: unknown) => Project; fromTemplate?: (p: Project, templateId: string) => Project } = {}
+    opts: {
+      mockAvailable?: boolean
+      fs?: PathFs
+      prepare?: (p: Project) => Project
+      importRoles?: (p: Project, sources: unknown) => Project
+      fromTemplate?: (p: Project, templateId: string) => Project
+      /**
+       * Start from the team in the folder's `.orgai/` (ProjectCreateInput.teamFiles). `build` returns the project with the
+       * files' team applied (it throws a readable message for a stale digest or a problem) and wins over importRoles and
+       * fromTemplate; `adopted` runs once the project is stored.
+       */
+      teamFiles?: { build: (p: Project) => Project; adopted: (p: Project) => void }
+    } = {}
   ): Project {
     const error = createPathError(input, checkProjectPath(input.path, opts.fs))
     if (error) throw new Error(error)
@@ -466,9 +505,11 @@ export class ProjectStore {
     // Mock projects stay on the anthropic defaults and the mock adapter; others take the default connection.
     if (input.mock) project.provider = { ...project.provider, id: 'mock' }
     else if (opts.prepare) project = opts.prepare(project)
+    const fromFiles = !!input.teamFiles && !!opts.teamFiles
+    if (fromFiles) project = (opts.teamFiles as NonNullable<typeof opts.teamFiles>).build(project)
     // Imported agents replace the default chart after the connection is chosen, so their models map to it.
-    let imported = false
-    if (Array.isArray(input.importAgents) && input.importAgents.length && opts.importRoles) {
+    let imported = fromFiles
+    if (!fromFiles && Array.isArray(input.importAgents) && input.importAgents.length && opts.importRoles) {
       const before = project
       project = opts.importRoles(project, input.importAgents)
       imported = project.roles !== before.roles
@@ -476,8 +517,19 @@ export class ProjectStore {
     // A team template pre-fills the chart only when the agent import produced nothing (importAgents wins).
     if (!imported && typeof input.templateId === 'string' && input.templateId && opts.fromTemplate) project = opts.fromTemplate(project, input.templateId)
     project = sanitizeRoleModels(project, this.tierContext).project
+    // A folder that came with agent config of its own (a cloned repository, or a quick chat promoted to a project) starts
+    // gated: runs ignore that config until the user accepts it. A missing folder or an engagement stays ungated.
+    const trust = initialFolderConfigTrust(project)
+    if (trust) project = { ...project, folderConfigTrust: trust }
     this.projects.push(project)
     this.persist()
+    if (fromFiles) {
+      try {
+        opts.teamFiles?.adopted(project)
+      } catch (e) {
+        console.warn(`Team files: could not record the adopted team: ${e instanceof Error ? e.message : String(e)}`)
+      }
+    }
     return project
   }
 
@@ -487,8 +539,28 @@ export class ProjectStore {
    */
   save(project: Project): Project {
     if (isVirtualProjectId(project?.id)) throw new Error('An assistant project (Chat, Skill assistant, harness) cannot be stored.')
-    const updated = { ...withCleanAllowedDirectories(sanitizeRoleModels(project, this.tierContext).project, this.dataDir, this.home).project, updatedAt: new Date().toISOString() }
-    const idx = this.projects.findIndex((p) => p.id === project.id)
+    let cleaned = withCleanAllowedDirectories(sanitizeRoleModels(project, this.tierContext).project, this.dataDir, this.home).project
+    // Team files: the hook may rebase the project (a change pulled into the folder is kept) and writes the team files.
+    if (this.saveHook) {
+      try {
+        const hooked = this.saveHook.beforeSave(this.get(project.id), cleaned)
+        if (hooked !== cleaned) cleaned = withCleanAllowedDirectories(sanitizeRoleModels(hooked, this.tierContext).project, this.dataDir, this.home).project
+      } catch (e) {
+        console.warn(`Team files: the save hook failed; saving without it: ${e instanceof Error ? e.message : String(e)}`)
+      }
+    }
+    return this.commitSave(cleaned)
+  }
+
+  /** Store a project without the team files hook (the service's own saves: a team change that came from the files). */
+  saveInternal(project: Project): Project {
+    if (isVirtualProjectId(project?.id)) throw new Error('An assistant project (Chat, Skill assistant, harness) cannot be stored.')
+    return this.commitSave(withCleanAllowedDirectories(sanitizeRoleModels(project, this.tierContext).project, this.dataDir, this.home).project)
+  }
+
+  private commitSave(cleaned: Project): Project {
+    const updated = { ...cleaned, updatedAt: new Date().toISOString() }
+    const idx = this.projects.findIndex((p) => p.id === cleaned.id)
     if (idx === -1) this.projects.push(updated)
     else this.projects[idx] = updated
     this.persist()
@@ -509,6 +581,13 @@ export class ProjectStore {
     // A renderer may never change a project's kind (it selects the rules file and where OrgAI writes).
     if (stored.kind !== undefined) next.kind = stored.kind
     else delete next.kind
+    // Nor the folder config gate: only projects:setFolderConfigTrust changes it. A new folder is judged afresh.
+    if (typeof next.path === 'string' && next.path !== stored.path) {
+      const trust = initialFolderConfigTrust({ path: next.path, kind: stored.kind })
+      if (trust) next.folderConfigTrust = trust
+      else delete next.folderConfigTrust
+    } else if (stored.folderConfigTrust !== undefined) next.folderConfigTrust = stored.folderConfigTrust
+    else delete next.folderConfigTrust
     if (stored.mcpServers !== undefined) next.mcpServers = stored.mcpServers
     else delete next.mcpServers
     if (stored.plugins !== undefined) next.plugins = stored.plugins

@@ -583,6 +583,57 @@ describe.skipIf(!posix)('acquireHostOwnership', () => {
       expect(warnings.join('\n')).toMatch(/could not be confirmed/)
     })
 
+    it.each(['refused', 'enoent'] as const)(
+      'never takes over from an unconfirmed pid whose daemon.json says listening: false, endpoint %s (Terminal access off, review M9 + M11)',
+      async (answer) => {
+        const env = tempEnv()
+        daemonJson(env, { hostInstanceId: '0d0d0d0d0d0d', pid: process.pid, endpoint: socketPathFor(env.dataDir, '0d0d0d0d0d0d'), hostKind: 'desktop', listening: false })
+        const err = await acquireHostOwnership(opts(env, { liveness: () => 'unconfirmed', connectProbe: async () => answer })).catch((e: unknown) => e)
+        expect(err).toBeInstanceOf(HostAlreadyRunningError)
+        expect((err as HostAlreadyRunningError).message).toContain(env.runDir)
+        expect(readDaemonInfo(env.dataDir)?.hostInstanceId).toBe('0d0d0d0d0d0d')
+        // The startup mutex is not left behind.
+        expect(existsSync(join(env.runDir, 'startup.mkdir'))).toBe(false)
+      }
+    )
+
+    it.each(['desktop', 'headless-host'] as const)(
+      'an Electron launch holding the single-instance lock takes over from an unconfirmed %s pid whose daemon.json says listening: false (review M9 follow-up)',
+      async (hostKind) => {
+        // A crashed desktop host with Terminal access off; Windows reused its pid for an elevated process.
+        const env = tempEnv()
+        daemonJson(env, { hostInstanceId: '0f0f0f0f0f0f', pid: process.pid, endpoint: socketPathFor(env.dataDir, '0f0f0f0f0f0f'), hostKind, listening: false })
+        warnings.length = 0
+        const own = await acquire(env, { warn, singleInstanceLockHeld: true, liveness: () => 'unconfirmed', connectProbe: async () => 'enoent' })
+        expect(readDaemonInfo(env.dataDir)?.hostInstanceId).toBe(own.info.hostInstanceId)
+        expect(warnings.join('\n')).toMatch(/single-instance lock; taking over/)
+      }
+    )
+
+    it('the single-instance lock never reclaims an inproc incumbent, a confirmed pid or an endpoint that answers', async () => {
+      const cases: { hostKind: 'desktop' | 'inproc'; live: 'same' | 'unconfirmed'; answer: 'enoent' | 'connected' }[] = [
+        { hostKind: 'inproc', live: 'unconfirmed', answer: 'enoent' },
+        { hostKind: 'desktop', live: 'same', answer: 'enoent' },
+        { hostKind: 'desktop', live: 'unconfirmed', answer: 'connected' }
+      ]
+      for (const c of cases) {
+        const env = tempEnv()
+        daemonJson(env, { hostInstanceId: '0c0c0c0c0c0c', pid: process.pid, endpoint: socketPathFor(env.dataDir, '0c0c0c0c0c0c'), hostKind: c.hostKind, listening: false })
+        const err = await acquireHostOwnership(
+          opts(env, { singleInstanceLockHeld: true, liveness: () => c.live, connectProbe: async () => c.answer })
+        ).catch((e: unknown) => e)
+        expect(err, JSON.stringify(c)).toBeInstanceOf(HostAlreadyRunningError)
+        expect(readDaemonInfo(env.dataDir)?.hostInstanceId).toBe('0c0c0c0c0c0c')
+      }
+    })
+
+    it('takes over from a dead pid whose daemon.json says listening: false', async () => {
+      const env = tempEnv()
+      daemonJson(env, { hostInstanceId: '0e0e0e0e0e0e', pid: process.pid, endpoint: socketPathFor(env.dataDir, '0e0e0e0e0e0e'), hostKind: 'desktop', listening: false })
+      const own = await acquire(env, { liveness: () => 'dead', connectProbe: async () => 'enoent' })
+      expect(readDaemonInfo(env.dataDir)?.hostInstanceId).toBe(own.info.hostInstanceId)
+    })
+
     it.each(['connected', 'timeout', 'eacces'] as const)('never takes over from an unconfirmed pid whose endpoint answers (%s)', async (answer) => {
       const env = tempEnv()
       daemonJson(env, { hostInstanceId: '0b0b0b0b0b0b', pid: process.pid, endpoint: socketPathFor(env.dataDir, '0b0b0b0b0b0b') })

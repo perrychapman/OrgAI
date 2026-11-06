@@ -34,10 +34,11 @@ describe('resolveDataDirs', () => {
     const base = mkdtempSync(join(tmpdir(), 'loc-'))
     dirs.push(base)
     mkdirSync(join(base, 'real'))
-    symlinkSync(join(base, 'real'), join(base, 'link'))
+    symlinkSync(join(base, 'real'), join(base, 'link'), 'junction') // junction: no privilege needed on Windows, ignored on POSIX
     const r = resolveDataDirs({ flag: join(base, 'link'), env: {} })
-    expect(r.userDataDir).toBe(realpathSync(join(base, 'real')))
-    expect(r.dataDir).toBe(join(realpathSync(join(base, 'real')), 'data'))
+    // locate.ts uses realpathSync.native, which expands 8.3 short names (RUNNER~1); the JS realpathSync keeps them.
+    expect(r.userDataDir).toBe(realpathSync.native(join(base, 'real')))
+    expect(r.dataDir).toBe(join(realpathSync.native(join(base, 'real')), 'data'))
     const missing = resolveDataDirs({ flag: join(base, 'nope'), env: {} })
     expect(missing.userDataDir.endsWith('nope')).toBe(true)
   })

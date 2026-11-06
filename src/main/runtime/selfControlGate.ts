@@ -141,7 +141,7 @@ export interface ControlProtectedExtras {
  * nearest existing ancestor plus the rest) spelling, deduped, in a stable order.
  */
 export function controlProtectedPaths(dataDir: string, runtimeSocketDir?: string, extras: ControlProtectedExtras = {}): string[] {
-  const roots = [join(dataDir, 'run'), join(dataDir, 'secrets.json'), join(dataDir, 'codex')]
+  const roots = [join(dataDir, 'run'), join(dataDir, 'secrets.json'), join(dataDir, 'codex'), join(dataDir, 'settings.json')]
   if (runtimeSocketDir) roots.push(runtimeSocketDir)
   for (const f of extras.vaultKeyFiles ?? []) if (typeof f === 'string' && f !== '') roots.push(f)
   const out: string[] = []
@@ -205,7 +205,10 @@ export function setOrgaiCliRoots(roots: readonly string[]): void {
  * and the launcher folder `<Resources>/bin` (packagedLayout.ts `packagedCliRoots`).
  */
 export function orgaiCliRootsOf(appRoot: string, platform: NodeJS.Platform = process.platform): string[] {
-  const out = [join(appRoot, 'out', 'cli'), join(appRoot, 'src', 'cli')]
+  // The platform's own path module: the roots are compared with it (insideCliRoot), so a win32 spelling must stay
+  // backslashed and a POSIX one forward-slashed whatever the host is.
+  const p = platform === 'win32' ? win32 : posix
+  const out = [p.join(appRoot, 'out', 'cli'), p.join(appRoot, 'src', 'cli')]
   for (const r of packagedCliRoots(appRoot, platform)) if (!out.includes(r)) out.push(r)
   return out
 }
@@ -1373,8 +1376,22 @@ const INTERPRETER_VALUE_OPTIONS: ReadonlySet<string> = new Set([
 /** Interpreter options whose value is code to run (the program then has no script file; stdin may be read). */
 const INTERPRETER_EVAL_OPTIONS = /^(?:-e|-p|-pe|-ep|--eval|--print)(?:=|$)/
 
+/** A word naming stdin as a file (`/dev/stdin`, `/dev/fd/N`, `/proc/<pid|self>/fd/N`) or a bare `-`. */
+const STDIN_WORD = /^(?:-|\/dev\/stdin|\/dev\/fd\/\d+|\/proc\/(?:self|\d+|thread-self)\/fd\/\d+)$/
+/** An inline-code option anywhere in the words: `-e`, `-c`, `-p`, `--eval`, `--print` (also `=value` and `-e'code'` forms). */
+const INLINE_CODE_WORD = /^(?:-[A-Za-z]*[ecp][A-Za-z]*|--eval|--print|--command)(?:=|$)/
+
+/**
+ * Stdin or inline code anywhere in the words means the program reads its code from there, whatever else looks like a
+ * script (an unknown option's value can never pass as the script file).
+ */
+function readsStdinOrInline(rest: readonly string[]): boolean {
+  return rest.some((w) => STDIN_WORD.test(w) || INLINE_CODE_WORD.test(w))
+}
+
 /** True when the interpreter runs a script file (or a subcommand such as `bun test`), so stdin is data to it. */
 function interpreterHasScript(bare: string, rest: readonly string[]): boolean {
+  if (readsStdinOrInline(rest.filter((w) => !/^\d*[<>]/.test(w)))) return false
   for (let k = 0; k < rest.length; k++) {
     const w = rest[k]
     if (w === '-') return false
@@ -1398,6 +1415,7 @@ function interpreterHasScript(bare: string, rest: readonly string[]): boolean {
 
 /** True when a POSIX shell's words name a script file to run (no -c, no -s, not `-`), so stdin is data to it. */
 function shellHasScriptFile(rest: readonly string[]): boolean {
+  if (rest.some((w) => STDIN_WORD.test(w) || NESTING_FLAGS.test(w))) return false
   let valueNext = false
   for (let k = 0; k < rest.length; k++) {
     const w = rest[k]
@@ -1441,11 +1459,41 @@ export function commandRunsOrgaiCli(command: string, opts: CliScanOptions = {}):
   return cliScan(command, opts) !== null
 }
 
-/** Programs that read a here-document's body only as data: never as code, file names or arguments to run. */
+/**
+ * Programs that read a here-document's body only as data: never as code, file names or arguments to run. Not jq: it
+ * takes its program from stdin (`jq -f /dev/stdin`) and a program's `import ... {search: "<dir>"}` reads files there.
+ */
 const HEREDOC_DATA_SINKS: ReadonlySet<string> = new Set([
-  'cat', 'tee', 'git', 'gh', 'wc', 'head', 'tail', 'sort', 'uniq', 'tr', 'cut', 'grep', 'egrep', 'fgrep', 'rg', 'diff',
-  'jq', 'column', 'fold', 'fmt', 'nl', 'rev', 'paste', 'expand', 'unexpand', 'base64', 'iconv'
+  'cat', 'tee', 'git', 'gh', 'wc', 'head', 'tail', 'uniq', 'tr', 'cut', 'grep', 'egrep', 'fgrep', 'rg', 'diff',
+  'column', 'fold', 'fmt', 'nl', 'rev', 'paste', 'expand', 'unexpand', 'base64', 'iconv'
 ])
+// Not sort (review follow-up): `sort --compress-program=sh` runs the body as a shell script.
+/**
+ * Options that make a program read its stdin as file names or paths (`sort --files0-from=-`, `wc --files0-from=-`,
+ * `git commit --pathspec-from-file=-`, `git hash-object --stdin-paths`): a here-document next to one is never stripped,
+ * whatever the program.
+ */
+const STDIN_NAMES_FILES = /^-{1,2}[A-Za-z0-9-]*(?:files0?-from|from-file|stdin-paths)(?:=|$)/
+/**
+ * Long options that read file names from stdin or run another program (`--compress-program`, ripgrep's `--pre` /
+ * `--pre-glob`). GNU getopt and git's parse-options take any unambiguous prefix (`wc --files0=-`, `sort --compress=sh`,
+ * `git commit --pathspec-from=-`), so a long option that is a prefix of one of these counts too.
+ */
+const STDIN_OR_PROGRAM_OPTIONS: readonly string[] = ['files0-from', 'files-from', 'pathspec-from-file', 'stdin-paths', 'compress-program', 'pre', 'pre-glob']
+
+/**
+ * True when a command word makes a here-document next to it more than data: stdin names files or an option runs a
+ * program. git's own `--file` (`git commit --file -`, the message) is an exact option, never an abbreviation.
+ */
+function stdinNotData(word: string, program: string): boolean {
+  const w = word.replace(/^['"]|['"]$/g, '')
+  if (STDIN_NAMES_FILES.test(w)) return true
+  const m = /^--([A-Za-z0-9][A-Za-z0-9-]*)(?:=|$)/.exec(w)
+  if (!m) return false
+  const name = m[1].toLowerCase()
+  if (program === 'git' && name === 'file') return false
+  return STDIN_OR_PROGRAM_OPTIONS.some((o) => o.startsWith(name))
+}
 /** Words that may open a command before its program (`{ cat <<EOF ... }`, `then cat <<EOF`). */
 const HEREDOC_LEADERS: ReadonlySet<string> = new Set(['{', '!', 'then', 'do', 'else'])
 /** A `$(cat <<'EOF' ...)` substitution that is the value of a git / gh message option. */
@@ -1476,15 +1524,33 @@ function commandName(cmd: string): { name: string; words: string[] } | null {
   return { name, words: words.slice(k) }
 }
 
+/**
+ * True for `git <message subcommand> ...` / `gh <message subcommand> ...` with the subcommand in its own position: the
+ * first word after `git` (only `-C <dir>` and `--no-pager` may come before it) or after `gh`. A message subcommand's
+ * name later in the line (`git --namespace commit hash-object ...`, `git apply --exclude commit ...`) does not count.
+ */
+function messageCommand(cmd: { name: string; words: string[] }): boolean {
+  const w = cmd.words
+  if (cmd.name === 'gh') return GH_MESSAGE_SUBCOMMANDS.has(w[1] ?? '')
+  if (cmd.name !== 'git') return false
+  let k = 1
+  for (;;) {
+    if (w[k] === '-C' && w[k + 1] !== undefined) k += 2
+    else if (w[k] === '--no-pager') k++
+    else break
+  }
+  return GIT_MESSAGE_SUBCOMMANDS.has(w[k] ?? '')
+}
+
 /** May the here-document whose operator starts at `op` (inside `frames`) be read as data only? (body checks aside) */
 function heredocEligible(text: string, frames: readonly HeredocFrame[], op: number): boolean {
   const f = frames[frames.length - 1]
   const cmd = commandName(text.slice(f.cmdStart, op))
   if (!cmd) return false
+  if (cmd.words.some((w) => stdinNotData(w, cmd.name))) return false
   if (frames.length === 1) {
     // git / gh only as a message (`git commit -F -`, `gh pr create --body-file -`): never `git apply`, whose patch names files.
-    if (cmd.name === 'git') return cmd.words.some((w) => GIT_MESSAGE_SUBCOMMANDS.has(w))
-    if (cmd.name === 'gh') return cmd.words.some((w) => GH_MESSAGE_SUBCOMMANDS.has(w))
+    if (cmd.name === 'git' || cmd.name === 'gh') return messageCommand(cmd)
     return HEREDOC_DATA_SINKS.has(cmd.name)
   }
   // `git commit -m "$(cat <<'EOF' ... EOF)"`: only plain cat, one level deep, as a git / gh message value.
@@ -1493,9 +1559,8 @@ function heredocEligible(text: string, frames: readonly HeredocFrame[], op: numb
   if (!MESSAGE_OPTION_TAIL.test(outerText)) return false
   const outer = commandName(outerText)
   if (!outer) return false
-  if (outer.name === 'git') return outer.words.some((w) => GIT_MESSAGE_SUBCOMMANDS.has(w))
-  if (outer.name === 'gh') return outer.words.some((w) => GH_MESSAGE_SUBCOMMANDS.has(w))
-  return false
+  if (outer.words.some((w) => stdinNotData(w, outer.name))) return false
+  return messageCommand(outer)
 }
 
 /** True when `segment` (the operator's line) pipes anywhere outside quotes. */
@@ -1517,8 +1582,9 @@ function pipesOnLine(segment: string): boolean {
 /**
  * A Bash command with the bodies of its data-only here-documents left out (review M3), so a large `cat <<'EOF' >
  * file` or a `git commit -m "$(cat <<'EOF' ...)"` message is neither denied for its size nor read as commands. A body
- * is left out only when all of these hold: its program is a data sink (HEREDOC_DATA_SINKS; inside a substitution only
- * `cat` as a git / gh message value), its delimiter is quoted or its body has no `$(` / backtick, its operator's line
+ * is left out only when all of these hold: its program is a data sink (HEREDOC_DATA_SINKS; git / gh only with a message
+ * subcommand in the subcommand position; inside a substitution only `cat` as a git / gh message value), no word of its
+ * command makes stdin name files or runs another program (stdinNotData), its delimiter is quoted or its body has no `$(` / backtick, its operator's line
  * pipes nowhere, and no piece of the rest of the command is a shell, an interpreter, `.` / `source`, eval, xargs or
  * parallel, nor a program run by its path (any of which could run the written text). Anything this parser is not sure bash reads the same way (arithmetic
  * `((`, backticks, `$'...'`, `case`, an unterminated or continued body, an odd delimiter) returns the text unchanged,
@@ -1710,7 +1776,10 @@ function searchDenied(
   // source or text files with a known extension (review M3): no protected file has one.
   if (root !== undefined && pathAtOrUnder(root, refs, ctx.cwd, opts)) return true
   if (toolName === 'Grep') {
-    const safeFilter = safeFileGlob(input.glob) || safeSearchType(input.type)
+    // Every filter given must be safe (review follow-up): ripgrep lets a positive --glob win over --type, so a safe
+    // `type` next to `glob: '*'` still searches every file.
+    const has = (v: unknown): boolean => v !== undefined && v !== null && v !== ''
+    const safeFilter = (has(input.glob) || has(input.type)) && (!has(input.glob) || safeGrepGlob(input.glob)) && (!has(input.type) || safeSearchType(input.type))
     if (root !== undefined && !safeFilter && searchReaches(root, undefined, refs, ctx.cwd, opts)) return true
     return pattern !== undefined && isRootedPattern(pattern, platform) && pathAtOrUnder(pattern, refs, ctx.cwd, opts) !== null
   }
@@ -1763,6 +1832,22 @@ function safeFileGlob(v: unknown): boolean {
     const m = /\.([A-Za-z0-9]+)$/.exec(base)
     return !!m && SAFE_SEARCH_EXTS.has(m[1].toLowerCase()) && !a.startsWith('!')
   })
+}
+
+/**
+ * A Grep `glob` that is safe as ripgrep receives it. Claude Code's Grep splits `glob` on whitespace, and a piece
+ * without braces on commas, into several --glob flags (`'* *.ts'`, `'*,x.ts'` would pass `*`), so whitespace and a
+ * comma outside braces are refused; what is left must be a safeFileGlob.
+ */
+function safeGrepGlob(v: unknown): boolean {
+  if (typeof v !== 'string' || /\s/.test(v)) return false
+  let depth = 0
+  for (const ch of v) {
+    if (ch === '{') depth++
+    else if (ch === '}') depth = Math.max(0, depth - 1)
+    else if (ch === ',' && depth === 0) return false
+  }
+  return safeFileGlob(v)
 }
 
 function safeSearchType(v: unknown): boolean {

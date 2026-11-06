@@ -1,6 +1,6 @@
 import type { KeyboardEvent, ReactElement } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ChevronDown, Download, LayoutGrid, LayoutTemplate, MousePointerClick, Plus, Undo2, Upload } from 'lucide-react'
+import { ChevronDown, Download, LayoutGrid, LayoutTemplate, MousePointerClick, Plus, Undo2 } from 'lucide-react'
 import {
   ReactFlow,
   Controls,
@@ -54,7 +54,11 @@ function roleNodeSize(style: CanvasNodeStyle, layout: CanvasLayout): { width: nu
   return ROLE_NODE_SIZE[style === 'compact' ? 'compact' : 'card']
 }
 import { nextRoleName, removeRole, restoreRole, setReportsTo, wouldCycle, type RemovedRole } from '../lib/roleOps'
-import { cleanIpcError } from '../lib/ipcError'
+import TeamFilesLine from '../components/team/TeamFilesLine'
+import TeamFilesCard from '../components/team/TeamFilesCard'
+import TeamFilesAppliedNotice from '../components/team/TeamFilesAppliedNotice'
+import { useTeamFilesActions } from '../components/team/useTeamFilesActions'
+import { approveBlockedReason, cardVisible, importSourcesFor } from '../lib/teamFiles'
 import { useCssVar } from '../lib/useCssVar'
 
 const nodeTypes = { role: RoleNode }
@@ -175,7 +179,15 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
   const [importDialog, setImportDialog] = useState<{ fresh: boolean } | null>(null)
   const [scan, setScan] = useState<AgentImportScan | null>(null)
   const [memory, setMemory] = useState<BannerMemory | null>(() => readBannerMemory(window.localStorage, project.id))
-  const [exported, setExported] = useState<{ path?: string; error?: string } | null>(null)
+  // Team files (spec docs/design/team-files.md): the status line, the approval card and the applied-at-once notice.
+  const filesStatus = useAppStore((s) => s.teamFilesByProject[project.id])
+  const filesActions = useTeamFilesActions(project.id)
+  const filesFocus = useAppStore((s) => s.teamFilesFocus)
+  const [cardFocusN, setCardFocusN] = useState(0)
+  const [assistantShown, setAssistantShown] = useState(false)
+  const lineRef = useRef<HTMLDivElement>(null)
+  const filesOn = !!filesStatus && filesStatus.state !== 'off'
+  const showCard = cardVisible(filesStatus)
   const importRequest = useAppStore((s) => s.importRequest)
   const importNotice = useAppStore((s) => s.importNotices[project.id])
   const dismissImportNotice = useAppStore((s) => s.dismissImportNotice)
@@ -197,6 +209,41 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
   const closeTemplateDialog = (): void => {
     setTemplateDialog(null)
     focusTemplatesButton()
+  }
+
+  // The files may have changed since the last push (a checkout, an edit): ask when the tab opens for this project.
+  useEffect(() => {
+    void useAppStore.getState().refreshTeamFiles(project.id)
+  }, [project.id])
+  // A request from the Needs-you list lands focus on the approval card once the status is known.
+  useEffect(() => {
+    if (!filesFocus || filesFocus.projectId !== project.id || !filesStatus) return
+    if (showCard) setCardFocusN(filesFocus.n)
+    else window.requestAnimationFrame(() => lineRef.current?.focus())
+    useAppStore.getState().clearTeamFilesFocus()
+  }, [filesFocus, filesStatus, project.id, showCard])
+  useEffect(() => {
+    if (!showCard) setAssistantShown(false)
+  }, [showCard])
+  // The agent files the chart has not taken in. `.orgai` agents are the team files' own while those are on.
+  const foundSources = useMemo(() => importSourcesFor(scan?.sources ?? [], filesOn), [scan, filesOn])
+
+  const decide = async (kind: 'approve' | 'reject'): Promise<void> => {
+    const digest = filesStatus?.digest
+    if (!digest) return
+    if (kind === 'approve' && filesStatus && approveBlockedReason(filesStatus)) return
+    const ok = await (kind === 'approve' ? filesActions.approve(digest) : filesActions.reject(digest))
+    // The card is gone after a decision, so focus goes to the status line; a refusal keeps focus on the card's own
+    // buttons unless the re-fetch removed the card too (a stale digest).
+    if (ok) window.requestAnimationFrame(() => lineRef.current?.focus())
+    else settleFocus()
+  }
+  /** Focus to the status line when the element that had it was removed (focus fell to the body). */
+  const settleFocus = (): void => {
+    window.requestAnimationFrame(() => {
+      const a = document.activeElement
+      if (!a || a === document.body) lineRef.current?.focus()
+    })
   }
 
   const root = project.roles.find((r) => r.reportsTo === null)
@@ -483,21 +530,6 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
     selectRole(role.id)
   }
 
-  const exportOrg = async (): Promise<void> => {
-    const ok = await confirm({
-      title: 'Export the org chart to the repository?',
-      body: 'This writes one file, .orgai/org.json, in the project folder. Nothing is committed. Another OrgAI can import it with Import agents.',
-      confirmLabel: 'Export to repo'
-    })
-    if (!ok) return
-    try {
-      const r = await window.orgai.projects.exportOrg(project.id)
-      setExported({ path: r.path })
-    } catch (e) {
-      setExported({ error: cleanIpcError(e) })
-    }
-  }
-
   // The assistant lives in the tray under the chart, so the role inspector stays in the side panel. "Ask the Team
   // assistant" from a role opens Recommend (scoped to that role) and focuses its primary button.
   const openAssistant = (): void => {
@@ -549,10 +581,7 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
               Add role
             </Button>
             <Button size="sm" icon={Download} onClick={() => setImportDialog({ fresh: false })} testId="import-agents">
-              Import agents
-            </Button>
-            <Button size="sm" icon={Upload} onClick={() => void exportOrg()} testId="export-org">
-              Export to repo
+              Import from other tools
             </Button>
             <Popover
               label="Templates"
@@ -617,6 +646,17 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
                 at 1024x640 and took that height from the Team assistant tray. */}
             <CanvasStyleButton testId="canvas-style-button" />
             <span className="toolbar-note">{addParent ? `New roles report to ${addParent.name}.` : 'The first role becomes the root.'}</span>
+            <TeamFilesLine
+              status={filesStatus}
+              busy={filesActions.busy}
+              message={filesActions.message}
+              lineRef={lineRef}
+              onCommit={() => void filesActions.commit().then(settleFocus)}
+              onEnable={() => void filesActions.enable().then(settleFocus)}
+              onReview={() => setCardFocusN((n) => n + 1)}
+            >
+              {filesStatus && <TeamFilesAppliedNotice status={filesStatus} busy={filesActions.busy} onUndo={() => void filesActions.undo().then(settleFocus)} />}
+            </TeamFilesLine>
             {undo && (
               <span className="toolbar-undo" role="status">
                 Role removed.
@@ -717,12 +757,12 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
               }
             />
           )}
-          {!importNotice && scan && importBannerVisible(scan.sources.reduce((n, x) => n + x.agentCount, 0), memory) && (
+          {!importNotice && scan && importBannerVisible(foundSources.reduce((n, x) => n + x.agentCount, 0), memory) && (
             <Banner
               tone="info"
               label="Agents found"
               testId="import-found"
-              title={notImportedLine(scan.sources.reduce((n, x) => n + x.agentCount, 0), scan.sources)}
+              title={notImportedLine(foundSources.reduce((n, x) => n + x.agentCount, 0), foundSources)}
               onDismiss={() => {
                 writeBannerMemory(window.localStorage, project.id, 'dismissed')
                 setMemory('dismissed')
@@ -733,11 +773,6 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
                 </Button>
               }
             />
-          )}
-          {exported && (
-            <Banner tone={exported.error ? 'danger' : 'success'} title={exported.error ? 'Could not export' : 'Exported the org chart'} testId="export-notice" onDismiss={() => setExported(null)}>
-              {exported.error ?? <span className="mono">{exported.path}</span>}
-            </Banner>
           )}
         </div>
         </div>
@@ -773,13 +808,28 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
             <CanvasMinimap ariaLabel="Org chart minimap" />
           </ReactFlow>
         </FrameStage>
-        <FrameTray label="Team assistant">
-          <TeamAssistantTray
-            project={project}
-            scope={selectedRole ? { kind: 'role', roleId: selectedRole.id } : { kind: 'team' }}
-            mode={assistant}
-            onModeChange={setAssistant}
-          />
+        <FrameTray label={showCard ? 'Team files approval' : 'Team assistant'}>
+          {showCard && filesStatus && (
+            <TeamFilesCard
+              status={filesStatus}
+              busy={filesActions.busy}
+              error={filesActions.error}
+              focusSignal={cardFocusN}
+              assistantOpen={assistantShown}
+              onToggleAssistant={() => setAssistantShown((v) => !v)}
+              onApprove={() => void decide('approve')}
+              onReject={() => void decide('reject')}
+            />
+          )}
+          {/* Mounted while the card is open (a search keeps running); shown under the card only when asked for. */}
+          <div className="team-assistant-slot" hidden={showCard && !assistantShown}>
+            <TeamAssistantTray
+              project={project}
+              scope={selectedRole ? { kind: 'role', roleId: selectedRole.id } : { kind: 'team' }}
+              mode={assistant}
+              onModeChange={setAssistant}
+            />
+          </div>
         </FrameTray>
         <FrameFooter>
           <span>

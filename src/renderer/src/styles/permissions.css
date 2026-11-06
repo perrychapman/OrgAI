@@ -105,6 +105,16 @@
   margin-top: var(--space-2);
   font-size: var(--text-small);
 }
+/* The folder's own settings are ignored: one quiet line with a Review link, visible in compact mode too. */
+.perm-trust-line {
+  margin: var(--space-1) 0 0;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-secondary);
+}
+.topbar-trust {
+  flex: 0 0 auto;
+}
 
 /* Compact (frame under 480 px tall, or the tray flags it): the glance stays visible with the body collapsed; the
    command and the scope list stay behind Details. Two lines at most for the effect sentence. */
@@ -316,4 +326,100 @@
   line-height: var(--text-body-lh);
   color: var(--text-secondary);
   max-width: 90ch;
+}
+
+/* Folder config trust: the review dialog. All content is plain text from the folder. */
+.trust-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.trust-framing,
+.trust-state {
+  margin: 0;
+  max-width: 90ch;
+}
+.trust-state {
+  color: var(--text-secondary);
+}
+.trust-message {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+}
+.trust-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.trust-h {
+  margin: 0;
+  font-size: var(--text-body);
+  line-height: var(--text-body-lh);
+}
+.trust-count {
+  color: var(--text-secondary);
+  font-weight: normal;
+}
+.trust-meta {
+  margin: 0;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+  max-width: 90ch;
+}
+.trust-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.trust-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+}
+.trust-item-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  min-width: 0;
+}
+.trust-item-name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.trust-mono,
+.trust-source {
+  font-family: var(--font-mono);
+  font-size: var(--text-small);
+  overflow-wrap: anywhere;
+}
+.trust-source {
+  color: var(--text-secondary);
+}
+.trust-text {
+  margin: 0;
+  padding: var(--space-2);
+  background: var(--bg-elev);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.trust-text.clamped {
+  max-height: calc(var(--text-small-lh) * 8 + var(--space-4));
+  overflow: hidden;
 }

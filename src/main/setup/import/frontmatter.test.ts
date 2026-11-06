@@ -93,4 +93,31 @@ describe('frontmatter: hostile input', () => {
     expect((r.data.description as string).length).toBeLessThan(4000)
     expect(r.body).toBe('Body')
   })
+  it('maxLineChars raises the cap, keeps the default otherwise, and stays linear', () => {
+    const long = 'd'.repeat(60_000)
+    const text = `---\nname: x\ndescription: "${long}"\n---\nBody`
+    const ok = parseFrontmatter(text, { maxLineChars: 64 * 1024 })
+    expect(ok.error).toBeUndefined()
+    expect((ok.data.description as string).length).toBe(60_000)
+    expect(parseFrontmatter(text).error).toMatch(/longer than 4000/)
+    expect(parseYamlDoc(`a: "${long}"`, { maxLineChars: 1000 }).error).toMatch(/longer than 1000/)
+    // Junk option values fall back to the default.
+    expect(parseFrontmatter(text, { maxLineChars: Number.NaN }).error).toMatch(/longer than 4000/)
+    // Time is linear in the text: four times the lines take about four times as long, not sixteen.
+    const timeOf = (lines: number): number => {
+      const text = `---\n${Array.from({ length: lines }, (_v, i) => `k${i}: "${'v'.repeat(30_000)}"`).join('\n')}\n---\n`
+      const start = performance.now()
+      const r = parseFrontmatter(text, { maxLineChars: 64 * 1024 })
+      expect(r.error).toBeUndefined()
+      return performance.now() - start
+    }
+    // Best of three each: a slow shared CI runner (GC pauses on multi-MB strings) inflates single samples
+    // (one run measured 1859 ms against a 127 ms baseline), while quadratic code is 16x slower in every sample.
+    const best = (lines: number): number => Math.min(timeOf(lines), timeOf(lines), timeOf(lines))
+    timeOf(10)
+    const small = Math.max(best(50), 5)
+    const big = best(200)
+    expect(big).toBeLessThan(small * 12)
+    expect(big).toBeLessThan(5000)
+  })
 })

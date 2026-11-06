@@ -355,6 +355,180 @@ html[data-reduce-motion='on'] .project-tile-dot.live {
   max-width: none;
 }
 
+/* The submit row stays in view while the form scrolls. The dialog body drops its bottom padding, or the fields would
+   show through under the row; scroll-padding keeps a focused field from landing behind it. */
+.project-form.in-dialog .form-submit,
+.project-form.in-panel .form-submit {
+  position: sticky;
+  bottom: 0;
+  padding-block: var(--space-2);
+  border-top: 1px solid var(--border-subtle);
+  background: var(--surface-2);
+}
+.project-form.in-dialog .form-submit {
+  padding-bottom: var(--space-3);
+}
+.dialog-body:has(> .project-form.in-dialog) {
+  padding-bottom: 0;
+  scroll-padding-bottom: calc(var(--space-8) + var(--space-4));
+}
+
+/* ---------- New project form: From GitHub (components/dashboard/RepoStartPanel) ---------- */
+
+/* On a short window the panel needs the room: the chosen kind's card drops its description, which radios still read out. */
+@media (max-height: 720px) {
+  .project-form.in-dialog:has(.repo-start) .project-kind-text {
+    display: none;
+  }
+  .project-form.in-dialog:has(.repo-start) .project-kind-option input {
+    grid-row: auto;
+  }
+}
+
+/* A fieldset only to lock its controls while a clone runs. */
+.repo-lock {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+.repo-start,
+.repo-start .repo-lock {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.repo-start {
+  margin-bottom: var(--space-3);
+}
+.repo-start .field {
+  margin-bottom: 0;
+}
+.repo-mode label[data-inert] {
+  color: var(--text-secondary);
+  cursor: not-allowed;
+}
+.repo-lines {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0h);
+}
+.repo-fork-preview {
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+}
+.repo-tools-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.repo-command {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+.repo-command code {
+  padding: var(--space-0h) var(--space-2);
+  font-family: var(--font-mono);
+  font-size: var(--text-mono);
+  background: var(--surface-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+}
+.repo-dest {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  gap: var(--space-3);
+}
+@container (max-width: 520px) {
+  .repo-dest {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-2);
+  }
+}
+.repo-path {
+  font-family: var(--font-mono);
+  font-size: var(--text-mono);
+  overflow-wrap: anywhere;
+}
+.repo-error,
+.repo-cloned {
+  display: block;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.repo-config,
+.repo-tail-hint {
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.repo-tail-hint {
+  margin: 0 0 var(--space-3);
+}
+/* The step's own button (with its errors and status) stays in view too, just above the sticky submit row. NewProjectForm
+   measures that row into --form-submit-h; the fallback is only for the first frame. */
+.repo-progress-block,
+.repo-action {
+  position: sticky;
+  bottom: var(--form-submit-h, calc(var(--space-8) + var(--space-6)));
+  padding-block: var(--space-2);
+  background: var(--surface-2);
+}
+.repo-progress-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.dialog-body:has(> .project-form.in-dialog .repo-action, > .project-form.in-dialog .repo-progress-block) {
+  scroll-padding-bottom: calc(var(--space-8) * 4);
+}
+.repo-progress {
+  width: 100%;
+  height: var(--space-2);
+  accent-color: var(--accent);
+}
+@media (prefers-reduced-motion: reduce) {
+  .repo-progress:indeterminate {
+    visibility: hidden;
+  }
+}
+:root[data-reduce-motion='on'] .repo-progress:indeterminate {
+  visibility: hidden;
+}
+.repo-action {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.repo-action-row {
+  gap: var(--space-3);
+}
+.repo-action .hint {
+  font-size: var(--text-caption);
+  color: var(--text-secondary);
+}
+.repo-offer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+}
+.repo-offer > .field-msg {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+
 /* ---------- First launch ---------- */
 
 .dash-first {

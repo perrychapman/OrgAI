@@ -5,6 +5,9 @@
  */
 import { existsSync } from 'node:fs'
 import type {
+  FolderConfigTrustInput,
+  ProjectCreateInput,
+  ProjectPathCheck,
   AppSettings,
   CapabilityApplyInput,
   CapabilityDiscoverInput,
@@ -72,6 +75,8 @@ import { runOverridesArgs } from '../runtime/runOverrides'
 import { allowRuleRefusal, ruleSaveRefusal } from '../runtime/permissionRules'
 import { isValidRule } from '../runtime/ruleMatch'
 import { knowledgeNodeCount } from '../store/knowledge'
+import { checkProjectPath } from '../store/projects'
+import type { TeamFilesService } from '../teamFiles/service'
 import { appRulesExist, engagementDocumentExists, listNotes, skillEvaluationFile, teamReviewFile } from '../store/projectData'
 import { isValidId } from '../windowScope'
 
@@ -1037,4 +1042,88 @@ export function continueRunArgs(input: unknown): ContinueRunInput {
   const overrides = runOverridesArgs(i.overrides, { partialPolicy: true })
   if (i.exec !== undefined && i.exec !== null && typeof i.exec !== 'boolean') throw badInput('exec must be true or false.')
   return { ...base, ...(overrides ? { overrides } : {}), ...(typeof i.exec === 'boolean' ? { exec: i.exec } : {}) }
+}
+
+// ---------- Team files and folder config trust (dev, ported into the host layer) ----------
+
+const TEAM_DIGEST_RE = /^[0-9a-f]{64}$/
+
+/**
+ * Rebuilds a teamFiles:* input field by field: a plain object, a safe non-virtual project id, a 64-hex digest where one is
+ * needed; extra fields are dropped. Exported for tests.
+ */
+export function teamFilesArgs(input: unknown, withDigest: true): { projectId: string; digest: string }
+export function teamFilesArgs(input: unknown, withDigest?: false): { projectId: string }
+export function teamFilesArgs(input: unknown, withDigest = false): { projectId: string; digest?: string } {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Project not found')
+  const i = input as Record<string, unknown>
+  if (!isSafeId(i.projectId) || isVirtualProjectId(i.projectId)) throw new Error('Project not found')
+  if (!withDigest) return { projectId: i.projectId }
+  if (typeof i.digest !== 'string' || !TEAM_DIGEST_RE.test(i.digest)) throw new Error('The team files changed since you looked. Review them again.')
+  return { projectId: i.projectId, digest: i.digest }
+}
+
+/** ProjectCreateInput.teamFiles rebuilt: `{ digest }` with a 64-hex digest, else dropped. Exported for tests. */
+export function teamFilesCreateArg(input: unknown): { digest: string } | undefined {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined
+  const d = (input as Record<string, unknown>).digest
+  return typeof d === 'string' && TEAM_DIGEST_RE.test(d) ? { digest: d } : undefined
+}
+
+/**
+ * projects:create's input before the store sees it (desktop and socket alike): teamFiles is rebuilt to `{ digest }` and
+ * refused for engagements; without it the field is deleted. A folder that holds team files never brings its `.orgai`
+ * agents through importAgents (they arrive only through the reviewed approval card), also when the check of the folder
+ * fails. Returns the copy to hand to ProjectStore.create and the rebuilt teamFiles argument.
+ */
+export function projectCreateInput(raw: unknown, teamFiles: Pick<TeamFilesService, 'found'> | undefined): { input: ProjectCreateInput; teamArg: { digest: string } | undefined } {
+  const teamArg = teamFilesCreateArg((raw as { teamFiles?: unknown } | null)?.teamFiles)
+  const input = (raw && typeof raw === 'object' ? { ...(raw as object) } : raw) as ProjectCreateInput
+  if (teamArg && input?.kind === 'engagement') throw new Error('Team files are for code projects only.')
+  if (input && typeof input === 'object') {
+    if (teamArg) input.teamFiles = teamArg
+    else delete input.teamFiles
+    if (Array.isArray(input.importAgents) && teamFiles) {
+      try {
+        const dir = checkProjectPath(input.path)
+        if (dir.isDirectory && teamFiles.found(input.path, dir)) input.importAgents = input.importAgents.filter((s) => s !== 'orgai')
+      } catch {
+        input.importAgents = input.importAgents.filter((s) => s !== 'orgai')
+      }
+    }
+  }
+  return { input, teamArg }
+}
+
+/**
+ * projects:checkPath's answer: the basic check, the agent-import extras and the team found in the folder. While a team
+ * is found, agent source 'orgai' is left out (the `.orgai` agents are the team files, never counted twice). Exported for tests.
+ */
+export function pathCheckWithTeamFiles(check: ProjectPathCheck, extras: Partial<ProjectPathCheck>, found: ProjectPathCheck['teamFiles']): ProjectPathCheck {
+  const out: ProjectPathCheck = { ...check, ...extras }
+  if (!found) return out
+  out.teamFiles = found
+  if (out.agentSources) {
+    const rest = out.agentSources.filter((s) => s.source !== 'orgai')
+    if (rest.length) out.agentSources = rest
+    else delete out.agentSources
+  }
+  return out
+}
+
+/**
+ * projects:folderConfig takes a project id; projects:setFolderConfigTrust takes { projectId, trust, digest }. Rebuilt
+ * field by field (extra fields dropped); trust must be a boolean, the digest a string of at most 64 characters.
+ */
+export function folderConfigProjectArg(id: unknown): string {
+  if (typeof id === 'string' && isVirtualProjectId(id)) throw new Error('This assistant project has no folder config.')
+  return storedIdArg(id)
+}
+
+export function folderConfigTrustArgs(input: unknown): FolderConfigTrustInput {
+  const i = obj<Record<string, unknown>>(input)
+  const projectId = folderConfigProjectArg(i.projectId)
+  if (typeof i.trust !== 'boolean') throw new Error('Choose whether to trust or stop trusting this folder\'s config.')
+  if (typeof i.digest !== 'string' || i.digest.length > 64) throw new Error("Review this folder's config first.")
+  return { projectId, trust: i.trust, digest: i.digest }
 }

@@ -82,9 +82,12 @@ export function ConfirmDialog({
   confirmLabel,
   danger,
   confirmTestId,
+  cancelLabel = 'Cancel',
   onConfirm,
   onCancel
 }: {
+  /** The dismissing button's text, for a confirm where "Cancel" could mean the very thing being confirmed. */
+  cancelLabel?: string
   open: boolean
   title: string
   body: ReactNode
@@ -104,7 +107,7 @@ export function ConfirmDialog({
       footer={
         <>
           <Button autoFocusDialog onClick={onCancel}>
-            Cancel
+            {cancelLabel}
           </Button>
           <Button variant={danger ? 'danger' : 'primary'} testId={confirmTestId} onClick={onConfirm}>
             {confirmLabel}

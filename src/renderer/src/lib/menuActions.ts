@@ -1,4 +1,5 @@
-import { useSyncExternalStore } from 'react'
+import { useMemo, useSyncExternalStore } from 'react'
+import { teamAttentionItems, type TeamAttentionItem } from './teamFiles'
 import { EMPTY_MENU_STATE, isMenuAction, isVirtualProjectId, type MenuAction, type MenuState } from '@shared/types'
 import { isRunLive, openNewChat, openNewProject, useAppStore, type RunState } from '../store/useAppStore'
 import { menuHandlerFor, runMenuAction } from './menuRegistry'
@@ -14,7 +15,30 @@ import { toggleSidebar } from './useSidebarCollapsed'
  */
 
 type State = ReturnType<typeof useAppStore.getState>
-type MenuSource = Pick<State, 'selectedProjectId' | 'view' | 'draftPage' | 'activeRunByProject' | 'runs' | 'projects'>
+type MenuSource = Pick<State, 'selectedProjectId' | 'view' | 'draftPage' | 'activeRunByProject' | 'runs' | 'projects'> & Partial<Pick<State, 'teamFilesByProject'>>
+
+// ---- team files (decisions with no run) ----
+
+/** Team-files items that count: known projects only, ordered by project name. */
+export function teamItemsOf(statuses: State['teamFilesByProject'] | undefined, projects: readonly { id: string }[]): TeamAttentionItem[] {
+  const known = new Set(projects.map((p) => p.id))
+  return teamAttentionItems(Object.values(statuses ?? {})).filter((t) => known.has(t.projectId))
+}
+
+/** The store's team-files items, stable while the statuses and projects do not change. */
+export function useTeamAttentionItems(): TeamAttentionItem[] {
+  const statuses = useAppStore((s) => s.teamFilesByProject)
+  const projects = useAppStore((s) => s.projects)
+  return useMemo(() => teamItemsOf(statuses, projects), [statuses, projects])
+}
+
+/** Opens a project's Team tab and lands focus on its approval card (bell, Needs-you rows, tiles, Go to decision). */
+export function openTeamFilesDecision(projectId: string): void {
+  const st = useAppStore.getState()
+  if (st.selectedProjectId !== projectId) st.selectProject(projectId)
+  st.setView('team')
+  st.requestTeamFilesFocus(projectId)
+}
 
 // ---- tiny external stores (dialog open flag, app-wide announcement) ----
 
@@ -61,8 +85,8 @@ export function viewedRunOf(s: MenuSource): RunState | undefined {
 }
 
 /** Any run in the store waits on a decision. */
-function anyDecision(runs: Record<string, RunState>): boolean {
-  return Object.values(runs).some((r) => !!r.summary.projectId && waitingItems(r).length > 0)
+function anyDecision(runs: Record<string, RunState>, team: readonly TeamAttentionItem[] = []): boolean {
+  return team.length > 0 || Object.values(runs).some((r) => !!r.summary.projectId && waitingItems(r).length > 0)
 }
 
 /** What the window shows, as the five booleans main needs to grey out menu items. */
@@ -75,7 +99,7 @@ export function menuStateFor(s: MenuSource): MenuState {
     hasRun: !!run,
     runLive: !!run && isRunLive(run),
     chatRun: !!run && !isRunLive(run) && offersSaveAsProject(run.summary),
-    hasDecision: anyDecision(s.runs)
+    hasDecision: anyDecision(s.runs, teamItemsOf(s.teamFilesByProject, s.projects))
   }
 }
 
@@ -223,6 +247,13 @@ function fallback(action: MenuAction): string | void {
       const runId = pid ? st.activeRunByProject[pid] : undefined
       const run = runId ? st.runs[runId] : undefined
       const first = run ? waitingItems(run)[0] : undefined
+      if (!pid || !run || !first) {
+        // No run decision here: a team-files approval of this project, else any project's (run decisions come first).
+        // With no project selected the first team item is the fallback.
+        const team = teamItemsOf(st.teamFilesByProject, st.projects)
+        const mine = (pid ? team.find((t) => t.projectId === pid) : undefined) ?? (anyDecision(st.runs) ? undefined : team[0])
+        if (mine) return openTeamFilesDecision(mine.projectId)
+      }
       if (!pid || !run || !first) return 'No decision is waiting on this run.'
       return jumpTo(pid, run.summary.id, first)
     }
@@ -230,7 +261,11 @@ function fallback(action: MenuAction): string | void {
       const waiting = Object.values(st.runs)
         .filter((r) => !!r.summary.projectId && waitingItems(r).length > 0)
         .sort((a, b) => a.summary.startedAt - b.summary.startedAt)[0]
-      if (!waiting) return 'Nothing needs you right now.'
+      if (!waiting) {
+        const team = teamItemsOf(st.teamFilesByProject, st.projects)[0]
+        if (team) return openTeamFilesDecision(team.projectId)
+        return 'Nothing needs you right now.'
+      }
       return jumpTo(waiting.summary.projectId, waiting.summary.id, waitingItems(waiting)[0])
     }
     case 'org-retrospective':

@@ -87,9 +87,13 @@ export function isolateWritersOn(project: { kind?: unknown; isolateWriters?: boo
   return project?.isolateWriters !== false
 }
 
-/** Where the project's saved allow rules live: 'folder' (.claude/settings.local.json) or 'app' (OrgAI's data folder). */
-export function projectRulesLocation(project: { kind?: unknown } | null | undefined): ProjectRulesLocation {
-  return writesToProjectFolder(project) ? 'folder' : 'app'
+/**
+ * Where the project's saved allow rules live: 'folder' (.claude/settings.local.json) or 'app' (OrgAI's data folder).
+ * 'app' for engagements and for every project with Project.folderConfigTrust, in any state: the folder's file may be
+ * someone else's, and OrgAI writing there would change the digest the user accepted.
+ */
+export function projectRulesLocation(project: { kind?: unknown; folderConfigTrust?: unknown } | null | undefined): ProjectRulesLocation {
+  return writesToProjectFolder(project) && project?.folderConfigTrust === undefined ? 'folder' : 'app'
 }
 
 /** How prompts name that document: "the architecture document" / "the engagement document". */

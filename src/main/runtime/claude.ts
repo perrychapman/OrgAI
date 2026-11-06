@@ -630,12 +630,16 @@ export function claudeAllowsBypass(ctx: RuntimeContext): boolean {
  * often a client share, so its hooks, rules and MCP servers must not load (OrgAI keeps an engagement's rules in its
  * own data folder, ctx.savedRules). Every reader of that file (claudeSettingSources, cliProjectSettings) uses this.
  */
-export function projectSettingsLoad(ctx: Pick<RuntimeContext, 'run' | 'project'>): boolean {
-  return !isTrustRestrictedRun(ctx.run) && projectKindOf(ctx.project) !== 'engagement'
+export function projectSettingsLoad(ctx: Pick<RuntimeContext, 'run' | 'project'> & Pick<Partial<RuntimeContext>, 'folderConfigLoads'>): boolean {
+  if (isTrustRestrictedRun(ctx.run) || projectKindOf(ctx.project) === 'engagement') return false
+  // Folder config trust: false = the folder's own agent config must not load this run (sticky). It re-hashes files, so
+  // callers read it when a query is built (buildOptions keeps the answer), never per tool call. Every run kind asks,
+  // setup runs included. Absent = no gate.
+  return ctx.folderConfigLoads?.() !== false
 }
 
 /** settingSources for a run: ['project'] only when projectSettingsLoad (never for a restricted run or an engagement). */
-export function claudeSettingSources(ctx: RuntimeContext): Options['settingSources'] {
+export function claudeSettingSources(ctx: Pick<RuntimeContext, 'run' | 'project'> & Pick<Partial<RuntimeContext>, 'folderConfigLoads'>): Options['settingSources'] {
   return projectSettingsLoad(ctx) ? ['project'] : []
 }
 
@@ -689,8 +693,10 @@ const cliSettingsCache = new Map<string, { mtimeMs: number; size: number; result
  * path) is no rules. When the CLI does not load the file (projectSettingsLoad false: a trust-restricted run or an
  * engagement, settingSources []) it holds no rules the CLI could apply, so it is not read and forces no 'ask'.
  */
-export function cliProjectSettings(ctx: Pick<RuntimeContext, 'run' | 'project'>): CliProjectSettings {
-  if (!projectSettingsLoad(ctx) || !ctx.project.path) return NO_CLI_SETTINGS
+export function cliProjectSettings(ctx: Pick<RuntimeContext, 'run' | 'project'> & Pick<Partial<RuntimeContext>, 'folderConfigLoads'>, loaded?: boolean): CliProjectSettings {
+  // `loaded` is what the running query was given (the session snapshot taken in buildOptions): the file's rules matter
+  // exactly while that CLI holds them, even if the folder's digest has changed since. Without it, ask the context.
+  if (!(loaded ?? projectSettingsLoad(ctx)) || !ctx.project.path) return NO_CLI_SETTINGS
   const file = join(ctx.project.path, '.claude', 'settings.json')
   let st
   try {
@@ -1005,6 +1011,8 @@ export class ClaudeSession implements RuntimeSession {
   private isSetup: boolean
   /** Writing reports get their own git worktree. Only for work runs inside a git repository. */
   private isolation: boolean
+  /** Whether the running query was given settingSources ['project'] (set by buildOptions; undefined before the first build). */
+  private cliSettingsLoaded: boolean | undefined
   /** Agent tool_use ids that were given isolation:"worktree" -> the spawning agent's id (ROOT_ID for the orchestrator). */
   private isolatedSpawns = new Map<string, string>()
   /** Commits and merges isolated reports' branches; tells the orchestrator through notifyOrchestrator. */
@@ -1957,7 +1965,7 @@ export class ClaudeSession implements RuntimeSession {
       // Per the Claude Code hooks docs, PreToolUse 'ask' prompts the user; that 'ask' beats a settings allow rule is
       // UNVERIFIED live (scripts/smoke-permission-hook.mjs could check it; it spends tokens and needs the user's consent).
       if (SHELL_TOOLS.has(input.tool_name)) {
-        const reason = cliShellAskReason(input.tool_name, toolInput, cliProjectSettings(this.ctx), matchOpts)
+        const reason = cliShellAskReason(input.tool_name, toolInput, cliProjectSettings(this.ctx, this.cliSettingsLoaded), matchOpts)
         if (reason) {
           this.log('info', reason)
           return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask', permissionDecisionReason: reason } }
@@ -2828,6 +2836,9 @@ export class ClaudeSession implements RuntimeSession {
     this.noteSecrets(resolved)
     const liveServers = this.liveMcpServers().filter((s) => !this.droppedMcp.has(s.name))
 
+    // One read per query: a restarted query asks again, so an agent's mid-run edit gets settingSources [] on the restart.
+    const settingSources = claudeSettingSources(this.ctx)
+    this.cliSettingsLoaded = (settingSources?.length ?? 0) > 0
     const options: Options = {
       cwd: project.path,
       agents: buildAgents(this.ctx, tools, this.isolation, { mcpServers: liveServers }, skillMap),
@@ -2836,7 +2847,7 @@ export class ClaudeSession implements RuntimeSession {
       // An unattended ('auto') project keeps the classifier for the Architect's shell work too.
       permissionMode: claudePermissionMode(this.ctx),
       allowDangerouslySkipPermissions: claudeAllowsBypass(this.ctx),
-      settingSources: claudeSettingSources(this.ctx),
+      settingSources,
       hooks: this.buildHooks(),
       // stream_event messages drive the live "agent.partial" text; transcripts still come from complete messages.
       includePartialMessages: true,

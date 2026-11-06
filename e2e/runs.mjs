@@ -196,9 +196,11 @@ try {
         body.scrollTop = body.scrollHeight
         await new Promise((r) => setTimeout(r, 100))
         const aside = body.closest('aside')
-        return { y0, y1: tab.getBoundingClientRect().top, scrolled: body.scrollTop > 0, asideScroll: aside ? aside.scrollTop : 0 }
+        return { y0, y1: tab.getBoundingClientRect().top, scrolled: body.scrollTop > 0, asideScroll: aside ? aside.scrollTop : 0, asideOverflow: aside ? aside.scrollHeight - aside.clientHeight : 0, asideOverflowX: aside ? aside.scrollWidth - aside.clientWidth : 0, bodyOv: getComputedStyle(body).overflowY }
       })
       check(!!pin && pin.scrolled && Math.abs(pin.y1 - pin.y0) < 0.5 && pin.asideScroll === 0, 'the side panel header stays fixed while the transcript body scrolls', JSON.stringify(pin))
+      // Issue #17: only the tab panel scrolls; the outer aside never grows a second scrollbar.
+      check(!!pin && pin.asideOverflow <= 1 && pin.asideOverflowX <= 1 && pin.bodyOv === 'auto', 'the side panel aside has no scroll of its own (only the tab panel scrolls)', JSON.stringify(pin))
     } else {
       check(false, 'the side panel tabs are reachable on the Live view')
     }
@@ -493,8 +495,25 @@ try {
   check(/^Permission: Run npm test/.test(opened), 'clicking a Needs you item opens that decision', opened)
   // Beside only in a frame of 1500 px or more.
   await setSize(2400, 1000)
+  await sleep(300)
   ts = await trayState()
-  check(!!ts.tray && !!ts.stage && ts.tray.l >= ts.stage.r - 0.5, 'the tray docks beside the stage in a frame of 1500 px or more', JSON.stringify(ts))
+  // The OS may clamp the window to the screen (a small CI display). Measure the frame we actually got; the docking rule
+  // needs a frame of 1500 x 560 or more, so with a smaller one the two docking checks are skipped, with the reason logged.
+  const got = await app.evaluate(({ BrowserWindow, screen }) => {
+    const w = BrowserWindow.getAllWindows()[0]
+    return { content: w.getContentSize(), workArea: screen.getPrimaryDisplay().workAreaSize }
+  })
+  const frameBox = await page.evaluate(() => {
+    const r = document.querySelector('.frame-grid')?.getBoundingClientRect()
+    return r ? { w: Math.round(r.width), h: Math.round(r.height) } : null
+  })
+  log('window after setSize(2400, 1000):', JSON.stringify({ ...got, frame: frameBox }))
+  const dockFits = !!frameBox && frameBox.w >= 1500 && frameBox.h >= 560
+  if (!dockFits) {
+    log(`SKIP tray docking checks at 2400: the window got a ${frameBox ? frameBox.w + 'x' + frameBox.h : 'unknown'} frame (content ${got.content.join('x')}, screen work area ${got.workArea.width}x${got.workArea.height}); docking needs 1500x560`)
+  } else {
+    check(!!ts.tray && !!ts.stage && ts.tray.l >= ts.stage.r - 0.5, 'the tray docks beside the stage in a frame of 1500 px or more', JSON.stringify(ts))
+  }
   await shot('three-decisions-2400')
   // Docked tray: the canvas pane meets the tray (no blank strip between them).
   const dockGap = await page.evaluate(() => {
@@ -502,7 +521,7 @@ try {
     const tray = document.querySelector('section.frame-tray')?.getBoundingClientRect()
     return pane && tray ? Math.round(tray.left - pane.right) : null
   })
-  check(dockGap !== null && Math.abs(dockGap) <= 2, 'with an open decision at 2400 the canvas pane meets the docked tray', String(dockGap))
+  if (dockFits) check(dockGap !== null && Math.abs(dockGap) <= 2, 'with an open decision at 2400 the canvas pane meets the docked tray', String(dockGap))
   await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), prev3)
   await sleep(400)
   await endSession(page)

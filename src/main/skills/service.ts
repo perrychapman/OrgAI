@@ -227,6 +227,27 @@ export class SkillService implements SkillServiceApi, SkillRunSource {
     return { skillMd: text, body: parseSkillMd(text).body, files: fileInfos(files) }
   }
 
+  // ---------- team files (src/main/teamFiles/service.ts) ----------
+
+  /** The stored files of a project skill (a link's are its library entry's); null when missing or unreadable. */
+  teamReadFiles(projectId: string, spec: SkillSpec): FileData[] | null {
+    try {
+      return readStoredFolder(this.specDir(projectId, spec))
+    } catch {
+      return null
+    }
+  }
+
+  /** Writes a project skill's own folder (SKILL.md and files, replaced as a unit). Throws on an unsafe id or path. */
+  teamStoreFiles(projectId: string, skillId: string, files: FileData[]): void {
+    writeFolder(this.ownDir(projectId, skillId), files)
+  }
+
+  /** Removes a project skill's own folder (never a library entry's). */
+  teamRemoveFiles(projectId: string, skillId: string): void {
+    removeFolder(this.ownDir(projectId, skillId))
+  }
+
   // ---------- project skills ----------
 
   list(projectId: string): SkillInfo[] {

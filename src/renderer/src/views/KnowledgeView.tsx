@@ -582,7 +582,12 @@ export default function KnowledgeView({ project }: { project: Project }): ReactE
           setSelectedId(null)
           setPaneOpen(true)
           setReveal(`new:${Date.now()}`)
-          focusLater(() => document.querySelector<HTMLElement>('[data-testid=knowledge-create] [data-testid=knowledge-name-input]'))
+          // The form also focuses Name on mount; if the user (or a fast typist) is already in the form, do not pull them back.
+          focusLater(() => {
+            const form = document.querySelector<HTMLElement>('[data-testid=knowledge-create]')
+            if (form?.contains(document.activeElement)) return null
+            return form?.querySelector<HTMLElement>('[data-testid=knowledge-name-input]')
+          })
         }}
       >
         Add an item

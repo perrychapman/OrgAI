@@ -6,7 +6,7 @@ import type { HostScope, HostState, RunEvent, RunSummary } from '../../shared/ty
 import { RPC_CONTROL_REQUEST_MAX_BYTES, RPC_MAX_CLIENT_SOCKETS, RPC_MAX_UNAUTH_SOCKETS } from '../../shared/types'
 import type { OrgAIHost } from './bootstrap'
 import { HostEventBus } from './events'
-import { LineReader, clientProof, encodeFrame, hostProof, newNonce, proofMatches, rpcRequest } from './protocol'
+import { LineReader, clientProof, encodeFrame, hostProof, newNonce, ownerProof, proofMatches, rpcRequest } from './protocol'
 import { gateRequest } from './registry'
 import {
   DESKTOP_HANDOFF_REFUSED_MESSAGE,
@@ -108,6 +108,8 @@ interface HelloOpts {
   mutate?: (p: Msg) => void
   /** Before the proof is computed (a well-proven but malformed hello). */
   shape?: (p: Msg) => void
+  /** Add an ownerProof made with this key (an in-process host's own CLI). */
+  ownerKey?: string
 }
 
 async function hello(c: TestClient, o: HelloOpts = {}): Promise<{ res: Msg; challenge: Msg; params: Msg }> {
@@ -133,6 +135,14 @@ async function hello(c: TestClient, o: HelloOpts = {}): Promise<{ res: Msg; chal
     cwd: params.cwd,
     requestedScopes: params.requestedScopes
   })
+  if (o.ownerKey) {
+    params.ownerProof = ownerProof(o.ownerKey, {
+      hostInstanceId: challenge.params.hostInstanceId,
+      hostNonce: challenge.params.hostNonce,
+      clientNonce: params.clientNonce,
+      clientProof: params.clientProof
+    })
+  }
   o.mutate?.(params)
   c.send(rpcRequest(1, 'host.hello', params))
   return { res: await c.response(1), challenge, params }
@@ -364,11 +374,71 @@ describe.runIf(posix)('HostSocketServer handshake', () => {
     expect((await d.response(6)).error.data.code).toBe('scope_denied')
   })
 
-  it('an in-process host grants every requested scope whatever the level', async () => {
+  it('an in-process host grants every scope only to the hello proven with its in-memory owner key (review H2)', async () => {
+    st.accessLevel = undefined
+    st.result = (method) => ({ method })
+    const KEY = 'cd'.repeat(32)
+    await start({ hostKind: 'inproc', ownerKey: KEY })
+    // A client that holds daemon.secret but not the owner key (an agent that read the run folder) is capped.
+    const other = await client()
+    expect((await hello(other, { scopes: ['read', 'operate', 'decide', 'configure'] })).res.result.grantedScopes).toEqual(['read', 'operate'])
+    other.send(rpcRequest(2, 'runs:decide', [{}]))
+    expect((await other.response(2)).error.data.code).toBe('scope_denied')
+    other.send(rpcRequest(3, 'permissions:add', [{}]))
+    expect((await other.response(3)).error.data.code).toBe('scope_denied')
+    // A wrong key, a garbled proof, or a proof replayed from another hello: capped too.
+    for (const o of [
+      { ownerKey: 'ef'.repeat(32) },
+      { ownerKey: KEY, mutate: (p: Msg) => (p.ownerProof = 'zz') },
+      { ownerKey: KEY, mutate: (p: Msg) => (p.ownerProof = ownerProof(KEY, { hostInstanceId: HOST_ID, hostNonce: newNonce(), clientNonce: p.clientNonce, clientProof: p.clientProof })) }
+    ]) {
+      expect((await hello(await client(), { scopes: ['read', 'decide'], ...o })).res.result.grantedScopes).toEqual(['read'])
+    }
+    // The owner (the CLI process that started the host) gets everything it asks for.
+    const owner = await client()
+    expect((await hello(owner, { scopes: ['read', 'operate', 'decide', 'configure'], ownerKey: KEY })).res.result.grantedScopes).toEqual([
+      'read',
+      'operate',
+      'decide',
+      'configure'
+    ])
+    owner.send(rpcRequest(4, 'runs:decide', [{}]))
+    expect((await owner.response(4)).result).toEqual({ method: 'runs:decide' })
+    expect(logs.join('\n')).toContain('in-process owner')
+  })
+
+  it("an in-process host accepts its owner whatever Terminal access says; other clients are refused (cli-standalone.md 13.12)", async () => {
+    st.terminalServer = false
+    const KEY = 'cd'.repeat(32)
+    const { events } = await start({ hostKind: 'inproc', ownerKey: KEY })
+    const other = await client()
+    expect((await hello(other, { scopes: ['read'] })).res.error.data).toMatchObject({ code: 'terminal_server_disabled' })
+    const owner = await client()
+    expect((await hello(owner, { scopes: ['read', 'decide', 'configure'], ownerKey: KEY })).res.result.grantedScopes).toEqual(['read', 'decide', 'configure'])
+    // Turning access off (again) never closes the owner.
+    events.emit('settings:changed', { terminalServer: false } as never)
+    await new Promise((r) => setTimeout(r, 50))
+    expect(owner.closed).toBe(false)
+  })
+
+  it('a server without an owner key ignores an ownerProof', async () => {
     st.accessLevel = undefined
     await start({ hostKind: 'inproc' })
-    const { res } = await hello(await client(), { scopes: ['read', 'decide', 'configure'] })
-    expect(res.result.grantedScopes).toEqual(['read', 'decide', 'configure'])
+    const { res } = await hello(await client(), { scopes: ['read', 'decide', 'configure'], ownerKey: 'cd'.repeat(32) })
+    expect(res.result.grantedScopes).toEqual(['read'])
+  })
+
+  it("an in-process host follows a 'full' level for other clients, and narrowing never closes the owner", async () => {
+    const KEY = 'cd'.repeat(32)
+    const { events } = await start({ hostKind: 'inproc', ownerKey: KEY })
+    const owner = await client()
+    expect((await hello(owner, { scopes: ['read', 'decide'], ownerKey: KEY })).res.result.grantedScopes).toEqual(['read', 'decide'])
+    const other = await client()
+    expect((await hello(other, { scopes: ['read', 'decide'] })).res.result.grantedScopes).toEqual(['read', 'decide'])
+    st.accessLevel = undefined
+    events.emit('settings:changed', { terminalServer: true } as never)
+    await other.waitClosed()
+    expect(owner.closed).toBe(false)
   })
 
   it('reads OrgAIHost.terminalAccess when the host has it (session-only Terminal access)', async () => {
@@ -398,21 +468,25 @@ describe.runIf(posix)('HostSocketServer handshake', () => {
     expect((await plain.response(2)).result).toBeDefined()
   })
 
-  it('win32: restricts daemon.secret once before answering, and refuses every hello when that fails', async () => {
-    const calls: string[] = []
-    await start({ platform: 'win32', restrictSecret: async (path) => (calls.push(path), undefined) })
-    expect((await hello(await client())).res.result).toBeDefined()
-    expect((await hello(await client())).res.result).toBeDefined()
-    expect(calls).toEqual([join(dataDir, 'run', 'daemon.secret')])
-    server.close()
-    await new Promise<void>((r) => netServer.close(() => r()))
-    logs = []
-    await start({ platform: 'win32', restrictSecret: async () => 'icacls failed: access denied' })
+  it('refuses every hello while the owner reports an unprotected daemon.secret, and runs no ACL step of its own (review follow-up)', async () => {
+    let problem: string | undefined = 'icacls failed: access denied'
+    await start({ secretAclProblem: () => problem })
     const { res } = await hello(await client())
     expect(res.error.data).toEqual({ code: 'auth_failed', message: SECRET_ACL_MESSAGE })
-    expect(logs.filter((l) => l.includes('icacls failed')).length).toBe(1)
     expect((await hello(await client())).res.error.data.code).toBe('auth_failed')
     expect(logs.filter((l) => l.includes('icacls failed')).length).toBe(1)
+    // Read at every hello, never cached: once the owner reports nothing, hellos succeed (no restart needed).
+    problem = undefined
+    expect((await hello(await client())).res.result).toBeDefined()
+    server.close()
+    await new Promise<void>((r) => netServer.close(() => r()))
+    // A throwing getter refuses too.
+    await start({
+      secretAclProblem: () => {
+        throw new Error('boom')
+      }
+    })
+    expect((await hello(await client())).res.error.data).toEqual({ code: 'auth_failed', message: SECRET_ACL_MESSAGE })
   })
 
   it('anything but host.hello id 1 before auth is bad_request and closes', async () => {

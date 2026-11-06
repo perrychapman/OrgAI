@@ -12,6 +12,7 @@ import {
   KIT_IPC,
   MCP_SCOPE_IPC,
   SECRETS_IPC,
+  TEAM_FILES_IPC,
   type AppSettings,
   type DecisionOutcome,
   type KitBundleApplyInput,
@@ -44,19 +45,19 @@ function dropUndefined(v: unknown): unknown {
 }
 
 describe('(a) completeness', () => {
-  const existing: string[] = [...Object.values(IPC), ...Object.values(MCP_SCOPE_IPC), ...Object.values(KIT_IPC)]
+  const existing: string[] = [...Object.values(IPC), ...Object.values(MCP_SCOPE_IPC), ...Object.values(KIT_IPC), ...Object.values(TEAM_FILES_IPC)]
   // HOST_IPC (socket only) and SECRETS_IPC (Wave 7, every surface): channels added for the host.
   const host: string[] = [...Object.values(HOST_IPC), ...Object.values(SECRETS_IPC)]
 
-  it('matches the spec counts: 166 existing channels (155 request + 11 push) plus 6 HOST_IPC and 5 SECRETS_IPC', () => {
+  it('matches the spec counts: 177 existing channels (165 request + 12 push) plus 6 HOST_IPC and 5 SECRETS_IPC', () => {
     const push = new Set(PUSH_CHANNELS)
     expect(new Set(existing).size).toBe(existing.length)
-    expect(existing.length).toBe(166)
-    expect(existing.filter((c) => push.has(c)).length).toBe(11)
-    expect(existing.filter((c) => !push.has(c)).length).toBe(155)
+    expect(existing.length).toBe(177)
+    expect(existing.filter((c) => push.has(c)).length).toBe(12)
+    expect(existing.filter((c) => !push.has(c)).length).toBe(165)
     expect(Object.values(HOST_IPC).length).toBe(6)
     expect(Object.values(SECRETS_IPC).length).toBe(5)
-    expect(requestChannels().length).toBe(166)
+    expect(requestChannels().length).toBe(176)
   })
 
   it('every channel is either in CHANNEL_JSON_FIELDS or a push channel, never both', () => {

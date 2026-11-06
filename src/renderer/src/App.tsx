@@ -24,11 +24,13 @@ import { Badge } from './components/ui/Badge'
 import { Icon } from './components/ui/Icon'
 import { Tabs, type TabItem } from './components/ui/Tabs'
 import { chainOf, needsYou } from './lib/runChains'
-import { waitingItems } from './lib/needsYou'
+import { teamDecisionsFor, waitingItems } from './lib/needsYou'
+import { openTeamFilesDecision, useTeamAttentionItems } from './lib/menuActions'
 import { runName, runTag } from './lib/runLabels'
 import { folderName } from './lib/paths'
 import { assistantLabel } from './lib/assistants'
 import ProjectClient from './components/ProjectClient'
+import { FolderTrustPointer } from './components/FolderTrustNotice'
 import { MAIN_MIN_PX, SIDEBAR_W, clampWidth, maxWidthFor, usePersistedWidth } from './lib/panelWidth'
 import { toggleSidebar, useSidebarCollapsed } from './lib/useSidebarCollapsed'
 
@@ -54,6 +56,8 @@ export default function App(): ReactElement {
       .sort((a, b) => a.summary.startedAt - b.summary.startedAt)
     return { count: list.reduce((n, r) => n + Math.max(1, waitingItems(r).length), 0), first: list[0]?.summary.id }
   }, [runsById, selectedId])
+  const teamItems = useTeamAttentionItems()
+  const teamHere = selectedId ? teamDecisionsFor(teamItems, selectedId).length : 0
   const indexes = useRunIndexes()
   const summaries = useProjectSummaries()
   const { collapsed } = useSidebarCollapsed()
@@ -186,16 +190,17 @@ export default function App(): ReactElement {
                   className="topbar-tabs"
                 />
                 <div className="spacer" />
-                {view !== 'run' && waitingHere.count > 0 && (
+                {!isVirtual && <FolderTrustPointer project={project} view={view} />}
+                {view !== 'run' && !(view === 'team' && waitingHere.count === 0) && waitingHere.count + teamHere > 0 && (
                   <button
                     type="button"
                     className="topbar-needs"
                     data-testid="topbar-needs-you"
                     title="Jump to the decision"
-                    onClick={() => waitingHere.first && void jumpToDecision(project.id, waitingHere.first)}
+                    onClick={() => (waitingHere.first ? void jumpToDecision(project.id, waitingHere.first) : openTeamFilesDecision(project.id))}
                   >
                     <Badge tone="attention" icon={BellRing}>
-                      Needs you · {waitingHere.count}
+                      Needs you · {waitingHere.count + teamHere}
                     </Badge>
                   </button>
                 )}

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
+import { resolve } from 'node:path'
 import type { HostScope, Project } from '../../shared/types'
 import { resetSkewWarning } from '../runRef'
 import { fakeContext, FakeHostClient, project, rpcError, type Answer } from '../testing/fakeContext'
@@ -39,6 +40,15 @@ describe('permissions list', () => {
     const { f } = setup({ 'permissions:list': () => [] }, { project: project('e1', '/work', { kind: 'engagement' } as Partial<Project>), format: 'json' })
     expect(await runPermissions(f.ctx, ['list'])).toBe(0)
     expect(JSON.parse(f.out())).toMatchObject({ location: 'app', rules: [] })
+  })
+
+  it('a folder-config-gated code project names the data folder, never settings.local.json', async () => {
+    const gated = project('g1', '/work', { folderConfigTrust: { state: 'untrusted' } } as unknown as Partial<Project>)
+    const { f } = setup({ 'permissions:list': () => [] }, { project: gated })
+    expect(await runPermissions(f.ctx, ['list'])).toBe(0)
+    expect(f.out()).toContain("OrgAI's data folder")
+    expect(f.out()).toContain('gated')
+    expect(f.out()).not.toContain('settings.local.json')
   })
 })
 
@@ -101,14 +111,14 @@ describe('permissions folders / reference', () => {
   it('add resolves a relative folder against cwd and saves it', async () => {
     const { f, client } = setup({ 'projects:save': (p) => (p as [Project])[0] })
     expect(await runPermissions(f.ctx, ['folders', 'add', '../lib'])).toBe(0)
-    expect((client.callsOf('projects:save')[0] as [Project])[0].allowedDirectories).toEqual(['/data/shared', '/lib'])
-    expect(f.out()).toContain('  /lib')
+    expect((client.callsOf('projects:save')[0] as [Project])[0].allowedDirectories).toEqual(['/data/shared', resolve('/lib')])
+    expect(f.out()).toContain('  ' + resolve('/lib'))
   })
 
   it('reference add / remove', async () => {
     let s = setup({ 'projects:save': (p) => (p as [Project])[0] })
     expect(await runPermissions(s.f.ctx, ['reference', 'add', 'docs'])).toBe(0)
-    expect((s.client.callsOf('projects:save')[0] as [Project])[0].referenceDirectories).toEqual(['/data/ref', '/work/docs'])
+    expect((s.client.callsOf('projects:save')[0] as [Project])[0].referenceDirectories).toEqual(['/data/ref', resolve('/work/docs')])
     s = setup({ 'projects:save': (p) => (p as [Project])[0] })
     expect(await runPermissions(s.f.ctx, ['reference', 'remove', '/data/ref/'])).toBe(0)
     expect((s.client.callsOf('projects:save')[0] as [Project])[0].referenceDirectories).toEqual([])

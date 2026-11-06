@@ -341,20 +341,33 @@ try {
   // ======== 7. Add an item inline ========
   await page.locator('[data-testid=knowledge-toolbar] [data-testid=knowledge-add-item]').click()
   const create = page.locator('[data-testid=knowledge-create]')
+  // Fill both fields and wait until they read back, so a save never races a re-render.
+  const fillCreate = async (nameText, kindText) => {
+    const nameIn = create.locator('[data-testid=knowledge-name-input]')
+    const kindIn = create.locator('[data-testid=knowledge-kind-input]')
+    await nameIn.fill(nameText)
+    await kindIn.fill(kindText)
+    const ok = await until(async () => (await nameIn.inputValue()) === nameText && (await kindIn.inputValue()) === kindText)
+    if (!ok) {
+      const vals = `name=${JSON.stringify(await nameIn.inputValue().catch(() => null))} kind=${JSON.stringify(await kindIn.inputValue().catch(() => null))}`
+      await page.screenshot({ path: 'e2e/shots/knowledge-create-fill.png' }).catch(() => {})
+      check(false, 'the create form holds the typed name and kind before Save', vals)
+    }
+  }
   await create.waitFor({ state: 'visible' })
   check(await until(async () => (await active()).includes('knowledge-name-input')), 'Add an item focuses the Name field', await active())
-  await create.locator('[data-testid=knowledge-name-input]').fill('Stripe')
-  await create.locator('[data-testid=knowledge-kind-input]').fill('Vendor')
+  await fillCreate('Stripe', 'Vendor')
   await create.locator('[data-testid=knowledge-create-save]').click()
   check(await statusIs('Saved Stripe.'), 'creating an item announces "Saved Stripe."', await status())
   check(await until(async () => (await nodeNamed(eng.id, 'Stripe'))?.kind === 'vendor'), 'the item is saved with the normalised kind "vendor"')
   check(await until(async () => (await page.locator('[data-testid=knowledge-group][data-kind=vendor] [data-testid=knowledge-group-title]').count()) === 1), 'a free-form kind gets its own group')
   check(clean(await page.locator('[data-testid=knowledge-group][data-kind=vendor] [data-testid=knowledge-group-title]').innerText()) === 'Vendor 1', 'the free-form group title reads "Vendor 1"')
   // A duplicate name is refused as a field error.
+  await create.waitFor({ state: 'detached' })
   await page.locator('[data-testid=knowledge-toolbar] [data-testid=knowledge-add-item]').click()
   await create.waitFor({ state: 'visible' })
-  await create.locator('[data-testid=knowledge-name-input]').fill('stripe')
-  await create.locator('[data-testid=knowledge-kind-input]').fill('vendor')
+  check(await until(async () => (await active()).includes('knowledge-name-input')), 'the second Add focuses the Name field', await active())
+  await fillCreate('stripe', 'vendor')
   await create.locator('[data-testid=knowledge-create-save]').click()
   await create.locator('[data-testid=knowledge-field-error]').waitFor({ state: 'visible' })
   check(/already exists/.test(await create.locator('[data-testid=knowledge-field-error]').innerText()), 'a duplicate name shows the refusal under the field', clean(await create.locator('[data-testid=knowledge-field-error]').innerText()))

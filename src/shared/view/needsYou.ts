@@ -46,6 +46,21 @@ export function decisionCount(runs: readonly WaitRun[]): number {
   return runs.reduce((n, r) => n + waitingItems(r).length, 0)
 }
 
+/** The slice of a team-files attention item the counts need (lib/teamFiles.ts `TeamAttentionItem`). */
+export interface TeamDecision {
+  projectId: string
+}
+
+/** Runs' decisions plus one decision per team-files item (one per project). The number the bell, rows and hero show. */
+export function combinedDecisionCount(runs: readonly WaitRun[], teamItems: readonly TeamDecision[] = []): number {
+  return decisionCount(runs) + teamItems.length
+}
+
+/** Team-files decisions that belong to one project (zero or one). */
+export function teamDecisionsFor<T extends TeamDecision>(teamItems: readonly T[], projectId: string): T[] {
+  return teamItems.filter((t) => t.projectId === projectId)
+}
+
 /**
  * The card the tray shows first: the first open decision in card order (blocking kinds first), never an answered
  * record. A later arrival does not take the tray from the user.

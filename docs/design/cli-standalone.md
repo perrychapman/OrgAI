@@ -253,8 +253,9 @@ never decide or configure). `terminalAccessLevel` cannot be changed over the soc
 in the app. Without the app a Node host would therefore never allow `orgai decide`, `init`, `connections set-secret`
 and the rest. New:
 
-- **inproc**: always enabled and `full`, whatever the stored choice. It lives only for the user's own command and its
-  first client is that command (today a stored "off" refuses even that client; fixed). The stored choice keeps
+- **inproc**: its owner's client (proven by `RpcHelloParams.ownerProof`, an in-memory key; merged from PR #18) is always
+  accepted with every scope, whatever the stored choice. Any other client of that host (a shared `daemon start --host
+  inproc` host serves other terminals) follows Terminal access and its level like any host. The stored choice keeps
   applying to background hosts.
 - **node**: follows the stored `terminalServer` / `terminalAccessLevel` like the headless host. New in-process-only
   command `orgai terminal-access [on|off] [--level full|operate]` changes them on a machine without the app: it runs

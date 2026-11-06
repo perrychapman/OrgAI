@@ -9,7 +9,7 @@
  *
  * Standalone and pure: no electron import, no file I/O. Wave 1's src/main/host/registry.ts imports it.
  */
-import { HOST_IPC, IPC, KIT_IPC, MCP_SCOPE_IPC, SECRETS_IPC } from '../../shared/types'
+import { HOST_IPC, IPC, KIT_IPC, MCP_SCOPE_IPC, SECRETS_IPC, TEAM_FILES_IPC } from '../../shared/types'
 
 // ---------- Safe parse / stringify ----------
 
@@ -65,7 +65,7 @@ export interface ChannelJsonFields {
 }
 
 /**
- * The 11 main -> renderer push channels (cli-spec 3.3(3)). They carry no request; Wave 1 routes them through
+ * The 12 main -> renderer push channels (cli-spec 3.3(3)). They carry no request; Wave 1 routes them through
  * host.subscribe / runs:subscribe (or keeps them desktop-only).
  */
 export const PUSH_CHANNELS: readonly string[] = [
@@ -79,7 +79,8 @@ export const PUSH_CHANNELS: readonly string[] = [
   IPC.projectsEngagementChanged,
   IPC.appFocusRun,
   IPC.menuAction,
-  IPC.projectsCloneProgress
+  IPC.projectsCloneProgress,
+  TEAM_FILES_IPC.teamFilesChanged
 ]
 
 /**
@@ -87,7 +88,7 @@ export const PUSH_CHANNELS: readonly string[] = [
  * HOST_IPC, SECRETS_IPC (Wave 7).
  */
 export function allChannels(): string[] {
-  return [...Object.values(IPC), ...Object.values(MCP_SCOPE_IPC), ...Object.values(KIT_IPC), ...Object.values(HOST_IPC), ...Object.values(SECRETS_IPC)]
+  return [...Object.values(IPC), ...Object.values(MCP_SCOPE_IPC), ...Object.values(KIT_IPC), ...Object.values(TEAM_FILES_IPC), ...Object.values(HOST_IPC), ...Object.values(SECRETS_IPC)]
 }
 
 /** Every request channel: allChannels() minus PUSH_CHANNELS. */
@@ -262,6 +263,17 @@ export const CHANNEL_JSON_FIELDS: Readonly<Record<string, ChannelJsonFields>> = 
 
   // ---- permissions ----
   'permissions:list': {}, // projectRulesFile + readRules
+  'permissions:ignored': {}, // projectRulesFile + listIgnoredRules
+  'projects:folderConfig': {}, // folderConfigProjectArg + folderConfigReview
+  'projects:setFolderConfigTrust': {}, // folderConfigTrustArgs + applyFolderConfigTrust (desktop only)
+  // ---- team files (TEAM_FILES_IPC; teamFilesArgs) ----
+  'teamFiles:status': {}, // may write the files on the first call of a code project
+  'teamFiles:listAttention': {},
+  'teamFiles:approve': {}, // desktop only
+  'teamFiles:reject': {},
+  'teamFiles:undo': {},
+  'teamFiles:commit': {},
+  'teamFiles:enable': {},
   'permissions:remove': {}, // permissionRuleArgs
   'permissions:add': {}, // permissionRuleArgs + permissionAddRefusal
   'permissions:decideRequest': {}, // runs.decideRules(runId, requestId, PermissionRuleDecision)

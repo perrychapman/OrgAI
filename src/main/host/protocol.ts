@@ -110,6 +110,24 @@ export function hostProof(secretHex: string, f: HostProofFields): string {
   ])
 }
 
+/** The fields the in-process owner proof binds (RpcHelloParams.ownerProof). */
+export interface OwnerProofFields {
+  hostInstanceId: string
+  hostNonce: string
+  clientNonce: string
+  /** The hello's clientProof: the owner proof is good for that one hello only. */
+  clientProof: string
+}
+
+/**
+ * HMAC-SHA256(ownerKey, JSON.stringify(['owner:v1', hostInstanceId, hostNonce, clientNonce, clientProof])) as
+ * lowercase hex. The owner key is a `--host inproc` host's in-memory key (never written to disk): only the CLI process
+ * that started that host can compute this, so only it gets every scope (review H2 follow-up).
+ */
+export function ownerProof(ownerKeyHex: string, f: OwnerProofFields): string {
+  return hmacHex(ownerKeyHex, ['owner:v1', f.hostInstanceId, f.hostNonce, f.clientNonce, f.clientProof])
+}
+
 /** Constant-time comparison of two proofs. False unless both are 64 lowercase hex chars and equal. */
 export function proofMatches(expectedHex: unknown, givenHex: unknown): boolean {
   if (!isHexNonce(expectedHex) || !isHexNonce(givenHex)) return false

@@ -6,7 +6,6 @@ import { dirname, isAbsolute, join, resolve } from 'node:path'
 import {
   REPO_CLONES_MAX,
   REPO_CLONE_CANCELLED_PREFIX,
-  REPO_CONFIG_PATHS,
   REPO_DESTINATION_MAX_CHARS,
   REPO_SOURCE_MAX_CHARS,
   type RepoCloneFork,
@@ -23,6 +22,7 @@ import { canonicalDeep, isInside, isInsideEither, isNetworkPath, pathKey } from 
 import { allowedDirectoryRisk } from './runtime/allowedDirectories'
 import { maskKeyLike } from './runtime/codexAppServer'
 import { trackChildProcess } from './host/shutdown'
+import { presentConfigPaths } from './runtime/folderConfigTrust'
 
 // ---- Constants ----
 
@@ -699,25 +699,7 @@ export async function cleanupDestinationAsync(rec: DestRecord, opts: { contentsA
 
 /** The REPO_CONFIG_PATHS present in `dest`, in table order. Only lstat; a link counts as present and is never followed. */
 export function scanRepoConfig(dest: string): string[] {
-  const out: string[] = []
-  for (const { path } of REPO_CONFIG_PATHS) {
-    const parts = path.split('/')
-    let cur = dest
-    let found = true
-    for (let i = 0; i < parts.length; i++) {
-      cur = join(cur, parts[i])
-      try {
-        const st = lstatSync(cur)
-        // A link on the way: the rest would be read through it, so stop here and count the path as present.
-        if (st.isSymbolicLink()) break
-      } catch {
-        found = false
-        break
-      }
-    }
-    if (found) out.push(path)
-  }
-  return out
+  return presentConfigPaths(dest)
 }
 
 // ---- Environment and arguments ----

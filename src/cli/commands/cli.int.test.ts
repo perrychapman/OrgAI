@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
+import { allowFullTerminalAccess } from '../testing/terminalAccess'
 import { clientProof, encodeFrame, isNotification, isResponse, LineReader, newNonce, readDaemonSecret, rpcRequest, errorDataOf, type JsonRpcResponse } from '../../main/host/protocol'
 import type { DaemonInfo, Project, RunRecord, RunSummary } from '../../shared/types'
 import { CLI_VERSION } from '../version'
@@ -142,6 +143,8 @@ describe.skipIf(!wave2Merged)('orgai read-only commands against a real inproc ho
     vi.spyOn(process.stdout, 'write').mockImplementation(((s: string | Uint8Array) => ((out += String(s)), true)) as typeof process.stdout.write)
     vi.spyOn(process.stderr, 'write').mockImplementation(((s: string | Uint8Array) => ((err += String(s)), true)) as typeof process.stderr.write)
     main = ((await import('../index')) as unknown as { main: Main }).main
+    // Clients of this host other than its starting context have no owner key: allow them decide / configure (review H2).
+    allowFullTerminalAccess(join(userDataDir, 'data'))
     hostDone = main(['--data-dir', userDataDir, '--host', 'inproc', 'daemon', 'start'])
     const info = await until('daemon.json ready', () => {
       const d = daemonInfo()

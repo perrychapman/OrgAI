@@ -8,7 +8,7 @@ import { createHmac, randomBytes } from 'node:crypto'
 import * as fs from 'node:fs'
 import * as net from 'node:net'
 import * as path from 'node:path'
-import { APP_DIR, DATA_DIR, sleep } from './lib.mjs'
+import { APP_DIR, DATA_DIR, allowFullTerminalAccess, sleep } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 
@@ -85,6 +85,8 @@ export const readDaemon = () => json(fs.existsSync(DAEMON_JSON) ? fs.readFileSyn
 let daemon
 /** `daemon start --host inproc --foreground` (kept running), resolved once daemon.json says 'ready'. */
 export async function startDaemon({ cwd = APP_DIR } = {}) {
+  // The script's other CLI processes answer cards and change settings on this host (review H2: the user's choice).
+  allowFullTerminalAccess()
   daemon = startCli(['--host', 'inproc', 'daemon', 'start', '--foreground'], { cwd })
   let exited
   daemon.done.then((r) => (exited = r))

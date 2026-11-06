@@ -1,10 +1,11 @@
-import { app, BrowserWindow, dialog, nativeImage, nativeTheme, safeStorage, shell } from 'electron'
+import { app, BrowserWindow, dialog, nativeImage, nativeTheme, safeStorage, screen, shell } from 'electron'
+import { parseLargerThanScreen, parseWindowInactive, windowPlacement } from './windowPlacement'
 import { mkdirSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type { AppSettings, DaemonInfo, FocusRunTarget, HostKind, RunEvent } from '@shared/types'
-import { IPC, runWindowHash } from '@shared/types'
+import { IPC, TEAM_FILES_IPC, runWindowHash } from '@shared/types'
 import { appUrlMatcher, isExternalWebUrl, scopedWindow, shouldBlockNavigation } from './windowScope'
 import { applyShellPath } from './shellEnv'
 import { stopSystemCertRead, trustSystemCertificates } from './systemCerts'
@@ -265,6 +266,31 @@ function openRunWindow(target: FocusRunTarget): void {
   else createWindow(target)
 }
 
+// Opt-in, read once: ORGAI_WINDOW_DISPLAY ('secondary' or a 1-based display number) and ORGAI_WINDOW_INACTIVE=1 let
+// test and walkthrough windows open on another monitor without taking focus. Unset = the default behaviour.
+const WINDOW_DISPLAY = process.env.ORGAI_WINDOW_DISPLAY
+const WINDOW_INACTIVE = parseWindowInactive(process.env.ORGAI_WINDOW_INACTIVE)
+// ORGAI_WINDOW_LARGER_THAN_SCREEN=1 (CI only, macOS): lets e2e windows exceed a small work area (constructor-only,
+// ignored off macOS). Unset = unchanged.
+const WINDOW_LARGER_THAN_SCREEN = parseLargerThanScreen(process.env.ORGAI_WINDOW_LARGER_THAN_SCREEN)
+let windowDisplayNoted = false
+
+function windowPlacementFor(width: number, height: number): { x: number; y: number } | null {
+  if (WINDOW_DISPLAY === undefined) return null
+  try {
+    const displays = screen.getAllDisplays().map((d) => ({ id: d.id, bounds: d.bounds, workArea: d.workArea }))
+    const result = windowPlacement(WINDOW_DISPLAY, displays, screen.getPrimaryDisplay().id, width, height)
+    if (result.note && !windowDisplayNoted) {
+      windowDisplayNoted = true
+      log.info(result.note)
+    }
+    return result.position
+  } catch (err) {
+    log.warn(`Window placement failed: ${err instanceof Error ? err.message : String(err)}`)
+    return null
+  }
+}
+
 /**
  * The one window factory. Every window, main or run-scoped, gets the same preload and security settings
  * (contextIsolation, the external-link handler). A run-scoped window loads the renderer with the hash
@@ -272,11 +298,16 @@ function openRunWindow(target: FocusRunTarget): void {
  */
 function createWindow(scope?: FocusRunTarget): BrowserWindow {
   inBackground = false
+  const width = scope ? 1280 : 1440
+  const height = scope ? 840 : 920
+  const placement = windowPlacementFor(width, height)
   const win = new BrowserWindow({
-    width: scope ? 1280 : 1440,
-    height: scope ? 840 : 920,
+    width,
+    height,
+    ...(placement ? { x: placement.x, y: placement.y } : {}),
     minWidth: 1024,
     minHeight: 680,
+    ...(WINDOW_LARGER_THAN_SCREEN ? { enableLargerThanScreen: true } : {}),
     show: false,
     autoHideMenuBar: false,
     backgroundColor: windowBackground(host?.settings.get().appearance.theme ?? 'dark', nativeTheme.shouldUseDarkColors),
@@ -294,7 +325,7 @@ function createWindow(scope?: FocusRunTarget): BrowserWindow {
 
   windowScopes.set(win, scope)
   win.on('closed', () => windowScopes.delete(win))
-  win.on('ready-to-show', () => win.show())
+  win.on('ready-to-show', () => (WINDOW_INACTIVE ? win.showInactive() : win.show()))
   notifier?.attach(win)
   // window.open and target=_blank never create a window: http(s) links go to the user's browser, anything else
   // (file:, custom protocols, javascript:) is refused.
@@ -336,6 +367,8 @@ app.whenReady().then(async () => {
     hostInstanceId: currentHostInstanceId(),
     appVersion: app.getVersion(),
     mock: process.env.ORGAI_MOCK === '1',
+    // Ownership restricts daemon.secret before it binds; the server only refuses while that reported a problem.
+    secretAclProblem: () => ownership?.secretAclWarning,
     log: (m) => log.info(m)
   })
   const socketServer = server
@@ -415,7 +448,14 @@ app.whenReady().then(async () => {
     safeStorage,
     secretStore,
     openExternal: (url) => shell.openExternal(url),
-    desktop: { openRunWindow },
+    desktop: {
+      openRunWindow,
+      teamFilesChanged: (status) => {
+        for (const win of BrowserWindow.getAllWindows()) {
+          if (!win.isDestroyed()) win.webContents.send(TEAM_FILES_IPC.teamFilesChanged, status)
+        }
+      }
+    },
     mock: process.env.ORGAI_MOCK === '1',
     // Wave 7 (cli-standalone.md 4.3): the shutdown sequence flushes the host.stop reply, then releases ownership, then
     // calls onDrained; a quit started anywhere (Quit, a last window on Windows / Linux, host.stop, idle exit, a
@@ -485,7 +525,7 @@ app.whenReady().then(async () => {
   // Start a project from a repository (desktop only: progress goes to the calling window, a closed window cancels).
   const clones = new RepoCloneService({
     dataDir,
-    mock: process.env.ORGAI_MOCK === '1',
+    mock: h.services.adapterIds.includes('mock'),
     // A clone never lands in a folder an existing project already uses (its folder, allowed or reference folders).
     projectFolders: () =>
       h.services.projects
@@ -494,6 +534,12 @@ app.whenReady().then(async () => {
         .filter((f): f is string => typeof f === 'string' && f.length > 0)
   })
   repoClone = clones
+  // Team files: pending and problem states exist before the first focus; later checks run on window focus, at most once per 2 s.
+  const teamFiles = h.services.teamFiles
+  if (teamFiles) {
+    void teamFiles.checkAll().catch((e) => log.warn(`Team files boot check failed: ${e instanceof Error ? e.message : String(e)}`))
+    app.on('browser-window-focus', () => teamFiles.focused())
+  }
   // `events` given: registerIpc leaves forwarding the bus to windows to the listener above.
   registerIpc({ ...h.services, openRunWindow, events: h.events, dispatcher: h.dispatcher, cliShim, repoClone: clones })
   installAppMenu(
@@ -666,8 +712,10 @@ async function askClose(workingRuns: number): Promise<void> {
   }
 }
 
-// The last window closed (review H3): a --headless-host launch goes back to the background, macOS stays (Dock), and
-// Windows / Linux quit through the shutdown coordinator, asking first only while runs are working without the user.
+// The last window closed (review H3): a --headless-host launch goes back to the background while no run is working,
+// macOS stays (Dock), and Windows / Linux quit through the shutdown coordinator, asking first only while runs are working without the
+// user. That ask covers a --headless-host launch too (an `orgai` command started it and the user later opened its
+// window from the Start menu): working runs never go to the background unasked.
 app.on('window-all-closed', () => {
   // The handoff's wait window was the only window (4.4): closing it never quits; neither does anything before boot.
   if (waitingForHandoff || !booted) return
@@ -700,7 +748,7 @@ async function acquireDesktopOwnership(dataDir: string, socketServer: HostSocket
   for (;;) {
     try {
       // Review M11: no listener and no daemon.secret yet; they exist only while Terminal access is on (syncTerminalListener).
-      return await acquireHostOwnership({ dataDir, hostKind, appVersion: app.getVersion(), listen: false, onConnection: (s) => socketServer.accept(s) })
+      return await acquireHostOwnership({ dataDir, hostKind, appVersion: app.getVersion(), listen: false, singleInstanceLockHeld: gotLock, onConnection: (s) => socketServer.accept(s) })
     } catch (e) {
       if (hostArgs.headless || !(e instanceof HostAlreadyRunningError)) throw e
       const outcome = await runHandoff(dataDir, e.info)

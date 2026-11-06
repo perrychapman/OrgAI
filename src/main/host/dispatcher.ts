@@ -43,6 +43,8 @@ import type {
   EngagementDocumentInfo,
   EngagementNote,
   EngagementNoteContent,
+  FolderConfigReview,
+  TeamFilesStatus,
   FocusRunTarget,
   HostRpcErrorCode,
   KitApplyResult,
@@ -118,6 +120,7 @@ import {
   QUICK_PROJECT_ID,
   SECRETS_IPC,
   SKILLS_PROJECT_ID,
+  TEAM_FILES_IPC,
   isVirtualProjectId
 } from '../../shared/types'
 import { projectConnection, projectKindOf } from '../../shared/defaults'
@@ -133,9 +136,11 @@ import { assistPrompt, harnessProject as buildHarnessProject } from '../mcp/assi
 import type { McpService } from '../mcp/service'
 import type { QuickRunService } from '../quick/quickRuns'
 import { createScratchDir } from '../quick/scratch'
-import { addRules, listRules, removeRule } from '../runtime/permissionRules'
+import { folderConfigReview } from '../runtime/folderConfigTrust'
+import { addRules, listIgnoredRules, listRules, removeRule } from '../runtime/permissionRules'
 import type { RunManager } from '../runtime/runManager'
 import { overridesWidening } from '../runtime/runOverrides'
+import type { TeamFilesService } from '../teamFiles/service'
 import type { TemplateService } from '../setup/templates'
 import { skillAssistPrompt, skillsProject } from '../skills/assist'
 import { bundleArgs } from '../skills/files'
@@ -170,6 +175,10 @@ import {
   startRunArgs,
   checkQuickContinue,
   connectionIdArg,
+  folderConfigProjectArg,
+  pathCheckWithTeamFiles,
+  projectCreateInput,
+  teamFilesArgs,
   connectionSecretArgs,
   connectorArgs,
   effectiveRemoveRuns,
@@ -438,7 +447,7 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
   const handle = (channel: string, fn: Handler): void => {
     table[channel] = fn
   }
-  const { projects, runs, setup, maintenance, settings, connections, mcp, adapterIds, harnessProject, importer, skills, skillEvaluation, capabilities, quick, templates, kit, usage, desktop, host } = services
+  const { projects, runs, setup, maintenance, settings, connections, mcp, adapterIds, harnessProject, importer, skills, skillEvaluation, capabilities, quick, templates, kit, teamFiles, usage, desktop, host } = services
   const mock = adapterIds.includes('mock')
   // Always served: without a usage monitor the answer is null (nothing to refresh).
   handle(IPC.usageRefresh, () => usage?.refresh() ?? Promise.resolve(null))
@@ -454,20 +463,25 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
   handle(IPC.projectsList, () => projects.list())
   handle(IPC.projectsGet, (_e, id: string) => projectOrHarness(id))
   // Throws a readable message for a bad path (the form shows it) or a mock project without the mock adapter.
-  handle(IPC.projectsCreate, (_e, input: ProjectCreateInput) =>
-    projects.create(input, settings.get(), {
+  handle(IPC.projectsCreate, (_e, rawInput: ProjectCreateInput) => {
+    // teamFiles is rebuilt to `{ digest }` (64 hex) and wins over importAgents and templateId; the folder's `.orgai`
+    // agents never come through importAgents (projectCreateInput), over the socket either.
+    const { input, teamArg } = projectCreateInput(rawInput, teamFiles)
+    return projects.create(input, settings.get(), {
       mockAvailable: adapterIds.includes('mock'),
       prepare: (p) => connections.prepareNewProject(p),
       // After prepare: imported models map to the connection the project was put on.
       importRoles: (p, sources) => importer.rolesForNewProject(p, sources),
       // Only when importAgents produced no roles; after prepare so the template's models map to the project's connection.
-      fromTemplate: (p, templateId) => templates.rolesForNewProject(p, templateId)
+      fromTemplate: (p, templateId) => templates.rolesForNewProject(p, templateId),
+      // The team in the folder's .orgai as previewed; a stale digest or a problem rejects with a readable message.
+      ...(teamArg && teamFiles ? { teamFiles: { build: (p: Project) => teamFiles.createFromFolder(p, teamArg.digest), adopted: (p: Project) => teamFiles.adopted(p.id) } } : {})
     })
-  )
+  })
   // Never rejects: the agent scan and the existing-project lookup add fields only when they succeed.
   handle(IPC.projectsCheckPath, (_e, path: string): ProjectPathCheck => {
     const check = checkProjectPath(path)
-    return { ...check, ...importer.pathCheckExtras(path, check) }
+    return pathCheckWithTeamFiles(check, importer.pathCheckExtras(path, check), teamFiles?.found(path, check))
   })
   // Agent import: read-only scans of the stored project's folder; the renderer supplies choices, never roles.
   handle(IPC.projectsScanAgents, (_e, path: string): AgentImportScan => importer.scan(path))
@@ -479,6 +493,13 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
   handle(IPC.projectsSave, (_e, project: Project) => {
     if (typeof project?.id === 'string' && isVirtualProjectId(project.id)) throw new Error('This assistant project cannot be saved.')
     return projects.saveFromRenderer(project)
+  })
+  // Folder config trust: what the folder's own agent config would do (read from disk now). The user's decision
+  // (projects:setFolderConfigTrust) is desktop only and is served by ipc.ts alone: no socket handler exists for it.
+  handle(IPC.projectsFolderConfig, (_e, id: unknown): FolderConfigReview => {
+    const project = projects.get(folderConfigProjectArg(id))
+    if (!project) throw new Error('Project not found')
+    return folderConfigReview(project)
   })
   // A string id or ProjectRemoveInput. Facts are gathered before anything is deleted (removalFacts).
   handle(IPC.projectsRemove, async (_e, input: unknown): Promise<ProjectRemoveResult> => {
@@ -701,6 +722,11 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
     if (!project) throw new Error('Project not found')
     return listRules({ file: projectRulesFile(project, settings.dataDir) })
   })
+  handle(IPC.permissionsIgnored, (_e, projectId: string) => {
+    const project = projects.get(projectId)
+    if (!project) throw new Error('Project not found')
+    return listIgnoredRules({ file: projectRulesFile(project, settings.dataDir) })
+  })
   handle(IPC.permissionsRemove, (_e, raw: unknown) => {
     const input = permissionRuleArgs(raw)
     const project = projects.get(input.projectId)
@@ -728,6 +754,7 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
   registerMcpIpc(handle, runs, mcp, projectOrHarness, { quick, settings, effectiveSettings: () => connections.effectiveSettings(), mock })
   registerSkillIpc(handle, skills, skillEvaluation)
   registerCapabilityIpc(handle, capabilities)
+  if (teamFiles) registerTeamFilesIpc(handle, teamFiles)
   if (kit) registerKitBundleIpc(handle, kit)
   registerSecretsIpc(handle, services.secrets, mcp, state)
 
@@ -1073,6 +1100,15 @@ function registerSecretsIpc(
  * kit:*Bundle (socket only, cli-spec 3.6): the kit's bytes travel with the call as base64, so no main-process file
  * dialog is involved; the inputs are rebuilt by kit/service.ts. The dialog-backed kit channels stay in ipc.ts.
  */
+/**
+ * Team files (src/main/teamFiles/service.ts), the reads and the first-call write. The review decisions (approve, reject,
+ * undo, enable, commit) are desktop only and live in ipc.ts. No service = the channels are not served.
+ */
+function registerTeamFilesIpc(handle: Register, svc: TeamFilesService): void {
+  handle(TEAM_FILES_IPC.teamFilesStatus, async (_e, input: unknown): Promise<TeamFilesStatus> => svc.withGit(svc.status(teamFilesArgs(input).projectId)))
+  handle(TEAM_FILES_IPC.teamFilesListAttention, async (): Promise<TeamFilesStatus[]> => Promise.all(svc.listAttention().map((s) => svc.withGit(s))))
+}
+
 function registerKitBundleIpc(handle: Register, kit: KitService): void {
   handle(HOST_IPC.kitExportBundle, (_e, input: unknown): KitBundleExportResult => kit.exportBundle(exportBundleArgs(input)))
   handle(HOST_IPC.kitPreviewBundle, (_e, input: unknown): KitImportPreview => kit.previewBundle(previewBundleArgs(input)))

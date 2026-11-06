@@ -11,8 +11,10 @@ import {
   importedSummary,
   managerSlug,
   notImportedLine,
+  otherToolAgents,
   readBannerMemory,
   setupSubmitLabel,
+  totalAgents,
   writeBannerMemory
 } from './agentImport'
 
@@ -30,6 +32,14 @@ describe('foundLine', () => {
       })
     ).toBe('Found 1 Claude Code agent and 3 opencode agents.')
     expect(foundLine({ instructionFiles: ['a/AGENTS.md', 'CLAUDE.md', 'GEMINI.md'] })).toBe('Found 3 instruction files.')
+  })
+  it('says nothing while a team is found, and counts no agents', () => {
+    const check = { agentSources: [{ source: 'claude' as const, label: 'Claude Code', agentCount: 2 }], instructionFiles: ['AGENTS.md'], teamFiles: { roleCount: 1, roles: [], skills: [], mcpServers: [], changes: [], problems: [], warnings: [] } }
+    expect(foundLine(check)).toBeNull()
+    expect(totalAgents(check)).toBe(0)
+    expect(otherToolAgents(check)).toBe(2)
+    expect(totalAgents({ agentSources: check.agentSources })).toBe(2)
+    expect(setupSubmitLabel('team', false)).toBe('Create project')
   })
   it('is null for nothing', () => {
     expect(foundLine({})).toBeNull()

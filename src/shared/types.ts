@@ -504,6 +504,13 @@ export interface Project {
    */
   referenceDirectories?: string[]
   /**
+   * Whether this folder's own agent config may load (section "Folder config trust" near the end of this file). Written
+   * only by main: projects:create sets it when the folder holds anything from REPO_CONFIG_PATHS, the trust channel
+   * changes it, and a renderer save keeps the stored value. Absent = state 'none': today's behaviour (projects stored
+   * before this field, and folders with no such config at creation).
+   */
+  folderConfigTrust?: FolderConfigTrust
+  /**
    * Engagements: who the work is for, in the user's own words (plain text, no category list), so the renderer can
    * group engagements by client. At most PROJECT_CLIENT_MAX_CHARS; ProjectStore trims it on save and read, drops it
    * when empty, not a string or holding control, zero-width, bidi or other hidden characters. The engagement
@@ -1761,9 +1768,10 @@ export interface AppSettings {
    * scopesForAccessLevel). Missing = 'operate': read and operate (watch, start, send to, interrupt and stop runs);
    * 'full' adds decide (answer decision cards) and configure (settings, projects, MCP, permissions, connections).
    * Only the desktop window changes it in practice: settings:set needs 'configure', which a socket client gets only
-   * when this is already 'full', so the socket can lower it but never raise it. A `--host inproc` host (the CLI process
-   * owns it) always grants full. Normalized: 'full' and an explicit 'operate' are stored (Wave 7: the choice is kept
-   * with terminalAccessLevelChosen); anything else is dropped.
+   * when this is already 'full', so the socket can lower it but never raise it. A `--host inproc` host applies it to
+   * every client too; only the CLI process that started it gets every scope, through RpcHelloParams.ownerProof (an
+   * in-memory key). Normalized: 'full' and an explicit 'operate' are stored (Wave 7: the choice is kept with
+   * terminalAccessLevelChosen); anything else is dropped.
    */
   terminalAccessLevel?: TerminalAccessLevel
   /**
@@ -2879,6 +2887,17 @@ export interface PermissionRequest {
 export type PermissionScope = 'once' | 'session' | 'project'
 
 /** One permission rule: a tool name plus optional content, written as `Tool(content)`. */
+/**
+ * A saved allow rule OrgAI ignores (permissions:ignored): `reason` is OrgAI's own sentence, never file text. `rule` is
+ * the stored text, cut at 1,000 chars (`cut: true`, then not removable); `hiddenChar` when it holds a hidden character.
+ */
+export interface IgnoredPermissionRule {
+  rule: string
+  reason: string
+  hiddenChar?: true
+  cut?: true
+}
+
 export interface PermissionRuleSpec {
   toolName: string
   ruleContent?: string
@@ -4324,7 +4343,9 @@ export interface OrgAIApi {
   permissions: {
     /** Allow rules saved in the project's .claude/settings.local.json, e.g. "Bash(npm:*)". */
     list(projectId: string): Promise<string[]>
-    /** Remove one saved allow rule; returns the remaining rules. */
+    /** Saved rules OrgAI ignores (too broad, destructive or with a hidden character) with why; remove() deletes them. */
+    ignored(projectId: string): Promise<IgnoredPermissionRule[]>
+    /** Remove one saved allow rule (also an ignored one, by its exact text); returns the remaining usable rules. */
     remove(input: { projectId: string; rule: string }): Promise<string[]>
     /** Save one allow rule (validated); returns the full list. Live runs of the project honour it at once. */
     add(input: { projectId: string; rule: string }): Promise<string[]>
@@ -5210,10 +5231,19 @@ export const REPO_CLONE_IPC = {
   projectsCloneProgress: 'projects:cloneProgress'
 } as const
 
+/** Channels of "Folder config trust" (section near the end of this file). Declared here for the same reason. */
+export const FOLDER_CONFIG_IPC = {
+  /** Project id -> FolderConfigReview. Rejects only for an unknown project. */
+  projectsFolderConfig: 'projects:folderConfig',
+  /** FolderConfigTrustInput -> FolderConfigTrustResult. Rejects with a readable sentence (missing or stale digest...). */
+  projectsSetFolderConfigTrust: 'projects:setFolderConfigTrust'
+} as const
+
 export const IPC = {
   ...TEMPLATE_ENGAGEMENT_IPC,
   ...KNOWLEDGE_IPC,
   ...REPO_CLONE_IPC,
+  ...FOLDER_CONFIG_IPC,
   projectsList: 'projects:list',
   projectsGet: 'projects:get',
   projectsCreate: 'projects:create',
@@ -5270,6 +5300,7 @@ export const IPC = {
   /** Desktop only (cli-spec 7(3)): remove the orgai command shim when it is OrgAI's; answers CliShimResult. */
   appUninstallCliShim: 'app:uninstallCliShim',
   permissionsList: 'permissions:list',
+  permissionsIgnored: 'permissions:ignored',
   permissionsRemove: 'permissions:remove',
   permissionsAdd: 'permissions:add',
   permissionsDecideRequest: 'permissions:decideRequest',
@@ -5848,6 +5879,13 @@ export interface RpcHelloParams {
    *   JSON.stringify(['client:v1', protocolVersion, hostInstanceId, hostNonce, clientNonce, clientKind, clientVersion, pid, cwd, requestedScopes]))
    */
   clientProof: string
+  /**
+   * Only from the CLI process that started a `--host inproc` host: HMAC-SHA256(that host's in-memory owner key,
+   * JSON.stringify(['owner:v1', hostInstanceId, hostNonce, clientNonce, clientProof])) (protocol.ts ownerProof). A
+   * matching one is granted every requested scope; any other client of that host is capped by Terminal access like
+   * on every other host. Never on disk, so a process that read daemon.secret still cannot make it.
+   */
+  ownerProof?: string
 }
 
 /** Step 2: client -> host. */
@@ -6761,7 +6799,8 @@ export type RepoConfigEffect =
 
 /**
  * Files in a repository that agents would load or that can run commands, checked in this order. A file or folder that
- * is a link still counts: it is listed, never followed. Claude work runs on code projects load `.claude/settings.json`
+ * is a link still counts: it is listed, never followed. A code project whose folder holds any of these at creation is
+ * gated (section "Folder config trust"); once allowed, Claude runs load `.claude/settings.json`
  * (settingSources ['project']), so its hooks can run on the user's computer. From the docs, not confirmed by a live
  * run: `.mcp.json` does not load on Claude runs (strictMcpConfig) and is listed because Codex and the importers may
  * read it; `.claude/settings.local.json` is listed because OrgAI itself reads its permission rules
@@ -6782,6 +6821,11 @@ export const REPO_CONFIG_PATHS: readonly { path: string; effect: RepoConfigEffec
   { path: '.claude/routines', effect: 'tools' },
   { path: '.claude/output-styles', effect: 'tools' },
   { path: '.orgai/org.json', effect: 'tools' },
+  // Team files (src/main/teamFiles/): roles, skills and servers a project would take on, behind an approval card.
+  { path: '.orgai/team.json', effect: 'tools' },
+  { path: '.orgai/mcp.json', effect: 'tools' },
+  { path: '.orgai/agents', effect: 'tools' },
+  { path: '.orgai/skills', effect: 'tools' },
   { path: '.agents', effect: 'tools' },
   { path: 'CLAUDE.md', effect: 'instructions' },
   { path: 'CLAUDE.local.md', effect: 'instructions' },
@@ -6808,7 +6852,168 @@ export interface RepoCloneProgress {
 /** A cancelled projects:cloneRepo rejects with a message starting with this. */
 export const REPO_CLONE_CANCELLED_PREFIX = 'Cancelled.'
 
+// ---- Folder config trust ----
+
+/**
+ * What a project's own agent config may do, seen by the renderer:
+ *   'none'       no gate: Project.folderConfigTrust is absent (stored before this feature, or no config at creation).
+ *   'untrusted'  the folder held config at creation and the user has not accepted it. Runs still work and ignore it.
+ *   'trusted'    the user accepted it and what is on disk still has that digest. Runs load it.
+ *   'changed'    accepted once, but the digest on disk differs now. Runs ignore it until accepted again.
+ */
+export type FolderConfigState = 'none' | 'untrusted' | 'trusted' | 'changed'
+
+/** Project.folderConfigTrust as stored. 'changed' is never stored: it is 'trusted' whose digest no longer matches. */
+export interface FolderConfigTrust {
+  state: 'untrusted' | 'trusted'
+  /** Lowercase sha256 hex of the accepted config (folderConfigTrust.ts). Only on 'trusted'. */
+  digest?: string
+  /** ISO time of the user's last accept or revoke. */
+  decidedAt?: string
+  /**
+   * Allow rules copied from the folder's settings.local.json into OrgAI's data folder on accept. Revoking removes them,
+   * and a later accept never re-adds one the user removed. Main only.
+   */
+  importedRules?: string[]
+}
+
+/** Longest text of one file in a review, in characters; longer text is cut and marked `truncated`. */
+export const FOLDER_CONFIG_FILE_TEXT_MAX = 64 * 1024
+/** All file text of one review together, in characters; files past it are listed with no text and `truncated`. */
+export const FOLDER_CONFIG_TOTAL_TEXT_MAX = 1024 * 1024
+/** Most entries of each list in a review (files, commands, env, allowRules, mcpServers); past it `truncated` is set. */
+export const FOLDER_CONFIG_LIST_MAX = 500
+
+/**
+ * One path in a review. All text is untrusted and comes from whoever wrote the folder: render it as plain text. It is
+ * not stripped: `hiddenChar` names the first control, zero-width, bidi or other invisible character ("U+202E"; tab and
+ * line breaks do not count), the way an import preview's text is badged. Secret-looking values are already masked.
+ */
+export interface FolderConfigFile {
+  /** '/'-relative to the project folder. */
+  path: string
+  effect: RepoConfigEffect
+  kind: 'file' | 'link' | 'other'
+  /** Only with kind 'link': where it points, as stored in the link. */
+  linkTarget?: string
+  sizeBytes: number
+  /** Absent for a link, a binary file or a file past FOLDER_CONFIG_TOTAL_TEXT_MAX. */
+  text?: string
+  truncated?: boolean
+  hiddenChar?: string
+  /** False for text the digest does not bind: 'instructions' files and .orgai/org.json can change while trusted. */
+  digested: boolean
+}
+
+/** Something the folder's config would run: a hook, or a helper setting such as apiKeyHelper or statusLine. */
+export interface FolderConfigCommand {
+  /** The file it is declared in. */
+  source: string
+  kind: 'hook' | 'helper'
+  /** Hook: its event and matcher ("PreToolUse Bash"). Helper: the setting's name ("apiKeyHelper"). */
+  label: string
+  /**
+   * The command, or the handler as JSON when it is not a command handler (an http or prompt hook). Only the
+   * credential-looking part is replaced by '[masked]' (URL userinfo, a key-shaped word, "Bearer x", the value of
+   * `API_KEY=...` or `--token=...`); everything else, including code after it, always shows.
+   */
+  command: string
+  /** Something in `command` was replaced by '[masked]'. */
+  masked?: boolean
+  hiddenChar?: string
+}
+
+export interface FolderConfigEnv {
+  source: string
+  name: string
+  /** '[masked]' when `masked`. */
+  value: string
+  /** The name or the value looked like a secret. */
+  masked: boolean
+  /** The name redirects where requests go or which model or account is used (a name Claude runs strip, or ending _BASE_URL). */
+  routing?: boolean
+  hiddenChar?: string
+}
+
+/**
+ * A setting that redirects or runs things but is not a hook, env value, allow rule or MCP server of its own:
+ * `.claude/settings*.json` enabledPlugins, extraKnownMarketplaces, permissions.defaultMode,
+ * permissions.additionalDirectories, enableAllProjectMcpServers, enabledMcpjsonServers, mcpServers; and
+ * `.codex/config.toml` notify, hooks, model_provider, model_providers, profile, profiles, approval_policy, sandbox_mode.
+ */
+export interface FolderConfigOtherSetting {
+  /** The file it is declared in. */
+  source: string
+  /** The setting's name, dotted for a nested one ("permissions.defaultMode"). */
+  key: string
+  /** The value as compact JSON, secret-looking parts masked. Never cut: a value over the field cap makes the review unreviewable. */
+  value: string
+  /** Something in `value` was replaced by '[masked]'. */
+  masked?: boolean
+  hiddenChar?: string
+}
+
+export interface FolderConfigAllowRule {
+  source: string
+  rule: string
+  /** OrgAI's reason for refusing this rule (allowRuleRefusal), else absent. A refused rule is never read as a saved rule. */
+  refused?: string
+  hiddenChar?: string
+}
+
+export interface FolderConfigMcpServer {
+  source: string
+  name: string
+  /** The whole command line or URL as it would run; only credential-looking parts are replaced by '[masked]'. */
+  target: string
+  /** Something in `target` was replaced by '[masked]'. */
+  masked?: boolean
+  hiddenChar?: string
+}
+
+/** projects:folderConfig. What accepting would approve, read from disk at call time. */
+export interface FolderConfigReview {
+  projectId: string
+  state: FolderConfigState
+  /** Lowercase sha256 hex of what the digest binds right now. Send it back through the write channel. */
+  digest: string
+  files: FolderConfigFile[]
+  commands: FolderConfigCommand[]
+  env: FolderConfigEnv[]
+  allowRules: FolderConfigAllowRule[]
+  mcpServers: FolderConfigMcpServer[]
+  /** Settings that redirect or run things beyond the lists above (see FolderConfigOtherSetting). */
+  otherSettings: FolderConfigOtherSetting[]
+  /** A list hit FOLDER_CONFIG_LIST_MAX or the total text cap. A file of 'tools' may be cut; anything that runs may not (see unreviewable). */
+  truncated: boolean
+  /**
+   * Why this config cannot be accepted (too many files, too large, a link leaving the project folder, a settings file
+   * too large to read, a command / helper / MCP target / env value / allow rule over 4,000 characters, a list that
+   * reached FOLDER_CONFIG_LIST_MAX, or a file that runs commands whose text could not be shown in full). Nothing is
+   * ever accepted unseen. The trust channel then refuses trust: true.
+   */
+  unreviewable?: string
+}
+
+/** projects:setFolderConfigTrust. `digest` is FolderConfigReview.digest of the review the user read. */
+export interface FolderConfigTrustInput {
+  projectId: string
+  trust: boolean
+  digest: string
+}
+
+export interface FolderConfigTrustResult {
+  /** The saved project; the renderer replaces its copy. */
+  project: Project
+  review: FolderConfigReview
+}
+
 export interface OrgAIApi {
+  /** Whether a project's own agent config may load. Takes effect from the next run; a live run keeps what it started with. */
+  folderConfig: {
+    review(projectId: string): Promise<FolderConfigReview>
+    setTrust(input: FolderConfigTrustInput): Promise<FolderConfigTrustResult>
+  }
   /** Start a project from a repository. Create the project afterwards with projects.create and the returned path. */
   repos: {
     /** Never rejects. */
@@ -6824,4 +7029,257 @@ export interface OrgAIApi {
     cancelClone(requestId: string): Promise<void>
   }
   onRepoCloneProgress(cb: (event: RepoCloneProgress) => void): () => void
+}
+
+// ---- Team files ----
+//
+// A code project's team as plain files under `.orgai/` in its folder, so git carries it between computers. The
+// ProjectStore's Project stays the cache every reader and adapter uses; files win, through an approval gate because the
+// repository is untrusted. Logic: src/main/teamFiles/. Never for engagements or the virtual assistant projects. Nothing
+// in the files is secret: names of secrets only, and no ids, timestamps or absolute paths.
+
+/** team.json and mcp.json `format`. Another value is a problem naming the file, never a guess. */
+export const TEAM_FILES_FORMAT = 'orgai.team/1'
+/** Folder-relative, '/'-separated. */
+export const TEAM_FILES_JSON = '.orgai/team.json'
+export const TEAM_FILES_MCP_JSON = '.orgai/mcp.json'
+export const TEAM_FILES_AGENTS_DIR = '.orgai/agents'
+export const TEAM_FILES_SKILLS_DIR = '.orgai/skills'
+/** Most roles read from `.orgai/agents`. */
+export const TEAM_FILES_MAX_ROLES = 200
+/** Largest role file, bytes. */
+export const TEAM_FILES_MAX_ROLE_BYTES = 1024 * 1024
+/** Largest team.json or mcp.json, bytes. */
+export const TEAM_FILES_MAX_JSON_BYTES = 1024 * 1024
+/** Most servers read from mcp.json. */
+export const TEAM_FILES_MAX_SERVERS = 200
+/** Largest whole team (every file together), bytes. Past it the team files are a problem and nothing is read or written. */
+export const TEAM_FILES_MAX_TOTAL_BYTES = 32 * 1024 * 1024
+/**
+ * How many entries one status lists per list (changes, problems, notes, ...). Changes are sorted power first, so the cut
+ * only ever drops the least risky ones, and `omittedChanges` counts them: approve and create-from-folder refuse while
+ * anything is omitted, because the user could not have seen it.
+ */
+export const TEAM_FILES_LIST_MAX = 200
+
+/**
+ * 'off': the project does not use team files (see offReason). 'in-sync': the team in use is what the files say.
+ * 'pending': the files hold changes that need approval; runs use the last approved team and get one warning.
+ * 'rejected': the user refused the files' current content; runs quietly keep the last approved team until the files
+ * change. 'problem': something in the folder could not be read (problems names it); the last approved team stays and
+ * the file is not overwritten. A folder with both a problem and pending changes is 'problem' (approve refuses until it
+ * is fixed) and still lists `changes`.
+ */
+export type TeamFilesState = 'off' | 'in-sync' | 'pending' | 'rejected' | 'problem'
+
+/**
+ * Why state is 'off'. 'engagement' and 'virtual': never. 'shared-folder': another OrgAI project owns this folder's team
+ * files (the oldest project with that folder, TeamFilesStatus.sharedWith), so this one neither reads nor writes them
+ * and its team stays in OrgAI's data folder. 'removed': the user ran "Remove OrgAI files" (teamFiles:enable turns it
+ * back on). 'no-folder': the folder does not exist yet. 'not-written': a code project not opened since team files
+ * landed; teamFiles:status writes its files, teamFiles:listAttention never does.
+ */
+export type TeamFilesOffReason = 'engagement' | 'virtual' | 'shared-folder' | 'removed' | 'no-folder' | 'not-written'
+
+export type TeamFileChangeKind = 'role' | 'skill' | 'mcp' | 'settings'
+
+/**
+ * One difference between the last approved team and the files, in plain words. Text comes from the repository:
+ * untrusted, show it as data (every string is length-capped and has hidden characters replaced).
+ */
+export interface TeamFileChange {
+  /** Stable for one digest, e.g. "role:reviewer:tools". */
+  id: string
+  kind: TeamFileChangeKind
+  /** What the change is about: a role name, skill name, server name or setting label. */
+  name: string
+  /** Folder-relative path of the file that holds it, e.g. ".orgai/agents/reviewer.md". */
+  file: string
+  action: 'added' | 'removed' | 'changed'
+  /** One sentence, e.g. "Reviewer gains Bash and Write." */
+  summary: string
+  /** Needs teamFiles:approve before use. False: applied at once, undoable. */
+  needsApproval: boolean
+  /** With needsApproval: why, e.g. "New tools", "First time this repository's team is seen on this computer". */
+  reason?: string
+  /** Prompts and other text: the old and new whole text. Absent on an added or removed side. */
+  before?: string
+  after?: string
+  /** Roles: the whole tool list on each side, and what is new. */
+  toolsBefore?: string[]
+  toolsAfter?: string[]
+  toolsAdded?: string[]
+  /** Tools newly held among Bash, Edit, Write, NotebookEdit, plus 'canSpawn'. */
+  elevatedAdded?: string[]
+  /** Skills: files that look like scripts. */
+  scripts?: string[]
+  /** MCP: what would run or connect, in full (never clamped; capabilities/sanitize.ts reviewTarget form). */
+  target?: string
+  /** MCP: secret slot names this computer must fill in before the server starts. */
+  secretNames?: string[]
+  /**
+   * MCP: the file names a connector or a library server, so approving links this computer's stored entry and its stored
+   * sign-in. `target` is then the ENTRY's real target, not the file's address.
+   */
+  usesStoredSignIn?: true
+  /** MCP: the role slugs the server is limited to once approved. Absent: every role (the `summary` says so). */
+  reachesRoles?: string[]
+}
+
+/** A file or folder that could not be used. The last approved content stays and the file is never overwritten. */
+export interface TeamFileProblem {
+  /** Folder-relative path. */
+  file: string
+  /** Plain words, e.g. "It has merge conflict markers." Never quotes file text. */
+  message: string
+}
+
+/** Text that looks like a key and would be committed. Names the file, never the value. */
+export interface TeamFileWarning {
+  file: string
+  message: string
+}
+
+/** What Undo would restore, or last restored. */
+export interface TeamFilesUndoInfo {
+  /** ISO time of the change it reverts (or of the undo, on lastUndo). */
+  at: string
+  /** Plain words, e.g. "Undo the 3 changes applied from the files". */
+  label: string
+  /** Folder-relative paths Undo rewrites (or rewrote): undoing changes the files, which then show as uncommitted. */
+  files: string[]
+}
+
+/** teamFiles:status, the teamFiles:changed payload and every action's result. Readable with no run open. */
+export interface TeamFilesStatus {
+  projectId: string
+  projectName: string
+  state: TeamFilesState
+  offReason?: TeamFilesOffReason
+  /** offReason 'shared-folder': the project that owns this folder's team files. */
+  sharedWith?: { projectId: string; projectName: string }
+  /** The files' content digest (parsed content, never bytes). teamFiles:approve and teamFiles:reject send it back. */
+  digest?: string
+  /** No team of this folder was ever approved on this computer, so every difference needs approval. */
+  firstSeen?: true
+  /** The folder holds a .git. False: teamFiles:commit refuses. */
+  isGitRepo: boolean
+  /** Team files have changes git has not committed. Always false outside git. */
+  uncommitted: boolean
+  /** Those files, folder-relative, at most TEAM_FILES_LIST_MAX. */
+  uncommittedFiles: string[]
+  /** The changes waiting for approval (or refused, on 'rejected'). Empty when in sync. Most powerful first. */
+  changes: TeamFileChange[]
+  /** Changes beyond TEAM_FILES_LIST_MAX that are not listed. Greater than 0: approve is refused ("Too many changes to review at once"). */
+  omittedChanges?: number
+  /** The changes last applied at once from the files; what `undo` reverts. */
+  applied: TeamFileChange[]
+  problems: TeamFileProblem[]
+  /** Plain-language notes: items left out of the files and why, plugins staying on this computer. */
+  notes: string[]
+  warnings: TeamFileWarning[]
+  /** One level of Undo, when there is something to undo. */
+  undo?: TeamFilesUndoInfo
+  /** The last Undo that ran: which files it rewrote. */
+  lastUndo?: TeamFilesUndoInfo
+}
+
+/** teamFiles:approve and teamFiles:reject input. A digest other than the current one is refused ("Review them again."). */
+export interface TeamFilesDecisionInput {
+  projectId: string
+  digest: string
+}
+
+/** Input of teamFiles:status, teamFiles:undo, teamFiles:commit and teamFiles:enable. */
+export interface TeamFilesProjectInput {
+  projectId: string
+}
+
+/** approve, reject, undo and enable: the saved project (its team is the cache) and the fresh status. */
+export interface TeamFilesActionResult {
+  project: Project
+  status: TeamFilesStatus
+}
+
+/** teamFiles:commit never rejects for a folder that is not git or a git refusal: ok false with a readable message. */
+export interface TeamFilesCommitResult {
+  ok: boolean
+  message: string
+  /** Folder-relative paths committed. */
+  committed: string[]
+  status: TeamFilesStatus
+}
+
+/** ProjectPathCheck.teamFiles: a team found in the folder, read without touching anything. Untrusted text, as above. */
+export interface TeamFilesFound {
+  /** Send back as ProjectCreateInput.teamFiles.digest. Absent when problems make the team unusable. */
+  digest?: string
+  roleCount: number
+  /** Whole list, root first, at most TEAM_FILES_MAX_ROLES. */
+  roles: { name: string; slug: string; prompt: string; tools: string[]; elevated: string[]; reportsTo: string | null }[]
+  skills: { name: string; description: string; scripts: string[] }[]
+  mcpServers: { name: string; target: string; secretNames: string[]; connectorId?: string }[]
+  /** Every difference from nothing, for a review that matches the approval card. Most powerful first. */
+  changes: TeamFileChange[]
+  /** Changes beyond TEAM_FILES_LIST_MAX that are not listed. Greater than 0: `digest` is absent and creating is refused. */
+  omittedChanges?: number
+  /** The team's settings as the files hold them, in plain words (permission mode, limits, switches). */
+  settings?: { label: string; value: string }[]
+  problems: TeamFileProblem[]
+  warnings: TeamFileWarning[]
+}
+
+/** ProjectCreateInput.teamFiles: start from the folder's team as previewed. Refused when the digest is stale. */
+export interface TeamFilesCreateInput {
+  digest: string
+}
+
+export interface ProjectCreateInput {
+  /**
+   * Start from the team in the folder's `.orgai/` as shown in ProjectPathCheck.teamFiles, approved by this call: the
+   * project is stored with that team and never holds the default chart. Wins over importAgents and templateId. Code
+   * projects only. Rejects with a readable message when the digest is stale or the files have a problem.
+   */
+  teamFiles?: TeamFilesCreateInput
+}
+
+export interface ProjectPathCheck {
+  /**
+   * A team in the folder (`.orgai/team.json` exists). While it is set, agentSources leaves out source 'orgai', so
+   * `.orgai/` agents are never counted twice next to other sources.
+   */
+  teamFiles?: TeamFilesFound
+}
+
+export const TEAM_FILES_IPC = {
+  /** Checks the folder (and writes a code project's files the first time) and returns TeamFilesStatus. Call it when a project opens. */
+  teamFilesStatus: 'teamFiles:status',
+  /** Every project with state 'pending' or 'problem', without a run and without writing anything: for Needs-you at boot. */
+  teamFilesListAttention: 'teamFiles:listAttention',
+  teamFilesApprove: 'teamFiles:approve',
+  teamFilesReject: 'teamFiles:reject',
+  teamFilesUndo: 'teamFiles:undo',
+  teamFilesCommit: 'teamFiles:commit',
+  /** Turn team files back on after "Remove OrgAI files": writes them from the current team. */
+  teamFilesEnable: 'teamFiles:enable',
+  /** main -> renderer push carrying TeamFilesStatus whenever a project's status changes. */
+  teamFilesChanged: 'teamFiles:changed'
+} as const
+
+export interface OrgAIApi {
+  /** A code project's team as files under `.orgai/`. Everything here works with no run open. */
+  teamFiles: {
+    status(input: TeamFilesProjectInput): Promise<TeamFilesStatus>
+    listAttention(): Promise<TeamFilesStatus[]>
+    /** Use the files' team. Rejects for a stale digest or while state is 'problem'. */
+    approve(input: TeamFilesDecisionInput): Promise<TeamFilesActionResult>
+    /** Keep the last approved team until the files change. Rejects for a stale digest. */
+    reject(input: TeamFilesDecisionInput): Promise<TeamFilesActionResult>
+    /** One level: rewrites the files back. Rejects when there is nothing to undo. */
+    undo(input: TeamFilesProjectInput): Promise<TeamFilesActionResult>
+    /** Stage and commit only the team files. Never pushes. */
+    commit(input: TeamFilesProjectInput): Promise<TeamFilesCommitResult>
+    enable(input: TeamFilesProjectInput): Promise<TeamFilesActionResult>
+  }
+  onTeamFilesChanged(cb: (status: TeamFilesStatus) => void): () => void
 }

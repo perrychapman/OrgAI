@@ -9,7 +9,7 @@
  *
  * Electron-free; relative imports only. Only registry.ts (and its tests) read these.
  */
-import { HOST_IPC, HOST_METHODS, IPC, KIT_IPC, MCP_SCOPE_IPC, SECRETS_IPC } from '../../shared/types'
+import { HOST_IPC, HOST_METHODS, IPC, KIT_IPC, MCP_SCOPE_IPC, SECRETS_IPC, TEAM_FILES_IPC } from '../../shared/types'
 import type { ParamSpec } from './registry'
 
 /** Ids from the renderer (newId() output, virtual project ids, older hand-made ids): windowScope.ts ID_PATTERN. */
@@ -122,8 +122,22 @@ export const CHANNEL_PARAMS: Readonly<Record<string, readonly ParamSpec[]>> = {
   [IPC.projectsCloneRepo]: OBJECT,
   [IPC.projectsCancelClone]: [{ kind: 'any' }],
 
+  // Folder config trust: folderConfigProjectArg / folderConfigTrustArgs rebuild the input.
+  [IPC.projectsFolderConfig]: ID,
+  [IPC.projectsSetFolderConfigTrust]: OBJECT,
+
+  // ---- TEAM_FILES_IPC ---- (teamFilesArgs rebuilds each input: safe project id, 64-hex digest)
+  [TEAM_FILES_IPC.teamFilesStatus]: OBJECT,
+  [TEAM_FILES_IPC.teamFilesListAttention]: NONE,
+  [TEAM_FILES_IPC.teamFilesApprove]: OBJECT,
+  [TEAM_FILES_IPC.teamFilesReject]: OBJECT,
+  [TEAM_FILES_IPC.teamFilesUndo]: OBJECT,
+  [TEAM_FILES_IPC.teamFilesCommit]: OBJECT,
+  [TEAM_FILES_IPC.teamFilesEnable]: OBJECT,
+
   // ---- permissions ----
   [IPC.permissionsList]: ID,
+  [IPC.permissionsIgnored]: ID,
   [IPC.permissionsRemove]: OBJECT,
   [IPC.permissionsAdd]: OBJECT,
   [IPC.permissionsDecideRequest]: OBJECT,

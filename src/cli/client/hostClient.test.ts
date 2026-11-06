@@ -18,6 +18,7 @@ import {
   rpcResult,
   type JsonRpcRequest
 } from '../../main/host/protocol'
+import { pipeNameFor } from '../../main/host/ownership'
 import { HostCallError, connectHost } from './hostClient'
 
 const ID = 'abcdef012345'
@@ -53,7 +54,8 @@ afterEach(async () => {
 })
 
 function writeDaemon(extra: Record<string, unknown> = {}): string {
-  const endpoint = join(dataDir, 'run', `d-${ID}.sock`)
+  // A file path cannot be listened on in Windows; the daemon uses a named pipe there.
+  const endpoint = process.platform === 'win32' ? pipeNameFor(dataDir, ID) : join(dataDir, 'run', `d-${ID}.sock`)
   writeFileSync(
     join(dataDir, 'run', 'daemon.json'),
     JSON.stringify({ hostInstanceId: ID, pid: process.pid, endpoint, state: 'ready', startedAt: Date.now(), hostKind: 'inproc', ...extra })

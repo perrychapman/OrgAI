@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { decisionCount, defaultDecisionIndex, defaultRunToOpen, waitingItems, type WaitRun } from './needsYou'
+import { combinedDecisionCount, teamDecisionsFor, decisionCount, defaultDecisionIndex, defaultRunToOpen, waitingItems, type WaitRun } from './needsYou'
 
 const run = (id: string, startedAt: number, status: WaitRun['summary']['status'], extra: Partial<WaitRun> = {}): WaitRun => ({
   summary: { id, status, startedAt },
@@ -84,5 +84,17 @@ describe('defaultRunToOpen', () => {
   })
   it('ignores a last-viewed id that no longer exists', () => {
     expect(defaultRunToOpen([], [{ id: 'h', startedAt: 1 }], 'gone')).toBe('h')
+  })
+})
+
+describe('team-files decisions', () => {
+  const r = run('r1', 1, 'running', { permissions: [{ id: 'p', agentId: 'a1', toolName: 'Bash' }] })
+  it('counts one decision per team item beside the run decisions', () => {
+    expect(combinedDecisionCount([r], [{ projectId: 'a' }, { projectId: 'b' }])).toBe(decisionCount([r]) + 2)
+    expect(combinedDecisionCount([], [{ projectId: 'a' }])).toBe(1)
+    expect(combinedDecisionCount([r])).toBe(decisionCount([r]))
+  })
+  it('picks a project\'s own items', () => {
+    expect(teamDecisionsFor([{ projectId: 'a' }, { projectId: 'b' }], 'b')).toEqual([{ projectId: 'b' }])
   })
 })

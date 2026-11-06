@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { execSync, spawn, type ChildProcess } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { currentHostInstanceId } from '../host/identity'
 import { processStartTime } from '../host/processInfo'
 import {
@@ -74,8 +74,9 @@ const staleDirs = (): string[] => readdirSync(common).filter((n) => n.startsWith
 describe('commonGitDir', () => {
   it('resolves the main checkout and a linked worktree to one real common dir', async () => {
     expect(common).toBe(realpathSync.native(join(repo, '.git')))
-    git(repo, 'worktree add -q -b wt1 ../wt1-' + repo.split('/').pop())
-    const wt = join(repo, '..', 'wt1-' + repo.split('/').pop())
+    // basename, not split('/'): on Windows the temp path has backslashes.
+    git(repo, 'worktree add -q -b wt1 ../wt1-' + basename(repo))
+    const wt = join(repo, '..', 'wt1-' + basename(repo))
     tmps.push(wt)
     expect(pathKey((await commonGitDir(wt))!)).toBe(pathKey(common))
     expect(pathKey((await commonGitDir(join(repo, 'sub', 'missing')))!)).toBe(pathKey(common))

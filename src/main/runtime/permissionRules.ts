@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import type { PermissionDecision, PermissionRuleSpec, PermissionSuggestion } from '@shared/types'
+import type { IgnoredPermissionRule, PermissionDecision, PermissionRuleSpec, PermissionSuggestion } from '@shared/types'
 import { isWholeToolRule } from '@shared/types'
 import { hiddenCharProblem } from '../capabilities/sanitize'
 import { posix, win32 } from 'node:path'
@@ -59,10 +59,56 @@ function uniqueRules(rules: readonly string[]): string[] {
   return [...new Set(rules.map((r) => r.trim()).filter(Boolean))]
 }
 
-/** Saved allow rules, trimmed and deduplicated. An unreadable file yields no rules rather than failing the caller. */
+/**
+ * A rule OrgAI will read from a rules file. The file may have come with a repository, so a rule is held to what OrgAI
+ * itself would save (allowRuleRefusal: `Bash`, `Bash(rm:*)`, `Bash(python:*)`, `Bash(curl:*)`) and may not hold a hidden
+ * character. A refused rule stays in the file and is simply never used.
+ */
+export function readableRule(rule: string): boolean {
+  return !hiddenCharProblem('Permission rule', rule) && allowRuleRefusal(rule) === null
+}
+
+/**
+ * Saved allow rules, trimmed and deduplicated, without any rule readableRule refuses (every project, every state). An
+ * unreadable file yields no rules rather than failing the caller.
+ */
 export function listRules(target: RulesTarget): string[] {
   try {
-    return uniqueRules(allowOf(readLocalSettings(target)))
+    return uniqueRules(allowOf(readLocalSettings(target))).filter(readableRule)
+  } catch {
+    return []
+  }
+}
+
+/** At most this many ignored rules are listed, and a longer rule text is cut (and marked `cut`). */
+export const IGNORED_RULES_MAX = 200
+export const IGNORED_RULE_MAX_CHARS = 1000
+export const HIDDEN_CHAR_RULE_REASON = 'This rule contains a hidden or control character, so OrgAI ignores it.'
+
+/**
+ * Saved rules in the file that listRules drops, with OrgAI's own sentence for why (never text from the file; a refusal
+ * that quotes the rule has the quote replaced). Same trim/dedupe as listRules, at most IGNORED_RULES_MAX, rule text
+ * cut at IGNORED_RULE_MAX_CHARS (`cut: true`; a cut rule cannot be removed through permissions:remove). An unreadable
+ * file yields [].
+ */
+export function listIgnoredRules(target: RulesTarget): IgnoredPermissionRule[] {
+  try {
+    const out: IgnoredPermissionRule[] = []
+    for (const rule of uniqueRules(allowOf(readLocalSettings(target)))) {
+      const hidden = hiddenCharProblem('Permission rule', rule) !== null
+      const refusal = hidden ? null : allowRuleRefusal(rule)
+      if (!hidden && refusal === null) continue
+      if (out.length >= IGNORED_RULES_MAX) break
+      const reason = hidden ? HIDDEN_CHAR_RULE_REASON : `${refusal!.split(`"${rule}"`).join('This rule')}`
+      const item: IgnoredPermissionRule = { rule, reason }
+      if (rule.length > IGNORED_RULE_MAX_CHARS) {
+        item.rule = rule.slice(0, IGNORED_RULE_MAX_CHARS)
+        item.cut = true
+      }
+      if (hidden) item.hiddenChar = true
+      out.push(item)
+    }
+    return out
   } catch {
     return []
   }
@@ -89,7 +135,7 @@ export function addRulesReport(target: RulesTarget, rules: string[]): { rules: s
     settings.permissions = { ...(settings.permissions ?? {}), allow: next }
     writeLocalSettings(target, settings)
   }
-  return { rules: next, added }
+  return { rules: next.filter(readableRule), added }
 }
 
 /** Merge rules into permissions.allow (addRulesReport). Returns the full list. */
@@ -102,12 +148,12 @@ export function removeRule(target: RulesTarget, rule: string): string[] {
   const settings = readLocalSettings(target)
   const raw = allowOf(settings)
   const wanted = rule.trim()
-  if (!raw.some((r) => r.trim() === wanted)) return uniqueRules(raw)
+  if (!raw.some((r) => r.trim() === wanted)) return uniqueRules(raw).filter(readableRule)
   // Every copy goes (a bloated file may hold the rule many times, with stray whitespace).
   const next = uniqueRules(raw.filter((r) => r.trim() !== wanted))
   settings.permissions = { ...(settings.permissions ?? {}), allow: next }
   writeLocalSettings(target, settings)
-  return next
+  return next.filter(readableRule)
 }
 
 /** Shell rules that must never be saved as a blanket allow: destructive or privilege-raising commands. */

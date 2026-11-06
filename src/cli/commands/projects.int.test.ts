@@ -7,6 +7,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
+import { allowFullTerminalAccess } from '../testing/terminalAccess'
 import type { DaemonInfo } from '../../shared/types'
 
 type Main = (argv: string[]) => Promise<number>
@@ -57,6 +58,8 @@ describe('orgai projects against a real inproc host', () => {
     vi.spyOn(process.stdout, 'write').mockImplementation(((s: string | Uint8Array) => ((out += String(s)), true)) as typeof process.stdout.write)
     vi.spyOn(process.stderr, 'write').mockImplementation(((s: string | Uint8Array) => ((err += String(s)), true)) as typeof process.stderr.write)
     main = ((await import('../index')) as unknown as { main: Main }).main
+    // Clients of this host other than its starting context have no owner key: allow them decide / configure (review H2).
+    allowFullTerminalAccess(join(userDataDir, 'data'))
     hostDone = main(['--data-dir', userDataDir, '--host', 'inproc', 'daemon', 'start'])
     const end = Date.now() + 30_000
     while (daemonInfo()?.state !== 'ready') {

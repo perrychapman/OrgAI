@@ -552,11 +552,15 @@ try {
   // The report that was handed the brief gets the quiet "Added" row.
   const nodes = page.locator('.react-flow__node')
   let addedText = ''
-  for (let i = 0; i < (await nodes.count()) && !addedText; i++) {
-    await nodes.nth(i).click().catch(() => {})
-    await sleep(300)
-    const t = (await page.locator('[data-testid=knowledge-read-row] .entry-plain').allInnerTexts()).find((x) => /^Added \d+ known items?: /.test(x.trim()))
-    if (t) addedText = t.trim()
+  // The report may spawn and be handed the brief a little after the root's rows show (slow runners): sweep the nodes again, up to 20 s.
+  for (let round = 0; round < 10 && !addedText; round++) {
+    for (let i = 0; i < (await nodes.count()) && !addedText; i++) {
+      await nodes.nth(i).click().catch(() => {})
+      await sleep(300)
+      const t = (await page.locator('[data-testid=knowledge-read-row] .entry-plain').allInnerTexts()).find((x) => /^Added \d+ known items?: /.test(x.trim()))
+      if (t) addedText = t.trim()
+    }
+    if (!addedText) await sleep(1500)
   }
   check(/^Added 1 known item: .*Jane Doe/.test(addedText), 'a report has the quiet "Added 1 known item: Jane Doe" row', addedText)
   if (addedText) check((await page.locator('[data-testid=knowledge-read-row]:has-text("Added") details').count()) === 0, 'the Added row has no output')

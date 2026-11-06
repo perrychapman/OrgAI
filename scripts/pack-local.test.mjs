@@ -136,7 +136,7 @@ test('main passes the darwin child env to every build step, in order', () => {
       }
       if (args.includes('--dir')) {
         seenByBuilder = JSON.parse(fs.readFileSync(installInfo, 'utf8'))
-        fs.mkdirSync(path.join(root, 'release', 'mac-arm64', 'OrgAI.app'), { recursive: true })
+        fs.mkdirSync(path.join(root, 'release', unpackedLayout('darwin', process.arch).dir, 'OrgAI.app'), { recursive: true })
       }
     }
     const lines = []

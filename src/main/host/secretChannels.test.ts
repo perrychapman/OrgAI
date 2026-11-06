@@ -255,6 +255,7 @@ const COVERED_ELSEWHERE: Record<string, string> = {
 
 /** Mutation channels that never store, delete or prepare a secret (reading has / get / status does not count). */
 const NEVER_WRITES_SECRETS: Record<string, string> = {
+  'teamFiles:status': 'writes the project folder\'s team files only, no secrets',
   // Runs: setup-like and virtual-project runs carry no project MCP servers (bare); run-scoped installs carry no OAuth.
   'runs:startQuick': 'quick runs are bare (no project servers to refresh)',
   'setup:start': 'setup runs are bare',

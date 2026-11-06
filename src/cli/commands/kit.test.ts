@@ -1,6 +1,6 @@
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { HostScope, KitApplyResult, KitImportPreview, KitPreviewItem } from '../../shared/types'
 import { manageDeps } from '../manage'
@@ -106,8 +106,8 @@ describe('kit export', () => {
   })
 
   it('kitTarget', () => {
-    expect(kitTarget('a', '/x')).toBe('/x/a.orgai-kit.json')
-    expect(kitTarget('/y/b.orgai-kit.json', '/x')).toBe('/y/b.orgai-kit.json')
+    expect(kitTarget('a', '/x')).toBe(resolve('/x', 'a.orgai-kit.json'))
+    expect(kitTarget('/y/b.orgai-kit.json', '/x')).toBe(resolve('/y/b.orgai-kit.json'))
   })
 })
 

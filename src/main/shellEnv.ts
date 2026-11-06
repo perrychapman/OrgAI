@@ -1,7 +1,9 @@
 import { execFileSync } from 'node:child_process'
 import { existsSync, readdirSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+// Only ever used for darwin / linux (win32 is a no-op), whose PATH entries are POSIX paths joined with ':'.
+import { posix } from 'node:path'
+const join = posix.join
 
 /**
  * GUI apps launched from Finder or the Dock on macOS (and from a desktop launcher on Linux) inherit the minimal

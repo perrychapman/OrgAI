@@ -7,7 +7,10 @@
  */
 import { app, BrowserWindow, dialog, ipcMain, shell, type IpcMainInvokeEvent, type WebContents } from 'electron'
 import type { CliShimResult, CliShimStatus, FocusRunTarget, KitApplyResult, KitExportResult, KitImportPreview, SkillLibraryFolderInput, SkillLibraryInfo } from '@shared/types'
-import { HOST_IPC, HOST_METHODS, IPC, KIT_IPC, REPO_DESTINATION_MAX_CHARS, REPO_SOURCE_MAX_CHARS } from '@shared/types'
+import { HOST_IPC, HOST_METHODS, IPC, KIT_IPC, REPO_DESTINATION_MAX_CHARS, REPO_SOURCE_MAX_CHARS, TEAM_FILES_IPC } from '@shared/types'
+import type { FolderConfigTrustResult, TeamFilesActionResult, TeamFilesCommitResult } from '@shared/types'
+import { applyFolderConfigTrust, folderConfigReview } from './runtime/folderConfigTrust'
+import { projectRulesFile } from './store/projectData'
 import type { RepoCloneInput, RepoCloneProgress, RepoCloneResult, RepoSourceParse, RepoTools } from '@shared/types'
 import { REPO_REQUEST_ID_RE, parseRepoSource, scrubStderr, type RepoCloneService } from './repoClone'
 import { applyArgs as kitApplyArgs, exportArgs as kitExportArgs, type KitService } from './kit/service'
@@ -18,7 +21,7 @@ import { isAbsolute } from 'node:path'
 import { hiddenCharProblem } from './capabilities/sanitize'
 import { cleanMenuState, setMenuState } from './appMenu'
 import { log, logPath, logsDir } from './log'
-import { obj } from './host/args'
+import { folderConfigTrustArgs, obj, teamFilesArgs } from './host/args'
 import { noopActivity } from './host/activity'
 import { HostDispatcher } from './host/dispatcher'
 import { runLeased } from './host/mutationLease'
@@ -61,6 +64,8 @@ export {
   connectionSecretArgs,
   connectorArgs,
   effectiveRemoveRuns,
+  folderConfigProjectArg,
+  folderConfigTrustArgs,
   knowledgeArgs,
   mcpAssistArgs,
   mcpCopyArgs,
@@ -68,6 +73,7 @@ export {
   mcpOverridesArgs,
   mcpSecretArgs,
   modelsQueryArg,
+  pathCheckWithTeamFiles,
   permissionAddRefusal,
   permissionRuleArgs,
   presetRemoveArgs,
@@ -77,6 +83,8 @@ export {
   removalFacts,
   settingsSetArgs,
   skillAssistArgs,
+  teamFilesArgs,
+  teamFilesCreateArg,
   templateEngagementArgs
 } from './host/args'
 export type { RemovalDeps } from './host/args'
@@ -100,7 +108,13 @@ export const DESKTOP_ONLY_CHANNELS: readonly string[] = [
   IPC.projectsParseRepoSource,
   IPC.projectsRepoTools,
   IPC.projectsCloneRepo,
-  IPC.projectsCancelClone
+  IPC.projectsCancelClone,
+  IPC.projectsSetFolderConfigTrust,
+  TEAM_FILES_IPC.teamFilesApprove,
+  TEAM_FILES_IPC.teamFilesReject,
+  TEAM_FILES_IPC.teamFilesUndo,
+  TEAM_FILES_IPC.teamFilesEnable,
+  TEAM_FILES_IPC.teamFilesCommit
 ]
 
 /**
@@ -129,7 +143,13 @@ export const DESKTOP_CHANNEL_MUTATES: Readonly<Record<string, boolean>> = {
   [IPC.projectsParseRepoSource]: false,
   [IPC.projectsRepoTools]: false,
   [IPC.projectsCloneRepo]: true,
-  [IPC.projectsCancelClone]: false
+  [IPC.projectsCancelClone]: false,
+  [IPC.projectsSetFolderConfigTrust]: true,
+  [TEAM_FILES_IPC.teamFilesApprove]: true,
+  [TEAM_FILES_IPC.teamFilesReject]: true,
+  [TEAM_FILES_IPC.teamFilesUndo]: true,
+  [TEAM_FILES_IPC.teamFilesCommit]: true,
+  [TEAM_FILES_IPC.teamFilesEnable]: true
 }
 
 /** Served over the socket only: HOST_IPC channels and host.* methods never get an ipcMain handler. */
@@ -175,6 +195,24 @@ export function registerIpc(services: IpcServices): void {
   }
 
   // ---- Desktop-only channels ----
+  // Folder config trust: only the user in a window can trust a folder's own agent config (no socket handler exists).
+  handleMutating(activity, IPC.projectsSetFolderConfigTrust, (_e, raw: unknown): FolderConfigTrustResult => {
+    const input = folderConfigTrustArgs(raw)
+    if (!projects.get(input.projectId)) throw new Error('Project not found')
+    // A gated project keeps its saved rules in the data folder (projectRulesFile), never in the folder being judged.
+    const saved = projects.update(input.projectId, (p) => applyFolderConfigTrust(p, input, { rulesFile: projectRulesFile(p, settings.dataDir) }))
+    return { project: saved, review: folderConfigReview(saved) }
+  })
+  // Team files review decisions (approve / reject / undo / enable / commit): the approval card is the window's.
+  const teamFiles = services.teamFiles
+  if (teamFiles) {
+    const filled = async (r: TeamFilesActionResult): Promise<TeamFilesActionResult> => ({ project: r.project, status: await teamFiles.withGit(r.status) })
+    handleMutating(activity, TEAM_FILES_IPC.teamFilesApprove, async (_e, input: unknown) => filled(teamFiles.approve(teamFilesArgs(input, true))))
+    handleMutating(activity, TEAM_FILES_IPC.teamFilesReject, async (_e, input: unknown) => filled(teamFiles.reject(teamFilesArgs(input, true))))
+    handleMutating(activity, TEAM_FILES_IPC.teamFilesUndo, async (_e, input: unknown) => filled(teamFiles.undo(teamFilesArgs(input))))
+    handleMutating(activity, TEAM_FILES_IPC.teamFilesCommit, async (_e, input: unknown): Promise<TeamFilesCommitResult> => teamFiles.commit(teamFilesArgs(input)))
+    handleMutating(activity, TEAM_FILES_IPC.teamFilesEnable, async (_e, input: unknown) => filled(teamFiles.enable(teamFilesArgs(input))))
+  }
   handleReadOnly(IPC.projectsPickDir, async (e) => {
     const win = BrowserWindow.fromWebContents(e.sender)
     const result = win

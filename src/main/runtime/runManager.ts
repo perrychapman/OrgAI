@@ -6,6 +6,7 @@ import type {
   EngagementChangedEvent,
   HostHandoffFacts,
   EngagementNoteWriter,
+  FolderConfigState,
   RunUsage,
   UsageStats,
   UsageStatsQuery,
@@ -29,6 +30,8 @@ import type {
   McpLibraryEntry,
   McpServerSpec,
   McpServersProposalPayload,
+  OrgChartProposalPayload,
+  SkillsProposalPayload,
   MergeDecision,
   PendingCards,
   MergeReview,
@@ -64,7 +67,7 @@ import type {
   SkillUseCount,
   UserQuestion
 } from '@shared/types'
-import { QUICK_ASSISTANT_SLUG, adapterForProject, agentProducedNothing, isolateWritersOn, mcpSecretNames, mixedFamilyRefusal, modelFamily, newId, projectConnection, projectKindOf, resolveModelSetting, runMessagingOn, settingTier, singleRunProject, writesToProjectFolder } from '@shared/defaults'
+import { QUICK_ASSISTANT_SLUG, adapterForProject, agentProducedNothing, isolateWritersOn, mcpSecretNames, mixedFamilyRefusal, modelFamily, newId, projectConnection, projectKindOf, projectRulesLocation, resolveModelSetting, runMessagingOn, settingTier, singleRunProject, writesToProjectFolder } from '@shared/defaults'
 import { referenceFolderOf } from './referenceDirectories'
 import { aliasesFor, priceAgentUsage, resolvePrice, type PricingContext } from './pricing'
 import { IntervalTimer, buildUsageCsv, buildUsageStats, computeRunUsage, emptyAgentUsage, legacySummaryUsage, monthRange, normalizeRunRecord } from './runUsage'
@@ -94,6 +97,7 @@ import { DecisionIndex } from './decisionIndex'
 import { cancelPending, cleanProposalDecision, emptyPending, listPending, proposalEffect, proposalOutcome, type PendingCardMaps } from './pendingCards'
 import { addRules, addRulesReport, isBlanketAllowRule, isUnsafeAllowRule, listRules, tooBroadRuleRefusal } from './permissionRules'
 import { projectRulesFile, readEngagementDocument } from '../store/projectData'
+import { cleanFolderConfigTrust, folderConfigStateOf, folderConfigWarning, presentConfigPaths } from './folderConfigTrust'
 
 /**
  * The project the adapters see. Adapters read `isolateWriters !== false`, so the value is made explicit: an
@@ -201,6 +205,9 @@ export function resolveAllowedDirectories(raw: readonly unknown[] | undefined, o
 }
 
 const FLUSH_INTERVAL_MS = 1500
+/** How long a 'trusted' folder-config answer is reused before the folder is scanned again. */
+const FOLDER_CHECK_MS = 2000
+
 /** Exec settlement re-check while the root is idle but the adapter is not settled yet (a continuation timer...). */
 export const EXEC_SETTLE_POLL_MS = 1000
 /**
@@ -589,6 +596,12 @@ export interface RunManagerOptions {
   /** OrgAI's data dir, for the allowed-folder checks. Tests may omit it (the data-dir check is then skipped). */
   dataDir?: string
   /**
+   * Team files (teamFiles/service.ts): called at the top of start() for work and setup runs. Returns the fresh stored
+   * project (the team is fixed for the run from here on) and a warning when the files hold changes waiting for approval.
+   * Never throws; virtual and engagement projects come back unchanged.
+   */
+  teamFiles?: { beforeRun(project: Project): { project: Project; warning?: string } }
+  /**
    * RuntimeContext.controlProtectedPaths (bootstrap: controlProtectedPaths(dataDir, ownership.runtimeDir)). Missing =
    * controlProtectedPaths(dataDir) when dataDir is set, else none.
    */
@@ -878,6 +891,97 @@ export function continuedOverrides(prev: RunOverrides | undefined, opts: Continu
  * changes mid-run: a role an org change added joins on the next run, and a role it removed keeps its start-time
  * definition (and grants) until this run ends. Every other field stays as the run started.
  */
+/**
+ * What an approved change touched, for the live run's project view (setLive): servers and their role grants, skills and
+ * their role grants, the org chart, the allowed folders or the permission mode. Nothing else moves, so team-file changes
+ * the same save ingested stay out of a live run.
+ */
+type LiveSettle = 'mcpServers' | 'skills' | 'orgChart' | 'folders' | 'permissionMode'
+
+/** The items an approved change named itself: only these move onto a live run's project (setLive). */
+export interface LiveOwnItems {
+  /** Server or skill ids, library entry ids included. */
+  ids: readonly string[]
+  /** Server or skill names. */
+  names: readonly string[]
+}
+
+/**
+ * The live list with only the change's own items taken from the saved project, in place, new ones at the end, gone ones
+ * removed; the roles' grants to those items follow and every other grant stays. A team-file change the same save
+ * ingested may touch the same list, but it names other items, so it stays out of the live run. Pure.
+ */
+export function overlayOwnItems<T extends { id: string; name: string; libraryId?: string }>(
+  live: readonly T[] | undefined,
+  saved: readonly T[] | undefined,
+  liveRoles: readonly Role[],
+  savedRoles: readonly Role[],
+  field: 'mcpServers' | 'skills',
+  own: LiveOwnItems
+): { items: T[] | undefined; roles: Role[] } {
+  const ids = new Set(own.ids)
+  const names = new Set(own.names)
+  const isOwn = (x: T): boolean => ids.has(x.id) || names.has(x.name) || (!!x.libraryId && ids.has(x.libraryId))
+  const savedById = new Map((saved ?? []).filter(isOwn).map((x) => [x.id, x]))
+  const savedByName = new Map((saved ?? []).filter(isOwn).map((x) => [x.name, x]))
+  const used = new Set<string>()
+  const items: T[] = []
+  for (const x of live ?? []) {
+    if (!isOwn(x)) {
+      items.push(x)
+      continue
+    }
+    const replacement = savedById.get(x.id) ?? savedByName.get(x.name)
+    if (replacement && !used.has(replacement.id)) {
+      used.add(replacement.id)
+      items.push(replacement)
+    }
+  }
+  for (const x of saved ?? []) if (isOwn(x) && !used.has(x.id)) items.push(x)
+  const ownIds = new Set([...(live ?? []).filter(isOwn), ...(saved ?? []).filter(isOwn)].map((x) => x.id))
+  const savedRole = new Map(savedRoles.map((r) => [r.id, r]))
+  const roles = liveRoles.map((r) => {
+    const s = savedRole.get(r.id)
+    if (!s || !ownIds.size) return r
+    const mine = (r[field] ?? []).filter((id) => !ownIds.has(id))
+    const theirs = (s[field] ?? []).filter((id) => ownIds.has(id))
+    const merged = [...mine, ...theirs]
+    const out: Role = { ...r }
+    if (merged.length || r[field] !== undefined) out[field] = merged
+    return out
+  })
+  return { items: live === undefined && saved === undefined ? undefined : items, roles }
+}
+
+/**
+ * The live roles with only the approved org chart's own roles (matched by id or name) taken from the saved roles, in
+ * place, new ones at the end. Roles the proposal did not name stay as the run has them, so a prompt edit the same
+ * save ingested from the team files never reaches a live run. Pure.
+ */
+export function overlayOwnRoles(live: readonly Role[], saved: readonly Role[], own: { ids: readonly string[]; names: readonly string[] }): Role[] {
+  const ids = new Set(own.ids)
+  const names = new Set(own.names)
+  const isOwn = (r: Role): boolean => ids.has(r.id) || names.has(r.name)
+  const mine = saved.filter(isOwn)
+  const byId = new Map(mine.map((r) => [r.id, r]))
+  const byName = new Map(mine.map((r) => [r.name, r]))
+  const used = new Set<string>()
+  const out: Role[] = []
+  for (const r of live) {
+    if (!isOwn(r)) {
+      out.push(r)
+      continue
+    }
+    const next = byId.get(r.id) ?? byName.get(r.name)
+    if (next && !used.has(next.id)) {
+      used.add(next.id)
+      out.push(next)
+    }
+  }
+  for (const r of mine) if (!used.has(r.id)) out.push(r)
+  return out
+}
+
 export function refreshRoleGrants(running: Role[], saved: readonly Role[]): void {
   const byId = new Map(saved.map((r) => [r.id, r]))
   for (const role of running) {
@@ -1090,8 +1194,9 @@ export class RunManager {
   }
 
   /** Where the project's saved rules live (projectRulesFile). An engagement needs the data dir: never falls back to a relative path. */
-  private rulesFileFor(p: Pick<Project, 'id' | 'path' | 'kind'>): string {
-    if (!writesToProjectFolder(p) && !this.options.dataDir) throw new Error('OrgAI has no data folder to keep this engagement\'s rules in.')
+  private rulesFileFor(p: Pick<Project, 'id' | 'path' | 'kind' | 'folderConfigTrust'>): string {
+    // An engagement or a project behind the folder config gate keeps its rules in the data folder, never in the folder.
+    if (projectRulesLocation(p) === 'app' && !this.options.dataDir) throw new Error('OrgAI has no data folder to keep this project\'s rules in.')
     return projectRulesFile(p, this.options.dataDir ?? '')
   }
 
@@ -1138,6 +1243,17 @@ export class RunManager {
     if (project.id === QUICK_PROJECT_ID && (kind !== 'work' || !quick)) throw new Error('Only a quick run can run on the quick project.')
     if (quick && project.id !== QUICK_PROJECT_ID) throw new Error('Quick run details belong to the quick project only.')
     if (buildWorkspace && kind !== 'mcp-assist') throw new Error('A build workspace belongs to an MCP assistant run.')
+    // Team files: the folder is checked first (a pulled change is gated), so the run starts on the last approved team.
+    let teamWarning: string | undefined
+    if (this.options.teamFiles && (kind === 'work' || kind === 'setup') && !isVirtualProjectId(project.id) && !quick && !buildWorkspace) {
+      try {
+        const fresh = this.options.teamFiles.beforeRun(project)
+        if (fresh.project?.id === project.id) project = fresh.project
+        teamWarning = fresh.warning
+      } catch (e) {
+        log.warn(`Team files could not be checked before the run: ${(e as Error).message}`)
+      }
+    }
     // Linked MCP servers come from the library as it is now (a deleted entry disables its links).
     project = this.options.mcp?.withLibrary?.(project) ?? project
     // The Chat's single assistant settles its model before the adapter is chosen.
@@ -1198,7 +1314,7 @@ export class RunManager {
       pendingRules: new Map(),
       runRules: [],
       projectPath: project.path,
-      ...(writesToProjectFolder(project) ? {} : { rulesTarget: { file: this.rulesFileFor(project) } }),
+      ...(projectRulesLocation(project) === 'app' ? { rulesTarget: { file: this.rulesFileFor(project) } } : {}),
       runServers: new Map(),
       emit: () => {},
       skills: [],
@@ -1483,18 +1599,65 @@ export class RunManager {
       const builtinModel = this.builtinRoleModel(kind, project, choice)
       if (builtinModel?.warning) emit({ type: 'log', runId: summary.id, level: 'warn', message: builtinModel.warning })
       if (quickWarning) emit({ type: 'log', runId: summary.id, level: 'warn', message: quickWarning })
+      if (teamWarning) emit({ type: 'log', runId: summary.id, level: 'warn', message: teamWarning })
       /**
        * The project as saved after an install or an approved proposal on this run's own project: the canonical path is
        * kept, the harness tools' view (ctx.project) follows, and a work run's skills are recomputed from the new grants.
        */
-      // skills false (an approved org chart, review M1): the card says it applies from the next run, so this run's grants stay.
-      const setLive = (saved: Project, skills = true): void => {
-        live = noFolderWrites({ ...saved, path: live.path })
+      // `settle` says what the approved change itself touched; only that moves onto the live project. The saved project
+      // also carries whatever the same save ingested from the team files (a pull), and a file change never reaches a
+      // live run. An approved org chart (review M1) says it applies from the next run, so this run's grants stay.
+      const setLive = (saved: Project, settle: LiveSettle = 'mcpServers', own?: LiveOwnItems): void => {
+        // Never the roles list as saved for an org chart with named roles: only the proposal's own roles move.
+        const next: Project = { ...live }
+        const overlay = <K extends keyof Project>(key: K): void => {
+          if (saved[key] === undefined) delete next[key]
+          else next[key] = saved[key]
+        }
+        const savedRoles = new Map(saved.roles.map((r) => [r.id, r]))
+        /** The grant field of live roles taken from the saved roles (by id); every other role field stays. */
+        const grants = (field: 'mcpServers' | 'skills'): void => {
+          next.roles = next.roles.map((r) => {
+            const s = savedRoles.get(r.id)
+            if (!s) return r
+            const out: Role = { ...r }
+            if (s[field]) out[field] = [...(s[field] as string[])]
+            else delete out[field]
+            return out
+          })
+        }
+        if ((settle === 'mcpServers' || settle === 'skills') && own) {
+          // Named items only: a pulled change to another server or skill in this same save stays out of the run.
+          if (settle === 'mcpServers') {
+            const o = overlayOwnItems(live.mcpServers, saved.mcpServers, next.roles, saved.roles, 'mcpServers', own)
+            if (o.items) next.mcpServers = o.items
+            else delete next.mcpServers
+            next.roles = o.roles
+          } else {
+            const o = overlayOwnItems(live.skills, saved.skills, next.roles, saved.roles, 'skills', own)
+            if (o.items) next.skills = o.items
+            else delete next.skills
+            next.roles = o.roles
+          }
+        } else if (settle === 'mcpServers') {
+          overlay('mcpServers')
+          grants('mcpServers')
+        } else if (settle === 'skills') {
+          overlay('skills')
+          grants('skills')
+        } else if (settle === 'orgChart') {
+          if (own) next.roles = overlayOwnRoles(live.roles, saved.roles, own)
+          else overlay('roles')
+        }
+        else if (settle === 'folders') overlay('allowedDirectories')
+        else overlay('permissionMode')
+        live = noFolderWrites({ ...next, path: live.path })
         // The run's overrides are re-applied to the saved project (cli-spec 6.2(1)): a tightened project re-clamps them.
         ctx.project = effectiveRunProject(live, summary.overrides, { allowWidening: active.allowWidening })
         ctx.autoContinue = ctx.project.autoContinue !== false && planNudgesApply(summary)
         ctx.maxAutoContinues = ctx.project.maxAutoContinues ?? DEFAULT_MAX_AUTO_CONTINUES
         this.applyExecBudget(active, ctx)
+        const skills = settle === 'mcpServers' || settle === 'skills'
         // Grant changes reach the live run's roles (review M1): the adapters' gates, restarts and role lookups read these
         // objects. An org chart approval (skills false) leaves them as they started.
         if (skills && !bare) refreshRoleGrants(ctx.roles, live.roles)
@@ -1554,12 +1717,68 @@ export class RunManager {
         resolveFolders()
         resolveReferences()
       }
+      // Folder config gate (folderConfigTrust.ts): decided at run start and latched. A run that started without the
+      // folder's own agent config never gains it mid-run (accepting applies from the next run); one that started with
+      // it loses it for good when the folder changes. Omitted for projects with no gate field (legacy, virtual,
+      // trust-restricted), whose behaviour is unchanged. A scan that fails counts as "do not load".
+      let folderLoads: (() => boolean) | undefined
+      // Rules copied from the folder's settings.local.json on accept stop counting when the folder's config stops loading.
+      let importedRulesNow: () => string[] = () => []
+      if (!restricted && !isVirtualProjectId(project.id) && project.folderConfigTrust !== undefined) {
+        // The stored record decides the trust, but the folder judged is the one this run is in.
+        const gateProject = (): Project => ({ ...(this.options.resolveProject?.(project.id) ?? live), path: live.path })
+        importedRulesNow = () => cleanFolderConfigTrust(gateProject().folderConfigTrust)?.importedRules ?? []
+        const stateNow = (): FolderConfigState => {
+          try {
+            return folderConfigStateOf(gateProject())
+          } catch {
+            return 'changed'
+          }
+        }
+        const warnNotLoaded = (state: FolderConfigState): void => {
+          let paths: string[] = []
+          try {
+            paths = presentConfigPaths(live.path)
+          } catch {
+            /* the sentence still reads right without a list */
+          }
+          emit({ type: 'log', runId: summary.id, level: 'warn', message: folderConfigWarning(state, paths) })
+        }
+        const first = stateNow()
+        let latched = first === 'none' || first === 'trusted'
+        if (!latched) warnNotLoaded(first)
+        // This is asked on every permission check and a check scans the whole config, so a 'trusted' answer is reused
+        // for FOLDER_CHECK_MS; a change shows up within that window. A latched-false run never scans again.
+        let checkedAt = Date.now()
+        folderLoads = () => {
+          if (!latched) return false
+          const at = Date.now()
+          if (at >= checkedAt && at - checkedAt < FOLDER_CHECK_MS) return true
+          const now = stateNow()
+          checkedAt = at
+          if (now === 'none' || now === 'trusted') return true
+          latched = false
+          warnNotLoaded(now)
+          return false
+        }
+      }
+      const withoutUnloadedImports = (rules: string[]): string[] => {
+        if (!folderLoads || folderLoads()) return rules
+        let imported: string[] = []
+        try {
+          imported = importedRulesNow()
+        } catch {
+          /* an unreadable record drops nothing it cannot name */
+        }
+        return imported.length ? rules.filter((r) => !imported.includes(r)) : rules
+      }
       // What the run sees (cli-spec 6.2(1)): the project with its overrides applied, before ctx exists, so the adapter's
       // permission mode and continuation host read the effective values from turn 1.
       const runProject = effectiveRunProject(project, summary.overrides, { allowWidening: active.allowWidening })
       const ctx: RuntimeContext = {
         run: summary,
         project: runProject,
+        ...(folderLoads ? { folderConfigLoads: folderLoads } : {}),
         roles:
           kind === 'setup' ? [architectRole(builtinModel, { kind: projectKindOf(project) })]
           : kind === 'mcp-assist' ? [withBuildTools(mcpAssistantRole(builtinModel), summary)]
@@ -1578,12 +1797,21 @@ export class RunManager {
         requestProposal: (req) =>
           this.requestProposal(active, req, (saved) => {
             // Keep the harness tools' view of the project (and the run's skills) current after an approved change.
-            if (req.kind === 'mcpServers' || req.kind === 'skills' || req.kind === 'orgChart') setLive(saved, req.kind !== 'orgChart')
+            if (req.kind === 'mcpServers') {
+              const payload = req.payload as McpServersProposalPayload
+              setLive(saved, 'mcpServers', { ids: [...payload.upsert.map((s) => s.id), ...(payload.remove ?? [])], names: payload.upsert.map((s) => s.name) })
+            } else if (req.kind === 'skills') {
+              const payload = req.payload as SkillsProposalPayload
+              setLive(saved, 'skills', { ids: payload.items.flatMap((i) => (i.libraryId ? [i.libraryId] : [])), names: payload.items.map((i) => i.draft.name) })
+            } else if (req.kind === 'orgChart') {
+              const payload = req.payload as OrgChartProposalPayload
+              setLive(saved, 'orgChart', { ids: payload.roles.map((r) => r.id), names: payload.roles.map((r) => r.name) })
+            }
           }),
         // Setup-like runs (setup, mcp-assist, the harness project) change servers through proposals only.
         ...(bare
           ? {}
-          : { requestMcpInstall: (req: Omit<McpInstallRequest, 'id' | 'runId' | 'createdAt'>) => this.requestMcpInstall(active, req, () => live, setLive) }),
+          : { requestMcpInstall: (req: Omit<McpInstallRequest, 'id' | 'runId' | 'createdAt'>) => this.requestMcpInstall(active, req, () => live, (saved) => setLive(saved, 'mcpServers', { ids: [req.spec.id], names: [req.spec.name] })) }),
         ...(mcp ? { searchMcpRegistry: (input: McpRegistrySearchInput) => mcp.searchRegistry(input) } : {}),
         mcpServers: allServers,
         // Setup-like runs and work runs of a real project (not quick runs) read the library; work runs link from it.
@@ -1614,12 +1842,12 @@ export class RunManager {
         ...(this.options.controlProtectedPaths || this.options.dataDir
           ? { controlProtectedPaths: () => this.options.controlProtectedPaths?.() ?? (this.options.dataDir ? controlProtectedPaths(this.options.dataDir) : []) }
           : {}),
-        allowedRules: () => [...new Set([...(restricted ? [] : listRules({ file: this.rulesFileFor(live) })), ...active.runRules])],
+        allowedRules: () => [...new Set([...(restricted ? [] : withoutUnloadedImports(listRules({ file: this.rulesFileFor(live) }))), ...active.runRules])],
         // Where the project keeps its saved rules: the folder file for code projects, OrgAI's data folder for engagements.
         ...(restricted
           ? {}
           : {
-              savedRules: () => listRules({ file: this.rulesFileFor(live) }),
+              savedRules: () => withoutUnloadedImports(listRules({ file: this.rulesFileFor(live) })),
               saveProjectRules: (rules: string[]) => addRulesReport({ file: this.rulesFileFor(live) }, rules)
             }),
         ...(!writesToProjectFolder(project) ? { engagementDocument: () => (this.options.dataDir ? readEngagementDocument(this.options.dataDir, project.id) : undefined) } : {}),
@@ -1670,7 +1898,7 @@ export class RunManager {
                       })
                       if (!dirs.length) return []
                       const saved = folderSave(live.id, { addDirectories: dirs })
-                      setLive(saved, false)
+                      setLive(saved, 'folders')
                       this.broadcast({ type: 'project.updated', runId: summary.id, project: saved })
                       resolveFolders()
                       resolveReferences()
@@ -1682,7 +1910,7 @@ export class RunManager {
                     acceptEditsForProject: () => {
                       if (live.permissionMode !== 'default') return false
                       const saved = folderSave(live.id, { acceptEdits: true })
-                      setLive(saved, false)
+                      setLive(saved, 'permissionMode')
                       if (saved.permissionMode !== 'acceptEdits') return false
                       this.broadcast({ type: 'project.updated', runId: summary.id, project: saved })
                       emit({ type: 'log', runId: summary.id, level: 'info', message: 'Permission mode set to Accept edits for this project.' })

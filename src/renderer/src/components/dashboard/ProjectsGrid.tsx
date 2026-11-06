@@ -6,7 +6,9 @@ import { cleanIpcError } from '../../lib/ipcError'
 import { projectKindOf } from '@shared/defaults'
 import { buildAttentionCtx, deleteProjectBody, projectAttentionOrder, removeConfirmLabel } from '../../lib/dashboard'
 import { useForgetEngagement } from './useForgetEngagement'
-import { decisionCount } from '../../lib/needsYou'
+import { combinedDecisionCount, teamDecisionsFor } from '../../lib/needsYou'
+import { useTeamAttentionItems } from '../../lib/menuActions'
+import type { TeamAttentionItem } from '../../lib/teamFiles'
 import { projectStatus } from '../../lib/projectStatus'
 import { runName } from '../../lib/runLabels'
 import { isTeamSurfaceRun } from '../../lib/runSurface'
@@ -17,7 +19,7 @@ import { ProjectTile, type TileModel } from './ProjectTile'
 import { costInWindow, filterProjects, idAfterRemoval, mergeSummaries, SEARCH_AFTER } from './dashboardProjects'
 
 /** The tile model of one project from its live runs and saved history. */
-function tileModel(project: Project, runs: readonly RunState[], history: readonly RunSummary[], now: number): TileModel {
+function tileModel(project: Project, runs: readonly RunState[], history: readonly RunSummary[], now: number, teamItems: readonly TeamAttentionItem[]): TileModel {
   const live = runs.filter(isRunLive)
   const summaries = mergeSummaries(
     runs.map((r) => r.summary),
@@ -25,7 +27,7 @@ function tileModel(project: Project, runs: readonly RunState[], history: readonl
   )
   const newest = [...summaries].sort((a, b) => b.startedAt - a.startedAt)[0]
   const status = newest ? statusOfRun(runs.find((r) => r.summary.id === newest.id) ?? { summary: newest }, project, false) : undefined
-  const decisions = decisionCount(runs)
+  const decisions = combinedDecisionCount(runs, teamDecisionsFor(teamItems, project.id))
   const st = projectStatus({ open: live.length, decisions, newest: newest && status ? { startedAt: newest.startedAt, status } : undefined, now })
   return {
     project,
@@ -79,7 +81,8 @@ export function ProjectsGrid({ onAnnounce }: { onAnnounce: (text: string) => voi
     return () => clearInterval(t)
   }, [])
 
-  const ordered = useMemo(() => projectAttentionOrder(projects, buildAttentionCtx(Object.values(runs), history)), [projects, runs, history])
+  const teamItems = useTeamAttentionItems()
+  const ordered = useMemo(() => projectAttentionOrder(projects, buildAttentionCtx(Object.values(runs), history, teamItems)), [projects, runs, history, teamItems])
   const searching = projects.length > SEARCH_AFTER
   const shown = useMemo(() => (searching ? filterProjects(ordered, query) : ordered), [ordered, query, searching])
   const models = useMemo(() => {
@@ -90,8 +93,8 @@ export function ProjectsGrid({ onAnnounce }: { onAnnounce: (text: string) => voi
       if (list) list.push(r)
       else byProject.set(r.summary.projectId, [r])
     }
-    return shown.map((p) => tileModel(p, byProject.get(p.id) ?? [], history[p.id] ?? [], now))
-  }, [shown, runs, history, now])
+    return shown.map((p) => tileModel(p, byProject.get(p.id) ?? [], history[p.id] ?? [], now, teamItems))
+  }, [shown, runs, history, now, teamItems])
 
   const open = (id: string): void => {
     void openProject(id)

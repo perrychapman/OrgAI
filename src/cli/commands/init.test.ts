@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
+import { resolve } from 'node:path'
 import type { HostScope, Project, ProjectPathCheck } from '../../shared/types'
 import { resetSkewWarning } from '../runRef'
 import { fakeContext, FakeHostClient, project, type Answer } from '../testing/fakeContext'
@@ -71,7 +72,7 @@ describe('orgai init', () => {
   it('--skip-architect creates the project and exits 0 (JSON: project)', async () => {
     const s = setup({ json: true })
     expect(await runInit(s.f.ctx, ['--skip-architect', '--name', 'Repo'])).toBe(0)
-    expect(s.client.callsOf('projects:create')).toEqual([[{ name: 'Repo', path: '/work/repo', brief: '', kind: 'code' }]])
+    expect(s.client.callsOf('projects:create')).toEqual([[{ name: 'Repo', path: resolve('/work/repo'), brief: '', kind: 'code' }]])
     expect(JSON.parse(s.f.out())).toMatchObject({ project: { id: 'p_new', name: 'Repo', kind: 'code' }, existing: false })
     expect(s.f.connectCalls[0].scopes).toEqual(['read', 'configure'])
     expect(s.interactive).toEqual([])
@@ -88,7 +89,7 @@ describe('orgai init', () => {
   it('the Architect path creates the project, then runs setup:start on it', async () => {
     const s = setup({ tty: true })
     expect(await runInit(s.f.ctx, ['--kind', 'engagement', '--client', 'Acme', '--inline'])).toBe(0)
-    expect(s.client.callsOf('projects:create')).toEqual([[{ name: 'repo', path: '/work/repo', brief: '', kind: 'engagement' }]])
+    expect(s.client.callsOf('projects:create')).toEqual([[{ name: 'repo', path: resolve('/work/repo'), brief: '', kind: 'engagement' }]])
     expect((s.client.callsOf('projects:save')[0] as [Project])[0]).toMatchObject({ client: 'Acme' })
     expect(s.interactive).toEqual([
       {

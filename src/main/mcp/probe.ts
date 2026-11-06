@@ -4,6 +4,7 @@ import type { McpTestResult } from '@shared/types'
 import type { ResolvedMcpServer } from '../runtime/types'
 import { scrubControlEnv } from '../runtime/childEnv'
 import { parseWwwAuthenticate, redactOAuth } from './oauth'
+import { system32Path } from '../host/systemBinaries'
 import { systemCertTrust, type CertTrustState } from '../systemCerts'
 
 /**
@@ -171,7 +172,7 @@ export function killTree(child: ChildProcess): void {
   if (!pid) return
   try {
     if (process.platform === 'win32') {
-      spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }).on('error', () => {})
+      spawn(system32Path('taskkill.exe'), ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }).on('error', () => {})
     } else {
       try {
         process.kill(-pid, 'SIGKILL')

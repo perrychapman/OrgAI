@@ -687,15 +687,18 @@ describe('overrides', () => {
     expect(ctx.autoContinue).toBe(false)
     expect(ctx.maxAutoContinues).toBe(3)
     expect(m.summary(run.id)?.overrides).toMatchObject({ permissionMode: 'default', execMode: true })
-    // The project tightens to 'plan' mid-run: 'default' no longer narrows it, so the project's mode wins.
+    // The project tightens to 'plan' mid-run, but an approved MCP change moves only the servers onto the live project
+    // (dev's setLive settle rule), so the run keeps its overrides applied over the project it started with: nothing
+    // widens and nothing the approval did not touch changes.
     saved = proj({ permissionMode: 'plan', maxAutoContinues: 1 })
     const decided = ctx.requestProposal?.({ kind: 'mcpServers', agentId: 'root', title: 't', summary: '', payload: { servers: [] } } as never)
     // Human approves before the policy acts.
     const id = (events.find((e) => e.type === 'proposal.request') as Extract<RunEvent, { type: 'proposal.request' }>).proposal.id
     m.decideProposal(run.id, id, { behavior: 'approve' })
     await decided
-    expect(ctx.project.permissionMode).toBe('plan')
-    expect(ctx.maxAutoContinues).toBe(1)
+    expect(ctx.project.permissionMode).toBe('default')
+    expect(ctx.autoContinue).toBe(false)
+    expect(ctx.maxAutoContinues).toBe(3)
     await m.stopAll()
   })
 

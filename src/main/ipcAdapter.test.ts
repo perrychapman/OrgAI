@@ -77,15 +77,15 @@ describe('registerIpc (thin adapter)', () => {
     ['with a kit and repository clones', true],
     ['without either', false]
   ])('registers exactly the dispatcher channels that are not socket-only plus the desktop-only ones (%s)', (_label, withOptional) => {
-    const svc = services(withOptional ? { kit: kit as never, repoClone: repoClone as never } : {})
+    const svc = services(withOptional ? { kit: kit as never, repoClone: repoClone as never, teamFiles: {} as never } : {})
     registerIpc(svc)
     const reference = new HostDispatcher({ ...svc, desktop: { openRunWindow: svc.openRunWindow } })
-    const desktopOnly = withOptional ? DESKTOP_ONLY_CHANNELS : DESKTOP_ONLY_CHANNELS.filter((c) => !c.startsWith('kit:') && !REPO_CHANNELS.includes(c))
+    const desktopOnly = withOptional ? DESKTOP_ONLY_CHANNELS : DESKTOP_ONLY_CHANNELS.filter((c) => !c.startsWith('kit:') && !c.startsWith('teamFiles:') && !REPO_CHANNELS.includes(c))
     const expected = [...reference.channels().filter((c) => !SOCKET_ONLY.has(c)), ...desktopOnly]
     expect([...handlers.keys()].sort()).toEqual([...expected].sort())
     for (const ch of handlers.keys()) expect(SOCKET_ONLY.has(ch), ch).toBe(false)
     expect(handlers.has(IPC.usageRefresh)).toBe(true)
-    expect(DESKTOP_ONLY_CHANNELS).toHaveLength(18)
+    expect(DESKTOP_ONLY_CHANNELS).toHaveLength(24)
   })
 
   it('DESKTOP_ONLY_CHANNELS is exactly the registry desktop_only request set', () => {

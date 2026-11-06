@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
+import { resolve } from 'node:path'
 import type { HostScope, OrgTemplateInfo, Project, Role } from '../../shared/types'
 import { manageDeps } from '../manage'
 import { resetSkewWarning } from '../runRef'
@@ -138,7 +139,7 @@ describe('team plugins', () => {
     expect(await runTeam(f.ctx, ['plugins', 'add', '--path', 'tools/fmt', '--name', 'Formatter', '--skip-mcp', '--disabled'])).toBe(0)
     const input = (client.callsOf('plugins:upsert')[0] as [{ projectId: string; plugin: Record<string, unknown> }])[0]
     expect(input.projectId).toBe('p1')
-    expect(input.plugin).toMatchObject({ name: 'Formatter', path: '/work/tools/fmt', enabled: false, skipMcpDiscovery: true })
+    expect(input.plugin).toMatchObject({ name: 'Formatter', path: resolve('/work/tools/fmt'), enabled: false, skipMcpDiscovery: true })
     expect(String(input.plugin.id)).toMatch(/^plugin_/)
   })
 

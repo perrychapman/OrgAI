@@ -83,6 +83,15 @@ Not present in a real build; the real height is a little smaller. The real conne
 ## Both themes
 Layout and heights were identical in dark and light at each size (numbers in `results.json`). Contrast of hints, errors, warn and ok lines looked fine in the shots I opened (dark 1024 plain and url, light 1024 agents, light 1600 agents); the other shots were captured but not each opened.
 
+## Implementation notes (UI Lead, after the feature landed)
+
+Built as recommended: third segment, two steps, parent folder plus derived name. Differences and additions:
+- The clone step's row (Clone, or progress and Cancel clone) sticks just above the sticky submit row, because at 1024x640 the panel with a fork preview still scrolls. Under 720 px of height a form showing the panel also drops the kind cards' descriptions (the radios keep them as their description).
+- "Clone a different repository" after a success: the folder stays and the target then reads as not empty.
+- A view change during a clone (app menu, or the sidebar under the inline form) does not cancel it; the form comes back with the progress or the result when the Dashboard is next opened. A dialog close always asks first.
+- "Use it" for a folder that already holds the same repository is skipped: the contract cannot tell. "Parent missing" needs no offer: main creates it.
+- Status: M1 and M5 fixed, M2 fixed (the bridge; the hint gives way under a blocking error on Existing code), M3 fixed for clones only (a typed path is still dropped on close). Open: M4 (first-launch form below the fold; its submit row is sticky now, the choices above still push it down), L1 (New idea's field order), L2 (group name not visible, "Existing code" wording), L3.
+
 ## Not driven
 - The feature itself, GitHub CLI states, fork, network, progress, cancel and partial-folder cleanup: nothing exists to drive.
 - The native Browse picker; screen reader output; macOS and Linux; the System theme; a real (non-mock) connection line; a repo with only an AGENTS.md or template list present (the template select was not shown here, the mock data had none).

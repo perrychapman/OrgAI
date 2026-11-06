@@ -666,16 +666,28 @@ try {
     await page.locator('[data-testid=knowledge-neural-zoom-in]').click()
     await sleep(450)
     check((await attr('data-user-view')) === 'true', `${theme}: a zoom makes the view the user's`)
+    // The zoom eases and the stage resizes over a few frames: read both only once they hold still.
+    const steady = async () => {
+      let prev = ''
+      for (let i = 0; i < 40; i++) {
+        const sb = await stageBox()
+        const cur = `${await attr('data-zoom')}|${Math.round(sb.width)}x${Math.round(sb.height)}`
+        if (cur === prev) return
+        prev = cur
+        await sleep(250)
+      }
+    }
+    await steady()
     const before14 = await offStage()
     const k0 = Number(await attr('data-zoom'))
     const s0 = await stageBox()
     await setSize(1024, 640)
-    await sleep(300)
+    await steady()
     const after14 = await offStage()
     const k1 = Number(await attr('data-zoom'))
     const s1 = await stageBox()
     const ratio = Math.min(s1.width / s0.width, s1.height / s0.height)
-    check(Math.abs(k1 - k0 * ratio) <= 0.05,`${theme}: a shrink scales the user's view with the stage`, `${k0} -> ${k1}, stage ratio ${ratio.toFixed(3)}`)
+    check(Math.abs(k1 - k0 * ratio) <= 0.05,`${theme}: a shrink scales the user's view with the stage`, `${k0} -> ${k1}, stage ratio ${ratio.toFixed(3)}; stage ${Math.round(s0.width)}x${Math.round(s0.height)} -> ${Math.round(s1.width)}x${Math.round(s1.height)}; window ${await page.evaluate(() => `${innerWidth}x${innerHeight}`)}; user-view ${await attr('data-user-view')}; late zoom ${await attr('data-zoom')}`)
     check(after14.outside <= before14.outside + 2, `${theme}: a shrink loses no more of the graph than the view already left out`, `${before14.outside} -> ${after14.outside}`)
     check((await attr('data-user-view')) === 'true', `${theme}: the view stays the user's`)
     await shot(`31-shrunk-moved-1024-${theme}`)

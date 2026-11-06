@@ -2,11 +2,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import type { Stats } from 'node:fs'
-import { join } from 'node:path'
+import { join as nodeJoin } from 'node:path'
 import { createCliShimService, dirOnPath, type CliShimDeps } from './shimInstaller'
 import { CLI_SHIM_MARKER, packagedLayout, parseCliShim, renderCliShim } from './packagedLayout'
 
-const quiet = { info: () => {}, warn: () => {} }
+// These tests drive the service with an injected 'darwin' platform, which uses POSIX path rules (absolute = leading '/').
+// On Windows node:path would give 'C:\...' paths those rules do not accept, so build every path with forward slashes
+// and no drive letter (Windows fs resolves '/Users/...' against the current drive, which is the temp dir's drive here).
+const join = (...parts: string[]): string => nodeJoin(...parts).replace(/\\/g, '/').replace(/^[A-Za-z]:/, '')
+const quiet ={ info: () => {}, warn: () => {} }
 let root: string
 let home: string
 let resources: string
@@ -23,7 +27,11 @@ function fakeInstall(dir: string): { resources: string; launcher: string } {
 }
 
 beforeEach(() => {
-  root = mkdtempSync(join(tmpdir(), 'orgai-shim-'))
+  // The drive-less paths resolve against the current drive, so on Windows the root must live on it: the CI runner's
+  // temp dir is on C: while the checkout (cwd) is on D:. Elsewhere the temp dir is fine.
+  const base = process.platform === 'win32' ? nodeJoin(process.cwd(), 'node_modules', '.cache') : tmpdir()
+  mkdirSync(base, { recursive: true })
+  root = mkdtempSync(join(base, 'orgai-shim-'))
   home = join(root, 'home')
   mkdirSync(home)
   ;({ resources, launcher } = fakeInstall(join(root, 'Applications')))
@@ -92,7 +100,8 @@ describe('install', () => {
     const r = await svc.install()
     expect(r.ok).toBe(true)
     expect(r.message).toBe(`Installed the orgai command at ${shim}. ${binDir} is not on your PATH yet; add it in your shell profile.`)
-    expect(statSync(shim).mode & 0o777).toBe(0o755)
+    // Unix permission bits do not exist on Windows files (stat reports 0o666/0o444).
+    if (process.platform !== 'win32') expect(statSync(shim).mode & 0o777).toBe(0o755)
     const text = readFileSync(shim, 'utf8')
     expect(text).toContain(CLI_SHIM_MARKER)
     expect(parseCliShim(text, 'darwin')).toEqual({ launcher })
@@ -123,7 +132,8 @@ describe('install', () => {
     expect(r.message).toBe(`${shim} already exists and was not written by OrgAI. Remove or rename it to install the orgai command.`)
     expect(readFileSync(shim, 'utf8')).toBe('#!/bin/sh\necho mine\n')
   })
-  it('refuses a symlink, even to an OrgAI shim, and never writes through it', async () => {
+  // Creating a file symlink on Windows needs Developer Mode or admin (EPERM otherwise); the lstat guard is platform-independent.
+  it.skipIf(process.platform === 'win32')('refuses a symlink, even to an OrgAI shim, and never writes through it', async () => {
     mkdirSync(binDir, { recursive: true })
     const real = join(root, 'elsewhere')
     const ownText = renderCliShim({ platform: 'darwin', launcher: '/old/orgai' })

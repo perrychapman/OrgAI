@@ -1,18 +1,20 @@
 /**
  * `--host inproc` (cli-spec 3.2(1), 3.5): a pure-Node OrgAI host inside the CLI process. Same ownership protocol as
  * the Electron host (refuses with exit 6 when another host owns the data dir), its own per-instance socket so
- * `orgai watch` and later `orgai decide` can attach, and the secret vault (Wave 7, cli-standalone.md 5) with the CLI's
+ * `orgai watch` and later `orgai decide` can attach (this process's own client gets every scope through the in-memory
+ * `ownerKey`, whatever the stored Terminal access; other clients are capped by it, review H2), and the secret vault (Wave 7, cli-standalone.md 5) with the CLI's
  * environment overlay: no safeStorage outside Electron, so values the OrgAI app saved only in secrets.json read as
  * pending-legacy, and values this host stores go to vault.json (created lazily by prepareWrite). There is no desktop,
  * so window:openRun answers desktop_unavailable. Always loaded through a dynamic import (its own chunk,
  * out/cli/inprocHost.mjs). Electron-free; relative imports only.
  */
 import { writeSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join, posix, resolve, win32 } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { bootOrgAIHost, type HostBackgroundOptions, type OrgAIHost } from '../main/host/bootstrap'
 import { currentHostInstanceId } from '../main/host/identity'
 import { HostOwnershipError, acquireHostOwnership, type HostOwnership } from '../main/host/ownership'
+import { newNonce } from '../main/host/protocol'
 import { ShutdownRefusedError } from '../main/host/shutdown'
 import { HostSocketServer } from '../main/host/socketServer'
 import { installLogging, log } from '../main/log'
@@ -148,7 +150,8 @@ export const NO_CIPHER: SecretCipher = {
  * orgaiCliRootsOf adds the unpacked bundle and `<Resources>/bin` (the launcher) too.
  */
 export function inprocCliRoots(moduleDir: string, platform: NodeJS.Platform = process.platform): string[] {
-  return orgaiCliRootsOf(resolve(moduleDir, '..', '..'), platform)
+  const p = platform === 'win32' ? win32 : posix
+  return orgaiCliRootsOf(p.resolve(moduleDir, '..', '..'), platform)
 }
 
 export async function startInprocHost(opts: StartInprocHostOptions): Promise<InprocHost> {
@@ -163,11 +166,27 @@ export async function startInprocHost(opts: StartInprocHostOptions): Promise<Inp
   if (opts.quiet) quietConsole()
   const hostInstanceId = currentHostInstanceId()
   const hostKind = opts.hostKind ?? 'inproc'
-  const server = new HostSocketServer({ dataDir, hostKind, hostInstanceId, appVersion: CLI_VERSION, mock: opts.mock, ...(opts.log ? { log: opts.log } : {}) })
+  // In memory only (never daemon.json, daemon.secret or a log): this process's proof that it started the host, so its
+  // own commands get every scope while any other client of the socket stays capped by Terminal access (review H2).
+  // A Node host is detached and has no owner client.
+  const ownerKey = hostKind === 'inproc' ? newNonce() : undefined
+  const server = new HostSocketServer({
+    dataDir,
+    hostKind,
+    hostInstanceId,
+    appVersion: CLI_VERSION,
+    mock: opts.mock,
+    ...(ownerKey ? { ownerKey } : {}),
+    // Ownership restricts daemon.secret before it binds; the server only refuses while that reported a problem.
+    secretAclProblem: () => ownershipRef?.secretAclWarning,
+    ...(opts.log ? { log: opts.log } : {})
+  })
 
+  let ownershipRef: HostOwnership | undefined
   let ownership: HostOwnership
   try {
     ownership = await acquireHostOwnership({ dataDir, hostKind, appVersion: CLI_VERSION, hostInstanceId, onConnection: (s) => server.accept(s) })
+    ownershipRef = ownership
   } catch (e) {
     server.close()
     if (e instanceof HostOwnershipError) throw new CliError(e.message, EXIT.hostBusy)
@@ -274,6 +293,8 @@ export async function startInprocHost(opts: StartInprocHostOptions): Promise<Inp
     server,
     ownership,
     closed,
+    ownerKey,
+    hostInstanceId,
     status: () => booted.hostControl.status(),
     async stop(force: boolean): Promise<void> {
       if (cleaned) return closed

@@ -90,7 +90,7 @@ Rather than running two competing host binaries (a Node daemon vs. an Electron D
     - When `app.on('second-instance', (_event, argv) => ...)` fires in the incumbent host: if `argv` includes `--headless-host` (e.g. a concurrent CLI spawn raced a running Desktop app), the incumbent does **not** open or focus a `BrowserWindow` (it simply ensures the socket server is ready); otherwise, it shows the Dock icon (`app.dock?.show()`), opens/focuses the `BrowserWindow` (focusing `--run <id>` if passed), and attaches to the **already-running `RunManager` and stores**.
     - On macOS, clicking the Dock icon or relaunching from Finder fires `app.on('activate')`, which shows the Dock icon and creates the main `BrowserWindow` when `BrowserWindow.getAllWindows().length === 0`.
   - **Window Close vs Explicit Quit**:
-    - On `window-all-closed` (review H3, PR #18): a host launched with `--headless-host` clears `windowScopes`, hides the Dock icon on macOS and stays in the background until its idle exit. A desktop launch on macOS stays (Dock behaviour). A desktop launch on Windows and Linux quits through `quitGate` (stopping its runs), as before the host work; only while runs are working without the user (`RunManager.workingRunCount`: not idle runs, runs with an open card, runs held by an interrupt or a usage limit, or paused runs waiting for an auto-resume) it first asks "Keep working in the background / Stop and quit / Cancel" (Cancel brings a window back). It never goes to the background without that answer.
+    - On `window-all-closed` (review H3, PR #18): a host launched with `--headless-host` clears `windowScopes`, hides the Dock icon on macOS and stays in the background until its idle exit, while no run is working. With runs working it is treated like a desktop launch (review follow-up: an `orgai` command may have spawned it and the user then opened OrgAI from the Start menu, whose window lives in that host): macOS stays, Windows and Linux ask. A desktop launch on macOS stays (Dock behaviour). A desktop launch on Windows and Linux quits through `quitGate` (stopping its runs), as before the host work; only while runs are working without the user (`RunManager.workingRunCount`: not idle runs, runs with an open card, runs held by an interrupt or a usage limit, or paused runs waiting for an auto-resume) it first asks "Keep working in the background / Stop and quit / Cancel" (Cancel brings a window back). It never goes to the background without that answer.
     - On explicit application Quit (`Cmd+Q` / File > Quit) while CLI-started runs or TUI clients are active, `quitGate` (`src/main/index.ts:569-579`) offers `"Keep background host running for N terminal run(s)"` alongside `"Stop all runs and quit"`.
 - **Pure-Node In-Process Host (`--host inproc`)**:
   - Boots `OrgAIHost` directly inside the Node >= 22 CLI process without Electron, sharing the exact universal `<dataDir>/run/` ownership protocol below (refusing with exit code `6` if an Electron or Node host already owns `dataDir`), binding its per-instance socket so `orgai watch` / `orgai decide` can attach, and using `OverlaySecretStore` for environment-supplied secrets.
@@ -112,7 +112,7 @@ Node's standard library does not expose `flock()`/`fcntl()`, and `RunStore`'s co
    - While holding `startup.mkdir`, if `<dataDir>/run/daemon.json` exists, check `isLiveProcess(daemon.pid, daemon.processStartTime)` and attempt a `1,500 ms` connection to `daemon.endpoint`:
      - If the socket connects, fails with `EACCES`, or times out (`ETIMEDOUT`) while `isLiveProcess` is `true`, a live host owns `dataDir`: remove our `startup.mkdir` and abort boot with `HostAlreadyRunningError` (exit code `6`).
      - Only when the socket returns `ENOENT` or `ECONNREFUSED` **and** `isLiveProcess` is `false`, unlink the dead instance's specific socket path `daemon.endpoint` (if it lies inside `<dataDir>/run/` or a `tmpdir/orgai-*` runtime dir) and sweep any orphaned `orgai-*` runtime directories whose owner PID is dead.
-   - Generate a fresh 32-byte hex secret in `<dataDir>/run/daemon.secret` (`mode: 0o600`; on Windows, if `userDataDir` is outside `%APPDATA%` / `%LOCALAPPDATA%`, apply an explicit current-user-only DACL via `icacls`; the socket server additionally restricts it to the user's SID before it answers the first `host.hello`, `protocol.ts` `restrictDaemonSecretAcl`, and refuses every hello when that fails).
+   - Generate a fresh 32-byte hex secret in `<dataDir>/run/daemon.secret` (`mode: 0o600`; on Windows, if `userDataDir` is outside `%APPDATA%` / `%LOCALAPPDATA%`, apply an explicit current-user-only DACL via `icacls`; ownership restricts the run folder and the secret to the user's SID before any listener is bound, `protocol.ts` `restrictDaemonSecretAcl` through `protectSecretOnWindows`, and the socket server refuses every hello while ownership reports the secret unprotected).
    - Bind a **unique per-instance listener** so no host ever unlinks another host's socket path:
      - **macOS / Linux**: `<dataDir>/run/d-<hostInstanceId>.sock` (`mode: 0o600`, where `hostInstanceId` is a 12-hex-char random ID). If `Buffer.byteLength(sockPath) >= 100` (leaving headroom under macOS's 104-byte and Linux's 108-byte `sun_path` limits), create `<runtimeBase>/orgai-<hostInstanceId>` (`mode: 0o700`, verified via `lstatSync`) under `$XDG_RUNTIME_DIR` or `os.tmpdir()` and bind `d.sock` inside it.
      - **Windows**: Named Pipe `\\.\pipe\orgai-<sha256(canonicalPath(dataDir)).slice(0, 20)>-<hostInstanceId>`. (Because each host instance uses a unique pipe suffix to prevent cross-user pipe squatting, single-instance exclusivity on Windows is enforced by the `startup.mkdir` + `daemon.json` liveness protocol above.)
@@ -241,17 +241,17 @@ export interface RpcHelloResult {
 ```
 
 #### 3. Exhaustive 156-Channel Registry & Push Topics (`src/main/host/registry.ts`)
-Every single channel constant across `IPC`, `TEMPLATE_ENGAGEMENT_IPC`, `KNOWLEDGE_IPC`, `MCP_SCOPE_IPC`, and `KIT_IPC` in `src/shared/types.ts` (all **156** unique existing channels: 146 request channels + 10 push channels), plus the 5 new `HOST_IPC` channels (`runs:subscribe`, `skillLibrary:addFromBundle`, `kit:exportBundle`, `kit:previewBundle`, `kit:applyBundle`) and the `host.*` protocol methods, must have an explicit entry in `HOST_CHANNEL_REGISTRY` (enforced by `registry.test.ts`; any unmapped channel is rejected with `code: 'unknown_channel'`). *Counts as implemented after the merge with dev on 2026-11-05: **166** existing channels (155 request + 11 push: 8 socket_subscribable, 3 desktop_only) plus 6 `HOST_IPC` channels (`runs:findDecision` added in Wave 3) and the 5 `host.*` methods; 18 request channels are desktop_only. The table below lists them all.* Push channels have `direction: 'push'` and are **never** RPC-invokable:
+Every single channel constant across `IPC`, `TEMPLATE_ENGAGEMENT_IPC`, `KNOWLEDGE_IPC`, `MCP_SCOPE_IPC`, `KIT_IPC` and `TEAM_FILES_IPC` in `src/shared/types.ts` (all **156** unique existing channels: 146 request channels + 10 push channels), plus the 5 new `HOST_IPC` channels (`runs:subscribe`, `skillLibrary:addFromBundle`, `kit:exportBundle`, `kit:previewBundle`, `kit:applyBundle`) and the `host.*` protocol methods, must have an explicit entry in `HOST_CHANNEL_REGISTRY` (enforced by `registry.test.ts`; any unmapped channel is rejected with `code: 'unknown_channel'`). *Counts as implemented after the merge with dev on 2026-11-05: **177** existing channels (165 request + 12 push: 8 socket_subscribable, 4 desktop_only) plus 6 `HOST_IPC` channels (`runs:findDecision` added in Wave 3) and the 5 `host.*` methods; 24 request channels are desktop_only (the merge with dev on 2026-11-05 added `projects:folderConfig`, `projects:setFolderConfigTrust`, `permissions:ignored` and the 7 request + 1 push `TEAM_FILES_IPC` channels). The table below lists them all.* Push channels have `direction: 'push'` and are **never** RPC-invokable:
 
 | Direction & Scope | Channels (`src/shared/types.ts` + `HOST_IPC` + `host.*`) |
 | --- | --- |
-| **`request: read`** | `host.status`, `host.subscribe`, `app:info`, `app:logPath`, `settings:get`, `auth:status`, `projects:list`, `projects:get`, `projects:checkPath`, `projects:previewRemap`, `projects:scanAgents`, `projects:previewImport`, `projects:removePreview`, `projects:engagementDocument`, `projects:listNotes`, `projects:getNote`, `runs:list`, `runs:get`, `runs:listLive`, `runs:pendingCards`, `runs:usageStats`, `runs:usageCsv`, `runs:subscribe`, `permissions:list`, `connections:list`, `models:list`, `models:prices`, `mcp:list`, `mcp:registrySearch`, `mcpLibrary:list`, `connectors:list`, `connectorPresets:list`, `skills:list`, `skills:read`, `skills:previewImport`, `skills:lastEvaluation`, `skillLibrary:list`, `skillLibrary:read`, `capabilities:lastReview`, `maintenance:listWorktrees`, `maintenance:diff`, `templates:list`, `knowledge:get`, `knowledge:inferredLinks`, `kit:previewBundle` |
+| **`request: read`** | `host.status`, `host.subscribe`, `app:info`, `app:logPath`, `settings:get`, `auth:status`, `projects:list`, `projects:get`, `projects:checkPath`, `projects:previewRemap`, `projects:scanAgents`, `projects:previewImport`, `projects:removePreview`, `projects:engagementDocument`, `projects:listNotes`, `projects:getNote`, `runs:list`, `runs:get`, `runs:listLive`, `runs:pendingCards`, `runs:usageStats`, `runs:usageCsv`, `runs:subscribe`, `permissions:list`, `permissions:ignored`, `connections:list`, `models:list`, `models:prices`, `mcp:list`, `mcp:registrySearch`, `mcpLibrary:list`, `connectors:list`, `connectorPresets:list`, `skills:list`, `skills:read`, `skills:previewImport`, `skills:lastEvaluation`, `skillLibrary:list`, `skillLibrary:read`, `capabilities:lastReview`, `maintenance:listWorktrees`, `maintenance:diff`, `templates:list`, `knowledge:get`, `knowledge:inferredLinks`, `kit:previewBundle`, `projects:folderConfig`, `teamFiles:listAttention` |
 | **`request: operate`** | `runs:start`, `runs:startQuick`, `runs:continue`, `runs:send`, `runs:interrupt`, `runs:stop`, `runs:resumeNow`, `runs:cancelAutoResume`, `setup:start`, `setup:retro`, `mcp:startAssist`, `skills:startAssist`, `usage:refresh`, `connections:test`, `models:refresh`, `mcp:test`, `mcpLibrary:test`, `capabilities:discover`, `capabilities:recommend`, `capabilities:cancel`, `capabilities:review`, `skills:evaluate`, `draft:orgChart`, `window:openRun` *(refused with `code: 'desktop_unavailable'` when running under `--host inproc`)* |
 | **`request: decide`** | `runs:decide`, `permissions:decideRequest`, `setup:decide`, `setup:answer`, `merges:decide`, `mcp:answerInstall` *(Note: `'decide'` authorizes resolving an active run's pending cards—including run-raised project rule grants, library/project MCP installs, or setup proposals—whereas direct out-of-band store mutations require `'configure'`.)* |
-| **`request: configure`** | `host.stop`, `settings:set`, `projects:create`, `projects:save`, `projects:remove`, `projects:remapModels`, `projects:applyImport`, `projects:exportOrg`, `projects:updateEngagementDocument`, `projects:saveNote`, `projects:removeNote`, `runs:promoteQuick`, `permissions:add`, `permissions:remove`, `connections:connect` *(enables disabled connections & remaps project models in `src/main/connections/service.ts:588`)*, `connections:update`, `connections:setSecret`, `connections:login`, `connections:cancelLogin`, `connections:logout`, `connections:setDefault`, `mcp:upsert`, `mcp:remove`, `mcp:setSecret`, `mcp:linkLibrary`, `mcp:promote`, `mcp:authorize`, `mcp:cancelAuthorize`, `mcp:revokeAuth`, `mcp:copyFromLibrary`, `mcp:setProjectOverrides`, `mcpLibrary:upsert`, `mcpLibrary:remove`, `mcpLibrary:setSecret`, `connectors:add`, `connectors:setToken`, `connectorPresets:upsert`, `connectorPresets:remove`, `plugins:upsert`, `plugins:remove`, `skills:create`, `skills:update`, `skills:remove`, `skills:linkLibrary`, `skills:promote`, `skills:applyImport`, `skills:undoImport`, `skills:applySuggestion`, `skillLibrary:create`, `skillLibrary:addFromBundle`, `skillLibrary:update`, `skillLibrary:remove`, `capabilities:apply`, `capabilities:undo`, `capabilities:dismiss`, `capabilities:restore`, `maintenance:integrateWorktree`, `maintenance:discardWorktree`, `maintenance:uninstallRepo`, `templates:saveFromProject`, `templates:remove`, `templates:apply`, `knowledge:saveNode`, `knowledge:removeNode`, `knowledge:saveEdge`, `knowledge:removeEdge`, `knowledge:clear`, `knowledge:dismissLink`, `kit:exportBundle`, `kit:applyBundle` |
-| **`request: desktop_only`** (refused over socket) | `projects:pickDirectory`, `skillLibrary:addFromFolder`, `kit:pickExportPath`, `kit:pickImportPath`, `kit:export`, `kit:previewImport`, `kit:applyImport`, `menu:setState`, `app:openPath`, `app:openLogs`, `app:setNotifications`, `app:cliShimStatus`, `app:installCliShim`, `app:uninstallCliShim` *(Wave 6)*, `projects:parseRepoSource`, `projects:repoTools`, `projects:cloneRepo`, `projects:cancelClone` *(dev's repository clone, merged 2026-11-05: the IPC sender carries progress and cancel-on-close)* |
+| **`request: configure`** | `host.stop`, `settings:set`, `projects:create`, `projects:save`, `projects:remove`, `projects:remapModels`, `projects:applyImport`, `projects:exportOrg`, `projects:updateEngagementDocument`, `projects:saveNote`, `projects:removeNote`, `runs:promoteQuick`, `permissions:add`, `permissions:remove`, `connections:connect` *(enables disabled connections & remaps project models in `src/main/connections/service.ts:588`)*, `connections:update`, `connections:setSecret`, `connections:login`, `connections:cancelLogin`, `connections:logout`, `connections:setDefault`, `mcp:upsert`, `mcp:remove`, `mcp:setSecret`, `mcp:linkLibrary`, `mcp:promote`, `mcp:authorize`, `mcp:cancelAuthorize`, `mcp:revokeAuth`, `mcp:copyFromLibrary`, `mcp:setProjectOverrides`, `mcpLibrary:upsert`, `mcpLibrary:remove`, `mcpLibrary:setSecret`, `connectors:add`, `connectors:setToken`, `connectorPresets:upsert`, `connectorPresets:remove`, `plugins:upsert`, `plugins:remove`, `skills:create`, `skills:update`, `skills:remove`, `skills:linkLibrary`, `skills:promote`, `skills:applyImport`, `skills:undoImport`, `skills:applySuggestion`, `skillLibrary:create`, `skillLibrary:addFromBundle`, `skillLibrary:update`, `skillLibrary:remove`, `capabilities:apply`, `capabilities:undo`, `capabilities:dismiss`, `capabilities:restore`, `maintenance:integrateWorktree`, `maintenance:discardWorktree`, `maintenance:uninstallRepo`, `templates:saveFromProject`, `templates:remove`, `templates:apply`, `knowledge:saveNode`, `knowledge:removeNode`, `knowledge:saveEdge`, `knowledge:removeEdge`, `knowledge:clear`, `knowledge:dismissLink`, `kit:exportBundle`, `kit:applyBundle`, `teamFiles:status` *(can write the team files on a code project's first call)* |
+| **`request: desktop_only`** (refused over socket) | `projects:pickDirectory`, `skillLibrary:addFromFolder`, `kit:pickExportPath`, `kit:pickImportPath`, `kit:export`, `kit:previewImport`, `kit:applyImport`, `menu:setState`, `app:openPath`, `app:openLogs`, `app:setNotifications`, `app:cliShimStatus`, `app:installCliShim`, `app:uninstallCliShim` *(Wave 6)*, `projects:parseRepoSource`, `projects:repoTools`, `projects:cloneRepo`, `projects:cancelClone`, `projects:setFolderConfigTrust` *(only the user can trust a folder's config)*, `teamFiles:approve`, `teamFiles:reject`, `teamFiles:undo`, `teamFiles:enable`, `teamFiles:commit` *(review-card decisions on a repository's team files)* *(dev's repository clone, merged 2026-11-05: the IPC sender carries progress and cancel-on-close)* |
 | **`push: socket_subscribable`** (server -> client push only; never RPC-callable) | `runs:event` *(via `runs:subscribe`)*, `settings:changed`, `connections:event` *(carries `connection.login` device-code URL/code and status changes)*, `mcpLibrary:changed`, `skillLibrary:changed`, `capabilities:progress`, `capabilities:reviewUpdated`, `projects:engagementChanged` *(via `host.subscribe({ topics })`)* |
-| **`push: desktop_only`** (Electron window routing push only; never sent over socket) | `app:focusRun` (`src/main/notifications.ts:186`), `menu:action` (`src/main/appMenu.ts`), `projects:cloneProgress` (`src/main/ipc.ts` `registerRepoIpc`, to the window that started the clone; merged 2026-11-05) |
+| **`push: desktop_only`** (Electron window routing push only; never sent over socket) | `app:focusRun` (`src/main/notifications.ts:186`), `menu:action` (`src/main/appMenu.ts`), `projects:cloneProgress` (`src/main/ipc.ts` `registerRepoIpc`, to the window that started the clone; merged 2026-11-05), `teamFiles:changed` (`DesktopHooks.teamFilesChanged`, every window; never on the bus a socket can subscribe to) |
 
 #### 4. Lossless Subscriptions (`runs:subscribe` & `host.subscribe`), Chain Following & Outbound Coalescing
 
@@ -284,6 +284,7 @@ Every single channel constant across `IPC`, `TEMPLATE_ENGAGEMENT_IPC`, `KNOWLEDG
    - **Protected Control Paths (`controlProtectedPaths(dataDir, runtimeSocketDir)`)**:
      - `<dataDir>/run` (contains `d-<hostInstanceId>.sock`, `daemon.json`, `daemon.secret`, `startup.mkdir`)
      - `<dataDir>/secrets.json`
+     - `<dataDir>/settings.json` (holds `terminalServer` and `terminalAccessLevel`, so an agent's file tools cannot switch the terminal server on or raise its level)
      - `<dataDir>/codex` (contains OrgAI's isolated `CODEX_HOME` and ChatGPT auth tokens)
      - `runtimeSocketDir` (when a fallback `/tmp` or `$XDG_RUNTIME_DIR` socket folder is used)
      - *(Note: `<dataDir>/quick/quick_<id>`, `<dataDir>/project-skills/`, and `<dataDir>/skills/` are **not** blocked so Quick scratch runs, MCP build sessions, and skill loads continue to work!)*
@@ -488,7 +489,7 @@ export interface RunOverrides {
   - `overrideMode === 'default'` and `projectMode` is `'acceptEdits' | 'auto' | 'bypassPermissions'` (never from `'dontAsk'`: "never ask" denies what `'default'` would ask about, and an `operate` client could answer those cards itself; review M1), OR
   - `overrideMode === 'acceptEdits'` and `projectMode` is `'auto' | 'bypassPermissions'`, OR
   - `overrideMode === 'auto'` and `projectMode === 'bypassPermissions'`.
-  - Any widening override (`permissionMode` outside the matrix above, `autoContinue: true` when project is `false`, `maxAutoContinues > project.maxAutoContinues`, `maxBudgetUsd > project.maxBudgetUsd`, or `allowUnpricedBudget: true` when the project enforces a budget) requires `'configure'` scope (granted only when Terminal access is `'full'`, or by a `--host inproc` host, which belongs to the CLI process).
+  - Any widening override (`permissionMode` outside the matrix above, `autoContinue: true` when project is `false`, `maxAutoContinues > project.maxAutoContinues`, `maxBudgetUsd > project.maxBudgetUsd`, or `allowUnpricedBudget: true` when the project enforces a budget) requires `'configure'` scope (granted only when Terminal access is `'full'`, or to the CLI process that started a `--host inproc` host, proven by its in-memory owner key).
 - **Conservative Question Policy (`question: 'conservative'`)**:
   - Default `HeadlessDecisionPolicy.question` is `'fail'`. When `'conservative'` is explicitly requested (`--on-question conservative`), `RunManager` answers every question with no option selected and the fixed text `HEADLESS_CONSERVATIVE_ANSWER` (decisionPolicy.ts `conservativeAnswer`: nobody can answer, no option was chosen, take the most cautious path that needs no decision or stop and say what is needed), also on cards that do not allow free text. The options (label, description, a `(Recommended)` mark, `isDefault`) are agent-authored, so they are never followed (PR #18 review Low; earlier drafts picked the `(Recommended)` option).
 - **Preservation Across Initial `ctx` Construction, `setLive`, `continueRun`, and `autoResume`**:
@@ -747,8 +748,8 @@ Resolved `R1`–`R10` (single-host daemon vs Desktop ownership, socket authentic
     (`closeAfterInflight`). This is what lets a non-forced stop, whose drain closes the server synchronously inside
     the handler, reach `orgai daemon stop`.
   - A host started with `--headless-host` (the background daemon) goes back to the background when its last window
-    closes, even when idle, and leaves only through its idle exit (`ORGAI_DAEMON_IDLE_MINUTES`) or host.stop. A
-    desktop host on macOS stays (Dock). A desktop host on Windows / Linux quits through quitGate unless runs are
+    closes while no run is working, and leaves only through its idle exit (`ORGAI_DAEMON_IDLE_MINUTES`) or host.stop;
+    with runs working it behaves like a desktop launch (review follow-up 3ffaa89, unit-tested). A desktop host on macOS stays (Dock). A desktop host on Windows / Linux quits through quitGate unless runs are
     working without the user; then it asks Keep working in the background / Stop and quit / Cancel (review H3,
     `hostLifecycle.ts` `windowAllClosedAction`; the prompt is unit-tested only, never driven on Windows or Linux).
   - Review M11: the Electron hosts acquire ownership with `listen: false`: `daemon.secret` and the listener exist only
@@ -789,7 +790,13 @@ Resolved `R1`–`R10` (single-host daemon vs Desktop ownership, socket authentic
     none (`readControlProtectedPaths`, all three adapters; logged once). RunManager passes the source only when it has
     `controlProtectedPaths` or a data dir.
   - PR #18 review M3 (false positives): Bash here-documents whose body is only data (`stripDataHeredocs`: a data-sink
-    program such as cat / tee, `git commit -F -`, or `cat` inside a `git` / `gh` message substitution; a quoted
+    program such as cat / tee (never jq, whose program can come from stdin and import files), `git commit -F -` with the
+    message subcommand in git's or gh's subcommand position (after `git` only `-C <dir>` / `--no-pager` may precede
+    it), or `cat` inside a `git` / `gh` message substitution (never sort, whose `--compress-program` runs a program);
+    no long option that is, or abbreviates, `files0-from`, `files-from`, `pathspec-from-file`, `stdin-paths`,
+    `compress-program`, `pre` or `pre-glob` (`stdinNotData`; GNU tools and git accept unambiguous prefixes such as
+    `wc --files0=-` or `sort --compress=sh`; git's exact `--file` message option is exempt; review follow-up ca2831f,
+    unit-tested, the GNU prefix behaviour read from docs, not run); a quoted
     delimiter or a body with no `$(` / backtick; no pipe on the operator's line; nothing in the rest of the command
     runs code, eval, xargs or parallel) are left out of the scan; anything the parser is unsure of (arithmetic `((`,
     backticks, `$'...'`, `case`, a continued or unterminated body) is scanned whole as before. A pipe into an
@@ -799,7 +806,10 @@ Resolved `R1`–`R10` (single-host daemon vs Desktop ownership, socket authentic
     not the CLI; `out/cli`, `<Resources>/bin`, orgai-named files and non-test files still are. A Grep (or Glob) rooted
     ABOVE a protected path is allowed when its `glob` / `type` (the Glob pattern) only matches source or document
     extensions (ts, js, py, md...; never json, toml, jsonl, log, txt, sh); one rooted at or under a protected path is
-    denied whatever its filter.
+    denied whatever its filter. Review follow-up (ca2831f): every Grep filter given must be safe and at least one must
+    be given (a safe `type` no longer covers an unsafe `glob`), and a `glob` with whitespace or a comma outside braces
+    is never safe (`safeGrepGlob`; Claude Code may split `glob` on those, which was not checked, so it is treated
+    conservatively). `*.{ts,tsx}` and a safe type plus a safe glob still pass. Unit-tested.
   - Launcher (review M): the default spawn listens for the child's 'error' (a bad ORGAI_ELECTRON_PATH no longer crashes
     the CLI) and 'exit'; `waitForReady` rejects with the reason on a spawn error or a non-zero exit (code 6: another
     host owns the folder) and keeps polling after exit 0 (a single-instance hand-off). `waitForReady({ hostKinds })`
@@ -1084,8 +1094,15 @@ Resolved `R1`–`R10` (single-host daemon vs Desktop ownership, socket authentic
   channels answer `scope_denied` with "Terminal access lets terminal clients watch and run work only. To answer
   decisions or change settings from a terminal, allow it in OrgAI: App settings > General > Advanced settings >
   Terminal access." `host.stop` stays callable by a client that asked for `configure` (`orgai daemon stop`): it does
-  nothing a same-user `kill` of the pid in daemon.json could not. A `--host inproc` host always grants full (the CLI
-  process owns it). Lowering the level closes the sockets that hold scopes it no longer allows. The level is raised
+  nothing a same-user `kill` of the pid in daemon.json could not. A `--host inproc` host caps its socket clients the same
+  way; only the CLI process that started it gets every scope, by adding `ownerProof` to its hello: an HMAC with a
+  32-byte key the host keeps in memory (`HostSocketServerOptions.ownerKey`, never in daemon.json, daemon.secret or a log)
+  over the hostInstanceId, both nonces and the clientProof (protocol.ts `ownerProof`; `CliContext.connect` adds it once
+  `startInproc` resolved, only for that host's instance id). A process that read daemon.secret (an agent shell under
+  Codex danger-full-access, say) is therefore capped by the stored level on an in-process host too (review H2
+  follow-up). A long-lived `daemon start --host inproc` serves other CLI processes, so `decide` / `configure` from them
+  need the stored level `'full'` (App settings, or `"terminalAccessLevel": "full"` in settings.json; the e2e and
+  integration tests write it). The owner is never closed when the level is lowered. Lowering the level closes the sockets that hold scopes it no longer allows. The level is raised
   only in the desktop window: `settings:set` needs `configure`, which a socket client holds only when the level is
   already `'full'`, so the socket can lower it but never raise it. The App settings control for it and its wording
   ("any program you run, agent shells included, can then control OrgAI") are the desktop part of this fix (group C).
@@ -1104,14 +1121,16 @@ Resolved `R1`–`R10` (single-host daemon vs Desktop ownership, socket authentic
   the secret), the proof, and the scope cap. An explicit pipe DACL needs a native addon (or a pipe created by another
   runtime) and is a follow-up. UNVERIFIED on Windows (read from libuv's pipe.c and Microsoft's CreateNamedPipe docs, not
   run).
-- **daemon.secret ACL on win32 (H2 (3)).** Before answering the first `host.hello` (and when Terminal access is on at
-  attach or turned on), the socket server runs `protocol.ts` `restrictDaemonSecretAcl`: `whoami /user /fo csv /nh` for
-  the user's SID, then `icacls <secret> /inheritance:r /grant:r *<SID>:F`, both by absolute `%SystemRoot%\System32`
-  path with `cwd: os.tmpdir()`. A failure is logged once and refuses every hello (`auth_failed`, "OrgAI could not
-  restrict its terminal access secret to your Windows account ..."); the desktop app is not affected. UNVERIFIED on
-  Windows (unit-tested with an injected runner). Open for `ownership.ts` (group A): call `restrictDaemonSecretAcl`
-  instead of its bare `icacls` with `USERDOMAIN\USERNAME`, and restrict the `run` folder before writing the secret, so
-  the file never exists with an inherited ACL.
+- **daemon.secret ACL on win32 (H2 (3)).** `ownership.ts` `protectSecretOnWindows` runs `protocol.ts`
+  `restrictDaemonSecretAcl` (`whoami /user /fo csv /nh` for the user's SID, then `icacls ... /inheritance:r /grant:r
+  *<SID>:F`, both by absolute `%SystemRoot%\System32` path with `cwd: os.tmpdir()`) on the run folder, writes the
+  secret, then restricts the file, before any listener is bound: 'required' (fail closed, no listener) for
+  setListening(true) and for headless / inproc acquires. Only a best-effort acquire that binds at once could leave it
+  unprotected; ownership then sets `secretAclWarning`, and the socket server (`secretAclProblem`, read at every hello)
+  refuses every hello (`auth_failed`, "OrgAI could not restrict its terminal access secret to your Windows account
+  ..."). Review follow-up: the socket server used to run its own icacls on the file at attach / when Terminal access
+  turned on. That raced ownership's write (the file did not exist yet) and cached the failure, refusing every hello
+  until a restart; it is gone. UNVERIFIED on Windows (unit-tested with injected runners).
 - **Handshake detail only after the proof (Low).** Only `protocol_mismatch` (the challenge names the version anyway)
   and a generic `auth_failed` are answered before the clientProof verifies; the proof is computed over the fields as
   sent, and the field checks with their messages run after it.
@@ -1132,3 +1151,53 @@ Resolved `R1`–`R10` (single-host daemon vs Desktop ownership, socket authentic
 - **Linux.** No PATH shim on Linux (AppImage), as recorded under Wave 6; accepted by the owner for now.
 - **Unverified.** Everything Windows-specific above (pipe DACL behaviour, whoami / icacls output, the ACL step's
   timing), and the desktop surface of the access level (group C).
+
+### Review fixes, PR #18 groups A, C, D, E, the dev merge and follow-ups (2026-11-05, 58cd542..46a9279)
+
+Each item is unit-tested on macOS unless it says otherwise; nothing here was run on Windows or Linux.
+
+- **Windows program search (H1).** `host/systemBinaries.ts`: PowerShell (processInfo), whoami / icacls (ownership,
+  protocol.ts), rundll32.exe (openUrl) run by absolute `%SystemRoot%\System32` path with `cwd: os.tmpdir()`; git goes
+  through `gitExecutable` (absolute PATH entries only, never a cwd; on win32 never a bare name) in resolveProject (`git
+  -C` from the temp dir), doctor, repoLock, worktrees.ts, codexAgents.ts and setup/profile.ts; the launcher spawns the
+  host in the app binary's folder. UNVERIFIED on Windows.
+- **Host ownership (M6-M10).** `processLiveness` is 'same' / 'unconfirmed' / 'dead'. An unconfirmed pid is reclaimed
+  when its endpoint is dead and its daemon.json does not say `listening: false` (an Electron host with Terminal access
+  off binds nothing, so that alone proves nothing, 8bce38f), or when the launch holds the Electron single-instance
+  lock (keyed by userData; dataDir is `<userData>/data`) and the incumbent is a desktop / headless-host record with
+  `listening: false` and a dead endpoint (`OwnershipOptions.singleInstanceLockHeld`, ceadf61; `--host inproc` takes no
+  such lock and keeps the refusal; a 'same' pid or an endpoint that answers is never reclaimed). An unconfirmed
+  startup.mkdir owner past 60 s is reclaimed. An unreadable daemon.json refuses (`daemon_json_unreadable`) unless it
+  names a dead pid. Refusals name `<data>/run`. Stale-dir renames retry transient win32 EPERM / EBUSY / EACCES
+  (`fsRetry.ts`). The repo lock counts a fresh heartbeat mtime as live (other PID namespaces). The win32 self start
+  time comes from Node's time origin (no PowerShell before the first window), other pids are read asynchronously. A
+  secret-ACL failure is fatal only for headless / inproc acquires and setListening(true); a desktop launch with
+  Terminal access off never fails on it (M8). UNVERIFIED on Windows (pid reuse, Get-Process, start-time skew).
+- **Window close (H3, group C).** Off macOS the desktop quits through quitGate as before; only while runs are working
+  without the user (`RunManager.workingRunCount`) it asks Keep working in the background / Stop and quit / Cancel. A
+  `--headless-host` launch goes to the background only while no run is working (3ffaa89). The `liveRuns` activity
+  source is `busyRunCount`: idle runs, runs with an open card and held runs do not count. The prompt is unverified by
+  eye on Windows and Linux.
+- **Listener only while Terminal access is on (M11, group C).** See Wave 2 notes; daemon.json says `listening: false`
+  meanwhile and the CLI answers "Terminal access is off" without connecting.
+- **Runtime gates (M1-M5, group D).** See the Wave 2 and Wave 3 notes and 6.2: 'dontAsk' is never narrowed to
+  'default' (M1); the gate fails closed for shell tools on an internal error or missing protected paths (M2); the
+  false positives of M3 are narrowed (limits 256 KB / 20,000 words / 40,000 parts, data-only here-documents, script
+  pipes, own test runners, Grep / Glob with safe filters); `EXEC_STALL_BUSY_ROUNDS` ceiling and user-only
+  `turnInFlight` (M4); an index.lock is re-checked a few times before a merge refuses, and the message no longer blames
+  a crashed holder (M5).
+- **CLI e2e and CI on Windows (H4, group E).** `cli-exec.mjs` skips the SIGINT case on win32 and drives the stop through
+  `orgai runs stop`; `pack:verify` is `continue-on-error` in CI until it has passed on both OSes. Not run on Windows.
+- **Windows argv (M12) and shim code page (M14).** `--prompt-file <path|->` for untrusted prompts (no exe stub); win32
+  shims write non-ASCII paths relative to `%LOCALAPPDATA%` / `%APPDATA%` / `%USERPROFILE%` / `%ProgramFiles%`
+  (`batchPath`) and refuse a path no variable makes ASCII. UNVERIFIED on Windows.
+- **System certificates (M16).** `trustSystemCertificates()` runs only once the single-instance lock is ours, and
+  `--host inproc` calls it after taking ownership.
+- **Merge with dev (H5, H6).** dev's 7 channels are in the registry (knowledge:inferredLinks read, knowledge:dismissLink
+  configure, the 4 repository clone requests and the cloneProgress push desktop_only); dev's knowledge / transcriptRows
+  bodies live in `src/shared/view`; reexports.test.ts compares export names and values of every stub.
+- **Lows.** Conservative question policy never follows an agent's "(Recommended)" option; `execStallTimeoutMs` <= 0 is
+  dropped on read; 'policy' / 'budget' endings read Stopped; kit `targetDigest` covers secret and sign-in presence;
+  CliShimRow live region, announced load failure and aria-describedby hint; `build/bin/orgai` stops after 40 link
+  hops and `.gitattributes` pins LF / CRLF; doctor caps daemon.json at 64 KB; the rest are in group B above.
+- **Owner decisions kept.** The RunAsNode fuse stays on; no PATH shim on Linux (AppImage).

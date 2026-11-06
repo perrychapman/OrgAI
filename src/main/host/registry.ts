@@ -17,6 +17,7 @@ import {
   RPC_CONTROL_REQUEST_MAX_BYTES,
   RPC_CONTROL_RESPONSE_MAX_BYTES,
   SECRETS_IPC,
+  TEAM_FILES_IPC,
   hostCanOpenWindows
 } from '../../shared/types'
 import type { HostKind, HostRpcError, HostRpcErrorCode, HostScope, HostSubscribeTopic } from '../../shared/types'
@@ -120,11 +121,11 @@ const SCOPE_TABLE: Readonly<Record<ChannelScope, readonly string[]>> = {
     'host.status', 'host.subscribe', 'app:info', 'app:logPath', 'settings:get', 'auth:status', 'projects:list', 'projects:get',
     'projects:checkPath', 'projects:previewRemap', 'projects:scanAgents', 'projects:previewImport', 'projects:removePreview',
     'projects:engagementDocument', 'projects:listNotes', 'projects:getNote', 'runs:list', 'runs:get', 'runs:listLive',
-    'runs:pendingCards', 'runs:usageStats', 'runs:usageCsv', 'runs:subscribe', 'runs:findDecision', 'permissions:list', 'connections:list',
+    'runs:pendingCards', 'runs:usageStats', 'runs:usageCsv', 'runs:subscribe', 'runs:findDecision', 'permissions:list', 'permissions:ignored', 'connections:list',
     'models:list', 'models:prices', 'mcp:list', 'mcp:registrySearch', 'mcpLibrary:list', 'connectors:list',
     'connectorPresets:list', 'skills:list', 'skills:read', 'skills:previewImport', 'skills:lastEvaluation', 'skillLibrary:list',
     'skillLibrary:read', 'capabilities:lastReview', 'maintenance:listWorktrees', 'maintenance:diff', 'templates:list',
-    'knowledge:get', 'knowledge:inferredLinks', 'kit:previewBundle', 'secrets:status'
+    'knowledge:get', 'knowledge:inferredLinks', 'kit:previewBundle', 'projects:folderConfig', 'teamFiles:listAttention', 'secrets:status'
   ],
   operate: [
     'runs:start', 'runs:startQuick', 'runs:continue', 'runs:send', 'runs:interrupt', 'runs:stop', 'runs:resumeNow',
@@ -147,14 +148,15 @@ const SCOPE_TABLE: Readonly<Record<ChannelScope, readonly string[]>> = {
     'capabilities:undo', 'capabilities:dismiss', 'capabilities:restore', 'maintenance:integrateWorktree',
     'maintenance:discardWorktree', 'maintenance:uninstallRepo', 'templates:saveFromProject', 'templates:remove',
     'templates:apply', 'knowledge:saveNode', 'knowledge:removeNode', 'knowledge:saveEdge', 'knowledge:removeEdge',
-    'knowledge:clear', 'knowledge:dismissLink', 'kit:exportBundle', 'kit:applyBundle', 'secrets:init', 'secrets:reset',
+    'knowledge:clear', 'knowledge:dismissLink', 'kit:exportBundle', 'kit:applyBundle', 'teamFiles:status', 'secrets:init', 'secrets:reset',
     'secrets:undelete', 'secrets:confirmDelete'
   ],
   desktop_only: [
     'projects:pickDirectory', 'skillLibrary:addFromFolder', 'kit:pickExportPath', 'kit:pickImportPath', 'kit:export',
     'kit:previewImport', 'kit:applyImport', 'menu:setState', 'app:openPath', 'app:openLogs', 'app:setNotifications',
     'app:cliShimStatus', 'app:installCliShim', 'app:uninstallCliShim', 'projects:parseRepoSource', 'projects:repoTools',
-    'projects:cloneRepo', 'projects:cancelClone'
+    'projects:cloneRepo', 'projects:cancelClone', 'projects:setFolderConfigTrust', 'teamFiles:approve', 'teamFiles:reject',
+    'teamFiles:undo', 'teamFiles:enable', 'teamFiles:commit'
   ]
 }
 
@@ -170,7 +172,8 @@ const PUSH_TABLE: Readonly<Record<string, Omit<PushChannelEntry, 'direction'>>> 
   [IPC.projectsEngagementChanged]: { delivery: 'socket_subscribable', topic: 'engagement', source: 'host/dispatcher.ts + RunManager engagementChanged -> host/events.ts' },
   [IPC.appFocusRun]: { delivery: 'desktop_only', source: 'notifications.ts (notification click focuses a run)' },
   [IPC.menuAction]: { delivery: 'desktop_only', source: 'appMenu.ts (application menu item click)' },
-  [IPC.projectsCloneProgress]: { delivery: 'desktop_only', source: 'ipc.ts registerRepoIpc (progress of a clone the window started)' }
+  [IPC.projectsCloneProgress]: { delivery: 'desktop_only', source: 'ipc.ts registerRepoIpc (progress of a clone the window started)' },
+  [TEAM_FILES_IPC.teamFilesChanged]: { delivery: 'desktop_only', source: 'host/bootstrap.ts TeamFilesService broadcastStatus -> DesktopHooks.teamFilesChanged (index.ts, every window; never on the bus, never a socket)' }
 }
 
 /** Where each request channel is handled today (ipc.ts register functions; HOST_IPC and host.* are Wave 1 / 2). */
@@ -211,6 +214,10 @@ const SOURCE_TABLE: Readonly<Record<string, readonly string[]>> = {
   'ipc.ts desktop-only (shimInstaller.ts)': [IPC.appCliShimStatus, IPC.appInstallCliShim, IPC.appUninstallCliShim],
   'ipc.ts registerRepoIpc (desktop-only; repoClone.ts, progress and cancel-on-close use the IPC sender)': [
     IPC.projectsParseRepoSource, IPC.projectsRepoTools, IPC.projectsCloneRepo, IPC.projectsCancelClone
+  ],
+  'host dispatcher (teamFiles/service.ts; Wave 6 port of dev)': [
+    TEAM_FILES_IPC.teamFilesStatus, TEAM_FILES_IPC.teamFilesListAttention, TEAM_FILES_IPC.teamFilesApprove, TEAM_FILES_IPC.teamFilesReject,
+    TEAM_FILES_IPC.teamFilesUndo, TEAM_FILES_IPC.teamFilesCommit, TEAM_FILES_IPC.teamFilesEnable
   ],
   'host dispatcher (HOST_IPC, socket only; skills/service.ts libraryAddFromBundle)': [HOST_IPC.skillLibraryAddFromBundle],
   'host dispatcher (HOST_IPC, socket only; kit/service.ts bundle channels)': [HOST_IPC.kitExportBundle, HOST_IPC.kitPreviewBundle, HOST_IPC.kitApplyBundle],

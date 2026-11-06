@@ -1,0 +1,263 @@
+/* ---------- Team files: status line, approval card, applied notice (Team tab) ---------- */
+
+.team-assistant-slot {
+  display: contents;
+}
+.team-assistant-slot[hidden] {
+  display: none;
+}
+
+/* One quiet row in the frame footer; a long detail wraps under the state. */
+/* In the toolbar's second row, beside the "New roles report to" note; a line with a detail or message takes its own row. */
+.team-files-line {
+  flex: 0 1 auto;
+  margin-left: auto;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 var(--space-2);
+  color: var(--text-secondary);
+  /* Same size as the toolbar note it sits beside, so it adds no height to that row. */
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+}
+.team-files-line[data-wrap='true'],
+.team-files-line:has(.team-files-notice) {
+  flex: 1 1 100%;
+  margin-left: 0;
+}
+/* The applied / undone notice shares the line's row: words, then Undo and Dismiss. */
+.team-files-notice {
+  flex: 1 1 100%;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  color: var(--text-primary);
+}
+.team-files-notice-text {
+  flex: 1 1 14rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.team-files-notice[data-tone='success'] .team-files-notice-text {
+  color: var(--text-secondary);
+}
+/* No detail or message: one row, the text clips (its full words stay in the page for assistive tech). */
+.team-files-line[data-wrap='false'] .team-files-line-main {
+  flex: 0 1 auto;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: block;
+}
+.team-files-line .btn.sm {
+  flex: none;
+}
+/* One-row line (beside the note): the 28 px button must not set the row's height; the tray gives up that room. A wrapped
+   line has other text above the button, so there it takes its own height instead of overlapping that text. */
+.team-files-line[data-wrap='false']:not(:has(.team-files-notice)) > .btn.sm {
+  margin-block: -7px;
+}
+.team-files-line:focus-visible {
+  outline: 2px solid var(--focus-ring, var(--accent));
+  outline-offset: 1px;
+}
+.team-files-line-main {
+  min-width: 0;
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 var(--space-1);
+  overflow-wrap: anywhere;
+}
+.team-files-line-text {
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+.team-files-line[data-tone='quiet'] .team-files-line-text {
+  font-weight: var(--weight-regular, 400);
+  color: var(--text-secondary);
+}
+.team-files-line[data-tone='danger'] .team-files-line-text {
+  color: var(--danger-text, var(--text-primary));
+}
+.team-files-line-message {
+  color: var(--text-primary);
+}
+.team-files-warnings {
+  flex: 1 1 100%;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0h);
+}
+
+/* Approval card (the DecisionCard shell classes are reused; there is no run to name). In a roomy frame it is the plain
+   proposal card (stage 40%, body up to 55%). In a short frame (under 720 px high, 1024x640 is 592) the change list is
+   what the user must read, so it gets the room the toolbar and the notice no longer take: the stage keeps 30% (about
+   180 px, still a readable chart), the card fills the rest of the tray and only its body scrolls, with head and
+   Approve / Reject fixed. Approve itself waits until the list was scrolled to its end (TeamFilesCard). */
+@container frame (max-height: 719px) {
+  .frame-grid:has(> .frame-tray .decision-card.team-files-card.kind-proposal) {
+    --stage-min: 30cqh;
+  }
+  .team-files-card {
+    flex: 1 1 auto;
+    /* A floor: with the Team assistant open under it the tray scrolls instead of clipping Approve and Reject. */
+    min-height: 200px;
+  }
+  .team-files-card .decision-body {
+    /* Content-sized, so the tray asks for the whole list; the grid clamps the tray and this shrinks to fit. */
+    flex: 0 1 auto;
+    min-height: 72px;
+    max-height: none;
+  }
+  /* The drag hint under the chart is not needed while a decision is open; its two lines go to the change list. */
+  .frame-grid:has(> .frame-tray .team-files-card) > .frame-footer {
+    display: none;
+  }
+  /* The lead sentence repeats the title; it stays for assistive tech. */
+  .team-files-card .decision-summary {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .team-files-card .decision-head {
+    padding-block: var(--space-1h) var(--space-1);
+    gap: var(--space-0h);
+  }
+  .team-files-card .decision-footer {
+    padding-block: var(--space-1h);
+  }
+}
+/* Live pointer: a quiet sentence with a link, in run meta and above the New run page. */
+.new-run-inner > .team-files-pointer {
+  display: block;
+  margin-bottom: var(--space-3);
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+  text-align: center;
+}
+.team-files-assistant-link {
+  margin-left: auto;
+  font-size: var(--text-small);
+}
+.team-files-card:focus-visible {
+  outline: 2px solid var(--focus-ring, var(--accent));
+  outline-offset: -2px;
+}
+.team-files-card .decision-body:focus-visible {
+  outline: 2px solid var(--focus-ring, var(--accent));
+  outline-offset: -2px;
+}
+.team-files-changes {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.team-files-change {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--surface-0, transparent);
+  min-width: 0;
+}
+.team-files-change-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+}
+.team-files-change-name {
+  overflow-wrap: anywhere;
+}
+.team-files-change p,
+.team-files-facts {
+  margin: 0;
+}
+.team-files-change-summary {
+  overflow-wrap: anywhere;
+}
+.team-files-change-reason,
+.team-files-change-file {
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.team-files-facts {
+  padding-left: var(--space-4);
+  font-size: var(--text-small);
+}
+.team-files-fact {
+  font-size: var(--text-small);
+}
+.team-files-target-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-1);
+}
+.team-files-target {
+  flex: 1;
+  min-width: 0;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-small);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.team-files-prompt > summary {
+  cursor: pointer;
+  font-size: var(--text-small);
+}
+.team-files-prompt:focus-within > summary {
+  border-radius: var(--radius-sm);
+}
+.team-files-empty {
+  color: var(--text-secondary);
+}
+.team-files-omitted,
+.team-files-problem {
+  margin: 0 0 var(--space-2);
+  display: flex;
+  gap: var(--space-1);
+  align-items: flex-start;
+  overflow-wrap: anywhere;
+}
+.team-files-omitted {
+  margin: var(--space-2) 0 0;
+  font-weight: var(--weight-semibold);
+}
+.team-files-notes {
+  margin: var(--space-2) 0 0;
+  padding-left: var(--space-4);
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}
+.team-files-error {
+  margin: 0;
+  padding: var(--space-1h) var(--space-3);
+  color: var(--danger-text, var(--text-primary));
+  font-size: var(--text-small);
+}
+.team-files-blocked {
+  flex: 1 1 100%;
+  margin: 0;
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}

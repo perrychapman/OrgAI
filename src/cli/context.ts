@@ -74,6 +74,8 @@ export function buildContext(input: BuildContextInput): CliContext {
     env
   })
 
+  // The started in-process host's owner key (memory only): connect() proves ownership of that host with it.
+  let owner: { key: string; hostInstanceId: string } | undefined
   const startInproc = reusableInproc((opts) =>
     import('./inprocHost').then((m) =>
       m.startInprocHost({
@@ -88,7 +90,10 @@ export function buildContext(input: BuildContextInput): CliContext {
         ...(opts.hostKind === 'node' ? { hostKind: 'node' as const, quiet: true } : {}),
         ...(quietContexts.has(ctx) ? { quiet: true } : {})
       })
-    )
+    ).then((h) => {
+      if (h.ownerKey && h.hostInstanceId) owner = { key: h.ownerKey, hostInstanceId: h.hostInstanceId }
+      return h
+    })
   )
   const ctx: CliContext = {
     globals,
@@ -107,6 +112,7 @@ export function buildContext(input: BuildContextInput): CliContext {
         cwd,
         pid,
         ...(opts.waitStartingMs !== undefined ? { waitStartingMs: opts.waitStartingMs } : {}),
+        ...(owner ? { ownerKey: owner.key, ownerHostInstanceId: owner.hostInstanceId } : {}),
         platform
       }),
     readStore: () => readOnlySnapshot({ dataDir: paths.dataDir }),
