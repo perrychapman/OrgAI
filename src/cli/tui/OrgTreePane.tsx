@@ -13,6 +13,7 @@ import { useRef, useState } from 'react'
 import { splitLabelTail } from '../../shared/view/agentTree'
 import { useFocusHandler, useTuiEnv } from './context'
 import { treeCounts } from './treeRows'
+import { waitingWords, worktreeChipWords } from './selectors'
 import { glyphs, stateGlyph, stateTone } from './theme'
 import type { OrgTreePaneProps, OrgTreeRow, Tone, TuiEnv } from './types'
 import { PaneLines, alignSegs, cutSegs, keepVisible, moveIndex, navKey, type PaneLine, type Seg } from './panes/lines'
@@ -80,10 +81,11 @@ interface Chip {
   tone: Tone
 }
 
-function chipsOf(row: OrgTreeRow): Chip[] {
+function chipsOf(row: OrgTreeRow, env: TuiEnv): Chip[] {
   const out: Chip[] = []
-  if (row.waiting && row.waiting > 0) out.push({ text: `! ${row.waiting}`, tone: 'warn' })
-  if (row.worktreeChip) out.push({ text: row.worktreeChip, tone: row.worktreeChip === 'conflict' ? 'danger' : row.worktreeChip === 'held' ? 'dim' : row.worktreeChip === 'review' ? 'warn' : 'dim' })
+  const sr = env.screenReader
+  if (row.waiting && row.waiting > 0) out.push({ text: sr ? waitingWords(row.waiting) : `! ${row.waiting}`, tone: 'warn' })
+  if (row.worktreeChip) out.push({ text: sr ? worktreeChipWords(row.worktreeChip) : row.worktreeChip, tone: row.worktreeChip === 'conflict' ? 'danger' : row.worktreeChip === 'held' ? 'dim' : row.worktreeChip === 'review' ? 'warn' : 'dim' })
   return out
 }
 
@@ -105,7 +107,7 @@ function rowLine(item: Item, selected: boolean, focused: boolean, width: number,
   // A recent message to or from the agent: `~` after the state word (words for a screen reader), F6.
   const traffic = row.traffic ? (env.screenReader ? ', messaging' : '~') : ''
   const word = row.stateWord ? `  ${row.stateWord}${traffic}` : ''
-  const chips = chipsOf(row)
+  const chips = chipsOf(row, env)
   const expander = group ? (env.screenReader ? '' : ' >') : ''
   const cost = row.costText ? `${row.costText}${expander}` : expander.trim()
 
@@ -160,7 +162,7 @@ function titleText(rows: readonly OrgTreeRow[], env: TuiEnv, zoomPath?: string):
   const bullet = ` ${glyphs(env).bullet} `
   const parts = [zoomPath ? `Focus: ${zoomPath} (${total})` : `Agents ${total}`]
   if (working > 0) parts.push(`${working} working`)
-  if (waiting > 0) parts.push(`! ${waiting}`)
+  if (waiting > 0) parts.push(env.screenReader ? waitingWords(waiting) : `! ${waiting}`)
   return parts.join(bullet)
 }
 
@@ -290,7 +292,7 @@ export function OrgTreePane(props: OrgTreePaneProps) {
   }, 0)
   const rightParts: string[] = []
   if (props.planChip) rightParts.push(props.planChip)
-  if (offscreen > 0) rightParts.push(`! ${offscreen} off screen`)
+  if (offscreen > 0) rightParts.push(env.screenReader ? `${waitingWords(offscreen)} off screen` : `! ${offscreen} off screen`)
   const right: Seg | undefined = rightParts.length ? { text: rightParts.join(` ${glyphs(env).bullet} `), dim: true } : undefined
   const titleSegs = alignSegs([{ text: titleText(props.rows, env, props.zoomPath), bold: true, tone: props.focused ? 'accent' : undefined }], right, width, env)
   const all: PaneLine[] = [{ key: 'title', segs: titleSegs }, ...body]

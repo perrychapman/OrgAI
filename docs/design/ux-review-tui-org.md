@@ -427,3 +427,5 @@ no tree), selectable `/runs`. Evidence: ink-testing-library frames at 120x40, 90
 Open: no real console or pty run (`e2e/cli-tui.mjs` section i is syntax-checked only), message marks unverified live (mock emits no
 `agent.message`), `/retro` confirm does not name the Architect tier, inline has no keys for `z`, `[`, `]`, `m`, chain usage
 tables repeat `role-1` across chain members, save-as-project.
+
+Review fixes (2026-11-06): M1 (overlay borders and separators by mode), M2 (chip words for a screen reader), M3 and L2 (column-width padding and cuts), L1, L3, L5 and L6 and the inspector hint and worktree-line items are fixed in src/cli/tui; unit and ink-frame tests only, no pty run.

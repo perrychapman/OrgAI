@@ -5,6 +5,7 @@
  */
 import type { FocusTarget, TuiEnv } from './types'
 import { asciiOnly } from './theme'
+import { textWidth } from './panes/text'
 
 export type KeyScope = 'global' | 'composer' | 'tree' | 'transcript' | 'plan' | 'worktrees' | 'inspector' | 'tray'
 
@@ -33,7 +34,7 @@ export const KEYMAP: readonly KeyDef[] = [
   { scope: 'global', keys: 'Ctrl+Z', label: 'Suspend (fg to come back)' },
   { scope: 'global', keys: '?', label: 'In a pane: the keys of that pane (the Composer types it: use /help)', hint: { order: 90, text: '? all keys' } },
   { scope: 'global', keys: '[ , ]', label: 'In a pane: follow the previous / next live run (the status bar lists them)' },
-  { scope: 'global', keys: 'm', label: 'In a pane: maximise the transcript, again to bring the panes back (/focus)' },
+  { scope: 'global', keys: 'm', label: 'In the tree, transcript, plan or worktrees: maximise the transcript, again to bring the panes back (/focus)' },
   // ---- Composer ----
   { scope: 'composer', keys: 'Enter', label: 'Send; Alt+Enter adds a new line', hint: { order: 1, text: 'Enter sends' } },
   { scope: 'composer', keys: '/', label: 'Open the command palette (on an empty composer)', hint: { order: 2, text: '/ commands' } },
@@ -109,30 +110,34 @@ export const keysFor = (scope: KeyScope): KeyDef[] => KEYMAP.filter((k) => k.sco
  * global hint ("? all keys") always closes the line; the pane's own keys fill the rest, and with a `width` the least
  * important ones drop until the line fits (it is never cut mid-key).
  */
-export function paneHint(scope: KeyScope, row: RowKind = 'agent', max = 5, width?: number): string {
+export function paneHint(scope: KeyScope, row: RowKind = 'agent', max = 5, width?: number, sep = ' · '): string {
   const defs = KEYMAP.filter((k) => k.scope === scope && k.hint && (!k.rows || k.rows.includes(row))).sort((a, b) => a.hint!.order - b.hint!.order)
   const globals = KEYMAP.filter((k) => k.scope === 'global' && k.hint).map((k) => k.hint!.text)
   let n = Math.min(defs.length, Math.max(1, max - globals.length))
-  const text = (count: number): string => [...defs.slice(0, count).map((k) => k.hint!.text), ...globals].join(' · ')
-  while (width !== undefined && n > 1 && text(n).length > width) n--
+  const text = (count: number): string => [...defs.slice(0, count).map((k) => k.hint!.text), ...globals].join(sep)
+  while (width !== undefined && n > 1 && textWidth(text(n)) > width) n--
   return text(n)
 }
 
 /** The status line's hint for a focus (panes: the short global one, the pane's own line carries its keys). */
-export function statusHint(focus: FocusTarget, opts: { readOnly: boolean; stopOnQuit: boolean; row?: RowKind }): string {
+export function statusHint(focus: FocusTarget, opts: { readOnly: boolean; stopOnQuit: boolean; row?: RowKind; env?: Pick<TuiEnv, 'unicode' | 'screenReader' | 'dumbTerminal'> }): string {
+  const sep = opts.env && asciiOnly(opts.env as TuiEnv) ? ' | ' : ' · '
   const quit = opts.stopOnQuit ? 'Ctrl+C twice stops and quits' : 'Ctrl+C twice quits'
-  switch (focus) {
-    case 'composer':
-      return opts.readOnly ? `Alt+D decisions · Tab panes · ${quit}` : `Enter sends · / commands · Alt+D decisions · Tab panes · Esc interrupts · ${quit}`
-    case 'tray':
-      return 'Keys on the card · Esc back'
-    case 'palette':
-      return 'Enter runs · Esc closes'
-    case 'onboarding':
-      return 'Esc cancels'
-    default:
-      return `${paneHint(scopeOf(focus) ?? 'tree', opts.row, 3)} · Esc composer`
-  }
+  const text = ((): string => {
+    switch (focus) {
+      case 'composer':
+        return opts.readOnly ? `Alt+D decisions · Tab panes · ${quit}` : `Enter sends · / commands · Alt+D decisions · Tab panes · Esc interrupts · ${quit}`
+      case 'tray':
+        return 'Keys on the card · Esc back'
+      case 'palette':
+        return 'Enter runs · Esc closes'
+      case 'onboarding':
+        return 'Esc cancels'
+      default:
+        return `${paneHint(scopeOf(focus) ?? 'tree', opts.row, 3)} · Esc composer`
+    }
+  })()
+  return sep === ' · ' ? text : text.split(' · ').join(sep)
 }
 
 /** The /help key lines, generated from KEYMAP. */

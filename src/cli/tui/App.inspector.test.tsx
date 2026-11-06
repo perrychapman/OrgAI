@@ -520,3 +520,66 @@ describe('/usage, /retro and /focus', () => {
     expect(m.frame()).toContain('Agents ')
   })
 })
+
+describe('overlays in ASCII and screen-reader mode (review M1, L1)', () => {
+  const RUNS = [summary('run1', { status: 'finished', startedAt: 1, title: 'First run' })]
+  const openRuns = async (envOver: Partial<TuiEnv>, state?: TuiState) => {
+    const m = mount({ cols: 100, rows: 40, listRuns: RUNS, env: { color: false, ...envOver }, ...(state ? { state } : {}) })
+    await m.send(...'/runs'.split('').map((c) => key(c)), named('enter'))
+    await tick()
+    return m
+  }
+
+  /** The overlay's own lines: from its title (or the border line above it) to its hint line; the rest of the screen is not under test. */
+  const region = (frame: string, title: string, hintEnd: string): string => {
+    const lines = frame.split('\n')
+    const t = lines.findIndex((l) => l.includes(title))
+    const h = lines.findIndex((l, i) => i >= t && l.includes(hintEnd))
+    return lines.slice(Math.max(0, t - 1), h + 2).join('\n')
+  }
+
+  it('Unicode keeps the single-line border and the dot separators', async () => {
+    const f = region((await openRuns({})).frame(), 'Runs', 'Esc closes')
+    expect(f).toContain('┌')
+    expect(f).toContain('Enter opens · c continues')
+  })
+
+  it('ASCII mode uses a classic border and plain separators', async () => {
+    const f = region((await openRuns({ unicode: false })).frame(), 'Runs', 'Esc closes')
+    expect(f).not.toMatch(/[┌┐└┘│─·…]/)
+    expect(f).toContain('+--')
+    expect(f).toContain('Enter opens | c continues')
+  })
+
+  it('screen-reader mode has no border at all', async () => {
+    const f = region((await openRuns({ unicode: false, screenReader: true })).frame(), 'Runs', 'Esc closes')
+    expect(f).not.toContain('+--')
+    expect(f).not.toMatch(/[┌┐└┘│─·]/)
+    expect(f).toContain('Enter opens | c continues')
+    expect(f).toContain('First run')
+  })
+
+  it('the ? overlay follows the same rules', async () => {
+    const m = mount({ cols: 100, rows: 40, env: { color: false, unicode: false, screenReader: true } })
+    await m.send(named('tab'), key('?'))
+    const sr = region(m.frame(), 'Keys: Agents', 'q or Esc closes')
+    expect(sr).toContain('q or Esc closes')
+    expect(sr).not.toContain('+--')
+    expect(sr).not.toMatch(/[┌│─·…]/)
+    const a = mount({ cols: 100, rows: 40, env: { color: false, unicode: false } })
+    await a.send(named('tab'), key('?'))
+    const ascii = region(a.frame(), 'Keys: Agents', 'q or Esc closes')
+    expect(ascii).toContain('+--')
+    expect(ascii).not.toMatch(/[┌│─·]/)
+  })
+
+  it('r in a read-only session notifies and never opens the confirm', async () => {
+    const ro: TuiState = { ...sampleState(), readOnlyReason: 'Read-only: your terminal access does not allow it.' }
+    const m = await openRuns({}, ro)
+    await m.send(key('r'))
+    await tick()
+    expect(m.frame()).not.toContain('Start an Org retrospective')
+    expect(m.session.startRetro).not.toHaveBeenCalled()
+    expect(m.session.notify).toHaveBeenCalledWith(expect.stringContaining('read-only'), 'warn')
+  })
+})
