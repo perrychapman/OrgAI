@@ -428,4 +428,6 @@ Open: no real console or pty run (`e2e/cli-tui.mjs` section i is syntax-checked 
 `agent.message`), `/retro` confirm does not name the Architect tier, inline has no keys for `z`, `[`, `]`, `m`, chain usage
 tables repeat `role-1` across chain members, save-as-project.
 
+CI fix (section i, run 42181924350, inferred; the pty cannot run here): mock-lead ends a moment after its reports, so the tree goes root, mock-lead, "2 done" and then root, "3 done" a beat later. The old script's fixed sleeps sent Down Down / Right / Up / Enter across that second fold, so Enter landed on the "3 done" row, where Enter unfolds (hint "Enter/Right unfold") and opens no inspector; the failure screen (mock-lead selected, reports shown, no inspector) is what that unfold leaves. No TUI change: Enter on a group unfolds, Enter on an agent opens the inspector, Right/Left unfold/fold. The script now waits for "3 done", then Down, Right (selects mock-lead), Enter, each after the screen shows the previous step. Frame tests in App.tree.test.tsx pin both shapes; a live pty run is still open.
+
 Review fixes (2026-11-06): M1 (overlay borders and separators by mode), M2 (chip words for a screen reader), M3 and L2 (column-width padding and cuts), L1, L3, L5 and L6 and the inspector hint and worktree-line items are fixed in src/cli/tui; unit and ink-frame tests only, no pty run.

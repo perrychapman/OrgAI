@@ -28,8 +28,9 @@
 //    further permission card resolves nothing within 1 s; `orgai decide <id> deny` from another process resolves it
 //    (surface 'cli') and the TUI says "Resolved in another window".
 // i. The org tree (ux-review-tui-org.md, `[mock:deep-tree]` on the mock's default script, full screen 120x40): the root, mock-lead
-//    and its two reports; once the reports finish and the 6 s grace passes they fold into one "2 done" row under mock-lead
-//    (the run is still open); Right on that row unfolds it; `n` with nothing waiting says so; Enter on mock-lead opens the
+//    and its two reports; once they finish and the 6 s grace passes they fold (reports first, "2 done", then mock-lead with
+//    them, "3 done" under the root; the run is still open); Right on the "3 done" row unfolds it and selects mock-lead; `n`
+//    with nothing waiting says so; Enter on mock-lead opens the
 //    agent inspector (facts and its own transcript); `?` opens the which-key overlay with the glyph legend; Esc closes the
 //    overlay, then the inspector; `z` roots the tree at mock-lead (breadcrumb) and Z goes back. The `n` jump to a waiting
 //    agent, message marks and the run chips have no mock source here: unit tests only.
@@ -505,27 +506,31 @@ try {
       await t.waitFor('mock-lead', 40_000)
       check(true, 'i: the deep-tree run shows mock-lead in the agents pane')
       // The reports finish at once; after the 6 s grace they fold into one row while the run is still open.
-      const folded = await t.waitFor(/\b2 done\b/, 30_000).then(() => true, () => false)
-      check(folded, 'i: the finished reports fold into one "2 done" row after the grace', esc(t.screen()))
+      // The reports fold first ("2 done"); mock-lead ends a moment later and folds with them into "3 done" under the
+      // root. Keys sent between those two moments land on rows that then move, so wait for the final shape (the
+      // earlier fixed-sleep version lost Enter to exactly that: it hit the "3 done" row and unfolded it).
+      const folded = await t.waitFor(/\b[23] done\b/, 30_000).then(() => true, () => false)
+      check(folded, 'i: the finished reports fold into a "done" row after the grace', esc(t.screen()))
+      const settled = await t.waitFor(/\b3 done\b/, 30_000).then(() => true, () => false)
+      check(settled, 'i: mock-lead folds with its reports into one "3 done" row', esc(t.screen()))
 
       t.key('tab') // the agents pane
-      await sleep(300)
+      await t.waitFor(/Enter details|Enter\/Right unfold/, 5_000).catch(() => undefined)
       t.write('n')
       await t.waitFor('Nothing needs you.', 5_000).then(
         () => check(true, 'i: `n` with nothing waiting says so'),
         () => check(false, 'i: `n` with nothing waiting says so', esc(t.screen()))
       )
-      // Selection starts on the first row (the root); the group is two rows down (root, mock-lead, "2 done").
+      // Selection starts on the root; the "3 done" group is the next row. Wait for it to be the selected row.
       t.key('down')
-      t.key('down')
-      await sleep(300)
+      const onGroup = await t.waitFor(/^> .*\b3 done\b/m, 5_000).then(() => true, () => false)
+      check(onGroup, 'i: Down selects the "3 done" row', esc(t.screen()))
       t.key('right')
-      const open2 = await t.waitFor('mock-lead-report-1', 8_000).then(() => true, () => false)
-      check(open2, 'i: Right on the "2 done" row unfolds the reports', esc(t.screen()))
+      // Wait for the tree row itself (the name also sits in the transcript beside it) and for the selection to move to it.
+      const open2 = await t.waitFor(/^> .*mock-lead\s+Finished/m, 8_000).then(() => true, () => false)
+      check(open2, 'i: Right on the "3 done" row unfolds it and selects mock-lead', esc(t.screen()))
 
-      // The unfold selects the first report; one Up is mock-lead, and Enter on it opens the inspector.
-      t.key('up')
-      await sleep(300)
+      // Enter on the agent row (not a group) opens its inspector.
       t.key('enter')
       const inspector = await t.waitFor('transcript (this agent', 8_000).then(() => true, () => false)
       check(inspector, 'i: Enter on an agent opens the inspector with its own transcript', esc(t.screen()))
