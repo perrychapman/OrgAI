@@ -178,7 +178,9 @@ export async function draftOrgChart(
   project: Project,
   req: DraftRequest,
   /** The project's connection (ConnectionService.importModelContext): its deep tier drafts, its tiers map the result. */
-  tiers?: TierContext
+  tiers?: TierContext,
+  /** Aborted when the host shuts down (HostDispatcher.quiesce): the model call stops and this rejects. */
+  signal?: AbortSignal
 ): Promise<DraftResult> {
   const existing =
     req.mode === 'revise'
@@ -208,7 +210,13 @@ ${req.instruction}${existing}
 
 Design the org chart now. Return only the JSON object.`
 
-  const text = await adapter.complete({ system: SYSTEM, prompt, cwd: project.path, model: tiers ? modelForTier('deep', tiers)?.model : undefined })
+  const text = await adapter.complete({
+    system: SYSTEM,
+    prompt,
+    cwd: project.path,
+    model: tiers ? modelForTier('deep', tiers)?.model : undefined,
+    ...(signal ? { signal } : {})
+  })
   const payload = extractJson(text)
   const context: DraftModelContext | undefined = tiers
     ? { connection: tiers.connection, tierModels: tiers.tierModels, ...(tiers.catalog ? { models: tiers.catalog.map((m) => m.id) } : {}) }

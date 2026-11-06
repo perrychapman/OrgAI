@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { fakeContext, project, summary } from '../testing/fakeContext'
 import { EXIT } from '../types'
-import { runApp } from './app'
+import { HANDOFF_OPENED_MESSAGE, runApp } from './app'
 
 const ready = { hostInstanceId: 'aaaaaaaaaaaa', pid: 1, endpoint: '/x', state: 'ready' as const, startedAt: 1, hostKind: 'desktop' as const }
 
@@ -16,15 +16,36 @@ describe('orgai app', () => {
     ])
   })
 
-  it('refuses (exit 6) when a --host inproc host owns the data folder, without spawning (review M)', async () => {
+  it.each(['inproc', 'node'] as const)('with a %s owner it launches the app and returns 0 at once (cli-standalone.md 4.4 step 7)', async (kind) => {
+    const owner = { ...ready, hostKind: kind, pid: 55 }
+    const waitForReady = async (): Promise<null> => {
+      throw new Error('must not wait for a desktop host')
+    }
+    const f = fakeContext({ launcher: { current: () => owner, waitForReady } })
+    expect(await runApp(f.ctx, [])).toBe(EXIT.ok)
+    expect(f.launcherCalls).toEqual([
+      { method: 'resolve', args: undefined },
+      { method: 'spawn', args: { headless: false } }
+    ])
+    expect(f.out()).toBe(`${HANDOFF_OPENED_MESSAGE}\n`)
+    // --json carries the owner.
+    const j = fakeContext({ globals: { outputFormat: 'json' }, launcher: { current: () => owner, waitForReady } })
+    expect(await runApp(j.ctx, [])).toBe(EXIT.ok)
+    expect(JSON.parse(j.out())).toMatchObject({ opened: true, waitingForHandoff: true, owner: { hostKind: kind, pid: 55 } })
+  })
+
+  it('a Node or inproc host that took the folder while the app was starting: 0 with the handoff text', async () => {
     const inproc = { ...ready, hostKind: 'inproc' as const, pid: 55 }
-    const f = fakeContext({ launcher: { current: () => inproc, waitForReady: async () => inproc } })
-    await expect(runApp(f.ctx, [])).rejects.toMatchObject({ exitCode: EXIT.hostBusy, message: expect.stringContaining('--host inproc (pid 55)') })
-    expect(f.launcherCalls).toEqual([])
-    // One that took the folder while the app was starting: the timeout names it.
     let owner: typeof inproc | null = null
     const g = fakeContext({ launcher: { current: () => owner, waitForReady: async () => ((owner = inproc), null) } })
-    await expect(runApp(g.ctx, [])).rejects.toMatchObject({ exitCode: EXIT.hostBusy })
+    expect(await runApp(g.ctx, [])).toBe(EXIT.ok)
+    expect(g.out()).toBe(`${HANDOFF_OPENED_MESSAGE}\n`)
+  })
+
+  it('a desktop or headless owner keeps the second-instance path and waits for ready', async () => {
+    const f = fakeContext({ launcher: { current: () => ({ ...ready, hostKind: 'headless-host' as const }), waitForReady: async () => ready } })
+    expect(await runApp(f.ctx, [])).toBe(EXIT.ok)
+    expect(f.launcherCalls.map((c) => c.method)).toEqual(['resolve', 'spawn', 'waitForReady'])
   })
 
   it('a spawned app that cannot start is exit 1 with its reason (review M)', async () => {

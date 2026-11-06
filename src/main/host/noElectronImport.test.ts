@@ -30,6 +30,7 @@ const PURE_NODE_MODULES = [
   './peerCheck',
   './storesSecret',
   './shutdown',
+  './mutationLease',
   '../store/projects',
   '../store/settings',
   '../store/runs',
@@ -51,7 +52,7 @@ const PURE_NODE_MODULES = [
   '../quick/quickRuns',
   '../maintenance',
   '../usageMonitor',
-  '../quitGate'
+  '../handoff'
 ]
 
 describe('host modules load without electron', () => {

@@ -22,6 +22,7 @@ import { cleanProjectPath } from './store/projects'
 import { canonicalDeep, isInside, isInsideEither, isNetworkPath, pathKey } from './quick/scratch'
 import { allowedDirectoryRisk } from './runtime/allowedDirectories'
 import { maskKeyLike } from './runtime/codexAppServer'
+import { trackChildProcess } from './host/shutdown'
 
 // ---- Constants ----
 
@@ -1614,6 +1615,8 @@ export const defaultRun: RunFn = (file, args, opts) =>
 function defaultSpawnGit(platform: NodeJS.Platform): SpawnGitFn {
   return (file, args, opts) => {
     const child = spawn(file, args, { cwd: opts.cwd, env: opts.env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, shell: false, detached: platform !== 'win32' })
+    // Ended with the host at the shutdown's hard limit (cli-standalone.md 4.3); quiesce cancels it before that.
+    trackChildProcess(child, 'git clone')
     child.stdout?.setEncoding('utf8')
     child.stderr?.setEncoding('utf8')
     return {

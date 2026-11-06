@@ -3,7 +3,7 @@ import { mkdirSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import type { AppSettings, FocusRunTarget, HostKind, RunEvent } from '@shared/types'
+import type { AppSettings, DaemonInfo, FocusRunTarget, HostKind, RunEvent } from '@shared/types'
 import { IPC, runWindowHash } from '@shared/types'
 import { appUrlMatcher, isExternalWebUrl, scopedWindow, shouldBlockNavigation } from './windowScope'
 import { applyShellPath } from './shellEnv'
@@ -13,7 +13,7 @@ import { registerIpc } from './ipc'
 import { Notifier } from './notifications'
 import { canWriteDir, dataDirOverride, installLogging, log, pickLogsDir } from './log'
 import { installElectronLogHooks } from './electronLogHooks'
-import { acquireHostOwnership, HostAlreadyRunningError, HostStartingOrBusyError, type HostOwnership } from './host/ownership'
+import { acquireHostOwnership, HostAlreadyRunningError, HostStartingOrBusyError, readDaemonInfo, runDirOf, type HostOwnership } from './host/ownership'
 import { bootOrgAIHost, type OrgAIHost } from './host/bootstrap'
 import { openSecretStore } from './store/secrets'
 import { HostSocketServer } from './host/socketServer'
@@ -33,7 +33,18 @@ import {
 } from './hostLifecycle'
 import type { HostRuntimeEnv } from './host/runtimeEnv'
 import { windowBackground } from './appInfo'
-import { quitGate } from './quitGate'
+import { installShutdownSignals, type ShutdownReason } from './host/shutdown'
+import { beforeQuitHandler, willQuitHandler } from './desktopQuit'
+import { connectHost } from '../cli/client/hostClient'
+import {
+  DesktopHandoff,
+  handoffChoiceOf,
+  handoffPageHtml,
+  handoffUnavailableText,
+  ownerExitCheck,
+  type HandoffOutcome,
+  type HandoffView
+} from './handoff'
 import { focusedOrPrimaryWindow, hiddenWindows } from './testWindows'
 import { orgaiCliRootsOf, setOrgaiCliRoots } from './runtime/selfControlGate'
 import { createCliShimService, type CliShimService } from './host/shimInstaller'
@@ -92,10 +103,28 @@ let drainQuit = false
 let quitPromptOpen = false
 /** The last-window close prompt (review H3) is showing. */
 let closePromptOpen = false
+/** Why the next quit happens (the shutdown coordinator's reason): the last window closing on Windows / Linux, else Quit. */
+let quitReason: ShutdownReason = 'desktop-quit'
+/**
+ * Wave 7 (cli-standalone.md 4.4): another host owns the data folder and this interactive launch waits for it to hand
+ * over. While set, window-all-closed does not quit and second-instance / activate show the wait window again; no main
+ * window is ever created (registerIpc has not run).
+ */
+let waitingForHandoff = false
+/** The handoff in progress (its buttons and its current view). */
+let handoff: DesktopHandoff | undefined
+/** The small wait window of the handoff (no preload, JavaScript off; buttons are links to orgai-handoff:<choice>). */
+let handoffWindow: BrowserWindow | undefined
 
 // A second launch on the same userData (Electron's single-instance lock) is answered by the incumbent: a terminal
 // host launch (--headless-host) only logs, anything else brings a window forward (and opens --run's run window).
 app.on('second-instance', (_event, argv, _cwd, additionalData) => {
+  if (waitingForHandoff && !booted) {
+    // Still waiting for the owner to hand over: bring the wait window back, never a main window (4.4).
+    const waiting = secondInstanceAction({ argv, additionalData, booted: true, quitting })
+    if (waiting.kind === 'window') reshowHandoffWindow()
+    return
+  }
   const action = secondInstanceAction({ argv, additionalData, booted, quitting })
   if (action.kind === 'ignore') {
     if (quitting) log.info('A second launch arrived while OrgAI is quitting; ignored (start OrgAI again once it has closed).')
@@ -112,6 +141,10 @@ app.on('second-instance', (_event, argv, _cwd, additionalData) => {
   if (action.run) openRunById(action.run)
 })
 app.on('activate', () => {
+  if (waitingForHandoff && !booted) {
+    reshowHandoffWindow()
+    return
+  }
   if (!booted || quitting) return
   showDockIcon()
   if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -314,14 +347,24 @@ app.whenReady().then(async () => {
   })
   const socketServer = server
   try {
-    // Review M11: no listener and no daemon.secret yet; they exist only while Terminal access is on (syncTerminalListener).
-    ownership = await acquireHostOwnership({ dataDir, hostKind, appVersion: app.getVersion(), listen: false, onConnection: (s) => socketServer.accept(s) })
+    const got = await acquireDesktopOwnership(dataDir, socketServer)
+    if (!got) {
+      // The user chose Quit in the handoff's wait window.
+      socketServer.close()
+      app.exit(0)
+      return
+    }
+    ownership = got
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e)
     log.error(`Host ownership failed: ${message}`)
     socketServer.close()
+    showHandoffWindow(undefined)
     if (hostArgs.headless) {
       // A terminal host has nobody to show a dialog to: the orgai command reads the exit code and the log.
+    } else if (e instanceof HandoffUnavailableError) {
+      const text = handoffUnavailableText(e.owner, runDirOf(dataDir))
+      dialog.showErrorBox(text.title, text.detail)
     } else if (e instanceof HostAlreadyRunningError || e instanceof HostStartingOrBusyError) {
       dialog.showErrorBox('OrgAI is already running', `${message}\n\nQuit the other OrgAI (or the terminal host using this data folder), then start OrgAI again.`)
     } else {
@@ -373,9 +416,21 @@ app.whenReady().then(async () => {
     openExternal: (url) => shell.openExternal(url),
     desktop: { openRunWindow },
     mock: process.env.ORGAI_MOCK === '1',
+    // Wave 7 (cli-standalone.md 4.3): the shutdown sequence flushes the host.stop reply, then releases ownership, then
+    // calls onDrained; a quit started anywhere (Quit, a last window on Windows / Linux, host.stop, idle exit, a
+    // signal) only leaves once it got here.
+    closeSocket: (graceMs) => socketServer.closeGracefully(graceMs),
+    terminalSessions: () => socketServer.terminalSessionCount(),
+    // Repository clones the windows started are cancelled as soon as the drain starts (round 6 item 9).
+    quiesce: () => repoClone?.dispose(),
+    // At the hard limit (writers still in flight after 60 s, descendants killed): leave now; the exit hook releases.
+    exitAtHardLimit: () => process.exit(0),
+    // Chromium's own helpers (GPU, renderers, network and utility services) are not the host's work: killing them
+    // only makes Chromium relaunch them. app.getAppMetrics lists them, re-read on every pass of the tree kill.
+    shutdownExcludePids: () => app.getAppMetrics().map((m) => m.pid),
     onDrained: () => {
       drainQuit = true
-      socketServer.close()
+      quitting = true
       app.quit()
     }
   })
@@ -449,6 +504,9 @@ app.whenReady().then(async () => {
     if (hostArgs.run) openRunById(hostArgs.run)
   }
   booted = true
+  waitingForHandoff = false
+  // SIGINT / SIGTERM (and SIGHUP) end the host through the same sequence as Quit (forced: runs end continuable).
+  installShutdownSignals(h.shutdown, { log: (m) => log.info(m) })
   // cli-spec 7(3): point an existing orgai command shim at this install when it runs an older form of this launcher or
   // a launcher that is gone (an app move or update); a newer or other-install shim stays. Every launch
   // kind, headless included; never blocks boot, never creates a shim, never touches a foreign file.
@@ -499,43 +557,38 @@ function buildCliShim(h: OrgAIHost): CliShimService {
   })
 }
 
-// Give up <dataDir>/run ownership on the way out; the exit hook covers app.exit and paths that skip will-quit.
-// release() is synchronous and idempotent.
-app.on('will-quit', () => {
-  server?.close()
-  ownership?.release()
-})
+// Wave 7 (cli-standalone.md 4.3): will-quit no longer releases on its own; the shutdown coordinator released ownership
+// before the quit could get here. The process exit hook stays as the last resort (a crash path, app.exit before boot):
+// the process's own writes end with it. release() is synchronous and idempotent.
+app.on('will-quit', willQuitHandler({ closeServer: () => server?.close() }))
 process.on('exit', () => ownership?.release())
 
-/** Longest a quit waits for live runs to record their end (RunManager.stopAll) before it goes ahead anyway. */
-const QUIT_STOP_DEADLINE_MS = 3000
-// Live runs are cut by the app, not the user (RunSummary.endedBy 'app'): the first quit is held until stopAll has
-// written them, or the deadline passes (then markQuit writes them synchronously). A re-entrant quit while stopAll is
-// pending is held too and never calls stopAll again; one after the deadline is forced through. See quitGate.ts.
-const gate = quitGate({
-  liveCount: () => host?.runs.liveRunCount() ?? 0,
-  stopAll: () => host?.runs.stopAll({ reason: 'quit' }) ?? Promise.resolve(),
-  markQuit: () => host?.runs.markQuit(),
-  deadlineMs: QUIT_STOP_DEADLINE_MS,
-  quit: () => app.quit(),
-  warn: (m) => console.warn(m)
-})
-// One before-quit handler, so the order is fixed: the terminal-clients prompt first (a cancelled or kept quit never
-// reaches the gate, never marks the app quitting and never disposes the host), then the gate, then dispose.
-app.on('before-quit', (event) => {
-  const terminalClients = server?.attachedClientCount() ?? 0
-  if (quitPromptNeeded({ terminalClients, drainQuit, alreadyAnswered: quitAnswered || quitting })) {
-    event.preventDefault()
-    if (!quitPromptOpen) void askQuit(terminalClients)
-    return
-  }
-  quitting = true
-  repoClone?.dispose()
-  // A macOS certificate read still running is killed once the quit goes ahead (a kept quit leaves it alone).
-  stopSystemCertRead()
-  gate(event)
-  host?.dispose()
-})
+// One before-quit handler (desktopQuit.ts, unit-tested with a fake app), so the order is fixed: the terminal-clients
+// prompt first (a cancelled or kept quit never reaches the shutdown, never marks the app quitting and never disposes
+// the host), then the shutdown coordinator, which holds the quit (preventDefault) until it released ownership: a forced
+// drain (runs end through stopAll({ reason: 'quit' }) within 3 s, else markQuit writes them), the writers settle, the
+// terminal connections close, ownership is released, then onDrained quits again and the handler lets that quit through.
+app.on(
+  'before-quit',
+  beforeQuitHandler({
+    host: () => host,
+    terminalClients: () => server?.attachedClientCount() ?? 0,
+    promptNeeded: quitPromptNeeded,
+    drainQuit: () => drainQuit,
+    quitAnswered: () => quitAnswered,
+    quitting: () => quitting,
+    markQuitting: () => {
+      quitting = true
+    },
+    promptOpen: () => quitPromptOpen,
+    askQuit: (n) => void askQuit(n),
+    reason: () => quitReason,
+    stopCertRead: () => stopSystemCertRead(),
+    // Never strand the app: the exit hook releases ownership.
+    exit: (code) => app.exit(code),
+    warn: (m) => log.warn(m)
+  })
+)
 
 /**
  * An explicit quit while terminal clients are attached (cli-spec 3.2(1)). The spec's "N terminal run(s)" is counted as
@@ -605,6 +658,7 @@ async function askClose(workingRuns: number): Promise<void> {
     goBackground()
   } else if (choice === 'quit') {
     quitAnswered = true
+    quitReason = 'window-closed'
     app.quit()
   } else {
     createWindow()
@@ -612,11 +666,155 @@ async function askClose(workingRuns: number): Promise<void> {
 }
 
 // The last window closed (review H3): a --headless-host launch goes back to the background, macOS stays (Dock), and
-// Windows / Linux quit through quitGate, asking first only while runs are working without the user.
+// Windows / Linux quit through the shutdown coordinator, asking first only while runs are working without the user.
 app.on('window-all-closed', () => {
+  // The handoff's wait window was the only window (4.4): closing it never quits; neither does anything before boot.
+  if (waitingForHandoff || !booted) return
   const workingRuns = host ? host.runs.workingRunCount() : 0
   const action = windowAllClosedAction({ platform: process.platform, launchedHeadless: hostArgs.headless, quitting, workingRuns })
-  if (action === 'quit') app.quit()
+  if (action === 'quit') {
+    quitReason = 'window-closed'
+    app.quit()
+  }
   else if (action === 'background') goBackground()
   else if (action === 'ask') void askClose(workingRuns)
 })
+
+// ---------- Wave 7 (cli-standalone.md 4.4): the app opening while another host owns the data folder ----------
+
+/** An owner that cannot hand over (no answer, older than Wave 7, or not a node / inproc host): the busy-folder dialog. */
+class HandoffUnavailableError extends Error {
+  constructor(readonly owner: DaemonInfo) {
+    super(`The host that owns the data folder (pid ${owner.pid}) did not hand it over.`)
+    this.name = 'HandoffUnavailableError'
+  }
+}
+
+/**
+ * Take <dataDir>/run ownership. On an interactive launch whose folder a Node host or the orgai command owns, run the
+ * handoff (4.4) and retry once that process has exited (a contender that wins the race starts it again). undefined:
+ * the user chose Quit. A --headless-host launch never hands over and never shows anything: it throws as before.
+ */
+async function acquireDesktopOwnership(dataDir: string, socketServer: HostSocketServer): Promise<HostOwnership | undefined> {
+  for (;;) {
+    try {
+      // Review M11: no listener and no daemon.secret yet; they exist only while Terminal access is on (syncTerminalListener).
+      return await acquireHostOwnership({ dataDir, hostKind, appVersion: app.getVersion(), listen: false, onConnection: (s) => socketServer.accept(s) })
+    } catch (e) {
+      if (hostArgs.headless || !(e instanceof HostAlreadyRunningError)) throw e
+      const outcome = await runHandoff(dataDir, e.info)
+      if (outcome === 'quit') return undefined
+      if (outcome === 'unavailable') throw new HandoffUnavailableError(e.info)
+      log.info(`The host that owned the data folder (pid ${e.info.pid}) has exited; taking over.`)
+    }
+  }
+}
+
+/** One handoff from `owner`, with the wait window as its UI. */
+async function runHandoff(dataDir: string, owner: DaemonInfo): Promise<HandoffOutcome> {
+  waitingForHandoff = true
+  log.info(`The data folder is owned by a ${owner.hostKind ?? 'host'} (pid ${owner.pid}); asking it to hand over.`)
+  const h = new DesktopHandoff({
+    connect: async (timeoutMs) => {
+      const r = await connectHost({
+        dataDir,
+        scopes: ['read', 'configure'],
+        clientKind: 'desktop',
+        clientVersion: app.getVersion(),
+        cwd: homedir(),
+        pid: process.pid,
+        connectTimeoutMs: timeoutMs,
+        callTimeoutMs: timeoutMs
+      })
+      if (r.ok) {
+        const client = r.client
+        return { client: { handoff: client.hello.handoff === true, call: (m, p, o) => client.call(m, p, o), close: () => client.close() } }
+      }
+      if (r.reason === 'draining') return { draining: true }
+      return { failed: r.message }
+    },
+    // Cached liveness: a signal probe per poll, the start time (ps / PowerShell) re-read only every 30 s (the inproc wait
+    // can last hours).
+    exited: ownerExitCheck(() => readDaemonInfo(dataDir)),
+    show: (view) => showHandoffWindow(view),
+    log: (m) => log.info(m)
+  })
+  handoff = h
+  try {
+    return await h.run(owner)
+  } finally {
+    handoff = undefined
+    showHandoffWindow(undefined)
+  }
+}
+
+/** second-instance / activate while waiting: the wait window again (when the handoff shows one), focused. */
+function reshowHandoffWindow(): void {
+  showDockIcon()
+  const view = handoff?.view()
+  if (view) showHandoffWindow(view)
+  if (handoffWindow && !handoffWindow.isDestroyed()) showWindow(handoffWindow)
+}
+
+/** Closing the wait window ourselves (a new view or the end of the handoff) is not the user's Quit. */
+let closingHandoffWindow = false
+/** The data: URL the wait window was last told to load: the one navigation its guard lets through. */
+let handoffPageUrl = ''
+
+/**
+ * Show (create or update) the handoff's wait window, or close it (undefined). It loads only its own data: page with
+ * JavaScript off and no preload; its buttons are links to orgai-handoff:<choice>, caught on navigation and never
+ * loaded. Closing it is Quit on Windows and Linux (nothing else would be on screen); on macOS the Dock brings it back.
+ */
+function showHandoffWindow(view: HandoffView | undefined): void {
+  if (!view) {
+    const w = handoffWindow
+    handoffWindow = undefined
+    if (w && !w.isDestroyed()) {
+      closingHandoffWindow = true
+      try {
+        w.destroy()
+      } finally {
+        closingHandoffWindow = false
+      }
+    }
+    return
+  }
+  let win = handoffWindow
+  if (!win || win.isDestroyed()) {
+    const created = new BrowserWindow({
+      width: 500,
+      height: 280,
+      resizable: false,
+      maximizable: false,
+      fullscreenable: false,
+      show: false,
+      title: 'OrgAI',
+      autoHideMenuBar: true,
+      backgroundColor: nativeTheme.shouldUseDarkColors ? '#16181d' : '#f7f7f8',
+      webPreferences: { sandbox: true, contextIsolation: true, javascript: false, ...(hiddenWindows() ? { backgroundThrottling: false } : {}) }
+    })
+    win = created
+    handoffWindow = created
+    created.on('closed', () => {
+      if (handoffWindow === created) handoffWindow = undefined
+      if (!closingHandoffWindow && process.platform !== 'darwin') handoff?.choose('quit')
+    })
+    created.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+    // Fails closed: every navigation but the page itself is stopped; a button's link only names a choice.
+    const onNavigate = (e: { url: string; preventDefault(): void }): void => {
+      if (e.url === handoffPageUrl) return
+      e.preventDefault()
+      const choice = handoffChoiceOf(e.url)
+      if (choice) handoff?.choose(choice)
+    }
+    created.webContents.on('will-navigate', onNavigate)
+    created.webContents.on('will-redirect', onNavigate)
+    created.webContents.on('will-frame-navigate', onNavigate)
+    created.once('ready-to-show', () => {
+      if (!hiddenWindows()) showWindow(created)
+    })
+  }
+  handoffPageUrl = `data:text/html;charset=utf-8,${encodeURIComponent(handoffPageHtml(view, nativeTheme.shouldUseDarkColors))}`
+  void win.loadURL(handoffPageUrl).catch((e: unknown) => log.warn(`The handoff wait window did not load: ${e instanceof Error ? e.message : String(e)}`))
+}

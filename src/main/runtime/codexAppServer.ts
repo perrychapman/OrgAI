@@ -166,6 +166,8 @@ export class CodexAppServer {
     if (binary.pathDir) env.PATH = `${binary.pathDir}${delimiter}${env.PATH ?? env.Path ?? ''}`
     const args = ['app-server', ...(this.options.config ?? []).flatMap((c) => ['-c', c])]
     const child = spawn(binary.path, args, { cwd: this.options.cwd, env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
+    // An agent CLI: ended with the host at the shutdown's hard limit, also when the process table cannot be read (4.3).
+    trackChildProcess(child, 'codex app-server')
     this.child = child
     // A host that gives up at the shutdown hard limit kills it (host/shutdown.ts); untracked on exit.
     const untrack = trackChildProcess(child, 'codex app-server')

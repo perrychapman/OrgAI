@@ -54,6 +54,7 @@ import { HostDispatcher } from './dispatcher'
 import { HostEventBus } from './events'
 import type { HostOwnership } from './ownership'
 import type { HostRuntimeEnv } from './runtimeEnv'
+import { ShutdownCoordinator, type ShutdownReleaseInfo } from './shutdown'
 import type { DesktopHooks, HostControl, HostServices } from './types'
 
 /** How long after a LiteLLM run ends its key's spend is re-read (the proxy batches spend writes, ~10 s by default). */
@@ -135,8 +136,38 @@ export interface BootOrgAIHostOptions {
   /** Per-kind overrides of startBackground (Wave 7). */
   background?: HostBackgroundOptions
   housekeeping?: Partial<HousekeepingSteps>
-  /** Called once a drain finished (the desktop shell quits the app). */
-  onDrained?: () => void
+  /**
+   * Called once a shutdown released ownership (Wave 7, cli-standalone.md 4.3: after the writers settled and the socket
+   * closed, or at the hard limit): the process may exit now. Desktop: quit the app; inproc: resolve `closed`; Node host:
+   * exit the process.
+   */
+  onDrained?: (info: ShutdownReleaseInfo) => void
+  /**
+   * The socket server's graceful close (HostSocketServer.closeGracefully), run by the shutdown before the release so the
+   * host.stop reply is flushed. Absent = no socket to close here.
+   */
+  closeSocket?: (graceMs: number) => Promise<void>
+  /**
+   * The shutdown's hard limit (4.3): once the host's descendants are gone, end the process (its exit hook releases
+   * ownership), so no writer of this host can run after the data folder is given up. Every real entry point passes one
+   * (desktop and headless: process.exit; inproc and Node hosts: startInprocHost's, which tells the terminal and exits);
+   * absent (tests) = release, then onDrained.
+   */
+  exitAtHardLimit?: () => void
+  /**
+   * Processes the hard limit never kills, with their subtrees (the desktop: Electron's own GPU, renderer and utility
+   * helpers from app.getAppMetrics, which Chromium would relaunch as fast as they die). Absent = none.
+   */
+  shutdownExcludePids?: () => number[]
+  /** The shutdown's hard limit and its tree-kill waits; production uses the defaults (tests shorten them). */
+  shutdownLimits?: { hardLimitMs?: number; kill?: { termGraceMs?: number; waitMs?: number; stepMs?: number } }
+  /** Authenticated terminal sessions (HostSocketServer.terminalSessionCount), for host.status `handoff`. Absent = 0. */
+  terminalSessions?: () => number
+  /**
+   * More background work the drain stops at once (after the host's own: Team assistant, OAuth flows, skill evaluation),
+   * e.g. the desktop's repository clones. A throw is logged.
+   */
+  quiesce?: () => void
 }
 
 export interface OrgAIHost {
@@ -149,6 +180,11 @@ export interface OrgAIHost {
   /** A stored project, or the display project of a virtual id (harness, quick, skills). */
   projectOrHarness(projectId: string): Project | null | undefined
   hostControl: HostControl
+  /**
+   * The one shutdown sequence (Wave 7, cli-standalone.md 4.3): host.stop, idle exit and every entry point's exit path
+   * (desktop Quit, signals, inproc cleanup) go through it; ownership is released only after the writers settled.
+   */
+  shutdown: ShutdownCoordinator
   /**
    * Whether host.hello accepts terminal clients now and the most it grants (socketServer.ts): AppSettings.terminalServer,
    * or this session of a headless / in-process boot while the user has made no choice; the level from
@@ -261,7 +297,10 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     // Library changes that save a project (unlink on remove, promote) reach every client like a run's project update.
     onProjectChanged: emitProject,
     // `orgai mcp auth` (announceUrl): the authorization URL reaches 'connections' subscribers (cli-spec 6.3(5)).
-    onAuthorizeUrl: (u) => events.emit(IPC.connectionsEvent, { type: 'mcp.authorize', authorize: u })
+    onAuthorizeUrl: (u) => events.emit(IPC.connectionsEvent, { type: 'mcp.authorize', authorize: u }),
+    // Wave 7 (round 6 item 9): only an authorization's final commit holds a mutation lease. `activityRef` is set below,
+    // before any call can arrive.
+    commitLease: (label) => (activityRef ? activityRef.acquire('inFlightRpcMutations', label) : () => {})
   })
   const skills = new SkillService({
     dataDir,
@@ -330,6 +369,8 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     }, LITELLM_SPEND_DELAY_MS)
   }
   let activityRef: HostActivityTracker | undefined
+  /** Set once the dispatcher exists (below); the drain's quiesce aborts its model calls (draft:orgChart). */
+  let dispatcherRef: HostDispatcher | undefined
   const rm = new RunManager(adapters, runBroadcast, runStore, setup, keepRunsFor, {
     dataDir,
     // cli-spec 3.4(1): the control socket dir, daemon secret, secrets.json and CODEX_HOME are off limits to agent tools.
@@ -501,20 +542,52 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
   steps.sweepStaleSkillDirs(ctx)
   if (dropped) console.log(`Housekeeping removed ${dropped} stale run(s) or record file(s).`)
 
+  // Wave 7 (cli-standalone.md 4.3): the one shutdown sequence. The activity tracker drains and settles the writers; the
+  // coordinator closes the socket, releases ownership (never before the writers are done), ends the process through
+  // onDrained, and at SHUTDOWN_HARD_LIMIT_MS kills this process's descendants and exits.
+  const shutdown = new ShutdownCoordinator({
+    release: () => ownership.release(),
+    ...(opts.closeSocket ? { closeSocket: opts.closeSocket } : {}),
+    handoffFacts: () => ({ ...rm.handoffFacts(), terminalSessions: opts.terminalSessions?.() ?? 0 }),
+    ...(opts.onDrained ? { onReleased: opts.onDrained } : {}),
+    ...(opts.exitAtHardLimit ? { exitAtHardLimit: opts.exitAtHardLimit } : {}),
+    ...(opts.shutdownExcludePids ? { excludePids: opts.shutdownExcludePids } : {}),
+    ...(opts.shutdownLimits?.hardLimitMs !== undefined ? { hardLimitMs: opts.shutdownLimits.hardLimitMs } : {}),
+    ...(opts.shutdownLimits?.kill ? { killTiming: opts.shutdownLimits.kill } : {}),
+    log: (m) => log.info(m)
+  })
   // cli-spec 3.2(4): what keeps the host from going idle and how it drains.
   const activity = new HostActivityTracker({
     ownership,
     idleMs: daemonIdleMs(processEnv),
-    onDrained: opts.onDrained,
-    // A draining host starts no Team review: without this, every run forceStop ends would arm a run-ended review
-    // (a backgroundTasks lease the settle step then waits on, and a model call from a host giving up its data folder).
-    quiesce: () => caps.dispose(),
+    ...shutdown.activityHooks(),
+    // A draining host starts no background work and abandons what waits on a user or a model (round 6 item 9): no
+    // Team review (every run forceStop ends would arm one), no OAuth flow, no skill evaluation model step, no org chart
+    // draft, plus the entry point's own (the desktop's repository clones).
+    quiesce: () => {
+      caps.dispose()
+      mcp.dispose()
+      skillEvaluation.dispose()
+      // An org chart draft's model call (no timeout of its own) would hold its mutation lease until the hard limit.
+      dispatcherRef?.quiesce()
+      if (opts.quiesce) {
+        try {
+          opts.quiesce()
+        } catch (e) {
+          log.warn(`Quiescing the entry point's background work failed: ${(e as Error)?.message ?? String(e)}`)
+        }
+      }
+    },
     forceStop: () => rm.stopAll({ reason: 'quit' }),
-    // As the desktop quit's quitGate: past the deadline (or on a throw) write every live run as cut by the app now.
+    // Every live run, waiting ones included: a non-forced drain (idle exit, `orgai daemon stop`) ends those too, as cut
+    // by the app ("Ended when OrgAI closed", continuable), before the writers settle and ownership is released.
+    liveRuns: () => rm.liveRunCount(),
+    // Past the deadline (or on a throw) write every live run as cut by the app now (RunManager.markQuit).
     forceStopFallback: () => rm.markQuit(),
     log: (m) => log.info(m)
   })
   activityRef = activity
+  shutdown.attachActivity(activity)
   // Wave 7 (cli-standalone.md 4.3): background vault work (creation, reconciliation, write-back) holds a lease.
   secrets.attachLeases((label) => activity.acquire('backgroundTasks', label))
   // Runs that only wait on the user (idle, a card open, held) do not keep a host busy (review H3; runActivity.ts).
@@ -535,9 +608,15 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
       mock: mockAdapter,
       pid: ownership.info.pid,
       startedAt: ownership.info.startedAt,
-      activity: activity.snapshot()
+      activity: activity.snapshot(),
+      // Wave 7 (4.4 step 4): what a handoff stop would wait for, for the app's waiting window.
+      ...((): { handoff?: HostStatusResult['handoff'] } => {
+        const facts = shutdown.handoffFacts()
+        return facts ? { handoff: facts } : {}
+      })()
     }),
-    stop: (input) => activity.requestDrain(input)
+    // host.stop (and the app's handoff stop) through the coordinator: the handoff predicate, then the drain.
+    stop: (input) => shutdown.stop(input)
   }
 
   const services: HostServices = {
@@ -571,6 +650,7 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     secrets
   }
   const dispatcher = new HostDispatcher(services)
+  dispatcherRef = dispatcher
 
   // Stores built, probes started, housekeeping done: advertise the host as ready.
   ownership.markReady()
@@ -592,5 +672,5 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     secrets.dispose()
   }
 
-  return { services, events, dispatcher, activity, runs: rm, settings, projectOrHarness, hostControl, terminalAccess, dispose }
+  return { services, events, dispatcher, activity, runs: rm, settings, projectOrHarness, hostControl, shutdown, terminalAccess, dispose }
 }
