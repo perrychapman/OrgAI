@@ -35,12 +35,13 @@ permissions:
   contents: read
 
 env:
-  # 'full' ships npm-shrinkwrap.json (cli-standalone.md 3.1). npm 11.12.1 then installs every platform's Claude runtime
-  # (about 2 GB) and verify-npm step 1 fails, so publish-npm stays blocked until the owner decides; 'none' builds with
-  # --no-shrinkwrap (direct dependencies pinned exactly, about 300 MB per install). This default blocks every npm
-  # release until it is decided (an open question for the owner, D-shrinkwrap). ci.yml installs 'none' on PRs to keep
-  # their cost down and dry-runs the full build.
-  NPM_SHRINKWRAP: full
+  # OWNER DECISION (2026-11-06), to revisit: the published package ships WITHOUT npm-shrinkwrap.json ('none': direct
+  # dependencies pinned to exact versions, the tree below them resolved by npm at install). A honoured shrinkwrap made
+  # npm 11.12.1 install every platform's Claude runtime (eight optional packages, about 2 GB per install; WP-A found it
+  # and verify-npm step 1 fails with it), where 'none' installs about 300 MB. The 'full' path stays available behind
+  # this one setting (build-npm-package.mjs without --no-shrinkwrap) for when npm or the SDK's optional packages make a
+  # shrinkwrap affordable. ci.yml uses 'none' too and still dry-runs the full derivation on every PR.
+  NPM_SHRINKWRAP: none
 
 jobs:
   meta:

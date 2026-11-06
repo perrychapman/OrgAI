@@ -3,6 +3,7 @@
  * one), explicit clears report a failed save, read I/O errors are not 'corrupt', and available() / the retry timer do
  * not promise or spam what the placeholder custodian cannot do.
  */
+import { unavailableCustodianFactory } from './unavailableCustodian'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
@@ -499,7 +500,7 @@ describe('review round 2, minor: a read I/O error is not damage', () => {
 
 describe('review round 2, minor: available() and the retry timer with the placeholder custodian', () => {
   it('a Node host with the placeholder custodian does not offer to store; a real one does until a creation fails unavailable', async () => {
-    const placeholder = await node({ custodian: undefined })
+    const placeholder = await node({ custodian: unavailableCustodianFactory })
     expect(placeholder.state()).toBe('absent')
     expect(placeholder.available()).toBe(false)
     const real = await node()
@@ -519,7 +520,7 @@ describe('review round 2, minor: available() and the retry timer with the placeh
     const lines: string[] = []
     const log = (m: string): void => void lines.push(m)
     const created = (): number => lines.filter((l) => l.includes('could not create the vault')).length
-    const p = await app({ custodian: undefined, retryMs: hour, log, now: () => Date.now() })
+    const p = await app({ custodian: unavailableCustodianFactory, retryMs: hour, log, now: () => Date.now() })
     await vi.advanceTimersByTimeAsync(10 * hour)
     expect(created()).toBe(1)
     p.retryOpen('timer') // the placeholder never succeeds: a manual retry is still allowed, and not logged again

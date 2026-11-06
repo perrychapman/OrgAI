@@ -86,12 +86,12 @@ export class HostTakenError extends Error {
 }
 
 /** The bundle-missing error of startBackground('node'). */
-export const NODE_HOST_BUNDLE_MISSING = 'The orgai bundle (orgai.mjs) was not found next to this command; build it with npm run build, or reinstall orgai.'
+export const NODE_HOST_BUNDLE_MISSING = 'The orgai bundle (orgai.mjs) was not found next to this command; build it with npm run build, or reinstall it with npm i -g orgai-cli.'
 
 /** The hidden command line a Node host runs: `<execPath> <orgai.mjs> daemon run-node`. */
 export const NODE_HOST_ARGS = ['daemon', 'run-node'] as const
 /** What `--runtime node` needs (cli-standalone.md 4.2). */
-export const NODE_HOST_NEEDS_NODE = 'The Node background host comes with the npm package: npm i -g orgai'
+export const NODE_HOST_NEEDS_NODE = 'The Node background host comes with the npm package: npm i -g orgai-cli'
 /** Host kinds each background runtime becomes. */
 export const RUNTIME_HOST_KINDS: Readonly<Record<DaemonRuntime, readonly HostKind[]>> = {
   app: ['headless-host', 'desktop'],

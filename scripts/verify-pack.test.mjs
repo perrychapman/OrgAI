@@ -409,7 +409,7 @@ test('main: a wrong outcome, a dev launcher in doctor and a missing launcher eac
 test('main --npm-tarball: the npm orgai drives the packed app (g), with ORGAI_ELECTRON_PATH at the app binary', async () => {
   const fake = fakeRelease(['@anthropic-ai/claude-agent-sdk', 'zod'])
   try {
-    const tgz = path.join(fake.base, 'orgai-1.0.0.tgz')
+    const tgz = path.join(fake.base, 'orgai-cli-1.0.0.tgz')
     fs.writeFileSync(tgz, 'not really a tarball')
     const r = await runMain(fake, ['--npm-tarball', tgz])
     assert.equal(r.code, 0, r.out)
@@ -438,7 +438,7 @@ test('main --npm-tarball: the npm orgai drives the packed app (g), with ORGAI_EL
 test('main --npm-tarball: (g) fails when no background host ran, even though exec and stop exit 0', async () => {
   const fake = fakeRelease(['@anthropic-ai/claude-agent-sdk', 'zod'])
   try {
-    const tgz = path.join(fake.base, 'orgai-1.0.0.tgz')
+    const tgz = path.join(fake.base, 'orgai-cli-1.0.0.tgz')
     fs.writeFileSync(tgz, 'not really a tarball')
     // exec ran in-process (a --host auto fallback): no host answers status, and stop exits 0 with nothing stopped
     const none = {

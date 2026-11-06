@@ -99,7 +99,7 @@ Phase 4 is a smaller follow-up.
 
 ### 3.1 npm package (phase A)
 
-- **Name** (**D1**): `orgai` if free on the registry (unverified), else `@orgai/cli`; the bin is `orgai` either way.
+- **Name** (**D1**, decided by the owner 2026-11-06): `orgai-cli`. npm refused `orgai` (too similar to `org.ai`). The bin stays `orgai`, so `npm i -g orgai-cli` installs the `orgai` command. A placeholder `orgai-cli@0.0.1` is already published. Every `orgai` / `@orgai/cli` package name below reads `orgai-cli`; the self-control gate (8.4) keeps denying `orgai` and `@orgai/cli` too.
 - **Builder** `scripts/build-npm-package.mjs` writes `release/npm/package/` and `npm pack`s it:
   - `out/cli/**` exactly as `vite.cli.config.ts` emits it, plus `out/cli/install.json` (3.5).
   - Generated `package.json`: `name`, `version` (the app's, same commit), `type: module`, `bin`, `engines.node` (7.1),
@@ -824,7 +824,7 @@ Anything only checked by unit tests or fakes stays marked unverified in CLAUDE.m
 
 | | Question | Recommended |
 | --- | --- | --- |
-| D1 | Package name `orgai` or `@orgai/cli` | `orgai` if free |
+| D1 | Package name `orgai` or `@orgai/cli` | **Decided 2026-11-06: `orgai-cli`** (npm refused `orgai`); bin `orgai` |
 | D2 | npm trusted publishing (OIDC) or an automation token; a manual approval before `publish-npm` | trusted publishing, with approval |
 | D3 | OS tools as child processes, or a native keyring addon (`@napi-rs/keyring`, N-API, one build for Node and Electron; a supply-chain dependency with per-platform prebuilds) | child processes; revisit if the custodian probes are unreliable |
 | D4 | Agent-reachable vault key on all platforms, including the macOS weakening | accept, documented |
@@ -833,6 +833,7 @@ Anything only checked by unit tests or fakes stays marked unverified in CLAUDE.m
 | D7 | Codex: bring-your-own with a version check, or a pinned optional dependency | bring-your-own |
 | D8 | Desktop handoff grant (4.4 step 5): `host.status` and `host.stop` (forced included) for any `desktop` hello with `daemon.secret`, whatever Terminal access is. Not an authentication of the app: any same-user process holding the secret can stop a Node host; the descendant check refuses agents where it works | accept |
 | D9 | Node host Terminal access level: stored setting (default `operate`), asked once on `daemon start` from a terminal, changed with `orgai terminal-access` | accept; revisit a `full` default for macOS and Linux, where the peer check refuses the host's own descendants |
+| D10 | Shrinkwrap in the published package | **Owner decision 2026-11-06, to revisit: `NPM_SHRINKWRAP=none`** in release.yml and ci.yml (exact top-level pins, no `npm-shrinkwrap.json`). With npm 11 a honoured shrinkwrap installed every platform's Claude runtime (about 2 GB); `none` installs about 300 MB. The `full` path stays behind that one setting |
 
 ---
 

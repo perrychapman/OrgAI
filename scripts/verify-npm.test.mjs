@@ -83,6 +83,7 @@ test('output readers', () => {
   assert.equal(vaultNotBuilt({ code: 0, stdout: '{}' }), false)
   assert.equal(vaultState(JSON.stringify({ state: 'key-mismatch' })), 'key-mismatch')
   assert.equal(vaultState(JSON.stringify({ vault: { state: 'open' } })), 'open')
+  assert.equal(vaultState(JSON.stringify({ schemaVersion: 1, secrets: { state: 'key-mismatch', scheme: 'key-file' } })), 'key-mismatch')
   assert.equal(vaultState('nope'), undefined)
   assert.equal(connectionTestState(JSON.stringify({ id: 'litellm', status: 'connected', ok: true })), 'connected')
   assert.equal(connectionTestState(JSON.stringify({ state: 'connected' })), undefined)
@@ -142,14 +143,14 @@ test('whichOnPath', () => {
 })
 
 test('readTgz and the packument', () => {
-  const tgz = makeTgz({ 'package/package.json': '{"name":"orgai","version":"1.0.0"}', 'package/npm-shrinkwrap.json': '{}', 'package/out/cli/orgai.mjs': 'x' })
+  const tgz = makeTgz({ 'package/package.json': '{"name":"orgai-cli","version":"1.0.0"}', 'package/npm-shrinkwrap.json': '{}', 'package/out/cli/orgai.mjs': 'x' })
   const files = readTgz(tgz, (n) => n.endsWith('.json'))
   assert.deepEqual([...files.keys()], ['package/package.json', 'package/npm-shrinkwrap.json'])
   assert.throws(() => readTgz(zlib.gzipSync(Buffer.from('short'))), /truncated|not a tar/)
-  const p = packumentFor({ name: 'orgai', version: '1.0.0' }, { tarballUrl: 'http://x/orgai/-/orgai-1.0.0.tgz', integrity: 'sha512-i', shasum: 's', hasShrinkwrap: true })
+  const p = packumentFor({ name: 'orgai-cli', version: '1.0.0' }, { tarballUrl: 'http://x/orgai-cli/-/orgai-cli-1.0.0.tgz', integrity: 'sha512-i', shasum: 's', hasShrinkwrap: true })
   assert.deepEqual(p['dist-tags'], { latest: '1.0.0', next: '1.0.0' })
   assert.equal(p.versions['1.0.0']._hasShrinkwrap, true)
-  assert.equal(p.versions['1.0.0'].dist.tarball, 'http://x/orgai/-/orgai-1.0.0.tgz')
+  assert.equal(p.versions['1.0.0'].dist.tarball, 'http://x/orgai-cli/-/orgai-cli-1.0.0.tgz')
   assert.equal(registryPathOf('@orgai/cli'), '/@orgai%2fcli')
 })
 
@@ -189,11 +190,11 @@ test('the local registry serves the tarball and proxies everything else upstream
   })
   await new Promise((r) => upstream.listen(0, '127.0.0.1', r))
   try {
-    const tgz = path.join(dir, 'orgai-1.0.0.tgz')
+    const tgz = path.join(dir, 'orgai-cli-1.0.0.tgz')
     fs.writeFileSync(tgz, 'tarball-bytes')
-    const reg = await startLocalRegistry({ tarball: tgz, pkg: { name: 'orgai', version: '1.0.0', dependencies: { zod: '4.1.0' } }, hasShrinkwrap: true, upstream: `http://127.0.0.1:${upstream.address().port}` })
+    const reg = await startLocalRegistry({ tarball: tgz, pkg: { name: 'orgai-cli', version: '1.0.0', dependencies: { zod: '4.1.0' } }, hasShrinkwrap: true, upstream: `http://127.0.0.1:${upstream.address().port}` })
     try {
-      const doc = JSON.parse((await get(`${reg.url}orgai`)).body)
+      const doc = JSON.parse((await get(`${reg.url}orgai-cli`)).body)
       const v = doc.versions['1.0.0']
       assert.equal(v._hasShrinkwrap, true)
       assert.deepEqual(v.dependencies, { zod: '4.1.0' })
@@ -217,12 +218,12 @@ function fakeRoot({ shrinkwrap = true } = {}) {
   fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: 'orgai', version: VERSION }))
   fs.mkdirSync(path.join(root, 'scripts'))
   fs.writeFileSync(path.join(root, 'scripts', 'npm-install-scripts-allowlist.json'), JSON.stringify({ allowed: [] }))
-  const pkg = { name: 'orgai', version: VERSION, dependencies: { a: '1.0.0' } }
+  const pkg = { name: 'orgai-cli', version: VERSION, dependencies: { a: '1.0.0' } }
   const sw = { packages: { '': {}, 'node_modules/a': { version: '1.0.0' }, [`node_modules/@anthropic-ai/claude-agent-sdk-${process.platform}-${process.arch}`]: { version: '0.3.1', optional: true } } }
   fs.mkdirSync(path.join(root, 'release', 'npm'), { recursive: true })
   const files = { 'package/package.json': JSON.stringify(pkg) }
   if (shrinkwrap) files['package/npm-shrinkwrap.json'] = JSON.stringify(sw)
-  fs.writeFileSync(path.join(root, 'release', 'npm', `orgai-${VERSION}.tgz`), makeTgz(files))
+  fs.writeFileSync(path.join(root, 'release', 'npm', `orgai-cli-${VERSION}.tgz`), makeTgz(files))
   return { root, pkg, sw }
 }
 
@@ -291,7 +292,7 @@ test('main: a matching install passes, vault and codex skip, temp dirs removed',
     assert.deepEqual(r.leftovers, [])
     const installs = r.calls.filter((c) => c.args.includes('install'))
     assert.equal(installs.length, 2)
-    assert.ok(installs[0].args.includes(`orgai@${VERSION}`) && installs[0].args.includes('--registry'))
+    assert.ok(installs[0].args.includes(`orgai-cli@${VERSION}`) && installs[0].args.includes('--registry'))
     assert.ok(installs[1].args.includes('--ignore-scripts'))
     const exec = r.calls.find((c) => c.args.includes('exec'))
     assert.ok(exec.args.includes('auto'))
@@ -312,7 +313,7 @@ test('main: an unlisted install script, a wrong version and a failed exec each f
     assert.match(r.out, /fail +\(1\) install +a@1\.0\.0 runs postinstall at install/)
     assert.match(r.out, /fail +\(5\) exec auto/)
     fake.sw.packages['node_modules/a'].version = '1.0.1'
-    fs.writeFileSync(path.join(fake.root, 'release', 'npm', `orgai-${VERSION}.tgz`), makeTgz({ 'package/package.json': JSON.stringify(fake.pkg), 'package/npm-shrinkwrap.json': '{}' }))
+    fs.writeFileSync(path.join(fake.root, 'release', 'npm', `orgai-cli-${VERSION}.tgz`), makeTgz({ 'package/package.json': JSON.stringify(fake.pkg), 'package/npm-shrinkwrap.json': '{}' }))
     const w = await runMain(fake)
     assert.match(w.out, /fail +\(1\) install +node_modules\/a is 1\.0\.0, shrinkwrap says 1\.0\.1/)
   } finally {
@@ -324,7 +325,7 @@ test('main: a failed step 1 (another platform\'s runtime installed) skips step 1
   const fake = fakeRoot()
   try {
     fake.sw.packages['node_modules/@anthropic-ai/claude-agent-sdk-plan9-mips'] = { version: '0.3.1', optional: true, os: ['plan9'], cpu: ['mips'] }
-    fs.writeFileSync(path.join(fake.root, 'release', 'npm', `orgai-${VERSION}.tgz`), makeTgz({ 'package/package.json': JSON.stringify(fake.pkg), 'package/npm-shrinkwrap.json': JSON.stringify(fake.sw) }))
+    fs.writeFileSync(path.join(fake.root, 'release', 'npm', `orgai-cli-${VERSION}.tgz`), makeTgz({ 'package/package.json': JSON.stringify(fake.pkg), 'package/npm-shrinkwrap.json': JSON.stringify(fake.sw) }))
     const r = await runMain(fake, { otherPlatform: true })
     assert.equal(r.code, 1)
     assert.match(r.out, /fail +\(1\) install +npm installed 1 package\(s\) for other platforms/)

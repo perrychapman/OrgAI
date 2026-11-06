@@ -62,13 +62,13 @@ describe('findOrgaiOnPath on a real folder tree', () => {
   afterEach(() => rmSync(root, { recursive: true, force: true }))
 
   posixOnly('reads an npm link, an app shim and an unknown file in PATH order', () => {
-    // npm: <prefix>/bin/orgai -> ../lib/node_modules/orgai/out/cli/orgai.mjs
-    const npmCli = join(root, 'npm', 'lib', 'node_modules', 'orgai', 'out', 'cli')
+    // npm: <prefix>/bin/orgai -> ../lib/node_modules/orgai-cli/out/cli/orgai.mjs
+    const npmCli = join(root, 'npm', 'lib', 'node_modules', 'orgai-cli', 'out', 'cli')
     mkdirSync(npmCli, { recursive: true })
     writeFileSync(join(npmCli, 'orgai.mjs'), '#!/usr/bin/env node\n')
     writeFileSync(join(npmCli, 'install.json'), JSON.stringify({ channel: 'npm', version: '0.1.6', commit: 'abc123' }))
     mkdirSync(join(root, 'npm', 'bin'))
-    symlinkSync(join('..', 'lib', 'node_modules', 'orgai', 'out', 'cli', 'orgai.mjs'), join(root, 'npm', 'bin', 'orgai'))
+    symlinkSync(join('..', 'lib', 'node_modules', 'orgai-cli', 'out', 'cli', 'orgai.mjs'), join(root, 'npm', 'bin', 'orgai'))
     // An app shim running <res>/bin/orgai, whose bundle says app 0.1.7.
     const res = join(root, 'OrgAI.app', 'Contents', 'Resources')
     const appCli = join(res, 'app.asar.unpacked', 'out', 'cli')
@@ -184,8 +184,8 @@ describe('findOrgaiOnPath on Windows (fake fs)', () => {
     const npmDir = 'C:\\Users\\u\\AppData\\Roaming\\npm'
     const res = 'C:\\Users\\u\\AppData\\Local\\Programs\\OrgAI\\resources'
     const fs = fakeFs({
-      [`${npmDir}\\orgai.cmd`]: '@ECHO off\r\nGOTO start\r\n:start\r\n"%_prog%"  "%dp0%\\node_modules\\orgai\\out\\cli\\orgai.mjs" %*\r\n',
-      [`${npmDir}\\node_modules\\orgai\\out\\cli\\install.json`]: JSON.stringify({ channel: 'npm', version: '0.2.0' }),
+      [`${npmDir}\\orgai.cmd`]: '@ECHO off\r\nGOTO start\r\n:start\r\n"%_prog%"  "%dp0%\\node_modules\\orgai-cli\\out\\cli\\orgai.mjs" %*\r\n',
+      [`${npmDir}\\node_modules\\orgai-cli\\out\\cli\\install.json`]: JSON.stringify({ channel: 'npm', version: '0.2.0' }),
       'C:\\Users\\u\\AppData\\Local\\OrgAI\\bin\\orgai.cmd': renderCliShim({ platform: 'win32', launcher: `${res}\\bin\\orgai.cmd`, env: {} }),
       [`${res}\\app.asar.unpacked\\out\\cli\\install.json`]: JSON.stringify({ channel: 'app', version: '0.1.9' })
     })
@@ -195,6 +195,16 @@ describe('findOrgaiOnPath on Windows (fake fs)', () => {
       ['npm', '0.2.0']
     ])
     expect(shadowedNewer(found).map((e) => e.path)).toEqual([`${npmDir}\\orgai.cmd`])
+  })
+
+  it("still reads an older npm install whose folder is node_modules\\orgai", () => {
+    const npmDir = 'C:\\Users\\u\\AppData\\Roaming\\npm'
+    const fs = fakeFs({
+      [`${npmDir}\\orgai.cmd`]: '"%_prog%"  "%dp0%\\node_modules\\orgai\\out\\cli\\orgai.mjs" %*\r\n',
+      [`${npmDir}\\node_modules\\orgai\\out\\cli\\install.json`]: JSON.stringify({ channel: 'npm', version: '0.0.9' })
+    })
+    const found = findOrgaiOnPath({ platform: 'win32', pathList: npmDir, env: {}, fs })
+    expect(found.map((e) => [e.kind, e.version])).toEqual([['npm', '0.0.9']])
   })
 
   it('reads the launcher folder itself on PATH as that app', () => {

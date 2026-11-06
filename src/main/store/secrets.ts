@@ -21,7 +21,8 @@ import type {
 import { isInsideEither } from '../quick/scratch'
 import { DurableFsError, errorCode, nodeVaultFs, renameDurable, unlinkDurable, writeFileDurable, type VaultFs } from './durableFs'
 import { baselineOf, legacyIsNewer, planReconcile, planRetirement, retirementBlocker, setBaseline, type ReconcileCrypto } from './reconcile'
-import { isPlaceholderCustodian, unavailableCustodianFactory } from './unavailableCustodian'
+import { createCustodianFactory } from './custodians'
+import { isPlaceholderCustodian, unavailableCustodian, unavailableCustodianFactory } from './unavailableCustodian'
 import { checkMatches, decryptEntry, encryptEntry, isDek, makeCheck, newVaultId, sha256Hex, zeroize } from './vaultCrypto'
 import {
   cloneVault,
@@ -59,6 +60,9 @@ import {
   type VaultFile,
   type VaultTombstone
 } from './vaultTypes'
+
+/** Set to '1' by the unit test runner (vitest.config.ts): the OS key stores report 'unavailable' to openSecretStore's default factory. */
+export const NO_OS_KEYSTORE_ENV = 'ORGAI_VAULT_NO_OS_KEYSTORE'
 
 /**
  * Encrypted secrets (the LiteLLM key, MCP server env vars and headers, OAuth client secrets and tokens), Wave 7
@@ -1584,6 +1588,11 @@ export class SecretStore implements SecretStoreApi {
     }
   }
 
+  /** The custody recorded in the vault on disk now, or null while there is no vault (the custodian factory reads it). */
+  currentCustody(): VaultCustody | null {
+    return this.vault?.custody ?? null
+  }
+
   /** secrets:init: create a vault (absent), or retry opening it; with keyFile the key-file scheme. */
   async initVault(input: SecretsInitInput): Promise<SecretsInitResult> {
     const keyFile = input?.keyFile
@@ -1772,7 +1781,11 @@ export interface OpenSecretStoreOptions {
   hostKind: HostKind
   /** Electron safeStorage in the app; NO_CIPHER in Node hosts. */
   cipher: SecretCipher
-  /** The custodian of a scheme (default: unavailableCustodianFactory until the platform custodians land); tests inject fakes. */
+  /**
+   * The custodian of a scheme. Default: the real ones (src/main/store/custodians: keychain, DPAPI, Secret Service, key
+   * file) for this platform and `env`. Tests inject fakes; a host that must not touch an OS key store passes
+   * unavailableCustodianFactory (an app host then stays in legacy-only mode).
+   */
   custodian?: CustodianFactory
   /** The CLI's ORGAI_SECRET_* / --secret-env values (inproc only); they win over stored values and are never saved. */
   overlay?: ReadonlyMap<string, string>
@@ -1796,10 +1809,25 @@ export interface OpenSecretStoreOptions {
  * custodian failure: the store reports it through state() / statusReport().
  */
 export async function openSecretStore(opts: OpenSecretStoreOptions): Promise<SecretStore> {
-  const store = new SecretStore(opts.dataDir, opts.cipher, {
+  // The factory reads the custody of the vault on disk at every call, so one built before the vault exists (or after a
+  // reset) never probes a stale key-file path. `store` is assigned right below, before any call.
+  let store: SecretStore | undefined
+  const real = createCustodianFactory({
+    dataDir: opts.dataDir,
+    userDataDir: opts.userDataDir,
+    ...(opts.env ? { env: opts.env } : {}),
+    ...(opts.platform ? { platform: opts.platform } : {}),
+    currentCustody: () => store?.currentCustody() ?? null
+  })
+  // The unit test runner sets NO_OS_KEYSTORE_ENV (vitest.config.ts): a test that forgets to inject a custodian must not
+  // write a real keychain / DPAPI / Secret Service item, so the default OS schemes answer 'unavailable'. Key files work.
+  const custodian: CustodianFactory =
+    opts.custodian ??
+    ((scheme, request) => (scheme !== 'key-file' && process.env[NO_OS_KEYSTORE_ENV] === '1' ? unavailableCustodian(scheme) : real(scheme, request)))
+  store = new SecretStore(opts.dataDir, opts.cipher, {
     hostKind: opts.hostKind,
     userDataDir: opts.userDataDir,
-    ...(opts.custodian ? { custodian: opts.custodian } : {}),
+    custodian,
     ...(opts.overlay ? { overlay: opts.overlay } : {}),
     ...(opts.env ? { env: opts.env } : {}),
     ...(opts.platform ? { platform: opts.platform } : {}),

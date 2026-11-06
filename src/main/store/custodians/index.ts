@@ -4,7 +4,7 @@
  * for it, else the platform's OS scheme (macOS keychain, Windows dpapi-user, Linux secret-service; none elsewhere).
  * Electron-free; relative imports only.
  */
-import { VAULT_KEY_FILE_ENV, type CustodianFactory, type KeyCustodian, type VaultCustody, type VaultCustodyScheme } from '../vaultTypes'
+import { VAULT_KEY_FILE_ENV, type CustodianFactory, type CustodianRequest, type KeyCustodian, type VaultCustody, type VaultCustodyScheme } from '../vaultTypes'
 import type { RemovableKeyCustodian } from './common'
 import { DpapiCustodian } from './dpapi'
 import { KeychainCustodian } from './keychain'
@@ -108,11 +108,21 @@ export function createCustodian(scheme: VaultCustodyScheme, opts: CustodianFacto
  * from `opts` plus `opts.currentCustody()` as it is at that moment.
  */
 export function createCustodianFactory(opts: CustodianFactoryOptions): CustodianFactory {
-  return (scheme: VaultCustodyScheme): KeyCustodian => {
+  return (scheme: VaultCustodyScheme, request?: CustodianRequest): KeyCustodian => {
     const custody = opts.currentCustody?.() ?? null
-    if (!custody) return createCustodian(scheme, opts)
-    return createCustodian(scheme, {
+    // The store resolves ORGAI_VAULT_KEY_FILE itself and hands the path over in `request`. A path that is just the
+    // environment's own stays an environment path for the custodian (an existing file is then imported when a new
+    // vault is made); only a path asked for with `secrets init --key-file` is passed as `keyFile`.
+    const envKeyFile = ((opts.env ?? process.env)[VAULT_KEY_FILE_ENV] ?? '').trim()
+    const asked = request?.keyFile !== undefined && request.keyFile !== envKeyFile ? request.keyFile : undefined
+    const base: CustodianFactoryOptions = {
       ...opts,
+      ...(asked !== undefined ? { keyFile: asked } : {}),
+      ...(asked !== undefined && request?.importKeyFile ? { importKeyFile: true } : {})
+    }
+    if (!custody) return createCustodian(scheme, base)
+    return createCustodian(scheme, {
+      ...base,
       vaultExists: true,
       ...(custody.scheme === 'key-file' && custody.keyFile ? { recordedKeyFile: custody.keyFile } : {})
     })

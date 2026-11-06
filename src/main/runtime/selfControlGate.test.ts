@@ -853,6 +853,62 @@ describe('Wave 7 gate additions (cli-standalone.md 8.4)', () => {
       }
     })
 
+    it('denies the published package name orgai-cli in every runner (owner decision 2026-11-06)', () => {
+      for (const command of [
+        'npx orgai-cli status',
+        'npx orgai-cli@1.2.3 status',
+        "npx 'orgai-cli@^1' status",
+        'npx -y orgai-cli@latest runs list',
+        'npx --yes -- orgai-cli status',
+        'npx --package orgai-cli orgai status',
+        'npx --package=orgai-cli -- orgai status',
+        'npx -p orgai-cli orgai status',
+        'npx -p@orgai-cli orgai',
+        'npx ORGAI-CLI status',
+        'npx orgai"-cli" status',
+        'npx orgai-c\\li status',
+        'npx orga{i,x}-cli status',
+        'npx orgai-cl? status',
+        'npm exec orgai-cli',
+        'npm exec -- orgai-cli status',
+        'npm exec --package=orgai-cli -- orgai status',
+        'npm x orgai-cli',
+        'pnpm dlx orgai-cli status',
+        'pnpm exec orgai-cli',
+        'pnpx orgai-cli',
+        'yarn dlx orgai-cli status',
+        'yarn dlx -p orgai-cli orgai status',
+        'bunx orgai-cli status',
+        'bun x orgai-cli',
+        'npx npm:orgai-cli status',
+        'npx --package=x@npm:orgai-cli x status',
+        'npx https://registry.npmjs.org/orgai-cli/-/orgai-cli-1.0.0.tgz',
+        'timeout 5 npx orgai-cli status',
+        "bash -c 'npx orgai-cli status'",
+        'node node_modules/orgai-cli/out/cli/index.mjs status',
+        'node ~/.npm-global/lib/node_modules/orgai-cli/dist/main.js',
+        './node_modules/orgai-cli/bin/run status'
+      ]) {
+        expect(bash(command, ctx), command).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+        expect(commandRunsOrgaiCli(command), command).toBe(true)
+      }
+    })
+
+    it('allows packages and commands that only look like orgai-cli', () => {
+      for (const command of [
+        'npx orgai-cli-tools status',
+        'npx my-orgai-cli status',
+        'npm install orgai-cli',
+        'npm view orgai-cli version',
+        'npm pack orgai-cli',
+        'echo orgai-cli',
+        'cat orgai-cli.log',
+        'git log --oneline -- docs/orgai-cli.md'
+      ]) {
+        expect(bash(command, ctx), command).toBeNull()
+      }
+    })
+
     it('allows other packages and non-running npm commands', () => {
       for (const command of [
         'npx @orgai/cli-tools status',

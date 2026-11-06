@@ -55,7 +55,7 @@ describe('the published dependency list', () => {
     }
     expect(deps['@anthropic-ai/claude-agent-sdk']).toBe(sdkPkg.version)
     const pkg = npmPackageJson({ version: repoPkg.version, dependencies: deps })
-    expect(pkg).toMatchObject({ name: 'orgai', version: repoPkg.version, type: 'module', bin: { orgai: 'out/cli/orgai.mjs' }, engines: { node: NODE_ENGINES } })
+    expect(pkg).toMatchObject({ name: 'orgai-cli', version: repoPkg.version, type: 'module', bin: { orgai: 'out/cli/orgai.mjs' }, engines: { node: NODE_ENGINES } })
     expect(pkg).not.toHaveProperty('scripts')
     expect(pkg.files).toContain('npm-shrinkwrap.json')
   })
@@ -64,7 +64,7 @@ describe('the published dependency list', () => {
     const deps = pinnedVersions(lock, cliDependencyNames(sdkPkg))
     const sw = shrinkwrapFor(lock, npmPackageJson({ version: repoPkg.version, dependencies: deps }))
     const locs = Object.keys(sw.packages)
-    expect(sw.packages['']).toMatchObject({ name: 'orgai', dependencies: deps })
+    expect(sw.packages['']).toMatchObject({ name: 'orgai-cli', dependencies: deps })
     for (const name of Object.keys(deps)) expect(locs).toContain(`node_modules/${name}`)
     for (const repoOnly of ['electron', 'react', 'vitest', '@openai/codex', 'electron-builder']) expect(locs).not.toContain(`node_modules/${repoOnly}`)
     for (const plat of ['darwin-arm64', 'darwin-x64', 'linux-x64', 'win32-x64']) {
@@ -206,9 +206,9 @@ describe('installed tree checks', () => {
   })
 
   it('names the global layout, the tarball, the native package and prerelease versions', () => {
-    expect(globalLayout('linux', '/t/prefix')).toEqual({ packageDir: '/t/prefix/lib/node_modules/orgai', binDir: '/t/prefix/bin', bin: '/t/prefix/bin/orgai' })
-    expect(globalLayout('win32', 'C:\\t\\prefix')).toEqual({ packageDir: 'C:\\t\\prefix\\node_modules\\orgai', binDir: 'C:\\t\\prefix', bin: 'C:\\t\\prefix\\orgai.cmd' })
-    expect(tarballName('orgai', '0.1.6')).toBe('orgai-0.1.6.tgz')
+    expect(globalLayout('linux', '/t/prefix')).toEqual({ packageDir: '/t/prefix/lib/node_modules/orgai-cli', binDir: '/t/prefix/bin', bin: '/t/prefix/bin/orgai' })
+    expect(globalLayout('win32', 'C:\\t\\prefix')).toEqual({ packageDir: 'C:\\t\\prefix\\node_modules\\orgai-cli', binDir: 'C:\\t\\prefix', bin: 'C:\\t\\prefix\\orgai.cmd' })
+    expect(tarballName('orgai-cli', '0.1.6')).toBe('orgai-cli-0.1.6.tgz')
     expect(tarballName('@orgai/cli', '0.1.6')).toBe('orgai-cli-0.1.6.tgz')
     expect(claudeNativePackage('darwin', 'arm64')).toBe('@anthropic-ai/claude-agent-sdk-darwin-arm64')
     expect(isPrerelease('0.1.6-dev1')).toBe(true)
@@ -233,7 +233,7 @@ describe('install.json and README', () => {
 
   it('README covers install, hosts, secrets, the app and the key-file warning', () => {
     const t = readmeText({ version: '0.1.6' })
-    for (const words of ['npm i -g orgai', '## Hosts', '## Secrets', '## The app and this package', '--key-file', 'Anyone who can read that key file can read every stored secret']) {
+    for (const words of ['npm i -g orgai-cli', '## Hosts', '## Secrets', '## The app and this package', '--key-file', 'Anyone who can read that key file can read every stored secret']) {
       expect(t).toContain(words)
     }
   })

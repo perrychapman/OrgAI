@@ -21,10 +21,9 @@ permissions:
 
 env:
   # What the npm tarball the CI installs is built with: 'full' ships npm-shrinkwrap.json, 'none' --no-shrinkwrap.
-  # Deliberately 'none' here while release.yml stays 'full' (cli-standalone.md 3.1) until the owner decides the
-  # shrinkwrap question: with 'full', npm 11.12.1 installs every platform's Claude runtime (about 2 GB per install) on
-  # every PR on three OSes and verify-npm step 1 fails as expected. The npm job still dry-runs the full build, so the
-  # shrinkwrap derivation is checked on every PR. Set it to 'full' again once the release default changes or is fixed.
+  # 'none' here and in release.yml (owner decision 2026-11-06, to revisit): a honoured shrinkwrap made npm 11.12.1
+  # install every platform's Claude runtime (about 2 GB per install). The npm job still dry-runs the full build, so the
+  # shrinkwrap derivation is checked on every PR. Change this and release.yml together to go back to 'full'.
   NPM_SHRINKWRAP: none
 
 jobs:
@@ -56,7 +55,7 @@ jobs:
       # The real Node host process test needs out/cli, so `npm test` above skips it; run it again on the build, where a
       # missing bundle fails instead of skipping (Wave 7 WP-E). POSIX only: it skips itself on Windows.
       - name: Node host integration test
-        run: npx vitest run src/cli/nodeHost.int.test.ts
+        run: npx vitest run src/cli/nodeHost.int.test.ts src/cli/daemonNodeHost.int.test.ts src/cli/vaultCli.int.test.ts
         env:
           ORGAI_REQUIRE_NODE_HOST_INT: '1'
       - name: e2e (free)
@@ -115,9 +114,8 @@ jobs:
 
   # The orgai npm package (cli-standalone.md 3.4): build it from this commit's CLI bundle and run verify-npm (steps 1-6,
   # all token-free on the mock; step 7 skips without a codex on PATH) on three OSes. The installs download the pinned
-  # dependencies from the registry. continue-on-error until it has passed once on all three: steps 3 and 5 need the
-  # --host auto fallback (cli-standalone.md 4.1, another work package), and with NPM_SHRINKWRAP 'full' step 1 fails
-  # (every platform's Claude runtime is installed; step 1b then skips instead of downloading it all again).
+  # dependencies from the registry. continue-on-error until it has passed once on all three (it has not run in CI yet);
+  # with NPM_SHRINKWRAP 'full' step 1 fails (every platform's Claude runtime is installed; step 1b then skips).
   npm:
     name: npm (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

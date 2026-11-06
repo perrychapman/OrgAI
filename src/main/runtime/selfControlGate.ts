@@ -51,10 +51,10 @@
  *
  * Wave 7 (docs/design/cli-standalone.md 8.4; text checks, a speed bump and not a boundary, 5.8):
  * - Package runners (npx, pnpx, bunx, `npm exec|x`, `pnpm dlx|exec`, `yarn dlx|exec`, `bun x`, options first allowed)
- *   with `orgai` or `@orgai/cli` in any word (versions, `-p` / `--package` forms, `npm:` aliases, registry URLs; the
+ *   with `orgai`, `orgai-cli` or `@orgai/cli` in any word (versions, `-p` / `--package` forms, `npm:` aliases, registry URLs; the
  *   scoped name is matched on the raw word, SCOPED_CLI), and their `-c` / `--call` value or a first positional word
  *   holding whitespace (`npx -c 'orgai status'`) as command texts (runnerCommandTexts; the package's own arguments,
- *   `npx vitest -t 'a b'`, are not). A `node_modules/@orgai/cli/...` path run as a program, script or interpreter
+ *   `npx vitest -t 'a b'`, are not). A `node_modules/orgai-cli/...` or `node_modules/@orgai/cli/...` path run as a program, script or interpreter
  *   argument counts too, and (review round 2) a glob the shell may expand to the package (`npx @orgai/cl?`,
  *   runnerWordNamesCli).
  * - Files directly in the data folder whose base name starts with `vault.json` or `secrets.json` (the .tmp, .reset-*,
@@ -253,7 +253,7 @@ const FILE_TOOLS: ReadonlySet<string> = new Set(['Read', 'Glob', 'Grep', 'Edit',
 const SHELLS: ReadonlySet<string> = new Set(['Bash', 'PowerShell'])
 
 /** CLI program names (base name, lowercase). `orgai@1.2.3` (an npx spec) counts too. */
-const CLI_NAME = /^orgai(?:@[^\\/]*)?(?:\.(?:exe|cmd|bat|ps1|mjs|js))?$/i
+const CLI_NAME = /^orgai(?:-cli)?(?:@[^\\/]*)?(?:\.(?:exe|cmd|bat|ps1|mjs|js))?$/i
 /** Interpreters that could run the CLI bundle or its sources directly. */
 const INTERPRETERS: ReadonlySet<string> = new Set(['node', 'nodejs', 'tsx', 'ts-node', 'bun', 'deno', 'electron'])
 /** A path-looking argument (an interpreter's script): a separator or a script extension. */
@@ -274,11 +274,13 @@ const MAX_NEST = 3
 const MAX_SEGMENTS = 2000
 
 /**
- * The npm package `@orgai/cli` in a word (Wave 7, cli-standalone 8.4): a package spec (`@orgai/cli`,
- * `@orgai/cli@1.2.3`, `npm:@orgai/cli`, `x@npm:@orgai/cli`), a `node_modules/@orgai/cli/...` path or a registry URL
- * (`@orgai%2fcli`). Never `@orgai/cli-tools`.
+ * The npm package in a word (Wave 7, cli-standalone 8.4; the published name is `orgai-cli`, owner decision 2026-11-06,
+ * and the scoped `@orgai/cli` stays covered): a package spec (`orgai-cli`, `orgai-cli@1.2.3`, `@orgai/cli`,
+ * `@orgai/cli@1.2.3`, `npm:orgai-cli`, `x@npm:@orgai/cli`), a `node_modules/orgai-cli/...` or
+ * `node_modules/@orgai/cli/...` path or a registry URL (`@orgai%2fcli`, `/orgai-cli/-/orgai-cli-1.0.0.tgz`). Never
+ * `@orgai/cli-tools`, `orgai-cli-tools` or `my-orgai-cli`.
  */
-const SCOPED_CLI = /@orgai(?:[\\/]|%2f)cli(?=$|[@\\/?#])/i
+const SCOPED_CLI = /(?:@orgai(?:[\\/]|%2f)cli|(?<![\w@.-])orgai-cli)(?=$|[@\\/?#])/i
 /** Package runners that need no subcommand, and the subcommands that make npm / pnpm / yarn / bun one. */
 const RUNNER_PROGRAMS: readonly string[] = ['npx', 'pnpx', 'bunx']
 const RUNNER_SUBCOMMANDS: readonly (readonly [string, readonly string[]])[] = [
@@ -466,7 +468,7 @@ function runnerWordNamesCli(word: string): boolean {
       for (const cand of [spec, spec.replace(/(?<=.)@[^@\\/]*$/, '')]) {
         if (!GLOB_CHARS.test(cand)) continue
         const re = cachedGlobRegex(cand)
-        if ((re.test('@orgai/cli') || re.test('orgai')) && keptSubsequence(cand, 'orgaicli') >= 3) return true
+        if ((re.test('@orgai/cli') || re.test('orgai') || re.test('orgai-cli')) && keptSubsequence(cand, 'orgaicli') >= 3) return true
       }
     }
   }

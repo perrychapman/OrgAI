@@ -11,10 +11,10 @@
 // passes every other request to the upstream registry (`npm config get registry`). npm honours a dependency's
 // shrinkwrap only when its manifest says so, which a plain `npm i -g ./file.tgz` never does (read from npm 11.12.1's
 // arborist and observed: such an install re-resolved six packages to newer versions), so this is the closest local
-// stand-in for `npm i -g orgai` after publishing. That the public registry sets `_hasShrinkwrap` is UNVERIFIED here.
+// stand-in for `npm i -g orgai-cli` after publishing. That the public registry sets `_hasShrinkwrap` is UNVERIFIED here.
 //
 // Steps, each printed as one ok / fail / skip line; exit 0 only when none fails:
-//   (1)  `npm i -g orgai@<version>` into a temp prefix: the installed tree equals the shrinkwrap's entries for this platform
+//   (1)  `npm i -g orgai-cli@<version>` into a temp prefix: the installed tree equals the shrinkwrap's entries for this platform
 //        (os / cpu; Linux accepts either libc build), this platform's Claude runtime package is there, install.json
 //        says npm, and no package has an install script missing from scripts/npm-install-scripts-allowlist.json
 //   (1b) with an empty allowlist: the same install with --ignore-scripts into a second prefix, then `orgai --version`
@@ -28,7 +28,8 @@
 //        answers /v1/models only for a synthetic bearer that is never printed), `connections set-secret litellm
 //        --stdin` in one process and `connections test litellm` in a fresh one (connected); another valid key file
 //        through ORGAI_VAULT_KEY_FILE reads as key-mismatch; after `set-secret --clear` the test says disconnected.
-//        SKIP while this build has no `orgai secrets` (the vault work package is not merged).
+//        SKIP only when the build has no `orgai secrets` (exit 2 "not available in this build"); the vault is merged, so
+//        it runs. The flow was driven by hand against the built bundle with a throwaway data folder (Wave 7 integration).
 //   (7)  Codex, when `codex` is on PATH or ORGAI_CODEX_PATH names it: `--version` and an app-server `initialize`
 //        handshake on a temp CODEX_HOME (token-free per the Codex schema; UNVERIFIED until run). SKIP otherwise.
 //
@@ -165,7 +166,7 @@ export function vaultNotBuilt(run) {
 export function vaultState(stdout) {
   const doc = parseJson(stdout)
   if (!doc || typeof doc !== 'object') return undefined
-  for (const v of [doc.state, doc.vault?.state, doc.status?.state, doc.status]) if (typeof v === 'string') return v
+  for (const v of [doc.secrets?.state, doc.state, doc.vault?.state, doc.status?.state, doc.status]) if (typeof v === 'string') return v
   return undefined
 }
 

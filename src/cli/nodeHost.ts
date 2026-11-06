@@ -5,7 +5,7 @@
  *
  * - `install.json` says 'app' (the CLI inside the app, where process.execPath is the Electron binary), or this CLI runs
  *   on Electron anyway (ORGAI_ELECTRON_PATH or dev setups without install.json): refused, "The Node background host
- *   comes with the npm package: npm i -g orgai". Checked before the level question, so nothing is asked or stored.
+ *   comes with the npm package: npm i -g orgai-cli". Checked before the level question, so nothing is asked or stored.
  * - Terminal access stored off (the user chose off): refused, since nothing could reach that host (neither `daemon
  *   stop` nor `terminal-access` could talk to it).
  */

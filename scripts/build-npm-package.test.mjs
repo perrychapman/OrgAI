@@ -10,9 +10,9 @@ import { commitOf, main as writeInstallInfoMain } from './write-install-info.mjs
 
 test('plan keeps every path under release/npm', () => {
   const root = path.resolve('/repo')
-  const p = plan(root, 'orgai', '1.2.3')
+  const p = plan(root, 'orgai-cli', '1.2.3')
   assert.equal(p.packageDir, path.join(root, 'release', 'npm', 'package'))
-  assert.equal(p.tgz, path.join(root, 'release', 'npm', 'orgai-1.2.3.tgz'))
+  assert.equal(p.tgz, path.join(root, 'release', 'npm', 'orgai-cli-1.2.3.tgz'))
   assert.equal(p.sha256, `${p.tgz}.sha256`)
   assert.equal(p.cliSource, path.join(root, 'out', 'cli'))
   assert.throws(() => assertInside(p.npmDir, p.npmDir))
@@ -118,7 +118,7 @@ test('main writes the package folder, packs it with npm and records the sha256',
     const calls = []
     const exec = (cmd, args, opts) => {
       calls.push({ cmd, args, opts })
-      fs.writeFileSync(path.join(args[args.indexOf('--pack-destination') + 1], 'orgai-9.9.9.tgz'), 'tarball bytes')
+      fs.writeFileSync(path.join(args[args.indexOf('--pack-destination') + 1], 'orgai-cli-9.9.9.tgz'), 'tarball bytes')
     }
     const r = main([], root, () => {}, { env: { GITHUB_SHA: 'b'.repeat(40), GITHUB_REPOSITORY: 'me/OrgAI' }, exec, execPath: '/n/bin/node', platform: 'linux' })
     const pkgDir = path.join(root, 'release', 'npm', 'package')
@@ -139,8 +139,8 @@ test('main writes the package folder, packs it with npm and records the sha256',
     assert.ok(calls[0].args.includes('pack') && calls[0].args.includes('--ignore-scripts'))
     assert.equal(calls[0].opts.cwd, pkgDir)
     assert.equal(calls[0].opts.env.npm_config_ignore_scripts, 'true')
-    const sum = fs.readFileSync(path.join(root, 'release', 'npm', 'orgai-9.9.9.tgz.sha256'), 'utf8')
-    assert.equal(sum, `${r.sha256}  orgai-9.9.9.tgz\n`)
+    const sum = fs.readFileSync(path.join(root, 'release', 'npm', 'orgai-cli-9.9.9.tgz.sha256'), 'utf8')
+    assert.equal(sum, `${r.sha256}  orgai-cli-9.9.9.tgz\n`)
     // The repo's own out/cli keeps its install.json: the package copy is the only one rewritten.
     assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'out', 'cli', 'install.json'), 'utf8')).channel, 'app')
 

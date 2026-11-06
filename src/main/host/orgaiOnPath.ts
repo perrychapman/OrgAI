@@ -12,7 +12,7 @@
  * - A link (npm's POSIX bin) or a file whose real path is `.../out/cli/orgai.mjs`: the install.json beside it.
  * - A packaged launcher (`<Resources>/bin/orgai[.cmd]`, its folder on PATH or a link to it), recognised by its text or
  *   the app's CLI bundle beside it: that app's bundle. Any other `<X>/bin/orgai` is not one.
- * - npm's Windows `orgai.cmd` (it names `node_modules\orgai\out\cli\orgai.mjs` under its own folder): that bundle.
+ * - npm's Windows `orgai.cmd` (it names `node_modules\orgai-cli\out\cli\orgai.mjs` under its own folder): that bundle.
  * - Anything else: kind 'unknown' (no channel, no version).
  */
 import * as nodeFs from 'node:fs'
@@ -116,7 +116,7 @@ export function samePathKey(platform: NodeJS.Platform | string, path: string): s
   return platform === 'win32' || platform === 'darwin' ? n.toLowerCase() : n
 }
 
-const NPM_CMD_BUNDLE_RE = /node_modules[\\/]orgai[\\/]out[\\/]cli[\\/]orgai\.mjs/i
+const NPM_CMD_BUNDLE_RE = /node_modules[\\/](orgai(?:-cli)?)[\\/]out[\\/]cli[\\/]orgai\.mjs/i
 
 function kindOfChannel(channel: InstallChannel | undefined): OrgaiOnPathKind {
   if (channel === 'npm') return 'npm'
@@ -231,8 +231,10 @@ function inspectCandidate(
     }
   }
   if (text === undefined) return { path: file, kind: 'unknown' }
-  if (platform === 'win32' && NPM_CMD_BUNDLE_RE.test(text)) {
-    return withBundle({ path: file, kind: 'unknown' }, p.join(p.dirname(file), 'node_modules', 'orgai', 'out', 'cli'), 'npm')
+  const npmCmd = platform === 'win32' ? NPM_CMD_BUNDLE_RE.exec(text) : null
+  if (npmCmd) {
+    // The package folder is named after the package: orgai-cli (owner decision 2026-11-06), orgai for an older install.
+    return withBundle({ path: file, kind: 'unknown' }, p.join(p.dirname(file), 'node_modules', npmCmd[1].toLowerCase(), 'out', 'cli'), 'npm')
   }
   return { path: file, kind: 'unknown' }
 }

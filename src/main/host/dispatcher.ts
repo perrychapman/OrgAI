@@ -265,6 +265,11 @@ export class HostDispatcher {
     this.env = services.env ?? FALLBACK_ENV
     this.gate = opts.gate ?? gateRequest
     this.handlers = buildHandlers(services, this.env, this.events, this.quiesced.signal, { secretWritesInFlight: () => this.secretWritesInFlight })
+    // Wave 7 integration (5.6 Reset): the store itself refuses resetVault while an MCP sign-in, a token refresh or a
+    // predicate-prepared secret write is in flight, whoever calls it (the secrets:reset handler checks the same first).
+    const busy = (): boolean =>
+      this.secretWritesInFlight > 0 || (services.mcp?.activeAuthorizationCount?.() ?? 0) > 0 || (services.mcp?.refreshingCount?.() ?? 0) > 0
+    ;(services.secrets as { setResetBusyCheck?: (check: () => boolean) => void } | undefined)?.setResetBusyCheck?.(busy)
   }
 
   /**

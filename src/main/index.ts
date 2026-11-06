@@ -16,6 +16,7 @@ import { installElectronLogHooks } from './electronLogHooks'
 import { acquireHostOwnership, HostAlreadyRunningError, HostStartingOrBusyError, readDaemonInfo, runDirOf, type HostOwnership } from './host/ownership'
 import { bootOrgAIHost, type OrgAIHost } from './host/bootstrap'
 import { openSecretStore } from './store/secrets'
+import { unavailableCustodianFactory } from './store/unavailableCustodian'
 import { HostSocketServer } from './host/socketServer'
 import { currentHostInstanceId } from './host/identity'
 import {
@@ -394,9 +395,17 @@ app.whenReady().then(async () => {
   // Wave 7 (cli-standalone.md 5.6): open the secret vault (decrypt `check`, reconcile with secrets.json, create it when
   // absent) after ownership and before the boot, for the desktop and the --headless-host boot alike, so the first
   // probes see secrets the orgai command stored. A custodian failure leaves the app in legacy-only mode (secrets.json,
-  // as before) with a retry every 10 minutes and on window focus after a lock failure. No custodian factory is passed
-  // yet: the default answers 'unavailable' until the platform custodians are wired in.
-  const secretStore = await openSecretStore({ dataDir, userDataDir, hostKind, cipher: safeStorage, log: (m) => log.info(m) })
+  // as before) with a retry every 10 minutes and on window focus after a lock failure. The real custodians are the
+  // default (macOS keychain, DPAPI, Secret Service, ORGAI_VAULT_KEY_FILE). A mock launch (e2e, verify-pack) must never
+  // write an OS key item for a throwaway data folder, so it keeps the legacy-only mode unless a key file is named.
+  const secretStore = await openSecretStore({
+    dataDir,
+    userDataDir,
+    hostKind,
+    cipher: safeStorage,
+    log: (m) => log.info(m),
+    ...(process.env.ORGAI_MOCK === '1' && !(process.env.ORGAI_VAULT_KEY_FILE ?? '').trim() ? { custodian: unavailableCustodianFactory } : {})
+  })
   app.on('browser-window-focus', () => secretStore.retryOpen('focus'))
   const h = bootOrgAIHost({
     env: runtimeEnv(),

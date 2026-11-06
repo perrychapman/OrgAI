@@ -216,11 +216,11 @@ describe('opening and creating (cli-standalone.md 5.6)', () => {
   })
 
   it('the default custodian is unavailable: an app host stays legacy-only, a Node host refuses values with the reason', async () => {
-    const a = await app({ custodian: undefined })
+    const a = await app({ custodian: unavailableCustodianFactory })
     expect(a.state()).toBe('absent')
     a.set('k', 'v')
     expect(olderApp(dataDir).get('k')).toBe('v')
-    const n = await openSecretStore({ dataDir, userDataDir: root, hostKind: 'inproc', cipher: noCipher, platform: 'darwin', env: {}, log: () => undefined })
+    const n = await openSecretStore({ dataDir, userDataDir: root, hostKind: 'inproc', cipher: noCipher, platform: 'darwin', env: {}, log: () => undefined, custodian: unavailableCustodianFactory })
     await expect(n.prepareWrite()).rejects.toThrow(custodianUnavailableReason('keychain'))
     expect(() => n.set('x', 'y')).toThrow(VaultNotReady)
     expect((await n.statusReport({ probe: true })).probe).toEqual({ ok: false, kind: 'unavailable', reason: custodianUnavailableReason('keychain') })

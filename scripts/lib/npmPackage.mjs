@@ -4,8 +4,8 @@
 // scripts/verify-npm.mjs do the I/O. Typed for the vitest tests by npmPackage.d.mts.
 import path from 'node:path'
 
-/** The package name (D1). The bin is `orgai` either way. */
-export const NPM_PACKAGE_NAME = 'orgai'
+/** The package name (D1, owner decision 2026-11-06: npm refused `orgai`, too similar to `org.ai`). The bin stays `orgai`. */
+export const NPM_PACKAGE_NAME = 'orgai-cli'
 
 /**
  * The CLI bundle's bare imports (src/cli/packaging.ts CLI_RUNTIME_PACKAGES) minus Codex, which is bring-your-own
@@ -313,7 +313,7 @@ export function readmeText({ version, nodeEngines = NODE_ENGINES, shrinkwrap = t
   const pinning = shrinkwrap
     ? 'The package pins its whole dependency tree (npm-shrinkwrap.json).'
     : 'The package pins its direct dependencies to exact versions.'
-  return `# orgai
+  return `# orgai-cli
 
 The \`orgai\` command for [OrgAI](https://github.com/perrychapman/OrgAI): run and steer OrgAI agent teams from a
 terminal, with or without the OrgAI desktop app. Version ${version}.

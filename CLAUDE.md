@@ -621,6 +621,21 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
 - CLI & host (docs/design/cli-spec.md; Waves 0-5 landed: the socket server, `--headless-host` / `--host inproc` hosts, the
   self-control gate, the read-only `orgai` CLI, headless exec, the terminal UI and the management commands; see the
   spec's "Implementation status" for deviations and what is unverified):
+  - Wave 7 (standalone `orgai`, docs/design/cli-standalone.md; integrated, see its section 13 Round 6 for binding rules):
+    npm package `orgai-cli` (bin `orgai`; owner decision 2026-11-06: npm refused `orgai`), published with
+    `NPM_SHRINKWRAP=none` in release.yml and ci.yml (owner decision, to revisit: a honoured shrinkwrap installs every
+    platform's Claude runtime, about 2 GB; `full` stays behind that setting). The self-control gate also denies
+    package runners naming `orgai-cli`. `openSecretStore` uses the real custodians by default
+    (`store/custodians` `createCustodianFactory`, honours the store's key-file request); the desktop under
+    `ORGAI_MOCK=1` passes `unavailableCustodianFactory` so e2e never writes an OS key item, and tests must inject a
+    fake custodian or a key file in a temp folder (never the OS schemes). The dispatcher installs the store's
+    `setResetBusyCheck` (sign-in, refresh, predicate-prepared write). Integration tests: `store/openSecretStoreCustodians`,
+    `host/secretChannelsReal` (real store, real key-file custodian; `secretChannels.test.ts` keeps the fixture store),
+    `cli/daemonNodeHost.int` (`--host daemon` with no app through the real launcher and a real Node host process),
+    `cli/vaultCli.int` (verify-npm step 6's flow on the built bundle), `cli/commands/doctorVault.int`. The two bundle
+    tests run again after the build in ci.yml with `ORGAI_REQUIRE_NODE_HOST_INT=1`. Hidden e2e windows are a local
+    preference only and are not in the branch. Verified on macOS only; verify-npm against the real registry, Windows and
+    Linux are not run here.
   - Wave 5: `init`, `projects`, `org`, `team`, `worktrees`, `permissions`, `connections`, `models`, `usage`, `notes`,
     `mcp`, `skills`, `knowledge`, `kit` in `src/cli/commands/` over `src/cli/manage.ts` (`confirm` asks on /dev/tty
     whenever stdin is a terminal, else exit 2 without --yes). Contracts: `McpAuthorizeInput.openBrowser` /

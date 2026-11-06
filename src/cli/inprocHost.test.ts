@@ -53,7 +53,7 @@ describe('startInprocHost', () => {
     // Wave 7: no vault until a value is stored, and only after prepareWrite (the bug trap of 5.6)
     expect(secrets.state()).toBe('absent')
     expect(() => secrets.set(LITELLM_KEY, 'other')).toThrow(VaultNotReady)
-    // the default custodian is unavailable until the platform custodians are wired in: values are refused with why
+    // the default custodian is the real one, which the test runner turns off for the OS key stores (vitest.config.ts): values are refused with why
     await expect(secrets.prepareWrite()).rejects.toThrow(/not available in this build yet/)
     expect(existsSync(join(dataDir, 'vault.json'))).toBe(false)
   })
