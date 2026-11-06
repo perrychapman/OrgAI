@@ -49,7 +49,8 @@ try {
   check(r.code === 0 && json((await cli(['mcp', 'show', 'notes', '--output-format', 'json'], inRepo)).out)?.server?.enabled === true, 'mcp enable', show(r))
 
   r = await cli(['mcp', 'set-secret', 'notes', 'NOTES_TOKEN', '--stdin'], { ...inRepo, input: 'e2e-secret-value\n' })
-  check(r.code !== 0 && r.err.includes('cannot save secrets') && !(r.out + r.err).includes('e2e-secret-value'), 'set-secret --stdin on an inproc host is refused and never echoes the value', show(r))
+  // Wave 7: the CLI's own host has the secret vault, so the value is saved (never echoed).
+  check(r.code === 0 && r.out.includes('Saved NOTES_TOKEN') && !(r.out + r.err).includes('e2e-secret-value'), 'set-secret --stdin on an inproc host saves to the vault and never echoes the value', show(r))
   r = await cli(['mcp', 'set-secret', 'notes', 'NOTES_TOKEN', 'on-argv'], inRepo)
   check(r.code === 2, 'a secret value on argv is exit 2', show(r))
 
@@ -87,8 +88,8 @@ try {
   r = await cli(['mcp', 'auth', '--library', 'linear'], { env: ssh })
   check(r.out.includes('Forward the callback first: ssh -L 38917:127.0.0.1:38917 dev@10.9.8.6'), 'mcp auth over SSH prints the ssh -L command', show(r))
   check(r.out.includes('Open this URL in a browser to sign in:') && r.out.includes(MOCK_URL), 'mcp auth prints the announced URL (browser not opened)', show(r))
-  // The inproc host cannot store the (fake) token: the sign-in ends as an authorization error.
-  check(r.code === 5 && r.out.includes('cannot save secrets'), 'the read-only store makes the sign-in fail with exit 5', show(r))
+  // Wave 7: the vault stores the (fake) token, so the mock sign-in completes.
+  check(r.code === 0 && r.out.includes('linear: authorized'), 'the vault stores the token and the sign-in completes', show(r))
   r = await cli(['mcp', 'auth', '--library', 'linear', '--no-browser', '--output-format', 'json'], { env: ssh })
   const doc = json(r.out)
   check(doc?.schemaVersion === 1 && doc?.authorizeUrl === MOCK_URL && doc?.openedBrowser === false && r.err.includes('ssh -L 38917:127.0.0.1:38917'), 'mcp auth json: one document, instructions on stderr', show(r))
