@@ -12,7 +12,7 @@ vi.mock('electron', () => {
 })
 vi.mock('../log', () => ({ log: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }, logPath: () => '/logs/main.log', logsDir: () => '/logs' }))
 
-const { HostDispatcher } = await import('./dispatcher')
+const { HostDispatcher, isMutatingChannel } = await import('./dispatcher')
 const { HostEventBus } = await import('./events')
 const { HostRpcFailure, socketInvokableChannels, desktopOnlyChannels } = await import('./registry')
 const { requestChannels } = await import('./jsonCodec')
@@ -131,6 +131,58 @@ describe('HostDispatcher.invoke (desktop path)', () => {
     const listed = d.invoke(IPC.runsList, ['proj_a'], DESKTOP)
     expect(listed).toEqual([])
     expect(listed).not.toBeInstanceOf(Promise)
+  })
+
+  it('Wave 7 (4.3): a mutating channel is refused with host_draining while draining and leased until it settles; reads take no lease', async () => {
+    const activity = fakeActivity()
+    let finish!: (v: unknown) => void
+    const start = vi.fn(() => new Promise((r) => (finish = r)))
+    const d = new HostDispatcher(services({ activity, runs: { list: vi.fn(() => []), start } as never }))
+    // A read: no lease, sync result.
+    expect(d.invoke(IPC.runsList, ['proj_a'], DESKTOP)).toEqual([])
+    expect(activity.acquired).toEqual([])
+    // A mutation with a promise: leased until it settles.
+    const p = d.invoke(IPC.runsStart, [{ projectId: 'proj_a', prompt: 'x' }], DESKTOP) as Promise<unknown>
+    expect(activity.acquired).toEqual([['inFlightRpcMutations', IPC.runsStart]])
+    expect(activity.held).toBe(1)
+    finish({ id: 'run_1' })
+    await expect(p).resolves.toEqual({ id: 'run_1' })
+    await Promise.resolve()
+    expect(activity.held).toBe(0)
+    // A synchronous mutation that throws: still a sync throw, lease released.
+    expect(() => d.invoke(IPC.projectsSave, [{ id: 'quick' }], DESKTOP)).toThrow(/cannot be saved/)
+    expect(activity.held).toBe(0)
+    // Draining: mutations refused before their handler, reads still answered.
+    activity.setState('draining')
+    expect(() => d.invoke(IPC.runsStart, [{ projectId: 'proj_a', prompt: 'x' }], DESKTOP)).toThrow(expect.objectContaining({ code: 'host_draining' }))
+    expect(start).toHaveBeenCalledTimes(1)
+    expect(d.invoke(IPC.runsList, ['proj_a'], DESKTOP)).toEqual([])
+  })
+
+  it('isMutatingChannel: a request above read that is not a lifecycle call; desktop-only channels are ipc.ts\'s', () => {
+    expect(isMutatingChannel(IPC.settingsSet)).toBe(true)
+    expect(isMutatingChannel(IPC.runsStart)).toBe(true)
+    expect(isMutatingChannel(IPC.mcpAuthorize)).toBe(true)
+    expect(isMutatingChannel(IPC.settingsGet)).toBe(false)
+    expect(isMutatingChannel(HOST_METHODS.hostStop)).toBe(false)
+    expect(isMutatingChannel(KIT_IPC.kitApplyImport)).toBe(false)
+    expect(isMutatingChannel(IPC.runEvent)).toBe(false)
+    expect(isMutatingChannel('made:up')).toBe(false)
+  })
+
+  it('mcp:authorize over RPC is refused while draining but takes no lease for its browser wait (round 6 item 9)', async () => {
+    const activity = fakeActivity()
+    let finish!: (v: unknown) => void
+    const authorize = vi.fn(() => new Promise((r) => (finish = r)))
+    const d = new HostDispatcher(services({ activity, mcp: { authorize } as never }), { gate: fakeGate({ mutations: [IPC.mcpAuthorize] }) })
+    const p = d.invokeRpc(IPC.mcpAuthorize, [{ libraryId: 'x' }], RPC)
+    await vi.waitFor(() => expect(authorize).toHaveBeenCalledTimes(1))
+    expect(activity.acquired).toEqual([])
+    finish({ state: 'authorized' })
+    await expect(p).resolves.toEqual({ state: 'authorized' })
+    activity.setState('draining')
+    await expect(d.invokeRpc(IPC.mcpAuthorize, [{ libraryId: 'x' }], RPC)).rejects.toMatchObject({ code: 'host_draining' })
+    expect(() => d.invoke(IPC.mcpAuthorize, [{ libraryId: 'x' }], DESKTOP)).toThrow(expect.objectContaining({ code: 'host_draining' }))
   })
 
   it('async handlers reject', async () => {

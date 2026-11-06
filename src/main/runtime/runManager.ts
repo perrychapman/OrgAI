@@ -4,6 +4,7 @@ import { resolve as resolvePath } from 'node:path'
 import type {
   AgentInstance,
   EngagementChangedEvent,
+  HostHandoffFacts,
   EngagementNoteWriter,
   RunUsage,
   UsageStats,
@@ -2663,6 +2664,29 @@ export class RunManager {
     return n
   }
 
+  /**
+   * Wave 7 (cli-standalone.md 4.4 step 4): what a `host.stop({ handoff: true })` waits for, stricter than
+   * busyRunCount: every live run in any form counts (working or ending, waiting on the user, held), every paused run
+   * with an auto-resume pending (armed or firing), and every open card. terminalSessions is the socket server's; the
+   * caller fills it.
+   */
+  handoffFacts(): Omit<HostHandoffFacts, 'terminalSessions'> {
+    let workingRuns = 0
+    let waitingRuns = 0
+    let heldRuns = 0
+    let openCards = 0
+    for (const a of this.runs.values()) {
+      openCards += pendingCount(a)
+      const s = a.summary
+      const state = this.activityStateOf(a)
+      // An exec run in flight is working whatever its root does (its follower owns its end), as in busyRunCount.
+      if (state !== 'waiting' || (LIVE_STATUSES.has(s.status) && !!s.overrides?.execMode && !s.execOutcome)) workingRuns++
+      else if (a.held || a.limitHold) heldRuns++
+      else waitingRuns++
+    }
+    return { workingRuns, waitingRuns, heldRuns, pausedRuns: this.activeResumeTimerCount() + this.inFlightResumeCount(), openCards }
+  }
+
   /** runs:listLive: every live run (session open or opening) across all projects, every kind, oldest first. Copies. */
   liveRuns(): RunSummary[] {
     return [...this.runs.values()]
@@ -3452,7 +3476,7 @@ export class RunManager {
   }
 
   /**
-   * The app is quitting and will not wait any longer (index.ts quitGate: the deadline passed, stopAll failed, or a
+   * The app is quitting and will not wait any longer (the shutdown's forced drain, activity.ts: the deadline passed, stopAll failed, or a
    * forced second quit). Synchronously refuses new work, cancels resumes and titles, marks every live run cut by the
    * app (an End session already under way keeps 'user') and writes each summary and record. Safe to call again.
    */

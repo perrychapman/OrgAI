@@ -256,6 +256,13 @@ export class McpService {
   refreshingCount(): number { return this.refreshing.size }
   /** The last failed authorization per owner, shown as state 'error' until it succeeds or is revoked. */
   private lastErrors = new Map<string, McpAuthStatus>()
+  /**
+   * Wave 7 (cli-standalone.md round 6 item 9): an inFlightRpcMutations lease held only around an authorization's final
+   * commit (the interactive wait is the activeOAuthFlows source). bootstrap.ts passes the activity tracker's acquire.
+   */
+  private commitLease: (label: string) => () => void
+  /** dispose() ran (the host is shutting down): every flow was aborted and no new one starts. */
+  private disposed = false
 
   constructor(deps: {
     projects: ProjectStore
@@ -283,7 +290,13 @@ export class McpService {
     mock?: boolean
     /** The custom connector preset store. Missing = one in `dataDir`, else none. */
     presets?: ConnectorPresetStore
+    /**
+     * Wave 7: hold an inFlightRpcMutations lease (returns its release) around an authorization's final commit, so a
+     * drain waits for it and never releases the data folder mid-commit. Missing = no lease (tests).
+     */
+    commitLease?: (label: string) => () => void
   }) {
+    this.commitLease = deps.commitLease ?? (() => () => {})
     this.mock = deps.mock === true
     this.dataDir = deps.dataDir
     if (!deps.dataDir) log.warn('McpService has no dataDir: built MCP servers cannot be staged and custom connector presets are unavailable (unless a presets store is passed).')
@@ -984,7 +997,19 @@ export class McpService {
     return this.statusFor(ref.owner, ref.spec.oauth)
   }
 
+  /**
+   * The host is shutting down (activity quiesce, cli-standalone.md round 6 item 9): abort every interactive
+   * authorization (each resolves 'Authorization was cancelled.' without saving anything), so Quit and the app's handoff
+   * never wait on a browser the user never finished. New authorizations are refused from now on. Idempotent.
+   */
+  dispose(): void {
+    this.disposed = true
+    for (const ac of this.flows.values()) ac.abort()
+    this.fixedPortFlow?.ac.abort()
+  }
+
   async authorize(input: McpAuthorizeInput): Promise<McpAuthStatus> {
+    if (this.disposed) throw new Error('OrgAI is shutting down; authorize this server once it has started again.')
     const ref = this.targetRef(input)
     // CLI-only flags (cli-spec 6.3(5)); only literal booleans count, so the desktop (which never sets them) is unchanged.
     const announceUrl = input.announceUrl === true
@@ -1037,7 +1062,13 @@ export class McpService {
       }
       if (this.mock && connector) {
         if (announceUrl) this.announceAuthorizeUrl(target, MOCK_AUTHORIZE_URL, false)
-        return this.mockAuthorize(ref, connector.variant.auth.kind === 'oauthClient', clientId)
+        // The synthetic token commit is leased like the real one.
+        const releaseMock = this.commitLease('mcp:authorize commit')
+        try {
+          return this.mockAuthorize(ref, connector.variant.auth.kind === 'oauthClient', clientId)
+        } finally {
+          releaseMock()
+        }
       }
       if (preset?.redirectPort) {
         // One sign-in on the fixed port at a time: the newer one wins, the older resolves 'error'.
@@ -1080,21 +1111,28 @@ export class McpService {
         now: this.now,
         ...(preset ? { preset } : {})
       })
-      if (ac.signal.aborted) throw new OAuthError('callback', 'Authorization was cancelled.')
-      // Re-read the owner: the entry may have been edited while the browser was open.
-      const live = this.refFromOwner(ref.owner)
-      if (!live) throw new OAuthError('token', 'The server was removed while it was being authorized.')
-      // The URL may have changed while the browser was open: tokens for another resource are discarded.
-      if (!mcpSupportsOAuth(live.spec) || resourceOf(live.spec.url) !== result.config.resource) {
-        throw new OAuthError('token', 'The server address changed while it was being authorized. Authorize it again.')
+      // The final commit holds a mutation lease (round 6 item 9), taken before any check so a drain that starts from
+      // here on waits for the saves; the browser wait before it held none (activeOAuthFlows counts it instead).
+      const releaseCommit = this.commitLease('mcp:authorize commit')
+      try {
+        if (ac.signal.aborted) throw new OAuthError('callback', 'Authorization was cancelled.')
+        // Re-read the owner: the entry may have been edited while the browser was open.
+        const live = this.refFromOwner(ref.owner)
+        if (!live) throw new OAuthError('token', 'The server was removed while it was being authorized.')
+        // The URL may have changed while the browser was open: tokens for another resource are discarded.
+        if (!mcpSupportsOAuth(live.spec) || resourceOf(live.spec.url) !== result.config.resource) {
+          throw new OAuthError('token', 'The server address changed while it was being authorized. Authorize it again.')
+        }
+        live.saveOAuth({ ...result.config })
+        this.secrets.set(mcpOwnerOAuthKey(ref.owner, 'accessToken'), result.tokens.accessToken)
+        this.secrets.set(mcpOwnerOAuthKey(ref.owner, 'refreshToken'), result.tokens.refreshToken ?? null)
+        if (result.clientSecret) this.secrets.set(mcpOwnerOAuthKey(ref.owner, 'clientSecret'), result.clientSecret)
+        this.lastErrors.delete(key)
+        this.markConnected(ref.owner, true)
+        return this.statusFor(ref.owner, result.config)
+      } finally {
+        releaseCommit()
       }
-      live.saveOAuth({ ...result.config })
-      this.secrets.set(mcpOwnerOAuthKey(ref.owner, 'accessToken'), result.tokens.accessToken)
-      this.secrets.set(mcpOwnerOAuthKey(ref.owner, 'refreshToken'), result.tokens.refreshToken ?? null)
-      if (result.clientSecret) this.secrets.set(mcpOwnerOAuthKey(ref.owner, 'clientSecret'), result.clientSecret)
-      this.lastErrors.delete(key)
-      this.markConnected(ref.owner, true)
-      return this.statusFor(ref.owner, result.config)
     } catch (e) {
       const secrets = [enteredSecret ?? '', secretOf() ?? '']
       const cancelled = ac.signal.aborted

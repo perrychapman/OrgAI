@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url'
 import { bootOrgAIHost, type HostBackgroundOptions, type OrgAIHost } from '../main/host/bootstrap'
 import { currentHostInstanceId } from '../main/host/identity'
 import { HostOwnershipError, acquireHostOwnership, type HostOwnership } from '../main/host/ownership'
+import { ShutdownRefusedError } from '../main/host/shutdown'
 import { HostSocketServer } from '../main/host/socketServer'
 import { installLogging, log } from '../main/log'
 import { stopSystemCertRead, trustSystemCertificates } from '../main/systemCerts'
@@ -140,6 +141,8 @@ export async function startInprocHost(opts: StartInprocHostOptions): Promise<Inp
   } catch (e) {
     log.warn(`System certificates not added: ${e instanceof Error ? e.message : String(e)}`)
   }
+  // The exit hook releases only when the process ends without the shutdown sequence (a crash, process.exit elsewhere):
+  // the process's own writes end with it.
   const onExit = (): void => {
     stopCerts()
     ownership.release()
@@ -150,6 +153,8 @@ export async function startInprocHost(opts: StartInprocHostOptions): Promise<Inp
   const closed = new Promise<void>((r) => (resolveClosed = r))
   let host: OrgAIHost | undefined
   let cleaned = false
+  // Wave 7 (cli-standalone.md 4.3): reached through the shutdown coordinator once it released ownership (the writers
+  // settled and the socket closed gracefully, or the hard limit passed), or directly when the boot failed.
   const cleanup = (): void => {
     if (cleaned) return
     cleaned = true
@@ -159,7 +164,7 @@ export async function startInprocHost(opts: StartInprocHostOptions): Promise<Inp
     try {
       ownership.release()
     } catch {
-      // release is best effort here; the drain already released.
+      // release is best effort here; the shutdown already released.
     }
     process.off('exit', onExit)
     resolveClosed()
@@ -190,6 +195,9 @@ export async function startInprocHost(opts: StartInprocHostOptions): Promise<Inp
       processEnv: opts.env,
       ...(opts.startBackground === false ? { startBackground: false } : {}),
       ...(opts.background ? { background: opts.background } : {}),
+      // The shutdown sequence: flush the host.stop reply, then release, then this cleanup.
+      closeSocket: (graceMs) => server.closeGracefully(graceMs),
+      terminalSessions: () => server.terminalSessionCount(),
       onDrained: cleanup
     })
   } catch (e) {
@@ -207,9 +215,12 @@ export async function startInprocHost(opts: StartInprocHostOptions): Promise<Inp
     status: () => booted.hostControl.status(),
     async stop(force: boolean): Promise<void> {
       if (cleaned) return closed
-      const res = await booted.hostControl.stop({ force })
-      if (!res.stopping) {
-        const busy = Object.entries(res.refusedBecause ?? {})
+      try {
+        // The coordinator's sequence (drain, writers settle, socket closes, release), then cleanup resolves `closed`.
+        await booted.shutdown.shutdown('inproc-cleanup', { force })
+      } catch (e) {
+        if (!(e instanceof ShutdownRefusedError)) throw e
+        const busy = Object.entries(e.result.refusedBecause ?? {})
           .map(([k, n]) => `${k} ${n}`)
           .join(', ')
         throw new CliError(`The in-process host is busy${busy ? ` (${busy})` : ''}; stop it with --force to end live runs.`, EXIT.hostBusy)

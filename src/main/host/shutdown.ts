@@ -1,12 +1,34 @@
 /**
- * Shutdown contracts (Wave 7, docs/design/cli-standalone.md 4.3): one coordinator for every exit path, ownership
- * released only once the owner's writes are done, and a process-wide registry of the child processes a host must kill
- * when it gives up at the hard limit (git under the repo lock, custodian helpers, agent CLIs).
+ * The shutdown coordinator (Wave 7, docs/design/cli-standalone.md 4.3 and round 6 items 5 and 9): one sequence for
+ * every exit path (host.stop over the socket, the app's handoff stop, desktop Quit and the last window closing on
+ * Windows / Linux, the headless and Node hosts' idle exit and signals, the inproc host's cleanup), ownership released
+ * only once the owner's writes are done, and a process-wide registry of the child processes a host must kill when it
+ * gives up at the hard limit (git under the repo lock, custodian helpers, agent CLIs).
  *
- * Contracts only, except the child registry, which is complete and tiny so spawners (WP-C, WP-F, WP-G) can register
- * their children today. The coordinator itself (ShutdownCoordinatorApi) is WP-F's: it replaces runDrain's
- * `ownership.release()` (activity.ts) and the desktop `will-quit` release. Electron-free; relative imports only.
+ * The sequence: the activity tracker drains (state 'draining', mutations refused with host_draining, background work
+ * quiesced, runs stopped when forced) and waits until no writer is in flight (activity.ts SETTLE_KINDS, forced and
+ * non-forced drains alike, with no deadline of its own); its onDrained runs from setImmediate, so the host.stop reply
+ * is queued first; then HostSocketServer.closeGracefully(SOCKET_CLOSE_GRACE_MS), then ownership.release(), then the
+ * entry point's exit (onReleased). While writers are in flight the host stays 'draining' and daemon.json stays, so no
+ * contender can take the data folder. At SHUTDOWN_HARD_LIMIT_MS the coordinator stops waiting: it enumerates every
+ * descendant of the host's pid from the process table (killHostDescendants), sends SIGTERM (Windows `taskkill /T`),
+ * waits KILL_TERM_GRACE_MS, sends SIGKILL (`taskkill /T /F`), and releases only once none of them is alive; when the
+ * table cannot be read or some survive it waits in KILL_STEP_MS steps up to KILL_WAIT_MS before exiting anyway (logged).
+ *
+ * Electron-free; relative imports only (noElectronImport.test.ts).
  */
+import { execFile } from 'node:child_process'
+import type {
+  ActivityLeaseKind,
+  HostActivitySnapshot,
+  HostHandoffBlocker,
+  HostHandoffFacts,
+  HostState,
+  HostStopInput,
+  HostStopResult
+} from '../../shared/types'
+import { ACTIVITY_LEASE_KINDS, HOST_HANDOFF_BLOCKERS } from '../../shared/types'
+import { neutralCwd, windowsPowerShellPath, system32Path } from './systemBinaries'
 
 /** After this long a shutdown kills the tracked children and exits; the exit hooks then release ownership. */
 export const SHUTDOWN_HARD_LIMIT_MS = 60_000
@@ -18,6 +40,15 @@ export const HANDOFF_WINDOW_DELAY_MS = 1_000
 export const HANDOFF_RETRY_MS = 5_000
 /** The app's handoff: no answer within this long (or an owner older than Wave 7) shows the busy-folder message. */
 export const HANDOFF_ANSWER_TIMEOUT_MS = 5_000
+
+/** Hard limit: SIGTERM, then this long before SIGKILL (round 6 item 5). */
+export const KILL_TERM_GRACE_MS = 5_000
+/** Hard limit: after SIGKILL (or with an unreadable process table), wait at most this long for the tree to be gone. */
+export const KILL_WAIT_MS = 60_000
+/** Hard limit: the step of that wait. */
+export const KILL_STEP_MS = 1_000
+/** How long one process-table read may take. */
+export const PROCESS_TABLE_TIMEOUT_MS = 5_000
 
 /** Every exit path the coordinator serves (4.3 "One shutdown coordinator"). */
 export type ShutdownReason =
@@ -36,7 +67,7 @@ export type ShutdownPhase = 'running' | 'draining' | 'settling' | 'closing' | 'r
  * The order (4.3): drain (mutations refused with host_draining, runs stopped when forced); the host.stop reply is
  * queued; writers settle (non-forced drains too); HostSocketServer.closeGracefully(SOCKET_CLOSE_GRACE_MS); release;
  * exit. While writers are in flight the host stays 'draining' and daemon.json stays. At SHUTDOWN_HARD_LIMIT_MS it
- * kills the tracked children (killTrackedChildren) and exits. onDrained runs from setImmediate, never inside
+ * kills the host's descendants (killHostDescendants) and exits. onDrained runs from setImmediate, never inside
  * requestDrain.
  */
 export interface ShutdownCoordinatorApi {
@@ -99,4 +130,570 @@ export function trackedChildCount(labelPrefix?: string): number {
   let n = 0
   for (const e of tracked) if (e.label.startsWith(labelPrefix)) n++
   return n
+}
+
+/** The pids of the tracked children that have one (the hard limit adds them to the process-tree targets). */
+export function trackedChildPids(): number[] {
+  const out: number[] = []
+  for (const e of tracked) {
+    const pid = e.child.pid
+    if (typeof pid === 'number' && Number.isSafeInteger(pid) && pid > 0) out.push(pid)
+  }
+  return out
+}
+
+// ---------- The process table and the host's descendants (round 6 item 5) ----------
+
+/** One process-table row. `start` identifies the process across pid reuse; `zombie` rows count as gone. */
+export interface ProcessRow {
+  pid: number
+  ppid: number
+  start?: string
+  zombie?: boolean
+}
+
+export type ProcessTable = ReadonlyMap<number, ProcessRow>
+
+/**
+ * Parse a process table: POSIX `ps -A -o pid=,ppid=,stat=,lstart=` lines ("pid ppid stat <start text>"), or the
+ * Windows reader's "pid ppid ticks" lines. Two-integer lines (no stat, no start) are accepted too. Anything else is
+ * skipped.
+ */
+export function parseProcessTable(text: string): Map<number, ProcessRow> {
+  const out = new Map<number, ProcessRow>()
+  for (const raw of text.split(/\r?\n/)) {
+    const m = /^\s*(\d+)\s+(\d+)(?:\s+(\S+)(?:\s+(.*\S))?)?\s*$/.exec(raw)
+    if (!m) continue
+    const pid = Number(m[1])
+    const ppid = Number(m[2])
+    if (!Number.isSafeInteger(pid) || !Number.isSafeInteger(ppid)) continue
+    const row: ProcessRow = { pid, ppid }
+    const third = m[3]
+    const rest = m[4]
+    if (third !== undefined && rest === undefined && /^\d+$/.test(third)) {
+      // Windows: "pid ppid creationTicks".
+      row.start = third
+    } else if (third !== undefined) {
+      // POSIX: "pid ppid stat lstart...".
+      if (third.startsWith('Z')) row.zombie = true
+      if (rest !== undefined) row.start = rest.replace(/\s+/g, ' ')
+    }
+    out.set(pid, row)
+  }
+  return out
+}
+
+/** Every live (non-zombie) descendant of `rootPid` in the table, breadth first; never the root itself. */
+export function descendantsOf(table: ProcessTable, rootPid: number): ProcessRow[] {
+  const children = new Map<number, ProcessRow[]>()
+  for (const row of table.values()) {
+    if (row.pid === row.ppid) continue
+    const list = children.get(row.ppid)
+    if (list) list.push(row)
+    else children.set(row.ppid, [row])
+  }
+  const out: ProcessRow[] = []
+  const seen = new Set<number>([rootPid])
+  const queue = [rootPid]
+  while (queue.length) {
+    const pid = queue.shift()!
+    for (const row of children.get(pid) ?? []) {
+      if (seen.has(row.pid)) continue
+      seen.add(row.pid)
+      queue.push(row.pid)
+      if (!row.zombie) out.push(row)
+    }
+  }
+  return out
+}
+
+/** Remove `pid` and every process under it (zombies included) from the table: the table reader's own tree. */
+export function withoutTree(table: Map<number, ProcessRow>, pid: number): void {
+  for (const row of descendantsOf(table, pid)) table.delete(row.pid)
+  // descendantsOf skips zombies in its answer; drop any zombie child of the reader too.
+  for (const row of [...table.values()]) if (row.ppid === pid) table.delete(row.pid)
+  table.delete(pid)
+}
+
+/** The PowerShell text that prints "pid ppid creationTicks" per process (CIM Win32_Process). */
+export const WIN32_PROCESS_TABLE_SCRIPT =
+  "Get-CimInstance -ClassName Win32_Process | ForEach-Object { $t = 0; if ($_.CreationDate) { $t = $_.CreationDate.ToFileTimeUtc() }; '{0} {1} {2}' -f $_.ProcessId, $_.ParentProcessId, $t }"
+
+/**
+ * Read the process table: POSIX `ps -A -o pid=,ppid=,stat=,lstart=` (LC_ALL=C, TZ=UTC so the start text is stable),
+ * Windows the CIM Win32_Process table through Windows PowerShell (absolute path, neutral cwd). The reader's own process
+ * and its descendants (ps lists itself; PowerShell may start a console host) are left out, since they are children of
+ * the host while it reads. Resolves null when the table cannot be read (timeout, missing tool, empty output). Never
+ * rejects.
+ */
+export function readProcessTable(opts: { platform?: NodeJS.Platform; timeoutMs?: number } = {}): Promise<Map<number, ProcessRow> | null> {
+  const platform = opts.platform ?? process.platform
+  const timeout = opts.timeoutMs ?? PROCESS_TABLE_TIMEOUT_MS
+  const [file, args] =
+    platform === 'win32'
+      ? [windowsPowerShellPath(), ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', WIN32_PROCESS_TABLE_SCRIPT]]
+      : ['ps', ['-A', '-o', 'pid=,ppid=,stat=,lstart=']]
+  return new Promise((resolve) => {
+    try {
+      let readerPid: number | undefined
+      const child = execFile(
+        file,
+        args,
+        { timeout, maxBuffer: 16 * 1024 * 1024, windowsHide: true, cwd: neutralCwd(), env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' } },
+        (err, stdout) => {
+          const table = parseProcessTable(String(stdout ?? ''))
+          if (readerPid !== undefined) withoutTree(table, readerPid)
+          // ps exits non-zero on some systems when a process vanished mid-read but still prints the rest.
+          if (table.size === 0) resolve(null)
+          else if (err && table.size < 2) resolve(null)
+          else resolve(table)
+        }
+      )
+      readerPid = child.pid
+    } catch {
+      resolve(null)
+    }
+  })
+}
+
+/** Send a signal to one process: POSIX process.kill, Windows `taskkill /PID <pid> /T` (/F for SIGKILL). Never throws. */
+export function signalProcess(pid: number, signal: 'SIGTERM' | 'SIGKILL', platform: NodeJS.Platform = process.platform): void {
+  if (platform === 'win32') {
+    try {
+      const args = ['/PID', String(pid), '/T', ...(signal === 'SIGKILL' ? ['/F'] : [])]
+      execFile(system32Path('taskkill.exe'), args, { windowsHide: true, timeout: 5_000, cwd: neutralCwd() }, () => {})
+    } catch {
+      // taskkill missing: nothing else to try.
+    }
+    return
+  }
+  try {
+    process.kill(pid, signal)
+  } catch {
+    // ESRCH: already gone; EPERM: not ours.
+  }
+}
+
+export interface KillDescendantsOptions {
+  /** Whose descendants (default process.pid). Never signalled itself. */
+  rootPid?: number
+  platform?: NodeJS.Platform
+  /** The process table (default readProcessTable); null = it could not be read. */
+  readTable?: () => Promise<ProcessTable | null>
+  /** Signal one process (default signalProcess). */
+  signal?: (pid: number, signal: 'SIGTERM' | 'SIGKILL') => void
+  /** Extra pids to treat as targets while they are in the table (default the tracked children's pids). */
+  extraPids?: () => number[]
+  termGraceMs?: number
+  waitMs?: number
+  stepMs?: number
+  sleep?: (ms: number) => Promise<void>
+  log?: (m: string) => void
+}
+
+export interface KillDescendantsResult {
+  /** Descendants found and signalled, over every read. */
+  found: number
+  /** Still alive (or unknown, when the table never became readable) when it gave up; 0 = the tree is gone. */
+  remaining: number
+  /** The table could be read at least once. */
+  tableReadable: boolean
+}
+
+const defaultSleep = (ms: number): Promise<void> => new Promise((r) => globalThis.setTimeout(r, ms))
+
+/**
+ * Round 6 item 5: enumerate every descendant of the host's pid (not only the tracked children, so a git hook, an
+ * agent's shell or an MCP server under an agent CLI are found), SIGTERM them, wait up to termGraceMs (less when all are
+ * gone), SIGKILL whatever is left (re-reading the table, so orphans that were re-parented still count by pid and start
+ * time), then wait in stepMs steps up to waitMs until none is alive. With an unreadable table it keeps re-reading in
+ * those steps for up to waitMs and gives up (remaining unknown, reported as 1). Never rejects.
+ */
+export async function killHostDescendants(opts: KillDescendantsOptions = {}): Promise<KillDescendantsResult> {
+  const rootPid = opts.rootPid ?? process.pid
+  const platform = opts.platform ?? process.platform
+  const readTable = opts.readTable ?? (() => readProcessTable({ platform }))
+  const send = opts.signal ?? ((pid: number, sig: 'SIGTERM' | 'SIGKILL') => signalProcess(pid, sig, platform))
+  const extraPids = opts.extraPids ?? trackedChildPids
+  const termGraceMs = opts.termGraceMs ?? KILL_TERM_GRACE_MS
+  const waitMs = opts.waitMs ?? KILL_WAIT_MS
+  const stepMs = Math.max(1, opts.stepMs ?? KILL_STEP_MS)
+  const sleep = opts.sleep ?? defaultSleep
+  const log = opts.log ?? (() => {})
+  const safeRead = async (): Promise<ProcessTable | null> => {
+    try {
+      return await readTable()
+    } catch {
+      return null
+    }
+  }
+
+  /** Every process we decided to end, by pid, with its start text when known (pid reuse guard). */
+  const targets = new Map<number, string | undefined>()
+  let tableReadable = false
+  const absorb = (table: ProcessTable): void => {
+    for (const row of descendantsOf(table, rootPid)) if (!targets.has(row.pid)) targets.set(row.pid, row.start)
+    for (const pid of extraPids()) {
+      const row = table.get(pid)
+      if (pid !== rootPid && row && !row.zombie && !targets.has(pid)) targets.set(pid, row.start)
+    }
+  }
+  /** Targets still alive in this table: same pid, same start (when both are known), not a zombie. */
+  const aliveIn = (table: ProcessTable): number[] => {
+    const out: number[] = []
+    for (const [pid, start] of targets) {
+      const row = table.get(pid)
+      if (!row || row.zombie) continue
+      if (start !== undefined && row.start !== undefined && row.start !== start) continue
+      out.push(pid)
+    }
+    return out
+  }
+
+  // SIGTERM.
+  let table = await safeRead()
+  if (table) {
+    tableReadable = true
+    absorb(table)
+    for (const pid of targets.keys()) send(pid, 'SIGTERM')
+    if (targets.size) log(`Shutdown: sent SIGTERM to ${targets.size} descendant process${targets.size === 1 ? '' : 'es'}.`)
+  }
+
+  // Grace: stop early once every target is gone.
+  if (targets.size) {
+    for (let waited = 0; waited < termGraceMs; ) {
+      const step = Math.min(stepMs, termGraceMs - waited)
+      await sleep(step)
+      waited += step
+      table = await safeRead()
+      if (table && aliveIn(table).length === 0 && descendantsOf(table, rootPid).length === 0) break
+    }
+  }
+
+  // SIGKILL, then wait for the tree to be gone (or for a readable table) in steps.
+  let killedOnce = false
+  for (let waited = 0; ; ) {
+    table = await safeRead()
+    if (table) {
+      tableReadable = true
+      absorb(table)
+      const alive = aliveIn(table)
+      if (alive.length === 0) return { found: targets.size, remaining: 0, tableReadable }
+      for (const pid of alive) send(pid, 'SIGKILL')
+      if (!killedOnce) log(`Shutdown: sent SIGKILL to ${alive.length} descendant process${alive.length === 1 ? '' : 'es'} that outlived SIGTERM.`)
+      killedOnce = true
+    }
+    if (waited >= waitMs) {
+      const left = table ? aliveIn(table) : []
+      const remaining = table ? left.length : Math.max(1, targets.size)
+      log(
+        table
+          ? `Shutdown: ${remaining} descendant process${remaining === 1 ? '' : 'es'} still alive after ${waitMs} ms (pid ${left.slice(0, 10).join(', ')}); exiting anyway.`
+          : `Shutdown: the process table could not be read for ${waitMs} ms; exiting without knowing whether descendants are gone.`
+      )
+      return { found: targets.size, remaining, tableReadable }
+    }
+    await sleep(stepMs)
+    waited += stepMs
+  }
+}
+
+// ---------- The coordinator ----------
+
+/** The slice of HostActivityTracker the coordinator drives. */
+export interface ShutdownActivity {
+  requestDrain(input?: HostStopInput): Promise<HostStopResult>
+  state(): HostState
+  snapshot(): HostActivitySnapshot
+  /** Stop waiting for writers (the hard limit took over); the tracker's onDrained is then never called. */
+  abandonSettle(): void
+}
+
+/** What a shutdown that reached 'released' was. */
+export interface ShutdownReleaseInfo {
+  reason: ShutdownReason
+  forced: boolean
+  /** The hard limit ended it (descendants killed, writers abandoned). */
+  hardLimit: boolean
+}
+
+export interface ShutdownCoordinatorOptions {
+  /** HostOwnership.release (synchronous, idempotent). */
+  release(): void
+  /** HostSocketServer.closeGracefully; absent = no socket server (or it closes elsewhere). */
+  closeSocket?: (graceMs: number) => Promise<void>
+  /** Run state for a handoff stop and host.status (RunManager.handoffFacts plus the socket's terminal sessions). */
+  handoffFacts?: () => HostHandoffFacts
+  /**
+   * Called once ownership is released (normal path or hard limit): the process may exit now (desktop: app.quit;
+   * Node host: process.exit; inproc: resolve `closed`). A throw is logged.
+   */
+  onReleased?: (info: ShutdownReleaseInfo) => void
+  /**
+   * At the hard limit, after the descendants are gone and the socket closed: end the process now (process.exit), so the
+   * exit hooks release ownership once no JavaScript of this host can run any more (4.3: "kills ... and exits; the exit
+   * hooks release"). Desktop and Node hosts pass it; absent (the inproc host, which lives inside the CLI command) =
+   * release here, then onReleased. If it returns, the coordinator releases and calls onReleased as without it.
+   */
+  exitAtHardLimit?: (info: ShutdownReleaseInfo) => void
+  hardLimitMs?: number
+  socketGraceMs?: number
+  /** The hard limit's tree kill (default killHostDescendants of this process). */
+  killDescendants?: () => Promise<KillDescendantsResult>
+  log?: (m: string) => void
+}
+
+/** A non-forced shutdown(...) that the activity refused (something is busy). */
+export class ShutdownRefusedError extends Error {
+  constructor(readonly result: HostStopResult) {
+    super('The host is busy; it was not stopped.')
+    this.name = 'ShutdownRefusedError'
+  }
+}
+
+/** The non-zero handoff blocker counts, or undefined when nothing blocks a handoff. */
+export function handoffBlockersOf(facts: HostHandoffFacts): Partial<Record<HostHandoffBlocker, number>> | undefined {
+  const out: Partial<Record<HostHandoffBlocker, number>> = {}
+  let any = false
+  for (const k of HOST_HANDOFF_BLOCKERS) {
+    const n = facts[k]
+    if (typeof n === 'number' && n > 0) {
+      out[k] = n
+      any = true
+    }
+  }
+  return any ? out : undefined
+}
+
+/** The non-zero lease counts of a snapshot, or undefined when the host is idle. */
+function busyLeases(snap: HostActivitySnapshot): Partial<Record<ActivityLeaseKind, number>> | undefined {
+  const out: Partial<Record<ActivityLeaseKind, number>> = {}
+  let any = false
+  for (const k of ACTIVITY_LEASE_KINDS) {
+    const n = snap.counts[k]
+    if (n > 0) {
+      out[k] = n
+      any = true
+    }
+  }
+  return any ? out : undefined
+}
+
+function errText(e: unknown): string {
+  return (e as Error)?.message ?? String(e)
+}
+
+/**
+ * The one shutdown sequence of a host (ShutdownCoordinatorApi). Build it first, construct the HostActivityTracker
+ * with `activityHooks()`, then `attachActivity(tracker)`. Every drain the tracker starts (host.stop, idle exit, a
+ * shutdown(...) call) runs through it, so the hard limit and the release order hold for all of them.
+ */
+export class ShutdownCoordinator implements ShutdownCoordinatorApi {
+  private activity: ShutdownActivity | undefined
+  private current: ShutdownPhase = 'running'
+  private reason: ShutdownReason | undefined
+  /** The reason the next drain start is attributed to (set by stop / shutdown right before requestDrain). */
+  private pendingReason: ShutdownReason | undefined
+  private forced = false
+  private hardTimer: ReturnType<typeof setTimeout> | undefined
+  private finishing = false
+  private resolveReleased!: () => void
+  private readonly releasedP: Promise<void>
+
+  constructor(private readonly opts: ShutdownCoordinatorOptions) {
+    this.releasedP = new Promise<void>((r) => (this.resolveReleased = r))
+  }
+
+  /** The HostActivityTracker options that route its drain through this coordinator. */
+  activityHooks(): { onDrainStart: (force: boolean) => void; onSettling: () => void; onDrained: () => void } {
+    return {
+      onDrainStart: (force) => this.drainStarted(force),
+      onSettling: () => {
+        if (this.current === 'draining') this.current = 'settling'
+      },
+      onDrained: () => void this.finish(false)
+    }
+  }
+
+  attachActivity(activity: ShutdownActivity): void {
+    this.activity = activity
+  }
+
+  phase(): ShutdownPhase {
+    return this.current
+  }
+
+  /** Resolves once ownership is released (never rejects). */
+  released(): Promise<void> {
+    return this.releasedP
+  }
+
+  /** host.status `handoff`; undefined when the host has no run state to report. */
+  handoffFacts(): HostHandoffFacts | undefined {
+    try {
+      return this.opts.handoffFacts?.()
+    } catch (e) {
+      this.log(`Shutdown: reading the handoff facts failed: ${errText(e)}`)
+      return undefined
+    }
+  }
+
+  /**
+   * HostControl.stop (host.stop). `handoff` without force applies the stricter handoff predicate first (any live,
+   * held or resumable run, or an open card, refuses with handoffBlockers); the activity's lease check follows in the
+   * same synchronous step, so nothing can start in between. Resolves once the drain settled (or with the refusal).
+   */
+  stop(input: HostStopInput = {}): Promise<HostStopResult> {
+    const activity = this.need()
+    const force = input.force === true
+    if (this.current === 'running' && !force && input.handoff === true) {
+      const facts = this.handoffFacts()
+      const blockers = facts ? handoffBlockersOf(facts) : undefined
+      if (blockers) {
+        // Refused without touching the drain; the busy leases are reported too, as a plain stop would.
+        const busy = busyLeases(activity.snapshot())
+        return Promise.resolve({ stopping: false, handoffBlockers: blockers, ...(busy ? { refusedBecause: busy } : {}) })
+      }
+    }
+    if (this.current === 'running') this.pendingReason = input.handoff === true && !force ? 'handoff' : 'host.stop'
+    // A forced request that joins a drain under way upgrades it (the tracker runs forceStop once).
+    if (force && this.current !== 'released') this.forced = true
+    const result = activity.requestDrain({ force })
+    this.pendingReason = undefined
+    return result
+  }
+
+  /**
+   * Start the shutdown, or join the one in progress (a forced request upgrades a non-forced one). Resolves once
+   * ownership is released. A non-forced request the activity refuses (busy) rejects with ShutdownRefusedError.
+   */
+  async shutdown(reason: ShutdownReason, opts: { force?: boolean } = {}): Promise<void> {
+    if (this.current === 'released') return
+    const activity = this.need()
+    if (this.current === 'running') this.pendingReason = reason
+    if (opts.force === true) this.forced = true
+    const result = activity.requestDrain({ force: opts.force === true })
+    this.pendingReason = undefined
+    const r = await result
+    if (!r.stopping) throw new ShutdownRefusedError(r)
+    await this.releasedP
+  }
+
+  private need(): ShutdownActivity {
+    if (!this.activity) throw new Error('The shutdown coordinator has no activity tracker attached.')
+    return this.activity
+  }
+
+  /** The tracker turned 'draining' (whoever asked): arm the hard limit once. */
+  private drainStarted(force: boolean): void {
+    if (force) this.forced = true
+    if (this.current !== 'running') return
+    this.current = 'draining'
+    this.reason = this.pendingReason ?? 'idle-exit'
+    const limit = this.opts.hardLimitMs ?? SHUTDOWN_HARD_LIMIT_MS
+    this.log(`Shutdown (${this.reason}${force ? ', forced' : ''}): draining; ownership is kept until in-flight writes finish (at most ${Math.round(limit / 1000)} s).`)
+    // Through globalThis at call time, so vi.useFakeTimers() replaces it. Not unref'd: an in-process host whose only
+    // remaining work is a hung writer must still reach the hard limit.
+    this.hardTimer = globalThis.setTimeout(() => void this.hardLimit(), limit)
+  }
+
+  /** Writers settled (or the hard limit took over): close the socket gracefully, release, hand over to the exit. */
+  private async finish(hardLimit: boolean): Promise<void> {
+    if (this.finishing) return
+    this.finishing = true
+    if (this.hardTimer !== undefined) globalThis.clearTimeout(this.hardTimer)
+    this.hardTimer = undefined
+    this.current = 'closing'
+    if (this.opts.closeSocket) {
+      const grace = this.opts.socketGraceMs ?? SOCKET_CLOSE_GRACE_MS
+      let timer: ReturnType<typeof setTimeout> | undefined
+      try {
+        // closeGracefully is bounded by itself; the race only guards against one that never settles.
+        await Promise.race([
+          this.opts.closeSocket(grace),
+          new Promise<void>((r) => (timer = globalThis.setTimeout(r, grace + 500)))
+        ])
+      } catch (e) {
+        this.log(`Shutdown: closing the terminal connections failed: ${errText(e)}`)
+      } finally {
+        globalThis.clearTimeout(timer)
+      }
+    }
+    const info: ShutdownReleaseInfo = { reason: this.reason ?? 'idle-exit', forced: this.forced, hardLimit }
+    if (hardLimit && this.opts.exitAtHardLimit) {
+      try {
+        // Normally does not return: the process exits and its exit hook releases ownership.
+        this.opts.exitAtHardLimit(info)
+      } catch (e) {
+        this.log(`Shutdown: exiting at the hard limit failed: ${errText(e)}`)
+      }
+    }
+    try {
+      this.opts.release()
+    } catch (e) {
+      this.log(`Shutdown: releasing host ownership failed: ${errText(e)}`)
+    }
+    this.current = 'released'
+    this.resolveReleased()
+    try {
+      this.opts.onReleased?.(info)
+    } catch (e) {
+      this.log(`Shutdown: the exit step failed: ${errText(e)}`)
+    }
+  }
+
+  /** SHUTDOWN_HARD_LIMIT_MS passed with writers still in flight: kill the process tree, then release and exit. */
+  private async hardLimit(): Promise<void> {
+    this.hardTimer = undefined
+    if (this.finishing) return
+    const limit = this.opts.hardLimitMs ?? SHUTDOWN_HARD_LIMIT_MS
+    this.log(`Shutdown: writers still in flight after ${Math.round(limit / 1000)} s; ending this host's child processes and exiting.`)
+    try {
+      this.activity?.abandonSettle()
+    } catch (e) {
+      this.log(`Shutdown: abandoning the writer wait failed: ${errText(e)}`)
+    }
+    try {
+      const kill = this.opts.killDescendants ?? (() => killHostDescendants({ log: (m) => this.log(m) }))
+      const r = await kill()
+      if (r.remaining === 0) this.log(`Shutdown: ${r.found} descendant process${r.found === 1 ? '' : 'es'} ended; releasing the data folder.`)
+    } catch (e) {
+      this.log(`Shutdown: ending child processes failed: ${errText(e)}`)
+    }
+    // Whatever the tracked registry still holds (children without a pid, or already outside the tree).
+    killTrackedChildren()
+    await this.finish(true)
+  }
+
+  private log(m: string): void {
+    this.opts.log?.(m)
+  }
+}
+
+/**
+ * Route SIGINT / SIGTERM (and SIGHUP on POSIX) of a background host process (the Node host, `daemon run-node`) to a
+ * forced shutdown; a second signal while it runs is ignored (the hard limit bounds the wait). Returns an uninstall
+ * function. The process exits through the coordinator's onReleased.
+ */
+export function installShutdownSignals(
+  coordinator: Pick<ShutdownCoordinatorApi, 'shutdown'>,
+  opts: { target?: Pick<NodeJS.Process, 'on' | 'off'>; platform?: NodeJS.Platform; log?: (m: string) => void } = {}
+): () => void {
+  const target = opts.target ?? process
+  const platform = opts.platform ?? process.platform
+  const signals: NodeJS.Signals[] = platform === 'win32' ? ['SIGINT', 'SIGTERM'] : ['SIGINT', 'SIGTERM', 'SIGHUP']
+  let started = false
+  const handler = (sig: NodeJS.Signals): void => {
+    if (started) {
+      opts.log?.(`Shutdown: ${sig} received again; the shutdown already under way finishes first.`)
+      return
+    }
+    started = true
+    opts.log?.(`Shutdown: ${sig} received; stopping every run and exiting.`)
+    void coordinator.shutdown('signal', { force: true }).catch((e: unknown) => opts.log?.(`Shutdown after ${sig} failed: ${errText(e)}`))
+  }
+  for (const s of signals) target.on(s, handler)
+  return () => {
+    for (const s of signals) target.off(s, handler)
+  }
 }

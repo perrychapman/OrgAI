@@ -3,11 +3,15 @@
  * ipc.ts) and to RPC clients (Wave 2's socket server, the CLI's inproc host). Electron-free; relative imports only
  * (noElectronImport.test.ts).
  *
- * - `invoke` is the trusted in-process desktop path: no gate, no lease (the window is the interactiveClients lease),
- *   and the handler's result is returned as is, so a sync handler stays sync and a sync throw stays a sync throw.
+ * - `invoke` is the trusted in-process desktop path: no gate, and the handler's result is returned as is, so a sync
+ *   handler stays sync and a sync throw stays a sync throw. Wave 7 (cli-standalone.md 4.3): a mutating channel (the
+ *   registry's scope above 'read') is refused with host_draining while the host drains and holds an
+ *   inFlightRpcMutations lease until its promise settles (mutationLease.ts runLeased), like the wire path.
  * - `invokeRpc` is the untrusted wire path: gate (scope, params), refuse transport-owned channels, refuse mutations
  *   while draining, hold an inFlightRpcMutations lease for mutations, await SecretStore.prepareWrite() when the
  *   channel's storesSecret predicate is true (Wave 7), map coded errors to HostRpcFailure.
+ * - mcp:authorize (both paths) is refused while draining but holds no lease for its browser wait; McpService leases
+ *   only its final commit (round 6 item 9, COMMIT_LEASED_CHANNELS).
  *
  * Pushes the handlers make (projects:engagementChanged) go on `events`; the desktop shell forwards them to windows.
  */
@@ -193,7 +197,8 @@ import {
   withEffectiveDefault
 } from './args'
 import { HostEventBus } from './events'
-import { HostRpcFailure, gateRequest, type GateFn, type StoresSecretHostView } from './registry'
+import { COMMIT_LEASED_CHANNELS, LIFECYCLE_CHANNELS, drainingFailure, runLeased } from './mutationLease'
+import { HostRpcFailure, channelEntry, gateRequest, type GateFn, type StoresSecretHostView } from './registry'
 import type { HostActivityTrackerApi, HostDispatchEnv, HostServices, InvokeContext, RpcInvokeContext } from './types'
 
 /** One request handler: the call context, then the positional arguments (what ipcRenderer.invoke passed). */
@@ -222,9 +227,6 @@ const RPC_ERROR_CODES: ReadonlySet<string> = new Set<HostRpcErrorCode>([
   'too_many_connections',
   'too_many_requests'
 ])
-
-/** How long a client should wait before retrying a mutation refused while the host drains. */
-const DRAINING_RETRY_MS = 1000
 
 /** Used when no env is given (unit tests that only exercise other channels): app:info reports placeholders. */
 const FALLBACK_ENV: HostDispatchEnv = {
@@ -260,11 +262,14 @@ export class HostDispatcher {
   /**
    * Desktop path: run the channel's handler with already-structured-cloned args. Returns the handler's result as is
    * (sync stays sync, a sync throw stays a sync throw). An unknown channel throws an Error with code 'unknown_channel'.
+   * A mutating channel (isMutatingChannel) is refused with host_draining while the host drains and holds an
+   * inFlightRpcMutations lease until its result settles (Wave 7, cli-standalone.md 4.3).
    */
   invoke(channel: string, args: unknown[], ctx: InvokeContext): unknown {
     const handler = this.lookup(channel)
     if (!handler) throw unknownChannel(channel)
-    return handler(ctx, ...args)
+    if (!isMutatingChannel(channel)) return handler(ctx, ...args)
+    return runLeased(this.activity, channel, () => handler(ctx, ...args), { lease: !COMMIT_LEASED_CHANNELS.has(channel) })
   }
 
   /**
@@ -276,12 +281,12 @@ export class HostDispatcher {
     if (g.entry.transport) throw new HostRpcFailure('bad_request', `${channel} is handled by the socket server.`)
     // host.stop is a lifecycle call, not store work: it holds no inFlightRpcMutations lease (its own lease would make
     // every drain without force refuse itself) and is never refused while draining (requestDrain joins the drain).
-    const leased = g.mutation && g.channel !== HOST_METHODS.hostStop
-    if (leased && this.activity.state() === 'draining') {
-      throw new HostRpcFailure('host_draining', 'OrgAI is shutting down; try again in a moment.', DRAINING_RETRY_MS)
-    }
+    const mutation = g.mutation && !LIFECYCLE_CHANNELS.has(g.channel)
+    if (mutation && this.activity.state() === 'draining') throw drainingFailure()
     const handler = this.lookup(g.channel)
     if (!handler) throw new HostRpcFailure('unknown_channel', `Unknown channel: ${channel}`)
+    // mcp:authorize leases only its final commit (McpService), not its browser wait (round 6 item 9).
+    const leased = mutation && !COMMIT_LEASED_CHANNELS.has(g.channel)
     const release = leased ? this.activity.acquire('inFlightRpcMutations', channel) : undefined
     try {
       // Wave 7 (cli-standalone.md 5.6): a call that will store a non-empty secret value prepares the vault first (Node /
@@ -321,6 +326,17 @@ export class HostDispatcher {
   private lookup(channel: string): Handler | undefined {
     return typeof channel === 'string' && Object.prototype.hasOwnProperty.call(this.handlers, channel) ? this.handlers[channel] : undefined
   }
+}
+
+/**
+ * A channel whose call changes host state (Wave 7, cli-standalone.md 4.3): a registry request entry with a scope above
+ * 'read' that is not a lifecycle call (host.stop). Desktop-only channels are leased by ipc.ts's own wrapper.
+ */
+export function isMutatingChannel(channel: string): boolean {
+  const entry = channelEntry(channel)
+  if (!entry || entry.direction !== 'request') return false
+  if (entry.scope === 'read' || entry.scope === 'desktop_only') return false
+  return !LIFECYCLE_CHANNELS.has(channel)
 }
 
 /** HostRpcFailure as is; an Error coded with a wire code becomes one; anything else is rethrown unchanged. */

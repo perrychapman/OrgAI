@@ -250,3 +250,68 @@ describe('RunManager working and busy run counts', () => {
     m.cancelAutoResume(run.id)
   })
 })
+
+// Wave 7 (cli-standalone.md 4.4 step 4): the handoff predicate is stricter than busyRunCount: every live run in any
+// form, every paused run with a resume pending and every open card blocks the app's handoff.
+describe('RunManager.handoffFacts', () => {
+  const idleScript: MockScript = { delayMs: 0, work: [{ type: 'text', text: 'Done for now.' }] }
+  const askScript: MockScript = { delayMs: 0, work: [{ type: 'tool', name: 'Bash', input: { command: 'npm test' }, ask: true }] }
+  const none = { workingRuns: 0, waitingRuns: 0, heldRuns: 0, pausedRuns: 0, openCards: 0 }
+
+  it('is all zeros with no runs', () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    expect(rig(p).m.handoffFacts()).toEqual(none)
+  })
+
+  it('a run in a turn is a working run', async () => {
+    const p = makeProject({ path: join(dir, 'repo'), autoContinue: false })
+    const { m } = rig(p, { delayMs: 300, work: [{ type: 'text', text: 'one' }, { type: 'text', text: 'two' }] })
+    const run = await m.start({ project: p, prompt: 'Hi', kind: 'work' })
+    await vi.waitFor(() => expect(m.summaryOf(run.id)?.status).toBe('running'))
+    expect(m.handoffFacts()).toEqual({ ...none, workingRuns: 1 })
+    await m.stopAll()
+  })
+
+  it('an idle run blocks the handoff although it keeps no host busy', async () => {
+    const p = makeProject({ path: join(dir, 'repo'), autoContinue: false })
+    const { m } = rig(p, idleScript)
+    const run = await m.start({ project: p, prompt: 'Hi', kind: 'work' })
+    await vi.waitFor(() => expect(m.summaryOf(run.id)?.status).toBe('idle'))
+    await vi.waitFor(() => expect(m.workingRunCount()).toBe(0))
+    expect(m.busyRunCount()).toBe(0)
+    expect(m.handoffFacts()).toEqual({ ...none, waitingRuns: 1 })
+    await m.stopAll()
+    expect(m.handoffFacts()).toEqual(none)
+  })
+
+  it('a run waiting on a card counts as waiting and its card as open', async () => {
+    const p = makeProject({ path: join(dir, 'repo'), autoContinue: false })
+    const { m } = rig(p, askScript)
+    const run = await m.start({ project: p, prompt: 'Run the tests', kind: 'work' })
+    await vi.waitFor(() => expect(events.some((e) => e.type === 'permission.request' && e.runId === run.id)).toBe(true))
+    expect(m.busyRunCount()).toBe(0)
+    expect(m.handoffFacts()).toEqual({ ...none, waitingRuns: 1, openCards: 1 })
+    await m.stopAll()
+  })
+
+  it('a run held by the user\'s interrupt is a held run', async () => {
+    const p = makeProject({ path: join(dir, 'repo'), autoContinue: false })
+    const { m } = rig(p, idleScript)
+    const run = await m.start({ project: p, prompt: 'Hi', kind: 'work' })
+    await vi.waitFor(() => expect(m.summaryOf(run.id)?.status).toBe('idle'))
+    await m.interrupt(run.id)
+    await vi.waitFor(() => expect(m.handoffFacts()).toEqual({ ...none, heldRuns: 1 }))
+    await m.stopAll()
+  })
+
+  it('a paused run with an auto-resume pending is a paused run', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const p = makeProject({ path: join(dir, 'repo') })
+    const { m } = rig(p)
+    const run = await pausedRun(m, p)
+    expect(m.busyRunCount()).toBe(0)
+    expect(m.handoffFacts()).toEqual({ ...none, pausedRuns: 1 })
+    m.cancelAutoResume(run.id)
+    expect(m.handoffFacts()).toEqual(none)
+  })
+})

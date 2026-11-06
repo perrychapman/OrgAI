@@ -264,13 +264,50 @@ describe('bootOrgAIHost', () => {
     const ctx = { surface: 'inproc' as const, grantedScopes: ['read', 'operate', 'decide', 'configure'] as const }
     await expect(h.dispatcher.invokeRpc('host.stop', [{}], ctx)).resolves.toEqual({ stopping: true })
     expect(own.markDraining).toHaveBeenCalledTimes(1)
+    // Wave 7 (4.3): the shutdown coordinator releases after the reply, then calls onDrained (the process may exit).
+    await h.shutdown.released()
     expect(own.release).toHaveBeenCalledTimes(1)
     expect(onDrained).toHaveBeenCalledTimes(1)
+    expect(onDrained).toHaveBeenCalledWith({ reason: 'host.stop', forced: false, hardLimit: false })
+    expect(h.shutdown.phase()).toBe('released')
     expect(h.activity.state()).toBe('draining')
     // A second stop joins the drain instead of being refused as a mutation.
     await expect(h.dispatcher.invokeRpc('host.stop', [{}], ctx)).resolves.toEqual({ stopping: true })
     await expect(h.dispatcher.invokeRpc(IPC.settingsSet, [{}], ctx)).rejects.toMatchObject({ code: 'host_draining' })
     expect(h.activity.snapshot().counts.inFlightRpcMutations).toBe(0)
+  })
+
+  it('host.status carries the handoff facts; a handoff stop is refused while a run is live in any form (4.4)', async () => {
+    const h = boot({ terminalSessions: () => 2 })
+    expect(h.hostControl.status().handoff).toEqual({ workingRuns: 0, waitingRuns: 0, heldRuns: 0, pausedRuns: 0, openCards: 0, terminalSessions: 2 })
+    const folder = join(root, 'repo-handoff')
+    mkdirSync(folder)
+    const project = h.services.projects.create({ name: 'Handoff', path: folder, brief: '', setupKind: 'existing', mock: true }, h.settings.get(), { mockAvailable: true })
+    const ctx = { surface: 'inproc' as const, grantedScopes: ['read', 'operate', 'configure'] as const }
+    await h.dispatcher.invokeRpc(IPC.runsStart, [{ projectId: project.id, prompt: 'keep me live' }], ctx)
+    const res = (await h.dispatcher.invokeRpc('host.stop', [{ handoff: true }], ctx)) as { stopping: boolean; handoffBlockers?: Record<string, number> }
+    expect(res.stopping).toBe(false)
+    expect(Object.values(res.handoffBlockers ?? {}).reduce((a, b) => a + b, 0)).toBeGreaterThan(0)
+    expect(h.activity.state()).toBe('ready')
+    await h.runs.stopAll({ reason: 'quit' })
+    // The ended work run armed a Team review (a backgroundTasks lease); without it and with nothing live, the handoff
+    // stop goes through.
+    h.services.capabilities.dispose()
+    await vi.waitFor(() => expect(h.activity.isIdle()).toBe(true))
+    expect(h.hostControl.status().handoff).toMatchObject({ workingRuns: 0, waitingRuns: 0, heldRuns: 0, pausedRuns: 0, openCards: 0 })
+    await expect(h.dispatcher.invokeRpc('host.stop', [{ handoff: true }], ctx)).resolves.toEqual({ stopping: true })
+    await h.shutdown.released()
+  })
+
+  it('the drain quiesces OAuth flows, skill evaluation and the entry point\'s own work (round 6 item 9)', async () => {
+    const quiesce = vi.fn()
+    const h = boot({ quiesce })
+    const mcp = vi.spyOn(h.services.mcp, 'dispose')
+    const evaluation = vi.spyOn(h.services.skillEvaluation as unknown as { dispose(): void }, 'dispose')
+    const caps = vi.spyOn(h.services.capabilities, 'dispose')
+    await h.shutdown.shutdown('desktop-quit', { force: true })
+    for (const f of [mcp, evaluation, caps, quiesce]) expect(f).toHaveBeenCalledTimes(1)
+    await expect(h.services.mcp.authorize({ libraryId: 'x' })).rejects.toThrow(/shutting down/)
   })
 
   it('host.stop without force over invokeRpc is refused while a run is live, naming liveRuns only', async () => {
@@ -303,6 +340,7 @@ describe('bootOrgAIHost', () => {
     expect(h.runs.liveRuns().length).toBe(1)
     const started = Date.now()
     await expect(h.dispatcher.invokeRpc('host.stop', [{ force: true }], ctx)).resolves.toEqual({ stopping: true })
+    await h.shutdown.released()
     // The run's end reached the Team assistant after it was disposed: nothing armed, nothing waited on.
     expect(runEnded).toHaveBeenCalled()
     expect(releasedWith).toEqual([0])

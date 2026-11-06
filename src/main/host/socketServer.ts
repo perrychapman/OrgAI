@@ -34,6 +34,16 @@
  *   client of another machine still needs daemon.secret; so on Windows the barriers are the secret's explicit DACL
  *   (refuse every hello when it cannot be set), the proof, and the scope cap above. A native addon (or a pipe created
  *   through another runtime) would be needed for an explicit DACL; UNVERIFIED on Windows from this code.
+ * - Handoff connections (Wave 7, cli-standalone.md 4.4 step 5, D8): a proven `clientKind: 'desktop'` hello (the OrgAI
+ *   app asking this host to hand over the data folder) is accepted whatever Terminal access is (off, 'operate' or
+ *   'full') and across app versions, with grantedScopes exactly HOST_HANDOFF_SCOPES and `handoff: true` in the result
+ *   and its hostProof. Such a connection may call only HOST_HANDOFF_METHODS (host.status, host.stop, forced included):
+ *   anything else, the subscriptions included, answers scope_denied before dispatch. The peer check still refuses the
+ *   host's own descendants, with DESKTOP_HELLO_PEER_CHECK_MS instead of the default budget. This does not authenticate
+ *   the app: any same-user process holding daemon.secret may claim 'desktop' (D8 accepts this). Handoff connections are
+ *   not terminal sessions (terminalSessionCount) and Terminal access changes never close them.
+ * - closeGracefully(ms) (the shutdown coordinator, before the release): close() and resolve once every socket has
+ *   flushed its queued frames and closed, or the time is up (the rest are destroyed then).
  * - mcp:authorize with announceUrl: the `mcp.authorize` connections:event reaches only the socket whose call is still
  *   in flight for that target (authorizeKey), never every 'connections' subscriber.
  * - After hello: requests go to host.dispatcher.invokeRpc (scope gate, draining, leases) with the per-channel caps of
@@ -63,7 +73,10 @@ import {
   RPC_MAX_INFLIGHT_PER_SOCKET,
   RPC_MAX_UNAUTH_SOCKETS,
   RPC_PRE_AUTH_FRAME_MAX_BYTES,
-  HOST_CLIENT_KINDS
+  HOST_CLIENT_KINDS,
+  HOST_HANDOFF_METHODS,
+  HOST_HANDOFF_SCOPES,
+  DESKTOP_HELLO_PEER_CHECK_MS
 } from '../../shared/types'
 import type {
   HostClientKind,
@@ -120,9 +133,10 @@ export interface HostSocketServerOptions {
   /**
    * Best-effort peer ancestry check of host.hello's pid (cli-spec 3.4(2)): 'descendant' refuses the client with
    * 'agent_descendant_refused', 'unavailable' is logged and allowed. Missing = peerCheck.ts checkPeerAncestry with
-   * the accepted socket's fd (macOS maps the socket to its real peer pids through lsof).
+   * the accepted socket's fd (macOS maps the socket to its real peer pids through lsof). `timeoutMs` is the budget:
+   * DESKTOP_HELLO_PEER_CHECK_MS for a 'desktop' hello, undefined (the check's default) otherwise.
    */
-  peerCheck?: (pid: number, socketFd?: number) => Promise<'ok' | 'descendant' | 'unavailable'>
+  peerCheck?: (pid: number, socketFd?: number, timeoutMs?: number) => Promise<'ok' | 'descendant' | 'unavailable'>
   log?: (m: string) => void
   /** Clock for deadlines; tests pass a fake. */
   now?: () => number
@@ -158,13 +172,10 @@ export const TERMINAL_ACCESS_OFF_MESSAGE =
 export const TERMINAL_ACCESS_LEVEL_MESSAGE =
   'Terminal access lets terminal clients watch and run work only. To answer decisions or change settings from a terminal, allow it in OrgAI: App settings > General > Advanced settings > Terminal access.'
 /**
- * A `clientKind: 'desktop'` hello (the OrgAI app asking a Node host to hand over; cli-standalone.md 4.4) is refused
- * until the handoff grant lands (WP-F): the app then shows the busy-folder message and the `orgai daemon stop` hint.
- * The grant WP-F builds (contract, RpcHelloResult.handoff): grantedScopes exactly HOST_HANDOFF_SCOPES whatever Terminal
- * access is (off included), `handoff: true` in the result and in hostProof, and HOST_HANDOFF_METHODS checked per call
- * before gateRequest.
+ * What a handoff connection (a 'desktop' hello, cli-standalone.md 4.4) is told when it calls anything but
+ * HOST_HANDOFF_METHODS. Wave 7 contracts refused the whole hello with a message of this name; the grant replaced that.
  */
-export const DESKTOP_HANDOFF_UNAVAILABLE_MESSAGE = 'This OrgAI host does not serve the app hand-off yet; stop it with `orgai daemon stop`.'
+export const DESKTOP_HANDOFF_UNAVAILABLE_MESSAGE = 'An OrgAI app hand-off connection may only read the host status and stop the host.'
 /** hello refused on win32 when daemon.secret could not be restricted to the current user. */
 export const SECRET_ACL_MESSAGE =
   'OrgAI could not restrict its terminal access secret to your Windows account, so it refuses terminal connections. See main.log.'
@@ -215,6 +226,8 @@ interface Conn {
    * are refused, since their argument shapes may differ between versions (cli-spec 3.3(2), 6.3(6)).
    */
   versionSkew?: boolean
+  /** A 'desktop' hello's handoff grant (4.4 step 5): only HOST_HANDOFF_METHODS, checked before anything else. */
+  handoff?: boolean
 }
 
 /** Re-read after calls that may close the connection (defeats narrowing). */
@@ -361,8 +374,40 @@ export class HostSocketServer {
   /** Authenticated sockets whose clientKind is 'tui' or whose runs:subscribe asked for an active run record. */
   attachedClientCount(): number {
     let n = 0
-    for (const c of this.conns) if (c.state === 'auth' && (c.clientKind === 'tui' || c.runs?.interactive === true)) n++
+    for (const c of this.conns) if (c.state === 'auth' && !c.handoff && (c.clientKind === 'tui' || c.runs?.interactive === true)) n++
     return n
+  }
+
+  /** Authenticated terminal sessions (cli and tui sockets), handoff connections excluded (host.status `handoff`). */
+  terminalSessionCount(): number {
+    let n = 0
+    for (const c of this.conns) if (c.state === 'auth' && !c.handoff && !c.closeAfterInflight) n++
+    return n
+  }
+
+  /**
+   * close(), then resolve once every socket has flushed what was queued (a host.stop reply included) and closed, or
+   * `graceMs` passed; sockets still open then are destroyed. A client that stops reading cannot hold it. Never rejects.
+   */
+  closeGracefully(graceMs: number): Promise<void> {
+    this.close()
+    if (this.conns.size === 0) return Promise.resolve()
+    return new Promise<void>((resolve) => {
+      let done = false
+      const finish = (): void => {
+        if (done) return
+        done = true
+        globalThis.clearInterval(poll)
+        globalThis.clearTimeout(timer)
+        for (const c of [...this.conns]) this.kill(c)
+        resolve()
+      }
+      // Each connection leaves `conns` on its socket's 'close'.
+      const poll = globalThis.setInterval(() => {
+        if (this.conns.size === 0) finish()
+      }, 10)
+      const timer = globalThis.setTimeout(finish, Math.max(0, graceMs))
+    })
   }
 
   /** Destroy every socket and stop serving. Idempotent. */
@@ -413,7 +458,8 @@ export class HostSocketServer {
   private dropAuthenticated(which: (c: Conn) => boolean = () => true, why = 'Terminal access was turned off'): void {
     let n = 0
     for (const c of [...this.conns]) {
-      if (c.state !== 'auth' || c.closeAfterInflight || !which(c)) continue
+      // A handoff connection does not depend on Terminal access (4.4 step 5).
+      if (c.state !== 'auth' || c.closeAfterInflight || c.handoff || !which(c)) continue
       n++
       if (c.socket.destroyed) this.kill(c)
       else if (c.inflight > 0) this.closeAfterInflight(c)
@@ -623,8 +669,8 @@ export class HostSocketServer {
     this.secretCache = secret
     const problem = this.helloProblem(raw)
     if (problem) return fail(problem)
-    // Wave 7 contracts: the handoff grant (RpcHelloResult.handoff, HOST_HANDOFF_METHODS) is WP-F's; refuse until then.
-    if (raw.clientKind === 'desktop') return fail({ code: 'bad_request', message: DESKTOP_HANDOFF_UNAVAILABLE_MESSAGE })
+    // Wave 7 (4.4 step 5, D8): a proven 'desktop' hello gets the handoff grant, whatever Terminal access is.
+    const handoff = raw.clientKind === 'desktop'
     const p = raw as Record<string, unknown> & {
       clientKind: HostClientKind
       clientVersion: string
@@ -638,16 +684,32 @@ export class HostSocketServer {
       const host = this.host
       if (!host) return { code: 'host_starting', message: 'OrgAI is starting; try again in a moment.', retryAfterMs: HOST_STARTING_RETRY_MS }
       if (host.activity.state() === 'draining') return { code: 'host_draining', message: 'OrgAI is shutting down.', retryAfterMs: HOST_DRAINING_RETRY_MS }
-      if (!accessOf(host, this.opts.hostKind).enabled) return { code: 'terminal_server_disabled', message: TERMINAL_ACCESS_OFF_MESSAGE }
+      if (!handoff && !accessOf(host, this.opts.hostKind).enabled) return { code: 'terminal_server_disabled', message: TERMINAL_ACCESS_OFF_MESSAGE }
       if (this.authCount >= RPC_MAX_CLIENT_SOCKETS) return { code: 'too_many_connections', message: `OrgAI already serves ${RPC_MAX_CLIENT_SOCKETS} terminal clients.` }
       return undefined
     }
     const before = gateProblem()
     if (before) return fail(before)
+    if (handoff) {
+      // The proof verified; the desktop peer check may take DESKTOP_HELLO_PEER_CHECK_MS, which the handshake deadline
+      // (RPC_HANDSHAKE_TIMEOUT_MS from accept) would otherwise cut, closing the app's connection mid-check (seen on a
+      // loaded Mac, where ps and lsof ran to the budget). Re-arm it past the check.
+      if (conn.timer) clearTimeout(conn.timer)
+      conn.timer = setTimeout(() => {
+        if (conn.state === 'hello') this.kill(conn)
+      }, DESKTOP_HELLO_PEER_CHECK_MS + RPC_HANDSHAKE_TIMEOUT_MS)
+      conn.timer.unref?.()
+    }
     let peer: 'ok' | 'descendant' | 'unavailable'
     try {
       const fd = socketFdOf(conn.socket)
-      peer = await (this.opts.peerCheck ?? ((pid: number, socketFd?: number) => checkPeerAncestry(pid, socketFd === undefined ? {} : { socketFd })))(p.pid, fd)
+      // A desktop hello gets a longer budget (the app waits on it; a missed descendant would be able to stop the host).
+      const budget = handoff ? DESKTOP_HELLO_PEER_CHECK_MS : undefined
+      const check =
+        this.opts.peerCheck ??
+        ((pid: number, socketFd?: number, timeoutMs?: number) =>
+          checkPeerAncestry(pid, { ...(socketFd === undefined ? {} : { socketFd }), ...(timeoutMs === undefined ? {} : { timeoutMs }) }))
+      peer = await check(p.pid, fd, budget)
     } catch {
       peer = 'unavailable'
     }
@@ -661,8 +723,11 @@ export class HostSocketServer {
     const after = gateProblem()
     if (after) return fail(after)
     // Never more than Terminal access allows (review H2): decide and configure need AppSettings.terminalAccessLevel
-    // 'full', which only the desktop window sets; an in-process host (the CLI's own) always grants full.
-    const { granted: grantedScopes, withheld } = grantScopes(p.requestedScopes, accessOf(this.host!, this.opts.hostKind).level)
+    // 'full', which only the desktop window sets; an in-process host (the CLI's own) always grants full. A handoff
+    // connection gets exactly HOST_HANDOFF_SCOPES, whatever it asked for and whatever the level.
+    const { granted: grantedScopes, withheld } = handoff
+      ? { granted: [...HOST_HANDOFF_SCOPES], withheld: [] as HostScope[] }
+      : grantScopes(p.requestedScopes, accessOf(this.host!, this.opts.hostKind).level)
     const result: RpcHelloResult = {
       protocolVersion: 1,
       hostInstanceId: this.opts.hostInstanceId,
@@ -680,9 +745,11 @@ export class HostSocketServer {
         appVersion: this.opts.appVersion,
         dataDir: this.opts.dataDir,
         mock: this.opts.mock,
-        grantedScopes
+        grantedScopes,
+        ...(handoff ? { handoff: true } : {})
       })
     }
+    if (handoff) result.handoff = true
     if (p.clientVersion !== this.opts.appVersion) {
       result.versionSkewWarning = `This orgai CLI is version ${p.clientVersion} and the running OrgAI is ${this.opts.appVersion}; update them to the same version.`
     }
@@ -693,6 +760,7 @@ export class HostSocketServer {
     conn.pid = p.pid
     conn.scopes = grantedScopes
     conn.withheld = withheld
+    if (handoff) conn.handoff = true
     if (result.versionSkewWarning) conn.versionSkew = true
     conn.reader.maxLineBytes = RPC_BULK_FRAME_MAX_BYTES
     this.send(conn, rpcResult(HELLO_REQUEST_ID, result))
@@ -712,6 +780,10 @@ export class HostSocketServer {
       return this.send(conn, rpcError(id, { code: 'frame_too_large', message: `${method} requests are limited to ${frameLimitFor(method).requestBytes} bytes.` }))
     }
     if (method === HOST_METHODS.hostHello) return this.send(conn, rpcError(id, { code: 'bad_request', message: 'Already connected.' }))
+    // A handoff connection (4.4 step 5) reaches host.status and host.stop only, before any other check or dispatch.
+    if (conn.handoff && !HOST_HANDOFF_METHODS.includes(method as (typeof HOST_HANDOFF_METHODS)[number])) {
+      return this.send(conn, rpcError(id, { code: 'scope_denied', message: `${method}: ${DESKTOP_HANDOFF_UNAVAILABLE_MESSAGE}` }))
+    }
     if (method === HOST_IPC.runsSubscribe) return this.runsSubscribe(conn, req)
     if (method === HOST_METHODS.hostSubscribe) return this.hostSubscribe(conn, req)
     const host = this.host

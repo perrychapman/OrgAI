@@ -225,3 +225,27 @@ describe('confinedPathExists', () => {
     expect(confinedPathExists(join(repo, 'nope'))('a/b.md')).toBe(false)
   })
 })
+
+// Wave 7 (cli-standalone.md round 6 item 9): the drain's quiesce aborts an evaluation's model step.
+describe('SkillEvaluationService.dispose', () => {
+  it('aborts the model step in flight, keeps the last saved report, and refuses new evaluations', async () => {
+    const first = await svc.evaluate('p1')
+    expect(first.modelAssisted).toBe(true)
+    complete.mockImplementation(
+      (_p: Project, input: { signal: AbortSignal }) =>
+        new Promise((_resolve, reject) => input.signal.addEventListener('abort', () => reject(new Error('aborted'))))
+    )
+    const p = svc.evaluate('p1')
+    await vi.waitFor(() => expect(complete).toHaveBeenCalledTimes(2))
+    expect(svc.inFlightCount()).toBe(1)
+    svc.dispose()
+    const cut = await p
+    expect(cut.skippedReason).toBe('error')
+    expect(cut.error).toBe('OrgAI shut down before the model answered.')
+    expect(svc.inFlightCount()).toBe(0)
+    // The saved report is still the good one.
+    expect(svc.last('p1')?.modelAssisted).toBe(true)
+    expect(svc.last('p1')?.suggestions).toHaveLength(1)
+    await expect(svc.evaluate('p1')).rejects.toThrow(/shutting down/)
+  })
+})
