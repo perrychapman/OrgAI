@@ -1,8 +1,9 @@
 /**
  * `--host inproc` (cli-spec 3.2(1), 3.5): a pure-Node OrgAI host inside the CLI process. Same ownership protocol as
  * the Electron host (refuses with exit 6 when another host owns the data dir), its own per-instance socket so
- * `orgai watch` and later `orgai decide` can attach, and a read-only SecretStore with the CLI's environment overlay
- * (no safeStorage outside Electron: stored secrets cannot be decrypted and nothing is ever saved). There is no desktop,
+ * `orgai watch` and later `orgai decide` can attach, and the secret vault (Wave 7, cli-standalone.md 5) with the CLI's
+ * environment overlay: no safeStorage outside Electron, so values the OrgAI app saved only in secrets.json read as
+ * pending-legacy, and values this host stores go to vault.json (created lazily by prepareWrite). There is no desktop,
  * so window:openRun answers desktop_unavailable. Always loaded through a dynamic import (its own chunk,
  * out/cli/inprocHost.mjs). Electron-free; relative imports only.
  */
@@ -16,6 +17,7 @@ import { installLogging, log } from '../main/log'
 import { stopSystemCertRead, trustSystemCertificates } from '../main/systemCerts'
 import { orgaiCliRootsOf, setOrgaiCliRoots } from '../main/runtime/selfControlGate'
 import { openSecretStore, type SecretCipher } from '../main/store/secrets'
+import type { CustodianFactory } from '../main/store/vaultTypes'
 import { openUrl } from './openUrl'
 import { CliError, EXIT, type InprocHostHandle } from './types'
 import { CLI_VERSION } from './version'
@@ -53,6 +55,11 @@ export interface StartInprocHostOptions {
    * (tests); hooks may be injected.
    */
   systemCertificates?: boolean | SystemCertHooks
+  /**
+   * Wave 7 (cli-standalone.md 5.3): the vault's key custodian per scheme. Default: openSecretStore's (unavailable until
+   * the platform custodians are wired in); tests inject fakes.
+   */
+  custodian?: CustodianFactory
 }
 
 /** The certificate setup the in-process host calls (src/main/systemCerts.ts). */
@@ -166,16 +173,16 @@ export async function startInprocHost(opts: StartInprocHostOptions): Promise<Inp
   }
 
   try {
-    // Wave 7 (cli-standalone.md 5.6): open (and later reconcile) the secret store after ownership, before the boot.
-    // Today's read-only store with the CLI's overlay; WP-G makes it the vault without touching this call.
+    // Wave 7 (cli-standalone.md 5.6): open and reconcile the secret vault after ownership, before the boot. A Node or
+    // inproc host never creates a vault here: the first stored value does (prepareWrite, awaited by invokeRpc).
     const secretStore = await openSecretStore({
       dataDir,
       userDataDir,
       hostKind,
       cipher: NO_CIPHER,
-      readOnly: true,
       overlay: opts.overlay,
       env: opts.env,
+      ...(opts.custodian ? { custodian: opts.custodian } : {}),
       log: (m) => log.info(m)
     })
     host = bootOrgAIHost({

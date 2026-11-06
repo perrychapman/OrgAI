@@ -1456,7 +1456,8 @@ export class McpService {
     const slots = slotKind === 'env' ? entry.secretEnv : entry.secretHeaders
     if (!(slots ?? []).includes(auth.header)) throw new Error(`${def.name} has no ${auth.header} slot. Remove it and add it again.`)
     const key = mcpOwnerSecretKey({ libraryId: entry.id }, slotKind, auth.header)
-    if (input.token === null) this.secrets.delete(key)
+    // An explicit clear (Wave 7, cli-standalone.md 5.5): clear() throws when the clear is refused or its save failed.
+    if (input.token === null) this.secrets.clear(key)
     else if (typeof input.token === 'string') this.secrets.set(key, tokenHeaderValue(auth, input.token))
     else throw new Error('The token must be text.')
     this.markConnected({ libraryId: entry.id }, input.token !== null)

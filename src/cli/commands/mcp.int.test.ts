@@ -1,7 +1,7 @@
 /**
  * Integration: `orgai mcp` against a real in-process mock host over its real socket (cli-spec 6.3, Wave 5). The host
- * gets a writable test cipher (a `--host inproc` host normally refuses to save secrets; the desktop and headless hosts
- * save them in safeStorage), so set-secret and the mock OAuth sign-in can be checked end to end. No tokens, no network.
+ * gets a fake key custodian and an open vault (Wave 7: a `--host inproc` host stores secrets in vault.json once a
+ * custodian works), so set-secret and the mock OAuth sign-in can be checked end to end. No tokens, no network.
  */
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -10,18 +10,19 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { Project } from '../../shared/types'
 import type { CliIo } from '../types'
 
-// The host's store comes from openSecretStore (Wave 7, cli-standalone.md 5.6): open it writable with the test cipher.
+// The host's store comes from openSecretStore (Wave 7, cli-standalone.md 5.6): give it a fake key custodian and create
+// the vault up front (the dispatcher's storesSecret predicates, which await prepareWrite per call, land separately).
 vi.mock('../../main/store/secrets', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../main/store/secrets')>()
-  const cipher = {
-    isEncryptionAvailable: () => true,
-    encryptString: (s: string) => Buffer.from(`enc:${s}`),
-    decryptString: (b: Buffer) => b.toString().slice(4)
-  }
+  const { fakeCustody } = await import('../../main/store/vaultTesting')
+  const custody = fakeCustody()
   return {
     ...real,
-    openSecretStore: (opts: Parameters<typeof real.openSecretStore>[0]) =>
-      real.openSecretStore({ ...opts, cipher, readOnly: false, ...(opts.overlay ? { overlay: opts.overlay } : {}) })
+    openSecretStore: async (opts: Parameters<typeof real.openSecretStore>[0]) => {
+      const store = await real.openSecretStore({ ...opts, custodian: custody.factory })
+      await store.prepareWrite()
+      return store
+    }
   }
 })
 

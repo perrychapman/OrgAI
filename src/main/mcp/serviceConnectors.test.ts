@@ -7,6 +7,7 @@ import { CONNECTORS, CONNECTOR_REDIRECT_PORT } from '@shared/connectors'
 import { ProjectStore } from '../store/projects'
 import { McpLibraryStore } from '../store/mcpLibrary'
 import { SecretStore, mcpLibraryOAuthKey, mcpLibrarySecretKey } from '../store/secrets'
+import { faultFs } from '../store/vaultTesting'
 import { McpService } from './service'
 import type { AuthorizeFlowInput } from './oauth'
 import { MOCK_CONNECTOR_ACCOUNT } from './connectors'
@@ -241,6 +242,21 @@ describe('connectors:setToken', () => {
     svc.linkLibrary({ projectId: pid, libraryId: entry.id })
     const link = projects.get(pid)!.mcpServers![0]
     expect(svc.resolve(pid, link).headers).toEqual({ 'X-MCP-Readonly': 'true', Authorization: 'Bearer ghp_123' })
+    svc.connectorsSetToken({ connectorId: 'github', token: null })
+    expect(secrets.get(mcpLibrarySecretKey(entry.id, 'header', 'Authorization'))).toBeUndefined()
+  })
+
+  it('clearing with null is an explicit clear: a save that fails throws and the token stays (Wave 7, WP-G1 review round 2)', () => {
+    const f = faultFs()
+    secrets = new SecretStore(join(dir, 'data'), cipher, { fs: f.fs, log: () => undefined })
+    const svc = build()
+    const { entry } = svc.connectorsAdd({ connectorId: 'github' })
+    svc.connectorsSetToken({ connectorId: 'github', token: 'ghp_1' })
+    f.arm(1, 'fail-from') // a full disk
+    expect(() => svc.connectorsSetToken({ connectorId: 'github', token: null })).toThrow(/still saved/)
+    f.arm()
+    expect(secrets.get(mcpLibrarySecretKey(entry.id, 'header', 'Authorization'))).toBe('Bearer ghp_1')
+    expect(svc.connectorsList().find((c) => c.connector.id === 'github')!.state).toBe('connected')
     svc.connectorsSetToken({ connectorId: 'github', token: null })
     expect(secrets.get(mcpLibrarySecretKey(entry.id, 'header', 'Authorization'))).toBeUndefined()
   })
