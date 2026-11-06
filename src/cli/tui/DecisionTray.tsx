@@ -76,6 +76,12 @@ interface TrayState {
 const NAV_KEYS = new Set(['up', 'down', 'pageup', 'pagedown', 'home', 'end'])
 const NEXT_CARDS_MAX = 3
 
+/** `cards` with the card of `key` moved to the front (unchanged when it is not there). */
+function orderFirst(cards: TrayCard[], key: string): TrayCard[] {
+  const at = cards.findIndex((c) => c.key === key)
+  return at <= 0 ? cards : [cards[at], ...cards.slice(0, at), ...cards.slice(at + 1)]
+}
+
 function keyLabel(k: string): string {
   return k === 'space' ? 'Space' : k === 'enter' ? 'Enter' : k
 }
@@ -148,7 +154,8 @@ export function DecisionTray(props: DecisionTrayProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const cards = props.cards
+  // Enter on an agent row asks for that agent's card first; the rest keep their order. A key that is no longer open is ignored.
+  const cards = props.focusKey ? orderFirst(props.cards, props.focusKey) : props.cards
   const top: TrayCard | undefined = cards[0]
   const topKey = top?.key
 
@@ -502,7 +509,8 @@ export function DecisionTray(props: DecisionTrayProps) {
   const guardMark = st.guardHint && !guard.accepts(now()) ? ` ${g.ellipsis}` : ''
 
   if (props.variant === 'footer') {
-    const text = modeLine ?? (st.status ? `${title} · ${st.status.text}` : `${top.runTag} ${title} · ${hintsFor(top, env)}`)
+    const who = top.agentLabel ? `${top.agentLabel}: ` : ''
+    const text = modeLine ?? (st.status ? `${title} · ${st.status.text}` : `${top.runTag} ${who}${title} · ${hintsFor(top, env)}`)
     return (
       <Box width={width}>
         <Text wrap="truncate-end" color={modeLine ? toneColor('warn', env) : undefined}>
@@ -515,7 +523,7 @@ export function DecisionTray(props: DecisionTrayProps) {
 
   const shown = detail.slice(st.scroll, st.scroll + bodyRows)
   const q = top.kind === 'question' && st.question?.key === top.key ? st.question : undefined
-  const header = `Needs you (${cards.length}) ${g.bullet} ${top.runTag} ${cardKindWord(top)}: ${title}`
+  const header = `Needs you (${cards.length}) ${g.bullet} ${top.runTag} ${g.bullet} ${top.agentLabel ? `${top.agentLabel} ${g.bullet} ` : ''}${cardKindWord(top)}: ${title}`
   return (
     <Box flexDirection="column" width={width}>
       <Text bold color={toneColor('warn', env)} wrap="truncate-end">

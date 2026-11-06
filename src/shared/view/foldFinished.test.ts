@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import type { AgentInstance } from '@shared/types'
-import { earlierKey, isEarlierKey } from './chainView'
+// chainView.ts (renderer) owns these two; the fold only sees opaque keys, so the test uses the same shape.
+const earlierKey = (runId: string): string => `earlier:${runId}`
+const isEarlierKey = (key: string): boolean => key.startsWith('earlier:')
 import { COLLAPSE_GRACE_MS, SETTLE_TIMER_FLOOR_MS, foldFinished, groupParentOf, isSettledAt, nextSettleAt, settleTimerDelay, type FoldResult } from './foldFinished'
 
 const ag = (id: string, parentId: string | null, state = 'done'): AgentInstance => ({ id, parentId, state }) as unknown as AgentInstance

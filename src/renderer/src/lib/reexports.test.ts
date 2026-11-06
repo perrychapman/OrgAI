@@ -37,6 +37,13 @@ const EXPECTED_EXPORTS: Readonly<Record<string, readonly string[]>> = {
     'permissionTitle', 'proposalKindLabel', 'proposalTitle', 'questionTitle', 'rulesTitle', 'shellAction',
     'shellSegments'
   ],
+  agentTree: [
+    'AGENT_LABEL_MAX', 'agentLabel', 'ancestorsOf', 'hasLiveDescendant', 'normalizeParents', 'splitLabelTail'
+  ],
+  foldFinished: [
+    'COLLAPSE_GRACE_MS', 'SETTLE_TIMER_FLOOR_MS', 'foldFinished', 'groupParentOf', 'isSettledAt', 'nextSettleAt',
+    'settleTimerDelay'
+  ],
   hiddenChars: [
     'HIDDEN_CHARS', 'HIDDEN_CLASS', 'HIDDEN_OR_CONTROL_RUN', 'hasHidden', 'showHidden'
   ],

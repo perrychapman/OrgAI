@@ -83,13 +83,17 @@ export const TUI_TRANSCRIPT_MAX = 5000
 export const TUI_NOTICE_MAX = 20
 /** Resolved-card infos kept (for "Resolved in another window"). */
 export const TUI_RESOLVED_MAX = 50
+/** Agent-to-agent messages kept per run (counts only, never the text). */
+export const TUI_MESSAGES_MAX = 200
+/** A row whose agent sent or got a message this recently shows the traffic mark. */
+export const TUI_TRAFFIC_MS = 10_000
 
 // ---------- Modes and environment ----------
 
 export type BufferMode = 'fullscreen' | 'inline'
 export type LayoutMode = 'split' | 'stacked'
 export type PaneId = 'tree' | 'transcript' | 'plan' | 'worktrees'
-export type FocusTarget = PaneId | 'composer' | 'tray' | 'palette' | 'onboarding'
+export type FocusTarget = PaneId | 'composer' | 'tray' | 'palette' | 'onboarding' | 'inspector'
 export type Tone = 'ok' | 'warn' | 'danger' | 'dim' | 'accent' | 'running'
 export type ConnectionState = 'connecting' | 'live' | 'reconnecting' | 'gone'
 
@@ -165,6 +169,74 @@ export interface OrgTreeRow {
   /** An agent of an earlier chain member. */
   earlier?: boolean
   worktree?: { branch: string; status: WorktreeStatus }
+  // ---- Fold (F1) and row facts (F2, F5, F10); every field optional so plain rows stay valid ----
+  /** 'group' is a folded "N done" row (default 'agent'). */
+  kind?: 'agent' | 'group'
+  /** The role name adds nothing beside the label (false: drop it from the row). Default true. */
+  roleShown?: boolean
+  /** Row id of the visible parent (agent rows). */
+  parentId?: string
+  /** Group: how many agents it folds, and how many of those failed. */
+  count?: number
+  failed?: number
+  /** Group: the key `expanded` uses (a visible agent's id, or an earlier-session key) and the folded agent ids (direct reports first). */
+  groupKey?: string
+  members?: string[]
+  /** Agent row of an earlier session: the key of its session group (to fold it back). */
+  earlierKey?: string
+  /** Open decision cards of this agent. */
+  waiting?: number
+  /** Worktree chip text ("2f", "review", "conflict", "held"). */
+  worktreeChip?: string
+  /** Messages this agent sent / got (F6): per peer, counted over the kept messages. */
+  msgOut?: PeerCount[]
+  msgIn?: PeerCount[]
+  /** A message to or from this agent in the last TUI_TRAFFIC_MS. */
+  traffic?: boolean
+}
+
+/** One peer of an agent's message traffic: its sanitized label and how many messages. */
+export interface PeerCount {
+  label: string
+  count: number
+}
+
+/** One agent-to-agent message the TUI keeps (no text: it is untrusted and already in the transcript). */
+export interface RunMessageRec {
+  from: string
+  to: string | null
+  toHandle: string
+  at: number
+}
+
+/** The agent inspector's facts (every field sanitized; missing facts are left out). */
+export interface InspectorView {
+  id: string
+  runId: string
+  label: string
+  role: string
+  state: AgentState
+  stateWord: string
+  model?: string
+  wall?: string
+  tokensIn?: string
+  tokensOut?: string
+  cost?: string
+  turns?: number
+  toolCalls?: number
+  activity?: string
+  worktree?: { branch: string; status: WorktreeStatus; files: number; mergeTarget: 'main' | 'parent' }
+  waiting: number
+  msgOut: PeerCount[]
+  msgIn: PeerCount[]
+}
+
+/** A live run as a status-bar chip (F8). */
+export interface RunChip {
+  tag: string
+  runId: string
+  followed: boolean
+  needsYou: boolean
 }
 
 export type TranscriptRowKind = 'user' | 'text' | 'thinking' | 'tool' | 'result' | 'system' | 'harness' | 'divider' | 'error' | 'log'
@@ -228,6 +300,8 @@ export interface StatusSummary {
   costText?: string
   needsYou: number
   liveRuns: number
+  /** Live runs of the project as chips (R1* R2!), oldest first. */
+  runChips?: RunChip[]
   hostKind?: HostKind
   connection: ConnectionState
   readOnlyReason?: string
@@ -257,6 +331,9 @@ export type TrayCard = {
   projectKind?: ProjectKind
   /** Arrival order (TuiState.cardSeq at arrival). */
   arrivedSeq: number
+  /** The agent the card is about (every card kind carries one) and its sanitized label. */
+  agentId?: string
+  agentLabel?: string
 } & (
   | { kind: 'permission'; card: PermissionRequest }
   | { kind: 'rules'; card: PermissionRuleRequest }
@@ -302,6 +379,8 @@ export interface TuiRun {
   omitted?: number
   /** The run's full record (runs:get / snapshot activeRun) has been applied. */
   recordLoaded: boolean
+  /** Newest TUI_MESSAGES_MAX agent.message events (TUI-local). */
+  messages?: RunMessageRec[]
 }
 
 export interface TuiNotice {
@@ -374,6 +453,8 @@ export interface TuiSessionApi {
   decide(call: DecisionCall): Promise<DecisionOutcome>
   worktreeDiff(branch: string): Promise<WorktreeDiff>
   listRuns(): Promise<RunSummary[]>
+  /** An Org retrospective of an ended work run (setup:retro, operate scope); follows the new run. */
+  startRetro(runId?: string): Promise<RunSummary>
   openInDesktop(runId?: string): Promise<void>
   /** Re-subscribe after SIGCONT or a reconnect. */
   resync(): Promise<void>
@@ -391,6 +472,10 @@ export interface LayoutInput {
   visible: Record<PaneId, boolean>
   trayRows: number
   composerRows: number
+  /** Rows the tree would like (title, rows, footer line); the stacked layout gives it that much up to half the body. */
+  treeRows?: number
+  /** Rows the worktrees pane would like (split layout: it takes no more than that). */
+  worktreeRows?: number
 }
 
 export interface PaneBox {
@@ -434,12 +519,37 @@ export interface OrgTreePaneProps extends PaneProps {
   rows: OrgTreeRow[]
   selectedId?: string
   onSelect?(id: string): void
+  /** Right / Enter on a folded group. */
+  onExpand?(row: OrgTreeRow): void
+  /** Left: fold back the group the row (or its nearest expanded ancestor) opened. */
+  onCollapse?(row: OrgTreeRow): void
+  /** `h`: Hide finished agents on / off. */
+  onToggleFold?(): void
+  /** `z`: root the tree at this agent; `Z` / Backspace: back one level. */
+  onZoom?(row: OrgTreeRow): void
+  onUnzoom?(): void
+  /** The tree is rooted at an agent (breadcrumb in the title). */
+  zoomPath?: string
+  /** Whether finished agents are folded (hint text). */
+  folded?: boolean
+  /** Enter on a row whose agent has an open card: focus the tray on that agent's card. */
+  onFocusCard?(row: OrgTreeRow): void
+  /** Enter on any other agent row (hook for the inspector; a no-op until it exists). */
+  onActivate?(row: OrgTreeRow): void
+  /** A one-line notice (nothing to jump to ...). */
+  onNotice?(text: string): void
+  /** "Plan 2/5" while the plan pane is hidden. */
+  planChip?: string
 }
 
 export interface TranscriptPaneProps extends PaneProps {
   rows: TranscriptRow[]
   partials: PartialRow[]
   omitted?: number
+  /** The focus target the scroll keys register under (default 'transcript'; the inspector uses 'inspector'). */
+  focusTarget?: FocusTarget
+  /** Keys the host pane handles first (the inspector's d / w / t / u). */
+  extraKeys?(e: InputEvent): boolean
 }
 
 export interface PlanPaneProps extends PaneProps {
@@ -469,6 +579,8 @@ export interface DecisionTrayProps {
   onViewText(title: string, text: string): Promise<void>
   onLeave(): void
   now?: () => number
+  /** Card key to show first (Enter on an agent row): the tray shows that card on top while it is open. */
+  focusKey?: string
 }
 
 export type ComposerMode = 'start' | 'send' | 'continue' | 'quick' | 'readOnly'
@@ -490,6 +602,16 @@ export interface SlashContext {
   notify(text: string, tone?: Tone): void
   setFocus(t: FocusTarget): void
   togglePane(p: PaneId): void
+  /** Maximise the transcript (hide every other pane), or bring the panes back. */
+  toggleFocusMode?(): void
+  /** A selectable runs list (Enter opens, c continues, r retro); without it /runs prints a table. */
+  openRuns?(runs: RunSummary[]): void
+  /** /retro: confirm, start the Org retrospective of the active run and follow it. */
+  startRetro?(): Promise<void>
+  /** /agent <name>: open that agent's inspector. */
+  openAgent?(arg: string): void
+  /** Hide finished agents on / off (optional: older test contexts lack it). */
+  toggleFold?(): void
   newRun(opts: { prompt?: string; team?: RunTeam }): Promise<void>
   switchRun(ref: string): Promise<void>
   confirm(question: string): Promise<boolean>

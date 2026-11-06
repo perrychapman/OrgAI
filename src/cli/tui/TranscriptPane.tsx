@@ -167,8 +167,9 @@ function FullTranscript(props: TranscriptPaneProps) {
   }
 
   useFocusHandler(
-    'transcript',
+    props.focusTarget ?? 'transcript',
     (e) => {
+      if (props.extraKeys?.(e)) return true
       const k = navKey(e)
       if (!k) return false
       const cur = topRef.current
