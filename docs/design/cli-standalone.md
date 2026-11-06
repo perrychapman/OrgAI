@@ -1,8 +1,9 @@
 # Standalone `orgai` (cli-spec Wave 7): design spec
 
-Status: draft 7, 2026-11-05. Revised after review rounds 1-5; round 6 folded in as binding implementation rules (13) (GPT Astra, Gemini Argon; resolutions in section
-13). Builds on `docs/design/cli-spec.md` (Waves 0-6, landed on dev). Owner decisions
-are marked **D1..D8**; each has a recommended default.
+Status: implemented on wave7/standalone-cli (not merged), 2026-11-06. Written as draft 7, 2026-11-05, revised after
+review rounds 1-5; round 6 was folded in as binding implementation rules (13) (GPT Astra, Gemini Argon; resolutions in
+section 13). Builds on `docs/design/cli-spec.md` (Waves 0-6, landed on dev; Wave 7 entry in its "Implementation
+status"). Owner decisions are marked **D1..D10**; D1 and D10 are decided (below), the rest keep their recommended default.
 
 Every fact says how it was checked: "code" = read from the repo at 15766cc, "measured" = observed on this Mac,
 "unverified" = from memory, docs or typings, not checked here.
@@ -829,7 +830,7 @@ Anything only checked by unit tests or fakes stays marked unverified in CLAUDE.m
 
 | | Question | Recommended |
 | --- | --- | --- |
-| D1 | Package name `orgai` or `@orgai/cli` | **Decided 2026-11-06: `orgai-cli`** (npm refused `orgai`); bin `orgai` |
+| D1 | Package name `orgai` or `@orgai/cli` | **Decided (owner, 2026-11-06): `orgai-cli`** (npm refused `orgai`); bin `orgai`. Built and in use throughout the code |
 | D2 | npm trusted publishing (OIDC) or an automation token; a manual approval before `publish-npm` | trusted publishing, with approval |
 | D3 | OS tools as child processes, or a native keyring addon (`@napi-rs/keyring`, N-API, one build for Node and Electron; a supply-chain dependency with per-platform prebuilds) | child processes; revisit if the custodian probes are unreliable |
 | D4 | Agent-reachable vault key on all platforms, including the macOS weakening | accept, documented |
@@ -1043,3 +1044,55 @@ already covered by 4.3.
 12. **Inproc owner** (parallel PR #18 work in progress on dev: `ownerProof`). 4.2.1's "inproc always enabled and full"
     becomes: an inproc host always accepts its owner's client (owner proof) with every scope, whatever the stored
     choice; other clients of that host follow Terminal access like any host. Reconcile with that change at merge.
+
+---
+
+## 14. Implementation notes (wave7/standalone-cli)
+
+Written after the build, from the code on the branch. Phases A and B are built; C (archive) and D (fuse) are not.
+Deviations from this spec, each checked against the code:
+
+1. **Package and shrinkwrap.** The package is `orgai-cli` (D1). `NPM_SHRINKWRAP=none` in release.yml and ci.yml (D10, to
+   revisit), so 3.1's `npm-shrinkwrap.json` is not published; `--no-shrinkwrap` is what both workflows pass, the full path
+   stays behind the setting and CI dry-runs it. verify-npm step 1b is skipped after any failed step 1. `engines.node` is
+   `>=22.19.0 <23 || >=24.5.0` (from typings and memory, unverified).
+2. **Publish gate.** `publish-npm` also refuses unless the `npm-publish` environment's variable `NPM_PUBLISH_ENABLED` is
+   'true' (3.4 asks only for an approval); the checklist is in CLAUDE.md.
+3. **Section 2 wording (Round 6 item 7).** release.yml has three desktop build jobs on two OSes and no Linux leg; Linux is
+   covered only by verify-npm.
+4. **Host selection (4.1).** Instead of attaching to any live host, a command first waits out an 'inproc' host it did not start
+   and that is not marked shared (`run/inproc-shared-<id>`, written by `daemon start --host inproc`), also under `--host
+   daemon`, then exits 6 if it stays (Round 6 did not cover this; found in review). A dev checkout missing its build or
+   electron binary is `broken`, never a fall-through. `ORGAI_SECRET_*` names are refused as `--from-env` sources.
+5. **Node host and Terminal access (4.2).** `daemon restart` runs every check that can fail (`nodeHostRefusal`,
+   `checkBackground`, the level question, settings readability) before the old host stops; the level answer is stored
+   after the stop. A stored 'full' counts as chosen. `HostTakenError` reports a host of another kind that won the race.
+   The Node host refuses a socket `settings:set` that turns Terminal access off. The log is rotated only at a start that
+   finds no live host; a running host's log is not capped.
+6. **Shutdown (4.3).** `quitGate.ts` is deleted; the `ShutdownCoordinator` replaces it. `will-quit` only closes the socket. The
+   hard limit kills descendants from the process table (Round 6 item 5), not just tracked children. `mcp:authorize` leases only
+   its commit (item 9); `draft:orgChart` keeps its lease and is aborted by quiesce.
+7. **Handoff (4.4).** The first, non-forced stop keeps "no answer within 5 s is unavailable"; after a user-confirmed forced stop a
+   timeout or closed connection counts as stopping. The exit poll signals every 250 ms and re-reads the start time every 30 s.
+   An empty `handoffBlockers` means the run state could not be read. A host that hangs after a confirmed forced stop leaves the
+   app waiting (only Quit); no upper bound is built.
+8. **Vault (5).** Explicit clears throw, removals never do. An unreadable `vault.json` reports 'locked' with the I/O reason, an
+   unreadable `secrets.json` refuses writes on every host. Creation keeps a private copy of the key until the commit. Retirement
+   (5.5) and the app's soft-delete notice are not built; `secrets confirmDelete` exists as a channel but not as a CLI command.
+   `connections:logout('litellm')` and `revokeAuth` use `clear()`. Claude's secret MCP values and the OAuth bearer leave the
+   child's argv. `ORGAI_VAULT_NO_OS_KEYSTORE=1` (set by the unit runner) and the desktop's `ORGAI_MOCK=1` placeholder keep tests and e2e off
+   the OS key stores; the mock inproc host uses an OS store never, a key file only.
+9. **Custodians (5.3).** keychain exit codes are classified before wording and only a `security: ` line's message counts with exit
+   0; a failed read-back removes the new item; macOS key files get an `ls -le` allow-entry check (deny entries accepted).
+   `CustodianFactoryOptions.currentCustody` lets the factory follow the vault's recorded custody.
+10. **Gate (8.4).** "OrgAI Vault" is denied after `security` and the keyring front ends, not in any word (agents must be able
+    to grep the sources). Added: getopt-style `security` options, `launchctl` / `script` unwrapping, single-letter bracket globs,
+    `/proc/<pid>/environ` and `ps` environment flags, `localDrivePathOf` for device and admin-share paths in definite mode.
+11. **Runtimes (6).** `.js` / `.mjs` / `.cjs` are refused for `ORGAI_CLAUDE_PATH`; a POSIX `#!` wrapper or npm shim in
+    `ORGAI_CODEX_PATH` with no package is used as is (the user's choice); a Windows `.cmd` / `.ps1` there is refused.
+12. **Terminal row (8.2).** `shimInstaller` `otherCli` prefers an npm or archive `orgai` anywhere on PATH; the shim path counts as ours
+    only while an OrgAI shim sits there.
+13. **Not built.** The archive (3.2), the fuse and the app-bundled CLI retirement (9), `secrets.json` retirement, the soft-delete
+    notice, a log cap for a running Node host, the certificate reader through `utilityProcess` (9.1).
+14. **Unverified.** See CLAUDE.md "CLI & host", Wave 7, and ARCHITECTURE.md Risks: Windows and Linux, real key stores, the real
+    registry and shrinkwrap behaviour, packaged builds, `scripts/probe-custodian.mjs` (not run), the engines floor.
