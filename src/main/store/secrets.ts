@@ -49,6 +49,7 @@ import {
   VaultNotReady,
   isCustodyFailure,
   vaultStateForFailure,
+  type CustodianCreated,
   type CustodianFactory,
   type CustodianRequest,
   type CustodyFailure,
@@ -184,11 +185,25 @@ export const SECURE_STORAGE_UNAVAILABLE_MESSAGE = 'Secure storage is not availab
 /** A value the app's safeStorage cannot decrypt (another user, a damaged string, a host without safeStorage). */
 export const UNDECRYPTABLE_REASON = 'Saved by the OrgAI app and cannot be read here'
 
-/** secrets.json does not parse: legacy-only writes refuse rather than overwrite it (5.5 Legacy file states). */
-export const LEGACY_CORRUPT_MESSAGE = "The OrgAI app's secrets file (secrets.json) is damaged, so OrgAI does not change it; run `orgai doctor` for details."
+/**
+ * secrets.json does not parse: legacy-only writes refuse rather than overwrite it (5.5 Legacy file states). secrets:reset
+ * moves it aside (review round 1), which also starts the secret vault over.
+ */
+export const LEGACY_CORRUPT_MESSAGE =
+  "The OrgAI app's secrets file (secrets.json) is damaged, so OrgAI does not change it; `orgai secrets reset` moves it aside (and starts the secret vault over)."
 
 /** Mutations refused until the reconcile after a failed save succeeds (5.5 Durability and failures). */
 export const VAULT_RECOVERY_MESSAGE = 'A save did not finish and OrgAI could not check the saved secrets again yet; try again, or check with `orgai secrets status`.'
+
+/** A custodian failure that is not a classified CustodyFailure (a helper bug, an unexpected throw). */
+export const KEY_STORE_UNREACHABLE_MESSAGE = 'The key store could not be reached.'
+
+/** A new vault's own save failed (a disk error such as ENOSPC or EIO), not the key store (review round 1). */
+export const vaultSaveFailedMessage = (detail: string): string => `OrgAI could not save the new secret vault (${detail}); try again when the disk works.`
+
+/** secrets:reset could not move a file aside (it is still in place). */
+export const VAULT_MOVE_FAILED_MESSAGE = 'vault.json could not be moved aside.'
+export const LEGACY_MOVE_FAILED_MESSAGE = 'The damaged secrets.json could not be moved aside.'
 
 export const NOTHING_TO_RESTORE_MESSAGE = 'No deleted value is kept for this secret.'
 export const NO_CUSTODIAN_MESSAGE = 'No key store is available on this system; set ORGAI_VAULT_KEY_FILE or run `orgai secrets init --key-file <path>`.'
@@ -219,6 +234,34 @@ class CommitError extends Error {
     super(outcome === 'indeterminate' ? VAULT_MESSAGES.notDurable : failure instanceof Error ? failure.message : String(failure))
     this.name = 'CommitError'
   }
+}
+
+/**
+ * A creation whose save of the new vault.json failed (a disk error, not the key store). The message is the disk's
+ * reason, or VAULT_MESSAGES.notDurable when the outcome is not known; `detail` is for logs (never a value).
+ */
+class VaultSaveError extends Error {
+  readonly detail: string
+  constructor(e: unknown) {
+    const indeterminate = e instanceof CommitError && e.outcome === 'indeterminate'
+    const failure = e instanceof CommitError ? e.failure : e
+    const detail = failure instanceof Error ? failure.message : 'error'
+    super(indeterminate ? VAULT_MESSAGES.notDurable : vaultSaveFailedMessage(detail))
+    this.detail = detail
+    this.name = 'VaultSaveError'
+  }
+}
+
+/** The custody steps that run one at a time (single-flight). */
+type FlightLabel = 'open' | 'prepare' | 'retry' | 'init' | 'reset'
+
+/** A key the custodian made for a vault whose save failed, kept for the next creation attempt. */
+interface PendingCreate {
+  scheme: VaultCustodyScheme
+  keyFile?: string
+  importKeyFile: boolean
+  vaultId: string
+  created: CustodianCreated
 }
 
 type CommitStep =
@@ -272,8 +315,13 @@ export class SecretStore implements SecretStoreApi {
   private recovering = false
   /** Keys a removal had to leave where they were (5.5 Deletes), counted by doctor. */
   private readonly orphaned = new Set<string>()
+  /** Why the last creation's own save failed (a disk error): reported instead of a custody reason. */
+  private createSaveError: string | undefined
+  /** The custodian's key for a vault whose save failed: the next creation reuses it instead of making another item. */
+  private pendingCreate: PendingCreate | undefined
   /** The one asynchronous custody operation in flight (create, open, init, reset): single-flight. */
   private flight: Promise<unknown> | undefined
+  private flightLabel: FlightLabel | undefined
   private retryTimer: ReturnType<typeof setInterval> | undefined
   private lastFocusRetry = 0
   private acquireLease: ((label: string) => () => void) | undefined
@@ -737,7 +785,15 @@ export class SecretStore implements SecretStoreApi {
     this.commit([{ kind: 'vault', next }])
   }
 
-  /** Write 3 of 5.5: an app host whose vault is not open writes secrets.json only, as before (the next open imports it). */
+  /**
+   * Write 3 of 5.5: an app host whose vault is not open writes secrets.json (the next open imports it, row 4). When
+   * vault.json parses (locked, missing-key, key-mismatch) and the new value string would not read as newer than the
+   * vault (its hash equals B or T.legacyHash: safeStorage is deterministic on macOS and Linux, so saving the value B was
+   * taken from again gives the same string), a metadata-only vault write first drops B and T.legacyHash for the key,
+   * so the save reads back now and row 4 imports it on unlock instead of row 5 writing an older vault value over it
+   * (review round 1). Vault first: a failure between the two leaves the earlier secrets.json value, which then has the
+   * same bytes as the new one (H = B), so reads converge to the new value; a failure at the vault write changes nothing.
+   */
   private writeLegacyOnly(key: string, value: string): void {
     if (this.legacy.state === 'corrupt') throw new Error(LEGACY_CORRUPT_MESSAGE)
     if (!this.cipherAvailable()) throw new Error(SECURE_STORAGE_UNAVAILABLE_MESSAGE)
@@ -745,7 +801,17 @@ export class SecretStore implements SecretStoreApi {
     const next = dict<string>()
     for (const [k, l] of Object.entries(this.legacyValues())) next[k] = l
     next[key] = back
-    this.commit([{ kind: 'legacy', next }])
+    const steps: CommitStep[] = []
+    const v = this.vault
+    if (v && !legacyIsNewer(v, key, sha256Hex(back))) {
+      const meta = cloneVault(v)
+      setBaseline(meta, key, undefined)
+      const t = Object.hasOwn(meta.tombstones, key) ? meta.tombstones[key] : undefined
+      if (t) delete t.legacyHash
+      steps.push({ kind: 'vault', next: meta })
+    }
+    steps.push({ kind: 'legacy', next })
+    this.commit(steps)
   }
 
   // ---------- Deletes (5.5 Deletes) ----------
@@ -830,7 +896,10 @@ export class SecretStore implements SecretStoreApi {
       // that finds nothing newer keeps what an earlier tombstone of this key still holds.
       if (l !== undefined && legacyIsNewer(v, k, h)) t.prevLegacy = l
       else if (e) t.prev = { iv: e.iv, ct: e.ct, tag: e.tag }
-      else if (old && (old.prev || old.prevLegacy !== undefined)) t = { ...old, by: 'vault' }
+      else if (old && (old.prev || old.prevLegacy !== undefined)) {
+        t = { ...old, by: 'vault' }
+        delete t.legacyHash
+      }
       if (l !== undefined && h !== undefined) {
         t.legacyHash = h
         legacyTargets.push(k)
@@ -838,8 +907,15 @@ export class SecretStore implements SecretStoreApi {
       step1.tombstones[k] = t
       delete step1.entries[k]
     }
+    // Step 3 drops B and T.legacyHash: the targeted legacy value is gone, and safeStorage is deterministic on macOS and
+    // Linux, so a later save of the same value (an older app, or this app in legacy-only mode) has the same hash and
+    // must read as new, not as this delete's target (review round 1).
     const step3 = cloneVault(step1)
-    for (const k of present) setBaseline(step3, k, undefined)
+    for (const k of present) {
+      setBaseline(step3, k, undefined)
+      const t3 = Object.hasOwn(step3.tombstones, k) ? step3.tombstones[k] : undefined
+      if (t3) delete t3.legacyHash
+    }
     if (!legacyTargets.length || this.legacy.state !== 'ok') {
       // No legacy copy to remove: steps 1 and 3 in one write.
       this.commit([{ kind: 'vault', next: step3 }])
@@ -854,13 +930,16 @@ export class SecretStore implements SecretStoreApi {
   // ---------- Opening, creating, retrying (5.6) ----------
 
   /** Run `fn` as the one custody operation in flight; a background one holds a lease once the host exists. */
-  private startFlight<T>(label: string, fn: () => Promise<T>): Promise<T> {
+  private startFlight<T>(label: FlightLabel, fn: () => Promise<T>): Promise<T> {
     const release = this.acquireLease?.(`secret vault ${label}`)
     // fn starts on the next microtask, so `flight` is set before any of it runs.
     const p: Promise<T> = Promise.resolve()
       .then(fn)
       .finally(() => {
-        if (this.flight === p) this.flight = undefined
+        if (this.flight === p) {
+          this.flight = undefined
+          this.flightLabel = undefined
+        }
         try {
           release?.()
         } catch {
@@ -868,18 +947,23 @@ export class SecretStore implements SecretStoreApi {
         }
       })
     this.flight = p
+    this.flightLabel = label
     return p
   }
 
-  /** Wait for the flight in progress (its outcome is not ours to report). */
-  private async settleFlight(): Promise<void> {
+  /**
+   * Wait until no custody step is in flight, then start `fn` as the next one. The check and the start run in the same
+   * synchronous step after the last await, so two callers that waited for the same flight never both start one.
+   */
+  private async runExclusive<T>(label: FlightLabel, fn: () => Promise<T>): Promise<T> {
     while (this.flight) {
       try {
         await this.flight
       } catch {
-        // the caller re-evaluates the state
+        // its outcome is not ours to report; the state is re-evaluated by fn
       }
     }
+    return this.startFlight(label, fn)
   }
 
   /**
@@ -889,8 +973,7 @@ export class SecretStore implements SecretStoreApi {
    */
   async openVault(): Promise<void> {
     if (this.readOnly) return
-    await this.settleFlight()
-    await this.startFlight('open', async () => {
+    await this.runExclusive('open', async () => {
       if (this.vault) await this.openExisting()
       else if (this.vstate === 'absent' && this.isApp) {
         try {
@@ -905,15 +988,37 @@ export class SecretStore implements SecretStoreApi {
 
   private failureOf(e: unknown): CustodyFailure {
     if (isCustodyFailure(e)) return { kind: e.kind, reason: e.reason }
-    return { kind: 'unavailable', reason: 'The key store could not be reached.' }
+    return { kind: 'unavailable', reason: KEY_STORE_UNREACHABLE_MESSAGE }
   }
 
+  /** The sentence for a failed creation: the disk's reason for a failed save of vault.json, else the custodian's. */
+  private createFailureReason(e: unknown): string {
+    return e instanceof VaultSaveError ? e.message : this.failureOf(e).reason
+  }
+
+  /**
+   * A creation failed. A failed save of the new vault.json (a disk error: VaultSaveError) is reported with the disk's
+   * reason and is not a custody failure: lastFailure is cleared (the key store worked), and the key the custodian made is
+   * kept for the next attempt (pendingCreate), so retries never leave one more OS key item each.
+   */
   private noteCreateFailure(e: unknown): void {
     if (this.vstate === 'open') return // created, but its save was not known to be durable: the caller got that error
-    const f = this.failureOf(e)
-    this.lastFailure = f
-    this.log(`could not create the vault (${f.kind}); ${this.isApp ? 'using secrets.json only until it can' : 'nothing stored'}`)
+    if (e instanceof VaultSaveError) {
+      this.createSaveError = e.message
+      this.lastFailure = undefined
+      this.log(`could not save the new vault (${e.detail}); ${this.isApp ? 'using secrets.json only until it can' : 'nothing stored'}`)
+    } else {
+      const f = this.failureOf(e)
+      this.lastFailure = f
+      this.createSaveError = undefined
+      this.log(`could not create the vault (${f.kind}); ${this.isApp ? 'using secrets.json only until it can' : 'nothing stored'}`)
+    }
     if (this.isApp) this.startRetryTimer()
+  }
+
+  private discardPendingCreate(): void {
+    if (this.pendingCreate) zeroize(this.pendingCreate.created.dek)
+    this.pendingCreate = undefined
   }
 
   private custodyRequestFor(custody: VaultCustody, override?: CustodianRequest): { custody: VaultCustody; request: CustodianRequest } {
@@ -961,6 +1066,8 @@ export class SecretStore implements SecretStoreApi {
     this.vstate = 'open'
     this.reason = undefined
     this.lastFailure = undefined
+    this.createSaveError = undefined
+    this.discardPendingCreate()
     this.stopRetryTimer()
     this.tryRecover()
     return true
@@ -969,7 +1076,9 @@ export class SecretStore implements SecretStoreApi {
   /**
    * Create a vault (never while vault.json exists): the custodian makes the key, vault.json is re-checked after that
    * call (an existing vault is opened instead), written with its check record, and then reconciled (an app host
-   * imports every legacy key). Throws the custodian's failure.
+   * imports every legacy key). Throws the custodian's failure (CustodyError), or VaultSaveError when the new vault.json
+   * could not be saved; then the custodian's key is kept in memory for the next attempt (pendingCreate), so a disk error
+   * that lasts never leaves one more OS key item per retry.
    */
   private async createVault(request?: CustodianRequest): Promise<'created' | 'opened'> {
     const scheme: VaultCustodyScheme | null = request?.keyFile ? 'key-file' : this.newScheme()
@@ -979,11 +1088,23 @@ export class SecretStore implements SecretStoreApi {
       const problem = req.keyFile ? this.keyFileProblem(req.keyFile) : 'No key file was named.'
       if (problem) throw new CustodyError('denied', problem)
     }
-    const vaultId = newVaultId()
-    const created = await this.factory(scheme, req).create(vaultId)
-    if (!isDek(created.dek)) {
-      zeroize(created.dek)
-      throw new CustodyError('unavailable', 'The key store returned an unusable key.')
+    let vaultId: string
+    let created: CustodianCreated
+    const pending = this.pendingCreate
+    if (pending && pending.scheme === scheme && pending.keyFile === req.keyFile && pending.importKeyFile === (req.importKeyFile === true)) {
+      // The key store already made a key for a vault whose save failed: use it instead of making another item.
+      this.pendingCreate = undefined
+      vaultId = pending.vaultId
+      created = pending.created
+    } else {
+      // Another scheme or key file: the earlier item stays orphaned (one at most), its key leaves memory.
+      this.discardPendingCreate()
+      vaultId = newVaultId()
+      created = await this.factory(scheme, req).create(vaultId)
+      if (!isDek(created.dek)) {
+        zeroize(created.dek)
+        throw new CustodyError('unavailable', 'The key store returned an unusable key.')
+      }
     }
     // Re-check after the custodian call: never overwrite a vault that appeared meanwhile; open it instead.
     const onDisk = readVaultFile(this.vaultPath, this.fs)
@@ -1013,15 +1134,23 @@ export class SecretStore implements SecretStoreApi {
     } catch (e) {
       // Recovery (an indeterminate save) may have found the new vault on disk and opened it with this key.
       if ((this.vstate as VaultState) !== 'open') {
+        this.pendingCreate = {
+          scheme,
+          ...(req.keyFile !== undefined ? { keyFile: req.keyFile } : {}),
+          importKeyFile: req.importKeyFile === true,
+          vaultId,
+          created: { ...created, dek: Buffer.from(created.dek) }
+        }
         this.dropKey()
         this.vault = undefined
         this.vstate = 'absent'
       }
-      throw e instanceof CommitError && e.outcome === 'indeterminate' ? new Error(VAULT_MESSAGES.notDurable) : e
+      throw new VaultSaveError(e)
     }
     this.vstate = 'open'
     this.reason = undefined
     this.lastFailure = undefined
+    this.createSaveError = undefined
     this.stopRetryTimer()
     this.log(`created a ${scheme} vault`)
     this.tryRecover()
@@ -1048,35 +1177,47 @@ export class SecretStore implements SecretStoreApi {
       if (!this.cipherAvailable()) throw new Error(SECURE_STORAGE_UNAVAILABLE_MESSAGE)
       return
     }
-    if (this.vstate === 'absent') throw new Error(this.lastFailure?.reason ?? VAULT_NOT_OPENED_MESSAGE)
+    if (this.vstate === 'absent') throw new Error(this.createSaveError ?? this.lastFailure?.reason ?? VAULT_NOT_OPENED_MESSAGE)
     throw new Error(this.notOpenReason())
+  }
+
+  /** One create or open attempt (prepareWrite, retryOpen). Never throws: the outcome is in the store's state. */
+  private async custodyStep(need: 'create' | 'open'): Promise<void> {
+    if (need === 'create') {
+      try {
+        await this.createVault()
+      } catch (e) {
+        this.noteCreateFailure(e)
+      }
+    } else await this.openExisting()
   }
 
   /**
    * Single-flight (5.6): create the vault (absent, Node / inproc hosts) or retry opening it (locked; missing-key with a
-   * key file) before a handler stores a value. Concurrent callers share one custodian call. Resolves when set() may
-   * store; rejects with the reason it may not.
+   * key file) before a handler stores a value. Concurrent callers share one custodian call: a prepare already in flight
+   * is waited for and its outcome is this call's too. Any other custody step in flight (open, retry, init, reset) is
+   * waited for and the need is checked again, so a reset that left the vault absent or a failed retry never stands in
+   * for the attempt this call still needs. Resolves when set() may store; rejects with the reason it may not.
    */
   async prepareWrite(): Promise<void> {
-    if (this.flight) {
-      await this.settleFlight()
-      this.writeReadiness()
-      return
-    }
-    const need = this.prepareNeed()
-    if (need === 'none') {
-      this.writeReadiness()
-      return
-    }
-    await this.startFlight('prepare', async () => {
-      if (need === 'create') {
+    let attempted = false
+    for (;;) {
+      const current = this.flight
+      if (current) {
+        if (this.flightLabel === 'prepare') attempted = true
         try {
-          await this.createVault()
-        } catch (e) {
-          this.noteCreateFailure(e)
+          await current
+        } catch {
+          // re-evaluated below
         }
-      } else await this.openExisting()
-    })
+        continue
+      }
+      if (attempted) break
+      const need = this.prepareNeed()
+      if (need === 'none') break
+      attempted = true
+      await this.startFlight('prepare', () => this.custodyStep(need))
+    }
     this.writeReadiness()
   }
 
@@ -1097,29 +1238,25 @@ export class SecretStore implements SecretStoreApi {
    * failed, on an open vault, on a corrupt or mismatched one, while another custody step runs, and on other hosts.
    */
   retryOpen(reason: 'focus' | 'timer'): void {
-    if (!this.isApp || this.readOnly || this.flight || !this.lastFailure) return
+    // A failed save of a new vault (createSaveError, a disk error) is retried by the timer only, with the same key.
+    if (!this.isApp || this.readOnly || this.flight || (!this.lastFailure && this.createSaveError === undefined)) return
     const need = this.vstate === 'absent' ? 'create' : this.prepareNeed()
     if (need === 'none') return
     if (reason === 'focus') {
-      if (this.lastFailure.kind !== 'locked' && this.lastFailure.kind !== 'timeout') return
+      if (this.lastFailure?.kind !== 'locked' && this.lastFailure?.kind !== 'timeout') return
       const now = this.now()
       if (now - this.lastFocusRetry < FOCUS_RETRY_MIN_MS) return
       this.lastFocusRetry = now
     }
-    void this.startFlight('retry', async () => {
-      if (need === 'create') {
-        try {
-          await this.createVault()
-        } catch (e) {
-          this.noteCreateFailure(e)
-        }
-      } else await this.openExisting()
-    }).catch((e: unknown) => this.log(`retry failed: ${e instanceof Error ? e.message : 'error'}`))
+    void this.startFlight('retry', () => this.custodyStep(need)).catch((e: unknown) =>
+      this.log(`retry failed: ${e instanceof Error ? e.message : 'error'}`)
+    )
   }
 
-  /** Stop the retry timer (host dispose). Reads keep working. */
+  /** Stop the retry timer (host dispose) and drop a kept creation key from memory. Reads keep working. */
   dispose(): void {
     this.stopRetryTimer()
+    this.discardPendingCreate()
   }
 
   /** The key file paths the self-control gate protects (ORGAI_VAULT_KEY_FILE and custody.keyFile), lexical and canonical. */
@@ -1262,9 +1399,8 @@ export class SecretStore implements SecretStoreApi {
       if (problem) throw new Error(problem)
     }
     if (this.readOnly) throw new Error(READ_ONLY_SECRETS_MESSAGE)
-    await this.settleFlight()
     const request: CustodianRequest | undefined = keyFile ? { keyFile, ...(input.importKeyFile ? { importKeyFile: true } : {}) } : undefined
-    const action = await this.startFlight('init', async (): Promise<SecretsInitResult['action']> => {
+    const action = await this.runExclusive('init', async (): Promise<SecretsInitResult['action']> => {
       if (this.vstate === 'corrupt') throw new Error(VAULT_MESSAGES.corrupt)
       if (this.vault && request && this.vault.custody.scheme !== 'key-file') throw new Error(keyFileSchemeConflict(this.vault.custody.scheme))
       if (this.vstate === 'open') return 'unchanged'
@@ -1273,7 +1409,7 @@ export class SecretStore implements SecretStoreApi {
           return await this.createVault(request)
         } catch (e) {
           this.noteCreateFailure(e)
-          throw new Error(this.failureOf(e).reason)
+          throw new Error(this.createFailureReason(e))
         }
       }
       if (await this.openExisting(request)) return 'opened'
@@ -1283,33 +1419,40 @@ export class SecretStore implements SecretStoreApi {
   }
 
   /**
-   * secrets:reset (every state): refused while a custody step, an OAuth flow or a token refresh runs. vault.json is
-   * moved aside (`vault.json.reset-<time>`, or `.corrupt-<time>`), so the store is absent; an app host then creates a
-   * fresh vault and imports secrets.json. The old OS key item stays (statusReport lists it).
+   * secrets:reset (every state): refused while a custody step, an OAuth flow or a token refresh runs. A secrets.json
+   * that does not parse is moved aside first (`secrets.json.corrupt-<time>`; review round 1: no host of this wave
+   * rewrites it, so without this an app in legacy-only mode could never save again). vault.json is moved aside
+   * (`vault.json.reset-<time>`, or `.corrupt-<time>`), so the store is absent; an app host then creates a fresh vault and
+   * imports secrets.json. The old OS key item stays (statusReport lists it). A move whose directory fsync failed is
+   * finished in memory (the file is gone on disk) and then reported as not known to be durable, never as success.
    */
   async resetVault(input: SecretsResetInput): Promise<SecretsResetResult> {
     if (input?.confirm !== true) throw new Error('Reset needs confirm: true.')
     if (this.flight || this.resetBusy?.() === true) throw new Error(VAULT_MESSAGES.resetBusy)
-    const movedTo = await this.startFlight('reset', async (): Promise<string | null> => {
+    const moved = await this.startFlight('reset', async (): Promise<{ vault: string | null; legacy: string | null; durable: boolean }> => {
+      let durable = true
+      let legacy: string | null = null
+      if (readLegacyFile(this.legacyPath, this.fs).state === 'corrupt') {
+        const name = this.asideName(LEGACY_SECRETS_FILE, VAULT_CORRUPT_SUFFIX)
+        const r = this.moveAside(this.legacyPath, name, () => readLegacyFile(this.legacyPath, this.fs).state !== 'missing', LEGACY_MOVE_FAILED_MESSAGE)
+        if (r !== 'gone') legacy = name
+        if (r === 'not-durable') durable = false
+      }
       const onDisk = readVaultFile(this.vaultPath, this.fs)
-      let moved: string | null = null
+      let vault: string | null = null
       if (onDisk.kind !== 'absent') {
         const suffix = onDisk.kind === 'corrupt' || this.vstate === 'corrupt' ? VAULT_CORRUPT_SUFFIX : VAULT_RESET_SUFFIX
-        moved = this.asideName(suffix)
-        try {
-          renameDurable(this.vaultPath, join(this.dataDir, moved), { fs: this.fs, platform: this.platform })
-        } catch (e) {
-          if (readVaultFile(this.vaultPath, this.fs).kind !== 'absent') {
-            this.reload()
-            throw new Error(e instanceof DurableFsError && e.outcome === 'unknown' ? VAULT_MESSAGES.notDurable : 'vault.json could not be moved aside.')
-          }
-        }
+        const name = this.asideName(VAULT_FILE, suffix)
+        const r = this.moveAside(this.vaultPath, name, () => readVaultFile(this.vaultPath, this.fs).kind !== 'absent', VAULT_MOVE_FAILED_MESSAGE)
+        if (r !== 'gone') vault = name
+        if (r === 'not-durable') durable = false
       }
       this.dropKey()
       this.vault = undefined
       this.vstate = 'absent'
       this.reason = undefined
       this.lastFailure = undefined
+      this.createSaveError = undefined
       this.recoveryRequired = false
       this.stopRetryTimer()
       this.reload()
@@ -1320,18 +1463,38 @@ export class SecretStore implements SecretStoreApi {
           this.noteCreateFailure(e)
         }
       }
-      return moved
+      return { vault, legacy, durable }
     })
-    if (movedTo) this.log(`vault.json moved aside to ${movedTo}`)
-    return { movedTo, status: await this.statusReport() }
+    if (moved.legacy) this.log(`secrets.json moved aside to ${moved.legacy}`)
+    if (moved.vault) this.log(`vault.json moved aside to ${moved.vault}`)
+    if (!moved.durable) throw new Error(VAULT_MESSAGES.notDurable)
+    return { movedTo: moved.vault, ...(moved.legacy ? { legacyMovedTo: moved.legacy } : {}), status: await this.statusReport() }
   }
 
-  private asideName(suffix: string): string {
+  /**
+   * Rename `path` to `<data>/<name>` durably. 'moved'; 'not-durable' when the rename happened but its directory fsync
+   * failed; 'gone' when the file vanished before the rename. Throws `failed` (after a re-read) when it is still there:
+   * a rename is atomic, so then it did not happen.
+   */
+  private moveAside(path: string, name: string, stillThere: () => boolean, failed: string): 'moved' | 'not-durable' | 'gone' {
+    try {
+      renameDurable(path, join(this.dataDir, name), { fs: this.fs, platform: this.platform })
+      return 'moved'
+    } catch (e) {
+      if (stillThere()) {
+        this.reload()
+        throw new Error(failed)
+      }
+      return e instanceof DurableFsError && e.outcome === 'unchanged' ? 'gone' : 'not-durable'
+    }
+  }
+
+  private asideName(file: string, suffix: string): string {
     const d = new Date(this.now())
     const p = (n: number, w = 2): string => String(n).padStart(w, '0')
     const stamp = `${d.getUTCFullYear()}${p(d.getUTCMonth() + 1)}${p(d.getUTCDate())}T${p(d.getUTCHours())}${p(d.getUTCMinutes())}${p(d.getUTCSeconds())}${p(d.getUTCMilliseconds(), 3)}Z`
-    let name = `${VAULT_FILE}${suffix}${stamp}`
-    for (let i = 1; this.fs.existsSync(join(this.dataDir, name)); i++) name = `${VAULT_FILE}${suffix}${stamp}-${i}`
+    let name = `${file}${suffix}${stamp}`
+    for (let i = 1; this.fs.existsSync(join(this.dataDir, name)); i++) name = `${file}${suffix}${stamp}-${i}`
     return name
   }
 

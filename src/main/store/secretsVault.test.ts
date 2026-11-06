@@ -6,6 +6,7 @@ import type { HostKind } from '@shared/types'
 import {
   FOCUS_RETRY_MIN_MS,
   KEY_FILE_INSIDE_DATA_MESSAGE,
+  KEY_STORE_UNREACHABLE_MESSAGE,
   LEGACY_CORRUPT_MESSAGE,
   LITELLM_KEY,
   NOTHING_TO_RESTORE_MESSAGE,
@@ -17,8 +18,8 @@ import {
   type OpenSecretStoreOptions
 } from './secrets'
 import { custodianUnavailableReason, unavailableCustodianFactory } from './unavailableCustodian'
-import { fakeCipher, fakeCustody, noCipher, olderApp, type FakeCustody } from './vaultTesting'
-import { VAULT_MESSAGES, VAULT_TOMBSTONE_KEEP_MS, VaultNotReady, type VaultFile } from './vaultTypes'
+import { faultFs, fakeCipher, fakeCustody, noCipher, olderApp, type FakeCustody } from './vaultTesting'
+import { CustodyError, VAULT_MESSAGES, VAULT_TOMBSTONE_KEEP_MS, VaultNotReady, type CustodianFactory, type VaultFile } from './vaultTypes'
 
 let root: string
 let dataDir: string
@@ -418,14 +419,22 @@ describe('writes (5.5 Writes)', () => {
 })
 
 describe('deletes (5.5 Deletes)', () => {
-  it('three metadata-only steps: tombstone with legacyHash and prev, secrets.json removal, baseline dropped; no notice', async () => {
+  it('three metadata-only steps: tombstone with legacyHash and prev, secrets.json removal, baseline and legacyHash dropped; no notice', async () => {
     const s = await app()
     s.set('k', 'v')
     const h = vaultJson().legacy.k
-    s.delete('k')
+    const f = faultFs()
+    const steps = await app({ fs: f.fs })
+    f.arm()
+    steps.delete('k')
+    // step 1 names the targeted legacy value; step 3 drops it with the baseline once secrets.json no longer holds it
+    const writes = f.events.filter((e) => e.op === 'rename').map((e) => e.file)
+    expect(writes).toEqual(['vault.json', 'secrets.json', 'vault.json'])
     const v = vaultJson()
     expect(v.entries.k).toBeUndefined()
-    expect(v.tombstones.k).toMatchObject({ by: 'vault', legacyHash: h })
+    expect(v.tombstones.k).toMatchObject({ by: 'vault' })
+    expect(v.tombstones.k?.legacyHash).toBeUndefined()
+    expect(h).toBeDefined()
     expect(v.tombstones.k?.prev).toBeDefined()
     expect(v.legacy.k).toBeUndefined()
     expect(legacyKeys()).toEqual([])
@@ -642,5 +651,166 @@ describe('secrets:* on the store (5.6, 5.7)', () => {
     expect(labels).toEqual(['secret vault retry'])
     expect(open).toBe(0)
     s.dispose()
+  })
+})
+
+describe('review round 1: custody steps and creation failures', () => {
+  it('prepareWrite after a reset in flight (Node host) creates the vault instead of refusing', async () => {
+    const n = await node()
+    await n.prepareWrite()
+    n.set('k', 'v')
+    const first = vaultJson().vaultId
+    const reset = n.resetVault({ confirm: true })
+    const prepared = n.prepareWrite()
+    await reset
+    await prepared
+    expect(n.state()).toBe('open')
+    expect(vaultJson().vaultId).not.toBe(first)
+    n.set('k2', 'v2')
+    expect((await node()).get('k2')).toBe('v2')
+  })
+
+  it('prepareWrite after a failed init flight makes its own attempt; a shared prepare is never repeated', async () => {
+    let creates = 0
+    const flaky: CustodianFactory = (scheme, request) => {
+      const real = custody.factory(scheme, request)
+      return {
+        scheme,
+        probe: () => real.probe(),
+        open: (id, c) => real.open(id, c),
+        create: async (id) => {
+          if (creates++ === 0) throw new CustodyError('locked', 'locked once')
+          return real.create(id)
+        }
+      }
+    }
+    const n = await node({ custodian: flaky })
+    const init = n.initVault({})
+    const prepared = n.prepareWrite()
+    await expect(init).rejects.toThrow('locked once')
+    await prepared
+    expect(n.state()).toBe('open')
+    expect(creates).toBe(2)
+    // two prepares sharing one failing attempt: one custodian call, both refuse
+    rmSync(join(dataDir, 'vault.json'))
+    custody.fail(locked)
+    const m = await node()
+    const both = await Promise.allSettled([m.prepareWrite(), m.prepareWrite()])
+    expect(both.map((r) => r.status)).toEqual(['rejected', 'rejected'])
+    expect(custody.calls.create).toBe(2) // the flaky host's second create, then this one
+  })
+
+  it('a creation whose vault.json save fails (disk full) reports the disk, not the key store, and reuses the key item on retry (Node host)', async () => {
+    const f = faultFs()
+    const n = await node({ fs: f.fs })
+    f.arm(1, 'fail-from')
+    const err = await n.prepareWrite().then(
+      () => undefined,
+      (e: unknown) => e as Error
+    )
+    expect(err?.message).toMatch(/could not save the new secret vault \(open failed \(ENOSPC\)\)/)
+    expect(err?.message).not.toContain(KEY_STORE_UNREACHABLE_MESSAGE)
+    await expect(n.initVault({})).rejects.toThrow(/could not save the new secret vault/)
+    await expect(n.prepareWrite()).rejects.toThrow(/could not save the new secret vault/)
+    expect(custody.calls.create).toBe(1)
+    expect(custody.items.size).toBe(1)
+    expect(existsSync(join(dataDir, 'vault.json'))).toBe(false)
+    f.arm() // the disk works again
+    await n.prepareWrite()
+    expect(n.state()).toBe('open')
+    expect(custody.calls.create).toBe(1)
+    expect([...custody.items.keys()]).toEqual([vaultJson().vaultId])
+    n.set('k', 'v')
+    expect((await node()).get('k')).toBe('v')
+  })
+
+  it('an app host whose creation save fails stays legacy-only; timer retries reuse the key item, focus does not retry a disk error', async () => {
+    olderApp(dataDir).set('a', '1')
+    const f = faultFs()
+    f.arm(1, 'fail-from')
+    const a = await app({ fs: f.fs })
+    expect(a.state()).toBe('absent')
+    expect(a.get('a')).toBe('1')
+    expect(custody.calls.create).toBe(1)
+    a.retryOpen('focus')
+    await a.prepareWrite() // waits for any custody step in flight
+    expect(custody.calls.create).toBe(1)
+    a.retryOpen('timer')
+    await a.prepareWrite()
+    expect(a.state()).toBe('absent')
+    expect(custody.calls.create).toBe(1)
+    f.arm()
+    a.retryOpen('timer')
+    await a.prepareWrite()
+    expect(a.state()).toBe('open')
+    expect(custody.calls.create).toBe(1)
+    expect(custody.items.size).toBe(1)
+    expect(vaultJson().entries.a?.lc).toBe(true)
+  })
+
+  it('a key made for another scheme is not reused (the store asks the key-file custodian anew)', async () => {
+    const keyFile = join(root, '..', `vault-key-${process.pid}-${Date.now()}`)
+    const f = faultFs()
+    const n = await node({ fs: f.fs })
+    f.arm(1, 'fail-from')
+    await expect(n.prepareWrite()).rejects.toThrow(/could not save/)
+    f.arm()
+    await n.initVault({ keyFile })
+    expect(custody.calls.create).toBe(2)
+    expect(vaultJson().custody.scheme).toBe('key-file')
+  })
+})
+
+describe('review round 1: a damaged secrets.json and secrets:reset', () => {
+  it('reset moves a corrupt secrets.json aside, so a legacy-only app can save again', async () => {
+    writeFileSync(join(dataDir, 'secrets.json'), '{ damaged')
+    custody.fail({ kind: 'unavailable', reason: 'no key store' })
+    const a = await app({ now: () => Date.UTC(2026, 10, 5, 12, 0, 0, 7) })
+    expect(a.state()).toBe('absent')
+    expect(() => a.set('k', 'v')).toThrow(LEGACY_CORRUPT_MESSAGE)
+    await expect(a.prepareWrite()).rejects.toThrow(LEGACY_CORRUPT_MESSAGE)
+    const res = await a.resetVault({ confirm: true })
+    expect(res.movedTo).toBeNull()
+    expect(res.legacyMovedTo).toBe('secrets.json.corrupt-20261105T120000007Z')
+    expect(readFileSync(join(dataDir, res.legacyMovedTo!), 'utf8')).toBe('{ damaged')
+    expect(res.status.legacyFile).toBe('missing')
+    a.set('k', 'v')
+    expect(a.get('k')).toBe('v')
+    expect(olderApp(dataDir).get('k')).toBe('v')
+    // a moved-aside secrets.json is never listed as an orphan vault
+    expect(res.status.orphanedVaults).toEqual([])
+  })
+
+  it('reset leaves a readable secrets.json where it is', async () => {
+    olderApp(dataDir).set('a', '1')
+    const s = await app()
+    const res = await s.resetVault({ confirm: true })
+    expect(res.legacyMovedTo).toBeUndefined()
+    expect(s.get('a')).toBe('1')
+    expect(readdirSync(dataDir).filter((n) => n.startsWith('secrets.json.'))).toEqual([])
+  })
+
+  it('a reset whose directory fsync fails after the move is reported as not durable, never success, and the store is absent', async () => {
+    const n = await node()
+    await n.prepareWrite()
+    n.set('k', 'v')
+    const f = faultFs()
+    const m = await node({ fs: f.fs })
+    f.arm(2, 'throw') // 1: the rename, 2: the directory open of its fsync
+    await expect(m.resetVault({ confirm: true })).rejects.toThrow(VAULT_MESSAGES.notDurable)
+    expect(m.state()).toBe('absent')
+    expect(existsSync(join(dataDir, 'vault.json'))).toBe(false)
+  })
+})
+
+describe('review round 1: temp files', () => {
+  it('leftover temp files of a crashed save are replaced, never piled up', async () => {
+    olderApp(dataDir).set('a', '1')
+    const s = await app()
+    writeFileSync(join(dataDir, 'vault.json.tmp'), 'stale')
+    writeFileSync(join(dataDir, 'secrets.json.tmp'), 'stale')
+    s.set('k', 'v')
+    expect(readdirSync(dataDir).filter((n) => n.endsWith('.tmp'))).toEqual([])
+    expect((await app()).get('k')).toBe('v')
   })
 })

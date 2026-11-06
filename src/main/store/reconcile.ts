@@ -6,14 +6,18 @@
  * Inputs per key K: L (the secrets.json value string), H = sha256(L), B (the baseline: `legacy[K]`, or
  * `legacyRetired.keys[K]` after retirement), E (the entry and its `lc`), T (a tombstone). The first matching row wins:
  *
- * 1. L present, T by 'vault', H = T.legacyHash: delete L from secrets.json, then drop B (an interrupted delete).
- * 2. L absent, T by 'vault', B present: drop B.
+ * 1. L present, T by 'vault', H = T.legacyHash: delete L from secrets.json, then drop B and T.legacyHash (an
+ *    interrupted delete).
+ * 2. L absent, T by 'vault', B or T.legacyHash present: drop both.
  * 3/4. L present, H != B (no B counts as different): import L (hosts that can write back, vault open); other hosts
  *    leave it pending-legacy (derived: legacyIsNewer).
  * 5. L present, H = B, E with lc false: write E back to secrets.json (dual-write window, hosts that can write back).
  * 6. L absent, B none, E with lc false: write back (as 5).
  * 7. L absent, file ok, B present, no T: soft delete (T by 'legacy' keeping E), drop B.
  * 8. anything else: nothing.
+ *
+ * T.legacyHash lives only until the delete it belongs to is finished (delete step 3, or rows 1 and 2): safeStorage is
+ * deterministic on macOS and Linux, so a later save of the same value has the same hash and must count as new.
  *
  * 'metadata' mode (vault.json parses but is not open here: locked, missing-key, key-mismatch) runs rows 1 and 2 only:
  * they need no data key (round 6 item 2). A corrupt secrets.json stops every row. Electron-free; relative imports only.
@@ -150,20 +154,23 @@ export function planReconcile(input: ReconcileInput): ReconcilePlan {
     const E = own(v.entries, key)
     const B = baselineOf(v, key)
 
-    // Row 1: the exact legacy value an interrupted delete targeted is still there.
+    // Row 1: the exact legacy value an interrupted delete targeted is still there. The finished delete also drops
+    // T.legacyHash: safeStorage is deterministic on macOS and Linux (a fixed IV), so a later save of the same value
+    // has the same hash and must not read as this delete's target (review round 1).
     if (L !== undefined && T?.by === 'vault' && T.legacyHash !== undefined && H === T.legacyHash) {
       delete values[key]
       legacyChanged = true
-      if (B !== undefined) {
-        setBaseline(v, key, undefined)
-        vaultChanged = true
-      }
+      if (B !== undefined) setBaseline(v, key, undefined)
+      delete T.legacyHash
+      vaultChanged = true
       plan.completedDeletes.push(key)
       continue
     }
-    // Row 2: a delete interrupted after its second step.
-    if (L === undefined && T?.by === 'vault' && B !== undefined) {
+    // Row 2: a delete interrupted after its second step (also with no B: a pending-legacy key's delete, whose only
+    // leftover is T.legacyHash).
+    if (L === undefined && T?.by === 'vault' && (B !== undefined || T.legacyHash !== undefined)) {
       setBaseline(v, key, undefined)
+      delete T.legacyHash
       vaultChanged = true
       plan.completedDeletes.push(key)
       continue
@@ -267,6 +274,10 @@ function tombstoneUpkeep(
       try {
         t.prev = crypto.vaultEncrypt(key, crypto.legacyDecrypt(t.prevLegacy))
         delete t.prevLegacy
+        // The 30 days start now (round 6 item 3: "after which the normal 30-day rule applies"), so a value a Node host
+        // deleted long before the first app open is not dropped in the same pass that re-stores it. `at` then reads as
+        // the time the app took the value over.
+        t.at = now
         changed = true
       } catch {
         plan.skipped.push({ key, reason: 'prev-legacy-undecryptable' })

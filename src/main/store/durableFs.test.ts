@@ -1,8 +1,8 @@
-import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { DurableFsError, fsyncDir, nodeVaultFs, renameDurable, unlinkDurable, writeFileDurable, type VaultFs } from './durableFs'
+import { DurableFsError, durableTempPath, fsyncDir, nodeVaultFs, renameDurable, unlinkDurable, writeFileDurable, type VaultFs } from './durableFs'
 
 let dir: string
 beforeEach(() => {
@@ -63,7 +63,8 @@ describe('writeFileDurable (cli-standalone.md 5.5 Durability)', () => {
     const { fs, ops } = recordingFs()
     writeFileDurable(target, 'hello', { fs, platform: 'linux' })
     expect(readFileSync(target, 'utf8')).toBe('hello')
-    expect(ops).toEqual(['open', 'write', 'fsync', 'close', 'rename', 'dir-open', 'dir-fsync'])
+    // 'unlink' first: a leftover <target>.tmp from a crash is removed (ENOENT here) before the O_EXCL create
+    expect(ops).toEqual(['unlink', 'open', 'write', 'fsync', 'close', 'rename', 'dir-open', 'dir-fsync'])
     if (process.platform !== 'win32') expect(statSync(target).mode & 0o777).toBe(0o600)
     expect(readdirSync(dir)).toEqual(['vault.json'])
   })
@@ -105,6 +106,35 @@ describe('writeFileDurable (cli-standalone.md 5.5 Durability)', () => {
     expect(readFileSync(target, 'utf8')).toBe(outcome === 'unchanged' || op === 'rename' ? 'old' : 'new')
     // the temp file never stays behind
     expect(readdirSync(dir)).toEqual(['vault.json'])
+  })
+
+  it('uses one fixed temp name per target: a leftover from a crash is replaced, never piled up', () => {
+    const target = join(dir, 'vault.json')
+    expect(durableTempPath(target)).toBe(join(dir, 'vault.json.tmp'))
+    writeFileSync(durableTempPath(target), 'stale half-written bytes')
+    writeFileDurable(target, 'new', { platform: 'linux' })
+    expect(readFileSync(target, 'utf8')).toBe('new')
+    expect(readdirSync(dir)).toEqual(['vault.json'])
+  })
+
+  it('a link planted at the temp name is removed, never followed (O_EXCL create after the unlink)', () => {
+    if (process.platform === 'win32') return
+    const outside = join(dir, 'outside')
+    writeFileSync(outside, 'keep me')
+    const target = join(dir, 'vault.json')
+    symlinkSync(outside, durableTempPath(target))
+    writeFileDurable(target, 'new', { platform: 'linux' })
+    expect(readFileSync(outside, 'utf8')).toBe('keep me')
+    expect(readFileSync(target, 'utf8')).toBe('new')
+    expect(readdirSync(dir).sort()).toEqual(['outside', 'vault.json'])
+  })
+
+  it('a leftover temp file that cannot be removed fails before the rename (unchanged)', () => {
+    const target = join(dir, 'vault.json')
+    writeFileSync(target, 'old')
+    const { fs } = recordingFs({ op: 'unlink', nth: 1, code: 'EACCES' })
+    expect(() => writeFileDurable(target, 'new', { fs, platform: 'linux' })).toThrow(expect.objectContaining({ outcome: 'unchanged', step: 'open' }))
+    expect(readFileSync(target, 'utf8')).toBe('old')
   })
 
   it('renameDurable and unlinkDurable report ENOENT as unchanged and dir-fsync failures as unknown', () => {

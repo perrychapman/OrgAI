@@ -11,7 +11,7 @@ import type { HostKind } from '@shared/types'
 import { VAULT_RECOVERY_MESSAGE, openSecretStore, type OpenSecretStoreOptions, type SecretStore } from './secrets'
 import { sha256Hex } from './vaultCrypto'
 import { boundaryIndex, faultFs, fakeCipher, fakeCustody, noCipher, olderApp, restoreDir, snapshotDir, type FakeCustody, type OlderApp } from './vaultTesting'
-import { VAULT_MESSAGES, type VaultFile } from './vaultTypes'
+import { VAULT_MESSAGES, VAULT_TOMBSTONE_KEEP_MS, type VaultFile } from './vaultTypes'
 
 let root: string
 let dataDir: string
@@ -399,5 +399,137 @@ describe('round 6 item 3: tombstones that hold the only copy', () => {
     expect(n.softDeletes()).toEqual([expect.objectContaining({ key: 'k', restorable: 'here' })])
     expect(n.undelete({ key: 'k' })).toEqual({ restored: true })
     expect(n.get('k')).toBe('only-copy')
+  })
+})
+
+/**
+ * Review round 1: safeStorage is deterministic on macOS and Linux (Chromium OSCrypt, AES-CBC with a fixed IV), so saving
+ * the same value again gives the same secrets.json string and the same hash. The fake cipher is deterministic too.
+ */
+describe('review round 1: a save of the same value string again', () => {
+  const K = 'connection:litellm:apiKey'
+
+  it('the fake cipher is deterministic, like safeStorage on macOS and Linux', () => {
+    const c = fakeCipher()
+    expect(c.encryptString('sk-1').equals(c.encryptString('sk-1'))).toBe(true)
+  })
+
+  it('a finished delete drops T.legacyHash: a legacy-only save of the same value reads back and survives the unlock', async () => {
+    const a = await app()
+    a.set(K, 'sk-1')
+    a.delete(K)
+    expect(vaultJson().tombstones[K]?.legacyHash).toBeUndefined()
+    custody.fail(locked)
+    const l = await app()
+    expect(l.state()).toBe('locked')
+    l.set(K, 'sk-1')
+    expect(l.get(K)).toBe('sk-1')
+    expect(l.status(K)).toBe('set')
+    custody.fail(undefined)
+    const u = await app()
+    expect(u.get(K)).toBe('sk-1')
+    expect(older.get(K)).toBe('sk-1')
+    expect((await node()).get(K)).toBe('sk-1')
+    expect(u.legacySoftDeletes()).toEqual([])
+  })
+
+  it('a finished delete, then the older app re-enters the same value (downgrade and upgrade): the value stays', async () => {
+    const a = await app()
+    a.set(K, 'tok')
+    a.delete(K)
+    older.set(K, 'tok')
+    const u = await app()
+    expect(u.get(K)).toBe('tok')
+    expect(older.get(K)).toBe('tok')
+    expect((await node()).get(K)).toBe('tok')
+  })
+
+  it('a Node delete of a pending-legacy key interrupted before step 3, then the same value saved again: row 2 finishes it and the save stays', async () => {
+    await app()
+    older.set(K, 'v')
+    const snap = snapshotDir(dataDir)
+    const probe = faultFs()
+    const p = await node({ fs: probe.fs })
+    probe.arm()
+    p.delete(K)
+    // the three steps: vault.json (T with legacyHash, no B), secrets.json, vault.json (drops legacyHash)
+    const step3 = boundaryIndex(probe.events, { op: 'open', file: 'vault.json.tmp' }, 2)
+    expect(step3).toBeGreaterThan(0)
+    restoreDir(dataDir, snap)
+    const f = faultFs()
+    const n = await node({ fs: f.fs })
+    f.arm(step3, 'crash')
+    n.delete(K)
+    expect(f.dead()).toBe(true)
+    expect(older.get(K)).toBeUndefined()
+    expect(vaultJson().tombstones[K]?.legacyHash).toBeDefined()
+    // the next open (any host, no key needed) finishes the delete
+    custody.fail(locked)
+    await node()
+    expect(vaultJson().tombstones[K]?.legacyHash).toBeUndefined()
+    custody.fail(undefined)
+    older.set(K, 'v') // the user saves the same value again in the older app
+    const a = await app()
+    expect(a.get(K)).toBe('v')
+    expect(older.get(K)).toBe('v')
+  })
+
+  it('a legacy-only save of the value the baseline was taken from, after a Node rotation, wins over the rotation (R4, R7)', async () => {
+    older.set(K, 'orig')
+    await app()
+    ;(await nodeWriter()).set(K, 'rotated')
+    expect(vaultJson().entries[K]?.lc).toBe(false)
+    custody.fail(locked)
+    const l = await app()
+    expect(l.state()).toBe('locked')
+    l.set(K, 'orig')
+    expect(l.get(K)).toBe('orig')
+    expect(l.status(K)).toBe('set')
+    expect(vaultJson().legacy[K]).toBeUndefined() // the metadata-only vault write dropped B
+    // a Node host sees the newer app save as pending (not the stale rotation)
+    expect((await node()).status(K)).toEqual({ unreadable: VAULT_MESSAGES.pendingLegacy })
+    custody.fail(undefined)
+    const u = await app()
+    expect(u.get(K)).toBe('orig')
+    expect(older.get(K)).toBe('orig')
+    expect((await node()).get(K)).toBe('orig')
+  })
+
+  it('a legacy-only save of another value needs no vault write (secrets.json only, as before)', async () => {
+    older.set(K, 'orig')
+    await app()
+    ;(await nodeWriter()).set(K, 'rotated')
+    custody.fail(locked)
+    const f = faultFs()
+    const l = await app({ fs: f.fs })
+    f.arm()
+    l.set(K, 'other')
+    expect(f.events.filter((e) => e.op === 'rename').map((e) => e.file)).toEqual(['secrets.json'])
+    custody.fail(undefined)
+    expect((await app()).get(K)).toBe('other')
+  })
+})
+
+describe('review round 1: a prevLegacy converted after more than 30 days', () => {
+  it('the 30 days start at the conversion, so the only copy is restorable in the app (and expires 30 days later)', async () => {
+    const day = 24 * 60 * 60 * 1000
+    let now = Date.UTC(2026, 0, 1)
+    await app({ now: () => now })
+    older.set('k', 'only-copy')
+    ;(await node({ now: () => now })).delete('k')
+    now += VAULT_TOMBSTONE_KEEP_MS + day
+    const a = await app({ now: () => now })
+    const converted = now
+    expect(vaultJson().tombstones.k).toMatchObject({ by: 'vault', at: converted })
+    expect(vaultJson().tombstones.k?.prevLegacy).toBeUndefined()
+    expect(a.softDeletes()).toEqual([{ key: 'k', by: 'vault', at: converted, restorable: 'here', expiresAt: converted + VAULT_TOMBSTONE_KEEP_MS }])
+    expect(a.undelete({ key: 'k' })).toEqual({ restored: true })
+    expect(a.get('k')).toBe('only-copy')
+    // without the undelete the kept value goes 30 days after the conversion
+    a.delete('k')
+    now += VAULT_TOMBSTONE_KEEP_MS + day
+    const later = await app({ now: () => now })
+    expect(later.softDeletes()).toEqual([])
+    expect(later.undelete({ key: 'k' })).toEqual({ restored: false, reason: expect.any(String) })
   })
 })

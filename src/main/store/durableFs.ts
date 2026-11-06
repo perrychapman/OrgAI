@@ -12,7 +12,6 @@
  * relative imports only.
  */
 import * as fs from 'node:fs'
-import { randomBytes } from 'node:crypto'
 import { basename, dirname, join } from 'node:path'
 
 /** The file operations the vault store uses (node:fs by default; tests wrap it to inject faults). */
@@ -97,9 +96,17 @@ export function fsyncDir(dir: string, opts: DurableOptions = {}): void {
   }
 }
 
+/** The temp file of a durable write: one fixed name per target, so a crash leaves at most one behind and the next write replaces it. */
+export function durableTempPath(target: string): string {
+  return join(dirname(target), `${basename(target)}.tmp`)
+}
+
 /**
  * Replace `target` with `data` durably (mode 0o600). Throws DurableFsError: 'unchanged' before the rename (the temp file
  * is removed best effort), 'unknown' from the rename on (the rename itself or the directory fsync).
+ *
+ * The temp file is `<target>.tmp` (one writer per data folder, R5): a leftover from a crash is unlinked first, then the
+ * file is created with O_EXCL, so a link planted at that name is never followed.
  */
 export function writeFileDurable(target: string, data: Buffer | string, opts: DurableOptions = {}): void {
   const f = opts.fs ?? nodeVaultFs
@@ -110,7 +117,12 @@ export function writeFileDurable(target: string, data: Buffer | string, opts: Du
   } catch (e) {
     throw new DurableFsError('unchanged', 'mkdir', e)
   }
-  const tmp = join(dir, `${basename(target)}.${randomBytes(6).toString('hex')}.tmp`)
+  const tmp = durableTempPath(target)
+  try {
+    f.unlinkSync(tmp)
+  } catch (e) {
+    if (errorCode(e) !== 'ENOENT') throw new DurableFsError('unchanged', 'open', e)
+  }
   let fd: number | undefined
   let step: DurableStep = 'open'
   try {

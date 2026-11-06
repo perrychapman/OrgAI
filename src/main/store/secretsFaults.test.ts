@@ -11,7 +11,7 @@
  * After each run the folder must converge to the state just before or just after the operation, never a mix; a
  * failure before the first rename must change nothing; an indeterminate one must be an error, never success.
  */
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -403,6 +403,91 @@ describe('fault injection: secrets:* store steps', () => {
         const fresh = await app()
         expect(fresh.has('j')).toBe(false)
         expect(fresh.legacySoftDeletes()).toEqual([])
+      }
+    )
+  })
+})
+
+describe('fault injection: review round 1', () => {
+  it('a legacy-only save of the value the baseline came from (vault metadata, then secrets.json) converges to the old or the new value', async () => {
+    older().set('k', 'orig')
+    await app()
+    const n = await node()
+    await n.prepareWrite()
+    n.set('k', 'rotated') // E.lc false, B = H(orig)
+    custody.fail(locked)
+    const runs = await exhaust(
+      (fs) => app(fs),
+      (s) => s.set('k', 'orig'),
+      async (r) => {
+        expect(r.error, `${r.mode} at ${r.at} ${r.event.op} ${r.event.file}`).toBeDefined()
+        const indeterminate = (r.error as Error).message === VAULT_MESSAGES.notDurable
+        if (!indeterminate) expect(r.at).toBeLessThan(r.firstRename)
+        const landed = firstChangeLanded(r)
+        // reads in the store that ran (vault still locked) serve what is on disk
+        if (r.store) expect(r.store.get('k')).toBe(landed ? 'orig' : undefined)
+        custody.fail(undefined)
+        const v = await views('k')
+        custody.fail(locked)
+        // vault first: once its rename landed the earlier secrets.json value is the same string (H = B), so the save wins
+        expect(v.app).toBe(landed ? 'orig' : 'rotated')
+        expect(v.node).toBe(v.app)
+        expect(v.older).toBe(v.app)
+        if (!indeterminate) expect(v.app).toBe('rotated')
+      }
+    )
+    expect(runs).toBeGreaterThan(10)
+  })
+
+  it.each(['older', 'legacy-only'] as const)(
+    'a delete interrupted at any boundary, recovered by the next open, then the same value saved again (%s): the save stays',
+    async (via) => {
+      older().set('k', 'old')
+      older().set('other', 'o')
+      await app()
+      await exhaust(
+        (fs) => app(fs),
+        (s) => s.delete('k'),
+        async () => {
+          await app() // the next open finishes (rows 1 and 2) or ignores the interrupted delete
+          if (via === 'older') older().set('k', 'old')
+          else {
+            custody.fail(locked)
+            const l = await app()
+            l.set('k', 'old')
+            expect(l.get('k')).toBe('old')
+            custody.fail(undefined)
+          }
+          const v = await views('k')
+          expect(v).toEqual({ app: 'old', node: 'old', older: 'old' })
+          expect((await app()).legacySoftDeletes()).toEqual([])
+        }
+      )
+    }
+  )
+
+  it('reset with a damaged secrets.json: each file is moved aside whole or left in place, never lost', async () => {
+    await app()
+    const n = await node()
+    n.set('vaultOnly', 'x')
+    writeFileSync(join(dataDir, 'secrets.json'), '{ damaged')
+    await exhaust(
+      (fs) => node(fs),
+      async (s) => {
+        await s.resetVault({ confirm: true })
+      },
+      async (r) => {
+        const names = readdirSync(dataDir)
+        const legacyCopies = names.filter((f) => f === 'secrets.json' || f.startsWith('secrets.json.corrupt-'))
+        expect(legacyCopies.map((f) => readFileSync(join(dataDir, f), 'utf8')), `${r.mode} at ${r.at} ${r.event.op}`).toEqual(['{ damaged'])
+        const vaults = names.filter((f) => f === 'vault.json' || f.startsWith('vault.json.reset-'))
+        expect(vaults.length).toBe(1)
+        if (!r.error) expect(names.filter((f) => f === 'secrets.json' || f === 'vault.json')).toEqual([])
+        // the damaged file goes first: a vault moved aside means secrets.json was moved before it
+        if (!names.includes('vault.json')) expect(names).not.toContain('secrets.json')
+        const fresh = await node()
+        expect(['absent', 'open']).toContain(fresh.state())
+        if (fresh.state() === 'open') expect(fresh.get('vaultOnly')).toBe('x')
       }
     )
   })

@@ -51,8 +51,19 @@ describe('planReconcile rows (cli-standalone.md 5.5)', () => {
       expect(p.completedDeletes).toEqual(['K'])
       expect({ ...p.legacy }).toEqual({ other: 'L:o' })
       expect(baselineOf(p.vault!, 'K')).toBeUndefined()
-      // the tombstone and its kept value stay (undelete)
+      // the tombstone and its kept value stay (undelete); the finished delete no longer targets that hash
       expect(p.vault!.tombstones.K?.prev).toBeDefined()
+      expect(p.vault!.tombstones.K?.legacyHash).toBeUndefined()
+    }
+  })
+
+  it('row 1 with no baseline (a pending-legacy key) still drops T.legacyHash', () => {
+    for (const mode of ['full', 'metadata'] as const) {
+      const v = vault({ tombstones: { K: { at: 1, by: 'vault', legacyHash: h('L:old'), prevLegacy: 'L:old' } } })
+      const p = planReconcile({ ...base, mode, vault: v, legacy: ok({ K: 'L:old' }) })
+      expect(p.completedDeletes).toEqual(['K'])
+      expect({ ...p.legacy }).toEqual({})
+      expect(p.vault!.tombstones.K).toEqual({ at: 1, by: 'vault', prevLegacy: 'L:old' })
     }
   })
 
@@ -74,6 +85,25 @@ describe('planReconcile rows (cli-standalone.md 5.5)', () => {
       expect(p.vault!.legacy.K).toBeUndefined()
       expect(p.softDeleted).toEqual([])
     }
+  })
+
+  it('row 2 also finishes a delete whose only leftover is T.legacyHash (no baseline), in both modes', () => {
+    for (const mode of ['full', 'metadata'] as const) {
+      const v = vault({ tombstones: { K: { at: 1, by: 'vault', legacyHash: h('L:x'), prevLegacy: 'L:x' } } })
+      const p = planReconcile({ ...base, mode, vault: v, legacy: ok({}) })
+      expect(p.completedDeletes).toEqual(['K'])
+      expect(p.legacy).toBeUndefined()
+      expect(p.vault!.tombstones.K).toEqual({ at: 1, by: 'vault', prevLegacy: 'L:x' })
+    }
+  })
+
+  it('after rows 1 and 2 a later save of the same value string (deterministic safeStorage) is new: row 4 imports it', () => {
+    const v = vault({ tombstones: { K: { at: 1, by: 'vault', legacyHash: h('L:same'), prev: seal('same') } }, legacy: { K: h('L:same') } })
+    const finished = planReconcile({ ...base, vault: v, legacy: ok({ K: 'L:same' }), crypto }).vault!
+    expect(legacyIsNewer(finished, 'K', h('L:same'))).toBe(true)
+    const again = planReconcile({ ...base, vault: finished, legacy: ok({ K: 'L:same' }), crypto })
+    expect(again.imported).toEqual(['K'])
+    expect(unseal(again.vault!.entries.K!)).toBe('same')
   })
 
   it('metadata mode runs rows 1 and 2 only', () => {
@@ -180,16 +210,22 @@ describe('tombstones (5.2, round 6 item 3)', () => {
 
   it('a prevLegacy is never collected; an app host with the vault open re-stores it as prev', () => {
     const old = 1000 - VAULT_TOMBSTONE_KEEP_MS - 1
-    const v = vault({ tombstones: { K: { at: old, by: 'vault', prevLegacy: 'L:only-copy', legacyHash: h('L:only-copy') } } })
+    const v = vault({ tombstones: { K: { at: old, by: 'vault', prevLegacy: 'L:only-copy' } } })
     const node = planReconcile({ ...base, vault: v, legacy: ok({}) })
     expect(node.vault).toBeUndefined()
     const fresh = vault({ tombstones: { K: { at: 999, by: 'vault', prevLegacy: 'L:only-copy' } } })
     const app = planReconcile({ ...base, vault: fresh, legacy: ok({}), crypto })
     expect(app.vault!.tombstones.K!.prevLegacy).toBeUndefined()
     expect(unseal(app.vault!.tombstones.K!.prev!)).toBe('only-copy')
-    // converted after 30 days: the normal rule applies at once (the delete's own time)
+    // converted more than 30 days after the delete: the 30 days start at the conversion (review round 1), so the only
+    // copy is never dropped in the pass that re-stores it
     const converted = planReconcile({ ...base, vault: v, legacy: ok({}), crypto })
-    expect(converted.vault!.tombstones.K).toBeUndefined()
+    expect(converted.vault!.tombstones.K).toMatchObject({ at: base.now, by: 'vault' })
+    expect(unseal(converted.vault!.tombstones.K!.prev!)).toBe('only-copy')
+    const kept = planReconcile({ ...base, now: base.now + VAULT_TOMBSTONE_KEEP_MS, vault: converted.vault!, legacy: ok({}), crypto })
+    expect(kept.vault).toBeUndefined()
+    const expired = planReconcile({ ...base, now: base.now + VAULT_TOMBSTONE_KEEP_MS + 1, vault: converted.vault!, legacy: ok({}), crypto })
+    expect(expired.vault!.tombstones.K).toBeUndefined()
   })
 
   it('a tombstone stays while its key is still in secrets.json', () => {

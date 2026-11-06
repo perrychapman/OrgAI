@@ -126,7 +126,11 @@ export interface VaultTombstone {
   prev?: VaultCipherText
   /** A secrets.json value string a Node host deleted without being able to decrypt it; only the app restores it. */
   prevLegacy?: string
-  /** sha256 hex of the secrets.json value string this delete targeted (rows 1 and 4 of 5.5). */
+  /**
+   * sha256 hex of the secrets.json value string this delete targeted (rows 1 and 4 of 5.5). Kept only until the delete
+   * is finished (delete step 3, or reconcile rows 1 and 2): safeStorage is deterministic on macOS and Linux, so a later
+   * save of the same value has the same hash and must not read as this delete's target (WP-G1 review round 1).
+   */
   legacyHash?: string
 }
 

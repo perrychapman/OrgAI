@@ -148,8 +148,8 @@ export type FsBoundary = { op: 'open' | 'write' | 'fsync' | 'close' | 'rename' |
 /**
  * How a boundary fails. 'throw': that call throws EIO and later calls work (the store recovers in process).
  * 'crash': that call throws and every later call (reads included) fails: the process is gone; reopen on a healthy fs.
- * 'crash-lose-rename' (dir-fsync only): as 'crash', and the rename before it is undone (power lost before the
- * directory entry was durable). 'fail-from': that call and every later write boundary throw (a full disk); reads work.
+ * 'crash-lose-rename' (dir-fsync only): as 'crash', and the rename before it is undone, source and target (power lost
+ * before the directory entries were durable). 'fail-from': that call and every later write boundary throw (a full disk); reads work.
  */
 export type FaultMode = 'throw' | 'crash' | 'crash-lose-rename' | 'fail-from'
 
@@ -163,7 +163,7 @@ export interface FaultFs {
 }
 
 const errno = (code: string): NodeJS.ErrnoException => Object.assign(new Error(`injected ${code}`), { code })
-const label = (p: string): string => basename(p).replace(/\.[0-9a-f]{12}\.tmp$/, '.tmp')
+const label = (p: string): string => basename(p)
 
 export function faultFs(): FaultFs {
   const events: FsBoundary[] = []
@@ -172,7 +172,8 @@ export function faultFs(): FaultFs {
   let crashed = false
   const dirFds = new Map<number, string>()
   const fileFds = new Map<number, string>()
-  let lastRename: { to: string; before: Buffer | undefined } | undefined
+  /** The last rename: its source bytes and the target's bytes before it, so a lost rename puts both entries back. */
+  let lastRename: { from: string; moved: Buffer | undefined; to: string; before: Buffer | undefined } | undefined
   const boundary = (op: FsBoundary['op'], file: string): void => {
     if (crashed) throw errno('EIO')
     events.push({ op, file })
@@ -184,6 +185,8 @@ export function faultFs(): FaultFs {
           if (lastRename.before === undefined) {
             if (existsSync(lastRename.to)) unlinkSync(lastRename.to)
           } else writeFileSync(lastRename.to, lastRename.before)
+          // the source entry comes back too (a temp file left behind, or a file a reset was moving aside)
+          if (lastRename.moved !== undefined) writeFileSync(lastRename.from, lastRename.moved)
         }
       }
       throw errno('EIO')
@@ -231,7 +234,7 @@ export function faultFs(): FaultFs {
     },
     renameSync: (a, b) => {
       boundary('rename', label(b))
-      lastRename = { to: b, before: existsSync(b) ? readFileSync(b) : undefined }
+      lastRename = { from: a, moved: existsSync(a) ? readFileSync(a) : undefined, to: b, before: existsSync(b) ? readFileSync(b) : undefined }
       nodeVaultFs.renameSync(a, b)
     },
     unlinkSync: (p) => {

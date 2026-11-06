@@ -6562,6 +6562,11 @@ export interface SecretsResetInput {
 export interface SecretsResetResult {
   /** The moved-aside file's name (`vault.json.reset-<time>` or `vault.json.corrupt-<time>`), or null when no vault existed. */
   movedTo: string | null
+  /**
+   * A secrets.json that did not parse is moved aside too (`secrets.json.corrupt-<time>`, WP-G1 review round 1), so the
+   * app can save again in legacy-only mode; absent when the file was fine or missing.
+   */
+  legacyMovedTo?: string
   status: SecretsStatusResult
 }
 
