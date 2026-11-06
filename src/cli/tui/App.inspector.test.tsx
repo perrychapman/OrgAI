@@ -457,6 +457,20 @@ describe('which-key overlay and hints (F9)', () => {
     expect(m.frame()).toContain('Keys: Agent inspector')
   })
 
+  it('? in the inspector at 120x40 renders its keys and the glyph legend in one frame', async () => {
+    for (const env of [{}, { unicode: false }, { screenReader: true }]) {
+      const m = mount({ cols: 120, rows: 40, env })
+      await m.onLeadRow()
+      await m.send(named('escape'))
+      await m.send(named('tab'), named('up'), named('enter'), key('?'))
+      const f = m.frame()
+      expect(f).toContain('Keys: Agent inspector')
+      expect(f).toContain('Glyphs')
+      expect(f).toMatch(/idle/i)
+      expect(f).toMatch(/finished/i)
+    }
+  })
+
   it('the focused tree has its own hint line, swapped by the row; the composer shows none', async () => {
     const m = mount({ cols: 120, rows: 40 })
     expect(m.frame()).not.toContain('Enter details')
