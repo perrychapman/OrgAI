@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -5,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { SecretsStatusResult } from '../../shared/types'
 import { VAULT_MESSAGES } from '../../main/store/vaultTypes'
 import { fakeContext, FakeHostClient, rpcError } from '../testing/fakeContext'
-import { hostSecretsChecks, offlineSecretsChecks, secretsChecks } from './secretsChecks'
+import { hostSecretsChecks, offlineSecretsChecks, pendingLegacyCount, secretsChecks } from './secretsChecks'
 
 let dir: string
 beforeEach(() => {
@@ -112,6 +113,57 @@ describe('doctor: the secret vault without a host (metadata only)', () => {
     const d = byId(offlineSecretsChecks(dir))
     expect(d.vault).toMatchObject({ status: 'fail', detail: VAULT_MESSAGES.corrupt })
     expect(d['legacy-secrets'].status).toBe('warn')
+  })
+
+  const sha = (v: string): string => createHash('sha256').update(v, 'utf8').digest('hex')
+  const vaultWith = (over: Record<string, unknown>) => ({
+    format: 'orgai.vault/1',
+    vaultId: '0123456789abcdef0123456789abcdef',
+    custody: { scheme: 'keychain' },
+    check: { iv: 'a', ct: 'b', tag: 'c' },
+    entries: {},
+    tombstones: {},
+    legacy: {},
+    legacyRetired: null,
+    ...over
+  })
+
+  it('counts pending-legacy secrets from hashes alone, with the open-the-app hint (5.4, 5.5 rows 3 and 4)', () => {
+    // No vault: every key in secrets.json is pending on a Node or inproc host.
+    writeFileSync(join(dir, 'secrets.json'), JSON.stringify({ version: 1, secrets: { a: 'QQ==', b: 'Qg==', c: 'Qw==', d: 'RA==' } }))
+    expect(byId(offlineSecretsChecks(dir))['vault-pending']).toMatchObject({ status: 'warn', detail: `4 secrets not shared with the orgai command yet. ${VAULT_MESSAGES.pendingLegacy}` })
+    // A vault: a = baseline (reconciled), b = changed since, c = never reconciled, d = a vault delete of exactly that value.
+    writeFileSync(
+      join(dir, 'vault.json'),
+      JSON.stringify(vaultWith({ entries: { a: {}, b: {} }, legacy: { a: sha('QQ=='), b: sha('old'), d: sha('RA==') }, tombstones: { d: { at: 1, by: 'vault', legacyHash: sha('RA==') } } }))
+    )
+    const c = byId(offlineSecretsChecks(dir))
+    expect(c['vault-pending']).toMatchObject({ status: 'warn', detail: `2 secrets not shared with the orgai command yet. ${VAULT_MESSAGES.pendingLegacy}` })
+    expect(JSON.stringify(offlineSecretsChecks(dir))).not.toContain('QQ==')
+    // Everything reconciled: no pending line.
+    writeFileSync(join(dir, 'secrets.json'), JSON.stringify({ version: 1, secrets: { a: 'QQ==' } }))
+    expect(byId(offlineSecretsChecks(dir))['vault-pending']).toBeUndefined()
+    // After retirement the retired baseline is the only one (round 6 item 1).
+    writeFileSync(join(dir, 'vault.json'), JSON.stringify(vaultWith({ legacy: { a: sha('QQ==') }, legacyRetired: { at: 1, digest: 'x', keys: { a: sha('other') } } })))
+    expect(byId(offlineSecretsChecks(dir))['vault-pending']).toMatchObject({ detail: expect.stringMatching(/^1 secret not shared/) })
+    // A damaged vault reads nothing from the legacy copy: no pending count.
+    writeFileSync(join(dir, 'vault.json'), '{nope')
+    expect(byId(offlineSecretsChecks(dir))['vault-pending']).toBeUndefined()
+  })
+
+  it('pendingLegacyCount follows the reconcile rows', () => {
+    const view = { entries: new Set(['a']), baseline: { a: sha('A') }, tombstones: {} }
+    expect(pendingLegacyCount({ a: 'A' }, view)).toBe(0)
+    expect(pendingLegacyCount({ a: 'A2' }, view)).toBe(1)
+    expect(pendingLegacyCount({ z: 'Z' }, view)).toBe(1)
+    expect(pendingLegacyCount({ z: 'Z' }, { ...view, tombstones: { z: { by: 'vault', legacyHash: sha('Z') } } })).toBe(0)
+    expect(pendingLegacyCount({ z: 'Z' }, { ...view, tombstones: { z: { by: 'vault', legacyHash: sha('other') } } })).toBe(1)
+    expect(pendingLegacyCount({ a: 'A', b: 'B' }, null)).toBe(2)
+  })
+
+  it('reports secrets an older OrgAI removed (the 5.5 notice) from the tombstones', () => {
+    writeFileSync(join(dir, 'vault.json'), JSON.stringify(vaultWith({ tombstones: { k1: { at: 1, by: 'legacy' }, k2: { at: 1, by: 'legacy' }, k3: { at: 1, by: 'vault' } } })))
+    expect(byId(offlineSecretsChecks(dir))['vault-removed']).toMatchObject({ status: 'warn', detail: expect.stringContaining(VAULT_MESSAGES.legacyRemovedNotice(2)) })
   })
 
   it('without a client the group reads the files', async () => {

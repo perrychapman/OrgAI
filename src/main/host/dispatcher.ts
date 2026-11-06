@@ -310,11 +310,19 @@ export class HostDispatcher {
 
   /** Read-only host state for the storesSecret predicates (never a secret value). */
   private storesSecretView(secrets: SecretStoreApi): StoresSecretHostView {
+    const { projects, mcp, runs } = this.services
     return {
-      project: (projectId) => this.services.projects.get(projectId),
-      libraryEntry: (entryId) => this.services.mcp.libraryEntries().find((e) => e.id === entryId),
+      project: (projectId) => projects.get(projectId),
+      libraryEntry: (entryId) => mcp.libraryEntries().find((e) => e.id === entryId),
       secretKeys: (prefix) => secrets.keys(prefix),
-      secretStatus: (key) => secrets.status(key)
+      secretStatus: (key) => secrets.status(key),
+      pendingProposal: (runId, proposalId) => runs.pendingCards(runId).proposals.find((p) => p.id === proposalId),
+      pendingInstall: (runId, requestId) => {
+        const request = runs.pendingCards(runId).mcpInstalls.find((r) => r.id === requestId)
+        const projectId = runs.summary(runId)?.projectId
+        return request && projectId ? { request, projectId } : undefined
+      },
+      authorizeTarget: (target) => mcp.authorizeTargetKind(target as unknown as McpAuthTarget)
     }
   }
 

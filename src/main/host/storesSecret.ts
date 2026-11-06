@@ -4,11 +4,15 @@
  * exactly when the channel's predicate is true, so handlers stay synchronous and a clear (or any call that stores
  * nothing) never creates a vault or a keychain item.
  *
- * A predicate sees the gated (shallow-validated, decoded) positional arguments and a read-only view of host state, and
- * is true only when the call will store a non-empty value. It never throws and never looks at a value beyond "is it a
- * non-empty string": the handler's own argument builders (host/args.ts) still validate everything. Where a predicate
- * cannot know (a pending card's slots, a refusal later in the handler) it errs towards true: a needless prepareWrite
- * creates a vault early, a missing one makes set() throw VaultNotReady.
+ * A predicate sees the gated (shallow-validated, decoded) positional arguments and a read-only view of host state (the
+ * project and library stores, SecretStore keys and status, the pending card a decision answers, what kind of sign-in an
+ * authorize target has), and is true only when the call will store a non-empty value: a decision's values must name a
+ * slot of its pending card, an install must be approvable (its id not taken), an authorize target must sign in with
+ * OAuth. It never throws and never looks at a value beyond "is it a non-empty string" (plus the one-line checks the
+ * handler applies before storing): the handler's own argument builders (host/args.ts) still validate everything. Where
+ * a predicate cannot know (a validation the handler runs later) it errs towards true, and so does a host view that
+ * throws: a needless prepareWrite creates a vault early, a missing one makes set() throw VaultNotReady and fails the
+ * call.
  *
  * Async internal writers prepare themselves right before their set(): the OAuth authorize flow after the browser step
  * (and the mock sign-in before its synthetic token), and McpService.doRefresh (mcp:test, mcpLibrary:test, runs). The
@@ -17,7 +21,14 @@
  * Electron-free and light: registry.ts (and through it the CLI bundle) imports this file, so it imports shared types
  * only; the two key prefixes below mirror store/secrets.ts (a test keeps them equal).
  */
-import type { McpLibraryEntry, Project, SecretStatus } from '../../shared/types'
+import type { McpInstallRequest, McpLibraryEntry, Project, Proposal, SecretStatus } from '../../shared/types'
+import { proposalSecretKey } from '../../shared/types'
+
+/**
+ * How an mcp:authorize target signs in: 'oauth' (discovery / DCR), 'oauthClient' (the user's own client), 'token' and
+ * 'none' (connectors that never take an OAuth client secret), 'stdio' (no OAuth at all). Undefined: no such target.
+ */
+export type AuthorizeTargetKind = 'oauth' | 'oauthClient' | 'token' | 'none' | 'stdio'
 
 /** Read-only host state a predicate may look at (never a secret value). */
 export interface StoresSecretHostView {
@@ -29,6 +40,12 @@ export interface StoresSecretHostView {
   secretKeys(prefix?: string): string[]
   /** SecretStore.status(key): promote / copy carry only readable secrets (an unreadable source makes the handler refuse). */
   secretStatus(key: string): SecretStatus
+  /** The pending proposal card a setup:decide answers (RunManager.pendingCards), or undefined. Optional: absent = unknown. */
+  pendingProposal?(runId: string, proposalId: string): Proposal | undefined
+  /** The pending install card an mcp:answerInstall answers, with its run's project id, or undefined. Optional: absent = unknown. */
+  pendingInstall?(runId: string, requestId: string): { request: McpInstallRequest; projectId: string } | undefined
+  /** How an mcp:authorize target (its McpAuthTarget input) signs in, or undefined for no such target. Optional: absent = unknown. */
+  authorizeTarget?(target: Record<string, unknown>): AuthorizeTargetKind | undefined
 }
 
 /** True when this call will store a non-empty secret value. Pure: no side effects, never throws on odd input. */
@@ -84,26 +101,91 @@ const slotValue: StoresSecretFn = (args) => {
   return !!i && nonEmpty(own(i, 'value'))
 }
 
-/** setup:decide: an approval carrying at least one non-empty secret value (only MCP proposals take them). */
-const proposalDecision: StoresSecretFn = (args) => {
-  const i = first(args)
-  const d = i ? own(i, 'decision') : undefined
-  return isRecord(d) && own(d, 'behavior') === 'approve' && anyValue(own(d, 'secrets'))
+/** expectedRevision given and different from the card's (the handler then answers 'stale-revision' and stores nothing). */
+const staleCard = (i: Record<string, unknown>, revision: number | undefined): boolean => {
+  const expected = own(i, 'expectedRevision')
+  return typeof expected === 'number' && expected !== (revision ?? 1)
 }
 
-/** mcp:answerInstall: an approval for the project or the library (a 'run' install keeps its values in memory). */
-const installAnswer: StoresSecretFn = (args) => {
+/** A string list as the handlers accept it, else undefined. */
+const stringList = (v: unknown): string[] | undefined => (Array.isArray(v) && v.every((x) => typeof x === 'string') ? v : undefined)
+
+/**
+ * setup:decide: an approval of a pending MCP proposal carrying a non-empty value for one of the card's own slots (a
+ * server the proposal upserts; a header value on one line), as McpService.planProposalSecrets stores them. Values under
+ * keys naming no slot, other proposal kinds, a card that is not pending and a stale revision store nothing.
+ */
+const proposalDecision: StoresSecretFn = (args, host) => {
   const i = first(args)
   const d = i ? own(i, 'decision') : undefined
-  if (!isRecord(d) || own(d, 'approved') !== true) return false
+  if (!i || !isRecord(d) || own(d, 'behavior') !== 'approve') return false
+  const values = own(d, 'secrets')
+  if (!anyValue(values)) return false
+  const runId = own(i, 'runId')
+  const proposalId = own(i, 'proposalId')
+  if (!host.pendingProposal) return true
+  if (typeof runId !== 'string' || typeof proposalId !== 'string') return false
+  const card = host.pendingProposal(runId, proposalId)
+  if (!card || card.kind !== 'mcpServers' || staleCard(i, card.revision)) return false
+  const upserted = new Set((Array.isArray(card.payload.upsert) ? card.payload.upsert : []).map((u) => u?.id).filter((x): x is string => typeof x === 'string'))
+  return (Array.isArray(card.payload.secrets) ? card.payload.secrets : []).some((slot) => {
+    if (!slot || typeof slot.serverId !== 'string' || typeof slot.name !== 'string' || (slot.kind !== 'env' && slot.kind !== 'header')) return false
+    if (!upserted.has(slot.serverId)) return false
+    const v = own(values as Record<string, unknown>, proposalSecretKey(slot))
+    return nonEmpty(v) && !(slot.kind === 'header' && /[\r\n]/.test(v as string))
+  })
+}
+
+/**
+ * mcp:answerInstall: an approval for the project or the library (a 'run' install keeps its values in memory) of a
+ * pending install whose id is still free (RunManager refuses a taken one), with a non-empty value for one of the
+ * server's secret names (the card's spec, or the edited spec's lists when the answer replaces them).
+ */
+const installAnswer: StoresSecretFn = (args, host) => {
+  const i = first(args)
+  const d = i ? own(i, 'decision') : undefined
+  if (!i || !isRecord(d) || own(d, 'approved') !== true) return false
   const scope = own(d, 'scope')
-  return (scope === 'project' || scope === 'library') && anyValue(own(d, 'secrets'))
+  const values = own(d, 'secrets')
+  if ((scope !== 'project' && scope !== 'library') || !anyValue(values)) return false
+  if (!host.pendingInstall) return true
+  const runId = own(i, 'runId')
+  const requestId = own(i, 'requestId')
+  if (typeof runId !== 'string' || typeof requestId !== 'string') return false
+  const pending = host.pendingInstall(runId, requestId)
+  if (!pending || staleCard(i, pending.request.revision)) return false
+  const { request, projectId } = pending
+  const edit = own(d, 'spec')
+  if (edit !== undefined && (!isRecord(edit) || own(edit, 'id') !== request.spec.id)) return false
+  const id = request.spec.id
+  if ((host.project(projectId)?.mcpServers ?? []).some((s) => s.id === id) || host.libraryEntry(id)) return false
+  // RunManager mergeInstallEdit: an edit's own list replaces the card's, an explicit undefined drops it.
+  const names = (k: 'secretEnv' | 'secretHeaders'): string[] => {
+    if (isRecord(edit) && Object.hasOwn(edit, k)) return edit[k] === undefined ? [] : (stringList(edit[k]) ?? request.spec[k] ?? [])
+    return request.spec[k] ?? []
+  }
+  return [...names('secretEnv'), ...names('secretHeaders')].some((n) => nonEmpty(own(values as Record<string, unknown>, n)))
 }
 
-/** mcp:authorize: a client secret, stored before the browser opens. The tokens are prepared by the flow itself. */
-const authorizeClientSecret: StoresSecretFn = (args) => {
+/** McpService checkClientCredential: one line without control characters, bounded (else the handler throws first). */
+// eslint-disable-next-line no-control-regex
+const oneLine = (v: string, max: number): boolean => v.length <= max && !/[\x00-\x1f\x7f]/.test(v)
+
+/**
+ * mcp:authorize: a client secret, stored before the browser opens, for a target that signs in with OAuth (never a
+ * token or no-auth connector, never a stdio server: the handler refuses those before storing). The tokens are prepared
+ * by the flow itself.
+ */
+const authorizeClientSecret: StoresSecretFn = (args, host) => {
   const i = first(args)
-  return !!i && nonEmpty(own(i, 'clientSecret'))
+  if (!i) return false
+  const secret = own(i, 'clientSecret')
+  if (!nonEmpty(secret) || !oneLine(secret as string, 4000)) return false
+  const clientId = own(i, 'clientId')
+  if (typeof clientId === 'string' && !oneLine(clientId.trim(), 512)) return false
+  if (!host.authorizeTarget) return true
+  const kind = host.authorizeTarget(i)
+  return kind === 'oauth' || kind === 'oauthClient'
 }
 
 /** mcp:promote: a project-only server whose own keys (env, header and OAuth) hold a readable value. */
@@ -136,13 +218,17 @@ const copyFromLibrary: StoresSecretFn = (args, host) => {
   return carriesReadable(keys, host)
 }
 
-/** Never throws: an odd input (or a host view that throws) means "stores nothing"; the handler refuses it anyway. */
+/**
+ * Never throws. The predicates read odd input without throwing (it means "stores nothing", and the handler refuses
+ * it), so a throw comes from the host view; then the answer is true: preparing a vault needlessly is better than a
+ * value reaching an unprepared one (VaultNotReady).
+ */
 function safe(fn: StoresSecretFn): StoresSecretFn {
   return (args, host) => {
     try {
       return fn(Array.isArray(args) ? args : [], host) === true
     } catch {
-      return false
+      return true
     }
   }
 }
@@ -153,9 +239,10 @@ function safe(fn: StoresSecretFn): StoresSecretFn {
  * server with a missing secret as disabled without a value.
  * - connections:setSecret, connectors:setToken: a non-empty value.
  * - mcp:setSecret, mcpLibrary:setSecret: a non-empty value.
- * - setup:decide: approving with non-empty `secrets` (an MCP proposal; other kinds carry none).
- * - mcp:answerInstall: approving with non-empty `secrets` and a scope other than 'run'.
- * - mcp:authorize: the input carries a client secret (stored before the browser opens).
+ * - setup:decide: approving a pending MCP proposal with a non-empty value for one of its slots.
+ * - mcp:answerInstall: approving a pending install (id still free) with a non-empty value for one of its secret names
+ *   and a scope other than 'run'.
+ * - mcp:authorize: the input carries a client secret (stored before the browser opens) for an OAuth target.
  * - mcp:promote, mcp:copyFromLibrary: the source holds a readable secret (per-project values included, whatever
  *   copySecrets says); an unreadable carried slot makes the predicate false and the handler refuse.
  */

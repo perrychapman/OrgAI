@@ -8,13 +8,15 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { McpLibraryEntry, McpServerSpec, Project } from '@shared/types'
+import type { McpLibraryEntry, McpServerSpec, McpServersProposalPayload, Project } from '@shared/types'
+import { proposalSecretKey } from '@shared/types'
 import { ProjectStore } from '../store/projects'
 import { McpLibraryStore } from '../store/mcpLibrary'
 import { mcpLibraryOAuthKey, mcpLibrarySecretKey, mcpOAuthKey, mcpSecretKey } from '../store/secrets'
 import { FixtureVaultStore } from '../store/vaultStore.fixture'
 import { VAULT_MESSAGES } from '../store/vaultTypes'
 import { McpService } from './service'
+import { ProposalSecretsNotSaved } from './proposalSecrets'
 
 vi.mock('../log', () => ({ log: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} } }))
 
@@ -210,6 +212,132 @@ describe('installs store secrets before other stores (round 6 item 10)', () => {
   })
 })
 
+describe('approved proposals store the typed values before other stores (round 6 item 10)', () => {
+  const slot = (serverId: string, name: string) => ({ serverId, kind: 'env' as const, name })
+  const payload = (upsert: McpServersProposalPayload['upsert'], secrets: McpServersProposalPayload['secrets'], over: Partial<McpServersProposalPayload> = {}): McpServersProposalPayload => ({
+    scope: 'project',
+    upsert,
+    secrets,
+    rationale: 'r',
+    ...over
+  })
+  const typed = (...pairs: [ReturnType<typeof slot>, string][]): Record<string, string> => Object.fromEntries(pairs.map(([sl, v]) => [proposalSecretKey(sl), v]))
+
+  /** The order of secret writes and record saves during one call. */
+  function trace(): string[] {
+    const order: string[] = []
+    const realSet = secrets.set.bind(secrets)
+    vi.spyOn(secrets, 'set').mockImplementation((k, v) => {
+      order.push(v ? `secret ${k.split(':').pop()}` : `clear ${k.split(':').pop()}`)
+      realSet(k, v)
+    })
+    const realProject = projects.save.bind(projects)
+    vi.spyOn(projects, 'save').mockImplementation((p) => {
+      order.push('projects.json')
+      return realProject(p)
+    })
+    const realLib = library.save.bind(library)
+    vi.spyOn(library, 'save').mockImplementation((e) => {
+      order.push('mcp-library.json')
+      return realLib(e)
+    })
+    return order
+  }
+
+  it('a new server: the values are stored before mcp-library.json and projects.json change', () => {
+    const order = trace()
+    const sa = slot('mcp-new', 'A')
+    svc.applyProposal(pid, payload([spec({ id: 'mcp-new', name: 'newsrv', secretEnv: ['A'] })], [sa]), { secrets: typed([sa, 'va']) })
+    vi.restoreAllMocks()
+    expect(order).toEqual(['secret A', 'mcp-library.json', 'projects.json'])
+    const saved = project().mcpServers![0]
+    expect(saved.libraryId).toBeDefined()
+    expect(secrets.get(mcpLibrarySecretKey(saved.libraryId!, 'env', 'A'))).toBe('va')
+  })
+
+  it('a store that refuses a value changes no record and puts back every value the call wrote', () => {
+    svc.upsert({ projectId: pid, spec: spec({ secretEnv: ['A', 'B'] }) })
+    svc.setSecret({ projectId: pid, serverId: 'mcp-1', kind: 'env', name: 'A', value: 'old-a' })
+    const before = JSON.stringify(project())
+    secrets.failSet = (k) => k.endsWith(':B')
+    const sa = slot('mcp-1', 'A')
+    const sb = slot('mcp-1', 'B')
+    const redefine = payload([spec({ args: ['-y', '@x/github@2.0.0'], secretEnv: ['A', 'B'] })], [sa, sb])
+    expect(() => svc.applyProposal(pid, redefine, { projectOnly: true, secrets: typed([sa, 'new-a'], [sb, 'new-b']) })).toThrow(ProposalSecretsNotSaved)
+    expect(JSON.stringify(project())).toBe(before)
+    expect(secrets.get(mcpSecretKey(pid, 'mcp-1', 'env', 'A'))).toBe('old-a')
+    expect(secrets.has(mcpSecretKey(pid, 'mcp-1', 'env', 'B'))).toBe(false)
+  })
+
+  it('a redefinition that changes the launch keeps the new values through its retarget; the other old values go', () => {
+    svc.upsert({ projectId: pid, spec: spec({ secretEnv: ['A', 'B'] }) })
+    svc.setSecret({ projectId: pid, serverId: 'mcp-1', kind: 'env', name: 'A', value: 'old-a' })
+    svc.setSecret({ projectId: pid, serverId: 'mcp-1', kind: 'env', name: 'B', value: 'old-b' })
+    const sa = slot('mcp-1', 'A')
+    svc.applyProposal(pid, payload([spec({ args: ['-y', '@x/github@2.0.0'], secretEnv: ['A', 'B'] })], [sa, slot('mcp-1', 'B')]), { projectOnly: true, secrets: typed([sa, 'new-a']) })
+    expect(project().mcpServers![0].args).toEqual(['-y', '@x/github@2.0.0'])
+    expect(secrets.get(mcpSecretKey(pid, 'mcp-1', 'env', 'A'))).toBe('new-a')
+    // B was not typed: the old value does not follow the server to its new launch.
+    expect(secrets.has(mcpSecretKey(pid, 'mcp-1', 'env', 'B'))).toBe(false)
+    expect(svc.storeProposalSecrets(pid, payload([spec({ secretEnv: ['A', 'B'] })], []), undefined)).toEqual(['github'])
+  })
+
+  it('a failed projects.json save puts the values back and removes the library entries it created', () => {
+    svc.upsert({ projectId: pid, spec: spec({ secretEnv: ['A'] }) })
+    svc.setSecret({ projectId: pid, serverId: 'mcp-1', kind: 'env', name: 'A', value: 'old-a' })
+    const before = JSON.stringify(project())
+    vi.spyOn(projects, 'save').mockImplementationOnce(() => {
+      throw new Error('disk full')
+    })
+    const sa = slot('mcp-1', 'A')
+    const sn = slot('mcp-new', 'N')
+    const p2 = payload([spec({ args: ['-y', '@x/github@2.0.0'], secretEnv: ['A'] }), spec({ id: 'mcp-new', name: 'newsrv', secretEnv: ['N'] })], [sa, sn])
+    expect(() => svc.applyProposal(pid, p2, { secrets: typed([sa, 'new-a'], [sn, 'new-n']) })).toThrow('disk full')
+    vi.restoreAllMocks()
+    expect(JSON.stringify(project())).toBe(before)
+    expect(library.list()).toEqual([])
+    expect(secrets.get(mcpSecretKey(pid, 'mcp-1', 'env', 'A'))).toBe('old-a')
+    expect(secrets.keys('mcplib:')).toEqual([])
+  })
+
+  it('library sessions: a refused value leaves the library untouched; an entry removed and added back keeps its new value', () => {
+    library.save(remote({ id: 'mcpl_s', name: 'stdio-lib', transport: 'stdio', url: undefined, command: 'npx', args: ['-y', 'x@1.0.0'], secretEnv: ['TOKEN'] }))
+    svc.librarySetSecret({ libraryId: 'mcpl_s', kind: 'env', name: 'TOKEN', value: 'old' })
+    const before = JSON.stringify(library.list())
+    const st = slot('mcpl_s', 'TOKEN')
+    const lp = payload([{ ...library.get('mcpl_s')!, args: ['-y', 'x@2.0.0'], enabled: true } as McpServerSpec], [st], { scope: 'library' })
+    secrets.failSet = () => true
+    expect(() => svc.applyLibraryProposal(lp, { secrets: typed([st, 'new']) })).toThrow(ProposalSecretsNotSaved)
+    expect(JSON.stringify(library.list())).toBe(before)
+    expect(secrets.get(mcpLibrarySecretKey('mcpl_s', 'env', 'TOKEN'))).toBe('old')
+    secrets.failSet = undefined
+    svc.applyLibraryProposal({ ...lp, remove: ['mcpl_s'] }, { secrets: typed([st, 'new']) })
+    expect(library.get('mcpl_s')?.args).toEqual(['-y', 'x@2.0.0'])
+    expect(secrets.get(mcpLibrarySecretKey('mcpl_s', 'env', 'TOKEN'))).toBe('new')
+  })
+
+  it('library sessions: a later entry that fails to save gets its old value back; an entry already saved keeps its new one', () => {
+    for (const id of ['mcpl_a', 'mcpl_b']) {
+      library.save(remote({ id, name: id.replace('mcpl_', 'srv-'), transport: 'stdio', url: undefined, command: 'npx', args: ['-y', `${id}@1.0.0`], secretEnv: ['TOKEN'] }))
+      svc.librarySetSecret({ libraryId: id, kind: 'env', name: 'TOKEN', value: `old-${id}` })
+    }
+    const sa = slot('mcpl_a', 'TOKEN')
+    const sb = slot('mcpl_b', 'TOKEN')
+    const realSave = library.save.bind(library)
+    vi.spyOn(library, 'save').mockImplementation((e) => {
+      if (e.id === 'mcpl_b') throw new Error('disk full')
+      return realSave(e)
+    })
+    const lp = payload(['mcpl_a', 'mcpl_b'].map((id) => ({ ...library.get(id)!, args: ['-y', `${id}@1.0.1`], enabled: true }) as McpServerSpec), [sa, sb], { scope: 'library' })
+    expect(() => svc.applyLibraryProposal(lp, { secrets: typed([sa, 'new-a'], [sb, 'new-b']) })).toThrow('disk full')
+    vi.restoreAllMocks()
+    expect(library.get('mcpl_a')?.args).toEqual(['-y', 'mcpl_a@1.0.1'])
+    expect(secrets.get(mcpLibrarySecretKey('mcpl_a', 'env', 'TOKEN'))).toBe('new-a')
+    expect(library.get('mcpl_b')?.args).toEqual(['-y', 'mcpl_b@1.0.0'])
+    expect(secrets.get(mcpLibrarySecretKey('mcpl_b', 'env', 'TOKEN'))).toBe('old-mcpl_b')
+  })
+})
+
 describe('OAuth commits wait for the vault (round 6 item 4)', () => {
   beforeEach(() => {
     build({ lazy: true })
@@ -297,6 +425,94 @@ describe('OAuth commits wait for the vault (round 6 item 4)', () => {
     expect(secrets.get(mcpLibraryOAuthKey('mcpl_1', 'accessToken'))).toBe('AT-2')
     expect(secrets.violations).toEqual([])
     vi.restoreAllMocks()
+  })
+})
+
+describe('OAuth commits never mix two sign-ins', () => {
+  beforeEach(() => {
+    svc.libraryUpsert(remote())
+  })
+  const oauthKeys = (): Record<string, string | undefined> =>
+    Object.fromEntries((['accessToken', 'refreshToken', 'clientSecret'] as const).map((k) => [k, secrets.get(mcpLibraryOAuthKey('mcpl_1', k))]))
+
+  it('a configuration save that fails puts back the tokens and client secret of the earlier sign-in', async () => {
+    runAuthorization.mockResolvedValue(flow())
+    await svc.authorize({ libraryId: 'mcpl_1' })
+    const config = library.get('mcpl_1')!.oauth
+    const realSave = library.save.bind(library)
+    vi.spyOn(library, 'save').mockImplementation((e) => {
+      if (e.oauth?.clientId === 'cid-2') throw new Error('disk full')
+      return realSave(e)
+    })
+    runAuthorization.mockResolvedValue(flow({ config: { ...flow().config, clientId: 'cid-2', tokenEndpoint: 'https://as2.test/token' }, tokens: { accessToken: 'AT-2', refreshToken: 'RT-2' }, clientSecret: 'CS-2' }))
+    const status = await svc.authorize({ libraryId: 'mcpl_1' })
+    vi.restoreAllMocks()
+    expect(status).toMatchObject({ state: 'error', error: expect.stringContaining('disk full') })
+    expect(oauthKeys()).toEqual({ accessToken: 'AT-1', refreshToken: 'RT-1', clientSecret: 'CS-1' })
+    expect(library.get('mcpl_1')!.oauth).toEqual(config)
+  })
+
+  it('a first sign-in whose configuration cannot be saved leaves no token behind', async () => {
+    vi.spyOn(library, 'save').mockImplementation(() => {
+      throw new Error('disk full')
+    })
+    runAuthorization.mockResolvedValue(flow())
+    expect((await svc.authorize({ libraryId: 'mcpl_1' })).state).toBe('error')
+    vi.restoreAllMocks()
+    expect(oauthKeys()).toEqual({ accessToken: undefined, refreshToken: undefined, clientSecret: undefined })
+  })
+
+  it('the mock sign-in rolls its synthetic token back the same way (ORGAI_MOCK=1)', async () => {
+    build({ mock: true })
+    const added = svc.connectorsAdd({ connectorId: 'notion' })
+    const realSave = library.save.bind(library)
+    vi.spyOn(library, 'save').mockImplementation((e) => {
+      if (e.oauth?.authorizedAt) throw new Error('disk full')
+      return realSave(e)
+    })
+    expect((await svc.authorize({ libraryId: added.entry.id })).state).toBe('error')
+    vi.restoreAllMocks()
+    expect(secrets.has(mcpLibraryOAuthKey(added.entry.id, 'accessToken'))).toBe(false)
+  })
+
+  it('a sign-out or a new sign-in during a refresh wins: the refresh result is discarded', async () => {
+    runAuthorization.mockResolvedValue(flow({ config: { ...flow().config, expiresAt: iso(NOW - 1000) } }))
+    await svc.authorize({ libraryId: 'mcpl_1' })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    let answer!: (t: unknown) => void
+    refreshTokens.mockImplementation(() => new Promise((r) => (answer = r)))
+    const signedOut = svc.refreshIfNeeded({ libraryId: 'mcpl_1' })
+    await vi.waitFor(() => expect(answer).toBeTypeOf('function'))
+    svc.revokeAuth({ libraryId: 'mcpl_1' })
+    answer({ accessToken: 'AT-2', refreshToken: 'RT-2', expiresAt: iso(NOW + 3_600_000) })
+    await signedOut
+    expect(oauthKeys()).toMatchObject({ accessToken: undefined, refreshToken: undefined })
+    expect(library.get('mcpl_1')!.oauth?.authorizedAt).toBeUndefined()
+    expect(svc.authStatus({ libraryId: 'mcpl_1' }).state).not.toBe('authorized')
+
+    // Signed in again (RT-3) while an older refresh was in flight: the sign-in's tokens stay.
+    runAuthorization.mockResolvedValue(flow({ config: { ...flow().config, expiresAt: iso(NOW - 1000) }, tokens: { accessToken: 'AT-3', refreshToken: 'RT-3' } }))
+    await svc.authorize({ libraryId: 'mcpl_1' })
+    answer = undefined as unknown as (t: unknown) => void
+    const reauthorized = svc.refreshIfNeeded({ libraryId: 'mcpl_1' })
+    await vi.waitFor(() => expect(answer).toBeTypeOf('function'))
+    runAuthorization.mockResolvedValue(flow({ tokens: { accessToken: 'AT-4', refreshToken: 'RT-4' } }))
+    await svc.authorize({ libraryId: 'mcpl_1' })
+    answer({ accessToken: 'AT-stale', refreshToken: 'RT-stale', expiresAt: iso(NOW + 3_600_000) })
+    await reauthorized
+    expect(oauthKeys()).toMatchObject({ accessToken: 'AT-4', refreshToken: 'RT-4' })
+    expect(warn.mock.calls.join(' ')).toContain('the sign-in changed during the refresh')
+    vi.restoreAllMocks()
+  })
+
+  it('a refresh on an open vault prepares once, right before its writes (no extra custodian round trip)', async () => {
+    runAuthorization.mockResolvedValue(flow({ config: { ...flow().config, expiresAt: iso(NOW - 1000) } }))
+    await svc.authorize({ libraryId: 'mcpl_1' })
+    refreshTokens.mockResolvedValue({ accessToken: 'AT-2', refreshToken: 'RT-2', expiresAt: iso(NOW + 3_600_000) })
+    secrets.log.length = 0
+    await svc.refreshIfNeeded({ libraryId: 'mcpl_1' })
+    expect(secrets.log.map((e) => (e.op === 'set' ? 'set' : e.op))).toEqual(['prepare', 'set', 'set'])
+    expect(oauthKeys()).toMatchObject({ accessToken: 'AT-2', refreshToken: 'RT-2' })
   })
 })
 

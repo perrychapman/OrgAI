@@ -108,6 +108,7 @@ import { allowedDirectoryRisk } from './allowedDirectories'
 import { isValidRule } from './ruleMatch'
 import { controlProtectedPaths } from './selfControlGate'
 import { validateSpec } from '../mcp/validate'
+import { ProposalSecretsNotSaved } from '../mcp/proposalSecrets'
 import { assistContext, buildToolsFor } from '../mcp/assist'
 import { skillAssistContext } from '../skills/assist'
 import { generateRunTitle } from '../ai/runTitle'
@@ -635,8 +636,10 @@ export interface RunManagerOptions {
     /** The app-wide MCP library (secret-free), for setup-like runs. */
     libraryEntries?(): McpLibraryEntry[]
     /**
-     * Store an approved MCP proposal's typed secret values (ProposalDecision.secrets) and return the names of its
-     * servers still waiting for a secret (McpService.storeProposalSecrets). projectId null = library session.
+     * The names of an approved MCP proposal's servers still waiting for a secret (McpService.storeProposalSecrets).
+     * projectId null = library session. RunManager calls it with `values` undefined after the apply: the typed values
+     * (ProposalDecision.secrets) go into SetupService.applyProposal / applyLibraryProposal as `secrets`, which store
+     * them before any record changes (round 6 item 10).
      */
     storeProposalSecrets?(projectId: string | null, payload: McpServersProposalPayload, values: Record<string, string> | undefined): string[]
     /**
@@ -3005,13 +3008,15 @@ export class RunManager {
           if (refusal) throw new ProposalKeptOpen(`The secret values could not be saved: ${refusal}. Nothing was applied; the card is still open.`)
         }
         let waitingForSecrets: string[] | undefined
+        // Round 6 item 10: the typed values go into the apply itself, which stores them before it changes any record.
+        const secrets = proposal.kind === 'mcpServers' && decision.secrets ? { secrets: decision.secrets } : {}
         {
           try {
             if (active.summary.projectId === HARNESS_PROJECT_ID) {
               // The harness project is virtual: its proposals change the MCP library only, never a stored project.
               if (proposal.kind !== 'mcpServers') throw new Error('Only MCP library proposals can be applied here.')
-              this.setup.applyLibraryProposal(proposal.payload as McpServersProposalPayload, active.summary.buildWorkspace ? { buildWorkspace: active.summary.buildWorkspace } : {})
-              waitingForSecrets = this.storeProposalSecrets(active, null, proposal, decision.secrets)
+              this.setup.applyLibraryProposal(proposal.payload as McpServersProposalPayload, { ...(active.summary.buildWorkspace ? { buildWorkspace: active.summary.buildWorkspace } : {}), ...secrets })
+              waitingForSecrets = this.proposalWaitingForSecrets(null, proposal)
             } else if (active.summary.projectId === SKILLS_PROJECT_ID) {
               // Library-scope Skill assistant: skill proposals change the skill library only.
               if (proposal.kind !== 'skills') throw new Error('Only skill proposals can be applied here.')
@@ -3021,13 +3026,16 @@ export class RunManager {
             } else if (active.summary.kind === 'skill-assist' && proposal.kind !== 'skills') {
               throw new Error('Only skill proposals can be applied in a Skill assistant session.')
             } else {
-              const updated = this.setup.applyProposal(active.summary.projectId, proposal, { projectOnly: active.summary.kind === 'work' })
-              // Before onApplied: a stored secret lets the server start (enabledServers reads the SecretStore live).
-              waitingForSecrets = this.storeProposalSecrets(active, active.summary.projectId, proposal, decision.secrets)
+              // The values are stored before onApplied: a stored secret lets the server start (enabledServers reads the
+              // SecretStore live).
+              const updated = this.setup.applyProposal(active.summary.projectId, proposal, { projectOnly: active.summary.kind === 'work', ...secrets })
+              waitingForSecrets = this.proposalWaitingForSecrets(active.summary.projectId, proposal)
               onApplied?.(updated)
               this.broadcast({ type: 'project.updated', runId: active.summary.id, project: updated })
             }
           } catch (e) {
+            // The store refused the values before anything was applied (round 6 item 10): the card keeps waiting for them.
+            if (e instanceof ProposalSecretsNotSaved) throw new ProposalKeptOpen(`${e.message}. Nothing was applied; the card is still open.`)
             const message = (e as Error).message
             logRunEvent(active.summary, { type: 'log', runId: active.summary.id, level: 'error', message: `Could not apply proposal: ${message}` })
             this.broadcast({ type: 'log', runId: active.summary.id, level: 'error', message: `Could not apply proposal: ${message}` })
@@ -3046,28 +3054,20 @@ export class RunManager {
   }
 
   /**
-   * Store an approved MCP proposal's secret values; the names of its servers still waiting for one. Never throws, and
-   * never swallows a vault error (round 6 item 10): a failed write is shown on the run (the message never carries a
-   * value: the store's errors name keys at most) and the outcome lists every server still waiting for a value, so the
-   * card's result says "waiting for secrets" instead of claiming they were saved.
+   * The names of an applied MCP proposal's servers still waiting for a secret value (McpService.storeProposalSecrets
+   * without values: the apply already stored what the card carried). Never throws: a failed read names every upserted
+   * server with a secret slot, so the outcome never claims a value was saved.
    */
-  private storeProposalSecrets(active: ActiveRun, projectId: string | null, proposal: Proposal, values: Record<string, string> | undefined): string[] | undefined {
+  private proposalWaitingForSecrets(projectId: string | null, proposal: Proposal): string[] | undefined {
     if (proposal.kind !== 'mcpServers' || !this.options.mcp?.storeProposalSecrets) return undefined
     try {
-      return this.options.mcp.storeProposalSecrets(projectId, proposal.payload, values)
+      return this.options.mcp.storeProposalSecrets(projectId, proposal.payload, undefined)
     } catch (e) {
-      const message = `The secret values of this proposal could not be saved (${(e as Error).message}). Set them in Settings > MCP servers.`
-      logRunEvent(active.summary, { type: 'log', runId: active.summary.id, level: 'error', message })
-      this.broadcast({ type: 'log', runId: active.summary.id, level: 'error', message })
-      try {
-        // Without values: only the waiting list, read from the store as it is now.
-        return this.options.mcp.storeProposalSecrets(projectId, proposal.payload, undefined)
-      } catch {
-        const named = (Array.isArray(proposal.payload.upsert) ? proposal.payload.upsert : [])
-          .filter((u) => (u?.secretEnv?.length ?? 0) + (u?.secretHeaders?.length ?? 0) > 0 && typeof u.name === 'string')
-          .map((u) => u.name)
-        return named.length ? named : undefined
-      }
+      log.warn(`Could not list the servers waiting for secrets: ${(e as Error).message}`)
+      const named = (Array.isArray(proposal.payload.upsert) ? proposal.payload.upsert : [])
+        .filter((u) => (u?.secretEnv?.length ?? 0) + (u?.secretHeaders?.length ?? 0) > 0 && typeof u.name === 'string')
+        .map((u) => u.name)
+      return named.length ? named : undefined
     }
   }
 

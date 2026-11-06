@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import type { McpLibraryEntry, McpServerSpec, Project, SecretStatus } from '../../shared/types'
+import type { McpInstallRequest, McpLibraryEntry, McpServerSpec, Project, Proposal, SecretStatus } from '../../shared/types'
 import { mcpLibraryPrefix, mcpSecretPrefix } from '../store/secrets'
-import { STORES_SECRET, librarySecretPrefix, projectServerSecretPrefix, type StoresSecretHostView } from './storesSecret'
+import { STORES_SECRET, librarySecretPrefix, projectServerSecretPrefix, type AuthorizeTargetKind, type StoresSecretHostView } from './storesSecret'
 
 const server = (over: Partial<McpServerSpec> = {}): McpServerSpec =>
   ({ id: 's1', name: 'gh', transport: 'stdio', command: 'npx', secretEnv: ['TOKEN'], enabled: true, source: 'user', addedAt: '', ...over }) as McpServerSpec
@@ -66,6 +66,84 @@ describe('storesSecret predicates (cli-standalone.md 5.6)', () => {
     expect(run('mcp:authorize', [{ libraryId: 'lib1', clientId: 'c', clientSecret: 's' }])).toBe(true)
     expect(run('mcp:authorize', [{ libraryId: 'lib1', clientId: 'c' }])).toBe(false)
     expect(run('mcp:authorize', [{ libraryId: 'lib1', clientSecret: '' }])).toBe(false)
+  })
+
+  it('setup:decide with the pending card in view: only values for the card\'s own slots of upserted servers count', () => {
+    const card = (over: Partial<Proposal> = {}): Proposal =>
+      ({
+        id: 'x',
+        runId: 'r',
+        kind: 'mcpServers',
+        revision: 2,
+        payload: {
+          upsert: [{ id: 's1', name: 'gh' }],
+          secrets: [{ serverId: 's1', kind: 'env', name: 'TOKEN' }, { serverId: 's1', kind: 'header', name: 'X-Key' }, { serverId: 'other', kind: 'env', name: 'TOKEN' }],
+          rationale: 'r'
+        },
+        ...over
+      }) as unknown as Proposal
+    const withCard = (c: Proposal | undefined): StoresSecretHostView => ({ ...view(), pendingProposal: (runId, id) => (c && runId === c.runId && id === c.id ? c : undefined) })
+    const decide = (secrets: Record<string, string>, extra: Record<string, unknown> = {}) => [{ runId: 'r', proposalId: 'x', decision: { behavior: 'approve', secrets }, ...extra }]
+    expect(run('setup:decide', decide({ 's1:env:TOKEN': 'v' }), withCard(card()))).toBe(true)
+    expect(run('setup:decide', decide({ 's1:header:X-Key': 'v' }), withCard(card()))).toBe(true)
+    // A key naming no slot, a slot of a server the proposal does not upsert, a multi-line header value: nothing stored.
+    expect(run('setup:decide', decide({ 'nope:env:X': 'v' }), withCard(card()))).toBe(false)
+    expect(run('setup:decide', decide({ 'other:env:TOKEN': 'v' }), withCard(card()))).toBe(false)
+    expect(run('setup:decide', decide({ 's1:header:X-Key': 'a\nb' }), withCard(card()))).toBe(false)
+    // Another kind of proposal, a card that is not pending, a stale revision.
+    expect(run('setup:decide', decide({ 's1:env:TOKEN': 'v' }), withCard(card({ kind: 'skills' } as Partial<Proposal>)))).toBe(false)
+    expect(run('setup:decide', decide({ 's1:env:TOKEN': 'v' }), withCard(undefined))).toBe(false)
+    expect(run('setup:decide', decide({ 's1:env:TOKEN': 'v' }, { expectedRevision: 1 }), withCard(card()))).toBe(false)
+    expect(run('setup:decide', decide({ 's1:env:TOKEN': 'v' }, { expectedRevision: 2 }), withCard(card()))).toBe(true)
+  })
+
+  it('mcp:answerInstall with the pending card in view: a free id and a value for one of its secret names', () => {
+    const request = { id: 'q', runId: 'r', spec: server({ id: 'new-1', secretEnv: ['TOKEN'] }), requiredSecrets: ['TOKEN'], revision: 1 } as unknown as McpInstallRequest
+    const withCard = (servers: McpServerSpec[] = [], entry?: Partial<McpLibraryEntry>): StoresSecretHostView => ({
+      ...view({ servers, entry }),
+      pendingInstall: (runId, id) => (runId === 'r' && id === 'q' ? { request, projectId: 'p1' } : undefined)
+    })
+    const d = (decision: Record<string, unknown>, extra: Record<string, unknown> = {}) => [{ runId: 'r', requestId: 'q', decision: { approved: true, scope: 'project', ...decision }, ...extra }]
+    expect(run('mcp:answerInstall', d({ secrets: { TOKEN: 'v' } }), withCard())).toBe(true)
+    expect(run('mcp:answerInstall', d({ secrets: { OTHER: 'v' } }), withCard())).toBe(false)
+    // The id is taken (RunManager refuses the install): nothing stored.
+    expect(run('mcp:answerInstall', d({ secrets: { TOKEN: 'v' } }), withCard([server({ id: 'new-1' })]))).toBe(false)
+    expect(run('mcp:answerInstall', d({ secrets: { TOKEN: 'v' } }), withCard([], { id: 'new-1' }))).toBe(false)
+    // An edit that changes the id is refused; an edit's own slot list replaces the card's.
+    expect(run('mcp:answerInstall', d({ secrets: { TOKEN: 'v' }, spec: { id: 'other' } }), withCard())).toBe(false)
+    expect(run('mcp:answerInstall', d({ secrets: { NEW: 'v' }, spec: { id: 'new-1', secretEnv: ['NEW'] } }), withCard())).toBe(true)
+    expect(run('mcp:answerInstall', d({ secrets: { TOKEN: 'v' }, spec: { id: 'new-1', secretEnv: ['NEW'] } }), withCard())).toBe(false)
+    expect(run('mcp:answerInstall', [{ runId: 'r', requestId: 'gone', decision: { approved: true, scope: 'project', secrets: { TOKEN: 'v' } } }], withCard())).toBe(false)
+    expect(run('mcp:answerInstall', d({ secrets: { TOKEN: 'v' } }, { expectedRevision: 3 }), withCard())).toBe(false)
+  })
+
+  it('mcp:authorize with the target in view: a client secret for an OAuth sign-in only', () => {
+    const withKind = (kind: AuthorizeTargetKind | undefined): StoresSecretHostView => ({ ...view(), authorizeTarget: () => kind })
+    const args = [{ libraryId: 'lib1', clientId: 'c', clientSecret: 's' }]
+    expect(run('mcp:authorize', args, withKind('oauth'))).toBe(true)
+    expect(run('mcp:authorize', args, withKind('oauthClient'))).toBe(true)
+    for (const kind of ['token', 'none', 'stdio', undefined] as const) expect(run('mcp:authorize', args, withKind(kind)), String(kind)).toBe(false)
+    // The handler refuses a secret or client id with a control character or over its length before storing.
+    expect(run('mcp:authorize', [{ libraryId: 'lib1', clientSecret: 'a\nb' }], withKind('oauth'))).toBe(false)
+    expect(run('mcp:authorize', [{ libraryId: 'lib1', clientSecret: 'x'.repeat(4001) }], withKind('oauth'))).toBe(false)
+    expect(run('mcp:authorize', [{ libraryId: 'lib1', clientId: 'c\u0001', clientSecret: 's' }], withKind('oauth'))).toBe(false)
+  })
+
+  it('a host view that throws makes the predicate true (preparing is better than VaultNotReady)', () => {
+    const throwing: StoresSecretHostView = {
+      ...view(),
+      project: () => {
+        throw new Error('store read failed')
+      },
+      pendingProposal: () => {
+        throw new Error('runs read failed')
+      }
+    }
+    expect(run('mcp:promote', [{ projectId: 'p1', serverId: 's1' }], throwing)).toBe(true)
+    expect(run('setup:decide', [{ runId: 'r', proposalId: 'x', decision: { behavior: 'approve', secrets: { a: 'v' } } }], throwing)).toBe(true)
+    // Odd input never reaches the view: still false.
+    expect(run('mcp:promote', [42], throwing)).toBe(false)
+    expect(run('setup:decide', [null], throwing)).toBe(false)
   })
 
   it('mcp:promote: a project-only server with a readable value; unreadable or linked or empty is false', () => {

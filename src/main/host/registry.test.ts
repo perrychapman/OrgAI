@@ -232,9 +232,10 @@ describe('entry flags', () => {
       const fn = (HOST_CHANNEL_REGISTRY[c] as RequestChannelEntry).storesSecret!
       for (const args of [[], [null], ['x'], [[]], [{}], [{ value: '' }]]) expect(fn(args, view), c).toBe(false)
     }
-    // A throwing view never escapes a predicate (storesSecret.test.ts covers each predicate).
+    // A throwing view never escapes a predicate, and answers true: preparing is better than VaultNotReady
+    // (storesSecret.test.ts covers each predicate).
     const throwing = { ...view, project: () => { throw new Error('boom') } }
-    expect((HOST_CHANNEL_REGISTRY['mcp:promote'] as RequestChannelEntry).storesSecret!([{ projectId: 'p', serverId: 's' }], throwing)).toBe(false)
+    expect((HOST_CHANNEL_REGISTRY['mcp:promote'] as RequestChannelEntry).storesSecret!([{ projectId: 'p', serverId: 's' }], throwing)).toBe(true)
   })
 
   it('socketInvokableChannels leaves out desktop_only and transport channels', () => {
