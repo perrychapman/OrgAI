@@ -6,6 +6,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { assertInside, checkBundle, main, npmInvocation, plan, repositoryFor } from './build-npm-package.mjs'
+import { readmeText } from './lib/npmPackage.mjs'
 import { commitOf, main as writeInstallInfoMain } from './write-install-info.mjs'
 
 test('plan keeps every path under release/npm', () => {
@@ -223,4 +224,9 @@ test('write-install-info writes channel app and removes it again', () => {
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
   }
+})
+
+test('the README of a prerelease installs from the next tag, a stable one from latest', () => {
+  assert.match(readmeText({ version: '0.1.6-dev1' }), /npm i -g orgai-cli@next\n/)
+  assert.match(readmeText({ version: '0.1.6' }), /npm i -g orgai-cli\n/)
 })

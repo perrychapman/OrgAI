@@ -168,7 +168,7 @@ export const LEVEL_WORDS: Record<TerminalAccessLevel, string> = {
 }
 
 /** The question `orgai daemon start --runtime node` asks once (4.2.1). */
-export const LEVEL_QUESTION = 'Let terminal sessions approve decisions and change configuration? [full/operate]'
+export const LEVEL_QUESTION = 'What may terminals do? full = also answer decisions and change settings, operate = start, follow and stop runs [full/operate]'
 
 /** {@link LEVEL_QUESTION} naming what an empty answer (Enter) keeps: the level stored now (review round 2). */
 export function levelQuestion(current: TerminalAccessLevel): string {

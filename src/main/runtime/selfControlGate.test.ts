@@ -1291,6 +1291,22 @@ describe('Wave 7 gate additions (cli-standalone.md 8.4)', () => {
       expect(checkSelfControlDenial('Grep', { pattern: 'ORGAI_VAULT_KEY_FILE', path: '/work/proj/src' }, ctx)).toBeNull()
     })
 
+    it('denies reading another process\'s environment (the host keeps ORGAI_SECRET_* in its own)', () => {
+      for (const command of [
+        'cat /proc/$PPID/environ',
+        'strings /proc/$PPID/environ',
+        'ps eww $PPID',
+        'ps -E -p $PPID',
+        'xargs -0 -n1 < /proc/1234/environ',
+        'p=$PPID; tr "\\0" "\\n" < /proc/$p/environ'
+      ]) {
+        expect(bash(command, ctx), command).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      }
+      for (const command of ['ps aux', 'ps -ef', 'ps -p 1234 -o comm=', 'cat /proc/cpuinfo']) {
+        expect(bash(command, ctx), command).toBeNull()
+      }
+    })
+
     it('leaves a data-only here-document that mentions the name alone (writing docs)', () => {
       expect(bash("cat <<'EOF' > docs/notes.md\nSet ORGAI_VAULT_KEY_FILE to move the key.\nEOF", ctx)).toBeNull()
     })

@@ -138,6 +138,33 @@ describe('explicit clears ask the store first (5.5 Deletes)', () => {
   })
 })
 
+describe('an overlay value is never written back by a rollback', () => {
+  it('priorOf reports an overlay-backed key as not restorable, so putBack never persists it', () => {
+    const key = mcpSecretKey(pid, 'mcp-1', 'env', 'GITHUB_TOKEN')
+    ;(secrets as unknown as { overlay: Map<string, string> }).overlay.set(key, 'from-env')
+    const prior = (svc as unknown as { priorOf(k: string): unknown; putBack(k: string, p: unknown, w: string): void }).priorOf(key)
+    expect(prior).toEqual({ unreadable: true })
+    ;(svc as unknown as { putBack(k: string, p: unknown, w: string): void }).putBack(key, prior, 'test')
+    expect((secrets as unknown as { overlay: Map<string, string> }).overlay.has(key)).toBe(true)
+    secrets.clear(key)
+    expect(secrets.has(key)).toBe(false)
+  })
+})
+
+describe('revokeAuth is an explicit clear', () => {
+  it('a failed save of the removal throws and leaves the sign-in recorded', async () => {
+    svc.libraryUpsert(remote())
+    runAuthorization.mockResolvedValue(flow())
+    await svc.authorize({ libraryId: 'mcpl_1' })
+    vi.spyOn(secrets, 'clear').mockImplementation(() => {
+      throw new Error('disk full')
+    })
+    expect(() => svc.revokeAuth({ libraryId: 'mcpl_1' })).toThrow('disk full')
+    expect(secrets.get(mcpLibraryOAuthKey('mcpl_1', 'accessToken'))).toBe('AT-1')
+    expect(svc.authStatus({ libraryId: 'mcpl_1' }).state).toBe('authorized')
+  })
+})
+
 describe('moves refuse unreadable secrets before any change (5.4)', () => {
   it('promote names the unreadable slot and changes nothing', () => {
     svc.upsert({ projectId: pid, spec: spec() })

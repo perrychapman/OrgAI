@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process'
+import { scrubControlEnv } from './childEnv'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { devNull } from 'node:os'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
@@ -60,7 +61,7 @@ function git(root: string, args: string[]): Promise<{ ok: boolean; out: string; 
   const bin = gitExecutable()
   if (!bin) return Promise.resolve({ ok: false, out: '', err: 'git was not found on PATH.' })
   return new Promise((resolve) => {
-    const child = execFile(bin, args, { cwd: root, windowsHide: true, timeout: 60_000, maxBuffer: 8 * 1024 * 1024 }, (error, stdout, stderr) => {
+    const child = execFile(bin, args, { cwd: root, env: scrubControlEnv(process.env), windowsHide: true, timeout: 60_000, maxBuffer: 8 * 1024 * 1024 }, (error, stdout, stderr) => {
       resolve({ ok: !error, out: String(stdout).trim(), err: String(stderr ?? error?.message ?? '').trim() })
     })
     // Git under the repo lock is ended with the host at the shutdown's hard limit (cli-standalone.md 4.3).
@@ -344,7 +345,7 @@ function gitRaw(root: string, args: string[]): Promise<{ ok: boolean; out: strin
   const bin = gitExecutable()
   if (!bin) return Promise.resolve({ ok: false, out: '', err: 'git was not found on PATH.' })
   return new Promise((resolve) => {
-    execFile(bin, args, { cwd: root, windowsHide: true, timeout: 60_000, maxBuffer: 8 * 1024 * 1024 }, (error, stdout, stderr) => {
+    execFile(bin, args, { cwd: root, env: scrubControlEnv(process.env), windowsHide: true, timeout: 60_000, maxBuffer: 8 * 1024 * 1024 }, (error, stdout, stderr) => {
       const overflow = (error as { code?: unknown } | null)?.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'
       resolve({ ok: !error, out: String(stdout ?? ''), err: String(stderr ?? error?.message ?? '').trim(), ...(overflow ? { overflow: true } : {}) })
     })

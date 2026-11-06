@@ -435,6 +435,41 @@ export function toClaudeMcpServers(resolved: ResolvedMcpServer[]): Record<string
   return out
 }
 
+/**
+ * toClaudeMcpServers for the query's start options (cli-standalone R3). SDK options.mcpServers travel in the claude
+ * child's argv (`--mcp-config {...}`), so a secret env value, a secret header and the OAuth bearer become
+ * `${ORGAI_MCP_<n>_<k>}` placeholders (Claude Code expands `${VAR}` in env, args, url and headers from its own
+ * environment) and the real values go to `env`, which the caller merges into options.env. Plain values stay inline.
+ * Servers attached later through setMcpServers (a control message, not argv) use toClaudeMcpServers.
+ */
+export function toClaudeMcpServersForArgv(resolved: ResolvedMcpServer[]): { servers: Record<string, McpServerConfig>; env: Record<string, string> } {
+  const env: Record<string, string> = {}
+  const servers = toClaudeMcpServers(resolved)
+  let n = 0
+  for (const r of resolved) {
+    const cfg = servers[r.spec.name] as { env?: Record<string, string>; headers?: Record<string, string> } | undefined
+    if (!cfg) continue
+    n++
+    let k = 0
+    const place = (value: string): string => {
+      const name = `ORGAI_MCP_${n}_${k++}`
+      env[name] = value
+      return '${' + name + '}'
+    }
+    if (cfg.env) {
+      const secret = new Set(r.spec.secretEnv ?? [])
+      const declared = r.spec.env ?? {}
+      cfg.env = Object.fromEntries(Object.entries(cfg.env).map(([key, v]) => [key, secret.has(key) || declared[key] !== v ? place(v) : v]))
+    }
+    if (cfg.headers) {
+      const secret = new Set(r.spec.secretHeaders ?? [])
+      const declared = r.spec.headers ?? {}
+      cfg.headers = Object.fromEntries(Object.entries(cfg.headers).map(([key, v]) => [key, secret.has(key) || declared[key] !== v ? place(v) : v]))
+    }
+  }
+  return { servers, env }
+}
+
 /** Enabled project plugins as SDK plugin configs. Note: strictMcpConfig also stops plugin-declared MCP servers from loading. */
 export function toClaudePlugins(plugins: PluginSpec[] | undefined): SdkPluginConfig[] {
   return (plugins ?? []).filter((p) => p.enabled).map((p) => ({ type: 'local' as const, path: p.path }))
@@ -2071,8 +2106,13 @@ export class ClaudeSession implements RuntimeSession {
   }
 
   /** Every server of the session: the harness's own plus the resolved MCP servers. */
-  private mcpRecord(resolved: ResolvedMcpServer[], harnessServer = this.harnessServer): Record<string, McpServerConfig> {
-    const record: Record<string, McpServerConfig> = toClaudeMcpServers(resolved)
+  private mcpRecord(resolved: ResolvedMcpServer[], harnessServer = this.harnessServer, forArgv?: { env: Record<string, string> }): Record<string, McpServerConfig> {
+    let record: Record<string, McpServerConfig>
+    if (forArgv) {
+      const split = toClaudeMcpServersForArgv(resolved)
+      record = split.servers
+      Object.assign(forArgv.env, split.env)
+    } else record = toClaudeMcpServers(resolved)
     if (harnessServer) record[ORGAI_MCP] = harnessServer
     return record
   }
@@ -2923,7 +2963,9 @@ export class ClaudeSession implements RuntimeSession {
     const dirs = claudeAdditionalDirectories(this.ctx)
     if (dirs.length) options.additionalDirectories = dirs
     options.pathToClaudeCodeExecutable = executable
-    options.mcpServers = this.mcpRecord(resolved, harnessServer)
+    const mcpSecretEnv: Record<string, string> = {}
+    options.mcpServers = this.mcpRecord(resolved, harnessServer, { env: mcpSecretEnv })
+    if (Object.keys(mcpSecretEnv).length) options.env = { ...env, ...mcpSecretEnv }
     options.strictMcpConfig = true
     const plugins = toClaudePlugins(this.ctx.plugins?.())
     if (plugin && skillNames.length) {

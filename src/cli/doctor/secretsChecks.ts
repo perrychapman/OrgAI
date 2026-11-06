@@ -13,7 +13,7 @@ import type { SecretsStatusResult } from '../../shared/types'
 import { readVaultMetadata } from '../../main/store/vaultMetadata'
 import { LEGACY_SECRETS_FILE, VAULT_FILE, VAULT_MESSAGES } from '../../main/store/vaultTypes'
 import type { DoctorCheck } from '../commands/doctor'
-import { schemeText } from '../commands/secrets'
+import { schemeText, STATE_TEXT } from '../commands/secrets'
 import type { DoctorCheckGroup } from './types'
 
 /** Largest secrets.json doctor reads (it counts keys and hashes value strings). */
@@ -50,7 +50,7 @@ export function hostSecretsChecks(s: SecretsStatusResult): DoctorCheck[] {
       checks.push({ id: 'vault', status: 'fail', detail: s.reason ?? VAULT_MESSAGES.corrupt })
       break
     default:
-      checks.push({ id: 'vault', status: 'warn', detail: `${s.state} (${scheme}): ${s.reason ?? 'its key cannot be read now'}` })
+      checks.push({ id: 'vault', status: 'warn', detail: `${STATE_TEXT[s.state] ?? s.state} (${scheme}): ${s.reason ?? `its key cannot be read now. ${STATE_NEXT[s.state] ?? '`orgai secrets status` says more'}`}` })
   }
   if (s.probe) {
     checks.push(
@@ -93,8 +93,14 @@ function legacyCheck(state: SecretsStatusResult['legacyFile'], keys: number): Do
     case 'retired':
       return { id: 'legacy-secrets', status: 'ok', detail: 'secrets.json was retired; the vault holds every secret' }
     default:
-      return { id: 'legacy-secrets', status: 'warn', detail: "secrets.json is damaged: no host of this version reads or rewrites it; the app shows a notice" }
+      return { id: 'legacy-secrets', status: 'warn', detail: "secrets.json is damaged: no host of this version reads or rewrites it; `orgai secrets reset` starts over" }
   }
+}
+
+const STATE_NEXT: Record<string, string> = {
+  locked: 'Unlock the key store, then try again',
+  'missing-key': 'Restore the key file or sign in to the OS account that created the vault; `orgai secrets reset` starts over',
+  'key-mismatch': 'Restore the matching key file; `orgai secrets reset` starts over'
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)

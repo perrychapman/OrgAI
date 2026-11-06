@@ -24,6 +24,7 @@ import { openSecretStore, type SecretCipher } from '../main/store/secrets'
 import type { CustodianFactory } from '../main/store/vaultTypes'
 import { markSharedHost } from './client/sharedHost'
 import { openUrl } from './openUrl'
+import { unavailableCustodianFactory } from '../main/store/unavailableCustodian'
 import { CliError, EXIT, type InprocHostHandle } from './types'
 import { CLI_VERSION } from './version'
 
@@ -258,7 +259,8 @@ export async function startInprocHost(opts: StartInprocHostOptions): Promise<Inp
       cipher: NO_CIPHER,
       overlay: opts.overlay,
       env: opts.env,
-      ...(opts.custodian ? { custodian: opts.custodian } : {}),
+      // A mock host (e2e, verify-pack) never writes an OS key item for a throwaway data folder unless a key file is named.
+      ...(opts.custodian ? { custodian: opts.custodian } : opts.mock && !((opts.env?.ORGAI_VAULT_KEY_FILE ?? '').trim()) ? { custodian: unavailableCustodianFactory } : {}),
       log: (m) => log.info(m)
     })
     host = bootOrgAIHost({

@@ -208,7 +208,7 @@ describe('orgai daemon start --runtime (Wave 7, cli-standalone.md 4.2)', () => {
     const opts = () => ({ connect: [noHost(), nodeStatus()], launcher: { ...absent, startBackground: () => ({ hostKinds: ['node'] as const }), waitForReady: async () => nodeReady } })
     const tty = fakeContext({ ...opts(), stdinIsTTY: true })
     expect(await runDaemon(tty.ctx, ['start'])).toBe(EXIT.ok)
-    expect(rec.asked).toEqual(['Let terminal sessions approve decisions and change configuration? [full/operate] (Enter keeps operate) '])
+    expect(rec.asked).toEqual(['What may terminals do? full = also answer decisions and change settings, operate = start, follow and stop runs [full/operate] (Enter keeps operate) '])
     expect(rec.written).toEqual(['full'])
     expect(tty.err()).toContain('Terminal access: full')
     // An unclear answer is asked again; Enter keeps operate.
@@ -234,7 +234,7 @@ describe('orgai daemon start --runtime (Wave 7, cli-standalone.md 4.2)', () => {
     daemonDeps.ask = async (q) => (rec.asked.push(q), '')
     const f = fakeContext({ stdinIsTTY: true, connect: [noHost(), nodeStatus()], launcher: { ...absent, startBackground: () => ({ hostKinds: ['node'] }), waitForReady: async () => nodeReady } })
     expect(await runDaemon(f.ctx, ['start'])).toBe(EXIT.ok)
-    expect(rec.asked).toEqual(['Let terminal sessions approve decisions and change configuration? [full/operate] (Enter keeps full) '])
+    expect(rec.asked).toEqual(['What may terminals do? full = also answer decisions and change settings, operate = start, follow and stop runs [full/operate] (Enter keeps full) '])
     expect(rec.written).toEqual(['full'])
   })
 

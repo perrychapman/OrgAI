@@ -20,12 +20,12 @@ import { emit, printText, safeLine, warn, type Json } from '../output'
 import { CliError, EXIT, type CliContext, type CommandFn } from '../types'
 import { CONFIGURE, READ, refusable } from './connections'
 
-const USAGE = 'secrets status [--probe] | init [--key-file <path> [--import]] | reset --yes | undelete <key>'
+const USAGE = 'secrets status [--probe] | init [--key-file <path> [--import]] | reset [--yes] | undelete <key>'
 
 /** What `secrets init --key-file` prints with the result (5.3.1: the README and the init output say it). */
 export const KEY_FILE_BACKUP_WARNING = 'A backup or sync that holds both the key file and the data folder holds every secret.'
 
-const STATE_TEXT: Record<SecretsStatusResult['state'], string> = {
+export const STATE_TEXT: Record<SecretsStatusResult['state'], string> = {
   absent: 'not created yet',
   open: 'open',
   locked: 'locked',
@@ -44,7 +44,7 @@ const SCHEME_TEXT: Record<NonNullable<SecretsStatusResult['scheme']>, string> = 
 const LEGACY_TEXT: Record<SecretsStatusResult['legacyFile'], string> = {
   ok: 'present',
   missing: 'missing',
-  corrupt: 'damaged (never rewritten; the app shows a notice)',
+  corrupt: 'damaged (never rewritten; `orgai secrets reset` starts over)',
   retired: 'retired'
 }
 
@@ -93,8 +93,8 @@ export function statusLines(s: SecretsStatusResult): string[] {
   if (s.counts.unreadable) counts.push(`${s.counts.unreadable} unreadable here`)
   if (s.counts.overlay) counts.push(`${s.counts.overlay} from the environment (never saved)`)
   lines.push(`Secrets:      ${counts.join(', ')}`)
-  if (s.pendingLegacy) lines.push(`Pending:      ${s.pendingLegacy} ${s.pendingLegacy === 1 ? 'secret' : 'secrets'}. ${VAULT_MESSAGES.pendingLegacy}.`)
-  lines.push(`Write-back:   ${s.canWriteBack ? "this host keeps the app's copy in step" : "this host cannot update the app's copy"}`)
+  if (s.pendingLegacy) lines.push(`Pending:      ${s.pendingLegacy} ${s.pendingLegacy === 1 ? 'secret' : 'secrets'}: ${VAULT_MESSAGES.pendingLegacy}`)
+  lines.push(`App copy:     ${s.canWriteBack ? "kept in step by this host" : "this host cannot update the OrgAI app's copy; secrets saved here reach the app only after it opens the vault"}`)
   if (s.softDeletes.length) {
     lines.push('', 'Removed secrets kept for `orgai secrets undelete <key>`:')
     for (const d of s.softDeletes) {
@@ -103,7 +103,7 @@ export function statusLines(s: SecretsStatusResult): string[] {
       lines.push(`  ${safeLine(d.key)}  ${who} ${formatDateTime(d.at)}, ${RESTORE_TEXT[d.restorable]}${until}`)
     }
   }
-  if (s.orphanedKeys) lines.push(`Left in place: ${s.orphanedKeys} ${s.orphanedKeys === 1 ? 'secret' : 'secrets'} a removal could not delete here (the app or a reset clears them).`)
+  if (s.orphanedKeys) lines.push(`Left in place: ${s.orphanedKeys} ${s.orphanedKeys === 1 ? 'secret' : 'secrets'} a removal could not delete here (they stay stored until that secret is removed again).`)
   if (s.orphanedVaults.length) {
     lines.push('', 'OS key items of moved-aside vaults (left in place; delete them in the OS key store if no copy needs them):')
     for (const o of s.orphanedVaults) lines.push(`  ${safeLine(o.vaultId)}  ${schemeText(o.scheme)}  ${safeLine(o.file)}`)

@@ -7,6 +7,7 @@ import { spawn } from 'node:child_process'
 import { createHmac, randomBytes } from 'node:crypto'
 import * as fs from 'node:fs'
 import * as net from 'node:net'
+import * as os from 'node:os'
 import * as path from 'node:path'
 import { APP_DIR, DATA_DIR, allowFullTerminalAccess, sleep } from './lib.mjs'
 
@@ -20,6 +21,12 @@ export const DAEMON_SECRET = path.join(HOST_DATA_DIR, 'run', 'daemon.secret')
 
 export const ENV = { ...process.env, ORGAI_DATA_DIR: DATA_DIR, ORGAI_MOCK: '1', NO_COLOR: '1' }
 delete ENV.ELECTRON_RUN_AS_NODE
+// A mock inproc host never touches an OS key store (a throwaway data folder must not leave keychain items); the
+// vault key comes from a throwaway key file instead.
+const KEY_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'orgai-e2e-key-'))
+fs.writeFileSync(path.join(KEY_DIR, 'vault.key'), randomBytes(32), { mode: 0o600 })
+ENV.ORGAI_VAULT_KEY_FILE = path.join(KEY_DIR, 'vault.key')
+process.on('exit', () => fs.rmSync(KEY_DIR, { recursive: true, force: true }))
 
 const PACKAGE_VERSION = JSON.parse(fs.readFileSync(path.join(APP_DIR, 'package.json'), 'utf8')).version
 

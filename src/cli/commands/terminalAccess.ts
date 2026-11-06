@@ -37,7 +37,7 @@ function lines(ctx: CliContext, s: StoredTerminalAccess, changed: boolean): stri
     ? s.terminalServer
       ? 'on'
       : 'off'
-    : 'not chosen (a background host started from a terminal accepts terminal clients for its own session)'
+    : 'not chosen yet. The app keeps it off; a background host started from a terminal allows terminals for its own session. Choose with `orgai terminal-access on` or `off`'
   const level = `${s.level}${s.levelChosen ? '' : ' (not chosen yet)'}: ${LEVEL_WORDS[s.level]}`
   return [
     `${changed ? 'Saved. ' : ''}Terminal access: ${state}.`,

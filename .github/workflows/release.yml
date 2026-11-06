@@ -281,7 +281,7 @@ jobs:
   # Setup guard (review round 2): GitHub creates a missing `npm-publish` environment on first use with NO protection
   # rules, which would publish without a reviewer. So the job refuses unless the environment variable
   # NPM_PUBLISH_ENABLED is 'true'. Set it ONLY as a variable of the `npm-publish` environment, after adding its
-  # required reviewers (Settings > Environments > npm-publish: Required reviewers, Deployment branches: main, then
+  # required reviewers (Settings > Environments > npm-publish: Required reviewers, Deployment branches and tags: allow the tag pattern `v*` (this job runs on a tag ref, which a branch-only rule refuses; the meta job already requires the commit to be on main), then
   # Environment variables: NPM_PUBLISH_ENABLED = true); never as a repository or organisation variable, which every
   # job sees. A refused run publishes nothing and can be re-run once the environment is set up.
   publish-npm:

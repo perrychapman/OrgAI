@@ -676,6 +676,28 @@ function segmentProgramWord(segment: string): string | undefined {
  */
 const VAULT_ENV_WORD = /ORGAI_VAULT|ORGAI_V(?:A(?:UL?)?)?(?![A-Za-z0-9_])/i
 
+/**
+ * Review fix: the host process (and every ancestor of an agent's shell) still holds ORGAI_SECRET_* and ORGAI_VAULT_* in
+ * its initial environment; the 6.3 scrub only cleans the child's. Reading another process's environment is denied:
+ * any `/proc/<pid>/environ` word (the pid may be a variable such as `$PPID`) and `ps` asked to print environments
+ * (BSD style `ps eww $PPID`, macOS `ps -E`). A speed bump, not a boundary (spec 5.8).
+ */
+const PROC_ENVIRON = /\/proc\/[^\s'"]*\/?environ\b/i
+export function readsProcessEnvironment(text: string): boolean {
+  if (PROC_ENVIRON.test(text.replace(/\\/g, ''))) return true
+  for (const segment of cliSegments(unquoted(text))) {
+    const words = segmentWords(segment.text)
+    const k = words.findIndex((w) => binName(w).toLowerCase() === 'ps')
+    if (k < 0) continue
+    const args = words.slice(k + 1)
+    // BSD style: the first argument is a letter cluster (`ps eww`, `ps axe`); an `e` there prints environments.
+    if (args[0] !== undefined && /^[A-Za-z]+$/.test(args[0]) && /[eE]/.test(args[0])) return true
+    // Dash style: macOS `-E`.
+    if (args.some((w) => /^-[A-Za-z]*E/.test(w))) return true
+  }
+  return false
+}
+
 function referencesVaultEnv(text: string): boolean {
   return VAULT_ENV_WORD.test(text.replace(/["'\\`[\]]/g, ''))
 }
@@ -1320,6 +1342,7 @@ function textRunsCli(text: string, depth: number, budget: CliBudget, check: CliC
   if (ELECTRON_AS_NODE_PS.some((re) => re.test(text))) return true
   // Wave 7: any word referencing ORGAI_VAULT_*, quoted or not (it may be handed to a shell).
   if (referencesVaultEnv(text)) return true
+  if (readsProcessEnvironment(text)) return true
   const plain = unquoted(text)
   if (/\bsetx\s+ELECTRON_RUN_AS_NODE\b/i.test(plain)) return true
   for (const segment of cliSegments(plain)) if (assignsElectronAsNode(segment.text)) return true

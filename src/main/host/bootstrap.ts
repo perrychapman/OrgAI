@@ -682,8 +682,9 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
 
   // Stores built, probes started, housekeeping done: advertise the host as ready.
   ownership.markReady()
-  // Background hosts exit when idle; the desktop host lives as long as its windows (Wave 2 adds background mode).
-  if (hostKind !== 'desktop') activity.armIdleExit()
+  // Background hosts exit when idle; the desktop host lives as long as its windows, and an inproc host (the shared
+  // in-terminal host, 'Press Ctrl+C to stop') as long as its terminal: an idle drain would end runs waiting on the user.
+  if (hostKind !== 'desktop' && hostKind !== 'inproc') activity.armIdleExit()
 
   const dispose = (): void => {
     if (disposed) return

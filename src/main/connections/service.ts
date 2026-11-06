@@ -663,7 +663,7 @@ export class ConnectionService {
     } else if (id === 'litellm') {
       // Removing the key is the user's explicit clear (5.5): refused before anything changes when it cannot be recorded.
       this.refuseClear()
-      this.deps.secrets.delete(LITELLM_KEY)
+      this.deps.secrets.clear(LITELLM_KEY)
       this.deps.settings.setLiteLLMKeyStored(false)
       this.setStatus('litellm', { state: 'disconnected', detail: 'API key removed', checkedAt })
     } else {

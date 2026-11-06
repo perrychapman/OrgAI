@@ -406,6 +406,12 @@ describe('bootOrgAIHost', () => {
     expect(armIdle).toHaveBeenCalledTimes(1)
   })
 
+  it('never arms idle exit for an inproc host (it lives until Ctrl+C)', () => {
+    const armIdle = vi.spyOn(HostActivityTracker.prototype, 'armIdleExit')
+    boot({ hostKind: 'inproc' })
+    expect(armIdle).not.toHaveBeenCalled()
+  })
+
   it('a headless boot opens Terminal access for its session only, never saving it (review H2)', () => {
     const fresh = boot({ hostKind: 'headless-host' })
     expect(fresh.settings.get().terminalServer).toBe(false)

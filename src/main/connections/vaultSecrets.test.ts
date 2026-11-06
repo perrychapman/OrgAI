@@ -72,6 +72,16 @@ describe('LiteLLM key and the vault', () => {
     expect(secrets.has(LITELLM_KEY)).toBe(false)
   })
 
+  it('logout reports a failed save of the removal and keeps the record (explicit clear, not a removal)', async () => {
+    const { secrets, service, settings } = await setup()
+    vi.spyOn(secrets, 'clear').mockImplementation(() => {
+      throw new Error('disk full')
+    })
+    await expect(service.logout('litellm')).rejects.toThrow('disk full')
+    expect(secrets.get(LITELLM_KEY)).toBe('sk-test-key')
+    expect(settings.get().connections.litellm).toMatchObject({ hasApiKey: true })
+  })
+
   it('a run and a model refresh say why the key cannot be read, never "has no API key" (5.4)', async () => {
     const { secrets, service } = await setup()
     const choice = { adapter: 'claude' as const, connection: 'litellm' as const, mismatched: [] }

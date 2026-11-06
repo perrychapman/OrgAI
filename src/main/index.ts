@@ -112,6 +112,8 @@ let quitReason: ShutdownReason = 'desktop-quit'
  * window is ever created (registerIpc has not run).
  */
 let waitingForHandoff = false
+/** A run id a second launch asked for while the handoff wait was open; opened once the app has booted. */
+let pendingRun: string | undefined
 /** The handoff in progress (its buttons and its current view). */
 let handoff: DesktopHandoff | undefined
 /** The small wait window of the handoff (no preload, JavaScript off; buttons are links to orgai-handoff:<choice>). */
@@ -124,6 +126,8 @@ app.on('second-instance', (_event, argv, _cwd, additionalData) => {
     // Still waiting for the owner to hand over: bring the wait window back, never a main window (4.4).
     const waiting = secondInstanceAction({ argv, additionalData, booted: true, quitting })
     if (waiting.kind === 'window') reshowHandoffWindow()
+    // `orgai app --run <id>` while waiting: open that run once the app has booted (the newest request wins).
+    if (waiting.kind === 'window' && waiting.run) pendingRun = waiting.run
     return
   }
   const action = secondInstanceAction({ argv, additionalData, booted, quitting })
@@ -548,7 +552,9 @@ app.whenReady().then(async () => {
   // A terminal host opens no window; the first plain launch (second-instance) or a Dock click (activate) does.
   if (!hostArgs.headless) {
     createWindow()
-    if (hostArgs.run) openRunById(hostArgs.run)
+    const run = pendingRun ?? hostArgs.run
+    pendingRun = undefined
+    if (run) openRunById(run)
   }
   booted = true
   waitingForHandoff = false

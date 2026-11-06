@@ -259,19 +259,19 @@ export function vaultStateForFailure(kind: CustodyFailureKind): Extract<VaultSta
 export const VAULT_MESSAGES = {
   pendingLegacy: 'Saved by the OrgAI app and not yet shared with the orgai command: open the app once',
   locked: (reason: string): string => `The secret vault is locked: ${reason}`,
-  missingKey: "This vault's key is not available for this user on this machine",
-  keyMismatch: 'The key does not match this vault, or the vault is damaged',
-  corrupt: "The secret vault is damaged; run `orgai secrets reset` to start over from the OrgAI app's older copies",
+  missingKey: "This vault's key is not available for this user on this machine. Sign in to the OS account that created it or restore its key file; `orgai secrets reset` starts over",
+  keyMismatch: 'The key does not match this vault, or the vault is damaged. Restore the matching key file; `orgai secrets reset` starts over',
+  corrupt: "The secret vault is damaged. Run `orgai secrets reset` to start over from the OrgAI app's older copies (App settings > General > Advanced > Terminal installs the orgai command)",
   unreadableEntry: 'This saved secret is damaged and cannot be read',
-  notDurable: 'The secret may or may not have been saved; check with `orgai secrets status`',
-  clearRefusedCorrupt: 'The secret vault is damaged; run `orgai secrets reset` first',
+  notDurable: 'The secret may or may not have been saved; set it again to be sure (`orgai secrets status` shows the vault state)',
+  clearRefusedCorrupt: 'The secret vault is damaged; reset it first with `orgai secrets reset` (App settings > General > Advanced > Terminal installs the orgai command)',
   clearRefusedLegacyOnly: 'Saved by the OrgAI app: open the app once, or run `orgai secrets init` first',
   undeleteAppOnly: 'This deleted secret was saved by the OrgAI app; open the app to restore it',
   resetBusy: 'A sign-in or save is in progress; try again when it ends',
   resetWarning: "Secrets saved only through the orgai command are lost; the OrgAI app's older copies, which may be outdated, are used instead.",
   legacyRemovedNotice: (n: number): string => `${n} saved secret${n === 1 ? ' was' : 's were'} removed by an older version of OrgAI.`,
   moveRefused: (slot: string, server: string, reason: string): string =>
-    `${slot} of ${server} cannot be read here (${reason}); open the OrgAI app or unlock the vault first.`
+    `${slot} of ${server} cannot be read here (${reason}); open the OrgAI app once, or unlock the vault (\`orgai secrets status\` shows how) and try again.`
 } as const
 
 /** set() with a value on an 'absent' vault in a Node or inproc host: prepareWrite() was not awaited first (a bug trap, 5.6). */

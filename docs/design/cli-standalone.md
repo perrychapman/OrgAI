@@ -506,8 +506,9 @@ whose vault is open (for example through a key file) but whose safeStorage is un
 
 - **Disappearances are soft**, whatever their number: an older app deleting a key and an older app rewriting a corrupt
   file as nearly empty look the same, so a `by: 'legacy'` tombstone makes the secret read as deleted (the user's last
-  action may have been a delete) but keeps its value until the user decides. The app shows one notice, "N saved
-  secrets were removed by an older version of OrgAI. Restore / Keep removed"; `orgai doctor` / `orgai secrets status`
+  action may have been a delete) but keeps its value until the user decides. The app notice ("N saved
+  secrets were removed by an older version of OrgAI. Restore / Keep removed") is NOT built (integration review: the
+  removal is logged only); until it ships, `orgai doctor` / `orgai secrets status`
   list them; `orgai secrets undelete <key>` restores one (`secrets:undelete`), and "Keep removed" confirms them
   (`secrets:confirmDelete`). Nothing expires them on a timer. This wave's own deletes
   never produce one (see Deletes).
@@ -655,6 +656,9 @@ kept while a key is pending); a vault that turns corrupt after a Node rotation (
   safeStorage is already in that position. On macOS it is a **weakening**: safeStorage's item is readable without a
   prompt only by OrgAI.app; an item created through `/usr/bin/security` is readable without a prompt by anything that
   runs `/usr/bin/security`.
+- Env overlay secrets (`ORGAI_SECRET_*`) stay in the in-process host's own initial environment, which the child scrub does
+  not touch; the gate denies `/proc/<pid>/environ` words and `ps` environment flags (integration review), but a script
+  reading another process's environment still gets them. Same-user agents are not protected (5.8).
 - The self-control gate gets more text rules (8.4); they are a speed bump, not a boundary (a script, or D-Bus from
   Python, reaches the key). **D4** asks the owner to accept agent-reachable custody on all three platforms
   (recommended: the alternative is that the CLI cannot use any secret the app saved), keep macOS app-only, or wait for

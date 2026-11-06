@@ -89,7 +89,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', async (importOriginal) => {
   }
 })
 
-import { ClaudeSession, MCP_RESTART_DELAY_MS, MCP_RESTART_MIN_BUDGET_USD, mcpAttachedNotice, safeMcpToolNames, mcpRestartBlocker, mcpToolRule, HarnessCallerTracker,everydayReplacement, isDeepOrTopModel, mapSupportedModels, authFailureDetail, authFailureFrom, agentMcpServerNames, buildAgents, buildCompletionOptions, buildEnv, claudeAllowsBypass, claudePermissionMode, claudeSavedRules, claudeSettingSources, cliProjectSettings, cliShellAskReason, CLI_SETTINGS_MAX_BYTES, CLI_SETTINGS_UNREADABLE_REASON, toSdkSessionUpdates, quickSafeDecision, restrictedSafeSuggestions, userMcpServerNames, buildConfigWriteDenial, probeQueryOptions, collectSecrets, completionEnv, linkAbortSignal, redactSecrets, toClaudeMcpServers, toClaudePlugins, usesProxy } from './claude'
+import { ClaudeSession, MCP_RESTART_DELAY_MS, MCP_RESTART_MIN_BUDGET_USD, mcpAttachedNotice, safeMcpToolNames, mcpRestartBlocker, mcpToolRule, HarnessCallerTracker,everydayReplacement, isDeepOrTopModel, mapSupportedModels, authFailureDetail, authFailureFrom, agentMcpServerNames, buildAgents, buildCompletionOptions, buildEnv, claudeAllowsBypass, claudePermissionMode, claudeSavedRules, claudeSettingSources, cliProjectSettings, cliShellAskReason, CLI_SETTINGS_MAX_BYTES, CLI_SETTINGS_UNREADABLE_REASON, toSdkSessionUpdates, quickSafeDecision, restrictedSafeSuggestions, userMcpServerNames, buildConfigWriteDenial, probeQueryOptions, collectSecrets, completionEnv, linkAbortSignal, redactSecrets, toClaudeMcpServers, toClaudeMcpServersForArgv, toClaudePlugins, usesProxy } from './claude'
 import { DEFAULT_MAX_CONCURRENT_SUBAGENTS } from '@shared/defaults'
 import { fakeCtx, mcpSpec, orgChart, project, role, runSummary } from './testHelpers'
 import { ROOT_AGENT_ID, type ResolvedMcpServer, type RuntimeContext } from './types'
@@ -172,6 +172,19 @@ describe('toClaudeMcpServers', () => {
       fs: { type: 'stdio', command: 'npx', args: ['-y', 'fs'], env: { TOKEN: 'sekrit-token' } },
       web: { type: 'http', url: 'https://x.test/mcp', headers: { Authorization: 'Bearer abc' } }
     })
+  })
+
+  it('keeps secret env and header values out of the argv config (placeholders, values in env)', () => {
+    const resolved: ResolvedMcpServer[] = [
+      { spec: { ...fs, secretEnv: ['TOKEN'] }, env: { TOKEN: 'sekrit-token' }, headers: {} },
+      { spec: web, env: {}, headers: { Authorization: 'Bearer abc' } }
+    ]
+    const { servers, env } = toClaudeMcpServersForArgv(resolved)
+    expect(JSON.stringify(servers)).not.toContain('sekrit-token')
+    expect(JSON.stringify(servers)).not.toContain('Bearer abc')
+    expect(Object.values(env).sort()).toEqual(['Bearer abc', 'sekrit-token'])
+    const name = Object.keys(env).find((k) => env[k] === 'sekrit-token')!
+    expect((servers.fs as { env: Record<string, string> }).env.TOKEN).toBe('${' + name + '}')
   })
 
   it('skips entries without a command or url', () => {

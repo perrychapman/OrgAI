@@ -486,6 +486,8 @@ export class McpService {
    * its value, nothing, or a value this host cannot read (pending-legacy, a locked vault, a damaged entry).
    */
   private priorOf(key: string): SecretPrior {
+    // An overlay value is never persisted: a rollback must not write it to disk, so it reads like a value that cannot be put back.
+    if (this.secrets.fromOverlay(key)) return { unreadable: true }
     const st = this.secrets.status(key)
     if (typeof st === 'object') return { unreadable: true }
     if (st === 'unset') return 'unset'
@@ -1437,8 +1439,9 @@ export class McpService {
     // The user's own sign-out is an explicit clear (5.5): refused before anything changes when the vault cannot record it.
     this.refuseClear(mcpOwnerOAuthKey(ref.owner, 'accessToken'), null)
     this.refuseClear(mcpOwnerOAuthKey(ref.owner, 'refreshToken'), null)
-    this.secrets.delete(mcpOwnerOAuthKey(ref.owner, 'accessToken'))
-    this.secrets.delete(mcpOwnerOAuthKey(ref.owner, 'refreshToken'))
+    // clear() throws when the save fails or its outcome is unknown, so the record below is not changed over a token still stored.
+    this.secrets.clear(mcpOwnerOAuthKey(ref.owner, 'accessToken'))
+    this.secrets.clear(mcpOwnerOAuthKey(ref.owner, 'refreshToken'))
     this.lastErrors.delete(mcpOwnerPrefix(ref.owner))
     const cfg = ref.spec.oauth
     const next = cfg ? ((): McpOAuthConfig => { const { authorizedAt: _a, expiresAt: _e, account: _c, ...keep } = cfg; return keep })() : undefined

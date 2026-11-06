@@ -637,6 +637,11 @@ export class SecretStore implements SecretStoreApi {
     return !isPlaceholderCustodian(this.factory) && this.lastFailure?.kind !== 'unavailable'
   }
 
+  /** True while an in-memory overlay value (ORGAI_SECRET_*, --secret-env) answers for the key; it is never persisted. */
+  fromOverlay(key: string): boolean {
+    return this.overlay.has(key)
+  }
+
   has(key: string): boolean {
     return this.overlay.has(key) || this.resolve(key).k !== 'unset'
   }

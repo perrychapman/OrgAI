@@ -66,7 +66,7 @@ describe('orgai secrets status', () => {
     expect(out).toContain('Vault:        open (macOS keychain)')
     expect(out).toContain('Key store:    locked: The macOS keychain is locked.')
     expect(out).toContain("3 in the vault, 2 in the app's secrets.json (present), 2 unreadable here, 1 from the environment (never saved)")
-    expect(out).toContain(`Pending:      2 secrets. ${VAULT_MESSAGES.pendingLegacy}.`)
+    expect(out).toContain(`Pending:      2 secrets: ${VAULT_MESSAGES.pendingLegacy}`)
     expect(out).toMatch(/mcp:p1:s1:env:TOKEN {2}removed by an older OrgAI .*, restorable/)
     expect(out).toContain('ffff  macOS keychain  vault.json.reset-1')
   })

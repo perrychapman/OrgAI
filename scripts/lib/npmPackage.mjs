@@ -321,7 +321,7 @@ terminal, with or without the OrgAI desktop app. Version ${version}.
 ## Install
 
 \`\`\`sh
-npm i -g ${NPM_PACKAGE_NAME}
+npm i -g ${NPM_PACKAGE_NAME}${/-/.test(version) ? '@next' : ''}
 orgai --version     # prints the version and "channel npm"
 orgai doctor        # checks the install, the data folder, the agent runtimes and the secret vault
 \`\`\`
