@@ -542,7 +542,12 @@ try {
   check(readTexts.filter((t) => /^Recalled \d+ items? about Acme billing \(2 times\)$/.test(t)).length === 1, 'the same recall twice in a row is one row with a count', JSON.stringify(readTexts))
   check((await reads.first().locator('details summary').innerText()) === 'Show output', 'the recall result sits under "Show output"')
   await reads.first().locator('details summary').click()
-  const recallOutput = await reads.first().locator('details pre').innerText()
+  // The pre is empty to innerText until the opened details has been laid out (and the result row may land a moment after the call row).
+  let recallOutput = ''
+  await until(async () => {
+    recallOutput = await reads.first().locator('details pre').innerText().catch(() => '')
+    return /Acme Corp, organisation/.test(recallOutput)
+  })
   check(/Acme Corp, organisation/.test(recallOutput) && /Headquartered in Leeds/.test(recallOutput), 'the output reads in plain words', recallOutput.slice(0, 200))
   check(!/kn_|kf_|<<<|>>>|not instructions/.test(recallOutput), 'the output has no raw ids, fence or note to the model', recallOutput.slice(0, 200))
   await reads.first().locator('details summary').click()

@@ -925,6 +925,16 @@ export class TeamFilesService {
     return s
   }
 
+  /**
+   * teamFiles:status for the app: the same check, but the push carries git's view too. `status()` alone pushes a
+   * git-less status (uncommitted false), which overwrote a newer git-filled push in the window (flaky "in sync").
+   */
+  async statusWithGit(projectId: string): Promise<TeamFilesStatus> {
+    const s = await this.withGit(this.check(projectId, { firstWrite: true }))
+    this.broadcastIfChanged(s)
+    return s
+  }
+
   private key(s: TeamFilesStatus): string {
     return JSON.stringify(s)
   }

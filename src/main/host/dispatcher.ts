@@ -986,7 +986,7 @@ function registerMcpIpc(
  * undo, enable, commit) are desktop only and live in ipc.ts. No service = the channels are not served.
  */
 function registerTeamFilesIpc(handle: Register, svc: TeamFilesService): void {
-  handle(TEAM_FILES_IPC.teamFilesStatus, async (_e, input: unknown): Promise<TeamFilesStatus> => svc.withGit(svc.status(teamFilesArgs(input).projectId)))
+  handle(TEAM_FILES_IPC.teamFilesStatus, async (_e, input: unknown): Promise<TeamFilesStatus> => svc.statusWithGit(teamFilesArgs(input).projectId))
   handle(TEAM_FILES_IPC.teamFilesListAttention, async (): Promise<TeamFilesStatus[]> => Promise.all(svc.listAttention().map((s) => svc.withGit(s))))
 }
 
