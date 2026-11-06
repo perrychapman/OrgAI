@@ -113,7 +113,12 @@ function mount(opts: { cols: number; rows: number; env?: Partial<TuiEnv>; inline
     }
   }
   const frame = (): string => r.lastFrame() ?? ''
-  return { r, session, send, frame }
+  /** Several events in the same tick, as one pty chunk delivers them (no render between them). */
+  const sendBatch = async (...events: InputEvent[]): Promise<void> => {
+    for (const e of events) for (const fn of [...listeners]) fn(e)
+    await tick()
+  }
+  return { r, session, send, sendBatch, frame }
 }
 
 // The 41-column tree clips the long handles in the middle ("mock-lead-…ort-2"); their ends stay apart.
@@ -256,6 +261,56 @@ describe('the org tree in the real App: folded, one line per agent, the waiting 
     await m.send(named('tab'))
     await m.send(key('n'))
     expect(m.session.notify).toHaveBeenCalledWith('Nothing needs you.', undefined)
+    m.r.unmount()
+  })
+})
+
+describe('the deep-tree keys of the pty test (section i)', () => {
+  /** root -> mock-lead -> two reports; no `leadEnd` keeps mock-lead thinking (its fold has not happened yet). */
+  function deepState(leadEnd?: number): TuiState {
+    const agents: Record<string, AgentInstance> = {
+      root: agent('root', null, { name: 'Orchestrator', state: 'idle', costUsd: 0.004 }),
+      lead: agent('lead', 'root', { name: 'Lead', handle: 'mock-lead', state: leadEnd ? 'done' : 'thinking', startedAt: 4, ...(leadEnd ? { endedAt: leadEnd } : {}), costUsd: 0.003 }),
+      r1: agent('r1', 'lead', { name: 'Reporter', handle: 'mock-lead-report-1', state: 'done', startedAt: 5, endedAt: OLD, costUsd: 0.001 }),
+      r2: agent('r2', 'lead', { name: 'Reporter', handle: 'mock-lead-report-2', state: 'done', startedAt: 6, endedAt: OLD, costUsd: 0.001 })
+    }
+    let s: TuiState = { ...createInitialState('/work'), project: project('p1', '/work', { name: 'Demo' }), connection: 'live' }
+    s = applyRecord(s, { ...record(summary('run1', { status: 'running', prompt: 'deep' }) as RunSummary), agents })
+    return setActiveRun(s, 'run1')
+  }
+  const treeRows = (f: string): string[] => f.split('\n').map((l) => l.slice(0, 41)).filter((l) => /done|mock-lead|Orchestrator/.test(l))
+
+  it('once everything has settled the tree is root + "3 done"; Down, Right selects mock-lead and Enter opens its inspector', async () => {
+    const m = mount({ cols: 120, rows: 40, state: deepState(OLD) })
+    await tick()
+    await m.send(named('tab'), key('n'), named('down'))
+    expect(treeRows(m.frame()).some((l) => l.startsWith('> ') && l.includes('3 done'))).toBe(true)
+    await m.send(named('right'))
+    expect(treeRows(m.frame()).some((l) => l.startsWith('> ') && /mock-lead\s+Finished/.test(l))).toBe(true)
+    await m.send(named('enter'))
+    const f = m.frame()
+    expect(f).toContain('transcript (this agent')
+    expect(f).toContain('mock-lead (Lead)')
+    m.r.unmount()
+  })
+
+  it('Enter on a "N done" row unfolds it and opens no inspector (how the old fixed-sleep script lost its Enter)', async () => {
+    const m = mount({ cols: 120, rows: 40, state: deepState(OLD) })
+    await tick()
+    await m.send(named('tab'), named('down'))
+    await m.send(named('enter'))
+    const f = m.frame()
+    expect(f).not.toContain('transcript (this agent')
+    expect(treeRows(f).some((l) => l.startsWith('> ') && /mock-lead\s+Finished/.test(l))).toBe(true)
+    m.r.unmount()
+  })
+
+  it('while mock-lead is still live the tree is root, mock-lead, "2 done"; Down Down, Right, Up, Enter opens mock-lead', async () => {
+    const m = mount({ cols: 120, rows: 40, state: deepState() })
+    await tick()
+    await m.send(named('tab'), named('down'), named('down'), named('right'), named('up'), named('enter'))
+    expect(m.frame()).toContain('mock-lead (Lead)')
+    expect(m.frame()).toContain('transcript (this agent')
     m.r.unmount()
   })
 })
