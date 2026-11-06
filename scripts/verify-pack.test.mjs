@@ -134,7 +134,7 @@ test('verifyEnv drops run-as-node, secrets and app overrides, and sets the temp 
     { HOME: '/h', PATH: '/bin', ELECTRON_RUN_AS_NODE: '1', ORGAI_SECRET_X: 's', ORGAI_ELECTRON_PATH: '/e', ORGAI_APP_ROOT: '/a', ORGAI_DATA_DIR: '/real' },
     '/tmp/d'
   )
-  assert.deepEqual(env, { HOME: '/h', PATH: '/bin', ORGAI_DATA_DIR: '/tmp/d', ORGAI_MOCK: '1', NO_COLOR: '1' })
+  assert.deepEqual(env, { HOME: '/h', PATH: '/bin', ORGAI_DATA_DIR: '/tmp/d', ORGAI_MOCK: '1', NO_COLOR: '1', ORGAI_VAULT_NO_OS_KEYSTORE: '1' })
 })
 
 test('launchCommand: POSIX runs the script, win32 goes through cmd.exe with fixed quoted arguments', () => {

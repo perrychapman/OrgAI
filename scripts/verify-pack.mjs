@@ -83,6 +83,8 @@ export function verifyEnv(base, userDataDir) {
   out.ORGAI_DATA_DIR = userDataDir
   out.ORGAI_MOCK = '1'
   out.NO_COLOR = '1'
+  // Never create items in the real OS keychain (a script-supplied ORGAI_VAULT_KEY_FILE still wins in the child).
+  out.ORGAI_VAULT_NO_OS_KEYSTORE = '1'
   return out
 }
 

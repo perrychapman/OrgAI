@@ -98,7 +98,7 @@ test('main --dry-run prints the plan and writes nothing', () => {
   const root = fakeRepo()
   try {
     const lines = []
-    const r = main(['--dry-run'], root, (l) => lines.push(l), { env: { GITHUB_SHA: 'a'.repeat(40) } })
+    const r = main(['--dry-run', '--shrinkwrap'], root, (l) => lines.push(l), { env: { GITHUB_SHA: 'a'.repeat(40) } })
     const out = lines.join('\n')
     assert.match(out, /Dry run/)
     assert.match(out, /install\.json: \{"channel":"npm","version":"9\.9\.9","commit":"aaaaaaaaaaaa"\}/)
@@ -108,6 +108,10 @@ test('main --dry-run prints the plan and writes nothing', () => {
     assert.equal(r.dryRun, true)
     assert.equal(fs.existsSync(path.join(root, 'release')), false)
     assert.throws(() => main(['--bogus'], root, () => {}), /Unknown argument/)
+    assert.throws(() => main(['--shrinkwrap', '--no-shrinkwrap'], root, () => {}), /not both/)
+    const plain = []
+    main(['--dry-run'], root, (l) => plain.push(l))
+    assert.match(plain.join('\n'), /Would leave out npm-shrinkwrap\.json \(the default/, 'no shrinkwrap unless asked')
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
   }
@@ -121,7 +125,7 @@ test('main writes the package folder, packs it with npm and records the sha256',
       calls.push({ cmd, args, opts })
       fs.writeFileSync(path.join(args[args.indexOf('--pack-destination') + 1], 'orgai-cli-9.9.9.tgz'), 'tarball bytes')
     }
-    const r = main([], root, () => {}, { env: { GITHUB_SHA: 'b'.repeat(40), GITHUB_REPOSITORY: 'me/OrgAI' }, exec, execPath: '/n/bin/node', platform: 'linux' })
+    const r = main(['--shrinkwrap'], root, () => {}, { env: { GITHUB_SHA: 'b'.repeat(40), GITHUB_REPOSITORY: 'me/OrgAI' }, exec, execPath: '/n/bin/node', platform: 'linux' })
     const pkgDir = path.join(root, 'release', 'npm', 'package')
     const pkg = JSON.parse(fs.readFileSync(path.join(pkgDir, 'package.json'), 'utf8'))
     assert.deepEqual(pkg.dependencies, { '@anthropic-ai/claude-agent-sdk': '0.3.1', zod: '4.1.0' })
@@ -145,7 +149,7 @@ test('main writes the package folder, packs it with npm and records the sha256',
     // The repo's own out/cli keeps its install.json: the package copy is the only one rewritten.
     assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'out', 'cli', 'install.json'), 'utf8')).channel, 'app')
 
-    main(['--no-shrinkwrap'], root, () => {}, { env: {}, exec, execPath: '/n/bin/node', platform: 'linux' })
+    main([], root, () => {}, { env: {}, exec, execPath: '/n/bin/node', platform: 'linux' })
     assert.equal(fs.existsSync(path.join(pkgDir, 'npm-shrinkwrap.json')), false, 'a rebuild starts from an empty folder')
     const pkg2 = JSON.parse(fs.readFileSync(path.join(pkgDir, 'package.json'), 'utf8'))
     assert.equal(pkg2.files.includes('npm-shrinkwrap.json'), false)

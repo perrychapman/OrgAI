@@ -11,6 +11,11 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+// Test isolation: no app, CLI or helper an e2e script starts may touch the real OS keychain. Every child inherits
+// process.env, so setting it here (an import side effect, before any launch) covers launch(), startCli() and the pty
+// driver. A script that names its own key file (ORGAI_VAULT_KEY_FILE) keeps it; the flag is harmless beside it.
+process.env.ORGAI_VAULT_NO_OS_KEYSTORE = '1'
+
 export const E2E_DIR = path.dirname(fileURLToPath(import.meta.url))
 export const APP_DIR = path.resolve(E2E_DIR, '..')
 export const SHOTS_DIR = path.join(E2E_DIR, 'shots')

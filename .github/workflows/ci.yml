@@ -20,7 +20,7 @@ permissions:
   contents: read
 
 env:
-  # What the npm tarball the CI installs is built with: 'full' ships npm-shrinkwrap.json, 'none' --no-shrinkwrap.
+  # What the npm tarball the CI installs is built with: 'full' ships npm-shrinkwrap.json, 'none' (the script's default).
   # 'none' here and in release.yml (owner decision 2026-11-06, to revisit): a honoured shrinkwrap made npm 11.12.1
   # install every platform's Claude runtime (about 2 GB per install). The npm job still dry-runs the full build, so the
   # shrinkwrap derivation is checked on every PR. Change this and release.yml together to go back to 'full'.
@@ -102,7 +102,7 @@ jobs:
         shell: bash
         run: |
           args=()
-          if [ "$NPM_SHRINKWRAP" = "none" ]; then args=(--no-shrinkwrap); fi
+          if [ "$NPM_SHRINKWRAP" = "full" ]; then args=(--shrinkwrap); fi
           node scripts/build-npm-package.mjs "${args[@]}"
       # The packaged orgai command (cli-spec 7): --version, doctor, and a mock exec (ORGAI_MOCK=1, no tokens) in-process
       # and through the spawned background app, on a temp data folder. UNVERIFIED until CI runs it: the Windows
@@ -144,9 +144,9 @@ jobs:
         shell: bash
         run: |
           args=()
-          if [ "$NPM_SHRINKWRAP" = "none" ]; then args=(--no-shrinkwrap); fi
+          if [ "$NPM_SHRINKWRAP" = "full" ]; then args=(--shrinkwrap); fi
           # the dry run always derives the full shrinkwrap (what release.yml ships), whatever is installed below
-          node scripts/build-npm-package.mjs --dry-run
+          node scripts/build-npm-package.mjs --dry-run --shrinkwrap
           node scripts/build-npm-package.mjs "${args[@]}"
       - name: verify-npm
         run: node scripts/verify-npm.mjs

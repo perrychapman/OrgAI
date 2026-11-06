@@ -635,7 +635,7 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     in-process / Node host integration tests and a few e2e scripts; nothing ran on Windows or Linux, against a real OS key
     store, the real npm registry or a packaged build (see Unverified at the end of this bullet).
   - Package and channel: npm package `orgai-cli` (bin `orgai`; owner decision D1 2026-11-06, npm refused `orgai`), built by
-    `scripts/build-npm-package.mjs` (`--dry-run`, `--no-shrinkwrap`; pure parts in `scripts/lib/npmPackage.mjs`) into
+    `scripts/build-npm-package.mjs` (`--dry-run`, `--shrinkwrap` (default: none); pure parts in `scripts/lib/npmPackage.mjs`) into
     `release/npm/package` + `orgai-<v>.tgz` from `out/cli` plus `out/cli/install.json` (`{ channel: 'npm'|'app'|'archive',
     version, commit }`, written and removed by `scripts/write-install-info.mjs`; `withInstallInfoCleanup` removes it after
     electron-builder, also on SIGINT / SIGTERM / SIGHUP, not SIGKILL; absent = 'dev'; a file that is present but invalid

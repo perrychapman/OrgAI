@@ -4,13 +4,15 @@
 //
 //   node scripts/build-npm-package.mjs              write release/npm/package/ and pack release/npm/orgai-<version>.tgz
 //   node scripts/build-npm-package.mjs --dry-run    print what it would write, change nothing
-//   node scripts/build-npm-package.mjs --no-shrinkwrap
-//                                                   leave npm-shrinkwrap.json out (top-level versions pinned only)
+//   node scripts/build-npm-package.mjs --shrinkwrap
+//                                                   also write npm-shrinkwrap.json (the full dependency tree pinned)
 //
-// Why --no-shrinkwrap exists: npm 11.12.1 installs every platform's Claude runtime (8 x about 280 MB) from a
+// The default leaves npm-shrinkwrap.json out (top-level versions pinned only), as ci.yml and release.yml do (owner
+// decision D10 is pending). --no-shrinkwrap still works and means the default.
+// Why the shrinkwrap is off by default: npm 11.12.1 installs every platform's Claude runtime (8 x about 280 MB) from a
 // dependency's shrinkwrap, because it applies no os / cpu check to shrinkwrapped optional packages, and installs none
 // when the shrinkwrap leaves them out (observed by verify-npm.mjs on macOS, 2026-11-05). The spec (3.1) asks for the
-// shrinkwrap, so it stays the default until the owner decides; verify-npm step 1 fails on the extra platforms.
+// shrinkwrap, so --shrinkwrap keeps that path until the owner decides; verify-npm step 1 fails on the extra platforms.
 //
 // release/npm/package/:
 //   out/cli/**            copied from out/cli (regular files only; an install.json there is replaced)
@@ -105,7 +107,7 @@ export function sha256File(file) {
 }
 
 /** Everything the package holds except the bundle, computed from the repo. */
-export function packageContents(root, env = process.env, { shrinkwrap: withShrinkwrap = true } = {}) {
+export function packageContents(root, env = process.env, { shrinkwrap: withShrinkwrap = false } = {}) {
   const version = readVersion(root)
   const lock = JSON.parse(fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8'))
   const sdk = JSON.parse(fs.readFileSync(path.join(root, 'node_modules', ...AGENT_SDK.split('/'), 'package.json'), 'utf8'))
@@ -136,10 +138,11 @@ export function checkBundle(cliSource, version) {
 /** `options`: env, exec (execFileSync's shape), platform, execPath; for tests. */
 export function main(argv = process.argv.slice(2), root = ROOT, log = console.log, options = {}) {
   const { env = process.env, exec = execFileSync, platform = process.platform, execPath = process.execPath } = options
-  const unknown = argv.filter((a) => a !== '--dry-run' && a !== '--no-shrinkwrap')
-  if (unknown.length) throw new Error(`Unknown argument(s): ${unknown.join(' ')}. Use --dry-run and / or --no-shrinkwrap.`)
+  const unknown = argv.filter((a) => a !== '--dry-run' && a !== '--shrinkwrap' && a !== '--no-shrinkwrap')
+  if (unknown.length) throw new Error(`Unknown argument(s): ${unknown.join(' ')}. Use --dry-run and / or --shrinkwrap.`)
+  if (argv.includes('--shrinkwrap') && argv.includes('--no-shrinkwrap')) throw new Error('Use either --shrinkwrap or --no-shrinkwrap, not both.')
   const dryRun = argv.includes('--dry-run')
-  const contents = packageContents(root, env, { shrinkwrap: !argv.includes('--no-shrinkwrap') })
+  const contents = packageContents(root, env, { shrinkwrap: argv.includes('--shrinkwrap') })
   const p = plan(root, NPM_PACKAGE_NAME, contents.version)
   const rel = (x) => path.relative(root, x) || '.'
   const deps = Object.entries(contents.pkg.dependencies).map(([n, v]) => `${n}@${v}`).join(', ')
@@ -159,7 +162,7 @@ export function main(argv = process.argv.slice(2), root = ROOT, log = console.lo
     log(
       contents.writeShrinkwrap
         ? `Would write npm-shrinkwrap.json: ${entries} package(s), ${optional} optional (per-platform)`
-        : `Would leave out npm-shrinkwrap.json (--no-shrinkwrap; the closure has ${entries} package(s))`
+        : `Would leave out npm-shrinkwrap.json (the default; --shrinkwrap writes it; the closure has ${entries} package(s))`
     )
     log(`Would write README.md${contents.licenseFile ? ` and copy ${path.basename(contents.licenseFile)}` : ' (no LICENSE in the repo: license UNLICENSED)'}`)
     log(`Would run: npm pack --ignore-scripts in ${rel(p.packageDir)} -> ${rel(p.tgz)} (+ .sha256)`)

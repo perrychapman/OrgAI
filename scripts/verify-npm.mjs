@@ -111,6 +111,8 @@ export function npmEnv(base, prefix) {
 export function npmCliEnv(base) {
   const out = {}
   for (const [k, v] of Object.entries(base)) if (!/^ORGAI_VAULT_/i.test(k) && k.toUpperCase() !== 'ORGAI_CLAUDE_PATH') out[k] = v
+  // Whatever the person had, an installed CLI must never reach the real OS keychain: keep (or set) the isolation flag.
+  out.ORGAI_VAULT_NO_OS_KEYSTORE = '1'
   return out
 }
 

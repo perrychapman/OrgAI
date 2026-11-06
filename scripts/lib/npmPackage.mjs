@@ -244,7 +244,7 @@ export function compareInstalledTree(shrinkwrap, installed, platform, arch) {
 }
 
 /**
- * Without a shrinkwrap (build-npm-package --no-shrinkwrap): the top-level dependencies are installed at exactly their
+ * Without a shrinkwrap (build-npm-package default; --shrinkwrap writes one): the top-level dependencies are installed at exactly their
  * pinned versions and no native package of another platform is there. Returns { ok, problems }. Pure.
  */
 export function compareTopLevel(dependencies, installed, platform, arch) {

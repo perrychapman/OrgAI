@@ -1053,8 +1053,8 @@ Written after the build, from the code on the branch. Phases A and B are built; 
 Deviations from this spec, each checked against the code:
 
 1. **Package and shrinkwrap.** The package is `orgai-cli` (D1). `NPM_SHRINKWRAP=none` in release.yml and ci.yml (D10, to
-   revisit), so 3.1's `npm-shrinkwrap.json` is not published; `--no-shrinkwrap` is what both workflows pass, the full path
-   stays behind the setting and CI dry-runs it. verify-npm step 1b is skipped after any failed step 1. `engines.node` is
+   revisit), so 3.1's `npm-shrinkwrap.json` is not published; the script now defaults to no shrinkwrap and `--shrinkwrap` is the full path
+   (both workflows pass it only for `NPM_SHRINKWRAP=full`; CI dry-runs it with `--shrinkwrap`). verify-npm step 1b is skipped after any failed step 1. `engines.node` is
    `>=22.19.0 <23 || >=24.5.0` (from typings and memory, unverified).
 2. **Publish gate.** `publish-npm` also refuses unless the `npm-publish` environment's variable `NPM_PUBLISH_ENABLED` is
    'true' (3.4 asks only for an approval); the checklist is in CLAUDE.md.

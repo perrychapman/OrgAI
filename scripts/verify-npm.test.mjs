@@ -73,7 +73,7 @@ test('environment helpers', () => {
   assert.equal(e.npm_config_registry, 'r')
   assert.equal(e.HOME, '/h')
   assert.equal('x' in e, false)
-  assert.deepEqual(npmCliEnv({ ORGAI_VAULT_KEY_FILE: '/k', ORGAI_CLAUDE_PATH: '/c', ORGAI_MOCK: '1' }), { ORGAI_MOCK: '1' })
+  assert.deepEqual(npmCliEnv({ ORGAI_VAULT_KEY_FILE: '/k', ORGAI_CLAUDE_PATH: '/c', ORGAI_MOCK: '1' }), { ORGAI_MOCK: '1', ORGAI_VAULT_NO_OS_KEYSTORE: '1' }, 'the OS keychain stays off')
 })
 
 test('output readers', () => {
@@ -299,6 +299,7 @@ test('main: a matching install passes, vault and codex skip, temp dirs removed',
     assert.equal(exec.env.ORGAI_MOCK, '1')
     assert.equal(exec.env.ORGAI_SECRET_X, undefined)
     assert.equal(exec.env.ORGAI_VAULT_KEY_FILE, undefined)
+    assert.equal(exec.env.ORGAI_VAULT_NO_OS_KEYSTORE, '1', 'no child may reach the real OS keychain')
     assert.ok(exec.env.PATH.startsWith(path.dirname(process.execPath)))
   } finally {
     fs.rmSync(fake.root, { recursive: true, force: true })
