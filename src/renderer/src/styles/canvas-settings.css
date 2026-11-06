@@ -1,0 +1,264 @@
+/* App settings > General > Canvas and the toolbar "Canvas style" popover (docs/design/canvas-themes.md section 7). */
+
+.canvas-section {
+  container: canvas-section / inline-size;
+}
+
+.canvas-section-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-4);
+  align-items: start;
+}
+
+/*
+ * One column: the preview stays at the top of the settings scroller while Customise rows scroll under it (opaque, so
+ * they never show through). scroll-padding-top keeps a focused control from landing beneath it (WCAG 2.4.11): preview
+ * height (160px) + its border and padding (2px + 2 x space-2) + a little air.
+ */
+.canvas-section-preview {
+  min-width: 0;
+  position: sticky;
+  top: 0;
+  z-index: var(--z-sticky);
+  padding-block: var(--space-2);
+  background: var(--surface-0);
+}
+
+.settings-scroll:has(.canvas-section) {
+  scroll-padding-top: calc(160px + 2px + var(--space-2) * 2 + var(--space-4));
+}
+
+.canvas-section-main {
+  display: grid;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+@container canvas-section (min-width: 720px) {
+  .canvas-section-body {
+    grid-template-columns: minmax(0, 1fr) 300px;
+  }
+  .canvas-section-preview {
+    grid-column: 2;
+    grid-row: 1;
+    top: var(--space-4);
+    padding-block: 0;
+    background: transparent;
+  }
+  .canvas-section-main {
+    grid-column: 1;
+    grid-row: 1;
+  }
+}
+
+/* The preview: its own stage, painted like the real one (backdrop colour plus the accent wash). */
+.canvas-preview {
+  position: relative;
+  width: 100%;
+  height: 160px;
+  overflow: hidden;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  background: var(--canvas-bg);
+}
+
+@container canvas-section (min-width: 720px) {
+  .canvas-preview {
+    height: 200px;
+  }
+}
+
+.canvas-preview-flow,
+.canvas-preview-flow .react-flow {
+  width: 100%;
+  height: 100%;
+}
+
+.canvas-preview .react-flow {
+  background: transparent;
+}
+
+/* Gallery */
+.canvas-presets {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: var(--space-2);
+}
+
+.canvas-opt {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  min-width: 0;
+  padding: var(--space-3);
+  text-align: left;
+  color: var(--text-primary);
+  background: var(--surface-1);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  font: inherit;
+}
+
+.canvas-opt:hover {
+  background: var(--surface-2);
+}
+
+.canvas-opt[aria-checked='true'] {
+  border-color: var(--accent-text);
+  box-shadow: inset 0 0 0 1px var(--accent-text);
+}
+
+.canvas-opt:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.canvas-opt .canvas-thumb {
+  flex: none;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+}
+
+.canvas-opt-text {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
+  padding-right: var(--space-5);
+}
+
+.canvas-opt-label {
+  font-size: var(--text-title-sm);
+  line-height: var(--text-title-sm-lh);
+  font-weight: var(--weight-semibold);
+}
+
+.canvas-opt-desc {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+}
+
+.canvas-opt-check {
+  position: absolute;
+  top: var(--space-2);
+  right: var(--space-2);
+  display: inline-flex;
+  color: var(--accent-text);
+}
+
+/* Compact rows (popover) */
+.canvas-presets[data-variant='compact'] {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-1);
+  min-width: 232px;
+}
+
+.canvas-presets[data-variant='compact'] .canvas-opt {
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  background: transparent;
+  border-color: transparent;
+}
+
+.canvas-presets[data-variant='compact'] .canvas-opt:hover {
+  background: var(--surface-2);
+}
+
+.canvas-presets[data-variant='compact'] .canvas-opt[aria-checked='true'] {
+  border-color: var(--accent-text);
+}
+
+.canvas-presets[data-variant='compact'] .canvas-opt-text {
+  padding-right: var(--space-5);
+}
+
+.canvas-presets[data-variant='compact'] .canvas-opt-label {
+  font-size: var(--text-body);
+  line-height: var(--text-body-lh);
+}
+
+.canvas-presets[data-variant='compact'] .canvas-opt-check {
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+/* Customise disclosure */
+.canvas-customise {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.canvas-customise-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  justify-self: start;
+  padding: var(--space-1) var(--space-2);
+  color: var(--text-primary);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-size: var(--text-body);
+  font-weight: var(--weight-semibold);
+  cursor: pointer;
+}
+
+.canvas-customise-toggle:hover {
+  background: var(--surface-2);
+}
+
+.canvas-customise-toggle:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.canvas-customise-toggle .canvas-customise-chevron {
+  display: inline-flex;
+  transition: transform var(--dur-fast) var(--ease-out);
+}
+
+.canvas-customise-toggle[aria-expanded='true'] .canvas-customise-chevron {
+  transform: rotate(90deg);
+}
+
+[data-reduce-motion='on'] .canvas-customise-toggle .canvas-customise-chevron {
+  transition: none;
+}
+
+.canvas-field {
+  display: contents;
+}
+
+/* Popover */
+.canvas-style-popover-body {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-2);
+}
+
+.canvas-style-popover-heading {
+  margin: 0;
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--text-title-sm);
+  line-height: var(--text-title-sm-lh);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+
+.canvas-style-popover-foot {
+  display: flex;
+  justify-content: flex-start;
+  padding: var(--space-1) var(--space-2) 0;
+  border-top: 1px solid var(--border-default);
+}

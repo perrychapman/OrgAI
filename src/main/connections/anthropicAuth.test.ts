@@ -159,4 +159,14 @@ describe('claudeAuthStatus', () => {
     expect(st.state).toBe('disconnected')
     expect(st.detail).toMatch(/choose another default connection/)
   })
+
+  it('anthropicStatus reports a missing or timed-out CLI as error, never disconnected', async () => {
+    const missing = await anthropicStatus({ kind: 'subscription' }, {}, { candidates: async () => [], env: {} })
+    expect(missing.state).toBe('error')
+    expect(missing.detail).toMatch(/CLI not found/)
+    // A timeout surfaces as a failed run with no JSON on stdout.
+    const timedOut: RunCli = async () => ({ stdout: '', stderr: 'ETIMEDOUT', code: 1 })
+    const st = await anthropicStatus({ kind: 'subscription' }, {}, { run: timedOut, candidates: async () => [{ bin: 'x', shell: false }], env: {} })
+    expect(st.state).toBe('error')
+  })
 })

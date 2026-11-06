@@ -1,299 +1,163 @@
-import { app, BrowserWindow, dialog, ipcMain, shell, type WebContents } from 'electron'
-import type {
-  AgentImportApplyInput,
-  AgentImportApplyResult,
-  AgentImportInput,
-  AgentImportPreview,
-  AgentImportScan,
-  OrgExportResult,
-  AppInfo,
-  AppSettings,
-  AppSettingsInfo,
-  AuthStatusResult,
-  CapabilityApplyInput,
-  CapabilityApplyResult,
-  CapabilityDiscoverInput,
-  CapabilityDiscovery,
-  CapabilityRecommendInput,
-  CapabilityUndoInput,
-  CapabilityUndoResult,
-  ConnectionId,
-  ConnectionInfo,
-  ConnectionLoginMethod,
-  ConnectionLoginStart,
-  ConnectionSecretInput,
-  ConnectionStatus,
-  ContinueRunInput,
-  DraftRequest,
-  FocusRunTarget,
-  ConnectorAddInput,
-  ConnectorInfo,
-  ConnectorTokenInput,
-  McpAnswerInstallInput,
-  McpAssistInput,
-  McpAuthStatus,
-  McpAuthTarget,
-  McpAuthorizeInput,
-  McpLibraryEntry,
-  McpLibraryInfo,
-  McpLibrarySecretInput,
-  McpLinkLibraryInput,
-  McpMutationResult,
-  McpRegistrySearchInput,
-  McpRegistrySearchResult,
-  McpSecretInput,
-  McpServerInfo,
-  McpTestResult,
-  McpUpsertInput,
-  MergeDecision,
-  ModelsQuery,
-  ModelPriceInfo,
-  ModelPricesQuery,
-  UsageStats,
-  UsageStatsQuery,
-  PermissionDecision,
-  PluginUpsertInput,
-  Project,
-  ProjectCreateInput,
-  ProjectPathCheck,
-  ProposalDecision,
-  ProviderConnection,
-  ProviderModel,
-  PermissionRuleDecision,
-  QuestionAnswer,
-  RemapModelsInput,
-  RemapModelsOutput,
-  RemapResult,
-  PendingCards,
-  RunSummary,
-  SetupStartInput,
-  SendRunInput,
-  SkillApplySuggestionInput,
-  SkillContent,
-  SkillCreateInput,
-  SkillDraft,
-  SkillEvaluationReport,
-  SkillImportApplyInput,
-  SkillImportApplyResult,
-  SkillImportInput,
-  SkillImportPreview,
-  SkillInfo,
-  SkillLibraryFolderInput,
-  SkillLibraryInfo,
-  SkillLinkLibraryInput,
-  SkillMutationResult,
-  SkillUpdateInput,
-  StartRunInput,
-  TeamDismissInput,
-  TeamRestoreInput,
-  TeamRecommendations,
-  TeamReview,
-  TeamReviewInput
-} from '@shared/types'
-import type { QuickRunInput, QuickRunPromoteInput, QuickRunPromoteResult } from '@shared/types'
-import { CONNECTION_IDS, HARNESS_PROJECT_ID, IPC, QUICK_PROJECT_ID, QUICK_RUN_MAX_PROMPT_CHARS, SKILLS_PROJECT_ID, isVirtualProjectId } from '@shared/types'
-import { isSafeId } from '@shared/defaults'
-import { sanitizeImages } from './runtime/attachments'
-import { skillAssistPrompt, skillsProject } from './skills/assist'
-import { harnessProject as buildHarnessProject } from './mcp/assist'
-import { createScratchDir, scratchDirFor, validateQuickFolder } from './quick/scratch'
-import { existsSync } from 'node:fs'
-import type { QuickRunService } from './quick/quickRuns'
-import type { ProjectStore } from './store/projects'
-import type { RunManager } from './runtime/runManager'
-import type { SetupService } from './setup/service'
-import type { MaintenanceService } from './maintenance'
-import type { SettingsStore } from './store/settings'
-import type { ConnectionService } from './connections/service'
-import type { McpService } from './mcp/service'
-import type { AgentImportService } from './setup/import/importer'
-import { applySuggestion, type SkillEvaluationApi, type SkillServiceApi } from './skills/types'
-import type { CapabilityServiceApi } from './capabilities/types'
-import { claudeAuthStatus } from './connections/anthropicAuth'
-import { assistPrompt } from './mcp/assist'
-import { draftOrgChart } from './ai/draft'
-import { projectConnection } from '@shared/defaults'
+/**
+ * The Electron adapter over the host dispatcher (cli-spec Wave 1). Every request handler lives in host/dispatcher.ts;
+ * this module registers them with ipcMain, keeps the desktop-only channels (DESKTOP_ONLY_CHANNELS: native dialogs, picked
+ * paths, the menu, the OS shell, the notifications mirror, the orgai command shim, and starting a project from a
+ * repository, whose progress and cancel-on-close use the IPC sender) and forwards the host's push bus to windows when it made the bus
+ * itself. The pure argument builders live in host/args.ts and are re-exported here for the existing tests.
+ */
+import { app, BrowserWindow, dialog, ipcMain, shell, type IpcMainInvokeEvent, type WebContents } from 'electron'
+import type { CliShimResult, CliShimStatus, FocusRunTarget, KitApplyResult, KitExportResult, KitImportPreview, SkillLibraryFolderInput, SkillLibraryInfo } from '@shared/types'
+import { HOST_IPC, HOST_METHODS, IPC, KIT_IPC, REPO_DESTINATION_MAX_CHARS, REPO_SOURCE_MAX_CHARS, TEAM_FILES_IPC } from '@shared/types'
+import type { FolderConfigTrustResult, TeamFilesActionResult, TeamFilesCommitResult } from '@shared/types'
+import { applyFolderConfigTrust, folderConfigReview } from './runtime/folderConfigTrust'
+import { projectRulesFile } from './store/projectData'
+import type { RepoCloneInput, RepoCloneProgress, RepoCloneResult, RepoSourceParse, RepoTools } from '@shared/types'
+import { REPO_REQUEST_ID_RE, parseRepoSource, scrubStderr, type RepoCloneService } from './repoClone'
+import { applyArgs as kitApplyArgs, exportArgs as kitExportArgs, type KitService } from './kit/service'
+import { PickedPaths, kitExportTarget } from './kit/pickedPaths'
+import { isInsideEither, samePath } from './quick/scratch'
+import { existsSync, lstatSync } from 'node:fs'
+import { isAbsolute } from 'node:path'
+import { hiddenCharProblem } from './capabilities/sanitize'
+import { cleanMenuState, setMenuState } from './appMenu'
 import { log, logPath, logsDir } from './log'
-import { addRules, listRules, removeRule } from './runtime/permissionRules'
-import { isValidRule } from './runtime/ruleMatch'
-import { buildAppInfo, buildSettingsInfo, stripSettingsInfo } from './appInfo'
-import { checkProjectPath } from './store/projects'
-import { checkRunTarget, isValidId } from './windowScope'
+import { folderConfigTrustArgs, obj, teamFilesArgs } from './host/args'
+import { HostDispatcher } from './host/dispatcher'
+import type { HostDispatchEnv, HostServices } from './host/types'
+import { CLI_SHIM_UNAVAILABLE, type CliShimService } from './host/shimInstaller'
 
-export interface IpcServices {
-  projects: ProjectStore
-  runs: RunManager
-  setup: SetupService
-  maintenance: MaintenanceService
-  settings: SettingsStore
-  connections: ConnectionService
-  mcp: McpService
-  /** Ids of the adapters handed to RunManager; `app:info` reports `mockAdapter` from it. */
-  adapterIds: readonly string[]
-  /** The virtual harness project (HARNESS_PROJECT_ID), built fresh from the current settings (mcp/assist.ts harnessProject). */
-  harnessProject(): Project
+/**
+ * What registerIpc serves: the host services (host/types.ts HostServices; the shared field docs live there) plus the
+ * Electron-only window opener. `usage` registers usage:refresh; `events` given means the caller forwards the bus to
+ * windows; `dispatcher` given is used instead of a new one (its services win over these).
+ */
+export interface IpcServices extends Omit<HostServices, 'desktop'> {
   /**
    * window:openRun after validation: focus the window already scoped to this run, or open a new one at
    * `#/run/<projectId>/<runId>` (index.ts window factory).
    */
   openRunWindow(target: FocusRunTarget): void
-  /** Agent import and org export (src/main/setup/import/importer.ts). */
-  importer: AgentImportService
-  /** Project skills, the skill library and the repo skill import (src/main/skills/service.ts). */
-  skills: SkillServiceApi
-  /** Skill evaluation (src/main/skills/evaluation.ts). */
-  skillEvaluation: SkillEvaluationApi
-  /** The Team assistant: discovery, recommendations, apply and grants (src/main/capabilities/service.ts). */
-  capabilities: CapabilityServiceApi
-  /** Chat (quick runs): start, promote, the project of a continued run and the display project (src/main/quick/quickRuns.ts). */
-  quick: QuickRunService
-}
-
-/** Longest instruction accepted for the MCP and Skill assistants; longer is cut. */
-export const ASSIST_INSTRUCTION_MAX_CHARS = 8000
-/**
- * The project a harness-level run continues or auto-resumes in. A build session (summary.buildWorkspace) gets its
- * workspace back (harnessProject allowBuild) only when the recorded path is exactly a <data>/quick/quick_<id> scratch
- * dir that still exists; a forged or vanished path throws instead of running without the workspace. Exported for tests.
- */
-export function harnessProjectFor(
-  summary: Pick<RunSummary, 'buildWorkspace'>,
-  settings: AppSettings,
-  dataDir: string,
-  mock: boolean,
-  exists: (p: string) => boolean = existsSync
-): Project {
-  const ws = summary.buildWorkspace
-  if (ws === undefined) return buildHarnessProject(settings, dataDir, { mock })
-  const dir = scratchDirFor(dataDir, ws)
-  if (!dir || !exists(dir)) throw new Error("This build session's workspace is gone; start a new one.")
-  return buildHarnessProject(settings, dataDir, { mock, allowBuild: true, workspace: dir })
-}
-
-/**
- * Checks a continued or messaged quick run: prompt at most QUICK_RUN_MAX_PROMPT_CHARS (refused, never cut) and, for a
- * non-scratch folder, validateQuickFolder again (it may have become a link into the data dir). Exported for tests.
- */
-export function checkQuickContinue(summary: Pick<RunSummary, 'quick'>, text: unknown, dataDir: string, validate: (folder: unknown, dataDir: string) => unknown = validateQuickFolder): void {
-  if (!summary.quick) return
-  if (typeof text === 'string' && text.length > QUICK_RUN_MAX_PROMPT_CHARS) {
-    throw new Error(`That message is too long (at most ${QUICK_RUN_MAX_PROMPT_CHARS.toLocaleString('en-US')} characters).`)
-  }
-  if (!summary.quick.scratch) validate(summary.quick.folder, dataDir)
-}
-
-/** Longest folder path accepted for a quick run; QuickRunService validates the folder itself. */
-const QUICK_FOLDER_MAX_CHARS = 4096
-
-/**
- * Renderer input for runs:startQuick / runs:promoteQuick rebuilt field by field: a prompt that is text, trimmed and at
- * most QUICK_RUN_MAX_PROMPT_CHARS (longer is refused, never cut), a folder as text (checked by QuickRunService), the
- * team only 'single' | 'default' (anything else is 'single'), allowEdits only when the literal true, images through
- * the run image sanitizer; any other field is dropped. Exported for tests.
- */
-export const quickArgs = {
-  start(input: unknown): QuickRunInput {
-    const i = obj<Record<string, unknown>>(input)
-    if (typeof i.prompt !== 'string') throw new Error('Type what you want done.')
-    const prompt = i.prompt.trim()
-    if (prompt.length > QUICK_RUN_MAX_PROMPT_CHARS) throw new Error(`That message is too long (at most ${QUICK_RUN_MAX_PROMPT_CHARS.toLocaleString('en-US')} characters).`)
-    const images = sanitizeImages(i.images)
-    if (!prompt && !images.length) throw new Error('Type what you want done.')
-    const out: QuickRunInput = { prompt, team: i.team === 'default' ? 'default' : 'single', allowEdits: i.allowEdits === true }
-    if (typeof i.folder === 'string' && i.folder.trim()) {
-      if (i.folder.length > QUICK_FOLDER_MAX_CHARS) throw new Error('That folder path is too long.')
-      out.folder = i.folder
-    }
-    if (images.length) out.images = images
-    return out
-  },
-  promote(input: unknown): QuickRunPromoteInput {
-    const i = obj<Record<string, unknown>>(input)
-    if (!isSafeId(i.runId)) throw new Error('Quick run not found.')
-    const name = typeof i.name === 'string' ? i.name.trim() : ''
-    if (!name || name.length > 80 || /[\u0000-\u001f\u007f]/.test(name)) throw new Error('Give the project a name of 1 to 80 characters.')
-    return { runId: i.runId, name }
-  }
-}
-
-/** The Skill assistant / MCP assistant instruction: text only, trimmed, cut at ASSIST_INSTRUCTION_MAX_CHARS. */
-function instructionArg(v: unknown): string | undefined {
-  return typeof v === 'string' && v.trim() ? v.trim().slice(0, ASSIST_INSTRUCTION_MAX_CHARS) : undefined
-}
-
-/**
- * skills:startAssist input. Scope 'library' (explicit, or no projectId) runs on the virtual SKILLS_PROJECT_ID. Scope
- * 'project' needs a projectId that is a safe id, not virtual and a stored project (`isStored`). Exported for tests.
- */
-export function skillAssistArgs(input: unknown, isStored: (projectId: string) => boolean): { library: true; instruction?: string } | { library: false; projectId: string; instruction?: string } {
-  const i = obj<Record<string, unknown>>(input)
-  const instruction = instructionArg(i.instruction)
-  const base = instruction ? { instruction } : {}
-  if (i.scope === 'library' || i.projectId === undefined || i.projectId === null || i.projectId === '') return { library: true, ...base }
-  if (!isSafeId(i.projectId) || isVirtualProjectId(i.projectId) || !isStored(i.projectId)) throw new Error('Project not found')
-  return { library: false, projectId: i.projectId, ...base }
-}
-
-/**
- * mcp:startAssist input. allowBuild is only ever the literal true, and only for library scope (the app-wide
- * assistant): a project-scope request with allowBuild is refused rather than silently ignored, because the user
- * would expect a build workspace. Exported for tests.
- */
-export function mcpAssistArgs(input: unknown): { library: boolean; projectId: string; instruction?: string; allowBuild: boolean } {
-  const i = obj<Record<string, unknown>>(input)
-  const library = i.scope === 'library'
-  const allowBuild = i.allowBuild === true
-  if (allowBuild && !library) throw new Error('Building a server is available in the app-wide MCP assistant only.')
-  const instruction = instructionArg(i.instruction)
-  return { library, projectId: library ? HARNESS_PROJECT_ID : typeof i.projectId === 'string' ? i.projectId : '', allowBuild, ...(instruction ? { instruction } : {}) }
-}
-
-export function registerIpc({ projects, runs, setup, maintenance, settings, connections, mcp, adapterIds, harnessProject, openRunWindow, importer, skills, skillEvaluation, capabilities, quick }: IpcServices): void {
-  const mock = adapterIds.includes('mock')
+  /** The host dispatcher to serve; absent = registerIpc builds one over these services. */
+  dispatcher?: HostDispatcher
+  /** The orgai command shim (cli-spec 7(3)); absent = app:cliShim* answer CLI_SHIM_UNAVAILABLE. */
+  cliShim?: CliShimService
   /**
-   * A stored project, or the display project of a virtual id (harness, quick = "Chat", skills). Never listed by
-   * projects:list. The Chat's display project has no roles and creates no directory.
+   * Start a project from a repository: parse, tools, clone or fork, cancel (src/main/repoClone.ts). Desktop only: the
+   * progress goes to the calling window and a closed window cancels its clone. Absent = the channels are not registered.
    */
-  const projectOrHarness = (id: string): Project | null =>
-    id === HARNESS_PROJECT_ID ? harnessProject()
-    : id === QUICK_PROJECT_ID ? quick.displayProject()
-    : id === SKILLS_PROJECT_ID ? skillsProject(settings.get(), settings.dataDir, { mock })
-    : projects.get(id)
-  ipcMain.handle(IPC.projectsList, () => projects.list())
-  ipcMain.handle(IPC.projectsGet, (_e, id: string) => projectOrHarness(id))
-  // Throws a readable message for a bad path (the form shows it) or a mock project without the mock adapter.
-  ipcMain.handle(IPC.projectsCreate, (_e, input: ProjectCreateInput) =>
-    projects.create(input, settings.get(), {
-      mockAvailable: adapterIds.includes('mock'),
-      prepare: (p) => connections.prepareNewProject(p),
-      // After prepare: imported models map to the connection the project was put on.
-      importRoles: (p, sources) => importer.rolesForNewProject(p, sources)
+  repoClone?: RepoCloneService
+}
+
+export { harnessProjectFor, withEffectiveDefault } from './host/args'
+export {
+  ASSIST_INSTRUCTION_MAX_CHARS,
+  CONNECTION_SECRET_MAX_CHARS,
+  CONNECTOR_TOKEN_MAX_CHARS,
+  OVERRIDES_MAX_KEYS,
+  PERMISSION_RULE_MAX_CHARS,
+  PROPOSAL_SECRETS_MAX,
+  capabilityArgs,
+  checkQuickContinue,
+  connectionIdArg,
+  connectionSecretArgs,
+  connectorArgs,
+  effectiveRemoveRuns,
+  folderConfigProjectArg,
+  folderConfigTrustArgs,
+  knowledgeArgs,
+  mcpAssistArgs,
+  mcpCopyArgs,
+  mcpLibrarySecretArgs,
+  mcpOverridesArgs,
+  mcpSecretArgs,
+  modelsQueryArg,
+  pathCheckWithTeamFiles,
+  permissionAddRefusal,
+  permissionRuleArgs,
+  presetRemoveArgs,
+  projectRemoveArgs,
+  proposalDecideArgs,
+  quickArgs,
+  removalFacts,
+  settingsSetArgs,
+  skillAssistArgs,
+  teamFilesArgs,
+  teamFilesCreateArg,
+  templateEngagementArgs
+} from './host/args'
+export type { RemovalDeps } from './host/args'
+
+/** The channels only the Electron shell serves (cli-spec 3.3(3) `request: desktop_only`); refused over the socket. */
+export const DESKTOP_ONLY_CHANNELS: readonly string[] = [
+  IPC.projectsPickDir,
+  IPC.skillLibraryAddFromFolder,
+  KIT_IPC.kitPickExportPath,
+  KIT_IPC.kitPickImportPath,
+  KIT_IPC.kitExport,
+  KIT_IPC.kitPreviewImport,
+  KIT_IPC.kitApplyImport,
+  IPC.menuSetState,
+  IPC.appOpenPath,
+  IPC.appOpenLogs,
+  IPC.appSetNotifications,
+  IPC.appCliShimStatus,
+  IPC.appInstallCliShim,
+  IPC.appUninstallCliShim,
+  IPC.projectsParseRepoSource,
+  IPC.projectsRepoTools,
+  IPC.projectsCloneRepo,
+  IPC.projectsCancelClone,
+  IPC.projectsSetFolderConfigTrust,
+  TEAM_FILES_IPC.teamFilesApprove,
+  TEAM_FILES_IPC.teamFilesReject,
+  TEAM_FILES_IPC.teamFilesUndo,
+  TEAM_FILES_IPC.teamFilesEnable,
+  TEAM_FILES_IPC.teamFilesCommit
+]
+
+/** Served over the socket only: HOST_IPC channels and host.* methods never get an ipcMain handler. */
+const SOCKET_ONLY: ReadonlySet<string> = new Set<string>([...Object.values(HOST_IPC), ...Object.values(HOST_METHODS)])
+
+export function registerIpc(services: IpcServices): void {
+  const { projects, settings, skills, kit } = services
+  const env: HostDispatchEnv = services.env ?? { app, platform: process.platform, logsDir }
+  const dispatcher = services.dispatcher ?? new HostDispatcher({ ...services, env, desktop: { openRunWindow: services.openRunWindow } })
+
+  // Window forwarding: only for a bus registerIpc made itself. A caller that passes `events` forwards it (index.ts).
+  if (!services.events && !services.dispatcher) {
+    dispatcher.events.on((channel, payload) => {
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed()) win.webContents.send(channel, payload)
+      }
     })
-  )
-  // Never rejects: the agent scan and the existing-project lookup add fields only when they succeed.
-  ipcMain.handle(IPC.projectsCheckPath, (_e, path: string): ProjectPathCheck => {
-    const check = checkProjectPath(path)
-    return { ...check, ...importer.pathCheckExtras(path, check) }
+  }
+
+  for (const channel of dispatcher.channels()) {
+    if (SOCKET_ONLY.has(channel)) continue
+    // Compatibility: usage:refresh only with a usage monitor (the dispatcher answers null without one).
+    if (channel === IPC.usageRefresh && !services.usage && !services.dispatcher) continue
+    ipcMain.handle(channel, (e: IpcMainInvokeEvent, ...args: unknown[]) => dispatcher.invoke(channel, args, { surface: 'desktop', senderId: e?.sender?.id }))
+  }
+
+  // ---- Desktop-only channels ----
+  // Folder config trust: only the user in a window can trust a folder's own agent config (no socket handler exists).
+  ipcMain.handle(IPC.projectsSetFolderConfigTrust, (_e, raw: unknown): FolderConfigTrustResult => {
+    const input = folderConfigTrustArgs(raw)
+    if (!projects.get(input.projectId)) throw new Error('Project not found')
+    // A gated project keeps its saved rules in the data folder (projectRulesFile), never in the folder being judged.
+    const saved = projects.update(input.projectId, (p) => applyFolderConfigTrust(p, input, { rulesFile: projectRulesFile(p, settings.dataDir) }))
+    return { project: saved, review: folderConfigReview(saved) }
   })
-  // Agent import: read-only scans of the stored project's folder; the renderer supplies choices, never roles.
-  ipcMain.handle(IPC.projectsScanAgents, (_e, path: string): AgentImportScan => importer.scan(path))
-  ipcMain.handle(IPC.projectsPreviewImport, (_e, input: AgentImportInput): AgentImportPreview => importer.preview(input))
-  // The digest of the reviewed preview is required; apply refuses without it or when the folder changed since.
-  ipcMain.handle(IPC.projectsApplyImport, (_e, input: AgentImportApplyInput): AgentImportApplyResult => importer.apply(input))
-  ipcMain.handle(IPC.projectsExportOrg, (_e, projectId: string): OrgExportResult => importer.exportOrg(projectId))
-  // The renderer's copy never changes mcpServers or plugins; those go through mcp:* and plugins:*.
-  ipcMain.handle(IPC.projectsSave, (_e, project: Project) => {
-    if (typeof project?.id === 'string' && isVirtualProjectId(project.id)) throw new Error('This assistant project cannot be saved.')
-    return projects.saveFromRenderer(project)
-  })
-  ipcMain.handle(IPC.projectsRemove, async (_e, id: string) => {
-    if (typeof id === 'string' && isVirtualProjectId(id)) throw new Error('This assistant project cannot be removed.')
-    await runs.removeProject(id)
-    mcp.removeProjectSecrets(id)
-    skills.removeProjectFiles(id)
-    capabilities.forgetProject(id)
-    projects.remove(id)
-  })
+  // Team files review decisions (approve / reject / undo / enable / commit): the approval card is the window's.
+  const teamFiles = services.teamFiles
+  if (teamFiles) {
+    const filled = async (r: TeamFilesActionResult): Promise<TeamFilesActionResult> => ({ project: r.project, status: await teamFiles.withGit(r.status) })
+    ipcMain.handle(TEAM_FILES_IPC.teamFilesApprove, async (_e, input: unknown) => filled(teamFiles.approve(teamFilesArgs(input, true))))
+    ipcMain.handle(TEAM_FILES_IPC.teamFilesReject, async (_e, input: unknown) => filled(teamFiles.reject(teamFilesArgs(input, true))))
+    ipcMain.handle(TEAM_FILES_IPC.teamFilesUndo, async (_e, input: unknown) => filled(teamFiles.undo(teamFilesArgs(input))))
+    ipcMain.handle(TEAM_FILES_IPC.teamFilesCommit, async (_e, input: unknown): Promise<TeamFilesCommitResult> => teamFiles.commit(teamFilesArgs(input)))
+    ipcMain.handle(TEAM_FILES_IPC.teamFilesEnable, async (_e, input: unknown) => filled(teamFiles.enable(teamFilesArgs(input))))
+  }
   ipcMain.handle(IPC.projectsPickDir, async (e) => {
     const win = BrowserWindow.fromWebContents(e.sender)
     const result = win
@@ -303,186 +167,237 @@ export function registerIpc({ projects, runs, setup, maintenance, settings, conn
     if (picked) rememberPickedFolder(e.sender, picked)
     return picked
   })
-
-  ipcMain.handle(IPC.draftOrgChart, async (_e, req: DraftRequest) => {
-    const project = projects.get(req.projectId)
-    if (!project) throw new Error('Project not found')
-    return draftOrgChart(runs.adapterFor(project), project, req, connections.importModelContext(projectConnection(project)))
-  })
-
-  ipcMain.handle(IPC.runsStart, async (_e, input: StartRunInput) => {
-    const project = projects.get(input.projectId)
-    if (!project) throw new Error('Project not found')
-    return runs.start({ project, prompt: input.prompt, scaffold: input.scaffold, images: input.images })
-  })
-  ipcMain.handle(IPC.runsGet, (_e, runId: string) => runs.get(runId))
-  // Chat: every field is rebuilt (quickArgs); the folder is validated in main (QuickRunService), never trusted here.
-  ipcMain.handle(IPC.runsStartQuick, (_e, input: unknown): Promise<RunSummary> => quick.start(quickArgs.start(input)))
-  ipcMain.handle(IPC.runsPromoteQuick, (_e, input: unknown): QuickRunPromoteResult => quick.promote(quickArgs.promote(input)))
-  // Skill assistant: library scope on the virtual skills project, project scope on a stored project.
-  ipcMain.handle(IPC.skillsStartAssist, async (_e, input: unknown): Promise<RunSummary> => {
-    const target = skillAssistArgs(input, (id) => !!projects.get(id))
-    const project = target.library ? skillsProject(settings.get(), settings.dataDir, { mock }) : projects.get(target.projectId)
-    if (!project) throw new Error('Project not found')
-    return runs.start({ project, kind: 'skill-assist', prompt: skillAssistPrompt(project, target.instruction) })
-  })
-
-  ipcMain.handle(IPC.setupStart, async (_e, input: SetupStartInput) => {
-    const existing = projects.get(input.projectId)
-    if (!existing) throw new Error('Project not found')
-    const project = await setup.prepare(existing)
-    return runs.start({
-      project,
-      kind: 'setup',
-      prompt: setup.displayPrompt(project, input.instruction),
-      hiddenContext: setup.hiddenContext(project),
-      // Only the literal 'team' is accepted: the Team tab's tray hosts the session (RunSummary.surface).
-      ...(input?.surface === 'team' ? { surface: 'team' as const } : {})
-    })
-  })
-  ipcMain.handle(IPC.setupRetro, async (_e, input: { projectId: string; runId: string }) => {
-    const existing = projects.get(input.projectId)
-    if (!existing) throw new Error('Project not found')
-    const record = runs.get(input.runId)
-    if (!record || record.summary.projectId !== existing.id) throw new Error('Run not found')
-    const project = await setup.prepare(existing)
-    return runs.start({
-      project,
-      kind: 'setup',
-      prompt: setup.retroPrompt(record),
-      hiddenContext: `${setup.hiddenContext(project)}\n\n${setup.retroContext(record)}`
-    })
-  })
-  ipcMain.handle(
-    IPC.setupDecide,
-    (_e, input: { runId: string; proposalId: string; decision: ProposalDecision }) =>
-      runs.decideProposal(input.runId, input.proposalId, input.decision)
-  )
-  ipcMain.handle(IPC.runsContinue, async (_e, input: ContinueRunInput) => {
-    const from = runs.summary(input.runId)
-    if (!from) throw new Error('Run not found')
-    // A quick run continues as the project rebuilt from its own summary (folder, team, edits), never a stored one.
-    checkQuickContinue(from, input.text, settings.dataDir)
-    const existing = from.quick ? quick.projectFor(from)
-      : from.projectId === HARNESS_PROJECT_ID ? harnessProjectFor(from, settings.get(), settings.dataDir, mock)
-      : projectOrHarness(from.projectId)
-    if (!existing) throw new Error('Project not found')
-    // Setup runs re-profile the repo like setup:start so the Architect's hidden context is current.
-    const project = from.kind === 'setup' ? await setup.prepare(existing) : existing
-    return runs.continueRun(project, input.runId, input.text, input.images)
-  })
-  ipcMain.handle(IPC.runsResumeNow, (_e, runId: string) => runs.resumeNow(runId))
-  ipcMain.handle(IPC.runsCancelAutoResume, (_e, runId: string) => runs.cancelAutoResume(runId))
-  ipcMain.handle(
-    IPC.setupAnswer,
-    (_e, input: { runId: string; questionId: string; answer: QuestionAnswer }) =>
-      runs.answerQuestion(input.runId, input.questionId, input.answer)
-  )
-  ipcMain.handle(IPC.runsSend, (_e, input: SendRunInput) => {
-    const from = runs.summary(input.runId)
-    if (from) checkQuickContinue(from, input.text, settings.dataDir)
-    return runs.send(input.runId, input.text, input.images)
-  })
-  ipcMain.handle(IPC.runsInterrupt, (_e, runId: string) => runs.interrupt(runId))
-  ipcMain.handle(IPC.runsStop, (_e, runId: string) => runs.stop(runId))
-  ipcMain.handle(IPC.runsList, (_e, projectId: string) => runs.list(projectId))
-  ipcMain.handle(IPC.runsListLive, (): RunSummary[] => runs.liveRuns())
-  ipcMain.handle(IPC.runsPendingCards, (_e, runId: unknown): PendingCards => {
-    if (!isValidId(runId)) throw new Error('Invalid run id')
-    return runs.pendingCards(runId)
-  })
-  ipcMain.handle(IPC.runsUsageStats, (_e, query: UsageStatsQuery): UsageStats => {
-    const q = query && typeof query === 'object' ? query : ({} as UsageStatsQuery)
-    if (!isValidId(q.projectId) || !projectOrHarness(q.projectId)) throw new Error('Project not found')
-    return runs.usageStats(q)
-  })
-  ipcMain.handle(IPC.windowOpenRun, (_e, input: FocusRunTarget): void => {
-    const target = checkRunTarget(input, {
-      project: (id) => projectOrHarness(id),
-      runProject: (runId) => runs.summary(runId)?.projectId
-    })
-    openRunWindow(target)
-  })
-  ipcMain.handle(
-    IPC.runsDecide,
-    (_e, input: { runId: string; requestId: string; decision: PermissionDecision }) =>
-      runs.decide(input.runId, input.requestId, input.decision)
-  )
-  ipcMain.handle(IPC.mergesDecide, (_e, input: { runId: string; reviewId: string; decision: MergeDecision }) =>
-    runs.decideMerge(input.runId, input.reviewId, input.decision)
-  )
-
-  ipcMain.handle(IPC.maintListWorktrees, (_e, projectId: string) => maintenance.listWorktrees(projectId))
-  ipcMain.handle(IPC.maintIntegrate, (_e, input: { projectId: string; branch: string }) => maintenance.integrateWorktree(input.projectId, input.branch))
-  ipcMain.handle(IPC.maintDiscard, (_e, input: { projectId: string; branch: string }) => maintenance.discardWorktree(input.projectId, input.branch))
-  ipcMain.handle(IPC.maintUninstall, (_e, projectId: string) => maintenance.uninstallRepo(projectId))
-  ipcMain.handle(IPC.maintDiff, (_e, input: { projectId: string; branch: string }) => maintenance.diffWorktree(input.projectId, input.branch))
-
-  ipcMain.handle(IPC.authStatus, async (): Promise<AuthStatusResult> => {
-    const auth = settings.get().providerAuth
-    if (auth.kind === 'apiKey') {
-      const envVarSet = !!process.env[auth.envVar]?.trim()
-      return {
-        loggedIn: envVarSet,
-        method: 'API key',
-        detail: envVarSet ? `Using ${auth.envVar}` : `${auth.envVar} is not set in OrgAI's environment`,
-        mode: 'apiKey',
-        envVar: auth.envVar,
-        envVarSet
-      }
-    }
-    // Only the AuthStatusResult fields cross IPC.
-    const s = await claudeAuthStatus()
-    return { loggedIn: s.loggedIn, method: s.method, detail: s.detail, mode: 'subscription' }
-  })
-
-  // settings.set() notifies SettingsStore listeners: index.ts applies the theme and broadcasts settings:changed.
-  const settingsInfo = (): AppSettingsInfo => buildSettingsInfo(settings.get(), { dataDir: settings.dataDir, appVersion: app.getVersion() })
-  ipcMain.handle(IPC.settingsGet, () => settingsInfo())
-  ipcMain.handle(IPC.settingsSet, (_e, next: AppSettings) => {
-    settings.set(stripSettingsInfo(next))
-    return settingsInfo()
+  ipcMain.handle(IPC.skillLibraryAddFromFolder, (e, input: unknown): SkillLibraryInfo[] => {
+    const i = obj<SkillLibraryFolderInput>(input)
+    if (typeof i.path !== 'string' || !i.path) throw new Error('Choose a skill folder.')
+    if (!pickedFolders.take(e.sender.id, i.path)) throw new Error('Choose the skill folder with the folder picker first.')
+    return skills.libraryAddFromFolder({ path: i.path })
   })
   // Deprecated (phase 1 removes NotificationsToggle): a mirror of AppSettings.notifications, the only source the
   // notifier reads.
   ipcMain.handle(IPC.appSetNotifications, (_e, enabled: boolean): void => {
     settings.set({ ...settings.get(), notifications: !!enabled })
   })
-  ipcMain.handle(IPC.appOpenPath, (_e, path: string) => shell.openPath(path))
-  ipcMain.handle(IPC.appLogPath, () => logPath())
-  ipcMain.handle(IPC.appInfo, (): AppInfo => buildAppInfo(app, { platform: process.platform, logsDir: logsDir(), adapterIds }))
+  // Returns shell.openPath's contract: an error message, or '' on success. Never throws to the renderer.
+  ipcMain.handle(IPC.appOpenPath, async (_e, path: unknown): Promise<string> => {
+    try {
+      const list = projects.list()
+      const refusal = openPathRefusal(path, {
+        dataDir: settings.dataDir,
+        projectPaths: list.map((p) => p.path),
+        allowedDirectories: list.flatMap((p) => p.allowedDirectories ?? []),
+        stat: lstatDirectory
+      })
+      if (refusal) {
+        log.warn('app:openPath refused:', refusal)
+        return refusal
+      }
+      return await shell.openPath(path as string)
+    } catch (err) {
+      log.warn('app:openPath failed:', err instanceof Error ? err.message : String(err))
+      return 'OrgAI could not open that folder.'
+    }
+  })
   ipcMain.handle(IPC.appOpenLogs, async () => {
     logPath() // creates the folder if nothing has been logged yet
     const error = await shell.openPath(logsDir())
     if (error) log.warn(`Could not open logs folder: ${error}`)
   })
-  ipcMain.handle(IPC.permissionsList, (_e, projectId: string) => {
-    const project = projects.get(projectId)
-    if (!project) throw new Error('Project not found')
-    return listRules(project.path)
+  // What the renderer shows, for enabling application menu items. Booleans only; nothing is echoed back.
+  ipcMain.handle(IPC.menuSetState, (e, input: unknown): void => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    if (win && !win.isDestroyed()) setMenuState(win, cleanMenuState(input))
   })
-  ipcMain.handle(IPC.permissionsRemove, (_e, input: { projectId: string; rule: string }) => {
-    const project = projects.get(input.projectId)
-    if (!project) throw new Error('Project not found')
-    return removeRule(project.path, input.rule)
-  })
-  ipcMain.handle(IPC.permissionsAdd, (_e, input: { projectId: string; rule: string }) => {
-    const project = projects.get(input.projectId)
-    if (!project) throw new Error('Project not found')
-    const rule = String(input.rule ?? '').trim()
-    if (!isValidRule(rule)) throw new Error('A rule looks like Tool(prefix:*), Tool(exact command) or a bare tool name, e.g. Bash(gh:*)')
-    return addRules(project.path, [rule])
-  })
-  ipcMain.handle(
-    IPC.permissionsDecideRequest,
-    (_e, input: { runId: string; requestId: string; decision: PermissionRuleDecision }) =>
-      runs.decideRules(input.runId, input.requestId, input.decision)
-  )
+  registerCliShimIpc(services.cliShim)
+  if (kit) registerKitIpc(kit)
+  if (services.repoClone) registerRepoIpc(services.repoClone)
+}
 
-  registerConnectionIpc(projects, connections)
-  registerMcpIpc(runs, mcp, projectOrHarness, { quick, settings, mock })
-  registerSkillIpc(skills, skillEvaluation)
-  registerCapabilityIpc(capabilities)
+// ---- Start a project from a repository (clone or fork); desktop only ----
+
+/**
+ * projects:cloneRepo input rebuilt field by field: a plain object, requestId 1..64 of letters, digits, '_' and '-',
+ * source and destination text within their limits (refused, never cut), mode exactly 'clone' or 'fork'; extra fields
+ * are dropped. The refusals are one fixed line and never quote the input. Exported for tests.
+ */
+export function repoCloneArgs(input: unknown): RepoCloneInput {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid clone request.')
+  const proto = Object.getPrototypeOf(input)
+  if (proto !== Object.prototype && proto !== null) throw new Error('Invalid clone request.')
+  const i = input as Record<string, unknown>
+  if (typeof i.requestId !== 'string' || !REPO_REQUEST_ID_RE.test(i.requestId)) throw new Error('Invalid clone request.')
+  if (typeof i.source !== 'string') throw new Error('Type or paste a repository address.')
+  if (i.source.length > REPO_SOURCE_MAX_CHARS * 2) throw new Error('That address is too long.')
+  if (i.mode !== 'clone' && i.mode !== 'fork') throw new Error('Choose clone or fork.')
+  if (typeof i.destination !== 'string' || !i.destination.trim()) throw new Error('Choose a folder for the new project.')
+  if (i.destination.length > REPO_DESTINATION_MAX_CHARS * 2) throw new Error('That folder path is too long.')
+  return { requestId: i.requestId, source: i.source, mode: i.mode, destination: i.destination }
+}
+
+/** projects:cancelClone argument: a valid request id, else refused. Exported for tests. */
+export function repoCancelArg(input: unknown): string {
+  if (typeof input !== 'string' || !REPO_REQUEST_ID_RE.test(input)) throw new Error('Invalid clone request.')
+  return input
+}
+
+/** The slice of WebContents that watchSenderGone uses. */
+export interface GoneWatchable {
+  on(event: string, listener: (...args: unknown[]) => void): unknown
+  removeListener(event: string, listener: (...args: unknown[]) => void): unknown
+}
+
+/**
+ * Calls `onGone` (once) when the window is destroyed, its renderer process is gone, or its main frame starts a new
+ * navigation to another document. Returns a function that removes every listener; call it when the work ends.
+ */
+export function watchSenderGone(sender: GoneWatchable, onGone: () => void): () => void {
+  const fire = (): void => onGone()
+  const onNavigate = (...args: unknown[]): void => {
+    const d = args[0] as { isMainFrame?: boolean; isSameDocument?: boolean } | undefined
+    if (d && d.isMainFrame === true && d.isSameDocument !== true) onGone()
+  }
+  sender.on('destroyed', fire)
+  sender.on('render-process-gone', fire)
+  sender.on('did-start-navigation', onNavigate)
+  return () => {
+    sender.removeListener('destroyed', fire)
+    sender.removeListener('render-process-gone', fire)
+    sender.removeListener('did-start-navigation', onNavigate)
+  }
+}
+
+function registerRepoIpc(repoClone: RepoCloneService): void {
+  ipcMain.handle(IPC.projectsParseRepoSource, (_e, text: unknown): RepoSourceParse => {
+    try {
+      return typeof text === 'string' ? repoClone.parse(text) : parseRepoSource(undefined)
+    } catch {
+      return parseRepoSource(undefined)
+    }
+  })
+  ipcMain.handle(IPC.projectsRepoTools, async (): Promise<RepoTools> => {
+    try {
+      return await repoClone.tools()
+    } catch {
+      return { git: { available: false }, gh: { available: false, loggedIn: false, detail: 'OrgAI could not check your GitHub CLI sign-in.' } }
+    }
+  })
+  ipcMain.handle(IPC.projectsCloneRepo, async (e, raw: unknown): Promise<RepoCloneResult> => {
+    const input = repoCloneArgs(raw)
+    const sender = e.sender
+    const onProgress = (event: RepoCloneProgress): void => {
+      if (!sender.isDestroyed()) sender.send(IPC.projectsCloneProgress, event)
+    }
+    // A closed, crashed or navigated window cancels its own clone.
+    const stopWatching = watchSenderGone(sender as unknown as GoneWatchable, () => repoClone.cancel(input.requestId))
+    try {
+      return await repoClone.clone(input, onProgress)
+    } catch (err) {
+      const message = err instanceof Error && err.message ? err.message : 'The clone failed.'
+      log.warn(`Clone request failed: ${scrubStderr(message)}`)
+      throw new Error(message)
+    } finally {
+      stopWatching()
+    }
+  })
+  ipcMain.handle(IPC.projectsCancelClone, (_e, id: unknown): void => {
+    try {
+      repoClone.cancel(repoCancelArg(id))
+    } catch {
+      // an invalid id names no clone
+    }
+  })
+}
+
+// ---- orgai command shim (cli-spec 7(3)); desktop only, never throws to the renderer ----
+
+function cliShimStatusOf(shim: CliShimService | undefined): CliShimStatus {
+  try {
+    return shim?.status() ?? CLI_SHIM_UNAVAILABLE
+  } catch (err) {
+    log.warn('app:cliShimStatus failed:', err instanceof Error ? err.message : String(err))
+    return CLI_SHIM_UNAVAILABLE
+  }
+}
+
+function registerCliShimIpc(shim: CliShimService | undefined): void {
+  const unavailable = (): CliShimResult => ({ ok: false, message: CLI_SHIM_UNAVAILABLE.reason ?? '', status: CLI_SHIM_UNAVAILABLE })
+  const change = (what: 'install' | 'uninstall') => async (): Promise<CliShimResult> => {
+    if (!shim) return unavailable()
+    try {
+      return await shim[what]()
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      log.warn(`app:${what}CliShim failed:`, message)
+      return { ok: false, message: `OrgAI could not change the orgai command: ${message}`, status: cliShimStatusOf(shim) }
+    }
+  }
+  ipcMain.handle(IPC.appCliShimStatus, (): CliShimStatus => cliShimStatusOf(shim))
+  ipcMain.handle(IPC.appInstallCliShim, change('install'))
+  ipcMain.handle(IPC.appUninstallCliShim, change('uninstall'))
+}
+
+// ---- Practice kit ----
+
+const kitExportPicks = new PickedPaths()
+const kitImportPicks = new PickedPaths()
+const kitTrackedSenders = new Set<number>()
+function rememberKitPath(picks: PickedPaths, sender: WebContents, path: string): void {
+  picks.remember(sender.id, path)
+  if (kitTrackedSenders.has(sender.id)) return
+  kitTrackedSenders.add(sender.id)
+  const id = sender.id
+  sender.once('destroyed', () => {
+    kitExportPicks.forget(id)
+    kitImportPicks.forget(id)
+    kitTrackedSenders.delete(id)
+  })
+}
+
+/**
+ * kit:* channels. The save and open dialogs are main's own; kit:export, kit:previewImport and kit:applyImport accept
+ * only a path the same renderer picked (an export path is consumed by a successful export). Inputs are rebuilt field by
+ * field (`exportArgs`, `applyArgs`).
+ */
+function registerKitIpc(kit: KitService): void {
+  const pickedPath = (input: unknown): string => {
+    const p = input && typeof input === 'object' && !Array.isArray(input) ? (input as { path?: unknown }).path : undefined
+    if (typeof p !== 'string' || !p || p.length > 4096) throw new Error('Choose a kit file.')
+    return p
+  }
+  ipcMain.handle(KIT_IPC.kitPickExportPath, async (e): Promise<string | null> => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    const options = { title: 'Save a practice kit', defaultPath: 'practice.orgai-kit.json', filters: [{ name: 'OrgAI kit', extensions: ['json'] }] }
+    const result = win ? await dialog.showSaveDialog(win, options) : await dialog.showSaveDialog(options)
+    if (result.canceled || !result.filePath) return null
+    const path = kitExportTarget(result.filePath, existsSync)
+    rememberKitPath(kitExportPicks, e.sender, path)
+    return path
+  })
+  ipcMain.handle(KIT_IPC.kitPickImportPath, async (e): Promise<string | null> => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    const options = { title: 'Import a practice kit', properties: ['openFile' as const], filters: [{ name: 'OrgAI kit', extensions: ['json'] }] }
+    const result = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options)
+    const path = result.canceled ? null : result.filePaths[0] ?? null
+    if (path) rememberKitPath(kitImportPicks, e.sender, path)
+    return path
+  })
+  ipcMain.handle(KIT_IPC.kitExport, (e, input: unknown): KitExportResult => {
+    const i = kitExportArgs(input)
+    if (!kitExportPicks.has(e.sender.id, i.path)) throw new Error('Choose where to save the kit with the Save dialog first.')
+    const out = kit.export(i)
+    kitExportPicks.take(e.sender.id, i.path)
+    return out
+  })
+  ipcMain.handle(KIT_IPC.kitPreviewImport, (e, input: unknown): KitImportPreview => {
+    const path = pickedPath(input)
+    if (!kitImportPicks.has(e.sender.id, path)) throw new Error('Choose the kit file with the file dialog first.')
+    return kit.previewImport({ path })
+  })
+  ipcMain.handle(KIT_IPC.kitApplyImport, (e, input: unknown): KitApplyResult => {
+    const i = kitApplyArgs(input)
+    if (!kitImportPicks.has(e.sender.id, i.path)) throw new Error('Choose the kit file with the file dialog first.')
+    return kit.applyImport(i)
+  })
 }
 
 /**
@@ -527,307 +442,42 @@ function rememberPickedFolder(sender: WebContents, path: string): void {
   })
 }
 
-/** A plain object argument, or {} (handlers validate the fields; services re-check ids against the stores). */
-function obj<T>(input: unknown): T {
-  return (input && typeof input === 'object' ? input : {}) as T
-}
+export const OPEN_PATH_MAX_CHARS = 1024
+export const OPEN_PATH_REFUSAL = "OrgAI only opens project folders, allowed folders and its own data folder."
 
-/** A project id that may name a stored project (the harness project has no skills). */
-function projectIdArg(id: unknown): string {
-  if (!isValidId(id) || isVirtualProjectId(id)) throw new Error('Project not found')
-  return id
-}
-
-/** Project skills, the skill library, the repo import and evaluation: the services 1:1, ids checked first. */
-function registerSkillIpc(skills: SkillServiceApi, evaluation: SkillEvaluationApi): void {
-  type ProjectSkill = { projectId: string; skillId: string }
-  const projectSkill = (input: unknown): ProjectSkill => {
-    const i = obj<ProjectSkill>(input)
-    projectIdArg(i.projectId)
-    if (!isValidId(i.skillId)) throw new Error('Skill not found')
-    return { projectId: i.projectId, skillId: i.skillId }
+/** lstat as a directory probe: a symlink or a file is not a directory; null when missing or unreadable. */
+export function lstatDirectory(p: string): { isDirectory: boolean } | null {
+  try {
+    return { isDirectory: lstatSync(p).isDirectory() }
+  } catch {
+    return null
   }
-  const withProject = <T extends { projectId: string }>(input: unknown): T => {
-    const i = obj<T>(input)
-    projectIdArg(i.projectId)
-    return i
-  }
-  const libraryArg = (input: unknown): { libraryId: string } => {
-    const i = obj<{ libraryId: string }>(input)
-    if (!isValidId(i.libraryId)) throw new Error('Library skill not found')
-    return { libraryId: i.libraryId }
-  }
-  ipcMain.handle(IPC.skillsList, (_e, projectId: unknown): SkillInfo[] => skills.list(projectIdArg(projectId)))
-  ipcMain.handle(IPC.skillsRead, (_e, input: unknown): SkillContent => skills.read(projectSkill(input)))
-  ipcMain.handle(IPC.skillsCreate, (_e, input: unknown): SkillMutationResult => skills.create(withProject<SkillCreateInput>(input)))
-  ipcMain.handle(IPC.skillsUpdate, (_e, input: unknown): SkillMutationResult => {
-    const i = withProject<SkillUpdateInput>(input)
-    return skills.update({ ...i, ...projectSkill(i) })
-  })
-  ipcMain.handle(IPC.skillsRemove, (_e, input: unknown): SkillMutationResult => skills.remove(projectSkill(input)))
-  ipcMain.handle(IPC.skillsLinkLibrary, (_e, input: unknown): SkillMutationResult => {
-    const i = withProject<SkillLinkLibraryInput>(input)
-    return skills.linkLibrary({ ...i, ...libraryArg(i) })
-  })
-  ipcMain.handle(IPC.skillsPromote, (_e, input: unknown): SkillMutationResult => skills.promote(projectSkill(input)))
-  // Import: read-only scans of the stored project's folder; the renderer supplies choices and the preview digest.
-  ipcMain.handle(IPC.skillsPreviewImport, (_e, input: unknown): SkillImportPreview => skills.previewImport(withProject<SkillImportInput>(input)))
-  ipcMain.handle(IPC.skillsApplyImport, (_e, input: unknown): SkillImportApplyResult => skills.applyImport(withProject<SkillImportApplyInput>(input)))
-  ipcMain.handle(IPC.skillsUndoImport, (_e, input: unknown): SkillMutationResult => {
-    const i = withProject<{ projectId: string; undoId: string }>(input)
-    if (!isValidId(i.undoId)) throw new Error('Nothing to undo')
-    return skills.undoImport({ projectId: i.projectId, undoId: i.undoId })
-  })
-  ipcMain.handle(IPC.skillsEvaluate, (_e, projectId: unknown): Promise<SkillEvaluationReport> => evaluation.evaluate(projectIdArg(projectId)))
-  ipcMain.handle(IPC.skillsLastEvaluation, (_e, projectId: unknown): SkillEvaluationReport | null => evaluation.last(projectIdArg(projectId)))
-  ipcMain.handle(IPC.skillsApplySuggestion, (_e, input: unknown): SkillMutationResult => {
-    const i = withProject<SkillApplySuggestionInput>(input)
-    if (!isValidId(i.suggestionId)) throw new Error('Suggestion not found')
-    return applySuggestion(skills, evaluation, i)
-  })
-  ipcMain.handle(IPC.skillLibraryList, (): SkillLibraryInfo[] => skills.libraryList())
-  ipcMain.handle(IPC.skillLibraryRead, (_e, input: unknown): SkillContent => skills.libraryRead(libraryArg(input)))
-  ipcMain.handle(IPC.skillLibraryCreate, (_e, draft: unknown): SkillLibraryInfo[] => skills.libraryCreate(obj<SkillDraft>(draft)))
-  ipcMain.handle(IPC.skillLibraryAddFromFolder, (e, input: unknown): SkillLibraryInfo[] => {
-    const i = obj<SkillLibraryFolderInput>(input)
-    if (typeof i.path !== 'string' || !i.path) throw new Error('Choose a skill folder.')
-    if (!pickedFolders.take(e.sender.id, i.path)) throw new Error('Choose the skill folder with the folder picker first.')
-    return skills.libraryAddFromFolder({ path: i.path })
-  })
-  ipcMain.handle(IPC.skillLibraryUpdate, (_e, input: unknown): SkillLibraryInfo[] => {
-    const i = obj<{ libraryId: string; draft: SkillDraft }>(input)
-    return skills.libraryUpdate({ ...libraryArg(i), draft: obj<SkillDraft>(i.draft) })
-  })
-  ipcMain.handle(IPC.skillLibraryRemove, (_e, input: unknown): SkillLibraryInfo[] => skills.libraryRemove(libraryArg(input)))
-}
-
-/** Role ids per apply; more is refused. */
-const CAPABILITY_MAX_ROLE_IDS = 100
-
-/**
- * Renderer input for capabilities:* rebuilt field by field: only known fields with the right shape reach the service,
- * so a renderer can never smuggle a path, a spec or file content into apply. Exported for tests.
- */
-export const capabilityArgs = {
-  discover(input: unknown): CapabilityDiscoverInput {
-    const i = obj<Record<string, unknown>>(input)
-    const out: CapabilityDiscoverInput = { projectId: projectIdArg(i.projectId), includeOutside: i.includeOutside === true }
-    if (typeof i.query === 'string' && i.query.trim()) out.query = i.query.trim().slice(0, 100)
-    if (i.requestId !== undefined) {
-      if (!isValidId(i.requestId)) throw new Error('Invalid request id')
-      out.requestId = i.requestId
-    }
-    return out
-  },
-  recommend(input: unknown): CapabilityRecommendInput {
-    const i = obj<Record<string, unknown>>(input)
-    const out: CapabilityRecommendInput = { ...capabilityArgs.discover(input), scope: {} }
-    const scope = obj<Record<string, unknown>>(i.scope)
-    if (scope.roleId !== undefined) {
-      if (!isValidId(scope.roleId)) throw new Error('Role not found')
-      out.scope = { roleId: scope.roleId }
-    }
-    return out
-  },
-  apply(input: unknown): CapabilityApplyInput {
-    const i = obj<Record<string, unknown>>(input)
-    if (typeof i.digest !== 'string' || !/^[a-f0-9]{64}$/.test(i.digest)) throw new Error('Run the recommendations again first: the result is missing or out of date.')
-    if (!Array.isArray(i.roleIds) || i.roleIds.length === 0) throw new Error('Choose at least one role.')
-    if (i.roleIds.length > CAPABILITY_MAX_ROLE_IDS || !i.roleIds.every((r) => isValidId(r))) throw new Error('Unknown role in the choice.')
-    if (i.access !== undefined && i.access !== 'read' && i.access !== 'full') throw new Error('Access must be read or full.')
-    const out: CapabilityApplyInput = {
-      projectId: projectIdArg(i.projectId),
-      digest: i.digest,
-      roleIds: [...new Set(i.roleIds as string[])]
-    }
-    // Omitted access means the recommendation's own access (else 'read'); the service still enforces the write-tools rule.
-    if (i.access === 'read' || i.access === 'full') out.access = i.access
-    if (i.recommendationId !== undefined) {
-      if (!isValidId(i.recommendationId)) throw new Error('Recommendation not found')
-      out.recommendationId = i.recommendationId
-    }
-    if (i.candidateId !== undefined) {
-      if (!isValidId(i.candidateId)) throw new Error('Candidate not found')
-      out.candidateId = i.candidateId
-    }
-    if (!out.recommendationId && !out.candidateId) throw new Error('Name a recommendation or a candidate.')
-    return out
-  },
-  undo(input: unknown): CapabilityUndoInput {
-    const i = obj<Record<string, unknown>>(input)
-    const projectId = projectIdArg(i.projectId)
-    if (!isValidId(i.undoId)) throw new Error('Nothing to undo')
-    return { projectId, undoId: i.undoId }
-  },
-  review(input: unknown): TeamReviewInput {
-    const i = obj<Record<string, unknown>>(input)
-    const trigger = i.trigger === 'opened' ? 'opened' : 'manual'
-    const out: TeamReviewInput = { projectId: projectIdArg(i.projectId), trigger }
-    if (i.requestId !== undefined) {
-      if (!isValidId(i.requestId)) throw new Error('Invalid request id')
-      out.requestId = i.requestId
-    }
-    // Outside fetches and the model step are the user's explicit call: never on the throttled 'opened' trigger.
-    if (trigger === 'manual') {
-      out.includeOutside = i.includeOutside === true
-      out.useModel = i.useModel === true
-    }
-    return out
-  },
-  dismiss(input: unknown): TeamDismissInput {
-    const i = obj<Record<string, unknown>>(input)
-    const projectId = projectIdArg(i.projectId)
-    const out: TeamDismissInput = { projectId }
-    if (i.recommendationId !== undefined) {
-      if (!isValidId(i.recommendationId)) throw new Error('Recommendation not found')
-      out.recommendationId = i.recommendationId
-    }
-    if (i.candidateId !== undefined) {
-      if (!isValidId(i.candidateId)) throw new Error('Candidate not found')
-      out.candidateId = i.candidateId
-    }
-    if (!out.recommendationId && !out.candidateId) throw new Error('Recommendation not found')
-    return out
-  },
-  restore(input: unknown): TeamRestoreInput {
-    const i = obj<Record<string, unknown>>(input)
-    const projectId = projectIdArg(i.projectId)
-    if (!isValidId(i.candidateId)) throw new Error('Candidate not found')
-    return { projectId, candidateId: i.candidateId }
-  }
-}
-
-/** The Team assistant: CapabilityServiceApi 1:1, inputs rebuilt by capabilityArgs, the harness project refused. */
-function registerCapabilityIpc(capabilities: CapabilityServiceApi): void {
-  ipcMain.handle(IPC.capabilitiesDiscover, (_e, input: unknown): Promise<CapabilityDiscovery> => capabilities.discover(capabilityArgs.discover(input)))
-  ipcMain.handle(IPC.capabilitiesRecommend, (_e, input: unknown): Promise<TeamRecommendations> => capabilities.recommend(capabilityArgs.recommend(input)))
-  ipcMain.handle(IPC.capabilitiesCancel, (_e, input: unknown): void => {
-    const i = obj<{ requestId?: unknown }>(input)
-    if (isValidId(i.requestId)) capabilities.cancel(i.requestId)
-  })
-  ipcMain.handle(IPC.capabilitiesApply, (_e, input: unknown): Promise<CapabilityApplyResult> => capabilities.apply(capabilityArgs.apply(input)))
-  ipcMain.handle(IPC.capabilitiesUndo, (_e, input: unknown): CapabilityUndoResult => capabilities.undo(capabilityArgs.undo(input)))
-  ipcMain.handle(IPC.capabilitiesReview, (_e, input: unknown): Promise<TeamReview> => capabilities.review(capabilityArgs.review(input)))
-  ipcMain.handle(IPC.capabilitiesLastReview, (_e, projectId: unknown): TeamReview | null => capabilities.lastReview(projectIdArg(projectId)))
-  ipcMain.handle(IPC.capabilitiesDismiss, (_e, input: unknown): TeamReview => capabilities.dismiss(capabilityArgs.dismiss(input)))
-  ipcMain.handle(IPC.capabilitiesRestore, (_e, input: unknown): TeamReview => capabilities.restore(capabilityArgs.restore(input)))
-}
-
-/** Connections, model catalog and remaps: ConnectionService 1:1. */
-function registerConnectionIpc(projects: ProjectStore, connections: ConnectionService): void {
-  ipcMain.handle(IPC.connectionsList, (): Promise<ConnectionInfo[]> => connections.list())
-  ipcMain.handle(IPC.connectionsUpdate, (_e, connection: ProviderConnection): Promise<ConnectionInfo> => {
-    if (!CONNECTION_IDS.includes(connection?.id)) throw new Error('Unknown connection')
-    return connections.update(connection)
-  })
-  ipcMain.handle(IPC.connectionsSetSecret, (_e, input: ConnectionSecretInput): Promise<ConnectionInfo> => connections.setSecret(input))
-  ipcMain.handle(IPC.connectionsTest, (_e, id: ConnectionId): Promise<ConnectionStatus> => connections.test(id))
-  ipcMain.handle(IPC.connectionsConnect, (_e, id: ConnectionId): Promise<ConnectionInfo> => connections.connect(id))
-  ipcMain.handle(IPC.connectionsLogin, (_e, id: 'openai', method?: ConnectionLoginMethod): Promise<ConnectionLoginStart> =>
-    connections.login(id, method === 'deviceCode' ? 'deviceCode' : 'browser')
-  )
-  ipcMain.handle(IPC.connectionsCancelLogin, (_e, loginId: string): Promise<void> => connections.cancelLogin(loginId))
-  ipcMain.handle(IPC.connectionsLogout, (_e, id: ConnectionId): Promise<ConnectionInfo> => connections.logout(id))
-  ipcMain.handle(IPC.modelsList, (_e, query?: ModelsQuery): ProviderModel[] => connections.models(query))
-  ipcMain.handle(IPC.modelsRefresh, (_e, query?: ModelsQuery): Promise<ProviderModel[]> => connections.refresh(query))
-  ipcMain.handle(IPC.modelsPrices, (_e, query?: ModelPricesQuery): ModelPriceInfo[] => {
-    const connection = query && typeof query === 'object' ? query.connection : undefined
-    if (connection !== undefined && !CONNECTION_IDS.includes(connection)) throw new Error('Unknown connection')
-    return connections.prices(connection ? { connection } : undefined)
-  })
-  ipcMain.handle(IPC.projectsRemapModels, (_e, input: RemapModelsInput): RemapModelsOutput => {
-    if (!projects.get(input.projectId)) throw new Error('Project not found')
-    return connections.remapModels(input)
-  })
-  ipcMain.handle(IPC.projectsPreviewRemap, (_e, input: RemapModelsInput): RemapResult => connections.previewRemap(input))
-}
-
-/** MCP servers, plugins, registry search and install approvals: McpService 1:1, installs and the assistant via RunManager. */
-function registerMcpIpc(
-  runs: RunManager,
-  mcp: McpService,
-  projectOrHarness: (id: string) => Project | null,
-  assist: { quick: QuickRunService; settings: SettingsStore; mock: boolean }
-): void {
-  ipcMain.handle(IPC.mcpList, (_e, projectId: string): McpServerInfo[] => mcp.list(projectId))
-  ipcMain.handle(IPC.mcpUpsert, (_e, input: McpUpsertInput): McpMutationResult => mcp.upsert(input))
-  ipcMain.handle(IPC.mcpRemove, (_e, input: { projectId: string; serverId: string }): McpMutationResult => mcp.remove(input))
-  ipcMain.handle(IPC.mcpSetSecret, (_e, input: McpSecretInput): McpMutationResult => mcp.setSecret(input))
-  ipcMain.handle(IPC.mcpTest, (_e, input: { projectId: string; serverId: string }): Promise<McpTestResult> => mcp.test(input))
-  ipcMain.handle(IPC.mcpRegistrySearch, (_e, input: McpRegistrySearchInput): Promise<McpRegistrySearchResult> => mcp.registrySearch(input))
-  ipcMain.handle(IPC.mcpAnswerInstall, (_e, input: McpAnswerInstallInput): void => runs.answerMcpInstall(input.runId, input.requestId, input.decision))
-  // scope 'library' runs the assistant on the virtual harness project; RunManager and the harness tools treat a run
-  // whose projectId is HARNESS_PROJECT_ID as library scope.
-  // allowBuild (library scope only, literal true): the session works in its own scratch dir under <data>/quick, with
-  // permission mode 'default' (harnessProject), and the run records it as buildWorkspace.
-  ipcMain.handle(IPC.mcpStartAssist, async (_e, input: McpAssistInput): Promise<RunSummary> => {
-    const { library, projectId, instruction, allowBuild } = mcpAssistArgs(input)
-    if (!library && isVirtualProjectId(projectId)) throw new Error('Project not found')
-    if (allowBuild) {
-      const workspace = createScratchDir(assist.settings.dataDir)
-      try {
-        const project = buildHarnessProject(assist.settings.get(), assist.settings.dataDir, { mock: assist.mock, allowBuild: true, workspace })
-        return await runs.start({ project, kind: 'mcp-assist', prompt: assistPrompt(project, instruction), buildWorkspace: workspace })
-      } catch (e) {
-        assist.quick.removeScratch(workspace)
-        throw e
-      }
-    }
-    const project = projectOrHarness(projectId)
-    if (!project) throw new Error('Project not found')
-    return runs.start({ project, kind: 'mcp-assist', prompt: assistPrompt(project, instruction) })
-  })
-  ipcMain.handle(IPC.mcpLinkLibrary, (_e, input: McpLinkLibraryInput): McpMutationResult => mcp.linkLibrary(input))
-  ipcMain.handle(IPC.mcpPromote, (_e, input: { projectId: string; serverId: string }): McpMutationResult => mcp.promote(input))
-  // Resolves when the browser flow ends (or fails, as state 'error'); client id and secret are write-only.
-  ipcMain.handle(IPC.mcpAuthorize, (_e, input: McpAuthorizeInput): Promise<McpAuthStatus> => mcp.authorize(input))
-  ipcMain.handle(IPC.mcpCancelAuthorize, (_e, target: McpAuthTarget): void => mcp.cancelAuthorize(target))
-  ipcMain.handle(IPC.mcpRevokeAuth, (_e, target: McpAuthTarget): McpAuthStatus => mcp.revokeAuth(target))
-  ipcMain.handle(IPC.mcpLibraryList, (): McpLibraryInfo[] => mcp.libraryList())
-  ipcMain.handle(IPC.mcpLibraryUpsert, (_e, entry: McpLibraryEntry): McpLibraryInfo[] => mcp.libraryUpsert(entry))
-  ipcMain.handle(IPC.mcpLibraryRemove, (_e, input: { libraryId: string }): McpLibraryInfo[] => mcp.libraryRemove(input))
-  ipcMain.handle(IPC.mcpLibrarySetSecret, (_e, input: McpLibrarySecretInput): McpLibraryInfo[] => mcp.librarySetSecret(input))
-  ipcMain.handle(IPC.mcpLibraryTest, (_e, input: { libraryId: string }): Promise<McpTestResult> => mcp.libraryTest(input))
-  // Connectors: the renderer names a preset (and a variant); main builds the entry from src/shared/connectors.ts.
-  ipcMain.handle(IPC.connectorsList, (): ConnectorInfo[] => mcp.connectorsList())
-  ipcMain.handle(IPC.connectorsAdd, (_e, input: unknown): McpLibraryInfo => mcp.connectorsAdd(connectorArgs.add(input)))
-  ipcMain.handle(IPC.connectorsSetToken, (_e, input: unknown): McpLibraryInfo => mcp.connectorsSetToken(connectorArgs.setToken(input)))
-  ipcMain.handle(IPC.pluginsUpsert, (_e, input: PluginUpsertInput): Project => mcp.upsertPlugin(input))
-  ipcMain.handle(IPC.pluginsRemove, (_e, input: { projectId: string; pluginId: string }): Project => mcp.removePlugin(input))
-}
-
-/** Longest pasted connector token accepted over IPC; McpService re-checks the header value it builds. */
-export const CONNECTOR_TOKEN_MAX_CHARS = 4000
-/** Catalog ids and variant ids are lowercase kebab-case, at most 64 chars. */
-const CONNECTOR_ID_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/
-
-function connectorObject(input: unknown): Record<string, unknown> & { connectorId: string } {
-  if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Unknown connector.')
-  const i = input as Record<string, unknown>
-  if (typeof i.connectorId !== 'string' || !CONNECTOR_ID_RE.test(i.connectorId)) throw new Error('Unknown connector.')
-  return i as Record<string, unknown> & { connectorId: string }
 }
 
 /**
- * Renderer input for connectors:add / connectors:setToken rebuilt field by field: a catalog-shaped connector id (and
- * variant id), or a bounded token string / null; any other field is dropped and a wrong shape is refused. McpService
- * still resolves the ids against the catalog. Exported for tests.
+ * app:openPath guard (pure apart from the injected stat and path canonicalization): a refusal message, or null when
+ * `path` may be handed to the OS. Only an existing real directory that is a stored project's folder, an entry of a
+ * project's allowedDirectories, or the data folder / inside it, compared on lexical and real spellings.
  */
-export const connectorArgs = {
-  add(input: unknown): ConnectorAddInput {
-    const i = connectorObject(input)
-    const out: ConnectorAddInput = { connectorId: i.connectorId }
-    if (i.variant !== undefined) {
-      if (typeof i.variant !== 'string' || !CONNECTOR_ID_RE.test(i.variant)) throw new Error('Unknown connector variant.')
-      out.variant = i.variant
-    }
-    return out
-  },
-  setToken(input: unknown): ConnectorTokenInput {
-    const i = connectorObject(input)
-    if (i.token === null) return { connectorId: i.connectorId, token: null }
-    if (typeof i.token !== 'string') throw new Error('The token must be text.')
-    if (i.token.length > CONNECTOR_TOKEN_MAX_CHARS) throw new Error(`The token is too long (at most ${CONNECTOR_TOKEN_MAX_CHARS} characters).`)
-    return { connectorId: i.connectorId, token: i.token }
+export function openPathRefusal(
+  path: unknown,
+  ctx: { dataDir: string; projectPaths: string[]; allowedDirectories: string[]; stat: (p: string) => { isDirectory: boolean } | null }
+): string | null {
+  if (typeof path !== 'string' || path.length === 0) return 'No folder was given.'
+  if (path.length > OPEN_PATH_MAX_CHARS) return 'That path is too long.'
+  if (path.includes('\0') || hiddenCharProblem('path', path)) return 'That path has hidden characters.'
+  if (/^[\\/]{2}/.test(path)) return 'OrgAI does not open network or device paths.'
+  const absolute = process.platform === 'win32' ? /^[a-zA-Z]:[\\/]/.test(path) : isAbsolute(path)
+  if (!absolute) return 'That path is not absolute.'
+  const st = ctx.stat(path)
+  if (!st) return 'That folder does not exist.'
+  if (!st.isDirectory) return 'OrgAI only opens folders.'
+  try {
+    const known = [...ctx.projectPaths, ...ctx.allowedDirectories].some((p) => typeof p === 'string' && p !== '' && samePath(p, path))
+    if (known || isInsideEither(ctx.dataDir, path)) return null
+  } catch {
+    // fall through: fail closed
   }
+  return OPEN_PATH_REFUSAL
 }
+

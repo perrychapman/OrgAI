@@ -7,11 +7,13 @@ import { Banner } from '../ui/Banner'
 import { Button } from '../ui/Button'
 import { Checkbox } from '../ui/Checkbox'
 import { Dialog } from '../ui/Dialog'
+import { useConfirm } from '../ui/ConfirmDialog'
 import { IconButton } from '../ui/IconButton'
 import { Input } from '../ui/Input'
 import { SecretField } from '../ui/SecretField'
 import { SegmentedControl } from '../ui/SegmentedControl'
 import { Textarea } from '../ui/Textarea'
+import { MCP_PER_PROJECT_ENV_MAX, scopeFields, type ScopedSpec } from '../../lib/mcpScope'
 import { RoleChecklist } from './RoleAccess'
 import type { McpWriter } from './mcpWriter'
 import { SECURITY_SECRETS, allRoleSlugs, errMessage, securityPhrase } from './mcpHelpers'
@@ -21,16 +23,20 @@ interface VarRow {
   name: string
   value: string
   secret: boolean
+  /** Library mode only: each linking project enters its own value (non-secret rows; see perProjectEnv). */
+  perProject: boolean
 }
 
 const TRANSPORTS: McpTransport[] = ['stdio', 'http', 'sse']
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/
 const HEADER_NAME = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/
 
-function rowsFrom(plain: Record<string, string> | undefined, secrets: string[] | undefined): VarRow[] {
+function rowsFrom(plain: Record<string, string> | undefined, secrets: string[] | undefined, perProject: string[] = []): VarRow[] {
+  const per = perProject.filter((n) => !(n in (plain ?? {})) && !(secrets ?? []).includes(n))
   return [
-    ...Object.entries(plain ?? {}).map(([name, value]) => ({ rid: newId('r'), name, value, secret: false })),
-    ...(secrets ?? []).map((name) => ({ rid: newId('r'), name, value: '', secret: true }))
+    ...Object.entries(plain ?? {}).map(([name, value]) => ({ rid: newId('r'), name, value, secret: false, perProject: perProject.includes(name) })),
+    ...per.map((name) => ({ rid: newId('r'), name, value: '', secret: false, perProject: true })),
+    ...(secrets ?? []).map((name) => ({ rid: newId('r'), name, value: '', secret: true, perProject: false }))
   ]
 }
 
@@ -61,13 +67,17 @@ export default function McpServerForm({
   const [command, setCommand] = useState(base?.command ?? '')
   const [argsText, setArgsText] = useState((base?.args ?? []).join('\n'))
   const [url, setUrl] = useState(base?.url ?? '')
-  const [env, setEnv] = useState<VarRow[]>(() => rowsFrom(base?.env, base?.secretEnv))
-  const [headers, setHeaders] = useState<VarRow[]>(() => rowsFrom(base?.headers, base?.secretHeaders))
+  const baseScope = base ? scopeFields(base) : undefined
+  const basePer = library ? (baseScope?.perProjectEnv ?? []) : []
+  const [perSecrets, setPerSecrets] = useState(library && baseScope?.perProjectSecrets === true)
+  const [env, setEnv] = useState<VarRow[]>(() => rowsFrom(base?.env, base?.secretEnv, (base?.transport ?? 'stdio') === 'stdio' ? basePer : []))
+  const [headers, setHeaders] = useState<VarRow[]>(() => rowsFrom(base?.headers, base?.secretHeaders, base?.transport && base.transport !== 'stdio' ? basePer : []))
   const [roles, setRoles] = useState<string[]>(base?.roles ?? allRoleSlugs(writer.roles ?? []))
   const [touched, setTouched] = useState<Record<string, boolean>>({})
   const [pending, setPending] = useState<Record<string, string>>({})
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const { confirm, dialog } = useConfirm()
 
   const live = editing ? servers.find((s) => s.spec.id === editing.spec.id) : undefined
   const touch = (k: string): void => setTouched((t) => ({ ...t, [k]: true }))
@@ -107,15 +117,18 @@ export default function McpServerForm({
   const setRows = transport === 'stdio' ? setEnv : setHeaders
   const kind = transport === 'stdio' ? 'env' : 'header'
   const prefix = transport === 'stdio' ? 'env' : 'hdr'
+  const perCount = rows.filter((r) => r.perProject).length
 
   const buildSpec = (): McpServerSpec => {
     const plain: Record<string, string> = {}
     const secret: string[] = []
+    const perProject: string[] = []
     for (const r of rows) {
       if (r.secret) secret.push(r.name)
+      else if (library && r.perProject) perProject.push(r.name)
       else plain[r.name] = r.value
     }
-    const spec: McpServerSpec = {
+    const spec: ScopedSpec = {
       id,
       name,
       transport,
@@ -139,12 +152,31 @@ export default function McpServerForm({
       if (Object.keys(plain).length) spec.headers = plain
       if (secret.length) spec.secretHeaders = secret
     }
+    if (library) {
+      // true sets, false clears, absent keeps: send the choice only when it matters.
+      if (perSecrets || baseScope?.perProjectSecrets) spec.perProjectSecrets = perSecrets
+      if (perProject.length > 0 || basePer.length > 0) spec.perProjectEnv = perProject
+    }
     return spec
   }
 
   const submit = async (): Promise<void> => {
     setTouched({ name: true, command: true, url: true, ...Object.fromEntries(Object.keys(errors).map((k) => [k, true])) })
     if (Object.keys(errors).length > 0) return
+    if (library && editing && perSecrets && baseScope?.perProjectSecrets !== true && (editing.envSet.length > 0 || editing.headersSet.length > 0)) {
+      // Main deletes the library's stored secret values when this turns on; linked projects then each need their own.
+      const linked = await window.orgai.mcpLibrary
+        .list()
+        .then((l) => l.find((x) => x.entry.id === editing.spec.id)?.usedBy.length ?? 0)
+        .catch(() => 0)
+      const ok = await confirm({
+        title: "Delete the library's secret values?",
+        body: `${linked === 0 ? 'No project links' : `${linked} project${linked === 1 ? ' links' : 's link'}`} this server. The secret values stored in the library will be deleted, and each project then enters its own before the server can start.`,
+        confirmLabel: 'Use per-project values',
+        danger: true
+      })
+      if (!ok) return
+    }
     setBusy(true)
     setError(null)
     try {
@@ -154,7 +186,8 @@ export default function McpServerForm({
       const failed: string[] = []
       for (const slot of slots) {
         const value = pending[`${slot.kind}:${slot.n}`]
-        if (value === undefined) continue
+        // A library entry whose secrets are per project takes no secret values of its own.
+        if (value === undefined || (library && perSecrets)) continue
         try {
           await writer.setSecret(id, slot.kind, slot.n, value)
         } catch (e) {
@@ -308,7 +341,11 @@ export default function McpServerForm({
                 onBlur={() => touch(errKey)}
               />
               <div className="mcp-var-value">
-                {r.secret ? (
+                {library && (r.secret ? perSecrets : r.perProject) ? (
+                  <span className="muted mcp-var-quiet" data-testid="mcp-var-quiet">
+                    Each project fills this in
+                  </span>
+                ) : r.secret ? (
                   <SecretField
                     name={r.name || `${label} ${i + 1}`}
                     state={secretState(r)}
@@ -343,18 +380,47 @@ export default function McpServerForm({
               <Checkbox label="Secret" checked={r.secret} disabled={isSaved(r)} onChange={(secret) => {
                 // Keep what the user typed: moving a value into the secret slot must not drop it silently.
                 if (secret && r.value && r.name) setPending((p) => ({ ...p, [`${kind}:${r.name}`]: r.value }))
-                patchRow(r.rid, { secret, value: '' })
+                patchRow(r.rid, { secret, value: '', perProject: secret ? false : r.perProject })
               }} />
+              {library && (
+                <Checkbox
+                  label={
+                    <>
+                      Per project<span className="sr-only">: {r.name || `${label} ${i + 1}`}</span>
+                    </>
+                  }
+                  checked={r.perProject}
+                  disabled={r.secret || (!r.perProject && perCount >= MCP_PER_PROJECT_ENV_MAX)}
+                  title={r.secret ? 'Secrets follow the setting below' : undefined}
+                  testId="mcp-var-per-project"
+                  onChange={(perProject) => patchRow(r.rid, { perProject, value: '' })}
+                />
+              )}
               <IconButton icon={Trash2} label={`Remove ${label} ${r.name || i + 1}`} size="sm" onClick={() => setRows((rs) => rs.filter((x) => x.rid !== r.rid))} />
               {touched[errKey] && errors[errKey] && <span className="hint invalid-text mcp-var-err">{errors[errKey]}</span>}
             </div>
           )
         })}
         <div>
-          <Button size="sm" icon={Plus} onClick={() => setRows((rs) => [...rs, { rid: newId('r'), name: '', value: '', secret: false }])}>
+          <Button size="sm" icon={Plus} onClick={() => setRows((rs) => [...rs, { rid: newId('r'), name: '', value: '', secret: false, perProject: false }])}>
             {transport === 'stdio' ? 'Add variable' : 'Add header'}
           </Button>
         </div>
+        {library && (
+          <>
+            <Checkbox
+              label="Each project enters its own secret values"
+              checked={perSecrets}
+              onChange={setPerSecrets}
+              testId="mcp-per-project-secrets"
+              description="The library then holds no secret values for this server."
+            />
+            <p className="muted" id={`${baseId}-per-h`} data-testid="mcp-per-project-hint">
+              Per project: each project that uses this server enters its own value, for example a client&apos;s own sign-in or address. Projects without it cannot
+              start the server.
+            </p>
+          </>
+        )}
         <p className="muted">{SECURITY_SECRETS}</p>
       </fieldset>
 
@@ -366,6 +432,7 @@ export default function McpServerForm({
       )}
 
       <p className="muted">{editing ? 'Use Test on the server row to check the saved configuration.' : 'Save first to test.'}</p>
+      {dialog}
     </Dialog>
   )
 }

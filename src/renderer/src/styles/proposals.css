@@ -1,0 +1,191 @@
+/* ---------- Proposal card bodies (MCP servers, skills, org chart diff rows). The card shell and tray are cards.css. ---------- */
+
+.proposal-summary {
+  margin: 0;
+  font-size: var(--text-body);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+.proposal-effect {
+  display: block;
+  margin-top: var(--space-1);
+}
+
+/* Rows of an MCP proposal take the diff tone of their change. */
+.mcp-prop-server[data-change='new'] {
+  background: var(--success-soft);
+}
+.mcp-prop-server[data-change='link'] {
+  background: var(--info-soft);
+}
+.mcp-prop-server[data-change='access'],
+.mcp-prop-server[data-change='update'] {
+  background: var(--warning-soft);
+}
+.mcp-prop-server[data-change='remove'] {
+  background: var(--danger-soft);
+}
+
+.mcp-prop-secret {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.mcp-prop-secret-label {
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  font-weight: var(--weight-semibold);
+  overflow-wrap: anywhere;
+}
+.mcp-prop-secret-hint {
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+/* Skills rows: the extra lines and the before / after view. */
+.skill-prop-line,
+.skill-prop-note {
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  overflow-wrap: anywhere;
+}
+.skill-prop-item[data-action='remove'] {
+  background: var(--danger-soft);
+}
+.skill-prop-item[data-action='create'] {
+  background: var(--success-soft);
+}
+.skill-prop-item[data-action='update'],
+.skill-prop-item[data-action='grant'] {
+  background: var(--warning-soft);
+}
+.skill-prop-item[data-action='link'] {
+  background: var(--info-soft);
+}
+.skill-prop-diff {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+.skill-prop-diff-title {
+  font-size: var(--text-small);
+  font-weight: var(--weight-semibold);
+  color: var(--text-secondary);
+}
+.skill-prop-pre {
+  margin: 0;
+  padding: var(--space-2);
+  max-height: var(--scroll-region-max);
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: var(--text-mono);
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+}
+
+/* A failed read of the current servers or instructions: said in words, in the warning text colour. */
+.proposal-read-error {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin: 0;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--warning-text);
+}
+.proposal-read-error > svg {
+  flex: none;
+  margin-top: var(--space-1);
+}
+.mcp-prop-checking {
+  margin: 0;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+}
+
+/* Decline and revise notes: a visible label and a quiet limit hint. */
+.proposal-note-label {
+  display: block;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  font-weight: var(--weight-semibold);
+  margin-block-end: var(--space-1);
+}
+.proposal-note-hint {
+  display: block;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+  margin-block-start: var(--space-1);
+}
+.proposal-rule {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* Org chart card: a role's prompt behind a disclosure (review M3). The added row's own summary rules
+   (.org-diff-row.is-added summary in cards.css) would reach this nested summary, so it is reset here. */
+.org-diff-row .org-diff-prompt {
+  margin-top: var(--space-1);
+}
+.org-diff-row .org-diff-prompt > summary {
+  display: list-item;
+  list-style: revert;
+  padding: 0;
+  cursor: pointer;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+}
+.org-diff-row .org-diff-prompt > summary::-webkit-details-marker {
+  display: revert;
+}
+.org-diff-row .org-diff-prompt > summary:hover {
+  color: var(--text-primary);
+}
+.org-diff-row .org-diff-prompt > summary:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+.org-diff-prompt-body {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  margin-top: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-default);
+  background: var(--code-bg);
+  font-size: var(--text-caption);
+}
+.org-diff-prompt-empty {
+  margin: 0;
+  color: var(--text-tertiary);
+}
+/* A changed role's new responsibilities (review M-a): untrusted agent text, so long words wrap inside the box. */
+.org-diff-resp {
+  align-self: stretch;
+  overflow-wrap: anywhere;
+}
+.org-diff-resp.is-removed {
+  color: var(--text-secondary);
+  text-decoration: line-through;
+}
+.org-diff-resp-head {
+  margin: 0;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.org-diff-resp-tag {
+  font-weight: 600;
+}

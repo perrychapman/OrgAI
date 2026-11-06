@@ -12,10 +12,25 @@ asarUnpack:
   - node_modules/@anthropic-ai/claude-agent-sdk-*/**
   # The Codex app-server binary (resolveCodexBinary rewrites app.asar to app.asar.unpacked).
   - node_modules/@openai/codex-*/**
+  # The orgai command (cli-spec 7, Wave 6): Resources/bin/orgai runs the app binary as Node (ELECTRON_RUN_AS_NODE=1)
+  # on app.asar.unpacked/out/cli/orgai.mjs. The bundle and the packages it leaves as bare imports
+  # (src/cli/packaging.ts CLI_RUNTIME_PACKAGES; packaging.test.ts keeps this list in step) live outside the archive so
+  # the CLI's module resolution finds them from app.asar.unpacked/out/cli. The main process still loads the SDK from
+  # app.asar/node_modules: Electron redirects reads of unpacked files transparently.
+  - out/cli/**
+  - node_modules/@anthropic-ai/claude-agent-sdk/**
+  - node_modules/@openai/codex/**
+  - node_modules/zod/**
 npmRebuild: false
-# build/icon.png (512x512, from `npm run icon`) is converted to ICO/ICNS by electron-builder.
+# build/icon.png, icon.ico and icon.icns are generated together by `npm run icon` and committed. The top-level
+# PNG (1024) is the Linux icon; win and mac name their own multi-size files.
 icon: build/icon.png
 win:
+  icon: build/icon.ico
+  # The orgai command's launcher (see asarUnpack): Resources\bin\orgai.cmd. UNVERIFIED on Windows.
+  extraResources:
+    - from: build/bin/orgai.cmd
+      to: bin/orgai.cmd
   target:
     - nsis
     - portable
@@ -45,7 +60,11 @@ mac:
   # Per-arch names so the arm64 and x64 jobs never collide: OrgAI-<version>-arm64.dmg, OrgAI-<version>-x64.zip.
   artifactName: ${productName}-${version}-${arch}.${ext}
   category: public.app-category.developer-tools
-  icon: build/icon.png
+  icon: build/icon.icns
+  # The orgai command's launcher (see asarUnpack): Contents/Resources/bin/orgai, a POSIX sh script (executable).
+  extraResources:
+    - from: build/bin/orgai
+      to: bin/orgai
   hardenedRuntime: true
   gatekeeperAssess: false
   entitlements: build/entitlements.mac.plist
@@ -59,6 +78,10 @@ dmg:
   artifactName: ${productName}-${version}-${arch}.${ext}
 linux:
   target: AppImage
+  # The orgai command's launcher (see asarUnpack): resources/bin/orgai. The shim installer refuses an AppImage.
+  extraResources:
+    - from: build/bin/orgai
+      to: bin/orgai
   category: Development
 appImage:
   artifactName: ${productName}-${version}.${ext}

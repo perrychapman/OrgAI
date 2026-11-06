@@ -49,6 +49,7 @@ describe('resolveShellPath', () => {
     expect(ran).toBe(false)
     expect(r.path).toBe('C:\\x')
     expect(r.added).toEqual([])
+    expect(r.shellPath).toEqual([])
   })
 
   it('merges the login shell PATH after the existing one', () => {
@@ -66,6 +67,7 @@ describe('resolveShellPath', () => {
     expect(r.path).toBe('/usr/bin:/bin:/opt/homebrew/bin:/Users/me/.volta/bin')
     expect(r.added).toEqual(['/opt/homebrew/bin', '/Users/me/.volta/bin'])
     expect(r.fromShell).toBe(true)
+    expect(r.shellPath).toEqual(['/opt/homebrew/bin', '/usr/bin', '/Users/me/.volta/bin'])
   })
 
   it('falls back to /bin/zsh on darwin without SHELL and still adds well-known dirs when the shell fails', () => {
@@ -84,7 +86,22 @@ describe('resolveShellPath', () => {
     expect(used).toBe('/bin/zsh')
     expect(r.path).toBe('/usr/bin:/opt/homebrew/bin')
     expect(r.fromShell).toBe(false)
+    expect(r.shellPath).toEqual([])
     expect(r.note).toContain('timed out')
+  })
+
+  it('shellPath holds only the login shell entries, never the current PATH or well-known dirs', () => {
+    const r = resolveShellPath({
+      platform: 'linux',
+      env: { PATH: '/gui/only:/usr/bin', SHELL: '/bin/bash' },
+      home: '/h',
+      seed: 'p',
+      run: () => '__ORGAI_PATH_p_START__/usr/bin:/h/bin__ORGAI_PATH_p_END__',
+      exists: (p) => p === '/h/.local/bin' || p === '/usr/local/bin',
+      readdir: () => []
+    })
+    expect(r.shellPath).toEqual(['/usr/bin', '/h/bin'])
+    expect(r.path).toBe('/gui/only:/usr/bin:/h/bin:/usr/local/bin:/h/.local/bin')
   })
 
   it('uses /bin/bash on linux without SHELL', () => {

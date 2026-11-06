@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs'
+import { closeSync, existsSync, fstatSync, lstatSync, openSync, readSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -27,24 +27,39 @@ import {
 } from '@anthropic-ai/claude-agent-sdk'
 import type { AgentInstance, ImageAttachment, McpServerSpec, PluginSpec, Project, RunSummary, Role, RunEvent, TranscriptBlock, UsageStatus, WorktreeInfo } from '@shared/types'
 import type { PermissionDecision, PermissionSuggestion, ProviderAuth } from '@shared/types'
-import { SPAWN_TOOL } from '@shared/types'
-import { ANTHROPIC_BUILTIN_MODELS, mcpServersForRole, newId, preferEverydayNearLimit, settingTier, tierForModel } from '@shared/defaults'
-import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo, type RunSkill, type CompletionInput, type RunConnection, type ResolvedMcpServer, type RuntimeAdapter, type PeerMessage, type RuntimeContext, type RuntimeSession } from './types'
+import { KNOWLEDGE_RECALL_TOOL, SPAWN_TOOL } from '@shared/types'
+import { ANTHROPIC_BUILTIN_MODELS, effectiveSubagentLimits, isolateWritersOn, mcpServersForRole, newId, planGuardEngaged, planGuardOf, projectKindOf, settingTier, tierForModel } from '@shared/defaults'
+import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo, type RunSkill, type CompletionInput, type RunConnection, type ResolvedMcpServer, type RuntimeAdapter, type PeerMessage, type RuntimeContext, type RuntimeSession, type RootTurnEnd, type SessionSettlement, type ExecActivityReason } from './types'
 import { isTrustRestrictedRun, isWorkspaceConfigPath } from '../quick/scratch'
-import { applyAllowScope, chooseSuggestions, listRules, suggestionLabels } from './permissionRules'
+import { hiddenCharIn } from '../capabilities/sanitize'
+import { allowRuleStrings, applyAllowScope, chooseSuggestions, listRules, suggestionLabels, type AllowScopePersist, type SuggestOptions } from './permissionRules'
 import { isGitRepo } from './worktrees'
 import { costOf, rateFor, ratesFromModelUsage, sumByModel, weighted, type CostRates, type TokenMix } from './claudeCost'
 import { costFromPrice, priceFor } from './pricing'
+import { projectBudgetUsd } from './runOverrides'
 import { countUsage, setModelTokens } from './runUsage'
 import { PartialText } from './claudePartial'
-import { buildSkillPlugin, skillGate, type SkillPlugin } from './claudeSkills'
-import { SETUP_TOOLS_INSTRUCTIONS, harnessToolsFor, isBlockingHarnessTool, type HarnessTool } from './harnessTools'
-import { matchingRule } from './ruleMatch'
+import { buildSkillPlugin, livePluginNames, pluginStale, skillGate, type SkillPlugin } from './claudeSkills'
+import { SETUP_TOOLS_INSTRUCTIONS, datum, harnessToolsFor, isBlockingHarnessTool, type ConfigChange, type ConfigChangeResult, type HarnessTool, type HarnessToolAudience, type McpAttachResult } from './harnessTools'
+import { agentInstalledServers, isMcpGated, mcpCallDenial, rolesGrantedServer, withoutServerRules } from './mcpGrants'
+import {
+  REFERENCE_EDIT_TOOLS,
+  commandReferenceTouch,
+  editTargetOf,
+  referenceCommandMessage,
+  referenceEditDenial,
+  referenceFolderOf,
+  referenceRefusalEntry,
+  referenceTouchOf
+} from './referenceDirectories'
+import { SHELL_TOOLS, isUnsafeSegment, matchOptionsFor, matchingRule, programRunsProgram, ruleCoversButRefused, splitCommand, unwrapShellCommand, type MatchOptions } from './ruleMatch'
 import { ContinuationDriver, stepActivity } from './continuation'
 import { LIST_AGENTS_TOOL, MESSAGE_TOOL, buildRolePrompt, peerMessageText, canWrite, composeFirstMessage, isArchitectureFile } from './prompts'
+import { firstMessageHiddenContext, spawnKnowledge, userMessageKnowledge, withSpawnKnowledge, withUserMessageKnowledge } from './knowledgeDelivery'
 import { HandleNamer, mapSendMessage, messageTranscriptText, spawnHandle } from './network'
 import { authFailureMessage, describeTool, isAuthFailure, scrubAuthDetail } from './activity'
-import { isolateClaudeEnv } from './childEnv'
+import { isolateClaudeEnv, scrubControlEnv } from './childEnv'
+import { SELF_CONTROL_PATHS_UNAVAILABLE_LOG, SELF_CONTROL_REFUSAL_TEXT, checkSelfControlDenial, readControlProtectedPaths, selfControlLogLine } from './selfControlGate'
 import { WorktreeIntegrator } from './integration'
 import { resolveParent } from './agentTree'
 import {
@@ -179,6 +194,16 @@ class PushStream<T> implements AsyncIterable<T> {
     for (const w of this.waiters.splice(0)) w({ value: undefined as never, done: true })
   }
 
+  /** Take every value pushed but not yet read (a restart moves them to the next query's stream). */
+  drain(): T[] {
+    return this.queue.splice(0)
+  }
+
+  /** The values pushed but not yet read, left in place. */
+  peek(): T[] {
+    return [...this.queue]
+  }
+
   [Symbol.asyncIterator](): AsyncIterator<T> {
     return {
       next: () => {
@@ -190,9 +215,204 @@ class PushStream<T> implements AsyncIterable<T> {
   }
 }
 
-/** Server-level tool rule for an MCP server. UNVERIFIED inside an AgentDefinition.tools whitelist (documented for permission rules). */
+/**
+ * Server-level tool rule for an MCP server inside an AgentDefinition.tools whitelist. Verified for a main-thread agent
+ * in scripts/smoke-mcp-midrun.mjs ('mcp__alpha' admits mcp__alpha__ping; 'mcp__*' admits nothing and makes a
+ * subagent spawn fail with "unrecognized [mcp__*]"). Whitelists are fixed for the query: a server attached later
+ * reaches a whitelisted agent only after the query is re-created (ClaudeSession.maybeRestartForMcp).
+ */
 export function mcpToolRule(serverName: string): string {
   return `mcp__${serverName}`
+}
+
+/** Wait after the orchestrator's turn ends before an MCP restart, so a report hand-back the SDK is about to resume with goes first. */
+export const MCP_RESTART_DELAY_MS = 1500
+/**
+ * Exec settlement: after a report finishes, the SDK resumes the orchestrator with its result by itself (no input from
+ * OrgAI). Until that turn's init arrives, or this long after the report (or after the root turn that ended later), the
+ * session is not quiescent, so an exec run never settles in that gap. Matches DEFAULT_CONTINUATION_DELAY_MS.
+ */
+export const REPORT_HANDBACK_GRACE_MS = 1500
+/** How long addMcpServer polls mcpServerStatus for the new server's tool names. */
+const MCP_STATUS_WAIT_MS = 5000
+/** If the old query has not ended this long after its input closed for a restart, it is closed. */
+const MCP_RESTART_CLOSE_MS = 15_000
+/** A run whose restarted query cannot start at all is paused this long, then RunManager resumes it. */
+export const MCP_RESTART_PAUSE_MS = 5 * 60 * 1000
+/** Smallest budget a restarted query is given; below that nothing is left and the restart is skipped. */
+export const MCP_RESTART_MIN_BUDGET_USD = 0.01
+/** Tool names an MCP server reports that the harness repeats to the orchestrator: plain identifiers only. */
+const MCP_TOOL_NAME = /^[A-Za-z0-9_-]{1,64}$/
+/** At most this many tool names per server in the attach notice. */
+export const MCP_NOTICE_TOOL_CAP = 20
+
+/** The query an MCP restart starts once the current one has ended. */
+interface NextQuery {
+  options: Options
+  /** Servers it attaches (announced once it runs). */
+  servers: string[]
+  /** Tool names per server reported before the restart (the notice's fallback). */
+  tools: Map<string, string[]>
+  /** Set when these servers were left out after failed starts: the orchestrator is told they could not be attached. */
+  dropped?: string[]
+  /**
+   * The skill plugin this query loads (a config change rebuilt it): installed as the session's plugin when the query
+   * starts; the one it replaces is removed only after a query's init. undefined = the current plugin; null = none.
+   */
+  plugin?: SkillPlugin | null
+  /** The plugin in use before this restart rebuilt it (a fallback after failed starts returns to it). */
+  prevPlugin?: SkillPlugin | null
+  /** Set when the restart applies an approved config change (propose_mcp_servers / propose_skills): what the notice names. */
+  config?: RestartConfig
+  /** Set when a rebuilt skill plugin was left out after failed starts: the orchestrator is told the skill changes wait. */
+  droppedSkills?: boolean
+}
+
+/** The parts of approved config changes a restart brings into the session (ConfigChange, after the adapter sorted it). */
+interface RestartConfig {
+  /** Existing servers whose roles changed so some role's whitelist grows. */
+  regranted: string[]
+  /** Servers removed or turned off (already denied by the gate; named in the notice). */
+  removed: string[]
+  /** The skills or skill grants changed. */
+  skills: boolean
+}
+
+/** One skill in the config notice: its qualified name and the roles granted it. */
+type SkillNoticeEntry = { name: string; roles: Pick<Role, 'name' | 'slug'>[] }
+
+/** Per role slug: the tools and MCP servers its AgentDefinition whitelists (fixed for the life of a query). */
+export type GrantSnapshot = Map<string, { tools: Set<string>; mcp: Set<string> }>
+
+/** The whitelists of a query's agent definitions. Pure. */
+export function grantSnapshot(agents: Record<string, AgentDefinition>): GrantSnapshot {
+  const out: GrantSnapshot = new Map()
+  for (const [slug, def] of Object.entries(agents)) {
+    const mcp = (def.mcpServers ?? []).map((s) => (typeof s === 'string' ? s : Object.keys(s).join(',')))
+    out.set(slug, { tools: new Set(def.tools ?? []), mcp: new Set(mcp) })
+  }
+  return out
+}
+
+/**
+ * True when `after` lets some role use a tool or MCP server that `before` did not: only a re-created query can give
+ * it (whitelists are exact and fixed per query). Losses never count, the PreToolUse gates enforce them at the next
+ * call. A missing `before` counts as gained. Pure.
+ */
+export function grantsGained(before: GrantSnapshot | undefined, after: GrantSnapshot): boolean {
+  if (!before) return true
+  for (const [slug, now] of after) {
+    const was = before.get(slug)
+    if (!was) return true
+    for (const t of now.tools) if (!was.tools.has(t)) return true
+    for (const m of now.mcp) if (!was.mcp.has(m)) return true
+  }
+  return false
+}
+
+/** What decides whether an upserted server was (re)defined: everything that changes what runs or where it connects. */
+export function mcpDefinitionKey(spec: McpServerSpec): string {
+  const sorted = (r?: Record<string, string>) => Object.entries(r ?? {}).sort(([a], [b]) => a.localeCompare(b))
+  return JSON.stringify([
+    spec.transport,
+    spec.command ?? null,
+    spec.args ?? [],
+    spec.url ?? null,
+    sorted(spec.env),
+    sorted(spec.headers),
+    [...(spec.secretEnv ?? [])].sort(),
+    [...(spec.secretHeaders ?? [])].sort(),
+    spec.libraryId ?? null
+  ])
+}
+
+/** What decides whether a session may be re-created now to attach MCP servers. */
+export interface McpRestartState {
+  /** The run is ending, stopped or failed. */
+  stopping: boolean
+  /** Interrupted (or stopped by the window cap) and waiting for the user. */
+  held: boolean
+  /** The provider rejected a request on a usage limit. */
+  limited: boolean
+  /** The orchestrator's turn has ended. */
+  rootIdle: boolean
+  /** Reports still running. */
+  liveReports: number
+  /** Open decision cards. */
+  pendingInteractions: number
+  /** Background tasks that are not subagents (background Bash, monitors, MCP tasks) still running; a restart would kill them. */
+  backgroundTasks: number
+}
+
+/** Why an MCP restart must wait (or never happen), or undefined when it may go ahead now. Pure. */
+export function mcpRestartBlocker(s: McpRestartState): string | undefined {
+  if (s.stopping) return 'the run is ending'
+  if (s.held) return 'the run is held for the user'
+  if (s.limited) return 'the run is at a usage limit'
+  if (!s.rootIdle) return 'the orchestrator is mid-turn'
+  if (s.liveReports > 0) return 'reports are still running'
+  if (s.pendingInteractions > 0) return 'a decision card is open'
+  if (s.backgroundTasks > 0) return 'background tasks are still running'
+  return undefined
+}
+
+/** Tool names reported by an MCP server (untrusted) that may be repeated to the orchestrator: plain identifiers, at most 64 chars. */
+export function safeMcpToolNames(names: readonly unknown[]): string[] {
+  return names.filter((t): t is string => typeof t === 'string' && MCP_TOOL_NAME.test(t))
+}
+
+/**
+ * The harness message that tells the orchestrator which MCP servers are attached, with their full tool names and the
+ * roles granted them. Tool names come from the server (untrusted): only plain identifiers are listed, at most
+ * MCP_NOTICE_TOOL_CAP per server, and every name (server, tools, roles) goes through datum().
+ */
+export function mcpAttachedNotice(servers: { name: string; tools: string[]; roles?: Pick<Role, 'name' | 'slug'>[] }[]): string {
+  const parts = servers.map((s) => {
+    const name = datum(s.name, 64)
+    const prefix = `mcp__${name}__`
+    const safe = safeMcpToolNames(s.tools)
+    // datum keeps the whole name (the pattern allows 64 chars, so a 60-char cut would name a tool that does not exist).
+    const listed = safe.slice(0, MCP_NOTICE_TOOL_CAP).map((t) => prefix + datum(t, 64)).join(', ')
+    const more = safe.length > MCP_NOTICE_TOOL_CAP ? `, and ${safe.length - MCP_NOTICE_TOOL_CAP} more` : ''
+    const tools = safe.length ? `Its tools: ${listed}${more}.` : `Its tool names start with ${prefix}.`
+    // roles undefined: the grants could not be read (announceAttached failed); the PreToolUse gate still enforces them.
+    const roles = !s.roles
+      ? 'Only roles the org chart grants it may call it.'
+      : s.roles.length
+        ? `Roles that may use it: ${s.roles.map((r) => `${datum(r.name, 60)} (${datum(r.slug, 60)})`).join(', ')}.`
+        : 'No role in the org chart is granted it, so no agent can call it in this run.'
+    return `The MCP server ${name} is attached now. ${tools} ${roles}`
+  })
+  return `[OrgAI harness] ${parts.join(' ')} Calls to it may still ask the user for permission under the project's permission mode. Reports you spawn from now on get it if their role is granted it.`
+}
+
+/**
+ * The harness message after a restart that applied an approved config change: the attached or re-granted servers (as
+ * mcpAttachedNotice), the servers removed or turned off, and the skills now in the session. `skills` undefined = no
+ * skill change; null = the skills changed but the list could not be read. Every name goes through datum(); at most
+ * MCP_NOTICE_TOOL_CAP skills are listed.
+ */
+export function configChangeNotice(c: {
+  servers: Parameters<typeof mcpAttachedNotice>[0]
+  removed: string[]
+  skills?: { name: string; roles: Pick<Role, 'name' | 'slug'>[] }[] | null
+}): string {
+  let text = c.servers.length ? mcpAttachedNotice(c.servers) : '[OrgAI harness] The configuration change approved this run is in effect now.'
+  if (c.removed.length) {
+    const one = c.removed.length === 1
+    text += ` The MCP server${one ? '' : 's'} ${c.removed.map((n) => datum(n, 64)).join(', ')} ${one ? 'was' : 'were'} removed or turned off: ${one ? 'its' : 'their'} tools are no longer available.`
+  }
+  if (c.skills === null) text += ' The project\'s skills changed and are loaded in this session now; load one with the Skill tool and its full name.'
+  else if (c.skills && !c.skills.length) text += ' No skills are granted in this session now.'
+  else if (c.skills) {
+    const listed = c.skills.slice(0, MCP_NOTICE_TOOL_CAP).map((s) => {
+      const roles = s.roles.length ? s.roles.map((r) => `${datum(r.name, 60)} (${datum(r.slug, 60)})`).join(', ') : 'no role'
+      return `${datum(s.name, 140)} for ${roles}`
+    })
+    const more = c.skills.length > MCP_NOTICE_TOOL_CAP ? `, and ${c.skills.length - MCP_NOTICE_TOOL_CAP} more` : ''
+    text += ` Skills in this session now: ${listed.join('; ')}${more}. Agents load one with the Skill tool and its full name, prefix included.`
+  }
+  return text
 }
 
 /** Names of the MCP servers a role may use (mcpServersForRole), root included. */
@@ -211,7 +431,7 @@ export function toClaudeMcpServers(resolved: ResolvedMcpServer[]): Record<string
         type: 'stdio',
         command: spec.command,
         ...(spec.args?.length ? { args: [...spec.args] } : {}),
-        ...(Object.keys(r.env).length ? { env: { ...r.env } } : {})
+        ...(Object.keys(scrubControlEnv(r.env)).length ? { env: scrubControlEnv(r.env) } : {})
       }
     } else {
       if (!spec.url) continue
@@ -272,7 +492,7 @@ export function completionEnv(connection: RunConnection | undefined, base: NodeJ
   // No connection (drafts): isolated from routing vars, but the legacy inherited key still works.
   if (!connection) return isolateClaudeEnv(base, { keepApiKey: true })
   // The anthropic API key arrives through connection.env; nothing inherited authenticates.
-  return { ...isolateClaudeEnv(base, { proxy: connection.connection !== 'anthropic', keepApiKey: false }), ...connection.env }
+  return { ...isolateClaudeEnv(base, { proxy: connection.connection !== 'anthropic', keepApiKey: false }), ...scrubControlEnv(connection.env ?? {}) }
 }
 
 /**
@@ -283,10 +503,12 @@ export function completionEnv(connection: RunConnection | undefined, base: NodeJ
 export function buildEnv(ctx: RuntimeContext, base: NodeJS.ProcessEnv = process.env): Record<string, string | undefined> {
   const { project } = ctx
   const proxy = usesProxy(ctx)
+  // Explicit project limits win; otherwise derived from the roles this run actually has (setup runs: the Architect's).
+  const limits = effectiveSubagentLimits({ ...project, roles: ctx.roles })
   const env: Record<string, string | undefined> = {
     ...isolateClaudeEnv(base, { proxy, keepApiKey: false }),
-    CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: String(project.maxSubagentDepth),
-    CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS: String(project.maxConcurrentSubagents),
+    CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: String(limits.depth),
+    CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS: String(limits.concurrency),
     // Only org-chart roles may be spawned; drop the SDK's built-in general-purpose default.
     CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS: '1'
   }
@@ -297,7 +519,8 @@ export function buildEnv(ctx: RuntimeContext, base: NodeJS.ProcessEnv = process.
     const key = base[project.provider.auth.envVar]
     if (key) env.ANTHROPIC_API_KEY = key
   }
-  Object.assign(env, ctx.connection?.env)
+  // OrgAI's control variables stay out even when the connection names one (cli-spec 3.4(3)).
+  if (ctx.connection?.env) Object.assign(env, scrubControlEnv(ctx.connection.env))
   return env
 }
 
@@ -343,6 +566,9 @@ export function buildAgents(
   skills: Map<string, RunSkill> = new Map()
 ): Record<string, AgentDefinition> {
   const isSetup = isSetupLikeRun(ctx.run.kind)
+  const engagementDocument = ctx.engagementDocument?.()
+  // Constant for the run (RunManager computes it once), so a restarted query's prompts stay cacheable.
+  const knowledgeBrief = ctx.knowledgeBrief?.()
   const agents: Record<string, AgentDefinition> = {}
   for (const role of ctx.roles) {
     const tools: string[] = [...role.tools]
@@ -363,6 +589,15 @@ export function buildAgents(
         isSetup,
         isolation,
         ...(ctx.run.quick ? { quick: ctx.run.quick } : {}),
+        // Single-agent work runs ('single'): the prompt drops delegation and plan wording.
+        ...(ctx.run.team ? { team: ctx.run.team } : {}),
+        // The run's allowed directories, so agents know where a plain `cd` and edits need no approval.
+        ...(ctx.allowedDirectories?.().length ? { allowedDirectories: ctx.allowedDirectories() } : {}),
+        // Read-only reference folders, so agents read them and never try to change them.
+        ...(ctx.referenceDirectories?.().length ? { referenceDirectories: ctx.referenceDirectories() } : {}),
+        // Engagements: the approved engagement document, read now (a restart rebuilds agents and re-reads it).
+        ...(engagementDocument ? { engagementDocument } : {}),
+        ...(knowledgeBrief ? { knowledgeBrief } : {}),
         ...(granted.length ? { skills: granted.map(([q, s]) => ({ name: q, description: s.description })), skillTool: 'Skill' as const } : {})
       }),
       tools,
@@ -399,14 +634,236 @@ export function claudeAllowsBypass(ctx: RuntimeContext): boolean {
   return !isSetupLikeRun(ctx.run.kind) && !isTrustRestrictedRun(ctx.run) && ctx.project.permissionMode === 'bypassPermissions'
 }
 
-/** A quick run's folder and a build session's scratch dir are untrusted: .claude/settings*.json (rules, hooks) must not load. */
-export function claudeSettingSources(ctx: RuntimeContext): Options['settingSources'] {
-  return isTrustRestrictedRun(ctx.run) ? [] : ['project']
+/**
+ * Whether the CLI loads the working folder's `.claude/settings.json` (settingSources ['project']). Not for a quick run's
+ * folder or a build session's scratch dir (trust-restricted), and not for any run of an engagement: its folder is
+ * often a client share, so its hooks, rules and MCP servers must not load (OrgAI keeps an engagement's rules in its
+ * own data folder, ctx.savedRules). Every reader of that file (claudeSettingSources, cliProjectSettings) uses this.
+ */
+export function projectSettingsLoad(ctx: Pick<RuntimeContext, 'run' | 'project'> & Pick<Partial<RuntimeContext>, 'folderConfigLoads'>): boolean {
+  if (isTrustRestrictedRun(ctx.run) || projectKindOf(ctx.project) === 'engagement') return false
+  // Folder config trust: false = the folder's own agent config must not load this run (sticky). It re-hashes files, so
+  // callers read it when a query is built (buildOptions keeps the answer), never per tool call. Every run kind asks,
+  // setup runs included. Absent = no gate.
+  return ctx.folderConfigLoads?.() !== false
 }
 
-/** Saved "always allow" rules from the project folder; none for a quick run (its grants come from allowedRules()). */
+/** settingSources for a run: ['project'] only when projectSettingsLoad (never for a restricted run or an engagement). */
+export function claudeSettingSources(ctx: Pick<RuntimeContext, 'run' | 'project'> & Pick<Partial<RuntimeContext>, 'folderConfigLoads'>): Options['settingSources'] {
+  return projectSettingsLoad(ctx) ? ['project'] : []
+}
+
+/**
+ * Saved "always allow" rules: ctx.savedRules() (wherever the project keeps them; OrgAI's data folder for engagements),
+ * else the project folder's file; none for a trust-restricted run (its grants come from allowedRules()).
+ */
 export function claudeSavedRules(ctx: RuntimeContext): string[] {
-  return isTrustRestrictedRun(ctx.run) ? [] : listRules(ctx.project.path)
+  if (isTrustRestrictedRun(ctx.run)) return []
+  return ctx.savedRules ? ctx.savedRules() : listRules(ctx.project.path)
+}
+
+/**
+ * The saved rules handed to the CLI as `options.allowedTools`: every shell rule (`Bash`, `Bash(...)`, `PowerShell`,
+ * `PowerShell(...)`) is left out, because the PreToolUse hook evaluates those itself through ruleMatch.ts and the CLI's
+ * own prefix match would approve commands the harness refuses (`npm test --script-shell=calc` under
+ * `Bash(npm test:*)`, reviewer-4 H-A). Rules the harness cannot evaluate (other tools, content rules) are kept. Pure.
+ */
+export function cliAllowedTools(rules: readonly string[]): string[] {
+  return rules.filter((r) => !isShellRule(r))
+}
+
+function isShellRule(rule: string): boolean {
+  const r = rule.trim()
+  for (const tool of SHELL_TOOLS) if (r === tool || r.startsWith(`${tool}(`)) return true
+  return false
+}
+
+/** Largest `<project>/.claude/settings.json` the PreToolUse hook reads (review M3); a bigger file counts as unreadable. */
+export const CLI_SETTINGS_MAX_BYTES = 256 * 1024
+
+/**
+ * `permissions.allow` of `<project>/.claude/settings.json`, which settingSources ['project'] makes the CLI load and
+ * match on its own (wrapper and env stripping, mid wildcards, no-space prefixes: shapes ruleMatch.ts does not model).
+ * `failed` means the file exists but OrgAI could not read it (not a regular file, a symlink or FIFO, over
+ * CLI_SETTINGS_MAX_BYTES, unreadable, not a JSON object): the hook then treats it as holding unknown shell rules.
+ */
+export interface CliProjectSettings {
+  rules: string[]
+  failed: boolean
+}
+
+const NO_CLI_SETTINGS: CliProjectSettings = { rules: [], failed: false }
+const CLI_SETTINGS_FAILED: CliProjectSettings = { rules: [], failed: true }
+const cliSettingsCache = new Map<string, { mtimeMs: number; size: number; result: CliProjectSettings }>()
+
+/**
+ * Reads `<project>/.claude/settings.json` for the PreToolUse ask check, never as an allow source. The file is untrusted
+ * and read synchronously on the main process: lstat first (a symlink, FIFO or directory is refused without opening it),
+ * at most CLI_SETTINGS_MAX_BYTES, a leading BOM stripped, cached by path + mtimeMs + size. A missing file (or project
+ * path) is no rules. When the CLI does not load the file (projectSettingsLoad false: a trust-restricted run or an
+ * engagement, settingSources []) it holds no rules the CLI could apply, so it is not read and forces no 'ask'.
+ */
+export function cliProjectSettings(ctx: Pick<RuntimeContext, 'run' | 'project'> & Pick<Partial<RuntimeContext>, 'folderConfigLoads'>, loaded?: boolean): CliProjectSettings {
+  // `loaded` is what the running query was given (the session snapshot taken in buildOptions): the file's rules matter
+  // exactly while that CLI holds them, even if the folder's digest has changed since. Without it, ask the context.
+  if (!(loaded ?? projectSettingsLoad(ctx)) || !ctx.project.path) return NO_CLI_SETTINGS
+  const file = join(ctx.project.path, '.claude', 'settings.json')
+  let st
+  try {
+    st = lstatSync(file)
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code
+    return code === 'ENOENT' || code === 'ENOTDIR' ? NO_CLI_SETTINGS : CLI_SETTINGS_FAILED
+  }
+  if (!st.isFile() || st.size > CLI_SETTINGS_MAX_BYTES) return CLI_SETTINGS_FAILED
+  const cached = cliSettingsCache.get(file)
+  if (cached && cached.mtimeMs === st.mtimeMs && cached.size === st.size) return cached.result
+  const result = readCliSettings(file, st)
+  if (cliSettingsCache.size >= 200) cliSettingsCache.clear()
+  cliSettingsCache.set(file, { mtimeMs: st.mtimeMs, size: st.size, result })
+  return result
+}
+
+function readCliSettings(file: string, st: { ino: number; dev: number }): CliProjectSettings {
+  let fd: number | undefined
+  try {
+    fd = openSync(file, 'r')
+    // The path may have been swapped between lstat and open: the opened file must be the same regular file.
+    const fst = fstatSync(fd)
+    if (!fst.isFile() || fst.size > CLI_SETTINGS_MAX_BYTES || fst.ino !== st.ino || fst.dev !== st.dev) return CLI_SETTINGS_FAILED
+    const buf = Buffer.alloc(CLI_SETTINGS_MAX_BYTES + 1)
+    let len = 0
+    for (;;) {
+      const n = readSync(fd, buf, len, buf.length - len, null)
+      if (n <= 0) break
+      len += n
+      if (len > CLI_SETTINGS_MAX_BYTES) return CLI_SETTINGS_FAILED
+    }
+    const text = buf.subarray(0, len).toString('utf8').replace(/^\uFEFF/, '')
+    const parsed = JSON.parse(text) as unknown
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return CLI_SETTINGS_FAILED
+    const allow = (parsed as { permissions?: { allow?: unknown } }).permissions?.allow
+    return { rules: Array.isArray(allow) ? allow.filter((r): r is string => typeof r === 'string') : [], failed: false }
+  } catch {
+    return CLI_SETTINGS_FAILED
+  } finally {
+    if (fd !== undefined) closeSync(fd)
+  }
+}
+
+/** The settings.json allow rules only (none when unreadable); see cliProjectSettings. */
+export function cliProjectSettingsRules(ctx: Pick<RuntimeContext, 'run' | 'project'>): string[] {
+  return cliProjectSettings(ctx).rules
+}
+
+/** A rule for this shell tool: bare `Bash` / `PowerShell` or `Tool(...)`. */
+function isRuleForTool(rule: string, toolName: string): boolean {
+  const r = rule.trim()
+  return r === toolName || r.startsWith(`${toolName}(`)
+}
+
+/** A rule as it may appear in a reason or a log line: bounded and quoting-safe (review L1). */
+function ruleForDisplay(rule: string): string {
+  return datum(rule.trim(), 120)
+}
+
+/**
+ * The PreToolUse 'ask' reason for a shell call that no rule allowed but whose command (or one of its segments) a rule's
+ * text appears to cover (ruleMatch.ts `ruleCoversButRefused`): "OrgAI: <rule> does not cover this command (<why>);
+ * asking", naming the first such rule. Undefined when no rule covers it. Callers pass rules without hidden characters.
+ * Pure.
+ */
+export function refusedShellReason(toolName: string, input: unknown, rules: readonly string[], opts?: MatchOptions): string | undefined {
+  if (!SHELL_TOOLS.has(toolName) || !ruleCoversButRefused(toolName, input, rules, opts)) return undefined
+  const rule = rules.find((r) => ruleCoversButRefused(toolName, input, [r], opts)) ?? rules.find((r) => r.trim().startsWith(`${toolName}(`)) ?? toolName
+  const command = String((input as { command?: unknown }).command ?? '')
+  // The why comes from the segments the rule covers but refuses on their own; none means the rule's segment is fine
+  // and some other segment has no rule.
+  const shell = toolName === 'PowerShell' ? 'powershell' : 'bash'
+  const segments = splitCommand(unwrapShellCommand(command))
+    .map((s) => s.trim())
+    .filter((s) => s && ruleCoversButRefused(toolName, { command: s }, [rule], opts))
+  const why = segments.some((s) => programRunsProgram(s))
+    ? 'it can run another program'
+    : segments.some((s) => isUnsafeSegment(s, shell))
+      ? 'it uses shell syntax or an expansion OrgAI does not approve'
+      : 'another part of the command is not covered'
+  return `OrgAI: ${ruleForDisplay(rule)} does not cover this command (${why}); asking`
+}
+
+/** Reason when settings.json exists but could not be read: every shell call the hook did not allow is asked (M3). */
+export const CLI_SETTINGS_UNREADABLE_REASON = "OrgAI could not read this project's .claude/settings.json; asking"
+
+/**
+ * The PreToolUse 'ask' reason for a shell call the hook did not allow, from the rules the CLI itself holds: only
+ * `<project>/.claude/settings.json` (review M2; settings.local.json is not loaded under settingSources ['project'], and
+ * run and session grants never reach the CLI as shell rules). Review M1: the CLI's matcher honours shapes ruleMatch.ts
+ * does not model (wrapper and env stripping, `Bash(npm test*)`, `Bash(git * main)`, bare `Bash`), so any rule for the
+ * called tool makes every such call ask, unless ruleMatch itself accepts the command under one of those `Tool(...)`
+ * rules (the CLI's approval is then one OrgAI would give too, so undefined: the call goes on). An unreadable file asks
+ * for every call (M3). Undefined when the file holds no rule for the tool. A rule with a hidden character counts but is
+ * never named or matched (L1). Pure apart from its input.
+ */
+export function cliShellAskReason(toolName: string, input: unknown, settings: CliProjectSettings, opts?: MatchOptions): string | undefined {
+  if (!SHELL_TOOLS.has(toolName)) return undefined
+  if (settings.failed) return CLI_SETTINGS_UNREADABLE_REASON
+  const forTool = settings.rules.filter((r) => isRuleForTool(r, toolName))
+  if (!forTool.length) return undefined
+  const clean = forTool.filter((r) => !hiddenCharIn(r))
+  const scoped = clean.filter((r) => r.trim().startsWith(`${toolName}(`))
+  if (scoped.length && matchingRule(toolName, input, scoped, opts) !== undefined) return undefined
+  const specific = refusedShellReason(toolName, input, scoped, opts)
+  if (specific) return specific
+  const named = clean[0]
+  return named
+    ? `OrgAI: this project's .claude/settings.json allows ${ruleForDisplay(named)}, which OrgAI cannot check for this command; asking`
+    : `OrgAI: this project's .claude/settings.json has a ${toolName} rule OrgAI cannot check for this command; asking`
+}
+
+/**
+ * Options.additionalDirectories for a run: RuntimeContext.allowedDirectories() plus referenceDirectories() read now,
+ * deduped (both absent on trust-restricted runs = none; a restricted run gets none here either way). The CLI treats
+ * them like the cwd for read-only `cd` and acceptEdits (docs; unverified live); reference folders are kept read-only
+ * by the PreToolUse reference gate, which runs before any allow path, acceptEdits included.
+ */
+export function claudeAdditionalDirectories(ctx: Pick<RuntimeContext, 'allowedDirectories' | 'referenceDirectories' | 'run'>): string[] {
+  if (isTrustRestrictedRun(ctx.run)) return []
+  const out: string[] = []
+  for (const d of [...(ctx.allowedDirectories?.() ?? []), ...(ctx.referenceDirectories?.() ?? [])]) {
+    if (typeof d === 'string' && d.length > 0 && !out.includes(d)) out.push(d)
+  }
+  return out
+}
+
+/**
+ * What a 'project' scope may persist besides rules: the ctx hooks bound to ctx, each left out when absent. Restricted
+ * runs never get there (quickSafeDecision turns project into session) and RunManager leaves the hooks out on them.
+ */
+export function allowScopePersist(ctx: RuntimeContext): AllowScopePersist {
+  return {
+    ...(ctx.allowDirectories ? { allowDirectories: (dirs: string[]) => ctx.allowDirectories!(dirs) } : {}),
+    ...(ctx.acceptEditsForProject ? { acceptEditsForProject: () => ctx.acceptEditsForProject!() } : {}),
+    ...(ctx.saveProjectRules ? { saveProjectRules: (rules: string[]) => ctx.saveProjectRules!(rules) } : {})
+  }
+}
+
+/**
+ * Card suggestions for a run: a trust-restricted run (quick run, build session) never gets a setMode suggestion, so
+ * "allow for session" cannot switch it to acceptEdits and it stays ask-only.
+ */
+export function restrictedSafeSuggestions(ctx: Pick<RuntimeContext, 'run'>, suggestions: PermissionSuggestion[]): PermissionSuggestion[] {
+  return isTrustRestrictedRun(ctx.run) ? suggestions.filter((s) => s.type !== 'setMode') : suggestions
+}
+
+/**
+ * MCP servers whose tool cards may offer the server-level rule `mcp__<server>` (SuggestOptions.userMcpServers): the
+ * run's enabled servers by the name in their tool prefix (the mcpServers record key), minus every server an agent
+ * installed this run (review M3: those keep exact tool rules) and never the harness's own `orgai`.
+ */
+export function userMcpServerNames(live: readonly McpServerSpec[], agentInstalled: ReadonlySet<string>): string[] {
+  const out = new Set<string>()
+  for (const s of live) if (s.enabled && s.name !== ORGAI_MCP && !agentInstalled.has(s.name)) out.add(s.name)
+  return [...out]
 }
 
 /** A quick or build run's "project" scope becomes "session": nothing is ever written into the user's folder. */
@@ -446,6 +903,21 @@ export class HarnessCallerTracker {
 
   /** Resolve and consume the caller; undefined means the root (or unknown). Never throws. */
   resolve(toolName: string, meta?: unknown): string | undefined {
+    return this.take(toolName, meta).agentId
+  }
+
+  /**
+   * Like resolve, for a tool that must tell a real root call from an unknown caller: ROOT_AGENT_ID for a known root,
+   * the agent id for a known report, undefined for unknown. A tool_use id match is known. A first-in-first-out match is
+   * a guess: it counts only as the root, and only while no report is live (nothing else could have made the call).
+   */
+  resolveKnown(toolName: string, meta: unknown, reportsLive: boolean): string | undefined {
+    const { agentId, how } = this.take(toolName, meta)
+    if (how === 'id') return agentId ?? ROOT_ID
+    return how === 'queue' && agentId === undefined && !reportsLive ? ROOT_ID : undefined
+  }
+
+  private take(toolName: string, meta: unknown): { agentId?: string; how: 'id' | 'queue' | 'none' } {
     try {
       const id = toolUseIdFromMeta(meta)
       const queue = this.queues.get(toolName) ?? []
@@ -454,18 +926,22 @@ export class HarnessCallerTracker {
         this.byToolUse.delete(id)
         const i = queue.findIndex((e) => e.toolUseId === id)
         if (i >= 0) queue.splice(i, 1)
-        return agentId
+        return { agentId, how: 'id' }
       }
       const next = queue.shift()
-      if (next?.toolUseId) this.byToolUse.delete(next.toolUseId)
-      return next?.agentId
+      if (!next) return { how: 'none' }
+      if (next.toolUseId) this.byToolUse.delete(next.toolUseId)
+      return { agentId: next.agentId, how: 'queue' }
     } catch {
-      return undefined
+      return { how: 'none' }
     }
   }
 }
 
-/** Pull a tool_use id out of MCP request _meta (key name unverified at runtime). */
+/**
+ * Pull a tool_use id out of MCP request _meta. The bundled CLI 2.1.312 sets "claudecode/toolUseId" on tools/call (read
+ * from the binary's text); that it reaches an in-process SDK server is unverified at runtime.
+ */
 export function toolUseIdFromMeta(meta: unknown): string | undefined {
   if (!meta || typeof meta !== 'object') return undefined
   const m = meta as Record<string, unknown>
@@ -476,20 +952,31 @@ export function toolUseIdFromMeta(meta: unknown): string | undefined {
   return undefined
 }
 
+/** The in-process harness server inside built options (mcpServers.orgai). */
+function harnessServerOf(options: Options): McpSdkServerConfigWithInstance | undefined {
+  const s = options.mcpServers?.[ORGAI_MCP]
+  return s && s.type === 'sdk' ? (s as McpSdkServerConfigWithInstance) : undefined
+}
+
 /** The harness's tools as an in-process MCP server; the model sees them as mcp__orgai__<name>. */
-function buildHarnessServer(tools: HarnessTool[], callers: HarnessCallerTracker, instructions?: string): McpSdkServerConfigWithInstance {
+function buildHarnessServer(tools: HarnessTool[], callers: HarnessCallerTracker, reportsLive: () => boolean, instructions?: string): McpSdkServerConfigWithInstance {
   return createSdkMcpServer({
     name: ORGAI_MCP,
     version: '1.0.0',
     ...(instructions ? { instructions } : {}),
     tools: tools.map((t) =>
       tool(t.name, t.description, t.inputSchema.shape, async (args, extra) => {
-        const agentId = callers.resolve(ORGAI_TOOL_PREFIX + t.name, (extra as { _meta?: unknown } | undefined)?._meta)
+        const meta = (extra as { _meta?: unknown } | undefined)?._meta
+        // knowledge_recall dedupes per agent, so a guessed caller must read as unknown (no agentId), never as the root.
+        const agentId = t.name === KNOWLEDGE_RECALL_TOOL ? callers.resolveKnown(ORGAI_TOOL_PREFIX + t.name, meta, reportsLive()) : callers.resolve(ORGAI_TOOL_PREFIX + t.name, meta)
         return { content: [{ type: 'text' as const, text: await t.call(args, agentId ? { agentId } : undefined) }] }
       })
     )
   })
 }
+
+/** Appended to the deny text an agent gets for an edit under a reference folder (referenceFolderMessage stays as is). */
+export const REFERENCE_COPY_HINT = '; write a copy in the working folder instead'
 
 function permissionKey(toolName: string, input: unknown): string {
   try {
@@ -534,6 +1021,8 @@ export class ClaudeSession implements RuntimeSession {
   private isSetup: boolean
   /** Writing reports get their own git worktree. Only for work runs inside a git repository. */
   private isolation: boolean
+  /** Whether the running query was given settingSources ['project'] (set by buildOptions; undefined before the first build). */
+  private cliSettingsLoaded: boolean | undefined
   /** Agent tool_use ids that were given isolation:"worktree" -> the spawning agent's id (ROOT_ID for the orchestrator). */
   private isolatedSpawns = new Map<string, string>()
   /** Commits and merges isolated reports' branches; tells the orchestrator through notifyOrchestrator. */
@@ -564,6 +1053,8 @@ export class ClaudeSession implements RuntimeSession {
   private resumeCostBase: number | null = null
   // ---------- subscription usage ----------
   private authMode: AuthMode
+  /** The automatic plan guard's one "now active" log line was written (planGuardArmed). */
+  private planGuardAutoLogged = false
   private usage: UsageStatus | null = null
   private usageTimer: ReturnType<typeof setInterval> | null = null
   private usageUnavailableLogged = false
@@ -579,17 +1070,116 @@ export class ClaudeSession implements RuntimeSession {
   private authFailed = false
   /** Unattended execution: re-engages the orchestrator when a turn ends with plan steps left. */
   private continuation: ContinuationDriver
-  /** The run-scoped orgai skills plugin (work runs with granted skills); removed at stop and teardown. */
+  /** Root turn ends so far (every result, failures and auth failures included): RootTurnEnd.turnGen. */
+  private rootTurnGen = 0
+  /** A root turn is running (a message was pushed, or the query emitted init, and no result since). */
+  private turnInFlight = false
+  /** interrupt() was called during a root turn; the next root result is that turn's (interrupted) end. */
+  private interruptPending = false
+  /**
+   * A report finished and the SDK has not started the root turn that reads it: when (ms) the grace window started.
+   * Cleared by the next root init; restarted when a root turn ends with it still set (REPORT_HANDBACK_GRACE_MS).
+   */
+  private handBackSince?: number
+  /** The generation of the turn end held back in turnEndDeferred. */
+  private deferredTurnGen = 0
+  /** The run-scoped orgai skills plugin of the current query (work runs with granted skills). */
   private skillPlugin?: SkillPlugin
+  /**
+   * Every skill plugin this session built. A config change may rebuild the plugin for a restart: the replaced one is
+   * removed once a query using another has sent its init (retirePlugins), and all of them at stop and teardown.
+   */
+  private plugins = new Set<SkillPlugin>()
+  /** A plugin maybeRestartForMcp built and has not handed to a next query or dropped yet. */
+  private pluginInFlight?: SkillPlugin
+  /** Approved config changes waiting for a restart (pendingMcp holds the servers whose tools are announced). */
+  private pendingConfig: RestartConfig & { due: boolean } = { due: false, regranted: [], removed: [], skills: false }
+  /** Counts configChanged calls, so a restart built before a later change leaves that change pending. */
+  private configGen = 0
+  /** Server name -> mcpDefinitionKey as this session last saw it: a new or changed definition counts as installed this run. */
+  private knownDefs = new Map<string, string>()
+  /** The whitelists of the running query, and of the live config as of the latest config change. */
+  private queryGrants?: GrantSnapshot
+  private liveGrants?: GrantSnapshot
+  /** Built options -> their whitelists, read when that query starts. */
+  private optionGrants = new WeakMap<Options, GrantSnapshot>()
   /** Skill tool_use ids the gate allowed, until PostToolUse confirms the call ran (then skill.used is emitted). */
   private gatedSkillCalls = new Map<string, { agentId: string; skill: RunSkill }>()
+  /** The harness tools of this run, bound once (prepare()); a restart re-serves the same tools. */
+  private harnessTools: HarnessTool[] = []
+  /** Harness tool name -> audience, for the PreToolUse MCP gate. */
+  private harnessAudiences = new Map<string, HarnessToolAudience>()
+  /** The SDK session id from init; a restart resumes it. */
+  private sessionId?: string
+  /** Interrupted by the user (until their next message). An MCP restart never fires while held. */
+  private held = false
+  /** MCP servers attached with setMcpServers whose tools reach the agents only after a restart: name -> tool names. */
+  private pendingMcp = new Map<string, string[]>()
+  private restarting = false
+  private restartTimer: ReturnType<typeof setTimeout> | null = null
+  private restartCloseTimer: ReturnType<typeof setTimeout> | null = null
+  /** Options of the query that replaces the current one once it has ended (an MCP restart). */
+  private nextQuery?: NextQuery
+  /** Queries re-created for MCP restarts so far. */
+  private restarts = 0
+  /** The latest restart's servers and their tool names (a retried restart announces them again). */
+  private lastRestart: Omit<NextQuery, 'options' | 'dropped' | 'droppedSkills'> = { servers: [], tools: new Map() }
+  /** The latest restart (or its fallback) came from a config change: the pause wording names that. */
+  private restartForConfig = false
+  /** Restarted queries that failed before their init since the last one that started (reset at init). */
+  private restartFailures = 0
+  /** Servers left out of every later query after a restart with them could not start. */
+  private droppedMcp = new Set<string>()
+  /** The latest successful turn end was held back from the continuation driver because an MCP restart was due. */
+  private turnEndDeferred = false
+  /** Every server attached mid-run through addMcpServer (agent installs): server-level rules never approve them. */
+  private attachedMcp = new Set<string>()
+  /**
+   * Allow rules granted from a card for the rest of this session (session and project scope). Non-shell ones also go to
+   * the CLI as updatedPermissions (shell rules never do, review H1), but the PreToolUse hook matches them itself (ruleMatch.ts), so a per-segment shell grant or
+   * a server-level `mcp__<server>` grant holds whatever the CLI's own matcher does, and survives a restarted query.
+   */
+  private sessionRules = new Set<string>()
+  /**
+   * tool_use id (and permissionKey + agent as the fallback) -> the reference folder touch the PreToolUse hook found for
+   * a shell call it asked about (null folder: the list could not be read), so canUseTool's card names the folder even
+   * when the hook's cwd differs from the fallback cwd canUseTool has. Taken by canUseTool, dropped at PostToolUse
+   * (review L6: identical calls from different agents never take each other's finding). At most 100 entries.
+   */
+  private referenceTouches = new Map<string, { folder: string | null; alt?: string; id?: string }>()
+  /** permissionKey -> edit calls the PreToolUse hook refused under a reference folder (their refusal row is written). */
+  private refusedEdits = new Map<string, number>()
+  /** Open non-subagent tasks (task_started with another task_type) until their notification: restart blockers. */
+  private backgroundTasks = new Set<string>()
+  /**
+   * Harness messages pushed to the input, by kind. When an interrupt holds the run across a restart, unread plan nudges
+   * are dropped and other unread harness notices wait for the user's next message (dropHeldHarnessMessages).
+   */
+  private harnessMessages = new WeakMap<SDKUserMessage, { nudge: boolean; text: string; restart?: boolean }>()
+  /** Attach notices that arrived while the run was held: prepended to the user's next message. */
+  private heldNotices: string[] = []
+  /** The session ended paused (a restarted query could not start); emitEnd is skipped. */
+  private pausedEnd = false
+  /** The current query has emitted its init message. */
+  private queryInitSeen = false
+  /**
+   * Every message the current query may have read before its init (review N2): what was queued when it started plus
+   * everything pushed since. A restarted query that dies before init may have read some of them; recoverRestart
+   * re-pushes them into the fresh stream. Cleared at init, so nothing is delivered twice.
+   */
+  private preInit: SDKUserMessage[] = []
+  /** Cost of this run reported by earlier queries of the session (restarts), and the SDK total last seen. */
+  private priorQueriesCost = 0
+  private lastRunCost = 0
+  private lastSdkTotal = 0
+  private prevQuerySdkTotal = 0
 
   constructor(private ctx: RuntimeContext) {
     const root = ctx.roles.find((r) => r.reportsTo === null) ?? ctx.roles[0]
     if (!root) throw new Error('Project has no roles')
     this.root = root
     this.isSetup = isSetupLikeRun(ctx.run.kind)
-    this.isolation = !this.isSetup && ctx.project.isolateWriters !== false && isGitRepo(ctx.project.path)
+    this.isolation = !this.isSetup && isolateWritersOn(ctx.project) && isGitRepo(ctx.project.path)
     this.rolesBySlug = new Map(ctx.roles.map((r) => [r.slug, r]))
     // A proxy connection (LiteLLM) has no subscription plan windows: treat it like an API key.
     this.authMode = usesProxy(ctx) || ctx.project.provider.auth.kind === 'apiKey' ? 'apiKey' : 'unknown'
@@ -605,8 +1195,14 @@ export class ClaudeSession implements RuntimeSession {
     })
     this.continuation = new ContinuationDriver({
       kind: ctx.run.kind,
-      autoContinue: ctx.autoContinue,
-      maxAutoContinues: ctx.maxAutoContinues,
+      projectKind: projectKindOf(ctx.project),
+      // Getters: RunManager's setLive re-clamp of ctx reaches the live driver.
+      get autoContinue() {
+        return ctx.autoContinue
+      },
+      get maxAutoContinues() {
+        return ctx.maxAutoContinues
+      },
       delayMs: ctx.continuationDelayMs,
       getPlan: () => ctx.getPlan(),
       updatePlan: (plan) => ctx.updatePlan(plan),
@@ -620,11 +1216,12 @@ export class ClaudeSession implements RuntimeSession {
         return !!root && root.state !== 'idle' && root.state !== 'done'
       },
       nudge: (text, activity, summary) => {
-        this.notifyOrchestrator(text, activity, { summary })
+        this.notifyOrchestrator(text, activity, { summary, nudge: true })
         this.emit({ type: 'run.status', runId: this.ctx.run.id, status: 'running' })
       },
       log: (level, message) => this.log(level, message),
-      tellUser: (text) => this.transcript(ROOT_ID, { kind: 'system', text }, { source: 'harness' })
+      tellUser: (text) => this.transcript(ROOT_ID, { kind: 'system', text }, { source: 'harness' }),
+      onSettled: () => this.noteActivity('continuation')
     })
     this.finished = this.run()
   }
@@ -633,27 +1230,38 @@ export class ClaudeSession implements RuntimeSession {
 
   async send(text: string, images?: ImageAttachment[]): Promise<void> {
     this.continuation.userMessage()
+    this.held = false
     // After a window-cap stop, the orchestrator learns why with the user's next message, and the cap
     // measures afresh from here.
-    const note = this.pendingCapNote
+    // Attach notices that arrived while the run was held come with it too.
+    const notes = [this.pendingCapNote, ...this.heldNotices.splice(0)].filter((n): n is string => !!n)
+    const note = notes.length ? notes.join('\n\n') : null
     this.pendingCapNote = null
     if (this.capTripped) {
       this.capTripped = false
       this.share = null
     }
-    const composed = note ? (text ? `${note}\n\n---\n${text}` : note) : text
-    this.input.push({
-      type: 'user',
-      message: { role: 'user', content: userContent(composed, images) },
-      parent_tool_use_id: null
-    })
+    // The transcript entry is what the user typed; the knowledge block's own row follows it.
     this.transcript(ROOT_ID, userBlock(text, images))
+    const body = withUserMessageKnowledge(text, userMessageKnowledge(this.ctx, text, (m) => this.log('warn', m)))
+    const composed = note ? (body ? `${note}\n\n---\n${body}` : note) : body
+    this.pushInput(
+      {
+        type: 'user',
+        message: { role: 'user', content: userContent(composed, images) },
+        parent_tool_use_id: null
+      },
+      { userTurn: true }
+    )
     this.setState(ROOT_ID, 'thinking', 'Thinking…')
   }
 
   async interrupt(): Promise<void> {
-    // An interrupted turn waits for the user; no automatic continue until they reply.
+    // An interrupted turn waits for the user; no automatic continue (and no MCP restart) until they reply.
     this.continuation.hold()
+    this.held = true
+    // The result that ends this turn reports it as interrupted (RootTurnEnd.interrupted), never as a failed turn.
+    if (this.turnInFlight) this.interruptPending = true
     try {
       await this.q?.interrupt()
     } catch (e) {
@@ -667,12 +1275,39 @@ export class ClaudeSession implements RuntimeSession {
     this.notifyOrchestrator(peerMessageText(message), 'Reading a message from another run…', { transcript: false })
   }
 
+  /** Headless exec settlement view (cli-spec 6.2(2)). */
+  settlement(): SessionSettlement {
+    const root = this.agents.get(ROOT_ID)
+    const rootIdle = !this.turnInFlight && (!root || root.state === 'idle' || root.state === 'done' || root.state === 'error')
+    const quiescent =
+      !this.turnEndDeferred &&
+      !this.restartTimer &&
+      !this.restartCloseTimer &&
+      this.pendingMcp.size === 0 &&
+      !this.pendingConfig.due &&
+      !this.restarting &&
+      !this.nextQuery &&
+      this.backgroundTasks.size === 0 &&
+      this.heldNotices.length === 0 &&
+      this.input.peek().length === 0 &&
+      !this.integrator.hasPendingWork() &&
+      !this.handBackPending()
+    return {
+      rootTurnGen: this.rootTurnGen,
+      rootIdle,
+      continuationSettled: this.continuation.isSettledForTurn(this.rootTurnGen),
+      nudgeTurn1Sent: this.continuation.nudgeTurn1Sent,
+      quiescent
+    }
+  }
+
   async stop(): Promise<void> {
     this.continuation.dispose()
+    this.clearRestartTimers()
     this.stopUsagePolling()
     this.input.end()
     this.abort.abort()
-    this.skillPlugin?.cleanup()
+    this.cleanupPlugins()
   }
 
   // ---------- internals ----------
@@ -683,6 +1318,48 @@ export class ClaudeSession implements RuntimeSession {
 
   private log(level: 'info' | 'warn' | 'error', message: string): void {
     this.emit({ type: 'log', runId: this.ctx.run.id, level, message })
+  }
+
+  /** A finished report's result may still be on its way to the orchestrator (REPORT_HANDBACK_GRACE_MS). */
+  private handBackPending(): boolean {
+    if (this.handBackSince === undefined) return false
+    const grace = this.ctx.continuationDelayMs ?? REPORT_HANDBACK_GRACE_MS
+    if (Date.now() - this.handBackSince < grace) return true
+    this.handBackSince = undefined
+    return false
+  }
+
+  /** A report finished: the SDK will hand its result to the orchestrator in a turn of its own. */
+  private reportFinished(): void {
+    this.handBackSince = Date.now()
+    this.noteActivity('report')
+  }
+
+  /** Exec settlement: adapter-internal activity (a listener's throw never breaks the session). */
+  private noteActivity(reason: ExecActivityReason): void {
+    try {
+      this.ctx.noteActivity?.(reason)
+    } catch {
+      /* ignore */
+    }
+  }
+
+  /**
+   * A root turn ended (any outcome): count it and tell RunManager BEFORE run.status 'idle' is emitted (cli-spec
+   * 6.2(2)). Returns the new generation; the caller hands it to the continuation driver (turnEnded or skipTurn).
+   */
+  private reportRootTurnEnd(e: Omit<RootTurnEnd, 'turnGen'>): number {
+    this.turnInFlight = false
+    // A report that finished during this turn is handed back in the next one, which the SDK starts after this result.
+    if (this.handBackSince !== undefined) this.handBackSince = Date.now()
+    this.rootTurnGen += 1
+    const turnGen = this.rootTurnGen
+    try {
+      this.ctx.onRootTurnEnded?.({ turnGen, ...e })
+    } catch (err) {
+      this.log('warn', `Root turn end listener failed: ${(err as Error)?.message ?? String(err)}`)
+    }
+    return turnGen
   }
 
   private transcript(agentId: string, block: TranscriptBlock, opts?: { source?: 'harness' }): void {
@@ -797,13 +1474,33 @@ export class ClaudeSession implements RuntimeSession {
   }
 
   /** Queue a harness message for the orchestrator; it starts a new turn if the orchestrator is idle. */
-  private notifyOrchestrator(text: string, activity = 'Integrating a report…', opts: { transcript?: boolean; summary?: string } = {}): void {
-    this.input.push({ type: 'user', message: { role: 'user', content: text }, parent_tool_use_id: null })
+  private notifyOrchestrator(
+    text: string,
+    activity = 'Integrating a report…',
+    opts: { transcript?: boolean; summary?: string; nudge?: boolean; restart?: boolean } = {}
+  ): void {
+    const message: SDKUserMessage = { type: 'user', message: { role: 'user', content: text }, parent_tool_use_id: null }
+    this.harnessMessages.set(message, { nudge: !!opts.nudge, text, ...(opts.restart ? { restart: true } : {}) })
+    this.pushInput(message)
+    this.noteActivity('message')
     if (opts.transcript !== false) {
       this.transcript(ROOT_ID, { kind: 'system', text: opts.summary ?? text, ...(opts.summary ? { detail: text } : {}) }, { source: 'harness' })
     }
     const root = this.agents.get(ROOT_ID)
     if (root && (root.state === 'idle' || root.state === 'done')) this.setState(ROOT_ID, 'thinking', activity)
+  }
+
+  /**
+   * Push to the current input stream; before the query's init the message is also kept for a restart replay (N2).
+   * Only a user's message marks a root turn in flight at once (review M4): a harness notice counts as a turn once the
+   * query's init for it arrives, so a notice the SDK drops leaves turnInFlight clear (an interrupt then is not taken
+   * for that turn's end). The root shows 'thinking' meanwhile; RunManager's stall watchdog ceiling
+   * (EXEC_STALL_BUSY_ROUNDS) ends an exec run that stays busy with no activity.
+   */
+  private pushInput(message: SDKUserMessage, opts: { userTurn?: boolean } = {}): void {
+    if (opts.userTurn) this.turnInFlight = true
+    this.input.push(message)
+    if (!this.queryInitSeen) this.preInit.push(message)
   }
 
   /** An agent called SendMessage: draw it on the canvas and keep a copy in the sender's transcript. */
@@ -872,6 +1569,24 @@ export class ClaudeSession implements RuntimeSession {
     this.usage = usage
     this.emit({ type: 'usage.status', runId: this.ctx.run.id, usage })
     this.checkWindowShare()
+    this.planGuardArmed()
+  }
+
+  /**
+   * Whether the plan guard may steer spawns in this run: never on setup runs, proxies or API keys; otherwise
+   * planGuardOf / planGuardEngaged over the latest usage report (probe merged with rate_limit_event). Under 'auto'
+   * the first time it engages writes one run log line.
+   */
+  private planGuardArmed(): boolean {
+    if (this.isSetup || usesProxy(this.ctx) || this.authMode === 'apiKey') return false
+    const mode = planGuardOf(this.ctx.project)
+    if (!planGuardEngaged(mode, this.usage)) return false
+    if (mode === 'auto' && !this.planGuardAutoLogged) {
+      this.planGuardAutoLogged = true
+      const threshold = this.ctx.opusGuardThreshold ?? DEFAULT_OPUS_GUARD
+      this.log('info', `Plan guard is automatic and now active: this plan reports a weekly limit, so new deep and top reports move to the everyday tier at ${threshold}% of it.`)
+    }
+    return true
   }
 
   /** project.maxWindowShare: interrupt the run once it has used that many points of the five-hour window. */
@@ -908,7 +1623,7 @@ export class ClaudeSession implements RuntimeSession {
 
   /** The everyday model to spawn this report on instead of its deep/top one while the weekly window is near its limit, if any. */
   private steerToEveryday(target: Role | undefined, toolInput: Record<string, unknown>): { from: string; to: string } | undefined {
-    if (this.isSetup || usesProxy(this.ctx) || !preferEverydayNearLimit(this.ctx.project) || this.authMode === 'apiKey') return undefined
+    if (!this.planGuardArmed()) return undefined
     const explicit = typeof toolInput.model === 'string' && validModelId(toolInput.model) ? toolInput.model : undefined
     let model = explicit ?? (target?.model && validModelId(target.model) ? target.model : 'inherit')
     if (model === 'inherit') model = this.root.model && this.root.model !== 'inherit' ? this.root.model : (this.agents.get(ROOT_ID)?.model ?? '')
@@ -920,6 +1635,154 @@ export class ClaudeSession implements RuntimeSession {
     return { from: model || 'its configured model', to }
   }
 
+  /** The run's reference folders now (live): undefined when the run has no list, 'unreadable' when reading it throws. */
+  private referenceList(): string[] | 'unreadable' | undefined {
+    if (!this.ctx.referenceDirectories) return undefined
+    try {
+      return this.ctx.referenceDirectories().filter((r) => typeof r === 'string' && r.length > 0)
+    } catch (e) {
+      this.log('warn', `Could not read the run's reference folders: ${(e as Error).message}`)
+      return 'unreadable'
+    }
+  }
+
+  /**
+   * matchOptionsFor(ctx) now, or null when a folder list (allowed, reference, protected) cannot be read (review L1):
+   * the hook then asks for a shell call and gives other tools no rule allow, and canUseTool's card has no suggestions
+   * (shell: an allow grants this call only). Never a rejected promise.
+   */
+  private safeMatchOptions(toolName: string): MatchOptions | null {
+    try {
+      return matchOptionsFor(this.ctx)
+    } catch (e) {
+      this.log('warn', `Could not read the run's folders for ${toolName}, so it needs your approval: ${(e as Error).message}`)
+      return null
+    }
+  }
+
+  /**
+   * Where the hook stashes a reference finding: the tool_use id when the SDK gives one (canUseTool's
+   * permOptions.toolUseID is the same id; sdk.d.ts 0.3.312 CanUseTool options, typings only), else the call's
+   * permissionKey plus the agent.
+   */
+  private referenceTouchKey(permKey: string, agentId: string): string {
+    return `key\u0000${permKey}\u0000${agentId}`
+  }
+
+  /** Stash a hook finding for canUseTool, under the tool_use id and the key + agent fallback (newest 100 calls kept). */
+  private stashReferenceTouch(toolUseId: string | undefined, permKey: string, agentId: string, folder: string | null): void {
+    const alt = this.referenceTouchKey(permKey, agentId)
+    const id = typeof toolUseId === 'string' && toolUseId ? `id\u0000${toolUseId}` : undefined
+    for (const k of [id, alt]) {
+      if (!k) continue
+      this.referenceTouches.delete(k)
+      while (this.referenceTouches.size >= 100) this.referenceTouches.delete(this.referenceTouches.keys().next().value!)
+      this.referenceTouches.set(k, { folder, ...(k === id ? { alt } : id ? { id } : {}) })
+    }
+  }
+
+  /** Take (and drop) the stashed finding for a call: by tool_use id when given, else by key + agent. */
+  private takeReferenceTouch(toolUseId: string | undefined, permKey: string, agentId: string): { folder: string | null } | undefined {
+    const k = typeof toolUseId === 'string' && toolUseId ? `id\u0000${toolUseId}` : this.referenceTouchKey(permKey, agentId)
+    const hit = this.referenceTouches.get(k)
+    if (!hit) return undefined
+    this.referenceTouches.delete(k)
+    if (hit.alt) this.referenceTouches.delete(hit.alt)
+    if (hit.id) this.referenceTouches.delete(hit.id)
+    return { folder: hit.folder }
+  }
+
+  /** The working folder of an agent when the provider does not say: its worktree, else the project folder. */
+  private agentCwd(agentId: string): string {
+    return this.integrator.worktreeOf(agentId)?.path ?? this.ctx.project.path
+  }
+
+  /** Set once the "self-control gate skipped" line was logged for this run. */
+  private selfControlSkipLogged = false
+
+  /**
+   * The pre-mode self-control gate (selfControlGate.ts, cli-spec 3.4(1)): the gate's denial (SELF_CONTROL_DENIAL_MESSAGE,
+   * or SELF_CONTROL_UNCHECKED_MESSAGE for a command too long to check) when this call runs the orgai command or opens
+   * OrgAI's control files, else null. On a hit it logs a warning and writes one harness
+   * row on the calling agent. An empty or unreadable protected list denies shell commands (review M2: they cannot be
+   * checked against the control files) and leaves file tools to the normal flow; logged once per run.
+   */
+  private selfControlDenial(agentId: string, toolName: string, toolInput: unknown, cwd: string): string | null {
+    // A context without the hook (tests, drafts) skips the path check quietly.
+    const { paths, unavailable } = readControlProtectedPaths(this.ctx.controlProtectedPaths?.bind(this.ctx))
+    if (unavailable && !this.selfControlSkipLogged) {
+      this.selfControlSkipLogged = true
+      this.log('warn', SELF_CONTROL_PATHS_UNAVAILABLE_LOG)
+    }
+    const denial = checkSelfControlDenial(toolName, toolInput, {
+      protectedPaths: paths,
+      pathsUnavailable: unavailable,
+      cwd,
+      shell: toolName === 'PowerShell' ? 'powershell' : 'bash'
+    })
+    if (!denial) return null
+    this.log('warn', selfControlLogLine(toolName, this.agents.get(agentId)?.name ?? agentId))
+    this.transcript(agentId, { kind: 'system', text: SELF_CONTROL_REFUSAL_TEXT }, { source: 'harness' })
+    return denial
+  }
+
+  /**
+   * referenceDirectories.ts referenceEditDenial for an edit tool call, with the deny text the agent gets (plus
+   * REFERENCE_COPY_HINT) and the harness transcript row (referenceRefusalEntry). An unreadable list refuses an edit tool.
+   */
+  private referenceEditRefusal(toolName: string, toolInput: unknown, cwd: string): { reason: string; entry: { text: string; detail: string } } | null {
+    if (!REFERENCE_EDIT_TOOLS.has(toolName)) return null
+    const refs = this.referenceList()
+    if (refs === undefined) return null
+    if (refs === 'unreadable') {
+      return { reason: 'OrgAI could not check the reference folders, so this edit was refused. Try again shortly.', entry: referenceRefusalEntry(undefined, 'a reference folder') }
+    }
+    const denial = referenceEditDenial(toolName, toolInput, refs, cwd)
+    if (!denial) return null
+    const target = editTargetOf(toolName, toolInput)
+    const hit = referenceFolderOf(target, refs, cwd)
+    return { reason: `${denial}${REFERENCE_COPY_HINT}`, entry: referenceRefusalEntry(hit ? target : undefined, hit ?? refs[0] ?? 'a reference folder') }
+  }
+
+  /** The one harness row for a refused edit under a reference folder, on the calling agent. */
+  private referenceRefusalRow(agentId: string, entry: { text: string; detail: string }): void {
+    this.transcript(agentId, { kind: 'system', ...entry }, { source: 'harness' })
+  }
+
+  /**
+   * The reference folder a shell call touches from `cwd` (commandReferenceTouch), `{ folder: null }` when the list cannot
+   * be read (the call is asked), null when it touches none or the run has no reference folders.
+   */
+  private shellReferenceTouch(toolName: string, toolInput: Record<string, unknown>, cwd: string): { folder: string | null; how?: 'names' | 'runs-in' } | null {
+    if (!SHELL_TOOLS.has(toolName)) return null
+    const refs = this.referenceList()
+    if (refs === undefined) return null
+    if (refs === 'unreadable') return { folder: null }
+    if (!refs.length || typeof toolInput.command !== 'string') return null
+    return commandReferenceTouch(toolInput.command, cwd, refs, { shell: toolName === 'PowerShell' ? 'powershell' : 'bash' })
+  }
+
+  /**
+   * For canUseTool's card: the reference folder a shell, Read, Glob or Grep call touches. The hook's finding for this
+   * call (its cwd is the real one) wins; otherwise recomputed from the agent's worktree or the project folder.
+   * `{ folder: null }`: the list could not be read. null: no reference folder involved.
+   */
+  private cardReferenceTouch(
+    call: { key: string; agentId: string; toolUseId?: string },
+    toolName: string,
+    input: Record<string, unknown>,
+    cwd: string
+  ): { folder: string | null } | null {
+    const stashed = this.takeReferenceTouch(call.toolUseId, call.key, call.agentId)
+    if (stashed) return stashed
+    if (!SHELL_TOOLS.has(toolName) && toolName !== 'Read' && toolName !== 'Glob' && toolName !== 'Grep') return null
+    const refs = this.referenceList()
+    if (refs === undefined || (Array.isArray(refs) && !refs.length)) return null
+    if (refs === 'unreadable') return { folder: null }
+    const folder = referenceTouchOf(toolName, input, refs, cwd, { shell: toolName === 'PowerShell' ? 'powershell' : 'bash' })
+    return folder ? { folder } : null
+  }
+
   private buildHooks(): Options['hooks'] {
     const hookAllow = (reason: string): HookJSONOutput => ({
       hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow', permissionDecisionReason: reason }
@@ -927,16 +1790,54 @@ export class ClaudeSession implements RuntimeSession {
     const preToolUse: HookCallback = async (raw) => {
       const input = raw as PreToolUseHookInput
       const agentId = input.agent_id ?? ROOT_ID
+      // Self-control gate first (cli-spec 3.4(1)): the orgai command and OrgAI's control files are denied before every
+      // other check, rule, hook-allow path and permission mode (bypassPermissions included).
+      const selfCwd = typeof input.cwd === 'string' && input.cwd ? input.cwd : this.agentCwd(agentId)
+      const selfDenial = this.selfControlDenial(agentId, input.tool_name, input.tool_input, selfCwd)
+      if (selfDenial) return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: selfDenial } }
       // Build sessions never write their own .claude settings (hooks, rules): denied before any allow rule or hook-allow path.
       const configDenial = buildConfigWriteDenial(this.ctx.run, input.tool_name, input.tool_input)
       if (configDenial) {
         this.log('warn', `Blocked ${input.tool_name} by ${this.agents.get(agentId)?.name ?? agentId}: ${configDenial}`)
         return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: configDenial } }
       }
+      // Reference folders are read-only: edit tools under one (or naming no path while any exist) are denied before
+      // any allow path (saved rules, acceptEdits, auto). The list is live, read at call time; relative paths resolve
+      // against the calling agent's cwd (a worktree for isolated agents), else the project folder.
+      // The refusal also writes one harness row on the calling agent ("Refused: <file> is in a reference folder (read
+      // only)"), counted per call so canUseTool's backstop never writes it twice.
+      const hookCwd = typeof input.cwd === 'string' && input.cwd ? input.cwd : this.agentCwd(agentId)
+      const editRefusal = this.referenceEditRefusal(input.tool_name, input.tool_input, hookCwd)
+      if (editRefusal) {
+        this.log('warn', `Blocked ${input.tool_name} by ${this.agents.get(agentId)?.name ?? agentId}: ${editRefusal.reason}`)
+        const refusedKey = permissionKey(input.tool_name, (input.tool_input ?? {}) as Record<string, unknown>)
+        // A hook deny normally never reaches canUseTool, so entries are kept only for the newest calls.
+        if (this.refusedEdits.size >= 100) this.refusedEdits.delete(this.refusedEdits.keys().next().value!)
+        this.refusedEdits.set(refusedKey, (this.refusedEdits.get(refusedKey) ?? 0) + 1)
+        this.referenceRefusalRow(agentId, editRefusal.entry)
+        return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: editRefusal.reason } }
+      }
+      // Per-role MCP grants on every MCP call, from the LIVE server list (run-scoped installs and the install card's
+      // roles included), before any rule or hook-allow path. Whitelists alone do not restrict: def.mcpServers grants
+      // nothing exclusive (scripts/smoke-mcp-midrun.mjs c), and a restart widens definitions. The MCP resource tools
+      // are gated on input.server. Only MCP calls read the live list; if it cannot be read the call is denied.
+      const mcpDenial = isMcpGated(input.tool_name) ? this.mcpGateDenial(input) : undefined
+      if (mcpDenial) {
+        this.log('warn', `Blocked ${input.tool_name} by ${this.agents.get(agentId)?.name ?? agentId}: ${mcpDenial}`)
+        return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: mcpDenial } }
+      }
       // The Skill gate comes first: no saved rule, auto-allow or later path may let an ungranted skill through.
+      // It reads the LIVE grants (ctx.skills()), so an ungrant or a removal approved mid-run applies at the next call.
       if (input.tool_name === 'Skill') {
-        const roleId = input.agent_id ? (this.agents.get(agentId)?.roleId ?? this.rolesBySlug.get(input.agent_type ?? '')?.id ?? '') : this.root.id
-        const verdict = skillGate(input.tool_input, roleId, this.skillPlugin?.names ?? new Map())
+        let names: Map<string, RunSkill>
+        try {
+          names = this.skillNamesFor(this.skillPlugin)
+        } catch (e) {
+          const reason = 'OrgAI could not check which skills this agent may use, so the call was refused. Try again shortly.'
+          this.log('warn', `Could not read the run's skills for a Skill call: ${(e as Error).message}`)
+          return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } }
+        }
+        const verdict = skillGate(input.tool_input, this.callerRole(input)?.id ?? '', names)
         if (!verdict.allow) {
           this.log('warn', `Blocked Skill call by ${this.agents.get(agentId)?.name ?? agentId}: ${verdict.reason}`)
           return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: verdict.reason } }
@@ -993,13 +1894,18 @@ export class ClaudeSession implements RuntimeSession {
           this.isolatedSpawns.set(input.tool_use_id, agentId)
           updates.isolation = 'worktree'
         }
-        // Near the weekly limit, new deep/top reports run on the everyday tier (preferEverydayNearLimit).
+        // Near the weekly limit, new deep/top reports run on the everyday tier (plan guard: planGuardOf / planGuardEngaged).
         const steer = this.steerToEveryday(target, toolInput)
         if (steer && validModelId(steer.to)) {
           updates.model = steer.to
           dropModel = false
           this.log('info', `Spawning ${target?.name ?? requested} on the everyday tier (${steer.to}) instead of ${steer.from}: the weekly usage window is near its limit.`)
         }
+        // Known items named in the brief go beside it. The new agent's id is unknown until task_started and the block
+        // must be in this input, so no id is passed: no dedupe, and the row lands on the root (RuntimeContext.knowledgeContext).
+        const brief = typeof toolInput.prompt === 'string' ? toolInput.prompt : ''
+        const knownItems = spawnKnowledge(this.ctx, brief, undefined, (m) => this.log('warn', m))
+        if (knownItems) updates.prompt = withSpawnKnowledge(brief, knownItems)
         if (!Object.keys(updates).length && !dropModel) return {}
         const updated: Record<string, unknown> = { ...toolInput, ...updates }
         if (dropModel) delete updated.model
@@ -1024,10 +1930,56 @@ export class ClaudeSession implements RuntimeSession {
       // scripts/smoke-permission-hook.mjs). The harness's own tools carry their approval inside their round-trip,
       // and rules granted while the run is live (request_permission_rules, the rules panel) apply without a restart.
       if (harness) return hookAllow('OrgAI harness tool')
-      const rules = this.ctx.allowedRules?.()
-      if (rules?.length) {
-        const hit = matchingRule(input.tool_name, toolInput, rules)
-        if (hit) return hookAllow(`OrgAI: allowed by saved rule ${hit}`)
+      // Reference folders (H1): a shell command that runs inside one or names a path at, under or above one never takes
+      // an allow path (saved, run or session rules, the CLI's settings rules, acceptEdits / auto pre-approval): it is
+      // asked, and canUseTool's card names the folder with no suggestions. The cwd is the hook's (the CLI's current
+      // folder for this agent), else the agent's worktree, else the project. An unreadable list asks too.
+      if (SHELL_TOOLS.has(input.tool_name)) {
+        const touch = this.shellReferenceTouch(input.tool_name, toolInput, hookCwd)
+        if (touch) {
+          this.stashReferenceTouch(input.tool_use_id, key, agentId, touch.folder)
+          const reason = touch.folder
+            ? referenceCommandMessage(touch.folder, touch.how ?? 'names')
+            : 'OrgAI could not check the reference folders, so this command needs your approval.'
+          this.log('info', `Asking about ${input.tool_name} by ${this.agents.get(agentId)?.name ?? agentId}: ${reason}`)
+          return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask', permissionDecisionReason: reason } }
+        }
+      }
+      const baseOpts = this.safeMatchOptions(input.tool_name)
+      if (!baseOpts) {
+        // The folder lists could not be read (review L1): a shell call is asked (its card names no folder and an allow
+        // grants this call only, like an unreadable reference list); other tools get no rule allow and go to the
+        // normal permission flow.
+        if (!SHELL_TOOLS.has(input.tool_name)) return {}
+        this.stashReferenceTouch(input.tool_use_id, key, agentId, null)
+        return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask', permissionDecisionReason: 'OrgAI could not check the run\'s folders, so this command needs your approval.' } }
+      }
+      const matchOpts: MatchOptions = { ...baseOpts, effectiveCwd: hookCwd }
+      // Matched even with no rules: a command made only of `cd` segments into the project or an allowed directory
+      // runs nothing and needs no rule (ruleMatch.ts FREE_CD_LABEL).
+      // Allow sources: RunManager's allowedRules (saved settings.local.json rules plus run grants; the run's grants only
+      // on a trust-restricted run) and this session's card grants. Saved rules are read directly only when a context has
+      // no allowedRules (review L4). Shell rules never reach the CLI (cliAllowedTools, toSdkSessionUpdates), so this is
+      // their only allow path.
+      const rules = [...new Set([...(this.ctx.allowedRules ? this.ctx.allowedRules() : claudeSavedRules(this.ctx)), ...this.sessionRules])]
+      // A server an agent installed this run is never approved wholesale by a server-level rule (M3): its calls
+      // ask per call unless an exact tool rule covers them.
+      const usable = rules.length && input.tool_name.startsWith('mcp__') ? withoutServerRules(rules, this.agentInstalledMcp()) : rules
+      const hit = matchingRule(input.tool_name, toolInput, usable, matchOpts)
+      if (hit) return hookAllow(`OrgAI: allowed by saved rule ${hit}`)
+      // Reviewer-4 H-A and its follow-up review (H1, M1-M3): the only shell allow rules the CLI still holds are those of
+      // <project>/.claude/settings.json, and its matcher approves shapes ruleMatch refuses (`timeout 5 npm test
+      // --script-shell=calc` under `Bash(npm test:*)`). When that file has a rule for this tool (or cannot be read), a
+      // call the hook did not allow is asked, never left to the CLI's own match. A refused command under a saved, run or
+      // session rule gets {}: the mode, the classifier and canUseTool decide, since the CLI holds none of those.
+      // Per the Claude Code hooks docs, PreToolUse 'ask' prompts the user; that 'ask' beats a settings allow rule is
+      // UNVERIFIED live (scripts/smoke-permission-hook.mjs could check it; it spends tokens and needs the user's consent).
+      if (SHELL_TOOLS.has(input.tool_name)) {
+        const reason = cliShellAskReason(input.tool_name, toolInput, cliProjectSettings(this.ctx, this.cliSettingsLoaded), matchOpts)
+        if (reason) {
+          this.log('info', reason)
+          return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask', permissionDecisionReason: reason } }
+        }
       }
       return {}
     }
@@ -1041,7 +1993,10 @@ export class ClaudeSession implements RuntimeSession {
         this.emit({ type: 'skill.used', runId: this.ctx.run.id, agentId: gated.agentId, skillId: gated.skill.id, name: gated.skill.name, at: Date.now() })
       }
       // Calls that never needed a permission prompt still leave an issuer queued; drop it now.
-      this.takeIssuer(permissionKey(input.tool_name, (input.tool_input ?? {}) as Record<string, unknown>), agentId)
+      const doneKey = permissionKey(input.tool_name, (input.tool_input ?? {}) as Record<string, unknown>)
+      this.takeIssuer(doneKey, agentId)
+      this.takeReferenceTouch(input.tool_use_id, doneKey, agentId)
+      this.takeReferenceTouch(undefined, doneKey, agentId)
       const archPath = this.ctx.project.setup?.architecturePath
       if (!this.isSetup && archPath && (input.tool_name === 'Edit' || input.tool_name === 'Write')) {
         const filePath = ((input.tool_input ?? {}) as Record<string, unknown>).file_path
@@ -1064,6 +2019,7 @@ export class ClaudeSession implements RuntimeSession {
       const input = raw as SubagentStartHookInput
       const role = this.rolesBySlug.get(input.agent_type)
       const existing = this.agents.get(input.agent_id)
+      if (!existing) this.noteActivity('subagent')
       this.upsert({
         ...(existing ?? this.ensureAgent(input.agent_id, { roleSlug: input.agent_type, parentId: ROOT_ID })),
         roleId: role?.id ?? null,
@@ -1084,6 +2040,7 @@ export class ClaudeSession implements RuntimeSession {
       a.endedAt = Date.now()
       this.partial.clear(a.id, true)
       this.upsert(a)
+      this.reportFinished()
       void this.integrator.onSubagentFinished(a.id)
       return {}
     }
@@ -1108,12 +2065,15 @@ export class ClaudeSession implements RuntimeSession {
    * the earlier run's cost, the SDK evidently did not carry the old total, so nothing is subtracted.
    */
   private runCost(sdkTotal: number): number {
-    if (!this.ctx.resumeSessionId) return sdkTotal
     if (this.resumeCostBase === null) {
-      const base = this.ctx.resumeBaseCostUsd ?? 0
+      // A restarted query resumes this run's own session: whether its total carries the earlier query's is unverified,
+      // so the earlier total is subtracted only when the new one is at least that large.
+      const base = this.restarts > 0 ? this.prevQuerySdkTotal : this.ctx.resumeSessionId ? (this.ctx.resumeBaseCostUsd ?? 0) : 0
       this.resumeCostBase = sdkTotal >= base ? base : 0
     }
-    return Math.max(0, sdkTotal - this.resumeCostBase)
+    this.lastSdkTotal = sdkTotal
+    this.lastRunCost = this.priorQueriesCost + Math.max(0, sdkTotal - this.resumeCostBase)
+    return this.lastRunCost
   }
 
   private noteSecrets(resolved: ResolvedMcpServer[]): void {
@@ -1121,18 +2081,85 @@ export class ClaudeSession implements RuntimeSession {
   }
 
   /** Every server of the session: the harness's own plus the resolved MCP servers. */
-  private mcpRecord(resolved: ResolvedMcpServer[]): Record<string, McpServerConfig> {
+  private mcpRecord(resolved: ResolvedMcpServer[], harnessServer = this.harnessServer): Record<string, McpServerConfig> {
     const record: Record<string, McpServerConfig> = toClaudeMcpServers(resolved)
-    if (this.harnessServer) record[ORGAI_MCP] = this.harnessServer
+    if (harnessServer) record[ORGAI_MCP] = harnessServer
     return record
   }
 
+  /** The run's MCP servers with secrets, minus any a restarted query could not start with (droppedMcp). */
+  private async resolvedServers(): Promise<ResolvedMcpServer[]> {
+    const all = (await this.ctx.resolvedMcpServers?.()) ?? []
+    return this.droppedMcp.size ? all.filter((r) => !this.droppedMcp.has(r.spec.name)) : all
+  }
+
+  /** The run's MCP servers as they are now (project servers plus run-scoped installs, with the card's roles). */
+  private liveMcpServers(): McpServerSpec[] {
+    return this.ctx.mcpServers ? this.ctx.mcpServers() : (this.ctx.project.mcpServers ?? [])
+  }
+
   /**
-   * An install was approved mid-run: attach the server to the live session. setMcpServers replaces the
-   * dynamic set, so the whole record is sent again. Resolves with the prefix the agent calls the tools by.
+   * The role of the agent behind a hook call, for the MCP gate and the Skill gate alike: the root when there is no
+   * agent_id; else the hook's own agent_type; else the role recorded for that agent id (task_started / SubagentStart).
+   * agent_type comes first because the CLI states it on this very call for the agent making it, and it is the
+   * subagent_type the spawn gate approved. The record is second-hand: ensureAgent() creates an entry with the guessed
+   * slug 'general-purpose' when a message arrives before task_started, so it may be a guess until task_started lands
+   * (stream messages and hook calls are not ordered against each other). Neither value comes from the model.
    */
-  private async addMcpServer(spec: McpServerSpec): Promise<string> {
-    const resolved = (await this.ctx.resolvedMcpServers?.()) ?? []
+  private callerRole(input: { agent_id?: string; agent_type?: string }): Role | undefined {
+    if (!input.agent_id) return this.root
+    const byType = input.agent_type ? this.rolesBySlug.get(input.agent_type) : undefined
+    if (byType) return byType
+    const roleId = this.agents.get(input.agent_id)?.roleId
+    return roleId ? this.ctx.roles.find((r) => r.id === roleId) : undefined
+  }
+
+  /** The MCP gate for one call (mcp__ tools and the resource tools). Fails closed if the live server list cannot be read. */
+  private mcpGateDenial(input: PreToolUseHookInput): string | undefined {
+    try {
+      return mcpCallDenial(input.tool_name, { role: this.callerRole(input), isRoot: !input.agent_id }, this.liveMcpServers(), this.harnessAudiences, input.tool_input)
+    } catch (e) {
+      this.log('warn', `Could not read the run's MCP servers for ${input.tool_name}: ${(e as Error).message}`)
+      return 'OrgAI could not check which MCP servers this agent may use, so the call was refused. Try again shortly.'
+    }
+  }
+
+  /** Match options plus the user's MCP servers (server-level card rules) for chooseSuggestions. */
+  private suggestOptions(toolName: string, effectiveCwd?: string): SuggestOptions | null {
+    const base = this.safeMatchOptions(toolName)
+    if (!base) return null
+    let live: McpServerSpec[] = []
+    try {
+      live = this.liveMcpServers()
+    } catch {
+      /* no server-level offers */
+    }
+    return { ...base, ...(effectiveCwd ? { effectiveCwd } : {}), userMcpServers: userMcpServerNames(live, this.agentInstalledMcp()) }
+  }
+
+  /** Servers agents installed during this run (attached mid-run, or run-scoped 'agent' installs): no server-level rule approves them. */
+  private agentInstalledMcp(): Set<string> {
+    let live: McpServerSpec[] = []
+    try {
+      live = this.liveMcpServers()
+    } catch {
+      /* the attached set alone */
+    }
+    return agentInstalledServers(live, this.ctx.project.mcpServers, this.attachedMcp)
+  }
+
+  /**
+   * An install was approved mid-run. setMcpServers attaches the server to the live session at once (connection
+   * errors surface here, and mcpServerStatus names its tools), but AgentDefinition.tools whitelists are exact and
+   * fixed for the query (scripts/smoke-mcp-midrun.mjs a, b), so no whitelisted agent can call the tools yet. The
+   * session is therefore re-created with resume and widened definitions once the orchestrator's turn has ended and
+   * no report is running (maybeRestartForMcp), and the orchestrator is told then: availability 'after-idle'.
+   */
+  private async addMcpServer(spec: McpServerSpec): Promise<McpAttachResult> {
+    // Every server an agent asked for counts as installed this run, attached or not (server-level rules skip it).
+    this.attachedMcp.add(spec.name)
+    this.knownDefs.set(spec.name, mcpDefinitionKey(spec))
+    const resolved = await this.resolvedServers()
     this.noteSecrets(resolved)
     if (!resolved.some((r) => r.spec.name === spec.name)) throw new Error(`MCP server "${spec.name}" is not configured for this run.`)
     if (!this.q) throw new Error('The session is not running yet.')
@@ -1144,13 +2171,620 @@ export class ClaudeSession implements RuntimeSession {
     }
     const error = result.errors?.[spec.name]
     if (error) throw new Error(redactSecrets(error, this.secrets))
-    return `mcp__${spec.name}__`
+    const tools = await this.serverTools(spec.name, MCP_STATUS_WAIT_MS)
+    this.pendingMcp.set(spec.name, tools)
+    this.log('info', `MCP server ${spec.name} is connected; the agents get its tools once the orchestrator's turn ends and no report is running (the session is resumed with the new tools).`)
+    return { prefix: `mcp__${spec.name}__`, availability: 'after-idle', ...(tools.length ? { tools } : {}) }
   }
 
-  private async buildOptions(): Promise<Options> {
-    const { project } = this.ctx
-    const env = buildEnv(this.ctx)
+  /**
+   * An approved propose_mcp_servers / propose_skills changed this run's project; ctx already returns the new config.
+   * - MCP: setMcpServers with the live resolved list at once (an added or redefined server connects, a removed one is
+   *   dropped from the session's dynamic servers), and the tool names of new servers are read when cheap. A removed
+   *   server leaves every attach record (pendingMcp, a pending regrant, the latest restart, droppedMcp, attachedMcp), so
+   *   no restart or fallback brings it back. A new or redefined server counts as installed this run (no saved
+   *   server-level rule approves it, as for request_mcp_install).
+   * - Skills: the Skill gate reads the live grants on every call, so an ungrant or a removal needs nothing more. A skill
+   *   the run plugin does not hold (or whose files changed) needs a rebuilt plugin, i.e. a restart.
+   * - Whitelists: the live agent definitions are compared with the running query's (grantsGained). A role that gains a
+   *   tool rule, an MCP server or the Skill tool needs the query re-created at idle (the same restart as addMcpServer:
+   *   idle detection, the withheld turn end, the budget floor, retries, fallback and pause).
+   * Answers 'after-idle' when this change gains something only a restart gives (the orchestrator is told when it is in
+   * effect), else 'now': removals, ungrants, turning a server off, a redefinition whose name every granted role already
+   * whitelists, and a skill grant the plugin and the role's Skill tool already cover (the gate allows it at once; the
+   * role's prompt lists it from the next restart or run). Rejects (the tool then says "from the next run") when the
+   * session is not running or the live config cannot be read.
+   */
+  private async configChanged(change: ConfigChange): Promise<ConfigChangeResult> {
+    if (this.isSetup) throw new Error('Setup-like runs do not take project config changes.')
+    if (!this.q) throw new Error('The session is not running yet.')
+    this.configGen += 1
+    const upserted = [...new Set(change.mcp?.upserted ?? [])]
+    const removedNames = [...new Set(change.mcp?.removed ?? [])]
+    const live = this.liveMcpServers()
+    const byName = new Map(live.map((s) => [s.name, s]))
+    const lost: string[] = []
+    const fresh: string[] = []
+    const regranted: string[] = []
+    for (const name of removedNames) {
+      this.forgetServer(name)
+      lost.push(name)
+    }
+    for (const name of upserted) {
+      const spec = byName.get(name)
+      // Not in the run's list (e.g. a secret slot is still empty, so it never starts): treated like a removal.
+      if (!spec) {
+        this.forgetServer(name)
+        lost.push(name)
+        continue
+      }
+      // The user approved this definition: a server an earlier failed restart left out gets another try.
+      this.droppedMcp.delete(name)
+      const key = mcpDefinitionKey(spec)
+      const known = this.knownDefs.get(name)
+      this.knownDefs.set(name, key)
+      if (!spec.enabled) {
+        this.pendingMcp.delete(name)
+        this.pendingConfig.regranted = this.pendingConfig.regranted.filter((n) => n !== name)
+        lost.push(name)
+        continue
+      }
+      if (known !== key) {
+        this.attachedMcp.add(name)
+        fresh.push(name)
+      } else regranted.push(name)
+    }
 
+    const tools: Record<string, string[]> = {}
+    if (upserted.length || removedNames.length) await this.syncMcpServers(fresh, tools)
+
+    // Whitelists and the skill plugin: what only a re-created query can bring.
+    const skillsPending = !!change.skills || this.pendingConfig.skills
+    const stale = skillsPending && pluginStale(this.skillPlugin, this.ctx.skills?.() ?? [])
+    const now = this.grantsNow()
+    const gainedNow = grantsGained(this.liveGrants, now) || (!!change.skills && stale)
+    const needRestart = grantsGained(this.queryGrants, now) || stale
+    this.liveGrants = now
+    if (needRestart) {
+      this.pendingConfig.due = true
+      for (const n of fresh) this.pendingMcp.set(n, tools[n] ?? [])
+      for (const n of regranted) if (!this.pendingConfig.regranted.includes(n)) this.pendingConfig.regranted.push(n)
+      for (const n of lost) if (!this.pendingConfig.removed.includes(n)) this.pendingConfig.removed.push(n)
+      if (change.skills) this.pendingConfig.skills = true
+      this.log('info', 'A configuration change was approved; the agents get it once the orchestrator\'s turn ends and no report is running (the session is resumed with the new config).')
+      // Normally the orchestrator is mid-turn (it called the proposal tool); if it is already idle, check now.
+      if (!mcpRestartBlocker(this.restartState())) this.scheduleMcpRestart()
+    } else {
+      // Nothing a restart would add: an earlier pending config restart is not needed any more.
+      this.pendingConfig = { due: false, regranted: [], removed: [], skills: false }
+      if (!this.restartDue()) this.releaseTurnEnd()
+    }
+    return { availability: gainedNow ? 'after-idle' : 'now', ...(Object.keys(tools).length ? { tools } : {}) }
+  }
+
+  /**
+   * Send the live resolved server list to the running query (setMcpServers), then read the tool names of `fresh`
+   * servers into `tools`. A failure is logged (redacted) and never thrown: the next restart builds from the live list.
+   * Skipped while a restart is under way (the old query is closing; the change is applied by a later restart).
+   */
+  private async syncMcpServers(fresh: string[], tools: Record<string, string[]>): Promise<void> {
+    const resolved = await this.resolvedServers()
+    this.noteSecrets(resolved)
+    if (this.restarting || this.nextQuery) {
+      this.log('info', 'A restart is under way; the MCP change reaches the session with a later restart.')
+      return
+    }
+    let errors: Record<string, string> = {}
+    try {
+      const result = await this.q.setMcpServers(this.mcpRecord(resolved))
+      errors = result.errors ?? {}
+    } catch (e) {
+      this.log('warn', `Could not update the session's MCP servers now (${redactSecrets((e as Error)?.message ?? String(e), this.secrets)}); the change applies when the session is re-created.`)
+      return
+    }
+    for (const [name, err] of Object.entries(errors)) {
+      if (fresh.includes(name)) this.log('warn', `MCP server ${name} did not connect: ${redactSecrets(String(err), this.secrets)}`)
+    }
+    const names = fresh.filter((n) => !errors[n] && resolved.some((r) => r.spec.name === n))
+    const lists = await Promise.all(names.map((n) => this.serverTools(n, MCP_STATUS_WAIT_MS)))
+    names.forEach((n, i) => {
+      if (lists[i]!.length) tools[n] = lists[i]!
+    })
+  }
+
+  /** A server left the project: drop it from every attach record so no restart, fallback or rule path brings it back. */
+  private forgetServer(name: string): void {
+    this.pendingMcp.delete(name)
+    this.pendingConfig.regranted = this.pendingConfig.regranted.filter((n) => n !== name)
+    this.lastRestart = {
+      ...this.lastRestart,
+      servers: this.lastRestart.servers.filter((n) => n !== name),
+      tools: new Map([...this.lastRestart.tools].filter(([n]) => n !== name))
+    }
+    this.droppedMcp.delete(name)
+    this.attachedMcp.delete(name)
+    this.knownDefs.delete(name)
+  }
+
+  /** The whitelists the live config gives (live servers minus droppedMcp, the plugin's skills with live grants). */
+  private grantsNow(plugin = this.skillPlugin): GrantSnapshot {
+    const servers = this.liveMcpServers().filter((s) => !this.droppedMcp.has(s.name))
+    return grantSnapshot(buildAgents(this.ctx, this.harnessTools, this.isolation, { mcpServers: servers }, this.skillNamesFor(plugin)))
+  }
+
+  /** A plugin's skills with the live grants (livePluginNames). Throws when ctx.skills() does. */
+  private skillNamesFor(plugin: SkillPlugin | undefined): Map<string, RunSkill> {
+    if (!plugin) return new Map()
+    return this.ctx.skills ? livePluginNames(plugin, this.ctx.skills()) : new Map(plugin.names)
+  }
+
+  /** A restart is due: servers to attach (addMcpServer or a config change) or a config change that needs one. */
+  private restartDue(): boolean {
+    return this.pendingMcp.size > 0 || this.pendingConfig.due
+  }
+
+  /** Remove every plugin except the current query's (after its init) or all of them (stop, teardown). */
+  private retirePlugins(): void {
+    // The old query re-emits init on later turns: a plugin built for a restart that has not started yet stays.
+    const keep = new Set([this.skillPlugin, this.pluginInFlight, this.nextQuery?.plugin])
+    for (const p of this.plugins) {
+      if (keep.has(p)) continue
+      p.cleanup()
+      this.plugins.delete(p)
+    }
+  }
+
+  private cleanupPlugins(): void {
+    for (const p of this.plugins) p.cleanup()
+    this.skillPlugin?.cleanup()
+  }
+
+  /** Tool names (no prefix) a connected server reports through mcpServerStatus, polled for up to `waitMs`; [] when unknown. */
+  private async serverTools(name: string, waitMs: number, q: Query | undefined = this.q): Promise<string[]> {
+    if (!q || typeof q.mcpServerStatus !== 'function') return []
+    const until = Date.now() + waitMs
+    for (;;) {
+      let timer: ReturnType<typeof setTimeout> | undefined
+      try {
+        const status = await Promise.race([
+          q.mcpServerStatus(),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error('mcpServerStatus timed out')), Math.max(250, until - Date.now()))
+          })
+        ])
+        const s = status.find((x) => x.name === name)
+        // Tool names are the server's (untrusted): only plain identifiers are kept (review M1).
+        if (s?.status === 'connected') return safeMcpToolNames((s.tools ?? []).map((t) => t.name)).slice(0, 200)
+        if (s?.status === 'failed' || s?.status === 'needs-auth' || s?.status === 'disabled') return []
+      } catch {
+        return []
+      } finally {
+        clearTimeout(timer)
+      }
+      if (Date.now() >= until || this.abort.signal.aborted) return []
+      await new Promise((r) => setTimeout(r, 250))
+    }
+  }
+
+  private restartState(): McpRestartState {
+    const root = this.agents.get(ROOT_ID)
+    return {
+      stopping: this.ending || this.authFailed || this.abort.signal.aborted,
+      held: this.held || this.capTripped,
+      limited: this.limited,
+      rootIdle: !!root && root.state === 'idle',
+      liveReports: [...this.agents.values()].filter((a) => a.id !== ROOT_ID && a.state !== 'done' && a.state !== 'error').length,
+      pendingInteractions: this.ctx.pendingInteractions(),
+      backgroundTasks: this.backgroundTasks.size
+    }
+  }
+
+  private clearRestartTimers(): void {
+    if (this.restartTimer) clearTimeout(this.restartTimer)
+    if (this.restartCloseTimer) clearTimeout(this.restartCloseTimer)
+    this.restartTimer = null
+    this.restartCloseTimer = null
+  }
+
+  /**
+   * A successful turn ended. With an MCP restart due and nothing blocking it, the continuation driver does not hear
+   * of this turn end (its nudge would wake the orchestrator and starve the restart, review H1): the attach notice
+   * re-engages the orchestrator instead, and the turn after it nudges normally. If the restart then does not happen,
+   * the held turn end is handed to the driver (releaseTurnEnd), so the run never stalls.
+   */
+  private onTurnEnded(turnGen: number): void {
+    if (this.restartDue() && !mcpRestartBlocker(this.restartState())) {
+      this.turnEndDeferred = true
+      this.deferredTurnGen = turnGen
+      return
+    }
+    this.turnEndDeferred = false
+    this.continuation.turnEnded(turnGen)
+  }
+
+  /** A non-subagent task ended; the last one to end lets a waiting MCP restart go ahead. */
+  private backgroundTaskEnded(taskId: string): void {
+    if (!this.backgroundTasks.delete(taskId)) return
+    if (!this.backgroundTasks.size && this.restartDue()) this.scheduleMcpRestart()
+  }
+
+  /** Give the continuation driver the turn end held back for a restart that did not happen. */
+  private releaseTurnEnd(): void {
+    if (!this.turnEndDeferred) return
+    this.turnEndDeferred = false
+    this.continuation.turnEnded(this.deferredTurnGen)
+  }
+
+  /** Check for an MCP restart shortly after a turn ends (a report hand-back the SDK resumes with goes first). */
+  private scheduleMcpRestart(): void {
+    if (this.restartTimer) clearTimeout(this.restartTimer)
+    this.restartTimer = setTimeout(() => {
+      this.restartTimer = null
+      void this.maybeRestartForMcp()
+        .then((started) => {
+          if (!started) this.releaseTurnEnd()
+        })
+        .catch((e) => {
+          this.log('warn', `MCP restart check failed: ${redactSecrets((e as Error).message ?? String(e), this.secrets)}`)
+          this.releaseTurnEnd()
+        })
+    }, MCP_RESTART_DELAY_MS)
+  }
+
+  /**
+   * The budget a restarted query may spend: the project's maxBudgetUsd minus what this run has cost so far (each query
+   * would otherwise get the whole budget again, review M2). undefined = no budget set; null = nothing is left.
+   */
+  private restartBudget(): number | undefined | null {
+    // An exec run's budget (ctx.budgetUsd, 0 allowed) replaces the project's; 0 is a real budget, never "none".
+    // A project cap <= 0 is "no cap" (projectBudgetUsd), as it always was for desktop runs.
+    const max = this.ctx.budgetUsd !== undefined ? this.ctx.budgetUsd : projectBudgetUsd(this.ctx.project)
+    if (max === undefined || this.isSetup) return undefined
+    const left = max - Math.max(0, this.lastRunCost, this.lastPricedTotal)
+    // Below the minimum counts as nothing left: rounding it up would overshoot the budget (review N7).
+    if (!(left >= MCP_RESTART_MIN_BUDGET_USD)) return null
+    return left
+  }
+
+  /**
+   * Re-create the query so the attached MCP servers reach every granted role: same session (resume), definitions
+   * rebuilt from the live ctx.mcpServers(), hooks, harness tools, skills plugin, worktree state and agents kept. Only
+   * when mcpRestartBlocker allows it; otherwise the next turn end tries again. If the new options cannot be built or
+   * no budget is left, the old query keeps running with a run warning and the orchestrator is told the server waits
+   * for the next run. Resolves true when the restart was set in motion.
+   */
+  private async maybeRestartForMcp(): Promise<boolean> {
+    if (!this.restartDue() || this.restarting || this.nextQuery || !this.sessionId) return false
+    if (mcpRestartBlocker(this.restartState())) return false
+    const budget = this.restartBudget()
+    if (budget === null) {
+      this.giveUpPendingMcp('this run has used its budget')
+      return false
+    }
+    this.restarting = true
+    // What this restart covers; anything a config change adds while the options are built stays pending (next restart).
+    const pending = new Map(this.pendingMcp)
+    const gen = this.configGen
+    const config: RestartConfig | undefined = this.pendingConfig.due
+      ? { regranted: [...this.pendingConfig.regranted], removed: [...this.pendingConfig.removed], skills: this.pendingConfig.skills }
+      : undefined
+    let plugin: SkillPlugin | null | undefined
+    let built: Options
+    try {
+      // A skill change the run plugin does not cover: a fresh plugin from the live skills. The old one stays until a
+      // query using the new one has started (retirePlugins at init), so a fallback can still load it.
+      if (config?.skills) {
+        const live = this.ctx.skills?.() ?? []
+        if (pluginStale(this.skillPlugin, live)) plugin = this.newSkillPlugin(live)
+        this.pluginInFlight = plugin ?? undefined
+      }
+      built = await this.buildOptions(this.sessionId, { maxBudgetUsd: budget, plugin })
+    } catch (e) {
+      this.restarting = false
+      this.pluginInFlight = undefined
+      this.dropUnusedPlugin(plugin)
+      this.giveUpPendingMcp(redactSecrets((e as Error).message ?? String(e), this.secrets))
+      return false
+    }
+    // Something may have started meanwhile (a user message, a nudge, a report); the next turn end tries again.
+    this.pluginInFlight = undefined
+    if (mcpRestartBlocker(this.restartState()) || !this.restartDue()) {
+      this.restarting = false
+      this.dropUnusedPlugin(plugin)
+      return false
+    }
+    // Off the pending list now (review L1): a result while the notice is prepared cannot start a second restart.
+    const tools = pending
+    const servers = [...tools.keys()]
+    for (const [name, t] of pending) if (this.pendingMcp.get(name) === t) this.pendingMcp.delete(name)
+    if (this.configGen === gen) this.pendingConfig = { due: false, regranted: [], removed: [], skills: false }
+    this.restartForConfig = !!config
+    this.nextQuery = {
+      options: built,
+      servers,
+      tools,
+      ...(plugin !== undefined ? { plugin, prevPlugin: this.skillPlugin ?? null } : {}),
+      ...(config ? { config } : {})
+    }
+    this.restarting = false
+    if (config) this.log('info', `Resuming the session to apply the approved configuration change${servers.length ? ` (MCP server${servers.length === 1 ? '' : 's'} ${servers.join(', ')})` : ''}.`)
+    else this.log('info', `Resuming the session to attach the MCP server${servers.length === 1 ? '' : 's'} ${servers.join(', ')}.`)
+    this.noteActivity('restart')
+    // Close the old query's input: it ends once the CLI exits; anything pushed but unread moves to the next query.
+    this.swapInput()
+    const oldQ = this.q
+    this.restartCloseTimer = setTimeout(() => {
+      this.restartCloseTimer = null
+      if (this.q !== oldQ || !this.nextQuery) return
+      this.log('warn', 'The previous query did not end after its input closed; closing it.')
+      try {
+        oldQ.close()
+      } catch {
+        /* already closed */
+      }
+    }, MCP_RESTART_CLOSE_MS)
+    return true
+  }
+
+  /**
+   * Give the next query a fresh input stream: messages pushed but unread move over, and the old stream ends, so a query
+   * that is closing (or died with a read still pending) cannot swallow a message meant for its successor.
+   */
+  private swapInput(): void {
+    const old = this.input
+    this.input = new PushStream<SDKUserMessage>()
+    for (const m of old.drain()) this.input.push(m)
+    old.end()
+  }
+
+  /**
+   * A restarted query died before its init (review N2): give the next one a fresh stream holding every message the dead
+   * query may have read (preInit) plus anything still unread, each once. Attach / not-attached notices of the dead
+   * query are left out: startRestartedQuery sends them again.
+   */
+  private replayInput(): void {
+    const old = this.input
+    const unread = old.drain()
+    old.end()
+    this.input = new PushStream<SDKUserMessage>()
+    const replay = [...this.preInit, ...unread.filter((m) => !this.preInit.includes(m))]
+    for (const m of replay) if (!this.harnessMessages.get(m)?.restart) this.input.push(m)
+    this.preInit = []
+  }
+
+  /** A fresh run plugin from the live skills granted to some role; null when none is granted. Tracked for cleanup. */
+  private newSkillPlugin(live: RunSkill[]): SkillPlugin | null {
+    const granted = live.filter((s) => s.roleIds.length)
+    if (!granted.length) return null
+    const plugin = buildSkillPlugin(granted, this.ctx.run.id, (m) => this.log('warn', m))
+    this.plugins.add(plugin)
+    return plugin
+  }
+
+  /** A plugin built for a restart that did not happen: remove it (never the current one). */
+  private dropUnusedPlugin(plugin: SkillPlugin | null | undefined): void {
+    if (!plugin || plugin === this.skillPlugin) return
+    plugin.cleanup()
+    this.plugins.delete(plugin)
+  }
+
+  /** The pending servers and config changes cannot reach this session: warn, and tell the orchestrator they wait for the next run. */
+  private giveUpPendingMcp(why: string): void {
+    const names = [...this.pendingMcp.keys()]
+    this.pendingMcp.clear()
+    const config = this.pendingConfig
+    this.pendingConfig = { due: false, regranted: [], removed: [], skills: false }
+    const other = config.due ? { regranted: config.regranted.filter((n) => !names.includes(n)), skills: config.skills } : undefined
+    if (!names.length && !other?.regranted.length && !other?.skills) return
+    this.tellNotAttached(names, why, false, other)
+  }
+
+  /**
+   * Warn and tell the orchestrator (or, while held, the user's next message) that servers could not be attached, or
+   * that the role changes (`other.regranted`) and skill changes of an approved config change could not be applied.
+   */
+  private tellNotAttached(names: string[], why: string, restart = false, other?: { regranted: string[]; skills: boolean }): void {
+    const plural = names.length === 1 ? '' : 's'
+    const parts: string[] = []
+    if (other?.regranted.length) parts.push(`the role changes for the MCP server${other.regranted.length === 1 ? '' : 's'} ${other.regranted.map((n) => datum(n, 64)).join(', ')}`)
+    if (other?.skills) parts.push('the skill changes')
+    const rest = parts.join(' and ')
+    let text: string
+    let summary: string
+    if (names.length) {
+      this.log('warn', `Could not attach the MCP server${plural} ${names.join(', ')} to this session: ${why}`)
+      text = `[OrgAI harness] The MCP server${plural} ${names.map((n) => datum(n, 64)).join(', ')} could not be attached to this session (${datum(why, 300)}). It is available from the next run; continue without it.`
+      if (rest) text += ` ${rest[0]!.toUpperCase()}${rest.slice(1)} approved this run could not be applied either; they apply from the next run.`
+      summary = `Could not attach the MCP server${plural} ${names.join(', ')}`
+    } else {
+      this.log('warn', `Could not apply the approved configuration change to this session: ${why}`)
+      text = `[OrgAI harness] ${rest[0]!.toUpperCase()}${rest.slice(1)} approved this run could not be applied to this session (${datum(why, 300)}). They apply from the next run; continue without them.`
+      summary = 'Could not apply the configuration change to this session'
+    }
+    if (this.held || this.capTripped) this.holdNotice(text, summary)
+    else this.notifyOrchestrator(text, 'Thinking…', { summary, restart })
+  }
+
+  /**
+   * A restarted query failed before its init (review M4). First failure: resume once more with the same servers.
+   * Second: resume without the newly attached servers (they may be what breaks the start; the orchestrator is told).
+   * Third, or no budget left: no next query, and run() ends the session paused instead of failing the run.
+   * Options that cannot be built count as a failed start too (review M2): each throw is one more failure, so this
+   * gives up after at most three and never throws. `why` is the latest failure, already redacted.
+   */
+  private async recoverRestart(why: string): Promise<{ next?: NextQuery; why: string }> {
+    for (;;) {
+      this.restartFailures += 1
+      const budget = this.restartBudget()
+      if (budget === null || !this.sessionId) return { why }
+      const { servers, tools, plugin, prevPlugin, config } = this.lastRestart
+      // A rebuilt plugin is part of what may break the start: the fallback returns to the plugin it replaced.
+      const rebuilt = plugin !== undefined
+      let next: Omit<NextQuery, 'options'>
+      if (this.restartFailures === 1) {
+        this.log('warn', `The resumed session failed to start (${why}); trying once more.`)
+        next = { servers, tools, ...(rebuilt ? { plugin, prevPlugin } : {}), ...(config ? { config } : {}) }
+      } else if (this.restartFailures === 2 && (servers.length || rebuilt)) {
+        for (const n of servers) this.droppedMcp.add(n)
+        const left = [
+          ...(servers.length ? [`the MCP server${servers.length === 1 ? '' : 's'} ${servers.join(', ')}`] : []),
+          ...(rebuilt ? ['the rebuilt skills'] : [])
+        ].join(' and ')
+        this.log('warn', `The resumed session failed to start again (${why}); resuming without ${left}.`)
+        next = { servers: [], tools: new Map(), dropped: servers, ...(rebuilt ? { plugin: prevPlugin ?? null, droppedSkills: true } : {}) }
+      } else return { why }
+      try {
+        return { next: { ...next, options: await this.buildOptions(this.sessionId, { maxBudgetUsd: budget, plugin: next.plugin }) }, why }
+      } catch (e) {
+        why = redactSecrets((e as Error)?.message ?? String(e), this.secrets)
+        this.log('warn', `Could not prepare the resumed session (${why}).`)
+      }
+    }
+  }
+
+  /**
+   * User messages a dead restarted query may have read before its init, or that still wait unread (review M1): they
+   * never reached a query that started. Harness messages (notices, nudges, peer messages) are left out.
+   */
+  private undeliveredUserMessages(): number {
+    const pending = new Set([...this.preInit, ...this.input.peek()])
+    let n = 0
+    for (const m of pending) if (!this.harnessMessages.has(m)) n += 1
+    return n
+  }
+
+  /**
+   * Before a restarted query starts (review L7): if an interrupt landed in the restart window, unread plan nudges are
+   * dropped and other unread harness notices (already in the transcript) wait for the user's next message, so the
+   * new query does not start a turn the user stopped. User messages stay queued.
+   */
+  private dropHeldHarnessMessages(): void {
+    if (!this.held && !this.capTripped) return
+    const queued = this.input.drain()
+    let dropped = 0
+    for (const m of queued) {
+      const h = this.harnessMessages.get(m)
+      if (!h) this.input.push(m)
+      else if (h.nudge) dropped += 1
+      else this.heldNotices.push(h.text)
+    }
+    if (dropped) this.log('info', `Dropped ${dropped} queued plan nudge${dropped === 1 ? '' : 's'}: the run is held for the user.`)
+  }
+
+  /** Start the query that replaces the one an MCP restart ended, then tell the orchestrator what is attached. */
+  private startRestartedQuery(next: NextQuery): void {
+    this.dropHeldHarnessMessages()
+    this.restarts += 1
+    this.queryInitSeen = false
+    // What the new query may read before its init: everything queued now plus what is pushed until then.
+    this.preInit = this.input.peek()
+    this.lastRestart = {
+      servers: next.servers,
+      tools: next.tools,
+      ...(next.plugin !== undefined ? { plugin: next.plugin, prevPlugin: next.prevPlugin } : {}),
+      ...(next.config ? { config: next.config } : {})
+    }
+    this.priorQueriesCost = this.lastRunCost
+    this.prevQuerySdkTotal = this.lastSdkTotal
+    this.resumeCostBase = null
+    this.harnessServer = harnessServerOf(next.options)
+    // The plugin this query loads becomes the session's (the gate's names); the replaced one is removed at its init.
+    if (next.plugin !== undefined) this.skillPlugin = next.plugin ?? undefined
+    this.queryGrants = this.optionGrants.get(next.options)
+    this.liveGrants = this.queryGrants
+    this.q = query({ prompt: this.input, options: next.options })
+    this.noteActivity('restart')
+    const config = next.config
+    if (next.dropped?.length || next.droppedSkills) {
+      const why = `the resumed session would not start with ${(next.dropped?.length ?? 0) + (next.droppedSkills ? 1 : 0) === 1 ? 'it' : 'them'}`
+      this.tellNotAttached(next.dropped ?? [], why, true, next.droppedSkills ? { regranted: [], skills: true } : undefined)
+    } else if (next.servers.length || config) {
+      const q = this.q
+      // Never left unhandled (review N4): a failure still sends a notice with the known tool names and releases a
+      // deferred turn end, so an unattended run does not stall.
+      void this.announceAttached(next.servers, next.tools, q, config).catch((e) => {
+        this.log('warn', `Could not read the attached MCP servers' grants: ${redactSecrets((e as Error)?.message ?? String(e), this.secrets)}`)
+        try {
+          const names = [...new Set([...next.servers, ...(config?.regranted ?? [])])]
+          this.sendAttachNotice(q, names.map((name) => ({ name, tools: next.tools.get(name) ?? [] })), next.servers, config && { removed: config.removed, skills: config.skills ? null : undefined })
+        } catch (e2) {
+          this.log('warn', `Could not send the MCP attach notice: ${redactSecrets((e2 as Error)?.message ?? String(e2), this.secrets)}`)
+        } finally {
+          this.releaseTurnEnd()
+        }
+      })
+    }
+  }
+
+  /** The run is held for the user: show a harness notice in the transcript and deliver it with the user's next message. */
+  private holdNotice(text: string, summary: string): void {
+    this.heldNotices.push(text)
+    this.transcript(ROOT_ID, { kind: 'system', text: summary, detail: text }, { source: 'harness' })
+  }
+
+  /** After a restart: name the attached servers' tools (from the new query's mcpServerStatus) to the orchestrator. */
+  private async announceAttached(servers: string[], known: Map<string, string[]>, q: Query, config?: RestartConfig): Promise<void> {
+    const live = this.liveMcpServers()
+    const liveNames = new Set(live.filter((s) => s.enabled).map((s) => s.name))
+    // A config restart also names the re-granted servers; a server removed since is left out of the list.
+    const names = [...new Set([...servers, ...(config?.regranted ?? [])])].filter((n) => !config || liveNames.has(n))
+    const entries: { name: string; tools: string[]; roles: Role[] }[] = []
+    for (const name of names) {
+      const fresh = await this.serverTools(name, MCP_STATUS_WAIT_MS, q)
+      entries.push({ name, tools: fresh.length ? fresh : (known.get(name) ?? []), roles: rolesGrantedServer(this.ctx.roles, live, name) })
+    }
+    let extra: { removed: string[]; skills?: SkillNoticeEntry[] | null } | undefined
+    if (config) {
+      let skills: SkillNoticeEntry[] | null | undefined
+      if (config.skills) {
+        try {
+          skills = [...this.skillNamesFor(this.skillPlugin)]
+            .filter(([, s]) => s.roleIds.length)
+            .map(([name, s]) => ({ name, roles: this.ctx.roles.filter((r) => s.roleIds.includes(r.id)) }))
+        } catch {
+          skills = null
+        }
+      }
+      extra = { removed: config.removed.filter((n) => !liveNames.has(n)), ...(skills !== undefined ? { skills } : {}) }
+    }
+    this.sendAttachNotice(q, entries, servers, extra)
+  }
+
+  /**
+   * Deliver the attach notice for query q (dropped if q is no longer current); while held it waits for the user. With
+   * `extra` (a config restart) the notice is configChangeNotice: removed servers and the skills in the session too.
+   */
+  private sendAttachNotice(
+    q: Query,
+    entries: Parameters<typeof mcpAttachedNotice>[0],
+    servers: string[],
+    extra?: { removed: string[]; skills?: SkillNoticeEntry[] | null }
+  ): void {
+    if (this.abort.signal.aborted || this.q !== q) return
+    let text: string
+    let summary: string
+    if (extra) {
+      text = configChangeNotice({ servers: entries, removed: extra.removed, ...(extra.skills !== undefined ? { skills: extra.skills } : {}) })
+      const parts = [
+        ...(entries.length ? [`MCP server${entries.length === 1 ? '' : 's'} ${entries.map((e) => e.name).join(', ')} attached`] : []),
+        ...(extra.removed.length ? [`${extra.removed.join(', ')} removed`] : []),
+        ...(extra.skills !== undefined ? ['skills updated'] : [])
+      ]
+      summary = `Configuration change in effect${parts.length ? `: ${parts.join('; ')}` : ''}`
+    } else {
+      text = mcpAttachedNotice(entries)
+      summary = `MCP server${servers.length === 1 ? '' : 's'} ${servers.join(', ')} attached`
+    }
+    // Held by an interrupt meanwhile: no new turn now; the notice goes with the user's next message.
+    if (this.held || this.capTripped) {
+      this.holdNotice(text, summary)
+      return
+    }
+    this.notifyOrchestrator(text, extra ? 'Using the new configuration…' : 'Using a new MCP server…', { summary, restart: true })
+  }
+
+  /** What lives for the whole run: the skills plugin and the bound harness tools. Called once, before the first query. */
+  private prepare(): void {
     // Granted skills become a run-scoped plugin (orgai:<name>). Setup-like runs get none.
     if (!this.isSetup) {
       const granted = this.ctx.skills?.() ?? []
@@ -1159,13 +2793,17 @@ export class ClaudeSession implements RuntimeSession {
         if (!this.skillPlugin.names.size) {
           this.skillPlugin.cleanup()
           this.skillPlugin = undefined
-        }
+        } else this.plugins.add(this.skillPlugin)
       }
     }
-    const skillNames = this.skillPlugin ? [...this.skillPlugin.names.keys()] : []
-
+    // The server definitions this session starts with; a config change that redefines one counts it as installed.
+    try {
+      for (const s of this.liveMcpServers()) this.knownDefs.set(s.name, mcpDefinitionKey(s))
+    } catch {
+      /* unknown: every upserted server then counts as new */
+    }
     // The harness tools for this kind of run (setup / mcp-assist / work); the audience decides who sees which.
-    const tools = harnessToolsFor(this.ctx, {
+    this.harnessTools = harnessToolsFor(this.ctx, {
       integratePending: (wt) => this.integrator.integratePending(wt),
       onPlanUpdated: (plan) => {
         const root = this.agents.get(ROOT_ID)
@@ -1176,23 +2814,48 @@ export class ClaudeSession implements RuntimeSession {
         const a = this.agents.get(ROOT_ID)
         if (a && a.state === 'waiting') this.setState(ROOT_ID, 'thinking', 'Thinking…')
       },
-      addMcpServer: (spec) => this.addMcpServer(spec)
+      addMcpServer: (spec) => this.addMcpServer(spec),
+      configChanged: (change) => this.configChanged(change)
     }, { nativeSkills: true })
-    this.harnessServer = buildHarnessServer(tools, this.harnessCallers, this.isSetup ? SETUP_TOOLS_INSTRUCTIONS : undefined)
+    this.harnessAudiences = new Map(this.harnessTools.map((t) => [t.name, t.audience]))
+  }
+
+  /**
+   * Query options. `resume` is the session to resume (an MCP restart); otherwise the run's own resumeSessionId.
+   * A fresh in-process harness server is built each time (same bound tools, mcpServers.orgai); the caller installs
+   * it as this.harnessServer when its query starts (harnessServerOf). Agent definitions come from the live server list.
+   * `opts.maxBudgetUsd` replaces the project's budget (a restart passes what is left of it, restartBudget()).
+   * `opts.plugin` is the skill plugin the query loads (a config restart's rebuilt one; null = none; undefined = the
+   * session's current one). Its skills carry the live grants; a skill removed since it was copied is left out.
+   */
+  private async buildOptions(resume?: string, opts: { maxBudgetUsd?: number; plugin?: SkillPlugin | null } = {}): Promise<Options> {
+    const { project } = this.ctx
+    const env = buildEnv(this.ctx)
+    const plugin = opts.plugin === undefined ? this.skillPlugin : (opts.plugin ?? undefined)
+    const skillMap = this.skillNamesFor(plugin)
+    const skillNames = [...skillMap.keys()]
+    const tools = this.harnessTools
+    const reportsLive = (): boolean => [...this.agents.values()].some((a) => a.id !== ROOT_ID && a.state !== 'done' && a.state !== 'error')
+    const harnessServer = buildHarnessServer(tools, this.harnessCallers, reportsLive, this.isSetup ? SETUP_TOOLS_INSTRUCTIONS : undefined)
 
     // MCP servers: the project's (plus run-scoped installs) with secrets filled in, only these load (strictMcpConfig).
-    const resolved = (await this.ctx.resolvedMcpServers?.()) ?? []
+    // Servers a restarted query could not start with stay out of this session (recoverRestart).
+    const resolved = (await this.resolvedServers())
     this.noteSecrets(resolved)
+    const liveServers = this.liveMcpServers().filter((s) => !this.droppedMcp.has(s.name))
 
+    // One read per query: a restarted query asks again, so an agent's mid-run edit gets settingSources [] on the restart.
+    const settingSources = claudeSettingSources(this.ctx)
+    this.cliSettingsLoaded = (settingSources?.length ?? 0) > 0
     const options: Options = {
       cwd: project.path,
-      agents: buildAgents(this.ctx, tools, this.isolation, { mcpServers: this.ctx.mcpServers ? this.ctx.mcpServers() : project.mcpServers }, this.skillPlugin?.names),
+      agents: buildAgents(this.ctx, tools, this.isolation, { mcpServers: liveServers }, skillMap),
       agent: this.root.slug,
       // Setup never edits files, so a plan-only project setting must not block the Architect's read tools.
       // An unattended ('auto') project keeps the classifier for the Architect's shell work too.
       permissionMode: claudePermissionMode(this.ctx),
       allowDangerouslySkipPermissions: claudeAllowsBypass(this.ctx),
-      settingSources: claudeSettingSources(this.ctx),
+      settingSources,
       hooks: this.buildHooks(),
       // stream_event messages drive the live "agent.partial" text; transcripts still come from complete messages.
       includePartialMessages: true,
@@ -1207,34 +2870,72 @@ export class ClaudeSession implements RuntimeSession {
       canUseTool: async (toolName, input, permOptions) => {
         // The harness's own tools carry their approval inside the proposal round-trip.
         if (toolName.startsWith(ORGAI_TOOL_PREFIX)) return { behavior: 'allow', updatedInput: input }
-        const agentId = this.takeIssuer(permissionKey(toolName, input)) ?? this.lastToolAgent.get(toolName) ?? ROOT_ID
+        const key = permissionKey(toolName, input)
+        const agentId = this.takeIssuer(key) ?? this.lastToolAgent.get(toolName) ?? ROOT_ID
+        const cwd = this.agentCwd(agentId)
+        // Backstop for the PreToolUse self-control gate (a call that reached canUseTool without the hook).
+        const selfDenial = this.selfControlDenial(agentId, toolName, input, cwd)
+        if (selfDenial) return { behavior: 'deny', message: selfDenial }
+        // Backstop for the PreToolUse reference gate: never a card for an edit under a reference folder. The refusal row
+        // is written here only when the hook did not already refuse (and write it for) this call.
+        const edit = this.referenceEditRefusal(toolName, input, cwd)
+        if (edit) {
+          const refused = this.refusedEdits.get(key) ?? 0
+          if (refused > 1) this.refusedEdits.set(key, refused - 1)
+          else if (refused === 1) this.refusedEdits.delete(key)
+          else this.referenceRefusalRow(agentId, edit.entry)
+          return { behavior: 'deny', message: edit.reason }
+        }
+        // A shell, Read, Glob or Grep call touching a reference folder: the card names the folder, offers no rule
+        // (RunManager narrows any allow to 'once'), and an allow grants this call only.
+        // The hook's finding for this exact call: keyed by tool_use id (permOptions.toolUseID, 0.3.312 typings), else
+        // permissionKey + agent (review L6).
+        const toolUseId = typeof permOptions.toolUseID === 'string' && permOptions.toolUseID ? permOptions.toolUseID : undefined
+        let ref = this.cardReferenceTouch({ key, agentId, ...(toolUseId ? { toolUseId } : {}) }, toolName, input, cwd)
+        // Folder lists unreadable now (review L1): no suggestions; a shell call is asked like an unreadable reference
+        // list (an allow grants this call only).
+        const suggestOpts = ref ? null : this.suggestOptions(toolName, cwd)
+        if (!ref && !suggestOpts && SHELL_TOOLS.has(toolName)) ref = { folder: null }
         this.setState(agentId, 'waiting', `Needs approval: ${describe(toolName, input)}`)
         // The SDK can forbid a "don't ask again" choice for asks whose rule would grant too much.
-        const suggestions = chooseSuggestions(
-          toolName,
-          input,
-          permOptions.suggestions?.length ? fromSdkSuggestions(permOptions.suggestions) : undefined,
-          !!permOptions.suppressAlwaysAllowRule
-        )
+        // A trust-restricted run never gets a setMode suggestion (it stays ask-only after "allow for session").
+        const suggestions = !suggestOpts
+          ? []
+          : restrictedSafeSuggestions(
+              this.ctx,
+              chooseSuggestions(
+                toolName,
+                input,
+                permOptions.suggestions?.length ? fromSdkSuggestions(permOptions.suggestions) : undefined,
+                !!permOptions.suppressAlwaysAllowRule,
+                suggestOpts
+              )
+            )
         const decision = await this.ctx.requestPermission({
           agentId,
           toolName,
           input,
           summary: describe(toolName, input),
-          ...(suggestions.length ? { suggestions, ruleLabels: suggestionLabels(suggestions) } : {})
+          ...(suggestions.length ? { suggestions, ruleLabels: suggestionLabels(suggestions) } : {}),
+          ...(ref?.folder ? { referenceFolder: ref.folder } : {})
         })
         const a = this.agents.get(agentId)
         if (a && a.state === 'waiting') this.setState(agentId, 'tool', describe(toolName, input))
-        if (decision.behavior === 'allow') return this.allowWithScope(decision, suggestions, input)
+        if (decision.behavior === 'allow' && ref) return { behavior: 'allow', updatedInput: input }
+        if (decision.behavior === 'allow') return this.allowWithScope(decision, suggestions, input, toolName)
         return { behavior: 'deny', message: decision.message }
       }
     }
+    // Allowed and reference directories (live: folders granted during the run join the next build, a config restart
+    // included). Reference folders are readable here and kept read-only by the PreToolUse reference gate.
+    const dirs = claudeAdditionalDirectories(this.ctx)
+    if (dirs.length) options.additionalDirectories = dirs
     if (CLAUDE_EXECUTABLE) options.pathToClaudeCodeExecutable = CLAUDE_EXECUTABLE
-    options.mcpServers = this.mcpRecord(resolved)
+    options.mcpServers = this.mcpRecord(resolved, harnessServer)
     options.strictMcpConfig = true
     const plugins = toClaudePlugins(this.ctx.plugins?.())
-    if (this.skillPlugin) {
-      plugins.push({ type: 'local', path: this.skillPlugin.path, skipMcpDiscovery: true })
+    if (plugin && skillNames.length) {
+      plugins.push({ type: 'local', path: plugin.path, skipMcpDiscovery: true })
       // Options.skills only adds Skill(<name>) allow rules (verified in sdk.mjs); the PreToolUse gate is the filter.
       options.skills = skillNames
       options.settings = { disableBundledSkills: true }
@@ -1245,14 +2946,24 @@ export class ClaudeSession implements RuntimeSession {
     if (plugins.length) options.plugins = plugins
     // "Always allow (project)" rules live in .claude/settings.local.json, which settingSources ['project'] does not load.
     // A quick run never reads the user's folder for rules: its grants arrive through allowedRules() (the PreToolUse hook).
-    const savedRules = claudeSavedRules(this.ctx)
+    // A server an agent installed this run is never approved wholesale by a saved server-level rule (review M3).
+    // Shell rules stay with the PreToolUse hook (ruleMatch.ts), never the CLI's prefix match (reviewer-4 H-A).
+    const savedRules = cliAllowedTools(withoutServerRules(claudeSavedRules(this.ctx), this.agentInstalledMcp()))
     if (savedRules.length) options.allowedTools = savedRules
     if (this.root.model && this.root.model !== 'inherit') {
       if (validModelId(this.root.model)) options.model = this.root.model
       else this.log('warn', 'The root role has an invalid model id; using the CLI default.')
     }
-    if (project.maxBudgetUsd && !this.isSetup) options.maxBudgetUsd = project.maxBudgetUsd
-    if (this.ctx.resumeSessionId) options.resume = this.ctx.resumeSessionId
+    if (opts.maxBudgetUsd !== undefined) options.maxBudgetUsd = opts.maxBudgetUsd
+    else if (!this.isSetup) {
+      // ctx.budgetUsd (exec runs, the chain's prior cost already taken off) wins; 0 is a real budget (cli-spec 6.2(3)).
+      // A project cap <= 0 means no cap (projectBudgetUsd).
+      const budget = this.ctx.budgetUsd !== undefined ? this.ctx.budgetUsd : projectBudgetUsd(project)
+      if (budget !== undefined) options.maxBudgetUsd = budget
+    }
+    const resumeId = resume ?? this.ctx.resumeSessionId
+    if (resumeId) options.resume = resumeId
+    if (options.agents) this.optionGrants.set(options, grantSnapshot(options.agents))
     return options
   }
 
@@ -1260,14 +2971,28 @@ export class ClaudeSession implements RuntimeSession {
   private allowWithScope(
     decision: Extract<PermissionDecision, { behavior: 'allow' }>,
     suggestions: PermissionSuggestion[],
-    input: Record<string, unknown>
+    input: Record<string, unknown>,
+    toolName: string
   ): PermissionResult {
-    const granted = applyAllowScope(this.ctx.project.path, quickSafeDecision(this.ctx, decision), suggestions, (level, message) => this.log(level, message))
+    // Folder lists unreadable now (review L1): this call only, no rule kept.
+    const opts = suggestions.length ? this.safeMatchOptions(toolName) : null
+    if (!opts) return { behavior: 'allow', updatedInput: input }
+    const granted = applyAllowScope(
+      this.ctx.project.path,
+      quickSafeDecision(this.ctx, decision),
+      suggestions,
+      (level, message) => this.log(level, message),
+      allowScopePersist(this.ctx),
+      { toolName, input, opts }
+    )
     if (!granted) return { behavior: 'allow', updatedInput: input }
+    for (const r of allowRuleStrings(granted)) this.sessionRules.add(r)
+    // Shell rules stay in sessionRules (the hook's allow path, kept across a restarted query) and never reach the CLI (H1).
+    const updates = toSdkSessionUpdates(granted)
     return {
       behavior: 'allow',
       updatedInput: input,
-      updatedPermissions: toSdkSessionUpdates(granted),
+      ...(updates.length ? { updatedPermissions: updates } : {}),
       decisionClassification: 'user_permanent'
     }
   }
@@ -1287,7 +3012,7 @@ export class ClaudeSession implements RuntimeSession {
     }
     this.transcript(ROOT_ID, userBlock(this.ctx.prompt, this.ctx.images))
 
-    let firstMessage = composeFirstMessage(this.ctx.prompt, this.ctx.hiddenContext)
+    let firstMessage = composeFirstMessage(this.ctx.prompt, firstMessageHiddenContext(this.ctx, (m) => this.log('warn', m)))
 
     try {
       if (this.isolation) {
@@ -1299,9 +3024,37 @@ export class ClaudeSession implements RuntimeSession {
         message: { role: 'user', content: userContent(firstMessage, this.ctx.images) },
         parent_tool_use_id: null
       })
-      this.q = query({ prompt: this.input, options: await this.buildOptions() })
-      for await (const msg of this.q) this.handle(msg)
-      this.emitEnd()
+      this.prepare()
+      const first = await this.buildOptions()
+      this.harnessServer = harnessServerOf(first)
+      this.queryGrants = this.optionGrants.get(first)
+      this.liveGrants = this.queryGrants
+      this.q = query({ prompt: this.input, options: first })
+      for (;;) {
+        try {
+          for await (const msg of this.q) this.handle(msg)
+        } catch (e) {
+          if (this.abort.signal.aborted) throw e
+          if (this.nextQuery) {
+            // The old query was closed for an MCP restart; the next one takes over below.
+          } else if (this.restarts > 0 && !this.queryInitSeen && this.sessionId) {
+            // A restarted query failed before it started: never fail the run for it (review M4).
+            const { next, why } = await this.recoverRestart(redactSecrets((e as Error).message ?? String(e), this.secrets))
+            if (!next) {
+              this.endPausedAfterRestart(why)
+              break
+            }
+            this.replayInput()
+            this.nextQuery = next
+          } else throw e
+        }
+        const next = this.nextQuery
+        this.nextQuery = undefined
+        if (!next || this.abort.signal.aborted || this.ending) break
+        this.clearRestartTimers()
+        this.startRestartedQuery(next)
+      }
+      if (!this.pausedEnd) this.emitEnd()
     } catch (e) {
       if (this.abort.signal.aborted) {
         this.emitEnd()
@@ -1315,7 +3068,7 @@ export class ClaudeSession implements RuntimeSession {
       this.ending = true
       this.continuation.dispose()
       this.stopUsagePolling()
-      this.skillPlugin?.cleanup()
+      this.cleanupPlugins()
       this.partial.clearAll()
       for (const a of this.agents.values()) {
         if (a.state !== 'done' && a.state !== 'error') {
@@ -1325,6 +3078,32 @@ export class ClaudeSession implements RuntimeSession {
         }
       }
     }
+  }
+
+  /**
+   * No restarted query could start (recoverRestart gave up): end the session paused, not failed. Unless the user held
+   * the run (interrupt or window cap) or a message of theirs never reached a started query, RunManager resumes it at
+   * pausedUntil (a fresh resume of the same session, without this run's run-scoped servers). Otherwise autoResume is
+   * false with no pausedUntil and the run waits for the user. An undelivered message is never replayed (review M1):
+   * the pause reason asks the user to send it again, so it cannot arrive twice and RESUME_TEXT never replaces it.
+   */
+  private endPausedAfterRestart(why: string): void {
+    this.pausedEnd = true
+    this.ending = true
+    const undelivered = this.undeliveredUserMessages()
+    // A run the user interrupted (or the window cap stopped) waits for the user, never auto-resumes (review N1).
+    const autoResume = !(this.held || this.capTripped || undelivered > 0)
+    const pausedUntil = autoResume ? Date.now() + MCP_RESTART_PAUSE_MS : undefined
+    const base = this.restartForConfig ? 'The session could not be resumed after a configuration change.' : 'The session could not be resumed after attaching an MCP server.'
+    const resend = undelivered
+      ? ` ${undelivered === 1 ? 'Your last message was' : `Your last ${undelivered} messages were`} not delivered; send ${undelivered === 1 ? 'it' : 'them'} again to continue.`
+      : ''
+    const reason = base + resend
+    const when = pausedUntil ? `it resumes at ${new Date(pausedUntil).toLocaleString()} or when you continue it` : 'it waits until you continue it'
+    this.log('error', `${base} Pausing the run; ${when}. Last error: ${why}`)
+    this.transcript(ROOT_ID, { kind: 'system', text: `${base} The run is paused.${resend}`, detail: why }, { source: 'harness' })
+    this.setState(ROOT_ID, 'idle', 'Paused')
+    this.emit({ type: 'run.status', runId: this.ctx.run.id, status: 'paused', ...(pausedUntil ? { pausedUntil } : {}), pauseReason: reason, autoResume })
   }
 
   /** The run's closing status: 'error' with the readable message after an auth failure, else 'finished'. */
@@ -1344,6 +3123,8 @@ export class ClaudeSession implements RuntimeSession {
     this.log('error', `Authentication failed${detail ? `: ${detail}` : ''}`)
     this.partial.clearAll()
     this.setState(ROOT_ID, 'error', 'Connection refused')
+    // Every root turn end is reported, an auth failure included (the result that follows is ignored).
+    this.continuation.skipTurn(this.reportRootTurnEnd({ ok: false, isAuthError: true, ...(this.limited ? { limited: true } : {}) }))
     this.ending = true
     void this.stop()
   }
@@ -1357,6 +3138,15 @@ export class ClaudeSession implements RuntimeSession {
           const root = this.ensureAgent(ROOT_ID)
           root.model = msg.model
           this.upsert(root)
+          this.sessionId = msg.session_id
+          this.turnInFlight = true
+          this.handBackSince = undefined
+          this.queryInitSeen = true
+          this.preInit = []
+          // A restarted query that starts clears the failure count, so a later restart gets its own retries.
+          this.restartFailures = 0
+          // A query that started holds its own plugin: plugins it replaced (or a failed restart built) can go now.
+          this.retirePlugins()
           this.emit({ type: 'run.status', runId, status: 'running', sessionId: msg.session_id })
           // The SDK re-emits init on every resumed turn (reports landing, harness messages); log it once.
           if (!this.sessionLogged) {
@@ -1365,8 +3155,14 @@ export class ClaudeSession implements RuntimeSession {
           }
           this.startUsagePolling()
         } else if (msg.subtype === 'task_started') {
-          // Background shell commands and MCP calls are tasks too; only subagents belong on the chart.
-          if (msg.task_type && msg.task_type !== 'local_agent') break
+          if ((!msg.task_type || msg.task_type === 'local_agent') && !this.agents.has(msg.task_id)) this.noteActivity('subagent')
+          // Background shell commands and MCP calls are tasks too; only subagents belong on the chart. The others are
+          // counted until they end, because an MCP restart would kill them (review M5). Ambient tasks (watchers,
+          // housekeeping) are left out: the SDK says they are not activity, and some never end.
+          if (msg.task_type && msg.task_type !== 'local_agent') {
+            if (!msg.ambient && !msg.skip_transcript) this.backgroundTasks.add(msg.task_id)
+            break
+          }
           // A SendMessage to a finished subagent resumes it with parent_task_id = the messenger (possibly its own
           // descendant); resolveParent keeps an existing agent's parent so the tree can never gain a cycle.
           const candidate = msg.parent_task_id ?? (msg.tool_use_id ? this.toolUseIssuer.get(msg.tool_use_id) : undefined)
@@ -1409,14 +3205,22 @@ export class ClaudeSession implements RuntimeSession {
           const root = this.ensureAgent(ROOT_ID)
           countUsage(root, 'retries')
           this.upsert(root)
+        } else if (msg.subtype === 'task_updated') {
+          const st = msg.patch?.status
+          if (st === 'completed' || st === 'failed' || st === 'killed') this.backgroundTaskEnded(msg.task_id)
         } else if (msg.subtype === 'task_notification') {
+          this.backgroundTaskEnded(msg.task_id)
           const a = this.agents.get(msg.task_id)
           if (a) {
+            // SubagentStop usually marked it done already; only a first finish opens the hand-back window.
+            const firstFinish = a.state !== 'done' && a.state !== 'error'
             a.state = msg.status === 'completed' ? 'done' : 'error'
             a.activity = msg.status === 'completed' ? 'Reported back' : `Task ${msg.status}`
             a.result = a.result ?? msg.summary
             a.endedAt = Date.now()
             this.upsert(a)
+            if (firstFinish) this.reportFinished()
+            else this.noteActivity('report')
             void this.integrator.onSubagentFinished(a.id)
           }
         }
@@ -1517,10 +3321,9 @@ export class ClaudeSession implements RuntimeSession {
         if (Array.isArray(content)) {
           for (const block of content) {
             if (block.type === 'tool_result') {
-              if (this.ctx.resumeSessionId) {
-                if (this.seenToolResults.has(block.tool_use_id)) continue
-                this.seenToolResults.add(block.tool_use_id)
-              }
+              // A resumed session (continued run or MCP restart) may replay history; show each result once.
+              if ((this.ctx.resumeSessionId || this.restarts > 0) && this.seenToolResults.has(block.tool_use_id)) continue
+              this.seenToolResults.add(block.tool_use_id)
               this.transcript(agentId, {
                 kind: 'tool_result',
                 toolUseId: block.tool_use_id,
@@ -1553,6 +3356,8 @@ export class ClaudeSession implements RuntimeSession {
           break
         }
         const root = this.ensureAgent(ROOT_ID)
+        const interrupted = this.interruptPending
+        this.interruptPending = false
         if (msg.subtype === 'success') {
           root.result = msg.result
           root.state = 'idle'
@@ -1560,16 +3365,36 @@ export class ClaudeSession implements RuntimeSession {
             (x) => x.id !== ROOT_ID && x.state !== 'done' && x.state !== 'error'
           )
           root.activity = reportsRunning ? 'Waiting on reports…' : 'Waiting for you'
+        } else if (interrupted && msg.subtype !== 'error_max_budget_usd') {
+          // The user's interrupt ends the turn with a non-success subtype (unverified live which one); not an error.
+          root.state = 'idle'
+          root.activity = 'Interrupted'
+          this.log('info', `Turn interrupted (${msg.subtype})`)
         } else {
           root.state = 'error'
           root.activity = msg.subtype.replace(/^error_/, '').replace(/_/g, ' ')
           this.log('error', `Run ended: ${msg.subtype}`)
         }
         this.upsert(root)
+        // Exec settlement (cli-spec 6.2(2)): every root turn end is reported before 'idle', failed and interrupted
+        // ones included (an interrupted turn is held by RunManager, never finalized as failed).
+        const ok = msg.subtype === 'success'
+        const turnGen = this.reportRootTurnEnd({
+          ok,
+          ...(ok ? {} : { errorSubtype: msg.subtype }),
+          ...(interrupted ? { interrupted: true } : {}),
+          ...(this.limited ? { limited: true } : {})
+        })
         this.emit({ type: 'run.status', runId, status: 'idle' })
         // Unattended execution: after a short delay (a report that just landed wakes the orchestrator
         // first), remind it of the plan's remaining steps. The driver re-checks every condition then.
-        if (msg.subtype === 'success' && !this.isSetup) this.continuation.turnEnded()
+        // With an MCP restart due, the restart's notice re-engages the orchestrator instead (onTurnEnded, review H1).
+        // A failed turn is never nudged; its generation is settled at once (skipTurn).
+        if (!ok) this.continuation.skipTurn(turnGen)
+        else if (this.isSetup) this.continuation.turnEnded(turnGen)
+        else this.onTurnEnded(turnGen)
+        // MCP servers approved this turn reach the agents through a restart once everything is idle.
+        if (this.restartDue()) this.scheduleMcpRestart()
         if (this.limited && !this.ending) {
           // Every further request would be rejected too. End the session; the run manager pauses the
           // run and continues it when the window resets.
@@ -1784,13 +3609,30 @@ function fromSdkSuggestions(updates: PermissionUpdate[]): PermissionSuggestion[]
   })
 }
 
-/** Shared suggestions back to SDK updates, all scoped to this session (persistence is the harness's job). */
-function toSdkSessionUpdates(suggestions: PermissionSuggestion[]): PermissionUpdate[] {
-  return suggestions.map((s): PermissionUpdate => {
-    if (s.type === 'setMode') return { type: 'setMode', mode: s.mode as SdkPermissionMode, destination: 'session' }
-    if ('directories' in s) return { type: s.type, directories: [...s.directories], destination: 'session' }
-    return { type: s.type, rules: s.rules.map((r) => ({ ...r })), behavior: s.behavior, destination: 'session' }
-  })
+/**
+ * Shared suggestions back to SDK updates, all scoped to this session (persistence is the harness's job). Allow rules for
+ * Bash / PowerShell are left out of addRules / replaceRules (review H1): the CLI's matcher strips wrappers (timeout,
+ * nice, nohup, ...) and leading env assignments, so a session `Bash(npm test:*)` would approve `timeout 5 npm test
+ * --script-shell=calc`, which the PreToolUse hook (the only shell allow path, through sessionRules) refuses. A rules
+ * update left empty is dropped. Pure.
+ */
+export function toSdkSessionUpdates(suggestions: PermissionSuggestion[]): PermissionUpdate[] {
+  const out: PermissionUpdate[] = []
+  for (const s of suggestions) {
+    if (s.type === 'setMode') out.push({ type: 'setMode', mode: s.mode as SdkPermissionMode, destination: 'session' })
+    else if ('directories' in s) out.push({ type: s.type, directories: [...s.directories], destination: 'session' })
+    else {
+      const dropShell = s.behavior === 'allow' && s.type !== 'removeRules'
+      const rules = dropShell ? s.rules.filter((r) => cliAllowedTools([ruleText(r)]).length > 0) : s.rules
+      if (dropShell && !rules.length) continue
+      out.push({ type: s.type, rules: rules.map((r) => ({ ...r })), behavior: s.behavior, destination: 'session' })
+    }
+  }
+  return out
+}
+
+function ruleText(r: { toolName: string; ruleContent?: string }): string {
+  return r.ruleContent === undefined ? r.toolName : `${r.toolName}(${r.ruleContent})`
 }
 
 type SdkPermissionMode = Extract<PermissionUpdate, { type: 'setMode' }>['mode']

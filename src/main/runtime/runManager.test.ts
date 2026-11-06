@@ -6,7 +6,7 @@ import type { AgentInstance, ImageAttachment, McpServerSpec, ModelPriceOverride,
 import { setModelTokens } from './runUsage'
 import type { RunSkill, RuntimeAdapter, RuntimeContext, RuntimeSession } from './types'
 import { ROOT_AGENT_ID } from './types'
-import { RESUME_TEXT, RUN_MESSAGE_INBOUND_LIMIT, RUN_MESSAGE_LIMIT, RUN_MESSAGE_QUEUE_LIMIT, RUN_MESSAGE_RECEIVE_TIMEOUT_MS, RUN_SKILL_LOAD_LIMIT, RunManager, sessionChain, type RunManagerOptions } from './runManager'
+import { RESUME_TEXT, RUN_MESSAGE_INBOUND_LIMIT, RUN_MESSAGE_LIMIT, RUN_MESSAGE_QUEUE_LIMIT, RUN_MESSAGE_RECEIVE_TIMEOUT_MS, RUN_SKILL_LOAD_LIMIT, RunManager, refreshRoleGrants, sessionChain, type RunManagerOptions } from './runManager'
 import { MockAdapter, type MockScript, type MockSession } from './mock'
 import { harnessToolsFor } from './harnessTools'
 import { RunStore } from '../store/runs'
@@ -14,6 +14,7 @@ import type { SetupService } from '../setup/service'
 import { project as makeProject, runSummary } from './testHelpers'
 import { SET_PLAN_NUDGE, SET_PLAN_SUMMARY, limitReachedText } from './continuation'
 import { defaultConnections } from '@shared/defaults'
+import { log } from '../log'
 
 // The real logger writes under Electron's userData; tests have no Electron.
 vi.mock('../log', () => ({ logRunEvent: () => {}, logPermission: () => {}, log: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} } }))
@@ -617,7 +618,8 @@ describe('RunManager with the mock adapter', () => {
     expect(req.request.toolName).toBe('Edit')
     expect(req.request.agentId).toBe('mock-report-1')
     expect(req.request.summary).toBe('Editing example.ts')
-    expect(req.request.ruleLabels).toEqual(['Edit'])
+    // Edit tools never get a whole-tool rule (UX H4): the card offers auto-accept edits instead.
+    expect(req.request.ruleLabels).toEqual(['Auto-accept file edits in this project'])
     m.decide(run.id, req.request.id, { behavior: 'allow' })
 
     await waitFor(isType('run.status', (e) => e.status === 'idle'))
@@ -669,7 +671,7 @@ describe('RunManager with the mock adapter', () => {
       const { m } = manager(p, script('gh repo create a/b --public && git push -u origin main'))
       const run = await m.start({ project: p, prompt: 'Publish' })
       const req = await waitFor(isType('rules.request'))
-      expect(req.request).toMatchObject({ agentId: 'root', rules: ['Bash(gh:*)', 'Bash(git push:*)'], reason: 'Publish the repo', flagged: ['Bash(git push:*)'] })
+      expect(req.request).toMatchObject({ agentId: 'root', rules: ['Bash(gh:*)', 'Bash(git push:*)'], reason: 'Publish the repo', flagged: ['Bash(gh:*)', 'Bash(git push:*)'] })
       m.decideRules(run.id, req.request.id, { behavior: 'grant', scope: 'run' })
       await waitFor(isType('rules.resolved'))
       await waitFor(isType('run.status', (e) => e.status === 'idle'))
@@ -690,8 +692,29 @@ describe('RunManager with the mock adapter', () => {
       m.decideRules(run.id, req.request.id, { behavior: 'grant', scope: 'project' })
       await waitFor(isType('run.status', (e) => e.status === 'idle'))
       const saved = JSON.parse(readFileSync(join(p.path, '.claude', 'settings.local.json'), 'utf8')) as { permissions: { allow: string[] } }
-      expect(saved.permissions.allow).toEqual(['Bash(gh:*)', 'Bash(git push:*)'])
+      // Bash(gh:*) covers every gh verb: like permissions:add, it is never saved for the project (reviewer-4 M-2).
+      expect(saved.permissions.allow).toEqual(['Bash(git push:*)'])
+      expect(events.some((e) => e.type === 'log' && e.level === 'warn' && /Not saved for the project: "Bash\(gh:\*\)" would allow far more than one command.*It applies to this run only/.test(e.message))).toBe(true)
       expect(events.filter(isType('transcript')).some((e) => e.entry.block.kind === 'tool_result' && /GRANTED \(saved for this project\)/.test(String(e.entry.block.content)))).toBe(true)
+      await m.stop(run.id)
+    })
+
+    it('a project grant keeps a blanket Edit rule out of the settings file and warns', async () => {
+      const p = makeProject({ path: join(dir, 'repo') })
+      const blanket: MockScript = {
+        work: [
+          { type: 'harness', name: 'request_permission_rules', args: { rules: ['Edit', 'Bash(gh repo view:*)'], reason: 'Edit elsewhere' } },
+          { type: 'tool', name: 'Bash', input: { command: 'gh repo view' }, ask: true, result: 'ok' }
+        ]
+      }
+      const { m } = manager(p, blanket)
+      const run = await m.start({ project: p, prompt: 'Go' })
+      const req = await waitFor(isType('rules.request'))
+      m.decideRules(run.id, req.request.id, { behavior: 'grant', scope: 'project' })
+      await waitFor(isType('run.status', (e) => e.status === 'idle'))
+      const saved = JSON.parse(readFileSync(join(p.path, '.claude', 'settings.local.json'), 'utf8')) as { permissions: { allow: string[] } }
+      expect(saved.permissions.allow).toEqual(['Bash(gh repo view:*)'])
+      expect(events.some((e) => e.type === 'log' && e.level === 'warn' && /Not saved for the project \(too broad\): Edit/.test(e.message))).toBe(true)
       await m.stop(run.id)
     })
 
@@ -735,6 +758,24 @@ describe('RunManager with the mock adapter', () => {
     await m.stop(run.id)
   })
 
+  it.each([
+    [{ behavior: 'allow', scope: 'project' }, true],
+    [{ behavior: 'allow', scope: 'session' }, false],
+    [{ behavior: 'allow', scope: 'once' }, false],
+    [{ behavior: 'allow' }, false],
+    [{ behavior: 'deny', message: 'No' }, false]
+  ] as const)('permission.resolved for %j carries savedToProject only for a project allow', async (decision, saved) => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    const { m } = manager(p)
+    const run = await m.start({ project: p, prompt: 'Change x' })
+    const req = await waitFor(isType('permission.request'))
+    m.decide(run.id, req.request.id, decision as never)
+    const resolved = await waitFor(isType('permission.resolved'))
+    expect(resolved).toEqual({ type: 'permission.resolved', runId: run.id, requestId: req.request.id, ...(saved ? { savedToProject: true } : {}) })
+    expect('savedToProject' in resolved).toBe(saved)
+    await m.stop(run.id)
+  })
+
   it('stopping while a permission is pending ends the run and denies the request', async () => {
     const p = makeProject({ path: join(dir, 'repo') })
     const { m } = manager(p)
@@ -766,7 +807,7 @@ describe('RunManager with the mock adapter', () => {
 
     const perm = await waitFor(isType('permission.request'))
     expect(perm.request.toolName).toBe('Bash')
-    expect(perm.request.ruleLabels).toEqual(['Bash(git:*)'])
+    expect(perm.request.ruleLabels).toEqual(['Bash(git status:*)'])
     m.decide(run.id, perm.request.id, { behavior: 'allow', scope: 'session' })
 
     // Ask for changes on the first architecture proposal; the mock proposes again.
@@ -1024,6 +1065,39 @@ describe('RunManager with the mock adapter', () => {
       await waitFor(isType('run.status', (e) => e.status === 'finished'))
       expect(events.some((e) => e.type === 'run.status' && e.status === 'paused')).toBe(false)
     })
+
+    it('an adapter pause with autoResume false (held run, failed MCP restart) schedules no resume', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      const p = makeProject({ path: join(dir, 'repo') })
+      const pauses: Array<boolean | undefined> = [false, undefined]
+      const adapter: RuntimeAdapter = {
+        id: 'mock',
+        complete: async () => '',
+        start: async (ctx) => {
+          ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'running' })
+          const autoResume = pauses.shift()
+          ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'paused', pauseReason: 'MCP restart failed', autoResume })
+          return { send: async () => {}, interrupt: async () => {}, stop: async () => {}, finished: Promise.resolve() }
+        }
+      }
+      const store = new RunStore(join(dir, 'data'))
+      const m = new RunManager({ mock: adapter }, sink(), store, fakeSetup(p).service, () => 100, { resolveProject: () => p })
+      const continueRun = vi.spyOn(m, 'continueRun')
+
+      const held = await m.start({ project: p, prompt: 'Go' })
+      await vi.waitFor(() => expect(m.summaryOf(held.id)).toBeUndefined())
+      expect(store.get(held.id)).toMatchObject({ status: 'paused', autoResume: false })
+      expect(m.hasAutoResume(held.id)).toBe(false)
+      vi.advanceTimersByTime(10 * 60 * 1000)
+      await Promise.resolve()
+      expect(continueRun).not.toHaveBeenCalled()
+
+      // A pause that does not say false keeps the existing auto-resume behaviour.
+      const other = await m.start({ project: p, prompt: 'Go again' })
+      await vi.waitFor(() => expect(m.summaryOf(other.id)).toBeUndefined())
+      expect(m.hasAutoResume(other.id)).toBe(true)
+      await m.stopAll()
+    })
   })
 })
 
@@ -1138,16 +1212,56 @@ describe('RunManager adapter selection, connections and MCP', () => {
       await m.stopAll()
     })
 
-    it('refuses a work run whose roles mix families, before creating the run', async () => {
+    it('starts a LiteLLM work run whose reports use another family on the root adapter, with one info line', async () => {
+      const info = vi.spyOn(log, 'info')
       const claude = recorder('claude')
       const codex = recorder('codex')
       const p = litellm('sonnet', { engineer: 'gpt-5', reviewer: 'gpt-5' })
+      const { m } = setupManager(p, { claude: claude.adapter, codex: codex.adapter })
+      await m.start({ project: p, prompt: 'go' })
+      expect(claude.ctxs).toHaveLength(1)
+      expect(codex.ctxs).toHaveLength(0)
+      // Each report keeps its own model id; the root's family picked the adapter.
+      expect(claude.ctxs[0].roles.find((r) => r.slug === 'engineer')?.model).toBe('gpt-5')
+      const lines = info.mock.calls.map((c) => String(c[0])).filter((l) => l.includes('-family models through the proxy'))
+      expect(lines).toEqual([expect.stringMatching(/^LiteLLM project .*: the orchestrator runs on Claude; Engineer, Reviewer use OpenAI-family models through the proxy\.$/)])
+      // The reverse: a GPT root runs on Codex with a Claude report.
+      const q = litellm('gpt-5', { engineer: 'claude-sonnet-4-5' })
+      await m.start({ project: q, prompt: 'go' })
+      expect(codex.ctxs).toHaveLength(1)
+      expect(codex.ctxs[0].roles.find((r) => r.slug === 'engineer')?.model).toBe('claude-sonnet-4-5')
+      info.mockRestore()
+      await m.stopAll()
+    })
+
+    it('refuses a LiteLLM work run whose root has no model of its own while reports use another family', async () => {
+      const claude = recorder('claude')
+      const codex = recorder('codex')
+      const p = litellm('inherit', { engineer: 'gpt-5' })
       const { m, store } = setupManager(p, { claude: claude.adapter, codex: codex.adapter })
       await expect(m.start({ project: p, prompt: 'go' })).rejects.toThrow(
-        "Roles Engineer, Reviewer use OpenAI-family models, but this LiteLLM project's orchestrator runs on Claude. Pick models of one family."
+        "Roles Engineer use OpenAI-family models, but this LiteLLM project's orchestrator has no model of its own, so OrgAI cannot tell which runtime to use. Give the orchestrator a model."
       )
       expect(store.list(p.id)).toEqual([])
       expect(events).toEqual([])
+      expect(claude.ctxs.length + codex.ctxs.length).toBe(0)
+      // An 'inherit' root with every report on the default (Claude) family still starts.
+      const ok = litellm('inherit', { engineer: 'sonnet', reviewer: 'sonnet' })
+      await m.start({ project: ok, prompt: 'go' })
+      expect(claude.ctxs).toHaveLength(1)
+      await m.stopAll()
+    })
+
+    it('still refuses a mixed chart on the single-family connections (anthropic, openai)', async () => {
+      const claude = recorder('claude')
+      const codex = recorder('codex')
+      const base = litellm('sonnet', { engineer: 'gpt-5' })
+      const p: Project = { ...base, provider: { ...base.provider, connection: 'anthropic' } }
+      const { m, store } = setupManager(p, { claude: claude.adapter, codex: codex.adapter })
+      await expect(m.start({ project: p, prompt: 'go' })).rejects.toThrow(
+        "Roles Engineer use OpenAI-family models, but this Anthropic project's orchestrator runs on Claude. Pick models of one family."
+      )
+      expect(store.list(p.id)).toEqual([])
       expect(claude.ctxs.length + codex.ctxs.length).toBe(0)
     })
 
@@ -1435,6 +1549,22 @@ describe('RunManager adapter selection, connections and MCP', () => {
       await m.stopAll()
     })
 
+    it('right after approval ctx.mcpServers() and resolvedMcpServers() carry the card-edited roles (run and project scope)', async () => {
+      for (const scope of ['run', 'project'] as const) {
+        const p = makeProject({ path: join(dir, 'repo') })
+        const { m, ctxs } = withMcp(p)
+        const run = await m.start({ project: p, prompt: 'go' })
+        const ctx = ctxs[0]
+        const { pending, req } = await ask(ctx)
+        expect(ctx.mcpServers!()).toEqual([])
+        m.answerMcpInstall(run.id, req.id, { approved: true, scope, secrets: { GITHUB_TOKEN: SECRET }, spec: spec({ roles: ['dev'] }) })
+        await pending
+        expect(ctx.mcpServers!().map((s) => [s.name, s.roles])).toEqual([['github', ['dev']]])
+        expect((await ctx.resolvedMcpServers!()).map((r) => r.spec.roles)).toEqual([['dev']])
+        await m.stopAll()
+      }
+    })
+
     it('a run-scoped server never reads stored secrets: only the values typed on the card', async () => {
       const p = makeProject({ path: join(dir, 'repo') })
       const { m, ctxs, mcp } = withMcp(p)
@@ -1647,6 +1777,418 @@ describe('RunManager session chains', () => {
     const next = await m.continueRun(p, a.id, 'more A')
     expect(next.resumedFrom).toBe(a.id)
     await m.stopAll()
+  })
+})
+
+describe('who ended a run (RunSummary.endedBy)', () => {
+  it('End session marks the run endedBy user, without endedWithApp', async () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    const { m, store } = manager(p, { work: [{ type: 'text', text: 'ok' }] })
+    const run = await m.start({ project: p, prompt: 'Work' })
+    await waitFor(isType('run.status', (e) => e.runId === run.id && e.status === 'idle'))
+    await m.stop(run.id)
+    await vi.waitFor(() => expect(m.summaryOf(run.id)).toBeUndefined())
+    expect(store.get(run.id)).toMatchObject({ status: 'finished', endedBy: 'user' })
+    expect(store.get(run.id)!.endedWithApp).toBeUndefined()
+    // A later quit does not relabel a run the user already ended.
+    await m.stopAll({ reason: 'quit' })
+    expect(store.get(run.id)!.endedBy).toBe('user')
+    expect(store.get(run.id)!.endedWhile).toBeUndefined()
+  })
+
+  it('stopAll on quit marks live runs endedBy app with endedWithApp, on disk before it resolves', async () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    const { m, store } = manager(p, { work: [{ type: 'text', text: 'ok' }] })
+    const a = await m.start({ project: p, prompt: 'A' })
+    const b = await m.start({ project: p, prompt: 'B' })
+    await waitFor(isType('run.status', (e) => e.runId === a.id && e.status === 'idle'))
+    await waitFor(isType('run.status', (e) => e.runId === b.id && e.status === 'idle'))
+    await m.stopAll({ reason: 'quit' })
+    // A fresh store reads the index from disk: the summaries were flushed before stopAll resolved.
+    const disk = new RunStore(join(dir, 'data'))
+    for (const id of [a.id, b.id]) {
+      expect(store.get(id)).toMatchObject({ status: 'finished', endedBy: 'app', endedWithApp: true })
+      expect(disk.get(id)).toMatchObject({ status: 'finished', endedBy: 'app', endedWithApp: true, endedWhile: 'waiting' })
+      expect(disk.get(id)!.autoResume).toBeUndefined()
+    }
+    // The root still settles as a cut run (not "Waiting for you").
+    const root = m.get(a.id)?.agents[ROOT_AGENT_ID]
+    expect(root?.state).toBe('done')
+    expect(events.some((e) => e.type === 'run.status' && e.status === 'paused')).toBe(false)
+  })
+
+  it('stopAll on quit writes a run that never reported its end as ended by the app', async () => {
+    const adapter: RuntimeAdapter = {
+      id: 'mock',
+      complete: async () => '',
+      start: async (ctx) => {
+        ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'running', sessionId: 's-silent' })
+        return { send: async () => {}, interrupt: async () => {}, stop: async () => {}, finished: new Promise<void>(() => {}) }
+      }
+    }
+    const p = makeProject({ path: join(dir, 'repo') })
+    const store = new RunStore(join(dir, 'data'))
+    const m = new RunManager({ mock: adapter }, sink(), store, fakeSetup(p).service, () => 100)
+    const run = await m.start({ project: p, prompt: 'Silent' })
+    await m.stopAll({ reason: 'quit' })
+    expect(new RunStore(join(dir, 'data')).get(run.id)).toMatchObject({
+      status: 'finished',
+      endedBy: 'app',
+      endedWithApp: true,
+      endedWhile: 'working'
+    })
+  })
+
+  it('stopAll on quit counts a running run with an open card as waiting', async () => {
+    const adapter: RuntimeAdapter = {
+      id: 'mock',
+      complete: async () => '',
+      start: async (ctx) => {
+        ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'running', sessionId: 's-card' })
+        void ctx.requestQuestion({ agentId: 'root', question: 'q?', options: [{ label: 'a' }, { label: 'b' }], allowMultiple: false, allowFreeText: false })
+        return {
+          send: async () => {},
+          interrupt: async () => {},
+          stop: async () => ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'finished' }),
+          finished: new Promise<void>(() => {})
+        }
+      }
+    }
+    const p = makeProject({ path: join(dir, 'repo') })
+    const store = new RunStore(join(dir, 'data'))
+    const m = new RunManager({ mock: adapter }, sink(), store, fakeSetup(p).service, () => 100)
+    const run = await m.start({ project: p, prompt: 'Ask' })
+    await vi.waitFor(() => expect(m.pendingCards(run.id).questions).toHaveLength(1))
+    await m.stopAll({ reason: 'quit' })
+    expect(new RunStore(join(dir, 'data')).get(run.id)).toMatchObject({ status: 'finished', endedBy: 'app', endedWhile: 'waiting' })
+  })
+
+  it('a run that finished on its own has no endedBy', async () => {
+    const adapter: RuntimeAdapter = {
+      id: 'mock',
+      complete: async () => '',
+      start: async (ctx) => {
+        ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'running', sessionId: 's-self' })
+        ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'finished' })
+        return { send: async () => {}, interrupt: async () => {}, stop: async () => {}, finished: Promise.resolve() }
+      }
+    }
+    const p = makeProject({ path: join(dir, 'repo') })
+    const store = new RunStore(join(dir, 'data'))
+    const m = new RunManager({ mock: adapter }, sink(), store, fakeSetup(p).service, () => 100)
+    const run = await m.start({ project: p, prompt: 'Done' })
+    await vi.waitFor(() => expect(m.summaryOf(run.id)).toBeUndefined())
+    await m.stopAll({ reason: 'quit' })
+    const saved = store.get(run.id)!
+    expect(saved.status).toBe('finished')
+    expect(saved.endedBy).toBeUndefined()
+    expect(saved.endedWithApp).toBeUndefined()
+    expect(saved.endedWhile).toBeUndefined()
+    // Its broadcast statuses carry no end facts either.
+    const statuses = events.filter((e): e is Extract<RunEvent, { type: 'run.status' }> => e.type === 'run.status' && e.runId === run.id)
+    expect(statuses.some((e) => e.status === 'finished')).toBe(true)
+    for (const e of statuses) {
+      expect(e.endedBy).toBeUndefined()
+      expect(e.endedWhile).toBeUndefined()
+    }
+  })
+
+  describe('the run.status event carries them', () => {
+    const statusesOf = (runId: string): Extract<RunEvent, { type: 'run.status' }>[] =>
+      events.filter((e): e is Extract<RunEvent, { type: 'run.status' }> => e.type === 'run.status' && e.runId === runId)
+
+    it('End session broadcasts stopping then finished with endedBy user', async () => {
+      const p = makeProject({ path: join(dir, 'repo') })
+      const { m } = manager(p, { work: [{ type: 'text', text: 'ok' }] })
+      const run = await m.start({ project: p, prompt: 'Work' })
+      await waitFor(isType('run.status', (e) => e.runId === run.id && e.status === 'idle'))
+      await m.stop(run.id)
+      await waitFor(isType('run.status', (e) => e.runId === run.id && e.status === 'finished'))
+      const st = statusesOf(run.id)
+      const stopping = st.findIndex((e) => e.status === 'stopping')
+      const finished = st.findIndex((e) => e.status === 'finished')
+      expect(stopping).toBeGreaterThanOrEqual(0)
+      expect(finished).toBeGreaterThan(stopping)
+      expect(st[stopping].endedBy).toBe('user')
+      expect(st[finished].endedBy).toBe('user')
+      expect(st[finished].endedWhile).toBeUndefined()
+      // Earlier statuses carry none.
+      for (const e of st.slice(0, stopping)) expect(e.endedBy).toBeUndefined()
+    })
+
+    it('a quit cut broadcasts finished with endedBy app and endedWhile', async () => {
+      const p = makeProject({ path: join(dir, 'repo') })
+      const { m } = manager(p, { work: [{ type: 'text', text: 'ok' }] })
+      const run = await m.start({ project: p, prompt: 'Work' })
+      await waitFor(isType('run.status', (e) => e.runId === run.id && e.status === 'idle'))
+      await m.stopAll({ reason: 'quit' })
+      const fin = statusesOf(run.id).filter((e) => e.status === 'finished')
+      expect(fin.length).toBeGreaterThan(0)
+      for (const e of fin) expect(e).toMatchObject({ endedBy: 'app', endedWhile: 'waiting' })
+      expect(statusesOf(run.id).some((e) => e.status === 'stopping')).toBe(false)
+    })
+
+    it('a session that never reports its end gets a finished broadcast from the quit write-out', async () => {
+      const adapter: RuntimeAdapter = {
+        id: 'mock',
+        complete: async () => '',
+        start: async (ctx) => {
+          ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'running', sessionId: 's-mute' })
+          return { send: async () => {}, interrupt: async () => {}, stop: async () => {}, finished: new Promise<void>(() => {}) }
+        }
+      }
+      const p = makeProject({ path: join(dir, 'repo') })
+      const m = new RunManager({ mock: adapter }, sink(), new RunStore(join(dir, 'data')), fakeSetup(p).service, () => 100)
+      const run = await m.start({ project: p, prompt: 'Mute' })
+      await m.stopAll({ reason: 'quit' })
+      const fin = statusesOf(run.id).filter((e) => e.status === 'finished')
+      expect(fin).toHaveLength(1)
+      expect(fin[0]).toMatchObject({ endedBy: 'app', endedWhile: 'working' })
+    })
+
+    it('drops end facts an adapter put on its own events', async () => {
+      const adapter: RuntimeAdapter = {
+        id: 'mock',
+        complete: async () => '',
+        start: async (ctx) => {
+          ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'running', sessionId: 's-forge', endedBy: 'user' })
+          ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'finished', endedBy: 'app', endedWhile: 'working' })
+          return { send: async () => {}, interrupt: async () => {}, stop: async () => {}, finished: Promise.resolve() }
+        }
+      }
+      const p = makeProject({ path: join(dir, 'repo') })
+      const m = new RunManager({ mock: adapter }, sink(), new RunStore(join(dir, 'data')), fakeSetup(p).service, () => 100)
+      const run = await m.start({ project: p, prompt: 'Forge' })
+      await vi.waitFor(() => expect(m.summaryOf(run.id)).toBeUndefined())
+      for (const e of statusesOf(run.id)) {
+        expect(e.endedBy).toBeUndefined()
+        expect(e.endedWhile).toBeUndefined()
+      }
+    })
+  })
+})
+
+describe('quitting (markQuit, the quitting flag, starts in flight)', () => {
+  /** An adapter whose session reports running and whose stop() hangs unless `stopEnds` (then it emits finished). */
+  function quitAdapter(opts: { stopEnds?: boolean; opening?: Promise<void>; endsOnItsOwn?: boolean } = {}) {
+    const stops: string[] = []
+    const adapter: RuntimeAdapter = {
+      id: 'mock',
+      complete: async () => '',
+      start: async (ctx) => {
+        await opts.opening
+        ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'running', sessionId: `s-${ctx.run.id}` })
+        if (opts.endsOnItsOwn) ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'finished' })
+        return {
+          send: async () => {},
+          interrupt: async () => {},
+          stop: () => {
+            stops.push(ctx.run.id)
+            if (!opts.stopEnds) return new Promise<void>(() => {})
+            ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'finished' })
+            return Promise.resolve()
+          },
+          finished: new Promise<void>(() => {})
+        }
+      }
+    }
+    return { adapter, stops }
+  }
+
+  function quitManager(adapter: RuntimeAdapter) {
+    const p = makeProject({ path: join(dir, 'repo') })
+    const store = new RunStore(join(dir, 'data'))
+    const m = new RunManager({ mock: adapter }, sink(), store, fakeSetup(p).service, () => 100)
+    return { p, store, m }
+  }
+
+  /** The run's record file as written, not through the store (getRecord swaps in the index summary). */
+  const recordOnDisk = (runId: string): RunSummary => (JSON.parse(readFileSync(join(dir, 'data', 'runs', `${runId}.json`), 'utf8')) as { summary: RunSummary }).summary
+
+  it('markQuit writes index and record at once when a session never stops (the deadline path)', async () => {
+    const { adapter } = quitAdapter()
+    const { p, m } = quitManager(adapter)
+    const run = await m.start({ project: p, prompt: 'Hangs' })
+    let settled = false
+    void m.stopAll({ reason: 'quit' }).then(() => (settled = true))
+    await sleep(5)
+    expect(settled).toBe(false)
+    m.markQuit()
+    const want = { status: 'finished', endedBy: 'app', endedWithApp: true, endedWhile: 'working' }
+    expect(new RunStore(join(dir, 'data')).get(run.id)).toMatchObject(want)
+    expect(recordOnDisk(run.id)).toMatchObject(want)
+    // The forced finished summary is broadcast too, once, with who cut it.
+    const fin = events.filter((e) => e.type === 'run.status' && e.runId === run.id && e.status === 'finished')
+    expect(fin).toEqual([{ type: 'run.status', runId: run.id, status: 'finished', endedBy: 'app', endedWhile: 'working' }])
+  })
+
+  it('End session then quit before the session ends keeps endedBy user, on disk from the stopping save', async () => {
+    const { adapter } = quitAdapter()
+    const { p, m } = quitManager(adapter)
+    const run = await m.start({ project: p, prompt: 'Stop me' })
+    void m.stop(run.id)
+    // The raw index (a fresh RunStore would apply the boot normalization, which keeps 'user' too).
+    const index = JSON.parse(readFileSync(join(dir, 'data', 'runs.json'), 'utf8')) as { runs: RunSummary[] }
+    expect(index.runs.find((r) => r.id === run.id)).toMatchObject({ status: 'stopping', endedBy: 'user' })
+    expect(new RunStore(join(dir, 'data')).get(run.id)).toMatchObject({ status: 'finished', endedBy: 'user' })
+    expect(recordOnDisk(run.id).endedBy).toBe('user')
+    void m.stopAll({ reason: 'quit' })
+    m.markQuit()
+    const disk = new RunStore(join(dir, 'data')).get(run.id)!
+    expect(disk).toMatchObject({ status: 'finished', endedBy: 'user' })
+    expect(disk.endedWithApp).toBeUndefined()
+    expect(disk.endedWhile).toBeUndefined()
+    expect(recordOnDisk(run.id)).toMatchObject({ status: 'finished', endedBy: 'user' })
+  })
+
+  it('quit then End session keeps endedBy app', async () => {
+    const { adapter, stops } = quitAdapter()
+    const { p, m } = quitManager(adapter)
+    const run = await m.start({ project: p, prompt: 'Quit first' })
+    void m.stopAll({ reason: 'quit' })
+    void m.stop(run.id)
+    m.markQuit()
+    expect(new RunStore(join(dir, 'data')).get(run.id)).toMatchObject({ status: 'finished', endedBy: 'app', endedWithApp: true })
+    // One session.stop() shared by the quit and End session.
+    expect(stops).toEqual([run.id])
+  })
+
+  it('stopAll waits for a run still opening and stops its session as soon as it opens', async () => {
+    let open: () => void = () => {}
+    const opening = new Promise<void>((r) => (open = r))
+    const { adapter, stops } = quitAdapter({ stopEnds: true, opening })
+    const { p, store, m } = quitManager(adapter)
+    const started = m.start({ project: p, prompt: 'Opening' })
+    await sleep(2)
+    const runId = m.liveRuns()[0].id
+    expect(m.summaryOf(runId)?.status).toBe('starting')
+    let done = false
+    const all = m.stopAll({ reason: 'quit' }).then(() => (done = true))
+    await sleep(5)
+    expect(done).toBe(false)
+    open()
+    await all
+    await started
+    expect(stops).toEqual([runId])
+    expect(store.get(runId)).toMatchObject({ status: 'finished', endedBy: 'app', endedWithApp: true, endedWhile: 'working' })
+    expect(recordOnDisk(runId)).toMatchObject({ status: 'finished', endedBy: 'app' })
+  })
+
+  it('refuses start, send, continueRun and resumeNow once quitting', async () => {
+    const { adapter } = quitAdapter({ stopEnds: true })
+    const { p, m } = quitManager(adapter)
+    const run = await m.start({ project: p, prompt: 'Live' })
+    const quit = m.stopAll({ reason: 'quit' })
+    await expect(m.start({ project: p, prompt: 'New' })).rejects.toThrow('OrgAI is quitting')
+    await expect(m.send(run.id, 'hello')).rejects.toThrow('OrgAI is quitting')
+    await expect(m.continueRun(p, run.id, 'more')).rejects.toThrow('OrgAI is quitting')
+    await expect(m.resumeNow(run.id)).rejects.toThrow('OrgAI is quitting')
+    await quit
+    expect(m.liveRuns().filter((r) => r.id !== run.id)).toEqual([])
+  })
+
+  it('markQuit alone also refuses new runs', async () => {
+    const { adapter } = quitAdapter()
+    const { p, m } = quitManager(adapter)
+    m.markQuit()
+    await expect(m.start({ project: p, prompt: 'New' })).rejects.toThrow('OrgAI is quitting')
+  })
+
+  it('a plain stopAll (not a quit) does not refuse new runs', async () => {
+    const { adapter } = quitAdapter({ stopEnds: true })
+    const { p, m } = quitManager(adapter)
+    await m.stopAll()
+    await expect(m.start({ project: p, prompt: 'Later' })).resolves.toMatchObject({ status: 'running' })
+  })
+
+  it('stopAll leaves a run that already finished (teardown pending) unlabelled', async () => {
+    const { adapter } = quitAdapter({ endsOnItsOwn: true, stopEnds: true })
+    const { p, store, m } = quitManager(adapter)
+    const run = await m.start({ project: p, prompt: 'Done already' })
+    expect(m.summaryOf(run.id)?.status).toBe('finished')
+    await m.stopAll({ reason: 'quit' })
+    m.markQuit()
+    const saved = store.get(run.id)!
+    expect(saved.endedBy).toBeUndefined()
+    expect(saved.endedWithApp).toBeUndefined()
+    expect(saved.endedWhile).toBeUndefined()
+  })
+
+  it('a hung start does not hold back the stop of an open session (review M1)', async () => {
+    const stops: string[] = []
+    let n = 0
+    const adapter: RuntimeAdapter = {
+      id: 'mock',
+      complete: async () => '',
+      start: async (ctx) => {
+        // The second run's adapter.start never settles.
+        if (n++ === 1) await new Promise<void>(() => {})
+        ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'running', sessionId: `s-${ctx.run.id}` })
+        return { send: async () => {}, interrupt: async () => {}, stop: async () => void stops.push(ctx.run.id), finished: new Promise<void>(() => {}) }
+      }
+    }
+    const { p, m } = quitManager(adapter)
+    const open = await m.start({ project: p, prompt: 'Open' })
+    void m.start({ project: p, prompt: 'Hung' })
+    await sleep(2)
+    void m.stopAll({ reason: 'quit' })
+    await sleep(5)
+    expect(stops).toEqual([open.id])
+    m.markQuit()
+    for (const r of [open.id, ...m.liveRuns().map((x) => x.id)]) expect(new RunStore(join(dir, 'data')).get(r)).toMatchObject({ status: 'finished', endedBy: 'app' })
+  })
+
+  it('End session while the session is still opening stops it once it opens (review M2)', async () => {
+    let open: () => void = () => {}
+    const opening = new Promise<void>((r) => (open = r))
+    const { adapter, stops } = quitAdapter({ stopEnds: true, opening })
+    const { p, store, m } = quitManager(adapter)
+    const started = m.start({ project: p, prompt: 'Opening' })
+    await sleep(2)
+    const runId = m.liveRuns()[0].id
+    await m.stop(runId)
+    expect(store.get(runId)).toMatchObject({ status: 'stopping', endedBy: 'user' })
+    open()
+    await started
+    await vi.waitFor(() => expect(stops).toEqual([runId]))
+    expect(store.get(runId)).toMatchObject({ status: 'finished', endedBy: 'user' })
+    expect(store.get(runId)!.endedWithApp).toBeUndefined()
+  })
+
+  it('markQuit asks open sessions to stop (review L2)', async () => {
+    const { adapter, stops } = quitAdapter()
+    const { p, m } = quitManager(adapter)
+    const run = await m.start({ project: p, prompt: 'Live' })
+    m.markQuit()
+    expect(stops).toEqual([run.id])
+  })
+
+  it('no auto-resume is armed for a run that pauses while the app quits (review L1)', async () => {
+    const adapter: RuntimeAdapter = {
+      id: 'mock',
+      complete: async () => '',
+      start: async (ctx) => {
+        ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'running', sessionId: 's-pause' })
+        return {
+          send: async () => {},
+          interrupt: async () => {},
+          stop: async () => ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'paused', pausedUntil: Date.now() + 60_000, pauseReason: 'x', autoResume: true }),
+          finished: new Promise<void>(() => {})
+        }
+      }
+    }
+    const { p, m } = quitManager(adapter)
+    const run = await m.start({ project: p, prompt: 'Pauses' })
+    await m.stopAll({ reason: 'quit' })
+    expect(m.hasAutoResume(run.id)).toBe(false)
+  })
+
+  it('the record file is on disk when stopAll resolves', async () => {
+    const { adapter } = quitAdapter({ stopEnds: true })
+    const { p, m } = quitManager(adapter)
+    const run = await m.start({ project: p, prompt: 'Record' })
+    await m.stopAll({ reason: 'quit' })
+    expect(recordOnDisk(run.id)).toMatchObject({ status: 'finished', endedBy: 'app', endedWithApp: true, endedWhile: 'working' })
   })
 })
 
@@ -2588,5 +3130,193 @@ describe('skills in runs', () => {
     await m.completeForProject(p, { system: 's', prompt: 'p', kind: 'skills', tier: 'everyday' })
     expect(completes[1]!.kind).toBe('skills')
     await expect(m.completeForProject({ ...p, id: 'harness' }, { system: 's', prompt: 'p', kind: 'skills', tier: 'fast' })).rejects.toThrow(/harness/)
+  })
+})
+
+describe('refreshRoleGrants (review M1)', () => {
+  it('copies only the grant fields onto the running roles by id, in place, and never adds or drops a role', () => {
+    const running = makeProject().roles.map((r) => ({ ...r }))
+    const [lead, eng, rev] = running
+    eng!.mcpServers = ['m1']
+    eng!.skills = ['s1']
+    const held = running[1]
+    const revBefore = structuredClone(rev)
+    const saved = [
+      { ...lead!, prompt: 'changed', mcpServers: ['m2'] },
+      { ...eng!, name: 'Renamed', mcpServers: undefined, skills: [] },
+      { ...rev!, id: 'r-new', skills: ['s9'] }
+    ]
+    refreshRoleGrants(running, saved)
+    expect(running).toHaveLength(3)
+    expect(running[1]).toBe(held)
+    expect(running[0]!.mcpServers).toEqual(['m2'])
+    expect(running[0]!.prompt).not.toBe('changed')
+    expect('mcpServers' in running[1]!).toBe(false)
+    expect(running[1]!.skills).toEqual([])
+    expect(running[1]!.name).not.toBe('Renamed')
+    // A role the saved chart no longer has keeps its start-time definition; a new one does not join.
+    expect(running[2]).toEqual(revBefore)
+    expect(running.some((r) => r.id === 'r-new')).toBe(false)
+    // The saved arrays are copied, not shared.
+    saved[0]!.mcpServers!.push('m3')
+    expect(running[0]!.mcpServers).toEqual(['m2'])
+  })
+})
+
+describe('approved installs and proposals keep the run current (setLive)', () => {
+  const skill = (over: Partial<RunSkill> = {}): RunSkill => ({ id: 'sk1', name: 'triage', description: 'Triage', dir: join(dir, 'sk'), files: [{ path: 'SKILL.md' }] as RunSkill['files'], roleIds: ['r-lead'], ...over })
+  function rig(options: RunManagerOptions = {}) {
+    const p = makeProject({ path: join(dir, 'repo'), name: 'Before' })
+    const ctxs: RuntimeContext[] = []
+    const adapter: RuntimeAdapter = {
+      id: 'mock',
+      complete: async () => '',
+      start: async (ctx) => {
+        ctxs.push(ctx)
+        ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'running' })
+        return { send: async () => {}, interrupt: async () => {}, stop: async () => {}, finished: new Promise<void>(() => {}) }
+      }
+    }
+    // The saved project after the change: a new name, a server and a skill that grants only exist on it.
+    const saved: Project = { ...p, name: 'After', brief: 'Pulled from the files', path: '/somewhere/else', mcpServers: [{ id: 'm1', name: 'docs', transport: 'http', url: 'https://d.test/mcp', enabled: true, source: 'user', addedAt: '' }], skills: [{ id: 'sk1', name: 'triage' } as never] }
+    const setup = fakeSetup(saved)
+    const forRun = vi.fn((proj: Project): RunSkill[] => (proj.mcpServers?.length || proj.skills?.length ? [skill()] : []))
+    const m = new RunManager({ mock: adapter }, sink(), new RunStore(join(dir, 'data')), setup.service, () => 100, { skills: { forRun }, ...options })
+    return { p, saved, m, ctxs, forRun }
+  }
+
+  it.each(['mcpServers', 'skills', 'orgChart'] as const)('an approved %s proposal updates ctx.project (keeping the path); MCP and skills changes recompute the skills', async (kind) => {
+    const { p, m, ctxs, forRun } = rig()
+    const run = await m.start({ project: p, prompt: 'go' })
+    const ctx = ctxs[0]
+    const path = ctx.project.path
+    expect(ctx.skills!()).toEqual([])
+    const callsBefore = forRun.mock.calls.length
+    // The proposal names its own items: only those move onto the live project.
+    const pending = ctx.requestProposal({ kind, agentId: 'root', title: 't', payload: { upsert: [{ id: 'm1', name: 'docs' }], items: [{ action: 'create', scope: 'project', draft: { name: 'triage', description: 'Triage', body: 'b' } }], roles: [], rationale: 'r', scope: 'project' } as never })
+    const req = await waitFor(isType('proposal.request', (e) => e.proposal.kind === kind))
+    m.decideProposal(run.id, req.proposal.id, { behavior: 'approve' })
+    expect(await pending).toEqual({ behavior: 'approve' })
+    // Only what the proposal touched moves; the rest of the saved project (here a name and a brief a pull would bring in
+    // the same save) never reaches the live run.
+    expect(ctx.project.name).toBe('Before')
+    expect(ctx.project.brief).toBe(p.brief)
+    expect(ctx.project.path).toBe(path)
+    expect(ctx.project.mcpServers?.[0]?.name).toBe(kind === 'mcpServers' ? 'docs' : undefined)
+    expect(ctx.project.skills?.[0]?.id).toBe(kind === 'skills' ? 'sk1' : undefined)
+    if (kind === 'orgChart') {
+      // The org chart card says it applies from the next run: this run's grants stay (review M1).
+      expect(ctx.skills!()).toEqual([])
+      expect(forRun).toHaveBeenCalledTimes(callsBefore)
+    } else {
+      expect(ctx.skills!().map((s) => s.id)).toEqual(['sk1'])
+      expect(forRun).toHaveBeenLastCalledWith(expect.objectContaining({ name: 'Before', path }), expect.any(Array))
+    }
+    await m.stopAll()
+  })
+
+  it('other proposal kinds and denied proposals leave the view alone', async () => {
+    const { p, m, ctxs } = rig()
+    const run = await m.start({ project: p, prompt: 'go' })
+    const ctx = ctxs[0]
+    const pending = ctx.requestProposal({ kind: 'settings', agentId: 'root', title: 't', payload: {} as never })
+    const req = await waitFor(isType('proposal.request', (e) => e.proposal.kind === 'settings'))
+    m.decideProposal(run.id, req.proposal.id, { behavior: 'approve' })
+    await pending
+    expect(ctx.project.name).toBe('Before')
+    const denied = ctx.requestProposal({ kind: 'skills', agentId: 'root', title: 't', payload: { items: [], rationale: 'r' } as never })
+    const req2 = await waitFor(isType('proposal.request', (e) => e.proposal.kind === 'skills'))
+    m.decideProposal(run.id, req2.proposal.id, { behavior: 'revise', feedback: 'no' })
+    await denied
+    expect(ctx.project.name).toBe('Before')
+    expect(ctx.skills!()).toEqual([])
+    await m.stopAll()
+  })
+
+  it('an approved MCP install updates ctx.project and the skills too', async () => {
+    const { p, saved, m, ctxs } = rig({
+      mcp: {
+        enabledServers: (proj) => (proj.mcpServers ?? []).filter((s) => s.enabled),
+        resolve: (_pid, s) => ({ spec: s, env: {}, headers: {} }),
+        persistInstall: vi.fn((): Project => saved),
+        searchRegistry: vi.fn(async () => ({ entries: [] }))
+      }
+    })
+    const run = await m.start({ project: p, prompt: 'go' })
+    const ctx = ctxs[0]
+    const spec: McpServerSpec = { id: 'mcp-new', name: 'docs', transport: 'stdio', command: 'npx', args: ['-y', 'gh-mcp@1.2.3'], enabled: true, source: 'agent', addedAt: '' }
+    const pending = ctx.requestMcpInstall!({ agentId: 'root', reason: 'r', spec, requiredSecrets: [] })
+    const req = await waitFor(isType('mcpInstall.request'))
+    m.answerMcpInstall(run.id, req.request.id, { approved: true, scope: 'project' })
+    expect(await pending).toMatchObject({ approved: true })
+    // The install settled the servers (and the grants to them); the pulled name stays out of the live view.
+    expect(ctx.project.name).toBe('Before')
+    expect(ctx.project.path).not.toBe('/somewhere/else')
+    expect(ctx.skills!().map((s) => s.id)).toEqual(['sk1'])
+    expect(ctx.mcpServers!().map((s) => s.name)).toEqual(['docs'])
+    await m.stopAll()
+  })
+
+  it('wires the library and the skill catalog into work runs only (not setup runs)', async () => {
+    const catalog = vi.fn(() => ({ library: [], project: [] }))
+    const read = vi.fn(() => null)
+    const libraryEntries = vi.fn(() => [])
+    const { p, m, ctxs } = rig({
+      skillAssist: { catalog, read },
+      mcp: {
+        enabledServers: () => [],
+        resolve: (_pid, s) => ({ spec: s, env: {}, headers: {} }),
+        persistInstall: vi.fn(),
+        searchRegistry: vi.fn(async () => ({ entries: [] })),
+        libraryEntries
+      }
+    })
+    await m.start({ project: p, prompt: 'work' })
+    await m.start({ project: p, prompt: 'setup', kind: 'setup' })
+    const [work, setupCtx] = ctxs
+    expect(work.mcpLibrary).toBeTypeOf('function')
+    work.mcpLibrary!()
+    expect(libraryEntries).toHaveBeenCalled()
+    work.skillCatalog!()
+    expect(catalog).toHaveBeenCalledWith(p.id)
+    work.readSkill!({ libraryId: 'lib1' })
+    expect(read).toHaveBeenCalledWith(p.id, { libraryId: 'lib1' })
+    expect(setupCtx.mcpLibrary).toBeTypeOf('function')
+    expect(setupCtx.skillCatalog).toBeUndefined()
+    expect(setupCtx.readSkill).toBeUndefined()
+    await m.stopAll()
+  })
+
+  it('a work run without skillAssist gets no catalog', async () => {
+    const { p, m, ctxs } = rig()
+    await m.start({ project: p, prompt: 'work' })
+    expect(ctxs[0].skillCatalog).toBeUndefined()
+    await m.stopAll()
+  })
+})
+
+describe('resolveAllowedDirectories through a linked home or project (review re-check L1)', () => {
+  it('drops a folder that holds home or the project when home or the project is reached through a link', async () => {
+    const { mkdirSync, symlinkSync } = await import('node:fs')
+    const { resolveAllowedDirectories } = await import('./runManager')
+    const root = mkdtempSync(join(tmpdir(), 'orgai-linked-'))
+    try {
+      const realHome = join(root, 'real', 'home')
+      const realProj = join(root, 'real', 'work', 'proj')
+      const sibling = join(root, 'real', 'work', 'sibling')
+      mkdirSync(realHome, { recursive: true })
+      mkdirSync(realProj, { recursive: true })
+      mkdirSync(sibling, { recursive: true })
+      const linkHome = join(root, 'home-link')
+      const linkProj = join(root, 'proj-link')
+      symlinkSync(realHome, linkHome, 'junction')
+      symlinkSync(realProj, linkProj, 'junction')
+      const r = resolveAllowedDirectories([join(root, 'real'), join(root, 'real', 'work'), sibling], { projectPath: linkProj, home: linkHome })
+      expect(r.dirs).toHaveLength(1)
+      expect(r.dirs[0].toLowerCase().endsWith(join('work', 'sibling').toLowerCase())).toBe(true)
+      expect(r.unsafe).toHaveLength(2)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })

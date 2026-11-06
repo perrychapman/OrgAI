@@ -1,7 +1,9 @@
 import { execFileSync } from 'node:child_process'
 import { existsSync, readdirSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+// Only ever used for darwin / linux (win32 is a no-op), whose PATH entries are POSIX paths joined with ':'.
+import { posix } from 'node:path'
+const join = posix.join
 
 /**
  * GUI apps launched from Finder or the Dock on macOS (and from a desktop launcher on Linux) inherit the minimal
@@ -30,6 +32,11 @@ export interface ShellPathResult {
   fromShell: boolean
   /** Directories added, in order. */
   added: string[]
+  /**
+   * The login shell's own PATH entries, in its order (empty when it was not asked or printed nothing). This is the
+   * PATH a terminal has, without the current process PATH or the well-known directories merged in.
+   */
+  shellPath: string[]
   /** Why the shell lookup was skipped or failed, if it was. */
   note?: string
 }
@@ -142,7 +149,7 @@ export function resolveShellPath(opts: ShellPathOptions = {}): ShellPathResult {
   const platform = opts.platform ?? process.platform
   const env = opts.env ?? process.env
   const current = env.PATH ?? env.Path ?? ''
-  if (platform !== 'darwin' && platform !== 'linux') return { path: current, fromShell: false, added: [], note: `not needed on ${platform}` }
+  if (platform !== 'darwin' && platform !== 'linux') return { path: current, fromShell: false, added: [], shellPath: [], note: `not needed on ${platform}` }
 
   const home = opts.home ?? homedir()
   const seed = opts.seed ?? Math.random().toString(36).slice(2, 10)
@@ -171,7 +178,7 @@ export function resolveShellPath(opts: ShellPathOptions = {}): ShellPathResult {
   const currentList = splitPath(current, ':')
   const merged = mergePaths([currentList, shellPath, extra])
   const added = merged.filter((d) => !currentList.includes(d))
-  return { path: merged.join(':'), fromShell: shellPath.length > 0, added, ...(note ? { note } : {}) }
+  return { path: merged.join(':'), fromShell: shellPath.length > 0, added, shellPath, ...(note ? { note } : {}) }
 }
 
 /** Set process.env.PATH from the login shell. Call once, first thing at startup, before anything spawns. Never throws. */

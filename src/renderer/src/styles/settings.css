@@ -8,6 +8,8 @@
   min-height: 0;
   overflow: auto;
   padding: var(--space-5) var(--space-6);
+  /* Contain absolutely positioned descendants (sr-only live regions, native inputs) so they never extend the window. */
+  position: relative;
 }
 .settings-loading {
   padding: var(--space-6);
@@ -328,6 +330,69 @@
   color: var(--text-secondary);
 }
 
+/* A group heading a deep link lands on (SettingsGroup with an id) takes focus like the pane heading. */
+.settings-group-title[tabindex] {
+  border-radius: var(--radius-xs);
+}
+.settings-group-title[tabindex]:focus {
+  outline: none;
+}
+.settings-group-title[tabindex]:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+/* ---------- Pane Advanced disclosure (SettingsAdvanced; config-review spec 2) ---------- */
+/* Last in the pane, after the normal section gap, with a hairline above. Styled like the row "Learn more". */
+.settings-advanced {
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border-subtle);
+  min-width: 0;
+}
+.settings-advanced > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  list-style: none;
+  cursor: pointer;
+  font-size: var(--text-body);
+  line-height: var(--text-body-lh);
+  color: var(--text-secondary);
+  border-radius: var(--radius-xs);
+}
+.settings-advanced > summary::-webkit-details-marker {
+  display: none;
+}
+.settings-advanced > summary:hover {
+  color: var(--accent-text);
+}
+.settings-advanced > summary:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.settings-advanced-chevron {
+  flex: none;
+  transition: transform var(--dur-fast) var(--ease-out);
+}
+.settings-advanced[open] .settings-advanced-chevron {
+  transform: rotate(90deg);
+}
+.settings-advanced-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  margin-top: var(--space-4);
+  min-width: 0;
+}
+/* Inside Advanced every heading is one tier: a section title (Connections: Costs, Model prices) reads like the group
+   captions of General and Limits (ux-review-config-2 N12). Levels stay h3 under the pane h2. */
+.settings-advanced-body .settings-section-title {
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  font-weight: var(--weight-medium);
+  color: var(--text-secondary);
+}
+
 /* ---------- Legacy block helpers still used by sections not yet on SettingsCard ---------- */
 .settings-grid {
   display: grid;
@@ -418,6 +483,21 @@
   color: var(--text-secondary);
   font-size: var(--text-small);
 }
+.rules-ignored-title {
+  margin: 0 0 var(--space-1);
+  font-size: var(--text-body);
+  font-weight: 600;
+}
+.rules-ignored > .settings-card-note {
+  margin: 0 0 var(--space-2);
+  color: var(--text-secondary);
+  font-size: var(--text-small);
+}
+.rules-ignored > .settings-card-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
 .settings-card > .settings-card-list {
   margin: 0;
   padding: 0;
@@ -447,6 +527,133 @@
   color: var(--text-primary);
 }
 
+/* ---------- Engagement plan and context notes (General, engagements only) ---------- */
+.settings-card > .plan-view {
+  max-height: var(--scroll-region-max);
+  overflow: auto;
+  border-radius: var(--radius-sm);
+}
+.plan-view:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.settings-card > .plan-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.plan-status {
+  display: block;
+  color: var(--text-secondary);
+  font-size: var(--text-small);
+}
+.plan-editor-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.plan-editor-label {
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}
+.plan-editor-field .textarea {
+  width: 100%;
+  font-family: var(--font-sans);
+}
+@container settings-col (min-width: 900px) {
+  .plan-editor-field .textarea {
+    min-height: 16lh;
+  }
+}
+/* Context notes summary (knowledge.md section 9): one quiet line with the "Open Knowledge" link. */
+.knowledge-summary-line {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-small);
+}
+.notes-add {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.notes-list {
+  container: notes / inline-size;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  background: var(--surface-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+}
+.notes-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+}
+.notes-row + .notes-row {
+  border-top: 1px solid var(--border-subtle);
+}
+.notes-row-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.notes-row-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: var(--weight-semibold);
+}
+.notes-row-meta {
+  color: var(--text-tertiary);
+  font-size: var(--text-small);
+}
+.notes-row-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+@container notes (min-width: 520px) {
+  .notes-row {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+  }
+}
+.note-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.note-form .field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.note-form .textarea {
+  width: 100%;
+  font-family: var(--font-sans);
+}
+.forget-confirm-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.forget-confirm-body p,
+.forget-confirm-body ul {
+  margin: 0;
+}
+.forget-confirm-body ul {
+  padding-left: var(--space-5);
+}
+.forget-confirm-quiet {
+  color: var(--text-tertiary);
+  font-size: var(--text-small);
+}
+
 /* Brief highlight of a row a deep link scrolled to (the attribute is cleared after a moment; no motion, so nothing to reduce). */
 .settings-highlightable[data-highlight] {
   background: var(--accent-soft);
@@ -457,4 +664,90 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
+}
+
+/* Connections: the default-connection row under a card's header (badge, how it was picked, one action). */
+.conn-card .conn-default {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+}
+.conn-card .conn-default-mode {
+  font-size: var(--text-small);
+  color: var(--text-tertiary);
+}
+.conn-card .conn-default-error {
+  flex: 1 1 100%;
+  margin: 0;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  overflow-wrap: anywhere;
+}
+.conn-card .tier-head {
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.conn-card .tier-head {
+  justify-content: flex-start;
+}
+.conn-card .tier-head > .btn {
+  margin-left: auto;
+}
+
+/* ---------- App settings > Terminal: the orgai command row (CliShimRow) ---------- */
+.cli-shim {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.cli-shim-status {
+  display: block;
+  margin-top: var(--space-1);
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+.cli-shim-status:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+.cli-shim .setting-row-control {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.cli-shim-btn {
+  display: inline-flex;
+}
+.cli-shim-path-hint {
+  display: block;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface-0);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--text-small);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+  cursor: text;
+}
+.cli-shim-notice {
+  color: var(--text-secondary);
+  font-size: var(--text-small);
+}
+.cli-shim-notice:empty {
+  /* Kept in the accessibility tree so the first message is announced, but takes no space. */
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+.cli-shim-notice.is-error {
+  color: var(--danger-text);
 }

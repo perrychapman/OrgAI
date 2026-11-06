@@ -640,3 +640,324 @@
   margin-left: var(--space-1);
   color: var(--warning-text);
 }
+
+/* ---------- Custom presets: tiles, dialog, "Your presets" section, form ---------- */
+/* The badge sits after the name; a long name gives way to it with an ellipsis. */
+.connector-name-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.connector-name-row .connector-name {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.connector-name-row .badge {
+  flex: none;
+}
+.addsvc-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+}
+.connector-foot-edit {
+  margin-right: auto;
+}
+/* The full command or address of a preset, never clamped: it is what runs or what is contacted. */
+.connector-custom-target {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  padding: var(--space-3);
+  background: var(--surface-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  min-width: 0;
+}
+.connector-custom-target-label {
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-secondary);
+}
+.connector-custom-text {
+  max-width: 100%;
+  font-size: var(--text-mono);
+  line-height: var(--text-mono-lh);
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.presets-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.preset-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  padding: var(--space-4);
+  color: var(--text-secondary);
+}
+.preset-empty strong {
+  color: var(--text-primary);
+  font-size: var(--text-body);
+}
+.preset-empty p {
+  margin: 0;
+}
+.preset-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.preset-list > li + li {
+  border-top: 1px solid var(--border-subtle);
+}
+.preset-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  min-width: 0;
+}
+.preset-item-main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0h);
+  min-width: 0;
+}
+.preset-item-name {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.preset-item-title {
+  font-size: var(--text-body);
+  line-height: var(--text-body-lh);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.preset-item-desc {
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.preset-item-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+}
+.preset-item-count {
+  font-size: var(--text-caption);
+}
+.preset-item-act {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+/* Wide: name, description and badges share one line. */
+@container settings-col (min-width: 900px) {
+  .preset-item-main {
+    flex-direction: row;
+    align-items: center;
+    gap: var(--space-4);
+  }
+  .preset-item-name {
+    flex: 0 1 26ch;
+  }
+  .preset-item-desc {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+  .preset-item-meta {
+    flex: none;
+  }
+}
+.preset-menu {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0h);
+}
+.preset-menuitem {
+  all: unset;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--control-md);
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-body);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.preset-menuitem:hover {
+  background: var(--surface-3);
+}
+.preset-menuitem:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.preset-menuitem[disabled] {
+  color: var(--text-tertiary);
+  cursor: default;
+}
+.preset-menuitem.danger {
+  color: var(--danger-text);
+}
+
+/* The form scrolls inside the dialog body; its container is the body so the option rows can stack when it is narrow. */
+.dialog-body:has(.preset-form) {
+  container-type: inline-size;
+  container-name: preset-dlg;
+}
+.preset-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+.preset-form .field {
+  margin-bottom: 0;
+}
+.field .hint.invalid-text,
+.preset-set .hint.invalid-text {
+  color: var(--danger-text);
+}
+.preset-legend {
+  font-size: var(--text-caption);
+  color: var(--text-secondary);
+  letter-spacing: 0.2px;
+}
+.preset-banner:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.preset-set {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: var(--space-3);
+  min-width: 0;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+}
+.preset-set legend {
+  padding: 0 var(--space-1);
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}
+.preset-set .hint,
+.preset-why {
+  margin: 0;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-tertiary);
+}
+.preset-radio {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--control-md);
+  cursor: pointer;
+}
+.preset-radio input {
+  accent-color: var(--accent);
+}
+.preset-radio:has(input:focus-visible),
+.preset-default:has(input:focus-visible) {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+.preset-radio:has(input:disabled) {
+  color: var(--text-tertiary);
+  cursor: default;
+}
+.preset-sub {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin-left: var(--space-6);
+  padding-left: var(--space-3);
+  border-left: 2px solid var(--border-subtle);
+}
+.preset-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.preset-row > .input {
+  flex: 1 1 140px;
+  min-width: 0;
+  width: auto;
+}
+.preset-row-err,
+.preset-variant-err {
+  flex-basis: 100%;
+}
+/* Access options: label | access | address | default | remove at width; each cell keeps its caption and they stack when narrow. */
+.preset-variant {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-2);
+  align-items: end;
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.preset-cell {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.preset-cell > label {
+  font-size: var(--text-caption);
+  color: var(--text-secondary);
+}
+.preset-cell .input,
+.preset-cell .select,
+.preset-cell .textarea {
+  width: 100%;
+}
+.preset-default {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--control-md);
+  font-size: var(--text-small);
+  cursor: pointer;
+}
+.preset-default input {
+  accent-color: var(--accent);
+}
+.preset-variant-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+}
+@container preset-dlg (min-width: 640px) {
+  .preset-variant {
+    grid-template-columns: minmax(0, 1fr) minmax(11.5rem, auto) minmax(0, 1.2fr) auto auto;
+    gap: var(--space-2) var(--space-3);
+  }
+}

@@ -1,0 +1,425 @@
+/* ---------- Permissions: card glance block and Project settings > Agents (docs/design/permissions.md) ---------- */
+
+/* Glance: where the agent works, what Always allow stops asking for, and the rules it saves. */
+.perm-glance {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin-bottom: var(--space-2);
+  min-width: 0;
+}
+.perm-location {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1h);
+  margin: 0;
+  min-width: 0;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+}
+.perm-location > svg {
+  flex: none;
+}
+.perm-location-label {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.perm-location-detail {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: var(--text-mono);
+  color: var(--text-tertiary);
+}
+.perm-location[data-attention='true'] {
+  color: var(--warning-text);
+  font-weight: var(--weight-semibold);
+}
+.perm-effect {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-2);
+  min-width: 0;
+}
+.perm-effect-text {
+  flex: 1 1 260px;
+  margin: 0;
+  min-width: 0;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.perm-rule-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  min-width: 0;
+}
+.perm-rule-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  max-width: 100%;
+  /* 1px vertical, as the existing .decision-rule-chips code chips in cards.css. */
+  padding: 1px var(--space-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: var(--text-small);
+}
+.perm-rule-chip > code {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-mono);
+}
+.perm-no-rule {
+  margin: 0;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+}
+.perm-rule-chip[data-broad='true'] {
+  border-color: var(--warning);
+  background: var(--warning-soft);
+  color: var(--warning-text);
+}
+.perm-rule-whole {
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+}
+.perm-settings-link {
+  margin-top: var(--space-2);
+  font-size: var(--text-small);
+}
+/* The folder's own settings are ignored: one quiet line with a Review link, visible in compact mode too. */
+.perm-trust-line {
+  margin: var(--space-1) 0 0;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-secondary);
+}
+.topbar-trust {
+  flex: 0 0 auto;
+}
+
+/* Compact (frame under 480 px tall, or the tray flags it): the glance stays visible with the body collapsed; the
+   command and the scope list stay behind Details. Two lines at most for the effect sentence. */
+.frame-tray[data-compact='true'] .decision-card.kind-permission[data-expanded='false'] .decision-body:has(> .perm-glance) {
+  display: block;
+  max-height: none;
+  overflow: visible;
+  padding-bottom: var(--space-1h);
+}
+.frame-tray[data-compact='true'] .decision-card.kind-permission[data-expanded='false'] .perm-detail,
+.frame-tray[data-compact='true'] .decision-card.kind-permission[data-expanded='false'] .decision-helper {
+  display: none;
+}
+.frame-tray[data-compact='true'] .decision-card.kind-permission[data-expanded='false'] .perm-glance {
+  margin-bottom: 0;
+}
+.frame-tray[data-compact='true'] .decision-card.kind-permission .perm-effect-text {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+@container frame (max-height: 479px) {
+  .decision-card.kind-permission[data-expanded='false'] .decision-body:has(> .perm-glance) {
+    display: block;
+    max-height: none;
+    overflow: visible;
+    padding-bottom: var(--space-1h);
+  }
+  .decision-card.kind-permission[data-expanded='false'] .perm-detail,
+  .decision-card.kind-permission[data-expanded='false'] .decision-helper {
+    display: none;
+  }
+  .decision-card.kind-permission[data-expanded='false'] .perm-glance {
+    margin-bottom: 0;
+  }
+  .decision-card.kind-permission .perm-effect-text {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+}
+
+/* ---------- Settings: permission mode, allowed folders, saved rules ---------- */
+
+.perm-mode-tradeoff {
+  display: block;
+  color: var(--text-primary);
+}
+.perm-mode-note {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+  border-top: 1px solid var(--border-subtle);
+}
+.allowed-folders-hint {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+}
+.allowed-folder-path {
+  /* Wrap, never cut: the end of a path is what tells two folders apart. */
+  flex: 1 1 12ch;
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: var(--text-mono);
+}
+/* New project form rows wrap like the settings rows: the end of the path is never cut. */
+.ref-folders .ref-folder-path {
+  flex: 1 1 12ch;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+/* Lock + "Read only" or pencil + "Can change": the difference between the two folder lists without colour. */
+.folder-access {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.allowed-folder-add {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.allowed-folder-add > .grow {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+.allowed-folder-notices {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  list-style: none;
+}
+.allowed-folder-notices:empty {
+  display: none;
+}
+.allowed-folder-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.allowed-folder-notice > span {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.rule-kind {
+  flex: none;
+}
+.rule-kind[data-kind='wholeTool'] {
+  border-color: var(--warning);
+  color: var(--warning-text);
+}
+.rule-explain {
+  display: block;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-secondary);
+}
+.rule-main {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0h);
+}
+.rule-main-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.rule-main-line > code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.rule-draft-warning {
+  display: block;
+  margin-top: var(--space-0h);
+  color: var(--warning-text);
+  font-weight: var(--weight-semibold);
+}
+.rule-draft-kind {
+  display: block;
+  margin-top: var(--space-1);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+}
+
+/* ---------- Project settings panes (config-review spec 4) ---------- */
+
+.project-path-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.project-path {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+}
+.perm-summary-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+  margin-bottom: var(--space-4);
+}
+.perm-summary-body > p {
+  margin: 0;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+  max-width: 90ch;
+}
+.perm-summary-body[hidden] {
+  display: none;
+}
+.perm-plan-line {
+  margin: 0;
+  font-size: var(--text-body);
+  line-height: var(--text-body-lh);
+  color: var(--text-secondary);
+  max-width: 90ch;
+}
+
+/* Folder config trust: the review dialog. All content is plain text from the folder. */
+.trust-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.trust-framing,
+.trust-state {
+  margin: 0;
+  max-width: 90ch;
+}
+.trust-state {
+  color: var(--text-secondary);
+}
+.trust-message {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+}
+.trust-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.trust-h {
+  margin: 0;
+  font-size: var(--text-body);
+  line-height: var(--text-body-lh);
+}
+.trust-count {
+  color: var(--text-secondary);
+  font-weight: normal;
+}
+.trust-meta {
+  margin: 0;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+  max-width: 90ch;
+}
+.trust-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.trust-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+}
+.trust-item-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  min-width: 0;
+}
+.trust-item-name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.trust-mono,
+.trust-source {
+  font-family: var(--font-mono);
+  font-size: var(--text-small);
+  overflow-wrap: anywhere;
+}
+.trust-source {
+  color: var(--text-secondary);
+}
+.trust-text {
+  margin: 0;
+  padding: var(--space-2);
+  background: var(--bg-elev);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.trust-text.clamped {
+  max-height: calc(var(--text-small-lh) * 8 + var(--space-4));
+  overflow: hidden;
+}

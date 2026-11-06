@@ -7,6 +7,7 @@ flows. Run `npm run build` first; the scripts use `out/` and never the dev serve
 | --- | --- | --- |
 | `layout.mjs` | free | create projects in both form modes with setup skipped; live view layout with a long path; delete |
 | `connections.mjs` | free | Connections page (three cards or a load error), project settings sections (connection, MCP servers, plugins, Add from registry), role model picker and tier badge, the project mock-adapter toggle (on saves provider.id mock and disables the connection fieldset, off restores it) and the App settings About block (version, data folder) at 1024x640 and 1600x1000 in both themes; a LiteLLM test against an unreachable URL shows an error, the key never lands in plain text, and Remove connection clears it |
+| `permissions.mjs` | free | permission card glance block (what, where it starts, Always allow sentence), rules panel validation, Allowed folders, Settings > Agents trade-off copy, and the `[mock:fatigue]` run: `Bash(npm test:*)` chip, "Outside the project" edit card, no card for the repeat `cd ... && npm test` after Allow for session |
 | `maintenance.mjs` | free | plants leftover worktrees and setup files in a fixture repo; merge, conflict, refusal, discard, uninstall |
 | `setup.mjs --yes [--new]` | **spends** | full Architect setup, one org-chart revision, applied roles and architecture files |
 | `history.mjs --yes` | **spends** | setup run, app restart, run reopened from the Runs tab, records removed with the project |

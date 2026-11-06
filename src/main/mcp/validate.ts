@@ -1,5 +1,7 @@
 import type { McpLibraryEntry, McpRegistryEntry, McpServerSpec } from '@shared/types'
+import { MCP_OVERRIDE_VALUE_MAX, MCP_PER_PROJECT_ENV_MAX } from '@shared/types'
 import { SAFE_ID, isValidMcpServerName, newId } from '@shared/defaults'
+import { hiddenCharIn, hiddenCharProblem } from '../capabilities/sanitize'
 
 /**
  * Validation of MCP server specs and building specs from registry entries. Pure; shared by the settings
@@ -177,6 +179,9 @@ function tooLong(s: unknown): boolean {
 export function validateSpec(spec: McpServerSpec, existing: readonly McpServerSpec[] = [], where: 'project' | 'library' = 'project'): string[] {
   const errors: string[] = []
   if (!spec || typeof spec !== 'object') return ['The server spec is missing.']
+  // Hidden characters first and alone: the checks below quote names and args, which would echo them.
+  const hidden = hiddenCharProblems(spec)
+  if (hidden.length) return hidden
   if (typeof spec.id !== 'string' || !SAFE_ID.test(spec.id)) errors.push('The server id must be 1-128 letters, digits, hyphens or underscores.')
   if (typeof spec.name !== 'string' || !isValidMcpServerName(spec.name)) {
     errors.push('The name must be lowercase kebab-case (letters, digits and single hyphens, at most 48 characters), e.g. "github".')
@@ -241,8 +246,139 @@ export function validateSpec(spec: McpServerSpec, existing: readonly McpServerSp
   return errors
 }
 
+/**
+ * One refusal per spec field holding a control, zero-width, bidi or other invisible character (capabilities/sanitize.ts
+ * hiddenCharIn). Every field is one line (no control character at all, so a card that clamps a value to one line never
+ * hides the rest of it) except the description, which is prose: tab and line breaks, ZWJ, ZWNJ, soft hyphen and tag
+ * characters (emoji, Persian and Indic text) are allowed there; bidi marks, zero-width space and controls are not.
+ * Proposals, library entries and settings edits all pass here.
+ */
+export function hiddenCharProblems(spec: Partial<McpServerSpec>): string[] {
+  const out: string[] = []
+  const one = (field: string, v: unknown): void => {
+    const p = hiddenCharProblem(field, v)
+    if (p) out.push(p)
+  }
+  one('The name', spec.name)
+  one('The command', spec.command)
+  one('The URL', spec.url)
+  const prose = hiddenCharProblem('The description', spec.description, { prose: true })
+  if (prose) out.push(prose)
+  if (Array.isArray(spec.args)) spec.args.forEach((a, i) => one(`Argument ${i + 1}`, a))
+  for (const [k, v] of Object.entries(spec.env && typeof spec.env === 'object' ? spec.env : {})) {
+    one('An environment variable name', k)
+    one(`Environment variable ${safeLabel(k)}`, v)
+  }
+  for (const [k, v] of Object.entries(spec.headers && typeof spec.headers === 'object' ? spec.headers : {})) {
+    one('A header name', k)
+    one(`Header ${safeLabel(k)}`, v)
+  }
+  for (const n of Array.isArray(spec.secretEnv) ? spec.secretEnv : []) one('A secret environment variable name', n)
+  for (const n of Array.isArray(spec.secretHeaders) ? spec.secretHeaders : []) one('A secret header name', n)
+  for (const r of Array.isArray(spec.roles) ? spec.roles : []) one('A role slug', r)
+  return out
+}
+
+/** A name quoted for a message only when it is plain; otherwise it is left out (never echo hidden characters). */
+function safeLabel(name: string): string {
+  return /^[\w.-]{1,64}$/.test(name) ? `"${name}"` : '(unnamed)'
+}
+
 /** Library ids double as secret-key segments, so they stay in a safe alphabet. */
 export const LIBRARY_ID = SAFE_ID
+
+/**
+ * Env names that change what runs (loader, interpreter-option, package-index, proxy and path variables). Copied from
+ * capabilities/outside.ts RISKY_ENV; keep the two in sync.
+ */
+const RISKY_ENV = /^(?:PATH|PATHEXT|HOME|USERPROFILE|APPDATA|LOCALAPPDATA|COMSPEC|SHELL|TMPDIR|TEMP|TMP|NODE_OPTIONS|NODE_PATH|NODE_EXTRA_CA_CERTS|NODE_TLS_REJECT_UNAUTHORIZED|LD_\w*|DYLD_\w*|PYTHON\w*|NPM_CONFIG_\w*|YARN_\w*|PNPM_\w*|UV_\w*|PIP_\w*|DOCKER_\w*|BUN_\w*|DENO_\w*|RUBYOPT|RUBYLIB|GEM_\w*|PERL5\w*|JAVA_TOOL_OPTIONS|_JAVA_OPTIONS|JDK_JAVA_OPTIONS|GIT_\w*|SSL_CERT_\w*|REQUESTS_CA_BUNDLE|CURL_CA_BUNDLE|\w*_PROXY)$/i
+/** Header names that carry a credential or change routing; never overridable per project. */
+const CREDENTIAL_HEADER = /^(?:authorization|proxy-authorization|cookie|x-api-key|host|forwarded|x-forwarded-\w+|proxy-\w+)$/i
+/** Names that look like a credential, whatever the transport. */
+const CREDENTIAL_LIKE = /(secret|token|passw|api[-_]?key|credential|auth)/i
+
+/** Whether an env variable name changes what runs (loader, interpreter options, proxies, paths). */
+export function riskyEnvName(name: string): boolean {
+  return RISKY_ENV.test(name)
+}
+/** Whether a name looks like a credential (any transport) or, for a header, is a credential / routing header. */
+export function credentialLikeName(name: string, header = false): boolean {
+  return CREDENTIAL_LIKE.test(name) || (header && CREDENTIAL_HEADER.test(name))
+}
+
+/**
+ * Problems with the per-project fields of a library entry (perProjectSecrets, perProjectEnv). Pure. Both are refused
+ * on connector entries. Names are never echoed unless plain.
+ */
+export function perProjectEnvProblems(entry: McpLibraryEntry): string[] {
+  const out: string[] = []
+  if (!entry || typeof entry !== 'object') return out
+  const hasSecrets = 'perProjectSecrets' in entry && entry.perProjectSecrets !== undefined
+  const hasEnv = 'perProjectEnv' in entry && entry.perProjectEnv !== undefined
+  if (!hasSecrets && !hasEnv) return out
+  if (hasSecrets && (entry.perProjectSecrets as unknown) !== true) out.push('perProjectSecrets must be true or left out.')
+  if (entry.connectorId) {
+    out.push('Per-project values are not available for connectors yet; add a custom server instead.')
+    return out
+  }
+  if (!hasEnv) return out
+  const names = entry.perProjectEnv as unknown
+  if (!Array.isArray(names)) return [...out, 'perProjectEnv must be a list of names.']
+  if (names.length > MCP_PER_PROJECT_ENV_MAX) return [...out, `At most ${MCP_PER_PROJECT_ENV_MAX} per-project names are allowed.`]
+  const stdio = entry.transport === 'stdio'
+  const kind = stdio ? 'environment variable' : 'header'
+  const secrets = new Set((stdio ? entry.secretEnv ?? [] : entry.secretHeaders ?? []).map((n) => (stdio ? String(n).toLowerCase() : String(n).toLowerCase())))
+  const seen = new Set<string>()
+  for (const raw of names) {
+    if (typeof raw !== 'string') {
+      out.push('A per-project name must be text.')
+      continue
+    }
+    const hidden = hiddenCharProblem('A per-project name', raw)
+    if (hidden) {
+      out.push(hidden)
+      continue
+    }
+    const label = safeLabel(raw)
+    if (raw === '__proto__' || !(stdio ? ENV_NAME : HEADER_NAME).test(raw)) {
+      out.push(`${label} is not a valid ${kind} name.`)
+      continue
+    }
+    const key = raw.toLowerCase()
+    if (seen.has(key)) {
+      out.push(`${label} is listed twice.`)
+      continue
+    }
+    seen.add(key)
+    if (secrets.has(key)) out.push(`${label} is a secret slot; secrets are set per project through perProjectSecrets, not listed here.`)
+    else if (CREDENTIAL_LIKE.test(raw) || (!stdio && CREDENTIAL_HEADER.test(raw))) out.push(`${label} looks like a credential; make it a secret slot instead.`)
+    else if (stdio ? RISKY_ENV.test(raw) : CREDENTIAL_HEADER.test(raw)) out.push(`${label} changes what runs or where it connects, so a project cannot override it.`)
+  }
+  return out
+}
+
+/**
+ * The overrides a project may set for the names in `allowed`: own string keys in `allowed` are kept, every other key is
+ * dropped silently. A value that is not a string, holds a control or hidden character (header values may hold a tab,
+ * never a line break) or is longer than MCP_OVERRIDE_VALUE_MAX throws a readable Error that never echoes the value.
+ */
+export function cleanOverrides(raw: unknown, allowed: readonly string[], kind: 'env' | 'header'): Record<string, string> {
+  const out: Record<string, string> = {}
+  if (raw === undefined || raw === null) return out
+  if (typeof raw !== 'object' || Array.isArray(raw)) throw new Error('The per-project values must be a list of names and values.')
+  const what = kind === 'env' ? 'Environment variable' : 'Header'
+  for (const name of allowed) {
+    if (name === '__proto__' || !Object.hasOwn(raw, name)) continue
+    const v = (raw as Record<string, unknown>)[name]
+    const label = safeLabel(name)
+    if (typeof v !== 'string') throw new Error(`${what} ${label} must have a text value.`)
+    if (v.length > MCP_OVERRIDE_VALUE_MAX) throw new Error(`${what} ${label} is too long (at most ${MCP_OVERRIDE_VALUE_MAX} characters).`)
+    if (kind === 'header' && /[\r\n]/.test(v)) throw new Error(`Header ${label} must be a single line.`)
+    if (hiddenCharIn(v, { multiline: kind === 'header' })) throw new Error(`${what} ${label} contains a control or hidden character; remove it.`)
+    out[name] = v
+  }
+  return out
+}
 
 /** Problems with a library entry; names are unique within the library. */
 export function validateLibraryEntry(entry: McpLibraryEntry, existing: readonly McpLibraryEntry[] = []): string[] {
@@ -251,6 +387,7 @@ export function validateLibraryEntry(entry: McpLibraryEntry, existing: readonly 
   if (typeof entry.id !== 'string' || !LIBRARY_ID.test(entry.id)) errors.push('The library entry id must be 1-128 letters, digits, hyphens or underscores.')
   const asSpec = (e: McpLibraryEntry): McpServerSpec => ({ ...e, enabled: true })
   errors.push(...validateSpec(asSpec(entry), existing.map(asSpec), 'library'))
+  errors.push(...perProjectEnvProblems(entry))
   return errors
 }
 

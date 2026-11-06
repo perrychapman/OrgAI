@@ -63,6 +63,36 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true })
 })
 
+describe('team files helpers: preview and discard', () => {
+  it('previews the catalog entry without adding anything, and prefers an existing entry', () => {
+    const svc = build()
+    const preview = svc.connectorPreviewForTeam('linear', 'full')!
+    expect(preview).toMatchObject({ name: 'linear', url: 'https://mcp.linear.app/mcp', connectorId: 'linear', connectorVariant: 'full' })
+    expect(svc.libraryEntries()).toEqual([])
+    expect(libEvents).toEqual([])
+    expect(svc.connectorPreviewForTeam('not-a-connector')).toBeUndefined()
+    const added = svc.connectorEntryForTeam('linear', 'full')!
+    expect(svc.connectorPreviewForTeam('linear', 'full')!.id).toBe(added.id)
+    // An entry on another variant is never rewritten: no preview for the asked one.
+    expect(svc.connectorPreviewForTeam('linear', 'readonly')).toBeUndefined()
+  })
+
+  it('discards an entry nobody uses, but never one a project links, one with stored values or one that is signed in', () => {
+    const svc = build()
+    const entry = svc.connectorEntryForTeam('linear', 'full')!
+    svc.discardConnectorEntryForTeam(entry.id)
+    expect(svc.libraryEntries()).toEqual([])
+    const kept = svc.connectorEntryForTeam('linear', 'full')!
+    secrets.set(mcpLibrarySecretKey(kept.id, 'header', 'Authorization'), 'Bearer x')
+    svc.discardConnectorEntryForTeam(kept.id)
+    expect(svc.libraryEntries()).toHaveLength(1)
+    secrets.delete(mcpLibrarySecretKey(kept.id, 'header', 'Authorization'))
+    projects.update(pid, (p) => ({ ...p, mcpServers: [{ id: 'm', name: 'linear', transport: 'http', url: kept.url, libraryId: kept.id, enabled: true, source: 'user', addedAt: '' } as McpServerSpec] }))
+    svc.discardConnectorEntryForTeam(kept.id)
+    expect(svc.libraryEntries()).toHaveLength(1)
+  })
+})
+
 describe('connectors:list and connectors:add', () => {
   it('lists every preset as available until added', () => {
     const list = build().connectorsList()
@@ -82,14 +112,100 @@ describe('connectors:list and connectors:add', () => {
     expect(card.library!.entry.id).toBe(info.entry.id)
   })
 
-  it('is idempotent per connector, whatever the variant', () => {
+  it('is idempotent per connector for the same, missing or unknown variant', () => {
     const svc = build()
     const a = svc.connectorsAdd({ connectorId: 'linear' })
-    const b = svc.connectorsAdd({ connectorId: 'linear', variant: 'full' })
-    expect(b.entry.id).toBe(a.entry.id)
-    expect(b.entry.url).toBe('https://mcp.linear.app/mcp/readonly')
+    const b = svc.connectorsAdd({ connectorId: 'linear' })
+    const c = svc.connectorsAdd({ connectorId: 'linear', variant: 'readonly' })
+    const d = svc.connectorsAdd({ connectorId: 'linear', variant: 'nope' })
+    for (const x of [b, c, d]) expect(x.entry).toEqual(a.entry)
     expect(library.list()).toHaveLength(1)
     expect(libEvents).toHaveLength(1)
+  })
+
+  it('switches an unconnected token connector to another variant in place', () => {
+    const svc = build()
+    const a = svc.connectorsAdd({ connectorId: 'github' })
+    expect(a.entry.headers).toEqual({ 'X-MCP-Readonly': 'true' })
+    const b = svc.connectorsAdd({ connectorId: 'github', variant: 'full' })
+    expect(b.entry.id).toBe(a.entry.id)
+    expect(b.entry.name).toBe(a.entry.name)
+    expect(b.entry.addedAt).toBe(a.entry.addedAt)
+    expect(b.entry.connectorVariant).toBe('full')
+    expect(b.entry.headers?.['X-MCP-Readonly']).toBeUndefined()
+    expect(b.entry.secretHeaders).toEqual(['Authorization'])
+    expect(b.entry.connectedAt).toBeUndefined()
+    expect(secrets.get(mcpLibrarySecretKey(a.entry.id, 'header', 'Authorization'))).toBeUndefined()
+    expect(b.missingSecrets).toEqual(['Authorization'])
+    expect(library.list()).toHaveLength(1)
+    expect(svc.connectorsList().find((c) => c.connector.id === 'github')!.variant).toBe('full')
+    // Unknown id: untouched.
+    expect(svc.connectorsAdd({ connectorId: 'github', variant: 'nope' }).entry).toEqual(b.entry)
+  })
+
+  it('locks the variant while connected and unlocks it on Disconnect', () => {
+    const svc = build()
+    svc.connectorsAdd({ connectorId: 'github' })
+    svc.connectorsSetToken({ connectorId: 'github', token: 'ghp_1' })
+    const locked = svc.connectorsAdd({ connectorId: 'github', variant: 'full' })
+    expect(locked.entry.connectorVariant).toBe('readonly')
+    expect(locked.entry.headers).toEqual({ 'X-MCP-Readonly': 'true' })
+    svc.connectorsSetToken({ connectorId: 'github', token: null })
+    const switched = svc.connectorsAdd({ connectorId: 'github', variant: 'full' })
+    expect(switched.entry.connectorVariant).toBe('full')
+    expect(switched.entry.id).toBe(locked.entry.id)
+  })
+
+  it('switching an OAuth connector variant drops its OAuth state and tokens', () => {
+    const svc = build()
+    const a = svc.connectorsAdd({ connectorId: 'cloudflare', variant: 'token' })
+    const o = svc.connectorsAdd({ connectorId: 'cloudflare', variant: 'oauth' })
+    expect(o.entry.id).toBe(a.entry.id)
+    secrets.set(mcpLibraryOAuthKey(o.entry.id, 'clientSecret'), 'CS-stale')
+    library.save({ ...library.get(o.entry.id)!, oauth: { resource: 'https://mcp.cloudflare.com/mcp', authorizationServer: 'https://x.example', hasClientSecret: false } })
+    const t = svc.connectorsAdd({ connectorId: 'cloudflare', variant: 'token' })
+    expect(t.entry.connectorVariant).toBe('token')
+    expect(t.entry.oauth).toBeUndefined()
+    expect(secrets.get(mcpLibraryOAuthKey(o.entry.id, 'clientSecret'))).toBeUndefined()
+  })
+
+  it('switching to a variant with no sign-in connects it at once', () => {
+    const svc = build()
+    const a = svc.connectorsAdd({ connectorId: 'exa', variant: 'key' })
+    expect(a.entry.connectedAt).toBeUndefined()
+    const b = svc.connectorsAdd({ connectorId: 'exa', variant: 'free' })
+    expect(b.entry.id).toBe(a.entry.id)
+    expect(b.entry.connectedAt).toBe(NOW)
+    expect(svc.connectorsList().find((c) => c.connector.id === 'exa')!.state).toBe('connected')
+  })
+
+  it('a switch re-snapshots projects that link the entry', () => {
+    const svc = build()
+    const a = svc.connectorsAdd({ connectorId: 'github' })
+    svc.linkLibrary({ projectId: pid, libraryId: a.entry.id })
+    expect(projects.get(pid)!.mcpServers![0].headers).toEqual({ 'X-MCP-Readonly': 'true' })
+    svc.connectorsAdd({ connectorId: 'github', variant: 'full' })
+    const link = projects.get(pid)!.mcpServers![0]
+    expect(link.connectorVariant).toBe('full')
+    expect(link.headers?.['X-MCP-Readonly']).toBeUndefined()
+  })
+
+  it('a switch aborts an in-flight authorization for the entry', async () => {
+    const svc = build()
+    const { entry } = svc.connectorsAdd({ connectorId: 'github', variant: 'app-readonly' })
+    let signal: AbortSignal | undefined
+    runAuthorization.mockImplementationOnce(
+      (input: AuthorizeFlowInput) =>
+        new Promise((_resolve, reject) => {
+          signal = input.signal
+          input.signal!.addEventListener('abort', () => reject(new Error('Authorization was cancelled.')))
+        })
+    )
+    const pending = svc.authorize({ libraryId: entry.id, clientId: 'gh', clientSecret: 'shh' })
+    await vi.waitFor(() => expect(runAuthorization).toHaveBeenCalledTimes(1))
+    svc.connectorsAdd({ connectorId: 'github', variant: 'full' })
+    expect(signal!.aborted).toBe(true)
+    expect((await pending).state).toBe('error')
   })
 
   it('rejects unknown connectors and avoids a custom entry name clash', () => {

@@ -66,13 +66,80 @@
   cursor: pointer;
 }
 
-/* Minimap (appearance setting): tokens only, no overlay of our own. */
+/* Minimap (appearance setting): React Flow's own control, bottom-left; colours come from the canvas tokens (CanvasMinimap). */
 .react-flow__minimap {
-  background: var(--surface-1);
+  --xy-minimap-background-color: var(--canvas-minimap-bg);
+  --xy-minimap-mask-background-color: var(--canvas-minimap-mask);
+  --xy-minimap-node-background-color: var(--canvas-minimap-node);
+  background: var(--canvas-minimap-bg);
   border: 1px solid var(--border-default);
   border-radius: var(--radius-md);
+  margin: var(--space-2);
 }
-.react-flow__minimap-mask {
-  fill: var(--surface-0);
-  fill-opacity: 0.6;
+
+/* Working reporting lines: the dash offset runs (React Flow's animated class); still under reduced motion. */
+.react-flow__edge.animated .react-flow__edge-path {
+  stroke-dasharray: var(--canvas-edge-live-dash);
+}
+
+/* Messages between agents: a round-capped dotted line whose dots drift slowly. */
+.react-flow .react-flow__edge.msg-edge .react-flow__edge-path {
+  stroke-dasharray: var(--canvas-edge-message-dash);
+  stroke-linecap: round;
+  animation: msg-dots 3s linear infinite;
+}
+@keyframes msg-dots {
+  to {
+    stroke-dashoffset: -28;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .react-flow .react-flow__edge.msg-edge .react-flow__edge-path,
+  .react-flow__edge.animated .react-flow__edge-path {
+    animation: none;
+  }
+}
+:root[data-reduce-motion='on'] .react-flow .react-flow__edge.msg-edge .react-flow__edge-path,
+:root[data-reduce-motion='on'] .react-flow__edge.animated .react-flow__edge-path {
+  animation: none;
+}
+/* Starfield: a new message glows for its first 1.5 s, then the glow fades (--canvas-glow is transparent elsewhere). */
+.react-flow .react-flow__edge.msg-edge .react-flow__edge-path {
+  filter: drop-shadow(0 0 0 transparent);
+  transition: filter var(--dur-slow) ease-out;
+}
+.react-flow .react-flow__edge.msg-edge.msg-fresh .react-flow__edge-path {
+  filter: drop-shadow(0 0 3px var(--canvas-glow));
+}
+@media (prefers-reduced-motion: reduce) {
+  .react-flow .react-flow__edge.msg-edge.msg-fresh .react-flow__edge-path {
+    filter: none;
+  }
+}
+:root[data-reduce-motion='on'] .react-flow .react-flow__edge.msg-edge.msg-fresh .react-flow__edge-path {
+  filter: none;
+}
+
+/* Station nodes: the handle's inline left / top is its centre, so bottom and right must not pin or shift it (React Flow's
+   own rules do, see @xyflow/react base.css). Invisible on the Live canvas; the Team editor shows them like the radial rule. */
+.react-flow__node > [data-style='station'] > .react-flow__handle {
+  right: auto;
+  bottom: auto;
+  transform: translate(-50%, -50%);
+}
+.react-flow__node-agent > [data-style='station'] > .react-flow__handle,
+.react-flow__node-done-group > [data-style='station'] > .react-flow__handle {
+  opacity: 0;
+}
+.react-flow__node-role:is(:hover, :focus-visible, :focus-within) > [data-style='station'] > .react-flow__handle {
+  opacity: 1;
+}
+
+/* Radial layout: edges run centre to centre, so the handles are only anchors for React Flow. */
+.react-flow[data-layout='radial'] .react-flow__handle {
+  opacity: 0;
+}
+/* The Team editor draws reporting lines by dragging from a handle: show them on the role under the pointer or focus. */
+.react-flow[data-layout='radial'] .react-flow__node-role:is(:hover, :focus-visible, :focus-within) .react-flow__handle {
+  opacity: 1;
 }

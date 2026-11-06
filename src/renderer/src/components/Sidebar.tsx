@@ -1,17 +1,20 @@
 import type { ReactElement, ReactNode } from 'react'
 import { useEffect, useMemo, useState } from 'react'
-import type { AuthStatusResult, ConnectionId, ConnectionStatus, Project, UsageStatus, VirtualProjectId } from '@shared/types'
-import { projectConnection } from '@shared/defaults'
-import { BellRing, ChevronDown, ChevronRight, LayoutGrid, MessageSquare, PanelLeftClose, Plug, Settings, Sparkles, type LucideIcon } from 'lucide-react'
+import type { AuthStatusResult, ConnectionId, ConnectionStatus, Project, RunSummary, UsageStatus, VirtualProjectId } from '@shared/types'
+import { projectConnection, projectKindOf } from '@shared/defaults'
+import { BellRing, Briefcase, ChevronDown, ChevronRight, LayoutDashboard,MessageSquare, PanelLeftClose, Plug, Settings, Sparkles, type LucideIcon } from 'lucide-react'
 import { ASSISTANT_ORDER, assistantLabel, displayProject, locationLabel } from '../lib/assistants'
 import { useShallow } from 'zustand/react/shallow'
 import { isRunLive, useAppStore, useRunIndexes, waitingRuns, type RunState } from '../store/useAppStore'
-import { decisionCount, waitingItems } from '../lib/needsYou'
+import { combinedDecisionCount, teamDecisionsFor, waitingItems } from '../lib/needsYou'
+import { openTeamFilesDecision, useTeamAttentionItems } from '../lib/menuActions'
+import { groupByClient, readCollapsedClients, writeCollapsedClients } from '../lib/clientGroups'
 import { needsYou } from '../lib/runChains'
 import { oneLine } from '../lib/decisionTitle'
 import { promptLine, runName, runTag } from '../lib/runLabels'
 import { isTeamSurfaceRun } from '../lib/runSurface'
-import { isStoppedRun, runStatus, statusOfRun } from '../lib/runStatus'
+import { statusOfRun, statusText } from '../lib/runStatus'
+import { chainGroups } from '../lib/runChains'
 import { projectStatus } from '../lib/projectStatus'
 import { initials } from '../lib/layout'
 import { currentPlatform, isMacPlatform, modKeyLabel } from '../lib/platform'
@@ -19,7 +22,7 @@ import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../lib/setting
 import { devBuildLabel, isDevBuild } from '../lib/buildChannel'
 import { useSidebarCollapsed } from '../lib/useSidebarCollapsed'
 import UsageMeter, { SpendBar, tightestWindow, UsageBar } from './UsageMeter'
-import { CONNECTION_LABEL, currentConnection, spendAria, spendLabel, spendLevel } from '../lib/usage'
+import { CONNECTION_LABEL, currentConnection, SPEND_ROW_PREFIX, spendLevel, spendRowFigure, spendRowLabel, spendSentence } from '../lib/usage'
 import { BrandLockup } from './layout/BrandLockup'
 import { ResizeHandle } from './layout/ResizeHandle'
 import { Icon } from './ui/Icon'
@@ -46,6 +49,8 @@ interface NavEntry {
   railMark: ReactNode
   /** Rail accessible name; default is "<name>, N need you". */
   accessibleName?: (decisions: number, needsLabel: string) => string
+  /** 'engagement' rows carry a kind mark (icon in the full list, tooltip and name in the rail). */
+  kind?: 'engagement'
   onOpen(): void
 }
 
@@ -73,9 +78,14 @@ function claudePill(auth: AuthStatusResult | null, status: ConnectionStatus | un
   return auth.loggedIn ? { tone: 'ok', label: `Claude · ${auth.method ?? 'logged in'}`, title: auth.detail } : { tone: 'danger', label: 'Claude not logged in', title: auth.detail }
 }
 
-type Pill = { tone: string; label: string; title?: string }
+/** `figure` is the label's part after "LiteLLM · "; the row renders the name visually hidden under a narrow footer so the figure and "today" always show. */
+type Pill = { tone: string; label: string; title?: string; figure?: string }
 
-/** Account row for a non-Anthropic connection: Codex follows its status, LiteLLM shows the key's spend. */
+/**
+ * Account row for a non-Anthropic connection: Codex follows its status, LiteLLM shows the key's spend: one figure
+ * (today's spend when the proxy reports periods, else the budget text; `spendRowLabel`), the whole sentence as the
+ * tooltip (`spendSentence`). The dot tone is the budget level only; a period figure never colours it.
+ */
 function connectionPill(id: 'openai' | 'litellm', status: ConnectionStatus | undefined, usage: UsageStatus | undefined): Pill {
   const name = CONNECTION_LABEL[id]
   const detail = status?.detail
@@ -86,7 +96,7 @@ function connectionPill(id: 'openai' | 'litellm', status: ConnectionStatus | und
     const spend = usage?.spend
     if (!spend) return { tone: 'warn', label: 'LiteLLM · spend unavailable', title: detail }
     const level = spendLevel(spend)
-    return { tone: level === 'danger' ? 'danger' : level === 'warn' ? 'warn' : 'ok', label: spendLabel(spend), title: spendAria(spend) }
+    return { tone: level === 'danger' ? 'danger' : level === 'warn' ? 'warn' : 'ok', label: spendRowLabel(spend), title: spendSentence(spend), figure: spendRowFigure(spend) }
   }
   return { tone: 'ok', label: `${name} · ${status.account ?? 'connected'}`, title: detail }
 }
@@ -137,16 +147,39 @@ export default function Sidebar({
   const indexes = useRunIndexes()
   const { collapsed: rail, toggle, setCollapsed } = useSidebarCollapsed()
   const [collapsed, setCollapsedRuns] = useState<Record<string, boolean>>({})
+  const [collapsedClients, setCollapsedClients] = useState<Set<string>>(() => readCollapsedClients())
+  // The selected project's row must stay reachable: opening it (or a project added to a collapsed client) expands its group.
+  // Keyed on the selection and its group only, so a later save of any project never re-opens a group the user collapsed.
+  const holderKey = useMemo(
+    () => (selectedId ? groupByClient(projects).groups.find((g) => g.items.some((p) => p.id === selectedId))?.key : undefined),
+    [selectedId, projects]
+  )
+  useEffect(() => {
+    if (holderKey === undefined) return
+    setCollapsedClients((prev) => {
+      if (!prev.has(holderKey)) return prev
+      const next = new Set(prev)
+      next.delete(holderKey)
+      writeCollapsedClients(next)
+      return next
+    })
+  }, [selectedId, holderKey])
 
   const allRuns = useMemo(() => Object.values(runs), [runs])
+  const teamItems = useTeamAttentionItems()
   const items = waiting.flatMap((r) => waitingItems(r))
+  const needsCount = items.length + teamItems.length
   const projectName = (id: string): string => locationLabel(id, projects)
   const inProject = (v: string): boolean => v !== 'projects' && v !== 'appSettings'
   const names = projects.map((p) => p.name)
 
   const account = mockAdapter ? { tone: 'ok', label: 'Mock adapter', title: undefined } : pill
+  /** The rail's accessible name and tooltip: LiteLLM's whole spend sentence (the rail shows no figure), else the label. */
+  const railName = current === 'litellm' && account.title ? account.title : account.label
+  /** The full row's tooltip: the LiteLLM spend sentence (the one-figure label can clip at narrow widths); other rows keep none. */
+  const rowTitle = rail ? railName : current === 'litellm' && !mockAdapter ? account.title : undefined
   const tight = mockAdapter || current === 'litellm' ? null : tightestWindow(currentUsage)
-  const needsLabel = `Needs you · ${items.length}`
+  const needsLabel = `Needs you · ${needsCount}`
   const sidebarKey = isMacPlatform(currentPlatform()) ? '⌘B' : `${modKeyLabel(currentPlatform())}+B`
 
   const newChatKey = isMacPlatform(currentPlatform()) ? '⌘⇧N' : 'Ctrl+Shift+N'
@@ -159,12 +192,21 @@ export default function Sidebar({
     const open = openRunsOf(visibleRuns)
     const expanded = !rail && open.length > 0 && !collapsed[id]
     const newest = [...(history[id] ?? []), ...visibleRuns.map((r) => r.summary)].sort((a, b) => b.startedAt - a.startedAt)[0]
-    const last = newest ? runStatus(newest.status, { endedWithApp: !!newest.endedWithApp, stopped: isStoppedRun(projectRuns.find((x) => x.summary.id === newest.id)?.agents) }) : undefined
+    const last = newest ? statusOfRun(projectRuns.find((x) => x.summary.id === newest.id) ?? { summary: newest }, p, false) : undefined
+    // An open run's tag and name are its chain's first member's (one conversation, one name).
+    const firstOf = new Map<string, RunSummary>()
+    if (open.length > 0) {
+      const known = new Map<string, RunSummary>((history[id] ?? []).map((h) => [h.id, h]))
+      for (const r of visibleRuns) known.set(r.summary.id, r.summary)
+      for (const g of chainGroups([...known.values()])) for (const m of g.members) firstOf.set(m.id, g.first)
+    }
     // One unit per level: decisions (the same count as the Needs-you row and the bell), with the run count beside it.
-    const st = projectStatus({ open: open.length, decisions: decisionCount(projectRuns), newest: newest && last ? { startedAt: newest.startedAt, status: last } : undefined })
+    const st = projectStatus({ open: open.length, decisions: combinedDecisionCount(projectRuns, teamDecisionsFor(teamItems, id)), newest: newest && last ? { startedAt: newest.startedAt, status: last } : undefined })
     const active = selectedId === id && inProject(view)
     const viewedId = draftPage[id] ? undefined : viewedByProject[id]
-    const accessibleName = entry.accessibleName ? entry.accessibleName(st.decisions, st.needsLabel) : st.needsLabel ? `${name}, ${st.needsLabel}` : name
+    const baseName = entry.accessibleName ? entry.accessibleName(st.decisions, st.needsLabel) : st.needsLabel ? `${name}, ${st.needsLabel}` : name
+    // In the rail the name replaces the visible content, so it says the kind; the full row's icon carries the label.
+    const accessibleName = rail && entry.kind === 'engagement' ? `${baseName}, engagement` : baseName
     return (
       <div key={id} className="nav-project">
         <div className="nav-row">
@@ -188,7 +230,8 @@ export default function Sidebar({
             aria-label={rail ? accessibleName : undefined}
             data-testid={entry.testId}
             {...entry.dataAttr}
-            title={[rail ? accessibleName : '', ...entry.titleLines, st.subtitle].filter(Boolean).join('\n')}
+            data-kind={entry.kind}
+            title={[rail ? (entry.kind === 'engagement' ? `${baseName} · Engagement` : baseName) : '', ...entry.titleLines, st.subtitle].filter(Boolean).join('\n')}
             onClick={entry.onOpen}
           >
             {rail ? (
@@ -199,6 +242,11 @@ export default function Sidebar({
             ) : (
               <>
                 <span className={`dot ${st.dot}`} aria-hidden="true" />
+                {entry.kind === 'engagement' && (
+                  <span className="nav-kind" data-testid="nav-kind-mark">
+                    <Icon icon={Briefcase} size="xs" label="Engagement" />
+                  </span>
+                )}
                 <span className="nav-text">
                   <span className="nav-name">{name}</span>
                   {active && st.subtitle && <span className="nav-counts">{st.subtitle}</span>}
@@ -216,6 +264,8 @@ export default function Sidebar({
           <ul className="nav-runs" aria-label={`Open runs of ${name}`}>
             {open.map((r) => {
               const rs = statusOfRun(r, p, needsYou(r))
+              const first = firstOf.get(r.summary.id) ?? r.summary
+              const tag = runTag(indexes.get(first.id))
               const here = active && viewedId === r.summary.id
               return (
                 <li key={r.summary.id}>
@@ -223,16 +273,16 @@ export default function Sidebar({
                     type="button"
                     className={`nav-run ${here ? 'active' : ''}`}
                     aria-current={here ? 'true' : undefined}
-                    title={`${runTag(indexes.get(r.summary.id))}: ${oneLine(promptLine(r.summary.prompt), 300)}\n${rs.word}`}
+                    title={`${tag}: ${oneLine(promptLine(first.prompt), 300)}\n${statusText(rs)}`}
                     onClick={() => {
                       if (selectedId !== id) selectProject(id)
                       void openRun(r.summary.id)
                     }}
                   >
                     <span className={`run-dot ${rs.tone}`} aria-hidden="true" />
-                    <span className="run-index">{runTag(indexes.get(r.summary.id))}</span>
-                    <span className="nav-run-title">{runName(r.summary)}</span>
-                    <span className="sr-only">{rs.word}</span>
+                    <span className="run-index">{tag}</span>
+                    <span className="nav-run-title">{runName(first)}</span>
+                    <span className="sr-only">{statusText(rs)}</span>
                   </button>
                 </li>
               )
@@ -251,11 +301,22 @@ export default function Sidebar({
     dataAttr: { 'data-name': p.name },
     titleLines: [p.path],
     railMark: initials(p.name, names),
+    kind: projectKindOf(p) === 'engagement' ? 'engagement' : undefined,
     onOpen: () => {
       void openProject(p.id)
       if (!inProject(view)) setView('run')
     }
   }))
+  const entryById = new Map(projectEntries.map((e) => [e.id, e]))
+  const grouping = groupByClient(projects)
+  const toggleClient = (key: string): void =>
+    setCollapsedClients((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      writeCollapsedClients(next)
+      return next
+    })
   const assistantEntries: NavEntry[] = ASSISTANT_ORDER.map((id) => ({
     id,
     name: assistantLabel(id),
@@ -307,19 +368,19 @@ export default function Sidebar({
           type="button"
           className={`nav-item ${view === 'projects' ? 'active' : ''}`}
           aria-current={view === 'projects' ? 'page' : undefined}
-          aria-label={rail ? 'All projects' : undefined}
-          title={rail ? 'All projects' : undefined}
+          aria-label={rail ? 'Dashboard' : undefined}
+          title={rail ? 'Dashboard' : undefined}
           onClick={() => setView('projects')}
         >
-          <Icon icon={LayoutGrid} size="sm" />
-          {!rail && 'Projects'}
+          <Icon icon={LayoutDashboard} size="sm" />
+          {!rail && 'Dashboard'}
         </button>
-        {items.length > 0 && (
+        {needsCount > 0 && (
           <Popover
             trigger={
               <>
                 <Icon icon={BellRing} size="sm" />
-                {rail ? <span className="nav-rail-count">{items.length}</span> : <span className="nav-text">{needsLabel}</span>}
+                {rail ? <span className="nav-rail-count">{needsCount}</span> : <span className="nav-text">{needsLabel}</span>}
                 {!rail && <Icon icon={ChevronDown} size="xs" />}
               </>
             }
@@ -334,7 +395,7 @@ export default function Sidebar({
             {({ close }) => (
               <ul className="needs-list">
                 {waiting.flatMap((r) =>
-                  waitingItems(r).map((it) => (
+                  waitingItems(r, projectKindOf(projects.find((p) => p.id === r.summary.projectId))).map((it) => (
                     <li key={it.key}>
                       <button
                         type="button"
@@ -354,6 +415,23 @@ export default function Sidebar({
                     </li>
                   ))
                 )}
+                {teamItems.map((t) => (
+                  <li key={t.key}>
+                    <button
+                      type="button"
+                      className="needs-item"
+                      data-kind="team"
+                      title={`${t.label}\n${t.projectName}`}
+                      onClick={() => {
+                        close()
+                        openTeamFilesDecision(t.projectId)
+                      }}
+                    >
+                      <span className="needs-what">{t.label}</span>
+                      <span className="needs-where">{t.projectName} · Team</span>
+                    </button>
+                  </li>
+                ))}
               </ul>
             )}
           </Popover>
@@ -368,7 +446,60 @@ export default function Sidebar({
       {!rail && <div className="sidebar-label">Projects</div>}
       <div className="sidebar-section sidebar-projects">
         {projects.length === 0 && !rail && <div className="sidebar-empty">No projects yet</div>}
-        {projectEntries.map(renderEntry)}
+        {!grouping.showHeaders
+          ? projectEntries.map(renderEntry)
+          : grouping.groups.map((g, gi) => {
+              const rows = g.items.map((p) => entryById.get(p.id)).filter((e): e is NavEntry => !!e)
+              if (rail) {
+                return (
+                  <div key={g.key} className="nav-client-rail">
+                    {gi > 0 && <hr className="nav-client-divider" aria-hidden="true" />}
+                    {rows.map(renderEntry)}
+                  </div>
+                )
+              }
+              if (g.type === 'code') {
+                return (
+                  <div key={g.key} className="nav-client-group">
+                    <div className="nav-client-label" data-testid="nav-client-code-label">
+                      {g.label}
+                    </div>
+                    {rows.map(renderEntry)}
+                  </div>
+                )
+              }
+              const closed = collapsedClients.has(g.key)
+              const need = g.items.reduce((n, p) => n + combinedDecisionCount(allRuns.filter((r) => r.summary.projectId === p.id), teamDecisionsFor(teamItems, p.id)), 0)
+              const panelId = `nav-client-rows-${gi}`
+              return (
+                <div key={g.key} className="nav-client-group">
+                  <button
+                    type="button"
+                    className="nav-client-header"
+                    aria-expanded={!closed}
+                    aria-controls={panelId}
+                    data-testid="nav-client-group"
+                    data-client={g.label}
+                    title={`${g.label} (${g.items.length})`}
+                    onClick={() => toggleClient(g.key)}
+                  >
+                    <Icon icon={closed ? ChevronRight : ChevronDown} size="xs" />
+                    <span className="nav-client-name">{g.label}</span>
+                    <span className="nav-client-count">{` (${g.items.length})`}</span>
+                    <span className="nav-client-fill" />
+                    {closed && need > 0 && (
+                      <Badge tone="attention" title={`${need} ${need === 1 ? 'decision needs' : 'decisions need'} you`}>
+                        <span aria-hidden="true">{need}</span>
+                        <span className="sr-only">{`, ${need} ${need === 1 ? 'decision' : 'decisions'}`}</span>
+                      </Badge>
+                    )}
+                  </button>
+                  <div id={panelId} role="group" aria-label={g.label} hidden={closed}>
+                    {rows.map(renderEntry)}
+                  </div>
+                </div>
+              )
+            })}
       </div>
 
       <div className="sidebar-footer">
@@ -376,13 +507,22 @@ export default function Sidebar({
           trigger={
             <>
               <span className={`dot ${account.tone}`} aria-hidden="true" />
-              <span className="account-label">{account.label}</span>
+              <span className="account-label">
+                {account.figure ? (
+                  <>
+                    <span className="account-name">{SPEND_ROW_PREFIX}</span>
+                    {account.figure}
+                  </>
+                ) : (
+                  account.label
+                )}
+              </span>
               {tight && !rail && <span className="account-pct">{Math.round(tight.pct)}%</span>}
               {!rail && !mockAdapter && (current === 'litellm' ? <SpendBar spend={currentUsage?.spend} /> : <UsageBar usage={currentUsage} />)}
             </>
           }
-          triggerLabel={rail ? account.label : undefined}
-          triggerTitle={rail ? account.label : undefined}
+          triggerLabel={rail ? railName : undefined}
+          triggerTitle={rowTitle}
           triggerClassName="account-row"
           triggerTestId="auth-pill"
           label="Account, plan usage and spend"

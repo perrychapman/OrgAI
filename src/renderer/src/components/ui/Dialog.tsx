@@ -37,7 +37,10 @@ export function Dialog({
     el.querySelector<HTMLElement>('[data-autofocus]')?.focus()
     return () => {
       if (el.open) el.close()
-      opener?.focus?.()
+      // Passive cleanups can run after the caller already moved focus on (a save that focuses the new row): give focus
+      // back to the opener only when it is still on nothing or inside the closed dialog.
+      const now = document.activeElement
+      if (!now || now === document.body || el.contains(now)) opener?.focus?.()
     }
   }, [open])
   return (
@@ -78,14 +81,20 @@ export function ConfirmDialog({
   body,
   confirmLabel,
   danger,
+  confirmTestId,
+  cancelLabel = 'Cancel',
   onConfirm,
   onCancel
 }: {
+  /** The dismissing button's text, for a confirm where "Cancel" could mean the very thing being confirmed. */
+  cancelLabel?: string
   open: boolean
   title: string
   body: ReactNode
   confirmLabel: string
   danger?: boolean
+  /** data-testid of the confirm button (e2e hooks for confirms whose label is not unique). */
+  confirmTestId?: string
   onConfirm: () => void
   onCancel: () => void
 }): ReactElement {
@@ -98,9 +107,9 @@ export function ConfirmDialog({
       footer={
         <>
           <Button autoFocusDialog onClick={onCancel}>
-            Cancel
+            {cancelLabel}
           </Button>
-          <Button variant={danger ? 'danger' : 'primary'} onClick={onConfirm}>
+          <Button variant={danger ? 'danger' : 'primary'} testId={confirmTestId} onClick={onConfirm}>
             {confirmLabel}
           </Button>
         </>

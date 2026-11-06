@@ -46,11 +46,53 @@ describe('skillAssistPrompt', () => {
   })
 })
 
+describe('skillProposalProblem hidden characters', () => {
+  it('refuses a bidi or zero-width character in name, description and roles, naming the field', () => {
+    const bidi = { ...draft('fresh'), description: 'Use for ‮fresh work.' }
+    expect(skillProposalProblem([item({ draft: bidi })], env())).toMatch(/^Item 1: draft\.description contains a hidden character \(U\+202E/)
+    expect(skillProposalProblem([item({ draft: { ...draft('fresh'), name: 'fre​sh' } })], env())).toMatch(/^Item 1: draft\.name contains a hidden character \(U\+200B/)
+    expect(skillProposalProblem([item({ scope: 'project', draft: draft('fresh'), roles: ['lead', 'engi​neer'] })], env())).toMatch(/^Item 1: A role slug in roles contains a hidden character \(U\+200B/)
+    const grant = { action: 'grant', scope: 'project', name: 'review‮-code', draft: draft('review-code'), roles: ['lead'] } as SkillProposalItem
+    expect(skillProposalProblem([grant], env())).toMatch(/^Item 1: name contains a hidden character \(U\+202E/)
+    // A line break in a description is folded, not refused.
+    expect(skillProposalProblem([item({ draft: { ...draft('fresh'), description: 'Use for\nfresh work.' } })], env())).toBeNull()
+  })
+})
+
 describe('skillProposalProblem', () => {
   it('accepts valid library and project items', () => {
     expect(skillProposalProblem([item(), item({ scope: 'project', draft: draft('fresh'), roles: ['lead'] })], env())).toBeNull()
     expect(skillProposalProblem([item({ action: 'update', libraryId: 'lib1', draft: draft('release-notes') })], env())).toBeNull()
     expect(skillProposalProblem([item({ action: 'update', scope: 'project', draft: draft('review-code'), roles: ['engineer'] })], env())).toBeNull()
+  })
+
+  it('accepts and checks the configuration actions link, grant and remove', () => {
+    const cfg = (over: Partial<SkillProposalItem>): SkillProposalItem => item({ scope: 'project', draft: { name: 'review-code', description: '', body: '' }, ...over })
+    const lib2 = env({ library: [{ id: 'lib1', name: 'release-notes' }, { id: 'lib2', name: 'triage' }] })
+    expect(skillProposalProblem([cfg({ action: 'link', libraryId: 'lib2', draft: { name: 'triage', description: '', body: '' }, roles: ['lead'] })], lib2)).toBeNull()
+    expect(skillProposalProblem([cfg({ action: 'grant', roles: [] })], env())).toBeNull()
+    expect(skillProposalProblem([cfg({ action: 'grant', enabled: false })], env())).toBeNull()
+    expect(skillProposalProblem([cfg({ action: 'remove' })], env())).toBeNull()
+    expect(skillProposalProblem([cfg({ action: 'remove', draft: { name: 'release-notes', description: '', body: '' } })], env())).toBeNull()
+    // link: the entry must exist and not be linked or shadowed already
+    expect(skillProposalProblem([cfg({ action: 'link', libraryId: 'nope' })], env())).toContain('not a library skill')
+    expect(skillProposalProblem([cfg({ action: 'link', libraryId: 'lib1' })], env())).toContain('already linked')
+    expect(skillProposalProblem([cfg({ action: 'link', libraryId: 'lib2' })], env({ library: [{ id: 'lib2', name: 'review-code' }] }))).toContain('already has a skill named')
+    // grant / remove: the skill must exist; grant must change something; roles must exist
+    expect(skillProposalProblem([cfg({ action: 'grant', draft: { name: 'ghost', description: '', body: '' }, roles: [] })], env())).toContain('no skill named')
+    expect(skillProposalProblem([cfg({ action: 'grant' })], env())).toContain('sets roles')
+    expect(skillProposalProblem([cfg({ action: 'grant', roles: ['nobody'] })], env())).toContain('no role')
+    expect(skillProposalProblem([cfg({ action: 'remove', draft: { name: 'ghost', description: '', body: '' } })], env())).toContain('no skill named')
+    // project scope only, project sessions only, no duplicates
+    expect(skillProposalProblem([cfg({ action: 'remove', scope: 'library' })], env())).toContain('scope must be "project"')
+    expect(skillProposalProblem([cfg({ action: 'remove' })], env({ projectSession: false }))).toContain('needs a project')
+    expect(skillProposalProblem([cfg({ action: 'remove' }), cfg({ action: 'grant', roles: [] })], env())).toContain('twice')
+    expect(skillProposalProblem([cfg({ action: 'update', draft: draft('review-code') }), cfg({ action: 'grant', roles: [] })], env())).toContain('twice')
+  })
+
+  it('refuses library items when allowLibrary is false (work runs)', () => {
+    expect(skillProposalProblem([item()], env({ allowLibrary: false }))).toContain('scope "library" is not available')
+    expect(skillProposalProblem([item({ scope: 'project', draft: draft('fresh') })], env({ allowLibrary: false }))).toBeNull()
   })
 
   it('refuses empty, oversized and malformed proposals', () => {

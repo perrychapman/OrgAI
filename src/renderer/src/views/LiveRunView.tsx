@@ -2,20 +2,29 @@ import type { ReactElement } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ReactFlow,
-  Background,
-  BackgroundVariant,
-  MiniMap,
   MarkerType,
   useReactFlow,
   ReactFlowProvider,
   type Edge,
   type FitViewOptions,
+  type NodeChange,
   type NodeMouseHandler
 } from '@xyflow/react'
-import type { AgentInstance, McpInstallOutcome, McpInstallRequest, Project, Proposal, ProposalDecision, ProposalKind } from '@shared/types'
+import { CanvasBackdrop } from '../components/canvas/CanvasBackdrop'
+import { CanvasMinimap } from '../components/canvas/CanvasMinimap'
+import { CanvasStyleButton } from '../components/canvas/CanvasStyleButton'
+import { CANVAS_EDGE_TYPES } from '../components/canvas/RadialEdge'
+import { STATION_CORNER_RADIUS, STATION_LINE_WIDTH } from '../lib/canvasShapes'
+import { EDGE_TYPE, HEX_GAP, HEX_TILE, agentNodeSize, edgeStroke, groupNodeSize, handlesFor, reportingLineRole, ringStepFor, useCanvasOptions, useNodeDims, useReducedMotion } from '../lib/canvas'
+import type { AgentInstance, CanvasNodeStyle, McpInstallOutcome, McpInstallRequest, Project, Proposal, ProposalDecision, ProposalKind } from '@shared/types'
 import { isVirtualProjectId } from '@shared/types'
 import type { VirtualProjectId } from '@shared/types'
 import { ASSISTANT_REPLY_LABEL, assistantModeLabel, newSessionLabel, runLayoutFor, speaksAsAssistant } from '../lib/assistants'
+import { chainCanvas, earlierLabel, isEarlierKey } from '../lib/chainView'
+import { foldFinished, groupParentOf, isSettledAt, nextSettleAt, settleTimerDelay } from '../lib/foldFinished'
+import { mergeChainFeed } from '../lib/transcriptRows'
+import { runName } from '../lib/runLabels'
+import { registerMenuHandler, runMenuAction } from '../lib/menuRegistry'
 import ChatStartPage from '../components/assistants/ChatStartPage'
 import McpAssistantStartPage from '../components/assistants/McpAssistantStartPage'
 import SkillAssistantStartPage from '../components/assistants/SkillAssistantStartPage'
@@ -25,7 +34,8 @@ import { Banner } from '../components/ui/Banner'
 import { IconButton } from '../components/ui/IconButton'
 import PermissionCard from '../components/PermissionCard'
 import DecisionTray, { type DecisionItem } from '../components/DecisionTray'
-import { oneLine, permissionTitle } from '../lib/decisionTitle'
+import { oneLine, permissionTitle, proposalKindLabel } from '../lib/decisionTitle'
+import { projectKindOf } from '@shared/defaults'
 import { defaultDecisionIndex } from '../lib/needsYou'
 import { Icon } from '../components/ui/Icon'
 import { Popover } from '../components/ui/Popover'
@@ -33,12 +43,13 @@ import { Switch } from '../components/ui/Switch'
 import RunActions from '../components/RunActions'
 import RunMeta from '../components/RunMeta'
 import { useCssVar } from '../lib/useCssVar'
-import { activeRun, isRunLive, useAppStore, useProjectSummaries } from '../store/useAppStore'
-import { SegmentedControl } from '../components/ui/SegmentedControl'
+import { activeRun, useAppStore, useProjectSummaries, type RunState } from '../store/useAppStore'
 import { Button } from '../components/ui/Button'
-import { canContinue as chainCanContinue, continuedBy, relativeTime, sessionOpenRunId } from '../lib/runChains'
-import { AgentNode, MSG_IN, MSG_OUT, type AgentFlowNode } from '../components/AgentNode'
-import { DoneGroupNode, GROUP_H, GROUP_W, groupId, type DoneGroupFlowNode } from '../components/DoneGroupNode'
+import { CHAIN_EAGER_MEMBERS, canContinueIn, chainKeyOf, chainOf, continuedByIn, earlierMembersToLoad, endedComposerCopy, sessionOpenRunId } from '../lib/runChains'
+import { AgentNode, type AgentFlowNode } from '../components/AgentNode'
+import { messageSides, msgHandleId, type PlacedBox } from '../lib/canvasShapes'
+import { fitOptions } from '../lib/canvasFit'
+import { DoneGroupNode, groupId, type DoneGroupFlowNode } from '../components/DoneGroupNode'
 import type { FinishedGroup } from '../components/FinishedList'
 import TranscriptPanel from '../components/TranscriptPanel'
 import ProposalCard from '../components/ProposalCard'
@@ -50,66 +61,52 @@ import { CanvasFrame, FrameStage, FrameToolbar, FrameTray } from '../components/
 import RunTabs from '../components/RunTabs'
 import NewRunPage from '../components/NewRunPage'
 import Composer from '../components/Composer'
-import { formatUntil, treeLayout } from '../lib/layout'
-import { ancestorsOf, hasLiveDescendant, normalizeParents } from '../lib/agentTree'
+import { formatUntil, layoutCanvas } from '../lib/layout'
+import { agentLabel, normalizeParents } from '../lib/agentTree'
 
 const nodeTypes = { agent: AgentNode, 'done-group': DoneGroupNode }
-const NODE_W = 240
-const NODE_H = 112
 const LIVE_STATES = new Set(['starting', 'thinking', 'tool', 'delegating', 'waiting'])
 /** A finished report keeps its own node this long before folding into its parent's "done" group. */
-const COLLAPSE_GRACE_MS = 6000
-const SETTLED_WORKTREE = new Set(['merged', 'empty', 'removed', 'held', 'conflict'])
 const COLLAPSE_KEY = 'orgai.collapseFinished'
 /** An agent-to-agent message stays drawn this long. */
 const MESSAGE_EDGE_MS = 12_000
 /** Neutral role colour used when a role has none; resolved from a token at render time (React Flow cannot take var()). */
 const NEUTRAL_ROLE_TOKEN = '--text-tertiary'
 
-/** Reads a data-* attribute on <html> and follows changes (the appearance settings write them). */
-function useHtmlAttr(name: string, fallback: string): string {
-  const read = (): string => document.documentElement.getAttribute(name) ?? fallback
-  const [value, setValue] = useState(read)
-  useEffect(() => {
-    const update = (): void => setValue(read())
-    update()
-    const mo = new MutationObserver(update)
-    mo.observe(document.documentElement, { attributes: true, attributeFilter: [name] })
-    return () => mo.disconnect()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [name])
-  return value
-}
-
-/** Fit-to-view options. A stage under 300 px tall (1024x640 with several decisions) keeps nodes readable: zoom stays at 0.8 or more and the chart pans. */
+/**
+ * Fit-to-view options. A stage under 300 px tall (1024x640 with several decisions) keeps nodes readable: zoom stays at
+ * 0.8 or more and the chart pans. The radial layout fits with less padding (spec section 3).
+ */
 function fitOpts(o: { duration: number }): FitViewOptions {
-  const h = document.querySelector('.frame-stage')?.clientHeight ?? 1000
-  return { padding: 0.25, maxZoom: 1, duration: o.duration, ...(h < 300 ? { minZoom: 0.8 } : {}) }
+  const style = document.querySelector('.frame-stage .agent-node[data-style]')?.getAttribute('data-style') as CanvasNodeStyle | null | undefined
+  return fitOptions({
+    stageHeight: document.querySelector('.frame-stage')?.clientHeight ?? 1000,
+    radial: !!document.querySelector('.frame-stage .react-flow[data-layout="radial"]'),
+    nodeStyle: style ?? undefined,
+    duration: o.duration
+  })
 }
 
-/** True when the OS or the app asks for reduced motion (animated edges stay still). */
-function useReducedMotion(): boolean {
-  const attr = useHtmlAttr('data-reduce-motion', '')
-  const [os, setOs] = useState(() => window.matchMedia('(prefers-reduced-motion: reduce)').matches)
-  useEffect(() => {
-    const mq = window.matchMedia('(prefers-reduced-motion: reduce)')
-    const on = (): void => setOs(mq.matches)
-    mq.addEventListener('change', on)
-    return () => mq.removeEventListener('change', on)
-  }, [])
-  return os || (attr !== '' && attr !== 'false' && attr !== 'off')
+/** The canvas controls, shared by the toolbar buttons and the application menu handlers. */
+const ZOOM_MS = 150
+function zoomInCanvas(rf: { zoomIn: (o?: { duration: number }) => unknown }, reduced: boolean): void {
+  void rf.zoomIn({ duration: reduced ? 0 : ZOOM_MS })
+}
+function zoomOutCanvas(rf: { zoomOut: (o?: { duration: number }) => unknown }, reduced: boolean): void {
+  void rf.zoomOut({ duration: reduced ? 0 : ZOOM_MS })
+}
+function fitCanvas(rf: { fitView: (o?: FitViewOptions) => unknown }, reduced: boolean): void {
+  void rf.fitView(fitOpts({ duration: reduced ? 0 : ZOOM_MS }))
 }
 
-const EDGE_TYPE = { curved: 'default', orthogonal: 'smoothstep', straight: 'straight' } as const
-const PATTERN_VARIANT = { dots: BackgroundVariant.Dots, grid: BackgroundVariant.Lines } as const
+/** A message edge glows (Starfield) and is marked fresh for this long. */
+const MESSAGE_FRESH_MS = 1500
 
 type CanvasNode = AgentFlowNode | DoneGroupFlowNode
 
-/** True once a report has reported back and nothing is still happening to its branch. */
-function isSettled(a: AgentInstance, now: number): boolean {
-  if (a.state !== 'done' && a.state !== 'error') return false
-  if (a.worktree && !SETTLED_WORKTREE.has(a.worktree.status)) return false
-  return now - (a.endedAt ?? now) >= COLLAPSE_GRACE_MS
+/** The fold's name for an agent (handle first, as its node shows it), or undefined when it is not known. */
+function lookupLabel(a: AgentInstance | undefined): string | undefined {
+  return a ? agentLabel(a) : undefined
 }
 
 function readCollapsePref(): boolean {
@@ -122,13 +119,16 @@ function readCollapsePref(): boolean {
 
 /**
  * The project's run workspace: the run strip on top (tabs and the viewed run's actions), then either one run (canvas
- * toolbar, decisions, canvas, composer, side panel) or the blank New run page. Each run is keyed, so its local state (images, folded groups, picked installs,
- * the session block) never leaks into another run.
+ * toolbar, decisions, canvas, composer, side panel) or the blank New run page. The view is keyed by the run's session chain, so
+ * a continue keeps it mounted; per-run local state (picked decision, the session block, approved kinds) resets when the viewed run changes.
  */
 export default function LiveRunView({ project }: { project: Project }): ReactElement {
   const runId = useAppStore((s) => activeRun(s)?.summary.id)
   const hasWorkspace = useAppStore((s) => !!s.draftPage[project.id] || !!s.activeRunByProject[project.id])
   const ensureWorkspace = useAppStore((s) => s.ensureWorkspace)
+  const summaries = useProjectSummaries()
+  // One view per session chain: a continue keeps the same view mounted (layout, panel, focus).
+  const chainKey = runId ? chainKeyOf(summaries, runId) : 'new'
 
   // A project opened without a workspace (e.g. straight after creation) picks its newest run or the New run page.
   useEffect(() => {
@@ -143,7 +143,7 @@ export default function LiveRunView({ project }: { project: Project }): ReactEle
       </div>
       <div className="run-panel" id="run-panel" role="tabpanel" aria-labelledby={`run-tab-${runId ?? 'new'}`}>
         {runId ? (
-          <ReactFlowProvider key={`${project.id}:${runId}`}>
+          <ReactFlowProvider key={`${project.id}:${chainKey}`}>
             <RunView project={project} runId={runId} />
           </ReactFlowProvider>
         ) : isVirtualProjectId(project.id) ? (
@@ -179,7 +179,18 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   const openRun = useAppStore((s) => s.openRun)
   const setSideTab = useAppStore((s) => s.setSideTab)
   const focusComposer = useAppStore((s) => s.focusComposer)
-  const chosenLayout = useAppStore((s) => s.runLayoutByRun[runId])
+  const summaries = useProjectSummaries()
+  // The pick is kept for the conversation: the newest member's own choice, else an earlier member's.
+  // The chain is worked out once per render; newest / canContinue / successor / key all derive from it.
+  const chainSummaries = useMemo(() => chainOf(summaries, runId), [summaries, runId])
+  const chainIds = useMemo(() => {
+    const ids = chainSummaries.map((r) => r.id).reverse()
+    return ids.length > 0 ? ids : [runId]
+  }, [chainSummaries, runId])
+  const chosenLayout = useAppStore((s) => {
+    for (const id of chainIds) if (s.runLayoutByRun[id]) return s.runLayoutByRun[id]
+    return undefined
+  })
   const setRunLayout = useAppStore((s) => s.setRunLayout)
   const pendingFocus = useAppStore((s) => s.pendingDecisionFocus === runId)
   const clearDecisionFocus = useAppStore((s) => s.clearDecisionFocus)
@@ -188,30 +199,49 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   const stopRun = useAppStore((s) => s.stopRun)
   const messageColor = useCssVar('--edge-message')
   const neutralRoleColor = useCssVar(NEUTRAL_ROLE_TOKEN)
-  const borderStrong = useCssVar('--border-strong')
-  const patternColor = useCssVar('--canvas-pattern')
-  const surfaceColor = useCssVar('--surface-0')
-  const patternKind = useHtmlAttr('data-canvas-pattern', 'dots')
-  const edgeStyle = useHtmlAttr('data-canvas-edges', 'curved') as keyof typeof EDGE_TYPE
-  const showMinimap = useHtmlAttr('data-canvas-minimap', 'off') === 'on'
+  const edgeMix = useCssVar('--canvas-edge-role-mix')
+  const edgeInk = useCssVar('--canvas-edge-ink')
+  const edgeDoneOpacity = Number.parseFloat(useCssVar('--canvas-edge-done-opacity')) || 0.8
+  const groupEdgeColor = useCssVar('--canvas-edge-group')
+  const liveDash = useCssVar('--canvas-edge-live-dash') || '6 4'
+  const messageDash = useCssVar('--canvas-edge-message-dash') || '2 5'
+  const options = useCanvasOptions()
   const reducedMotion = useReducedMotion()
-  const edgeType = EDGE_TYPE[edgeStyle] ?? 'default'
+  const nodeDims = useNodeDims()
+  // The stage collapses to height 0 while an expanded proposal takes a compact frame: nothing to fit then.
+  const stageHidden = (): boolean => (canvasRef.current?.querySelector('.frame-stage')?.clientHeight ?? 1) < 8
+  const radial = options.layout === 'radial'
+  const edgeType = radial ? 'radial' : EDGE_TYPE[options.edges]
+  const agentSize = useMemo(() => agentNodeSize(options.nodeStyle, options.layout), [options.nodeStyle, options.layout])
+  const groupSize = useMemo(() => groupNodeSize(options.nodeStyle, options.layout), [options.nodeStyle, options.layout])
+  const station = options.nodeStyle === 'station'
+  // Right angle lines turn with a rounded corner on the subway map.
+  const roundedCorners = useMemo(() => (station && options.edges === 'orthogonal' && !radial ? { pathOptions: { borderRadius: STATION_CORNER_RADIUS } } : {}), [station, options.edges, radial])
 
   /** The runtime refused a Continue because the session is open in another live run. */
   const [sessionBlock, setSessionBlock] = useState<{ message: string; runId: string } | null>(null)
-  /** What Send does on a finished run: a new run (default) or the explicit Continue. */
-  const continueIntent = useAppStore((s) => s.continueIntent === runId)
-  const [finishedChoice, setFinishedChoice] = useState<'new' | 'continue'>(continueIntent ? 'continue' : 'new')
-  useEffect(() => {
-    // History's Continue sets the intent just before the view mounts; it is consumed once.
-    if (!continueIntent) return
-    setFinishedChoice('continue')
-    useAppStore.setState({ continueIntent: null })
-  }, [continueIntent])
-  const summaries = useProjectSummaries()
-  const otherOpenRuns = useAppStore((s) => Object.values(s.runs).filter((r) => r.summary.projectId === project.id && r.summary.id !== runId && isRunLive(r)).length)
+  const allRuns = useAppStore((s) => s.runs)
+  // Loaded members, oldest first (members whose records are not loaded yet are missing until loadChain fetches them).
+  const members = useMemo(() => [...chainIds].reverse().map((id) => allRuns[id]).filter((r): r is RunState => !!r), [chainIds, allRuns])
+  const historyLoaded = useAppStore((s) => s.historyByProject[project.id] !== undefined)
+  const continueIntent = useAppStore((s) => s.continueIntent === chainIds[0])
+  const loadChain = useAppStore((s) => s.loadChain)
+  const loadEarlierSessions = useAppStore((s) => s.loadEarlierSessions)
+  // M2: only the newest members load at first; the rest wait behind "Load earlier sessions" at the top of the feed.
+  const chainLimit = useAppStore((s) => s.chainLoadLimit[chainIds[chainIds.length - 1]] ?? CHAIN_EAGER_MEMBERS)
+  const earlierToLoad = useMemo(() => {
+    // Count only members before the viewed run (the feed shows the chain up to it); the window counts from the newest.
+    const at = chainSummaries.findIndex((m) => m.id === runId)
+    const uptoViewed = at >= 0 ? chainSummaries.slice(0, at + 1) : chainSummaries
+    return earlierMembersToLoad(uptoViewed, (id) => !!allRuns[id], Math.max(0, chainLimit - (chainSummaries.length - uptoViewed.length)))
+  }, [chainSummaries, allRuns, chainLimit, runId])
+  const loadEarlierRef = useRef<HTMLDivElement>(null)
+  const [loadingEarlier, setLoadingEarlier] = useState(false)
+  const chainFocusRun = useAppStore((s) => s.chainFocusRun)
   const [collapseFinished, setCollapseFinished] = useState(readCollapsePref)
-  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({})
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean | number>>({})
+  // The frame's one polite line: new decisions and "Showing N agents under X" after an expand.
+  const [arrival, setArrival] = useState<{ text: string; n: number } | undefined>(undefined)
   const [now, setNow] = useState(() => Date.now())
   const [msgNow, setMsgNow] = useState(() => Date.now())
   const [pickedDecision, setPickedDecision] = useState<string | null>(null)
@@ -219,42 +249,97 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   const [approvedKinds, setApprovedKinds] = useState<ProposalKind[]>([])
   const bodyRef = useRef<HTMLDivElement>(null)
 
+  // Turning "Hide finished agents" back on folds every expanded group again (the way back after expanding).
   const toggleCollapse = (): void => {
-    setCollapseFinished((v) => {
-      try {
-        localStorage.setItem(COLLAPSE_KEY, v ? 'off' : 'on')
-      } catch {
-        /* storage unavailable */
-      }
-      return !v
-    })
+    const next = !collapseFinished
+    try {
+      localStorage.setItem(COLLAPSE_KEY, next ? 'on' : 'off')
+    } catch {
+      /* storage unavailable */
+    }
+    setCollapseFinished(next)
+    if (next) setExpandedGroups({})
   }
-  const toggleGroup = useCallback((parentId: string) => setExpandedGroups((g) => ({ ...g, [parentId]: !g[parentId] })), [])
+
+  // Earlier sessions of this conversation load lazily; the view stays mounted when a continue changes the viewed run.
+  // It re-runs when the set of known members changes or the history arrives: a run opened before history loaded gets its earlier members then.
+  const chainMemberKey = chainIds.join(',')
+  useEffect(() => {
+    void loadChain(runId)
+  }, [runId, chainMemberKey, historyLoaded, loadChain])
+  // History's Continue asks for the composer: it takes focus once (the Composer sees autoFocus on mount), then the request is cleared.
+  useEffect(() => {
+    if (continueIntent) useAppStore.setState({ continueIntent: null })
+  }, [continueIntent])
+  const prevRunId = useRef(runId)
+  useEffect(() => {
+    const prev = prevRunId.current
+    if (prev === runId) return
+    prevRunId.current = runId
+    // Per-run local state starts clean; the collapse preference, folded groups and the side panel tab carry over.
+    setSessionBlock(null)
+    setPickedDecision(null)
+    setDismissedInstalls({})
+    setApprovedKinds([])
+    const st = useAppStore.getState()
+    const tab = st.sideTabByRun[prev]
+    if (tab && !st.sideTabByRun[runId]) useAppStore.setState({ sideTabByRun: { ...st.sideTabByRun, [runId]: tab } })
+  }, [runId])
 
   const isSetupRun = run.summary.kind === 'setup'
   const rootName = project.roles.find((r) => r.reportsTo === null)?.name ?? 'the orchestrator'
+  const status = run.summary.status
+  const sessionOpen = status === 'running' || status === 'idle' || status === 'starting'
+  // A stopped run with a provider session can be continued with its memory intact, but only the newest run of its
+  // session chain: an older member points to the newest.
+  const canContinue = canContinueIn(chainSummaries, runId)
+  const newestRun = chainSummaries[chainSummaries.length - 1]
+  const successor = !sessionOpen ? continuedByIn(chainSummaries, runId) : undefined
+  const virtualId = isVirtualProjectId(project.id) ? project.id : undefined
+  // M6: an ended, continuable work run opened in a window under 1100 px starts as the conversation (decided once, at
+  // open, so a live run that ends or a continue never flips the layout under the user). A saved choice always wins.
+  const [endedNarrow] = useState(
+    () => !sessionOpen && canContinue && run.summary.kind === 'work' && !virtualId && window.matchMedia('(max-width: 1099px)').matches
+  )
   // Single-agent runs open as a conversation (the root agent's transcript is the stage); team runs open on the canvas.
-  // Every run can switch, the choice is kept per run in the store.
-  const layout = runLayoutFor(run.summary, chosenLayout)
+  // Every run can switch, the choice is kept per conversation in the store.
+  const layout = runLayoutFor(run.summary, chosenLayout, { endedNarrow })
   const conversation = layout === 'conversation'
   const asAssistant = speaksAsAssistant(run.summary)
 
+  // The chain up to the viewed run, oldest first (the viewed run is the newest in practice).
+  const upto = useMemo(() => {
+    const at = members.findIndex((m) => m.summary.id === runId)
+    return at >= 0 ? members.slice(0, at + 1) : [run]
+    // Earlier members are ended records: they change only when loaded; the viewed run changes with every event.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [members.map((m) => `${m.summary.id}:${m.transcript.length}:${Object.keys(m.agents).length}`).join('|'), run.agents, run.transcript, run.summary])
+  const chain = useMemo(() => chainCanvas(upto), [upto])
   const agentsById = run.agents
-  const agents = useMemo(() => normalizeParents(Object.values(agentsById)), [agentsById])
+  const agents = useMemo(() => normalizeParents(chain.agents), [chain.agents])
+  const agentLookup = useMemo(() => {
+    const m = new Map<string, AgentInstance>()
+    for (const a of agents) m.set(a.id, a)
+    for (const g of chain.earlier) for (const a of g.agents) m.set(a.id, a)
+    return m
+  }, [agents, chain.earlier])
   const roleColor = useCallback(
     (roleId: string | null, slug: string): string =>
       project.roles.find((r) => r.id === roleId)?.color ?? project.roles.find((r) => r.slug === slug)?.color ?? neutralRoleColor,
     [project.roles, neutralRoleColor]
   )
 
-  // Finished reports fold into one "done" node per parent after a short grace period. A ticker keeps
-  // the grace period honest while anything recently finished is still shown.
+  // Finished reports fold after a short grace period (lib/foldFinished.ts). One timeout waits for the next agent to
+  // come out of its grace period. It is keyed on that moment only, never on the agents array, so a run streaming
+  // events faster than the timer still folds its reports while it is Running (ux-review-fold.md H1).
+  const settleDue = collapseFinished ? nextSettleAt(agents, now) : undefined
   useEffect(() => {
-    const pending = agents.some((a) => (a.state === 'done' || a.state === 'error') && !isSettled(a, Date.now()))
-    if (!collapseFinished || !pending) return undefined
-    const t = setInterval(() => setNow(Date.now()), 1500)
-    return () => clearInterval(t)
-  }, [agents, collapseFinished])
+    if (settleDue === undefined) return undefined
+    // Never below the moment waited for: a timer that fires early or a clock set back would otherwise leave `now`
+    // short of it, give the same moment again and never re-arm (review M-A).
+    const t = setTimeout(() => setNow(Math.max(Date.now(), settleDue)), settleTimerDelay(settleDue, Date.now()))
+    return () => clearTimeout(t)
+  }, [settleDue])
 
   // Message edges fade after MESSAGE_EDGE_MS; tick while the newest one is still showing.
   const messages = run.messages
@@ -270,24 +355,56 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
     return () => clearInterval(t)
   }, [messages])
 
-  const { visibleAgents, groups } = useMemo(() => {
-    if (!collapseFinished) return { visibleAgents: agents, groups: new Map<string, AgentInstance[]>() }
-    const byId = new Map(agents.map((a) => [a.id, a]))
-    const settledNow = (c: AgentInstance): boolean => isSettled(c, now)
-    const groups = new Map<string, AgentInstance[]>()
-    const visibleAgents: AgentInstance[] = []
-    for (const a of agents) {
-      const parentVisible = !a.parentId || byId.has(a.parentId)
-      const foldable =
-        a.parentId !== null && parentVisible && isSettled(a, now) && !hasLiveDescendant(agents, a.id, settledNow) && !expandedGroups[a.parentId as string]
-      if (foldable) groups.set(a.parentId as string, [...(groups.get(a.parentId as string) ?? []), a])
-      else visibleAgents.push(a)
-    }
-    // Hide the subtree under a folded report too; the list in the side panel still reaches them.
-    const folded = new Set([...groups.values()].flat().map((a) => a.id))
-    const hiddenUnder = (a: AgentInstance): boolean => ancestorsOf(byId, a.id).some((p) => folded.has(p))
-    return { visibleAgents: visibleAgents.filter((a) => !hiddenUnder(a)), groups }
-  }, [agents, collapseFinished, expandedGroups, now])
+  // Finished agents fold into one group per visible ancestor (lib/foldFinished.ts): a settled subtree is one group
+  // under the agent still shown above it. Earlier sessions are one dashed "Earlier: N agents" group each, under the root.
+  // `expandedGroups` is keyed by the group's key: the visible ancestor's id, or an earlier-session key.
+  const { visibleAgents, groups } = useMemo(
+    () => foldFinished({ agents, isSettled: (a) => isSettledAt(a, now), expanded: expandedGroups, earlier: chain.earlier, collapse: collapseFinished }),
+    [agents, chain.earlier, collapseFinished, expandedGroups, now]
+  )
+
+  // An expanded key whose agent has left the canvas (it finished and folded) is dropped, so expanding the group it is
+  // now in shows that agent folded like its siblings (review L2). Earlier-session keys stay.
+  useEffect(() => {
+    const shown = new Set(visibleAgents.map((a) => a.id))
+    const stale = Object.keys(expandedGroups).filter((k) => !isEarlierKey(k) && !shown.has(k))
+    if (stale.length === 0) return
+    setExpandedGroups((g) => {
+      const next = { ...g }
+      for (const k of stale) delete next[k]
+      return next
+    })
+  }, [visibleAgents, expandedGroups])
+
+  /** The agent a group node hangs under: the visible ancestor it is keyed by, or the root for an earlier session. */
+  const groupParent = useCallback((key: string): string | null => groupParentOf(key, chain.rootId, isEarlierKey), [chain.rootId])
+  const groupParentName = useCallback(
+    (key: string): string => (isEarlierKey(key) ? 'an earlier session' : (lookupLabel(agentLookup.get(key)) ?? 'its parent')),
+    [agentLookup]
+  )
+
+  // Expanding removes the group node (and the focused button in it): focus moves to the agent it hung under, a stale
+  // group selection follows it, and the frame says what appeared (review M1).
+  const expandGroup = useCallback(
+    (key: string) => {
+      const members = groups.get(key) ?? []
+      const shownNow = isEarlierKey(key) ? members.length : members.filter((m) => m.parentId === key).length
+      // A report group remembers when it was opened: reports that finish later fold again (ux-review-fold.md M1).
+      setExpandedGroups((g) => ({ ...g, [key]: isEarlierKey(key) ? true : Date.now() }))
+      const parent = groupParent(key)
+      if (parent && useAppStore.getState().selectedAgentId === groupId(key)) selectAgent(parent)
+      setArrival((a) => ({ text: `Showing ${shownNow} ${shownNow === 1 ? 'agent' : 'agents'} under ${groupParentName(key)}`, n: (a?.n ?? 0) + 1 }))
+      if (parent) {
+        requestAnimationFrame(() =>
+          requestAnimationFrame(() => {
+            const el = document.querySelector<HTMLElement>(`.react-flow__node[data-id="${CSS.escape(parent)}"]`)
+            el?.focus({ preventScroll: true })
+          })
+        )
+      }
+    },
+    [groups, groupParent, groupParentName, selectAgent]
+  )
 
   // Recompute the tree layout only when the set of shown nodes or their parent links change.
   const topologyKey = [
@@ -296,15 +413,22 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   ]
     .sort()
     .join('|')
-  const positions = useMemo(
+  // The layout, node style and topology decide where nodes sit and when to refit.
+  const layoutKey = `${topologyKey}#${options.layout}#${options.nodeStyle}`
+  const placed = useMemo(
     () =>
-      treeLayout([
-        ...visibleAgents.map((a) => ({ id: a.id, parentId: a.parentId, width: NODE_W, height: NODE_H })),
-        ...[...groups.keys()].map((p) => ({ id: groupId(p), parentId: p, width: GROUP_W, height: GROUP_H }))
-      ]),
+      layoutCanvas(
+        options.layout,
+        [
+          ...visibleAgents.map((a) => ({ id: a.id, parentId: a.parentId, width: agentSize.width, height: agentSize.height })),
+          ...[...groups.keys()].map((p) => ({ id: groupId(p), parentId: groupParent(p), width: groupSize.width, height: groupSize.height }))
+        ],
+        { ringStep: ringStepFor(options.nodeStyle), ...(options.nodeStyle === 'hex' ? { honeycomb: { width: HEX_TILE.width, height: HEX_TILE.height, gap: HEX_GAP } } : {}) }
+      ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [topologyKey]
+    [layoutKey]
   )
+  const positions = placed.positions
 
   // Switching back to the canvas mounts a fresh React Flow: fit it once it has a size.
   const prevLayout = useRef(layout)
@@ -312,19 +436,25 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
     if (prevLayout.current === layout) return undefined
     prevLayout.current = layout
     if (layout !== 'canvas') return undefined
-    const t = setTimeout(() => fitView(fitOpts({ duration: 0 })), 80)
+    const t = setTimeout(() => {
+      if (stageHidden()) return
+      void fitView(fitOpts({ duration: 0 }))
+    }, 80)
     return () => clearTimeout(t)
   }, [layout, fitView])
 
   const lastTopology = useRef('')
   useEffect(() => {
-    if (topologyKey && topologyKey !== lastTopology.current) {
-      lastTopology.current = topologyKey
-      const t = setTimeout(() => fitView(fitOpts({ duration: 500 })), 60)
+    if (topologyKey && layoutKey !== lastTopology.current) {
+      lastTopology.current = layoutKey
+      const t = setTimeout(() => {
+        if (stageHidden()) return
+        void fitView(fitOpts({ duration: reducedMotion ? 0 : 300 }))
+      }, 60)
       return () => clearTimeout(t)
     }
     return undefined
-  }, [topologyKey, fitView])
+  }, [layoutKey, fitView])
 
   const nodes: CanvasNode[] = useMemo(() => {
     const agentNodes: CanvasNode[] = visibleAgents.map((agent) => ({
@@ -333,48 +463,87 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
       position: positions[agent.id] ?? { x: 0, y: 0 },
       selected: agent.id === selectedAgentId,
       draggable: false,
+      initialWidth: agentSize.width,
+      initialHeight: agentSize.height,
+      ...(nodeDims.dims[agent.id] ? { measured: nodeDims.dims[agent.id] } : {}),
+      // Name tags, stations and hexes: the accessible name leads with the label the node shows (handle, then role name).
+      ...(options.nodeStyle !== 'card' ? { ariaLabel: agentLabel(agent) === agent.name ? agent.name : `${agentLabel(agent)}, ${agent.name}` } : {}),
       data: { agent, color: roleColor(agent.roleId, agent.roleSlug), isRoot: agent.parentId === null }
     }))
     const groupNodes: CanvasNode[] = [...groups.entries()].map(([parentId, members]) => {
-      const parent = run.agents[parentId]
+      const parent = agentLookup.get(groupParent(parentId) ?? '')
+      const earlier = isEarlierKey(parentId)
       return {
         id: groupId(parentId),
         type: 'done-group' as const,
         position: positions[groupId(parentId)] ?? { x: 0, y: 0 },
         selected: selectedAgentId === groupId(parentId) || members.some((m) => m.id === selectedAgentId),
         draggable: false,
-        data: { parentId, agents: members, color: parent ? roleColor(parent.roleId, parent.roleSlug) : neutralRoleColor, onToggle: toggleGroup }
+        initialWidth: groupSize.width,
+        initialHeight: groupSize.height,
+        ...(nodeDims.dims[groupId(parentId)] ? { measured: nodeDims.dims[groupId(parentId)] } : {}),
+        data: { parentId, parentName: groupParentName(parentId), agents: members, color: parent ? roleColor(parent.roleId, parent.roleSlug) : neutralRoleColor, onToggle: expandGroup, ...(earlier ? { label: earlierLabel(members.length), earlier: true } : {}) }
       }
     })
     return [...agentNodes, ...groupNodes]
-  }, [visibleAgents, groups, positions, selectedAgentId, roleColor, run, toggleGroup, neutralRoleColor])
+  }, [visibleAgents, groups, positions, selectedAgentId, roleColor, agentLookup, groupParent, groupParentName, expandGroup, neutralRoleColor, agentSize, groupSize, nodeDims.dims, options.nodeStyle])
+
+  // Controlled nodes: keep React Flow's measured sizes so the minimap draws every node (H1).
+  // Enter or Space on a focused node arrives as a 'select' change (React Flow's own key handler); it selects like a click.
+  const onNodesChange = useCallback(
+    (changes: NodeChange<CanvasNode>[]) => {
+      nodeDims.apply(changes as NodeChange[])
+      const picked = changes.find((c) => c.type === 'select' && c.selected)
+      if (picked && picked.type === 'select' && useAppStore.getState().selectedAgentId !== picked.id) selectAgent(picked.id)
+    },
+    [nodeDims.apply, selectAgent]
+  )
 
   const edges: Edge[] = useMemo(() => {
     const shown = new Set(visibleAgents.map((a) => a.id))
     const agentEdges: Edge[] = visibleAgents
       .filter((a) => a.parentId && shown.has(a.parentId))
       .map((a) => {
-        const color = roleColor(a.roleId, a.roleSlug)
+        // Role colour mixed toward the ink; the marker takes the same literal colour (section 5).
+        const parentAgent = agentLookup.get(a.parentId as string)
+        const color = edgeStroke(reportingLineRole(options.nodeStyle, parentAgent ? roleColor(parentAgent.roleId, parentAgent.roleSlug) : roleColor(a.roleId, a.roleSlug), roleColor(a.roleId, a.roleSlug)), edgeMix, edgeInk)
         const live = LIVE_STATES.has(a.state)
+        const finished = a.state === 'done'
+        if (station) {
+          // Subway: one thick coloured line per lead; working shows on the station, never on the line.
+          return {
+            id: `e-${a.parentId}-${a.id}`,
+            source: a.parentId as string,
+            target: a.id,
+            type: edgeType,
+            style: { stroke: color, strokeWidth: STATION_LINE_WIDTH, strokeLinecap: 'round', strokeLinejoin: 'round', opacity: finished ? edgeDoneOpacity : 1 },
+            ...roundedCorners
+          }
+        }
         return {
           id: `e-${a.parentId}-${a.id}`,
           source: a.parentId as string,
           target: a.id,
           type: edgeType,
           animated: live && !reducedMotion,
-          style: { stroke: color, strokeWidth: live ? 2.2 : 1.4, opacity: a.state === 'done' ? 0.45 : 1 },
+          style: {
+            stroke: color,
+            strokeWidth: live ? 2.2 : finished ? 1.4 : 1.6,
+            opacity: finished ? edgeDoneOpacity : 1,
+            ...(live ? { strokeDasharray: liveDash } : {})
+          },
           markerEnd: { type: MarkerType.ArrowClosed, color }
         }
       })
     const groupEdges: Edge[] = [...groups.keys()]
-      .filter((p) => shown.has(p))
-      .map((p) => ({
-        id: `e-${p}-${groupId(p)}`,
-        source: p,
-        target: groupId(p),
-        type: edgeType,
-        style: { stroke: borderStrong, strokeWidth: 1.2, strokeDasharray: '4 4' }
-      }))
+      .filter((p) => shown.has(groupParent(p) ?? ''))
+      .map((p) => {
+        const base = { id: `e-${p}-${groupId(p)}`, source: groupParent(p) as string, target: groupId(p), type: edgeType }
+        if (!station) return { ...base, style: { stroke: groupEdgeColor, strokeWidth: 1.4, strokeDasharray: '4 4' } }
+        const lead = agentLookup.get(groupParent(p) ?? '')
+        const color = edgeStroke(lead ? roleColor(lead.roleId, lead.roleSlug) : neutralRoleColor, edgeMix, edgeInk)
+        return { ...base, style: { stroke: color, strokeWidth: STATION_LINE_WIDTH, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const, opacity: edgeDoneOpacity }, ...roundedCorners }
+      })
     // Recent messages: a dashed, animated side-to-side edge. A folded agent's end attaches to its group node;
     // a message whose ends are not on the canvas (or land on the same node) is skipped.
     const groupOf = new Map<string, string>()
@@ -394,31 +563,41 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
       return null
     }
     const messageEdges = new Map<string, Edge>()
+    const boxOf = (nodeId: string): PlacedBox | null => {
+      const at = positions[nodeId]
+      if (!at) return null
+      const size = nodeId.startsWith('group:') ? groupSize : agentSize
+      const m = nodeDims.dims[nodeId]
+      return { x: at.x, y: at.y, width: m?.width ?? size.width, height: m?.height ?? size.height }
+    }
+    const parentOfNode = (nodeId: string): string | null => (nodeId.startsWith('group:') ? groupParent(nodeId.slice('group:'.length)) : (agentLookup.get(nodeId)?.parentId ?? null))
     for (const m of messages ?? []) {
       if (msgNow - m.at > MESSAGE_EDGE_MS) continue
       const source = onCanvas(m.from)
       const target = onCanvas(m.to)
       if (!source || !target || source === target) continue
       const id = `msg-${source}-${target}`
+      // The side of each end that faces the other node, from the laid-out boxes; a parent and child take the axis
+      // their reporting line does not use. Radial edges ignore handles (centre to centre, clipped at the shapes).
+      const a = boxOf(source)
+      const b = boxOf(target)
+      const reportingAxis = parentOfNode(source) === target || parentOfNode(target) === source ? (handlesFor(options.layout).source === 'bottom' ? 'y' : 'x') : undefined
+      const sides = a && b ? messageSides(a, b, reportingAxis) : null
       messageEdges.set(id, {
         id,
         source,
         target,
-        sourceHandle: MSG_OUT,
-        targetHandle: MSG_IN,
+        sourceHandle: msgHandleId('out', sides?.out ?? 'right'),
+        targetHandle: msgHandleId('in', sides?.in ?? 'left'),
         type: edgeType,
-        animated: !reducedMotion,
-        className: 'msg-edge',
-        label: 'msg',
-        labelStyle: { fill: messageColor, fontSize: 'var(--text-small)' },
-        labelBgStyle: { fill: surfaceColor },
-        style: { stroke: messageColor, strokeWidth: 1.8, strokeDasharray: '6 4' },
-        markerEnd: { type: MarkerType.ArrowClosed, color: messageColor },
-        zIndex: 10
+        data: { message: true },
+        className: msgNow - m.at < MESSAGE_FRESH_MS ? 'msg-edge msg-fresh' : 'msg-edge',
+        style: { stroke: messageColor, strokeWidth: 1.8, strokeDasharray: messageDash, strokeLinecap: 'round' },
+        markerEnd: { type: MarkerType.ArrowClosed, color: messageColor }
       })
     }
     return [...agentEdges, ...groupEdges, ...messageEdges.values()]
-  }, [visibleAgents, groups, roleColor, messages, msgNow, agentsById, edgeType, reducedMotion, borderStrong, messageColor, surfaceColor])
+  }, [visibleAgents, groups, groupParent, roleColor, messages, msgNow, agentsById, agentLookup, neutralRoleColor, edgeType, station, roundedCorners, options.nodeStyle, reducedMotion, groupEdgeColor, messageColor, edgeMix, edgeInk, edgeDoneOpacity, liveDash, messageDash, positions, agentSize, groupSize, nodeDims.dims, options.layout])
 
   const onNodeClick: NodeMouseHandler<CanvasNode> = useCallback((_e, node) => selectAgent(node.id), [selectAgent])
 
@@ -429,24 +608,22 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
     const members = groups.get(parentId)
     if (!members) return undefined
     return {
-      parentName: run.agents[parentId]?.name ?? 'its parent',
+      parentName: groupParentName(parentId),
       agents: members,
+      // Members deeper than a direct report say which agent they ran under (earlier sessions: never).
+      underOf: (a) => (isEarlierKey(parentId) || !a.parentId || a.parentId === parentId ? undefined : (lookupLabel(agentLookup.get(a.parentId)) ?? 'an earlier agent')),
       onPick: (id) => selectAgent(id),
-      onExpand: () => toggleGroup(parentId)
+      onExpand: () => expandGroup(parentId)
     }
-  }, [run, selectedAgentId, groups, selectAgent, toggleGroup])
+  }, [selectedAgentId, groups, selectAgent, expandGroup, groupParentName, agentLookup])
   const finishedCount = [...groups.values()].reduce((n, g) => n + g.length, 0)
 
-  const status = run.summary.status
-  const sessionOpen = status === 'running' || status === 'idle' || status === 'starting'
-  // A stopped run with a provider session can be continued with its memory intact, but only the newest run of its
-  // session chain: an older member says who continued it.
-  const canContinue = chainCanContinue(summaries, runId)
-  const successor = !sessionOpen ? continuedBy(summaries, runId) : undefined
-  // What Send does. On a finished run the default is a NEW run; Continue is the explicit second choice.
-  // An assistant (virtual project) has no "New run" choice: it continues, or it is over and a new session starts from the start page.
-  const virtualId = isVirtualProjectId(project.id) ? project.id : undefined
-  const sendMode: 'reply' | 'continue' | 'new' = sessionOpen ? 'reply' : canContinue && (virtualId || finishedChoice === 'continue') ? 'continue' : 'new'
+  // What Send does (model 3): reply while the session is open; on the chain's newest ended run it continues the
+  // conversation; a run with no saved session can only start a new run. An assistant (virtual project) that cannot
+  // continue is over and a new session starts from the start page.
+  const sendMode: 'reply' | 'continue' | 'new' = sessionOpen ? 'reply' : canContinue ? 'continue' : 'new'
+  // L4: the danger Banner names the error, so the mode line does not repeat it.
+  const endedCopy = sendMode === 'reply' ? undefined : endedComposerCopy(run.summary, { continuable: canContinue, cutWhile: run.cutWhile, errorShown: !!run.summary.error })
   const openCardCount = (run.ruleRequests?.length ?? 0) + (run.questions?.length ?? 0) + run.proposals.length + (run.mergeReviews?.length ?? 0) + run.permissions.length + (run.mcpInstalls?.length ?? 0)
   const modeLabel =
     sendMode === 'reply'
@@ -455,14 +632,10 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
         : isSetupRun
         ? 'Answering the Architect'
         : `Replying to ${rootName}`
-      : sendMode === 'continue'
-        ? run.summary.endedWithApp
-          ? 'Continuing this run (it ended when OrgAI closed)'
-          : `Continuing this run (from ${relativeTime(run.summary.startedAt)})`
-        : otherOpenRuns > 0
-          ? `New run: ${otherOpenRuns} other run${otherOpenRuns === 1 ? '' : 's'} keep${otherOpenRuns === 1 ? 's' : ''} going`
-          : 'New run'
-  const primaryLabel = sendMode === 'reply' ? 'Send' : sendMode === 'continue' ? 'Continue' : 'Start'
+      : status === 'paused' && sendMode === 'continue'
+        ? 'Paused at a usage limit. Send to continue with its memory.'
+        : (endedCopy?.modeLabel ?? '')
+  const primaryLabel = sendMode === 'new' ? 'Start' : 'Send'
   const placeholder =
     sendMode === 'reply'
       ? isSetupRun
@@ -470,11 +643,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
         : asAssistant
           ? ASSISTANT_REPLY_LABEL
           : 'Your reply'
-      : sendMode === 'continue'
-        ? run.summary.endedWithApp
-          ? 'Pick up where it was cut off'
-          : 'What next?'
-        : 'Describe the task'
+      : (endedCopy?.placeholder ?? '')
 
   // Install approval cards: open ones first (one expanded, the rest collapsed), answered ones until dismissed.
   const openInstalls = run.mcpInstalls ?? []
@@ -489,7 +658,11 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
     cardItems.map((c) => `${c.request.id}:${c.outcome ? 'r' : 'o'}`).join('|') +
     `/${run.permissions.length}.${run.proposals.length}.${run.questions?.length ?? 0}.${run.ruleRequests?.length ?? 0}.${run.mergeReviews?.length ?? 0}.${status === 'paused' ? 'p' : ''}`
   useEffect(() => {
-    const t = setTimeout(() => fitView(fitOpts({ duration: 200 })), 80)
+    const t = setTimeout(() => {
+      // An expanded proposal in a compact frame takes the stage's room (height 0): nothing to fit then.
+      if (stageHidden()) return
+      void fitView(fitOpts({ duration: reducedMotion ? 0 : 200 }))
+    }, 80)
     return () => clearTimeout(t)
   }, [cardsKey, fitView])
 
@@ -497,7 +670,11 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   const focusDecision = useCallback((): void => {
     const region = bodyRef.current?.querySelector<HTMLElement>('.frame-tray')
     if (!region) return
+    // A folded proposal in a compact frame lands on Details: the user must see what Approve covers first.
+    const details = region.querySelector<HTMLElement>('.decision-card[data-focus-details="true"] .decision-details')
+    const foldedDetails = details && details.offsetParent !== null && details.getAttribute('aria-expanded') !== 'true' ? details : null
     const target =
+      foldedDetails ??
       region.querySelector<HTMLElement>('.decision-footer .btn.primary:not([disabled])') ??
       region.querySelector<HTMLElement>('button:not([disabled]), textarea, input, select') ??
       region
@@ -525,16 +702,44 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       const jump = (e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey && e.key === '.') || (e.altKey && !e.ctrlKey && !e.shiftKey && !e.metaKey && e.key.toLowerCase() === 'd')
-      if (!jump || !bodyRef.current?.querySelector('.frame-tray')) return
+      // No tray guard: with nothing waiting the registered handler answers "No decision is waiting on this run.".
+      if (!jump) return
       e.preventDefault()
-      focusDecision()
+      runMenuAction('go-to-decision')
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [focusDecision])
+  }, [])
+
+  // Application menu handlers (docs/design/ux-review-menu.md H2): the canvas actions only this view can run. The refs
+  // carry the latest state so the registration happens once per mounted run view, not on every render.
+  const menuRef = useRef({ conversation: false, hasDecision: false, toggleCollapse: () => {}, toggleLayout: () => {} })
+  useEffect(() => {
+    const NO_CANVAS = 'Open a run on Live to use the canvas.'
+    const onCanvas = (run: () => void): string | void => {
+      const m = menuRef.current
+      if (m.conversation || stageHidden()) return NO_CANVAS
+      run()
+    }
+    const offs = [
+      registerMenuHandler('canvas-zoom-in', () => onCanvas(() => zoomInCanvas({ zoomIn }, reducedRef.current))),
+      registerMenuHandler('canvas-zoom-out', () => onCanvas(() => zoomOutCanvas({ zoomOut }, reducedRef.current))),
+      registerMenuHandler('canvas-fit', () => onCanvas(() => fitCanvas({ fitView }, reducedRef.current))),
+      registerMenuHandler('toggle-hide-finished', () => onCanvas(() => menuRef.current.toggleCollapse())),
+      registerMenuHandler('toggle-conversation', () => menuRef.current.toggleLayout()),
+      registerMenuHandler('go-to-decision', () => {
+        if (!menuRef.current.hasDecision || !bodyRef.current?.querySelector('.frame-tray')) return 'No decision is waiting on this run.'
+        focusDecision()
+      })
+    ]
+    return () => offs.forEach((off) => off())
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [zoomIn, zoomOut, fitView, focusDecision])
 
   // Re-fit when the canvas container itself changes size (window resize, side panel, decisions region).
   const canvasRef = useRef<HTMLDivElement>(null)
+  const reducedRef = useRef(reducedMotion)
+  reducedRef.current = reducedMotion
   useEffect(() => {
     const el = canvasRef.current
     if (!el || typeof ResizeObserver === 'undefined') return
@@ -555,32 +760,102 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
       }
       clearTimeout(t)
       t = setTimeout(() => {
-        const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-        void fitView(fitOpts({ duration: reduced ? 0 : 150 }))
+        if (stageHidden()) return
+        void fitView(fitOpts({ duration: reducedRef.current ? 0 : 150 }))
       }, 100)
     })
     ro.observe(el)
+    // An expanded proposal in a compact frame collapses the stage to height 0 (the canvas stays mounted, nothing floats).
+    // Refit only when the stage comes back; while it is collapsed there is nothing to fit.
+    const stage = el.querySelector('.frame-stage')
+    let stageShown = (stage?.clientHeight ?? 1) >= 8
+    const so = stage ? new ResizeObserver(() => {
+      const shown = stage.clientHeight >= 8
+      if (shown === stageShown) return
+      stageShown = shown
+      if (!shown) return
+      clearTimeout(t)
+      t = setTimeout(() => void fitView(fitOpts({ duration: 0 })), 100)
+    }) : null
+    if (stage) so?.observe(stage)
     return () => {
       clearTimeout(t)
       ro.disconnect()
+      so?.disconnect()
     }
   }, [fitView])
 
   // Keyboard zoom while the canvas has focus: + / - and 0 to fit (the toolbar buttons do the same).
   const onCanvasKey = (e: React.KeyboardEvent): void => {
     if (e.ctrlKey || e.metaKey || e.altKey) return
-    if (e.key === '+' || e.key === '=') void zoomIn({ duration: 150 })
-    else if (e.key === '-' || e.key === '_') void zoomOut({ duration: 150 })
-    else if (e.key === '0') void fitView(fitOpts({ duration: 150 }))
+    // Enter / Space on a focused node select it even when it already looks selected (a done group holding the
+    // selected agent): React Flow only emits a 'select' change for an unselected node. Buttons inside a node keep the key.
+    const target = e.target as HTMLElement
+    if ((e.key === 'Enter' || e.key === ' ') && target.classList.contains('react-flow__node')) {
+      const nodeId = target.getAttribute('data-id')
+      if (nodeId && useAppStore.getState().selectedAgentId !== nodeId) selectAgent(nodeId)
+      return
+    }
+    if (e.key === '+' || e.key === '=') void zoomIn({ duration: reducedMotion ? 0 : 150 })
+    else if (e.key === '-' || e.key === '_') void zoomOut({ duration: reducedMotion ? 0 : 150 })
+    else if (e.key === '0' && !stageHidden()) void fitView(fitOpts({ duration: reducedMotion ? 0 : 150 }))
   }
 
-  const selectedAgent = selectedAgentId ? run.agents[selectedAgentId] : undefined
-  const rootAgent = useMemo(() => Object.values(run.agents).find((a) => a.parentId === null), [run.agents])
-  const rootEntries = useMemo(() => (rootAgent ? run.transcript.filter((e) => e.agentId === rootAgent.id) : []), [run.transcript, rootAgent])
-  const entries = useMemo(
-    () => (selectedAgentId ? run.transcript.filter((e) => e.agentId === selectedAgentId) : []),
-    [run, selectedAgentId]
+  const selectedAgent = selectedAgentId ? agentLookup.get(selectedAgentId) : undefined
+  const rootAgent = useMemo(() => agents.find((a) => a.parentId === null), [agents])
+  // The root's transcript is the whole conversation: every session's root entries with a divider where each
+  // continuation starts (model 2). Another agent's transcript is that one session's entries.
+  const feed = useMemo(
+    () =>
+      mergeChainFeed(
+        upto.map((m) => ({
+          summary: m.summary,
+          entries: m.transcript.filter((e) => e.agentId === (Object.values(m.agents).find((a) => a.parentId === null)?.id ?? 'root'))
+        }))
+      ),
+    [upto]
   )
+  const entries = useMemo(() => {
+    if (!selectedAgentId) return []
+    const from = chain.origin.get(selectedAgentId)
+    if (from) return (upto.find((m) => m.summary.id === from.runId)?.transcript ?? []).filter((e) => e.agentId === from.agentId)
+    return run.transcript.filter((e) => e.agentId === selectedAgentId)
+  }, [run.transcript, upto, chain.origin, selectedAgentId])
+  const rootSelected = !!selectedAgent && selectedAgent.parentId === null
+  // M-3: a feed already at its cap would cut what an earlier load adds, so the button is not offered then.
+  const loadEarlierRow =
+    earlierToLoad > 0 && feed[0]?.kind !== 'omitted' ? (
+      <div className="chain-load-earlier" ref={loadEarlierRef}>
+        <Button
+          variant="ghost"
+          size="sm"
+          testId="chain-load-earlier"
+          onClick={() => {
+            // Never disabled while loading: a disabled button would drop keyboard focus.
+            if (loadingEarlier) return
+            setLoadingEarlier(true)
+            // The feed's scroll area: focus lands there when the button goes away (everything loaded).
+            const host = loadEarlierRef.current?.closest<HTMLElement>('.conversation-list, .transcript')
+            void loadEarlierSessions(runId).finally(() => {
+              setLoadingEarlier(false)
+              requestAnimationFrame(() => {
+                if (!host?.isConnected || host.contains(document.activeElement)) return
+                if (host.tabIndex < 0) host.tabIndex = -1
+                host.focus({ preventScroll: true })
+              })
+            })
+          }}
+        >
+          {loadingEarlier ? 'Loading earlier sessions…' : `Load earlier sessions (${earlierToLoad})`}
+        </Button>
+      </div>
+    ) : null
+  // A new chain member to show (after Send, End session, History): clear the request when it has no divider to scroll to.
+  useEffect(() => {
+    if (!chainFocusRun) return undefined
+    const t = setTimeout(() => useAppStore.setState((st) => (st.chainFocusRun === chainFocusRun ? { chainFocusRun: null } : {})), 2500)
+    return () => clearTimeout(t)
+  }, [chainFocusRun])
 
   // Every open decision as one card; the tray lists them all and shows one at a time. The newest is selected.
   const who = (agentId: string): string => run.agents[agentId]?.name ?? 'An agent'
@@ -601,8 +876,8 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
     })),
     ...run.proposals.map((p) => ({
       key: p.id,
-      label: short(p.title),
-      node: <ProposalCard runId={runId} who={isSetupRun ? 'The Architect' : undefined} proposal={p} currentRoles={project.roles} onDecide={(d) => trackProposal(p, d)} />
+      label: `${proposalKindLabel(p.kind, projectKindOf(project))}: ${short(p.title)}`,
+      node: <ProposalCard runId={runId} who={isSetupRun ? 'The Architect' : who(p.agentId)} agentId={isSetupRun ? undefined : p.agentId} proposal={p} currentRoles={project.roles} onDecide={(d) => trackProposal(p, d)} />
     })),
     ...(run.mergeReviews ?? []).map((m) => ({
       key: m.id,
@@ -644,6 +919,26 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
     if (shownKey && shownKey !== pickedDecision) setPickedDecision(shownKey)
   }
 
+  // One short polite line when a new decision arrives. The tray itself is not a live region: expanding Details would
+  // otherwise read a whole proposal body aloud.
+  const seenDecisions = useRef<{ runId: string; keys: Set<string> } | null>(null)
+  const decisionKeys = decisionItems.map((d) => d.key).join('|')
+  menuRef.current = { conversation, hasDecision: decisionItems.length > 0, toggleCollapse, toggleLayout: () => setRunLayout(runId, conversation ? 'canvas' : 'conversation') }
+  useEffect(() => {
+    const prior = seenDecisions.current
+    const now = new Set(decisionItems.filter((d) => !isRecord(d.key)).map((d) => d.key))
+    seenDecisions.current = { runId, keys: now }
+    // First look at a run (or a different run in this view): what is already open is not an arrival.
+    if (!prior || prior.runId !== runId) {
+      setArrival(undefined)
+      return
+    }
+    const seen = prior.keys
+    const fresh = decisionItems.find((d) => now.has(d.key) && !seen.has(d.key))
+    if (fresh) setArrival((a) => ({ text: `New decision: ${fresh.label}`, n: (a?.n ?? 0) + 1 }))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [decisionKeys, runId])
+
   // What the user approved in this view; the setup banner only claims what was actually applied.
   const trackProposal = async (p: Proposal, d: ProposalDecision): Promise<void> => {
     await decideProposal(p.id, d)
@@ -682,13 +977,18 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
       )}
       <div className="run-body" ref={bodyRef} data-layout={layout}>
 
-        <CanvasFrame frameRef={canvasRef}>
+        <CanvasFrame frameRef={canvasRef} announcement={arrival}>
           <FrameToolbar dense label="Canvas toolbar">
-            <RunMeta run={run} project={project} agentCount={agents.length} />
+            <RunMeta run={run} project={project} agentCount={agents.length + chain.earlier.reduce((n, g) => n + g.agents.length, 0)} />
             <div className="frame-toolbar-end">
-              {!conversation && agents.length > 1 && (
-                <span className="run-fold" title="Folds finished reports into one node per parent on the chart. Turn off to show every agent.">
-                  <Switch checked={collapseFinished} onChange={toggleCollapse} label="Hide finished agents" title="Hide finished agents" />
+              {!conversation && (agents.length > 1 || chain.earlier.length > 0) && (
+                <span className="run-fold" title="Folds finished agents into one node under the agent still shown above them. Turn off to show every agent; turn on again to fold everything back.">
+                  <Switch
+                    checked={collapseFinished}
+                    onChange={toggleCollapse}
+                    label="Hide finished agents"
+                    title={collapseFinished && finishedCount ? `Hide finished agents (${finishedCount} hidden)` : 'Hide finished agents'}
+                  />
                   <span className="fold-label" aria-hidden="true">
                     <span className="fold-long">Hide finished agents</span>
                     <span className="fold-short">Hide finished</span>
@@ -709,27 +1009,30 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
           <FrameStage>
             {conversation ? (
               <div className="conversation-stage" data-testid="run-conversation">
-                <TranscriptPanel variant="conversation" runId={runId} agent={rootAgent} entries={rootEntries} logs={[]} />
+                <TranscriptPanel variant="conversation" runId={runId} tagRunId={chainIds[chainIds.length - 1]} agent={rootAgent} entries={[]} feed={feed} lead={loadEarlierRow} logs={[]} />
               </div>
             ) : (
             <ReactFlow
               nodes={nodes}
               edges={edges}
               nodeTypes={nodeTypes}
+              edgeTypes={CANVAS_EDGE_TYPES}
+              data-layout={options.layout}
+              onNodesChange={onNodesChange}
               onNodeClick={onNodeClick}
               onPaneClick={() => selectAgent(null)}
               nodesConnectable={false}
               elementsSelectable
               fitView
-              fitViewOptions={{ padding: 0.25, maxZoom: 1 }}
+              fitViewOptions={{ padding: radial ? 0.12 : 0.25, maxZoom: 1 }}
               proOptions={{ hideAttribution: true }}
               deleteKeyCode={null}
               edgesFocusable={false}
               minZoom={0.3}
               onKeyDown={onCanvasKey}
             >
-              {patternKind !== 'none' && <Background variant={PATTERN_VARIANT[patternKind as 'dots' | 'grid'] ?? BackgroundVariant.Dots} gap={22} size={1} color={patternColor} />}
-              {showMinimap && <MiniMap pannable zoomable ariaLabel="Run minimap" nodeColor={neutralRoleColor} />}
+              <CanvasBackdrop rings={placed.rings} />
+              <CanvasMinimap ariaLabel="Run minimap" />
             </ReactFlow>
             )}
           </FrameStage>
@@ -762,7 +1065,16 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
         </FrameTray>
         </CanvasFrame>
 
-        {virtualId && sendMode === 'new' ? (
+        {successor && newestRun && newestRun.id !== runId ? (
+          <div className="composer composer-ended" data-testid="composer-superseded">
+            <div className="composer-notice info">
+              This conversation continues in {runName(newestRun)}.
+            </div>
+            <Button variant="secondary" size="sm" testId="go-to-latest" onClick={() => void openRun(newestRun.id).then(() => focusComposer())}>
+              Go to latest
+            </Button>
+          </div>
+        ) : virtualId && sendMode === 'new' ? (
           <div className="composer composer-ended" data-testid="assistant-ended">
             <p className="composer-ended-text">{virtualId === 'quick' ? 'This chat has ended.' : 'This session has ended.'}</p>
             <Button
@@ -778,32 +1090,17 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
           </div>
         ) : (
         <Composer
-          draftKey={runId}
+          draftKey={chainIds[chainIds.length - 1]}
           modeLabel={modeLabel}
           primaryLabel={primaryLabel}
           placeholder={placeholder}
           focusToken={composerFocusToken}
-          modeSwitch={
-            !sessionOpen && canContinue && !virtualId ? (
-              <SegmentedControl
-                label="What Send does"
-                value={sendMode === 'continue' ? 'continue' : 'new'}
-                options={[
-                  { value: 'new', label: 'New run', title: 'Start a fresh run of this project' },
-                  { value: 'continue', label: 'Continue this run', title: 'Resume this run’s session with its memory' }
-                ]}
-                onChange={(v) => setFinishedChoice(v)}
-              />
-            ) : undefined
-          }
+          autoFocus={continueIntent}
           notices={
             <>
-              {successor && (
-                <div className="composer-notice info" role="status">
-                  This run was continued by a later run.
-                  <button type="button" className="link-btn" onClick={() => void openRun(successor.id)}>
-                    Open it
-                  </button>
+              {endedCopy?.notice && (
+                <div className="composer-notice cut" data-testid="composer-cut-notice">
+                  {endedCopy.notice}
                 </div>
               )}
               {sessionBlock && (
@@ -834,7 +1131,16 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
 
         <SidePanel label="run panel" autoCollapseBelow={1100} persistKey="run" revealOn={selectedAgentId}>
           <div className="live-panel">
-            <TranscriptPanel runId={runId} agent={selectedAgent ?? (conversation ? rootAgent : undefined)} entries={selectedAgent || !conversation ? entries : rootEntries} logs={run.logs ?? []} finished={finishedGroup} />
+            <TranscriptPanel
+              runId={runId}
+              tagRunId={chainIds[chainIds.length - 1]}
+              agent={selectedAgent ?? (conversation ? rootAgent : undefined)}
+              entries={selectedAgent && !rootSelected ? entries : []}
+              feed={rootSelected || (!selectedAgent && conversation) ? feed : undefined}
+              lead={conversation ? undefined : loadEarlierRow}
+              logs={run.logs ?? []}
+              finished={finishedGroup}
+            />
           </div>
         </SidePanel>
       </div>
@@ -845,13 +1151,18 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
 /** Zoom out, zoom in, fit and the legend: the canvas controls, in the toolbar so nothing sits on the canvas. */
 function CanvasTools(): ReactElement {
   const { zoomIn, zoomOut, fitView } = useReactFlow()
+  const reduced = useReducedMotion()
+  const options = useCanvasOptions()
+  const station = options.nodeStyle === 'station'
+  const stageShown = (): boolean => (document.querySelector('.frame-stage')?.clientHeight ?? 1) >= 8
   return (
-    <>
+    <span className="canvas-tools">
       <span className="zoom-group" role="group" aria-label="Canvas zoom">
-        <IconButton icon={ZoomOut} label="Zoom out" size="sm" onClick={() => void zoomOut({ duration: 150 })} />
-        <IconButton icon={ZoomIn} label="Zoom in" size="sm" onClick={() => void zoomIn({ duration: 150 })} />
-        <IconButton icon={Maximize} label="Fit to view" size="sm" onClick={() => void fitView(fitOpts({ duration: 150 }))} />
+        <IconButton icon={ZoomOut} label="Zoom out" size="sm" onClick={() => zoomOutCanvas({ zoomOut }, reduced)} />
+        <IconButton icon={ZoomIn} label="Zoom in" size="sm" onClick={() => zoomInCanvas({ zoomIn }, reduced)} />
+        <IconButton icon={Maximize} label="Fit to view" size="sm" onClick={() => stageShown() && fitCanvas({ fitView }, reduced)} />
       </span>
+      <CanvasStyleButton testId="canvas-style-button" />
       <Popover
         label="Canvas legend"
         placement="bottom-end"
@@ -872,29 +1183,47 @@ function CanvasTools(): ReactElement {
             <span className="legend-shape legend-warn">
               <Icon icon={Bell} size="sm" />
             </span>
-            Needs approval
+            Needs you
           </li>
           <li>
             <span className="legend-shape legend-ok">
-              <Icon icon={CircleCheck} size="sm" />
+              {station ? <span className="legend-dot" aria-hidden="true" /> : <Icon icon={CircleCheck} size="sm" />}
             </span>
-            Done
+            Finished
           </li>
           <li>
             <span className="legend-shape legend-bad">
               <Icon icon={TriangleAlert} size="sm" />
             </span>
-            Error
+            Failed
           </li>
           <li>
             <span className="legend-shape">
+              <span className="legend-selected" />
+            </span>
+            Selected
+          </li>
+          <li>
+            <span className="legend-shape legend-wide">
+              <span className="legend-folded" data-style={options.nodeStyle} aria-hidden="true">3 done</span>
+            </span>
+            Folded finished agents
+          </li>
+          <li>
+            <span className="legend-shape legend-wide">
+              <span className={station ? 'legend-report legend-report-station' : 'legend-report'} />
+            </span>
+            {station ? "Reporting line (the lead's colour)" : 'Reporting line'}
+          </li>
+          <li>
+            <span className="legend-shape legend-wide">
               <span className="legend-line" />
             </span>
             Message between agents
           </li>
         </ul>
       </Popover>
-    </>
+    </span>
   )
 }
 

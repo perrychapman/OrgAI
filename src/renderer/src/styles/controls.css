@@ -52,14 +52,19 @@
 .btn:disabled,
 .btn.primary:disabled,
 .btn.danger:disabled,
-.btn.ghost:disabled {
+.btn.ghost:disabled,
+.btn[aria-disabled='true'],
+.btn.primary[aria-disabled='true'],
+.btn.danger[aria-disabled='true'],
+.btn.ghost[aria-disabled='true'] {
   background: var(--surface-3);
   border-color: var(--border-subtle);
   color: var(--text-disabled);
-  cursor: default;
+  cursor: not-allowed;
   transform: none;
 }
-.btn.ghost:disabled {
+.btn.ghost:disabled,
+.btn.ghost[aria-disabled='true'] {
   background: transparent;
   border-color: transparent;
 }
@@ -233,4 +238,14 @@
   border-top-color: var(--accent-text);
   animation: spin 0.8s linear infinite;
   display: inline-block;
+}
+
+/* Model selects: sans face, full width of their column (240 px in a settings row). */
+.model-select > .select {
+  width: 100%;
+  min-width: 0;
+  text-overflow: ellipsis;
+}
+.setting-row-control > .model-select {
+  flex: 1 1 auto;
 }

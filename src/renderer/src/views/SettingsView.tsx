@@ -1,30 +1,61 @@
 import type { ReactElement } from 'react'
+import { useEffect } from 'react'
 import type { Project } from '@shared/types'
+import { projectKindOf } from '@shared/defaults'
+import { ContextNotesSection } from '../components/settings/ContextNotesSection'
+import { EngagementPlanSection } from '../components/settings/EngagementPlanSection'
+import { scrollWithin } from '../lib/scrollWithin'
 import { useAppStore } from '../store/useAppStore'
 import ProjectConnection from '../components/connections/ProjectConnection'
 import RemapNotices from '../components/RemapNotices'
-import { SkillEvaluationSettings } from '../components/skills/SkillEvaluationPanel'
-import PluginsSection from '../components/mcp/PluginsSection'
 import { GeneralSection } from '../components/settings/GeneralSection'
 import { LimitsSection } from '../components/settings/LimitsSection'
 import { MaintenanceSection } from '../components/settings/MaintenanceSection'
-import { AgentsSection } from '../components/settings/AgentsSection'
-import { SettingsSection } from '../components/settings/SettingsSection'
+import { PermissionsSection } from '../components/settings/PermissionsSection'
 import { SettingsPage } from '../components/settings/SettingsPage'
 import type { SettingsNavItem } from '../components/settings/SettingsNav'
-import { Banner } from '../components/ui/Banner'
-import { Button } from '../components/ui/Button'
-import { PROJECT_SETTINGS_PANES, type ProjectSettingsPane } from '../lib/settingsTarget'
+import {
+  PROJECT_SECTION_EVENT,
+  PROJECT_SETTINGS_PANES,
+  PROJECT_SETTINGS_SECTIONS,
+  normalizeProjectPane,
+  takeProjectSettingsSection,
+  type ProjectSettingsPane
+} from '../lib/settingsTarget'
 
 /** Panes in nav order. Each pane holds the sections whose ids are listed in lib/settingsTarget. */
 const PANES: SettingsNavItem[] = [
   { id: PROJECT_SETTINGS_PANES.general, label: 'General' },
-  { id: PROJECT_SETTINGS_PANES.agents, label: 'Agents' },
+  { id: PROJECT_SETTINGS_PANES.permissions, label: 'Permissions' },
   { id: PROJECT_SETTINGS_PANES.limits, label: 'Limits' },
-  { id: PROJECT_SETTINGS_PANES.connection, label: 'Connection' },
-  { id: PROJECT_SETTINGS_PANES.tools, label: 'Plugins and skill settings' },
   { id: PROJECT_SETTINGS_PANES.maintenance, label: 'Maintenance' }
 ]
+
+/**
+ * Deep links to the engagement plan and context notes: scroll inside the settings scroller only, then focus the
+ * section heading. Other General targets are left alone (their own surfaces handle them).
+ */
+function useEngagementSectionTarget(active: boolean): void {
+  useEffect(() => {
+    if (!active) return undefined
+    const take = (): void => {
+      const target = takeProjectSettingsSection('general')
+      if (target !== PROJECT_SETTINGS_SECTIONS.engagementPlan && target !== PROJECT_SETTINGS_SECTIONS.contextNotes) return
+      requestAnimationFrame(() => {
+        const section = document.getElementById(target)
+        const heading = section?.querySelector<HTMLElement>('h3')
+        scrollWithin(section, 'start')
+        if (heading) {
+          heading.setAttribute('tabindex', '-1')
+          heading.focus({ preventScroll: true })
+        }
+      })
+    }
+    take()
+    window.addEventListener(PROJECT_SECTION_EVENT, take)
+    return () => window.removeEventListener(PROJECT_SECTION_EVENT, take)
+  }, [active])
+}
 
 /**
  * Project settings tab: a pane nav plus one pane at a time. The selected pane is remembered per project in the store.
@@ -35,41 +66,25 @@ export default function SettingsView({ project }: { project: Project }): ReactEl
   const updateProject = useAppStore((s) => s.updateProject)
   const stored = useAppStore((s) => s.projectSettingsPane[project.id])
   const setPane = useAppStore((s) => s.setProjectSettingsPane)
-  const setView = useAppStore((s) => s.setView)
   const patch = (p: Partial<Project>): void => updateProject({ ...project, ...p })
-  const pane = (PANES.some((p) => p.id === stored) ? stored : PROJECT_SETTINGS_PANES.general) as ProjectSettingsPane
+  const pane: ProjectSettingsPane = normalizeProjectPane(stored)
+  const engagement = projectKindOf(project) === 'engagement'
+  useEngagementSectionTarget(pane === 'general' && engagement)
 
   return (
     <div className="editor single">
       <SettingsPage title="Project settings" idBase="project-settings" label="Project settings sections" panes={PANES} active={pane} onSelect={(id) => setPane(project.id, id)}>
-        {pane === 'general' && <GeneralSection project={project} patch={patch} />}
-        {pane === 'agents' && <AgentsSection project={project} patch={patch} />}
-        {pane === 'limits' && <LimitsSection project={project} patch={patch} />}
-        {pane === 'connection' && (
+        {pane === 'general' && (
           <>
+            <GeneralSection project={project} patch={patch} />
+            {engagement && <EngagementPlanSection project={project} />}
+            {engagement && <ContextNotesSection project={project} />}
             <RemapNotices projectId={project.id} />
             <ProjectConnection project={project} />
           </>
         )}
-        {pane === 'tools' && (
-          <>
-            <Banner
-              tone="info"
-              title="Roles, connections and skills are on the Team tab"
-              label="Team tab"
-              testId="tools-team-pointer"
-              actions={
-                <Button size="sm" variant="primary" onClick={() => setView('team')} testId="open-team">
-                  Open Team
-                </Button>
-              }
-            />
-            <PluginsSection project={project} />
-            <SettingsSection id="settings-section-skill-settings" title="Skills" description="Skills themselves are on the Team tab, under Catalog. Results of the check appear there too." testId="skill-settings-section">
-              <SkillEvaluationSettings project={project} />
-            </SettingsSection>
-          </>
-        )}
+        {pane === 'permissions' && <PermissionsSection project={project} patch={patch} />}
+        {pane === 'limits' && <LimitsSection project={project} patch={patch} />}
         {pane === 'maintenance' && <MaintenanceSection project={project} />}
       </SettingsPage>
     </div>

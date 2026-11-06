@@ -1,0 +1,379 @@
+# Settings restructure spec (config review)
+
+Status: spec for the next implementation pass. Source: `ux-review-config.md` (audit at bbbbffe, H1-H3, M1-M6), refined by
+the orchestrator's decisions. Supersedes `spec.md` 2.3 (pane lists, the Defaults row table and the "shared settings"
+paragraph) wherever they differ. Conventions from `spec.md` 2.3 hold: `SettingsPage`, `SettingsNav`, `SettingsSection`
+(h3), `SettingsGroup` (h4 caption over a card), `SettingsCard`, `SettingRow` (label and one-line description left,
+control right, 56 px rows), `ClampedNumber`; copy from `lib/settingsCopy.ts` (one line per row, sentence case, no
+internal tool names). Tokens, the type scale, container queries, lucide icons, both themes, visible focus. Nothing
+floats: every disclosure opens in the flow.
+
+## 1. Data the UI reads (runtime contracts landing concurrently)
+
+| Contract | Used for |
+| --- | --- |
+| `ConnectionInfo.isDefault` (connections:list) | The effective default: the stored one when connected, else the only connected connection. Badge on the card, the New project line, the assistants' model lines. The renderer never computes the default itself (drop `newProjectConnection` fallback logic in `lib/projectsForm.ts`). |
+| `AppSettings.defaultConnectionChosen` | Set by main once the user picks. The renderer only writes `defaultConnection` through the card action; settings:set refuses a not-connected id, and the card shows that error inline. |
+| `planGuardOf(project)` 'on' / 'off' / 'auto' | Limits plan guard line and its override; writes `Project.preferEverydayNearLimit` true / false / undefined (auto). `opusGuardThreshold` is fixed at 80 and never shown. |
+| `effectiveSubagentLimits(project)` | "Automatic (N from the chart)" and "Automatic (8)"; overrides write `maxSubagentDepth` / `maxConcurrentSubagents`, Automatic writes undefined. |
+| `skillEvaluationOf(project)` | Derived from `teamReview.auto === 'ai'`; the UI no longer writes `skillEvaluation`. |
+| `PERMISSION_MODE_OPTIONS` (provider-neutral) | Mode labels; no "Claude" anywhere in permission copy. |
+| `effortOptionsFor(adapterId)` | Role Effort options. |
+| `projects.checkPath(path).isGitRepo` | Worktree automatic state for a stored project (call once per pane mount, keyed by `project.path`). |
+
+Metered vs subscription (new pure helper `lib/limits.ts` `isMeteredProject(project, connections)`, unit-tested):
+metered when the project's connection is LiteLLM, or its `ConnectionInfo.connection.auth.kind === 'apiKey'`
+(Anthropic or OpenAI). Everything else, including the mock adapter on a login connection, is subscription. Unknown
+(connections not loaded) renders as subscription without the plan line until loaded.
+
+## 2. The Advanced disclosure primitive
+
+`components/settings/SettingsAdvanced.tsx`, `export function SettingsAdvanced({ paneKey, children })`.
+
+- A native `<details className="settings-advanced" data-testid="settings-advanced" data-pane={paneKey}>` with
+  `<summary>` whose visible text is exactly "Advanced settings" (that is its accessible name; no aria-label override,
+  so the label-in-name rule holds) and a lucide `ChevronRight` that rotates 90 degrees when open
+  (`--dur-fast`, none under reduced motion).
+- Styled like the row "Learn more" (`.setting-row-more` in `styles/settings.css`): text button in
+  `--text-body`, secondary colour, accent on hover, the shared `:focus-visible` ring. It sits after the pane's last
+  section with the normal 32 px section gap and a hairline above; the body uses the same `SettingsGroup` +
+  `SettingsCard` + `SettingRow` pattern, so rows inside look like rows outside.
+- At most one per pane, always last. Closed by default. Open state remembered per pane in localStorage
+  `orgai.settingsAdvanced.<paneKey>` ('1' open, absent closed; read once on mount, written on the `toggle` event,
+  storage errors ignored). Pane keys: `app-general`, `app-connections`, `project-permissions`, `project-limits`.
+  Not per project.
+- Deep links: a target inside Advanced sets `open` before scrolling (the toggle event then stores it, like a click).
+- Nothing inside is mounted lazily in a way that moves focus; opening never moves focus.
+
+## 3. App settings: 5 panes
+
+Nav: **General, Connections, Connectors, Skill library, About**. The Defaults pane, `APP_SETTINGS_PANES.defaults`,
+`APP_SETTINGS_SECTIONS.defaults` / `.usage`, the highlight-usage logic in `AppSettingsView.tsx` and
+`DEFAULT_CONNECTION_COPY` are deleted. Removed from the UI entirely (fields stay in types, untouched): default cost cap,
+default runs to keep, default keep-going, default max continues, default isolate writers, default everyday-near-limit,
+weekly threshold, the Default connection select.
+
+### 3.1 General
+
+| Where | Row title | Control | Description | Writes |
+| --- | --- | --- | --- | --- |
+| Visible, section Appearance (`appearance-section`), card | Theme | Segmented Dark / Light / System | System follows your operating system. | `appearance.theme` |
+| same card | Accent colour | Swatches + Custom (as today) | none | `appearance.accent` |
+| Visible, section Notifications | Notify me when a run needs attention or finishes | Switch `notifications-switch` | Shown by your operating system while OrgAI is in the background. | `notifications` |
+| Visible, section New projects (`appsettings-section-new-projects`, testid `new-projects-section`, lead "Starting values for new projects. Existing projects keep their own.") | Permission mode | Select 240 px, short names, testid `default-mode-select` | The selected mode's trade-off sentence (`PERMISSION_MODE_TRADEOFF`) | `defaultPermissionMode` |
+| Advanced, group "Motion and canvas" | Motion | Segmented Follow system / Always reduce | Reduce animation across the app. | `appearance.reduceMotion` |
+| same | Pattern, Connection lines, Tint with the accent, Minimap | as today | none | `appearance.canvas.*` |
+| Advanced, group "Assistant models (used now by every project)", section id `appsettings-section-assistant-models` | Setup model | ModelSelect `setup-model-row-select` | Plans and revises org charts and reviews finished runs. | `setupModel` |
+| same | MCP assistant model | `mcp-assist-model-row-select` | Writes and tests connectors with you. | `mcpAssistModel` |
+| same | Skill assistant model | `skill-assist-model-row-select` | Writes and revises skills. | `skillAssistModel` |
+| same | Chat model | `quick-run-model-row-select` | Answers in Chat. | `quickRunModel` |
+| Advanced, group "New projects (advanced)" | Orchestrator starting tier | `default-root-model-row-select` | Leads each new project's runs. | `defaultRootModel` |
+| same | Report starting tier | `default-report-model-row-select` | Used by the roles that report to the orchestrator. | `defaultReportModel` |
+
+Under the assistant models card, one muted line: "Tiers resolve through each project's connection." (the long note
+goes). ModelSelect options: the four tiers first, each labelled "Everyday tier (sonnet)" with the model it resolves to on
+the effective default connection, then an "Exact model" optgroup (concrete ids). Model selects use the sans face and
+the 240 px select width (audit L1). At rest the General pane has no model select.
+
+### 3.2 Connections
+
+- Cards as today (`ConnectionsPanel`, `connection-card[data-provider]`). Badge `default-connection-badge` reads
+  "Default for new projects and assistants" on the card whose `ConnectionInfo.isDefault` is true. Other connected cards
+  show the existing secondary "Use for new projects" button (add testid `connection-make-default`; accessible name
+  "Use <Name> for new projects and assistants"); a not-connected card never shows it. One primary action per card stays
+  (Connect when not connected).
+- Per card, inside the opened card: "Models (N)" and the tier disclosure, renamed "Model tiers" with an "Automatic"
+  badge while they match the catalog. Unchanged otherwise.
+- Pane Advanced (`app-connections`), section "Costs" (`appsettings-section-costs`, lead "Where cost estimates come
+  from."): Community price list (`community-prices-row`, Switch, "Fetches a public price list for models without a
+  built-in price. Your prices below win.", `communityPrices`), then `ModelPricesSection` (id
+  `appsettings-section-model-prices`, testid `model-prices`, writes `modelPrices`).
+
+### 3.3 Connectors, Skill library, About
+
+Unchanged.
+
+## 4. Project settings: 4 panes
+
+Nav: **General, Permissions, Limits, Maintenance**. `PROJECT_SETTINGS_PANES` becomes `general`, `permissions`,
+`limits`, `maintenance`. A stored pane id of `agents` maps to `permissions`; `connection` maps to `general`; `tools`
+maps to `general` (in `SettingsView` before the fallback). The "Plugins and skill settings" pane, its
+`tools-team-pointer` banner and `open-team` button, and the `SkillEvaluationSettings` mount are deleted. The "Keep going
+until the plan is complete" switch is removed (one exception: section 4.2 legacy row).
+
+### 4.1 General (no Advanced)
+
+| Row title | Control | Description | Writes |
+| --- | --- | --- | --- |
+| Name | Input | none | `name` |
+| Working directory | Read-only mono path (full path in `title`) + Button "Change folder" (folder picker) | none | `path` |
+| Project brief | Textarea, full width | hint "Added to every role's prompt and used by the drafter." | `brief` |
+
+The typed path input goes (one tab stop instead of two; a typed path was never validated here). Then section
+"Connection" (id `settings-section-connection`, `RemapNotices` above it):
+
+- **One line** (testid `project-connection-line`) when fewer than 2 connections are connected and the project's
+  connection is connected: "Runs on Anthropic (Claude Code login)." plus the link button "App settings > Connections"
+  (`requestAppSettingsSection(APP_SETTINGS_SECTIONS.connections)`). No Role models disclosure, no prices link.
+- **The three cards** (today's `ProjectConnection`, fieldset `project-connection`, Review changes, `role-models`,
+  `model-prices-link`) when 2+ connections are connected, or when the project's own connection is not connected (the
+  user must be able to switch away). The lead keeps "App default for new projects: <Name>." when it differs.
+- Auth method words (new `lib/connectionLabel.ts` `authMethodLabel(info)`, shared with the New project form):
+  Anthropic "Claude Code login" / "API key", OpenAI "ChatGPT sign-in" / "API key", LiteLLM "proxy key".
+- Under ORGAI_MOCK the mock card (`mock-adapter-toggle`) stays last, unchanged.
+
+### 4.2 Permissions
+
+Visible, section Permissions (id `settings-section-permissions`):
+
+| Row title | Control | Description / hint | Writes |
+| --- | --- | --- | --- |
+| Permission mode | Select 240 px (short names) | Description `permission-mode-tradeoff`: the provider-neutral trade-off ("auto": "The model's safety check approves routine calls and asks when unsure. Fewest prompts."). Hint: "App default for new projects: Unattended" (testid `permission-mode-default`; no reset). No Learn more. | `permissionMode` |
+| (note under the row) | none | `permission-mode-note`, as today | |
+| Rules and folders you allowed | Button "Show" / "Hide", `aria-expanded`, `aria-controls`, testid `permissions-summary-toggle`; row testid `permissions-summary` | "3 rules and 1 folder you allowed" (plural-aware; zero: "None yet. Approval cards add them here.") | none |
+
+The toggle discloses, in the flow below the row: one paragraph with today's `MODE_MORE` text (de-Claude'd), then the
+existing `AllowedDirectoriesSection` and `PermissionRulesPanel` unchanged (their ids, testids and behaviour stay). Folder
+count is `project.allowedDirectories.length`; the rule count comes from the same preload call `PermissionRulesPanel`
+makes, refreshed when the panel changes. A deep link to `allowedFolders` or `rules` opens the disclosure first.
+
+Advanced (`project-permissions`), one card "Runs":
+
+| Row title | Control | Description | Writes |
+| --- | --- | --- | --- |
+| Isolate writers in worktrees | Switch; disabled with reason when not a git repo | "Automatic: git repository found." / "Off: not a git repository." / "Off for this project." (when the user turned it off) | `isolateWriters` (false = override off; on writes undefined) |
+| Review each report's changes before merge | Switch; disabled unless isolation is effectively on | You merge, hold or discard each diff. | `reviewMerges` |
+| Let runs message each other | Switch (label unchanged) | Orchestrators can exchange short notes. | `runMessaging` |
+| Max automatic continues per run | ClampedNumber 0..`MAX_AUTO_CONTINUES_LIMIT` | Stops nudging a run after this many. | `maxAutoContinues` |
+| Team assistant | Select Off / Free checks / AI suggestions, testid `team-assistant-select` | Off: "Never looks for missing tools or skills." Free: "Checks your runs without the model." AI: "Also asks the model; sends the names of found tools and skills." | `teamReview.auto` ('off' / 'free' / 'ai') |
+| Keep going until the plan is complete (legacy) | Switch | Shown only while `autoContinue === false`, so it can be turned back on. | `autoContinue` |
+
+No "every N runs" or token budget fields; their stored values stay untouched.
+
+### 4.3 Limits
+
+Visible, section Limits (id `settings-section-limits`):
+
+- Metered project: row "Estimated-cost cap per run", Input number 120 px, placeholder "No cap", description "Stops a
+  run above this USD cost. Blank: no cap." (no Learn more), writes `maxBudgetUsd`.
+- Subscription project: one line, no control (testid `plan-guard-line`, `lib/settingsCopy.ts` `planGuardLine`), saying
+  only what runs. From `planGuardOf`: auto "Plan guard: automatic. Uses the everyday tier when your weekly window passes
+  80%."; on "Plan guard: on. Uses the everyday tier when your weekly window passes 80%."; off "Plan guard: off.". Then
+  always "A run that reaches a plan limit pauses until it resets." (RunManager pauses a usage-limited run and resumes
+  it at the reset), and only when `maxWindowShare` is set "Stops at N% of the five-hour window." Automatic never stops a
+  run near the five-hour window (ux-review-config-2 N2).
+
+Advanced (`project-limits`), one card:
+
+| Row title | Shown | Control | Description | Writes |
+| --- | --- | --- | --- | --- |
+| Plan guard | subscription only | Select Automatic / On / Off | Uses the everyday tier when the weekly window passes 80%. | `preferEverydayNearLimit` undefined / true / false |
+| Stop at a share of the five-hour window (%) | subscription only | Input number, placeholder "Off" | Stops a run that uses more than this share. | `maxWindowShare` |
+| Estimated-cost cap per run | subscription only (visible above when metered) | as above | as above | `maxBudgetUsd` |
+| Runs to keep | always | ClampedNumber 1..5000 | Older finished runs are deleted. | `keepRuns` |
+| Max subagent depth | always | Select: "Automatic (N from the chart)", 1..`MAX_SUBAGENT_DEPTH_LIMIT` | 1 means reports cannot create subagents. | `maxSubagentDepth` |
+| Max concurrent subagents | always | Select: "Automatic (8)", 1, 2, 4, 8, 12, 16, 24, 32 (a saved other value is added) | Reports that may run at once. | `maxConcurrentSubagents` |
+
+The "Threshold: 80% · Change in App settings" hint and the settings fetch in `LimitsSection` go.
+
+### 4.4 Maintenance
+
+Unchanged.
+
+## 5. Elsewhere
+
+- **Team > Catalog**: `PluginsSection` variant 'catalog' becomes the only variant: a third `CatalogGroup`
+  (`catalog-plugins`) beside Skills and Connections with Add plugin folder and per-row Remove inline (today's settings
+  controls; `plugins-section` body testid moves here). `catalog-plugin-settings` and the "Add them in Plugin
+  settings" copy go. On a project whose adapter is not Claude the group says "Plugins are used only on Anthropic
+  projects." in its description.
+- **New project form** (`new-project-connection`): "Runs on <Name> (<auth method>)." + link "Change"
+  (`new-project-connection-change`) to App settings > Connections, from the `isDefault` entry. Nothing connected:
+  "Nothing is connected yet." + link "Connect". Mock checked: "Runs on the mock adapter (no tokens)." with no link.
+- **Chat start page**: `chat-summary` reads "... Runs on <model> via <Connection>. ..." (connection always present,
+  from `isDefault`), without the "Change in App settings > Defaults" sentence; a link button `chat-model-change`
+  "Change in App settings" follows the line. `AssistantModelLine` (MCP and Skill assistant start pages) reads "Runs on
+  <model> via <Connection>." + "Change in App settings".
+- **Role panel** (`RoleInspector`, `RoleModelPicker`): the fold title is "Model" (summary: the tier label, "Inherited"
+  or "Custom"). Inside: one Select labelled "Model" (`role-model`) with Inherit plus the four tiers as "Everyday
+  (sonnet)"; then a `details.setting-row-more` "Advanced" with "Exact model" (`role-exact-model`, concrete ids) and
+  "Effort" (`role-effort`, Default plus `effortOptionsFor(adapter)`). A saved unsupported value stays selected as
+  "xhigh (not used on OpenAI)" with a one-line note `role-effort-unsupported`. The `role-tier-badge` and the second
+  "Model" label go. canSpawn and spawnable unchanged.
+- **Copy**: `SETTINGS_COPY.permissionMode.more`, `PERMISSION_MODE_TRADEOFF.auto` and `MODE_MORE` lose "Claude"
+  ("the model's safety check"). Remove `autoContinue` (except the legacy row label), `opusThreshold` and
+  `DEFAULT_CONNECTION_COPY`; `preferEveryday` becomes `planGuard`. `RunActions` retro help: "set in App settings >
+  General".
+
+## 6. Deep-link retargeting
+
+| Source | Today | New target |
+| --- | --- | --- |
+| `AssistantModelLine` (MCP / Skill assistant start pages) | `APP_SETTINGS_SECTIONS.defaults`, "Change in App settings > Defaults" | `assistantModels` (General, Advanced opened, group heading focused), "Change in App settings" |
+| `McpAssistDialog` `mcp-assist-model-hint` | defaults, same text | `assistantModels`, "Change in App settings" |
+| Chat start page `chat-summary` (`lib/assistants.ts` `chatSummaryLine`) | text "Change in App settings > Defaults" | sentence dropped; `chat-model-change` link to `assistantModels` |
+| New project form `new-project-connection` | defaults, "App settings > Defaults" | `APP_SETTINGS_SECTIONS.connections`, "Change" |
+| `LimitsSection` "Change in App settings" | `usage` (weekly threshold row) | removed (override is in the same pane's Advanced) |
+| `RunActions` retro tooltip | text "App settings > Defaults" | text "App settings > General" (no link) |
+| `requestModelPrice` (Usage "Set a price", project `model-prices-link`) | `modelPrices` on Connections | unchanged id; opens `app-connections` Advanced first, then scrolls and focuses |
+| `PermissionCard` `perm-settings-link` | pane `agents` + `permissions` section | pane `permissions` + same section |
+| `PluginsSection` `catalog-plugin-settings` | pane `tools` | removed |
+| `ProjectConnection` / `project-connection-line` link, Sidebar auth row | `connections` | unchanged |
+| `requestAppSettingsSection` with a removed id (`defaults`, `usage`) | Defaults pane | `appPaneForSection` returns undefined; the page opens on General |
+
+`lib/settingsTarget.ts`: add `newProjects`, `assistantModels`, `costs` to `APP_SETTINGS_SECTIONS` (General, General,
+Connections); `PROJECT_SECTION_PANE` maps `permissions`, `allowedFolders`, `rules` to 'permissions'. A new
+`ADVANCED_SECTIONS` set (`assistantModels`, `costs`, `modelPrices`) tells `AppSettingsView` to open the pane's Advanced
+before landing. `useSectionTarget` moves from `AgentsSection` into the new `PermissionsSection` with
+`takeProjectSettingsSection('permissions')`. Update `settingsTarget.test.ts` and `projectsForm.test.ts` /
+`assistants.test.ts` in the same change.
+
+## 7. e2e selector plan (same change as the code)
+
+| Script | Today | Becomes |
+| --- | --- | --- |
+| `connections.mjs` 41-104 | tab "Defaults"; combobox "Default connection"; Setup / MCP assistant model; "A tier resolves..." note; tier-label and clipping checks; Setup model and default connection persistence | tab "General", open `[data-testid=settings-advanced][data-pane=app-general] > summary`; same comboboxes by name; note text "Tiers resolve through each project's connection."; tier and clipping checks run on Advanced selects; Setup model persistence after reopen (Advanced remembered open, assert it); the default-connection block becomes: `default-connection-badge` count 1 on Connections, and `connection-make-default` absent on not-connected cards |
+| `connections.mjs` 141-161 | tab "Connection", `#settings-section-connection`, `project-connection` fieldset | tab "General", same section id; `mock-adapter-toggle` unchanged; fieldset checks only when `project-connection` exists, else assert `project-connection-line` |
+| `connections.mjs` 131, 166-172 | `catalog-plugins`; `role-model-fold`, `role-model`, `role-tier-badge` | `catalog-plugins` unchanged (+ `plugins-section` inside it); `role-tier-badge` check replaced by "`role-model` selected label ends with a tier word" |
+| `usage.mjs` 83-86 | Connections, `model-prices` visible | Connections, open `settings-advanced[data-pane=app-connections]`, then `model-prices` |
+| `assistants.mjs` 152, 166-171 | `chat-summary` includes "Change in App settings > Defaults"; tab "Defaults"; `skill-assist-model-row-select`, `quick-run-model-row-select` | `chat-summary` includes " via "; `chat-model-change` visible; tab "General" + open app-general Advanced; same row testids |
+| `permissions.mjs` 104-105, 178-182, 210-247 | tab "Agents"; link opens "Agents" pane | tab "Permissions"; link asserts the "Permissions" tab selected; before the allowed-folder steps click `permissions-summary-toggle` (assert `aria-expanded` true) |
+| `runs.mjs` 690, 702 | tab "Agents", switch "Let runs message each other" | tab "Permissions", open `settings-advanced[data-pane=project-permissions]`, same switch; after reload the disclosure is still open |
+| `runs.mjs` 678, `maintenance.mjs` 74 | tab "Maintenance" | unchanged |
+| `layout.mjs` 354-390 | `appearance-section`, Theme radiogroup | unchanged (Theme stays visible) |
+| `skills.mjs`, `team.mjs` | Team tab skill evaluation, Skill library tab | unchanged (no settings-pane selectors) |
+
+New checks (added to `connections.mjs` for app panes and `permissions.mjs` for project panes, 1024x640 and
+1600x1000, dark and light): the acceptance checks in section 8.
+
+## 8. Acceptance checks
+
+1. App settings has no "Defaults" tab and no text "App settings > Defaults" anywhere in the renderer (grep).
+2. Project Permissions pane at 1024x640, Advanced closed and the summary hidden: the settings scroller's
+   `scrollHeight <= clientHeight` (no scroll at rest).
+3. No visible select at rest (Advanced closed, role panel Advanced closed) has an option whose label is a concrete model
+   id without a tier word; App General at rest has no model select.
+4. On an API-key or LiteLLM project, Limits (Advanced open or closed) contains no "five-hour" or "weekly" text; on a
+   subscription project it shows `plan-guard-line` and no percent input at rest.
+5. Tab stops at rest (from the pane h2 to the end of the pane, mock toggle not counted): project General <= 4 with one
+   connected connection, Permissions <= 3, Limits <= 2.
+6. `settings-advanced` summary has accessible name "Advanced settings", toggles with Enter and Space, shows the focus
+   ring, and its open state survives a reload per pane.
+7. Every deep link in section 6 lands on the right pane with focus on the pane or group heading.
+8. No "Claude" in permission copy on an OpenAI project.
+
+## 9. Not in this pass
+
+- canSpawn / spawnable derived from the chart (R9, R10).
+- Settings search (settings-2 N8).
+- Gating permission modes on adapter support (`supportsAutoMode`).
+- An automatic five-hour window share (the share stays a manual override).
+- Team assistant cost estimate ("about $0.02 per review") and derived budgets in the UI.
+- Accent swatches as one roving radiogroup; App General tab stops are not budgeted.
+- Role panel slug, colour and system prompt moves (R2, R5, R14); auth fields moving into the Connect flow (A9-A14).
+
+## Implementation notes (UI Lead, 2026-11-03)
+
+Landed on the renderer branch after c30368e (foundation 21f94cb; panes f51943e, 301b2c5, 0ca8213; fix-ups after).
+Where it differs from the sections above, and why:
+
+- **Effective default (review M-A).** The store's `defaultConnection` is the connections:list entry with `isDefault`.
+  It is re-read (coalesced, 150 ms) on settings:changed, on `connection.status` and after any single-record update; a
+  single-record merge keeps the list's `isDefault` flags until the reload lands. `defaultConnectionChosen` comes from
+  settings:get / settings:changed. `setDefaultConnection(id | null)` is the only writer. No consumer reads the stored
+  field.
+- **A way back to automatic (review M-B).** The default card's badge reads "Default for new projects and assistants"
+  plus a quiet "Chosen" or "Automatic". A chosen default shows the secondary "Back to automatic"
+  (`connection-default-auto`, `setDefault(null)`). The make-default button's accessible name is "Use for new projects:
+  <Name>"; the spec's "Use <Name> for new projects and assistants" broke label-in-name. A refusal shows as plain text in
+  the card (`aria-describedby`) and is announced through the pane's one polite live region (`connections-live`,
+  `components/connections/announce.ts`). The card's own live regions are gone.
+- **LiteLLM mixed models (owner decision).** The "cannot start" banner and the "Roles that must change" list are
+  replaced by an info notice (`proxy-family-notice`: "Claude orchestrator; 2 roles on other model families run through
+  the proxy."). A danger banner (`project-start-refusal`) remains only when `lib/remap.ts` `startRefusal` refuses. Since the
+  follow-up after edb3e95 `startRefusal` is the shared `mixedFamilyRefusal` itself (a unit test pins the identity), so
+  the banner and main's start gate cannot drift. The info notice shows only while some role is on another family. The role panel's Exact model lists the whole proxy catalog in per-family optgroups.
+  The project line reads "Default connection for roles: Anthropic (Claude Code login)." instead of "Runs on ...".
+- **New project form.** It says "Runs on <Name> (<auth>), which is not connected." when the effective default is not
+  connected but another connection is. "Nothing is connected yet." shows only when nothing is connected. The typed
+  values survive the Change / Connect detour through a session-only draft in ProjectsView.
+- **Permissions.** The deep link focuses the pane h2, because the section h3 repeats the pane title and is hidden. The
+  summary disclosure body is always mounted with `hidden`, so the rule count and deep links work while it is closed.
+  The toggle's accessible name is "Show rules and folders you allowed" or "Hide rules and folders you allowed".
+- **Raw controls.** Five controls are native elements with the shared classes, because the `components/ui` wrappers
+  lack the prop they need (testId on `Select`; `aria-describedby`, `aria-expanded` and `aria-controls` on `Button`):
+  `default-mode-select`, `team-assistant-select`, `connection-make-default`, `connection-default-auto` and
+  `permissions-summary-toggle`.
+- **ModelSelect** uses the sans face by default. `mono` is opt-in, and only TierEditor uses it.
+- **Role panel.** The Model select shows "Use the connection default" for the root and "Inherit from parent" for
+  other roles. An exact model shows as "Custom (set under Advanced)". The Advanced disclosure is `role-model-advanced`.
+
+Selectors added:
+- `settings-advanced[data-pane]`, `new-projects-section`, `default-mode-select`, and the `*-model-row-select` rows,
+  which moved into General Advanced.
+- `default-connection-badge`, `connection-make-default`, `connection-default-auto`, `connections-live`,
+  `community-prices-row`.
+- `project-connection-line`, `proxy-family-notice`, `project-start-refusal`, `project-path`.
+- `permission-mode-tradeoff`, `permission-mode-default`, `permissions-summary`, `permissions-summary-toggle`,
+  `team-assistant-select`, `plan-guard-line`.
+- `new-project-connection-change`, `chat-model-change`.
+- `role-model-advanced`, `role-exact-model`, `role-effort`, `role-effort-unsupported`, `plugin-add`.
+
+Selectors removed: `role-tier-badge`, `catalog-plugin-settings`, `tools-team-pointer`, `open-team`,
+`skill-settings-section`.
+
+Fixed in the follow-up after edb3e95 (unit-tested where pure; not driven by e2e):
+- L3: the mode word comes from `lib/connectionLabel.ts` `defaultMode`: "Chosen" only on the card the user picked
+  (store `defaultConnectionStored`); a fallback card reads "Automatic" and offers no "Back to automatic".
+- L4: "Back to automatic" carries `aria-describedby` to the refusal text, and every card clears its refusal when any
+  card's change succeeds (store `defaultConnectionChanges`).
+- L8: `SettingsGroup` titles are h3 directly under the pane h2 (the Advanced body, `GroupHeadingLevelContext`) and
+  h4 inside a section; connection card titles are h4 under the Connections section; the Limits Advanced group is
+  "Runs and agents". Selectors unchanged (one e2e check now matches `.settings-group-title` instead of `h4`).
+- L9: the LiteLLM info banner shows only when roles are on another family.
+- L14: `defaultChangeAnnouncement` names the default after "Back to automatic".
+
+Still open (Reviewer Lows; also listed in ARCHITECTURE.md Risks):
+- L1: the `components/ui` wrappers still lack the props listed under Raw controls.
+- L5: opening the pane makes duplicate `connections:list` calls.
+- L6: the announcer can overwrite messages that arrive close together.
+- L7: pre-existing `role=alert` errors in App settings and Model prices.
+- L10: `flushSync` inside an effect in PermissionsSection.
+- L11: render-only 'anthropic' fallbacks while the list loads.
+- L13: `aria-controls` points at unmounted bodies in TierEditor and ModelList.
+
+Not exercised by e2e, because the mock connects only Anthropic: make-default, Back to automatic, a setDefault refusal,
+the multi-connection project cards, the LiteLLM notices and the unsupported-effort note.
+
+Fix-up after the re-walk (`ux-review-config-2.md`, 2026-11-03):
+- N1: deep links scroll only their scroll container. `lib/scrollWithin.ts` `scrollWithin(el, block)` sets the nearest
+  `overflow-y: auto | scroll` ancestor's `scrollTop` (clamped, pure `targetScrollTop`) and resets any shifted
+  non-scrolling ancestor, `<html>` and `<body>`. It replaces `scrollIntoView` in `AppSettingsView` (the deep-link
+  effect), `PermissionsSection` (`useSectionTarget`), `ModelPricesSection`, `McpLibrarySection` and
+  `ConnectorGallery`. e2e `lib.mjs` `windowShift(page)` checks it after every Assistant models link (Chat, MCP and
+  Skill start pages at both sizes and themes, the MCP assist dialog in dark at both sizes; `assistants.mjs`), after the
+  App deep links (`connections.mjs`), the permission card link and Team assistant settings (`permissions.mjs`).
+- N2: the plan guard line is `planGuardLine(mode, maxWindowShare)` (see 4.3).
+- N3: Exact model shows a pinned id only for a Custom role (`lib/roleModels.ts` `exactModelValue`); a tier or inherit
+  role reads "Not set (use the tier above)". "Not set" on a custom role writes the role's saved tier, else everyday,
+  else the first mapped tier; inherit only when the connection maps no tier (`applyExactModel(value, tiers, role)`).
+- N4: the role Model select's label is visually hidden (the fold title "Model" names it). The org chart node's model
+  chip shows the tier word with the id in its title (`roleChipLabel`).
+- N5: `lib/assistantModels.ts` `assistantModelLabel` / `runsOnText` / `useAssistantRunsOn` give one wording,
+  "Runs on Everyday tier (sonnet) via Anthropic", to the Chat summary, the MCP and Skill start pages, the MCP assist
+  dialog hint and the Connectors "Configure with AI" title. The Assistant models note (`assistant-models-note`) reads
+  "Chat and the MCP and Skill assistants run on <Default>, the default connection. Setup uses each project's connection."
+- N6: the Team assistant tray head has a quiet gear `IconButton` "Team assistant settings" (`team-assistant-settings`).
+  It opens Project settings > Permissions with Advanced open and `team-assistant-select` focused
+  (`PROJECT_SETTINGS_SECTIONS.teamAssistant`, `PROJECT_ADVANCED_SECTIONS`, shared opener `lib/openProjectSettings.ts`).
+- M6 leftover: `SINGLE_SLASH_REASON` reads "A single leading / is read as relative to the project; ..." on every connection.
+- N8: one short-name table, `lib/settingsCopy.ts` `PERMISSION_MODE_SHORT` ("Ask for everything risky",
+  "Auto-accept edits"), for App General, project Permissions and the card's "Always allow" sentence.
+- N10: with worktrees off, "Review each report's changes before merge" says "Needs worktree isolation (above)." as its
+  description and the switch's title (`SETTINGS_COPY.reviewMerges.disabled`).
+- N11: `perm-settings-link` targets `rules`: the "Rules and folders you allowed" disclosure opens and "Saved permission
+  rules" takes focus.
+- N12: inside any Advanced body, section titles (Connections: Costs, Model prices) use the group caption style, so
+  every Advanced heading is one tier; levels and ids are unchanged.
+- Left open: N7 (App General scrolls about 91 px at rest at 1024x640), N9 (an 'error' Anthropic status keeps an
+  automatic default; main, `defaults.ts`), N13 (the About "Mock adapter" chip is unexplained).

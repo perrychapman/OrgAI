@@ -10,10 +10,38 @@ import { CAPABILITY_DESCRIPTION_MAX, type CapabilityKind, type CapabilityOrigin,
 
 // C0/C1 controls, soft hyphen, combining grapheme joiner, Arabic letter mark, Mongolian vowel separator, zero-width,
 // bidi overrides/isolates, word joiner and invisible operators, BOM, Hangul fillers and tag characters.
-const HIDDEN_CLASS = '[\u0000-\u001f\u007f-\u009f\u00ad\u034f\u061c\u115f\u1160\u180e\u200b-\u200f\u202a-\u202e\u2060-\u206f\u3164\ufeff\uffa0\u{e0000}-\u{e007f}]'
+const HIDDEN_BASE = '[\u0000-\u001f\u007f-\u009f\u00ad\u034f\u061c\u115f\u1160\u180e\u200b-\u200f\u202a-\u202e\u2060-\u206f\u3164\ufeff\uffa0\u{e0000}-\u{e007f}]'
+// One-line fields also refuse the Unicode line and paragraph separators: they end a line in a prompt as much as LF does.
+// Built with fromCodePoint so neither appears literally in this file; multi-line fields keep allowing them like LF (the
+// renderer's mirror covers that multi-line set, which is unchanged).
+const HIDDEN_CLASS = HIDDEN_BASE.replace(']', `${String.fromCodePoint(0x2028, 0x2029)}]`)
 const HIDDEN_RUN = new RegExp(`${HIDDEN_CLASS}+`, 'gu')
 /** True when the text holds a control, zero-width, bidi or other invisible character. */
 export const HIDDEN_CHARS = new RegExp(HIDDEN_CLASS, 'u')
+// The same set with tab, line feed and carriage return allowed (the renderer's lib/hiddenChars.ts mirrors it).
+const DISGUISE_CHARS = new RegExp(HIDDEN_BASE.replace('\u0000-\u001f', '\u0000-\u0008\u000b\u000c\u000e-\u001f'), 'u')
+// Prose (descriptions): controls other than tab / LF / CR, bidi marks, overrides and isolates, zero-width space, word
+// joiner and BOM. ZWJ, ZWNJ, soft hyphen and tag characters stay allowed: emoji sequences and Persian or Indic text
+// use them, and stored or registry descriptions with them must keep validating.
+const PROSE_HIDDEN = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f؜​‎‏‪-‮⁠⁦-⁩﻿]/u
+
+/**
+ * The first hidden character in `s` as "U+XXXX", or null. One-line fields (names, URLs, rules, slugs) refuse every
+ * control character; `multiline` fields (descriptions, args, env values) allow tab, line feed and carriage return.
+ * Non-strings are null. Used by the proposal gates (validateSpec, skillProposalProblem, allow rules).
+ */
+export function hiddenCharIn(s: unknown, opts: { multiline?: boolean; prose?: boolean } = {}): string | null {
+  if (typeof s !== 'string') return null
+  const m = (opts.prose ? PROSE_HIDDEN : opts.multiline ? DISGUISE_CHARS : HIDDEN_CHARS).exec(s)
+  if (!m) return null
+  return `U+${(m[0].codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, '0')}`
+}
+
+/** The refusal text for a field holding a hidden character, or null. `field` names it for the model and the user. */
+export function hiddenCharProblem(field: string, s: unknown, opts: { multiline?: boolean; prose?: boolean } = {}): string | null {
+  const c = hiddenCharIn(s, opts)
+  return c ? `${field} contains a hidden character (${c}, a control, zero-width, bidi or other invisible character); remove it.` : null
+}
 
 /** One line, control and bidi characters removed, at most `max` chars. Non-strings become ''. */
 export function clampText(s: unknown, max = CAPABILITY_DESCRIPTION_MAX): string {
@@ -80,7 +108,9 @@ export function isKeyLikeArg(arg: string): boolean {
   return false
 }
 
-const USERINFO_URL = /[a-z][a-z0-9+.-]*:\/\/[^/\s]*@/i
+// The scheme is bounded (RFC 3986 allows more, no real one needs it): an unbounded run made this quadratic on a long
+// line of letters.
+const USERINFO_URL = /[a-z][a-z0-9+.-]{0,31}:\/\/[^/\s]*@/i
 const CREDENTIAL_WORDS = /(?:bearer|basic|token)\s+\S{6,}/i
 const AUTH_HEADER = /authorization\s*[:=]/i
 

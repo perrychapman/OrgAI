@@ -48,12 +48,25 @@ function canonical(p: string): string {
 }
 
 /**
+ * True for a path that may reach the network when touched: on win32 anything starting with two separators (UNC,
+ * `\\?\UNC\`, `\\.\`), on darwin the automount prefixes `/net/` and `/Network/`. Such a path is never handed to the
+ * file system (an SMB connection would leak NTLM credentials before any approval).
+ */
+export function isNetworkPath(p: string): boolean {
+  if (process.platform === 'win32') return /^[\\/]{2}/.test(p)
+  if (process.platform === 'darwin') return /^\/(?:net|network)(?:\/|$)/i.test(p)
+  return false
+}
+
+/**
  * The path as the file system would spell it even when it does not exist yet: the real path of the nearest existing
  * ancestor with the rest re-appended (macOS `/var/...` becomes `/private/var/...` for a not-yet-created data dir).
  * The resolved input when no ancestor can be resolved.
  */
 export function canonicalDeep(p: string): string {
   let probe = resolve(p)
+  if (isNetworkPath(probe)) return probe
+
   const rest: string[] = []
   for (let i = 0; i < 256; i++) {
     if (existsSync(probe)) break

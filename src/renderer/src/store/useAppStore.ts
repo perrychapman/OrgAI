@@ -1,12 +1,19 @@
 import { normalizeView } from '../lib/teamView'
+import { droppedExtrasMessage } from '../lib/folderLists'
+import { rulesChangedProject } from '../lib/rulesChange'
+import { clearKnowledgePrefs } from '../lib/knowledgePrefs'
 import { isTeamSurfaceRun } from '../lib/runSurface'
 import { useTeamAssistantStore } from './teamAssistant'
 import { create } from 'zustand'
 import { useMemo } from 'react'
 import { defaultRunToOpen } from '../lib/needsYou'
 import { assistantRunToOpen } from '../lib/assistantNav'
-import type { ProposalNext } from '../lib/proposalNext'
-import { needsYou } from '../lib/runChains'
+import { secretsNextFor, type ProposalNext } from '../lib/proposalNext'
+import type { KnowledgeFocusRequest } from '../lib/knowledge'
+import { addRecalled, cleanRecalledEvent, type RecalledEvent } from '../lib/runKnowledge'
+import { adoptEndFacts, statusEventEndFacts, CHAIN_EAGER_MEMBERS, CHAIN_FETCH_CONCURRENCY, CHAIN_WALK_MAX_HOPS, chainGroups, chainIdsToLoad, chainKeyOf, chainOf, needsYou, runBatched, type ChainGroup } from '../lib/runChains'
+import { cutWhile, settleEndedAgents } from '../lib/runStatus'
+import { readOpenTabs, sameRunSummaries, tabsSignature, writeOpenTabs } from '../lib/openTabs'
 import { mergePendingCards, type PendingCards } from '../lib/pendingCards'
 import { runIndexMap } from '../lib/runLabels'
 import { cleanIpcError } from '../lib/ipcError'
@@ -35,6 +42,7 @@ import type {
   ImageAttachment,
   Proposal,
   ProposalDecision,
+  ProposalOutcome,
   PermissionRuleDecision,
   PermissionRuleRequest,
   QuestionAnswer,
@@ -48,12 +56,16 @@ import type {
   UserQuestion
 } from '@shared/types'
 import { HARNESS_PROJECT_ID, QUICK_PROJECT_ID, SKILLS_PROJECT_ID, VIRTUAL_PROJECT_IDS, isVirtualProjectId, parseRunWindowHash } from '@shared/types'
-import type { QuickRunInput, QuickRunPromoteResult, SkillAssistInput, VirtualProjectId } from '@shared/types'
+import { projectKindOf } from '@shared/defaults'
+import type { ProjectKind, QuickRunInput, QuickRunPromoteResult, SkillAssistInput, VirtualProjectId } from '@shared/types'
+import type { OrgTemplateInfo, OrgTemplateSaveInput, ProjectRemoveResult, RunTeam, TeamFilesStatus } from '@shared/types'
 import { displayProject, type RunLayout } from '../lib/assistants'
 
-/** Project tabs: run (Live), history, team (Team; was 'org', see lib/teamView normalizeView), settings. projects and appSettings are app-level. */
+/** Project tabs: run (Live), history, knowledge (engagements only), team (Team; was 'org', see lib/teamView normalizeView), settings. projects and appSettings are app-level. */
 /** The Banner after an agent import: what came in, and what Undo restores. */
 export interface ImportNotice {
+  /** What replaced the chart: an agent import (default) or a team template (templates:apply). One notice per project. */
+  source?: 'import' | 'template'
   count: number
   summary: string
   previousRoles: Role[]
@@ -63,9 +75,31 @@ export interface ImportNotice {
   error?: string
 }
 
-export type View = 'projects' | 'team' | 'settings' | 'run' | 'history' | 'appSettings'
+export type View = 'projects' | 'team' | 'settings' | 'run' | 'history' | 'knowledge' | 'appSettings'
 /** Tabs of the live view's side panel. The side tab is remembered per run. */
-export type SideTab = 'transcript' | 'plan' | 'usage' | 'logs'
+export type SideTab = 'transcript' | 'plan' | 'usage' | 'knowledge' | 'logs'
+
+/** What a request to open one item in a run's Knowledge side tab names (ids first, else kind and name, else a note title). */
+export interface RunKnowledgeRequest {
+  nodeId?: string
+  kind?: string
+  name?: string
+  noteTitle?: string
+}
+
+/**
+ * The run side tab's own state, per conversation chain (docs/design/knowledge-graph-2.md section 3.1): the search text,
+ * the open item and the Back stack survive a tab switch. `request` is a pending open from a transcript link or RunMeta
+ * in a run window; the tab resolves and clears it.
+ */
+export interface RunKnowledgeUi {
+  query: string
+  openId: string | null
+  stack: string[]
+  request?: RunKnowledgeRequest
+}
+
+export const EMPTY_RUN_KNOWLEDGE: RunKnowledgeUi = { query: '', openId: null, stack: [] }
 
 /** A half-typed message. Kept per run (and per project for the New run page) so it survives tab switches. */
 export interface ComposerDraft {
@@ -111,6 +145,11 @@ export interface RunState {
   mcpInstalls: McpInstallRequest[]
   /** Answered installs (secret-free outcomes), keyed by request id, kept so the card shows its resolution. */
   mcpResolved: Record<string, { request: McpInstallRequest; outcome: McpInstallOutcome }>
+  /**
+   * Ended runs loaded from a record: what the run was doing when it ended (lib/runStatus cutWhile, read before the
+   * agents were settled). Only meaningful for a run cut by OrgAI closing.
+   */
+  cutWhile?: 'working' | 'waiting'
 }
 
 /** A model-change notice (Banner). Per project it keeps the pre-change copy so Undo can restore it. */
@@ -158,6 +197,14 @@ interface AppState {
   /** Save a quick run's chain as a project. On 'created' the project is selected and the run opened. */
   promoteQuick(runId: string, name: string): Promise<QuickRunPromoteResult>
   mcpFocus: McpFocus | null
+  /**
+   * A pending request to select one item on the Knowledge tab (a transcript row's link, a settings link). KnowledgeView
+   * resolves it (lib/knowledge.ts resolveFocus) once it has its data and clears it through clearKnowledgeFocus.
+   */
+  knowledgeFocus: KnowledgeFocusRequest | null
+  /** Open the project's Knowledge tab, on one item when the request names one (ids first, else kind and name, else a note title). */
+  openKnowledgeItem(req: KnowledgeFocusRequest): void
+  clearKnowledgeFocus(): void
   /** Selected project-settings pane per project id (lib/settingsTarget PROJECT_SETTINGS_PANES); absent means General. */
   projectSettingsPane: Record<string, string>
   setProjectSettingsPane(projectId: string, pane: string): void
@@ -170,6 +217,8 @@ interface AppState {
   startLibraryAssist(instruction?: string, allowBuild?: boolean): Promise<RunSummary>
   selectedProjectId: string | null
   view: View
+  /** Bumped by openNewProject(); the Dashboard opens its New project form when it changes. */
+  newProjectRequest: number
   saveStatus: SaveStatus
   selectedRoleId: string | null
   runs: Record<string, RunState>
@@ -195,6 +244,14 @@ interface AppState {
   setRunLayout(runId: string, layout: RunLayout): void
   /** Select the side tab of the viewed run. */
   setSideTab(tab: SideTab): void
+  /** `knowledge.recalled` events per run (ids and time only), in arrival order; not saved with the run, so empty after a relaunch. */
+  knowledgeRecalledByRun: Record<string, RecalledEvent[]>
+  /** The run Knowledge side tab's state per chain (the key is the chain's first run id). */
+  runKnowledgeByChain: Record<string, RunKnowledgeUi>
+  /** Merge a change into the chain's side-tab state (the chain of `runId`). */
+  patchRunKnowledge(runId: string, patch: Partial<RunKnowledgeUi>): void
+  /** Show the run's Knowledge side tab, on one item when `request` names it (a run window's stand-in for the Knowledge tab). */
+  openRunKnowledge(runId: string, request?: RunKnowledgeRequest): void
   /** Short inline message next to the run tabs (e.g. after hiding a tab). */
   tabNotice: string | null
   setTabNotice(message: string): void
@@ -207,10 +264,19 @@ interface AppState {
   /** The request id that jump asked to open (a specific card in the tray); null opens the default card. */
   pendingDecisionRequest: string | null
   clearDecisionFocus(): void
+  /** The chain member the user asked to see (History, a link): the merged feed scrolls to its divider once. Cleared by the view. */
+  chainFocusRun: string | null
+  /** Load the records of `runId`'s chain members that are not in `runs` yet (lazy, cached, one fetch per id in flight). */
+  loadChain(runId: string): Promise<void>
+  /** How many of a chain's newest members load (chain key -> count); missing means CHAIN_EAGER_MEMBERS. */
+  chainLoadLimit: Record<string, number>
+  /** "Load earlier sessions": widen the chain's load window by CHAIN_EAGER_MEMBERS and load the next batch. */
+  loadEarlierSessions(runId: string): Promise<void>
   /** Run whose composer should open on "Continue this run" (set by History's Continue). */
   continueIntent: string | null
   /** Open a finished run with its composer preset to Continue, and focus the composer. */
-  continueFromHistory(runId: string): Promise<void>
+  /** `projectId` selects that project first (the Dashboard's Continue); omitted inside a project. */
+  continueFromHistory(runId: string, projectId?: string): Promise<void>
   /** Show the blank New run page for the selected project. */
   openDraft(): void
   /** Close the New run page and drop its draft. */
@@ -232,10 +298,26 @@ interface AppState {
   /** Static app facts (version, folders, mock availability). null until loaded. */
   appInfo: AppInfo | null
   loadAppInfo(): Promise<void>
-  /** AppSettings.defaultConnection, mirrored for the Connections pane and the new-project form. null until loaded. */
+  /**
+   * The effective default connection: the connections:list entry with `isDefault` (main decides it from the stored
+   * choice and the live statuses), never the raw AppSettings.defaultConnection. Every consumer (connection cards, the
+   * New project line, the assistants' model lines, usage) reads this one value. null until the list is loaded.
+   * Reloaded on settings:changed, connection.status events and after a connection record changes.
+   */
   defaultConnection: ConnectionId | null
+  /** AppSettings.defaultConnectionChosen: the user picked the default (true) or main picks it (false). null until loaded. */
+  defaultConnectionChosen: boolean | null
+  /**
+   * The stored AppSettings.defaultConnection (the user's pick while defaultConnectionChosen is true). Only for telling
+   * whether the effective default is that pick or a fallback (lib/connectionLabel.ts `defaultMode`). null until loaded.
+   */
+  defaultConnectionStored: ConnectionId | null
+  /** Counts successful setDefaultConnection calls, so every card can clear its own earlier refusal. */
+  defaultConnectionChanges: number
+  /** Load the connection list and the chosen flag, and start following settings:changed (idempotent). */
   loadDefaultConnection(): Promise<void>
-  setDefaultConnection(id: ConnectionId): Promise<void>
+  /** connections:setDefault: an id makes it the chosen default, null returns to automatic. Rejects with a readable refusal. */
+  setDefaultConnection(id: ConnectionId | null): Promise<void>
   connections: ConnectionInfo[] | null
   connectionsError: string | null
   /** Model catalogs by connection. */
@@ -255,6 +337,23 @@ interface AppState {
   importRequest: { projectId: string; fresh: boolean } | null
   importNotices: Record<string, ImportNotice>
   proposalNextByRun: Record<string, ProposalNext>
+  /** The secret-free outcome of each resolved proposal (by proposal id), from the proposal.resolved event. */
+  proposalOutcomes: Record<string, ProposalOutcome>
+  /** Per project: bumped when saved permission rules may have changed (project-scope grant, project.updated). */
+  rulesChangedByProject: Record<string, number>
+  /** Latest team-files status per project (lib/teamFiles.ts). Filled by listAttention at boot, status() and the push. */
+  teamFilesByProject: Record<string, TeamFilesStatus>
+  /**
+   * A request to land focus on the team-files approval card (or status line) of a project's Team tab. The Team tab
+   * consumes it (focus, then clearTeamFilesFocus). Callers also open the project and its Team view.
+   */
+  teamFilesFocus: { projectId: string; n: number } | null
+  requestTeamFilesFocus(projectId: string): void
+  clearTeamFilesFocus(): void
+  setTeamFilesStatus(status: TeamFilesStatus): void
+  loadTeamFilesAttention(): Promise<void>
+  /** Calls teamFiles.status (which may write a project's files the first time) and stores the answer; null on failure. */
+  refreshTeamFiles(projectId: string): Promise<TeamFilesStatus | null>
   requestImport(request: { projectId: string; fresh: boolean } | null): void
   recordImport(projectId: string, notice: Omit<ImportNotice, 'state' | 'error'>): void
   undoImport(projectId: string): Promise<void>
@@ -273,12 +372,45 @@ interface AppState {
   trackSave<T>(fn: () => Promise<T>): Promise<T>
   selectRole(id: string | null): void
   selectAgent(id: string | null): void
-  createProject(input: { name: string; path: string; brief: string; setupKind?: SetupKind; mock?: boolean }): Promise<Project>
+  createProject(
+    input: {
+      name: string
+      path: string
+      brief: string
+      setupKind?: SetupKind
+      kind?: ProjectKind
+      mock?: boolean
+      client?: string
+      referenceDirectories?: string[]
+      /** Start from a saved team template (ProjectCreateInput.templateId). */
+      templateId?: string
+    },
+    opts?: { onExtrasError?: (err: unknown) => void }
+  ): Promise<Project>
   updateProject(project: Project): void
   updateRoles(projectId: string, mutate: (roles: Role[]) => Role[]): void
-  removeProject(id: string): Promise<void>
+  /** projects:remove; resolves to main's counts of what was deleted. */
+  removeProject(id: string): Promise<ProjectRemoveResult>
+  /** The Dashboard notice after "Forget this engagement" (name and main's counts); null when none. */
+  forgetNotice: { name: string; result: ProjectRemoveResult } | null
+  setForgetNotice(notice: { name: string; result: ProjectRemoveResult } | null): void
 
-  startRun(prompt: string, opts?: { scaffold?: boolean; images?: ImageAttachment[] }): Promise<void>
+  /** Saved team templates (templates:list); null until loaded. */
+  templates: OrgTemplateInfo[] | null
+  templatesError: string | null
+  loadTemplates(): Promise<void>
+  /** templates:saveFromProject; refreshes the list. Rejects with main's refusal. */
+  saveTemplate(input: OrgTemplateSaveInput): Promise<OrgTemplateInfo>
+  /** templates:remove; replaces the list with the remaining ones. */
+  removeTemplate(templateId: string): Promise<void>
+  /**
+   * templates:apply (mode 'replace'): replaces the store's project and records the project's chart notice with
+   * source 'template' (Undo restores previousRoles through undoImport). Rejects with main's refusal.
+   */
+  applyTemplate(projectId: string, template: Pick<OrgTemplateInfo, 'id' | 'name'>): Promise<void>
+
+  /** `team: 'single'` starts an Ask run (one assistant, conversation layout). */
+  startRun(prompt: string, opts?: { scaffold?: boolean; images?: ImageAttachment[]; team?: RunTeam }): Promise<void>
   /** Start an Architect session for the selected project. */
   startSetup(instruction?: string): Promise<void>
   /** Start the MCP assistant run (kind 'mcp-assist') for the selected project and show it. */
@@ -325,6 +457,8 @@ interface AppState {
 }
 
 let unsubscribeEvents: (() => void) | null = null
+/** Bumped by every setTabNotice call; only the newest call may show or clear the notice. */
+let tabNoticeSeq = 0
 /** Runs whose real summary is being fetched after an event created a placeholder. */
 const summaryLookups = new Set<string>()
 const saveTimers = new Map<string, ReturnType<typeof setTimeout>>()
@@ -344,6 +478,11 @@ function debouncedSave(project: Project): void {
 /** Open the Chat assistant on its start page (a new chat), whatever it showed before. */
 export async function openNewChat(): Promise<void> {
   await useAppStore.getState().openAssistant('quick', { fresh: true })
+}
+
+/** Show the Dashboard and open its New project form. */
+export function openNewProject(): void {
+  useAppStore.setState((s) => ({ view: 'projects', newProjectRequest: s.newProjectRequest + 1 }))
 }
 
 export const selectedProject =(s: AppState): Project | undefined =>
@@ -385,11 +524,26 @@ export function useProjectSummaries(): RunSummary[] {
 }
 
 /** State patch that shows a run in its project's workspace: leaves the New run page, un-hides the tab. */
-function showRunPatch(s: AppState, projectId: string, runId: string): Partial<AppState> {
+function showRunPatch(s: AppState, projectId: string, requestedId: string): Partial<AppState> {
+  // One conversation per chain: the tab always shows the chain's newest loaded member, and un-hides the whole chain.
+  const members = chainOf(summariesOf(s, projectId), requestedId)
+  const runId = [...members].reverse().find((m) => s.runs[m.id])?.id ?? requestedId
   const { [projectId]: _draft, ...draftPage } = s.draftPage
-  const { [runId]: _hidden, ...dismissedRuns } = s.dismissedRuns
-  const { [runId]: _read, ...unreadByRun } = s.unreadByRun
+  const dismissedRuns = { ...s.dismissedRuns }
+  const unreadByRun = { ...s.unreadByRun }
+  for (const id of [runId, requestedId, ...members.map((m) => m.id)]) {
+    delete dismissedRuns[id]
+    delete unreadByRun[id]
+  }
   return { activeRunByProject: { ...s.activeRunByProject, [projectId]: runId }, selectedAgentId: 'root', view: 'run', draftPage, dismissedRuns, unreadByRun }
+}
+
+/** Summaries of one project: its persisted history merged with the runs the renderer holds (fresher). */
+function summariesOf(s: AppState, projectId: string): RunSummary[] {
+  const byId = new Map<string, RunSummary>()
+  for (const h of s.historyByProject[projectId] ?? (s.selectedProjectId === projectId ? s.history : [])) byId.set(h.id, h)
+  for (const r of Object.values(s.runs)) if (r.summary.projectId === projectId && !isTeamSurfaceRun(r.summary)) byId.set(r.summary.id, r.summary)
+  return [...byId.values()]
 }
 
 /** A run record from the main process as renderer state. Pending cards are not in a record; events fill them. */
@@ -413,33 +567,178 @@ async function seedPendingCards(runId: string): Promise<void> {
 }
 
 function stateFromRecord(record: Omit<RunState, 'permissions' | 'proposals' | 'questions' | 'ruleRequests' | 'mergeReviews' | 'partial' | 'messages' | 'mcpInstalls' | 'mcpResolved'>): RunState {
-  return { ...record, permissions: [], proposals: [], questions: [], ruleRequests: [], mergeReviews: [], logs: record.logs, partial: {}, messages: [], mcpInstalls: [], mcpResolved: {} }
+  // What the run was doing when it was cut, read before the agents are settled (H4); then no ended run keeps a live label.
+  const ended = record.summary.status === 'finished' || record.summary.status === 'error'
+  const cut = ended ? cutWhile(record.agents) : undefined
+  const agents = settleEndedAgents(record.summary, record.agents)
+  return { ...record, agents, ...(cut ? { cutWhile: cut } : {}), permissions: [], proposals: [], questions: [], ruleRequests: [], mergeReviews: [], logs: record.logs, partial: {}, messages: [], mcpInstalls: [], mcpResolved: {} }
 }
 
-/** Runs of a project that have a tab (not hidden), oldest first. */
+/**
+ * Tabs of a project: one run per session chain (its newest loaded member), hidden chains left out, ordered by the
+ * chain's first member start (oldest first).
+ */
+function tabEntriesOf(s: AppState, projectId: string): { run: RunState; group: ChainGroup<RunSummary> }[] {
+  if (!Object.values(s.runs).some((r) => r.summary.projectId === projectId)) return []
+  const out: { run: RunState; group: ChainGroup<RunSummary> }[] = []
+  for (const g of chainGroups(summariesOf(s, projectId))) {
+    const run = [...g.members]
+      .reverse()
+      .map((m) => s.runs[m.id])
+      .find((r): r is RunState => !!r)
+    if (!run || isTeamSurfaceRun(run.summary)) continue
+    if (s.dismissedRuns[run.summary.id] && s.activeRunByProject[projectId] !== run.summary.id) continue
+    out.push({ run, group: g })
+  }
+  return out.sort((a, b) => a.group.first.startedAt - b.group.first.startedAt || a.group.first.id.localeCompare(b.group.first.id))
+}
+
 function tabRunsOf(s: AppState, projectId: string): RunState[] {
-  return runsOfProject(s, projectId)
-    .filter((r) => !s.dismissedRuns[r.summary.id] || s.activeRunByProject[projectId] === r.summary.id)
-    .sort((a, b) => a.summary.startedAt - b.summary.startedAt || a.summary.id.localeCompare(b.summary.id))
+  return tabEntriesOf(s, projectId).map((x) => x.run)
+}
+
+// ---------- Chain loading and open-tab restore (docs/design/ux-review-continue.md H1, M2) ----------
+
+/**
+ * The run.status event carries endedBy / endedWhile (statusEventEndFacts) but not every end fact (error text, a record
+ * from an older main process): the persisted rows do. A terminal run adopts them as a fallback; a live one never does. Returns a `runs` patch, or {} when nothing differs.
+ */
+function adoptRowsPatch(s: AppState, rows: readonly RunSummary[]): Partial<AppState> {
+  let runs: Record<string, RunState> | null = null as Record<string, RunState> | null
+  for (const row of rows) {
+    const run: RunState | undefined = (runs ?? s.runs)[row.id]
+    if (!run) continue
+    const next = adoptEndFacts(run.summary, row)
+    if (!next) continue
+    runs = { ...(runs ?? s.runs), [row.id]: { ...run, summary: next } }
+  }
+  return runs ? { runs } : {}
+}
+
+/** One delayed history reload per project after a run ends, so the end facts events do not carry arrive. */
+const endReloads = new Map<string, ReturnType<typeof setTimeout>>()
+function reloadHistoryAfterEnd(projectId: string): void {
+  if (!projectId || endReloads.has(projectId)) return
+  endReloads.set(
+    projectId,
+    setTimeout(() => {
+      endReloads.delete(projectId)
+      void window.orgai.runs
+        .list(projectId)
+        .then((rows) => {
+          const history = rows.filter((h) => !isTeamSurfaceRun(h))
+          useAppStore.setState((s) => ({
+            historyByProject: { ...s.historyByProject, [projectId]: history },
+            ...(s.selectedProjectId === projectId ? { history } : {}),
+            ...adoptRowsPatch(s, history)
+          }))
+        })
+        .catch(() => undefined)
+    }, 400)
+  )
+}
+
+const chainFetches = new Map<string, Promise<void>>()
+/** Latest openRun request per project (a stale, slower one gives way). */
+const openRunRequests = new Map<string, number>()
+
+/** Fetches one run record into the store unless it is loaded or already on its way. Events that created the run meanwhile win. */
+function fetchRun(id: string): Promise<void> {
+  if (useAppStore.getState().runs[id]) return Promise.resolve()
+  const pending = chainFetches.get(id)
+  if (pending) return pending
+  const p = window.orgai.runs
+    .get(id)
+    .then((record) => {
+      if (record) useAppStore.setState((s) => (s.runs[id] ? {} : { runs: { ...s.runs, [id]: stateFromRecord(record) } }))
+    })
+    .catch(() => undefined)
+    .finally(() => chainFetches.delete(id))
+  chainFetches.set(id, p)
+  return p
+}
+
+const restoredTabs = new Map<string, Promise<string | undefined>>()
+
+/**
+ * The first settle of a real project after launch: loads the newest member of each remembered chain so its tab is
+ * back. Resolves to the remembered viewed chain's newest member (the run to open when nothing needs you).
+ */
+function restoreOpenTabs(projectId: string): Promise<string | undefined> {
+  const known = restoredTabs.get(projectId)
+  if (known) return known
+  const p = (async () => {
+    if (isVirtualProjectId(projectId)) return undefined
+    const remembered = readOpenTabs(projectId)
+    const sums = summariesOf(useAppStore.getState(), projectId)
+    const newestOfKey = (key: string): string | undefined => chainOf(sums, key).at(-1)?.id
+    const ids = remembered.chains.map(newestOfKey).filter((id): id is string => !!id)
+    await runBatched(ids, CHAIN_FETCH_CONCURRENCY, fetchRun)
+    return remembered.viewed ? newestOfKey(remembered.viewed) : undefined
+  })()
+  restoredTabs.set(projectId, p)
+  return p
+}
+
+let tabsWatch: (() => void) | null = null
+/** Writes each restored project's tab set and viewed chain to localStorage whenever they change. */
+function watchOpenTabs(): void {
+  if (tabsWatch) return
+  const written = new Map<string, string>()
+  const signatures = new Map<string, string>()
+  tabsWatch = useAppStore.subscribe((s, prev) => {
+    const othersSame = s.history === prev.history && s.dismissedRuns === prev.dismissedRuns && s.activeRunByProject === prev.activeRunByProject && s.draftPage === prev.draftPage && s.historyByProject === prev.historyByProject
+    if (othersSame && (s.runs === prev.runs || sameRunSummaries(s.runs, prev.runs))) return
+    for (const [projectId, state] of restoreDone) {
+      if (!state || isVirtualProjectId(projectId)) continue
+      // Streamed events change `runs` constantly; rebuild the chains only when something that decides the tabs changed.
+      const sums = summariesOf(s, projectId)
+      const viewedId = s.draftPage[projectId] ? undefined : s.activeRunByProject[projectId]
+      const dismissed = sums.filter((r) => s.dismissedRuns[r.id]).map((r) => r.id)
+      const signature = tabsSignature(sums, dismissed, viewedId, !!s.draftPage[projectId])
+      if (signatures.get(projectId) === signature) continue
+      signatures.set(projectId, signature)
+      const entries = tabEntriesOf(s, projectId)
+      const chains = entries.map((x) => x.group.key)
+      const viewed = viewedId ? (entries.find((x) => x.group.members.some((m) => m.id === viewedId))?.group.key ?? viewedId) : undefined
+      const sig = JSON.stringify([chains, viewed])
+      if (written.get(projectId) === sig) continue
+      written.set(projectId, sig)
+      writeOpenTabs(projectId, { chains, ...(viewed ? { viewed } : {}) })
+    }
+  })
+}
+/** Projects whose remembered tabs are back: only then do we overwrite what was remembered. */
+const restoreDone = new Map<string, boolean>()
+function markTabsRestored(projectId: string): void {
+  if (isVirtualProjectId(projectId)) return
+  restoreDone.set(projectId, true)
+  watchOpenTabs()
 }
 
 /** Opens the project's newest run (or the New run page) when its workspace shows nothing yet. */
 async function settleWorkspace(projectId: string): Promise<void> {
   const { getState, setState } = useAppStore
   await getState().loadHistory()
-  const s = getState()
-  if (s.selectedProjectId !== projectId || s.draftPage[projectId]) return
-  const viewed = s.activeRunByProject[projectId]
-  if (viewed && s.runs[viewed]) {
-    if (!s.selectedAgentId) setState({ selectedAgentId: 'root' })
-    return
+  // The first settle after launch brings the remembered tabs back (M2); the remembered viewed chain is the fallback "last viewed".
+  const remembered = await restoreOpenTabs(projectId)
+  try {
+    const s = getState()
+    if (s.selectedProjectId !== projectId || s.draftPage[projectId]) return
+    const viewed = s.activeRunByProject[projectId]
+    if (viewed && s.runs[viewed]) {
+      if (!s.selectedAgentId) setState({ selectedAgentId: 'root' })
+      return
+    }
+    // An assistant opens a live run or its start page, never an ended run.
+    const target = isVirtualProjectId(projectId)
+      ? assistantRunToOpen(runsOfProject(s, projectId), viewed)
+      : defaultRunToOpen(runsOfProject(s, projectId), s.historyByProject[projectId] ?? [], viewed ?? remembered)
+    if (target) await getState().openRun(target)
+    else setState((cur) => (cur.draftPage[projectId] ? {} : { draftPage: { ...cur.draftPage, [projectId]: true as const } }))
+  } finally {
+    markTabsRestored(projectId)
   }
-  // An assistant opens a live run or its start page, never an ended run.
-  const target = isVirtualProjectId(projectId)
-    ? assistantRunToOpen(runsOfProject(s, projectId), viewed)
-    : defaultRunToOpen(runsOfProject(s, projectId), s.historyByProject[projectId] ?? [], viewed)
-  if (target) await getState().openRun(target)
-  else setState((cur) => (cur.draftPage[projectId] ? {} : { draftPage: { ...cur.draftPage, [projectId]: true as const } }))
 }
 
 /** Show a run that continues an earlier one (Continue, Resume now). */
@@ -449,7 +748,9 @@ function showContinuation(summary: RunSummary): void {
   setState((s) => ({
     // Events may have landed before the IPC call returned; keep them and take the real summary.
     runs: { ...s.runs, [summary.id]: { ...(s.runs[summary.id] ?? emptyRun(summary)), summary: { ...summary, ...s.runs[summary.id]?.summary, kind: summary.kind, prompt: summary.prompt, projectId: summary.projectId, resumedFrom: summary.resumedFrom } } },
-    ...showRunPatch(s, summary.projectId, summary.id)
+    ...showRunPatch(s, summary.projectId, summary.id),
+    // M3: focus stays in the composer after a send that switches run ids.
+    composerFocusToken: s.composerFocusToken + 1
   }))
   void getState().loadHistory()
 }
@@ -477,15 +778,35 @@ function putUsage(st: { usageByConnection: Partial<Record<ConnectionId, UsageSta
 }
 
 let defaultConnectionWatch: (() => void) | null = null
+let connectionsReloadTimer: ReturnType<typeof setTimeout> | null = null
+
+/** The effective default from a connections:list result (exactly one entry has isDefault; null when none does). */
+function effectiveDefaultOf(list: ConnectionInfo[] | null | undefined): ConnectionId | null {
+  return list?.find((c) => c.isDefault)?.connection.id ?? null
+}
+
+/**
+ * Re-read connections:list soon (coalesced): a status change or an edited record can move the effective default,
+ * and only main decides it.
+ */
+function scheduleConnectionsReload(): void {
+  if (connectionsReloadTimer) return
+  connectionsReloadTimer = setTimeout(() => {
+    connectionsReloadTimer = null
+    void useAppStore.getState().loadConnections()
+  }, 150)
+}
 
 export const useAppStore = create<AppState>((set, get) => ({
   projects: [],
   virtualProjects: {},
   assistantSeed: {},
   mcpFocus: null,
+  knowledgeFocus: null,
   projectSettingsPane: {},
   selectedProjectId: null,
   view: 'projects',
+  newProjectRequest: 0,
   saveStatus: { state: 'idle' },
   selectedRoleId: null,
   runs: {},
@@ -499,12 +820,36 @@ export const useAppStore = create<AppState>((set, get) => ({
   draftPage: {},
   composerDrafts: {},
   sideTabByRun: {},
+  knowledgeRecalledByRun: {},
+  runKnowledgeByChain: {},
   runLayoutByRun: {},
   tabNotice: null,
   unreadByRun: {},
   pendingDecisionFocus: null,
   pendingDecisionRequest: null,
   continueIntent: null,
+  chainFocusRun: null,
+  async loadChain(runId) {
+    const projectId = get().runs[runId]?.summary.projectId || get().selectedProjectId || ''
+    // Walk back along resumedFrom: each fetched record can name an earlier member the summaries did not know yet.
+    // Only the newest members load eagerly (M2); earlier ones wait for "Load earlier sessions". Fetches go out in small batches.
+    const tried = new Set<string>()
+    for (let hop = 0; hop < CHAIN_WALK_MAX_HOPS; hop++) {
+      const sums = summariesOf(get(), projectId)
+      const limit = get().chainLoadLimit[chainKeyOf(sums, runId)] ?? CHAIN_EAGER_MEMBERS
+      const ids = chainIdsToLoad(sums, runId, tried, limit)
+      if (ids.length === 0) break
+      for (const id of ids) tried.add(id)
+      await runBatched(ids, CHAIN_FETCH_CONCURRENCY, fetchRun)
+    }
+  },
+  chainLoadLimit: {},
+  async loadEarlierSessions(runId) {
+    const projectId = get().runs[runId]?.summary.projectId || get().selectedProjectId || ''
+    const key = chainKeyOf(summariesOf(get(), projectId), runId)
+    set((s) => ({ chainLoadLimit: { ...s.chainLoadLimit, [key]: (s.chainLoadLimit[key] ?? CHAIN_EAGER_MEMBERS) + CHAIN_EAGER_MEMBERS } }))
+    await get().loadChain(runId)
+  },
   historyByProject: {},
   usage: null,
   usageByConnection: {},
@@ -518,21 +863,73 @@ export const useAppStore = create<AppState>((set, get) => ({
   importRequest: null,
   importNotices: {},
   proposalNextByRun: {},
-
-  defaultConnection: null,
-  async loadDefaultConnection() {
+  proposalOutcomes: {},
+  rulesChangedByProject: {},
+  teamFilesByProject: {},
+  teamFilesFocus: null,
+  requestTeamFilesFocus(projectId) {
+    set((s) => ({ teamFilesFocus: { projectId, n: (s.teamFilesFocus?.n ?? 0) + 1 } }))
+  },
+  clearTeamFilesFocus() {
+    set({ teamFilesFocus: null })
+  },
+  setTeamFilesStatus(status) {
+    set((s) => ({ teamFilesByProject: { ...s.teamFilesByProject, [status.projectId]: status } }))
+  },
+  async loadTeamFilesAttention() {
     try {
-      const s = await window.orgai.settings.get()
-      set({ defaultConnection: s.defaultConnection ?? 'anthropic' })
-      if (!defaultConnectionWatch) defaultConnectionWatch = window.orgai.onSettingsChanged((n) => set({ defaultConnection: n.defaultConnection ?? 'anthropic' }))
+      const list = await window.orgai.teamFiles.listAttention()
+      set((s) => {
+        const next = { ...s.teamFilesByProject }
+        for (const st of list) next[st.projectId] = st
+        return { teamFilesByProject: next }
+      })
     } catch {
-      // Unknown: callers fall back to Anthropic wording.
+      /* optional: the Team tab loads its own status */
     }
   },
+  async refreshTeamFiles(projectId) {
+    try {
+      const status = await window.orgai.teamFiles.status({ projectId })
+      get().setTeamFilesStatus(status)
+      return status
+    } catch {
+      return null
+    }
+  },
+
+  defaultConnection: null,
+  defaultConnectionChosen: null,
+  defaultConnectionStored: null,
+  defaultConnectionChanges: 0,
+  async loadDefaultConnection() {
+    if (!defaultConnectionWatch) {
+      // Another window, the Connections pane or main's automatic rewrite changed the default: re-read the effective one.
+      defaultConnectionWatch = window.orgai.onSettingsChanged((n) => {
+        set({ defaultConnectionChosen: n.defaultConnectionChosen === true, defaultConnectionStored: n.defaultConnection ?? null })
+        scheduleConnectionsReload()
+      })
+    }
+    await Promise.all([
+      get().loadConnections(),
+      window.orgai.settings
+        .get()
+        .then((s) => set({ defaultConnectionChosen: s.defaultConnectionChosen === true, defaultConnectionStored: s.defaultConnection ?? null }))
+        .catch(() => undefined)
+    ])
+  },
   async setDefaultConnection(id) {
-    const { dataDir: _d, appVersion: _v, ...cur } = await window.orgai.settings.get()
-    const saved = await window.orgai.settings.set({ ...cur, defaultConnection: id })
-    set({ defaultConnection: saved.defaultConnection ?? id })
+    // connections:setDefault is the only way to change the default (settings:set keeps it); it rejects with a
+    // readable refusal ("OpenAI is not connected. ...") that callers show inline. null returns to automatic.
+    const connections = await window.orgai.connections.setDefault(id)
+    const effective = effectiveDefaultOf(connections)
+    set((s) => ({
+      connections,
+      defaultConnection: effective,
+      defaultConnectionChosen: id !== null,
+      defaultConnectionStored: id ?? effective ?? s.defaultConnectionStored,
+      defaultConnectionChanges: s.defaultConnectionChanges + 1
+    }))
   },
 
   async loadAppInfo() {
@@ -547,7 +944,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   async loadConnections() {
     try {
       const connections = await window.orgai.connections.list()
-      set({ connections, connectionsError: null })
+      set({ connections, connectionsError: null, defaultConnection: effectiveDefaultOf(connections) })
     } catch (e) {
       set({ connectionsError: (e as Error).message })
     }
@@ -566,8 +963,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((s) => {
       const list = s.connections ?? []
       const exists = list.some((c) => c.connection.id === info.connection.id)
-      return { connections: exists ? list.map((c) => (c.connection.id === info.connection.id ? info : c)) : [...list, info] }
+      // Keep the list's isDefault flags until the reload lands, so two cards never claim the default at once.
+      return { connections: exists ? list.map((c) => (c.connection.id === info.connection.id ? { ...info, isDefault: c.isDefault } : c)) : [...list, info] }
     })
+    // One edited record can carry a stale isDefault next to the others: re-read the whole list.
+    scheduleConnectionsReload()
   },
 
   pushRemapNotice(cause, results, before) {
@@ -673,6 +1073,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         const { [runId]: _gone, ...rest } = s.proposalNextByRun
         return { proposalNextByRun: rest }
       }
+      // Servers waiting on a secret are the more useful pointer: a plain "saved" note never replaces it.
+      if (next.kind === 'mcpProject' && s.proposalNextByRun[runId]?.kind === 'mcpSecrets') return {}
       return { proposalNextByRun: { ...s.proposalNextByRun, [runId]: next } }
     })
   },
@@ -684,6 +1086,20 @@ export const useAppStore = create<AppState>((set, get) => ({
   setSideTab(tab) {
     const runId = activeRun(get())?.summary.id
     if (runId) set((s) => ({ sideTabByRun: { ...s.sideTabByRun, [runId]: tab } }))
+  },
+
+  patchRunKnowledge(runId, patch) {
+    set((s) => {
+      const projectId = s.runs[runId]?.summary.projectId ?? ''
+      const key = chainKeyOf(summariesOf(s, projectId), runId)
+      const cur = s.runKnowledgeByChain[key] ?? EMPTY_RUN_KNOWLEDGE
+      return { runKnowledgeByChain: { ...s.runKnowledgeByChain, [key]: { ...cur, ...patch } } }
+    })
+  },
+
+  openRunKnowledge(runId, request) {
+    get().patchRunKnowledge(runId, request ? { request, query: '', openId: null, stack: [] } : {})
+    set((s) => ({ sideTabByRun: { ...s.sideTabByRun, [runId]: 'knowledge' } }))
   },
 
   setComposerDraft(key, draft) {
@@ -701,9 +1117,22 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ pendingDecisionFocus: null, pendingDecisionRequest: null })
   },
 
-  async continueFromHistory(runId) {
-    set({ continueIntent: runId })
+  async continueFromHistory(runId, projectId) {
+    // From the Dashboard no project is selected yet: select it and load the run first (H1).
+    if (projectId && get().selectedProjectId !== projectId) await get().focusRun(projectId, runId)
+    // Continue acts on the chain's newest member, which is the run the tab shows.
+    const s = get()
+    const newest = chainOf(summariesOf(s, s.selectedProjectId ?? ''), runId).at(-1)?.id ?? runId
+    set({ continueIntent: newest })
     await get().openRun(runId)
+    // L6: openRun can return early (a newer click, an unknown run); a stale intent must not fire on a later open.
+    const after = get()
+    const shown = after.selectedProjectId ? after.activeRunByProject[after.selectedProjectId] : undefined
+    const showsChain = !!shown && chainOf(summariesOf(after, after.selectedProjectId ?? ''), newest).some((m) => m.id === shown)
+    if (!showsChain) {
+      set((st) => (st.continueIntent === newest ? { continueIntent: null } : {}))
+      return
+    }
     get().focusComposer()
   },
 
@@ -771,10 +1200,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   async openProject(projectId) {
     if (get().selectedProjectId !== projectId) get().selectProject(projectId)
     await get().loadHistory()
+    const remembered = await restoreOpenTabs(projectId)
     const s = get()
-    const target = defaultRunToOpen(runsOfProject(s, projectId), s.historyByProject[projectId] ?? [], s.activeRunByProject[projectId])
+    const target = defaultRunToOpen(runsOfProject(s, projectId), s.historyByProject[projectId] ?? [], s.activeRunByProject[projectId] ?? remembered)
     if (target) await get().openRun(target)
     else get().openDraft()
+    markTabsRestored(projectId)
   },
 
   async jumpToDecision(projectId, runId, requestId) {
@@ -802,6 +1233,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     unsubscribeEvents = window.orgai.onRunEvent((e) => get().handleEvent(e))
     window.orgai.onFocusRun(({ projectId, runId }) => void get().focusRun(projectId, runId))
     window.orgai.onConnectionEvent((e) => get().handleConnectionEvent(e))
+    // Team files: the push keeps every known status fresh; listAttention seeds the ones that need the user.
+    window.orgai.onTeamFilesChanged?.((status) => get().setTeamFilesStatus(status))
+    void get().loadTeamFilesAttention()
     await get().loadProjects()
     void get().loadAllHistory()
     void get().loadConnections()
@@ -872,9 +1306,36 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ selectedAgentId: id })
   },
 
-  async createProject(input) {
-    const project = await window.orgai.projects.create(input)
-    set((s) => ({ projects: [project, ...s.projects], selectedProjectId: project.id, view: 'team' }))
+  async createProject(input, opts) {
+    const { client, referenceDirectories, ...createInput } = input
+    const project = await window.orgai.projects.create(createInput)
+    const land = (): void => set({ selectedProjectId: project.id, view: 'team' })
+    set((s) => ({ projects: [project, ...s.projects] }))
+    // client and reference folders are not part of ProjectCreateInput: one direct save right after create. A failure
+    // keeps the project in the list but does not land on it: the callback fires, the form shows the error
+    // and the caller selects the project itself when the user chooses to open it.
+    if (client || (referenceDirectories && referenceDirectories.length > 0)) {
+      try {
+        const saved = await get().saveProjectNow({
+          ...project,
+          ...(client ? { client } : {}),
+          ...(referenceDirectories && referenceDirectories.length > 0 ? { referenceDirectories } : {})
+        })
+        // Main drops folders inside, containing or equal to the project folder (and cleans the rest); say so rather than
+        // landing as if they were kept. The form keeps the user there with the note and an Open button.
+        const dropped = droppedExtrasMessage(referenceDirectories ?? [], saved, client)
+        if (dropped) {
+          opts?.onExtrasError?.(new Error(dropped))
+          return saved
+        }
+        land()
+        return saved
+      } catch (err) {
+        opts?.onExtrasError?.(err)
+        return project
+      }
+    }
+    land()
     return project
   },
 
@@ -898,13 +1359,82 @@ export const useAppStore = create<AppState>((set, get) => ({
     get().updateProject({ ...project, roles: mutate(project.roles) })
   },
 
+  forgetNotice: null,
+
+  setForgetNotice(notice) {
+    set({ forgetNotice: notice })
+  },
+
+  templates: null,
+  templatesError: null,
+
+  async loadTemplates() {
+    try {
+      const templates = await window.orgai.templates.list()
+      set({ templates, templatesError: null })
+    } catch (e) {
+      set({ templatesError: cleanIpcError(e) })
+    }
+  },
+
+  async saveTemplate(input) {
+    const saved = await window.orgai.templates.saveFromProject(input)
+    await get().loadTemplates()
+    return saved
+  },
+
+  async removeTemplate(templateId) {
+    const templates = await window.orgai.templates.remove(templateId)
+    set({ templates, templatesError: null })
+  },
+
+  async applyTemplate(projectId, template) {
+    const result = await window.orgai.templates.apply({ projectId, templateId: template.id, mode: 'replace' })
+    get().replaceProject(result.project)
+    // The newer notice replaces an import notice: one Undo per chart.
+    get().recordImport(projectId, {
+      source: 'template',
+      count: result.project.roles.length,
+      summary: `Team replaced with ${template.name}.`,
+      previousRoles: result.previousRoles,
+      importedRoles: result.project.roles
+    })
+  },
+
   async removeProject(id) {
-    await window.orgai.projects.remove(id)
-    set((s) => ({
-      projects: s.projects.filter((p) => p.id !== id),
-      selectedProjectId: s.selectedProjectId === id ? null : s.selectedProjectId,
-      view: s.selectedProjectId === id ? 'projects' : s.view
-    }))
+    const result = await window.orgai.projects.remove(id)
+    clearKnowledgePrefs(id)
+    set((s) => {
+      // H2: the project's runs go with it, so the Dashboard (attention column, hero, tiles, Cost card) stops counting them.
+      const gone = new Set<string>()
+      for (const r of Object.values(s.runs)) if (r.summary.projectId === id) gone.add(r.summary.id)
+      for (const h of s.historyByProject[id] ?? []) gone.add(h.id)
+      const { [id]: _hist, ...historyByProject } = s.historyByProject
+      const { [id]: _active, ...activeRunByProject } = s.activeRunByProject
+      const { [id]: _draft, ...draftPage } = s.draftPage
+      const runs = Object.fromEntries(Object.entries(s.runs).filter(([runId]) => !gone.has(runId)))
+      const dismissedRuns = Object.fromEntries(Object.entries(s.dismissedRuns).filter(([runId]) => !gone.has(runId))) as Record<string, true>
+      const knowledgeRecalledByRun = Object.fromEntries(Object.entries(s.knowledgeRecalledByRun).filter(([runId]) => !gone.has(runId)))
+      const sideTabByRun = Object.fromEntries(Object.entries(s.sideTabByRun).filter(([runId]) => !gone.has(runId)))
+      // Keyed by the chain's oldest member, a run id of the project.
+      const runKnowledgeByChain = Object.fromEntries(Object.entries(s.runKnowledgeByChain).filter(([chain]) => !gone.has(chain)))
+      const wasSelected = s.selectedProjectId === id
+      return {
+        projects: s.projects.filter((p) => p.id !== id),
+        selectedProjectId: wasSelected ? null : s.selectedProjectId,
+        view: wasSelected ? 'projects' : s.view,
+        historyByProject,
+        activeRunByProject,
+        draftPage,
+        runs,
+        dismissedRuns,
+        knowledgeRecalledByRun,
+        sideTabByRun,
+        runKnowledgeByChain,
+        ...(wasSelected ? { history: [] } : {})
+      }
+    })
+    return result
   },
 
   history: [],
@@ -917,25 +1447,32 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
     const history = (await window.orgai.runs.list(project.id)).filter((h) => !isTeamSurfaceRun(h))
     // The selection may have moved while the list was loading.
-    set((s) => ({ historyByProject: { ...s.historyByProject, [project.id]: history }, ...(s.selectedProjectId === project.id ? { history } : {}) }))
+    set((s) => ({
+      historyByProject: { ...s.historyByProject, [project.id]: history },
+      ...(s.selectedProjectId === project.id ? { history } : {}),
+      ...adoptRowsPatch(s, history)
+    }))
   },
 
   async loadAllHistory() {
     const ids = [...get().projects.map((p) => p.id), ...VIRTUAL_PROJECT_IDS]
     const entries = await Promise.all(ids.map(async (id) => [id, (await window.orgai.runs.list(id).catch(() => [] as RunSummary[])).filter((h) => !isTeamSurfaceRun(h))] as const))
-    set((s) => ({ historyByProject: { ...s.historyByProject, ...Object.fromEntries(entries) } }))
+    set((s) => ({ historyByProject: { ...s.historyByProject, ...Object.fromEntries(entries) }, ...adoptRowsPatch(s, entries.flatMap(([, rows]) => rows)) }))
   },
 
   async openRun(runId) {
     const project = selectedProject(get())
     if (!project) return
-    const live = get().runs[runId]
-    if (!live) {
-      const record = await window.orgai.runs.get(runId)
-      if (!record) return
-      set((s) => ({ runs: { ...s.runs, [runId]: stateFromRecord(record) } }))
-    }
-    set((s) => showRunPatch(s, project.id, runId))
+    // A slower, older request must not override a newer click in the same project.
+    const request = (openRunRequests.get(project.id) ?? 0) + 1
+    openRunRequests.set(project.id, request)
+    // One conversation per chain: load every member (the feed is complete on first paint), then show the newest.
+    await get().loadChain(runId)
+    if (openRunRequests.get(project.id) !== request) return
+    if (!get().runs[runId]) return
+    const members = chainOf(summariesOf(get(), project.id), runId)
+    const newestId = [...members].reverse().find((m) => get().runs[m.id])?.id ?? runId
+    set((s) => ({ ...showRunPatch(s, project.id, newestId), chainFocusRun: newestId === runId ? null : runId }))
   },
 
   async loadLiveRuns() {
@@ -955,19 +1492,37 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   setTabNotice(message) {
-    set({ tabNotice: message })
-    setTimeout(() => set((s) => (s.tabNotice === message ? { tabNotice: null } : {})), 4000)
+    // Each call owns the notice until a newer one: an older timer never clears it, and a repeat of the same text is
+    // cleared first and set again on the next tick so the always-mounted status region reads it again.
+    const seq = ++tabNoticeSeq
+    const show = (): void => {
+      if (seq !== tabNoticeSeq) return
+      set({ tabNotice: message })
+      setTimeout(() => {
+        if (seq === tabNoticeSeq) set((s) => (s.tabNotice === message ? { tabNotice: null } : {}))
+      }, 4000)
+    }
+    if (get().tabNotice === message) {
+      set({ tabNotice: null })
+      setTimeout(show, 60)
+    } else show()
   },
 
   async startRun(prompt, opts) {
     const project = selectedProject(get())
     // Assistants never start work runs through here (Chat has startQuick, the others their own start calls).
     if (!project || isVirtualProjectId(project.id)) return
-    const summary = await window.orgai.runs.start({ projectId: project.id, prompt, scaffold: opts?.scaffold, images: opts?.images })
+    const summary = await window.orgai.runs.start({
+      projectId: project.id,
+      prompt,
+      scaffold: opts?.scaffold,
+      images: opts?.images,
+      ...(opts?.team === 'single' ? { team: 'single' as const } : {})
+    })
     get().handleEvent({ type: 'run.status', runId: summary.id, status: summary.status })
     set((s) => ({
       // Events may have landed before the IPC call returned; keep them and take the real summary.
-      runs: { ...s.runs, [summary.id]: { ...(s.runs[summary.id] ?? emptyRun(summary)), summary: { ...summary, ...s.runs[summary.id]?.summary, kind: summary.kind, prompt: summary.prompt, projectId: summary.projectId } } },
+      runs: { ...s.runs, [summary.id]: { ...(s.runs[summary.id] ?? emptyRun(summary)), summary: { ...summary, ...s.runs[summary.id]?.summary, kind: summary.kind, prompt: summary.prompt, projectId: summary.projectId, team: summary.team } } },
       ...showRunPatch(s, project.id, summary.id)
     }))
   },
@@ -975,7 +1530,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   async startSetup(instruction) {
     const project = selectedProject(get())
     if (!project) return
-    const summary = await window.orgai.setup.start({ projectId: project.id, instruction })
+    // An engagement has no repository to scan, so the visible prompt and the run title read as a request to begin.
+    const text = instruction ?? (projectKindOf(project) === 'engagement' ? 'Set up this project with me.' : undefined)
+    const summary = await window.orgai.setup.start({ projectId: project.id, instruction: text })
     set((s) => ({
       runs: { ...s.runs, [summary.id]: { ...(s.runs[summary.id] ?? emptyRun(summary)), summary: { ...summary, ...s.runs[summary.id]?.summary, kind: summary.kind, prompt: summary.prompt, projectId: summary.projectId } } },
       ...showRunPatch(s, project.id, summary.id)
@@ -999,6 +1556,15 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   clearMcpFocus() {
     set({ mcpFocus: null })
+  },
+
+  openKnowledgeItem(req) {
+    if (get().selectedProjectId !== req.projectId) get().selectProject(req.projectId)
+    set({ view: 'knowledge', knowledgeFocus: req })
+  },
+
+  clearKnowledgeFocus() {
+    set({ knowledgeFocus: null })
   },
 
   async startLibraryAssist(instruction, allowBuild) {
@@ -1094,7 +1660,12 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   async stopRun() {
     const run = activeRun(get())
-    if (run) await window.orgai.runs.stop(run.summary.id)
+    try {
+      if (run) await window.orgai.runs.stop(run.summary.id)
+    } finally {
+      // M3: End session must not strand focus; the composer takes it back, also when the stop call fails.
+      get().focusComposer()
+    }
   },
 
   async decide(requestId, decision) {
@@ -1128,6 +1699,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         set((s) => ({
           connections: s.connections?.map((c) => (c.connection.id === e.connection ? { ...c, status: e.status } : c)) ?? s.connections
         }))
+        // A connect or disconnect can move the effective default (main decides it).
+        scheduleConnectionsReload()
         return
       case 'connection.login':
         set({ login: e.login })
@@ -1164,18 +1737,40 @@ export const useAppStore = create<AppState>((set, get) => ({
           .catch(() => undefined)
         return
       }
+      case 'mcp.authorize':
+        // Only the CLI asks for it (announceUrl); the app opens the browser itself.
+        return
     }
   },
 
   handleEvent(e) {
+    const rulesProject = rulesChangedProject(e, (runId) => get().runs[runId]?.summary.projectId)
+    if (rulesProject) set((s) => ({ rulesChangedByProject: { ...s.rulesChangedByProject, [rulesProject]: (s.rulesChangedByProject[rulesProject] ?? 0) + 1 } }))
     if (e.type === 'project.updated') {
       set((s) => ({ projects: s.projects.map((p) => (p.id === e.project.id ? e.project : p)) }))
+      return
+    }
+    // What agents looked up or were given: ids and time only, kept per run for the Knowledge side tab.
+    if (e.type === 'knowledge.recalled') {
+      const ev = cleanRecalledEvent(e)
+      if (ev) set((s) => ({ knowledgeRecalledByRun: { ...s.knowledgeRecalledByRun, [e.runId]: addRecalled(s.knowledgeRecalledByRun[e.runId], ev) } }))
       return
     }
     // Plan usage is account-wide: keep the latest, whichever run reported it.
     if (e.type === 'usage.status') {
       set((st) => putUsage(st, e.usage))
       return
+    }
+    // Keep the outcome. A cancelled resolution (run ended) is not the user's choice: it sets no notice and clears none.
+    if (e.type === 'proposal.resolved') {
+      set((s) => {
+        const proposal = s.runs[e.runId]?.proposals.find((p) => p.id === e.proposalId)
+        const out: Partial<AppState> = { proposalOutcomes: { ...s.proposalOutcomes, [e.proposalId]: e.decision } }
+        const home = s.runs[e.runId]?.summary.projectId
+        const next = !e.cancelled && proposal && home ? secretsNextFor(proposal, e.decision, home) : null
+        if (next) out.proposalNextByRun = { ...s.proposalNextByRun, [e.runId]: next }
+        return out
+      })
     }
     // A note from another run: the transcript already carries it (a persisted system row); here it only marks the tab unread.
     if (e.type === 'run.message') {
@@ -1238,7 +1833,9 @@ export const useAppStore = create<AppState>((set, get) => ({
             endedAt: e.status === 'finished' || e.status === 'error' || e.status === 'paused' ? Date.now() : run.summary.endedAt,
             pausedUntil: e.pausedUntil ?? run.summary.pausedUntil,
             pauseReason: e.pauseReason ?? run.summary.pauseReason,
-            autoResume: e.autoResume ?? run.summary.autoResume
+            autoResume: e.autoResume ?? run.summary.autoResume,
+            // How it ended, right away (the status word after End session); adoptEndFacts stays the fallback for older events.
+            ...statusEventEndFacts(e)
           }
           // A run that ended or paused has no open decisions: main cancels them, and no card keeps live-looking buttons (H4).
           if (e.status === 'finished' || e.status === 'error' || e.status === 'paused') {
@@ -1251,7 +1848,10 @@ export const useAppStore = create<AppState>((set, get) => ({
             run.mcpResolved = {}
             run.partial = {}
           }
+          // H4: an ended run's agents never keep Thinking / Waiting for you (the same object comes back when main already settled them).
+          if (e.status === 'finished' || e.status === 'error') run.agents = settleEndedAgents(run.summary, run.agents)
           if (e.status === 'finished' || e.status === 'error' || e.status === 'running' || e.status === 'paused') void get().loadHistory()
+          if (e.status === 'finished' || e.status === 'error' || e.status === 'paused') reloadHistoryAfterEnd(run.summary.projectId)
           break
         case 'agent.upsert':
           run.agents = { ...run.agents, [e.agent.id]: e.agent }
@@ -1365,8 +1965,14 @@ export const useAppStore = create<AppState>((set, get) => ({
       const run = s.runs[runId]
       if (!run || isRunLive(run)) return {}
       const projectId = run.summary.projectId
+      // Hiding a tab hides its whole chain.
       const dismissedRuns = { ...s.dismissedRuns, [runId]: true as const }
-      const { [runId]: _unread, ...unreadByRun } = s.unreadByRun
+      const unreadByRun = { ...s.unreadByRun }
+      for (const m of chainOf(summariesOf(s, projectId), runId)) {
+        dismissedRuns[m.id] = true
+        delete unreadByRun[m.id]
+      }
+      delete unreadByRun[runId]
       const tabNotice = HIDDEN_NOTICE
       if (s.activeRunByProject[projectId] !== runId) return { dismissedRuns, unreadByRun, tabNotice }
       // Hiding the viewed tab moves to its right neighbour, else the left one; with no tab left, the New run page.
@@ -1391,6 +1997,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       await get().loadVirtualProject(projectId)
     } else if (!get().projects.some((p) => p.id === projectId)) return
     if (get().selectedProjectId !== projectId) get().selectProject(projectId)
+    // L7: the chain key comes from the project's summaries; with History in first the view mounts once under its final key.
+    if (get().historyByProject[projectId] === undefined) await get().loadHistory().catch(() => undefined)
     if (!get().runs[runId]) {
       const record = await window.orgai.runs.get(runId).catch(() => null)
       if (record) set((st) => (st.runs[runId] ? {} : { runs: { ...st.runs, [runId]: stateFromRecord(record) } }))
@@ -1421,7 +2029,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         const agents = Object.keys(run.agents).length ? run.agents : record.agents
         // A paused run the user is looking at was resumed automatically: follow it to its continuation.
         const viewed = s.activeRunByProject[projectId]
-        const follow = !!resumedFrom && viewed === resumedFrom && s.runs[resumedFrom]?.summary.pausedUntil !== undefined
+        // A newer member of the viewed chain (auto-resume, a continue from another window) takes the tab: the tab shows the chain's newest member.
+        const follow = !!resumedFrom && viewed === resumedFrom
         return {
           runs: { ...s.runs, [runId]: { ...run, summary, agents } },
           ...(follow ? { activeRunByProject: { ...s.activeRunByProject, [projectId]: runId }, selectedAgentId: 'root' } : {})
@@ -1490,5 +2099,41 @@ export function useRunIndexes(): Map<string, number> {
 /** Runs across all projects that wait for the user. Returns a fresh array: use with `useShallow`. */
 export const waitingRuns = (s: AppState): RunState[] => Object.values(s.runs).filter((r) => r.summary.projectId && needsYou(r))
 
+/**
+ * The loaded members of `runId`'s session chain, oldest first (the run itself included). Members whose records are
+ * not loaded yet are missing until `loadChain` fetches them. Chains come from the selected project's summaries.
+ */
+export function useChainRuns(runId: string | undefined): RunState[] {
+  const summaries = useProjectSummaries()
+  const runs = useAppStore((s) => s.runs)
+  return useMemo(() => {
+    if (!runId) return []
+    const members = chainOf(summaries, runId)
+    const list = (members.length ? members.map((m) => m.id) : [runId]).map((id) => runs[id]).filter((r): r is RunState => !!r)
+    return list
+  }, [summaries, runs, runId])
+}
+
 /** Runs of the selected project that have a tab (not hidden), oldest first. Fresh array: use with `useShallow`. */
 export const projectTabRuns = (s: AppState): RunState[] => (s.selectedProjectId ? tabRunsOf(s, s.selectedProjectId) : [])
+
+/**
+ * activeRunByProject follows a chain to its newest loaded member: when a newer member enters `runs` (an earlier
+ * member was viewed), the pointer moves to it, so no consumer sees a stale older member.
+ */
+let knownRunCount = 0
+useAppStore.subscribe((s, prev) => {
+  if (s.runs === prev.runs) return
+  const count = Object.keys(s.runs).length
+  if (count === knownRunCount) return
+  knownRunCount = count
+  let next: Record<string, string> | null = null
+  for (const [projectId, viewed] of Object.entries(s.activeRunByProject)) {
+    if (!s.runs[viewed]) continue
+    const newest = chainOf(summariesOf(s, projectId), viewed)
+      .reverse()
+      .find((m) => s.runs[m.id])
+    if (newest && newest.id !== viewed && newest.startedAt > s.runs[viewed].summary.startedAt) next = { ...(next ?? s.activeRunByProject), [projectId]: newest.id }
+  }
+  if (next) useAppStore.setState({ activeRunByProject: next })
+})

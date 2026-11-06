@@ -11,8 +11,8 @@ import type {
   ProviderAuth,
   ProviderConnections
 } from '@shared/types'
-import { CANVAS_EDGE_STYLES, CANVAS_PATTERNS, CONNECTION_IDS, THEME_MODES, isModelTier, isPermissionMode } from '@shared/types'
-import { DEFAULT_APPEARANCE, DEFAULT_APP_SETTINGS, MAX_AUTO_CONTINUES_LIMIT, MODEL_PRICE_ID_MAX_CHARS, MODEL_PRICE_OVERRIDES_MAX, defaultConnections } from '@shared/defaults'
+import { CANVAS_EDGE_STYLES, CANVAS_LAYOUTS, CANVAS_NODE_STYLES, CANVAS_PATTERNS, CONNECTION_IDS, THEME_MODES, isModelTier, isPermissionMode } from '@shared/types'
+import { DEFAULT_APPEARANCE, DEFAULT_APP_SETTINGS, MAX_AUTO_CONTINUES_LIMIT, MODEL_PRICE_ID_MAX_CHARS, MODEL_PRICE_OVERRIDES_MAX, defaultConnections, isConnectionId } from '@shared/defaults'
 import { normalizeModelId, sanitizeModelPrice } from '../runtime/pricing'
 import { validModelId } from '../connections/codexAccount'
 
@@ -41,6 +41,8 @@ export function normalizeAppearance(raw: unknown): AppearanceSettings {
       pattern: oneOf(CANVAS_PATTERNS, c.pattern, d.canvas.pattern),
       tint: typeof c.tint === 'boolean' ? c.tint : d.canvas.tint,
       edges: oneOf(CANVAS_EDGE_STYLES, c.edges, d.canvas.edges),
+      layout: oneOf(CANVAS_LAYOUTS, c.layout, d.canvas.layout),
+      nodeStyle: oneOf(CANVAS_NODE_STYLES, c.nodeStyle, d.canvas.nodeStyle),
       minimap: typeof c.minimap === 'boolean' ? c.minimap : d.canvas.minimap
     },
     reduceMotion: oneOf(['system', 'on'] as const, r.reduceMotion, d.reduceMotion)
@@ -212,13 +214,21 @@ export function normalizeSettings(raw: Partial<AppSettings> | null | undefined):
       : typeof r.defaultPreferSonnetNearLimit === 'boolean'
         ? r.defaultPreferSonnetNearLimit
         : d.defaultPreferEverydayNearLimit
+  const defaultConnection: ConnectionId = isConnectionId(r.defaultConnection) ? r.defaultConnection : d.defaultConnection
+  // Explicit booleans are kept. A file saved before the field existed: a default other than anthropic was the user's
+  // pick (the old code never changed it on its own), anthropic is automatic. Automatic writes always store false.
+  const defaultConnectionChosen = typeof r.defaultConnectionChosen === 'boolean' ? r.defaultConnectionChosen : defaultConnection !== 'anthropic'
+  const replaced =
+    !defaultConnectionChosen && isConnectionId(r.defaultConnectionReplaced) && r.defaultConnectionReplaced !== defaultConnection
+      ? r.defaultConnectionReplaced
+      : undefined
   return {
     defaultPermissionMode: isPermissionMode(r.defaultPermissionMode) ? r.defaultPermissionMode : d.defaultPermissionMode,
     defaultMaxBudgetUsd: typeof budget === 'number' && Number.isFinite(budget) && budget > 0 ? budget : d.defaultMaxBudgetUsd,
     defaultKeepRuns: Number.isFinite(keep) && keep >= 1 ? Math.floor(keep) : d.defaultKeepRuns,
     defaultIsolateWriters: typeof r.defaultIsolateWriters === 'boolean' ? r.defaultIsolateWriters : d.defaultIsolateWriters,
-    defaultRootModel: migrateModelDefault(str(r.defaultRootModel, d.defaultRootModel), 'root'),
-    defaultReportModel: migrateModelDefault(str(r.defaultReportModel, d.defaultReportModel), 'report'),
+    defaultRootModel: migrateModelDefault(modelRef(r.defaultRootModel, d.defaultRootModel), 'root'),
+    defaultReportModel: migrateModelDefault(modelRef(r.defaultReportModel, d.defaultReportModel), 'report'),
     setupModel: migrateModelDefault(modelRef(r.setupModel, d.setupModel), 'builtin'),
     mcpAssistModel: migrateModelDefault(modelRef(r.mcpAssistModel, d.mcpAssistModel), 'builtin'),
     skillAssistModel: migrateModelDefault(modelRef(r.skillAssistModel, d.skillAssistModel ?? 'deep'), 'builtin'),
@@ -226,7 +236,9 @@ export function normalizeSettings(raw: Partial<AppSettings> | null | undefined):
     // The connection is authoritative; the legacy field mirrors it (see reconcileAnthropicAuth).
     providerAuth: { ...connections.anthropic.auth },
     connections,
-    defaultConnection: (CONNECTION_IDS as readonly unknown[]).includes(r.defaultConnection) ? (r.defaultConnection as ConnectionId) : d.defaultConnection,
+    defaultConnection,
+    defaultConnectionChosen,
+    ...(replaced !== undefined ? { defaultConnectionReplaced: replaced } : {}),
     notifications: typeof r.notifications === 'boolean' ? r.notifications : d.notifications,
     appearance: normalizeAppearance(r.appearance),
     modelPrices: normalizeModelPrices(r.modelPrices),
@@ -239,8 +251,25 @@ export function normalizeSettings(raw: Partial<AppSettings> | null | undefined):
     defaultMaxAutoContinues:
       r.defaultMaxAutoContinues != null && Number.isFinite(maxContinues) && maxContinues >= 0
         ? Math.min(MAX_AUTO_CONTINUES_LIMIT, Math.floor(maxContinues))
-        : d.defaultMaxAutoContinues
+        : d.defaultMaxAutoContinues,
+    // Only an explicit boolean true opens the terminal server.
+    terminalServer: r.terminalServer === true,
+    ...(r.terminalServerChosen === true ? { terminalServerChosen: true } : {}),
+    // Missing (or anything but 'full') is 'operate': read and operate only.
+    ...(r.terminalAccessLevel === 'full' ? { terminalAccessLevel: 'full' as const } : {})
   }
+}
+
+/**
+ * Settings read from disk: Terminal access saved on without terminalServerChosen was turned on by an older build's
+ * headless or in-process boot, never by the user (every settings:set that changes terminalServer sets
+ * terminalServerChosen, args.ts settingsSetArgs). It is read as off; such a boot now opens it for its own session only
+ * (bootstrap.ts terminalAccess). Pure; exported for tests.
+ */
+export function withoutUnchosenTerminalAccess(s: AppSettings): AppSettings {
+  if (s.terminalServer !== true || s.terminalServerChosen === true) return s
+  console.info('Terminal access was saved on by a headless start, not by a choice in App settings; it is off until turned on there.')
+  return { ...s, terminalServer: false }
 }
 
 /** Global app settings, stored as settings.json next to projects.json. */
@@ -260,7 +289,7 @@ export class SettingsStore {
     try {
       if (existsSync(this.file)) {
         const parsed = JSON.parse(readFileSync(this.file, 'utf8')) as { settings?: Partial<AppSettings> }
-        this.settings = normalizeSettings(parsed.settings)
+        this.settings = withoutUnchosenTerminalAccess(normalizeSettings(parsed.settings))
       }
     } catch (e) {
       console.error('Failed to read settings.json, using defaults:', e)

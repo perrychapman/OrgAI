@@ -9,6 +9,7 @@ import { ProjectStore } from '../store/projects'
 import { SecretStore } from '../store/secrets'
 import { SettingsStore } from '../store/settings'
 import { ConnectionService, type ConnectionServiceDeps } from './service'
+import { SPEND_PERIOD_NOTES, keyHash } from './litellm'
 import { asCodexServer, fakeRpc, type FakeRpc } from './testHelpers'
 
 const KEY = 'sk-super-secret-key'
@@ -464,7 +465,11 @@ describe('openai ChatGPT login', () => {
 })
 
 describe('LiteLLM spend and pricing', () => {
-  const pricedFetch = (keyInfo: () => Response) =>
+  /** Wednesday 2026-11-04 15:00 UTC; the daily fixture has rows 10-31..11-05 (see litellm-daily-activity.json). */
+  const SPEND_NOW = Date.parse('2026-11-04T15:00:00Z')
+  /** The fixture is keyed by the hash of 'sk-secret'; the service's key is KEY, so its breakdown entries are rekeyed (the cross-check would count 0 otherwise). */
+  const dailyFixture = (): unknown => JSON.parse(readFileSync(join(__dirname, 'fixtures', 'litellm-daily-activity.json'), 'utf8').replaceAll(keyHash('sk-secret'), keyHash(KEY)))
+  const pricedFetch = (keyInfo: () => Response, daily: () => Response = () => json(dailyFixture())) =>
     (async (url: string | URL | Request) => {
       const u = String(url)
       if (u.endsWith('/v1/models')) return json({ data: [{ id: 'claude-sonnet-4-5' }, { id: 'gpt-5' }] })
@@ -476,12 +481,13 @@ describe('LiteLLM spend and pricing', () => {
           ]
         })
       if (u.endsWith('/key/info')) return keyInfo()
+      if (u.includes('/user/daily/activity/aggregated?')) return daily()
       return json({}, 404)
     }) as unknown as typeof fetch
 
-  it('probeLiteLLMUsage is gated on enabled, base URL and key, and maps /key/info', async () => {
-    const fetchImpl = vi.fn(pricedFetch(() => json({ key: 'hashed', info: { spend: 1.25, max_budget: 10, budget_duration: '30d', budget_reset_at: '2026-11-01T00:00:00Z', key_alias: 'team-a' } })))
-    const ctx = setup({ fetch: fetchImpl })
+  it('probeLiteLLMUsage is gated on enabled, base URL and key, and maps /key/info plus the daily periods', async () => {
+    const fetchImpl = vi.fn(pricedFetch(() => json({ key: 'hashed', info: { spend: 1.25, max_budget: 10, budget_duration: '30d', budget_reset_at: '2026-11-01T00:00:00Z', key_alias: 'team-a', total_spend: 42 } })))
+    const ctx = setup({ fetch: fetchImpl, now: () => SPEND_NOW })
     expect(await ctx.service.probeLiteLLMUsage()).toBeNull() // nothing configured
     await configureLiteLLM(ctx)
     expect(await ctx.service.probeLiteLLMUsage()).toBeNull() // not enabled
@@ -501,13 +507,40 @@ describe('LiteLLM spend and pricing', () => {
       subscriptionType: null,
       available: true,
       windows: {},
-      spend: { usd: 1.25, budgetUsd: 10, resetsAt: Date.parse('2026-11-01T00:00:00Z'), budgetDuration: '30d', keyAlias: 'team-a' },
-      updatedAt: 1000
+      spend: {
+        usd: 1.25,
+        budgetUsd: 10,
+        resetsAt: Date.parse('2026-11-01T00:00:00Z'),
+        budgetDuration: '30d',
+        keyAlias: 'team-a',
+        totalUsd: 42,
+        // UTC calendar periods of updatedAt: 11-04 / 11-02..11-04 / 11-01..11-04 (10-31 and the future 11-05 excluded).
+        periods: { day: { usd: 0.5, since: Date.UTC(2026, 10, 4) }, week: { usd: 6.75, since: Date.UTC(2026, 10, 2) }, month: { usd: 8.25, since: Date.UTC(2026, 10, 1) } }
+      },
+      updatedAt: SPEND_NOW
     })
     expect(JSON.stringify(usage)).not.toContain(KEY)
+    expect(JSON.stringify(usage)).not.toContain(keyHash(KEY)) // the hash is a LiteLLM credential too
     expect(structuredClone(usage)).toEqual(usage)
     const call = fetchImpl.mock.calls.find(([u]) => String(u).endsWith('/key/info'))!
     expect(String(call[0])).toBe('http://localhost:4000/key/info') // no key in the URL
+    const daily = fetchImpl.mock.calls.map(([u]) => String(u)).filter((u) => u.includes('/user/daily/activity'))
+    expect(daily.length).toBeGreaterThan(0)
+    expect(daily[0]).toBe(`http://localhost:4000/user/daily/activity/aggregated?start_date=2026-11-01&end_date=2026-11-04&api_key=${keyHash(KEY)}`)
+    for (const [u] of fetchImpl.mock.calls) expect(String(u)).not.toContain(KEY) // only the hash travels in a URL
+  })
+
+  it('probeLiteLLMUsage keeps the /key/info spend with a note when the daily route refuses (403)', async () => {
+    const fetchImpl = vi.fn(pricedFetch(() => json({ info: { spend: 2 } }), () => json({ detail: 'User not found' }, 403)))
+    const ctx = setup({ fetch: fetchImpl, now: () => SPEND_NOW })
+    await configureLiteLLM(ctx)
+    await ctx.service.connect('litellm')
+    ctx.projects.save(litellmProject([['claude-sonnet-4-5', 'everyday']]))
+    const usage = await ctx.service.probeLiteLLMUsage()
+    expect(usage?.spend).toEqual({ usd: 2, budgetUsd: null, resetsAt: null, budgetDuration: null, keyAlias: null, totalUsd: null, periodsNote: SPEND_PERIOD_NOTES.noUser })
+    expect(usage?.updatedAt).toBe(SPEND_NOW)
+    expect(structuredClone(usage)).toEqual(usage)
+    for (const [u] of fetchImpl.mock.calls) expect(String(u)).not.toContain(KEY)
   })
 
   it('probeLiteLLMUsage returns null on 500 (no DB), 403, junk and network errors', async () => {

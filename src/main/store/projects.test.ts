@@ -1,10 +1,12 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join, posix, sep, win32 } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { McpServerSpec, PluginSpec, Project, Role, SkillSpec } from '@shared/types'
+import { PROJECT_CLIENT_MAX_CHARS, PROJECT_ALLOWED_DIRECTORIES_MAX, PROJECT_ALLOWED_DIRECTORY_MAX_CHARS, PROJECT_REFERENCE_DIRECTORIES_MAX, PROJECT_REFERENCE_DIRECTORY_MAX_CHARS } from '@shared/types'
+import { projectKindOf } from '@shared/defaults'
 import { project, role } from '../runtime/testHelpers'
-import { ProjectStore, acceptableRoleModel, sanitizeRoleModels, checkProjectPath, cleanProjectPath, createPathError, reconcileNearLimitProject, suggestedProjectName, type PathFs } from './projects'
+import { ProjectStore, cleanClient, cleanAllowedDirectories, cleanReferenceDirectories,acceptableRoleModel, sanitizeRoleModels, checkProjectPath, cleanProjectPath, createPathError, reconcileNearLimitProject, suggestedProjectName, type PathFs } from './projects'
 import { mkdirSync } from 'node:fs'
 
 describe('reconcileNearLimitProject', () => {
@@ -66,6 +68,58 @@ describe('ProjectStore.saveFromRenderer', () => {
   })
 })
 
+describe('Project.client normalization', () => {
+  it('trims, cuts at the limit, and drops empty, non-string and hidden-character values on save', () => {
+    const store = new ProjectStore(dataDir())
+    const clientOf = (client: unknown): unknown => store.save(project({ client } as Partial<Project>)).client
+    expect(clientOf('  Acme Corp  ')).toBe('Acme Corp')
+    expect(clientOf('   ')).toBeUndefined()
+    expect(clientOf(42)).toBeUndefined()
+    expect(clientOf('Ac‮me')).toBeUndefined()
+    expect(clientOf('Ac​me')).toBeUndefined()
+    const cut = clientOf('x'.repeat(PROJECT_CLIENT_MAX_CHARS + 20)) as string
+    expect(cut).toBe('x'.repeat(PROJECT_CLIENT_MAX_CHARS))
+  })
+
+  it('does not cut an emoji in half', () => {
+    const store = new ProjectStore(dataDir())
+    const text = `${'x'.repeat(PROJECT_CLIENT_MAX_CHARS - 1)}😀`
+    expect(store.save(project({ client: text } as Partial<Project>)).client).toBe('x'.repeat(PROJECT_CLIENT_MAX_CHARS - 1))
+  })
+})
+
+describe('Project.knowledgeAutoContext', () => {
+  it('stays unset through boot, save, renderer save and newProject; only a boolean is kept', () => {
+    const dir = dataDir()
+    const unset = project({ id: 'p_unset' })
+    expect('knowledgeAutoContext' in unset).toBe(false)
+    writeFileSync(
+      join(dir, 'projects.json'),
+      JSON.stringify({ version: 2, projects: [unset, { ...project({ id: 'p_off' }), knowledgeAutoContext: false }, { ...project({ id: 'p_junk' }), knowledgeAutoContext: 'yes' }, { ...project({ id: 'p_null' }), knowledgeAutoContext: null }] })
+    )
+    const store = new ProjectStore(dir)
+    expect('knowledgeAutoContext' in store.get('p_unset')!).toBe(false)
+    expect(store.get('p_off')?.knowledgeAutoContext).toBe(false)
+    expect('knowledgeAutoContext' in store.get('p_junk')!).toBe(false)
+    expect('knowledgeAutoContext' in store.get('p_null')!).toBe(false)
+    // Saves never fill it in.
+    expect('knowledgeAutoContext' in store.save(store.get('p_unset')!)).toBe(false)
+    expect('knowledgeAutoContext' in store.saveFromRenderer({ ...store.get('p_unset')!, name: 'Renamed' })).toBe(false)
+    expect(store.saveFromRenderer({ ...store.get('p_unset')!, knowledgeAutoContext: true }).knowledgeAutoContext).toBe(true)
+    expect(store.saveFromRenderer({ ...store.get('p_unset')!, knowledgeAutoContext: false }).knowledgeAutoContext).toBe(false)
+    expect(store.saveFromRenderer({ ...store.get('p_unset')!, knowledgeAutoContext: 1 as unknown as boolean }).knowledgeAutoContext).toBeUndefined()
+    // A renderer that sends it unset clears it back to automatic.
+    const { knowledgeAutoContext: _gone, ...without } = store.get('p_off')!
+    expect('knowledgeAutoContext' in store.saveFromRenderer(without as Project)).toBe(false)
+    // A new project starts without it.
+    const created = new ProjectStore(dataDir()).create({ name: 'New', path: dataDir(), brief: '' } as never, undefined, { mockAvailable: true, fs: { statSync: () => ({ isDirectory: () => true }), existsSync: () => true, readdirSync: () => [] } })
+    expect('knowledgeAutoContext' in created).toBe(false)
+    // And a reload keeps all of it.
+    const again = new ProjectStore(dir)
+    expect('knowledgeAutoContext' in again.get('p_junk')!).toBe(false)
+  })
+})
+
 describe('ProjectStore.save virtual ids (L4)', () => {
   it('refuses the harness, Chat and Skill assistant ids', () => {
     const store = new ProjectStore(dataDir())
@@ -106,7 +160,101 @@ describe('ProjectStore.saveFromRenderer skills', () => {
     const saved = store.saveFromRenderer(project({ skillEvaluation: { enabled: true, tokenBudget: 5 } }))
     expect(saved.skillEvaluation).toEqual({ enabled: true, tokenBudget: 1000 })
     const bad = store.saveFromRenderer(project({ skillEvaluation: { enabled: 'yes', tokenBudget: 'lots' } as never }))
-    expect(bad.skillEvaluation).toEqual({ enabled: false, tokenBudget: 20000 })
+    expect(bad.skillEvaluation).toEqual({ tokenBudget: 20000 })
+    expect('enabled' in (bad.skillEvaluation ?? {})).toBe(false)
+  })
+
+  it('keeps an unset skillEvaluation.enabled unset', () => {
+    const store = new ProjectStore(dataDir())
+    store.save(project())
+    const saved = store.saveFromRenderer(project({ skillEvaluation: { tokenBudget: 30_000 } }))
+    expect(saved.skillEvaluation).toEqual({ tokenBudget: 30_000 })
+    expect(store.get(saved.id)?.skillEvaluation?.enabled).toBeUndefined()
+  })
+
+  it('never fills subagent limits and keeps explicit ones', () => {
+    const store = new ProjectStore(dataDir())
+    const base = project()
+    delete (base as Partial<Project>).maxSubagentDepth
+    delete (base as Partial<Project>).maxConcurrentSubagents
+    store.save(base)
+    const saved = store.saveFromRenderer({ ...base })
+    expect(saved.maxSubagentDepth).toBeUndefined()
+    expect(saved.maxConcurrentSubagents).toBeUndefined()
+    expect(store.get(base.id)?.maxSubagentDepth).toBeUndefined()
+    expect(store.get(base.id)?.maxConcurrentSubagents).toBeUndefined()
+    const explicit = store.saveFromRenderer({ ...base, maxSubagentDepth: 3, maxConcurrentSubagents: 7 })
+    expect(explicit).toMatchObject({ maxSubagentDepth: 3, maxConcurrentSubagents: 7 })
+    expect(store.get(base.id)).toMatchObject({ maxSubagentDepth: 3, maxConcurrentSubagents: 7 })
+  })
+
+  it('drops the old always-filled limits (3 / 8) once from a version 1 file and keeps other values (L3)', () => {
+    const dir = dataDir()
+    const legacy = { ...project({ id: 'p_legacy' }), maxSubagentDepth: 3, maxConcurrentSubagents: 8 }
+    const custom = { ...project({ id: 'p_custom' }), maxSubagentDepth: 2, maxConcurrentSubagents: 12 }
+    const mixed = { ...project({ id: 'p_mixed' }), maxSubagentDepth: 3, maxConcurrentSubagents: 4 }
+    writeFileSync(join(dir, 'projects.json'), JSON.stringify({ version: 1, projects: [legacy, custom, mixed] }))
+    const store = new ProjectStore(dir)
+    expect(store.get('p_legacy')?.maxSubagentDepth).toBeUndefined()
+    expect(store.get('p_legacy')?.maxConcurrentSubagents).toBeUndefined()
+    expect(store.get('p_custom')).toMatchObject({ maxSubagentDepth: 2, maxConcurrentSubagents: 12 })
+    expect(store.get('p_mixed')?.maxSubagentDepth).toBeUndefined()
+    expect(store.get('p_mixed')?.maxConcurrentSubagents).toBe(4)
+    expect(JSON.parse(readFileSync(join(dir, 'projects.json'), 'utf8')).version).toBe(2)
+    // After the migration an explicit 3 / 8 is the user's and survives a reload.
+    store.save({ ...store.get('p_legacy')!, maxSubagentDepth: 3, maxConcurrentSubagents: 8 })
+    expect(store.migrateAll()).toBe(0)
+    expect(new ProjectStore(dir).get('p_legacy')).toMatchObject({ maxSubagentDepth: 3, maxConcurrentSubagents: 8 })
+  })
+
+  it('does not run the limits migration on a version 2 or newer file (3 / 8 stay explicit)', () => {
+    for (const version of [2, 3, 99]) {
+      const dir = dataDir()
+      const p = { ...project({ id: 'p_new' }), maxSubagentDepth: 3, maxConcurrentSubagents: 8 }
+      writeFileSync(join(dir, 'projects.json'), JSON.stringify({ version, projects: [p] }))
+      const store = new ProjectStore(dir)
+      expect(store.get('p_new'), `version ${version}`).toMatchObject({ maxSubagentDepth: 3, maxConcurrentSubagents: 8 })
+    }
+  })
+
+  it('treats a missing or non-numeric version as 1 and migrates once', () => {
+    for (const version of [undefined, 'two', null, '2']) {
+      const dir = dataDir()
+      const p = { ...project({ id: 'p_old' }), maxSubagentDepth: 3, maxConcurrentSubagents: 8 }
+      writeFileSync(join(dir, 'projects.json'), JSON.stringify({ version, projects: [p] }))
+      const store = new ProjectStore(dir)
+      expect(store.get('p_old')?.maxSubagentDepth, String(version)).toBeUndefined()
+      expect(JSON.parse(readFileSync(join(dir, 'projects.json'), 'utf8')).version).toBe(2)
+    }
+  })
+
+  it('starts empty on a corrupt, empty or wrongly shaped projects.json without throwing', () => {
+    const cases = ['{ not json', '', '   ', 'null', '[]', '"x"', JSON.stringify({ version: 2 }), JSON.stringify({ version: 1, projects: 'nope' }), JSON.stringify({ version: 1, projects: {} })]
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      for (const text of cases) {
+        const dir = dataDir()
+        writeFileSync(join(dir, 'projects.json'), text)
+        let store: ProjectStore | undefined
+        expect(() => (store = new ProjectStore(dir)), JSON.stringify(text)).not.toThrow()
+        expect(store!.list(), JSON.stringify(text)).toEqual([])
+        store!.save(project({ id: 'p_after' }))
+        expect(new ProjectStore(dir).get('p_after')).not.toBeNull()
+      }
+    } finally {
+      err.mockRestore()
+    }
+  })
+
+  it('keeps an unset plan guard unset through a renderer save', () => {
+    const store = new ProjectStore(dataDir())
+    const base = project()
+    delete (base as Partial<Project>).preferEverydayNearLimit
+    delete (base as Partial<Project>).preferSonnetNearLimit
+    store.save(base)
+    const saved = store.saveFromRenderer({ ...base })
+    expect(saved.preferEverydayNearLimit).toBeUndefined()
+    expect(saved.preferSonnetNearLimit).toBeUndefined()
   })
 })
 
@@ -231,6 +379,33 @@ describe('creating projects', () => {
     store.create({ name: 'Z', path: d, brief: '' }, undefined, { prepare, importRoles })
     expect(order).toEqual(['prepare'])
   })
+
+  it('create applies fromTemplate after prepare, and importAgents wins when it produced roles', () => {
+    const d = dataDir()
+    const store = new ProjectStore(d)
+    const order: string[] = []
+    const prepare = (p: Project): Project => ({ ...p, provider: { ...p.provider, connection: 'openai' } })
+    const fromTemplate = (p: Project, id: string): Project => {
+      order.push(`tpl:${p.provider.connection}:${id}`)
+      return { ...p, roles: [role({ id: 'r2', slug: 'from-template' })] }
+    }
+    const importRoles = (p: Project): Project => ({ ...p, roles: [role({ id: 'r1', slug: 'imported' })] })
+    const noImport = (p: Project): Project => p
+    const a = store.create({ name: 'A', path: d, brief: '', templateId: 'tpl_1' }, undefined, { prepare, fromTemplate })
+    expect(order).toEqual(['tpl:openai:tpl_1'])
+    expect(a.roles.map((r) => r.slug)).toEqual(['from-template'])
+    order.length = 0
+    const b = store.create({ name: 'B', path: d, brief: '', templateId: 'tpl_1', importAgents: ['claude'] }, undefined, { prepare, fromTemplate, importRoles })
+    expect(order).toEqual([])
+    expect(b.roles.map((r) => r.slug)).toEqual(['imported'])
+    const c = store.create({ name: 'C', path: d, brief: '', templateId: 'tpl_1', importAgents: ['claude'] }, undefined, { prepare, fromTemplate, importRoles: noImport })
+    expect(order).toEqual(['tpl:openai:tpl_1'])
+    expect(c.roles.map((r) => r.slug)).toEqual(['from-template'])
+    order.length = 0
+    store.create({ name: 'D', path: d, brief: '' }, undefined, { prepare, fromTemplate })
+    store.create({ name: 'E', path: d, brief: '', templateId: '' }, undefined, { prepare, fromTemplate })
+    expect(order).toEqual([])
+  })
 })
 
 describe('Role.model validation', () => {
@@ -289,5 +464,314 @@ describe('Role.model validation', () => {
     const importRoles = (p: Project): Project => ({ ...p, roles: [bad('--imported', 'deep')] })
     const p = store.create({ name: 'I', path: d, brief: '', importAgents: ['claude'] }, undefined, { importRoles })
     expect(p.roles[0]).toMatchObject({ model: 'opus', tier: 'deep' })
+  })
+})
+
+describe('cleanAllowedDirectories', () => {
+  const winOpts = { path: win32, touchesData: (d: string) => d.toLowerCase().startsWith('c:\\data'), same: (a: string, b: string) => a.toLowerCase() === b.toLowerCase() }
+  const posixOpts = { path: posix, touchesData: (d: string) => d === '/home/u' || d.startsWith('/home/u/.orgai'), same: (a: string, b: string) => a === b }
+
+  it('drops non-arrays and keeps the field absent', () => {
+    expect(cleanAllowedDirectories(undefined, 'C:\\data', winOpts)).toBeUndefined()
+    expect(cleanAllowedDirectories('C:\\x', 'C:\\data', winOpts)).toBeUndefined()
+    expect(cleanAllowedDirectories({ 0: 'C:\\x' }, 'C:\\data', winOpts)).toBeUndefined()
+  })
+
+  it('win32: keeps drive-letter paths, trims and normalizes them, drops the rest', () => {
+    const out = cleanAllowedDirectories(
+      [' D:\\shared\\lib\\ ', 'relative\\dir', '\\rooted-no-drive', 'C:foo', 'C:\\', 'C:', 'C:/', 'D:\\a\\..', '\\\\server\\share', '\\\\?\\C:\\x', '\\\\.\\pipe\\x', '//host/x', 'C:\\data', 'c:\\DATA\\sub', 'E:/other/dir', 42, null, '', 'D:\\a\0b'],
+      'C:\\data',
+      winOpts
+    )
+    expect(out).toEqual(['D:\\shared\\lib', 'E:\\other\\dir'])
+  })
+
+  it('posix: keeps absolute paths, drops relative, root, UNC-style and the data folder (and a folder that contains it)', () => {
+    const out = cleanAllowedDirectories(['/srv/shared/', 'rel/dir', './x', '/', '/a/..', '//host/share', '/home/u', '/home/u/.orgai/projects', '/opt/x'], '/home/u/.orgai', posixOpts)
+    expect(out).toEqual(['/srv/shared', '/opt/x'])
+  })
+
+  it('collapses duplicates, keeping the first spelling', () => {
+    expect(cleanAllowedDirectories(['D:\\Lib', 'd:\\lib\\', 'D:/Lib', 'D:\\lib\\.\\'], 'C:\\data', winOpts)).toEqual(['D:\\Lib'])
+    expect(cleanAllowedDirectories(['/srv/a', '/srv/a/', '/srv//a', '/srv/A'], '/home/u/.orgai', posixOpts)).toEqual(['/srv/a', '/srv/A'])
+  })
+
+  it('caps the list and the path length', () => {
+    const many = Array.from({ length: 30 }, (_, i) => `/srv/d${i}`)
+    const out = cleanAllowedDirectories(many, '/home/u/.orgai', posixOpts)!
+    expect(out).toHaveLength(PROJECT_ALLOWED_DIRECTORIES_MAX)
+    expect(out[PROJECT_ALLOWED_DIRECTORIES_MAX - 1]).toBe(`/srv/d${PROJECT_ALLOWED_DIRECTORIES_MAX - 1}`)
+    const exact = '/' + 'a'.repeat(PROJECT_ALLOWED_DIRECTORY_MAX_CHARS - 1)
+    expect(cleanAllowedDirectories([exact, exact + 'b'], '/home/u/.orgai', posixOpts)).toEqual([exact])
+  })
+
+  it('native defaults: refuses the real data dir, a folder inside it and one that contains it; accepts a missing folder', () => {
+    const data = dataDir()
+    const outside = join(tmpdir(), `orgai-allowed-missing-${Date.now()}`)
+    const out = cleanAllowedDirectories([data, join(data, 'projects'), dirname(data), outside, outside + sep], data)
+    expect(out).toEqual([outside])
+  })
+})
+
+describe('ProjectStore allowedDirectories', () => {
+  it('normalizes on saveFromRenderer and on save', () => {
+    const data = dataDir()
+    const store = new ProjectStore(data)
+    store.save(project())
+    const keep = join(tmpdir(), 'orgai-allowed-keep')
+    const saved = store.saveFromRenderer(project({ allowedDirectories: [keep, 'relative', join(data, 'x'), keep] }))
+    expect(saved.allowedDirectories).toEqual([keep])
+    expect(store.get('p1')?.allowedDirectories).toEqual([keep])
+    const bad = store.save(project({ allowedDirectories: 'nope' as never }))
+    expect('allowedDirectories' in bad).toBe(false)
+  })
+
+  it('normalizes on read and persists the cleaned list once', () => {
+    const dir = dataDir()
+    const keep = join(tmpdir(), 'orgai-allowed-keep')
+    writeFileSync(join(dir, 'projects.json'), JSON.stringify({ version: 1, projects: [project({ allowedDirectories: [keep, dir, 'x', 7] as never })] }))
+    const store = new ProjectStore(dir)
+    expect(store.get('p1')?.allowedDirectories).toEqual([keep])
+    expect(JSON.parse(readFileSync(join(dir, 'projects.json'), 'utf8')).projects[0].allowedDirectories).toEqual([keep])
+    expect(new ProjectStore(dir).migrateAll()).toBe(0)
+  })
+})
+
+describe('cleanAllowedDirectories: too broad or sensitive (allowedDirectoryRisk, review M2)', () => {
+  const winOpts = { path: win32, touchesData: () => false, same: (a: string, b: string) => a.toLowerCase() === b.toLowerCase(), home: 'C:\\Users\\me', projectPath: 'C:\\work\\proj' }
+  const posixOpts = { path: posix, touchesData: () => false, same: (a: string, b: string) => a === b, home: '/home/me', projectPath: '/work/proj' }
+
+  it('win32: drops home, its parent, home config folders and the project in every direction; keeps a sibling and another drive', () => {
+    const dropped = [
+      'C:\\Users\\me',
+      'C:\\Users',
+      'C:\\Users\\me\\.ssh',
+      'c:\\users\\ME\\.SSH\\keys',
+      'C:\\Users\\me\\.claude',
+      'C:\\Users\\me\\.codex',
+      'C:\\Users\\me\\AppData\\Roaming',
+      'C:\\Users\\me\\AppData\\Roaming\\Code',
+      'C:\\work\\proj',
+      'c:\\WORK\\proj\\',
+      'C:\\work\\proj\\src',
+      'C:\\work'
+    ]
+    const kept = ['C:\\work\\sibling', 'D:\\shared\\lib', 'C:\\Users\\me\\notes']
+    expect(cleanAllowedDirectories([...dropped, ...kept], 'C:\\data', winOpts)).toEqual(kept)
+  })
+
+  it('posix: the same rules', () => {
+    const dropped = ['/home/me', '/home', '/home/me/.ssh', '/home/me/.claude', '/home/me/.config/gh', '/work/proj', '/work/proj/src', '/work']
+    const kept = ['/work/sibling', '/mnt/other/lib']
+    expect(cleanAllowedDirectories([...dropped, ...kept], '/data', posixOpts)).toEqual(kept)
+  })
+
+  it('without home or project path only the syntax and data rules apply', () => {
+    expect(cleanAllowedDirectories(['C:\\Users\\me', 'C:\\work\\proj'], 'C:\\data', { ...winOpts, home: undefined, projectPath: undefined })).toEqual(['C:\\Users\\me', 'C:\\work\\proj'])
+  })
+
+  it('ProjectStore drops them on save (returning the cleaned list) and on read, with a home override', () => {
+    const data = dataDir()
+    const root = dataDir()
+    const home = join(root, 'home')
+    const proj = join(root, 'work', 'proj')
+    const sibling = join(root, 'work', 'sibling')
+    const other = process.platform === 'win32' ? (/^z:/i.test(root) ? 'Y:\\lib' : 'Z:\\lib') : '/mnt/other-drive/lib'
+    const all = [home, root, join(home, '.ssh'), join(home, '.claude'), join(home, 'AppData', 'Roaming'), proj, join(proj, 'src'), join(root, 'work'), sibling, other]
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {})
+    try {
+      const store = new ProjectStore(data, { home })
+      store.save(project({ path: proj }))
+      const saved = store.saveFromRenderer(project({ path: proj, allowedDirectories: all }))
+      expect(saved.allowedDirectories).toEqual([sibling, other])
+      expect(store.get('p1')?.allowedDirectories).toEqual([sibling, other])
+      expect(debug.mock.calls.some((c) => String(c[0]).includes('too broad or sensitive'))).toBe(true)
+      expect(debug.mock.calls.some((c) => String(c[0]).includes('the project folder or inside it'))).toBe(true)
+      // A list written before the rule existed is cleaned at boot and persisted once.
+      writeFileSync(join(data, 'projects.json'), JSON.stringify({ version: 1, projects: [project({ path: proj, allowedDirectories: all })] }))
+      const reread = new ProjectStore(data, { home })
+      expect(reread.get('p1')?.allowedDirectories).toEqual([sibling, other])
+      expect(JSON.parse(readFileSync(join(data, 'projects.json'), 'utf8')).projects[0].allowedDirectories).toEqual([sibling, other])
+    } finally {
+      debug.mockRestore()
+    }
+  })
+})
+
+describe('cleanReferenceDirectories', () => {
+  const winOpts = { path: win32, touchesData: (d: string) => d.toLowerCase().startsWith('c:\\data'), same: (a: string, b: string) => a.toLowerCase() === b.toLowerCase(), home: 'C:\\Users\\me', projectPath: 'C:\\work\\proj' }
+  const posixOpts = { path: posix, touchesData: () => false, same: (a: string, b: string) => a === b, home: '/home/me', projectPath: '/work/proj' }
+
+  it('drops non-arrays', () => {
+    expect(cleanReferenceDirectories(undefined, 'C:\\data', winOpts)).toBeUndefined()
+    expect(cleanReferenceDirectories('C:\\x', 'C:\\data', winOpts)).toBeUndefined()
+  })
+
+  it('applies the allowed-folder rules: relative, root, UNC, data dir, project, containing the project, home, home config, duplicates', () => {
+    const out = cleanReferenceDirectories(
+      ['relative\\dir', 'C:\\', '\\\\server\\share', 'C:\\data\\sub', 'C:\\work\\proj', 'C:\\work\\proj\\src', 'C:\\work', 'C:\\Users\\me', 'C:\\Users\\me\\.ssh', 42, 'D:\\Docs\\', 'd:\\docs', 'E:\\other'],
+      'C:\\data',
+      winOpts
+    )
+    expect(out).toEqual(['D:\\Docs', 'E:\\other'])
+    expect(cleanReferenceDirectories(['/home/me/.claude', '/home', '/srv/ref/', '/srv/ref'], '/data', posixOpts)).toEqual(['/srv/ref'])
+  })
+
+  it('caps the list and the path length like the allowed list', () => {
+    const many = Array.from({ length: 30 }, (_, i) => `/srv/d${i}`)
+    expect(cleanReferenceDirectories(many, '/data', posixOpts)).toHaveLength(PROJECT_REFERENCE_DIRECTORIES_MAX)
+    const exact = '/' + 'a'.repeat(PROJECT_REFERENCE_DIRECTORY_MAX_CHARS - 1)
+    expect(cleanReferenceDirectories([exact, exact + 'b'], '/data', posixOpts)).toEqual([exact])
+  })
+})
+
+describe('ProjectStore referenceDirectories and kind', () => {
+  it('cleans reference folders on save and drops one that is also an allowed folder', () => {
+    const data = dataDir()
+    const root = dataDir()
+    const home = join(root, 'home')
+    const proj = join(root, 'work', 'proj')
+    const keep = join(root, 'work', 'ref')
+    const both = join(root, 'work', 'both')
+    const store = new ProjectStore(data, { home })
+    store.save(project({ path: proj }))
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {})
+    try {
+      const saved = store.saveFromRenderer(project({ path: proj, allowedDirectories: [both], referenceDirectories: [keep, 'relative', join(data, 'x'), join(proj, 'src'), both, keep] }))
+      expect(saved.referenceDirectories).toEqual([keep])
+      expect(saved.allowedDirectories).toEqual([both])
+      expect(store.get('p1')?.referenceDirectories).toEqual([keep])
+      expect(debug.mock.calls.some((c) => String(c[0]).includes('also an allowed folder'))).toBe(true)
+      const bad = store.save(project({ path: proj, referenceDirectories: 'nope' as never }))
+      expect('referenceDirectories' in bad).toBe(false)
+    } finally {
+      debug.mockRestore()
+    }
+  })
+
+  it('cleans reference folders and kind at boot and persists once', () => {
+    const data = dataDir()
+    const root = dataDir()
+    const keep = join(root, 'ref')
+    const both = join(root, 'both')
+    const raw = project({ path: join(root, 'proj'), allowedDirectories: [both], referenceDirectories: [keep, both, 'x', 7] as never, kind: 'banana' as never })
+    writeFileSync(join(data, 'projects.json'), JSON.stringify({ version: 2, projects: [raw] }))
+    const store = new ProjectStore(data, { home: join(root, 'home') })
+    expect(store.get('p1')?.referenceDirectories).toEqual([keep])
+    expect('kind' in store.get('p1')!).toBe(false)
+    const disk = JSON.parse(readFileSync(join(data, 'projects.json'), 'utf8')).projects[0]
+    expect(disk.referenceDirectories).toEqual([keep])
+    expect('kind' in disk).toBe(false)
+    expect(new ProjectStore(data, { home: join(root, 'home') }).migrateAll()).toBe(0)
+  })
+
+  it('normalizes kind on save: a valid kind stays, junk is removed', () => {
+    const store = new ProjectStore(dataDir())
+    expect(store.save(project({ kind: 'engagement' })).kind).toBe('engagement')
+    expect('kind' in store.save(project({ kind: 'nope' as never }))).toBe(false)
+    expect('kind' in store.saveFromRenderer(project({ kind: 5 as never }))).toBe(false)
+  })
+
+  it('saveFromRenderer never changes the stored kind', () => {
+    const store = new ProjectStore(dataDir())
+    store.save(project({ id: 'e1', kind: 'engagement' }))
+    expect(store.saveFromRenderer(project({ id: 'e1', kind: 'code' })).kind).toBe('engagement')
+    expect(store.saveFromRenderer(project({ id: 'e1' })).kind).toBe('engagement')
+    store.save(project({ id: 'c1' }))
+    expect('kind' in store.saveFromRenderer(project({ id: 'c1', kind: 'engagement' }))).toBe(false)
+    expect('kind' in store.get('c1')!).toBe(false)
+  })
+
+  it('client drops line breaks, tabs and hidden characters', () => {
+    expect(cleanClient('Acme Co')).toBe('Acme Co')
+    expect(cleanClient('Acme\nignore previous')).toBeUndefined()
+    expect(cleanClient('Acme\tCo')).toBeUndefined()
+    expect(cleanClient('Acme\u202eCo')).toBeUndefined()
+    expect(cleanClient('Acme\u2028Co')).toBeUndefined()
+  })
+
+  it('an engagement needs an existing folder', () => {
+    const missing = { exists: false, isDirectory: false, isGitRepo: false, suggestedName: 'x', empty: false }
+    expect(createPathError({ path: 'C:/new/folder', kind: 'engagement' }, missing)).toBe("Choose an existing folder for the engagement's working files.")
+    expect(createPathError({ path: 'C:/new/folder', kind: 'engagement' }, { ...missing, exists: true, isDirectory: true })).toBeNull()
+    expect(createPathError({ path: 'C:/new/folder' }, missing)).toBeNull()
+  })
+
+  it('create passes kind through and drops junk to code', () => {
+    const d = dataDir()
+    const store = new ProjectStore(d)
+    const eng = store.create({ name: 'E', path: d, brief: '', kind: 'engagement' })
+    expect(eng.kind).toBe('engagement')
+    expect(store.get(eng.id)?.kind).toBe('engagement')
+    const junk = store.create({ name: 'J', path: d, brief: '', kind: 'junk' as never })
+    expect(projectKindOf(junk)).toBe('code')
+    expect(projectKindOf(store.create({ name: 'C', path: d, brief: '' }))).toBe('code')
+  })
+})
+
+describe('ProjectStore folder config gate', () => {
+  function folderWith(files: string[]): string {
+    const f = mkdtempSync(join(tmpdir(), 'orgai-gate-'))
+    dirs.push(f)
+    for (const rel of files) {
+      mkdirSync(dirname(join(f, rel)), { recursive: true })
+      writeFileSync(join(f, rel), '{}')
+    }
+    return f
+  }
+
+  it('create gates a code folder that holds agent config, even only instruction files', () => {
+    const store = new ProjectStore(dataDir())
+    expect(store.create({ name: 'A', path: folderWith(['.claude/settings.json']), brief: '' }).folderConfigTrust).toEqual({ state: 'untrusted' })
+    expect(store.create({ name: 'B', path: folderWith(['CLAUDE.md']), brief: '' }).folderConfigTrust).toEqual({ state: 'untrusted' })
+    expect('folderConfigTrust' in store.create({ name: 'C', path: folderWith(['README.md']), brief: '' })).toBe(false)
+  })
+
+  it('an engagement is never gated', () => {
+    const store = new ProjectStore(dataDir())
+    const p = store.create({ name: 'E', path: folderWith(['.claude/settings.json']), brief: '', kind: 'engagement' })
+    expect(p.folderConfigTrust).toBeUndefined()
+  })
+
+  it('a renderer save can neither set, change nor clear the field', () => {
+    const store = new ProjectStore(dataDir())
+    const gated = store.create({ name: 'A', path: folderWith(['.mcp.json']), brief: '' })
+    const trusted = { state: 'trusted' as const, digest: 'a'.repeat(64) }
+    expect(store.saveFromRenderer({ ...gated, folderConfigTrust: trusted }).folderConfigTrust).toEqual({ state: 'untrusted' })
+    const stripped = { ...gated }
+    delete stripped.folderConfigTrust
+    expect(store.saveFromRenderer(stripped).folderConfigTrust).toEqual({ state: 'untrusted' })
+    const plain = store.create({ name: 'P', path: folderWith(['README.md']), brief: '' })
+    expect('folderConfigTrust' in store.saveFromRenderer({ ...plain, folderConfigTrust: trusted })).toBe(false)
+  })
+
+  it('changing the path judges the new folder afresh', () => {
+    const store = new ProjectStore(dataDir())
+    const plain = store.create({ name: 'P', path: folderWith(['README.md']), brief: '' })
+    const withConfig = folderWith(['.claude/hooks/x.sh'])
+    expect(store.saveFromRenderer({ ...plain, path: withConfig }).folderConfigTrust).toEqual({ state: 'untrusted' })
+    const back = folderWith(['README.md'])
+    expect('folderConfigTrust' in store.saveFromRenderer({ ...store.get(plain.id)!, path: back })).toBe(false)
+  })
+
+  it('update (the trust channel) can set the field and it survives a reload', () => {
+    const d = dataDir()
+    const store = new ProjectStore(d)
+    const gated = store.create({ name: 'A', path: folderWith(['.mcp.json']), brief: '' })
+    const digest = 'b'.repeat(64)
+    store.update(gated.id, (p) => ({ ...p, folderConfigTrust: { state: 'trusted', digest, decidedAt: '2026-11-05T10:00:00.000Z' } }))
+    expect(new ProjectStore(d).get(gated.id)?.folderConfigTrust).toEqual({ state: 'trusted', digest, decidedAt: '2026-11-05T10:00:00.000Z' })
+  })
+
+  it('a junk field fails closed on load, a legacy project keeps no field', () => {
+    const d = dataDir()
+    const base = project({ id: 'junk' })
+    const legacy = project({ id: 'legacy' })
+    const badDigest = project({ id: 'bad', folderConfigTrust: { state: 'trusted', digest: 'nope' } as never })
+    writeFileSync(join(d, 'projects.json'), JSON.stringify({ version: 2, projects: [{ ...base, folderConfigTrust: 'yes' }, legacy, badDigest] }))
+    const store = new ProjectStore(d)
+    expect(store.get('junk')?.folderConfigTrust).toEqual({ state: 'untrusted' })
+    expect(store.get('bad')?.folderConfigTrust).toEqual({ state: 'untrusted' })
+    expect('folderConfigTrust' in store.get('legacy')!).toBe(false)
   })
 })

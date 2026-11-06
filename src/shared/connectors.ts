@@ -39,6 +39,21 @@ const GOOGLE_OAUTH: ConnectorOAuthOverrides = {
   sendResource: false
 }
 
+// GitHub has no dynamic client registration: users sign in through their own OAuth App or GitHub App. 'replace'
+// builds the discovery from these endpoints and sets the expected RFC 9207 iss to the issuer below. A callback
+// that carries a different iss is refused, but 'replace' discovery never sets issParameterSupported, so a callback
+// with no iss at all is accepted. RFC 8707 resource indicators are not advertised.
+const GITHUB_OAUTH: ConnectorOAuthOverrides = {
+  issuer: 'https://github.com/login/oauth',
+  authorizationEndpoint: 'https://github.com/login/oauth/authorize',
+  tokenEndpoint: 'https://github.com/login/oauth/access_token',
+  endpointsMode: 'replace',
+  sendResource: false
+}
+
+// Unverified: GitHub does not document the scopes the MCP server needs; these are what third-party guides agree on.
+const GITHUB_SCOPES = ['repo', 'read:org', 'read:user']
+
 const GOOGLE_MCP_GUIDE = 'https://developers.google.com/workspace/guides/configure-mcp-servers'
 
 const googleSetup = (api: string): string[] => [
@@ -332,11 +347,38 @@ export const CONNECTORS: readonly ConnectorDef[] = [
           'A fine-grained token with the repository permissions agents need.',
           'https://github.com/settings/personal-access-tokens/new'
         )
+      },
+      {
+        id: 'app-readonly',
+        label: 'Read-only, sign in with your app',
+        description: 'Only the read tools (X-MCP-Readonly header), signed in through your own GitHub app. The sign-in asks GitHub for the repo scope, which can also write, so read-only is enforced only by that header.',
+        transport: 'http',
+        url: 'https://api.githubcopilot.com/mcp/',
+        headers: { 'X-MCP-Readonly': 'true' },
+        readOnly: true,
+        auth: { kind: 'oauthClient', scopes: GITHUB_SCOPES, overrides: GITHUB_OAUTH, consoleUrl: 'https://github.com/settings/developers', clientSecret: 'required' }
+      },
+      {
+        id: 'app-full',
+        label: 'Full access, sign in with your app',
+        description: 'Read and write tools, signed in through your own GitHub app.',
+        transport: 'http',
+        url: 'https://api.githubcopilot.com/mcp/',
+        readOnly: false,
+        auth: { kind: 'oauthClient', scopes: GITHUB_SCOPES, overrides: GITHUB_OAUTH, consoleUrl: 'https://github.com/settings/developers', clientSecret: 'required' }
       }
     ],
     defaultVariant: 'readonly',
-    setup: ['Create a fine-grained personal access token on GitHub.', 'Paste it into OrgAI and test the connection.'],
-    notes: ['The token is stored with Electron safeStorage and sent as Authorization: Bearer.'],
+    setup: ownAppSetup('GitHub', [
+      'On GitHub, open Settings > Developer settings > OAuth Apps > New OAuth App. (A GitHub App with "Request user authorization (OAuth) during installation" also works; its tokens expire after 8 hours and refresh.)',
+      'Generate a client secret for the app.',
+      'If the repositories belong to an organisation, the organisation may need to approve the app before it can see them.'
+    ]),
+    notes: [
+      'The token is stored with Electron safeStorage and sent as Authorization: Bearer. For a personal access token, create a fine-grained one on GitHub and paste it in.',
+      'Unverified: the sign-in route. GitHub does not document the scopes its MCP server needs (OrgAI asks for repo, read:org and read:user), nor whether the server accepts a token from an app you registered, nor that GitHub accepts a 127.0.0.1 callback URL on the app form.',
+      'The read-only variants rely on the X-MCP-Readonly header, which GitHub documents as enabling only read tools.'
+    ],
     aliases: ['git', 'code', 'repositories', 'pull requests', 'issues'],
     verified: false
   },

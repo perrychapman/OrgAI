@@ -301,7 +301,7 @@ export interface PolicyChoice {
   sandbox: SandboxMode
   /** 'auto': Codex's own reviewer subagent approves or denies each request (ThreadStartParams.approvalsReviewer, UNSTABLE). */
   approvalsReviewer?: 'auto_review'
-  /** acceptEdits: the harness accepts file-change approvals itself and only asks for commands. */
+  /** acceptEdits: the harness accepts file-change approvals whose concrete paths are inside a free folder (codex.ts onFileApproval checks every path); anything else, and every command, asks. */
   autoAcceptEdits: boolean
   /** dontAsk / plan: any approval request that still arrives is declined. */
   denyApprovals: boolean
@@ -310,14 +310,22 @@ export interface PolicyChoice {
 /**
  * Map the project's permission mode onto Codex's approval policy and sandbox.
  *   auto              on-request + workspace-write, Codex's auto_review reviewer decides, asks only when unsure
- *   acceptEdits       untrusted + workspace-write; the harness accepts file edits, commands ask
+ *   acceptEdits       untrusted + workspace-write; the harness accepts file edits whose concrete paths are in free folders (path-checked), commands ask
  *   default           untrusted + workspace-write; everything not known-safe asks
  *   dontAsk           never + workspace-write; whatever the sandbox refuses stays refused (approvals declined)
  *   plan              never + read-only
  *   bypassPermissions never + danger-full-access
  * A role without any writing tool (`writes` false) and every setup-like run get read-only, unless the mode is stricter.
+ *
+ * referenceFolders: the run has read-only reference folders (RuntimeContext.referenceDirectories). They are kept out of
+ * writable_roots, and codex.ts onFileApproval declines changes there, but that only works while writes outside the
+ * workspace reach the client as approvals:
+ *   - bypassPermissions: danger-full-access + never sends no approval at all, so it becomes workspace-write + untrusted.
+ *   - auto: the auto_review reviewer is dropped (approvals route to the client; on-request + workspace-write stay).
+ *     The app-server schema does not say whether auto_review settles a file-change or escalation request without
+ *     sending item/fileChange/requestApproval to the client, so OrgAI assumes it can (UNVERIFIED live; schema-read only).
  */
-export function policyFor(mode: PermissionMode, opts: { writes: boolean; setupLike: boolean; quick?: boolean; setupWrites?: boolean }): PolicyChoice {
+export function policyFor(mode: PermissionMode, opts: { writes: boolean; setupLike: boolean; quick?: boolean; setupWrites?: boolean; referenceFolders?: boolean }): PolicyChoice {
   // Quick runs and setup-like runs whose role can write (allowBuild MCP assistant) ask for every change: auto,
   // acceptEdits and bypass fall back to the asking default (mirrors claude.ts claudePermissionMode).
   // setupWrites: a build session (allowBuild MCP assistant) whose role has write tools; the Architect (Bash only) is not one.
@@ -352,6 +360,14 @@ export function policyFor(mode: PermissionMode, opts: { writes: boolean; setupLi
     choice = { ...choice, sandbox: 'read-only', ...(mode === 'plan' ? { approvalPolicy: 'untrusted' as const, denyApprovals: false } : {}) }
   } else if (!opts.writes && choice.sandbox !== 'read-only') {
     choice = { ...choice, sandbox: 'read-only' }
+  }
+  if (opts.referenceFolders && choice.sandbox !== 'read-only') {
+    if (choice.sandbox === 'danger-full-access') choice = { ...choice, sandbox: 'workspace-write', approvalPolicy: 'untrusted' }
+    if (choice.approvalsReviewer) {
+      const { approvalsReviewer: _reviewer, ...rest } = choice
+      void _reviewer
+      choice = rest
+    }
   }
   return choice
 }
@@ -411,11 +427,34 @@ function tomlTable(entries: Record<string, string>): string {
     .join(', ')} }`
 }
 
-export const API_KEY_ENV = 'ORGAI_CODEX_API_KEY'
+/** Codex project trust to force for these folders (see folderTrustEntry). */
+export interface FolderTrustConfig {
+  level: 'untrusted' | 'trusted'
+  paths: string[]
+}
+
+/**
+ * The one `-c` entry that pins Codex's project trust: `projects={ "<p1>" = { trust_level = "untrusted" }, ... }`.
+ * Checked token-free with scripts/probe-codex-trust.mjs on codex 0.166.0 (Windows, no turn started): the dotted form
+ * `projects."<path>".trust_level=...` is NOT seen by the trust lookup (danger-full-access still wrote trust and loaded
+ * the repo's model and mcp_servers), while this whole-table form keeps the project layer disabled (repo model and
+ * mcp_servers absent, nothing written to CODEX_HOME/config.toml), also for a path with dots, with the path already
+ * trusted in CODEX_HOME/config.toml and for a linked worktree thread; with "trusted" the layer loads (positive control).
+ * Keys and values are TOML basic strings (tomlString), so backslashes and quotes in a path are escaped. Not checked on
+ * macOS or Linux. Returns undefined when there is nothing to pin.
+ */
+export function folderTrustEntry(trust: FolderTrustConfig | undefined): string | undefined {
+  if (!trust) return undefined
+  const paths = [...new Set(trust.paths.filter((p) => typeof p === 'string' && p.length > 0))]
+  if (!paths.length) return undefined
+  return `projects={ ${paths.map((p) => `${tomlString(p)} = { trust_level = ${tomlString(trust.level)} }`).join(', ')} }`
+}
+
+export const API_KEY_ENV ='ORGAI_CODEX_API_KEY'
 export const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com/v1'
 
 export interface LaunchConfig {
-  /** `-c key=value` overrides for `codex app-server`. May contain no secrets except for the documented collision fallback. */
+  /** `-c key=value` overrides for `codex app-server`. Never contains a secret value. */
   config: string[]
   /** Extra child environment: CODEX_HOME, the API key and forwarded MCP secrets. Never log. */
   env: Record<string, string>
@@ -438,11 +477,24 @@ export interface LaunchConfig {
  *          app-server's own environment (same name), so values are not in argv.
  *   http   url + http_headers (non-secret); each secret header becomes env_http_headers { Header = "ORGAI_MCP_<n>_H<k>" }.
  *          An Authorization header of the form "Bearer x" is passed as bearer_token_env_var instead.
- * Two stdio servers needing the same secret name with different values cannot both use env_vars; the later one
- * gets the value inline in `env` (visible in the process arguments) and the summary says so.
+ * One app-server has one environment, so one secret env name can carry only one value per run. Two enabled stdio
+ * servers that need the same secret name with the same value share it through env_vars. With different values the
+ * later server is refused before launch (no config line at all, an entry in `skipped` naming the variable and the
+ * server that forwarded it first); a secret value never goes into argv. The adapter logs each skipped entry as a run
+ * warning. HTTP secret headers need no such check: their env names (ORGAI_MCP_<n>_H<k>) are unique per server.
  */
-export function buildLaunchConfig(connection: RunConnection | undefined, servers: ResolvedMcpServer[], opts: { noProjectDocs?: boolean } = {}): LaunchConfig {
+export function buildLaunchConfig(
+  connection: RunConnection | undefined,
+  servers: ResolvedMcpServer[],
+  opts: { noProjectDocs?: boolean; writableRoots?: string[]; folderTrust?: FolderTrustConfig } = {}
+): LaunchConfig {
   const config: string[] = [...NATIVE_SKILL_CONFIG, ...(opts.noProjectDocs ? NO_PROJECT_DOCS_CONFIG : [])]
+  const trust = folderTrustEntry(opts.folderTrust)
+  if (trust) config.push(trust)
+  // Allowed folders become extra writable roots of the workspace-write sandbox (key found in the codex 0.166.0
+  // binary; whether it takes effect with thread/start's sandbox mode string is unverified live).
+  const roots = (opts.writableRoots ?? []).filter((r) => typeof r === 'string' && r.length > 0)
+  if (roots.length) config.push(`sandbox_workspace_write.writable_roots=${tomlArray(roots)}`)
   const env: Record<string, string> = { ...(connection?.env ?? {}) }
   const summary: string[] = []
   const skipped: LaunchConfig['skipped'] = []
@@ -462,7 +514,8 @@ export function buildLaunchConfig(connection: RunConnection | undefined, servers
     summary.push('ChatGPT login from CODEX_HOME')
   }
 
-  const forwarded = new Map<string, string>() // env var name -> value already forwarded for another server
+  // Secret env name -> the value forwarded for it and the server that forwarded it first.
+  const forwarded = new Map<string, { value: string; serverName: string }>()
   servers.forEach((srv, n) => {
     const { spec } = srv
     if (!spec.enabled) return
@@ -472,27 +525,37 @@ export function buildLaunchConfig(connection: RunConnection | undefined, servers
         skipped.push({ name: spec.name, reason: 'no command' })
         return
       }
+      const secretNames = new Set(spec.secretEnv ?? [])
+      // Decide the clash before any config line is pushed, so a refused server leaves nothing behind.
+      const clash = Object.entries(srv.env).find(
+        ([k, v]) => secretNames.has(k) && forwarded.has(k) && forwarded.get(k)!.value !== v
+      )
+      if (clash) {
+        const other = forwarded.get(clash[0])!.serverName
+        skipped.push({
+          name: spec.name,
+          reason: `its secret ${clash[0]} has a different value than server "${other}" uses; one Codex run can pass only one value per name. Rename the variable in one server.`
+        })
+        summary.push(`mcp ${spec.name}: refused (secret ${clash[0]} clashes with server ${other})`)
+        return
+      }
       config.push(`${base}.command=${tomlString(spec.command)}`)
       if (spec.args?.length) config.push(`${base}.args=${tomlArray(spec.args)}`)
-      const secretNames = new Set(spec.secretEnv ?? [])
       const plain: Record<string, string> = {}
       const forward: string[] = []
-      const inlineSecrets: string[] = []
       for (const [k, v] of Object.entries(srv.env)) {
-        if (!secretNames.has(k)) plain[k] = v
-        else if (!forwarded.has(k) || forwarded.get(k) === v) {
-          forwarded.set(k, v)
-          env[k] = v
-          forward.push(k)
-        } else {
+        if (!secretNames.has(k)) {
           plain[k] = v
-          inlineSecrets.push(k)
+          continue
         }
+        if (!forwarded.has(k)) forwarded.set(k, { value: v, serverName: spec.name })
+        env[k] = v
+        forward.push(k)
       }
       if (Object.keys(plain).length) config.push(`${base}.env=${tomlTable(plain)}`)
       if (forward.length) config.push(`${base}.env_vars=${tomlArray(forward)}`)
       summary.push(
-        `mcp ${spec.name}: stdio ${spec.command}${forward.length ? ` (secrets forwarded: ${forward.join(', ')})` : ''}${inlineSecrets.length ? ` (WARNING ${inlineSecrets.join(', ')} passed inline: name clash with another server)` : ''}`
+        `mcp ${spec.name}: stdio ${spec.command}${forward.length ? ` (secrets forwarded: ${forward.join(', ')})` : ''}`
       )
     } else {
       if (!spec.url) {
@@ -506,6 +569,7 @@ export function buildLaunchConfig(connection: RunConnection | undefined, servers
       const declared = spec.headers ?? {}
       const plain: Record<string, string> = {}
       const fromEnv: Record<string, string> = {}
+      // These env names carry the server's index, so they are unique per server and never clash between servers.
       let k = 0
       for (const [h, v] of Object.entries(srv.headers)) {
         if (!secretNames.has(h) && declared[h] === v) {

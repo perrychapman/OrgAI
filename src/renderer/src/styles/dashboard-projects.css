@@ -1,0 +1,609 @@
+/* Dashboard: project tiles, fact cards, the New project dialog form and the first-launch choice.
+   Region placement (.dashboard, .dashboard-grid) lives in dashboard.css. Tokens only. */
+
+/* The notice after forgetting an engagement spans the grid above the hero. */
+.dash-forget-notice {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+
+/* ---------- Projects region ---------- */
+
+.dash-projects-region {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.dash-projects-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+.dash-projects-head h2 {
+  margin: 0;
+  font-size: var(--text-title);
+  line-height: var(--text-title-lh);
+  font-weight: var(--weight-semibold);
+}
+.dash-projects-count {
+  color: var(--text-secondary);
+}
+.dash-projects-search {
+  max-width: 24rem;
+}
+.dash-projects-none {
+  margin: 0;
+  color: var(--text-secondary);
+}
+.dash-projects-grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: var(--space-4);
+}
+
+/* ---------- Project tile ---------- */
+
+.project-tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface-1);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--elev-1);
+  transition: border-color var(--dur-fast);
+}
+.project-tile:hover,
+.project-tile:has(.project-tile-main:focus-visible) {
+  border-color: var(--border-strong);
+}
+.project-tile[data-state='decisions'] {
+  background: var(--warning-soft);
+  border-color: var(--warning-border);
+}
+.project-tile[data-state='live'] {
+  /* The 2 px working edge sits inside the radius, so the corner stays clean. */
+  box-shadow: var(--elev-1), inset 2px 0 0 var(--state-working);
+}
+
+.project-tile-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-2);
+}
+.project-tile-title {
+  margin: 0;
+  min-width: 0;
+  font-size: var(--text-title-sm);
+  line-height: var(--text-title-sm-lh);
+  font-weight: var(--weight-semibold);
+}
+.project-tile-main {
+  all: unset;
+  box-sizing: border-box;
+  display: block;
+  min-width: 0;
+  cursor: pointer;
+}
+.project-tile-name {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The whole tile is the hit area. It stacks under the More button (z-index 1) and above the plain text. */
+.project-tile-main::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius-lg);
+}
+.project-tile-main:focus-visible {
+  outline: none;
+}
+.project-tile-main:focus-visible::after {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.project-tile-more {
+  position: relative;
+  z-index: 1;
+}
+
+.project-tile-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+}
+.project-tile-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: var(--state-idle);
+}
+.project-tile-dot.decisions {
+  background: var(--state-waiting);
+}
+.project-tile-dot.live {
+  background: var(--state-working);
+  box-shadow: var(--halo-dot-live);
+}
+@media (prefers-reduced-motion: reduce) {
+  .project-tile-dot.live {
+    box-shadow: none;
+  }
+}
+html[data-reduce-motion='on'] .project-tile-dot.live {
+  box-shadow: none;
+}
+
+.project-tile-folder,
+.project-tile-client,
+.project-tile-run {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-tertiary);
+}
+.project-tile-folder {
+  font-family: var(--font-mono);
+}
+.project-tile-run {
+  color: var(--text-secondary);
+}
+.project-tile-foot {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin: var(--space-1) 0 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-mono);
+  line-height: var(--text-mono-lh);
+  color: var(--text-secondary);
+}
+.project-tile-cost-unit {
+  color: var(--text-tertiary);
+}
+.project-tile-error {
+  margin: 0;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--danger-text, var(--danger));
+}
+
+/* More menu */
+.project-tile-menu {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0h);
+}
+.project-tile-menuitem {
+  all: unset;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--control-md);
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-body);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.project-tile-menuitem:hover {
+  background: var(--surface-3);
+}
+.project-tile-menuitem:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.project-tile-menuitem.danger {
+  color: var(--danger-text, var(--danger));
+}
+.project-tile-menusep {
+  margin: var(--space-1) 0;
+  border: 0;
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* ---------- Fact cards ---------- */
+
+.dash-facts {
+  container: dash-facts / inline-size;
+  min-width: 0;
+}
+.dash-facts-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-4);
+}
+/* A card needs about 240 px for the "Connection settings" link and a usage bar: two across from 500 px, three from 780. */
+@container dash-facts (min-width: 500px) {
+  .dash-facts-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@container dash-facts (min-width: 780px) {
+  .dash-facts-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+.dash-fact {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface-1);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--elev-1);
+}
+.dash-fact h2 {
+  margin: 0;
+  font-size: var(--text-title-sm);
+  line-height: var(--text-title-sm-lh);
+  font-weight: var(--weight-semibold);
+}
+.dash-fact-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.dash-fact-note,
+.dash-fact-foot,
+.dash-fact-line {
+  margin: 0;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-secondary);
+}
+.dash-fact-foot {
+  color: var(--text-tertiary);
+}
+.dash-fact-link {
+  align-self: flex-start;
+  margin-top: auto;
+  max-width: 100%;
+  white-space: normal;
+  text-align: start;
+}
+
+.dash-usage-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-1);
+}
+.dash-usage-row .usage-mini {
+  flex: none;
+  max-width: none;
+  width: 100%;
+}
+.dash-usage-name {
+  font-size: var(--text-body);
+  color: var(--text-primary);
+}
+
+.dash-cost-figure {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-title-lg);
+  line-height: var(--text-title-lg-lh);
+  color: var(--text-primary);
+}
+.dash-cost-row {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-secondary);
+}
+.dash-cost-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dash-conn-default {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  font-size: var(--text-body);
+}
+.dash-conn-problem {
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--danger-text, var(--danger));
+}
+
+/* ---------- New project form inside the dialog or a page panel ---------- */
+
+/* Inside the dialog the dialog is the card: no second border, fill or padding. */
+.project-form.in-dialog {
+  max-width: none;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+.project-form.in-panel {
+  max-width: none;
+}
+
+/* The submit row stays in view while the form scrolls. The dialog body drops its bottom padding, or the fields would
+   show through under the row; scroll-padding keeps a focused field from landing behind it. */
+.project-form.in-dialog .form-submit,
+.project-form.in-panel .form-submit {
+  position: sticky;
+  bottom: 0;
+  padding-block: var(--space-2);
+  border-top: 1px solid var(--border-subtle);
+  background: var(--surface-2);
+}
+.project-form.in-dialog .form-submit {
+  padding-bottom: var(--space-3);
+}
+.dialog-body:has(> .project-form.in-dialog) {
+  padding-bottom: 0;
+  scroll-padding-bottom: calc(var(--space-8) + var(--space-4));
+}
+
+/* ---------- New project form: From GitHub (components/dashboard/RepoStartPanel) ---------- */
+
+/* On a short window the panel needs the room: the chosen kind's card drops its description, which radios still read out. */
+@media (max-height: 720px) {
+  .project-form.in-dialog:has(.repo-start) .project-kind-text {
+    display: none;
+  }
+  .project-form.in-dialog:has(.repo-start) .project-kind-option input {
+    grid-row: auto;
+  }
+}
+
+/* A fieldset only to lock its controls while a clone runs. */
+.repo-lock {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+.repo-start,
+.repo-start .repo-lock {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.repo-start {
+  margin-bottom: var(--space-3);
+}
+.repo-start .field {
+  margin-bottom: 0;
+}
+.repo-mode label[data-inert] {
+  color: var(--text-secondary);
+  cursor: not-allowed;
+}
+.repo-lines {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0h);
+}
+.repo-fork-preview {
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+}
+.repo-tools-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.repo-command {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+.repo-command code {
+  padding: var(--space-0h) var(--space-2);
+  font-family: var(--font-mono);
+  font-size: var(--text-mono);
+  background: var(--surface-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+}
+.repo-dest {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  gap: var(--space-3);
+}
+@container (max-width: 520px) {
+  .repo-dest {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-2);
+  }
+}
+.repo-path {
+  font-family: var(--font-mono);
+  font-size: var(--text-mono);
+  overflow-wrap: anywhere;
+}
+.repo-error,
+.repo-cloned {
+  display: block;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.repo-config,
+.repo-tail-hint {
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.repo-tail-hint {
+  margin: 0 0 var(--space-3);
+}
+/* The step's own button (with its errors and status) stays in view too, just above the sticky submit row. NewProjectForm
+   measures that row into --form-submit-h; the fallback is only for the first frame. */
+.repo-progress-block,
+.repo-action {
+  position: sticky;
+  bottom: var(--form-submit-h, calc(var(--space-8) + var(--space-6)));
+  padding-block: var(--space-2);
+  background: var(--surface-2);
+}
+.repo-progress-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.dialog-body:has(> .project-form.in-dialog .repo-action, > .project-form.in-dialog .repo-progress-block) {
+  scroll-padding-bottom: calc(var(--space-8) * 4);
+}
+.repo-progress {
+  width: 100%;
+  height: var(--space-2);
+  accent-color: var(--accent);
+}
+@media (prefers-reduced-motion: reduce) {
+  .repo-progress:indeterminate {
+    visibility: hidden;
+  }
+}
+:root[data-reduce-motion='on'] .repo-progress:indeterminate {
+  visibility: hidden;
+}
+.repo-action {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.repo-action-row {
+  gap: var(--space-3);
+}
+.repo-action .hint {
+  font-size: var(--text-caption);
+  color: var(--text-secondary);
+}
+.repo-offer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+}
+.repo-offer > .field-msg {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+
+/* ---------- First launch ---------- */
+
+.dash-first {
+  container: dash-first / inline-size;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  max-width: 880px;
+  min-width: 0;
+}
+.dash-first-choice {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+.dash-first-choice legend {
+  padding: 0;
+  margin-bottom: var(--space-2);
+  font-size: var(--text-title);
+  line-height: var(--text-title-lh);
+  font-weight: var(--weight-semibold);
+}
+.dash-first-options {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-3);
+}
+@container dash-first (min-width: 600px) {
+  .dash-first-options {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+.dash-first-option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: var(--space-3);
+  row-gap: var(--space-1);
+  align-items: start;
+  padding: var(--space-4);
+  background: var(--surface-1);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--elev-1);
+  cursor: pointer;
+}
+.dash-first-option input {
+  grid-row: 1 / span 2;
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+}
+.dash-first-option:hover {
+  border-color: var(--border-strong);
+}
+.dash-first-option:has(input:checked) {
+  border-color: var(--accent-border);
+  background: var(--accent-faint);
+}
+.dash-first-option:has(input:focus-visible) {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.dash-first-option-title {
+  font-size: var(--text-title-sm);
+  line-height: var(--text-title-sm-lh);
+  font-weight: var(--weight-semibold);
+}
+.dash-first-option-text {
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+}
+.dash-first-panel {
+  min-width: 0;
+}
+.dash-first-panel[hidden] {
+  display: none;
+}

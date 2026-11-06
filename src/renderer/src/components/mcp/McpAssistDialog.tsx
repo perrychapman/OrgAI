@@ -5,7 +5,7 @@ import { Button } from '../ui/Button'
 import { Dialog } from '../ui/Dialog'
 import { Textarea } from '../ui/Textarea'
 import { errMessage } from './mcpHelpers'
-import { useAssistantModelName } from '../../lib/assistantModels'
+import { useAssistantRunsOn } from '../../lib/assistantModels'
 import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../../lib/settingsTarget'
 import { useAppStore } from '../../store/useAppStore'
 
@@ -25,7 +25,7 @@ export default function McpAssistDialog({
   description: string
   placeholder: string
 }): ReactElement {
-  const model = useAssistantModelName('mcpAssistModel')
+  const runsOn = useAssistantRunsOn('mcpAssistModel')
   const [text, setText] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -74,19 +74,19 @@ export default function McpAssistDialog({
         Runs an assistant on your plan. Counts toward your usage.
       </p>
       <p className="muted" data-testid="mcp-assist-model-hint">
-        Runs on {model}.{' '}
+        {runsOn.text}.{' '}
         <button
           type="button"
           className="link-btn"
           onClick={() => {
-            requestAppSettingsSection(APP_SETTINGS_SECTIONS.defaults)
+            requestAppSettingsSection(APP_SETTINGS_SECTIONS.assistantModels)
             onClose()
             useAppStore.getState().setView('appSettings')
             // Already on App settings (the library pane): tell the mounted page to switch panes.
             window.dispatchEvent(new Event('orgai:settings-section'))
           }}
         >
-          Change in App settings &gt; Defaults
+          Change in App settings
         </button>
       </p>
     </Dialog>

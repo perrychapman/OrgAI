@@ -5,6 +5,12 @@ import { createContext, useContext, useId } from 'react'
 export const PaneTitleContext = createContext<string | null>(null)
 
 /**
+ * Heading level of a `SettingsGroup` title: h4 inside a `SettingsSection` (under its h3), h3 where a group sits
+ * directly under the pane's h2 (the Advanced disclosure body). Keeps the outline without skipped levels (UI review L8).
+ */
+export const GroupHeadingLevelContext = createContext<3 | 4>(4)
+
+/**
  * One settings section, the same on both pages: a title (h3, under the pane's h2; one tier above row labels), an
  * optional one-line lead, an optional actions slot (buttons that act on the whole section) and then its content
  * (usually `SettingsCard`s). `id` is the stable DOM id deep links and e2e use; `titleId` pins the heading's id
@@ -46,19 +52,20 @@ export function SettingsSection({
         </div>
         {actions && <div className="settings-section-actions">{actions}</div>}
       </header>
-      {children}
+      <GroupHeadingLevelContext.Provider value={4}>{children}</GroupHeadingLevelContext.Provider>
     </section>
   )
 }
 
 /** Lower-tier heading (caption, sentence case) above a card or a run of rows inside a section. */
-export function SettingsGroup({ title, children }: { title: string; children: ReactNode }): ReactElement {
+export function SettingsGroup({ title, id, testId, children }: { title: string; /** Stable DOM id for deep links (the heading is focused on landing). */ id?: string; testId?: string; children: ReactNode }): ReactElement {
   const titleId = useId()
+  const Heading = useContext(GroupHeadingLevelContext) === 3 ? 'h3' : 'h4'
   return (
-    <div className="settings-group" role="group" aria-labelledby={titleId}>
-      <h4 id={titleId} className="settings-group-title">
+    <div id={id} className="settings-group" role="group" aria-labelledby={titleId} data-testid={testId}>
+      <Heading id={titleId} className="settings-group-title" tabIndex={id ? -1 : undefined}>
         {title}
-      </h4>
+      </Heading>
       {children}
     </div>
   )

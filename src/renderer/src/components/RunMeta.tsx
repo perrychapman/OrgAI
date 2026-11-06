@@ -1,19 +1,23 @@
 import type { ReactElement } from 'react'
 import { useEffect, useState } from 'react'
-import { Bot, ClipboardList, Clock, Folder, ShieldAlert } from 'lucide-react'
+import { Bot, ClipboardList, Clock, Database, Folder, ShieldAlert } from 'lucide-react'
 import type { Project } from '@shared/types'
 import { isVirtualProjectId } from '@shared/types'
+import { projectKindOf } from '@shared/defaults'
 import { folderName } from '../lib/paths'
-import { PROPOSAL_NEXT_COPY } from '../lib/proposalNext'
+import { breakdownKey, breakdownTotal, EMPTY_BREAKDOWN, parseBreakdownKey, parseBreakdownPartial, recordedBreakdown, recordedBreakdownText, recordedLabel, recordedTitle } from '../lib/knowledgeRun'
+import { isRunWindow, revealKnowledgeTab } from '../lib/runKnowledge'
+import { PROPOSAL_NEXT_COPY, proposalNextLead } from '../lib/proposalNext'
 import { APP_SETTINGS_PANES, requestAppSettingsSection, requestSkillLibrary } from '../lib/settingsTarget'
-import { useAppStore, useProjectSummaries, useRunIndexes, type RunState } from '../store/useAppStore'
+import { useAppStore, useProjectSummaries, type RunState } from '../store/useAppStore'
 import { planProgress } from '../lib/layout'
 import { agentCostInput, formatDuration, runCostInput, sumCosts, costView } from '../lib/cost'
 import { Cost } from './ui/Cost'
-import { predecessorOf, relativeTime } from '../lib/runChains'
-import { runName, runTag, shortPrompt } from '../lib/runLabels'
+import { chainOf, relativeTime } from '../lib/runChains'
+import { shortPrompt } from '../lib/runLabels'
 import { autoContinueState } from '../lib/runStatus'
 import { Icon } from './ui/Icon'
+import TeamFilesPointer from './team/TeamFilesPointer'
 import { quickAccessLabel, quickFolderLabel } from '../lib/assistants'
 
 /**
@@ -22,10 +26,8 @@ import { quickAccessLabel, quickFolderLabel } from '../lib/assistants'
  * (container queries in run.css); the status is not here, the active tab carries it.
  */
 export default function RunMeta({ run, project, agentCount }: { run: RunState; project: Project; agentCount: number }): ReactElement {
-  const indexes = useRunIndexes()
   const summaries = useProjectSummaries()
   const setSideTab = useAppStore((s) => s.setSideTab)
-  const openRun = useAppStore((s) => s.openRun)
   const { summary } = run
   // Wall time ticks each second while the run is live; "Started" refreshes every 30 s either way.
   const live = !summary.endedAt
@@ -37,10 +39,43 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
   const wallMs = (summary.endedAt ?? now) - summary.startedAt
   // The host's run usage is the truth; before the first run.usage event the strip total can lag the agent costs.
   const agentCosts = sumCosts(Object.values(run.agents).map(agentCostInput))
-  const cost =
+  const own =
     summary.usage ?? (agentCosts.costUsd !== null && agentCosts.costUsd > summary.totalCostUsd ? agentCosts : runCostInput(summary))
+  // One conversation per session chain: the figure covers every session, like the root node on the canvas.
+  const chain = chainOf(summaries, summary.id)
+  const earlier = chain.filter((m) => m.id !== summary.id && m.startedAt <= summary.startedAt)
+  const cost = earlier.length > 0 ? sumCosts([...earlier.map(runCostInput), own]) : own
   const showCost = !costView(cost).empty
-  const before = summary.resumedFrom ? predecessorOf(summaries, summary.id) : undefined
+  const sessions = chain.length
+  // Section 8: what the conversation recorded on the Knowledge tab (every member's harness write rows), engagements only.
+  const engagement = projectKindOf(project) === 'engagement'
+  // A joined string keeps the selector's result a stable primitive.
+  const recordedKey = useAppStore((s) => {
+    if (!engagement) return ''
+    const sum = { ...EMPTY_BREAKDOWN }
+    let partial = false
+    for (const m of chain) {
+      if (!s.runs[m.id]) partial = true
+      const b = recordedBreakdown(s.runs[m.id]?.transcript ?? [])
+      sum.items += b.items
+      sum.updates += b.updates
+      sum.relations += b.relations
+      sum.notes += b.notes
+      sum.retired += b.retired
+    }
+    return breakdownKey(sum, partial)
+  })
+  const breakdown = parseBreakdownKey(recordedKey)
+  const recordedPartial = parseBreakdownPartial(recordedKey)
+  const recorded = breakdownTotal(breakdown)
+  const recordedText = recordedBreakdownText(breakdown)
+  // A run window cannot reach the project's Knowledge tab: the run's own Knowledge side tab opens instead (spec 3.3).
+  const openRecorded = (runId: string): void => {
+    if (isRunWindow()) {
+      useAppStore.getState().openRunKnowledge(runId)
+      revealKnowledgeTab()
+    } else useAppStore.getState().openKnowledgeItem({ projectId: project.id })
+  }
   const progress = run.plan ? planProgress(run.plan) : undefined
   const auto = autoContinueState({
     status: summary.status,
@@ -60,7 +95,7 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
     } else if (next.kind === 'connectors') {
       requestAppSettingsSection(APP_SETTINGS_PANES.mcpLibrary)
       st.setView('appSettings')
-    } else if (next.kind === 'mcpProject') {
+    } else if (next.kind === 'mcpProject' || next.kind === 'mcpSecrets') {
       st.openProjectMcp(next.projectId)
     } else {
       if (st.selectedProjectId !== next.projectId) st.selectProject(next.projectId)
@@ -70,8 +105,8 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
   return (
     <div className="run-meta" data-testid="run-meta">
       {next && nextCopy && (
-        <span className="run-meta-item run-meta-next" role="status">
-          {nextCopy.lead}{' '}
+        <span className="run-meta-item run-meta-next">
+          {next ? proposalNextLead(next) : nextCopy.lead}{' '}
           <button type="button" className="link-btn" data-testid={nextCopy.testId} onClick={goNext}>
             {nextCopy.action}
           </button>
@@ -80,18 +115,7 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
           </button>
         </span>
       )}
-      {summary.resumedFrom && (
-        <span className="run-meta-item run-meta-chain">
-          Continues{' '}
-          {before ? (
-            <button type="button" className="link-btn" onClick={() => void openRun(before.id)} title={shortPrompt(before.prompt, 300)}>
-              {runTag(indexes.get(before.id))}: {runName(before)}
-            </button>
-          ) : (
-            'an earlier run'
-          )}
-        </span>
-      )}
+      {!isVirtualProjectId(project.id) && <TeamFilesPointer projectId={project.id} />}
       {summary.kind === 'setup' && <span className="run-meta-item">Setup session</span>}
       {summary.quick && (
         <>
@@ -112,6 +136,18 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
         <Icon icon={Bot} size="xs" />
         {agentCount} agent{agentCount === 1 ? '' : 's'}
       </span>
+      {recorded > 0 && (
+        <button type="button" className="run-meta-item run-meta-recorded" data-testid="run-meta-recorded" title={recordedTitle(recordedText, sessions, recordedPartial)} onClick={() => openRecorded(summary.id)}>
+          <Icon icon={Database} size="xs" />
+          {recordedLabel(recorded, recordedPartial)}
+          <span className="sr-only"> ({recordedText}{recordedPartial ? ', at least; some sessions are not loaded' : ''}; opens Knowledge)</span>
+        </button>
+      )}
+      {sessions > 1 && (
+        <span className="run-meta-item run-meta-sessions" data-testid="run-meta-sessions" title="This conversation has been continued; the figures cover every session.">
+          {sessions} sessions
+        </span>
+      )}
       {run.plan && progress && (
         <button
           type="button"
@@ -144,10 +180,15 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
           {auto.count} of {auto.max} auto-continues
         </span>
       )}
-      {project.permissionMode === 'auto' && !summary.quick && summary.kind === 'work' && !isVirtualProjectId(summary.projectId) && (
+      {summary.team === 'single' && !summary.quick && !isVirtualProjectId(summary.projectId) && (
+        <span className="run-meta-item" data-testid="run-meta-ask">
+          Ask · one assistant
+        </span>
+      )}
+      {project.permissionMode === 'auto' && !summary.quick && summary.kind === 'work' && summary.team !== 'single' && !isVirtualProjectId(summary.projectId) && (
         <span
           className="run-meta-item run-meta-unattended"
-          title="Permission mode is auto: Claude approves or denies each call and asks only when unsure. Saved rules never ask."
+          title="Permission mode is auto: the model's safety check approves or denies each call and asks only when unsure. Saved rules never ask."
         >
           <Icon icon={ShieldAlert} size="xs" />
           unattended

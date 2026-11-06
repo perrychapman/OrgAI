@@ -3,7 +3,7 @@
 // "Import agents" and "Export to repo" actions, and checks the repository stays untouched except for the export.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { check, cleanup, finish, findProject, gotoProjects, launch, log, makeFixtureRepo, removeFixture, sleep, writeFile } from './lib.mjs'
+import { check, cleanup, finish, findProject, gotoProjects, launch, log, makeFixtureRepo, openProjectForm, removeFixture, sleep, writeFile } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const NAME = 'E2E import (orgai test)'
@@ -21,10 +21,9 @@ try {
   const size = /^(\d+)x(\d+)$/.exec(process.env.E2E_SIZE ?? '')
   if (size) await app.evaluate(({ BrowserWindow }, [w, h]) => BrowserWindow.getAllWindows()[0].setContentSize(w, h), [Number(size[1]), Number(size[2])])
   await gotoProjects(page)
-  const form = page.locator('form.card')
-  if (!(await form.count())) await page.locator('[data-testid=new-project]').click()
-  await form.waitFor({ timeout: 10_000 })
-  await form.getByRole('radio', { name: 'Existing repository', exact: true }).check({ force: true })
+  const form = await openProjectForm(page)
+  await form.locator('[data-testid=project-kind-option][data-kind=code] input[type=radio]').check({ force: true })
+  await form.getByRole('radio', { name: 'Existing code', exact: true }).check({ force: true })
   await form.locator('input[placeholder*="repo"]').fill(repo)
   await form.locator('input[placeholder*="Defaults to the folder name"]').fill(NAME)
   const found = form.locator('[data-testid=agents-found]')
@@ -32,6 +31,7 @@ try {
   check((await found.innerText()).trim() === 'Found 2 Claude Code agents and AGENTS.md.', 'form names the agents found', await found.innerText())
   const radios = form.locator('[data-testid=setup-choice] input[type=radio]')
   check((await radios.count()) === 3, 'three setup choices replace the Architect checkbox')
+  check((await form.locator('[data-testid=setup-choice] legend').innerText()).trim() === 'How should the team start?', 'setup choice legend reads "How should the team start?"')
   check((await form.locator('[data-testid=architect-setup]').count()) === 0, 'no Architect checkbox when agents exist')
   await shot('form')
   await form.getByRole('button', { name: 'Create project and review import' }).click()
@@ -103,12 +103,9 @@ try {
   check(/chart|edit|changed|Undo/i.test(await notice.innerText()), 'banner stays but Undo is gone after a chart edit', await notice.innerText())
   await shot('undo-expired')
 
-  await page.locator('[data-testid=export-org]').click()
-  const dlg = page.locator('dialog[open]')
-  await dlg.waitFor({ timeout: 10_000 })
-  await dlg.getByRole('button', { name: 'Export to repo', exact: true }).click()
-  await page.locator('[data-testid=export-notice]').waitFor({ timeout: 10_000 })
-  check(fs.existsSync(path.join(repo, '.orgai', 'org.json')), 'export wrote .orgai/org.json')
+  // The team files are the source of truth; there is no separate export any more.
+  check((await page.locator('[data-testid=export-org]').count()) === 0, 'no Export to repo button on the Team tab')
+  check(/Import from other tools/.test(await page.locator('[data-testid=import-agents]').innerText()), 'the import button reads "Import from other tools"')
   await sleep(200)
   await shot('export')
 } catch (e) {

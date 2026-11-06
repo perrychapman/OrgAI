@@ -1,5 +1,33 @@
 import { describe, expect, it } from 'vitest'
-import { sanitizeArgs, isCredentialArg, capabilityId, clampText, displayPath, isKeyLikeArg, isKeyLikeValue, isSecretFlag, isSecretName, scrubUrl, validKeyName, MCP_TARGET_MAX, mcpSpecDigest, reviewTarget } from './sanitize'
+import { sanitizeArgs, isCredentialArg, capabilityId, clampText, hiddenCharIn, hiddenCharProblem, displayPath, isKeyLikeArg, isKeyLikeValue, isSecretFlag, isSecretName, scrubUrl, validKeyName, MCP_TARGET_MAX, mcpSpecDigest, reviewTarget } from './sanitize'
+
+describe('hiddenCharIn / hiddenCharProblem', () => {
+  it('finds bidi, zero-width and control characters; multi-line fields allow tab and line breaks', () => {
+    expect(hiddenCharIn('a‮b')).toBe('U+202E')
+    expect(hiddenCharIn('a​b')).toBe('U+200B')
+    expect(hiddenCharIn('tag\u{e0041}')).toBe('U+E0041')
+    expect(hiddenCharIn('a\tb')).toBe('U+0009')
+    expect(hiddenCharIn('a\tb\r\nc', { multiline: true })).toBeNull()
+    expect(hiddenCharIn('a\u0007b', { multiline: true })).toBe('U+0007')
+    expect(hiddenCharIn('plain')).toBeNull()
+    expect(hiddenCharIn(42)).toBeNull()
+    // Unicode line and paragraph separators end a line: refused on one line, allowed like LF in multi-line fields and prose.
+    const [ls, ps] = [String.fromCodePoint(0x2028), String.fromCodePoint(0x2029)]
+    expect(hiddenCharIn(`a${ls}b`)).toBe('U+2028')
+    expect(hiddenCharIn(`a${ps}b`)).toBe('U+2029')
+    expect(hiddenCharIn(`a${ls}${ps}b`, { multiline: true })).toBeNull()
+    expect(hiddenCharIn(`a${ls}${ps}b`, { prose: true })).toBeNull()
+    expect(clampText(`a${ls}b${ps}c`)).toBe('a b c')
+    // Prose keeps emoji and Persian joiners and soft hyphens, refuses bidi, zero-width space and controls.
+    expect(hiddenCharIn('\u{1F469}‍\u{1F4BB} می‌ co­op\n\t', { prose: true })).toBeNull()
+    expect(hiddenCharIn('a‮b', { prose: true })).toBe('U+202E')
+    expect(hiddenCharIn('a​b', { prose: true })).toBe('U+200B')
+    expect(hiddenCharIn('a⁧b', { prose: true })).toBe('U+2067')
+    expect(hiddenCharIn('a\u0007b', { prose: true })).toBe('U+0007')
+    expect(hiddenCharProblem('The URL', 'x‮')).toBe('The URL contains a hidden character (U+202E, a control, zero-width, bidi or other invisible character); remove it.')
+    expect(hiddenCharProblem('The URL', 'x')).toBeNull()
+  })
+})
 
 describe('clampText', () => {
   it('removes controls and bidi characters, collapses whitespace and clamps', () => {
@@ -82,6 +110,11 @@ describe('sanitizeArgs', () => {
     expect(isCredentialArg('token abcdef1')).toBe(true)
     expect(isCredentialArg('Authorization=x')).toBe(true)
     expect(isCredentialArg('https://h.example/path')).toBe(false)
+  })
+  it('stays linear on hostile long input', () => {
+    const start = Date.now()
+    for (const s of ['a'.repeat(300_000), `${'a'.repeat(100_000)}://${'b'.repeat(100_000)}`, 'x://'.repeat(50_000), `a:${'/'.repeat(100_000)}`, `${'a='.repeat(50_000)}@@@@`]) isCredentialArg(s)
+    expect(Date.now() - start).toBeLessThan(2000)
   })
   it('drops secret flags with their value and names them without values', () => {
     const r = sanitizeArgs(['run', '--header=Foo: SECRETV', '-H', 'SECRETV2', '--keep'])

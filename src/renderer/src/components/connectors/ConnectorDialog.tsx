@@ -1,6 +1,6 @@
 import type { ReactElement } from 'react'
 import { useEffect, useId, useRef, useState } from 'react'
-import { ExternalLink, PlugZap, ShieldCheck, Unplug } from 'lucide-react'
+import { ExternalLink, Pencil, PlugZap, ShieldCheck, TriangleAlert, Unplug } from 'lucide-react'
 import type { ConnectorInfo, McpTestResult } from '@shared/types'
 import { CONNECTOR_REDIRECT_URI, connectorEase, connectorVariant } from '@shared/connectors'
 import { Badge } from '../ui/Badge'
@@ -15,6 +15,7 @@ import {
   clampText,
   connectLabel,
   connectMissing,
+  customNote,
   defaultVariantId,
   dialogLead,
   dialogTitle,
@@ -23,12 +24,15 @@ import {
   noteForUser,
   plainToolName,
   removeConsequence,
+  variantCommandLine,
   variantExplain
 } from '../../lib/connectors'
 import { authFailure, connectStep, disconnectKind, httpsUrl, testFailure } from '../../lib/connectorFlow'
+import { hasHidden, showHidden } from '../../lib/hiddenChars'
+import { presetOf, type UserConnectorDef, type UserConnectorVariant } from '../../lib/mcpScope'
 import { errMessage } from '../mcp/mcpHelpers'
 import { ConnectorLogo } from './ConnectorLogo'
-import { EaseBadge } from './ConnectorTile'
+import { CustomBadge, EaseBadge } from './ConnectorTile'
 import { useConnectors } from './useConnectors'
 
 type Phase = 'idle' | 'working' | 'waiting'
@@ -44,14 +48,59 @@ function ExtLink({ href, children }: { href: string; children: string }): ReactE
   )
 }
 
+type TargetShape = Pick<UserConnectorVariant, 'transport' | 'url' | 'headers' | 'command' | 'args' | 'env'> & { secretEnv?: string[]; secretHeaders?: string[] }
+
+/**
+ * Where a preset the user described will connect, in full and unclamped: the program and every argument, or the address.
+ * Text goes through hiddenChars so a disguised character is shown as an escape, with a badge.
+ */
+function CustomTarget({ variant, added = false }: { variant: TargetShape; added?: boolean }): ReactElement | null {
+  const program = variant.transport === 'stdio'
+  const headerLines = [
+    ...Object.entries(variant.headers ?? {}).map(([k, v]) => ` -H ${JSON.stringify(`${k}: ${v}`)}`),
+    ...(variant.secretHeaders ?? []).map((k) => ` -H ${JSON.stringify(`${k}: (secret)`)}`)
+  ].join('')
+  const secretEnv = (variant.secretEnv ?? []).map((k) => `${k}=(secret)`)
+  const text = program ? [...secretEnv, variantCommandLine(variant)].join(' ') : `${variant.url ?? ''}${headerLines}`.trim()
+  if (!text.trim()) return null
+  const hidden = hasHidden(text)
+  return (
+    <div className="connector-custom-target">
+      <span className="connector-custom-target-label">
+        {added ? (program ? 'Already added; runs this program on this computer' : 'Already added; connects to') : program ? 'Runs this program on this computer' : 'Connects to'}
+      </span>
+      <code className="mono connector-custom-text" data-testid={program ? 'connector-custom-command' : 'connector-custom-url'}>
+        {showHidden(text)}
+      </code>
+      {hidden && (
+        <Badge tone="danger" icon={TriangleAlert}>
+          Hidden characters shown
+        </Badge>
+      )}
+    </div>
+  )
+}
+
 /** Connect, check, disconnect or remove one service. Plain words only; the live state comes from connectors:list. */
-export default function ConnectorDialog({ info, onClose, onConnected }: { info: ConnectorInfo; onClose: () => void; onConnected?: (info: ConnectorInfo) => void }): ReactElement {
+export default function ConnectorDialog({
+  info,
+  onClose,
+  onConnected,
+  onEditPreset
+}: {
+  info: ConnectorInfo
+  onClose: () => void
+  onConnected?: (info: ConnectorInfo) => void
+  /** A service the user described: the footer then offers "Edit preset". The caller closes this dialog and opens the form. */
+  onEditPreset?: (preset: UserConnectorDef) => void
+}): ReactElement {
   const { connectors, refresh } = useConnectors()
   const live = connectors?.find((c) => c.connector.id === info.connector.id) ?? info
   const def = live.connector
   const entry = live.library
-  const [variantId, setVariantId] = useState(() => info.variant ?? defaultVariantId(def))
-  const variant = connectorVariant(def, entry ? live.variant : variantId)
+  const [variantId, setVariantId] = useState(() => info.library?.entry.connectorVariant ?? info.variant ?? defaultVariantId(def))
+  const connected = live.state === 'connected'
+  const variant = connectorVariant(def, connected ? live.variant : variantId)
   const auth = variant.auth
   const ease = connectorEase(def, variant.id)
   const [haveClient, setHaveClient] = useState(false)
@@ -72,10 +121,11 @@ export default function ConnectorDialog({ info, onClose, onConnected }: { info: 
   const waitingRef = useRef(false)
   const ids = useId()
 
-  const connected = live.state === 'connected'
   const usedBy = entry?.usedBy ?? []
   const account = entry?.auth.account
-  const note = honestyNote(def)
+  const preset = presetOf(live)
+  const presetVariant = preset?.variants.find((v) => v.id === variant.id)
+  const note = preset ? customNote(preset.origin) : honestyNote(def)
   const missing = connected ? [] : connectMissing(auth, { clientId, clientSecret, token })
   const sentence = missingSentence(missing)
   const busy = phase !== 'idle'
@@ -104,7 +154,12 @@ export default function ConnectorDialog({ info, onClose, onConnected }: { info: 
     setPhase('working')
     cancelled.current = false
     try {
-      const lib = entry ?? (await window.orgai.connectors.add({ connectorId: def.id, variant: variantId }))
+      // An entry that is not connected is rewritten in place to the chosen variant.
+      const lib = entry && entry.entry.connectorVariant === variantId ? entry : await window.orgai.connectors.add({ connectorId: def.id, variant: variantId })
+      if (lib.entry.connectorVariant !== variantId) {
+        setError('This service was connected with a different access level. Close and open it again.')
+        return
+      }
       const id = lib.entry.id
       libraryId.current = id
       let failure: string | undefined
@@ -193,28 +248,43 @@ export default function ConnectorDialog({ info, onClose, onConnected }: { info: 
   const notes = connected ? [] : noteForUser(def.notes, def.name)
   /** A token service leads with the token field; the access choice and notes come after it. */
   const tokenFirst = form && auth.kind === 'token'
+  const lockedId = `${ids}-locked`
+  const mixedAuth = new Set(def.variants.map((v) => v.auth.kind)).size > 1
+  const pickVariant = (id: string): void => {
+    setVariantId(id)
+    setToken('')
+    setClientId('')
+    setClientSecret('')
+  }
+  // One stable slot (always before the form), so a change between a token and an own-app variant keeps the focused radio mounted.
+  const variantsBlock = multi ? (
+    <fieldset className="connector-variants" disabled={connected || busy} aria-describedby={connected ? lockedId : undefined}>
+      <legend>{mixedAuth ? 'Access and sign-in' : 'What agents can do'}</legend>
+      {def.variants.map((v) => (
+        <label key={v.id} data-testid="connector-variant" data-variant={v.id} className={`connector-variant${v.id === variant.id ? ' on' : ''}`}>
+          <input type="radio" name={`${ids}-variant`} value={v.id} checked={v.id === variant.id} onChange={() => pickVariant(v.id)} />
+          <span className="connector-variant-text">
+            <strong>
+              {v.label} <span className="muted">· {accessWords(v)}</span>
+            </strong>
+            <span className="muted">
+              {v.description ? `${v.description} ` : ''}
+              {variantExplain(v)}
+            </span>
+          </span>
+        </label>
+      ))}
+      {connected && (
+        <p id={lockedId} className="muted connector-locked" data-testid="connector-locked">
+          {auth.kind === 'none'
+            ? 'Access was chosen when you added this service. Remove the service and add it again to change it.'
+            : 'Access was chosen when you connected this service. Disconnect it to change it.'}
+        </p>
+      )}
+    </fieldset>
+  ) : null
   const extras = (
     <>
-      {multi && (
-        <fieldset className="connector-variants" disabled={!!entry || busy}>
-          <legend>What agents can do</legend>
-          {def.variants.map((v) => (
-            <label key={v.id} className={`connector-variant${v.id === variant.id ? ' on' : ''}`}>
-              <input type="radio" name={`${ids}-variant`} value={v.id} checked={v.id === variant.id} onChange={() => setVariantId(v.id)} />
-              <span className="connector-variant-text">
-                <strong>
-                  {v.label} <span className="muted">· {accessWords(v)}</span>
-                </strong>
-                <span className="muted">
-                  {v.description ? `${v.description} ` : ''}
-                  {variantExplain(v)}
-                </span>
-              </span>
-            </label>
-          ))}
-          {entry && <p className="muted connector-locked">Access is set when the service is added. To switch it, remove the service and add it again.</p>}
-        </fieldset>
-      )}
       {!multi && (
         <p className="muted connector-access">
           <Icon icon={ShieldCheck} size="xs" /> {accessLine(def, variant)}
@@ -228,7 +298,7 @@ export default function ConnectorDialog({ info, onClose, onConnected }: { info: 
         </ul>
       )}
       {note && (
-        <p className="muted connector-honesty" data-testid="connector-honesty">
+        <p className="muted connector-honesty" data-testid={preset ? 'connector-custom-note' : 'connector-honesty'}>
           {note}
         </p>
       )}
@@ -244,6 +314,13 @@ export default function ConnectorDialog({ info, onClose, onConnected }: { info: 
       testId="connector-dialog"
       footer={
         <>
+          {preset && onEditPreset && phase === 'idle' && (
+            <span className="connector-foot-edit">
+              <Button icon={Pencil} testId="connector-preset-edit" onClick={() => onEditPreset(preset)}>
+                Edit preset
+              </Button>
+            </span>
+          )}
           {form && phase === 'waiting' && (
             <>
               <span className="muted connector-foot-status" role="status" data-testid="connector-waiting">
@@ -286,8 +363,9 @@ export default function ConnectorDialog({ info, onClose, onConnected }: { info: 
         <div className="connector-dlg-head">
           <ConnectorLogo def={def} size="lg" />
           <div className="connector-dlg-id">
-            <span className="connector-dlg-vendor">by {def.vendor}</span>
+            {!preset && <span className="connector-dlg-vendor">by {def.vendor}</span>}
             <div className="connector-badges">
+              {preset && <CustomBadge info={live} />}
               {!connected && <EaseBadge ease={ease} />}
               {def.status === 'preview' && <Badge>Preview</Badge>}
             </div>
@@ -312,6 +390,8 @@ export default function ConnectorDialog({ info, onClose, onConnected }: { info: 
             I already have a client ID
           </button>
         )}
+        {variantsBlock}
+        {preset && entry ? <CustomTarget variant={entry.entry} added /> : presetVariant && <CustomTarget variant={presetVariant} />}
         {!tokenFirst && extras}
 
         {form && (

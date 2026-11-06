@@ -5,19 +5,25 @@ import type {
   CapabilityProgressEvent,
   ConnectionEvent,
   ContinueRunInput,
+  EngagementChangedEvent,
   DraftRequest,
   FocusRunTarget,
   McpLibraryInfo,
+  MenuActionEvent,
+  MenuState,
   OrgAIApi,
   SkillLibraryInfo,
   PermissionDecision,
   Project,
+  RepoCloneProgress,
   RunEvent,
   SendRunInput,
   StartRunInput,
+  TeamFilesStatus,
   TeamReviewSummary
 } from '../shared/types'
-import { IPC } from '../shared/types'
+import { IPC, isMenuAction } from '../shared/types'
+import { KIT_IPC, MCP_SCOPE_IPC, TEAM_FILES_IPC } from '../shared/types'
 
 const api: OrgAIApi = {
   projects: {
@@ -25,7 +31,7 @@ const api: OrgAIApi = {
     get: (id: string) => ipcRenderer.invoke(IPC.projectsGet, id),
     create: (input) => ipcRenderer.invoke(IPC.projectsCreate, input),
     save: (project: Project) => ipcRenderer.invoke(IPC.projectsSave, project),
-    remove: (id: string) => ipcRenderer.invoke(IPC.projectsRemove, id),
+    remove: (input) => ipcRenderer.invoke(IPC.projectsRemove, input),
     pickDirectory: () => ipcRenderer.invoke(IPC.projectsPickDir),
     checkPath: (path: string) => ipcRenderer.invoke(IPC.projectsCheckPath, path),
     remapModels: (input) => ipcRenderer.invoke(IPC.projectsRemapModels, input),
@@ -43,7 +49,8 @@ const api: OrgAIApi = {
     connect: (id) => ipcRenderer.invoke(IPC.connectionsConnect, id),
     login: (id, method) => ipcRenderer.invoke(IPC.connectionsLogin, id, method),
     cancelLogin: (loginId) => ipcRenderer.invoke(IPC.connectionsCancelLogin, loginId),
-    logout: (id) => ipcRenderer.invoke(IPC.connectionsLogout, id)
+    logout: (id) => ipcRenderer.invoke(IPC.connectionsLogout, id),
+    setDefault: (id) => ipcRenderer.invoke(IPC.connectionsSetDefault, id)
   },
   models: {
     list: (query) => ipcRenderer.invoke(IPC.modelsList, query),
@@ -160,6 +167,7 @@ const api: OrgAIApi = {
     listLive: () => ipcRenderer.invoke(IPC.runsListLive),
     pendingCards: (runId: string) => ipcRenderer.invoke(IPC.runsPendingCards, runId),
     usageStats: (query) => ipcRenderer.invoke(IPC.runsUsageStats, query),
+    usageCsv: (query) => ipcRenderer.invoke(IPC.runsUsageCsv, query),
     startQuick: (input) => ipcRenderer.invoke(IPC.runsStartQuick, input),
     promoteQuick: (input) => ipcRenderer.invoke(IPC.runsPromoteQuick, input)
   },
@@ -182,6 +190,7 @@ const api: OrgAIApi = {
   },
   permissions: {
     list: (projectId: string) => ipcRenderer.invoke(IPC.permissionsList, projectId),
+    ignored: (projectId: string) => ipcRenderer.invoke(IPC.permissionsIgnored, projectId),
     remove: (input) => ipcRenderer.invoke(IPC.permissionsRemove, input),
     add: (input) => ipcRenderer.invoke(IPC.permissionsAdd, input),
     decideRequest: (input) => ipcRenderer.invoke(IPC.permissionsDecideRequest, input)
@@ -207,12 +216,33 @@ const api: OrgAIApi = {
     openPath: (path: string) => ipcRenderer.invoke(IPC.appOpenPath, path),
     openLogs: () => ipcRenderer.invoke(IPC.appOpenLogs),
     logPath: () => ipcRenderer.invoke(IPC.appLogPath),
-    info: () => ipcRenderer.invoke(IPC.appInfo)
+    info: () => ipcRenderer.invoke(IPC.appInfo),
+    cliShimStatus: () => ipcRenderer.invoke(IPC.appCliShimStatus),
+    installCliShim: () => ipcRenderer.invoke(IPC.appInstallCliShim),
+    uninstallCliShim: () => ipcRenderer.invoke(IPC.appUninstallCliShim)
   },
   onFocusRun: (cb) => {
     const listener = (_e: IpcRendererEvent, target: FocusRunTarget): void => cb(target)
     ipcRenderer.on(IPC.appFocusRun, listener)
     return () => ipcRenderer.removeListener(IPC.appFocusRun, listener)
+  },
+  onMenuAction: (cb) => {
+    const listener = (_e: IpcRendererEvent, event: MenuActionEvent): void => {
+      const action = event && typeof event === 'object' ? event.action : undefined
+      if (isMenuAction(action)) cb(action)
+    }
+    ipcRenderer.on(IPC.menuAction, listener)
+    return () => ipcRenderer.removeListener(IPC.menuAction, listener)
+  },
+  menu: {
+    setState: (state: MenuState) =>
+      ipcRenderer.invoke(IPC.menuSetState, {
+        hasProject: state?.hasProject === true,
+        hasRun: state?.hasRun === true,
+        runLive: state?.runLive === true,
+        chatRun: state?.chatRun === true,
+        hasDecision: state?.hasDecision === true
+      })
   },
   usage: {
     refresh: () => ipcRenderer.invoke(IPC.usageRefresh)
@@ -220,6 +250,90 @@ const api: OrgAIApi = {
   notifications: {
     /** @deprecated Mirrors into AppSettings.notifications; removed with NotificationsToggle in phase 1. */
     setEnabled: (enabled: boolean) => ipcRenderer.invoke(IPC.appSetNotifications, enabled)
+  },
+  // ---- Team templates, engagement context (runs.usageCsv sits in runs) ----
+  templates: {
+    list: () => ipcRenderer.invoke(IPC.templatesList),
+    saveFromProject: (input) => ipcRenderer.invoke(IPC.templatesSaveFromProject, input),
+    remove: (templateId: string) => ipcRenderer.invoke(IPC.templatesRemove, templateId),
+    apply: (input) => ipcRenderer.invoke(IPC.templatesApply, input)
+  },
+  engagement: {
+    document: (projectId: string) => ipcRenderer.invoke(IPC.projectsEngagementDocument, projectId),
+    updateDocument: (input) => ipcRenderer.invoke(IPC.projectsUpdateEngagementDocument, input),
+    listNotes: (projectId: string) => ipcRenderer.invoke(IPC.projectsListNotes, projectId),
+    getNote: (ref) => ipcRenderer.invoke(IPC.projectsGetNote, ref),
+    saveNote: (input) => ipcRenderer.invoke(IPC.projectsSaveNote, input),
+    removeNote: (ref) => ipcRenderer.invoke(IPC.projectsRemoveNote, ref)
+  },
+  projectRemoval: {
+    preview: (input) => ipcRenderer.invoke(IPC.projectsRemovePreview, input)
+  },
+  // ---- Engagement knowledge graph (every write pushes onEngagementChanged 'knowledge') ----
+  knowledge: {
+    get: (projectId: string) => ipcRenderer.invoke(IPC.knowledgeGet, projectId),
+    saveNode: (input) => ipcRenderer.invoke(IPC.knowledgeSaveNode, input),
+    removeNode: (ref) => ipcRenderer.invoke(IPC.knowledgeRemoveNode, ref),
+    saveEdge: (input) => ipcRenderer.invoke(IPC.knowledgeSaveEdge, input),
+    removeEdge: (ref) => ipcRenderer.invoke(IPC.knowledgeRemoveEdge, ref),
+    clear: (projectId: string) => ipcRenderer.invoke(IPC.knowledgeClear, projectId),
+    inferredLinks: (projectId: string) => ipcRenderer.invoke(IPC.knowledgeInferredLinks, projectId),
+    dismissLink: (input) => ipcRenderer.invoke(IPC.knowledgeDismissLink, input)
+  },
+  onEngagementChanged: (cb) => {
+    const listener = (_e: IpcRendererEvent, event: EngagementChangedEvent): void => cb(event)
+    ipcRenderer.on(IPC.projectsEngagementChanged, listener)
+    return () => ipcRenderer.removeListener(IPC.projectsEngagementChanged, listener)
+  },
+  // ---- MCP per-project secrets and custom connector presets ----
+  mcpProject: {
+    copyFromLibrary: (input) => ipcRenderer.invoke(MCP_SCOPE_IPC.mcpCopyFromLibrary, input),
+    setOverrides: (input) => ipcRenderer.invoke(MCP_SCOPE_IPC.mcpSetProjectOverrides, input)
+  },
+  connectorPresets: {
+    list: () => ipcRenderer.invoke(MCP_SCOPE_IPC.connectorPresetsList),
+    upsert: (def) => ipcRenderer.invoke(MCP_SCOPE_IPC.connectorPresetsUpsert, def),
+    remove: (input) => ipcRenderer.invoke(MCP_SCOPE_IPC.connectorPresetsRemove, input)
+  },
+  // ---- Practice kit ----
+  kit: {
+    pickExportPath: () => ipcRenderer.invoke(KIT_IPC.kitPickExportPath),
+    pickImportPath: () => ipcRenderer.invoke(KIT_IPC.kitPickImportPath),
+    export: (input) => ipcRenderer.invoke(KIT_IPC.kitExport, input),
+    previewImport: (input) => ipcRenderer.invoke(KIT_IPC.kitPreviewImport, input),
+    applyImport: (input) => ipcRenderer.invoke(KIT_IPC.kitApplyImport, input)
+  },
+  // ---- Folder config trust ----
+  folderConfig: {
+    review: (projectId: string) => ipcRenderer.invoke(IPC.projectsFolderConfig, projectId),
+    setTrust: (input) => ipcRenderer.invoke(IPC.projectsSetFolderConfigTrust, input)
+  },
+  // ---- Start a project from a repository (clone or fork) ----
+  repos: {
+    parseSource: (text: string) => ipcRenderer.invoke(IPC.projectsParseRepoSource, text),
+    tools: () => ipcRenderer.invoke(IPC.projectsRepoTools),
+    clone: (input) => ipcRenderer.invoke(IPC.projectsCloneRepo, input),
+    cancelClone: (requestId: string) => ipcRenderer.invoke(IPC.projectsCancelClone, requestId)
+  },
+  onRepoCloneProgress: (cb) => {
+    const listener = (_e: IpcRendererEvent, event: RepoCloneProgress): void => cb(event)
+    ipcRenderer.on(IPC.projectsCloneProgress, listener)
+    return () => ipcRenderer.removeListener(IPC.projectsCloneProgress, listener)
+  },
+  // ---- Team files ----
+  teamFiles: {
+    status: (input) => ipcRenderer.invoke(TEAM_FILES_IPC.teamFilesStatus, input),
+    listAttention: () => ipcRenderer.invoke(TEAM_FILES_IPC.teamFilesListAttention),
+    approve: (input) => ipcRenderer.invoke(TEAM_FILES_IPC.teamFilesApprove, input),
+    reject: (input) => ipcRenderer.invoke(TEAM_FILES_IPC.teamFilesReject, input),
+    undo: (input) => ipcRenderer.invoke(TEAM_FILES_IPC.teamFilesUndo, input),
+    commit: (input) => ipcRenderer.invoke(TEAM_FILES_IPC.teamFilesCommit, input),
+    enable: (input) => ipcRenderer.invoke(TEAM_FILES_IPC.teamFilesEnable, input)
+  },
+  onTeamFilesChanged: (cb) => {
+    const listener = (_e: IpcRendererEvent, status: TeamFilesStatus): void => cb(status)
+    ipcRenderer.on(TEAM_FILES_IPC.teamFilesChanged, listener)
+    return () => ipcRenderer.removeListener(TEAM_FILES_IPC.teamFilesChanged, listener)
   }
 }
 

@@ -1,7 +1,7 @@
 import type { KeyboardEvent, ReactElement } from 'react'
 import { useId, useMemo, useRef, useState } from 'react'
 import { ChevronUp, Library, Package, Plus, Search, Sparkles } from 'lucide-react'
-import type { ConnectorInfo, McpMutationResult, McpServerInfo, Project, Role } from '@shared/types'
+import type { ConnectorInfo, McpLibraryInfo, McpMutationResult, McpServerInfo, Project, Role } from '@shared/types'
 import { Badge } from '../ui/Badge'
 import { Banner } from '../ui/Banner'
 import { Button } from '../ui/Button'
@@ -11,23 +11,36 @@ import { Input } from '../ui/Input'
 import { Popover } from '../ui/Popover'
 import { linkedServerFor } from '../mcp/mcpLibraryHelpers'
 import { errMessage } from '../mcp/mcpHelpers'
+import { transportWords } from '../mcp/mcpLibraryHelpers'
+import { useMcpLibrary } from '../mcp/useMcpLibrary'
+import { RoleChecklist } from '../mcp/RoleAccess'
 import { grantServerRoles } from '../../lib/roleCapabilities'
 import { clampText } from '../../lib/capabilities'
-import { CATEGORY_LABELS, EASE_BADGE, filterConnectors, infoEase, serviceCount, sortForGallery, stateChip } from '../../lib/connectors'
+import { CATEGORY_LABELS, EASE_BADGE, filterConnectors, filterLibrary, infoEase, serviceCount, sortForGallery, stateChip } from '../../lib/connectors'
 import { UseInProjectDialog, connectorAccess } from './ConnectedServices'
 import { ConnectorLogo } from './ConnectorLogo'
-import { EaseBadge } from './ConnectorTile'
+import { CustomBadge, EaseBadge } from './ConnectorTile'
+import { isCustomConnector, presetOf } from '../../lib/mcpScope'
 import ConnectorDialog from './ConnectorDialog'
 import { useRovingFocus } from './useRovingFocus'
 
 export type OtherWay = 'assist' | 'link' | 'registry' | 'form'
 
-type Step = { kind: 'list' } | { kind: 'connect'; info: ConnectorInfo } | { kind: 'use'; info: ConnectorInfo }
+type Step = { kind: 'list' } | { kind: 'connect'; info: ConnectorInfo } | { kind: 'use'; info: ConnectorInfo } | { kind: 'library'; item: McpLibraryInfo }
 
 /** Scroll the project's row for a service into view and focus its role control (after this dialog has closed). */
 function jumpToRow(connectorId: string): void {
+  jumpTo(`[data-testid=connected-service-row][data-connector="${connectorId}"]`)
+}
+
+/** The same for a linked saved server's row (`mcp-row`, keyed by the project server id). */
+function jumpToServer(serverId: string): void {
+  jumpTo(`[data-testid=mcp-row][data-id="${serverId}"]`)
+}
+
+function jumpTo(selector: string): void {
   window.setTimeout(() => {
-    const row = document.querySelector<HTMLElement>(`[data-testid=connected-service-row][data-connector="${connectorId}"]`)
+    const row = document.querySelector<HTMLElement>(selector)
     if (!row) return
     row.scrollIntoView({ block: 'center' })
     const target = row.querySelector<HTMLElement>('.mcp-role-access button') ?? row
@@ -36,8 +49,70 @@ function jumpToRow(connectorId: string): void {
   }, 60)
 }
 
+/** Roles step for a saved server picked from "Your servers": least privilege, so at least one role (or All roles). */
+function LibraryRolesDialog({
+  project,
+  item,
+  onBack,
+  onClose,
+  onResult
+}: {
+  project: Project
+  item: McpLibraryInfo
+  onBack: () => void
+  onClose: () => void
+  onResult: (r: McpMutationResult) => void
+}): ReactElement {
+  const [roles, setRoles] = useState<string[]>([])
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const name = clampText(item.entry.name, 60)
+  const add = async (): Promise<void> => {
+    setBusy(true)
+    setError(null)
+    try {
+      onResult(await window.orgai.mcp.linkLibrary({ projectId: project.id, libraryId: item.entry.id, roles, enabled: true }))
+      onClose()
+    } catch (e) {
+      setError(errMessage(e))
+      setBusy(false)
+    }
+  }
+  return (
+    <Dialog
+      open
+      onClose={busy ? () => undefined : onClose}
+      title={`Add ${name}`}
+      description="This project uses the server as you set it up in App settings. Pick which roles may use it. You can change this later."
+      size="md"
+      testId="add-service-library-dialog"
+      footer={
+        <>
+          <Button onClick={onBack} disabled={busy}>
+            Back
+          </Button>
+          <Button variant="primary" loading={busy} disabled={roles.length === 0} testId="add-service-library-confirm" onClick={() => void add()}>
+            Add to project
+          </Button>
+        </>
+      }
+    >
+      {error && (
+        <Banner tone="danger" title="Could not add the server">
+          {error}
+        </Banner>
+      )}
+      <fieldset className="mcp-vars">
+        <legend>Who can use it?</legend>
+        <RoleChecklist roles={project.roles} value={roles} onChange={setRoles} label="Role access" />
+        {roles.length === 0 && <span className="hint">Choose at least one role, or All roles.</span>}
+      </fieldset>
+    </Dialog>
+  )
+}
+
 /**
- * "Add a service": a search-first picker. Services ready to use (connected in the app) come first; a connected one goes
+ * "Add a service": a search-first picker. "Your servers" (saved custom servers) come first, then services ready to use (connected in the app) come first; a connected one goes
  * straight to the roles step, an unconnected one opens the connect dialog and continues to roles once connected. A service
  * already in this project offers "Manage roles". The other routes are pinned in the footer.
  */
@@ -69,13 +144,31 @@ export default function AddServiceDialog({
   const roving = useRovingFocus(listRef, '[role=option]')
   const ids = useId()
 
-  const { ready, more } = useMemo(() => {
+  const { ready, more, presets } = useMemo(() => {
     const ranked = filterConnectors(sortForGallery(connectors ?? []), query)
     // A query ranks by match; keep the Ready section on top without losing that order inside each section.
-    return { ready: ranked.filter((i) => i.state === 'connected'), more: ranked.filter((i) => i.state !== 'connected') }
+    // The user's own presets that are not connected sit with "Your servers", beside their saved custom servers.
+    const notReady = ranked.filter((i) => i.state !== 'connected')
+    return { ready: ranked.filter((i) => i.state === 'connected'), more: notReady.filter((i) => !isCustomConnector(i)), presets: notReady.filter(isCustomConnector) }
   }, [connectors, query])
-  const total = ready.length + more.length
+  const { library } = useMcpLibrary()
+  const yours = useMemo(
+    () => filterLibrary((library ?? []).filter((l) => !l.entry.connectorId), query),
+    [library, query]
+  )
+  const total = yours.length + presets.length + ready.length + more.length
 
+  if (step.kind === 'library') {
+    return (
+      <LibraryRolesDialog
+        project={project}
+        item={step.item}
+        onBack={() => setStep({ kind: 'list' })}
+        onClose={onClose}
+        onResult={onResult}
+      />
+    )
+  }
   if (step.kind === 'connect') {
     return (
       <ConnectorDialog
@@ -121,6 +214,28 @@ export default function AddServiceDialog({
       setStep({ kind: 'use', info })
     } else setStep({ kind: 'connect', info })
   }
+  const linkedFor = (item: McpLibraryInfo): McpServerInfo | undefined => servers.find((s) => s.spec.libraryId === item.entry.id)
+  const pickLibrary = (item: McpLibraryInfo): void => {
+    const linked = linkedFor(item)
+    if (linked) {
+      onClose()
+      jumpToServer(linked.spec.id)
+      return
+    }
+    if (role || project.roles.length === 0) {
+      // One role asked, or a project with no roles: nothing to choose, link now.
+      setPickError(null)
+      window.orgai.mcp
+        .linkLibrary({ projectId: project.id, libraryId: item.entry.id, ...(role ? { roles: [role.slug] } : {}), enabled: true })
+        .then((r) => {
+          onResult(r)
+          onClose()
+        })
+        .catch((e) => setPickError(errMessage(e)))
+      return
+    }
+    setStep({ kind: 'library', item })
+  }
   const other = (way: OtherWay): void => {
     onClose()
     onOther(way)
@@ -130,6 +245,46 @@ export default function AddServiceDialog({
       e.preventDefault()
       pick(info)
     }
+  }
+
+  const libraryOption = (item: McpLibraryInfo): ReactElement => {
+    const e = item.entry
+    const used = !!linkedFor(item)
+    const descId = `${ids}-l-${e.id}`
+    return (
+      <li
+        key={e.id}
+        role="option"
+        className="addsvc-opt"
+        data-testid="add-service-library-option"
+        data-id={e.id}
+        data-used={used ? 'true' : undefined}
+        aria-selected={activeId === e.id}
+        aria-label={`${clampText(e.name, 60)}, your server, ${used ? 'in this project' : 'ready to add'}`}
+        aria-describedby={descId}
+        tabIndex={-1}
+        onFocus={() => setActiveId(e.id)}
+        onClick={() => pickLibrary(item)}
+        onKeyDown={(ev) => {
+          if (ev.key === 'Enter' || ev.key === ' ') {
+            ev.preventDefault()
+            pickLibrary(item)
+          }
+        }}
+      >
+        <ConnectorLogo def={{ id: e.id, name: e.name }} />
+        <span className="addsvc-text">
+          <span className="mcp-name">{clampText(e.name, 60)}</span>
+          <span id={descId} className="muted addsvc-desc">
+            {e.description ? clampText(e.description, 200) : transportWords(e.transport)}
+          </span>
+        </span>
+        <span className="addsvc-meta">
+          {used ? <Badge tone="info">In this project</Badge> : null}
+          <span className={`addsvc-act${used ? '' : ' primary'}`}>{used ? 'Manage roles' : 'Add'}</span>
+        </span>
+      </li>
+    )
   }
 
   const option = (info: ConnectorInfo, isReady: boolean): ReactElement => {
@@ -147,7 +302,7 @@ export default function AddServiceDialog({
         data-ready={isReady ? 'true' : undefined}
         data-used={used ? 'true' : undefined}
         aria-selected={activeId === def.id}
-        aria-label={`${def.name}, ${CATEGORY_LABELS[def.category]}, ${status}`}
+        aria-label={`${def.name}, ${isCustomConnector(info) ? `${presetOf(info)?.origin === 'kit' ? 'from a kit' : 'yours'}, ` : ''}${CATEGORY_LABELS[def.category]}, ${status}`}
         aria-describedby={descId}
         tabIndex={-1}
         onFocus={() => setActiveId(def.id)}
@@ -156,7 +311,10 @@ export default function AddServiceDialog({
       >
         <ConnectorLogo def={def} />
         <span className="addsvc-text">
-          <span className="mcp-name">{def.name}</span>
+          <span className="mcp-name addsvc-name">
+            {def.name}
+            {isCustomConnector(info) && <CustomBadge info={info} />}
+          </span>
           <span id={descId} className="muted addsvc-desc">
             {def.description}
           </span>
@@ -255,7 +413,7 @@ export default function AddServiceDialog({
               value={query}
               onChange={setQuery}
               placeholder="Search by name or what it does"
-              aria-label="Search services"
+              aria-label="Search services and your servers"
               data-autofocus=""
               data-testid="add-service-search"
               onKeyDown={(e) => {
@@ -271,16 +429,30 @@ export default function AddServiceDialog({
           </p>
           {total === 0 ? (
             <div className="connector-empty" data-testid="add-service-empty">
-              <strong>{query.trim() ? `No service matches "${query.trim()}"` : 'No services yet'}</strong>
+              <strong>{query.trim() ? `No service or saved server matches "${clampText(query.trim(), 60)}"` : 'No services yet'}</strong>
               <p className="muted">Try a different name, or use "Can't find it?" below.</p>
               <div className="connector-empty-actions">
                 <Button size="sm" onClick={() => setQuery('')}>
                   Clear search
                 </Button>
+                <Button size="sm" icon={Plus} onClick={() => other('form')} testId="add-service-empty-custom">
+                  Set up a custom server
+                </Button>
               </div>
             </div>
           ) : (
             <div ref={listRef} className="addsvc-lists" onKeyDown={roving.onKeyDown} onFocus={roving.onFocus}>
+              {yours.length + presets.length > 0 && (
+                <section className="addsvc-group" data-testid="add-service-yours">
+                  <h3 className="connector-group-title" id={`${ids}-yours`}>
+                    Your servers <span className="muted connector-group-n">{yours.length + presets.length}</span>
+                  </h3>
+                  <ul role="listbox" aria-labelledby={`${ids}-yours`} className="addsvc-list">
+                    {presets.map((i) => option(i, false))}
+                    {yours.map((l) => libraryOption(l))}
+                  </ul>
+                </section>
+              )}
               {ready.length > 0 && (
                 <section className="addsvc-group" data-testid="add-service-ready">
                   <h3 className="connector-group-title" id={`${ids}-ready`}>
@@ -294,7 +466,7 @@ export default function AddServiceDialog({
               {more.length > 0 && (
                 <section className="addsvc-group" data-testid="add-service-new">
                   <h3 className="connector-group-title" id={`${ids}-new`}>
-                    {ready.length > 0 || query.trim() ? 'Connect a new service' : 'Services'} <span className="muted connector-group-n">{more.length}</span>
+                    {yours.length + presets.length > 0 || ready.length > 0 || query.trim() ? 'Connect a new service' : 'Services'} <span className="muted connector-group-n">{more.length}</span>
                   </h3>
                   <ul role="listbox" aria-labelledby={`${ids}-new`} className="addsvc-list">
                     {more.map((i) => option(i, false))}

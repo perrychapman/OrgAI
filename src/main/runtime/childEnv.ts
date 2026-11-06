@@ -92,15 +92,37 @@ export interface IsolateClaudeEnvOptions {
 const PROXY_DROPPED = new Set(['CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CODE_OAUTH_REFRESH_TOKEN', 'CLAUDE_CONFIG_DIR'])
 
 /**
- * A copy of `base` without the routing variables (and, per the options, the inherited auth). Undefined values
- * are dropped. Never mutates `base`.
+ * OrgAI's own control variables (cli-spec 3.4(3)): the data dir, the daemon's and the secret overlay's settings, and
+ * ELECTRON_RUN_AS_NODE (which turns the OrgAI binary into a Node runtime that could load the CLI). No agent or MCP
+ * child may see them, whoever set them (the inherited env, a connection or an MCP spec). Names compare
+ * case-insensitively. ORGAI_MOCK is not one of them.
+ */
+export const ORGAI_CONTROL_ENV_PATTERNS: readonly RegExp[] = [/^ORGAI_DATA_DIR$/i, /^ORGAI_DAEMON_/i, /^ORGAI_SECRET_/i, /^ELECTRON_RUN_AS_NODE$/i]
+
+/** True for a name scrubControlEnv drops. */
+export function isControlEnvVar(name: string): boolean {
+  return ORGAI_CONTROL_ENV_PATTERNS.some((re) => re.test(name))
+}
+
+/** A copy of `env` without OrgAI's control variables (ORGAI_CONTROL_ENV_PATTERNS). Never mutates `env`. */
+export function scrubControlEnv<T extends Record<string, string | undefined>>(env: T): T {
+  const out: Record<string, string | undefined> = {}
+  for (const [name, value] of Object.entries(env)) {
+    if (!isControlEnvVar(name)) out[name] = value
+  }
+  return out as T
+}
+
+/**
+ * A copy of `base` without the routing variables (and, per the options, the inherited auth) and without OrgAI's
+ * control variables (scrubControlEnv). Undefined values are dropped. Never mutates `base`.
  */
 export function isolateClaudeEnv(base: NodeJS.ProcessEnv, opts: IsolateClaudeEnvOptions = {}): Record<string, string> {
   const out: Record<string, string> = {}
   for (const [name, value] of Object.entries(base)) {
     if (value === undefined) continue
     const n = name.toUpperCase()
-    if (isClaudeRoutingVar(n)) continue
+    if (isClaudeRoutingVar(n) || isControlEnvVar(n)) continue
     if (n === 'ANTHROPIC_API_KEY' && (opts.proxy || !opts.keepApiKey)) continue
     if (opts.proxy && PROXY_DROPPED.has(n)) continue
     out[name] = value

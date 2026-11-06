@@ -14,7 +14,7 @@ import { composerPlaceholder } from '../lib/assistants'
 const HINT = 'Enter to send · Shift+Enter for a new line · paste or drop images'
 
 interface Props {
-  /** Key of the draft in the store: a run id, or newRunDraftKey(projectId). */
+  /** Key of the draft in the store: a run's chain key (one draft per conversation), or newRunDraftKey(projectId). */
   draftKey: string
   /** Says what the primary button does ("Replying to Orchestrator", "New run: 2 open runs keep going"). */
   modeLabel: string
@@ -157,8 +157,8 @@ export default function Composer({ draftKey, modeLabel, primaryLabel, placeholde
           <textarea
             ref={ref}
             className="textarea"
-            aria-labelledby={labelId}
-            aria-describedby={hintId}
+            aria-label={composerPlaceholder(placeholder)}
+            aria-describedby={`${labelId} ${hintId}`}
             value={text}
             onChange={(e) => setDraft(draftKey, { text: e.target.value, images })}
             onPaste={(e) => {

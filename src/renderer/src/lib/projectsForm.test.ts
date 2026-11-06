@@ -1,24 +1,33 @@
 import { describe, expect, it } from 'vitest'
 import type { ProjectPathCheck } from '@shared/types'
-import { effectiveName, isFullPath, newProjectConnectionLine, pathStatus, submitBlocker } from './projectsForm'
+import { LAST_PROJECT_KIND_KEY, addReferenceFolder, effectiveName, isFullPath, newProjectConnectionView, pathStatus, readLastProjectKind, submitBlocker, writeLastProjectKind } from './projectsForm'
 
-describe('newProjectConnectionLine', () => {
-  const status = { state: 'connected' }
-  const lite = (baseUrl: string, hasApiKey: boolean): never => ({ connection: { id: 'litellm', enabled: true, tierModels: {}, baseUrl, hasApiKey }, status, modelCount: 0 }) as never
-  const oai = (enabled: boolean): never => ({ connection: { id: 'openai', enabled, tierModels: {}, auth: { kind: 'chatgpt' } }, status, modelCount: 0 }) as never
-  it('uses the default when it is usable', () => {
-    expect(newProjectConnectionLine('litellm', [lite('http://x', true)])).toContain('Runs on LiteLLM.')
-    expect(newProjectConnectionLine('openai', [oai(true)])).toContain('Runs on OpenAI.')
+describe('newProjectConnectionView', () => {
+  const info = (id: 'anthropic' | 'openai' | 'litellm', state: string, isDefault: boolean, auth?: object): never =>
+    ({ connection: { id, enabled: true, tierModels: {}, auth: auth ?? { kind: 'subscription' }, baseUrl: 'http://x', hasApiKey: true }, status: { state }, modelCount: 0, isDefault }) as never
+  it('names the effective default with its auth method and offers Change', () => {
+    expect(newProjectConnectionView([info('anthropic', 'connected', true)])).toEqual({ text: 'Runs on Anthropic (Claude Code login).', link: 'Change' })
+    expect(newProjectConnectionView([info('anthropic', 'disconnected', false), info('openai', 'connected', true, { kind: 'chatgpt' })])).toEqual({
+      text: 'Runs on OpenAI (ChatGPT sign-in).',
+      link: 'Change'
+    })
+    expect(newProjectConnectionView([info('litellm', 'connected', true)]).text).toBe('Runs on LiteLLM (proxy key).')
   })
-  it('says the mock adapter when it is ticked', () => {
-    expect(newProjectConnectionLine('litellm', [lite('http://x', true)], true)).toBe('Runs on the mock adapter (no tokens).')
+  it('says nothing is connected when there is no connected default', () => {
+    expect(newProjectConnectionView([info('anthropic', 'disconnected', false)])).toEqual({ text: 'Nothing is connected yet.', link: 'Connect' })
+    expect(newProjectConnectionView([info('anthropic', 'error', true)]).link).toBe('Connect')
   })
-  it('falls back to Anthropic when it is not', () => {
-    expect(newProjectConnectionLine('litellm', [lite('', true)])).toContain('so this project runs on Anthropic.')
-    expect(newProjectConnectionLine('litellm', [lite('http://x', false)])).toContain('so this project runs on Anthropic.')
-    expect(newProjectConnectionLine('openai', [oai(false)])).toBe('OpenAI is not connected, so this project runs on Anthropic. Change in App settings > Defaults.')
-    expect(newProjectConnectionLine('litellm', null)).toContain('LiteLLM is not connected, so this project runs on Anthropic.')
-    expect(newProjectConnectionLine(null, null)).toContain('Runs on Anthropic.')
+  it('names a chosen default that is not connected while another connection is', () => {
+    expect(newProjectConnectionView([info('anthropic', 'connected', false), info('openai', 'disconnected', true, { kind: 'chatgpt' })])).toEqual({
+      text: 'Runs on OpenAI (ChatGPT sign-in), which is not connected.',
+      link: 'Change'
+    })
+  })
+  it('says the mock adapter when it is ticked, with no link', () => {
+    expect(newProjectConnectionView([info('litellm', 'connected', true)], true)).toEqual({ text: 'Runs on the mock adapter (no tokens).', link: null })
+  })
+  it('is empty until the list loads', () => {
+    expect(newProjectConnectionView(null)).toEqual({ text: '', link: null })
   })
 })
 
@@ -76,6 +85,58 @@ describe('submitBlocker', () => {
     expect(submitBlocker({ ...base, kind: 'new' })).toMatch(/name/)
     expect(submitBlocker({ ...base, kind: 'new', name: 'a' })).toMatch(/Describe/)
     expect(submitBlocker({ ...base, status: { tone: 'error', text: 'No folder', blocking: true } })).toBe('No folder')
+  })
+})
+
+describe('engagement kind', () => {
+  it('says nothing about git or emptiness for the working folder', () => {
+    expect(pathStatus('existing', '/x', chk({ isGitRepo: false }), 'engagement')).toBeNull()
+    expect(pathStatus('existing', '/x', chk({ empty: true }), 'engagement')).toBeNull()
+    expect(pathStatus('existing', '/x', chk({ exists: false, isDirectory: false }), 'engagement')).toMatchObject({ tone: 'error', blocking: true })
+    expect(pathStatus('existing', '/x', chk({ isDirectory: false }), 'engagement')?.text).toMatch(/file/)
+  })
+  it('needs only a working folder', () => {
+    const base = { kind: 'existing' as const, name: '', path: '', brief: '', status: null, projectKind: 'engagement' as const }
+    expect(submitBlocker(base)).toBe('Choose the working folder.')
+    expect(submitBlocker({ ...base, path: '/x' })).toBeNull()
+  })
+})
+
+describe('last project kind', () => {
+  const store = (): { getItem: (k: string) => string | null; setItem: (k: string, v: string) => void } => {
+    const m = new Map<string, string>()
+    return { getItem: (k) => m.get(k) ?? null, setItem: (k, v) => void m.set(k, v) }
+  }
+  it('is null until one is written, then round trips', () => {
+    const s = store()
+    expect(readLastProjectKind(s)).toBeNull()
+    writeLastProjectKind('engagement', s)
+    expect(readLastProjectKind(s)).toBe('engagement')
+  })
+  it('ignores junk and a missing or throwing storage', () => {
+    const s = store()
+    s.setItem(LAST_PROJECT_KIND_KEY, 'nope')
+    expect(readLastProjectKind(s)).toBeNull()
+    expect(readLastProjectKind(null)).toBeNull()
+    expect(readLastProjectKind({ getItem: () => { throw new Error('x') }, setItem: () => undefined })).toBeNull()
+  })
+})
+
+describe('addReferenceFolder', () => {
+  it('adds a full path', () => {
+    expect(addReferenceFolder(['/a'], ' /b ', '/w')).toEqual({ list: ['/a', '/b'] })
+  })
+  it('refuses the working folder, duplicates, relative paths, empty input and a full list', () => {
+    expect(addReferenceFolder([], '/w/', '/w')).toEqual({ error: 'This is the working folder. Agents can already change files in it.' })
+    expect(addReferenceFolder([], '/w/sub', '/w')).toMatchObject({ error: expect.stringMatching(/inside the working folder/) })
+    expect(addReferenceFolder([], '/', '/w', 'code')).toMatchObject({ error: expect.stringMatching(/contains the project folder/) })
+    expect(addReferenceFolder([], 'C:\\work2', 'C:\\work')).toEqual({ list: ['C:\\work2'] })
+    expect(addReferenceFolder([], 'C:\\Work\\', 'c:/work')).toMatchObject({ error: expect.stringMatching(/working folder/) })
+    expect(addReferenceFolder(['/a'], '/a', '/w')).toMatchObject({ error: expect.stringMatching(/already/) })
+    expect(addReferenceFolder([], 'rel/x', '/w')).toMatchObject({ error: expect.stringMatching(/full path/) })
+    expect(addReferenceFolder([], '  ', '/w')).toMatchObject({ error: expect.any(String) })
+    const full = Array.from({ length: 20 }, (_, i) => `/f${i}`)
+    expect(addReferenceFolder(full, '/new', '/w')).toMatchObject({ error: expect.stringMatching(/20/) })
   })
 })
 

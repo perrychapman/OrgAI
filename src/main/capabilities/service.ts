@@ -243,6 +243,12 @@ export class CapabilityService implements CapabilityServiceApi {
   private runTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private pendingRuns = new Map<string, number>()
   private chains = new Map<string, Promise<unknown>>()
+  /**
+   * Activity (backgroundTasks): non-zero while a discover, recommend or review runs (tracked controllers), a project's
+   * serial review chain is pending, or a debounced run-ended review is scheduled. A review counts in both maps; only
+   * zero versus non-zero matters.
+   */
+  inFlightCount(): number { return this.controllers.size + this.chains.size + this.runTimers.size }
   private disposed = false
   private now: () => number
 

@@ -75,6 +75,37 @@
   border-left: 2px solid var(--border-default);
   padding-left: var(--space-3);
 }
+/* Where a continuation starts in the merged feed: one quiet centred line. */
+.chain-divider {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  color: var(--text-tertiary);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  text-align: center;
+  margin: var(--space-2) 0;
+}
+.chain-divider::before,
+.chain-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border-subtle);
+}
+/* Top of a chain's merged feed: earlier entries cut by the feed cap, and the button that loads earlier sessions. */
+.chain-omitted {
+  margin: var(--space-2) 0;
+  color: var(--text-tertiary);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  text-align: center;
+}
+.chain-load-earlier {
+  display: flex;
+  justify-content: center;
+  margin: var(--space-1) 0 var(--space-2);
+}
 /* Compact one-line rows: tool calls, tool results and harness lines. */
 .entry.tool_use,
 .entry.tool_result,
@@ -101,6 +132,12 @@
 .tool-main {
   min-width: 0;
   flex: 1;
+}
+/* A harness row standing for a knowledge write: headline, then its "Open" link to the Knowledge tab. */
+.knowledge-write-row .knowledge-row-open {
+  white-space: nowrap;
+  margin-left: var(--space-1);
+  font-size: var(--text-small);
 }
 .tool-label {
   overflow-wrap: anywhere;
@@ -508,6 +545,7 @@
   position: static;
 }
 .side-run > [role='tabpanel'] {
+  position: relative; /* positioned descendants are clipped by this scroller, not by .side-panel */
   flex: 1;
   min-height: 0;
   overflow-y: auto;
@@ -531,6 +569,12 @@
 }
 .side-header .tabs-list {
   margin-inline: calc(var(--space-1) * -1);
+}
+/* Five tabs (Transcript, Plan, Usage, Knowledge, Logs) must fit a 280 px panel without clipping the last. */
+@container (max-width: 340px) {
+  .side-header .tabs-list.compact {
+    gap: var(--space-1);
+  }
 }
 .transcript-bar {
   padding: var(--space-1) var(--space-3);

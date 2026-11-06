@@ -1,8 +1,8 @@
 // Token-free (mock adapter). The Assistants group: sidebar rows, virtual-project topbar and tabs, the three start pages,
-// Ctrl+Shift+N, the Projects view entry points, App settings > Defaults rows, and (when the main-process handlers for
+// Ctrl+Shift+N, the Projects view entry points, App settings > General > Advanced rows, and (when the main-process handlers for
 // runs.startQuick / skills.startAssist are merged) the Chat, MCP assistant and Skill assistant runs end to end.
 import path from 'node:path'
-import { TMP, check, cleanup, createProject, deleteProject, endSession, finish, gotoProjects, launch, log, makeFixtureRepo, openAppSettings, openProject, openTeam, removeFixture, sleep, teamPanelTab } from './lib.mjs'
+import { TMP, check, cleanup, createProject, deleteProject, endSession, finish, gotoProjects, launch, log, makeFixtureRepo, openAppSettings, openProject, openTeam, removeFixture, sleep, teamPanelTab, windowShift } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const NAME = 'E2E assistants (orgai test)'
@@ -68,15 +68,17 @@ try {
   // ---- First launch: no projects yet ----
   await setSize(1600, 1000)
   await gotoProjects(page)
-  check(await visible('[data-testid=empty-chat-now]'), 'first launch shows "Chat now" beside the project form')
-  check((await page.locator('form.card').count()) === 1, 'first launch still shows the project form')
+  check(await visible('[data-testid=dash-start-choice]'), 'first launch shows the start choice')
+  check((await page.locator('[data-testid=dashboard] form.project-form').count()) === 1, 'first launch shows the inline project form')
   await shot('projects-empty-1600x1000')
+  await page.locator('[data-testid=dash-start-choice]').getByRole('radio', { name: 'Chat now' }).check({ force: true })
+  check(await visible('[data-testid=empty-chat-now]'), 'choosing Chat now shows the Chat now button')
   await page.locator('[data-testid=empty-chat-now]').click({ timeout: 3000 }).catch(() => {})
   check(await visible('[data-testid=assistant-start-quick]'), 'Chat now opens the Chat start page')
 
   await createProject(page, { path: repo, name: NAME })
   await gotoProjects(page)
-  check(await visible('[data-testid=projects-new-chat]'), 'the Projects view header has "New chat"')
+  check(await visible('[data-testid=projects-new-chat]'), 'the Dashboard header has "New chat"')
   await page.locator('[data-testid=projects-new-chat]').click({ timeout: 3000 }).catch(() => {})
   check(await visible('[data-testid=assistant-start-quick]'), 'New chat opens the Chat start page')
   await gotoProjects(page)
@@ -149,12 +151,16 @@ try {
             check(await team.getByRole('radio', { name: 'One assistant' }).isChecked().catch(() => false), `"One assistant" is selected in Team ${tag}`)
             await team.locator('summary').click().catch(() => {})
           }
-          check((await page.locator('[data-testid=chat-summary]').innerText().catch(() => '')).includes('Change in App settings > Defaults'), `chat-summary points to App settings > Defaults ${tag}`)
+          const summaryText = await page.locator('[data-testid=chat-summary]').innerText().catch(() => '')
+          check(summaryText.includes(' via '), `chat-summary names the connection ("via") ${tag}`, summaryText)
+          check(!summaryText.includes('Defaults'), `chat-summary has no Defaults pointer ${tag}`, summaryText)
+          check(await visible('[data-testid=chat-model-change]'), `chat-model-change link is visible ${tag}`)
         } else if (id === 'harness') {
           check((await page.locator('textarea[data-testid=assistant-instruction]').count()) === 1, `MCP start page has the instruction textarea ${tag}`)
           const st = await switchState('[data-testid=mcp-allow-build]')
           check(!!st && !st.checked, `mcp-allow-build switch exists and is off ${tag}`, JSON.stringify(st))
           check(await visible('[data-testid=assistant-start]'), `MCP start page has a Start button ${tag}`)
+          check(((await page.locator('[data-testid=assistant-model-line]').innerText().catch(() => '')).includes(' via ')), `MCP assistant model line names the connection ${tag}`)
           const buildLabel = await page.locator('[data-testid=mcp-allow-build]').getAttribute('aria-label')
           check(/data folder/.test(buildLabel ?? ''), `mcp-allow-build names where it builds ${tag}`, buildLabel ?? '')
         } else {
@@ -163,13 +169,60 @@ try {
         }
       }
 
-      // App settings > Defaults rows
+      // chat-model-change lands on App settings > General with Advanced open and the "Assistant models" heading focused
+      await openAssistant('quick')
+      await page.locator('[data-testid=chat-model-change]').click().catch(() => {})
+      await sleep(700)
+      check(await visible('[data-testid=settings-advanced][data-pane=app-general] [data-testid=skill-assist-model-row-select]'), `chat-model-change opens General with Advanced open (${tag})`)
+      const focusedHeading = await page.evaluate(() => (document.activeElement?.textContent ?? '').trim())
+      check(/Assistant models/i.test(focusedHeading), `focus is on the Assistant models group heading ${tag}`, focusedHeading)
+      // N1: the deep link scrolls only the settings scroller, never the window or the app shell (checked after the
+      // 900 ms re-land too).
+      await sleep(800)
+      let shift = await windowShift(page)
+      check(shift.ok, `chat-model-change leaves the window unshifted ${tag}`, JSON.stringify(shift))
+      // The MCP and Skill assistant start pages' "Change in App settings" (AssistantModelLine).
+      for (const id of ['harness', 'skills']) {
+        await openAssistant(id)
+        const line = page.locator(`[data-testid=assistant-start-${id}] [data-testid=assistant-model-line]`)
+        const lineText = await line.innerText().catch(() => '')
+        check(/Runs on .+ tier \(.+\) via /.test(lineText), `${LABELS[id]} model line names the resolved model and the connection ${tag}`, lineText)
+        await line.getByRole('button', { name: 'Change in App settings' }).click().catch(() => {})
+        await sleep(1500)
+        const hd = await page.evaluate(() => (document.activeElement?.textContent ?? '').trim())
+        check(/Assistant models/i.test(hd), `${LABELS[id]} model link focuses the Assistant models heading ${tag}`, hd)
+        shift = await windowShift(page)
+        check(shift.ok, `${LABELS[id]} model link leaves the window unshifted ${tag}`, JSON.stringify(shift))
+      }
+      if (theme === 'dark') {
+        // The MCP assist dialog's hint (Team > Catalog > Add a service > Ask the assistant).
+        await openProject(page, NAME)
+        await openTeam(page)
+        await teamPanelTab(page, 'Catalog').click().catch(() => {})
+        await page.locator('[data-testid=mcp-add-service]').scrollIntoViewIfNeeded().catch(() => {})
+        await page.locator('[data-testid=mcp-add-service]').click().catch(() => {})
+        await page.locator('[data-testid=add-service-assist]').click().catch(() => {})
+        const hint = page.locator('[data-testid=mcp-assist-model-hint]')
+        const hintText = await hint.innerText().catch(() => '')
+        check(/Runs on .+ tier \(.+\) via /.test(hintText), `MCP assist dialog hint names the resolved model and the connection ${tag}`, hintText)
+        await hint.getByRole('button', { name: 'Change in App settings' }).click().catch(() => {})
+        await sleep(1500)
+        const hd = await page.evaluate(() => (document.activeElement?.textContent ?? '').trim())
+        check(/Assistant models/i.test(hd), `MCP assist dialog link focuses the Assistant models heading ${tag}`, hd)
+        shift = await windowShift(page)
+        check(shift.ok, `MCP assist dialog link leaves the window unshifted ${tag}`, JSON.stringify(shift))
+      }
+
+      // App settings > General > Advanced: the assistant model rows
       await openAppSettings(page)
-      await page.getByRole('tab', { name: 'Defaults', exact: true }).click().catch(() => {})
-      await sleep(500)
-      check(await visible('[data-testid=skill-assist-model-row-select]'), `Defaults has the Skill assistant model row ${tag}`)
-      check(await visible('[data-testid=quick-run-model-row-select]'), `Defaults has the Chat model row ${tag}`)
-      await shot(`defaults-${w}x${h}-${theme}`)
+      await page.getByRole('tab', { name: 'General', exact: true }).click().catch(() => {})
+      await sleep(400)
+      const adv = page.locator('[data-testid=settings-advanced][data-pane=app-general]')
+      if ((await adv.count()) && !(await adv.evaluate((d) => d.open).catch(() => false))) await adv.locator('summary').click().catch(() => {})
+      await sleep(300)
+      check(await visible('[data-testid=skill-assist-model-row-select]'), `General > Advanced has the Skill assistant model row ${tag}`)
+      check(await visible('[data-testid=quick-run-model-row-select]'), `General > Advanced has the Chat model row ${tag}`)
+      await shot(`general-advanced-${w}x${h}-${theme}`)
     }
   }
 
@@ -337,7 +390,7 @@ try {
     check((await page.locator('[data-testid=tab-live]').getAttribute('aria-selected')) === 'true', 'the project Skill assistant opens on the Live tab')
     check((await pitem.count()) > 0, 'the project Skill assistant raises a proposal')
     const roleText = await pitem.locator('.skill-prop-roles').innerText().catch(() => '')
-    check(/Roles:\s*\S/.test(roleText), 'the project skill proposal lists a role', roleText)
+    check(/Who loads it:\s*\S/.test(roleText), 'the project skill proposal says who loads it', roleText)
     await endSession(page)
 
     // Skill assistant

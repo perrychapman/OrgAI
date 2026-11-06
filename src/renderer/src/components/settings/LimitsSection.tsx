@@ -1,154 +1,184 @@
-import type { ReactElement } from 'react'
-import { useEffect, useId, useState } from 'react'
+import type { ReactElement, ReactNode } from 'react'
+import { useId } from 'react'
 import type { Project } from '@shared/types'
 import { DEFAULT_KEEP_RUNS } from '@shared/types'
-import { MAX_CONCURRENT_SUBAGENTS_LIMIT, MAX_SUBAGENT_DEPTH_LIMIT, preferEverydayNearLimit } from '@shared/defaults'
+import { MAX_SUBAGENT_DEPTH_LIMIT, effectiveSubagentLimits, planGuardOf } from '@shared/defaults'
 import { useAppStore } from '../../store/useAppStore'
-import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../../lib/settingsTarget'
-import { SETTINGS_COPY } from '../../lib/settingsCopy'
+import { projectMetering } from '../../lib/limits'
+import { SETTINGS_COPY, planGuardLine } from '../../lib/settingsCopy'
 import { Input } from '../ui/Input'
 import { SettingRow, settingDescId } from '../ui/SettingRow'
-import { Switch } from '../ui/Switch'
+import { Select } from '../ui/Select'
 import { ClampedNumber } from './ClampedNumber'
+import { SettingsAdvanced } from './SettingsAdvanced'
 import { SettingsCard } from './SettingsCard'
-import { SettingsSection } from './SettingsSection'
+import { SettingsGroup, SettingsSection } from './SettingsSection'
 
-const SHARE_LABEL = 'Stop at a share of the five-hour window (%)'
+/** planGuardOf modes: Automatic (unset) engages on a plan with a weekly window or a warning status. */
+const PLAN_GUARD_OPTIONS = [
+  { value: 'auto', label: 'Automatic' },
+  { value: 'on', label: 'On' },
+  { value: 'off', label: 'Off' }
+]
 
-/** Limits pane: cost cap, retention, subagent caps, the five-hour window cap and the everyday-tier fallback. */
+/** Concurrency choices; a saved value outside the list is added. */
+const CONCURRENCY_CHOICES = [1, 2, 4, 8, 12, 16, 24, 32]
+
+/** Limits pane (config-review spec 4.3): a cost cap on metered projects or the plan guard line on a plan; the rest is Advanced. */
 export function LimitsSection({ project, patch }: { project: Project; patch: (p: Partial<Project>) => void }): ReactElement {
   const uid = useId()
-  const setView = useAppStore((s) => s.setView)
-  const [opusGuard, setOpusGuard] = useState<number | null>(null)
-  useEffect(() => {
-    window.orgai.settings
-      .get()
-      .then((s) => setOpusGuard(s.opusGuardThreshold))
-      .catch(() => setOpusGuard(null))
-  }, [])
+  const connections = useAppStore((s) => s.connections)
+  const metering = projectMetering(project, connections)
+  const metered = metering === 'metered'
   const copy = SETTINGS_COPY
   const row = (name: string): string => `${uid}-${name}-row`
   const desc = (name: string): string => settingDescId(row(name))
+
+  const limits = effectiveSubagentLimits(project)
+  const auto = effectiveSubagentLimits({ roles: project.roles })
+  const depthOptions = [
+    { value: 'auto', label: `Automatic (${auto.depth} from the chart)` },
+    ...Array.from({ length: MAX_SUBAGENT_DEPTH_LIMIT }, (_, i) => ({ value: String(i + 1), label: String(i + 1) }))
+  ]
+  const concurrencyValues = limits.explicit.concurrency && !CONCURRENCY_CHOICES.includes(limits.concurrency) ? [...CONCURRENCY_CHOICES, limits.concurrency].sort((a, b) => a - b) : CONCURRENCY_CHOICES
+  const concurrencyOptions = [{ value: 'auto', label: `Automatic (${auto.concurrency})` }, ...concurrencyValues.map((n) => ({ value: String(n), label: String(n) }))]
+
+  const costRow = (): ReactElement => (
+    <SettingRow
+      id={row('cost')}
+      title={copy.costCap.label}
+      description={copy.costCap.description}
+      width="number"
+      control={
+        <Input
+          id={`${uid}-cost`}
+          aria-label={copy.costCap.label}
+          aria-describedby={desc('cost')}
+          type="number"
+          min={0}
+          step={0.5}
+          value={project.maxBudgetUsd ?? ''}
+          placeholder="No cap"
+          onChange={(v) => patch({ maxBudgetUsd: v ? Number(v) : undefined })}
+        />
+      }
+    />
+  )
+
+  const planRows: ReactNode = metered ? null : (
+    <>
+      <SettingRow
+        id={row('guard')}
+        title={copy.planGuard.label}
+        description={copy.planGuard.description}
+        width="select"
+        control={
+          <Select
+            label={copy.planGuard.label}
+            describedBy={desc('guard')}
+            value={planGuardOf(project)}
+            options={PLAN_GUARD_OPTIONS}
+            onChange={(v) => {
+              // Automatic clears both the field and its legacy mirror (reconcileNearLimitProject keeps them unset).
+              const value = v === 'on' ? true : v === 'off' ? false : undefined
+              patch({ preferEverydayNearLimit: value, preferSonnetNearLimit: value })
+            }}
+          />
+        }
+      />
+      <SettingRow
+        id={row('share')}
+        title={copy.windowShare.label}
+        description={copy.windowShare.description}
+        width="number"
+        control={
+          <Input
+            id={`${uid}-share`}
+            aria-label={copy.windowShare.label}
+            aria-describedby={desc('share')}
+            type="number"
+            min={1}
+            max={100}
+            placeholder="Off"
+            value={project.maxWindowShare ?? ''}
+            onChange={(e) => {
+              const v = Number(e)
+              patch({ maxWindowShare: e && Number.isFinite(v) && v > 0 ? Math.min(100, v) : undefined })
+            }}
+          />
+        }
+      />
+      {costRow()}
+    </>
+  )
+
   return (
-    <SettingsSection id="settings-section-limits" title="Limits">
-      <SettingsCard>
-        <SettingRow
-          id={row('cost')}
-          title={copy.costCap.label}
-          description={copy.costCap.description}
-          more={copy.costCap.more}
-          width="number"
-          control={
-            <Input
-              id={`${uid}-cost`}
-              aria-label={copy.costCap.label}
-              aria-describedby={desc('cost')}
-              type="number"
-              min={0}
-              step={0.5}
-              value={project.maxBudgetUsd ?? ''}
-              placeholder="No cap"
-              onChange={(v) => patch({ maxBudgetUsd: v ? Number(v) : undefined })}
+    <>
+      <SettingsSection id="settings-section-limits" title="Limits">
+        {metered && <SettingsCard>{costRow()}</SettingsCard>}
+        {metering === 'subscription' && (
+          <p className="perm-plan-line" data-testid="plan-guard-line">
+            {planGuardLine(planGuardOf(project), project.maxWindowShare)}
+          </p>
+        )}
+      </SettingsSection>
+
+      <SettingsAdvanced paneKey="project-limits">
+        <SettingsGroup title="Runs and agents">
+          <SettingsCard>
+            {planRows}
+            <SettingRow
+              id={row('keep')}
+              title={copy.keepRuns.label}
+              description={copy.keepRuns.description}
+              width="number"
+              control={
+                <ClampedNumber
+                  id={`${uid}-keep`}
+                  label={copy.keepRuns.label}
+                  describedBy={desc('keep')}
+                  min={1}
+                  max={5000}
+                  value={project.keepRuns ?? DEFAULT_KEEP_RUNS}
+                  onCommit={(n) => patch({ keepRuns: n })}
+                />
+              }
             />
-          }
-        />
-        <SettingRow
-          id={row('keep')}
-          title={copy.keepRuns.label}
-          description={copy.keepRuns.description}
-          width="number"
-          control={
-            <ClampedNumber
-              id={`${uid}-keep`}
-              label={copy.keepRuns.label}
-              describedBy={desc('keep')}
-              min={1}
-              max={5000}
-              value={project.keepRuns ?? DEFAULT_KEEP_RUNS}
-              onCommit={(n) => patch({ keepRuns: n })}
+            <SettingRow
+              id={row('depth')}
+              title={copy.maxSubagentDepth.label}
+              description={copy.maxSubagentDepth.description}
+              width="select"
+              control={
+                <Select
+                  id={`${uid}-depth`}
+                  label={copy.maxSubagentDepth.label}
+                  describedBy={desc('depth')}
+                  value={limits.explicit.depth ? String(limits.depth) : 'auto'}
+                  options={depthOptions}
+                  onChange={(v) => patch({ maxSubagentDepth: v === 'auto' ? undefined : Number(v) })}
+                />
+              }
             />
-          }
-        />
-        <SettingRow
-          id={row('depth')}
-          title="Max subagent depth"
-          description="1 means reports cannot spawn subagents."
-          width="number"
-          control={
-            <ClampedNumber
-              id={`${uid}-depth`}
-              label="Max subagent depth"
-              describedBy={desc('depth')}
-              min={1}
-              max={MAX_SUBAGENT_DEPTH_LIMIT}
-              value={project.maxSubagentDepth}
-              onCommit={(n) => patch({ maxSubagentDepth: n })}
+            <SettingRow
+              id={row('conc')}
+              title={copy.maxConcurrentSubagents.label}
+              description={copy.maxConcurrentSubagents.description}
+              width="select"
+              control={
+                <Select
+                  id={`${uid}-conc`}
+                  label={copy.maxConcurrentSubagents.label}
+                  describedBy={desc('conc')}
+                  value={limits.explicit.concurrency ? String(limits.concurrency) : 'auto'}
+                  options={concurrencyOptions}
+                  onChange={(v) => patch({ maxConcurrentSubagents: v === 'auto' ? undefined : Number(v) })}
+                />
+              }
             />
-          }
-        />
-        <SettingRow
-          id={row('conc')}
-          title="Max concurrent subagents"
-          description="Reports that may run at once across the org."
-          width="number"
-          control={
-            <ClampedNumber
-              id={`${uid}-conc`}
-              label="Max concurrent subagents"
-              describedBy={desc('conc')}
-              min={1}
-              max={MAX_CONCURRENT_SUBAGENTS_LIMIT}
-              value={project.maxConcurrentSubagents}
-              onCommit={(n) => patch({ maxConcurrentSubagents: n })}
-            />
-          }
-        />
-        <SettingRow
-          id={row('share')}
-          title={SHARE_LABEL}
-          description="Stops a run that uses more than this share."
-          more="The run is interrupted and waits for you; the orchestrator is told why with your next message. Blank turns it off."
-          width="number"
-          control={
-            <Input
-              id={`${uid}-share`}
-              aria-label={SHARE_LABEL}
-              aria-describedby={desc('share')}
-              type="number"
-              min={1}
-              max={100}
-              placeholder="Off"
-              value={project.maxWindowShare ?? ''}
-              onChange={(e) => {
-                const v = Number(e)
-                patch({ maxWindowShare: e && Number.isFinite(v) && v > 0 ? Math.min(100, v) : undefined })
-              }}
-            />
-          }
-        />
-        <SettingRow
-          id={row('everyday')}
-          title={copy.preferEveryday.label}
-          description={copy.preferEveryday.description}
-          more={copy.preferEveryday.more}
-          hint={
-            <>
-              Threshold: {opusGuard ?? 80}% ·{' '}
-              <button
-                type="button"
-                className="link-btn"
-                onClick={() => {
-                  requestAppSettingsSection(APP_SETTINGS_SECTIONS.usage)
-                  setView('appSettings')
-                }}
-              >
-                Change in App settings
-              </button>
-            </>
-          }
-          control={<Switch checked={preferEverydayNearLimit(project)} label={copy.preferEveryday.label} describedBy={desc('everyday')} onChange={(v) => patch({ preferEverydayNearLimit: v })} />}
-        />
-      </SettingsCard>
-    </SettingsSection>
+          </SettingsCard>
+        </SettingsGroup>
+      </SettingsAdvanced>
+    </>
   )
 }

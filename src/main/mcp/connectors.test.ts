@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { ConnectorAuth, McpLibraryInfo } from '@shared/types'
 import { CONNECTORS, CONNECTOR_REDIRECT_PORT, connectorById, connectorVariant } from '@shared/connectors'
-import { buildConnectorEntry, connectorEntryName, connectorState, mockConnectorTest, oauthPresetFor, tokenHeaderValue } from './connectors'
+import { buildConnectorEntry, connectorEntryName, connectorOf, connectorState, mockConnectorTest, oauthPresetFor, tokenHeaderValue } from './connectors'
+import { presetConnectorDef, validateUserPreset } from './presets'
 import { validateLibraryEntry } from './validate'
 import { OAuthError, buildAuthorizeUrl, discoverWithPreset, refreshTokens, runAuthorization, startLoopback, type FetchLike, type LoopbackServer } from './oauth'
 
@@ -56,6 +57,28 @@ describe('oauthPresetFor', () => {
       sendResource: false,
       redirectPort: CONNECTOR_REDIRECT_PORT
     })
+  })
+
+  it('GitHub own-app variants: replaced endpoints, exact issuer for the iss check, no resource, read-only header kept', async () => {
+    const p = oauthPresetFor({ connectorId: 'github', connectorVariant: 'app-readonly' })!
+    expect(p).toMatchObject({
+      issuer: 'https://github.com/login/oauth',
+      authorizationEndpoint: 'https://github.com/login/oauth/authorize',
+      tokenEndpoint: 'https://github.com/login/oauth/access_token',
+      endpointsMode: 'replace',
+      scopes: ['repo', 'read:org', 'read:user'],
+      sendResource: false,
+      redirectPort: CONNECTOR_REDIRECT_PORT
+    })
+    const noFetch = (async () => {
+      throw new Error('no network')
+    }) as unknown as FetchLike
+    const d = await discoverWithPreset('https://api.githubcopilot.com/mcp/', noFetch, p)
+    expect(d.issuer ?? d.authorizationServer).toBe('https://github.com/login/oauth')
+    const def = connectorById('github')!
+    const entry = buildConnectorEntry(def, connectorVariant(def, 'app-readonly')!, 'mcpl_gh', [], NOW)
+    expect(entry.headers).toEqual({ 'X-MCP-Readonly': 'true' })
+    expect(entry.secretHeaders).toBeUndefined()
   })
 
   it('Slack: fallback endpoints and the authed_user token shape', () => {
@@ -316,5 +339,49 @@ describe('OAuth presets in oauth.ts', () => {
     }).catch((e) => e)
     expect(err).toBeInstanceOf(OAuthError)
     expect(opener).not.toHaveBeenCalled()
+  })
+})
+
+describe('connectorOf and oauthPresetFor with custom presets', () => {
+  const preset = validateUserPreset({
+    id: 'acme-crm',
+    name: 'Acme CRM',
+    vendor: 'Acme',
+    category: 'crm',
+    description: 'Reads Acme records.',
+    variants: [
+      { id: 'sso', label: 'Sign in', transport: 'http', url: 'https://mcp.acme.test/mcp', readOnly: true, auth: { kind: 'oauth', scopes: ['read'] } },
+      { id: 'open', label: 'Open', transport: 'sse', url: 'https://mcp.acme.test/sse', readOnly: true, auth: { kind: 'none' } }
+    ],
+    defaultVariant: 'sso'
+  })
+  const def = presetConnectorDef(preset)
+  const lookup = (id: string) => (id === 'acme-crm' ? def : undefined)
+
+  it('resolves a custom entry only through the lookup', () => {
+    expect(connectorOf({ connectorId: 'acme-crm', connectorVariant: 'open', connectorCustom: true }, lookup)).toMatchObject({ def: { id: 'acme-crm' }, variant: { id: 'open' } })
+    expect(connectorOf({ connectorId: 'acme-crm', connectorCustom: true }, lookup)?.variant.id).toBe('sso')
+    expect(connectorOf({ connectorId: 'acme-crm', connectorCustom: true })).toBeUndefined()
+    // A custom entry never falls through to the curated catalog, even with a curated id.
+    expect(connectorOf({ connectorId: 'gmail', connectorCustom: true }, () => undefined)).toBeUndefined()
+    expect(connectorOf({ connectorId: 'gmail', connectorCustom: true })).toBeUndefined()
+    expect(oauthPresetFor({ connectorId: 'gmail', connectorVariant: 'readonly', connectorCustom: true })).toBeUndefined()
+  })
+
+  it('does not use the custom lookup for a curated entry', () => {
+    const spy = vi.fn(() => def)
+    expect(connectorOf({ connectorId: 'gmail' }, spy)?.def.id).toBe('gmail')
+    expect(connectorOf({ connectorId: 'acme-crm' }, spy)).toBeUndefined()
+    expect(spy).not.toHaveBeenCalled()
+  })
+
+  it('returns undefined when the variant left the preset', () => {
+    expect(connectorOf({ connectorId: 'acme-crm', connectorVariant: 'gone', connectorCustom: true }, lookup)).toBeUndefined()
+    expect(oauthPresetFor({ connectorId: 'acme-crm', connectorVariant: 'gone', connectorCustom: true }, lookup)).toBeUndefined()
+  })
+
+  it('gives a custom OAuth preset scopes only', () => {
+    expect(oauthPresetFor({ connectorId: 'acme-crm', connectorVariant: 'sso', connectorCustom: true }, lookup)).toEqual({ scopes: ['read'] })
+    expect(oauthPresetFor({ connectorId: 'acme-crm', connectorVariant: 'open', connectorCustom: true }, lookup)).toBeUndefined()
   })
 })

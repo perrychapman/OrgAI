@@ -1,11 +1,14 @@
 import type { ReactElement } from 'react'
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
-import { ChevronDown, Ellipsis, KeyRound, Library, Pencil, Plus, Package, ShieldOff, Sparkles, Trash2 } from 'lucide-react'
+import { ChevronDown, Ellipsis, KeyRound, Library, Pencil, Plus, Package, ShieldOff, Sparkles, Trash2, TriangleAlert, Users } from 'lucide-react'
 import type { McpLibraryInfo, McpTestResult } from '@shared/types'
 import { HARNESS_PROJECT_ID } from '@shared/types'
+import { secretEnvClashes, type McpSecretClash } from '@shared/mcpSecretClash'
 import { useAppStore } from '../../store/useAppStore'
 import { focusPaneHeading } from '../../lib/settingsTarget'
-import { modelDisplayName, useAssistantModel } from '../../lib/assistantModels'
+import { scrollWithin } from '../../lib/scrollWithin'
+import { useAssistantRunsOn } from '../../lib/assistantModels'
+import { projectSecretsOf, scopeFields } from '../../lib/mcpScope'
 import { Badge } from '../ui/Badge'
 import { Banner } from '../ui/Banner'
 import { Button } from '../ui/Button'
@@ -18,7 +21,7 @@ import { AuthChip, AuthorizeControl, SourceBadge } from './McpAuth'
 import McpServerForm from './McpServerForm'
 import RegistryDialog from './RegistryDialog'
 import TestResultPanel from './TestResultPanel'
-import { errMessage, launchTarget, secretStatuses } from './mcpHelpers'
+import { errMessage, launchTarget, secretClashLine, secretStatuses } from './mcpHelpers'
 import { infoFromLibrary, transportWords } from './mcpLibraryHelpers'
 import { libraryWriter } from './mcpWriter'
 import { useMcpLibrary } from './useMcpLibrary'
@@ -37,7 +40,7 @@ export default function McpLibrarySection(): ReactElement {
       (r) => r.summary.projectId === HARNESS_PROJECT_ID && r.summary.kind === 'mcp-assist' && ['starting', 'running', 'idle'].includes(r.summary.status)
     )
   )
-  const assistModel = modelDisplayName(useAssistantModel('mcpAssistModel'))
+  const assistModel = useAssistantRunsOn('mcpAssistModel').label
   const writer = useMemo(() => libraryWriter(setLibrary), [setLibrary])
 
   // A deep link ("Open in library") lands here: scroll to the section or the entry and move focus into it.
@@ -46,7 +49,7 @@ export default function McpLibrarySection(): ReactElement {
     if (focus.libraryId && library === null) return
     const row = focus.libraryId ? section.current?.querySelector<HTMLElement>(`[data-id="${CSS.escape(focus.libraryId)}"]`) : null
     if (row) {
-      row.scrollIntoView({ block: 'start' })
+      scrollWithin(row, 'start')
       row.querySelector<HTMLElement>('button')?.focus()
     } else {
       focusPaneHeading()
@@ -57,6 +60,9 @@ export default function McpLibrarySection(): ReactElement {
 
   // Services from the Connectors gallery live there; this list is for servers added by hand, from the registry or by an agent.
   const infos = (library ?? []).filter((i) => !i.entry.connectorId)
+  // Any project linking two entries that need the same secret env name may clash on the OpenAI connection (one Codex
+  // run passes one value per name), so warn whatever the adapter. Library entries have no enabled flag of their own.
+  const clashes = useMemo(() => secretEnvClashes((library ?? []).map((i) => ({ ...i.entry, enabled: true }))), [library])
   return (
     <SettingsSection
       id="appsettings-section-mcp-library"
@@ -119,7 +125,7 @@ export default function McpLibrarySection(): ReactElement {
         ) : (
           <ul className="card-block mcp-list" aria-label="Custom servers">
             {infos.map((info) => (
-              <LibraryRow key={info.entry.id} info={info} onList={setLibrary} onEdit={() => setModal({ kind: 'form', editing: info })} />
+              <LibraryRow key={info.entry.id} info={info} clashes={clashes[info.entry.id]} onList={setLibrary} onEdit={() => setModal({ kind: 'form', editing: info })} />
             ))}
           </ul>
         )}
@@ -141,7 +147,18 @@ export default function McpLibrarySection(): ReactElement {
   )
 }
 
-function LibraryRow({ info, onList, onEdit }: { info: McpLibraryInfo; onList: (l: McpLibraryInfo[]) => void; onEdit: () => void }): ReactElement {
+function LibraryRow({
+  info,
+  clashes,
+  onList,
+  onEdit
+}: {
+  info: McpLibraryInfo
+  /** Secret env names this entry shares with other stdio entries. */
+  clashes?: McpSecretClash[]
+  onList: (l: McpLibraryInfo[]) => void
+  onEdit: () => void
+}): ReactElement {
   const { entry, auth } = info
   const [menu, setMenu] = useState(false)
   const [confirm, setConfirm] = useState(false)
@@ -157,6 +174,9 @@ function LibraryRow({ info, onList, onEdit }: { info: McpLibraryInfo; onList: (l
   const secrets = secretStatuses(infoFromLibrary(info))
   const secretsSet = secrets.filter((s) => s.set).length
   const remote = entry.transport !== 'stdio'
+  const perProjectSecrets = scopeFields(entry).perProjectSecrets === true
+  const perEnv = scopeFields(entry).perProjectEnv ?? []
+  const missingIn = (projectSecretsOf(info) ?? []).filter((r) => r.missingSecrets.length > 0).map((r) => r.projectName)
 
   const guard = async (fn: () => Promise<void>): Promise<void> => {
     setError(null)
@@ -206,7 +226,27 @@ function LibraryRow({ info, onList, onEdit }: { info: McpLibraryInfo; onList: (l
           <Badge>{transportWords(entry.transport)}</Badge>
           <SourceBadge source={entry.source} />
           <AuthChip auth={auth} />
-          {secrets.length > 0 && (
+          {perProjectSecrets && secrets.length > 0 && (
+            <span className="mcp-link-static" data-testid="mcp-library-per-project">
+              <Icon icon={Users} size="xs" />
+              Secrets per project
+              {missingIn.length > 0 && (
+                <span className="muted">
+                  {' '}
+                  (still empty in {missingIn.slice(0, 3).join(', ')}
+                  {missingIn.length > 3 ? ` and ${missingIn.length - 3} more` : ''})
+                </span>
+              )}
+            </span>
+          )}
+          {perEnv.length > 0 && (
+            <span className="mcp-link-static">
+              <Icon icon={Users} size="xs" />
+              <span className="mono">{perEnv.slice(0, 3).join(', ')}</span>
+              {perEnv.length > 3 ? ` and ${perEnv.length - 3} more` : ''} per project
+            </span>
+          )}
+          {!perProjectSecrets && secrets.length > 0 && (
             <button type="button" className="mcp-link" aria-expanded={secretsOpen} aria-controls={secretsOpen ? panelId : undefined} onClick={() => setSecretsOpen((o) => !o)}>
               <Icon icon={KeyRound} size="xs" />
               Secrets: {secretsSet} of {secrets.length} set
@@ -247,6 +287,12 @@ function LibraryRow({ info, onList, onEdit }: { info: McpLibraryInfo; onList: (l
           <IconButton icon={Ellipsis} label={`More actions for ${entry.name}`} size="sm" expanded={menu} onClick={() => setMenu((m) => !m)} />
         </div>
       </div>
+      {clashes?.map((c) => (
+        <p key={c.envName} className="mcp-row-note mcp-secret-clash" data-testid="mcp-secret-clash">
+          <Icon icon={TriangleAlert} size="sm" />
+          <span>{secretClashLine(c)}</span>
+        </p>
+      ))}
       {usedOpen && (
         <ul id={usedId} className="mcp-used-by" aria-label={`Projects using ${entry.name}`}>
           {info.usedBy.map((u) => (

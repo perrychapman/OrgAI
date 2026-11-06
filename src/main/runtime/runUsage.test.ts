@@ -3,7 +3,7 @@ import type { AgentInstance, RunRecord, RunSummary, RunUsage, TokenUsage } from 
 import { runSummary } from './testHelpers'
 import { agentProducedNothing } from '@shared/defaults'
 import { priceAgentUsage } from './pricing'
-import { IntervalTimer, addTokens, bucketOf, buildUsageStats, computeRunUsage, countUsage, emptyAgentUsage, legacySummaryUsage, mergeCosts, normalizeRunRecord, setModelTokens, sumRunUsage, usageFromLegacyAgent, usageOf } from './runUsage'
+import { IntervalTimer, addTokens, bucketOf, buildUsageStats, cleanKnowledgeUsage, computeRunUsage, countUsage, emptyAgentUsage, legacySummaryUsage, mergeCosts, normalizeRunRecord, setModelTokens, sumRunUsage, usageFromLegacyAgent, usageOf } from './runUsage'
 
 const tok = (input = 0, output = 0, cacheRead = 0, cacheWrite = 0): TokenUsage => ({ input, output, cacheRead, cacheWrite })
 
@@ -240,6 +240,12 @@ describe('buildUsageStats', () => {
   const run = (id: string, startedAt: number, u: RunUsage | undefined, over: Partial<RunSummary> = {}): RunSummary =>
     runSummary({ id, projectId: 'p1', startedAt, status: 'finished', ...(u ? { usage: u } : {}), ...over })
 
+  it('copies team single from the summary onto the row', () => {
+    const s = buildUsageStats([run('a', D(2026, 10, 1), usage(), { team: 'single' }), run('b', D(2026, 10, 2), usage())], { projectId: 'p1' }, 1)
+    expect(s.runs.find((r) => r.runId === 'a')?.team).toBe('single')
+    expect(s.runs.find((r) => r.runId === 'b')).not.toHaveProperty('team')
+  })
+
   it('filters by project, kind and time, newest first', () => {
     const list = [
       run('a', D(2026, 10, 1), usage()),
@@ -336,6 +342,48 @@ describe('buildUsageStats', () => {
   it('sumRunUsage of nothing is empty', () => {
     expect(sumRunUsage([], 1)).toMatchObject({ costSource: 'none', agents: 0 })
     expect(legacySummaryUsage(runSummary({ totalCostUsd: 0 }), 1)).toMatchObject({ costSource: 'none', costUsd: 0 })
+  })
+})
+
+describe('RunUsage.knowledge', () => {
+  const inputs = { nudges: 0, waitingMs: 0, limitHoldMs: 0, idleMs: 0, now: 5000 }
+  const served = { recalls: 2, autoContexts: 1, itemsServed: 9, charsServed: 3000 }
+
+  it('is set only when something was served, and copied from the inputs', () => {
+    const s = runSummary({ startedAt: 1000 })
+    expect(computeRunUsage(s, [], { ...inputs, knowledge: served }).knowledge).toEqual(served)
+    expect(computeRunUsage(s, [], inputs).knowledge).toBeUndefined()
+    expect(computeRunUsage(s, [], { ...inputs, knowledge: { recalls: 0, autoContexts: 0, itemsServed: 0, charsServed: 0 } }).knowledge).toBeUndefined()
+  })
+
+  it('cleanKnowledgeUsage accepts whole numbers >= 0 only and never throws', () => {
+    expect(cleanKnowledgeUsage({ ...served, extra: 1 })).toEqual(served)
+    expect(cleanKnowledgeUsage({ ...served, recalls: 2.9 })).toEqual({ ...served, recalls: 2 })
+    for (const junk of [null, undefined, 5, 'x', [], { recalls: 1 }, { ...served, recalls: -1 }, { ...served, charsServed: Number.NaN }, { ...served, itemsServed: Infinity }, { ...served, autoContexts: '1' }]) {
+      expect(cleanKnowledgeUsage(junk), JSON.stringify(junk)).toBeUndefined()
+    }
+  })
+
+  it('sumRunUsage adds it up and skips junk from old records', () => {
+    const a = { ...legacySummaryUsage(runSummary(), 1), knowledge: served }
+    const b = { ...legacySummaryUsage(runSummary(), 1), knowledge: { recalls: 1, autoContexts: 0, itemsServed: 3, charsServed: 100 } }
+    const junk = { ...legacySummaryUsage(runSummary(), 1), knowledge: 'lots' as unknown as RunUsage['knowledge'] }
+    expect(sumRunUsage([a, b, junk], 9).knowledge).toEqual({ recalls: 3, autoContexts: 1, itemsServed: 12, charsServed: 3100 })
+    expect(sumRunUsage([junk], 9).knowledge).toBeUndefined()
+    expect(sumRunUsage([legacySummaryUsage(runSummary(), 1)], 9).knowledge).toBeUndefined()
+  })
+
+  it('normalizeRunRecord drops a junk stored value, keeps a good one untouched and is idempotent', () => {
+    const base = normalizeRunRecord({ summary: runSummary({ startedAt: 1, endedAt: 2, status: 'finished' }), agents: {}, transcript: [], logs: [] }, 5)
+    const withGood: RunRecord = { ...base, summary: { ...base.summary, usage: { ...base.summary.usage!, knowledge: served } } }
+    expect(normalizeRunRecord(withGood, 6)).toBe(withGood)
+    for (const junk of ['x', 7, { recalls: 'a' }, { recalls: -1, autoContexts: 0, itemsServed: 0, charsServed: 0 }, []]) {
+      const rec = { ...base, summary: { ...base.summary, usage: { ...base.summary.usage!, knowledge: junk as unknown as RunUsage['knowledge'] } } }
+      const out = normalizeRunRecord(rec, 6)
+      expect(out.summary.usage, JSON.stringify(junk)).not.toHaveProperty('knowledge')
+      expect(out.summary.usage?.costSource).toBe(base.summary.usage?.costSource)
+      expect(normalizeRunRecord(out, 7)).toBe(out)
+    }
   })
 })
 

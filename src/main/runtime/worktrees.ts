@@ -1,7 +1,9 @@
-import { AsyncLocalStorage } from 'node:async_hooks'
 import { execFile } from 'node:child_process'
-import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
-import { basename, dirname, isAbsolute, join } from 'node:path'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
+import { devNull } from 'node:os'
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
+import { gitPath, gitPathSync, pathKey, repoLockRecovery, withRepoLock as repoLock } from './repoLock'
+import { gitExecutable } from '../host/systemBinaries'
 import type { MergeDecision, PendingWorktree, WorktreeDiff, WorktreeInfo } from '@shared/types'
 
 /**
@@ -24,8 +26,9 @@ import type { MergeDecision, PendingWorktree, WorktreeDiff, WorktreeInfo } from 
  * anchors agent worktrees at the main repository root, findWorktree still finds them, and a
  * child cut from the main HEAD still merges into its parent's branch (only with an older base).
  *
- * The exclude line lives in .git/info/exclude, which belongs to the common git dir and so
- * applies to every worktree. The pattern ".claude/worktrees/" has a slash in the middle, so it
+ * The exclude line lives in the common git dir's info/exclude (resolved with `git rev-parse --git-path
+ * info/exclude`, so a linked worktree or a `.git`-file checkout writes the same file) and so applies to every
+ * worktree. The pattern ".claude/worktrees/" has a slash in the middle, so it
  * is anchored at each worktree's toplevel (not at any depth); nested agent worktrees always
  * sit at <some worktree>/.claude/worktrees/, which it matches. commitLeftovers additionally
  * never stages .claude/worktrees at any depth.
@@ -51,41 +54,53 @@ export function isGitRepo(root: string): boolean {
 }
 
 function git(root: string, args: string[]): Promise<{ ok: boolean; out: string; err: string }> {
+  // By absolute path (review H1): on Windows a bare 'git' is searched in the cwd (the checkout, maybe an untrusted
+  // clone) before PATH. Missing on Windows = git is not installed.
+  const bin = gitExecutable()
+  if (!bin) return Promise.resolve({ ok: false, out: '', err: 'git was not found on PATH.' })
   return new Promise((resolve) => {
-    execFile('git', args, { cwd: root, windowsHide: true, timeout: 60_000, maxBuffer: 8 * 1024 * 1024 }, (error, stdout, stderr) => {
+    execFile(bin, args, { cwd: root, windowsHide: true, timeout: 60_000, maxBuffer: 8 * 1024 * 1024 }, (error, stdout, stderr) => {
       resolve({ ok: !error, out: String(stdout).trim(), err: String(stderr ?? error?.message ?? '').trim() })
     })
   })
 }
 
-/** Tail of each checkout's lock queue, by pathKey. Removed when the last holder releases. */
-const repoLocks = new Map<string, Promise<void>>()
-/** Keys the current async call chain already holds, so nested calls (integrate -> discard) do not wait on themselves. */
-const heldLocks = new AsyncLocalStorage<ReadonlySet<string>>()
+/**
+ * Run `fn` while holding the repository lock of `root` (the main checkout or any linked worktree). Delegates to
+ * repoLock.ts: the lock is keyed by the repository's common git dir, so it serializes ALL git operations per
+ * repository, across processes (`<commonDir>/orgai-repo.lock`, so the app and a CLI host never run git on one
+ * repository at the same time), reentrant within one async call chain (integrateWorktree(root) ->
+ * commitLeftovers(wt) / discardWorktree(root) reuse the outer lease), and never held across a merge review.
+ * A worktree and the main checkout of one repository therefore queue behind each other; different repositories do
+ * not. Callers queue in arrival order; a rejected fn releases the lock.
+ *
+ * Lock hierarchy: `WorktreeIntegrator.exclusive(dir)` (integration.ts, a per-directory in-process queue) is always
+ * taken first, outside this lock, and nothing in this file calls back into integration.ts while holding it, so the
+ * order exclusive -> repo lock is the only one. integrateWorktree releases the repo lock before awaiting `review`
+ * (the user's merge card) and takes it again for the merge.
+ */
+export function withRepoLock<T>(root: string, fn: () => Promise<T>): Promise<T> {
+  return repoLock(root, fn)
+}
 
 /**
- * Run `fn` while holding the lock of one checkout (the main checkout or a worktree), keyed by pathKey(root).
- * Two runs of one project, or a run and the maintenance panel, then never merge, commit or remove worktrees in
- * the same checkout at the same time. Different checkouts do not block each other. Re-entrant within one call
- * chain. Callers queue in arrival order; a rejected fn releases the lock.
- * Concurrent runs: two live runs of one project share the repo's lock, so their merges and commits queue per
- * checkout (never refuse); runs of different projects, or a worktree vs the main checkout, do not block each other.
+ * The exclude file `git rev-parse --git-path info/exclude` names, made absolute: the common dir's info/exclude, also
+ * from a linked worktree or a checkout whose `.git` is a file. Falls back to <root>/.git/info/exclude only when
+ * .git is a real directory.
  */
-export async function withRepoLock<T>(root: string, fn: () => Promise<T>): Promise<T> {
-  const key = pathKey(root)
-  const held = heldLocks.getStore()
-  if (held?.has(key)) return fn()
-  const prev = repoLocks.get(key) ?? Promise.resolve()
-  let release!: () => void
-  const mine = new Promise<void>((r) => (release = r))
-  const tail = prev.then(() => mine)
-  repoLocks.set(key, tail)
-  await prev
+async function excludeFileOf(root: string): Promise<string | null> {
+  return (await gitPath(root, 'info/exclude')) ?? fallbackExclude(root)
+}
+
+function excludeFileOfSync(root: string): string | null {
+  return gitPathSync(root, 'info/exclude') ?? fallbackExclude(root)
+}
+
+function fallbackExclude(root: string): string | null {
   try {
-    return await heldLocks.run(new Set([...(held ?? []), key]), fn)
-  } finally {
-    release()
-    if (repoLocks.get(key) === tail) repoLocks.delete(key)
+    return statSync(join(root, '.git')).isDirectory() ? join(root, '.git', 'info', 'exclude') : null
+  } catch {
+    return null
   }
 }
 
@@ -96,10 +111,10 @@ export async function prepareRepo(root: string): Promise<void> {
 }
 
 async function prepareRepoUnlocked(root: string): Promise<void> {
-  const infoDir = join(root, '.git', 'info')
+  const excludeFile = await excludeFileOf(root)
   try {
-    mkdirSync(infoDir, { recursive: true })
-    const excludeFile = join(infoDir, 'exclude')
+    if (!excludeFile) throw new Error('no exclude file')
+    mkdirSync(dirname(excludeFile), { recursive: true })
     const existing = existsSync(excludeFile) ? readFileSync(excludeFile, 'utf8') : ''
     if (!existing.split(/\r?\n/).includes(EXCLUDE_LINE)) appendFileSync(excludeFile, `${existing.endsWith('\n') || !existing ? '' : '\n'}${EXCLUDE_LINE}\n`)
   } catch {
@@ -108,10 +123,10 @@ async function prepareRepoUnlocked(root: string): Promise<void> {
   await git(root, ['worktree', 'prune'])
 }
 
-/** Undo what prepareRepo added to .git/info/exclude. */
+/** Undo what prepareRepo added to the repository's info/exclude (synchronous: maintenance.ts calls it inline). */
 export function removeExcludeLine(root: string): boolean {
-  const excludeFile = join(root, '.git', 'info', 'exclude')
-  if (!existsSync(excludeFile)) return false
+  const excludeFile = excludeFileOfSync(root)
+  if (!excludeFile || !existsSync(excludeFile)) return false
   const lines = readFileSync(excludeFile, 'utf8').split(/\r?\n/)
   if (!lines.includes(EXCLUDE_LINE)) return false
   writeFileSync(excludeFile, lines.filter((l) => l !== EXCLUDE_LINE).join('\n'), 'utf8')
@@ -139,35 +154,7 @@ async function listAgentWorktrees(root: string): Promise<{ path: string; branch:
   return (await listAllWorktrees(root)).flatMap((e) => (e.branch?.startsWith(BRANCH_PREFIX) ? [{ path: e.path, branch: e.branch }] : []))
 }
 
-/**
- * Real path of `p`, or for a path that does not exist (yet) the real path of its nearest existing ancestor plus
- * the rest, so /tmp/proj/.claude/worktrees/new keys like /private/tmp/proj/.claude/worktrees/new.
- */
-function realpathOfNearest(p: string): string {
-  if (!isAbsolute(p)) return p
-  const rest: string[] = []
-  let cur = p
-  // Stop below the filesystem root: resolving "/" alone would turn a foreign path into C:\... on Windows.
-  for (let parent = dirname(cur); parent !== cur; cur = parent, parent = dirname(cur)) {
-    try {
-      const real = realpathSync.native(cur)
-      return rest.length ? join(real, ...rest.reverse()) : real
-    } catch {
-      rest.push(basename(cur))
-    }
-  }
-  return p
-}
-
-/**
- * Path comparison key:forward slashes, no trailing slash. Case-folded on Windows and macOS, whose default
- * file systems are case-insensitive, but not on Linux. Symlinks are resolved when the path exists: git prints
- * real paths (/private/var/... for /var/...) while a project folder may have been picked through a symlink.
- */
-export function pathKey(p: string, platform: string = process.platform): string {
-  const key = realpathOfNearest(p).replace(/\\/g, '/').replace(/\/+$/, '')
-  return platform === 'win32' || platform === 'darwin' ? key.toLowerCase() : key
-}
+export { pathKey }
 
 /**
  * Move agent worktrees nested inside `parentPath` to the main checkout's .claude/worktrees, so
@@ -238,6 +225,89 @@ export async function inspectPending(root: string): Promise<PendingWorktree[]> {
   return out
 }
 
+/**
+ * Files in a checkout's git dir that mean a git operation is unfinished there: a merge, cherry-pick, revert or rebase
+ * in progress, or an index.lock (a git process running now, such as the user's editor or terminal, or one that stopped
+ * without cleaning up). With the repository lock held none of them is OrgAI's own work in progress.
+ */
+const UNFINISHED_GIT_STATE = ['index.lock', 'MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'rebase-merge', 'rebase-apply']
+
+/**
+ * How long to wait (ms, one entry per re-check) when the only unfinished state is an index.lock (review M5): the
+ * user's own git (an editor's status poll, a commit in a terminal) holds it for a moment, so it is re-checked a few
+ * times before a refusal. About 2 s in all, spent holding the repository lock.
+ */
+export const INDEX_LOCK_RETRY_DELAYS_MS: readonly number[] = [100, 250, 500, 1000]
+let indexLockRetryDelays: readonly number[] = INDEX_LOCK_RETRY_DELAYS_MS
+
+/** Tests: the index.lock re-check delays (undefined restores INDEX_LOCK_RETRY_DELAYS_MS). */
+export function setIndexLockRetryDelays(delays?: readonly number[]): void {
+  indexLockRetryDelays = delays ?? INDEX_LOCK_RETRY_DELAYS_MS
+}
+
+const isIndexLock = (p: string): boolean => basename(p).toLowerCase() === 'index.lock'
+
+/** Thrown by a git step that refused to run over an unfinished git operation (spec 3.2 (5) 4). */
+export class UnfinishedGitStateError extends Error {
+  readonly files: string[]
+  constructor(message: string, files: string[]) {
+    super(message)
+    this.name = 'UnfinishedGitStateError'
+    this.files = files
+  }
+}
+
+/** The unfinished-operation files of each existing checkout, deduplicated. Read-only; one git call per checkout. */
+async function unfinishedGitState(checkouts: string[]): Promise<string[]> {
+  const found: string[] = []
+  const seen = new Set<string>()
+  for (const checkout of checkouts) {
+    if (!existsSync(checkout)) continue
+    const res = await git(checkout, ['rev-parse', ...UNFINISHED_GIT_STATE.flatMap((rel) => ['--git-path', rel])])
+    if (!res.ok) continue
+    for (const line of res.out.split(/\r?\n/)) {
+      if (!line.trim()) continue
+      const p = resolve(checkout, line.trim())
+      const k = pathKey(p)
+      if (seen.has(k)) continue
+      seen.add(k)
+      if (existsSync(p)) found.push(p)
+    }
+  }
+  return found
+}
+
+/**
+ * Null when git may run destructive steps (merge --abort, worktree remove --force, branch -D, reset) in `checkouts`;
+ * else the sentence telling the user what was found and that nothing was changed. Call it holding the repository lock.
+ * An index.lock alone is usually a git process running right now (the user's editor or terminal), so it is re-checked
+ * after each of indexLockRetryDelays before a refusal; MERGE_HEAD and the other operation files refuse at once.
+ */
+async function unfinishedGitStateRefusal(checkouts: string[], kept: string): Promise<{ message: string; files: string[] } | null> {
+  let files = await unfinishedGitState(checkouts)
+  let waited = false
+  for (const delay of indexLockRetryDelays) {
+    if (!files.length || !files.every(isIndexLock)) break
+    waited = true
+    await new Promise((r) => setTimeout(r, delay))
+    files = await unfinishedGitState(checkouts)
+  }
+  if (!files.length) return null
+  const reclaimed = repoLockRecovery()
+    .map((n) => (n.previousOwner ? ` OrgAI took over the repository lock from process ${n.previousOwner.pid}, which is gone.` : ' OrgAI took over a stale repository lock.'))
+    .slice(0, 1)
+    .join('')
+  const lock = files.some(isIndexLock)
+  return {
+    files,
+    message:
+      `Git is busy or has an unfinished operation in this repository (${files.join(', ')}).${reclaimed} ` +
+      `OrgAI ${waited ? 'waited a moment, ' : ''}ran no destructive git command and changed nothing; ${kept}. ` +
+      (lock ? 'If git is running elsewhere (an editor, a terminal or another tool), let it finish and integrate again. ' : '') +
+      'If an operation was left half done, finish or abort it yourself (for example git merge --abort, or delete index.lock once no git process is running), then integrate again.'
+  }
+}
+
 /** Stage and commit whatever a report left behind. Returns true when a commit was made. */
 export async function commitLeftovers(wt: string, message: string): Promise<{ committed: boolean; error?: string }> {
   return withRepoLock(wt, () => commitLeftoversUnlocked(wt, message))
@@ -248,6 +318,9 @@ const IDENTITY_ERROR = /user\.name|user\.email|identity|tell me who you are/i
 const FALLBACK_IDENTITY = ['-c', 'user.name=OrgAI', '-c', 'user.email=orgai@localhost']
 
 async function commitLeftoversUnlocked(wt: string, message: string): Promise<{ committed: boolean; error?: string }> {
+  // `git add` / `reset` / `commit` over a half-finished merge in the worktree would conclude or unstage it.
+  const refusal = await unfinishedGitStateRefusal([wt], `its files stay as they are in ${wt}`)
+  if (refusal) return { committed: false, error: refusal.message }
   const status = await git(wt, ['status', '--porcelain'])
   if (!status.ok || !status.out) return { committed: false }
   await git(wt, ['add', '-A', ...ADD_PATHSPEC])
@@ -263,9 +336,82 @@ async function commitLeftoversUnlocked(wt: string, message: string): Promise<{ c
   return commit.ok ? { committed: true } : { committed: false, error: commit.err.slice(0, 300) }
 }
 
-/** Remove a worktree and its branch, discarding any work on it. */
+/** git output exactly as printed (the trimming `git()` does would eat the leading space of a porcelain line). */
+function gitRaw(root: string, args: string[]): Promise<{ ok: boolean; out: string; err: string; overflow?: boolean }> {
+  const bin = gitExecutable()
+  if (!bin) return Promise.resolve({ ok: false, out: '', err: 'git was not found on PATH.' })
+  return new Promise((resolve) => {
+    execFile(bin, args, { cwd: root, windowsHide: true, timeout: 60_000, maxBuffer: 8 * 1024 * 1024 }, (error, stdout, stderr) => {
+      const overflow = (error as { code?: unknown } | null)?.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'
+      resolve({ ok: !error, out: String(stdout ?? ''), err: String(stderr ?? error?.message ?? '').trim(), ...(overflow ? { overflow: true } : {}) })
+    })
+  })
+}
+
+/** The paths team files live at, relative to the project folder. */
+const TEAM_PATHSPEC = ['.orgai/team.json', '.orgai/mcp.json', '.orgai/agents', '.orgai/skills']
+
+/**
+ * What git has not committed under the team files: every changed or untracked file (folders listed file by file;
+ * a rename gives both names), folder-relative with '/'. `ok` false when `root` is not a git work tree git can read.
+ */
+export async function teamFilesStatusGit(root: string): Promise<{ ok: boolean; files: string[]; error?: string }> {
+  if (!isGitRepo(root)) return { ok: false, files: [] }
+  // The repository's own config is untrusted: no file-system monitor (it is a program the repository names), literal paths.
+  const res = await gitRaw(root, ['-c', 'core.fsmonitor=false', '--literal-pathspecs', 'status', '--porcelain', '-z', '--untracked-files=all', '--', ...TEAM_PATHSPEC])
+  // Output past the buffer is a git that works and a huge change list, not "not a repository": keep what was read.
+  if (!res.ok && !res.overflow) return { ok: false, files: [], error: res.err }
+  const parts = res.out.split('\0')
+  if (res.overflow) parts.pop() // the last entry may be cut
+  const files: string[] = []
+  for (let i = 0; i < parts.length; i++) {
+    const entry = parts[i]
+    if (entry.length < 4) continue
+    const x = entry[0]
+    const y = entry[1]
+    files.push(entry.slice(3))
+    // With -z a rename or copy is "XY new" followed by a separate "old" entry.
+    if (x === 'R' || x === 'C' || y === 'R' || y === 'C') {
+      const old = parts[++i]
+      if (old) files.push(old)
+    }
+  }
+  return { ok: true, files: [...new Set(files)].sort() }
+}
+
+/**
+ * Commit exactly `paths` (relative to `root`) and nothing else: `git add -A -- <paths>` then `git commit --only --no-verify
+ * -- <paths>`, so another file the user already staged stays staged and out of the commit. Hooks are switched off with
+ * core.hooksPath (a repository's hooks are code from the repository; OrgAI does not run them on its own initiative, and
+ * --no-verify alone leaves post-commit and prepare-commit-msg hooks running). Never pushes. The message is fixed text by
+ * the caller (it never starts with a dash). Uses the same identity fallback as every other OrgAI commit.
+ */
+export async function commitPaths(root: string, paths: string[], message: string): Promise<{ committed: boolean; error?: string }> {
+  if (!paths.length) return { committed: false }
+  return withRepoLock(root, async () => {
+    // Paths come from a repository's status: literal, never a pathspec magic word or glob.
+    const noHooks = ['-c', `core.hooksPath=${devNull}`, '--literal-pathspecs']
+    const add = await git(root, [...noHooks, 'add', '-A', '--', ...paths])
+    if (!add.ok) {
+      // A path that only HEAD knows (the old name of a staged rename, a staged deletion) cannot be added; the commit below
+      // still sees it through HEAD. Anything else that fails to add is reported by the commit.
+      for (const p of paths) await git(root, [...noHooks, 'add', '-A', '--', p])
+    }
+    const args = ['commit', '--only', '--no-verify', '-q', '-m', message, '--', ...paths]
+    let commit = await git(root, [...noHooks, ...args])
+    if (!commit.ok && IDENTITY_ERROR.test(commit.err)) commit = await git(root, [...noHooks, ...FALLBACK_IDENTITY, ...args])
+    return commit.ok ? { committed: true } : { committed: false, error: commit.err }
+  })
+}
+
+/**
+ * Remove a worktree and its branch, discarding any work on it. Throws UnfinishedGitStateError, changing nothing, when
+ * the worktree's git dir holds an unfinished operation (an index.lock that does not go away, or MERGE_HEAD).
+ */
 export async function discardWorktree(root: string, wt: { path: string; branch: string }): Promise<void> {
   await withRepoLock(root, async () => {
+    const refusal = await unfinishedGitStateRefusal([wt.path], `branch ${wt.branch} is kept at ${wt.path}`)
+    if (refusal) throw new UnfinishedGitStateError(refusal.message, refusal.files)
     await removeWorktree(root, wt.path)
     await git(root, ['branch', '-D', wt.branch])
   })
@@ -304,6 +450,9 @@ export async function integrateWorktree(
     if (!existsSync(wt)) {
       return { info: { ...info, status: 'removed' }, message: 'Worktree was already removed; nothing to integrate.' }
     }
+    // The user's git (or one that stopped half way) holds a merge or an index.lock: never commit, merge, abort or remove over it.
+    const refusal = await unfinishedGitStateRefusal([root, wt], `branch ${info.branch} is kept at ${wt}`)
+    if (refusal) return { info: { ...info, status: 'conflict' }, message: refusal.message }
 
     const commit = await commitLeftovers(wt, commitMessage)
     if (commit.error) {
@@ -330,7 +479,12 @@ export async function integrateWorktree(
   if (review) {
     const decision = await review(changedFiles)
     if (decision.behavior === 'discard') {
-      await discardWorktree(root, info)
+      try {
+        await discardWorktree(root, info)
+      } catch (e) {
+        if (e instanceof UnfinishedGitStateError) return { info: { ...info, status: 'conflict', changedFiles }, message: e.message }
+        throw e
+      }
       return { info: { ...info, status: 'removed', changedFiles }, message: `The user discarded ${info.branch}; its changes were deleted.` }
     }
     if (decision.behavior === 'hold') {
@@ -346,6 +500,8 @@ export async function integrateWorktree(
     if (!existsSync(wt)) {
       return { info: { ...info, status: 'removed', changedFiles }, message: `${info.branch} was removed during the review; nothing was merged.` }
     }
+    const refusal = await unfinishedGitStateRefusal([root, wt], `branch ${info.branch} is kept at ${wt}`)
+    if (refusal) return { info: { ...info, status: 'conflict', changedFiles }, message: refusal.message }
     return mergeInto(root, info, commitMessage, changedFiles)
   })
 }
@@ -365,9 +521,11 @@ async function mergeInto(root: string, info: WorktreeInfo, commitMessage: string
     const conflictFiles = conflicts.ok ? conflicts.out.split(/\r?\n/).filter(Boolean) : []
     await git(root, ['merge', '--abort'])
     const reason = conflictFiles.length ? `conflicts in ${conflictFiles.join(', ')}` : merge.err.slice(0, 300)
+    // Team files changed in the main checkout and not committed: git refuses a merge that would overwrite them.
+    const teamBlock = !conflictFiles.length && /\.orgai\//.test(merge.err) ? ' Uncommitted team files in .orgai block this merge; commit them and integrate again.' : ''
     return {
       info: { ...info, status: 'conflict', changedFiles },
-      message: `Branch ${info.branch} could not be merged automatically (${reason}). It is kept at ${wt}.`
+      message: `Branch ${info.branch} could not be merged automatically (${reason}). It is kept at ${wt}.${teamBlock}`
     }
   }
 

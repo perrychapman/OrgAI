@@ -3,6 +3,9 @@ import type { AppSettings, ConnectionId, ConnectionInfo, Project, UsageSpend, Us
 
 export const CONNECTION_LABEL: Record<ConnectionId, string> = { anthropic: 'Claude', openai: 'Codex', litellm: 'LiteLLM' }
 
+/** The connection name before the account row's spend figure; the row hides it visually under a narrow footer (usage.css). */
+export const SPEND_ROW_PREFIX = `${CONNECTION_LABEL.litellm} · `
+
 export const WARN_AT = 80
 
 export type SpendLevel = '' | 'warn' | 'danger'
@@ -60,12 +63,81 @@ export function spendText(spend: UsageSpend): string {
   return `${money(spend.usd)} of ${money(spend.budgetUsd)}`
 }
 
-/** Sidebar label for a LiteLLM report. */
+/** Sidebar label for a LiteLLM report without period figures: the current budget text. */
 export function spendLabel(spend: UsageSpend): string {
-  return `LiteLLM · ${spendText(spend)}`
+  return `${SPEND_ROW_PREFIX}${spendText(spend)}`
 }
 
+/** The bar's name: share of the key budget only (a "today" figure has no denominator). */
 export function spendAria(spend: UsageSpend): string {
   const pct = spendPct(spend)
   return pct === null ? `LiteLLM spend ${money(spend.usd)}, no budget set` : `LiteLLM spend ${Math.round(pct)} percent of budget`
+}
+
+export type SpendPeriodKey = 'day' | 'week' | 'month'
+
+/** Row labels in the popover list, in display order. */
+export const SPEND_PERIOD_LABEL: Record<SpendPeriodKey, string> = { day: 'Today', week: 'This week', month: 'This month' }
+
+export const SPEND_PERIOD_ORDER: readonly SpendPeriodKey[] = ['day', 'week', 'month']
+
+const PERIOD_WORD: Record<SpendPeriodKey, string> = { day: 'today', week: 'this week', month: 'this month' }
+
+/** "$3.20 today", "$12.40 this week", "$31.00 this month". */
+export function periodText(usd: number, period: SpendPeriodKey): string {
+  return `${money(usd)} ${PERIOD_WORD[period]}`
+}
+
+/**
+ * The one figure the account row and the Dashboard Usage row show: today's spend when the proxy reports periods,
+ * else the current budget text. Never two figures (the row clips at 200 px, ux-review-litellm-periods.md M1).
+ */
+export function spendRowLabel(spend: UsageSpend): string {
+  return `${SPEND_ROW_PREFIX}${spendRowFigure(spend)}`
+}
+
+/** The row's figure without the connection name: "$3.20 today" with periods, else "$42.10 of $50.00" / "$42.10 spent". */
+export function spendRowFigure(spend: UsageSpend): string {
+  if (spend.periods) return periodText(spend.periods.day.usd, 'day')
+  return spendText(spend)
+}
+
+/** "$42.10 of $50.00 budget." or "No budget set." */
+function budgetSentence(spend: UsageSpend): string {
+  return spend.budgetUsd === null ? 'No budget set.' : `${money(spend.usd)} of ${money(spend.budgetUsd)} budget.`
+}
+
+/**
+ * The whole sentence for the account row's tooltip and the rail's accessible name:
+ * "LiteLLM spend: $3.20 today, $12.40 this week, $31.00 this month. $42.10 of $50.00 budget."
+ * Without periods: "LiteLLM spend: $42.10 of $50.00 budget." / "LiteLLM spend: $42.10. No budget set."
+ */
+export function spendSentence(spend: UsageSpend): string {
+  const p = spend.periods
+  if (!p) return spend.budgetUsd === null ? `LiteLLM spend: ${money(spend.usd)}. No budget set.` : `LiteLLM spend: ${budgetSentence(spend)}`
+  return `LiteLLM spend: ${periodText(p.day.usd, 'day')}, ${periodText(p.week.usd, 'week')}, ${periodText(p.month.usd, 'month')}. ${budgetSentence(spend)}`
+}
+
+/** The Dashboard Usage card's second caption: "$12.40 this week · $31.00 this month". Empty without periods. */
+export function periodsCaption(spend: UsageSpend): string {
+  const p = spend.periods
+  if (!p) return ''
+  return `${periodText(p.week.usd, 'week')} · ${periodText(p.month.usd, 'month')}`
+}
+
+/**
+ * The popover row's tooltip: "Since Mon 2 Nov (UTC)". Period starts are UTC calendar boundaries, so the date is
+ * printed in UTC and says so (a local-time print would show the previous evening west of Greenwich).
+ */
+export function periodSince(since: number, locale?: string): string {
+  const d = new Date(since)
+  if (!Number.isFinite(d.getTime())) return ''
+  return `Since ${d.toLocaleDateString(locale, { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' })} (UTC)`
+}
+
+/** A quiet "Lifetime $X" line: only when the proxy reports a lifetime total that differs from the current budget period's spend. */
+export function lifetimeText(spend: UsageSpend): string {
+  const t = spend.totalUsd
+  if (t === null || t === undefined || !Number.isFinite(t) || t < 0 || Math.abs(t - spend.usd) < 0.005) return ''
+  return `Lifetime ${money(t)}`
 }

@@ -75,6 +75,19 @@ describe('policyFor (permission mode -> approval policy + sandbox)', () => {
       expect(policyFor(mode, { writes: true, setupLike: false, quick: true })).toMatchObject({ approvalPolicy: 'untrusted', autoAcceptEdits: false, denyApprovals: false })
     }
   })
+
+  it('with reference folders: bypass becomes workspace-write + untrusted, auto loses its reviewer, the rest is unchanged', () => {
+    const refs = { ...work, referenceFolders: true }
+    expect(policyFor('bypassPermissions', refs)).toEqual({ approvalPolicy: 'untrusted', sandbox: 'workspace-write', autoAcceptEdits: false, denyApprovals: false })
+    expect(policyFor('auto', refs)).toEqual({ approvalPolicy: 'on-request', sandbox: 'workspace-write', autoAcceptEdits: false, denyApprovals: false })
+    for (const mode of ['default', 'acceptEdits', 'dontAsk', 'plan'] as const) expect(policyFor(mode, refs), mode).toEqual(policyFor(mode, work))
+    // Read-only roles and setup runs are read-only already: nothing to downgrade.
+    expect(policyFor('bypassPermissions', { writes: false, setupLike: false, referenceFolders: true })).toEqual(policyFor('bypassPermissions', { writes: false, setupLike: false }))
+    expect(policyFor('auto', { writes: false, setupLike: false, referenceFolders: true })).toEqual(policyFor('auto', { writes: false, setupLike: false }))
+    expect(policyFor('bypassPermissions', { writes: true, setupLike: true, referenceFolders: true }).sandbox).toBe('read-only')
+    // referenceFolders false or absent: unchanged.
+    expect(policyFor('bypassPermissions', { ...work, referenceFolders: false })).toEqual(policyFor('bypassPermissions', work))
+  })
 })
 
 describe('matchesBashRule (saved allow rules)', () => {
@@ -96,7 +109,7 @@ describe('matchesBashRule (saved allow rules)', () => {
 
   it('unwraps bash -lc and powershell -Command wrappers', () => {
     expect(unwrapShellCommand(`bash -lc 'npm test'`)).toBe('npm test')
-    expect(unwrapShellCommand(`"C:\\Program Files\\PowerShell\\pwsh.exe" -Command "npm test"`)).toBe('npm test')
+    expect(unwrapShellCommand(`"C:\\Program Files\\PowerShell\\7\\pwsh.exe" -Command "npm test"`)).toBe('npm test')
     expect(matchesBashRule(`bash -lc 'npm test --silent'`, rules)).toBe(true)
     expect(matchesBashRule(`bash -lc 'npm test && rm x'`, rules)).toBe(false)
     expect(unwrapShellCommand('ls -la')).toBe('ls -la')
@@ -143,7 +156,7 @@ describe('dynamic tool specs', () => {
   it('turns every harness tool into a function spec with a JSON schema from zod', () => {
     const tools = harnessToolsFor(fakeCtx())
     const specs = tools.map(dynamicToolSpec)
-    expect(specs.map((s) => s.name)).toEqual(['set_plan', 'orgai_update_plan', 'complete_plan', 'mark_blocked', 'ask_user', 'integrate_worktrees', 'propose_org_change', 'list_mcp_servers', 'search_mcp_registry', 'request_mcp_install', 'request_permission_rules', 'list_runs', 'message_run'])
+    expect(specs.map((s) => s.name)).toEqual(['set_plan', 'orgai_update_plan', 'complete_plan', 'mark_blocked', 'ask_user', 'integrate_worktrees', 'propose_org_change', 'list_mcp_servers', 'search_mcp_registry', 'request_mcp_install', 'propose_mcp_servers', 'list_skill_library', 'read_library_skill', 'propose_skills', 'request_permission_rules', 'list_runs', 'message_run', 'list_skills', 'load_skill'])
     const setPlan = specs[0]
     expect(setPlan).toMatchObject({ type: 'function' })
     const schema = setPlan.inputSchema as { type: string; required: string[]; properties: Record<string, { type?: string }> }
@@ -225,6 +238,17 @@ describe('native skill discovery', () => {
       return {}
     }
     expect(await lockNativeSkills(flaky, '/repo')).toEqual({ disabled: 2, failed: 1, skipped: 0 })
+  })
+})
+
+describe('buildLaunchConfig writable roots', () => {
+  it('adds the allowed folders as sandbox_workspace_write.writable_roots, JSON-quoted', () => {
+    const roots = ['C:\\shared "x"', '/opt/lib']
+    expect(buildLaunchConfig(undefined, [], { writableRoots: roots }).config).toContain(`sandbox_workspace_write.writable_roots=[${roots.map((r) => JSON.stringify(r)).join(', ')}]`)
+  })
+  it('adds nothing for none', () => {
+    expect(buildLaunchConfig(undefined, [], { writableRoots: [] }).config.join('\n')).not.toContain('writable_roots')
+    expect(buildLaunchConfig(undefined, []).config.join('\n')).not.toContain('writable_roots')
   })
 })
 
@@ -317,15 +341,61 @@ describe('buildLaunchConfig', () => {
     expect(l.config).toContain('mcp_servers.r.env_http_headers={ X-Key = "ORGAI_MCP_0_H0" }')
   })
 
-  it('falls back to inline env on a secret name clash between servers and says so', () => {
+  it('refuses a stdio server whose secret name clashes with another server at a different value', () => {
+    const a = spec({ name: 'a', command: 'a', secretEnv: ['TOKEN'] })
+    const b = spec({ name: 'b', command: 'b', args: ['--x'], env: { MODE: 'ro' }, secretEnv: ['TOKEN'] })
+    const l = buildLaunchConfig(conn(), [resolved(a, { TOKEN: 'secret-one' }), resolved(b, { MODE: 'ro', TOKEN: 'secret-two' })])
+    expect(l.skipped).toHaveLength(1)
+    expect(l.skipped[0].name).toBe('b')
+    expect(l.skipped[0].reason).toContain('TOKEN')
+    expect(l.skipped[0].reason).toContain('"a"')
+    expect(l.config.some((c) => c.startsWith('mcp_servers.b.'))).toBe(false)
+    expect(l.config).toContain('mcp_servers.a.env_vars=["TOKEN"]')
+    const all = l.config.join('\n') + l.summary.join('\n') + JSON.stringify(l.skipped)
+    expect(all).not.toContain('secret-one')
+    expect(all).not.toContain('secret-two')
+    expect(l.env.TOKEN).toBe('secret-one')
+    expect(Object.values(l.env)).not.toContain('secret-two')
+  })
+
+  it('shares a secret name with the same value through env_vars on both servers', () => {
     const a = spec({ name: 'a', command: 'a', secretEnv: ['TOKEN'] })
     const b = spec({ name: 'b', command: 'b', secretEnv: ['TOKEN'] })
-    const l = buildLaunchConfig(conn(), [resolved(a, { TOKEN: 'one' }), resolved(b, { TOKEN: 'two' })])
-    expect(l.env.TOKEN).toBe('one')
+    const l = buildLaunchConfig(conn(), [resolved(a, { TOKEN: 'same' }), resolved(b, { TOKEN: 'same' })])
+    expect(l.skipped).toEqual([])
     expect(l.config).toContain('mcp_servers.a.env_vars=["TOKEN"]')
-    expect(l.config).toContain('mcp_servers.b.env={ TOKEN = "two" }')
-    expect(l.summary.join('\n')).toContain('WARNING TOKEN passed inline')
-    expect(l.summary.join('\n')).not.toContain('two')
+    expect(l.config).toContain('mcp_servers.b.env_vars=["TOKEN"]')
+    expect(l.config.join('\n')).not.toContain('same')
+    expect(l.env.TOKEN).toBe('same')
+  })
+
+  it('ignores a disabled server whose secret name would clash', () => {
+    const a = spec({ name: 'a', command: 'a', secretEnv: ['TOKEN'], enabled: false })
+    const b = spec({ name: 'b', command: 'b', secretEnv: ['TOKEN'] })
+    const l = buildLaunchConfig(conn(), [resolved(a, { TOKEN: 'one' }), resolved(b, { TOKEN: 'two' })])
+    expect(l.skipped).toEqual([])
+    expect(l.config).toContain('mcp_servers.b.env_vars=["TOKEN"]')
+    expect(l.config.some((c) => c.startsWith('mcp_servers.a.'))).toBe(false)
+    expect(l.env.TOKEN).toBe('two')
+  })
+
+  it('keeps the first of three servers, skips the clashing one and configures a non-clashing one', () => {
+    const a = spec({ name: 'a', command: 'a', secretEnv: ['TOKEN'] })
+    const b = spec({ name: 'b', command: 'b', secretEnv: ['TOKEN', 'OTHER'] })
+    const c = spec({ name: 'c', command: 'c', secretEnv: ['OTHER'] })
+    const d = spec({ name: 'd', command: 'd', secretEnv: ['TOKEN'] })
+    const l = buildLaunchConfig(conn(), [
+      resolved(a, { TOKEN: 'one' }),
+      resolved(b, { TOKEN: 'two', OTHER: 'b-other' }),
+      resolved(c, { OTHER: 'c-other' }),
+      resolved(d, { TOKEN: 'three' })
+    ])
+    expect(l.skipped.map((s) => s.name)).toEqual(['b', 'd'])
+    expect(l.skipped.every((s) => s.reason.includes('TOKEN') && s.reason.includes('"a"'))).toBe(true)
+    // The refused server forwarded nothing, so c's OTHER is its own.
+    expect(l.config).toContain('mcp_servers.c.env_vars=["OTHER"]')
+    expect(l.env).toMatchObject({ TOKEN: 'one', OTHER: 'c-other' })
+    expect(l.config.some((x) => x.startsWith('mcp_servers.b.') || x.startsWith('mcp_servers.d.'))).toBe(false)
   })
 
   it('skips disabled servers and servers without a command or url', () => {

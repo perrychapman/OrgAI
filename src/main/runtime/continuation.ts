@@ -1,4 +1,4 @@
-import type { PlanStep, RunKind, RunPlan, RunSummary } from '@shared/types'
+import type { PlanStep, ProjectKind, RunKind, RunPlan, RunSummary } from '@shared/types'
 import { DEFAULT_MAX_AUTO_CONTINUES } from '@shared/types'
 
 /**
@@ -70,22 +70,26 @@ export function describePlanChange(previous: RunPlan | undefined, next: RunPlan)
 }
 
 /** The instruction sent to the orchestrator when steps remain. The transcript shows continueSummary instead. */
-export function continueNudgeText(plan: RunPlan): string {
+export function continueNudgeText(plan: RunPlan, kind: ProjectKind = 'code'): string {
   const remaining = remainingSteps(plan)
   const list = remaining.map((s) => `${s.id} ${s.title}${s.status === 'in_progress' ? ' (in progress)' : s.status === 'blocked' ? ' (blocked)' : ''}`).join('; ')
   return (
     `Harness: plan ${finishedCount(plan)} of ${plan.steps.length} done. Remaining: ${list}. ` +
     'Continue with the next step; mark steps with update_plan as you go. ' +
-    "When all are done, run the project's verification (build/tests) and call complete_plan. " +
+    (kind === 'engagement'
+      ? 'When all are done, review the deliverables against the brief and call complete_plan. '
+      : "When all are done, run the project's verification (build/tests) and call complete_plan. ") +
     'Stop only for a real decision: ask_user, or mark_blocked with the reason.'
   )
 }
 
 /** Every step is marked done or skipped but complete_plan was never called. */
-export function finishNudgeText(plan: RunPlan): string {
+export function finishNudgeText(plan: RunPlan, kind: ProjectKind = 'code'): string {
   return (
     `Harness: plan ${finishedCount(plan)} of ${plan.steps.length} done but not completed. ` +
-    "Run the project's verification (build/tests) and call complete_plan with a summary. " +
+    (kind === 'engagement'
+      ? 'Review the deliverables against the brief and call complete_plan with a summary. '
+      : "Run the project's verification (build/tests) and call complete_plan with a summary. ") +
     'Stop only for a real decision: ask_user, or mark_blocked with the reason.'
   )
 }
@@ -109,8 +113,8 @@ export function limitReachedText(max: number): string {
  * RunManager folds this into RuntimeContext.autoContinue, so every adapter's ContinuationDriver stays off for such a
  * run; interrupt holds, idle handling and auto-resume do not depend on it. Pure.
  */
-export function planNudgesApply(run: Pick<RunSummary, 'kind' | 'quick'>): boolean {
-  return run.kind === 'work' && run.quick?.team !== 'single'
+export function planNudgesApply(run: Pick<RunSummary, 'kind' | 'quick' | 'team'>): boolean {
+  return run.kind === 'work' && run.quick?.team !== 'single' && run.team !== 'single'
 }
 
 export interface NudgeInput {
@@ -129,6 +133,8 @@ export interface NudgeInput {
   turnsWithoutPlan: number
   /** The orchestrator is in a turn again (a report or message woke it during the delay). */
   orchestratorBusy?: boolean
+  /** The run's project kind; wording of the nudges only. Missing = 'code'. */
+  projectKind?: ProjectKind
 }
 
 export interface NudgeDecision {
@@ -160,7 +166,7 @@ export function nextNudge(input: NudgeInput): NudgeDecision {
   if (!plan) return input.turnsWithoutPlan === 1 ? { kind: 'set-plan', text: SET_PLAN_NUDGE, summary: SET_PLAN_SUMMARY } : { kind: 'none' }
   if (plan.status !== 'active') return { kind: 'none' }
   if (plan.autoContinues >= Math.max(0, input.maxAutoContinues)) return { kind: 'none', limitReached: true }
-  const text = remainingSteps(plan).length ? continueNudgeText(plan) : finishNudgeText(plan)
+  const text = remainingSteps(plan).length ? continueNudgeText(plan, input.projectKind) : finishNudgeText(plan, input.projectKind)
   return { kind: 'continue', text, summary: continueSummary(plan) }
 }
 
@@ -185,12 +191,17 @@ export function peerDeliveryBlocked(input: PeerDeliveryInput): 'held' | 'rate li
   return null
 }
 
-/** What a ContinuationDriver needs from the adapter and the run manager. */
+/**
+ * What a ContinuationDriver needs from the adapter and the run manager. `autoContinue` and `maxAutoContinues` are read
+ * at every check (adapters pass getters over ctx), so RunManager's setLive re-clamp reaches a live driver.
+ */
 export interface ContinuationHost {
   kind: RunKind
-  autoContinue?: boolean
-  maxAutoContinues?: number
+  readonly autoContinue?: boolean
+  readonly maxAutoContinues?: number
   delayMs?: number
+  /** The run's project kind (projectKindOf(ctx.project)); only changes the nudge wording. Missing = 'code'. */
+  projectKind?: ProjectKind
   getPlan(): RunPlan | undefined
   updatePlan(plan: RunPlan): Promise<void>
   liveReports(): number
@@ -206,12 +217,22 @@ export interface ContinuationHost {
   log(level: 'info' | 'warn' | 'error', message: string): void
   /** A system line in the orchestrator's transcript, for the user (`source: 'harness'`). */
   tellUser(text: string): void
+  /**
+   * Headless exec settlement (cli-spec 6.2(2)): a root turn generation became settled (evaluated without a nudge,
+   * skipped, or the driver is off). Adapters forward it as ctx.noteActivity('continuation'). Optional.
+   */
+  onSettled?(turnGen: number): void
 }
 
 /**
- * Re-engages the orchestrator after a turn ends with plan steps left. The adapter calls `turnEnded`
- * at every successful turn end, `userMessage` when the user sends a message, `hold` on interrupt and
- * `dispose` when the session ends.
+ * Re-engages the orchestrator after a turn ends with plan steps left. The adapter calls `turnEnded(gen)`
+ * at every successful root turn end, `skipTurn(gen)` at a failed or interrupted one, `userMessage` when
+ * the user sends a message, `hold` on interrupt and `dispose` when the session ends.
+ *
+ * Turn generations (cli-spec 6.2(2)): each root turn end carries the adapter's monotonic `turnGen`. A
+ * generation is settled once it was evaluated without sending a nudge (or skipped, or the driver is off)
+ * and nothing is pending; `isSettledForTurn(gen)` is what RunManager's exec settlement reads. A turn that
+ * got a nudge is never settled: the follow-up turn the nudge starts gets the next generation.
  */
 export class ContinuationDriver {
   private timer: ReturnType<typeof setTimeout> | null = null
@@ -219,33 +240,82 @@ export class ContinuationDriver {
   private disposed = false
   private turnsWithoutPlan = 0
   private limitWarned = false
+  private evaluating = false
+  /** The newest root turn generation reported (turnEnded / skipTurn). */
+  private currentTurnGen = 0
+  /** The newest generation evaluated without a nudge (or skipped); -1 = none yet, or unsettled by a user message. */
+  private lastEvaluatedTurnGen = -1
+  private setPlanNudgeSent = false
 
   constructor(private host: ContinuationHost) {}
 
+  /** Read at every check: the host's autoContinue may change while the run is live (setLive re-clamp). */
   private get enabled(): boolean {
     return this.host.kind === 'work' && this.host.autoContinue !== false
   }
 
-  /** A turn finished. Evaluate after the delay, re-checking every condition then. */
-  turnEnded(): void {
-    if (!this.enabled || this.disposed) return
+  /** The turn-1 set-plan nudge was sent in this session. */
+  get nudgeTurn1Sent(): boolean {
+    return this.setPlanNudgeSent
+  }
+
+  /** The generation of the newest root turn end the driver heard of. */
+  get turnGen(): number {
+    return this.currentTurnGen
+  }
+
+  /** No timer, no evaluation in flight, and `gen` was evaluated without a nudge (or skipped, or the driver is off). */
+  isSettledForTurn(gen: number): boolean {
+    return !this.timer && !this.evaluating && this.lastEvaluatedTurnGen === gen
+  }
+
+  private markSettled(gen: number): void {
+    this.lastEvaluatedTurnGen = gen
+    try {
+      this.host.onSettled?.(gen)
+    } catch {
+      /* a listener never breaks the driver */
+    }
+  }
+
+  /**
+   * A turn finished (`turnGen`: the adapter's root turn counter; missing = the previous one plus 1). Evaluate after
+   * the delay, re-checking every condition then. A disabled or disposed driver settles the generation at once.
+   */
+  turnEnded(turnGen?: number): void {
+    this.currentTurnGen = turnGen ?? this.currentTurnGen + 1
     this.cancel()
+    if (!this.enabled || this.disposed) {
+      this.markSettled(this.currentTurnGen)
+      return
+    }
     this.timer = setTimeout(() => {
       this.timer = null
       void this.evaluate()
     }, this.host.delayMs ?? DEFAULT_CONTINUATION_DELAY_MS)
   }
 
-  /** The user spoke: drop a pending evaluation and lift an interrupt's hold. */
+  /** A failed or interrupted root turn: no nudge for it, and its generation counts as evaluated at once. */
+  skipTurn(turnGen: number): void {
+    this.currentTurnGen = turnGen
+    this.cancel()
+    this.markSettled(turnGen)
+  }
+
+  /** The user spoke: drop a pending evaluation and lift an interrupt's hold. Unsettled until the next turn end. */
   userMessage(): void {
     this.cancel()
     this.held = false
+    this.lastEvaluatedTurnGen = -1
   }
 
   /** The user interrupted the turn: no automatic continues until they send a message. */
   hold(): void {
+    const pending = !!this.timer
     this.cancel()
     this.held = true
+    // A held run never nudges: a turn end still waiting for its evaluation is settled now.
+    if (pending) this.markSettled(this.currentTurnGen)
   }
 
   /** True from an interrupt (`hold`) until the user's next message (`userMessage`). */
@@ -255,7 +325,9 @@ export class ContinuationDriver {
 
   dispose(): void {
     this.disposed = true
+    const pending = !!this.timer
     this.cancel()
+    if (pending) this.markSettled(this.currentTurnGen)
   }
 
   private cancel(): void {
@@ -263,9 +335,26 @@ export class ContinuationDriver {
     this.timer = null
   }
 
-  /** Decide and act now. Returns the decision (for tests). */
+  /**
+   * Decide and act now. Returns the decision (for tests). Unless a nudge was sent, the generation current when the
+   * evaluation started is settled when it finishes (decision 'none', limit reached, blocked, held or disposed).
+   */
   async evaluate(): Promise<NudgeDecision> {
-    if (this.disposed) return { kind: 'none' }
+    const gen = this.currentTurnGen
+    this.evaluating = true
+    let sent = false
+    try {
+      const result = await this.decide()
+      sent = result.sent
+      return result.decision
+    } finally {
+      this.evaluating = false
+      if (!sent) this.markSettled(gen)
+    }
+  }
+
+  private async decide(): Promise<{ decision: NudgeDecision; sent: boolean }> {
+    if (this.disposed) return { decision: { kind: 'none' }, sent: false }
     const plan = this.host.getPlan()
     const input: NudgeInput = {
       plan,
@@ -277,7 +366,8 @@ export class ContinuationDriver {
       rateLimited: this.host.rateLimited(),
       stopping: this.held || this.host.stopping(),
       turnsWithoutPlan: this.turnsWithoutPlan,
-      orchestratorBusy: this.host.orchestratorBusy()
+      orchestratorBusy: this.host.orchestratorBusy(),
+      ...(this.host.projectKind ? { projectKind: this.host.projectKind } : {})
     }
     if (!plan && !nudgeBlocked(input)) input.turnsWithoutPlan = ++this.turnsWithoutPlan
     const decision = nextNudge(input)
@@ -286,21 +376,22 @@ export class ContinuationDriver {
       this.host.log('warn', `Automatic-continue limit reached (${input.maxAutoContinues}); the orchestrator waits for you.`)
       this.host.tellUser(limitReachedText(input.maxAutoContinues))
     }
-    if (decision.kind === 'none' || !decision.text) return decision
+    if (decision.kind === 'none' || !decision.text) return { decision, sent: false }
     let activity = 'Planning the work…'
     let summary = decision.summary ?? decision.text
     if (decision.kind === 'continue' && plan) {
       const updated: RunPlan = { ...plan, autoContinues: plan.autoContinues + 1, updatedAt: Date.now() }
       await this.host.updatePlan(updated)
       const step = nextStep(updated)
-      activity = step ? `Continuing: ${step.title}`.slice(0, 90) : 'Continuing: verification'
+      activity = step ? `Continuing: ${step.title}`.slice(0, 90) : this.host.projectKind === 'engagement' ? 'Continuing: review' : 'Continuing: verification'
       summary = continueSummary(updated)
       this.host.log('info', `Automatic continue ${updated.autoContinues} of ${input.maxAutoContinues}: ${planProgressLabel(updated)} done.`)
     } else {
       this.host.log('info', 'The orchestrator ended a turn without a plan; asking it to set one.')
     }
-    if (this.disposed) return decision
+    if (this.disposed) return { decision, sent: false }
     this.host.nudge(decision.text, activity, summary)
-    return decision
+    if (decision.kind === 'set-plan') this.setPlanNudgeSent = true
+    return { decision, sent: true }
   }
 }

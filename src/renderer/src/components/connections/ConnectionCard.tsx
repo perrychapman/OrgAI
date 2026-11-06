@@ -22,6 +22,8 @@ import ModelList from './ModelList'
 import { spendText } from '../../lib/usage'
 import { formatUntil } from '../../lib/layout'
 import TierEditor from './TierEditor'
+import { useConnectionsAnnounce } from './announce'
+import { defaultChangeAnnouncement, defaultMode } from '../../lib/connectionLabel'
 
 const META: Record<ConnectionId, { name: string; icon: typeof Bot; hint: string }> = {
   anthropic: { name: 'Anthropic', icon: Sparkles, hint: 'Sign in with Claude Code to use Claude models.' },
@@ -34,6 +36,9 @@ const DISCONNECTED: Record<ConnectionId, string> = {
   openai: 'Signed out. Connect again to use OpenAI models.',
   litellm: 'Disconnected. The stored API key was removed; the proxy URL is kept.'
 }
+
+const statusWord = (state: ConnectionInfo['status']['state']): string =>
+  state === 'connected' ? 'connected' : state === 'connecting' ? 'connecting' : state === 'error' ? 'connection error' : 'not connected'
 
 const errText = (e: unknown): string => (e instanceof Error ? e.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, '') : String(e))
 
@@ -53,24 +58,44 @@ export default function ConnectionCard({ info }: { info: ConnectionInfo }): Reac
   const [error, setError] = useState<string | null>(null)
   const [confirmRemove, setConfirmRemove] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
-  const [announce, setAnnounce] = useState('')
+  const announce = useConnectionsAnnounce()
+  const [defaultError, setDefaultError] = useState<string | null>(null)
   const state = info.status.state
   const connected = state === 'connected'
-  const defaultId = useAppStore((s) => s.defaultConnection)
+  const isDefault = info.isDefault
+  const chosen = useAppStore((s) => s.defaultConnectionChosen)
+  const storedDefault = useAppStore((s) => s.defaultConnectionStored)
+  const defaultChanges = useAppStore((s) => s.defaultConnectionChanges)
+  const mode = defaultMode(id, chosen, storedDefault)
   const loadDefault = useAppStore((s) => s.loadDefaultConnection)
-  const isDefault = defaultId === id
+  const errorId = `conn-default-error-${id}`
   useEffect(() => {
     void loadDefault()
   }, [loadDefault])
-  const makeDefault = async (): Promise<void> => {
+  // Any card's successful default change makes an earlier refusal here stale (UI review L4).
+  useEffect(() => {
+    setDefaultError(null)
+  }, [defaultChanges])
+  const changeDefault = async (next: ConnectionId | null): Promise<void> => {
+    setDefaultError(null)
     try {
-      await useAppStore.getState().setDefaultConnection(id)
-      setAnnounce(`${meta.name} is now the default for new projects`)
-      requestAnimationFrame(() => card.current?.querySelector<HTMLElement>('.conn-title h3')?.focus())
+      await useAppStore.getState().setDefaultConnection(next)
+      announce(defaultChangeAnnouncement(next, useAppStore.getState().defaultConnection))
+      requestAnimationFrame(() => card.current?.querySelector<HTMLElement>('.conn-title h4')?.focus())
     } catch (e) {
-      setError(errText(e))
+      // The refusal ("<Name> is not connected. ...") stays in the card as plain text and is announced by the pane.
+      const msg = errText(e)
+      setDefaultError(msg)
+      announce(msg)
     }
   }
+  // Status changes after the first render are read out through the pane's one live region.
+  const lastState = useRef(state)
+  useEffect(() => {
+    if (lastState.current === state) return
+    lastState.current = state
+    announce(`${meta.name}: ${statusWord(state)}`)
+  }, [state, announce, meta.name])
 
   useEffect(() => {
     if (state === 'error' || state === 'connecting') setOpen(true)
@@ -172,22 +197,12 @@ export default function ConnectionCard({ info }: { info: ConnectionInfo }): Reac
           {brandMark(id) ? <BrandMark id={id} /> : <Icon icon={meta.icon} size="lg" />}
         </span>
         <div className="conn-title">
-          <h3 tabIndex={-1}>{meta.name}</h3>
-          <p className={state === 'error' ? 'conn-detail invalid-text' : 'conn-detail'} role="status" aria-live="polite" data-testid="connection-status">
+          <h4 tabIndex={-1}>{meta.name}</h4>
+          <p className={state === 'error' ? 'conn-detail invalid-text' : 'conn-detail'} data-testid="connection-status">
             {detail}
           </p>
         </div>
         <ConnectionStatusBadge state={state} />
-        {isDefault && (
-          <Badge tone="accent" testId="default-connection-badge">
-            Default for new projects
-          </Badge>
-        )}
-        {connected && defaultId !== null && !isDefault && (
-          <Button size="sm" variant="secondary" ariaLabel={`Use ${meta.name} for new projects`} onClick={() => void makeDefault()}>
-            Use for new projects
-          </Button>
-        )}
         {!connected && !open && (
           <Button
             size="sm"
@@ -201,9 +216,6 @@ export default function ConnectionCard({ info }: { info: ConnectionInfo }): Reac
             Connect
           </Button>
         )}
-        <span className="sr-only" role="status" aria-live="polite">
-          {announce}
-        </span>
         <IconButton
           icon={RefreshCw}
           label={`Refresh ${meta.name} status and models`}
@@ -215,6 +227,49 @@ export default function ConnectionCard({ info }: { info: ConnectionInfo }): Reac
         />
         <IconButton icon={open ? ChevronDown : ChevronRight} label={open ? `Collapse ${meta.name}` : `Expand ${meta.name}`} size="sm" expanded={open} onClick={() => setOpen((v) => !v)} />
       </header>
+      {(isDefault || connected) && (
+        <div className="card-sec conn-default">
+          {isDefault ? (
+            <>
+              <Badge tone="accent" testId="default-connection-badge">
+                Default for new projects and assistants
+              </Badge>
+              {mode && (
+                <span className="conn-default-mode" data-testid="default-connection-mode">
+                  {mode === 'chosen' ? 'Chosen' : 'Automatic'}
+                </span>
+              )}
+              {mode === 'chosen' && (
+                <button
+                  type="button"
+                  className="btn sm"
+                  data-testid="connection-default-auto"
+                  aria-describedby={defaultError ? errorId : undefined}
+                  onClick={() => void changeDefault(null)}
+                >
+                  Back to automatic
+                </button>
+              )}
+            </>
+          ) : (
+            <button
+              type="button"
+              className="btn sm"
+              data-testid="connection-make-default"
+              aria-label={`Use for new projects: ${meta.name}`}
+              aria-describedby={defaultError ? errorId : undefined}
+              onClick={() => void changeDefault(id)}
+            >
+              Use for new projects
+            </button>
+          )}
+          {defaultError && (
+            <p className="conn-default-error invalid-text" id={errorId} data-testid="connection-default-error">
+              {defaultError}
+            </p>
+          )}
+        </div>
+      )}
       {open && (
         <>
           {state === 'error' && (

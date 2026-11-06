@@ -11,8 +11,10 @@ import {
   importedSummary,
   managerSlug,
   notImportedLine,
+  otherToolAgents,
   readBannerMemory,
   setupSubmitLabel,
+  totalAgents,
   writeBannerMemory
 } from './agentImport'
 
@@ -31,6 +33,14 @@ describe('foundLine', () => {
     ).toBe('Found 1 Claude Code agent and 3 opencode agents.')
     expect(foundLine({ instructionFiles: ['a/AGENTS.md', 'CLAUDE.md', 'GEMINI.md'] })).toBe('Found 3 instruction files.')
   })
+  it('says nothing while a team is found, and counts no agents', () => {
+    const check = { agentSources: [{ source: 'claude' as const, label: 'Claude Code', agentCount: 2 }], instructionFiles: ['AGENTS.md'], teamFiles: { roleCount: 1, roles: [], skills: [], mcpServers: [], changes: [], problems: [], warnings: [] } }
+    expect(foundLine(check)).toBeNull()
+    expect(totalAgents(check)).toBe(0)
+    expect(otherToolAgents(check)).toBe(2)
+    expect(totalAgents({ agentSources: check.agentSources })).toBe(2)
+    expect(setupSubmitLabel('team', false)).toBe('Create project')
+  })
   it('is null for nothing', () => {
     expect(foundLine({})).toBeNull()
     expect(foundLine(null)).toBeNull()
@@ -43,6 +53,15 @@ describe('setup choice', () => {
     expect(effectiveSetupChoice(true, 'default', true)).toBe('default')
     expect(effectiveSetupChoice(false, 'import', true)).toBe('architect')
     expect(effectiveSetupChoice(false, null, false)).toBe('default')
+  })
+  it('adds the template choice only with templates', () => {
+    expect(effectiveSetupChoice(false, 'template', true, true)).toBe('template')
+    expect(effectiveSetupChoice(false, 'template', true, false)).toBe('architect')
+    expect(effectiveSetupChoice(true, 'template', true, true)).toBe('template')
+    expect(effectiveSetupChoice(false, 'default', true, true)).toBe('default')
+    expect(effectiveSetupChoice(false, null, true, true)).toBe('architect')
+    expect(effectiveSetupChoice(true, 'template', true, false)).toBe('import')
+    expect(setupSubmitLabel('template', false)).toBe('Create from template')
   })
   it('labels the submit button', () => {
     expect(setupSubmitLabel('import', false)).toBe('Create project and review import')

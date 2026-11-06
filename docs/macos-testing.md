@@ -20,7 +20,7 @@ npm run typecheck && npm test && npm run build
 
 ## 3. Dev smoke
 
-`npm run dev` from Terminal, then check: the window opens, the menu bar shows OrgAI / Edit / View / Window, Cmd+C / Cmd+V / Cmd+A work in a text field, Cmd+Q quits, closing the window keeps the app in the Dock and clicking the Dock icon reopens it, and the dark and light themes both render.
+`npm run dev` from Terminal, then check: the window opens, the menu bar shows OrgAI / Edit / View / Window, Cmd+C / Cmd+V / Cmd+A work in a text field, Cmd+Q quits, closing the window keeps the app in the Dock and clicking the Dock icon reopens it, and the dark and light themes both render. The Dock shows the OrgAI mark (set at startup with `app.dock.setIcon` from `build/icon.png`, dev only), not Electron's icon.
 
 Dev runs use the app name OrgAI, so dev logs land in `~/Library/Logs/OrgAI`. To test against a scratch data dir instead of your real one, set `ORGAI_DATA_DIR`: when set, user data and logs live under that directory.
 
@@ -37,10 +37,15 @@ open release/
 
 Open the `.dmg`, drag OrgAI to Applications, then right-click the app and choose Open (needed for an unsigned build; if macOS says it is damaged, run `xattr -dr com.apple.quarantine /Applications/OrgAI.app`). Launch it from Finder or the Dock, not from a terminal: that is the case where PATH is minimal.
 
+Launch time and certificates (issue #16): from Finder, time the launch to a usable window with a stopwatch and note it. In `main.log` look for one line starting "System certificates:" (N added, with ms) or "System certificates not added:" (a reason). The Keychain is read by a child process after launch, so the window must not wait for it; report the ms in the line. If the machine sits behind an HTTPS-inspecting proxy whose root is in the Keychain, add a remote MCP server in the Team Catalog and press Test: it should connect. If it fails with a certificate message, copy the exact text; "still reading" means try again in a moment, "could not read" means the child failed (see the log line). A green MCP test does not prove a Claude or Codex run connects. Also check: no second Dock icon appears during the read; no Keychain or Gatekeeper prompt appears; after quitting OrgAI during the read (first seconds after launch), `ps aux | grep -i orgai` shows no OrgAI process left; and, if an endpoint security tool is installed, whether it flags the helper process (the app's own executable run with `-e` and ELECTRON_RUN_AS_NODE=1). Nothing here has been run on a Mac yet.
+
+Icon checks: Finder shows the OrgAI mark (from `build/icon.icns`, with its margin) on OrgAI.app and on the dmg volume/file, and the running app's Dock icon is the same mark, not Electron's.
+
 ## 5. PATH discovery (packaged app, launched from Finder)
 
 - Open the log: `open ~/Library/Logs/OrgAI` (the app also has an Open log folder action). The first lines should include `OrgAI <version> starting ... darwin arm64 packaged=true` and a `PATH: N entries added (login shell)` line.
 - In the app, confirm `git`, `claude` and `codex` are found: the Claude status pill shows logged in, and starting a project on a git repo works.
+- Cmd+B, Cmd+Shift+N, Cmd+T, Cmd+W (Close tab, never closes the window) and Cmd+. (Go to decision) each fire once through the menu (the native menu consumes them on macOS; check the renderer handler does not fire a second time). Cmd+1..4 switch Live / History / Team / Project settings. Run and View > Canvas items grey out when no project, run or decision applies; Help > Open data folder opens the data folder.
 - Check the packaged native binaries exist: `ls /Applications/OrgAI.app/Contents/Resources/app.asar.unpacked/node_modules/@anthropic-ai/*/claude` and `.../@openai/codex-darwin-*/vendor/*/codex/codex`.
 
 ## 6. Claude login

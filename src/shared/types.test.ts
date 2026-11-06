@@ -9,13 +9,31 @@ import {
   isValidMcpServerName,
   mcpSecretNames,
   mcpServersForRole,
+  mixedFamilyRefusal,
   modelFamily,
   newProject,
   projectConnection,
   tierForModel
 } from './defaults'
 import type { McpServerSpec, Project, ProviderModel } from './types'
-import { CONNECTION_IDS, IPC, MCP_HARNESS_TOOLS, MODEL_TIERS, isModelTier } from './types'
+import {
+  CONNECTION_IDS,
+  DEFAULT_EXEC_STALL_TIMEOUT_MS,
+  DEFAULT_HEADLESS_DECISION_POLICY,
+  EXEC_OUTCOMES,
+  EXEC_OUTCOME_EXIT_CODE,
+  HOST_IPC,
+  HOST_SCOPES,
+  IPC,
+  KIT_IPC,
+  KNOWLEDGE_IPC,
+  MCP_HARNESS_TOOLS,
+  MCP_SCOPE_IPC,
+  MODEL_TIERS,
+  RPC_BULK_CHANNELS,
+  TEMPLATE_ENGAGEMENT_IPC,
+  isModelTier
+} from './types'
 
 const project = (over: Partial<Project> = {}): Project => ({ ...newProject({ name: 'X', path: '/x', brief: '' }), ...over })
 
@@ -114,6 +132,40 @@ describe('projectConnection and adapterForProject', () => {
     expect(choice).toEqual({ adapter: 'codex', connection: 'litellm', family: 'openai', mismatched: [b.id] })
     const claudeRoot = adapterForProject({ provider: { ...p.provider, connection: 'litellm' }, roles: [{ ...root, model: 'team-claude' }] }, catalog)
     expect(claudeRoot.adapter).toBe('claude')
+    // A mixed chart on LiteLLM is informational: the root's family picked the adapter, the run may start.
+    expect(mixedFamilyRefusal(choice)).toBeNull()
+  })
+
+  it('mixedFamilyRefusal: LiteLLM refuses only without a root family; single-family connections always refuse a mix', () => {
+    const p = project()
+    const [root, a] = p.roles
+    const catalog = [litellmModel('team-claude', 'claude'), litellmModel('team-gpt', 'openai')]
+    const onLiteLLM = (rootModel: string, reportModel: string) =>
+      adapterForProject({ provider: { ...p.provider, connection: 'litellm' }, roles: [{ ...root, model: rootModel }, { ...a, model: reportModel }] }, catalog)
+    expect(mixedFamilyRefusal(onLiteLLM('team-claude', 'team-gpt'))).toBeNull()
+    expect(mixedFamilyRefusal(onLiteLLM('team-gpt', 'team-claude'))).toBeNull()
+    expect(mixedFamilyRefusal(onLiteLLM('team-claude', 'team-claude'))).toBeNull()
+    // 'inherit' root: no family, the adapter defaults to Claude and a GPT report cannot be placed.
+    const inherit = onLiteLLM('inherit', 'team-gpt')
+    expect(inherit).toMatchObject({ adapter: 'claude', family: undefined, mismatched: [a.id] })
+    expect(mixedFamilyRefusal(inherit)).toBe('no-root-family')
+    expect(mixedFamilyRefusal(onLiteLLM('inherit', 'team-claude'))).toBeNull()
+    expect(mixedFamilyRefusal({ connection: 'anthropic', family: 'claude', mismatched: ['r1'] })).toBe('single-family-connection')
+    expect(mixedFamilyRefusal({ connection: 'openai', family: 'openai', mismatched: ['r1'] })).toBe('single-family-connection')
+    expect(mixedFamilyRefusal({ connection: 'anthropic', family: 'claude', mismatched: [] })).toBeNull()
+  })
+
+  it('keeps the anthropic and openai catalogs single-family, so a chart picked from them never mixes', () => {
+    expect(new Set(builtinModels('anthropic').map((m) => m.family))).toEqual(new Set(['claude']))
+    expect(new Set(builtinModels('openai').map((m) => m.family))).toEqual(new Set(['openai']))
+    for (const connection of ['anthropic', 'openai'] as const) {
+      const models = builtinModels(connection)
+      const p = project()
+      const roles = p.roles.map((r, i) => ({ ...r, model: models[i % models.length].id }))
+      const choice = adapterForProject({ provider: { ...p.provider, connection }, roles }, models)
+      expect(choice.mismatched).toEqual([])
+      expect(mixedFamilyRefusal(choice)).toBeNull()
+    }
   })
 
   it('keeps mock projects on the mock adapter', () => {
@@ -169,5 +221,46 @@ describe('IPC names', () => {
   it('are unique', () => {
     const names = Object.values(IPC)
     expect(new Set(names).size).toBe(names.length)
+  })
+})
+
+describe('CLI and host contracts (cli-spec Wave 0)', () => {
+  const existing = new Set<string>([IPC, TEMPLATE_ENGAGEMENT_IPC, KNOWLEDGE_IPC, MCP_SCOPE_IPC, KIT_IPC].flatMap((o) => Object.values(o)))
+
+  it('HOST_IPC values are unique and collide with no IPC channel', () => {
+    const names = Object.values(HOST_IPC)
+    expect(new Set(names).size).toBe(names.length)
+    for (const n of names) expect(existing.has(n)).toBe(false)
+    expect(Object.values(IPC)).not.toContain('runs:subscribe')
+  })
+
+  it('RPC_BULK_CHANNELS are unique and every one is a known channel', () => {
+    expect(new Set(RPC_BULK_CHANNELS).size).toBe(RPC_BULK_CHANNELS.length)
+    const known = new Set<string>([...existing, ...Object.values(HOST_IPC)])
+    for (const c of RPC_BULK_CHANNELS) expect(known.has(c)).toBe(true)
+  })
+
+  it('EXEC_OUTCOME_EXIT_CODE covers every EXEC_OUTCOMES entry', () => {
+    expect(new Set(EXEC_OUTCOMES).size).toBe(EXEC_OUTCOMES.length)
+    expect(Object.keys(EXEC_OUTCOME_EXIT_CODE).sort()).toEqual([...EXEC_OUTCOMES].sort())
+    for (const o of EXEC_OUTCOMES) expect(Number.isInteger(EXEC_OUTCOME_EXIT_CODE[o])).toBe(true)
+    expect(EXEC_OUTCOME_EXIT_CODE).toMatchObject({ completed: 0, 'completed-unplanned': 0, 'rate-limited': 4, 'auth-error': 5, failed: 1, stalled: 1, interrupted: 130 })
+    for (const o of ['unmerged-conflicts', 'blocked', 'incomplete-plan', 'needs-decision', 'budget-exceeded'] as const) expect(EXEC_OUTCOME_EXIT_CODE[o]).toBe(3)
+  })
+
+  it('DEFAULT_HEADLESS_DECISION_POLICY matches the spec defaults', () => {
+    expect(DEFAULT_HEADLESS_DECISION_POLICY).toEqual({
+      permission: 'deny',
+      rules: 'deny',
+      mcpInstall: 'deny',
+      question: 'fail',
+      proposal: 'decline',
+      merge: 'hold',
+      maxAutoDenials: 5,
+      waitTimeoutMs: 900_000,
+      humanGraceMs: 60_000
+    })
+    expect(DEFAULT_EXEC_STALL_TIMEOUT_MS).toBe(300_000)
+    expect(HOST_SCOPES).toEqual(['read', 'operate', 'decide', 'configure'])
   })
 })

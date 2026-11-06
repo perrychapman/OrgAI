@@ -2,10 +2,9 @@ import type { CSSProperties, ReactElement } from 'react'
 import { Fragment, useEffect, useRef, useState } from 'react'
 import { Plus } from 'lucide-react'
 import { devBuildLabel, isDevBuild } from '../lib/buildChannel'
-import type { AppearanceSettings, AppSettings, AppSettingsInfo, CanvasEdgeStyle, CanvasPattern, ModelPriceOverride, PermissionMode, ThemeMode } from '@shared/types'
-import type { ConnectionId } from '@shared/types'
-import { CONNECTION_IDS, PERMISSION_MODE_OPTIONS } from '@shared/types'
-import { DEFAULT_APPEARANCE, MAX_AUTO_CONTINUES_LIMIT } from '@shared/defaults'
+import type { AppearanceSettings, AppSettings, AppSettingsInfo, ModelPriceOverride, PermissionMode, ThemeMode } from '@shared/types'
+import { PERMISSION_MODE_OPTIONS } from '@shared/types'
+import { DEFAULT_APPEARANCE } from '@shared/defaults'
 import { useAppStore } from '../store/useAppStore'
 import { setAppearance, normalizeHex } from '../lib/theme'
 import { Badge } from '../components/ui/Badge'
@@ -13,26 +12,36 @@ import { Button } from '../components/ui/Button'
 import { CopyButton } from '../components/ui/CopyButton'
 import { Input } from '../components/ui/Input'
 import { SegmentedControl } from '../components/ui/SegmentedControl'
-import { Select } from '../components/ui/Select'
 import { Icon } from '../components/ui/Icon'
 import { SettingRow, settingDescId } from '../components/ui/SettingRow'
 import { Switch } from '../components/ui/Switch'
 import { SaveIndicator } from '../components/layout/SaveIndicator'
 import type { SettingsNavItem } from '../components/settings/SettingsNav'
-import { ClampedNumber } from '../components/settings/ClampedNumber'
+import { SettingsAdvanced, openSettingsAdvanced } from '../components/settings/SettingsAdvanced'
 import { SettingsPage } from '../components/settings/SettingsPage'
 import { SettingsCard } from '../components/settings/SettingsCard'
 import { SettingsGroup, SettingsSection } from '../components/settings/SettingsSection'
-import { CONNECTION_NAME, DEFAULT_CONNECTION_COPY, SETTINGS_COPY } from '../lib/settingsCopy'
-import { modelSettingDescription, modelSettingGroups, modelSources } from '../lib/assistantModels'
+import { CONNECTION_NAME, PERMISSION_MODE_SHORT, SETTINGS_COPY } from '../lib/settingsCopy'
+import { PERMISSION_MODE_TRADEOFF } from '../lib/permissionCopy'
+import { modelSettingGroups, modelSources } from '../lib/assistantModels'
 import { ModelSelect } from '../components/ui/ModelSelect'
-import { connectionUsable } from '../lib/projectsForm'
-import { APP_SETTINGS_PANES, APP_SETTINGS_SECTIONS, appPaneForSection, focusPaneHeading, takeAppSettingsSection, clearTeamOrigin } from '../lib/settingsTarget'
+import { ADVANCED_SECTIONS, APP_SETTINGS_PANES, APP_SETTINGS_SECTIONS, appPaneForSection, focusPaneHeading, takeAppSettingsSection, clearTeamOrigin } from '../lib/settingsTarget'
+import { scrollWithin } from '../lib/scrollWithin'
 import ConnectionsPanel from '../components/connections/ConnectionsPanel'
 import { ModelPricesSection } from '../components/settings/ModelPricesSection'
 import { ConnectorGallery } from '../components/connectors/ConnectorGallery'
+import PresetsSection from '../components/connectors/PresetsSection'
 import McpLibrarySection from '../components/mcp/McpLibrarySection'
 import SkillLibrarySection from '../components/skills/SkillLibrarySection'
+import TemplatesSection from '../components/templates/TemplatesSection'
+import KitSection from '../components/kit/KitSection'
+import { CanvasSection } from '../components/settings/CanvasSection'
+import { CliShimRow } from '../components/settings/CliShimRow'
+import { Select } from '../components/ui/Select'
+import { TERMINAL_ACCESS_TRUST } from '../lib/cliShim'
+import { TERMINAL_ACCESS_LEVEL_HINT, TERMINAL_ACCESS_LEVEL_OPTIONS, isTerminalAccessLevel, terminalAccessLevelOf, terminalAccessLevelPatch } from '../lib/terminalAccess'
+import { mergePendingSettings } from '../lib/settingsMerge'
+import { focusCheckedPreset } from '../components/canvas/CanvasPresetGroup'
 
 /** Same debounce the project store uses for project saves. */
 const SAVE_DELAY_MS = 350
@@ -42,29 +51,10 @@ const THEME_OPTIONS: { value: ThemeMode; label: string }[] = [
   { value: 'light', label: 'Light' },
   { value: 'system', label: 'System' }
 ]
-const PATTERN_OPTIONS: { value: CanvasPattern; label: string }[] = [
-  { value: 'dots', label: 'Dots' },
-  { value: 'grid', label: 'Grid' },
-  { value: 'none', label: 'None' }
-]
-const EDGE_OPTIONS: { value: CanvasEdgeStyle; label: string }[] = [
-  { value: 'curved', label: 'Curved' },
-  { value: 'orthogonal', label: 'Right-angle' },
-  { value: 'straight', label: 'Straight' }
-]
 const MOTION_OPTIONS: { value: AppearanceSettings['reduceMotion']; label: string }[] = [
   { value: 'system', label: 'Follow system' },
   { value: 'on', label: 'Always reduce' }
 ]
-/** Short select names; the chosen mode's description shows as the row hint. Matches the project page. */
-const PERMISSION_SHORT: Record<PermissionMode, string> = {
-  auto: 'Unattended',
-  acceptEdits: 'Auto-accept edits',
-  default: 'Ask for risky actions',
-  dontAsk: 'Never ask',
-  plan: 'Plan only',
-  bypassPermissions: 'Bypass all prompts'
-}
 /** Accent choices; the first is the default. Any other color can be typed as hex. */
 const ACCENT_SWATCHES: { name: string; hex: string }[] = [
   { name: 'Violet', hex: DEFAULT_APPEARANCE.accent },
@@ -81,7 +71,7 @@ const PANES: SettingsNavItem[] = [
   { id: APP_SETTINGS_PANES.connections, label: 'Connections' },
   { id: APP_SETTINGS_PANES.mcpLibrary, label: 'Connectors' },
   { id: APP_SETTINGS_PANES.skillLibrary, label: 'Skill library' },
-  { id: APP_SETTINGS_PANES.defaults, label: 'Defaults' },
+  { id: APP_SETTINGS_PANES.kit, label: 'Templates and kit' },
   { id: APP_SETTINGS_PANES.about, label: 'About' }
 ]
 
@@ -96,11 +86,13 @@ export default function AppSettingsView(): ReactElement {
   const [hexDraft, setHexDraft] = useState<string | null>(null)
   const [customRequested, setCustomRequested] = useState(false)
   const focusHex = useRef(false)
-  const [highlightUsage, setHighlightUsage] = useState(false)
-  // Set by a deep link; the first render that has the page loaded moves focus to the pane heading.
-  const pendingFocus = useRef<{ usage: boolean; section?: string } | null>(null)
+  // Set by a deep link; the first render that has the page loaded moves focus to the pane heading or the target.
+  const pendingFocus = useRef<{ section?: string } | null>(null)
+  const [focusTick, setFocusTick] = useState(0)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pending = useRef<AppSettings | null>(null)
+  /** The fields the queued save changed; a settings:changed from elsewhere keeps only these from `pending`. */
+  const pendingKeys = useRef<Set<keyof AppSettings>>(new Set())
   const appInfo = useAppStore((s) => s.appInfo)
   const mcpFocus = useAppStore((st) => st.mcpFocus)
   const [pane, setPane] = useState<string>(() => (useAppStore.getState().mcpFocus?.kind === 'library' ? APP_SETTINGS_PANES.mcpLibrary : APP_SETTINGS_PANES.general))
@@ -118,10 +110,11 @@ export default function AppSettingsView(): ReactElement {
   useEffect(() => {
     const take = (): void => {
       const target = takeAppSettingsSection()
-      const next = target ? appPaneForSection(target) : undefined
-      if (next) {
-        setPane(next)
-        pendingFocus.current = { usage: target === APP_SETTINGS_SECTIONS.usage, section: target === APP_SETTINGS_SECTIONS.modelPrices ? target : undefined }
+      if (target) {
+        // A removed id (the old Defaults pane or its rows) opens General.
+        setPane(appPaneForSection(target) ?? APP_SETTINGS_PANES.general)
+        pendingFocus.current = { section: ADVANCED_SECTIONS[target] || target === APP_SETTINGS_SECTIONS.canvas ? target : undefined }
+        setFocusTick((t) => t + 1)
       }
     }
     take()
@@ -138,29 +131,29 @@ export default function AppSettingsView(): ReactElement {
     const pf = pendingFocus.current
     if (!pf || !ready) return
     pendingFocus.current = null
-    focusPaneHeading({ preventScroll: pf.usage || !!pf.section })
-    if (pf.section) {
-      // Land on the section itself: scroll its title to the top and focus it (an add form pre-filled by a deep link then takes focus).
-      // Panels above it load after the first paint and push it down, so the scroll is repeated once they settle.
-      const land = (): void => document.getElementById(pf.section!)?.scrollIntoView({ block: 'start' })
-      land()
-      setTimeout(land, 350)
-      setTimeout(land, 900)
-      const title = document.getElementById(pf.section)?.querySelector<HTMLElement>('.settings-section-title')
-      title?.setAttribute('tabindex', '-1')
-      title?.focus({ preventScroll: true })
+    if (!pf.section) {
+      focusPaneHeading()
+      return
     }
-    if (pf.usage) {
-      document.getElementById(APP_SETTINGS_SECTIONS.usage)?.scrollIntoView({ block: 'center' })
-      setHighlightUsage(true)
+    // A target inside a pane's Advanced opens it first (never moving focus), then lands on the section or group heading.
+    const advancedPane = ADVANCED_SECTIONS[pf.section]
+    if (advancedPane) openSettingsAdvanced(advancedPane)
+    focusPaneHeading({ preventScroll: true })
+    // Scroll only the settings scroller: scrollIntoView also shifted <html> and the app shell for a target near the end (N1).
+    const land = (): void => scrollWithin(document.getElementById(pf.section!), 'start')
+    land()
+    // Panels above it load after the first paint and push it down, so the scroll is repeated once they settle.
+    setTimeout(land, 350)
+    setTimeout(land, 900)
+    if (pf.section === APP_SETTINGS_SECTIONS.canvas) {
+      // The canvas section lands on its checked style option.
+      focusCheckedPreset(document.getElementById(pf.section))
+      return
     }
-  }, [ready, pane])
-  // The usage row's highlight is brief; the attribute is cleared so it never lingers or replays.
-  useEffect(() => {
-    if (!highlightUsage) return
-    const t = setTimeout(() => setHighlightUsage(false), 2200)
-    return () => clearTimeout(t)
-  }, [highlightUsage])
+    const title = document.getElementById(pf.section)?.querySelector('.settings-section-title, .settings-group-title')
+    title?.setAttribute('tabindex', '-1')
+    ;(title as HTMLElement | null)?.focus({ preventScroll: true })
+  }, [ready, pane, focusTick])
   // The Custom swatch revealed the hex field: move focus into it.
   useEffect(() => {
     if (!focusHex.current) return
@@ -171,12 +164,15 @@ export default function AppSettingsView(): ReactElement {
   const connections = useAppStore((s) => s.connections)
   const loadConnections = useAppStore((s) => s.loadConnections)
   const loadModels = useAppStore((s) => s.loadModels)
-  const defaultConn: ConnectionId = info?.defaultConnection ?? 'anthropic'
+  // The effective default (connections:list isDefault); never the raw setting.
+  const defaultConn = useAppStore((s) => s.defaultConnection) ?? 'anthropic'
+  const loadDefaultConnection = useAppStore((s) => s.loadDefaultConnection)
   const defaultCatalog = useAppStore((s) => s.models[defaultConn])
   useEffect(() => {
     void loadAppInfo()
     void loadConnections()
-  }, [loadAppInfo, loadConnections])
+    void loadDefaultConnection()
+  }, [loadAppInfo, loadConnections, loadDefaultConnection])
   useEffect(() => {
     if (!defaultCatalog) void loadModels(defaultConn)
   }, [defaultCatalog, defaultConn, loadModels])
@@ -190,6 +186,7 @@ export default function AppSettingsView(): ReactElement {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabledKey, loadModels])
   const sources = modelSources(connections, allModels)
+  const resolveOn = sources.find((x) => x.id === defaultConn)
 
   useEffect(() => {
     window.orgai.settings
@@ -199,13 +196,18 @@ export default function AppSettingsView(): ReactElement {
     // Another window or the sidebar mirror changed a setting: follow it unless we have an unsaved edit.
     return window.orgai.onSettingsChanged((s) => {
       if (!pending.current) setInfo(s)
-      else pending.current = { ...pending.current, notifications: s.notifications }
+      else {
+        const merged = mergePendingSettings(pending.current, s, pendingKeys.current)
+        pending.current = merged
+        setInfo({ ...merged, dataDir: s.dataDir, appVersion: s.appVersion })
+      }
     })
   }, [])
 
   const flush = async (): Promise<void> => {
     const next = pending.current
     pending.current = null
+    pendingKeys.current = new Set()
     timer.current = null
     if (!next) return
     try {
@@ -245,10 +247,11 @@ export default function AppSettingsView(): ReactElement {
 
   /** Queue a save. `immediate` skips the debounce (switches, segmented choices, the theme). */
   const patch = (p: Partial<AppSettings>, immediate = false): void => {
-    const next: AppSettings = { ...stripInfo(info), ...p }
+    const next: AppSettings = { ...(pending.current ?? stripInfo(info)), ...p }
     setInfo({ ...next, dataDir: info.dataDir, appVersion: info.appVersion })
     useAppStore.getState().setSaveStatus({ state: 'saving' })
     pending.current = next
+    for (const key of Object.keys(p) as (keyof AppSettings)[]) pendingKeys.current.add(key)
     if (timer.current) clearTimeout(timer.current)
     if (immediate) void flush()
     else timer.current = setTimeout(() => void flush(), SAVE_DELAY_MS)
@@ -258,6 +261,7 @@ export default function AppSettingsView(): ReactElement {
   const saveModelPrices = async (modelPrices: ModelPriceOverride[]): Promise<void> => {
     const base = pending.current ?? stripInfo(info)
     pending.current = null
+    pendingKeys.current = new Set()
     if (timer.current) clearTimeout(timer.current)
     timer.current = null
     const result = await useAppStore.getState().trackSave(() => window.orgai.settings.set({ ...base, modelPrices }))
@@ -266,6 +270,7 @@ export default function AppSettingsView(): ReactElement {
   }
 
   const appearance: AppearanceSettings = info.appearance ?? DEFAULT_APPEARANCE
+  const terminalLevel = terminalAccessLevelOf(info)
   const patchAppearance = (p: Partial<AppearanceSettings>, canvas?: Partial<AppearanceSettings['canvas']>): void => {
     const next: AppearanceSettings = { ...appearance, ...p, canvas: { ...appearance.canvas, ...canvas } }
     setAppearance(next)
@@ -295,23 +300,17 @@ export default function AppSettingsView(): ReactElement {
     patchAppearance({ accent: hex })
   }
 
-  /** Tiers first, then the default connection's discovered models. Never a hard-coded vendor name. */
+  /** Tiers (with what each resolves to on the effective default connection), then the exact models. */
   const modelSelect = (label: string, rowId: string, value: string, allowInherit: boolean, onChange: (v: string) => void): ReactElement => (
     <ModelSelect
       label={label}
       hideLabel
       value={value}
-      groups={modelSettingGroups(value, sources, allowInherit)}
+      groups={modelSettingGroups(value, sources, allowInherit, resolveOn)}
       onChange={onChange}
       testId={`${rowId}-select`}
     />
   )
-
-  /** Row description: what the row does, then what its tier or model resolves to per connection. */
-  const describe = (what: string, value: string): string => {
-    const d = modelSettingDescription(value, sources)
-    return d ? `${what} ${d}` : what
-  }
 
   return (
     <>
@@ -329,8 +328,7 @@ export default function AppSettingsView(): ReactElement {
         {pane === 'general' && (
           <>
             <SettingsSection id={APP_SETTINGS_SECTIONS.appearance} title="Appearance" testId="appearance-section">
-              <SettingsGroup title="Theme">
-                <SettingsCard>
+              <SettingsCard>
                   <SettingRow
                     title="Theme"
                     description="System follows your operating system."
@@ -399,37 +397,9 @@ export default function AppSettingsView(): ReactElement {
                       ) : undefined
                     }
                   />
-                  <SettingRow
-                    title="Motion"
-                    description="Reduce animation across the app."
-                    width="select"
-                    control={<SegmentedControl label="Motion" value={appearance.reduceMotion} options={MOTION_OPTIONS} onChange={(reduceMotion) => patchAppearance({ reduceMotion })} />}
-                  />
-                </SettingsCard>
-              </SettingsGroup>
-              <SettingsGroup title="Canvas">
-                <SettingsCard>
-                  <SettingRow
-                    title="Pattern"
-                    width="select"
-                    control={<SegmentedControl label="Canvas pattern" value={appearance.canvas.pattern} options={PATTERN_OPTIONS} onChange={(pattern) => patchAppearance({}, { pattern })} />}
-                  />
-                  <SettingRow
-                    title="Connection lines"
-                    width="select"
-                    control={<SegmentedControl label="Connection lines" value={appearance.canvas.edges} options={EDGE_OPTIONS} onChange={(edges) => patchAppearance({}, { edges })} />}
-                  />
-                  <SettingRow
-                    title="Tint with the accent"
-                    control={<Switch checked={appearance.canvas.tint} label="Tint the canvas with the accent" onChange={(tint) => patchAppearance({}, { tint })} />}
-                  />
-                  <SettingRow
-                    title="Minimap"
-                    control={<Switch checked={appearance.canvas.minimap} label="Show the minimap" onChange={(minimap) => patchAppearance({}, { minimap })} />}
-                  />
-                </SettingsCard>
-              </SettingsGroup>
+              </SettingsCard>
             </SettingsSection>
+            <CanvasSection canvas={appearance.canvas} onChange={(canvas) => patchAppearance({}, canvas)} />
             <SettingsSection id={APP_SETTINGS_SECTIONS.notifications} title="Notifications">
               <SettingsCard>
                 <SettingRow
@@ -446,244 +416,183 @@ export default function AppSettingsView(): ReactElement {
                 />
               </SettingsCard>
             </SettingsSection>
+            <SettingsSection
+              id={APP_SETTINGS_SECTIONS.newProjects}
+              title="New projects"
+              description="Starting values for new projects. Existing projects keep their own."
+              testId="new-projects-section"
+            >
+              <SettingsCard>
+                <SettingRow
+                  id="default-mode-row"
+                  title={SETTINGS_COPY.permissionMode.label}
+                  description={PERMISSION_MODE_TRADEOFF[info.defaultPermissionMode]}
+                  width="select"
+                  control={
+                    <select
+                      className="select"
+                      aria-label={SETTINGS_COPY.permissionMode.label}
+                      aria-describedby={settingDescId('default-mode-row')}
+                      value={info.defaultPermissionMode}
+                      data-testid="default-mode-select"
+                      onChange={(e) => patch({ defaultPermissionMode: e.target.value as PermissionMode })}
+                    >
+                      {PERMISSION_MODE_OPTIONS.map((o) => (
+                        <option key={o.value} value={o.value}>
+                          {PERMISSION_MODE_SHORT[o.value]}
+                        </option>
+                      ))}
+                    </select>
+                  }
+                />
+              </SettingsCard>
+            </SettingsSection>
+            <SettingsAdvanced paneKey="app-general">
+              <SettingsGroup title="Motion">
+                <SettingsCard>
+                  <SettingRow
+                    title="Motion"
+                    description="Reduce animation across the app."
+                    width="select"
+                    control={<SegmentedControl label="Motion" value={appearance.reduceMotion} options={MOTION_OPTIONS} onChange={(reduceMotion) => patchAppearance({ reduceMotion })} />}
+                  />
+                </SettingsCard>
+              </SettingsGroup>
+              <SettingsGroup title="Assistant models (used now by every project)" id={APP_SETTINGS_SECTIONS.assistantModels}>
+                <SettingsCard>
+                  <SettingRow
+                    id="setup-model-row"
+                    title="Setup model"
+                    description="Plans and revises org charts and reviews finished runs."
+                    width="select"
+                    control={modelSelect('Setup model', 'setup-model-row', info.setupModel, false, (setupModel) => patch({ setupModel }))}
+                  />
+                  <SettingRow
+                    id="mcp-assist-model-row"
+                    title="MCP assistant model"
+                    description="Writes and tests connectors with you."
+                    width="select"
+                    control={modelSelect('MCP assistant model', 'mcp-assist-model-row', info.mcpAssistModel, false, (mcpAssistModel) => patch({ mcpAssistModel }))}
+                  />
+                  <SettingRow
+                    id="skill-assist-model-row"
+                    title="Skill assistant model"
+                    description="Writes and revises skills."
+                    width="select"
+                    control={modelSelect('Skill assistant model', 'skill-assist-model-row', info.skillAssistModel ?? 'deep', false, (skillAssistModel) => patch({ skillAssistModel }))}
+                  />
+                  <SettingRow
+                    id="quick-run-model-row"
+                    title="Chat model"
+                    description="Answers in Chat."
+                    width="select"
+                    control={modelSelect('Chat model', 'quick-run-model-row', info.quickRunModel ?? 'everyday', false, (quickRunModel) => patch({ quickRunModel }))}
+                  />
+                </SettingsCard>
+                <p className="muted" data-testid="assistant-models-note">
+                  Chat and the MCP and Skill assistants run on {CONNECTION_NAME[defaultConn]}, the default connection. Setup uses each project's connection.
+                </p>
+              </SettingsGroup>
+              <SettingsGroup title="New projects (advanced)">
+                <SettingsCard>
+                  <SettingRow
+                    id="default-root-model-row"
+                    title="Orchestrator starting tier"
+                    description="Leads each new project's runs."
+                    width="select"
+                    control={modelSelect('Orchestrator starting tier', 'default-root-model-row', info.defaultRootModel, false, (defaultRootModel) => patch({ defaultRootModel }))}
+                  />
+                  <SettingRow
+                    id="default-report-model-row"
+                    title="Report starting tier"
+                    description="Used by the roles that report to the orchestrator."
+                    width="select"
+                    control={modelSelect('Report starting tier', 'default-report-model-row', info.defaultReportModel, true, (defaultReportModel) => patch({ defaultReportModel }))}
+                  />
+                </SettingsCard>
+              </SettingsGroup>
+              <SettingsGroup title="Terminal">
+                <SettingsCard>
+                  <SettingRow
+                    id="terminal-server-row"
+                    title="Terminal access"
+                    description={`Lets the orgai command in a terminal on this computer see and control OrgAI. ${TERMINAL_ACCESS_TRUST} Off, OrgAI opens no connection point for terminals at all.`}
+                    control={
+                      <Switch
+                        checked={info.terminalServer === true}
+                        label="Terminal access"
+                        testId="terminal-server-switch"
+                        describedBy={settingDescId('terminal-server-row')}
+                        onChange={(terminalServer) => patch({ terminalServer }, true)}
+                      />
+                    }
+                  />
+                  <SettingRow
+                    id="terminal-access-level-row"
+                    title="What terminals may do"
+                    description={
+                      info.terminalServer === true
+                        ? TERMINAL_ACCESS_LEVEL_HINT[terminalLevel]
+                        : `${TERMINAL_ACCESS_LEVEL_HINT[terminalLevel]} Applies once Terminal access is on.`
+                    }
+                    width="select"
+                    control={
+                      <span data-testid="terminal-access-level">
+                        <Select
+                          id="terminal-access-level-select"
+                          label="What terminals may do"
+                          value={terminalLevel}
+                          options={TERMINAL_ACCESS_LEVEL_OPTIONS}
+                          describedBy={settingDescId('terminal-access-level-row')}
+                          onChange={(v) => {
+                            if (isTerminalAccessLevel(v)) patch(terminalAccessLevelPatch(v), true)
+                          }}
+                        />
+                      </span>
+                    }
+                  />
+                  <CliShimRow terminalAccessOn={info.terminalServer === true} onTurnOnTerminalAccess={() => patch({ terminalServer: true }, true)} />
+                </SettingsCard>
+              </SettingsGroup>
+            </SettingsAdvanced>
           </>
         )}
         {pane === 'connections' && (
           <>
             <ConnectionsPanel />
-            <SettingsSection id="appsettings-section-price-sources" title="Price sources" description="Where cost estimates come from for models without a built-in price.">
-              <SettingsCard>
-                <SettingRow
-                  id="community-prices-row"
-                  title="Community price list"
-                  description="Fetches a cached public price list (LiteLLM, MIT) for models without a built-in price. Your overrides below always win."
-                  control={
-                    <Switch
-                      checked={info.communityPrices !== false}
-                      label="Community price list"
-                      describedBy={settingDescId('community-prices-row')}
-                      onChange={(communityPrices) => patch({ communityPrices }, true)}
-                    />
-                  }
-                />
-              </SettingsCard>
-            </SettingsSection>
-            <ModelPricesSection overrides={info.modelPrices ?? []} onSave={saveModelPrices} />
+            <SettingsAdvanced paneKey="app-connections">
+              <SettingsSection id={APP_SETTINGS_SECTIONS.costs} title="Costs" description="Where cost estimates come from.">
+                <SettingsCard>
+                  <SettingRow
+                    id="community-prices-row"
+                    title="Community price list"
+                    description="Fetches a public price list for models without a built-in price. Your prices below win."
+                    control={
+                      <Switch
+                        checked={info.communityPrices !== false}
+                        label="Community price list"
+                        testId="community-prices-switch"
+                        describedBy={settingDescId('community-prices-row')}
+                        onChange={(communityPrices) => patch({ communityPrices }, true)}
+                      />
+                    }
+                  />
+                </SettingsCard>
+              </SettingsSection>
+              <ModelPricesSection overrides={info.modelPrices ?? []} onSave={saveModelPrices} />
+            </SettingsAdvanced>
           </>
         )}
         {pane === 'mcp-library' && (
           <>
             <ConnectorGallery />
+            <PresetsSection />
             <McpLibrarySection />
           </>
         )}
         {pane === 'skill-library' && <SkillLibrarySection />}
-        {pane === 'defaults' && (
-          <SettingsSection id={APP_SETTINGS_SECTIONS.defaults} title="Defaults" description="Starting values for new projects, plus the assistants that work across all projects.">
-            <SettingsGroup title="Connection">
-              <SettingsCard>
-                <SettingRow
-                  id="default-connection-row"
-                  title={DEFAULT_CONNECTION_COPY.label}
-                  description={DEFAULT_CONNECTION_COPY.description}
-                  width="select"
-                  control={
-                    <Select
-                      label={DEFAULT_CONNECTION_COPY.label}
-                      describedBy={settingDescId('default-connection-row')}
-                      value={info.defaultConnection ?? 'anthropic'}
-                      options={CONNECTION_IDS.map((id) => {
-                        const usable = id === 'anthropic' || connectionUsable(connections?.find((c) => c.connection.id === id))
-                        return {
-                          value: id,
-                          label: `${CONNECTION_NAME[id]}${usable ? '' : ' (Not connected)'}`,
-                          disabled: !usable && id !== (info.defaultConnection ?? 'anthropic')
-                        }
-                      })}
-                      onChange={(v) => {
-                        const defaultConnection = v as ConnectionId
-                        patch({ defaultConnection }, true)
-                        useAppStore.setState({ defaultConnection })
-                      }}
-                    />
-                  }
-                />
-              </SettingsCard>
-            </SettingsGroup>
-            <SettingsGroup title="Models">
-              <SettingsCard>
-                <SettingRow
-                  id="default-root-model-row"
-                  title="Orchestrator model"
-                  description={describe("Leads each new project's runs.", info.defaultRootModel)}
-                  width="select"
-                  control={modelSelect('Orchestrator model', 'default-root-model-row', info.defaultRootModel, false, (defaultRootModel) => patch({ defaultRootModel }))}
-                />
-                <SettingRow
-                  id="default-report-model-row"
-                  title="Report model"
-                  description={describe('Used by the roles that report to the orchestrator.', info.defaultReportModel)}
-                  width="select"
-                  control={modelSelect('Report model', 'default-report-model-row', info.defaultReportModel, true, (defaultReportModel) => patch({ defaultReportModel }))}
-                />
-              </SettingsCard>
-            </SettingsGroup>
-            <SettingsGroup title="Assistants">
-              <SettingsCard>
-                <SettingRow
-                  id="setup-model-row"
-                  title="Setup model"
-                  description={describe('Plans and revises org charts and reviews finished runs.', info.setupModel)}
-                  width="select"
-                  control={modelSelect('Setup model', 'setup-model-row', info.setupModel, false, (setupModel) => patch({ setupModel }))}
-                />
-                <SettingRow
-                  id="mcp-assist-model-row"
-                  title="MCP assistant model"
-                  description={describe('Used by the MCP assistant.', info.mcpAssistModel)}
-                  width="select"
-                  control={modelSelect('MCP assistant model', 'mcp-assist-model-row', info.mcpAssistModel, false, (mcpAssistModel) => patch({ mcpAssistModel }))}
-                />
-                <SettingRow
-                  id="skill-assist-model-row"
-                  title="Skill assistant model"
-                  description={describe('Used by the Skill assistant to write and revise skills.', info.skillAssistModel ?? 'deep')}
-                  width="select"
-                  control={modelSelect('Skill assistant model', 'skill-assist-model-row', info.skillAssistModel ?? 'deep', false, (skillAssistModel) => patch({ skillAssistModel }))}
-                />
-                <SettingRow
-                  id="quick-run-model-row"
-                  title="Chat model"
-                  description={describe("Used by Chat's single assistant.", info.quickRunModel ?? 'everyday')}
-                  width="select"
-                  control={modelSelect('Chat model', 'quick-run-model-row', info.quickRunModel ?? 'everyday', false, (quickRunModel) => patch({ quickRunModel }))}
-                />
-              </SettingsCard>
-              <p className="muted">A tier resolves through each project's connection. A specific model applies only where that connection offers it. If a project's connection can't run it, the run uses the deep tier and says so in its log.</p>
-            </SettingsGroup>
-            <SettingsGroup title="Safety">
-              <SettingsCard>
-                <SettingRow
-                  id="default-mode-row"
-                  title={SETTINGS_COPY.permissionMode.label}
-                  description={PERMISSION_MODE_OPTIONS.find((o) => o.value === info.defaultPermissionMode)?.label.replace(/^[^:]*: /, '')}
-                  width="select"
-                  control={
-                    <Select
-                      label={SETTINGS_COPY.permissionMode.label}
-                      describedBy={settingDescId('default-mode-row')}
-                      value={info.defaultPermissionMode}
-                      options={PERMISSION_MODE_OPTIONS.map((o) => ({ value: o.value, label: PERMISSION_SHORT[o.value] }))}
-                      onChange={(v) => patch({ defaultPermissionMode: v as PermissionMode })}
-                    />
-                  }
-                />
-                <SettingRow
-                  id="default-cost-row"
-                  title={SETTINGS_COPY.costCap.label}
-                  description={SETTINGS_COPY.costCap.description}
-                  width="number"
-                  control={
-                    <Input
-                      aria-label={SETTINGS_COPY.costCap.label}
-                      aria-describedby={settingDescId('default-cost-row')}
-                      type="number"
-                      min={0}
-                      step={0.5}
-                      value={info.defaultMaxBudgetUsd ?? ''}
-                      placeholder="No cap"
-                      onChange={(v) => patch({ defaultMaxBudgetUsd: v && Number(v) > 0 ? Number(v) : undefined })}
-                    />
-                  }
-                />
-                <SettingRow
-                  title={SETTINGS_COPY.keepRuns.label}
-                  width="number"
-                  control={<ClampedNumber label={SETTINGS_COPY.keepRuns.label} min={1} max={5000} value={info.defaultKeepRuns} onCommit={(defaultKeepRuns) => patch({ defaultKeepRuns })} />}
-                />
-              </SettingsCard>
-            </SettingsGroup>
-            <SettingsGroup title="Behaviour">
-              <SettingsCard>
-                <SettingRow
-                  id="default-auto-row"
-                  title={SETTINGS_COPY.autoContinue.label}
-                  description={SETTINGS_COPY.autoContinue.description}
-                  control={
-                    <Switch
-                      checked={info.defaultAutoContinue}
-                      label={SETTINGS_COPY.autoContinue.label}
-                      describedBy={settingDescId('default-auto-row')}
-                      onChange={(defaultAutoContinue) => patch({ defaultAutoContinue })}
-                    />
-                  }
-                />
-                <SettingRow
-                  title={SETTINGS_COPY.maxAutoContinues.label}
-                  width="number"
-                  control={
-                    <ClampedNumber
-                      label={SETTINGS_COPY.maxAutoContinues.label}
-                      min={0}
-                      max={MAX_AUTO_CONTINUES_LIMIT}
-                      value={info.defaultMaxAutoContinues}
-                      onCommit={(defaultMaxAutoContinues) => patch({ defaultMaxAutoContinues })}
-                    />
-                  }
-                />
-                <SettingRow
-                  id="default-iso-row"
-                  title={SETTINGS_COPY.isolateWriters.label}
-                  description={SETTINGS_COPY.isolateWriters.description}
-                  control={
-                    <Switch
-                      checked={info.defaultIsolateWriters}
-                      label={SETTINGS_COPY.isolateWriters.label}
-                      describedBy={settingDescId('default-iso-row')}
-                      onChange={(defaultIsolateWriters) => patch({ defaultIsolateWriters })}
-                    />
-                  }
-                />
-                <SettingRow
-                  id="default-everyday-row"
-                  title={SETTINGS_COPY.preferEveryday.label}
-                  description={SETTINGS_COPY.preferEveryday.description}
-                  control={
-                    <Switch
-                      checked={info.defaultPreferEverydayNearLimit}
-                      label={SETTINGS_COPY.preferEveryday.label}
-                      describedBy={settingDescId('default-everyday-row')}
-                      onChange={(defaultPreferEverydayNearLimit) => patch({ defaultPreferEverydayNearLimit })}
-                    />
-                  }
-                />
-                <div id={APP_SETTINGS_SECTIONS.usage} className="settings-highlightable" data-highlight={highlightUsage || undefined}>
-                  <SettingRow
-                    id="default-opus-row"
-                    title={SETTINGS_COPY.opusThreshold.label}
-                    description={SETTINGS_COPY.opusThreshold.description}
-                    width="number"
-                    control={
-                      <Input
-                        id="default-opus-threshold"
-                        aria-label={`${SETTINGS_COPY.opusThreshold.label} (%)`}
-                        aria-describedby={settingDescId('default-opus-row')}
-                        type="number"
-                        min={1}
-                        max={100}
-                        value={info.opusGuardThreshold}
-                        onChange={(v) => {
-                          const n = Number(v)
-                          if (Number.isFinite(n) && n >= 1 && n <= 100) patch({ opusGuardThreshold: n })
-                        }}
-                      />
-                    }
-                  />
-                </div>
-              </SettingsCard>
-            </SettingsGroup>
-          </SettingsSection>
-        )}
+        {pane === 'kit' && <TemplatesSection />}
+        {pane === 'kit' && <KitSection />}
         {pane === 'about' && appInfo && (
           <SettingsSection id={APP_SETTINGS_SECTIONS.about} title="About" testId="about-block">
             <SettingsCard>

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ProviderModel } from '@shared/types'
-import { ASSISTANT_MODEL_FALLBACK, modelDisplayName,modelSettingDescription, modelSettingGroups, modelSources } from './assistantModels'
+import { ASSISTANT_MODEL_FALLBACK, assistantModelLabel, modelDisplayName, modelSettingDescription, modelSettingGroups, modelSources, runsOnText } from './assistantModels'
 import type { ModelSource } from './assistantModels'
 
 const catalog: ProviderModel[] = [
@@ -28,6 +28,17 @@ describe('modelDisplayName', () => {
   })
 })
 
+describe('assistant model lines (ux-review-config-2 N5)', () => {
+  it('names the tier with the model it resolves to on the default connection', () => {
+    const on = { id: 'anthropic' as const, tierModels: { everyday: 'sonnet' } }
+    expect(assistantModelLabel('everyday', on)).toBe('Everyday tier (sonnet)')
+    expect(assistantModelLabel('gpt-5')).toBe('gpt-5')
+    expect(assistantModelLabel('')).toBe('the configured model')
+    expect(runsOnText(assistantModelLabel('everyday', on), 'Anthropic')).toBe('Runs on Everyday tier (sonnet) via Anthropic')
+    expect(runsOnText('Deep tier')).toBe('Runs on Deep tier')
+  })
+})
+
 describe('modelSources', () => {
   it('always includes anthropic and only other connections that are enabled', () => {
     expect(modelSources(null, {}).map((s) => s.id)).toEqual(['anthropic'])
@@ -35,12 +46,21 @@ describe('modelSources', () => {
 })
 
 describe('modelSettingGroups', () => {
-  it('lists short tier labels, then a group per connection with recommended marked, keeping an unknown saved id', () => {
+  it('lists plain tier labels, then one Exact model group with recommended marked, keeping an unknown saved id', () => {
     const groups = modelSettingGroups('mystery', sources, false)
-    expect(groups.map((g) => g.label)).toEqual(['Tiers', 'OpenAI', 'Saved'])
+    expect(groups.map((g) => g.label)).toEqual(['Tiers', 'Exact model'])
     expect(groups[0].options.map((o) => o.label)).toEqual(['Top tier', 'Deep tier', 'Everyday tier', 'Fast tier'])
-    expect(groups[1].options[0].label).toBe('GPT X (recommended)')
-    expect(groups[2].options[0].value).toBe('mystery')
+    expect(groups[1].options.map((o) => o.label)).toEqual(['GPT X (recommended)', 'GPT Y', 'mystery'])
+    expect(groups[1].options[2].value).toBe('mystery')
+  })
+  it('labels each tier with the model it resolves to on the given connection', () => {
+    const groups = modelSettingGroups('deep', sources, false, sources[0])
+    expect(groups[0].options.find((o) => o.value === 'deep')?.label).toBe('Deep tier (opus)')
+    expect(groups[0].options.find((o) => o.value === 'fast')?.label).toBe('Fast tier (haiku)')
+  })
+  it('names the connection on exact models only when several connections offer models', () => {
+    const both: ModelSource[] = [...sources, { id: 'litellm', name: 'LiteLLM', tierModels: {}, catalog: [{ ...catalog[0], id: 'lite-1', label: 'Lite 1', connection: 'litellm' }] }]
+    expect(modelSettingGroups('deep', both, false)[1].options.map((o) => o.label)).toContain('Lite 1 (recommended) · LiteLLM')
   })
   it('offers inherit only when allowed', () => {
     expect(modelSettingGroups('deep', [], true)[0].options[0].value).toBe('inherit')

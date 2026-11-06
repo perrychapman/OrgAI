@@ -57,6 +57,25 @@ export function electronBinary() {
 const failures = []
 
 /** Record a check. Failures are collected and reported by `finish()`. */
+/**
+ * Record the user's choice of Terminal access 'full' in `<DATA_DIR>/data/settings.json` (merged into what is there),
+ * as App settings does. A `--host inproc` host gives decide / configure only to the CLI process that started it (its
+ * in-memory owner key, review H2); a long-lived `daemon start --host inproc` serves other CLI processes, which then
+ * need this to answer cards or change settings.
+ */
+export function allowFullTerminalAccess() {
+  const dir = path.join(DATA_DIR, 'data')
+  fs.mkdirSync(dir, { recursive: true })
+  const file = path.join(dir, 'settings.json')
+  let doc = {}
+  try {
+    if (fs.existsSync(file)) doc = JSON.parse(fs.readFileSync(file, 'utf8')) ?? {}
+  } catch {
+    doc = {}
+  }
+  fs.writeFileSync(file, JSON.stringify({ version: 1, ...doc, settings: { ...(doc.settings ?? {}), terminalAccessLevel: 'full' } }, null, 2))
+}
+
 export function check(ok, what, detail = '') {
   if (ok) log(`PASS ${what}`)
   else {
@@ -208,7 +227,7 @@ export function removeFixture(root) {
  * Launch the built app and wait until the renderer is up. Returns { app, page, shot }.
  * Dialogs (confirm()) are accepted automatically; renderer console errors are logged.
  */
-export async function launch({ shotPrefix = 'shot' } = {}) {
+export async function launch({ shotPrefix = 'shot', clearPrefs = true } = {}) {
   if (!fs.existsSync(path.join(APP_DIR, 'out', 'main', 'index.js'))) throw new Error('out/main/index.js missing. Run `npm run build` first.')
   fs.mkdirSync(SHOTS_DIR, { recursive: true })
   // process.env is read here, so flags a script sets before launching (ORGAI_MOCK=1) still reach the app.
@@ -226,7 +245,7 @@ export async function launch({ shotPrefix = 'shot' } = {}) {
   // A shared ORGAI_DATA_DIR (CI) keeps the renderer's localStorage between scripts, so an earlier script's UI choices
   // (orgai.sidebar, orgai.sidePanel.*, widths) would leak into this one. Start every script from auto state; projects
   // and runs live in the main process data and are untouched.
-  const cleared = await page.evaluate(() => {
+  const cleared = !clearPrefs ? [] : await page.evaluate(() => {
     const keys = Object.keys(localStorage).filter((k) => k.startsWith('orgai.'))
     keys.forEach((k) => localStorage.removeItem(k))
     return keys
@@ -236,10 +255,21 @@ export async function launch({ shotPrefix = 'shot' } = {}) {
     await page.reload()
     await page.waitForSelector('.sidebar', { timeout: 60_000 })
   }
-  await page.waitForSelector('form.card, .editor', { timeout: 60_000 })
+  // A relaunch on existing data may open on the dashboard or a run.
+  if (clearPrefs) await page.waitForSelector('[data-testid=dashboard], .editor', { timeout: 60_000 })
   let n = 0
   const shot = (name) => screenshot(page, `${shotPrefix}-${String(++n).padStart(2, '0')}-${name}`)
   return { app, page, shot }
+}
+
+/**
+ * Quit the running app and start it again on the SAME data dir (runs, projects and the renderer's localStorage stay,
+ * so open tabs and widths are restored). Returns { app, page, shot } like launch(). Runs that were live when the app
+ * quit come back as 'Ended when OrgAI closed'.
+ */
+export async function relaunch(app, { shotPrefix = 'shot' } = {}) {
+  await app.close().catch(() => {})
+  return launch({ shotPrefix, clearPrefs: false })
 }
 
 export async function screenshot(page, name) {
@@ -251,16 +281,31 @@ export async function screenshot(page, name) {
 }
 
 export async function gotoProjects(page) {
-  await page.locator('.sidebar .nav-item', { hasText: 'Projects' }).or(page.locator('.sidebar [aria-label="All projects"]')).first().click()
-  // With no projects the form is open; otherwise it sits behind the topbar "New project" button.
-  await page.waitForSelector('form.card, [data-testid=new-project], .project-card', { timeout: 10_000 })
+  await page
+    .locator('.sidebar .nav-item', { hasText: /^\s*(Dashboard|Projects)\s*$/ })
+    .or(page.locator('.sidebar [aria-label="Dashboard"], .sidebar [aria-label="All projects"]'))
+    .first()
+    .click()
+  await page.waitForSelector('[data-testid=dashboard]', { timeout: 10_000 })
 }
 
-/** Open the new-project form if it is closed. Returns the form locator. */
-async function openProjectForm(page) {
-  const form = page.locator('form.card')
-  if (!(await form.count())) await page.locator('[data-testid=new-project]').click()
-  await form.waitFor({ timeout: 10_000 })
+/**
+ * Open the new-project form. With projects it sits in `new-project-dialog` behind the topbar "New project" button;
+ * on first launch it is the inline form of the Dashboard. Returns the form locator.
+ */
+export async function openProjectForm(page) {
+  const trigger = page.locator('[data-testid=new-project]')
+  if (await trigger.count()) {
+    await trigger.click()
+    const form = page.locator('[data-testid=new-project-dialog] form')
+    await form.waitFor({ timeout: 10_000 })
+    return form
+  }
+  // First launch: "Start a project" is checked by default.
+  const choice = page.locator('[data-testid=dash-start-choice]').getByRole('radio', { name: 'Start a project' })
+  if (!(await choice.isChecked())) await choice.check({ force: true })
+  const form = page.locator('[data-testid=dashboard] form.project-form')
+  await form.waitFor({ state: 'visible', timeout: 10_000 })
   return form
 }
 
@@ -272,7 +317,8 @@ async function openProjectForm(page) {
 export async function createProject(page, { mode = 'existing', path: dir, name, brief = '', skipSetup = true, useMock = true }) {
   await gotoProjects(page)
   const form = await openProjectForm(page)
-  await form.getByRole('radio', { name: mode === 'new' ? 'New idea' : 'Existing repository', exact: true }).check({ force: true })
+  await form.locator('[data-testid=project-kind-option][data-kind=code] input[type=radio]').check({ force: true })
+  await form.getByRole('radio', { name: mode === 'new' ? 'New idea' : 'Existing code', exact: true }).check({ force: true })
   if (mode === 'new') {
     await form.locator('input[placeholder="My app"]').fill(name)
     await form.locator('textarea').first().fill(brief)
@@ -290,8 +336,8 @@ export async function createProject(page, { mode = 'existing', path: dir, name, 
   const mock = form.locator('[data-testid=use-mock]')
   if ((await mock.count()) && (await mock.isChecked()) !== useMock) await form.locator('label.checkbox', { hasText: 'Use the mock adapter' }).click()
   await form.getByRole('button', { name: skipSetup ? 'Create project' : 'Create and start setup' }).click()
-  // The projects view (and its form) goes away once the project exists and the app navigates to it.
-  await page.waitForSelector('form.card, [data-testid=new-project]', { state: 'detached', timeout: 120_000 })
+  // The dashboard (and its dialog or form) goes away once the project exists and the app navigates to it.
+  await page.waitForSelector('[data-testid=dashboard]', { state: 'detached', timeout: 120_000 })
   return await findProject(page, name)
 }
 
@@ -304,20 +350,22 @@ export async function findProject(page, name) {
 /** Open a project from the sidebar. */
 export async function openProject(page, name) {
   await page.locator(`.sidebar [data-testid=nav-project][data-name="${name.replace(/"/g, '\\"')}"]`).first().click()
-  await page.waitForSelector('form.card, [data-testid=new-project]', { state: 'detached', timeout: 10_000 })
+  await page.waitForSelector('[data-testid=dashboard]', { state: 'detached', timeout: 10_000 })
 }
 
-/** Delete every project card with this name. Returns how many cards remain (0 on success). */
+/** Delete every project tile with this name. Returns how many tiles remain (0 on success). */
 export async function deleteProject(page, name) {
   await gotoProjects(page)
+  const tiles = () => page.locator(`[data-testid=project-tile][data-name="${name.replace(/"/g, '\\"')}"]`)
   for (let i = 0; i < 5; i++) {
-    const card = page.locator('.project-card', { hasText: name }).first()
-    if (!(await card.count())) break
-    await card.getByRole('button', { name: 'Delete', exact: true }).click()
-    await page.getByRole('button', { name: 'Delete project', exact: true }).click()
+    const tile = tiles().first()
+    if (!(await tile.count())) break
+    await tile.locator('[data-testid=project-tile-more]').click()
+    await page.locator('[data-testid=project-tile-delete]').click()
+    await page.getByRole('button', { name: /^(Delete project|Forget engagement)$/ }).click()
     await sleep(700)
   }
-  return page.locator('.project-card', { hasText: name }).count()
+  return tiles().count()
 }
 
 /** End a live session if the button is there. */
@@ -428,4 +476,26 @@ export function teamPanelTab(page, name) {
 /** Open App settings through the sidebar gear. */
 export async function openAppSettings(page) {
   await page.getByRole('button', { name: 'App settings', exact: true }).click()
+}
+
+/**
+ * How far a deep link shifted the window (ux-review-config-2 N1): `<html>` / `<body>` scrollTop, the app root's top
+ * edge, and every ancestor of the settings scroller that is scrolled. All zero / empty when only the scroller moved.
+ */
+export async function windowShift(page) {
+  return page.evaluate(() => {
+    const scroller = document.querySelector('.settings-scroll')
+    const shifted = []
+    for (let p = scroller?.parentElement; p; p = p.parentElement) {
+      if (p.scrollTop !== 0) shifted.push(`${p.tagName.toLowerCase()}.${String(p.className).split(' ')[0]}:${p.scrollTop}`)
+    }
+    const root = document.querySelector('#root') ?? document.body
+    return {
+      html: document.documentElement.scrollTop,
+      body: document.body.scrollTop,
+      appTop: Math.round(root.getBoundingClientRect().top),
+      shifted,
+      ok: document.documentElement.scrollTop === 0 && document.body.scrollTop === 0 && Math.round(root.getBoundingClientRect().top) === 0 && shifted.length === 0
+    }
+  })
 }

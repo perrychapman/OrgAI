@@ -1,10 +1,12 @@
 import type { ReactElement, ReactNode } from 'react'
 import { useEffect, useId, useRef, useState } from 'react'
 import { FolderPlus, Pause, RotateCcw, Square } from 'lucide-react'
-import { useAppStore } from '../store/useAppStore'
+import { useAppStore, useProjectSummaries } from '../store/useAppStore'
+import { newestOf } from '../lib/runChains'
 import { Button } from './ui/Button'
 import { useAssistantModelName } from '../lib/assistantModels'
 import { canPromote, offersRetro, offersSaveAsProject } from '../lib/assistants'
+import { registerMenuHandler } from '../lib/menuRegistry'
 import SaveAsProjectDialog from './assistants/SaveAsProjectDialog'
 
 /** Wraps one control and points its aria-describedby at a helper text; the primitives take no such prop. */
@@ -37,15 +39,34 @@ export default function RunActions({ runId }: { runId: string }): ReactElement |
   const mock = useAppStore((s) => !!s.appInfo?.mockAdapter)
   const setupModel = useAssistantModelName('setupModel')
   const [saving, setSaving] = useState(false)
+  const summaries = useProjectSummaries()
+  const sessionOpen = !!summary && (summary.status === 'running' || summary.status === 'idle' || summary.status === 'starting')
+  // One conversation per chain: the retrospective reviews the whole chain and is offered once, on its newest session.
+  const canRetro = !!summary && !sessionOpen && offersRetro(summary) && (newestOf(summaries, summary.id)?.id ?? summary.id) === summary.id
+  const canSave = !!summary && !sessionOpen && offersSaveAsProject(summary)
+  const promote = summary ? canPromote(summary) : { ok: false, reason: undefined }
+  // Application menu: registered only while the action applies, so the router says "Not available for this run." otherwise.
+  const menuRef = useRef({ promote, startRetro, id: summary?.id ?? '' })
+  menuRef.current = { promote, startRetro, id: summary?.id ?? '' }
+  useEffect(() => {
+    const offs: Array<() => void> = []
+    if (canSave) {
+      offs.push(
+        registerMenuHandler('save-chat-as-project', () => {
+          const p = menuRef.current.promote
+          if (!p.ok) return p.reason ?? 'This chat cannot be saved as a project.'
+          setSaving(true)
+        })
+      )
+    }
+    if (canRetro) offs.push(registerMenuHandler('org-retrospective', () => void menuRef.current.startRetro(menuRef.current.id)))
+    return () => offs.forEach((off) => off())
+  }, [canSave, canRetro])
   if (!summary) return null
-  const sessionOpen = summary.status === 'running' || summary.status === 'idle' || summary.status === 'starting'
-  const canRetro = !sessionOpen && offersRetro(summary)
-  const canSave = !sessionOpen && offersSaveAsProject(summary)
-  const promote = canPromote(summary)
   if (!sessionOpen && !canRetro && !canSave) return null
   const interruptHelp = 'Stops the current turn. The session stays open.'
   const endHelp = 'Ends the session and stops all of its agents.'
-  const retroHelp = `Have the Architect (${setupModel}, set in App settings > Defaults) review this run and revise the org chart where roles struggled. Starts a session (${mock ? 'mock, no tokens' : 'spends tokens'}).`
+  const retroHelp = `Have the Architect (${setupModel}, set in App settings > General) review this run and revise the org chart where roles struggled. Starts a session (${mock ? 'mock, no tokens' : 'spends tokens'}).`
   return (
     <div className="run-actions" role="group" aria-label="Run actions">
       {sessionOpen && (

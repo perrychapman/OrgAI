@@ -1,44 +1,138 @@
 import { readFileSync } from 'node:fs'
-import type { AgentInstance, ConnectionId, ImageAttachment, McpServerSpec, PluginSpec, ProviderId, Role, RunEvent, RunPlan, TokenUsage, TranscriptBlock } from '@shared/types'
-import { CHAT_HARNESS_TOOLS, HARNESS_PROJECT_ID, MCP_HARNESS_TOOLS, SKILLS_PROJECT_ID, SKILL_ASSIST_HARNESS_TOOLS, SKILL_HARNESS_TOOLS, SPAWN_TOOL } from '@shared/types'
-import { mcpServersForRole, newId } from '@shared/defaults'
-import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo, type CompletionInput, type PeerMessage, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
-import { harnessToolsFor, isBlockingHarnessTool, type HarnessTool } from './harnessTools'
+import { dirname, join } from 'node:path'
+import type { AgentInstance, ConnectionId, ImageAttachment, McpServerSpec, PermissionSuggestion, PluginSpec, ProviderId, Role, RunEvent, RunPlan, TokenUsage, TranscriptBlock } from '@shared/types'
+import { CHAT_HARNESS_TOOLS, ENGAGEMENT_CONTEXT_TOOL, HARNESS_PROJECT_ID, KNOWLEDGE_FACT_MAX_CHARS, KNOWLEDGE_RECALL_TOOL, KNOWLEDGE_TOOL, MCP_HARNESS_TOOLS, SKILLS_PROJECT_ID, SKILL_ASSIST_HARNESS_TOOLS, SKILL_HARNESS_TOOLS, SPAWN_TOOL } from '@shared/types'
+import { mcpServersForRole, newId, projectKindOf } from '@shared/defaults'
+import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo, type CompletionInput, type ExecActivityReason, type PeerMessage, type RootTurnEnd, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type SessionSettlement } from './types'
+import { datum, harnessToolsFor, isBlockingHarnessTool, type ConfigChange, type ConfigChangeResult, type HarnessTool, type HarnessToolAudience, type HarnessToolHooks, type McpAttachResult } from './harnessTools'
+import { agentInstalledServers, mcpCallDenial, withoutServerRules } from './mcpGrants'
+import { SELF_CONTROL_PATHS_UNAVAILABLE_LOG, SELF_CONTROL_REFUSAL_TEXT, checkSelfControlDenial, readControlProtectedPaths, selfControlLogLine } from './selfControlGate'
+import {
+  REFERENCE_EDIT_TOOLS,
+  commandReferenceTouch,
+  editTargetOf as referenceEditTarget,
+  referenceCommandMessage,
+  referenceEditDenial,
+  referenceFolderOf,
+  referenceRefusalEntry,
+  referenceTouchOf
+} from './referenceDirectories'
 import { ContinuationDriver, PLAN_TOOLS, stepActivity } from './continuation'
 import { authFailureMessage, describeTool, harnessToolActivity } from './activity'
-import { allowRuleStrings, applyAllowScope, chooseSuggestions, listRules, suggestionLabels } from './permissionRules'
+import { EDIT_TOOLS, allowRuleStrings, applyAllowScope, chooseSuggestions, editTargetOf, isOfferableDirectory, listRules, suggestionLabels, type AllowScopePersist } from './permissionRules'
 import { isTrustRestrictedRun, isWorkspaceConfigPath } from '../quick/scratch'
 import { composeFirstMessage, peerMessageText } from './prompts'
+import { firstMessageHiddenContext, spawnKnowledge, userMessageKnowledge, withSpawnKnowledge, withUserMessageKnowledge } from './knowledgeDelivery'
 import { resolveParent } from './agentTree'
 import { HandleNamer, mapSendMessage, messageTranscriptText, spawnHandle } from './network'
-import { matchingRule } from './ruleMatch'
+import { SHELL_TOOLS, isFreeCdTarget, matchOptionsFor, matchingRule, type MatchOptions } from './ruleMatch'
 import { countUsage, setModelTokens, usageOf } from './runUsage'
+import { cliProjectSettings, projectSettingsLoad } from './claude'
 
 /**
  * A scripted, token-free provider. It plays a script of steps and emits the same normalized RunEvents a
  * real adapter would, going through the same RuntimeContext round-trips (permissions, proposals, setup
  * completion) and the shared harness tools. Used by tests and for UI work: set ORGAI_MOCK=1 and a
  * project's provider.id to "mock"; ORGAI_MOCK_SCRIPT may point at a JSON MockScript.
+ *
+ * Prompt markers (default script only): [mock:auth-fail], [mock:skill], [mock:mcp-midrun], [mock:config-change],
+ * [mock:no-price], [mock:computed-cost], [mock:title-fail] (complete()), [mock:deep-tree] (deepTreeSteps: root ->
+ * mock-lead -> mock-lead-report-1 / -2, every report finishes) and [mock:fatigue] (fatigueSteps): the root
+ * runs `cd <project>/.claude/worktrees/agent-x && npm test` with a provider-style compound rule suggestion (the card
+ * offers `Bash(npm test:*)`), a report edits `<parent of project>/sibling-notes/README.md` with setMode acceptEdits +
+ * addDirectories suggestions, then the root runs `cd <project>/sub && npm test` (no card once `Bash(npm test:*)` is
+ * granted; the free cd needs no rule). [mock:reference-edit] (referenceEditSteps): a report tries an Edit under the
+ * run's first reference folder and gets the reference gate's refusal plus one harness row "Refused: brief.md is in a
+ * reference folder (read only)"; the run goes on to its usual end. [mock:reference-shell] (referenceShellSteps): the
+ * root runs Bash `del "<first reference folder>/brief.md"` with no `ask` on the step; the reference shell guard forces
+ * a card with referenceFolder and no suggestions (allow: result 'ok', nothing runs; deny: the deny text).
+ * [mock:folder-config] (folderConfigSteps): folder config trust. When ctx.folderConfigLoads() is not false the root
+ * reads `<project>/.claude/settings.json` permissions.allow (same reader as the Claude adapter) and says "Folder config
+ * loaded."; otherwise it says "Folder config ignored." and reads nothing. Then Bash `npm test` runs with no card when a
+ * loaded rule covers it, else it asks through the normal permission card.
+ * [mock:knowledge] (knowledgeSteps, engagement work runs): before the default script the root reads the graph's
+ * vocabulary, records Acme Corp (organisation), Jane Doe (person), a decision and a risk with facts, links them,
+ * saves the context note "Kickoff call summary", searches "Acme", reads Acme Corp back and retires its fact "Fiscal
+ * year ends in March" (skipped when the fact cannot be read back), then says MOCK_KNOWLEDGE_DONE; without a knowledge
+ * graph (a code project) it says MOCK_KNOWLEDGE_NONE instead and the default script follows either way.
+ * [mock:knowledge-recall] (knowledgeRecallSteps, engagement work runs): the same seeding steps, then knowledge_recall
+ * "Acme billing" twice (the second shows the dedupe path), says MOCK_KNOWLEDGE_RECALLED, and plays the default script
+ * with the first report's brief naming Jane Doe so knowledgeContext fires with purpose 'spawn'; MOCK_KNOWLEDGE_NONE
+ * without a knowledge graph.
+ *
+ * Every user message and spawn brief goes through ctx.knowledgeContext like the other adapters (knowledgeDelivery.ts);
+ * the mock has no model, so what a model would receive is kept in `deliveredMessages` and scripted replies echo only
+ * what the user typed.
+ *
+ * Headless exec markers (work runs, default script; cli-spec Wave 3, relied on by e2e/cli-exec.mjs and RunManager tests):
+ * [mock:exec-plan] (execPlanSteps): set_plan with 2 steps, both updated done, complete_plan, a closing text; the exec
+ * outcome is 'completed'. [mock:exec-blocked] (execBlockedSteps): set_plan, then mark_blocked with a reason; outcome
+ * 'blocked'. [mock:exec-question] (execQuestionSteps): ask_user with the options "(Recommended) Keep the default" and
+ * "Change it", then a text that echoes the answer ("You chose: <answer>"). [mock:turn-fail] (turnFailSteps): one text,
+ * then the root turn ends failed (RootTurnEnd errorSubtype 'error_during_execution', root state 'error', run.status
+ * 'idle'; the session stays open). [mock:rate-limit] (rateLimitSteps): one text, then the rateLimit step with
+ * untilInMs 1500 and the session ends (RunManager pauses the run). [mock:exec-slow] (execSlowSteps): about 30 text
+ * steps one second apart, cut short by interrupt and stop. Every root turn end calls ctx.onRootTurnEnded before
+ * run.status 'idle' (the auth-fail marker reports ok false with isAuthError, before its 'error' status).
+ *
+ * Reference folders (same as the Claude adapter): a shell step touching one always asks, never through a rule, a
+ * suggestion shortcut or acceptEdits; a Read / Glob / Grep card under one carries referenceFolder and no suggestions.
+ *
+ * Permission asks follow the Claude adapter: saved, session and live rules (matchingRule with matchOptionsFor, so a
+ * `cd` into the project or an allowed directory needs no rule), and an edit is pre-approved when its file is inside
+ * the project, an allowed directory or a session-granted directory AND the project mode is 'acceptEdits' (not on a
+ * trust-restricted run) or the session was granted acceptEdits. Deviation: the real CLI's auto mode also
+ * auto-approves in-cwd edits; the mock does not, so e2e can rely on the default script's Edit card.
  */
 
 export type MockStep =
-  /** Assistant text from an agent (default: the root). */
-  | { type: 'text'; agent?: string; text: string }
+  /**
+   * Assistant text from an agent (default: the root). It streams as one agent.partial with the first half of `text`,
+   * then the transcript entry, then an agent.partial '' clear. With `partials` (cli-spec Wave 4, e2e/cli-tui.mjs splits
+   * an escape sequence across two chunks), each string is emitted in order as a cumulative agent.partial instead of the
+   * half-text one, with the script's `delayMs` between them; an interrupt or stop during those waits cuts them short:
+   * the remaining partials are skipped, the '' clear is still emitted and no transcript entry is written.
+   */
+  | { type: 'text'; agent?: string; text: string; partials?: string[] }
   | { type: 'thinking'; agent?: string; text: string }
   /**
    * A tool call. With `ask`, it first needs the user's approval through ctx.requestPermission. With
    * `background` too, the turn goes on without waiting for the answer (a report's call still pending
    * while the orchestrator's turn ends).
    */
-  | { type: 'tool'; agent?: string; name: string; input?: Record<string, unknown>; result?: string; ask?: boolean; background?: boolean }
+  | {
+      type: 'tool'
+      agent?: string
+      name: string
+      input?: Record<string, unknown>
+      result?: string
+      ask?: boolean
+      background?: boolean
+      /** Provider-style permission suggestions passed to chooseSuggestions as `provided` (like the CLI's canUseTool). */
+      suggestions?: PermissionSuggestion[]
+    }
   /** Spawn a report. `role` is a slug; default: the first role the parent may spawn. */
-  | { type: 'spawn'; id: string; role?: string; description: string; parent?: string; /** Handle; default <role>-<n>. */ name?: string }
+  | { type: 'spawn'; id: string; role?: string; description: string; parent?: string; /** Handle; default <role>-<n>. */ name?: string; /** The brief it receives; default `description`. */ brief?: string }
   /** An agent messages another by handle or role slug (SendMessage). `from` defaults to the root. */
   | { type: 'message'; from?: string; to: string; text: string }
   /** A report finishes and reports back to its parent. */
   | { type: 'finish'; id: string; result: string }
   /** Call one of the harness's own tools by bare name (propose_architecture, ask_user, complete_setup, ...). */
-  | { type: 'harness'; name: string; args?: Record<string, unknown>; /** Re-run the call when the user asks for changes. Default true. */ retryOnRevise?: boolean }
+  | {
+      type: 'harness'
+      name: string
+      args?: Record<string, unknown>
+      /** Re-run the call when the user asks for changes. Default true. */
+      retryOnRevise?: boolean
+      /** After the call, the root says this text with "{result}" replaced by the tool's answer. */
+      echo?: string
+    }
+  /**
+   * engagement_knowledge from the root: `get` the entity `node` (a name), find the id of its live fact whose text is
+   * `fact` in the fenced result (knowledgeFactId) and `retire` it with `reason`. When the entity or the fact cannot be
+   * read back, the retire is skipped with a log line; the run never fails on it.
+   */
+  | { type: 'retireFact'; node: string; fact: string; reason?: string }
   /**
    * The plan's usage limit rejects the next request: reports ctx.rateLimited (with `until` ms from now,
    * when given) and ends the session, like the Claude adapter does at the next result.
@@ -52,6 +146,13 @@ export type MockStep =
   | { type: 'planComplete'; summary: string }
   /** An API retry (rate limit or overload) against an agent's request; counted in usage.retries. */
   | { type: 'retry'; agent?: string }
+  /** Wait `ms` more before the next step (cut short by interrupt and stop). */
+  | { type: 'wait'; ms: number }
+  /**
+   * The root turn ends failed here (like a Claude result with subtype `subtype`, default 'error_during_execution'):
+   * the rest of the turn is skipped, the root goes to 'error' and run.status 'idle' follows; the session stays open.
+   */
+  | { type: 'fail'; subtype?: string }
 
 export interface MockScript {
   /** Pause before each step, in milliseconds. Default 400. */
@@ -220,20 +321,422 @@ const AUTH_FAIL_TOKEN = '[mock:auth-fail]'
 /** Trigger token: the root calls list_skills (or loads its first granted skill). */
 const SKILL_TOKEN = '[mock:skill]'
 
+/** Trigger token (work runs, default script): request_mcp_install mid-run, then call the new server from the root and a report. */
+export const MCP_MIDRUN_TOKEN = '[mock:mcp-midrun]'
+/** The server the [mock:mcp-midrun] script asks for, its report's id and the tool both agents call. */
+export const MOCK_MIDRUN_SERVER = 'mock-midrun'
+export const MOCK_MIDRUN_REPORT = 'mock-midrun-report'
+export const MOCK_MIDRUN_TOOL = `mcp__${MOCK_MIDRUN_SERVER}__ping`
+
+/**
+ * The [mock:mcp-midrun] turn: ask for a server, then (once approved) call one of its tools from the root and from a
+ * spawned report. Each call goes through the MCP grant gate and then the permission card, like the live adapter; a
+ * role the install card left out gets the gate's denial as the tool result.
+ */
+const MCP_MIDRUN_STEPS: MockStep[] = [
+  { type: 'text', text: 'This needs a server the project does not have; asking you to add it.' },
+  {
+    type: 'harness',
+    name: MCP_HARNESS_TOOLS.requestInstall,
+    retryOnRevise: false,
+    args: {
+      reason: 'Mock: exercise attaching an MCP server mid-run.',
+      manual: { name: MOCK_MIDRUN_SERVER, transport: 'stdio', command: 'npx', args: ['-y', 'mock-midrun-server@1.0.0'] }
+    }
+  },
+  { type: 'tool', name: MOCK_MIDRUN_TOOL, ask: true, result: 'PONG' },
+  { type: 'spawn', id: MOCK_MIDRUN_REPORT, description: 'Ping the new MCP server' },
+  { type: 'tool', agent: MOCK_MIDRUN_REPORT, name: MOCK_MIDRUN_TOOL, ask: true, result: 'PONG' },
+  { type: 'finish', id: MOCK_MIDRUN_REPORT, result: 'Pinged the new MCP server.' },
+  { type: 'text', text: 'Mock: the new MCP server was used.' }
+]
+
+/** Trigger token (work runs, default script): the permission-fatigue script (fatigueSteps). */
+export const FATIGUE_TOKEN = '[mock:fatigue]'
+/** The report the [mock:fatigue] script spawns. */
+export const MOCK_FATIGUE_REPORT = 'mock-fatigue-report'
+
+/**
+ * The [mock:fatigue] turn for a project folder: a compound `cd <worktree> && npm test` with the CLI's compound rule
+ * suggestion (replaced on the card by `Bash(npm test:*)`), an edit outside the project with setMode acceptEdits +
+ * addDirectories suggestions, then `cd <project>/sub && npm test`. Nothing touches the disk.
+ */
+export function fatigueSteps(projectPath: string): MockStep[] {
+  const worktree = join(projectPath, '.claude', 'worktrees', 'agent-x')
+  const sibling = join(dirname(projectPath), 'sibling-notes')
+  const sub = join(projectPath, 'sub')
+  const bashRule = (cmd: string): PermissionSuggestion[] => [
+    { type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: `${cmd} *` }], behavior: 'allow', destination: 'localSettings' }
+  ]
+  const first = `cd ${worktree} && npm test`
+  const last = `cd ${sub} && npm test`
+  return [
+    { type: 'text', text: 'Running the tests in the worktree.' },
+    { type: 'tool', name: 'Bash', input: { command: first }, ask: true, suggestions: bashRule(first), result: 'Tests passed.' },
+    { type: 'spawn', id: MOCK_FATIGUE_REPORT, description: 'Update the sibling notes' },
+    {
+      type: 'tool',
+      agent: MOCK_FATIGUE_REPORT,
+      name: 'Edit',
+      input: { file_path: join(sibling, 'README.md'), old_string: 'old', new_string: 'new' },
+      ask: true,
+      suggestions: [
+        { type: 'setMode', mode: 'acceptEdits', destination: 'session' },
+        { type: 'addDirectories', directories: [sibling], destination: 'session' }
+      ],
+      result: 'File updated.'
+    },
+    { type: 'finish', id: MOCK_FATIGUE_REPORT, result: 'Updated the sibling notes. Files touched: ../sibling-notes/README.md' },
+    { type: 'tool', name: 'Bash', input: { command: last }, ask: true, suggestions: bashRule(last), result: 'Tests passed.' },
+    { type: 'text', text: 'Mock: the fatigue script is done.' }
+  ]
+}
+
+/** Trigger token (work runs, default script): a report tries to edit a file in the first reference folder (referenceEditSteps). */
+export const REFERENCE_EDIT_TOKEN = '[mock:reference-edit]'
+/** The report the [mock:reference-edit] script spawns. */
+export const MOCK_REFERENCE_REPORT = 'mock-reference-report'
+
+/**
+ * The [mock:reference-edit] turn: a report reads, then tries an Edit under `ref` (the run's first reference folder),
+ * which the reference gate refuses with referenceFolderMessage (the denial is the tool result), then finishes and the
+ * root wraps up as usual. Without a reference folder the edit step is left out. Nothing touches the disk.
+ */
+export function referenceEditSteps(ref: string | undefined): MockStep[] {
+  return [
+    { type: 'text', text: 'Checking the client material.' },
+    { type: 'spawn', id: MOCK_REFERENCE_REPORT, description: 'Review the client material' },
+    ...(ref
+      ? ([
+          { type: 'tool', agent: MOCK_REFERENCE_REPORT, name: 'Read', input: { file_path: join(ref, 'brief.md') }, result: '# Client brief\n' },
+          { type: 'tool', agent: MOCK_REFERENCE_REPORT, name: 'Edit', input: { file_path: join(ref, 'brief.md'), old_string: 'old', new_string: 'new' }, ask: true, result: 'File updated.' }
+        ] satisfies MockStep[])
+      : []),
+    { type: 'finish', id: MOCK_REFERENCE_REPORT, result: 'Reviewed the client material; it is read-only, so notes go in the project folder.' },
+    { type: 'text', text: 'Mock: the reference-edit script is done.' }
+  ]
+}
+
+/** Appended to the deny text for an edit under a reference folder (same as claude.ts REFERENCE_COPY_HINT). */
+export const MOCK_REFERENCE_COPY_HINT = '; write a copy in the working folder instead'
+
+/** Trigger token (work runs, default script): the root runs a shell command naming a file in the first reference folder (referenceShellSteps). */
+export const REFERENCE_SHELL_TOKEN = '[mock:reference-shell]'
+
+/**
+ * The [mock:reference-shell] turn: the root runs Bash `del "<ref>/brief.md"` with no `ask` on the step; the reference
+ * shell guard forces a card with referenceFolder and no suggestions. Allow gives result 'ok' (the mock executes
+ * nothing), Deny the deny text. Without a reference folder the command step is left out.
+ */
+export function referenceShellSteps(ref: string | undefined): MockStep[] {
+  return [
+    { type: 'text', text: 'Tidying the client material.' },
+    ...(ref ? ([{ type: 'tool', name: 'Bash', input: { command: `del "${join(ref, 'brief.md')}"` } }] satisfies MockStep[]) : []),
+    { type: 'text', text: 'Mock: the reference-shell script is done.' }
+  ]
+}
+
+/** Trigger token (work runs, default script): the folder's own settings.json decides whether `npm test` asks (folderConfigSteps). */
+export const FOLDER_CONFIG_TOKEN = '[mock:folder-config]'
+export const MOCK_FOLDER_CONFIG_LOADED = 'Folder config loaded.'
+export const MOCK_FOLDER_CONFIG_IGNORED = 'Folder config ignored.'
+
+/**
+ * The [mock:folder-config] turn: says whether the folder's config loaded, then runs Bash `npm test`. `covered` (a loaded
+ * rule matches the command) leaves out the card; otherwise the step asks. Pure.
+ */
+export function folderConfigSteps(loaded: boolean, covered: boolean): MockStep[] {
+  return [
+    { type: 'text', text: loaded ? MOCK_FOLDER_CONFIG_LOADED : MOCK_FOLDER_CONFIG_IGNORED },
+    { type: 'tool', name: 'Bash', input: { command: 'npm test' }, ...(covered ? {} : { ask: true }), result: 'Tests passed.' },
+    { type: 'text', text: 'Mock: the folder-config script is done.' }
+  ]
+}
+
+/** Trigger token (work runs, default script): the root changes its own project's MCP servers and skills mid-run. */
+/** Trigger token (work runs, default script): a three-level agent tree whose reports all finish (deepTreeSteps). */
+export const DEEP_TREE_TOKEN = '[mock:deep-tree]'
+
+/** Headless exec markers (work runs, default script). See the file header. */
+export const EXEC_PLAN_TOKEN = '[mock:exec-plan]'
+export const EXEC_BLOCKED_TOKEN = '[mock:exec-blocked]'
+export const EXEC_QUESTION_TOKEN = '[mock:exec-question]'
+export const TURN_FAIL_TOKEN = '[mock:turn-fail]'
+export const RATE_LIMIT_TOKEN = '[mock:rate-limit]'
+export const EXEC_SLOW_TOKEN = '[mock:exec-slow]'
+/** The [mock:exec-question] options, in order; the first is the recommended one. */
+export const EXEC_QUESTION_OPTIONS = ['(Recommended) Keep the default', 'Change it'] as const
+export const EXEC_BLOCKED_REASON = 'Mock: the work needs a decision only you can make.'
+/** Steps in [mock:exec-slow] and the time between them (ms). */
+export const EXEC_SLOW_STEPS = 30
+export const EXEC_SLOW_STEP_MS = 1000
+
+/** [mock:exec-plan]: a plan with two steps, both done, then complete_plan and a closing text. */
+export function execPlanSteps(): MockStep[] {
+  return [
+    { type: 'text', text: 'Planning the work.' },
+    { type: 'plan', goal: 'Mock exec: make the requested change', steps: ['Read the code', 'Make the change'] },
+    { type: 'planUpdate', steps: [{ id: 'p1', status: 'done' }] },
+    { type: 'planUpdate', steps: [{ id: 'p2', status: 'done', note: 'Changed src/example.ts' }] },
+    { type: 'planComplete', summary: 'Both steps are done and verified.' },
+    { type: 'text', text: 'All done: both plan steps are complete.' }
+  ]
+}
+
+/** [mock:exec-blocked]: a plan, then mark_blocked with EXEC_BLOCKED_REASON. */
+export function execBlockedSteps(): MockStep[] {
+  return [
+    { type: 'plan', goal: 'Mock exec: a change that needs a decision', steps: ['Decide the approach', 'Make the change'] },
+    { type: 'harness', name: PLAN_TOOLS.blocked, args: { reason: EXEC_BLOCKED_REASON } },
+    { type: 'text', text: 'I need a decision from you before I can go on.' }
+  ]
+}
+
+/** [mock:exec-question]: ask_user with EXEC_QUESTION_OPTIONS, then a text echoing the answer. */
+export function execQuestionSteps(): MockStep[] {
+  return [
+    {
+      type: 'harness',
+      name: 'ask_user',
+      retryOnRevise: false,
+      args: { question: 'Which setting should I use?', options: EXEC_QUESTION_OPTIONS.map((label) => ({ label })), allowFreeText: false },
+      echo: 'You chose: {result}'
+    }
+  ]
+}
+
+/** [mock:turn-fail]: one text, then the root turn fails with error_during_execution. */
+export function turnFailSteps(): MockStep[] {
+  return [
+    { type: 'text', text: 'Starting on the request.' },
+    { type: 'fail', subtype: 'error_during_execution' }
+  ]
+}
+
+/** [mock:rate-limit]: one text, then the plan's usage limit (reset in 1.5 s) and the session ends. */
+export function rateLimitSteps(): MockStep[] {
+  return [
+    { type: 'text', text: 'Starting on the request.' },
+    { type: 'rateLimit', untilInMs: 1500 }
+  ]
+}
+
+/** [mock:exec-slow]: EXEC_SLOW_STEPS texts about EXEC_SLOW_STEP_MS apart (`delayMs` is the script's per-step pause). */
+export function execSlowSteps(delayMs: number): MockStep[] {
+  const extra = Math.max(0, EXEC_SLOW_STEP_MS - Math.max(0, delayMs))
+  const out: MockStep[] = []
+  for (let i = 1; i <= EXEC_SLOW_STEPS; i++) {
+    if (extra) out.push({ type: 'wait', ms: extra })
+    out.push({ type: 'text', text: `Working slowly: step ${i} of ${EXEC_SLOW_STEPS}.` })
+  }
+  return out
+}
+/** The agent ids (= handles) the [mock:deep-tree] script spawns. */
+export const MOCK_DEEP_LEAD = 'mock-lead'
+export const MOCK_DEEP_LEAD_REPORTS = ['mock-lead-report-1', 'mock-lead-report-2'] as const
+
+/**
+ * The [mock:deep-tree] turn: the root spawns `mock-lead` (role `leadSlug`), which spawns two reports of `reportSlug`;
+ * both report back to mock-lead, which then reports back to the root. Scripted spawns are the harness's own fixture,
+ * so they are not checked against the parent role's spawnable list (spawnStep never enforces it).
+ */
+export function deepTreeSteps(leadSlug: string, reportSlug: string): MockStep[] {
+  const [r1, r2] = MOCK_DEEP_LEAD_REPORTS
+  return [
+    { type: 'text', text: 'Planning the work: one lead will split it between two reports.' },
+    { type: 'spawn', id: MOCK_DEEP_LEAD, name: MOCK_DEEP_LEAD, role: leadSlug, description: 'Lead the deep-tree work' },
+    { type: 'text', agent: MOCK_DEEP_LEAD, text: 'Splitting the work in two.' },
+    { type: 'spawn', id: r1, name: r1, parent: MOCK_DEEP_LEAD, role: reportSlug, description: 'Do the first half' },
+    { type: 'spawn', id: r2, name: r2, parent: MOCK_DEEP_LEAD, role: reportSlug, description: 'Do the second half' },
+    { type: 'tool', agent: r1, name: 'Read', input: { file_path: 'README.md' }, result: '# Mock project\n' },
+    { type: 'finish', id: r1, result: 'First half done.' },
+    { type: 'tool', agent: r2, name: 'Glob', input: { pattern: 'src/**' }, result: 'src/example.ts' },
+    { type: 'finish', id: r2, result: 'Second half done.' },
+    { type: 'text', agent: MOCK_DEEP_LEAD, text: 'Both reports are done.' },
+    { type: 'finish', id: MOCK_DEEP_LEAD, result: 'Both halves done by mock-lead-report-1 and mock-lead-report-2.' },
+    { type: 'text', text: 'The lead finished: both halves are done. Anything else?' }
+  ]
+}
+
+/** Trigger token (engagement work runs, default script): the root records what it learned in the knowledge graph (knowledgeSteps). */
+export const KNOWLEDGE_TOKEN = '[mock:knowledge]'
+/** What the [mock:knowledge] script records, by name, and the fact the root retires afterwards. */
+export const MOCK_KNOWLEDGE = {
+  client: 'Acme Corp',
+  sponsor: 'Jane Doe',
+  decision: 'Migrate billing to Stripe',
+  risk: 'Legacy export format undocumented',
+  noteTitle: 'Kickoff call summary',
+  retiredFact: 'Fiscal year ends in March'
+} as const
+/** The root's sentence after the [mock:knowledge] steps. */
+export const MOCK_KNOWLEDGE_DONE = 'I recorded what I learned about the engagement.'
+/** The root's sentence when [mock:knowledge] is set but the run has no knowledge graph (not an engagement work run). */
+export const MOCK_KNOWLEDGE_NONE = 'No knowledge graph is available in this run.'
+/** Trigger token (engagement work runs, default script): the root seeds the graph, recalls from it twice, then spawns (knowledgeRecallSteps). */
+export const KNOWLEDGE_RECALL_TOKEN = '[mock:knowledge-recall]'
+export const MOCK_KNOWLEDGE_RECALL_QUERY = 'Acme billing'
+/** The root's sentence after the two recalls. */
+export const MOCK_KNOWLEDGE_RECALLED = 'I recalled what the team knows.'
+/** The first report's brief on a [mock:knowledge-recall] run; it names a recorded person so knowledgeContext fires. */
+export const MOCK_KNOWLEDGE_RECALL_BRIEF = 'Implement the requested change. Check the billing wording with Jane Doe.'
+
+/**
+ * The [mock:knowledge] steps, each a real harness tool call through the mock's tool path (RunManager counts the
+ * writes and writes the harness transcript rows): vocabulary; Acme Corp (organisation) and Jane Doe (person) with
+ * aliases, summaries and facts; Jane works-at Acme; the decision "Migrate billing to Stripe" decided-by Jane; the risk
+ * "Legacy export format undocumented"; the context note "Kickoff call summary"; a search for "Acme"; then a `get` of
+ * Acme Corp and the retire of its fact "Fiscal year ends in March" (retireFact). Nothing touches the disk directly.
+ */
+export function knowledgeSteps(): MockStep[] {
+  const kg = (args: Record<string, unknown>): MockStep => ({ type: 'harness', name: KNOWLEDGE_TOOL, args })
+  return [
+    kg({ action: 'vocabulary' }),
+    kg({
+      action: 'upsert_node',
+      kind: 'organisation',
+      name: MOCK_KNOWLEDGE.client,
+      aliases: ['Acme'],
+      summary: 'The client. Mid-size manufacturer moving its billing off a legacy system.',
+      facts: ['Headquartered in Leeds', MOCK_KNOWLEDGE.retiredFact]
+    }),
+    kg({
+      action: 'upsert_node',
+      kind: 'person',
+      name: MOCK_KNOWLEDGE.sponsor,
+      aliases: ['J. Doe'],
+      summary: 'Chief Financial Officer at Acme Corp and the engagement sponsor.',
+      facts: ['Role: CFO', 'Prefers written summaries before meetings']
+    }),
+    kg({ action: 'link', from: MOCK_KNOWLEDGE.sponsor, to: MOCK_KNOWLEDGE.client, relation: 'works-at' }),
+    kg({ action: 'upsert_node', kind: 'decision', name: MOCK_KNOWLEDGE.decision, facts: ['Agreed at the kickoff call'] }),
+    kg({ action: 'link', from: MOCK_KNOWLEDGE.decision, to: MOCK_KNOWLEDGE.sponsor, relation: 'decided-by', note: 'Sponsor sign-off' }),
+    kg({ action: 'upsert_node', kind: 'risk', name: MOCK_KNOWLEDGE.risk, facts: ['No one at Acme owns the export spec'] }),
+    {
+      type: 'harness',
+      name: ENGAGEMENT_CONTEXT_TOOL,
+      args: {
+        action: 'save',
+        title: MOCK_KNOWLEDGE.noteTitle,
+        text: 'Kickoff call with Jane Doe (CFO).\n\nAgreed to migrate billing to Stripe before the March year end. Open risk: the legacy export format is undocumented.'
+      }
+    },
+    kg({ action: 'search', query: 'Acme' }),
+    { type: 'retireFact', node: MOCK_KNOWLEDGE.client, fact: MOCK_KNOWLEDGE.retiredFact, reason: 'Corrected: fiscal year ends in April' },
+    { type: 'text', text: MOCK_KNOWLEDGE_DONE }
+  ]
+}
+
+/**
+ * The [mock:knowledge-recall] steps after the seeding ones: knowledge_recall twice with one query through the real
+ * harness tool (RunManager counts both, writes the rows and answers the repeat from its "already shown" state), the
+ * done sentence, then the default script with the first report's brief naming Jane Doe.
+ */
+export function knowledgeRecallSteps(): MockStep[] {
+  const recall: MockStep = { type: 'harness', name: KNOWLEDGE_RECALL_TOOL, args: { query: MOCK_KNOWLEDGE_RECALL_QUERY } }
+  const firstSpawn = DEFAULT_WORK.findIndex((s) => s.type === 'spawn')
+  return [
+    ...knowledgeSteps(),
+    recall,
+    recall,
+    { type: 'text', text: MOCK_KNOWLEDGE_RECALLED },
+    ...DEFAULT_WORK.map((s, i) => (i === firstSpawn && s.type === 'spawn' ? { ...s, brief: MOCK_KNOWLEDGE_RECALL_BRIEF } : s))
+  ]
+}
+
+/**
+ * The id of the live fact whose text is `text` in an engagement_knowledge `get` result: its fact lines read
+ * `  kf_<id> | <text>` with ` | retired` appended on a retired one. The text is compared as datum() renders it
+ * (whitespace runs joined, angle brackets replaced), so a plain fact reads back unchanged. undefined when there is no
+ * such live fact or the result is not a `get` block (a refusal, "No entity ...").
+ */
+export function knowledgeFactId(result: string, text: string): string | undefined {
+  const want = datum(text, KNOWLEDGE_FACT_MAX_CHARS)
+  const retiredSuffix = ' | retired'
+  for (const line of result.split('\n')) {
+    const m = /^\s+(kf_[A-Za-z0-9_-]+) \| (.*)$/.exec(line)
+    if (!m) continue
+    const rest = m[2]!
+    if (rest.endsWith(retiredSuffix)) continue
+    if (rest === want) return m[1]!
+  }
+  return undefined
+}
+
+export const CONFIG_CHANGE_TOKEN = '[mock:config-change]'
+/** The server and the skill the [mock:config-change] script proposes. */
+export const MOCK_CONFIG_SERVER = 'mock-notes'
+export const MOCK_CONFIG_SKILL = 'mock-config-skill'
+/** Harness tools the [mock:config-change] script calls (work-run tools; a run without them logs a warning and goes on). */
+const PROPOSE_MCP_TOOL = MCP_HARNESS_TOOLS.proposeServers
+const PROPOSE_SKILLS_TOOL = SKILL_ASSIST_HARNESS_TOOLS.propose
+
+/**
+ * The [mock:config-change] turn for a root role: propose an MCP server and a project skill granted to the root, then
+ * load the skill. Each approved proposal reaches the session through the configChanged hook (the mock applies it at
+ * once), and the tool results land in the transcript as usual.
+ */
+export function configChangeSteps(rootSlug: string): MockStep[] {
+  return [
+    {
+      type: 'harness',
+      name: PROPOSE_MCP_TOOL,
+      retryOnRevise: false,
+      args: {
+        title: 'Add mock notes server',
+        rationale: 'Mock config change.',
+        upsert: [{ name: MOCK_CONFIG_SERVER, transport: 'stdio', command: 'npx', args: ['-y', 'mock-fs-server@1.0.0'], roles: [rootSlug] }]
+      }
+    },
+    {
+      type: 'harness',
+      name: PROPOSE_SKILLS_TOOL,
+      retryOnRevise: false,
+      args: {
+        title: 'Add mock skill',
+        rationale: 'Mock config change.',
+        items: [
+          {
+            action: 'create',
+            scope: 'project',
+            draft: { name: MOCK_CONFIG_SKILL, description: 'Use for the mock config change.', body: 'Say that the mock config change worked.' },
+            roles: [rootSlug]
+          }
+        ]
+      }
+    },
+    { type: 'harness', name: SKILL_HARNESS_TOOLS.load, args: { name: MOCK_CONFIG_SKILL } },
+    { type: 'text', text: 'Config change done.' }
+  ]
+}
+
 export class MockSession implements RuntimeSession {
   readonly finished: Promise<void>
   /** Harness messages delivered to the orchestrator (automatic continues), in order. For tests. */
   readonly harnessMessages: string[] = []
   /** Raw messages from other runs delivered through receive(), in order. For tests. */
   readonly peerMessages: PeerMessage[] = []
-  /** What a real adapter would grant: role slug -> names of the MCP servers that role may use. For tests. */
-  readonly mcpServersByRole: Record<string, string[]> = {}
+  /**
+   * What a real adapter would grant: role slug -> names of the MCP servers that role may use, from the LIVE server
+   * list (servers installed mid-run and the install card's roles included). For tests.
+   */
+  get mcpServersByRole(): Record<string, string[]> {
+    const specs = { mcpServers: this.liveMcpServers() }
+    return Object.fromEntries(this.ctx.roles.map((r) => [r.slug, mcpServersForRole(specs, r).map((s) => s.name)]))
+  }
   /** The enabled plugins the session would load. For tests. */
   readonly plugins: PluginSpec[] = []
   /** Which adapter and connection the run was routed to; never secrets. Undefined without ctx.connection. For tests. */
   readonly connection?: { adapter: ProviderId; connection: ConnectionId }
   /** Servers attached mid-run through the harness's addMcpServer hook, in order. For tests. */
   readonly addedMcpServers: McpServerSpec[] = []
+  /** Changes reported through the harness's configChanged hook (approved propose_mcp_servers / propose_skills), in order. For tests. */
+  readonly configChanges: ConfigChange[] = []
+  /** What a real adapter would hand the model for user messages and spawn briefs, knowledge blocks included. For tests. */
+  readonly deliveredMessages: { agentId: string; text: string }[] = []
+  /** The standing knowledge index each agent's system prompt would carry (PromptFlags.knowledgeBrief), in spawn order. For tests. */
+  readonly promptKnowledgeBriefs: { agentId: string; brief: string | undefined }[] = []
+  private hooks: HarnessToolHooks
   private agents = new Map<string, AgentInstance>()
   private rolesBySlug: Map<string, Role>
   private root: Role
@@ -245,13 +748,27 @@ export class MockSession implements RuntimeSession {
   private wake: (() => void) | null = null
   private stopped = false
   private interrupted = false
+  /** Root turn ends so far (RootTurnEnd.turnGen). */
+  private rootTurnGen = 0
+  /** A root turn is being played (turn()). */
+  private inTurn = false
+  /** Set by a 'fail' step: the SDK-style subtype the current root turn failed with. */
+  private turnFailure: string | null = null
+  /** Set by a 'rateLimit' step: the turn ended on a usage limit. */
+  private limited = false
   private stopSignal: Promise<typeof STOPPED>
   private signalStop!: () => void
   /** agent id -> spawning tool_use id, for the parent's tool_result. */
   private spawnToolUse = new Map<string, string>()
   /** Allow rules granted for the rest of this session. */
   private sessionRules = new Set<string>()
+  /** A setMode acceptEdits granted for the rest of this session (the CLI's session permission mode). */
+  private sessionAcceptEdits = false
+  /** Folders granted for the rest of this session (addDirectories). */
+  private sessionDirs = new Set<string>()
   private handles = new HandleNamer()
+  /** Harness tool name -> audience, for the MCP grant gate (same as the Claude adapter's PreToolUse). */
+  private harnessAudiences = new Map<string, HarnessToolAudience>()
 
   constructor(
     private ctx: RuntimeContext,
@@ -272,16 +789,22 @@ export class MockSession implements RuntimeSession {
       const activity = stepActivity(plan)
       if (a && activity && a.state !== 'done' && a.state !== 'error') this.setState(ROOT_AGENT_ID, a.state, activity)
     }
-    this.tools = harnessToolsFor(ctx, { onDecided, onPlanUpdated, addMcpServer: (spec) => this.addMcpServer(spec) })
-    const mcpSpecs = { mcpServers: ctx.mcpServers ? ctx.mcpServers() : ctx.project.mcpServers }
-    for (const r of ctx.roles) this.mcpServersByRole[r.slug] = mcpServersForRole(mcpSpecs, r).map((s) => s.name)
+    this.hooks = { onDecided, onPlanUpdated, addMcpServer: (spec) => this.addMcpServer(spec), configChanged: (change) => this.configChanged(change) }
+    this.tools = harnessToolsFor(ctx, this.hooks)
+    this.harnessAudiences = new Map(this.tools.map((t) => [t.name, t.audience]))
     this.plugins.push(...(ctx.plugins?.() ?? []).filter((p) => p.enabled))
     if (ctx.connection) this.connection = { adapter: ctx.connection.adapter, connection: ctx.connection.connection }
     this.continueTurns = [...(script.continue ?? [])]
     this.continuation = new ContinuationDriver({
       kind: ctx.run.kind,
-      autoContinue: ctx.autoContinue,
-      maxAutoContinues: ctx.maxAutoContinues,
+      projectKind: projectKindOf(ctx.project),
+      // Getters: RunManager's setLive re-clamp of ctx reaches the live driver.
+      get autoContinue() {
+        return ctx.autoContinue
+      },
+      get maxAutoContinues() {
+        return ctx.maxAutoContinues
+      },
       delayMs: ctx.continuationDelayMs,
       getPlan: () => ctx.getPlan(),
       updatePlan: (plan) => ctx.updatePlan(plan),
@@ -295,7 +818,8 @@ export class MockSession implements RuntimeSession {
       },
       nudge: (text, activity, summary) => this.deliverHarness(text, activity, { summary }),
       log: (level, message) => this.log(level, message),
-      tellUser: (text) => this.transcript(ROOT_AGENT_ID, { kind: 'system', text }, { source: 'harness' })
+      tellUser: (text) => this.transcript(ROOT_AGENT_ID, { kind: 'system', text }, { source: 'harness' }),
+      onSettled: () => this.noteActivity('continuation')
     })
     this.stopSignal = new Promise((resolve) => (this.signalStop = () => resolve(STOPPED)))
     if (loadError) this.log('warn', loadError)
@@ -307,6 +831,7 @@ export class MockSession implements RuntimeSession {
   async send(text: string, images?: ImageAttachment[]): Promise<void> {
     this.continuation.userMessage()
     this.transcript(ROOT_AGENT_ID, images?.length ? { kind: 'user', text, images } : { kind: 'user', text })
+    this.deliveredMessages.push({ agentId: ROOT_AGENT_ID, text: withUserMessageKnowledge(text, userMessageKnowledge(this.ctx, text, (m) => this.log('warn', m))) })
     this.setState(ROOT_AGENT_ID, 'thinking', 'Thinking…')
     // An image-only message is still a turn; give the scripted reply something to echo.
     const n = images?.length ?? 0
@@ -328,6 +853,19 @@ export class MockSession implements RuntimeSession {
     this.deliverHarness(peerMessageText(message), 'Reading a message from another run…', { transcript: false })
   }
 
+  /** Headless exec settlement view (cli-spec 6.2(2)). The mock has no integrator or restarts. */
+  settlement(): SessionSettlement {
+    const root = this.agents.get(ROOT_AGENT_ID)
+    const rootIdle = !this.inTurn && (!root || root.state === 'idle' || root.state === 'done' || root.state === 'error')
+    return {
+      rootTurnGen: this.rootTurnGen,
+      rootIdle,
+      continuationSettled: this.continuation.isSettledForTurn(this.rootTurnGen),
+      nudgeTurn1Sent: this.continuation.nudgeTurn1Sent,
+      quiescent: !this.inTurn && this.inbox.length === 0
+    }
+  }
+
   async stop(): Promise<void> {
     this.continuation.dispose()
     this.stopped = true
@@ -335,10 +873,40 @@ export class MockSession implements RuntimeSession {
     this.poke()
   }
 
-  /** The addMcpServer harness hook: record the server the way a live adapter would attach it. */
-  async addMcpServer(spec: McpServerSpec): Promise<string> {
+  /**
+   * The addMcpServer harness hook: record the server. The mock has no whitelists to widen, so the tools are callable
+   * at once ('now'); the per-role grant gate in toolStep still applies (the Claude adapter answers 'after-idle').
+   */
+  async addMcpServer(spec: McpServerSpec): Promise<McpAttachResult> {
     this.addedMcpServers.push(spec)
-    return `mcp__${spec.name}__`
+    return { prefix: `mcp__${spec.name}__`, availability: 'now' }
+  }
+
+  /**
+   * The configChanged harness hook: record the change and apply it at once ('now'). The MCP grant gate already reads
+   * the live server list; a skills change re-binds the harness tools so list_skills / load_skill see the live
+   * ctx.skills() (the Claude adapter's Skill gate reads the live grants the same way, and answers 'after-idle' when a
+   * re-created query is needed).
+   */
+  async configChanged(change: ConfigChange): Promise<ConfigChangeResult> {
+    this.configChanges.push(structuredClone(change))
+    if (change.skills) {
+      this.tools = harnessToolsFor(this.ctx, this.hooks)
+      this.harnessAudiences = new Map(this.tools.map((t) => [t.name, t.audience]))
+    }
+    return { availability: 'now' }
+  }
+
+  /** The run's MCP servers as they are now (project servers plus run-scoped installs). */
+  private liveMcpServers(): McpServerSpec[] {
+    return this.ctx.mcpServers ? this.ctx.mcpServers() : (this.ctx.project.mcpServers ?? [])
+  }
+
+  /** The role behind an agent id (the root's for the root). */
+  private roleOf(agentId: string): Role | undefined {
+    if (agentId === ROOT_AGENT_ID) return this.root
+    const a = this.agents.get(agentId)
+    return (a?.roleId ? this.ctx.roles.find((r) => r.id === a.roleId) : undefined) ?? (a ? this.rolesBySlug.get(a.roleSlug) : undefined)
   }
 
   // ---------- events ----------
@@ -349,6 +917,27 @@ export class MockSession implements RuntimeSession {
 
   private log(level: 'info' | 'warn' | 'error', message: string): void {
     this.emit({ type: 'log', runId: this.ctx.run.id, level, message })
+  }
+
+  /** Exec settlement: adapter-internal activity (a listener's throw never breaks the session). */
+  private noteActivity(reason: ExecActivityReason): void {
+    try {
+      this.ctx.noteActivity?.(reason)
+    } catch {
+      /* ignore */
+    }
+  }
+
+  /** Count a root turn end and report it (before run.status 'idle'). Returns its generation. */
+  private reportRootTurnEnd(e: Omit<RootTurnEnd, 'turnGen'>): number {
+    this.rootTurnGen += 1
+    const turnGen = this.rootTurnGen
+    try {
+      this.ctx.onRootTurnEnded?.({ turnGen, ...e })
+    } catch (err) {
+      this.log('warn', `Root turn end listener failed: ${(err as Error)?.message ?? String(err)}`)
+    }
+    return turnGen
   }
 
   private transcript(agentId: string, block: TranscriptBlock, opts?: { source?: 'harness' }): void {
@@ -477,6 +1066,7 @@ export class MockSession implements RuntimeSession {
     if (root && (root.state === 'idle' || root.state === 'done')) this.setState(ROOT_AGENT_ID, 'thinking', activity)
     this.emit({ type: 'run.status', runId: this.ctx.run.id, status: 'running' })
     this.inbox.push({ text, harness: true })
+    this.noteActivity('message')
     this.poke()
   }
 
@@ -501,7 +1091,9 @@ export class MockSession implements RuntimeSession {
     const sessionId = this.ctx.resumeSessionId ?? `mock-${runId}`
     try {
       this.emit({ type: 'run.status', runId, status: 'running', sessionId })
-      const first = composeFirstMessage(this.ctx.prompt, this.ctx.hiddenContext)
+      this.promptKnowledgeBriefs.push({ agentId: ROOT_AGENT_ID, brief: this.ctx.knowledgeBrief?.() })
+      const first = composeFirstMessage(this.ctx.prompt, firstMessageHiddenContext(this.ctx, (m) => this.log('warn', m)))
+      this.deliveredMessages.push({ agentId: ROOT_AGENT_ID, text: first })
       this.log('info', `Mock session ${sessionId} started (${this.ctx.run.kind} script, first message ${first.length} chars)`)
       if (this.ctx.prompt.includes(AUTH_FAIL_TOKEN)) return this.failAuth()
       await this.skillStep(ROOT_AGENT_ID, this.root)
@@ -539,6 +1131,7 @@ export class MockSession implements RuntimeSession {
     this.transcript(ROOT_AGENT_ID, { kind: 'system', text: message, detail: 'Invalid API key · Please run /login' }, { source: 'harness' })
     this.log('error', 'Authentication failed: Invalid API key · Please run /login')
     this.setState(ROOT_AGENT_ID, 'error', 'Connection refused')
+    this.continuation.skipTurn(this.reportRootTurnEnd({ ok: false, isAuthError: true }))
     this.emit({ type: 'run.status', runId: this.ctx.run.id, status: 'error', error: message })
   }
 
@@ -569,6 +1162,10 @@ export class MockSession implements RuntimeSession {
         { type: 'text', text: `I can see ${n} OrgAI project${n === 1 ? '' : 's'}. Tell me what you would like to do.` }
       ]
     }
+    // A single-agent work run (team 'single'): like a Chat conversation, one reply to the prompt, no spawning, no plan.
+    if (this.ctx.run.kind === 'work' && this.ctx.run.team === 'single' && this.script.work === DEFAULT_WORK) {
+      return [{ type: 'text', text: this.script.reply.replace('{text}', this.ctx.prompt) }]
+    }
     if (this.isSetup && this.script.setup === DEFAULT_SETUP && library[0]) {
       const at = DEFAULT_SETUP.findIndex((st) => st.type === 'harness' && st.name === 'complete_setup')
       const item: Record<string, unknown> = { libraryId: library[0].id, ...(this.root ? { roles: [this.root.slug] } : {}) }
@@ -580,7 +1177,61 @@ export class MockSession implements RuntimeSession {
       }
       return at < 0 ? [...DEFAULT_SETUP, step] : [...DEFAULT_SETUP.slice(0, at), step, ...DEFAULT_SETUP.slice(at)]
     }
+    if (!this.isSetup && this.ctx.run.kind === 'work' && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(MCP_MIDRUN_TOKEN)) return MCP_MIDRUN_STEPS
+    if (!this.isSetup && this.ctx.run.kind === 'work' && !this.ctx.run.quick && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(CONFIG_CHANGE_TOKEN)) return configChangeSteps(this.root.slug)
+    if (!this.isSetup && this.ctx.run.kind === 'work' && !this.ctx.run.quick && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(FATIGUE_TOKEN)) return fatigueSteps(this.ctx.project.path)
+    if (!this.isSetup && this.ctx.run.kind === 'work' && !this.ctx.run.quick && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(FOLDER_CONFIG_TOKEN)) {
+      // One read of the gate for the turn, like the Claude adapter's per-query snapshot.
+      const loaded = projectSettingsLoad(this.ctx)
+      const rules = loaded ? cliProjectSettings(this.ctx, true).rules : []
+      const covered = rules.length > 0 && matchingRule('Bash', { command: 'npm test' }, rules, this.safeMatchOptions('Bash') ?? undefined) !== undefined
+      return folderConfigSteps(loaded, covered)
+    }
+    if (!this.isSetup && this.ctx.run.kind === 'work' && !this.ctx.run.quick && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(REFERENCE_EDIT_TOKEN)) {
+      const list = this.referenceList()
+      const ref = Array.isArray(list) ? list[0] : undefined
+      if (!ref) this.log('info', 'Mock [mock:reference-edit]: this run has no reference folder, so the edit step is skipped.')
+      return referenceEditSteps(ref)
+    }
+    if (!this.isSetup && this.ctx.run.kind === 'work' && !this.ctx.run.quick && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(REFERENCE_SHELL_TOKEN)) {
+      const list = this.referenceList()
+      const ref = Array.isArray(list) ? list[0] : undefined
+      if (!ref) this.log('info', 'Mock [mock:reference-shell]: this run has no reference folder, so the command step is skipped.')
+      return referenceShellSteps(ref)
+    }
+    const execMarker = this.execMarkerSteps()
+    if (execMarker) return execMarker
+    if (!this.isSetup && this.ctx.run.kind === 'work' && !this.ctx.run.quick && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(DEEP_TREE_TOKEN)) {
+      const lead = this.firstSpawnableSlug(this.root)
+      return deepTreeSteps(lead, this.firstSpawnableSlug(this.rolesBySlug.get(lead), lead))
+    }
+    if (!this.isSetup && this.ctx.run.kind === 'work' && !this.ctx.run.quick && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(KNOWLEDGE_RECALL_TOKEN)) {
+      const available = !!this.ctx.knowledge && !!this.ctx.knowledgeRecall && this.tools.some((t) => t.name === KNOWLEDGE_RECALL_TOOL)
+      if (available) return knowledgeRecallSteps()
+      this.log('info', 'Mock [mock:knowledge-recall]: this run has no knowledge graph (not an engagement work run), so the recall steps are skipped.')
+      return [{ type: 'text', text: MOCK_KNOWLEDGE_NONE }, ...DEFAULT_WORK]
+    }
+    if (!this.isSetup && this.ctx.run.kind === 'work' && !this.ctx.run.quick && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(KNOWLEDGE_TOKEN)) {
+      // The tool is bound on engagement work runs only, and answers the same sentence itself without ctx.knowledge.
+      const available = !!this.ctx.knowledge && this.tools.some((t) => t.name === KNOWLEDGE_TOOL)
+      if (!available) this.log('info', 'Mock [mock:knowledge]: this run has no knowledge graph (not an engagement work run), so the knowledge steps are skipped.')
+      const first: MockStep[] = available ? knowledgeSteps() : [{ type: 'text', text: MOCK_KNOWLEDGE_NONE }]
+      return [...first, ...DEFAULT_WORK]
+    }
     return this.isSetup ? this.script.setup : this.script.work
+  }
+
+  /** The headless exec markers' first turn (work runs, default script), or null. */
+  private execMarkerSteps(): MockStep[] | null {
+    if (this.isSetup || this.ctx.run.kind !== 'work' || this.ctx.run.quick || this.script.work !== DEFAULT_WORK) return null
+    const prompt = this.ctx.prompt
+    if (prompt.includes(EXEC_PLAN_TOKEN)) return execPlanSteps()
+    if (prompt.includes(EXEC_BLOCKED_TOKEN)) return execBlockedSteps()
+    if (prompt.includes(EXEC_QUESTION_TOKEN)) return execQuestionSteps()
+    if (prompt.includes(TURN_FAIL_TOKEN)) return turnFailSteps()
+    if (prompt.includes(RATE_LIMIT_TOKEN)) return rateLimitSteps()
+    if (prompt.includes(EXEC_SLOW_TOKEN)) return execSlowSteps(this.script.delayMs)
+    return null
   }
 
   /**
@@ -605,22 +1256,46 @@ export class MockSession implements RuntimeSession {
 
   private async turn(steps: MockStep[]): Promise<void> {
     this.interrupted = false
-    this.setState(ROOT_AGENT_ID, 'thinking', 'Thinking…')
-    for (const step of steps) {
-      await this.pause(this.script.delayMs)
-      if (this.stopped || this.interrupted) break
-      await this.step(step)
+    this.turnFailure = null
+    this.inTurn = true
+    try {
+      this.setState(ROOT_AGENT_ID, 'thinking', 'Thinking…')
+      for (const step of steps) {
+        await this.pause(this.script.delayMs)
+        if (this.stopped || this.interrupted) break
+        await this.step(step)
+        if (this.turnFailure) break
+      }
+      if (this.stopped) {
+        // A usage limit ends the session mid-turn: the turn end is still reported (limited), then the session ends.
+        if (this.limited) this.continuation.skipTurn(this.reportRootTurnEnd({ ok: true, limited: true }))
+        return
+      }
+      if (this.interrupted) this.log('info', 'Turn interrupted.')
+      this.emit({ type: 'run.cost', runId: this.ctx.run.id, totalCostUsd: this.totalCost() })
+      const root = this.ensureAgent(ROOT_AGENT_ID)
+      const failure = this.turnFailure as string | null // set by a fail step (step() mutates it)
+      if (failure) {
+        root.state = 'error'
+        root.activity = failure.replace(/^error_/, '').replace(/_/g, ' ')
+        this.log('error', `Run ended: ${failure}`)
+      } else {
+        root.state = 'idle'
+        const reportsRunning = [...this.agents.values()].some((x) => x.id !== ROOT_AGENT_ID && x.state !== 'done' && x.state !== 'error')
+        root.activity = reportsRunning ? 'Waiting on reports…' : 'Waiting for you'
+      }
+      this.upsert(root)
+      this.inTurn = false
+      // Exec settlement (cli-spec 6.2(2)): every root turn end is reported before 'idle'.
+      const interrupted = this.interrupted
+      const turnGen = this.reportRootTurnEnd(failure ? { ok: false, errorSubtype: failure } : { ok: true, ...(interrupted ? { interrupted: true } : {}) })
+      this.emit({ type: 'run.status', runId: this.ctx.run.id, status: 'idle' })
+      if (failure || interrupted) this.continuation.skipTurn(turnGen)
+      else this.continuation.turnEnded(turnGen)
+    } finally {
+      this.inTurn = false
+      this.turnFailure = null
     }
-    if (this.stopped) return
-    if (this.interrupted) this.log('info', 'Turn interrupted.')
-    this.emit({ type: 'run.cost', runId: this.ctx.run.id, totalCostUsd: this.totalCost() })
-    const root = this.ensureAgent(ROOT_AGENT_ID)
-    root.state = 'idle'
-    const reportsRunning = [...this.agents.values()].some((x) => x.id !== ROOT_AGENT_ID && x.state !== 'done' && x.state !== 'error')
-    root.activity = reportsRunning ? 'Waiting on reports…' : 'Waiting for you'
-    this.upsert(root)
-    this.emit({ type: 'run.status', runId: this.ctx.run.id, status: 'idle' })
-    if (!this.interrupted && !this.isSetup) this.continuation.turnEnded()
   }
 
   private async step(step: MockStep): Promise<void> {
@@ -628,7 +1303,19 @@ export class MockSession implements RuntimeSession {
       case 'text': {
         const agentId = step.agent ?? ROOT_AGENT_ID
         const a = this.ensureAgent(agentId)
-        this.emit({ type: 'agent.partial', runId: this.ctx.run.id, agentId, text: step.text.slice(0, Math.ceil(step.text.length / 2)) })
+        if (Array.isArray(step.partials)) {
+          let first = true
+          for (const chunk of step.partials) {
+            if (!first) await this.pause(this.script.delayMs)
+            first = false
+            if (this.stopped || this.interrupted) break
+            this.emit({ type: 'agent.partial', runId: this.ctx.run.id, agentId, text: String(chunk) })
+          }
+          if (this.stopped || this.interrupted) {
+            this.emit({ type: 'agent.partial', runId: this.ctx.run.id, agentId, text: '' })
+            return
+          }
+        } else this.emit({ type: 'agent.partial', runId: this.ctx.run.id, agentId, text: step.text.slice(0, Math.ceil(step.text.length / 2)) })
         a.lastText = step.text.trim().slice(0, 200)
         this.charge(agentId, step.text)
         this.transcript(agentId, { kind: 'text', text: step.text })
@@ -651,13 +1338,27 @@ export class MockSession implements RuntimeSession {
         a.activity = 'Reported back'
         a.endedAt = Date.now()
         this.upsert(a)
+        this.noteActivity('report')
         const toolUseId = this.spawnToolUse.get(step.id)
         if (toolUseId) this.transcript(a.parentId ?? ROOT_AGENT_ID, { kind: 'tool_result', toolUseId, content: step.result, isError: false })
         if (a.parentId) this.setState(a.parentId, 'thinking', 'Thinking…')
         return
       }
-      case 'harness':
-        return this.harnessStep(step)
+      case 'harness': {
+        const result = await this.harnessStep(step)
+        if (step.echo !== undefined && result !== undefined && !this.stopped && !this.interrupted) {
+          await this.step({ type: 'text', text: step.echo.replace('{result}', result) })
+        }
+        return
+      }
+      case 'retireFact':
+        return this.retireFactStep(step)
+      case 'wait':
+        await this.pause(step.ms)
+        return
+      case 'fail':
+        this.turnFailure = step.subtype ?? 'error_during_execution'
+        return
       case 'retry': {
         const a = this.ensureAgent(step.agent ?? ROOT_AGENT_ID)
         countUsage(a, 'retries')
@@ -666,15 +1367,18 @@ export class MockSession implements RuntimeSession {
         return
       }
       case 'plan':
-        return this.harnessStep({
+        await this.harnessStep({
           type: 'harness',
           name: PLAN_TOOLS.set,
           args: { goal: step.goal, steps: step.steps.map((s) => (typeof s === 'string' ? { title: s } : s)) }
         })
+        return
       case 'planUpdate':
-        return this.harnessStep({ type: 'harness', name: PLAN_TOOLS.update, args: { steps: step.steps } })
+        await this.harnessStep({ type: 'harness', name: PLAN_TOOLS.update, args: { steps: step.steps } })
+        return
       case 'planComplete':
-        return this.harnessStep({ type: 'harness', name: PLAN_TOOLS.complete, args: { summary: step.summary } })
+        await this.harnessStep({ type: 'harness', name: PLAN_TOOLS.complete, args: { summary: step.summary } })
+        return
       case 'message': {
         const from = step.from ?? ROOT_AGENT_ID
         const input = { to: step.to, message: step.text }
@@ -705,6 +1409,7 @@ export class MockSession implements RuntimeSession {
         })
         this.log('warn', 'Mock usage limit reached; ending the session.')
         this.ctx.rateLimited({ window, ...(until ? { until } : {}) })
+        this.limited = true
         this.stopped = true
         this.signalStop()
         return
@@ -720,6 +1425,15 @@ export class MockSession implements RuntimeSession {
     this.charge(agentId, JSON.stringify(input))
     countUsage(this.ensureAgent(agentId), 'toolCalls')
     this.setState(agentId, 'tool', describeTool(step.name, input))
+    // Same self-control gate as the Claude adapter's PreToolUse (cli-spec 3.4(1)), before every other check, rule and
+    // mode: the orgai command and OrgAI's control files are refused outright.
+    const selfDenial = this.selfControlDenial(agentId, step.name, input)
+    if (selfDenial) {
+      this.transcript(agentId, { kind: 'tool_result', toolUseId: id, content: selfDenial, isError: true })
+      this.transcript(agentId, { kind: 'system', text: SELF_CONTROL_REFUSAL_TEXT }, { source: 'harness' })
+      this.setState(agentId, 'thinking', 'Thinking…')
+      return
+    }
     // Same refusal as the Claude adapter's PreToolUse deny: build sessions never write <workspace>/.claude (no card, no allow rule).
     const ws = this.ctx.run.buildWorkspace
     if (ws && MOCK_CONFIG_WRITE_TOOLS.has(step.name)) {
@@ -730,10 +1444,37 @@ export class MockSession implements RuntimeSession {
         return
       }
     }
+    // Same reference-folder gate as the Claude adapter's PreToolUse: edit tools under a reference folder (or naming no
+    // path while any exist) are refused before any rule, mode or card. The list is live; the mock's cwd is the project.
+    // An unreadable list refuses an edit tool (same wording as the Claude adapter). The refusal also writes one harness
+    // row on the agent ("Refused: <file> is in a reference folder (read only)").
+    const refusal = this.referenceEditRefusal(step.name, input)
+    if (refusal) {
+      this.log('warn', `Blocked ${step.name} by ${this.agents.get(agentId)?.name ?? agentId}: ${refusal.reason}`)
+      this.transcript(agentId, { kind: 'tool_result', toolUseId: id, content: refusal.reason, isError: true })
+      this.transcript(agentId, { kind: 'system', ...refusal.entry }, { source: 'harness' })
+      this.setState(agentId, 'thinking', 'Thinking…')
+      return
+    }
+    // Same per-role MCP grant gate as the Claude adapter's PreToolUse, from the live server list; the MCP resource
+    // tools are gated on input.server.
+    const mcpDenial = mcpCallDenial(step.name, { role: this.roleOf(agentId), isRoot: agentId === ROOT_AGENT_ID }, this.liveMcpServers(), this.harnessAudiences, input)
+    if (mcpDenial) {
+      this.log('warn', `Blocked ${step.name} by ${this.agents.get(agentId)?.name ?? agentId}: ${mcpDenial}`)
+      this.transcript(agentId, { kind: 'tool_result', toolUseId: id, content: mcpDenial, isError: true })
+      this.setState(agentId, 'thinking', 'Thinking…')
+      return
+    }
+    // Reference folders (same as the Claude adapter): a shell command touching one always asks (even a step without
+    // `ask`), never through a rule, suggestion shortcut or mode; a Read / Glob / Grep card under one names the folder.
+    // Such cards carry referenceFolder and no suggestions, and an allow grants this call only.
+    const ref = this.referenceTouch(step.name, input)
+    if (ref?.forced) this.log('info', `Asking about ${step.name} by ${this.agents.get(agentId)?.name ?? agentId}: ${ref.folder ? referenceCommandMessage(ref.folder, ref.how ?? 'names') : 'the reference folders could not be read'}`)
+    const refField = ref?.folder ? { referenceFolder: ref.folder } : {}
     if (step.ask && step.background) {
       // Leave the request pending and carry on; the result lands whenever the user answers.
       this.setState(agentId, 'waiting', `Needs approval: ${describeTool(step.name, input)}`)
-      void this.ctx.requestPermission({ agentId, toolName: step.name, input, summary: describeTool(step.name, input) }).then((decision) => {
+      void this.ctx.requestPermission({ agentId, toolName: step.name, input, summary: describeTool(step.name, input), ...refField }).then((decision) => {
         if (this.stopped) return
         const denied = decision.behavior === 'deny'
         this.transcript(agentId, { kind: 'tool_result', toolUseId: id, content: denied ? decision.message : step.result ?? 'ok', isError: denied })
@@ -742,14 +1483,42 @@ export class MockSession implements RuntimeSession {
       })
       return
     }
-    if (step.ask) {
-      const suggestions = chooseSuggestions(step.name, input, undefined)
-      const rules = allowRuleStrings(suggestions)
-      // A quick run or build session never reads saved rules from the user's folder (same as the Claude adapter).
-      const saved = new Set([...(isTrustRestrictedRun(this.ctx.run) ? [] : listRules(this.ctx.project.path)), ...this.sessionRules])
-      // Live grants (request_permission_rules, the rules panel) count too, like the real adapters' matchers.
-      const live = this.ctx.allowedRules?.() ?? []
-      const preApproved = (rules.length > 0 && rules.every((r) => saved.has(r))) || matchingRule(step.name, input, [...saved, ...live]) !== undefined
+    if (step.ask || ref?.forced) {
+      const restricted = isTrustRestrictedRun(this.ctx.run)
+      let suggestions: PermissionSuggestion[] = []
+      let preApproved = false
+      let opts: MatchOptions | undefined
+      // A touching shell command skips every allow path (and never reads matchOptionsFor, which an unreadable list breaks).
+      // When the folder lists cannot be read now (safeMatchOptions null, review L1) the call is asked with no suggestions
+      // and no rule allow, and an allow grants this call only (same as the Claude adapter).
+      const base = ref?.forced ? null : this.safeMatchOptions(step.name)
+      if (base) {
+        const cwd = typeof input.cwd === 'string' && input.cwd ? input.cwd : undefined
+        opts = { ...base, ...(cwd ? { effectiveCwd: cwd } : {}) }
+        // Same as the Claude adapter: server-level rules are offered for the user's MCP servers only (never one an agent
+        // installed this run, never orgai), and a trust-restricted run never gets a setMode suggestion.
+        const installedAll = agentInstalledServers(this.liveMcpServers(), this.ctx.project.mcpServers, this.addedMcpServers.map((x) => x.name))
+        const userMcpServers = [...new Set(this.liveMcpServers().filter((s) => s.enabled && s.name !== 'orgai' && !installedAll.has(s.name)).map((s) => s.name))]
+        // A read under a reference folder gets no suggestions (M2).
+        const chosen = ref ? [] : chooseSuggestions(step.name, input, step.suggestions, false, { ...opts, userMcpServers })
+        suggestions = restricted ? chosen.filter((s) => s.type !== 'setMode') : chosen
+        const rules = allowRuleStrings(suggestions)
+        // A quick run or build session never reads saved rules from the user's folder (same as the Claude adapter).
+        // Saved rules come from ctx.savedRules() (OrgAI's data folder for engagements), else the folder's file.
+        const savedRules = isTrustRestrictedRun(this.ctx.run) ? [] : this.ctx.savedRules ? this.ctx.savedRules() : listRules(this.ctx.project.path)
+        const saved = new Set([...savedRules, ...this.sessionRules])
+        // Live grants (request_permission_rules, the rules panel) count too, like the real adapters' matchers.
+        // A server an agent installed this run is never approved by a server-level rule (same as the Claude adapter).
+        const installed = step.name.startsWith('mcp__') ? installedAll : new Set<string>()
+        // The suggestion shortcut stands in for the CLI's own match of allowedTools and session updates, which never
+        // carry Bash / PowerShell rules (Claude adapter H-A / H1): shell calls are approved only through matchingRule.
+        const savedUsable = new Set(withoutServerRules([...saved], installed).filter((r) => !/^(Bash|PowerShell)(\(|$)/.test(r.trim())))
+        const usable = withoutServerRules([...saved, ...(this.ctx.allowedRules?.() ?? [])], installed)
+        preApproved =
+          (rules.length > 0 && rules.every((r) => savedUsable.has(r))) ||
+          matchingRule(step.name, input, usable, opts) !== undefined ||
+          this.editPreApproved(step.name, input, restricted)
+      }
       if (!preApproved) {
         this.setState(agentId, 'waiting', `Needs approval: ${describeTool(step.name, input)}`)
         const decision = await this.untilStopped(
@@ -758,7 +1527,8 @@ export class MockSession implements RuntimeSession {
             toolName: step.name,
             input,
             summary: describeTool(step.name, input),
-            ...(suggestions.length ? { suggestions, ruleLabels: suggestionLabels(suggestions) } : {})
+            ...(suggestions.length ? { suggestions, ruleLabels: suggestionLabels(suggestions) } : {}),
+            ...refField
           })
         )
         if (decision === STOPPED) return
@@ -769,27 +1539,162 @@ export class MockSession implements RuntimeSession {
           this.setState(agentId, 'thinking', 'Thinking…')
           return
         }
-        const granted = applyAllowScope(this.ctx.project.path, isTrustRestrictedRun(this.ctx.run) && decision.scope === 'project' ? { ...decision, scope: 'session' } : decision, suggestions, (level, message) => this.log(level, message))
+        // A reference-folder card grants this call only: no rule, folder or mode is kept.
+        if (ref || !opts) {
+          this.transcript(agentId, { kind: 'tool_result', toolUseId: id, content: step.result ?? 'ok', isError: false })
+          this.setState(agentId, 'thinking', 'Thinking…')
+          return
+        }
+        // Same as the Claude adapter: a trust-restricted run never persists anything (project scope becomes session).
+        const granted = applyAllowScope(
+          this.ctx.project.path,
+          restricted && decision.scope === 'project' ? { ...decision, scope: 'session' } : decision,
+          suggestions,
+          (level, message) => this.log(level, message),
+          restricted ? undefined : allowScopePersist(this.ctx),
+          { toolName: step.name, input, opts }
+        )
         for (const r of allowRuleStrings(granted ?? [])) this.sessionRules.add(r)
+        for (const s of granted ?? []) {
+          // A trust-restricted run stays ask-only: a session acceptEdits is never honoured there.
+          if (s.type === 'setMode' && s.mode === 'acceptEdits' && !restricted) this.sessionAcceptEdits = true
+          // Only folders the card may offer (never the data folder, home, a credential folder or a root).
+          if (s.type === 'addDirectories') for (const d of s.directories) if (isOfferableDirectory(d, opts)) this.sessionDirs.add(d)
+        }
       }
     }
     this.transcript(agentId, { kind: 'tool_result', toolUseId: id, content: step.result ?? 'ok', isError: false })
     this.setState(agentId, 'thinking', 'Thinking…')
   }
 
+  /**
+   * matchOptionsFor(ctx) now, or null when a folder list (allowed, reference, protected) cannot be read (review L1):
+   * the caller then asks, with no rule allow and no suggestions. Same as the Claude and Codex adapters.
+   */
+  private safeMatchOptions(toolName: string): MatchOptions | null {
+    try {
+      return matchOptionsFor(this.ctx)
+    } catch (e) {
+      this.log('warn', `Could not read the run's folders for ${toolName}, so it needs your approval: ${(e as Error).message}`)
+      return null
+    }
+  }
+
+  /** The run's reference folders now (live): undefined when the run has no list, 'unreadable' when reading it throws. */
+  private referenceList(): string[] | 'unreadable' | undefined {
+    if (!this.ctx.referenceDirectories) return undefined
+    try {
+      return this.ctx.referenceDirectories().filter((r) => typeof r === 'string' && r.length > 0)
+    } catch (e) {
+      this.log('warn', `Could not read the run's reference folders: ${(e as Error).message}`)
+      return 'unreadable'
+    }
+  }
+
+  /** Set once the "self-control gate skipped" line was logged for this run. */
+  private selfControlSkipLogged = false
+
+  /**
+   * Same as the Claude adapter's selfControlDenial: SELF_CONTROL_DENIAL_MESSAGE for a call that runs the orgai command
+   * or opens OrgAI's control files (logged as a warning), else null. The cwd is input.cwd, else the project folder. An
+   * empty or unreadable protected list denies shell commands (SELF_CONTROL_UNCHECKED_MESSAGE, review M2) and leaves
+   * file tools to the normal flow (logged once per run).
+   */
+  private selfControlDenial(agentId: string, toolName: string, input: Record<string, unknown>): string | null {
+    const { paths, unavailable } = readControlProtectedPaths(this.ctx.controlProtectedPaths?.bind(this.ctx))
+    if (unavailable && !this.selfControlSkipLogged) {
+      this.selfControlSkipLogged = true
+      this.log('warn', SELF_CONTROL_PATHS_UNAVAILABLE_LOG)
+    }
+    const cwd = typeof input.cwd === 'string' && input.cwd ? input.cwd : this.ctx.project.path
+    const denial = checkSelfControlDenial(toolName, input, {
+      protectedPaths: paths,
+      pathsUnavailable: unavailable,
+      cwd,
+      shell: toolName === 'PowerShell' ? 'powershell' : 'bash'
+    })
+    if (!denial) return null
+    this.log('warn', selfControlLogLine(toolName, this.agents.get(agentId)?.name ?? agentId))
+    return denial
+  }
+
+  /**
+   * Same as the Claude adapter's referenceEditRefusal: the deny text for an edit tool under a reference folder (plus
+   * MOCK_REFERENCE_COPY_HINT) and its harness row. The mock's cwd is the project folder.
+   */
+  private referenceEditRefusal(toolName: string, input: Record<string, unknown>): { reason: string; entry: { text: string; detail: string } } | null {
+    if (!REFERENCE_EDIT_TOOLS.has(toolName)) return null
+    const refs = this.referenceList()
+    if (refs === undefined) return null
+    if (refs === 'unreadable') {
+      return { reason: 'OrgAI could not check the reference folders, so this edit was refused. Try again shortly.', entry: referenceRefusalEntry(undefined, 'a reference folder') }
+    }
+    const cwd = this.ctx.project.path
+    const denial = referenceEditDenial(toolName, input, refs, cwd)
+    if (!denial) return null
+    const target = referenceEditTarget(toolName, input)
+    const hit = referenceFolderOf(target, refs, cwd)
+    return { reason: `${denial}${MOCK_REFERENCE_COPY_HINT}`, entry: referenceRefusalEntry(hit ? target : undefined, hit ?? refs[0] ?? 'a reference folder') }
+  }
+
+  /**
+   * The reference folder a call touches, for the permission path. Shell tools (forced: always asked): commandReferenceTouch
+   * from input.cwd, else the project folder; an unreadable list counts as touching with no folder. Read / Glob / Grep
+   * (not forced): referenceTouchOf. null otherwise.
+   */
+  private referenceTouch(toolName: string, input: Record<string, unknown>): { folder: string | null; how?: 'names' | 'runs-in'; forced: boolean } | null {
+    const shell = SHELL_TOOLS.has(toolName)
+    if (!shell && toolName !== 'Read' && toolName !== 'Glob' && toolName !== 'Grep') return null
+    const refs = this.referenceList()
+    if (refs === undefined) return null
+    if (refs === 'unreadable') return shell ? { folder: null, forced: true } : null
+    if (!refs.length) return null
+    const cwd = typeof input.cwd === 'string' && input.cwd ? input.cwd : this.ctx.project.path
+    const opts = { shell: toolName === 'PowerShell' ? ('powershell' as const) : ('bash' as const) }
+    if (shell) {
+      if (typeof input.command !== 'string') return null
+      const touch = commandReferenceTouch(input.command, cwd, refs, opts)
+      return touch ? { ...touch, forced: true } : null
+    }
+    const folder = referenceTouchOf(toolName, input, refs, cwd, opts)
+    return folder ? { folder, forced: false } : null
+  }
+
+  /**
+   * An edit the CLI would auto-accept: the file is inside the project, an allowed directory or a session directory,
+   * and the session runs in acceptEdits (project mode, not on a trust-restricted run, or a session grant). The
+   * project's 'auto' mode deliberately does not count (see the header comment).
+   */
+  private editPreApproved(toolName: string, input: unknown, restricted: boolean): boolean {
+    if (!EDIT_TOOLS.has(toolName)) return false
+    const acceptEdits = !restricted && (this.sessionAcceptEdits || this.ctx.project.permissionMode === 'acceptEdits')
+    if (!acceptEdits) return false
+    const target = editTargetOf(input)
+    if (!target) return false
+    const opts = this.safeMatchOptions(toolName)
+    if (!opts) return false
+    return isFreeCdTarget(target, { ...opts, freeDirs: [...(opts.freeDirs ?? []), ...this.sessionDirs] })
+  }
+
+  /** The first role `parent` may spawn, else the first non-root role, else `fallback` (default: the root's slug). */
+  private firstSpawnableSlug(parent: Role | undefined, fallback?: string): string {
+    const allowed = parent ? this.ctx.roles.filter((r) => parent.spawnable.includes(r.id)) : []
+    return allowed[0]?.slug ?? fallback ?? this.ctx.roles.find((r) => r.reportsTo !== null)?.slug ?? this.root.slug
+  }
+
   private async spawnStep(step: Extract<MockStep, { type: 'spawn' }>): Promise<void> {
     const parentId = step.parent ?? ROOT_AGENT_ID
     const parent = this.ensureAgent(parentId)
-    const parentRole = this.rolesBySlug.get(parent.roleSlug)
-    const allowed = parentRole ? this.ctx.roles.filter((r) => parentRole.spawnable.includes(r.id)) : []
-    const slug = step.role ?? allowed[0]?.slug ?? this.ctx.roles.find((r) => r.reportsTo !== null)?.slug ?? this.root.slug
+    const slug = step.role ?? this.firstSpawnableSlug(this.rolesBySlug.get(parent.roleSlug))
     const { handle } = spawnHandle(this.handles, slug, step.name)
-    const input = { subagent_type: slug, description: step.description, prompt: step.description, name: handle }
+    const brief = step.brief ?? step.description
+    const input = { subagent_type: slug, description: step.description, prompt: brief, name: handle }
     const toolUseId = newId('tu')
     this.transcript(parentId, { kind: 'tool_use', id: toolUseId, name: SPAWN_TOOL, input })
     countUsage(parent, 'toolCalls')
     this.setState(parentId, 'delegating', describeTool(SPAWN_TOOL, input))
     this.spawnToolUse.set(step.id, toolUseId)
+    if (!this.agents.has(step.id)) this.noteActivity('subagent')
     const role = this.rolesBySlug.get(slug)
     const agentParent = resolveParent(this.agents, step.id, parentId, ROOT_AGENT_ID)
     this.upsert({
@@ -803,7 +1708,10 @@ export class MockSession implements RuntimeSession {
       state: 'thinking',
       activity: step.description.slice(0, 90) || 'Reading the brief…'
     })
-    this.transcript(step.id, { kind: 'user', text: step.description })
+    this.transcript(step.id, { kind: 'user', text: brief })
+    // After the upsert, so the row lands on the report (like Codex); the block stays out of its transcript entry.
+    this.promptKnowledgeBriefs.push({ agentId: step.id, brief: this.ctx.knowledgeBrief?.() })
+    this.deliveredMessages.push({ agentId: step.id, text: withSpawnKnowledge(brief, spawnKnowledge(this.ctx, brief, step.id, (m) => this.log('warn', m))) })
     if (role) await this.skillStep(step.id, role)
   }
 
@@ -845,12 +1753,17 @@ export class MockSession implements RuntimeSession {
     this.transcript(agentId, { kind: 'tool_result', toolUseId: id, content: text, isError })
   }
 
-  private async harnessStep(step: Extract<MockStep, { type: 'harness' }>): Promise<void> {
+  /**
+   * A harness tool call from the root. Returns the tool's last result text (a thrown error's message counts), or
+   * undefined when the tool is not bound for this run or the session stopped mid-call.
+   */
+  private async harnessStep(step: Extract<MockStep, { type: 'harness' }>): Promise<string | undefined> {
     const t = this.tools.find((x) => x.name === step.name)
     if (!t) {
       this.log('warn', `Mock script calls unknown harness tool ${step.name} for a ${this.ctx.run.kind} run`)
-      return
+      return undefined
     }
+    let last: string | undefined
     for (let attempt = 0; attempt < 3; attempt++) {
       const id = newId('tu')
       this.transcript(ROOT_AGENT_ID, { kind: 'tool_use', id, name: step.name, input: step.args ?? {} })
@@ -860,24 +1773,51 @@ export class MockSession implements RuntimeSession {
       let isError = false
       try {
         const res = await this.untilStopped(t.call(step.args ?? {}, { agentId: ROOT_AGENT_ID, roleId: this.root.id }))
-        if (res === STOPPED) return
+        if (res === STOPPED) return undefined
         text = res
       } catch (e) {
         text = (e as Error).message
         isError = true
       }
+      last = text
       this.transcript(ROOT_AGENT_ID, { kind: 'tool_result', toolUseId: id, content: text, isError })
       const a = this.agents.get(ROOT_AGENT_ID)
       if (a && (a.state === 'waiting' || a.state === 'tool')) this.setState(ROOT_AGENT_ID, 'thinking', stepActivity(this.ctx.getPlan()) ?? 'Thinking…')
-      if (isError || !text.startsWith('REVISE') || step.retryOnRevise === false || this.stopped || this.interrupted) return
+      if (isError || !text.startsWith('REVISE') || step.retryOnRevise === false || this.stopped || this.interrupted) return text
       this.transcript(ROOT_AGENT_ID, { kind: 'text', text: 'Revising the proposal with your feedback.' })
     }
+    return last
+  }
+
+  /**
+   * The retireFact step: read the entity back with engagement_knowledge `get`, find the fact's id in the fenced result
+   * and `retire` it. When the entity or the fact cannot be read back (no graph, a refusal, the fact missing or already
+   * retired) the retire is skipped with an info log line, never a failure.
+   */
+  private async retireFactStep(step: Extract<MockStep, { type: 'retireFact' }>): Promise<void> {
+    const got = await this.harnessStep({ type: 'harness', name: KNOWLEDGE_TOOL, args: { action: 'get', name: step.node } })
+    if (this.stopped || this.interrupted) return
+    const factId = got === undefined ? undefined : knowledgeFactId(got, step.fact)
+    if (!factId) {
+      this.log('info', `Mock: the fact "${step.fact}" of ${step.node} could not be read back from the knowledge graph, so the retire step is skipped.`)
+      return
+    }
+    await this.harnessStep({ type: 'harness', name: KNOWLEDGE_TOOL, args: { action: 'retire', factId, ...(step.reason ? { reason: step.reason } : {}) } })
   }
 }
 
 export interface MockAdapterOptions {
   /** Use this script instead of ORGAI_MOCK_SCRIPT or the default. Missing fields come from the default. */
   script?: MockScript
+}
+
+/** What a 'project' scope may persist besides rules: the ctx hooks bound to ctx, each undefined when absent. */
+function allowScopePersist(ctx: RuntimeContext): AllowScopePersist {
+  return {
+    ...(ctx.allowDirectories ? { allowDirectories: (dirs: string[]) => ctx.allowDirectories!(dirs) } : {}),
+    ...(ctx.acceptEditsForProject ? { acceptEditsForProject: () => ctx.acceptEditsForProject!() } : {}),
+    ...(ctx.saveProjectRules ? { saveProjectRules: (rules: string[]) => ctx.saveProjectRules!(rules) } : {})
+  }
 }
 
 const MOCK_CONFIG_WRITE_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])

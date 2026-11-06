@@ -1,16 +1,22 @@
-import { existsSync, readdirSync, readFileSync, rmSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { removeOrgaiIfEmpty, removeTeamFolderFiles } from './teamFiles/disk'
 import type { MaintenanceResult, PendingWorktree, Project, WorktreeDiff } from '@shared/types'
+import { writesToProjectFolder } from '@shared/defaults'
 import type { ProjectStore } from './store/projects'
 import { ARCHITECTURE_PATH, CLAUDE_MD_MARKER } from './setup/service'
-import { diffWorktree, discardWorktree, inspectPending, integrateWorktree, isGitRepo, removeExcludeLine } from './runtime/worktrees'
+import { diffWorktree, discardWorktree, inspectPending, integrateWorktree, isGitRepo, removeExcludeLine, UnfinishedGitStateError } from './runtime/worktrees'
 
 /**
  * Cleanup that happens outside a run: leftover report branches, and removing OrgAI's
  * footprint from a repository.
  */
 export class MaintenanceService {
-  constructor(private projects: ProjectStore) {}
+  /** `teamFiles.markRemoved` keeps the team files from coming back on a later save (teamFiles:enable turns them on again). */
+  constructor(
+    private projects: ProjectStore,
+    private teamFiles?: { markRemoved(projectId: string): void }
+  ) {}
 
   private project(id: string): Project {
     const p = this.projects.get(id)
@@ -18,12 +24,18 @@ export class MaintenanceService {
     return p
   }
 
-  listWorktrees(projectId: string): Promise<PendingWorktree[]> {
-    return inspectPending(this.project(projectId).path)
+  /**
+   * Leftover report branches are listed whenever the folder is a git repository, whatever the isolation setting is
+   * now (it may have been on for an earlier run). Listing only reads; inspectPending answers [] for a non-git folder.
+   */
+  async listWorktrees(projectId: string): Promise<PendingWorktree[]> {
+    const p = this.project(projectId)
+    return inspectPending(p.path)
   }
 
   private async find(projectId: string, branch: string): Promise<{ root: string; wt: PendingWorktree }> {
-    const root = this.project(projectId).path
+    const p = this.project(projectId)
+    const root = p.path
     const wt = (await inspectPending(root)).find((w) => w.branch === branch)
     if (!wt) throw new Error(`Branch ${branch} is not a pending report branch`)
     return { root, wt }
@@ -37,7 +49,12 @@ export class MaintenanceService {
 
   async discardWorktree(projectId: string, branch: string): Promise<MaintenanceResult> {
     const { root, wt } = await this.find(projectId, branch)
-    await discardWorktree(root, wt)
+    try {
+      await discardWorktree(root, wt)
+    } catch (e) {
+      if (e instanceof UnfinishedGitStateError) return { ok: false, message: e.message }
+      throw e
+    }
     return { ok: true, message: `Discarded ${branch}.` }
   }
 
@@ -52,6 +69,8 @@ export class MaintenanceService {
   async uninstallRepo(projectId: string): Promise<MaintenanceResult> {
     const project = this.project(projectId)
     const root = project.path
+    // An engagement's folder holds nothing of OrgAI's (its document and rules live in the data folder): never touch it.
+    if (!writesToProjectFolder(project)) return { ok: true, message: 'Nothing to remove.' }
     if (isGitRepo(root)) {
       const holding = (await inspectPending(root)).filter((w) => w.uncommittedFiles > 0 || w.commitsAhead > 0)
       if (holding.length) {
@@ -60,24 +79,30 @@ export class MaintenanceService {
           message: `${holding.length} report branch${holding.length === 1 ? ' still holds' : 'es still hold'} unmerged work (${holding.map((w) => w.branch).join(', ')}). Integrate or discard them first.`
         }
       }
-      for (const w of await inspectPending(root)) await discardWorktree(root, w)
+      try {
+        for (const w of await inspectPending(root)) await discardWorktree(root, w)
+      } catch (e) {
+        if (e instanceof UnfinishedGitStateError) return { ok: false, message: e.message }
+        throw e
+      }
     }
 
     const removed: string[] = []
-    const archFile = join(root, ARCHITECTURE_PATH)
-    if (existsSync(archFile)) {
-      unlinkSync(archFile)
-      removed.push(ARCHITECTURE_PATH)
-      const dir = join(root, '.orgai')
-      try {
-        if (existsSync(dir) && readdirSync(dir).filter((n) => n !== '.DS_Store').length === 0) {
-          rmSync(join(dir, '.DS_Store'), { force: true }) // Finder litter on macOS
-          rmdirSync(dir)
-        }
-      } catch {
-        /* leave it */
+    let removedDoc = false
+    for (const docPath of [ARCHITECTURE_PATH]) {
+      const docFile = join(root, docPath)
+      if (existsSync(docFile)) {
+        unlinkSync(docFile)
+        removed.push(docPath)
+        removedDoc = true
       }
     }
+    // The team files (team.json, mcp.json, agents, skills) go too; org.json stays. Links are unlinked, never followed.
+    // The service is told first so no later save recreates them.
+    this.teamFiles?.markRemoved(project.id)
+    const team = removeTeamFolderFiles(root)
+    removed.push(...team)
+    if (removedDoc || team.length) removeOrgaiIfEmpty(root) // a folder with only OS litter left (Finder's .DS_Store)
 
     const claudeMd = join(root, 'CLAUDE.md')
     if (existsSync(claudeMd)) {

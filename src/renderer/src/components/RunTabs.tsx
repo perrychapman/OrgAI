@@ -5,10 +5,12 @@ import { useShallow } from 'zustand/react/shallow'
 import type { Project, VirtualProjectId } from '@shared/types'
 import { isVirtualProjectId } from '@shared/types'
 import { newSessionLabel } from '../lib/assistants'
-import { isDraftEmpty, isRunLive, newRunDraftKey, projectTabRuns, useAppStore, useRunIndexes, type RunState } from '../store/useAppStore'
-import { needsYou } from '../lib/runChains'
+import { isDraftEmpty, isRunLive, newRunDraftKey, projectTabRuns, useAppStore, useProjectSummaries, useRunIndexes, type RunState } from '../store/useAppStore'
+import { chainGroups, needsYou } from '../lib/runChains'
+import { runMenuAction } from '../lib/menuRegistry'
+import { openRunWindow } from '../lib/menuActions'
 import { runName, runTag, shortPrompt } from '../lib/runLabels'
-import { autoContinueState, isStoppedRun, runStatus, type RunTone } from '../lib/runStatus'
+import { statusOfRun, statusText, type RunTone } from '../lib/runStatus'
 import { Icon } from './ui/Icon'
 
 /** Longest prompt excerpt put in a tab tooltip. */
@@ -17,9 +19,16 @@ const PROMPT_TIP_CHARS = 300
 const DRAFT_ID = 'new'
 
 interface TabItem {
+  /** The newest member's run id for a run tab (DOM id, selection, actions); 'new' for the New run tab. */
   id: string
+  /** React key: the chain key (oldest member id), stable across continues. */
+  key: string
   kind: 'run' | 'draft'
+  /** The chain's newest loaded member. */
   run?: RunState
+  /** The chain's first member: it names the tab. */
+  first?: { id: string; title?: string; prompt: string }
+  sessions: number
 }
 
 interface TabView {
@@ -49,24 +58,13 @@ export function useRunTabShortcuts(): void {
       // Electron's default menu would close the window; swallow Ctrl+W everywhere.
       if (key === 'w') e.preventDefault()
       if (e.repeat) return
-      const st = useAppStore.getState()
-      const pid = st.selectedProjectId
-      if (!pid || st.view === 'projects' || st.view === 'appSettings') return
+      // Both keys share the application menu's router (Ctrl+T = File > New run, Ctrl+W = Window > Close tab).
       if (key === 't') {
         e.preventDefault()
-        st.openDraft()
-        st.focusComposer()
+        runMenuAction('new-run')
         return
       }
-      if (st.view !== 'run') return
-      const runId = st.draftPage[pid] ? undefined : st.activeRunByProject[pid]
-      const run = runId ? st.runs[runId] : undefined
-      if (!run) {
-        if (st.draftPage[pid]) st.closeDraft()
-        return
-      }
-      if (isRunLive(run)) st.setTabNotice('A working run stays open. End its session first.')
-      else st.dismissRun(run.summary.id)
+      runMenuAction('close-tab')
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -94,13 +92,27 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
   const virtual = isVirtualProjectId(project.id)
   const newLabel = virtual ? newSessionLabel(project.id as VirtualProjectId) : 'New run'
 
-  const viewedRun = !draftPage && viewedId ? runs.find((r) => r.summary.id === viewedId) : undefined
+  const summaries = useProjectSummaries()
+  const groupOf = useMemo(() => {
+    const byMember = new Map<string, ReturnType<typeof chainGroups<(typeof summaries)[number]>>[number]>()
+    for (const g of chainGroups(summaries)) for (const m of g.members) byMember.set(m.id, g)
+    return byMember
+  }, [summaries])
+  // The viewed id may name an older member of a chain (a stale pointer): it still selects that chain's one tab.
+  const viewedGroup = viewedId ? groupOf.get(viewedId) : undefined
+  const viewedRun =
+    !draftPage && viewedId
+      ? (runs.find((r) => r.summary.id === viewedId) ?? (viewedGroup ? runs.find((r) => groupOf.get(r.summary.id) === viewedGroup) : undefined))
+      : undefined
   const selectedId = viewedRun ? viewedRun.summary.id : DRAFT_ID
   const items: TabItem[] = useMemo(() => {
-    const list: TabItem[] = runs.map((run) => ({ id: run.summary.id, kind: 'run', run }))
-    if (!viewedRun || draftOnPage) list.push({ id: DRAFT_ID, kind: 'draft' })
+    const list: TabItem[] = runs.map((run) => {
+      const g = groupOf.get(run.summary.id)
+      return { id: run.summary.id, key: g?.key ?? run.summary.id, kind: 'run', run, first: g?.first ?? run.summary, sessions: g?.members.length ?? 1 }
+    })
+    if (!viewedRun || draftOnPage) list.push({ id: DRAFT_ID, key: DRAFT_ID, kind: 'draft', sessions: 0 })
     return list
-  }, [runs, viewedRun, draftOnPage])
+  }, [runs, groupOf, viewedRun, draftOnPage])
 
   const view = (item: TabItem): TabView => {
     if (item.kind === 'draft') {
@@ -120,31 +132,25 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
     }
     const run = item.run as RunState
     const waiting = needsYou(run)
-    const auto = autoContinueState({
-      status: run.summary.status,
-      plan: run.plan,
-      autoContinue: project.autoContinue,
-      maxAutoContinues: project.maxAutoContinues,
-      kind: run.summary.kind
-    })
-    const st = runStatus(run.summary.status, {
-      waiting,
-      endedWithApp: !!run.summary.endedWithApp,
-      stopped: isStoppedRun(run.agents),
-      autoContinuing: auto.active
-    })
-    const tag = runTag(indexes.get(run.summary.id))
+    // Status is the newest member's; the name and tag are the chain's first member's (R1 keeps naming the conversation).
+    const st = statusOfRun(run, project, waiting)
+    const words = statusText(st)
+    const first = item.first ?? run.summary
+    const tag = runTag(indexes.get(first.id))
+    const name = runName(first)
     // Untrusted text in a tooltip: capped. The full prompt lives only in the transcript.
-    const full = shortPrompt(run.summary.prompt, PROMPT_TIP_CHARS)
-    const hasDraft = draftKeys.includes(run.summary.id)
+    const full = shortPrompt(first.prompt, PROMPT_TIP_CHARS)
+    const sessions = item.sessions > 1 ? `${item.sessions} sessions` : ''
+    // The composer draft is kept per conversation (chain key), like the tab.
+    const hasDraft = draftKeys.includes(item.key)
     const unread = unreadByRun[run.summary.id] ?? 0
     return {
       tag,
-      title: runName(run.summary),
-      tooltip: `${tag}: ${full}\n${st.word}${st.note ? ` (${st.note})` : ''}${run.summary.kind === 'setup' ? ' · Setup' : ''}`,
-      label: `${tag}: ${runName(run.summary)}. ${st.word}.${unread > 0 ? ` ${unread} unread note${unread === 1 ? '' : 's'} from other runs.` : ''}${hasDraft ? ' Has an unsent draft.' : ''}`,
+      title: name,
+      tooltip: `${tag}: ${full}\n${words}${st.note && st.note !== words ? ` (${st.note})` : ''}${sessions ? ` · ${sessions}` : ''}${run.summary.kind === 'setup' ? ' · Setup' : ''}`,
+      label: `${tag}: ${name}. ${words}.${sessions ? ` ${sessions}.` : ''}${unread > 0 ? ` ${unread} unread note${unread === 1 ? '' : 's'} from other runs.` : ''}${hasDraft ? ' Has an unsent draft.' : ''}`,
       tone: st.tone,
-      word: st.word,
+      word: words,
       waiting,
       hasDraft,
       unread,
@@ -167,7 +173,7 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
     const gap = parseFloat(getComputedStyle(bar).columnGap) || 0
     const tabW = first.getBoundingClientRect().width + gap
     const plusW = plus.getBoundingClientRect().width + gap
-    const noticeW = noticeRef.current ? noticeRef.current.getBoundingClientRect().width + gap : 0
+    const noticeW = noticeRef.current?.textContent ? noticeRef.current.getBoundingClientRect().width + gap : 0
     const room = bar.clientWidth - plusW - noticeW
     const all = Math.floor((room + gap) / tabW)
     setCap(count <= all ? count : Math.max(1, Math.floor((room - plusW + gap) / tabW)))
@@ -308,9 +314,7 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
   const openInWindow = (item: TabItem): void => {
     const run = item.run
     if (!run) return
-    window.orgai.window
-      .openRun({ projectId: run.summary.projectId, runId: run.summary.id })
-      .catch((err: unknown) => setTabNotice(`Could not open a new window: ${err instanceof Error ? err.message.replace(/^Error invoking remote method '[^']*': (Error: )?/, '') : 'unknown error'}`))
+    openRunWindow(run.summary.projectId, run.summary.id)
   }
   const onMenuKey = (e: ReactKeyboardEvent, root: HTMLElement | null = menuRef.current, close: () => void = () => {
     setMenuOpen(false)
@@ -346,7 +350,7 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
           const v = view(item)
           const selected = item.id === selectedId
           return (
-            <div key={item.id} className={`run-tab-wrap ${selected ? 'selected' : ''}`} role="presentation" data-run={item.id}>
+            <div key={item.key} className={`run-tab-wrap ${selected ? 'selected' : ''}`} role="presentation" data-run={item.id} data-chain={item.key}>
               <button
                 type="button"
                 role="tab"
@@ -416,7 +420,7 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
                 const v = view(item)
                 return (
                   <button
-                    key={item.id}
+                    key={item.key}
                     type="button"
                     role="menuitem"
                     className="run-tab-menuitem"
@@ -486,11 +490,10 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
       <button type="button" ref={newRef} className="run-tab-new" aria-label={newLabel} title={`${newLabel} (Ctrl+T)`} onClick={openDraft}>
         <Icon icon={Plus} size="sm" />
       </button>
-      {notice && (
-        <span className="run-tabs-notice" role="status" ref={noticeRef}>
-          {notice}
-        </span>
-      )}
+      {/* Always mounted, so a screen reader is already watching the region when a notice arrives. */}
+      <span className="run-tabs-notice" role="status" ref={noticeRef}>
+        {notice ?? ''}
+      </span>
     </div>
   )
 }

@@ -1,11 +1,24 @@
-import { existsSync, mkdirSync, realpathSync } from 'node:fs'
+import { existsSync, mkdirSync, realpathSync, statSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { resolve as resolvePath } from 'node:path'
 import type {
   AgentInstance,
+  EngagementChangedEvent,
+  EngagementNoteWriter,
+  FolderConfigState,
   RunUsage,
   UsageStats,
   UsageStatsQuery,
   AppSettings,
   AdapterChoice,
+  CardKind,
+  DecisionLookup,
+  DecisionOptions,
+  DecisionOutcome,
+  DecidedBy,
+  ExecOutcome,
+  RunEndedBy,
+  RunOverrides,
   ModelPrice,
   ImageAttachment,
   McpInstallDecision,
@@ -16,6 +29,8 @@ import type {
   McpLibraryEntry,
   McpServerSpec,
   McpServersProposalPayload,
+  OrgChartProposalPayload,
+  SkillsProposalPayload,
   MergeDecision,
   PendingCards,
   MergeReview,
@@ -27,8 +42,16 @@ import type {
   ProjectPeek,
   QuickRunInfo,
   SkillContent,
+  KnowledgeNode,
+  KnowledgeRecallInput,
+  KnowledgeServedUsage,
+  KnowledgeSource,
+  EngagementNote,
+  EngagementNoteContent,
+  RunTeam,
   Proposal,
   ProposalDecision,
+  ProposalOutcome,
   ProviderId,
   ProviderModel,
   QuestionAnswer,
@@ -43,14 +66,20 @@ import type {
   SkillUseCount,
   UserQuestion
 } from '@shared/types'
-import { QUICK_ASSISTANT_SLUG, adapterForProject, agentProducedNothing, mcpSecretNames, modelFamily, newId, projectConnection, runMessagingOn, settingTier } from '@shared/defaults'
-import { aliasesFor, priceAgentUsage, type PricingContext } from './pricing'
-import { IntervalTimer, buildUsageStats, computeRunUsage, emptyAgentUsage, legacySummaryUsage, normalizeRunRecord } from './runUsage'
-import { DEFAULT_MAX_AUTO_CONTINUES, HARNESS_PROJECT_ID, QUICK_PROJECT_ID, RUN_MESSAGE_MAX_CHARS, RUN_PEER_PROMPT_CHARS, SKILLS_PROJECT_ID, USAGE_STATS_DEFAULT_LIMIT, USAGE_STATS_MAX_LIMIT, isVirtualProjectId } from '@shared/types'
+import { QUICK_ASSISTANT_SLUG, adapterForProject, agentProducedNothing, isolateWritersOn, mcpSecretNames, mixedFamilyRefusal, modelFamily, newId, projectConnection, projectKindOf, projectRulesLocation, resolveModelSetting, runMessagingOn, settingTier, singleRunProject, writesToProjectFolder } from '@shared/defaults'
+import { referenceFolderOf } from './referenceDirectories'
+import { aliasesFor, priceAgentUsage, resolvePrice, type PricingContext } from './pricing'
+import { IntervalTimer, buildUsageCsv, buildUsageStats, computeRunUsage, emptyAgentUsage, legacySummaryUsage, monthRange, normalizeRunRecord } from './runUsage'
+import { knowledgeAutoContextOn } from '@shared/knowledge'
+import { RESUME_TEXT } from './prompts'
+import { dropLoneHighSurrogate, fenceDatum, knowledgeBrief, knowledgeContextBlock, knowledgeListItem, recallKnowledge } from '@shared/knowledgeIndex'
+import { strongMentionLinks } from '@shared/knowledgeLinks'
+import { DEFAULT_EXEC_STALL_TIMEOUT_MS, DEFAULT_HEADLESS_DECISION_POLICY, DEFAULT_MAX_AUTO_CONTINUES, EXEC_FINALIZE_STOP_TIMEOUT_MS, EXEC_SETTLE_DEBOUNCE_MS, EXEC_TITLE_JOIN_MS, HARNESS_PROJECT_ID, KNOWLEDGE_RECALLED_IDS_MAX, KNOWLEDGE_RUN_WRITES_MAX, MAX_TIMER_DELAY_MS, QUICK_PROJECT_ID, RUN_MESSAGE_MAX_CHARS, RUN_PEER_PROMPT_CHARS, SKILLS_PROJECT_ID, USAGE_STATS_DEFAULT_LIMIT, USAGE_STATS_MAX_LIMIT, isVirtualProjectId } from '@shared/types'
 import { architectRole, mcpAssistantRole, skillAssistantRole } from '@shared/setup'
-import { isTrustRestrictedRun } from '../quick/scratch'
+import { isTrustRestrictedRun, isInsideEither, samePath, canonicalDeep } from '../quick/scratch'
 import { MCP_ASSIST_MODEL_LABEL, QUICK_RUN_MODEL_LABEL, SETUP_MODEL_LABEL, SKILL_ASSIST_MODEL_LABEL, resolveBuiltinModel, type ResolvedBuiltinModel } from './builtinModel'
-import { ROOT_AGENT_ID, isSetupLikeRun, type CompletionInput, type ResolvedMcpServer, type RunMessageOutcome, type RunConnection, type RunSkill, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type SkillAssistCatalog } from './types'
+import { ROOT_AGENT_ID, isSetupLikeRun, type RootTurnEnd, type CompletionInput, type KnowledgeCaller, type KnowledgeStoreApi, type ResolvedMcpServer, type RunMessageOutcome, type RunConnection, type RunSkill, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type SessionSettlement, type SkillAssistCatalog } from './types'
+import { datum } from './harnessTools'
 import type { SkillRunSource } from '../skills/types'
 import { RunStore } from '../store/runs'
 import type { SetupService } from '../setup/service'
@@ -58,10 +87,30 @@ import { log, logPermission, logRunEvent } from '../log'
 import { hasContent, sanitizeImages } from './attachments'
 import { breakParentCycles } from './agentTree'
 import { describePlanChange, peerDeliveryBlocked, planNudgesApply } from './continuation'
-import { isLiveAgent, runOutcome, settleAgent, withSkillActivity, type RunOutcome } from './activity'
-import { cancelPending, emptyPending, listPending, type PendingCardMaps } from './pendingCards'
-import { addRules, isUnsafeAllowRule, listRules } from './permissionRules'
+import { isAuthFailure, isLiveAgent, runOutcome, settleAgent, withSkillActivity, type RunOutcome } from './activity'
+import { effectiveRunProject, execBudgetUsd } from './runOverrides'
+import { defaultEndedBy, execOutcomeFor, execQuiescent } from './execSettle'
+import { keepsHostBusy, runActivityState, type RunActivityState } from './runActivity'
+import { countsAsDenial, fullPolicy, policyAction, type PolicyDecisions } from './decisionPolicy'
+import { DecisionIndex } from './decisionIndex'
+import { cancelPending, cleanProposalDecision, emptyPending, listPending, proposalEffect, proposalOutcome, type PendingCardMaps } from './pendingCards'
+import { addRules, addRulesReport, isBlanketAllowRule, isUnsafeAllowRule, listRules, tooBroadRuleRefusal } from './permissionRules'
+import { projectRulesFile, readEngagementDocument } from '../store/projectData'
+import { cleanFolderConfigTrust, folderConfigStateOf, folderConfigWarning, presentConfigPaths } from './folderConfigTrust'
+
+/**
+ * The project the adapters see. Adapters read `isolateWriters !== false`, so the value is made explicit: an
+ * engagement isolates (git worktrees) only on an explicit true; a code project is on unless explicitly false.
+ * Code projects pass through untouched; engagements get the explicit isolateWritersOn value.
+ */
+function noFolderWrites(p: Project): Project {
+  if (writesToProjectFolder(p)) return p
+  const on = isolateWritersOn(p)
+  return p.isolateWriters === on ? p : { ...p, isolateWriters: on }
+}
+import { allowedDirectoryRisk } from './allowedDirectories'
 import { isValidRule } from './ruleMatch'
+import { controlProtectedPaths } from './selfControlGate'
 import { validateSpec } from '../mcp/validate'
 import { assistContext, buildToolsFor } from '../mcp/assist'
 import { skillAssistContext } from '../skills/assist'
@@ -76,16 +125,137 @@ export function canonicalPath(p: string): string {
   }
 }
 
+/** Result of resolveAllowedDirectories. */
+export interface ResolvedAllowedDirectories {
+  /** Existing directories, canonical, deduped: what the run may use. */
+  dirs: string[]
+  /** Entries that do not exist or are not directories (as given). */
+  missing: string[]
+  /** Entries left out on purpose: OrgAI's data folder (either direction) or the project folder itself / inside it. */
+  dropped: string[]
+  /** The subset of `dropped` left out as too broad or sensitive (home, a folder holding the project, ~/.ssh ...). */
+  unsafe: string[]
+}
+
+/** OrgAI's data folder in both spellings (deduped); empty without a data dir. */
+export function protectedDirsOf(dataDir: string | undefined): string[] {
+  if (!dataDir) return []
+  return [...new Set([dataDir, canonicalDeep(dataDir)])]
+}
+
+/**
+ * Resolve `Project.allowedDirectories` for one run. Keeps existing directories only (canonical spelling), drops any
+ * that sit inside OrgAI's data dir or contain it, drops the project folder and anything inside it (already free),
+ * and dedupes. `dataDir` is optional for tests only: without it the data-dir check is skipped.
+ */
+export function resolveAllowedDirectories(raw: readonly unknown[] | undefined, opts: { projectPath: string; dataDir?: string; home?: string }): ResolvedAllowedDirectories {
+  const out: ResolvedAllowedDirectories = { dirs: [], missing: [], dropped: [], unsafe: [] }
+  const denied = protectedDirsOf(opts.dataDir)
+  for (const entry of raw ?? []) {
+    if (typeof entry !== 'string' || !entry.trim()) continue
+    const given = entry.trim()
+    let isDir = false
+    try {
+      isDir = statSync(resolvePath(given)).isDirectory()
+    } catch {
+      isDir = false
+    }
+    if (!isDir) {
+      out.missing.push(given)
+      continue
+    }
+    const canon = canonicalPath(resolvePath(given))
+    if (opts.dataDir && (isInsideEither(opts.dataDir, canon) || isInsideEither(canon, opts.dataDir))) {
+      out.dropped.push(given)
+      continue
+    }
+    if (isInsideEither(opts.projectPath, canon)) {
+      out.dropped.push(given)
+      continue
+    }
+    // The static rules (allowedDirectories.ts, shared with ProjectStore's save-time clean), on the canonical path.
+    // Both spellings of home and the project (a junction or symlink in either must not hide a containing folder).
+    const home = opts.home ?? homedir()
+    const both = (p: string): string[] => {
+      try {
+        return [...new Set([p, canonicalDeep(p)])]
+      } catch {
+        return [p]
+      }
+    }
+    const homes = both(home)
+    const projects = both(opts.projectPath)
+    const risks = homes.flatMap((h) => projects.map((projectPath) => allowedDirectoryRisk(canon, { projectPath, deniedDirs: denied, home: h })))
+    const risk = risks.includes('project') ? 'project' : risks.find((r) => r !== null) ?? null
+    if (risk === 'project') {
+      out.dropped.push(given)
+      continue
+    }
+    if (risk) {
+      out.dropped.push(given)
+      out.unsafe.push(given)
+      continue
+    }
+    if (out.dirs.some((d) => samePath(d, canon))) continue
+    out.dirs.push(canon)
+  }
+  return out
+}
+
 const FLUSH_INTERVAL_MS = 1500
+/** How long a 'trusted' folder-config answer is reused before the folder is scanned again. */
+const FOLDER_CHECK_MS = 2000
+
+/** Exec settlement re-check while the root is idle but the adapter is not settled yet (a continuation timer...). */
+export const EXEC_SETTLE_POLL_MS = 1000
+/**
+ * The stall watchdog's hard ceiling (review M4): an exec run whose adapter keeps reporting a busy root with no activity
+ * at all ends 'stalled' after this many execStallTimeoutMs periods (30 min at the 5 min default).
+ */
+export const EXEC_STALL_BUSY_ROUNDS = 6
+
+/**
+ * A delay setTimeout honours: setTimeout runs anything above MAX_TIMER_DELAY_MS (about 24.8 days) after 1 ms, so a
+ * longer exec timer (a record saved before the host refused such values) is capped there; non-finite or negative is 0.
+ */
+export function timerDelay(ms: number): number {
+  return Number.isFinite(ms) && ms > 0 ? Math.min(ms, MAX_TIMER_DELAY_MS) : 0
+}
+
+/** Wait for `p` at most `ms`; true when the time ran out first. Never rejects. */
+async function raceTimeout(p: Promise<unknown>, ms: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<true>((resolve) => {
+    timer = setTimeout(() => resolve(true), ms)
+  })
+  try {
+    return await Promise.race([p.then(() => false as const, () => false as const), timeout])
+  } finally {
+    clearTimeout(timer)
+  }
+}
 /** Most skill loads one run counts (RunUsage.skills, transcript rows); later skill.used events are dropped. */
 export const RUN_SKILL_LOAD_LIMIT = 1000
 /** run.usage events (and the index save that goes with them) are published at most this often per run. */
 export const USAGE_THROTTLE_MS = 1000
+/** knowledge.recalled events go out at most this often per agent (leading edge at once, the rest merged and trailing). */
+export const KNOWLEDGE_RECALLED_THROTTLE_MS = 1000
+/** Most agents whose "already shown" knowledge state a run keeps (a bug-proofing bound; more agents just get no dedupe). */
+const KNOWLEDGE_SHOWN_AGENTS_MAX = 500
+/** Most entity names one "Added N known items" row lists. */
+const KNOWLEDGE_ROW_NAMES = 3
+
+/** One agent's knowledge.recalled throttle: when it last went out and what is waiting. */
+interface RecalledThrottle {
+  lastAt: number
+  timer?: ReturnType<typeof setTimeout>
+  pending?: { ids: string[]; via: 'recall' | 'auto' }
+}
 /** When a usage limit gives no reset time, try again after this long. */
 export const DEFAULT_PAUSE_MS = 5 * 60 * 1000
-/** Sent to the orchestrator when a paused run continues. */
-export const RESUME_TEXT =
-  'The usage window has reset. Continue exactly where you left off; the harness has reconciled any report branches left in progress.'
+// RESUME_TEXT lives in prompts.ts (the adapters' delivery helpers need it without importing the manager); re-exported
+// here so existing imports of it from './runManager' keep compiling.
+export { RESUME_TEXT }
 
 const WINDOW_LABELS: Record<string, string> = {
   five_hour: 'five-hour',
@@ -103,6 +273,37 @@ export function pauseReasonText(window: string | undefined, error?: string): str
   )
 }
 
+/** Any decision card open on the run (the user's turn). */
+function hasOpenCard(r: PendingCardMaps): boolean {
+  return (
+    r.pending.size > 0 ||
+    r.pendingProposals.size > 0 ||
+    r.pendingQuestions.size > 0 ||
+    r.pendingMerges.size > 0 ||
+    r.pendingInstalls.size > 0 ||
+    r.pendingRules.size > 0
+  )
+}
+
+/**
+ * A run.status event with the summary's endedBy / endedWhile: on 'finished' / 'error' when the summary has them, on
+ * 'stopping' only with endedBy 'user'. Any an adapter put on the event are dropped (RunManager is their only source).
+ */
+export function withEndFacts(e: Extract<RunEvent, { type: 'run.status' }>, s: Pick<RunSummary, 'endedBy' | 'endedWhile'>): Extract<RunEvent, { type: 'run.status' }> {
+  const { endedBy: _by, endedWhile: _while, ...rest } = e
+  const terminal = e.status === 'finished' || e.status === 'error'
+  if (terminal && s.endedBy) return { ...rest, endedBy: s.endedBy, ...(s.endedBy === 'app' && s.endedWhile ? { endedWhile: s.endedWhile } : {}) }
+  if (e.status === 'stopping' && s.endedBy === 'user') return { ...rest, endedBy: 'user' }
+  return rest
+}
+
+/** RunSummary.endedWhile for a run cut by the app: idle or an open card is 'waiting', live work 'working', paused none. */
+export function quitEndedWhile(status: RunSummary['status'], openCard: boolean): 'working' | 'waiting' | undefined {
+  if (status === 'paused' || status === 'finished' || status === 'error') return undefined
+  if (status === 'idle' || openCard) return 'waiting'
+  return 'working'
+}
+
 interface ActiveRun {
   summary: RunSummary
   session?: RuntimeSession
@@ -118,6 +319,8 @@ interface ActiveRun {
   runRules: string[]
   /** The project's (canonical) path, for saving project-scoped grants. */
   projectPath: string
+  /** Set for engagements: their saved rules live in OrgAI's data folder, never in the project folder. */
+  rulesTarget?: { file: string }
   /** Servers approved with scope 'run': kept in memory (secret values included) until the run ends. */
   runServers: Map<string, { spec: McpServerSpec; secrets: Record<string, string> }>
   /** Everything needed to redraw the run later; flushed to disk on a timer and at the end. */
@@ -133,10 +336,21 @@ interface ActiveRun {
   limitHold?: boolean
   /** The user ended the session; never pause it. */
   userStopped?: boolean
+  /**
+   * Who cut the session (RunSummary.endedBy): 'user' from stop(), 'app' from stopAll({ reason: 'quit' }), 'policy' /
+   * 'budget' from finalizeExecRun. The first one wins.
+   */
+  endedBy?: RunEndedBy
+  /** With endedBy 'app': what the run was doing when the quit began (RunSummary.endedWhile). Read before stopping. */
+  endedWhile?: 'working' | 'waiting'
+  /** The session.stop() call in flight (stopSession), so End session, quit and a late start share one stop. */
+  stopCall?: Promise<void>
   /** Cancels a pending title query (user stop, project removal, app quit). A natural end lets the title land. */
   titleAbort?: AbortController
   /** Set by the terminal run.status; later agent upserts are relabeled with settleAgent. */
   outcome?: RunOutcome
+  /** The adapter driving this run (Proposal.effect). */
+  adapter?: ProviderId
   /** Agents still live when the run ended; they read Stopped / Failed however the adapter re-reports them. */
   cutOff?: Set<string>
   /** The provider session this run resumes; known before the adapter reports summary.sessionId at init. */
@@ -150,6 +364,21 @@ interface ActiveRun {
   /** Counted skill loads by skill id (RunUsage.skills) and their total (capped at RUN_SKILL_LOAD_LIMIT). */
   skillCounts: Map<string, SkillUseCount>
   skillLoads: number
+  /** Knowledge graph writes and saved notes this run made through the harness tools (KNOWLEDGE_RUN_WRITES_MAX). */
+  knowledgeWrites: number
+  /** The writes cap was reached and logged once. */
+  knowledgeCapWarned?: boolean
+  /** Per named receiving agent: node id -> the signature last served in full (knowledge_recall and auto context). In memory only. */
+  knowledgeShown: Map<string, Map<string, string>>
+  /** Per named receiving agent: node id -> the signature last put in an automatic context block, full or not. In memory only. */
+  knowledgeContextShown: Map<string, Map<string, string>>
+  /** RunUsage.knowledge: recalls, auto context blocks, entities and characters served. */
+  knowledgeUsage: KnowledgeServedUsage
+  /** Per agent: knowledge.recalled throttle state (last emit, trailing timer, ids and `via` waiting to go out). */
+  knowledgeRecalled: Map<string, RecalledThrottle>
+  /** knowledgeBrief() was computed (also when it was undefined); the text is constant for the run. */
+  knowledgeBriefDone?: boolean
+  knowledgeBriefText?: string
   /** Time with at least one decision card open. */
   waiting: IntervalTimer
   /** Time held on a usage limit, until the user's next send or the run's end. */
@@ -183,6 +412,47 @@ interface ActiveRun {
   held: boolean
   /** The inbox flush in progress; flushes chain on it so concurrent flushes never reorder peer messages. */
   flushing?: Promise<void>
+  // ---------- headless exec (cli-spec 6.2) ----------
+  /** The run's RuntimeContext (exec settlement reads ctx.autoContinue). Set before adapter.start. */
+  ctx?: RuntimeContext
+  /** The caller held the 'configure' scope: widening overrides apply (effectiveRunProject). Never persisted. */
+  allowWidening?: boolean
+  /** The newest root turn generation the adapter reported (ctx.onRootTurnEnded). */
+  rootTurnGen: number
+  /** Bumped on every activity that may keep an exec run from settling (and that resets the stall watchdog). */
+  activityGen: number
+  lastTurnEnd?: RootTurnEnd
+  settleTimer?: ReturnType<typeof setTimeout>
+  stallTimer?: ReturnType<typeof setTimeout>
+  /** finalizeExecRun in flight or done (the first outcome claimed it). */
+  finalizing?: Promise<void>
+  /** The outcome finalizeExecRun claimed. */
+  finalOutcome?: ExecOutcome
+  /** The finalizer wrote the final status (or gave up): teardown no longer waits for it. */
+  finalizeDone?: boolean
+  /** The finalizer's own run.status is going through emit (late adapter statuses are dropped otherwise). */
+  finalEmitting?: boolean
+  /** run.finalized was broadcast (by the finalizer, or best effort by a quit). */
+  finalizedSent?: boolean
+  /** The adapter reported run.status 'error' after the finalizer claimed the run (its text, or ''). */
+  adapterError?: string
+  /** Decision cards the headless policy resolved as a refusal (maxAutoDenials). */
+  autoDenials: number
+  /** Headless policy timers per card id (grace before acting, or the 'wait' timeout). */
+  policyTimers: Map<string, ReturnType<typeof setTimeout>>
+  /** The run-title task (finalizeExecRun joins it). */
+  titleTask?: Promise<void>
+  /** adapter.start() in flight (finalizeExecRun waits for it before stopping). */
+  opening?: Promise<unknown>
+  /** Exec budget (execBudgetUsd of the effective project) and the exec chain's cost before this run. */
+  execBudget?: number
+  chainPriorCostUsd: number
+  /** Agents already checked for an unpriced model (exec budget). */
+  priceChecked: Set<string>
+  /** Whether a model setting or id has a known price on this run's connection (exec budget). Set in start(). */
+  modelPriced?: (model: string) => boolean
+  /** teardown ran (it may be reached from both the finalizer and session.finished). */
+  tornDown?: boolean
 }
 
 /** A message_run message held for a run that is waiting on its user. */
@@ -293,6 +563,12 @@ function sanitizeUsageQuery(raw: UsageStatsQuery): UsageStatsQuery & { kinds: Ru
   }
   if (typeof q.since === 'number' && Number.isFinite(q.since)) out.since = q.since
   if (typeof q.until === 'number' && Number.isFinite(q.until)) out.until = q.until
+  // A calendar month replaces since / until; a malformed one is refused, never ignored.
+  if (q.range !== undefined && q.range !== null) {
+    const { since, until } = monthRange((q.range as { month?: unknown }).month as string)
+    out.since = since
+    out.until = until
+  }
   const limit = typeof q.limit === 'number' && Number.isFinite(q.limit) ? Math.floor(q.limit) : USAGE_STATS_DEFAULT_LIMIT
   out.limit = Math.min(USAGE_STATS_MAX_LIMIT, Math.max(1, limit))
   return out
@@ -310,6 +586,30 @@ function excerpt(prompt: string, max = 60): string {
 }
 
 export interface RunManagerOptions {
+  /**
+   * Interactive clients right now: open desktop windows plus attached TUI or interactive sockets. The headless decision
+   * policy waits humanGraceMs before auto-resolving a card while this is above 0. Missing = 0.
+   */
+  interactiveClients?: () => number
+  /** OrgAI's data dir, for the allowed-folder checks. Tests may omit it (the data-dir check is then skipped). */
+  dataDir?: string
+  /**
+   * Team files (teamFiles/service.ts): called at the top of start() for work and setup runs. Returns the fresh stored
+   * project (the team is fixed for the run from here on) and a warning when the files hold changes waiting for approval.
+   * Never throws; virtual and engagement projects come back unchanged.
+   */
+  teamFiles?: { beforeRun(project: Project): { project: Project; warning?: string } }
+  /**
+   * RuntimeContext.controlProtectedPaths (bootstrap: controlProtectedPaths(dataDir, ownership.runtimeDir)). Missing =
+   * controlProtectedPaths(dataDir) when dataDir is set, else none.
+   */
+  controlProtectedPaths?: () => string[]
+  /**
+   * Save permission changes made from a card onto the stored project (index.ts: ProjectStore.update, which cleans
+   * allowedDirectories). `addDirectories` are appended, never replacing; `acceptEdits` sets permissionMode
+   * 'acceptEdits'. Returns the saved project. Missing = RuntimeContext.allowDirectories / acceptEditsForProject absent.
+   */
+  saveProjectPermissions?: (projectId: string, patch: { addDirectories?: string[]; acceptEdits?: true }) => Project
   /** The current project for a run being resumed automatically. */
   resolveProject?: (projectId: string) => Project | null | undefined
   /** App setting passed to adapters (see RuntimeContext.opusGuardThreshold). */
@@ -344,9 +644,14 @@ export interface RunManagerOptions {
     /** Refresh expiring OAuth tokens before servers start; resolves with the names still without a usable token. */
     prepareForRun?(projectId: string, specs: McpServerSpec[]): Promise<string[]>
     /** Enabled servers `enabledServers` left out because a secret slot has no value (the run warns once each). */
-    skippedServers?(project: Project): { name: string; missing: string[] }[]
+    skippedServers?(project: Project): { name: string; missing: string[]; scope?: 'project' }[]
     /** The app-wide MCP library (secret-free), for setup-like runs. */
     libraryEntries?(): McpLibraryEntry[]
+    /**
+     * Store an approved MCP proposal's typed secret values (ProposalDecision.secrets) and return the names of its
+     * servers still waiting for a secret (McpService.storeProposalSecrets). projectId null = library session.
+     */
+    storeProposalSecrets?(projectId: string | null, payload: McpServersProposalPayload, values: Record<string, string> | undefined): string[]
   }
   /** Project skills for work runs (SkillService, RuntimeContext.skills). Missing = runs have no skills. */
   skills?: SkillRunSource
@@ -367,6 +672,31 @@ export interface RunManagerOptions {
     catalog(projectId: string | null): SkillAssistCatalog
     read(projectId: string | null, ref: { libraryId?: string; skillId?: string }): SkillContent | null
   }
+  /**
+   * Context notes of a stored project (store/projectData.ts), for RuntimeContext.engagementNotes on engagement work
+   * runs and single-agent runs. Missing = no engagement_context data. `save` is the store's saveNote with an agent
+   * writer (RunManager fills the run id and role); missing = the tool's save action is refused.
+   */
+  engagementNotes?: {
+    list(projectId: string): EngagementNote[]
+    read(projectId: string, noteId: string): EngagementNoteContent | null
+    save?(projectId: string, input: { noteId?: string; title: string; text: string }, writer: EngagementNoteWriter): EngagementNote
+  }
+  /**
+   * The engagement knowledge graph store (store/knowledge.ts `knowledgeStore(dataDir)`), for RuntimeContext.knowledge
+   * on engagement work runs. Missing = engagement_knowledge is not offered.
+   */
+  knowledge?: KnowledgeStoreApi
+  /**
+   * Push projects:engagementChanged to every window after an agent wrote a note ('notes') or the knowledge graph
+   * ('knowledge') (bootstrap.ts emits it on the host's HostEventBus). Missing = no push.
+   */
+  engagementChanged?: (event: EngagementChangedEvent) => void
+  /**
+   * A saved team template's roles converted for `project` (setup/templates.ts, the agent-import convert path),
+   * for RuntimeContext.orgTemplate on setup runs. null for an unknown id. Missing = templates unavailable.
+   */
+  orgTemplate?: (templateId: string, project: Project) => { name: string; roles: Role[] } | null
 }
 
 /** RunManager.completeForProject input: a one-shot completion on the project's own connection. */
@@ -420,6 +750,36 @@ export function mergeInstallEdit(requested: McpServerSpec, edit: McpServerSpec |
 /** Human label of a model family for refusal messages. */
 const FAMILY_LABEL: Record<string, string> = { claude: 'Claude', openai: 'OpenAI', other: 'other' }
 const CONNECTION_LABEL: Record<string, string> = { anthropic: 'Anthropic', openai: 'OpenAI', litellm: 'LiteLLM' }
+/** A project or role name for one log line: control characters become spaces, at most 80 chars. */
+const logText = (s: string): string => s.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, ' ').slice(0, 80)
+
+/** A decision method's 'applied' outcome. */
+function applied(runId: string, requestId: string, effectiveDecision: string | undefined, opts: DecisionOptions): DecisionOutcome {
+  return {
+    status: 'applied',
+    runId,
+    requestId,
+    ...(effectiveDecision ? { effectiveDecision } : {}),
+    ...(opts.decidedBy ? { decidedBy: opts.decidedBy } : {})
+  }
+}
+
+/** The pending card `id` in one run's maps, with its kind and revision. */
+function findPendingCard(cards: PendingCardMaps, id: string): { kind: CardKind; revision?: number } | undefined {
+  const permission = cards.pending.get(id)
+  if (permission) return { kind: 'permission', revision: permission.request.revision }
+  const question = cards.pendingQuestions.get(id)
+  if (question) return { kind: 'question', revision: question.question.revision }
+  const proposal = cards.pendingProposals.get(id)
+  if (proposal) return { kind: 'proposal', revision: proposal.proposal.revision }
+  const rules = cards.pendingRules.get(id)
+  if (rules) return { kind: 'rules', revision: rules.request.revision }
+  const merge = cards.pendingMerges.get(id)
+  if (merge) return { kind: 'merge', revision: merge.review.revision }
+  const install = cards.pendingInstalls.get(id)
+  if (install) return { kind: 'mcpInstall', revision: install.request.revision }
+  return undefined
+}
 
 export interface StartInput {
   project: Project
@@ -453,6 +813,178 @@ export interface StartInput {
   quick?: QuickRunInfo
   /** MCP assistant runs with allowBuild: the per-run scratch dir the session works in (RunSummary.buildWorkspace). */
   buildWorkspace?: string
+  /**
+   * Work runs of a stored project only: 'single' runs one assistant built from the project (RunSummary.team).
+   * Refused on setup-like runs, quick runs and virtual projects. Continuations carry it from the run they continue.
+   */
+  team?: RunTeam
+  /** Headless exec overrides (cli-spec 6.2(1)); host clients only. Refused on setup-like runs; stored on RunSummary.overrides. */
+  overrides?: RunOverrides
+  /** The caller holds the 'configure' scope: widening overrides apply (runOverrides.ts effectiveRunProject). */
+  allowWidening?: boolean
+}
+
+/** Internal ContinueRunOptions key: the automatic rate-limit resume (keeps the exec fields like `exec`). */
+const AUTO_RESUME = Symbol('autoResume')
+
+/** continueRun options (cli-spec 6.2(1)). */
+export interface ContinueRunOptions {
+  /** Merged over the overrides carried from the continued run. */
+  overrides?: RunOverrides
+  /** `orgai resume --exec`: keep the chain's execMode / execChainId / waitForReset / decisionPolicy. */
+  exec?: boolean
+  /** The caller holds the 'configure' scope. */
+  allowWidening?: boolean
+  /** Set only by RunManager's own auto-resume. */
+  [AUTO_RESUME]?: true
+}
+
+/** Narrowing overrides a continuation always keeps. */
+const NARROWING_KEYS = ['permissionMode', 'maxBudgetUsd', 'autoContinue', 'maxAutoContinues'] as const
+/** Exec fields a continuation keeps only with `exec` or on the automatic resume. */
+const EXEC_KEYS = ['execMode', 'execChainId', 'waitForReset', 'decisionPolicy', 'allowUnmerged', 'allowUnpricedBudget', 'execStallTimeoutMs', 'allowPeerMessages'] as const
+
+/** Carried exec fields that only a 'configure' caller can set (overridesWidening): kept only with allowWidening. */
+const CONFIGURE_ONLY_EXEC_KEYS: ReadonlySet<string> = new Set(['allowPeerMessages', 'allowUnpricedBudget'])
+
+/**
+ * The overrides of a continuation (cli-spec 6.2(1)): the continued run's narrowing overrides always, its exec fields
+ * only for `orgai resume --exec` or the automatic resume (a later desktop continue strips them), then opts.overrides
+ * on top. allowPeerMessages / allowUnpricedBudget carry over only with allowWidening (an 'operate'-only resume never
+ * inherits a 'configure' grant). A decisionPolicy merges per field over the carried one (opts.overrides may give only
+ * the fields the client set) and the remaining choices take the defaults. undefined when nothing is left.
+ */
+export function continuedOverrides(prev: RunOverrides | undefined, opts: ContinueRunOptions): RunOverrides | undefined {
+  const out: Record<string, unknown> = {}
+  const keepExec = opts.exec === true || opts[AUTO_RESUME] === true
+  for (const k of [...NARROWING_KEYS, ...(keepExec ? EXEC_KEYS : [])]) {
+    if (CONFIGURE_ONLY_EXEC_KEYS.has(k) && opts.allowWidening !== true) continue
+    const v = prev?.[k]
+    if (v !== undefined) out[k] = typeof v === 'object' ? structuredClone(v) : v
+  }
+  for (const [k, v] of Object.entries(opts.overrides ?? {})) {
+    if (v === undefined) continue
+    if (k === 'decisionPolicy') {
+      const merged: Record<string, unknown> = { ...((out.decisionPolicy as object | undefined) ?? {}) }
+      for (const [pk, pv] of Object.entries(v as object)) if (pv !== undefined) merged[pk] = pv
+      out.decisionPolicy = merged
+    } else out[k] = v
+  }
+  if (out.decisionPolicy) {
+    const policy = out.decisionPolicy as Record<string, unknown>
+    for (const k of ['permission', 'rules', 'mcpInstall', 'question', 'proposal', 'merge'] as const) policy[k] ??= DEFAULT_HEADLESS_DECISION_POLICY[k]
+  }
+  return Object.keys(out).length ? (out as RunOverrides) : undefined
+}
+
+/**
+ * Copy the grant fields (Role.mcpServers, Role.skills) of the saved roles onto a running session's roles, matched by id,
+ * in place: the adapters hold these objects (role maps, the spawn network, the MCP and Skill gates, agent definitions
+ * rebuilt on a restart), so an ungrant or a new grant approved mid-run is in force on the next call. Role identity never
+ * changes mid-run: a role an org change added joins on the next run, and a role it removed keeps its start-time
+ * definition (and grants) until this run ends. Every other field stays as the run started.
+ */
+/**
+ * What an approved change touched, for the live run's project view (setLive): servers and their role grants, skills and
+ * their role grants, the org chart, the allowed folders or the permission mode. Nothing else moves, so team-file changes
+ * the same save ingested stay out of a live run.
+ */
+type LiveSettle = 'mcpServers' | 'skills' | 'orgChart' | 'folders' | 'permissionMode'
+
+/** The items an approved change named itself: only these move onto a live run's project (setLive). */
+export interface LiveOwnItems {
+  /** Server or skill ids, library entry ids included. */
+  ids: readonly string[]
+  /** Server or skill names. */
+  names: readonly string[]
+}
+
+/**
+ * The live list with only the change's own items taken from the saved project, in place, new ones at the end, gone ones
+ * removed; the roles' grants to those items follow and every other grant stays. A team-file change the same save
+ * ingested may touch the same list, but it names other items, so it stays out of the live run. Pure.
+ */
+export function overlayOwnItems<T extends { id: string; name: string; libraryId?: string }>(
+  live: readonly T[] | undefined,
+  saved: readonly T[] | undefined,
+  liveRoles: readonly Role[],
+  savedRoles: readonly Role[],
+  field: 'mcpServers' | 'skills',
+  own: LiveOwnItems
+): { items: T[] | undefined; roles: Role[] } {
+  const ids = new Set(own.ids)
+  const names = new Set(own.names)
+  const isOwn = (x: T): boolean => ids.has(x.id) || names.has(x.name) || (!!x.libraryId && ids.has(x.libraryId))
+  const savedById = new Map((saved ?? []).filter(isOwn).map((x) => [x.id, x]))
+  const savedByName = new Map((saved ?? []).filter(isOwn).map((x) => [x.name, x]))
+  const used = new Set<string>()
+  const items: T[] = []
+  for (const x of live ?? []) {
+    if (!isOwn(x)) {
+      items.push(x)
+      continue
+    }
+    const replacement = savedById.get(x.id) ?? savedByName.get(x.name)
+    if (replacement && !used.has(replacement.id)) {
+      used.add(replacement.id)
+      items.push(replacement)
+    }
+  }
+  for (const x of saved ?? []) if (isOwn(x) && !used.has(x.id)) items.push(x)
+  const ownIds = new Set([...(live ?? []).filter(isOwn), ...(saved ?? []).filter(isOwn)].map((x) => x.id))
+  const savedRole = new Map(savedRoles.map((r) => [r.id, r]))
+  const roles = liveRoles.map((r) => {
+    const s = savedRole.get(r.id)
+    if (!s || !ownIds.size) return r
+    const mine = (r[field] ?? []).filter((id) => !ownIds.has(id))
+    const theirs = (s[field] ?? []).filter((id) => ownIds.has(id))
+    const merged = [...mine, ...theirs]
+    const out: Role = { ...r }
+    if (merged.length || r[field] !== undefined) out[field] = merged
+    return out
+  })
+  return { items: live === undefined && saved === undefined ? undefined : items, roles }
+}
+
+/**
+ * The live roles with only the approved org chart's own roles (matched by id or name) taken from the saved roles, in
+ * place, new ones at the end. Roles the proposal did not name stay as the run has them, so a prompt edit the same
+ * save ingested from the team files never reaches a live run. Pure.
+ */
+export function overlayOwnRoles(live: readonly Role[], saved: readonly Role[], own: { ids: readonly string[]; names: readonly string[] }): Role[] {
+  const ids = new Set(own.ids)
+  const names = new Set(own.names)
+  const isOwn = (r: Role): boolean => ids.has(r.id) || names.has(r.name)
+  const mine = saved.filter(isOwn)
+  const byId = new Map(mine.map((r) => [r.id, r]))
+  const byName = new Map(mine.map((r) => [r.name, r]))
+  const used = new Set<string>()
+  const out: Role[] = []
+  for (const r of live) {
+    if (!isOwn(r)) {
+      out.push(r)
+      continue
+    }
+    const next = byId.get(r.id) ?? byName.get(r.name)
+    if (next && !used.has(next.id)) {
+      used.add(next.id)
+      out.push(next)
+    }
+  }
+  for (const r of mine) if (!used.has(r.id)) out.push(r)
+  return out
+}
+
+export function refreshRoleGrants(running: Role[], saved: readonly Role[]): void {
+  const byId = new Map(saved.map((r) => [r.id, r]))
+  for (const role of running) {
+    const next = byId.get(role.id)
+    if (!next) continue
+    if (next.mcpServers) role.mcpServers = [...next.mcpServers]
+    else delete role.mcpServers
+    if (next.skills) role.skills = [...next.skills]
+    else delete role.skills
+  }
 }
 
 export class RunManager {
@@ -461,6 +993,20 @@ export class RunManager {
   /** Every pending title query, live run or not, with its project id; stopAll and removeProject abort them. */
   private titleAborts = new Map<AbortController, string>()
   private resumeTimers =new Map<string, ReturnType<typeof setTimeout>>()
+  /**
+   * waitForReset exec runs started by a 'configure' caller (allowWidening). The automatic rate-limit resume (the timer
+   * path only) is the same invocation, so it keeps widening overrides; like the resume timers this lives only in this
+   * process. Dropped with the timer (clearResume), at teardown without an armed timer, and when the resume consumes it.
+   */
+  private widenedRuns = new Set<string>()
+  /** Set by stopAll({ reason: 'quit' }) and markQuit: no run starts, continues, resumes or takes a message after it. */
+  private quitting = false
+  /** adapter.start() calls not yet settled; stopAll waits for them so a session that opens during a quit is stopped. */
+  private startsInFlight = new Set<Promise<unknown>>()
+  /** Resumes (timer or manual) between their start and the successor run being registered (activity lease; withResumeLease). */
+  private resumesInFlight = 0
+  /** Pending decision cards across runs and tombstones of resolved ones (runs:findDecision, DecisionOutcome). */
+  private decisions = new DecisionIndex()
 
   constructor(
     private adapters: Partial<Record<ProviderId, RuntimeAdapter>>,
@@ -483,20 +1029,27 @@ export class RunManager {
   }
 
   /** Drop every run of a deleted project. Live runs are stopped first. */
-  async removeProject(projectId: string): Promise<void> {
+  /**
+   * Stop the project's live runs and cancel their titles. With `removeRuns` (default true) its run records are deleted
+   * too; resolves with the number deleted (0 when kept).
+   */
+  async removeProject(projectId: string, { removeRuns = true }: { removeRuns?: boolean } = {}): Promise<number> {
     // Pending titles of the project's runs, live or already ended, are cancelled.
     for (const [a, pid] of this.titleAborts) if (pid === projectId) a.abort()
     for (const r of this.runs.values()) {
       if (r.summary.projectId === projectId) {
         r.userStopped = true
+        this.clearExecTimers(r)
         await r.session?.stop().catch(() => {})
         if (r.flushTimer) clearTimeout(r.flushTimer)
         if (r.usageTimer) clearTimeout(r.usageTimer)
+        for (const st of r.knowledgeRecalled.values()) if (st.timer) clearTimeout(st.timer)
+        r.knowledgeRecalled.clear()
         this.runs.delete(r.summary.id)
       }
     }
     for (const s of this.store.list(projectId)) this.clearResume(s.id)
-    this.store.removeProject(projectId)
+    return removeRuns ? this.store.removeProject(projectId) : 0
   }
 
   /** The adapter a project's runs use (also used by the org chart drafter). Does not check role mismatches. */
@@ -512,6 +1065,8 @@ export class RunManager {
    * the adapter's default. Never for the harness project.
    */
   async completeForProject(project: Project, input: ProjectCompletionInput): Promise<{ text: string; model?: string }> {
+    // A quitting app (or draining host) spends no tokens on helpers.
+    if (this.quitting) throw new Error('OrgAI is quitting; no model calls start now.')
     if (isVirtualProjectId(project.id)) throw new Error('The harness and the built-in assistant projects have no model connection for completions.')
     const { adapter, choice } = this.choose(project, 'setup')
     const connection = this.options.resolveConnection?.(project, choice)
@@ -537,20 +1092,34 @@ export class RunManager {
   }
 
   /**
-   * Pick the adapter for a run. Work runs refuse to start when some roles would need the other adapter;
-   * setup-like runs use a built-in role and only need the root's adapter.
+   * Pick the adapter for a run (mixedFamilyRefusal decides whether a work run whose roles span model families may
+   * start). On LiteLLM a mixed chart starts with one info line naming the roles on another family; setup-like runs
+   * use a built-in role and only need the root's adapter.
    */
   private choose(project: Project, kind: RunKind): { adapter: RuntimeAdapter; choice: AdapterChoice } {
-    const choice = adapterForProject(project, this.options.catalog?.() ?? [])
+    const catalog = this.options.catalog?.() ?? []
+    const choice = adapterForProject(project, catalog)
     if (!isSetupLikeRun(kind) && choice.mismatched.length) {
-      const catalog = this.options.catalog?.() ?? []
       const bad = choice.mismatched.map((id) => project.roles.find((r) => r.id === id)).filter((r): r is Role => !!r)
-      const names = bad.length ? bad.map((r) => r.name) : choice.mismatched
+      const names = (bad.length ? bad.map((r) => r.name) : choice.mismatched).map((n) => logText(String(n)))
       const families = [...new Set(bad.map((r) => catalog.find((m) => m.id === r.model && m.connection === choice.connection)?.family ?? modelFamily(r.model)))]
       const other = families.length ? families.map((f) => (f === 'other' ? 'non-Claude' : (FAMILY_LABEL[f] ?? f))).join('/') : 'other'
+      const where = CONNECTION_LABEL[choice.connection] ?? choice.connection
+      const refusal = mixedFamilyRefusal(choice)
+      if (refusal === 'no-root-family') {
+        throw new Error(
+          `Roles ${names.join(', ')} use ${other}-family models, but this ${where} project's orchestrator has no model of its own, so OrgAI cannot tell which runtime to use. Give the orchestrator a model.`
+        )
+      }
+      if (refusal === 'single-family-connection') {
+        const rootFamily = choice.family ?? 'claude'
+        throw new Error(
+          `Roles ${names.join(', ')} use ${other}-family models, but this ${where} project's orchestrator runs on ${FAMILY_LABEL[rootFamily] ?? rootFamily}. Pick models of one family.`
+        )
+      }
       const rootFamily = choice.family ?? 'claude'
-      throw new Error(
-        `Roles ${names.join(', ')} use ${other}-family models, but this ${CONNECTION_LABEL[choice.connection] ?? choice.connection} project's orchestrator runs on ${FAMILY_LABEL[rootFamily] ?? rootFamily}. Pick models of one family.`
+      log.info(
+        `${where} project ${logText(project.name)}: the orchestrator runs on ${FAMILY_LABEL[rootFamily] ?? rootFamily}; ${names.join(', ')} use ${other}-family models through the proxy${choice.adapter === 'codex' ? " (on Codex a report whose model is a tier name or a bare Claude alias runs on its parent's model)" : ''}.`
       )
     }
     const adapter = this.adapters[choice.adapter]
@@ -617,6 +1186,13 @@ export class RunManager {
     return from ? this.chainOf(from) : []
   }
 
+  /** Where the project's saved rules live (projectRulesFile). An engagement needs the data dir: never falls back to a relative path. */
+  private rulesFileFor(p: Pick<Project, 'id' | 'path' | 'kind' | 'folderConfigTrust'>): string {
+    // An engagement or a project behind the folder config gate keeps its rules in the data folder, never in the folder.
+    if (projectRulesLocation(p) === 'app' && !this.options.dataDir) throw new Error('OrgAI has no data folder to keep this project\'s rules in.')
+    return projectRulesFile(p, this.options.dataDir ?? '')
+  }
+
   /** The project a stored or live run continues in: a quick run's rebuilt project, else the current saved one. */
   private projectOfRun(run: RunSummary): Project | null | undefined {
     if (run.quick) return this.options.quickProject?.(run)
@@ -640,19 +1216,43 @@ export class RunManager {
     titleContext,
     surface,
     quick,
-    buildWorkspace
+    buildWorkspace,
+    team,
+    overrides: rawOverrides,
+    allowWidening
   }: StartInput): Promise<RunSummary> {
+    this.refuseWhileQuitting()
+    if (team !== undefined && team !== 'single') throw new Error('Unknown team for this run.')
+    // Headless exec overrides (cli-spec 6.2(1)) shape work runs only.
+    const overrides: RunOverrides | undefined = rawOverrides && Object.keys(rawOverrides).length ? { ...rawOverrides } : undefined
+    if (overrides && isSetupLikeRun(kind)) throw new Error('Run overrides apply to work runs only.')
+    if (team === 'single') {
+      if (kind !== 'work') throw new Error('Only a work run can use the single assistant.')
+      if (isVirtualProjectId(project.id) || quick || buildWorkspace) throw new Error('The single assistant runs on a saved project only.')
+    }
     // Each virtual project belongs to exactly one kind of run.
     if (project.id === HARNESS_PROJECT_ID && kind !== 'mcp-assist') throw new Error('Only the MCP assistant can run on the harness project.')
     if (project.id === SKILLS_PROJECT_ID && kind !== 'skill-assist') throw new Error('Only the Skill assistant can run on the skills project.')
     if (project.id === QUICK_PROJECT_ID && (kind !== 'work' || !quick)) throw new Error('Only a quick run can run on the quick project.')
     if (quick && project.id !== QUICK_PROJECT_ID) throw new Error('Quick run details belong to the quick project only.')
     if (buildWorkspace && kind !== 'mcp-assist') throw new Error('A build workspace belongs to an MCP assistant run.')
+    // Team files: the folder is checked first (a pulled change is gated), so the run starts on the last approved team.
+    let teamWarning: string | undefined
+    if (this.options.teamFiles && (kind === 'work' || kind === 'setup') && !isVirtualProjectId(project.id) && !quick && !buildWorkspace) {
+      try {
+        const fresh = this.options.teamFiles.beforeRun(project)
+        if (fresh.project?.id === project.id) project = fresh.project
+        teamWarning = fresh.warning
+      } catch (e) {
+        log.warn(`Team files could not be checked before the run: ${(e as Error).message}`)
+      }
+    }
     // Linked MCP servers come from the library as it is now (a deleted entry disables its links).
     project = this.options.mcp?.withLibrary?.(project) ?? project
     // The Chat's single assistant settles its model before the adapter is chosen.
     let quickWarning: string | undefined
-    if (quick?.team === 'single') {
+    if (team === 'single') project = singleRunProject(project, this.options.appSettings?.().quickRunModel)
+    if (quick?.team === 'single' || team === 'single') {
       const resolved = this.resolveQuickAssistant(project)
       project = resolved.project
       quickWarning = resolved.warning
@@ -690,8 +1290,15 @@ export class RunManager {
     if (surface === 'team' && kind === 'setup') summary.surface = surface
     if (quick) summary.quick = { ...quick }
     if (buildWorkspace) summary.buildWorkspace = buildWorkspace
+    if (team === 'single') summary.team = 'single'
+    if (overrides) {
+      if (overrides.execMode && !overrides.execChainId) overrides.execChainId = summary.id
+      summary.overrides = overrides
+    }
+    const exec = !!overrides?.execMode
     const active: ActiveRun = {
       summary,
+      adapter: choice.adapter,
       pending: new Map(),
       pendingProposals: new Map(),
       pendingQuestions: new Map(),
@@ -700,11 +1307,17 @@ export class RunManager {
       pendingRules: new Map(),
       runRules: [],
       projectPath: project.path,
+      ...(projectRulesLocation(project) === 'app' ? { rulesTarget: { file: this.rulesFileFor(project) } } : {}),
       runServers: new Map(),
       emit: () => {},
       skills: [],
       skillCounts: new Map(),
       skillLoads: 0,
+      knowledgeWrites: 0,
+      knowledgeShown: new Map(),
+      knowledgeContextShown: new Map(),
+      knowledgeUsage: { recalls: 0, autoContexts: 0, itemsServed: 0, charsServed: 0 },
+      knowledgeRecalled: new Map(),
       projectName: project.name,
       rootRole: (project.roles.find((r) => r.reportsTo === null) ?? project.roles[0])?.name ?? '',
       messagesSent: new Map(),
@@ -718,9 +1331,18 @@ export class RunManager {
       lastUsageAt: 0,
       usageDirty: false,
       record: { summary, agents: {}, transcript: [], logs: [] },
-      ...(resumeSessionId ? { resumeSessionId } : {})
+      ...(resumeSessionId ? { resumeSessionId } : {}),
+      ...(allowWidening ? { allowWidening: true } : {}),
+      rootTurnGen: 0,
+      activityGen: 0,
+      autoDenials: 0,
+      policyTimers: new Map(),
+      chainPriorCostUsd: overrides?.execChainId ? this.chainPriorCost(project.id, overrides.execChainId, summary.id) : 0,
+      priceChecked: new Set()
     }
     this.runs.set(summary.id, active)
+    // Only the automatic resume of a waitForReset chain is the same invocation; nothing else re-applies the grant.
+    if (allowWidening && overrides?.execMode && overrides.waitForReset) this.widenedRuns.add(summary.id)
     this.store.upsert(summary)
 
     // Settings are read at each pricing call, so a saved override applies to a live run on its next usage update.
@@ -736,25 +1358,48 @@ export class RunManager {
         ...(community ? { community } : {})
       }
     }
+    // Exec budgets (cli-spec 6.2(3)): a role's model setting is read like the pricing aliases (tier name -> the
+    // connection's tier model) before its price is looked up. 'inherit' has no model of its own and is not checked.
+    active.modelPriced = (setting: string): boolean => {
+      const tierModels = this.options.appSettings?.().connections?.[choice.connection]?.tierModels ?? {}
+      // An empty catalog means "not discovered yet": the connection's builtin list answers then (modelForTier).
+      const catalog = this.options.catalog?.() ?? []
+      const resolved = resolveModelSetting(setting, { connection: choice.connection, tierModels, ...(catalog.length ? { catalog } : {}) })
+      if (!resolved || resolved.model === 'inherit') return true
+      const ctx = pricing()
+      if (resolvePrice(resolved.model, ctx) !== null) return true
+      // A bare tier name or Claude alias the connection does not map is resolved by the CLI itself (latest model of the
+      // family): its real id is only known from usage reports, which checkExecBudget prices live.
+      return !!settingTier(resolved.model) && !Object.hasOwn(ctx.aliases ?? {}, resolved.model)
+    }
 
     const emit = (raw: RunEvent): void => {
       // Usage is computed by the host; an adapter's run.usage is dropped.
       if (raw.type === 'run.usage') return
       if (raw.type === 'skill.used' && !this.noteSkillUsed(active, raw)) return
       let e = raw
+      // An exec run the finalizer claimed (cli-spec 6.2(2)): it writes the final status itself; later adapter statuses
+      // (the abort's 'finished' / 'error', a stray 'idle') never change status, execOutcome or endedBy.
+      if (e.type === 'run.status' && active.finalizing && !active.finalEmitting) {
+        if (e.sessionId) summary.sessionId = e.sessionId
+        if (e.status === 'error') active.adapterError = e.error ?? active.adapterError ?? ''
+        return
+      }
       // A session that ends after a usage-limit rejection is paused, not finished.
-      if (e.type === 'run.status' && (e.status === 'finished' || e.status === 'error') && active.limited && !active.userStopped) {
+      if (e.type === 'run.status' && (e.status === 'finished' || e.status === 'error') && active.limited && !active.userStopped && !active.finalizing) {
         const now = Date.now()
         const until = active.limited.until && active.limited.until > now ? active.limited.until : now + DEFAULT_PAUSE_MS
         e = { ...e, status: 'paused', pausedUntil: until, pauseReason: pauseReasonText(active.limited.window, e.error), autoResume: true }
       }
+      // Knowledge items still waiting in the per-second throttle go out before the run's end, never after it.
+      if (e.type === 'run.status' && (e.status === 'finished' || e.status === 'error' || e.status === 'paused')) this.flushRecalled(active)
       const outcome = e.type === 'run.status' && !active.outcome ? runOutcome(e.status, !!active.userStopped) : null
       if (outcome) {
         active.outcome = outcome
         active.cutOff = new Set(Object.values(active.record.agents).filter(isLiveAgent).map((a) => a.id))
       }
       // No card outlives its run: cancel every pending card before a terminal (or paused) status goes out.
-      if (outcome || (e.type === 'run.status' && e.status === 'paused')) cancelPending(active, summary.id, this.broadcast)
+      if (outcome || (e.type === 'run.status' && e.status === 'paused')) this.cancelCards(active)
       if (e.type === 'agent.upsert') {
         let agent = e.agent
         if (active.outcome) {
@@ -772,13 +1417,29 @@ export class RunManager {
         if (e.error) summary.error = e.error
         active.idleTimer.set(e.status === 'idle', now)
         if (closing) summary.endedAt = now
+        // A session cut by End session or by the app quitting records who cut it, so the status word needs no agents.
+        if ((e.status === 'finished' || e.status === 'error') && active.endedBy) {
+          summary.endedBy = active.endedBy
+          if (active.endedBy === 'app') {
+            summary.endedWithApp = true
+            if (active.endedWhile) summary.endedWhile = active.endedWhile
+          }
+        }
         if (e.status === 'paused') {
+          // An exec run without waitForReset ends 'rate-limited' here: no resume timer is armed (a reset already in the
+          // past would otherwise resume it before the finalizer runs), and it waits for the user like autoResume false.
+          if (exec && !overrides?.waitForReset) e = { ...e, autoResume: false }
           summary.pausedUntil = e.pausedUntil
           summary.pauseReason = e.pauseReason
           summary.autoResume = e.autoResume
-          this.scheduleResume(summary.id, e.pausedUntil ?? Date.now() + DEFAULT_PAUSE_MS)
+          // An adapter that says autoResume: false (e.g. Claude's failed MCP restart on a run the user interrupted)
+          // waits for the user; any other paused status keeps the auto-resume timer.
+          if (e.autoResume === false) this.clearResume(summary.id)
+          else this.scheduleResume(summary.id, e.pausedUntil ?? Date.now() + DEFAULT_PAUSE_MS)
         }
         this.store.upsert(summary)
+        // Who ended it rides on the terminal status (and on 'stopping' after End session), never from an adapter.
+        e = withEndFacts(e, summary)
       } else if (e.type === 'run.cost') {
         // The provider's own total feeds RunUsage; summary.totalCostUsd follows usage.costUsd.
         // On a priced (LiteLLM) connection the adapter's total is a proxy estimate, not the provider's own figure.
@@ -798,6 +1459,7 @@ export class RunManager {
           if (settled !== agent) emit({ type: 'agent.upsert', runId: summary.id, agent: settled })
         }
       }
+      if (exec) this.execEventSeen(active, e)
     }
 
     active.emit = emit
@@ -807,7 +1469,7 @@ export class RunManager {
     // Advisory title from the fast model; never awaited, never fails the run.
     // The harness's own resume message is never titled (the continued run's title is carried instead).
     if (kind === 'work' && !summary.title && prompt.trim() && prompt.trim() !== RESUME_TEXT.trim()) {
-      void this.titleRun(active, adapter, {
+      active.titleTask = this.titleRun(active, adapter, {
         prompt,
         cwd: project.path,
         model: this.options.fastModel?.(project, choice),
@@ -860,7 +1522,7 @@ export class RunManager {
     const prepareServers = async (specs: McpServerSpec[]): Promise<void> => {
       // Servers left out because a secret slot is empty (enabledServers skips them): one warning each per run.
       if (!bare && mcp?.skippedServers) {
-        let skipped: { name: string; missing: string[] }[] = []
+        let skipped: { name: string; missing: string[]; scope?: 'project' }[] = []
         try {
           skipped = mcp.skippedServers(live)
         } catch (e) {
@@ -874,7 +1536,10 @@ export class RunManager {
             type: 'log',
             runId: summary.id,
             level: 'warn',
-            message: `MCP server "${s.name}" has no value for ${s.missing.join(', ')}: open Settings > MCP servers and fill it in. It does not start in this run.`
+            message:
+              s.scope === 'project'
+                ? `MCP server "${s.name}" needs ${s.missing.join(', ')} for this project: open Project settings > MCP servers and fill it in. It does not start in this run.`
+                : `MCP server "${s.name}" has no value for ${s.missing.join(', ')}: open Settings > MCP servers and fill it in. It does not start in this run.`
           })
         }
       }
@@ -902,18 +1567,21 @@ export class RunManager {
       if (isQuick) {
         if (!existsSync(project.path)) throw new Error(`The folder ${project.path} no longer exists.`)
       } else {
-        // A new project's folder may not exist yet, and the provider needs a real cwd.
-        mkdirSync(project.path, { recursive: true })
+        // A new project's folder may not exist yet, and the provider needs a real cwd. An engagement's folder is the
+        // client's: OrgAI never creates it.
+        if (writesToProjectFolder(project)) mkdirSync(project.path, { recursive: true })
+        else if (!existsSync(project.path)) throw new Error(`The folder ${project.path} no longer exists.`)
       }
       // Git and Claude Code compare paths case-sensitively on Windows; a project path typed in a different
       // case than the folder on disk makes worktree isolation refuse to start. Use the on-disk spelling.
-      project = { ...project, path: canonicalPath(project.path) }
+      project = noFolderWrites({ ...project, path: canonicalPath(project.path) })
       live = project
       if (scaffold) {
         const updated = this.setup.markScaffolded(project.id)
         this.broadcast({ type: 'project.updated', runId: summary.id, project: updated })
       }
-      // Work runs only; read once and kept for the session (grants do not change mid-run).
+      // Work runs only. Computed at start and again by setLive when an approved install or proposal changes the
+      // project's servers, skills or chart mid-run.
       if (!bare && this.options.skills) {
         try {
           active.skills = this.options.skills.forRun(live, project.roles) ?? []
@@ -924,14 +1592,191 @@ export class RunManager {
       const builtinModel = this.builtinRoleModel(kind, project, choice)
       if (builtinModel?.warning) emit({ type: 'log', runId: summary.id, level: 'warn', message: builtinModel.warning })
       if (quickWarning) emit({ type: 'log', runId: summary.id, level: 'warn', message: quickWarning })
+      if (teamWarning) emit({ type: 'log', runId: summary.id, level: 'warn', message: teamWarning })
+      /**
+       * The project as saved after an install or an approved proposal on this run's own project: the canonical path is
+       * kept, the harness tools' view (ctx.project) follows, and a work run's skills are recomputed from the new grants.
+       */
+      // `settle` says what the approved change itself touched; only that moves onto the live project. The saved project
+      // also carries whatever the same save ingested from the team files (a pull), and a file change never reaches a
+      // live run. An approved org chart (review M1) says it applies from the next run, so this run's grants stay.
+      const setLive = (saved: Project, settle: LiveSettle = 'mcpServers', own?: LiveOwnItems): void => {
+        // Never the roles list as saved for an org chart with named roles: only the proposal's own roles move.
+        const next: Project = { ...live }
+        const overlay = <K extends keyof Project>(key: K): void => {
+          if (saved[key] === undefined) delete next[key]
+          else next[key] = saved[key]
+        }
+        const savedRoles = new Map(saved.roles.map((r) => [r.id, r]))
+        /** The grant field of live roles taken from the saved roles (by id); every other role field stays. */
+        const grants = (field: 'mcpServers' | 'skills'): void => {
+          next.roles = next.roles.map((r) => {
+            const s = savedRoles.get(r.id)
+            if (!s) return r
+            const out: Role = { ...r }
+            if (s[field]) out[field] = [...(s[field] as string[])]
+            else delete out[field]
+            return out
+          })
+        }
+        if ((settle === 'mcpServers' || settle === 'skills') && own) {
+          // Named items only: a pulled change to another server or skill in this same save stays out of the run.
+          if (settle === 'mcpServers') {
+            const o = overlayOwnItems(live.mcpServers, saved.mcpServers, next.roles, saved.roles, 'mcpServers', own)
+            if (o.items) next.mcpServers = o.items
+            else delete next.mcpServers
+            next.roles = o.roles
+          } else {
+            const o = overlayOwnItems(live.skills, saved.skills, next.roles, saved.roles, 'skills', own)
+            if (o.items) next.skills = o.items
+            else delete next.skills
+            next.roles = o.roles
+          }
+        } else if (settle === 'mcpServers') {
+          overlay('mcpServers')
+          grants('mcpServers')
+        } else if (settle === 'skills') {
+          overlay('skills')
+          grants('skills')
+        } else if (settle === 'orgChart') {
+          if (own) next.roles = overlayOwnRoles(live.roles, saved.roles, own)
+          else overlay('roles')
+        }
+        else if (settle === 'folders') overlay('allowedDirectories')
+        else overlay('permissionMode')
+        live = noFolderWrites({ ...next, path: live.path })
+        // The run's overrides are re-applied to the saved project (cli-spec 6.2(1)): a tightened project re-clamps them.
+        ctx.project = effectiveRunProject(live, summary.overrides, { allowWidening: active.allowWidening })
+        ctx.autoContinue = ctx.project.autoContinue !== false && planNudgesApply(summary)
+        ctx.maxAutoContinues = ctx.project.maxAutoContinues ?? DEFAULT_MAX_AUTO_CONTINUES
+        this.applyExecBudget(active, ctx)
+        const skills = settle === 'mcpServers' || settle === 'skills'
+        // Grant changes reach the live run's roles (review M1): the adapters' gates, restarts and role lookups read these
+        // objects. An org chart approval (skills false) leaves them as they started.
+        if (skills && !bare) refreshRoleGrants(ctx.roles, live.roles)
+        if (skills && !bare && this.options.skills) {
+          try {
+            active.skills = this.options.skills.forRun(live, ctx.roles) ?? []
+          } catch (e) {
+            log.warn(`Run ${summary.id}: skills unavailable (${(e as Error).message})`)
+          }
+        }
+      }
+      // Extra folders (Project.allowedDirectories): work and setup-like runs of a real project only.
+      const folderSave = this.options.saveProjectPermissions
+      const foldersOn = !restricted && !isVirtualProjectId(project.id)
+      let allowedDirs: string[] = []
+      const warnedMissing = new Set<string>()
+      const resolveFolders = (): void => {
+        const r = resolveAllowedDirectories(live.allowedDirectories, { projectPath: live.path, dataDir: this.options.dataDir })
+        allowedDirs = r.dirs
+        for (const m of r.missing) {
+          if (warnedMissing.has(m)) continue
+          warnedMissing.add(m)
+          emit({ type: 'log', runId: summary.id, level: 'warn', message: `Allowed folder ${m} does not exist; agents cannot use it in this run.` })
+        }
+        for (const u of r.unsafe) {
+          if (warnedMissing.has(u)) continue
+          warnedMissing.add(u)
+          emit({ type: 'log', runId: summary.id, level: 'warn', message: `Allowed folder ${u} is too broad or sensitive; agents cannot use it in this run.` })
+        }
+      }
+      // Reference folders (Project.referenceDirectories): readable, never editable. Same resolution and conditions.
+      let refDirs: string[] = []
+      const resolveReferences = (): void => {
+        const r = resolveAllowedDirectories(live.referenceDirectories, { projectPath: live.path, dataDir: this.options.dataDir })
+        // A folder that is also an allowed folder stays writable: it is only in allowedDirectories().
+        refDirs = r.dirs.filter((d) => !allowedDirs.some((a) => samePath(a, d)))
+        for (const ref of refDirs) {
+          for (const a of allowedDirs) {
+            const key = `contains:${a}|${ref}`
+            if (warnedMissing.has(key) || !isInsideEither(a, ref)) continue
+            warnedMissing.add(key)
+            log.info(`Run ${summary.id}: ${a} contains reference folder ${ref}; edits there stay refused.`)
+          }
+        }
+        for (const m of r.missing) {
+          if (warnedMissing.has(m)) continue
+          warnedMissing.add(m)
+          emit({ type: 'log', runId: summary.id, level: 'warn', message: `Reference folder ${m} does not exist; agents cannot read it in this run.` })
+        }
+        for (const u of r.unsafe) {
+          if (warnedMissing.has(u)) continue
+          warnedMissing.add(u)
+          emit({ type: 'log', runId: summary.id, level: 'warn', message: `Reference folder ${u} is too broad or sensitive; agents cannot use it in this run.` })
+        }
+      }
+      if (foldersOn) {
+        resolveFolders()
+        resolveReferences()
+      }
+      // Folder config gate (folderConfigTrust.ts): decided at run start and latched. A run that started without the
+      // folder's own agent config never gains it mid-run (accepting applies from the next run); one that started with
+      // it loses it for good when the folder changes. Omitted for projects with no gate field (legacy, virtual,
+      // trust-restricted), whose behaviour is unchanged. A scan that fails counts as "do not load".
+      let folderLoads: (() => boolean) | undefined
+      // Rules copied from the folder's settings.local.json on accept stop counting when the folder's config stops loading.
+      let importedRulesNow: () => string[] = () => []
+      if (!restricted && !isVirtualProjectId(project.id) && project.folderConfigTrust !== undefined) {
+        // The stored record decides the trust, but the folder judged is the one this run is in.
+        const gateProject = (): Project => ({ ...(this.options.resolveProject?.(project.id) ?? live), path: live.path })
+        importedRulesNow = () => cleanFolderConfigTrust(gateProject().folderConfigTrust)?.importedRules ?? []
+        const stateNow = (): FolderConfigState => {
+          try {
+            return folderConfigStateOf(gateProject())
+          } catch {
+            return 'changed'
+          }
+        }
+        const warnNotLoaded = (state: FolderConfigState): void => {
+          let paths: string[] = []
+          try {
+            paths = presentConfigPaths(live.path)
+          } catch {
+            /* the sentence still reads right without a list */
+          }
+          emit({ type: 'log', runId: summary.id, level: 'warn', message: folderConfigWarning(state, paths) })
+        }
+        const first = stateNow()
+        let latched = first === 'none' || first === 'trusted'
+        if (!latched) warnNotLoaded(first)
+        // This is asked on every permission check and a check scans the whole config, so a 'trusted' answer is reused
+        // for FOLDER_CHECK_MS; a change shows up within that window. A latched-false run never scans again.
+        let checkedAt = Date.now()
+        folderLoads = () => {
+          if (!latched) return false
+          const at = Date.now()
+          if (at >= checkedAt && at - checkedAt < FOLDER_CHECK_MS) return true
+          const now = stateNow()
+          checkedAt = at
+          if (now === 'none' || now === 'trusted') return true
+          latched = false
+          warnNotLoaded(now)
+          return false
+        }
+      }
+      const withoutUnloadedImports = (rules: string[]): string[] => {
+        if (!folderLoads || folderLoads()) return rules
+        let imported: string[] = []
+        try {
+          imported = importedRulesNow()
+        } catch {
+          /* an unreadable record drops nothing it cannot name */
+        }
+        return imported.length ? rules.filter((r) => !imported.includes(r)) : rules
+      }
+      // What the run sees (cli-spec 6.2(1)): the project with its overrides applied, before ctx exists, so the adapter's
+      // permission mode and continuation host read the effective values from turn 1.
+      const runProject = effectiveRunProject(project, summary.overrides, { allowWidening: active.allowWidening })
       const ctx: RuntimeContext = {
         run: summary,
-        project,
+        project: runProject,
+        ...(folderLoads ? { folderConfigLoads: folderLoads } : {}),
         roles:
-          kind === 'setup' ? [architectRole(builtinModel)]
+          kind === 'setup' ? [architectRole(builtinModel, { kind: projectKindOf(project) })]
           : kind === 'mcp-assist' ? [withBuildTools(mcpAssistantRole(builtinModel), summary)]
           : kind === 'skill-assist' ? [skillAssistantRole(builtinModel)]
-          : project.roles,
+          : project.roles.map((r) => ({ ...r })),
         prompt,
         images: images.length ? images : undefined,
         hiddenContext,
@@ -944,19 +1789,26 @@ export class RunManager {
         requestPermission: (req) => this.requestPermission(active, req),
         requestProposal: (req) =>
           this.requestProposal(active, req, (saved) => {
-            // Keep the harness tools' view of the project current after an approved MCP change.
+            // Keep the harness tools' view of the project (and the run's skills) current after an approved change.
             if (req.kind === 'mcpServers') {
-              live = { ...saved, path: live.path }
-              ctx.project = live
+              const payload = req.payload as McpServersProposalPayload
+              setLive(saved, 'mcpServers', { ids: [...payload.upsert.map((s) => s.id), ...(payload.remove ?? [])], names: payload.upsert.map((s) => s.name) })
+            } else if (req.kind === 'skills') {
+              const payload = req.payload as SkillsProposalPayload
+              setLive(saved, 'skills', { ids: payload.items.flatMap((i) => (i.libraryId ? [i.libraryId] : [])), names: payload.items.map((i) => i.draft.name) })
+            } else if (req.kind === 'orgChart') {
+              const payload = req.payload as OrgChartProposalPayload
+              setLive(saved, 'orgChart', { ids: payload.roles.map((r) => r.id), names: payload.roles.map((r) => r.name) })
             }
           }),
         // Setup-like runs (setup, mcp-assist, the harness project) change servers through proposals only.
         ...(bare
           ? {}
-          : { requestMcpInstall: (req: Omit<McpInstallRequest, 'id' | 'runId' | 'createdAt'>) => this.requestMcpInstall(active, req, () => live, (saved) => (live = { ...saved, path: live.path })) }),
+          : { requestMcpInstall: (req: Omit<McpInstallRequest, 'id' | 'runId' | 'createdAt'>) => this.requestMcpInstall(active, req, () => live, (saved) => setLive(saved, 'mcpServers', { ids: [req.spec.id], names: [req.spec.name] })) }),
         ...(mcp ? { searchMcpRegistry: (input: McpRegistrySearchInput) => mcp.searchRegistry(input) } : {}),
         mcpServers: allServers,
-        ...(setupLike ? { mcpLibrary: libraryEntries } : {}),
+        // Setup-like runs and work runs of a real project (not quick runs) read the library; work runs link from it.
+        ...(setupLike || (!bare && !isQuick) ? { mcpLibrary: libraryEntries } : {}),
         resolveMcpSecrets: async (serverId) => {
           const spec = allServers().find((s) => s.id === serverId)
           if (!spec) return { env: {}, headers: {} }
@@ -978,8 +1830,96 @@ export class RunManager {
         requestPermissionRules: (req) => this.requestRules(active, req),
         // A quick run works in a folder the user never made a project: only this run's own grants count, never the
         // folder's saved rules file (it is untrusted), and nothing is ever written there (decideRules).
-        allowedRules: () => [...new Set([...(restricted ? [] : listRules(project.path)), ...active.runRules])],
+        protectedDirectories: () => protectedDirsOf(this.options.dataDir),
+        // Only with a source: an empty answer from one makes the adapters' gate refuse shell commands (review M2).
+        ...(this.options.controlProtectedPaths || this.options.dataDir
+          ? { controlProtectedPaths: () => this.options.controlProtectedPaths?.() ?? (this.options.dataDir ? controlProtectedPaths(this.options.dataDir) : []) }
+          : {}),
+        allowedRules: () => [...new Set([...(restricted ? [] : withoutUnloadedImports(listRules({ file: this.rulesFileFor(live) }))), ...active.runRules])],
+        // Where the project keeps its saved rules: the folder file for code projects, OrgAI's data folder for engagements.
+        ...(restricted
+          ? {}
+          : {
+              savedRules: () => withoutUnloadedImports(listRules({ file: this.rulesFileFor(live) })),
+              saveProjectRules: (rules: string[]) => addRulesReport({ file: this.rulesFileFor(live) }, rules)
+            }),
+        ...(!writesToProjectFolder(project) ? { engagementDocument: () => (this.options.dataDir ? readEngagementDocument(this.options.dataDir, project.id) : undefined) } : {}),
+        // Context notes: work runs of an engagement and single-agent runs; never Chat, setup-like or trust-restricted runs.
+        ...(this.options.engagementNotes && kind === 'work' && !bare && !restricted && (projectKindOf(project) === 'engagement' || team === 'single')
+          ? {
+              engagementNotes: {
+                list: () => this.options.engagementNotes!.list(project.id),
+                read: (noteId: string) => this.options.engagementNotes!.read(project.id, noteId),
+                save: (input: { noteId?: string; title: string; text: string }, caller: KnowledgeCaller) => {
+                  const save = this.options.engagementNotes?.save
+                  if (!save) throw new Error('Notes cannot be saved in this run.')
+                  this.checkKnowledgeBudget(active)
+                  const source = this.knowledgeSource(active, caller, ctx.roles)
+                  const note = save(project.id, input, { by: 'agent', runId: summary.id, role: source.role })
+                  this.countKnowledgeWrite(active, source.agentId, `Saved note ${note.title}`)
+                  this.engagementChanged(project.id, 'notes', [note.id])
+                  return note
+                }
+              }
+            }
+          : {}),
+        // The knowledge graph: work runs of an engagement (any team); never Chat, setup-like or trust-restricted runs.
+        // The same gate covers the read side (recall, automatic context, the standing brief); it is read-only.
+        ...(this.options.knowledge && kind === 'work' && !bare && !restricted && projectKindOf(project) === 'engagement'
+          ? {
+              knowledge: this.bindKnowledge(active, this.options.knowledge, project.id, () => ctx.roles),
+              ...this.bindKnowledgeReads(active, this.options.knowledge, project.id, () => this.options.resolveProject?.(project.id) ?? live)
+            }
+          : {}),
+        // Saved team templates: Architect setup runs only.
+        ...(this.options.orgTemplate && kind === 'setup' && !isVirtualProjectId(project.id)
+          ? { orgTemplate: (templateId: string) => this.options.orgTemplate!(templateId, live) }
+          : {}),
+        ...(foldersOn
+          ? {
+              allowedDirectories: () => [...allowedDirs],
+              referenceDirectories: () => [...refDirs],
+              ...(folderSave
+                ? {
+                    allowDirectories: (requested: string[]) => {
+                      // A reference folder (or anything inside one) stays read-only: never saved as writable.
+                      const refs = [...new Set([...refDirs, ...(live.referenceDirectories ?? []).filter((r): r is string => typeof r === 'string')])]
+                      const dirs = requested.filter((d) => {
+                        if (!referenceFolderOf(d, refs, live.path)) return true
+                        log.info(`Run ${summary.id}: ${d} is a reference folder; it stays read-only.`)
+                        return false
+                      })
+                      if (!dirs.length) return []
+                      const saved = folderSave(live.id, { addDirectories: dirs })
+                      setLive(saved, 'folders')
+                      this.broadcast({ type: 'project.updated', runId: summary.id, project: saved })
+                      resolveFolders()
+                      resolveReferences()
+                      const asked = resolveAllowedDirectories(dirs, { projectPath: live.path, dataDir: this.options.dataDir }).dirs
+                      const inForce = asked.filter((d) => allowedDirs.some((a) => samePath(a, d)))
+                      if (inForce.length) emit({ type: 'log', runId: summary.id, level: 'info', message: `Allowed folders for this project: ${inForce.join(', ')}` })
+                      return inForce
+                    },
+                    acceptEditsForProject: () => {
+                      if (live.permissionMode !== 'default') return false
+                      const saved = folderSave(live.id, { acceptEdits: true })
+                      setLive(saved, 'permissionMode')
+                      if (saved.permissionMode !== 'acceptEdits') return false
+                      this.broadcast({ type: 'project.updated', runId: summary.id, project: saved })
+                      emit({ type: 'log', runId: summary.id, level: 'info', message: 'Permission mode set to Accept edits for this project.' })
+                      return true
+                    }
+                  }
+                : {})
+            }
+          : {}),
         ...(isQuick && this.options.listProjects ? { listProjects: () => this.options.listProjects!() } : {}),
+        ...(!bare && !isQuick && kind === 'work' && this.options.skillAssist
+          ? {
+              skillCatalog: () => this.options.skillAssist!.catalog(project.id),
+              readSkill: (ref: { libraryId?: string; skillId?: string }) => this.options.skillAssist!.read(project.id, ref)
+            }
+          : {}),
         ...(kind === 'skill-assist' && this.options.skillAssist
           ? {
               skillCatalog: () => this.options.skillAssist!.catalog(skillScope()),
@@ -1001,22 +1941,441 @@ export class RunManager {
         updatePlan,
         pendingInteractions: () => pendingCount(active),
         // A Chat with the single assistant is a conversation: no plan nudges (planNudgesApply).
-        autoContinue: project.autoContinue !== false && planNudgesApply(summary),
-        maxAutoContinues: project.maxAutoContinues ?? DEFAULT_MAX_AUTO_CONTINUES,
+        autoContinue: runProject.autoContinue !== false && planNudgesApply(summary),
+        maxAutoContinues: runProject.maxAutoContinues ?? DEFAULT_MAX_AUTO_CONTINUES,
+        onRootTurnEnded: (e: RootTurnEnd) => this.rootTurnEnded(active, e),
+        noteActivity: () => this.bumpActivity(active),
         ...(this.options.continuationDelayMs !== undefined ? { continuationDelayMs: this.options.continuationDelayMs } : {}),
         completeSetup: async (text) => {
           const updated = this.setup.complete(project.id, text)
           this.broadcast({ type: 'project.updated', runId: summary.id, project: updated })
         }
       }
-      active.session = await adapter.start(ctx)
+      active.ctx = ctx
+      if (exec) {
+        // Budget before launch (cli-spec 6.2(3)): a spent chain (maxBudgetUsd 0 included) or an unpriced role model
+        // ends the run as 'budget-exceeded' without ever starting the adapter.
+        this.applyExecBudget(active, ctx)
+        const refusal = this.preLaunchBudgetRefusal(active, ctx)
+        if (refusal) {
+          emit({ type: 'log', runId: summary.id, level: 'warn', message: refusal })
+          await this.finalizeExecRun(summary.id, 'budget-exceeded', { endedBy: 'budget' })
+          return summary
+        }
+      }
+      const opening = adapter.start(ctx)
+      this.startsInFlight.add(opening)
+      active.opening = opening
+      try {
+        active.session = await opening
+      } finally {
+        this.startsInFlight.delete(opening)
+        active.opening = undefined
+      }
       void active.session.finished.finally(() => this.teardown(active))
+      if (exec) this.armStall(active)
+      // The run was ended (End session or the app quitting) while its session was still opening: stop it at once.
+      if (active.userStopped || active.finalizing) {
+        this.stopSession(active)?.catch((err: unknown) => log.warn(`Run ${summary.id}: stopping a session that opened after its end failed: ${(err as Error)?.message ?? err}`))
+      }
     } catch (e) {
       emit({ type: 'run.status', runId: summary.id, status: 'error', error: (e as Error).message })
       // No session will ever finish this run; it must not count as live.
       this.teardown(active)
     }
     return summary
+  }
+
+  // ---------- headless exec: budget, settlement and the finalizer (cli-spec 6.2) ----------
+
+  /** The cost of the exec chain's other runs (stored and live), for the chain budget. */
+  private chainPriorCost(projectId: string, chainId: string, excludeId: string): number {
+    const byId = new Map<string, RunSummary>()
+    for (const r of this.store.list(projectId)) byId.set(r.id, r)
+    for (const a of this.runs.values()) if (a.summary.projectId === projectId) byId.set(a.summary.id, a.summary)
+    let sum = 0
+    for (const r of byId.values()) {
+      if (r.id === excludeId || r.overrides?.execChainId !== chainId) continue
+      const cost = r.usage?.costUsd ?? r.totalCostUsd
+      if (typeof cost === 'number' && Number.isFinite(cost) && cost > 0) sum += cost
+    }
+    return sum
+  }
+
+  /** The exec budget of the run's effective project and what is left of it for the adapter (ctx.budgetUsd). */
+  private applyExecBudget(a: ActiveRun, ctx: RuntimeContext): void {
+    const o = a.summary.overrides
+    if (!o?.execMode) return
+    a.execBudget = execBudgetUsd(ctx.project, o)
+    if (a.execBudget !== undefined) ctx.budgetUsd = Math.max(0, a.execBudget - a.chainPriorCostUsd)
+    else delete ctx.budgetUsd
+  }
+
+  /** Why an exec run may not start under its budget, or null. */
+  private preLaunchBudgetRefusal(a: ActiveRun, ctx: RuntimeContext): string | null {
+    const budget = a.execBudget
+    if (budget === undefined) return null
+    if (a.chainPriorCostUsd >= budget) {
+      return `The budget of $${budget.toFixed(2)} is spent ($${a.chainPriorCostUsd.toFixed(2)} so far in this exec chain); the run did not start.`
+    }
+    if (a.summary.overrides?.allowUnpricedBudget || !a.modelPriced) return null
+    for (const role of ctx.roles) {
+      if (a.modelPriced(role.model)) continue
+      const name = logText(String(role.model))
+      log.warn(`Run ${a.summary.id}: model ${name} (role ${logText(role.name)}) has no known price; a budget cannot be enforced.`)
+      return `Model ${name} (role ${logText(role.name)}) has no known price, so the budget cannot be enforced; the run did not start. Set a model price in App settings or allow unpriced models.`
+    }
+    return null
+  }
+
+  /** Synchronous budget check on every agent.upsert of an exec run (after pricing). */
+  private checkExecBudget(a: ActiveRun, agent: AgentInstance): void {
+    const budget = a.execBudget
+    if (budget === undefined || a.finalizing) return
+    const runId = a.summary.id
+    if (!a.summary.overrides?.allowUnpricedBudget) {
+      const unpriced = agent.usage?.models.find((m) => m.costUsd === null)
+      let model = unpriced?.model
+      if (!model && !a.priceChecked.has(agent.id)) {
+        a.priceChecked.add(agent.id)
+        // Mock models are fake ids priced by the mock's own provider cost; only their usage entries are checked.
+        if (a.adapter !== 'mock' && agent.model && a.modelPriced && !a.modelPriced(agent.model)) model = agent.model
+      }
+      if (model) {
+        const message = `Model ${logText(model)} has no known price, so the budget cannot be enforced; the run ends.`
+        log.warn(`Run ${runId}: ${message}`)
+        a.emit({ type: 'log', runId, level: 'warn', message })
+        void this.finalizeExecRun(runId, 'budget-exceeded', { endedBy: 'budget' })
+        return
+      }
+    }
+    const cost = a.summary.usage?.costUsd ?? 0
+    if (a.chainPriorCostUsd + cost >= budget) {
+      a.emit({ type: 'log', runId, level: 'warn', message: `The budget of $${budget.toFixed(2)} is reached ($${(a.chainPriorCostUsd + cost).toFixed(2)} estimated); the run ends.` })
+      void this.finalizeExecRun(runId, 'budget-exceeded', { endedBy: 'budget' })
+    }
+  }
+
+  /** RunManager's view of an exec run's own events (after they were recorded and broadcast). */
+  private execEventSeen(a: ActiveRun, e: RunEvent): void {
+    if (e.type === 'agent.upsert') {
+      this.bumpActivity(a)
+      this.checkExecBudget(a, e.agent)
+      return
+    }
+    if (e.type !== 'run.status') return
+    if (e.status === 'running') this.bumpActivity(a)
+    if (a.finalizing || a.finalEmitting) return
+    const runId = a.summary.id
+    if (e.status === 'paused') {
+      // waitForReset leaves the outcome to the auto-resume, unless none is armed (an adapter's autoResume false).
+      if (!a.summary.overrides?.waitForReset || e.autoResume === false) void this.finalizeExecRun(runId, 'rate-limited')
+    } else if (e.status === 'error') {
+      const auth = !!a.lastTurnEnd?.isAuthError || isAuthFailure({ text: e.error, isError: true })
+      void this.finalizeExecRun(runId, auth ? 'auth-error' : 'failed')
+    } else if (e.status === 'finished') {
+      // The session ended without the finalizer: a cut (End session, quit) is 'interrupted', else judge the plan.
+      if (a.userStopped) {
+        void this.finalizeExecRun(runId, 'interrupted', { endedBy: a.endedBy ?? 'user' })
+      } else {
+        const r = execOutcomeFor({ plan: a.record.plan, agents: Object.values(a.record.agents), allowUnmerged: a.summary.overrides?.allowUnmerged })
+        void this.finalizeExecRun(runId, r.outcome, { endedBy: r.endedBy })
+      }
+    }
+  }
+
+  /** ctx.onRootTurnEnded: every root turn end, failed ones included, before the adapter's 'idle'. */
+  private rootTurnEnded(a: ActiveRun, e: RootTurnEnd): void {
+    if (typeof e?.turnGen === 'number' && Number.isFinite(e.turnGen)) a.rootTurnGen = e.turnGen
+    a.lastTurnEnd = e
+    a.activityGen++
+    if (!a.summary.overrides?.execMode || a.finalizing) return
+    const runId = a.summary.id
+    if (e.errorSubtype === 'error_max_budget_usd') {
+      void this.finalizeExecRun(runId, 'budget-exceeded', { endedBy: 'budget' })
+      return
+    }
+    if (!e.ok && !e.limited && !e.interrupted) {
+      void this.finalizeExecRun(runId, e.isAuthError ? 'auth-error' : 'failed')
+      return
+    }
+    this.armSettle(a)
+    this.armStall(a)
+  }
+
+  /** Activity that may keep an exec run from settling: bump activityGen, re-arm the settle check and the stall watchdog. */
+  private bumpActivity(a: ActiveRun): void {
+    a.activityGen++
+    if (!a.summary.overrides?.execMode || a.finalizing) return
+    this.armSettle(a)
+    this.armStall(a)
+  }
+
+  private armSettle(a: ActiveRun, delay: number = EXEC_SETTLE_DEBOUNCE_MS): void {
+    if (a.settleTimer) clearTimeout(a.settleTimer)
+    const gen = a.activityGen
+    const turn = a.rootTurnGen
+    a.settleTimer = setTimeout(() => {
+      a.settleTimer = undefined
+      // A later activity re-armed it; this one is stale.
+      if (gen !== a.activityGen || turn !== a.rootTurnGen) return
+      this.trySettleExecRun(a)
+    }, delay)
+  }
+
+  /** At a stable (rootTurnGen, activityGen): finalize the exec run if it is quiescent (execSettle.ts). */
+  private trySettleExecRun(a: ActiveRun): void {
+    if (!a.summary.overrides?.execMode || a.finalizing || this.runs.get(a.summary.id) !== a) return
+    const st = a.summary.status
+    if (st !== 'running' && st !== 'idle') return
+    const settlement = a.session?.settlement?.()
+    const input = {
+      settlement,
+      rootTurnGen: a.rootTurnGen,
+      limitHold: !!a.limitHold,
+      held: a.held,
+      agents: Object.values(a.record.agents),
+      openCards: pendingCount(a),
+      inboxLength: a.inbox.length,
+      flushing: !!a.flushing,
+      plan: a.record.plan,
+      autoContinue: a.ctx?.autoContinue === true
+    }
+    if (execQuiescent(input)) {
+      const r = execOutcomeFor({ plan: a.record.plan, agents: input.agents, allowUnmerged: a.summary.overrides.allowUnmerged })
+      void this.finalizeExecRun(a.summary.id, r.outcome, { endedBy: r.endedBy })
+      return
+    }
+    // Adapter-side state (a continuation timer, a deferred restart) can change without any event: poll while idle.
+    if (settlement?.rootIdle) this.armSettle(a, EXEC_SETTLE_POLL_MS)
+  }
+
+  /**
+   * The stall watchdog: reset on every activity; fires after execStallTimeoutMs without any. While the adapter says
+   * the root is busy it re-arms, but only EXEC_STALL_BUSY_ROUNDS times in a row with no activity at all (review M4):
+   * a lost harness notice or a hung turn that never reports back must not keep an exec run alive forever. Any activity
+   * (bumpActivity, a root turn end) starts the count again; a card under a policy timer never counts.
+   */
+  private armStall(a: ActiveRun, busyRounds = 0): void {
+    if (a.stallTimer) clearTimeout(a.stallTimer)
+    a.stallTimer = undefined
+    const o = a.summary.overrides
+    if (!o?.execMode || a.finalizing) return
+    const gen = a.activityGen
+    // A non-positive timeout (a record from before cleanRunOverrides refused one) would re-arm every tick: use the default.
+    const set = o.execStallTimeoutMs
+    const ms = timerDelay(typeof set === 'number' && set > 0 ? set : DEFAULT_EXEC_STALL_TIMEOUT_MS)
+    a.stallTimer = setTimeout(() => {
+      a.stallTimer = undefined
+      if (a.finalizing || this.runs.get(a.summary.id) !== a) return
+      if (gen !== a.activityGen) return this.armStall(a)
+      // A paused run waits for its reset (waitForReset); a card under the policy's grace or 'wait' timer suspends it.
+      if (a.summary.status === 'paused') return
+      if (a.policyTimers.size > 0) return this.armStall(a)
+      const settlement = a.session?.settlement?.()
+      // Without a settlement view the adapter cannot say it is busy: only this watchdog ends such a run.
+      if (settlement && !settlement.rootIdle) {
+        if (busyRounds + 1 < EXEC_STALL_BUSY_ROUNDS) return this.armStall(a, busyRounds + 1)
+        log.warn(`Run ${a.summary.id}: busy with no activity for ${ms * EXEC_STALL_BUSY_ROUNDS} ms; ending it as stalled.`)
+        void this.finalizeExecRun(a.summary.id, 'stalled', { endedBy: 'policy' })
+        return
+      }
+      log.warn(`Run ${a.summary.id}: no activity for ${ms} ms while not settled; ending it as stalled.`)
+      void this.finalizeExecRun(a.summary.id, 'stalled', { endedBy: 'policy' })
+    }, ms)
+  }
+
+  private clearExecTimers(a: ActiveRun): void {
+    if (a.settleTimer) clearTimeout(a.settleTimer)
+    if (a.stallTimer) clearTimeout(a.stallTimer)
+    a.settleTimer = undefined
+    a.stallTimer = undefined
+    for (const t of a.policyTimers.values()) clearTimeout(t)
+    a.policyTimers.clear()
+  }
+
+  /** A run.status from the finalizer itself (late adapter statuses are dropped). */
+  private finalEmit(a: ActiveRun, e: Extract<RunEvent, { type: 'run.status' }>): void {
+    a.finalEmitting = true
+    try {
+      a.emit(e)
+    } finally {
+      a.finalEmitting = false
+    }
+  }
+
+  /**
+   * End an exec run with `outcome` (cli-spec 6.2(2) item 4). Idempotent: the first call claims the outcome and later
+   * calls return the same promise. Stops the session and waits for it (EXEC_FINALIZE_STOP_TIMEOUT_MS), joins the title
+   * (EXEC_TITLE_JOIN_MS), flushes usage, writes the final status, execOutcome and endedBy, persists, and broadcasts
+   * exactly one run.finalized. RunManager never calls stop() for policy, budget or completion finishes.
+   */
+  finalizeExecRun(runId: string, outcome: ExecOutcome, opts: { endedBy?: RunEndedBy } = {}): Promise<void> {
+    const a = this.runs.get(runId)
+    if (!a) return Promise.resolve()
+    if (a.finalizing) return a.finalizing
+    a.finalOutcome = outcome
+    const endedBy = opts.endedBy !== undefined ? opts.endedBy : defaultEndedBy(outcome)
+    const run = this.runFinalizer(a, outcome, endedBy)
+      .catch((err: unknown) => log.warn(`Run ${runId}: finalizing failed: ${(err as Error)?.message ?? err}`))
+      .finally(() => {
+        a.finalizeDone = true
+      })
+    a.finalizing = run
+    return run
+  }
+
+  private async runFinalizer(a: ActiveRun, outcome: ExecOutcome, endedBy: RunEndedBy | undefined): Promise<void> {
+    // Claimed synchronously by finalizeExecRun; the body starts on a microtask so the caller's emit finishes first.
+    await Promise.resolve()
+    const s = a.summary
+    this.clearExecTimers(a)
+    // A finalized run never resumes by itself (a waitForReset pause stopped by the user included).
+    this.clearResume(s.id)
+    if (s.status === 'paused') s.autoResume = false
+    if (endedBy) a.endedBy ??= endedBy
+    if (outcome === 'interrupted') {
+      a.userStopped = true
+      if (endedBy === 'user') s.endedBy = 'user'
+      if (s.status === 'starting' || s.status === 'running' || s.status === 'idle') this.finalEmit(a, { type: 'run.status', runId: s.id, status: 'stopping' })
+      this.flush(a)
+    }
+    // A session still opening is waited for, then stopped with the rest.
+    if (!a.session && a.opening) await raceTimeout(a.opening.catch(() => undefined), EXEC_FINALIZE_STOP_TIMEOUT_MS)
+    let timedOut = false
+    if (a.session) {
+      const stopping = this.stopSession(a)?.catch((err: unknown) => log.warn(`Run ${s.id}: stop failed while finalizing: ${(err as Error)?.message ?? err}`))
+      timedOut = await raceTimeout(Promise.all([stopping, a.session.finished.catch(() => undefined)]), EXEC_FINALIZE_STOP_TIMEOUT_MS)
+      if (timedOut) log.warn(`Run ${s.id}: the session did not finish within ${EXEC_FINALIZE_STOP_TIMEOUT_MS} ms of being stopped; finalizing anyway.`)
+    }
+    // The title may still land within EXEC_TITLE_JOIN_MS; after that it is cancelled so it cannot race persistence.
+    if (a.titleTask) await raceTimeout(a.titleTask, EXEC_TITLE_JOIN_MS)
+    a.titleAbort?.abort()
+    // The final status, unless the run already reached one (an adapter error, a natural end, the pause).
+    // A paused run the user stopped ('interrupted') is finished, not left paused.
+    const terminal = s.status === 'finished' || s.status === 'error' || (s.status === 'paused' && outcome !== 'interrupted')
+    if (!terminal) {
+      const status = outcome === 'failed' || outcome === 'auth-error' ? 'error' : outcome === 'rate-limited' ? 'paused' : 'finished'
+      const error =
+        status === 'error' ? a.adapterError || s.error || (a.lastTurnEnd?.errorSubtype ? `The turn ended with ${logText(a.lastTurnEnd.errorSubtype)}.` : 'The run failed.') : undefined
+      this.finalEmit(a, { type: 'run.status', runId: s.id, status, ...(error ? { error } : {}), ...(status === 'paused' ? { autoResume: false } : {}) })
+    }
+    this.closeTimers(a)
+    this.refreshUsage(a, true)
+    s.execOutcome = outcome
+    if (endedBy) s.endedBy = endedBy
+    else if (s.endedBy !== 'app') delete s.endedBy
+    try {
+      this.store.upsert(s)
+    } catch (e) {
+      log.warn(`Run ${s.id}: could not persist the finalized summary: ${(e as Error).message}`)
+    }
+    this.flush(a)
+    a.finalizeDone = true
+    // The run leaves the live set here once its final status is written (session.finished's teardown waited for it).
+    if (this.runs.get(s.id) === a) this.teardown(a)
+    if (!a.finalizedSent) {
+      a.finalizedSent = true
+      this.broadcast({ type: 'run.finalized', runId: s.id, ...(s.overrides?.execChainId ? { execChainId: s.overrides.execChainId } : {}), outcome, summary: { ...s } })
+    }
+  }
+
+  // ---------- decision cards: index, tombstones and the headless policy ----------
+
+  /** A card was raised (after its *.request broadcast): index it, count the activity and apply the headless policy. */
+  private cardCreated(a: ActiveRun, kind: CardKind, id: string, card: unknown): void {
+    this.decisions.add(id, { runId: a.summary.id, projectId: a.summary.projectId, kind, revision: 1 })
+    this.bumpActivity(a)
+    this.applyPolicy(a, kind, id, card)
+  }
+
+  /** A card left the pending set: tombstone it, drop its policy timer, count the activity. */
+  private cardResolved(a: ActiveRun, kind: CardKind, id: string, status: 'applied' | 'cancelled', effectiveDecision?: string, decidedBy?: DecidedBy): void {
+    const t = a.policyTimers.get(id)
+    if (t) clearTimeout(t)
+    a.policyTimers.delete(id)
+    this.decisions.resolve(id, { status, kind, runId: a.summary.id, ...(effectiveDecision ? { effectiveDecision } : {}), ...(decidedBy ? { decidedBy } : {}) })
+    this.bumpActivity(a)
+  }
+
+  /** Cancel every open card of a run (its end or pause) and record 'cancelled' tombstones. */
+  private cancelCards(a: ActiveRun): void {
+    cancelPending(a, a.summary.id, this.broadcast, (id, kind) => this.cardResolved(a, kind, id, 'cancelled'))
+  }
+
+  /** The 'not pending' answer of a decision method: from the tombstones, else not-found. */
+  private decisionMiss(requestId: string): DecisionOutcome {
+    return this.decisions.missOutcome(requestId)
+  }
+
+  /** expectedRevision given and different from the card's revision. */
+  private staleRevision(revision: number | undefined, opts: DecisionOptions): boolean {
+    return opts.expectedRevision !== undefined && opts.expectedRevision !== (revision ?? 1)
+  }
+
+  /** The decision method for a card kind (the headless policy answers through the same paths as a human). */
+  private decideCard<K extends CardKind>(kind: K, runId: string, id: string, decision: PolicyDecisions[K], opts: DecisionOptions): DecisionOutcome {
+    switch (kind) {
+      case 'permission':
+        return this.decide(runId, id, decision as PolicyDecisions['permission'], opts)
+      case 'rules':
+        return this.decideRules(runId, id, decision as PolicyDecisions['rules'], opts)
+      case 'proposal':
+        return this.decideProposal(runId, id, decision as PolicyDecisions['proposal'], opts)
+      case 'question':
+        return this.answerQuestion(runId, id, decision as PolicyDecisions['question'], opts)
+      case 'merge':
+        return this.decideMerge(runId, id, decision as PolicyDecisions['merge'], opts)
+      default:
+        return this.answerMcpInstall(runId, id, decision as PolicyDecisions['mcpInstall'], opts)
+    }
+  }
+
+  /**
+   * Headless decision policy (cli-spec 6.2(1)) on an exec run: act after a 0 ms timer (so the *.request event goes out
+   * first), or after humanGraceMs while an interactive client is attached. A human answer clears the timer.
+   */
+  private applyPolicy(a: ActiveRun, kind: CardKind, id: string, card: unknown): void {
+    const o = a.summary.overrides
+    if (!o?.execMode || a.finalizing) return
+    const policy = fullPolicy(o.decisionPolicy)
+    const runId = a.summary.id
+    let interactive = 0
+    try {
+      interactive = this.options.interactiveClients?.() ?? 0
+    } catch {
+      interactive = 0
+    }
+    const act = (): void => {
+      a.policyTimers.delete(id)
+      if (a.finalizing || this.runs.get(runId) !== a || !findPendingCard(a, id)) return
+      const action = policyAction(kind, card, policy)
+      if (action.kind === 'fail') {
+        a.emit({ type: 'log', runId, level: 'warn', message: `A ${kind} card needs a decision and the headless policy fails the run on it.` })
+        void this.finalizeExecRun(runId, 'needs-decision', { endedBy: 'policy' })
+        return
+      }
+      if (action.kind === 'wait') {
+        a.policyTimers.set(
+          id,
+          setTimeout(() => {
+            a.policyTimers.delete(id)
+            if (a.finalizing || this.runs.get(runId) !== a || !findPendingCard(a, id)) return
+            a.emit({ type: 'log', runId, level: 'warn', message: `Nobody answered a ${kind} card within ${policy.waitTimeoutMs} ms; the run ends.` })
+            void this.finalizeExecRun(runId, 'needs-decision', { endedBy: 'policy' })
+          }, timerDelay(policy.waitTimeoutMs))
+        )
+        return
+      }
+      this.decideCard(kind, runId, id, action.decision, { decidedBy: { surface: 'policy' } })
+      if (!countsAsDenial(kind)) return
+      a.autoDenials++
+      if (a.autoDenials >= policy.maxAutoDenials) {
+        a.emit({ type: 'log', runId, level: 'warn', message: `The headless policy refused ${a.autoDenials} decision${a.autoDenials === 1 ? '' : 's'} (limit ${policy.maxAutoDenials}); the run ends.` })
+        void this.finalizeExecRun(runId, 'needs-decision', { endedBy: 'policy' })
+      }
+    }
+    a.policyTimers.set(id, setTimeout(act, interactive > 0 ? timerDelay(policy.humanGraceMs) : 0))
   }
 
   /** Close the open wait / limit / idle intervals (the run ended or paused). */
@@ -1036,7 +2395,8 @@ export class RunManager {
       limitHoldMs: a.limitTimer.elapsed(now),
       idleMs: a.idleTimer.elapsed(now),
       now,
-      skills: [...a.skillCounts.values()]
+      skills: [...a.skillCounts.values()],
+      knowledge: a.knowledgeUsage
     })
   }
 
@@ -1069,6 +2429,259 @@ export class RunManager {
       if (updated !== agent) a.emit({ type: 'agent.upsert', runId: a.summary.id, agent: updated })
     }
     return true
+  }
+
+  // ---------- engagement notes and knowledge graph (harness tool writes) ----------
+
+  /**
+   * Provenance of a knowledge or note write: the run, the calling agent (missing = the root) and its role name. The
+   * role comes from the run's agent record (its slug, shown as the role's name when the run's roles know it), else the
+   * role the adapter named (caller.roleId), else the root role. Never a string the agent supplied.
+   */
+  private knowledgeSource(a: ActiveRun, caller: KnowledgeCaller, roles: Role[]): KnowledgeSource & { agentId: string } {
+    const agentId = caller.agentId ?? ROOT_AGENT_ID
+    const slug = a.record.agents[agentId]?.roleSlug
+    const role =
+      (slug ? (roles.find((r) => r.slug === slug)?.name ?? slug) : undefined) ??
+      (caller.roleId ? roles.find((r) => r.id === caller.roleId)?.name : undefined) ??
+      a.rootRole
+    return { by: 'agent', runId: a.summary.id, agentId, ...(role ? { role } : {}), at: Date.now() }
+  }
+
+  /** Throws (before anything is saved) once the run made KNOWLEDGE_RUN_WRITES_MAX writes; the cap is logged once. */
+  private checkKnowledgeBudget(a: ActiveRun): void {
+    if (a.knowledgeWrites < KNOWLEDGE_RUN_WRITES_MAX) return
+    if (!a.knowledgeCapWarned) {
+      a.knowledgeCapWarned = true
+      log.warn(`Run ${a.summary.id}: knowledge graph write limit (${KNOWLEDGE_RUN_WRITES_MAX}) reached; later writes are refused`)
+    }
+    throw new Error(`The knowledge graph write limit for this run (${KNOWLEDGE_RUN_WRITES_MAX}) is reached; nothing was saved.`)
+  }
+
+  /** After a successful store write: count it and write its harness transcript row on the writing agent. */
+  private countKnowledgeWrite(a: ActiveRun, agentId: string, text: string): void {
+    a.knowledgeWrites++
+    this.knowledgeRow(a, agentId, text)
+  }
+
+  /**
+   * A quiet harness row (like a skill load) on the agent that wrote to the notes or the graph. An agent id the run
+   * record does not know (an adapter quirk) would attach the row to no visible agent, so it falls back to the root.
+   */
+  private knowledgeRow(a: ActiveRun, agentId: string, text: string): void {
+    const shown = agentId === ROOT_AGENT_ID || a.record.agents[agentId] ? agentId : ROOT_AGENT_ID
+    a.emit({ type: 'transcript', runId: a.summary.id, entry: { id: newId('t'), agentId: shown, at: Date.now(), source: 'harness', block: { kind: 'system', text } } })
+  }
+
+  /** Push projects:engagementChanged for an agent write (index.ts passes the broadcaster); never throws into the tool. */
+  private engagementChanged(projectId: string, what: 'notes' | 'knowledge', ids: string[]): void {
+    const event: EngagementChangedEvent = { projectId, what, ids }
+    try {
+      this.options.engagementChanged?.(event)
+    } catch (e) {
+      log.warn(`engagementChanged broadcast failed: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+
+  /** RuntimeContext.knowledge over the store: provenance, the writes cap, one transcript row per write, the push. */
+  private bindKnowledge(a: ActiveRun, store: KnowledgeStoreApi, projectId: string, roles: () => Role[]): NonNullable<RuntimeContext['knowledge']> {
+    const label = (n: KnowledgeNode): string => `${n.kind} ${n.name}`
+    return {
+      graph: () => store.get(projectId),
+      upsertNode: (input, caller) => {
+        this.checkKnowledgeBudget(a)
+        const source = this.knowledgeSource(a, caller, roles())
+        const r = store.upsertNode(projectId, input, source)
+        this.countKnowledgeWrite(a, source.agentId, `${r.created ? 'Recorded' : 'Updated'} ${label(r.node)}`)
+        this.engagementChanged(projectId, 'knowledge', [r.node.id])
+        return r
+      },
+      link: (input, caller) => {
+        this.checkKnowledgeBudget(a)
+        const source = this.knowledgeSource(a, caller, roles())
+        const r = store.saveEdge(projectId, input, source)
+        const g = store.get(projectId)
+        const name = (id: string): string => {
+          const n = g.nodes.find((x) => x.id === id)
+          return n ? n.name : id
+        }
+        this.countKnowledgeWrite(a, source.agentId, `Linked ${name(r.edge.from)} ${r.edge.relation} ${name(r.edge.to)}`)
+        this.engagementChanged(projectId, 'knowledge', [r.edge.id])
+        return r
+      },
+      retire: (input, caller) => {
+        this.checkKnowledgeBudget(a)
+        const source = this.knowledgeSource(a, caller, roles())
+        const r = store.retire(projectId, input, source)
+        if (r.alreadyRetired) return r
+        // A fact's label is its text (multi-line, up to 1,000 chars): one line, cut, like every other row value.
+        const reason = input.reason?.trim() ? ` (${datum(input.reason, 120)})` : ''
+        this.countKnowledgeWrite(a, source.agentId, `Retired ${r.item} ${datum(r.label, 160)}${reason}`)
+        this.engagementChanged(projectId, 'knowledge', [r.id])
+        return r
+      }
+    }
+  }
+
+  // ---------- knowledge reads: recall, automatic context, brief (read-only, in-memory state per run) ----------
+
+  /** The agent a row or event lands on: the agent when the run record knows it, else the root (like knowledgeRow). */
+  private visibleAgent(a: ActiveRun, agentId: string): string {
+    return agentId === ROOT_AGENT_ID || a.record.agents[agentId] ? agentId : ROOT_AGENT_ID
+  }
+
+  /**
+   * The "already shown" map of one agent (created on first use), or undefined for a missing / over-long id and once the
+   * run tracks KNOWLEDGE_SHOWN_AGENTS_MAX agents (those just get no dedupe). Keyed by the id the adapter reports, so a
+   * spawned agent that is not in the run record yet still has its own state.
+   */
+  private shownFor(a: ActiveRun, agentId: string | undefined): Map<string, string> | undefined {
+    if (typeof agentId !== 'string' || !agentId || agentId.length > 128) return undefined
+    let m = a.knowledgeShown.get(agentId)
+    if (!m) {
+      if (a.knowledgeShown.size >= KNOWLEDGE_SHOWN_AGENTS_MAX) return undefined
+      m = new Map()
+      a.knowledgeShown.set(agentId, m)
+    }
+    return m
+  }
+
+  /** Like shownFor, for what an automatic context block already gave this agent (it may be less than a recall gives). */
+  private contextShownFor(a: ActiveRun, agentId: string | undefined): Map<string, string> | undefined {
+    if (typeof agentId !== 'string' || !agentId || agentId.length > 128) return undefined
+    let m = a.knowledgeContextShown.get(agentId)
+    if (!m) {
+      if (a.knowledgeContextShown.size >= KNOWLEDGE_SHOWN_AGENTS_MAX) return undefined
+      m = new Map()
+      a.knowledgeContextShown.set(agentId, m)
+    }
+    return m
+  }
+
+  /** Count what was served, refresh the usage and (for a non-empty answer) tell the renderer which nodes were touched. */
+  private noteServed(a: ActiveRun, kind: 'recalls' | 'autoContexts', items: number, chars: number): void {
+    a.knowledgeUsage[kind]++
+    a.knowledgeUsage.itemsServed += items
+    a.knowledgeUsage.charsServed += chars
+    if (this.runs.get(a.summary.id) === a) this.refreshUsage(a, false)
+  }
+
+  /**
+   * knowledge.recalled for one agent: at most one per KNOWLEDGE_RECALLED_THROTTLE_MS. The first call goes out at once
+   * (leading edge); calls inside the window merge their ids (deduped, the newest KNOWLEDGE_RECALLED_IDS_MAX kept, the
+   * newest call's `via`) into one trailing event when the window ends. Nothing is queued after the run's outcome.
+   */
+  private noteRecalled(a: ActiveRun, agentId: string, ids: string[], via: 'recall' | 'auto'): void {
+    if (!ids.length || a.outcome) return
+    const key = this.visibleAgent(a, agentId)
+    let st = a.knowledgeRecalled.get(key)
+    if (!st) {
+      st = { lastAt: 0 }
+      a.knowledgeRecalled.set(key, st)
+    }
+    const fresh = new Set(ids)
+    st.pending = { ids: [...(st.pending?.ids ?? []).filter((id) => !fresh.has(id)), ...fresh].slice(-KNOWLEDGE_RECALLED_IDS_MAX), via }
+    if (st.timer) return
+    const wait = Math.max(0, st.lastAt + KNOWLEDGE_RECALLED_THROTTLE_MS - Date.now())
+    if (wait === 0) {
+      this.sendRecalled(a, key, st)
+      return
+    }
+    st.timer = setTimeout(() => this.sendRecalled(a, key, st), wait)
+    st.timer.unref?.()
+  }
+
+  private sendRecalled(a: ActiveRun, agentId: string, st: RecalledThrottle, force = false): void {
+    if (st.timer) clearTimeout(st.timer)
+    st.timer = undefined
+    const pending = st.pending
+    st.pending = undefined
+    if (!pending || !pending.ids.length) return
+    if (!force && (a.outcome || this.runs.get(a.summary.id) !== a)) return
+    st.lastAt = Date.now()
+    a.emit({ type: 'knowledge.recalled', runId: a.summary.id, agentId, nodeIds: pending.ids, at: st.lastAt, via: pending.via })
+  }
+
+  /** Send every waiting knowledge.recalled now and stop the timers (the run is ending; called before the terminal status goes out). */
+  private flushRecalled(a: ActiveRun): void {
+    for (const [agentId, st] of a.knowledgeRecalled) this.sendRecalled(a, agentId, st, true)
+    a.knowledgeRecalled.clear()
+  }
+
+  /**
+   * RuntimeContext.knowledgeRecall / knowledgeContext / knowledgeBrief over the store. Read-only: no write counts toward
+   * KNOWLEDGE_RUN_WRITES_MAX and the graph file is never touched. Dedupe state lives on the ActiveRun only.
+   * `project` is the project as saved now (falls back to the run's own copy), for Project.knowledgeAutoContext.
+   */
+  private bindKnowledgeReads(
+    a: ActiveRun,
+    store: KnowledgeStoreApi,
+    projectId: string,
+    project: () => Project
+  ): Pick<RuntimeContext, 'knowledgeRecall' | 'knowledgeContext' | 'knowledgeBrief'> {
+    return {
+      knowledgeRecall: (input: KnowledgeRecallInput, caller: KnowledgeCaller): string => {
+        try {
+          // The row lands on the root when no agent is named, but dedupe needs a named agent: an unknown caller must not
+          // share the root's "already shown" state (ROOT_AGENT_ID named explicitly does).
+          const agentId = caller.agentId ?? ROOT_AGENT_ID
+          const query = String(input.query)
+          const graph = store.get(projectId)
+          const view = store.recallView?.(projectId)
+          const inferred = strongMentionLinks(view?.inferred ?? store.inferred?.(projectId) ?? [])
+          const shown = this.shownFor(a, caller.agentId)
+          const r = recallKnowledge(graph, query, { budget: input.budget, fresh: input.fresh === true, ...(shown ? { shown } : {}), inferred, ...(view ? { rankOn: view.rankOn } : {}) })
+          const ids = [...r.served.map((s) => s.id), ...r.alreadyShown]
+          if (shown) for (const s of r.served) if (s.complete) shown.set(s.id, s.signature)
+          this.noteServed(a, 'recalls', r.served.length, r.text.length)
+          this.knowledgeRow(a, agentId, `Recalled ${ids.length} item${ids.length === 1 ? '' : 's'} about ${datum(query, 80)}`)
+          this.noteRecalled(a, agentId, ids, 'recall')
+          // A very large graph is ranked on a revision up to 30 s old (store readRecallView): say so, in a few words.
+          const old = view && view.rankOn !== graph ? ' (Search index up to 30 s old.)' : ''
+          if (r.text) return `${r.text}${old ? `\n${old.trim()}` : ''}`
+          const q = fenceDatum(query, 120)
+          return (r.cut.length ? `${r.cut.length} entities match "${q}" but none fit the budget. Ask again with a larger budget.` : `Nothing in the knowledge graph matches "${q}".`) + old
+        } catch (e) {
+          log.warn(`Run ${a.summary.id}: knowledge recall failed: ${e instanceof Error ? e.message : String(e)}`)
+          return 'The knowledge graph could not be read right now.'
+        }
+      },
+      knowledgeContext: (text: string, opts: { agentId?: string; purpose: 'spawn' | 'message' }): string | null => {
+        try {
+          if (typeof text !== 'string' || !text) return null
+          if (!knowledgeAutoContextOn(project())) return null
+          const agentId = typeof opts?.agentId === 'string' && opts.agentId ? opts.agentId : undefined
+          const shown = this.shownFor(a, agentId)
+          const contextShown = this.contextShownFor(a, agentId)
+          const r = knowledgeContextBlock(store.get(projectId), text, { ...(shown ? { shown } : {}), ...(contextShown ? { contextShown } : {}) })
+          if (!r) return null
+          // "Already shown" for a recall needs everything printed; the next automatic block only needs this one to have gone out.
+          if (shown) for (const s of r.served) if (s.complete) shown.set(s.id, s.signature)
+          if (contextShown) for (const s of r.served) contextShown.set(s.id, s.signature)
+          this.noteServed(a, 'autoContexts', r.served.length, r.text.length)
+          const names = r.served.map((s) => knowledgeListItem(s.name, 60))
+          const n = names.length
+          const list = names.slice(0, KNOWLEDGE_ROW_NAMES).join(', ') + (n > KNOWLEDGE_ROW_NAMES ? `, and ${n - KNOWLEDGE_ROW_NAMES} more` : '')
+          const row = `Added ${n} known item${n === 1 ? '' : 's'}: ${list}`
+          this.knowledgeRow(a, agentId ?? ROOT_AGENT_ID, row.length > 200 ? `${dropLoneHighSurrogate(row.slice(0, 199))}…` : row)
+          this.noteRecalled(a, agentId ?? ROOT_AGENT_ID, r.served.map((s) => s.id), 'auto')
+          return r.text
+        } catch (e) {
+          log.warn(`Run ${a.summary.id}: knowledge context failed: ${e instanceof Error ? e.message : String(e)}`)
+          return null
+        }
+      },
+      knowledgeBrief: (): string | undefined => {
+        if (a.knowledgeBriefDone) return a.knowledgeBriefText
+        a.knowledgeBriefDone = true
+        try {
+          a.knowledgeBriefText = knowledgeBrief(store.get(projectId))
+        } catch (e) {
+          log.warn(`Run ${a.summary.id}: knowledge brief failed: ${e instanceof Error ? e.message : String(e)}`)
+        }
+        return a.knowledgeBriefText
+      }
+    }
   }
 
   /**
@@ -1111,9 +2724,24 @@ export class RunManager {
    * peer messages, persist the record and drop the run from the live set.
    */
   private teardown(active: ActiveRun): void {
+    // Reached from session.finished and, for an exec run that never started or never finished, from the finalizer.
+    if (active.tornDown) return
+    // An exec run the finalizer claimed stays live until its final status is written (it may still wait for the
+    // title), so listLive, continueRun and a quit's writeCut never see it gone while it still reads 'idle'.
+    if (active.finalizing && !active.finalizeDone) {
+      void active.finalizing.finally(() => this.teardown(active))
+      return
+    }
+    active.tornDown = true
     const runId = active.summary.id
+    // A widened chain's grant lives only until its own automatic resume (an armed timer); any other end drops it.
+    if (!this.resumeTimers.has(runId)) this.widenedRuns.delete(runId)
     // Every waiting card (permissions, proposals, questions, rules, merges, installs) is settled as cancelled.
-    cancelPending(active, runId, this.broadcast)
+    this.cancelCards(active)
+    // Waiting knowledge.recalled events are sent once and their timers stop (nothing is emitted after this).
+    this.flushRecalled(active)
+    // After the cards and the recalled events: their cancellation counts as activity and would re-arm the exec timers.
+    this.clearExecTimers(active)
     // The final usage goes out and is saved with the record, whatever the throttle still holds.
     // Always recompute after the timers close so waitingMs / idleMs / limitHoldMs are final (publish skips no-op changes).
     this.closeTimers(active)
@@ -1219,6 +2847,50 @@ export class RunManager {
     return this.runs.size
   }
 
+  /** What a live run is doing (runActivity.ts): working without the user, ending, or only waiting on the user. */
+  private activityStateOf(a: ActiveRun): RunActivityState {
+    let settlement: SessionSettlement | undefined
+    try {
+      settlement = a.session?.settlement?.()
+    } catch {
+      settlement = undefined
+    }
+    return runActivityState({
+      status: a.summary.status,
+      openCards: pendingCount(a),
+      held: a.held,
+      limitHold: !!a.limitHold,
+      agents: Object.values(a.record.agents),
+      peerMessagesPending: a.inbox.length > 0 || !!a.flushing,
+      ...(settlement ? { settlement } : {})
+    })
+  }
+
+  /**
+   * Live runs doing work without the user right now (review H3): the desktop asks before closing its last window
+   * only for these. Idle runs, runs with an open card and runs held by an interrupt or a usage limit do not count.
+   */
+  workingRunCount(): number {
+    let n = 0
+    for (const a of this.runs.values()) if (this.activityStateOf(a) === 'working') n++
+    return n
+  }
+
+  /**
+   * Activity ('liveRuns', cli-spec 3.2(4)): live runs that keep a host from going idle. Working and ending runs, and
+   * exec runs still in flight (their follower, stall watchdog and decision policy own their end). A run that only
+   * waits on its user does not: a background host's idle exit then ends it like a quit would (continuable).
+   */
+  busyRunCount(): number {
+    let n = 0
+    for (const a of this.runs.values()) {
+      const s = a.summary
+      if (!LIVE_STATUSES.has(s.status)) continue
+      if (keepsHostBusy(this.activityStateOf(a), !!s.overrides?.execMode && !s.execOutcome)) n++
+    }
+    return n
+  }
+
   /** runs:listLive: every live run (session open or opening) across all projects, every kind, oldest first. Copies. */
   liveRuns(): RunSummary[] {
     return [...this.runs.values()]
@@ -1234,6 +2906,14 @@ export class RunManager {
   pendingCards(runId: string): PendingCards {
     const active = this.runs.get(runId)
     return active ? listPending(active) : emptyPending()
+  }
+
+  /** runs:usageCsv: usageStats rows as CSV (USAGE_CSV_COLUMNS), limit USAGE_STATS_MAX_LIMIT (runUsage.ts buildUsageCsv). */
+  usageCsv(raw: UsageStatsQuery, names: { project?: string; client?: string } = {}): string {
+    return buildUsageCsv(this.usageStats({ ...(raw && typeof raw === 'object' ? raw : {}), limit: USAGE_STATS_MAX_LIMIT } as UsageStatsQuery), {
+      project: typeof names.project === 'string' ? names.project : '',
+      client: typeof names.client === 'string' ? names.client : ''
+    })
   }
 
   /** runs:usageStats: usage per run, per role and per trend bucket for one project (see UsageStats). */
@@ -1273,7 +2953,7 @@ export class RunManager {
    * that did not opt in neither reads nor reveals what other runs are doing beyond project, status and orchestrator.
    */
   private listRunsFor(self: ActiveRun): RunPeer[] {
-    if (isSetupLikeRun(self.summary.kind) || isVirtualProjectId(self.summary.projectId)) return []
+    if (isSetupLikeRun(self.summary.kind) || isVirtualProjectId(self.summary.projectId) || self.summary.team === 'single') return []
     const selfOn = this.messagingOn(self)
     return [...this.runs.values()]
       .filter((a) => a !== self && a.summary.kind === 'work' && !isVirtualProjectId(a.summary.projectId) && isOpenStatus(a.summary.status))
@@ -1295,16 +2975,20 @@ export class RunManager {
   /** message_run: see RuntimeContext.messageRun. Both runs record the exchange through their own emit. */
   private async messageRun(sender: ActiveRun, targetId: string, rawText: string): Promise<RunMessageOutcome> {
     const text = (typeof rawText === 'string' ? rawText : '').trim().slice(0, RUN_MESSAGE_MAX_CHARS)
-    if (isSetupLikeRun(sender.summary.kind) || isVirtualProjectId(sender.summary.projectId)) return { result: 'refused', refusal: 'not-work' }
+    if (isSetupLikeRun(sender.summary.kind) || isVirtualProjectId(sender.summary.projectId) || sender.summary.team === 'single') return { result: 'refused', refusal: 'not-work' }
     if (targetId === sender.summary.id) return { result: 'refused', refusal: 'self' }
     if (!text) return { result: 'refused', refusal: 'empty' }
     const target = this.runs.get(targetId)
     const stored = target ? undefined : this.store.get(targetId)
     if (!target && !stored) return { result: 'not-found' }
     const targetSummary = target?.summary ?? stored!
-    if (isSetupLikeRun(targetSummary.kind) || isVirtualProjectId(targetSummary.projectId)) return { result: 'refused', refusal: 'not-work' }
+    if (isSetupLikeRun(targetSummary.kind) || isVirtualProjectId(targetSummary.projectId) || targetSummary.team === 'single') return { result: 'refused', refusal: 'not-work' }
     // An ended run is just not live; checking its project's flag would name a project the caller cannot list.
     if (!target) return { result: 'not-live' }
+    // A headless exec run takes no peer messages unless its caller allowed them (RunOverrides.allowPeerMessages).
+    if (target.summary.overrides?.execMode && !target.summary.overrides.allowPeerMessages) {
+      return { result: 'refused', refusal: 'messaging-off', offProjects: [target.projectName] }
+    }
     // Opt-in per project (Project.runMessaging): both ends must allow it; one project only needs its own flag.
     const off: string[] = []
     if (!this.messagingOn(sender)) off.push(sender.projectName)
@@ -1406,9 +3090,14 @@ export class RunManager {
   /** Deliver held peer messages, oldest first, while nothing makes the run wait on its user. */
   private flushInbox(a: ActiveRun): Promise<void> {
     const drain = async (): Promise<void> => {
-      while (a.inbox.length && this.deliveryBlocked(a) === null && this.runs.get(a.summary.id) === a) {
-        const m = a.inbox.shift()!
-        m.delivered = await this.deliverPeerMessage(a, m)
+      this.bumpActivity(a)
+      try {
+        while (a.inbox.length && this.deliveryBlocked(a) === null && this.runs.get(a.summary.id) === a) {
+          const m = a.inbox.shift()!
+          m.delivered = await this.deliverPeerMessage(a, m)
+        }
+      } finally {
+        this.bumpActivity(a)
       }
     }
     // Chained: a flush started while another runs waits for it, so messages leave strictly oldest first.
@@ -1427,7 +3116,7 @@ export class RunManager {
 
   /** Project.runMessaging of a run's project, read from the current saved project when possible. */
   private messagingOn(a: ActiveRun): boolean {
-    if (isVirtualProjectId(a.summary.projectId)) return false
+    if (isVirtualProjectId(a.summary.projectId) || a.summary.team === 'single') return false
     const current = this.options.resolveProject?.(a.summary.projectId)
     return current ? runMessagingOn(current) : a.messagingAtStart
   }
@@ -1453,6 +3142,12 @@ export class RunManager {
     req: Omit<PermissionRequest, 'id' | 'runId'>
   ): Promise<PermissionDecision> {
     const request: PermissionRequest = { ...req, id: newId('perm'), runId: active.summary.id }
+    // A call that touches a reference folder offers Allow once and Deny only, whatever the adapter sent.
+    if (typeof request.referenceFolder === 'string' && request.referenceFolder) {
+      delete request.suggestions
+      delete request.ruleLabels
+    } else if ('referenceFolder' in request) delete request.referenceFolder
+    request.revision = 1
     logPermission(active.summary, request)
     return new Promise((resolve) => {
       active.pending.set(request.id, {
@@ -1463,6 +3158,7 @@ export class RunManager {
         }
       })
       this.broadcast({ type: 'permission.request', runId: active.summary.id, request })
+      this.cardCreated(active, 'permission', request.id, request)
     })
   }
 
@@ -1471,34 +3167,55 @@ export class RunManager {
     return summary.projectId === QUICK_PROJECT_ID || isTrustRestrictedRun(summary)
   }
 
-  decide(runId: string, requestId: string, decision: PermissionDecision): void {
+  decide(runId: string, requestId: string, decision: PermissionDecision, opts: DecisionOptions = {}): DecisionOutcome {
     const active = this.runs.get(runId)
     const pending = active?.pending.get(requestId)
-    if (!active || !pending) return
+    if (!active || !pending) return this.decisionMiss(requestId)
+    if (this.staleRevision(pending.request.revision, opts)) return { status: 'stale-revision', runId, requestId }
+    // pending -> resolving: out of the map before anything else runs, so a second answer finds a tombstone.
     active.pending.delete(requestId)
     // A quick run or build session works in a folder that is not a project: a 'project' grant would let the adapter
     // save rules into it. Narrow to the session here so every adapter is covered.
-    const narrowed: PermissionDecision =
+    let narrowed: PermissionDecision =
       decision?.behavior === 'allow' && decision.scope === 'project' && this.isRestricted(active.summary) ? { ...decision, scope: 'session' } : decision
+    // A call that touches a reference folder is allowed once at most: never a session or project grant.
+    if (pending.request.referenceFolder && narrowed?.behavior === 'allow' && (narrowed.scope === 'session' || narrowed.scope === 'project')) {
+      log.info(`Narrowed a ${narrowed.scope} grant to once: the call touches a reference folder`)
+      narrowed = { ...narrowed, scope: 'once' }
+    }
+    const effective = narrowed?.behavior === 'allow' ? 'allow' : 'deny'
+    this.cardResolved(active, 'permission', requestId, 'applied', effective, opts.decidedBy)
     pending.resolve(narrowed)
-    this.broadcast({ type: 'permission.resolved', runId, requestId })
+    const savedToProject = narrowed?.behavior === 'allow' && narrowed.scope === 'project'
+    this.broadcast({ type: 'permission.resolved', runId, requestId, ...(savedToProject ? { savedToProject: true as const } : {}), ...(opts.decidedBy ? { decidedBy: opts.decidedBy } : {}) })
     this.cardSettled(active)
+    return applied(runId, requestId, effective, opts)
   }
 
   private requestProposal(
     active: ActiveRun,
-    req: Omit<Proposal, 'id' | 'runId' | 'createdAt'>,
+    req: Omit<Proposal, 'id' | 'runId' | 'createdAt' | 'effect'>,
     onApplied?: (saved: Project) => void
-  ): Promise<ProposalDecision> {
-    const proposal = { ...req, id: newId('prop'), runId: active.summary.id, createdAt: Date.now() } as Proposal
+  ): Promise<ProposalOutcome> {
+    const effect = proposalEffect(req.kind, active.summary, active.adapter)
+    const proposal = { ...req, id: newId('prop'), runId: active.summary.id, createdAt: Date.now(), effect, revision: 1 } as Proposal
     return new Promise((resolve) => {
-      active.pendingProposals.set(proposal.id, { proposal, resolve: (decision) => {
-        if (decision.behavior === 'approve') {
+      active.pendingProposals.set(proposal.id, { proposal, resolve: (raw) => {
+        // Secrets stop here: the tool and the proposal.resolved event only ever get the outcome.
+        const decision = cleanProposalDecision(raw)
+        if (decision.behavior !== 'approve') {
+          const outcome = proposalOutcome(decision)
+          resolve(outcome)
+          return outcome
+        }
+        let waitingForSecrets: string[] | undefined
+        {
           try {
             if (active.summary.projectId === HARNESS_PROJECT_ID) {
               // The harness project is virtual: its proposals change the MCP library only, never a stored project.
               if (proposal.kind !== 'mcpServers') throw new Error('Only MCP library proposals can be applied here.')
               this.setup.applyLibraryProposal(proposal.payload as McpServersProposalPayload, active.summary.buildWorkspace ? { buildWorkspace: active.summary.buildWorkspace } : {})
+              waitingForSecrets = this.storeProposalSecrets(null, proposal, decision.secrets)
             } else if (active.summary.projectId === SKILLS_PROJECT_ID) {
               // Library-scope Skill assistant: skill proposals change the skill library only.
               if (proposal.kind !== 'skills') throw new Error('Only skill proposals can be applied here.')
@@ -1508,7 +3225,9 @@ export class RunManager {
             } else if (active.summary.kind === 'skill-assist' && proposal.kind !== 'skills') {
               throw new Error('Only skill proposals can be applied in a Skill assistant session.')
             } else {
-              const updated = this.setup.applyProposal(active.summary.projectId, proposal)
+              const updated = this.setup.applyProposal(active.summary.projectId, proposal, { projectOnly: active.summary.kind === 'work' })
+              // Before onApplied: a stored secret lets the server start (enabledServers reads the SecretStore live).
+              waitingForSecrets = this.storeProposalSecrets(active.summary.projectId, proposal, decision.secrets)
               onApplied?.(updated)
               this.broadcast({ type: 'project.updated', runId: active.summary.id, project: updated })
             }
@@ -1516,72 +3235,104 @@ export class RunManager {
             const message = (e as Error).message
             logRunEvent(active.summary, { type: 'log', runId: active.summary.id, level: 'error', message: `Could not apply proposal: ${message}` })
             this.broadcast({ type: 'log', runId: active.summary.id, level: 'error', message: `Could not apply proposal: ${message}` })
-            resolve({ behavior: 'revise', feedback: `The harness could not apply this proposal: ${message}` })
-            return
+            const failed: ProposalOutcome = { behavior: 'revise', feedback: `The harness could not apply this proposal: ${message}` }
+            resolve(failed)
+            return failed
           }
         }
-        resolve(decision)
+        const outcome: ProposalOutcome = { behavior: 'approve', ...(waitingForSecrets ? { waitingForSecrets } : {}) }
+        resolve(outcome)
+        return outcome
       } })
       this.broadcast({ type: 'proposal.request', runId: active.summary.id, proposal })
+      this.cardCreated(active, 'proposal', proposal.id, proposal)
     })
   }
 
-  decideProposal(runId: string, proposalId: string, decision: ProposalDecision): void {
+  /** Store an approved MCP proposal's secret values; the names of its servers still waiting for one. Never throws. */
+  private storeProposalSecrets(projectId: string | null, proposal: Proposal, values: Record<string, string> | undefined): string[] | undefined {
+    if (proposal.kind !== 'mcpServers' || !this.options.mcp?.storeProposalSecrets) return undefined
+    try {
+      return this.options.mcp.storeProposalSecrets(projectId, proposal.payload, values)
+    } catch (e) {
+      log.warn(`Proposal secrets could not be stored: ${(e as Error).message}`)
+      return undefined
+    }
+  }
+
+  decideProposal(runId: string, proposalId: string, decision: ProposalDecision, opts: DecisionOptions = {}): DecisionOutcome {
     const active = this.runs.get(runId)
     const pending = active?.pendingProposals.get(proposalId)
-    if (!active || !pending) return
+    if (!active || !pending) return this.decisionMiss(proposalId)
+    if (this.staleRevision(pending.proposal.revision, opts)) return { status: 'stale-revision', runId, requestId: proposalId }
     active.pendingProposals.delete(proposalId)
-    pending.resolve(decision)
-    this.broadcast({ type: 'proposal.resolved', runId, proposalId, decision })
+    // The broadcast carries the secret-free outcome (with waitingForSecrets), never decision.secrets.
+    const outcome = pending.resolve(decision) ?? proposalOutcome(cleanProposalDecision(decision))
+    // An approval the harness could not apply came back as a revise: say so (applyError).
+    const applyError = cleanProposalDecision(decision).behavior === 'approve' && outcome.behavior === 'revise' ? outcome.feedback : undefined
+    this.cardResolved(active, 'proposal', proposalId, 'applied', outcome.behavior, opts.decidedBy)
+    this.broadcast({ type: 'proposal.resolved', runId, proposalId, decision: outcome, ...(opts.decidedBy ? { decidedBy: opts.decidedBy } : {}) })
     this.cardSettled(active)
+    return { ...applied(runId, proposalId, outcome.behavior, opts), ...(applyError ? { applyError } : {}) }
   }
 
   private requestQuestion(
     active: ActiveRun,
     req: Omit<UserQuestion, 'id' | 'runId' | 'createdAt'>
   ): Promise<QuestionAnswer> {
-    const question: UserQuestion = { ...req, id: newId('q'), runId: active.summary.id, createdAt: Date.now() }
+    const question: UserQuestion = { ...req, id: newId('q'), runId: active.summary.id, createdAt: Date.now(), revision: 1 }
     return new Promise((resolve) => {
       active.pendingQuestions.set(question.id, { question, resolve })
       this.broadcast({ type: 'question.request', runId: active.summary.id, question })
+      this.cardCreated(active, 'question', question.id, question)
     })
   }
 
-  answerQuestion(runId: string, questionId: string, answer: QuestionAnswer): void {
+  answerQuestion(runId: string, questionId: string, answer: QuestionAnswer, opts: DecisionOptions = {}): DecisionOutcome {
     const active = this.runs.get(runId)
     const pending = active?.pendingQuestions.get(questionId)
-    if (!active || !pending) return
+    if (!active || !pending) return this.decisionMiss(questionId)
+    if (this.staleRevision(pending.question.revision, opts)) return { status: 'stale-revision', runId, requestId: questionId }
     active.pendingQuestions.delete(questionId)
     // Only labels that were offered count; a single-choice question keeps the first.
     const labels = new Set(pending.question.options.map((o) => o.label))
     let selected = (Array.isArray(answer?.selected) ? answer.selected : []).filter((l) => typeof l === 'string' && labels.has(l))
     if (!pending.question.allowMultiple) selected = selected.slice(0, 1)
-    const text = pending.question.allowFreeText && typeof answer?.text === 'string' && answer.text.trim() ? answer.text.trim() : undefined
+    // The headless policy's conservative answer is text only (decisionPolicy.ts conservativeAnswer), whatever the card allows.
+    const textAllowed = pending.question.allowFreeText || opts.decidedBy?.surface === 'policy'
+    const text = textAllowed && typeof answer?.text === 'string' && answer.text.trim() ? answer.text.trim() : undefined
     const clean: QuestionAnswer = text ? { selected, text } : { selected }
+    this.cardResolved(active, 'question', questionId, 'applied', 'answer', opts.decidedBy)
     pending.resolve(clean)
-    this.broadcast({ type: 'question.resolved', runId, questionId, answer: clean })
+    this.broadcast({ type: 'question.resolved', runId, questionId, answer: clean, ...(opts.decidedBy ? { decidedBy: opts.decidedBy } : {}) })
     this.cardSettled(active)
+    return applied(runId, questionId, 'answer', opts)
   }
 
   private requestMergeReview(
     active: ActiveRun,
     req: Omit<MergeReview, 'id' | 'runId' | 'createdAt'>
   ): Promise<MergeDecision> {
-    const review: MergeReview = { ...req, id: newId('merge'), runId: active.summary.id, createdAt: Date.now() }
+    const review: MergeReview = { ...req, id: newId('merge'), runId: active.summary.id, createdAt: Date.now(), revision: 1 }
     return new Promise((resolve) => {
       active.pendingMerges.set(review.id, { review, resolve })
       this.broadcast({ type: 'merge.request', runId: active.summary.id, review })
+      this.cardCreated(active, 'merge', review.id, review)
     })
   }
 
-  decideMerge(runId: string, reviewId: string, decision: MergeDecision): void {
+  decideMerge(runId: string, reviewId: string, decision: MergeDecision, opts: DecisionOptions = {}): DecisionOutcome {
     const active = this.runs.get(runId)
     const pending = active?.pendingMerges.get(reviewId)
-    if (!active || !pending) return
+    if (!active || !pending) return this.decisionMiss(reviewId)
+    if (this.staleRevision(pending.review.revision, opts)) return { status: 'stale-revision', runId, requestId: reviewId }
     active.pendingMerges.delete(reviewId)
+    const effective = decision?.behavior === 'merge' || decision?.behavior === 'discard' ? decision.behavior : 'hold'
+    this.cardResolved(active, 'merge', reviewId, 'applied', effective, opts.decidedBy)
     pending.resolve(decision)
-    this.broadcast({ type: 'merge.resolved', runId, reviewId, decision })
+    this.broadcast({ type: 'merge.resolved', runId, reviewId, decision, ...(opts.decidedBy ? { decidedBy: opts.decidedBy } : {}) })
     this.cardSettled(active)
+    return applied(runId, reviewId, effective, opts)
   }
 
   // ---------- permission rule requests ----------
@@ -1594,27 +3345,32 @@ export class RunManager {
     const request: PermissionRuleRequest = {
       ...req,
       rules,
-      flagged: rules.filter((r) => isUnsafeAllowRule(r)),
+      // Destructive or unbounded rules, and shell prefixes that grant far more than one command (reviewer-4 M-2).
+      flagged: rules.filter((r) => isUnsafeAllowRule(r) || tooBroadRuleRefusal(r) !== null),
       id: newId('rule'),
       runId: active.summary.id,
-      createdAt: Date.now()
+      createdAt: Date.now(),
+      revision: 1
     }
     if (!rules.length) return Promise.resolve({ behavior: 'deny', message: 'no valid rules' })
     return new Promise((resolve) => {
       active.pendingRules.set(request.id, { request, resolve })
       this.broadcast({ type: 'rules.request', runId: active.summary.id, request })
+      this.cardCreated(active, 'rules', request.id, request)
     })
   }
 
   /**
    * Answer a request_permission_rules card. A grant is in force before the agent's tool call returns: run
    * scope adds the rules to the run (allowedRules), project scope also saves them to the settings file. The user
-   * chose the rules knowingly, so flagged (destructive) rules are saved too.
+   * chose the rules knowingly, so flagged destructive rules are saved too; blanket rules and too-broad shell prefixes
+   * (tooBroadRuleRefusal) stay run grants.
    */
-  decideRules(runId: string, requestId: string, decision: PermissionRuleDecision): void {
+  decideRules(runId: string, requestId: string, decision: PermissionRuleDecision, opts: DecisionOptions = {}): DecisionOutcome {
     const active = this.runs.get(runId)
     const pending = active?.pendingRules.get(requestId)
-    if (!active || !pending) return
+    if (!active || !pending) return this.decisionMiss(requestId)
+    if (this.staleRevision(pending.request.revision, opts)) return { status: 'stale-revision', runId, requestId }
     active.pendingRules.delete(requestId)
     const { rules } = pending.request
     let clean: PermissionRuleDecision
@@ -1624,8 +3380,17 @@ export class RunManager {
       clean = { behavior: 'grant', scope }
       for (const r of rules) if (!active.runRules.includes(r)) active.runRules.push(r)
       if (scope === 'project') {
+        // A blanket rule (bare Bash / Edit / Write ...) stays a run grant; it is never written to the file.
+        // A too-broad shell prefix (tooBroadRuleRefusal, the wording permissions:add uses) also stays on the run (M-2).
+        const savable = rules.filter((r) => !isBlanketAllowRule(r) && tooBroadRuleRefusal(r) === null)
+        const blanket = rules.filter(isBlanketAllowRule)
+        if (blanket.length) this.broadcast({ type: 'log', runId, level: 'warn', message: `Not saved for the project (too broad): ${blanket.join(', ')}. It applies to this run only.` })
+        for (const r of rules) {
+          const refusal = isBlanketAllowRule(r) ? null : tooBroadRuleRefusal(r)
+          if (refusal) this.broadcast({ type: 'log', runId, level: 'warn', message: `Not saved for the project: ${refusal} It applies to this run only.` })
+        }
         try {
-          addRules(active.projectPath, rules)
+          if (savable.length) addRules(active.rulesTarget ?? active.projectPath, savable)
         } catch (e) {
           clean = { behavior: 'grant', scope: 'run' }
           this.broadcast({ type: 'log', runId, level: 'warn', message: `Could not save the rules to the project (${(e as Error).message}); they apply to this run only.` })
@@ -1642,9 +3407,11 @@ export class RunManager {
       clean = message ? { behavior: 'deny', message } : { behavior: 'deny' }
       this.broadcast({ type: 'log', runId, level: 'info', message: `Denied the permission request for ${rules.join(', ')}.` })
     }
+    this.cardResolved(active, 'rules', requestId, 'applied', clean.behavior, opts.decidedBy)
     pending.resolve(clean)
-    this.broadcast({ type: 'rules.resolved', runId, requestId, decision: clean })
+    this.broadcast({ type: 'rules.resolved', runId, requestId, decision: clean, ...(opts.decidedBy ? { decidedBy: opts.decidedBy } : {}) })
     this.cardSettled(active)
+    return applied(runId, requestId, clean.behavior, opts)
   }
 
   // ---------- MCP install requests ----------
@@ -1655,11 +3422,11 @@ export class RunManager {
     getProject: () => Project,
     setProject: (saved: Project) => void
   ): Promise<McpInstallDecision> {
-    const request: McpInstallRequest = { ...req, id: newId('mcpi'), runId: active.summary.id, createdAt: Date.now() }
+    const request: McpInstallRequest = { ...req, id: newId('mcpi'), runId: active.summary.id, createdAt: Date.now(), revision: 1 }
     return new Promise((resolve) => {
       active.pendingInstalls.set(request.id, {
         request,
-        resolve: (raw, cancelled) => {
+        resolve: (raw, cancelled, decidedBy) => {
           const decision = this.settleInstall(active, request, raw, getProject(), setProject)
           // Secrets stop here: the agent and the renderer only ever see the outcome.
           const outcome: McpInstallOutcome = {
@@ -1668,11 +3435,20 @@ export class RunManager {
             ...(decision.note ? { note: decision.note } : {}),
             ...(decision.spec ? { spec: decision.spec } : {})
           }
-          this.broadcast({ type: 'mcpInstall.resolved', runId: active.summary.id, requestId: request.id, outcome, ...(cancelled ? { cancelled: true as const } : {}) })
+          this.broadcast({
+            type: 'mcpInstall.resolved',
+            runId: active.summary.id,
+            requestId: request.id,
+            outcome,
+            ...(cancelled ? { cancelled: true as const } : {}),
+            ...(decidedBy ? { decidedBy } : {})
+          })
           resolve(outcome)
+          return outcome
         }
       })
       this.broadcast({ type: 'mcpInstall.request', runId: active.summary.id, request })
+      this.cardCreated(active, 'mcpInstall', request.id, request)
     })
   }
 
@@ -1714,16 +3490,45 @@ export class RunManager {
   }
 
   /** Answer a request_mcp_install card (mcp:answerInstall). Unknown or already answered requests are ignored. */
-  answerMcpInstall(runId: string, requestId: string, decision: McpInstallDecision): void {
+  answerMcpInstall(runId: string, requestId: string, decision: McpInstallDecision, opts: DecisionOptions = {}): DecisionOutcome {
     const active = this.runs.get(runId)
     const pending = active?.pendingInstalls.get(requestId)
-    if (!active || !pending) return
+    if (!active || !pending) return this.decisionMiss(requestId)
+    if (this.staleRevision(pending.request.revision, opts)) return { status: 'stale-revision', runId, requestId }
     active.pendingInstalls.delete(requestId)
-    pending.resolve(decision)
+    // The install's own resolve validates and applies it; the outcome says whether it was really installed.
+    const outcome = pending.resolve(decision, false, opts.decidedBy)
+    const effective = (outcome ? outcome.approved : !!decision?.approved) ? 'approve' : 'deny'
+    this.cardResolved(active, 'mcpInstall', requestId, 'applied', effective, opts.decidedBy)
     this.cardSettled(active)
+    return applied(runId, requestId, effective, opts)
+  }
+
+  /**
+   * runs:findDecision: which live run holds the pending card `requestId` (its kind and revision), or how a recently
+   * resolved one ended (tombstones, at most DECISION_TOMBSTONES_MAX), else 'not-found'.
+   */
+  findDecision(requestId: string): DecisionLookup {
+    const indexed = this.decisions.lookup(requestId)
+    if (indexed.status !== 'not-found') return indexed
+    for (const active of this.runs.values()) {
+      const hit = findPendingCard(active, requestId)
+      if (hit) {
+        return {
+          status: 'pending',
+          requestId,
+          runId: active.summary.id,
+          projectId: active.summary.projectId,
+          kind: hit.kind,
+          revision: hit.revision ?? 1
+        }
+      }
+    }
+    return { status: 'not-found', requestId }
   }
 
   async send(runId: string, text: string, rawImages?: ImageAttachment[]): Promise<void> {
+    this.refuseWhileQuitting()
     const active = this.runs.get(runId)
     if (!active?.session) throw new Error('Run is not active')
     const images = sanitizeImages(rawImages, (m) => log.warn(m))
@@ -1749,20 +3554,169 @@ export class RunManager {
 
   async stop(runId: string): Promise<void> {
     const active = this.runs.get(runId)
-    if (!active?.session) return
+    if (!active) return this.stopPaused(runId)
+    const st = active.summary.status
+    if (st === 'finished' || st === 'error') return
+    // A headless exec run ends through its finalizer (outcome 'interrupted', endedBy 'user'); an outcome already
+    // claimed (budget, policy, completion) stands.
+    if (active.summary.overrides?.execMode) return this.finalizeExecRun(runId, 'interrupted', { endedBy: 'user' })
     active.userStopped = true
+    active.endedBy ??= 'user'
+    // Saved with the 'stopping' status, so a quit or crash before the session ends still reads as the user's end.
+    if (active.endedBy === 'user') active.summary.endedBy = 'user'
     active.titleAbort?.abort()
     active.emit({ type: 'run.status', runId, status: 'stopping' })
-    await active.session.stop()
+    this.flush(active)
+    // A session still opening is stopped by start() as soon as adapter.start resolves (userStopped is set).
+    await this.stopSession(active)
   }
 
-  async stopAll(): Promise<void> {
+  /**
+   * End a paused run that has no live session (it left `runs` when its session finished; only its resume timer may be
+   * left): the auto-resume is cancelled and the run is finished as ended by the user. An exec run still waiting for its
+   * reset (no execOutcome yet) is finalized as 'interrupted' (cli-spec 6.2(3)), so its follower gets run.finalized.
+   */
+  private stopPaused(runId: string): void {
+    const s = this.store.get(runId)
+    if (!s || s.status !== 'paused') return
+    this.clearResume(runId)
+    const exec = !!s.overrides?.execMode && !s.execOutcome
+    const done = this.patchSummary(runId, { status: 'finished', autoResume: false, endedBy: 'user', ...(exec ? { execOutcome: 'interrupted' as const } : {}) })
+    if (!done) return
+    this.broadcast(withEndFacts({ type: 'run.status', runId, status: 'finished', pausedUntil: done.pausedUntil, pauseReason: done.pauseReason, autoResume: false }, done))
+    if (exec) this.broadcastFinalized(done, 'interrupted')
+  }
+
+  /**
+   * A paused exec run of a waitForReset chain that will no longer resume by itself (no timer: an adapter's autoResume
+   * false, a resume that failed, Cancel auto-resume) is finalized as 'rate-limited', so its follower never waits
+   * forever. A live run goes through the finalizer; a stored one is patched and run.finalized broadcast. Idempotent.
+   */
+  private finalizeStrandedExec(runId: string): void {
+    if (this.resumeTimers.has(runId)) return
+    const a = this.runs.get(runId)
+    if (a) {
+      const o = a.summary.overrides
+      if (o?.execMode && o.waitForReset && a.summary.status === 'paused') void this.finalizeExecRun(runId, 'rate-limited')
+      return
+    }
+    const s = this.store.get(runId)
+    if (!s?.overrides?.execMode || !s.overrides.waitForReset || s.execOutcome || s.status !== 'paused') return
+    const done = this.patchSummary(runId, { execOutcome: 'rate-limited', autoResume: false })
+    if (done) this.broadcastFinalized(done, 'rate-limited')
+  }
+
+  private broadcastFinalized(s: RunSummary, outcome: ExecOutcome): void {
+    this.broadcast({ type: 'run.finalized', runId: s.id, ...(s.overrides?.execChainId ? { execChainId: s.overrides.execChainId } : {}), outcome, summary: { ...s } })
+  }
+
+  /** The run's session.stop(), one call at a time (End session, quit and a late start share it; a failed stop can be retried). */
+  private stopSession(r: ActiveRun): Promise<void> | undefined {
+    if (!r.session) return undefined
+    if (r.stopCall) return r.stopCall
+    const call = r.session.stop()
+    r.stopCall = call
+    call.catch(() => {
+      if (r.stopCall === call) r.stopCall = undefined
+    })
+    return call
+  }
+
+  private refuseWhileQuitting(): void {
+    if (this.quitting) throw new Error('OrgAI is quitting; runs cannot start, continue or take messages now.')
+  }
+
+  /**
+   * In memory: the run is being cut by `by` (the first cut wins). endedWhile is read before anything stops. A run
+   * that already ended (finished or error, teardown pending) is left alone.
+   */
+  private markCut(r: ActiveRun, by: 'user' | 'app'): void {
+    const st = r.summary.status
+    if (st === 'finished' || st === 'error') return
+    if (by === 'app' && !r.endedBy) {
+      const w = quitEndedWhile(st, hasOpenCard(r))
+      if (w) r.endedWhile = w
+    }
+    r.userStopped = true
+    r.endedBy ??= by
+  }
+
+  /**
+   * Write a run's summary and record now (synchronous). On a quit, a cut run that has not reported its end is written
+   * finished; a paused run keeps its pause (the store's boot normalization ends it next start). A cut run's endedBy
+   * goes on the summary, with endedWithApp and endedWhile only when it is 'app'. A run that ended on its own keeps
+   * no endedBy.
+   */
+  private writeCut(r: ActiveRun, quit: boolean): void {
+    const s = r.summary
+    const forced = quit && !!r.endedBy && s.status !== 'finished' && s.status !== 'error' && s.status !== 'paused'
+    if (forced) {
+      s.status = 'finished'
+      s.endedAt ??= Date.now()
+      if (s.autoResume) delete s.autoResume
+    }
+    if ((s.status === 'finished' || s.status === 'error') && r.endedBy) {
+      s.endedBy ??= r.endedBy
+      if (s.endedBy === 'app') {
+        s.endedWithApp = true
+        if (r.endedWhile) s.endedWhile = r.endedWhile
+      }
+    }
+    // A headless exec run cut before its finalizer finished (best effort): its claimed outcome, else 'interrupted'.
+    const execCut = !!s.overrides?.execMode && !r.finalizedSent && (forced || s.status === 'finished' || s.status === 'error' || s.status === 'paused')
+    if (execCut) s.execOutcome ??= r.finalOutcome ?? 'interrupted'
+    try {
+      this.store.upsert(s)
+    } catch (e) {
+      console.error('Failed to persist run summary:', e)
+    }
+    this.flush(r)
+    // The session never reported its end: tell the renderer it is finished, and who cut it.
+    if (forced) this.broadcast(withEndFacts({ type: 'run.status', runId: s.id, status: 'finished' }, s))
+    if (execCut && s.execOutcome) {
+      r.finalizedSent = true
+      this.broadcast({ type: 'run.finalized', runId: s.id, ...(s.overrides?.execChainId ? { execChainId: s.overrides.execChainId } : {}), outcome: s.execOutcome, summary: { ...s } })
+    }
+  }
+
+  /**
+   * The app is quitting and will not wait any longer (index.ts quitGate: the deadline passed, stopAll failed, or a
+   * forced second quit). Synchronously refuses new work, cancels resumes and titles, marks every live run cut by the
+   * app (an End session already under way keeps 'user') and writes each summary and record. Safe to call again.
+   */
+  markQuit(): void {
+    this.quitting = true
     for (const runId of [...this.resumeTimers.keys()]) this.clearResume(runId)
-    for (const r of this.runs.values()) r.userStopped = true
+    for (const a of this.titleAborts.keys()) a.abort()
+    for (const r of this.runs.values()) this.markCut(r, 'app')
+    for (const r of this.runs.values()) this.writeCut(r, true)
+    // Ask every open session to stop before the process goes (nothing waits for it).
+    for (const r of this.runs.values()) {
+      this.stopSession(r)?.catch((err: unknown) => log.warn(`Run ${r.summary.id}: stop on quit failed: ${(err as Error)?.message ?? err}`))
+    }
+  }
+
+  /**
+   * Stop every live run. `reason: 'quit'` (the app is quitting) records the cut runs as `endedBy: 'app'` with
+   * `endedWithApp: true`, not as user-stopped; without it they read as ended by the user. Either way no run pauses
+   * or auto-resumes, pending titles are aborted, and every summary and record is on disk before this resolves.
+   */
+  async stopAll(opts: { reason?: 'quit' } = {}): Promise<void> {
+    const quit = opts.reason === 'quit'
+    // From here on start, continueRun, send and resumeNow refuse ("OrgAI is quitting").
+    if (quit) this.quitting = true
+    for (const runId of [...this.resumeTimers.keys()]) this.clearResume(runId)
+    for (const r of this.runs.values()) this.markCut(r, quit ? 'app' : 'user')
     // Titles still pending for runs that already ended are cancelled too (app quit).
     for (const a of this.titleAborts.keys()) a.abort()
-    await Promise.allSettled([...this.runs.values()].map((r) => r.session?.stop()))
-    for (const r of this.runs.values()) this.flush(r)
+    // Open sessions are stopped at once, while sessions still opening are waited for (start() stops each one as soon
+    // as adapter.start resolves, userStopped being set), so one hung start does not hold back the others' stops.
+    // The second pass picks up sessions that opened meanwhile; stopSession shares one call per run.
+    await Promise.allSettled([...[...this.runs.values()].map((r) => this.stopSession(r)), ...this.startsInFlight])
+    await Promise.allSettled([...this.runs.values()].map((r) => this.stopSession(r)))
+    // A session that never reported its end (its stop failed) is written as ended here, so the index does not depend
+    // on the store's boot normalization.
+    for (const r of this.runs.values()) this.writeCut(r, quit)
   }
 
   list(projectId: string): RunSummary[] {
@@ -1780,7 +3734,8 @@ export class RunManager {
    * its memory. Same kind as the old run: setup runs keep the Architect (with its hidden profile
    * context), work runs use the project's roles. `project` must be the old run's project.
    */
-  async continueRun(project: Project, fromRunId: string, text: string, rawImages?: ImageAttachment[]): Promise<RunSummary> {
+  async continueRun(project: Project, fromRunId: string, text: string, rawImages?: ImageAttachment[], opts: ContinueRunOptions = {}): Promise<RunSummary> {
+    this.refuseWhileQuitting()
     const from = this.summary(fromRunId)
     if (!from) throw new Error('Run not found')
     if (from.projectId !== project.id) throw new Error('Run belongs to another project')
@@ -1808,18 +3763,28 @@ export class RunManager {
       .reduce((best, r) => (r.startedAt > best.startedAt || (r.startedAt === best.startedAt && r.resumedFrom === best.id) ? r : best), from)
     const sessionId = target.sessionId ?? from.sessionId
 
-    // A paused run is handed over to its continuation; it stays in history as finished.
+    const overrides = continuedOverrides(target.overrides ?? from.overrides, opts)
+    // A paused run is handed over to its continuation; it stays in history as finished. An exec run still waiting for
+    // its reset (no execOutcome) whose continuation is not an exec run (the Desktop composer, `orgai resume` without
+    // --exec) is finalized as 'interrupted' by the user, so its `orgai exec` follower ends instead of adopting the
+    // desktop continuation (which never sends run.finalized) and waiting forever.
+    const handedToExec = !!overrides?.execMode
     for (const r of target.id === from.id ? [from] : [target, from]) {
       if (r.status !== 'paused') continue
       this.clearResume(r.id)
-      const done = this.patchSummary(r.id, { status: 'finished', autoResume: false })
-      if (done) this.broadcast({ type: 'run.status', runId: done.id, status: 'finished', pausedUntil: done.pausedUntil, pauseReason: done.pauseReason, autoResume: false })
+      const strand = !!r.overrides?.execMode && !r.execOutcome && !handedToExec
+      const done = this.patchSummary(r.id, { status: 'finished', autoResume: false, ...(strand ? { execOutcome: 'interrupted' as const, endedBy: 'user' as const } : {}) })
+      if (!done) continue
+      this.broadcast(withEndFacts({ type: 'run.status', runId: done.id, status: 'finished', pausedUntil: done.pausedUntil, pauseReason: done.pauseReason, autoResume: false }, done))
+      if (strand) this.broadcastFinalized(done, 'interrupted')
     }
     return this.start({
       project,
       prompt,
       images,
       kind: target.kind,
+      ...(overrides ? { overrides } : {}),
+      ...(opts.allowWidening ? { allowWidening: true } : {}),
       // The harness's own resume message is not a new task: keep the title of the run it continues.
       // A follow-up is titled with the task it continues as context, so it stays recognisable.
       ...(prompt === RESUME_TEXT.trim() && target.title
@@ -1831,6 +3796,7 @@ export class RunManager {
       // A Chat run keeps its folder and settings; an MCP build session reopens in the same workspace.
       ...(target.quick ? { quick: target.quick } : {}),
       ...(target.buildWorkspace ? { buildWorkspace: target.buildWorkspace } : {}),
+      ...(target.team === 'single' ? { team: target.team } : {}),
       resumeSessionId: sessionId,
       resumedFrom: target.id,
       // totalCostUsd may be a computed cost; only the provider's own total is subtracted from the next provider total.
@@ -1853,25 +3819,51 @@ export class RunManager {
   // ---------- pause and auto-resume ----------
 
   private scheduleResume(runId: string, at: number): void {
-    this.clearResume(runId)
+    this.clearResumeTimer(runId)
+    // No auto-resume is armed while the app quits (resumeNow would refuse); the boot normalization ends the pause.
+    if (this.quitting) return
     const delay = Math.max(0, at - Date.now())
     const timer = setTimeout(() => {
-      this.resumeTimers.delete(runId)
-      this.resumeNow(runId).catch((err) => {
-        const message = `Could not resume the paused run: ${(err as Error).message}`
-        this.broadcast({ type: 'log', runId, level: 'error', message })
-        const s = this.patchSummary(runId, { autoResume: false })
-        if (s) this.broadcast({ type: 'run.status', runId, status: s.status, pausedUntil: s.pausedUntil, pauseReason: s.pauseReason, autoResume: false })
-      })
+      // Activity lease (cli-spec 3.2(4)): taken BEFORE the timer entry goes, so a host never sees neither a timer, an
+      // in-flight resume nor a live run. The timer path calls resumeUnleased (the lease is already held here) and
+      // drops the lease once, after the error handling below, when the resume settles.
+      this.withResumeLease(() => {
+        this.resumeTimers.delete(runId)
+        return this.resumeUnleased(runId, { auto: true }).then(
+          () => undefined,
+          (err: unknown) => {
+            const message = `Could not resume the paused run: ${(err as Error).message}`
+            this.broadcast({ type: 'log', runId, level: 'error', message })
+            const s = this.patchSummary(runId, { autoResume: false })
+            if (s) this.broadcast({ type: 'run.status', runId, status: s.status, pausedUntil: s.pausedUntil, pauseReason: s.pauseReason, autoResume: false })
+            this.finalizeStrandedExec(runId)
+          }
+        )
+      }).catch((err: unknown) => log.warn(`Run ${runId}: auto-resume failed: ${(err as Error)?.message ?? err}`))
     }, delay)
     this.resumeTimers.set(runId, timer)
   }
 
-  private clearResume(runId: string): void {
+  private clearResumeTimer(runId: string): void {
     const t = this.resumeTimers.get(runId)
     if (t) clearTimeout(t)
     this.resumeTimers.delete(runId)
   }
+
+  /** Cancel a run's auto-resume: its timer and the widening grant that only that resume may use. */
+  private clearResume(runId: string): void {
+    this.clearResumeTimer(runId)
+    this.widenedRuns.delete(runId)
+  }
+
+  /** Activity (pausedAutoResumes): auto-resume timers still armed. */
+  activeResumeTimerCount(): number { return this.resumeTimers.size }
+
+  /** Activity (pausedAutoResumes): auto-resumes whose timer fired and whose successor run is not registered yet. */
+  inFlightResumeCount(): number { return this.resumesInFlight }
+
+  /** Activity (backgroundTasks): pending run-title queries, live run or not. */
+  titleTaskCount(): number { return this.titleAborts.size }
 
   /** Is an auto-resume timer pending for this run? */
   hasAutoResume(runId: string): boolean {
@@ -1893,9 +3885,45 @@ export class RunManager {
     return next
   }
 
-  /** Continue a paused run now, with the harness's resume message. */
-  async resumeNow(runId: string): Promise<RunSummary> {
+  /**
+   * Hold one in-flight resume lease (inFlightResumeCount) while fn runs: taken before fn is called, dropped exactly
+   * once when its promise settles, or at once when fn throws synchronously. continueRun -> start() registers the
+   * successor ActiveRun in `this.runs` before its first await, so by the time the lease drops the successor is live.
+   */
+  private withResumeLease<T>(fn: () => Promise<T>): Promise<T> {
+    this.resumesInFlight++
+    let released = false
+    const release = (): void => {
+      if (released) return
+      released = true
+      this.resumesInFlight--
+    }
+    let p: Promise<T>
+    try {
+      p = fn()
+    } catch (e) {
+      release()
+      return Promise.reject(e)
+    }
+    return p.finally(release)
+  }
+
+  /**
+   * Continue a paused run now, with the harness's resume message. A manual resume (Desktop or RPC) holds its own
+   * resume lease across the async setup.prepare gap; the timer path takes the lease itself and calls resumeUnleased.
+   */
+  resumeNow(runId: string): Promise<RunSummary> {
+    return this.withResumeLease(() => this.resumeUnleased(runId))
+  }
+
+  /**
+   * resumeNow's body, without the activity lease (the caller holds it). `auto` is the timer path only: a manual
+   * Resume now (Desktop or RPC) never re-applies a 'configure' caller's widening.
+   */
+  private async resumeUnleased(runId: string, opts: { auto?: boolean } = {}): Promise<RunSummary> {
+    const widened = opts.auto === true && this.widenedRuns.has(runId)
     this.clearResume(runId)
+    this.refuseWhileQuitting()
     const from = this.summary(runId)
     if (!from) throw new Error('Run not found')
     if (from.status !== 'paused') throw new Error('Run is not paused')
@@ -1904,7 +3932,15 @@ export class RunManager {
     // Setup runs re-profile the repo like setup:start so the Architect's hidden context is current.
     const project = from.kind === 'setup' ? await this.setup.prepare(current) : current
     try {
-      return await this.continueRun(project, runId, RESUME_TEXT)
+      // A waitForReset exec chain still in flight (no execOutcome: its follower waits) keeps its exec fields, on the
+      // timer or an early Resume now. A finalized exec run (e.g. 'rate-limited', its client gone) resumed by hand
+      // continues as a desktop run, with the exec fields stripped (cli-spec 6.2(1)).
+      // A chain a 'configure' caller widened stays widened across its own automatic resume only.
+      const o = from.overrides
+      const keepExec = !!o?.execMode && !!o.waitForReset && !from.execOutcome
+      return await (keepExec
+        ? this.continueRun(project, runId, RESUME_TEXT, undefined, { [AUTO_RESUME]: true, ...(widened ? { allowWidening: true } : {}) })
+        : this.continueRun(project, runId, RESUME_TEXT))
     } catch (e) {
       // The timer is gone; a run still paused must not claim it will resume by itself.
       const s = this.summary(runId)
@@ -1919,6 +3955,8 @@ export class RunManager {
     const s = this.patchSummary(runId, { autoResume: false })
     if (s && s.status === 'paused') {
       this.broadcast({ type: 'run.status', runId, status: 'paused', pausedUntil: s.pausedUntil, pauseReason: s.pauseReason, autoResume: false })
+      // A waitForReset exec chain will not resume now: it ends 'rate-limited' (its follower would wait forever).
+      this.finalizeStrandedExec(runId)
     }
   }
 }

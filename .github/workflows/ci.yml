@@ -1,10 +1,14 @@
-# Checks every push to main or dev and every pull request into main or dev. Free: no smoke scripts and no
-# token-spending e2e (setup, history and worktree need the user's consent and never run here).
+# Checks every push to main or dev (docs-only pushes, docs/** and Markdown, are skipped) and every pull request into
+# main or dev (always runs). Free: no smoke scripts and no token-spending e2e (setup, history and worktree need the
+# user's consent and never run here).
 name: CI
 
 on:
   push:
     branches: [main, dev]
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
   pull_request:
     branches: [main, dev]
 
@@ -24,7 +28,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-14]
+        os: [windows-latest, macos-15]
     env:
       # Fresh runners have no git identity; the e2e fixtures and OrgAI's merge commits need one.
       GIT_AUTHOR_NAME: OrgAI CI
@@ -44,9 +48,12 @@ jobs:
       - name: e2e (free)
         run: npm run e2e:free
         env:
-          # The e2e scripts pick their own temp data dir; this keeps any stray launch off the runner's profile.
+          # The e2e scripts ignore this and give each script its own temp data dir (E2E_DATA_DIR overrides); this only keeps
+          # any stray launch off the runner's profile.
           # (The runner context is only available at step level.)
           ORGAI_DATA_DIR: ${{ runner.temp }}/orgai-data
+          # macOS only: the runner's work area is 1024x684, which clamps the 1600x1000 / 2400x1000 e2e windows.
+          ORGAI_WINDOW_LARGER_THAN_SCREEN: ${{ runner.os == 'macOS' && '1' || '' }}
       - name: Upload e2e screenshots
         if: failure()
         uses: actions/upload-artifact@v4
@@ -63,7 +70,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-14]
+        os: [windows-latest, macos-15]
     env:
       # Unsigned: never look for a signing identity on the runner.
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
@@ -77,3 +84,12 @@ jobs:
       # Unpacked app only, no installers: catches electron-builder config and asarUnpack breakage.
       # (`npm run pack`, not `npm pack`, which is npm's own tarball command.)
       - run: npm run pack
+      # The packaged orgai command (cli-spec 7): --version, doctor, and a mock exec (ORGAI_MOCK=1, no tokens) in-process
+      # and through the spawned background app, on a temp data folder. UNVERIFIED until CI runs it: the Windows
+      # launcher (cmd.exe running orgai.cmd) and the default-host step (the packaged app spawned with --headless-host).
+      # continue-on-error until it has passed once on both windows-latest and macos-14 (review H4): it has never run in
+      # CI, its Windows path has never run anywhere, and a first-run failure should not hide the rest of the pack job's
+      # result. A failure still shows on the step (and in the job's annotations). Drop this line once both legs are green.
+      - name: pack:verify
+        run: npm run pack:verify
+        continue-on-error: true

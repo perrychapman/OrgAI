@@ -3,10 +3,11 @@ import { useEffect, useId, useState } from 'react'
 import type { Project, ProjectPathCheck, QuickRunTeam } from '@shared/types'
 import { QUICK_RUN_MAX_PROMPT_CHARS } from '@shared/types'
 import { chatSummaryLine, START_PAGE_COPY } from '../../lib/assistants'
-import { useAssistantModelName } from '../../lib/assistantModels'
+import { useAssistantRunsOn } from '../../lib/assistantModels'
 import { folderName } from '../../lib/paths'
 import { pathStatus } from '../../lib/projectsForm'
-import { CONNECTION_LABEL } from '../../lib/usage'
+import { CONNECTION_NAME } from '../../lib/settingsCopy'
+import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../../lib/settingsTarget'
 import { newRunDraftKey, useAppStore } from '../../store/useAppStore'
 import { Button } from '../ui/Button'
 import { EmptyState } from '../ui/EmptyState'
@@ -30,7 +31,7 @@ export default function ChatStartPage({ project }: { project: Project }): ReactE
   const setView = useAppStore((s) => s.setView)
   const defaultConnection = useAppStore((s) => s.defaultConnection)
   const mock = useAppStore((s) => s.appInfo?.mockAdapter ?? false)
-  const model = useAssistantModelName('quickRunModel')
+  const model = useAssistantRunsOn('quickRunModel').label
   const [text, setText] = useState('')
   const [checked, setChecked] = useState<{ path: string; result: ProjectPathCheck } | null>(null)
   const [pickError, setPickError] = useState<string | null>(null)
@@ -87,7 +88,7 @@ export default function ChatStartPage({ project }: { project: Project }): ReactE
     folderName: folder ? folderName(folder) : undefined,
     allowEdits,
     model,
-    connection: CONNECTION_LABEL[defaultConnection ?? 'anthropic'],
+    connection: defaultConnection ? CONNECTION_NAME[defaultConnection] : undefined,
     mock
   })
 
@@ -195,6 +196,18 @@ export default function ChatStartPage({ project }: { project: Project }): ReactE
           <p className="muted chat-summary" data-testid="chat-summary">
             {summary}
           </p>
+          <button
+            type="button"
+            className="link-btn chat-model-change"
+            data-testid="chat-model-change"
+            onClick={() => {
+              requestAppSettingsSection(APP_SETTINGS_SECTIONS.assistantModels)
+              setView('appSettings')
+              window.dispatchEvent(new Event('orgai:settings-section'))
+            }}
+          >
+            Change in App settings
+          </button>
         </div>
 
         <Composer

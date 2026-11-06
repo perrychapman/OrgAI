@@ -1,6 +1,6 @@
-import type { AgentInstance, AgentUsage, CostSource, ModelUsageEntry, PriceSource, RoleUsage, RunRecord, RunSummary, RunUsage, SkillUseCount, TokenUsage, UsageStats, UsageStatsQuery, UsageTrendPoint } from '@shared/types'
+import type { AgentInstance, AgentUsage, CostSource, KnowledgeServedUsage, ModelUsageEntry, PriceSource, RoleUsage, RunRecord, RunSummary, RunUsage, SkillUseCount, TokenUsage, UsageStats, UsageStatsQuery, UsageTrendPoint } from '@shared/types'
 import { agentProducedNothing, emptyTokens, totalTokens } from '@shared/defaults'
-import { USAGE_STATS_DEFAULT_LIMIT, USAGE_STATS_MAX_LIMIT } from '@shared/types'
+import { USAGE_CSV_COLUMNS, USAGE_STATS_DEFAULT_LIMIT, USAGE_STATS_MAX_LIMIT } from '@shared/types'
 
 /**
  * Vendor-neutral usage metrics: the adapter-facing tally helpers (below, used by claude.ts, codex.ts and mock.ts),
@@ -71,6 +71,25 @@ export interface RunUsageInputs {
   now: number
   /** Skill loads counted by RunManager (skill.used events). Missing or empty = RunUsage.skills stays unset. */
   skills?: readonly SkillUseCount[]
+  /** Knowledge graph reads served (RunManager's tally). Missing or all zero = RunUsage.knowledge stays unset. */
+  knowledge?: KnowledgeServedUsage
+}
+
+/**
+ * A KnowledgeServedUsage from untrusted data (a persisted record): every field a finite whole number >= 0, else the
+ * whole value is absent. All zero counts as absent too. Never throws.
+ */
+export function cleanKnowledgeUsage(x: unknown): KnowledgeServedUsage | undefined {
+  if (!x || typeof x !== 'object' || Array.isArray(x)) return undefined
+  const o = x as Record<string, unknown>
+  const out: Partial<KnowledgeServedUsage> = {}
+  for (const k of ['recalls', 'autoContexts', 'itemsServed', 'charsServed'] as const) {
+    const v = o[k]
+    if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) return undefined
+    out[k] = Math.floor(v)
+  }
+  const u = out as KnowledgeServedUsage
+  return u.recalls + u.autoContexts + u.itemsServed + u.charsServed > 0 ? u : undefined
 }
 
 /**
@@ -245,6 +264,8 @@ export function computeRunUsage(summary: RunSummary, agents: readonly AgentInsta
   if (legacy) usage.legacy = true
   const skills = mergeSkillCounts([inputs.skills ?? []])
   if (skills.length) usage.skills = skills
+  const knowledge = cleanKnowledgeUsage(inputs.knowledge)
+  if (knowledge) usage.knowledge = knowledge
   return usage
 }
 
@@ -355,6 +376,16 @@ export function normalizeRunRecord(record: RunRecord, now: number = Date.now()):
     }
     summary = { ...summary, usage }
     changed = true
+  } else if (summary.usage.knowledge !== undefined) {
+    // A stored knowledge tally that is junk (old build, hand-edited file) reads as absent.
+    const clean = cleanKnowledgeUsage(summary.usage.knowledge)
+    if (JSON.stringify(clean) !== JSON.stringify(summary.usage.knowledge)) {
+      const usage = { ...summary.usage }
+      if (clean) usage.knowledge = clean
+      else delete usage.knowledge
+      summary = { ...summary, usage }
+      changed = true
+    }
   }
   return changed ? { ...record, summary, agents } : record
 }
@@ -456,7 +487,16 @@ export function sumRunUsage(list: readonly RunUsage[], now: number): RunUsage {
   if (list.some((u) => u.legacy)) total.legacy = true
   const skills = mergeSkillCounts(list.map((u) => u.skills ?? []))
   if (skills.length) total.skills = skills
-  const pc = sum((u) => u.providerCostUsd ?? 0)
+  const served = list.map((u) => cleanKnowledgeUsage(u.knowledge)).filter((k): k is KnowledgeServedUsage => k !== undefined)
+  if (served.length) {
+    total.knowledge = {
+      recalls: served.reduce((n, k) => n + k.recalls, 0),
+      autoContexts: served.reduce((n, k) => n + k.autoContexts, 0),
+      itemsServed: served.reduce((n, k) => n + k.itemsServed, 0),
+      charsServed: served.reduce((n, k) => n + k.charsServed, 0)
+    }
+  }
+  const pc =sum((u) => u.providerCostUsd ?? 0)
   if (pc > 0 && Number.isFinite(pc)) total.providerCostUsd = pc
   return total
 }
@@ -476,6 +516,7 @@ export function buildUsageStats(summaries: readonly RunSummary[], query: UsageSt
   const runs = picked.slice(0, limit).map((s) => {
     const row: UsageStats['runs'][number] = { runId: s.id, kind: s.kind, status: s.status, prompt: oneLine(s.prompt, 120), startedAt: s.startedAt, usage: s.usage ?? legacySummaryUsage(s, now) }
     if (s.title) row.title = s.title
+    if (s.team === 'single') row.team = 'single'
     if (s.endedAt !== undefined) row.endedAt = s.endedAt
     if (s.resumedFrom) row.resumedFrom = s.resumedFrom
     return row
@@ -517,4 +558,84 @@ export function buildUsageStats(summaries: readonly RunSummary[], query: UsageSt
   const stats: UsageStats = { projectId: query.projectId, runs, roles: totals.roles as UsageStats['roles'], trend, totals, generatedAt: now }
   if (truncated) stats.truncated = true
   return stats
+}
+
+// ---------- month range and CSV export ----------
+
+/**
+ * A local calendar month as the [since, until) window UsageStatsQuery uses: local midnight of the 1st to local
+ * midnight of the next month's 1st. 'YYYY-MM' only, months 01..12, years 2000..2999; anything else throws
+ * "Invalid month". Pure.
+ */
+export function monthRange(month: string): { since: number; until: number } {
+  const m = typeof month === 'string' ? /^(2\d{3})-(0[1-9]|1[0-2])$/.exec(month) : null
+  if (!m) throw new Error('Invalid month')
+  const year = Number(m[1])
+  const index = Number(m[2]) - 1
+  return { since: new Date(year, index, 1).getTime(), until: new Date(year, index + 1, 1).getTime() }
+}
+
+/**
+ * One CSV cell: formula-injection guard for strings (a leading tab, CR or LF, or = + - @ and their full-width forms
+ * after any leading whitespace gets a leading apostrophe), then RFC 4180 quoting.
+ */
+function csvCell(value: string | number): string {
+  let s = String(value)
+  if (typeof value === 'string' && (/^[\t\r\n]/.test(s) || /^[=+\-@＝＋－＠]/.test(s.trimStart()))) s = `'${s}`
+  return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+}
+
+/** buildUsageCsv inputs from the caller: names for the project / client columns, and a UTC offset source for tests. */
+export interface UsageCsvOptions {
+  project?: string
+  client?: string
+  /** Offset east of UTC in minutes at the instant; default is the process time zone. A parameter so tests need no TZ. */
+  offsetMinutes?: (t: number) => number
+}
+
+/**
+ * runs:usageCsv body: USAGE_CSV_COLUMNS header, then one row per stats.runs entry (already newest first). project and
+ * client come from `opts` (blank when missing); started / ended are local time with the UTC offset, started_utc is
+ * ISO 8601 UTC (all blank while missing), title falls back to the prompt, roles is the role count, cost is
+ * blank when unknown (never 0) and otherwise fixed-point with 6 decimals. RFC 4180 with CRLF line ends, no trailing
+ * newline and a leading UTF-8 BOM so spreadsheets read it as UTF-8. When `stats.truncated` the file holds only the
+ * returned rows (the newest ones); nothing marks that inside the file. Pure.
+ */
+export function buildUsageCsv(stats: UsageStats, opts: UsageCsvOptions = {}): string {
+  const offsetOf = opts.offsetMinutes ?? ((t: number) => -new Date(t).getTimezoneOffset())
+  const valid = (t: number | undefined): t is number => typeof t === 'number' && Number.isFinite(t) && Math.abs(t) <= 8.64e15
+  const utc = (t: number | undefined): string => (valid(t) ? new Date(t).toISOString() : '')
+  const local = (t: number | undefined): string => {
+    if (!valid(t)) return ''
+    const off = offsetOf(t)
+    const mins = Number.isFinite(off) ? Math.trunc(off) : 0
+    const shifted = new Date(t + mins * 60000)
+    if (Number.isNaN(shifted.getTime())) return ''
+    const abs = Math.abs(mins)
+    const pad = (n: number): string => String(n).padStart(2, '0')
+    return `${shifted.toISOString().slice(0, 19)}${mins < 0 ? '-' : '+'}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`
+  }
+  const lines: string[] = [USAGE_CSV_COLUMNS.join(',')]
+  for (const r of stats.runs) {
+    const u = r.usage
+    const cells: (string | number)[] = [
+      opts.project ?? '',
+      opts.client ?? '',
+      local(r.startedAt),
+      utc(r.startedAt),
+      local(r.endedAt),
+      r.team === 'single' && r.kind === 'work' ? 'ask' : r.kind,
+      r.status,
+      r.title || r.prompt || '',
+      u.roles.length,
+      u.tokens.input,
+      u.tokens.output,
+      u.tokens.cacheRead,
+      u.tokens.cacheWrite,
+      u.costUsd === null || !Number.isFinite(u.costUsd) ? '' : u.costUsd.toFixed(6),
+      u.costPartial ? 'true' : ''
+    ]
+    lines.push(cells.map(csvCell).join(','))
+  }
+  return '﻿' + lines.join('\r\n')
 }

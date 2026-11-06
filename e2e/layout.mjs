@@ -221,11 +221,17 @@ try {
       check((await page.locator('[data-testid=run-strip] .btn:visible').first().evaluate((el) => el.getBoundingClientRect().height).catch(() => 28)) <= 36, `strip buttons fit the 40 px strip at ${w}x${h} ${theme}`)
       log(`chrome above canvas at ${w}x${h} ${theme}:`, m.stage ? Math.round(m.stage.t) : '?', 'px; stage', m.stage ? `${Math.round(m.stage.r - m.stage.l)}x${Math.round(m.stage.b - m.stage.t)}` : '?')
       // The legend lives behind the toolbar "?" popover: a shape plus a word per state.
+      // An ended single-agent run opens as the conversation under 1100 px; the legend belongs to the agents layout.
+      if ((await page.locator('[data-testid=canvas-legend-trigger]').count()) === 0) await page.locator('[data-testid=run-layout-toggle]').click()
       const legendBtn = page.locator('[data-testid=canvas-legend-trigger]')
       await legendBtn.click()
       await sleep(250)
       const legendText = ((await page.locator('[data-testid=canvas-legend]').innerText().catch(() => '')) || '').toLowerCase()
-      check(['working', 'needs approval', 'done', 'error', 'message'].every((t) => legendText.includes(t)), `legend popover lists all five states at ${w}x${h} ${theme}`, legendText.replace(/\s+/g, ' '))
+      check(
+        ['working', 'needs you', 'finished', 'failed', 'selected', 'folded', 'reporting line', 'message'].every((t) => legendText.includes(t)),
+        `legend popover lists all eight entries at ${w}x${h} ${theme}`,
+        legendText.replace(/\s+/g, ' ')
+      )
       await page.keyboard.press('Escape')
       await sleep(150)
       check((await page.locator('.frame-footer').count()) === 0, `no legend row under the canvas at ${w}x${h} ${theme}`)
@@ -262,7 +268,7 @@ try {
   }
   await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'))
 
-  // Keyboard order: skip to content, skip to sidebar, the sidebar toggle, then Projects.
+  // Keyboard order: skip to content, skip to sidebar, the sidebar toggle, then Dashboard.
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(1600, 1000))
   await sleep(300)
   await page.reload()
@@ -274,7 +280,7 @@ try {
     if (i > 0) await page.keyboard.press('Tab')
     stops.push(await page.evaluate(() => (document.activeElement?.getAttribute('aria-label') || document.activeElement?.textContent || '').trim()))
   }
-  check(stops[0] === 'Skip to content' && stops[1] === 'Skip to sidebar' && /sidebar/i.test(stops[2]) && /Projects/.test(stops[3]), 'first Tab stops are the two skip links, the sidebar toggle and Projects', JSON.stringify(stops))
+  check(stops[0] === 'Skip to content' && stops[1] === 'Skip to sidebar' && /sidebar/i.test(stops[2]) && /Dashboard/.test(stops[3]), 'first Tab stops are the two skip links, the sidebar toggle and Dashboard', JSON.stringify(stops))
 
   // Ctrl/Cmd+B toggles the sidebar between the 232 px column and the 56 px rail, and the choice survives a reload.
   const sideW = () => page.evaluate(() => Math.round(document.querySelector('.sidebar')?.getBoundingClientRect().width ?? 0))

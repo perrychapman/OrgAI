@@ -178,7 +178,7 @@ describe('convertImport: OrgAI exports, tools and warnings', () => {
     expect(out.instructionFiles).toEqual(['AGENTS.md'])
   })
 
-  it('warns when LiteLLM roles would need two adapters', () => {
+  it('does not warn about a family mix on LiteLLM when the orchestrator has a model (owner decision 2026-11-03)', () => {
     const catalog: ProviderModel[] = [
       { id: 'claude-sonnet-4-5', label: 's', connection: 'litellm', family: 'claude', adapter: 'claude', tier: 'everyday', source: 'discovered' },
       { id: 'gpt-5', label: 'g', connection: 'litellm', family: 'openai', adapter: 'codex', tier: 'deep', source: 'discovered' }
@@ -189,7 +189,8 @@ describe('convertImport: OrgAI exports, tools and warnings', () => {
       model: { connection: 'litellm', catalog, tierModels: { everyday: 'claude-sonnet-4-5', deep: 'gpt-5' } },
       agents: [agent({ name: 'orchestrator', model: 'claude-sonnet-4-5' }), agent({ name: 'coder', model: 'gpt-5' })]
     })
-    expect(out.warnings.some((w) => w.includes('LiteLLM') && w.includes('coder'))).toBe(true)
+    expect(out.warnings.some((w) => w.includes('LiteLLM') && w.includes('coder'))).toBe(false)
+    expect(out.items.find((i) => i.name === 'coder')).toBeDefined()
   })
 
   it('exposes the prompt excerpt and length, and a digest that follows the content', () => {

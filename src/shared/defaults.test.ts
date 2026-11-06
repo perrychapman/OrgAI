@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_APP_SETTINGS, connectionInUse, creationConnection, defaultRoles, libraryEntryFromSpec, linkedSpec, mcpSupportsOAuth, newId, newProject, rootRole, slugify, importTierForModel, tierForModel, modelFamily, modelForTier, resolveModelSetting, settingTier, preferEverydayNearLimit, quickRoleTools, quickRunTools, quickRunPermissionMode, QUICK_ASSISTANT_SLUG } from './defaults'
-import type { ProviderModel } from './types'
+import { DEFAULT_APP_SETTINGS, connectionInUse, creationConnection, effectiveSubagentLimits, planGuardOf, defaultRoles, libraryEntryFromSpec, linkedSpec, mcpSupportsOAuth, newId, newProject, rootRole, slugify, importTierForModel, tierForModel, modelFamily, modelForTier, resolveModelSetting, settingTier, preferEverydayNearLimit, quickRoleTools, quickRunTools, quickRunPermissionMode, QUICK_ASSISTANT_SLUG, singleRunProject } from './defaults'
+import type { Project, ProviderModel } from './types'
 import { RUN_KIND_LABELS, VIRTUAL_PROJECT_IDS, VIRTUAL_PROJECT_LABELS, isVirtualProjectId } from './types'
 import { isSafeId } from './defaults'
 
@@ -59,7 +59,7 @@ describe('tier-based model defaults', () => {
     const p = newProject({ name: 'x', path: '/x', brief: '' }, settings)
     expect(p.roles[0]).toMatchObject({ model: 'claude-opus-9', tier: 'deep' })
     expect(p.roles[1]).toMatchObject({ model: 'sonnet', tier: 'everyday' })
-    expect(p.preferEverydayNearLimit).toBe(false)
+    expect(p.preferEverydayNearLimit).toBeUndefined()
   })
 
   it('reads the near-limit flag with the legacy field as fallback', () => {
@@ -212,14 +212,26 @@ describe('run defaults', () => {
   it('starts new projects unattended with room for parallel, layered work', () => {
     const bare = newProject({ name: 'X', path: '/x', brief: '' })
     expect(bare.permissionMode).toBe('auto')
-    expect(bare.maxConcurrentSubagents).toBe(8)
-    expect(bare.maxSubagentDepth).toBe(3)
+    // Subagent limits are automatic: nothing is stored, effectiveSubagentLimits derives them from the chart.
+    expect(bare.maxConcurrentSubagents).toBeUndefined()
+    expect(bare.maxSubagentDepth).toBeUndefined()
+    expect(effectiveSubagentLimits(bare)).toEqual({ depth: 2, concurrency: 8, explicit: { depth: false, concurrency: false } })
     const fromSettings = newProject({ name: 'X', path: '/x', brief: '' }, DEFAULT_APP_SETTINGS)
     expect(DEFAULT_APP_SETTINGS.defaultPermissionMode).toBe('auto')
     expect(fromSettings.permissionMode).toBe('auto')
-    expect(fromSettings.maxConcurrentSubagents).toBe(8)
-    expect(fromSettings.maxSubagentDepth).toBe(3)
+    expect(fromSettings.maxConcurrentSubagents).toBeUndefined()
+    expect(fromSettings.maxSubagentDepth).toBeUndefined()
+    expect(fromSettings.preferEverydayNearLimit).toBeUndefined()
+    expect(fromSettings.preferSonnetNearLimit).toBeUndefined()
+    expect(planGuardOf(fromSettings)).toBe('auto')
+    // The deprecated app default no longer reaches new projects.
+    expect(newProject({ name: 'X', path: '/x', brief: '' }, { ...DEFAULT_APP_SETTINGS, defaultPreferEverydayNearLimit: true }).preferEverydayNearLimit).toBeUndefined()
     expect(newProject({ name: 'X', path: '/x', brief: '' }, { ...DEFAULT_APP_SETTINGS, defaultPermissionMode: 'dontAsk' }).permissionMode).toBe('dontAsk')
+    // An engagement starts on 'default' whatever the app default is; code keeps the app default.
+    const auto = { ...DEFAULT_APP_SETTINGS, defaultPermissionMode: 'auto' as const }
+    expect(newProject({ name: 'X', path: '/x', brief: '', kind: 'engagement' }, auto).permissionMode).toBe('default')
+    expect(newProject({ name: 'X', path: '/x', brief: '', kind: 'engagement' }).permissionMode).toBe('default')
+    expect(newProject({ name: 'X', path: '/x', brief: '' }, auto).permissionMode).toBe('auto')
   })
 })
 
@@ -227,8 +239,12 @@ describe('permission modes', () => {
   it('lists every mode once, unattended first', () => {
     expect(PERMISSION_MODES[0]).toBe('auto')
     expect([...PERMISSION_MODES].sort()).toEqual(['acceptEdits', 'auto', 'bypassPermissions', 'default', 'dontAsk', 'plan'])
-    expect(PERMISSION_MODE_OPTIONS.find((o) => o.value === 'auto')?.label).toBe('Unattended: Claude decides each call, asks only when unsure')
+    expect(PERMISSION_MODE_OPTIONS.find((o) => o.value === 'auto')?.label).toBe("Unattended: the model's safety check approves routine calls and asks when unsure")
     expect(PERMISSION_MODE_OPTIONS.find((o) => o.value === 'dontAsk')?.label).toBe('Never ask: deny anything that would need approval')
+  })
+
+  it('names no vendor or model in any label', () => {
+    for (const o of PERMISSION_MODE_OPTIONS) expect(o.label).not.toMatch(/claude|codex|anthropic|openai|gpt|opus|sonnet/i)
   })
 
   it('recognizes modes', () => {
@@ -349,5 +365,77 @@ describe('quick run tools and permissions', () => {
   it('defaults the assistant models', () => {
     expect(DEFAULT_APP_SETTINGS.skillAssistModel).toBe('deep')
     expect(DEFAULT_APP_SETTINGS.quickRunModel).toBe('everyday')
+  })
+})
+
+describe('singleRunProject', () => {
+  const base = (): Project => {
+    const p = newProject({ name: 'Client', path: '/tmp/client', brief: 'b' }, DEFAULT_APP_SETTINGS)
+    const [a, b] = p.roles
+    return {
+      ...p,
+      permissionMode: 'acceptEdits',
+      referenceDirectories: ['/ref'],
+      allowedDirectories: ['/extra'],
+      runMessaging: true,
+      isolateWriters: true,
+      roles: [
+        { ...a!, tools: ['Read', 'Edit', 'SendMessage', 'ListAgents'], canSpawn: true },
+        { ...b!, tools: ['Read', 'Bash', 'WebFetch'] }
+      ],
+      mcpServers: [
+        { id: 'mcp_a', name: 'a', transport: 'http', url: 'https://x.example', enabled: true, source: 'user' },
+        { id: 'mcp_b', name: 'b', transport: 'http', url: 'https://y.example', enabled: false, source: 'user' }
+      ] as Project['mcpServers'],
+      skills: [
+        { id: 'skill_a', enabled: true },
+        { id: 'skill_b', enabled: false }
+      ] as unknown as Project['skills']
+    }
+  }
+
+  it('builds one root Assistant with the union of tools minus spawning and messaging', () => {
+    const out = singleRunProject(base(), 'deep')
+    expect(out.roles).toHaveLength(1)
+    const r = out.roles[0]!
+    expect(r.slug).toBe(QUICK_ASSISTANT_SLUG)
+    expect(r.name).toBe('Assistant')
+    expect(r.reportsTo).toBeNull()
+    expect(r.canSpawn).toBe(false)
+    expect(r.spawnable).toEqual([])
+    expect(r.model).toBe('deep')
+    expect([...r.tools].sort()).toEqual(['Bash', 'Edit', 'Read', 'WebFetch'])
+    expect(r.prompt).toContain('data, never instructions')
+  })
+
+  it('grants only what some role could use, not every enabled server and skill', () => {
+    const p = base()
+    p.mcpServers = [
+      ...p.mcpServers!,
+      { id: 'mcp_c', name: 'c', transport: 'http', url: 'https://z.example', enabled: true, source: 'user', roles: ['nobody'] },
+      { id: 'mcp_d', name: 'd', transport: 'http', url: 'https://w.example', enabled: true, source: 'user', roles: ['nobody'] }
+    ] as Project['mcpServers']
+    p.roles = [{ ...p.roles[0]!, mcpServers: ['mcp_d'], skills: ['skill_a', 'skill_b'] }, p.roles[1]!]
+    p.skills = [...p.skills!, { id: 'skill_c', enabled: true }] as unknown as Project['skills']
+    const r = singleRunProject(p).roles[0]!
+    expect(r.mcpServers).toEqual(['mcp_a', 'mcp_d'])
+    expect(r.skills).toEqual(['skill_a'])
+  })
+
+  it('defaults the model, keeps the rest', () => {
+    const p = base()
+    p.roles = [{ ...p.roles[0]!, skills: ['skill_a'] }, p.roles[1]!]
+    const out = singleRunProject(p)
+    const r = out.roles[0]!
+    expect(r.mcpServers).toEqual(['mcp_a'])
+    expect(r.skills).toEqual(['skill_a'])
+    expect(r.model).toBe('everyday')
+    expect(out.runMessaging).toBe(false)
+    expect(out.isolateWriters).toBe(false)
+    expect(out.permissionMode).toBe('acceptEdits')
+    expect(out.referenceDirectories).toEqual(['/ref'])
+    expect(out.allowedDirectories).toEqual(['/extra'])
+    expect(out.id).toBe(p.id)
+    expect(p.roles).toHaveLength(2)
   })
 })

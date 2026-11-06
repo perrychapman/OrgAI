@@ -17,6 +17,11 @@ export type ClaudeAuthStatus = {
   apiProvider?: string
   /** True when the CLI was run with `--setting-sources project` (user settings excluded, as runs do). */
   restricted?: boolean
+  /**
+   * True when no CLI gave an answer (none found, every candidate timed out, failed or printed no JSON): the login
+   * state is unknown, not "logged out". anthropicStatus reports it as 'error', never 'disconnected'.
+   */
+  unavailable?: boolean
 }
 
 export interface CliResult {
@@ -103,6 +108,7 @@ export async function claudeAuthStatus(deps: AuthStatusDeps = {}): Promise<Claud
   }
   return {
     loggedIn: false,
+    unavailable: true,
     detail: `Claude Code CLI not found (looked in ${claudeLookupLocations().join(', ')}). Install it and run claude /login, set an API key, or choose another default connection.`
   }
 }
@@ -121,9 +127,10 @@ export async function anthropicStatus(
       : { state: 'disconnected', detail: `${auth.envVar} is not set in OrgAI's environment`, checkedAt }
   }
   const s = await claudeAuthStatus(deps)
-  return s.loggedIn
-    ? { state: 'connected', detail: s.detail ?? s.method ?? 'Claude Code login', checkedAt }
-    : { state: 'disconnected', detail: s.detail ?? NOT_LOGGED_IN, checkedAt }
+  if (s.loggedIn) return { state: 'connected', detail: s.detail ?? s.method ?? 'Claude Code login', checkedAt }
+  // No CLI answered (missing, timed out, no JSON): not a definite logout, so never 'disconnected' (it would move an
+  // automatic default connection away).
+  return { state: s.unavailable ? 'error' : 'disconnected', detail: s.detail ?? NOT_LOGGED_IN, checkedAt }
 }
 
 /**

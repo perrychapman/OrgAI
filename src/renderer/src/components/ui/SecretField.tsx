@@ -4,6 +4,7 @@ import { Check, Minus } from 'lucide-react'
 import { Badge } from './Badge'
 import { Button } from './Button'
 import { ConfirmDialog } from './Dialog'
+import { cleanIpcError } from '../../lib/ipcError'
 
 /**
  * Write-only secret input. It never receives or shows a stored value: `state` says whether one exists.
@@ -50,7 +51,7 @@ export function SecretField({
       setValue('')
       setReplacing(false)
     } catch (e) {
-      setError((e as Error).message)
+      setError(cleanIpcError(e))
     } finally {
       setBusy(false)
     }
@@ -142,7 +143,7 @@ export function SecretField({
         onCancel={() => setConfirmClear(false)}
         onConfirm={() => {
           setConfirmClear(false)
-          void Promise.resolve(onClear?.()).catch((e: Error) => setError(e.message))
+          void Promise.resolve(onClear?.()).catch((e: unknown) => setError(cleanIpcError(e)))
         }}
       />
     </div>

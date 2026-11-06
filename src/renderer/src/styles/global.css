@@ -9,12 +9,13 @@
 @import './mcp-library.css';
 @import './connectors.css';
 @import './mcp-install.css';
-@import './projects.css';
+@import './dashboard.css';
 @import './editor.css';
 @import './flow.css';
 @import './run.css';
 @import './transcript.css';
 @import './cards.css';
+@import './proposals.css';
 @import './usage.css';
 @import './layout.css';
 @import './import.css';
@@ -23,6 +24,8 @@
 @import './model-prices.css';
 @import './skill-library.css';
 @import './team.css';
+@import './teamFiles.css';
+@import './permissions.css';
 
 * {
   box-sizing: border-box;

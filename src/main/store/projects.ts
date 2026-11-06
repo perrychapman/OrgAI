@@ -1,10 +1,15 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
-import { basename, dirname, isAbsolute, join } from 'node:path'
+import { basename, dirname, isAbsolute, join, posix, win32, type PlatformPath } from 'node:path'
 import type { AppSettings, ConnectionId, Project, ProjectCreateInput, ProjectPathCheck, Role } from '@shared/types'
-import { HARNESS_PROJECT_ID, isModelTier, isVirtualProjectId } from '@shared/types'
-import { isSafeId, modelForTier, newProject, preferEverydayNearLimit, projectConnection, skillEvaluationOf, teamReviewOf, type TierContext } from '@shared/defaults'
+import { hiddenCharIn } from '../capabilities/sanitize'
+import { HARNESS_PROJECT_ID, PROJECT_CLIENT_MAX_CHARS, PROJECT_ALLOWED_DIRECTORIES_MAX, PROJECT_ALLOWED_DIRECTORY_MAX_CHARS, isModelTier, isProjectKind, isVirtualProjectId } from '@shared/types'
+import { isSafeId, modelForTier, newProject, preferEverydayNearLimit, projectConnection, storedSkillEvaluation, teamReviewOf, type TierContext } from '@shared/defaults'
 import { migrateProject } from '../connections/remap'
 import { validModelId } from '../connections/codexAccount'
+import { isInsideEither, pathKey, samePath } from '../quick/scratch'
+import { allowedDirectoryRisk } from '../runtime/allowedDirectories'
+import { cleanFolderConfigTrust, initialFolderConfigTrust } from '../runtime/folderConfigTrust'
+import { homedir } from 'node:os'
 
 /** The tier mapping of a connection, for the invalid-model fallback. Default: the connection's builtin catalog only. */
 export type TierContextFor = (connection: ConnectionId) => TierContext | undefined
@@ -60,6 +65,25 @@ export function sanitizeRoleModels(
     return next
   })
   return changed ? { project: { ...project, roles }, changed } : { project, changed }
+}
+
+/** projects.json format version. 2: subagent limits are optional (automatic when unset). */
+export const PROJECTS_FILE_VERSION = 2
+
+/**
+ * One-time migration of a projects.json older than PROJECTS_FILE_VERSION 2: the old code always filled
+ * maxSubagentDepth 3 and maxConcurrentSubagents 8, so exactly those values are dropped (the project becomes
+ * automatic); any other value was the user's and stays explicit. Pure.
+ */
+export function dropLegacyLimitDefaults(p: Project): { project: Project; changed: boolean } {
+  // The values the pre-2026-11-03 code always filled (fixed here: they must not follow later default changes).
+  const legacyDepth = p.maxSubagentDepth === 3
+  const legacyConcurrency = p.maxConcurrentSubagents === 8
+  if (!legacyDepth && !legacyConcurrency) return { project: p, changed: false }
+  const project = { ...p }
+  if (legacyDepth) delete project.maxSubagentDepth
+  if (legacyConcurrency) delete project.maxConcurrentSubagents
+  return { project, changed: true }
 }
 
 /**
@@ -132,24 +156,266 @@ export function checkProjectPath(path: unknown, fs: PathFs = nodeFs): ProjectPat
  * Why projects:create must refuse this input, or null. A path must be given and must not be a file; an
  * existing-repository project needs a folder that exists. A new idea may name a folder that does not exist yet.
  */
-export function createPathError(input: Pick<ProjectCreateInput, 'path' | 'setupKind'>, check: ProjectPathCheck): string | null {
+export function createPathError(input: Pick<ProjectCreateInput, 'path' | 'setupKind'> & { kind?: unknown }, check: ProjectPathCheck): string | null {
   const path = cleanProjectPath(input.path)
   if (!path) return 'Choose a folder for the project.'
   if (!isAbsolute(path) && !/^[a-zA-Z]:[\\/]/.test(path)) return `Use a full path, for example ${process.platform === 'win32' ? 'C:\\Projects\\shop' : '/Users/you/projects/shop'}.`
   if (check.exists && !check.isDirectory) return `${path} is a file, not a folder. Choose the project's folder.`
   if (input.setupKind === 'existing' && !check.exists) return `There is no folder at ${path}. Check the path, or choose "New idea" to start in a new folder.`
+  if (input.kind === 'engagement' && !check.exists) return "Choose an existing folder for the engagement's working files."
   return null
+}
+
+/** Raw entries looked at by cleanAllowedDirectories before it stops (a hostile list cannot cost unbounded fs work). */
+const ALLOWED_DIRECTORIES_SCAN_MAX = 200
+
+export interface AllowedDirectoryOpts {
+  /** Path flavour for the syntax checks (tests pass `path.win32` / `path.posix`). Default: the native one. */
+  path?: PlatformPath
+  /** True when `dir` is the data dir, inside it or contains it. Default: isInsideEither both ways (fails closed). */
+  touchesData?: (dir: string) => boolean
+  /** True when two accepted folders name the same place. Default: scratch.ts pathKey / samePath. */
+  same?: (a: string, b: string) => boolean
+  /** The project's folder: it, anything inside it and any folder containing it are dropped (allowedDirectoryRisk). */
+  projectPath?: string
+  /**
+   * The user's home folder: home, its ancestors and the config folders under it are dropped (allowedDirectoryRisk).
+   * Omitted = no home rules (pure tests); ProjectStore always passes one (os.homedir() unless overridden).
+   */
+  home?: string
+}
+
+/** Why an allowed-directory entry is refused on syntax alone, or null. */
+function allowedDirectoryProblem(text: string, p: PlatformPath): string | null {
+  if (!text) return 'empty'
+  if (text.length > PROJECT_ALLOWED_DIRECTORY_MAX_CHARS) return 'too long'
+  if (text.includes('\0')) return 'NUL character'
+  // UNC and device paths (\\server\share, \\?\, \\.\, //host), on every platform.
+  if (/^[\\/]{2}/.test(text)) return 'network share or device path'
+  if (p === win32 ?!/^[a-zA-Z]:[\\/]/.test(text) : !p.isAbsolute(text)) return 'not an absolute path'
+  const resolved = p.resolve(text)
+  // A bare root (C:\, /, or C:\a\.. which resolves to one) would mean "everything".
+  if (p.parse(resolved).root === resolved) return 'a drive or file-system root'
+  return null
+}
+
+/**
+ * Normalize `Project.allowedDirectories` (see its doc in shared/types.ts): strings only, trimmed, at most
+ * PROJECT_ALLOWED_DIRECTORY_MAX_CHARS, absolute (win32: a drive-letter path), never a root, never UNC or device,
+ * never OrgAI's data folder, a folder inside it or a folder that contains it, no duplicates (first spelling kept), at
+ * most PROJECT_ALLOWED_DIRECTORIES_MAX. Each kept entry is `path.normalize`d with its trailing separator dropped.
+ * Rejected entries are dropped silently (logged at debug). A non-array gives undefined. Existence is not required.
+ */
+export function cleanAllowedDirectories(raw: unknown, dataDir: string, opts: AllowedDirectoryOpts = {}): string[] | undefined {
+  return cleanDirectoryList(raw, dataDir, opts, 'allowedDirectories')
+}
+
+/** Normalize `Project.referenceDirectories`: the same rules as cleanAllowedDirectories (cap, length, risk), own log prefix. */
+export function cleanReferenceDirectories(raw: unknown, dataDir: string, opts: AllowedDirectoryOpts = {}): string[] | undefined {
+  return cleanDirectoryList(raw, dataDir, opts, 'referenceDirectories')
+}
+
+/** The shared cleaner behind cleanAllowedDirectories and cleanReferenceDirectories; `label` prefixes the debug logs. */
+function cleanDirectoryList(raw: unknown, dataDir: string, opts: AllowedDirectoryOpts, label: string): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined
+  const p = opts.path ?? (process.platform === 'win32' ? win32 : posix)
+  const platform: NodeJS.Platform = p === win32 ? 'win32' : process.platform === 'win32' ? 'linux' : process.platform
+  const touchesData =
+    opts.touchesData ??
+    ((dir: string): boolean => {
+      try {
+        return isInsideEither(dataDir, dir) || isInsideEither(dir, dataDir)
+      } catch {
+        return true
+      }
+    })
+  const same =
+    opts.same ??
+    ((a: string, b: string): boolean => {
+      if (pathKey(a) === pathKey(b)) return true
+      try {
+        return samePath(a, b)
+      } catch {
+        return false
+      }
+    })
+  const out: string[] = []
+  for (const entry of raw.slice(0, ALLOWED_DIRECTORIES_SCAN_MAX)) {
+    if (out.length >= PROJECT_ALLOWED_DIRECTORIES_MAX) {
+      console.debug(`${label}: over the limit, dropping the rest`)
+      break
+    }
+    if (typeof entry !== 'string') {
+      console.debug(`${label}: dropped a non-string entry`)
+      continue
+    }
+    const text = entry.trim()
+    const problem = allowedDirectoryProblem(text, p)
+    if (problem) {
+      console.debug(`${label}: dropped an entry (${problem})`)
+      continue
+    }
+    let dir = p.normalize(text)
+    if (dir.length > p.parse(dir).root.length) dir = dir.replace(/[\\/]+$/, '')
+    if (touchesData(dir)) {
+      console.debug(`${label}: dropped an entry (OrgAI's data folder)`)
+      continue
+    }
+    const risk = allowedDirectoryRisk(dir, { platform, home: opts.home ?? '', ...(opts.projectPath ? { projectPath: opts.projectPath } : {}) })
+    if (risk) {
+      console.debug(`${label}: dropped an entry (${risk === 'project' ? 'the project folder or inside it' : 'too broad or sensitive'})`)
+      continue
+    }
+    if (out.some((d) => same(d, dir))) continue
+    out.push(dir)
+  }
+  return out
+}
+
+/**
+ * Normalize `Project.client`: a string, trimmed, cut to PROJECT_CLIENT_MAX_CHARS at a character boundary; dropped
+ * (undefined) when it is not a string, empty or holds a hidden character.
+ */
+export function cleanClient(raw: unknown): string | undefined {
+  if (typeof raw !== 'string') {
+    console.debug('client: dropped a value that is not a string')
+    return undefined
+  }
+  let text = raw.trim()
+  if (!text) return undefined
+  if (hiddenCharIn(text) || /[\r\n\t\u2028\u2029]/.test(text)) {
+    console.debug('client: dropped a value with a hidden character')
+    return undefined
+  }
+  if (text.length > PROJECT_CLIENT_MAX_CHARS) {
+    text = text.slice(0, PROJECT_CLIENT_MAX_CHARS)
+    const last = text.charCodeAt(text.length - 1)
+    if (last >= 0xd800 && last <= 0xdbff) text = text.slice(0, -1)
+    text = text.trim()
+    console.debug('client: cut to the length limit')
+  }
+  return text || undefined
+}
+
+/**
+ * The project with allowedDirectories and referenceDirectories normalized (each removed when it is not an array), a
+ * reference entry that names the same place as an allowed one dropped (the folder stays writable), and a non-ProjectKind
+ * `kind` removed (missing = 'code'); `changed` when anything differs.
+ */
+function withCleanAllowedDirectories(project: Project, dataDir: string, home: string): { project: Project; changed: boolean } {
+  if (!project || typeof project !== 'object') return { project, changed: false }
+  let next = project
+  let changed = false
+  if ('kind' in project && !isProjectKind(project.kind)) {
+    console.debug('project kind: dropped a value that is not a project kind')
+    next = { ...next }
+    delete next.kind
+    changed = true
+  }
+  // Project.knowledgeAutoContext is a boolean or unset; anything else is dropped (unset = on). Never filled in here.
+  if ('knowledgeAutoContext' in project && typeof project.knowledgeAutoContext !== 'boolean') {
+    console.debug('knowledgeAutoContext: dropped a value that is not true or false')
+    next = { ...next }
+    delete next.knowledgeAutoContext
+    changed = true
+  }
+  // Project.folderConfigTrust (folder config gate): rebuilt when present, junk fails closed to 'untrusted'. Never
+  // added to a project without it: projects stored before the gate stay 'none' (no gate) on purpose.
+  if ('folderConfigTrust' in project) {
+    const trust = cleanFolderConfigTrust(project.folderConfigTrust)
+    if (JSON.stringify(trust) !== JSON.stringify(project.folderConfigTrust)) {
+      next = { ...next }
+      if (trust === undefined) delete next.folderConfigTrust
+      else next.folderConfigTrust = trust
+      changed = true
+    }
+  }
+  if ('client' in project) {
+    const client = cleanClient(project.client)
+    if (client !== project.client) {
+      next = { ...next }
+      if (client === undefined) delete next.client
+      else next.client = client
+      changed = true
+    }
+  }
+  const hasAllowed = 'allowedDirectories' in project
+  const hasRefs = 'referenceDirectories' in project
+  if (!hasAllowed && !hasRefs) return { project: next, changed }
+  const projectPath = typeof project.path === 'string' && project.path ? project.path : undefined
+  const opts: AllowedDirectoryOpts = { home, ...(projectPath ? { projectPath } : {}) }
+  next = { ...next }
+  let allowed: string[] | undefined
+  if (hasAllowed) {
+    allowed = cleanAllowedDirectories(project.allowedDirectories, dataDir, opts)
+    if (allowed === undefined) delete next.allowedDirectories
+    else next.allowedDirectories = allowed
+    if (JSON.stringify(allowed) !== JSON.stringify(project.allowedDirectories)) changed = true
+  }
+  if (hasRefs) {
+    let refs = cleanReferenceDirectories(project.referenceDirectories, dataDir, opts)
+    const writable = Array.isArray(next.allowedDirectories) ? next.allowedDirectories : []
+    if (refs && writable.length) {
+      const before = refs.length
+      refs = refs.filter((r) => !writable.some((a) => sameFolder(a, r)))
+      if (refs.length !== before) console.debug('referenceDirectories: dropped an entry (also an allowed folder)')
+    }
+    if (refs === undefined) delete next.referenceDirectories
+    else next.referenceDirectories = refs
+    if (JSON.stringify(refs) !== JSON.stringify(project.referenceDirectories)) changed = true
+  }
+  return { project: next, changed }
+}
+
+function sameFolder(a: string, b: string): boolean {
+  if (pathKey(a) === pathKey(b)) return true
+  try {
+    return samePath(a, b)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Team files (src/main/teamFiles/service.ts) see every `save`: `beforeSave` gets the stored project (null when it is
+ * new) and the cleaned incoming one, and returns the project to store (usually `next`; a rebased copy when the files
+ * were ingested first). It must not throw. `saveInternal` bypasses it.
+ */
+export interface ProjectSaveHook {
+  beforeSave(before: Project | null, next: Project): Project
+}
+
+/**
+ * The projects and format version of a parsed `projects.json` (pure; ProjectStore's load and the CLI's read-only
+ * reader). Not migrated. A null file throws, as the store's load always did (it then starts empty).
+ */
+export function parseProjectsFile(parsed: unknown): { projects: Project[]; version: number } {
+  const p = parsed as { version?: unknown; projects?: Project[] }
+  return {
+    projects: Array.isArray(p.projects) ? p.projects : [],
+    version: typeof p.version === 'number' && Number.isFinite(p.version) ? p.version : 1
+  }
 }
 
 /** Simple JSON-file store. Projects are small and few, so a database is overkill for now. */
 export class ProjectStore {
+  private saveHook?: ProjectSaveHook
   private file: string
   private projects: Project[] = []
+  /** Format version of the loaded projects.json; a missing file is current. */
+  private fileVersion = PROJECTS_FILE_VERSION
   private tierContext?: TierContextFor
+  private dataDir: string
+  private home: string
 
-  /** `opts.tierContext` gives a connection's tier mapping for the invalid-model fallback (sanitizeRoleModels). */
-  constructor(dataDir: string, opts: { tierContext?: TierContextFor } = {}) {
+  /**
+   * `opts.tierContext` gives a connection's tier mapping for the invalid-model fallback (sanitizeRoleModels).
+   * `opts.home` overrides os.homedir() for the allowed-directory rules (tests).
+   */
+  constructor(dataDir: string, opts: { tierContext?: TierContextFor; home?: string } = {}) {
     this.tierContext = opts.tierContext
+    this.dataDir = dataDir
+    this.home = opts.home ?? homedir()
     this.file = join(dataDir, 'projects.json')
     this.load()
     this.migrateAll()
@@ -158,8 +424,9 @@ export class ProjectStore {
   private load(): void {
     try {
       if (existsSync(this.file)) {
-        const parsed = JSON.parse(readFileSync(this.file, 'utf8')) as { projects?: Project[] }
-        this.projects = Array.isArray(parsed.projects) ? parsed.projects : []
+        const parsed = parseProjectsFile(JSON.parse(readFileSync(this.file, 'utf8')))
+        this.projects = parsed.projects
+        this.fileVersion = parsed.version
       }
     } catch (e) {
       console.error('Failed to read projects.json, starting empty:', e)
@@ -170,7 +437,7 @@ export class ProjectStore {
   private persist(): void {
     mkdirSync(dirname(this.file), { recursive: true })
     const tmp = `${this.file}.tmp`
-    writeFileSync(tmp, JSON.stringify({ version: 1, projects: this.projects }, null, 2), 'utf8')
+    writeFileSync(tmp, JSON.stringify({ version: PROJECTS_FILE_VERSION, projects: this.projects }, null, 2), 'utf8')
     renameSync(tmp, this.file)
   }
 
@@ -180,14 +447,26 @@ export class ProjectStore {
    */
   migrateAll(): number {
     let changed = 0
+    const legacyLimits = this.fileVersion < 2
     this.projects = this.projects.map((p) => {
-      const m = migrateProject(p)
+      const limits = legacyLimits ? dropLegacyLimitDefaults(p) : { project: p, changed: false }
+      const m = migrateProject(limits.project)
       const clean = sanitizeRoleModels(m.project, this.tierContext)
-      if (m.changed || clean.changed) changed++
-      return clean.project
+      const dirs = withCleanAllowedDirectories(clean.project, this.dataDir, this.home)
+      if (limits.changed || m.changed || clean.changed || dirs.changed) changed++
+      return dirs.project
     })
-    if (changed) this.persist()
+    // Persist after a version bump too, so the one-time limits migration never runs again on explicit 3 / 8 values.
+    if (changed || this.fileVersion < PROJECTS_FILE_VERSION) {
+      if (this.projects.length || changed) this.persist()
+      this.fileVersion = PROJECTS_FILE_VERSION
+    }
     return changed
+  }
+
+  /** Installed once by index.ts after the team files service exists. */
+  setTeamFilesHook(hook: ProjectSaveHook | undefined): void {
+    this.saveHook = hook
   }
 
   list(): Project[] {
@@ -205,28 +484,83 @@ export class ProjectStore {
   create(
     input: ProjectCreateInput,
     settings?: AppSettings,
-    opts: { mockAvailable?: boolean; fs?: PathFs; prepare?: (p: Project) => Project; importRoles?: (p: Project, sources: unknown) => Project } = {}
+    opts: {
+      mockAvailable?: boolean
+      fs?: PathFs
+      prepare?: (p: Project) => Project
+      importRoles?: (p: Project, sources: unknown) => Project
+      fromTemplate?: (p: Project, templateId: string) => Project
+      /**
+       * Start from the team in the folder's `.orgai/` (ProjectCreateInput.teamFiles). `build` returns the project with the
+       * files' team applied (it throws a readable message for a stale digest or a problem) and wins over importRoles and
+       * fromTemplate; `adopted` runs once the project is stored.
+       */
+      teamFiles?: { build: (p: Project) => Project; adopted: (p: Project) => void }
+    } = {}
   ): Project {
     const error = createPathError(input, checkProjectPath(input.path, opts.fs))
     if (error) throw new Error(error)
     if (input.mock && !opts.mockAvailable) throw new Error('The mock adapter is not available. Start OrgAI with ORGAI_MOCK=1 to use it.')
-    let project = newProject({ name: input.name, path: cleanProjectPath(input.path), brief: input.brief, setupKind: input.setupKind }, settings)
+    let project = newProject({ name: input.name, path: cleanProjectPath(input.path), brief: input.brief, setupKind: input.setupKind, kind: input.kind }, settings)
     // Mock projects stay on the anthropic defaults and the mock adapter; others take the default connection.
     if (input.mock) project.provider = { ...project.provider, id: 'mock' }
     else if (opts.prepare) project = opts.prepare(project)
+    const fromFiles = !!input.teamFiles && !!opts.teamFiles
+    if (fromFiles) project = (opts.teamFiles as NonNullable<typeof opts.teamFiles>).build(project)
     // Imported agents replace the default chart after the connection is chosen, so their models map to it.
-    if (Array.isArray(input.importAgents) && input.importAgents.length && opts.importRoles) project = opts.importRoles(project, input.importAgents)
+    let imported = fromFiles
+    if (!fromFiles && Array.isArray(input.importAgents) && input.importAgents.length && opts.importRoles) {
+      const before = project
+      project = opts.importRoles(project, input.importAgents)
+      imported = project.roles !== before.roles
+    }
+    // A team template pre-fills the chart only when the agent import produced nothing (importAgents wins).
+    if (!imported && typeof input.templateId === 'string' && input.templateId && opts.fromTemplate) project = opts.fromTemplate(project, input.templateId)
     project = sanitizeRoleModels(project, this.tierContext).project
+    // A folder that came with agent config of its own (a cloned repository, or a quick chat promoted to a project) starts
+    // gated: runs ignore that config until the user accepts it. A missing folder or an engagement stays ungated.
+    const trust = initialFolderConfigTrust(project)
+    if (trust) project = { ...project, folderConfigTrust: trust }
     this.projects.push(project)
     this.persist()
+    if (fromFiles) {
+      try {
+        opts.teamFiles?.adopted(project)
+      } catch (e) {
+        console.warn(`Team files: could not record the adopted team: ${e instanceof Error ? e.message : String(e)}`)
+      }
+    }
     return project
   }
 
-  /** Every save (saveFromRenderer, update) passes Role.model through sanitizeRoleModels. */
+  /**
+   * Every save (saveFromRenderer, update) passes Role.model through sanitizeRoleModels and allowedDirectories through
+   * cleanAllowedDirectories.
+   */
   save(project: Project): Project {
     if (isVirtualProjectId(project?.id)) throw new Error('An assistant project (Chat, Skill assistant, harness) cannot be stored.')
-    const updated = { ...sanitizeRoleModels(project, this.tierContext).project, updatedAt: new Date().toISOString() }
-    const idx = this.projects.findIndex((p) => p.id === project.id)
+    let cleaned = withCleanAllowedDirectories(sanitizeRoleModels(project, this.tierContext).project, this.dataDir, this.home).project
+    // Team files: the hook may rebase the project (a change pulled into the folder is kept) and writes the team files.
+    if (this.saveHook) {
+      try {
+        const hooked = this.saveHook.beforeSave(this.get(project.id), cleaned)
+        if (hooked !== cleaned) cleaned = withCleanAllowedDirectories(sanitizeRoleModels(hooked, this.tierContext).project, this.dataDir, this.home).project
+      } catch (e) {
+        console.warn(`Team files: the save hook failed; saving without it: ${e instanceof Error ? e.message : String(e)}`)
+      }
+    }
+    return this.commitSave(cleaned)
+  }
+
+  /** Store a project without the team files hook (the service's own saves: a team change that came from the files). */
+  saveInternal(project: Project): Project {
+    if (isVirtualProjectId(project?.id)) throw new Error('An assistant project (Chat, Skill assistant, harness) cannot be stored.')
+    return this.commitSave(withCleanAllowedDirectories(sanitizeRoleModels(project, this.tierContext).project, this.dataDir, this.home).project)
+  }
+
+  private commitSave(cleaned: Project): Project {
+    const updated = { ...cleaned, updatedAt: new Date().toISOString() }
+    const idx = this.projects.findIndex((p) => p.id === cleaned.id)
     if (idx === -1) this.projects.push(updated)
     else this.projects[idx] = updated
     this.persist()
@@ -244,6 +578,16 @@ export class ProjectStore {
     const stored = this.get(project.id)
     if (!stored) throw new Error('Project not found')
     const next: Project = reconcileNearLimitProject(stored, { ...project })
+    // A renderer may never change a project's kind (it selects the rules file and where OrgAI writes).
+    if (stored.kind !== undefined) next.kind = stored.kind
+    else delete next.kind
+    // Nor the folder config gate: only projects:setFolderConfigTrust changes it. A new folder is judged afresh.
+    if (typeof next.path === 'string' && next.path !== stored.path) {
+      const trust = initialFolderConfigTrust({ path: next.path, kind: stored.kind })
+      if (trust) next.folderConfigTrust = trust
+      else delete next.folderConfigTrust
+    } else if (stored.folderConfigTrust !== undefined) next.folderConfigTrust = stored.folderConfigTrust
+    else delete next.folderConfigTrust
     if (stored.mcpServers !== undefined) next.mcpServers = stored.mcpServers
     else delete next.mcpServers
     if (stored.plugins !== undefined) next.plugins = stored.plugins
@@ -259,7 +603,7 @@ export class ProjectStore {
         return { ...r, skills: kept }
       })
     }
-    if (next.skillEvaluation !== undefined) next.skillEvaluation = skillEvaluationOf(next)
+    if (next.skillEvaluation !== undefined) next.skillEvaluation = storedSkillEvaluation(next.skillEvaluation)
     if (next.teamReview !== undefined) next.teamReview = teamReviewOf(next)
     return this.save(next)
   }

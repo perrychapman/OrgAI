@@ -1,0 +1,249 @@
+/**
+ * `orgai team` (cli-spec 6.3, Wave 5): team templates, the role list, one role in full, and Claude Code plugins.
+ *
+ * - `team templates [list]` (read), `team templates save --name <n> [--description <d>]`, `team templates apply <id>
+ *   [--mode replace|merge] [--yes]`, `team templates remove <id> [--yes]` (configure). An apply cannot be undone (the
+ *   Desktop's Undo covers only its own applies); --json carries the previous chart as `previousRoles`.
+ * - `team roles`, `team role <name-or-slug>` (read): the prompt is shown with every hidden character made visible
+ *   (shared/view/hiddenChars showHidden), then sanitized.
+ * - `team plugins [list]`, `team plugins add --path <dir> [--name] [--id] [--disabled] [--skip-mcp]`, `team plugins
+ *   remove <id> [--yes]` (configure).
+ */
+import { isAbsolute, resolve } from 'node:path'
+import { newId } from '../../shared/defaults'
+import { hasHidden, showHidden } from '../../shared/view/hiddenChars'
+import type { AgentImportApplyResult, OrgTemplateInfo, PluginSpec, Project, Role } from '../../shared/types'
+import { formatDate } from '../../shared/view/dates'
+import { parseFlags } from '../flags'
+import { confirm, hostCall, requireProject, runSubcommands, withHost, type SubcommandFn } from '../manage'
+import { emit, note, safe, safeLine } from '../output'
+import { CliError, EXIT, type CommandFn } from '../types'
+import { checkArg, findRole, NO_UNDO, NO_UNDO_AFTER, onlyPositionals, projectJson, roleTierWord } from './org'
+
+const USAGE =
+  'team templates [list] | templates save --name <name> [--description <text>] | templates apply <id> [--mode replace|merge] [--yes] | templates remove <id> [--yes] | roles | role <name-or-slug> | plugins [list] | plugins add --path <dir> [--name <n>] [--id <id>] [--disabled] [--skip-mcp] | plugins remove <id> [--yes]'
+
+export const runTeam: CommandFn = (ctx, args) => runSubcommands(ctx, args, { templates: teamTemplates, roles: teamRoles, role: teamRole, plugins: teamPlugins }, USAGE)
+
+/** A safe one-line string with hidden characters shown as \uXXXX escapes. */
+const visible = (s: unknown): string => safeLine(showHidden(String(s ?? '')))
+
+// ---------- templates ----------
+
+const teamTemplates: SubcommandFn = (ctx, args) => {
+  if (args.length === 0 || args[0].startsWith('-')) return templatesList(ctx, args)
+  return runSubcommands(ctx, args, { list: templatesList, save: templatesSave, apply: templatesApply, remove: templatesRemove }, 'team templates [list] | save | apply <id> | remove <id>')
+}
+
+function templateLine(t: OrgTemplateInfo): string {
+  const desc = t.description ? ` · ${safeLine(t.description)}` : ''
+  return `  ${t.id}  ${safeLine(t.name)} (${t.kind}, ${t.roleCount} role${t.roleCount === 1 ? '' : 's'}, ${formatDate(t.updatedAt)})${desc}`
+}
+
+const templatesList: SubcommandFn = async (ctx, args) => {
+  const { positionals } = parseFlags(args, {})
+  onlyPositionals(positionals, 0, 'team templates list')
+  return withHost(ctx, ['read'], async (client) => {
+    const list = await hostCall<OrgTemplateInfo[]>(client, 'templates:list', [])
+    emit(ctx, { templates: list }, () => (list.length ? [`${list.length} template${list.length === 1 ? '' : 's'}:`, ...list.map(templateLine)] : 'No team templates yet. Save one with: orgai team templates save --name <name>'))
+    return EXIT.ok
+  })
+}
+
+const templatesSave: SubcommandFn = async (ctx, args) => {
+  const { values, positionals } = parseFlags(args, { name: { type: 'string' }, description: { type: 'string' } })
+  onlyPositionals(positionals, 0, 'team templates save --name <name> [--description <text>]')
+  const name = checkArg('template name (--name)', values.name).trim()
+  const description = values.description?.trim()
+  if (description !== undefined && description.length > 1000) throw new CliError('The description is longer than 1000 characters.', EXIT.usage)
+  return withHost(ctx, ['read', 'configure'], async (client) => {
+    const project = await requireProject(ctx, client)
+    const t = await hostCall<OrgTemplateInfo>(client, 'templates:saveFromProject', [{ projectId: project.id, name, ...(description ? { description } : {}) }])
+    emit(ctx, { project: projectJson(project), template: t }, () => `Saved template ${safeLine(t.name)} (${t.id}) with ${t.roleCount} role${t.roleCount === 1 ? '' : 's'}.`)
+    return EXIT.ok
+  })
+}
+
+const templatesApply: SubcommandFn = async (ctx, args) => {
+  const { values, positionals } = parseFlags(args, { mode: { type: 'string' }, yes: { type: 'boolean', short: 'y' } })
+  onlyPositionals(positionals, 1, 'team templates apply <id> [--mode replace|merge] [--yes]')
+  const templateId = checkArg('template id', positionals[0])
+  const mode = values.mode ?? 'replace'
+  if (mode !== 'replace' && mode !== 'merge') throw new CliError('--mode must be replace or merge.', EXIT.usage)
+  return withHost(ctx, ['read', 'configure'], async (client) => {
+    const project = await requireProject(ctx, client)
+    const list = await hostCall<OrgTemplateInfo[]>(client, 'templates:list', [])
+    const t = list.find((x) => x.id === templateId)
+    if (!t) throw new CliError(`No template ${safeLine(templateId)}. List them with: orgai team templates`, EXIT.usage)
+    const question =
+      mode === 'replace'
+        ? `Replace the ${project.roles.length} role(s) of ${safeLine(project.name)} with template ${safeLine(t.name)} (${t.roleCount} role(s))? ${NO_UNDO}`
+        : `Add the ${t.roleCount} role(s) of template ${safeLine(t.name)} under the root of ${safeLine(project.name)}?`
+    if (!(await confirm(ctx, question, !!values.yes))) {
+      note(ctx, 'Nothing changed.')
+      return EXIT.failure
+    }
+    const res = await hostCall<AgentImportApplyResult>(client, 'templates:apply', [{ projectId: project.id, templateId, mode }])
+    const previousRoles = Array.isArray(res.previousRoles) ? res.previousRoles : []
+    emit(ctx, { project: projectJson(res.project), template: t, mode, roles: res.project.roles.length, previousRoles }, () => [
+      `Applied template ${safeLine(t.name)} (${mode}); the chart now has ${res.project.roles.length} role${res.project.roles.length === 1 ? '' : 's'}.`,
+      `${NO_UNDO_AFTER} The previous chart had ${previousRoles.length} role${previousRoles.length === 1 ? '' : 's'}.`
+    ])
+    return EXIT.ok
+  })
+}
+
+const templatesRemove: SubcommandFn = async (ctx, args) => {
+  const { values, positionals } = parseFlags(args, { yes: { type: 'boolean', short: 'y' } })
+  onlyPositionals(positionals, 1, 'team templates remove <id> [--yes]')
+  const templateId = checkArg('template id', positionals[0])
+  return withHost(ctx, ['read', 'configure'], async (client) => {
+    const list = await hostCall<OrgTemplateInfo[]>(client, 'templates:list', [])
+    const t = list.find((x) => x.id === templateId)
+    if (!t) throw new CliError(`No template ${safeLine(templateId)}.`, EXIT.usage)
+    if (!(await confirm(ctx, `Remove template ${safeLine(t.name)}?`, !!values.yes))) {
+      note(ctx, 'Nothing removed.')
+      return EXIT.failure
+    }
+    const rest = await hostCall<OrgTemplateInfo[]>(client, 'templates:remove', [templateId])
+    emit(ctx, { removed: templateId, templates: rest }, () => `Removed template ${safeLine(t.name)}.`)
+    return EXIT.ok
+  })
+}
+
+// ---------- roles ----------
+
+const grantCount = (r: Role): number => (r.mcpServers?.length ?? 0) + (r.skills?.length ?? 0)
+
+const teamRoles: SubcommandFn = async (ctx, args) => {
+  const { positionals } = parseFlags(args, {})
+  onlyPositionals(positionals, 0, 'team roles')
+  return withHost(ctx, ['read'], async (client) => {
+    const project = await requireProject(ctx, client)
+    const nameOf = new Map(project.roles.map((r) => [r.id, r.name]))
+    emit(
+      ctx,
+      {
+        project: projectJson(project),
+        roles: project.roles.map((r) => ({ id: r.id, slug: r.slug, name: r.name, model: r.model, tier: r.tier ?? null, reportsTo: r.reportsTo, grants: grantCount(r) }))
+      },
+      () => [
+        `${project.roles.length} role${project.roles.length === 1 ? '' : 's'} in ${safeLine(project.name)}:`,
+        ...project.roles.map((r) => {
+          const boss = r.reportsTo ? `reports to ${safeLine(nameOf.get(r.reportsTo) ?? r.reportsTo)}` : 'root'
+          const g = grantCount(r)
+          return `  ${safeLine(r.name)} [${safeLine(r.slug)}] · ${safeLine(roleTierWord(r))} · ${boss} · ${g} grant${g === 1 ? '' : 's'}`
+        })
+      ]
+    )
+    return EXIT.ok
+  })
+}
+
+const teamRole: SubcommandFn = async (ctx, args) => {
+  const { positionals } = parseFlags(args, {})
+  onlyPositionals(positionals, 1, 'team role <name-or-slug>')
+  const ref = checkArg('role name or slug', positionals[0])
+  return withHost(ctx, ['read'], async (client) => {
+    const project = await requireProject(ctx, client)
+    const role = findRole(project.roles, ref)
+    if (!role) throw new CliError(`No role "${safeLine(ref)}" in ${safeLine(project.name)}. List them with: orgai team roles`, EXIT.usage)
+    const nameOf = new Map(project.roles.map((r) => [r.id, r.name]))
+    const skills = new Map((project.skills ?? []).map((s) => [s.id, s.name]))
+    const servers = new Map((project.mcpServers ?? []).map((s) => [s.id, s.name]))
+    emit(ctx, { project: projectJson(project), role, promptHasHiddenCharacters: hasHidden(role.prompt) }, () => {
+      const lines = [
+        `${visible(role.name)} [${visible(role.slug)}]`,
+        `  id: ${role.id}`,
+        `  model: ${safeLine(role.model)} (${safeLine(roleTierWord(role))})${role.effort ? ` · effort ${role.effort}` : ''}`,
+        `  reports to: ${role.reportsTo ? visible(nameOf.get(role.reportsTo) ?? role.reportsTo) : 'nobody (root)'}`,
+        `  spawning: ${role.canSpawn ? (role.spawnable.length ? role.spawnable.map((id) => visible(nameOf.get(id) ?? id)).join(', ') : 'allowed, none listed') : 'no'}`,
+        `  tools: ${role.tools.length ? role.tools.map(visible).join(', ') : 'none'}`,
+        `  MCP grants: ${role.mcpServers?.length ? role.mcpServers.map((id) => visible(servers.get(id) ?? id)).join(', ') : 'none'}`,
+        `  skills: ${role.skills?.length ? role.skills.map((id) => visible(skills.get(id) ?? id)).join(', ') : 'none'}`
+      ]
+      if (role.description) lines.push(`  description: ${visible(role.description)}`)
+      if (role.responsibilities.length) {
+        lines.push('  responsibilities:')
+        for (const r of role.responsibilities) lines.push(`    - ${visible(r)}`)
+      }
+      if (hasHidden(role.prompt)) lines.push('  ! The prompt holds hidden characters, shown below as \\uXXXX.')
+      lines.push('  prompt:')
+      for (const l of safe(showHidden(role.prompt)).split('\n')) lines.push(`    ${l}`)
+      return lines
+    })
+    return EXIT.ok
+  })
+}
+
+// ---------- plugins ----------
+
+const teamPlugins: SubcommandFn = (ctx, args) => {
+  if (args.length === 0 || args[0].startsWith('-')) return pluginsList(ctx, args)
+  return runSubcommands(ctx, args, { list: pluginsList, add: pluginsAdd, remove: pluginsRemove }, 'team plugins [list] | add --path <dir> | remove <id>')
+}
+
+const pluginLine = (p: PluginSpec): string =>
+  `  ${p.id}  ${safeLine(p.name)} · ${safeLine(p.path)}${p.enabled ? '' : ' · disabled'}${p.skipMcpDiscovery ? ' · MCP servers not loaded' : ''}`
+
+const pluginsList: SubcommandFn = async (ctx, args) => {
+  const { positionals } = parseFlags(args, {})
+  onlyPositionals(positionals, 0, 'team plugins list')
+  return withHost(ctx, ['read'], async (client) => {
+    const project = await requireProject(ctx, client)
+    const list = project.plugins ?? []
+    emit(ctx, { project: projectJson(project), plugins: list }, () => (list.length ? [`${list.length} plugin${list.length === 1 ? '' : 's'}:`, ...list.map(pluginLine)] : 'No plugins.'))
+    return EXIT.ok
+  })
+}
+
+const pluginsAdd: SubcommandFn = async (ctx, args) => {
+  const { values, positionals } = parseFlags(args, {
+    path: { type: 'string' },
+    name: { type: 'string' },
+    id: { type: 'string' },
+    disabled: { type: 'boolean' },
+    'skip-mcp': { type: 'boolean' }
+  })
+  onlyPositionals(positionals, 1, 'team plugins add --path <dir> [--name <n>] [--id <id>] [--disabled] [--skip-mcp]')
+  const raw = values.path ?? positionals[0]
+  if (values.path !== undefined && positionals[0] !== undefined) throw new CliError('Give the plugin folder once (--path or as the argument).', EXIT.usage)
+  const dir = checkArg('plugin folder (--path)', raw)
+  const path = isAbsolute(dir) ? dir : resolve(ctx.cwd, dir)
+  const id = values.id !== undefined ? checkArg('plugin id', values.id) : undefined
+  if (id !== undefined && !/^[A-Za-z0-9_-]{1,64}$/.test(id)) throw new CliError('A plugin id is letters, digits, - and _ (at most 64).', EXIT.usage)
+  const name = values.name !== undefined ? checkArg('plugin name', values.name).trim() : ''
+  return withHost(ctx, ['read', 'configure'], async (client) => {
+    const project = await requireProject(ctx, client)
+    const existing = id ? (project.plugins ?? []).find((p) => p.id === id) : undefined
+    const plugin: PluginSpec = {
+      id: id ?? newId('plugin'),
+      name: name || existing?.name || '',
+      path,
+      enabled: !values.disabled,
+      ...(values['skip-mcp'] ? { skipMcpDiscovery: true } : {})
+    }
+    const saved = await hostCall<Project>(client, 'plugins:upsert', [{ projectId: project.id, plugin }])
+    const stored = (saved.plugins ?? []).find((p) => p.id === plugin.id) ?? plugin
+    emit(ctx, { project: projectJson(saved), plugin: stored }, () => `${existing ? 'Updated' : 'Added'} plugin ${safeLine(stored.name)} (${stored.id}).`)
+    return EXIT.ok
+  })
+}
+
+const pluginsRemove: SubcommandFn = async (ctx, args) => {
+  const { values, positionals } = parseFlags(args, { yes: { type: 'boolean', short: 'y' } })
+  onlyPositionals(positionals, 1, 'team plugins remove <id> [--yes]')
+  const pluginId = checkArg('plugin id', positionals[0])
+  return withHost(ctx, ['read', 'configure'], async (client) => {
+    const project = await requireProject(ctx, client)
+    const p = (project.plugins ?? []).find((x) => x.id === pluginId)
+    if (!p) throw new CliError(`No plugin ${safeLine(pluginId)} in this project.`, EXIT.usage)
+    if (!(await confirm(ctx, `Remove plugin ${safeLine(p.name)}?`, !!values.yes))) {
+      note(ctx, 'Nothing removed.')
+      return EXIT.failure
+    }
+    const saved = await hostCall<Project>(client, 'plugins:remove', [{ projectId: project.id, pluginId }])
+    emit(ctx, { project: projectJson(saved), removed: pluginId }, () => `Removed plugin ${safeLine(p.name)}.`)
+    return EXIT.ok
+  })
+}

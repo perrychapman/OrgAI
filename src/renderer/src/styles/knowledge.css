@@ -1,0 +1,725 @@
+/* Knowledge tab (docs/design/knowledge.md): list, filters and detail pane. Owned by views/KnowledgeView.tsx and components/knowledge/*.
+   Tokens only; both themes come from them. The grid is the same shape as .editor (layout.css): the side panel sets
+   --side-panel-w on it and the collapsed rail narrows the last column. Heights of group titles and rows are fixed so
+   lib/knowledgeList.ts can window the list (GROUP_TITLE_PX 32, ROW_PX 56, ROW_PLAIN_PX 44). */
+
+.knowledge {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) var(--side-panel-w, 360px);
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-areas:
+    'toolbar toolbar toolbar'
+    'filters main side';
+  container: knowledge / inline-size;
+  overflow: hidden;
+  background: var(--surface-0);
+}
+.knowledge:has(> .side-panel[data-collapsed='true']) {
+  grid-template-columns: auto minmax(0, 1fr) 40px;
+}
+.knowledge > .side-panel {
+  grid-area: side;
+}
+
+/* ---------- Toolbar (40 px) ---------- */
+.knowledge-toolbar {
+  grid-area: toolbar;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: var(--space-10);
+  padding: 0 var(--space-3);
+  background: var(--surface-1);
+  border-bottom: 1px solid var(--border-default);
+  min-width: 0;
+}
+.knowledge-toolbar .spacer {
+  flex: 1;
+}
+.knowledge-quiet {
+  color: var(--text-tertiary);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+}
+
+/* ---------- Filter column ---------- */
+.knowledge-filters {
+  grid-area: filters;
+  width: 240px;
+  box-sizing: border-box;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-3);
+  border-right: 1px solid var(--border-default);
+  background: var(--surface-1);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+@container knowledge (max-width: 1100px) {
+  .knowledge-filters {
+    width: 200px;
+    padding: var(--space-2);
+  }
+}
+.knowledge-filters:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.knowledge-filters-title {
+  margin: 0;
+  font-size: var(--text-title-sm);
+  line-height: var(--text-title-sm-lh);
+  font-weight: var(--weight-semibold);
+}
+.knowledge-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.knowledge-search .input {
+  width: 100%;
+  padding-left: var(--space-8);
+  padding-right: var(--space-8);
+}
+.knowledge-search-icon {
+  position: absolute;
+  left: var(--space-2);
+  display: inline-flex;
+  color: var(--text-tertiary);
+  pointer-events: none;
+}
+.knowledge-search-clear {
+  position: absolute;
+  right: var(--space-0h);
+  display: inline-flex;
+}
+.knowledge-chips-set {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+.knowledge-legend {
+  padding: 0;
+  margin: 0 0 var(--space-1h);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-secondary);
+  font-weight: var(--weight-semibold);
+}
+.knowledge-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1h);
+}
+.knowledge-chip {
+  padding: 0 var(--space-3);
+  height: var(--control-sm);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-full);
+  background: var(--surface-1);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--text-small);
+  cursor: pointer;
+  white-space: nowrap;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.knowledge-chip:hover {
+  background: var(--surface-2);
+  color: var(--text-primary);
+}
+.knowledge-chip[aria-pressed='true'] {
+  background: var(--accent-soft);
+  border-color: var(--accent-soft-border);
+  color: var(--text-primary);
+}
+.knowledge-chip:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.knowledge-chip-n {
+  color: var(--text-tertiary);
+}
+.knowledge-switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  font-size: var(--text-small);
+  color: var(--text-primary);
+}
+.knowledge-count {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-tertiary);
+}
+
+/* Chips carry the kind's 10 px mark (KindMark) in both layouts. */
+.knowledge-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1h);
+}
+.knowledge-note-dot {
+  background: var(--text-tertiary);
+}
+
+/* ---------- Filter band (Graph view, docs/design/knowledge-graph-2.md section 1.2) ---------- */
+/* The column becomes a band above the canvas: row 1 search and switches, row 2 the kind chips (two rows, then they scroll). */
+.knowledge[data-view='graph'] {
+  grid-template-columns: minmax(0, 1fr) var(--side-panel-w, 360px);
+  grid-template-areas:
+    'toolbar toolbar'
+    'filters side'
+    'main side';
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+.knowledge[data-view='graph']:has(> .side-panel[data-collapsed='true']) {
+  grid-template-columns: minmax(0, 1fr) 40px;
+}
+.knowledge-filters[data-layout='band'] {
+  width: auto;
+  overflow: visible;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1h) var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-right: 0;
+  border-bottom: 1px solid var(--border-default);
+}
+.knowledge-filters[data-layout='band'] .knowledge-search {
+  flex: 0 0 200px;
+}
+.knowledge-filters[data-layout='band'][data-compact='true'] .knowledge-search {
+  flex: 1 1 140px;
+  min-width: 0;
+}
+.knowledge-filters[data-layout='band'] .knowledge-origins .knowledge-chips {
+  flex-wrap: nowrap;
+}
+.knowledge-filters[data-layout='band'] .knowledge-origins {
+  flex: none;
+}
+.knowledge-inline-switch {
+  flex: none;
+}
+.knowledge-inline-switch .knowledge-switch-row {
+  justify-content: flex-start;
+  gap: var(--space-1h);
+  white-space: nowrap;
+}
+.knowledge-filters[data-layout='band'] .knowledge-count {
+  order: 1;
+  margin-left: auto;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+}
+.knowledge-filters[data-layout='band'] .knowledge-kinds {
+  order: 2;
+  flex: 1 0 100%;
+  max-height: 64px;
+  overflow-y: auto;
+}
+.knowledge-more-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  min-width: 14rem;
+}
+.knowledge-more-panel .knowledge-switch-row {
+  justify-content: space-between;
+}
+
+/* ---------- Main column: list, empty states, graph ---------- */
+.knowledge-main {
+  grid-area: main;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.knowledge-main > .banner,
+.knowledge-main > .knowledge-notice-wrap > .banner {
+  margin: var(--space-3) var(--space-3) 0;
+}
+.knowledge-notice-wrap {
+  flex: none;
+}
+.knowledge-main > .empty-state {
+  margin: auto;
+}
+.knowledge-loading {
+  padding: var(--space-3);
+}
+.knowledge-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0 0 var(--space-4);
+  list-style: none;
+}
+.knowledge-list:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.knowledge-group,
+.knowledge-group-rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.knowledge-group-title {
+  box-sizing: border-box;
+  height: 32px;
+  margin: 0;
+  padding: var(--space-2) var(--space-3) 0;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  font-weight: var(--weight-semibold);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.knowledge-group-n {
+  color: var(--text-tertiary);
+  font-weight: var(--weight-regular);
+}
+.knowledge-spacer {
+  display: block;
+}
+.knowledge-row {
+  box-sizing: border-box;
+  height: 56px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: var(--space-0h);
+  padding: 0 var(--space-3) 0 var(--space-4);
+  border-left: 3px solid transparent;
+  cursor: pointer;
+  min-width: 0;
+}
+.knowledge-row[data-excerpt='false'] {
+  height: 44px;
+}
+.knowledge-row:hover {
+  background: var(--surface-2);
+}
+.knowledge-row[aria-selected='true'] {
+  background: var(--accent-soft);
+  border-left-color: var(--accent);
+}
+.knowledge-row:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.knowledge-row[data-retired='true'] .knowledge-row-name,
+.knowledge-row[data-retired='true'] .knowledge-row-excerpt {
+  color: var(--text-tertiary);
+}
+.knowledge-row-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.knowledge-row-name {
+  font-size: var(--text-body);
+  line-height: var(--text-body-lh);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+  min-width: 0;
+  flex: 0 1 auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.knowledge-row-head .badge {
+  flex: none;
+}
+.knowledge-row-excerpt {
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.knowledge-row-prov {
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---------- Menus (the row menu and the per-row More actions popovers) ---------- */
+.knowledge-row-menu {
+  padding: var(--space-1);
+}
+.knowledge-menu {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0h);
+  min-width: 10rem;
+}
+.knowledge-menuitem {
+  all: unset;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--control-md);
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-body);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.knowledge-menuitem:hover {
+  background: var(--surface-3);
+}
+.knowledge-menuitem:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.knowledge-menuitem.danger {
+  color: var(--danger-text);
+}
+
+/* ---------- Detail pane ---------- */
+.knowledge-detail-body {
+  padding: var(--space-3) var(--space-4) var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.knowledge-detail-body:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.knowledge-detail-head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1h);
+  min-width: 0;
+}
+.knowledge-detail-name {
+  margin: 0;
+  font-size: var(--text-title);
+  line-height: var(--text-title-lh);
+  font-weight: var(--weight-semibold);
+  overflow-wrap: anywhere;
+  border-radius: var(--radius-sm);
+}
+.knowledge-detail-name:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.knowledge-detail-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1h);
+}
+.knowledge-detail-excerpt {
+  margin: 0;
+  font-size: var(--text-body);
+  line-height: var(--text-body-lh);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.knowledge-detail-fields {
+  margin: 0;
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--space-1h) var(--space-3);
+  align-items: baseline;
+}
+.knowledge-detail-fields dt {
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-secondary);
+}
+.knowledge-detail-fields dd {
+  margin: 0;
+  min-width: 0;
+  font-size: var(--text-body);
+  line-height: var(--text-body-lh);
+}
+@container side (max-width: 320px) {
+  .knowledge-detail-fields {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-0h);
+  }
+  .knowledge-detail-fields dt:not(:first-child) {
+    margin-top: var(--space-2);
+  }
+}
+
+/* Inline-editable values: at rest a button that reads as text, with a quiet edit affordance on hover and focus. */
+.inline-edit {
+  all: unset;
+  box-sizing: border-box;
+  display: block;
+  width: 100%;
+  min-height: var(--space-6);
+  padding: var(--space-0h) var(--space-1);
+  margin: 0 calc(-1 * var(--space-1));
+  border-radius: var(--radius-sm);
+  font: inherit;
+  color: inherit;
+  cursor: text;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.inline-edit:hover {
+  background: var(--surface-2);
+  box-shadow: inset 0 0 0 1px var(--border-default);
+}
+.inline-edit:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 0;
+}
+.inline-edit.is-empty {
+  color: var(--text-tertiary);
+  font-style: italic;
+}
+.inline-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.inline-field .input,
+.inline-field .textarea {
+  width: 100%;
+}
+.inline-field .textarea {
+  max-height: calc(8 * var(--text-body-lh) + var(--space-4));
+  resize: vertical;
+}
+.knowledge-detail-name .inline-edit {
+  font-weight: inherit;
+  font-size: inherit;
+  line-height: inherit;
+}
+.knowledge-field-error {
+  display: block;
+}
+
+/* Sections */
+.knowledge-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border-default);
+  min-width: 0;
+}
+.knowledge-section-title {
+  margin: 0;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  font-weight: var(--weight-semibold);
+  color: var(--text-secondary);
+}
+.knowledge-section-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.knowledge-fact-list,
+.knowledge-relation-list,
+.knowledge-note-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1h);
+}
+.knowledge-fact,
+.knowledge-relation,
+.knowledge-note-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.knowledge-fact-main,
+.knowledge-relation-main {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.knowledge-fact-main .input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.knowledge-fact[data-retired='true'] .input {
+  color: var(--text-tertiary);
+}
+.knowledge-relation-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: var(--text-body);
+  line-height: var(--text-body-lh);
+  overflow-wrap: anywhere;
+}
+.knowledge-relation[data-retired='true'] .knowledge-relation-text {
+  color: var(--text-tertiary);
+}
+.knowledge-relation-link,
+.knowledge-note-link {
+  font-weight: var(--weight-semibold);
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+.knowledge-relation-note,
+.knowledge-history-line {
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.knowledge-history-line {
+  margin: 0;
+}
+.knowledge-note-row {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.knowledge-relation-form,
+.knowledge-create {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.knowledge-relation-form .field,
+.knowledge-create .field {
+  position: relative;
+}
+.knowledge-picker {
+  margin: var(--space-1) 0 0;
+  padding: var(--space-1);
+  list-style: none;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  box-shadow: var(--elev-1);
+  max-height: var(--scroll-region-max);
+  overflow-y: auto;
+}
+.knowledge-picker-opt {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-body);
+  cursor: pointer;
+  min-width: 0;
+}
+.knowledge-picker-opt:hover {
+  background: var(--surface-3);
+}
+.knowledge-picker-opt[aria-selected='true'] {
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent-soft-border);
+}
+.knowledge-picker-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.knowledge-picker-kind {
+  flex: none;
+  font-size: var(--text-caption);
+  color: var(--text-tertiary);
+}
+/* Possible connections (docs/design/knowledge-graph-2.md section 2.2). */
+.knowledge-possible-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.knowledge-possible-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1h);
+  min-width: 0;
+}
+.knowledge-possible-other,
+.knowledge-possible-why {
+  margin: 0;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.knowledge-possible-other {
+  font-size: var(--text-body);
+  line-height: var(--text-body-lh);
+  color: var(--text-primary);
+}
+.knowledge-possible-statement {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1h);
+  font-size: var(--text-body);
+  line-height: var(--text-body-lh);
+  min-width: 0;
+}
+.knowledge-possible-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.knowledge-possible-statement .input {
+  flex: 1 1 8rem;
+  min-width: 6rem;
+  max-width: 14rem;
+}
+.knowledge-possible-failed {
+  margin: 0;
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}
+
+.knowledge-detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border-default);
+}
+.knowledge-detail-actions .danger-text {
+  color: var(--danger-text);
+}

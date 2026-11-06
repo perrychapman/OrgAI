@@ -1,11 +1,11 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AppSettings, Project, RunSummary, ProjectPeek, Proposal, QuickRunInfo, RunEvent, SkillsProposalPayload } from '@shared/types'
 import { DEFAULT_APP_SETTINGS, defaultConnections } from '@shared/defaults'
 import { harnessProject } from '../mcp/assist'
-import { RunManager, type RunManagerOptions } from './runManager'
+import { RunManager, resolveAllowedDirectories, type RunManagerOptions } from './runManager'
 import { RunStore } from '../store/runs'
 import { addRules, listRules } from './permissionRules'
 import { skillAssistContext } from '../skills/assist'
@@ -20,7 +20,9 @@ let dir: string
 let events: RunEvent[]
 
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), 'orgai-rma-'))
+  // Real path: macOS /var -> /private/var and the Windows 8.3 temp spelling differ from the lexical one,
+  // and RunManager reports real paths.
+  dir = realpathSync.native(mkdtempSync(join(tmpdir(), 'orgai-rma-')))
   events = []
 })
 afterEach(() => {
@@ -119,6 +121,10 @@ describe('quick runs', () => {
     expect(ctx.skills?.()).toEqual([])
     expect(skills.forRun).not.toHaveBeenCalled()
     expect(ctx.requestMcpInstall).toBeUndefined()
+    // Quick runs never get the library or the skill catalog (work runs of a real project do).
+    expect(ctx.mcpLibrary).toBeUndefined()
+    expect(ctx.skillCatalog).toBeUndefined()
+    expect(ctx.readSkill).toBeUndefined()
     expect(ctx.listRuns?.()).toEqual([])
     expect(await ctx.messageRun?.('run-x', 'hi')).toMatchObject({ result: 'refused', refusal: 'not-work' })
     expect(ctx.listProjects).toBeTypeOf('function')
@@ -282,7 +288,7 @@ describe('skill assistant runs', () => {
     const req2 = events.find((e): e is Extract<RunEvent, { type: 'proposal.request' }> => e.type === 'proposal.request' && e.runId === proj.id)!
     m.decideProposal(proj.id, req2.proposal.id, { behavior: 'approve' })
     expect(await pending2).toEqual({ behavior: 'approve' })
-    expect(setup.raw.applyProposal).toHaveBeenCalledWith('real', expect.objectContaining({ kind: 'skills' }))
+    expect(setup.raw.applyProposal).toHaveBeenCalledWith('real', expect.objectContaining({ kind: 'skills' }), { projectOnly: false })
     expect(events.some((e) => e.type === 'project.updated' && e.runId === proj.id)).toBe(true)
   })
 
@@ -363,6 +369,8 @@ describe('trust-restricted runs (quick runs and build sessions)', () => {
       const req = events.filter((e) => e.type === 'permission.request' && e.runId === run.id).at(-1) as Extract<RunEvent, { type: 'permission.request' }>
       m.decide(run.id, req.request.id, { behavior: 'allow', scope: 'project' })
       expect(await pending).toEqual({ behavior: 'allow', scope: 'session' })
+      const resolved = events.filter((e) => e.type === 'permission.resolved' && e.runId === run.id).at(-1)
+      expect(resolved).toEqual({ type: 'permission.resolved', runId: run.id, requestId: req.request.id })
       expect(existsSync(join(path, '.claude', 'settings.local.json'))).toBe(false)
     }
   })
@@ -380,10 +388,10 @@ describe('trust-restricted runs (quick runs and build sessions)', () => {
     const { m, ctxs } = rig({}, { live: true })
     const ws = join(dir, 'data', 'quick', 'quick_build2')
     mkdirSync(join(ws, '.claude'), { recursive: true })
-    writeFileSync(join(ws, '.claude', 'settings.local.json'), JSON.stringify({ permissions: { allow: ['Bash'] } }))
-    expect(listRules(ws)).toContain('Bash')
+    writeFileSync(join(ws, '.claude', 'settings.local.json'), JSON.stringify({ permissions: { allow: ['Bash(npm test:*)'] } }))
+    expect(listRules(ws)).toContain('Bash(npm test:*)')
     await m.start({ project: makeProject({ id: 'harness', roles: [], path: ws }), prompt: 'build', kind: 'mcp-assist', buildWorkspace: ws })
-    expect(ctxs[0].allowedRules?.()).not.toContain('Bash')
+    expect(ctxs[0].allowedRules?.()).not.toContain('Bash(npm test:*)')
   })
 
   it('a build session project-scope rule grant stays on the run', async () => {
@@ -407,5 +415,167 @@ describe('trust-restricted runs (quick runs and build sessions)', () => {
     store.upsert({ ...(store.get(run.id) as RunSummary), status: 'paused' })
     await expect(m.resumeNow(run.id)).rejects.toThrow(/workspace is gone/)
     expect(buildProject).toHaveBeenCalled()
+  })
+})
+
+describe('allowed folders and permission hooks', () => {
+  const mk = (name: string): string => {
+    const p = join(dir, name)
+    mkdirSync(p, { recursive: true })
+    return p
+  }
+  const warnings = (): string[] => events.filter((e): e is Extract<RunEvent, { type: 'log' }> => e.type === 'log' && e.level === 'warn').map((e) => e.message)
+  /** A fake save option over one in-memory project (mirrors ProjectStore.update: appends, never drops). */
+  function saver(p: Project) {
+    let stored = p
+    const save = vi.fn((_id: string, patch: { addDirectories?: string[]; acceptEdits?: true }) => {
+      stored = {
+        ...stored,
+        ...(patch.addDirectories ? { allowedDirectories: [...(stored.allowedDirectories ?? []), ...patch.addDirectories] } : {}),
+        ...(patch.acceptEdits ? { permissionMode: 'acceptEdits' as const } : {})
+      }
+      return stored
+    })
+    return { save, get: () => stored }
+  }
+
+  it('resolves existing folders at start, warns once for a missing one, keeps the project and data dir out', async () => {
+    const repo = mk('repo')
+    const shared = mk('shared')
+    const data = join(dir, 'data')
+    mkdirSync(join(data, 'inner'), { recursive: true })
+    const gone = join(dir, 'gone')
+    const p = makeProject({ path: repo, allowedDirectories: [shared, shared, gone, join(repo, 'sub'), data, join(data, 'inner'), dir] })
+    mkdirSync(join(repo, 'sub'), { recursive: true })
+    const { m, ctxs } = rig({ dataDir: data }, { live: true })
+    await m.start({ project: p, prompt: 'go' })
+    const dirs = ctxs[0].allowedDirectories!()
+    expect(dirs).toHaveLength(1)
+    expect(dirs[0].toLowerCase()).toBe(shared.toLowerCase())
+    expect(warnings().filter((w) => w.includes('does not exist'))).toEqual([`Allowed folder ${gone} does not exist; agents cannot use it in this run.`])
+    // the list is a copy
+    dirs.push('x')
+    expect(ctxs[0].allowedDirectories!()).toHaveLength(1)
+    await m.stopAll()
+  })
+
+  it('allowDirectories saves through the option, updates the list at once and broadcasts the project', async () => {
+    const repo = mk('repo')
+    const extra = mk('extra')
+    const p = makeProject({ path: repo })
+    const s = saver(p)
+    const { m, ctxs } = rig({ dataDir: join(dir, 'data'), saveProjectPermissions: s.save }, { live: true })
+    await m.start({ project: p, prompt: 'go' })
+    const ctx = ctxs[0]
+    expect(ctx.allowedDirectories!()).toEqual([])
+    const inForce = ctx.allowDirectories!([extra, join(dir, 'nope')])
+    expect(s.save).toHaveBeenCalledWith(p.id, { addDirectories: [extra, join(dir, 'nope')] })
+    expect(inForce).toHaveLength(1)
+    expect(inForce[0].toLowerCase()).toBe(extra.toLowerCase())
+    expect(ctx.allowedDirectories!().map((d) => d.toLowerCase())).toEqual([extra.toLowerCase()])
+    expect(events.some((e) => e.type === 'project.updated')).toBe(true)
+    expect(events.some((e) => e.type === 'log' && e.level === 'info' && e.message.startsWith('Allowed folders for this project:'))).toBe(true)
+    // the live project follows, with the run's canonical path kept
+    expect(ctx.project.allowedDirectories).toEqual([extra, join(dir, 'nope')])
+    await m.stopAll()
+  })
+
+  it('acceptEditsForProject switches only from default', async () => {
+    for (const mode of ['auto', 'plan', 'dontAsk', 'bypassPermissions', 'acceptEdits'] as const) {
+      const p = makeProject({ path: mk('repo'), permissionMode: mode })
+      const s = saver(p)
+      const { m, ctxs } = rig({ saveProjectPermissions: s.save }, { live: true })
+      await m.start({ project: p, prompt: 'go' })
+      expect(ctxs[0].acceptEditsForProject!()).toBe(false)
+      expect(s.save).not.toHaveBeenCalled()
+      await m.stopAll()
+    }
+    const p = makeProject({ path: mk('repo2'), permissionMode: 'default' })
+    const s = saver(p)
+    const { m, ctxs } = rig({ saveProjectPermissions: s.save }, { live: true })
+    await m.start({ project: p, prompt: 'go' })
+    expect(ctxs[0].acceptEditsForProject!()).toBe(true)
+    expect(ctxs[0].project.permissionMode).toBe('acceptEdits')
+    expect(ctxs[0].acceptEditsForProject!()).toBe(false)
+    expect(s.save).toHaveBeenCalledTimes(1)
+    expect(events.some((e) => e.type === 'log' && e.message === 'Permission mode set to Accept edits for this project.')).toBe(true)
+    await m.stopAll()
+  })
+
+  it('acceptEditsForProject returns false and stays quiet when the store declined the switch', async () => {
+    const p = makeProject({ path: mk('repo'), permissionMode: 'default' })
+    const save = vi.fn(() => p)
+    const { m, ctxs } = rig({ saveProjectPermissions: save }, { live: true })
+    await m.start({ project: p, prompt: 'go' })
+    expect(ctxs[0].acceptEditsForProject!()).toBe(false)
+    expect(save).toHaveBeenCalledTimes(1)
+    expect(events.some((e) => e.type === 'project.updated')).toBe(false)
+    expect(events.some((e) => e.type === 'log' && e.message === 'Permission mode set to Accept edits for this project.')).toBe(false)
+    await m.stopAll()
+  })
+
+  it('exposes the data folder (both spellings, deduped) as protectedDirectories on every run, restricted included', async () => {
+    const data = join(dir, 'data')
+    mkdirSync(data, { recursive: true })
+    const { m, ctxs } = rig({ dataDir: data }, { live: true })
+    await m.start({ project: makeProject({ path: mk('repo') }), prompt: 'go' })
+    await m.start({ project: quickProj({}), prompt: 'q', quick: quickInfo() })
+    expect(ctxs).toHaveLength(2)
+    for (const c of ctxs) {
+      const prot = c.protectedDirectories!()
+      expect(prot.length).toBeGreaterThanOrEqual(1)
+      expect(prot.length).toBeLessThanOrEqual(2)
+      expect(new Set(prot).size).toBe(prot.length)
+      expect(prot[0]).toBe(data)
+    }
+    const none = rig({}, { live: true })
+    await none.m.start({ project: makeProject({ path: mk('repo3') }), prompt: 'go' })
+    expect(none.ctxs[0].protectedDirectories!()).toEqual([])
+    await none.m.stopAll()
+    await m.stopAll()
+  })
+
+  it('drops too-broad folders (home, one holding the project, inside home config) with one warning each', async () => {
+    const home = mk('home')
+    mkdirSync(join(home, '.ssh'), { recursive: true })
+    const repo = join(home, 'work', 'repo')
+    mkdirSync(repo, { recursive: true })
+    const fine = mk('fine')
+    const direct = resolveAllowedDirectories([home, join(home, 'work'), join(home, '.ssh'), fine], { projectPath: repo, home })
+    expect(direct.dirs).toHaveLength(1)
+    expect(direct.unsafe).toEqual([home, join(home, 'work'), join(home, '.ssh')])
+    expect(direct.dropped).toEqual(direct.unsafe)
+    const { m } = rig({}, { live: true })
+    await m.start({ project: makeProject({ path: repo, allowedDirectories: [dir, join(dir, 'home', 'work')] }), prompt: 'go' })
+    const broad = warnings().filter((w) => w.includes('too broad or sensitive'))
+    expect(broad).toHaveLength(2)
+    expect(broad[0]).toContain(dir)
+    await m.stopAll()
+  })
+
+  it('has no hooks without the save option, but still lists folders', async () => {
+    const shared = mk('shared')
+    const { m, ctxs } = rig({}, { live: true })
+    await m.start({ project: makeProject({ path: mk('repo'), allowedDirectories: [shared] }), prompt: 'go' })
+    expect(ctxs[0].allowedDirectories!()).toHaveLength(1)
+    expect(ctxs[0].allowDirectories).toBeUndefined()
+    expect(ctxs[0].acceptEditsForProject).toBeUndefined()
+    await m.stopAll()
+  })
+
+  it('gives quick runs and build sessions no folders and no hooks', async () => {
+    const shared = mk('shared')
+    const s = saver(makeProject())
+    const { m, ctxs } = rig({ saveProjectPermissions: s.save }, { live: true })
+    await m.start({ project: quickProj({ allowedDirectories: [shared] }), prompt: 'q', quick: quickInfo() })
+    const ws = mk('ws')
+    await m.start({ project: makeProject({ id: 'harness', roles: [], path: ws, allowedDirectories: [shared] }), prompt: 'build', kind: 'mcp-assist', buildWorkspace: ws })
+    expect(ctxs).toHaveLength(2)
+    for (const c of ctxs) {
+      expect(c.allowedDirectories).toBeUndefined()
+      expect(c.allowDirectories).toBeUndefined()
+      expect(c.acceptEditsForProject).toBeUndefined()
+    }
+    await m.stopAll()
   })
 })

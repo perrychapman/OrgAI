@@ -1,5 +1,7 @@
-import type { ConnectionId, ConnectionInfo, ProjectPathCheck, SetupKind } from '@shared/types'
-import { CONNECTION_NAME } from './settingsCopy'
+import type { ConnectionInfo, ProjectKind, ProjectPathCheck, SetupKind } from '@shared/types'
+import { PROJECT_REFERENCE_DIRECTORIES_MAX, isProjectKind } from '@shared/types'
+import { connectionWithAuth, defaultConnectionInfo } from './connectionLabel'
+import { workingFolderProblem } from './folderLists'
 
 export type PathTone = 'error' | 'warn' | 'ok' | 'info'
 export interface PathStatus {
@@ -25,12 +27,18 @@ function fullPathExample(): string {
 }
 
 /** What to tell the user about the folder they typed, or null while there is nothing to say. */
-export function pathStatus(kind: SetupKind, path: string, check: ProjectPathCheck | null): PathStatus | null {
+export function pathStatus(kind: SetupKind, path: string, check: ProjectPathCheck | null, projectKind: ProjectKind = 'code'): PathStatus | null {
   const p = path.trim()
   if (!p) return null
   // A relative path would resolve against the app's own folder, so it is refused before anything is checked.
   if (!isFullPath(p)) return { tone: 'error', text: `Use a full path, for example ${fullPathExample()}`, blocking: true }
   if (!check) return null
+  if (projectKind === 'engagement') {
+    // The working folder must exist; nothing about git, emptiness or code is said.
+    if (!check.exists) return { tone: 'error', text: 'No folder at this path.', blocking: true }
+    if (!check.isDirectory) return { tone: 'error', text: 'This is a file, not a folder.', blocking: true }
+    return null
+  }
   // A folder that is not there never counts as empty, whatever else the check says.
   if (!check.exists && kind === 'existing') return { tone: 'error', text: 'No folder at this path.', blocking: true }
   if (check.exists && !check.isDirectory) return { tone: 'error', text: 'This is a file, not a folder.', blocking: true }
@@ -45,7 +53,11 @@ export function pathStatus(kind: SetupKind, path: string, check: ProjectPathChec
 }
 
 /** Why Create is disabled, or null when it can be submitted. */
-export function submitBlocker(input: { kind: SetupKind; name: string; path: string; brief: string; status: PathStatus | null }): string | null {
+export function submitBlocker(input: { kind: SetupKind; name: string; path: string; brief: string; status: PathStatus | null; projectKind?: ProjectKind }): string | null {
+  if (input.projectKind === 'engagement') {
+    if (!input.path.trim()) return 'Choose the working folder.'
+    return input.status?.blocking ? input.status.text : null
+  }
   if (!input.path.trim()) return input.kind === 'new' ? 'Choose a folder to create the project in.' : 'Choose the repository folder.'
   if (input.status?.blocking) return input.status.text
   if (input.kind === 'new') {
@@ -55,32 +67,72 @@ export function submitBlocker(input: { kind: SetupKind; name: string; path: stri
   return null
 }
 
-/** Same rule as projects:create: LiteLLM needs a proxy URL and key, OpenAI needs to be enabled, Anthropic always works. */
-export function connectionUsable(info: ConnectionInfo | undefined): boolean {
-  if (!info) return false
-  const c = info.connection
-  if (c.id === 'litellm') return !!c.baseUrl && c.hasApiKey
-  if (c.id === 'openai') return c.enabled
-  return true
+export interface NewProjectConnectionView {
+  text: string
+  /** The link button after the text ("Change" or "Connect"); null when there is nothing to open (mock). */
+  link: 'Change' | 'Connect' | null
 }
 
-/** The connection a new project will get: the default when usable, else Anthropic. */
-export function newProjectConnection(def: ConnectionId | null | undefined, connections: ConnectionInfo[] | null | undefined): ConnectionId {
-  if (!def || def === 'anthropic') return 'anthropic'
-  return connectionUsable(connections?.find((c) => c.connection.id === def)) ? def : 'anthropic'
+/**
+ * The New project form's connection line, from the effective default (connections:list `isDefault`) only; the
+ * renderer never works out a fallback. Before the list loads the line is empty.
+ */
+export function newProjectConnectionView(connections: readonly ConnectionInfo[] | null | undefined, mock = false): NewProjectConnectionView {
+  if (mock) return { text: 'Runs on the mock adapter (no tokens).', link: null }
+  if (!connections) return { text: '', link: null }
+  const def = defaultConnectionInfo(connections)
+  // "Nothing is connected" only when nothing is: a chosen default that dropped, or one still checking, is named instead.
+  if (!connections.some((c) => c.status.state === 'connected')) return { text: 'Nothing is connected yet.', link: 'Connect' }
+  if (!def) return { text: '', link: null }
+  if (def.status.state !== 'connected') return { text: `Runs on ${connectionWithAuth(def)}, which is not connected.`, link: 'Change' }
+  return { text: `Runs on ${connectionWithAuth(def)}.`, link: 'Change' }
 }
 
-/** The lead sentence of the new-project line (the "Change in App settings > Defaults" tail is added by the view). */
-export function newProjectConnectionNote(def: ConnectionId | null | undefined, connections: ConnectionInfo[] | null | undefined, mock = false): string {
-  if (mock) return 'Runs on the mock adapter (no tokens).'
-  const used = newProjectConnection(def, connections)
-  if (def && def !== used) return `${CONNECTION_NAME[def]} is not connected, so this project runs on ${CONNECTION_NAME[used]}.`
-  return `Runs on ${CONNECTION_NAME[used]}.`
+export const LAST_PROJECT_KIND_KEY = 'orgai.lastProjectKind'
+
+type KindStorage = Pick<Storage, 'getItem' | 'setItem'>
+
+function defaultStorage(): KindStorage | null {
+  try {
+    return typeof localStorage === 'undefined' ? null : localStorage
+  } catch {
+    return null
+  }
 }
 
-export function newProjectConnectionLine(def: ConnectionId | null | undefined, connections: ConnectionInfo[] | null | undefined, mock = false): string {
-  const note = newProjectConnectionNote(def, connections, mock)
-  return mock ? note : `${note} Change in App settings > Defaults.`
+/** The kind of the user's last created project, or null (first launch, junk, storage unavailable). */
+export function readLastProjectKind(storage: KindStorage | null = defaultStorage()): ProjectKind | null {
+  try {
+    const v = storage?.getItem(LAST_PROJECT_KIND_KEY)
+    return isProjectKind(v) ? v : null
+  } catch {
+    return null
+  }
+}
+
+export function writeLastProjectKind(kind: ProjectKind, storage: KindStorage | null = defaultStorage()): void {
+  try {
+    storage?.setItem(LAST_PROJECT_KIND_KEY, kind)
+  } catch {
+    /* remembering is a convenience */
+  }
+}
+
+function folderKey(path: string): string {
+  const p = path.trim().replace(/[\\/]+$/, '')
+  return /^[a-zA-Z]:|\\/.test(p) ? p.replace(/\//g, '\\').toLowerCase() : p
+}
+
+/** Adding one reference folder to the list: the new list, or the reason it was refused. */
+export function addReferenceFolder(list: readonly string[], input: string, workingFolder: string, kind: ProjectKind = 'engagement'): { list: string[] } | { error: string } {
+  const p = input.trim()
+  if (!p) return { error: 'Enter a folder path or choose one with Browse.' }
+  if (!isFullPath(p)) return { error: `Use a full path, for example ${fullPathExample()}` }
+  const outside = workingFolderProblem(p, workingFolder, kind)
+  if (outside) return { error: outside }
+  if (list.some((x) => folderKey(x) === folderKey(p))) return { error: 'This folder is already in the list.' }
+  if (list.length >= PROJECT_REFERENCE_DIRECTORIES_MAX) return { error: `At most ${PROJECT_REFERENCE_DIRECTORIES_MAX} folders.` }
+  return { list: [...list, p] }
 }
 
 /** The name to create with: the typed one, else the folder's name. */

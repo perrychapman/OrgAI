@@ -1,6 +1,16 @@
 import { describe, expect, it } from 'vitest'
 import type { AgentInstance } from '@shared/types'
-import { ancestorsOf, hasLiveDescendant, normalizeParents } from './agentTree'
+import { AGENT_LABEL_MAX, agentLabel, ancestorsOf, hasLiveDescendant, normalizeParents, splitLabelTail } from './agentTree'
+
+describe('splitLabelTail', () => {
+  it('keeps a short label whole', () => {
+    expect(splitLabelTail('Implementer')).toEqual({ head: 'Implementer', tail: '' })
+  })
+  it('keeps the end of a long handle apart so two reports stay different when clipped', () => {
+    expect(splitLabelTail('mock-lead-report-1')).toEqual({ head: 'mock-lead-rep', tail: 'ort-1' })
+    expect(splitLabelTail('mock-lead-report-1').tail).not.toBe(splitLabelTail('mock-lead-report-2').tail)
+  })
+})
 
 const ag = (id: string, parentId: string | null, state = 'done'): AgentInstance => ({ id, parentId, state }) as unknown as AgentInstance
 const map = (list: AgentInstance[]): Map<string, AgentInstance> => new Map(list.map((a) => [a.id, a]))
@@ -49,5 +59,27 @@ describe('hasLiveDescendant', () => {
   it('finds a live deep descendant and terminates on cycles', () => {
     expect(hasLiveDescendant([ag('r', null), ag('a', 'r'), ag('b', 'a', 'running')], 'r', settled)).toBe(true)
     expect(hasLiveDescendant([ag('a', 'b'), ag('b', 'a')], 'a', settled)).toBe(false)
+  })
+})
+
+describe('agentLabel', () => {
+  it('names an agent by its handle, as its canvas node does', () => {
+    expect(agentLabel({ name: 'Implementer', handle: 'runtime-lead-1' })).toBe('runtime-lead-1')
+  })
+  it('falls back to the role name when there is no handle or it is blank', () => {
+    expect(agentLabel({ name: 'Orchestrator' })).toBe('Orchestrator')
+    expect(agentLabel({ name: 'Implementer', handle: '  ' })).toBe('Implementer')
+  })
+  it('falls back to the role name for a handle with hidden or control characters', () => {
+    expect(agentLabel({ name: 'Implementer', handle: 'evil\u202Eparts' })).toBe('Implementer')
+    expect(agentLabel({ name: 'Implementer', handle: 'a\u200Bb' })).toBe('Implementer')
+    expect(agentLabel({ name: 'Implementer', handle: 'two\nlines' })).toBe('Implementer')
+    // Twice in a row: the check must not carry state between calls.
+    expect(agentLabel({ name: 'Implementer', handle: 'a\u200Bb' })).toBe('Implementer')
+  })
+  it('cuts a long handle with an ellipsis', () => {
+    const label = agentLabel({ name: 'Implementer', handle: 'x'.repeat(200) })
+    expect([...label]).toHaveLength(AGENT_LABEL_MAX)
+    expect(label.endsWith('…')).toBe(true)
   })
 })

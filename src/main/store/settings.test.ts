@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_APPEARANCE } from '@shared/defaults'
-import { SettingsStore, normalizeAppearance, normalizeSettings, reconcileAnthropicAuth, reconcileNearLimit } from './settings'
+import { SettingsStore, normalizeAppearance, normalizeSettings, reconcileAnthropicAuth, reconcileNearLimit, withoutUnchosenTerminalAccess } from './settings'
 
 describe('tier model validation', () => {
   it('drops renderer or file tier models that are not valid model ids', () => {
@@ -28,6 +28,17 @@ describe('tier model validation', () => {
 
 describe('modelPrices', () => {
   const price = { inputPerToken: 1e-6, outputPerToken: 2e-6 }
+
+  it('normalizes defaultRootModel / defaultReportModel as model refs (review fix-up)', () => {
+    const d = normalizeSettings({})
+    for (const bad of ['a b', 'new\nline', 'inherit', 'x'.repeat(201), 'caf\u00e9', 42]) {
+      const s = normalizeSettings({ defaultRootModel: bad, defaultReportModel: bad } as never)
+      expect(s.defaultRootModel, String(bad)).toBe(d.defaultRootModel)
+      expect(s.defaultReportModel, String(bad)).toBe(d.defaultReportModel)
+    }
+    expect(normalizeSettings({ defaultRootModel: ' openai/gpt-5 ', defaultReportModel: 'everyday' }).defaultRootModel).toBe('openai/gpt-5')
+    expect(normalizeSettings({ defaultReportModel: 'everyday' }).defaultReportModel).toBe('everyday')
+  })
 
   it('defaults to an empty list and ignores non-arrays', () => {
     expect(normalizeSettings({}).modelPrices).toEqual([])
@@ -234,10 +245,20 @@ describe('appearance', () => {
   it('keeps valid values and falls back field by field', () => {
     expect(
       normalizeAppearance({ theme: 'light', accent: '#22C58B', canvas: { pattern: 'grid', tint: false, edges: 'orthogonal', minimap: true }, reduceMotion: 'on' })
-    ).toEqual({ theme: 'light', accent: '#22c58b', canvas: { pattern: 'grid', tint: false, edges: 'orthogonal', minimap: true }, reduceMotion: 'on' })
-    expect(normalizeAppearance({ theme: 'sepia', accent: 'purple', canvas: { pattern: 'stars', tint: 'yes', edges: 3 }, reduceMotion: 'always' })).toEqual(DEFAULT_APPEARANCE)
+    ).toEqual({ theme: 'light', accent: '#22c58b', canvas: { pattern: 'grid', tint: false, edges: 'orthogonal', layout: 'top-down', nodeStyle: 'card', minimap: true }, reduceMotion: 'on' })
+    expect(normalizeAppearance({ theme: 'sepia', accent: 'purple', canvas: { pattern: 'stars', tint: 'yes', edges: 3, layout: 'spiral', nodeStyle: 'blob' }, reduceMotion: 'always' })).toEqual(DEFAULT_APPEARANCE)
     expect(normalizeAppearance({ theme: 'system', accent: '#AbC' })).toMatchObject({ theme: 'system', accent: '#aabbcc' })
     expect(normalizeAppearance('nonsense')).toEqual(DEFAULT_APPEARANCE)
+  })
+
+  it('loads a canvas saved before layout and nodeStyle existed with their defaults', () => {
+    const a = normalizeAppearance({ canvas: { pattern: 'grid', tint: false, edges: 'straight', minimap: true } })
+    expect(a.canvas).toEqual({ pattern: 'grid', tint: false, edges: 'straight', layout: 'top-down', nodeStyle: 'card', minimap: true })
+  })
+
+  it('keeps the new themed values and drops junk for pattern, layout and nodeStyle', () => {
+    expect(normalizeAppearance({ canvas: { pattern: 'starfield', layout: 'radial', nodeStyle: 'hex' } }).canvas).toMatchObject({ pattern: 'starfield', layout: 'radial', nodeStyle: 'hex' })
+    expect(normalizeAppearance({ canvas: { pattern: 7, layout: {}, nodeStyle: null } }).canvas).toMatchObject({ pattern: 'dots', layout: 'top-down', nodeStyle: 'card' })
   })
 })
 
@@ -272,6 +293,18 @@ describe('SettingsStore', () => {
     }
   })
 
+  it('keeps stored layout and nodeStyle when a partial canvas is set', () => {
+    const dir = tmp()
+    try {
+      const store = new SettingsStore(dir)
+      store.set({ ...store.get(), appearance: { ...DEFAULT_APPEARANCE, canvas: { ...DEFAULT_APPEARANCE.canvas, layout: 'radial', nodeStyle: 'hex' } } })
+      store.set({ ...store.get(), appearance: { canvas: { pattern: 'paper' } } as never })
+      expect(store.get().appearance.canvas).toMatchObject({ pattern: 'paper', layout: 'radial', nodeStyle: 'hex' })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('tells listeners about every save until they unsubscribe', () => {
     const dir = tmp()
     try {
@@ -283,6 +316,67 @@ describe('SettingsStore', () => {
       off()
       store.set({ ...store.get(), notifications: false })
       expect(seen).toEqual([false, true])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('defaultConnectionChosen', () => {
+  it('keeps an explicit boolean', () => {
+    expect(normalizeSettings({ defaultConnectionChosen: true }).defaultConnectionChosen).toBe(true)
+    expect(normalizeSettings({ defaultConnection: 'openai', defaultConnectionChosen: false }).defaultConnectionChosen).toBe(false)
+    expect(normalizeSettings({ defaultConnection: 'anthropic', defaultConnectionChosen: true }).defaultConnectionChosen).toBe(true)
+  })
+
+  it('migrates a pre-merge file: a non-anthropic default was the user pick, anthropic is automatic', () => {
+    expect(normalizeSettings({ defaultConnection: 'openai' }).defaultConnectionChosen).toBe(true)
+    expect(normalizeSettings({ defaultConnection: 'litellm' }).defaultConnectionChosen).toBe(true)
+    expect(normalizeSettings({ defaultConnection: 'anthropic' }).defaultConnectionChosen).toBe(false)
+    expect(normalizeSettings(null).defaultConnectionChosen).toBe(false)
+    for (const v of ['true', 1, null, {}]) expect(normalizeSettings({ defaultConnection: 'anthropic', defaultConnectionChosen: v } as never).defaultConnectionChosen).toBe(false)
+  })
+})
+
+describe('defaultConnectionReplaced', () => {
+  it('keeps a valid id while automatic and drops it otherwise', () => {
+    expect(normalizeSettings({ defaultConnection: 'openai', defaultConnectionChosen: false, defaultConnectionReplaced: 'anthropic' }).defaultConnectionReplaced).toBe('anthropic')
+    expect(normalizeSettings({ defaultConnection: 'openai', defaultConnectionChosen: true, defaultConnectionReplaced: 'anthropic' })).not.toHaveProperty('defaultConnectionReplaced')
+    expect(normalizeSettings({ defaultConnection: 'openai', defaultConnectionChosen: false, defaultConnectionReplaced: 'openai' })).not.toHaveProperty('defaultConnectionReplaced')
+    for (const v of ['bogus', 'toString', 1, null, {}]) {
+      expect(normalizeSettings({ defaultConnection: 'openai', defaultConnectionChosen: false, defaultConnectionReplaced: v } as never)).not.toHaveProperty('defaultConnectionReplaced')
+    }
+  })
+})
+
+describe('terminalServer', () => {
+  it('defaults to false and keeps only a boolean true', () => {
+    expect(normalizeSettings(undefined).terminalServer).toBe(false)
+    expect(normalizeSettings({}).terminalServer).toBe(false)
+    expect(normalizeSettings({ terminalServer: true }).terminalServer).toBe(true)
+    expect(normalizeSettings({ terminalServer: false }).terminalServer).toBe(false)
+    for (const junk of ['true', 1, null, {}, []]) expect(normalizeSettings({ terminalServer: junk } as never).terminalServer).toBe(false)
+  })
+
+  it("terminalAccessLevel keeps only 'full' (missing = operate)", () => {
+    expect(normalizeSettings({})).not.toHaveProperty('terminalAccessLevel')
+    expect(normalizeSettings({ terminalAccessLevel: 'full' }).terminalAccessLevel).toBe('full')
+    for (const junk of ['operate', 'FULL', true, 1, null, {}]) expect(normalizeSettings({ terminalAccessLevel: junk } as never)).not.toHaveProperty('terminalAccessLevel')
+  })
+
+  it('reads Terminal access saved on without a choice (an older headless boot) as off; a chosen one stays (review H2)', () => {
+    const on = normalizeSettings({ terminalServer: true })
+    expect(withoutUnchosenTerminalAccess(on).terminalServer).toBe(false)
+    const chosen = normalizeSettings({ terminalServer: true, terminalServerChosen: true })
+    expect(withoutUnchosenTerminalAccess(chosen)).toBe(chosen)
+    const dir = mkdtempSync(join(tmpdir(), 'orgai-term-'))
+    try {
+      writeFileSync(join(dir, 'settings.json'), JSON.stringify({ version: 1, settings: { terminalServer: true, terminalAccessLevel: 'full' } }))
+      const s = new SettingsStore(dir).get()
+      expect(s.terminalServer).toBe(false)
+      expect(s.terminalAccessLevel).toBe('full')
+      writeFileSync(join(dir, 'settings.json'), JSON.stringify({ version: 1, settings: { terminalServer: true, terminalServerChosen: true } }))
+      expect(new SettingsStore(dir).get().terminalServer).toBe(true)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

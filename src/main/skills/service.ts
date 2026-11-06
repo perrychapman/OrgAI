@@ -15,6 +15,7 @@ import {
   type SkillImportInput,
   type SkillImportPreview,
   type SkillInfo,
+  type SkillBundleInput,
   type SkillLibraryEntry,
   type SkillLibraryFolderInput,
   type SkillLibraryInfo,
@@ -30,7 +31,7 @@ import type { ProjectStore } from '../store/projects'
 import { SkillLibraryStore } from '../store/skillLibrary'
 import type { RunSkill } from '../runtime/types'
 import type { SkillRunSource, SkillServiceApi, SkillSnapshotInput } from './types'
-import { childPath, digestFiles, fileInfos, readStoredFolder, removeFolder, writeFolder, type FileData } from './files'
+import { childPath, digestFiles, fileInfos, readBundle, readStoredFolder, removeFolder, writeFolder, type FileData } from './files'
 import { composeSkillMd, parseSkillMd, skillFromMd, validDraft } from './skillMd'
 import { skillProposalProblem } from './assist'
 import { buildScannedSkill, planImport, scanRepoSkills, scanSkillFolder, type ScannedSkill } from './scan'
@@ -224,6 +225,27 @@ export class SkillService implements SkillServiceApi, SkillRunSource {
     if (!md) throw new Error('The skill has no SKILL.md.')
     const text = md.data.toString('utf8')
     return { skillMd: text, body: parseSkillMd(text).body, files: fileInfos(files) }
+  }
+
+  // ---------- team files (src/main/teamFiles/service.ts) ----------
+
+  /** The stored files of a project skill (a link's are its library entry's); null when missing or unreadable. */
+  teamReadFiles(projectId: string, spec: SkillSpec): FileData[] | null {
+    try {
+      return readStoredFolder(this.specDir(projectId, spec))
+    } catch {
+      return null
+    }
+  }
+
+  /** Writes a project skill's own folder (SKILL.md and files, replaced as a unit). Throws on an unsafe id or path. */
+  teamStoreFiles(projectId: string, skillId: string, files: FileData[]): void {
+    writeFolder(this.ownDir(projectId, skillId), files)
+  }
+
+  /** Removes a project skill's own folder (never a library entry's). */
+  teamRemoveFiles(projectId: string, skillId: string): void {
+    removeFolder(this.ownDir(projectId, skillId))
   }
 
   // ---------- project skills ----------
@@ -575,6 +597,29 @@ export class SkillService implements SkillServiceApi, SkillRunSource {
     return this.libraryList()
   }
 
+  /**
+   * skillLibrary:addFromBundle (cli-spec 3.6 item 1): the folder path's twin for files sent as base64 (Wave 1 socket
+   * channel; the input has been through files.ts `bundleArgs`). No filesystem path is taken from the caller.
+   * readBundle decodes and checks every file, buildScannedSkill parses SKILL.md (skillFromMd: name and description
+   * only re-emitted, shell-injection bodies refused) with `input.name` as the folder-name fallback, and addEntry
+   * installs it through writeFolder: a temp staging dir beside the entry under the library dir, renamed into place
+   * (removed on any failure), then the index is saved.
+   *
+   * Library mutation mutex: every SkillService method is synchronous, so this read-validate-write sequence cannot
+   * interleave with another library mutation in this process (the name check and the install happen in one turn of
+   * the event loop).
+   */
+  libraryAddFromBundle(input: SkillBundleInput): SkillLibraryInfo[] {
+    const read = readBundle(input)
+    if (!read.ok) throw new Error(read.reason)
+    const name = typeof input?.name === 'string' ? input.name : ''
+    const skill = buildScannedSkill(read.files, name, name, null)
+    if (typeof skill === 'string') throw new Error(skill)
+    this.addEntry(this.newEntry(skill.name, skill.description, 'user', skill.data), skill.data)
+    this.notifyLibrary()
+    return this.libraryList()
+  }
+
   libraryUpdate(input: { libraryId: string; draft: SkillDraft }): SkillLibraryInfo[] {
     const prev = this.entry(input?.libraryId)
     const d = validDraft(input.draft)
@@ -613,6 +658,38 @@ export class SkillService implements SkillServiceApi, SkillRunSource {
     removeFolder(this.libDir(entry.id))
     this.notifyLibrary()
     return this.libraryList()
+  }
+
+  /** For the practice kit: a library skill's files (read from OrgAI's own folder). Throws "Library skill not found". */
+  libraryFilesForKit(libraryId: string): { name: string; description: string; files: FileData[] } {
+    const entry = this.entry(libraryId)
+    return { name: entry.name, description: entry.description, files: readStoredFolder(this.libDir(entry.id)) }
+  }
+
+  /**
+   * For the practice kit: add a validated skill to the library, or replace the files of `replaceId` (same name; every
+   * project that links it is refreshed). The caller has already validated name, description and files (buildScannedSkill).
+   */
+  libraryImportForKit(input: { name: string; description: string; files: FileData[] }, replaceId?: string): SkillLibraryEntry {
+    if (replaceId === undefined) {
+      const entry = this.newEntry(input.name, input.description, 'user', input.files)
+      this.addEntry(entry, input.files)
+      this.notifyLibrary()
+      return entry
+    }
+    const prev = this.entry(replaceId)
+    if (prev.name !== input.name) throw new Error('The library skill has another name.')
+    const dir = this.libDir(prev.id)
+    writeFolder(dir, input.files)
+    const entry: SkillLibraryEntry = { ...prev, description: input.description, source: 'user', digest: digestFiles(input.files), files: fileInfos(input.files), updatedAt: this.now() }
+    this.library.save(entry)
+    for (const p of this.deps.projects.list()) {
+      if (!p.skills?.some((s) => s.libraryId === entry.id)) continue
+      const saved = this.deps.projects.save({ ...p, skills: p.skills.map((s) => (s.libraryId === entry.id ? linkedSnapshot(entry, s) : s)) })
+      this.deps.onProjectChanged?.(saved)
+    }
+    this.notifyLibrary()
+    return entry
   }
 
   // ---------- shared ----------
@@ -680,7 +757,8 @@ export class SkillService implements SkillServiceApi, SkillRunSource {
     return Object.assign(restore, { discard: () => rmSync(tmp, { recursive: true, force: true }) })
   }
 
-  applyProposal(projectId: string | null, payload: SkillsProposalPayload): Project | null {
+  /** opts.projectOnly (work runs, review L3): scope 'library' items are refused here too, not only by propose_skills. */
+  applyProposal(projectId: string | null, payload: SkillsProposalPayload, opts: { projectOnly?: boolean } = {}): Project | null {
     const items = payload?.items
     const project = projectId === null ? null : this.project(projectId)
     const lib = this.library.list()
@@ -689,12 +767,13 @@ export class SkillService implements SkillServiceApi, SkillRunSource {
       projectSession: project !== null,
       roleSlugs: project ? project.roles.map((r) => r.slug) : [],
       library: lib.map((e) => ({ id: e.id, name: e.name })),
-      projectSkills: (view?.skills ?? []).map((s) => ({ id: s.id, name: s.name, ...(s.libraryId ? { libraryId: s.libraryId } : {}) }))
+      projectSkills: (view?.skills ?? []).map((s) => ({ id: s.id, name: s.name, ...(s.libraryId ? { libraryId: s.libraryId } : {}) })),
+      ...(opts.projectOnly ? { allowLibrary: false } : {})
     })
     if (problem) throw new Error(problem)
     const libCreates = items.filter((i) => i.scope === 'library' && i.action === 'create').length
     if (lib.length + libCreates > SKILL_MAX_PER_PROJECT) throw new Error(`The skill library holds at most ${SKILL_MAX_PER_PROJECT} skills.`)
-    const projCreates = items.filter((i) => i.scope === 'project' && i.action === 'create').length
+    const projCreates = items.filter((i) => i.scope === 'project' && (i.action === 'create' || i.action === 'link')).length
     if ((view?.skills?.length ?? 0) + projCreates > SKILL_MAX_PER_PROJECT) throw new Error(`A project has at most ${SKILL_MAX_PER_PROJECT} skills.`)
     for (const it of items) {
       if (it.scope !== 'library' || it.action !== 'update') continue
@@ -719,7 +798,21 @@ export class SkillService implements SkillServiceApi, SkillRunSource {
           continue
         }
         const ids = roleIds(it)
-        if (it.action === 'create') {
+        if (it.action === 'link') {
+          this.linkLibrary({ projectId: project!.id, libraryId: it.libraryId as string, ...(ids ? { roleIds: ids } : {}) })
+        } else if (it.action === 'grant' || it.action === 'remove') {
+          const name = it.draft.name.trim()
+          const skill = (this.refreshed(this.project(project!.id)).project.skills ?? []).find((s) => s.name === name)
+          if (!skill) throw new Error(`This project has no skill named "${name}".`)
+          if (it.action === 'remove') this.remove({ projectId: project!.id, skillId: skill.id })
+          else
+            this.update({
+              projectId: project!.id,
+              skillId: skill.id,
+              ...(ids ? { roleIds: ids } : {}),
+              ...(typeof it.enabled === 'boolean' ? { enabled: it.enabled } : {})
+            })
+        } else if (it.action === 'create') {
           this.create({ projectId: project!.id, draft: it.draft, ...(ids ? { roleIds: ids } : {}) }, 'user')
         } else {
           const name = it.draft.name.trim()

@@ -7,6 +7,8 @@ describe('run layout', () => {
   it('single-agent runs default to the conversation', () => {
     expect(isSingleAgentRun({ kind: 'work', quick: quick() })).toBe(true)
     expect(isSingleAgentRun({ kind: 'mcp-assist' })).toBe(true)
+    expect(isSingleAgentRun({ kind: 'work', team: 'single' })).toBe(true)
+    expect(speaksAsAssistant({ kind: 'work', projectId: 'p1', team: 'single' })).toBe(true)
     expect(isSingleAgentRun({ kind: 'skill-assist' })).toBe(true)
     expect(runLayoutFor({ kind: 'work', quick: quick() })).toBe('conversation')
   })
@@ -18,6 +20,11 @@ describe('run layout', () => {
   it('the user choice wins', () => {
     expect(runLayoutFor({ kind: 'mcp-assist' }, 'canvas')).toBe('canvas')
     expect(runLayoutFor({ kind: 'work' }, 'conversation')).toBe('conversation')
+  })
+  it('an ended continuable work run in a narrow window defaults to the conversation, a choice still wins', () => {
+    expect(runLayoutFor({ kind: 'work' }, undefined, { endedNarrow: true })).toBe('conversation')
+    expect(runLayoutFor({ kind: 'work' }, 'canvas', { endedNarrow: true })).toBe('canvas')
+    expect(runLayoutFor({ kind: 'work' }, undefined, { endedNarrow: false })).toBe('canvas')
   })
 })
 
@@ -46,6 +53,7 @@ describe('assistants', () => {
   it('labels kinds', () => {
     expect(runKindLabel({ kind: 'work', quick: quick() })).toBe('Chat')
     expect(runKindLabel({ kind: 'work' })).toBe('Run')
+    expect(runKindLabel({ kind: 'work', team: 'single' })).toBe('Ask')
     expect(runKindLabel({ kind: 'skill-assist' })).toBe('Skill assistant')
   })
   it('labels folder and access', () => {
@@ -66,7 +74,7 @@ describe('assistants', () => {
   })
   it('summarises a chat', () => {
     expect(chatSummaryLine({ scratch: true, allowEdits: false, model: 'Everyday tier', connection: 'Anthropic' })).toBe(
-      'Works in a private scratch area. Reads files, asks before editing. Runs on Everyday tier via Anthropic. Change in App settings > Defaults. Counts toward your usage.'
+      'Works in a private scratch area. Reads files, asks before editing. Runs on Everyday tier via Anthropic. Counts toward your usage.'
     )
     const line = chatSummaryLine({ scratch: false, folderName: 'api', allowEdits: true, model: '', mock: true })
     expect(line).toContain('Works in api. Reads and edits files')
@@ -80,6 +88,7 @@ describe('assistants', () => {
     const base = { kind: 'work' as const, projectId: 'p1', status: 'finished' as const }
     expect(offersRetro(base)).toBe(true)
     expect(offersRetro({ ...base, quick: quick() })).toBe(false)
+    expect(offersRetro({ ...base, team: 'single' })).toBe(false)
     expect(offersRetro({ ...base, projectId: 'quick' })).toBe(false)
     expect(offersRetro({ ...base, kind: 'setup' })).toBe(false)
     expect(offersRetro({ ...base, status: 'running' })).toBe(false)

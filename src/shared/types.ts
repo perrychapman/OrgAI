@@ -152,7 +152,22 @@ export interface ConnectionInfo {
    * last good catalog and never changes `status`; a manual refresh or connect still reports errors in `status`.
    */
   modelsError?: string
+  /**
+   * This connection is the effective default connection (defaults.ts `effectiveDefaultConnection` over the stored
+   * AppSettings.defaultConnection, defaultConnectionChosen and the live statuses). Exactly one entry of
+   * connections:list has it. The renderer reads this instead of guessing from AppSettings.defaultConnection.
+   */
+  isDefault: boolean
 }
+
+/**
+ * connections:setDefault input. A ConnectionId makes it the default and marks it chosen
+ * (AppSettings.defaultConnectionChosen true); refused with a readable error naming the connection when it is not
+ * usable (defaults.ts `connectionUsable`) unless it already is the stored default. null returns to automatic
+ * (defaultConnectionChosen false; the stored value is rewritten to the effective one at once). Both clear
+ * AppSettings.defaultConnectionReplaced. The only way the renderer changes the default (settings:set keeps it).
+ */
+export type ConnectionDefaultInput = ConnectionId | null
 
 /** connections:setSecret. Only LiteLLM has a stored secret today. null clears the stored key. */
 export interface ConnectionSecretInput {
@@ -279,15 +294,19 @@ export interface RemapModelsOutput {
 }
 
 /**
- * Which adapter a project's run uses (adapterForProject). For 'litellm' the root role's model family decides;
- * every role in the run must then share it, because one run drives one adapter.
+ * Which adapter a project's run uses (adapterForProject). For 'litellm' the root role's model family decides, and
+ * one run drives that one adapter; reports may run any model the proxy serves (each role's model id goes through).
  */
 export interface AdapterChoice {
   adapter: ProviderId
   connection: ConnectionId
   /** Family of the root role's model, when it is known. */
   family?: ModelFamily
-  /** Ids of roles whose model would need the other adapter. Non-empty = the run cannot start as configured. */
+  /**
+   * Ids of roles whose model family differs from the adapter's. Informational on 'litellm' (show it as a notice);
+   * a work run is refused only per mixedFamilyRefusal: on LiteLLM when the root has no family, and on the
+   * single-family connections (anthropic, openai), where their catalogs make it unreachable.
+   */
   mismatched: string[]
 }
 
@@ -303,6 +322,13 @@ export type ConnectionEvent =
   | { type: 'models.updated'; connection: ConnectionId; models: ProviderModel[]; changed?: boolean; refreshedAt?: number }
   /** A connection change remapped role models. Only projects with at least one change are listed; reload them. */
   | { type: 'projects.remapped'; results: RemapResult[] }
+  /**
+   * An mcp:authorize with `announceUrl` is about to wait for its callback. Sent on the 'connections' host.subscribe
+   * topic only when announceUrl was set (the CLI's `orgai mcp auth`). It carries no token or PKCE verifier. The socket
+   * server delivers it only to the socket whose mcp:authorize for that target is in flight (socketServer.ts), never to
+   * every 'connections' subscriber; the desktop window still gets it.
+   */
+  | { type: 'mcp.authorize'; authorize: McpAuthorizeUrlUpdate }
 
 /** Model choices are provider-scoped aliases or full model IDs. */
 export type ModelRef = string
@@ -405,9 +431,12 @@ export interface Role {
  */
 export type PermissionMode = 'auto' | 'acceptEdits' | 'default' | 'dontAsk' | 'plan' | 'bypassPermissions'
 
-/** Every permission mode, recommended first, with the label settings selects show. */
+/**
+ * Every permission mode, recommended first, with the label settings selects show. Labels are provider-neutral: they
+ * never name a vendor or model, because every connection (Claude, Codex, LiteLLM) shares them.
+ */
 export const PERMISSION_MODE_OPTIONS: { value: PermissionMode; label: string }[] = [
-  { value: 'auto', label: 'Unattended: Claude decides each call, asks only when unsure' },
+  { value: 'auto', label: "Unattended: the model's safety check approves routine calls and asks when unsure" },
   { value: 'acceptEdits', label: 'Auto-accept file edits, ask for commands' },
   { value: 'default', label: 'Ask for everything risky' },
   { value: 'dontAsk', label: 'Never ask: deny anything that would need approval' },
@@ -421,19 +450,99 @@ export function isPermissionMode(v: unknown): v is PermissionMode {
   return typeof v === 'string' && (PERMISSION_MODES as string[]).includes(v)
 }
 
+/** Most extra folders a project may list in `Project.allowedDirectories`. */
+export const PROJECT_ALLOWED_DIRECTORIES_MAX = 20
+/** Longest path accepted in `Project.allowedDirectories`. */
+export const PROJECT_ALLOWED_DIRECTORY_MAX_CHARS = 1024
+/** Most read-only folders a project may list in `Project.referenceDirectories` (same cap as allowed folders). */
+export const PROJECT_REFERENCE_DIRECTORIES_MAX = PROJECT_ALLOWED_DIRECTORIES_MAX
+/** Longest path accepted in `Project.referenceDirectories`. */
+export const PROJECT_REFERENCE_DIRECTORY_MAX_CHARS = PROJECT_ALLOWED_DIRECTORY_MAX_CHARS
+/** Longest `Project.client` kept. */
+export const PROJECT_CLIENT_MAX_CHARS = 120
+/** Most characters of the engagement document put into each agent's prompt (a truncation note follows). */
+export const ENGAGEMENT_DOCUMENT_PROMPT_MAX_CHARS = 16_000
+
+/** Where a project's saved "always allow" rules live: the project folder's .claude/settings.local.json, or OrgAI's data folder. */
+export type ProjectRulesLocation = 'folder' | 'app'
+
+/**
+ * What a project is for. 'code': a software repository (the original OrgAI project). 'engagement': client or
+ * practice work in any field: a working folder for deliverables (often not git), read-only reference folders, and
+ * the Architect specialises the neutral engagement chart from its interview. OrgAI writes nothing into an engagement's
+ * working folder (it is often a share the client can see): the engagement document lives at
+ * `<data>/projects/<id>/ENGAGEMENT.md` and reaches agents through their prompt, saved rules at
+ * `<data>/projects/<id>/permission-rules.json`, no CLAUDE.md, no .orgai/, and writers never run in git worktrees
+ * (no .git/info/exclude edit). Industry-neutral by design: no built-in
+ * role, prompt or label names a field of work. Read it only through defaults.ts `projectKindOf` (missing = 'code').
+ */
+export type ProjectKind = 'code' | 'engagement'
+export const PROJECT_KINDS: readonly ProjectKind[] = ['code', 'engagement']
+export function isProjectKind(v: unknown): v is ProjectKind {
+  return typeof v === 'string' && (PROJECT_KINDS as readonly string[]).includes(v)
+}
+
 export interface Project {
   id: string
   name: string
   /** Working directory the agents operate in. */
   path: string
+  /**
+   * What the project is for (see ProjectKind). Missing = 'code'; ProjectStore drops any other value on read and save.
+   * Read it through defaults.ts `projectKindOf(project)`. Set by projects:create (`ProjectCreateInput.kind`).
+   */
+  kind?: ProjectKind
+  /**
+   * Absolute folders agents may READ like the project folder but never change (client material, source documents).
+   * Passed to the provider as extra readable folders; every adapter refuses Edit / Write / MultiEdit / NotebookEdit
+   * (and Codex file changes) under them with "<folder> is a reference folder: agents may read it, not change it".
+   * Bash writes there are NOT gated (the permission mode still applies to Bash). At most
+   * PROJECT_REFERENCE_DIRECTORIES_MAX, each at most PROJECT_REFERENCE_DIRECTORY_MAX_CHARS. Cleaned by ProjectStore on
+   * save and on read with the allowedDirectories rules (relative, roots, UNC / device, OrgAI's data folder either
+   * way, the project or inside it, a folder containing it, home or above, home config folders dropped silently;
+   * duplicates collapse); a folder listed in both lists stays only in allowedDirectories. The folders need not exist.
+   */
+  referenceDirectories?: string[]
+  /**
+   * Whether this folder's own agent config may load (section "Folder config trust" near the end of this file). Written
+   * only by main: projects:create sets it when the folder holds anything from REPO_CONFIG_PATHS, the trust channel
+   * changes it, and a renderer save keeps the stored value. Absent = state 'none': today's behaviour (projects stored
+   * before this field, and folders with no such config at creation).
+   */
+  folderConfigTrust?: FolderConfigTrust
+  /**
+   * Engagements: who the work is for, in the user's own words (plain text, no category list), so the renderer can
+   * group engagements by client. At most PROJECT_CLIENT_MAX_CHARS; ProjectStore trims it on save and read, drops it
+   * when empty, not a string or holding control, zero-width, bidi or other hidden characters. The engagement
+   * Architect asks for it and propose_settings may set it.
+   */
+  client?: string
+  /**
+   * Extra folders, absolute paths, that agents may read and edit like the project folder (passed to the provider as
+   * additional working directories; edits there follow the project's permission mode). At most
+   * PROJECT_ALLOWED_DIRECTORIES_MAX. Normalized by the main process on save and on read (ProjectStore
+   * `cleanAllowedDirectories`): relative paths, drive roots, UNC / device paths, OrgAI's data folder (or a folder
+   * inside or containing it) and duplicates are dropped silently. The folders need not exist.
+   */
+  allowedDirectories?: string[]
   /** Free text describing the project and the kind of work done in it. Feeds the AI drafter. */
   brief: string
   provider: ProviderConfig
   permissionMode: PermissionMode
   /** Hard spend cap per run in USD. undefined = no cap. */
   maxBudgetUsd?: number
-  maxSubagentDepth: number
-  maxConcurrentSubagents: number
+  /**
+   * How many levels of reports may spawn their own reports. Missing = automatic: defaults.ts
+   * `effectiveSubagentLimits` derives it from the org chart (longest reportsTo chain in edges plus 1, at least 1, at
+   * most MAX_SUBAGENT_DEPTH_LIMIT). An explicit value is the user's override and is kept as saved. Every reader goes
+   * through `effectiveSubagentLimits`; ProjectStore never fills it in.
+   */
+  maxSubagentDepth?: number
+  /**
+   * Most reports running at once. Missing = automatic: DEFAULT_MAX_CONCURRENT_SUBAGENTS through
+   * `effectiveSubagentLimits`. An explicit value is the user's override.
+   */
+  maxConcurrentSubagents?: number
   /**
    * Run reports that can edit files in their own git worktree, and merge each report back
    * when it finishes. Needs a git repository; silently off otherwise. Default true.
@@ -454,7 +563,9 @@ export interface Project {
   /**
    * Subscription plans (Anthropic connection): spawn new deep- or top-tier reports on the connection's everyday tier
    * while the guarding weekly window (the deep model's own weekly window, else the seven-day window) is at or above
-   * the app's opusGuardThreshold. Read through defaults.ts preferEverydayNearLimit (falls back to the legacy field).
+   * the app's opusGuardThreshold. Read it through defaults.ts `planGuardOf` ('on' | 'off' | 'auto'; the legacy field
+   * is honoured): explicit true = on, explicit false = off, missing = 'auto', which engages only while the run's
+   * connection reports a weekly plan window or a rate-limit status 'allowed_warning' (`planGuardEngaged`).
    */
   preferEverydayNearLimit?: boolean
   /** @deprecated Legacy name of preferEverydayNearLimit; read only when that is unset. */
@@ -467,11 +578,17 @@ export interface Project {
   /** Upper bound on automatic continues per run. Default DEFAULT_MAX_AUTO_CONTINUES. */
   maxAutoContinues?: number
   /**
-   * Cross-run messaging ("Let runs message each other" in Project settings). On by default: missing =
-   * DEFAULT_RUN_MESSAGING (on) and an explicit false turns it off. message_run is refused unless the sender's and the
+   * Cross-run messaging ("Let runs message each other" in Project settings). Missing = on for 'code' projects
+   * (DEFAULT_RUN_MESSAGING) and off for engagements; an explicit value always wins. message_run is refused unless the sender's and the
    * target's projects both have it on; read it with runMessagingOn() from defaults.ts. Saved through projects:save.
    */
   runMessaging?: boolean
+  /**
+   * Engagements: add known knowledge-graph items to what an agent receives (RuntimeContext.knowledgeContext, no model
+   * call). Unset = on; only an explicit false turns it off. Read it with knowledgeAutoContextOn() from
+   * shared/knowledge.ts; never fill a default in a store or newProject. Saved through projects:save.
+   */
+  knowledgeAutoContext?: boolean
   roles: Role[]
   /**
    * MCP servers this project's agents may use (mcp__<name>__* tools). Missing = none. Secret values are
@@ -569,7 +686,32 @@ export type McpAuthTarget = { libraryId: string } | { projectId: string; serverI
  * mcp:authorize input. clientId / clientSecret are write-only: stored (the secret in safeStorage) and never
  * echoed. A linked project server is authorized through its library entry ({ libraryId }).
  */
-export type McpAuthorizeInput = McpAuthTarget & { clientId?: string; clientSecret?: string }
+export type McpAuthorizeInput = McpAuthTarget & {
+  clientId?: string
+  clientSecret?: string
+  /**
+   * CLI only (`orgai mcp auth`, cli-spec 6.3(5)): false = the host does not open a browser itself (an SSH session, where
+   * the user opens the URL on their own computer). Default true.
+   */
+  openBrowser?: boolean
+  /**
+   * CLI only: true = before waiting for the callback the host sends the authorization URL as a connections:event
+   * `mcp.authorize` (McpAuthorizeUrlUpdate) on the 'connections' host.subscribe topic.
+   */
+  announceUrl?: boolean
+}
+
+/** connections:event `mcp.authorize`: the OAuth authorization URL of an mcp:authorize that set announceUrl. */
+export interface McpAuthorizeUrlUpdate {
+  target: McpAuthTarget
+  /** The authorization URL the user opens (it carries the PKCE challenge and state, never the verifier or a token). */
+  url: string
+  /** The loopback redirect the authorization server calls back (for the SSH port-forward hint). */
+  redirectUri?: string
+  /** True when the host opened a browser itself. */
+  openedBrowser: boolean
+  at: number
+}
 
 /** The MCP Registry package a server was installed from. */
 export interface McpRegistryRef {
@@ -749,8 +891,9 @@ export interface ConnectorVariant {
   id: string
   label: string
   description?: string
-  transport: 'http' | 'sse'
-  /** https only. */
+  /** Curated presets: 'http' | 'sse'. 'stdio' only on a custom preset's variant (command / args / env, url ''). */
+  transport: McpTransport
+  /** https only; '' for a custom preset's stdio variant. */
   url: string
   /** Non-secret headers sent with every request, e.g. GitHub's X-MCP-Readonly. */
   headers?: Record<string, string>
@@ -769,8 +912,8 @@ export interface ConnectorDef {
   name: string
   /** Who runs the server, e.g. "Google". */
   vendor: string
-  /** Every preset points at the vendor's own server. */
-  publisher: 'official'
+  /** Curated presets point at the vendor's own server ('official'); 'user' = a custom preset (UserConnectorDef). */
+  publisher: 'official' | 'user'
   category: ConnectorCategory
   /** One line for the gallery card. */
   description: string
@@ -816,7 +959,10 @@ export interface ConnectorInfo {
 /** connectors:add input. The renderer names a preset; main builds the URL, headers and auth from the catalog. */
 export interface ConnectorAddInput {
   connectorId: string
-  /** A ConnectorVariant id; missing or unknown = the connector's defaultVariant. */
+  /**
+   * A ConnectorVariant id; missing or unknown = the connector's defaultVariant for a new entry. For an existing entry
+   * that is not connected, a different valid id switches the entry to that variant; a connected entry keeps its own.
+   */
   variant?: string
 }
 
@@ -832,7 +978,7 @@ export interface ConnectorTokenInput {
  * credentials and OAuth authorization live with it, and projects link it (McpServerSpec.libraryId). The name
  * is unique within the library.
  */
-export type McpLibraryEntry = Omit<McpServerSpec, 'enabled' | 'roles' | 'libraryId'> & {
+export type McpLibraryEntry = Omit<McpServerSpec, 'enabled' | 'roles' | 'libraryId' | 'envOverrides' | 'headerOverrides'> & {
   /**
    * Connector entries only, written by the main process: epoch ms when its auth last succeeded (OAuth authorize,
    * connectors:setToken with a token, or connectors:add for an auth kind 'none' preset). Cleared by mcp:revokeAuth,
@@ -1192,10 +1338,17 @@ export interface SkillLibraryFolderInput {
   path: string
 }
 
-/** Project.skillEvaluation: proactive skill evaluation. Missing = DEFAULT_SKILL_EVALUATION (off). */
+/**
+ * Project.skillEvaluation: proactive skill evaluation. Missing = DEFAULT_SKILL_EVALUATION. Read it through defaults.ts
+ * `skillEvaluationOf`, which always returns `enabled` filled in.
+ */
 export interface SkillEvaluationSettings {
-  /** Allows the model-assisted step of skills:evaluate (the deterministic checks always run). Default false. */
-  enabled: boolean
+  /**
+   * Allows the model-assisted step of skills:evaluate (the deterministic checks always run). Missing = follow the Team
+   * assistant: on exactly when `teamReviewOf(project).auto === 'ai'`, so one project setting drives both model steps.
+   * An explicit true or false is an override and wins.
+   */
+  enabled?: boolean
   /** Most tokens (input + output) one skills:evaluate may spend on the model-assisted step. */
   tokenBudget: number
 }
@@ -1386,6 +1539,8 @@ export interface McpInstallRequest {
   /** Secret names (from spec.secretEnv and spec.secretHeaders) the user must fill to approve. */
   requiredSecrets: string[]
   createdAt: number
+  /** Card revision, set by RunManager when the card is created (1 for now). Decision calls may send expectedRevision. */
+  revision?: number
 }
 
 /**
@@ -1412,6 +1567,8 @@ export interface McpAnswerInstallInput {
   runId: string
   requestId: string
   decision: McpInstallDecision
+  /** Refused as 'stale-revision' when it does not match the card's revision (cli-spec 5.3). */
+  expectedRevision?: number
 }
 
 /**
@@ -1465,8 +1622,18 @@ export const RUN_TITLE_MAX_CHARS = 32
 /** 'system' follows the OS (Electron nativeTheme); the renderer resolves it with matchMedia('(prefers-color-scheme: dark)'). */
 export type ThemeMode = 'dark' | 'light' | 'system'
 export const THEME_MODES: readonly ThemeMode[] = ['dark', 'light', 'system']
-export type CanvasPattern = 'dots' | 'grid' | 'none'
-export const CANVAS_PATTERNS: readonly CanvasPattern[] = ['dots', 'grid', 'none']
+/** Canvas background. 'blueprint', 'paper', 'isometric', 'circuit', 'terminal' and 'starfield' are themed backdrops. */
+export type CanvasPattern = 'dots' | 'grid' | 'none' | 'blueprint' | 'paper' | 'isometric' | 'circuit' | 'terminal' | 'starfield'
+export const CANVAS_PATTERNS: readonly CanvasPattern[] = ['dots', 'grid', 'none', 'blueprint', 'paper', 'isometric', 'circuit', 'terminal', 'starfield']
+/** How the org chart is arranged. 'top-down' and 'left-right' are dagre rank directions; 'radial' puts the root at the centre with each depth on a ring. */
+export type CanvasLayout = 'top-down' | 'left-right' | 'radial'
+export const CANVAS_LAYOUTS: readonly CanvasLayout[] = ['top-down', 'left-right', 'radial']
+/**
+ * How an agent is drawn. 'card' is the 240x112 card; 'compact' is a name-tag pill with the state ring, details on
+ * select; 'station' is a subway-map circle on one coloured line per lead; 'hex' is a honeycomb tile.
+ */
+export type CanvasNodeStyle = 'card' | 'compact' | 'station' | 'hex'
+export const CANVAS_NODE_STYLES: readonly CanvasNodeStyle[] = ['card', 'compact', 'station', 'hex']
 export type CanvasEdgeStyle = 'curved' | 'orthogonal' | 'straight'
 export const CANVAS_EDGE_STYLES: readonly CanvasEdgeStyle[] = ['curved', 'orthogonal', 'straight']
 
@@ -1481,6 +1648,10 @@ export interface AppearanceSettings {
     /** Tint the canvas background with the accent. */
     tint: boolean
     edges: CanvasEdgeStyle
+    /** Chart arrangement. Main fills 'top-down' for settings saved before it existed. */
+    layout: CanvasLayout
+    /** Agent drawing. Main fills 'card' for settings saved before it existed. */
+    nodeStyle: CanvasNodeStyle
     minimap: boolean
   }
   /** 'system' honours prefers-reduced-motion; 'on' always reduces motion. */
@@ -1524,8 +1695,27 @@ export interface AppSettings {
   providerAuth: ProviderAuth
   /** App-wide connection records (no secrets). Filled with defaults for settings saved before connections existed. */
   connections: ProviderConnections
-  /** Connection new projects use. Default 'anthropic'. */
+  /**
+   * Connection new projects, Chat and the MCP and Skill assistants use. Default 'anthropic'. Consumers read the
+   * effective value (ConnectionService `effectiveDefault()`, defaults.ts `effectiveDefaultConnection`), never this
+   * field alone. While defaultConnectionChosen is false, the main process rewrites it to the effective connection
+   * (only after a definite 'disconnected' of the stored one, or when the replaced one connects again) and broadcasts
+   * settings:changed. Main-owned: settings:set always keeps the stored value; change it with connections:setDefault.
+   */
   defaultConnection: ConnectionId
+  /**
+   * The user picked defaultConnection explicitly (connections:setDefault with an id). false = automatic (written
+   * explicitly by connections:setDefault(null) and every automatic rewrite). Main-owned, settings:set keeps the stored
+   * value. Normalized by store/settings.ts: a file saved before the field existed loads as
+   * `defaultConnection !== 'anthropic'` (a non-default value there was the user's pick).
+   */
+  defaultConnectionChosen?: boolean
+  /**
+   * The connection the first automatic rewrite replaced, while the default is automatic. When it reports 'connected'
+   * again the default moves back to it and the field is cleared. Main-owned (settings:set keeps the stored value);
+   * cleared by connections:setDefault.
+   */
+  defaultConnectionReplaced?: ConnectionId
   /**
    * OS attention notifications on or off. The single source of truth: the main process reads it every time it
    * decides to notify. Default true.
@@ -1538,7 +1728,10 @@ export interface AppSettings {
    * top-tier reports on the everyday tier. (The name predates tiers.)
    */
   opusGuardThreshold: number
-  /** preferEverydayNearLimit for new projects. Default false. */
+  /**
+   * @deprecated Was "preferEverydayNearLimit for new projects". New projects now leave preferEverydayNearLimit unset
+   * (automatic, `planGuardOf`); kept and normalized for old settings files only.
+   */
   defaultPreferEverydayNearLimit: boolean
   /**
    * @deprecated Mirror of defaultPreferEverydayNearLimit for older renderer code; settings:set keeps the two in step
@@ -1561,6 +1754,31 @@ export interface AppSettings {
    * runs re-price on their next usage update); persisted runs keep the cost they were saved with.
    */
   modelPrices?: ModelPriceOverride[]
+  /**
+   * Terminal access: external CLI / TUI clients (host.hello from clientKind 'cli' | 'tui' over the host socket,
+   * cli-spec 3.3) are accepted only while this is true; otherwise host.hello answers 'terminal_server_disabled'.
+   * Default false (normalized: only a boolean true stays true). A host booted as 'headless-host' or 'inproc' accepts
+   * terminal clients for that session only (OrgAIHost.terminalAccess, bootstrap.ts), never saving true, unless the user
+   * has chosen a value (terminalServerChosen). A stored true without terminalServerChosen (an older build saved it on
+   * a headless boot) is read as false (store/settings.ts).
+   */
+  terminalServer: boolean
+  /**
+   * What Terminal access lets a terminal client do: host.hello grants at most these scopes (socketServer.ts
+   * scopesForAccessLevel). Missing = 'operate': read and operate (watch, start, send to, interrupt and stop runs);
+   * 'full' adds decide (answer decision cards) and configure (settings, projects, MCP, permissions, connections).
+   * Only the desktop window changes it in practice: settings:set needs 'configure', which a socket client gets only
+   * when this is already 'full', so the socket can lower it but never raise it. A `--host inproc` host applies it to
+   * every client too; only the CLI process that started it gets every scope, through RpcHelloParams.ownerProof (an
+   * in-memory key). Normalized: only 'full' is stored.
+   */
+  terminalAccessLevel?: TerminalAccessLevel
+  /**
+   * Main-owned: true once a settings:set changed terminalServer (the user's choice in App settings, or a configure
+   * client). A headless or in-process boot then never turns terminal access on by itself. settings:set never writes
+   * it directly (args.ts settingsSetArgs).
+   */
+  terminalServerChosen?: boolean
 }
 
 /**
@@ -1606,8 +1824,32 @@ export interface ProjectProfile {
    * `.github/agents`...), project-relative. Missing on profiles taken before the importer existed.
    */
   agentDefinitions?: string[]
+  /**
+   * The kind the profile was taken for. Missing = 'code' (and on profiles taken before engagements existed). An
+   * engagement profile (setup/profile.ts) has no git log and no manifests; `languages` then counts file types,
+   * keyFiles holds only .md / .txt notes (README, brief, notes), and the two fields below are set.
+   */
+  kind?: ProjectKind
+  /** Engagement profiles: top-level folder names (at most 50). */
+  topFolders?: string[]
+  /**
+   * Engagement profiles: project-relative paths of documents found (.docx .xlsx .pptx .pdf .md .txt .csv), at most
+   * PROFILE_DOCUMENTS_MAX; `documentsTruncated` when more were found.
+   */
+  documents?: string[]
+  documentsTruncated?: boolean
 }
 
+/** Most document paths an engagement ProjectProfile lists. */
+export const PROFILE_DOCUMENTS_MAX = 200
+
+/**
+ * The approved charter. Code projects: the architecture (summary, stack, modules, conventions, commands, risks),
+ * written to .orgai/ARCHITECTURE.md. Engagements reuse the fields with engagement meaning, written to
+ * .orgai/ENGAGEMENT.md: summary = engagement summary; stack = platforms and systems involved; modules = workstreams
+ * with their folders; conventions = working agreements and deliverable standards; commands = recurring procedures
+ * (may be empty); risks.
+ */
 export interface ArchitectureSpec {
   summary: string
   stack: string[]
@@ -1622,7 +1864,10 @@ export interface ProjectSetup {
   state: SetupState
   profile?: ProjectProfile
   architecture?: ArchitectureSpec
-  /** Repo-relative path of the architecture document written on approval. */
+  /**
+   * Repo-relative path of the architecture document written on approval (code projects). Unset for engagements: their
+   * document is in OrgAI's data folder (`<data>/projects/<id>/ENGAGEMENT.md`) and is never written to the folder.
+   */
   architecturePath?: string
   /** The Architect's closing summary. */
   summary?: string
@@ -1651,8 +1896,14 @@ export interface SettingsProposalPayload {
   autoContinue?: boolean
   /** Automatic continues allowed per run. */
   maxAutoContinues?: number
-  /** Permission rules to save as project allow rules, e.g. "Bash(npm:*)". Merged into .claude/settings.local.json. */
+  /**
+   * Permission rules to save as project allow rules, e.g. "Bash(npm:*)". Saved where the project keeps its rules
+   * (defaults.ts `projectRulesLocation`): .claude/settings.local.json for code projects, OrgAI's data folder for
+   * engagements.
+   */
   allowRules?: string[]
+  /** Engagements: the client's name in the user's own words (Project.client rules; '' clears it). */
+  client?: string
   rationale: string
 }
 
@@ -1661,7 +1912,12 @@ export interface SettingsProposalPayload {
  * fields are a display snapshot); otherwise a new server that is also saved to the library and linked, unless
  * `projectOnly`. Library scope: a library entry (enabled, roles, libraryId and projectOnly are ignored).
  */
-export type McpProposalServer = McpServerSpec & { projectOnly?: boolean }
+/**
+ * `configOnly` (main-written, work runs): a name-only item that only switches an existing project server on or off or
+ * changes its roles. It lists the fields the item sets; at approval main applies just those onto the server as stored
+ * then, and the rest of the spec (a snapshot for the card) is never written back.
+ */
+export type McpProposalServer = McpServerSpec & { projectOnly?: boolean; configOnly?: ('enabled' | 'roles')[] }
 
 /**
  * MCP proposal (propose_mcp_servers, from the MCP assistant or the Architect in setup): servers to add or replace,
@@ -1689,21 +1945,38 @@ export interface McpServersProposalPayload {
 export const SKILL_PROPOSAL_MAX_ITEMS = 10
 
 /**
- * One skill change in a Skill assistant proposal. 'create' writes a new skill; 'update' rewrites SKILL.md of an
- * existing one (resource files kept). scope 'library' targets the skill library (libraryId names the entry on
- * update); scope 'project' targets the session's project (libraryId unused; the skill is matched by draft.name on
- * update). The draft follows the skill limits (name [a-z0-9-] at most 64, never "anthropic" or "claude";
- * description 1..1024 without < or >; body at most SKILL_BODY_MAX_CHARS; no shell injection).
+ * One skill change in a skills proposal (propose_skills: the Skill assistant, and a work run's orchestrator for its
+ * own project). 'create' writes a new skill; 'update' rewrites SKILL.md of an existing one (resource files kept).
+ * scope 'library' targets the skill library (libraryId names the entry on update); scope 'project' targets the
+ * session's project (libraryId unused; the skill is matched by draft.name on update). The draft follows the skill
+ * limits (name [a-z0-9-] at most 64, never "anthropic" or "claude"; description 1..1024 without < or >; body at most
+ * SKILL_BODY_MAX_CHARS; no shell injection).
+ *
+ * Configuration actions, scope 'project' only, never write a SKILL.md: draft.body is '' and the harness fills
+ * draft.name / draft.description with the target skill's (a library entry's for 'link'), so a card can name it.
+ * - 'link': link the library entry `libraryId` into the project; `roles` are the slugs that load it.
+ * - 'grant': change which roles load the project skill named draft.name and/or whether it is enabled. `roles` is
+ *   the complete slug list after the change ([] = no role); omitted keeps the grants. `enabled` omitted keeps the
+ *   state. At least one of the two is set.
+ * - 'remove': remove the project skill named draft.name (a link is unlinked; the library entry stays) and its grants.
  */
 export interface SkillProposalItem {
-  action: 'create' | 'update'
-  /** Library entry id; 'update' with scope 'library' only. */
+  action: 'create' | 'update' | 'link' | 'grant' | 'remove'
+  /** Library entry id: 'update' with scope 'library', and 'link'. */
   libraryId?: string
   draft: SkillDraft
-  /** Role slugs to grant the skill to after creating or updating it. Project scope only; ignored for the library. */
+  /**
+   * Role slugs to grant the skill to after the change. Project scope only; ignored for the library. On 'grant' it is
+   * the complete list after the change.
+   */
   roles?: string[]
+  /** 'grant' only: enable (true) or disable (false) the project skill; omitted keeps the state. */
+  enabled?: boolean
   scope: 'library' | 'project'
 }
+
+/** Actions of SkillProposalItem that change configuration only (no SKILL.md is written; draft.body is ''). */
+export const SKILL_CONFIG_ACTIONS = ['link', 'grant', 'remove'] as const
 
 /** Skill proposal (propose_skills, from the Skill assistant): at most SKILL_PROPOSAL_MAX_ITEMS items. */
 export interface SkillsProposalPayload {
@@ -1719,7 +1992,19 @@ interface ProposalBase {
   agentId: string
   title: string
   createdAt: number
+  /**
+   * When an approved proposal takes effect, set by the harness (runManager.ts proposalEffect) so the card can say so:
+   * 'now' (the live run sees it from the next tool call), 'after-turn' (once the current turn ends and the session is
+   * re-attached), 'next-run' (this run keeps its configuration). Work-run 'mcpServers' / 'skills' proposals:
+   * 'after-turn' on Claude and Codex, 'now' on the mock; everything else 'next-run'. Missing on older events.
+   */
+  effect?: ProposalEffect
+  /** Card revision, set by RunManager when the card is created (1 for now). Decision calls may send expectedRevision. */
+  revision?: number
 }
+
+/** When an approved proposal takes effect (Proposal.effect). */
+export type ProposalEffect = 'now' | 'after-turn' | 'next-run'
 
 export type Proposal =
   | (ProposalBase & { kind: 'architecture'; payload: ArchitectureSpec })
@@ -1728,7 +2013,36 @@ export type Proposal =
   | (ProposalBase & { kind: 'mcpServers'; payload: McpServersProposalPayload })
   | (ProposalBase & { kind: 'skills'; payload: SkillsProposalPayload })
 
-export type ProposalDecision = { behavior: 'approve' } | { behavior: 'revise'; feedback: string }
+/**
+ * The user's answer to a proposal card (setup:decide). 'approve' applies it; 'revise' sends feedback and the agent may
+ * propose again; 'decline' applies nothing and tells the agent not to propose the same change again in this run.
+ * `secrets` (kind 'mcpServers' approvals only, like McpInstallDecision.secrets): values for the payload's secret
+ * slots, keyed by proposalSecretKey(slot) = '<serverId>:<env|header>:<name>'; a key that names no slot of the payload
+ * is ignored. Stored in SecretStore on apply under the server's owner (the project server, or its library entry when
+ * linked; the library entry in a library session) and never put in any event or tool result.
+ */
+export type ProposalDecision =
+  | { behavior: 'approve'; secrets?: Record<string, string> }
+  | { behavior: 'revise'; feedback: string }
+  | { behavior: 'decline'; note?: string }
+
+/**
+ * The secret-free outcome of a proposal, carried by the proposal.resolved event and returned to the harness tool.
+ * `waitingForSecrets` (approved 'mcpServers' only): names of servers that still have an empty secret slot and do
+ * not start until the user sets it in Settings.
+ */
+export type ProposalOutcome =
+  | { behavior: 'approve'; waitingForSecrets?: string[] }
+  | { behavior: 'revise'; feedback: string }
+  | { behavior: 'decline'; note?: string }
+
+/** At most this many characters in a proposal decision's feedback or note (longer text is cut in main). */
+export const PROPOSAL_NOTE_MAX_CHARS = 4000
+
+/** The key of one secret slot of an MCP proposal in ProposalDecision.secrets. */
+export function proposalSecretKey(slot: { serverId: string; kind: McpSecretKind; name: string }): string {
+  return `${slot.serverId}:${slot.kind}:${slot.name}`
+}
 
 /** A multiple-choice question the Architect (setup) or the orchestrator (work runs) puts to the user (ask_user tool). */
 export interface UserQuestion {
@@ -1740,6 +2054,8 @@ export interface UserQuestion {
   allowMultiple: boolean
   allowFreeText: boolean
   createdAt: number
+  /** Card revision, set by RunManager when the card is created (1 for now). Decision calls may send expectedRevision. */
+  revision?: number
 }
 
 /** The user's answer: chosen option labels plus optional free text. Empty when the run ended unanswered. */
@@ -1935,7 +2251,21 @@ export interface RunUsage {
   legacy?: true
   /** Skills loaded in the run (skill.used events), most loaded first. Missing = none (or a run before skills existed). */
   skills?: SkillUseCount[]
+  /** Knowledge graph reads served to agents (knowledge_recall and auto context). Missing = none (or an older run). */
+  knowledge?: KnowledgeServedUsage
   updatedAt: number
+}
+
+/** RunUsage.knowledge: counted by RunManager, never by an adapter. */
+export interface KnowledgeServedUsage {
+  /** knowledge_recall calls answered. */
+  recalls: number
+  /** knowledgeContext blocks added to what an agent received (nulls are not counted). */
+  autoContexts: number
+  /** Entities served in full across both paths ("already shown" lines are not counted). */
+  itemsServed: number
+  /** Characters of tool results and context blocks served. */
+  charsServed: number
 }
 
 /** runs:usageStats input. */
@@ -1945,7 +2275,9 @@ export interface UsageStatsQuery {
   since?: number
   /** Only runs started before this time (epoch ms). */
   until?: number
-  /** Run kinds to include. Default ['work']. */
+  /** A local calendar month (UsageStatsRange); replaces since / until when set. */
+  range?: UsageStatsRange
+  /** Run kinds to include. Default ['work']; pass every RunKind to count setup and assistant runs too. */
   kinds?: RunKind[]
   /** Trend bucket size, by local calendar day or ISO week (Monday start). Default 'day'. */
   bucket?: 'day' | 'week'
@@ -1963,6 +2295,11 @@ export const USAGE_STATS_MAX_LIMIT = 2000
 export interface RunUsageRow {
   runId: string
   kind: RunKind
+  /**
+   * 'single' when RunSummary.team is 'single' (an Ask run); absent otherwise. The CSV `kind` column is then 'ask'
+   * instead of 'work'; its values are the RunKind values plus 'ask'.
+   */
+  team?: 'single'
   status: RunStatus
   /** RunSummary.title when set. */
   title?: string
@@ -2125,6 +2462,8 @@ export interface MergeReview {
   /** Unified diff, truncated when very large. */
   patch: string
   createdAt: number
+  /** Card revision, set by RunManager when the card is created (1 for now). Decision calls may send expectedRevision. */
+  revision?: number
 }
 
 export type MergeDecision = { behavior: 'merge' } | { behavior: 'discard' } | { behavior: 'hold' }
@@ -2276,6 +2615,8 @@ export interface QuickRunInput {
   /** Allow Edit, Write and Bash in the folder (each still asks). Default false. A git folder with edits on isolates writers. */
   allowEdits?: boolean
   images?: ImageAttachment[]
+  /** Headless exec overrides (cli-spec 6.2(1)). Honoured only from socket / inproc host clients; the desktop handler drops it. */
+  overrides?: RunOverrides
 }
 
 /** RunSummary.quick: how a quick run was started. Kept by continuations. */
@@ -2402,6 +2743,19 @@ export interface RunSummary {
    */
   endedWithApp?: true
   /**
+   * Who ended the run. 'user': End session (RunManager.stop). 'app': OrgAI quit or crashed while it was live (stopAll on
+   * quit, or the store's boot normalization). 'policy' / 'budget': a host-finalized headless exec run (decision policy,
+   * completion or stall; or its budget cap); these read 'Finished', never 'Stopped'. Absent: the run ended on its own
+   * (finished, error, paused). Structured-clone safe.
+   */
+  endedBy?: RunEndedBy
+  /** Only with endedBy 'app': what the run was doing when OrgAI cut it. 'waiting': status idle or a decision card open (the user's turn). 'working': starting, running or stopping. Absent for a paused run. */
+  endedWhile?: 'working' | 'waiting'
+  /** Headless exec overrides (cli-spec 6.2). Host-set only, never from the renderer; RunStore rebuilds them on read and drops unknown keys or bad types. */
+  overrides?: RunOverrides
+  /** How a headless exec run ended. Host-set (RunManager.finalizeExecRun); RunStore keeps only EXEC_OUTCOMES values on read. */
+  execOutcome?: ExecOutcome
+  /**
    * Work runs: a short AI summary of the run's first message (one line, at most RUN_TITLE_MAX_CHARS characters),
    * written by the connection's fast model shortly after the run starts (a run.title event announces it). Absent
    * until generated, and for good when generation failed or was skipped (setup-like runs, image-only prompts).
@@ -2428,6 +2782,8 @@ export interface RunSummary {
    * sweep keeps a scratch dir any run record points to (quick.folder or buildWorkspace).
    */
   buildWorkspace?: string
+  /** Work runs of a real project started with StartRunInput.team 'single' (RunTeam). Kept by continuations and auto-resume. */
+  team?: RunTeam
 }
 
 /**
@@ -2507,12 +2863,33 @@ export interface PermissionRequest {
   suggestions?: PermissionSuggestion[]
   /** Human-readable rules the suggestions grant, e.g. "Bash(npm test:*)". Shown on the card. */
   ruleLabels?: string[]
+  /**
+   * The reference folder (Project.referenceDirectories, read only) this call touches, as the run resolved it: a shell
+   * command whose effective cwd is inside one or whose words name a path at, under or above one
+   * (runtime/referenceDirectories.ts `commandTouchesReference`), or a Read / Glob / Grep of a path under one. Set by
+   * every adapter. Such a request carries no suggestions or ruleLabels and RunManager narrows any allow to 'once', so
+   * the card offers Allow once and Deny only ("Touches a reference folder (read only)").
+   */
+  referenceFolder?: string
+  /** Card revision, set by RunManager when the card is created (1 for now). Decision calls may send expectedRevision. */
+  revision?: number
 }
 
 /** How long an allow decision lasts: this call only, the rest of this run, or every future run of the project. */
 export type PermissionScope = 'once' | 'session' | 'project'
 
 /** One permission rule: a tool name plus optional content, written as `Tool(content)`. */
+/**
+ * A saved allow rule OrgAI ignores (permissions:ignored): `reason` is OrgAI's own sentence, never file text. `rule` is
+ * the stored text, cut at 1,000 chars (`cut: true`, then not removable); `hiddenChar` when it holds a hidden character.
+ */
+export interface IgnoredPermissionRule {
+  rule: string
+  reason: string
+  hiddenChar?: true
+  cut?: true
+}
+
 export interface PermissionRuleSpec {
   toolName: string
   ruleContent?: string
@@ -2551,6 +2928,8 @@ export interface PermissionRuleRequest {
   /** Rules the harness flags as broad or destructive (a bare shell tool, a wildcard, rm, git push, sudo...). */
   flagged: string[]
   createdAt: number
+  /** Card revision, set by RunManager when the card is created (1 for now). Decision calls may send expectedRevision. */
+  revision?: number
 }
 
 export type PermissionRuleDecision = { behavior: 'grant'; scope: 'run' | 'project' } | { behavior: 'deny'; message?: string }
@@ -2570,6 +2949,33 @@ export interface ModelRateLimitWindow extends RateLimitWindow {
   model: string
 }
 
+/** USD spent in one calendar period as the proxy's daily spend rows sum up (UTC calendar days). */
+export interface SpendPeriod {
+  usd: number
+  /** Start of the period, epoch ms (UTC day start / ISO week Monday 00:00 UTC / first of the month 00:00 UTC). */
+  since: number
+}
+
+/**
+ * How many UTC days back the daily spend probe asks for at most. The probe asks from the earlier of the month start
+ * and the ISO week's Monday (at most 30 days back), so the cap only guards the arithmetic.
+ */
+export const SPEND_PERIOD_DAYS = 40
+
+/**
+ * The fixed sentences `UsageSpend.periodsNote` may carry (never proxy error text; the proxy body is untrusted).
+ * The UI may switch on them.
+ */
+export const SPEND_PERIOD_NOTES = {
+  /** The daily route answered 403: the key has no user (a service-account key). */
+  noUser: 'This key is not bound to a user, so the proxy refuses its daily spend.',
+  /** 404 / 405 on both daily routes, or a paginated answer with more pages than the one read. */
+  unsupported: 'This proxy does not report daily spend (needs LiteLLM 1.65 or newer).',
+  /** Any other failure: 5xx, network, timeout, redirect, non-JSON, oversized body, junk shape, non-finite sums. */
+  failed: 'The proxy did not answer its daily spend request.'
+} as const
+export type SpendPeriodsNote = (typeof SPEND_PERIOD_NOTES)[keyof typeof SPEND_PERIOD_NOTES]
+
 /**
  * Spend of a LiteLLM virtual key as the proxy reports it (GET {base}/key/info with the key as Bearer; UNVERIFIED
  * against a live proxy). Only the key's own budget: a team budget that may also govern the key is not read.
@@ -2585,6 +2991,23 @@ export interface UsageSpend {
   budgetDuration: string | null
   /** The key's alias (info.key_alias); null when unset. Never the key itself. */
   keyAlias: string | null
+  /**
+   * Lifetime spend of the key (info.total_spend, which keeps counting when `usd` resets at `resetsAt`); null when the
+   * proxy does not report it. Optional only so records and fixtures written before it was read still type-check.
+   */
+  totalUsd?: number | null
+  /**
+   * Spend by period from GET {base}/user/daily/activity/aggregated (older proxies: /user/daily/activity) filtered to
+   * this key by its SHA-256 hash (the proxy's stored key id, which LiteLLM also accepts as a credential, so it goes
+   * only to the proxy that already holds the key and never into this record), summed over UTC calendar days: `day` =
+   * the UTC day containing `UsageStatus.updatedAt`,
+   * `week` = the ISO week (Monday 00:00 UTC) containing it, `month` = its calendar month. Never rolling windows, and
+   * all three are present or none. Absent when the proxy did not report daily spend; `periodsNote` then says why.
+   * UNVERIFIED against a live proxy (read from LiteLLM source, v1.108.0).
+   */
+  periods?: { day: SpendPeriod; week: SpendPeriod; month: SpendPeriod }
+  /** Why `periods` is absent: one of the fixed `SPEND_PERIOD_NOTES` sentences, never proxy error text. */
+  periodsNote?: SpendPeriodsNote
 }
 
 /**
@@ -2644,7 +3067,21 @@ export type RunEvent =
       pausedUntil?: number
       pauseReason?: string
       autoResume?: boolean
+      /**
+       * Who ended the run (RunSummary.endedBy). 'user': End session (RunManager.stop). 'app': OrgAI quit or crashed while
+       * it was live. 'policy' / 'budget': a host-finalized headless exec run (reads Stopped with a policy or budget note, never Finished). Set by RunManager on a
+       * terminal status ('finished' / 'error') of a cut run, and on 'stopping' with 'user'. Absent: the run ended on its
+       * own. Adapters never set it. Structured-clone safe.
+       */
+      endedBy?: RunEndedBy
+      /** Only with endedBy 'app' (RunSummary.endedWhile): 'waiting' (idle or a card open) or 'working' when OrgAI cut it. */
+      endedWhile?: 'working' | 'waiting'
     }
+  /**
+   * A headless exec run reached its outcome (RunSummary.execOutcome). Emitted exactly once per run by
+   * RunManager.finalizeExecRun (cli-spec Wave 3), after the final summary is persisted; never by adapters.
+   */
+  | { type: 'run.finalized'; runId: string; execChainId?: string; outcome: ExecOutcome; summary: RunSummary }
   /**
    * The run's AI-generated title (RunSummary.title) arrived. Sent at most once per run, work runs only, possibly
    * after the run ended. The summary in runs:list / runs:get carries it from then on.
@@ -2666,7 +3103,19 @@ export type RunEvent =
    * user answered; the same flag is on every *.resolved event. RunManager emits these for every pending item
    * before the terminal run.status, so no card outlives its run.
    */
-  | { type: 'permission.resolved'; runId: string; requestId: string; cancelled?: true }
+  | {
+      type: 'permission.resolved'
+      runId: string
+      requestId: string
+      cancelled?: true
+      /**
+       * Set when the user's allow decision had project scope after RunManager's narrowing, so the project's saved
+       * rules, allowed folders or permission mode may have changed. Absent on deny, once, session and cancelled.
+       */
+      savedToProject?: true
+      /** Who decided (cli-spec 3.4(4)); absent on cancelled cards and older events. */
+      decidedBy?: DecidedBy
+    }
   /** Adapters report the provider's run total here; RunManager stores the priced total on the summary. Kept for older readers. */
   | { type: 'run.cost'; runId: string; totalCostUsd: number }
   /**
@@ -2676,14 +3125,14 @@ export type RunEvent =
   | { type: 'run.usage'; runId: string; usage: RunUsage }
   | { type: 'log'; runId: string; level: 'info' | 'warn' | 'error'; message: string }
   | { type: 'proposal.request'; runId: string; proposal: Proposal }
-  | { type: 'proposal.resolved'; runId: string; proposalId: string; decision: ProposalDecision; cancelled?: true }
+  | { type: 'proposal.resolved'; runId: string; proposalId: string; decision: ProposalOutcome; cancelled?: true; decidedBy?: DecidedBy }
   | { type: 'question.request'; runId: string; question: UserQuestion }
-  | { type: 'question.resolved'; runId: string; questionId: string; answer: QuestionAnswer; cancelled?: true }
+  | { type: 'question.resolved'; runId: string; questionId: string; answer: QuestionAnswer; cancelled?: true; decidedBy?: DecidedBy }
   /** An agent asked for permission rules (request_permission_rules); the run waits for permissions:decideRequest. */
   | { type: 'rules.request'; runId: string; request: PermissionRuleRequest }
-  | { type: 'rules.resolved'; runId: string; requestId: string; decision: PermissionRuleDecision; cancelled?: true }
+  | { type: 'rules.resolved'; runId: string; requestId: string; decision: PermissionRuleDecision; cancelled?: true; decidedBy?: DecidedBy }
   | { type: 'merge.request'; runId: string; review: MergeReview }
-  | { type: 'merge.resolved'; runId: string; reviewId: string; decision: MergeDecision; cancelled?: true }
+  | { type: 'merge.resolved'; runId: string; reviewId: string; decision: MergeDecision; cancelled?: true; decidedBy?: DecidedBy }
   /** The main process changed the project (an approved proposal, setup completion). */
   | { type: 'project.updated'; runId: string; project: Project }
   /** Latest plan usage as seen by a live session. Account-wide, not specific to the run. */
@@ -2716,10 +3165,16 @@ export type RunEvent =
    * ("Loaded skill <name>", source 'harness') on that agent. `at` is epoch ms.
    */
   | { type: 'skill.used'; runId: string; agentId: string; skillId: string; name: string; at: number }
+  /**
+   * Knowledge graph items just reached an agent, so the renderer can light those nodes up. RunManager emits it (at most
+   * one per agent per second, trailing, ids merged, at most KNOWLEDGE_RECALLED_IDS_MAX ids). `via` 'recall' =
+   * knowledge_recall, 'auto' = knowledgeContext; a merged event carries the newest call's `via`. `at` is epoch ms.
+   */
+  | { type: 'knowledge.recalled'; runId: string; agentId: string; nodeIds: string[]; at: number; via: 'recall' | 'auto' }
   /** An agent asked to install an MCP server (request_mcp_install); the run waits for mcp:answerInstall. */
   | { type: 'mcpInstall.request'; runId: string; request: McpInstallRequest }
   /** The install request was answered (or dropped when the run ended: approved false). Never carries secrets. */
-  | { type: 'mcpInstall.resolved'; runId: string; requestId: string; outcome: McpInstallOutcome; cancelled?: true }
+  | { type: 'mcpInstall.resolved'; runId: string; requestId: string; outcome: McpInstallOutcome; cancelled?: true; decidedBy?: DecidedBy }
 
 /**
  * Payload of the main -> renderer `app:focusRun` message sent when a notification is clicked, and of
@@ -2729,6 +3184,75 @@ export type RunEvent =
 export interface FocusRunTarget {
   projectId: string
   runId: string
+}
+
+/**
+ * Application menu items that the renderer handles. Main pushes `{ action }` on `menu:action` (IPC.menuAction) to
+ * the focused window (else the first live one); the renderer routes on the name. A fixed enum: main never puts a
+ * renderer-supplied string into the menu, and the renderer must ignore names it does not know.
+ */
+export const MENU_ACTIONS = [
+  'new-project',
+  'new-chat',
+  'open-chat',
+  'open-mcp-assistant',
+  'open-skill-assistant',
+  'new-run',
+  'interrupt-run',
+  'end-session',
+  'org-retrospective',
+  'show-live',
+  'show-history',
+  'show-team',
+  'show-project-settings',
+  'open-app-settings',
+  'open-connections',
+  'open-connectors',
+  'open-skill-library',
+  'open-about',
+  'toggle-sidebar',
+  'toggle-hide-finished',
+  'canvas-fit',
+  'keyboard-shortcuts',
+  'close-tab',
+  'go-to-decision',
+  'show-needs-you',
+  'toggle-conversation',
+  'save-chat-as-project',
+  'open-run-window',
+  'canvas-zoom-in',
+  'canvas-zoom-out'
+] as const
+
+export type MenuAction = (typeof MENU_ACTIONS)[number]
+
+/** Payload of the main -> renderer `menu:action` push. Structured-clone safe. */
+export interface MenuActionEvent {
+  action: MenuAction
+}
+
+/**
+ * What the window's renderer is showing, sent on `menu:setState` (renderer -> main) whenever it changes. Main keeps
+ * one per sender window, validates it (booleans only, anything else false) and rebuilds the application menu from
+ * the focused window's state, greying out items that do not apply. Structured-clone safe.
+ */
+export interface MenuState {
+  /** A real or virtual project is open (section items, New run). */
+  hasProject: boolean
+  /** A run tab is shown (Close tab, Open in new window, Show conversation, canvas items). */
+  hasRun: boolean
+  /** The shown run is live (Interrupt, End session). */
+  runLive: boolean
+  /** The shown run is a Chat run that Save as project applies to. */
+  chatRun: boolean
+  /** At least one decision card is open (Go to decision, Show what needs you). */
+  hasDecision: boolean
+}
+
+export const EMPTY_MENU_STATE: MenuState = { hasProject: false, hasRun: false, runLive: false, chatRun: false, hasDecision: false }
+
+export function isMenuAction(value: unknown): value is MenuAction {
+  return typeof value === 'string' && (MENU_ACTIONS as readonly string[]).includes(value)
 }
 
 /** Hash prefix of a run-scoped window: `#/run/<projectId>/<runId>`. The main (unscoped) window has no hash. */
@@ -2774,6 +3298,8 @@ export interface ProjectCreateInput {
   path: string
   brief: string
   setupKind?: SetupKind
+  /** What the project is for; missing = 'code'. Any other value is dropped (the project is 'code'). */
+  kind?: ProjectKind
   /**
    * Run the project on the scripted, token-free mock adapter (provider.id 'mock'). Only accepted when
    * AppInfo.mockAdapter is true (ORGAI_MOCK=1); otherwise projects:create rejects.
@@ -2785,6 +3311,12 @@ export interface ProjectCreateInput {
    * created on. Unknown sources are ignored; when nothing importable is found the default chart is kept.
    */
   importAgents?: AgentImportSource[]
+  /**
+   * Start the project from this saved team template (OrgTemplateInfo.id) instead of the default chart: the 'replace'
+   * apply, models mapped to the connection the project is created on. importAgents wins when both are set; an unknown
+   * id keeps the default chart.
+   */
+  templateId?: string
 }
 
 /** projects:checkPath. Never rejects; an empty or unreadable path reports exists false. */
@@ -2988,6 +3520,10 @@ export interface StartRunInput {
   prompt: string
   scaffold?: boolean
   images?: ImageAttachment[]
+  /** 'single': one assistant instead of the org chart (RunTeam). Any other value is dropped. */
+  team?: RunTeam
+  /** Headless exec overrides (cli-spec 6.2(1)). Honoured only from socket / inproc host clients; the desktop handler drops it. */
+  overrides?: RunOverrides
 }
 
 /** runs:send: a follow-up message to a live run's orchestrator. */
@@ -3004,6 +3540,13 @@ export interface ContinueRunInput {
   /** May be empty when images are attached. */
   text: string
   images?: ImageAttachment[]
+  /** Headless exec overrides (cli-spec 6.2(1)). Honoured only from socket / inproc host clients; the desktop handler drops it. */
+  overrides?: RunOverrides
+  /**
+   * `orgai resume --exec`: keep the chain's execMode / execChainId / waitForReset / decisionPolicy. Without it a
+   * continuation strips them (narrowing overrides are kept). Socket / inproc clients only.
+   */
+  exec?: boolean
 }
 
 /**
@@ -3476,7 +4019,8 @@ export interface OrgAIApi {
     /** What is at `path` right now, for validating the New project form. Never rejects. */
     checkPath(path: string): Promise<ProjectPathCheck>
     save(project: Project): Promise<Project>
-    remove(id: string): Promise<void>
+    /** A project id string or ProjectRemoveInput (removeRuns default true; engagements always remove their runs). */
+    remove(input: string | ProjectRemoveInput): Promise<ProjectRemoveResult>
     pickDirectory(): Promise<string | null>
     /**
      * Remap the project's tiered role models to its connection's tierModels. With `connection`, switch the
@@ -3517,6 +4061,11 @@ export interface OrgAIApi {
     cancelLogin(loginId: string): Promise<void>
     /** Sign out (OpenAI ChatGPT login) or forget the stored key (LiteLLM), and mark the connection disconnected. */
     logout(id: ConnectionId): Promise<ConnectionInfo>
+    /**
+     * Pick the default connection (marks it chosen) or, with null, return to automatic. Resolves to connections:list
+     * after the change; rejects with a readable message naming the connection when it is not usable.
+     */
+    setDefault(id: ConnectionDefaultInput): Promise<ConnectionInfo[]>
   }
   models: {
     /** The model catalog: builtin plus discovered, for one connection or every enabled one. */
@@ -3601,8 +4150,10 @@ export interface OrgAIApi {
     list(): Promise<ConnectorInfo[]>
     /**
      * Create the library entry from the preset (main builds url, headers and secret slots; nothing else is taken
-     * from the renderer). Idempotent: an existing entry for that connector is returned unchanged, whatever the
-     * variant (remove it first to switch). Broadcasts mcpLibrary:changed when it creates one.
+     * from the renderer). Idempotent: an existing entry for that connector is returned unchanged, except that while
+     * it is not connected a different valid variant switches it in place (the old variant's token or OAuth state is
+     * dropped); a connected entry keeps its variant until disconnected. Broadcasts mcpLibrary:changed when it
+     * creates or switches one.
      */
     add(input: ConnectorAddInput): Promise<McpLibraryInfo>
     /** 'token' connectors: store (or clear) the token as the entry's secret header. Rejects before add. */
@@ -3764,6 +4315,8 @@ export interface OrgAIApi {
      * unknown project. Never spends tokens.
      */
     usageStats(query: UsageStatsQuery): Promise<UsageStats>
+    /** The same rows as usageStats as CSV text (USAGE_CSV_COLUMNS), at most USAGE_STATS_MAX_LIMIT rows. */
+    usageCsv(query: UsageStatsQuery): Promise<string>
     /**
      * Start a quick run (the Chat assistant): a project-less work run on QUICK_PROJECT_ID (RunSummary.quick set).
      * Rejects on an empty or too long prompt (QUICK_RUN_MAX_PROMPT_CHARS) or an invalid folder.
@@ -3782,7 +4335,9 @@ export interface OrgAIApi {
   permissions: {
     /** Allow rules saved in the project's .claude/settings.local.json, e.g. "Bash(npm:*)". */
     list(projectId: string): Promise<string[]>
-    /** Remove one saved allow rule; returns the remaining rules. */
+    /** Saved rules OrgAI ignores (too broad, destructive or with a hidden character) with why; remove() deletes them. */
+    ignored(projectId: string): Promise<IgnoredPermissionRule[]>
+    /** Remove one saved allow rule (also an ignored one, by its exact text); returns the remaining usable rules. */
     remove(input: { projectId: string; rule: string }): Promise<string[]>
     /** Save one allow rule (validated); returns the full list. Live runs of the project honour it at once. */
     add(input: { projectId: string; rule: string }): Promise<string[]>
@@ -3792,6 +4347,15 @@ export interface OrgAIApi {
   onRunEvent(cb: (event: RunEvent) => void): () => void
   /** A clicked OS notification asks the renderer to show this run. */
   onFocusRun(cb: (target: FocusRunTarget) => void): () => void
+  /**
+   * An application menu item routed to the renderer was chosen (File / View / Run / Help ...). Only names in
+   * MENU_ACTIONS are delivered. Returns an unsubscribe function.
+   */
+  onMenuAction(cb: (action: MenuAction) => void): () => void
+  menu: {
+    /** Tell main what this window shows so the application menu greys out items that do not apply. Send on change. */
+    setState(state: MenuState): Promise<void>
+  }
   usage: {
     /** Read plan usage now, without a run. null when the provider cannot report it. */
     refresh(): Promise<UsageStatus | null>
@@ -3825,6 +4389,768 @@ export interface OrgAIApi {
     logPath(): Promise<string>
     /** Version, platform, data and logs folders, and whether the token-free mock adapter is available. */
     info(): Promise<AppInfo>
+    /** The orgai command shim's state (cli-spec 7(3)). Never rejects. */
+    cliShimStatus(): Promise<CliShimStatus>
+    /** Write or refresh the orgai command shim. Never rejects; failures come back as ok: false with a message. */
+    installCliShim(): Promise<CliShimResult>
+    /** Remove the orgai command shim (only OrgAI's own). Never rejects; failures come back as ok: false. */
+    uninstallCliShim(): Promise<CliShimResult>
+  }
+}
+
+// ---- Team templates, single-agent runs, engagement context, usage export ----
+
+/** Most saved team templates (`<data>/org-templates/templates.json`). Saving one more is refused. */
+export const ORG_TEMPLATES_MAX = 100
+/** Template name: 1..80 characters, no control or hidden characters. */
+export const ORG_TEMPLATE_NAME_MAX_CHARS = 80
+/** Template description: at most 500 characters (tab and line breaks allowed, other hidden characters refused). */
+export const ORG_TEMPLATE_DESCRIPTION_MAX_CHARS = 500
+
+/**
+ * One saved team template (templates:list). The chart itself lives in `<data>/org-templates/<id>/org.json`, format
+ * 'orgai.org/1' (the same document projects:exportOrg writes and the agent importer reads): roles with slug
+ * references, no ids, positions, secrets, MCP or skill grants.
+ */
+export interface OrgTemplateInfo {
+  id: string
+  name: string
+  description: string
+  /** The kind of the project the template was saved from. */
+  kind: ProjectKind
+  roleCount: number
+  /** Role names in chart order (root first), at most ORG_TEMPLATE_ROLE_NAMES_MAX. */
+  roleNames: string[]
+  /** Epoch ms. */
+  createdAt: number
+  updatedAt: number
+}
+
+/** Most role names kept on an OrgTemplateInfo. */
+export const ORG_TEMPLATE_ROLE_NAMES_MAX = 40
+
+/** templates:saveFromProject input. */
+export interface OrgTemplateSaveInput {
+  projectId: string
+  name: string
+  description?: string
+}
+
+/**
+ * templates:apply input: the template's chart through the agent-import convert path (models mapped to the project's
+ * connection). 'replace' drops the chart, 'merge' adds under its root. Result: AgentImportApplyResult (Undo = save
+ * previousRoles through projects:save).
+ */
+export interface OrgTemplateApplyInput {
+  projectId: string
+  templateId: string
+  mode: 'replace' | 'merge'
+}
+
+/**
+ * Who works on a work run of a real project. 'single' = one root role "Assistant" built from the project (no
+ * spawning, the union of the project's role tools, every enabled MCP server, every project skill, the project's
+ * permission mode; plan nudges and run messaging off). Missing = the project's org chart. Never on setup-like runs.
+ * StartRunInput.team / RunSummary.team; continuations keep it.
+ */
+export type RunTeam = 'single'
+
+/**
+ * Harness tool of engagement work runs (every role) and single-agent runs: lists context notes, reads one, or saves
+ * an agent-written note (`action: 'list' | 'read' | 'save'`; no action and no noteId = list, a noteId alone = read).
+ */
+export const ENGAGEMENT_CONTEXT_TOOL = 'engagement_context'
+/** engagement_context: at most this many characters of a note per call (the rest is reported as cut). */
+export const ENGAGEMENT_CONTEXT_TOOL_MAX_CHARS = 20_000
+
+/** projects:updateEngagementDocument: the longest engagement document accepted (longer is refused, never cut). */
+export const ENGAGEMENT_DOCUMENT_MAX_CHARS = 100_000
+
+/** projects:engagementDocument result. Empty text and no updatedAt when there is none (always for code projects). */
+export interface EngagementDocumentInfo {
+  text: string
+  /** Epoch ms of the file's last write. */
+  updatedAt?: number
+  /** Who wrote it last: the user (editor) or setup (the approved charter). Present whenever updatedAt is. */
+  updatedBy?: 'user' | 'setup'
+}
+
+/** projects:updateEngagementDocument input (engagements only). Hidden characters other than tab, LF and CR are refused. */
+export interface EngagementDocumentUpdate {
+  projectId: string
+  text: string
+  /**
+   * The updatedAt the editor loaded (0 or undefined = no document yet). The save is refused when the stored document
+   * changed since; omitted while a document exists is refused too.
+   */
+  expectedUpdatedAt?: number
+}
+
+/** Context notes per project (`<data>/projects/<id>/context/<noteId>.md` plus an index). Agents write notes too (see EngagementNote.source). */
+export const ENGAGEMENT_NOTES_MAX = 200
+export const ENGAGEMENT_NOTE_MAX_CHARS = 50_000
+export const ENGAGEMENT_NOTE_TITLE_MAX_CHARS = 120
+
+/** Who wrote a context note: the user (missing = user, notes saved before the field existed) or an agent through engagement_context. */
+export type EngagementNoteSource = 'user' | 'agent'
+
+/**
+ * Who is saving a note (store/projectData.ts saveNote): the user (IPC; default) or an agent (engagement_context save,
+ * with the run id and the role name or slug RunManager resolved). An agent may replace only an agent-written note.
+ */
+export type EngagementNoteWriter = { by: 'user' } | { by: 'agent'; runId?: string; role?: string }
+
+/** Longest note excerpt kept in the index. */
+export const ENGAGEMENT_NOTE_EXCERPT_MAX_CHARS = 120
+
+/**
+ * One context note in the index (projects:listNotes). The renderer orders by `createdAt`, so agent writes never
+ * reshuffle the list. Rows saved before these fields existed read as: excerpt and createdAt from the file (createdAt
+ * = updatedAt), source user, no recordedBy / updatedBy / retired.
+ */
+export interface EngagementNote {
+  id: string
+  /** 1..120 characters, no control or hidden characters. */
+  title: string
+  /** The first non-empty line of the text, at most ENGAGEMENT_NOTE_EXCERPT_MAX_CHARS, hidden characters stripped. */
+  excerpt: string
+  /** Epoch ms of the first save (stable). */
+  createdAt: number
+  /** Epoch ms of the last save. */
+  updatedAt: number
+  /** Length of the note's text. */
+  chars: number
+  /**
+   * Who created it; missing = 'user'. Main fills it, never the renderer or the agent. An agent may replace only a
+   * note whose source is 'agent' and that the user has not edited since (updatedBy !== 'user'); any other note is
+   * read-only to agents ("Only the user can change that note; save a new one instead.").
+   */
+  source?: EngagementNoteSource
+  /** The creating run and the writing agent's role name or slug (agent notes only; main fills it from the run's agent record). */
+  recordedBy?: { runId?: string; role?: string }
+  /** Who saved it last (absent until the first save after creation). */
+  updatedBy?: EngagementNoteSource
+  /**
+   * A user-set flag (projects:saveNote `retired`), reversible: the note stays, lists mark it, reads still return it,
+   * the tool's list marks it. Agents cannot set or clear it.
+   */
+  retired?: boolean
+}
+
+/** projects:getNote result. */
+export interface EngagementNoteContent extends EngagementNote {
+  text: string
+}
+
+/** projects:getNote / projects:removeNote input. */
+export interface EngagementNoteRef {
+  projectId: string
+  noteId: string
+}
+
+/**
+ * projects:saveNote input. Without noteId a new note is created (refused at ENGAGEMENT_NOTES_MAX: "A project keeps at
+ * most 200 notes. Remove or merge notes first."); with one, that note is replaced (a user save of an agent note keeps
+ * source 'agent' and sets updatedBy 'user', which makes it read-only to agents).
+ */
+export interface EngagementNoteSaveInput {
+  projectId: string
+  noteId?: string
+  title: string
+  /** At most ENGAGEMENT_NOTE_MAX_CHARS; hidden characters other than tab, LF and CR are refused. */
+  text: string
+  /** Sets or clears the user's retired flag (omitted = unchanged). */
+  retired?: boolean
+  /**
+   * Only with noteId: refuse the save when the stored note's updatedAt differs (compare-and-set, code
+   * 'stale_revision'; cli-spec Wave 5 `orgai notes edit`). Omitted = no check (the app's note dialog).
+   */
+  expectedUpdatedAt?: number
+}
+
+/**
+ * main -> renderer push (IPC projectsEngagementChanged) after the document, a note or the knowledge graph was written
+ * or removed, by the user (IPC) or by an agent (engagement_context save, engagement_knowledge writes). `ids` names the
+ * note ids ('notes') or the node / edge ids ('knowledge') the write touched, so the renderer can refresh one row and
+ * announce it; absent for the document and for knowledge:clear.
+ */
+export interface EngagementChangedEvent {
+  projectId: string
+  what: 'document' | 'notes' | 'knowledge'
+  ids?: string[]
+}
+
+/**
+ * projects:remove input (a bare project id string is still accepted). `removeRuns` default true for both kinds
+ * (the behaviour before this flag existed). An engagement always removes its runs ("forget engagement"): false is
+ * ignored there. A code project with removeRuns false keeps its run records (orphaned, still in RunStore).
+ */
+export interface ProjectRemoveInput {
+  projectId: string
+  removeRuns?: boolean
+}
+
+/** projects:remove result: what was deleted, for the renderer's notice. Best effort: a failed delete is not counted. */
+export interface ProjectRemoveResult {
+  projectId: string
+  kind: ProjectKind
+  /** Run records deleted (index entries with their transcripts). */
+  runsRemoved: number
+  /** Run records left in place (code project with removeRuns false). */
+  runsKept: number
+  /** Context notes deleted. */
+  notesRemoved: number
+  /** Project skills whose stored files were deleted. */
+  skillsRemoved: number
+  /** `<data>/projects/<id>/ENGAGEMENT.md` existed and was deleted. */
+  documentRemoved: boolean
+  /** App-folder saved rules (`<data>/projects/<id>/permission-rules.json`) existed and were deleted. */
+  rulesRemoved: boolean
+  /** The Team review file (`<data>/team-reviews/<id>.json`) existed and was deleted. */
+  teamReviewRemoved: boolean
+  /** The skill evaluation file (`<data>/skill-evaluations/<id>.json`) existed and was deleted. */
+  skillEvaluationRemoved: boolean
+  /** Knowledge graph nodes deleted with `<data>/projects/<id>/knowledge.json` (0 when there was no graph). */
+  knowledgeRemoved: number
+}
+
+/**
+ * UsageStatsQuery.range: a local calendar month as 'YYYY-MM' (months 01..12, years 2000..2999). Sugar over
+ * since / until (local midnight of the 1st to local midnight of the next month's 1st); it wins over both. A malformed
+ * month is refused.
+ */
+export interface UsageStatsRange {
+  month: string
+}
+
+/**
+ * runs:usageCsv columns, in order. One row per run (UsageStats.runs, newest first, at most USAGE_STATS_MAX_LIMIT rows);
+ * project is the project name and client is Project.client (blank for code projects), the same on every row (the
+ * query is one project). started / ended are local time as ISO 8601 with the UTC offset (2026-11-04T09:15:00-05:00),
+ * started_utc is the start as ISO 8601 UTC; cost blank when unknown, cost_partial 'true' / ''. RFC 4180 quoting (CRLF
+ * line ends, a header row); a cell starting with = + - @ (or tab / CR) gets a leading single quote (formula injection).
+ * There is no run id column.
+ */
+export const USAGE_CSV_COLUMNS = [
+  'project',
+  'client',
+  'started',
+  'started_utc',
+  'ended',
+  'kind',
+  'status',
+  'title',
+  'roles',
+  'tokens_in',
+  'tokens_out',
+  'tokens_cache_read',
+  'tokens_cache_write',
+  'cost_usd',
+  'cost_partial'
+] as const
+
+/** Channels of this section; spread into IPC. */
+export const TEMPLATE_ENGAGEMENT_IPC = {
+  templatesList: 'templates:list',
+  templatesSaveFromProject: 'templates:saveFromProject',
+  templatesRemove: 'templates:remove',
+  templatesApply: 'templates:apply',
+  projectsEngagementDocument: 'projects:engagementDocument',
+  projectsUpdateEngagementDocument: 'projects:updateEngagementDocument',
+  projectsListNotes: 'projects:listNotes',
+  projectsGetNote: 'projects:getNote',
+  projectsSaveNote: 'projects:saveNote',
+  projectsRemoveNote: 'projects:removeNote',
+  /** main -> renderer push channel carrying EngagementChangedEvent. */
+  projectsEngagementChanged: 'projects:engagementChanged',
+  runsUsageCsv: 'runs:usageCsv',
+  /** Same input as projects:remove; returns the counts it would produce, deleting nothing. */
+  projectsRemovePreview: 'projects:removePreview'
+} as const
+
+/** window.orgai additions of this section (declaration-merged into OrgAIApi). */
+export interface OrgAIApi {
+  templates: {
+    list(): Promise<OrgTemplateInfo[]>
+    /** Save the project's chart (no ids, positions, secrets or grants) as a new template. Rejects at ORG_TEMPLATES_MAX. */
+    saveFromProject(input: OrgTemplateSaveInput): Promise<OrgTemplateInfo>
+    /** Resolves to the remaining templates. */
+    remove(templateId: string): Promise<OrgTemplateInfo[]>
+    apply(input: OrgTemplateApplyInput): Promise<AgentImportApplyResult>
+  }
+  engagement: {
+    document(projectId: string): Promise<EngagementDocumentInfo>
+    updateDocument(input: EngagementDocumentUpdate): Promise<EngagementDocumentInfo>
+    listNotes(projectId: string): Promise<EngagementNote[]>
+    getNote(ref: EngagementNoteRef): Promise<EngagementNoteContent>
+    saveNote(input: EngagementNoteSaveInput): Promise<EngagementNote>
+    /** Resolves to the remaining notes. */
+    removeNote(ref: EngagementNoteRef): Promise<EngagementNote[]>
+  }
+  onEngagementChanged(cb: (event: EngagementChangedEvent) => void): () => void
+  projectRemoval: {
+    /** What projects:remove would delete for the same input (counts), without deleting anything. */
+    preview(input: string | ProjectRemoveInput): Promise<ProjectRemoveResult>
+  }
+}
+
+// ---- Engagement knowledge graph ----
+//
+// Per engagement, agents and the user build a graph of the engagement: entities of free-form kinds (person,
+// organisation, system, document, decision, risk, ...), relations of free-form types between them, and facts on each
+// entity, every item with provenance. Stored at `<data>/projects/<id>/knowledge.json` (version 1, atomic writes, junk
+// dropped on read, never in the working folder). Agents reach it through the `engagement_knowledge` harness tool on
+// engagement work runs; the user through the knowledge:* channels (reads for any project, writes for engagements only).
+// Every write, by whom ever, pushes projects:engagementChanged with what 'knowledge'.
+// Pure helpers (normalisation, vocabulary, search, identity matching) live in src/shared/knowledge.ts.
+
+/** Most nodes one graph keeps; a save past it is refused ("The knowledge graph is full ..."). */
+export const KNOWLEDGE_NODES_MAX = 2000
+/** Most edges one graph keeps. */
+export const KNOWLEDGE_EDGES_MAX = 5000
+/** Most facts one node keeps (append-only for agents; the user may remove facts). */
+export const KNOWLEDGE_NODE_FACTS_MAX = 50
+/** Most writes (node upserts, links, retirements and saved notes) one run may make through the harness tools. */
+export const KNOWLEDGE_RUN_WRITES_MAX = 500
+/** Most hits engagement_knowledge search returns (also its default). */
+export const KNOWLEDGE_SEARCH_LIMIT = 50
+/**
+ * Largest knowledge.json the store reads or writes (64 MB; the file is compact JSON). A larger file reads as empty
+ * and every write refuses ("could not be read"); a write whose serialized graph would cross it is refused ("The
+ * knowledge graph file is full ..."), nothing written. A full graph (2,000 nodes with 50 facts of 1,000 characters)
+ * could exceed it, so the cap is real, not theoretical.
+ */
+export const KNOWLEDGE_FILE_MAX_BYTES = 64 * 1024 * 1024
+/** Node name: 1..120 characters, one line, no hidden characters. Aliases the same. */
+export const KNOWLEDGE_NAME_MAX_CHARS = 120
+/** Most aliases per node. */
+export const KNOWLEDGE_ALIASES_MAX = 10
+/** Node summary: at most 2,000 characters (tab, LF and CR allowed; other hidden characters refused). */
+export const KNOWLEDGE_SUMMARY_MAX_CHARS = 2000
+/** Fact text: 1..1,000 characters (tab, LF and CR allowed). */
+export const KNOWLEDGE_FACT_MAX_CHARS = 1000
+/** Edge note: at most 500 characters (tab, LF and CR allowed). */
+export const KNOWLEDGE_EDGE_NOTE_MAX_CHARS = 500
+/** Most context notes a node links to. */
+export const KNOWLEDGE_NODE_NOTES_MAX = 20
+/**
+ * A node kind or edge relation after normalisation (knowledge.ts `normalizeKnowledgeKey`: trim, lower-case, runs of
+ * whitespace and underscores to '-'): 1..40 characters of a-z, 0-9 and '-', starting with a letter or digit.
+ */
+export const KNOWLEDGE_KEY_RE = /^[a-z0-9][a-z0-9-]{0,39}$/
+/**
+ * Kinds the tool suggests so agents pick consistent names (data, not a closed list: any key that matches
+ * KNOWLEDGE_KEY_RE is accepted).
+ */
+export const KNOWLEDGE_COMMON_KINDS = ['person', 'organisation', 'system', 'document', 'decision', 'risk', 'requirement', 'deadline', 'meeting', 'open-question'] as const
+/**
+ * Relations the tool suggests so agents pick consistent names (a hint like KNOWLEDGE_COMMON_KINDS, not a closed list).
+ * The judgement-based connections of docs/design/knowledge-connections.md are recorded by agents under these names.
+ */
+export const KNOWLEDGE_COMMON_RELATIONS = ['works-at', 'reports-to', 'owns', 'depends-on', 'affects', 'decided-by', 'evidence-for', 'mitigates', 'supersedes', 'contradicts', 'can-answer', 'raised-by'] as const
+/** Harness tool of engagement work runs (every role): vocabulary, search, get, upsert_node, link, retire. */
+export const KNOWLEDGE_TOOL = 'engagement_knowledge'
+/**
+ * Read-only harness tool of engagement work runs and single (Ask) engagement runs, every role: one budgeted, ranked
+ * answer in place of vocabulary + search + get. On no other kind of run.
+ */
+export const KNOWLEDGE_RECALL_TOOL = 'knowledge_recall'
+/** knowledge_recall budget in characters of the whole result: default, floor and ceiling. */
+export const KNOWLEDGE_RECALL_BUDGET_DEFAULT = 1500
+export const KNOWLEDGE_RECALL_BUDGET_MIN = 400
+export const KNOWLEDGE_RECALL_BUDGET_MAX = 6000
+/** Longest knowledge_recall query; longer is refused, never cut. */
+export const KNOWLEDGE_RECALL_QUERY_MAX_CHARS = 500
+/** The standing index in the prompt (knowledgeBrief): at most this many characters, omitted for an empty graph. */
+export const KNOWLEDGE_BRIEF_MAX_CHARS = 600
+/** One knowledgeContext block, framing and fences included. */
+export const KNOWLEDGE_CONTEXT_MAX_CHARS = 800
+/** knowledgeContext reads at most this many characters of the incoming text when it looks for names. */
+export const KNOWLEDGE_CONTEXT_SCAN_MAX_CHARS = 64 * 1024
+/** Most node ids on one knowledge.recalled event (the newest are kept). */
+export const KNOWLEDGE_RECALLED_IDS_MAX = 50
+/** Most links inferKnowledgeLinks returns, strongest first. */
+export const KNOWLEDGE_INFERRED_LINKS_MAX = 500
+/** A name or alias of more tokens than this is not matched as a mention of its entity (it stays searchable and resolvable). */
+export const KNOWLEDGE_NAME_TOKENS_MAX = 8
+/** Most characters between two tokens of a name in matched text ("Billing - Core"); a longer gap breaks the name. */
+export const KNOWLEDGE_NAME_GAP_MAX = 8
+/** Most entities one name matches at a span (past it the span is ambiguous anyway and is never suggested). */
+export const KNOWLEDGE_SAME_NAME_MAX = 16
+/**
+ * Work one inference pass may do on the main thread, in tokens scanned plus trie steps plus matches (a pair seen for the
+ * first time counts more: it costs an evidence snippet). Past it the pass stops and KnowledgeInferredResult.partial says so.
+ */
+export const KNOWLEDGE_MATCH_BUDGET = 4_000_000
+/** Most dismissed inferred link ids a graph keeps (oldest dropped). */
+export const KNOWLEDGE_DISMISSED_LINKS_MAX = 2000
+/** An inferred link id: stable hash of basis and endpoints. */
+export const KNOWLEDGE_LINK_ID_RE = /^kl_[a-f0-9]{16}$/
+/** engagement_knowledge actions. */
+export const KNOWLEDGE_TOOL_ACTIONS = ['vocabulary', 'search', 'get', 'upsert_node', 'link', 'retire'] as const
+export type KnowledgeToolAction = (typeof KNOWLEDGE_TOOL_ACTIONS)[number]
+
+/**
+ * Who wrote an item. `by: 'user'` comes from the knowledge:* channels (no run); `by: 'agent'` from the harness tool,
+ * with the run, the agent id and the agent's role (the role name or slug as recorded on the run; main fills every
+ * field, the agent never names itself). `at` is epoch ms.
+ */
+export interface KnowledgeSource {
+  by: 'user' | 'agent'
+  runId?: string
+  agentId?: string
+  role?: string
+  at: number
+}
+
+/**
+ * One fact on a node. Ids are `kf_<hex>`. Facts are append-only for agents (they may only retire their own or other
+ * agents' facts); the user may edit, remove or retire any fact through knowledge:saveNode.
+ */
+export interface KnowledgeFact {
+  id: string
+  /** 1..KNOWLEDGE_FACT_MAX_CHARS, tab / LF / CR allowed, other hidden characters refused, never cut. */
+  text: string
+  source: KnowledgeSource
+  /** Marked retired (kept for history, shown as such, left out of search). */
+  retired?: boolean
+}
+
+/** One entity of the engagement. Ids are `kn_<hex>`. */
+export interface KnowledgeNode {
+  id: string
+  /** A normalised key (KNOWLEDGE_KEY_RE), e.g. 'person', 'organisation', 'system', 'decision'. */
+  kind: string
+  /** 1..KNOWLEDGE_NAME_MAX_CHARS, one line. Unique per kind together with the aliases, case-insensitively. */
+  name: string
+  /** At most KNOWLEDGE_ALIASES_MAX, each like a name; identity matching uses them like the name. */
+  aliases?: string[]
+  /** At most KNOWLEDGE_SUMMARY_MAX_CHARS. */
+  summary?: string
+  /** At most KNOWLEDGE_NODE_FACTS_MAX. */
+  facts: KnowledgeFact[]
+  /**
+   * Context notes this entity links to (EngagementNote ids): validated against the note index on write, and an id
+   * whose note is gone is dropped on read. At most KNOWLEDGE_NODE_NOTES_MAX.
+   */
+  noteIds?: string[]
+  /** Who created it. */
+  source: KnowledgeSource
+  /** Who last changed it (absent until the first change after creation). */
+  updatedBy?: KnowledgeSource
+  /** Epoch ms. */
+  createdAt: number
+  updatedAt: number
+  /** Marked retired: kept, listed as retired, left out of search unless asked for; its edges stay. */
+  retired?: boolean
+}
+
+/**
+ * One relation between two nodes. Ids are `ke_<hex>`. `from` and `to` are existing node ids (removing a node removes
+ * its edges); (from, to, relation) is unique: linking the same triple again updates the note, never duplicates.
+ */
+export interface KnowledgeEdge {
+  id: string
+  from: string
+  to: string
+  /** A normalised key (KNOWLEDGE_KEY_RE), e.g. 'works-at', 'owns', 'depends-on', 'decided-in'. */
+  relation: string
+  /** At most KNOWLEDGE_EDGE_NOTE_MAX_CHARS. */
+  note?: string
+  source: KnowledgeSource
+  /** Epoch ms. */
+  createdAt: number
+  retired?: boolean
+}
+
+/** The whole graph (knowledge:get). Empty (no nodes, no edges, no updatedAt) for code projects and before the first write. */
+export interface KnowledgeGraph {
+  version: 1
+  nodes: KnowledgeNode[]
+  edges: KnowledgeEdge[]
+  /**
+   * Inferred link ids (KnowledgeInferredLink.id) the user dismissed: ids only, shape KNOWLEDGE_LINK_ID_RE, at most
+   * KNOWLEDGE_DISMISSED_LINKS_MAX (oldest dropped). Tolerant on read: junk entries are dropped, an id whose link no
+   * longer exists is harmless. Absent when none.
+   */
+  dismissedLinks?: string[]
+  /** Epoch ms of the last write. */
+  updatedAt?: number
+}
+
+/** Kinds and relations in use with counts (live, non-retired items), most used first (knowledge.ts `knowledgeVocabulary`). */
+export interface KnowledgeVocabulary {
+  kinds: { kind: string; count: number }[]
+  relations: { relation: string; count: number }[]
+}
+
+/** knowledge:saveNode fact input: an id keeps that fact's source (and text edits are the user's); no id = a new user fact. */
+export interface KnowledgeFactInput {
+  id?: string
+  text: string
+  retired?: boolean
+}
+
+/**
+ * knowledge:saveNode input (the user's editor; engagements only). Without nodeId a node is created, and a (kind, name)
+ * or (kind, alias) match with an existing node is refused ("... already exists; edit it instead."). With nodeId that
+ * node is replaced field by field: `facts` given = the full list afterwards (a fact whose id is left out is removed),
+ * omitted = unchanged; `aliases`, `summary`, `noteIds` given replace, omitted keep. Unknown noteIds are refused.
+ * `kind` is normalised and must match KNOWLEDGE_KEY_RE.
+ */
+export interface KnowledgeNodeSaveInput {
+  projectId: string
+  nodeId?: string
+  /**
+   * Required without nodeId. With nodeId, omitted keeps the stored value, so an append-only save
+   * (`{ projectId, nodeId, appendFacts }`, `orgai knowledge upsert --fact`; cli-spec 3.6) needs no client-side read
+   * and never reverts a concurrent rename.
+   */
+  kind?: string
+  /** As `kind`: required without nodeId, omitted with nodeId keeps the stored name. */
+  name?: string
+  aliases?: string[]
+  summary?: string
+  facts?: KnowledgeFactInput[]
+  noteIds?: string[]
+  retired?: boolean
+  /** User facts appended atomically inside the store (deduplicated against the node's facts and each other); cli-spec 3.6. */
+  appendFacts?: string[]
+  /**
+   * Only with nodeId: refuse the save when the stored node's updatedAt differs (compare-and-set). Any write to the
+   * node bumps updatedAt (an agent's fact append included), so leave it out of a pure append: appends commute.
+   */
+  expectedUpdatedAt?: number
+}
+
+/**
+ * Agent-side node write (engagement_knowledge upsert_node, RuntimeContext.knowledge.upsertNode). Identity: nodeId
+ * when given (its `kind` must then equal the stored kind, else refused: "That entity is a <stored kind>, not a
+ * <given kind> ..."), else a (kind, name) or (kind, alias) match, case-insensitive, else a new node ("created" vs
+ * "merged"). On a merge: `aliases` are added (deduped; one another entity of the kind already uses is skipped and
+ * reported in `aliasesSkipped`), `summary` replaces when given unless the node is user-created (then it is appended as
+ * a fact and `summaryKept` is true), `facts` are appended as new facts with the caller's source (a text already on
+ * the node is not appended twice), `noteIds` are added. Nothing is removed.
+ */
+export interface KnowledgeNodeUpsertInput {
+  nodeId?: string
+  kind: string
+  name: string
+  aliases?: string[]
+  summary?: string
+  facts?: string[]
+  noteIds?: string[]
+}
+
+/**
+ * knowledge:saveNode / upsert result: the node and whether it was created (false = an existing node was updated or
+ * merged). The optional fields are filled by the agent upsert only (absent on the user's save).
+ */
+export interface KnowledgeNodeWriteResult {
+  node: KnowledgeNode
+  created: boolean
+  /** Facts the store actually appended on this call (deduped against the node's live facts). */
+  factsAdded?: number
+  /** Aliases (the input name included on a merge) dropped because another entity of the kind already uses them. */
+  aliasesSkipped?: string[]
+  /** The node is user-created, so the agent's summary was appended as a fact instead of replacing the user's summary. */
+  summaryKept?: boolean
+}
+
+/**
+ * knowledge:saveEdge input (engagements only) and the agent link write after name resolution: from / to are node ids.
+ * Without edgeId: a (from, to, relation) match updates that edge's note (and un-retires it when `retired` is false),
+ * else a new edge. With edgeId: that edge's note / retired change; from, to and relation must equal the stored edge's
+ * (a different value is refused: "That relation id names <from> <relation> <to>; from, to and relation cannot
+ * change. Remove it and link again.").
+ */
+export interface KnowledgeEdgeSaveInput {
+  projectId: string
+  edgeId?: string
+  from: string
+  to: string
+  relation: string
+  note?: string
+  retired?: boolean
+}
+
+export interface KnowledgeEdgeWriteResult {
+  edge: KnowledgeEdge
+  created: boolean
+  /** An agent's note was not applied because the relation is the user's: the user's note stands (same rule as summaryKept). */
+  noteKept?: boolean
+}
+
+/** knowledge:removeNode / knowledge:removeEdge input. Removing a node removes its edges. Unknown ids are refused. */
+export interface KnowledgeItemRef {
+  projectId: string
+  nodeId?: string
+  edgeId?: string
+}
+
+/**
+ * Agent-side retire (engagement_knowledge retire): exactly one of nodeId / edgeId / factId. Marks the item retired,
+ * never deletes. Refused on an item whose source.by is 'user' ("Only the user can change that."). `reason` is kept
+ * in the harness transcript row only.
+ */
+export interface KnowledgeRetireInput {
+  nodeId?: string
+  edgeId?: string
+  factId?: string
+  reason?: string
+}
+
+/** What an agent retire marked: the item kind, its id and a label for the transcript row (node: "<kind> <name>"; edge: "<from> <relation> <to>"; fact: its text). */
+export interface KnowledgeRetireResult {
+  item: 'node' | 'edge' | 'fact'
+  id: string
+  label: string
+  /** True when it was already retired (nothing changed, no write counted). */
+  alreadyRetired: boolean
+}
+
+/** engagement_knowledge search input (knowledge.ts `searchKnowledge`). */
+export interface KnowledgeSearchQuery {
+  /**
+   * Matched per word over name, aliases, kind, summary and live fact texts, ranked (knowledgeIndex.ts rankKnowledge),
+   * with the old whole-query case-insensitive substring match only when the ranked result is empty. Empty = no text filter.
+   */
+  query?: string
+  /** A normalised kind; empty = every kind. */
+  kind?: string
+  /** 1..KNOWLEDGE_SEARCH_LIMIT, default KNOWLEDGE_SEARCH_LIMIT. */
+  limit?: number
+  /** Include retired nodes (default false). */
+  includeRetired?: boolean
+}
+
+/** One search hit: name / alias hits sort first, then the most recently updated. */
+export interface KnowledgeSearchHit {
+  node: KnowledgeNode
+  /** The query matched the name or an alias (not only the summary or a fact). */
+  nameHit: boolean
+  /** Live edges touching the node, both directions. */
+  edgeCount: number
+}
+
+/** knowledge_recall input (RuntimeContext.knowledgeRecall). */
+export interface KnowledgeRecallInput {
+  query: string
+  /** Characters of the whole result, clamped to KNOWLEDGE_RECALL_BUDGET_MIN..MAX. Default KNOWLEDGE_RECALL_BUDGET_DEFAULT. */
+  budget?: number
+  /** Show entities this agent already received in full again (it may have lost context). */
+  fresh?: boolean
+}
+
+/**
+ * What an inferred link rests on. See docs/design/knowledge-connections.md for the evaluation; only what passed it is
+ * built. 'mention': the `from` entity's summary or a live fact names `to`. 'same-name': equal name or alias across
+ * different kinds, a possible duplicate or a pair worth linking. Shared context notes and same-relation siblings were
+ * evaluated and rejected (they are not offered).
+ */
+export type KnowledgeLinkBasis = 'mention' | 'same-name'
+
+/**
+ * A connection OrgAI derived from the graph (src/shared/knowledgeLinks.ts). Never stored as an edge and never reported
+ * as a fact: the user can confirm it (an ordinary user edge through knowledge:saveEdge) or dismiss it
+ * (knowledge:dismissLink). Pairs that already have an edge are not suggested: any live edge and a retired edge the user
+ * wrote. A retired edge an agent wrote does not hold a suggestion back (an agent could otherwise silence one by linking
+ * and retiring).
+ */
+export interface KnowledgeInferredLink {
+  /** `kl_` + a stable hash of basis and endpoints (KNOWLEDGE_LINK_ID_RE); survives edits to the evidence text. */
+  id: string
+  /** Node ids. For the symmetric basis (same-name) `from` is the smaller id. */
+  from: string
+  to: string
+  basis: KnowledgeLinkBasis
+  /** A suggested relation word for confirming (a KNOWLEDGE_KEY_RE key), when the kind pair has one. */
+  suggestedRelation?: string
+  /** One short line of plain text saying why (at most 200 characters). User- or agent-written text: render as text only. */
+  evidence: string
+  /** The fact the evidence came from ('mention' in a fact). */
+  evidenceFactId?: string
+  /** Reserved: the context note the evidence came from. No current basis sets it (shared-note was rejected). */
+  evidenceNoteId?: string
+  /** 0..1, comparable within a result; higher is stronger. Not a probability. */
+  strength: number
+  /** How many separate texts or shared items back it (1 or more). */
+  count: number
+}
+
+/**
+ * How often an entity shows up, for sizing graph nodes. Derived only, never stored, and agent recalls are not counted.
+ * `relations`: live edges touching it whose other end is live. `mentions`: live entities' summaries and live facts that
+ * name it, with no hub cutoff (a large client organisation being the largest node is correct); dismissed mentions do
+ * not count. `notes`: context notes it links. `total` is their sum.
+ */
+export interface KnowledgeAppearance {
+  relations: number
+  mentions: number
+  notes: number
+  total: number
+}
+
+/**
+ * The name-matching pass stopped at KNOWLEDGE_MATCH_BUDGET (a graph with more text than one pass may scan on the main
+ * thread): entities are scanned in graph order, so `links` and the mention counts in `appearances` cover only the first
+ * `scannedEntities` of `totalEntities` live entities. The UI should say the list is partial.
+ */
+export interface KnowledgeInferencePartial {
+  scannedEntities: number
+  totalEntities: number
+}
+
+/** knowledge:inferredLinks result, computed once per graph revision. `appearances` has one entry per node id. */
+export interface KnowledgeInferredResult {
+  links: KnowledgeInferredLink[]
+  appearances: Record<string, KnowledgeAppearance>
+  /** Only when the pass stopped early; absent = every live entity's text was scanned. */
+  partial?: KnowledgeInferencePartial
+}
+
+/** knowledge:dismissLink input (engagements only). The id must have the KNOWLEDGE_LINK_ID_RE shape; dismissing twice is a no-op. */
+export interface KnowledgeDismissLinkInput {
+  projectId: string
+  linkId: string
+}
+
+/** Channels of this section; spread into IPC. */
+export const KNOWLEDGE_IPC = {
+  /** (projectId) -> KnowledgeGraph. Empty for code projects. */
+  knowledgeGet: 'knowledge:get',
+  /** (KnowledgeNodeSaveInput) -> KnowledgeNode. Engagements only. */
+  knowledgeSaveNode: 'knowledge:saveNode',
+  /** (KnowledgeItemRef with nodeId) -> KnowledgeGraph. Engagements only. */
+  knowledgeRemoveNode: 'knowledge:removeNode',
+  /** (KnowledgeEdgeSaveInput) -> KnowledgeEdge. Engagements only. */
+  knowledgeSaveEdge: 'knowledge:saveEdge',
+  /** (KnowledgeItemRef with edgeId) -> KnowledgeGraph. Engagements only. */
+  knowledgeRemoveEdge: 'knowledge:removeEdge',
+  /** (projectId) -> KnowledgeGraph (empty): the user's "start over". Engagements only. */
+  knowledgeClear: 'knowledge:clear',
+  /** (projectId) -> KnowledgeInferredResult. Empty for code projects. */
+  knowledgeInferredLinks: 'knowledge:inferredLinks',
+  /** (KnowledgeDismissLinkInput) -> KnowledgeInferredResult afterwards. Engagements only. */
+  knowledgeDismissLink: 'knowledge:dismissLink'
+} as const
+
+/** window.orgai additions of this section (declaration-merged into OrgAIApi). Every write pushes onEngagementChanged 'knowledge'. */
+export interface OrgAIApi {
+  knowledge: {
+    get(projectId: string): Promise<KnowledgeGraph>
+    saveNode(input: KnowledgeNodeSaveInput): Promise<KnowledgeNode>
+    /** Resolves to the graph afterwards. */
+    removeNode(ref: KnowledgeItemRef): Promise<KnowledgeGraph>
+    saveEdge(input: KnowledgeEdgeSaveInput): Promise<KnowledgeEdge>
+    /** Resolves to the graph afterwards. */
+    removeEdge(ref: KnowledgeItemRef): Promise<KnowledgeGraph>
+    /** Removes every node and edge; resolves to the empty graph. */
+    clear(projectId: string): Promise<KnowledgeGraph>
+    /** Derived connections and appearance counts for the current graph; nothing is written. */
+    inferredLinks(projectId: string): Promise<KnowledgeInferredResult>
+    /** Resolves to the result afterwards. */
+    dismissLink(input: KnowledgeDismissLinkInput): Promise<KnowledgeInferredResult>
   }
 }
 
@@ -3844,7 +5170,66 @@ export interface AppInfo {
   packaged: boolean
 }
 
+// ---- orgai command shim (cli-spec 7(3), Wave 6) ----
+
+/**
+ * Where the orgai command shim stands. 'unavailable': this OrgAI cannot install it (a dev build, ORGAI_DATA_DIR set,
+ * a translocated / disk-image / AppImage / portable copy; `reason` says which). 'not-installed': no file at `path`.
+ * 'installed': OrgAI's shim runs this install's launcher. 'outdated': OrgAI's shim runs another launcher (`target`).
+ * 'foreign': a file at `path` that OrgAI did not write; OrgAI never overwrites or removes it.
+ */
+export type CliShimState = 'unavailable' | 'not-installed' | 'installed' | 'outdated' | 'foreign'
+
+/** The orgai command shim (app:cliShimStatus). Structured-clone safe. */
+export interface CliShimStatus {
+  state: CliShimState
+  /** The shim file (~/.local/bin/orgai or %LOCALAPPDATA%\OrgAI\bin\orgai.cmd); '' when unknown. */
+  path: string
+  /** The shim's folder; '' when unknown. */
+  binDir: string
+  /** The launcher an OrgAI shim runs now (for 'outdated': the other install's). */
+  target?: string
+  /** True when binDir is on the login shell PATH; undefined when unknown. */
+  onPath?: boolean
+  /** One plain sentence for 'unavailable' and 'foreign'. */
+  reason?: string
+}
+
+/** The answer of app:installCliShim / app:uninstallCliShim. Never a rejection: failures are ok: false. */
+export interface CliShimResult {
+  ok: boolean
+  /** One plain sentence for the user. */
+  message: string
+  /** The status after the change (or the unchanged status after a failure). */
+  status: CliShimStatus
+}
+
+/**
+ * Channels of "Start a project from a repository" (section near the end of this file). Declared here because IPC
+ * spreads it and a const must be initialised first.
+ */
+export const REPO_CLONE_IPC = {
+  projectsParseRepoSource: 'projects:parseRepoSource',
+  projectsRepoTools: 'projects:repoTools',
+  projectsCloneRepo: 'projects:cloneRepo',
+  projectsCancelClone: 'projects:cancelClone',
+  /** main -> renderer push channel carrying RepoCloneProgress. */
+  projectsCloneProgress: 'projects:cloneProgress'
+} as const
+
+/** Channels of "Folder config trust" (section near the end of this file). Declared here for the same reason. */
+export const FOLDER_CONFIG_IPC = {
+  /** Project id -> FolderConfigReview. Rejects only for an unknown project. */
+  projectsFolderConfig: 'projects:folderConfig',
+  /** FolderConfigTrustInput -> FolderConfigTrustResult. Rejects with a readable sentence (missing or stale digest...). */
+  projectsSetFolderConfigTrust: 'projects:setFolderConfigTrust'
+} as const
+
 export const IPC = {
+  ...TEMPLATE_ENGAGEMENT_IPC,
+  ...KNOWLEDGE_IPC,
+  ...REPO_CLONE_IPC,
+  ...FOLDER_CONFIG_IPC,
   projectsList: 'projects:list',
   projectsGet: 'projects:get',
   projectsCreate: 'projects:create',
@@ -3885,12 +5270,23 @@ export const IPC = {
   settingsChanged: 'settings:changed',
   appOpenPath: 'app:openPath',
   appFocusRun: 'app:focusRun',
+  /** main -> renderer push of MenuActionEvent when a renderer-routed application menu item is chosen. */
+  menuAction: 'menu:action',
+  /** renderer -> main: the sender window's MenuState (validated in main, never echoed). */
+  menuSetState: 'menu:setState',
   appSetNotifications: 'app:setNotifications',
   usageRefresh: 'usage:refresh',
   appOpenLogs: 'app:openLogs',
   appLogPath: 'app:logPath',
   appInfo: 'app:info',
+  /** Desktop only (cli-spec 7(3)): the orgai command shim's CliShimStatus. Refused over the socket. */
+  appCliShimStatus: 'app:cliShimStatus',
+  /** Desktop only (cli-spec 7(3)): write or refresh the orgai command shim; answers CliShimResult. */
+  appInstallCliShim: 'app:installCliShim',
+  /** Desktop only (cli-spec 7(3)): remove the orgai command shim when it is OrgAI's; answers CliShimResult. */
+  appUninstallCliShim: 'app:uninstallCliShim',
   permissionsList: 'permissions:list',
+  permissionsIgnored: 'permissions:ignored',
   permissionsRemove: 'permissions:remove',
   permissionsAdd: 'permissions:add',
   permissionsDecideRequest: 'permissions:decideRequest',
@@ -3904,6 +5300,7 @@ export const IPC = {
   connectionsLogin: 'connections:login',
   connectionsCancelLogin: 'connections:cancelLogin',
   connectionsLogout: 'connections:logout',
+  connectionsSetDefault: 'connections:setDefault',
   /** main -> renderer push channel carrying ConnectionEvent. */
   connectionsEvent: 'connections:event',
   modelsList: 'models:list',
@@ -3976,3 +5373,1557 @@ export const IPC = {
   /** main -> renderer push channel carrying TeamReviewSummary. */
   capabilitiesReviewUpdated: 'capabilities:reviewUpdated'
 } as const
+
+// ---- MCP per-project secrets and custom connector presets ----
+//
+// Engagement kind, phase 2. A vendor-platform MCP server is a practice asset (one library entry); the tenant values
+// and credentials are client assets (per project). The interfaces below MERGE into the declarations of the same name
+// above (TypeScript declaration merging), so every field here is part of McpServerSpec / McpServerInfo / ... .
+
+/** Most names McpLibraryEntry.perProjectEnv may list. */
+export const MCP_PER_PROJECT_ENV_MAX = 20
+/** Longest value of one envOverrides / headerOverrides entry. */
+export const MCP_OVERRIDE_VALUE_MAX = 2000
+
+export interface McpServerSpec {
+  /**
+   * Library entries only (set by the user through mcpLibrary:upsert; a linked spec carries the entry's value as part of
+   * its snapshot). True = every project that links the entry keeps its OWN env / header secret values under the
+   * project key `mcp:<projectId>:<serverId>:{env|header}:<name>`; the entry's own values are never used for those
+   * links (no fallback: one client's credential never reaches another client's runs). Missing = the link uses the
+   * entry's values (unchanged behaviour). OAuth tokens stay with the entry either way. Refused on connector entries.
+   * Proposals and installs never set or clear it (an approved redefinition keeps the stored value). On
+   * mcpLibrary:upsert: true sets it, false clears it, absent KEEPS the stored value (a form that does not know the
+   * field never turns it off). Stored and returned only as true. While set, the entry takes no env / header values of
+   * its own (mcpLibrary:setSecret and library-scope proposal secrets refuse them; turning it on deletes any stored
+   * ones) and its McpLibraryInfo.missingSecrets is empty (see projectSecrets).
+   */
+  perProjectSecrets?: boolean
+  /**
+   * Library entries only (user-set, like perProjectSecrets): names of NON-secret env vars (stdio) or headers (http /
+   * sse) a linking project may override, e.g. a tenant base URL. At most MCP_PER_PROJECT_ENV_MAX valid env / header
+   * names, none a secret slot, none credential-like (authorization, cookie, *token*, *secret*, *password*, *key*...)
+   * and none that changes what runs (NODE_OPTIONS, PATH, LD_*, *_PROXY ...). Refused on connector entries. On
+   * mcpLibrary:upsert: absent KEEPS the stored list, [] clears it.
+   */
+  perProjectEnv?: string[]
+  /**
+   * Linked project servers only: this project's values for names in the entry's perProjectEnv (stdio env). Set
+   * through mcp:upsert on the linked server (present = replace, `{}` clears, absent = keep). Names not in the entry's
+   * list are dropped; a value with control or hidden characters, or longer than MCP_OVERRIDE_VALUE_MAX, is refused.
+   * Merged over the entry's env at resolve, filtered again against the entry's current list (secret values still win).
+   * Plain text in projects.json: never put a credential here. Proposals and installs never carry it.
+   */
+  envOverrides?: Record<string, string>
+  /** Linked project servers only: like envOverrides for http / sse headers (single-line values). */
+  headerOverrides?: Record<string, string>
+  /**
+   * Written by the main process only, with connectorId: the entry was made from a custom preset (UserConnectorDef in
+   * <data>/connector-presets.json), so connectorId is looked up there and never in the curated catalog.
+   */
+  connectorCustom?: true
+}
+
+export interface McpServerInfo {
+  /**
+   * Where envSet / headersSet / missingSecrets were read: 'project' for a project-only server or a link whose entry
+   * sets perProjectSecrets (this project's own values); 'library' for any other link (the entry's values).
+   */
+  secretScope?: 'project' | 'library'
+}
+
+export interface McpLibraryInfo {
+  /**
+   * Entries with perProjectSecrets only: every linking project with the secret slot names still empty there (empty
+   * list = all set). The entry's own envSet / headersSet / missingSecrets then describe values no run uses.
+   */
+  projectSecrets?: { projectId: string; projectName: string; serverId: string; missingSecrets: string[] }[]
+}
+
+/**
+ * mcp:copyFromLibrary input: replace a linked server with a project-only copy (new id, source 'user', same
+ * definition with this project's overrides baked into env / headers, enabled and roles kept, Role.mcpServers grants
+ * moved to the new id). OAuth state is never copied (the copy starts unauthorized). copySecrets true copies the
+ * library entry's env / header values into the copy's project slots; false leaves them empty. A link whose entry sets
+ * perProjectSecrets always moves this project's own values to the copy. Refused for a missing entry or a built
+ * server (buildDigest: its files live with the entry). Returns the saved project and refreshed list.
+ */
+export interface McpCopyFromLibraryInput {
+  projectId: string
+  serverId: string
+  copySecrets: boolean
+}
+
+/** Most custom connector presets (<data>/connector-presets.json). */
+export const USER_CONNECTOR_PRESETS_MAX = 100
+
+/**
+ * How a custom preset's variant authenticates: a subset of ConnectorAuth (no oauthClient, no OAuth overrides).
+ * 'token' on a stdio variant: `header` names the secret ENV var (the slot goes into secretEnv), else a secret header.
+ * 'oauth' only on http / sse variants.
+ */
+export type UserConnectorAuth =
+  | { kind: 'none' }
+  | { kind: 'oauth'; scopes?: string[] }
+  | { kind: 'token'; header: string; prefix?: string; label: string; help: string; link?: string }
+
+/** One variant of a custom preset: http / sse with an https url, or stdio with a command (pinned like any stdio server). */
+export interface UserConnectorVariant {
+  /** Kebab-case, unique within the preset. */
+  id: string
+  label: string
+  description?: string
+  transport: McpTransport
+  /** http / sse only: https. */
+  url?: string
+  /** http / sse only: non-secret headers. */
+  headers?: Record<string, string>
+  /** stdio only. */
+  command?: string
+  args?: string[]
+  /** stdio only: non-secret env. */
+  env?: Record<string, string>
+  readOnly: boolean
+  auth: UserConnectorAuth
+}
+
+/**
+ * A user-defined connector preset: a tile in the Connectors gallery like a curated one. Validated on every write and
+ * read: kebab-case id (also the library entry name) that is not a curated id, every string field single line (the
+ * description prose) without hidden characters and length-capped, category from CONNECTOR_CATEGORIES, 1-5 variants,
+ * defaultVariant one of them, at most USER_CONNECTOR_PRESETS_MAX presets. publisher is always 'user' and verified
+ * always false (main sets both).
+ */
+export interface UserConnectorDef {
+  id: string
+  name: string
+  vendor: string
+  publisher: 'user'
+  category: ConnectorCategory
+  description: string
+  status?: 'preview' | 'stable'
+  /** https. */
+  docsUrl?: string
+  variants: UserConnectorVariant[]
+  defaultVariant: string
+  setup?: string[]
+  notes?: string[]
+  /** Lowercase search words. */
+  aliases?: string[]
+  verified: false
+  /** Reserved for the practice-kit importer, which sets 'kit'. Kept as stored; connectorPresets:upsert drops any other value. */
+  origin?: 'kit'
+}
+
+/**
+ * mcp:setProjectOverrides input: this project's non-secret values for a linked server's perProjectEnv names (env for
+ * stdio, headers for http / sse). Each map given replaces the stored one (`{}` clears it; an omitted map is kept).
+ * Names outside the entry's perProjectEnv are dropped; a value with control or hidden characters, or longer than
+ * MCP_OVERRIDE_VALUE_MAX, is refused. Refused for a project-only server or a missing entry. Returns the saved project
+ * and refreshed list. (mcp:upsert on a linked server still accepts envOverrides / headerOverrides the same way.)
+ */
+export interface McpProjectOverridesInput {
+  projectId: string
+  serverId: string
+  env?: Record<string, string>
+  headers?: Record<string, string>
+}
+
+export interface ConnectorInfo {
+  /**
+   * A custom preset: `connector` is its ConnectorDef projection (publisher 'user', status 'stable' and setup [] when
+   * unset, docsUrl '' when unset (show no link), stdio variants with url '') and `preset` the stored definition.
+   * connectors:list lists curated presets in catalog order, then custom ones in store order.
+   */
+  custom?: true
+  preset?: UserConnectorDef
+}
+
+/**
+ * Editing a custom preset (connectorPresets:upsert) never rewrites a library entry already added from it: the entry
+ * keeps its own definition and secrets, and the tile shows the current preset. When the entry's variant id is no
+ * longer in the preset, its card state is derived from the entry alone (secrets set and OAuth authorized if it uses
+ * OAuth = connected). connectors:add with a new variant follows the curated rules (a not-yet-connected entry switches).
+ *
+ * connectorPresets:remove input. Refused while a library entry made from the preset exists.
+ */
+export interface ConnectorPresetRemoveInput {
+  id: string
+}
+
+/** IPC channels of this section (kept apart from IPC so the two phase-2 branches merge cleanly). */
+export const MCP_SCOPE_IPC = {
+  mcpCopyFromLibrary: 'mcp:copyFromLibrary',
+  mcpSetProjectOverrides: 'mcp:setProjectOverrides',
+  connectorPresetsList: 'connectorPresets:list',
+  connectorPresetsUpsert: 'connectorPresets:upsert',
+  connectorPresetsRemove: 'connectorPresets:remove'
+} as const
+
+export interface OrgAIApi {
+  /** Per-project handling of linked MCP servers. */
+  mcpProject: {
+    /** Replace a linked server with a project-only copy (McpCopyFromLibraryInput). Rejects for a project-only server, a missing entry or a built server. */
+    copyFromLibrary(input: McpCopyFromLibraryInput): Promise<McpMutationResult>
+    /** Set this project's non-secret values for the entry's perProjectEnv names (McpProjectOverridesInput). */
+    setOverrides(input: McpProjectOverridesInput): Promise<McpMutationResult>
+  }
+  /** Custom connector presets. Every mutation broadcasts mcpLibrary:changed (re-read connectors.list then). */
+  connectorPresets: {
+    list(): Promise<UserConnectorDef[]>
+    /** Add (new id) or replace one preset. Rejects with a readable message. Existing library entries made from it are never rewritten. */
+    upsert(def: UserConnectorDef): Promise<UserConnectorDef[]>
+    /** Rejects while a library entry made from it exists ("Remove <name> from the MCP library first."). */
+    remove(input: ConnectorPresetRemoveInput): Promise<UserConnectorDef[]>
+  }
+}
+
+// ---- Practice kit ----
+
+/** The practice-kit file format (`*.orgai-kit.json`, UTF-8 JSON, one file). */
+export const KIT_FORMAT = 'orgai.kit/1'
+/** Largest kit file main writes or reads. */
+export const KIT_MAX_BYTES = 50 * 1024 * 1024
+/** Most items of one kind in a kit, and most items in all. */
+export const KIT_MAX_ITEMS_PER_KIND = 200
+export const KIT_MAX_ITEMS = 500
+/** Most choices kit:applyImport accepts. */
+export const KIT_MAX_CHOICES = 500
+
+export type KitItemKind = 'skill' | 'server' | 'preset' | 'template'
+
+/** What to export from one group: the stored ids (library entry ids, preset ids, template ids) or every item. Absent = none. */
+export type KitSelection = string[] | 'all'
+
+/** kit:export input. `path` must come from kit:pickExportPath (main refuses any other path). */
+export interface KitExportInput {
+  path: string
+  include: {
+    /** Skill library entry ids. */
+    skills?: KitSelection
+    /** MCP library entry ids. */
+    mcpServers?: KitSelection
+    /** Custom connector preset ids. */
+    connectorPresets?: KitSelection
+    /** Team template ids. */
+    templates?: KitSelection
+  }
+}
+
+/** Items per group. */
+export interface KitCounts {
+  skills: number
+  mcpServers: number
+  connectorPresets: number
+  templates: number
+}
+
+export interface KitExportResult {
+  path: string
+  /** What went into the file. */
+  counts: KitCounts
+  /** Bytes written. */
+  bytes: number
+  /** Plain-language notes: items left out and why, what the file does not carry (secrets, sign-ins). */
+  notes: string[]
+}
+
+/** kit:previewImport input. `path` must come from kit:pickImportPath. */
+export interface KitPreviewInput {
+  path: string
+}
+
+/** new = not in your data; same = identical to yours; different = same name (id for presets), other content; refused = main will not import it. */
+export type KitItemStatus = 'new' | 'same' | 'different' | 'refused'
+
+/** add (status new), replace / copy (status different), skip (always). */
+export type KitAction = 'add' | 'replace' | 'copy' | 'skip'
+
+export interface KitPreviewItem {
+  /** Opaque, stable for one file digest ("skill:0"); choices refer to it. */
+  key: string
+  kind: KitItemKind
+  /** Display name (control and hidden characters replaced, at most 80 characters). */
+  name: string
+  description?: string
+  status: KitItemStatus
+  /** The action to preselect: 'add' for new, otherwise 'skip'. */
+  action: KitAction
+  /** Why it is `different` ("A skill with this name exists with other content") or why a replace is blocked. */
+  conflict?: string
+  /** False when a replace is not possible (a connector entry or a built server of yours has that name). */
+  canReplace: boolean
+  /** Bytes the item takes in the file. */
+  size: number
+  notes: string[]
+  /** status refused: the reason. */
+  refusal?: string
+  /** Servers and presets: what would run or connect, in full (command and arguments, or address). Never clamped. */
+  command?: string
+  /** Servers: secret slot names the user must fill in after importing (env, then headers). */
+  secretSlots?: string[]
+  /** Servers: every project that links it keeps its own secrets. */
+  perProjectSecrets?: boolean
+  /** Skills: files the skill carries other than SKILL.md. */
+  files?: string[]
+  /** Skills: files that look like scripts (the skill may ask agents to run them). */
+  scripts?: string[]
+  /** Templates: role names. */
+  roleNames?: string[]
+  /** Templates: each role's whole prompt (at most 20,000 characters) and elevated grants, so they can be read before apply. */
+  roles?: KitPreviewRole[]
+}
+
+/** One template role as the preview shows it. */
+export interface KitPreviewRole {
+  name: string
+  slug: string
+  prompt: string
+  elevatedTools: ('Bash' | 'Edit' | 'Write' | 'NotebookEdit' | 'canSpawn' | 'mcp')[]
+}
+
+export interface KitImportPreview {
+  /** The picked file's path; '' for a kit:previewBundle preview (the bytes came over the socket). */
+  path: string
+  fileName: string
+  /** sha256 hex of the file's bytes; kit:applyImport refuses a missing or different one. */
+  digest: string
+  bytes: number
+  exportedAt?: string
+  appVersion?: string
+  platform?: string
+  items: KitPreviewItem[]
+  /** Whole-file notes ("3 items refused"). */
+  notes: string[]
+  /**
+   * sha256 hex over the destination library state the items would touch (cli-spec 3.6). Set by kit:previewBundle;
+   * kit:applyBundle refuses with stale_target_digest when it no longer matches.
+   */
+  targetDigest?: string
+}
+
+export interface KitImportChoice {
+  key: string
+  action: KitAction
+}
+
+export interface KitApplyInput {
+  path: string
+  digest: string
+  /** Only these items are applied; an item without a choice is skipped. At most KIT_MAX_CHOICES. */
+  choices: KitImportChoice[]
+}
+
+export interface KitNeedsSecrets {
+  /** The library server's name. */
+  name: string
+  /** Secret environment variable names to set in Settings > Connectors. */
+  env: string[]
+  /** Secret header names. */
+  headers: string[]
+  /** Each project that links it enters its own values. */
+  perProject: boolean
+}
+
+export interface KitApplyResult {
+  added: number
+  replaced: number
+  copied: number
+  skipped: number
+  /** Added + replaced + copied per group. */
+  counts: KitCounts
+  /** Items that could not be applied (the rest were). */
+  failed: { key: string; name: string; reason: string }[]
+  /** Imported servers that cannot start until their secrets are set. */
+  needsSecrets: KitNeedsSecrets[]
+  notes: string[]
+}
+
+/** IPC channels of this section. */
+export const KIT_IPC = {
+  /** Opens the save dialog; resolves to the path or null. Only that path is accepted by kit:export (once). */
+  kitPickExportPath: 'kit:pickExportPath',
+  /** Opens the file dialog; resolves to the path or null. Only that path is accepted by the import channels. */
+  kitPickImportPath: 'kit:pickImportPath',
+  kitExport: 'kit:export',
+  kitPreviewImport: 'kit:previewImport',
+  kitApplyImport: 'kit:applyImport'
+} as const
+
+export interface OrgAIApi {
+  /** Practice kit: skills, custom servers, presets and templates in one file. Secret values and sign-ins never go in it. No undo. */
+  kit: {
+    pickExportPath(): Promise<string | null>
+    pickImportPath(): Promise<string | null>
+    export(input: KitExportInput): Promise<KitExportResult>
+    previewImport(input: KitPreviewInput): Promise<KitImportPreview>
+    applyImport(input: KitApplyInput): Promise<KitApplyResult>
+  }
+}
+
+// ---------- CLI and host (cli-spec Wave 0) ----------
+//
+// Contracts for the local host daemon, its socket wire protocol, headless exec runs and the host-validated bundle
+// channels (docs/design/cli-spec.md sections 3.2, 3.3, 3.4(4), 3.6 and 6.2). Wave 0 only lands the shapes: no socket
+// server, dispatcher or IPC handler uses them yet. Everything here is structured-clone and JSON safe.
+
+/**
+ * Socket-only host channels (cli-spec 3.3(3)). Deliberately NOT spread into IPC: no ipcMain handler exists for them,
+ * and Wave 1 wires them into the host channel registry.
+ */
+export const HOST_IPC = {
+  runsSubscribe: 'runs:subscribe',
+  skillLibraryAddFromBundle: 'skillLibrary:addFromBundle',
+  kitExportBundle: 'kit:exportBundle',
+  kitPreviewBundle: 'kit:previewBundle',
+  kitApplyBundle: 'kit:applyBundle',
+  /**
+   * `orgai decide` lookup (cli-spec 6.3): which run holds a pending card, or how a recently resolved one ended
+   * (RunManager tombstones). Scope 'read', socket only, params `[requestId]`, result DecisionLookup.
+   */
+  runsFindDecision: 'runs:findDecision'
+} as const
+
+export type HostIpcChannel = (typeof HOST_IPC)[keyof typeof HOST_IPC]
+
+/** Who ended a run (RunSummary.endedBy, run.status). 'policy' and 'budget' are host-finalized exec runs. */
+export type RunEndedBy = 'user' | 'app' | 'policy' | 'budget'
+
+/** Wire protocol version of the host socket (host.challenge / host.hello). */
+export const HOST_PROTOCOL_VERSION = 1
+
+/** What an authenticated client may do. 'read' < 'operate' < 'decide' < 'configure' by convention; each is granted explicitly. */
+export type HostScope = 'read' | 'operate' | 'decide' | 'configure'
+export const HOST_SCOPES: readonly HostScope[] = ['read', 'operate', 'decide', 'configure']
+
+/** AppSettings.terminalAccessLevel: 'operate' grants read + operate, 'full' every scope. */
+export type TerminalAccessLevel = 'operate' | 'full'
+
+export type HostClientKind = 'tui' | 'cli'
+
+/** 'desktop': the Electron app with a window. 'headless-host': the Electron app started with --headless-host. 'inproc': pure Node inside the CLI. */
+export type HostKind = 'desktop' | 'headless-host' | 'inproc'
+
+export type HostState = 'starting' | 'ready' | 'draining'
+
+/** `<dataDir>/run/daemon.json`: the live host's advertisement (cli-spec 3.2). Written atomically by the owner only. */
+export interface DaemonInfo {
+  /** 12 lowercase hex chars (src/main/host/identity.ts). */
+  hostInstanceId: string
+  pid: number
+  /** The owner's process start time as processStartTime() reports it; guards against PID reuse. */
+  processStartTime?: string
+  /** Socket path (unix) or pipe name (win32). */
+  endpoint: string
+  /**
+   * false while the host binds no listener and has no daemon.secret (Terminal access off, review M11): clients answer
+   * "Terminal access is off" without connecting. Absent = listening.
+   */
+  listening?: false
+  state: HostState
+  /** Epoch ms. */
+  startedAt: number
+  hostKind?: HostKind
+  appVersion?: string
+}
+
+/** Step 1 of the handshake: host -> client, sent immediately on socket connect. */
+export interface RpcChallengeFrame {
+  jsonrpc: '2.0'
+  method: 'host.challenge'
+  params: {
+    protocolVersion: 1
+    hostInstanceId: string
+    /** 32-byte hex random nonce. */
+    hostNonce: string
+  }
+}
+
+/** host.hello params (step 2: client -> host). */
+export interface RpcHelloParams {
+  protocolVersion: 1
+  clientKind: HostClientKind
+  clientVersion: string
+  pid: number
+  cwd: string
+  /** 32-byte hex random nonce. */
+  clientNonce: string
+  requestedScopes: HostScope[]
+  /**
+   * Canonical structured full-transcript HMAC (binds all client fields including cwd):
+   * HMAC-SHA256(daemon.secret,
+   *   JSON.stringify(['client:v1', protocolVersion, hostInstanceId, hostNonce, clientNonce, clientKind, clientVersion, pid, cwd, requestedScopes]))
+   */
+  clientProof: string
+  /**
+   * Only from the CLI process that started a `--host inproc` host: HMAC-SHA256(that host's in-memory owner key,
+   * JSON.stringify(['owner:v1', hostInstanceId, hostNonce, clientNonce, clientProof])) (protocol.ts ownerProof). A
+   * matching one is granted every requested scope; any other client of that host is capped by Terminal access like
+   * on every other host. Never on disk, so a process that read daemon.secret still cannot make it.
+   */
+  ownerProof?: string
+}
+
+/** Step 2: client -> host. */
+export interface RpcHelloRequest {
+  jsonrpc: '2.0'
+  id: 1
+  method: 'host.hello'
+  params: RpcHelloParams
+}
+
+/** Step 3: host -> client (the result of host.hello). */
+export interface RpcHelloResult {
+  protocolVersion: 1
+  hostInstanceId: string
+  hostKind: HostKind
+  appVersion: string
+  dataDir: string
+  mock: boolean
+  grantedScopes: HostScope[]
+  /** Populated when clientVersion !== appVersion; 'read', 'operate', and 'decide' still work when protocolVersion matches. */
+  versionSkewWarning?: string
+  /**
+   * Canonical structured full-transcript HMAC (binds all host fields):
+   * HMAC-SHA256(daemon.secret,
+   *   JSON.stringify(['host:v1', protocolVersion, hostInstanceId, clientNonce, hostNonce, hostKind, appVersion, dataDir, mock, grantedScopes]))
+   */
+  hostProof: string
+}
+
+export type HostRpcErrorCode =
+  | 'host_starting'
+  | 'host_draining'
+  | 'terminal_server_disabled'
+  | 'unknown_channel'
+  | 'desktop_unavailable'
+  | 'agent_descendant_refused'
+  | 'stale_target_digest'
+  | 'stale_revision'
+  | 'scope_denied'
+  | 'frame_too_large'
+  | 'bad_request'
+  /** host.hello: the clientProof did not verify (or the daemon secret could not be read). */
+  | 'auth_failed'
+  /** host.hello: protocolVersion differs from HOST_PROTOCOL_VERSION. */
+  | 'protocol_mismatch'
+  /** Socket quota (RPC_MAX_UNAUTH_SOCKETS / RPC_MAX_CLIENT_SOCKETS) reached. */
+  | 'too_many_connections'
+  /** More than RPC_MAX_INFLIGHT_PER_SOCKET requests in flight on one socket. */
+  | 'too_many_requests'
+
+/** The `data` of a JSON-RPC error answered by the host. */
+export interface HostRpcError {
+  code: HostRpcErrorCode
+  message: string
+  /** host_starting / host_draining: when to try again. */
+  retryAfterMs?: number
+}
+
+/** Max line length until host.hello succeeds. */
+export const RPC_PRE_AUTH_FRAME_MAX_BYTES = 16 * 1024
+/** Standard control channel request cap. */
+export const RPC_CONTROL_REQUEST_MAX_BYTES = 2 * 1024 * 1024
+/** Standard control channel response cap (runs:subscribe snapshots must fit). */
+export const RPC_CONTROL_RESPONSE_MAX_BYTES = 16 * 1024 * 1024
+/** Request / response cap of RPC_BULK_CHANNELS. */
+export const RPC_BULK_FRAME_MAX_BYTES = 80 * 1024 * 1024
+/** Host-wide cap on concurrent in-flight bulk frames (> 2 MB) across all sockets. */
+export const RPC_BULK_MEMORY_BUDGET_BYTES = 256 * 1024 * 1024
+/** Deadline for an unauthenticated socket to finish host.hello. */
+export const RPC_HANDSHAKE_TIMEOUT_MS = 2000
+export const RPC_MAX_UNAUTH_SOCKETS = 16
+export const RPC_MAX_CLIENT_SOCKETS = 32
+export const RPC_MAX_INFLIGHT_PER_SOCKET = 4
+
+/** Channels whose frames may reach RPC_BULK_FRAME_MAX_BYTES (base64 images, kit bundles, knowledge graphs). */
+export const RPC_BULK_CHANNELS: readonly string[] = [
+  'runs:start',
+  'runs:startQuick',
+  'runs:continue',
+  'runs:send',
+  'runs:get',
+  'kit:exportBundle',
+  'kit:previewBundle',
+  'kit:applyBundle',
+  'knowledge:get',
+  'skillLibrary:addFromBundle'
+]
+
+/** host.subscribe topics: non-run push channels a socket client may receive. */
+export type HostSubscribeTopic = 'settings' | 'connections' | 'mcpLibrary' | 'skillLibrary' | 'capabilities' | 'engagement'
+
+/** runs:subscribe input (cli-spec 3.3(4).1). */
+export interface RunsSubscribeInput {
+  projectIds?: string[]
+  runIds?: string[]
+  /** Run id whose RunRecord the snapshot carries (images replaced by OmittedImage). */
+  includeActiveRunRecord?: string
+  /** Follow continuations / auto-resumes and run.moved promotions of subscribed runs. */
+  followChains?: boolean
+  /**
+   * true: this subscriber never counts toward the host's interactiveClients, even with includeActiveRunRecord
+   * (headless `orgai exec` followers must not hold a decision policy's humanGraceMs window). Not part of filterKey.
+   */
+  nonInteractive?: boolean
+  /** Last seq the client applied; a valid one in the ring buffer gets a replay. */
+  sinceSeq?: number
+  filterKey?: string
+  hostInstanceId?: string
+}
+
+/** Stands in for an image's base64 data in snapshots and oversized push frames; the bytes come only via runs:get. */
+export interface OmittedImage {
+  mediaType: ImageMediaType
+  byteLength: number
+  omittedBase64: true
+}
+
+/** A durable RunEvent with its host event bus sequence number. */
+export interface SequencedHostEvent {
+  seq: number
+  event: RunEvent
+}
+
+/** runs:subscribe result: a snapshot XOR a replay, never both. */
+export type RunsSubscribeResult =
+  | {
+      mode: 'snapshot'
+      hostInstanceId: string
+      seq: number
+      filterKey: string
+      snapshot: {
+        liveRuns: RunSummary[]
+        /** Open cards of each live run, keyed by run id (runs:pendingCards per run). */
+        pendingCards: Record<string, PendingCards>
+        /**
+         * The includeActiveRunRecord run, images scrubbed. Past ACTIVE_RUN_SNAPSHOT_MAX_BYTES its oldest transcript
+         * entries (and logs) are left out so the answer stays under the response cap; activeRunOmitted counts them.
+         */
+        activeRun?: RunRecord
+        /** Oldest transcript entries left out of activeRun to fit (absent when nothing was left out). */
+        activeRunOmitted?: number
+        /** Runs ended within the last 10 minutes. */
+        recentEndedRuns: RunSummary[]
+      }
+    }
+  | {
+      mode: 'replay'
+      hostInstanceId: string
+      fromSeq: number
+      toSeq: number
+      filterKey: string
+      events: SequencedHostEvent[]
+    }
+
+// Headless exec (cli-spec 6.2(1)).
+
+export interface HeadlessDecisionPolicy {
+  permission: 'deny' | 'fail' | 'wait' // default: 'deny'
+  rules: 'deny' | 'fail' | 'wait' // default: 'deny'
+  mcpInstall: 'deny' | 'fail' | 'wait' // default: 'deny'
+  question: 'fail' | 'conservative' | 'wait' // default: 'fail'
+  proposal: 'decline' | 'fail' | 'wait' // default: 'decline'
+  merge: 'hold' | 'fail' | 'wait' // default: 'hold'
+  /** Max auto-denials/declines before ending the run as 'needs-decision' (default 5). */
+  maxAutoDenials?: number
+  /** Timeout in ms when a policy is 'wait' (default 900_000 = 15 min). */
+  waitTimeoutMs?: number
+  /** Grace window in ms before auto-resolving while an interactive Desktop/TUI client is open (default 60_000). */
+  humanGraceMs?: number
+}
+
+export const DEFAULT_HEADLESS_DECISION_POLICY: Readonly<Required<HeadlessDecisionPolicy>> = {
+  permission: 'deny',
+  rules: 'deny',
+  mcpInstall: 'deny',
+  question: 'fail',
+  proposal: 'decline',
+  merge: 'hold',
+  maxAutoDenials: 5,
+  waitTimeoutMs: 900_000,
+  humanGraceMs: 60_000
+}
+
+export interface RunOverrides {
+  /** Overrides Project.permissionMode. Under 'operate' scope, must satisfy canNarrowPermissionMode(projectMode, overrideMode). */
+  permissionMode?: PermissionMode
+  /** Overrides Project.autoContinue for this run (under 'operate', cannot change false -> true). */
+  autoContinue?: boolean
+  /** Overrides Project.maxAutoContinues (0..MAX_AUTO_CONTINUES_LIMIT = 500; under 'operate', <= project.maxAutoContinues). */
+  maxAutoContinues?: number
+  /** Overrides Project.maxBudgetUsd (finite >= 0 USD estimated cap across the execChainId; under 'operate', <= project.maxBudgetUsd). */
+  maxBudgetUsd?: number
+  /** Allow starting/continuing with maxBudgetUsd even when an effective role model has no known price (requires 'configure' if project sets maxBudgetUsd). */
+  allowUnpricedBudget?: boolean
+  /** Allow ending as 'completed' even if conflict worktree branches remain unmerged (--allow-unmerged, default false). */
+  allowUnmerged?: boolean
+  /** Allow inbound cross-run `message_run` deliveries during an execMode run (default false; requires 'configure' if enabled). */
+  allowPeerMessages?: boolean
+  /** Host-enforced headless lifecycle & decision policy. */
+  execMode?: boolean
+  /** Stable identifier linking all continuation/auto-resume RunSummaries belonging to one headless invocation. */
+  execChainId?: string
+  /** Keep paused run alive with an auto-resume timer on rate-limit hit in execMode (default false). */
+  waitForReset?: boolean
+  /** Stall timeout in ms when idle with non-quiescent state and no activityGen progress (default 300_000 = 5 min). */
+  execStallTimeoutMs?: number
+  /** Executed inside RunManager under `decidedBy: { surface: 'policy' }` (requires no client 'decide' scope). */
+  decisionPolicy?: HeadlessDecisionPolicy
+}
+
+/** RunOverrides.execStallTimeoutMs default (5 min). */
+export const DEFAULT_EXEC_STALL_TIMEOUT_MS = 300_000
+
+/** How a headless exec run ended (RunSummary.execOutcome, run.finalized). */
+export type ExecOutcome =
+  | 'completed'
+  | 'completed-unplanned'
+  | 'unmerged-conflicts'
+  | 'blocked'
+  | 'incomplete-plan'
+  | 'needs-decision'
+  | 'budget-exceeded'
+  | 'rate-limited'
+  | 'auth-error'
+  | 'failed'
+  | 'stalled'
+  | 'interrupted'
+
+export const EXEC_OUTCOMES: readonly ExecOutcome[] = [
+  'completed',
+  'completed-unplanned',
+  'unmerged-conflicts',
+  'blocked',
+  'incomplete-plan',
+  'needs-decision',
+  'budget-exceeded',
+  'rate-limited',
+  'auth-error',
+  'failed',
+  'stalled',
+  'interrupted'
+]
+
+/** CLI exit code per outcome (cli-spec 6.2(3)). */
+export const EXEC_OUTCOME_EXIT_CODE: Record<ExecOutcome, number> = {
+  completed: 0,
+  'completed-unplanned': 0,
+  'unmerged-conflicts': 3,
+  blocked: 3,
+  'incomplete-plan': 3,
+  'needs-decision': 3,
+  'budget-exceeded': 3,
+  'rate-limited': 4,
+  'auth-error': 5,
+  failed: 1,
+  stalled: 1,
+  interrupted: 130
+}
+
+/** Who resolved a decision card (cli-spec 3.4(4)). */
+export interface DecidedBy {
+  surface: 'desktop' | 'tui' | 'cli' | 'policy'
+  reportedPid?: number
+}
+
+/** The result of a decision method (decide, decideRules, decideProposal, answerQuestion, decideMerge, answerMcpInstall). */
+export interface DecisionOutcome {
+  status: 'applied' | 'already-resolved' | 'stale-revision' | 'cancelled' | 'not-found'
+  runId?: string
+  requestId: string
+  /** e.g. 'allow', 'deny', 'grant', 'approve', 'revise', 'decline', 'hold', 'merge', 'discard' */
+  effectiveDecision?: string
+  /** Populated when a proposal approval was turned into a 'revise' outcome due to a validation/apply error. */
+  applyError?: string
+  decidedBy?: DecidedBy
+}
+
+/** The six decision card kinds (RunManager pending maps, runs:findDecision). */
+export type CardKind = 'permission' | 'question' | 'proposal' | 'rules' | 'merge' | 'mcpInstall'
+
+/** Last-parameter options of the RunManager decision methods (cli-spec 3.4(4), 5.3). */
+export interface DecisionOptions {
+  /** Refused as 'stale-revision' when it does not match the card's revision. */
+  expectedRevision?: number
+  decidedBy?: DecidedBy
+}
+
+/** runs:findDecision result: a pending card, a recently resolved one (tombstone), or nothing. */
+export type DecisionLookup =
+  | { status: 'pending'; requestId: string; runId: string; projectId: string; kind: CardKind; revision: number }
+  | {
+      status: 'applied' | 'cancelled'
+      requestId: string
+      runId: string
+      kind: CardKind
+      effectiveDecision?: string
+      decidedBy?: DecidedBy
+      at: number
+    }
+  | { status: 'not-found'; requestId: string }
+
+/** Resolved-card tombstones RunManager keeps for runs:findDecision / 'already-resolved' answers. */
+export const DECISION_TOMBSTONES_MAX = 1000
+/** finalizeExecRun: how long it waits for session.finished and teardown before force-closing. */
+export const EXEC_FINALIZE_STOP_TIMEOUT_MS = 5000
+/** finalizeExecRun: how long it waits for an in-flight run title before cancelling it. */
+export const EXEC_TITLE_JOIN_MS = 2000
+/** trySettleExecRun debounce. */
+export const EXEC_SETTLE_DEBOUNCE_MS = 50
+/**
+ * The longest delay a Node / Electron timer honours (2^31 - 1 ms, about 24.8 days): setTimeout runs a longer one after
+ * 1 ms. Exec timer overrides (execStallTimeoutMs, decisionPolicy.waitTimeoutMs / humanGraceMs) are refused above it.
+ */
+export const MAX_TIMER_DELAY_MS = 2_147_483_647
+/** The deny message a headless decision policy sends to the agent. */
+export const HEADLESS_POLICY_DENY_MESSAGE = 'Denied by the headless decision policy (orgai exec).'
+/** A question option whose label or description starts with this is the conservative policy's pick. */
+export const RECOMMENDED_OPTION_PREFIX = '(Recommended)'
+
+// Host-validated bundles (cli-spec 3.6).
+
+/** One file of a skill bundle: a relative POSIX path and its bytes as base64. */
+export interface SkillBundleFile {
+  relPath: string
+  base64: string
+}
+
+/** skillLibrary:addFromBundle input. The host decodes and validates every file like skillLibrary:addFromFolder. */
+export interface SkillBundleInput {
+  name: string
+  files: SkillBundleFile[]
+}
+
+export const SKILL_BUNDLE_MAX_FILES = 50
+export const SKILL_BUNDLE_SKILL_MD_MAX_BYTES = 256 * 1024
+export const SKILL_BUNDLE_FILE_MAX_BYTES = 64 * 1024
+export const SKILL_BUNDLE_MAX_BYTES = 1024 * 1024
+
+/** kit:exportBundle input: like kit:export, but the bytes come back instead of going to a picked path. */
+export interface KitBundleExportInput {
+  include: KitExportInput['include']
+  fileName?: string
+}
+
+export interface KitBundleExportResult {
+  fileName: string
+  rawBytesBase64: string
+  counts: KitCounts
+  bytes: number
+  notes: string[]
+}
+
+/** kit:previewBundle input. The result is a KitImportPreview with `path: ''` and a `targetDigest`. */
+export interface KitBundlePreviewInput {
+  fileName: string
+  rawBytesBase64: string
+}
+
+/** kit:applyBundle input. Refused when `digest` does not match the bytes or `targetDigest` the destination state (stale_target_digest). */
+export interface KitBundleApplyInput {
+  rawBytesBase64: string
+  digest: string
+  targetDigest: string
+  choices: KitImportChoice[]
+}
+
+// ---------- CLI and host (cli-spec Wave 1) ----------
+//
+// Host protocol methods, activity leases and host.status / host.stop shapes (cli-spec 3.2(4), 3.3(3)). Outside IPC:
+// the preload API is unchanged, and none of these is an ipcMain channel.
+//
+// RPC params convention: a channel method's JSON-RPC `params` is the positional argument array, exactly what
+// ipcRenderer.invoke passes after the channel (`runs:get` with `["run_1"]`, `settings:set` with `[settings]`, a
+// zero-argument channel with `[]`). A host.* method also accepts a single object as `params`; the host normalizes it
+// to `[object]` before validation.
+
+/** JSON-RPC methods of the host protocol itself (not channels; never in IPC). */
+export const HOST_METHODS = {
+  hostChallenge: 'host.challenge',
+  hostHello: 'host.hello',
+  hostStatus: 'host.status',
+  hostSubscribe: 'host.subscribe',
+  hostStop: 'host.stop'
+} as const
+
+export type HostMethod = (typeof HOST_METHODS)[keyof typeof HOST_METHODS]
+
+/** What keeps a host from going idle (cli-spec 3.2(4) "Tracked Leases"). */
+export type ActivityLeaseKind =
+  | 'liveRuns'
+  | 'pausedAutoResumes'
+  | 'inFlightRpcMutations'
+  | 'activeWorktreeOps'
+  | 'backgroundTasks'
+  | 'activeOAuthFlows'
+  | 'interactiveClients'
+
+export const ACTIVITY_LEASE_KINDS: readonly ActivityLeaseKind[] = [
+  'liveRuns',
+  'pausedAutoResumes',
+  'inFlightRpcMutations',
+  'activeWorktreeOps',
+  'backgroundTasks',
+  'activeOAuthFlows',
+  'interactiveClients'
+]
+
+/** HostActivityTracker's view at one moment: held leases plus polled sources, per kind. */
+export interface HostActivitySnapshot {
+  counts: Record<ActivityLeaseKind, number>
+  /** Sum of counts. */
+  total: number
+  /** total === 0. */
+  idle: boolean
+  /** Epoch ms since which the host has been idle (absent while busy). */
+  idleSince?: number
+  state: HostState
+}
+
+/** host.status result (scope 'read'). */
+export interface HostStatusResult {
+  protocolVersion: 1
+  hostInstanceId: string
+  hostKind: HostKind
+  state: HostState
+  appVersion: string
+  dataDir: string
+  mock: boolean
+  pid: number
+  /** Epoch ms. */
+  startedAt: number
+  activity: HostActivitySnapshot
+}
+
+/** host.stop input (scope 'configure'). Without force the host refuses while any lease is held. */
+export interface HostStopInput {
+  force?: boolean
+}
+
+export interface HostStopResult {
+  stopping: boolean
+  /** Set when the stop was refused: the non-zero lease counts that blocked it. */
+  refusedBecause?: Partial<Record<ActivityLeaseKind, number>>
+}
+
+/** host.subscribe input (scope 'read'). */
+export interface HostSubscribeInput {
+  topics: HostSubscribeTopic[]
+}
+
+/** host.subscribe result: the topics the socket is now subscribed to (deduped, known topics only). */
+export interface HostSubscribeResult {
+  topics: HostSubscribeTopic[]
+}
+
+/**
+ * Params of a socket `runs:event` notification (pushed after runs:subscribe). Durable events carry `seq` (their slot
+ * in the host's replay ring); a transient agent.partial carries `atSeq` instead (the current durable watermark, not a
+ * ring slot). Exactly one of the two is set.
+ */
+export interface RunsEventParams {
+  seq?: number
+  atSeq?: number
+  event: RunEvent
+}
+
+/** ORGAI_DAEMON_IDLE_MINUTES default: an idle background host exits after this long. */
+export const DEFAULT_DAEMON_IDLE_MINUTES = 30
+
+// ---- Start a project from a repository (clone or fork) ----
+//
+// The renderer asks main to clone a repository into a folder, optionally forking it first through the user's own gh
+// login, then creates the project through the existing projects:create with that folder. Renderer only: agents get no
+// tool for this. Service: src/main/repoClone.ts. Main re-parses `source` itself and never takes a URL from the renderer.
+
+/** Longest repository source text accepted, and longest destination path. */
+export const REPO_SOURCE_MAX_CHARS = 512
+export const REPO_DESTINATION_MAX_CHARS = 1024
+/** How many clones may run at once; one more is refused with a sentence. */
+export const REPO_CLONES_MAX = 3
+
+/** projects:parseRepoSource when the text names a repository OrgAI can clone. */
+export interface RepoSourceOk {
+  ok: true
+  /**
+   * The canonical URL git receives: https://github.com/<owner>/<repo>.git for an https URL or the shorthand; the
+   * ssh forms stay ssh (git@github.com:<owner>/<repo>.git, ssh://git@github.com/<owner>/<repo>.git). No password or token, ever.
+   */
+  url: string
+  /** Lowercase host, with the port when one was given. 'github.com' when canFork. */
+  host: string
+  /** Absent only when another host's path has a single segment; on those hosts it may hold several segments (group/sub). */
+  owner?: string
+  /** Repository name without `.git`. */
+  repo: string
+  /** What to show: `owner/repo` on GitHub, `host/group/repo` elsewhere. */
+  display: string
+  /** A folder name for the repository, safe on every platform. Never a path. */
+  suggestedFolder: string
+  /** True only for github.com. */
+  canFork: boolean
+}
+/** `problem` is a fixed sentence. It never quotes the input, so a pasted token is not echoed. */
+export interface RepoSourceRefused {
+  ok: false
+  problem: string
+}
+export type RepoSourceParse = RepoSourceOk | RepoSourceRefused
+
+/**
+ * projects:repoTools. Never rejects. Spends no model tokens, but `gh auth status` DOES reach the network: it tests the
+ * account against api.github.com (seen on gh 2.93.0 through a dead proxy: state 'error', "Get https://api.github.com/ ...").
+ * When GitHub cannot be reached the account still counts as logged in and `detail` says the check could not finish.
+ */
+export interface RepoTools {
+  git: { available: boolean; version?: string }
+  gh: {
+    available: boolean
+    loggedIn: boolean
+    /** The active github.com account. */
+    login?: string
+    /** A sentence for the user: how to install or sign in, or why the check could not finish. */
+    detail?: string
+  }
+}
+
+export type RepoCloneMode = 'clone' | 'fork'
+
+/** projects:cloneRepo input. Rebuilt field by field in ipc.ts. */
+export interface RepoCloneInput {
+  /** Chosen by the renderer: 1 to 64 of letters, digits, '_' and '-'. The same id is refused while it is running. */
+  requestId: string
+  /** The text the user typed; main parses it again. */
+  source: string
+  mode: RepoCloneMode
+  /**
+   * The new folder: absolute, on this computer (no UNC or device path), not a drive root, outside OrgAI's data folder,
+   * and either missing or an empty real directory.
+   */
+  destination: string
+}
+
+/** What is known about the fork when mode was 'fork'. */
+export interface RepoCloneFork {
+  /** `owner/repo` of the fork (GitHub may have renamed it to avoid a clash). */
+  fullName: string
+  htmlUrl: string
+  /** The source repository, as remote `upstream`. */
+  upstreamUrl: string
+  /** False when `git remote add upstream` failed; the clone is still good. */
+  upstreamAdded: boolean
+  /** True when GitHub returned a fork older than this request, so nothing new was made. A best guess from created_at. */
+  alreadyExisted?: boolean
+}
+
+export interface RepoCloneResult {
+  /** The folder that now holds the clone; pass it to projects:create. */
+  path: string
+  /** The URL it was cloned from. */
+  url: string
+  /** The checked-out branch; absent when it could not be read. */
+  branch?: string
+  fork?: RepoCloneFork
+  /**
+   * What the clone contains from REPO_CONFIG_PATHS, as '/'-relative paths in that order. These come from whoever wrote
+   * the repository. See REPO_CONFIG_PATHS for what each does.
+   */
+  repoConfig: string[]
+}
+
+/** What a repository file can do once a run works in the folder. */
+export type RepoConfigEffect =
+  /** Can run commands on this computer or change what agents may do without asking. */
+  | 'runs-commands'
+  /** Starts tool servers or defines agents, skills or commands for the run. */
+  | 'tools'
+  /** Text agents read as instructions. */
+  | 'instructions'
+
+/**
+ * Files in a repository that agents would load or that can run commands, checked in this order. A file or folder that
+ * is a link still counts: it is listed, never followed. A code project whose folder holds any of these at creation is
+ * gated (section "Folder config trust"); once allowed, Claude runs load `.claude/settings.json`
+ * (settingSources ['project']), so its hooks can run on the user's computer. From the docs, not confirmed by a live
+ * run: `.mcp.json` does not load on Claude runs (strictMcpConfig) and is listed because Codex and the importers may
+ * read it; `.claude/settings.local.json` is listed because OrgAI itself reads its permission rules
+ * (permissionRules listRules), not because the CLI loads it; nested CLAUDE.md files and `@` imports inside
+ * instruction files cannot be listed here.
+ */
+export const REPO_CONFIG_PATHS: readonly { path: string; effect: RepoConfigEffect }[] = [
+  { path: '.claude/settings.json', effect: 'runs-commands' },
+  { path: '.claude/settings.local.json', effect: 'runs-commands' },
+  { path: '.claude/hooks', effect: 'runs-commands' },
+  { path: '.codex', effect: 'runs-commands' },
+  { path: '.mcp.json', effect: 'tools' },
+  { path: '.claude/agents', effect: 'tools' },
+  { path: '.claude/commands', effect: 'tools' },
+  { path: '.claude/skills', effect: 'tools' },
+  { path: '.claude/rules', effect: 'tools' },
+  { path: '.claude/workflows', effect: 'tools' },
+  { path: '.claude/routines', effect: 'tools' },
+  { path: '.claude/output-styles', effect: 'tools' },
+  { path: '.orgai/org.json', effect: 'tools' },
+  // Team files (src/main/teamFiles/): roles, skills and servers a project would take on, behind an approval card.
+  { path: '.orgai/team.json', effect: 'tools' },
+  { path: '.orgai/mcp.json', effect: 'tools' },
+  { path: '.orgai/agents', effect: 'tools' },
+  { path: '.orgai/skills', effect: 'tools' },
+  { path: '.agents', effect: 'tools' },
+  { path: 'CLAUDE.md', effect: 'instructions' },
+  { path: 'CLAUDE.local.md', effect: 'instructions' },
+  { path: '.claude/CLAUDE.md', effect: 'instructions' },
+  { path: 'AGENTS.md', effect: 'instructions' },
+  { path: 'AGENTS.override.md', effect: 'instructions' },
+  // prompts.ts tells agents to read .orgai/ARCHITECTURE.md and follow it.
+  { path: '.orgai/ARCHITECTURE.md', effect: 'instructions' }
+]
+
+export type RepoClonePhase = 'forking' | 'waiting-for-fork' | 'cloning' | 'finishing'
+
+/**
+ * main -> the renderer that asked, at most about 4 a second per request (a phase change always goes through). `percent`
+ * is 0-100 over the whole cloning phase and never moves back within an attempt; `text` is a fixed label, never remote text.
+ */
+export interface RepoCloneProgress {
+  requestId: string
+  phase: RepoClonePhase
+  percent?: number
+  text?: string
+}
+
+/** A cancelled projects:cloneRepo rejects with a message starting with this. */
+export const REPO_CLONE_CANCELLED_PREFIX = 'Cancelled.'
+
+// ---- Folder config trust ----
+
+/**
+ * What a project's own agent config may do, seen by the renderer:
+ *   'none'       no gate: Project.folderConfigTrust is absent (stored before this feature, or no config at creation).
+ *   'untrusted'  the folder held config at creation and the user has not accepted it. Runs still work and ignore it.
+ *   'trusted'    the user accepted it and what is on disk still has that digest. Runs load it.
+ *   'changed'    accepted once, but the digest on disk differs now. Runs ignore it until accepted again.
+ */
+export type FolderConfigState = 'none' | 'untrusted' | 'trusted' | 'changed'
+
+/** Project.folderConfigTrust as stored. 'changed' is never stored: it is 'trusted' whose digest no longer matches. */
+export interface FolderConfigTrust {
+  state: 'untrusted' | 'trusted'
+  /** Lowercase sha256 hex of the accepted config (folderConfigTrust.ts). Only on 'trusted'. */
+  digest?: string
+  /** ISO time of the user's last accept or revoke. */
+  decidedAt?: string
+  /**
+   * Allow rules copied from the folder's settings.local.json into OrgAI's data folder on accept. Revoking removes them,
+   * and a later accept never re-adds one the user removed. Main only.
+   */
+  importedRules?: string[]
+}
+
+/** Longest text of one file in a review, in characters; longer text is cut and marked `truncated`. */
+export const FOLDER_CONFIG_FILE_TEXT_MAX = 64 * 1024
+/** All file text of one review together, in characters; files past it are listed with no text and `truncated`. */
+export const FOLDER_CONFIG_TOTAL_TEXT_MAX = 1024 * 1024
+/** Most entries of each list in a review (files, commands, env, allowRules, mcpServers); past it `truncated` is set. */
+export const FOLDER_CONFIG_LIST_MAX = 500
+
+/**
+ * One path in a review. All text is untrusted and comes from whoever wrote the folder: render it as plain text. It is
+ * not stripped: `hiddenChar` names the first control, zero-width, bidi or other invisible character ("U+202E"; tab and
+ * line breaks do not count), the way an import preview's text is badged. Secret-looking values are already masked.
+ */
+export interface FolderConfigFile {
+  /** '/'-relative to the project folder. */
+  path: string
+  effect: RepoConfigEffect
+  kind: 'file' | 'link' | 'other'
+  /** Only with kind 'link': where it points, as stored in the link. */
+  linkTarget?: string
+  sizeBytes: number
+  /** Absent for a link, a binary file or a file past FOLDER_CONFIG_TOTAL_TEXT_MAX. */
+  text?: string
+  truncated?: boolean
+  hiddenChar?: string
+  /** False for text the digest does not bind: 'instructions' files and .orgai/org.json can change while trusted. */
+  digested: boolean
+}
+
+/** Something the folder's config would run: a hook, or a helper setting such as apiKeyHelper or statusLine. */
+export interface FolderConfigCommand {
+  /** The file it is declared in. */
+  source: string
+  kind: 'hook' | 'helper'
+  /** Hook: its event and matcher ("PreToolUse Bash"). Helper: the setting's name ("apiKeyHelper"). */
+  label: string
+  /**
+   * The command, or the handler as JSON when it is not a command handler (an http or prompt hook). Only the
+   * credential-looking part is replaced by '[masked]' (URL userinfo, a key-shaped word, "Bearer x", the value of
+   * `API_KEY=...` or `--token=...`); everything else, including code after it, always shows.
+   */
+  command: string
+  /** Something in `command` was replaced by '[masked]'. */
+  masked?: boolean
+  hiddenChar?: string
+}
+
+export interface FolderConfigEnv {
+  source: string
+  name: string
+  /** '[masked]' when `masked`. */
+  value: string
+  /** The name or the value looked like a secret. */
+  masked: boolean
+  /** The name redirects where requests go or which model or account is used (a name Claude runs strip, or ending _BASE_URL). */
+  routing?: boolean
+  hiddenChar?: string
+}
+
+/**
+ * A setting that redirects or runs things but is not a hook, env value, allow rule or MCP server of its own:
+ * `.claude/settings*.json` enabledPlugins, extraKnownMarketplaces, permissions.defaultMode,
+ * permissions.additionalDirectories, enableAllProjectMcpServers, enabledMcpjsonServers, mcpServers; and
+ * `.codex/config.toml` notify, hooks, model_provider, model_providers, profile, profiles, approval_policy, sandbox_mode.
+ */
+export interface FolderConfigOtherSetting {
+  /** The file it is declared in. */
+  source: string
+  /** The setting's name, dotted for a nested one ("permissions.defaultMode"). */
+  key: string
+  /** The value as compact JSON, secret-looking parts masked. Never cut: a value over the field cap makes the review unreviewable. */
+  value: string
+  /** Something in `value` was replaced by '[masked]'. */
+  masked?: boolean
+  hiddenChar?: string
+}
+
+export interface FolderConfigAllowRule {
+  source: string
+  rule: string
+  /** OrgAI's reason for refusing this rule (allowRuleRefusal), else absent. A refused rule is never read as a saved rule. */
+  refused?: string
+  hiddenChar?: string
+}
+
+export interface FolderConfigMcpServer {
+  source: string
+  name: string
+  /** The whole command line or URL as it would run; only credential-looking parts are replaced by '[masked]'. */
+  target: string
+  /** Something in `target` was replaced by '[masked]'. */
+  masked?: boolean
+  hiddenChar?: string
+}
+
+/** projects:folderConfig. What accepting would approve, read from disk at call time. */
+export interface FolderConfigReview {
+  projectId: string
+  state: FolderConfigState
+  /** Lowercase sha256 hex of what the digest binds right now. Send it back through the write channel. */
+  digest: string
+  files: FolderConfigFile[]
+  commands: FolderConfigCommand[]
+  env: FolderConfigEnv[]
+  allowRules: FolderConfigAllowRule[]
+  mcpServers: FolderConfigMcpServer[]
+  /** Settings that redirect or run things beyond the lists above (see FolderConfigOtherSetting). */
+  otherSettings: FolderConfigOtherSetting[]
+  /** A list hit FOLDER_CONFIG_LIST_MAX or the total text cap. A file of 'tools' may be cut; anything that runs may not (see unreviewable). */
+  truncated: boolean
+  /**
+   * Why this config cannot be accepted (too many files, too large, a link leaving the project folder, a settings file
+   * too large to read, a command / helper / MCP target / env value / allow rule over 4,000 characters, a list that
+   * reached FOLDER_CONFIG_LIST_MAX, or a file that runs commands whose text could not be shown in full). Nothing is
+   * ever accepted unseen. The trust channel then refuses trust: true.
+   */
+  unreviewable?: string
+}
+
+/** projects:setFolderConfigTrust. `digest` is FolderConfigReview.digest of the review the user read. */
+export interface FolderConfigTrustInput {
+  projectId: string
+  trust: boolean
+  digest: string
+}
+
+export interface FolderConfigTrustResult {
+  /** The saved project; the renderer replaces its copy. */
+  project: Project
+  review: FolderConfigReview
+}
+
+export interface OrgAIApi {
+  /** Whether a project's own agent config may load. Takes effect from the next run; a live run keeps what it started with. */
+  folderConfig: {
+    review(projectId: string): Promise<FolderConfigReview>
+    setTrust(input: FolderConfigTrustInput): Promise<FolderConfigTrustResult>
+  }
+  /** Start a project from a repository. Create the project afterwards with projects.create and the returned path. */
+  repos: {
+    /** Never rejects. */
+    parseSource(text: string): Promise<RepoSourceParse>
+    /** Never rejects. Reaches GitHub when gh is logged in (see RepoTools). */
+    tools(): Promise<RepoTools>
+    /**
+     * Rejects with one readable line. A failure removes only what this call created; a pre-existing empty folder stays,
+     * empty. When the fork was made and the clone failed, the message names the fork's URL: a fork is never rolled back.
+     */
+    clone(input: RepoCloneInput): Promise<RepoCloneResult>
+    /** Unknown ids are ignored. The clone call then rejects with REPO_CLONE_CANCELLED_PREFIX. */
+    cancelClone(requestId: string): Promise<void>
+  }
+  onRepoCloneProgress(cb: (event: RepoCloneProgress) => void): () => void
+}
+
+// ---- Team files ----
+//
+// A code project's team as plain files under `.orgai/` in its folder, so git carries it between computers. The
+// ProjectStore's Project stays the cache every reader and adapter uses; files win, through an approval gate because the
+// repository is untrusted. Logic: src/main/teamFiles/. Never for engagements or the virtual assistant projects. Nothing
+// in the files is secret: names of secrets only, and no ids, timestamps or absolute paths.
+
+/** team.json and mcp.json `format`. Another value is a problem naming the file, never a guess. */
+export const TEAM_FILES_FORMAT = 'orgai.team/1'
+/** Folder-relative, '/'-separated. */
+export const TEAM_FILES_JSON = '.orgai/team.json'
+export const TEAM_FILES_MCP_JSON = '.orgai/mcp.json'
+export const TEAM_FILES_AGENTS_DIR = '.orgai/agents'
+export const TEAM_FILES_SKILLS_DIR = '.orgai/skills'
+/** Most roles read from `.orgai/agents`. */
+export const TEAM_FILES_MAX_ROLES = 200
+/** Largest role file, bytes. */
+export const TEAM_FILES_MAX_ROLE_BYTES = 1024 * 1024
+/** Largest team.json or mcp.json, bytes. */
+export const TEAM_FILES_MAX_JSON_BYTES = 1024 * 1024
+/** Most servers read from mcp.json. */
+export const TEAM_FILES_MAX_SERVERS = 200
+/** Largest whole team (every file together), bytes. Past it the team files are a problem and nothing is read or written. */
+export const TEAM_FILES_MAX_TOTAL_BYTES = 32 * 1024 * 1024
+/**
+ * How many entries one status lists per list (changes, problems, notes, ...). Changes are sorted power first, so the cut
+ * only ever drops the least risky ones, and `omittedChanges` counts them: approve and create-from-folder refuse while
+ * anything is omitted, because the user could not have seen it.
+ */
+export const TEAM_FILES_LIST_MAX = 200
+
+/**
+ * 'off': the project does not use team files (see offReason). 'in-sync': the team in use is what the files say.
+ * 'pending': the files hold changes that need approval; runs use the last approved team and get one warning.
+ * 'rejected': the user refused the files' current content; runs quietly keep the last approved team until the files
+ * change. 'problem': something in the folder could not be read (problems names it); the last approved team stays and
+ * the file is not overwritten. A folder with both a problem and pending changes is 'problem' (approve refuses until it
+ * is fixed) and still lists `changes`.
+ */
+export type TeamFilesState = 'off' | 'in-sync' | 'pending' | 'rejected' | 'problem'
+
+/**
+ * Why state is 'off'. 'engagement' and 'virtual': never. 'shared-folder': another OrgAI project owns this folder's team
+ * files (the oldest project with that folder, TeamFilesStatus.sharedWith), so this one neither reads nor writes them
+ * and its team stays in OrgAI's data folder. 'removed': the user ran "Remove OrgAI files" (teamFiles:enable turns it
+ * back on). 'no-folder': the folder does not exist yet. 'not-written': a code project not opened since team files
+ * landed; teamFiles:status writes its files, teamFiles:listAttention never does.
+ */
+export type TeamFilesOffReason = 'engagement' | 'virtual' | 'shared-folder' | 'removed' | 'no-folder' | 'not-written'
+
+export type TeamFileChangeKind = 'role' | 'skill' | 'mcp' | 'settings'
+
+/**
+ * One difference between the last approved team and the files, in plain words. Text comes from the repository:
+ * untrusted, show it as data (every string is length-capped and has hidden characters replaced).
+ */
+export interface TeamFileChange {
+  /** Stable for one digest, e.g. "role:reviewer:tools". */
+  id: string
+  kind: TeamFileChangeKind
+  /** What the change is about: a role name, skill name, server name or setting label. */
+  name: string
+  /** Folder-relative path of the file that holds it, e.g. ".orgai/agents/reviewer.md". */
+  file: string
+  action: 'added' | 'removed' | 'changed'
+  /** One sentence, e.g. "Reviewer gains Bash and Write." */
+  summary: string
+  /** Needs teamFiles:approve before use. False: applied at once, undoable. */
+  needsApproval: boolean
+  /** With needsApproval: why, e.g. "New tools", "First time this repository's team is seen on this computer". */
+  reason?: string
+  /** Prompts and other text: the old and new whole text. Absent on an added or removed side. */
+  before?: string
+  after?: string
+  /** Roles: the whole tool list on each side, and what is new. */
+  toolsBefore?: string[]
+  toolsAfter?: string[]
+  toolsAdded?: string[]
+  /** Tools newly held among Bash, Edit, Write, NotebookEdit, plus 'canSpawn'. */
+  elevatedAdded?: string[]
+  /** Skills: files that look like scripts. */
+  scripts?: string[]
+  /** MCP: what would run or connect, in full (never clamped; capabilities/sanitize.ts reviewTarget form). */
+  target?: string
+  /** MCP: secret slot names this computer must fill in before the server starts. */
+  secretNames?: string[]
+  /**
+   * MCP: the file names a connector or a library server, so approving links this computer's stored entry and its stored
+   * sign-in. `target` is then the ENTRY's real target, not the file's address.
+   */
+  usesStoredSignIn?: true
+  /** MCP: the role slugs the server is limited to once approved. Absent: every role (the `summary` says so). */
+  reachesRoles?: string[]
+}
+
+/** A file or folder that could not be used. The last approved content stays and the file is never overwritten. */
+export interface TeamFileProblem {
+  /** Folder-relative path. */
+  file: string
+  /** Plain words, e.g. "It has merge conflict markers." Never quotes file text. */
+  message: string
+}
+
+/** Text that looks like a key and would be committed. Names the file, never the value. */
+export interface TeamFileWarning {
+  file: string
+  message: string
+}
+
+/** What Undo would restore, or last restored. */
+export interface TeamFilesUndoInfo {
+  /** ISO time of the change it reverts (or of the undo, on lastUndo). */
+  at: string
+  /** Plain words, e.g. "Undo the 3 changes applied from the files". */
+  label: string
+  /** Folder-relative paths Undo rewrites (or rewrote): undoing changes the files, which then show as uncommitted. */
+  files: string[]
+}
+
+/** teamFiles:status, the teamFiles:changed payload and every action's result. Readable with no run open. */
+export interface TeamFilesStatus {
+  projectId: string
+  projectName: string
+  state: TeamFilesState
+  offReason?: TeamFilesOffReason
+  /** offReason 'shared-folder': the project that owns this folder's team files. */
+  sharedWith?: { projectId: string; projectName: string }
+  /** The files' content digest (parsed content, never bytes). teamFiles:approve and teamFiles:reject send it back. */
+  digest?: string
+  /** No team of this folder was ever approved on this computer, so every difference needs approval. */
+  firstSeen?: true
+  /** The folder holds a .git. False: teamFiles:commit refuses. */
+  isGitRepo: boolean
+  /** Team files have changes git has not committed. Always false outside git. */
+  uncommitted: boolean
+  /** Those files, folder-relative, at most TEAM_FILES_LIST_MAX. */
+  uncommittedFiles: string[]
+  /** The changes waiting for approval (or refused, on 'rejected'). Empty when in sync. Most powerful first. */
+  changes: TeamFileChange[]
+  /** Changes beyond TEAM_FILES_LIST_MAX that are not listed. Greater than 0: approve is refused ("Too many changes to review at once"). */
+  omittedChanges?: number
+  /** The changes last applied at once from the files; what `undo` reverts. */
+  applied: TeamFileChange[]
+  problems: TeamFileProblem[]
+  /** Plain-language notes: items left out of the files and why, plugins staying on this computer. */
+  notes: string[]
+  warnings: TeamFileWarning[]
+  /** One level of Undo, when there is something to undo. */
+  undo?: TeamFilesUndoInfo
+  /** The last Undo that ran: which files it rewrote. */
+  lastUndo?: TeamFilesUndoInfo
+}
+
+/** teamFiles:approve and teamFiles:reject input. A digest other than the current one is refused ("Review them again."). */
+export interface TeamFilesDecisionInput {
+  projectId: string
+  digest: string
+}
+
+/** Input of teamFiles:status, teamFiles:undo, teamFiles:commit and teamFiles:enable. */
+export interface TeamFilesProjectInput {
+  projectId: string
+}
+
+/** approve, reject, undo and enable: the saved project (its team is the cache) and the fresh status. */
+export interface TeamFilesActionResult {
+  project: Project
+  status: TeamFilesStatus
+}
+
+/** teamFiles:commit never rejects for a folder that is not git or a git refusal: ok false with a readable message. */
+export interface TeamFilesCommitResult {
+  ok: boolean
+  message: string
+  /** Folder-relative paths committed. */
+  committed: string[]
+  status: TeamFilesStatus
+}
+
+/** ProjectPathCheck.teamFiles: a team found in the folder, read without touching anything. Untrusted text, as above. */
+export interface TeamFilesFound {
+  /** Send back as ProjectCreateInput.teamFiles.digest. Absent when problems make the team unusable. */
+  digest?: string
+  roleCount: number
+  /** Whole list, root first, at most TEAM_FILES_MAX_ROLES. */
+  roles: { name: string; slug: string; prompt: string; tools: string[]; elevated: string[]; reportsTo: string | null }[]
+  skills: { name: string; description: string; scripts: string[] }[]
+  mcpServers: { name: string; target: string; secretNames: string[]; connectorId?: string }[]
+  /** Every difference from nothing, for a review that matches the approval card. Most powerful first. */
+  changes: TeamFileChange[]
+  /** Changes beyond TEAM_FILES_LIST_MAX that are not listed. Greater than 0: `digest` is absent and creating is refused. */
+  omittedChanges?: number
+  /** The team's settings as the files hold them, in plain words (permission mode, limits, switches). */
+  settings?: { label: string; value: string }[]
+  problems: TeamFileProblem[]
+  warnings: TeamFileWarning[]
+}
+
+/** ProjectCreateInput.teamFiles: start from the folder's team as previewed. Refused when the digest is stale. */
+export interface TeamFilesCreateInput {
+  digest: string
+}
+
+export interface ProjectCreateInput {
+  /**
+   * Start from the team in the folder's `.orgai/` as shown in ProjectPathCheck.teamFiles, approved by this call: the
+   * project is stored with that team and never holds the default chart. Wins over importAgents and templateId. Code
+   * projects only. Rejects with a readable message when the digest is stale or the files have a problem.
+   */
+  teamFiles?: TeamFilesCreateInput
+}
+
+export interface ProjectPathCheck {
+  /**
+   * A team in the folder (`.orgai/team.json` exists). While it is set, agentSources leaves out source 'orgai', so
+   * `.orgai/` agents are never counted twice next to other sources.
+   */
+  teamFiles?: TeamFilesFound
+}
+
+export const TEAM_FILES_IPC = {
+  /** Checks the folder (and writes a code project's files the first time) and returns TeamFilesStatus. Call it when a project opens. */
+  teamFilesStatus: 'teamFiles:status',
+  /** Every project with state 'pending' or 'problem', without a run and without writing anything: for Needs-you at boot. */
+  teamFilesListAttention: 'teamFiles:listAttention',
+  teamFilesApprove: 'teamFiles:approve',
+  teamFilesReject: 'teamFiles:reject',
+  teamFilesUndo: 'teamFiles:undo',
+  teamFilesCommit: 'teamFiles:commit',
+  /** Turn team files back on after "Remove OrgAI files": writes them from the current team. */
+  teamFilesEnable: 'teamFiles:enable',
+  /** main -> renderer push carrying TeamFilesStatus whenever a project's status changes. */
+  teamFilesChanged: 'teamFiles:changed'
+} as const
+
+export interface OrgAIApi {
+  /** A code project's team as files under `.orgai/`. Everything here works with no run open. */
+  teamFiles: {
+    status(input: TeamFilesProjectInput): Promise<TeamFilesStatus>
+    listAttention(): Promise<TeamFilesStatus[]>
+    /** Use the files' team. Rejects for a stale digest or while state is 'problem'. */
+    approve(input: TeamFilesDecisionInput): Promise<TeamFilesActionResult>
+    /** Keep the last approved team until the files change. Rejects for a stale digest. */
+    reject(input: TeamFilesDecisionInput): Promise<TeamFilesActionResult>
+    /** One level: rewrites the files back. Rejects when there is nothing to undo. */
+    undo(input: TeamFilesProjectInput): Promise<TeamFilesActionResult>
+    /** Stage and commit only the team files. Never pushes. */
+    commit(input: TeamFilesProjectInput): Promise<TeamFilesCommitResult>
+    enable(input: TeamFilesProjectInput): Promise<TeamFilesActionResult>
+  }
+  onTeamFilesChanged(cb: (status: TeamFilesStatus) => void): () => void
+}

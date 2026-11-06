@@ -5,6 +5,7 @@ import {
   grantableServers,
   grantedServers,
   needsSignIn,
+  waitingLabel,
   revokePlan,
   roleSkillSplit,
   toolsSummary,
@@ -109,6 +110,14 @@ describe('role editor helpers', () => {
     expect(needsSignIn({ ...base, missingSecrets: ['TOKEN'], libraryMissing: true })).toBe(false)
     expect(needsSignIn({ ...base, auth: { state: 'notAuthorized' }, spec: { enabled: false } })).toBe(false)
     expect(needsSignIn({ ...base, auth: { state: 'notAuthorized' }, libraryMissing: true })).toBe(false)
+  })
+  it('splits the waiting label: sign in vs per-project values', () => {
+    expect(waitingLabel({ missingSecrets: [] })).toBe('Needs sign in')
+    expect(waitingLabel({ missingSecrets: ['TOKEN'] })).toBe('Needs sign in')
+    expect(waitingLabel({ missingSecrets: ['TOKEN'], secretScope: 'library' })).toBe('Needs sign in')
+    expect(waitingLabel({ missingSecrets: ['TOKEN'], secretScope: 'project' })).toBe('Needs a value for this project')
+    expect(waitingLabel({ missingSecrets: ['A', 'B'], secretScope: 'project' })).toBe('Needs 2 values for this project')
+    expect(waitingLabel({ missingSecrets: [], secretScope: 'project' })).toBe('Needs sign in')
   })
   it('plans a revoke', () => {
     const all = [{ slug: 'lead' }, { slug: 'reviewer' }]

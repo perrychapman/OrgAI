@@ -1,21 +1,27 @@
 import type { ReactElement, ReactNode } from 'react'
-import { useState } from 'react'
-import { Check, Minus, Pencil, Plus, TriangleAlert } from 'lucide-react'
-import type { Proposal, ProposalDecision, Role } from '@shared/types'
-import { PERMISSION_MODE_OPTIONS } from '@shared/types'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
+import { Minus, Pencil, Plus, TriangleAlert } from 'lucide-react'
+import type { Proposal, ProposalDecision, ProjectKind, Role } from '@shared/types'
+import { PERMISSION_MODE_OPTIONS, PROPOSAL_NOTE_MAX_CHARS, proposalSecretKey } from '@shared/types'
 import { initials } from '../lib/layout'
 import { useAppStore } from '../store/useAppStore'
 import { proposalNextFor } from '../lib/proposalNext'
-import { CopyButton } from './ui/CopyButton'
-import { clampLabel } from '../lib/clampLabel'
-import { effectLine, mcpApplyNote, proposalCommand, proposalSource, pinState, proposalScope, removalLabels, secretsLine, SKIP_MCP_FEEDBACK, upsertAction, whoCanUse } from '../lib/mcpProposal'
-import { diffOrgChart, type ChangedRole, type DiffRole } from '../lib/orgDiff'
+import { mcpApplyNote, proposalScope, proposalEffectCopy, secretsHelp, SKIP_MCP_FEEDBACK, uniqueSecretSlots } from '../lib/mcpProposal'
+import { diffOrgChart, modelDisplay, type ChangedRole, type DiffRole } from '../lib/orgDiff'
+import { proposalFoldSummary, proposerName, revisePlaceholder } from '../lib/proposalSummary'
 import DecisionCard, { useDecisionAnswer } from './DecisionCard'
 import { oneLine, proposalTitle } from '../lib/decisionTitle'
+import { hasHidden, showHidden } from '../lib/hiddenChars'
 import { Badge } from './ui/Badge'
 import { Button } from './ui/Button'
 import { Textarea } from './ui/Textarea'
-import { Markdown } from './Markdown'
+import { McpProposalBody, type SecretValues } from './proposals/McpProposalBody'
+import { SkillsProposalBody } from './proposals/SkillsProposalBody'
+import { useMcpCurrent } from './proposals/useCurrent'
+import { ClampText } from './proposals/ClampText'
+import { clampLabel } from '../lib/clampLabel'
+import { projectKindOf, projectRulesLocation } from '@shared/defaults'
+import { projectKindCopy, settingsApplyNoteFor, type ArchitectureHeadings } from '../lib/projectKindCopy'
 
 interface Props {
   proposal: Proposal
@@ -25,22 +31,16 @@ interface Props {
   currentRoles: Role[]
   /** The proposing agent's display name, when known. */
   who?: string
+  /** The proposing agent's id, for the avatar's role colour (unset for setup runs). */
+  agentId?: string
   onDecide: (decision: ProposalDecision) => void | Promise<void>
-}
-
-const KIND_LABEL: Record<Proposal['kind'], string> = {
-  architecture: 'Architecture',
-  orgChart: 'Org chart',
-  settings: 'Run settings',
-  mcpServers: 'MCP servers',
-  skills: 'Skills'
 }
 
 const APPLY_NOTE: Record<Proposal['kind'], string> = {
   architecture: 'Approving writes .orgai/ARCHITECTURE.md into the working directory and references it from CLAUDE.md.',
   orgChart: 'Approving replaces the project’s org chart with these roles. You can still edit them by hand afterwards.',
-  settings: 'Approving updates the project settings and brief, and saves any allowed commands to .claude/settings.local.json.',
-  mcpServers: 'Approving saves these MCP servers to the project. Secrets are entered separately and stored encrypted.',
+  settings: 'Approving updates the project settings and brief, and saves any allowed commands for this project.',
+  mcpServers: 'Approving saves these MCP servers to the project. Secrets are stored encrypted.',
   // The skills card picks its own note by scope (skillsApplyNote).
   skills: 'Approving writes these skills to this project and grants them to the listed roles.'
 }
@@ -52,20 +52,79 @@ export function skillsApplyNote(payload: Extract<Proposal, { kind: 'skills' }>['
     : 'Approving writes these skills to this project and grants them to the listed roles.'
 }
 
-export default function ProposalCard({ proposal, runId, currentRoles, who, onDecide }: Props): ReactElement {
-  const [revising, setRevising] = useState(false)
+type Mode = 'idle' | 'revise' | 'decline'
+
+export default function ProposalCard({ proposal, runId, currentRoles, who, agentId, onDecide }: Props): ReactElement {
+  const [mode, setMode] = useState<Mode>('idle')
   const [feedback, setFeedback] = useState('')
+  const [note, setNote] = useState('')
+  // Typed secret values by slot index in payload.secrets. They stay in this component's state until Approve.
+  const noteId = useId()
+  const [expandSignal, setExpandSignal] = useState(0)
+  const anchorRef = useRef<HTMLSpanElement>(null)
+  const prevMode = useRef<Mode>('idle')
+  const feedbackRef = useRef<HTMLDivElement>(null)
+  // Entering a mode opens the folded body and focuses its field; Back returns focus to the button that opened it.
+  useEffect(() => {
+    const from = prevMode.current
+    prevMode.current = mode
+    if (mode !== 'idle') {
+      setExpandSignal((n) => n + 1)
+      // The folded body opens on the next render; focus the field after it.
+      const id = requestAnimationFrame(() => feedbackRef.current?.querySelector('textarea')?.focus())
+      return () => cancelAnimationFrame(id)
+    } else if (from !== 'idle') {
+      anchorRef.current?.closest('article')?.querySelector<HTMLElement>(`[data-testid="proposal-${from}"]`)?.focus()
+    }
+    return undefined
+  }, [mode])
+  const [secretValues, setSecretValues] = useState<SecretValues>({})
   const { busy, error, submit } = useDecisionAnswer()
-  const isSetup = useAppStore((st) => st.runs[runId]?.summary.kind === 'setup')
+  const runSummary = useAppStore((st) => st.runs[runId]?.summary)
+  const isSetup = runSummary?.kind === 'setup'
   const canSkip = isSetup && proposal.kind === 'mcpServers'
+  const canDecline = !isSetup && (proposal.kind === 'mcpServers' || proposal.kind === 'orgChart' || proposal.kind === 'skills')
+  const project = useAppStore((st) => st.projects.find((p) => p.id === runSummary?.projectId))
+  const kind = projectKindOf(project)
+  const kindCopy = projectKindCopy(kind)
+  const mcp = proposal.kind === 'mcpServers' ? proposal.payload : null
+  const scope = mcp ? proposalScope(mcp) : 'project'
+  // The library is read when the card needs it: library scope (what is there now) and link rows (their command). The
+  // project's servers are read through the preload too: the store's copy can be stale.
+  const needsLibrary = !!mcp && (scope === 'library' || mcp.upsert.some((s) => s.libraryId))
+  const mcpCurrent = useMcpCurrent({ active: !!mcp, scope, projectId: project?.id, needsLibrary, storeServers: project?.mcpServers ?? null })
+  const skillCurrent = useMemo(() => ({ roles: currentRoles, skills: project?.skills ?? [] }), [currentRoles, project?.skills])
+  const mcpLoading = !!mcp && mcpCurrent.status === 'loading'
+  const foldSummary = useMemo(
+    () => (mcpLoading ? undefined : proposalFoldSummary(proposal, { roles: currentRoles, mcpServers: mcpCurrent.servers, skills: skillCurrent })),
+    [proposal, currentRoles, mcpCurrent.servers, skillCurrent, mcpLoading]
+  )
+  const hasSecrets = !!mcp && uniqueSecretSlots(mcp).length > 0
+  const effectCopy = proposalEffectCopy(proposal.effect, isSetup ? 'architect' : runSummary?.kind === 'mcp-assist' || runSummary?.kind === 'skill-assist' || runSummary?.quick ? 'assistant' : 'orchestrator')
+  const helperText =
+    proposal.kind === 'mcpServers'
+      ? mcpApplyNote(scope, hasSecrets)
+      : proposal.kind === 'skills'
+        ? skillsApplyNote(proposal.payload)
+        : proposal.kind === 'architecture'
+          ? kindCopy.architectureApplyNote
+          : proposal.kind === 'settings'
+            ? settingsApplyNoteFor(kind, projectRulesLocation(project))
+            : APPLY_NOTE[proposal.kind]
+
+  const setSecret = (index: number, v: string): void => setSecretValues((cur) => ({ ...cur, [index]: v }))
 
   const skip = (): void => {
     void submit(() => onDecide({ behavior: 'revise', feedback: SKIP_MCP_FEEDBACK }))
   }
 
   const approve = (): void => {
+    // Only non-empty values, keyed by the contract's slot key; omitted when none were typed.
+    const secrets: Record<string, string> = {}
+    if (mcp) for (const { index, slot } of uniqueSecretSlots(mcp)) if (secretValues[index]) secrets[proposalSecretKey(slot)] = secretValues[index]
+    const decision: ProposalDecision = Object.keys(secrets).length > 0 ? { behavior: 'approve', secrets } : { behavior: 'approve' }
     void submit(async () => {
-      await onDecide({ behavior: 'approve' })
+      await onDecide(decision)
       // The card disappears once resolved; the run's metadata line keeps the pointer to where the result went.
       const home = useAppStore.getState().runs[runId]?.summary.projectId
       useAppStore.getState().noteProposalNext(runId, home ? proposalNextFor(proposal, home) : null)
@@ -75,39 +134,58 @@ export default function ProposalCard({ proposal, runId, currentRoles, who, onDec
     if (!feedback.trim()) return
     void submit(() => onDecide({ behavior: 'revise', feedback: feedback.trim() }))
   }
+  const decline = (): void => {
+    void submit(() => onDecide({ behavior: 'decline', note: note.trim() || undefined }))
+  }
 
-  // No Reject: ProposalDecision only has approve and revise.
   return (
     <DecisionCard
       kind="proposal"
       error={error}
       runId={runId}
       who={who}
-      title={proposalTitle(KIND_LABEL[proposal.kind])}
+      agentId={agentId}
+      expandSignal={expandSignal}
+      focusDetails
+      title={proposal.kind === 'architecture' ? kindCopy.architectureTitle : proposalTitle(proposal.kind)}
+      summary={foldSummary}
       helper={
-        proposal.kind === 'mcpServers'
-          ? mcpApplyNote(proposalScope(proposal.payload))
-          : proposal.kind === 'skills'
-            ? skillsApplyNote(proposal.payload)
-            : APPLY_NOTE[proposal.kind]
+        <>
+          {helperText}
+          {hasSecrets && <span className="proposal-effect">{secretsHelp(scope)}</span>}
+          {effectCopy && (
+            <span className="proposal-effect" data-testid="proposal-effect">
+              {effectCopy}
+            </span>
+          )}
+        </>
       }
       primary={
-        !revising ? (
-          <Button variant="primary" onClick={approve} disabled={busy}>
+        mode === 'idle' ? (
+          <Button variant="primary" onClick={approve} disabled={busy || mcpLoading}>
             Approve
           </Button>
-        ) : (
+        ) : mode === 'revise' ? (
           <Button variant="primary" onClick={revise} disabled={busy || !feedback.trim()}>
             Send feedback
+          </Button>
+        ) : (
+          <Button variant="primary" onClick={decline} disabled={busy} testId="proposal-decline-send">
+            Decline
           </Button>
         )
       }
       secondary={
-        !revising ? (
+        mode === 'idle' ? (
           <>
-            <Button onClick={() => setRevising(true)} disabled={busy}>
+            <Button onClick={() => setMode('revise')} disabled={busy} testId="proposal-revise">
               Request changes
             </Button>
+            {canDecline && (
+              <Button variant="ghost" onClick={() => setMode('decline')} disabled={busy} testId="proposal-decline">
+                Not now
+              </Button>
+            )}
             {canSkip && (
               <Button onClick={skip} disabled={busy} testId="mcp-proposal-skip">
                 Skip
@@ -115,29 +193,38 @@ export default function ProposalCard({ proposal, runId, currentRoles, who, onDec
             )}
           </>
         ) : (
-          <Button variant="ghost" onClick={() => setRevising(false)} disabled={busy}>
+          <Button variant="ghost" onClick={() => setMode('idle')} disabled={busy}>
             Back
           </Button>
         )
       }
     >
       {proposal.title.trim() && <p className="proposal-lead">{oneLine(proposal.title, 200)}</p>}
-      {proposal.kind === 'architecture' && <ArchitectureBody payload={proposal.payload} />}
+      {proposal.kind === 'architecture' && <ArchitectureBody payload={proposal.payload} headings={kindCopy.architecture} />}
       {proposal.kind === 'orgChart' && <OrgChartBody payload={proposal.payload} currentRoles={currentRoles} />}
-      {proposal.kind === 'settings' && <SettingsBody payload={proposal.payload} />}
-      {proposal.kind === 'mcpServers' && <McpServersBody payload={proposal.payload} roleSlugs={currentRoles.map((r) => r.slug)} />}
-      {proposal.kind === 'skills' && <SkillsBody payload={proposal.payload} />}
-      {revising && (
-        <div className="proposal-feedback">
-          <Textarea
-            autoFocus
-            aria-label="What should change?"
-            value={feedback}
-            onChange={setFeedback}
-            placeholder="What should change? The Architect revises and proposes again."
-          />
+      {proposal.kind === 'settings' && <SettingsBody payload={proposal.payload} kind={kind} />}
+      {proposal.kind === 'mcpServers' && <McpProposalBody proposalId={proposal.id} payload={proposal.payload} current={mcpCurrent} roles={currentRoles} secretValues={secretValues} setSecret={setSecret} />}
+      {proposal.kind === 'skills' && <SkillsProposalBody proposalId={proposal.id} payload={proposal.payload} current={skillCurrent} projectId={project?.id} />}
+      {mode !== 'idle' && (
+        <div className="proposal-feedback" ref={feedbackRef}>
+          <label className="proposal-note-label" htmlFor={`${noteId}-${mode}`}>
+            {mode === 'revise' ? 'What should change?' : 'Anything the agent should know? (optional)'}
+          </label>
+          {mode === 'revise' ? (
+            <Textarea
+              id={`${noteId}-revise`}
+              value={feedback}
+              onChange={setFeedback}
+              maxLength={PROPOSAL_NOTE_MAX_CHARS}
+              placeholder={revisePlaceholder(proposerName(runSummary))}
+            />
+          ) : (
+            <Textarea id={`${noteId}-decline`} data-testid="proposal-decline-note" maxLength={PROPOSAL_NOTE_MAX_CHARS} value={note} onChange={setNote} />
+          )}
+          <span className="proposal-note-hint">Up to {PROPOSAL_NOTE_MAX_CHARS.toLocaleString('en-US')} characters</span>
         </div>
       )}
+      <span ref={anchorRef} hidden />
     </DecisionCard>
   )
 }
@@ -151,12 +238,18 @@ function Section({ title, children }: { title: string; children: ReactNode }): R
   )
 }
 
-function ArchitectureBody({ payload }: { payload: Extract<Proposal, { kind: 'architecture' }>['payload'] }): ReactElement {
+function ArchitectureBody({ payload, headings }: { payload: Extract<Proposal, { kind: 'architecture' }>['payload']; headings: ArchitectureHeadings }): ReactElement {
   return (
     <>
-      <p className="proposal-lead">{payload.summary}</p>
+      {headings.summary === 'Summary' ? (
+        <p className="proposal-lead">{payload.summary}</p>
+      ) : (
+        <Section title={headings.summary}>
+          <p className="proposal-lead">{payload.summary}</p>
+        </Section>
+      )}
       {payload.stack.length > 0 && (
-        <Section title="Stack">
+        <Section title={headings.stack}>
           <div className="proposal-chips">
             {payload.stack.map((s, i) => (
               <span key={i} className="chip proposal-chip">
@@ -167,7 +260,7 @@ function ArchitectureBody({ payload }: { payload: Extract<Proposal, { kind: 'arc
         </Section>
       )}
       {payload.modules.length > 0 && (
-        <Section title="Modules">
+        <Section title={headings.modules}>
           <ul className="proposal-list">
             {payload.modules.map((m, i) => (
               <li key={i}>
@@ -179,7 +272,7 @@ function ArchitectureBody({ payload }: { payload: Extract<Proposal, { kind: 'arc
         </Section>
       )}
       {payload.conventions.length > 0 && (
-        <Section title="Conventions">
+        <Section title={headings.conventions}>
           <ul className="proposal-list">
             {payload.conventions.map((c, i) => (
               <li key={i}>{c}</li>
@@ -188,7 +281,7 @@ function ArchitectureBody({ payload }: { payload: Extract<Proposal, { kind: 'arc
         </Section>
       )}
       {payload.commands.length > 0 && (
-        <Section title="Commands">
+        <Section title={headings.commands}>
           <ul className="proposal-list">
             {payload.commands.map((c, i) => (
               <li key={i}>
@@ -199,7 +292,7 @@ function ArchitectureBody({ payload }: { payload: Extract<Proposal, { kind: 'arc
         </Section>
       )}
       {payload.risks.length > 0 && (
-        <Section title="Risks and gaps">
+        <Section title={headings.risks}>
           <ul className="proposal-list">
             {payload.risks.map((r, i) => (
               <li key={i}>{r}</li>
@@ -225,51 +318,144 @@ function RoleAvatar({ role }: { role: PayloadRole }): ReactElement {
   )
 }
 
-function AddedRow({ role, all }: { role: PayloadRole; all: PayloadRole[] }): ReactElement {
+/**
+ * A role's prompt behind a disclosure (review M3): untrusted agent text, shown through ClampText (showHidden, clamped,
+ * never Markdown), with the hidden-characters badge when it holds any.
+ */
+function PromptDisclosure({ prompt, roleName, label }: { prompt: string; roleName: string; label: string }): ReactElement {
+  const name = clampLabel(showHidden(roleName), 60)
   return (
-    <details className="org-diff-row is-added">
+    <details className="org-diff-prompt" data-testid="org-diff-prompt">
       <summary>
-        <Badge tone="success" icon={Plus}>
-          Added
-        </Badge>
-        <RoleAvatar role={role} />
-        <span className="org-diff-name">{role.name}</span>
-        <span className="org-diff-meta">
-          reports to {parentLabel(role, all)} · {role.model}
-          {role.canSpawn ? ` · leads ${role.spawnable.length}` : ''}
-        </span>
+        {label}
+        <span className="sr-only"> for {name}</span>
       </summary>
-      <div className="proposal-role-body">
-        <div>{role.description}</div>
-        <div className="mono-dim">tools: {role.tools.join(', ') || 'none'}</div>
-        {role.responsibilities.length > 0 && (
-          <ul className="proposal-list">
-            {role.responsibilities.map((x, i) => (
-              <li key={i}>{x}</li>
-            ))}
-          </ul>
+      <div className="org-diff-prompt-body">
+        {hasHidden(prompt) && (
+          <Badge tone="danger" icon={TriangleAlert} testId="org-diff-prompt-hidden">
+            Contains hidden characters
+          </Badge>
         )}
-        <div className="proposal-prompt">{role.prompt}</div>
+        {prompt ? <ClampText text={prompt} label={`${name} prompt`} /> : <p className="org-diff-prompt-empty">Empty prompt.</p>}
       </div>
     </details>
   )
 }
 
-function ChangedRow({ item }: { item: ChangedRole<PayloadRole> }): ReactElement {
+/** A changed role's new responsibilities behind a disclosure (review M-a): they go into its system prompt, so they are shown like the prompt. */
+function ResponsibilitiesDisclosure({ before, items, roleName }: { before: readonly string[]; items: readonly string[]; roleName: string }): ReactElement {
+  const name = clampLabel(showHidden(roleName), 60)
+  // A dropped line (a constraint) matters as much as a new one; a reorder alone would otherwise look like no change.
+  const removed = before.filter((x) => !items.includes(x))
+  const added = new Set(items.filter((x) => !before.includes(x)))
+  const reorderOnly = removed.length === 0 && added.size === 0
   return (
-    <div className="org-diff-row is-changed">
+    <details className="org-diff-prompt" data-testid="org-diff-responsibilities">
+      <summary>
+        Show new responsibilities
+        <span className="sr-only"> for {name}</span>
+      </summary>
+      <div className="org-diff-prompt-body">
+        {items.some(hasHidden) && (
+          <Badge tone="danger" icon={TriangleAlert} testId="org-diff-responsibilities-hidden">
+            Contains hidden characters
+          </Badge>
+        )}
+        {items.length > 0 ? (
+          <ul className="proposal-list org-diff-resp">
+            {items.map((x, i) => (
+              <li key={i}>
+                {added.has(x) && <span className="org-diff-resp-tag">New: </span>}
+                {showHidden(x)}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="org-diff-prompt-empty">No responsibilities.</p>
+        )}
+        {reorderOnly && <p className="org-diff-prompt-empty">Same responsibilities in a new order.</p>}
+        {removed.length > 0 && (
+          <>
+            <p className="org-diff-resp-head">Removed</p>
+            <ul className="proposal-list org-diff-resp is-removed" data-testid="org-diff-responsibilities-removed">
+              {removed.map((x, i) => (
+                <li key={i}>{showHidden(x)}</li>
+              ))}
+            </ul>
+          </>
+        )}
+      </div>
+    </details>
+  )
+}
+
+function AddedRow({ role, all }: { role: PayloadRole; all: PayloadRole[] }): ReactElement {
+  const hidden = hasHidden(role.name) || hasHidden(role.description) || hasHidden(role.prompt) || role.tools.some(hasHidden) || role.responsibilities.some(hasHidden)
+  return (
+    <details className="org-diff-row is-added" data-testid="org-diff-row" data-change="added" data-role={clampLabel(role.name, 64)}>
+      <summary>
+        <Badge tone="success" icon={Plus}>
+          Added
+        </Badge>
+        <RoleAvatar role={role} />
+        <span className="org-diff-name">{showHidden(role.name)}</span>
+        <span className="org-diff-meta">
+          reports to {showHidden(parentLabel(role, all))} · {showHidden(modelDisplay(role.model))}
+          {role.canSpawn ? ` · leads ${role.spawnable.length}` : ''}
+        </span>
+      </summary>
+      <div className="proposal-role-body">
+        <div>{showHidden(role.description)}</div>
+        <div className="mono-dim">tools: {showHidden(role.tools.join(', ')) || 'none'}</div>
+        {role.responsibilities.length > 0 && (
+          <ul className="proposal-list">
+            {role.responsibilities.map((x, i) => (
+              <li key={i}>{showHidden(x)}</li>
+            ))}
+          </ul>
+        )}
+        {hidden && (
+          <Badge tone="danger" icon={TriangleAlert}>
+            Contains hidden characters
+          </Badge>
+        )}
+        <PromptDisclosure prompt={role.prompt} roleName={role.name} label="Show prompt" />
+      </div>
+    </details>
+  )
+}
+
+/** Fields whose change line is a fixed summary ("prompt changed"); the new text sits behind a disclosure. */
+const SUMMARY_FIELDS: ReadonlySet<string> = new Set(['prompt', 'responsibilities'])
+
+function ChangedRow({ item }: { item: ChangedRole<PayloadRole> }): ReactElement {
+  // The row badge shows without opening anything, so it also covers the new prompt.
+  const hidden =
+    hasHidden(item.role.name) ||
+    hasHidden(item.prompt?.after) ||
+    !!item.responsibilities?.after.some(hasHidden) ||
+    item.changes.some((c) => !SUMMARY_FIELDS.has(c.field) && (hasHidden(c.from) || hasHidden(c.to)))
+  return (
+    <div className="org-diff-row is-changed" data-testid="org-diff-row" data-change="changed" data-role={clampLabel(item.role.name, 64)}>
       <div className="org-diff-line">
         <Badge tone="warning" icon={Pencil}>
           {item.renamed ? 'Renamed' : 'Changed'}
         </Badge>
         <RoleAvatar role={item.role} />
-        <span className="org-diff-name">{item.role.name}</span>
+        <span className="org-diff-name">{showHidden(item.role.name)}</span>
+        {hidden && (
+          <Badge tone="danger" icon={TriangleAlert} testId="org-diff-hidden">
+            Contains hidden characters
+          </Badge>
+        )}
       </div>
       <ul className="org-diff-fields">
         {item.changes.map((c) => (
-          <li key={c.field}>{c.field === 'prompt' ? 'prompt changed' : `${c.label}: ${c.from} -> ${c.to}`}</li>
+          <li key={c.field}>{SUMMARY_FIELDS.has(c.field) ? c.to : `${c.label}: ${showHidden(c.from)} -> ${showHidden(c.to)}`}</li>
         ))}
       </ul>
+      {item.responsibilities && <ResponsibilitiesDisclosure before={item.responsibilities.before} items={item.responsibilities.after} roleName={item.role.name} />}
+      {item.prompt && <PromptDisclosure prompt={item.prompt.after} roleName={item.role.name} label="Show new prompt" />}
     </div>
   )
 }
@@ -279,7 +465,7 @@ function OrgChartBody({ payload, currentRoles }: { payload: Extract<Proposal, { 
   return (
     <div className="org-diff">
       <p className="org-diff-summary">{diff.summary}</p>
-      <p className="proposal-rationale">{payload.rationale}</p>
+      <p className="proposal-rationale">{showHidden(payload.rationale)}</p>
       {diff.added.length > 0 && (
         <div className="org-diff-group" role="group" aria-label="Added roles">
           {diff.added.map((r) => (
@@ -302,8 +488,8 @@ function OrgChartBody({ payload, currentRoles }: { payload: Extract<Proposal, { 
                 <Badge tone="danger" icon={Minus}>
                   Removed
                 </Badge>
-                <span className="org-diff-name">{r.name}</span>
-                <span className="org-diff-meta">was reporting to {parentLabel(r, currentRoles)}</span>
+                <span className="org-diff-name">{showHidden(r.name)}</span>
+                <span className="org-diff-meta">was reporting to {showHidden(parentLabel(r, currentRoles))}</span>
               </div>
             </div>
           ))}
@@ -316,7 +502,7 @@ function OrgChartBody({ payload, currentRoles }: { payload: Extract<Proposal, { 
           </summary>
           <ul className="proposal-list">
             {diff.unchanged.map((r) => (
-              <li key={r.id}>{r.name}</li>
+              <li key={r.id}>{showHidden(r.name)}</li>
             ))}
           </ul>
         </details>
@@ -325,21 +511,23 @@ function OrgChartBody({ payload, currentRoles }: { payload: Extract<Proposal, { 
   )
 }
 
-function SettingsBody({ payload }: { payload: Extract<Proposal, { kind: 'settings' }>['payload'] }): ReactElement {
+function SettingsBody({ payload, kind }: { payload: Extract<Proposal, { kind: 'settings' }>['payload']; kind: ProjectKind }): ReactElement {
   const rows: [string, string][] = []
+  const engagement = kind === 'engagement'
+  if (engagement && payload.client !== undefined) rows.push(['Client or case', payload.client.trim() ? showHidden(oneLine(payload.client, 120)) : 'Cleared'])
   if (payload.permissionMode) {
     rows.push(['Permission mode', PERMISSION_MODE_OPTIONS.find((o) => o.value === payload.permissionMode)?.label ?? payload.permissionMode])
   }
   if (payload.maxBudgetUsd !== undefined) rows.push(['Spend cap per run', payload.maxBudgetUsd === null ? 'No cap' : `$${payload.maxBudgetUsd}`])
   if (payload.maxSubagentDepth !== undefined) rows.push(['Max subagent depth', String(payload.maxSubagentDepth)])
   if (payload.maxConcurrentSubagents !== undefined) rows.push(['Max concurrent subagents', String(payload.maxConcurrentSubagents)])
-  if (payload.isolateWriters !== undefined) rows.push(['Isolate writers in worktrees', payload.isolateWriters ? 'on' : 'off'])
-  if (payload.reviewMerges !== undefined) rows.push(['Review changes before merging', payload.reviewMerges ? 'on' : 'off'])
+  if (payload.isolateWriters !== undefined) rows.push([engagement ? 'Give each writer its own copy (git worktrees)' : 'Isolate writers in worktrees', payload.isolateWriters ? 'on' : 'off'])
+  if (payload.reviewMerges !== undefined) rows.push(['Review changes before merging',payload.reviewMerges ? 'on' : 'off'])
   if (payload.autoContinue !== undefined) rows.push(['Keep going until the plan is complete', payload.autoContinue ? 'on' : 'off'])
   if (payload.maxAutoContinues !== undefined) rows.push(['Max automatic continues per run', String(payload.maxAutoContinues)])
   return (
     <>
-      <p className="proposal-rationale">{payload.rationale}</p>
+      <p className="proposal-rationale">{showHidden(payload.rationale)}</p>
       {rows.length > 0 && (
         <div className="proposal-kv">
           {rows.map(([k, v]) => (
@@ -354,125 +542,28 @@ function SettingsBody({ payload }: { payload: Extract<Proposal, { kind: 'setting
         <Section title="Commands that never ask">
           <div className="proposal-rules">
             {payload.allowRules.map((r) => (
-              <code key={r}>{r}</code>
+              <span key={r} className="proposal-rule">
+                <code>{showHidden(r)}</code>
+                {hasHidden(r) && (
+                  <Badge tone="danger" icon={TriangleAlert}>
+                    Contains hidden characters
+                  </Badge>
+                )}
+              </span>
             ))}
           </div>
         </Section>
       )}
       {payload.brief && (
         <Section title="Project brief">
-          <div className="proposal-prompt">{payload.brief}</div>
+          {hasHidden(payload.brief) && (
+            <Badge tone="danger" icon={TriangleAlert}>
+              Contains hidden characters
+            </Badge>
+          )}
+          <div className="proposal-prompt">{showHidden(payload.brief)}</div>
         </Section>
       )}
     </>
-  )
-}
-
-/** Agent text is untrusted: plain text, clamped, never a link or Markdown. */
-function ClampText({ text }: { text: string }): ReactElement {
-  const [open, setOpen] = useState(false)
-  const long = text.length > 240 || text.split('\n').length > 4
-  return (
-    <>
-      <p className={`mcp-prop-text${long && !open ? ' clamped' : ''}`}>{text}</p>
-      {long && (
-        <Button variant="ghost" size="sm" onClick={() => setOpen((o) => !o)}>
-          {open ? 'Show less' : 'Show more'}
-        </Button>
-      )}
-    </>
-  )
-}
-
-function McpServersBody({ payload, roleSlugs }: { payload: Extract<Proposal, { kind: 'mcpServers' }>['payload']; roleSlugs: string[] }): ReactElement {
-  const scope = proposalScope(payload)
-  const removals = removalLabels(payload)
-  return (
-    <div className="mcp-prop">
-      <div className="mcp-prop-scope">
-        <Badge tone="info" testId="mcp-proposal-scope">
-          {scope === 'library' ? 'Library' : 'This project'}
-        </Badge>
-        <span className="mcp-prop-scope-note">{scope === 'library' ? 'Changes your MCP library' : 'Changes this project’s MCP servers'}</span>
-      </div>
-      <ClampText text={payload.rationale} />
-      {payload.upsert.map((s) => {
-        const pin = pinState(s)
-        const secrets = secretsLine(payload, s.id)
-        const cmd = proposalCommand(s)
-        const source = proposalSource(s)
-        const who = whoCanUse(s, roleSlugs, scope)
-        return (
-          <div key={s.id} className="mcp-prop-server" data-server={clampLabel(s.name)}>
-            <div className="mcp-prop-head">
-              <strong>{upsertAction(s, scope)}</strong>
-              {scope === 'project' && s.projectOnly && !s.libraryId && <Badge tone="neutral">Project only</Badge>}
-              {pin === 'pinned' && (
-                <Badge tone="success" icon={Check}>
-                  Pinned
-                </Badge>
-              )}
-              {pin === 'unpinned' && (
-                <Badge tone="danger" icon={TriangleAlert}>
-                  Version not pinned
-                </Badge>
-              )}
-            </div>
-            {s.description && <ClampText text={s.description} />}
-            {source && <div className="mcp-prop-source muted">{source}</div>}
-            {cmd && (
-              <div className="mcpi-command">
-                <div className="code-block" data-testid="mcp-proposal-command" title={cmd}>
-                  {cmd}
-                </div>
-                <CopyButton text={cmd} label={s.transport === 'stdio' ? 'Copy command' : 'Copy URL'} />
-              </div>
-            )}
-            <ul className="mcp-prop-effects">
-              <li>{effectLine(s)}</li>
-              {who && <li>Who can use it: {who}</li>}
-              {secrets && <li>{secrets}</li>}
-            </ul>
-          </div>
-        )
-      })}
-      {removals.length > 0 && (
-        <Section title="Removals">
-          <ul className="mcp-prop-effects">
-            {removals.map((r) => (
-              <li key={r}>{r}</li>
-            ))}
-          </ul>
-        </Section>
-      )}
-    </div>
-  )
-}
-
-function SkillsBody({ payload }: { payload: Extract<Proposal, { kind: 'skills' }>['payload'] }): ReactElement {
-  return (
-    <div className="skill-prop">
-      <p className="proposal-rationale">{payload.rationale}</p>
-      <ul className="skill-prop-list" aria-label="Skills in this proposal">
-        {payload.items.map((item, i) => (
-          <li key={`${item.draft.name}-${i}`} className="skill-prop-item" data-testid="proposal-skill-item" data-skill={clampLabel(item.draft.name)}>
-            <div className="skill-prop-head">
-              <Badge tone={item.action === 'create' ? 'success' : 'warning'}>{item.action === 'create' ? 'New' : 'Update'}</Badge>
-              <Badge tone="info">{item.scope === 'library' ? 'Library' : 'This project'}</Badge>
-              <span className="skill-prop-name mono">{item.draft.name}</span>
-            </div>
-            {item.draft.description && <ClampText text={item.draft.description} />}
-            {item.scope === 'project' && item.roles && item.roles.length > 0 && <div className="skill-prop-roles muted">Roles: {item.roles.join(', ')}</div>}
-            {item.scope === 'project' && (!item.roles || item.roles.length === 0) && <div className="skill-prop-roles muted">No roles</div>}
-            <details className="skill-prop-body">
-              <summary>Show instructions</summary>
-              <div className="skill-prop-md">
-                <Markdown text={item.draft.body} />
-              </div>
-            </details>
-          </li>
-        ))}
-      </ul>
-    </div>
   )
 }

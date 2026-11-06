@@ -1,5 +1,17 @@
 import type {
   ConnectionId,
+  EngagementNote,
+  EngagementNoteContent,
+  KnowledgeEdgeSaveInput,
+  KnowledgeEdgeWriteResult,
+  KnowledgeGraph,
+  KnowledgeInferredResult,
+  KnowledgeRecallInput,
+  KnowledgeNodeUpsertInput,
+  KnowledgeNodeWriteResult,
+  KnowledgeRetireInput,
+  KnowledgeRetireResult,
+  KnowledgeSource,
   ModelRef,
   ModelTier,
   ImageAttachment,
@@ -20,6 +32,7 @@ import type {
   Project,
   Proposal,
   ProposalDecision,
+  ProposalOutcome,
   ProviderAuth,
   ProviderId,
   QuestionAnswer,
@@ -136,6 +149,40 @@ export interface RunSkill {
   roleIds: string[]
 }
 
+/**
+ * The calling agent of a knowledge or note write, as the adapter reports it to the harness tool (the same fields as
+ * harnessTools.ts HarnessToolCaller). Missing agentId = the root; RunManager turns it into a KnowledgeSource.
+ */
+export interface KnowledgeCaller {
+  agentId?: string
+  roleId?: string
+}
+
+/**
+ * The knowledge graph store as RunManager and ipc.ts use it (store/knowledge.ts `knowledgeStore(dataDir)`): every
+ * function is keyed by the stored project id, validates its input (keys, lengths, hidden characters, caps, note ids
+ * against the note index) and throws an Error whose message is shown to the caller. Writes are atomic. The agent
+ * functions take the KnowledgeSource RunManager built; the user's IPC writes use the store's own user functions.
+ */
+export interface KnowledgeStoreApi {
+  /** The graph as stored (junk dropped, note links to missing notes dropped); empty when there is no file. */
+  get(projectId: string): KnowledgeGraph
+  /** Agent upsert (identity by id, else (kind, name) / (kind, alias) case-insensitive; see KnowledgeNodeUpsertInput). */
+  upsertNode(projectId: string, input: KnowledgeNodeUpsertInput, source: KnowledgeSource): KnowledgeNodeWriteResult
+  /** Agent or user link: from / to are node ids; (from, to, relation) dedupes onto the existing edge (note updated). */
+  saveEdge(projectId: string, input: Omit<KnowledgeEdgeSaveInput, 'projectId'>, source: KnowledgeSource): KnowledgeEdgeWriteResult
+  /** Agent retire: refuses an item whose source.by is 'user' ("Only the user can change that."). */
+  retire(projectId: string, input: KnowledgeRetireInput, source: KnowledgeSource): KnowledgeRetireResult
+  /** Derived links and appearances for the current graph, computed once per graph revision. Never throws. Missing = no inferred lines in recalls. */
+  inferred?(projectId: string): KnowledgeInferredResult
+  /**
+   * For a recall: the graph revision to rank on and its inferred links. The current revision, except that a very large
+   * graph keeps one revision for a while so its index and inference are not rebuilt per write (store/knowledge.ts
+   * readRecallView). Never throws. Missing = the current graph and `inferred`.
+   */
+  recallView?(projectId: string): { rankOn: KnowledgeGraph; inferred: KnowledgeInferredResult }
+}
+
 /** What message_run achieved (RuntimeContext.messageRun). */
 export type RunMessageResult = 'delivered' | 'queued' | 'not-live' | 'not-found' | 'refused'
 
@@ -180,7 +227,12 @@ export interface PeerMessage {
 export interface RuntimeContext {
   run: RunSummary
   project: Project
-  /** The org chart to run. For setup runs this is the built-in Architect, not the project's roles. */
+  /**
+   * The org chart to run. For setup runs this is the built-in Architect, not the project's roles. A work run gets its own
+   * copies of the roles: RunManager rewrites their grant fields (mcpServers, skills) in place when the user approves a
+   * grant change mid-run (refreshRoleGrants), so hold these objects and read the grants at call time. Ids and every
+   * other field stay as the run started (an org change applies from the next run).
+   */
   roles: Role[]
   /** The first user message. May be empty when `images` is set. */
   prompt: string
@@ -201,8 +253,11 @@ export interface RuntimeContext {
   emit(event: RunEvent): void
   /** Ask the user to approve a tool call. Resolves with their decision. */
   requestPermission(req: Omit<PermissionRequest, 'id' | 'runId'>): Promise<PermissionDecision>
-  /** Setup runs only: put a proposal in front of the user. Resolves when they approve or ask for changes. */
-  requestProposal(req: Omit<Proposal, 'id' | 'runId' | 'createdAt'>): Promise<ProposalDecision>
+  /**
+   * Put a proposal in front of the user. Resolves with the secret-free outcome (approve, revise or decline) once it
+   * is applied or refused. RunManager sets Proposal.effect.
+   */
+  requestProposal(req: Omit<Proposal, 'id' | 'runId' | 'createdAt' | 'effect'>): Promise<ProposalOutcome>
   /** Work runs with reviewMerges: show a finished report's diff and wait for merge, discard or hold. */
   requestMergeReview(req: Omit<MergeReview, 'id' | 'runId' | 'createdAt'>): Promise<MergeDecision>
   /** Setup runs only: the Architect declares setup finished. */
@@ -219,6 +274,160 @@ export interface RuntimeContext {
    * rules granted for this run. Adapters allow matching calls themselves (ruleMatch.ts) so grants need no restart.
    */
   allowedRules?(): string[]
+  /**
+   * The project's saved allow rules alone (no run grants), re-read at each call from wherever the project keeps them
+   * (store/projectData.ts projectRulesFile: .claude/settings.local.json for code projects, OrgAI's data folder for
+   * engagements). Adapters use it instead of `listRules(ctx.project.path)` (Claude options.allowedTools, Codex and
+   * mock fallbacks). Missing on trust-restricted runs = none.
+   */
+  savedRules?(): string[]
+  /**
+   * Save "Always allow for project" rules where the project keeps them (see savedRules); returns the full list and
+   * the rules that were new (permissionRules.ts addRulesReport). permissionRules.ts applyAllowScope calls it through
+   * AllowScopePersist, so adapters pass it with allowDirectories / acceptEditsForProject. Missing on
+   * trust-restricted runs: nothing persists.
+   */
+  saveProjectRules?(rules: string[]): { rules: string[]; added: string[] }
+  /**
+   * Engagements: the approved engagement document's text (store/projectData.ts readEngagementDocument, at most
+   * ENGAGEMENT_DOCUMENT_PROMPT_MAX_CHARS plus a truncation note), read at call time; undefined for code projects or
+   * before one is approved. Adapters pass it as PromptFlags.engagementDocument.
+   */
+  engagementDocument?(): string | undefined
+  /**
+   * engagement_context (ENGAGEMENT_CONTEXT_TOOL): the project's context notes. RunManager provides it on engagement
+   * work runs and single-agent runs (RunSummary.team 'single') of a stored project, never on quick, setup-like or
+   * trust-restricted runs. `list` is the index (EngagementNote), `read` one note's text or null for an unknown id.
+   * Read at call time. Missing = the tool is not offered (adapters) or says no notes are available.
+   * `save` creates (no noteId) or replaces an agent-written note: RunManager fills source 'agent', the run id and the
+   * caller's role (from the run's agent record, else the caller's roleId, else the root role), writes the harness
+   * transcript row "Saved note <title>" on the writing agent, counts it toward KNOWLEDGE_RUN_WRITES_MAX and pushes
+   * projects:engagementChanged 'notes'. It throws (the tool answers REFUSED with the message) for a user note
+   * ("Only the user can change that note; save a new one instead."), an unknown id, the caps, or the writes limit.
+   */
+  engagementNotes?: {
+    list(): EngagementNote[]
+    read(noteId: string): EngagementNoteContent | null
+    save(input: { noteId?: string; title: string; text: string }, caller: KnowledgeCaller): EngagementNote
+  }
+  /**
+   * engagement_knowledge (KNOWLEDGE_TOOL): the engagement's knowledge graph (types.ts "Engagement knowledge graph").
+   * RunManager provides it on engagement work runs of a stored project (any team, never bare, quick, setup-like or
+   * trust-restricted runs); missing = the tool is not offered (adapters) or answers that no knowledge graph is
+   * available. `graph` is read at call time (search, vocabulary and get are pure helpers in shared/knowledge.ts over
+   * it). Every write takes the calling agent (HarnessToolCaller) and RunManager fills the KnowledgeSource (by 'agent',
+   * run id, agent id, role name or slug), writes one harness transcript row on the writing agent ("Recorded <kind>
+   * <name>" / "Updated <kind> <name>" / "Linked <from> <relation> <to>" / "Retired <item> <label>"), counts it toward
+   * KNOWLEDGE_RUN_WRITES_MAX (past it every write throws "The knowledge graph write limit for this run (N) is
+   * reached; nothing was saved." and nothing is saved) and pushes projects:engagementChanged 'knowledge'. Validation
+   * failures (keys, lengths, hidden characters, unknown ids, user-written items on retire, the graph caps) throw with
+   * the message the tool shows after "REFUSED: ".
+   */
+  knowledge?: {
+    graph(): KnowledgeGraph
+    upsertNode(input: KnowledgeNodeUpsertInput, caller: KnowledgeCaller): KnowledgeNodeWriteResult
+    /** from / to are node ids (the tool resolves names first). */
+    link(input: Omit<KnowledgeEdgeSaveInput, 'projectId' | 'edgeId' | 'retired'>, caller: KnowledgeCaller): KnowledgeEdgeWriteResult
+    retire(input: KnowledgeRetireInput, caller: KnowledgeCaller): KnowledgeRetireResult
+  }
+  /**
+   * knowledge_recall (KNOWLEDGE_RECALL_TOOL): one budgeted, ranked answer as fenced data. RunManager provides it on
+   * engagement work runs and single (Ask) engagement runs of a stored project; never on bare, quick, setup-like or
+   * trust-restricted runs. It keeps the per-agent "already shown" state (only for a named agent: `caller.agentId` must
+   * be set, ROOT_AGENT_ID for a known root; missing = no dedupe, and the row lands on the root), counts RunUsage.knowledge,
+   * writes the row "Recalled N items about <query>" on the caller and emits knowledge.recalled. Read-only. Never throws for
+   * a query it can answer; a refusal comes back as text starting "REFUSED: ".
+   */
+  knowledgeRecall?(input: KnowledgeRecallInput, caller: KnowledgeCaller): string
+  /**
+   * Zero-call context, same runs as knowledgeRecall. Deterministic and with no model call: finds live entities whose
+   * name or alias appears in `text` (word boundaries, exact, names under 3 characters skipped), and returns a fenced
+   * data block of at most KNOWLEDGE_CONTEXT_MAX_CHARS, framed as data from the graph (never instructions, never the
+   * user's words), or null when nothing matches, when everything matched was already shown to that agent, or when
+   * knowledgeAutoContextOn(project) is false (read at call time). It reaches later turns unasked, so it holds name, kind,
+   * relations and only user-written summaries and facts; agents get the rest from knowledgeRecall.
+   *
+   * The adapter calls it where text reaches an agent: `purpose: 'spawn'` on a spawn's brief, `purpose: 'message'` on a
+   * user message, never on harness nudges or peer messages. It adds the block beside the text, never inside the user's
+   * transcript entry (hiddenContext-style). `agentId` is the receiving agent when known; missing means no dedupe and
+   * the row lands on the root. On a non-null result RunManager has already counted it, written the row "Added 2 known
+   * items: Acme Corp, Jane Doe" on that agent and emitted knowledge.recalled.
+   */
+  knowledgeContext?(text: string, opts: { agentId?: string; purpose: 'spawn' | 'message' }): string | null
+  /**
+   * The standing index for the system prompt (shared/knowledgeIndex.ts knowledgeBrief, at most
+   * KNOWLEDGE_BRIEF_MAX_CHARS): computed once per run at its first call and then constant, so prompt caching holds, and
+   * undefined for an empty graph. It reaches every role, so it holds nothing an agent wrote: counts, common kinds and
+   * relations, names of user-created entities. Same runs as knowledgeRecall. Adapters pass `knowledgeBrief: ctx.knowledgeBrief?.()`
+   * as PromptFlags.knowledgeBrief wherever they pass engagementDocument.
+   */
+  knowledgeBrief?(): string | undefined
+  /**
+   * propose_org_chart `fromTemplate` (setup runs): the saved team template's roles as drafts for this project
+   * (converted through the agent-import path, models mapped to the project's connection; no ids, grants or
+   * positions), with the template's name. null for an unknown id. Missing = templates unavailable.
+   */
+  orgTemplate?(templateId: string): { name: string; roles: Role[] } | null
+  /**
+   * False when the working folder's own agent config must not load this run (folderConfigTrust.ts): the project's
+   * state is 'untrusted' or 'changed', or a digest that matched at run start no longer does. Sticky: once false it stays
+   * false for the run, so an agent's mid-run edit cannot reach a restarted query. It re-hashes the config, so read it
+   * when building a query or launch config, never per tool call. Absent = no gate.
+   */
+  folderConfigLoads?(): boolean
+  /**
+   * Extra folders agents may read and edit like the project folder: Project.allowedDirectories resolved by RunManager
+   * at run start (existing directories only, canonical, never touching OrgAI's data folder in either direction, never
+   * the project folder or a folder inside it). Live: folders added during the run through allowDirectories appear at
+   * once, so read it at call time. Claude passes it as Options.additionalDirectories on every options build; a `cd`
+   * into one needs no rule (ruleMatch.ts matchOptionsFor). Missing (quick runs, build sessions, every
+   * isTrustRestrictedRun) = none.
+   */
+  allowedDirectories?(): string[]
+  /**
+   * Read-only extra folders: Project.referenceDirectories resolved by RunManager at run start like allowedDirectories
+   * (existing directories only, canonical, the same refusals, one run warning per missing or dropped folder; a folder
+   * also in allowedDirectories() is left out here). Read it at call time. Missing (quick runs, build sessions, every
+   * isTrustRestrictedRun) or empty = none.
+   * - The provider sees them as readable extra folders: Claude adds them to Options.additionalDirectories next to
+   *   allowedDirectories(); Codex never adds them to sandbox_workspace_write.writable_roots (workspace-write reads
+   *   outside the workspace already, per the Codex docs; unverified live).
+   * - The adapter MUST refuse Edit / Write / MultiEdit / NotebookEdit whose path is under one (lexical plus the real
+   *   path of the nearest existing ancestor; a missing or non-string path on those tools is refused) before any allow
+   *   path, restarted queries included, and decline a Codex file change under one without a card, always with
+   *   referenceDirectories.ts `referenceFolderMessage(folder)`: "<folder> is a reference folder: agents may read it,
+   *   not change it". Use referenceDirectories.ts `referenceEditDenial` / `referenceFolderOf`.
+   * - A `cd` into one needs no rule (ruleMatch.ts matchOptionsFor adds them to freeDirs).
+   * - LIMITATION: Bash (and PowerShell) commands that write inside a reference folder are NOT gated by this; the
+   *   project's permission mode still applies to them.
+   */
+  referenceDirectories?(): string[]
+  /**
+   * "Always allow for project" on an addDirectories suggestion (permissionRules.ts applyAllowScope): save the folders
+   * onto Project.allowedDirectories through ProjectStore (cleaned) and add the ones that resolve (as above) to
+   * allowedDirectories() at once. Returns the canonical folders now in force from `dirs`. Logs one info line.
+   * A folder that is (or is inside) a reference folder is never added: it is skipped with a log line, so a
+   * reference folder stays read-only. Missing on trust-restricted runs: nothing persists.
+   */
+  allowDirectories?(dirs: string[]): string[]
+  /**
+   * "Always allow for project" on a setMode acceptEdits suggestion: set Project.permissionMode to 'acceptEdits' only
+   * while it is 'default' (never from auto, plan, dontAsk or bypassPermissions); ctx.project follows. Returns true
+   * when it switched. Logs it. Missing on trust-restricted runs: nothing persists.
+   */
+  acceptEditsForProject?(): boolean
+  /**
+   * Folders never offered or granted as extra directories (addDirectories suggestions, session dirs): OrgAI's data
+   * folder, both spellings. Set on every run, restricted ones included. ruleMatch.ts matchOptionsFor carries it as
+   * MatchOptions.deniedDirs. Missing = only the built-in refusals (roots, UNC, home and its config folders).
+   */
+  protectedDirectories?(): string[]
+  /**
+   * Paths the self-control gate protects (selfControlGate.ts `controlProtectedPaths`, cli-spec 3.4(1)): the host's
+   * `<dataDir>/run`, `secrets.json`, `codex` (CODEX_HOME) and a fallback runtime socket dir, both spellings. Read live
+   * on every check (the runtime dir is known only once ownership is acquired). Missing = no self-control paths.
+   */
+  controlProtectedPaths?(): string[]
   /** Work runs: an agent edited the architecture document; record the time on the project. */
   noteArchitectureUpdated(): Promise<void>
   /**
@@ -244,6 +453,18 @@ export interface RuntimeContext {
   maxAutoContinues?: number
   /** Delay between a turn ending and the continuation check, in ms. Tests shorten it. */
   continuationDelayMs?: number
+  /**
+   * Headless exec settlement (cli-spec 6.2(2)). Adapters call it on EVERY root turn end, failed ones included,
+   * BEFORE emitting run.status 'idle'. Optional: missing = nobody listens.
+   */
+  onRootTurnEnded?(e: RootTurnEnd): void
+  /** Adapter-internal activity that should keep an exec run from settling or stalling (bumps activityGen). */
+  noteActivity?(reason: ExecActivityReason): void
+  /**
+   * Set by RunManager on exec runs with a budget: the effective budget minus the exec chain's prior cost (0 allowed).
+   * Claude passes it as options.maxBudgetUsd instead of project.maxBudgetUsd; a restart subtracts this run's cost from it.
+   */
+  budgetUsd?: number
   /**
    * request_mcp_install: put an agent's MCP server request in front of the user (mcpInstall.request event)
    * and block until mcp:answerInstall, like requestProposal. Resolves `{ approved: false, scope: 'run' }` if
@@ -280,7 +501,7 @@ export interface RuntimeContext {
   plugins?(): PluginSpec[]
   /**
    * Work runs: the project skills granted to at least one role in `roles` (RunSkill.roleIds says which). Setup-like
-   * runs get none. Read once at session start (the set does not change mid-run). Missing = none.
+   * runs get none. Recomputed when an approved proposal or install changes the project (RunManager setLive), so read it at call time. Missing = none.
    * Grants are enforced per agent: Claude gates the Skill tool in PreToolUse, list_skills / load_skill filter by the
    * caller's role (HarnessToolCaller.roleId). Adapters emit `skill.used` when a granted skill loads.
    */
@@ -351,6 +572,42 @@ export interface RuntimeSession {
    * cannot receive (message_run answers NOT LIVE).
    */
   receive?(message: PeerMessage): Promise<void>
+  /** Headless exec settlement view (cli-spec 6.2(2)). Missing = the adapter cannot report it (treated as not settled). */
+  settlement?(): SessionSettlement
+}
+
+/** One root turn end, reported through RuntimeContext.onRootTurnEnded. */
+export interface RootTurnEnd {
+  /** The adapter's own monotonic root-turn counter: 1 for the first root turn end of the session. */
+  turnGen: number
+  ok: boolean
+  /** The SDK result subtype, e.g. 'error_max_turns', 'error_during_execution', 'error_max_budget_usd', or 'failed' for a Codex failed turn. */
+  errorSubtype?: string
+  isAuthError?: boolean
+  /** The turn ended on a usage limit: the run is about to pause, not fail. */
+  limited?: boolean
+  /** The user interrupted the turn. */
+  interrupted?: boolean
+}
+
+/** Why RuntimeContext.noteActivity was called. */
+export type ExecActivityReason = 'subagent' | 'report' | 'integration' | 'continuation' | 'restart' | 'message'
+
+/** RuntimeSession.settlement(): what the adapter knows about being done (cli-spec 6.2(2)). */
+export interface SessionSettlement {
+  /** The newest root turn generation the adapter reported through onRootTurnEnded. */
+  rootTurnGen: number
+  /** The root agent is idle (no turn running). */
+  rootIdle: boolean
+  /** ContinuationDriver.isSettledForTurn(rootTurnGen): no timer, no evaluation in flight, that turn evaluated. */
+  continuationSettled: boolean
+  /** The turn-1 set-plan nudge was sent (ContinuationDriver.nudgeTurn1Sent). */
+  nudgeTurn1Sent: boolean
+  /**
+   * Nothing adapter-internal pending: no deferred turn end or MCP / app-server restart pending, no background tasks,
+   * no queued harness or user messages, no turn in flight, and integrator.hasPendingWork() false.
+   */
+  quiescent: boolean
 }
 
 export interface CompletionInput {

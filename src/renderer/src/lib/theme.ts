@@ -1,16 +1,20 @@
 import type { AppearanceSettings, AppSettingsInfo, ThemeMode } from '@shared/types'
 import { DEFAULT_APPEARANCE } from '@shared/defaults'
+import { effectiveNodeStyle } from './canvas'
 
 /**
  * Applies AppearanceSettings to <html>. What it sets (consumed by CSS and by canvas views through useCssVar):
  *   data-theme            'dark' | 'light' (system is resolved here with matchMedia)
  *   --accent (+ hover/active/text/on-accent) inline, only when the accent differs from the default (the designed token values stay otherwise)
  *   data-reduce-motion    'on' when AppearanceSettings.reduceMotion is 'on' (absent otherwise); global.css honours it like prefers-reduced-motion
- *   data-canvas-pattern   'dots' | 'grid' | 'none'
+ *   data-canvas-pattern   a CanvasPattern ('dots' | 'grid' | 'none' | 'blueprint' | 'paper' | 'isometric' | 'circuit' | 'terminal' | 'starfield')
  *   data-canvas-tint      'on' | 'off'    (off sets --canvas-wash-opacity to 0 in tokens.css)
  *   data-canvas-edges     'curved' | 'orthogonal' | 'straight'
  *   data-canvas-minimap   'on' | 'off'
- *   --canvas-pattern-kind / --canvas-edge-style / --canvas-minimap  the same values as CSS custom properties for useCssVar
+ *   data-canvas-layout    'top-down' | 'left-right' | 'radial'
+ *   data-canvas-node-style the node style drawn (lib/canvas.ts effectiveNodeStyle: an unbuilt style is 'card')
+ *   --canvas-pattern-kind / --canvas-edge-style / --canvas-minimap / --canvas-layout / --canvas-node-style  the same values as CSS custom properties
+ * Canvases read these through lib/canvas.ts useCanvasOptions().
  * With pattern 'none', tokens.css also makes --canvas-pattern transparent so existing grids vanish without code changes.
  */
 
@@ -70,9 +74,15 @@ export function applyAppearance(a: AppearanceSettings, prefersDark: boolean, roo
   root.dataset.canvasTint = c.tint ? 'on' : 'off'
   root.dataset.canvasEdges = c.edges
   root.dataset.canvasMinimap = c.minimap ? 'on' : 'off'
+  root.dataset.canvasLayout = c.layout
+  // A style that is not built yet (phase A: station, hex) draws as 'card', silently.
+  const nodeStyle = effectiveNodeStyle(c.nodeStyle)
+  root.dataset.canvasNodeStyle = nodeStyle
   root.style.setProperty('--canvas-pattern-kind', c.pattern)
   root.style.setProperty('--canvas-edge-style', c.edges)
   root.style.setProperty('--canvas-minimap', c.minimap ? '1' : '0')
+  root.style.setProperty('--canvas-layout', c.layout)
+  root.style.setProperty('--canvas-node-style', nodeStyle)
 }
 
 let current: AppearanceSettings = DEFAULT_APPEARANCE

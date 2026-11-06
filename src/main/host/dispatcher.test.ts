@@ -1,0 +1,389 @@
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { HOST_IPC, HOST_METHODS, IPC, KIT_IPC } from '@shared/types'
+import type { ActivityLeaseKind, HostScope, HostState, Project, RunSummary } from '@shared/types'
+import { DEFAULT_APP_SETTINGS } from '@shared/defaults'
+
+// The dispatcher must load and run without Electron (cli-spec 3.1.1).
+vi.mock('electron', () => {
+  throw new Error('electron must not be imported by the host dispatcher')
+})
+vi.mock('../log', () => ({ log: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }, logPath: () => '/logs/main.log', logsDir: () => '/logs' }))
+
+const { HostDispatcher } = await import('./dispatcher')
+const { HostEventBus } = await import('./events')
+const { HostRpcFailure, socketInvokableChannels, desktopOnlyChannels } = await import('./registry')
+const { requestChannels } = await import('./jsonCodec')
+const { project: makeProject } = await import('../runtime/testHelpers')
+type GateFn = import('./registry').GateFn
+type HostServices = import('./types').HostServices
+type HostActivityTrackerApi = import('./types').HostActivityTrackerApi
+type RpcInvokeContext = import('./types').RpcInvokeContext
+
+/** cli-spec 3.3(3) `request: desktop_only`: served by ipc.ts only. */
+const DESKTOP_ONLY = [
+  'projects:pickDirectory',
+  'skillLibrary:addFromFolder',
+  'kit:pickExportPath',
+  'kit:pickImportPath',
+  'kit:export',
+  'kit:previewImport',
+  'kit:applyImport',
+  'menu:setState',
+  'app:openPath',
+  'app:openLogs',
+  'app:setNotifications',
+  'app:cliShimStatus',
+  'app:installCliShim',
+  'app:uninstallCliShim',
+  'projects:parseRepoSource',
+  'projects:repoTools',
+  'projects:cloneRepo',
+  'projects:cancelClone',
+  'projects:setFolderConfigTrust',
+  'teamFiles:approve',
+  'teamFiles:reject',
+  'teamFiles:undo',
+  'teamFiles:enable',
+  'teamFiles:commit'
+]
+
+const DESKTOP = { surface: 'desktop' as const, senderId: 1 }
+const RPC: RpcInvokeContext = { surface: 'socket', grantedScopes: ['read', 'operate', 'decide', 'configure'] satisfies HostScope[] }
+
+/** A gate that trusts its table: positional params, a scope per channel, transport and mutation flags. */
+function fakeGate(opts: { mutations?: string[]; transport?: string[] } = {}): GateFn {
+  return (channel, params) => ({
+    channel,
+    args: Array.isArray(params) ? params : params === undefined ? [] : [params],
+    entry: { direction: 'request', scope: 'read', bulk: false, params: [], source: 'test', ...(opts.transport?.includes(channel) ? { transport: true as const } : {}) },
+    mutation: !!opts.mutations?.includes(channel)
+  })
+}
+
+function fakeActivity(): HostActivityTrackerApi & { held: number; acquired: Array<[ActivityLeaseKind, string | undefined]>; setState(s: HostState): void } {
+  let state: HostState = 'ready'
+  const out = {
+    held: 0,
+    acquired: [] as Array<[ActivityLeaseKind, string | undefined]>,
+    setState: (s: HostState) => void (state = s),
+    acquire(kind: ActivityLeaseKind, label?: string) {
+      out.acquired.push([kind, label])
+      out.held++
+      let done = false
+      return () => {
+        if (done) return
+        done = true
+        out.held--
+      }
+    },
+    track: <T,>(_k: ActivityLeaseKind, p: Promise<T>) => p,
+    addSource: () => () => {},
+    snapshot: () => ({ counts: {} as never, total: out.held, idle: out.held === 0, state }),
+    isIdle: () => out.held === 0,
+    state: () => state,
+    requestDrain: () => Promise.resolve({ stopping: false }),
+    onChange: () => () => {}
+  }
+  return out
+}
+
+let dir: string
+beforeEach(() => {
+  dir = mkdtempSync(join(tmpdir(), 'orgai-dispatcher-'))
+})
+afterEach(() => {
+  rmSync(dir, { recursive: true, force: true })
+})
+
+function services(over: Partial<HostServices> = {}, stored: Project[] = [makeProject({ id: 'proj_a' })]): HostServices {
+  const settings = { get: () => DEFAULT_APP_SETTINGS, dataDir: dir, set: vi.fn() }
+  const runs = {
+    list: vi.fn(() => [] as RunSummary[]),
+    summary: vi.fn(() => undefined),
+    start: vi.fn(async () => ({ id: 'run_1' }) as RunSummary),
+    stop: vi.fn(async () => {}),
+    send: vi.fn(() => {
+      throw new Error('send failed')
+    })
+  }
+  return {
+    projects: { get: (id: string) => stored.find((p) => p.id === id) ?? null, list: () => stored, saveFromRenderer: vi.fn() } as never,
+    runs: runs as never,
+    setup: {} as never,
+    maintenance: {} as never,
+    settings: settings as never,
+    connections: { effectiveSettings: () => settings.get(), effectiveDefault: () => 'anthropic' } as never,
+    mcp: {} as never,
+    adapterIds: ['mock'],
+    harnessProject: () => makeProject({ id: 'harness', roles: [] }),
+    importer: {} as never,
+    skills: { list: vi.fn(() => []), libraryAddFromBundle: vi.fn(() => []) } as never,
+    skillEvaluation: {} as never,
+    capabilities: {} as never,
+    quick: { displayProject: () => makeProject({ id: 'quick', roles: [] }) } as never,
+    templates: { list: () => [] } as never,
+    ...over
+  }
+}
+
+describe('HostDispatcher.invoke (desktop path)', () => {
+  it('keeps sync semantics: a sync throw stays sync, a sync result is not a promise', () => {
+    const d = new HostDispatcher(services())
+    expect(() => d.invoke(IPC.projectsSave, [{ id: 'quick' }], DESKTOP)).toThrow(/cannot be saved/)
+    expect(() => d.invoke(IPC.skillsList, ['quick'], DESKTOP)).toThrow(/Project not found/)
+    const listed = d.invoke(IPC.runsList, ['proj_a'], DESKTOP)
+    expect(listed).toEqual([])
+    expect(listed).not.toBeInstanceOf(Promise)
+  })
+
+  it('async handlers reject', async () => {
+    const d = new HostDispatcher(services())
+    const p = d.invoke(IPC.runsStart, [{ projectId: 'nope', prompt: 'x' }], DESKTOP)
+    expect(p).toBeInstanceOf(Promise)
+    await expect(p).rejects.toThrow('Project not found')
+  })
+
+  it('agrees with the registry: serves exactly its socket-invokable channels (with a kit), none of its desktop-only ones', () => {
+    const kit = { exportBundle: vi.fn(), previewBundle: vi.fn(), applyBundle: vi.fn() }
+    const d = new HostDispatcher(services({ kit: kit as never, teamFiles: {} as never }))
+    expect([...d.channels()].sort()).toEqual([...socketInvokableChannels()].sort())
+    expect([...desktopOnlyChannels()].sort()).toEqual([...DESKTOP_ONLY].sort())
+  })
+
+  it('an unknown channel throws with code unknown_channel', () => {
+    const d = new HostDispatcher(services())
+    for (const ch of ['nope:nothing', '__proto__', 'toString', ...DESKTOP_ONLY]) {
+      let caught: unknown
+      try {
+        d.invoke(ch, [], DESKTOP)
+      } catch (e) {
+        caught = e
+      }
+      expect((caught as { code?: string })?.code, ch).toBe('unknown_channel')
+      expect(d.has(ch)).toBe(false)
+    }
+  })
+
+  it('serves every request channel except the desktop-only ones and runs:subscribe, plus host.status and host.stop', () => {
+    const kit = { exportBundle: vi.fn(), previewBundle: vi.fn(), applyBundle: vi.fn() }
+    const d = new HostDispatcher(services({ kit: kit as never, teamFiles: {} as never }))
+    const expected = requestChannels().filter((c) => !DESKTOP_ONLY.includes(c) && c !== 'runs:subscribe')
+    expected.push('host.status', 'host.stop')
+    expect([...d.channels()].sort()).toEqual([...new Set(expected)].sort())
+    expect(d.channels()).toHaveLength(new Set(d.channels()).size)
+    // Without a kit the three bundle channels are not served (like today's kit channels).
+    const bare = new HostDispatcher(services())
+    expect(bare.channels().filter((c) => c.startsWith('kit:'))).toEqual([])
+    expect(bare.has(HOST_IPC.kitApplyBundle)).toBe(false)
+    expect(bare.has(KIT_IPC.kitExport)).toBe(false)
+    expect(bare.has(HOST_METHODS.hostSubscribe)).toBe(false)
+    expect(bare.has(HOST_METHODS.hostHello)).toBe(false)
+  })
+
+  it('app:info and settings info read the env, not Electron', () => {
+    const env = { app: { getVersion: () => '9.9.9', getPath: () => '', isPackaged: true }, platform: 'linux', logsDir: () => '/var/log/orgai' }
+    const d = new HostDispatcher(services({ env }))
+    expect(d.invoke(IPC.appInfo, [], DESKTOP)).toMatchObject({ version: '9.9.9', platform: 'linux', logsDir: '/var/log/orgai', mockAdapter: true })
+    expect(d.invoke(IPC.settingsGet, [], DESKTOP)).toMatchObject({ appVersion: '9.9.9', defaultConnection: 'anthropic' })
+    expect(d.invoke(IPC.appLogPath, [], DESKTOP)).toBe('/logs/main.log')
+  })
+})
+
+describe('HostDispatcher.invokeRpc (wire path)', () => {
+  it('holds an inFlightRpcMutations lease for mutations and releases it on success, sync throw and rejection', async () => {
+    const activity = fakeActivity()
+    const svc = services({ activity })
+    const d = new HostDispatcher(svc, { gate: fakeGate({ mutations: [IPC.runsStop, IPC.runsSend, IPC.runsStart] }) })
+    let seen = -1
+    ;(svc.runs as unknown as { stop: ReturnType<typeof vi.fn> }).stop.mockImplementation(async () => {
+      seen = activity.held
+    })
+    await d.invokeRpc(IPC.runsStop, ['run_1'], RPC)
+    expect(seen).toBe(1)
+    expect(activity.held).toBe(0)
+    expect(activity.acquired).toEqual([['inFlightRpcMutations', IPC.runsStop]])
+    await expect(d.invokeRpc(IPC.runsSend, [{ runId: 'run_1', text: 'x' }], RPC)).rejects.toThrow('send failed')
+    expect(activity.held).toBe(0)
+    await expect(d.invokeRpc(IPC.runsStart, [{ projectId: 'nope', prompt: 'x' }], RPC)).rejects.toThrow('Project not found')
+    expect(activity.held).toBe(0)
+    expect(activity.acquired).toHaveLength(3)
+  })
+
+  it('takes no lease for reads', async () => {
+    const activity = fakeActivity()
+    const d = new HostDispatcher(services({ activity }), { gate: fakeGate() })
+    await expect(d.invokeRpc(IPC.runsList, ['proj_a'], RPC)).resolves.toEqual([])
+    expect(activity.acquired).toEqual([])
+  })
+
+  it('refuses mutations with host_draining while draining; reads still run', async () => {
+    const activity = fakeActivity()
+    activity.setState('draining')
+    const svc = services({ activity })
+    const d = new HostDispatcher(svc, { gate: fakeGate({ mutations: [IPC.runsStop] }) })
+    const err = await d.invokeRpc(IPC.runsStop, ['run_1'], RPC).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(HostRpcFailure)
+    expect(err).toMatchObject({ code: 'host_draining', retryAfterMs: 1000 })
+    expect((svc.runs as unknown as { stop: ReturnType<typeof vi.fn> }).stop).not.toHaveBeenCalled()
+    expect(activity.acquired).toEqual([])
+    await expect(d.invokeRpc(IPC.runsList, ['proj_a'], RPC)).resolves.toEqual([])
+  })
+
+  it('refuses transport entries and channels without a handler', async () => {
+    const d = new HostDispatcher(services(), { gate: fakeGate({ transport: [HOST_IPC.runsSubscribe, HOST_METHODS.hostSubscribe] }) })
+    await expect(d.invokeRpc(HOST_IPC.runsSubscribe, [{}], RPC)).rejects.toMatchObject({ code: 'bad_request' })
+    await expect(d.invokeRpc(HOST_METHODS.hostSubscribe, [{}], RPC)).rejects.toMatchObject({ code: 'bad_request' })
+    await expect(d.invokeRpc(HOST_IPC.kitApplyBundle, [{}], RPC)).rejects.toMatchObject({ code: 'unknown_channel' })
+  })
+
+  it('uses the real gate by default: known channels pass, unknown and out-of-scope ones are refused', async () => {
+    const d = new HostDispatcher(services())
+    await expect(d.invokeRpc(IPC.runsList, ['proj_a'], RPC)).resolves.toEqual([])
+    await expect(d.invokeRpc('nope:nothing', [], RPC)).rejects.toMatchObject({ code: 'unknown_channel' })
+    await expect(d.invokeRpc(IPC.runsStop, ['run_1'], { surface: 'socket', grantedScopes: ['read'] })).rejects.toMatchObject({ code: 'scope_denied' })
+    await expect(d.invokeRpc(IPC.runsList, [42], RPC)).rejects.toMatchObject({ code: 'bad_request' })
+  })
+
+  it('maps coded errors to HostRpcFailure and passes other errors through', async () => {
+    const coded = (code: string, message: string) => Object.assign(new Error(message), { code })
+    const kit = {
+      exportBundle: vi.fn(() => {
+        throw new Error('plain failure')
+      }),
+      previewBundle: vi.fn(() => {
+        throw coded('ENOENT', 'not a wire code')
+      }),
+      applyBundle: vi.fn(async () => {
+        throw coded('stale_target_digest', 'The library changed.')
+      })
+    }
+    const d = new HostDispatcher(services({ kit: kit as never, teamFiles: {} as never }), { gate: fakeGate({ mutations: [HOST_IPC.kitApplyBundle] }) })
+    const digest = 'a'.repeat(64)
+    const stale = await d.invokeRpc(HOST_IPC.kitApplyBundle, [{ rawBytesBase64: '', digest, targetDigest: digest, choices: [] }], RPC).catch((e: unknown) => e)
+    expect(kit.applyBundle).toHaveBeenCalled()
+    expect(stale).toBeInstanceOf(HostRpcFailure)
+    expect(stale).toMatchObject({ code: 'stale_target_digest', message: 'The library changed.' })
+    const plain = await d.invokeRpc(HOST_IPC.kitExportBundle, [{ include: {} }], RPC).catch((e: unknown) => e)
+    expect(plain).not.toBeInstanceOf(HostRpcFailure)
+    expect(plain).toMatchObject({ message: 'plain failure' })
+    const enoent = await d.invokeRpc(HOST_IPC.kitPreviewBundle, [{ fileName: 'k.orgai-kit.json', rawBytesBase64: '' }], RPC).catch((e: unknown) => e)
+    expect(enoent).not.toBeInstanceOf(HostRpcFailure)
+    expect(enoent).toMatchObject({ code: 'ENOENT' })
+    const failure = new HostRpcFailure('scope_denied', 'no')
+    kit.exportBundle.mockImplementation(() => {
+      throw failure
+    })
+    await expect(d.invokeRpc(HOST_IPC.kitExportBundle, [{ include: {} }], RPC)).rejects.toBe(failure)
+  })
+
+  it('maps the knowledge store stale_revision refusal', async () => {
+    const eng = makeProject({ id: 'proj_e', kind: 'engagement' })
+    const d = new HostDispatcher(services({}, [eng]), { gate: fakeGate({ mutations: [IPC.knowledgeSaveNode] }) })
+    const node = (await d.invokeRpc(IPC.knowledgeSaveNode, [{ projectId: 'proj_e', kind: 'person', name: 'Ada' }], RPC)) as { id: string; updatedAt: number }
+    const err = await d
+      .invokeRpc(IPC.knowledgeSaveNode, [{ projectId: 'proj_e', nodeId: node.id, appendFacts: ['x'], expectedUpdatedAt: node.updatedAt - 1 }], RPC)
+      .catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(HostRpcFailure)
+    expect(err).toMatchObject({ code: 'stale_revision' })
+  })
+})
+
+describe('host-specific handlers', () => {
+  it('window:openRun without desktop hooks answers desktop_unavailable; with them it opens the window', async () => {
+    const d = new HostDispatcher(services())
+    const target = { projectId: 'proj_a', runId: 'run_1' }
+    const svc = services()
+    ;(svc.runs as unknown as { summary: ReturnType<typeof vi.fn> }).summary.mockReturnValue({ projectId: 'proj_a' })
+    const bare = new HostDispatcher(svc)
+    expect(() => bare.invoke(IPC.windowOpenRun, [target], DESKTOP)).toThrow(HostRpcFailure)
+    try {
+      bare.invoke(IPC.windowOpenRun, [target], DESKTOP)
+    } catch (e) {
+      expect(e).toMatchObject({ code: 'desktop_unavailable' })
+    }
+    const openRunWindow = vi.fn()
+    const withHooks = new HostDispatcher({ ...svc, desktop: { openRunWindow } })
+    withHooks.invoke(IPC.windowOpenRun, [target], DESKTOP)
+    expect(openRunWindow).toHaveBeenCalledWith(target)
+    // Validation runs first: an unknown project is refused before the hooks are asked.
+    expect(() => d.invoke(IPC.windowOpenRun, [{ projectId: 'nope', runId: 'run_1' }], DESKTOP)).toThrow()
+    expect(() => d.invoke(IPC.windowOpenRun, [{ projectId: 'nope', runId: 'run_1' }], DESKTOP)).not.toThrow(HostRpcFailure)
+  })
+
+  it('usage:refresh resolves null without a usage monitor and delegates with one', async () => {
+    await expect(new HostDispatcher(services()).invoke(IPC.usageRefresh, [], DESKTOP)).resolves.toBeNull()
+    const refresh = vi.fn(async () => ({ ok: 1 }))
+    await expect(new HostDispatcher(services({ usage: { refresh } })).invoke(IPC.usageRefresh, [], DESKTOP)).resolves.toEqual({ ok: 1 })
+    expect(refresh).toHaveBeenCalledOnce()
+  })
+
+  it('host.status and host.stop delegate to services.host; host.stop rebuilds force', async () => {
+    const bare = new HostDispatcher(services(), { gate: fakeGate() })
+    await expect(bare.invokeRpc(HOST_METHODS.hostStatus, [], RPC)).rejects.toMatchObject({ code: 'desktop_unavailable' })
+    await expect(bare.invokeRpc(HOST_METHODS.hostStop, [{}], RPC)).rejects.toMatchObject({ code: 'desktop_unavailable' })
+    const status = { state: 'ready' }
+    const host = { status: vi.fn(() => status as never), stop: vi.fn(async () => ({ stopping: true })) }
+    const d = new HostDispatcher(services({ host }), { gate: fakeGate({ mutations: [HOST_METHODS.hostStop] }) })
+    await expect(d.invokeRpc(HOST_METHODS.hostStatus, [], RPC)).resolves.toBe(status)
+    await d.invokeRpc(HOST_METHODS.hostStop, [{ force: true, evil: 1 }], RPC)
+    await d.invokeRpc(HOST_METHODS.hostStop, [{ force: 'yes' }], RPC)
+    await d.invokeRpc(HOST_METHODS.hostStop, [], RPC)
+    expect(host.stop.mock.calls).toEqual([[{ force: true }], [{ force: false }], [{ force: false }]])
+  })
+
+  it('skillLibrary:addFromBundle validates through bundleArgs', () => {
+    const svc = services()
+    const d = new HostDispatcher(svc)
+    expect(() => d.invoke(HOST_IPC.skillLibraryAddFromBundle, [{ files: [] }], DESKTOP)).toThrow(/needs a name/)
+    expect(() => d.invoke(HOST_IPC.skillLibraryAddFromBundle, [null], DESKTOP)).toThrow(/not valid/)
+    d.invoke(HOST_IPC.skillLibraryAddFromBundle, [{ name: 'tidy', files: [{ relPath: 'SKILL.md', base64: 'eA==', extra: 1 }], evil: 1 }], DESKTOP)
+    const add = (svc.skills as unknown as { libraryAddFromBundle: ReturnType<typeof vi.fn> }).libraryAddFromBundle
+    expect(add.mock.calls).toEqual([[{ name: 'tidy', files: [{ relPath: 'SKILL.md', base64: 'eA==' }] }]])
+  })
+
+  it('kit:*Bundle call the KitService methods with rebuilt inputs', async () => {
+    const kit = { exportBundle: vi.fn((_input: unknown) => ({ fileName: 'k' })), previewBundle: vi.fn(() => ({ items: [] })), applyBundle: vi.fn(async () => ({ applied: [] })) }
+    const d = new HostDispatcher(services({ kit: kit as never, teamFiles: {} as never }))
+    d.invoke(HOST_IPC.kitExportBundle, [{ include: {}, fileName: 'mine', x: 1 }], DESKTOP)
+    expect(kit.exportBundle).toHaveBeenCalledOnce()
+    expect(kit.exportBundle.mock.calls[0][0]).toMatchObject({ fileName: 'mine' })
+    expect(kit.exportBundle.mock.calls[0][0]).not.toHaveProperty('x')
+    d.invoke(HOST_IPC.kitPreviewBundle, [{ fileName: 'k.orgai-kit.json', rawBytesBase64: 'e30=', x: 1 }], DESKTOP)
+    expect(kit.previewBundle.mock.calls).toEqual([[{ fileName: 'k.orgai-kit.json', rawBytesBase64: 'e30=' }]])
+    expect(() => d.invoke(HOST_IPC.kitPreviewBundle, [{ rawBytesBase64: 5 }], DESKTOP)).toThrow()
+    const digest = 'b'.repeat(64)
+    await d.invoke(HOST_IPC.kitApplyBundle, [{ rawBytesBase64: 'e30=', digest, targetDigest: digest, choices: [] }], DESKTOP)
+    expect(kit.applyBundle).toHaveBeenCalledOnce()
+    expect(() => d.invoke(HOST_IPC.kitApplyBundle, [{ rawBytesBase64: 'e30=' }], DESKTOP)).toThrow()
+    expect(kit.applyBundle).toHaveBeenCalledOnce()
+  })
+
+  it('knowledge, notes and document writes emit projects:engagementChanged on services.events', () => {
+    const events = new HostEventBus()
+    const seen: Array<[string, unknown]> = []
+    events.on((channel, payload) => void seen.push([channel, payload]))
+    const eng = makeProject({ id: 'proj_e', kind: 'engagement' })
+    const d = new HostDispatcher(services({ events }, [eng]))
+    expect(d.events).toBe(events)
+    const node = d.invoke(IPC.knowledgeSaveNode, [{ projectId: 'proj_e', kind: 'person', name: 'Ada' }], DESKTOP) as { id: string }
+    const note = d.invoke(IPC.projectsSaveNote, [{ projectId: 'proj_e', title: 'T', text: 'x' }], DESKTOP) as { id: string }
+    d.invoke(IPC.projectsRemoveNote, [{ projectId: 'proj_e', noteId: note.id }], DESKTOP)
+    d.invoke(IPC.projectsUpdateEngagementDocument, [{ projectId: 'proj_e', text: '# Plan' }], DESKTOP)
+    d.invoke(IPC.knowledgeClear, ['proj_e'], DESKTOP)
+    expect(seen).toEqual([
+      [IPC.projectsEngagementChanged, { projectId: 'proj_e', what: 'knowledge', ids: [node.id] }],
+      [IPC.projectsEngagementChanged, { projectId: 'proj_e', what: 'notes', ids: [note.id] }],
+      [IPC.projectsEngagementChanged, { projectId: 'proj_e', what: 'notes', ids: [note.id] }],
+      [IPC.projectsEngagementChanged, { projectId: 'proj_e', what: 'document' }],
+      [IPC.projectsEngagementChanged, { projectId: 'proj_e', what: 'knowledge' }]
+    ])
+  })
+
+  it('makes its own bus when none is given', () => {
+    const d = new HostDispatcher(services())
+    expect(d.events).toBeInstanceOf(HostEventBus)
+  })
+})

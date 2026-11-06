@@ -1,5 +1,6 @@
 import type { ProviderAuth, RunEvent, UsageStatus } from '@shared/types'
 import type { RuntimeAdapter } from './runtime/types'
+import { mergeUsage } from './runtime/usage'
 
 const BOOT_DELAY_MS = 1500
 const IDLE_INTERVAL_MS = 10 * 60_000
@@ -11,6 +12,10 @@ export type ExtraProbe = (() => Promise<UsageStatus | null>) | { key: string; pr
  * Keeps the plan usage meter fresh when no run is open. Live runs report usage themselves every
  * minute, so the monitor only probes while the app is idle: once shortly after boot, then every
  * ten minutes, plus whenever the renderer asks.
+ *
+ * The idle probe is folded onto the newest Claude status known (observe() records every usage.status broadcast,
+ * live runs' included) through mergeUsage, so a window only a run's rate_limit_event reported (five_hour since
+ * 2026-11-04) survives between runs until its reset passes instead of being wiped by the next probe.
  */
 export class UsageMonitor {
   private timer: ReturnType<typeof setInterval> | null = null
@@ -46,9 +51,22 @@ export class UsageMonitor {
     this.timer = null
   }
 
-  /** The latest Claude report (unchanged behaviour). */
+  /** The newest Claude status known, from the probe or a run. */
   latest(): UsageStatus | null {
     return this.last
+  }
+
+  /**
+   * Record a broadcast usage.status for the Claude connection (connection unset or 'anthropic') as the newest
+   * Claude status. Other connections' reports are ignored; the monitor's own broadcasts pass through here too,
+   * which is harmless.
+   */
+  observe(event: RunEvent): void {
+    if (event.type !== 'usage.status') return
+    const usage = event.usage
+    if (!usage || typeof usage !== 'object') return
+    if (usage.connection !== undefined && usage.connection !== 'anthropic') return
+    this.last = usage
   }
 
   /** The latest report of every probe, Claude first. */
@@ -65,11 +83,12 @@ export class UsageMonitor {
     this.inFlight = probe
       .call(this.opts.adapter, this.opts.auth())
       .then((usage) => {
-        if (usage) {
-          this.last = usage
-          this.opts.broadcast({ type: 'usage.status', runId: '', usage })
-        }
-        return usage
+        if (!usage) return usage
+        // Fold the probe onto what runs reported, so an event-only window outlives the run until its reset.
+        const merged = mergeUsage(this.last, usage)
+        this.last = merged
+        this.opts.broadcast({ type: 'usage.status', runId: '', usage: merged })
+        return merged
       })
       .catch(() => null)
       .finally(() => {

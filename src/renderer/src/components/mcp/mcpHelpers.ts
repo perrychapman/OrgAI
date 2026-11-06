@@ -7,6 +7,8 @@ import type {
   Role
 } from '@shared/types'
 import { newId } from '@shared/defaults'
+import type { McpSecretClash } from '@shared/mcpSecretClash'
+import { scopeFields, secretScopeOf } from '../../lib/mcpScope'
 
 /** The exact thing that runs: `command args` for stdio, the URL for http and sse. */
 export function launchTarget(spec: Pick<McpServerSpec, 'transport' | 'command' | 'args' | 'url'>): string {
@@ -32,6 +34,54 @@ export function secretStatuses(info: McpServerInfo): SecretStatus[] {
     ...(info.spec.secretEnv ?? []).map((name) => ({ name, set: info.envSet.includes(name) })),
     ...(info.spec.secretHeaders ?? []).map((name) => ({ name, set: info.headersSet.includes(name) }))
   ]
+}
+
+export interface PerProjectSecretSlot {
+  kind: 'env' | 'header'
+  name: string
+  set: boolean
+}
+
+export interface PerProjectState {
+  /** True when the linked entry declares any slot this project fills in. */
+  declared: boolean
+  /** Non-secret names (spec.perProjectEnv) with this project's saved values (empty string = unset). */
+  plain: Array<{ name: string; value: string }>
+  /** Secret slots, only while the secrets are this project's own (secretScope 'project'). */
+  secrets: PerProjectSecretSlot[]
+  missingPlain: string[]
+  missingSecrets: string[]
+  missingCount: number
+}
+
+/** This project's own slots on a linked server and which of them are still empty. */
+export function perProjectState(info: McpServerInfo): PerProjectState {
+  const fields = scopeFields(info.spec)
+  const values = (info.spec.transport === 'stdio' ? fields.envOverrides : fields.headerOverrides) ?? {}
+  const plain = (fields.perProjectEnv ?? []).map((name) => ({ name, value: values[name] ?? '' }))
+  const secrets: PerProjectSecretSlot[] =
+    info.spec.libraryId && secretScopeOf(info) === 'project'
+      ? [
+          ...(info.spec.secretEnv ?? []).map((name) => ({ kind: 'env' as const, name, set: info.envSet.includes(name) })),
+          ...(info.spec.secretHeaders ?? []).map((name) => ({ kind: 'header' as const, name, set: info.headersSet.includes(name) }))
+        ]
+      : []
+  const missingPlain = plain.filter((p) => p.value === '').map((p) => p.name)
+  const missingSecrets = secrets.filter((s) => !s.set).map((s) => s.name)
+  return { declared: plain.length + secrets.length > 0, plain, secrets, missingPlain, missingSecrets, missingCount: missingPlain.length + missingSecrets.length }
+}
+
+/** The full overrides map after setting one name; an empty value removes it (main replaces the whole map). */
+export function nextOverrides(current: Record<string, string>, name: string, value: string): Record<string, string> {
+  const next = { ...current }
+  if (value === '') delete next[name]
+  else next[name] = value
+  return next
+}
+
+/** "Needs 2 values for this engagement before agents can use it." */
+export function perProjectMissingLine(count: number, noun: string): string {
+  return `Needs ${count} ${count === 1 ? 'value' : 'values'} for this ${noun} before agents can use it.`
 }
 
 export function allRoleSlugs(roles: Role[]): string[] {
@@ -186,4 +236,19 @@ export const REGISTRY_SUGGESTIONS = ['filesystem', 'github', 'fetch', 'memory', 
 
 export function errMessage(e: unknown): string {
   return e instanceof Error ? e.message.replace(/^Error invoking remote method '[^']*': (Error: )?/, '') : String(e)
+}
+
+/** "a", "a and b", "a, b and c". */
+function nameList(names: readonly string[]): string {
+  if (names.length <= 1) return names[0] ?? ''
+  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
+}
+
+/**
+ * The quiet row warning for a secret env name shared with other servers (shared/mcpSecretClash.ts). The renderer
+ * never sees the values, so it warns on the shared name; a run on the OpenAI connection refuses the later server
+ * only when the values differ.
+ */
+export function secretClashLine(clash: McpSecretClash): string {
+  return `Shares the secret name ${clash.envName} with ${nameList(clash.others)}. On the OpenAI connection, a run starts only one of them when their values differ.`
 }
