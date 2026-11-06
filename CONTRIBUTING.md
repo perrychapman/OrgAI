@@ -35,3 +35,7 @@ The release workflow refuses tags that are not reachable from `main`. A manual d
 Never run the smoke scripts (`scripts/smoke-*.mjs`) or the token-spending e2e scripts (`e2e/setup.mjs`,
 `e2e/history.mjs`, `e2e/worktree.mjs`) in CI or without the maintainer's explicit consent. `npm test` and
 `npm run e2e:free` never spend tokens.
+
+## License
+
+Contributions are accepted under the MIT License (see [LICENSE](LICENSE)).
