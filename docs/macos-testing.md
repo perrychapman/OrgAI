@@ -22,6 +22,8 @@ npm run typecheck && npm test && npm run build
 
 `npm run dev` from Terminal, then check: the window opens, the menu bar shows OrgAI / Edit / View / Window, Cmd+C / Cmd+V / Cmd+A work in a text field, Cmd+Q quits, closing the window keeps the app in the Dock and clicking the Dock icon reopens it, and the dark and light themes both render. The Dock shows the OrgAI mark (set at startup with `app.dock.setIcon` from `build/icon.png`, dev only), not Electron's icon.
 
+Menu bar and Dock tooltip name: they come from `node_modules/electron/dist/Electron.app/Contents/Info.plist`, which `app.setName` does not change. `npm run dev` (also `start` / `preview`) therefore runs `scripts/mac-dev-app-name.mjs` first (macOS only): it sets `CFBundleName` and `CFBundleDisplayName` to OrgAI with `/usr/bin/plutil` and re-signs the bundle ad hoc with `/usr/bin/codesign`, prints one line, and never fails the start (on error it prints the manual command). `npm install` / `npm ci` restore the original plist, so it repeats on the next dev start. Check: (1) run `npm run dev` and read the `mac-dev-app-name:` line; (2) the menu bar's bold name and the Dock tooltip say OrgAI and the app launches. Not yet run on a Mac.
+
 Dev runs use the app name OrgAI, so dev logs land in `~/Library/Logs/OrgAI`. To test against a scratch data dir instead of your real one, set `ORGAI_DATA_DIR`: when set, user data and logs live under that directory.
 
 ```sh
