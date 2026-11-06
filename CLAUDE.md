@@ -1597,9 +1597,11 @@ Each fact says how it was checked. "Unverified" means it comes from docs or typi
     the dry run and the rotation on a fake build were.
   - Branches: `dev` is integration (agent runs, PRs, dependabot), `main` is stable and protected. CI runs on both;
     `release.yml` only releases `v<version>` tags whose commit is on `main`. Push as you go: after each merged
-    feature passes its gate (typecheck, unit tests, build, e2e:free where UI changed, the Reviewer where required),
-    dev is pushed to origin (`git push origin dev`) before the next step, never a red tree and never `main` directly
-    (release PRs only); the orchestrator does the push after each gate; reports never push.
+    feature passes the local gate (typecheck, the whole unit suite, build, only the e2e scripts for the area changed,
+    the Reviewer where required), the orchestrator pushes dev to origin (`git push origin dev`) before the next step;
+    reports never push. The full e2e:free chain is not run locally (owner decision 2026-11-05, it duplicated CI) but
+    runs in CI on windows-latest and macos-15 on every push to dev. A red CI run is a blocker, triaged and fixed at
+    once, and other runs do not push on top of a red dev except to fix it. Never push `main` directly (release PRs only).
   - The first real CI run has not happened yet. Open items: winCodeSign extraction on windows-latest, macos-15-intel
     really being x64, e2e:free on mac (a possible Keychain prompt), unsigned dmg/zip with hardenedRuntime, the publish job.
 
