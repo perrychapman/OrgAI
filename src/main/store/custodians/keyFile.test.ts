@@ -7,6 +7,7 @@ import { CustodyError } from '../vaultTypes'
 import { fakeSpawner, type FakeAnswer } from './fakeSpawner'
 import {
   KeyFileCustodian,
+  LS_PATH,
   createKeyFileWindows,
   daclIsOwnerOnly,
   folderLetsOthersIn,
@@ -14,12 +15,14 @@ import {
   keyFilePathProblem,
   parseIcaclsSave,
   parseKeyFileContent,
+  parseLsAcl,
   parseSddlDacl,
   parseWhoamiUser,
   readKeyFileWindows
 } from './keyFile'
 
 const posixOnly = process.platform === 'win32' ? it.skip : it
+const darwinOnly = process.platform === 'darwin' ? it : it.skip
 const ID = '0123456789abcdef0123456789abcdef'
 
 let root: string
@@ -113,11 +116,13 @@ describe('KeyFileCustodian on POSIX (5.3.1)', () => {
   posixOnly('creates a new 0600 file with base64 text and opens it again', async () => {
     const path = join(outside, 'orgai.key')
     const c = custodian({ keyFile: path })
-    const { dek, wrapped } = await c.create(ID)
+    const { dek, wrapped, keyFile } = await c.create(ID)
     expect(wrapped).toBeUndefined()
     expect(statSync(path).mode & 0o777).toBe(0o600)
     expect(readFileSync(path, 'latin1')).toBe(`${dek.toString('base64')}\n`)
     expect(c.canonicalPath()).toBe(realpathSync(path))
+    // create names the canonical path for custody.keyFile, the same spelling canonicalPath() gives (review round 2).
+    expect(keyFile).toBe(realpathSync(path))
     const again = await custodian().open(ID, { scheme: 'key-file', keyFile: realpathSync(path) })
     expect(again.equals(dek)).toBe(true)
   })
@@ -138,8 +143,9 @@ describe('KeyFileCustodian on POSIX (5.3.1)', () => {
     const path = join(outside, 'ci.key')
     const key = Buffer.alloc(32, 0x42)
     writeFileSync(path, `${key.toString('base64')}\n`, { mode: 0o600 })
-    const { dek } = await custodian({ keyFile: path, importExisting: true }).create(ID)
+    const { dek, keyFile } = await custodian({ keyFile: path, importExisting: true }).create(ID)
     expect(dek.equals(key)).toBe(true)
+    expect(keyFile).toBe(realpathSync(path))
     expect(readFileSync(path, 'latin1')).toBe(`${key.toString('base64')}\n`)
     expect((await failure(custodian({ keyFile: join(outside, 'none.key'), importExisting: true }).create(ID))).kind).toBe('missing')
   })
@@ -251,6 +257,100 @@ describe('KeyFileCustodian on POSIX (5.3.1)', () => {
 
   posixOnly('open with nothing configured is missing', async () => {
     expect((await failure(custodian().open(ID, { scheme: 'key-file' }))).kind).toBe('missing')
+  })
+})
+
+describe('macOS key file ACL check (5.3.1, review round 2)', () => {
+  it('parses ls -le / -led output into ACL entries, failing closed on anything else', () => {
+    expect(parseLsAcl('-rw-------  1 me  staff  45 Nov  5 16:22 /k\n')).toEqual([])
+    expect(parseLsAcl('-rw-------@ 1 me  wheel  0 Nov  5 16:22 /d/f\n 0: group:everyone inherited allow read\n')).toEqual(['group:everyone inherited allow read'])
+    expect(parseLsAcl('drwxr-xr-x+ 3 me  wheel  96 Nov  5 16:22 /d\n 0: group:everyone allow list,file_inherit\n 1: user:x deny delete\n')).toEqual([
+      'group:everyone allow list,file_inherit',
+      'user:x deny delete'
+    ])
+    expect(parseLsAcl('')).toBeUndefined()
+    expect(parseLsAcl('ls: /k: No such file or directory\n')).toBeUndefined()
+    // A name with a line break leaves a line ls did not write as an entry: refuse rather than guess.
+    expect(parseLsAcl('-rw-------  1 me  staff  45 Nov  5 16:22 /a\nb\n')).toBeUndefined()
+  })
+
+  /** A fake /bin/ls: the folder's entries for -led, the file's for -le. */
+  const fakeLs = (folder: string[], file: string[]) =>
+    fakeSpawner(({ file: exe, args }) => {
+      if (exe !== LS_PATH) return { code: 1 }
+      const entries = args[0] === '-led' ? folder : file
+      const head = args[0] === '-led' ? 'drwx------' : '-rw-------'
+      return { code: 0, stdout: `${head}  1 me  staff  0 Nov  5 16:22 ${args[1]}\n${entries.map((e, i) => ` ${i}: ${e}\n`).join('')}` }
+    })
+
+  posixOnly('refuses a folder with an inheritable allow entry before creating anything (fake ls)', async () => {
+    const path = join(outside, 'orgai.key')
+    const f = fakeLs(['group:everyone allow read,file_inherit'], [])
+    const c = custodian({ keyFile: path, platform: 'darwin', spawner: f.spawner })
+    const e = await failure(c.create(ID))
+    expect(e.kind).toBe('denied')
+    expect(e.reason).toMatch(/inherited ACL/)
+    expect(existsSync(path)).toBe(false)
+    expect(f.calls.map((x) => x.args)).toEqual([['-led', outside]])
+    expect(f.calls[0]!.file).toBe('/bin/ls')
+    expect(f.calls[0]!.options.env).toEqual({})
+    expect(await c.probe()).toMatchObject({ ok: false, kind: 'denied', reason: expect.stringMatching(/inherited ACL/) })
+  })
+
+  posixOnly('checks the new, still empty file and deletes it when it carries an allow entry (fake ls)', async () => {
+    const path = join(outside, 'orgai.key')
+    const f = fakeLs([], ['group:everyone inherited allow read'])
+    const e = await failure(custodian({ keyFile: path, platform: 'darwin', spawner: f.spawner }).create(ID))
+    expect(e.kind).toBe('denied')
+    expect(existsSync(path)).toBe(false)
+    expect(f.calls.map((x) => x.args[0])).toEqual(['-led', '-le'])
+    // A deny entry takes access away only: the file is made.
+    const ok = fakeLs(['everyone deny delete'], ['everyone deny delete'])
+    const { dek } = await custodian({ keyFile: path, platform: 'darwin', spawner: ok.spawner }).create(ID)
+    expect(readFileSync(path, 'latin1')).toBe(`${dek.toString('base64')}\n`)
+  })
+
+  posixOnly('refuses to open a key file with an allow entry and names chmod -N; fails closed when ls fails (fake ls)', async () => {
+    const path = join(outside, 'k')
+    writeFileSync(path, Buffer.alloc(32, 4), { mode: 0o600 })
+    const open = (spawner: ReturnType<typeof fakeLs>['spawner']) =>
+      custodian({ platform: 'darwin', spawner }).open(ID, { scheme: 'key-file', keyFile: path })
+    const e = await failure(open(fakeLs([], ['user:other allow read']).spawner))
+    expect(e.kind).toBe('denied')
+    expect(e.reason).toContain(`chmod -N "${path}"`)
+    expect((await open(fakeLs([], []).spawner)).equals(Buffer.alloc(32, 4))).toBe(true)
+    expect((await failure(open(fakeSpawner(() => ({ code: 1 })).spawner))).kind).toBe('denied')
+    expect((await failure(open(fakeSpawner(() => ({ code: 0, stdout: 'junk\n' })).spawner))).kind).toBe('denied')
+    expect((await failure(open(fakeSpawner(() => ({ spawnError: 'ENOENT' })).spawner))).kind).toBe('unavailable')
+    expect(await custodian({ platform: 'darwin', spawner: fakeLs([], ['user:other allow read']).spawner, recordedKeyFile: path }).probe()).toMatchObject({
+      ok: false,
+      kind: 'denied'
+    })
+  })
+
+  darwinOnly('real /bin/ls: an inherited ACL on the folder or an ACL on the file is refused', async () => {
+    const shared = join(outside, 'shared')
+    mkdirSync(shared, { mode: 0o700 })
+    execFileSync('/bin/chmod', ['+a', 'everyone allow read,file_inherit', shared])
+    const inShared = join(shared, 'orgai.key')
+    expect((await failure(custodian({ keyFile: inShared }).create(ID))).reason).toMatch(/inherited ACL/)
+    expect(existsSync(inShared)).toBe(false)
+
+    const path = join(outside, 'k')
+    writeFileSync(path, Buffer.alloc(32, 6), { mode: 0o600 })
+    const open = () => custodian().open(ID, { scheme: 'key-file', keyFile: path })
+    try {
+      expect((await open()).equals(Buffer.alloc(32, 6))).toBe(true)
+      execFileSync('/bin/chmod', ['+a', 'everyone allow read', path])
+      expect((await failure(open())).reason).toContain('chmod -N')
+      execFileSync('/bin/chmod', ['-N', path])
+      execFileSync('/bin/chmod', ['+a', 'everyone deny delete', path])
+      expect((await open()).equals(Buffer.alloc(32, 6))).toBe(true)
+    } finally {
+      // The deny entry would stop afterEach from removing the temp folder.
+      execFileSync('/bin/chmod', ['-N', path])
+      execFileSync('/bin/chmod', ['-N', shared])
+    }
   })
 })
 

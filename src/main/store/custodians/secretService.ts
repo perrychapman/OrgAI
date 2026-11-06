@@ -7,7 +7,7 @@
  *   `$XDG_RUNTIME_DIR/bus`; else 'unavailable'), and `secret-tool search service orgai-vault-probe` answering within
  *   10 s (a timeout = 'locked').
  * - create: `lookup` first (an existing item refuses), then `store --label="OrgAI vault" service orgai vault <id>` with
- *   the key on stdin, then `lookup` again and compare.
+ *   the key on stdin, then `lookup` again and compare; a read-back that fails or differs runs `clear` (best effort).
  * - open: `lookup service orgai vault <id>` (empty = 'missing').
  *
  * UNVERIFIED (never run from this code): whether `search` on a locked collection prompts or fails, a desktop unlock
@@ -155,20 +155,33 @@ export class SecretServiceCustodian implements RemovableKeyCustodian {
       dek.fill(0)
       throw new CustodyError(stored.kind, stored.reason)
     }
+    // The store succeeded and the lookup before it found nothing, so the item is ours: a read-back that fails or
+    // differs clears it again (best effort) so a failed create leaves no orphan item (review round 2).
     let back: Buffer | undefined
     try {
       back = await this.lookup(pre.file, vaultId)
     } catch (e) {
       dek.fill(0)
+      await this.rollback(pre.file, vaultId)
       throw e
     }
     const same = back !== undefined && sameKey(dek, back)
     back?.fill(0)
     if (!same) {
       dek.fill(0)
+      await this.rollback(pre.file, vaultId)
       throw new CustodyError('unavailable', `The key could not be stored in the desktop keyring; ${KEY_FILE_HINT}.`)
     }
     return { dek }
+  }
+
+  /** Best-effort `secret-tool clear` after a failed create; its own failure is dropped (the create's error wins). */
+  private async rollback(file: string, vaultId: string): Promise<void> {
+    try {
+      await this.run(file, ['clear', ...this.attrs(vaultId)])
+    } catch {
+      // runHelper reports failures in its result; nothing else to do.
+    }
   }
 
   async open(vaultId: string, custody: VaultCustody): Promise<Buffer> {

@@ -56,6 +56,14 @@ describe('custodian factory (cli-standalone.md 5.3 choice of scheme)', () => {
       await expect(viaFactory.probe()).resolves.toMatchObject({ ok: false, kind: 'missing' })
       const fresh = custodianFor({ ...d, env: { ORGAI_VAULT_KEY_FILE: gone } })
       await expect(fresh!.probe()).resolves.toEqual({ ok: true })
+
+      // A factory built before the vault existed reads the custody on every call (review round 2).
+      let custody: { scheme: 'key-file'; keyFile: string } | null = null
+      const lazy = createCustodianFactory({ ...d, env: {}, currentCustody: () => custody })
+      await expect(lazy('key-file').probe()).resolves.toMatchObject({ ok: false, kind: 'unavailable' })
+      custody = { scheme: 'key-file', keyFile: gone }
+      await expect(lazy('key-file').probe()).resolves.toMatchObject({ ok: false, kind: 'missing' })
+      expect((lazy('key-file') as KeyFileCustodian).configuredPath()).toBe(gone)
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

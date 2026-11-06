@@ -62,10 +62,17 @@ export interface CustodianFactoryOptions {
   keyFile?: string
   /** `secrets init --key-file <path> --import`. */
   importKeyFile?: boolean
-  /** custody.keyFile of the vault on disk, for a key-file probe. */
+  /** custody.keyFile of the vault on disk, for a key-file probe. Fixed when the options are built: see currentCustody. */
   recordedKeyFile?: string
-  /** A vault exists on disk: a key-file probe reports a missing file as 'missing'. */
+  /** A vault exists on disk: a key-file probe reports a missing file as 'missing'. Fixed: see currentCustody. */
   vaultExists?: boolean
+  /**
+   * Read on every factory call (review round 2): the custody of the vault on disk now, or null / undefined while there
+   * is none. A custody makes the custodian treat the vault as existing and gives a key-file custodian its recorded
+   * path, so a long-lived factory built before the vault was created probes a gone key file as 'missing' afterwards.
+   * A store that does not pass it must build a new factory after it creates or resets a vault.
+   */
+  currentCustody?: () => VaultCustody | null | undefined
 }
 
 /** One custodian per scheme (the store asks for the recorded scheme, or for chooseCustodyScheme's answer). */
@@ -96,9 +103,20 @@ export function createCustodian(scheme: VaultCustodyScheme, opts: CustodianFacto
   }
 }
 
-/** The CustodianFactory openSecretStore uses by default (tests inject fakes instead). */
+/**
+ * The CustodianFactory openSecretStore uses by default (tests inject fakes instead). Each call builds a fresh custodian
+ * from `opts` plus `opts.currentCustody()` as it is at that moment.
+ */
 export function createCustodianFactory(opts: CustodianFactoryOptions): CustodianFactory {
-  return (scheme: VaultCustodyScheme): KeyCustodian => createCustodian(scheme, opts)
+  return (scheme: VaultCustodyScheme): KeyCustodian => {
+    const custody = opts.currentCustody?.() ?? null
+    if (!custody) return createCustodian(scheme, opts)
+    return createCustodian(scheme, {
+      ...opts,
+      vaultExists: true,
+      ...(custody.scheme === 'key-file' && custody.keyFile ? { recordedKeyFile: custody.keyFile } : {})
+    })
+  }
 }
 
 /** The custodian for a vault (recorded custody) or for a new one; null when no scheme is usable here. */

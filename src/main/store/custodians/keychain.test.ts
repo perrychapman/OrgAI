@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { CustodyError } from '../vaultTypes'
 import { fakeSpawner, type FakeAnswer } from './fakeSpawner'
-import { KEYCHAIN_LOCKED_REASON, KeychainCustodian, SECURITY_PATH, addGenericPasswordLine, parseDefaultKeychain, securityInteractiveArg } from './keychain'
+import { KEYCHAIN_LOCKED_REASON, KeychainCustodian, SECURITY_PATH, addGenericPasswordLine, classifyKeychain, parseDefaultKeychain, securityInteractiveArg } from './keychain'
 
 const ID = '0123456789abcdef0123456789abcdef'
 const LOGIN = '/Users/me/Library/Keychains/login.keychain-db'
@@ -113,7 +113,9 @@ describe('KeychainCustodian (cli-standalone.md 5.3, macOS)', () => {
   })
 
   it('fails create when the add reports a duplicate or the read back differs', async () => {
-    const dup = fakeSecurity({ override: (args) => (args[0] === '-i' ? { code: 0, stderr: 'The specified item already exists in the keychain.' } : undefined) })
+    const dup = fakeSecurity({
+      override: (args) => (args[0] === '-i' ? { code: 0, stderr: 'security: SecKeychainItemCreateFromContent (<default>): The specified item already exists in the keychain.' } : undefined)
+    })
     await expect(new KeychainCustodian({ spawner: dup.spawner, env, platform: 'darwin' }).create(ID)).rejects.toMatchObject({ kind: 'denied' })
 
     const items = new Map<string, string>()
@@ -131,6 +133,72 @@ describe('KeychainCustodian (cli-standalone.md 5.3, macOS)', () => {
 
     const lost = fakeSecurity({ override: (args) => (args[0] === '-i' ? { code: 0 } : undefined) })
     await expect(new KeychainCustodian({ spawner: lost.spawner, env, platform: 'darwin' }).create(ID)).rejects.toMatchObject({ kind: 'unavailable' })
+  })
+
+  it('trusts exit 0 when stderr only echoes a keychain path holding failure words (review round 2)', async () => {
+    const home = '/Users/cancelo/not allowed/already exists/could not be found'
+    const path = `${home}/Library/Keychains/login.keychain-db`
+    const ok = { code: 0, stdout: Buffer.alloc(0), stderr: `Keychain "${path}" no-timeout\n`, timedOut: false, overflow: false }
+    expect(classifyKeychain(ok)).toBeNull()
+    // A real `security` error line still counts on exit 0 (the -i backstop).
+    expect(classifyKeychain({ ...ok, stderr: 'security: SecKeychainItemCreateFromContent (<default>): The specified item already exists in the keychain.\n' })).toMatchObject({ kind: 'exists' })
+    expect(classifyKeychain({ ...ok, stderr: `security: SecKeychainCopySettings ${path}: User interaction is not allowed.\n` })).toMatchObject({ kind: 'locked' })
+    // Exit codes win over a path's wording.
+    expect(classifyKeychain({ ...ok, code: 36, stderr: `security: SecKeychainCopySettings /Users/x/could not be found/k: User interaction is not allowed.` })).toMatchObject({ kind: 'locked' })
+
+    const f = fakeSecurity({
+      override: (args) => {
+        if (args[0] === 'default-keychain') return { code: 0, stdout: `    "${path}"\n` }
+        if (args[0] === 'show-keychain-info') return { code: 0, stderr: `Keychain "${path}" no-timeout\n` }
+        return undefined
+      }
+    })
+    await expect(new KeychainCustodian({ spawner: f.spawner, env, platform: 'darwin' }).probe()).resolves.toEqual({ ok: true })
+  })
+
+  it('removes the new item when the read back differs or fails after a successful add (review round 2)', async () => {
+    const items = new Map<string, string>()
+    const other = fakeSecurity({
+      items,
+      override: (args) => {
+        if (args[0] === '-i') {
+          items.set(ID, Buffer.alloc(32, 9).toString('base64'))
+          return { code: 0 }
+        }
+        return undefined
+      }
+    })
+    await expect(new KeychainCustodian({ spawner: other.spawner, env, platform: 'darwin' }).create(ID)).rejects.toMatchObject({ kind: 'denied' })
+    expect(other.calls.map((x) => x.args[0])).toEqual(['find-generic-password', '-i', 'find-generic-password', 'delete-generic-password'])
+    expect(other.calls[3]!.args).toEqual(['delete-generic-password', '-s', 'OrgAI Vault', '-a', ID])
+    expect(items.has(ID)).toBe(false)
+
+    // The read back times out (an unlock prompt): the item is removed too, and create still reports locked.
+    let reads = 0
+    const slow = fakeSecurity({
+      override: (args) => (args[0] === 'find-generic-password' && args.includes('-w') && ++reads === 1 ? { hang: true } : undefined)
+    })
+    // 500 ms, not 30: only the hanging read back may time out, even on a loaded machine.
+    await expect(new KeychainCustodian({ spawner: slow.spawner, env, platform: 'darwin', timeoutMs: 500 }).create(ID)).rejects.toMatchObject({ kind: 'locked' })
+    expect(slow.calls.map((x) => x.args[0])).toEqual(['find-generic-password', '-i', 'find-generic-password', 'delete-generic-password'])
+    expect(slow.items.has(ID)).toBe(false)
+
+    // A failing removal never hides the create's own error.
+    const stuck = fakeSecurity({
+      override: (args) => {
+        if (args[0] === 'find-generic-password' && args.includes('-w')) return { code: 0, stdout: 'not-a-key\n' }
+        if (args[0] === 'delete-generic-password') return { code: 36 }
+        return undefined
+      }
+    })
+    await expect(new KeychainCustodian({ spawner: stuck.spawner, env, platform: 'darwin' }).create(ID)).rejects.toMatchObject({ kind: 'denied', reason: expect.stringContaining('valid key') })
+    expect(stuck.calls.some((x) => x.args[0] === 'delete-generic-password')).toBe(true)
+  })
+
+  it('never removes anything when the add itself failed', async () => {
+    const dup = fakeSecurity({ override: (args) => (args[0] === '-i' ? { code: 45 } : undefined) })
+    await expect(new KeychainCustodian({ spawner: dup.spawner, env, platform: 'darwin' }).create(ID)).rejects.toMatchObject({ kind: 'denied' })
+    expect(dup.calls.some((x) => x.args[0] === 'delete-generic-password')).toBe(false)
   })
 
   it('opens with find-generic-password -s "OrgAI Vault" -a <id> -w', async () => {

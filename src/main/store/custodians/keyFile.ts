@@ -10,6 +10,12 @@
  *   (`openssl rand -base64 32 > file` works). A file OrgAI creates holds base64 text and a newline.
  * - POSIX: created with O_CREAT | O_EXCL | O_NOFOLLOW, mode 0o600; opened with O_NOFOLLOW | O_NONBLOCK (a FIFO never
  *   blocks) then fstat: a regular file owned by the current uid with no group or other bits.
+ * - macOS (review round 2): ACL entries grant access beside the mode bits and a new file inherits its folder's
+ *   `file_inherit` entries, which fstat cannot see. `/bin/ls -le` (absolute path, no shell, empty environment) lists
+ *   them: a key file with any `allow` entry is refused at open and probe (remedy `chmod -N`), and create refuses a
+ *   folder with an inheritable allow entry before making the file, then checks the new, still empty file before writing
+ *   the key (deleting it on a refusal). The ls check reads the path, not the open descriptor, so a file swapped between
+ *   the fstat and the ls is not caught. Linux needs no such check: a POSIX default ACL is masked by mode 0o600.
  * - Windows: refuse a folder in which a new file would inherit access for anyone but this user, SYSTEM, Administrators
  *   or CREATOR OWNER (that principal could open the new file before it is restricted and keep the handle), then create
  *   the empty file exclusively, set a protected DACL for the current user's SID (from `whoami /user /fo csv /nh`, never
@@ -428,6 +434,80 @@ export async function readKeyFileWindows(path: string, deps: WinDeps): Promise<B
   }
 }
 
+// ---------- macOS extended ACLs ----------
+
+/** `/bin/ls` lists a path's ACL entries with -e (fstat cannot see them). */
+export const LS_PATH = '/bin/ls'
+
+/**
+ * The ACL entries `ls -le` / `ls -led` prints under a path's line (` 0: group:everyone inherited allow read`), or
+ * undefined when the output is not in that shape (fail closed). Entries are the text after `<n>: `.
+ */
+export function parseLsAcl(text: string): string[] | undefined {
+  const lines = text.split(/\r?\n/)
+  while (lines.length > 0 && lines[lines.length - 1] === '') lines.pop()
+  if (lines.length === 0 || !/^[-dlbcpsw][-rwxsStT]{9}[@+ ]?/.test(lines[0]!)) return undefined
+  const entries: string[] = []
+  for (const line of lines.slice(1)) {
+    const m = /^\s*\d+: (.*)$/.exec(line)
+    // A name with a line break in it shows up as an unknown line: never guess, refuse.
+    if (!m) return undefined
+    entries.push(m[1]!)
+  }
+  return entries
+}
+
+/** An entry that grants something (deny entries only take access away). */
+function grants(entry: string): boolean {
+  return /\ballow\b/.test(entry)
+}
+
+interface DarwinDeps {
+  env: Env
+  spawner: CustodianSpawner
+  timeoutMs?: number
+}
+
+async function darwinAcl(deps: DarwinDeps, path: string, dir: boolean): Promise<string[]> {
+  const r = await runHelper(LS_PATH, [dir ? '-led' : '-le', path], {
+    spawner: deps.spawner,
+    env: custodianEnvFor('key-file', deps.env, 'darwin'),
+    label: 'custodian:key-file',
+    platform: 'darwin',
+    ...(deps.timeoutMs !== undefined ? { timeoutMs: deps.timeoutMs } : {})
+  })
+  if (r.spawnError) throw new CustodyError('unavailable', `${LS_PATH} could not be run, so the access list of ${path} cannot be checked.`)
+  if (r.timedOut) throw new CustodyError('timeout', `${LS_PATH} did not answer within 10 seconds.`)
+  const entries = r.overflow || r.code !== 0 ? undefined : parseLsAcl(stdoutText(r))
+  if (!entries) throw new CustodyError('denied', `OrgAI could not read the access list of ${path}, so it cannot tell who may read it.`)
+  return entries
+}
+
+/**
+ * macOS (review round 2): a file inherits ACL entries from its folder (`chmod +a "... allow read,file_inherit"`), and
+ * those grant access whatever the 0o600 mode says. A key file with any allow entry is refused.
+ */
+export async function darwinCheckFile(deps: DarwinDeps, path: string, phase: 'create' | 'open'): Promise<void> {
+  if (!(await darwinAcl(deps, path, false)).some(grants)) return
+  if (phase === 'create') {
+    throw new CustodyError(
+      'denied',
+      `The folder ${dirname(path)} gives new files extra access (an inherited ACL; see \`ls -led "${dirname(path)}"\`), so a key file there could be read by other accounts. OrgAI deleted the empty file; choose another folder or remove that entry.`
+    )
+  }
+  throw new CustodyError('denied', `The key file ${path} has ACL entries that may let other accounts read it; run \`chmod -N "${path}"\` and try again.`)
+}
+
+/** macOS: refuse, before creating anything, a folder whose allow entries new files would inherit. */
+export async function darwinCheckFolder(deps: DarwinDeps, dir: string): Promise<void> {
+  const inherited = (await darwinAcl(deps, dir, true)).filter((e) => grants(e) && /\bfile_inherit\b/.test(e))
+  if (inherited.length === 0) return
+  throw new CustodyError(
+    'denied',
+    `The folder ${dir} gives new files extra access (an inherited ACL; see \`ls -led "${dir}"\`), so a key file there could be read by other accounts. Choose another folder or remove that entry.`
+  )
+}
+
 // ---------- POSIX ----------
 
 function createError(e: unknown, path: string): CustodyError {
@@ -473,8 +553,14 @@ function posixCheck(fd: number, path: string, uid: number | undefined): number {
   return st.size
 }
 
-/** POSIX open (5.3.1): O_NOFOLLOW (and O_NONBLOCK, so a FIFO never blocks), then fstat checks, then the content. */
-export function readKeyFilePosix(path: string, uid: number | undefined): Buffer {
+/** A check that runs on the open file's path after the fstat checks (macOS: its ACL). Throws CustodyError. */
+export type ExtraFileCheck = (path: string) => Promise<void>
+
+/**
+ * POSIX open (5.3.1): O_NOFOLLOW (and O_NONBLOCK, so a FIFO never blocks), then fstat checks, then `extra` (macOS
+ * ACL), then the content.
+ */
+export async function readKeyFilePosix(path: string, uid: number | undefined, extra?: ExtraFileCheck): Promise<Buffer> {
   let fd: number
   try {
     fd = openSync(path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0) | (fsConstants.O_NONBLOCK ?? 0))
@@ -482,14 +568,19 @@ export function readKeyFilePosix(path: string, uid: number | undefined): Buffer 
     throw openError(e, path)
   }
   try {
-    return readKey(fd, posixCheck(fd, path, uid))
+    const size = posixCheck(fd, path, uid)
+    if (extra) await extra(path)
+    return readKey(fd, size)
   } finally {
     closeSync(fd)
   }
 }
 
-/** POSIX create (5.3.1): O_CREAT | O_EXCL | O_NOFOLLOW, mode 0o600, written and flushed; deleted again on a failure. */
-export function createKeyFilePosix(path: string, content: Buffer, uid: number | undefined): void {
+/**
+ * POSIX create (5.3.1): O_CREAT | O_EXCL | O_NOFOLLOW, mode 0o600, the fstat checks and `extra` (macOS ACL) on the
+ * still empty file, then written and flushed; deleted again on a failure.
+ */
+export async function createKeyFilePosix(path: string, content: Buffer, uid: number | undefined, extra?: ExtraFileCheck): Promise<void> {
   let fd: number
   try {
     fd = openSync(path, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY | (fsConstants.O_NOFOLLOW ?? 0), 0o600)
@@ -499,6 +590,7 @@ export function createKeyFilePosix(path: string, content: Buffer, uid: number | 
   try {
     try {
       posixCheck(fd, path, uid)
+      if (extra) await extra(path)
       writeSync(fd, content)
       fsyncSync(fd)
     } finally {
@@ -557,7 +649,7 @@ export class KeyFileCustodian implements RemovableKeyCustodian {
     return this.opts.uid ?? (typeof process.getuid === 'function' ? process.getuid() : undefined)
   }
 
-  private winDeps(): WinDeps {
+  private helperDeps(): WinDeps & DarwinDeps {
     return { env: this.env, spawner: this.opts.spawner ?? defaultSpawner, ...(this.opts.timeoutMs !== undefined ? { timeoutMs: this.opts.timeoutMs } : {}) }
   }
 
@@ -570,8 +662,15 @@ export class KeyFileCustodian implements RemovableKeyCustodian {
     return p
   }
 
+  /** macOS only: the ACL check of a key file (fstat cannot see ACL entries). */
+  private extraCheck(phase: 'create' | 'open'): ExtraFileCheck | undefined {
+    if (this.platform !== 'darwin') return undefined
+    const deps = this.helperDeps()
+    return (path) => darwinCheckFile(deps, path, phase)
+  }
+
   private read(path: string): Promise<Buffer> {
-    return this.platform === 'win32' ? readKeyFileWindows(path, this.winDeps()) : Promise.resolve().then(() => readKeyFilePosix(path, this.uid()))
+    return this.platform === 'win32' ? readKeyFileWindows(path, this.helperDeps()) : readKeyFilePosix(path, this.uid(), this.extraCheck('open'))
   }
 
   private existingVault(): boolean {
@@ -595,6 +694,7 @@ export class KeyFileCustodian implements RemovableKeyCustodian {
       if (this.opts.importExisting || (this.existingVault() && !askedNow)) throw new CustodyError('missing', `The key file ${path} does not exist.`)
       const dir = pathApi(this.platform).dirname(path)
       if (!isDirectory(dir)) throw new CustodyError('unavailable', `The folder for the key file ${path} does not exist.`)
+      if (this.platform === 'darwin') await darwinCheckFolder(this.helperDeps(), dir)
       return { ok: true }
     } catch (e) {
       if (e instanceof CustodyError) return { ok: false, kind: e.kind, reason: e.reason }
@@ -605,22 +705,27 @@ export class KeyFileCustodian implements RemovableKeyCustodian {
   async create(vaultId: string): Promise<CustodianCreated> {
     void vaultId
     const path = this.checkedPath('unavailable')
-    if (this.opts.importExisting) return { dek: await this.read(path) }
+    // custody.keyFile: the canonical spelling, computed once the file exists (its real path).
+    const made = (dek: Buffer): CustodianCreated => ({ dek, keyFile: canonicalSpelling(path, this.platform) })
+    if (this.opts.importExisting) return made(await this.read(path))
     // ORGAI_VAULT_KEY_FILE naming a provisioned key (CI, a moved file): use it as it is, never overwrite it. A path
     // asked for now with `--key-file` still creates a new file only.
-    if (this.opts.keyFile === undefined && pathExists(path)) return { dek: await this.read(path) }
+    if (this.opts.keyFile === undefined && pathExists(path)) return made(await this.read(path))
     const dek = randomBytes(VAULT_DEK_BYTES)
     const content = Buffer.from(`${dek.toString('base64')}\n`, 'latin1')
     try {
-      if (this.platform === 'win32') await createKeyFileWindows(path, content, this.winDeps())
-      else createKeyFilePosix(path, content, this.uid())
+      if (this.platform === 'win32') await createKeyFileWindows(path, content, this.helperDeps())
+      else {
+        if (this.platform === 'darwin' && !pathExists(path)) await darwinCheckFolder(this.helperDeps(), dirname(path))
+        await createKeyFilePosix(path, content, this.uid(), this.extraCheck('create'))
+      }
     } catch (e) {
       dek.fill(0)
       throw e
     } finally {
       content.fill(0)
     }
-    return { dek }
+    return made(dek)
   }
 
   async open(vaultId: string, custody: VaultCustody): Promise<Buffer> {

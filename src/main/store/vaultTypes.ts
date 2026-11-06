@@ -210,6 +210,11 @@ export interface CustodianCreated {
   dek: Buffer
   /** dpapi-user: the protected blob for custody.wrapped. */
   wrapped?: string
+  /**
+   * key-file: the canonical path of the key file in use (5.3.1), for custody.keyFile. The store records this value
+   * as it is, never a spelling of its own, so the self-control gate protects the same path.
+   */
+  keyFile?: string
 }
 
 /**

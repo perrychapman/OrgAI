@@ -101,6 +101,41 @@ describe('SecretServiceCustodian (cli-standalone.md 5.3, Linux)', () => {
     await expect(custodian(f).create(ID)).rejects.toMatchObject({ kind: 'unavailable' })
   })
 
+  it('clears the new item when the read back differs or times out after a successful store (review round 2)', async () => {
+    const items = new Map<string, string>()
+    const other = fakeTool({
+      items,
+      override: (args) => {
+        if (args[0] === 'store') {
+          items.set(ID, Buffer.alloc(32, 9).toString('base64'))
+          return { code: 0 }
+        }
+        return undefined
+      }
+    })
+    await expect(custodian(other).create(ID)).rejects.toMatchObject({ kind: 'unavailable' })
+    expect(other.calls.map((c) => c.args[0])).toEqual(['lookup', 'store', 'lookup', 'clear'])
+    expect(other.calls[3]!.args).toEqual(['clear', 'service', 'orgai', 'vault', ID])
+    expect(items.has(ID)).toBe(false)
+
+    let lookups = 0
+    const slow = fakeTool({ override: (args) => (args[0] === 'lookup' && ++lookups === 2 ? { hang: true } : undefined) })
+    // 500 ms, not 30: only the hanging lookup may time out, even on a loaded machine.
+    await expect(custodian(slow, { timeoutMs: 500 }).create(ID)).rejects.toMatchObject({ kind: 'locked' })
+    expect(slow.calls.map((c) => c.args[0])).toEqual(['lookup', 'store', 'lookup', 'clear'])
+    expect(slow.items.has(ID)).toBe(false)
+  })
+
+  it('never clears when the store itself failed or an item already existed', async () => {
+    const failed = fakeTool({ override: (args) => (args[0] === 'store' ? { code: 1, stderr: 'secret-tool: Prompt dismissed' } : undefined) })
+    await expect(custodian(failed).create(ID)).rejects.toMatchObject({ kind: 'locked' })
+    expect(failed.calls.some((c) => c.args[0] === 'clear')).toBe(false)
+    const there = fakeTool({ items: new Map([[ID, Buffer.alloc(32, 1).toString('base64')]]) })
+    await expect(custodian(there).create(ID)).rejects.toMatchObject({ kind: 'denied' })
+    expect(there.calls.some((c) => c.args[0] === 'clear')).toBe(false)
+    expect(there.items.has(ID)).toBe(true)
+  })
+
   it('opens with lookup (trimmed); empty is missing', async () => {
     const key = Buffer.alloc(32, 5)
     const f = fakeTool({ items: new Map([[ID, `${key.toString('base64')}\n`]]) })

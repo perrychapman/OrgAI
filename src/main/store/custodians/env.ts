@@ -12,8 +12,8 @@ export const CUSTODIAN_ENV_ALLOWLIST: Readonly<Record<VaultCustodyScheme, readon
   keychain: ['HOME', 'USER', 'LOGNAME', 'TMPDIR', 'PATH'],
   'dpapi-user': ['SystemRoot', 'windir', 'Path', 'TEMP', 'TMP', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'ComSpec', 'PSModulePath'],
   'secret-service': ['HOME', 'USER', 'LOGNAME', 'PATH', 'DBUS_SESSION_BUS_ADDRESS', 'XDG_RUNTIME_DIR', 'DISPLAY', 'WAYLAND_DISPLAY'],
-  // No custodian child on POSIX. On Windows the key-file DACL steps run whoami.exe and icacls.exe by absolute path,
-  // which need only the system folder and a temp folder.
+  // On Windows the key-file DACL steps run whoami.exe and icacls.exe by absolute path, which need only the system
+  // folder and a temp folder. On macOS the ACL check runs /bin/ls with an empty environment.
   'key-file': ['SystemRoot', 'windir', 'TEMP', 'TMP']
 }
 
@@ -25,8 +25,8 @@ function forbidden(name: string): boolean {
 
 /**
  * The helper's environment for `scheme`: only the allowlisted names, matched case-insensitively on Windows (so `PATH`
- * or `path` is kept as `Path`) and exactly elsewhere. Values with NUL or an empty value are dropped. key-file has no
- * child outside Windows, so it gets an empty environment there.
+ * or `path` is kept as `Path`) and exactly elsewhere. Values with NUL or an empty value are dropped. key-file gets an
+ * empty environment outside Windows (its only child there is macOS /bin/ls, which needs none).
  */
 export function custodianEnvFor(scheme: VaultCustodyScheme, env: Env = process.env, platform: NodeJS.Platform = process.platform): Record<string, string> {
   const out: Record<string, string> = {}

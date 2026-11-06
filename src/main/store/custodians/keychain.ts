@@ -8,7 +8,10 @@
  *   seen on macOS 26), which says nothing about the default keychain's lock state (review round 1).
  * - create: refuses when an item for vaultId exists (find-generic-password without -w), then `security -i -q` with the
  *   add-generic-password command on stdin (never argv, no -U), then reads the item back and compares it, because the
- *   exit status of an interactive session is not a reliable signal of one command's failure.
+ *   exit status of an interactive session is not a reliable signal of one command's failure. A read-back that fails or
+ *   differs removes the new item again (delete-generic-password, best effort) before create throws.
+ * - Exit 0 is success unless stderr carries a `security: ` error line: show-keychain-info prints its success line,
+ *   with the keychain path, to stderr.
  * - open: `find-generic-password -s "OrgAI Vault" -a <vaultId> -w`: 44 = missing; 36, 51, a user cancel (128) and a
  *   timeout = locked, never missing.
  *
@@ -34,21 +37,43 @@ export const KEYCHAIN_MISSING_REASON = 'The macOS keychain has no OrgAI Vault it
 
 type Classified = { kind: CustodyFailureKind | 'exists'; reason: string }
 
+/**
+ * The messages of `security`'s error lines (`security: <call> [<path>]: <message>`): only lines that start with
+ * `security: `, and only the text after the last `: `, so a keychain path echoed in the line never counts as wording.
+ */
+function securityMessages(stderr: string): string {
+  return stderr
+    .split(/\r?\n/)
+    .filter((l) => l.startsWith('security: '))
+    .map((l) => l.slice(l.lastIndexOf(': ') + 2))
+    .join('\n')
+}
+
 /** Reduces a `security` result to a failure (null = success). stderr is read here and dropped. */
 export function classifyKeychain(r: HelperResult): Classified | null {
   if (r.spawnError) return { kind: 'unavailable', reason: `${SECURITY_PATH} could not be run, so the macOS keychain cannot hold the vault's key; ${KEY_FILE_HINT}.` }
   if (r.timedOut) return { kind: 'locked', reason: `${KEYCHAIN_LOCKED_REASON} (The keychain did not answer within 10 seconds.)` }
   if (r.overflow) return { kind: 'denied', reason: 'The macOS keychain tool answered with unexpected output.' }
   const err = r.stderr
-  if (r.code === 0 && !/already exists|could not be found|not allowed|cancel/i.test(err)) return null
-  if (r.code === 50 || /default keychain|no such keychain/i.test(err)) {
-    return { kind: 'unavailable', reason: `There is no default macOS keychain for this user; ${KEY_FILE_HINT}.` }
-  }
-  if (r.code === 45 || /already exists/i.test(err)) return { kind: 'exists', reason: EXISTS_REASON }
-  if (r.code === 44 || /could not be found/i.test(err)) return { kind: 'missing', reason: KEYCHAIN_MISSING_REASON }
-  if (r.code === 36 || r.code === 51 || r.code === 128 || /interaction is not allowed|user interaction|cancel|passphrase|locked/i.test(err)) {
-    return { kind: 'locked', reason: KEYCHAIN_LOCKED_REASON }
-  }
+  // Exit 0 is success unless a real `security` error line says otherwise (a backstop for `security -i`, which passes
+  // a failing command's exit code through as far as we know). Only lines that start with `security: ` count:
+  // show-keychain-info prints its success line (`Keychain "<path>" no-timeout`) to stderr, and the path may hold any
+  // word (review round 2: a user named `cancelo` probed as locked).
+  const messages = securityMessages(err)
+  if (r.code === 0 && !/already exists|could not be found|not allowed|cancel/i.test(messages)) return null
+  const noDefault: Classified = { kind: 'unavailable', reason: `There is no default macOS keychain for this user; ${KEY_FILE_HINT}.` }
+  const locked: Classified = { kind: 'locked', reason: KEYCHAIN_LOCKED_REASON }
+  // Exit codes first: the wording below may also match a keychain path that `security` echoes.
+  if (r.code === 50) return noDefault
+  if (r.code === 45) return { kind: 'exists', reason: EXISTS_REASON }
+  if (r.code === 44) return { kind: 'missing', reason: KEYCHAIN_MISSING_REASON }
+  if (r.code === 36 || r.code === 51 || r.code === 128) return locked
+  // Wording: only the messages of `security: ` error lines (exit 0 with such a line, or an exit code not named above).
+  const lines = messages
+  if (/default keychain|no such keychain/i.test(lines)) return noDefault
+  if (/already exists/i.test(lines)) return { kind: 'exists', reason: EXISTS_REASON }
+  if (/could not be found/i.test(lines)) return { kind: 'missing', reason: KEYCHAIN_MISSING_REASON }
+  if (/interaction is not allowed|user interaction|cancel|passphrase|locked/i.test(lines)) return locked
   return { kind: 'unavailable', reason: `The macOS keychain tool failed (exit ${r.code ?? 'signal'}); ${KEY_FILE_HINT}.` }
 }
 
@@ -132,11 +157,14 @@ export class KeychainCustodian implements RemovableKeyCustodian {
       dek.fill(0)
       throw new CustodyError(added.kind === 'exists' ? 'denied' : added.kind === 'missing' ? 'unavailable' : added.kind, added.reason)
     }
+    // The add succeeded, so an item for vaultId is ours from here on: any failure below removes it again (best effort)
+    // so a failed create never leaves an orphan item behind (review round 2).
     let back: Buffer
     try {
       back = await this.read(vaultId)
     } catch (e) {
       dek.fill(0)
+      await this.rollback(vaultId)
       if (e instanceof CustodyError && e.kind === 'missing') throw new CustodyError('unavailable', `The key could not be stored in the macOS keychain; ${KEY_FILE_HINT}.`)
       throw e
     }
@@ -144,9 +172,19 @@ export class KeychainCustodian implements RemovableKeyCustodian {
     back.fill(0)
     if (!same) {
       dek.fill(0)
+      await this.rollback(vaultId)
       throw new CustodyError('denied', 'The macOS keychain returned a different key than the one stored; the vault was not created.')
     }
     return { dek }
+  }
+
+  /** Best-effort removal of the item a failed create added; a failure here is dropped (the create's error wins). */
+  private async rollback(vaultId: string): Promise<void> {
+    try {
+      await this.removeItem(vaultId, { scheme: 'keychain' })
+    } catch {
+      // Left behind; the create's own error is what the caller sees.
+    }
   }
 
   async open(vaultId: string, custody: VaultCustody): Promise<Buffer> {

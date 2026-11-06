@@ -169,12 +169,13 @@ async function main() {
 
       let dekHash
       const created = await step(report, 'create', async () => {
-        const { dek, wrapped } = await custodian.create(vaultId)
+        const { dek, wrapped, keyFile: createdKeyFile } = await custodian.create(vaultId)
         if (scheme === 'key-file') fileCreated = true
         dekHash = sha(dek)
         dek.fill(0)
         if (wrapped) custody = { ...custody, wrapped }
-        if (scheme === 'key-file') custody = { ...custody, keyFile: custodian.canonicalPath() }
+        // The path create() names for custody.keyFile (the canonical spelling), as the store records it.
+        if (scheme === 'key-file') custody = { ...custody, keyFile: createdKeyFile ?? custodian.canonicalPath() }
         return { bytes: 32, wrapped: wrapped ? `${wrapped.length} chars` : undefined }
       })
 
