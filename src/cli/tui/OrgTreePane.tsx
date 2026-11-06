@@ -102,7 +102,9 @@ function rowLine(item: Item, selected: boolean, focused: boolean, width: number,
   const glyph = env.screenReader ? '' : `${stateGlyph(row.state, env)} `
   const label0 = group && env.screenReader ? `${row.label}, folded` : row.label
   const role = !group && row.roleShown !== false && row.role && row.role !== row.label ? ` (${row.role})` : ''
-  const word = row.stateWord ? `  ${row.stateWord}` : ''
+  // A recent message to or from the agent: `~` after the state word (words for a screen reader), F6.
+  const traffic = row.traffic ? (env.screenReader ? ', messaging' : '~') : ''
+  const word = row.stateWord ? `  ${row.stateWord}${traffic}` : ''
   const chips = chipsOf(row)
   const expander = group ? (env.screenReader ? '' : ' >') : ''
   const cost = row.costText ? `${row.costText}${expander}` : expander.trim()
@@ -132,11 +134,31 @@ function rowLine(item: Item, selected: boolean, focused: boolean, width: number,
   return alignSegs(left, right, width, env, { inverse: inv })
 }
 
-/** "Agents 6 · 1 working · ! 1" */
-function titleText(rows: readonly OrgTreeRow[], env: TuiEnv): string {
+/**
+ * The message lines of a selected agent (F6): `-> writer-1 (2)  <- mock-lead (1)` on one line, or sent and got on two
+ * lines when they do not fit `width`. Three peers each at most.
+ */
+export function messageLines(row: OrgTreeRow, env: TuiEnv, width: number): string[] {
+  const list = (peers: readonly { label: string; count: number }[]): string => {
+    const shown = peers.slice(0, 3).map((p) => `${p.label} (${p.count})`)
+    if (peers.length > 3) shown.push(`+${peers.length - 3} more`)
+    return shown.join(', ')
+  }
+  const out = row.msgOut?.length ? list(row.msgOut) : ''
+  const inn = row.msgIn?.length ? list(row.msgIn) : ''
+  const g = glyphs(env)
+  const back = g.arrow === '->' ? '<-' : '\u2190'
+  const parts = env.screenReader ? [out ? `sent to ${out}` : '', inn ? `got from ${inn}` : ''] : [out ? `${g.arrow} ${out}` : '', inn ? `${back} ${inn}` : '']
+  const present = parts.filter(Boolean)
+  const joined = present.join(env.screenReader ? '; ' : '  ')
+  return textWidth(joined) <= width ? (joined ? [joined] : []) : present
+}
+
+/** "Agents 6 · 1 working · ! 1", or "Focus: Orchestrator > mock-lead · 3" while the tree is rooted at one agent. */
+function titleText(rows: readonly OrgTreeRow[], env: TuiEnv, zoomPath?: string): string {
   const { total, working, waiting } = treeCounts(rows)
   const bullet = ` ${glyphs(env).bullet} `
-  const parts = [`Agents ${total}`]
+  const parts = [zoomPath ? `Focus: ${zoomPath} (${total})` : `Agents ${total}`]
   if (working > 0) parts.push(`${working} working`)
   if (waiting > 0) parts.push(`! ${waiting}`)
   return parts.join(bullet)
@@ -162,10 +184,13 @@ export function OrgTreePane(props: OrgTreePaneProps) {
 
   const bodyH = Math.max(0, height - 1)
   const selRow = selectable.find((r) => r.id === selId)
-  // The selected row's activity (or the names a folded group holds) is one footer line, when the pane has the room.
+  // The selected row's activity (or the names a folded group holds) and its message counts are footer lines, when the pane has the room.
   const footerText = selRow?.activity ? (selRow.kind === 'group' ? selRow.activity : `${selRow.label}: ${selRow.activity}`) : ''
   const footer = footerText !== '' && bodyH >= 3
-  const rowsH = Math.max(0, bodyH - (footer ? 1 : 0))
+  const msgAll = selRow && selRow.kind !== 'group' ? messageLines(selRow, env, width) : []
+  const msgTexts = bodyH >= (footer ? 4 : 3) + (msgAll.length > 1 ? 1 : 0) ? msgAll : bodyH >= (footer ? 4 : 3) ? [msgAll.join(env.screenReader ? '; ' : '  ')].filter(Boolean) : []
+  const footerRows = (footer ? 1 : 0) + msgTexts.length
+  const rowsH = Math.max(0, bodyH - footerRows)
 
   const select = (id: string): void => {
     const changed = id !== selRef.current
@@ -196,6 +221,15 @@ export function OrgTreePane(props: OrgTreePaneProps) {
         } else if (row.kind === 'group') props.onExpand?.(row)
         else if (row.waiting) props.onFocusCard?.(row)
         else props.onActivate?.(row)
+        return true
+      }
+      if (isChar(e, 'z')) {
+        if (row && row.kind !== 'group' && !row.earlier) props.onZoom?.(row)
+        else props.onNotice?.('Pick an agent of this session to focus on.')
+        return true
+      }
+      if (isChar(e, 'Z') || e.name === 'backspace') {
+        props.onUnzoom?.()
         return true
       }
       if (isChar(e, 'h')) {
@@ -245,6 +279,9 @@ export function OrgTreePane(props: OrgTreePaneProps) {
   if (footer && lines.length > 0) {
     body.push({ key: 'footer', segs: cutSegs([{ text: footerText, dim: true }], width, env) })
   }
+  if (lines.length > 0) {
+    msgTexts.forEach((text, i) => body.push({ key: `messages${i}`, segs: cutSegs([{ text, dim: true }], width, env) }))
+  }
 
   // The title: counts on the left; the plan chip and how many waiting agents are scrolled out of view on the right.
   const offscreen = selectable.reduce((n, r) => {
@@ -255,7 +292,7 @@ export function OrgTreePane(props: OrgTreePaneProps) {
   if (props.planChip) rightParts.push(props.planChip)
   if (offscreen > 0) rightParts.push(`! ${offscreen} off screen`)
   const right: Seg | undefined = rightParts.length ? { text: rightParts.join(` ${glyphs(env).bullet} `), dim: true } : undefined
-  const titleSegs = alignSegs([{ text: titleText(props.rows, env), bold: true, tone: props.focused ? 'accent' : undefined }], right, width, env)
+  const titleSegs = alignSegs([{ text: titleText(props.rows, env, props.zoomPath), bold: true, tone: props.focused ? 'accent' : undefined }], right, width, env)
   const all: PaneLine[] = [{ key: 'title', segs: titleSegs }, ...body]
   return <PaneLines width={width} height={height} lines={all} env={env} />
 }

@@ -5,7 +5,10 @@
  */
 import { runIndexMap, runName, runTag } from '../../shared/view/runLabels'
 import { agentLabel, statusWordOfSummary } from '../render'
+import { helpKeyLines } from './keymap'
 import { sanitizeTty } from './sanitizeTty'
+import { offersRetro } from './selectors'
+import { usageText } from './usageText'
 import type { RunSummary } from '../../shared/types'
 import type { SlashCommand, SlashContext, TuiState } from './types'
 
@@ -49,27 +52,8 @@ function stoppable(s: TuiState): boolean {
 
 const canStart = (s: TuiState): boolean => !s.readOnlyReason && s.project !== undefined
 
-export const HELP_TEXT = [
-  'Keys',
-  '  Alt+D, F2, Ctrl+.   Focus the Decision Tray (Shift+Tab from the composer too)',
-  '  Tab                 Cycle the panes',
-  '  Esc                 Interrupt the running turn',
-  '  Ctrl+C              Clear the composer; twice on an empty composer quits (runs keep going)',
-  '  Ctrl+Z              Suspend (fg to come back)',
-  '  Enter               Send; Alt+Enter adds a new line',
-  '  /                   Open the command palette (on an empty composer)',
-  '',
-  'Decision Tray keys (only while the tray has focus)',
-  '  Permission     y allow once, s allow for the session, a always allow for the project (asks to confirm), n deny',
-  '  Rule request   r grant for the run, a always grant for the project (asks to confirm), n deny',
-  '  Proposal       y approve, e revise with a note, d decline, s enter secrets, v view in the pager',
-  '  Question       1-9 pick an option, Space toggle (multiple choice), c custom answer, Enter submit',
-  '  Merge review   v view the diff, m merge, h hold (keep the branch), x discard (asks to confirm)',
-  '  MCP install    r allow for the run, p save to the project, l save to the library (both ask), n deny',
-  '  On TERM=dumb press Enter after a decision key.',
-  '',
-  'Commands'
-].join('\n')
+/** Keys (generated from KEYMAP, so the footer hints, `?` and this text cannot drift), then the commands. */
+export const HELP_TEXT = [...helpKeyLines(), '', 'Commands'].join('\n')
 
 function helpText(): string {
   const lines = SLASH_COMMANDS.map((c) => {
@@ -150,11 +134,13 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
   {
     name: 'runs',
     aliases: ['ls', 'history'],
-    summary: "List this project's runs",
+    summary: "List this project's runs (pick one: Enter opens, c continues, r retrospective)",
     run: (ctx) =>
       guarded(ctx, async () => {
         const runs = await ctx.session.listRuns()
-        await ctx.openText('Runs', runsTable(runs, ctx.state().project?.id))
+        const own = ctx.state().project?.id ? runs.filter((r) => r.projectId === ctx.state().project?.id) : runs
+        if (ctx.openRuns && own.length > 0) ctx.openRuns(own)
+        else await ctx.openText('Runs', runsTable(runs, ctx.state().project?.id))
       })
   },
   {
@@ -209,6 +195,49 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
       guarded(ctx, () => {
         if (ctx.toggleFold) ctx.toggleFold()
         else ctx.notify('Folding is not available here.', 'warn')
+      })
+  },
+  {
+    name: 'focus',
+    aliases: ['maximise', 'maximize'],
+    summary: 'Maximise the transcript, or bring the panes back',
+    run: (ctx) =>
+      guarded(ctx, () => {
+        if (ctx.toggleFocusMode) ctx.toggleFocusMode()
+        else ctx.notify('Focus mode is not available here.', 'warn')
+      })
+  },
+  {
+    name: 'agent',
+    aliases: ['inspect'],
+    args: '<name>',
+    summary: "Open an agent's inspector (facts, now, worktree, its own transcript)",
+    available: (s) => s.activeRunId !== undefined,
+    run: (ctx, args) =>
+      guarded(ctx, () => {
+        if (ctx.openAgent) ctx.openAgent(cleanLine(args, 140))
+        else ctx.notify('The inspector is not available here.', 'warn')
+      })
+  },
+  {
+    name: 'usage',
+    aliases: ['cost'],
+    summary: 'Tokens, time and cost by agent and by role (whole conversation)',
+    available: (s) => s.activeRunId !== undefined,
+    run: (ctx) => guarded(ctx, () => ctx.openText('Usage', usageText(ctx.state())))
+  },
+  {
+    name: 'retro',
+    aliases: ['retrospective'],
+    summary: "Org retrospective: the Architect reviews this ended run and proposes team changes",
+    available: (s) => {
+      const run = s.activeRunId ? s.runs[s.activeRunId] : undefined
+      return !s.readOnlyReason && !!run && offersRetro(run.summary)
+    },
+    run: (ctx) =>
+      guarded(ctx, async () => {
+        if (ctx.startRetro) await ctx.startRetro()
+        else ctx.notify('The Org retrospective is not available here.', 'warn')
       })
   },
   {
