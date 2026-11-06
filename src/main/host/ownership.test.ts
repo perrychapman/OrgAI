@@ -741,6 +741,93 @@ describe.skipIf(!posix)('withStartupMutex (Wave 7, round 6 item 11)', () => {
   })
 })
 
+/**
+ * The same steps with injected liveness and probe, so they run on every OS (windows-latest included; review round 2):
+ * `orgai terminal-access` and the level write reach acquire's pre-publish steps only through withStartupMutex. Each case
+ * also runs with `platform: 'win32'` injected, which takes the win32 branches (assertSafeDir without the uid / mode
+ * checks, named-pipe endpoints, no socket sweep) on any machine.
+ */
+describe('withStartupMutex, platform-neutral (fake liveness and probe)', () => {
+  const plats = [...new Set<NodeJS.Platform>([process.platform, 'win32'])]
+  const daemonJson = (env: Env, pid: number, endpoint: string): void => {
+    mkdirSync(env.runDir, { recursive: true, mode: 0o700 })
+    writeFileSync(join(env.runDir, 'daemon.json'), JSON.stringify({ hostInstanceId: '0123456789ab', pid, endpoint, state: 'ready', startedAt: 1, hostKind: 'node' }))
+  }
+  const endpointFor = (platform: NodeJS.Platform, env: Env): string => (platform === 'win32' ? pipeNameFor(env.dataDir, '0123456789ab', 'win32') : join(env.runDir, 'd-0123456789ab.sock'))
+
+  for (const platform of plats) {
+    it(`${platform}: runs fn with no host, publishes nothing and releases the mutex`, async () => {
+      const env = tempEnv()
+      let probes = 0
+      const value = await withStartupMutex(
+        {
+          dataDir: env.dataDir,
+          runtimeBase: env.runtimeBase,
+          platform,
+          liveness: () => 'dead',
+          connectProbe: async () => (probes++, 'refused')
+        },
+        () => existsSync(join(env.runDir, 'startup.mkdir'))
+      )
+      expect(value).toBe(true)
+      expect(existsSync(join(env.runDir, 'startup.mkdir'))).toBe(false)
+      expect(existsSync(join(env.runDir, 'daemon.json'))).toBe(false)
+      expect(existsSync(join(env.runDir, 'daemon.secret'))).toBe(false)
+      expect(probes).toBe(0)
+    })
+
+    it(`${platform}: a live incumbent (or one whose endpoint answers) refuses without calling fn`, async () => {
+      for (const [live, answer] of [
+        ['same', 'refused'],
+        ['dead', 'connected']
+      ] as const) {
+        const env = tempEnv()
+        daemonJson(env, 4242, endpointFor(platform, env))
+        let called = false
+        const err = await withStartupMutex(
+          { dataDir: env.dataDir, runtimeBase: env.runtimeBase, platform, liveness: () => live, connectProbe: async () => answer },
+          () => {
+            called = true
+          }
+        ).catch((e: unknown) => e)
+        expect(err).toBeInstanceOf(HostAlreadyRunningError)
+        expect((err as HostAlreadyRunningError).info.pid).toBe(4242)
+        expect(called).toBe(false)
+        expect(existsSync(join(env.runDir, 'startup.mkdir'))).toBe(false)
+      }
+    })
+
+    it(`${platform}: a dead incumbent with a dead endpoint is reclaimed and fn runs`, async () => {
+      const env = tempEnv()
+      daemonJson(env, 4242, endpointFor(platform, env))
+      let called = false
+      await withStartupMutex({ dataDir: env.dataDir, runtimeBase: env.runtimeBase, platform, liveness: () => 'dead', connectProbe: async () => 'refused' }, () => {
+        called = true
+      })
+      expect(called).toBe(true)
+      expect(existsSync(join(env.runDir, 'startup.mkdir'))).toBe(false)
+    })
+
+    it(`${platform}: a live process holding the mutex past the wait is HostStartingOrBusyError; fn never runs`, async () => {
+      const env = tempEnv()
+      const startup = join(env.runDir, 'startup.mkdir')
+      mkdirSync(startup, { recursive: true, mode: 0o700 })
+      writeFileSync(join(startup, 'owner.json'), JSON.stringify({ pid: 4242, hostInstanceId: '0f0f0f0f0f0f', createdAt: Date.now() }))
+      let called = false
+      const err = await withStartupMutex(
+        { dataDir: env.dataDir, runtimeBase: env.runtimeBase, platform, liveness: () => 'same', liveWaitMs: 60, retryMs: 10 },
+        () => {
+          called = true
+        }
+      ).catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(HostStartingOrBusyError)
+      expect((err as HostStartingOrBusyError).ownerPid).toBe(4242)
+      expect(called).toBe(false)
+      expect(existsSync(join(startup, 'owner.json'))).toBe(true)
+    })
+  }
+})
+
 describe('readDaemonFileState', () => {
   it('tells missing, ok and unusable apart', () => {
     const base = mkdtempSync(join(tmpdir(), 'orgai-own-state-'))

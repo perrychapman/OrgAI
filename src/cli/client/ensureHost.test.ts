@@ -4,6 +4,7 @@ import { FakeHostClient, fakeContext, fakeInproc, noHost } from '../testing/fake
 import { EXIT } from '../types'
 import { ENSURE_HOST_READY_TIMEOUT_MS, ensureHost, missingScopesError, NODE_TERMINAL_FULL_ACCESS_HINT, TERMINAL_FULL_ACCESS_HINT } from './ensureHost'
 import { NODE_HOST_TERMINAL_OFF, nodeHostDeps } from '../nodeHost'
+import { HostTakenError } from './launcher'
 
 const realNodeDeps = { ...nodeHostDeps }
 afterEach(() => Object.assign(nodeHostDeps, realNodeDeps))
@@ -117,6 +118,26 @@ describe('ensureHost', () => {
     const a = fakeContext({ globals: { host: 'daemon' }, connect: [noHost(), new FakeHostClient()], launcher: { startBackground: () => ({ hostKinds: ['node'] }), waitForReady: async () => ready } })
     await ensureHost(a.ctx, ['read'])
     expect(a.launcherCalls.map((c) => c.method)).toEqual(['resolve', 'spawn', 'waitForReady'])
+  })
+
+  it('a started host that hands off to a live host of another kind (a lost start race) uses that host (review round 2)', async () => {
+    nodeHostDeps.installInfo = () => ({ channel: 'npm', source: 'file' })
+    nodeHostDeps.terminalAccess = () => ({ terminalServer: false, terminalServerChosen: false, level: 'operate', levelChosen: true, enabledForBackground: true })
+    const absent = { locate: () => ({ status: 'absent' as const, message: 'none' }) }
+    const inproc: DaemonInfo = { ...ready, hostKind: 'inproc' }
+    const taken = async (): Promise<never> => {
+      throw new HostTakenError(inproc)
+    }
+    const h = new FakeHostClient()
+    const f = fakeContext({ globals: { host: 'daemon' }, connect: [noHost(), h], launcher: { ...absent, startBackground: () => ({ hostKinds: ['node'] }), waitForReady: taken } })
+    expect(await ensureHost(f.ctx, ['read'])).toEqual({ client: h, started: false })
+    // The app path too.
+    const k = new FakeHostClient()
+    const g = fakeContext({ connect: [noHost(), k], launcher: { waitForReady: taken } })
+    expect(await ensureHost(g.ctx, ['read'])).toEqual({ client: k, started: false })
+    // That host refusing this terminal is the usual connect failure.
+    const r = fakeContext({ connect: [noHost(), { ok: false, reason: 'disabled', message: '' }], launcher: { waitForReady: taken } })
+    await expect(ensureHost(r.ctx, ['read'])).rejects.toMatchObject({ exitCode: EXIT.failure, message: expect.stringContaining('Terminal access') })
   })
 
   it('a Node host that withheld a scope names the orgai commands, not App settings (review round 1)', () => {

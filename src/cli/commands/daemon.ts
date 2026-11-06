@@ -11,7 +11,10 @@
  *   install.json says 'app' or Terminal access is stored off, and asks once on a terminal for the Terminal access level
  *   when none was chosen (nodeHost.ts, 4.2.1).
  * - stop [--force] [--timeout S]: host.stop; a refusal lists the leases that block it (exit 1).
- * - restart [--force] [--runtime app|node]: stop, then start (the kind that ran, unless --runtime says otherwise).
+ * - restart [--force] [--runtime app|node]: stop, then start (the kind that ran, unless --runtime says otherwise). For a
+ *   Node host every check and the level question come before the stop; the answer is stored after it.
+ * - A host of another kind that takes the folder while one is being started (a lost start race, or during the level
+ *   question) is reported as running (exit 0), or exit 1 with an explicit --runtime of the other kind.
  * - logs [--lines N] [--follow]: the tail of the newest log: the host's own, else `<userData>/logs/main.log` /
  *   `node-host.log` and, on macOS with the default data folder, `~/Library/Logs/OrgAI/main.log` (sanitized).
  * - run-node (hidden): the detached Node host itself (`startBackground('node')` spawns it); runs until it drains. One
@@ -21,13 +24,13 @@ import { closeSync, existsSync, openSync, readSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { ActivityLeaseKind, DaemonInfo, HostKind, HostStatusResult, HostStopResult, TerminalAccessLevel } from '../../shared/types'
-import { NODE_HOST_LOG } from '../client/launcher'
+import { HostTakenError, NODE_HOST_LOG } from '../client/launcher'
 import { parseFlags } from '../flags'
 import { manageDeps } from '../manage'
 import { nodeHostDeps, nodeHostRefusal } from '../nodeHost'
 import { emit, isJsonOutput, note, safe, safeLine, shortDuration, styleFor, warn, type Json } from '../output'
 import { warnVersionSkew } from '../runRef'
-import { LEVEL_QUESTION, levelNote, parseLevelAnswer, writeTerminalAccess } from '../terminalAccessSettings'
+import { assertSettingsWritable, levelNote, levelQuestion, parseLevelAnswer, writeTerminalAccess } from '../terminalAccessSettings'
 import { CliError, EXIT, type CliContext, type CommandFn, type DaemonRuntime, type HostClient, type InprocHostHandle } from '../types'
 import { activityText } from './status'
 import { intFlag } from './runs'
@@ -52,6 +55,8 @@ export const daemonDeps = {
   /** One line from the terminal; undefined when there is none or it closed (Ctrl+D). */
   ask: (prompt: string): Promise<string | undefined> => manageDeps.ttyAsk(prompt),
   writeLevel: (dataDir: string, level: TerminalAccessLevel): Promise<unknown> => writeTerminalAccess(dataDir, { level }),
+  /** Throws the refusal a level write would meet (a junk settings.json); restart checks it before stopping the host. */
+  checkLevelWritable: (dataDir: string): void => assertSettingsWritable(dataDir),
   /** After a Node host drained: exit once the loop is empty, or after the grace even if a handle lingers. */
   exitSoon: (code: number): void => {
     process.exitCode = code
@@ -158,15 +163,49 @@ function checkRuntime(explicit: DaemonRuntime | undefined, kind: HostKind | unde
   if (runtimeOfKind(kind) !== explicit) throw new CliError(otherKindRunning(kind, explicit), EXIT.failure)
 }
 
+/** What {@link startHost} takes. */
+interface StartOptions {
+  timeoutS: number
+  foreground: boolean
+  /** Wait for a host other than this one (restart). */
+  notInstanceId?: string
+  /** --runtime as given (checked against a running host). */
+  runtime?: DaemonRuntime
+  /** What to start when --runtime was not given (restart: the kind that ran); else the app when found, else Node. */
+  runtimeDefault?: DaemonRuntime
+  /** Restart: the Node host's level question was already asked, before the old host stopped (`level` = to store). */
+  asked?: { level?: TerminalAccessLevel }
+  /** Restart: the old host is gone, so a failed level write warns and the start goes on (never leaves no host). */
+  afterStop?: boolean
+}
+
 /**
- * Start (or report) a host. `notInstanceId`: wait for a host other than this one (restart). `runtime`: --runtime as
- * given (checked against a running host); `runtimeDefault`: what to start when --runtime was not given (restart: the
- * kind that ran), else the app when the launcher finds one, else Node.
+ * A live host took the data folder while we were starting one (it won a start race, or appeared during the level
+ * question; review round 2). With an explicit --runtime of the other kind: exit 1 (otherKindRunning), as when it was
+ * there first; otherwise it is reported as already running, exit 0, as `daemon start` reports a host found up front.
  */
-async function startHost(
-  ctx: CliContext,
-  o: { timeoutS: number; foreground: boolean; notInstanceId?: string; runtime?: DaemonRuntime; runtimeDefault?: DaemonRuntime }
-): Promise<number> {
+async function reportIncumbent(ctx: CliContext, d: DaemonInfo, explicit: DaemonRuntime | undefined): Promise<number> {
+  checkRuntime(explicit, d.hostKind)
+  const res = await ctx.connect(['read'], { clientKind: 'cli', waitStartingMs: 2000 })
+  if (res.ok) {
+    try {
+      warnVersionSkew(ctx, res.client)
+      const s = await fetchStatus(res.client)
+      checkRuntime(explicit, s.hostKind)
+      printHostStatus(ctx, s, { alreadyRunning: true })
+      return EXIT.ok
+    } finally {
+      res.client.close()
+    }
+  }
+  emit(ctx, { running: true, alreadyRunning: true, reason: res.reason, message: res.message, daemon: daemonFacts(d) }, () => [
+    `An OrgAI host is already running (${[d.hostKind, `pid ${d.pid}`].filter(Boolean).join(', ')})${res.message ? `: ${safeLine(res.message)}` : '.'}`
+  ])
+  return EXIT.ok
+}
+
+/** Start (or report) a host. */
+async function startHost(ctx: CliContext, o: StartOptions): Promise<number> {
   const mode = ctx.globals.host
   const inproc = mode === 'inproc' || (o.foreground && mode !== 'daemon')
   if (o.foreground && mode === 'daemon') throw new CliError('--foreground runs the host in this terminal; it needs --host inproc.', EXIT.usage)
@@ -229,6 +268,7 @@ async function startHost(
       ...(o.notInstanceId ? { notInstanceId: o.notInstanceId } : {})
     })
   } catch (e) {
+    if (e instanceof HostTakenError) return reportIncumbent(ctx, e.info, o.runtime)
     throw new CliError(`Could not start the OrgAI host: ${e instanceof Error ? e.message : String(e)}`, EXIT.failure)
   }
   if (!ready) throw new CliError(`The OrgAI host did not become ready within ${o.timeoutS} s. See \`orgai daemon logs\`.`, EXIT.hostBusy)
@@ -244,49 +284,84 @@ function defaultRuntime(ctx: CliContext): DaemonRuntime {
 }
 
 /**
- * The Terminal access level a Node host will grant, asked once (4.2.1, round 6 item 11): on a terminal with no stored
- * choice the question is asked and the answer stored (an empty line keeps 'operate'); otherwise a note names the level
- * and how to change it. Only a real answer is stored: no terminal, a closed one (Ctrl+D) or three unclear answers store
- * nothing, so the question comes again next time. Runs while no host owns the data folder, so the write (under the
- * startup mutex) never races a host.
+ * The Terminal access level question a Node host's start asks once (4.2.1, round 6 item 11). Returns the level to store,
+ * or undefined when nothing is to be stored: a choice already stored (the marker, or a stored 'full'), no terminal
+ * (a note names the level in use and how to change it), a closed one (Ctrl+D) or three unclear answers; the question
+ * then comes again next time. An empty answer (Enter) keeps the level stored now, which the prompt names (review round
+ * 2). Asks only; {@link storeLevel} writes.
  */
-async function chooseLevelOnce(ctx: CliContext): Promise<void> {
+async function askLevelOnce(ctx: CliContext): Promise<TerminalAccessLevel | undefined> {
   const stored = nodeHostDeps.terminalAccess(ctx.paths.dataDir)
-  if (stored.levelChosen) return
+  if (stored.levelChosen) return undefined
   if (!ctx.io.stdinIsTTY || isJsonOutput(ctx)) {
     note(ctx, levelNote(stored.level))
-    return
+    return undefined
   }
   let level: TerminalAccessLevel | undefined
   for (let i = 0; i < 3 && !level; i++) {
-    const answer = await daemonDeps.ask(LEVEL_QUESTION)
+    const answer = await daemonDeps.ask(levelQuestion(stored.level))
     if (answer === undefined) break
-    level = answer.trim() === '' ? 'operate' : parseLevelAnswer(answer)
+    level = answer.trim() === '' ? stored.level : parseLevelAnswer(answer)
     if (!level) ctx.io.stderr.write('Answer full or operate.\n')
   }
-  if (!level) {
-    note(ctx, levelNote(stored.level))
-    return
-  }
-  await daemonDeps.writeLevel(ctx.paths.dataDir, level)
-  note(ctx, levelNote(level))
+  if (!level) note(ctx, levelNote(stored.level))
+  return level
 }
 
-/** Start the detached Node host (4.2) and wait for it. */
-async function startNodeHost(ctx: CliContext, o: { timeoutS: number; notInstanceId?: string }): Promise<number> {
+/**
+ * Store the asked level (under the startup mutex, while no host owns the folder). Returns the live host that took the
+ * folder meanwhile (nothing was stored; the question comes again next time), else null after storing.
+ */
+async function storeLevel(ctx: CliContext, level: TerminalAccessLevel): Promise<DaemonInfo | null> {
+  try {
+    await daemonDeps.writeLevel(ctx.paths.dataDir, level)
+  } catch (e) {
+    const owner = ctx.launcher.current()
+    if (owner) return owner
+    throw e
+  }
+  note(ctx, levelNote(level))
+  return null
+}
+
+/**
+ * The checks before a Node host is started, in the order that asks or stores nothing in vain: install.json / Electron
+ * and Terminal access off (nodeHostRefusal), then the launcher's own preconditions (orgai.mjs found).
+ */
+function nodeHostPreflight(ctx: CliContext): void {
   const refusal = nodeHostRefusal(ctx)
   if (refusal) throw refusal
   if (!ctx.launcher.startBackground) throw new CliError('This orgai cannot start a Node background host.', EXIT.failure)
-  await chooseLevelOnce(ctx)
+  const why = ctx.launcher.checkBackground?.('node')
+  if (why) throw new CliError(`Could not start the OrgAI Node host: ${why}`, EXIT.failure)
+}
+
+/** Start the detached Node host (4.2) and wait for it. */
+async function startNodeHost(ctx: CliContext, o: StartOptions): Promise<number> {
+  nodeHostPreflight(ctx)
+  const level = o.asked ? o.asked.level : await askLevelOnce(ctx)
+  if (level) {
+    let owner: DaemonInfo | null = null
+    try {
+      owner = await storeLevel(ctx, level)
+    } catch (e) {
+      if (!o.afterStop) throw e
+      // Restart: the old host is gone; starting with the stored level beats leaving no host.
+      warn(ctx, `Could not store the Terminal access level (${e instanceof Error ? e.message : String(e)}); the host starts with the stored level.`)
+    }
+    if (owner) return reportIncumbent(ctx, owner, o.runtime)
+  }
   let ready: DaemonInfo | null
   try {
-    const started = ctx.launcher.startBackground('node')
+    const started = ctx.launcher.startBackground!('node')
     ready = await ctx.launcher.waitForReady({
       timeoutMs: o.timeoutS * 1000,
       hostKinds: started.hostKinds,
       ...(o.notInstanceId ? { notInstanceId: o.notInstanceId } : {})
     })
   } catch (e) {
+    // Lost a start race to a host of another kind (review round 2): report it, unless --runtime asked for this kind.
+    if (e instanceof HostTakenError) return reportIncumbent(ctx, e.info, o.runtime)
     throw new CliError(`Could not start the OrgAI Node host: ${e instanceof Error ? e.message : String(e)}`, EXIT.failure)
   }
   if (!ready) throw new CliError(`The OrgAI Node host did not become ready within ${o.timeoutS} s. See \`orgai daemon logs\`.`, EXIT.hostBusy)
@@ -474,10 +549,14 @@ async function daemonRestart(ctx: CliContext, args: string[]): Promise<number> {
   // Without --runtime, the kind that runs now comes back (a Node host stays a Node host).
   const was = runtimeOfKind(ctx.launcher.current()?.hostKind)
   const target = runtime ?? (was === 'node' || was === 'app' ? was : undefined)
-  // A Node host that could not start is refused before the running host is stopped.
+  // A Node host that could not start is refused, and the level question asked, before the running host is stopped
+  // (review round 2): an interrupted question, a junk settings.json or a missing orgai.mjs never leaves no host. The
+  // answer is stored once the old host is gone (a write needs the folder free).
+  let asked: StartOptions['asked']
   if (background && target === 'node') {
-    const refusal = nodeHostRefusal(ctx)
-    if (refusal) throw refusal
+    nodeHostPreflight(ctx)
+    asked = { level: await askLevelOnce(ctx) }
+    if (asked.level) daemonDeps.checkLevelWritable(ctx.paths.dataDir)
   }
   const stopped = await stopHost(ctx, { force: !!values.force, timeoutS: DEFAULT_STOP_TIMEOUT_S, quiet: true })
   if (stopped.code !== EXIT.ok) return stopped.code
@@ -487,7 +566,8 @@ async function daemonRestart(ctx: CliContext, args: string[]): Promise<number> {
     timeoutS,
     foreground: !!values.foreground,
     ...(stopped.stoppedId ? { notInstanceId: stopped.stoppedId } : {}),
-    ...(runtime ? { runtime } : target ? { runtimeDefault: target } : {})
+    ...(runtime ? { runtime } : target ? { runtimeDefault: target } : {}),
+    ...(asked ? { asked, afterStop: stopped.wasRunning } : {})
   })
 }
 

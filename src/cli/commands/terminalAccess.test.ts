@@ -6,7 +6,7 @@ import { acquireHostOwnership, type HostOwnership } from '../../main/host/owners
 import { newHostInstanceId } from '../../main/host/identity'
 import { SettingsStore } from '../../main/store/settings'
 import { fakeContext } from '../testing/fakeContext'
-import { readStoredTerminalAccess, writeTerminalAccess, writeTerminalAccessNow } from '../terminalAccessSettings'
+import { assertSettingsWritable, hostStartingMessage, readStoredTerminalAccess, writeTerminalAccess, writeTerminalAccessNow } from '../terminalAccessSettings'
 import { EXIT } from '../types'
 import { runTerminalAccess } from './terminalAccess'
 
@@ -56,9 +56,19 @@ describe('terminal access settings (no host)', () => {
     expect(stored).toMatchObject({ terminalServer: true, terminalServerChosen: true, terminalAccessLevel: 'operate', terminalAccessLevelChosen: true, notifications: false })
   })
 
+  it('a stored full without the marker (a build before Wave 7 stored it only on a pick) counts as chosen; operate does not (review round 2)', () => {
+    mkdirSync(dataDir, { recursive: true })
+    writeFileSync(join(dataDir, 'settings.json'), JSON.stringify({ version: 1, settings: { terminalAccessLevel: 'full' } }))
+    expect(readStoredTerminalAccess(dataDir)).toMatchObject({ level: 'full', levelChosen: true })
+    writeFileSync(join(dataDir, 'settings.json'), JSON.stringify({ version: 1, settings: { terminalAccessLevel: 'operate' } }))
+    expect(readStoredTerminalAccess(dataDir)).toMatchObject({ level: 'operate', levelChosen: false })
+  })
+
   it('refuses to overwrite a settings.json that does not parse', () => {
     mkdirSync(dataDir, { recursive: true })
+    expect(() => assertSettingsWritable(dataDir)).not.toThrow()
     writeFileSync(join(dataDir, 'settings.json'), '{nope')
+    expect(() => assertSettingsWritable(dataDir)).toThrow(/could not be read/)
     expect(() => writeTerminalAccessNow(dataDir, { on: true })).toThrow(/could not be read/)
     expect(readFileSync(join(dataDir, 'settings.json'), 'utf8')).toBe('{nope')
   })
@@ -90,6 +100,19 @@ describe('orgai terminal-access', () => {
     const h = ctxFor()
     expect(await runTerminalAccess(h.ctx, ['--level', 'operate'])).toBe(EXIT.ok)
     expect(settingsFile()).toMatchObject({ terminalServer: false, terminalAccessLevel: 'operate', terminalAccessLevelChosen: true })
+  })
+
+  it('a live process holding startup.mkdir past the wait is exit 6, never the delete-the-run-folder advice (review round 2)', async () => {
+    const startup = join(dataDir, 'run', 'startup.mkdir')
+    mkdirSync(startup, { recursive: true, mode: 0o700 })
+    writeFileSync(join(startup, 'owner.json'), JSON.stringify({ pid: 4242, hostInstanceId: '0f0f0f0f0f0f', createdAt: Date.now() }))
+    const err = await writeTerminalAccess(dataDir, { on: true }, { liveness: () => 'same', liveWaitMs: 60, retryMs: 10 }).catch((e: unknown) => e)
+    expect(err).toMatchObject({ exitCode: EXIT.hostBusy, message: hostStartingMessage(4242) })
+    expect((err as Error).message).toBe('Another OrgAI process (pid 4242) is starting for this data folder; try again in a moment.')
+    expect((err as Error).message).not.toMatch(/delete/i)
+    // The live owner's mutex is left alone, and nothing was written.
+    expect(existsSync(join(startup, 'owner.json'))).toBe(true)
+    expect(existsSync(join(dataDir, 'settings.json'))).toBe(false)
   })
 
   it('usage errors are exit 2', async () => {

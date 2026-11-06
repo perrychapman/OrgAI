@@ -28,6 +28,7 @@ export interface StoredTerminalAccess {
   terminalServerChosen: boolean
   /** The level a Node or headless host grants (missing = 'operate'). */
   level: TerminalAccessLevel
+  /** terminalAccessLevelChosen, or a stored 'full' (only ever stored by a user's pick). */
   levelChosen: boolean
   /**
    * Whether a background (headless or Node) host would accept terminal clients: on unless the user chose off
@@ -56,7 +57,9 @@ export function terminalAccessOf(s: Pick<AppSettings, 'terminalServer' | 'termin
     terminalServer,
     terminalServerChosen: chosen,
     level: s.terminalAccessLevel === 'full' ? 'full' : 'operate',
-    levelChosen: s.terminalAccessLevelChosen === true,
+    // A stored 'full' without the marker comes from a build before Wave 7, which stored 'full' only when the user picked
+    // it in App settings (the default was unset = 'operate'): a choice, never asked again (review round 2).
+    levelChosen: s.terminalAccessLevelChosen === true || s.terminalAccessLevel === 'full',
     enabledForBackground: !chosen || terminalServer
   }
 }
@@ -78,17 +81,30 @@ export interface TerminalAccessChange {
   level?: TerminalAccessLevel
 }
 
-/** Apply `change` to settings.json now (the caller holds the startup mutex). Returns the new stored access. */
-export function writeTerminalAccessNow(dataDir: string, change: TerminalAccessChange): StoredTerminalAccess {
-  let raw: ReturnType<typeof readRaw>
+/** readRaw, or the CliError a write refuses with (exit 1) when settings.json exists but is junk. */
+function readRawForWrite(dataDir: string): ReturnType<typeof readRaw> {
   try {
-    raw = readRaw(dataDir)
+    return readRaw(dataDir)
   } catch (e) {
     throw new CliError(
       `${join(dataDir, SETTINGS_FILE)} could not be read (${e instanceof Error ? e.message : String(e)}); it was left as it is. Fix it, or open OrgAI once to rewrite it.`,
       EXIT.failure
     )
   }
+}
+
+/**
+ * Throws the CliError {@link writeTerminalAccessNow} would refuse with when settings.json is junk. `orgai daemon
+ * restart` checks it before it stops the running host, so a write that cannot succeed never leaves no host (review
+ * round 2). Reads only.
+ */
+export function assertSettingsWritable(dataDir: string): void {
+  readRawForWrite(dataDir)
+}
+
+/** Apply `change` to settings.json now (the caller holds the startup mutex). Returns the new stored access. */
+export function writeTerminalAccessNow(dataDir: string, change: TerminalAccessChange): StoredTerminalAccess {
+  const raw = readRawForWrite(dataDir)
   const settings: Record<string, unknown> = { ...(raw?.settings ?? {}) }
   if (change.on !== undefined) {
     settings.terminalServer = change.on
@@ -123,15 +139,24 @@ export function hostOwnsFolderMessage(d: DaemonInfo): string {
 }
 
 /**
+ * The refusal while a live process has held startup.mkdir past the wait (a host still starting). Never the "delete the
+ * run folder" advice of HostStartingOrBusyError: that process is confirmed live, and removing its mutex could break its
+ * ownership (review round 2).
+ */
+export function hostStartingMessage(pid: number | undefined): string {
+  return `Another OrgAI process${pid ? ` (pid ${pid})` : ''} is starting for this data folder; try again in a moment.`
+}
+
+/**
  * Write `change` while no host owns the data folder: under startup.mkdir, daemon.json re-checked inside it. A live host
- * is exit 1 with {@link hostOwnsFolderMessage}; a mutex held past the wait is exit 6.
+ * is exit 1 with {@link hostOwnsFolderMessage}; a mutex held past the wait is exit 6 with {@link hostStartingMessage}.
  */
 export async function writeTerminalAccess(dataDir: string, change: TerminalAccessChange, opts: Omit<StartupMutexOptions, 'dataDir'> = {}): Promise<StoredTerminalAccess> {
   try {
     return await withStartupMutex({ dataDir, ...opts }, () => writeTerminalAccessNow(dataDir, change))
   } catch (e) {
     if (e instanceof HostAlreadyRunningError) throw new CliError(hostOwnsFolderMessage(e.info), EXIT.failure)
-    if (e instanceof HostStartingOrBusyError) throw new CliError(e.message, EXIT.hostBusy)
+    if (e instanceof HostStartingOrBusyError) throw new CliError(hostStartingMessage(e.ownerPid), EXIT.hostBusy)
     throw e
   }
 }
@@ -143,7 +168,12 @@ export const LEVEL_WORDS: Record<TerminalAccessLevel, string> = {
 }
 
 /** The question `orgai daemon start --runtime node` asks once (4.2.1). */
-export const LEVEL_QUESTION = 'Let terminal sessions approve decisions and change configuration? [full/operate] '
+export const LEVEL_QUESTION = 'Let terminal sessions approve decisions and change configuration? [full/operate]'
+
+/** {@link LEVEL_QUESTION} naming what an empty answer (Enter) keeps: the level stored now (review round 2). */
+export function levelQuestion(current: TerminalAccessLevel): string {
+  return `${LEVEL_QUESTION} (Enter keeps ${current}) `
+}
 
 /** The answer to {@link LEVEL_QUESTION}: 'full' / 'f' / 'operate' / 'o' (any case), else undefined. */
 export function parseLevelAnswer(answer: string): TerminalAccessLevel | undefined {

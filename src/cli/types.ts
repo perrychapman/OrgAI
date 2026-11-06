@@ -212,6 +212,12 @@ export interface HostLauncher {
    * or early exit makes the next waitForReady reject, as for spawn(). Optional so test fakes may leave it out.
    */
   startBackground?(runtime: DaemonRuntime, opts?: { app?: HostLauncherFound }): { pid?: number; hostKinds: readonly HostKind[] }
+  /**
+   * Why startBackground(runtime) would throw before spawning (no app; on Electron or no orgai.mjs for 'node'), else
+   * undefined. Starters check it before they ask or store anything and before `daemon restart` stops the running host
+   * (review round 2). Optional like startBackground.
+   */
+  checkBackground?(runtime: DaemonRuntime): string | undefined
 }
 
 /** A pure-Node host running inside the CLI (`--host inproc`, src/cli/inprocHost.ts, W2-T4). */

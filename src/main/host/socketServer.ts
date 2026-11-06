@@ -166,6 +166,30 @@ export const NODE_TERMINAL_ACCESS_OFF_MESSAGE =
 export const NODE_TERMINAL_ACCESS_LEVEL_MESSAGE =
   'Terminal access lets terminal clients watch and run work only. To answer decisions or change settings from a terminal, stop this Node host (`orgai daemon stop`), then run `orgai terminal-access --level full`.'
 
+/**
+ * A socket settings:set that would turn Terminal access off on a Node host (review round 2): refused, since the host
+ * would then run unreachable (4.2.1): neither `orgai daemon stop` nor `orgai terminal-access` could talk to it, and
+ * its idle exit never comes while runs are live or with ORGAI_DAEMON_IDLE_MINUTES=0.
+ */
+export const NODE_TERMINAL_ACCESS_OFF_REFUSED =
+  'A Node host cannot turn Terminal access off from a terminal: nothing could reach it afterwards. Stop it with `orgai daemon stop`, then run `orgai terminal-access off`.'
+
+/**
+ * Whether a socket settings:set (`params` as sent) turns Terminal access off on this host: on a Node host, a
+ * `terminalServer: false` while it is stored on. An echo of a stored false changes nothing and passes.
+ */
+export function turnsNodeTerminalAccessOff(hostKind: HostKind, method: string, params: unknown, stored: () => { terminalServer?: boolean }): boolean {
+  if (hostKind !== 'node' || method !== IPC.settingsSet) return false
+  const input = Array.isArray(params) ? params[0] : undefined
+  if (!isObj(input) || input.terminalServer !== false) return false
+  try {
+    return stored().terminalServer === true
+  } catch {
+    // Unreadable settings: refuse rather than risk an unreachable host.
+    return true
+  }
+}
+
 /** TERMINAL_ACCESS_OFF_MESSAGE, or its Node host wording. */
 export function terminalAccessOffMessage(hostKind: HostKind): string {
   return hostKind === 'node' ? NODE_TERMINAL_ACCESS_OFF_MESSAGE : TERMINAL_ACCESS_OFF_MESSAGE
@@ -751,6 +775,9 @@ export class HostSocketServer {
     const stopOnly = method === HOST_METHODS.hostStop && conn.withheld.includes('configure')
     if (scope !== undefined && conn.withheld.includes(scope as HostScope) && !stopOnly) {
       return this.send(conn, rpcError(id, { code: 'scope_denied', message: `${method} needs the '${scope}' scope. ${terminalAccessLevelMessage(this.opts.hostKind)}` }))
+    }
+    if (turnsNodeTerminalAccessOff(this.opts.hostKind, method, req.params, () => host.settings.get())) {
+      return this.send(conn, rpcError(id, { code: 'bad_request', message: NODE_TERMINAL_ACCESS_OFF_REFUSED }))
     }
     const grantedScopes: HostScope[] = stopOnly ? [...conn.scopes, 'configure'] : conn.scopes
     const authorizing = method === IPC.mcpAuthorize ? this.trackAuthorize(conn, req.params) : undefined

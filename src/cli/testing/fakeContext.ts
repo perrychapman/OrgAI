@@ -250,7 +250,9 @@ export function fakeContext(o: FakeContextOptions = {}): FakeContext {
             return o.launcher!.startBackground!(runtime, opts)
           }
         }
-      : {})
+      : {}),
+    // Not recorded in launcherCalls (a check, no effect).
+    ...(o.launcher?.checkBackground ? { checkBackground: (runtime: DaemonRuntime) => o.launcher!.checkBackground!(runtime) } : {})
   }
   const ctx: CliContext = {
     globals,

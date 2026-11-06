@@ -60,6 +60,21 @@ export function rotateNodeHostLog(logsDir: string, maxBytes = NODE_HOST_LOG_MAX_
   }
 }
 
+/**
+ * waitForReady's rejection when the background host this launcher started handed off (exit 0) to a live, ready host of
+ * a kind the caller does not wait for (review round 2): `info` is that host, so a starter without an explicit --runtime
+ * can report it as already running instead of failing.
+ */
+export class HostTakenError extends Error {
+  constructor(readonly info: DaemonInfo) {
+    super(`Another OrgAI host (${info.hostKind ?? 'host'}, pid ${info.pid}) took this data folder first. See \`orgai daemon status\`.`)
+    this.name = 'HostTakenError'
+  }
+}
+
+/** The bundle-missing error of startBackground('node'). */
+export const NODE_HOST_BUNDLE_MISSING = 'The orgai bundle (orgai.mjs) was not found next to this command; build it with npm run build, or reinstall orgai.'
+
 /** The hidden command line a Node host runs: `<execPath> <orgai.mjs> daemon run-node`. */
 export const NODE_HOST_ARGS = ['daemon', 'run-node'] as const
 /** What `--runtime node` needs (cli-standalone.md 4.2). */
@@ -289,20 +304,29 @@ export function createLauncher(opts: LauncherOptions): HostLauncher {
    * Why the spawned app can no longer become ready, or undefined while it may. `d`: daemon.json as just read and
    * `hostKinds` the kinds the caller waits for.
    */
-  const childFailure = (d: DaemonInfo | null, hostKinds?: readonly HostKind[]): string | undefined => {
+  const childFailure = (d: DaemonInfo | null, hostKinds?: readonly HostKind[]): Error | undefined => {
     if (!child) return undefined
-    if (child.error) return child.error.message
+    if (child.error) return child.error
     const ex = child.exited
     // Exit 0 is a hand-off: the single-instance lock (or, for a Node host, the data folder) went to a running OrgAI,
     // which answers instead. A ready host of a kind the caller does not wait for never will: say so now, not at the
     // timeout.
     if (ex?.code === 0 && hostKinds && d?.state === 'ready' && d.hostKind !== undefined && !hostKinds.includes(d.hostKind) && isLive(d.pid, d.processStartTime)) {
-      return `Another OrgAI host (${d.hostKind}, pid ${d.pid}) took this data folder first. See \`orgai daemon status\`.`
+      return new HostTakenError(d)
     }
     if (!ex || ex.code === 0) return undefined
-    if (ex.code === 6) return 'OrgAI exited (code 6): another OrgAI host owns this data folder. See `orgai daemon status`.'
-    return ex.code !== null ? `OrgAI exited (code ${ex.code}) before it was ready. See \`orgai daemon logs\`.` : `OrgAI was stopped (${ex.signal ?? 'signal'}) before it was ready.`
+    if (ex.code === 6) return new Error('OrgAI exited (code 6): another OrgAI host owns this data folder. See `orgai daemon status`.')
+    return new Error(ex.code !== null ? `OrgAI exited (code ${ex.code}) before it was ready. See \`orgai daemon logs\`.` : `OrgAI was stopped (${ex.signal ?? 'signal'}) before it was ready.`)
   }
+
+  /** The live host that owns the data folder (any state), else null. */
+  const currentHost = (): DaemonInfo | null => {
+    const d = readDaemonInfo(opts.dataDir)
+    return d && isLive(d.pid, d.processStartTime) ? d : null
+  }
+
+  const nodeRuntime = (): { execPath: string; electron?: string } => opts.runtime ?? { execPath: process.execPath, electron: process.versions.electron }
+  const nodeEntry = (): string | undefined => opts.cliEntry ?? cliBundleEntry(opts.bundleDir ?? moduleDir())
 
   /** Spawn detached with the host environment and cwd, and track the child for waitForReady. */
   const launch = (command: string, args: string[], stdio: SpawnOptions['stdio']): { pid?: number } => {
@@ -345,20 +369,31 @@ export function createLauncher(opts: LauncherOptions): HostLauncher {
       return launch(app.command, args, 'ignore')
     },
 
+    checkBackground(runtime) {
+      if (runtime === 'app') {
+        const app = resolveApp()
+        return 'error' in app ? app.error : undefined
+      }
+      // Under the packaged launcher execPath is the Electron binary, and index.ts strips ELECTRON_RUN_AS_NODE.
+      if (nodeRuntime().electron) return NODE_HOST_NEEDS_NODE
+      return nodeEntry() ? undefined : NODE_HOST_BUNDLE_MISSING
+    },
+
     startBackground(runtime, o = {}) {
       if (runtime === 'app') {
         const app = o.app ?? resolveApp()
         if ('error' in app) throw new Error(app.error)
         return { ...launch(app.command, [...app.args, '--headless-host'], 'ignore'), hostKinds: RUNTIME_HOST_KINDS.app }
       }
-      const rt = opts.runtime ?? { execPath: process.execPath, electron: process.versions.electron }
-      // Under the packaged launcher execPath is the Electron binary, and index.ts strips ELECTRON_RUN_AS_NODE.
+      const rt = nodeRuntime()
       if (rt.electron) throw new Error(NODE_HOST_NEEDS_NODE)
-      const entry = opts.cliEntry ?? cliBundleEntry(opts.bundleDir ?? moduleDir())
-      if (!entry) throw new Error('The orgai bundle (orgai.mjs) was not found next to this command; build it with npm run build, or reinstall orgai.')
+      const entry = nodeEntry()
+      if (!entry) throw new Error(NODE_HOST_BUNDLE_MISSING)
       const logsDir = join(opts.userDataDir, 'logs')
       mkdirSync(logsDir, { recursive: true, mode: 0o700 })
-      rotateNodeHostLog(logsDir)
+      // Only while no host owns the folder (review round 2): a live Node host (one that won a start race, or one still
+      // starting) keeps writing to its open node-host.log, which must not be renamed under it.
+      if (!currentHost()) rotateNodeHostLog(logsDir)
       const fd = openSync(join(logsDir, NODE_HOST_LOG), 'a', 0o600)
       try {
         // detached: setsid() on POSIX (no controlling terminal, no SIGHUP when this terminal closes); on Windows a new
@@ -370,10 +405,7 @@ export function createLauncher(opts: LauncherOptions): HostLauncher {
       }
     },
 
-    current() {
-      const d = readDaemonInfo(opts.dataDir)
-      return d && isLive(d.pid, d.processStartTime) ? d : null
-    },
+    current: currentHost,
 
     async waitForReady({ timeoutMs, notInstanceId, hostKinds }) {
       const deadline = now() + timeoutMs
@@ -381,7 +413,7 @@ export function createLauncher(opts: LauncherOptions): HostLauncher {
         const d = readDaemonInfo(opts.dataDir)
         if (ready(d, notInstanceId, hostKinds)) return d
         const failure = childFailure(d, hostKinds)
-        if (failure) throw new Error(failure)
+        if (failure) throw failure
         if (now() >= deadline) return null
         await sleep(Math.min(POLL_MS, Math.max(1, deadline - now())))
       }

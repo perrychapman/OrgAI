@@ -6,7 +6,7 @@ import type { DaemonInfo } from '../../shared/types'
 import { resetSkewWarning } from '../runRef'
 import { FakeHostClient, fakeContext, flush, hostStatus, noHost } from '../testing/fakeContext'
 import { CliError, EXIT, type InprocHostHandle } from '../types'
-import { NODE_HOST_NEEDS_NODE } from '../client/launcher'
+import { HostTakenError, NODE_HOST_BUNDLE_MISSING, NODE_HOST_NEEDS_NODE } from '../client/launcher'
 import { NODE_HOST_TERMINAL_OFF, nodeHostDeps } from '../nodeHost'
 import type { StoredTerminalAccess } from '../terminalAccessSettings'
 import { daemonDeps, daemonTimers, guessLogPath, INPROC_BANNER, logCandidates, runDaemon } from './daemon'
@@ -206,7 +206,7 @@ describe('orgai daemon start --runtime (Wave 7, cli-standalone.md 4.2)', () => {
     const opts = () => ({ connect: [noHost(), nodeStatus()], launcher: { ...absent, startBackground: () => ({ hostKinds: ['node'] as const }), waitForReady: async () => nodeReady } })
     const tty = fakeContext({ ...opts(), stdinIsTTY: true })
     expect(await runDaemon(tty.ctx, ['start'])).toBe(EXIT.ok)
-    expect(rec.asked).toEqual(['Let terminal sessions approve decisions and change configuration? [full/operate] '])
+    expect(rec.asked).toEqual(['Let terminal sessions approve decisions and change configuration? [full/operate] (Enter keeps operate) '])
     expect(rec.written).toEqual(['full'])
     expect(tty.err()).toContain('Terminal access: full')
     // An unclear answer is asked again; Enter keeps operate.
@@ -225,6 +225,67 @@ describe('orgai daemon start --runtime (Wave 7, cli-standalone.md 4.2)', () => {
     const chosen = nodeMachine(access({ levelChosen: true }))
     expect(await runDaemon(fakeContext({ ...opts(), stdinIsTTY: true }).ctx, ['start'])).toBe(EXIT.ok)
     expect(chosen.asked).toEqual([])
+  })
+
+  it('Enter keeps the level stored now, and the question names it (review round 2)', async () => {
+    const rec = nodeMachine(access({ levelChosen: false, level: 'full' }))
+    daemonDeps.ask = async (q) => (rec.asked.push(q), '')
+    const f = fakeContext({ stdinIsTTY: true, connect: [noHost(), nodeStatus()], launcher: { ...absent, startBackground: () => ({ hostKinds: ['node'] }), waitForReady: async () => nodeReady } })
+    expect(await runDaemon(f.ctx, ['start'])).toBe(EXIT.ok)
+    expect(rec.asked).toEqual(['Let terminal sessions approve decisions and change configuration? [full/operate] (Enter keeps full) '])
+    expect(rec.written).toEqual(['full'])
+  })
+
+  it('a host of another kind that wins the start race is reported as running; with an explicit --runtime it is exit 1 (review round 2)', async () => {
+    nodeMachine()
+    const inprocInfo: DaemonInfo = { ...nodeReady, hostInstanceId: 'dddddddddddd', hostKind: 'inproc' }
+    const taken = (d: DaemonInfo) => async (): Promise<never> => {
+      throw new HostTakenError(d)
+    }
+    const inprocStatus = () => new FakeHostClient({ 'host.status': () => hostStatus({ hostKind: 'inproc' }) })
+    const f = fakeContext({ connect: [noHost(), inprocStatus()], launcher: { ...absent, startBackground: () => ({ hostKinds: ['node'] }), waitForReady: taken(inprocInfo) } })
+    expect(await runDaemon(f.ctx, ['start'])).toBe(EXIT.ok)
+    expect(f.out()).toContain('OrgAI host: ready (inproc)')
+    const j = fakeContext({ globals: { outputFormat: 'json' }, connect: [noHost(), inprocStatus()], launcher: { ...absent, startBackground: () => ({ hostKinds: ['node'] }), waitForReady: taken(inprocInfo) } })
+    expect(await runDaemon(j.ctx, ['start'])).toBe(EXIT.ok)
+    expect(JSON.parse(j.out())).toMatchObject({ running: true, alreadyRunning: true })
+    const e = fakeContext({ connect: [noHost(), inprocStatus()], launcher: { ...absent, startBackground: () => ({ hostKinds: ['node'] }), waitForReady: taken(inprocInfo) } })
+    await expect(runDaemon(e.ctx, ['start', '--runtime', 'node'])).rejects.toMatchObject({
+      exitCode: EXIT.failure,
+      message: 'An in-process host is already running; use `orgai daemon restart --runtime node`'
+    })
+    // The app path: the spawned app handed off to a Node host.
+    const a = fakeContext({ connect: [noHost(), nodeStatus()], launcher: { waitForReady: taken(nodeReady) } })
+    expect(await runDaemon(a.ctx, ['start'])).toBe(EXIT.ok)
+    expect(a.out()).toContain('OrgAI host: ready (node)')
+  })
+
+  it('a host that takes the folder during the level question is reported, nothing stored or spawned (review round 2)', async () => {
+    const rec = nodeMachine(access({ levelChosen: false }))
+    const owner: DaemonInfo = { ...ready }
+    daemonDeps.writeLevel = async () => {
+      throw new CliError('An OrgAI host owns this data folder (headless-host host, pid 77). Stop the background host first: orgai daemon stop', EXIT.failure)
+    }
+    const opts = () => ({ stdinIsTTY: true, connect: [noHost(), statusHost()], launcher: { ...absent, current: () => owner, startBackground: () => ({ hostKinds: ['node'] as const }) } })
+    const f = fakeContext(opts())
+    expect(await runDaemon(f.ctx, ['start'])).toBe(EXIT.ok)
+    expect(f.out()).toContain('OrgAI host: ready (headless-host)')
+    expect(f.err()).not.toContain('Stop the background host first')
+    const g = fakeContext(opts())
+    await expect(runDaemon(g.ctx, ['start', '--runtime', 'node'])).rejects.toMatchObject({ exitCode: EXIT.failure, message: expect.stringContaining('already running; use `orgai daemon restart --runtime node`') })
+    expect([...f.launcherCalls, ...g.launcherCalls].filter((c) => c.method === 'startBackground')).toEqual([])
+    expect(rec.written).toEqual([])
+    // With no host there, the write's own error stands.
+    const h = fakeContext({ ...opts(), launcher: { ...absent, startBackground: () => ({ hostKinds: ['node'] as const }) } })
+    await expect(runDaemon(h.ctx, ['start'])).rejects.toMatchObject({ message: expect.stringContaining('Stop the background host first') })
+  })
+
+  it('a missing orgai.mjs is refused before the level question (review round 2)', async () => {
+    const rec = nodeMachine(access({ levelChosen: false }))
+    const f = fakeContext({ stdinIsTTY: true, launcher: { ...absent, startBackground: () => ({ hostKinds: ['node'] }), checkBackground: () => NODE_HOST_BUNDLE_MISSING } })
+    await expect(runDaemon(f.ctx, ['start'])).rejects.toMatchObject({ exitCode: EXIT.failure, message: `Could not start the OrgAI Node host: ${NODE_HOST_BUNDLE_MISSING}` })
+    expect(rec.asked).toEqual([])
+    expect(rec.written).toEqual([])
   })
 
   it('no terminal answer (none could be opened, or Ctrl+D) and three unclear answers store nothing (review round 1)', async () => {
@@ -370,6 +431,58 @@ describe('orgai daemon restart (Wave 7)', () => {
     const g = fakeContext({ connect: [k], launcher: { current: () => ready } })
     await expect(runDaemon(g.ctx, ['restart', '--runtime', 'node'])).rejects.toMatchObject({ exitCode: EXIT.failure, message: NODE_HOST_NEEDS_NODE })
     expect(k.callsOf('host.stop')).toEqual([])
+  })
+})
+
+describe('orgai daemon restart to a Node host: everything that can fail happens before the stop (review round 2)', () => {
+  const running = () => new FakeHostClient({ 'host.stop': () => ({ stopping: true }) }, { hello: { hostKind: 'node' } })
+
+  it('asks before the stop and stores after it', async () => {
+    const order: string[] = []
+    nodeMachine(access({ levelChosen: false }))
+    daemonDeps.ask = async () => (order.push('ask'), 'full')
+    daemonDeps.writeLevel = async () => void order.push('write')
+    const h = new FakeHostClient({ 'host.stop': () => (order.push('stop'), { stopping: true }) }, { hello: { hostKind: 'node' } })
+    const f = fakeContext({ stdinIsTTY: true, connect: [h, nodeStatus()], launcher: { current: () => nodeReady, startBackground: () => (order.push('spawn'), { hostKinds: ['node'] }), waitForReady: async () => nodeReady } })
+    expect(await runDaemon(f.ctx, ['restart'])).toBe(EXIT.ok)
+    expect(order).toEqual(['ask', 'stop', 'write', 'spawn'])
+  })
+
+  it('an interrupted question, a junk settings.json or a missing orgai.mjs leaves the running host alone', async () => {
+    const rec = nodeMachine(access({ levelChosen: false }))
+    const launcher = { current: () => nodeReady, startBackground: () => ({ hostKinds: ['node'] as const }), waitForReady: async () => nodeReady }
+    daemonDeps.ask = async () => {
+      throw new Error('interrupted')
+    }
+    const a = running()
+    await expect(runDaemon(fakeContext({ stdinIsTTY: true, connect: [a], launcher }).ctx, ['restart'])).rejects.toThrow('interrupted')
+    expect(a.callsOf('host.stop')).toEqual([])
+    daemonDeps.ask = async () => 'full'
+    daemonDeps.checkLevelWritable = () => {
+      throw new CliError('settings.json could not be read', EXIT.failure)
+    }
+    const b = running()
+    await expect(runDaemon(fakeContext({ stdinIsTTY: true, connect: [b], launcher }).ctx, ['restart'])).rejects.toThrow('settings.json could not be read')
+    expect(b.callsOf('host.stop')).toEqual([])
+    const c = running()
+    await expect(runDaemon(fakeContext({ stdinIsTTY: true, connect: [c], launcher: { ...launcher, checkBackground: () => NODE_HOST_BUNDLE_MISSING } }).ctx, ['restart'])).rejects.toMatchObject({
+      message: expect.stringContaining(NODE_HOST_BUNDLE_MISSING)
+    })
+    expect(c.callsOf('host.stop')).toEqual([])
+    expect(rec.written).toEqual([])
+  })
+
+  it('a level write that fails after the stop warns and the host still starts', async () => {
+    nodeMachine(access({ levelChosen: false }))
+    daemonDeps.writeLevel = async () => {
+      throw new Error('disk full')
+    }
+    let up = true
+    const h = new FakeHostClient({ 'host.stop': () => ((up = false), { stopping: true }) }, { hello: { hostKind: 'node' } })
+    const f = fakeContext({ stdinIsTTY: true, connect: [h, nodeStatus()], launcher: { current: () => (up ? nodeReady : null), startBackground: () => ({ hostKinds: ['node'] }), waitForReady: async () => nodeReady } })
+    expect(await runDaemon(f.ctx, ['restart'])).toBe(EXIT.ok)
+    expect(f.err()).toContain('Could not store the Terminal access level (disk full)')
+    expect(f.launcherCalls.map((c) => c.method)).toEqual(['waitForGone', 'startBackground', 'waitForReady'])
   })
 })
 

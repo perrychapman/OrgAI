@@ -15,6 +15,7 @@
  * `decidedBy.surface` 'tui' on the decisions it sends.
  */
 import type { HostClientKind, HostKind, HostScope } from '../../shared/types'
+import { HostTakenError } from './launcher'
 import { nodeHostDeps, nodeHostRefusal } from '../nodeHost'
 import { note } from '../output'
 import { levelNote } from '../terminalAccessSettings'
@@ -116,6 +117,14 @@ export async function ensureHost(ctx: CliContext, scopes: HostScope[], opts: Ens
   if (first.ok) return { client: first.client, started: false }
   if (first.reason !== 'no_host') throw connectFailure(first)
 
+  // The background host we started handed off to a live host of another kind that won the start race (review round 2):
+  // `--host daemon` takes either background kind (cli-standalone.md 4.1), so use that host.
+  const useIncumbent = async (): Promise<EnsuredHost> => {
+    const res = await connect()
+    if (!res.ok) throw connectFailure(res)
+    return { client: res.client, started: false }
+  }
+
   let ready
   // Wave 7 (cli-standalone.md 4.1, 4.2): `--host daemon` never runs a host in-process; with no app anywhere it starts the
   // detached Node host (refused when install.json says app or Terminal access is stored off; nodeHost.ts).
@@ -129,6 +138,7 @@ export async function ensureHost(ctx: CliContext, scopes: HostScope[], opts: Ens
       const started = ctx.launcher.startBackground('node')
       ready = await ctx.launcher.waitForReady({ timeoutMs: ENSURE_HOST_READY_TIMEOUT_MS, hostKinds: started.hostKinds })
     } catch (e) {
+      if (e instanceof HostTakenError) return useIncumbent()
       throw new CliError(`Could not start the OrgAI Node host: ${e instanceof Error ? e.message : String(e)}`, EXIT.failure)
     }
     if (!ready) throw new CliError(`The OrgAI Node host did not become ready within ${ENSURE_HOST_READY_TIMEOUT_MS / 1000} s. See \`orgai daemon logs\`.`, EXIT.hostBusy)
@@ -144,6 +154,7 @@ export async function ensureHost(ctx: CliContext, scopes: HostScope[], opts: Ens
     // Only an Electron host counts (a running desktop app takes the hand-off); an inproc host's daemon.json never does.
     ready = await ctx.launcher.waitForReady({ timeoutMs: ENSURE_HOST_READY_TIMEOUT_MS, hostKinds: ELECTRON_HOST_KINDS })
   } catch (e) {
+    if (e instanceof HostTakenError) return useIncumbent()
     throw new CliError(`Could not start the OrgAI host: ${e instanceof Error ? e.message : String(e)}`, EXIT.failure)
   }
   if (!ready) throw new CliError(`The OrgAI host did not become ready within ${ENSURE_HOST_READY_TIMEOUT_MS / 1000} s. See \`orgai daemon logs\`.`, EXIT.hostBusy)

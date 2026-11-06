@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { EventEmitter } from 'node:events'
 import { dirname, join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { APP_NOT_FOUND, NODE_HOST_NEEDS_NODE, NODE_HOST_LOG_MAX_BYTES, cliBundleEntry, rotateNodeHostLog, createLauncher, hostSpawnCwd, hostSpawnEnv, packagedAppMissing, type SpawnFn } from './launcher'
+import { APP_NOT_FOUND, HostTakenError, NODE_HOST_BUNDLE_MISSING, NODE_HOST_NEEDS_NODE, NODE_HOST_LOG_MAX_BYTES, cliBundleEntry, rotateNodeHostLog, createLauncher, hostSpawnCwd, hostSpawnEnv, packagedAppMissing, type SpawnFn } from './launcher'
 
 let base: string
 let dataDir: string
@@ -290,6 +290,43 @@ describe('launcher: startBackground (Wave 7, cli-standalone.md 4.2)', () => {
     m.startBackground!('node')
     children[1].emit('exit', 0, null)
     await expect(m.waitForReady({ timeoutMs: 5000, hostKinds: ['node'] })).rejects.toThrow('Another OrgAI host (desktop, pid 10) took this data folder first.')
+    // A HostTakenError carrying the winner, so a starter can report it as running (review round 2).
+    const err = await m.waitForReady({ timeoutMs: 5000, hostKinds: ['node'] }).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(HostTakenError)
+    expect((err as HostTakenError).info).toMatchObject({ hostInstanceId: 'eeeeeeeeeeee', hostKind: 'desktop', pid: 10 })
+  })
+
+  it('checkBackground names why startBackground would throw, without spawning (review round 2)', () => {
+    let spawned = 0
+    const spawn: SpawnFn = () => (spawned++, { pid: 1, unref() {} })
+    const mk = (extra: Partial<Parameters<typeof createLauncher>[0]>) => createLauncher({ dataDir, userDataDir: base, userChoseDataDir: false, env: {}, spawn, ...extra })
+    expect(mk({ runtime: { execPath: '/OrgAI', electron: '40.0.0' }, cliEntry: '/x/orgai.mjs' }).checkBackground!('node')).toBe(NODE_HOST_NEEDS_NODE)
+    expect(mk({ runtime: { execPath: '/node' }, bundleDir: join(base, 'nowhere') }).checkBackground!('node')).toBe(NODE_HOST_BUNDLE_MISSING)
+    expect(mk({ runtime: { execPath: '/node' }, cliEntry: '/x/orgai.mjs' }).checkBackground!('node')).toBeUndefined()
+    expect(mk({ bundleDir: join(base, 'nowhere') }).checkBackground!('app')).toBe(APP_NOT_FOUND)
+    expect(mk({ env: { ORGAI_ELECTRON_PATH: '/opt/e' } }).checkBackground!('app')).toBeUndefined()
+    expect(spawned).toBe(0)
+  })
+
+  it('node-host.log is never rotated while a live host owns the data folder (review round 2)', () => {
+    const userDataDir = join(base, 'ud')
+    const logs = join(userDataDir, 'logs')
+    mkdirSync(logs, { recursive: true })
+    const log = join(logs, 'node-host.log')
+    const old = join(logs, 'node-host.old.log')
+    writeFileSync(log, Buffer.alloc(NODE_HOST_LOG_MAX_BYTES + 1))
+    // The winner of a start race (or a host still starting) has node-host.log open.
+    writeFileSync(join(dataDir, 'run', 'daemon.json'), JSON.stringify({ hostInstanceId: 'dddddddddddd', pid: 9, endpoint: '/x', state: 'starting', startedAt: 1, hostKind: 'node' }))
+    let live = true
+    const l = createLauncher({ dataDir, userDataDir, userChoseDataDir: false, env: {}, spawn: () => ({ pid: 1, unref() {} }), runtime: { execPath: '/node' }, cliEntry: '/x/orgai.mjs', isLive: () => live })
+    l.startBackground!('node')
+    expect(existsSync(old)).toBe(false)
+    expect(statSync(log).size).toBe(NODE_HOST_LOG_MAX_BYTES + 1)
+    // Once that host is gone, the next start rotates.
+    live = false
+    l.startBackground!('node')
+    expect(statSync(old).size).toBe(NODE_HOST_LOG_MAX_BYTES + 1)
+    expect(statSync(log).size).toBe(0)
   })
 
   it('node-host.log is moved to node-host.old.log past the size cap before a start (review round 1)', () => {
