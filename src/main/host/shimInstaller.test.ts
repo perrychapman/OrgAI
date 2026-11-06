@@ -329,6 +329,23 @@ describe('otherCli (Wave 7, cli-standalone.md 8.2)', () => {
     expect(createCliShimService(deps({ loginPath: '' })).status().otherCli).toBeUndefined()
   })
 
+  posixOnly('this install\'s launcher folder on PATH itself (VS Code style) is ours, not another command', () => {
+    expect(createCliShimService(deps({ loginPath: `${join(resources, 'bin')}:/usr/bin` })).status().otherCli).toBeUndefined()
+    // Also with the real launcher text and bundle, read by the PATH reader as an app launcher.
+    writeFileSync(launcher, '#!/bin/sh\n# The orgai command of a packaged OrgAI (cli-spec 7, Wave 6).\n')
+    const cli = join(resources, 'app.asar.unpacked', 'out', 'cli')
+    mkdirSync(cli, { recursive: true })
+    writeFileSync(join(cli, 'orgai.mjs'), '')
+    writeFileSync(join(cli, 'install.json'), JSON.stringify({ channel: 'app', version: '0.1.7' }))
+    const npmBin = npmInstall('0.2.0')
+    expect(createCliShimService(deps({ loginPath: `${join(resources, 'bin')}:${npmBin}` })).status().otherCli).toEqual({ path: join(npmBin, 'orgai'), channel: 'npm', version: '0.2.0' })
+  })
+
+  it('a PATH entry whose path is this launcher counts as ours even when the reader gives no launcher', () => {
+    const status = createCliShimService(deps({ findOnPath: () => [{ path: launcher, kind: 'unknown' }, { path: '/x/orgai', kind: 'npm', channel: 'npm' }] })).status()
+    expect(status.otherCli).toEqual({ path: '/x/orgai', channel: 'npm' })
+  })
+
   it('a PATH reader that throws leaves otherCli unset and logs', () => {
     const warn = vi.fn()
     const status = createCliShimService(

@@ -4,13 +4,14 @@
  * (src/cli/installInfo.ts). Used by `orgai doctor` (src/cli/doctor/installChecks.ts) and by the app's Terminal row
  * (shimInstaller.ts `otherCli`).
  *
- * Read only and bounded: one lstat / stat per PATH entry and candidate name, at most SHIM_TEXT_MAX_BYTES read from a
+ * Read only and bounded: network folders (UNC, /net) are skipped untouched; one lstat / stat per PATH entry and candidate name, at most SHIM_TEXT_MAX_BYTES read from a
  * candidate, at most ORGAI_PATH_MAX_ENTRIES PATH entries. Nothing is executed. Electron-free; injectable fs for tests.
  *
  * How a hit is read:
  * - An OrgAI shim (packagedLayout.ts marker): its launcher, then `<Resources>/app.asar.unpacked/out/cli/install.json`.
  * - A link (npm's POSIX bin) or a file whose real path is `.../out/cli/orgai.mjs`: the install.json beside it.
- * - A link to a packaged launcher (`<Resources>/bin/orgai`): that app's bundle.
+ * - A packaged launcher (`<Resources>/bin/orgai[.cmd]`, its folder on PATH or a link to it), recognised by its text or
+ *   the app's CLI bundle beside it: that app's bundle. Any other `<X>/bin/orgai` is not one.
  * - npm's Windows `orgai.cmd` (it names `node_modules\orgai\out\cli\orgai.mjs` under its own folder): that bundle.
  * - Anything else: kind 'unknown' (no channel, no version).
  */
@@ -24,6 +25,22 @@ import { isOrgaiShim, packagedLayout, parseCliShim } from './packagedLayout'
 export const SHIM_TEXT_MAX_BYTES = 64 * 1024
 /** PATH entries looked at, at most. */
 export const ORGAI_PATH_MAX_ENTRIES = 256
+/**
+ * A line of the packaged launcher (build/bin/orgai and orgai.cmd); the same text as doctor.ts PACKAGED_LAUNCHER_MARK
+ * (a test keeps them equal).
+ */
+export const PACKAGED_LAUNCHER_MARK = 'The orgai command of a packaged OrgAI'
+
+/**
+ * True for a PATH folder that may reach the network when touched (scratch.ts `isNetworkPath`, with the platform passed
+ * in): on win32 anything starting with two separators (UNC, `\\?\UNC\`, `\\.\`), on darwin `/net/` and `/Network/`.
+ * Such a folder is never stat'ed: this runs on the app's main thread, and an offline file server would stall it.
+ */
+export function isNetworkPathFor(platform: NodeJS.Platform | string, path: string): boolean {
+  if (platform === 'win32') return /^[\\/]{2}/.test(path)
+  if (platform === 'darwin') return /^\/(?:net|network)(?:\/|$)/i.test(path)
+  return false
+}
 
 export type OrgaiOnPathKind = 'npm' | 'app-shim' | 'app-launcher' | 'archive' | 'dev' | 'unknown'
 
@@ -125,6 +142,8 @@ export function findOrgaiOnPath(opts: FindOrgaiOptions): OrgaiOnPathEntry[] {
     const dir = folderKey(p, platform, raw, home)
     // Relative PATH entries depend on the cwd; a shell would search them, but nothing here guesses a cwd.
     if (!dir || !p.isAbsolute(dir)) continue
+    // Never touch a network folder (UNC, /net automounts): see isNetworkPathFor. A mapped drive letter is not detected.
+    if (isNetworkPathFor(platform, raw.trim().replace(/^"(.*)"$/, '$1')) || isNetworkPathFor(platform, dir)) continue
     const key = samePathKey(platform, dir)
     if (seen.has(key)) continue
     seen.add(key)
@@ -157,6 +176,13 @@ function inspectCandidate(
     return undefined
   }
   if (!st.isFile()) return undefined
+  const isFile = (x: string): boolean => {
+    try {
+      return fs.lstat(x).isFile()
+    } catch {
+      return false
+    }
+  }
   const withBundle = (entry: OrgaiOnPathEntry, bundleDir: string, fallback: OrgaiOnPathKind): OrgaiOnPathEntry => {
     const info = readInstallInfo({ bundleDir, fs: { size: (x) => fs.lstat(x).size, isFile: (x) => fs.lstat(x).isFile(), readText: (x) => fs.readText(x) } })
     const kind = entry.kind !== 'unknown' ? entry.kind : info.source === 'file' ? kindOfChannel(info.channel) : fallback
@@ -170,36 +196,41 @@ function inspectCandidate(
     }
   }
   let real = file
-  try {
-    real = fs.realpath(file)
-  } catch {
-    real = file
+  if (link) {
+    try {
+      real = fs.realpath(file)
+    } catch {
+      real = file
+    }
   }
   // npm's POSIX bin is a link straight to the bundle entry; so is a hand-made link to a checkout's out/cli/orgai.mjs.
   if (p.basename(real) === 'orgai.mjs' && p.basename(p.dirname(real)) === 'cli' && p.basename(p.dirname(p.dirname(real))) === 'out') {
     return withBundle({ path: file, kind: 'unknown' }, p.dirname(real), 'dev')
   }
-  // A link to a packaged app's launcher (<Resources>/bin/orgai[.cmd]).
-  if (link && p.basename(p.dirname(real)) === 'bin') {
-    const resources = p.dirname(p.dirname(real))
-    const layout = packagedLayout(platform, resources)
-    if (samePathKey(platform, layout.launcher) === samePathKey(platform, real)) {
-      return withBundle({ path: file, kind: 'app-launcher', launcher: real }, layout.cliBundleDir, 'app-launcher')
+  // Read through links: a link to a shim is read as that shim, a link to the launcher as the launcher.
+  const text = (() => {
+    if (st.size > SHIM_TEXT_MAX_BYTES) return undefined
+    try {
+      return fs.readText(file)
+    } catch {
+      return undefined
     }
-  }
-  if (st.size > SHIM_TEXT_MAX_BYTES) return { path: file, kind: 'unknown' }
-  let text: string
-  try {
-    text = fs.readText(file)
-  } catch {
-    return { path: file, kind: 'unknown' }
-  }
-  if (isOrgaiShim(text)) {
+  })()
+  if (text !== undefined && isOrgaiShim(text)) {
     const parsed = parseCliShim(text, platform, env)
     if (!parsed) return { path: file, kind: 'app-shim' }
     const resources = p.dirname(p.dirname(parsed.launcher))
     return withBundle({ path: file, kind: 'app-shim', launcher: parsed.launcher }, packagedLayout(platform, resources).cliBundleDir, 'app-shim')
   }
+  // A packaged app's launcher (<Resources>/bin/orgai[.cmd]): its folder on PATH (VS Code style) or a link to it. Only
+  // when it really is one: the launcher's own text, or the app's CLI bundle beside it. Any other <X>/bin/orgai is not.
+  if (p.basename(p.dirname(real)) === 'bin') {
+    const layout = packagedLayout(platform, p.dirname(p.dirname(real)))
+    if (samePathKey(platform, layout.launcher) === samePathKey(platform, real) && ((text !== undefined && text.includes(PACKAGED_LAUNCHER_MARK)) || isFile(layout.cliEntry))) {
+      return withBundle({ path: file, kind: 'app-launcher', launcher: real }, layout.cliBundleDir, 'app-launcher')
+    }
+  }
+  if (text === undefined) return { path: file, kind: 'unknown' }
   if (platform === 'win32' && NPM_CMD_BUNDLE_RE.test(text)) {
     return withBundle({ path: file, kind: 'unknown' }, p.join(p.dirname(file), 'node_modules', 'orgai', 'out', 'cli'), 'npm')
   }

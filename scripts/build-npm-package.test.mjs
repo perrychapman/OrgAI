@@ -33,10 +33,15 @@ test('npmInvocation prefers npm-cli.js and never a shell', () => {
   assert.deepEqual(npmInvocation({ ComSpec: 'C:\\cmd.exe' }, 'C:\\n\\node.exe', 'win32', () => false), { command: 'C:\\cmd.exe', prefix: ['/d', '/s', '/c', 'npm.cmd'] })
 })
 
-test('commitOf takes GITHUB_SHA first and shortens to 12', () => {
-  assert.equal(commitOf('/nowhere', { GITHUB_SHA: 'ABCDEF0123456789abcdef0123456789abcdef01' }), 'abcdef012345')
-  assert.equal(commitOf('/nowhere', {}, () => { throw new Error('no git') }), undefined)
-  assert.equal(commitOf('/nowhere', {}, () => '0123456789abcdef0123456789abcdef01234567\n'), '0123456789ab')
+test('commitOf takes the checkout HEAD first, GITHUB_SHA only without git, and shortens to 12', () => {
+  const noGit = () => { throw new Error('no git') }
+  const head = () => '0123456789abcdef0123456789abcdef01234567\n'
+  // A hand-run Release on a tag: the checkout is the tag, GITHUB_SHA the dispatching branch head. The checkout wins.
+  assert.equal(commitOf('/nowhere', { GITHUB_SHA: 'ABCDEF0123456789abcdef0123456789abcdef01' }, head), '0123456789ab')
+  assert.equal(commitOf('/nowhere', { GITHUB_SHA: 'ABCDEF0123456789abcdef0123456789abcdef01' }, noGit), 'abcdef012345')
+  assert.equal(commitOf('/nowhere', { GITHUB_SHA: 'ABCDEF0123456789abcdef0123456789abcdef01' }, () => 'fatal: not a git repository'), 'abcdef012345')
+  assert.equal(commitOf('/nowhere', {}, noGit), undefined)
+  assert.equal(commitOf('/nowhere', {}, head), '0123456789ab')
 })
 
 /** A repo with package.json, a tiny lockfile, the SDK's package.json and a built out/cli. */
@@ -161,6 +166,45 @@ test('main refuses a stale bundle and a link in it', () => {
     }
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('write-install-info --electron-builder writes channel app, runs the local electron-builder, then removes it', () => {
+  const root = fakeRepo()
+  try {
+    const cli = path.join(root, 'out', 'cli')
+    fs.rmSync(path.join(cli, 'install.json'))
+    // No electron-builder installed: refused before anything is written.
+    assert.throws(() => writeInstallInfoMain(['--channel', 'app', '--electron-builder', '--mac'], root, () => {}, {}, () => {}), /electron-builder is not installed/)
+    assert.equal(fs.existsSync(path.join(cli, 'install.json')), false)
+    const eb = path.join(root, 'node_modules', 'electron-builder')
+    fs.mkdirSync(eb, { recursive: true })
+    fs.writeFileSync(path.join(eb, 'package.json'), JSON.stringify({ bin: { 'electron-builder': 'cli.js' } }))
+    const calls = []
+    const seen = []
+    const exec = (cmd, args, opts) => {
+      calls.push({ cmd, args, cwd: opts.cwd })
+      seen.push(JSON.parse(fs.readFileSync(path.join(cli, 'install.json'), 'utf8')))
+    }
+    writeInstallInfoMain(['--channel', 'app', '--electron-builder', '--mac', '--arm64'], root, () => {}, { GITHUB_SHA: 'd'.repeat(40) }, exec)
+    assert.deepEqual(calls, [{ cmd: process.execPath, args: [path.join(eb, 'cli.js'), '--mac', '--arm64'], cwd: root }])
+    assert.deepEqual(seen, [{ channel: 'app', version: '9.9.9', commit: 'dddddddddddd' }], 'install.json is in place while electron-builder runs')
+    assert.equal(fs.existsSync(path.join(cli, 'install.json')), false, 'removed afterwards')
+    // A failed build still removes it.
+    assert.throws(() => writeInstallInfoMain(['--channel', 'app', '--electron-builder', '--win'], root, () => {}, {}, () => { throw new Error('builder failed') }), /builder failed/)
+    assert.equal(fs.existsSync(path.join(cli, 'install.json')), false)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('every npm run dist script writes install.json channel app around electron-builder', () => {
+  const pkg = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, '..', 'package.json'), 'utf8'))
+  const dist = Object.entries(pkg.scripts).filter(([k]) => k === 'dist' || k.startsWith('dist:'))
+  assert.ok(dist.length >= 7)
+  for (const [name, cmd] of dist) {
+    assert.match(cmd, /node scripts\/write-install-info\.mjs --channel app --electron-builder /, name)
+    assert.doesNotMatch(cmd.replace('--electron-builder', ''), /electron-builder/, `${name} runs electron-builder only through write-install-info`)
   }
 })
 

@@ -23,6 +23,7 @@ import {
   startLocalRegistry,
   vaultNotBuilt,
   vaultState,
+  connectionTestState,
   versionSaysNpm,
   whichOnPath,
   withNodeFirst
@@ -83,6 +84,9 @@ test('output readers', () => {
   assert.equal(vaultState(JSON.stringify({ state: 'key-mismatch' })), 'key-mismatch')
   assert.equal(vaultState(JSON.stringify({ vault: { state: 'open' } })), 'open')
   assert.equal(vaultState('nope'), undefined)
+  assert.equal(connectionTestState(JSON.stringify({ id: 'litellm', status: 'connected', ok: true })), 'connected')
+  assert.equal(connectionTestState(JSON.stringify({ state: 'connected' })), undefined)
+  assert.equal(connectionTestState('nope'), undefined)
 })
 
 test('checkNpmDoctor', () => {
@@ -254,14 +258,15 @@ function fakeRun(calls, { pkg, sw }, answers = {}) {
   }
 }
 
-async function runMain(fake, answers) {
+async function runMain(fake, answers, extraDeps = {}) {
   const calls = []
   const lines = []
   const tmp = tempDir('tmp')
   try {
     const code = await main([], {
       root: fake.root,
-      run: fakeRun(calls, fake, answers),
+      run: extraDeps.wrapRun ? extraDeps.wrapRun(fakeRun(calls, fake, answers)) : fakeRun(calls, fake, answers),
+      ...(extraDeps.fakeProxy ? { fakeProxy: extraDeps.fakeProxy } : {}),
       log: (l) => lines.push(l),
       tmpDir: tmp,
       env: { PATH: '', HOME: os.homedir(), ORGAI_SECRET_X: 'shh', ORGAI_VAULT_KEY_FILE: '/mine.key' },
@@ -335,5 +340,92 @@ test('main: a missing tarball or an unknown argument exits 2', async () => {
     assert.match(lines.at(-1), /no tarball/)
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+/**
+ * A fake vault behind `orgai secrets` / `connections`: one stored LiteLLM key shared across "processes" (calls), a
+ * key-mismatch answer when ORGAI_VAULT_KEY_FILE names another key file, and the shapes of the real commands
+ * (connections.ts runTest: `{ id, status, ok }`; SecretsStatusResult: `{ state, ... }`). `leak` prints the key.
+ */
+function fakeVault({ leak = false, staleAfterClear = false } = {}) {
+  const st = { key: undefined, keyFile: undefined, cmds: [] }
+  const wrap = (inner) => async (cmd) => {
+    const a = cmd.args
+    const has = (...w) => w.every((x) => a.includes(x))
+    if (has('secrets')) st.cmds.push(a.slice(a.indexOf('secrets')).join(' '))
+    if (has('connections')) st.cmds.push(a.slice(a.indexOf('connections')).join(' '))
+    if (has('secrets', 'status')) {
+      const other = cmd.env.ORGAI_VAULT_KEY_FILE
+      const state = other && st.keyFile && other !== st.keyFile ? 'key-mismatch' : st.keyFile ? 'open' : 'absent'
+      return { code: 0, stdout: JSON.stringify({ state, scheme: 'key-file', counts: { vault: st.key ? 1 : 0, legacy: 0, unreadable: 0, overlay: 0 } }), stderr: '' }
+    }
+    if (has('secrets', 'init')) {
+      st.keyFile = a[a.indexOf('--key-file') + 1]
+      return { code: 0, stdout: '', stderr: '' }
+    }
+    if (has('connections', 'update')) return { code: 0, stdout: '', stderr: '' }
+    if (has('connections', 'set-secret', '--stdin')) {
+      st.key = String(cmd.input ?? '').trim()
+      return { code: 0, stdout: '', stderr: '' }
+    }
+    if (has('connections', 'set-secret', '--clear')) {
+      if (!staleAfterClear) st.key = undefined
+      return { code: 0, stdout: '', stderr: '' }
+    }
+    if (has('connections', 'test')) {
+      const status = st.key ? 'connected' : 'disconnected'
+      return { code: st.key ? 0 : 5, stdout: JSON.stringify({ id: 'litellm', status, ok: !!st.key, ...(leak && st.key ? { detail: `key ${st.key}` } : {}) }), stderr: '' }
+    }
+    return inner(cmd)
+  }
+  const proxy = async (key) => {
+    st.proxyKey = key
+    return { url: 'http://127.0.0.1:9/', hits: { authorized: 1, refused: 0 }, close: async () => {} }
+  }
+  return { st, wrap, proxy }
+}
+
+test('main step (6): a working key-file vault passes: stored, read in another process, key-mismatch, then cleared', async () => {
+  const fake = fakeRoot()
+  const v = fakeVault()
+  try {
+    const r = await runMain(fake, {}, { wrapRun: v.wrap, fakeProxy: v.proxy })
+    assert.equal(r.code, 0, r.out)
+    assert.match(r.out, /ok +\(6\) vault +key file vault: stored in one process, read in another/)
+    assert.ok(v.st.proxyKey.startsWith('sk-verify-'), 'the proxy gets the synthetic key')
+    assert.doesNotMatch(r.out, new RegExp(v.st.proxyKey))
+    assert.deepEqual(
+      v.st.cmds.map((c) => c.replace(/--key-file \S+/, '--key-file K').replace(/--base-url \S+/, '--base-url U')),
+      [
+        'secrets status',
+        'secrets init --key-file K',
+        'connections update litellm --base-url U --enable',
+        'connections set-secret litellm --stdin',
+        'connections test litellm',
+        'secrets status',
+        'connections set-secret litellm --clear',
+        'connections test litellm'
+      ]
+    )
+  } finally {
+    fs.rmSync(fake.root, { recursive: true, force: true })
+  }
+})
+
+test('main step (6): a key that survives the delete fails; a printed key fails without echoing it', async () => {
+  const fake = fakeRoot()
+  try {
+    const stale = fakeVault({ staleAfterClear: true })
+    const r = await runMain(fake, {}, { wrapRun: stale.wrap, fakeProxy: stale.proxy })
+    assert.equal(r.code, 1)
+    assert.match(r.out, /fail +\(6\) vault +after the delete: expected disconnected, got connected/)
+    const leak = fakeVault({ leak: true })
+    const l = await runMain(fake, {}, { wrapRun: leak.wrap, fakeProxy: leak.proxy })
+    assert.equal(l.code, 1)
+    assert.match(l.out, /fail +\(6\) vault +the synthetic key was printed by an orgai command/)
+    assert.doesNotMatch(l.out, new RegExp(leak.st.proxyKey))
+  } finally {
+    fs.rmSync(fake.root, { recursive: true, force: true })
   }
 })

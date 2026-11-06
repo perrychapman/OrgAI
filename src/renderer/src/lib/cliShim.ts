@@ -85,26 +85,34 @@ export function otherCliLine(other: NonNullable<CliShimStatus['otherCli']>, plat
   }
 }
 
+/** True for an orgai the user installed on purpose (npm, the portable archive): the app then offers no Install (8.2). */
+export function otherCliBlocksInstall(other: NonNullable<CliShimStatus['otherCli']>): boolean {
+  return other.channel === 'npm' || other.channel === 'archive'
+}
+
 export function cliShimView(status: CliShimStatus, platform: string, home?: string): CliShimView {
   const path = displayPath(status.path, platform, home) || 'its folder'
   const binDir = displayPath(status.binDir, platform, home)
   const hint = status.onPath === false && binDir ? { pathHint: pathHint(binDir, platform) } : {}
-  // Another orgai on PATH (an npm install): say so and never offer to install or update over it (8.2).
+  // Another orgai on PATH: always named. Only an npm or archive install blocks Install / Update (8.2: the user chose
+  // that command); an unknown file, a dev checkout or another app's shim keeps the buttons (main never refuses either).
   const other = status.otherCli && typeof status.otherCli.path === 'string' ? status.otherCli : undefined
+  const blocking = other !== undefined && otherCliBlocksInstall(other)
+  const also = other ? ` ${otherCliLine(other, platform, home, true)}` : ''
   switch (status.state) {
     case 'not-installed':
-      if (other) return { line: otherCliLine(other, platform, home), remove: false }
+      if (other && blocking) return { line: otherCliLine(other, platform, home), remove: false }
       return {
-        line: binDir ? `Not installed. Adds a small orgai command in ${binDir}.` : 'Not installed. Adds a small orgai command.',
+        line: `${binDir ? `Not installed. Adds a small orgai command in ${binDir}.` : 'Not installed. Adds a small orgai command.'}${also}`,
         primary: { action: 'install', label: CLI_SHIM_INSTALL_LABEL },
         remove: false
       }
     case 'installed':
-      return { line: `Installed at ${path}.${other ? ` ${otherCliLine(other, platform, home, true)}` : ''}`, remove: true, ...hint }
+      return { line: `Installed at ${path}.${also}`, remove: true, ...hint }
     case 'outdated':
-      if (other) return { line: `Installed at ${path}, but it runs another copy of OrgAI. ${otherCliLine(other, platform, home, true)}`, remove: true, ...hint }
+      if (blocking) return { line: `Installed at ${path}, but it runs another copy of OrgAI.${also}`, remove: true, ...hint }
       return {
-        line: `Installed at ${path}, but it runs another copy of OrgAI.`,
+        line: `Installed at ${path}, but it runs another copy of OrgAI.${also}`,
         primary: { action: 'update', label: CLI_SHIM_UPDATE_LABEL },
         remove: true,
         ...hint

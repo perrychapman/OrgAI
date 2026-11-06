@@ -6,8 +6,12 @@
 //
 //   node scripts/write-install-info.mjs --channel app     write out/cli/install.json (version from package.json)
 //   node scripts/write-install-info.mjs --remove          remove it again (a checkout reads as channel 'dev')
+//   node scripts/write-install-info.mjs --channel app --electron-builder <args...>
+//                                                          write it, run the local electron-builder with <args>, then
+//                                                          remove it whatever happened (the npm run dist:* scripts)
 //
-// Touches only out/cli/install.json. Spawns only git (the commit). Token-free.
+// Touches only out/cli/install.json. Spawns git (the commit) and, with --electron-builder, node_modules' electron-builder.
+// Token-free.
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -17,16 +21,20 @@ import { installInfoFor } from './lib/npmPackage.mjs'
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 export const INSTALL_INFO_FILE = 'install.json'
 
-/** The commit to stamp: GITHUB_SHA (CI) else `git rev-parse HEAD`, shortened to 12; undefined when unknown. */
+/**
+ * The commit to stamp: `git rev-parse HEAD` of the checkout that was built, else GITHUB_SHA, shortened to 12;
+ * undefined when unknown. The checkout comes first: release.yml checks out the meta job's ref, which for a hand-run
+ * Release with a `tag` input is the tag, while GITHUB_SHA is the head of the branch the run was dispatched from.
+ */
 export function commitOf(root, env = process.env, exec = execFileSync) {
-  const fromEnv = typeof env.GITHUB_SHA === 'string' && /^[0-9a-f]{7,40}$/i.test(env.GITHUB_SHA) ? env.GITHUB_SHA : undefined
-  if (fromEnv) return fromEnv.slice(0, 12).toLowerCase()
   try {
     const sha = String(exec('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] })).trim()
-    return /^[0-9a-f]{7,40}$/i.test(sha) ? sha.slice(0, 12).toLowerCase() : undefined
+    if (/^[0-9a-f]{7,40}$/i.test(sha)) return sha.slice(0, 12).toLowerCase()
   } catch {
-    return undefined
+    /* not a checkout, or no git: fall back to the CI variable */
   }
+  const fromEnv = typeof env.GITHUB_SHA === 'string' && /^[0-9a-f]{7,40}$/i.test(env.GITHUB_SHA) ? env.GITHUB_SHA : undefined
+  return fromEnv ? fromEnv.slice(0, 12).toLowerCase() : undefined
 }
 
 export function readVersion(root) {
@@ -60,19 +68,46 @@ export function removeInstallInfo(cliDir) {
   }
 }
 
-export function main(argv = process.argv.slice(2), root = ROOT, log = console.log, env = process.env) {
+/** The local electron-builder's cli script (node_modules/electron-builder, its "electron-builder" bin). */
+export function electronBuilderBin(root) {
+  const dir = path.join(root, 'node_modules', 'electron-builder')
+  let meta
+  try {
+    meta = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'))
+  } catch {
+    throw new Error('electron-builder is not installed in node_modules; run npm install first')
+  }
+  const rel = typeof meta.bin === 'string' ? meta.bin : meta.bin?.['electron-builder']
+  if (!rel) throw new Error('electron-builder has no "electron-builder" bin')
+  return path.join(dir, rel)
+}
+
+export function main(argv = process.argv.slice(2), root = ROOT, log = console.log, env = process.env, exec = execFileSync) {
   const cliDir = path.join(root, 'out', 'cli')
   if (argv.length === 1 && argv[0] === '--remove') {
     log(removeInstallInfo(cliDir) ? `Removed ${path.relative(root, path.join(cliDir, INSTALL_INFO_FILE))}` : 'No install.json to remove.')
     return
   }
   let channel
-  if (argv.length === 2 && argv[0] === '--channel') channel = argv[1]
-  else if (argv.length === 1 && argv[0].startsWith('--channel=')) channel = argv[0].slice('--channel='.length)
-  else throw new Error('Use: write-install-info --channel app|npm|archive, or --remove')
+  let builderArgs
+  const ebAt = argv.indexOf('--electron-builder')
+  const own = ebAt === -1 ? argv : argv.slice(0, ebAt)
+  if (ebAt !== -1) builderArgs = argv.slice(ebAt + 1)
+  if (own.length === 2 && own[0] === '--channel') channel = own[1]
+  else if (own.length === 1 && own[0].startsWith('--channel=')) channel = own[0].slice('--channel='.length)
+  else throw new Error('Use: write-install-info --channel app|npm|archive [--electron-builder <args...>], or --remove')
   const info = installInfoFor(channel, readVersion(root), commitOf(root, env))
+  const bin = builderArgs ? electronBuilderBin(root) : undefined
   const target = writeInstallInfo(cliDir, info)
   log(`Wrote ${path.relative(root, target)}: ${JSON.stringify(info)}`)
+  if (!bin) return
+  try {
+    exec(process.execPath, [bin, ...builderArgs], { cwd: root, stdio: 'inherit', windowsHide: true, env })
+  } finally {
+    // The checkout's own out/cli reads as channel 'dev' again (HostLauncher treats 'app' as a packaged layout).
+    removeInstallInfo(cliDir)
+    log(`Removed ${path.relative(root, target)}`)
+  }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {

@@ -18,7 +18,9 @@ import {
   parseArgs,
   stopRefusal,
   verifyEnv,
-  versionMatches
+  versionMatches,
+  versionChannelMatches,
+  appInstallInfoProblem
 } from './verify-pack.mjs'
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')), '..')
@@ -271,6 +273,7 @@ function fakeRelease(unpacked) {
   fs.writeFileSync(path.join(p.cliBundleDir, 'orgai.mjs'), "import fs from 'node:fs'\nconst h = () => import('./inprocHost.mjs')\n")
   fs.writeFileSync(path.join(p.cliBundleDir, 'inprocHost.mjs'), "import { query } from '@anthropic-ai/claude-agent-sdk'\nimport { z } from 'zod'\n")
   fs.writeFileSync(path.join(p.cliBundleDir, 'tui.mjs'), "import path from 'node:path'\n")
+  fs.writeFileSync(path.join(p.cliBundleDir, 'install.json'), JSON.stringify({ channel: 'app', version: VERSION, commit: '0123456789ab' }))
   for (const pkg of unpacked) {
     const dir = path.join(p.resourcesDir, 'app.asar.unpacked', 'node_modules', ...pkg.split('/'))
     fs.mkdirSync(dir, { recursive: true })
@@ -284,7 +287,7 @@ function fakeRunner(calls, overrides = {}) {
   return async (cmd) => {
     calls.push(cmd)
     const a = cmd.args
-    if (a.includes('--version')) return { code: 0, stdout: `${VERSION}\n`, stderr: '' }
+    if (a.includes('--version')) return overrides.version ?? { code: 0, stdout: `${VERSION} channel app commit 0123456789ab\n`, stderr: '' }
     if (a.includes('doctor')) return { code: 0, stdout: overrides.doctor ?? doctorDoc(), stderr: '' }
     if (a.includes('exec')) {
       const inproc = a.includes('inproc')
@@ -423,6 +426,40 @@ test('main --npm-tarball: the npm orgai drives the packed app (g), with ORGAI_EL
     assert.match(failed.out, /fail +\(g\) npm exec host {2}npm install -g failed: exit 1; stderr: E404/)
     const missing = await runMain(fake, ['--skip-host', '--npm-tarball', path.join(fake.base, 'nope.tgz')])
     assert.match(missing.out, /fail +\(g\) npm exec host {2}no npm tarball/)
+  } finally {
+    fs.rmSync(fake.base, { recursive: true, force: true })
+  }
+})
+
+test('versionChannelMatches and appInstallInfoProblem', () => {
+  assert.equal(versionChannelMatches('0.1.7 channel app commit abc\n', '0.1.7'), true)
+  assert.equal(versionChannelMatches('0.1.7 channel dev', '0.1.7'), false)
+  assert.equal(versionChannelMatches('0.1.7 channel application', '0.1.7'), false)
+  assert.equal(versionChannelMatches('0.1.6 channel app', '0.1.7'), false)
+  const dir = tempDir('info')
+  try {
+    assert.match(appInstallInfoProblem(dir, '0.1.7'), /install\.json missing/)
+    fs.writeFileSync(path.join(dir, 'install.json'), '{nope')
+    assert.match(appInstallInfoProblem(dir, '0.1.7'), /not valid JSON/)
+    fs.writeFileSync(path.join(dir, 'install.json'), JSON.stringify({ channel: 'npm', version: '0.1.7' }))
+    assert.match(appInstallInfoProblem(dir, '0.1.7'), /channel "npm", expected "app"/)
+    fs.writeFileSync(path.join(dir, 'install.json'), JSON.stringify({ channel: 'app', version: '0.1.6' }))
+    assert.match(appInstallInfoProblem(dir, '0.1.7'), /version "0\.1\.6", expected 0\.1\.7/)
+    fs.writeFileSync(path.join(dir, 'install.json'), JSON.stringify({ channel: 'app', version: '0.1.7' }))
+    assert.equal(appInstallInfoProblem(dir, '0.1.7'), undefined)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('main: a pack without install.json fails (a), and a --version without channel app fails (c)', async () => {
+  const fake = fakeRelease(['@anthropic-ai/claude-agent-sdk', 'zod'])
+  try {
+    fs.rmSync(path.join(fake.paths.cliBundleDir, 'install.json'))
+    const r = await runMain(fake, ['--skip-host'], { version: { code: 0, stdout: `${VERSION} channel dev\n`, stderr: '' } })
+    assert.equal(r.code, 1)
+    assert.match(r.out, /fail +\(a\) files {2}out\/cli\/install\.json missing/)
+    assert.match(r.out, /fail +\(c\) --version {2}expected .* channel app/)
   } finally {
     fs.rmSync(fake.base, { recursive: true, force: true })
   }

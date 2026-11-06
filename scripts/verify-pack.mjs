@@ -9,9 +9,10 @@
 //   node scripts/verify-pack.mjs --npm-tarball <tgz>     also run (g) with that tarball
 //
 // Checks, each printed as one ok / fail line; exit 0 only when all pass:
-//   (a) the launcher, the app binary and out/cli/{orgai,tui,inprocHost}.mjs exist; the launcher is executable (POSIX)
+//   (a) the launcher, the app binary and out/cli/{orgai,tui,inprocHost}.mjs exist; the launcher is executable (POSIX);
+//       out/cli/install.json says channel 'app' and package.json's version (Wave 7, cli-standalone.md 3.5)
 //   (b) every package the CLI bundle imports is a Node builtin or unpacked from app.asar
-//   (c) `orgai --version` prints package.json's version
+//   (c) `orgai --version` prints package.json's version and `channel app`
 //   (d) `orgai --output-format json doctor`: launcher ok from the packaged app, node ok, no check failed
 //   (e) `orgai --host inproc exec --create-project` with [mock:exec-plan] in a temp git repo: exit 0, 'completed'
 //   (f) the same exec with the default host (the packaged app spawned with --headless-host), then `orgai daemon stop`
@@ -119,6 +120,28 @@ export function versionMatches(stdout, version) {
     .trim()
     .split(/\s+/)
     .some((w) => w === version || w === `v${version}`)
+}
+
+/** True when `--version` output names this version and the install channel (`0.1.7 channel app commit ...`). Pure. */
+export function versionChannelMatches(stdout, version, channel = 'app') {
+  return versionMatches(stdout, version) && new RegExp(`(^|\\s)channel ${channel}(\\s|$)`).test(String(stdout ?? '').trim())
+}
+
+/**
+ * What is wrong with the app bundle's install.json (cli-standalone.md 3.5): missing, not JSON, a channel other than
+ * 'app' or another version. Undefined when it is right.
+ */
+export function appInstallInfoProblem(cliBundleDir, version) {
+  const file = path.join(cliBundleDir, 'install.json')
+  let info
+  try {
+    info = JSON.parse(fs.readFileSync(file, 'utf8'))
+  } catch (e) {
+    return e?.code === 'ENOENT' ? 'out/cli/install.json missing (the app would read as channel dev)' : `out/cli/install.json is not valid JSON (${e.message})`
+  }
+  if (info?.channel !== 'app') return `out/cli/install.json says channel ${JSON.stringify(info?.channel)}, expected "app"`
+  if (info.version !== version) return `out/cli/install.json says version ${JSON.stringify(info.version)}, expected ${version}`
+  return undefined
 }
 
 /**
@@ -382,7 +405,11 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
   const problemsA = absent.map(([label, p]) => `${label} missing (${p})`)
   if (!absent.some(([label]) => label === 'launcher') && platform !== 'win32' && !isExecutable(paths.launcher))
     problemsA.push(`the launcher is not executable (${paths.launcher})`)
-  report('(a) files', problemsA.length === 0, problemsA.length ? problemsA.join('; ') : `launcher, app binary and ${BUNDLE_FILES.join(', ')} are there`)
+  if (fs.existsSync(paths.cliBundleDir)) {
+    const infoProblem = appInstallInfoProblem(paths.cliBundleDir, version)
+    if (infoProblem) problemsA.push(infoProblem)
+  }
+  report('(a) files', problemsA.length === 0, problemsA.length ? problemsA.join('; ') : `launcher, app binary, ${BUNDLE_FILES.join(', ')} and install.json (channel app) are there`)
 
   // (b) unpacked dependencies
   if (fs.existsSync(paths.cliBundleDir)) {
@@ -416,7 +443,8 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
     } else {
       // (c)
       const v = await orgai(['--version'], userDataDir)
-      report('(c) --version', v.code === 0 && versionMatches(v.stdout, version), v.code === 0 && versionMatches(v.stdout, version) ? `prints ${version}` : `expected ${version}: ${showRun(v)}`)
+      const vOk = v.code === 0 && versionChannelMatches(v.stdout, version, 'app')
+      report('(c) --version', vOk, vOk ? `prints ${version} channel app` : `expected ${version} channel app: ${showRun(v)}`)
 
       // (d)
       const d = await orgai(['--output-format', 'json', 'doctor'], userDataDir)

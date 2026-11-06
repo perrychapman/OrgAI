@@ -87,6 +87,18 @@ describe('another orgai on PATH (cli-standalone.md 8.2)', () => {
     const i = cliShimView({ state: 'installed', ...base, onPath: true, otherCli: other }, 'darwin')
     expect(i).toEqual({ line: 'Installed at ~/.local/bin/orgai. The orgai command from npm is also on your PATH.', remove: true })
   })
+  it('an unknown file, a dev checkout or another app keeps Install and Update; the archive blocks like npm', () => {
+    const unknown = cliShimView({ state: 'not-installed', ...base, otherCli: { path: '/Users/a/bin/orgai' } }, 'darwin', '/Users/a')
+    expect(unknown).toEqual({
+      line: 'Not installed. Adds a small orgai command in ~/.local/bin. Another orgai command is also on your PATH: ~/bin/orgai.',
+      primary: { action: 'install', label: CLI_SHIM_INSTALL_LABEL },
+      remove: false
+    })
+    expect(cliShimView({ state: 'not-installed', ...base, otherCli: { path: '/r/out/cli/orgai', channel: 'dev' } }, 'darwin').primary?.action).toBe('install')
+    expect(cliShimView({ state: 'not-installed', ...base, otherCli: { path: '/o/orgai', channel: 'app' } }, 'darwin').primary?.action).toBe('install')
+    expect(cliShimView({ state: 'outdated', ...base, otherCli: { path: '/x/orgai' } }, 'darwin').primary?.action).toBe('update')
+    expect(cliShimView({ state: 'not-installed', ...base, otherCli: { path: '/x/orgai', channel: 'archive' } }, 'darwin').primary).toBeUndefined()
+  })
   it('words every channel; an unknown one names its path; a junk version is left out', () => {
     expect(otherCliLine({ path: '/x', channel: 'archive', version: '1.0.0' }, 'linux')).toBe('The orgai command from the portable archive (1.0.0) is on your PATH.')
     expect(otherCliLine({ path: '/x', channel: 'app' }, 'linux')).toBe('The orgai command of another OrgAI app is on your PATH.')

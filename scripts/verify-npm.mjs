@@ -170,6 +170,15 @@ export function vaultState(stdout) {
 }
 
 /**
+ * The connection state in a `connections test <id> --output-format json` document. The shape is src/cli/commands/
+ * connections.ts runTest's: `{ id, status: ConnectionStatus['state'], detail?, account?, ok }`. Pure.
+ */
+export function connectionTestState(stdout) {
+  const doc = parseJson(stdout)
+  return doc && typeof doc === 'object' && typeof doc.status === 'string' ? doc.status : undefined
+}
+
+/**
  * Every package installed under `<packageDir>/node_modules` (scopes and nested node_modules included):
  * Map location (posix, relative to packageDir) -> { version, manifest, hasBindingGyp }. Links are not followed.
  */
@@ -670,7 +679,7 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
       const testState = async () => {
         const r = await orgai(['--host', 'inproc', '--output-format', 'json', 'connections', 'test', 'litellm'])
         outputs.push(r)
-        return parseJson(r.stdout)?.status
+        return connectionTestState(r.stdout)
       }
       const connected = await testState()
       if (connected !== 'connected') problems6.push(`a fresh process reads the stored key: expected connected, got ${connected ?? 'no answer'}`)

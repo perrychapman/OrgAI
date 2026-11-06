@@ -238,3 +238,22 @@ describe('install.json and README', () => {
     }
   })
 })
+
+describe('release.yml publish-npm', () => {
+  // Text checks (nothing runs the workflow here): the job publishes only the verified tarball and has a credential
+  // for a first publish, when npm cannot have a trusted publisher yet (D2 fallback).
+  const text = readFileSync(join(ROOT, '.github', 'workflows', 'release.yml'), 'utf8')
+  const job = text.slice(text.indexOf('\n  publish-npm:'), text.indexOf('\n  publish:'))
+  it('needs verify-npm, sits behind the npm-publish environment and may use OIDC', () => {
+    expect(job).toMatch(/needs: \[meta, build, npm-package, verify-npm\]/)
+    expect(job).toMatch(/environment: npm-publish/)
+    expect(job).toMatch(/id-token: write/)
+    expect(job).toMatch(/--provenance/)
+  })
+  it('falls back to the NPM_TOKEN secret through an npmrc that names the variable, never the value', () => {
+    expect(job).toMatch(/NPM_TOKEN: \$\{\{ secrets\.NPM_TOKEN \}\}/)
+    expect(job).toContain("'//registry.npmjs.org/:_authToken=${NPM_TOKEN}'")
+    expect(job).toMatch(/NPM_CONFIG_USERCONFIG="\$npmrc"/)
+    expect(job).not.toMatch(/echo[^\n]*\$NPM_TOKEN/)
+  })
+})

@@ -272,6 +272,9 @@ jobs:
 
   # Publishes the verified tarball. The `npm-publish` environment must require a reviewer (repository settings:
   # npm is not reversible after 72 hours; D2). Trusted publishing (OIDC, id-token) with provenance; npm must be 11.5.1+.
+  # D2 fallback: npm configures a trusted publisher only on a package that already exists, so the first version (and
+  # any release before trusted publishing is set up) needs a granular automation token in the `npm-publish`
+  # environment's NPM_TOKEN secret. With the secret set it is used; without it the job relies on OIDC alone.
   publish-npm:
     needs: [meta, build, npm-package, verify-npm]
     if: needs.meta.outputs.publish == 'true'
@@ -295,12 +298,22 @@ jobs:
         env:
           FILE: ${{ needs.npm-package.outputs.file }}
           WANT: ${{ needs.npm-package.outputs.sha256 }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           got="$(sha256sum "npm-artifact/$FILE" | cut -d' ' -f1)"
           if [ "$got" != "$WANT" ]; then echo "::error::$FILE sha256 $got, expected $WANT"; exit 1; fi
           version="$(tar -xOzf "npm-artifact/$FILE" package/package.json | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).version")"
           tag=latest
           case "$version" in *-*) tag=next ;; esac
+          if [ -n "$NPM_TOKEN" ]; then
+            # The token stays in the environment: the npmrc names the variable, npm expands it (never echoed).
+            npmrc="$RUNNER_TEMP/npmrc-publish"
+            printf '%s\n' '//registry.npmjs.org/:_authToken=${NPM_TOKEN}' > "$npmrc"
+            export NPM_CONFIG_USERCONFIG="$npmrc"
+            echo "Credentials: the NPM_TOKEN automation token (D2 fallback)"
+          else
+            echo "Credentials: trusted publishing (OIDC). A first publish of a new package needs NPM_TOKEN instead."
+          fi
           echo "Publishing $FILE ($version) with --tag $tag"
           npm publish "npm-artifact/$FILE" --provenance --access public --tag "$tag"
 

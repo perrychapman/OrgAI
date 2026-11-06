@@ -228,7 +228,7 @@ export function createCliShimService(deps: CliShimDeps): CliShimService {
 
   /**
    * Wave 7 (cli-standalone.md 8.2): the first orgai on the login shell PATH that is neither this install's shim nor a
-   * link to this install's launcher (an npm install, an archive, another app's shim). Undefined when there is none or
+   * link to this install's launcher, nor that launcher itself (an npm install, an archive, another app's shim). Undefined when there is none or
    * PATH could not be read; never throws.
    */
   function otherCli(r: Ready): CliShimStatus['otherCli'] {
@@ -253,7 +253,10 @@ export function createCliShimService(deps: CliShimDeps): CliShimService {
     }
     const shim = keys(r.path)
     const launcher = keys(r.launcher)
-    const other = entries.find((e) => !shim.has(samePathKey(platform, e.path)) && !(e.launcher !== undefined && launcher.has(samePathKey(platform, e.launcher))))
+    // This install's own launcher counts as ours whether its folder is on PATH itself or a link or shim reaches it.
+    const ours = (e: OrgaiOnPathEntry): boolean =>
+      [...keys(e.path)].some((k) => shim.has(k) || launcher.has(k)) || (e.launcher !== undefined && launcher.has(samePathKey(platform, e.launcher)))
+    const other = entries.find((e) => !ours(e))
     if (!other) return undefined
     return { path: other.path, ...(other.channel !== undefined ? { channel: other.channel } : {}), ...(other.version !== undefined ? { version: other.version } : {}) }
   }
