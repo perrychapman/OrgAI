@@ -18,6 +18,14 @@ const settingsFile = path.join(repoDir, '.claude', 'settings.json')
 const { app, page } = await launch({ shotPrefix: 'folder-trust' })
 page.setDefaultTimeout(10_000)
 
+const until = async (fn, ms = 10_000) => {
+  const end = Date.now() + ms
+  while (Date.now() < end) {
+    if (await fn()) return true
+    await sleep(200)
+  }
+  return !!(await fn())
+}
 const tid = (id) => page.locator(`[data-testid=${id}]`)
 const textOf = async (id) => ((await tid(id).count()) ? ((await tid(id).first().innerText()) ?? '').trim() : '')
 const activeTestId = () => page.evaluate(() => document.activeElement?.getAttribute('data-testid') ?? document.activeElement?.closest('[data-testid]')?.getAttribute('data-testid') ?? null)
@@ -116,9 +124,17 @@ try {
   await tid('repo-source').fill('mock-org/with-agents')
   await tid('repo-parent').fill(base)
   await tid('repo-folder').fill(FOLDER)
+  // The panel recomputes the target from the typed fields (and checks the path) after a debounce; clone only once it names ours.
+  await page.waitForFunction(
+    (want) => (document.querySelector('[data-testid=repo-target-line]')?.textContent ?? '').replace(/\\/g, '/').includes(want),
+    path.join(base, FOLDER).replace(/\\/g, '/'),
+    { timeout: 15_000 }
+  )
   await sleep(600)
+  await page.waitForFunction(() => !document.querySelector('[data-testid=repo-clone]')?.hasAttribute('disabled'), null, { timeout: 15_000 })
   await tid('repo-clone').click()
   await tid('repo-cloned-line').waitFor({ timeout: 30_000 })
+  check(await until(() => fs.existsSync(settingsFile), 10_000), 'the clone wrote the folder config into the chosen folder', settingsFile)
   const cfg = await textOf('repo-config-line')
   check(/until you allow them in the project's Settings/.test(cfg), 'clone form: agents will not use these settings until allowed', cfg)
   await tid('setup-choice').waitFor()
@@ -127,8 +143,10 @@ try {
   if ((await mock.count()) && !(await mock.isChecked())) await form.locator('label.checkbox', { hasText: 'Use the mock adapter' }).click()
   await tid('new-project-submit').click()
   await page.waitForSelector('[data-testid=dashboard]', { state: 'detached', timeout: 60_000 })
-  const project = await findProject(page, FOLDER)
+  let project
+  await until(async () => ((project = await findProject(page, FOLDER)), !!project), 15_000)
   check(!!project && path.resolve(project.path) === path.resolve(repoDir), 'project created on the clone', String(project?.path))
+  await until(async () => ((project = await findProject(page, FOLDER)), project?.folderConfigTrust?.state === 'untrusted'), 10_000)
   check(project?.folderConfigTrust?.state === 'untrusted', 'project is gated and untrusted', JSON.stringify(project?.folderConfigTrust))
 
   // ---- M2: a findable pointer in the topbar on every view, not only the New run page ----
