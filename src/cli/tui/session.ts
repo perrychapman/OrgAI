@@ -30,7 +30,7 @@ import { RunStream, type RunStreamTimers } from '../client/runStream'
 import { safeLine } from '../output'
 import { recordWithoutImages } from '../render'
 import { CliError, EXIT, type CliContext, type ConnectResult, type HostCallError, type HostClient, type InprocHostHandle } from '../types'
-import { composerMode } from './selectors'
+import { composerMode, offersRetro } from './selectors'
 import {
   addNotice,
   applyEvent,
@@ -539,6 +539,14 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
       const out = Array.isArray(list) ? list : []
       if (state.project && out.some((r) => r.projectId === state.project?.id)) set(applyRunList(state, out))
       return out
+    },
+    async startRetro(runId?: string) {
+      const id = runId ?? activeId()
+      const run = state.runs[id]?.summary
+      if (!run) throw new Error('Open the run first.')
+      if (!offersRetro(run)) throw new Error('An Org retrospective looks back at an ended work run of a project.')
+      const started = await call<RunSummary>('setup:retro', [{ projectId: run.projectId, runId: id }], { timeoutMs: TUI_DECIDE_TIMEOUT_MS })
+      return adopt(started)
     },
     async openInDesktop(runId?: string) {
       const id = runId ?? activeId()

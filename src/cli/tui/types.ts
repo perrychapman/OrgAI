@@ -83,13 +83,17 @@ export const TUI_TRANSCRIPT_MAX = 5000
 export const TUI_NOTICE_MAX = 20
 /** Resolved-card infos kept (for "Resolved in another window"). */
 export const TUI_RESOLVED_MAX = 50
+/** Agent-to-agent messages kept per run (counts only, never the text). */
+export const TUI_MESSAGES_MAX = 200
+/** A row whose agent sent or got a message this recently shows the traffic mark. */
+export const TUI_TRAFFIC_MS = 10_000
 
 // ---------- Modes and environment ----------
 
 export type BufferMode = 'fullscreen' | 'inline'
 export type LayoutMode = 'split' | 'stacked'
 export type PaneId = 'tree' | 'transcript' | 'plan' | 'worktrees'
-export type FocusTarget = PaneId | 'composer' | 'tray' | 'palette' | 'onboarding'
+export type FocusTarget = PaneId | 'composer' | 'tray' | 'palette' | 'onboarding' | 'inspector'
 export type Tone = 'ok' | 'warn' | 'danger' | 'dim' | 'accent' | 'running'
 export type ConnectionState = 'connecting' | 'live' | 'reconnecting' | 'gone'
 
@@ -184,6 +188,55 @@ export interface OrgTreeRow {
   waiting?: number
   /** Worktree chip text ("2f", "review", "conflict", "held"). */
   worktreeChip?: string
+  /** Messages this agent sent / got (F6): per peer, counted over the kept messages. */
+  msgOut?: PeerCount[]
+  msgIn?: PeerCount[]
+  /** A message to or from this agent in the last TUI_TRAFFIC_MS. */
+  traffic?: boolean
+}
+
+/** One peer of an agent's message traffic: its sanitized label and how many messages. */
+export interface PeerCount {
+  label: string
+  count: number
+}
+
+/** One agent-to-agent message the TUI keeps (no text: it is untrusted and already in the transcript). */
+export interface RunMessageRec {
+  from: string
+  to: string | null
+  toHandle: string
+  at: number
+}
+
+/** The agent inspector's facts (every field sanitized; missing facts are left out). */
+export interface InspectorView {
+  id: string
+  runId: string
+  label: string
+  role: string
+  state: AgentState
+  stateWord: string
+  model?: string
+  wall?: string
+  tokensIn?: string
+  tokensOut?: string
+  cost?: string
+  turns?: number
+  toolCalls?: number
+  activity?: string
+  worktree?: { branch: string; status: WorktreeStatus; files: number; mergeTarget: 'main' | 'parent' }
+  waiting: number
+  msgOut: PeerCount[]
+  msgIn: PeerCount[]
+}
+
+/** A live run as a status-bar chip (F8). */
+export interface RunChip {
+  tag: string
+  runId: string
+  followed: boolean
+  needsYou: boolean
 }
 
 export type TranscriptRowKind = 'user' | 'text' | 'thinking' | 'tool' | 'result' | 'system' | 'harness' | 'divider' | 'error' | 'log'
@@ -247,6 +300,8 @@ export interface StatusSummary {
   costText?: string
   needsYou: number
   liveRuns: number
+  /** Live runs of the project as chips (R1* R2!), oldest first. */
+  runChips?: RunChip[]
   hostKind?: HostKind
   connection: ConnectionState
   readOnlyReason?: string
@@ -324,6 +379,8 @@ export interface TuiRun {
   omitted?: number
   /** The run's full record (runs:get / snapshot activeRun) has been applied. */
   recordLoaded: boolean
+  /** Newest TUI_MESSAGES_MAX agent.message events (TUI-local). */
+  messages?: RunMessageRec[]
 }
 
 export interface TuiNotice {
@@ -396,6 +453,8 @@ export interface TuiSessionApi {
   decide(call: DecisionCall): Promise<DecisionOutcome>
   worktreeDiff(branch: string): Promise<WorktreeDiff>
   listRuns(): Promise<RunSummary[]>
+  /** An Org retrospective of an ended work run (setup:retro, operate scope); follows the new run. */
+  startRetro(runId?: string): Promise<RunSummary>
   openInDesktop(runId?: string): Promise<void>
   /** Re-subscribe after SIGCONT or a reconnect. */
   resync(): Promise<void>
@@ -466,6 +525,11 @@ export interface OrgTreePaneProps extends PaneProps {
   onCollapse?(row: OrgTreeRow): void
   /** `h`: Hide finished agents on / off. */
   onToggleFold?(): void
+  /** `z`: root the tree at this agent; `Z` / Backspace: back one level. */
+  onZoom?(row: OrgTreeRow): void
+  onUnzoom?(): void
+  /** The tree is rooted at an agent (breadcrumb in the title). */
+  zoomPath?: string
   /** Whether finished agents are folded (hint text). */
   folded?: boolean
   /** Enter on a row whose agent has an open card: focus the tray on that agent's card. */
@@ -482,6 +546,10 @@ export interface TranscriptPaneProps extends PaneProps {
   rows: TranscriptRow[]
   partials: PartialRow[]
   omitted?: number
+  /** The focus target the scroll keys register under (default 'transcript'; the inspector uses 'inspector'). */
+  focusTarget?: FocusTarget
+  /** Keys the host pane handles first (the inspector's d / w / t / u). */
+  extraKeys?(e: InputEvent): boolean
 }
 
 export interface PlanPaneProps extends PaneProps {
@@ -534,6 +602,14 @@ export interface SlashContext {
   notify(text: string, tone?: Tone): void
   setFocus(t: FocusTarget): void
   togglePane(p: PaneId): void
+  /** Maximise the transcript (hide every other pane), or bring the panes back. */
+  toggleFocusMode?(): void
+  /** A selectable runs list (Enter opens, c continues, r retro); without it /runs prints a table. */
+  openRuns?(runs: RunSummary[]): void
+  /** /retro: confirm, start the Org retrospective of the active run and follow it. */
+  startRetro?(): Promise<void>
+  /** /agent <name>: open that agent's inspector. */
+  openAgent?(arg: string): void
   /** Hide finished agents on / off (optional: older test contexts lack it). */
   toggleFold?(): void
   newRun(opts: { prompt?: string; team?: RunTeam }): Promise<void>

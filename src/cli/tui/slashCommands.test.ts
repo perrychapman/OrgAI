@@ -75,7 +75,7 @@ describe('parseSlash', () => {
 describe('matchSlash', () => {
   it('prefix-matches names and aliases, exact first, ties by name', () => {
     const s = stateWith()
-    expect(matchSlash('/', s).length).toBe(SLASH_COMMANDS.length)
+    expect(matchSlash('/', s).length).toBe(SLASH_COMMANDS.filter((c) => !c.available || c.available(s)).length)
     expect(matchSlash('/r', s).map((c) => c.name)).toEqual(['run', 'runs'])
     expect(matchSlash('run', s).map((c) => c.name)).toEqual(['run', 'runs'])
     expect(matchSlash('/q', s)[0].name).toBe('quit')

@@ -27,6 +27,12 @@
 //    approved) and a skills proposal (`d`: declined), each resolved with decidedBy.surface 'tui'. Two-step: `a` on a
 //    further permission card resolves nothing within 1 s; `orgai decide <id> deny` from another process resolves it
 //    (surface 'cli') and the TUI says "Resolved in another window".
+// i. The org tree (ux-review-tui-org.md, `[mock:deep-tree]` on the mock's default script, full screen 120x40): the root, mock-lead
+//    and its two reports; once the reports finish and the 6 s grace passes they fold into one "2 done" row under mock-lead
+//    (the run is still open); Right on that row unfolds it; `n` with nothing waiting says so; Enter on mock-lead opens the
+//    agent inspector (facts and its own transcript); `?` opens the which-key overlay with the glyph legend; Esc closes the
+//    overlay, then the inspector; `z` roots the tree at mock-lead (breadcrumb) and Z goes back. The `n` jump to a waiting
+//    agent, message marks and the run chips have no mock source here: unit tests only.
 // h. SIGTERM in full screen: the tail has \x1b[?1049l and \x1b[?25h and the exit code is 143.
 //
 // Not covered here (unit tests only): merge review cards (the mock has no worktrees), the pager, TERM=dumb Enter
@@ -129,6 +135,8 @@ const SCRIPTS = { simple: scriptFile('simple', SIMPLE), escapes: scriptFile('esc
 
 const baseEnv = (script) => {
   const env = { ...process.env, ORGAI_DATA_DIR: DATA_DIR, ORGAI_MOCK: '1', NO_COLOR: '1', TERM: 'xterm-256color', ORGAI_MOCK_SCRIPT: script, LANG: 'en_US.UTF-8' }
+  // No script: the mock's default script, which understands the [mock:deep-tree] marker in the prompt.
+  if (!script) delete env.ORGAI_MOCK_SCRIPT
   delete env.ELECTRON_RUN_AS_NODE
   delete env.CI // Ink's is-in-ci would turn interactive rendering off
   delete env.FORCE_COLOR
@@ -484,6 +492,69 @@ try {
     await daemon.done
     clearTimeout(tk)
     daemon = undefined
+  }
+
+  // ---------- i: the org tree, inspector and keys overlay ----------
+  {
+    const t = tui(['--host', 'inproc', ...UI.fullscreenArgs], { cols: 120, rows: 40, script: '', cwd: repo })
+    open.push(t)
+    try {
+      await t.waitFor(projectName, 30_000)
+      await type(t, '[mock:deep-tree] E2E deep tree')
+      t.key('enter')
+      await t.waitFor('mock-lead', 40_000)
+      check(true, 'i: the deep-tree run shows mock-lead in the agents pane')
+      // The reports finish at once; after the 6 s grace they fold into one row while the run is still open.
+      const folded = await t.waitFor(/\b2 done\b/, 30_000).then(() => true, () => false)
+      check(folded, 'i: the finished reports fold into one "2 done" row after the grace', esc(t.screen()))
+
+      t.key('tab') // the agents pane
+      await sleep(300)
+      t.write('n')
+      await t.waitFor('No agent needs you in this run.', 5_000).then(
+        () => check(true, 'i: `n` with nothing waiting says so'),
+        () => check(false, 'i: `n` with nothing waiting says so', esc(t.screen()))
+      )
+      // Selection starts on the first row (the root); the group is two rows down (root, mock-lead, "2 done").
+      t.key('down')
+      t.key('down')
+      await sleep(300)
+      t.key('right')
+      const open2 = await t.waitFor('mock-lead-report-1', 8_000).then(() => true, () => false)
+      check(open2, 'i: Right on the "2 done" row unfolds the reports', esc(t.screen()))
+
+      // The unfold selects the first report; one Up is mock-lead, and Enter on it opens the inspector.
+      t.key('up')
+      await sleep(300)
+      t.key('enter')
+      const inspector = await t.waitFor('transcript (this agent', 8_000).then(() => true, () => false)
+      check(inspector, 'i: Enter on an agent opens the inspector with its own transcript', esc(t.screen()))
+      check(/model|turns|tool call|now /.test(t.screen()), 'i: the inspector shows the facts the mock reports', esc(t.screen()))
+
+      t.write('?')
+      const keys = await t.waitFor('Keys: Agent inspector', 8_000).then(() => true, () => false)
+      check(keys, 'i: `?` opens the keys overlay of the inspector', esc(t.screen()))
+      check(/idle/.test(t.screen()) && /finished/.test(t.screen()), 'i: the overlay carries the glyph legend', esc(t.screen()))
+      t.key('esc')
+      await sleep(400)
+      check(!t.screen().includes('Keys: Agent inspector'), 'i: Esc closes the overlay', esc(t.screen()))
+      check(t.screen().includes('transcript (this agent'), 'i: ... and leaves the inspector open', esc(t.screen()))
+      t.key('esc')
+      await sleep(500)
+      check(!t.screen().includes('transcript (this agent'), 'i: Esc closes the inspector', esc(t.screen()))
+
+      t.write('z')
+      const zoomed = await t.waitFor('Focus: ', 5_000).then(() => true, () => false)
+      check(zoomed, 'i: `z` roots the tree at the agent (breadcrumb in the title)', esc(t.screen()))
+      t.write('Z')
+      await sleep(500)
+      check(!t.screen().includes('Focus: '), 'i: Z goes back to the whole run', esc(t.screen()))
+
+      const e = await quit(t, { confirm: true })
+      check(e?.code === 0, 'i: quitting exits 0', JSON.stringify(e))
+    } finally {
+      await t.close()
+    }
   }
 
   // ---------- h: SIGTERM cleanup ----------

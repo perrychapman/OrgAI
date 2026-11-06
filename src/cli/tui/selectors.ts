@@ -4,8 +4,8 @@
  * status from statusText (render.ts statusWordOf), names from agentLabel / runName, costs from costView, the needs-you
  * count from decisionCount (cli-spec 2 item 4).
  */
-import type { AgentInstance, AgentState, CardKind, RunSummary, TranscriptEntry } from '../../shared/types'
-import { agentCostInput, costView, runCostInput, sumCosts } from '../../shared/view/cost'
+import { VIRTUAL_PROJECT_IDS, type AgentInstance, type AgentState, type CardKind, type RunSummary, type TranscriptEntry } from '../../shared/types'
+import { agentCostInput, costView, formatDuration, formatTokens, runCostInput, sumCosts } from '../../shared/view/cost'
 import { normalizeParents } from '../../shared/view/agentTree'
 import { foldFinished, isSettledAt } from '../../shared/view/foldFinished'
 import { decisionCount, type WaitRun } from '../../shared/view/needsYou'
@@ -20,8 +20,13 @@ import { CARD_BUCKETS, cardArrivalSeq } from './state'
 import {
   cardKey,
   type CardRef,
+  TUI_TRAFFIC_MS,
   type ComposerMode,
+  type InspectorView,
   type OrgTreeRow,
+  type PeerCount,
+  type RunChip,
+  type RunMessageRec,
   type PartialRow,
   type PlanView,
   type StatusSummary,
@@ -156,8 +161,79 @@ export interface OrgTreeOptions {
   collapse?: boolean
   /** Expanded group keys: a visible agent's id or an earlier-session key; a number is when it was expanded. */
   expanded?: Readonly<Record<string, boolean | number>>
-  /** The clock for the settle grace (tests pass it; the App passes its own `now`). */
+  /** The clock for the settle grace and the traffic mark (tests pass it; the App passes its own `now`). */
   now?: number
+  /** Root the tree at this agent (F7); ignored when the agent is not in the run. Earlier sessions are left out. */
+  rootId?: string
+}
+
+/** Message counts of one agent (F6): per peer, newest peer first; `recent` = traffic in the last TUI_TRAFFIC_MS. */
+export interface AgentTraffic {
+  out: PeerCount[]
+  in: PeerCount[]
+  recent: boolean
+}
+
+interface PeerAcc {
+  key: string
+  label: string
+  count: number
+  last: number
+}
+
+function bump(list: PeerAcc[], key: string, label: string, at: number): void {
+  const hit = list.find((p) => p.key === key)
+  if (hit) {
+    hit.count += 1
+    hit.last = Math.max(hit.last, at)
+  } else list.push({ key, label, count: 1, last: at })
+}
+
+/** Per agent id: who it messaged and who messaged it, from the run's kept messages. Counts only, labels sanitized. */
+export function trafficByAgent(run: TuiRun, now: number): Map<string, AgentTraffic> {
+  const raw = new Map<string, { out: PeerAcc[]; in: PeerAcc[]; recent: boolean }>()
+  const slot = (id: string) => {
+    let v = raw.get(id)
+    if (!v) raw.set(id, (v = { out: [], in: [], recent: false }))
+    return v
+  }
+  const labelOf = (id: string | null, handle: string): string => (id !== null && run.agents[id] ? agentLabel(run.agents[id]) : safeLine(handle) || 'someone')
+  for (const m of run.messages ?? ([] as RunMessageRec[])) {
+    const recent = now - m.at <= TUI_TRAFFIC_MS
+    const from = slot(m.from)
+    bump(from.out, m.to ?? `handle:${m.toHandle}`, labelOf(m.to, m.toHandle), m.at)
+    if (recent) from.recent = true
+    if (m.to !== null) {
+      const to = slot(m.to)
+      bump(to.in, m.from, labelOf(m.from, ''), m.at)
+      if (recent) to.recent = true
+    }
+  }
+  const out = new Map<string, AgentTraffic>()
+  const fin = (l: PeerAcc[]): PeerCount[] => [...l].sort((a, b) => b.last - a.last).map((p) => ({ label: p.label, count: p.count }))
+  for (const [id, v] of raw) out.set(id, { out: fin(v.out), in: fin(v.in), recent: v.recent })
+  return out
+}
+
+/** The agent and everything under it (ids), for the subtree focus and its transcript filter. */
+export function subtreeIds(agents: Readonly<Record<string, AgentInstance>>, rootId: string): Set<string> {
+  const out = new Set<string>()
+  if (!agents[rootId]) return out
+  const kids = new Map<string, string[]>()
+  for (const a of Object.values(agents)) {
+    if (!a.parentId) continue
+    const list = kids.get(a.parentId) ?? []
+    list.push(a.id)
+    kids.set(a.parentId, list)
+  }
+  const stack = [rootId]
+  while (stack.length > 0 && out.size < 5000) {
+    const id = stack.pop()!
+    if (out.has(id)) continue
+    out.add(id)
+    for (const k of kids.get(id) ?? []) stack.push(k)
+  }
+  return out
 }
 
 /** Does the role name add anything beside the label? ("implementer-1" already says Implementer.) */
@@ -219,7 +295,8 @@ function treeOf(
   earlier: boolean,
   skipRoot: boolean,
   opts: OrgTreeOptions = {},
-  waiting: Readonly<Record<string, string[]>> = {}
+  waiting: Readonly<Record<string, string[]>> = {},
+  traffic: ReadonlyMap<string, AgentTraffic> = new Map()
 ): OrgTreeRow[] {
   const agents = settleEndedAgents(run.summary, run.agents)
   const list = Object.values(agents)
@@ -259,7 +336,8 @@ function treeOf(
   for (const arr of children.values()) arr.sort((x, y) => x.startedAt - y.startedAt || x.id.localeCompare(y.id))
   const out: OrgTreeRow[] = []
   const seen = new Set<string>()
-  const shown = (a: AgentInstance): boolean => visibleIds === undefined || visibleIds.has(a.id)
+  const zoomRoot = !earlier && opts.rootId !== undefined && ids.has(opts.rootId) ? opts.rootId : undefined
+  const shown = (a: AgentInstance): boolean => visibleIds === undefined || visibleIds.has(a.id) || a.id === zoomRoot
   const rowId = (a: AgentInstance): string => (earlier ? `${runId}:${a.id}` : a.id)
   const walk = (a: AgentInstance, depth: number, parent?: string): void => {
     if (seen.has(a.id) || depth > 50 || !shown(a)) return
@@ -269,6 +347,7 @@ function treeOf(
     const label = agentLabel(a)
     const open = earlier ? 0 : (waiting[a.id]?.length ?? 0)
     const chip = a.worktree ? worktreeChipOf(a.worktree) : undefined
+    const tr = earlier ? undefined : traffic.get(a.id)
     out.push({
       id: rowId(a),
       runId,
@@ -286,6 +365,9 @@ function treeOf(
       ...(earlier ? { earlier: true, earlierKey: earlierGroupKey } : {}),
       ...(open > 0 ? { waiting: open } : {}),
       ...(chip ? { worktreeChip: chip } : {}),
+      ...(tr && tr.out.length > 0 ? { msgOut: tr.out } : {}),
+      ...(tr && tr.in.length > 0 ? { msgIn: tr.in } : {}),
+      ...(tr?.recent ? { traffic: true } : {}),
       ...(a.worktree ? { worktree: { branch: safeLine(a.worktree.branch), status: a.worktree.status } } : {})
     })
     for (const c of children.get(a.id) ?? []) walk(c, depth + 1, rowId(a))
@@ -294,15 +376,15 @@ function treeOf(
       out.push(groupRow(runId, depth + 1, folded, { groupKey: a.id, members: folded.map((m) => m.id), parentId: rowId(a) }))
     }
   }
-  const roots = children.get(null) ?? []
+  const roots = zoomRoot !== undefined ? list.filter((a) => a.id === zoomRoot) : (children.get(null) ?? [])
   for (const r of roots) {
     if (skipRoot && r.parentId === null) {
       seen.add(r.id)
       for (const c of children.get(r.id) ?? []) walk(c, depth0)
     } else walk(r, depth0)
   }
-  // A parent cycle: what is left is listed flat.
-  for (const a of list) if (!seen.has(a.id)) walk(a, depth0)
+  // A parent cycle: what is left is listed flat (not when the tree is rooted at one agent).
+  if (zoomRoot === undefined) for (const a of list) if (!seen.has(a.id)) walk(a, depth0)
   return out
 }
 
@@ -314,7 +396,8 @@ export function orgTreeRows(s: TuiState, opts: OrgTreeOptions = {}): OrgTreeRow[
   const run = activeRun(s)
   if (!run) return []
   const waiting = cardsByAgent(s)
-  const own = treeOf(run, 0, false, false, opts, waiting)
+  const own = treeOf(run, 0, false, false, opts, waiting, trafficByAgent(run, opts.now ?? Date.now()))
+  if (opts.rootId !== undefined && run.agents[opts.rootId]) return own
   const earlier = chainRuns(s)
     .filter((r) => r.summary.id !== run.summary.id)
     .flatMap((r) => treeOf(r, 1, true, true, opts))
@@ -404,8 +487,13 @@ function entryRow(e: TranscriptEntry, runId: string, who: string, toolName: (id:
   }
 }
 
+/** Which agents' rows a transcript keeps (F4 one agent, F7 a subtree); dividers drop out of a filtered feed. */
+export interface TranscriptFilter {
+  agentIds?: ReadonlySet<string>
+}
+
 /** The active chain's transcripts merged oldest first, one divider per continuation; `omitted` counts left-out entries. */
-export function transcriptRows(s: TuiState): { rows: TranscriptRow[]; omitted: number } {
+export function transcriptRows(s: TuiState, filter: TranscriptFilter = {}): { rows: TranscriptRow[]; omitted: number } {
   const members = chainRuns(s)
   if (members.length === 0) return { rows: [], omitted: 0 }
   const feed = mergeChainFeed(members.map((r) => ({ summary: r.summary, entries: r.transcript })))
@@ -423,20 +511,61 @@ export function transcriptRows(s: TuiState): { rows: TranscriptRow[]; omitted: n
       if (row) rows.push(row)
     }
   }
+  const only = filter.agentIds
+  if (only) return { rows: rows.filter((r) => r.agentId !== undefined && only.has(r.agentId)), omitted }
   return { rows, omitted }
 }
 
 /** The active run's streaming partials (non-empty), agents in start order. */
-export function partialRows(s: TuiState): PartialRow[] {
+export function partialRows(s: TuiState, filter: TranscriptFilter = {}): PartialRow[] {
   const run = activeRun(s)
   if (!run) return []
   const out: PartialRow[] = []
   for (const [agentId, text] of Object.entries(run.partials)) {
-    if (!text) continue
+    if (!text || (filter.agentIds && !filter.agentIds.has(agentId))) continue
     out.push({ key: `partial|${run.summary.id}|${agentId}`, runId: run.summary.id, agentId, agentLabel: agentLabel(run.agents[agentId]), text })
   }
   const started = (id: string): number => run.agents[id]?.startedAt ?? 0
   return out.sort((a, b) => started(a.agentId) - started(b.agentId) || a.agentId.localeCompare(b.agentId))
+}
+
+// ---------- Agent inspector (F4) ----------
+
+/** The facts the inspector shows for one agent of the active run; a fact the agent does not have is left out. */
+export function agentDetail(s: TuiState, agentId: string, now: number = Date.now()): InspectorView | undefined {
+  const run = activeRun(s)
+  const a = run?.agents[agentId]
+  if (!run || !a) return undefined
+  const u = a.usage
+  const promptTokens = u ? u.tokens.input + u.tokens.cacheRead + u.tokens.cacheWrite : a.inputTokens
+  const outTokens = u ? u.tokens.output : a.outputTokens
+  const spent = promptTokens > 0 || outTokens > 0
+  const cost = costView(agentCostInput(a))
+  const model = safeLine(a.model ?? u?.models?.[0]?.model ?? '')
+  const end = a.endedAt ?? now
+  const traffic = trafficByAgent(run, now).get(agentId)
+  const wt = a.worktree
+  return {
+    id: a.id,
+    runId: run.summary.id,
+    label: agentLabel(a),
+    role: safeLine(a.name),
+    state: a.state,
+    stateWord: AGENT_STATE_WORD[a.state] ?? safeLine(a.state),
+    ...(model ? { model } : {}),
+    ...(a.startedAt > 0 && end >= a.startedAt ? { wall: formatDuration(end - a.startedAt) } : {}),
+    ...(spent ? { tokensIn: formatTokens(promptTokens), tokensOut: formatTokens(outTokens) } : {}),
+    ...(cost.empty ? {} : { cost: cost.text }),
+    ...(u && u.turns > 0 ? { turns: u.turns } : {}),
+    ...(u && u.toolCalls > 0 ? { toolCalls: u.toolCalls } : {}),
+    ...(a.activity ? { activity: clipLine(safeLine(a.activity), ACTIVITY_MAX) } : {}),
+    ...(wt
+      ? { worktree: { branch: safeLine(wt.branch), status: wt.status, files: Array.isArray(wt.changedFiles) ? wt.changedFiles.length : 0, mergeTarget: wt.mergeTarget === 'parent' ? ('parent' as const) : ('main' as const) } }
+      : {}),
+    waiting: cardsByAgent(s)[agentId]?.length ?? 0,
+    msgOut: traffic?.out ?? [],
+    msgIn: traffic?.in ?? []
+  }
 }
 
 // ---------- Plan and worktrees ----------
@@ -486,11 +615,37 @@ export function worktreeRows(s: TuiState): WorktreeRow[] {
 
 // ---------- Status bar and composer ----------
 
+/** The project's live runs oldest first, as chips (F8): `*` marks the followed run, `!` one with an open decision. */
+export function runChips(s: TuiState): RunChip[] {
+  const pid = s.project?.id
+  return s.runOrder
+    .map((id) => s.runs[id])
+    .filter((r): r is TuiRun => !!r && isOpenStatus(r.summary.status) && (pid === undefined || r.summary.projectId === pid))
+    .map((r) => ({ tag: runTagOf(s, r.summary.id), runId: r.summary.id, followed: r.summary.id === s.activeRunId, needsYou: openDecisions(r) > 0 }))
+}
+
+/** The live run before / after the followed one (wrapping), for `[` and `]`; undefined when no other run is live. */
+export function adjacentLiveRun(s: TuiState, dir: 1 | -1): RunChip | undefined {
+  const chips = runChips(s)
+  const others = chips.filter((c) => !c.followed)
+  if (others.length === 0) return undefined
+  const at = chips.findIndex((c) => c.followed)
+  if (at < 0) return dir === 1 ? chips[0] : chips[chips.length - 1]
+  return chips[(at + dir + chips.length) % chips.length]
+}
+
+/** Whether a run offers the Org retrospective (the app's offersRetro): an ended work run of a real project, never a Chat or assistant run. */
+export function offersRetro(summary: Pick<RunSummary, 'kind' | 'quick' | 'projectId' | 'status'> & Partial<Pick<RunSummary, 'team'>>): boolean {
+  return summary.kind === 'work' && summary.team !== 'single' && !summary.quick && !(VIRTUAL_PROJECT_IDS as readonly string[]).includes(summary.projectId) && (summary.status === 'finished' || summary.status === 'error')
+}
+
 export function statusSummary(s: TuiState): StatusSummary {
   const live = Object.values(s.runs).filter((r) => isOpenStatus(r.summary.status))
+  const chips = runChips(s)
   const out: StatusSummary = {
     needsYou: decisionCount(live.map(waitRunOf)),
     liveRuns: live.length,
+    ...(chips.length > 0 ? { runChips: chips } : {}),
     connection: s.connection,
     ...(s.project ? { projectName: safeLine(s.project.name) } : {}),
     ...(s.hostKind ? { hostKind: s.hostKind } : {}),

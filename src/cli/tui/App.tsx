@@ -17,12 +17,18 @@ import { DecisionTray } from './DecisionTray'
 import { cardDetailLines } from './decisions'
 import { isTrayFocusKey, PASTE_MAX_CHARS } from './input/keys'
 import { computeLayout } from './layout'
+import { InspectorPane } from './InspectorPane'
+import { paneHint, statusHint, whichKeyLines, type RowKind } from './keymap'
 import { Onboarding, type OnboardingChoice } from './Onboarding'
 import { OrgTreePane } from './OrgTreePane'
 import { showInPager } from './pager'
 import { PlanPane } from './PlanPane'
 import { sanitizeTty } from './sanitizeTty'
-import { cardsByAgent, collapseTarget, composerMode, orgTreeRows, partialRows, planView, resolveSelectedRow, statusSummary, topCard, transcriptRows, trayCards, worktreeRows } from './selectors'
+import { agentLabel } from '../render'
+import { PaneLines, cutSegs } from './panes/lines'
+import { runPickLines, runPickRows, type RunPickRow } from './runPick'
+import { adjacentLiveRun, agentDetail, cardsByAgent, collapseTarget, composerMode, offersRetro, orgTreeRows, partialRows, planView, resolveSelectedRow, runTagOf, statusSummary, subtreeIds, topCard, transcriptRows, trayCards, worktreeRows } from './selectors'
+import { usageText } from './usageText'
 import { SLASH_COMMANDS } from './slashCommands'
 import { SlashPalette } from './SlashPalette'
 import { StatusBar } from './StatusBar'
@@ -46,6 +52,7 @@ import type {
   TuiSessionApi,
   TuiState
 } from './types'
+import { TUI_TRAFFIC_MS } from './types'
 import { WorktreesPane } from './WorktreesPane'
 
 /** 128 + SIGINT: a stopOnQuit session that was quit (types.ts EXIT.sigint; not imported to keep this file pure TUI). */
@@ -98,6 +105,7 @@ export interface AppProps {
 type Overlay =
   | { kind: 'confirm'; question: string; resolve(yes: boolean): void }
   | { kind: 'text'; title: string; lines: string[]; offset: number }
+  | { kind: 'runs'; rows: RunPickRow[]; sel: number }
 
 const isOpen = (status: RunStatus | undefined): boolean => status !== undefined && isOpenStatus(status)
 const isWorking = (status: RunStatus | undefined): boolean => status === 'starting' || status === 'running'
@@ -115,20 +123,9 @@ export const PLACEHOLDERS: Record<ComposerMode, string> = {
   readOnly: ''
 }
 
-export function hintsFor(focus: FocusTarget, readOnly: boolean, stopOnQuit = false): string {
-  const quit = stopOnQuit ? 'Ctrl+C twice stops and quits' : 'Ctrl+C twice quits'
-  switch (focus) {
-    case 'composer':
-      return readOnly ? `Alt+D decisions · Tab panes · ${quit}` : `Enter sends · / commands · Alt+D decisions · Tab panes · Esc interrupts · ${quit}`
-    case 'tray':
-      return 'Keys on the card · Esc back'
-    case 'palette':
-      return 'Enter runs · Esc closes'
-    case 'onboarding':
-      return 'Esc cancels'
-    default:
-      return 'Tab next pane · Shift+Tab previous · Esc composer'
-  }
+/** The status line's hint for a focus (keymap.ts holds the keys; panes show their own keys on their bottom line). */
+export function hintsFor(focus: FocusTarget, readOnly: boolean, stopOnQuit = false, row?: RowKind): string {
+  return statusHint(focus, { readOnly, stopOnQuit, ...(row ? { row } : {}) })
 }
 
 /**
@@ -289,6 +286,13 @@ export function App(props: AppProps) {
   const [expandedGroups, setExpandedGroups] = useState<Record<string, number>>({})
   /** Card key the tray shows first (Enter on a waiting agent row). */
   const [trayFocusKey, setTrayFocusKey] = useState<string | undefined>(undefined)
+  /** Agent inspector (F4): the agent id it shows, and whether thinking rows show in it. */
+  const [inspectorId, setInspectorId] = useState<string | undefined>(undefined)
+  const [showThinking, setShowThinking] = useState(false)
+  /** Subtree focus (F7): the agent ids `z` rooted the tree at, outermost first. */
+  const [zoomStack, setZoomStack] = useState<string[]>([])
+  /** The transcript maximised (F13: `m`, /focus). */
+  const [maximised, setMaximised] = useState(false)
   const [, setFoldTick] = useState(0)
   const [, setRedraw] = useState(0)
   const lastCtrlC = useRef<number | undefined>(undefined)
@@ -318,15 +322,47 @@ export function App(props: AppProps) {
   const activePlan = state.activeRunId ? state.runs[state.activeRunId]?.plan : undefined
   const autoPlan = planData !== undefined && activePlan?.status === 'blocked'
   const autoWorktrees = worktreeData.some((w) => w.status === 'review' || w.status === 'conflict' || w.reviewId !== undefined)
-  const effective: Record<PaneId, boolean> = { ...visible, plan: userPanes.plan ?? autoPlan, worktrees: userPanes.worktrees ?? autoWorktrees }
-  const effectiveRef = useRef(effective)
-  effectiveRef.current = effective
+  const chosen: Record<PaneId, boolean> = { ...visible, plan: userPanes.plan ?? autoPlan, worktrees: userPanes.worktrees ?? autoWorktrees }
+  const effective: Record<PaneId, boolean> = maximised ? { tree: false, transcript: true, plan: false, worktrees: false } : chosen
+  const effectiveRef = useRef(chosen)
+  effectiveRef.current = chosen
 
   // Org tree rows: finished subtrees folded (F1). One timer to the next moment an agent settles, so reports fold while the run still runs.
   const clock = now()
-  const treeRows = orgTreeRows(state, { collapse: foldOn, expanded: expandedGroups, now: clock })
-  const selectedRow = resolveSelectedRow(treeRows, selectedAgent)
   const runAgents = state.activeRunId ? state.runs[state.activeRunId]?.agents : undefined
+  const zoomRoot = [...zoomStack].reverse().find((id) => runAgents?.[id] !== undefined)
+  const treeRows = orgTreeRows(state, { collapse: foldOn, expanded: expandedGroups, now: clock, ...(zoomRoot ? { rootId: zoomRoot } : {}) })
+  const selectedRow = resolveSelectedRow(treeRows, selectedAgent)
+  // The pane's own default when nothing was chosen: the first agent that needs you, else the first row.
+  const orderedRows = [...treeRows.filter((r) => !r.earlier), ...treeRows.filter((r) => r.earlier)]
+  const selectedTreeRow = orderedRows.find((r) => r.id === selectedRow) ?? orderedRows.find((r) => r.waiting) ?? orderedRows[0]
+  const rowKind: RowKind = selectedTreeRow?.kind === 'group' ? 'group' : selectedTreeRow?.waiting ? 'waiting' : 'agent'
+  const zoomPath = (() => {
+    if (!zoomRoot || !runAgents) return undefined
+    const names: string[] = []
+    for (let id: string | null = zoomRoot, hops = 0; id && runAgents[id] && hops < 60; hops++) {
+      names.unshift(agentLabel(runAgents[id]))
+      id = runAgents[id].parentId
+    }
+    return names.join(' > ')
+  })()
+  const zoomIds = zoomRoot && runAgents ? subtreeIds(runAgents, zoomRoot) : undefined
+  const inspectorView = inspectorId && state.activeRunId ? agentDetail(state, inspectorId, clock) : undefined
+  const inspecting = inspectorView !== undefined && !onboarding
+  const lastMessageAt = state.activeRunId ? state.runs[state.activeRunId]?.messages?.at(-1)?.at : undefined
+  const trafficDue = lastMessageAt !== undefined && clock - lastMessageAt < TUI_TRAFFIC_MS ? lastMessageAt + TUI_TRAFFIC_MS : undefined
+  useEffect(() => {
+    if (trafficDue === undefined) return undefined
+    const timer = setTimeout(() => setFoldTick((n) => n + 1), Math.max(50, trafficDue - now() + 25))
+    return () => clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trafficDue])
+  // A different run: the inspector, the subtree focus and the selection belonged to the old one.
+  useEffect(() => {
+    setInspectorId(undefined)
+    setZoomStack([])
+    setSelectedAgent(undefined)
+  }, [state.activeRunId])
   const settleDue = foldOn && runAgents ? nextSettleAt(Object.values(runAgents), clock) : undefined
   useEffect(() => {
     if (settleDue === undefined) return undefined
@@ -336,17 +372,27 @@ export function App(props: AppProps) {
   }, [settleDue])
 
   const treeWanted = treeRows.length + 2
+  // The inspector takes the right column (split) or the whole body; the layout keeps a transcript column for it.
+  const layoutVisible: Record<PaneId, boolean> = inspecting ? { ...effective, transcript: true, plan: false } : effective
   const plan = computeLayout({
     cols: size.cols,
     rows: size.rows,
     bufferMode: env.bufferMode,
-    visible: effective,
+    visible: layoutVisible,
     trayRows,
     composerRows: COMPOSER_ROWS,
     treeRows: treeWanted,
     worktreeRows: worktreeData.length + 1
   })
-  const panes = plan.panes.filter((p) => effective[p.pane])
+  const panes = plan.panes.filter((p) => layoutVisible[p.pane])
+  const bodyRows = Math.max(0, size.rows - plan.statusRows - plan.tray.height - plan.composer.height)
+  // Rows an overlay's lines get: its box is the body (the tray and composer stay), minus two borders, the title and the hint.
+  const overlayRoom = inline ? Math.max(1, size.rows - 6) : Math.max(1, bodyRows - 4)
+  const inspectorBox = inline
+    ? { width: size.cols, height: Math.max(6, Math.min(16, size.rows - 5)) }
+    : plan.mode === 'split'
+      ? { width: panes.find((p) => p.pane === 'transcript')?.width ?? size.cols, height: panes.find((p) => p.pane === 'transcript')?.height ?? bodyRows }
+      : { width: size.cols, height: bodyRows }
 
   const setFocus = useCallback((t: FocusTarget) => setFocusState(t), [])
 
@@ -354,7 +400,8 @@ export function App(props: AppProps) {
   useEffect(() => {
     if (focus === 'tray' && cards.length === 0) setFocusState('composer')
     if (PANE_ORDER.includes(focus as PaneId) && !panes.some((p) => p.pane === focus)) setFocusState('composer')
-  }, [focus, cards.length, panes])
+    if (focus === 'inspector' && !inspecting) setFocusState(panes.some((p) => p.pane === 'tree') ? 'tree' : 'composer')
+  }, [focus, cards.length, panes, inspecting])
 
   // A resize while suspended is picked up by the resume listener (setSize(terminal.size())).
   useEffect(() => terminal.onResize((cols, rows) => (terminal.suspended === true ? undefined : setSize({ cols, rows }))), [terminal])
@@ -589,6 +636,83 @@ export function App(props: AppProps) {
     setExpandedGroups(({ [key]: _gone, ...rest }) => rest)
     setSelectedAgent(row.id)
   }
+  const closeInspector = (): void => {
+    if (inspectorId) setSelectedAgent(inspectorId)
+    setInspectorId(undefined)
+    setFocusState(panes.some((p) => p.pane === 'tree') ? 'tree' : 'composer')
+  }
+  const openInspector = (id: string): void => {
+    setSelectedAgent(id)
+    setInspectorId(id)
+    setFocusState('inspector')
+  }
+  const zoomTo = (row: { id: string }): void => {
+    if (!runAgents?.[row.id]) return
+    setZoomStack((st) => (st[st.length - 1] === row.id ? st : [...st, row.id]))
+    setSelectedAgent(row.id)
+  }
+  const unzoom = (): void => {
+    if (!zoomRoot) {
+      notify('The tree already shows the whole run.')
+      return
+    }
+    setSelectedAgent(zoomRoot)
+    setZoomStack((st) => {
+      const i = st.lastIndexOf(zoomRoot)
+      return i < 0 ? [] : st.slice(0, i)
+    })
+  }
+  const toggleFocusMode = (): void => {
+    setMaximised((m) => !m)
+    notify(maximised ? 'Panes are back.' : 'Transcript maximised. m or /focus brings the panes back.')
+  }
+  const switchLive = (dir: 1 | -1): void => {
+    const chip = adjacentLiveRun(session.getState(), dir)
+    if (!chip) {
+      notify('No other live run.')
+      return
+    }
+    const id = runForRef(session.getState(), chip.tag) ?? chip.runId
+    session.focusRun(id).catch((err: unknown) => notify(`Could not follow ${chip.tag}: ${errText(err)}`, 'warn'))
+  }
+  const viewUsage = (): void => {
+    void openText('Usage', usageText(session.getState()))
+  }
+  const viewAgentDiff = (): void => {
+    const st = session.getState()
+    const branch = inspectorId && st.activeRunId ? st.runs[st.activeRunId]?.agents[inspectorId]?.worktree?.branch : undefined
+    if (!branch) {
+      notify('This agent has no worktree.')
+      return
+    }
+    session
+      .worktreeDiff(branch)
+      .then((d) => openText(`Changes on ${sanitizeTty(branch)}`, `${d.stat}\n\n${d.patch}`))
+      .catch((err: unknown) => notify(`Could not read the diff: ${errText(err)}`, 'danger'))
+  }
+  const openRunsPicker = (runs: RunSummary[]): void => {
+    const rows = runPickRows(runs, session.getState().project?.id)
+    if (rows.length === 0) {
+      notify('No runs yet.')
+      return
+    }
+    const followed = rows.findIndex((r) => r.id === session.getState().activeRunId)
+    setOverlay({ kind: 'runs', rows, sel: followed >= 0 ? followed : rows.length - 1 })
+  }
+  const startRetro = async (runId?: string, listed?: RunSummary): Promise<void> => {
+    const st = session.getState()
+    const id = runId ?? st.activeRunId
+    const summary = id ? (st.runs[id]?.summary ?? listed) : undefined
+    if (!id || !summary || !offersRetro(summary)) {
+      notify('An Org retrospective looks back at an ended work run of a project.', 'warn')
+      return
+    }
+    const tag = runTagOf(st, id)
+    const yes = await confirm(`Start an Org retrospective of ${tag}? The Architect reads the run and proposes changes to your team; you approve each one. It starts a new run that uses tokens.`)
+    if (!yes) return
+    await session.startRetro(id)
+    notify(`Following the Org retrospective of ${tag}. Its proposals wait in the tray.`)
+  }
   const focusAgentCard = (row: { id: string }): void => {
     const key = cardsByAgent(state)[row.id]?.[0]
     if (!key) return
@@ -622,6 +746,21 @@ export function App(props: AppProps) {
       else setVisible((v) => ({ ...v, [p]: !v[p] }))
     },
     toggleFold: () => toggleFold(),
+    toggleFocusMode,
+    openRuns: openRunsPicker,
+    startRetro: () => startRetro(),
+    openAgent: (arg) => {
+      const st = session.getState()
+      const agents = st.activeRunId ? Object.values(st.runs[st.activeRunId]?.agents ?? {}) : []
+      const want = arg.trim().toLowerCase()
+      if (!want) {
+        notify('Name the agent: /agent <name>.', 'warn')
+        return
+      }
+      const hit = agents.find((a) => a.id === arg.trim() || (a.handle ?? '').toLowerCase() === want || sanitizeTty(agentLabel(a)).toLowerCase() === want || a.name.toLowerCase() === want)
+      if (!hit) notify(`No agent "${sanitizeTty(arg).slice(0, 64)}" in this run.`, 'warn')
+      else openInspector(hit.id)
+    },
     newRun: async ({ prompt, team }) => {
       session.setComposeTarget('new')
       if (prompt && prompt.trim()) {
@@ -646,7 +785,11 @@ export function App(props: AppProps) {
 
   // ---------- Input ----------
 
-  const ring = (): FocusTarget[] => ['composer', ...panes.map((p) => p.pane), ...(cards.length ? (['tray'] as const) : [])]
+  const ring = (): FocusTarget[] => [
+    'composer',
+    ...(inspecting ? [...(plan.mode === 'split' ? panes.filter((p) => p.column === 0).map((p) => p.pane) : []), 'inspector' as const] : panes.map((p) => p.pane)),
+    ...(cards.length ? (['tray'] as const) : [])
+  ]
   const cycle = (dir: 1 | -1): void => {
     const r = ring()
     const i = r.indexOf(focus)
@@ -660,6 +803,43 @@ export function App(props: AppProps) {
 
   const overlayKey = (e: InputEvent): void => {
     if (!overlay || e.type !== 'key') return
+    if (overlay.kind === 'runs') {
+      const n = overlay.rows.length
+      const row = overlay.rows[overlay.sel]
+      const ch = e.name === 'char' && !e.ctrl && !e.alt ? e.ch : undefined
+      if (named(e, 'escape') || ctrl(e, 'c') || ch === 'q') {
+        setOverlay(undefined)
+        return
+      }
+      if (named(e, 'down') || ch === 'j') setOverlay({ ...overlay, sel: Math.min(n - 1, overlay.sel + 1) })
+      else if (named(e, 'up') || ch === 'k') setOverlay({ ...overlay, sel: Math.max(0, overlay.sel - 1) })
+      else if (named(e, 'home')) setOverlay({ ...overlay, sel: 0 })
+      else if (named(e, 'end')) setOverlay({ ...overlay, sel: n - 1 })
+      else if (row && (named(e, 'enter') || ch === 'c')) {
+        setOverlay(undefined)
+        const continuing = ch === 'c'
+        session
+          .focusRun(row.id)
+          .then(() => {
+            setFocusState('composer')
+            if (!continuing) return
+            const m = composerMode(session.getState())
+            notify(m === 'continue' ? `Type your message to continue ${row.tag} with its memory.` : m === 'send' ? `${row.tag} is still open: type to message it.` : `${row.tag} cannot be continued; type to start a new run.`)
+          })
+          .catch((err: unknown) => notify(`Could not open ${row.tag}: ${errText(err)}`, 'warn'))
+      } else if (row && ch === 'r') {
+        setOverlay(undefined)
+        if (!row.retro) {
+          notify(`${row.tag} is not an ended work run of a project, so it has no retrospective.`, 'warn')
+          return
+        }
+        session
+          .focusRun(row.id)
+          .then(() => startRetro(row.id, row.summary))
+          .catch((err: unknown) => notify(errText(err), 'danger'))
+      }
+      return
+    }
     if (overlay.kind === 'confirm') {
       const ch = e.name === 'char' && !e.ctrl ? e.ch?.toLowerCase() : undefined
       if (ch === 'y' || ch === 'n' || named(e, 'escape') || ctrl(e, 'c')) {
@@ -668,7 +848,8 @@ export function App(props: AppProps) {
       }
       return
     }
-    const page = Math.max(1, size.rows - 4)
+    if (overlay.kind !== 'text') return
+    const page = overlayRoom
     const max = Math.max(0, overlay.lines.length - page)
     let offset = overlay.offset
     if (named(e, 'escape') || ctrl(e, 'c') || (e.name === 'char' && !e.ctrl && e.ch === 'q')) {
@@ -702,6 +883,26 @@ export function App(props: AppProps) {
         return
       }
       bus.dispatch(e, 'onboarding')
+      return
+    }
+    // Pane-only keys: `?` the keys of this pane, `[` / `]` the previous / next live run, `m` maximise the transcript.
+    if (e.type === 'key' && e.name === 'char' && !e.ctrl && !e.alt && (PANE_ORDER.includes(focus as PaneId) || focus === 'inspector')) {
+      if (e.ch === '?') {
+        const k = whichKeyLines(focus, env)
+        setOverlay({ kind: 'text', title: k.title, lines: k.lines, offset: 0 })
+        return
+      }
+      if (e.ch === '[' || e.ch === ']') {
+        switchLive(e.ch === ']' ? 1 : -1)
+        return
+      }
+      if (e.ch === 'm' && focus !== 'inspector') {
+        toggleFocusMode()
+        return
+      }
+    }
+    if (named(e, 'escape') && focus === 'inspector') {
+      closeInspector()
       return
     }
     if (named(e, 'backtab')) {
@@ -764,14 +965,53 @@ export function App(props: AppProps) {
 
   // ---------- Render ----------
 
-  const transcript = transcriptRows(state)
+  const zoomFilter = zoomIds ? { agentIds: zoomIds } : {}
+  const transcript = transcriptRows(state, zoomFilter)
   const scrollback = useScrollback(inline, transcript.rows, top, size.cols)
   const notice = state.notices.at(-1)
-  const hints = hintsFor(focus, readOnly, launch.stopOnQuit === true)
+  const hintRow: RowKind = focus === 'inspector' ? (inspectorView?.waiting ? 'waiting' : inspectorView?.worktree ? 'agent' : 'bare') : rowKind
+  const hints = hintsFor(focus, readOnly, launch.stopOnQuit === true, hintRow)
   const dim = toneColor('dim', env)
 
+  const inspectorNode = (() => {
+    if (!inspecting || !inspectorView || !inspectorId) return null
+    const mine = transcriptRows(state, { agentIds: new Set([inspectorId]) })
+    const rows = showThinking ? mine.rows : mine.rows.filter((r) => r.kind !== 'thinking')
+    return (
+      <InspectorPane
+        key="inspector"
+        width={inspectorBox.width}
+        height={inspectorBox.height}
+        focused={focus === 'inspector'}
+        view={inspectorView}
+        rows={rows}
+        partials={partialRows(state, { agentIds: new Set([inspectorId]) })}
+        omitted={mine.omitted}
+        showThinking={showThinking}
+        onDecide={() => focusAgentCard({ id: inspectorId })}
+        onDiff={viewAgentDiff}
+        onToggleThinking={() => setShowThinking((t) => !t)}
+        onUsage={viewUsage}
+        onNotice={(text) => notify(text)}
+      />
+    )
+  })()
+
   const paneNode = (box: PaneBox) => {
-    const common = { width: box.width, height: box.height, focused: focus === box.pane }
+    // The focused pane's own keys sit on a dim line at its bottom, so a long status line can never cut them off.
+    const hint = focus === box.pane && box.height >= 6 ? paneHint(box.pane, box.pane === 'tree' ? rowKind : 'agent', 5, box.width) : ''
+    const node = paneBody(box, hint ? box.height - 1 : box.height)
+    if (!hint) return node
+    return (
+      <Box key={box.pane} flexDirection="column" width={box.width} height={box.height}>
+        {node}
+        <PaneLines width={box.width} height={1} lines={[{ key: 'hint', segs: cutSegs([{ text: hint, dim: true }], box.width, env) }]} env={env} />
+      </Box>
+    )
+  }
+
+  const paneBody = (box: PaneBox, height: number) => {
+    const common = { width: box.width, height, focused: focus === box.pane }
     switch (box.pane) {
       case 'tree':
         return (
@@ -785,15 +1025,17 @@ export function App(props: AppProps) {
             onCollapse={collapseGroup}
             onToggleFold={toggleFold}
             onFocusCard={focusAgentCard}
-            // Enter on an agent row with no card: the inspector hooks in here (not built yet).
-            onActivate={() => undefined}
+            onActivate={(row) => (row.earlier ? notify('Agents of an earlier session have no inspector; open that run to see them.') : openInspector(row.id))}
+            onZoom={zoomTo}
+            onUnzoom={unzoom}
+            {...(zoomPath ? { zoomPath } : {})}
             onNotice={(text) => notify(text)}
             folded={foldOn}
             {...(!effective.plan && planData && planData.total > 0 ? { planChip: `Plan ${planData.done}/${planData.total}` } : {})}
           />
         )
       case 'transcript':
-        return <TranscriptPane key="transcript" {...common} mode={env.bufferMode} rows={transcript.rows} partials={partialRows(state)} omitted={transcript.omitted} />
+        return <TranscriptPane key="transcript" {...common} mode={env.bufferMode} rows={transcript.rows} partials={partialRows(state, zoomFilter)} omitted={transcript.omitted} />
       case 'plan':
         return <PlanPane key="plan" {...common} plan={planData} />
       case 'worktrees':
@@ -871,17 +1113,30 @@ export function App(props: AppProps) {
   const status = <StatusBar width={size.cols} summary={summary} {...(notice ? { notice } : {})} hints={hints} />
 
   const overlayNode = overlay ? (
-    overlay.kind === 'confirm' ? (
+    overlay.kind === 'runs' ? (
+      <Box borderStyle="single" flexDirection="column" paddingX={1} height={inline ? undefined : Math.max(3, Math.min(bodyRows, overlay.rows.length + 4))}>
+        <Text bold>Runs</Text>
+        {runPickLines(overlay.rows, overlay.sel, Math.max(10, size.cols - 4), state.activeRunId)
+          .slice(Math.max(0, Math.min(overlay.sel - overlayRoom + 1, overlay.rows.length - overlayRoom)))
+          .slice(0, overlayRoom)
+          .map((l, i) => (
+            <Text key={i} wrap="truncate-end" {...(l.startsWith('>') ? { bold: true } : {})}>
+              {l}
+            </Text>
+          ))}
+        <Text color={dim}>Up / Down select · Enter opens · c continues · r retrospective · Esc closes</Text>
+      </Box>
+    ) : overlay.kind === 'confirm' ? (
       <Box borderStyle="single" flexDirection="column" paddingX={1}>
         <Text bold>{sanitizeTty(overlay.question)}</Text>
         <Text color={dim}>y: yes · n or Esc: no</Text>
       </Box>
     ) : (
-      <Box borderStyle="single" flexDirection="column" paddingX={1} height={inline ? undefined : Math.max(3, size.rows - 2)}>
+      <Box borderStyle="single" flexDirection="column" paddingX={1} height={inline ? undefined : Math.max(3, bodyRows)}>
         <Text bold>{overlay.title}</Text>
-        {overlay.lines.slice(overlay.offset, overlay.offset + Math.max(1, size.rows - 4)).map((l, i) => (
+        {overlay.lines.slice(overlay.offset, overlay.offset + overlayRoom).map((l, i) => (
           <Text key={i} wrap="truncate-end">
-            {l}
+            {l || ' '}
           </Text>
         ))}
         <Text color={dim}>Up / Down / PgUp / PgDn scroll · q or Esc closes</Text>
@@ -901,8 +1156,9 @@ export function App(props: AppProps) {
   } else if (inline) {
     body = (
       <Box flexDirection="column">
-        <TranscriptPane mode="inline" width={size.cols} height={0} focused={focus === 'transcript'} rows={scrollback} partials={partialRows(state)} omitted={transcript.omitted} />
+        <TranscriptPane mode="inline" width={size.cols} height={0} focused={focus === 'transcript'} rows={scrollback} partials={partialRows(state, zoomFilter)} omitted={transcript.omitted} />
         {overlayNode}
+        {inspectorNode}
         {tray}
         {palette}
         {composer}
@@ -920,11 +1176,11 @@ export function App(props: AppProps) {
               <>
                 <Box flexDirection="column">{col(0).map(paneNode)}</Box>
                 <Box flexDirection="column" flexGrow={1}>
-                  {col(1).map(paneNode)}
+                  {inspectorNode ?? col(1).map(paneNode)}
                 </Box>
               </>
             ) : (
-              panes.map(paneNode)
+              (inspectorNode ? [inspectorNode] : panes.map(paneNode))
             )}
           </Box>
         )}

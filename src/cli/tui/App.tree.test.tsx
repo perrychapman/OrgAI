@@ -237,12 +237,12 @@ describe('the org tree in the real App: folded, one line per agent, the waiting 
   it('a report that finishes folds after the grace by itself, with the run still running (one timer to the next settle moment)', async () => {
     const s = sampleState()
     const r1 = s.runs.run1.agents.r1
-    // Finished 5.85 s ago: the 6 s grace ends in about 150 ms (the timer waits at least 250 ms).
-    const fresh: TuiState = { ...s, runs: { ...s.runs, run1: { ...s.runs.run1, agents: { ...s.runs.run1.agents, r1: { ...r1, endedAt: Date.now() - 5850 } } } } }
+    // Finished 5.4 s ago: the 6 s grace ends in about 600 ms (roomy, so a loaded test run still sees the row first).
+    const fresh: TuiState = { ...s, runs: { ...s.runs, run1: { ...s.runs.run1, agents: { ...s.runs.run1.agents, r1: { ...r1, endedAt: Date.now() - 5400 } } } } }
     const m = mount({ cols: 90, rows: 30, state: fresh, realClock: true })
     await tick()
     expect(m.frame()).toMatch(/mock-lead-report-1 +Finished/)
-    await new Promise((r) => setTimeout(r, 450))
+    await new Promise((r) => setTimeout(r, 1000))
     expect(m.frame()).not.toMatch(/mock-lead-report-1 +Finished/)
     expect(m.frame()).toContain('1 done')
     m.r.unmount()
