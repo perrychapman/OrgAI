@@ -17,6 +17,7 @@ import {
   withHost
 } from './manage'
 import { resetSkewWarning } from './runRef'
+import { reservedSecretSourceProblem } from './secretOverlay'
 import { fakeContext, fakeInproc, FakeHostClient, noHost, project, rpcError } from './testing/fakeContext'
 import { CliError, EXIT, type CliContext } from './types'
 
@@ -224,6 +225,18 @@ describe('readSecretValue', () => {
       expect(e.message).toContain('MY_TOKEN')
       expect(e.message).not.toContain('secret-value')
     }
+  })
+
+  it('an ORGAI_SECRET_* source is refused with its own message, never "not set" (prepareContext scrubbed it; review round 2)', async () => {
+    // As main() leaves it: the variable already taken out of the environment.
+    const f = fakeContext({ env: {} })
+    const e = await caught(readSecretValue(f.ctx, { fromEnv: 'ORGAI_SECRET_LITELLM_API_KEY', what: 'the LiteLLM API key' }))
+    expect(e.exitCode).toBe(EXIT.usage)
+    expect(e.message).toBe(reservedSecretSourceProblem('ORGAI_SECRET_LITELLM_API_KEY', '--from-env'))
+    expect(e.message).toContain('Put the value in another variable for --from-env')
+    expect(e.message).not.toContain('not set')
+    const c = await caught(readSecretValue(f.ctx, { fromEnv: 'ORGAI_SECRET_X', what: 'the OAuth client secret', fromEnvFlag: '--client-secret-from-env' }))
+    expect(c.message).toContain('--client-secret-from-env')
   })
 
   it('stdin: one trailing newline trimmed, at most 64 KB', async () => {

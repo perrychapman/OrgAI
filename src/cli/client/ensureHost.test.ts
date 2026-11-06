@@ -1,4 +1,7 @@
-import { describe, expect, it } from 'vitest'
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, describe, expect, it } from 'vitest'
 import type { DaemonInfo } from '../../shared/types'
 import { SECRET_ENV_IGNORED_WARNING, SECRET_ENV_REFUSAL } from '../secretOverlay'
 import { FakeHostClient, fakeContext, fakeInproc, noHost } from '../testing/fakeContext'
@@ -9,8 +12,11 @@ import {
   INPROC_FALLBACK_NOTE,
   INPROC_SECRETS_NOTE,
   MANAGEMENT_INPROC,
-  NO_BACKGROUND_HOST_MESSAGE
+  NO_BACKGROUND_HOST_MESSAGE,
+  OTHER_COMMAND_HOST_MESSAGE,
+  OTHER_COMMAND_HOST_NOTE
 } from './ensureHost'
+import { markSharedHost } from './sharedHost'
 
 const ready: DaemonInfo = { hostInstanceId: 'bbbbbbbbbbbb', pid: 77, endpoint: '/tmp/y.sock', state: 'ready', startedAt: 1, hostKind: 'headless-host' }
 const BACKGROUND = ['headless-host', 'desktop', 'node']
@@ -218,5 +224,108 @@ describe('ensureHost: environment secrets under --host auto (4.1, round 6 item 8
     const f = fakeContext({ connect: [h] })
     expect(await ensureHost(f.ctx, ['read'])).toEqual({ client: h, started: false })
     expect(f.err()).toBe('')
+  })
+})
+
+describe("ensureHost: another command's own in-process host (WP-B review round 2)", () => {
+  const OTHER = 'cccccccccccc'
+  /** A live inproc host that belongs to another terminal's command. */
+  const otherInproc = (): FakeHostClient => new FakeHostClient({}, { hello: { hostKind: 'inproc', hostInstanceId: OTHER, grantedScopes: ['read', 'operate', 'decide', 'configure'] } })
+  let dirs: string[] = []
+  afterEach(() => {
+    for (const d of dirs) rmSync(d, { recursive: true, force: true })
+    dirs = []
+  })
+  const dataDirWithRun = (): { userDataDir: string; dataDir: string } => {
+    const userDataDir = mkdtempSync(join(tmpdir(), 'ens-'))
+    dirs.push(userDataDir)
+    const dataDir = join(userDataDir, 'data')
+    mkdirSync(join(dataDir, 'run'), { recursive: true })
+    return { userDataDir, dataDir }
+  }
+
+  it('--host auto never attaches to it: waits for it to go, then runs its own in-process host', async () => {
+    const other = otherInproc()
+    const inproc = fakeInproc()
+    const h = new FakeHostClient()
+    const f = fakeContext({ connect: [other, noHost(), h], launcher: { locate: () => absent }, inproc: async () => inproc })
+    const r = await ensureHost(f.ctx, ['read', 'operate'])
+    expect(r).toEqual({ client: h, inproc, started: true })
+    expect(other.closed).toBe(true)
+    expect(other.calls).toEqual([])
+    expect(f.launcherCalls[0]).toEqual({ method: 'waitForGone', args: { timeoutMs: expect.any(Number), hostInstanceId: OTHER } })
+    expect((f.launcherCalls[0].args as { timeoutMs: number }).timeoutMs).toBeLessThanOrEqual(HOST_STARTING_WAIT_MS)
+    expect(f.err()).toBe(`${OTHER_COMMAND_HOST_NOTE}\n${INPROC_FALLBACK_NOTE}\n`)
+  })
+
+  it('still there after the wait: exit 6 with the message, nothing started', async () => {
+    const other = otherInproc()
+    const f = fakeContext({ connect: [other], launcher: { locate: () => absent, waitForGone: async () => false }, inproc: async () => fakeInproc() })
+    await expect(ensureHost(f.ctx, ['read'])).rejects.toMatchObject({ exitCode: EXIT.hostBusy, message: OTHER_COMMAND_HOST_MESSAGE })
+    expect(f.inprocCalls).toEqual([])
+    expect(f.launcherCalls.map((c) => c.method)).toEqual(['waitForGone'])
+    // One that keeps coming back (a fake that says gone at once) gives up after a bounded number of rounds.
+    const g = fakeContext({ connect: [otherInproc()], launcher: { locate: () => absent } })
+    await expect(ensureHost(g.ctx, ['read'])).rejects.toMatchObject({ exitCode: EXIT.hostBusy, message: OTHER_COMMAND_HOST_MESSAGE })
+    expect(g.launcherCalls.length).toBeLessThanOrEqual(5)
+  })
+
+  it('one that is draining is waited out too, instead of exit 6', async () => {
+    const draining = { ok: false as const, reason: 'draining' as const, message: 'OrgAI is shutting down.', daemon: { ...ready, hostKind: 'inproc' as const, hostInstanceId: OTHER } }
+    const inproc = fakeInproc()
+    const h = new FakeHostClient()
+    const f = fakeContext({ connect: [draining, noHost(), h], launcher: { locate: () => absent }, inproc: async () => inproc })
+    expect(await ensureHost(f.ctx, ['read'])).toEqual({ client: h, inproc, started: true })
+    expect(f.launcherCalls[0]).toMatchObject({ method: 'waitForGone', args: { hostInstanceId: OTHER } })
+    // A draining background host is still exit 6 (unchanged).
+    const g = fakeContext({ connect: [{ ...draining, daemon: ready }] })
+    await expect(ensureHost(g.ctx, ['read'])).rejects.toMatchObject({ exitCode: EXIT.hostBusy })
+  })
+
+  it('a shared in-process host (daemon start --host inproc) is attached to like any live host', async () => {
+    const paths = dataDirWithRun()
+    const unmark = markSharedHost(paths.dataDir, OTHER)
+    const other = otherInproc()
+    const f = fakeContext({ paths, connect: [other], launcher: { locate: () => absent } })
+    expect(await ensureHost(f.ctx, ['read'])).toEqual({ client: other, started: false })
+    expect(f.launcherCalls).toEqual([])
+    expect(other.closed).toBe(false)
+    // Its marker gone (the host ended): no longer attached to.
+    unmark()
+    const g = fakeContext({ paths, connect: [otherInproc(), noHost(), new FakeHostClient()], launcher: { locate: () => absent }, inproc: async () => fakeInproc() })
+    expect((await ensureHost(g.ctx, ['read'])).started).toBe(true)
+  })
+
+  it("this context's own in-process host, still running, is attached to", async () => {
+    const own = fakeInproc({ hostInstanceId: OTHER })
+    const first = new FakeHostClient({}, { hello: { hostKind: 'inproc', hostInstanceId: OTHER } })
+    const f = fakeContext({ globals: { host: 'inproc' }, connect: [first, otherInproc()], inproc: async () => own })
+    await ensureHost(f.ctx, ['read'])
+    f.ctx.globals.host = 'auto'
+    const again = await ensureHost(f.ctx, ['read'])
+    expect(again.started).toBe(false)
+    expect(f.launcherCalls).toEqual([])
+    // Once it stopped, a host with that id is no longer this context's own.
+    await own.stop(true)
+    await own.closed
+    await Promise.resolve()
+    const g = await ensureHost(f.ctx, ['read']).catch((e: unknown) => e)
+    expect(g).toMatchObject({ exitCode: EXIT.hostBusy })
+  })
+
+  it('env secrets: such a host is never a live host for the refusal; the command waits, then uses them in-process', async () => {
+    const inproc = fakeInproc()
+    const h = new FakeHostClient()
+    const f = fakeContext({ connect: [otherInproc(), noHost(), h], launcher: { locate: () => found }, inproc: async () => inproc, secretEnv: { explicit: true, ambient: false, usesSecrets: true } })
+    expect(await ensureHost(f.ctx, ['read', 'operate'])).toEqual({ client: h, inproc, started: true })
+    expect(f.launcherCalls.map((c) => c.method)).toEqual(['waitForGone'])
+    expect(f.err()).toBe(`${OTHER_COMMAND_HOST_NOTE}\n${INPROC_SECRETS_NOTE}\n`)
+  })
+
+  it('--host daemon waits it out too, then starts a background host', async () => {
+    const h = new FakeHostClient()
+    const f = fakeContext({ globals: { host: 'daemon' }, connect: [otherInproc(), noHost(), h], launcher: { locate: () => found, waitForReady: async () => ready } })
+    expect(await ensureHost(f.ctx, ['read'])).toEqual({ client: h, started: true })
+    expect(f.launcherCalls.map((c) => c.method)).toEqual(['waitForGone', 'spawn', 'waitForReady'])
   })
 })

@@ -87,6 +87,8 @@ describe('orgai daemon start', () => {
     const done = runDaemon(f.ctx, ['start'])
     await flush()
     expect(f.out()).toContain(INPROC_BANNER)
+    // It serves other terminals: started shared, so their ensureHost attaches to it (WP-B review round 2).
+    expect(f.inprocCalls).toEqual([{ shared: true }])
     f.signal('SIGINT')
     expect(await done).toBe(EXIT.ok)
     expect(stopped).toBe(true)

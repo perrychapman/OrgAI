@@ -14,6 +14,7 @@ import { ensureHost, MANAGEMENT_INPROC, missingScopesError, TERMINAL_ACCESS_HINT
 import { consumeSecretEnv } from './client/launcher'
 import { note, safeLine, warn } from './output'
 import { checkProjectResolution, warnVersionSkew } from './runRef'
+import { reservedSecretSourceProblem } from './secretOverlay'
 import { CliError, EXIT, type CliContext, type HostCallError, type HostClient } from './types'
 
 /** The most a secret read from stdin may be. */
@@ -188,14 +189,18 @@ export async function confirm(ctx: CliContext, question: string, yes: boolean): 
  * A secret value from exactly one source: the environment variable `fromEnv` (set and non-empty) or stdin (one
  * trailing newline trimmed, at most 64 KB, never an interactive terminal: the value would echo). Secrets are never
  * accepted on argv and never printed; errors name the variable, never a value. The variable is taken out of the
- * environment once read (launcher.ts consumeSecretEnv): call this before withHost, which may start a host.
+ * environment once read (launcher.ts consumeSecretEnv): call this before withHost, which may start a host. An
+ * ORGAI_SECRET_* name is refused with its own message (secretOverlay.ts reservedSecretSourceProblem): prepareContext has
+ * already taken such variables out of the environment. `fromEnvFlag` names the option in that message.
  */
-export async function readSecretValue(ctx: CliContext, opts: { fromEnv?: string; stdin?: boolean; what: string }): Promise<string> {
+export async function readSecretValue(ctx: CliContext, opts: { fromEnv?: string; stdin?: boolean; what: string; fromEnvFlag?: string }): Promise<string> {
   const { fromEnv, stdin, what } = opts
   if (fromEnv !== undefined && stdin) throw new CliError(`Give ${what} with --from-env or --stdin, not both.`, EXIT.usage)
   if (fromEnv === undefined && !stdin) throw new CliError(`Give ${what} with --from-env <VAR> or --stdin; secrets are never taken as arguments.`, EXIT.usage)
   if (fromEnv !== undefined) {
     if (!ENV_NAME_RE.test(fromEnv)) throw new CliError(`--from-env needs an environment variable name, not "${safeLine(fromEnv).slice(0, 40)}".`, EXIT.usage)
+    const reserved = reservedSecretSourceProblem(fromEnv, opts.fromEnvFlag ?? '--from-env')
+    if (reserved) throw new CliError(reserved, EXIT.usage)
     // Taken out of the environment at once: a host this command starts (and its agents) never inherit it (review M13).
     const v = consumeSecretEnv(ctx.env, fromEnv)
     if (v === undefined || v === '') throw new CliError(`The environment variable ${fromEnv} is not set or empty; it should hold ${what}.`, EXIT.usage)

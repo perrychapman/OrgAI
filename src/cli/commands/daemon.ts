@@ -184,9 +184,10 @@ async function reportStarted(ctx: CliContext, d: DaemonInfo, wasStarting: boolea
   return EXIT.ok
 }
 
-/** `--host inproc`: the host lives in this process until Ctrl+C (or until it stops on its own). */
+/** `--host inproc`: the host lives in this process until Ctrl+C (or until it stops on its own) and serves other terminals. */
 async function runInproc(ctx: CliContext): Promise<number> {
-  const handle = await ctx.startInproc()
+  // This host serves other terminals until Ctrl+C: marked shared, so their ensureHost attaches to it (client/sharedHost.ts).
+  const handle = await ctx.startInproc({ shared: true })
   emit(ctx, { running: true, inproc: true, status: handle.status() }, () => [INPROC_BANNER])
   let offSignal: () => void = () => undefined
   const code = await new Promise<number>((resolve) => {

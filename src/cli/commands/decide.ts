@@ -46,6 +46,7 @@ import { parseFlags, type FlagValues } from '../flags'
 import { manageDeps } from '../manage'
 import { emit, isJsonOutput, safeLine, type Json } from '../output'
 import { warnVersionSkew } from '../runRef'
+import { reservedSecretSourceProblem } from '../secretOverlay'
 import { CliError, EXIT, HOST_STARTING_WAIT_MS, type CliContext, type CommandFn, type ConnectResult, type HostCallError, type HostClient } from '../types'
 
 export const NO_HOST_FOR_DECIDE = 'No OrgAI host is running; pending decisions live only in a running host.'
@@ -170,6 +171,8 @@ function readSecrets(ctx: CliContext, specs: readonly string[] | undefined, know
         EXIT.usage
       )
     }
+    const reserved = reservedSecretSourceProblem(envVar, `--secret ${safeLine(name)}`)
+    if (reserved) throw new CliError(reserved, EXIT.usage)
     // Taken out of the environment once read (review M13).
     const value = consumeSecretEnv(ctx.env, envVar)
     if (value === undefined || value === '') throw new CliError(`The environment variable ${envVar} (for --secret ${safeLine(name)}) is not set or empty.`, EXIT.usage)

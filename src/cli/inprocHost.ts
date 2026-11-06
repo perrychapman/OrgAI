@@ -16,6 +16,7 @@ import { installLogging, log } from '../main/log'
 import { stopSystemCertRead, trustSystemCertificates } from '../main/systemCerts'
 import { orgaiCliRootsOf, setOrgaiCliRoots } from '../main/runtime/selfControlGate'
 import { openSecretStore, type SecretCipher } from '../main/store/secrets'
+import { markSharedHost } from './client/sharedHost'
 import { openUrl } from './openUrl'
 import { CliError, EXIT, type InprocHostHandle } from './types'
 import { CLI_VERSION } from './version'
@@ -54,6 +55,13 @@ export interface StartInprocHostOptions {
    * false or inject hooks.
    */
   systemCertificates?: boolean | SystemCertHooks
+  /**
+   * WP-B review round 2: this host serves other terminals (`orgai daemon start --host inproc`), so it writes the
+   * `run/inproc-shared-<id>` marker (client/sharedHost.ts) once it owns the data folder, before it is ready, and removes
+   * it when it ends. Without it (a command's own host) other terminals' ensureHost waits for it to end instead of
+   * attaching. Default false.
+   */
+  shared?: boolean
 }
 
 /** The certificate setup the in-process host calls (src/main/systemCerts.ts). */
@@ -141,8 +149,18 @@ export async function startInprocHost(opts: StartInprocHostOptions): Promise<Inp
   } catch (e) {
     log.warn(`System certificates not added: ${e instanceof Error ? e.message : String(e)}`)
   }
+  let unmarkShared = (): void => undefined
+  if (opts.shared) {
+    try {
+      unmarkShared = markSharedHost(dataDir, hostInstanceId)
+    } catch (e) {
+      // Other terminals then wait for this host instead of using it (the safe side).
+      log.warn(`Could not mark the host as shared with other terminals: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
   const onExit = (): void => {
     stopCerts()
+    unmarkShared()
     ownership.release()
   }
   process.on('exit', onExit)
@@ -155,6 +173,7 @@ export async function startInprocHost(opts: StartInprocHostOptions): Promise<Inp
     if (cleaned) return
     cleaned = true
     stopCerts()
+    unmarkShared()
     server.close()
     host?.dispose()
     try {

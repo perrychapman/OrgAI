@@ -319,6 +319,44 @@ describe('orgai routing', () => {
     expect([...inprocStarts[0].overlay]).toEqual([['connection:litellm:apiKey', 'sk']])
   })
 
+  it('projects list with an ambient secret, an app found and no live host: runs in-process with the overlay and never spawns the app (round 6 item 8; review round 2)', async () => {
+    const projects = await import('./commands/projects')
+    const { withHost } = await import('./manage')
+    const { INPROC_SECRETS_NOTE } = await import('./client/ensureHost')
+    const spawns: unknown[] = []
+    const client = {
+      hello: { protocolVersion: 1, hostInstanceId: 'aaaaaaaaaaaa', hostKind: 'inproc', appVersion: CLI_VERSION, dataDir: '/d', mock: true, grantedScopes: ['read', 'operate', 'decide', 'configure'], hostProof: '' },
+      daemon: { hostInstanceId: 'aaaaaaaaaaaa', pid: 1, endpoint: '/x', state: 'ready', startedAt: 1 },
+      call: async () => [],
+      onNotification: () => () => undefined,
+      onClose: () => () => undefined,
+      close: () => undefined
+    }
+    vi.mocked(projects.runProjects).mockImplementationOnce(async (ctx: CliContext, args: string[]) => {
+      calls.push({ name: 'projects', args, ctx })
+      // The real ensureHost path (withHost) with only the edges faked: an installed app, no live host until the
+      // in-process host this command starts.
+      ctx.launcher = {
+        ...ctx.launcher,
+        locate: () => ({ status: 'found', command: '/Applications/OrgAI.app/Contents/MacOS/OrgAI', args: [], source: 'installed' }),
+        spawn: (o) => (spawns.push(o), { pid: 1 }),
+        waitForReady: async () => {
+          throw new Error('never waits for a spawned app')
+        }
+      }
+      ctx.connect = async () => (inprocStarts.length ? ({ ok: true, client } as never) : { ok: false, reason: 'no_host', message: 'No OrgAI host is running.' })
+      return withHost(ctx, ['read'], async () => 0)
+    })
+    const env: NodeJS.ProcessEnv = { ORGAI_SECRET_LITELLM_API_KEY: 'sk', PATH: '/bin' }
+    const r = await run(['projects', 'list'], env)
+    expect(r.code).toBe(0)
+    expect(spawns).toEqual([])
+    expect(inprocStarts).toHaveLength(1)
+    expect([...inprocStarts[0].overlay]).toEqual([['connection:litellm:apiKey', 'sk']])
+    expect(r.err).toBe(`${INPROC_SECRETS_NOTE}\n`)
+    expect(env).toEqual({ PATH: '/bin' })
+  })
+
   it('auto: commands that may run in-process collect and scrub the secrets and hand ensureHost what it needs', async () => {
     const env: NodeJS.ProcessEnv = { ORGAI_SECRET_LITELLM_API_KEY: 'sk', TOKEN: 't', PATH: '/bin' }
     const r = await run(['--secret-env', 'mcp:p:s:env:X=TOKEN', 'exec', 'hello'], env)

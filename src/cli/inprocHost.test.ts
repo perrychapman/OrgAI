@@ -14,6 +14,7 @@ vi.mock('../main/systemCerts', () => ({
 import { LITELLM_KEY, READ_ONLY_SECRETS_MESSAGE, type SecretStore } from '../main/store/secrets'
 import { inprocCliRoots, startInprocHost, type InprocHost } from './inprocHost'
 import { CliError } from './types'
+import { isSharedInprocHost } from './client/sharedHost'
 
 let userDataDir: string
 let dataDir: string
@@ -48,6 +49,18 @@ describe('startInprocHost', () => {
     const secrets = secretsOf(h)
     expect(secrets.get(LITELLM_KEY)).toBe('sk-overlay')
     expect(() => secrets.set(LITELLM_KEY, 'other')).toThrow(READ_ONLY_SECRETS_MESSAGE)
+  })
+
+  it('a shared host (daemon start --host inproc) carries the shared marker until it stops; a command host never does (review round 2)', async () => {
+    const own = await start()
+    expect(isSharedInprocHost(dataDir, own.status().hostInstanceId)).toBe(false)
+    await own.stop(true)
+    const h = await startInprocHost({ userDataDir, dataDir, env: { ORGAI_MOCK: '1', ORGAI_DAEMON_IDLE_MINUTES: '0' }, mock: true, overlay: new Map(), logging: false, startBackground: false, systemCertificates: false, shared: true })
+    started.push(h)
+    const id = h.status().hostInstanceId
+    expect(isSharedInprocHost(dataDir, id)).toBe(true)
+    await h.stop(true)
+    expect(isSharedInprocHost(dataDir, id)).toBe(false)
   })
 
   it('a second host on the same data dir is refused with exit 6', async () => {

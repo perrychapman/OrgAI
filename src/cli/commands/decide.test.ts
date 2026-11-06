@@ -3,6 +3,7 @@ import type { CardKind, DecisionLookup, DecisionOutcome, HostScope, PendingCards
 import { TERMINAL_FULL_ACCESS_HINT } from '../client/ensureHost'
 import { FakeHostClient, fakeContext, noHost, rpcError, type FakeContextOptions } from '../testing/fakeContext'
 import { EXIT, HOST_STARTING_WAIT_MS } from '../types'
+import { reservedSecretSourceProblem } from '../secretOverlay'
 import { decideDeps, runDecide } from './decide'
 
 const RUN = 'run_abc123'
@@ -199,6 +200,15 @@ describe('orgai decide: secrets from the environment', () => {
       await expect(runDecide(f.ctx, [REQ, 'allow', '--secret', spec])).rejects.toMatchObject({ exitCode: EXIT.usage })
       expect(sent()).toEqual([])
     }
+  })
+
+  it('an ORGAI_SECRET_* source is refused with its own message (prepareContext scrubbed it; review round 2)', async () => {
+    const { f, sent } = setup({ kind: 'mcpInstall', opts: { env: {} } })
+    await expect(runDecide(f.ctx, [REQ, 'allow', '--secret', 'API_KEY=ORGAI_SECRET_TOKEN'])).rejects.toMatchObject({
+      exitCode: EXIT.usage,
+      message: reservedSecretSourceProblem('ORGAI_SECRET_TOKEN', '--secret API_KEY')
+    })
+    expect(sent()).toEqual([])
   })
 
   it('--secret on a verb that takes none is exit 2', async () => {

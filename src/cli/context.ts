@@ -83,6 +83,7 @@ export function buildContext(input: BuildContextInput): CliContext {
         mock: env.ORGAI_MOCK === '1',
         overlay: input.overlay ?? new Map(),
         ...(opts.background ? { background: opts.background } : {}),
+        ...(opts.shared ? { shared: true } : {}),
         ...(quietContexts.has(ctx) ? { quiet: true } : {})
       })
     )

@@ -8,6 +8,8 @@ import {
   CHECKOUT_MARKER,
   createLauncher,
   devAppRoot,
+  devCheckoutNoElectron,
+  devCheckoutUnbuilt,
   discoverInstalledApp,
   hostSpawnCwd,
   hostSpawnEnv,
@@ -78,7 +80,21 @@ describe('launcher', () => {
     const root = fakeRepo()
     rmSync(join(root, 'out', 'main', 'index.js'))
     const unbuilt = createLauncher({ dataDir, userDataDir: '', userChoseDataDir: false, env: {}, bundleDir: join(root, 'out', 'cli') })
-    expect(unbuilt.locate()).toMatchObject({ status: 'broken', path: root })
+    expect(unbuilt.locate()).toEqual({ status: 'broken', path: root, message: devCheckoutUnbuilt(root) })
+  })
+
+  it('a checkout without its electron binary is broken naming the checkout, never a fall-through to an installed app (review round 2)', () => {
+    const root = fakeRepo()
+    rmSync(join(root, 'node_modules', 'electron'), { recursive: true, force: true })
+    // An installed app exists too: it must not be picked for a broken checkout.
+    const realExists = (p: string): boolean => p === '/Applications/OrgAI.app' || p === '/Applications/OrgAI.app/Contents/MacOS/OrgAI' || p === '/Applications/OrgAI.app/Contents/Resources/app.asar' || existsSync(p)
+    const l = createLauncher({ dataDir, userDataDir: '', userChoseDataDir: false, env: {}, bundleDir: join(root, 'out', 'cli'), platform: 'darwin', home: '/Users/me', exists: realExists, installInfo: { channel: 'dev', source: 'absent' } })
+    expect(l.resolve()).toEqual({ error: devCheckoutNoElectron(root), path: root })
+    expect(l.locate()).toEqual({ status: 'broken', path: root, message: devCheckoutNoElectron(root) })
+    expect(devCheckoutNoElectron(root)).toContain('npm install')
+    // The injected binary lookup is what decides (an installed electron makes it found again).
+    const ok = createLauncher({ dataDir, userDataDir: '', userChoseDataDir: false, env: {}, bundleDir: join(root, 'out', 'cli'), platform: 'darwin', home: '/Users/me', exists: realExists, installInfo: { channel: 'dev', source: 'absent' }, electronBinary: () => '/x/electron' })
+    expect(ok.locate()).toEqual({ status: 'found', command: '/x/electron', args: [root], source: 'dev' })
   })
 
   it('spawns detached with the flags and a cleaned environment', () => {

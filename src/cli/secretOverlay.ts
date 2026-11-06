@@ -84,6 +84,17 @@ export function collectSecretOverlay(env: NodeJS.ProcessEnv, secretEnvFlags: rea
   return { overlay, consumedVars: [...consumed] }
 }
 
+/**
+ * The usage error when a command is told to read a secret from an ORGAI_SECRET_* variable (`--from-env`, `decide
+ * --secret NAME=VAR`, `--client-secret-from-env`): prepareContext takes every such variable out of the environment for
+ * the environment secret overlay before any command runs, so it would read as unset (WP-B review round 2). Undefined for
+ * any other name.
+ */
+export function reservedSecretSourceProblem(envVar: string, flag: string): string | undefined {
+  if (!envVar.startsWith(SECRET_ENV_PREFIX)) return undefined
+  return `${envVar} is an ORGAI_SECRET_* variable: OrgAI keeps those for its environment secret overrides and takes them out of the environment before any command runs. Put the value in another variable for ${flag}.`
+}
+
 /** Delete every ORGAI_SECRET_* variable and each consumed variable from `env` (process.env by default). */
 export function scrubSecretEnv(env: NodeJS.ProcessEnv, consumedVars: readonly string[]): void {
   for (const k of Object.keys(env)) if (k.startsWith(SECRET_ENV_PREFIX)) delete env[k]

@@ -192,8 +192,8 @@ export interface HostLauncher {
   resolve(): HostLauncherFound | { error: string; path?: string }
   /**
    * Wave 7: the same lookup as found / absent / broken (HostLauncherResolution): APP_NOT_FOUND is 'absent', any other
-   * error 'broken' with the error's `path` (a missing packaged binary, an unbuilt checkout, an incomplete installed
-   * app).
+   * error 'broken' with the error's `path` (a missing packaged binary, an unbuilt checkout or one without its electron
+   * binary, an incomplete installed app).
    */
   locate(): HostLauncherResolution
   /**
@@ -237,6 +237,12 @@ export interface InprocStartOptions {
    * decides; a later call while that host is still running reuses it.
    */
   background?: HostBackgroundOptions
+  /**
+   * The host serves other terminals until stopped (`orgai daemon start --host inproc`): it is marked shared
+   * (client/sharedHost.ts), so other terminals' ensureHost attaches to it. Without it the host is the command's own and
+   * other terminals wait for it to end (WP-B review round 2). Default false.
+   */
+  shared?: boolean
 }
 
 /**

@@ -4,6 +4,10 @@
  *
  * - `--host inproc`: start a pure-Node host in this process, then connect to its own socket.
  * - `--host auto`:
+ *   0. Another command's own in-process host (an 'inproc' host that is neither this context's nor marked shared by
+ *      `daemon start --host inproc`, client/sharedHost.ts) is never used: it ends with that command and drains with
+ *      force, stopping anything started on it. Wait for it to go (HostLauncher.waitForGone, HOST_STARTING_WAIT_MS in all,
+ *      one stderr note), then go on as if no host had answered; still there: exit 6 (WP-B review round 2).
  *   1. A live host answers: connect. Environment secrets meet it here (secretOverlay.ts liveHostSecretAnswer): an
  *      explicit --secret-env, or an ambient ORGAI_SECRET_* on a command that would use it, is refused (exit 2); any other
  *      ambient one is ignored with one warning.
@@ -12,7 +16,7 @@
  *   4. Else HostLauncher.locate(): 'found' spawns the app headless and waits up to 30 s for a background host
  *      (BACKGROUND_HOST_KINDS); 'broken' is an error naming the path; 'absent' runs in-process with one stderr note in
  *      text mode.
- * - `--host daemon`: never in-process (cli-spec 3.2(3)). With no live host it starts a background host: the app when
+ * - `--host daemon`: never in-process (cli-spec 3.2(3)); step 0 applies too. With no live host it starts a background host: the app when
  *   locate() finds one, else a Node host through `launcher.startBackground('node')` when this build has it, else an
  *   error; then it waits for any BACKGROUND_HOST_KINDS host.
  *
@@ -24,10 +28,11 @@
  * `clientKind: 'tui'`: the host counts 'tui' sockets as interactiveClients (a person is watching) and fills
  * `decidedBy.surface` 'tui' on the decisions it sends.
  */
-import { BACKGROUND_HOST_KINDS, type HostClientKind, type HostScope } from '../../shared/types'
+import { BACKGROUND_HOST_KINDS, HOST_KIND_CAPABILITIES, type HostClientKind, type HostKind, type HostScope } from '../../shared/types'
 import { note, warn } from '../output'
 import { liveHostSecretAnswer, SECRET_ENV_IGNORED_WARNING } from '../secretOverlay'
 import { CliError, EXIT, HOST_STARTING_WAIT_MS, type CliContext, type ConnectResult, type HostClient, type InprocHostHandle, type InprocStartOptions } from '../types'
+import { isSharedInprocHost } from './sharedHost'
 
 export const ENSURE_HOST_READY_TIMEOUT_MS = 30_000
 /** How long a 'starting' host is waited for (Wave 7: HOST_STARTING_WAIT_MS, 15 s; was 2 s). */
@@ -38,6 +43,16 @@ export const INPROC_FALLBACK_NOTE = 'No OrgAI app or background host found; runn
 
 /** The stderr line (text mode) when environment secrets keep `--host auto` in-process (round 6 item 8). */
 export const INPROC_SECRETS_NOTE = 'Environment secrets are set; running the host inside this command so they are used.'
+
+/** The stderr line (text mode) while ensureHost waits for another command's own in-process host to end. */
+export const OTHER_COMMAND_HOST_NOTE = 'Another orgai command is running its own host for this data folder; waiting for it to finish.'
+
+/** Exit 6 when another command's own in-process host is still there after the wait. */
+export const OTHER_COMMAND_HOST_MESSAGE =
+  'Another orgai command is still running its own host for this data folder, and that host ends with it. Try again when it finishes, or keep a host running for every terminal with `orgai daemon start`.'
+
+/** How many times ensureHost waits for another command's host before it gives up (each wait shares one deadline). */
+const OTHER_COMMAND_HOST_ROUNDS = 5
 
 /** `--host daemon` with no app and no Node background host in this build. */
 export const NO_BACKGROUND_HOST_MESSAGE =
@@ -103,6 +118,55 @@ function once(ctx: CliContext, line: string): boolean {
   return true
 }
 
+/** The in-process host each context started and has not seen end: the only 'inproc' host it may attach to unmarked. */
+const ownInproc = new WeakMap<CliContext, InprocHostHandle>()
+
+function inProcessKind(kind: HostKind | undefined): boolean {
+  return kind !== undefined && Object.prototype.hasOwnProperty.call(HOST_KIND_CAPABILITIES, kind) && HOST_KIND_CAPABILITIES[kind].inProcess
+}
+
+function isOwnHost(ctx: CliContext, hostInstanceId: string): boolean {
+  const own = ownInproc.get(ctx)
+  if (!own) return false
+  try {
+    return own.status().hostInstanceId === hostInstanceId
+  } catch {
+    return false
+  }
+}
+
+/**
+ * The id of another command's own in-process host behind this connect answer (a live one, or one draining), else
+ * undefined: an 'inproc' host that is not this context's own and not marked shared (client/sharedHost.ts).
+ */
+function otherCommandHost(ctx: CliContext, res: ConnectResult): string | undefined {
+  const kind = res.ok ? res.client.hello.hostKind : res.reason === 'draining' ? res.daemon?.hostKind : undefined
+  const id = res.ok ? res.client.hello.hostInstanceId : res.daemon?.hostInstanceId
+  if (!inProcessKind(kind) || typeof id !== 'string') return undefined
+  if (isOwnHost(ctx, id) || isSharedInprocHost(ctx.paths.dataDir, id)) return undefined
+  return id
+}
+
+/**
+ * Connect, waiting out another command's own in-process host (step 0): its id closes the client, prints the note once,
+ * waits for that host to go and connects again. Gives up with exit 6 after HOST_STARTING_WAIT_MS in all.
+ */
+async function connectPastOtherCommandHosts(ctx: CliContext, connect: () => Promise<ConnectResult>): Promise<ConnectResult> {
+  const deadline = Date.now() + ENSURE_HOST_STARTING_WAIT_MS
+  let res = await connect()
+  for (let round = 0; ; round++) {
+    const other = otherCommandHost(ctx, res)
+    if (other === undefined) return res
+    if (res.ok) res.client.close()
+    if (round >= OTHER_COMMAND_HOST_ROUNDS) throw new CliError(OTHER_COMMAND_HOST_MESSAGE, EXIT.hostBusy)
+    if (once(ctx, OTHER_COMMAND_HOST_NOTE)) note(ctx, OTHER_COMMAND_HOST_NOTE)
+    const left = deadline - Date.now()
+    const gone = left > 0 && (await ctx.launcher.waitForGone({ timeoutMs: left, hostInstanceId: other }))
+    if (!gone) throw new CliError(OTHER_COMMAND_HOST_MESSAGE, EXIT.hostBusy)
+    res = await connect()
+  }
+}
+
 /** The CliError for a failed connect. */
 export function connectFailure(res: Extract<ConnectResult, { ok: false }>): CliError {
   switch (res.reason) {
@@ -126,6 +190,11 @@ export function connectFailure(res: Extract<ConnectResult, { ok: false }>): CliE
 /** Start an in-process host and connect to it; a failed connect stops it again. */
 async function inprocHost(ctx: CliContext, connect: () => Promise<ConnectResult>, opts: InprocStartOptions | undefined): Promise<EnsuredHost> {
   const inproc = await ctx.startInproc(opts)
+  ownInproc.set(ctx, inproc)
+  const forget = (): void => {
+    if (ownInproc.get(ctx) === inproc) ownInproc.delete(ctx)
+  }
+  inproc.closed.then(forget, forget)
   let res: ConnectResult
   try {
     res = await connect()
@@ -160,7 +229,7 @@ export async function ensureHost(ctx: CliContext, scopes: HostScope[], opts: Ens
 
   if (mode === 'inproc') return inprocHost(ctx, connect, opts.inproc)
 
-  const first = await connect()
+  const first = await connectPastOtherCommandHosts(ctx, connect)
   if (first.ok) {
     const answer = liveHostSecretAnswer(ctx.secretEnv)
     if (answer === 'warn') {

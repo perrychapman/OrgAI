@@ -81,8 +81,10 @@ export interface LauncherOptions {
   installInfo?: InstallInfo
   /** The home folder for ~/Applications (tests); default env.HOME, else os.homedir(). */
   home?: string
-  /** File existence for installed-app discovery and the checkout markers (tests); default fs.existsSync. */
+  /** File existence for installed-app discovery, the checkout markers and its build (tests); default fs.existsSync. */
   exists?: (path: string) => boolean
+  /** A dev checkout's electron binary (tests); default {@link electronBinaryOf}. */
+  electronBinary?: (appRoot: string, env: NodeJS.ProcessEnv) => string | undefined
 }
 
 function isDir(p: string): boolean {
@@ -233,6 +235,16 @@ export function electronBinaryOf(appRoot: string, env: NodeJS.ProcessEnv): strin
   }
 }
 
+/** A dev checkout without `out/main/index.js`. */
+export function devCheckoutUnbuilt(root: string): string {
+  return `The OrgAI app in ${root} is not built (run npm run build); set ORGAI_ELECTRON_PATH or use --host inproc`
+}
+
+/** A dev checkout whose electron package or binary is not installed. */
+export function devCheckoutNoElectron(root: string): string {
+  return `The OrgAI checkout in ${root} has no electron binary (run npm install); set ORGAI_ELECTRON_PATH or use --host inproc`
+}
+
 /** The packaged app's missing-binary error. */
 export function packagedAppMissing(path: string): string {
   return `The OrgAI app next to this orgai command is missing (${path}); reinstall OrgAI or set ORGAI_ELECTRON_PATH`
@@ -337,11 +349,12 @@ export function createLauncher(opts: LauncherOptions): HostLauncher {
     // A dev checkout only without any install.json (an unreadable one is never a checkout).
     const root = installInfo.source === 'absent' ? devAppRoot(bundleDir, exists) : undefined
     if (root) {
-      if (!existsSync(join(root, 'out', 'main', 'index.js'))) {
-        return { error: `The OrgAI app in ${root} is not built (run npm run build); set ORGAI_ELECTRON_PATH or use --host inproc`, path: root }
-      }
-      const bin = electronBinaryOf(root, env)
-      if (bin) return { command: bin, args: [root], source: 'dev' }
+      // A checkout is found (4.1 step 3), so anything missing is 'broken' naming it, never a fall-through to an installed
+      // app or the in-process host (WP-B review round 2).
+      if (!exists(join(root, 'out', 'main', 'index.js'))) return { error: devCheckoutUnbuilt(root), path: root }
+      const bin = (opts.electronBinary ?? electronBinaryOf)(root, env)
+      if (!bin) return { error: devCheckoutNoElectron(root), path: root }
+      return { command: bin, args: [root], source: 'dev' }
     }
     const home = opts.home ?? (env.HOME?.trim() || homedir())
     const installed = discoverInstalledApp(installedAppCandidates(platform, env, home), exists)
