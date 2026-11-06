@@ -4,7 +4,12 @@
  * secrets.json under the test's temp dir (a reversible test cipher). On top of that:
  *
  * - `lazy`: the vault starts 'absent' and set() with a value throws VaultNotReady until prepareWrite() ran (the bug trap
- *   of 5.6); forgetVault() makes it 'absent' again, as a fresh Node host would be.
+ *   of 5.6); forgetVault() makes it 'absent' again. Values stored before stay readable across forgetVault (a test
+ *   simplification: a real reset would lose them), except those seeded with seedAppValue: the OrgAI app's own
+ *   secrets.json values, which a Node host reads as pending-legacy (5.4) until one of its own writes supersedes them,
+ *   and whose explicit clear is refused while the vault is 'absent' (VAULT_MESSAGES.clearRefusedLegacyOnly, 5.5).
+ * - set() with a value refuses with the store's own sentence where WP-G's store does (writeReadiness): a corrupt,
+ *   locked (`lockReason`), missing-key or key-mismatch vault, or no secure storage (`unavailable`).
  * - every set / delete / deletePrefix / prepareWrite is logged in order; a prepare records whether its direct caller
  *   was the dispatcher (invokeRpc's storesSecret path) or a writer that prepared itself.
  * - scripted states: unreadable keys with a reason, clear refusals, a rejecting prepareWrite, a failing set().
@@ -13,7 +18,7 @@
  */
 import type { SecretStatus, VaultState } from '../../shared/types'
 import { SecretStore } from './secrets'
-import { VaultNotReady } from './vaultTypes'
+import { VAULT_MESSAGES, VaultNotReady } from './vaultTypes'
 
 export const FIXTURE_CIPHER = {
   isEncryptionAvailable: (): boolean => true,
@@ -49,8 +54,13 @@ export class FixtureVaultStore extends SecretStore {
   prepareError: Error | undefined
   /** When it answers true for a key, set() with a value throws (an I/O failure after preparation). */
   failSet: ((key: string) => boolean) | undefined
-  /** available() is false while this is set (a locked or damaged vault on an app host). */
+  /** available() is false while this is set (no secure storage on an app host); set() then refuses as the store does. */
   unavailable = false
+  /** The custodian's reason a 'locked' vault gives (VAULT_MESSAGES.locked(lockReason)). */
+  lockReason = 'Run `security unlock-keychain`, or set ORGAI_VAULT_KEY_FILE'
+  /** Lazy stores: keys only the OrgAI app's secrets.json holds (seedAppValue); a Node host reads them as pending-legacy. */
+  readonly appSaved = new Set<string>()
+  private seeding = false
 
   constructor(dataDir: string, opts: { lazy?: boolean } = {}) {
     super(dataDir, FIXTURE_CIPHER)
@@ -71,7 +81,38 @@ export class FixtureVaultStore extends SecretStore {
     return this.vault
   }
 
+  /**
+   * A value the OrgAI app saved in secrets.json (lazy stores model a Node host, which cannot decrypt it: pending-legacy
+   * until a Node write supersedes it). Written without preparing; never logged as a set.
+   */
+  seedAppValue(key: string, value: string): void {
+    this.seeding = true
+    try {
+      super.set(key, value)
+    } finally {
+      this.seeding = false
+    }
+    if (this.lazy) this.appSaved.add(key)
+  }
+
+  /** The sentence WP-G's store throws for set() with a value in this state, or undefined when it would store. */
+  writeRefusal(): string | undefined {
+    switch (this.vault) {
+      case 'corrupt':
+        return VAULT_MESSAGES.corrupt
+      case 'locked':
+        return VAULT_MESSAGES.locked(this.lockReason)
+      case 'missing-key':
+        return VAULT_MESSAGES.missingKey
+      case 'key-mismatch':
+        return VAULT_MESSAGES.keyMismatch
+      default:
+        return this.unavailable ? 'Secure storage is not available on this system, so OrgAI cannot store secrets.' : undefined
+    }
+  }
+
   override available(): boolean {
+    if (this.seeding) return true
     if (this.unavailable) return false
     if (this.vault === 'corrupt' || this.vault === 'locked' || this.vault === 'missing-key' || this.vault === 'key-mismatch') return false
     return this.lazy ? this.vault === 'open' : super.available()
@@ -85,11 +126,20 @@ export class FixtureVaultStore extends SecretStore {
   }
 
   override clearRefusal(key: string): string | undefined {
-    return this.clearRefusals.get(key)
+    const scripted = this.clearRefusals.get(key)
+    if (scripted !== undefined) return scripted
+    // 5.5 Deletes: a Node host without a vault never clears a value only the app's secrets.json holds.
+    if (this.appSaved.has(key) && this.vault === 'absent') return VAULT_MESSAGES.clearRefusedLegacyOnly
+    return undefined
+  }
+
+  /** The reason status() gives for an unreadable key, or undefined. */
+  private unreadableReason(key: string): string | undefined {
+    return this.unreadable.get(key) ?? (this.appSaved.has(key) ? VAULT_MESSAGES.pendingLegacy : undefined)
   }
 
   override status(key: string): SecretStatus {
-    const why = this.unreadable.get(key)
+    const why = this.unreadableReason(key)
     if (why !== undefined) return { unreadable: why }
     return super.status(key)
   }
@@ -99,7 +149,7 @@ export class FixtureVaultStore extends SecretStore {
   }
 
   override get(key: string): string | undefined {
-    if (this.unreadable.has(key)) return undefined
+    if (this.unreadableReason(key) !== undefined) return undefined
     return super.get(key)
   }
 
@@ -112,24 +162,32 @@ export class FixtureVaultStore extends SecretStore {
   override set(key: string, value: string | null): void {
     const stores = value !== null && value !== ''
     this.log.push({ op: 'set', key, value: stores, state: this.vault })
-    if (stores && this.lazy && this.vault !== 'open') {
-      this.violations.push(key)
-      throw new VaultNotReady(key)
+    if (stores) {
+      if (this.lazy && this.vault === 'absent') {
+        this.violations.push(key)
+        throw new VaultNotReady(key)
+      }
+      const refusal = this.writeRefusal()
+      if (refusal) throw new Error(refusal)
+      if (this.failSet?.(key)) throw new Error(`could not write ${key}`)
     }
-    if (stores && this.failSet?.(key)) throw new Error(`could not write ${key}`)
-    if (!stores) this.unreadable.delete(key)
+    this.unreadable.delete(key)
+    // A Node write supersedes the app's value (round 6 item 1); a clear removes it.
+    this.appSaved.delete(key)
     super.set(key, value)
   }
 
   override delete(key: string): void {
     this.log.push({ op: 'delete', key })
     this.unreadable.delete(key)
+    this.appSaved.delete(key)
     super.delete(key)
   }
 
   override deletePrefix(prefix: string): number {
     this.log.push({ op: 'deletePrefix', prefix })
     for (const k of [...this.unreadable.keys()]) if (k.startsWith(prefix)) this.unreadable.delete(k)
+    for (const k of [...this.appSaved]) if (k.startsWith(prefix)) this.appSaved.delete(k)
     return super.deletePrefix(prefix)
   }
 

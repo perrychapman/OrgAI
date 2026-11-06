@@ -542,14 +542,83 @@ describe('status displays say why (5.4)', () => {
     expect(svc.authStatus({ libraryId: 'mcpl_1' })).toMatchObject({ state: 'error', error: PENDING })
   })
 
-  it('secretsRefusal names the vault state, undefined while values can be stored', () => {
-    expect(svc.secretsRefusal()).toBeUndefined()
-    secrets.setState('corrupt')
-    expect(svc.secretsRefusal()).toBe(VAULT_MESSAGES.corrupt)
-    secrets.setState('locked')
-    expect(svc.secretsRefusal()).toMatch(/locked/)
+  it("a proposal the vault cannot take now is refused with the store's own reason (the custodian's for a lock), nothing applied", () => {
+    svc.upsert({ projectId: pid, spec: spec({ secretEnv: ['A'] }) })
+    const before = JSON.stringify(project())
+    const sa = { serverId: 'mcp-1', kind: 'env' as const, name: 'A' }
+    const p = { scope: 'project' as const, upsert: [spec({ args: ['-y', '@x/github@2.0.0'], secretEnv: ['A'] })], secrets: [sa], rationale: 'r' }
+    secrets.lockReason = 'Run `security unlock-keychain` in this SSH session, or set ORGAI_VAULT_KEY_FILE'
+    for (const [state, sentence] of [
+      ['locked', VAULT_MESSAGES.locked(secrets.lockReason)],
+      ['corrupt', VAULT_MESSAGES.corrupt],
+      ['missing-key', VAULT_MESSAGES.missingKey],
+      ['key-mismatch', VAULT_MESSAGES.keyMismatch]
+    ] as const) {
+      secrets.setState(state)
+      expect(() => svc.applyProposal(pid, p, { secrets: { [proposalSecretKey(sa)]: 'v' } }), state).toThrow(`The secret values could not be saved: ${sentence}`)
+      expect(JSON.stringify(project()), state).toBe(before)
+    }
     secrets.setState('open')
     secrets.unavailable = true
-    expect(svc.secretsRefusal()).toMatch(/not available/)
+    expect(() => svc.applyProposal(pid, p, { secrets: { [proposalSecretKey(sa)]: 'v' } })).toThrow(/^The secret values could not be saved: Secure storage is not available/)
+    expect(JSON.stringify(project())).toBe(before)
+    // A typed value for a slot of a server the proposal does not upsert is dropped, so nothing is refused.
+    const stray = { serverId: 'mcp-other', kind: 'env' as const, name: 'A' }
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    expect(() => svc.applyProposal(pid, { ...p, secrets: [stray] }, { secrets: { [proposalSecretKey(stray)]: 'v' } })).not.toThrow()
+    expect(warn).toHaveBeenCalledTimes(1)
+    vi.restoreAllMocks()
+  })
+})
+
+describe('a rollback never deletes a value this host could not read (5.5 Deletes)', () => {
+  it("a failed proposal apply keeps the new value over the app's pending-legacy one instead of deleting both", async () => {
+    build({ lazy: true })
+    svc.upsert({ projectId: pid, spec: spec({ secretEnv: ['A', 'B'] }) })
+    const keyA = mcpSecretKey(pid, 'mcp-1', 'env', 'A')
+    const keyB = mcpSecretKey(pid, 'mcp-1', 'env', 'B')
+    secrets.seedAppValue(keyA, 'app-a')
+    await secrets.prepareWrite()
+    secrets.set(keyB, 'old-b')
+    expect(secrets.status(keyA)).toEqual({ unreadable: PENDING })
+    const before = JSON.stringify(project())
+    vi.spyOn(projects, 'save').mockImplementationOnce(() => {
+      throw new Error('disk full')
+    })
+    const sa = { serverId: 'mcp-1', kind: 'env' as const, name: 'A' }
+    const sb = { serverId: 'mcp-1', kind: 'env' as const, name: 'B' }
+    const p = { scope: 'project' as const, upsert: [spec({ args: ['-y', '@x/github@2.0.0'], secretEnv: ['A', 'B'] })], secrets: [sa, sb], rationale: 'r' }
+    secrets.log.length = 0
+    expect(() => svc.applyProposal(pid, p, { secrets: { [proposalSecretKey(sa)]: 'new-a', [proposalSecretKey(sb)]: 'new-b' } })).toThrow('disk full')
+    vi.restoreAllMocks()
+    expect(JSON.stringify(project())).toBe(before)
+    // The readable one goes back; the unreadable one keeps the value just written (never deleted).
+    expect(secrets.get(keyB)).toBe('old-b')
+    expect(secrets.get(keyA)).toBe('new-a')
+    expect(secrets.log.some((e) => (e.op === 'delete' && e.key === keyA) || (e.op === 'set' && e.key === keyA && !e.value))).toBe(false)
+  })
+
+  it("a failed sign-in save keeps the new tokens over the app's pending-legacy ones; slots that held nothing are cleared", async () => {
+    build({ lazy: true })
+    svc.libraryUpsert(remote())
+    const at = mcpLibraryOAuthKey('mcpl_1', 'accessToken')
+    const rt = mcpLibraryOAuthKey('mcpl_1', 'refreshToken')
+    const cs = mcpLibraryOAuthKey('mcpl_1', 'clientSecret')
+    secrets.seedAppValue(at, 'AT-app')
+    secrets.seedAppValue(rt, 'RT-app')
+    const realSave = library.save.bind(library)
+    vi.spyOn(library, 'save').mockImplementation((e) => {
+      if (e.oauth?.authorizedAt) throw new Error('disk full')
+      return realSave(e)
+    })
+    runAuthorization.mockResolvedValue(flow())
+    secrets.log.length = 0
+    expect(await svc.authorize({ libraryId: 'mcpl_1' })).toMatchObject({ state: 'error', error: expect.stringContaining('disk full') })
+    vi.restoreAllMocks()
+    expect(secrets.get(at)).toBe('AT-1')
+    expect(secrets.get(rt)).toBe('RT-1')
+    expect(secrets.has(cs)).toBe(false)
+    const dropped = secrets.log.filter((e) => e.op === 'delete' || (e.op === 'set' && !e.value)).map((e) => ('key' in e ? e.key : ''))
+    expect(dropped).toEqual([cs])
   })
 })

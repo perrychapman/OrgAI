@@ -245,9 +245,8 @@ export class ConnectionService {
   private async discoverRaw(id: ConnectionId): Promise<ProviderModel[] | null | typeof SIGNED_OUT> {
     if (id === 'litellm') {
       const conn = this.deps.settings.get().connections.litellm
-      const key = this.deps.secrets.get(LITELLM_KEY)
       if (!conn.baseUrl) throw new Error('LiteLLM has no base URL')
-      if (!key) throw new Error('LiteLLM has no API key')
+      const key = this.litellmKey('LiteLLM has no API key')
       return fetchLiteLLMModels(conn.baseUrl, key, this.deps.fetch ?? fetch)
     }
     if (id === 'openai') {
@@ -440,6 +439,19 @@ export class ConnectionService {
       this.deps.settings.set({ ...withoutReplaced(s), defaultConnection: input, defaultConnectionChosen: true })
     }
     return this.list()
+  }
+
+  /**
+   * The stored LiteLLM key, else a throw: a key that is stored but cannot be read here says why with the store's reason
+   * (Wave 7, 5.4: saved by the OrgAI app and not yet shared, a locked or damaged vault), never "no API key" (which would
+   * send the user to type it again); `missing` is the sentence for a key that is not stored at all.
+   */
+  private litellmKey(missing: string): string {
+    const stored = this.deps.secrets.status(LITELLM_KEY)
+    if (typeof stored === 'object') throw new Error(`The LiteLLM API key cannot be read here: ${stored.unreadable.replace(/[.\s]+$/, '')}.`)
+    const key = this.deps.secrets.get(LITELLM_KEY)
+    if (!key) throw new Error(missing)
+    return key
   }
 
   private safeMessage(e: unknown): string {
@@ -904,9 +916,8 @@ export class ConnectionService {
       return { ...base, codexAuth: 'apiKey', apiKey, env: codexHome() }
     }
     const conn = settings.connections.litellm
-    const key = this.deps.secrets.get(LITELLM_KEY)
     if (!conn.baseUrl) throw new Error('LiteLLM has no base URL. Set it in Settings > Connections.')
-    if (!key) throw new Error('LiteLLM has no API key. Set it in Settings > Connections.')
+    const key = this.litellmKey('LiteLLM has no API key. Set it in Settings > Connections.')
     const baseUrl = normalizeBaseUrl(conn.baseUrl)
     // Prices from /model/info (catalog); runs on models without one get no estimate.
     const pricing = pricingFromCatalog(this.catalogFor('litellm'))

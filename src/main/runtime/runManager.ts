@@ -71,7 +71,7 @@ import { knowledgeAutoContextOn } from '@shared/knowledge'
 import { RESUME_TEXT } from './prompts'
 import { dropLoneHighSurrogate, fenceDatum, knowledgeBrief, knowledgeContextBlock, knowledgeListItem, recallKnowledge } from '@shared/knowledgeIndex'
 import { strongMentionLinks } from '@shared/knowledgeLinks'
-import { DEFAULT_EXEC_STALL_TIMEOUT_MS, DEFAULT_HEADLESS_DECISION_POLICY, DEFAULT_MAX_AUTO_CONTINUES, EXEC_FINALIZE_STOP_TIMEOUT_MS, EXEC_SETTLE_DEBOUNCE_MS, EXEC_TITLE_JOIN_MS, HARNESS_PROJECT_ID, KNOWLEDGE_RECALLED_IDS_MAX, KNOWLEDGE_RUN_WRITES_MAX, MAX_TIMER_DELAY_MS, QUICK_PROJECT_ID, RUN_MESSAGE_MAX_CHARS, RUN_PEER_PROMPT_CHARS, SKILLS_PROJECT_ID, USAGE_STATS_DEFAULT_LIMIT, USAGE_STATS_MAX_LIMIT, isVirtualProjectId, proposalSecretKey } from '@shared/types'
+import { DEFAULT_EXEC_STALL_TIMEOUT_MS, DEFAULT_HEADLESS_DECISION_POLICY, DEFAULT_MAX_AUTO_CONTINUES, EXEC_FINALIZE_STOP_TIMEOUT_MS, EXEC_SETTLE_DEBOUNCE_MS, EXEC_TITLE_JOIN_MS, HARNESS_PROJECT_ID, KNOWLEDGE_RECALLED_IDS_MAX, KNOWLEDGE_RUN_WRITES_MAX, MAX_TIMER_DELAY_MS, QUICK_PROJECT_ID, RUN_MESSAGE_MAX_CHARS, RUN_PEER_PROMPT_CHARS, SKILLS_PROJECT_ID, USAGE_STATS_DEFAULT_LIMIT, USAGE_STATS_MAX_LIMIT, isVirtualProjectId } from '@shared/types'
 import { architectRole, mcpAssistantRole, skillAssistantRole } from '@shared/setup'
 import { isTrustRestrictedRun, isInsideEither, samePath, canonicalDeep } from '../quick/scratch'
 import { MCP_ASSIST_MODEL_LABEL, QUICK_RUN_MODEL_LABEL, SETUP_MODEL_LABEL, SKILL_ASSIST_MODEL_LABEL, resolveBuiltinModel, type ResolvedBuiltinModel } from './builtinModel'
@@ -642,11 +642,6 @@ export interface RunManagerOptions {
      * them before any record changes (round 6 item 10).
      */
     storeProposalSecrets?(projectId: string | null, payload: McpServersProposalPayload, values: Record<string, string> | undefined): string[]
-    /**
-     * Wave 7 (cli-standalone.md 5.4, round 6 item 10): why secret values cannot be saved right now, else undefined
-     * (McpService.secretsRefusal). An approval carrying values is refused before anything is applied; the card stays.
-     */
-    secretsRefusal?(): string | undefined
   }
   /** Project skills for work runs (SkillService, RuntimeContext.skills). Missing = runs have no skills. */
   skills?: SkillRunSource
@@ -714,16 +709,6 @@ const isStringRecord = (v: unknown): v is Record<string, string> =>
 
 /** A proposal approval refused before anything was applied: decideProposal keeps the card pending (Wave 7). */
 class ProposalKeptOpen extends Error {}
-
-/** ProposalDecision.secrets holds a non-empty value for at least one of the proposal's own secret slots. */
-function carriesSecretValues(payload: McpServersProposalPayload, values: Record<string, string> | undefined): boolean {
-  if (!values || typeof values !== 'object') return false
-  return (Array.isArray(payload.secrets) ? payload.secrets : []).some((slot) => {
-    if (!slot || typeof slot.serverId !== 'string' || typeof slot.name !== 'string' || (slot.kind !== 'env' && slot.kind !== 'header')) return false
-    const key = proposalSecretKey(slot)
-    return Object.hasOwn(values, key) && typeof values[key] === 'string' && values[key] !== ''
-  })
-}
 
 /**
  * The requested spec with the user's allowed edits applied. Ids, transport, registry refs, OAuth configs and
@@ -3001,14 +2986,12 @@ export class RunManager {
           resolve(outcome)
           return outcome
         }
-        // Wave 7 (round 6 item 10): values the secret store cannot take now (vault locked, damaged, no secure storage)
-        // refuse the approval before anything is applied; decideProposal keeps the card open for another try.
-        if (proposal.kind === 'mcpServers' && carriesSecretValues(proposal.payload, decision.secrets)) {
-          const refusal = this.options.mcp?.secretsRefusal?.()
-          if (refusal) throw new ProposalKeptOpen(`The secret values could not be saved: ${refusal}. Nothing was applied; the card is still open.`)
-        }
         let waitingForSecrets: string[] | undefined
-        // Round 6 item 10: the typed values go into the apply itself, which stores them before it changes any record.
+        // Round 6 item 10: the typed values go into the apply itself, which stores them before it changes any record. Values
+        // the store cannot take now (vault locked, damaged, no secure storage) make it throw ProposalSecretsNotSaved with
+        // the store's own reason (5.4), nothing applied; decideProposal keeps the card open for another try. Over the
+        // socket, the setup:decide storesSecret predicate has prepared (created or reopened) the vault before this runs,
+        // by the same slot rule (proposalSecrets.ts proposalTypedSlots).
         const secrets = proposal.kind === 'mcpServers' && decision.secrets ? { secrets: decision.secrets } : {}
         {
           try {

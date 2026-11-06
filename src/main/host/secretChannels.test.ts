@@ -3,8 +3,11 @@
  * host (bootOrgAIHost, hostKind 'inproc', the mock adapter) is seeded with a project, project MCP servers (one with an
  * OAuth sign-in about to expire), library entries (one with an OAuth sign-in), connectors and a work run holding
  * pending MCP-proposal and MCP-install cards. Every channel that reaches the SecretStore is then driven through
- * HostDispatcher.invokeRpc with a value and with a clear (or without a value), on a store that is 'absent' before each
- * call, as on a fresh Node host:
+ * HostDispatcher.invokeRpc with a value and with a clear (or without a value), on a store whose vault is put back to
+ * 'absent' before each call (FixtureVaultStore.forgetVault). That is not a whole fresh Node host: values stored by
+ * earlier calls stay readable across forgetVault (they are the seed the next call works on). A fresh host's realistic
+ * case, values the OrgAI app saved that a Node host reads as pending-legacy (5.4), is driven separately with
+ * seedAppValue: moves refuse them and explicit clears are refused, without preparing.
  *
  * - a call that stores a value must have prepared the vault first, either through its storesSecret predicate (the
  *   dispatcher) or through the writer itself (OAuth commits, token refreshes); set() on an unprepared vault throws
@@ -26,6 +29,7 @@ import type { DaemonInfo, HostScope, KitBundleExportResult, KitImportPreview, Mc
 import { MCP_HARNESS_TOOLS } from '../../shared/types'
 import type { McpLibraryStore } from '../store/mcpLibrary'
 import { LITELLM_KEY, mcpLibraryOAuthKey, mcpLibrarySecretKey, mcpOAuthKey, mcpSecretKey } from '../store/secrets'
+import { VAULT_MESSAGES } from '../store/vaultTypes'
 import { FixtureVaultStore } from '../store/vaultStore.fixture'
 import { requestEntries } from './registry'
 import { STORES_SECRET } from './storesSecret'
@@ -442,6 +446,54 @@ describe('every channel that reaches SecretStore prepares before a value and nev
     const two = links.find((s) => s.spec.libraryId === 'mcpl_two')!
     expect((await measure('value', 'mcp:copyFromLibrary', { projectId: project.id, serverId: one.spec.id, copySecrets: true })).origins).toEqual(['dispatcher'])
     await measure('none', 'mcp:copyFromLibrary', { projectId: project.id, serverId: two.spec.id, copySecrets: false })
+  })
+
+  it("values the OrgAI app saved (pending-legacy here) are never carried or cleared, and a value over one prepares first (5.4, 5.5)", async () => {
+    // A project-only server, a library entry linked with copySecrets, a per-project link, a token connector and the
+    // LiteLLM key, each holding only the app's value.
+    await rpc('mcp:upsert', { projectId: project.id, spec: { id: 'mcp-app', name: 'srv-app', transport: 'stdio', command: 'npx', args: ['-y', 'srv-app@1.0.0'], secretEnv: ['APP_TOKEN'], enabled: true, source: 'user', addedAt: '' } })
+    const appKey = mcpSecretKey(project.id, 'mcp-app', 'env', 'APP_TOKEN')
+    secrets.seedAppValue(appKey, 'from-the-app')
+    for (const [id, name, slot, perProject] of [['mcpl_app', 'lib-app', 'LIB_APP', false], ['mcpl_pp', 'lib-pp', 'LIB_PP', true]] as const) {
+      await rpc('mcpLibrary:upsert', { id, name, transport: 'stdio', command: 'npx', args: ['-y', `${name}@1.0.0`], secretEnv: [slot], source: 'user', addedAt: '', ...(perProject ? { perProjectSecrets: true } : {}) })
+      await rpc('mcp:linkLibrary', { projectId: project.id, libraryId: id })
+    }
+    const links = (await rpc<{ spec: { id: string; libraryId?: string } }[]>('mcp:list', project.id)).filter((s) => s.spec.libraryId)
+    const appLink = links.find((s) => s.spec.libraryId === 'mcpl_app')!.spec.id
+    const ppLink = links.find((s) => s.spec.libraryId === 'mcpl_pp')!.spec.id
+    const libKey = mcpLibrarySecretKey('mcpl_app', 'env', 'LIB_APP')
+    const ppKey = mcpSecretKey(project.id, ppLink, 'env', 'LIB_PP')
+    secrets.seedAppValue(libKey, 'lib-from-the-app')
+    secrets.seedAppValue(ppKey, 'pp-from-the-app')
+    const zapier = await libraryEntry('zapier')
+    const zapKey = mcpLibrarySecretKey(zapier.entry.id, 'header', zapier.entry.secretHeaders![0])
+    secrets.seedAppValue(zapKey, 'Bearer zap-from-the-app')
+    secrets.seedAppValue(LITELLM_KEY, 'sk-from-the-app')
+    for (const k of [appKey, libKey, ppKey, zapKey, LITELLM_KEY]) expect(secrets.status(k), k).toEqual({ unreadable: VAULT_MESSAGES.pendingLegacy })
+    const before = JSON.stringify(host.services.projects.get(project.id))
+
+    // Moves: the predicate sees an unreadable source (no prepare) and the handler refuses before any change.
+    const refused = async (channel: string, input: unknown, sentence: string): Promise<void> => {
+      const r = await measure('none', channel, input)
+      expect(r.refused, channel).toContain(sentence)
+      expect(r.deleted, `${channel} deleted something`).toBe(0)
+    }
+    await refused('mcp:promote', { projectId: project.id, serverId: 'mcp-app' }, VAULT_MESSAGES.moveRefused('APP_TOKEN', 'srv-app', VAULT_MESSAGES.pendingLegacy))
+    await refused('mcp:copyFromLibrary', { projectId: project.id, serverId: appLink, copySecrets: true }, VAULT_MESSAGES.moveRefused('LIB_APP', 'lib-app', VAULT_MESSAGES.pendingLegacy))
+    await refused('mcp:copyFromLibrary', { projectId: project.id, serverId: ppLink, copySecrets: false }, VAULT_MESSAGES.moveRefused('LIB_PP', 'lib-pp', VAULT_MESSAGES.pendingLegacy))
+    expect(JSON.stringify(host.services.projects.get(project.id))).toBe(before)
+
+    // Explicit clears: refused while there is no vault (5.5), so the app's copy is never dropped from here.
+    await refused('mcp:setSecret', { projectId: project.id, serverId: 'mcp-app', kind: 'env', name: 'APP_TOKEN', value: null }, VAULT_MESSAGES.clearRefusedLegacyOnly)
+    await refused('mcpLibrary:setSecret', { libraryId: 'mcpl_app', kind: 'env', name: 'LIB_APP', value: '' }, VAULT_MESSAGES.clearRefusedLegacyOnly)
+    await refused('connectors:setToken', { connectorId: 'zapier', token: null }, VAULT_MESSAGES.clearRefusedLegacyOnly)
+    await refused('connections:setSecret', { id: 'litellm', apiKey: null }, VAULT_MESSAGES.clearRefusedLegacyOnly)
+    for (const k of [appKey, libKey, ppKey, zapKey, LITELLM_KEY]) expect(secrets.status(k), k).toEqual({ unreadable: VAULT_MESSAGES.pendingLegacy })
+
+    // A Node write over the app's value prepares first and supersedes it (round 6 item 1); the move then carries it.
+    expect((await measure('value', 'mcp:setSecret', { projectId: project.id, serverId: 'mcp-app', kind: 'env', name: 'APP_TOKEN', value: 'from-node' })).origins).toEqual(['dispatcher'])
+    expect(secrets.status(appKey)).toBe('set')
+    expect((await measure('value', 'mcp:promote', { projectId: project.id, serverId: 'mcp-app' })).origins).toEqual(['dispatcher'])
   })
 
   it('removals delete without ever preparing', async () => {

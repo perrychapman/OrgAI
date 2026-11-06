@@ -245,6 +245,12 @@ export class HostDispatcher {
   private readonly env: HostDispatchEnv
   private readonly gate: GateFn
   private readonly handlers: Record<string, Handler>
+  /**
+   * Wave 7 (cli-standalone.md 5.6 Reset): RPC calls whose storesSecret predicate fired, from the start of their
+   * prepareWrite() until their handler settled. secrets:reset is refused while any is in flight: a reset between the
+   * preparation and the handler's set() would move the vault aside under it (VaultNotReady on a Node host).
+   */
+  private secretWritesInFlight = 0
 
   constructor(
     private readonly services: HostServices,
@@ -254,7 +260,7 @@ export class HostDispatcher {
     this.activity = services.activity ?? noopActivity()
     this.env = services.env ?? FALLBACK_ENV
     this.gate = opts.gate ?? gateRequest
-    this.handlers = buildHandlers(services, this.env, this.events)
+    this.handlers = buildHandlers(services, this.env, this.events, { secretWritesInFlight: () => this.secretWritesInFlight })
   }
 
   /**
@@ -283,16 +289,23 @@ export class HostDispatcher {
     const handler = this.lookup(g.channel)
     if (!handler) throw new HostRpcFailure('unknown_channel', `Unknown channel: ${channel}`)
     const release = leased ? this.activity.acquire('inFlightRpcMutations', channel) : undefined
+    let writing = false
     try {
       // Wave 7 (cli-standalone.md 5.6): a call that will store a non-empty secret value prepares the vault first (Node /
       // inproc hosts create it lazily), inside the mutation lease, so the handler stays synchronous. Clears and calls
-      // that store nothing never reach prepareWrite. The predicates live in storesSecret.ts.
+      // that store nothing never reach prepareWrite. The predicates live in storesSecret.ts. From the prepare until the
+      // handler settles the call counts as a secret write in flight (secrets:reset refuses meanwhile).
       const secrets = this.services.secrets
-      if (secrets && g.entry.storesSecret?.(g.args, this.storesSecretView(secrets))) await secrets.prepareWrite()
+      if (secrets && g.entry.storesSecret?.(g.args, this.storesSecretView(secrets))) {
+        writing = true
+        this.secretWritesInFlight += 1
+        await secrets.prepareWrite()
+      }
       return await handler(ctx, ...g.args)
     } catch (err) {
       throw rpcError(err)
     } finally {
+      if (writing) this.secretWritesInFlight -= 1
       release?.()
     }
   }
@@ -381,7 +394,13 @@ export function checkRunOverrides(
  * Every request handler registerIpc and its register*Ipc helpers had, moved verbatim (same sync / async shape, same
  * error messages). The first handler argument is the InvokeContext instead of the IpcMainInvokeEvent.
  */
-function buildHandlers(services: HostServices, env: HostDispatchEnv, events: HostEventBus): Record<string, Handler> {
+/** Dispatcher state a handler may read (never a secret). */
+interface DispatcherState {
+  /** RPC calls between their predicate-driven prepareWrite() and the end of their handler (HostDispatcher.invokeRpc). */
+  secretWritesInFlight(): number
+}
+
+function buildHandlers(services: HostServices, env: HostDispatchEnv, events: HostEventBus, state: DispatcherState): Record<string, Handler> {
   const table: Record<string, Handler> = Object.create(null) as Record<string, Handler>
   const handle = (channel: string, fn: Handler): void => {
     table[channel] = fn
@@ -676,7 +695,7 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
   registerSkillIpc(handle, skills, skillEvaluation)
   registerCapabilityIpc(handle, capabilities)
   if (kit) registerKitBundleIpc(handle, kit)
-  registerSecretsIpc(handle, services.secrets, mcp)
+  registerSecretsIpc(handle, services.secrets, mcp, state)
 
   // ---- Host protocol methods the dispatcher answers (socket only; runs:subscribe / host.subscribe are transport) ----
   handle(HOST_METHODS.hostStatus, () => {
@@ -986,10 +1005,16 @@ function registerMcpIpc(
 
 /**
  * secrets:* (Wave 7, cli-standalone.md 5.6, 5.7) over the host's SecretStore: inputs rebuilt by secretsArgs.ts, never a
- * secret value either way. secrets:reset is refused while an MCP sign-in or a token refresh is in flight (the store
- * itself refuses while one of its own writes is, and takes its write queue for the move).
+ * secret value either way. secrets:reset is refused while an MCP sign-in, a token refresh or a predicate-prepared secret
+ * write (invokeRpc) is in flight (the store itself refuses while one of its own writes is, and takes its write queue for
+ * the move).
  */
-function registerSecretsIpc(handle: Register, secrets: SecretStoreApi | undefined, mcp: Partial<Pick<McpService, 'activeAuthorizationCount' | 'refreshingCount'>>): void {
+function registerSecretsIpc(
+  handle: Register,
+  secrets: SecretStoreApi | undefined,
+  mcp: Partial<Pick<McpService, 'activeAuthorizationCount' | 'refreshingCount'>>,
+  state: DispatcherState
+): void {
   const store = (): SecretStoreApi => {
     if (!secrets) throw new HostRpcFailure('bad_request', 'This OrgAI host has no secret store.')
     return secrets
@@ -999,7 +1024,11 @@ function registerSecretsIpc(handle: Register, secrets: SecretStoreApi | undefine
   handle(SECRETS_IPC.secretsReset, (_e, input: unknown): Promise<SecretsResetResult> => {
     const i = secretsResetArgs(input)
     const s = store()
-    if ((mcp.activeAuthorizationCount?.() ?? 0) > 0 || (mcp.refreshingCount?.() ?? 0) > 0) throw new Error(VAULT_MESSAGES.resetBusy)
+    // 5.6 Reset: refused while an OAuth flow, a token refresh or a secret write is in flight (a call whose storesSecret
+    // predicate prepared the vault and whose handler has not settled yet); the store refuses while its own writes are.
+    if ((mcp.activeAuthorizationCount?.() ?? 0) > 0 || (mcp.refreshingCount?.() ?? 0) > 0 || state.secretWritesInFlight() > 0) {
+      throw new Error(VAULT_MESSAGES.resetBusy)
+    }
     return s.resetVault(i)
   })
   handle(SECRETS_IPC.secretsUndelete, (_e, input: unknown): SecretsUndeleteResult => store().undelete(secretsUndeleteArgs(input)))

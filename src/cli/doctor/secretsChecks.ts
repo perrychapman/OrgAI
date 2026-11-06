@@ -32,7 +32,19 @@ export function hostSecretsChecks(s: SecretsStatusResult): DoctorCheck[] {
       checks.push({ id: 'vault', status: 'ok', detail: `Open (${scheme}); ${plural(s.counts.vault, 'secret')} in it` })
       break
     case 'absent':
-      checks.push({ id: 'vault', status: 'ok', detail: `Not created yet (${scheme}); the first saved secret creates it` })
+      // 5.6: a Node or inproc host creates the vault lazily (the first saved secret). An app host (it can write back)
+      // creates it at boot, so 'absent' there means creation failed and the app runs legacy-only: the orgai command
+      // cannot read anything the app saves until it succeeds.
+      if (s.canWriteBack || s.reason) {
+        const why = s.reason ?? (s.probe && !s.probe.ok ? s.probe.reason : undefined)
+        checks.push({
+          id: 'vault',
+          status: 'warn',
+          detail: `Not created (${scheme})${why ? `: ${why}` : ''}; the OrgAI app keeps its secrets to itself until it can create the vault. Run \`orgai secrets init\` to try again`
+        })
+      } else {
+        checks.push({ id: 'vault', status: 'ok', detail: `Not created yet (${scheme}); the first saved secret creates it` })
+      }
       break
     case 'corrupt':
       checks.push({ id: 'vault', status: 'fail', detail: s.reason ?? VAULT_MESSAGES.corrupt })

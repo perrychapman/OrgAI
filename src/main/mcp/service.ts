@@ -27,7 +27,6 @@ import type {
   UnreadableSecretSlot
 } from '@shared/types'
 import { MCP_OAUTH_REFRESH_SKEW_MS, libraryEntryFromSpec, linkedSpec, mcpSupportsOAuth, newId } from '@shared/defaults'
-import { proposalSecretKey } from '@shared/types'
 import type { ProjectStore } from '../store/projects'
 import type { McpLibraryStore } from '../store/mcpLibrary'
 import {
@@ -59,7 +58,7 @@ import {
 import { insideWorkspace, removeBuildDir, rewritePath, stageBuild, type InstalledBuild } from './builds'
 import { scratchDirFor } from '../quick/scratch'
 import { VAULT_MESSAGES } from '../store/vaultTypes'
-import { ProposalSecretsNotSaved } from './proposalSecrets'
+import { ProposalSecretsNotSaved, isProposalSecretSlot, proposalTypedSlots, proposalUpsertedIds, typedSlotValue } from './proposalSecrets'
 import { log } from '../log'
 import type { ConnectorAddInput, ConnectorInfo, ConnectorPresetRemoveInput, ConnectorState, ConnectorTokenInput, ConnectorDef, ConnectorVariant, McpProjectOverridesInput, UserConnectorDef } from '@shared/types'
 import { USER_CONNECTOR_PRESETS_MAX } from '@shared/types'
@@ -152,6 +151,9 @@ interface PlannedSecret {
   key: string
   value: string
 }
+
+/** What a key held before a write that may be rolled back (McpService.priorOf). */
+type SecretPrior = 'unset' | { value: string } | { unreadable: true }
 
 export interface McpOAuthFns {
   runAuthorization: typeof runAuthorization
@@ -441,19 +443,17 @@ export class McpService {
     ownerFor: (spec: McpServerSpec | McpLibraryEntry) => McpSecretOwner | null
   ): PlannedSecret[] {
     if (!values || typeof values !== 'object') return []
-    const out: PlannedSecret[] = []
     // Only the servers this proposal adds or changes take a value: a slot naming any other stored server is dropped.
-    const upserted = new Set((Array.isArray(p.upsert) ? p.upsert : []).map((u) => u?.id).filter((id): id is string => typeof id === 'string'))
+    const upserted = proposalUpsertedIds(p)
     for (const slot of Array.isArray(p.secrets) ? p.secrets : []) {
-      if (!isSecretKind(slot?.kind) || typeof slot.serverId !== 'string' || typeof slot.name !== 'string') continue
-      if (!upserted.has(slot.serverId)) {
+      if (isProposalSecretSlot(slot) && !upserted.has(slot.serverId) && typedSlotValue(slot, values) !== undefined) {
         // installLogging routes console.warn into main.log. Names and values stay out of the line.
         console.warn('A proposal secret slot names a server the proposal does not add or change; its value was dropped.')
-        continue
       }
-      const key = proposalSecretKey(slot)
-      const v = Object.hasOwn(values, key) ? values[key] : undefined
-      if (typeof v !== 'string' || !v || (slot.kind === 'header' && /[\r\n]/.test(v))) continue
+    }
+    const out: PlannedSecret[] = []
+    // proposalTypedSlots is the rule the setup:decide storesSecret predicate prepares the vault by (proposalSecrets.ts).
+    for (const { slot, value } of proposalTypedSlots(p, values)) {
       const spec = specOf(slot.serverId)
       const slots = spec ? (slot.kind === 'env' ? spec.secretEnv : spec.secretHeaders) : undefined
       if (!spec || !slots?.includes(slot.name)) continue
@@ -463,32 +463,57 @@ export class McpService {
         console.warn('A library proposal secret was skipped: that entry keeps its secrets per project.')
         continue
       }
-      out.push({ key: mcpOwnerSecretKey(owner, slot.kind, slot.name), value: v })
+      out.push({ key: mcpOwnerSecretKey(owner, slot.kind, slot.name), value })
     }
     return out
   }
 
   /**
+   * What `key` holds before a write that may have to be rolled back (status(), never a decrypt failure read as unset):
+   * its value, nothing, or a value this host cannot read (pending-legacy, a locked vault, a damaged entry).
+   */
+  private priorOf(key: string): SecretPrior {
+    const st = this.secrets.status(key)
+    if (typeof st === 'object') return { unreadable: true }
+    if (st === 'unset') return 'unset'
+    const value = this.secrets.get(key)
+    // Readable a moment ago; a value that vanished since is treated like one that cannot be read (never deleted).
+    return value === undefined ? { unreadable: true } : { value }
+  }
+
+  /**
+   * Put `key` back to `prior` after a failed write: its old value, deleted when it held none. A value this host could
+   * not read is left as the failed write set it: a delete here would keep only the value just written for undelete and
+   * take the older app copy out of secrets.json for good (5.5 Deletes), so the user keeps the newer value instead of
+   * losing both. Never throws.
+   */
+  private putBack(key: string, prior: SecretPrior, what: string): void {
+    try {
+      if (prior === 'unset') this.secrets.delete(key)
+      else if ('value' in prior) this.secrets.set(key, prior.value)
+      else log.warn(`Kept the new value of a secret after a failed ${what}: the earlier one cannot be read on this host, so it could not be put back.`)
+    } catch (e) {
+      log.warn(`Could not put back a secret after a failed ${what}: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+
+  /**
    * Round 6 item 10: store `planned` before any record changes. A failed write puts back every key this call wrote and
-   * throws ProposalSecretsNotSaved (nothing changed). Returns the undo for a later failure: each key `only` selects goes
-   * back to the value it held (deleted when it held none or held one this host could not read).
+   * throws ProposalSecretsNotSaved with the store's own reason (vault locked, damaged, no secure storage; nothing
+   * changed). Returns the undo for a later failure: each key `only` selects goes back to the value it held (deleted when
+   * it held none; left with the new value when the earlier one could not be read here, see putBack).
    */
   private storeFirst(planned: readonly PlannedSecret[]): (only?: (key: string) => boolean) => void {
-    const before = new Map<string, string | undefined>()
+    const before = new Map<string, SecretPrior>()
     const undo = (only?: (key: string) => boolean): void => {
-      for (const [key, prev] of [...before].reverse()) {
+      for (const [key, prior] of [...before].reverse()) {
         if (only && !only(key)) continue
-        try {
-          if (prev === undefined) this.secrets.delete(key)
-          else this.secrets.set(key, prev)
-        } catch (e) {
-          log.warn(`Could not put back a secret after a failed proposal apply: ${e instanceof Error ? e.message : String(e)}`)
-        }
+        this.putBack(key, prior, 'proposal apply')
       }
     }
     try {
       for (const { key, value } of planned) {
-        if (!before.has(key)) before.set(key, this.secrets.get(key))
+        if (!before.has(key)) before.set(key, this.priorOf(key))
         this.secrets.set(key, value)
       }
     } catch (e) {
@@ -496,26 +521,6 @@ export class McpService {
       throw new ProposalSecretsNotSaved(e instanceof Error ? e.message : String(e))
     }
     return undo
-  }
-
-  /**
-   * Why secret values cannot be saved on this host right now, or undefined (5.4). Checked before an approval that
-   * carries values changes anything (RunManager proposals), so a locked or damaged vault keeps the card open.
-   */
-  secretsRefusal(): string | undefined {
-    if (this.secrets.available()) return undefined
-    switch (this.secrets.state()) {
-      case 'corrupt':
-        return VAULT_MESSAGES.corrupt
-      case 'missing-key':
-        return VAULT_MESSAGES.missingKey
-      case 'key-mismatch':
-        return VAULT_MESSAGES.keyMismatch
-      case 'locked':
-        return 'The secret vault is locked; unlock it (`orgai secrets status` says how) and try again'
-      default:
-        return 'Secure storage is not available on this system, so OrgAI cannot save secret values'
-    }
   }
 
   /** The stored access token, except the ORGAI_MOCK=1 stand-in outside mock mode (a data dir shared across modes). */
@@ -1344,7 +1349,9 @@ export class McpService {
   /**
    * Commit a sign-in: the credentials first, then the configuration that says they exist (round 6 items 4 and 10), with
    * no await. When a write or the configuration save throws, every slot written here goes back to what it held, so the
-   * stored configuration and the tokens never come from two different sign-ins. Rethrows.
+   * stored configuration and the tokens never come from two different sign-ins. Rethrows. The one exception: a slot
+   * whose earlier value this host could not read keeps the new value (putBack), since deleting it would also drop the
+   * OrgAI app's copy; the user signs in again rather than losing both.
    */
   private commitOAuth(ref: AuthRef, tokens: { accessToken: string; refreshToken: string | null; clientSecret?: string }, config: McpOAuthConfig): void {
     const slots: Array<['accessToken' | 'refreshToken' | 'clientSecret', string | null]> = [
@@ -1352,23 +1359,18 @@ export class McpService {
       ['refreshToken', tokens.refreshToken],
       ...(tokens.clientSecret ? [['clientSecret', tokens.clientSecret] as ['clientSecret', string]] : [])
     ]
-    const before = new Map<string, string | undefined>()
+    const before = new Map<string, SecretPrior>()
     try {
       for (const [slot, value] of slots) {
         const k = mcpOwnerOAuthKey(ref.owner, slot)
-        before.set(k, this.secrets.get(k))
+        before.set(k, this.priorOf(k))
         this.secrets.set(k, value)
       }
       ref.saveOAuth(config)
     } catch (e) {
-      for (const [k, prev] of [...before].reverse()) {
-        try {
-          if (prev === undefined) this.secrets.delete(k)
-          else this.secrets.set(k, prev)
-        } catch (undoError) {
-          log.warn(`Could not put back an OAuth credential after a failed sign-in save: ${undoError instanceof Error ? undoError.message : String(undoError)}`)
-        }
-      }
+      // A credential this host could not read before (an app sign-in not yet shared, a locked vault) is never deleted
+      // here: putBack keeps the new one rather than dropping the app's copy too.
+      for (const [k, prior] of [...before].reverse()) this.putBack(k, prior, 'sign-in save')
       throw e
     }
   }

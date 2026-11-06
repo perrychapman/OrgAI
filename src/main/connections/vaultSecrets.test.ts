@@ -71,4 +71,21 @@ describe('LiteLLM key and the vault', () => {
     await service.logout('litellm')
     expect(secrets.has(LITELLM_KEY)).toBe(false)
   })
+
+  it('a run and a model refresh say why the key cannot be read, never "has no API key" (5.4)', async () => {
+    const { secrets, service } = await setup()
+    const choice = { adapter: 'claude' as const, connection: 'litellm' as const, mismatched: [] }
+    expect(service.runConnection(undefined, choice).env).toMatchObject({ ANTHROPIC_AUTH_TOKEN: 'sk-test-key' })
+    secrets.unreadable.set(LITELLM_KEY, VAULT_MESSAGES.pendingLegacy)
+    expect(() => service.runConnection(undefined, choice)).toThrow(`The LiteLLM API key cannot be read here: ${VAULT_MESSAGES.pendingLegacy}.`)
+    secrets.unreadable.set(LITELLM_KEY, VAULT_MESSAGES.locked('run security unlock-keychain.'))
+    expect(() => service.runConnection(undefined, choice)).toThrow('The LiteLLM API key cannot be read here: The secret vault is locked: run security unlock-keychain.')
+    await service.refresh({ connection: 'litellm' })
+    expect((await service.list()).find((c) => c.connection.id === 'litellm')?.status).toMatchObject({ state: 'error', detail: expect.stringContaining('The secret vault is locked: run security unlock-keychain') })
+    // A key that is not stored at all keeps the old advice.
+    secrets.unreadable.clear()
+    await service.setSecret({ id: 'litellm', apiKey: null })
+    expect(() => service.runConnection(undefined, choice)).toThrow('LiteLLM has no API key. Set it in Settings > Connections.')
+  })
 })
+

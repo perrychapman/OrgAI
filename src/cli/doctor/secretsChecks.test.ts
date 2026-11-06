@@ -65,6 +65,26 @@ describe('doctor: the secret vault through the host', () => {
     expect(byId(hostSecretsChecks(status({ state: 'corrupt', reason: VAULT_MESSAGES.corrupt }))).vault).toMatchObject({ status: 'fail', detail: VAULT_MESSAGES.corrupt })
   })
 
+  it("'absent' is fine on a Node host (created lazily) but warns on an app host, where creation failed (5.6)", () => {
+    // A Node or inproc host: the first saved secret creates it.
+    expect(byId(hostSecretsChecks(status({ state: 'absent', counts: { vault: 0, legacy: 0, unreadable: 0, overlay: 0 } }))).vault).toMatchObject({
+      status: 'ok',
+      detail: 'Not created yet (macOS keychain); the first saved secret creates it'
+    })
+    // An app host (it writes the app's copy back): the vault should exist since boot, so the app runs legacy-only.
+    const app = byId(
+      hostSecretsChecks(
+        status({ state: 'absent', scheme: 'secret-service', canWriteBack: true, probe: { ok: false, kind: 'unavailable', reason: 'No Secret Service is running (install gnome-keyring)' } })
+      )
+    )
+    expect(app.vault).toMatchObject({ status: 'warn', detail: expect.stringContaining('No Secret Service is running (install gnome-keyring)') })
+    expect(app.vault.detail).toContain('`orgai secrets init`')
+    expect(app['vault-key-store']).toMatchObject({ status: 'warn' })
+    // A reason from the store wins over the probe; without either the check still warns.
+    expect(byId(hostSecretsChecks(status({ state: 'absent', canWriteBack: true, reason: 'The disk is full' }))).vault).toMatchObject({ status: 'warn', detail: expect.stringContaining('The disk is full') })
+    expect(byId(hostSecretsChecks(status({ state: 'absent', canWriteBack: true }))).vault.status).toBe('warn')
+  })
+
   it('asks the host with a probe, and falls back to the files when the host does not answer', async () => {
     const ok = new FakeHostClient({ 'secrets:status': () => status() })
     const f = fakeContext({ paths: { userDataDir: dir, dataDir: dir } })

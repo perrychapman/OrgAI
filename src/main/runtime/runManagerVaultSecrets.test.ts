@@ -84,7 +84,6 @@ async function rig() {
       skippedServers: (pr) => mcp.skippedServers(pr),
       libraryEntries: () => mcp.libraryEntries(),
       storeProposalSecrets: (pid, pl, values) => mcp.storeProposalSecrets(pid, pl, values),
-      secretsRefusal: () => mcp.secretsRefusal(),
       searchRegistry: async () => ({ entries: [] })
     }
   })
@@ -102,7 +101,7 @@ async function rig() {
     const withSecret: ProposalDecision = { behavior: 'approve', secrets: { [proposalSecretKey(slot!)]: value } }
     return { pending, card, withSecret }
   }
-  return { p, m, run, propose }
+  return { p, m, run, propose, ctx: ctxs[0] }
 }
 
 describe('MCP proposal secrets and the vault (round 6 item 10)', () => {
@@ -110,8 +109,12 @@ describe('MCP proposal secrets and the vault (round 6 item 10)', () => {
     const { p, m, run, propose } = await rig()
     const { pending, card, withSecret } = await propose()
     secrets.setState('locked')
+    secrets.lockReason = 'Run `security unlock-keychain`, or set ORGAI_VAULT_KEY_FILE'
     const before = JSON.stringify(store.get(p.id))
-    expect(() => m.decideProposal(run.id, card.proposal.id, withSecret)).toThrow(/^The secret values could not be saved: The secret vault is locked.*Nothing was applied; the card is still open\.$/)
+    // The store's own sentence, with the custodian's reason (5.4), never a fixed one.
+    expect(() => m.decideProposal(run.id, card.proposal.id, withSecret)).toThrow(
+      'The secret values could not be saved: The secret vault is locked: Run `security unlock-keychain`, or set ORGAI_VAULT_KEY_FILE. Nothing was applied; the card is still open.'
+    )
     expect(JSON.stringify(store.get(p.id))).toBe(before)
     expect(m.pendingCards(run.id).proposals.map((x) => x.id)).toEqual([card.proposal.id])
     expect(events.some((e) => e.type === 'proposal.resolved')).toBe(false)
@@ -182,6 +185,39 @@ describe('MCP proposal secrets and the vault (round 6 item 10)', () => {
     expect(mcp.resolve(p.id, now).env.GH_TOKEN).toBe(NEW)
     expect(JSON.stringify(events)).not.toContain(SECRET)
     expect(JSON.stringify(events)).not.toContain(NEW)
+    await m.stopAll()
+  })
+
+  it('a value typed only for a slot of a server the proposal does not upsert is dropped, never a refusal, on a Node host without a vault', async () => {
+    // Round 2 review: RunManager once judged "carries values" by its own rule and refused here with the wrong advice
+    // ("Secure storage is not available") while the setup:decide predicate (rightly) prepared nothing.
+    const data = join(dir, 'data')
+    secrets = new FixtureVaultStore(data, { lazy: true })
+    mcp = new McpService({ projects: store, secrets, library: new McpLibraryStore(data) })
+    const { p, m, run, ctx } = await rig()
+    const at = events.length
+    const slot = { serverId: 'mcp-gh', kind: 'env' as const, name: 'GH_TOKEN' }
+    const stray = { serverId: 'mcp-elsewhere', kind: 'env' as const, name: 'GH_TOKEN' }
+    const outcome = ctx.requestProposal({
+      kind: 'mcpServers',
+      agentId: 'root',
+      title: 'Add gh',
+      payload: {
+        scope: 'project',
+        rationale: 'r',
+        upsert: [{ id: 'mcp-gh', name: 'gh', transport: 'stdio', command: 'npx', args: ['-y', 'gh-mcp@1.2.3'], secretEnv: ['GH_TOKEN'], enabled: true, source: 'agent', addedAt: '' }],
+        secrets: [slot, stray]
+      }
+    } as Parameters<RuntimeContext['requestProposal']>[0])
+    const card = await waitFor((e): e is Extract<RunEvent, { type: 'proposal.request' }> => e.type === 'proposal.request', at)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    expect(m.decideProposal(run.id, card.proposal.id, { behavior: 'approve', secrets: { [proposalSecretKey(stray)]: SECRET } })).toMatchObject({ status: 'applied' })
+    warn.mockRestore()
+    expect(await outcome).toMatchObject({ behavior: 'approve', waitingForSecrets: ['gh'] })
+    expect(store.get(p.id)!.mcpServers!.map((s) => s.name)).toEqual(['gh'])
+    expect(secrets.storedKeys()).toEqual([])
+    expect(secrets.violations).toEqual([])
+    expect(secrets.state()).toBe('absent')
     await m.stopAll()
   })
 

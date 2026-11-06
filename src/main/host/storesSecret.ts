@@ -19,10 +19,10 @@
  * channel-coverage test (secretChannels.test.ts) accepts either.
  *
  * Electron-free and light: registry.ts (and through it the CLI bundle) imports this file, so it imports shared types
- * only; the two key prefixes below mirror store/secrets.ts (a test keeps them equal).
+ * and the light mcp/proposalSecrets.ts only; the two key prefixes below mirror store/secrets.ts (a test keeps them equal).
  */
 import type { McpInstallRequest, McpLibraryEntry, Project, Proposal, SecretStatus } from '../../shared/types'
-import { proposalSecretKey } from '../../shared/types'
+import { proposalTypedSlots } from '../mcp/proposalSecrets'
 
 /**
  * How an mcp:authorize target signs in: 'oauth' (discovery / DCR), 'oauthClient' (the user's own client), 'token' and
@@ -111,9 +111,10 @@ const staleCard = (i: Record<string, unknown>, revision: number | undefined): bo
 const stringList = (v: unknown): string[] | undefined => (Array.isArray(v) && v.every((x) => typeof x === 'string') ? v : undefined)
 
 /**
- * setup:decide: an approval of a pending MCP proposal carrying a non-empty value for one of the card's own slots (a
- * server the proposal upserts; a header value on one line), as McpService.planProposalSecrets stores them. Values under
- * keys naming no slot, other proposal kinds, a card that is not pending and a stale revision store nothing.
+ * setup:decide: an approval of a pending MCP proposal carrying a value for one of the card's own slots, by the one rule
+ * McpService.planProposalSecrets stores them by (proposalSecrets.ts proposalTypedSlots: a server the proposal upserts,
+ * a non-empty value, a header value on one line). Values under keys naming no slot or a server the proposal does not
+ * upsert, other proposal kinds, a card that is not pending and a stale revision store nothing.
  */
 const proposalDecision: StoresSecretFn = (args, host) => {
   const i = first(args)
@@ -127,13 +128,7 @@ const proposalDecision: StoresSecretFn = (args, host) => {
   if (typeof runId !== 'string' || typeof proposalId !== 'string') return false
   const card = host.pendingProposal(runId, proposalId)
   if (!card || card.kind !== 'mcpServers' || staleCard(i, card.revision)) return false
-  const upserted = new Set((Array.isArray(card.payload.upsert) ? card.payload.upsert : []).map((u) => u?.id).filter((x): x is string => typeof x === 'string'))
-  return (Array.isArray(card.payload.secrets) ? card.payload.secrets : []).some((slot) => {
-    if (!slot || typeof slot.serverId !== 'string' || typeof slot.name !== 'string' || (slot.kind !== 'env' && slot.kind !== 'header')) return false
-    if (!upserted.has(slot.serverId)) return false
-    const v = own(values as Record<string, unknown>, proposalSecretKey(slot))
-    return nonEmpty(v) && !(slot.kind === 'header' && /[\r\n]/.test(v as string))
-  })
+  return proposalTypedSlots(card.payload, values).length > 0
 }
 
 /**

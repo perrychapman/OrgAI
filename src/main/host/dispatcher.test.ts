@@ -390,6 +390,48 @@ describe('host-specific handlers', () => {
     expect(resetVault).toHaveBeenCalledTimes(1)
   })
 
+  it('secrets:reset is refused while a predicate-prepared secret write is between its prepare and the end of its handler', async () => {
+    // Round 2 review: a reset landing after `await prepareWrite()` and before the handler's set() moved the vault aside
+    // under it (VaultNotReady on a Node host).
+    let finishPrepare!: () => void
+    const prepareWrite = vi.fn(() => new Promise<void>((r) => (finishPrepare = r)))
+    let finishHandler!: () => void
+    const statusReport = vi.fn(() => new Promise((r) => (finishHandler = () => r({ state: 'open' }))))
+    const resetVault = vi.fn(async () => ({ movedTo: 'vault.json.reset-1', status: { state: 'absent' } }))
+    const gate: GateFn = (channel, params) => ({
+      channel,
+      args: Array.isArray(params) ? params : [],
+      entry: { direction: 'request', scope: 'read', bulk: false, params: [], source: 'test', storesSecret: (args) => (args[0] as { store?: boolean } | undefined)?.store === true },
+      mutation: false
+    })
+    const d = new HostDispatcher(services({ secrets: { prepareWrite, statusReport, resetVault } as never, mcp: { activeAuthorizationCount: () => 0, refreshingCount: () => 0 } as never }), { gate })
+    const reset = () => d.invokeRpc(SECRETS_IPC.secretsReset, [{ confirm: true }], RPC)
+    const write = d.invokeRpc(SECRETS_IPC.secretsStatus, [{ store: true }], RPC)
+    await vi.waitFor(() => expect(prepareWrite).toHaveBeenCalledTimes(1))
+    // Preparing (the custodian may take up to 10 s): busy.
+    await expect(reset()).rejects.toThrow(VAULT_MESSAGES.resetBusy)
+    finishPrepare()
+    await vi.waitFor(() => expect(statusReport).toHaveBeenCalledTimes(1))
+    // Prepared, handler not settled yet: still busy.
+    await expect(reset()).rejects.toThrow(VAULT_MESSAGES.resetBusy)
+    expect(resetVault).not.toHaveBeenCalled()
+    finishHandler()
+    await write
+    await reset()
+    expect(resetVault).toHaveBeenCalledTimes(1)
+    // A refused prepare or a throwing handler ends the write too; a call whose predicate is false never counts.
+    prepareWrite.mockRejectedValueOnce(new Error('locked'))
+    await expect(d.invokeRpc(SECRETS_IPC.secretsStatus, [{ store: true }], RPC)).rejects.toThrow('locked')
+    statusReport.mockRejectedValueOnce(new Error('boom'))
+    prepareWrite.mockResolvedValueOnce(undefined)
+    await expect(d.invokeRpc(SECRETS_IPC.secretsStatus, [{ store: true }], RPC)).rejects.toThrow('boom')
+    const plain = d.invokeRpc(SECRETS_IPC.secretsStatus, [{ store: false }], RPC)
+    await reset()
+    expect(resetVault).toHaveBeenCalledTimes(2)
+    finishHandler()
+    await plain
+  })
+
   it('invokeRpc awaits secrets.prepareWrite() before the handler only when storesSecret is true (Wave 7)', async () => {
     const order: string[] = []
     const prepareWrite = vi.fn(async () => void order.push('prepare'))
