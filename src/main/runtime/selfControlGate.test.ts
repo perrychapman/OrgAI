@@ -1406,29 +1406,220 @@ describe('Wave 7 gate additions (cli-standalone.md 8.4)', () => {
       expect(ps(`powershell -enc ${encode(`Get-Content ${join(s.data, 'run', 'daemon.secret')}`)}`, ctx2)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
     })
   })
+
+  describe('review round 2', () => {
+    const ctx: SelfControlContext = { protectedPaths: [], cwd: '/work/proj', home: '/home/u' }
+    const denied = (commands: readonly string[]): void => {
+      for (const command of commands) expect(bash(command, ctx), JSON.stringify(command)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+    }
+    const allowed = (commands: readonly string[]): void => {
+      for (const command of commands) expect(bash(command, ctx), JSON.stringify(command)).toBeNull()
+    }
+
+    it('reads security options the way getopt does: `--`, `-p<value>`, `-p <value>` and clusters', () => {
+      denied([
+        'security -- dump-keychain -d',
+        'security -pfoo dump-keychain -d',
+        'security -p foo dump-keychain -d',
+        "security -p 'a prompt' find-generic-password -w -s x",
+        'security -qpfoo find-generic-password -a me -w',
+        'security -qv -- find-generic-password -w',
+        'security -pfoo',
+        'security -p',
+        'security -qpfoo -i',
+        'env security -- dump-keychain',
+        'launchctl asuser 501 security -- dump-keychain',
+        'flatpak-spawn --host security -pX export -o /tmp/x',
+        'sudo security -qpX find-generic-password -w',
+        "python3 -c \"import subprocess; subprocess.run(['security','--','dump-keychain'])\"",
+        "python3 -c \"import subprocess; subprocess.run(['security', '-qpfoo', 'find-generic-password', '-w'])\"",
+        "node -e \"require('child_process').execFileSync('security', ['-p', 'x', 'dump-keychain'])\"",
+        "ruby -e 'system(\"security -- export -o /tmp/x\")'"
+      ])
+      allowed([
+        'security -p x find-certificate -a',
+        'security -pfoo list-keychains',
+        'security -- find-identity -v',
+        // `-e` is no security option: what follows is not its subcommand.
+        'rg security -e export src',
+        'grep security -i notes.md'
+      ])
+    })
+
+    it('reads names written as single-letter bracket classes', () => {
+      denied([
+        '/usr/bin/[s][e][c][u][r][i][t][y] dump-keychain',
+        '/usr/bin/[s][e][c][u][r][i][t][y] -i',
+        'echo dump-keychain | /usr/bin/[s][e][c][u][r][i][t][y]',
+        '/usr/bin/s[e][c][u][r][i][t][y] dump-keychain',
+        '/usr/bin/[sS][eE][cC][uU][rR][iI][tT][yY] dump-keychain',
+        '/usr/bin/[s-s]ecurity -i',
+        'security [d][u][m][p]-[k][e][y][c][h][a][i][n]',
+        '/usr/bin/[s][e][c][r][e][t]-[t][o][o][l] lookup a b',
+        '[b][u][s][c][t][l] --user call org.freedesktop.secrets /x y z',
+        '[g][d][b][u][s] call --dest org.freedesktop.secrets',
+        '[n][p][x] @orgai/cli status',
+        '/usr/local/bin/[n]p[x] -y orgai status',
+        'npm [e][x][e][c] @orgai/cli status',
+        "echo '[Security.Cryptography.ProtectedData]::Unprotect(1)' | [p][w][s][h] -",
+        '/usr/local/bin/[o][r][g][a][i] status'
+      ])
+      allowed([
+        // Classes of several letters or negated ones keep nothing: not read as a name.
+        'ls [a-z][a-z][a-z] lookup',
+        'echo [!s]ecurity dump-keychain',
+        'ls [st][eu] export'
+      ])
+    })
+
+    it('reads glob spellings of the scoped package in a package runner', () => {
+      denied([
+        'npx @orgai/cl? status',
+        'npx @orgai/c* status',
+        'npx @orga?/cli status',
+        'npx @orgai/cl[i] status',
+        'npx @orgai/cl?@1.2.3 status',
+        'npx -y @orga*/cli@latest runs list',
+        'npx --package=@orgai/cl? orgai status',
+        'npx -p @orgai/c* cli status',
+        'npm exec -- @orgai/cl? status',
+        'pnpm dlx @orgai/cl? status',
+        'yarn dlx @orgai/cl? status',
+        'bunx @orgai/cl? status',
+        'npx x@npm:@orgai/cl? status',
+        'npx orga? status',
+        'npx orga?@latest status'
+      ])
+      allowed(['npx prettier --write *', "npx eslint 'src/**/*.ts'", 'npx vitest run src/cli/*', 'npx tsc -p tsconfig.json', 'npx vitest o*'])
+    })
+
+    it('reads security -i and stdin in interpreter code, and unwraps script and launchctl', () => {
+      denied([
+        "python3 -c \"import os; os.system('security -i')\"",
+        "python3 -c \"import os; os.system('security -qi')\"",
+        "python3 -c \"import os; os.system('security -q -i')\"",
+        "python3 -c \"import os; os.system('security')\"",
+        "node -e \"require('child_process').execSync('printf dump-keychain | security')\"",
+        "node -e \"require('child_process').execSync('printf dump-keychain | /usr/bin/security -q')\"",
+        "python3 -c \"import subprocess; subprocess.run(['security'], input=b'dump-keychain')\"",
+        "python3 -c \"import subprocess; subprocess.run(['/usr/bin/security'], input=b'dump-keychain')\"",
+        'script -q /dev/null security -i',
+        'script /dev/null security dump-keychain',
+        'script -q -t 0 /dev/null security -i',
+        "printf dump-keychain | script -q /dev/null security",
+        "script -q -c 'security -i' /dev/null",
+        "script --command='security dump-keychain' /dev/null",
+        'printf dump-keychain | launchctl asuser 501 security',
+        'launchctl bsexec 1 security -i',
+        'launchctl asuser 501 /usr/bin/security < cmds.txt'
+      ])
+      allowed([
+        "python3 -c \"import subprocess; subprocess.run(['security', 'find-certificate', '-a'])\"",
+        "node -e \"console.log('security review done')\"",
+        "python3 -c \"print('the security team')\"",
+        'script -q /dev/null ls',
+        "script -q -c 'npm test' /dev/null",
+        'launchctl asuser 501 security find-certificate -a',
+        'launchctl list'
+      ])
+    })
+
+    it('denies the OrgAI Vault name after any keyring front end, however it is launched', () => {
+      denied([
+        "keyring get 'OrgAI Vault' key",
+        "keyring set 'OrgAI Vault' key",
+        "keyring del 'OrgAI Vault' key",
+        'keyring get OrgAI\\ Vault key',
+        'keyring get "OrgAI vault" key',
+        "~/.local/bin/keyring get 'OrgAI Vault' key",
+        "pipx run keyring get 'OrgAI Vault' key",
+        "python3 -m keyring get 'OrgAI Vault' key",
+        "kwallet-query -r 'OrgAI Vault' kdewallet",
+        "kwallet-query -f 'OrgAI Vault' -r abc kdewallet",
+        "kwalletcli -f 'OrgAI Vault' -e abc",
+        "k\\wallet-query -r 'OrgAI Vault' kdewallet",
+        "bash -c \"keyring get 'OrgAI Vault' key\"",
+        "security find-key -l 'OrgAI Vault'"
+      ])
+      allowed([
+        'keyring --list-backends',
+        "keyring get 'Other Service' key",
+        "grep -rn 'OrgAI Vault' src && node -v",
+        "npx vitest run src/main/runtime/selfControlGate.test.ts -t 'OrgAI Vault'",
+        'kwallet-query -l kdewallet'
+      ])
+    })
+
+    it('reads a local drive spelled as a device path or an admin share (win32, no file system)', () => {
+      const data = 'C:\\Users\\me\\AppData\\Roaming\\OrgAI'
+      const wctx: SelfControlContext = { protectedPaths: [`${data}\\run`, `${data}\\secrets.json`, `${data}\\codex`], platform: 'win32', home: 'C:\\Users\\me', cwd: 'C:\\work' }
+      const targets = [
+        `\\\\?\\${data}\\vault.json`,
+        `\\\\.\\${data}\\vault.json`,
+        '\\\\?\\c:\\users\\me\\appdata\\roaming\\orgai\\run\\daemon.secret',
+        '//?/C:/Users/me/AppData/Roaming/OrgAI/secrets.json.tmp',
+        '\\\\localhost\\c$\\Users\\me\\AppData\\Roaming\\OrgAI\\vault.json',
+        '\\\\LOCALHOST\\C$\\Users\\me\\AppData\\Roaming\\OrgAI\\codex\\auth.json',
+        '\\\\127.0.0.1\\c$\\Users\\me\\AppData\\Roaming\\OrgAI\\vault.json.corrupt-1',
+        '\\\\?\\UNC\\localhost\\c$\\Users\\me\\AppData\\Roaming\\OrgAI\\vault.json',
+        '\\\\?\\UNC\\127.0.0.1\\C$\\Users\\me\\AppData\\Roaming\\OrgAI\\secrets.json'
+      ]
+      for (const t of targets) {
+        expect(checkSelfControlDenial('Read', { file_path: t }, wctx), t).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+        expect(checkSelfControlDenial('Write', { file_path: t, content: 'x' }, wctx), t).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+        expect(ps(`Get-Content ${t}`, wctx), t).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      }
+      expect(checkSelfControlDenial('Grep', { pattern: 'x', path: '\\\\?\\C:\\Users\\me\\AppData\\Roaming\\OrgAI\\run' }, wctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      // Remote hosts, other shares and other folders stay with the normal flow.
+      for (const t of [
+        '\\\\server\\c$\\Users\\me\\AppData\\Roaming\\OrgAI\\vault.json',
+        '\\\\localhost\\share\\vault.json',
+        '\\\\?\\Volume{0}\\x',
+        '\\\\?\\C:\\Users\\me\\AppData\\Roaming\\OrgAI\\projects.json',
+        '\\\\localhost\\c$\\work\\notes.md'
+      ]) {
+        expect(checkSelfControlDenial('Read', { file_path: t }, wctx), t).toBeNull()
+        expect(ps(`Get-Content ${t}`, wctx), t).toBeNull()
+      }
+    })
+  })
 })
 
 describe('Wave 7 scan cost', () => {
+  // Review round 2: linearity, not wall-clock time (a loaded runner made a fixed 2 s limit fail with no code change).
+  // Each hostile text is timed at n and 2n (best of three, so a scheduler stall in one run does not count); a scan that
+  // grows with the square of the input takes about four times as long at 2n, a linear one about twice.
   it('reads long hostile texts in linear time (quotes, backslashes, braces, custodian words)', () => {
     const data = '/home/u/.config/OrgAI'
     const ctx: SelfControlContext = { protectedPaths: controlProtectedPaths(data), cwd: '/work', home: '/home/u', platform: 'linux' }
-    const texts = [
-      `echo ${'"\\'.repeat(40_000)}`,
-      `echo ${"'a".repeat(40_000)}`,
-      `echo ${'security '.repeat(10_000)}x && node x.js`,
-      `echo ${'orgai\\'.repeat(20_000)}`,
-      `echo ${'env '.repeat(20_000)}`,
-      `echo ${'{a,b}'.repeat(5)}`,
+    const texts: [string, (n: number) => string, number][] = [
+      ['quote-backslash', (n) => `echo ${'"\\'.repeat(n)}`, 20_000],
+      ['single quotes', (n) => `echo ${"'a".repeat(n)}`, 20_000],
+      ['security words', (n) => `echo ${'security '.repeat(n)}x && node x.js`, 5_000],
+      ['escaped names', (n) => `echo ${'orgai\\'.repeat(n)}`, 10_000],
+      ['env words', (n) => `echo ${'env '.repeat(n)}`, 10_000],
       // Review round 1: glob and escaped names read as programs and subcommands, runner words, security options.
-      `echo ${'s?c*r?t[y] '.repeat(5_000)}`,
-      `npx ${'np\\x e?ec '.repeat(5_000)}`,
-      `echo ${'security -v '.repeat(5_000)}`,
-      `echo ${'ORGAI_'.repeat(20_000)}`
+      ['glob names', (n) => `echo ${'s?c*r?t[y] '.repeat(n)}`, 2_500],
+      ['bracket names', (n) => `echo ${'[s][e][c][u][r][i][t][y] '.repeat(n)}`, 2_500],
+      ['runner words', (n) => `npx ${'np\\x e?ec '.repeat(n)}`, 2_500],
+      ['security options', (n) => `echo ${'security -v -- -pX '.repeat(n)}`, 2_500],
+      ['vault env', (n) => `echo ${'ORGAI_'.repeat(n)}`, 10_000],
+      ['vault label words', (n) => `echo ${'keyring OrgAI '.repeat(n)}`, 2_500]
     ]
-    for (const command of texts) {
-      const t0 = Date.now()
-      checkSelfControlDenial('Bash', { command }, ctx)
-      expect(Date.now() - t0, command.slice(0, 40)).toBeLessThan(2000)
+    const best = (command: string): number => {
+      let min = Infinity
+      for (let k = 0; k < 3; k++) {
+        const t0 = performance.now()
+        checkSelfControlDenial('Bash', { command }, ctx)
+        min = Math.min(min, performance.now() - t0)
+      }
+      return min
+    }
+    expect(checkSelfControlDenial('Bash', { command: 'echo {a,b}{a,b}{a,b}{a,b}{a,b}' }, ctx)).toBeNull()
+    for (const [name, make, n] of texts) {
+      const t1 = best(make(n))
+      const t2 = best(make(2 * n))
+      expect(t2, `${name}: ${t1.toFixed(1)} ms at n, ${t2.toFixed(1)} ms at 2n`).toBeLessThan(3 * t1 + 100)
     }
   })
 })

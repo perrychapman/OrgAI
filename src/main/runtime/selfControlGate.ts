@@ -43,7 +43,7 @@
  * variables (`$p status` with p=orgai), a script or program that opens the file itself or sets ELECTRON_RUN_AS_NODE
  * itself (a Python or Node script; the packaged app keeps Electron's RunAsNode fuse on, cli-spec Wave 6 deviations),
  * text a program generates rather than names (`printf 'org%sai'`, `base64 -d`, a download, a file whose contents run
- * orgai: `cat notes.sh | sh`), commands other wrappers run (`parallel`, `script -c`, a Makefile, an npm script, a
+ * orgai: `cat notes.sh | sh`), commands other wrappers run (`parallel`, a Makefile, an npm script, a
  * PowerShell backtick escape), an `orgai` reached through an alias, a shell function or a renamed copy outside the
  * CLI folders, and a Grep `glob` filter (a Grep rooted above a protected path is denied whatever its filter).
  * Commands a provider runs without asking OrgAI (Codex inside its own sandbox) are governed by that provider's sandbox
@@ -55,7 +55,8 @@
  *   scoped name is matched on the raw word, SCOPED_CLI), and their `-c` / `--call` value or a first positional word
  *   holding whitespace (`npx -c 'orgai status'`) as command texts (runnerCommandTexts; the package's own arguments,
  *   `npx vitest -t 'a b'`, are not). A `node_modules/@orgai/cli/...` path run as a program, script or interpreter
- *   argument counts too.
+ *   argument counts too, and (review round 2) a glob the shell may expand to the package (`npx @orgai/cl?`,
+ *   runnerWordNamesCli).
  * - Files directly in the data folder whose base name starts with `vault.json` or `secrets.json` (the .tmp, .reset-*,
  *   .corrupt-* siblings), lexical and canonical, for every file tool and shell word (referenceDirectories.ts
  *   PrefixProtection; the data folder is found among the protected paths, vaultPrefixProtections), and globs in the data
@@ -69,20 +70,32 @@
  *   'ORGAI_VAULT*'`) and plain mentions (`grep -rn ORGAI_VAULT_KEY_FILE src`; the Grep tool is the way to search for
  *   it), with quotes, backslashes, backticks and brackets removed first, plus a shortened prefix that can only stand for
  *   it (`ORGAI_V*`). A data-only here-document body is left out as for every rule (stripDataHeredocs).
- * - Key custodian tools: `security` with a keychain item subcommand (KEYCHAIN_SUBCOMMANDS) after its own options, `-i`,
- *   a redirect or here-string, no subcommand, a pipe into it, or the `OrgAI Vault` name; any `secret-tool` call; busctl
+ * - Key custodian tools: `security` with a keychain item subcommand (KEYCHAIN_SUBCOMMANDS) after its own options (read
+ *   as getopt does: `--`, `-pX`, `-p X`; securityOptions), `-i`, a redirect or here-string, no subcommand, a pipe into
+ *   it; `security`, `keyring` (python-keyring) or `kwallet-query` / `kwalletcli` followed by the `OrgAI Vault` name
+ *   (spec 8.4's "any word `OrgAI Vault`" is read as a word given to a keyring front end, so a search of the sources for
+ *   the name passes); any `secret-tool` call; busctl
  *   / gdbus / dbus-send / qdbus naming the Secret Service; PowerShell text naming ProtectedData or Unprotect (the
  *   PowerShell tool, `pwsh -c`, a pipe or here-string into pwsh, and `-EncodedCommand` texts, which are decoded and
  *   scanned like any command); and code a code runner in the text runs (its own words, a here-document, a pipe into
- *   one that reads stdin) that names any of these (CUSTODIAN_CODE, custodianCodeRuns). Program, wrapper and subcommand
+ *   one that reads stdin) that names any of these (CUSTODIAN_CODE, custodianCodeRuns; also `security -i` and a bare
+ *   `security` at the end of a string or array or after a `|`, which read stdin). Program, wrapper and subcommand
  *   names are read through backslash escapes and globs (wordMayBe: `sec\urity`, `/usr/bin/secur*y`, `np?`, `npm
- *   ex?c`), and `arch -arch <name>` / `xcrun --sdk <x>` are unwrapped.
+ *   ex?c`; a single-letter bracket class counts as its letter, `[s][e][c][u][r][i][t][y]`), and `arch -arch <name>` /
+ *   `xcrun --sdk <x>`, `launchctl asuser|bsexec <id>` and `script [options] <file> <cmd>` are unwrapped (util-linux
+ *   `script -c <text>` is read as a command text).
+ * - On win32 a local drive written as a device path or an admin share (`\\?\C:\...`, `\\.\C:\...`,
+ *   `\\localhost\c$\...`, `\\127.0.0.1\c$\...`, `\\?\UNC\localhost\c$\...`) is read as that drive, lexically
+ *   (referenceDirectories.ts localDrivePathOf); other UNC paths stay with the normal flow.
  * Honest limits as above, plus: the data folder named as a whole (`cp -r <data> x`, `grep -r k <data>`, `find <data>
  * -exec cat {} +`) is a parent and passes, as before; a moved APPDATA / XDG folder is not followed; a script file or a
  * program that calls the keychain, the Secret Service or DPAPI itself (Python's keyring from a .py file, a compiled
  * helper) is not seen; a bare environment dump (`env`, `printenv`, `env | grep ORGAI_`) is not a reference to
  * ORGAI_VAULT_* and passes (the 6.3 environment scrub is the defence there); an awk or other program text that names a
- * custodian (`awk '/secret-tool/'`) is read as code and denied.
+ * custodian (`awk '/secret-tool/'`) is read as code and denied, as is interpreter code that only prints the word
+ * (`print('security')`); a program word that is all wildcards (`/usr/bin/????????`) or a class of several letters is
+ * not read as a custodian name; a UNC path to this computer under its own host name (`\\MYPC\c$`) is not mapped; the
+ * keyring service name passed through a variable or built by code at run time is not seen.
  */
 import { join, posix, resolve, win32 } from 'node:path'
 import { packagedCliRoots } from '../host/packagedLayout'
@@ -306,9 +319,48 @@ function wordNames(word: string): readonly string[] {
 /** wordNames results (a long segment asks for one word's names many times), at most 4,096 kept. */
 const wordNamesCache = new Map<string, readonly string[]>()
 
-/** The literal letters a glob keeps (bracket expressions and wildcards dropped); when it matches a name they are that name's, in order. */
-function globLiteralLength(glob: string): number {
-  return glob.replace(/\[[^\]]*\]/g, '').replace(/[*?]/g, '').length
+/**
+ * The letters a glob keeps, lowercase, in order: its literal characters plus every bracket class that can match only one
+ * letter (case folded: `[s]`, `[sS]`, `[e-e]`; review round 2), so `[s][e][c][u][r][i][t][y]` keeps all of `security`.
+ * Wildcards, negated classes and classes of several letters keep nothing. When the glob matches a name these letters
+ * are that name's, in order.
+ */
+function globKeptLetters(glob: string): string {
+  let out = ''
+  for (let i = 0; i < glob.length; i++) {
+    const ch = glob[i]
+    if (ch === '*' || ch === '?') continue
+    if (ch === '[') {
+      // The same bracket reading as globRegex: a `]` right after `[` is part of the class.
+      const end = glob.indexOf(']', i + 2)
+      if (end !== -1) {
+        out += singleClassLetter(glob.slice(i + 1, end))
+        i = end
+        continue
+      }
+    }
+    out += ch.toLowerCase()
+  }
+  return out
+}
+
+/** The one letter a bracket class body can match (case folded), else ''. */
+function singleClassLetter(body: string): string {
+  if (body === '' || body.startsWith('!') || body.startsWith('^')) return ''
+  const seen = new Set<string>()
+  for (let k = 0; k < body.length; k++) {
+    let lo = body[k]
+    let hi = lo
+    if (body[k + 1] === '-' && k + 2 < body.length) {
+      hi = body[k + 2]
+      k += 2
+    }
+    if (lo.toLowerCase() !== hi.toLowerCase()) return ''
+    lo = lo.toLowerCase()
+    seen.add(lo)
+    if (seen.size > 1) return ''
+  }
+  return seen.size === 1 ? [...seen][0] : ''
 }
 
 /**
@@ -322,7 +374,7 @@ function wordMayBe(word: string, names: readonly string[]): boolean {
     if (names.includes(n)) return true
     if (!GLOB_CHARS.test(n)) continue
     const re = cachedGlobRegex(n)
-    const kept = globLiteralLength(n)
+    const kept = globKeptLetters(n).length
     for (const name of names) if (re.test(name) && kept >= Math.min(3, Math.max(1, name.length - 1))) return true
   }
   return false
@@ -397,6 +449,30 @@ function runnerCommandTexts(words: readonly string[]): string[] {
   return out.filter((t) => /\s/.test(t))
 }
 
+/**
+ * A package runner's word naming the CLI package (Wave 7): `@orgai/cli` on the raw word (SCOPED_CLI) or an `orgai`
+ * base name (CLI_NAME), in every spelling, and (review round 2) a glob the shell may expand to either (`@orgai/cl?`,
+ * `@orga?/cli@1.2.3`, `--package=@orgai/c*`, `npm:@orgai/cl?`, `orga?`) that keeps at least three of the letters of
+ * `orgai` / `orgaicli` in order (a bare `*` or `src/*.ts` is not read as it).
+ */
+function runnerWordNamesCli(word: string): boolean {
+  for (const v of spellings(word)) {
+    if (SCOPED_CLI.test(v) || CLI_NAME.test(binName(v))) return true
+    if (!GLOB_CHARS.test(v)) continue
+    const specs = [v, v.replace(/^(?:--?[A-Za-z][\w-]*=|-p(?=.))/, '')]
+    const alias = v.lastIndexOf('npm:')
+    if (alias >= 0) specs.push(v.slice(alias + 4))
+    for (const spec of specs) {
+      for (const cand of [spec, spec.replace(/(?<=.)@[^@\\/]*$/, '')]) {
+        if (!GLOB_CHARS.test(cand)) continue
+        const re = cachedGlobRegex(cand)
+        if ((re.test('@orgai/cli') || re.test('orgai')) && keptSubsequence(cand, 'orgaicli') >= 3) return true
+      }
+    }
+  }
+  return false
+}
+
 /** `security` subcommands that read, write, delete or export keychain items (and the vault's key with them). */
 const KEYCHAIN_SUBCOMMANDS: readonly string[] = [
   'find-generic-password', 'find-internet-password', 'add-generic-password', 'add-internet-password',
@@ -416,61 +492,100 @@ const POWERSHELLS: readonly string[] = ['pwsh', 'pwsh-preview', 'powershell', 'p
 const PS_DPAPI = /ProtectedData|Unprotect/i
 const SECURITY: readonly string[] = ['security']
 const SECRET_TOOL: readonly string[] = ['secret-tool']
-/** `security`'s own leading options: -h, -i, -l, -q, -v clusters (`-p <prompt>` takes a value). */
-const SECURITY_OPTION = /^-[hilqvp]+$/
+/**
+ * Keyring front ends that take a service name (review round 2): `security`, python-keyring's `keyring` console script
+ * (Keychain or Secret Service) and KWallet's `kwallet-query` / `kwalletcli`. Any of these followed later by the
+ * `OrgAI Vault` name is denied.
+ */
+const VAULT_LABEL_TOOLS: readonly string[] = ['security', 'keyring', 'kwallet-query', 'kwalletcli', 'kwallet5-query', 'kwallet6-query']
+
+/** What `security`'s leading options say (securityOptions). */
+interface SecurityOptions {
+  /** Index of the subcommand word (words.length when there is none). */
+  sub: number
+  /** `-i` among the options: it then reads commands from stdin. */
+  interactive: boolean
+  /** An input redirect, here-document or here-string before the subcommand. */
+  stdin: boolean
+}
+
+/**
+ * `security`'s options after words[k], read the way its getopt does (review round 2): `--` ends them, `-p` takes the
+ * rest of its cluster or else the next word as its value (`-pfoo`, `-qpfoo`, `-p foo`), and any other cluster of h, i,
+ * l, q, v is skipped. `strict` (a `security` word anywhere in the segment, maybe some other program's argument) stops at
+ * a word that is not one of those clusters; at the program position every `-` word is skipped (fail closed: security
+ * answers an unknown option with its usage text), and redirects are read too.
+ */
+function securityOptions(words: readonly string[], k: number, strict: boolean): SecurityOptions {
+  let interactive = false
+  let stdin = false
+  let j = k + 1
+  for (; j < words.length; j++) {
+    const w = words[j]
+    if (!strict && /^\d*[<>]/.test(w)) {
+      if (w.includes('<')) stdin = true
+      if (/^\d*(?:<<<?|[<>]+&?)$/.test(w)) j++
+      continue
+    }
+    if (w === '--') {
+      j++
+      break
+    }
+    if (w.length < 2 || !w.startsWith('-')) break
+    if (strict && !/^-[hilqv]*(?:p[\s\S]*)?$/.test(w)) break
+    if (!strict && w.includes('<')) stdin = true
+    const p = w.indexOf('p', 1)
+    if (w.slice(1, p < 0 ? undefined : p).includes('i')) interactive = true
+    // `-p` with nothing after it in the cluster takes the next word.
+    if (p === w.length - 1) j++
+  }
+  return { sub: Math.min(j, words.length), interactive, stdin }
+}
+
+/** Separators between words in code text: spaces, quotes, array and call punctuation. */
+const SEP = `[\\s'",[\\](){}+]`
+const NOT_SEP = `[^\\s'",[\\](){}+]`
+/** One `security` option in code text: `-p <value>`, `-pX`, `--`, `-qv`. Bounded repetitions only. */
+const SECURITY_CODE_OPTION = `(?:-p${SEP}{1,16}(?!-)${NOT_SEP}{1,64}${SEP}{1,16}|--?${NOT_SEP}{0,64}${SEP}{1,16})`
 
 /**
  * Wave 7 (cli-standalone 8.4): the segment calls a key custodian tool. Every name is read through wordMayBe (escapes
- * and globs, review round 1). Anywhere in the words (wrappers OrgAI does not unwrap: `launchctl asuser 501 security
- * ...`): `security` whose first word after its own options is a KEYCHAIN_SUBCOMMANDS word, or followed later by the
- * `OrgAI Vault` name; `secret-tool` directly followed by one of its subcommands; a
- * D-Bus client followed later by a Secret Service name. At the program position: any `secret-tool` call; `security`
- * with `-i` among its leading options, an input redirect, here-document or here-string before its subcommand, or no
- * subcommand at all (it then reads commands from stdin; a pipe into it is caught by textRunsCli); PowerShell with a
- * word naming ProtectedData or Unprotect. Other `security` subcommands (find-certificate, find-identity, cms -D -i,
- * verify-cert...) pass, and so does a word `security` that is some other program's argument (`rg security -e export`).
+ * and globs, review round 1). Anywhere in the words (wrappers OrgAI does not unwrap): `security` whose subcommand after
+ * its own options (securityOptions, strict) is a KEYCHAIN_SUBCOMMANDS word; a keyring front end (VAULT_LABEL_TOOLS)
+ * followed later by the `OrgAI Vault` name; `secret-tool` directly followed by one of its subcommands; a D-Bus client
+ * followed later by a Secret Service name. At the program position: any `secret-tool` call; `security` with `-i` among
+ * its leading options, an input redirect, here-document or here-string before its subcommand, a keychain subcommand,
+ * or no subcommand at all (it then reads commands from stdin; a pipe into it is caught by textRunsCli); PowerShell
+ * with a word naming ProtectedData or Unprotect. Other `security` subcommands (find-certificate, find-identity, cms -D
+ * -i, verify-cert...) pass, and so does a word `security` that is some other program's argument (`rg security -e
+ * export`).
  */
 function custodianCall(words: readonly string[], at: number): boolean {
   let busLater = false
+  let labelLater = false
   for (let k = words.length - 1; k >= 0; k--) {
-    if (busLater && wordMayBe(words[k], DBUS_TOOLS)) return true
-    busLater ||= SECRETS_BUS.test(words[k])
+    const w = words[k]
+    if (busLater && wordMayBe(w, DBUS_TOOLS)) return true
+    if (labelLater && wordMayBe(w, VAULT_LABEL_TOOLS)) return true
+    busLater ||= SECRETS_BUS.test(w)
+    // `OrgAI Vault` in this word, also split over this and the next one (`OrgAI\ Vault`, `OrgAI Vault` unquoted).
+    labelLater ||= VAULT_LABEL.test(words[k + 1] === undefined ? w : `${w} ${words[k + 1]}`)
   }
-  let firstSecurity = -1
   for (let k = 0; k < words.length; k++) {
     const w = words[k]
     if (wordMayBe(w, SECRET_TOOL) && words[k + 1] !== undefined && wordMayBe(words[k + 1], SECRET_TOOL_SUBCOMMANDS)) return true
     if (!wordMayBe(w, SECURITY)) continue
-    if (firstSecurity < 0) firstSecurity = k
-    let j = k + 1
-    for (; j < words.length && SECURITY_OPTION.test(words[j]); j++) if (words[j] === '-p') j++
-    if (j < words.length && wordMayBe(words[j], KEYCHAIN_SUBCOMMANDS)) return true
+    const { sub } = securityOptions(words, k, true)
+    if (sub < words.length && wordMayBe(words[sub], KEYCHAIN_SUBCOMMANDS)) return true
   }
-  // `OrgAI Vault` after a `security` word, also split over words (`OrgAI\ Vault`).
-  if (firstSecurity >= 0 && VAULT_LABEL.test(words.slice(firstSecurity + 1).join(' '))) return true
   const prog = words[at]
   if (prog === undefined) return false
   if (wordMayBe(prog, SECRET_TOOL)) return true
   if (wordMayBe(prog, POWERSHELLS)) return words.slice(at + 1).some((w) => PS_DPAPI.test(w))
   if (!wordMayBe(prog, SECURITY)) return false
-  const rest = words.slice(at + 1)
-  for (let k = 0; k < rest.length; k++) {
-    const w = rest[k]
-    if (/^\d*[<>]/.test(w)) {
-      if (w.includes('<')) return true
-      if (/^\d*>+&?$/.test(w)) k++
-      continue
-    }
-    if (w.startsWith('-')) {
-      if (w.includes('<') || /^-[A-Za-z]*i/.test(w)) return true
-      // `-p <prompt>` takes a value.
-      if (w === '-p') k++
-      continue
-    }
-    // The subcommand: not one of KEYCHAIN_SUBCOMMANDS (checked above).
-    return false
-  }
-  return true
+  const opts = securityOptions(words, at, false)
+  if (opts.interactive || opts.stdin || opts.sub >= words.length) return true
+  return wordMayBe(words[opts.sub], KEYCHAIN_SUBCOMMANDS)
 }
 
 /**
@@ -484,7 +599,12 @@ const CODE_RUNNERS: ReadonlySet<string> = new Set([
 ])
 /** Custodian calls and names inside code text (see CODE_RUNNERS). Bounded repetitions only; array and call punctuation between words. */
 const CUSTODIAN_CODE: readonly RegExp[] = [
-  /\bsecurity[\s'",[\](){}+]{1,16}(?:-\w+[\s'",[\](){}+]{1,16}){0,8}(?:find-generic-password|find-internet-password|add-generic-password|add-internet-password|delete-generic-password|delete-internet-password|set-generic-password-partition-list|set-internet-password-partition-list|dump-keychain|export)\b/i,
+  new RegExp(`\\bsecurity${SEP}{1,16}${SECURITY_CODE_OPTION}{0,8}(?:${KEYCHAIN_SUBCOMMANDS.join('|')})\\b`, 'i'),
+  // Review round 2: `security -i` (also after other options), and `security` alone at the end of a string, array or call
+  // (`os.system('security')`, `run(['security'], input=...)`, `execSync('printf x | security')`): it reads stdin.
+  new RegExp(`\\bsecurity${SEP}{1,16}${SECURITY_CODE_OPTION}{0,8}-[hlqv]*i`, 'i'),
+  /\bsecurity['"`]\s*(?:[\]);]|$)/im,
+  /\|\s*(?:[^\s|'"]*\/)?security(?![\w.-])/i,
   /\bsecret-tool\b/i,
   SECRETS_BUS,
   VAULT_LABEL,
@@ -708,6 +828,21 @@ function programIndex(words: readonly string[]): number {
       }
       continue
     }
+    // Review round 2: macOS `launchctl asuser <uid> <cmd>` / `bsexec <pid> <cmd>`, and `script [options] <file> <cmd>`
+    // (BSD; util-linux `script -c <text>` is read as a command text in wordsRunCli, scriptCommandTexts).
+    if (is('launchctl') && nextIs('asuser', 'bsexec')) {
+      i += 3
+      continue
+    }
+    if (is('script')) {
+      i++
+      while (i < words.length && words[i].startsWith('-') && words[i] !== '-') {
+        if (SCRIPT_VALUE_OPTION.test(words[i])) i++
+        i++
+      }
+      i++ // the typescript file
+      continue
+    }
     if (is('npx')) {
       i++
       while (i < words.length && words[i].startsWith('-')) {
@@ -728,6 +863,26 @@ function programIndex(words: readonly string[]): number {
     break
   }
   return i
+}
+
+/** `script` options that take the next word as their value: BSD `-t <time>`, util-linux `-c`, `-T`, `-I`, `-O`, `-B`, `-E`, `-m` and long forms. */
+const SCRIPT_VALUE_OPTION = /^(?:-[A-Za-z]*[tcTIOBEm]|--(?:command|log-in|log-out|log-io|log-timing|logging-format|echo|output-limit))$/
+
+/** The command texts util-linux `script -c <text>` / `--command <text>` / `--command=<text>` runs (review round 2). */
+function scriptCommandTexts(words: readonly string[]): string[] {
+  const out: string[] = []
+  for (let i = 0; i < words.length; i++) {
+    if (!wordNames(words[i]).includes('script')) continue
+    for (let j = i + 1; j < words.length && words[j].startsWith('-'); j++) {
+      const w = words[j]
+      if (w.startsWith('--command=')) out.push(w.slice('--command='.length))
+      else if (/^-[A-Za-z]*c$/.test(w) || w === '--command') {
+        if (words[j + 1] !== undefined) out.push(words[j + 1])
+        j++
+      } else if (SCRIPT_VALUE_OPTION.test(w)) j++
+    }
+  }
+  return out
 }
 
 /** The text `env -S` / `--split-string` splits into words, joined with the words after it; null without one. */
@@ -775,7 +930,7 @@ function wordsRunCli(words: readonly string[], depth: number, budget: CliBudget,
   // registry URL), and so is any `orgai` word; a `-c` / `--call` value or a first positional word holding whitespace
   // (`npx -c 'orgai status'`, `pnpm dlx -c ...`) is a command text of its own (runnerCommandTexts).
   if (isPackageRunner(words)) {
-    for (const w of words) if (spellings(w).some((v) => SCOPED_CLI.test(v) || CLI_NAME.test(binName(v)))) return true
+    for (const w of words) if (runnerWordNamesCli(w)) return true
     for (const t of runnerCommandTexts(words)) {
       if (depth >= MAX_NEST) return (budget.limited = true)
       if (textRunsCli(t, depth + 1, budget, check)) return true
@@ -786,6 +941,11 @@ function wordsRunCli(words: readonly string[], depth: number, budget: CliBudget,
   if (split !== null) {
     if (depth >= MAX_NEST) return (budget.limited = true)
     if (textRunsCli(split, depth + 1, budget, check)) return true
+  }
+  // util-linux `script -c 'security -i' /dev/null`: the -c text is a command of its own.
+  for (const t of scriptCommandTexts(words)) {
+    if (depth >= MAX_NEST) return (budget.limited = true)
+    if (textRunsCli(t, depth + 1, budget, check)) return true
   }
   const at = programIndex(words)
   // Wave 7: the vault key's custodian tools (security, secret-tool, D-Bus clients, PowerShell DPAPI).
@@ -1093,10 +1253,14 @@ function interpreterArgIsCli(word: string, check: CliCheck): boolean {
 function globNamesCli(base: string): boolean {
   const re = globRegex(base)
   if (!CLI_FILE_NAMES.some((n) => re.test(n))) return false
-  const literal = base.replace(/\[[^\]]*\]/g, '').replace(/[*?]/g, '').toLowerCase()
+  return keptSubsequence(base, 'orgai') >= 3
+}
+
+/** How many letters of `name`, in order, a glob keeps (globKeptLetters). */
+function keptSubsequence(glob: string, name: string): number {
   let got = 0
-  for (const ch of literal) if ('orgai'[got] === ch) got++
-  return got >= 3
+  for (const ch of globKeptLetters(glob)) if (name[got] === ch) got++
+  return got
 }
 
 /** A path (relative against the cwd) at or inside one of this install's CLI folders. */

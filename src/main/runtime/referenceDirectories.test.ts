@@ -9,6 +9,7 @@ import {
   commandTouchesReference,
   editTargetOf,
   globMayStartWith,
+  localDrivePathOf,
   pathAtOrUnder,
   referenceCommandMessage,
   referenceEditDenial,
@@ -262,5 +263,23 @@ describe('prefix protection (definite mode, selfControlGate.ts Wave 7)', () => {
     expect(commandControlScan('cd /d && cat vault.json', '/w', [], opts)).toBe('touch')
     // Reference mode ignores it.
     expect(commandReferenceTouch('cat /d/vault.json', '/w', ['/r'], { platform: 'linux', prefixed })).toBeNull()
+  })
+})
+
+describe('localDrivePathOf (review round 2)', () => {
+  it('reads device paths and local admin shares as the drive, lexically', () => {
+    expect(localDrivePathOf('\\\\?\\C:\\Users\\me\\x')).toBe('C:\\Users\\me\\x')
+    expect(localDrivePathOf('\\\\.\\c:\\x')).toBe('C:\\x')
+    expect(localDrivePathOf('//?/d:/a/b')).toBe('D:\\a\\b')
+    expect(localDrivePathOf('\\\\localhost\\c$\\Users')).toBe('C:\\Users')
+    expect(localDrivePathOf('\\\\127.0.0.1\\D$\\x')).toBe('D:\\x')
+    expect(localDrivePathOf('\\\\?\\UNC\\LOCALHOST\\c$\\x')).toBe('C:\\x')
+    expect(localDrivePathOf('\\\\?\\C:')).toBe('C:\\')
+  })
+
+  it('gives null for remote hosts, other shares and non-UNC paths', () => {
+    for (const p of ['\\\\server\\c$\\x', '\\\\localhost\\share\\x', '\\\\?\\Volume{0}\\x', '\\\\.\\pipe\\x', '\\\\?\\UNC\\server\\c$\\x', 'C:\\x', '/tmp/x', '\\\\localhost']) {
+      expect(localDrivePathOf(p), p).toBeNull()
+    }
   })
 })

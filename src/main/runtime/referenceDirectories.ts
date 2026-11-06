@@ -27,6 +27,36 @@ function isUncLike(p: string): boolean {
   return /^[\\/]{2}/.test(p)
 }
 
+/** Host names a Windows UNC path may use for this computer's own admin shares (`\\localhost\c$`). */
+const LOCAL_UNC_HOSTS = /^(?:localhost|127(?:\.\d{1,3}){3}|::1|0:0:0:0:0:0:0:1|0--1\.ipv6-literal\.net|\.)$/i
+
+/**
+ * Review round 2 (self-control, win32): a UNC-like path that names a local drive, as that drive path, read lexically
+ * with no file-system or network access: `\\?\C:\x` and `\\.\C:\x` (device and extended-length forms), and the
+ * local admin shares `\\localhost\c$\x`, `\\127.0.0.1\c$\x` and `\\?\UNC\localhost\c$\x` give `C:\x`. Any
+ * other UNC path (a remote host, `\\?\Volume{...}`, a pipe) gives null.
+ */
+export function localDrivePathOf(p: string): string | null {
+  if (!isUncLike(p)) return null
+  const parts = p.slice(2).split(/[\\/]/)
+  let k = 0
+  let host: string | undefined
+  if (parts[0] === '?' || parts[0] === '.') {
+    const next = parts[1] ?? ''
+    if (/^[a-zA-Z]:$/.test(next)) return `${next.toUpperCase()}\\${parts.slice(2).join('\\')}`
+    if (parts[0] !== '?' || next.toUpperCase() !== 'UNC') return null
+    host = parts[2]
+    k = 3
+  } else {
+    host = parts[0]
+    k = 1
+  }
+  if (host === undefined || !LOCAL_UNC_HOSTS.test(host)) return null
+  const share = /^([a-zA-Z])\$$/.exec(parts[k] ?? '')
+  if (!share) return null
+  return `${share[1].toUpperCase()}:\\${parts.slice(k + 1).join('\\')}`
+}
+
 /** The edit tools refused under a reference folder. */
 export const REFERENCE_EDIT_TOOLS: ReadonlySet<string> = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
 
@@ -339,9 +369,13 @@ function checkPart(s: CheckState, raw: string, cwd: string | undefined): string 
   for (const v of variants) {
     if (v.includes('://')) continue
     // A UNC or device word is never resolved (that would touch the network): it counts as naming a reference folder.
+    // Definite mode reads a local drive spelled as a device path or an admin share as that drive (review round 2).
     if (s.platform === 'win32' && isUncLike(v)) {
-      if (s.definite) continue
-      return s.refs[0].ref
+      if (!s.definite) return s.refs[0].ref
+      const local = localDrivePathOf(v)
+      const hit = local ? checkWord(s, local, cwd) : null
+      if (hit) return hit
+      continue
     }
     const hit = checkWord(s, v, cwd)
     if (hit) return hit
@@ -678,11 +712,17 @@ function definiteState(refs: readonly string[], opts: Pick<ReferenceCheckOptions
   }
 }
 
-/** `target` as an absolute path (`~` expanded, relative against cwd), or null (none, UNC / device, NUL). */
+/**
+ * `target` as an absolute path (`~` expanded, relative against cwd), or null (none, UNC / device, NUL). On win32 a
+ * local drive spelled as a device path or an admin share (`\\?\C:\x`, `\\localhost\c$\x`) is read as that drive
+ * (localDrivePathOf, review round 2).
+ */
 function definiteAbs(s: CheckState, target: unknown, cwd: string | undefined): string | null {
-  if (typeof target !== 'string' || !target || target.includes('\0') || isUncLike(target)) return null
+  if (typeof target !== 'string' || !target || target.includes('\0')) return null
+  const local = s.platform === 'win32' ? localDrivePathOf(target) : null
+  if (isUncLike(target) && !local) return null
   const p = s.p
-  let w = target
+  let w = local ?? target
   if (w === '~' || /^~[\\/]/.test(w)) {
     if (!s.home || !p.isAbsolute(s.home)) return null
     w = p.join(s.home, w.slice(1))
