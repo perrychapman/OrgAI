@@ -8,10 +8,14 @@ import { join } from 'node:path'
 import { readVaultFile } from './vaultFile'
 import { VAULT_FILE, type VaultMetadata } from './vaultTypes'
 
-/** `<dataDir>/vault.json` metadata. Never throws: an unreadable file other than a missing one is 'corrupt'. */
+/**
+ * `<dataDir>/vault.json` metadata. Never throws: a file that cannot be read (an I/O error) also reports 'corrupt' here
+ * (VaultMetadata has no separate state; the running store tells the two apart).
+ */
 export function readVaultMetadata(dataDir: string): VaultMetadata {
   const empty = { entries: 0, tombstones: 0, legacyRetired: false }
   const read = readVaultFile(join(dataDir, VAULT_FILE))
+  if (read.kind === 'unreadable') return { state: 'corrupt', ...empty }
   if (read.kind !== 'vault') return { state: read.kind, ...empty }
   const v = read.vault
   return {

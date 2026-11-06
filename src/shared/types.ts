@@ -6532,6 +6532,13 @@ export interface SecretsStatusResult {
   /** OS key items of moved-aside vaults (5.6 Reset). */
   orphanedVaults: SecretsOrphanVault[]
   legacyFile: LegacySecretsFileState
+  /**
+   * vault.json or secrets.json could not be read just now (an I/O error such as EIO or EACCES, not damage; WP-G1 review
+   * round 2): the sentence to show. An unreadable vault.json reports `state` 'locked' with this reason; an unreadable
+   * secrets.json reports `legacyFile` 'corrupt' (never written while it lasts). The store reads both again on the next
+   * save and on secrets:status / init; secrets:reset refuses (nothing is moved aside) while either cannot be read.
+   */
+  readError?: string
   /** This host can encrypt with the app's safeStorage (5.5 "can write back"). */
   canWriteBack: boolean
 }

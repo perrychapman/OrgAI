@@ -19,9 +19,9 @@ import type {
   VaultState
 } from '@shared/types'
 import { isInsideEither } from '../quick/scratch'
-import { DurableFsError, nodeVaultFs, renameDurable, unlinkDurable, writeFileDurable, type VaultFs } from './durableFs'
+import { DurableFsError, errorCode, nodeVaultFs, renameDurable, unlinkDurable, writeFileDurable, type VaultFs } from './durableFs'
 import { baselineOf, legacyIsNewer, planReconcile, planRetirement, retirementBlocker, setBaseline, type ReconcileCrypto } from './reconcile'
-import { unavailableCustodianFactory } from './unavailableCustodian'
+import { isPlaceholderCustodian, unavailableCustodianFactory } from './unavailableCustodian'
 import { checkMatches, decryptEntry, encryptEntry, isDek, makeCheck, newVaultId, sha256Hex, zeroize } from './vaultCrypto'
 import {
   cloneVault,
@@ -201,6 +201,23 @@ export const KEY_STORE_UNREACHABLE_MESSAGE = 'The key store could not be reached
 /** A new vault's own save failed (a disk error such as ENOSPC or EIO), not the key store (review round 1). */
 export const vaultSaveFailedMessage = (detail: string): string => `OrgAI could not save the new secret vault (${detail}); try again when the disk works.`
 
+/**
+ * vault.json or secrets.json could not be read (an I/O error such as EIO, EACCES or EBUSY; not damage). The store reads
+ * it again on the next save, prepareWrite, retry, secrets:init and secrets:status (review round 2).
+ */
+export const fileReadFailedMessage = (file: string, code: string): string =>
+  `${file} could not be read (${code}); OrgAI reads it again on the next save or \`orgai secrets status\``
+
+/** secrets:reset refuses while a file cannot be read: a healthy file is never moved aside as damaged (review round 2). */
+export const resetReadFailedMessage = (file: string, code: string): string =>
+  `${file} could not be read (${code}), so nothing was moved aside; try again when the disk works.`
+
+/** An explicit clear whose save failed before anything changed on disk (review round 2): the value is still saved. */
+export const secretClearFailedMessage = (detail: string): string => `OrgAI could not remove the secret (${detail}); it is still saved.`
+
+/** A repeated identical vault failure is logged again at most this often (review round 2: no line every 10 minutes). */
+export const VAULT_REPEAT_LOG_MS = 24 * 60 * 60 * 1000
+
 /** secrets:reset could not move a file aside (it is still in place). */
 export const VAULT_MOVE_FAILED_MESSAGE = 'vault.json could not be moved aside.'
 export const LEGACY_MOVE_FAILED_MESSAGE = 'The damaged secrets.json could not be moved aside.'
@@ -313,8 +330,19 @@ export class SecretStore implements SecretStoreApi {
   /** A failed save left the files unreconciled: mutations retry the reconcile first and refuse until it succeeds. */
   private recoveryRequired = false
   private recovering = false
-  /** Keys a removal had to leave where they were (5.5 Deletes), counted by doctor. */
+  /** Keys a removal had to leave where they were (5.5 Deletes), counted by doctor (`<prefix>*` for a prefix it could not list). */
   private readonly orphaned = new Set<string>()
+  /**
+   * vault.json could not be read (an I/O error, not damage; review round 2): handled internally like 'corrupt' (no legacy
+   * reads, values and clears refused, removals left in place, the file never written), but state() reports 'locked'
+   * with this sentence, reset is never advised, and the file is read again (retryRead) before every mutation and on
+   * prepareWrite, retryOpen, secrets:init and secrets:status.
+   */
+  private vaultReadError: string | undefined
+  /** secrets.json could not be read (an I/O error): handled like a corrupt legacy file (never written), read again as above. */
+  private legacyReadError: string | undefined
+  /** The last repeated failure logged (signature and time), so the retry timer does not add a line every 10 minutes. */
+  private lastRepeatLog: { sig: string; at: number } | undefined
   /** Why the last creation's own save failed (a disk error): reported instead of a custody reason. */
   private createSaveError: string | undefined
   /** The custodian's key for a vault whose save failed: the next creation reuses it instead of making another item. */
@@ -370,10 +398,26 @@ export class SecretStore implements SecretStoreApi {
   private reload(strictIo = false): void {
     const legacy = readLegacyFile(this.legacyPath, this.fs, strictIo)
     const read = readVaultFile(this.vaultPath, this.fs, strictIo)
-    this.legacy = legacy
+    if (legacy.state === 'unreadable') {
+      // Never written while it cannot be read (the corrupt rules), and read again later.
+      this.legacy = { state: 'corrupt' }
+      this.legacyReadError = fileReadFailedMessage(LEGACY_SECRETS_FILE, legacy.code)
+    } else {
+      this.legacy = legacy
+      this.legacyReadError = undefined
+    }
     const hashes = dict<string>()
-    if (legacy.state === 'ok') for (const [k, l] of Object.entries(legacy.values)) hashes[k] = sha256Hex(l)
+    if (this.legacy.state === 'ok') for (const [k, l] of Object.entries(this.legacy.values)) hashes[k] = sha256Hex(l)
     this.legacyHashes = hashes
+    if (read.kind === 'unreadable') {
+      this.dropKey()
+      this.vault = undefined
+      this.vstate = 'corrupt'
+      this.vaultReadError = fileReadFailedMessage(VAULT_FILE, read.code)
+      this.reason = this.vaultReadError
+      return
+    }
+    this.vaultReadError = undefined
     if (read.kind !== 'vault') {
       this.dropKey()
       this.vault = undefined
@@ -409,6 +453,41 @@ export class SecretStore implements SecretStoreApi {
 
   private log(m: string): void {
     this.logLine(m)
+  }
+
+  /** Log a failure the retry timer may repeat: an identical one again only after VAULT_REPEAT_LOG_MS. */
+  private logRepeated(sig: string, m: string): void {
+    const now = this.now()
+    const last = this.lastRepeatLog
+    if (last && last.sig === sig && now - last.at < VAULT_REPEAT_LOG_MS) return
+    this.lastRepeatLog = { sig, at: now }
+    this.log(m)
+  }
+
+  private hasReadError(): boolean {
+    return this.vaultReadError !== undefined || this.legacyReadError !== undefined
+  }
+
+  /**
+   * After an I/O read failure: read both files again (synchronous and cheap). Once both read, reconcile as an open would
+   * (an app host with the vault open imports what secrets.json held). Never throws.
+   */
+  private retryRead(): void {
+    if (!this.hasReadError()) return
+    try {
+      this.reload()
+    } catch (e) {
+      this.log(`could not read the secret files again (${e instanceof Error ? e.message : 'error'})`)
+      return
+    }
+    if (this.hasReadError()) return
+    this.lastRepeatLog = undefined
+    this.log('the secret files can be read again')
+    // An app host opens (or creates) the vault found again through its background retry (retryOpen needs a failure).
+    if (this.isApp && this.vstate !== 'open' && !this.lastFailure && this.createSaveError === undefined) {
+      this.lastFailure = { kind: 'locked', reason: VAULT_NOT_OPENED_MESSAGE }
+    }
+    if (!this.recoveryRequired) this.reconcileNow()
   }
 
   // ---------- Small helpers ----------
@@ -449,6 +528,7 @@ export class SecretStore implements SecretStoreApi {
   }
 
   private notOpenReason(): string {
+    if (this.vaultReadError) return VAULT_MESSAGES.locked(this.vaultReadError)
     if (this.vstate === 'corrupt') return VAULT_MESSAGES.corrupt
     if (this.vstate === 'missing-key') return VAULT_MESSAGES.missingKey
     if (this.vstate === 'key-mismatch') return VAULT_MESSAGES.keyMismatch
@@ -488,7 +568,7 @@ export class SecretStore implements SecretStoreApi {
 
   /** Where K's value comes from on this host, without decrypting anything. */
   private resolve(key: string): Resolution {
-    if (this.vstate === 'corrupt') return this.L(key) !== undefined ? { k: 'unreadable', reason: VAULT_MESSAGES.corrupt } : { k: 'unset' }
+    if (this.vstate === 'corrupt') return this.L(key) !== undefined ? { k: 'unreadable', reason: this.notOpenReason() } : { k: 'unset' }
     const l = this.L(key)
     // Only the app reads secrets.json values (with safeStorage; a failed decrypt reads unreadable, as before Wave 7).
     const capable = this.isApp
@@ -539,12 +619,18 @@ export class SecretStore implements SecretStoreApi {
     return { unreadable: VAULT_MESSAGES.unreadableEntry }
   }
 
-  /** False when nothing can be stored here (read-only, a corrupt vault, no cipher in legacy-only mode, a closed vault). */
+  /**
+   * False when nothing can be stored here (read-only, a corrupt or unreadable vault, an unreadable secrets.json, no cipher
+   * in legacy-only mode, a closed vault). A Node or inproc host with an absent vault answers true only while a key store
+   * may create one: never with the placeholder custodian of this build, nor after a creation failed 'unavailable'
+   * (review round 2).
+   */
   available(): boolean {
-    if (this.readOnly || this.vstate === 'corrupt') return false
+    if (this.readOnly || this.vstate === 'corrupt' || this.legacyReadError !== undefined) return false
     if (this.vstate === 'open') return true
     if (this.isApp) return this.cipherAvailable() && this.legacy.state !== 'corrupt'
-    return this.vstate === 'absent' && this.newScheme() !== null
+    if (this.vstate !== 'absent' || this.newScheme() === null) return false
+    return !isPlaceholderCustodian(this.factory) && this.lastFailure?.kind !== 'unavailable'
   }
 
   has(key: string): boolean {
@@ -564,7 +650,8 @@ export class SecretStore implements SecretStoreApi {
   }
 
   state(): VaultState {
-    return this.vstate
+    // An unreadable vault.json (an I/O error) is reported as locked with the read error, never as damaged.
+    return this.vaultReadError ? 'locked' : this.vstate
   }
 
   /** Keys (stored and overlay) starting with a prefix that hold a value somewhere, readable or not. */
@@ -666,6 +753,15 @@ export class SecretStore implements SecretStoreApi {
     }
   }
 
+  /**
+   * The reconcile after an open or a creation. While a file cannot be read (an I/O error) a strict re-read would only
+   * fail and mark a recovery that no save needs: read it again instead (retryRead reconciles once both read).
+   */
+  private reconcileAfterOpen(): void {
+    if (this.hasReadError()) this.retryRead()
+    else this.tryRecover()
+  }
+
   /** Before a mutation: finish the recovery a failed save left, or refuse. */
   private ensureRecovered(): void {
     if (this.recoveryRequired && !this.tryRecover()) throw new Error(VAULT_RECOVERY_MESSAGE)
@@ -741,16 +837,23 @@ export class SecretStore implements SecretStoreApi {
 
   // ---------- Writes (5.5 Writes) ----------
 
-  /** Store a value, or delete it with null or '' (a delete never throws; see delete()). */
+  /**
+   * Store a value, or clear it with null or '' (an explicit clear: see clear(), which throws when the clear is refused or
+   * its save failed; removals use delete() / deletePrefix(), which never throw).
+   */
   set(key: string, value: string | null): void {
     if (value === null || value === '') {
-      this.delete(key)
+      this.clear(key)
       return
     }
     if (typeof value !== 'string' || !validSecretKey(key)) throw new Error('A secret needs a key and a string value.')
     if (this.readOnly) throw new Error(READ_ONLY_SECRETS_MESSAGE)
+    this.retryRead()
     this.ensureRecovered()
-    if (this.vstate === 'corrupt') throw new Error(VAULT_MESSAGES.corrupt)
+    if (this.vstate === 'corrupt') throw new Error(this.notOpenReason())
+    // Values wait while secrets.json cannot be read: its hash is what makes a stale copy there never read as newer, so a
+    // save now could later lose to an older value (rows 3 and 4).
+    if (this.legacyReadError) throw new Error(this.legacyReadError)
     if (this.vstate === 'open') this.writeVault(key, value)
     else if (this.isApp) this.writeLegacyOnly(key, value)
     else if (this.vstate === 'absent') throw new VaultNotReady(key)
@@ -795,7 +898,7 @@ export class SecretStore implements SecretStoreApi {
    * same bytes as the new one (H = B), so reads converge to the new value; a failure at the vault write changes nothing.
    */
   private writeLegacyOnly(key: string, value: string): void {
-    if (this.legacy.state === 'corrupt') throw new Error(LEGACY_CORRUPT_MESSAGE)
+    if (this.legacy.state === 'corrupt') throw new Error(this.legacyReadError ?? LEGACY_CORRUPT_MESSAGE)
     if (!this.cipherAvailable()) throw new Error(SECURE_STORAGE_UNAVAILABLE_MESSAGE)
     const back = this.legacyEncrypt(value)
     const next = dict<string>()
@@ -816,18 +919,32 @@ export class SecretStore implements SecretStoreApi {
 
   // ---------- Deletes (5.5 Deletes) ----------
 
-  /** Delete a value. Never throws: a key it cannot handle is left in place, logged and counted as orphaned. */
+  /**
+   * A removal's delete (a project, server or library entry removed, linkLibrary, a kit replace). Never throws: a key it
+   * cannot handle is left in place, logged and counted as orphaned. An explicit clear is clear() (or set(key, null)).
+   */
   delete(key: string): void {
     this.overlay.delete(key)
     if (this.readOnly || typeof key !== 'string') return
+    this.retryRead()
+    if (this.hasReadError()) {
+      // Whether the key is stored cannot be seen while a file cannot be read: left in place, retried by a later removal.
+      this.leaveInPlace([key], this.readErrorReason())
+      return
+    }
     this.removeKeys([key])
   }
 
-  /** Delete every key starting with a prefix; returns how many were removed (overlay included). Never throws. */
+  /** A removal of every key starting with a prefix; returns how many were removed (overlay included). Never throws. */
   deletePrefix(prefix: string): number {
     const before = this.keys(prefix)
     for (const k of [...this.overlay.keys()]) if (k.startsWith(prefix)) this.overlay.delete(k)
     if (!this.readOnly) {
+      this.retryRead()
+      if (this.hasReadError()) {
+        this.leaveInPlace([`${prefix}*`], this.readErrorReason())
+        return before.filter((k) => !this.has(k)).length
+      }
       const stored = new Set<string>(Object.keys(this.legacyValues()).filter((k) => k.startsWith(prefix)))
       if (this.vault) for (const k of Object.keys(this.vault.entries)) if (k.startsWith(prefix)) stored.add(k)
       if (stored.size) this.removeKeys([...stored])
@@ -835,8 +952,45 @@ export class SecretStore implements SecretStoreApi {
     return before.filter((k) => !this.has(k)).length
   }
 
-  /** 5.5 Deletes clear check: why clearing `key` must be refused here, else undefined. */
+  /**
+   * An explicit clear (5.5 Deletes: `set-secret --clear`, connections:setSecret / mcp:setSecret / mcpLibrary:setSecret
+   * with null or '', connectors:setToken null; set(key, null) lands here too). Unlike a removal it reports what happened
+   * (review round 2): it throws clearRefusal()'s sentence before anything changes, VAULT_RECOVERY_MESSAGE while a failed
+   * save is not reconciled, secretClearFailedMessage(<the disk's reason>) when the save failed before anything changed
+   * (the value is still stored), and VAULT_MESSAGES.notDurable when the outcome is not known (never success). A key that
+   * exists nowhere is a no-op. A read-only store only drops the overlay value.
+   */
+  clear(key: string): void {
+    this.overlay.delete(key)
+    if (this.readOnly || !validSecretKey(key)) return
+    const refusal = this.clearRefusal(key)
+    if (refusal) throw new Error(refusal)
+    try {
+      this.removeKeysOrThrow([key])
+    } catch (e) {
+      if (e instanceof CommitError && e.outcome === 'clean') {
+        const failure = e.failure
+        throw new Error(secretClearFailedMessage(failure instanceof Error ? failure.message : 'error'))
+      }
+      throw e
+    }
+    this.orphaned.delete(key)
+  }
+
+  /** The sentence for a file that cannot be read (vault.json first). */
+  private readErrorReason(): string {
+    return this.vaultReadError ?? this.legacyReadError ?? VAULT_NOT_OPENED_MESSAGE
+  }
+
+  /**
+   * 5.5 Deletes clear check: why clearing `key` must be refused here, else undefined. Reads the files again first when
+   * one could not be read; while one still cannot be, every clear is refused with that reason (whether the key is stored
+   * cannot be seen, and a secrets.json copy left behind would be imported again later).
+   */
   clearRefusal(key: string): string | undefined {
+    this.retryRead()
+    if (this.vaultReadError) return VAULT_MESSAGES.locked(this.vaultReadError)
+    if (this.legacyReadError) return this.legacyReadError
     if (this.L(key) === undefined) return undefined
     if (this.vstate === 'corrupt') return VAULT_MESSAGES.clearRefusedCorrupt
     if (!this.isApp && this.vstate === 'absent') return VAULT_MESSAGES.clearRefusedLegacyOnly
@@ -982,6 +1136,12 @@ export class SecretStore implements SecretStoreApi {
           this.noteCreateFailure(e)
         }
       }
+      if (this.hasReadError()) {
+        // An I/O error, not damage: read again by the next save, prepareWrite, secrets:init / status and the app's retry.
+        this.logRepeated(`read:${this.readErrorReason()}`, this.readErrorReason())
+        if (this.isApp && this.vstate !== 'open') this.startRetryTimer()
+        return
+      }
       if (this.vstate !== 'open' && !this.recoveryRequired) this.tryRecover()
     })
   }
@@ -1006,12 +1166,12 @@ export class SecretStore implements SecretStoreApi {
     if (e instanceof VaultSaveError) {
       this.createSaveError = e.message
       this.lastFailure = undefined
-      this.log(`could not save the new vault (${e.detail}); ${this.isApp ? 'using secrets.json only until it can' : 'nothing stored'}`)
+      this.logRepeated(`save:${e.detail}`, `could not save the new vault (${e.detail}); ${this.isApp ? 'using secrets.json only until it can' : 'nothing stored'}`)
     } else {
       const f = this.failureOf(e)
       this.lastFailure = f
       this.createSaveError = undefined
-      this.log(`could not create the vault (${f.kind}); ${this.isApp ? 'using secrets.json only until it can' : 'nothing stored'}`)
+      this.logRepeated(`create:${f.kind}:${f.reason}`, `could not create the vault (${f.kind}); ${this.isApp ? 'using secrets.json only until it can' : 'nothing stored'}`)
     }
     if (this.isApp) this.startRetryTimer()
   }
@@ -1046,7 +1206,7 @@ export class SecretStore implements SecretStoreApi {
         this.vstate = vaultStateForFailure(f.kind)
         this.reason = f.reason
         this.lastFailure = f
-        this.log(`vault not opened (${f.kind})`)
+        this.logRepeated(`open:${f.kind}:${f.reason}`, `vault not opened (${f.kind})`)
         if (this.isApp && (this.vstate === 'locked' || this.keyFileConfigured())) this.startRetryTimer()
       }
       return false
@@ -1057,7 +1217,7 @@ export class SecretStore implements SecretStoreApi {
         this.vstate = 'key-mismatch'
         this.reason = VAULT_MESSAGES.keyMismatch
         this.lastFailure = { kind: 'missing', reason: VAULT_MESSAGES.keyMismatch }
-        this.log('the key does not match this vault')
+        this.logRepeated('open:mismatch', 'the key does not match this vault')
       }
       return false
     }
@@ -1067,9 +1227,10 @@ export class SecretStore implements SecretStoreApi {
     this.reason = undefined
     this.lastFailure = undefined
     this.createSaveError = undefined
+    this.lastRepeatLog = undefined
     this.discardPendingCreate()
     this.stopRetryTimer()
-    this.tryRecover()
+    this.reconcileAfterOpen()
     return true
   }
 
@@ -1108,6 +1269,18 @@ export class SecretStore implements SecretStoreApi {
     }
     // Re-check after the custodian call: never overwrite a vault that appeared meanwhile; open it instead.
     const onDisk = readVaultFile(this.vaultPath, this.fs)
+    if (onDisk.kind === 'unreadable' && this.vstate === 'absent') {
+      // Whether a vault appeared cannot be seen (an I/O error): keep the key for the next attempt, write nothing.
+      this.pendingCreate = {
+        scheme,
+        ...(req.keyFile !== undefined ? { keyFile: req.keyFile } : {}),
+        importKeyFile: req.importKeyFile === true,
+        vaultId,
+        created
+      }
+      this.reload()
+      throw new VaultSaveError(new Error(fileReadFailedMessage(VAULT_FILE, onDisk.code)))
+    }
     if (onDisk.kind !== 'absent' || this.vstate !== 'absent') {
       zeroize(created.dek)
       this.reload()
@@ -1127,6 +1300,10 @@ export class SecretStore implements SecretStoreApi {
       legacy: dict(),
       legacyRetired: null
     }
+    // A private copy of the key, taken before the commit: when the save fails, the commit's recovery re-reads from disk
+    // and (vault.json still absent) zeroizes the store's key, which is this same buffer (review round 2 blocker). The
+    // retry must reuse the key the custodian holds, never the zeroed buffer.
+    const keep = Buffer.from(created.dek)
     this.dropKey()
     this.dek = created.dek
     try {
@@ -1139,21 +1316,23 @@ export class SecretStore implements SecretStoreApi {
           ...(req.keyFile !== undefined ? { keyFile: req.keyFile } : {}),
           importKeyFile: req.importKeyFile === true,
           vaultId,
-          created: { ...created, dek: Buffer.from(created.dek) }
+          created: { ...created, dek: keep }
         }
         this.dropKey()
         this.vault = undefined
         this.vstate = 'absent'
-      }
+      } else zeroize(keep)
       throw new VaultSaveError(e)
     }
+    zeroize(keep)
     this.vstate = 'open'
     this.reason = undefined
     this.lastFailure = undefined
     this.createSaveError = undefined
+    this.lastRepeatLog = undefined
     this.stopRetryTimer()
     this.log(`created a ${scheme} vault`)
-    this.tryRecover()
+    this.reconcileAfterOpen()
     return 'created'
   }
 
@@ -1169,11 +1348,13 @@ export class SecretStore implements SecretStoreApi {
   /** Throws the reason set() would refuse a value now; returns when it would store. */
   private writeReadiness(): void {
     if (this.readOnly) throw new Error(READ_ONLY_SECRETS_MESSAGE)
+    this.retryRead()
     this.ensureRecovered()
+    if (this.vstate === 'corrupt') throw new Error(this.notOpenReason())
+    if (this.legacyReadError) throw new Error(this.legacyReadError)
     if (this.vstate === 'open') return
-    if (this.vstate === 'corrupt') throw new Error(VAULT_MESSAGES.corrupt)
     if (this.isApp) {
-      if (this.legacy.state === 'corrupt') throw new Error(LEGACY_CORRUPT_MESSAGE)
+      if (this.legacy.state === 'corrupt') throw new Error(this.legacyReadError ?? LEGACY_CORRUPT_MESSAGE)
       if (!this.cipherAvailable()) throw new Error(SECURE_STORAGE_UNAVAILABLE_MESSAGE)
       return
     }
@@ -1202,6 +1383,8 @@ export class SecretStore implements SecretStoreApi {
   async prepareWrite(): Promise<void> {
     let attempted = false
     for (;;) {
+      // A file that could not be read is read again first (the need below depends on what it holds).
+      if (!this.flight) this.retryRead()
       const current = this.flight
       if (current) {
         if (this.flightLabel === 'prepare') attempted = true
@@ -1222,7 +1405,8 @@ export class SecretStore implements SecretStoreApi {
   }
 
   private startRetryTimer(): void {
-    if (!this.isApp || this.retryTimer || this.retryMs <= 0) return
+    // The placeholder custodian of this build never succeeds: no timer (review round 2: no failed retry every 10 minutes).
+    if (!this.isApp || this.retryTimer || this.retryMs <= 0 || isPlaceholderCustodian(this.factory)) return
     this.retryTimer = setInterval(() => this.retryOpen('timer'), this.retryMs)
     this.retryTimer.unref?.()
   }
@@ -1238,12 +1422,19 @@ export class SecretStore implements SecretStoreApi {
    * failed, on an open vault, on a corrupt or mismatched one, while another custody step runs, and on other hosts.
    */
   retryOpen(reason: 'focus' | 'timer'): void {
+    if (!this.isApp || this.readOnly || this.flight) return
+    // A file that could not be read (an I/O error) is read again first; a vault found again is then opened.
+    const readFailed = this.hasReadError()
+    if (readFailed) {
+      this.retryRead()
+      if (this.hasReadError()) return
+    }
     // A failed save of a new vault (createSaveError, a disk error) is retried by the timer only, with the same key.
-    if (!this.isApp || this.readOnly || this.flight || (!this.lastFailure && this.createSaveError === undefined)) return
+    if (!readFailed && !this.lastFailure && this.createSaveError === undefined) return
     const need = this.vstate === 'absent' ? 'create' : this.prepareNeed()
     if (need === 'none') return
     if (reason === 'focus') {
-      if (this.lastFailure?.kind !== 'locked' && this.lastFailure?.kind !== 'timeout') return
+      if (!readFailed && this.lastFailure?.kind !== 'locked' && this.lastFailure?.kind !== 'timeout') return
       const now = this.now()
       if (now - this.lastFocusRetry < FOCUS_RETRY_MIN_MS) return
       this.lastFocusRetry = now
@@ -1346,6 +1537,7 @@ export class SecretStore implements SecretStoreApi {
   }
 
   async statusReport(input?: SecretsStatusInput): Promise<SecretsStatusResult> {
+    if (!this.flight) this.retryRead()
     const scheme = this.currentScheme()
     let probe: SecretsStatusResult['probe']
     if (input?.probe === true && scheme) {
@@ -1366,9 +1558,11 @@ export class SecretStore implements SecretStoreApi {
     const all = this.keys()
     const unreadable = all.filter((k) => typeof this.status(k) === 'object').length
     const legacyFile: SecretsStatusResult['legacyFile'] = this.legacy.state === 'missing' && this.vault?.legacyRetired ? 'retired' : this.legacy.state
-    const notOpen = this.vstate !== 'open' && this.vstate !== 'absent'
+    const state = this.state()
+    const notOpen = state !== 'open' && state !== 'absent'
+    const readError = this.vaultReadError ?? this.legacyReadError
     return {
-      state: this.vstate,
+      state,
       scheme,
       ...(notOpen ? { reason: this.notOpenReason() } : {}),
       ...(probe ? { probe } : {}),
@@ -1385,6 +1579,7 @@ export class SecretStore implements SecretStoreApi {
       orphanedKeys: this.orphaned.size,
       orphanedVaults: this.orphanVaults(),
       legacyFile,
+      ...(readError ? { readError } : {}),
       canWriteBack: this.legacyCapable()
     }
   }
@@ -1401,7 +1596,8 @@ export class SecretStore implements SecretStoreApi {
     if (this.readOnly) throw new Error(READ_ONLY_SECRETS_MESSAGE)
     const request: CustodianRequest | undefined = keyFile ? { keyFile, ...(input.importKeyFile ? { importKeyFile: true } : {}) } : undefined
     const action = await this.runExclusive('init', async (): Promise<SecretsInitResult['action']> => {
-      if (this.vstate === 'corrupt') throw new Error(VAULT_MESSAGES.corrupt)
+      this.retryRead()
+      if (this.vstate === 'corrupt') throw new Error(this.notOpenReason())
       if (this.vault && request && this.vault.custody.scheme !== 'key-file') throw new Error(keyFileSchemeConflict(this.vault.custody.scheme))
       if (this.vstate === 'open') return 'unchanged'
       if (this.vstate === 'absent') {
@@ -1432,16 +1628,25 @@ export class SecretStore implements SecretStoreApi {
     const moved = await this.startFlight('reset', async (): Promise<{ vault: string | null; legacy: string | null; durable: boolean }> => {
       let durable = true
       let legacy: string | null = null
-      if (readLegacyFile(this.legacyPath, this.fs).state === 'corrupt') {
+      // Strict reads: an I/O error refuses the reset (nothing moved), so a healthy file is never moved aside as damaged.
+      const strict = <T>(file: string, read: () => T): T => {
+        try {
+          return read()
+        } catch (e) {
+          throw new Error(resetReadFailedMessage(file, errorCode(e) ?? 'EIO'))
+        }
+      }
+      const legacyNow = strict(LEGACY_SECRETS_FILE, () => readLegacyFile(this.legacyPath, this.fs, true))
+      const onDisk = strict(VAULT_FILE, () => readVaultFile(this.vaultPath, this.fs, true))
+      if (legacyNow.state === 'corrupt') {
         const name = this.asideName(LEGACY_SECRETS_FILE, VAULT_CORRUPT_SUFFIX)
         const r = this.moveAside(this.legacyPath, name, () => readLegacyFile(this.legacyPath, this.fs).state !== 'missing', LEGACY_MOVE_FAILED_MESSAGE)
         if (r !== 'gone') legacy = name
         if (r === 'not-durable') durable = false
       }
-      const onDisk = readVaultFile(this.vaultPath, this.fs)
       let vault: string | null = null
       if (onDisk.kind !== 'absent') {
-        const suffix = onDisk.kind === 'corrupt' || this.vstate === 'corrupt' ? VAULT_CORRUPT_SUFFIX : VAULT_RESET_SUFFIX
+        const suffix = onDisk.kind === 'corrupt' ? VAULT_CORRUPT_SUFFIX : VAULT_RESET_SUFFIX
         const name = this.asideName(VAULT_FILE, suffix)
         const r = this.moveAside(this.vaultPath, name, () => readVaultFile(this.vaultPath, this.fs).kind !== 'absent', VAULT_MOVE_FAILED_MESSAGE)
         if (r !== 'gone') vault = name
@@ -1502,8 +1707,9 @@ export class SecretStore implements SecretStoreApi {
   undelete(input: SecretsUndeleteInput): SecretsUndeleteResult {
     const key = input?.key
     if (!validSecretKey(key)) return { restored: false, reason: NOTHING_TO_RESTORE_MESSAGE }
+    this.retryRead()
     const v = this.vault
-    if (this.vstate === 'corrupt') return { restored: false, reason: VAULT_MESSAGES.corrupt }
+    if (this.vstate === 'corrupt') return { restored: false, reason: this.notOpenReason() }
     const t = v && Object.hasOwn(v.tombstones, key) ? v.tombstones[key] : undefined
     const kept = t ? this.softDeletes().find((s) => s.key === key) : undefined
     if (!v || !t || !kept) return { restored: false, reason: NOTHING_TO_RESTORE_MESSAGE }
@@ -1530,8 +1736,10 @@ export class SecretStore implements SecretStoreApi {
   /** secrets:confirmDelete ("Keep removed"): drop the kept values of the named soft deletes (metadata only). */
   confirmDeletes(input: SecretsConfirmDeleteInput): SecretsConfirmDeleteResult {
     const keys = Array.isArray(input?.keys) ? input.keys.filter(validSecretKey) : []
+    this.retryRead()
     const v = this.vault
-    if (!v || this.vstate === 'corrupt' || this.vstate === 'absent' || !keys.length) return { confirmed: [] }
+    // While a file cannot be read nothing is confirmed: a tombstone dropped now could let its legacy copy come back.
+    if (!v || this.vstate === 'corrupt' || this.vstate === 'absent' || this.hasReadError() || !keys.length) return { confirmed: [] }
     this.ensureRecovered()
     const live = this.vault as VaultFile
     const next = cloneVault(live)

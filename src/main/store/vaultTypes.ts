@@ -23,7 +23,7 @@
  * | VaultFile and its parts, VAULT_* constants, vaultEntryAad, vaultCheckAad, dpapiEntropy, vaultStateForFailure, VAULT_MESSAGES | this file | G |
  * | KeyCustodian, CustodyFailure, CustodyError, isCustodyFailure, CustodianProbe, CustodianCreated, CustodianFactory, CustodianRequest | this file | G (custodians), D (gate rules for their tools); WP-G1 added CustodianRequest (key-file path, --import) and CustodianCreated.keyFile |
  * | VaultNotReady | this file | G (set() on an absent vault in a Node / inproc host) |
- * | SecretStoreApi (status, state, clearRefusal, prepareWrite, vaultKeyFiles, attachLeases, retryOpen, statusReport, initVault, resetVault, undelete, confirmDeletes) | this file; SecretStore implements it in secrets.ts (WP-G1: vaultFile.ts, vaultCrypto.ts, reconcile.ts, durableFs.ts; extras setResetBusyCheck, softDeletes, legacySoftDeletes, dispose) | done (store, WP-G1); H (callers: clearRefusal in explicit-clear handlers, setResetBusyCheck for OAuth / refresh); retryOpen('focus') wired in index.ts |
+ * | SecretStoreApi (status, state, clear, clearRefusal, prepareWrite, vaultKeyFiles, attachLeases, retryOpen, statusReport, initVault, resetVault, undelete, confirmDeletes) | this file; SecretStore implements it in secrets.ts (WP-G1: vaultFile.ts, vaultCrypto.ts, reconcile.ts, durableFs.ts; extras setResetBusyCheck, softDeletes, legacySoftDeletes, dispose) | done (store, WP-G1); H (callers: clearRefusal then clear() in explicit-clear handlers, delete / deletePrefix only in removals, setResetBusyCheck for OAuth / refresh); retryOpen('focus') wired in index.ts |
  * | VaultMetadata | this file | G |
  * | readVaultMetadata | src/main/store/vaultMetadata.ts (the store's own validator, vaultFile.ts validateVaultFile) | done (WP-G1); H (doctor without a host) |
  * | McpService.refreshingCount | src/main/mcp/service.ts | done; H (secrets:reset busy check) |
@@ -296,14 +296,30 @@ export interface SecretStoreApi {
   /** The plain value, or undefined when unset or unreadable (status() says which). */
   get(key: string): string | undefined
   /**
-   * Store a value, or delete it with null or ''. A delete (here, delete() and deletePrefix()) never throws for a
-   * removal in any vault state (5.5 Deletes): a key it cannot handle is left in place, logged and counted in
-   * SecretsStatusResult.orphanedKeys. An explicit clear calls clearRefusal() first.
+   * Store a value, or clear it with null or '' (the same as clear(key)). Throws when the value cannot be stored, or the
+   * clear is refused or its save failed (see clear()).
    */
   set(key: string, value: string | null): void
+  /**
+   * A removal's delete (a project, server or library entry removed, linkLibrary, a kit replace; 5.5 Deletes): never
+   * throws in any vault state, so a removal that already changed other stores is never left half done. A key it cannot
+   * handle (vault 'corrupt' or unreadable, a Node host with an 'absent' vault and a legacy-only key, a failed save) is
+   * left in place, logged and counted in SecretsStatusResult.orphanedKeys. Not for explicit clears: use clear().
+   */
   delete(key: string): void
   keys(prefix?: string): string[]
+  /** A removal of every key under a prefix: never throws, as delete(). Returns how many were removed. */
   deletePrefix(prefix: string): number
+  /**
+   * An explicit clear (WP-G1 review round 2; 5.5 Deletes and Durability): connections:setSecret / mcp:setSecret /
+   * mcpLibrary:setSecret with null or '' (set(key, null) calls it), connectors:setToken null, `set-secret --clear`.
+   * Unlike delete() it reports what happened: it throws clearRefusal()'s sentence before anything changes, the recovery
+   * refusal while a failed save is not reconciled yet, "OrgAI could not remove the secret (<the disk's reason>); it is
+   * still saved." when the save failed before anything changed, and VAULT_MESSAGES.notDurable when the outcome is not
+   * known (never success). A key that exists nowhere is a no-op. Handlers still call clearRefusal() before changing any
+   * record of their own, then clear().
+   */
+  clear(key: string): void
 
   /** 'set', 'unset' or unreadable with the reason to show (5.4). Never the value. */
   status(key: string): SecretStatus
@@ -314,8 +330,9 @@ export interface SecretStoreApi {
    * clear (connections:setSecret / mcp:setSecret / mcpLibrary:setSecret with null or '', connectors:setToken null; the
    * service method behind each) call it before changing any record and throw the sentence: VAULT_MESSAGES.
    * clearRefusedCorrupt while the vault is 'corrupt', VAULT_MESSAGES.clearRefusedLegacyOnly on a Node or inproc host
-   * whose vault is 'absent' for a key that exists only in secrets.json. Removals (project, server or library delete,
-   * linkLibrary, kit replace) never call it. A key that exists nowhere is never refused.
+   * whose vault is 'absent' for a key that exists only in secrets.json, and every clear (with the read error's sentence)
+   * while vault.json or secrets.json cannot be read (an I/O error; it is read again first). Removals (project, server or
+   * library delete, linkLibrary, kit replace) never call it. A key that exists nowhere is otherwise never refused.
    */
   clearRefusal(key: string): string | undefined
   /**

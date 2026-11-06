@@ -171,45 +171,75 @@ export function serializeVaultFile(v: VaultFile): string {
   return `${JSON.stringify(out, null, 2)}\n`
 }
 
-/** A vault.json read: absent (no file), corrupt (unreadable, does not parse or validate), or the vault. */
-export type VaultRead = { kind: 'absent' } | { kind: 'corrupt' } | { kind: 'vault'; vault: VaultFile }
+/**
+ * How a read error of vault.json or secrets.json counts: ENOENT is no file; EISDIR (a directory in its place) is damage;
+ * anything else (EIO, EACCES, EBUSY, EPERM: a network home, an antivirus lock) is an I/O failure that may pass, never
+ * damage (review round 2): the store reports it with its code and reads again, and reset refuses rather than moving a
+ * healthy file aside.
+ */
+function readErrorKind(e: unknown): 'missing' | 'damaged' | 'io' {
+  const code = errorCode(e)
+  if (code === 'ENOENT') return 'missing'
+  if (code === 'EISDIR') return 'damaged'
+  return 'io'
+}
+
+/** The errno code of an I/O read failure, for the store's sentence ('EIO' when the error carries none). */
+function ioCode(e: unknown): string {
+  return errorCode(e) ?? 'EIO'
+}
 
 /**
- * Read `<dataDir>/vault.json`. A read error other than ENOENT is 'corrupt', or rethrown with `strictIo` (the store's
- * in-process recovery, where a transient I/O error must not pass for a damaged file).
+ * A vault.json read: absent (no file), corrupt (does not parse or validate, or a directory in its place), unreadable (an
+ * I/O error: not known to be damaged), or the vault.
+ */
+export type VaultRead = { kind: 'absent' } | { kind: 'corrupt' } | { kind: 'unreadable'; code: string } | { kind: 'vault'; vault: VaultFile }
+
+/**
+ * Read `<dataDir>/vault.json`. An I/O error is 'unreadable' with its code, or rethrown with `strictIo` (the store's
+ * in-process recovery and secrets:reset, where a transient I/O error must not pass for a damaged or missing file).
  */
 export function readVaultFile(path: string, f: VaultFs = nodeVaultFs, strictIo = false): VaultRead {
   let text: string
   try {
     text = f.readFileSync(path).toString('utf8')
   } catch (e) {
-    if (errorCode(e) === 'ENOENT') return { kind: 'absent' }
+    const kind = readErrorKind(e)
+    if (kind === 'missing') return { kind: 'absent' }
+    if (kind === 'damaged') return { kind: 'corrupt' }
     if (strictIo) throw e
-    return { kind: 'corrupt' }
+    return { kind: 'unreadable', code: ioCode(e) }
   }
   const vault = parseVaultFile(text)
   return vault ? { kind: 'vault', vault } : { kind: 'corrupt' }
 }
 
-/** secrets.json as read (5.5 Legacy file states). `bytes` is the exact file content, for the retirement digest. */
+/**
+ * secrets.json as read (5.5 Legacy file states). `bytes` is the exact file content, for the retirement digest.
+ * 'unreadable' is an I/O error (not one of the three file states): the store handles it like 'corrupt' (never written,
+ * no reconcile rows) but reads it again, and reset refuses instead of moving it aside (review round 2).
+ */
 export type LegacyRead =
   | { state: 'ok'; values: Record<string, string>; bytes: Buffer }
   | { state: 'missing' }
   | { state: 'corrupt' }
+  | { state: 'unreadable'; code: string }
 
 /**
  * Read secrets.json: 'ok' when it parses and `secrets` is an object (non-string values are ignored, as the older app
- * does), 'missing' when there is no file, 'corrupt' otherwise (never rewritten by a host of this wave). `strictIo`
- * rethrows a read error other than ENOENT instead.
+ * does), 'missing' when there is no file, 'corrupt' when it does not parse (never rewritten by a host of this wave),
+ * 'unreadable' on an I/O error. `strictIo` rethrows an I/O error instead.
  */
 export function readLegacyFile(path: string, f: VaultFs = nodeVaultFs, strictIo = false): LegacyRead {
   let bytes: Buffer
   try {
     bytes = f.readFileSync(path)
   } catch (e) {
-    if (errorCode(e) === 'ENOENT') return { state: 'missing' }
+    const kind = readErrorKind(e)
+    if (kind === 'missing') return { state: 'missing' }
+    if (kind === 'damaged') return { state: 'corrupt' }
     if (strictIo) throw e
-    return { state: 'corrupt' }
+    return { state: 'unreadable', code: ioCode(e) }
   }
   let parsed: unknown
   try {

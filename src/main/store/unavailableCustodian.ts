@@ -25,3 +25,11 @@ export function unavailableCustodian(scheme: VaultCustodyScheme): KeyCustodian {
 
 /** The default CustodianFactory until the platform custodians land. */
 export const unavailableCustodianFactory: CustodianFactory = (scheme) => unavailableCustodian(scheme)
+
+/**
+ * True for the placeholder factory: the store then never reports a Node or inproc host as able to store values and starts
+ * no background retry timer (it can never succeed; review round 2).
+ */
+export function isPlaceholderCustodian(factory: CustodianFactory): boolean {
+  return factory === unavailableCustodianFactory
+}
