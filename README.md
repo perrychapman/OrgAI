@@ -8,6 +8,7 @@
 
 [![Latest release](https://img.shields.io/github/v/release/perrychapman/OrgAI?label=release)](https://github.com/perrychapman/OrgAI/releases/latest)
 [![CI](https://github.com/perrychapman/OrgAI/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/perrychapman/OrgAI/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 ![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-informational)
 
 [Download](#download) · [Quick start](#quick-start) · [How it works](docs/how-it-works.md) · [Contributing](CONTRIBUTING.md)
@@ -149,5 +150,8 @@ See [docs/testing.md](docs/testing.md) for the testing guide.
 - [docs/design](docs/design): UI specs and the UX walk-throughs.
 - [CONTRIBUTING.md](CONTRIBUTING.md): branches (`dev` for work, `main` for releases), releases and commands.
 
-OrgAI is built with an Electron main process, a React 19 renderer and TypeScript. There is no license file in the
-repository yet.
+OrgAI is built with an Electron main process, a React 19 renderer and TypeScript.
+
+## License
+
+OrgAI is released under the MIT License. See [LICENSE](LICENSE).
