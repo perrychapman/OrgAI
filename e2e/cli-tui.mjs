@@ -511,7 +511,7 @@ try {
       t.key('tab') // the agents pane
       await sleep(300)
       t.write('n')
-      await t.waitFor('No agent needs you in this run.', 5_000).then(
+      await t.waitFor('Nothing needs you.', 5_000).then(
         () => check(true, 'i: `n` with nothing waiting says so'),
         () => check(false, 'i: `n` with nothing waiting says so', esc(t.screen()))
       )
@@ -534,7 +534,9 @@ try {
       t.write('?')
       const keys = await t.waitFor('Keys: Agent inspector', 8_000).then(() => true, () => false)
       check(keys, 'i: `?` opens the keys overlay of the inspector', esc(t.screen()))
-      check(/idle/.test(t.screen()) && /finished/.test(t.screen()), 'i: the overlay carries the glyph legend', esc(t.screen()))
+      // The title can arrive in an earlier pty chunk than the body; wait for the legend instead of reading one frame.
+      const legend = await t.waitFor(/finished/, 5_000).then(() => /idle/.test(t.screen()), () => false)
+      check(legend, 'i: the overlay carries the glyph legend', esc(t.screen()))
       t.key('esc')
       await sleep(400)
       check(!t.screen().includes('Keys: Agent inspector'), 'i: Esc closes the overlay', esc(t.screen()))
@@ -550,6 +552,9 @@ try {
       await sleep(500)
       check(!t.screen().includes('Focus: '), 'i: Z goes back to the whole run', esc(t.screen()))
 
+      // Focus is still on the agents pane (typing there is not the composer); Esc goes back to the composer.
+      t.key('esc')
+      await sleep(400)
       const e = await quit(t, { confirm: true })
       check(e?.code === 0, 'i: quitting exits 0', JSON.stringify(e))
     } finally {

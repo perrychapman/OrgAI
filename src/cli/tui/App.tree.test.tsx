@@ -255,7 +255,7 @@ describe('the org tree in the real App: folded, one line per agent, the waiting 
     await tick()
     await m.send(named('tab'))
     await m.send(key('n'))
-    expect(m.session.notify).toHaveBeenCalledWith('No agent needs you in this run.', undefined)
+    expect(m.session.notify).toHaveBeenCalledWith('Nothing needs you.', undefined)
     m.r.unmount()
   })
 })

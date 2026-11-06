@@ -258,7 +258,7 @@ describe('OrgTreePane', () => {
     const onNotice = vi.fn()
     const calm = mount({ rows: [row('root', { depth: 0 })], focused: true, onNotice })
     press(calm.bus, 'tree', ch('n'))
-    expect(onNotice).toHaveBeenCalledWith('No agent needs you in this run.')
+    expect(onNotice).toHaveBeenCalledWith('Nothing needs you.')
     calm.unmount()
   })
 

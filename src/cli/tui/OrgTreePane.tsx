@@ -242,7 +242,7 @@ export function OrgTreePane(props: OrgTreePaneProps) {
         const back = e.ch === 'N'
         const waiting = selectable.map((r, i) => (r.waiting ? i : -1)).filter((i) => i >= 0)
         if (waiting.length === 0) {
-          props.onNotice?.('No agent needs you in this run.')
+          props.onNotice?.('Nothing needs you.')
           return true
         }
         const next = back ? ([...waiting].reverse().find((i) => i < cur) ?? waiting[waiting.length - 1]) : (waiting.find((i) => i > cur) ?? waiting[0])
