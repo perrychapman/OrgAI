@@ -642,6 +642,16 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     when the run ended or runs:stop succeeded, else 1 ("Could not stop ... The run keeps going."). Unit, inproc integration and e2e
     (`cli-projects`, `cli-org`, `cli-connections`, `cli-mcp`, `cli-skills-kit`) on macOS; SSH forward, device-code login
     against a real server and the Windows / Linux URL openers are unverified.
+  - TUI org chart (2026-11-06, `docs/design/ux-review-tui-org.md` "Implementation notes"): the Agents pane folds finished
+    subtrees like the app (`foldFinished`/`agentTree` now in `src/shared/view/`, renderer stubs; `treeRows.ts`; `h` and `/fold`
+    toggle, Right/Left expand, one line per agent, selected row's activity in a footer), tree-first layout, `! N` / worktree
+    chips, `n`/`N` to waiting agents, Enter on one focuses its card (`DecisionTray` `focusKey`), Enter on another agent opens
+    `InspectorPane` (also `/agent`), `z`/`Z` subtree focus, `m`/`/focus`, run chips in the status bar with `[` `]`, a
+    selectable `/runs`, `/usage` (`usageText.ts`), `/retro` (`session.startRetro`, `setup:retro`), `agent.message` kept as counts
+    only (`TuiRun.messages`, no text). `keymap.ts` is the one key table behind hints, `HELP_TEXT` and the `?` overlay.
+    No save-as-project (`runs:promoteQuick` is configure scope, the TUI has none). Verified by unit and ink-testing-library
+    frames (120x40, 90x30, 100x24, inline 80x24, ASCII, screen reader); the pty steps in `e2e/cli-tui.mjs` and a real console
+    were NOT run (Windows SKIP); `agent.message` forwarding to a tui client and the message marks are unverified live.
   - Wave 4: the Ink TUI in `src/cli/tui/` (ink 8.0.0, loaded only through `await import('../tui/index')`, the
     `out/cli/tui.mjs` chunk; lazyTui.test.ts): `orgai tui [--run]`, `attach`, bare `orgai` / `orgai [--] <prompt>`,
     `resume` without --exec. `terminal.ts` owns raw mode, paste, cursor and the alternate screen (mode chosen once;

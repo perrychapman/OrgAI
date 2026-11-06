@@ -7,7 +7,7 @@
 import { Box, Text } from 'ink'
 import { useTuiEnv } from './context'
 import { asciiOnly } from './theme'
-import type { ConnectionState, StatusBarProps, StatusSummary, Tone, TuiEnv } from './types'
+import type { ConnectionState, RunChip, StatusBarProps, StatusSummary, Tone, TuiEnv } from './types'
 import { cutSegs, styleFor, type Seg } from './panes/lines'
 
 const CONNECTION_TEXT: Record<ConnectionState, { text: string; tone?: Tone } | undefined> = {
@@ -21,8 +21,18 @@ export function needsYouText(n: number): string {
   return `${n} need${n === 1 ? 's' : ''} you`
 }
 
+/** Live runs as chips (F8): `R1*` followed, `!` has an open decision; a screen reader gets words. At most 6, then "+N". */
+export function runChipsText(chips: readonly RunChip[], env: Pick<TuiEnv, 'screenReader'>): string {
+  const shown = chips.slice(0, 6).map((c) => {
+    if (env.screenReader) return `${c.tag}${c.followed ? ' followed' : ''}${c.needsYou ? ' needs you' : ''}`
+    return `${c.tag}${c.followed ? '*' : ''}${c.needsYou ? '!' : ''}`
+  })
+  if (chips.length > 6) shown.push(`+${chips.length - 6}`)
+  return shown.join(env.screenReader ? '; ' : ' ')
+}
+
 /** The status segments (without separators). */
-export function statusSegments(s: StatusSummary): Seg[] {
+export function statusSegments(s: StatusSummary, env: Pick<TuiEnv, 'screenReader'> = { screenReader: false }): Seg[] {
   const out: Seg[] = []
   if (s.title) out.push({ text: s.title, tone: 'accent', bold: true })
   if (s.projectName) out.push({ text: s.projectName, bold: true })
@@ -31,7 +41,8 @@ export function statusSegments(s: StatusSummary): Seg[] {
   if (s.statusWord) out.push({ text: s.statusWord, tone: s.tone })
   if (s.costText) out.push({ text: s.costText, dim: true })
   out.push({ text: needsYouText(s.needsYou), tone: s.needsYou > 0 ? 'warn' : 'dim' })
-  if (s.liveRuns > 0) out.push({ text: `${s.liveRuns} live`, dim: true })
+  if (s.runChips && s.runChips.length > 0) out.push({ text: env.screenReader ? `live runs: ${runChipsText(s.runChips, env)}` : runChipsText(s.runChips, env), ...(s.runChips.some((c) => c.needsYou) ? { tone: 'warn' as const } : { dim: true }) })
+  else if (s.liveRuns > 0) out.push({ text: `${s.liveRuns} live`, dim: true })
   const conn = CONNECTION_TEXT[s.connection]
   if (conn) out.push(conn)
   if (s.readOnlyReason) out.push({ text: s.readOnlyReason, tone: 'warn' })
@@ -49,7 +60,7 @@ export function StatusBar(props: StatusBarProps) {
   if (width === 0) return <Box width={0} height={1} />
   const sep = separator(env)
   const segs: Seg[] = []
-  for (const seg of statusSegments(props.summary)) {
+  for (const seg of statusSegments(props.summary, env)) {
     if (segs.length > 0) segs.push({ text: sep, dim: true })
     segs.push(seg)
   }

@@ -416,3 +416,14 @@ Could: F13 conversation layout, F14 role colour, F15 logs.
 - pty e2e (`e2e/cli-tui.mjs`, macOS): `[mock:deep-tree]` run, wait for the fold, `Right` expands, `n` jumps to a waiting agent,
   Enter opens the inspector, `?` opens the keys overlay. Not runnable on win32 (SKIP); a real-console run on Windows is the
   open check from section 0.
+
+## Implementation notes (2026-11-06)
+
+Landed: F1-F12 and F13 (`m` / `/focus`). F14, F15 not built. Section 7 checks, all read from source (not live): (a) every card kind
+carries `agentId` (unknown agents attribute to the root); (b) `runs:subscribe` filters by run/project only, `agent.message` is
+forwarded, the TUI reducer now keeps counts; (c) `AgentUsage` has turns and tool calls; (d) `setup:retro` is operate scope
+(`/retro` built), `runs:promoteQuick` is configure scope, so save-as-project is NOT built. Extras: `/agent <name>` (inline has
+no tree), selectable `/runs`. Evidence: ink-testing-library frames at 120x40, 90x30, 100x24, inline 80x24, ASCII, screen reader.
+Open: no real console or pty run (`e2e/cli-tui.mjs` section i is syntax-checked only), message marks unverified live (mock emits no
+`agent.message`), `/retro` confirm does not name the Architect tier, inline has no keys for `z`, `[`, `]`, `m`, chain usage
+tables repeat `role-1` across chain members, save-as-project.

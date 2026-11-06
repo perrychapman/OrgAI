@@ -30,6 +30,7 @@ import {
   cardKey,
   TUI_NOTICE_MAX,
   TUI_RESOLVED_MAX,
+  TUI_MESSAGES_MAX,
   TUI_TRANSCRIPT_MAX,
   type ConnectionState,
   type ComposeTarget,
@@ -424,7 +425,7 @@ export function applyEvent(s: TuiState, p: RunsEventParams, opts: ApplyOptions =
   }
 
   const existing = out.runs[e.runId]
-  if (!existing && (e.type === 'agent.partial' || e.type === 'agent.remove')) return out
+  if (!existing && (e.type === 'agent.partial' || e.type === 'agent.remove' || e.type === 'agent.message')) return out
   let run: TuiRun = existing ?? newRun(stubSummary(out, e.runId, now))
   const summary = run.summary
 
@@ -481,6 +482,18 @@ export function applyEvent(s: TuiState, p: RunsEventParams, opts: ApplyOptions =
     case 'plan.updated':
       run = { ...run, plan: e.plan }
       break
+    case 'agent.message': {
+      // F6: who messaged whom, never the text (untrusted; the sender's transcript already carries the call).
+      if (typeof e.from !== 'string' || e.from === '') return out
+      const rec = {
+        from: e.from,
+        to: typeof e.to === 'string' ? e.to : null,
+        toHandle: typeof e.toHandle === 'string' ? safeLine(e.toHandle).slice(0, 80) : '',
+        at: typeof e.at === 'number' && Number.isFinite(e.at) ? e.at : now
+      }
+      run = { ...run, messages: [...(run.messages ?? []), rec].slice(-TUI_MESSAGES_MAX) }
+      break
+    }
     case 'run.usage':
       run = {
         ...run,
@@ -519,7 +532,7 @@ export function applyEvent(s: TuiState, p: RunsEventParams, opts: ApplyOptions =
         out = { ...out, resolved: [...out.resolved, info].slice(-TUI_RESOLVED_MAX) }
         break
       }
-      // Other events (agent.message, run.message, skill.used ...) change nothing the TUI keeps.
+      // Other events (run.message, skill.used ...) change nothing the TUI keeps.
       return out
     }
   }

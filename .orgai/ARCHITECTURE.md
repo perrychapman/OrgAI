@@ -735,3 +735,5 @@ components/layout:
 - CLI & host Wave 1 (cli-spec.md): host core; the gate, `host_draining` and idle exit are now also reached over the Wave 2 socket. The desktop `invoke` path does not check the draining state; a forced drain that passes its 10 s settle bound releases ownership with writers in flight (logged); `activeOAuthFlows` and `interactiveClients` are not waited on. Unverified: Windows named pipes, packaged builds.
 
 _Maintained by OrgAI. Approved by the project owner during setup._
+
+- TUI org chart (2026-11-06): Agents pane folds finished subtrees (`src/shared/view/foldFinished.ts`, `agentTree.ts`), inspector, subtree focus, run chips, `/usage`, `/retro`; `src/cli/tui/keymap.ts` is the single key table. See CLAUDE.md and docs/design/ux-review-tui-org.md.

@@ -1201,3 +1201,10 @@ Each item is unit-tested on macOS unless it says otherwise; nothing here was run
   CliShimRow live region, announced load failure and aria-describedby hint; `build/bin/orgai` stops after 40 link
   hops and `.gitattributes` pins LF / CRLF; doctor caps daemon.json at 64 KB; the rest are in group B above.
 - **Owner decisions kept.** The RunAsNode fuse stays on; no PATH shim on Linux (AppImage).
+
+### TUI org chart (2026-11-06)
+
+The TUI's Agents pane follows the desktop org chart: folded finished subtrees, one-line rows, waiting-agent chips and jump keys,
+an agent inspector, subtree focus, run chips, `/usage`, `/retro`, and a single `keymap.ts` for hints, `/help` and the `?` overlay.
+No new channel and no change to `src/shared/types.ts`. See `docs/design/ux-review-tui-org.md` "Implementation notes" for what was
+checked and what is open (no pty or real-console run; save-as-project needs the configure scope the TUI lacks).

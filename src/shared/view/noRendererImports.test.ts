@@ -16,7 +16,7 @@ const DOM_GLOBAL = /\bdocument\.|\blocalStorage\b|\bnavigator\./
 describe('src/shared/view stays renderer-free', () => {
   it('has the moved view-models', () => {
     const names = sources.map((s) => s.file)
-    for (const n of ['runStatus.ts', 'runChains.ts', 'viewPendingCards.ts', 'needsYou.ts', 'orgDiff.ts', 'mcpProposal.ts', 'transcriptRows.ts', 'usageView.ts', 'cost.ts', 'teamView.ts', 'permissionCopy.ts']) {
+    for (const n of ['runStatus.ts', 'runChains.ts', 'viewPendingCards.ts', 'needsYou.ts', 'orgDiff.ts', 'mcpProposal.ts', 'transcriptRows.ts', 'usageView.ts', 'cost.ts', 'teamView.ts', 'permissionCopy.ts', 'foldFinished.ts', 'agentTree.ts']) {
       expect(names).toContain(n)
     }
   })
