@@ -305,10 +305,19 @@ try {
   const clearBtn = page.locator('[data-testid=knowledge-clear]')
   await clearBtn.waitFor({ state: 'visible' })
   check(await until(async () => !(await clearBtn.isDisabled())), '"Clear everything…" is enabled while items exist')
-  await clearBtn.focus()
-  await page.keyboard.press('Enter')
   // The shared useConfirm dialog (no dialog testId): found by its confirm button.
   const dlg = page.locator('.dialog, [role=dialog]', { has: page.locator('[data-testid=knowledge-clear-confirm]') }).first()
+  // Closing the forget confirm restores focus to its trigger a frame or two later (slower on macOS runners), which can
+  // take focus off the button between our focus() and the key press. Re-focus until the button really holds focus, then press.
+  for (let attempt = 0; attempt < 5 && !(await dlg.isVisible()); attempt++) {
+    await clearBtn.focus()
+    if (!(await page.evaluate(() => document.activeElement?.getAttribute('data-testid') === 'knowledge-clear'))) {
+      await sleep(300)
+      continue
+    }
+    await page.keyboard.press('Enter')
+    await dlg.waitFor({ state: 'visible', timeout: 2000 }).catch(() => {})
+  }
   await dlg.waitFor({ state: 'visible' })
   check(clean(await dlg.getByRole('heading').first().innerText()) === 'Clear everything the team recorded?', 'the confirm title', clean(await dlg.getByRole('heading').first().innerText()))
   const body = clean(await dlg.locator('[data-testid=knowledge-clear-body]').innerText())
@@ -708,6 +717,8 @@ try {
 } finally {
   try {
     if (!page.isClosed()) {
+      // A confirm dialog left open by a failed step would block every click below.
+      if (await page.locator('dialog[open], [role=dialog]').count()) await page.keyboard.press('Escape').catch(() => {})
       await projectTab(page, 'Live').click().catch(() => {})
       const end = page.getByRole('button', { name: 'End session' })
       if (await end.count()) await end.first().click().catch(() => {})
