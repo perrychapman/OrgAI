@@ -43,7 +43,7 @@ describe('orgai daemon start', () => {
     expect(f.launcherCalls).toEqual([
       { method: 'resolve', args: undefined },
       { method: 'spawn', args: { headless: true } },
-      { method: 'waitForReady', args: { timeoutMs: 5000, hostKinds: ['headless-host', 'desktop'] } }
+      { method: 'waitForReady', args: { timeoutMs: 5000, hostKinds: ['headless-host', 'desktop', 'node'] } }
     ])
     expect(f.out()).toContain('headless-host')
   })
@@ -87,6 +87,8 @@ describe('orgai daemon start', () => {
     const done = runDaemon(f.ctx, ['start'])
     await flush()
     expect(f.out()).toContain(INPROC_BANNER)
+    // It serves other terminals: started shared, so their ensureHost attaches to it (WP-B review round 2).
+    expect(f.inprocCalls).toEqual([{ shared: true }])
     f.signal('SIGINT')
     expect(await done).toBe(EXIT.ok)
     expect(stopped).toBe(true)
@@ -138,7 +140,7 @@ describe('orgai daemon stop / restart', () => {
     const f = fakeContext({ connect: [h, statusHost()], launcher: { waitForReady: async () => ready } })
     expect(await runDaemon(f.ctx, ['restart'])).toBe(EXIT.ok)
     expect(f.launcherCalls.map((c) => c.method)).toEqual(['waitForGone', 'resolve', 'spawn', 'waitForReady'])
-    expect(f.launcherCalls[3].args).toEqual({ timeoutMs: 30000, hostKinds: ['headless-host', 'desktop'], notInstanceId: 'aaaaaaaaaaaa' })
+    expect(f.launcherCalls[3].args).toEqual({ timeoutMs: 30000, hostKinds: ['headless-host', 'desktop', 'node'], notInstanceId: 'aaaaaaaaaaaa' })
   })
 })
 

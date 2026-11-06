@@ -36,8 +36,8 @@ import { COMMANDS, DEFAULT_TUI_FLAGS, GLOBAL_FLAGS, findCommand, type CommandEnt
 import { buildContext } from './context'
 import { splitGlobalFlags } from './flags'
 import { safe } from './output'
-import { collectSecretOverlay, scrubSecretEnv, secretEnvRefusal } from './secretOverlay'
-import { CliError, EXIT, type CliIo, type CommandFn } from './types'
+import { collectSecretOverlay, planSecretEnv, scrubSecretEnv, secretEnvCommandClass } from './secretOverlay'
+import { CliError, EXIT, type CliIo, type CommandFn, type SecretEnvUse } from './types'
 import { CLI_VERSION } from './version'
 import { readInstallInfo } from './installInfo'
 import { versionLine } from './versionLine'
@@ -184,19 +184,28 @@ export async function main(argv: string[] = process.argv.slice(2), overrides: Ma
     const { globals, rest } = splitGlobalFlags(argv)
     const [name, ...args] = rest
 
-    /** The secret refusal and the --host inproc overlay (taken out of the environment before anything can spawn). */
-    const prepareContext = (checkSecrets: boolean): ReturnType<typeof buildContext> => {
-      if (checkSecrets) {
-        const refusal = secretEnvRefusal(globals.host, env, globals.secretEnv)
+    /**
+     * Environment secrets (secretOverlay.ts planSecretEnv): the refusal, the one warning, and the overlay taken out of
+     * the environment before anything can spawn. `command` undefined is bare `orgai`; null is completions, which
+     * only refuses an explicit --secret-env (a hostless command, cli-standalone.md 4.1) and leaves the environment be.
+     */
+    const prepareContext = (command: string | null | undefined, commandArgs: readonly string[]): ReturnType<typeof buildContext> => {
+      if (command === null) {
+        const refusal = planSecretEnv(globals.host, 'never-inproc', {}, globals.secretEnv).refusal
         if (refusal) throw new CliError(refusal, EXIT.usage)
+        return contextFor(globals, env, io, overrides)
       }
+      const plan = planSecretEnv(globals.host, secretEnvCommandClass(command, commandArgs), env, globals.secretEnv)
+      if (plan.refusal) throw new CliError(plan.refusal, EXIT.usage)
       let overlay: Map<string, string> | undefined
-      if (globals.host === 'inproc') {
+      if (plan.collect) {
         const collected = collectSecretOverlay(env, globals.secretEnv)
         scrubSecretEnv(env, collected.consumedVars)
-        overlay = collected.overlay
+        // An ignored ambient secret is scrubbed, never handed to a host this command may start (review round 1).
+        if (!plan.dropOverlay) overlay = collected.overlay
       }
-      return contextFor(globals, env, io, overrides, overlay)
+      if (plan.warning) io.stderr.write(`${plan.warning}\n`)
+      return contextFor(globals, env, io, overrides, overlay, plan.use)
     }
 
     // Bare `orgai`, `orgai [tui options] [--] <prompt>` or a quoted prompt (an unknown first word with whitespace).
@@ -210,7 +219,7 @@ export async function main(argv: string[] = process.argv.slice(2), overrides: Ma
         out(generalHelp())
         return EXIT.ok
       }
-      return await runDefaultTui(prepareContext(true), rest, { help: generalHelp })
+      return await runDefaultTui(prepareContext(undefined, rest), rest, { help: generalHelp })
     }
     if (VERSION_WORDS.has(name)) {
       out(versionLine(CLI_VERSION, readInstallInfo()))
@@ -240,7 +249,7 @@ export async function main(argv: string[] = process.argv.slice(2), overrides: Ma
     }
     if (!command.available || !ROUTES[command.name]) throw new CliError(`\`orgai ${command.name}\` is not available in this build yet.`, EXIT.usage)
 
-    return await ROUTES[command.name](prepareContext(command.name !== 'completions'), args)
+    return await ROUTES[command.name](prepareContext(command.name === 'completions' ? null : command.name, args), args)
   } catch (e) {
     if (e instanceof CliError) {
       err(e.message)
@@ -259,15 +268,16 @@ function isDefaultTuiFlag(arg: string): boolean {
 }
 
 /**
- * The context, with the --host inproc secret overlay taken out of the environment first (before anything can spawn).
- * `overlay` is passed when the caller already collected it.
+ * The context. `overlay` is the environment secret overlay prepareContext already collected (and scrubbed); `secretEnv`
+ * what ensureHost needs to decide about it under `--host auto`.
  */
 function contextFor(
   globals: ReturnType<typeof splitGlobalFlags>['globals'],
   env: NodeJS.ProcessEnv,
   io: CliIo,
   overrides: MainOverrides,
-  overlay?: Map<string, string>
+  overlay?: Map<string, string>,
+  secretEnv?: SecretEnvUse
 ): ReturnType<typeof buildContext> {
   return buildContext({
     globals,
@@ -275,7 +285,8 @@ function contextFor(
     cwd: overrides.cwd ?? process.cwd(),
     platform: overrides.platform ?? process.platform,
     io,
-    ...(overlay ? { overlay } : {})
+    ...(overlay ? { overlay } : {}),
+    ...(secretEnv ? { secretEnv } : {})
   })
 }
 

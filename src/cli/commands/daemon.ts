@@ -13,11 +13,11 @@
 import { closeSync, existsSync, openSync, readSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import type { ActivityLeaseKind, DaemonInfo, HostStatusResult, HostStopResult } from '../../shared/types'
+import { BACKGROUND_HOST_KINDS, type ActivityLeaseKind, type DaemonInfo, type HostStatusResult, type HostStopResult } from '../../shared/types'
 import { parseFlags } from '../flags'
 import { emit, isJsonOutput, safe, safeLine, shortDuration, styleFor, warn, type Json } from '../output'
 import { warnVersionSkew } from '../runRef'
-import { CliError, EXIT, type CliContext, type CommandFn, type HostClient } from '../types'
+import { CliError, EXIT, HOST_STARTING_WAIT_MS, type CliContext, type CommandFn, type HostClient } from '../types'
 import { activityText } from './status'
 import { intFlag } from './runs'
 
@@ -25,7 +25,6 @@ export const DEFAULT_START_TIMEOUT_S = 30
 export const DEFAULT_STOP_TIMEOUT_S = 20
 export const DEFAULT_LOG_LINES = 200
 export const LOG_POLL_MS = 500
-const ELECTRON_HOST_KINDS = ['headless-host', 'desktop'] as const
 export const INPROC_BANNER = 'OrgAI host running in this terminal (inproc). Press Ctrl+C to stop.'
 
 /** Timers, swappable in tests. */
@@ -153,10 +152,11 @@ async function startHost(ctx: CliContext, o: { timeoutS: number; foreground: boo
   let ready: DaemonInfo | null
   try {
     ctx.launcher.spawn({ headless: true })
-    // Only an Electron host counts (a running desktop app takes the hand-off); an inproc host's daemon.json never does.
+    // Only a background host counts (a running desktop app takes the hand-off, a Node host is one too); an inproc
+    // host's daemon.json never does.
     ready = await ctx.launcher.waitForReady({
       timeoutMs: o.timeoutS * 1000,
-      hostKinds: ELECTRON_HOST_KINDS,
+      hostKinds: BACKGROUND_HOST_KINDS,
       ...(o.notInstanceId ? { notInstanceId: o.notInstanceId } : {})
     })
   } catch (e) {
@@ -167,7 +167,7 @@ async function startHost(ctx: CliContext, o: { timeoutS: number; foreground: boo
 }
 
 async function reportStarted(ctx: CliContext, d: DaemonInfo, wasStarting: boolean): Promise<number> {
-  const res = await ctx.connect(['read'], { clientKind: 'cli', waitStartingMs: 2000 })
+  const res = await ctx.connect(['read'], { clientKind: 'cli', waitStartingMs: HOST_STARTING_WAIT_MS })
   if (res.ok) {
     try {
       warnVersionSkew(ctx, res.client)
@@ -184,9 +184,10 @@ async function reportStarted(ctx: CliContext, d: DaemonInfo, wasStarting: boolea
   return EXIT.ok
 }
 
-/** `--host inproc`: the host lives in this process until Ctrl+C (or until it stops on its own). */
+/** `--host inproc`: the host lives in this process until Ctrl+C (or until it stops on its own) and serves other terminals. */
 async function runInproc(ctx: CliContext): Promise<number> {
-  const handle = await ctx.startInproc()
+  // This host serves other terminals until Ctrl+C: marked shared, so their ensureHost attaches to it (client/sharedHost.ts).
+  const handle = await ctx.startInproc({ shared: true })
   emit(ctx, { running: true, inproc: true, status: handle.status() }, () => [INPROC_BANNER])
   let offSignal: () => void = () => undefined
   const code = await new Promise<number>((resolve) => {
@@ -241,7 +242,7 @@ export function leaseText(leases: Partial<Record<ActivityLeaseKind, number>>): s
  * `quiet`.
  */
 async function stopHost(ctx: CliContext, o: { force: boolean; timeoutS: number; quiet?: boolean }): Promise<{ code: number; stoppedId?: string; wasRunning: boolean }> {
-  const res = await ctx.connect(['read', 'configure'], { clientKind: 'cli', waitStartingMs: 2000 })
+  const res = await ctx.connect(['read', 'configure'], { clientKind: 'cli', waitStartingMs: HOST_STARTING_WAIT_MS })
   if (!res.ok) {
     if (res.reason === 'no_host') {
       if (!o.quiet) emit(ctx, { stopped: false, running: false }, () => ['No OrgAI host is running.'])

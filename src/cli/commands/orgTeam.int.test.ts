@@ -26,7 +26,7 @@ beforeAll(async () => {
   dataDir = join(userDataDir, 'data')
   projectDir = join(userDataDir, 'repo')
   mkdirSync(projectDir)
-  host = await startInprocHost({ userDataDir, dataDir, env: { ...env }, mock: true, overlay: new Map(), logging: false, startBackground: false })
+  host = await startInprocHost({ userDataDir, dataDir, env: { ...env }, mock: true, overlay: new Map(), logging: false, startBackground: false, systemCertificates: false, shared: true })
   const res = await connectHost({ dataDir, scopes: ['read', 'configure'], clientVersion: CLI_VERSION, cwd: userDataDir, pid: process.pid })
   if (!res.ok) throw new Error(res.message)
   project = await res.client.call<Project>('projects:create', [{ name: 'Int app', path: projectDir, brief: '', mock: true }])

@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type { CardKind, DecisionLookup, DecisionOutcome, HostScope, PendingCards } from '../../shared/types'
 import { TERMINAL_FULL_ACCESS_HINT } from '../client/ensureHost'
 import { FakeHostClient, fakeContext, noHost, rpcError, type FakeContextOptions } from '../testing/fakeContext'
-import { EXIT } from '../types'
+import { EXIT, HOST_STARTING_WAIT_MS } from '../types'
+import { reservedSecretSourceProblem } from '../secretOverlay'
 import { decideDeps, runDecide } from './decide'
 
 const RUN = 'run_abc123'
@@ -97,6 +98,8 @@ describe('orgai decide: payloads per kind and verb (cli-spec 5.3)', () => {
       expect(await runDecide(f.ctx, [REQ, ...argv])).toBe(EXIT.ok)
       expect(sent()).toEqual([[payload]])
       expect(f.connectCalls[0].scopes).toEqual(['read', 'decide'])
+      // A starting host is waited for as long as ensureHost waits (cli-standalone.md 4.1 step 2).
+      expect(f.connectCalls[0].opts).toMatchObject({ waitStartingMs: HOST_STARTING_WAIT_MS })
       expect(host.callsOf('runs:findDecision')).toEqual([[REQ]])
       expect(host.callsOf('runs:pendingCards')).toEqual([[RUN]])
       expect(host.closed).toBe(true)
@@ -197,6 +200,15 @@ describe('orgai decide: secrets from the environment', () => {
       await expect(runDecide(f.ctx, [REQ, 'allow', '--secret', spec])).rejects.toMatchObject({ exitCode: EXIT.usage })
       expect(sent()).toEqual([])
     }
+  })
+
+  it('an ORGAI_SECRET_* source is refused with its own message (prepareContext scrubbed it; review round 2)', async () => {
+    const { f, sent } = setup({ kind: 'mcpInstall', opts: { env: {} } })
+    await expect(runDecide(f.ctx, [REQ, 'allow', '--secret', 'API_KEY=ORGAI_SECRET_TOKEN'])).rejects.toMatchObject({
+      exitCode: EXIT.usage,
+      message: reservedSecretSourceProblem('ORGAI_SECRET_TOKEN', '--secret API_KEY')
+    })
+    expect(sent()).toEqual([])
   })
 
   it('--secret on a verb that takes none is exit 2', async () => {

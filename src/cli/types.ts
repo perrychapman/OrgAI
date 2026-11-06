@@ -15,6 +15,7 @@ import type {
   RunRecord,
   RunSummary
 } from '../shared/types'
+import type { HostBackgroundOptions } from '../main/host/bootstrap'
 
 /** Process exit codes (cli-spec 6.1). */
 export const EXIT = {
@@ -85,7 +86,10 @@ export interface CliGlobals {
   project?: string
   /** false with --no-color (or NO_COLOR / a non-TTY stdout, decided by index.ts). */
   color: boolean
-  /** Repeated --secret-env `<owner>:<kind>:<name>=<ENV_VAR>` specs (only valid with --host inproc). */
+  /**
+   * Repeated --secret-env `<owner>:<kind>:<name>=<ENV_VAR>` specs: used by an in-process host (--host inproc, or --host
+   * auto with no live host), refused by any command that would attach to a live host (cli-standalone.md 4.1).
+   */
   secretEnv: string[]
 }
 
@@ -179,14 +183,17 @@ export interface HostLauncherFound {
 /** Finds and starts the OrgAI app as a host (src/cli/launcher.ts, W2-T4). */
 export interface HostLauncher {
   /**
-   * The app binary: ORGAI_ELECTRON_PATH ('env'), the packaged app next to this bundle ('packaged': the bundle sits in
-   * `<Resources>/app.asar.unpacked/out/cli`) or the dev checkout's electron + out/main ('dev'), in that order.
+   * The app binary, in this order: ORGAI_ELECTRON_PATH ('env'); the packaged app next to this bundle ('packaged': the
+   * bundle sits in `<Resources>/app.asar.unpacked/out/cli`), only when install.json says 'app'; the dev checkout's
+   * electron + out/main ('dev'), only without any install.json and with the checkout markers (electron.vite.config.ts,
+   * electron in devDependencies); an installed app ('installed': /Applications or ~/Applications on macOS,
+   * %LOCALAPPDATA%\Programs or %ProgramFiles% on Windows, none on Linux). Errors carry the path they are about.
    */
   resolve(): HostLauncherFound | { error: string; path?: string }
   /**
-   * Wave 7: the same lookup as found / absent / broken (HostLauncherResolution). Until WP-B adds installed-app
-   * discovery (source 'installed') and the checkout marker, it maps resolve(): APP_NOT_FOUND is 'absent', any other
-   * error 'broken' with the error's `path` (the missing packaged binary, the unbuilt checkout).
+   * Wave 7: the same lookup as found / absent / broken (HostLauncherResolution): APP_NOT_FOUND is 'absent', any other
+   * error 'broken' with the error's `path` (a missing packaged binary, an unbuilt checkout or one without its electron
+   * binary, an incomplete installed app).
    */
   locate(): HostLauncherResolution
   /**
@@ -194,6 +201,13 @@ export interface HostLauncher {
    * app locate() found, so the lookup that decided and the spawn cannot disagree; without it spawn() resolves again.
    */
   spawn(opts: { headless: boolean; run?: string; app?: HostLauncherFound }): { pid?: number }
+  /**
+   * Wave 7 (cli-standalone.md 4.1, 4.2): start a detached Node background host (`daemon run-node`) when no app was
+   * found. Optional: the node runtime package (WP-E) adds it; `--host daemon` without an app fails with a clear message
+   * while it is absent. Resolves once the process is spawned (callers then waitForReady on BACKGROUND_HOST_KINDS);
+   * rejects with a message the CLI prints (e.g. Terminal access is off, or this install has no plain Node).
+   */
+  startBackground?(runtime: 'node'): Promise<{ pid?: number }>
   /** The daemon.json of the live host that owns the data folder (any state), else null. */
   current(): DaemonInfo | null
   /**
@@ -213,6 +227,39 @@ export interface InprocHostHandle {
   stop(force: boolean): Promise<void>
   /** Resolves once the host drained and released the data dir. */
   readonly closed: Promise<void>
+}
+
+/** How an in-process host starts (ensureHost / withHost pass it to CliContext.startInproc). */
+export interface InprocStartOptions {
+  /**
+   * bootOrgAIHost's background work (cli-standalone.md 4.1 step 4): management commands keep connection probes and
+   * turn model discovery, community prices and the usage monitor off. Default: all on. The first start in a process
+   * decides; a later call while that host is still running reuses it.
+   */
+  background?: HostBackgroundOptions
+  /**
+   * The host serves other terminals until stopped (`orgai daemon start --host inproc`): it is marked shared
+   * (client/sharedHost.ts), so other terminals' ensureHost attaches to it. Without it the host is the command's own and
+   * other terminals wait for it to end (WP-B review round 2). Default false.
+   */
+  shared?: boolean
+}
+
+/**
+ * Environment secrets this command carries under `--host auto` (cli-standalone.md 4.1, round 6 item 8), set by
+ * index.ts prepareContext after collecting and scrubbing them. Absent when there are none (and under --host inproc,
+ * where the secrets always go to the command's own host).
+ */
+export interface SecretEnvUse {
+  /** --secret-env flags were given: refused (exit 2) when the command attaches to a live host. */
+  explicit: boolean
+  /** ORGAI_SECRET_* variables were set. */
+  ambient: boolean
+  /**
+   * The command would use a secret on a live host (runs, Architect, assistants, credential probes, model calls): an
+   * ambient secret is then refused against a live host too; otherwise it is ignored with one warning.
+   */
+  usesSecrets: boolean
 }
 
 /** Everything a command may use. Built once per process by index.ts; tests build fakes. */
@@ -236,8 +283,14 @@ export interface CliContext {
   /** cli-spec 4 resolution over these projects (globals.project, then cwd). */
   resolveProject(projects: Project[]): ProjectResolution
   launcher: HostLauncher
-  /** Start a `--host inproc` host (lazy-loads the inprocHost chunk). */
-  startInproc(): Promise<InprocHostHandle>
+  /**
+   * Start an in-process host (lazy-loads the inprocHost chunk): `--host inproc`, or `--host auto` when no host is live
+   * and no app was found or environment secrets are set. One per process at a time; a call after that host closed
+   * starts a new one (init's Architect after its withHost).
+   */
+  startInproc(opts?: InprocStartOptions): Promise<InprocHostHandle>
+  /** Environment secrets under `--host auto` (see SecretEnvUse); undefined when there are none. */
+  secretEnv?: SecretEnvUse
   /** SIGINT / SIGTERM listeners; returns an unsubscribe function. */
   signals: { onInterrupt(fn: (sig: 'SIGINT' | 'SIGTERM') => void): () => void }
 }

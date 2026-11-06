@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { RunRecord, TranscriptEntry } from '../../shared/types'
 import { FakeHostClient, fakeContext, noHost, project, record, summary } from '../testing/fakeContext'
-import { EXIT } from '../types'
+import { EXIT, HOST_STARTING_WAIT_MS } from '../types'
 import { afterEach } from 'vitest'
 import { runRuns, runsDeps } from './runs'
 
@@ -160,6 +160,7 @@ describe('orgai runs send / interrupt / stop', () => {
     expect(await runRuns(f.ctx, ['send', 'run_old111', 'Please add tests'])).toBe(EXIT.ok)
     expect(host.callsOf('runs:send')).toEqual([[{ runId: 'run_new222', text: 'Please add tests' }]])
     expect(f.connectCalls[0].scopes).toEqual(['read', 'operate'])
+    expect(f.connectCalls[0].opts).toMatchObject({ waitStartingMs: HOST_STARTING_WAIT_MS })
     expect(f.out()).toContain('Sent to')
     expect(f.launcherCalls).toEqual([])
     expect(host.closeCount()).toBe(1)

@@ -13,8 +13,10 @@ import type {
   HostClient,
   HostLauncher,
   InprocHostHandle,
+  InprocStartOptions,
   ProjectResolution,
-  ReadOnlySnapshot
+  ReadOnlySnapshot,
+  SecretEnvUse
 } from '../types'
 
 export type Answer = (params: unknown) => unknown
@@ -123,6 +125,8 @@ export interface FakeContextOptions {
   inproc?: () => Promise<InprocHostHandle>
   /** io.stdinIsTTY (default false). */
   stdinIsTTY?: boolean
+  /** CliContext.secretEnv (environment secrets under --host auto). */
+  secretEnv?: SecretEnvUse
 }
 
 export interface FakeContext {
@@ -133,6 +137,8 @@ export interface FakeContext {
   signal(sig: 'SIGINT' | 'SIGTERM'): void
   connectCalls: { scopes: string[]; opts?: unknown }[]
   launcherCalls: { method: string; args: unknown }[]
+  /** The options of each startInproc() call. */
+  inprocCalls: (InprocStartOptions | undefined)[]
   signalListeners(): number
 }
 
@@ -210,6 +216,7 @@ export function fakeContext(o: FakeContextOptions = {}): FakeContext {
   const listeners = new Set<(sig: 'SIGINT' | 'SIGTERM') => void>()
   const connectCalls: FakeContext['connectCalls'] = []
   const launcherCalls: FakeContext['launcherCalls'] = []
+  const inprocCalls: FakeContext['inprocCalls'] = []
   const queue = [...(o.connect ?? [noHost()])]
   const store = o.store ?? {}
   const cwd = o.cwd ?? '/work'
@@ -230,6 +237,15 @@ export function fakeContext(o: FakeContextOptions = {}): FakeContext {
       launcherCalls.push({ method: 'spawn', args })
       return o.launcher?.spawn ? o.launcher.spawn(args) : { pid: 999 }
     },
+    // Wave 7: only when the test gives one (the node runtime's hook); recorded.
+    ...(o.launcher?.startBackground
+      ? {
+          startBackground: (runtime: 'node') => {
+            launcherCalls.push({ method: 'startBackground', args: runtime })
+            return o.launcher!.startBackground!(runtime)
+          }
+        }
+      : {}),
     // A read of daemon.json; not recorded in launcherCalls.
     current: () => (o.launcher?.current ? o.launcher.current() : null),
     waitForReady: async (args) => {
@@ -271,10 +287,12 @@ export function fakeContext(o: FakeContextOptions = {}): FakeContext {
     },
     resolveProject: (projects) => (o.resolveProject ? o.resolveProject(projects) : defaultResolve(globals, cwd, projects)),
     launcher,
-    startInproc: async () => {
+    startInproc: async (opts) => {
+      inprocCalls.push(opts)
       if (!o.inproc) throw new Error('no inproc host in this test')
       return o.inproc()
     },
+    ...(o.secretEnv ? { secretEnv: o.secretEnv } : {}),
     signals: {
       onInterrupt: (fn) => {
         listeners.add(fn)
@@ -291,6 +309,7 @@ export function fakeContext(o: FakeContextOptions = {}): FakeContext {
     },
     connectCalls,
     launcherCalls,
+    inprocCalls,
     signalListeners: () => listeners.size
   }
 }

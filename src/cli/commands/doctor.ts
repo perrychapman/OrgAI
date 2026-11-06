@@ -19,7 +19,7 @@ import { secretsChecks } from '../doctor/secretsChecks'
 import type { DoctorCheckGroup } from '../doctor/types'
 import { parseFlags } from '../flags'
 import { emit, safeLine, styleFor } from '../output'
-import { CliError, EXIT, type CliContext, type CommandFn, type ConnectResult } from '../types'
+import { CliError, EXIT, HOST_STARTING_WAIT_MS, type CliContext, type CommandFn, type ConnectResult } from '../types'
 
 export type CheckStatus = 'ok' | 'warn' | 'fail'
 
@@ -79,6 +79,9 @@ export const doctorProbes = {
 
 /** A line of the packaged launcher (build/bin/orgai): a file at the shim path that reads through to it is a link to one. */
 export const PACKAGED_LAUNCHER_MARK = 'The orgai command of a packaged OrgAI'
+
+/** The launcher line when no OrgAI app is found (not a failure: `--host auto` runs the host in-process). */
+export const LAUNCHER_ABSENT_DETAIL = 'No OrgAI app found; commands run the host inside the command (`orgai daemon start` keeps one running)'
 
 const SHIM_NOT_INSTALLED = 'The orgai command is not installed (App settings > General > Advanced settings > Terminal)'
 
@@ -232,7 +235,7 @@ export const runDoctor: CommandFn = async (ctx: CliContext, args: string[]): Pro
   // Socket, handshake, terminal access, version skew
   let conn: ConnectResult | undefined
   if (daemon && daemonAlive) {
-    conn = await ctx.connect(['read'], { clientKind: 'cli', waitStartingMs: 2000 }).catch((e: unknown) => ({ ok: false, reason: 'unreachable', message: e instanceof Error ? e.message : String(e) }) as ConnectResult)
+    conn = await ctx.connect(['read'], { clientKind: 'cli', waitStartingMs: HOST_STARTING_WAIT_MS }).catch((e: unknown) => ({ ok: false, reason: 'unreachable', message: e instanceof Error ? e.message : String(e) }) as ConnectResult)
     if (conn.ok) {
       add('socket', 'ok', `Connected and verified the host (hostProof ok, ${conn.client.hello.hostKind})`)
       add('terminal-access', 'ok', 'Terminal access is on')
@@ -250,9 +253,12 @@ export const runDoctor: CommandFn = async (ctx: CliContext, args: string[]): Pro
     add('socket', 'ok', 'Skipped: no host is running')
   }
 
-  // Launcher
-  const app = ctx.launcher.resolve()
-  add('launcher', 'error' in app ? 'fail' : 'ok', 'error' in app ? app.error : `${app.command}${app.args.length ? ` ${app.args.join(' ')}` : ''} (${app.source})`)
+  // Launcher (Wave 7, cli-standalone.md 4.1 step 3): an app found, none (commands then run the host in-process), or a
+  // broken install naming its path.
+  const app = ctx.launcher.locate()
+  if (app.status === 'found') add('launcher', 'ok', `${app.command}${app.args.length ? ` ${app.args.join(' ')}` : ''} (${app.source})`)
+  else if (app.status === 'broken') add('launcher', 'fail', app.message)
+  else add('launcher', 'ok', LAUNCHER_ABSENT_DETAIL)
 
   // The orgai command on PATH (read only)
   checks.push(shimCheck(ctx.platform, ctx.env))
