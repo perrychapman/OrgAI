@@ -6,7 +6,7 @@
 // 2. window-all-closed while a run works ([mock:exec-slow], about 30 s of steps): the host stays up and ready; a plain
 //    launch brings a window back with the run still live; after End session a run that only waits on the user (the
 //    default script, idle) no longer keeps it busy (review H3): closing the window sends the host (it started
-//    headless, so it is the background daemon) back to the background, and it quits through its idle exit (6 s here),
+//    headless, so it is the background daemon) back to the background, and it quits through its idle exit (30 s here),
 //    never at once, ending that waiting run.
 // 3. Desktop first: a --headless-host launch against a running desktop host opens no window. Terminal access off
 //    removes the listener and daemon.secret and daemon.json says `listening: false`; on brings them back (review M11).
@@ -24,9 +24,11 @@ import { APP_DIR, DATA_DIR, SHOTS_DIR, check, createProject, electronBinary, fin
 
 process.env.ORGAI_MOCK = '1'
 const NAME = 'E2E cli host'
-// A short idle exit (6 s; polled every 15 s): a background host that still has short background work when its last
-// window closes (the Team review after a finished run) goes 'background' and leaves through the idle exit.
-const ENV = { ...process.env, ORGAI_MOCK: '1', ORGAI_DATA_DIR: DATA_DIR, ORGAI_DAEMON_IDLE_MINUTES: '0.1' }
+// A short idle exit (30 s; polled every 15 s, so it leaves 30-45 s after the host went idle): a background host that
+// still has short background work when its last window closes (the Team review after a finished run) goes 'background'
+// and leaves through the idle exit. 6 s was flaky on macOS: the second run had been idle for several seconds before the
+// windows closed, so a poll tick could drain the host inside the 2 s "still up" check (CI run 42138177367).
+const ENV = { ...process.env, ORGAI_MOCK: '1', ORGAI_DATA_DIR: DATA_DIR, ORGAI_DAEMON_IDLE_MINUTES: '0.5' }
 delete ENV.ELECTRON_RUN_AS_NODE
 const DAEMON_JSON = path.join(DATA_DIR, 'data', 'run', 'daemon.json')
 
@@ -158,7 +160,13 @@ try {
     for (const w of BrowserWindow.getAllWindows()) w.close()
   }).catch(() => {})
   await sleep(2000)
-  const stillUp = app.process().exitCode === null && app.process().signalCode === null
+  // Read the process state without throwing if Playwright already lost the app.
+  const stillUp = await Promise.resolve()
+    .then(() => {
+      const p = app.process()
+      return p.exitCode === null && p.signalCode === null
+    })
+    .catch(() => false)
   check(stillUp, 'an idle close of the last window keeps a host that started headless running (daemon mode)')
   check(readDaemon()?.state === 'ready', 'daemon.json stays ready after the idle close', JSON.stringify(readDaemon()?.state))
   const didExit = await Promise.race([gone, sleep(60_000).then(() => false)])
