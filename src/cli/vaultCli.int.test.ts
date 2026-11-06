@@ -71,7 +71,7 @@ interface Ran {
 function orgai(args: string[], extra: { input?: string; env?: Record<string, string> } = {}): Promise<Ran> {
   const env: NodeJS.ProcessEnv = {}
   for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !k.startsWith('ORGAI_')) env[k] = v
-  Object.assign(env, { ORGAI_DATA_DIR: data, ORGAI_MOCK: '1', NO_COLOR: '1', ...(extra.env ?? {}) })
+  Object.assign(env, { ORGAI_DATA_DIR: data, ORGAI_MOCK: '1', NO_COLOR: '1', ORGAI_VAULT_KEY_FILE: join(keys, 'vault.key'), ...(extra.env ?? {}) })
   return new Promise((res) => {
     const c = spawn(process.execPath, [bundle, '--host', 'inproc', ...args], { env })
     let stdout = ''
