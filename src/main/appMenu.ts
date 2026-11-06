@@ -3,7 +3,6 @@ import type { MenuItemConstructorOptions } from 'electron'
 import { EMPTY_MENU_STATE, IPC, isMenuAction } from '../shared/types'
 import type { MenuAction, MenuActionEvent, MenuState } from '../shared/types'
 import { logsDir } from './log'
-import { focusedOrPrimaryWindow } from './testWindows'
 
 /** The only URLs the Help menu ever opens. */
 export const DOCS_URL = 'https://github.com/perrychapman/OrgAI'
@@ -296,7 +295,7 @@ function refreshMenu(): void {
 
 function currentFocusedId(): number | undefined {
   try {
-    return focusedOrPrimaryWindow()?.id
+    return BrowserWindow.getFocusedWindow()?.id
   } catch {
     return undefined
   }
@@ -509,7 +508,7 @@ export function installAppMenu(send: (action: MenuAction) => void): void {
                 })
                 .catch((e: Error) => console.warn(`Could not open the data folder: ${e.message}`))
             },
-            closeWindow: () => focusedOrPrimaryWindow()?.close()
+            closeWindow: () => BrowserWindow.getFocusedWindow()?.close()
           })
         )
       )

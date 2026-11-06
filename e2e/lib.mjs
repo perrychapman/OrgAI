@@ -23,12 +23,6 @@ export const TMP = fs.realpathSync.native(os.tmpdir())
 
 // One data dir per script run, shared by every launch() in it (history.mjs restarts the app). A dir we created is
 // removed when the script passes and kept (path printed) when it fails, so its logs/main.log can be read.
-// The app's windows stay hidden (never shown or focused, no Dock icon) so e2e runs never take over the screen
-// (src/main/testWindows.ts). Set E2E_SHOW=1 to watch a run. Set on process.env so every launch and every app the CLI
-// scripts spawn inherits it.
-if (process.env.E2E_SHOW !== '1') process.env.ORGAI_E2E_HIDDEN = '1'
-else delete process.env.ORGAI_E2E_HIDDEN
-
 const ownDataDir = !process.env.E2E_DATA_DIR?.trim()
 export const DATA_DIR = ownDataDir ? fs.mkdtempSync(path.join(TMP, 'orgai-e2e-data-')) : path.resolve(process.env.E2E_DATA_DIR.trim())
 process.on('exit', (code) => {

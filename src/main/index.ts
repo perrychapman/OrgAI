@@ -45,7 +45,6 @@ import {
   type HandoffOutcome,
   type HandoffView
 } from './handoff'
-import { focusedOrPrimaryWindow, hiddenWindows } from './testWindows'
 import { orgaiCliRootsOf, setOrgaiCliRoots } from './runtime/selfControlGate'
 import { createCliShimService, type CliShimService } from './host/shimInstaller'
 import { RepoCloneService } from './repoClone'
@@ -159,8 +158,6 @@ const gotLock = app.requestSingleInstanceLock(
 if (!gotLock) app.exit(0)
 // A terminal host never shows a Dock icon (macOS); a later window brings it back.
 if (gotLock && hostArgs.headless && process.platform === 'darwin') app.dock?.hide()
-// e2e runs (ORGAI_E2E_HIDDEN=1, testWindows.ts) never show a Dock icon, so the app never becomes the active app.
-if (gotLock && hiddenWindows() && process.platform === 'darwin') app.dock?.hide()
 
 // Unpackaged (npm run dev, e2e) the name comes from package.json ("orgai"); on macOS that names ~/Library/Logs/<name>
 // and the About entry. userData was set above, so it does not move.
@@ -222,14 +219,13 @@ function refuseExternal(url: string): void {
 }
 
 function showWindow(win: BrowserWindow): void {
-  if (hiddenWindows()) return
   if (win.isMinimized()) win.restore()
   win.show()
   win.focus()
 }
 
 function showDockIcon(): void {
-  if (process.platform !== 'darwin' || hiddenWindows()) return
+  if (process.platform !== 'darwin') return
   void Promise.resolve(app.dock?.show()).catch(() => {})
 }
 
@@ -291,17 +287,13 @@ function createWindow(scope?: FocusRunTarget): BrowserWindow {
       // shared code bundled in, so it requires only 'electron' and runs in the sandboxed renderer.
       preload: join(__dirname, '../preload/index.cjs'),
       sandbox: true,
-      contextIsolation: true,
-      // e2e (testWindows.ts): the window is never shown, so keep its timers and animation frames running.
-      ...(hiddenWindows() ? { backgroundThrottling: false } : {})
+      contextIsolation: true
     }
   })
 
   windowScopes.set(win, scope)
   win.on('closed', () => windowScopes.delete(win))
-  win.on('ready-to-show', () => {
-    if (!hiddenWindows()) win.show()
-  })
+  win.on('ready-to-show', () => win.show())
   notifier?.attach(win)
   // window.open and target=_blank never create a window: http(s) links go to the user's browser, anything else
   // (file:, custom protocols, javascript:) is refused.
@@ -496,7 +488,7 @@ app.whenReady().then(async () => {
   // `events` given: registerIpc leaves forwarding the bus to windows to the listener above.
   registerIpc({ ...h.services, openRunWindow, events: h.events, dispatcher: h.dispatcher, cliShim, repoClone: clones })
   installAppMenu(
-    menuActionSender(() => focusedOrPrimaryWindow(), liveWindowScopes, () => createWindow())
+    menuActionSender(() => BrowserWindow.getFocusedWindow(), liveWindowScopes, () => createWindow())
   )
   // A terminal host opens no window; the first plain launch (second-instance) or a Dock click (activate) does.
   if (!hostArgs.headless) {
@@ -792,7 +784,7 @@ function showHandoffWindow(view: HandoffView | undefined): void {
       title: 'OrgAI',
       autoHideMenuBar: true,
       backgroundColor: nativeTheme.shouldUseDarkColors ? '#16181d' : '#f7f7f8',
-      webPreferences: { sandbox: true, contextIsolation: true, javascript: false, ...(hiddenWindows() ? { backgroundThrottling: false } : {}) }
+      webPreferences: { sandbox: true, contextIsolation: true, javascript: false }
     })
     win = created
     handoffWindow = created
@@ -811,9 +803,7 @@ function showHandoffWindow(view: HandoffView | undefined): void {
     created.webContents.on('will-navigate', onNavigate)
     created.webContents.on('will-redirect', onNavigate)
     created.webContents.on('will-frame-navigate', onNavigate)
-    created.once('ready-to-show', () => {
-      if (!hiddenWindows()) showWindow(created)
-    })
+    created.once('ready-to-show', () => showWindow(created))
   }
   handoffPageUrl = `data:text/html;charset=utf-8,${encodeURIComponent(handoffPageHtml(view, nativeTheme.shouldUseDarkColors))}`
   void win.loadURL(handoffPageUrl).catch((e: unknown) => log.warn(`The handoff wait window did not load: ${e instanceof Error ? e.message : String(e)}`))

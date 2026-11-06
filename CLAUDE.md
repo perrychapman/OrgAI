@@ -972,7 +972,6 @@ and the frontend-design skill is not vendored in `.claude/skills` (only `run-des
     custom round trip (skipped when the mock catalog has no id outside the tiers). Unit tests: scrollWithin,
     settingsCopy, roleModels, assistantModels, settingsTarget, permissionCopy. Non-Anthropic connections are not
     driven. Open: N7, N9, N13 and the Lows in ARCHITECTURE.md Risks.
-- e2e windows stay hidden: `e2e/lib.mjs` sets `ORGAI_E2E_HIDDEN=1` (unless `E2E_SHOW=1`), and `src/main/testWindows.ts` then never shows or focuses a window (unpackaged builds only), hides the macOS Dock icon, turns off background throttling and treats the first window as focused for menu routing; layout, menu, knowledge-graph and canvas pass that way on macOS.
 - e2e:free is `e2e/layout.mjs`, `dashboard.mjs`, `runs.mjs`, `proposals.mjs`, `maintenance.mjs`, `connections.mjs`, `connectors.mjs`, `import.mjs`, `skills.mjs`, `usage.mjs`, `team.mjs`, `canvas.mjs`, `assistants.mjs`, `permissions.mjs`, `menu.mjs`, `engagement.mjs`, `engagement2.mjs`, `per-project.mjs`, `presets.mjs`, `knowledge.mjs`, `knowledge-graph.mjs`, `knowledge-run.mjs`, `cli-host.mjs` and `cli-readonly.mjs` (package.json). Update selectors in the same change.
 - Engagement phases 2-3, renderer (2026-11-04; `docs/design/engagement-2.md` "Implementation notes"): Team tab
   Templates menu (`team-templates`, save / apply dialogs, `template-notice` with Undo through `undoImport` and
