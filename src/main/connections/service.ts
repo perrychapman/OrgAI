@@ -251,9 +251,8 @@ export class ConnectionService {
   private async discoverRaw(id: ConnectionId): Promise<ProviderModel[] | null | typeof SIGNED_OUT> {
     if (id === 'litellm') {
       const conn = this.deps.settings.get().connections.litellm
-      const key = this.deps.secrets.get(LITELLM_KEY)
       if (!conn.baseUrl) throw new Error('LiteLLM has no base URL')
-      if (!key) throw new Error('LiteLLM has no API key')
+      const key = this.litellmKey('LiteLLM has no API key')
       return fetchLiteLLMModels(conn.baseUrl, key, this.deps.fetch ?? fetch)
     }
     if (id === 'openai') {
@@ -448,6 +447,19 @@ export class ConnectionService {
     return this.list()
   }
 
+  /**
+   * The stored LiteLLM key, else a throw: a key that is stored but cannot be read here says why with the store's reason
+   * (Wave 7, 5.4: saved by the OrgAI app and not yet shared, a locked or damaged vault), never "no API key" (which would
+   * send the user to type it again); `missing` is the sentence for a key that is not stored at all.
+   */
+  private litellmKey(missing: string): string {
+    const stored = this.deps.secrets.status(LITELLM_KEY)
+    if (typeof stored === 'object') throw new Error(`The LiteLLM API key cannot be read here: ${stored.unreadable.replace(/[.\s]+$/, '')}.`)
+    const key = this.deps.secrets.get(LITELLM_KEY)
+    if (!key) throw new Error(missing)
+    return key
+  }
+
   private safeMessage(e: unknown): string {
     let msg = e instanceof Error ? e.message : String(e)
     const key = this.deps.secrets.get(LITELLM_KEY)
@@ -531,10 +543,13 @@ export class ConnectionService {
     const conn = this.deps.settings.get().connections.litellm
     const checkedAt = this.now()
     if (!conn.baseUrl) return { state: 'disconnected', detail: 'Set the proxy base URL.', checkedAt }
+    // A key that is stored but cannot be read here (Wave 7, 5.4: saved by the app and not yet shared, a locked or damaged
+    // vault, safeStorage failure) is an error with the store's reason, not a definite disconnect: it must not move the
+    // automatic default, and "set it again" would be the wrong advice.
+    const stored = this.deps.secrets.status(LITELLM_KEY)
+    if (typeof stored === 'object') return { state: 'error', detail: stored.unreadable, checkedAt }
     const key = this.deps.secrets.get(LITELLM_KEY)
-    // A key that is stored but cannot be decrypted (safeStorage failure, another OS keyring) is an error, not a
-    // definite disconnect: it must not move the automatic default.
-    if (!key && conn.hasApiKey) return { state: 'error', detail: 'The stored key could not be read. Set the API key again.', checkedAt }
+    if (!key && conn.hasApiKey) return { state: 'error', detail: 'The stored key is gone. Set the API key again.', checkedAt }
     if (!key) return { state: 'disconnected', detail: 'Set an API key.', checkedAt }
     const models = await fetchLiteLLMModels(conn.baseUrl, key, this.deps.fetch ?? fetch)
     return { state: 'connected', detail: `${models.length} model${models.length === 1 ? '' : 's'} available`, checkedAt }
@@ -580,9 +595,17 @@ export class ConnectionService {
     return this.info(c.id)
   }
 
+  /** Throws SecretStore.clearRefusal's sentence for the LiteLLM key (vault damaged; app-only key on a Node host). */
+  private refuseClear(): void {
+    const refusal = this.deps.secrets.clearRefusal(LITELLM_KEY)
+    if (refusal) throw new Error(refusal)
+  }
+
   async setSecret(input: ConnectionSecretInput): Promise<ConnectionInfo> {
     if (input?.id !== 'litellm') throw new Error('Only the LiteLLM connection has a stored secret')
     const key = input.apiKey?.trim() || null
+    // An explicit clear is checked before anything changes (Wave 7, 5.5 Deletes).
+    if (!key) this.refuseClear()
     const before = this.effectiveDefault()
     this.deps.secrets.set(LITELLM_KEY, key)
     this.deps.settings.setLiteLLMKeyStored(!!key)
@@ -638,6 +661,8 @@ export class ConnectionService {
       }
       this.setStatus('openai', { state: 'disconnected', detail: 'Signed out', checkedAt })
     } else if (id === 'litellm') {
+      // Removing the key is the user's explicit clear (5.5): refused before anything changes when it cannot be recorded.
+      this.refuseClear()
       this.deps.secrets.delete(LITELLM_KEY)
       this.deps.settings.setLiteLLMKeyStored(false)
       this.setStatus('litellm', { state: 'disconnected', detail: 'API key removed', checkedAt })
@@ -902,9 +927,8 @@ export class ConnectionService {
       return { ...base, codexAuth: 'apiKey', apiKey, env: codexHome() }
     }
     const conn = settings.connections.litellm
-    const key = this.deps.secrets.get(LITELLM_KEY)
     if (!conn.baseUrl) throw new Error('LiteLLM has no base URL. Set it in Settings > Connections.')
-    if (!key) throw new Error('LiteLLM has no API key. Set it in Settings > Connections.')
+    const key = this.litellmKey('LiteLLM has no API key. Set it in Settings > Connections.')
     const baseUrl = normalizeBaseUrl(conn.baseUrl)
     // Prices from /model/info (catalog); runs on models without one get no estimate.
     const pricing = pricingFromCatalog(this.catalogFor('litellm'))

@@ -95,7 +95,10 @@ describe('review hardening (self-configuration fix-up)', () => {
     ctx.probe.current = { state: 'error' }
     ctx.cipher.decryptFails = true
     const status = await ctx.service.test('litellm')
-    expect(status).toMatchObject({ state: 'error', detail: 'The stored key could not be read. Set the API key again.' })
+    // Wave 7 (5.4): the detail is SecretStore.status()'s reason (why it cannot be read here), never "set it again".
+    expect(status.state).toBe('error')
+    expect(status.detail).toBeTruthy()
+    expect(status.detail).not.toMatch(/set (it|the API key) again|Set an API key/i)
     expect(ctx.settings.get().defaultConnection).toBe('litellm')
     expect(ctx.service.effectiveDefault()).toBe('litellm')
   })

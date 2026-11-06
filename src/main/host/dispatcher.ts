@@ -86,7 +86,6 @@ import type {
   SecretsConfirmDeleteResult,
   SecretsInitResult,
   SecretsResetResult,
-  SecretsStatusInput,
   SecretsStatusResult,
   SecretsUndeleteResult,
   SetupStartInput,
@@ -156,7 +155,7 @@ import {
 } from '../store/projectData'
 import { checkProjectPath, type ProjectStore } from '../store/projects'
 import type { SettingsStore } from '../store/settings'
-import type { SecretStoreApi } from '../store/vaultTypes'
+import { VAULT_MESSAGES, type SecretStoreApi } from '../store/vaultTypes'
 import { checkRunTarget, isValidId } from '../windowScope'
 import { noopActivity } from './activity'
 import {
@@ -198,6 +197,7 @@ import {
 } from './args'
 import { HostEventBus } from './events'
 import { COMMIT_LEASED_CHANNELS, LIFECYCLE_CHANNELS, drainingFailure, runLeased } from './mutationLease'
+import { secretsConfirmDeleteArgs, secretsInitArgs, secretsResetArgs, secretsStatusArgs, secretsUndeleteArgs } from './secretsArgs'
 import { HostRpcFailure, channelEntry, gateRequest, type GateFn, type StoresSecretHostView } from './registry'
 import type { HostActivityTrackerApi, HostDispatchEnv, HostServices, InvokeContext, RpcInvokeContext } from './types'
 
@@ -249,6 +249,12 @@ export class HostDispatcher {
   private readonly handlers: Record<string, Handler>
   /** Aborted by quiesce(): the model calls handlers make for a caller (draft:orgChart) stop when the host drains. */
   private readonly quiesced = new AbortController()
+  /**
+   * Wave 7 (cli-standalone.md 5.6 Reset): RPC calls whose storesSecret predicate fired, from the start of their
+   * prepareWrite() until their handler settled. secrets:reset is refused while any is in flight: a reset between the
+   * preparation and the handler's set() would move the vault aside under it (VaultNotReady on a Node host).
+   */
+  private secretWritesInFlight = 0
 
   constructor(
     private readonly services: HostServices,
@@ -258,7 +264,7 @@ export class HostDispatcher {
     this.activity = services.activity ?? noopActivity()
     this.env = services.env ?? FALLBACK_ENV
     this.gate = opts.gate ?? gateRequest
-    this.handlers = buildHandlers(services, this.env, this.events, this.quiesced.signal)
+    this.handlers = buildHandlers(services, this.env, this.events, this.quiesced.signal, { secretWritesInFlight: () => this.secretWritesInFlight })
   }
 
   /**
@@ -300,16 +306,23 @@ export class HostDispatcher {
     // mcp:authorize leases only its final commit (McpService), not its browser wait (round 6 item 9).
     const leased = mutation && !COMMIT_LEASED_CHANNELS.has(g.channel)
     const release = leased ? this.activity.acquire('inFlightRpcMutations', channel) : undefined
+    let writing = false
     try {
       // Wave 7 (cli-standalone.md 5.6): a call that will store a non-empty secret value prepares the vault first (Node /
       // inproc hosts create it lazily), inside the mutation lease, so the handler stays synchronous. Clears and calls
-      // that store nothing never reach prepareWrite. The predicates live in storesSecret.ts.
+      // that store nothing never reach prepareWrite. The predicates live in storesSecret.ts. From the prepare until the
+      // handler settles the call counts as a secret write in flight (secrets:reset refuses meanwhile).
       const secrets = this.services.secrets
-      if (secrets && g.entry.storesSecret?.(g.args, this.storesSecretView(secrets))) await secrets.prepareWrite()
+      if (secrets && g.entry.storesSecret?.(g.args, this.storesSecretView(secrets))) {
+        writing = true
+        this.secretWritesInFlight += 1
+        await secrets.prepareWrite()
+      }
       return await handler(ctx, ...g.args)
     } catch (err) {
       throw rpcError(err)
     } finally {
+      if (writing) this.secretWritesInFlight -= 1
       release?.()
     }
   }
@@ -327,11 +340,19 @@ export class HostDispatcher {
 
   /** Read-only host state for the storesSecret predicates (never a secret value). */
   private storesSecretView(secrets: SecretStoreApi): StoresSecretHostView {
+    const { projects, mcp, runs } = this.services
     return {
-      project: (projectId) => this.services.projects.get(projectId),
-      libraryEntry: (entryId) => this.services.mcp.libraryEntries().find((e) => e.id === entryId),
+      project: (projectId) => projects.get(projectId),
+      libraryEntry: (entryId) => mcp.libraryEntries().find((e) => e.id === entryId),
       secretKeys: (prefix) => secrets.keys(prefix),
-      secretStatus: (key) => secrets.status(key)
+      secretStatus: (key) => secrets.status(key),
+      pendingProposal: (runId, proposalId) => runs.pendingCards(runId).proposals.find((p) => p.id === proposalId),
+      pendingInstall: (runId, requestId) => {
+        const request = runs.pendingCards(runId).mcpInstalls.find((r) => r.id === requestId)
+        const projectId = runs.summary(runId)?.projectId
+        return request && projectId ? { request, projectId } : undefined
+      },
+      authorizeTarget: (target) => mcp.authorizeTargetKind(target as unknown as McpAuthTarget)
     }
   }
 
@@ -401,7 +422,13 @@ export function checkRunOverrides(
  * Every request handler registerIpc and its register*Ipc helpers had, moved verbatim (same sync / async shape, same
  * error messages). The first handler argument is the InvokeContext instead of the IpcMainInvokeEvent.
  */
-function buildHandlers(services: HostServices, env: HostDispatchEnv, events: HostEventBus, quiesced: AbortSignal): Record<string, Handler> {
+/** Dispatcher state a handler may read (never a secret). */
+interface DispatcherState {
+  /** RPC calls between their predicate-driven prepareWrite() and the end of their handler (HostDispatcher.invokeRpc). */
+  secretWritesInFlight(): number
+}
+
+function buildHandlers(services: HostServices, env: HostDispatchEnv, events: HostEventBus, quiesced: AbortSignal, state: DispatcherState): Record<string, Handler> {
   const table: Record<string, Handler> = Object.create(null) as Record<string, Handler>
   const handle = (channel: string, fn: Handler): void => {
     table[channel] = fn
@@ -697,7 +724,7 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
   registerSkillIpc(handle, skills, skillEvaluation)
   registerCapabilityIpc(handle, capabilities)
   if (kit) registerKitBundleIpc(handle, kit)
-  registerSecretsIpc(handle, services.secrets)
+  registerSecretsIpc(handle, services.secrets, mcp, state)
 
   // ---- Host protocol methods the dispatcher answers (socket only; runs:subscribe / host.subscribe are transport) ----
   handle(HOST_METHODS.hostStatus, () => {
@@ -1006,26 +1033,35 @@ function registerMcpIpc(
 
 
 /**
- * secrets:* (Wave 7, cli-standalone.md 5.6). Contracts only: secrets:status answers the store's report (a host without
- * a vault reports the legacy file), the others refuse until WP-H builds them (argument builders, the reset refusal
- * while a write, an OAuth flow or a token refresh is in flight) over WP-G's store. Never a secret value.
+ * secrets:* (Wave 7, cli-standalone.md 5.6, 5.7) over the host's SecretStore: inputs rebuilt by secretsArgs.ts, never a
+ * secret value either way. secrets:reset is refused while an MCP sign-in, a token refresh or a predicate-prepared secret
+ * write (invokeRpc) is in flight (the store itself refuses while one of its own writes is, and takes its write queue for
+ * the move).
  */
-function registerSecretsIpc(handle: Register, secrets: SecretStoreApi | undefined): void {
+function registerSecretsIpc(
+  handle: Register,
+  secrets: SecretStoreApi | undefined,
+  mcp: Partial<Pick<McpService, 'activeAuthorizationCount' | 'refreshingCount'>>,
+  state: DispatcherState
+): void {
   const store = (): SecretStoreApi => {
     if (!secrets) throw new HostRpcFailure('bad_request', 'This OrgAI host has no secret store.')
     return secrets
   }
-  const notYet = (channel: string): never => {
-    throw new HostRpcFailure('bad_request', `${channel} is not available in this build yet.`)
-  }
-  handle(SECRETS_IPC.secretsStatus, (_e, input?: unknown): Promise<SecretsStatusResult> => {
-    const probe = input && typeof input === 'object' && (input as SecretsStatusInput).probe === true
-    return store().statusReport(probe ? { probe: true } : {})
+  handle(SECRETS_IPC.secretsStatus, (_e, input?: unknown): Promise<SecretsStatusResult> => store().statusReport(secretsStatusArgs(input)))
+  handle(SECRETS_IPC.secretsInit, (_e, input?: unknown): Promise<SecretsInitResult> => store().initVault(secretsInitArgs(input)))
+  handle(SECRETS_IPC.secretsReset, (_e, input: unknown): Promise<SecretsResetResult> => {
+    const i = secretsResetArgs(input)
+    const s = store()
+    // 5.6 Reset: refused while an OAuth flow, a token refresh or a secret write is in flight (a call whose storesSecret
+    // predicate prepared the vault and whose handler has not settled yet); the store refuses while its own writes are.
+    if ((mcp.activeAuthorizationCount?.() ?? 0) > 0 || (mcp.refreshingCount?.() ?? 0) > 0 || state.secretWritesInFlight() > 0) {
+      throw new Error(VAULT_MESSAGES.resetBusy)
+    }
+    return s.resetVault(i)
   })
-  handle(SECRETS_IPC.secretsInit, (): Promise<SecretsInitResult> => notYet(SECRETS_IPC.secretsInit))
-  handle(SECRETS_IPC.secretsReset, (): Promise<SecretsResetResult> => notYet(SECRETS_IPC.secretsReset))
-  handle(SECRETS_IPC.secretsUndelete, (): SecretsUndeleteResult => notYet(SECRETS_IPC.secretsUndelete))
-  handle(SECRETS_IPC.secretsConfirmDelete, (): SecretsConfirmDeleteResult => notYet(SECRETS_IPC.secretsConfirmDelete))
+  handle(SECRETS_IPC.secretsUndelete, (_e, input: unknown): SecretsUndeleteResult => store().undelete(secretsUndeleteArgs(input)))
+  handle(SECRETS_IPC.secretsConfirmDelete, (_e, input: unknown): SecretsConfirmDeleteResult => store().confirmDeletes(secretsConfirmDeleteArgs(input)))
 }
 
 /**

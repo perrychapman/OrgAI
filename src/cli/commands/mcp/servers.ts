@@ -47,7 +47,8 @@ export function serverJson(s: McpServerInfo): Record<string, unknown> {
     auth: s.auth,
     ...(s.spec.libraryId ? { libraryId: s.spec.libraryId } : {}),
     ...(s.libraryMissing ? { libraryMissing: true } : {}),
-    ...(s.secretScope ? { secretScope: s.secretScope } : {})
+    ...(s.secretScope ? { secretScope: s.secretScope } : {}),
+    ...(s.unreadableSecrets?.length ? { unreadableSecrets: s.unreadableSecrets } : {})
   }
 }
 
@@ -101,6 +102,8 @@ export async function mcpShow(ctx: CliContext, args: string[]): Promise<number> 
       lines.push(...definitionLines(s.spec, s))
       lines.push(`Auth:         ${authText(s.auth)}`)
       if (s.missingSecrets.length) lines.push(`Missing:      ${s.missingSecrets.map(safeLine).join(', ')} (the server does not start until they are set)`)
+      // Wave 7 (5.4): a value saved but unreadable on this host says why instead of "set it again".
+      for (const u of s.unreadableSecrets ?? []) lines.push(`Unreadable:   ${safeLine(u.name)}: ${safeLine(u.reason)}`)
       if (s.spec.libraryId) lines.push(`Library:      ${safeLine(s.spec.libraryId)}${s.libraryMissing ? ' (the entry is gone; not passed to runs)' : ''}${s.secretScope ? `, secrets from the ${s.secretScope}` : ''}`)
       for (const [k, v] of Object.entries(s.spec.envOverrides ?? {})) lines.push(`Override:     ${safeLine(k)}=${safeLine(v)}`)
       for (const [k, v] of Object.entries(s.spec.headerOverrides ?? {})) lines.push(`Override:     ${safeLine(k)}: ${safeLine(v)}`)

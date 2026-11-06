@@ -6628,6 +6628,27 @@ export const SECRETS_IPC = {
 
 export type SecretsIpcChannel = (typeof SECRETS_IPC)[keyof typeof SECRETS_IPC]
 
+/** A secret slot that holds a value this host cannot read (5.4), with the reason to show instead of "unset". */
+export interface UnreadableSecretSlot {
+  /** The slot name (an env var or header name). Never a value. */
+  name: string
+  /** SecretStatus.unreadable: "Saved by the OrgAI app and not yet shared with the orgai command: open the app once", ... */
+  reason: string
+}
+
+export interface McpServerInfo {
+  /**
+   * Wave 7 (5.4): slots whose stored value cannot be read on this host, with why. They are also in missingSecrets
+   * (a run cannot use them) and never in envSet / headersSet. Absent when there are none.
+   */
+  unreadableSecrets?: UnreadableSecretSlot[]
+}
+
+export interface McpLibraryInfo {
+  /** Wave 7 (5.4): as McpServerInfo.unreadableSecrets, for the entry's own slots. */
+  unreadableSecrets?: UnreadableSecretSlot[]
+}
+
 // ---- Start a project from a repository (clone or fork) ----
 //
 // The renderer asks main to clone a repository into a folder, optionally forking it first through the user's own gh

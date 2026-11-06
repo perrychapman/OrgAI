@@ -103,7 +103,7 @@ export class SetupService {
        */
       mcp?: {
         libraryEntries(): McpLibraryEntry[]
-        applyProposal(projectId: string, payload: McpServersProposalPayload, opts?: { projectOnly?: boolean }): Project
+        applyProposal(projectId: string, payload: McpServersProposalPayload, opts?: { projectOnly?: boolean; secrets?: Record<string, string> }): Project
         applyLibraryProposal(payload: McpServersProposalPayload, opts?: LibraryProposalOptions): void
       }
       /**
@@ -241,7 +241,11 @@ export class SetupService {
 
   /** Apply an approved proposal. Returns the saved project. */
   /** opts.projectOnly (work runs): an MCP proposal never writes the MCP library (review M3) and a skills proposal never changes the skill library (review L3). */
-  applyProposal(projectId: string, proposal: Proposal, opts: { projectOnly?: boolean } = {}): Project {
+  /**
+   * opts.secrets (Wave 7, round 6 item 10): an MCP proposal's typed values, handed to the MCP hook, which stores them
+   * before it changes any record. Other kinds ignore it.
+   */
+  applyProposal(projectId: string, proposal: Proposal, opts: { projectOnly?: boolean; secrets?: Record<string, string> } = {}): Project {
     const project = this.projects.get(projectId)
     if (!project) throw new Error('Project not found')
     const setup: ProjectSetup = project.setup ?? { kind: 'existing', state: 'in_progress' }

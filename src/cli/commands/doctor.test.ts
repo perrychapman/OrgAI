@@ -41,14 +41,16 @@ describe('orgai doctor', () => {
     const data = liveDataDir()
     const h = new FakeHostClient({
       'auth:status': () => ({ loggedIn: true, mode: 'subscription', method: 'claude.ai' }),
-      'connections:list': () => [{ connection: { id: 'anthropic', enabled: true, tierModels: {}, auth: { mode: 'apiKey', apiKey: 'sk-secret' } }, status: { state: 'connected' }, modelCount: 3, isDefault: true }]
+      'connections:list': () => [{ connection: { id: 'anthropic', enabled: true, tierModels: {}, auth: { mode: 'apiKey', apiKey: 'sk-secret' } }, status: { state: 'connected' }, modelCount: 3, isDefault: true }],
+      // Wave 7 (secretsChecks): the host's vault report, probe included.
+      'secrets:status': () => ({ state: 'open', scheme: 'keychain', probe: { ok: true }, counts: { vault: 2, legacy: 2, unreadable: 0, overlay: 0 }, pendingLegacy: 0, softDeletes: [], orphanedKeys: 0, orphanedVaults: [], legacyFile: 'ok', canWriteBack: false })
     })
     const f = fakeContext({ paths: { userDataDir: dir, dataDir: data }, connect: [h], globals: { outputFormat: 'json' }, env: { ORGAI_MOCK: '1' } })
     expect(await runDoctor(f.ctx, [])).toBe(EXIT.ok)
     const j = JSON.parse(f.out())
     expect(j.ok).toBe(true)
     const ids = j.checks.map((c: { id: string }) => c.id)
-    expect(ids).toEqual(['node', 'install', 'data-dir', 'run-dir', 'daemon-json', 'socket', 'terminal-access', 'version', 'launcher', 'shim', 'git', 'mock', 'install-channel', 'orgai-on-path', 'node-certs', 'claude-runtime', 'codex-runtime', 'auth', 'connections'])
+    expect(ids).toEqual(['node', 'install', 'data-dir', 'run-dir', 'daemon-json', 'socket', 'terminal-access', 'version', 'launcher', 'shim', 'git', 'mock', 'install-channel', 'orgai-on-path', 'node-certs', 'claude-runtime', 'codex-runtime', 'vault', 'vault-key-store', 'legacy-secrets', 'auth', 'connections'])
     expect(j.checks.every((c: { status: string }) => c.status !== 'fail')).toBe(true)
     expect(j.checks.find((c: { id: string }) => c.id === 'connections').detail).toBe('Anthropic connected (default)')
     expect(f.out()).not.toContain('sk-secret')

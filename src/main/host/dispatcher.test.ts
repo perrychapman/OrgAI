@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { HOST_IPC, HOST_METHODS, IPC, KIT_IPC, SECRETS_IPC } from '@shared/types'
 import type { ActivityLeaseKind, HostScope, HostState, Project, RunSummary } from '@shared/types'
 import { DEFAULT_APP_SETTINGS } from '@shared/defaults'
+import { VAULT_MESSAGES } from '../store/vaultTypes'
 
 // The dispatcher must load and run without Electron (cli-spec 3.1.1).
 vi.mock('electron', () => {
@@ -424,18 +425,104 @@ describe('host-specific handlers', () => {
     expect(host.stop.mock.calls).toEqual([[{ force: true }], [{ force: false }], [{ force: false }], [{ force: false, handoff: true }], [{ force: true }]])
   })
 
-  it('secrets:* (Wave 7 contracts): status answers the store report, the others refuse until built; no store refuses all', async () => {
+  it('secrets:* (Wave 7): every channel goes to the store with its input rebuilt; bad input is bad_request; no store refuses all', async () => {
     const report = { state: 'absent' }
-    const statusReport = vi.fn(async () => report)
-    const d = new HostDispatcher(services({ secrets: { statusReport } as never }), { gate: fakeGate() })
-    await expect(d.invokeRpc(SECRETS_IPC.secretsStatus, [], RPC)).resolves.toBe(report)
-    await expect(d.invokeRpc(SECRETS_IPC.secretsStatus, [{ probe: true }], RPC)).resolves.toBe(report)
-    expect(statusReport.mock.calls).toEqual([[{}], [{ probe: true }]])
-    for (const c of [SECRETS_IPC.secretsInit, SECRETS_IPC.secretsReset, SECRETS_IPC.secretsUndelete, SECRETS_IPC.secretsConfirmDelete]) {
-      await expect(d.invokeRpc(c, [{}], RPC), c).rejects.toMatchObject({ code: 'bad_request', message: `${c} is not available in this build yet.` })
+    const store = {
+      statusReport: vi.fn(async () => report),
+      initVault: vi.fn(async () => ({ action: 'created', status: report })),
+      resetVault: vi.fn(async () => ({ movedTo: 'vault.json.reset-1', status: report })),
+      undelete: vi.fn(() => ({ restored: true })),
+      confirmDeletes: vi.fn(() => ({ confirmed: ['k1'] }))
     }
+    const d = new HostDispatcher(services({ secrets: store as never }), { gate: fakeGate() })
+    await expect(d.invokeRpc(SECRETS_IPC.secretsStatus, [], RPC)).resolves.toBe(report)
+    await expect(d.invokeRpc(SECRETS_IPC.secretsStatus, [{ probe: true, extra: 1 }], RPC)).resolves.toBe(report)
+    await d.invokeRpc(SECRETS_IPC.secretsStatus, [{ probe: 'yes' }], RPC)
+    expect(store.statusReport.mock.calls).toEqual([[{}], [{ probe: true }], [{}]])
+
+    const keyFile = join(dir, 'outside', 'vault.key')
+    await d.invokeRpc(SECRETS_IPC.secretsInit, [], RPC)
+    await d.invokeRpc(SECRETS_IPC.secretsInit, [{ keyFile, importKeyFile: true, evil: 1 }], RPC)
+    expect(store.initVault.mock.calls).toEqual([[{}], [{ keyFile, importKeyFile: true }]])
+    for (const bad of [{ keyFile: 'relative/key' }, { keyFile: 42 }, { importKeyFile: true }, { keyFile: `${keyFile}\u0000x` }, { keyFile, importKeyFile: 'yes' }, 'x']) {
+      await expect(d.invokeRpc(SECRETS_IPC.secretsInit, [bad], RPC), JSON.stringify(bad)).rejects.toMatchObject({ code: 'bad_request' })
+    }
+    expect(store.initVault).toHaveBeenCalledTimes(2)
+
+    await expect(d.invokeRpc(SECRETS_IPC.secretsReset, [{}], RPC)).rejects.toMatchObject({ code: 'bad_request' })
+    await expect(d.invokeRpc(SECRETS_IPC.secretsReset, [{ confirm: true }], RPC)).resolves.toMatchObject({ movedTo: 'vault.json.reset-1' })
+    expect(store.resetVault.mock.calls).toEqual([[{ confirm: true }]])
+
+    await expect(d.invokeRpc(SECRETS_IPC.secretsUndelete, [{ key: 'mcp:p:s:env:TOKEN' }], RPC)).resolves.toEqual({ restored: true })
+    for (const bad of [{}, { key: '' }, { key: ' padded' }, { key: 'a\nb' }, { key: 'x'.repeat(513) }]) {
+      await expect(d.invokeRpc(SECRETS_IPC.secretsUndelete, [bad], RPC), JSON.stringify(bad)).rejects.toMatchObject({ code: 'bad_request' })
+    }
+    expect(store.undelete.mock.calls).toEqual([[{ key: 'mcp:p:s:env:TOKEN' }]])
+
+    await expect(d.invokeRpc(SECRETS_IPC.secretsConfirmDelete, [{ keys: ['k1', 'k1', 'k2'] }], RPC)).resolves.toEqual({ confirmed: ['k1'] })
+    expect(store.confirmDeletes.mock.calls).toEqual([[{ keys: ['k1', 'k2'] }]])
+    await expect(d.invokeRpc(SECRETS_IPC.secretsConfirmDelete, [{ keys: 'k1' }], RPC)).rejects.toMatchObject({ code: 'bad_request' })
+    await expect(d.invokeRpc(SECRETS_IPC.secretsConfirmDelete, [{ keys: Array.from({ length: 1001 }, (_, i) => `k${i}`) }], RPC)).rejects.toMatchObject({ code: 'bad_request' })
+
     const bare = new HostDispatcher(services(), { gate: fakeGate() })
-    await expect(bare.invokeRpc(SECRETS_IPC.secretsStatus, [], RPC)).rejects.toMatchObject({ code: 'bad_request' })
+    for (const c of Object.values(SECRETS_IPC)) await expect(bare.invokeRpc(c, [{ confirm: true, key: 'k', keys: [] }], RPC), c).rejects.toMatchObject({ code: 'bad_request' })
+  })
+
+  it('secrets:reset is refused while an MCP sign-in or a token refresh is in flight (5.6 Reset)', async () => {
+    const resetVault = vi.fn(async () => ({ movedTo: null, status: { state: 'absent' } }))
+    const counts = { auth: 1, refresh: 0 }
+    const mcp = { activeAuthorizationCount: () => counts.auth, refreshingCount: () => counts.refresh }
+    const d = new HostDispatcher(services({ secrets: { resetVault } as never, mcp: mcp as never }), { gate: fakeGate() })
+    await expect(d.invokeRpc(SECRETS_IPC.secretsReset, [{ confirm: true }], RPC)).rejects.toThrow(VAULT_MESSAGES.resetBusy)
+    counts.auth = 0
+    counts.refresh = 2
+    await expect(d.invokeRpc(SECRETS_IPC.secretsReset, [{ confirm: true }], RPC)).rejects.toThrow(VAULT_MESSAGES.resetBusy)
+    expect(resetVault).not.toHaveBeenCalled()
+    counts.refresh = 0
+    await d.invokeRpc(SECRETS_IPC.secretsReset, [{ confirm: true }], RPC)
+    expect(resetVault).toHaveBeenCalledTimes(1)
+  })
+
+  it('secrets:reset is refused while a predicate-prepared secret write is between its prepare and the end of its handler', async () => {
+    // Round 2 review: a reset landing after `await prepareWrite()` and before the handler's set() moved the vault aside
+    // under it (VaultNotReady on a Node host).
+    let finishPrepare!: () => void
+    const prepareWrite = vi.fn(() => new Promise<void>((r) => (finishPrepare = r)))
+    let finishHandler!: () => void
+    const statusReport = vi.fn(() => new Promise((r) => (finishHandler = () => r({ state: 'open' }))))
+    const resetVault = vi.fn(async () => ({ movedTo: 'vault.json.reset-1', status: { state: 'absent' } }))
+    const gate: GateFn = (channel, params) => ({
+      channel,
+      args: Array.isArray(params) ? params : [],
+      entry: { direction: 'request', scope: 'read', bulk: false, params: [], source: 'test', storesSecret: (args) => (args[0] as { store?: boolean } | undefined)?.store === true },
+      mutation: false
+    })
+    const d = new HostDispatcher(services({ secrets: { prepareWrite, statusReport, resetVault } as never, mcp: { activeAuthorizationCount: () => 0, refreshingCount: () => 0 } as never }), { gate })
+    const reset = () => d.invokeRpc(SECRETS_IPC.secretsReset, [{ confirm: true }], RPC)
+    const write = d.invokeRpc(SECRETS_IPC.secretsStatus, [{ store: true }], RPC)
+    await vi.waitFor(() => expect(prepareWrite).toHaveBeenCalledTimes(1))
+    // Preparing (the custodian may take up to 10 s): busy.
+    await expect(reset()).rejects.toThrow(VAULT_MESSAGES.resetBusy)
+    finishPrepare()
+    await vi.waitFor(() => expect(statusReport).toHaveBeenCalledTimes(1))
+    // Prepared, handler not settled yet: still busy.
+    await expect(reset()).rejects.toThrow(VAULT_MESSAGES.resetBusy)
+    expect(resetVault).not.toHaveBeenCalled()
+    finishHandler()
+    await write
+    await reset()
+    expect(resetVault).toHaveBeenCalledTimes(1)
+    // A refused prepare or a throwing handler ends the write too; a call whose predicate is false never counts.
+    prepareWrite.mockRejectedValueOnce(new Error('locked'))
+    await expect(d.invokeRpc(SECRETS_IPC.secretsStatus, [{ store: true }], RPC)).rejects.toThrow('locked')
+    statusReport.mockRejectedValueOnce(new Error('boom'))
+    prepareWrite.mockResolvedValueOnce(undefined)
+    await expect(d.invokeRpc(SECRETS_IPC.secretsStatus, [{ store: true }], RPC)).rejects.toThrow('boom')
+    const plain = d.invokeRpc(SECRETS_IPC.secretsStatus, [{ store: false }], RPC)
+    await reset()
+    expect(resetVault).toHaveBeenCalledTimes(2)
+    finishHandler()
+    await plain
   })
 
   it('invokeRpc awaits secrets.prepareWrite() before the handler only when storesSecret is true (Wave 7)', async () => {
