@@ -25,7 +25,7 @@ import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { unpackedLayout } from './lib/packLayout.mjs'
 import { installInfoFor } from './lib/npmPackage.mjs'
-import { commitOf, removeInstallInfo, writeInstallInfo } from './write-install-info.mjs'
+import { commitOf, withInstallInfoCleanup, writeInstallInfo } from './write-install-info.mjs'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -181,10 +181,11 @@ function rotate(p, { dryRun, log, root }) {
 }
 
 /**
- * `options.platform` / `options.env` are for tests (default: this process); `options.exec` replaces execFileSync.
+ * `options.platform` / `options.env` are for tests (default: this process); `options.exec` replaces execFileSync;
+ * `options.signalTarget` replaces `process` for the signal listeners.
  */
 export function main(argv = process.argv.slice(2), root = ROOT, log = console.log, options = {}) {
-  const { platform = process.platform, env = process.env, exec = execFileSync } = options
+  const { platform = process.platform, env = process.env, exec = execFileSync, signalTarget = process } = options
   const unknown = argv.filter((a) => a !== '--dry-run')
   if (unknown.length) throw new Error(`Unknown argument(s): ${unknown.join(' ')}. Only --dry-run is supported.`)
   const dryRun = argv.includes('--dry-run')
@@ -202,7 +203,7 @@ export function main(argv = process.argv.slice(2), root = ROOT, log = console.lo
   if (child.note) log(`${dryRun ? 'Would set' : 'Setting'} for every step: ${child.note}`)
   const cliDir = path.join(root, 'out', 'cli')
   const appInstallInfo = installInfoFor('app', readVersion(root), commitOf(root, env))
-  try {
+  const runSteps = () => {
     for (const [pkg, bin, args] of steps) {
       // The app's bundle says channel 'app' (cli-standalone.md 3.5): written after the CLI build, before electron-builder.
       if (pkg === 'electron-builder') {
@@ -221,10 +222,11 @@ export function main(argv = process.argv.slice(2), root = ROOT, log = console.lo
       }
       exec(process.execPath, [localBin(root, pkg, bin), ...args], { cwd: root, stdio: 'inherit', windowsHide: true, env: child.env })
     }
-  } finally {
-    // The checkout's own out/cli reads as channel 'dev' again (HostLauncher treats 'app' as a packaged layout).
-    if (!dryRun) removeInstallInfo(cliDir)
   }
+  // The checkout's own out/cli reads as channel 'dev' again afterwards (HostLauncher treats 'app' as a packaged
+  // layout), also after Ctrl+C or a kill during electron-builder (withInstallInfoCleanup).
+  if (dryRun) runSteps()
+  else withInstallInfoCleanup(cliDir, runSteps, signalTarget)
 
   const info = formatBuildInfo({ version: readVersion(root), commit: gitShortSha(root), builtAt: new Date() })
   if (dryRun) {

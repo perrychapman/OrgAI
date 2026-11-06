@@ -346,6 +346,47 @@ describe('otherCli (Wave 7, cli-standalone.md 8.2)', () => {
     expect(status.otherCli).toEqual({ path: '/x/orgai', channel: 'npm' })
   })
 
+  posixOnly('npm\'s own link at the shim path (npm prefix ~/.local) is another orgai, named as 8.2 says, never "remove it"', async () => {
+    // npm prefix ~/.local: npm writes ~/.local/bin/orgai -> ../lib/node_modules/orgai/out/cli/orgai.mjs
+    const cli = join(home, '.local', 'lib', 'node_modules', 'orgai', 'out', 'cli')
+    mkdirSync(cli, { recursive: true })
+    writeFileSync(join(cli, 'orgai.mjs'), '')
+    writeFileSync(join(cli, 'install.json'), JSON.stringify({ channel: 'npm', version: '0.2.0' }))
+    mkdirSync(binDir, { recursive: true })
+    symlinkSync(join(cli, 'orgai.mjs'), shim)
+    const svc = createCliShimService(deps({ loginPath: `${binDir}:/usr/bin` }))
+    const status = svc.status()
+    expect(status).toMatchObject({ state: 'foreign', otherCli: { path: shim, channel: 'npm', version: '0.2.0' } })
+    expect(status.reason).toBe(`The orgai command from npm (0.2.0) is on your PATH at ${shim}. OrgAI leaves it alone.`)
+    expect(status.reason).not.toMatch(/Remove or rename/)
+    const r = await svc.install()
+    expect(r.ok).toBe(false)
+    expect(r.message).toBe(status.reason)
+    expect(lstatSync(shim).isSymbolicLink()).toBe(true)
+  })
+
+  posixOnly('an unknown file at the shim path still reads as foreign with the remove-or-rename reason', () => {
+    mkdirSync(binDir, { recursive: true })
+    writeFileSync(shim, '#!/bin/sh\necho mine\n', { mode: 0o755 })
+    const status = createCliShimService(deps({ loginPath: `${binDir}:/usr/bin` })).status()
+    expect(status).toMatchObject({ state: 'foreign', otherCli: { path: shim } })
+    expect(status.reason).toMatch(/was not written by OrgAI\. Remove or rename it/)
+  })
+
+  it('an npm or archive orgai later on PATH wins over an earlier unknown one (it is the one that blocks Install)', () => {
+    const later = createCliShimService(
+      deps({ findOnPath: () => [{ path: '/usr/local/bin/orgai', kind: 'unknown' }, { path: '/opt/homebrew/bin/orgai', kind: 'npm', channel: 'npm', version: '0.2.0' }] })
+    ).status()
+    expect(later.otherCli).toEqual({ path: '/opt/homebrew/bin/orgai', channel: 'npm', version: '0.2.0' })
+    const archive = createCliShimService(
+      deps({ findOnPath: () => [{ path: '/a/orgai', kind: 'dev', channel: 'dev' }, { path: '/b/orgai', kind: 'archive', channel: 'archive' }] })
+    ).status()
+    expect(archive.otherCli).toEqual({ path: '/b/orgai', channel: 'archive' })
+    // with no npm or archive one, the first other one in PATH order
+    const first = createCliShimService(deps({ findOnPath: () => [{ path: '/a/orgai', kind: 'unknown' }, { path: '/b/orgai', kind: 'dev', channel: 'dev' }] })).status()
+    expect(first.otherCli).toEqual({ path: '/a/orgai' })
+  })
+
   it('a PATH reader that throws leaves otherCli unset and logs', () => {
     const warn = vi.fn()
     const status = createCliShimService(

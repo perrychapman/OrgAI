@@ -117,8 +117,14 @@ export function cliShimView(status: CliShimStatus, platform: string, home?: stri
         remove: true,
         ...hint
       }
-    case 'foreign':
-      return { line: cleanShown(status.reason) || CLI_SHIM_FOREIGN, remove: false }
+    case 'foreign': {
+      // An npm or archive orgai (often npm's own link at the shim path, npm prefix ~/.local) is named as 8.2 says,
+      // never as a file to remove. Any other other orgai is added after the reason unless it is that same file.
+      if (other && blocking) return { line: otherCliLine(other, platform, home), remove: false }
+      const reason = cleanShown(status.reason) || CLI_SHIM_FOREIGN
+      const sameFile = other !== undefined && other.path === status.path
+      return { line: `${reason}${other && !sameFile ? also : ''}`, remove: false }
+    }
     default:
       return { line: cleanShown(status.reason) || CLI_SHIM_UNAVAILABLE, remove: false }
   }

@@ -221,15 +221,23 @@ export function createCliShimService(deps: CliShimDeps): CliShimService {
   const foreignReason = (path: string): string =>
     `${path} already exists and was not written by OrgAI. Remove or rename it to install the orgai command.`
 
+  /** The 8.2 sentence for an npm or archive orgai at the shim path (main-side; the renderer words it the same way). */
+  const userCliReason = (other: NonNullable<CliShimStatus['otherCli']>, path: string): string => {
+    const v = other.version && /^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}$/.test(other.version) ? ` (${other.version})` : ''
+    const from = other.channel === 'npm' ? 'from npm' : 'from the portable archive'
+    return `The orgai command ${from}${v} is on your PATH at ${path}. OrgAI leaves it alone.`
+  }
+
   function onPath(binDir: string): boolean | undefined {
     const list = deps.loginPath !== undefined ? deps.loginPath : (deps.env.PATH ?? deps.env.Path)
     return dirOnPath(binDir, list, platform, deps.home)
   }
 
   /**
-   * Wave 7 (cli-standalone.md 8.2): the first orgai on the login shell PATH that is neither this install's shim nor a
-   * link to this install's launcher, nor that launcher itself (an npm install, an archive, another app's shim). Undefined when there is none or
-   * PATH could not be read; never throws.
+   * Wave 7 (cli-standalone.md 8.2): another orgai on the login shell PATH, i.e. one that is neither an OrgAI shim at
+   * this install's shim path, nor a link to or shim of this install's launcher, nor that launcher itself. An npm or
+   * archive install anywhere on PATH wins over an earlier unknown file (it is the one that blocks Install); else the
+   * first other one in PATH order. Undefined when there is none or PATH could not be read; never throws.
    */
   function otherCli(r: Ready): CliShimStatus['otherCli'] {
     const pathList = deps.loginPath !== undefined ? deps.loginPath : (deps.env.PATH ?? deps.env.Path)
@@ -254,9 +262,16 @@ export function createCliShimService(deps: CliShimDeps): CliShimService {
     const shim = keys(r.path)
     const launcher = keys(r.launcher)
     // This install's own launcher counts as ours whether its folder is on PATH itself or a link or shim reaches it.
-    const ours = (e: OrgaiOnPathEntry): boolean =>
-      [...keys(e.path)].some((k) => shim.has(k) || launcher.has(k)) || (e.launcher !== undefined && launcher.has(samePathKey(platform, e.launcher)))
-    const other = entries.find((e) => !ours(e))
+    // The shim path counts only while an OrgAI shim sits there (installed or outdated): npm's link at the same path
+    // (npm prefix ~/.local) is another orgai, never ours (review round 2).
+    const ours = (e: OrgaiOnPathEntry): boolean => {
+      const ks = [...keys(e.path)]
+      if (ks.some((k) => launcher.has(k))) return true
+      if (e.launcher !== undefined && launcher.has(samePathKey(platform, e.launcher))) return true
+      return e.kind === 'app-shim' && ks.some((k) => shim.has(k))
+    }
+    const others = entries.filter((e) => !ours(e))
+    const other = others.find((e) => e.channel === 'npm' || e.channel === 'archive') ?? others[0]
     if (!other) return undefined
     return { path: other.path, ...(other.channel !== undefined ? { channel: other.channel } : {}), ...(other.version !== undefined ? { version: other.version } : {}) }
   }
@@ -268,7 +283,11 @@ export function createCliShimService(deps: CliShimDeps): CliShimService {
     const withPath = path === undefined ? {} : { onPath: path }
     const found = inspect(r.path)
     if (found.kind === 'none') return { state: 'not-installed', ...base, ...withPath }
-    if (found.kind === 'foreign') return { state: 'foreign', ...base, ...withPath, reason: foreignReason(r.path) }
+    if (found.kind === 'foreign') {
+      // npm's (or the archive's) own orgai at the shim path: say so (8.2) instead of asking the user to remove it.
+      const atShim = other !== undefined && (other.channel === 'npm' || other.channel === 'archive') && samePathKey(platform, other.path) === samePathKey(platform, r.path)
+      return { state: 'foreign', ...base, ...withPath, reason: atShim ? userCliReason(other, r.path) : foreignReason(r.path) }
+    }
     const parsed = parseCliShim(found.text, platform, deps.env)
     if (parsed && parsed.launcher === r.launcher && parsed.userDataDir === r.userDataDir) {
       return { state: 'installed', ...base, target: parsed.launcher, ...withPath }

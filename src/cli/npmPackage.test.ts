@@ -250,6 +250,16 @@ describe('release.yml publish-npm', () => {
     expect(job).toMatch(/id-token: write/)
     expect(job).toMatch(/--provenance/)
   })
+  it('refuses to publish unless the npm-publish environment set NPM_PUBLISH_ENABLED, before any other step', () => {
+    // GitHub auto-creates a missing environment with no reviewers, so the environment name alone guards nothing.
+    const steps = job.slice(job.indexOf('    steps:'))
+    const guard = steps.indexOf('Require a configured npm-publish environment')
+    expect(guard).toBeGreaterThan(-1)
+    expect(guard).toBeLessThan(steps.indexOf('- uses:'))
+    expect(steps.indexOf('npm publish')).toBeGreaterThan(guard)
+    expect(job).toMatch(/ENABLED: \$\{\{ vars\.NPM_PUBLISH_ENABLED \}\}/)
+    expect(job).toMatch(/if \[ "\$ENABLED" != "true" \]; then[\s\S]*?exit 1/)
+  })
   it('falls back to the NPM_TOKEN secret through an npmrc that names the variable, never the value', () => {
     expect(job).toMatch(/NPM_TOKEN: \$\{\{ secrets\.NPM_TOKEN \}\}/)
     expect(job).toContain("'//registry.npmjs.org/:_authToken=${NPM_TOKEN}'")

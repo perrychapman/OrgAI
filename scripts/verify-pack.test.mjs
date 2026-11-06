@@ -17,6 +17,8 @@ import {
   missingPackages,
   parseArgs,
   stopRefusal,
+  statusHostKind,
+  hostWasStopped,
   verifyEnv,
   versionMatches,
   versionChannelMatches,
@@ -293,7 +295,8 @@ function fakeRunner(calls, overrides = {}) {
       const inproc = a.includes('inproc')
       return overrides[inproc ? 'inproc' : 'host'] ?? { code: 0, stdout: JSON.stringify({ outcome: 'completed', exitCode: 0 }), stderr: '' }
     }
-    if (a.includes('daemon')) return { code: 0, stdout: '', stderr: '' }
+    if (a.includes('daemon') && a.includes('status')) return overrides.status ?? { code: 0, stdout: JSON.stringify({ running: true, status: { hostKind: 'headless-host', state: 'ready' } }), stderr: '' }
+    if (a.includes('daemon')) return overrides.stop ?? { code: 0, stdout: JSON.stringify({ stopped: true, hostInstanceId: 'abc123abc123' }), stderr: '' }
     if (a.includes('install') && a.includes('--prefix')) {
       if (overrides.npmInstall) return overrides.npmInstall
       const bin = globalLayout(process.platform, a[a.indexOf('--prefix') + 1]).bin
@@ -332,10 +335,10 @@ test('main: a complete fake release passes every check and cleans its temp dirs'
   try {
     const r = await runMain(fake, [])
     assert.equal(r.code, 0, r.out)
-    for (const id of ['(a)', '(b)', '(c)', '(d)', '(e)', '(f) exec host', '(f) daemon stop']) assert.match(r.out, new RegExp(`ok +${id.replace(/[()]/g, '\\$&')}`), id)
+    for (const id of ['(a)', '(b)', '(c)', '(d)', '(e)', '(f) exec host', '(f) host kind', '(f) daemon stop']) assert.match(r.out, new RegExp(`ok +${id.replace(/[()]/g, '\\$&')}`), id)
     assert.match(r.out, /All checks passed/)
     assert.deepEqual(r.leftovers, [], 'temp dirs removed')
-    assert.equal(r.calls.length, 5)
+    assert.equal(r.calls.length, 6)
     for (const c of r.calls) {
       assert.equal(c.env.ORGAI_MOCK, '1')
       assert.equal(c.env.NO_COLOR, '1')
@@ -411,11 +414,12 @@ test('main --npm-tarball: the npm orgai drives the packed app (g), with ORGAI_EL
     const r = await runMain(fake, ['--npm-tarball', tgz])
     assert.equal(r.code, 0, r.out)
     assert.match(r.out, /ok +\(g\) npm exec host/)
+    assert.match(r.out, /ok +\(g\) npm host kind/)
     assert.match(r.out, /ok +\(g\) npm daemon stop/)
     const install = r.calls.find((c) => c.args.includes('install'))
     assert.ok(install.args.includes(tgz))
     const npmExec = r.calls.filter((c) => c.env?.ORGAI_ELECTRON_PATH)
-    assert.equal(npmExec.length, 2, 'exec and daemon stop')
+    assert.equal(npmExec.length, 3, 'exec, daemon status and daemon stop')
     assert.equal(npmExec[0].env.ORGAI_ELECTRON_PATH, fake.paths.appBinary)
     assert.ok(npmExec[0].args.includes('auto') && npmExec[0].args.includes('exec'))
     assert.ok(npmExec[0].env.ORGAI_DATA_DIR.includes('orgai-verify-npmcli-'), 'its own data folder')
@@ -429,6 +433,47 @@ test('main --npm-tarball: the npm orgai drives the packed app (g), with ORGAI_EL
   } finally {
     fs.rmSync(fake.base, { recursive: true, force: true })
   }
+})
+
+test('main --npm-tarball: (g) fails when no background host ran, even though exec and stop exit 0', async () => {
+  const fake = fakeRelease(['@anthropic-ai/claude-agent-sdk', 'zod'])
+  try {
+    const tgz = path.join(fake.base, 'orgai-1.0.0.tgz')
+    fs.writeFileSync(tgz, 'not really a tarball')
+    // exec ran in-process (a --host auto fallback): no host answers status, and stop exits 0 with nothing stopped
+    const none = {
+      status: { code: 1, stdout: JSON.stringify({ running: false, reason: 'no_host', daemon: null }), stderr: '' },
+      stop: { code: 0, stdout: JSON.stringify({ stopped: false, running: false }), stderr: '' }
+    }
+    const r = await runMain(fake, ['--skip-host', '--npm-tarball', tgz], none)
+    assert.equal(r.code, 1, r.out)
+    assert.match(r.out, /ok +\(g\) npm exec host/)
+    assert.match(r.out, /fail +\(g\) npm host kind {2}expected a running headless-host host, got none/)
+    assert.match(r.out, /fail +\(g\) npm daemon stop {2}exit 0 but no host was stopped/)
+    // the same in (f)
+    const f = await runMain(fake, [], none)
+    assert.equal(f.code, 1)
+    assert.match(f.out, /fail +\(f\) daemon stop {2}exit 0 but no host was stopped/)
+    // a host of the wrong kind (an in-process host answering) fails the kind check alone
+    const inproc = await runMain(fake, ['--skip-host', '--npm-tarball', tgz], {
+      status: { code: 0, stdout: JSON.stringify({ running: true, status: { hostKind: 'inproc' } }), stderr: '' }
+    })
+    assert.match(inproc.out, /fail +\(g\) npm host kind {2}expected a running headless-host host, got inproc/)
+    assert.match(inproc.out, /ok +\(g\) npm daemon stop/)
+  } finally {
+    fs.rmSync(fake.base, { recursive: true, force: true })
+  }
+})
+
+test('statusHostKind and hostWasStopped read the daemon JSON documents', () => {
+  assert.equal(statusHostKind(JSON.stringify({ running: true, status: { hostKind: 'headless-host' } })), 'headless-host')
+  assert.equal(statusHostKind(JSON.stringify({ running: false, daemon: { hostKind: 'headless-host' } })), undefined)
+  assert.equal(statusHostKind('No OrgAI host is running.'), undefined)
+  assert.equal(statusHostKind(JSON.stringify({ running: true })), undefined)
+  assert.equal(hostWasStopped(JSON.stringify({ stopped: true, hostInstanceId: 'x' })), true)
+  assert.equal(hostWasStopped(JSON.stringify({ stopped: false, running: false })), false)
+  assert.equal(hostWasStopped('OrgAI host stopped.'), false)
+  assert.equal(hostWasStopped(''), false)
 })
 
 test('versionChannelMatches and appInstallInfoProblem', () => {

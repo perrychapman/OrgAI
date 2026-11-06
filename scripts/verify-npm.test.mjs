@@ -245,6 +245,7 @@ function fakeRun(calls, { pkg, sw }, answers = {}) {
       fs.writeFileSync(path.join(packageDir, 'out', 'cli', 'install.json'), JSON.stringify({ channel: 'npm', version: VERSION }))
       put('node_modules/a', { name: 'a', version: '1.0.0', ...(answers.script ? { scripts: { postinstall: 'node x' } } : {}) })
       put(`node_modules/@anthropic-ai/claude-agent-sdk-${process.platform}-${process.arch}`, { name: 'native', version: '0.3.1' })
+      if (answers.otherPlatform) put('node_modules/@anthropic-ai/claude-agent-sdk-plan9-mips', { name: 'other', version: '0.3.1' })
       fs.mkdirSync(path.dirname(bin), { recursive: true })
       fs.writeFileSync(bin, '')
       return { code: 0, stdout: '', stderr: '' }
@@ -314,6 +315,22 @@ test('main: an unlisted install script, a wrong version and a failed exec each f
     fs.writeFileSync(path.join(fake.root, 'release', 'npm', `orgai-${VERSION}.tgz`), makeTgz({ 'package/package.json': JSON.stringify(fake.pkg), 'package/npm-shrinkwrap.json': '{}' }))
     const w = await runMain(fake)
     assert.match(w.out, /fail +\(1\) install +node_modules\/a is 1\.0\.0, shrinkwrap says 1\.0\.1/)
+  } finally {
+    fs.rmSync(fake.root, { recursive: true, force: true })
+  }
+})
+
+test('main: a failed step 1 (another platform\'s runtime installed) skips step 1b instead of a second full install', async () => {
+  const fake = fakeRoot()
+  try {
+    fake.sw.packages['node_modules/@anthropic-ai/claude-agent-sdk-plan9-mips'] = { version: '0.3.1', optional: true, os: ['plan9'], cpu: ['mips'] }
+    fs.writeFileSync(path.join(fake.root, 'release', 'npm', `orgai-${VERSION}.tgz`), makeTgz({ 'package/package.json': JSON.stringify(fake.pkg), 'package/npm-shrinkwrap.json': JSON.stringify(fake.sw) }))
+    const r = await runMain(fake, { otherPlatform: true })
+    assert.equal(r.code, 1)
+    assert.match(r.out, /fail +\(1\) install +npm installed 1 package\(s\) for other platforms/)
+    assert.match(r.out, /skip +\(1b\) --ignore-scripts +skipped: step 1 failed/)
+    assert.equal(r.calls.filter((c) => c.args.includes('install')).length, 1, 'one install only')
+    assert.match(r.out, /ok +\(2\) --version/, 'the later steps still run')
   } finally {
     fs.rmSync(fake.root, { recursive: true, force: true })
   }

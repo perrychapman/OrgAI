@@ -603,8 +603,11 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
         : `${tree.size} packages ${shrinkwrap ? `match the shrinkwrap for ${platform}-${arch}` : 'installed'}; ${native} present; no unlisted install scripts${notes1.length ? ` (${notes1.join('; ')})` : ''}`
     )
 
-    // (1b) --ignore-scripts, only when nothing needs a script
-    if (!allowlistProblem && allowlist.length === 0) {
+    // (1b) --ignore-scripts, only when nothing needs a script and step 1 passed: a second full install after a failed
+    // step 1 (most often npm installing every platform's Claude runtime from the shrinkwrap, about 2 GB) only repeats
+    // that download for a result that is already a failure.
+    if (problems1.length > 0) report('(1b) --ignore-scripts', 'skip', 'skipped: step 1 failed, so a second full install would tell nothing new')
+    else if (!allowlistProblem && allowlist.length === 0) {
       const prefix2 = path.join(work, 'prefix-ignore-scripts')
       fs.mkdirSync(prefix2)
       const r = await npmInstall(prefix2, ['--ignore-scripts'])

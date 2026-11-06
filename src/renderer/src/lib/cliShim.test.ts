@@ -149,6 +149,18 @@ describe('cliShimView', () => {
     })
   }
 
+  it('foreign names an npm or archive orgai as 8.2 says, and adds another other orgai after the reason', () => {
+    const at = '/Users/a/.local/bin/orgai'
+    const base = { path: at, binDir: '/Users/a/.local/bin', reason: `${at} already exists and was not written by OrgAI. Remove or rename it to install the orgai command.` }
+    const npm = cliShimView({ state: 'foreign', ...base, otherCli: { path: at, channel: 'npm', version: '0.2.0' } }, 'darwin', '/Users/a')
+    expect(npm).toEqual({ line: 'The orgai command from npm (0.2.0) is on your PATH.', remove: false })
+    const later = cliShimView({ state: 'foreign', ...base, otherCli: { path: '/Users/a/bin/orgai' } }, 'darwin', '/Users/a')
+    expect(later.line).toBe(`${base.reason} Another orgai command is also on your PATH: ~/bin/orgai.`)
+    expect(later.primary).toBeUndefined()
+    const same = cliShimView({ state: 'foreign', ...base, otherCli: { path: at } }, 'darwin', '/Users/a')
+    expect(same.line).toBe(base.reason)
+  })
+
   it('foreign without a reason still says something', () => {
     expect(cliShimView(st('darwin', 'foreign'), 'darwin').line).toMatch(/orgai/)
   })

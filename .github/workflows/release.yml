@@ -37,7 +37,9 @@ permissions:
 env:
   # 'full' ships npm-shrinkwrap.json (cli-standalone.md 3.1). npm 11.12.1 then installs every platform's Claude runtime
   # (about 2 GB) and verify-npm step 1 fails, so publish-npm stays blocked until the owner decides; 'none' builds with
-  # --no-shrinkwrap (direct dependencies pinned exactly, about 300 MB per install). Keep ci.yml's value in step.
+  # --no-shrinkwrap (direct dependencies pinned exactly, about 300 MB per install). This default blocks every npm
+  # release until it is decided (an open question for the owner, D-shrinkwrap). ci.yml installs 'none' on PRs to keep
+  # their cost down and dry-runs the full build.
   NPM_SHRINKWRAP: full
 
 jobs:
@@ -275,6 +277,12 @@ jobs:
   # D2 fallback: npm configures a trusted publisher only on a package that already exists, so the first version (and
   # any release before trusted publishing is set up) needs a granular automation token in the `npm-publish`
   # environment's NPM_TOKEN secret. With the secret set it is used; without it the job relies on OIDC alone.
+  # Setup guard (review round 2): GitHub creates a missing `npm-publish` environment on first use with NO protection
+  # rules, which would publish without a reviewer. So the job refuses unless the environment variable
+  # NPM_PUBLISH_ENABLED is 'true'. Set it ONLY as a variable of the `npm-publish` environment, after adding its
+  # required reviewers (Settings > Environments > npm-publish: Required reviewers, Deployment branches: main, then
+  # Environment variables: NPM_PUBLISH_ENABLED = true); never as a repository or organisation variable, which every
+  # job sees. A refused run publishes nothing and can be re-run once the environment is set up.
   publish-npm:
     needs: [meta, build, npm-package, verify-npm]
     if: needs.meta.outputs.publish == 'true'
@@ -285,6 +293,15 @@ jobs:
       contents: read
       id-token: write
     steps:
+      - name: Require a configured npm-publish environment
+        shell: bash
+        env:
+          ENABLED: ${{ vars.NPM_PUBLISH_ENABLED }}
+        run: |
+          if [ "$ENABLED" != "true" ]; then
+            echo "::error::Not publishing: the npm-publish environment is not set up. Add required reviewers to it, then set its environment variable NPM_PUBLISH_ENABLED=true (never at repository level), and re-run this job."
+            exit 1
+          fi
       - uses: actions/setup-node@v4
         with:
           node-version: 24

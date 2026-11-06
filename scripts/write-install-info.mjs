@@ -68,6 +68,46 @@ export function removeInstallInfo(cliDir) {
   }
 }
 
+/** Signals that end a build from outside (Ctrl+C, a kill, a closed terminal). SIGKILL cannot be caught. */
+export const CLEANUP_SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP']
+
+/**
+ * Runs `fn` and removes `<cliDir>/install.json` afterwards, also when the build is ended by a signal (review round 2:
+ * a `finally` alone does not run when Ctrl+C ends node). While `fn` runs, a listener per CLEANUP_SIGNALS removes the
+ * file, drops the listeners and re-raises the signal so the process still ends the way it was asked to. A listener
+ * also stops node's default exit, so during a synchronous child (execFileSync) the child ends first (it got the same
+ * Ctrl+C), the throw reaches the `finally`, and the file is gone either way. `proc` is for tests.
+ */
+export function withInstallInfoCleanup(cliDir, fn, proc = process) {
+  const listeners = new Map()
+  const drop = () => {
+    for (const [sig, l] of listeners) proc.removeListener(sig, l)
+    listeners.clear()
+  }
+  const cleanup = () => {
+    try {
+      removeInstallInfo(cliDir)
+    } catch {
+      /* best effort: the next build empties out/cli */
+    }
+  }
+  for (const sig of CLEANUP_SIGNALS) {
+    const l = () => {
+      cleanup()
+      drop()
+      proc.kill(proc.pid, sig)
+    }
+    listeners.set(sig, l)
+    proc.on(sig, l)
+  }
+  try {
+    return fn()
+  } finally {
+    drop()
+    cleanup()
+  }
+}
+
 /** The local electron-builder's cli script (node_modules/electron-builder, its "electron-builder" bin). */
 export function electronBuilderBin(root) {
   const dir = path.join(root, 'node_modules', 'electron-builder')
@@ -82,7 +122,7 @@ export function electronBuilderBin(root) {
   return path.join(dir, rel)
 }
 
-export function main(argv = process.argv.slice(2), root = ROOT, log = console.log, env = process.env, exec = execFileSync) {
+export function main(argv = process.argv.slice(2), root = ROOT, log = console.log, env = process.env, exec = execFileSync, signalTarget = process) {
   const cliDir = path.join(root, 'out', 'cli')
   if (argv.length === 1 && argv[0] === '--remove') {
     log(removeInstallInfo(cliDir) ? `Removed ${path.relative(root, path.join(cliDir, INSTALL_INFO_FILE))}` : 'No install.json to remove.')
@@ -98,16 +138,26 @@ export function main(argv = process.argv.slice(2), root = ROOT, log = console.lo
   else throw new Error('Use: write-install-info --channel app|npm|archive [--electron-builder <args...>], or --remove')
   const info = installInfoFor(channel, readVersion(root), commitOf(root, env))
   const bin = builderArgs ? electronBuilderBin(root) : undefined
-  const target = writeInstallInfo(cliDir, info)
-  log(`Wrote ${path.relative(root, target)}: ${JSON.stringify(info)}`)
-  if (!bin) return
-  try {
-    exec(process.execPath, [bin, ...builderArgs], { cwd: root, stdio: 'inherit', windowsHide: true, env })
-  } finally {
-    // The checkout's own out/cli reads as channel 'dev' again (HostLauncher treats 'app' as a packaged layout).
-    removeInstallInfo(cliDir)
-    log(`Removed ${path.relative(root, target)}`)
+  if (!bin) {
+    const target = writeInstallInfo(cliDir, info)
+    log(`Wrote ${path.relative(root, target)}: ${JSON.stringify(info)}`)
+    return
   }
+  // The checkout's own out/cli reads as channel 'dev' again afterwards (HostLauncher treats 'app' as a packaged
+  // layout), even after Ctrl+C or a kill during electron-builder.
+  withInstallInfoCleanup(
+    cliDir,
+    () => {
+      const target = writeInstallInfo(cliDir, info)
+      log(`Wrote ${path.relative(root, target)}: ${JSON.stringify(info)}`)
+      try {
+        exec(process.execPath, [bin, ...builderArgs], { cwd: root, stdio: 'inherit', windowsHide: true, env })
+      } finally {
+        log(`Removing ${path.relative(root, target)}`)
+      }
+    },
+    signalTarget
+  )
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {

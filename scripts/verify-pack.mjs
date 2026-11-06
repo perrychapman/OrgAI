@@ -15,12 +15,14 @@
 //   (c) `orgai --version` prints package.json's version and `channel app`
 //   (d) `orgai --output-format json doctor`: launcher ok from the packaged app, node ok, no check failed
 //   (e) `orgai --host inproc exec --create-project` with [mock:exec-plan] in a temp git repo: exit 0, 'completed'
-//   (f) the same exec with the default host (the packaged app spawned with --headless-host), then `orgai daemon stop`
+//   (f) the same exec with the default host (the packaged app spawned with --headless-host), then `orgai daemon status`
+//       must name a running headless-host and `orgai daemon stop` must answer `stopped: true` (exit 0 alone is not
+//       enough: stop also exits 0 when no host was running)
 //   (g) only with --npm / --npm-tarball (Wave 7, cli-standalone.md 3.4 "Packaged integration"): the npm tarball
 //       installed into a temp prefix (`npm i -g <tgz>`, so a shrinkwrap is not applied: this checks discovery, not the
 //       tree), then that npm `orgai --host auto exec` with ORGAI_ELECTRON_PATH at the packed app's binary on its own
 //       temp data folder: the npm CLI must start the packaged app headless and finish the mock run; then its
-//       `orgai daemon stop`. Needs npm and the registry (the dependencies are downloaded).
+//       `orgai daemon status` (a running headless-host) and `daemon stop` (`stopped: true`), as in (f). Needs npm and the registry (the dependencies are downloaded).
 //
 // Environment of every command: this one without ELECTRON_RUN_AS_NODE, ORGAI_SECRET_*, ORGAI_ELECTRON_PATH,
 // ORGAI_APP_ROOT and ORGAI_DATA_DIR, plus ORGAI_DATA_DIR=<temp>, ORGAI_MOCK=1, NO_COLOR=1. HOME is untouched. Writes
@@ -197,6 +199,47 @@ export async function stopHost(orgai, sleep = (ms) => new Promise((r) => setTime
     s = await orgai(['--output-format', 'json', 'daemon', 'stop'])
   }
   return s
+}
+
+/** The host kind the packaged app reports when the CLI spawned it in the background (`--headless-host`). */
+export const BACKGROUND_HOST_KIND = 'headless-host'
+
+/**
+ * The `hostKind` of the host an `orgai --output-format json daemon status` document describes, or undefined when it
+ * says no host answered (`running: false`) or is not that document. Pure.
+ */
+export function statusHostKind(stdout) {
+  const doc = parseJson(stdout)
+  if (!doc || typeof doc !== 'object' || Array.isArray(doc) || doc.running !== true) return undefined
+  const kind = doc.status && typeof doc.status === 'object' ? doc.status.hostKind : undefined
+  return typeof kind === 'string' ? kind : undefined
+}
+
+/**
+ * True only when an `orgai --output-format json daemon stop` document says a host was stopped (`stopped: true`).
+ * `daemon stop` also exits 0 when no host was running (`{ stopped: false, running: false }`), so exit 0 alone proves
+ * nothing. Pure.
+ */
+export function hostWasStopped(stdout) {
+  const doc = parseJson(stdout)
+  return !!doc && typeof doc === 'object' && !Array.isArray(doc) && doc.stopped === true
+}
+
+/**
+ * Proof that a background host ran the exec: `daemon status` must name a running `headless-host`, then the stop must
+ * say it stopped one. Reports `<prefix> host kind` and `<prefix> daemon stop`.
+ */
+async function checkBackgroundHost(orgai, report, prefix, stopOk) {
+  const st = await orgai(['--output-format', 'json', 'daemon', 'status'])
+  const kind = statusHostKind(st.stdout)
+  report(
+    `${prefix} host kind`,
+    kind === BACKGROUND_HOST_KIND,
+    kind === BACKGROUND_HOST_KIND ? `a ${BACKGROUND_HOST_KIND} host is running` : `expected a running ${BACKGROUND_HOST_KIND} host, got ${kind ?? 'none'}: ${showRun(st)}`
+  )
+  const s = await stopHost(orgai)
+  const stopped = s.code === 0 && hostWasStopped(s.stdout)
+  report(`${prefix} daemon stop`, stopped, stopped ? stopOk : s.code === 0 ? `exit 0 but no host was stopped: ${showRun(s)}` : showRun(s))
 }
 
 /** `{ outcome, exitCode }` of an `exec --output-format json` document, or undefined. Pure. */
@@ -439,7 +482,7 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
   }
   try {
     if (!launcherThere) {
-      for (const id of ['(c) --version', '(d) doctor', '(e) exec inproc', ...(opts.skipHost ? [] : ['(f) exec host', '(f) daemon stop'])]) skipped(id)
+      for (const id of ['(c) --version', '(d) doctor', '(e) exec inproc', ...(opts.skipHost ? [] : ['(f) exec host', '(f) host kind', '(f) daemon stop'])]) skipped(id)
     } else {
       // (c)
       const v = await orgai(['--version'], userDataDir)
@@ -471,8 +514,7 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
         await execCase('(e) exec inproc', ['--host', 'inproc'])
         if (!opts.skipHost) {
           await execCase('(f) exec host', [])
-          const s = await stopHost((args) => orgai(args, repo))
-          report('(f) daemon stop', s.code === 0, s.code === 0 ? 'the background app stopped' : showRun(s))
+          await checkBackgroundHost((args) => orgai(args, repo), report, '(f)', 'the background app stopped')
         }
       }
     }
@@ -518,9 +560,10 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
             const r = await npmOrgai(['--host', 'auto', 'exec', '--create-project', '--output-format', 'json', EXEC_PROMPT])
             const o = execOutcome(r.stdout)
             const ok = r.code === 0 && o?.outcome === 'completed'
-            report('(g) npm exec host', ok, ok ? "the npm orgai started the packed app headless: exit 0, outcome 'completed'" : `expected exit 0 and 'completed', got outcome ${o?.outcome ?? 'none'}: ${showRun(r)}`)
-            const s = await stopHost(npmOrgai)
-            report('(g) npm daemon stop', s.code === 0, s.code === 0 ? 'the npm orgai stopped the packed app' : showRun(s))
+            report('(g) npm exec host', ok, ok ? "exit 0, outcome 'completed'" : `expected exit 0 and 'completed', got outcome ${o?.outcome ?? 'none'}: ${showRun(r)}`)
+            // exec alone could have run in-process (a --host auto fallback): only a running headless-host that the
+            // stop then stops proves the npm CLI started the packed app.
+            await checkBackgroundHost(npmOrgai, report, '(g) npm', 'the npm orgai started and stopped the packed app headless')
           }
         }
       }
