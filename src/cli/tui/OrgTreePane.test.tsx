@@ -46,6 +46,28 @@ function mount(props: Partial<OrgTreePaneProps> = {}, e: TuiEnv = env()) {
 
 const lines = (frame: string | undefined): string[] => (frame ?? '').split('\n')
 
+describe('OrgTreePane chips in screen-reader mode (review M2)', () => {
+  const chipRows = [
+    row('root', { depth: 0, label: 'orchestrator', role: 'orchestrator', isRoot: true, waiting: 1, worktreeChip: '1f' }),
+    row('dev-1', { label: 'dev-1', waiting: 3, worktreeChip: '2f' })
+  ]
+
+  it('reads the waiting and worktree chips as words', () => {
+    const f = mount({ rows: chipRows, width: 100 }, env({ screenReader: true })).lastFrame() ?? ''
+    expect(f).toContain('1 decision open')
+    expect(f).toContain('1 file changed')
+    expect(f).toContain('3 decisions open')
+    expect(f).toContain('2 files changed')
+    expect(f).not.toMatch(/! \d|\b\df\b/)
+  })
+
+  it('keeps the short chips without a screen reader', () => {
+    const f = mount({ rows: chipRows, width: 100 }, env()).lastFrame() ?? ''
+    expect(f).toContain('! 3')
+    expect(f).toContain('2f')
+  })
+})
+
 describe('OrgTreePane', () => {
   it('renders the title, one line per row with role, state word and cost, the selected activity once, and the earlier group', () => {
     const r = mount()

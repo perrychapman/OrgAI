@@ -264,6 +264,17 @@ function worktreeChipOf(wt: NonNullable<AgentInstance['worktree']>): string | un
   }
 }
 
+/** Words for a screen reader: "1 decision open", "3 decisions open". */
+export const waitingWords = (n: number): string => `${n} decision${n === 1 ? '' : 's'} open`
+
+/** Words for a worktree chip: "2f" -> "2 files changed" ("1 file changed"); the state chips are already words. */
+export function worktreeChipWords(chip: string): string {
+  const m = /^(\d+)f$/.exec(chip)
+  if (!m) return chip
+  const n = Number(m[1])
+  return `${n} file${n === 1 ? '' : 's'} changed`
+}
+
 const GROUP_NAMES_MAX = 6
 
 function groupRow(runId: string, depth: number, members: AgentInstance[], over: Partial<OrgTreeRow>): OrgTreeRow {

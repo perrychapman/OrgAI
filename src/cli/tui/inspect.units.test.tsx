@@ -7,7 +7,8 @@ import { describe, expect, it, vi } from 'vitest'
 import type { RunSummary } from '../../shared/types'
 import { FakeHostClient, fakeContext, project, record, summary } from '../testing/fakeContext'
 import { InputBus } from './context'
-import { InspectorPane } from './InspectorPane'
+import { InspectorPane, inspectorFacts } from './InspectorPane'
+import { textWidth } from './panes/text'
 import { OrgTreePane, messageLines } from './OrgTreePane'
 import { Providers, ESC_RE, char, env, key, press } from './panes/testUtil'
 import { runPickLines, runPickRows } from './runPick'
@@ -106,13 +107,27 @@ describe('InspectorPane', () => {
   })
 
   it('ASCII and screen-reader modes use plain words and no glyphs', () => {
-    for (const e of [env({ color: false, unicode: false }), env({ color: false, unicode: false, screenReader: true })]) {
-      const f = mountInspector({}, e).lastFrame() ?? ''
-      expect(f).not.toMatch(/[─│•→●]/)
-      expect(f).toContain('-> d: decide')
-    }
+    const ascii = mountInspector({}, env({ color: false, unicode: false })).lastFrame() ?? ''
+    expect(ascii).not.toMatch(/[─│•→●·]/)
+    expect(ascii).toContain('-> d: decide')
+    expect(ascii).toContain('-> w: diff')
     const sr = mountInspector({}, env({ color: false, unicode: false, screenReader: true })).lastFrame() ?? ''
+    expect(sr).not.toMatch(/[─│•→●·]/)
+    expect(sr).not.toContain('->  d')
+    expect(sr).toContain('press d to decide')
+    expect(sr).toContain('press w for the diff')
     expect(sr.split('\n')[0]).toBe('writer-1 (Writer)  Needs you')
+  })
+
+  it('a long worktree branch is cut in the middle, the status and target stay', () => {
+    const wt = { branch: 'worktree-agent-' + 'x'.repeat(60) + '-tail', status: 'active', files: 3, mergeTarget: 'main' }
+    const v = view({ worktree: wt as never })
+    const facts = inspectorFacts(v, env({ color: false }), 70)
+    const line = facts.find(([l]) => l.startsWith('worktree'))![0]
+    expect(textWidth(line) + textWidth(facts.find(([l]) => l.startsWith('worktree'))![1] ?? '')).toBeLessThanOrEqual(70)
+    expect(line).toContain('-tail')
+    expect(line).toContain('active')
+    expect(line).toContain('main')
   })
 
   it('hostile text cannot carry a control sequence (rows arrive sanitized; the frame has no ESC)', () => {

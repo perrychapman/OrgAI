@@ -8,6 +8,7 @@ import { runIndexMap, runName, runTag } from '../../shared/view/runLabels'
 import { statusWordOfSummary } from '../render'
 import { offersRetro } from './selectors'
 import { cleanLine } from './slashCommands'
+import { textWidth, truncateEnd } from './panes/text'
 
 export interface RunPickRow {
   id: string
@@ -35,9 +36,10 @@ export function runPickRows(runs: readonly RunSummary[], projectId?: string): Ru
 }
 
 /** One line per row: the marker, tag, status word and title (cut to `width`). */
-export function runPickLines(rows: readonly RunPickRow[], sel: number, width: number, followedId?: string): string[] {
+export function runPickLines(rows: readonly RunPickRow[], sel: number, width: number, followedId?: string, ellipsis = '…'): string[] {
   return rows.map((r, i) => {
-    const text = `${i === sel ? '>' : ' '} ${r.tag.padEnd(5)} ${r.status.padEnd(22)} ${r.title}${r.id === followedId ? '  (following)' : ''}`
-    return text.length > width ? `${text.slice(0, Math.max(0, width - 1))}…` : text
+    const pad = (s: string, n: number): string => s + ' '.repeat(Math.max(0, n - textWidth(s)))
+    const text = `${i === sel ? '>' : ' '} ${pad(r.tag, 5)} ${pad(r.status, 22)} ${r.title}${r.id === followedId ? '  (following)' : ''}`
+    return truncateEnd(text, width, ellipsis)
   })
 }

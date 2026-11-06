@@ -17,7 +17,9 @@ export function cleanLine(s: string | undefined, max = 200): string {
   const t = sanitizeTty(s ?? '')
     .replace(/\s+/g, ' ')
     .trim()
-  return t.length > max ? `${t.slice(0, max - 1)}…` : t
+  // Cut on code points so a surrogate pair (emoji, rare CJK) is never split into a lone half.
+  const cps = Array.from(t)
+  return cps.length > max ? `${cps.slice(0, max - 1).join('')}…` : t
 }
 
 /** Free text from an argument (a prompt): sanitized, trimmed, newlines kept. */

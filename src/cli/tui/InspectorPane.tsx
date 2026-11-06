@@ -8,11 +8,13 @@
  */
 import { Box } from 'ink'
 import { useTuiEnv } from './context'
-import { glyphs, stateGlyph, stateTone } from './theme'
+import { asciiOnly, glyphs, stateGlyph, stateTone } from './theme'
 import { TranscriptPane } from './TranscriptPane'
 import type { InputEvent, InspectorView, PartialRow, PaneProps, PeerCount, TranscriptRow, TuiEnv } from './types'
 import { PaneLines, alignSegs, cutSegs, type PaneLine, type Seg } from './panes/lines'
 import { paneHint } from './keymap'
+import { clipMiddle } from './OrgTreePane'
+import { textWidth, truncateEnd } from './panes/text'
 
 export interface InspectorPaneProps extends PaneProps {
   view: InspectorView
@@ -36,8 +38,9 @@ function peerNames(peers: readonly PeerCount[]): string {
 }
 
 /** The fact lines in priority order (the last ones are dropped first in a short pane). */
-export function inspectorFacts(v: InspectorView, env: TuiEnv): string[][] {
+export function inspectorFacts(v: InspectorView, env: TuiEnv, width?: number): string[][] {
   const g = glyphs(env)
+  const sr = env.screenReader
   const sep = ` ${g.bullet} `
   const out: string[][] = []
   const stats: string[] = []
@@ -50,11 +53,16 @@ export function inspectorFacts(v: InspectorView, env: TuiEnv): string[][] {
   if (stats.length > 0) out.push([stats.join(sep)])
   if (v.activity || v.waiting > 0) {
     const act = v.activity || 'Waiting for you'
-    out.push([`now      ${act}`, v.waiting > 0 ? `${g.arrow} d: decide${v.waiting > 1 ? ` (${v.waiting} cards)` : ''}` : ''])
+    out.push([`now      ${act}`, v.waiting > 0 ? `${sr ? 'press d to decide' : `${g.arrow} d: decide`}${v.waiting > 1 ? ` (${v.waiting} cards)` : ''}` : ''])
   }
   if (v.worktree) {
     const w = v.worktree
-    out.push([`worktree ${w.branch}  ${w.status}  ${w.files} file${w.files === 1 ? '' : 's'} ${g.arrow} ${w.mergeTarget}`, `${g.arrow} w: diff`])
+    const hint = sr ? 'press w for the diff' : `${g.arrow} w: diff`
+    const tail = `  ${w.status}  ${w.files} file${w.files === 1 ? '' : 's'} ${g.arrow} ${w.mergeTarget}`
+    // A long branch is cut in the middle (its end stays) so the status, file count and target stay visible.
+    const room = width === undefined ? undefined : width - textWidth('worktree ') - textWidth(tail) - textWidth(hint) - 1
+    const branch = room !== undefined && room >= 8 ? clipMiddle(w.branch, room, g.ellipsis) : w.branch
+    out.push([width === undefined ? `worktree ${branch}${tail}` : truncateEnd(`worktree ${branch}${tail}`, width, g.ellipsis), hint])
   }
   if (v.msgOut.length > 0 || v.msgIn.length > 0) {
     const parts: string[] = []
@@ -80,8 +88,8 @@ export function InspectorPane(props: InspectorPaneProps) {
     { text: v.stateWord, tone: stateTone(v.state) }
   ]
 
-  const facts = inspectorFacts(v, env)
-  const hintLine = props.focused ? paneHint('inspector', v.waiting > 0 ? 'waiting' : v.worktree ? 'agent' : 'bare', 5, width) : ''
+  const facts = inspectorFacts(v, env, width)
+  const hintLine = props.focused ? paneHint('inspector', v.waiting > 0 ? 'waiting' : v.worktree ? 'agent' : 'bare', 5, width, asciiOnly(env) ? ' | ' : ' · ') : ''
   // Fixed lines: header, facts, rule and the hint; the transcript keeps at least three rows or the facts give way.
   let shownFacts = facts.length
   const fixed = (n: number): number => 1 + n + 1 + (hintLine ? 1 : 0)

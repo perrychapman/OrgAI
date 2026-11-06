@@ -8,6 +8,7 @@ import type { AgentInstance, RoleUsage, RunUsage, TokenUsage } from '../../share
 import { agentRows, formatHitRate, runSignals, timeRows, type AgentRow } from '../../shared/view/usageView'
 import { costView, formatDuration, formatTokens, runCostInput, sumCosts, type CostInput } from '../../shared/view/cost'
 import { safeLine } from '../output'
+import { textWidth } from './panes/text'
 import { chainRuns, runTagOf } from './selectors'
 import type { TuiRun, TuiState } from './types'
 
@@ -17,10 +18,12 @@ const promptOf = (t: TokenUsage): number => t.input + t.cacheRead + t.cacheWrite
 
 /** Left-aligned cells padded to the column widths; the last cell is not padded. */
 function table(head: string[], rows: string[][], rightFrom = 1): string[] {
-  const widths = head.map((h, i) => Math.max(h.length, ...rows.map((r) => (r[i] ?? '').length)))
+  const widths = head.map((h, i) => Math.max(textWidth(h), ...rows.map((r) => textWidth(r[i] ?? ''))))
+  const padEnd = (c: string, w: number): string => c + ' '.repeat(Math.max(0, w - textWidth(c)))
+  const padStart = (c: string, w: number): string => ' '.repeat(Math.max(0, w - textWidth(c))) + c
   const line = (cells: string[]): string =>
     cells
-      .map((c, i) => (i === 0 ? c.padEnd(widths[i]) : i >= rightFrom ? c.padStart(widths[i]) : c.padEnd(widths[i])))
+      .map((c, i) => (i === 0 ? padEnd(c, widths[i]) : i >= rightFrom ? padStart(c, widths[i]) : padEnd(c, widths[i])))
       .join('  ')
       .trimEnd()
   return [line(head), ...rows.map(line)]

@@ -33,7 +33,8 @@ import { SLASH_COMMANDS } from './slashCommands'
 import { SlashPalette } from './SlashPalette'
 import { StatusBar } from './StatusBar'
 import type { TuiTerminal } from './terminal'
-import { toneColor } from './theme'
+import { asciiOnly, glyphs, toneColor } from './theme'
+import { truncateEnd } from './panes/text'
 import { TranscriptPane } from './TranscriptPane'
 import type {
   ComposerMode,
@@ -124,8 +125,8 @@ export const PLACEHOLDERS: Record<ComposerMode, string> = {
 }
 
 /** The status line's hint for a focus (keymap.ts holds the keys; panes show their own keys on their bottom line). */
-export function hintsFor(focus: FocusTarget, readOnly: boolean, stopOnQuit = false, row?: RowKind): string {
-  return statusHint(focus, { readOnly, stopOnQuit, ...(row ? { row } : {}) })
+export function hintsFor(focus: FocusTarget, readOnly: boolean, stopOnQuit = false, row?: RowKind, hintEnv?: TuiEnv): string {
+  return statusHint(focus, { readOnly, stopOnQuit, ...(row ? { row } : {}), ...(hintEnv ? { env: hintEnv } : {}) })
 }
 
 /**
@@ -469,7 +470,27 @@ export function App(props: AppProps) {
       })
   }, [session, notify, doExit, label, conn])
 
-  const confirm = useCallback((question: string): Promise<boolean> => new Promise<boolean>((resolve) => setOverlay({ kind: 'confirm', question, resolve })), [])
+  // A confirm that is replaced by another (or still open at unmount) answers "no", so no caller waits forever.
+  const pendingConfirm = useRef<((yes: boolean) => void) | undefined>(undefined)
+  const confirm = useCallback(
+    (question: string): Promise<boolean> =>
+      new Promise<boolean>((resolve) => {
+        pendingConfirm.current?.(false)
+        pendingConfirm.current = resolve
+        setOverlay({ kind: 'confirm', question, resolve: (yes) => {
+          if (pendingConfirm.current === resolve) pendingConfirm.current = undefined
+          resolve(yes)
+        } })
+      }),
+    []
+  )
+  useEffect(
+    () => () => {
+      pendingConfirm.current?.(false)
+      pendingConfirm.current = undefined
+    },
+    []
+  )
 
   const requestQuit = useCallback(() => {
     if (launch.stopOnQuit) {
@@ -829,8 +850,9 @@ export function App(props: AppProps) {
           .catch((err: unknown) => notify(`Could not open ${row.tag}: ${errText(err)}`, 'warn'))
       } else if (row && ch === 'r') {
         setOverlay(undefined)
-        if (!row.retro) {
-          notify(`${row.tag} is not an ended work run of a project, so it has no retrospective.`, 'warn')
+        // Same availability check as /retro: a read-only session or a run that offers none notifies, never opens the confirm.
+        if (!row.retro || readOnly) {
+          notify(readOnly ? 'This session is read-only: it cannot start an Org retrospective.' : `${row.tag} is not an ended work run of a project, so it has no retrospective.`, 'warn')
           return
         }
         session
@@ -970,8 +992,11 @@ export function App(props: AppProps) {
   const scrollback = useScrollback(inline, transcript.rows, top, size.cols)
   const notice = state.notices.at(-1)
   const hintRow: RowKind = focus === 'inspector' ? (inspectorView?.waiting ? 'waiting' : inspectorView?.worktree ? 'agent' : 'bare') : rowKind
-  const hints = hintsFor(focus, readOnly, launch.stopOnQuit === true, hintRow)
+  const hints = hintsFor(focus, readOnly, launch.stopOnQuit === true, hintRow, env)
   const dim = toneColor('dim', env)
+  const listSep = asciiOnly(env) ? ' | ' : ' · '
+  // Overlay frames: Unicode single lines, 'classic' (+ - |) in ASCII mode, none for a screen reader.
+  const boxBorder: { borderStyle?: 'single' | 'classic' } = env.screenReader ? {} : { borderStyle: asciiOnly(env) ? 'classic' : 'single' }
 
   const inspectorNode = (() => {
     if (!inspecting || !inspectorView || !inspectorId) return null
@@ -999,7 +1024,7 @@ export function App(props: AppProps) {
 
   const paneNode = (box: PaneBox) => {
     // The focused pane's own keys sit on a dim line at its bottom, so a long status line can never cut them off.
-    const hint = focus === box.pane && box.height >= 6 ? paneHint(box.pane, box.pane === 'tree' ? rowKind : 'agent', 5, box.width) : ''
+    const hint = focus === box.pane && box.height >= 6 ? paneHint(box.pane, box.pane === 'tree' ? rowKind : 'agent', 5, box.width, listSep) : ''
     const node = paneBody(box, hint ? box.height - 1 : box.height)
     if (!hint) return node
     return (
@@ -1114,9 +1139,9 @@ export function App(props: AppProps) {
 
   const overlayNode = overlay ? (
     overlay.kind === 'runs' ? (
-      <Box borderStyle="single" flexDirection="column" paddingX={1} height={inline ? undefined : Math.max(3, Math.min(bodyRows, overlay.rows.length + 4))}>
+      <Box {...boxBorder} flexDirection="column" paddingX={1} height={inline ? undefined : Math.max(3, Math.min(bodyRows, overlay.rows.length + 4))}>
         <Text bold>Runs</Text>
-        {runPickLines(overlay.rows, overlay.sel, Math.max(10, size.cols - 4), state.activeRunId)
+        {runPickLines(overlay.rows, overlay.sel, Math.max(10, size.cols - 4), state.activeRunId, glyphs(env).ellipsis)
           .slice(Math.max(0, Math.min(overlay.sel - overlayRoom + 1, overlay.rows.length - overlayRoom)))
           .slice(0, overlayRoom)
           .map((l, i) => (
@@ -1124,22 +1149,22 @@ export function App(props: AppProps) {
               {l}
             </Text>
           ))}
-        <Text color={dim}>Up / Down select · Enter opens · c continues · r retrospective · Esc closes</Text>
+        <Text color={dim}>{['Up / Down select', 'Enter opens', 'c continues', 'r retrospective', 'Esc closes'].join(listSep)}</Text>
       </Box>
     ) : overlay.kind === 'confirm' ? (
-      <Box borderStyle="single" flexDirection="column" paddingX={1}>
+      <Box {...boxBorder} flexDirection="column" paddingX={1}>
         <Text bold>{sanitizeTty(overlay.question)}</Text>
-        <Text color={dim}>y: yes · n or Esc: no</Text>
+        <Text color={dim}>{['y: yes', 'n or Esc: no'].join(listSep)}</Text>
       </Box>
     ) : (
-      <Box borderStyle="single" flexDirection="column" paddingX={1} height={inline ? undefined : Math.max(3, bodyRows)}>
+      <Box {...boxBorder} flexDirection="column" paddingX={1} height={inline ? undefined : Math.max(3, bodyRows)}>
         <Text bold>{overlay.title}</Text>
         {overlay.lines.slice(overlay.offset, overlay.offset + overlayRoom).map((l, i) => (
           <Text key={i} wrap="truncate-end">
-            {l || ' '}
+            {l ? truncateEnd(l, Math.max(10, size.cols - 4), glyphs(env).ellipsis) : ' '}
           </Text>
         ))}
-        <Text color={dim}>Up / Down / PgUp / PgDn scroll · q or Esc closes</Text>
+        <Text color={dim}>{['Up / Down / PgUp / PgDn scroll', 'q or Esc closes'].join(listSep)}</Text>
       </Box>
     )
   ) : null
