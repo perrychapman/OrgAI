@@ -3,6 +3,7 @@ import {
   CLAUDE_PATH_ENV,
   claudeExecutable,
   claudeNativePackages,
+  claudePathCandidateSentence,
   claudeResolutionMessage,
   claudeRuntimeMissingMessage,
   claudeWellKnownPaths,
@@ -85,6 +86,44 @@ describe('claudeExecutable (cli-standalone 6.1)', () => {
     const r = claudeExecutable({}, { ...base, fs, bundleDir: '/usr/lib/node_modules/orgai/out/cli', resolveModule: resolver(table, calls) })
     expect(r).toEqual({ ok: true, path: bin, source: 'sdk' })
     expect(calls).toEqual([['@anthropic-ai/claude-agent-sdk-darwin-arm64/package.json', '/usr/lib/node_modules/orgai/out/cli']])
+  })
+
+  it('a native package npm nested under the SDK (version conflict) is found from the SDK folder (review round 2)', () => {
+    const sdkDir = '/usr/lib/node_modules/orgai/node_modules/@anthropic-ai/claude-agent-sdk'
+    const bin = `${sdkDir}/node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude`
+    const fs = new FakeLookupFs({ [bin]: MACHO })
+    const bundleDir = '/usr/lib/node_modules/orgai/out/cli'
+    const calls: [string, string][] = []
+    const nested: ModuleResolver = (spec, from) => {
+      calls.push([spec, from])
+      if (spec === '@anthropic-ai/claude-agent-sdk' && from === bundleDir) return `${sdkDir}/sdk.mjs`
+      if (spec === '@anthropic-ai/claude-agent-sdk-darwin-arm64/package.json' && from === sdkDir) return bin.replace(/claude$/, 'package.json')
+      return undefined
+    }
+    expect(claudeExecutable({ PATH: '' }, { ...base, fs, bundleDir, resolveModule: nested })).toEqual({ ok: true, path: bin, source: 'sdk' })
+    expect(calls).toEqual([
+      ['@anthropic-ai/claude-agent-sdk-darwin-arm64/package.json', bundleDir],
+      ['@anthropic-ai/claude-agent-sdk', bundleDir],
+      ['@anthropic-ai/claude-agent-sdk-darwin-arm64/package.json', sdkDir]
+    ])
+  })
+
+  it('refuses an ORGAI_CLAUDE_PATH that names a .js / .mjs / .cjs file: the probe could not run it the way the SDK does (review round 2)', () => {
+    for (const js of ['/opt/claude-code/cli.js', '/opt/claude-code/cli.mjs', '/opt/claude-code/cli.CJS']) {
+      const fs = new FakeLookupFs({ [js]: '#!/usr/bin/env node\n' })
+      expect(claudeExecutable({ [CLAUDE_PATH_ENV]: js }, { ...base, fs, resolveModule: resolver({}) })).toEqual({
+        ok: false,
+        reason: `ORGAI_CLAUDE_PATH names ${js}, a JavaScript file; name the native claude executable itself.`
+      })
+    }
+  })
+
+  it('a .cmd / .ps1 claude on PATH is named with advice that works: point ORGAI_CLAUDE_PATH at the executable (review round 2)', () => {
+    expect(claudePathCandidateSentence('C:\\npm\\claude.cmd')).toBe(
+      'A claude on PATH at C:\\npm\\claude.cmd is a script shim OrgAI cannot run; set ORGAI_CLAUDE_PATH to the claude executable it starts (claude.exe).'
+    )
+    expect(claudePathCandidateSentence('C:\\npm\\claude.ps1')).toMatch(/script shim OrgAI cannot run/)
+    expect(claudePathCandidateSentence('C:\\tools\\claude.exe')).toBe('A claude on PATH at C:\\tools\\claude.exe is not used; set ORGAI_CLAUDE_PATH to use it.')
   })
 
   it('a resolved package without its binary does not count', () => {

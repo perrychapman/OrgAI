@@ -1383,6 +1383,76 @@ describe('CodexAdapter session', () => {
     expect(s2.turnStarts('th-1')[0].params.input[0].text).toContain('may still ask the user for permission')
   })
 
+  it('End session while an MCP restart waits for the old app-server to exit: no new server is left running (review round 2)', async () => {
+    let releaseExit!: () => void
+    class SlowExit extends FakeServer {
+      constructor(o: CodexAppServerOptions) {
+        super(o)
+        // close() marks closed but the process "exits" only when the test says so.
+        ;(this as { exited: Promise<void> }).exited = new Promise<void>((r) => (releaseExit = r))
+      }
+    }
+    const servers: FakeServer[] = []
+    const adapter = new CodexAdapter({
+      createServer: (o) => {
+        const s = servers.length === 0 ? new SlowExit(o) : new FakeServer(o)
+        servers.push(s)
+        return s
+      }
+    })
+    const mcp: any[] = []
+    const ctx = ctxFor({ resolvedMcpServers: async () => mcp })
+    session = await adapter.start(ctx)
+    const s1 = servers[0]
+    await vi.waitFor(() => expect(s1.turnStarts('th-1')).toHaveLength(1))
+    mcp.push({ spec: { id: 'm', name: 'files', transport: 'stdio', command: 'npx', enabled: true, source: 'agent', addedAt: '' }, env: {}, headers: {} })
+    await (session as any).addMcpServer(mcp[0].spec)
+    s1.push('turn/completed', turnDone('th-1', 'tu-1'))
+    await vi.waitFor(() => expect(s1.closed).toBe(true)) // the restart closed the old server and waits for its exit
+    await session.stop()
+    releaseExit()
+    await new Promise((r) => setTimeout(r, 30))
+    expect(servers.filter((s) => !s.closed)).toHaveLength(0)
+    expect(servers).toHaveLength(1) // never created after End session
+    expect(ctx.events.some((e) => e.type === 'run.status' && e.status === 'error')).toBe(false)
+  })
+
+  it('End session while the restarted app-server starts: that server is closed (review round 2)', async () => {
+    let releaseStart!: () => void
+    const startGate = new Promise<void>((r) => (releaseStart = r))
+    class SlowStart extends FakeServer {
+      override async start(): Promise<unknown> {
+        await startGate
+        // Resolves even after close(), so the session's own check is what closes it.
+        this.started = true
+        return {}
+      }
+    }
+    const servers: FakeServer[] = []
+    const adapter = new CodexAdapter({
+      createServer: (o) => {
+        const s = servers.length === 0 ? new FakeServer(o) : new SlowStart(o)
+        servers.push(s)
+        return s
+      }
+    })
+    const mcp: any[] = []
+    const ctx = ctxFor({ resolvedMcpServers: async () => mcp })
+    session = await adapter.start(ctx)
+    const s1 = servers[0]
+    await vi.waitFor(() => expect(s1.turnStarts('th-1')).toHaveLength(1))
+    mcp.push({ spec: { id: 'm', name: 'files', transport: 'stdio', command: 'npx', enabled: true, source: 'agent', addedAt: '' }, env: {}, headers: {} })
+    await (session as any).addMcpServer(mcp[0].spec)
+    s1.push('turn/completed', turnDone('th-1', 'tu-1'))
+    await vi.waitFor(() => expect(servers).toHaveLength(2))
+    // The run ends some other way while the new server starts (the old server reference was what got closed).
+    ;(session as any).ending = true
+    releaseStart()
+    await new Promise((r) => setTimeout(r, 30))
+    expect(servers[1].closed).toBe(true)
+    expect(servers[1].of('thread/resume')).toHaveLength(0)
+  })
+
   it('configChanged (MCP): answers after-idle, restarts once idle from the live list, and a removed server is not re-added', async () => {
     const mcp: any[] = [{ spec: { id: 'o', name: 'old', transport: 'stdio', command: 'old-cmd', enabled: true, source: 'user', addedAt: '' }, env: {}, headers: {} }]
     const { adapter, servers } = setup()

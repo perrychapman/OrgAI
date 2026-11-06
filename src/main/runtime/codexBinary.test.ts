@@ -1,6 +1,13 @@
 import { beforeEach, describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { resolve } from 'node:path'
+import { trackedChildCount } from '../host/shutdown'
 import {
   CODEX_NOT_INSTALLED_MESSAGE,
+  CODEX_PINNED_VERSION,
+  CODEX_SUPPORTED_RANGE,
+  defaultCodexVersionRunner,
   checkCodexBinary,
   checkCodexRuntime,
   clearCodexVersionCache,
@@ -8,6 +15,7 @@ import {
   codexVersionSupported,
   lookupCodexBinary,
   parseCodexVersion,
+  shimTargets,
   type CodexBinary
 } from './codexBinary'
 import { ELF, FakeLookupFs, MACHO, PE } from './fakeLookupFs'
@@ -148,6 +156,48 @@ describe('lookupCodexBinary (cli-standalone 6.2)', () => {
     expect(lookupCodexBinary({ ...mac, fs: new FakeLookupFs(), env: {} })).toEqual({ problem: CODEX_NOT_INSTALLED_MESSAGE })
   })
 
+  it('ORGAI_CODEX_PATH naming a POSIX wrapper script is used as is; a Windows .cmd / .ps1 there stays refused (review round 2)', () => {
+    const wrapper = '#!/bin/sh\nexport FOO=1\nexec /opt/real/codex "$@"\n'
+    const fs = new FakeLookupFs({ '/home/u/bin/codex-wrapper': wrapper })
+    expect(lookupCodexBinary({ ...mac, fs, env: { ORGAI_CODEX_PATH: '/home/u/bin/codex-wrapper' } })).toEqual({ binary: { path: '/home/u/bin/codex-wrapper', source: 'env' } })
+    expect(lookupCodexBinary({ platform: 'linux', arch: 'x64', resolveModule: noModules, bundleDir: '/b', fs, env: { ORGAI_CODEX_PATH: '/home/u/bin/codex-wrapper' } }).binary?.source).toBe('env')
+    // An npm sh shim whose package is gone is also the user's choice on POSIX.
+    const fs2 = new FakeLookupFs({ '/p/codex': POSIX_SH_SHIM })
+    expect(lookupCodexBinary({ ...mac, fs: fs2, env: { ORGAI_CODEX_PATH: '/p/codex' } }).binary).toEqual({ path: '/p/codex', source: 'env' })
+    // Plain text is still refused.
+    const fs3 = new FakeLookupFs({ '/p/codex': 'plain text' })
+    expect(lookupCodexBinary({ ...mac, fs: fs3, env: { ORGAI_CODEX_PATH: '/p/codex' } }).problem).toMatch(/neither a native Codex executable nor an npm shim/)
+    // Windows cannot spawn a .cmd / .ps1 without a shell.
+    const win = { platform: 'win32' as const, arch: 'x64', resolveModule: noModules, bundleDir: 'C:\\b' }
+    for (const [name, text] of [['codex.cmd', CMD_SHIM], ['codex.ps1', PS1_SHIM]] as const) {
+      const shim = `C:\\npm\\${name}`
+      const r = lookupCodexBinary({ ...win, fs: new FakeLookupFs({ [shim]: text }), env: { ORGAI_CODEX_PATH: shim } })
+      expect(r.binary).toBeUndefined()
+      expect(r.problem).toMatch(/^ORGAI_CODEX_PATH: .* is an npm shim whose native package/)
+    }
+  })
+
+  it('shimTargets finds the prefix each shim style uses', () => {
+    expect(shimTargets(POSIX_SH_SHIM)).toEqual(['$basedir/node_modules/@openai/codex/bin/codex.js'])
+    expect(shimTargets(CMD_SHIM)).toEqual(['%dp0%\\node_modules\\@openai\\codex\\bin\\codex.js'])
+    expect(shimTargets(PS1_SHIM)).toEqual(['$basedir/node_modules/@openai/codex/bin/codex.js'])
+    expect(shimTargets('exec node "/usr/lib/node_modules/@openai/codex/bin/codex.js" "$@"')).toEqual(['/usr/lib/node_modules/@openai/codex/bin/codex.js'])
+    expect(shimTargets('"C:\\nodejs\\node_modules\\@openai\\codex\\bin\\codex.js"')).toEqual(['C:\\nodejs\\node_modules\\@openai\\codex\\bin\\codex.js'])
+    expect(shimTargets('node @openai/codex/bin/codex.js')).toEqual([])
+    expect(shimTargets('nothing')).toEqual([])
+  })
+
+  it('a large single-line #! script on PATH is read in linear time (review round 2: the old lazy regex took ~680 ms)', () => {
+    const big = `#!/usr/bin/env node\n${'/a'.repeat(8_000)}`
+    const fs = new FakeLookupFs({ '/s/codex': big })
+    const started = performance.now()
+    for (let i = 0; i < 5; i++) shimTargets(big)
+    const r = lookupCodexBinary({ ...mac, fs, env: { PATH: '/s' } })
+    const took = performance.now() - started
+    expect(r.binary).toBeUndefined()
+    expect(took).toBeLessThan(100)
+  })
+
   it('a later PATH folder is used when an earlier hit cannot be mapped', () => {
     const fs = new FakeLookupFs({ '/s/codex': '#!/bin/sh\n', '/n/codex': MACHO })
     expect(lookupCodexBinary({ ...mac, fs, env: { PATH: '/s:/n' } }).binary).toEqual({ path: '/n/codex', source: 'path' })
@@ -162,6 +212,21 @@ describe('lookupCodexBinary (cli-standalone 6.2)', () => {
 
 describe('Codex version (cli-standalone 6.2)', () => {
   beforeEach(() => clearCodexVersionCache())
+
+  it('the pin matches package.json and is inside the supported range (review round 2)', () => {
+    const pkg = JSON.parse(readFileSync(resolve(__dirname, '../../../package.json'), 'utf8')) as { dependencies: Record<string, string> }
+    expect(pkg.dependencies['@openai/codex']).toBe(CODEX_PINNED_VERSION)
+    expect(codexVersionSupported(CODEX_PINNED_VERSION)).toBe(true)
+    expect(CODEX_SUPPORTED_RANGE).toBe(CODEX_PINNED_VERSION.replace(/\.\d+$/, '.x'))
+  })
+
+  it('a failed --version spawn leaves nothing in the shutdown registry (review round 2)', async () => {
+    const before = trackedChildCount('codex --version')
+    const missing = resolve(tmpdir(), 'orgai-definitely-not-codex', 'codex')
+    await expect(defaultCodexVersionRunner({ path: missing })).rejects.toThrow(/ENOENT/)
+    await new Promise((r) => setTimeout(r, 20))
+    expect(trackedChildCount('codex --version')).toBe(before)
+  })
 
   it('parses and ranges versions', () => {
     expect(parseCodexVersion('codex-cli 0.166.0\n')).toBe('0.166.0')

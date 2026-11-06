@@ -4,7 +4,8 @@
  *
  * Resolution (`lookupCodexBinary`, synchronous, file system only, nothing spawned):
  *   1. ORGAI_CODEX_PATH: an absolute path to an existing regular file; when set it decides (a bad value is refused,
- *      never passed over).
+ *      never passed over). On POSIX a '#!' script there that is not an npm shim of a findable package (a user's own
+ *      wrapper) is used as is.
  *   2. The per-platform package (@openai/codex-<platform>-<arch>) beside a packaged app's archive or resolved through
  *      createRequire from our bundle (the app, the archive, a dev checkout); a hit inside app.asar is rewritten to
  *      app.asar.unpacked.
@@ -113,8 +114,43 @@ function defaultBundleDir(): string {
 
 /** How much of a shim is read to find the package it starts. npm's shims are well under 1 KB. */
 const SHIM_READ_BYTES = 16 * 1024
-/** A reference to @openai/codex/bin/codex.js inside a shim, with whatever prefix the shim uses. */
-const SHIM_TARGET = /((?:%~?dp0%?|\$\{?basedir\}?|[A-Za-z]:[\\/]|\/)[^"'\s*?<>|`]*?[\\/]@openai[\\/]codex[\\/]bin[\\/]codex\.js)/g
+/** The script npm's shims start, with '/' separators (a shim's text is searched with '\\' folded to '/'). */
+const SHIM_TARGET_TAIL = '/@openai/codex/bin/codex.js'
+/** How far before the target a shim's path prefix is looked for. */
+const SHIM_PREFIX_MAX = 1024
+/** Characters a shim path never contains (quotes, whitespace, shell and cmd metacharacters). */
+const SHIM_PATH_STOP = /["'\s*?<>|`]/
+/** The prefix a shim path starts with: %~dp0% / %dp0%, $basedir / ${basedir}, a drive or '/'. Sticky. */
+const SHIM_PREFIX = /%~?dp0%?|\$\{?basedir\}?|[A-Za-z]:[\\/]|\//y
+
+/**
+ * Every reference to @openai/codex/bin/codex.js in a shim's text, with the prefix the shim uses (the leftmost prefix
+ * in the path run before the target). A literal search first, then a bounded walk back, so a large script with many
+ * '/' and no target costs one linear scan (review round 2: the old lazy regex was quadratic on such a file).
+ */
+export function shimTargets(text: string): string[] {
+  const folded = text.replace(/\\/g, '/')
+  const out: string[] = []
+  let from = 0
+  for (;;) {
+    const at = folded.indexOf(SHIM_TARGET_TAIL, from)
+    if (at < 0) break
+    const end = at + SHIM_TARGET_TAIL.length
+    const floor = from
+    from = end
+    let start = at
+    while (start > floor && at - start < SHIM_PREFIX_MAX && !SHIM_PATH_STOP.test(text[start - 1])) start--
+    // The prefix ends at or before the separator in front of @openai.
+    for (let p = start; p < at; p++) {
+      SHIM_PREFIX.lastIndex = p
+      if (SHIM_PREFIX.test(text) && SHIM_PREFIX.lastIndex <= at) {
+        out.push(text.slice(p, end))
+        break
+      }
+    }
+  }
+  return out
+}
 
 class Resolver {
   readonly p: ReturnType<typeof pathFor>
@@ -166,8 +202,7 @@ class Resolver {
     const out: string[] = []
     const head = this.fs.readHead(real, SHIM_READ_BYTES)
     const text = head ? new TextDecoder('utf-8', { fatal: false }).decode(head) : ''
-    for (const m of text.matchAll(SHIM_TARGET)) {
-      let ref = m[1]
+    for (let ref of shimTargets(text)) {
       ref = ref.replace(/^%~?dp0%?/, `${dir}${this.p.sep}`).replace(/^\$\{?basedir\}?/, dir)
       if (!this.p.isAbsolute(ref)) continue
       const js = this.p.normalize(ref)
@@ -251,7 +286,12 @@ export function lookupCodexBinary(opts: CodexLookupOptions = {}): CodexLookup {
     if (!st) return { problem: `${CODEX_PATH_ENV} names ${chosen}, which does not exist; Codex is not installed there.` }
     if (!st.isFile) return { problem: `${CODEX_PATH_ENV} names ${chosen}, which is not a regular file.` }
     const c = r.classify(chosen, 'env')
-    return c.binary ? { binary: c.binary } : { problem: `${CODEX_PATH_ENV}: ${c.problem}.` }
+    if (c.binary) return { binary: c.binary }
+    // The user's own wrapper (`#!/bin/sh` ... `exec /real/codex "$@"`) on POSIX: it cannot be mapped to a native
+    // package, and POSIX spawns a '#!' file without a shell, so it is used as is (the version check still runs and only
+    // warns for this source). A .cmd / .ps1 on Windows cannot be spawned without a shell and stays refused (review round 2).
+    if (platform !== 'win32' && fileKindOf(r.fs.readHead(chosen, 8)) === 'script') return { binary: { path: chosen, source: 'env' } }
+    return { problem: `${CODEX_PATH_ENV}: ${c.problem}.` }
   }
 
   if (r.target) {
@@ -293,7 +333,10 @@ export const defaultCodexVersionRunner: CodexVersionRunner = (binary) =>
     const child = execFile(binary.path, ['--version'], { timeout: CODEX_VERSION_TIMEOUT_MS, windowsHide: true, cwd: tmpdir(), env }, (err, stdout) =>
       err ? reject(err) : resolve(String(stdout ?? ''))
     )
-    trackChildProcess(child, 'codex --version')
+    // A failed spawn (ENOENT, EACCES) emits 'error' and 'close' but no 'exit': untrack there too (review round 2).
+    const untrack = trackChildProcess(child, 'codex --version')
+    child.once('error', untrack)
+    child.once('close', untrack)
   })
 
 const versionCache = new Map<string, string>()

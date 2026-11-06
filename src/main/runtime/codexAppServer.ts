@@ -168,7 +168,10 @@ export class CodexAppServer {
     const child = spawn(binary.path, args, { cwd: this.options.cwd, env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
     this.child = child
     // A host that gives up at the shutdown hard limit kills it (host/shutdown.ts); untracked on exit.
-    trackChildProcess(child, 'codex app-server')
+    const untrack = trackChildProcess(child, 'codex app-server')
+    // A failed spawn emits 'error' and 'close' but no 'exit': untrack there too (review round 2).
+    child.once('error', untrack)
+    child.once('close', untrack)
     child.stdout.setEncoding('utf8')
     child.stdout.on('data', (chunk: string) => this.onData(chunk))
     child.stderr.setEncoding('utf8')

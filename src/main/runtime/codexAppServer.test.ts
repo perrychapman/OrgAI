@@ -2,6 +2,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { trackedChildCount } from '../host/shutdown'
 import { clearCodexVersionCache } from './codexBinary'
 import { CodexAppServer, CodexRpcError, STDERR_TAIL_MAX_CHARS, codexExitMessage, codexHomeDir, maskKeyLike, redactSecrets, resolveCodexBinary } from './codexAppServer'
 import { buildLaunchConfig } from './codexProtocol'
@@ -61,6 +62,16 @@ describe('request plumbing without a process', () => {
       if (prev === undefined) delete process.env.ORGAI_CODEX_PATH
       else process.env.ORGAI_CODEX_PATH = prev
     }
+  })
+
+  it('a failed app-server spawn leaves nothing in the shutdown registry (review round 2)', async () => {
+    const before = trackedChildCount('codex app-server')
+    // A hand-made binary (no source) skips the version check, so the spawn itself fails (ENOENT, no 'exit' event).
+    const s = new CodexAppServer({ cwd: tmpdir(), binary: { path: join(tmpdir(), 'orgai-definitely-not-codex', 'codex') } })
+    await expect(s.start()).rejects.toThrow()
+    await s.exited
+    await new Promise((r) => setTimeout(r, 20))
+    expect(trackedChildCount('codex app-server')).toBe(before)
   })
 
   it('checks the version of a resolved binary before spawning: refused outside 0.166.x, warned for ORGAI_CODEX_PATH', async () => {

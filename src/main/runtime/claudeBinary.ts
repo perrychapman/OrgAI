@@ -3,10 +3,11 @@
  * completions) and anthropicAuth.ts (the connection probe) so the two never disagree. Evaluated per call, never at
  * import.
  *
- * Order: ORGAI_CLAUDE_PATH (an absolute path to an existing regular file, not a .cmd / .bat / .ps1 shim; when set it
- * decides, a bad value is refused and never falls through), the app.asar.unpacked native package of a packaged app, the SDK's per-platform package
- * through createRequire from the bundle (a hit inside app.asar is rewritten to app.asar.unpacked and counts as the
- * app's), else none. When resolved, callers always pass `pathToClaudeCodeExecutable`. A `claude` found on PATH (or
+ * Order: ORGAI_CLAUDE_PATH (an absolute path to an existing regular file, not a .cmd / .bat / .ps1 shim or a .js /
+ * .mjs / .cjs file; when set it decides, a bad value is refused and never falls through), the app.asar.unpacked native
+ * package of a packaged app, the SDK's per-platform package through createRequire from the bundle and then from the
+ * SDK's own folder (a nested optional package; a hit inside app.asar is rewritten to app.asar.unpacked and counts as
+ * the app's), else none. When resolved, callers always pass `pathToClaudeCodeExecutable`. A `claude` found on PATH (or
  * in a well-known install folder) is named in the error, never used.
  *
  * Synchronous and file-system only (statSync through LookupFs); nothing is spawned. Electron-free; relative imports
@@ -53,8 +54,12 @@ export function claudeRuntimeMissingMessage(platform: string, arch: string): str
   return `The Claude runtime for ${platform}-${arch} is not installed; reinstall orgai without --omit=optional, or set ${CLAUDE_PATH_ENV}.`
 }
 
-/** The sentence naming a claude on PATH that OrgAI does not use. */
+/**
+ * The sentence naming a claude on PATH that OrgAI does not use. A .cmd / .bat / .ps1 shim cannot be chosen through
+ * ORGAI_CLAUDE_PATH either (claudeExecutable refuses it), so the advice then names the executable it starts (review round 2).
+ */
 export function claudePathCandidateSentence(path: string): string {
+  if (SCRIPT_SHIM.test(path)) return `A claude on PATH at ${path} is a script shim OrgAI cannot run; set ${CLAUDE_PATH_ENV} to the claude executable it starts (claude.exe).`
   return `A claude on PATH at ${path} is not used; set ${CLAUDE_PATH_ENV} to use it.`
 }
 
@@ -67,6 +72,11 @@ const SDK_PACKAGE = '@anthropic-ai/claude-agent-sdk'
 
 /** Windows shims that only run through a shell. */
 const SCRIPT_SHIM = /\.(cmd|bat|ps1)$/i
+/**
+ * JavaScript entry points (the old npm cli.js): the SDK would run them through node, but the connection probe runs the
+ * path directly, so the two would disagree; refused like the shims (review round 2).
+ */
+const JS_ENTRY = /\.(js|mjs|cjs)$/i
 
 /** The process's libc cannot change while it runs: getReport (a full diagnostic report) is built at most once. */
 let processIsMusl: boolean | undefined
@@ -145,6 +155,7 @@ export function claudeExecutable(env: NodeJS.ProcessEnv = process.env, opts: Cla
     // The SDK spawns the path without a shell (a .js / .mjs file through node), which a .cmd / .bat / .ps1 shim cannot
     // survive; the probe runs it the same way, so the two never disagree.
     if (SCRIPT_SHIM.test(chosen)) return { ok: false, reason: `${CLAUDE_PATH_ENV} names ${chosen}, a script shim OrgAI cannot run; name the claude executable itself (claude.exe on Windows).` }
+    if (JS_ENTRY.test(chosen)) return { ok: false, reason: `${CLAUDE_PATH_ENV} names ${chosen}, a JavaScript file; name the native claude executable itself.` }
     return { ok: true, path: chosen, source: 'env' }
   }
 
@@ -161,13 +172,26 @@ export function claudeExecutable(env: NodeJS.ProcessEnv = process.env, opts: Cla
     }
   }
 
-  // The SDK's per-platform package as the bundle sees it (a dev checkout, the npm package, the archive).
-  for (const pkg of packages) {
-    const pkgJson = resolveModule(`${pkg}/package.json`, bundleDir)
-    if (!pkgJson) continue
-    const { path: dir, rewritten } = unpackedAsarPath(p.dirname(pkgJson))
-    const bin = p.join(dir, exe)
-    if (fs.stat(bin)?.isFile) return { ok: true, path: bin, source: rewritten ? 'app' : 'sdk' }
+  // The SDK's per-platform package as the bundle sees it (a dev checkout, the npm package, the archive), then as the
+  // SDK itself sees it: npm nests the optional package under the SDK's own node_modules on a version conflict, where
+  // the bundle cannot see it (review round 2).
+  const fromDir = (from: string): ClaudeExecutableResolution | undefined => {
+    for (const pkg of packages) {
+      const pkgJson = resolveModule(`${pkg}/package.json`, from)
+      if (!pkgJson) continue
+      const { path: dir, rewritten } = unpackedAsarPath(p.dirname(pkgJson))
+      const bin = p.join(dir, exe)
+      if (fs.stat(bin)?.isFile) return { ok: true, path: bin, source: rewritten ? 'app' : 'sdk' }
+    }
+    return undefined
+  }
+  const fromBundle = fromDir(bundleDir)
+  if (fromBundle) return fromBundle
+  // The SDK's main entry (its exports map hides ./package.json), resolved only after the bundle lookup missed.
+  const sdkEntry = resolveModule(SDK_PACKAGE, bundleDir)
+  if (sdkEntry && p.dirname(sdkEntry) !== bundleDir) {
+    const fromSdk = fromDir(p.dirname(sdkEntry))
+    if (fromSdk) return fromSdk
   }
 
   const pathCandidate = claudeOnPath(env, platform, fs, opts.home ?? homedir())

@@ -1431,8 +1431,20 @@ class CodexSession implements RuntimeSession {
     this.restarting = true
     this.mcpRestartPending = false
     this.noteActivity('restart')
+    // End session can land during any await below. stop() / endRun() close whatever `this.server` is at that moment,
+    // so a server this restart created after that would never be closed: check `ending` before creating one, and close
+    // the one we made when the run ended while it started (review round 2).
+    let created: CodexServerLike | undefined
+    const abandon = (): void => {
+      this.restarting = false
+      if (created) {
+        this.unwire()
+        created.close()
+      }
+    }
     try {
       const servers = withoutControlEnv(await this.ctx.resolvedMcpServers!())
+      if (this.ending) return abandon()
       const launch = buildLaunchConfig(this.ctx.connection, servers, {
         noProjectDocs: isTrustRestrictedRun(this.ctx.run),
         writableRoots: codexWritableRoots(this.ctx)
@@ -1441,14 +1453,13 @@ class CodexSession implements RuntimeSession {
       this.unwire()
       old.close()
       await Promise.race([old.exited, new Promise((r) => setTimeout(r, EXIT_WAIT_MS))])
+      if (this.ending) return abandon()
       this.launch = launch
-      this.server = this.createServer(launch)
-      this.wire(this.server)
-      await this.server.start(this.options.clientVersion)
-      if (this.ending) {
-        this.restarting = false
-        return
-      }
+      created = this.createServer(launch)
+      this.server = created
+      this.wire(created)
+      await created.start(this.options.clientVersion)
+      if (this.ending) return abandon()
       for (const [threadId, info] of this.threads) {
         const role = this.net.roleOf(info.agentId) ?? this.root
         const wt = this.integrator.worktreeOf(info.agentId)
@@ -1475,9 +1486,9 @@ class CodexSession implements RuntimeSession {
         'Using a new MCP server…'
       )
     } catch (e) {
-      this.restarting = false
       // stop() closed the new server while it started: the run is ending, not failing.
-      if (this.ending) return
+      if (this.ending) return abandon()
+      this.restarting = false
       this.fail(`Could not restart Codex to attach the MCP server: ${(e as Error).message}`)
       return
     }
