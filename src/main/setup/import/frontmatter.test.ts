@@ -111,9 +111,12 @@ describe('frontmatter: hostile input', () => {
       expect(r.error).toBeUndefined()
       return performance.now() - start
     }
+    // Best of three each: a slow shared CI runner (GC pauses on multi-MB strings) inflates single samples
+    // (one run measured 1859 ms against a 127 ms baseline), while quadratic code is 16x slower in every sample.
+    const best = (lines: number): number => Math.min(timeOf(lines), timeOf(lines), timeOf(lines))
     timeOf(10)
-    const small = Math.max(timeOf(50), 5)
-    const big = timeOf(200)
+    const small = Math.max(best(50), 5)
+    const big = best(200)
     expect(big).toBeLessThan(small * 12)
     expect(big).toBeLessThan(5000)
   })

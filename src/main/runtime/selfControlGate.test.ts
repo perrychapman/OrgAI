@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync as fsRealpath, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -19,6 +19,9 @@ afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true })
 })
 
+// The gate's canonical spelling comes from the native realpath, which expands 8.3 short names (RUNNER~1) on Windows;
+// the JS realpathSync keeps them. Tests build their bases with the native one so "both spellings" means the link and its target.
+const realpathSync = (p: string): string => fsRealpath.native(p)
 describe('controlProtectedPaths', () => {
   it('lists run, secrets.json and codex, plus the runtime dir when given', () => {
     const base = realpathSync(mkdtempSync(join(tmpdir(), 'orgai-scg-')))
