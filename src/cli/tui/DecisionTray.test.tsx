@@ -418,3 +418,39 @@ describe('DecisionTray: outcomes and variants', () => {
     h.unmount()
   })
 })
+
+describe('DecisionTray: the agent and the focused card (ux-review-tui-org.md F5)', () => {
+  const withAgent = (c: TrayCard, agentId: string, agentLabel: string): TrayCard => ({ ...c, agentId, agentLabel }) as TrayCard
+
+  it('names the asking agent in the header and the footer line', async () => {
+    const a = withAgent(tray('permission', 'a', permission('a')), 'r2', 'mock-lead-report-2')
+    const full = await mount({ cards: [a] })
+    expect(full.frame().split('\n')[0]).toBe('Needs you (1) * R1 * mock-lead-report-2 * permission: Run npm test a')
+    full.unmount()
+    const footer = await mount({ cards: [a], variant: 'footer', height: 1 })
+    expect(footer.frame()).toContain('R1 mock-lead-report-2: ')
+    footer.unmount()
+    const none = await mount({ cards: [tray('permission', 'b', permission('b'))] })
+    expect(none.frame().split('\n')[0]).toBe('Needs you (1) * R1 * permission: Run npm test b')
+    none.unmount()
+  })
+
+  it('focusKey shows that card first and keeps the others in order; an unknown key changes nothing', async () => {
+    const a = tray('permission', 'a', permission('a'))
+    const b = tray('permission', 'b', permission('b'))
+    const c = tray('permission', 'c', permission('c'))
+    const h = await mount({ cards: [a, b, c], focusKey: c.key })
+    expect(h.frame().split('\n')[0]).toContain('Run npm test c')
+    expect(h.frame()).toContain('Run npm test a')
+    h.unmount()
+    const same = await mount({ cards: [a, b, c], focusKey: 'gone' })
+    expect(same.frame().split('\n')[0]).toContain('Run npm test a')
+    same.unmount()
+    // Decisions go to the card shown on top.
+    const decide = await mount({ cards: [a, b], focusKey: b.key })
+    decide.clock.t += 800
+    await decide.press('y')
+    expect(decide.calls[0].card.ref.requestId).toBe('b')
+    decide.unmount()
+  })
+})

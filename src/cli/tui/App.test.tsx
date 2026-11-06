@@ -14,6 +14,9 @@ vi.mock('./selectors', () => {
     trayCards: (s: S) => s.testCards ?? [],
     topCard: (s: S) => (s.testCards ?? [])[0],
     orgTreeRows: () => [],
+    cardsByAgent: () => ({}),
+    collapseTarget: () => undefined,
+    resolveSelectedRow: (_rows: unknown, id: string | undefined) => id,
     transcriptRows: (s: S) => ({ rows: s.testRows ?? [], omitted: 0 }),
     partialRows: () => [],
     planView: () => undefined,
@@ -341,11 +344,12 @@ describe('App focus and routing', () => {
   it('Tab cycles the visible panes and back to the composer', async () => {
     const m = mount()
     const order: string[] = []
-    for (let i = 0; i < 5; i++) {
+    // Plan and Worktrees show only when something needs them (nothing does here), so the ring is tree, transcript, composer.
+    for (let i = 0; i < 3; i++) {
       await m.send(named('tab'))
       order.push(['ORGTREE*', 'TRANSCRIPT*', 'PLAN*', 'WORKTREES*', 'COMPOSER*'].find((t) => m.frame().includes(t)) ?? '?')
     }
-    expect(order).toEqual(['ORGTREE*', 'TRANSCRIPT*', 'PLAN*', 'WORKTREES*', 'COMPOSER*'])
+    expect(order).toEqual(['ORGTREE*', 'TRANSCRIPT*', 'COMPOSER*'])
     await m.send(named('tab'), named('backtab'))
     expect(m.frame()).toContain('COMPOSER*')
     m.r.unmount()

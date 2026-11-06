@@ -85,27 +85,50 @@ describe('computeLayout', () => {
     }
   })
 
-  it('drops worktrees, then plan, then tree when stacked space runs out, never the transcript', () => {
+  it('drops worktrees, then plan when stacked space runs out; the tree and the transcript are never dropped', () => {
     const at = (rows: number): PaneId[] => panes(computeLayout(input({ cols: 80, rows, composerRows: 3 })))
     expect(at(60)).toEqual(['tree', 'plan', 'worktrees', 'transcript'])
     const seen: PaneId[][] = []
-    for (let rows = 60; rows >= 4; rows--) seen.push(at(rows))
-    for (const s of seen) expect(s).toContain('transcript')
+    for (let rows = 60; rows >= 6; rows--) seen.push(at(rows))
+    for (const s of seen) {
+      expect(s).toContain('transcript')
+      expect(s).toContain('tree')
+    }
     // Each pane, once dropped, stays dropped on smaller terminals, and they go in order.
     const firstMissing = (p: PaneId): number => seen.findIndex((s) => !s.includes(p))
     expect(firstMissing('worktrees')).toBeGreaterThan(-1)
     expect(firstMissing('worktrees')).toBeLessThanOrEqual(firstMissing('plan'))
-    expect(firstMissing('plan')).toBeLessThanOrEqual(firstMissing('tree'))
-    for (const p of ['worktrees', 'plan', 'tree'] as const) {
+    for (const p of ['worktrees', 'plan'] as const) {
       const i = firstMissing(p)
       for (const s of seen.slice(i)) expect(s).not.toContain(p)
     }
-    // The transcript keeps at least 5 rows whenever another pane is shown.
-    for (let rows = 60; rows >= 4; rows--) {
+    // The transcript keeps at least 5 rows whenever another pane is shown and the body has the room for both.
+    for (let rows = 60; rows >= 14; rows--) {
       const plan = computeLayout(input({ cols: 80, rows, composerRows: 3 }))
       if (plan.panes.length > 1) expect(plan.panes.find((b) => b.pane === 'transcript')!.height).toBeGreaterThanOrEqual(5)
     }
     expect(at(14)).toEqual(['tree', 'transcript'])
+  })
+
+  it('gives the stacked tree max(6, 30%) of the body, or what its rows want up to half of it', () => {
+    const only = { tree: true, transcript: true, plan: false, worktrees: false }
+    const tree = (rows: number, treeRows?: number): number =>
+      computeLayout(input({ cols: 90, rows, visible: only, trayRows: 6, composerRows: 3, ...(treeRows !== undefined ? { treeRows } : {}) })).panes.find((b) => b.pane === 'tree')!.height
+    // 90x30: body = 30 - 1 - 3 - 6 = 20; 30% = 6.
+    expect(tree(30)).toBe(6)
+    expect(tree(30, 8)).toBe(8)
+    expect(tree(30, 40)).toBe(10)
+    // Plan and worktrees are dropped before the tree gives up a row.
+    const full = computeLayout(input({ cols: 90, rows: 24, trayRows: 6, composerRows: 3, treeRows: 8 }))
+    expect(full.panes.find((b) => b.pane === 'tree')!.height).toBeGreaterThanOrEqual(6)
+    expect(full.panes.find((b) => b.pane === 'transcript')!.height).toBeGreaterThanOrEqual(5)
+  })
+
+  it('split: worktrees take what their rows want, not 40% of the column', () => {
+    const wt = (wanted?: number): number =>
+      computeLayout(input({ cols: 120, rows: 40, trayRows: 0, ...(wanted !== undefined ? { worktreeRows: wanted } : {}) })).panes.find((b) => b.pane === 'worktrees')!.height
+    expect(wt()).toBe(Math.floor(35 * 0.4))
+    expect(wt(4)).toBe(4)
   })
 
   it('gives the tray 0 rows without cards and its rows with them', () => {

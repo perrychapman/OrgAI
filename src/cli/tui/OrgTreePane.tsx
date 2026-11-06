@@ -1,23 +1,38 @@
 /**
- * The org tree pane (W4-T3, cli-spec 5.1). Pure display plus its own selection and scroll state. Rows arrive from
- * selectors.ts already sanitized, labelled through agentLabel and with their state word; this pane only lays them
- * out: tree indent, state glyph, label, role (when it differs), state word and cost flush right, and the activity on a
- * dim second line when the height allows. Agents of earlier chain members sit under a dim "Earlier sessions" line.
- * Input arrives only through the InputBus while focused (Up/Down, PageUp/PageDown, Home/End).
+ * The org tree pane (W4-T3, cli-spec 5.1; ux-review-tui-org.md F1, F2, F5, F10). Pure display plus its own selection and
+ * scroll state. Rows arrive from selectors.ts already sanitized, labelled through agentLabel and with their state word.
+ * One line per agent, never a blank activity line: tree indent (capped at four levels, then "+N"), state glyph, label,
+ * the role only when it adds something and fits, the state word (never cut before the role, the activity or the middle
+ * of the handle), chips (`! N` open cards, `2f` / `review` / `conflict` / `held` for the worktree) and the cost flush
+ * right. Finished subtrees arrive folded as "N done" rows (Right / Enter expand, Left folds back, `h` toggles Hide
+ * finished). The selected row's activity is one footer line under the rows. `n` / `N` jump to the next / previous agent
+ * with an open card, Enter on such a row focuses the tray on its card. Agents of earlier chain members sit under a dim
+ * "Earlier sessions" line. Input arrives only through the InputBus while focused.
  */
 import { useRef, useState } from 'react'
+import { splitLabelTail } from '../../shared/view/agentTree'
 import { useFocusHandler, useTuiEnv } from './context'
+import { treeCounts } from './treeRows'
 import { glyphs, stateGlyph, stateTone } from './theme'
-import type { OrgTreePaneProps, OrgTreeRow, TuiEnv } from './types'
+import type { OrgTreePaneProps, OrgTreeRow, Tone, TuiEnv } from './types'
 import { PaneLines, alignSegs, cutSegs, keepVisible, moveIndex, navKey, type PaneLine, type Seg } from './panes/lines'
-import { textWidth, truncateEnd } from './panes/text'
+import { sliceToWidth, textWidth, truncateEnd } from './panes/text'
+
+/** A handle is cut in the middle only down to this many columns; the chips give way before it gets shorter. */
+const LABEL_MIN = 14
+
+/** Tree indent stops growing at this depth; deeper rows show how many levels they are below it ("+2"). */
+export const TREE_INDENT_MAX = 4
 
 /** Tree prefix per row: indentation plus a branch glyph for nested agents (no glyphs for a screen reader). */
 export function treePrefixes(rows: readonly OrgTreeRow[], env: TuiEnv): string[] {
   const g = glyphs(env)
   return rows.map((row, i) => {
     if (row.depth <= 0) return ''
-    if (env.screenReader) return '  '.repeat(row.depth)
+    const capped = Math.min(row.depth, TREE_INDENT_MAX)
+    const extra = row.depth - capped
+    const more = extra > 0 ? `+${extra} ` : ''
+    if (env.screenReader) return '  '.repeat(capped) + more
     let last = true
     for (let j = i + 1; j < rows.length; j++) {
       if (rows[j].depth < row.depth) break
@@ -26,7 +41,7 @@ export function treePrefixes(rows: readonly OrgTreeRow[], env: TuiEnv): string[]
         break
       }
     }
-    return '  '.repeat(row.depth - 1) + (last ? g.lastBranch : g.branch) + ' '
+    return '  '.repeat(capped - 1) + more + (last ? g.lastBranch : g.branch) + ' '
   })
 }
 
@@ -50,19 +65,85 @@ function buildItems(rows: readonly OrgTreeRow[], env: TuiEnv): { items: Item[]; 
   return { items, selectable: [...current, ...earlier] }
 }
 
+/** `label` cut to `max` columns in the middle, keeping its last characters ("mock-lead-rep…ort-2") so siblings stay apart. */
+export function clipMiddle(label: string, max: number, ell: string): string {
+  if (textWidth(label) <= max) return label
+  const { head, tail } = splitLabelTail(label)
+  if (!tail) return truncateEnd(label, max, ell)
+  const room = max - textWidth(tail) - textWidth(ell)
+  if (room < 2) return truncateEnd(label, max, ell)
+  return `${sliceToWidth(head, room)}${ell}${tail}`
+}
+
+interface Chip {
+  text: string
+  tone: Tone
+}
+
+function chipsOf(row: OrgTreeRow): Chip[] {
+  const out: Chip[] = []
+  if (row.waiting && row.waiting > 0) out.push({ text: `! ${row.waiting}`, tone: 'warn' })
+  if (row.worktreeChip) out.push({ text: row.worktreeChip, tone: row.worktreeChip === 'conflict' ? 'danger' : row.worktreeChip === 'held' ? 'dim' : row.worktreeChip === 'review' ? 'warn' : 'dim' })
+  return out
+}
+
+/**
+ * One row, one line. Cut order when the line is too wide: the role, then the handle's middle (its end stays), then the
+ * chips; the state word is never cut before those.
+ */
 function rowLine(item: Item, selected: boolean, focused: boolean, width: number, env: TuiEnv): Seg[] {
   const row = item.row!
+  const g = glyphs(env)
+  const group = row.kind === 'group'
   const inv = selected && focused
   const marker = selected ? (focused ? '>' : '*') : ' '
   const tone = stateTone(row.state)
-  const left: Seg[] = [{ text: `${marker} ${item.prefix}`, inverse: inv }]
-  if (!env.screenReader) left.push({ text: `${stateGlyph(row.state, env)} `, tone, inverse: inv })
-  left.push({ text: row.label, bold: row.isRoot, inverse: inv })
-  if (row.role && row.role !== row.label) left.push({ text: ` (${row.role})`, dim: !inv, inverse: inv })
-  left.push({ text: `  ${row.stateWord}`, tone, inverse: inv })
-  const right: Seg | undefined = row.costText ? { text: row.costText, dim: !inv, inverse: inv } : undefined
+  const lead = `${marker} ${item.prefix}`
+  const glyph = env.screenReader ? '' : `${stateGlyph(row.state, env)} `
+  const label0 = group && env.screenReader ? `${row.label}, folded` : row.label
+  const role = !group && row.roleShown !== false && row.role && row.role !== row.label ? ` (${row.role})` : ''
+  const word = row.stateWord ? `  ${row.stateWord}` : ''
+  const chips = chipsOf(row)
+  const expander = group ? (env.screenReader ? '' : ' >') : ''
+  const cost = row.costText ? `${row.costText}${expander}` : expander.trim()
+
+  const chipsW = (list: Chip[]): number => list.reduce((n, c) => n + 1 + textWidth(c.text), 0)
+  const need = (labelW: number, withRole: boolean, list: Chip[]): number =>
+    textWidth(lead) + textWidth(glyph) + labelW + (withRole ? textWidth(role) : 0) + textWidth(word) + chipsW(list) + (cost ? textWidth(cost) + 1 : 0)
+
+  let useRole = role !== ''
+  let label = label0
+  let list = chips
+  if (need(textWidth(label), useRole, list) > width) useRole = false
+  if (need(textWidth(label), useRole, list) > width) {
+    // Shorten the handle (its end stays), but not below LABEL_MIN columns: the chips go first, the worktree one before `! N`.
+    while (list.length > 0 && width - need(0, false, list) < Math.min(LABEL_MIN, textWidth(label0))) list = list.slice(0, -1)
+    const room = width - need(0, false, list)
+    label = room >= 4 ? clipMiddle(label0, room, g.ellipsis) : label0
+  }
+
+  const left: Seg[] = [{ text: lead, inverse: inv }]
+  if (glyph) left.push({ text: glyph, tone, inverse: inv })
+  left.push({ text: label, bold: row.isRoot, inverse: inv })
+  if (useRole) left.push({ text: role, dim: !inv, inverse: inv })
+  if (word) left.push({ text: word, tone, inverse: inv })
+  for (const c of list) left.push({ text: ` ${c.text}`, tone: c.tone, inverse: inv })
+  const right: Seg | undefined = cost ? { text: cost, dim: !inv, inverse: inv } : undefined
   return alignSegs(left, right, width, env, { inverse: inv })
 }
+
+/** "Agents 6 · 1 working · ! 1" */
+function titleText(rows: readonly OrgTreeRow[], env: TuiEnv): string {
+  const { total, working, waiting } = treeCounts(rows)
+  const bullet = ` ${glyphs(env).bullet} `
+  const parts = [`Agents ${total}`]
+  if (working > 0) parts.push(`${working} working`)
+  if (waiting > 0) parts.push(`! ${waiting}`)
+  return parts.join(bullet)
+}
+
+const isChar = (e: Parameters<Parameters<typeof useFocusHandler>[1]>[0], ch: string): boolean =>
+  e.type === 'key' && e.name === 'char' && !e.ctrl && !e.alt && e.ch === ch
 
 export function OrgTreePane(props: OrgTreePaneProps) {
   const env = useTuiEnv()
@@ -72,43 +153,74 @@ export function OrgTreePane(props: OrgTreePaneProps) {
   const topRef = useRef(0)
 
   const { items, selectable } = buildItems(props.rows, env)
-  const selId =
-    (props.selectedId && selectable.some((r) => r.id === props.selectedId) ? props.selectedId : undefined) ??
-    (localSel && selectable.some((r) => r.id === localSel) ? localSel : undefined) ??
-    selectable[0]?.id
+  const has = (id: string | undefined): id is string => id !== undefined && selectable.some((r) => r.id === id)
+  // No choice yet: the first agent that needs you, else the first row.
+  const selId = (has(props.selectedId) ? props.selectedId : undefined) ?? (has(localSel) ? localSel : undefined) ?? (selectable.find((r) => r.waiting) ?? selectable[0])?.id
   // The handler reads and moves the selection through a ref: several keys can arrive before the next render.
   const selRef = useRef<string | undefined>(selId)
   selRef.current = selId
 
   const bodyH = Math.max(0, height - 1)
-  // Activity lines only when every row (and the header) still fits with two lines per agent.
-  const withActivity = selectable.some((r) => r.activity) && items.length + selectable.length <= bodyH
+  const selRow = selectable.find((r) => r.id === selId)
+  // The selected row's activity (or the names a folded group holds) is one footer line, when the pane has the room.
+  const footerText = selRow?.activity ? (selRow.kind === 'group' ? selRow.activity : `${selRow.label}: ${selRow.activity}`) : ''
+  const footer = footerText !== '' && bodyH >= 3
+  const rowsH = Math.max(0, bodyH - (footer ? 1 : 0))
+
+  const select = (id: string): void => {
+    const changed = id !== selRef.current
+    selRef.current = id
+    setLocalSel(id)
+    if (changed) props.onSelect?.(id)
+  }
 
   useFocusHandler(
     'tree',
     (e) => {
-      const k = navKey(e)
-      if (!k) return false
-      if (selectable.length === 0) return true
-      const perRow = withActivity ? 2 : 1
+      if (e.type !== 'key') return false
       const cur = Math.max(0, selectable.findIndex((r) => r.id === selRef.current))
-      const next = moveIndex(cur, k, selectable.length, Math.max(1, Math.floor(bodyH / perRow) - 1))
-      const id = selectable[next].id
-      const changed = id !== selRef.current
-      selRef.current = id
-      setLocalSel(id)
-      if (changed) props.onSelect?.(id)
-      return true
+      const row = selectable[cur]
+      const k = navKey(e)
+      if (k) {
+        if (selectable.length === 0) return true
+        select(selectable[moveIndex(cur, k, selectable.length, Math.max(1, rowsH - 1))].id)
+        return true
+      }
+      if (e.ctrl || e.alt) return false
+      if (e.name === 'right' || e.name === 'left' || e.name === 'enter') {
+        if (!row) return true
+        if (e.name === 'right') {
+          if (row.kind === 'group') props.onExpand?.(row)
+        } else if (e.name === 'left') {
+          props.onCollapse?.(row)
+        } else if (row.kind === 'group') props.onExpand?.(row)
+        else if (row.waiting) props.onFocusCard?.(row)
+        else props.onActivate?.(row)
+        return true
+      }
+      if (isChar(e, 'h')) {
+        props.onToggleFold?.()
+        return true
+      }
+      if (isChar(e, 'n') || isChar(e, 'N')) {
+        const back = e.ch === 'N'
+        const waiting = selectable.map((r, i) => (r.waiting ? i : -1)).filter((i) => i >= 0)
+        if (waiting.length === 0) {
+          props.onNotice?.('No agent needs you in this run.')
+          return true
+        }
+        const next = back ? ([...waiting].reverse().find((i) => i < cur) ?? waiting[waiting.length - 1]) : (waiting.find((i) => i > cur) ?? waiting[0])
+        select(selectable[next].id)
+        return true
+      }
+      return false
     },
     props.focused
   )
 
-  const ell = glyphs(env).ellipsis
-  const count = props.rows.length
-  const title = truncateEnd(`Agents (${count})`, width, ell)
   const lines: PaneLine[] = []
-  let selFrom = 0
-  let selTo = 0
+  const lineOf = new Map<string, number>()
+  let selAt = 0
   for (const item of items) {
     if (item.kind === 'header') {
       lines.push({ key: 'earlier', segs: cutSegs([{ text: '  Earlier sessions', dim: true }], width, env) })
@@ -116,24 +228,34 @@ export function OrgTreePane(props: OrgTreePaneProps) {
     }
     const row = item.row!
     const selected = row.id === selId
-    if (selected) selFrom = lines.length
+    if (selected) selAt = lines.length
+    lineOf.set(row.id, lines.length)
     lines.push({ key: `${row.runId}:${row.id}`, segs: rowLine(item, selected, props.focused, width, env) })
-    if (withActivity) {
-      const indent = ' '.repeat(Math.min(width, 2 + textWidth(item.prefix) + (env.screenReader ? 0 : 2)))
-      const act = row.activity ? `${indent}${row.activity}` : ''
-      lines.push({ key: `${row.runId}:${row.id}:activity`, segs: act ? cutSegs([{ text: act, dim: true }], width, env) : [] })
-    }
-    if (selected) selTo = lines.length - 1
   }
 
   let body: PaneLine[]
+  let top = 0
   if (lines.length === 0) {
     body = [{ key: 'empty', segs: cutSegs([{ text: 'No agents yet', dim: true }], width, env) }]
   } else {
-    const top = keepVisible(topRef.current, selFrom, selTo, bodyH, lines.length)
+    top = keepVisible(topRef.current, selAt, selAt, rowsH, lines.length)
     topRef.current = top
-    body = lines.slice(top, top + bodyH)
+    body = lines.slice(top, top + rowsH)
   }
-  const all: PaneLine[] = [{ key: 'title', segs: [{ text: title, bold: true, tone: props.focused ? 'accent' : undefined }] }, ...body]
+  if (footer && lines.length > 0) {
+    body.push({ key: 'footer', segs: cutSegs([{ text: footerText, dim: true }], width, env) })
+  }
+
+  // The title: counts on the left; the plan chip and how many waiting agents are scrolled out of view on the right.
+  const offscreen = selectable.reduce((n, r) => {
+    const at = lineOf.get(r.id)
+    return r.waiting && at !== undefined && (at < top || at >= top + rowsH) ? n + r.waiting : n
+  }, 0)
+  const rightParts: string[] = []
+  if (props.planChip) rightParts.push(props.planChip)
+  if (offscreen > 0) rightParts.push(`! ${offscreen} off screen`)
+  const right: Seg | undefined = rightParts.length ? { text: rightParts.join(` ${glyphs(env).bullet} `), dim: true } : undefined
+  const titleSegs = alignSegs([{ text: titleText(props.rows, env), bold: true, tone: props.focused ? 'accent' : undefined }], right, width, env)
+  const all: PaneLine[] = [{ key: 'title', segs: titleSegs }, ...body]
   return <PaneLines width={width} height={height} lines={all} env={env} />
 }
