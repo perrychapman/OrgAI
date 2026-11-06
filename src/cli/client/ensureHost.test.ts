@@ -12,11 +12,19 @@ import {
   INPROC_FALLBACK_NOTE,
   INPROC_SECRETS_NOTE,
   MANAGEMENT_INPROC,
+  missingScopesError,
   NO_BACKGROUND_HOST_MESSAGE,
+  NODE_TERMINAL_FULL_ACCESS_HINT,
   OTHER_COMMAND_HOST_MESSAGE,
-  OTHER_COMMAND_HOST_NOTE
+  OTHER_COMMAND_HOST_NOTE,
+  TERMINAL_FULL_ACCESS_HINT
 } from './ensureHost'
 import { markSharedHost } from './sharedHost'
+import { NODE_HOST_TERMINAL_OFF, nodeHostDeps } from '../nodeHost'
+import { HostTakenError } from './launcher'
+
+const realNodeDeps = { ...nodeHostDeps }
+afterEach(() => Object.assign(nodeHostDeps, realNodeDeps))
 
 const ready: DaemonInfo = { hostInstanceId: 'bbbbbbbbbbbb', pid: 77, endpoint: '/tmp/y.sock', state: 'ready', startedAt: 1, hostKind: 'headless-host' }
 const BACKGROUND = ['headless-host', 'desktop', 'node']
@@ -109,23 +117,23 @@ describe('ensureHost', () => {
     const node = fakeContext({
       globals: { host: 'daemon' },
       connect: [noHost(), h],
-      launcher: { locate: () => absent, startBackground: async () => ({ pid: 5 }), waitForReady: async () => nodeReady },
+      launcher: { locate: () => absent, startBackground: () => ({ pid: 5, hostKinds: ['node'] }), waitForReady: async () => nodeReady },
       inproc: async () => fakeInproc()
     })
     expect(await ensureHost(node.ctx, ['read'])).toEqual({ client: h, started: true })
     expect(node.launcherCalls).toEqual([
       { method: 'startBackground', args: 'node' },
-      { method: 'waitForReady', args: { timeoutMs: ENSURE_HOST_READY_TIMEOUT_MS, hostKinds: BACKGROUND } }
+      { method: 'waitForReady', args: { timeoutMs: ENSURE_HOST_READY_TIMEOUT_MS, hostKinds: ['node'] } }
     ])
     expect(node.inprocCalls).toEqual([])
-    expect(node.err()).toBe('')
+    expect(node.err()).toContain('Terminal access: operate')
 
     const refused = fakeContext({
       globals: { host: 'daemon' },
       connect: [noHost()],
       launcher: {
         locate: () => absent,
-        startBackground: async () => {
+        startBackground: () => {
           throw new Error('Terminal access is off')
         }
       }
@@ -327,5 +335,61 @@ describe("ensureHost: another command's own in-process host (WP-B review round 2
     const f = fakeContext({ globals: { host: 'daemon' }, connect: [otherInproc(), noHost(), h], launcher: { locate: () => found, waitForReady: async () => ready } })
     expect(await ensureHost(f.ctx, ['read'])).toEqual({ client: h, started: true })
     expect(f.launcherCalls.map((c) => c.method)).toEqual(['waitForGone', 'spawn', 'waitForReady'])
+  })
+
+  it('--host daemon with no app anywhere starts the Node host and waits for kind node (Wave 7, 4.1 / 4.2)', async () => {
+    nodeHostDeps.installInfo = () => ({ channel: 'npm', source: 'file' })
+    nodeHostDeps.terminalAccess = () => ({ terminalServer: false, terminalServerChosen: false, level: 'operate', levelChosen: false, enabledForBackground: true })
+    const node: DaemonInfo = { ...ready, hostKind: 'node' }
+    const h = new FakeHostClient()
+    const absent = { locate: () => ({ status: 'absent' as const, message: 'none' }) }
+    const f = fakeContext({ globals: { host: 'daemon' }, connect: [noHost(), h], launcher: { ...absent, startBackground: () => ({ hostKinds: ['node'] }), waitForReady: async () => node } })
+    const r = await ensureHost(f.ctx, ['read'])
+    expect(r).toEqual({ client: h, started: true })
+    // No level chosen: nothing asks here, so a note names the level and how to change it (review round 1).
+    expect(f.err()).toContain('Terminal access: operate')
+    expect(f.err()).toContain('orgai terminal-access --level full')
+    expect(f.launcherCalls).toEqual([
+      { method: 'startBackground', args: 'node' },
+      { method: 'waitForReady', args: { timeoutMs: ENSURE_HOST_READY_TIMEOUT_MS, hostKinds: ['node'] } }
+    ])
+    // Terminal access stored off: refused, nothing started.
+    nodeHostDeps.terminalAccess = () => ({ terminalServer: false, terminalServerChosen: true, level: 'operate', levelChosen: false, enabledForBackground: false })
+    const g = fakeContext({ globals: { host: 'daemon' }, launcher: { ...absent, startBackground: () => ({ hostKinds: ['node'] }) } })
+    await expect(ensureHost(g.ctx, ['read'])).rejects.toMatchObject({ exitCode: EXIT.failure, message: NODE_HOST_TERMINAL_OFF })
+    expect(g.launcherCalls).toEqual([])
+    // An app found: the app, as before.
+    const a = fakeContext({ globals: { host: 'daemon' }, connect: [noHost(), new FakeHostClient()], launcher: { startBackground: () => ({ hostKinds: ['node'] }), waitForReady: async () => ready } })
+    await ensureHost(a.ctx, ['read'])
+    expect(a.launcherCalls.map((c) => c.method)).toEqual(['spawn', 'waitForReady'])
+  })
+
+  it('a started host that hands off to a live host of another kind (a lost start race) uses that host (review round 2)', async () => {
+    nodeHostDeps.installInfo = () => ({ channel: 'npm', source: 'file' })
+    nodeHostDeps.terminalAccess = () => ({ terminalServer: false, terminalServerChosen: false, level: 'operate', levelChosen: true, enabledForBackground: true })
+    const absent = { locate: () => ({ status: 'absent' as const, message: 'none' }) }
+    const inproc: DaemonInfo = { ...ready, hostKind: 'inproc' }
+    const taken = async (): Promise<never> => {
+      throw new HostTakenError(inproc)
+    }
+    const h = new FakeHostClient()
+    const f = fakeContext({ globals: { host: 'daemon' }, connect: [noHost(), h], launcher: { ...absent, startBackground: () => ({ hostKinds: ['node'] }), waitForReady: taken } })
+    expect(await ensureHost(f.ctx, ['read'])).toEqual({ client: h, started: false })
+    // The app path too.
+    const k = new FakeHostClient()
+    const g = fakeContext({ connect: [noHost(), k], launcher: { waitForReady: taken } })
+    expect(await ensureHost(g.ctx, ['read'])).toEqual({ client: k, started: false })
+    // That host refusing this terminal is the usual connect failure.
+    const r = fakeContext({ connect: [noHost(), { ok: false, reason: 'disabled', message: '' }], launcher: { waitForReady: taken } })
+    await expect(ensureHost(r.ctx, ['read'])).rejects.toMatchObject({ exitCode: EXIT.failure, message: expect.stringContaining('Terminal access') })
+  })
+
+  it('a Node host that withheld a scope names the orgai commands, not App settings (review round 1)', () => {
+    const node = new FakeHostClient({}, { hello: { hostKind: 'node', grantedScopes: ['read', 'operate'] } })
+    const e = missingScopesError(node, ['read', 'decide'])
+    expect(e?.message).toBe(`The OrgAI host did not grant the 'decide' access this needs. ${NODE_TERMINAL_FULL_ACCESS_HINT}`)
+    expect(e?.message).not.toContain('App settings')
+    const app = new FakeHostClient({}, { hello: { hostKind: 'headless-host', grantedScopes: ['read'] } })
+    expect(missingScopesError(app, ['configure'])?.message).toContain(TERMINAL_FULL_ACCESS_HINT)
   })
 })

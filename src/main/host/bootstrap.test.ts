@@ -367,6 +367,22 @@ describe('bootOrgAIHost', () => {
     headless.dispose()
   })
 
+  it('a Node host follows the stored Terminal access and level like the headless host, and arms idle exit (Wave 7, 4.2.1)', () => {
+    const armIdle = vi.spyOn(HostActivityTracker.prototype, 'armIdleExit')
+    const node = boot({ hostKind: 'node' })
+    expect(armIdle).toHaveBeenCalledTimes(1)
+    // No stored choice: on for this session, 'operate' (never 'full' as an in-process host would be).
+    expect(node.terminalAccess()).toEqual({ enabled: true, level: 'operate' })
+    node.settings.set({ ...node.settings.get(), terminalAccessLevel: 'full', terminalAccessLevelChosen: true })
+    expect(node.terminalAccess()).toEqual({ enabled: true, level: 'full' })
+    node.settings.set({ ...node.settings.get(), terminalServer: false, terminalServerChosen: true })
+    expect(node.terminalAccess()).toEqual({ enabled: false, level: 'full' })
+    node.dispose()
+    const later = boot({ hostKind: 'node' })
+    expect(later.terminalAccess()).toEqual({ enabled: false, level: 'full' })
+    later.dispose()
+  })
+
   it('dispose() is idempotent and leaves no timers behind', () => {
     vi.useFakeTimers()
     const h = boot()

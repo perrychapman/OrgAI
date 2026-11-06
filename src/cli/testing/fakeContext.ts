@@ -9,9 +9,11 @@ import type {
   CliContext,
   CliGlobals,
   ConnectResult,
+  DaemonRuntime,
   HostCallError,
   HostClient,
   HostLauncher,
+  HostLauncherFound,
   InprocHostHandle,
   InprocStartOptions,
   ProjectResolution,
@@ -122,7 +124,7 @@ export interface FakeContextOptions {
   /** Override project resolution; default: --project by id or path, else the deepest project containing cwd. */
   resolveProject?: (projects: Project[]) => ProjectResolution
   launcher?: Partial<HostLauncher>
-  inproc?: () => Promise<InprocHostHandle>
+  inproc?: (opts?: InprocStartOptions) => Promise<InprocHostHandle>
   /** io.stdinIsTTY (default false). */
   stdinIsTTY?: boolean
   /** CliContext.secretEnv (environment secrets under --host auto). */
@@ -237,15 +239,6 @@ export function fakeContext(o: FakeContextOptions = {}): FakeContext {
       launcherCalls.push({ method: 'spawn', args })
       return o.launcher?.spawn ? o.launcher.spawn(args) : { pid: 999 }
     },
-    // Wave 7: only when the test gives one (the node runtime's hook); recorded.
-    ...(o.launcher?.startBackground
-      ? {
-          startBackground: (runtime: 'node') => {
-            launcherCalls.push({ method: 'startBackground', args: runtime })
-            return o.launcher!.startBackground!(runtime)
-          }
-        }
-      : {}),
     // A read of daemon.json; not recorded in launcherCalls.
     current: () => (o.launcher?.current ? o.launcher.current() : null),
     waitForReady: async (args) => {
@@ -255,7 +248,18 @@ export function fakeContext(o: FakeContextOptions = {}): FakeContext {
     waitForGone: async (args) => {
       launcherCalls.push({ method: 'waitForGone', args })
       return o.launcher?.waitForGone ? o.launcher.waitForGone(args) : true
-    }
+    },
+    // Wave 7 (WP-E): present only when the test gives one, as the optional member it is.
+    ...(o.launcher?.startBackground
+      ? {
+          startBackground: (runtime: DaemonRuntime, opts?: { app?: HostLauncherFound }) => {
+            launcherCalls.push({ method: 'startBackground', args: runtime })
+            return o.launcher!.startBackground!(runtime, opts)
+          }
+        }
+      : {}),
+    // Not recorded in launcherCalls (a check, no effect).
+    ...(o.launcher?.checkBackground ? { checkBackground: (runtime: DaemonRuntime) => o.launcher!.checkBackground!(runtime) } : {})
   }
   const ctx: CliContext = {
     globals,
@@ -290,7 +294,7 @@ export function fakeContext(o: FakeContextOptions = {}): FakeContext {
     startInproc: async (opts) => {
       inprocCalls.push(opts)
       if (!o.inproc) throw new Error('no inproc host in this test')
-      return o.inproc()
+      return o.inproc(opts)
     },
     ...(o.secretEnv ? { secretEnv: o.secretEnv } : {}),
     signals: {

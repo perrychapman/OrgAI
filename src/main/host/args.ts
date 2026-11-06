@@ -603,6 +603,7 @@ export function settingsSetArgs(raw: unknown, stored: AppSettings): AppSettings 
     connections: _connections,
     providerAuth: _auth,
     terminalServerChosen: _terminalChosen,
+    terminalAccessLevelChosen: _levelChosen,
     ...rest
   } = incoming
   // A field whose kind differs from the stored one's (a non-array modelPrices, a string flag, null) is dropped, so a
@@ -626,6 +627,11 @@ export function settingsSetArgs(raw: unknown, stored: AppSettings): AppSettings 
   // never overrides the user's choice (bootstrap.ts).
   delete out.terminalServerChosen
   if (stored.terminalServerChosen === true || (out.terminalServer === true) !== (stored.terminalServer === true)) out.terminalServerChosen = true
+  // terminalAccessLevelChosen likewise (Wave 7, round 6 item 11): set once a save names a level other than the stored
+  // one (picking 'operate' explicitly over an unset level counts), so `orgai daemon start` never asks again.
+  delete out.terminalAccessLevelChosen
+  const level = out.terminalAccessLevel
+  if (stored.terminalAccessLevelChosen === true || ((level === 'full' || level === 'operate') && level !== stored.terminalAccessLevel)) out.terminalAccessLevelChosen = true
   return out
 }
 

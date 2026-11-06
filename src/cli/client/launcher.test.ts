@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { EventEmitter } from 'node:events'
 import { dirname, join, resolve } from 'node:path'
@@ -6,17 +6,23 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   APP_NOT_FOUND,
   CHECKOUT_MARKER,
+  cliBundleEntry,
   createLauncher,
   devAppRoot,
   devCheckoutNoElectron,
   devCheckoutUnbuilt,
   discoverInstalledApp,
+  HostTakenError,
   hostSpawnCwd,
   hostSpawnEnv,
   installedAppBroken,
   installedAppCandidates,
   isOrgAICheckout,
+  NODE_HOST_BUNDLE_MISSING,
+  NODE_HOST_LOG_MAX_BYTES,
+  NODE_HOST_NEEDS_NODE,
   packagedAppMissing,
+  rotateNodeHostLog,
   type SpawnFn
 } from './launcher'
 
@@ -224,6 +230,173 @@ describe('launcher', () => {
     expect(await l.waitForGone({ timeoutMs: 300, hostInstanceId: 'cccccccccccc' })).toBe(true)
     alive = false
     expect(await l.waitForGone({ timeoutMs: 300, hostInstanceId: 'aaaaaaaaaaaa' })).toBe(true)
+  })
+})
+
+describe('launcher: startBackground (Wave 7, cli-standalone.md 4.2)', () => {
+  it("'node' spawns execPath <orgai.mjs> daemon run-node detached, stdio to <userDataDir>/logs/node-host.log", () => {
+    const calls: { command: string; args: string[]; options: Record<string, unknown> }[] = []
+    const spawn: SpawnFn = (command, args, options) => {
+      calls.push({ command, args, options: options as Record<string, unknown> })
+      return { pid: 91, unref() {} }
+    }
+    const userDataDir = join(base, 'ud')
+    const env = { PATH: '/bin', ORGAI_SECRET_X: 'nope', ELECTRON_RUN_AS_NODE: '1', ORGAI_DAEMON_IDLE_MINUTES: '5' }
+    const l = createLauncher({ dataDir, userDataDir, userChoseDataDir: true, env, spawn, runtime: { execPath: '/usr/local/bin/node' }, cliEntry: '/pkg/out/cli/orgai.mjs' })
+    expect(l.startBackground!('node')).toEqual({ pid: 91, hostKinds: ['node'] })
+    expect(calls[0].command).toBe('/usr/local/bin/node')
+    expect(calls[0].args).toEqual(['/pkg/out/cli/orgai.mjs', 'daemon', 'run-node'])
+    const o = calls[0].options
+    expect(o.detached).toBe(true)
+    expect(o.windowsHide).toBe(true)
+    expect(o.shell).toBe(false)
+    const stdio = o.stdio as unknown[]
+    expect(stdio[0]).toBe('ignore')
+    expect(typeof stdio[1]).toBe('number')
+    expect(stdio[2]).toBe(stdio[1])
+    const log = join(userDataDir, 'logs', 'node-host.log')
+    expect(existsSync(log)).toBe(true)
+    if (process.platform !== 'win32') expect(statSync(log).mode & 0o777).toBe(0o600)
+    // The host environment: no secrets, no ELECTRON_RUN_AS_NODE, the chosen data folder, the idle setting kept.
+    expect(o.env).toEqual({ PATH: '/bin', ORGAI_DAEMON_IDLE_MINUTES: '5', ORGAI_DATA_DIR: userDataDir })
+    expect(o.cwd).toBe('/usr/local/bin')
+  })
+
+  it("'node' refuses on Electron (no real Node) and without a bundle", () => {
+    const spawn: SpawnFn = () => ({ pid: 1, unref() {} })
+    const onElectron = createLauncher({ dataDir, userDataDir: base, userChoseDataDir: false, env: {}, spawn, runtime: { execPath: '/OrgAI', electron: '40.0.0' }, cliEntry: '/x/orgai.mjs' })
+    expect(() => onElectron.startBackground!('node')).toThrow(NODE_HOST_NEEDS_NODE)
+    const noBundle = createLauncher({ dataDir, userDataDir: base, userChoseDataDir: false, env: {}, spawn, runtime: { execPath: '/node' }, bundleDir: join(base, 'nowhere') })
+    expect(() => noBundle.startBackground!('node')).toThrow(/orgai\.mjs\) was not found/)
+  })
+
+  it("'app' spawns the app headless and waits for the Electron kinds", () => {
+    const calls: { command: string; args: string[] }[] = []
+    const spawn: SpawnFn = (command, args) => {
+      calls.push({ command, args })
+      return { pid: 5, unref() {} }
+    }
+    const l = createLauncher({ dataDir, userDataDir: base, userChoseDataDir: false, env: { ORGAI_ELECTRON_PATH: '/opt/e', ORGAI_APP_ROOT: '/opt/app' }, spawn })
+    expect(l.startBackground!('app')).toEqual({ pid: 5, hostKinds: ['headless-host', 'desktop'] })
+    expect(calls[0]).toEqual({ command: '/opt/e', args: ['/opt/app', '--headless-host'] })
+  })
+
+  it('a Node host that exits before it is ready fails waitForReady with its exit code', async () => {
+    const children: EventEmitter[] = []
+    const spawn: SpawnFn = () => {
+      const c = Object.assign(new EventEmitter(), { pid: 3, unref() {} })
+      children.push(c)
+      return c
+    }
+    let t = 0
+    const l = createLauncher({ dataDir, userDataDir: base, userChoseDataDir: false, env: {}, spawn, runtime: { execPath: '/node' }, cliEntry: '/x/orgai.mjs', isLive: () => true, now: () => t, sleep: async (ms) => void (t += ms) })
+    l.startBackground!('node')
+    children[0].emit('exit', 1, null)
+    await expect(l.waitForReady({ timeoutMs: 5000, hostKinds: ['node'] })).rejects.toThrow('OrgAI exited (code 1)')
+  })
+
+  it('a Node host that lost the data folder exits 0 (a hand-off): wait for the winner, fail at once for a ready host of another kind (review round 1)', async () => {
+    const children: EventEmitter[] = []
+    const spawn: SpawnFn = () => {
+      const c = Object.assign(new EventEmitter(), { pid: 3, unref() {} })
+      children.push(c)
+      return c
+    }
+    let t = 0
+    const l = createLauncher({
+      dataDir,
+      userDataDir: base,
+      userChoseDataDir: false,
+      env: {},
+      spawn,
+      runtime: { execPath: '/node' },
+      cliEntry: '/x/orgai.mjs',
+      isLive: () => true,
+      now: () => t,
+      sleep: async (ms) => {
+        t += ms
+        // The winner (another Node host) becomes ready a moment later.
+        if (t >= 300) writeFileSync(join(dataDir, 'run', 'daemon.json'), JSON.stringify({ hostInstanceId: 'dddddddddddd', pid: 9, endpoint: '/x', state: 'ready', startedAt: 1, hostKind: 'node' }))
+      }
+    })
+    writeFileSync(join(dataDir, 'run', 'daemon.json'), JSON.stringify({ hostInstanceId: 'dddddddddddd', pid: 9, endpoint: '/x', state: 'starting', startedAt: 1, hostKind: 'node' }))
+    l.startBackground!('node')
+    children[0].emit('exit', 0, null)
+    expect((await l.waitForReady({ timeoutMs: 5000, hostKinds: ['node'] }))?.hostInstanceId).toBe('dddddddddddd')
+    // The folder went to a ready app host instead: no Node host will come, so say so now (not at the timeout).
+    writeFileSync(join(dataDir, 'run', 'daemon.json'), JSON.stringify({ hostInstanceId: 'eeeeeeeeeeee', pid: 10, endpoint: '/x', state: 'ready', startedAt: 1, hostKind: 'desktop' }))
+    const m = createLauncher({ dataDir, userDataDir: base, userChoseDataDir: false, env: {}, spawn, runtime: { execPath: '/node' }, cliEntry: '/x/orgai.mjs', isLive: () => true, now: () => 0, sleep: async () => undefined })
+    m.startBackground!('node')
+    children[1].emit('exit', 0, null)
+    await expect(m.waitForReady({ timeoutMs: 5000, hostKinds: ['node'] })).rejects.toThrow('Another OrgAI host (desktop, pid 10) took this data folder first.')
+    // A HostTakenError carrying the winner, so a starter can report it as running (review round 2).
+    const err = await m.waitForReady({ timeoutMs: 5000, hostKinds: ['node'] }).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(HostTakenError)
+    expect((err as HostTakenError).info).toMatchObject({ hostInstanceId: 'eeeeeeeeeeee', hostKind: 'desktop', pid: 10 })
+  })
+
+  it('checkBackground names why startBackground would throw, without spawning (review round 2)', () => {
+    let spawned = 0
+    const spawn: SpawnFn = () => (spawned++, { pid: 1, unref() {} })
+    const mk = (extra: Partial<Parameters<typeof createLauncher>[0]>) => createLauncher({ dataDir, userDataDir: base, userChoseDataDir: false, env: {}, spawn, ...extra })
+    expect(mk({ runtime: { execPath: '/OrgAI', electron: '40.0.0' }, cliEntry: '/x/orgai.mjs' }).checkBackground!('node')).toBe(NODE_HOST_NEEDS_NODE)
+    expect(mk({ runtime: { execPath: '/node' }, bundleDir: join(base, 'nowhere') }).checkBackground!('node')).toBe(NODE_HOST_BUNDLE_MISSING)
+    expect(mk({ runtime: { execPath: '/node' }, cliEntry: '/x/orgai.mjs' }).checkBackground!('node')).toBeUndefined()
+    expect(mk({ bundleDir: join(base, 'nowhere') }).checkBackground!('app')).toBe(APP_NOT_FOUND)
+    expect(mk({ env: { ORGAI_ELECTRON_PATH: '/opt/e' } }).checkBackground!('app')).toBeUndefined()
+    expect(spawned).toBe(0)
+  })
+
+  it('node-host.log is never rotated while a live host owns the data folder (review round 2)', () => {
+    const userDataDir = join(base, 'ud')
+    const logs = join(userDataDir, 'logs')
+    mkdirSync(logs, { recursive: true })
+    const log = join(logs, 'node-host.log')
+    const old = join(logs, 'node-host.old.log')
+    writeFileSync(log, Buffer.alloc(NODE_HOST_LOG_MAX_BYTES + 1))
+    // The winner of a start race (or a host still starting) has node-host.log open.
+    writeFileSync(join(dataDir, 'run', 'daemon.json'), JSON.stringify({ hostInstanceId: 'dddddddddddd', pid: 9, endpoint: '/x', state: 'starting', startedAt: 1, hostKind: 'node' }))
+    let live = true
+    const l = createLauncher({ dataDir, userDataDir, userChoseDataDir: false, env: {}, spawn: () => ({ pid: 1, unref() {} }), runtime: { execPath: '/node' }, cliEntry: '/x/orgai.mjs', isLive: () => live })
+    l.startBackground!('node')
+    expect(existsSync(old)).toBe(false)
+    expect(statSync(log).size).toBe(NODE_HOST_LOG_MAX_BYTES + 1)
+    // Once that host is gone, the next start rotates.
+    live = false
+    l.startBackground!('node')
+    expect(statSync(old).size).toBe(NODE_HOST_LOG_MAX_BYTES + 1)
+    expect(statSync(log).size).toBe(0)
+  })
+
+  it('node-host.log is moved to node-host.old.log past the size cap before a start (review round 1)', () => {
+    const logs = join(base, 'ud', 'logs')
+    mkdirSync(logs, { recursive: true })
+    const log = join(logs, 'node-host.log')
+    const old = join(logs, 'node-host.old.log')
+    writeFileSync(log, 'x'.repeat(10))
+    expect(rotateNodeHostLog(logs, 10)).toBe(false)
+    writeFileSync(log, 'y'.repeat(11))
+    writeFileSync(old, 'older')
+    expect(rotateNodeHostLog(logs, 10)).toBe(true)
+    expect(existsSync(log)).toBe(false)
+    expect(readFileSync(old, 'utf8')).toBe('y'.repeat(11))
+    expect(rotateNodeHostLog(join(base, 'missing'))).toBe(false)
+    expect(NODE_HOST_LOG_MAX_BYTES).toBe(5 * 1024 * 1024)
+    // startBackground rotates first, then appends to a fresh file.
+    writeFileSync(log, Buffer.alloc(NODE_HOST_LOG_MAX_BYTES + 1))
+    const l = createLauncher({ dataDir, userDataDir: join(base, 'ud'), userChoseDataDir: false, env: {}, spawn: () => ({ pid: 1, unref() {} }), runtime: { execPath: '/node' }, cliEntry: '/x/orgai.mjs' })
+    l.startBackground!('node')
+    expect(statSync(old).size).toBe(NODE_HOST_LOG_MAX_BYTES + 1)
+    expect(statSync(log).size).toBe(0)
+  })
+
+  it('cliBundleEntry: the bundle folder, else a dev checkout build, else undefined', () => {
+    const root = fakeRepo()
+    writeFileSync(join(root, 'out', 'cli', 'orgai.mjs'), '')
+    expect(cliBundleEntry(join(root, 'out', 'cli'))).toBe(join(root, 'out', 'cli', 'orgai.mjs'))
+    mkdirSync(join(root, 'src', 'cli', 'client'), { recursive: true })
+    expect(cliBundleEntry(join(root, 'src', 'cli', 'client'))).toBe(join(root, 'out', 'cli', 'orgai.mjs'))
+    expect(cliBundleEntry(join(base, 'elsewhere'))).toBeUndefined()
   })
 })
 

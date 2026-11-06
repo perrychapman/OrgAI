@@ -84,6 +84,8 @@ export function buildContext(input: BuildContextInput): CliContext {
         overlay: input.overlay ?? new Map(),
         ...(opts.background ? { background: opts.background } : {}),
         ...(opts.shared ? { shared: true } : {}),
+        // The detached Node host (daemon run-node) writes to main.log only; its stdio file keeps what escapes that.
+        ...(opts.hostKind === 'node' ? { hostKind: 'node' as const, quiet: true } : {}),
         ...(quietContexts.has(ctx) ? { quiet: true } : {})
       })
     )

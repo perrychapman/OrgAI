@@ -29,9 +29,12 @@
  * `decidedBy.surface` 'tui' on the decisions it sends.
  */
 import { BACKGROUND_HOST_KINDS, HOST_KIND_CAPABILITIES, type HostClientKind, type HostKind, type HostScope } from '../../shared/types'
+import { nodeHostDeps, nodeHostRefusal } from '../nodeHost'
 import { note, warn } from '../output'
 import { liveHostSecretAnswer, SECRET_ENV_IGNORED_WARNING } from '../secretOverlay'
 import { CliError, EXIT, HOST_STARTING_WAIT_MS, type CliContext, type ConnectResult, type HostClient, type InprocHostHandle, type InprocStartOptions } from '../types'
+import { levelNote } from '../terminalAccessSettings'
+import { HostTakenError } from './launcher'
 import { isSharedInprocHost } from './sharedHost'
 
 export const ENSURE_HOST_READY_TIMEOUT_MS = 30_000
@@ -76,18 +79,27 @@ export const TERMINAL_ACCESS_HINT = 'Terminal access is off. Turn it on in OrgAI
 export const TERMINAL_FULL_ACCESS_HINT =
   'Terminal access lets terminal clients watch and run work only. To answer decisions or change settings from a terminal, allow it in OrgAI: App settings > General > Advanced settings > Terminal access, or use `--host inproc`.'
 
+/** TERMINAL_FULL_ACCESS_HINT for a Node host: no App settings on an npm-only machine (Wave 7, review round 1). */
+export const NODE_TERMINAL_FULL_ACCESS_HINT =
+  'Terminal access lets terminal clients watch and run work only. To answer decisions or change settings from a terminal, stop the Node host (`orgai daemon stop`), then run `orgai terminal-access --level full`, or use `--host inproc`.'
+
 /** A host of another version grants this CLI only read, operate, decide and host.stop. */
 export const VERSION_SKEW_SCOPE_HINT = 'A host of another version accepts only read, operate and decide from this CLI.'
 
 /**
  * The CliError when a host granted fewer scopes than asked (`missing`), or undefined when nothing is missing: the
- * version-skew hint for a skewed host, else the Terminal access level hint.
+ * version-skew hint for a skewed host, else the Terminal access level hint (for a Node host, the orgai commands that
+ * change it).
  */
 export function missingScopesError(client: Pick<HostClient, 'hello'>, wanted: readonly HostScope[]): CliError | undefined {
   const granted = client.hello.grantedScopes
   const missing = Array.isArray(granted) ? wanted.filter((s) => !granted.includes(s)) : []
   if (!missing.length) return undefined
-  const hint = client.hello.versionSkewWarning ? VERSION_SKEW_SCOPE_HINT : TERMINAL_FULL_ACCESS_HINT
+  const hint = client.hello.versionSkewWarning
+    ? VERSION_SKEW_SCOPE_HINT
+    : client.hello.hostKind === 'node'
+      ? NODE_TERMINAL_FULL_ACCESS_HINT
+      : TERMINAL_FULL_ACCESS_HINT
   return new CliError(`The OrgAI host did not grant the ${missing.map((s) => `'${s}'`).join(', ')} access this needs. ${hint}`, EXIT.failure)
 }
 
@@ -209,17 +221,23 @@ async function inprocHost(ctx: CliContext, connect: () => Promise<ConnectResult>
   return { client: res.client, inproc, started: true }
 }
 
-/** Spawn or start a background host and wait for any BACKGROUND_HOST_KINDS host to be ready. */
-async function startBackground(ctx: CliContext, start: () => unknown): Promise<void> {
+/**
+ * Spawn or start a background host and wait for a host of `hostKinds` to be ready. 'taken' = the host we started handed
+ * off to a live host of another kind that won the start race (review round 2): `--host daemon` takes either background
+ * kind (cli-standalone.md 4.1), so the caller connects to that host.
+ */
+async function startBackground(ctx: CliContext, start: () => unknown, label: string, hostKinds: readonly HostKind[]): Promise<'ready' | 'taken'> {
   let ready
   try {
-    await start()
+    const started = (await start()) as { hostKinds?: readonly HostKind[] } | undefined
     // Only a background host counts (a running desktop app takes the hand-off); an inproc host's daemon.json never does.
-    ready = await ctx.launcher.waitForReady({ timeoutMs: ENSURE_HOST_READY_TIMEOUT_MS, hostKinds: BACKGROUND_HOST_KINDS })
+    ready = await ctx.launcher.waitForReady({ timeoutMs: ENSURE_HOST_READY_TIMEOUT_MS, hostKinds: started?.hostKinds ?? hostKinds })
   } catch (e) {
-    throw new CliError(`Could not start the OrgAI host: ${e instanceof Error ? e.message : String(e)}`, EXIT.failure)
+    if (e instanceof HostTakenError) return 'taken'
+    throw new CliError(`Could not start the OrgAI ${label}: ${e instanceof Error ? e.message : String(e)}`, EXIT.failure)
   }
-  if (!ready) throw new CliError(`The OrgAI host did not become ready within ${ENSURE_HOST_READY_TIMEOUT_MS / 1000} s. See \`orgai daemon logs\`.`, EXIT.hostBusy)
+  if (!ready) throw new CliError(`The OrgAI ${label} did not become ready within ${ENSURE_HOST_READY_TIMEOUT_MS / 1000} s. See \`orgai daemon logs\`.`, EXIT.hostBusy)
+  return 'ready'
 }
 
 export async function ensureHost(ctx: CliContext, scopes: HostScope[], opts: EnsureHostOptions = {}): Promise<EnsuredHost> {
@@ -247,6 +265,7 @@ export async function ensureHost(ctx: CliContext, scopes: HostScope[], opts: Ens
     return inprocHost(ctx, connect, opts.inproc)
   }
 
+  let outcome: 'ready' | 'taken'
   const app = ctx.launcher.locate()
   if (app.status === 'broken') throw new CliError(app.message, EXIT.failure)
   if (app.status === 'absent') {
@@ -257,12 +276,18 @@ export async function ensureHost(ctx: CliContext, scopes: HostScope[], opts: Ens
     // --host daemon: a Node background host when this build can start one, never in-process.
     const startNode = ctx.launcher.startBackground?.bind(ctx.launcher)
     if (!startNode) throw new CliError(NO_BACKGROUND_HOST_MESSAGE, EXIT.failure)
-    await startBackground(ctx, () => startNode('node'))
+    // Wave 7 (cli-standalone.md 4.1, 4.2): refused when install.json says app or Terminal access is stored off.
+    const refusal = nodeHostRefusal(ctx)
+    if (refusal) throw refusal
+    // Nothing asks here (exec and scripts are not interactive): say which level the new host grants and how to change it.
+    const stored = nodeHostDeps.terminalAccess(ctx.paths.dataDir)
+    if (!stored.levelChosen) note(ctx, levelNote(stored.level))
+    outcome = await startBackground(ctx, () => startNode('node'), 'Node host', BACKGROUND_HOST_KINDS)
   } else {
     const { status: _found, ...found } = app
-    await startBackground(ctx, () => ctx.launcher.spawn({ headless: true, app: found }))
+    outcome = await startBackground(ctx, () => ctx.launcher.spawn({ headless: true, app: found }), 'host', BACKGROUND_HOST_KINDS)
   }
   const second = await connect()
   if (!second.ok) throw connectFailure(second)
-  return { client: second.client, started: true }
+  return { client: second.client, started: outcome === 'ready' }
 }

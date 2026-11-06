@@ -29,7 +29,10 @@ const CLI_MODULES = [
   // Wave 7 contracts
   './installInfo',
   './commands/secrets',
-  './commands/terminalAccess'
+  './commands/terminalAccess',
+  // Wave 7 WP-E
+  './nodeHost',
+  './terminalAccessSettings'
 ]
 
 describe('CLI modules load without electron', () => {

@@ -392,6 +392,20 @@ describe('settingsSetArgs terminalServerChosen (cli-spec 3.3)', () => {
     const chosen = { ...base, terminalServer: false, terminalServerChosen: true }
     expect(settingsSetArgs({ notifications: false, terminalServerChosen: false }, chosen).terminalServerChosen).toBe(true)
   })
+
+  it('terminalAccessLevelChosen is main-owned and set once a save names another level (Wave 7, round 6 item 11)', () => {
+    const base = { ...DEFAULT_APP_SETTINGS }
+    expect(settingsSetArgs({ terminalAccessLevelChosen: true, notifications: false }, base)).not.toHaveProperty('terminalAccessLevelChosen')
+    // An echo of the stored settings (no level) chooses nothing.
+    expect(settingsSetArgs({ ...base }, base)).not.toHaveProperty('terminalAccessLevelChosen')
+    expect(settingsSetArgs({ terminalAccessLevel: 'full' }, base).terminalAccessLevelChosen).toBe(true)
+    // Picking 'operate' explicitly over an unset level is a choice too.
+    expect(settingsSetArgs({ terminalAccessLevel: 'operate' }, base).terminalAccessLevelChosen).toBe(true)
+    expect(settingsSetArgs({ terminalAccessLevel: 'full' }, { ...base, terminalAccessLevel: 'full' })).not.toHaveProperty('terminalAccessLevelChosen')
+    expect(settingsSetArgs({ terminalAccessLevel: 'junk' } as never, base)).not.toHaveProperty('terminalAccessLevelChosen')
+    const chosen = { ...base, terminalAccessLevel: 'operate' as const, terminalAccessLevelChosen: true }
+    expect(settingsSetArgs({ notifications: false, terminalAccessLevelChosen: false }, chosen).terminalAccessLevelChosen).toBe(true)
+  })
 })
 
 describe('connection id guards (connections:test / logout, models:list / refresh)', () => {
