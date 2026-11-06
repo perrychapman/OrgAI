@@ -5,6 +5,7 @@
  * repository, whose progress and cancel-on-close use the IPC sender) and forwards the host's push bus to windows when it made the bus
  * itself. The pure argument builders live in host/args.ts and are re-exported here for the existing tests.
  */
+import { appSecretReason } from '@shared/view/secretNotices'
 import { app, BrowserWindow, dialog, ipcMain, shell, type IpcMainInvokeEvent, type WebContents } from 'electron'
 import type { CliShimResult, CliShimStatus, FocusRunTarget, KitApplyResult, KitExportResult, KitImportPreview, SkillLibraryFolderInput, SkillLibraryInfo } from '@shared/types'
 import { HOST_IPC, HOST_METHODS, IPC, KIT_IPC, REPO_DESTINATION_MAX_CHARS, REPO_SOURCE_MAX_CHARS, TEAM_FILES_IPC } from '@shared/types'
@@ -152,6 +153,20 @@ export const DESKTOP_CHANNEL_MUTATES: Readonly<Record<string, boolean>> = {
   [TEAM_FILES_IPC.teamFilesEnable]: true
 }
 
+/**
+ * A refusal on its way to a window: the secret vault's sentences name the orgai command, which an app-only user may not
+ * have, so they are put in the app's words (src/shared/view/secretNotices.ts appSecretReason). Any other error is
+ * returned as it is.
+ */
+export function appFacingError(err: unknown): unknown {
+  if (!(err instanceof Error)) return err
+  const text = appSecretReason(err.message)
+  if (text === err.message.trim() || text === err.message) return err
+  const out = new Error(text)
+  out.name = err.name
+  return out
+}
+
 /** Served over the socket only: HOST_IPC channels and host.* methods never get an ipcMain handler. */
 const SOCKET_ONLY: ReadonlySet<string> = new Set<string>([...Object.values(HOST_IPC), ...Object.values(HOST_METHODS)])
 
@@ -191,7 +206,17 @@ export function registerIpc(services: IpcServices): void {
     if (SOCKET_ONLY.has(channel)) continue
     // Compatibility: usage:refresh only with a usage monitor (the dispatcher answers null without one).
     if (channel === IPC.usageRefresh && !services.usage && !services.dispatcher) continue
-    ipcMain.handle(channel, (e: IpcMainInvokeEvent, ...args: unknown[]) => dispatcher.invoke(channel, args, { surface: 'desktop', senderId: e?.sender?.id }))
+    ipcMain.handle(channel, (e: IpcMainInvokeEvent, ...args: unknown[]) => {
+      const reply = (): unknown => {
+        try {
+          const r = dispatcher.invoke(channel, args, { surface: 'desktop', senderId: e?.sender?.id }) as unknown
+          return r && typeof (r as Promise<unknown>).then === 'function' ? (r as Promise<unknown>).catch((err: unknown) => Promise.reject(appFacingError(err))) : r
+        } catch (err) {
+          throw appFacingError(err)
+        }
+      }
+      return reply()
+    })
   }
 
   // ---- Desktop-only channels ----

@@ -153,6 +153,30 @@ describe('orgai secrets reset', () => {
   })
 })
 
+describe('orgai secrets keep-removed', () => {
+  const legacy = (key: string) => ({ key, by: 'legacy' as const, at: Date.UTC(2026, 10, 4), restorable: 'app' as const })
+  it('with no key it confirms every soft delete an older OrgAI made, after asking; --yes skips the question', async () => {
+    const { f, client } = setup({
+      'secrets:status': () => status({ softDeletes: [legacy('a'), { key: 'b', by: 'vault', at: 1, restorable: 'here' }, legacy('c')] }),
+      'secrets:confirmDelete': (p) => ({ confirmed: (p as [{ keys: string[] }])[0].keys })
+    })
+    const code = await run(f, ['keep-removed', '--yes'])
+    expect(f.err()).toBe('')
+    expect(code).toBe(EXIT.ok)
+    expect(client.callsOf('secrets:confirmDelete')[0]).toEqual([{ keys: ['a', 'c'] }])
+    expect(f.out()).toContain('Kept 2 secrets removed.')
+  })
+  it('named keys are sent as given; nothing waiting is exit 0 and sends nothing', async () => {
+    const { f, client } = setup({ 'secrets:status': () => status(), 'secrets:confirmDelete': () => ({ confirmed: ['x'] }) })
+    expect(await run(f, ['keep-removed'])).toBe(EXIT.ok)
+    expect(f.out()).toContain('No secrets removed by an older OrgAI are waiting.')
+    expect(client.callsOf('secrets:confirmDelete')).toHaveLength(0)
+    expect(await run(f, ['keep-removed', 'x', 'y', '-y'])).toBe(EXIT.ok)
+    expect(client.callsOf('secrets:confirmDelete')[0]).toEqual([{ keys: ['x', 'y'] }])
+    expect(f.out()).toContain('1 had nothing kept to confirm.')
+  })
+})
+
 describe('orgai secrets undelete', () => {
   it('restores one key; a refusal with a reason is exit 1; a missing key is exit 2', async () => {
     const answers: Record<string, Answer> = {

@@ -545,3 +545,16 @@ describe('withEffectiveDefault (settings:get / set / changed)', () => {
     expect(settingsSetArgs(out, s).defaultConnection).toBe('anthropic')
   })
 })
+
+describe('appFacingError (what a window is told about the secret vault)', () => {
+  it('puts the vault sentences in the app words and leaves every other error alone', async () => {
+    const { appFacingError } = await import('./ipc')
+    const { VAULT_MESSAGES } = await import('./store/vaultTypes')
+    const e = appFacingError(new Error(VAULT_MESSAGES.clearRefusedCorrupt)) as Error
+    expect(e.message).not.toMatch(/orgai|`/)
+    expect(e.message).toContain('Dashboard')
+    const plain = new Error('Something else')
+    expect(appFacingError(plain)).toBe(plain)
+    expect(appFacingError('text')).toBe('text')
+  })
+})

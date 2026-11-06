@@ -15,6 +15,8 @@ import { fileURLToPath } from 'node:url'
 // process.env, so setting it here (an import side effect, before any launch) covers launch(), startCli() and the pty
 // driver. A script that names its own key file (ORGAI_VAULT_KEY_FILE) keeps it; the flag is harmless beside it.
 process.env.ORGAI_VAULT_NO_OS_KEYSTORE = '1'
+// Electron's own safeStorage (the app's older secrets.json) would otherwise create a "... Safe Storage" keychain item on
+// macOS; Chromium's --use-mock-keychain keeps the key in memory, so no e2e launch touches the real keychain.
 
 export const E2E_DIR = path.dirname(fileURLToPath(import.meta.url))
 export const APP_DIR = path.resolve(E2E_DIR, '..')
@@ -236,7 +238,7 @@ export async function launch({ shotPrefix = 'shot', clearPrefs = true } = {}) {
   if (!fs.existsSync(path.join(APP_DIR, 'out', 'main', 'index.js'))) throw new Error('out/main/index.js missing. Run `npm run build` first.')
   fs.mkdirSync(SHOTS_DIR, { recursive: true })
   // process.env is read here, so flags a script sets before launching (ORGAI_MOCK=1) still reach the app.
-  const app = await electron.launch({ executablePath: electronBinary(), args: [APP_DIR], cwd: APP_DIR, timeout: 60_000, env: { ...process.env, ORGAI_DATA_DIR: DATA_DIR } })
+  const app = await electron.launch({ executablePath: electronBinary(), args: ['--use-mock-keychain', APP_DIR], cwd: APP_DIR, timeout: 60_000, env: { ...process.env, ORGAI_DATA_DIR: DATA_DIR } })
   const page = await app.firstWindow()
   page.on('dialog', (d) => {
     log('dialog:', d.message().slice(0, 100))

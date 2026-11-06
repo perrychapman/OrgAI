@@ -7282,4 +7282,14 @@ export interface OrgAIApi {
     enable(input: TeamFilesProjectInput): Promise<TeamFilesActionResult>
   }
   onTeamFilesChanged(cb: (status: TeamFilesStatus) => void): () => void
+  /** The secret vault's notices (Dashboard): status, restore, keep removed, try again, start over. Never a value. */
+  secrets: {
+    status(input?: SecretsStatusInput): Promise<SecretsStatusResult>
+    undelete(input: SecretsUndeleteInput): Promise<SecretsUndeleteResult>
+    confirmDelete(input: SecretsConfirmDeleteInput): Promise<SecretsConfirmDeleteResult>
+    /** Open a locked vault again (or create an absent one). */
+    init(input?: SecretsInitInput): Promise<SecretsInitResult>
+    /** Move a damaged vault (and a damaged secrets.json) aside. The caller confirms first. */
+    reset(input: SecretsResetInput): Promise<SecretsResetResult>
+  }
 }

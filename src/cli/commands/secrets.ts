@@ -6,12 +6,13 @@
  *   secrets init [--key-file <path> [--import]]    configure: create the vault (or open a locked one)
  *   secrets reset [--yes]                          configure: move vault.json aside (asks on /dev/tty without --yes)
  *   secrets undelete <key>                         configure: restore one soft-deleted secret
+ *   secrets keep-removed [<key>...] [--yes]        configure: keep removed secrets removed (all removed by an older OrgAI when no key)
  *
  * A key file path is resolved against the current folder and must lie outside OrgAI's data folder (5.3.1; the host
  * checks again, canonically). Exit codes: 0 done, 1 refused by the host or not confirmed, 2 bad usage.
  */
 import * as path from 'node:path'
-import type { SecretsInitInput, SecretsInitResult, SecretsResetResult, SecretsSoftDelete, SecretsStatusResult, SecretsUndeleteResult } from '../../shared/types'
+import type { SecretsConfirmDeleteResult, SecretsInitInput, SecretsInitResult, SecretsResetResult, SecretsSoftDelete, SecretsStatusResult, SecretsUndeleteResult } from '../../shared/types'
 import { formatDateTime } from '../../shared/view/dates'
 import { VAULT_MESSAGES } from '../../main/store/vaultTypes'
 import { parseFlags } from '../flags'
@@ -20,7 +21,7 @@ import { emit, printText, safeLine, warn, type Json } from '../output'
 import { CliError, EXIT, type CliContext, type CommandFn } from '../types'
 import { CONFIGURE, READ, refusable } from './connections'
 
-const USAGE = 'secrets status [--probe] | init [--key-file <path> [--import]] | reset [--yes] | undelete <key>'
+const USAGE = 'secrets status [--probe] | init [--key-file <path> [--import]] | reset [--yes] | undelete <key> | keep-removed [<key>...] [--yes]'
 
 /** What `secrets init --key-file` prints with the result (5.3.1: the README and the init output say it). */
 export const KEY_FILE_BACKUP_WARNING = 'A backup or sync that holds both the key file and the data folder holds every secret.'
@@ -96,7 +97,7 @@ export function statusLines(s: SecretsStatusResult): string[] {
   if (s.pendingLegacy) lines.push(`Pending:      ${s.pendingLegacy} ${s.pendingLegacy === 1 ? 'secret' : 'secrets'}: ${VAULT_MESSAGES.pendingLegacy}`)
   lines.push(`App copy:     ${s.canWriteBack ? "kept in step by this host" : "this host cannot update the OrgAI app's copy; secrets saved here reach the app only after it opens the vault"}`)
   if (s.softDeletes.length) {
-    lines.push('', 'Removed secrets kept for `orgai secrets undelete <key>`:')
+    lines.push('', 'Removed secrets kept for `orgai secrets undelete <key>` (`orgai secrets keep-removed` keeps them removed):')
     for (const d of s.softDeletes) {
       const who = d.by === 'legacy' ? 'removed by an older OrgAI' : 'deleted'
       const until = d.expiresAt !== undefined ? `, kept until ${formatDateTime(d.expiresAt)}` : ''
@@ -197,4 +198,34 @@ const runUndelete = async (ctx: CliContext, args: string[]): Promise<number> => 
   })
 }
 
-export const runSecrets: CommandFn = (ctx, args) => runSubcommands(ctx, args, { status: runStatus, init: runInit, reset: runReset, undelete: runUndelete }, USAGE)
+// ---------- keep-removed ----------
+
+/** `secrets keep-removed`: the "Keep removed" answer of the app notice, from a terminal. Drops the kept values, so it asks first. */
+const runKeepRemoved = async (ctx: CliContext, args: string[]): Promise<number> => {
+  const { values, positionals } = parseFlags(args, { yes: { type: 'boolean', short: 'y' } })
+  const named = [...new Set(positionals.map((k) => k.trim()))].filter((k) => k)
+  return withHost(ctx, CONFIGURE, async (client) => {
+    let keys = named
+    if (!keys.length) {
+      const s = await refusable<SecretsStatusResult>(client, 'secrets:status', [{}])
+      keys = s.softDeletes.filter((d) => d.by === 'legacy').map((d) => d.key)
+    }
+    if (!keys.length) {
+      emit(ctx, { confirmed: [] }, () => 'No secrets removed by an older OrgAI are waiting.')
+      return EXIT.ok
+    }
+    const what = `${keys.length} removed ${keys.length === 1 ? 'secret' : 'secrets'}`
+    if (!(await confirm(ctx, `Keep ${what} removed? They can no longer be restored.`, !!values.yes))) {
+      printText(ctx, 'Nothing changed.')
+      return EXIT.failure
+    }
+    const r = await refusable<SecretsConfirmDeleteResult>(client, 'secrets:confirmDelete', [{ keys }])
+    emit(ctx, { confirmed: r.confirmed }, () => [
+      `Kept ${r.confirmed.length} ${r.confirmed.length === 1 ? 'secret' : 'secrets'} removed.`,
+      ...(r.confirmed.length < keys.length ? [`${keys.length - r.confirmed.length} had nothing kept to confirm.`] : [])
+    ])
+    return EXIT.ok
+  })
+}
+
+export const runSecrets: CommandFn = (ctx, args) => runSubcommands(ctx, args, { status: runStatus, init: runInit, reset: runReset, undelete: runUndelete, 'keep-removed': runKeepRemoved }, USAGE)

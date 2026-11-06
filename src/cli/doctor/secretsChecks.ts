@@ -71,7 +71,7 @@ export function hostSecretsChecks(s: SecretsStatusResult): DoctorCheck[] {
     checks.push({
       id: 'vault-removed',
       status: legacy ? 'warn' : 'ok',
-      detail: `${plural(s.softDeletes.length, 'removed secret')} kept for undelete${legacy ? ` (${legacy} removed by an older OrgAI)` : ''}; \`orgai secrets status\` lists them, \`orgai secrets undelete <key>\` restores one`
+      detail: `${plural(s.softDeletes.length, 'removed secret')} kept for undelete${legacy ? ` (${legacy} removed by an older OrgAI)` : ''}; \`orgai secrets status\` lists them, \`orgai secrets undelete <key>\` restores one, \`orgai secrets keep-removed\` keeps them removed (the OrgAI app's Dashboard offers Restore and Keep removed)`
     })
   }
   if (s.orphanedKeys || s.orphanedVaults.length) {
@@ -93,7 +93,7 @@ function legacyCheck(state: SecretsStatusResult['legacyFile'], keys: number): Do
     case 'retired':
       return { id: 'legacy-secrets', status: 'ok', detail: 'secrets.json was retired; the vault holds every secret' }
     default:
-      return { id: 'legacy-secrets', status: 'warn', detail: "secrets.json is damaged: no host of this version reads or rewrites it; `orgai secrets reset` starts over" }
+      return { id: 'legacy-secrets', status: 'warn', detail: "secrets.json is damaged: no host of this version reads or rewrites it; `orgai secrets reset` starts over (the OrgAI app shows a notice with Start over)" }
   }
 }
 
@@ -210,7 +210,7 @@ export function offlineSecretsChecks(dataDir: string): DoctorCheck[] {
     checks.push({
       id: 'vault-removed',
       status: 'warn',
-      detail: `${VAULT_MESSAGES.legacyRemovedNotice(removedByOlder)} \`orgai secrets status\` lists them, \`orgai secrets undelete <key>\` restores one`
+      detail: `${VAULT_MESSAGES.legacyRemovedNotice(removedByOlder)} \`orgai secrets status\` lists them, \`orgai secrets undelete <key>\` restores one, \`orgai secrets keep-removed\` keeps them removed (the OrgAI app's Dashboard offers Restore and Keep removed)`
     })
   }
   return checks
