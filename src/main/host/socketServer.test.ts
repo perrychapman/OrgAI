@@ -499,7 +499,7 @@ describe.runIf(posix)('HostSocketServer handshake', () => {
     await c.waitClosed()
   })
 
-  it('a Node host names the orgai commands in its level and off refusals, never App settings (review round 1)', async () => {
+  it('a background host names the orgai commands in its level and off refusals, never App settings (review round 1)', async () => {
     st.accessLevel = undefined
     await start({ hostKind: 'node' })
     const c = await client()
@@ -516,7 +516,7 @@ describe.runIf(posix)('HostSocketServer handshake', () => {
     expect(off.error.data).toMatchObject({ code: 'terminal_server_disabled', message: NODE_TERMINAL_ACCESS_OFF_MESSAGE })
   })
 
-  it('a Node host refuses a settings:set that turns Terminal access off, so it never runs unreachable (review round 2)', async () => {
+  it('a background host refuses a settings:set that turns Terminal access off, so it never runs unreachable (review round 2)', async () => {
     st.accessLevel = 'full'
     st.terminalServer = true
     st.result = (method) => ({ method })
@@ -866,7 +866,7 @@ describe('scope helpers', () => {
 describe('turnsNodeTerminalAccessOff (review round 2; platform-neutral)', () => {
   const on = () => ({ terminalServer: true })
   const off = () => ({ terminalServer: false })
-  it('is true only for a Node host, settings:set, terminalServer false and Terminal access stored on', () => {
+  it('is true only for a background host, settings:set, terminalServer false and Terminal access stored on', () => {
     expect(turnsNodeTerminalAccessOff('node', 'settings:set', [{ terminalServer: false }], on)).toBe(true)
     expect(turnsNodeTerminalAccessOff('headless-host', 'settings:set', [{ terminalServer: false }], on)).toBe(false)
     expect(turnsNodeTerminalAccessOff('desktop', 'settings:set', [{ terminalServer: false }], on)).toBe(false)
@@ -904,7 +904,7 @@ describe.runIf(posix)('HostSocketServer handoff connections (cli-standalone.md 4
 
   for (const hostKind of ['inproc', 'headless-host', 'desktop'] as const) {
     for (const on of [true, false]) {
-      it(`a proven desktop hello on a ${hostKind} host is refused after the proof (only a Node host hands over; Terminal access ${on ? 'on' : 'off'})`, async () => {
+      it(`a proven desktop hello on a ${hostKind} host is refused after the proof (only a background host hands over; Terminal access ${on ? 'on' : 'off'})`, async () => {
         st.terminalServer = on
         st.accessLevel = 'full'
         await start({ hostKind })

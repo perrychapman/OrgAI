@@ -516,7 +516,7 @@ export default function AppSettingsView(): ReactElement {
                   <SettingRow
                     id="terminal-server-row"
                     title="Terminal access"
-                    description={`Lets the orgai command in a terminal on this computer see and control OrgAI. ${TERMINAL_ACCESS_TRUST} Off, OrgAI opens no connection point for terminals at all.`}
+                    description={`Lets the orgai command in a terminal on this computer see and control OrgAI. ${TERMINAL_ACCESS_TRUST} When it is off, terminals cannot reach OrgAI at all.`}
                     control={
                       <Switch
                         checked={info.terminalServer === true}

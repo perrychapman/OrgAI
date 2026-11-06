@@ -42,7 +42,7 @@ export const ENSURE_HOST_READY_TIMEOUT_MS = 30_000
 export const ENSURE_HOST_STARTING_WAIT_MS = HOST_STARTING_WAIT_MS
 
 /** The one stderr line (text mode) when `--host auto` finds neither a host nor an app (4.1 step 4). */
-export const INPROC_FALLBACK_NOTE = 'No OrgAI app or background host found; running the host inside this command. `orgai daemon start` keeps one running.'
+export const INPROC_FALLBACK_NOTE = 'No OrgAI app or background host is running, so this command runs its own. `orgai daemon start` keeps one running.'
 
 /** The stderr line (text mode) when environment secrets keep `--host auto` in-process (round 6 item 8). */
 export const INPROC_SECRETS_NOTE = 'Environment secrets are set; running the host inside this command so they are used.'
@@ -81,7 +81,7 @@ export const TERMINAL_FULL_ACCESS_HINT =
 
 /** TERMINAL_FULL_ACCESS_HINT for a Node host: no App settings on an npm-only machine (Wave 7, review round 1). */
 export const NODE_TERMINAL_FULL_ACCESS_HINT =
-  'Terminal access lets terminal clients watch and run work only. To answer decisions or change settings from a terminal, stop the Node host (`orgai daemon stop`), then run `orgai terminal-access --level full`, or use `--host inproc`.'
+  'Terminal access lets terminal clients watch and run work only. To answer decisions or change settings from a terminal, stop the background host (`orgai daemon stop`), then run `orgai terminal-access --level full`, or use `--host inproc`.'
 
 /** A host of another version grants this CLI only read, operate, decide and host.stop. */
 export const VERSION_SKEW_SCOPE_HINT = 'A host of another version accepts only read, operate and decide from this CLI.'
@@ -282,7 +282,7 @@ export async function ensureHost(ctx: CliContext, scopes: HostScope[], opts: Ens
     // Nothing asks here (exec and scripts are not interactive): say which level the new host grants and how to change it.
     const stored = nodeHostDeps.terminalAccess(ctx.paths.dataDir)
     if (!stored.levelChosen) note(ctx, levelNote(stored.level))
-    outcome = await startBackground(ctx, () => startNode('node'), 'Node host', BACKGROUND_HOST_KINDS)
+    outcome = await startBackground(ctx, () => startNode('node'), 'background host', BACKGROUND_HOST_KINDS)
   } else {
     const { status: _found, ...found } = app
     outcome = await startBackground(ctx, () => ctx.launcher.spawn({ headless: true, app: found }), 'host', BACKGROUND_HOST_KINDS)

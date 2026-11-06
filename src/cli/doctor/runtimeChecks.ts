@@ -22,7 +22,7 @@ import type { DoctorCheck } from '../commands/doctor'
 import type { DoctorCheckGroup } from './types'
 
 /** Appended to every runtime detail: the resolution is this CLI process's, not the running host's. */
-export const RUNTIME_VIEW_NOTE = 'as seen by this CLI process; a running OrgAI resolves with its own environment'
+export const RUNTIME_VIEW_NOTE = 'for this command; a running OrgAI may differ'
 
 const viewed = (detail: string): string => `${detail} (${RUNTIME_VIEW_NOTE})`
 

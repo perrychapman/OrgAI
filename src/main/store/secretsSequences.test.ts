@@ -121,7 +121,7 @@ describe('required sequences (cli-standalone.md 5.5)', () => {
 
   it('Node delete of a pending-legacy key, then undelete in the app (only the app can restore it)', async () => {
     await app()
-    older.set('k', 'saved-by-app') // pending-legacy for Node hosts
+    older.set('k', 'saved-by-app') // pending-legacy for background hosts
     const n = await node()
     expect(n.status('k')).toEqual({ unreadable: VAULT_MESSAGES.pendingLegacy })
     n.delete('k')
@@ -371,7 +371,7 @@ describe('round 6 item 2: delete recovery without a key', () => {
 })
 
 describe('round 6 item 3: tombstones that hold the only copy', () => {
-  it('a prevLegacy is never collected on a Node host and stays while the key is still in secrets.json', async () => {
+  it('a prevLegacy is never collected on a background host and stays while the key is still in secrets.json', async () => {
     let now = 1_000
     await app({ now: () => now })
     older.set('k', 'only-copy')

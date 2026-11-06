@@ -58,6 +58,6 @@ describe('proposalSecrets slot rule', () => {
   })
 
   it('ProposalSecretsNotSaved carries the store reason once, without a doubled period', () => {
-    expect(new ProposalSecretsNotSaved('The secret vault is locked: unlock it.').message).toBe('The secret values could not be saved: The secret vault is locked: unlock it')
+    expect(new ProposalSecretsNotSaved('Secure storage is locked: unlock it.').message).toBe('The secret values could not be saved: Secure storage is locked: unlock it')
   })
 })

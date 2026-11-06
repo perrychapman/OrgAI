@@ -109,7 +109,7 @@ describe.skipIf(!posix || !existsSync(bundle))('the vault across CLI processes (
     expect(existsSync(join(data, 'data', 'vault.json'))).toBe(true)
     expect((await step(['connections', 'update', 'litellm', '--base-url', url, '--enable'])).code).toBe(0)
     expect((await step(['connections', 'set-secret', 'litellm', '--stdin'], { input: `${synthetic}\n` })).code).toBe(0)
-    // The key is in the vault, not in secrets.json.
+    // The key is in secure storage, not in secrets.json.
     expect(existsSync(join(data, 'data', 'secrets.json')) ? readFileSync(join(data, 'data', 'secrets.json'), 'utf8') : '').not.toContain(synthetic)
 
     const connected = await step(['--output-format', 'json', 'connections', 'test', 'litellm'])

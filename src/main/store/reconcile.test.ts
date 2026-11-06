@@ -246,7 +246,7 @@ describe('after retirement (5.5 Retirement, round 6 item 1)', () => {
     expect(p.imported).toEqual([])
   })
 
-  it('a changed or new key is newer: an app imports it and records keys[K] in the same write; a Node host keeps the file', () => {
+  it('a changed or new key is newer: an app imports it and records keys[K] in the same write; a background host keeps the file', () => {
     const app = planReconcile({ ...base, vault: retiredVault(), legacy: ok({ A: 'L:a', B: 'L:b2', C: 'L:c' }), crypto })
     expect(app.imported.sort()).toEqual(['B', 'C'])
     expect(app.vault!.legacyRetired!.keys.B).toBe(h('L:b2'))

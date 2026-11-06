@@ -59,7 +59,7 @@ describe('availability', () => {
   it('is unavailable when not packaged', () => {
     const s = createCliShimService(deps({ isPackaged: false })).status()
     expect(s.state).toBe('unavailable')
-    expect(s.reason).toBe('The orgai command can be installed only from the installed OrgAI app.')
+    expect(s.reason).toBe('The orgai command can be added only from the installed OrgAI app, not from a development build. The npm package installs its own orgai.')
   })
   it('is unavailable with a data-dir override', () => {
     const s = createCliShimService(deps({ dataDirOverride: true })).status()

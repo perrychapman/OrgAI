@@ -154,7 +154,7 @@ export const DESKTOP_CHANNEL_MUTATES: Readonly<Record<string, boolean>> = {
 }
 
 /**
- * A refusal on its way to a window: the secret vault's sentences name the orgai command, which an app-only user may not
+ * A refusal on its way to a window: secure storage's sentences name the orgai command, which an app-only user may not
  * have, so they are put in the app's words (src/shared/view/secretNotices.ts appSecretReason). Any other error is
  * returned as it is.
  */

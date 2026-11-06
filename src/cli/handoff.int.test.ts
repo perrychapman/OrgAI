@@ -79,8 +79,8 @@ const until = async (fn: () => boolean, ms = 10_000): Promise<void> => {
   }
 }
 
-describe('handoff from a Node host to the app (real socket)', () => {
-  it('an idle Node host hands over at once, even with Terminal access off and another app version', async () => {
+describe('handoff from a background host to the app (real socket)', () => {
+  it('an idle background host hands over at once, even with Terminal access off and another app version', async () => {
     const h = await nodeHost({ terminalOff: true })
     const owner = readDaemonInfo(dataDir)!
     expect(owner.hostKind).toBe('node')
@@ -105,7 +105,7 @@ describe('handoff from a Node host to the app (real socket)', () => {
     r.client.close()
   }, 30_000)
 
-  it('a Node host with an idle run refuses the handoff (waitingRuns), then "Stop them and open" ends the run continuable', async () => {
+  it('a background host with an idle run refuses the handoff (waitingRuns), then "Stop them and open" ends the run continuable', async () => {
     const h = await nodeHost()
     const projectDir = join(userDataDir, 'project')
     mkdirSync(projectDir)

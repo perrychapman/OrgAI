@@ -102,7 +102,7 @@ describe.skipIf(!posix || !existsSync(bundle))('Node background host (real proce
     expect(await until(() => !alive(ready!.pid), 10_000)).toBe(true)
     expect(readDaemonInfo(dataDir)).toBeNull()
     const log = readFileSync(join(userDataDir, 'logs', 'node-host.log'), 'utf8')
-    expect(log).toContain('OrgAI Node host stopped.')
+    expect(log).toContain('OrgAI background host stopped.')
   }, 90_000)
 
   it('grants full when the level was stored full, and leaves on its own through the idle exit', async () => {
@@ -134,7 +134,7 @@ describe.skipIf(!posix || !existsSync(bundle))('Node background host (real proce
     const loser = ra!.pid === sa.pid ? sb.pid! : sa.pid!
     expect(await until(() => !alive(loser), 15_000)).toBe(true)
     const log = readFileSync(join(userDataDir, 'logs', 'node-host.log'), 'utf8')
-    expect(log).toContain('Another OrgAI host owns this data folder (node')
+    expect(log).toContain('Another OrgAI host owns this data folder (background')
     expect(log).not.toContain('delete the folder')
 
     const res = await connectHost({ dataDir, scopes: ['read', 'configure'], clientVersion: CLI_VERSION, cwd: userDataDir, pid: process.pid })

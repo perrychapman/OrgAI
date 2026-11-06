@@ -47,7 +47,7 @@ import { readInstallInfo } from '../installInfo'
 import type { DaemonRuntime, HostLauncher, HostLauncherFound } from '../types'
 import { SECRET_ENV_PREFIX } from '../secretOverlay'
 
-export const APP_NOT_FOUND = 'OrgAI app not found; set ORGAI_ELECTRON_PATH or use --host inproc'
+export const APP_NOT_FOUND = 'OrgAI app not found. Install it, or set ORGAI_ELECTRON_PATH to its executable.'
 const POLL_MS = 150
 
 /** The Node host's stdio file under `<userDataDir>/logs` (Wave 7, cli-standalone.md 4.2). */

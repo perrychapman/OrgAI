@@ -78,7 +78,7 @@ export const CLI_SHIM_UNAVAILABLE: CliShimStatus = {
   state: 'unavailable',
   path: '',
   binDir: '',
-  reason: 'The orgai command can be installed only from the installed OrgAI app.'
+  reason: 'The orgai command can be added only from the installed OrgAI app, not from a development build. The npm package installs its own orgai.'
 }
 
 /** A shim is a few hundred bytes: anything bigger at the path is not ours and is never read whole. */

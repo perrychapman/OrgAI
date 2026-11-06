@@ -40,16 +40,16 @@ describe('secret notices', () => {
 
   it('a vault that will not open and a damaged secrets.json each get a warning with a next step in the app', () => {
     for (const state of ['locked', 'missing-key', 'key-mismatch', 'corrupt'] as const) {
-      const [n] = secretNotices(status({ state, reason: 'The secret vault is locked: The macOS keychain is locked.' }))
+      const [n] = secretNotices(status({ state, reason: 'Secure storage is locked: The macOS keychain is locked.' }))
       expect(n.kind).toBe('vault')
       expect(n.tone).toBe('warning')
       expect(n.actions).toContain('reset')
       expect(n.body).not.toMatch(/orgai (secrets|command)|`/)
     }
-    expect(secretNotices(status({ state: 'locked', reason: 'The secret vault is locked: The macOS keychain is locked.' }))[0].body).toContain('The macOS keychain is locked.')
+    expect(secretNotices(status({ state: 'locked', reason: 'Secure storage is locked: The macOS keychain is locked.' }))[0].body).toContain('The macOS keychain is locked.')
     const [l] = secretNotices(status({ legacyFile: 'corrupt' }))
     expect(l.kind).toBe('legacy-corrupt')
-    expect(l.body).toContain('Keys saved in the vault still work')
+    expect(l.body).toContain('Keys saved in secure storage still work')
     expect(l.actions).toEqual(['reset'])
   })
 })

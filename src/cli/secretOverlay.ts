@@ -22,7 +22,7 @@ export const SECRET_ENV_PREFIX = 'ORGAI_SECRET_'
 export const LITELLM_SECRET_ENV = 'ORGAI_SECRET_LITELLM_API_KEY'
 
 export const SECRET_ENV_REFUSAL =
-  "Environment secret overrides (--secret-env / ORGAI_SECRET_*) can only be used with --host inproc. Use 'orgai connections set-secret' or 'orgai mcp set-secret' to store secrets in the host."
+  "Environment secret overrides (--secret-env / ORGAI_SECRET_*) work only when this command runs its own host (--host inproc). To store a secret in the running host, use 'orgai connections set-secret' or 'orgai mcp set-secret'."
 
 /** An environment variable name (POSIX portable form) for both the slot name of kind env and the source variable. */
 const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/

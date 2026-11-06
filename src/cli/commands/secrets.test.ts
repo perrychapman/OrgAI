@@ -63,25 +63,25 @@ describe('orgai secrets status', () => {
     expect(await run(f, ['status', '--probe'])).toBe(EXIT.ok)
     expect(client.callsOf('secrets:status')).toEqual([[{ probe: true }]])
     const out = f.out()
-    expect(out).toContain('Vault:        open (macOS keychain)')
+    expect(out).toContain('Storage:      open (macOS keychain)')
     expect(out).toContain('Key store:    locked: The macOS keychain is locked.')
-    expect(out).toContain("3 in the vault, 2 in the app's secrets.json (present), 2 unreadable here, 1 from the environment (never saved)")
+    expect(out).toContain("3 in secure storage, 2 in the app's older secrets.json (present), 2 unreadable here, 1 from the environment (never saved)")
     expect(out).toContain(`Pending:      2 secrets: ${VAULT_MESSAGES.pendingLegacy}`)
     expect(out).toMatch(/mcp:p1:s1:env:TOKEN {2}removed by an older OrgAI .*, restorable/)
     expect(out).toContain('ffff  macOS keychain  vault.json.reset-1')
   })
 
   it('json carries the whole report; a plain status call sends no probe', async () => {
-    const { f, client } = setup({ 'secrets:status': () => status({ state: 'locked', reason: 'The secret vault is locked: x' }) }, { globals: { outputFormat: 'json' } })
+    const { f, client } = setup({ 'secrets:status': () => status({ state: 'locked', reason: 'Secure storage is locked: x' }) }, { globals: { outputFormat: 'json' } })
     expect(await run(f, ['status'])).toBe(EXIT.ok)
     expect(client.callsOf('secrets:status')).toEqual([[{}]])
     const j = JSON.parse(f.out())
-    expect(j.secrets).toMatchObject({ state: 'locked', scheme: 'keychain', reason: 'The secret vault is locked: x', counts: { vault: 3 } })
+    expect(j.secrets).toMatchObject({ state: 'locked', scheme: 'keychain', reason: 'Secure storage is locked: x', counts: { vault: 3 } })
   })
 
   it('statusLines never needs a value: an absent vault with no usable scheme reads plainly', () => {
     const lines = statusLines(status({ state: 'absent', scheme: null, vaultId: undefined, counts: { vault: 0, legacy: 0, unreadable: 0, overlay: 0 }, legacyFile: 'missing' }))
-    expect(lines[0]).toBe('Vault:        not created yet (none usable on this host)')
+    expect(lines[0]).toBe('Storage:      not created yet (none usable on this host)')
   })
 })
 
@@ -90,7 +90,7 @@ describe('orgai secrets init', () => {
     const { f, client } = setup({ 'secrets:init': () => ({ action: 'created', status: status({ scheme: 'key-file', keyFile: '/home/u/keys/orgai.key' }) }) })
     expect(await run(f, ['init', '--key-file', '../keys/orgai.key'])).toBe(EXIT.ok)
     expect(client.callsOf('secrets:init')).toEqual([[{ keyFile: '/home/u/keys/orgai.key' }]])
-    expect(f.out()).toContain('Created the secret vault (key file: /home/u/keys/orgai.key).')
+    expect(f.out()).toContain('Created secure storage (key file: /home/u/keys/orgai.key).')
     expect(f.out()).toContain(KEY_FILE_BACKUP_WARNING)
   })
 
@@ -109,7 +109,7 @@ describe('orgai secrets init', () => {
     const { f, client } = setup({ 'secrets:init': () => ({ action: 'unchanged', status: status() }) })
     expect(await run(f, ['init'])).toBe(EXIT.ok)
     expect(client.callsOf('secrets:init')).toEqual([[{}]])
-    expect(f.out()).toContain('The secret vault is already open (macOS keychain).')
+    expect(f.out()).toContain('Secure storage is already open (macOS keychain).')
     const g = setup({
       'secrets:init': () => {
         throw rpcError({ code: 'bad_request', message: 'The macOS keychain is locked or cannot ask in this session.' })
@@ -127,7 +127,7 @@ describe('orgai secrets reset', () => {
     const { f, client } = setup({}, { stdinIsTTY: true })
     expect(await run(f, ['reset'])).toBe(EXIT.failure)
     expect(f.err()).toContain(VAULT_MESSAGES.resetWarning)
-    expect(asked).toEqual(['Reset the secret vault?'])
+    expect(asked).toEqual(['Reset secure storage?'])
     expect(client.calls).toEqual([])
     expect(f.out()).toContain('Nothing changed.')
   })
@@ -138,7 +138,7 @@ describe('orgai secrets reset', () => {
     expect(client.calls).toEqual([])
     expect(await run(f, ['reset', '--yes'])).toBe(EXIT.ok)
     expect(client.callsOf('secrets:reset')).toEqual([[{ confirm: true }]])
-    expect(f.out()).toContain('Moved the vault aside to vault.json.reset-1762300000000 in the data folder.')
+    expect(f.out()).toContain('Moved secure storage aside to vault.json.reset-1762300000000 in the data folder.')
     expect(f.err()).toContain(VAULT_MESSAGES.resetWarning)
   })
 

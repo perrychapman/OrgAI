@@ -98,7 +98,7 @@ describe('opening and creating (cli-standalone.md 5.6)', () => {
     s.dispose()
   })
 
-  it('retryOpen: focus only after a lock failure (throttled), never when nothing failed, never on Node hosts', async () => {
+  it('retryOpen: focus only after a lock failure (throttled), never when nothing failed, never on background hosts', async () => {
     let now = 1_000_000
     const s0 = await app({ now: () => now })
     s0.retryOpen('focus')
@@ -149,7 +149,7 @@ describe('opening and creating (cli-standalone.md 5.6)', () => {
     expect(vaultJson().vaultId).toBe(id)
   })
 
-  it('a Node host retries open at prepareWrite (unlocking the keychain over SSH works without a restart)', async () => {
+  it('a background host retries open at prepareWrite (unlocking the keychain over SSH works without a restart)', async () => {
     await app()
     custody.fail(locked)
     const n = await node()
@@ -215,7 +215,7 @@ describe('opening and creating (cli-standalone.md 5.6)', () => {
     expect(custody.calls.create).toBe(0)
   })
 
-  it('the default custodian is unavailable: an app host stays legacy-only, a Node host refuses values with the reason', async () => {
+  it('the default custodian is unavailable: an app host stays legacy-only, a background host refuses values with the reason', async () => {
     const a = await app({ custodian: unavailableCustodianFactory })
     expect(a.state()).toBe('absent')
     a.set('k', 'v')
@@ -267,7 +267,7 @@ describe('Node and inproc hosts with an absent vault (5.4, 5.6)', () => {
     s.set('new', 'value')
     const v = vaultJson()
     expect(v.entries.new?.lc).toBe(false)
-    expect(v.entries.legacy).toBeUndefined() // a Node host never imports
+    expect(v.entries.legacy).toBeUndefined() // a background host never imports
     expect(olderApp(dataDir).keys()).toEqual(['legacy'])
     expect(s.status('legacy')).toEqual({ unreadable: VAULT_MESSAGES.pendingLegacy })
   })
@@ -414,7 +414,7 @@ describe('writes (5.5 Writes)', () => {
     expect((await s.statusReport()).legacyFile).toBe('corrupt')
   })
 
-  it('values are refused with the reason on a Node host whose vault is locked', async () => {
+  it('values are refused with the reason on a background host whose vault is locked', async () => {
     await app()
     custody.fail(locked)
     const n = await node()
@@ -488,7 +488,7 @@ describe('deletes (5.5 Deletes)', () => {
     expect(a.get('k')).toBe('legacy-newer')
   })
 
-  it('a Node host with an absent vault leaves a legacy-only key in place (orphaned) and never throws', async () => {
+  it('a background host with an absent vault leaves a legacy-only key in place (orphaned) and never throws', async () => {
     olderApp(dataDir).set('mcp:p:s:env:A', 'a')
     olderApp(dataDir).set('mcp:p:s:env:B', 'b')
     const n = await node()
@@ -653,14 +653,14 @@ describe('secrets:* on the store (5.6, 5.7)', () => {
     custody.fail(undefined)
     await vi.advanceTimersByTimeAsync(1000)
     expect(s.state()).toBe('open')
-    expect(labels).toEqual(['secret vault retry'])
+    expect(labels).toEqual(['secure storage retry'])
     expect(open).toBe(0)
     s.dispose()
   })
 })
 
 describe('review round 1: custody steps and creation failures', () => {
-  it('prepareWrite after a reset in flight (Node host) creates the vault instead of refusing', async () => {
+  it('prepareWrite after a reset in flight (background host) creates the vault instead of refusing', async () => {
     const n = await node()
     await n.prepareWrite()
     n.set('k', 'v')
@@ -705,7 +705,7 @@ describe('review round 1: custody steps and creation failures', () => {
     expect(custody.calls.create).toBe(2) // the flaky host's second create, then this one
   })
 
-  it('a creation whose vault.json save fails (disk full) reports the disk, not the key store, and reuses the key item on retry (Node host)', async () => {
+  it('a creation whose vault.json save fails (disk full) reports the disk, not the key store, and reuses the key item on retry (background host)', async () => {
     const f = faultFs()
     const n = await node({ fs: f.fs })
     f.arm(1, 'fail-from')
@@ -713,10 +713,10 @@ describe('review round 1: custody steps and creation failures', () => {
       () => undefined,
       (e: unknown) => e as Error
     )
-    expect(err?.message).toMatch(/could not save the new secret vault \(open failed \(ENOSPC\)\)/)
+    expect(err?.message).toMatch(/could not save the new secure storage \(open failed \(ENOSPC\)\)/)
     expect(err?.message).not.toContain(KEY_STORE_UNREACHABLE_MESSAGE)
-    await expect(n.initVault({})).rejects.toThrow(/could not save the new secret vault/)
-    await expect(n.prepareWrite()).rejects.toThrow(/could not save the new secret vault/)
+    await expect(n.initVault({})).rejects.toThrow(/could not save the new secure storage/)
+    await expect(n.prepareWrite()).rejects.toThrow(/could not save the new secure storage/)
     expect(custody.calls.create).toBe(1)
     expect(custody.items.size).toBe(1)
     expect(existsSync(join(dataDir, 'vault.json'))).toBe(false)

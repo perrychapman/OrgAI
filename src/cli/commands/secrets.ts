@@ -1,5 +1,5 @@
 /**
- * `orgai secrets` (Wave 7, cli-standalone.md 5.6, 5.7): the secret vault shared by the app and the orgai command, over
+ * `orgai secrets` (Wave 7, cli-standalone.md 5.6, 5.7): secure storage shared by the app and the orgai command, over
  * the secrets:* host channels. No subcommand ever prints a value: key names, counts, states, paths and reasons only.
  *
  *   secrets status [--probe]                       read: state, scheme, counts, pending, soft deletes, orphans
@@ -45,7 +45,7 @@ const SCHEME_TEXT: Record<NonNullable<SecretsStatusResult['scheme']>, string> = 
 const LEGACY_TEXT: Record<SecretsStatusResult['legacyFile'], string> = {
   ok: 'present',
   missing: 'missing',
-  corrupt: 'damaged (never rewritten; `orgai secrets reset` starts over)',
+  corrupt: 'damaged (never changed; `orgai secrets reset` starts over)',
   retired: 'retired'
 }
 
@@ -85,28 +85,28 @@ const RESTORE_TEXT: Record<SecretsSoftDelete['restorable'], string> = { here: 'r
 
 /** Text lines of a status (names, counts and reasons; never a value). */
 export function statusLines(s: SecretsStatusResult): string[] {
-  const lines = [`Vault:        ${STATE_TEXT[s.state]} (${schemeText(s.scheme)})`]
+  const lines = [`Storage:      ${STATE_TEXT[s.state]} (${schemeText(s.scheme)})`]
   if (s.reason) lines.push(`Why:          ${safeLine(s.reason)}`)
   if (s.probe) lines.push(`Key store:    ${s.probe.ok ? 'reachable' : `${s.probe.kind}: ${safeLine(s.probe.reason)}`}`)
   if (s.keyFile) lines.push(`Key file:     ${safeLine(s.keyFile)}`)
-  if (s.vaultId) lines.push(`Vault id:     ${safeLine(s.vaultId)}`)
-  const counts = [`${s.counts.vault} in the vault`, `${s.counts.legacy} in the app's secrets.json (${LEGACY_TEXT[s.legacyFile]})`]
+  if (s.vaultId) lines.push(`Storage id:   ${safeLine(s.vaultId)}`)
+  const counts = [`${s.counts.vault} in secure storage`, `${s.counts.legacy} in the app's older secrets.json (${LEGACY_TEXT[s.legacyFile]})`]
   if (s.counts.unreadable) counts.push(`${s.counts.unreadable} unreadable here`)
   if (s.counts.overlay) counts.push(`${s.counts.overlay} from the environment (never saved)`)
   lines.push(`Secrets:      ${counts.join(', ')}`)
   if (s.pendingLegacy) lines.push(`Pending:      ${s.pendingLegacy} ${s.pendingLegacy === 1 ? 'secret' : 'secrets'}: ${VAULT_MESSAGES.pendingLegacy}`)
-  lines.push(`App copy:     ${s.canWriteBack ? "kept in step by this host" : "this host cannot update the OrgAI app's copy; secrets saved here reach the app only after it opens the vault"}`)
+  lines.push(`App copy:     ${s.canWriteBack ? "kept in step by this host" : "not updated from here; secrets saved here reach the OrgAI app after it next opens"}`)
   if (s.softDeletes.length) {
-    lines.push('', 'Removed secrets kept for `orgai secrets undelete <key>` (`orgai secrets keep-removed` keeps them removed):')
+    lines.push('', 'Removed secrets (restore one with `orgai secrets undelete <key>`, or `orgai secrets keep-removed` to drop them for good):')
     for (const d of s.softDeletes) {
       const who = d.by === 'legacy' ? 'removed by an older OrgAI' : 'deleted'
       const until = d.expiresAt !== undefined ? `, kept until ${formatDateTime(d.expiresAt)}` : ''
       lines.push(`  ${safeLine(d.key)}  ${who} ${formatDateTime(d.at)}, ${RESTORE_TEXT[d.restorable]}${until}`)
     }
   }
-  if (s.orphanedKeys) lines.push(`Left in place: ${s.orphanedKeys} ${s.orphanedKeys === 1 ? 'secret' : 'secrets'} a removal could not delete here (they stay stored until that secret is removed again).`)
+  if (s.orphanedKeys) lines.push(`Left in place: ${s.orphanedKeys} ${s.orphanedKeys === 1 ? 'secret' : 'secrets'} that a removal could not delete from here. Remove them again to clear them.`)
   if (s.orphanedVaults.length) {
-    lines.push('', 'OS key items of moved-aside vaults (left in place; delete them in the OS key store if no copy needs them):')
+    lines.push('', 'Keys of secure storage that was moved aside (left in the OS key store; delete them there if no copy needs them):')
     for (const o of s.orphanedVaults) lines.push(`  ${safeLine(o.vaultId)}  ${schemeText(o.scheme)}  ${safeLine(o.file)}`)
   }
   return lines
@@ -138,9 +138,9 @@ export function keyFileArg(ctx: CliContext, raw: string): string {
 }
 
 const INIT_TEXT: Record<SecretsInitResult['action'], string> = {
-  created: 'Created the secret vault',
-  opened: 'Opened the secret vault',
-  unchanged: 'The secret vault is already open'
+  created: 'Created secure storage',
+  opened: 'Opened secure storage',
+  unchanged: 'Secure storage is already open'
 }
 
 const runInit = async (ctx: CliContext, args: string[]): Promise<number> => {
@@ -167,16 +167,16 @@ const runReset = async (ctx: CliContext, args: string[]): Promise<number> => {
   unexpected(positionals)
   // Said before asking (5.6 Reset), in every format: a script passing --yes still sees what it gives up.
   warn(ctx, VAULT_MESSAGES.resetWarning)
-  if (!(await confirm(ctx, 'Reset the secret vault?', !!values.yes))) {
+  if (!(await confirm(ctx, 'Reset secure storage?', !!values.yes))) {
     printText(ctx, 'Nothing changed.')
     return EXIT.failure
   }
   return withHost(ctx, CONFIGURE, async (client) => {
     const r = await refusable<SecretsResetResult>(client, 'secrets:reset', [{ confirm: true }])
     emit(ctx, { movedTo: r.movedTo, secrets: statusJson(r.status) }, () => [
-      r.movedTo ? `Moved the vault aside to ${safeLine(r.movedTo)} in the data folder.` : 'There was no vault to reset.',
-      ...(r.movedTo ? ['Its key stays in the OS key store (another copy of the vault may need it); `orgai secrets status` lists it.'] : []),
-      `Vault now: ${STATE_TEXT[r.status.state]} (${schemeText(r.status.scheme)}).`
+      r.movedTo ? `Moved secure storage aside to ${safeLine(r.movedTo)} in the data folder.` : 'There was nothing to reset.',
+      ...(r.movedTo ? ['Its key stays in the OS key store in case another copy needs it. `orgai secrets status` lists it.'] : []),
+      `Storage now: ${STATE_TEXT[r.status.state]} (${schemeText(r.status.scheme)}).`
     ])
     return EXIT.ok
   })
@@ -192,7 +192,7 @@ const runUndelete = async (ctx: CliContext, args: string[]): Promise<number> => 
   return withHost(ctx, CONFIGURE, async (client) => {
     const r = await refusable<SecretsUndeleteResult>(client, 'secrets:undelete', [{ key }])
     emit(ctx, { key, restored: r.restored === true, ...(r.reason ? { reason: r.reason } : {}) }, () =>
-      r.restored ? `Restored ${safeLine(key)}.` : `Not restored: ${safeLine(r.reason ?? 'nothing is kept for that key')}.`
+      r.restored ? `Restored ${safeLine(key)}.` : `Not restored: ${safeLine((r.reason ?? 'nothing is kept for that key').replace(/[.\s]+$/, ''))}. List what can be restored with \`orgai secrets status\`.`
     )
     return r.restored ? EXIT.ok : EXIT.failure
   })

@@ -148,7 +148,7 @@ describe('orgai daemon start', () => {
 })
 
 describe('orgai daemon start --runtime (Wave 7, cli-standalone.md 4.2)', () => {
-  it('no app found: starts the Node host and waits for kind node', async () => {
+  it('no app found: starts the background host and waits for kind node', async () => {
     nodeMachine()
     const f = fakeContext({
       connect: [noHost(), nodeStatus()],
@@ -159,7 +159,7 @@ describe('orgai daemon start --runtime (Wave 7, cli-standalone.md 4.2)', () => {
       { method: 'startBackground', args: 'node' },
       { method: 'waitForReady', args: { timeoutMs: 7000, hostKinds: ['node'] } }
     ])
-    expect(f.out()).toContain('OrgAI host: ready (node)')
+    expect(f.out()).toContain('OrgAI host: ready (background)')
   })
 
   it('an app found: the app is the default; --runtime node starts Node anyway', async () => {
@@ -177,10 +177,10 @@ describe('orgai daemon start --runtime (Wave 7, cli-standalone.md 4.2)', () => {
     const f = fakeContext({ connect: [statusHost()] })
     await expect(runDaemon(f.ctx, ['start', '--runtime', 'node'])).rejects.toMatchObject({
       exitCode: EXIT.failure,
-      message: 'An app (headless) host is already running; use `orgai daemon restart --runtime node`'
+      message: 'An app host (headless) is already running; use `orgai daemon restart --runtime node`'
     })
     const g = fakeContext({ connect: [nodeStatus()] })
-    await expect(runDaemon(g.ctx, ['start', '--runtime', 'app'])).rejects.toMatchObject({ message: 'A Node host is already running; use `orgai daemon restart --runtime app`' })
+    await expect(runDaemon(g.ctx, ['start', '--runtime', 'app'])).rejects.toMatchObject({ message: 'A background host is already running; use `orgai daemon restart --runtime app`' })
     const h = fakeContext({ connect: [nodeStatus()] })
     expect(await runDaemon(h.ctx, ['start'])).toBe(EXIT.ok)
     expect(await runDaemon(fakeContext({ connect: [nodeStatus()] }).ctx, ['start', '--runtime', 'node'])).toBe(EXIT.ok)
@@ -247,19 +247,19 @@ describe('orgai daemon start --runtime (Wave 7, cli-standalone.md 4.2)', () => {
     const inprocStatus = () => new FakeHostClient({ 'host.status': () => hostStatus({ hostKind: 'inproc' }) })
     const f = fakeContext({ connect: [noHost(), inprocStatus()], launcher: { ...absent, startBackground: () => ({ hostKinds: ['node'] }), waitForReady: taken(inprocInfo) } })
     expect(await runDaemon(f.ctx, ['start'])).toBe(EXIT.ok)
-    expect(f.out()).toContain('OrgAI host: ready (inproc)')
+    expect(f.out()).toContain('OrgAI host: ready (this command)')
     const j = fakeContext({ globals: { outputFormat: 'json' }, connect: [noHost(), inprocStatus()], launcher: { ...absent, startBackground: () => ({ hostKinds: ['node'] }), waitForReady: taken(inprocInfo) } })
     expect(await runDaemon(j.ctx, ['start'])).toBe(EXIT.ok)
     expect(JSON.parse(j.out())).toMatchObject({ running: true, alreadyRunning: true })
     const e = fakeContext({ connect: [noHost(), inprocStatus()], launcher: { ...absent, startBackground: () => ({ hostKinds: ['node'] }), waitForReady: taken(inprocInfo) } })
     await expect(runDaemon(e.ctx, ['start', '--runtime', 'node'])).rejects.toMatchObject({
       exitCode: EXIT.failure,
-      message: 'An in-process host is already running; use `orgai daemon restart --runtime node`'
+      message: 'A terminal command with its own host is already running; use `orgai daemon restart --runtime node`'
     })
     // The app path: the spawned app handed off to a Node host.
     const a = fakeContext({ connect: [noHost(), nodeStatus()], launcher: { waitForReady: taken(nodeReady) } })
     expect(await runDaemon(a.ctx, ['start'])).toBe(EXIT.ok)
-    expect(a.out()).toContain('OrgAI host: ready (node)')
+    expect(a.out()).toContain('OrgAI host: ready (background)')
   })
 
   it('a host that takes the folder during the level question is reported, nothing stored or spawned (review round 2)', async () => {
@@ -285,7 +285,7 @@ describe('orgai daemon start --runtime (Wave 7, cli-standalone.md 4.2)', () => {
   it('a missing orgai.mjs is refused before the level question (review round 2)', async () => {
     const rec = nodeMachine(access({ levelChosen: false }))
     const f = fakeContext({ stdinIsTTY: true, launcher: { ...absent, startBackground: () => ({ hostKinds: ['node'] }), checkBackground: () => NODE_HOST_BUNDLE_MISSING } })
-    await expect(runDaemon(f.ctx, ['start'])).rejects.toMatchObject({ exitCode: EXIT.failure, message: `Could not start the OrgAI Node host: ${NODE_HOST_BUNDLE_MISSING}` })
+    await expect(runDaemon(f.ctx, ['start'])).rejects.toMatchObject({ exitCode: EXIT.failure, message: `Could not start the OrgAI background host: ${NODE_HOST_BUNDLE_MISSING}` })
     expect(rec.asked).toEqual([])
     expect(rec.written).toEqual([])
   })
@@ -320,10 +320,10 @@ describe('orgai daemon start --runtime (Wave 7, cli-standalone.md 4.2)', () => {
     expect(f.launcherCalls.filter((c) => c.method === 'startBackground')).toEqual([])
   })
 
-  it('a Node host that fails or times out: exit 1 with the reason, exit 6 on timeout', async () => {
+  it('a background host that fails or times out: exit 1 with the reason, exit 6 on timeout', async () => {
     nodeMachine()
     const f = fakeContext({ launcher: { ...absent, startBackground: () => ({ hostKinds: ['node'] }), waitForReady: async () => Promise.reject(new Error('OrgAI exited (code 1)')) } })
-    await expect(runDaemon(f.ctx, ['start'])).rejects.toMatchObject({ exitCode: EXIT.failure, message: 'Could not start the OrgAI Node host: OrgAI exited (code 1)' })
+    await expect(runDaemon(f.ctx, ['start'])).rejects.toMatchObject({ exitCode: EXIT.failure, message: 'Could not start the OrgAI background host: OrgAI exited (code 1)' })
     const g = fakeContext({ launcher: { ...absent, startBackground: () => ({ hostKinds: ['node'] }), waitForReady: async () => null } })
     await expect(runDaemon(g.ctx, ['start'])).rejects.toMatchObject({ exitCode: EXIT.hostBusy })
   })
@@ -348,7 +348,7 @@ describe('orgai daemon run-node (hidden)', () => {
     const done = runDaemon(f.ctx, ['run-node'])
     await flush()
     expect(kind).toBe('node')
-    expect(f.err()).toContain('OrgAI Node host aaaaaaaaaaaa (pid 4242) ready')
+    expect(f.err()).toContain('OrgAI background host aaaaaaaaaaaa (pid 4242) ready')
     f.signal('SIGTERM')
     expect(await done).toBe(EXIT.ok)
     expect(rec.exits).toEqual([0])
@@ -361,7 +361,7 @@ describe('orgai daemon run-node (hidden)', () => {
     const f = fakeContext({ inproc: async () => Promise.reject(busy), launcher: { current: () => nodeReady } })
     expect(await runDaemon(f.ctx, ['run-node'])).toBe(EXIT.ok)
     expect(rec.exits).toEqual([0])
-    expect(f.err()).toContain('Another OrgAI host owns this data folder (node, pid 88)')
+    expect(f.err()).toContain('Another OrgAI host owns this data folder (background, pid 88)')
     expect(f.err()).not.toContain('delete')
     // No live owner (a real ownership failure): the error stands.
     const g = fakeContext({ inproc: async () => Promise.reject(busy) })
@@ -413,7 +413,7 @@ describe('orgai daemon stop / restart', () => {
 })
 
 describe('orgai daemon restart (Wave 7)', () => {
-  it('a Node host comes back as a Node host', async () => {
+  it('a background host comes back as a background host', async () => {
     nodeMachine()
     const h = new FakeHostClient({ 'host.stop': () => ({ stopping: true }) }, { hello: { hostKind: 'node' } })
     const f = fakeContext({ connect: [h, nodeStatus()], launcher: { current: () => nodeReady, startBackground: () => ({ hostKinds: ['node'] }), waitForReady: async () => nodeReady } })
@@ -422,7 +422,7 @@ describe('orgai daemon restart (Wave 7)', () => {
     expect(f.launcherCalls[2].args).toEqual({ timeoutMs: 30000, hostKinds: ['node'], notInstanceId: 'aaaaaaaaaaaa' })
   })
 
-  it('--runtime switches kinds; a refused Node host is refused before the running host is stopped', async () => {
+  it('--runtime switches kinds; a refused background host is refused before the running host is stopped', async () => {
     nodeMachine()
     const h = new FakeHostClient({ 'host.stop': () => ({ stopping: true }) })
     const f = fakeContext({ connect: [h, nodeStatus()], launcher: { current: () => ready, startBackground: () => ({ hostKinds: ['node'] }), waitForReady: async () => nodeReady } })
@@ -436,7 +436,7 @@ describe('orgai daemon restart (Wave 7)', () => {
   })
 })
 
-describe('orgai daemon restart to a Node host: everything that can fail happens before the stop (review round 2)', () => {
+describe('orgai daemon restart to a background host: everything that can fail happens before the stop (review round 2)', () => {
   const running = () => new FakeHostClient({ 'host.stop': () => ({ stopping: true }) }, { hello: { hostKind: 'node' } })
 
   it('asks before the stop and stores after it', async () => {

@@ -1,5 +1,5 @@
 /**
- * ConnectionService and the Wave 7 secret vault (cli-standalone.md 5.4, 5.5): the LiteLLM probe says why a stored
+ * ConnectionService and the Wave 7 secure storage (cli-standalone.md 5.4, 5.5): the LiteLLM probe says why a stored
  * key cannot be read instead of "set it again", and an explicit clear (set-secret --clear, logout) asks the store
  * first and changes nothing when it refuses. A FixtureVaultStore stands in for the vault; no network.
  */
@@ -51,7 +51,7 @@ describe('LiteLLM key and the vault', () => {
     secrets.unreadable.set(LITELLM_KEY, VAULT_MESSAGES.pendingLegacy)
     expect(await service.test('litellm')).toMatchObject({ state: 'error', detail: VAULT_MESSAGES.pendingLegacy })
     secrets.unreadable.set(LITELLM_KEY, VAULT_MESSAGES.locked('run security unlock-keychain'))
-    expect(await service.test('litellm')).toMatchObject({ state: 'error', detail: 'The secret vault is locked: run security unlock-keychain' })
+    expect(await service.test('litellm')).toMatchObject({ state: 'error', detail: 'Secure storage is locked: run security unlock-keychain' })
     secrets.unreadable.clear()
     expect(await service.test('litellm')).toMatchObject({ state: 'connected' })
   })
@@ -89,9 +89,9 @@ describe('LiteLLM key and the vault', () => {
     secrets.unreadable.set(LITELLM_KEY, VAULT_MESSAGES.pendingLegacy)
     expect(() => service.runConnection(undefined, choice)).toThrow(`The LiteLLM API key cannot be read here: ${VAULT_MESSAGES.pendingLegacy}.`)
     secrets.unreadable.set(LITELLM_KEY, VAULT_MESSAGES.locked('run security unlock-keychain.'))
-    expect(() => service.runConnection(undefined, choice)).toThrow('The LiteLLM API key cannot be read here: The secret vault is locked: run security unlock-keychain.')
+    expect(() => service.runConnection(undefined, choice)).toThrow('The LiteLLM API key cannot be read here: Secure storage is locked: run security unlock-keychain.')
     await service.refresh({ connection: 'litellm' })
-    expect((await service.list()).find((c) => c.connection.id === 'litellm')?.status).toMatchObject({ state: 'error', detail: expect.stringContaining('The secret vault is locked: run security unlock-keychain') })
+    expect((await service.list()).find((c) => c.connection.id === 'litellm')?.status).toMatchObject({ state: 'error', detail: expect.stringContaining('Secure storage is locked: run security unlock-keychain') })
     // A key that is not stored at all keeps the old advice.
     secrets.unreadable.clear()
     await service.setSecret({ id: 'litellm', apiKey: null })

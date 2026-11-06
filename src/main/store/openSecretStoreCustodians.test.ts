@@ -35,7 +35,7 @@ const open = (hostKind: 'node' | 'inproc' | 'desktop', extra: Record<string, unk
 const vaultJson = (): VaultFile => JSON.parse(readFileSync(join(dataDir, 'vault.json'), 'utf8')) as VaultFile
 
 describe('openSecretStore with its default (real) custodians', () => {
-  it('a Node host creates a key-file vault on the first value and a later host reads it back', async () => {
+  it('a background host creates a key-file vault on the first value and a later host reads it back', async () => {
     const node = await open('node')
     expect(node.state()).toBe('absent')
     expect(existsSync(keyFile)).toBe(false)
@@ -64,7 +64,7 @@ describe('openSecretStore with its default (real) custodians', () => {
     later.dispose()
   })
 
-  it('secrets init --key-file creates a new key file on a Node host (the request reaches the custodian)', async () => {
+  it('secrets init --key-file creates a new key file on a background host (the request reaches the custodian)', async () => {
     const asked = join(keyDir, 'asked.key')
     const node = await open('node', { env: {} })
     const r = await node.initVault({ keyFile: asked })

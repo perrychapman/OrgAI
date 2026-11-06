@@ -450,7 +450,7 @@ describe('bootOrgAIHost', () => {
     headless.dispose()
   })
 
-  it('a Node host follows the stored Terminal access and level like the headless host, and arms idle exit (Wave 7, 4.2.1)', () => {
+  it('a background host follows the stored Terminal access and level like the headless host, and arms idle exit (Wave 7, 4.2.1)', () => {
     const armIdle = vi.spyOn(HostActivityTracker.prototype, 'armIdleExit')
     const node = boot({ hostKind: 'node' })
     expect(armIdle).toHaveBeenCalledTimes(1)

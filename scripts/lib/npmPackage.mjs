@@ -323,7 +323,7 @@ terminal, with or without the OrgAI desktop app. Version ${version}.
 \`\`\`sh
 npm i -g ${NPM_PACKAGE_NAME}${/-/.test(version) ? '@next' : ''}
 orgai --version     # prints the version and "channel npm"
-orgai doctor        # checks the install, the data folder, the agent runtimes and the secret vault
+orgai doctor        # checks the install, the data folder, the agent runtimes and secure storage
 \`\`\`
 
 Node ${nodeEngines}. Older Node versions run, but cannot add the operating system's root certificates (a corporate

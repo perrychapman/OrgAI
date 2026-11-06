@@ -124,50 +124,50 @@ export function busyLines(stop: HostStopResult, facts?: HostHandoffFacts): strin
 
 /** The wait window's contents per state. Pure; exported for tests. */
 export function handoffView(kind: HandoffView['kind'], lines: string[] = []): HandoffView {
-  const list = lines.length ? `\n\nStill going on: ${lines.join(', ')}.` : ''
+  const list = lines.length ? `\n\nStill going: ${lines.join(', ')}.` : ''
   switch (kind) {
     case 'inproc':
       return {
         kind,
-        message: "OrgAI's data is in use by the orgai command in a terminal.",
-        detail: 'OrgAI can open as soon as that command ends. It is never stopped from here.',
+        message: 'The orgai command in a terminal is using OrgAI\'s data.',
+        detail: 'OrgAI can open as soon as that command ends. OrgAI never stops it for you.',
         buttons: [
-          { label: 'Open when it ends', choice: 'wait' },
+          { label: 'Wait, then open', choice: 'wait' },
           { label: 'Quit', choice: 'quit' }
         ]
       }
     case 'inproc-waiting':
       return {
         kind,
-        message: 'OrgAI opens when the orgai command in the terminal ends.',
-        detail: "OrgAI's data is in use by that command until then.",
+        message: 'OrgAI will open when the orgai command ends.',
+        detail: 'You can also end it yourself with Ctrl+C in its terminal.',
         buttons: [{ label: 'Quit', choice: 'quit' }]
       }
     case 'stopping':
       return {
         kind,
-        message: 'OrgAI is waiting for its background host to stop.',
-        detail: 'The background host is finishing what it was saving. OrgAI opens once it has stopped.',
+        message: 'Waiting for the background host to stop.',
+        detail: 'It is finishing a save. OrgAI opens as soon as it stops.',
         buttons: [{ label: 'Quit', choice: 'quit' }]
       }
     case 'busy':
       return {
         kind,
         message: 'OrgAI is still working in the background.',
-        detail: `A background host (started from a terminal) owns OrgAI's data and has work under way.${list}\n\nStopping them ends those runs; they read "Ended when OrgAI closed" and can be continued. Attached terminal sessions are disconnected.`,
+        detail: `A background host you started from a terminal is using OrgAI's data and still has work to do.${list}\n\nStopping it ends those runs. They show "Ended when OrgAI closed" and can be continued. Connected terminals are disconnected.`,
         buttons: [
-          { label: 'Open when they finish', choice: 'wait' },
-          { label: 'Stop them and open', choice: 'force' },
+          { label: 'Wait, then open', choice: 'wait' },
+          { label: 'Stop and open', choice: 'force' },
           { label: 'Quit', choice: 'quit' }
         ]
       }
     case 'busy-waiting':
       return {
         kind,
-        message: 'OrgAI opens when the background work finishes.',
-        detail: `OrgAI checks again every few seconds.${list}`,
+        message: 'OrgAI will open when the background work finishes.',
+        detail: `OrgAI checks every few seconds.${list}`,
         buttons: [
-          { label: 'Stop them and open', choice: 'force' },
+          { label: 'Stop and open', choice: 'force' },
           { label: 'Quit', choice: 'quit' }
         ]
       }
@@ -429,15 +429,15 @@ export function handoffPageHtml(view: HandoffView, dark: boolean): string {
   const muted = dark ? '#a3a7b3' : '#4f5562'
   const accent = dark ? '#7aa2ff' : '#2f5bd3'
   const detail = view.detail
-    .split('\n')
-    .map((l) => escapeHtml(l))
-    .join('<br>')
+    .split(/\n\n+/)
+    .map((para) => escapeHtml(para).replace(/\n/g, '<br>'))
+    .join('</p><p>')
   const buttons = view.buttons
     .map((b, i) => `<a class="btn${i === 0 ? ' primary' : ''}" href="${HANDOFF_CHOICE_SCHEME}${b.choice}">${escapeHtml(b.label)}</a>`)
     .join('')
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'"><title>OrgAI</title><style>
 body{margin:0;padding:24px;font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;background:${bg};color:${fg}}
-h1{font-size:15px;font-weight:600;margin:0 0 8px}p{margin:0 0 20px;color:${muted}}
+h1{font-size:15px;font-weight:600;margin:0 0 10px}p{margin:0 0 10px;color:${muted}}.row{margin-top:18px}
 .row{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
 .btn{display:inline-block;padding:6px 14px;border-radius:6px;border:1px solid ${muted};color:${fg};text-decoration:none}
 .btn.primary{background:${accent};border-color:${accent};color:#fff}

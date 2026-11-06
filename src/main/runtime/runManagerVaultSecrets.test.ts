@@ -1,5 +1,5 @@
 /**
- * Approved MCP proposals and the Wave 7 secret vault (cli-standalone.md round 6 item 10), on real stores and services
+ * Approved MCP proposals and the Wave 7 secure storage (cli-standalone.md round 6 item 10), on real stores and services
  * with a FixtureVaultStore: the values typed on the card are stored before projects.json or mcp-library.json changes;
  * a store that cannot take them now (locked, damaged, or a write that fails after preparation) refuses the approval
  * with nothing applied, the earlier values intact and the card still open, waiting for secrets (never swallowed). No
@@ -113,7 +113,7 @@ describe('MCP proposal secrets and the vault (round 6 item 10)', () => {
     const before = JSON.stringify(store.get(p.id))
     // The store's own sentence, with the custodian's reason (5.4), never a fixed one.
     expect(() => m.decideProposal(run.id, card.proposal.id, withSecret)).toThrow(
-      'The secret values could not be saved: The secret vault is locked: Run `security unlock-keychain`, or set ORGAI_VAULT_KEY_FILE. Nothing was applied; the card is still open.'
+      'The secret values could not be saved: Secure storage is locked: Run `security unlock-keychain`, or set ORGAI_VAULT_KEY_FILE. Nothing was applied; the card is still open.'
     )
     expect(JSON.stringify(store.get(p.id))).toBe(before)
     expect(m.pendingCards(run.id).proposals.map((x) => x.id)).toEqual([card.proposal.id])
@@ -188,7 +188,7 @@ describe('MCP proposal secrets and the vault (round 6 item 10)', () => {
     await m.stopAll()
   })
 
-  it('a value typed only for a slot of a server the proposal does not upsert is dropped, never a refusal, on a Node host without a vault', async () => {
+  it('a value typed only for a slot of a server the proposal does not upsert is dropped, never a refusal, on a background host without a vault', async () => {
     // Round 2 review: RunManager once judged "carries values" by its own rule and refused here with the wrong advice
     // ("Secure storage is not available") while the setup:decide predicate (rightly) prepared nothing.
     const data = join(dir, 'data')

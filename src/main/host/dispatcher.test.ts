@@ -490,7 +490,7 @@ describe('host-specific handlers', () => {
   })
 
   it('secrets:reset is refused while a predicate-prepared secret write is between its prepare and the end of its handler', async () => {
-    // Round 2 review: a reset landing after `await prepareWrite()` and before the handler's set() moved the vault aside
+    // Round 2 review: a reset landing after `await prepareWrite()` and before the handler's set() moved secure storage aside
     // under it (VaultNotReady on a Node host).
     let finishPrepare!: () => void
     const prepareWrite = vi.fn(() => new Promise<void>((r) => (finishPrepare = r)))

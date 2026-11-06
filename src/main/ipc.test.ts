@@ -546,7 +546,7 @@ describe('withEffectiveDefault (settings:get / set / changed)', () => {
   })
 })
 
-describe('appFacingError (what a window is told about the secret vault)', () => {
+describe('appFacingError (what a window is told about secure storage)', () => {
   it('puts the vault sentences in the app words and leaves every other error alone', async () => {
     const { appFacingError } = await import('./ipc')
     const { VAULT_MESSAGES } = await import('./store/vaultTypes')

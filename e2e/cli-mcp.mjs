@@ -49,7 +49,7 @@ try {
   check(r.code === 0 && json((await cli(['mcp', 'show', 'notes', '--output-format', 'json'], inRepo)).out)?.server?.enabled === true, 'mcp enable', show(r))
 
   r = await cli(['mcp', 'set-secret', 'notes', 'NOTES_TOKEN', '--stdin'], { ...inRepo, input: 'e2e-secret-value\n' })
-  // Wave 7: the CLI's own host has the secret vault, so the value is saved (never echoed).
+  // Wave 7: the CLI's own host has secure storage, so the value is saved (never echoed).
   check(r.code === 0 && r.out.includes('Saved NOTES_TOKEN') && !(r.out + r.err).includes('e2e-secret-value'), 'set-secret --stdin on an inproc host saves to the vault and never echoes the value', show(r))
   r = await cli(['mcp', 'set-secret', 'notes', 'NOTES_TOKEN', 'on-argv'], inRepo)
   check(r.code === 2, 'a secret value on argv is exit 2', show(r))

@@ -181,7 +181,7 @@ export interface SecretStoreOptions {
 export const READ_ONLY_SECRETS_MESSAGE = 'This OrgAI host runs inside the CLI (--host inproc) and cannot save secrets.'
 
 /** What the vault channels answered before the vault landed (kept for callers that still name it). */
-export const VAULT_NOT_AVAILABLE_MESSAGE = 'The secret vault is not available in this build yet.'
+export const VAULT_NOT_AVAILABLE_MESSAGE = 'Secure storage is not available in this build yet.'
 
 /** set() refusal when safeStorage cannot encrypt (an app host in legacy-only mode). */
 export const SECURE_STORAGE_UNAVAILABLE_MESSAGE = 'Secure storage is not available on this system, so OrgAI cannot store secrets.'
@@ -191,10 +191,10 @@ export const UNDECRYPTABLE_REASON = 'Saved by the OrgAI app and cannot be read h
 
 /**
  * secrets.json does not parse: legacy-only writes refuse rather than overwrite it (5.5 Legacy file states). secrets:reset
- * moves it aside (review round 1), which also starts the secret vault over.
+ * moves it aside (review round 1), which also starts secure storage over.
  */
 export const LEGACY_CORRUPT_MESSAGE =
-  "The OrgAI app's secrets file (secrets.json) is damaged, so OrgAI does not change it; `orgai secrets reset` moves it aside (and starts the secret vault over)."
+  "The OrgAI app's secrets file (secrets.json) is damaged, so OrgAI does not change it; `orgai secrets reset` moves it aside (and starts secure storage over)."
 
 /** Mutations refused until the reconcile after a failed save succeeds (5.5 Durability and failures). */
 export const VAULT_RECOVERY_MESSAGE = 'A save did not finish and OrgAI could not check the saved secrets again yet; try again, or check with `orgai secrets status`.'
@@ -203,7 +203,7 @@ export const VAULT_RECOVERY_MESSAGE = 'A save did not finish and OrgAI could not
 export const KEY_STORE_UNREACHABLE_MESSAGE = 'The key store could not be reached.'
 
 /** A new vault's own save failed (a disk error such as ENOSPC or EIO), not the key store (review round 1). */
-export const vaultSaveFailedMessage = (detail: string): string => `OrgAI could not save the new secret vault (${detail}); try again when the disk works.`
+export const vaultSaveFailedMessage = (detail: string): string => `OrgAI could not save the new secure storage (${detail}); try again when the disk works.`
 
 /**
  * vault.json or secrets.json could not be read (an I/O error such as EIO, EACCES or EBUSY; not damage). The store reads
@@ -229,7 +229,7 @@ export const LEGACY_MOVE_FAILED_MESSAGE = 'The damaged secrets.json could not be
 export const NOTHING_TO_RESTORE_MESSAGE = 'No deleted value is kept for this secret.'
 export const NO_CUSTODIAN_MESSAGE = 'No key store is available on this system; set ORGAI_VAULT_KEY_FILE or run `orgai secrets init --key-file <path>`.'
 export const KEY_FILE_INSIDE_DATA_MESSAGE = "The key file must be outside OrgAI's data folder."
-export const VAULT_NOT_OPENED_MESSAGE = 'The secret vault has not been opened yet.'
+export const VAULT_NOT_OPENED_MESSAGE = 'Secure storage has not been opened yet.'
 export const keyFileSchemeConflict = (scheme: VaultCustodyScheme): string =>
   `This vault keeps its key in ${scheme}; run \`orgai secrets reset\` before starting a vault with a key file.`
 
@@ -378,8 +378,8 @@ export class SecretStore implements SecretStoreApi {
     const log = opts.log
     this.logLine = (m) => {
       try {
-        if (log) log(`Secret vault: ${m}`)
-        else console.log(`Secret vault: ${m}`)
+        if (log) log(`Secure storage: ${m}`)
+        else console.log(`Secure storage: ${m}`)
       } catch {
         // logging never breaks the store
       }
@@ -395,7 +395,7 @@ export class SecretStore implements SecretStoreApi {
   // ---------- Loading ----------
 
   /**
-   * Re-read both files from disk into fresh maps; the data key is kept only while it still opens the vault on disk.
+   * Re-read both files from disk into fresh maps; the data key is kept only while it still opens secure storage on disk.
    * `strictIo` (recovery): an I/O error other than ENOENT throws and leaves the maps as they were, so a transient read
    * failure never passes for a damaged file.
    */
@@ -430,7 +430,7 @@ export class SecretStore implements SecretStoreApi {
       return
     }
     this.vault = read.vault
-    // A key that opens this vault's check record belongs to it (also right after a creation whose save was not durable).
+    // A key that opens this secure storage's check record belongs to it (also right after a creation whose save was not durable).
     if (this.dek && checkMatches(this.dek, read.vault.vaultId, read.vault.check)) {
       this.vstate = 'open'
       this.reason = undefined
@@ -1029,7 +1029,7 @@ export class SecretStore implements SecretStoreApi {
     this.ensureRecovered()
     const present = keys.filter(onDisk)
     if (this.vstate === 'corrupt') {
-      this.leaveInPlace(present, 'the secret vault is damaged')
+      this.leaveInPlace(present, 'secure storage is damaged')
       return
     }
     if (this.vstate === 'absent') {
@@ -1094,7 +1094,7 @@ export class SecretStore implements SecretStoreApi {
 
   /** Run `fn` as the one custody operation in flight; a background one holds a lease once the host exists. */
   private startFlight<T>(label: FlightLabel, fn: () => Promise<T>): Promise<T> {
-    const release = this.acquireLease?.(`secret vault ${label}`)
+    const release = this.acquireLease?.(`secure storage ${label}`)
     // fn starts on the next microtask, so `flight` is set before any of it runs.
     const p: Promise<T> = Promise.resolve()
       .then(fn)
@@ -1205,7 +1205,7 @@ export class SecretStore implements SecretStoreApi {
     let dek: Buffer
     try {
       if (custody.scheme === 'key-file') {
-        const problem = custody.keyFile ? this.keyFileProblem(custody.keyFile) : 'No key file is configured for this vault.'
+        const problem = custody.keyFile ? this.keyFileProblem(custody.keyFile) : 'No key file is configured for this secure storage.'
         if (problem) throw new CustodyError('denied', problem)
       }
       dek = await this.factory(custody.scheme, request).open(vaultId, custody)
@@ -1226,7 +1226,7 @@ export class SecretStore implements SecretStoreApi {
         this.vstate = 'key-mismatch'
         this.reason = VAULT_MESSAGES.keyMismatch
         this.lastFailure = { kind: 'missing', reason: VAULT_MESSAGES.keyMismatch }
-        this.logRepeated('open:mismatch', 'the key does not match this vault')
+        this.logRepeated('open:mismatch', 'the key does not match this secure storage')
       }
       return false
     }
@@ -1593,7 +1593,7 @@ export class SecretStore implements SecretStoreApi {
     }
   }
 
-  /** The custody recorded in the vault on disk now, or null while there is no vault (the custodian factory reads it). */
+  /** The custody recorded in secure storage on disk now, or null while there is no vault (the custodian factory reads it). */
   currentCustody(): VaultCustody | null {
     return this.vault?.custody ?? null
   }

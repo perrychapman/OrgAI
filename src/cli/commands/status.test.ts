@@ -34,7 +34,7 @@ describe('orgai status', () => {
     const f = fakeContext({ cwd: '/work/app/src', connect: [liveHost()] })
     expect(await runStatus(f.ctx, [])).toBe(EXIT.ok)
     const out = f.out()
-    expect(out).toContain('Host: ready (desktop)')
+    expect(out).toContain('Host: ready (app)')
     expect(out).toContain('Activity: 1 live run')
     expect(out).toContain('Project: App')
     expect(out).toMatch(/R2 {2}Needs you {2}Fix tests · 2 decisions|R2 {2}Needs you {2}Fix tests · 1 decision/)

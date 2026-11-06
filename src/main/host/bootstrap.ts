@@ -239,8 +239,8 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
   if (hostKind !== 'desktop' && settings.get().terminalServer !== true) {
     log.info(
       sessionTerminal
-        ? `Terminal access is on for this ${hostKind} host's session only (not saved).`
-        : `Terminal access is off in App settings; this ${hostKind} host refuses terminal clients until it is turned on.`
+        ? `Terminal access is on for this ${hostKind === 'node' ? 'background host' : 'command'}'s session only (not saved).`
+        : `Terminal access is off in App settings; this ${hostKind === 'node' ? 'background host' : 'command'} refuses terminal clients until it is turned on.`
     )
   }
   const terminalAccess = (): HostTerminalAccess => {

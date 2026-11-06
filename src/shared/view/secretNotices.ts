@@ -1,5 +1,5 @@
 /**
- * What the app says about the secret vault (cli-standalone.md 5.4, 5.5): the Dashboard notices and the readable form of a
+ * What the app says about secure storage (cli-standalone.md 5.4, 5.5): the Dashboard notices and the readable form of a
  * slot's "cannot be read here" reason. Pure; no renderer, DOM or React imports. The main-process sentences these map
  * live in src/main/store/vaultTypes.ts (VAULT_MESSAGES) and mention the `orgai` command, which an app-only user may not
  * have; here every one is paired with a way to act in the app (the notice's buttons) or says nothing about a command.
@@ -66,26 +66,26 @@ export function legacySoftDeletes(s: Pick<SecretsStatusResult, 'softDeletes'>): 
 
 const VAULT_PROBLEM: Partial<Record<SecretsStatusResult['state'], (reason?: string) => { title: string; body: string }>> = {
   locked: (reason) => ({
-    title: 'OrgAI could not unlock its secret vault',
-    body: `${reason ? `${reason.replace(/^The secret vault is locked: /, '').replace(/[.\s]+$/, '')}. ` : ''}Saved keys and tokens cannot be read until it opens. Unlock your key store (for example sign in to your computer), then try again.`
+    title: 'OrgAI could not unlock its secure storage',
+    body: `${reason ? `${reason.replace(/^Secure storage is locked: /, '').replace(/[.\s]+$/, '')}. ` : ''}Saved keys and tokens cannot be read until it opens. Unlock your key store (for example sign in to your computer), then try again.`
   }),
   'missing-key': () => ({
-    title: "The key to OrgAI's secret vault is not available",
-    body: 'This computer account cannot reach the key that opens the vault, so saved keys and tokens cannot be read. Sign in to the account that created it, or start over and enter your keys again.'
+    title: "The key to OrgAI's secure storage is not available",
+    body: 'This computer account cannot reach the key that opens secure storage, so saved keys and tokens cannot be read. Sign in to the account that created it, or start over and enter your keys again.'
   }),
   'key-mismatch': () => ({
-    title: "OrgAI's secret vault does not open with its key",
-    body: 'The key does not match the vault, or the vault is damaged, so saved keys and tokens cannot be read. Restore the matching key file, or start over and enter your keys again.'
+    title: "OrgAI's secure storage does not open with its key",
+    body: 'The key does not match the vault, or it is damaged, so saved keys and tokens cannot be read. Restore the matching key file, or start over and enter your keys again.'
   }),
   corrupt: () => ({
-    title: "OrgAI's secret vault is damaged",
-    body: "Saved keys and tokens in the vault cannot be read. Start over to move it aside; OrgAI then uses the older copies it kept, which may be outdated. Enter any key that is missing again."
+    title: "OrgAI's secure storage is damaged",
+    body: "Saved keys and tokens in secure storage cannot be read. Start over to move it aside; OrgAI then uses the older copies it kept, which may be outdated. Enter any key that is missing again."
   })
 }
 
 /** What "Start over" gives up, shown in its confirmation (same meaning as VAULT_MESSAGES.resetWarning). */
 export const START_OVER_WARNING =
-  "Starting over moves the vault aside. Secrets saved only through the orgai command are lost; the OrgAI app's older copies, which may be outdated, are used instead."
+  "Starting over moves secure storage aside. Secrets saved only through the orgai command are lost; the OrgAI app's older copies, which may be outdated, are used instead."
 
 /** The notices for a status, most urgent first. Empty when there is nothing to say. */
 export function secretNotices(s: SecretsStatusResult, names: KeyNames = {}): SecretNotice[] {
@@ -100,7 +100,7 @@ export function secretNotices(s: SecretsStatusResult, names: KeyNames = {}): Sec
       kind: 'legacy-corrupt',
       tone: 'warning',
       title: "OrgAI's older secrets file is damaged",
-      body: 'The file secrets.json cannot be read, so the keys and tokens saved in it are not available, and OrgAI will not change it. Keys saved in the vault still work. Enter any key that is missing again in Connections and Connectors, or start over to move the damaged file aside.',
+      body: 'The file secrets.json cannot be read, so the keys and tokens saved in it are not available, and OrgAI will not change it. Keys saved in secure storage still work. Enter any key that is missing again in Connections and Connectors, or start over to move the damaged file aside.',
       actions: ['reset']
     })
   }
@@ -132,19 +132,19 @@ export function appSecretReason(reason: string): string {
     .trim()
     .replace(/,? or check with `orgai[^`]*`/g, '')
     .replace(/ \([^()]*`orgai[^`]*`[^()]*\)/g, '')
-    .replace(/open the OrgAI app once, or unlock the vault and try again\./, 'unlock the vault (the Dashboard notice has a Try again button) and try again.')
+    .replace(/open the OrgAI app once, or unlock secure storage and try again\./, 'unlock secure storage (the Dashboard notice has a Try again button) and try again.')
   // A known sentence may follow a prefix ("The LiteLLM API key cannot be read here: ..."): the prefix stays.
   const at = (re: RegExp): number => t.search(re)
-  let i = at(/The secret vault is locked/)
-  if (i >= 0) return `${t.replace(/[.\s]+$/, '')}. Open the notice on the Dashboard and choose Try again.`
-  i = at(/This vault's key is not available|The key does not match this vault|The secret vault is damaged/)
-  if (i >= 0) return `${t.slice(0, i)}The secret vault cannot be opened. The notice on the Dashboard says what to do.`
+  let i = at(/Secure storage is locked/)
+  if (i >= 0) return `${t.replace(/[.\s]+$/, '')}. Open the Dashboard notice and choose Try again.`
+  i = at(/The key for this secure storage is not available|The key does not match this secure storage|Secure storage is damaged/)
+  if (i >= 0) return `${t.slice(0, i)}OrgAI's secure storage cannot be opened. The Dashboard notice says what to do.`
   i = at(/Saved by the OrgAI app and not yet shared/)
-  if (i >= 0) return `${t.slice(0, i)}Saved by OrgAI earlier and being moved into the secret vault. Restart OrgAI if this stays.`
+  if (i >= 0) return `${t.slice(0, i)}Saved by OrgAI earlier and being moved into secure storage. Restart OrgAI if this stays.`
   i = at(/This saved secret is damaged/)
   if (i >= 0) return `${t.slice(0, i)}This saved secret is damaged and cannot be read. Enter it again.`
   i = at(/secrets file \(secrets\.json\) is damaged/)
-  if (i >= 0) return `${t.slice(0, i)}OrgAI's secrets file (secrets.json) is damaged, so OrgAI does not change it. The notice on the Dashboard has a Start over button.`
+  if (i >= 0) return `${t.slice(0, i)}OrgAI's secrets file (secrets.json) is damaged, so OrgAI does not change it. The Dashboard notice has a Start over button.`
   i = at(/Saved by the OrgAI app: open the app once/)
   if (i >= 0) return `${t.slice(0, i)}Saved by OrgAI earlier. Restart OrgAI and try again.`
   return t.replace(/`orgai[^`]*`/g, 'a terminal command')

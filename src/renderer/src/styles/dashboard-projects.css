@@ -1,7 +1,7 @@
 /* Dashboard: project tiles, fact cards, the New project dialog form and the first-launch choice.
    Region placement (.dashboard, .dashboard-grid) lives in dashboard.css. Tokens only. */
 
-/* The notice after forgetting an engagement and the secret vault notices span the grid above the hero. */
+/* The notice after forgetting an engagement and secure storage notices span the grid above the hero. */
 .dash-forget-notice,
 .dash-secret-notices {
   grid-column: 1 / -1;

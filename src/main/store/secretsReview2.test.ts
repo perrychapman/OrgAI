@@ -95,7 +95,7 @@ async function creationBoundaries(): Promise<number> {
 }
 
 describe('review round 2, blocker: a failed creation save keeps the real key for the retry', () => {
-  it('a Node host: a throw at every creation boundary, then a retry on the same store, set and a fresh store reads it back', async () => {
+  it('a background host: a throw at every creation boundary, then a retry on the same store, set and a fresh store reads it back', async () => {
     const snap = snapshotDir(dataDir)
     const total = await creationBoundaries()
     expect(total).toBeGreaterThan(4)
@@ -213,7 +213,7 @@ describe('review round 2, major: an explicit clear reports a failed save (5.5 Du
     expect(await views('tok')).toEqual({ app: undefined, node: undefined, older: undefined })
   })
 
-  it('a legacy-only app host (vault locked) and a Node host also throw', async () => {
+  it('a legacy-only app host (vault locked) and a background host also throw', async () => {
     older().set('k', 'v')
     await app()
     custody.fail(locked)
@@ -241,7 +241,7 @@ describe('review round 2, major: an explicit clear reports a failed save (5.5 Du
       }
     },
     {
-      name: 'Node host, vault locked (metadata only)',
+      name: 'background host, vault locked (metadata only)',
       open: (fs) => node({ fs }),
       before: async () => {
         older().set('k', 'old')
@@ -251,7 +251,7 @@ describe('review round 2, major: an explicit clear reports a failed save (5.5 Du
       lockedDuring: true
     },
     {
-      name: 'Node host, vault open, a vault-only key',
+      name: 'background host, vault open, a vault-only key',
       open: (fs) => node({ fs }),
       before: async () => {
         older().set('other', 'o')
@@ -373,7 +373,7 @@ describe('review round 2, minor: a read I/O error is not damage', () => {
     expect(readLegacyFile(join(dataDir, 'secrets.json'))).toEqual({ state: 'corrupt' })
   })
 
-  it('a Node host: an unreadable vault.json is locked with the I/O reason, never corrupt; prepareWrite reads it again', async () => {
+  it('a background host: an unreadable vault.json is locked with the I/O reason, never corrupt; prepareWrite reads it again', async () => {
     older().set('k', 'v')
     await app()
     const r = readFailFs()
@@ -381,7 +381,7 @@ describe('review round 2, minor: a read I/O error is not damage', () => {
     const n = await node({ fs: r.fs })
     const reason = VAULT_MESSAGES.locked(fileReadFailedMessage('vault.json', 'EIO'))
     expect(n.state()).toBe('locked')
-    // whether the vault holds a newer value cannot be seen: unreadable with the I/O reason, never pending-legacy
+    // whether secure storage holds a newer value cannot be seen: unreadable with the I/O reason, never pending-legacy
     expect(n.status('k')).toEqual({ unreadable: reason })
     const st = await n.statusReport()
     expect(st).toMatchObject({ state: 'locked', reason, readError: fileReadFailedMessage('vault.json', 'EIO') })
@@ -394,7 +394,7 @@ describe('review round 2, minor: a read I/O error is not damage', () => {
     n.delete('k') // a removal: left in place, counted
     expect(n.deletePrefix('mcp:p:')).toBe(0) // whether anything is stored under it cannot be seen: counted as one
     expect((await n.statusReport()).orphanedKeys).toBe(2)
-    // the disk works again: prepareWrite reads it, opens the vault, and the store is whole
+    // the disk works again: prepareWrite reads it, opens secure storage, and the store is whole
     r.heal()
     await n.prepareWrite()
     expect(n.state()).toBe('open')
@@ -499,7 +499,7 @@ describe('review round 2, minor: a read I/O error is not damage', () => {
 })
 
 describe('review round 2, minor: available() and the retry timer with the placeholder custodian', () => {
-  it('a Node host with the placeholder custodian does not offer to store; a real one does until a creation fails unavailable', async () => {
+  it('a background host with the placeholder custodian does not offer to store; a real one does until a creation fails unavailable', async () => {
     const placeholder = await node({ custodian: unavailableCustodianFactory })
     expect(placeholder.state()).toBe('absent')
     expect(placeholder.available()).toBe(false)

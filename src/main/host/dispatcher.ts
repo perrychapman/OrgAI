@@ -261,7 +261,7 @@ export class HostDispatcher {
   /**
    * Wave 7 (cli-standalone.md 5.6 Reset): RPC calls whose storesSecret predicate fired, from the start of their
    * prepareWrite() until their handler settled. secrets:reset is refused while any is in flight: a reset between the
-   * preparation and the handler's set() would move the vault aside under it (VaultNotReady on a Node host).
+   * preparation and the handler's set() would move secure storage aside under it (VaultNotReady on a Node host).
    */
   private secretWritesInFlight = 0
 

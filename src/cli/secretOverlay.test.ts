@@ -54,7 +54,7 @@ describe('secret overlay', () => {
 
   it('refuses secret overrides outside --host inproc with the exact message', () => {
     expect(SECRET_ENV_REFUSAL).toBe(
-      "Environment secret overrides (--secret-env / ORGAI_SECRET_*) can only be used with --host inproc. Use 'orgai connections set-secret' or 'orgai mcp set-secret' to store secrets in the host."
+      "Environment secret overrides (--secret-env / ORGAI_SECRET_*) work only when this command runs its own host (--host inproc). To store a secret in the running host, use 'orgai connections set-secret' or 'orgai mcp set-secret'."
     )
     expect(secretEnvRefusal('auto', { ORGAI_SECRET_X: '1' }, [])).toBe(SECRET_ENV_REFUSAL)
     expect(secretEnvRefusal('daemon', {}, ['mcp:p:s:env:X=V'])).toBe(SECRET_ENV_REFUSAL)

@@ -35,7 +35,7 @@ describe('FixtureVaultStore', () => {
     expect(s.prepares().map((p) => p.origin)).toEqual(['writer'])
   })
 
-  it("reads the app's own values as pending-legacy on a Node host until a Node write supersedes them", async () => {
+  it("reads the app's own values as pending-legacy on a background host until a Node write supersedes them", async () => {
     const s = new FixtureVaultStore(dir, { lazy: true })
     s.seedAppValue('app', 'from-the-app')
     expect(s.status('app')).toEqual({ unreadable: VAULT_MESSAGES.pendingLegacy })

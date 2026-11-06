@@ -1,5 +1,5 @@
 /**
- * McpService and the Wave 7 secret vault (cli-standalone.md 5.4-5.6, round 6 items 4 and 10): explicit clears ask the
+ * McpService and the Wave 7 secure storage (cli-standalone.md 5.4-5.6, round 6 items 4 and 10): explicit clears ask the
  * store first, moves refuse unreadable slots before changing anything, installs store secrets before other stores,
  * OAuth commits wait for prepareWrite and re-read the owner, refreshes prepare before the request and the writes, and
  * status displays say why a value cannot be read. A FixtureVaultStore stands in for the vault; no custodian, no network.
@@ -178,8 +178,8 @@ describe('moves refuse unreadable secrets before any change (5.4)', () => {
     expect(secrets.has(key)).toBe(true)
     // An unreadable OAuth slot is named by what it is.
     secrets.unreadable.delete(key)
-    secrets.unreadable.set(mcpOAuthKey(pid, 'mcp-1', 'refreshToken'), 'The secret vault is locked: x')
-    expect(() => svc.promote({ projectId: pid, serverId: 'mcp-1' })).toThrow('The OAuth refresh token of github cannot be read here (The secret vault is locked: x)')
+    secrets.unreadable.set(mcpOAuthKey(pid, 'mcp-1', 'refreshToken'), 'Secure storage is locked: x')
+    expect(() => svc.promote({ projectId: pid, serverId: 'mcp-1' })).toThrow('The OAuth refresh token of github cannot be read here (Secure storage is locked: x)')
     secrets.unreadable.clear()
     const moved = svc.promote({ projectId: pid, serverId: 'mcp-1' })
     expect(moved.servers[0].spec.libraryId).toBeDefined()
@@ -195,8 +195,8 @@ describe('moves refuse unreadable secrets before any change (5.4)', () => {
     expect(JSON.stringify(project())).toBe(before)
     // A perProjectSecrets link moves its own values whatever copySecrets says.
     library.save({ ...library.get('mcpl_s')!, perProjectSecrets: true })
-    secrets.unreadable.set(mcpSecretKey(pid, link.id, 'env', 'TOKEN'), 'The secret vault is locked: y')
-    expect(() => svc.copyFromLibrary({ projectId: pid, serverId: link.id, copySecrets: false })).toThrow('TOKEN of stdio-lib cannot be read here (The secret vault is locked: y)')
+    secrets.unreadable.set(mcpSecretKey(pid, link.id, 'env', 'TOKEN'), 'Secure storage is locked: y')
+    expect(() => svc.copyFromLibrary({ projectId: pid, serverId: link.id, copySecrets: false })).toThrow('TOKEN of stdio-lib cannot be read here (Secure storage is locked: y)')
     expect(JSON.stringify(project())).toBe(before)
 
     // Without per-project values and without copySecrets nothing is carried: nothing to refuse.
@@ -397,10 +397,10 @@ describe('OAuth commits wait for the vault (round 6 item 4)', () => {
   })
 
   it('a vault that cannot take the tokens fails the sign-in with its reason; nothing is stored', async () => {
-    secrets.prepareError = new Error('The secret vault is locked: run security unlock-keychain')
+    secrets.prepareError = new Error('Secure storage is locked: run security unlock-keychain')
     runAuthorization.mockResolvedValue(flow())
     const status = await svc.authorize({ libraryId: 'mcpl_1' })
-    expect(status).toMatchObject({ state: 'error', error: 'The secret vault is locked: run security unlock-keychain' })
+    expect(status).toMatchObject({ state: 'error', error: 'Secure storage is locked: run security unlock-keychain' })
     expect(secrets.storedKeys()).toEqual([])
     expect(library.get('mcpl_1')?.oauth).toBeUndefined()
   })
@@ -556,9 +556,9 @@ describe('status displays say why (5.4)', () => {
     expect(JSON.stringify(info)).not.toContain('"a"')
 
     svc.libraryUpsert({ ...remote(), secretHeaders: ['X-Key'] })
-    secrets.unreadable.set(mcpLibrarySecretKey('mcpl_1', 'header', 'X-Key'), 'The secret vault is locked: z')
+    secrets.unreadable.set(mcpLibrarySecretKey('mcpl_1', 'header', 'X-Key'), 'Secure storage is locked: z')
     const lib = svc.libraryList().find((l) => l.entry.id === 'mcpl_1')!
-    expect(lib).toMatchObject({ headersSet: [], missingSecrets: ['X-Key'], unreadableSecrets: [{ name: 'X-Key', reason: 'The secret vault is locked: z' }] })
+    expect(lib).toMatchObject({ headersSet: [], missingSecrets: ['X-Key'], unreadableSecrets: [{ name: 'X-Key', reason: 'Secure storage is locked: z' }] })
   })
 
   it('an unreadable sign-in reads as an error with the reason, never "not authorized"', async () => {

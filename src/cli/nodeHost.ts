@@ -15,7 +15,7 @@ import { readInstallInfo } from './installInfo'
 import { readStoredTerminalAccess, type StoredTerminalAccess } from './terminalAccessSettings'
 import { CliError, EXIT, type CliContext } from './types'
 
-export const NODE_HOST_TERMINAL_OFF = 'Terminal access is off, so nothing could talk to that host; turn it on with `orgai terminal-access on`'
+export const NODE_HOST_TERMINAL_OFF = 'Terminal access is off, so terminals could not use that host. Turn it on with `orgai terminal-access on`'
 
 /** Swappable in tests. */
 export const nodeHostDeps = {

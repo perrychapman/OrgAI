@@ -337,7 +337,7 @@ describe("ensureHost: another command's own in-process host (WP-B review round 2
     expect(f.launcherCalls.map((c) => c.method)).toEqual(['waitForGone', 'spawn', 'waitForReady'])
   })
 
-  it('--host daemon with no app anywhere starts the Node host and waits for kind node (Wave 7, 4.1 / 4.2)', async () => {
+  it('--host daemon with no app anywhere starts the background host and waits for kind node (Wave 7, 4.1 / 4.2)', async () => {
     nodeHostDeps.installInfo = () => ({ channel: 'npm', source: 'file' })
     nodeHostDeps.terminalAccess = () => ({ terminalServer: false, terminalServerChosen: false, level: 'operate', levelChosen: false, enabledForBackground: true })
     const node: DaemonInfo = { ...ready, hostKind: 'node' }
@@ -384,7 +384,7 @@ describe("ensureHost: another command's own in-process host (WP-B review round 2
     await expect(ensureHost(r.ctx, ['read'])).rejects.toMatchObject({ exitCode: EXIT.failure, message: expect.stringContaining('Terminal access') })
   })
 
-  it('a Node host that withheld a scope names the orgai commands, not App settings (review round 1)', () => {
+  it('a background host that withheld a scope names the orgai commands, not App settings (review round 1)', () => {
     const node = new FakeHostClient({}, { hello: { hostKind: 'node', grantedScopes: ['read', 'operate'] } })
     const e = missingScopesError(node, ['read', 'decide'])
     expect(e?.message).toBe(`The OrgAI host did not grant the 'decide' access this needs. ${NODE_TERMINAL_FULL_ACCESS_HINT}`)

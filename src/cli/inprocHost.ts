@@ -2,7 +2,7 @@
  * `--host inproc` (cli-spec 3.2(1), 3.5): a pure-Node OrgAI host inside the CLI process. Same ownership protocol as
  * the Electron host (refuses with exit 6 when another host owns the data dir), its own per-instance socket so
  * `orgai watch` and later `orgai decide` can attach (this process's own client gets every scope through the in-memory
- * `ownerKey`, whatever the stored Terminal access; other clients are capped by it, review H2), and the secret vault (Wave 7, cli-standalone.md 5) with the CLI's
+ * `ownerKey`, whatever the stored Terminal access; other clients are capped by it, review H2), and secure storage (Wave 7, cli-standalone.md 5) with the CLI's
  * environment overlay: no safeStorage outside Electron, so values the OrgAI app saved only in secrets.json read as
  * pending-legacy, and values this host stores go to vault.json (created lazily by prepareWrite). There is no desktop,
  * so window:openRun answers desktop_unavailable. Always loaded through a dynamic import (its own chunk,
@@ -250,7 +250,7 @@ export async function startInprocHost(opts: StartInprocHostOptions): Promise<Inp
   }
 
   try {
-    // Wave 7 (cli-standalone.md 5.6): open and reconcile the secret vault after ownership, before the boot. A Node or
+    // Wave 7 (cli-standalone.md 5.6): open and reconcile secure storage after ownership, before the boot. A Node or
     // inproc host never creates a vault here: the first stored value does (prepareWrite, awaited by invokeRpc).
     const secretStore = await openSecretStore({
       dataDir,

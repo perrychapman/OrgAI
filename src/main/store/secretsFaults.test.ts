@@ -154,7 +154,7 @@ describe('fault injection: writes', () => {
     expect(runs).toBeGreaterThan(20)
   })
 
-  it('a vault-only set (Node host) converges to the old or the new value', async () => {
+  it('a vault-only set (background host) converges to the old or the new value', async () => {
     older().set('k', 'old')
     await app()
     await exhaust(
@@ -191,7 +191,7 @@ describe('fault injection: writes', () => {
     )
   })
 
-  it('lazy creation then a set (Node host): never a vault without its key, never a lost acknowledged value', async () => {
+  it('lazy creation then a set (background host): never a vault without its key, never a lost acknowledged value', async () => {
     await exhaust(
       (fs) => node(fs),
       async (s) => {
@@ -236,7 +236,7 @@ describe('fault injection: deletes (every step interrupted: no notice, converges
     expect(runs).toBeGreaterThan(20)
   })
 
-  it('Node host, vault locked: metadata only, no key needed', async () => {
+  it('background host, vault locked: metadata only, no key needed', async () => {
     older().set('k', 'old')
     older().set('other', 'o')
     await app()

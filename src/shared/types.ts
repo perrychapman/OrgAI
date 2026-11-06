@@ -6381,7 +6381,7 @@ export const DEFAULT_DAEMON_IDLE_MINUTES = 30
 // ---------- Wave 7 (standalone CLI) ----------
 //
 // Contracts of docs/design/cli-standalone.md (cli-spec Wave 7): the Node background host, host capabilities, the
-// app's handoff from a Node host, the install channel and the secret vault's host channels. Everything here is
+// app's handoff from a Node host, the install channel and secure storage's host channels. Everything here is
 // structured-clone and JSON safe; no secret value or data key ever appears in these shapes. The vault file format,
 // the key custodians and the SecretStore API live in src/main/store/vaultTypes.ts (main only).
 
@@ -6653,7 +6653,7 @@ export interface SecretsConfirmDeleteResult {
 }
 
 /**
- * Channels of the secret vault (cli-standalone.md 5.6). Served by the host dispatcher on every surface (the app's
+ * Channels of secure storage (cli-standalone.md 5.6). Served by the host dispatcher on every surface (the app's
  * window and the socket); `secrets:status` needs 'read', the others 'configure'. None ever returns a value.
  */
 export const SECRETS_IPC = {
@@ -7282,7 +7282,7 @@ export interface OrgAIApi {
     enable(input: TeamFilesProjectInput): Promise<TeamFilesActionResult>
   }
   onTeamFilesChanged(cb: (status: TeamFilesStatus) => void): () => void
-  /** The secret vault's notices (Dashboard): status, restore, keep removed, try again, start over. Never a value. */
+  /** The secure storage's notices (Dashboard): status, restore, keep removed, try again, start over. Never a value. */
   secrets: {
     status(input?: SecretsStatusInput): Promise<SecretsStatusResult>
     undelete(input: SecretsUndeleteInput): Promise<SecretsUndeleteResult>

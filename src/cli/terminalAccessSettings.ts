@@ -12,6 +12,7 @@
  *
  * Plain Node, no electron; relative imports only.
  */
+import { hostKindWord } from './hostWords'
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { AppSettings, DaemonInfo, TerminalAccessLevel } from '../shared/types'
@@ -123,7 +124,7 @@ export function writeTerminalAccessNow(dataDir: string, change: TerminalAccessCh
 
 /** Words for a host kind in a refusal. */
 function hostWords(d: DaemonInfo): string {
-  return `${d.hostKind ?? 'OrgAI'} host, pid ${d.pid}`
+  return `${hostKindWord(d.hostKind)} host, pid ${d.pid}`
 }
 
 /** The refusal when a host owns the data folder (4.2.1). */
@@ -133,9 +134,9 @@ export function hostOwnsFolderMessage(d: DaemonInfo): string {
   }
   if (d.hostKind === 'inproc') {
     // The user's own `orgai --host inproc` command (TUI, exec, daemon start --foreground), not a background host.
-    return `An orgai command (pid ${d.pid}) is running its own host for this data folder; finish it, then try again.`
+    return `An orgai command (pid ${d.pid}) is running its own host for this data folder. Let it finish, then try again.`
   }
-  return `An OrgAI host owns this data folder (${hostWords(d)}). Stop the background host first: orgai daemon stop (or change Terminal access in the OrgAI app).`
+  return `A background host (pid ${d.pid}) is running for this data folder. Stop it with \`orgai daemon stop\`, then change Terminal access.`
 }
 
 /**

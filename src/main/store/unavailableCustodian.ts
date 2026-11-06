@@ -9,7 +9,7 @@ import { CustodyError, type CustodianFactory, type KeyCustodian } from './vaultT
 
 /** The sentence every placeholder call answers. */
 export function custodianUnavailableReason(scheme: VaultCustodyScheme): string {
-  return `The ${scheme} key store is not available in this build yet, so the secret vault cannot be created or opened.`
+  return `The ${scheme} key store is not available in this build yet, so secure storage cannot be created or opened.`
 }
 
 /** A custodian that is never available. */

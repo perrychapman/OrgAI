@@ -31,7 +31,7 @@ const status = (over: Partial<SecretsStatusResult> = {}): SecretsStatusResult =>
 
 const byId = (checks: { id: string; status: string; detail: string }[]) => Object.fromEntries(checks.map((c) => [c.id, c]))
 
-describe('doctor: the secret vault through the host', () => {
+describe('doctor: secure storage through the host', () => {
   it('an open vault with a reachable key store is all ok', () => {
     const c = byId(hostSecretsChecks(status({ probe: { ok: true } })))
     expect(c.vault).toMatchObject({ status: 'ok', detail: 'Open (macOS keychain); 2 secrets in it' })
@@ -44,7 +44,7 @@ describe('doctor: the secret vault through the host', () => {
       hostSecretsChecks(
         status({
           state: 'locked',
-          reason: 'The secret vault is locked: unlock it',
+          reason: 'Secure storage is locked: unlock it',
           probe: { ok: false, kind: 'locked', reason: 'Run security unlock-keychain' },
           counts: { vault: 2, legacy: 3, unreadable: 3, overlay: 0 },
           pendingLegacy: 2,
@@ -55,7 +55,7 @@ describe('doctor: the secret vault through the host', () => {
         })
       )
     )
-    expect(locked.vault).toMatchObject({ status: 'warn', detail: 'locked (macOS keychain): The secret vault is locked: unlock it' })
+    expect(locked.vault).toMatchObject({ status: 'warn', detail: 'locked (macOS keychain): Secure storage is locked: unlock it' })
     expect(locked['vault-key-store']).toMatchObject({ status: 'warn', detail: 'macOS keychain: locked: Run security unlock-keychain' })
     expect(locked['vault-pending']).toMatchObject({ status: 'warn', detail: `2 secrets not shared with the orgai command yet. ${VAULT_MESSAGES.pendingLegacy}` })
     expect(locked['vault-unreadable']).toMatchObject({ status: 'warn' })
@@ -65,7 +65,7 @@ describe('doctor: the secret vault through the host', () => {
     expect(byId(hostSecretsChecks(status({ state: 'corrupt', reason: VAULT_MESSAGES.corrupt }))).vault).toMatchObject({ status: 'fail', detail: VAULT_MESSAGES.corrupt })
   })
 
-  it("'absent' is fine on a Node host (created lazily) but warns on an app host, where creation failed (5.6)", () => {
+  it("'absent' is fine on a background host (created lazily) but warns on an app host, where creation failed (5.6)", () => {
     // A Node or inproc host: the first saved secret creates it.
     expect(byId(hostSecretsChecks(status({ state: 'absent', counts: { vault: 0, legacy: 0, unreadable: 0, overlay: 0 } }))).vault).toMatchObject({
       status: 'ok',
@@ -107,7 +107,7 @@ describe('doctor: the secret vault through the host', () => {
 const CT = { iv: Buffer.alloc(12, 1).toString('base64'), ct: Buffer.from('cipher').toString('base64'), tag: Buffer.alloc(16, 2).toString('base64') }
 const ENTRY = { ...CT, at: 1, lc: true }
 
-describe('doctor: the secret vault without a host (metadata only)', () => {
+describe('doctor: secure storage without a host (metadata only)', () => {
   it('no files: nothing created yet, no legacy copy', () => {
     expect(offlineSecretsChecks(dir).map((c) => [c.id, c.status, c.detail])).toEqual([
       ['vault', 'ok', 'Not created yet; the first saved secret (or the app) creates it'],

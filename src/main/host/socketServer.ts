@@ -188,9 +188,9 @@ export const TERMINAL_ACCESS_LEVEL_MESSAGE =
  * settings, so they name the commands that change the stored Terminal access (review round 1).
  */
 export const NODE_TERMINAL_ACCESS_OFF_MESSAGE =
-  'Terminal access is off. Once this Node host has stopped (its idle exit), turn it on with `orgai terminal-access on`.'
+  'Terminal access is off. Once this background host has stopped (its idle exit), turn it on with `orgai terminal-access on`.'
 export const NODE_TERMINAL_ACCESS_LEVEL_MESSAGE =
-  'Terminal access lets terminal clients watch and run work only. To answer decisions or change settings from a terminal, stop this Node host (`orgai daemon stop`), then run `orgai terminal-access --level full`.'
+  'Terminal access lets terminal clients watch and run work only. To answer decisions or change settings from a terminal, stop this background host (`orgai daemon stop`), then run `orgai terminal-access --level full`.'
 
 /**
  * A socket settings:set that would turn Terminal access off on a Node host (review round 2): refused, since the host
@@ -198,7 +198,7 @@ export const NODE_TERMINAL_ACCESS_LEVEL_MESSAGE =
  * its idle exit never comes while runs are live or with ORGAI_DAEMON_IDLE_MINUTES=0.
  */
 export const NODE_TERMINAL_ACCESS_OFF_REFUSED =
-  'A Node host cannot turn Terminal access off from a terminal: nothing could reach it afterwards. Stop it with `orgai daemon stop`, then run `orgai terminal-access off`.'
+  'A background host cannot turn Terminal access off from a terminal: nothing could reach it afterwards. Stop it with `orgai daemon stop`, then run `orgai terminal-access off`.'
 
 /**
  * Whether a socket settings:set (`params` as sent) turns Terminal access off on this host: on a Node host, a

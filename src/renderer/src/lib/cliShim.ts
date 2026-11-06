@@ -10,7 +10,7 @@ export interface CliShimView {
   pathHint?: string
 }
 
-export const CLI_SHIM_UNAVAILABLE = 'Available in the installed OrgAI app.'
+export const CLI_SHIM_UNAVAILABLE = 'Available in the installed OrgAI app, not in a development build.'
 export const CLI_SHIM_CHECKING = 'Checking…'
 /** Said when the status could not be read and no earlier status is known. */
 export const CLI_SHIM_LOAD_FAILED = 'OrgAI could not check the orgai command. Open App settings again to retry.'

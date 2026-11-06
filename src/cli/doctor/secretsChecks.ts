@@ -1,5 +1,5 @@
 /**
- * The secret vault in `orgai doctor` (cli-standalone.md 5.7): custodian scheme and probe, vault state, legacy file
+ * Secure storage in `orgai doctor` (cli-standalone.md 5.7): custodian scheme and probe, vault state, legacy file
  * state, the pending-legacy count with the "open the app once" hint, soft deletes and orphans. With a host: its
  * secrets:status (probe on). Without one: vault.json metadata (readVaultMetadata, plus the key names, baseline hashes
  * and tombstone kinds of a valid file) and secrets.json's keys and value strings, hashed, never decrypted: the
@@ -71,13 +71,13 @@ export function hostSecretsChecks(s: SecretsStatusResult): DoctorCheck[] {
     checks.push({
       id: 'vault-removed',
       status: legacy ? 'warn' : 'ok',
-      detail: `${plural(s.softDeletes.length, 'removed secret')} kept for undelete${legacy ? ` (${legacy} removed by an older OrgAI)` : ''}; \`orgai secrets status\` lists them, \`orgai secrets undelete <key>\` restores one, \`orgai secrets keep-removed\` keeps them removed (the OrgAI app's Dashboard offers Restore and Keep removed)`
+      detail: `${plural(s.softDeletes.length, 'removed secret')} kept for undelete${legacy ? ` (${legacy} removed by an older OrgAI)` : ''}; see them with \`orgai secrets status\`. Restore one with \`orgai secrets undelete <key>\`, or drop them with \`orgai secrets keep-removed\` (the app's Dashboard has both buttons)`
     })
   }
   if (s.orphanedKeys || s.orphanedVaults.length) {
     const parts = [
       ...(s.orphanedKeys ? [`${plural(s.orphanedKeys, 'secret')} a removal had to leave in place`] : []),
-      ...(s.orphanedVaults.length ? [`${plural(s.orphanedVaults.length, 'OS key item')} of moved-aside vaults`] : [])
+      ...(s.orphanedVaults.length ? [`${plural(s.orphanedVaults.length, 'OS key item')} of secure storage that was moved aside`] : [])
     ]
     checks.push({ id: 'vault-orphans', status: 'warn', detail: `${parts.join('; ')}; \`orgai secrets status\` lists them` })
   }
@@ -91,7 +91,7 @@ function legacyCheck(state: SecretsStatusResult['legacyFile'], keys: number): Do
     case 'missing':
       return { id: 'legacy-secrets', status: 'ok', detail: "secrets.json (the app's copy): none" }
     case 'retired':
-      return { id: 'legacy-secrets', status: 'ok', detail: 'secrets.json was retired; the vault holds every secret' }
+      return { id: 'legacy-secrets', status: 'ok', detail: 'secrets.json was retired; secure storage holds every secret' }
     default:
       return { id: 'legacy-secrets', status: 'warn', detail: "secrets.json is damaged: no host of this version reads or rewrites it; `orgai secrets reset` starts over (the OrgAI app shows a notice with Start over)" }
   }
@@ -99,7 +99,7 @@ function legacyCheck(state: SecretsStatusResult['legacyFile'], keys: number): Do
 
 const STATE_NEXT: Record<string, string> = {
   locked: 'Unlock the key store, then try again',
-  'missing-key': 'Restore the key file or sign in to the OS account that created the vault; `orgai secrets reset` starts over',
+  'missing-key': 'Restore the key file or sign in to the OS account that created secure storage; `orgai secrets reset` starts over',
   'key-mismatch': 'Restore the matching key file; `orgai secrets reset` starts over'
 }
 
@@ -210,7 +210,7 @@ export function offlineSecretsChecks(dataDir: string): DoctorCheck[] {
     checks.push({
       id: 'vault-removed',
       status: 'warn',
-      detail: `${VAULT_MESSAGES.legacyRemovedNotice(removedByOlder)} \`orgai secrets status\` lists them, \`orgai secrets undelete <key>\` restores one, \`orgai secrets keep-removed\` keeps them removed (the OrgAI app's Dashboard offers Restore and Keep removed)`
+      detail: `${VAULT_MESSAGES.legacyRemovedNotice(removedByOlder)} See them with \`orgai secrets status\`. Restore one with \`orgai secrets undelete <key>\`, or drop them with \`orgai secrets keep-removed\` (the app's Dashboard has both buttons)`
     })
   }
   return checks
@@ -224,7 +224,7 @@ export const secretsChecks: DoctorCheckGroup = async ({ ctx, client }) => {
     } catch (e) {
       // An older host without secrets:status, or a refusal: fall back to what the files say.
       return [
-        { id: 'vault-host', status: 'warn', detail: `The host did not report the secret vault (${(e as Error)?.message ?? String(e)}); read from the files instead` },
+        { id: 'vault-host', status: 'warn', detail: `The host did not report secure storage (${(e as Error)?.message ?? String(e)}); read from the files instead` },
         ...offlineSecretsChecks(ctx.paths.dataDir)
       ]
     }

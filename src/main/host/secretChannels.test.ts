@@ -1,5 +1,5 @@
 /**
- * Channel coverage of the secret vault (docs/design/cli-standalone.md 5.6 "Test", round 6 item 4). A mock in-process
+ * Channel coverage of secure storage (docs/design/cli-standalone.md 5.6 "Test", round 6 item 4). A mock in-process
  * host (bootOrgAIHost, hostKind 'inproc', the mock adapter) is seeded with a project, project MCP servers (one with an
  * OAuth sign-in about to expire), library entries (one with an OAuth sign-in), connectors and a work run holding
  * pending MCP-proposal and MCP-install cards. Every channel that reaches the SecretStore is then driven through

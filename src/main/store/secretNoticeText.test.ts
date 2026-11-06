@@ -24,7 +24,7 @@ describe('secret notice wording', () => {
       VAULT_MESSAGES.notDurable,
       LEGACY_CORRUPT_MESSAGE,
       VAULT_RECOVERY_MESSAGE,
-      VAULT_MESSAGES.moveRefused('TOKEN', 'GitHub', 'The secret vault is locked: x'),
+      VAULT_MESSAGES.moveRefused('TOKEN', 'GitHub', 'Secure storage is locked: x'),
       VAULT_MESSAGES.moveRefused('TOKEN', 'GitHub', VAULT_MESSAGES.pendingLegacy)
     )
     for (const s of sentences) expect(appSecretReason(s), s).not.toMatch(/`|orgai (secrets|command)/)

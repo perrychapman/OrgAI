@@ -55,14 +55,14 @@ afterEach(() => {
   rmSync(userDataDir, { recursive: true, force: true })
 })
 
-describe.runIf(posix && required)('daemon + Node host bundle (CI after the build)', () => {
+describe.runIf(posix && required)('daemon + background host bundle (CI after the build)', () => {
   it('out/cli/orgai.mjs is built', () => {
     expect(existsSync(bundle)).toBe(true)
   })
 })
 
-describe.skipIf(!posix || !existsSync(bundle))('--host daemon without the app (real ensureHost, real launcher, real Node host)', () => {
-  it('starts the Node host through startBackground, connects as kind node, and SIGTERM leaves through the coordinator', async () => {
+describe.skipIf(!posix || !existsSync(bundle))('--host daemon without the app (real ensureHost, real launcher, real background host)', () => {
+  it('starts the background host through startBackground, connects as kind node, and SIGTERM leaves through the coordinator', async () => {
     const env: NodeJS.ProcessEnv = {}
     for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !k.startsWith('ORGAI_')) env[k] = v
     Object.assign(env, { ORGAI_MOCK: '1', ORGAI_DAEMON_IDLE_MINUTES: '0' })
@@ -95,7 +95,7 @@ describe.skipIf(!posix || !existsSync(bundle))('--host daemon without the app (r
     expect(await until(() => !alive(daemon!.pid), 30_000)).toBe(true)
     expect(readDaemonInfo(dataDir)).toBeNull()
     const log = readFileSync(join(userDataDir, 'logs', 'node-host.log'), 'utf8')
-    expect(log).toContain('OrgAI Node host stopped.')
+    expect(log).toContain('OrgAI background host stopped.')
     expect(err).not.toContain('running the host inside this command')
   }, 90_000)
 })

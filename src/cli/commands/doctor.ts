@@ -275,7 +275,7 @@ export const runDoctor: CommandFn = async (ctx: CliContext, args: string[]): Pro
   const hostMock = conn?.ok ? conn.client.hello.mock : undefined
   add('mock', 'ok', mock || hostMock ? `Mock mode${hostMock ? ' (the host runs the mock adapter)' : ''}: no tokens are spent` : 'Off')
 
-  // Wave 7 groups (src/cli/doctor): install channel and PATH, agent runtimes, the secret vault. Each never throws.
+  // Wave 7 groups (src/cli/doctor): install channel and PATH, agent runtimes, secure storage. Each never throws.
   const groups: DoctorCheckGroup[] = [installChecks, runtimeChecks, secretsChecks]
   for (const group of groups) {
     try {
@@ -309,10 +309,11 @@ export const runDoctor: CommandFn = async (ctx: CliContext, args: string[]): Pro
   }
 
   const failed = checks.some((c) => c.status === 'fail')
+  const warned = checks.filter((c) => c.status === 'warn').length
   emit(ctx, { ok: !failed, checks }, () => {
     const st = styleFor(ctx)
     const mark = (s: CheckStatus): string => (s === 'ok' ? st.green('ok  ') : s === 'warn' ? st.yellow('warn') : st.red('fail'))
-    return [...checks.map((c) => `${mark(c.status)}  ${c.id.padEnd(16)} ${safeLine(c.detail)}`), failed ? st.red('Some checks failed.') : 'All checks passed.']
+    return [...checks.map((c) => `${mark(c.status)}  ${c.id.padEnd(16)} ${safeLine(c.detail)}`), failed ? st.red('Some checks failed.') : warned ? st.yellow(`${warned} ${warned === 1 ? 'check needs' : 'checks need'} a look (see the warnings above).`) : 'All checks passed.']
   })
   return failed ? EXIT.failure : EXIT.ok
 }

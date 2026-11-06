@@ -26,6 +26,7 @@ import { join } from 'node:path'
 import { BACKGROUND_HOST_KINDS, type ActivityLeaseKind, type DaemonInfo, type HostKind, type HostStatusResult, type HostStopResult, type TerminalAccessLevel } from '../../shared/types'
 import { HostTakenError, NODE_HOST_LOG } from '../client/launcher'
 import { parseFlags } from '../flags'
+import { hostKindWord } from '../hostWords'
 import { manageDeps } from '../manage'
 import { nodeHostDeps, nodeHostRefusal } from '../nodeHost'
 import { emit, isJsonOutput, note, safe, safeLine, shortDuration, styleFor, warn, type Json } from '../output'
@@ -92,7 +93,7 @@ function noArgs(positionals: string[]): void {
 function statusLines(ctx: CliContext, s: HostStatusResult): string[] {
   const st = styleFor(ctx)
   return [
-    `${st.bold('OrgAI host:')} ${s.state} (${s.hostKind}) · OrgAI ${safeLine(s.appVersion)} · pid ${s.pid} · up ${shortDuration(Date.now() - s.startedAt)}${s.mock ? ' · mock' : ''}`,
+    `${st.bold('OrgAI host:')} ${s.state} (${hostKindWord(s.hostKind)}) · OrgAI ${safeLine(s.appVersion)} · pid ${s.pid} · up ${shortDuration(Date.now() - s.startedAt)}${s.mock ? ' · mock' : ''}`,
     `  ${st.dim('Data folder:')} ${safeLine(s.dataDir)}`,
     `  ${st.dim('Activity:')} ${activityText(s.activity.counts) || 'idle'}`
   ]
@@ -130,7 +131,7 @@ async function daemonStatus(ctx: CliContext, args: string[]): Promise<number> {
   emit(ctx, { running: alive, reason: res.reason, message: res.message, daemon: d ? daemonFacts(d) : null, dataDir: ctx.paths.dataDir }, () => {
     const st = styleFor(ctx)
     if (res.reason === 'no_host' || !alive) return [`No OrgAI host is running. ${st.dim(`(data folder ${safeLine(ctx.paths.dataDir)})`)}`]
-    const facts = d ? ` (${[d.hostKind, d.appVersion ? `OrgAI ${safeLine(d.appVersion)}` : '', `pid ${d.pid}`, d.state].filter(Boolean).join(' · ')})` : ''
+    const facts = d ? ` (${[hostKindWord(d.hostKind), d.appVersion ? `OrgAI ${safeLine(d.appVersion)}` : '', `pid ${d.pid}`, d.state].filter(Boolean).join(' · ')})` : ''
     return [`OrgAI host${facts}: ${safeLine(res.message || res.reason)}`]
   })
   return EXIT.failure
@@ -150,10 +151,10 @@ export function runtimeOfKind(kind: HostKind | undefined): DaemonRuntime | 'inpr
   return kind ? 'app' : undefined
 }
 
-/** "A Node host is already running; use `orgai daemon restart --runtime app`" (cli-standalone.md 4.2). */
+/** "A background host is already running; use `orgai daemon restart --runtime app`" (cli-standalone.md 4.2). */
 export function otherKindRunning(kind: HostKind, wanted: DaemonRuntime): string {
-  const words = kind === 'node' ? 'A Node' : kind === 'inproc' ? 'An in-process' : kind === 'headless-host' ? 'An app (headless)' : 'An app'
-  return `${words} host is already running; use \`orgai daemon restart --runtime ${wanted}\``
+  const words = kind === 'node' ? 'A background host' : kind === 'inproc' ? 'A terminal command with its own host' : kind === 'headless-host' ? 'An app host (headless)' : 'The OrgAI app'
+  return `${words} is already running; use \`orgai daemon restart --runtime ${wanted}\``
 }
 
 /** Exit 1 when --runtime was given and a host of the other kind runs. */
@@ -198,7 +199,7 @@ async function reportIncumbent(ctx: CliContext, d: DaemonInfo, explicit: DaemonR
     }
   }
   emit(ctx, { running: true, alreadyRunning: true, reason: res.reason, message: res.message, daemon: daemonFacts(d) }, () => [
-    `An OrgAI host is already running (${[d.hostKind, `pid ${d.pid}`].filter(Boolean).join(', ')})${res.message ? `: ${safeLine(res.message)}` : '.'}`
+    `An OrgAI host is already running (${[hostKindWord(d.hostKind), `pid ${d.pid}`].filter(Boolean).join(', ')})${res.message ? `: ${safeLine(res.message)}` : '.'}`
   ])
   return EXIT.ok
 }
@@ -233,7 +234,7 @@ async function startHost(ctx: CliContext, o: StartOptions): Promise<number> {
       // A live host owns the data folder; we cannot start another one.
       const d = res.daemon
       emit(ctx, { running: true, alreadyRunning: true, reason: res.reason, message: res.message, daemon: d ? daemonFacts(d) : null }, () => [
-        `An OrgAI host is already running${d ? ` (${[d.hostKind, `pid ${d.pid}`].filter(Boolean).join(', ')})` : ''}: ${safeLine(res.message)}`
+        `An OrgAI host is already running${d ? ` (${[hostKindWord(d.hostKind), `pid ${d.pid}`].filter(Boolean).join(', ')})` : ''}: ${safeLine(res.message)}`
       ])
       return res.reason === 'draining' ? EXIT.hostBusy : EXIT.ok
     }
@@ -333,7 +334,7 @@ function nodeHostPreflight(ctx: CliContext): void {
   if (refusal) throw refusal
   if (!ctx.launcher.startBackground) throw new CliError('This orgai cannot start a Node background host.', EXIT.failure)
   const why = ctx.launcher.checkBackground?.('node')
-  if (why) throw new CliError(`Could not start the OrgAI Node host: ${why}`, EXIT.failure)
+  if (why) throw new CliError(`Could not start the OrgAI background host: ${why}`, EXIT.failure)
 }
 
 /** Start the detached Node host (4.2) and wait for it. */
@@ -362,9 +363,9 @@ async function startNodeHost(ctx: CliContext, o: StartOptions): Promise<number> 
   } catch (e) {
     // Lost a start race to a host of another kind (review round 2): report it, unless --runtime asked for this kind.
     if (e instanceof HostTakenError) return reportIncumbent(ctx, e.info, o.runtime)
-    throw new CliError(`Could not start the OrgAI Node host: ${e instanceof Error ? e.message : String(e)}`, EXIT.failure)
+    throw new CliError(`Could not start the OrgAI background host: ${e instanceof Error ? e.message : String(e)}`, EXIT.failure)
   }
-  if (!ready) throw new CliError(`The OrgAI Node host did not become ready within ${o.timeoutS} s. See \`orgai daemon logs\`.`, EXIT.hostBusy)
+  if (!ready) throw new CliError(`The OrgAI background host did not become ready within ${o.timeoutS} s. See \`orgai daemon logs\`.`, EXIT.hostBusy)
   return reportStarted(ctx, ready, false)
 }
 
@@ -385,12 +386,12 @@ async function runNodeHost(ctx: CliContext, args: string[]): Promise<number> {
     // for that host (review round 1). Never the "delete the run folder" advice while a live host owns it.
     const owner = e instanceof CliError && e.exitCode === EXIT.hostBusy ? ctx.launcher.current() : null
     if (!owner) throw e
-    ctx.io.stderr.write(`Another OrgAI host owns this data folder (${owner.hostKind ?? 'host'}, pid ${owner.pid}); this Node host is not needed and exits.\n`)
+    ctx.io.stderr.write(`Another OrgAI host owns this data folder (${hostKindWord(owner.hostKind)}, pid ${owner.pid}); this background host is not needed and exits.\n`)
     daemonDeps.exitSoon(EXIT.ok)
     return EXIT.ok
   }
   const s = handle.status()
-  ctx.io.stderr.write(`OrgAI Node host ${s.hostInstanceId} (pid ${s.pid}) ready for ${safeLine(s.dataDir)}.\n`)
+  ctx.io.stderr.write(`OrgAI background host ${s.hostInstanceId} (pid ${s.pid}) ready for ${safeLine(s.dataDir)}.\n`)
   let offSignal: () => void = () => undefined
   const code = await new Promise<number>((resolve) => {
     let stopping = false
@@ -411,13 +412,13 @@ async function runNodeHost(ctx: CliContext, args: string[]): Promise<number> {
     )
   })
   offSignal()
-  ctx.io.stderr.write('OrgAI Node host stopped.\n')
+  ctx.io.stderr.write('OrgAI background host stopped.\n')
   daemonDeps.exitSoon(code)
   return code
 }
 
 /** run-node's own refusal (it is never started that way by orgai; someone ran it by hand). */
-export const NODE_HOST_TERMINAL_OFF_RUN = 'Terminal access is off, so nothing could talk to a Node host; turn it on with `orgai terminal-access on`'
+export const NODE_HOST_TERMINAL_OFF_RUN = 'Terminal access is off, so terminals could not use a background host. Turn it on with `orgai terminal-access on`'
 
 async function reportStarted(ctx: CliContext, d: DaemonInfo, wasStarting: boolean): Promise<number> {
   const res = await ctx.connect(['read'], { clientKind: 'cli', waitStartingMs: HOST_STARTING_WAIT_MS })

@@ -129,7 +129,7 @@ describe('invokeRpc and the storesSecret predicates over the real SecretStore', 
     next.dispose()
   })
 
-  it('the mock OAuth commit prepares by itself (writer) and the vault holds the tokens', async () => {
+  it('the mock OAuth commit prepares by itself (writer) and secure storage holds the tokens', async () => {
     await rpc('connectors:add', { connectorId: 'notion' })
     const entry = (await rpc<{ entry: { id: string; connectorId?: string } }[]>('mcpLibrary:list')).find((l) => l.entry.connectorId === 'notion')!
     expect(secrets.state()).toBe('absent')

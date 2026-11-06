@@ -1,5 +1,5 @@
 // Token-free. Mock adapter, temp ORGAI_DATA_DIR, a key-file vault in a sibling folder of the data dir (never the OS
-// keychain: lib.mjs sets ORGAI_VAULT_NO_OS_KEYSTORE and launches with --use-mock-keychain). The secret vault notices on the
+// keychain: lib.mjs sets ORGAI_VAULT_NO_OS_KEYSTORE and launches with --use-mock-keychain). Secure storage notices on the
 // Dashboard (docs/design/cli-standalone.md 5.5): "N saved secrets were removed by an older version of OrgAI" with
 // Keep removed and Restore, a damaged secrets.json with Start over, and a vault whose key does not match with Try again
 // and Start over. Each is seeded the way it happens: secrets saved through the app, then secrets.json edited as an older
@@ -124,7 +124,7 @@ try {
   await page.locator('[data-testid=secret-restore]').click()
   await one.waitFor({ state: 'detached', timeout: 10_000 })
   await sleep(400)
-  check((await vaultCount()) === before + 1, 'Restore puts the secret back in the vault', `${before} -> ${await vaultCount()}`)
+  check((await vaultCount()) === before + 1, 'Restore puts the secret back in secure storage', `${before} -> ${await vaultCount()}`)
   s = await status()
   check(s.softDeletes.length === 0, 'nothing is left to restore', JSON.stringify(s.softDeletes))
   f = await focusInfo()
@@ -191,13 +191,13 @@ try {
       check((await vault.isVisible()) && (await noOverflow()), `vault notice fits in ${theme}`)
       await screenshot(page, `secrets-notices-vault-${theme}`)
     }
-    // The old key comes back: Try again opens the vault and the notice goes.
+    // The old key comes back: Try again opens secure storage and the notice goes.
     fs.writeFileSync(KEY_FILE, good)
     await page.locator('[data-testid=secret-retry]').click()
     await vault.waitFor({ state: 'detached', timeout: 15_000 })
     await sleep(400)
     s = await status()
-    check(s.state === 'open', 'Try again opens the vault once the key is back', s.state)
+    check(s.state === 'open', 'Try again opens secure storage once the key is back', s.state)
     f = await focusInfo()
     check(f.h1 || (!f.body && f.testid !== ''), 'focus lands on a real element after Try again', JSON.stringify(f))
   }

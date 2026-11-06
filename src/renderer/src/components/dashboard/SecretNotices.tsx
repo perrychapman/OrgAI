@@ -23,7 +23,7 @@ const TESTID: Record<SecretNotice['kind'], string> = {
 }
 
 /**
- * The secret vault's quiet notices on the Dashboard (cli-standalone.md 5.5): secrets an older OrgAI removed (Restore /
+ * The secure storage's quiet notices on the Dashboard (cli-standalone.md 5.5): secrets an older OrgAI removed (Restore /
  * Keep removed), a vault that will not open (Try again / Start over) and a damaged secrets.json. The Dashboard is the
  * first page the app opens on, which is why they live here rather than in App settings. Reads secrets:status on mount
  * and when the window gets focus; shows nothing when there is nothing to say or the status cannot be read. After an
@@ -93,9 +93,9 @@ export function SecretNotices(): ReactElement | null {
   // A refusal that points at "the notice on the Dashboard" is read inside that notice: say what happened instead.
   const fail = (kind: SecretNotice['kind'], e: unknown): void => {
     const text = cleanIpcError(e)
-      .replace(/\s*(Open )?the notice on the Dashboard[^.]*\./gi, '')
+      .replace(/\s*(Open )?the (notice on the )?Dashboard( notice)?[^.]*\./gi, '')
       .trim()
-    setErrors((m) => ({ ...m, [kind]: text || 'The vault is still closed.' }))
+    setErrors((m) => ({ ...m, [kind]: text || 'Secure storage is still closed.' }))
   }
 
   const run = async (n: SecretNotice, action: () => Promise<string | null>): Promise<void> => {
@@ -137,12 +137,12 @@ export function SecretNotices(): ReactElement | null {
   const retry = (n: SecretNotice): Promise<void> =>
     run(n, async () => {
       const r = await window.orgai.secrets.init({})
-      return r.status.state === 'open' ? null : 'The vault is still closed. Fix the cause above, then try again.'
+      return r.status.state === 'open' ? null : 'Secure storage is still closed. Fix the cause above, then try again.'
     })
 
   const startOver = async (n: SecretNotice): Promise<void> => {
     const ok = await confirm({
-      title: 'Start the secret vault over?',
+      title: 'Start secure storage over?',
       body: START_OVER_WARNING,
       confirmLabel: 'Start over',
       danger: true,

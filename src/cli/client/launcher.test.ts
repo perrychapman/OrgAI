@@ -284,7 +284,7 @@ describe('launcher: startBackground (Wave 7, cli-standalone.md 4.2)', () => {
     expect(calls[0]).toEqual({ command: '/opt/e', args: ['/opt/app', '--headless-host'] })
   })
 
-  it('a Node host that exits before it is ready fails waitForReady with its exit code', async () => {
+  it('a background host that exits before it is ready fails waitForReady with its exit code', async () => {
     const children: EventEmitter[] = []
     const spawn: SpawnFn = () => {
       const c = Object.assign(new EventEmitter(), { pid: 3, unref() {} })
@@ -298,7 +298,7 @@ describe('launcher: startBackground (Wave 7, cli-standalone.md 4.2)', () => {
     await expect(l.waitForReady({ timeoutMs: 5000, hostKinds: ['node'] })).rejects.toThrow('OrgAI exited (code 1)')
   })
 
-  it('a Node host that lost the data folder exits 0 (a hand-off): wait for the winner, fail at once for a ready host of another kind (review round 1)', async () => {
+  it('a background host that lost the data folder exits 0 (a hand-off): wait for the winner, fail at once for a ready host of another kind (review round 1)', async () => {
     const children: EventEmitter[] = []
     const spawn: SpawnFn = () => {
       const c = Object.assign(new EventEmitter(), { pid: 3, unref() {} })

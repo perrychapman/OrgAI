@@ -123,7 +123,7 @@ describe('orgai terminal-access', () => {
 
   it.skipIf(!posix)('refuses while a host owns the data folder (exit 1), and names the app for a desktop host', async () => {
     held = await acquireHostOwnership({ dataDir, hostKind: 'node', appVersion: 't', hostInstanceId: newHostInstanceId() })
-    await expect(runTerminalAccess(ctxFor().ctx, ['on'])).rejects.toMatchObject({ exitCode: EXIT.failure, message: expect.stringContaining('Stop the background host first: orgai daemon stop') })
+    await expect(runTerminalAccess(ctxFor().ctx, ['on'])).rejects.toMatchObject({ exitCode: EXIT.failure, message: expect.stringContaining('Stop it with `orgai daemon stop`') })
     expect(existsSync(join(dataDir, 'settings.json'))).toBe(false)
     held.release()
     held = await acquireHostOwnership({ dataDir, hostKind: 'desktop', appVersion: 't', hostInstanceId: newHostInstanceId() })
@@ -134,6 +134,6 @@ describe('orgai terminal-access', () => {
     // An in-process host is the user's own orgai command, not a background host (review round 1).
     held = await acquireHostOwnership({ dataDir, hostKind: 'inproc', appVersion: 't', hostInstanceId: newHostInstanceId() })
     const refusal = runTerminalAccess(ctxFor().ctx, ['--level', 'full'])
-    await expect(refusal).rejects.toMatchObject({ exitCode: EXIT.failure, message: `An orgai command (pid ${process.pid}) is running its own host for this data folder; finish it, then try again.` })
+    await expect(refusal).rejects.toMatchObject({ exitCode: EXIT.failure, message: `An orgai command (pid ${process.pid}) is running its own host for this data folder. Let it finish, then try again.` })
   })
 })

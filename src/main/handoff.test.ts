@@ -122,7 +122,7 @@ describe('DesktopHandoff (cli-standalone.md 4.4)', () => {
     await expect(run).resolves.toBe('acquire')
   })
 
-  it('refused: the busy window lists the blockers; "Stop them and open" sends a forced stop and waits for the exit', async () => {
+  it('refused: the busy window lists the blockers; "Stop and open" sends a forced stop and waits for the exit', async () => {
     const r = rig({ stops: [{ stopping: false, handoffBlockers: { waitingRuns: 1, openCards: 2 } }, { stopping: true }], status: facts({ waitingRuns: 1, openCards: 2, terminalSessions: 1 }) })
     const run = r.h.run(owner('node'))
     await vi.waitFor(() => expect(r.h.view()?.kind).toBe('busy'))
@@ -137,7 +137,7 @@ describe('DesktopHandoff (cli-standalone.md 4.4)', () => {
     await expect(run).resolves.toBe('acquire')
   })
 
-  it('"Stop them and open": a forced host.stop that answers after the call timeout still ends in acquire, never the busy-folder error', async () => {
+  it('"Stop and open": a forced host.stop that answers after the call timeout still ends in acquire, never the busy-folder error', async () => {
     // A forced stop answers only after stopAll and every writer; here it takes 3x the call timeout (100 ms).
     const r = rig({ stops: [{ stopping: false, handoffBlockers: { workingRuns: 1 } }], forcedAnswerMs: 300 })
     const run = r.h.run(owner('node'))
@@ -153,7 +153,7 @@ describe('DesktopHandoff (cli-standalone.md 4.4)', () => {
     expect(r.calls.filter((c) => c.method === 'host.stop').map((c) => c.params)).toEqual([[{ force: false, handoff: true }], [{ force: true }]])
   })
 
-  it('"Stop them and open": a connection closed after the forced request counts as stopping; a coded refusal does not', async () => {
+  it('"Stop and open": a connection closed after the forced request counts as stopping; a coded refusal does not', async () => {
     const closed = rig({ stops: [{ stopping: false, handoffBlockers: { workingRuns: 1 } }], forcedThrows: new Error('The connection to the OrgAI host closed.') })
     const run = closed.h.run(owner('node'))
     await vi.waitFor(() => expect(closed.h.view()?.kind).toBe('busy'))
@@ -178,7 +178,7 @@ describe('DesktopHandoff (cli-standalone.md 4.4)', () => {
     await expect(rig({ stopThrows: new Error('The OrgAI host did not answer host.stop within 5 s.') }).h.run(owner('node'))).resolves.toBe('unavailable')
   })
 
-  it('refused: "Open when they finish" retries the handoff stop until it is accepted', async () => {
+  it('refused: "Wait, then open" retries the handoff stop until it is accepted', async () => {
     const busy: HostStopResult = { stopping: false, handoffBlockers: { workingRuns: 1 } }
     const r = rig({ stops: [busy, busy, busy, { stopping: true }] })
     const run = r.h.run(owner('node'))
@@ -256,8 +256,8 @@ describe('handoff helpers', () => {
       expect(v.message.length).toBeGreaterThan(10)
       expect(v.buttons.some((b) => b.choice === 'quit')).toBe(true)
     }
-    expect(handoffView('inproc').message).toBe("OrgAI's data is in use by the orgai command in a terminal.")
-    expect(handoffView('busy').buttons.map((b) => b.label)).toEqual(['Open when they finish', 'Stop them and open', 'Quit'])
+    expect(handoffView('inproc').message).toBe("The orgai command in a terminal is using OrgAI's data.")
+    expect(handoffView('busy').buttons.map((b) => b.label)).toEqual(['Wait, then open', 'Stop and open', 'Quit'])
   })
 
   it('handoffPageHtml escapes every text and links each button to its choice; handoffChoiceOf reads them back', () => {

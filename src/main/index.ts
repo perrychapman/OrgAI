@@ -429,7 +429,7 @@ app.whenReady().then(async () => {
     markDraining: () => owned.markDraining(),
     release: () => owned.release()
   }
-  // Wave 7 (cli-standalone.md 5.6): open the secret vault (decrypt `check`, reconcile with secrets.json, create it when
+  // Wave 7 (cli-standalone.md 5.6): open secure storage (decrypt `check`, reconcile with secrets.json, create it when
   // absent) after ownership and before the boot, for the desktop and the --headless-host boot alike, so the first
   // probes see secrets the orgai command stored. A custodian failure leaves the app in legacy-only mode (secrets.json,
   // as before) with a retry every 10 minutes and on window focus after a lock failure. The real custodians are the
@@ -838,8 +838,9 @@ function showHandoffWindow(view: HandoffView | undefined): void {
   let win = handoffWindow
   if (!win || win.isDestroyed()) {
     const created = new BrowserWindow({
-      width: 500,
-      height: 280,
+      width: 520,
+      height: 360,
+      useContentSize: true,
       resizable: false,
       maximizable: false,
       fullscreenable: false,
