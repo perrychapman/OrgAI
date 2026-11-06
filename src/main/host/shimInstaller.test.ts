@@ -27,7 +27,11 @@ function fakeInstall(dir: string): { resources: string; launcher: string } {
 }
 
 beforeEach(() => {
-  root = mkdtempSync(join(tmpdir(), 'orgai-shim-'))
+  // The drive-less paths resolve against the current drive, so on Windows the root must live on it: the CI runner's
+  // temp dir is on C: while the checkout (cwd) is on D:. Elsewhere the temp dir is fine.
+  const base = process.platform === 'win32' ? nodeJoin(process.cwd(), 'node_modules', '.cache') : tmpdir()
+  mkdirSync(base, { recursive: true })
+  root = mkdtempSync(join(base, 'orgai-shim-'))
   home = join(root, 'home')
   mkdirSync(home)
   ;({ resources, launcher } = fakeInstall(join(root, 'Applications')))
