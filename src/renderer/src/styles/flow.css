@@ -106,7 +106,26 @@
 /* Starfield: a new message glows for its first 1.5 s, then the glow fades (--canvas-glow is transparent elsewhere). */
 .react-flow .react-flow__edge.msg-edge .react-flow__edge-path {
   filter: drop-shadow(0 0 0 transparent);
-  transition: filter var(--dur-slow) ease-out;
+  transition: filter var(--dur-slow) var(--ease-out);
+}
+
+/* Layout glide (motion.md 3.12): positions from an auto-layout glide while the canvas carries data-layout-moving (set by
+   beginCanvasGlide for --dur-slow + 50 ms, never above 60 nodes). Transform only. A drag wins; pan, zoom and selection
+   never set the attribute. React Flow hands the edges the final positions at once, so they leave while the nodes move
+   and fade back in over --dur-base (this is also how a new edge appears). */
+.react-flow[data-layout-moving] .react-flow__node {
+  transition: transform var(--dur-slow) var(--ease-in-out);
+}
+.react-flow[data-layout-moving] .react-flow__node.dragging,
+.react-flow__node.dragging {
+  transition: none;
+}
+.react-flow__edges {
+  transition: opacity var(--dur-base) var(--ease-out);
+}
+.react-flow[data-layout-moving] .react-flow__edges {
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-in);
 }
 .react-flow .react-flow__edge.msg-edge.msg-fresh .react-flow__edge-path {
   filter: drop-shadow(0 0 3px var(--canvas-glow));

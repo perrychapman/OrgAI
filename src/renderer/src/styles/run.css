@@ -9,7 +9,6 @@
   border-radius: var(--radius-lg);
   padding: 11px 12px 10px;
   box-shadow: var(--elev-1);
-  animation: pop-in var(--dur-slow) var(--ease-out) both;
   transition: border-color var(--dur-base), box-shadow var(--dur-base), opacity var(--dur-base);
   position: relative;
 }
@@ -111,7 +110,11 @@
 }
 .state-thinking .ring {
   border-color: var(--role);
-  animation: breathe 1.5s ease-in-out infinite;
+}
+/* The live cue (motion.md 3.18): one period, phase by --i, only the first 12 working nodes carry data-breathe. */
+[data-breathe].state-thinking .ring {
+  animation: breathe var(--dur-pulse) var(--ease-in-out) infinite;
+  animation-delay: calc(var(--i, 0) * 150ms);
 }
 .state-starting .ring {
   border-color: var(--role);
@@ -257,7 +260,20 @@
   background: var(--role);
   margin-right: 7px;
   vertical-align: middle;
-  animation: breathe 1s ease-in-out infinite;
+}
+[data-breathe] .activity.working::before {
+  animation: breathe var(--dur-pulse) var(--ease-in-out) infinite;
+  animation-delay: calc(var(--i, 0) * 150ms);
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-breathe].state-thinking .ring,
+  [data-breathe] .activity.working::before {
+    animation: none;
+  }
+}
+:root[data-reduce-motion='on'] [data-breathe].state-thinking .ring,
+:root[data-reduce-motion='on'] [data-breathe] .activity.working::before {
+  animation: none;
 }
 .agent-node .foot {
   display: flex;

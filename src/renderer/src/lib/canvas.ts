@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { ArrivalTracker } from './useArrival'
+import { tokenMs } from './useExitPresence'
 import { useUpdateNodeInternals, type NodeChange, type Position } from '@xyflow/react'
 import type { AppearanceSettings, CanvasEdgeStyle, CanvasLayout, CanvasNodeStyle, CanvasPattern } from '@shared/types'
 import { CANVAS_EDGE_STYLES, CANVAS_LAYOUTS, CANVAS_NODE_STYLES, CANVAS_PATTERNS } from '@shared/types'
@@ -366,4 +368,83 @@ export function minimapSize(stageWidth: number, stageHeight: number): { width: n
 export function groupNodeSize(style: CanvasNodeStyle, layout: CanvasLayout = 'left-right'): { width: number; height: number } {
   if (style === 'station') return agentNodeSize(style, layout)
   return GROUP_NODE_SIZE[effectiveNodeStyle(style)]
+}
+
+/* ---------- Motion: arrival, glide, fit duration (docs/design/motion.md 3.12, 3.13) ---------- */
+
+/** Above this many nodes a layout change snaps instead of gliding (per-frame edge work). */
+export const GLIDE_MAX_NODES = 60
+/** The glide attribute is removed this long after the transition should have ended. */
+export const GLIDE_END_MARGIN_MS = 50
+/** At most this many working nodes breathe at once (motion.md 3.18). */
+export const BREATHE_MAX_NODES = 12
+const GLIDE_ATTR = 'data-layout-moving'
+const glideTimers = new WeakMap<Element, number>()
+
+/** The glide length in ms, or 0 when the canvas has too many nodes or motion is reduced. */
+export function glideMs(nodeCount: number): number {
+  if (nodeCount > GLIDE_MAX_NODES) return 0
+  const ms = tokenMs('--dur-slow')
+  return ms > 1 ? ms : 0
+}
+
+/** The fit animation length: 0 reduced, else the slow token. */
+export function fitMs(reduced: boolean): number {
+  if (reduced) return 0
+  const ms = tokenMs('--dur-slow')
+  return ms > 1 ? ms : 0
+}
+
+/**
+ * Marks the canvas as gliding: its `.react-flow` gets `data-layout-moving` (flow.css turns the node transition on and
+ * hides edges meanwhile) and loses it after the glide. Call it before the commit that moves the nodes. Returns the ms
+ * until the glide has settled (0 when nothing glides, so the caller may refit at once).
+ */
+export function beginCanvasGlide(root: Element | null | undefined, nodeCount: number): number {
+  const ms = glideMs(nodeCount)
+  const flow = root ? (root.matches('.react-flow') ? root : root.querySelector('.react-flow')) : null
+  if (!flow || ms === 0) return 0
+  const total = ms + GLIDE_END_MARGIN_MS
+  flow.setAttribute(GLIDE_ATTR, '')
+  const prev = glideTimers.get(flow)
+  if (prev !== undefined) window.clearTimeout(prev)
+  glideTimers.set(
+    flow,
+    window.setTimeout(() => {
+      flow.removeAttribute(GLIDE_ATTR)
+      glideTimers.delete(flow)
+    }, total)
+  )
+  return total
+}
+
+/** The first `BREATHE_MAX_NODES` working ids in node order: the only nodes that breathe. Pure. */
+export function breatheIndex(nodes: readonly { id: string; working: boolean }[]): Map<string, number> {
+  const out = new Map<string, number>()
+  for (const n of nodes) {
+    if (!n.working) continue
+    if (out.size >= BREATHE_MAX_NODES) break
+    out.set(n.id, out.size)
+  }
+  return out
+}
+
+/**
+ * Arrival tracking for canvas nodes: ids new since the canvas was shown (or since `scope` changed) pop in once. At most
+ * 12 ids arriving together animate. `arrivedKey` changes when the set of new ids does, for memo deps.
+ */
+export function useNodeArrival(ids: readonly string[], scope: string): { isNew: (id: string) => boolean; arrivedKey: string; markArrived: (ids: readonly string[]) => void } {
+  const ref = useRef<{ tracker: ArrivalTracker; started: boolean } | null>(null)
+  if (!ref.current) ref.current = { tracker: new ArrivalTracker({ maxPerBatch: 12 }), started: false }
+  const state = ref.current
+  const now = Date.now()
+  // An empty first list (the run is still loading) must not make everything that follows look new.
+  if (ids.length > 0 || state.started) {
+    state.started = true
+    state.tracker.update(ids, scope, now)
+  }
+  const isNew = (id: string): boolean => state.tracker.isNew(id, now)
+  const arrivedKey = ids.filter(isNew).join('|')
+  const markArrived = useCallback((list: readonly string[]): void => state.tracker.markArrived(list, Date.now()), [state])
+  return { isNew, arrivedKey, markArrived }
 }

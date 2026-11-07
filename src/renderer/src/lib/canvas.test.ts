@@ -166,3 +166,18 @@ describe('minimapSize', () => {
     expect(minimapSize(480, 240)).not.toBeNull()
   })
 })
+
+describe('motion helpers', () => {
+  it('breathes only the first 12 working nodes, in node order', async () => {
+    const { breatheIndex, glideMs, GLIDE_MAX_NODES } = await import('./canvas')
+    const nodes = Array.from({ length: 20 }, (_, i) => ({ id: `n${i}`, working: i % 2 === 0 }))
+    const idx = breatheIndex(nodes)
+    expect(idx.size).toBe(10)
+    expect([...idx.values()]).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9])
+    const all = breatheIndex(Array.from({ length: 30 }, (_, i) => ({ id: `w${i}`, working: true })))
+    expect(all.size).toBe(12)
+    expect(all.has('w12')).toBe(false)
+    // Above the cap a layout snaps instead of gliding.
+    expect(glideMs(GLIDE_MAX_NODES + 1)).toBe(0)
+  })
+})
