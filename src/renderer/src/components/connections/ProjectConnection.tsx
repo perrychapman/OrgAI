@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Bot, Network, Sparkles } from 'lucide-react'
 import type { ConnectionId, ConnectionInfo, Project } from '@shared/types'
 import { MODEL_TIER_OPTIONS } from '@shared/types'
-import { adapterForProject, projectConnection } from '@shared/defaults'
+import { adapterForProject, projectConnection, roleConnection } from '@shared/defaults'
 import { useAppStore } from '../../store/useAppStore'
 import { Badge } from '../ui/Badge'
 import { Banner } from '../ui/Banner'
@@ -17,7 +17,8 @@ import { SettingsCard } from '../settings/SettingsCard'
 import { SettingsSection } from '../settings/SettingsSection'
 import { SettingRow } from '../ui/SettingRow'
 import RemapPreviewDialog from '../RemapPreviewDialog'
-import { otherFamilyRoles, previewRemap, proxyFamilyNotice, roleTier, routeLines, startRefusal, tierMappingLines, START_REFUSAL_COPY, FAMILY_LABEL } from '../../lib/remap'
+import { otherFamilyRoles, previewRemap, projectStartRefusal, proxyFamilyNotice, roleTier, routeLines, tierMappingLines, FAMILY_LABEL } from '../../lib/remap'
+import { isPinned, pinnedRoles } from '../../lib/roleConnection'
 import { connectionKindLabel, connectionLabel, connectionWithAuth, isProxyId } from '../../lib/connectionLabel'
 import { APP_SETTINGS_SECTIONS, requestAppSettingsSection, requestModelPrice } from '../../lib/settingsTarget'
 
@@ -81,7 +82,8 @@ export default function ProjectConnection({ project }: { project: Project }): Re
   const targetIsProxy = isProxyId(target)
   const otherFamilies = useMemo(() => (targetIsProxy ? otherFamilyRoles(project, catalog) : []), [targetIsProxy, project, catalog])
   const familyNotice = proxyFamilyNotice(adapter.family, otherFamilies.length)
-  const refusal = project.provider.id === 'mock' ? null : startRefusal(adapter)
+  const refusal = projectStartRefusal({ ...project, provider: { ...project.provider, connection: target } }, connections, catalog)
+  const pinned = useMemo(() => pinnedRoles(project), [project])
 
   const change = useMemo(
     () => previewRemap({ project, connection: target, tierModels, catalog, switching: pending !== null && pending !== current }),
@@ -122,6 +124,12 @@ export default function ProjectConnection({ project }: { project: Project }): Re
 
   const rolesOn = project.roles.length
   const everyday = tierModels.everyday
+  const ownCount = pinned.length
+  const defaultCount = rolesOn - ownCount
+  const rolesLine =
+    ownCount > 0
+      ? `${defaultCount} ${defaultCount === 1 ? 'role uses' : 'roles use'} ${connectionLabel(current)} by default · ${ownCount} ${ownCount === 1 ? 'runs' : 'run'} on ${ownCount === 1 ? 'its own connection' : 'their own connections'}`
+      : `${rolesOn} ${rolesOn === 1 ? 'role uses' : 'roles use'} ${connectionLabel(current)} by default${everyday ? ` · Everyday tier: ${everyday}` : ''}`
   const disconnected = (id: ConnectionId): boolean => infoOf(id)?.status.state !== 'connected'
   const noRootModel = targetIsProxy && rootRole?.model === 'inherit' && !tierModels.top
   const connectedCount = connections?.filter((c) => c.status.state === 'connected').length ?? 0
@@ -152,7 +160,7 @@ export default function ProjectConnection({ project }: { project: Project }): Re
   // A proxy: one connection for the project, any model it serves; the orchestrator's family picks the adapter.
   const refusalBanner = refusal && (
     <Banner tone="danger" testId="project-start-refusal">
-      {START_REFUSAL_COPY[refusal]}
+      {refusal}
     </Banner>
   )
   const proxyNotice = targetIsProxy && (
@@ -160,7 +168,6 @@ export default function ProjectConnection({ project }: { project: Project }): Re
       {/* Only when some role is on another family (UI review L9); a refused start shows the danger banner instead. */}
       {familyNotice && !refusal && (
         <Banner tone="info">
-          The orchestrator&apos;s model family picks the adapter. Other roles can use any model the proxy serves.
           <span data-testid="proxy-family-notice"> {familyNotice}</span>
         </Banner>
       )}
@@ -183,6 +190,11 @@ export default function ProjectConnection({ project }: { project: Project }): Re
             App settings &gt; Connections
           </button>
         </p>
+        {ownCount > 0 && (
+          <p className="pconn-line" data-testid="project-connection-roles-line">
+            {rolesLine}
+          </p>
+        )}
         {error && <Banner tone="danger">{error}</Banner>}
         {refusalBanner}
         {proxyNotice}
@@ -191,7 +203,8 @@ export default function ProjectConnection({ project }: { project: Project }): Re
     )
   }
 
-  const tierLines = tierMappingLines(tierModels, project.roles, targetName)
+  // Only roles that follow the project move on a switch; roles on their own connection keep theirs.
+  const tierLines = tierMappingLines(tierModels, pending !== null && pending !== current ? project.roles.filter((r) => !isPinned(r, project)) : project.roles, targetName)
   const routes = targetIsProxy ? routeLines(tierModels, catalog) : []
   const mappingExtra = (
     <div className="remap-mapping" data-testid="remap-mapping">
@@ -231,7 +244,7 @@ export default function ProjectConnection({ project }: { project: Project }): Re
       title="Connection"
       description={
         <>
-          {mock && appInfo?.mockAdapter ? 'This project runs on the mock adapter, so the connection applies once you turn it off. ' : 'Default connection for roles in this project. '}
+          {mock && appInfo?.mockAdapter ? 'This project runs on the mock adapter, so its connections apply once you turn it off. ' : 'Default connection for roles in this project; a role can run on another in its Runs on. '}
           {defaultConnection && defaultConnection !== current ? `App default for new projects: ${connectionLabel(defaultConnection)}. ` : ''}
           Sign-in and keys are set in{' '}
           <button type="button" className="link-btn" onClick={openConnections}>
@@ -259,7 +272,7 @@ export default function ProjectConnection({ project }: { project: Project }): Re
           disabled={locked}
           aria-disabled={locked ? true : undefined}
         >
-          <legend className="sr-only">Default connection for roles</legend>
+          <legend className="sr-only">Default connection for roles; a role can run on another in its Runs on</legend>
           {connections.map((info) => {
             const id = info.connection.id
             const on = target === id
@@ -323,17 +336,20 @@ export default function ProjectConnection({ project }: { project: Project }): Re
       )}
 
       <SettingsCard>
-        <p className="settings-card-note">
-          {rolesOn} {rolesOn === 1 ? 'role uses' : 'roles use'} {connectionLabel(current)} by default{everyday ? ` · Everyday tier: ${everyday}` : ''}
+        <p className="settings-card-note" data-testid="project-connection-roles-line">
+          {rolesLine}
         </p>
         <details className="setting-row-more role-models" data-testid="role-models">
-          <summary>Role models on {connectionLabel(current)}</summary>
+          <summary>Role models</summary>
           <ul className="remap-roles flush">
             {project.roles.map((r) => {
               const tier = r.model === 'inherit' ? undefined : roleTier(r)
               return (
-                <li key={r.id}>
+                <li key={r.id} data-pinned={isPinned(r, project) ? 'true' : undefined}>
                   <span className="remap-role">{r.name}</span>
+                  <span className={isPinned(r, project) ? 'pconn-role-own' : 'muted'} data-testid="role-model-connection">
+                    {isPinned(r, project) ? `Own: ${connectionLabel(roleConnection(r, project))}` : connectionLabel(roleConnection(r, project))}
+                  </span>
                   <span className="muted">{tier ? MODEL_TIER_OPTIONS.find((o) => o.value === tier)?.label : r.model === 'inherit' ? 'Inherit' : 'Custom'}</span>
                   <span className="mono">{r.model === 'inherit' ? "its parent's model" : r.model}</span>
                 </li>

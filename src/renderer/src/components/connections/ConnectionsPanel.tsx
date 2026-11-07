@@ -69,7 +69,7 @@ export default function ConnectionsPanel(): ReactElement {
       id={APP_SETTINGS_SECTIONS.connections}
       titleId="connections-title"
       title="Connections"
-      description="Where agents get their models. One connection is the default for new projects and assistants; each project can switch in its own Settings."
+      description="Where agents get their models. One connection is the default for new projects and assistants. Each project picks a default for its roles, and each role can run on another."
       actions={
         <Button loading={busy} title="Reload status and model lists" onClick={() => void refreshAll()}>
           Refresh all
