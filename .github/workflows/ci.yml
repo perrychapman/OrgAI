@@ -30,8 +30,8 @@ jobs:
   check:
     name: check (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    # The maintenance e2e shells out to git a lot.
-    timeout-minutes: 30
+    # The maintenance e2e shells out to git a lot; the whole free e2e suite took 30 min on macos-15 once the CLI scripts joined it.
+    timeout-minutes: 50
     strategy:
       fail-fast: false
       matrix:
