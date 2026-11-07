@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { RunRecord } from '@shared/types'
 import { architectPrompt } from '@shared/setup'
 import { ProjectStore } from '../store/projects'
-import { project, role, runSummary } from '../runtime/testHelpers'
+import { mcpSpec, project, role, runSummary } from '../runtime/testHelpers'
 import { SetupService } from './service'
 
 describe('Architect context', () => {
@@ -26,8 +26,11 @@ describe('Architect context', () => {
   ]
 
   it('hiddenContext lists name, slug, model with tier, and says unmentioned roles are kept', () => {
-    const text = service.hiddenContext(project({ path: join(dir, 'repo'), roles }))
-    expect(text).toContain('roles you do not mention in a revision are kept unchanged')
+    const text = service.hiddenContext(project({ path: join(dir, 'repo'), roles, setup: { kind: 'existing', state: 'complete' } as never }))
+    expect(text).toContain('roles you do not mention in propose_org_chart are kept unchanged')
+    const first = service.hiddenContext(project({ path: join(dir, 'repo'), roles, setup: { kind: 'existing', state: 'in_progress' } as never }))
+    expect(first).toContain('the roles you propose are the whole chart')
+    expect(first).not.toContain('kept unchanged')
     expect(text).toContain('Lead (lead) [tier deep: gw/big] -> root')
     expect(text).toContain('Dev (dev) [model gw/custom] -> Lead')
     expect(text).toContain('Scribe (scribe) [inherit] -> Lead')
@@ -46,6 +49,18 @@ describe('Architect context', () => {
     expect(text).toContain('Roles in the chart that did not take part in this run (not needed for this task; keep them unless there is other evidence): Scribe (scribe), QA ‹b› (qa)')
     expect(service.retroContext(record)).not.toContain('did not take part')
     expect(service.retroContext(record, { roles: roles.slice(0, 2) })).not.toContain('did not take part')
+  })
+
+  it('approving an org chart never brings back a grant revoked while the card was open (review M3)', () => {
+    const store = new ProjectStore(join(dir, 'data2'))
+    const svc = new SetupService(store)
+    const lead = role({ id: 'a', slug: 'lead', name: 'Lead', mcpServers: ['m1'] })
+    const p = store.save(project({ path: join(dir, 'repo'), roles: [lead], mcpServers: [mcpSpec({ id: 'm1', name: 'github' })] }))
+    // The card payload was built while Lead still had the grant; the user then revoked it.
+    const payloadRoles = structuredClone(p.roles)
+    store.save({ ...p, roles: [{ ...p.roles[0], mcpServers: [] }] })
+    const saved = svc.applyProposal(p.id, { id: 'pr1', kind: 'orgChart', agentId: 'root', title: 'T', payload: { roles: payloadRoles, rationale: 'r' } } as never)
+    expect(saved.roles[0].mcpServers).toEqual([])
   })
 
   it('the Architect prompts no longer call unused roles a finding and mention remove', () => {

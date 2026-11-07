@@ -232,7 +232,7 @@ export class SetupService {
     if (setup?.architecture) parts.push(`Previously approved architecture summary: ${promptDatum(setup.architecture.summary, 4000, true)}`)
     if (project.roles.length) {
       parts.push(
-        `Current org chart roles (revise rather than replace when they still fit; roles you do not mention in a revision are kept unchanged): ${project.roles
+        `Current org chart roles (revise rather than replace when they still fit${setup?.state === 'complete' ? '; this is a revision: roles you do not mention in propose_org_chart are kept unchanged' : '; in this first setup the roles you propose are the whole chart'}): ${project.roles
           .map((r) => `${promptDatum(r.name, 80)} (${promptDatum(r.slug, 80)}) [${roleModelLabel(r)}] -> ${promptDatum(project.roles.find((x) => x.id === r.reportsTo)?.name ?? 'root', 80)}`)
           .join('; ')}`
       )
@@ -274,7 +274,15 @@ export class SetupService {
         return this.projects.save({ ...project, setup: { ...setup, architecture: proposal.payload, architecturePath: written } })
       }
       case 'orgChart': {
-        const m = mergeOrgChart(project, proposal.payload.roles)
+        // Grants are never part of an org chart approval (the card does not show them): strip them so the merge keeps
+        // the grants as they are now, not as they were when the card was raised (review M3), and new roles get none.
+        const proposed = proposal.payload.roles.map((r) => {
+          const { mcpServers: _m, skills: _s, ...rest } = r
+          void _m
+          void _s
+          return rest
+        })
+        const m = mergeOrgChart(project, proposed)
         return this.projects.save({ ...project, roles: m.roles, ...(m.mcpServers ? { mcpServers: m.mcpServers } : {}), setup })
       }
       case 'settings': {

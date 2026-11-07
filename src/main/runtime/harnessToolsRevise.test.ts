@@ -142,6 +142,18 @@ describe('propose_org_chart in a revision (setup complete)', () => {
     expect(roles).toHaveLength(5)
   })
 
+  it('REVISE when a listed role is placed under one of its own kept descendants (review M1)', async () => {
+    const { text, ctx } = await propose(revisionProject(), { roles: [draft('Boss', null), draft('Lead', 'QA', { slug: 'lead' })] }, proxyConn)
+    expect(text).toMatch(/^REVISE\. The org chart was not shown to the user: the reporting lines of .*form a loop/)
+    expect(ctx.requestProposal).not.toHaveBeenCalled()
+  })
+
+  it('a new draft asking canSpawn false keeps it false under a kept manager (review M2)', async () => {
+    const { roles } = await propose(revisionProject(), { roles: [draft('Alpha', 'Lead'), draft('Beta', 'Lead')] }, proxyConn)
+    expect(roles!.find((r) => r.name === 'Alpha')).toMatchObject({ canSpawn: false, spawnable: [], reportsTo: 'r-lead' })
+    expect(roles!.find((r) => r.name === 'Beta')).toMatchObject({ canSpawn: false, spawnable: [], reportsTo: 'r-lead' })
+  })
+
   it('omitted model keeps, a different tier changes, inherit keeps', async () => {
     const p = revisionProject()
     const { roles } = await propose(

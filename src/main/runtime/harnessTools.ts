@@ -353,10 +353,39 @@ function rolesFromDrafts(
     else delete converted[i].tier
   }
 
-  if (!revision) return { roles: converted, merged: mergeOrgChart(ctx.project, converted) }
-  const kept = reviseKeepingUnmentioned(ctx.project, drafts, converted, matched, revision.remove)
-  if ('error' in kept) return kept
-  return { roles: kept.roles, merged: mergeOrgChart(ctx.project, kept.roles) }
+  let roles = converted
+  if (revision) {
+    const kept = reviseKeepingUnmentioned(ctx.project, drafts, converted, matched, revision.remove)
+    if ('error' in kept) return kept
+    roles = kept.roles
+  }
+  const merged = mergeOrgChart(ctx.project, roles)
+  const loop = reportingProblem(merged.roles)
+  if (loop.length) {
+    return {
+      error: `REVISE. The org chart was not shown to the user: the reporting lines of ${loop.map((n) => datum(n, 60)).join(', ')} form a loop or do not lead to the root. Every role must reach the single root through reportsTo.`
+    }
+  }
+  return { roles, merged }
+}
+
+/**
+ * Names of roles whose reportsTo chain does not end at the single root: a loop, or a manager id not in the chart
+ * (review M1: a listed role placed under one of its own kept descendants). Empty when the chart is a tree. Pure.
+ */
+export function reportingProblem(roles: readonly Role[]): string[] {
+  const byId = new Map(roles.map((r) => [r.id, r]))
+  const bad: string[] = []
+  for (const r of roles) {
+    const seen = new Set<string>()
+    let cur: Role | undefined = r
+    while (cur && cur.reportsTo !== null && !seen.has(cur.id)) {
+      seen.add(cur.id)
+      cur = byId.get(cur.reportsTo)
+    }
+    if (!cur || cur.reportsTo !== null) bad.push(r.name)
+  }
+  return bad.slice(0, 10)
 }
 
 const lower = (s: unknown): string => (typeof s === 'string' ? s.trim().toLowerCase() : '')
@@ -443,7 +472,8 @@ function reviseKeepingUnmentioned(
       if (target && target.id !== role.id) named.push(target.id)
     }
     role.spawnable = named
-    if (named.length) role.canSpawn = true
+    // Reset from the draft: toRoles forced canSpawn on its stand-in root, which may now report to a kept role (review M2).
+    role.canSpawn = !!d.canSpawn || named.length > 0
   })
   for (const r of converted) {
     const reports = converted.filter((x) => x.reportsTo === r.id).map((x) => x.id)
@@ -457,8 +487,7 @@ function reviseKeepingUnmentioned(
   const chart = [...converted, ...keptRoles]
   const chartIds = new Set(chart.map((r) => r.id))
   for (const k of keptRoles) {
-    if (draftRoot !== undefined && k.id === keptRoot?.id) k.reportsTo = rootId ?? null
-    else if (k.reportsTo !== null && !chartIds.has(k.reportsTo) && !matchedIds.has(k.reportsTo)) k.reportsTo = rootId ?? null
+    if (k.reportsTo !== null && !chartIds.has(k.reportsTo) && !matchedIds.has(k.reportsTo)) k.reportsTo = rootId ?? null
     k.spawnable = (k.spawnable ?? []).filter((id) => !removedIds.has(id))
   }
   // A role that reported to a removed role (a matched draft can too, through its existing id) goes to the root.
