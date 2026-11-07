@@ -15,7 +15,7 @@ import { parseFlags } from '../flags'
 import { confirm, hostCall, requireProject, runSubcommands, withHost } from '../manage'
 import { emit, printText, safeLine, styleFor, table, termWidth, type Json } from '../output'
 import { CliError, EXIT, type CliContext, type CommandFn, type HostClient } from '../types'
-import { CONFIGURE, CONNECTION_LABELS, OPERATE, READ, connectionArg } from './connections'
+import { CONFIGURE, OPERATE, READ, connectionArg, labelOfId } from './connections'
 
 const USAGE = 'models <list|refresh|prices|remap> [options]'
 
@@ -114,7 +114,7 @@ const runRefresh = async (ctx: CliContext, args: string[]): Promise<number> => {
     const counts: Record<string, number> = {}
     for (const m of list) counts[m.connection] = (counts[m.connection] ?? 0) + 1
     emit(ctx, { counts, models: list.map((m) => m.id) }, () =>
-      Object.keys(counts).length === 0 ? 'No models listed.' : Object.entries(counts).map(([c, n]) => `${CONNECTION_LABELS[c as keyof typeof CONNECTION_LABELS] ?? safeLine(c)}: ${n} model${n === 1 ? '' : 's'}`)
+      Object.keys(counts).length === 0 ? 'No models listed.' : Object.entries(counts).map(([c, n]) => `${labelOfId(c)}: ${n} model${n === 1 ? '' : 's'}`)
     )
     return EXIT.ok
   })
@@ -170,9 +170,9 @@ const runPrices = async (ctx: CliContext, args: string[]): Promise<number> => {
 // ---------- remap ----------
 
 function changeLines(result: RemapResult, project: Project): string[] {
-  if (result.changes.length === 0) return [`Nothing to remap in ${safeLine(project.name)} on ${CONNECTION_LABELS[result.connection]}.`]
+  if (result.changes.length === 0) return [`Nothing to remap in ${safeLine(project.name)} on ${labelOfId(result.connection)}.`]
   return [
-    `${result.changes.length} role model${result.changes.length === 1 ? '' : 's'} in ${safeLine(project.name)} on ${CONNECTION_LABELS[result.connection]}:`,
+    `${result.changes.length} role model${result.changes.length === 1 ? '' : 's'} in ${safeLine(project.name)} on ${labelOfId(result.connection)}:`,
     ...result.changes.map((c) => `  ${safeLine(project.roles.find((r) => r.id === c.roleId)?.name ?? c.roleId)}: ${safeLine(c.from)} -> ${safeLine(c.to)}`)
   ]
 }
@@ -201,7 +201,7 @@ const runRemap = async (ctx: CliContext, args: string[]): Promise<number> => {
       return EXIT.ok
     }
     printText(ctx, changeLines(preview, project))
-    const question = switching ? `Move ${safeLine(project.name)} to ${CONNECTION_LABELS[to]} and save these models?` : `Save these models in ${safeLine(project.name)}?`
+    const question = switching ? `Move ${safeLine(project.name)} to ${labelOfId(to)} and save these models?` : `Save these models in ${safeLine(project.name)}?`
     if (!(await confirm(ctx, question, !!values.yes))) {
       printText(ctx, 'Nothing changed.')
       return EXIT.failure

@@ -11,7 +11,7 @@ import { dirname, join, posix, resolve, win32 } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { cliShimPath, packagedLayout, parseCliShim, resourcesDirOfCliBundle, transientInstallReason } from '../../main/host/packagedLayout'
 import { gitExecutable, neutralCwd } from '../../main/host/systemBinaries'
-import type { AuthStatusResult, ConnectionInfo, DaemonInfo } from '../../shared/types'
+import { isProxyConnection, type AuthStatusResult, type ConnectionInfo, type DaemonInfo } from '../../shared/types'
 import { devAppRoot } from '../client/launcher'
 import { parseFlags } from '../flags'
 import { emit, safeLine, styleFor } from '../output'
@@ -277,7 +277,7 @@ export const runDoctor: CommandFn = async (ctx: CliContext, args: string[]): Pro
     try {
       const list = await client.call<ConnectionInfo[]>('connections:list', [])
       const parts = (Array.isArray(list) ? list : []).map((c) => {
-        const name = CONNECTION_NAMES[c.connection.id] ?? c.connection.id
+        const name = isProxyConnection(c.connection) ? c.connection.name : (CONNECTION_NAMES[c.connection.id] ?? c.connection.id)
         return `${name} ${c.connection.enabled === false ? 'off' : c.status.state}${c.isDefault ? ' (default)' : ''}`
       })
       const anyConnected = (Array.isArray(list) ? list : []).some((c) => c.status.state === 'connected')

@@ -35,7 +35,7 @@ const MODES: { value: AgentImportMode; label: string; title: string }[] = [
 
 const SEARCHED = '.claude/agents, .opencode/agents, opencode.json, .codex/agents, .github/agents, .gemini/agents, .kiro/agents, .roomodes and .orgai/org.json'
 
-const CONN_NAME = { anthropic: 'Anthropic', openai: 'OpenAI', litellm: 'LiteLLM' }
+const CONN_NAME: Record<string, string> = { anthropic: 'Anthropic', openai: 'OpenAI', litellm: 'LiteLLM' }
 
 function ImportRow({
   item,
@@ -370,7 +370,7 @@ export default function ImportAgentsDialog({
             {preview && (
               <>
                 <p className="hint">
-                  Models map to {mock ? "the connection's tiers (mock adapter)" : `${CONN_NAME[preview.connection]}'s tiers`}
+                  Models map to {mock ? "the connection's tiers (mock adapter)" : `${CONN_NAME[preview.connection] ?? preview.connection}'s tiers`}
                   {flat ? '; roles without a hierarchy report to the orchestrator' : ''}. Change either below.
                 </p>
                 <ul className="import-roles" aria-busy={loading}>

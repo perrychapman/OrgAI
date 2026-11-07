@@ -80,7 +80,8 @@ export const SETTINGS_COPY = {
 export type SettingCopyKey = keyof typeof SETTINGS_COPY
 
 /** Connection names as shown in the project picker, the Connections pane and the connection lines. */
-export const CONNECTION_NAME = { anthropic: 'Anthropic', openai: 'OpenAI', litellm: 'LiteLLM' } as const
+/** Display names of the fixed connections; a proxy is named by its record (connectionLabel.ts), so an unknown id has no entry. */
+export const CONNECTION_NAME: Readonly<Record<string, string>> = { anthropic: 'Anthropic', openai: 'OpenAI', litellm: 'LiteLLM' }
 
 
 /**

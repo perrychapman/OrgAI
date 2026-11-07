@@ -60,6 +60,8 @@ export {
   checkQuickContinue,
   connectionIdArg,
   connectionSecretArgs,
+  proxyCreateArgs,
+  proxyIdArg,
   connectorArgs,
   effectiveRemoveRuns,
   folderConfigProjectArg,
