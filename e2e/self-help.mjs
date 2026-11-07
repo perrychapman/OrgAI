@@ -292,6 +292,8 @@ try {
   await page.locator('[data-testid=shortcuts-ask-orgai]').waitFor({ timeout: 5000 }).catch(() => {})
   check(await visible('[data-testid=shortcuts-ask-orgai]'), 'the shortcuts dialog offers Ask OrgAI')
   await page.locator('[data-testid=shortcuts-ask-orgai]').click()
+  // The closing dialog stays displayed for its exit (~100 ms): wait for it to go.
+  await page.waitForFunction(() => { const d = document.querySelector('[data-testid=keyboard-shortcuts-dialog]'); return !d || !d.getClientRects().length }, null, { timeout: 3000 }).catch(() => {})
   check(!(await visible('[data-testid=keyboard-shortcuts-dialog]')), 'Ask OrgAI closes the shortcuts dialog')
   check(await visible('[data-testid=assistant-start-quick]'), 'Ask OrgAI from the dialog lands on the Chat start page')
 } catch (e) {

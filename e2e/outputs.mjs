@@ -154,6 +154,8 @@ const until = async (fn, ms = 10_000) => {
 }
 const clean = (s) => (s ?? '').replace(/\s+/g, ' ').trim()
 const noScroll = async (what) => {
+  // Arrival animations (transform) can overflow main by a few px while running: measure at rest.
+  await page.evaluate(() => Promise.all(document.getAnimations().filter((a) => a.effect?.getComputedTiming().iterations !== Infinity).map((a) => a.finished.catch(() => {}))))
   const o = await page.evaluate(() => {
     const el = document.scrollingElement
     const main = document.querySelector('main.main')
