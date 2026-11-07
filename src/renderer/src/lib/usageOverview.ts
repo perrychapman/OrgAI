@@ -388,7 +388,7 @@ function costOf(parts: CostInput[]): { costUsd: number | null; costSource: CostS
 }
 
 /** One row's figures under the filters: with a model chip only that model's tokens and cost count. */
-function rowFigures(row: UsageOverviewRow, model: string | null): { tokens: TokenUsage; cost: CostInput; known: boolean } {
+export function rowFigures(row: UsageOverviewRow, model: string | null): { tokens: TokenUsage; cost: CostInput; known: boolean } {
   if (!model) {
     const u = row.usage
     return {
