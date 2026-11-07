@@ -142,7 +142,7 @@ same outcome without those costs.
   automation token for the one package). The desktop release stays a draft published by hand (code); npm publishing
   is not reversible after 72 hours, so the owner decides (**D2**) whether `publish-npm` also waits for a manual
   approval (a GitHub environment with a required reviewer; recommended).
-- `verify-npm` job (macos-14, windows-latest, ubuntu-latest; Node at the `engines` floor and current 24 LTS), from the
+- `verify-npm` job (macos-15, windows-latest, ubuntu-latest; Node at the `engines` floor and current 24 LTS), from the
   same tarball, in a temp folder outside the checkout with a temp npm prefix and a temp data folder:
   1. `npm i -g <tgz>` (with and without `--ignore-scripts` when the allowlist is empty); the installed tree equals the
      shrinkwrap's entries whose `os` / `cpu` match the runner (other platforms' optional native packages are absent by

@@ -645,7 +645,7 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     lists the install scripts verify-npm tolerates in the tree. Owner decision D10 (2026-11-06, to revisit):
     `NPM_SHRINKWRAP=none` in release.yml and ci.yml (no `npm-shrinkwrap.json`); with npm 11.12.1 a honoured shrinkwrap
     installed every platform's Claude runtime (about 2 GB, which makes verify-npm step 1 fail), `none` installs about 300 MB. `full` stays behind that one setting
-    and CI always dry-runs the full derivation. release.yml: `npm-package` -> `verify-npm` (macos-14, windows-latest,
+    and CI always dry-runs the full derivation. release.yml: `npm-package` -> `verify-npm` (macos-15, windows-latest,
     ubuntu-latest x Node at the engines floor and 24; `scripts/verify-npm.mjs` implements spec 3.4 steps 1-7: step 1b
     `--ignore-scripts` is skipped after a failed step 1; step 6 is the vault flow with a key file and a local fake LiteLLM
     proxy, run on the built bundle by `cli/vaultCli.int.test.ts`) -> `publish-npm` (needs meta, build, npm-package and

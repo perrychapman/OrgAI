@@ -232,7 +232,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-14, windows-latest, ubuntu-latest]
+        os: [macos-15, windows-latest, ubuntu-latest]
         # 22.19.0 = scripts/lib/npmPackage.mjs NODE_FLOOR_22 (engines.node), pinned exactly.
         node: ['22.19.0', '24']
     env:
