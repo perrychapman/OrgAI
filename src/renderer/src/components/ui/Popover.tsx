@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import type { ReactElement, ReactNode } from 'react'
+import { exitProps, useExitPresence } from '../../lib/useExitPresence'
 
 export type PopoverPlacement = 'bottom-start' | 'bottom-end' | 'top-start' | 'top-end'
 
@@ -73,6 +74,10 @@ export function Popover({
     top = Math.max(MARGIN, Math.min(top, vh - h - MARGIN))
     p.style.top = `${Math.round(top)}px`
     p.style.left = `${Math.round(left)}px`
+    // The enter scales from the trigger's side (motion.md 3.2): the panel's own side after the flip and clamp.
+    const above = top < r.top
+    p.dataset.side = above ? 'top' : 'bottom'
+    p.style.transformOrigin = `${above ? 'bottom' : 'top'} ${placement.endsWith('end') ? 'right' : 'left'}`
     setPlaced(true)
   }, [placement])
 
@@ -84,7 +89,7 @@ export function Popover({
       const next = (e as ToggleEvent).newState === 'open'
       setOpen(next)
       if (!next) {
-        setPlaced(false)
+        // `placed` stays true: hiding the panel here would cut the CSS exit short. It is positioned again on the next open.
         const active = document.activeElement
         if (!active || active === document.body || el.contains(active)) triggerRef.current?.focus()
       }
@@ -121,6 +126,17 @@ export function Popover({
     }
   }, [])
 
+  // Children mount while open plus one exit duration; the last render stays up (inert) so the exit fades real content.
+  const exit = useExitPresence(open)
+  const lastContent = useRef<ReactNode>(null)
+  const content = typeof children === 'function' ? children({ close }) : children
+  if (open) lastContent.current = content
+  // Cleared in an effect, not in render: the hook's first pass after a close still reports unmounted before it lingers.
+  const exitMounted = exit.mounted
+  useEffect(() => {
+    if (!exitMounted) lastContent.current = null
+  }, [exitMounted])
+
   return (
     <span className="popover-wrap">
       <button
@@ -151,8 +167,9 @@ export function Popover({
         className={className ? `popover-panel ${className}` : 'popover-panel'}
         data-placed={placed}
         data-testid={testId}
+        {...(exit.mounted ? exitProps(exit.state) : {})}
       >
-        {open && (typeof children === 'function' ? children({ close }) : children)}
+        {exit.mounted && (open ? content : lastContent.current)}
       </div>
     </span>
   )

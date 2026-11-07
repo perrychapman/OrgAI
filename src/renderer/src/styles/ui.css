@@ -144,6 +144,11 @@
   background: transparent;
   color: var(--text-secondary);
   cursor: pointer;
+  transition: background var(--dur-instant), color var(--dur-instant), transform var(--dur-fast) var(--ease-out);
+}
+.icon-btn:active:not(:disabled):not([aria-disabled='true']) {
+  transform: scale(0.98);
+  transition-duration: var(--dur-instant);
 }
 .icon-btn.size-md {
   width: var(--control-md);
@@ -192,7 +197,7 @@
   background: var(--surface-3);
   cursor: pointer;
   padding: 0;
-  transition: background var(--dur-fast);
+  transition: background var(--dur-fast), border-color var(--dur-fast);
 }
 .switch[aria-checked='true'] {
   background: var(--accent);
@@ -207,7 +212,7 @@
   margin-top: calc(var(--space-4) / -2);
   border-radius: var(--radius-full);
   background: var(--text-tertiary);
-  transition: transform var(--dur-fast);
+  transition: transform var(--dur-base) var(--ease-spring), background var(--dur-fast);
 }
 .switch[aria-checked='true'] .switch-thumb {
   transform: translateX(var(--space-3));
@@ -243,8 +248,49 @@
   display: flex;
   flex-direction: column;
 }
+/* Motion (docs/design/motion.md 3.1): CSS-only entry and exit through @starting-style and allow-discrete; Dialog.tsx
+   keeps the content rendered while it closes. Exit is opacity and scale only. */
+.dialog {
+  opacity: 0;
+  transform: scale(var(--motion-scale-from));
+  transition:
+    opacity var(--dur-fast) var(--ease-in),
+    transform var(--dur-fast) var(--ease-in),
+    overlay var(--dur-fast) allow-discrete,
+    display var(--dur-fast) allow-discrete;
+}
+.dialog[open] {
+  opacity: 1;
+  transform: none;
+  transition:
+    opacity var(--dur-base) var(--ease-out),
+    transform var(--dur-base) var(--ease-out),
+    overlay var(--dur-base) allow-discrete,
+    display var(--dur-base) allow-discrete;
+}
 .dialog::backdrop {
   background: var(--overlay-scrim);
+  opacity: 0;
+  transition:
+    opacity var(--dur-fast) var(--ease-in),
+    overlay var(--dur-fast) allow-discrete,
+    display var(--dur-fast) allow-discrete;
+}
+.dialog[open]::backdrop {
+  opacity: 1;
+  transition:
+    opacity var(--dur-base) var(--ease-out),
+    overlay var(--dur-base) allow-discrete,
+    display var(--dur-base) allow-discrete;
+}
+@starting-style {
+  .dialog[open] {
+    opacity: 0;
+    transform: translateY(var(--motion-distance)) scale(var(--motion-scale-from));
+  }
+  .dialog[open]::backdrop {
+    opacity: 0;
+  }
 }
 .dialog-panel {
   display: flex;
@@ -354,17 +400,31 @@
   color: var(--text-tertiary);
 }
 
-/* Skeleton */
+/* Skeleton (motion.md 3.17): appears after 200 ms so a fast load never flashes, then pulses at the one live rate. */
 .skeleton {
   border-radius: var(--radius-sm);
   background: var(--surface-3);
   height: var(--space-4);
-  animation: breathe 1.6s ease-in-out infinite;
+  animation:
+    motion-fade var(--dur-fade) var(--ease-out) 200ms backwards,
+    skeleton-pulse var(--dur-pulse) var(--ease-in-out) 200ms infinite;
+}
+@keyframes skeleton-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.6;
+  }
 }
 @media (prefers-reduced-motion: reduce) {
   .skeleton {
     animation: none;
   }
+}
+:root[data-reduce-motion='on'] .skeleton {
+  animation: none;
 }
 
 .card-block {
@@ -492,10 +552,18 @@
   border-radius: var(--radius-sm);
   background: var(--field-bg);
   color: transparent;
+  transition: background var(--dur-instant), border-color var(--dur-instant);
 }
 .checkbox-box svg {
   width: 12px;
   height: 12px;
+  opacity: 0;
+  transform: scale(0.6);
+  transition: opacity var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
+}
+.checkbox input:checked + .checkbox-box svg {
+  opacity: 1;
+  transform: none;
 }
 .checkbox:hover .checkbox-box {
   border-color: var(--border-strong);
@@ -623,8 +691,28 @@ ul.maint-list {
   font-size: var(--text-body);
   line-height: var(--text-body-lh);
 }
-.popover-panel:not(:popover-open) {
-  display: none;
+/* Motion (motion.md 3.2): enter opacity + scale from the trigger side, exit opacity only. The UA's
+   [popover]:not(:popover-open) { display: none } is what allow-discrete holds open for the exit. */
+.popover-panel {
+  opacity: 0;
+  transition:
+    opacity var(--dur-fast) var(--ease-in),
+    overlay var(--dur-fast) allow-discrete,
+    display var(--dur-fast) allow-discrete;
+}
+.popover-panel:popover-open {
+  opacity: 1;
+  transition:
+    opacity var(--dur-base) var(--ease-out),
+    transform var(--dur-base) var(--ease-out),
+    overlay var(--dur-base) allow-discrete,
+    display var(--dur-base) allow-discrete;
+}
+@starting-style {
+  .popover-panel:popover-open {
+    opacity: 0;
+    transform: scale(var(--motion-scale-from));
+  }
 }
 .popover-panel[data-placed='false'] {
   visibility: hidden;
