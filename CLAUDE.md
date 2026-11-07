@@ -128,6 +128,22 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   from the builtin table with no provider cost, and the default script's `mock-report-2` is unpriced and returns
   nothing. Verified by unit tests and the mock only; no live run has checked the builtin ids or which model id the CLI
   or a proxy reports.
+  - App-wide overview (2026-11-07, main only; ARCHITECTURE.md Shared contracts "App-wide usage overview"):
+    `runs:usageOverview` / `runs:usageOverviewCsv` (read scope; preload `runs.usageOverview / usageOverviewCsv`, query
+    optional) cover every project, the virtual assistant ones and a removed project's leftover runs
+    (`USAGE_REMOVED_PROJECT_NAME`, `removed: true`). kinds default to every RunKind, bucket day | week | month,
+    projectIds at most 200 valid ids (else refused). Rollups (projects, models, roles per project, connections, trend
+    with `byProject`, totals) cover every matched run; only `runs` stops at the limit. Builder `runUsage.ts`
+    `buildUsageOverview` (pure), names from dispatcher.ts `usageNames`. Not built yet: the renderer page, its View
+    menu action and its atlas surface; the UI Lead adds all three together, so nothing names a page that does not exist.
+    Stored usage is rebuilt by `cleanStoredUsage` first (one malformed record never breaks the view); a connection's
+    partial cost stays a lower bound (`RunUsage.connections[id].costPartial`); `cleanCost` never reads junk or spend
+    under 'none' as $0. Every rollup carries `costKnownRuns` / `costUnknownRuns`; rows carry `live`, `endedBy`,
+    `quick`, `legacy`, `projectRemoved`; RunUsage gains `noResultCostUsd` / `noResultAgents` (at most 20, new runs
+    only); the CSV has its own `USAGE_OVERVIEW_CSV_COLUMNS`. Cache "not reported" cannot be told from 0 (adapters
+    write 0; Codex never reports cacheWrite). Responses are not size-capped (review
+    L4, open): send a range or a month bucket. Unit-tested (runUsageOverview.test.ts, runManager.test.ts,
+    bootstrap.test.ts through invokeRpc); 2,000 runs in about 23 to 49 ms on Windows.
 - Skills (#11): `src/main/skills/` (`SkillService`). Project skills are specs in `Project.skills` with files in
   `<data>/project-skills/<pid>/<sid>/`; the library is `<data>/skill-library.json` + `<data>/skills/<id>/`; a project
   skill with `libraryId` is a link refreshed from its entry on every read, and a link whose entry is gone is kept but

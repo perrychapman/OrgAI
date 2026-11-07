@@ -173,6 +173,8 @@ const api: OrgAIApi = {
     pendingCards: (runId: string) => ipcRenderer.invoke(IPC.runsPendingCards, runId),
     usageStats: (query) => ipcRenderer.invoke(IPC.runsUsageStats, query),
     usageCsv: (query) => ipcRenderer.invoke(IPC.runsUsageCsv, query),
+    usageOverview: (query) => ipcRenderer.invoke(IPC.runsUsageOverview, query),
+    usageOverviewCsv: (query) => ipcRenderer.invoke(IPC.runsUsageOverviewCsv, query),
     startQuick: (input) => ipcRenderer.invoke(IPC.runsStartQuick, input),
     promoteQuick: (input) => ipcRenderer.invoke(IPC.runsPromoteQuick, input)
   },

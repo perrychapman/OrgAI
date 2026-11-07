@@ -236,6 +236,34 @@ describe('bootOrgAIHost', () => {
     await h.runs.stopAll({ reason: 'quit' })
   })
 
+  it('serves runs:usageOverview and runs:usageOverviewCsv over invokeRpc with read scope, naming every project (mock, no tokens)', async () => {
+    const now = Date.now()
+    const chat = { id: 'r_chat', projectId: 'quick', prompt: 'hi', status: 'finished', startedAt: now - 1000, endedAt: now, kind: 'work', totalCostUsd: 0 }
+    writeFileSync(join(dataDir, 'runs.json'), JSON.stringify({ version: 1, runs: [chat] }))
+    const h = boot()
+    const folder = join(root, 'repo-usage')
+    mkdirSync(folder)
+    const project = h.services.projects.create({ name: 'Usage, "one"', path: folder, brief: '', setupKind: 'existing', mock: true }, h.settings.get(), { mockAvailable: true })
+    const run = await h.runs.start({ project, prompt: 'count me' })
+    const read = { surface: 'inproc' as const, grantedScopes: ['read'] as const }
+    const o = (await h.dispatcher.invokeRpc(IPC.runsUsageOverview, [], read)) as import('../../shared/types').UsageOverview
+    expect(o.runs.map((r) => [r.runId, r.projectName, r.projectKind])).toEqual([
+      [run.id, 'Usage, "one"', 'code'],
+      ['r_chat', 'Chat', 'assistant']
+    ])
+    const only = (await h.dispatcher.invokeRpc(IPC.runsUsageOverview, [{ projectIds: ['quick'], bucket: 'month' }], read)) as import('../../shared/types').UsageOverview
+    expect(only.runs.map((r) => r.runId)).toEqual(['r_chat'])
+    expect(only.query).toMatchObject({ bucket: 'month', projectIds: ['quick'] })
+    await expect(h.dispatcher.invokeRpc(IPC.runsUsageOverview, [{ projectIds: ['../x'] }], read)).rejects.toThrow()
+    await expect(h.dispatcher.invokeRpc(IPC.runsUsageOverview, ['p1'], read)).rejects.toMatchObject({ code: 'bad_request' })
+    const csv = (await h.dispatcher.invokeRpc(IPC.runsUsageOverviewCsv, [null], read)) as string
+    const lines = csv.split('\r\n')
+    expect(lines).toHaveLength(3)
+    expect(lines[1]!.startsWith('"Usage, ""one""",,')).toBe(true)
+    expect(lines[2]!.startsWith('Chat,,')).toBe(true)
+    await h.runs.stopAll({ reason: 'quit' })
+  })
+
   it('serves host.status from ownership info and the activity snapshot', async () => {
     const h = boot()
     const status = h.hostControl.status()

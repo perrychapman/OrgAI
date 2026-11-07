@@ -83,6 +83,9 @@ export const CHANNEL_PARAMS: Readonly<Record<string, readonly ParamSpec[]>> = {
   [IPC.runsListLive]: NONE,
   [IPC.runsPendingCards]: ID,
   [IPC.runsUsageStats]: OBJECT,
+  // UsageOverviewQuery or nothing (every project, every kind); sanitizeUsageOverviewQuery does the deep check.
+  [IPC.runsUsageOverview]: OPTIONAL_NULLABLE_OBJECT,
+  [IPC.runsUsageOverviewCsv]: OPTIONAL_NULLABLE_OBJECT,
   [IPC.runsStartQuick]: OBJECT,
   [IPC.runsPromoteQuick]: OBJECT,
   [IPC.windowOpenRun]: OBJECT,

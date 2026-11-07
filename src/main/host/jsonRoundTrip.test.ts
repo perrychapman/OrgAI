@@ -50,15 +50,15 @@ describe('(a) completeness', () => {
   // HOST_IPC (socket only) and SECRETS_IPC (Wave 7, every surface): channels added for the host.
   const host: string[] = [...Object.values(HOST_IPC), ...Object.values(SECRETS_IPC)]
 
-  it('matches the spec counts: 189 existing channels (175 request + 14 push) plus 6 HOST_IPC and 5 SECRETS_IPC', () => {
+  it('matches the spec counts: 191 existing channels (177 request + 14 push) plus 6 HOST_IPC and 5 SECRETS_IPC', () => {
     const push = new Set(PUSH_CHANNELS)
     expect(new Set(existing).size).toBe(existing.length)
-    expect(existing.length).toBe(189)
+    expect(existing.length).toBe(191)
     expect(existing.filter((c) => push.has(c)).length).toBe(14)
-    expect(existing.filter((c) => !push.has(c)).length).toBe(175)
+    expect(existing.filter((c) => !push.has(c)).length).toBe(177)
     expect(Object.values(HOST_IPC).length).toBe(6)
     expect(Object.values(SECRETS_IPC).length).toBe(5)
-    expect(requestChannels().length).toBe(186)
+    expect(requestChannels().length).toBe(188)
   })
 
   it('every channel is either in CHANNEL_JSON_FIELDS or a push channel, never both', () => {

@@ -69,6 +69,8 @@ const PAYLOADS: Record<string, unknown[]> = {
   'runs:listLive': [],
   'runs:pendingCards': ['run_1'],
   'runs:usageStats': [{ projectId: 'p_abc123', limit: 500 }],
+  'runs:usageOverview': [{ projectIds: ['p_abc123', 'quick'], bucket: 'month', range: { month: '2026-11' } }],
+  'runs:usageOverviewCsv': [],
   'runs:startQuick': [{ prompt: 'Hello', folder: null, allowEdits: false, team: 'single' }],
   'runs:promoteQuick': [{ runId: 'run_1', name: 'Saved', path: '/tmp/x' }],
   'window:openRun': [{ projectId: 'p_abc123', runId: 'run_1' }],
