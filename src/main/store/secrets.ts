@@ -920,11 +920,21 @@ export class SecretStore implements SecretStoreApi {
     next[key] = back
     const steps: CommitStep[] = []
     const v = this.vault
-    if (v && !legacyIsNewer(v, key, sha256Hex(back))) {
+    // A missing secrets.json is never read as deletions (5.5): the new file holds only this key, so the other keys'
+    // baselines and lc flags go now, as the full reconcile's missing branch does, or row 7 would soft-delete them later.
+    const resetMissing = v !== undefined && this.legacy.state === 'missing' && v.legacyRetired === null
+    const dropKey = v !== undefined && !legacyIsNewer(v, key, sha256Hex(back))
+    if (v && (dropKey || resetMissing)) {
       const meta = cloneVault(v)
-      setBaseline(meta, key, undefined)
-      const t = Object.hasOwn(meta.tombstones, key) ? meta.tombstones[key] : undefined
-      if (t) delete t.legacyHash
+      if (resetMissing) {
+        meta.legacy = dict<string>()
+        for (const e of Object.values(meta.entries)) e.lc = false
+      }
+      if (dropKey) {
+        setBaseline(meta, key, undefined)
+        const t = Object.hasOwn(meta.tombstones, key) ? meta.tombstones[key] : undefined
+        if (t) delete t.legacyHash
+      }
       steps.push({ kind: 'vault', next: meta })
     }
     steps.push({ kind: 'legacy', next })

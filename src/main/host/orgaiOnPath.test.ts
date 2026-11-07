@@ -65,7 +65,7 @@ describe('findOrgaiOnPath on a real folder tree', () => {
     // npm: <prefix>/bin/orgai -> ../lib/node_modules/orgai-cli/out/cli/orgai.mjs
     const npmCli = join(root, 'npm', 'lib', 'node_modules', 'orgai-cli', 'out', 'cli')
     mkdirSync(npmCli, { recursive: true })
-    writeFileSync(join(npmCli, 'orgai.mjs'), '#!/usr/bin/env node\n')
+    writeFileSync(join(npmCli, 'orgai.mjs'), '#!/usr/bin/env node\n', { mode: 0o755 })
     writeFileSync(join(npmCli, 'install.json'), JSON.stringify({ channel: 'npm', version: '0.1.6', commit: 'abc123' }))
     mkdirSync(join(root, 'npm', 'bin'))
     symlinkSync(join('..', 'lib', 'node_modules', 'orgai-cli', 'out', 'cli', 'orgai.mjs'), join(root, 'npm', 'bin', 'orgai'))
@@ -75,15 +75,15 @@ describe('findOrgaiOnPath on a real folder tree', () => {
     mkdirSync(appCli, { recursive: true })
     writeFileSync(join(appCli, 'install.json'), JSON.stringify({ channel: 'app', version: '0.1.7' }))
     mkdirSync(join(res, 'bin'))
-    writeFileSync(join(res, 'bin', 'orgai'), `#!/bin/sh\n# ${PACKAGED_LAUNCHER_MARK} (cli-spec 7, Wave 6).\n`)
+    writeFileSync(join(res, 'bin', 'orgai'), `#!/bin/sh\n# ${PACKAGED_LAUNCHER_MARK} (cli-spec 7, Wave 6).\n`, { mode: 0o755 })
     mkdirSync(join(root, 'shim'))
-    writeFileSync(join(root, 'shim', 'orgai'), renderCliShim({ platform: 'darwin', launcher: join(res, 'bin', 'orgai'), env: {} }))
+    writeFileSync(join(root, 'shim', 'orgai'), renderCliShim({ platform: 'darwin', launcher: join(res, 'bin', 'orgai'), env: {} }), { mode: 0o755 })
     // A link to the packaged launcher itself.
     mkdirSync(join(root, 'linked'))
     symlinkSync(join(res, 'bin', 'orgai'), join(root, 'linked', 'orgai'))
     // Something else called orgai, a folder named orgai, and a missing folder.
     mkdirSync(join(root, 'other'))
-    writeFileSync(join(root, 'other', 'orgai'), '#!/bin/sh\necho hi\n')
+    writeFileSync(join(root, 'other', 'orgai'), '#!/bin/sh\necho hi\n', { mode: 0o755 })
     mkdirSync(join(root, 'dir', 'orgai'), { recursive: true })
     const pathList = [join(root, 'npm', 'bin'), join(root, 'missing'), join(root, 'dir'), join(root, 'shim'), `${join(root, 'npm', 'bin')}/`, 'relative/bin', join(root, 'linked'), join(root, 'other')].join(':')
 
@@ -102,7 +102,7 @@ describe('findOrgaiOnPath on a real folder tree', () => {
   posixOnly('a link to a checkout bundle without install.json reads as dev; a broken install.json gives no channel', () => {
     const cli = join(root, 'repo', 'out', 'cli')
     mkdirSync(cli, { recursive: true })
-    writeFileSync(join(cli, 'orgai.mjs'), '')
+    writeFileSync(join(cli, 'orgai.mjs'), '', { mode: 0o755 })
     mkdirSync(join(root, 'bin'))
     symlinkSync(join(cli, 'orgai.mjs'), join(root, 'bin', 'orgai'))
     expect(findOrgaiOnPath({ platform: process.platform, pathList: join(root, 'bin'), home: root })).toEqual([
@@ -118,9 +118,9 @@ describe('findOrgaiOnPath on a real folder tree', () => {
     const cli = join(res, 'app.asar.unpacked', 'out', 'cli')
     mkdirSync(cli, { recursive: true })
     writeFileSync(join(cli, 'install.json'), JSON.stringify({ channel: 'app', version: opts.version }))
-    if (opts.entry) writeFileSync(join(cli, 'orgai.mjs'), '')
+    if (opts.entry) writeFileSync(join(cli, 'orgai.mjs'), '', { mode: 0o755 })
     mkdirSync(join(res, 'bin'))
-    writeFileSync(join(res, 'bin', 'orgai'), opts.marked ? `#!/bin/sh\n# ${PACKAGED_LAUNCHER_MARK} (cli-spec 7, Wave 6).\n` : '#!/bin/sh\n')
+    writeFileSync(join(res, 'bin', 'orgai'), opts.marked ? `#!/bin/sh\n# ${PACKAGED_LAUNCHER_MARK} (cli-spec 7, Wave 6).\n` : '#!/bin/sh\n', { mode: 0o755 })
     return res
   }
 
@@ -139,7 +139,7 @@ describe('findOrgaiOnPath on a real folder tree', () => {
   posixOnly('any other <X>/bin/orgai is not a launcher, as a file or through a link; a link to a shim reads as the shim', () => {
     // A user's own wrapper at ~/tools/bin/orgai: neither marked nor beside an OrgAI bundle.
     mkdirSync(join(root, 'tools', 'bin'), { recursive: true })
-    writeFileSync(join(root, 'tools', 'bin', 'orgai'), '#!/bin/sh\nexec something "$@"\n')
+    writeFileSync(join(root, 'tools', 'bin', 'orgai'), '#!/bin/sh\nexec something "$@"\n', { mode: 0o755 })
     mkdirSync(join(root, 'bin'))
     symlinkSync(join(root, 'tools', 'bin', 'orgai'), join(root, 'bin', 'orgai'))
     expect(findOrgaiOnPath({ platform: process.platform, pathList: `${join(root, 'bin')}:${join(root, 'tools', 'bin')}`, home: root })).toEqual([
@@ -149,7 +149,7 @@ describe('findOrgaiOnPath on a real folder tree', () => {
     // /usr/local/bin/orgai -> ~/.local/bin/orgai (this app's shim): the shim's launcher, not "a launcher at ~/.local".
     const res = packagedApp('C.app', { marked: true, entry: true, version: '0.1.9' })
     mkdirSync(join(root, 'home', '.local', 'bin'), { recursive: true })
-    writeFileSync(join(root, 'home', '.local', 'bin', 'orgai'), renderCliShim({ platform: 'darwin', launcher: join(res, 'bin', 'orgai'), env: {} }))
+    writeFileSync(join(root, 'home', '.local', 'bin', 'orgai'), renderCliShim({ platform: 'darwin', launcher: join(res, 'bin', 'orgai'), env: {} }), { mode: 0o755 })
     mkdirSync(join(root, 'usrlocal'))
     symlinkSync(join(root, 'home', '.local', 'bin', 'orgai'), join(root, 'usrlocal', 'orgai'))
     expect(findOrgaiOnPath({ platform: process.platform, pathList: join(root, 'usrlocal'), home: root })).toEqual([
@@ -246,5 +246,20 @@ describe('isNetworkPathFor', () => {
     expect(isNetworkPathFor('darwin', '/Network/Servers')).toBe(true)
     expect(isNetworkPathFor('darwin', '/usr/local/bin')).toBe(false)
     expect(isNetworkPathFor('linux', '/net/host')).toBe(false)
+  })
+})
+
+describe('findOrgaiOnPath execute bit', () => {
+  const fsWith = (mode: number | undefined): Partial<OrgaiPathFs> => {
+    const st = (): { isFile(): boolean; isSymbolicLink(): boolean; size: number; mode?: number } => ({ isFile: () => true, isSymbolicLink: () => false, size: 1, ...(mode === undefined ? {} : { mode }) })
+    return { lstat: st, stat: st, readText: () => '', realpath: (p) => p }
+  }
+  it('skips a non-executable orgai on POSIX', () => {
+    expect(findOrgaiOnPath({ platform: 'linux', pathList: '/a', fs: fsWith(0o100644) })).toEqual([])
+    expect(findOrgaiOnPath({ platform: 'linux', pathList: '/a', fs: fsWith(0o100755) }).map((e) => e.path)).toEqual(['/a/orgai'])
+    expect(findOrgaiOnPath({ platform: 'linux', pathList: '/a', fs: fsWith(undefined) })).toHaveLength(1)
+  })
+  it('ignores the mode on Windows', () => {
+    expect(findOrgaiOnPath({ platform: 'win32', pathList: 'C:\\a', env: { PATHEXT: '.CMD' }, fs: fsWith(0o100644) })).toHaveLength(1)
   })
 })

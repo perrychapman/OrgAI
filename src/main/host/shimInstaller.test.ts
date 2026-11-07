@@ -312,7 +312,7 @@ describe('otherCli (Wave 7, cli-standalone.md 8.2)', () => {
   function npmInstall(version: string): string {
     const cli = join(root, 'npm', 'lib', 'node_modules', 'orgai', 'out', 'cli')
     mkdirSync(cli, { recursive: true })
-    writeFileSync(join(cli, 'orgai.mjs'), '')
+    writeFileSync(join(cli, 'orgai.mjs'), '', { mode: 0o755 })
     writeFileSync(join(cli, 'install.json'), JSON.stringify({ channel: 'npm', version }))
     mkdirSync(join(root, 'npm', 'bin'), { recursive: true })
     symlinkSync(join(cli, 'orgai.mjs'), join(root, 'npm', 'bin', 'orgai'))
@@ -345,7 +345,7 @@ describe('otherCli (Wave 7, cli-standalone.md 8.2)', () => {
     writeFileSync(launcher, '#!/bin/sh\n# The orgai command of a packaged OrgAI (cli-spec 7, Wave 6).\n')
     const cli = join(resources, 'app.asar.unpacked', 'out', 'cli')
     mkdirSync(cli, { recursive: true })
-    writeFileSync(join(cli, 'orgai.mjs'), '')
+    writeFileSync(join(cli, 'orgai.mjs'), '', { mode: 0o755 })
     writeFileSync(join(cli, 'install.json'), JSON.stringify({ channel: 'app', version: '0.1.7' }))
     const npmBin = npmInstall('0.2.0')
     expect(createCliShimService(deps({ loginPath: `${join(resources, 'bin')}:${npmBin}` })).status().otherCli).toEqual({ path: join(npmBin, 'orgai'), channel: 'npm', version: '0.2.0' })
@@ -360,7 +360,7 @@ describe('otherCli (Wave 7, cli-standalone.md 8.2)', () => {
     // npm prefix ~/.local: npm writes ~/.local/bin/orgai -> ../lib/node_modules/orgai/out/cli/orgai.mjs
     const cli = join(home, '.local', 'lib', 'node_modules', 'orgai', 'out', 'cli')
     mkdirSync(cli, { recursive: true })
-    writeFileSync(join(cli, 'orgai.mjs'), '')
+    writeFileSync(join(cli, 'orgai.mjs'), '', { mode: 0o755 })
     writeFileSync(join(cli, 'install.json'), JSON.stringify({ channel: 'npm', version: '0.2.0' }))
     mkdirSync(binDir, { recursive: true })
     symlinkSync(join(cli, 'orgai.mjs'), shim)

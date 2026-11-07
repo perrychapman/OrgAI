@@ -260,6 +260,22 @@ describe('release.yml publish-npm', () => {
     expect(job).toMatch(/ENABLED: \$\{\{ vars\.NPM_PUBLISH_ENABLED \}\}/)
     expect(job).toMatch(/if \[ "\$ENABLED" != "true" \]; then[\s\S]*?exit 1/)
   })
+  it('requires reviewers on the npm-publish environment through the API, before publishing', () => {
+    const steps = job.slice(job.indexOf('    steps:'))
+    const check = steps.indexOf('Require reviewers on the npm-publish environment')
+    expect(check).toBeGreaterThan(-1)
+    expect(check).toBeLessThan(steps.indexOf('- uses:'))
+    expect(job).toMatch(/actions: read/)
+    expect(job).toContain('repos/$REPO/environments/npm-publish')
+    expect(job).toContain('required_reviewers')
+    expect(job).not.toMatch(/run:[^\n]*\$\{\{ github\.event/)
+  })
+  it('builds, packs and verifies the commit the meta job checked, not the ref name', () => {
+    expect(text).toMatch(/sha: \$\{\{ steps\.meta\.outputs\.sha \}\}/)
+    expect(text).toContain('echo "sha=$commit"')
+    expect(text.match(/ref: \$\{\{ needs\.meta\.outputs\.sha \}\}/g)).toHaveLength(3)
+    expect(text).not.toMatch(/ref: \$\{\{ needs\.meta\.outputs\.ref \}\}/)
+  })
   it('falls back to the NPM_TOKEN secret through an npmrc that names the variable, never the value', () => {
     expect(job).toMatch(/NPM_TOKEN: \$\{\{ secrets\.NPM_TOKEN \}\}/)
     expect(job).toContain("'//registry.npmjs.org/:_authToken=${NPM_TOKEN}'")
