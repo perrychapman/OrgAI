@@ -189,44 +189,7 @@ export function errorFirstLine(error: string | undefined, max = 100): string {
 
 export const WEEK_MS = 7 * DAY
 
-export interface WeekCost {
-  /** Sum of the known costs; null when no run in the week has a known cost (never shown as $0). */
-  costUsd: number | null
-  /** Some run's cost is unknown or partial: the sum is a lower bound. */
-  partial: boolean
-  /** Runs started in the window. */
-  runs: number
-}
-
-/** Cost of runs started in the last 7 days (rolling), each run once. */
-export function weekCost(
-  summaries: readonly { id: string; startedAt: number; usage?: { costUsd: number | null; costPartial?: true } }[],
-  now: number
-): WeekCost {
-  const from = now - WEEK_MS
-  const seen = new Set<string>()
-  let sum = 0
-  let known = 0
-  let partial = false
-  let runs = 0
-  for (const s of summaries) {
-    if (seen.has(s.id)) continue
-    seen.add(s.id)
-    if (s.startedAt < from) continue
-    runs += 1
-    const c = s.usage?.costUsd
-    if (typeof c === 'number' && Number.isFinite(c)) {
-      sum += c
-      known += 1
-      if (s.usage?.costPartial) partial = true
-    } else {
-      partial = true
-    }
-  }
-  if (runs === 0) return { costUsd: 0, partial: false, runs: 0 }
-  return { costUsd: known > 0 ? sum : null, partial, runs }
-}
-
+/** The Cost windows of the tiles and the cost helpers (dashboardProjects.ts). */
 // ---------------------------------------------------------------- words
 
 /** How long a run has been going: "just started", "4 min", "1 h 12 min", "2 d". */
@@ -256,30 +219,81 @@ export function planStepLabel(plan: { status?: string; steps: readonly { status:
   return `Step ${(open < 0 ? steps.length - 1 : open) + 1} of ${steps.length}`
 }
 
-/** The Dashboard's one big figure (spec 3): decisions, then live runs, then paused, else quiet; no projects is a welcome. */
-export function heroFigure(input: { decisions: number; running: number; paused: number; projects: number }): { figure: string } {
-  const { decisions, running, paused, projects } = input
-  if (projects === 0 && decisions === 0 && running === 0 && paused === 0) return { figure: 'Welcome to OrgAI' }
-  if (decisions > 0) return { figure: decisions === 1 ? '1 needs you' : `${decisions} need you` }
-  if (running > 0) return { figure: `${running} running` }
-  if (paused > 0) return { figure: `${paused} paused` }
-  return { figure: 'All quiet' }
-}
-
 const plural = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`
 
-/** The text parts of the hero subline before the cost: "3 projects", "2 runs open". Empty parts are left out. */
-export function heroSublineParts(input: { projects: number; openRuns: number; closedWaiting?: number; quiet?: boolean }): string[] {
-  const parts: string[] = []
-  if (input.projects > 0) parts.push(plural(input.projects, 'project', 'projects'))
-  if (input.openRuns > 0) parts.push(`${plural(input.openRuns, 'run', 'runs')} open`)
-  // M2: "All quiet" must not hide runs OrgAI cut while they waited on the user.
-  const cut = Math.max(0, Math.floor(input.closedWaiting ?? 0))
-  if (input.quiet && cut > 0) parts.push(`${cut} ${cut === 1 ? 'was' : 'were'} waiting on you when OrgAI closed`)
-  return parts
+export const FIRST_LAUNCH_LINE = 'Start a project or just chat. Nothing runs until you say so.'
+
+export interface StatusInput {
+  firstLaunch?: boolean
+  /** Agents of open runs in starting, thinking, tool or delegating. */
+  workingAgents: number
+  /** Open runs holding at least one of those agents. */
+  agentRuns: number
+  /** Open runs whose status word is Running and that are not in Needs you. */
+  workingRuns: number
+  /** Open runs (live, not paused). */
+  openRuns: number
+  pausedRuns: number
+  /** The soonest `pausedUntil` of paused runs that resume by themselves (epoch ms). */
+  pausedUntil?: number | null
+  /** Runs OrgAI cut while they waited on the user. */
+  closedWaiting: number
 }
 
-export const FIRST_LAUNCH_LINE = 'Start a project or just chat. Nothing runs until you say so.'
+/**
+ * The status bar's sentence (docs/design/dashboard-2.md 4.1): what is working, what is paused, what was cut by a quit.
+ * Decisions are never named (Needs you sits beside it). Parts are joined with ". " and the whole ends with ".".
+ */
+export function statusSentence(input: StatusInput): string {
+  if (input.firstLaunch) return `Welcome to OrgAI. ${FIRST_LAUNCH_LINE}`
+  const parts: string[] = []
+  if (input.workingAgents > 0) parts.push(`${plural(input.workingAgents, 'agent', 'agents')} working in ${plural(Math.max(1, input.agentRuns), 'run', 'runs')}`)
+  else if (input.workingRuns > 0) parts.push(`${plural(input.workingRuns, 'run', 'runs')} working`)
+  else if (input.openRuns > 0) parts.push(`${plural(input.openRuns, 'run', 'runs')} open, none working`)
+  else parts.push('Nothing is running')
+  if (input.pausedRuns > 0) {
+    const until = input.pausedUntil
+    const when = typeof until === 'number' && Number.isFinite(until) ? new Date(until).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''
+    parts.push(when ? `${input.pausedRuns} paused until ${when}` : `${input.pausedRuns} paused`)
+  }
+  const cut = Math.max(0, Math.floor(input.closedWaiting))
+  if (cut > 0) parts.push(`${cut} ${cut === 1 ? 'was' : 'were'} waiting on you when OrgAI closed`)
+  return `${parts.join('. ')}.`
+}
+
+/**
+ * "resets in under a minute", "resets in 25 min", "resets in 2 h 10 min", and from 24 h on "resets Thu 09:00".
+ * Empty when the reset time is unknown. A time already past reads "under a minute".
+ */
+export function resetsInLabel(resetsAt: number | null | undefined, now: number): string {
+  if (typeof resetsAt !== 'number' || !Number.isFinite(resetsAt)) return ''
+  const ms = resetsAt - now
+  if (ms < MINUTE) return 'resets in under a minute'
+  if (ms < HOUR) return `resets in ${Math.floor(ms / MINUTE)} min`
+  if (ms < DAY) {
+    const h = Math.floor(ms / HOUR)
+    const m = Math.floor((ms % HOUR) / MINUTE)
+    return m === 0 ? `resets in ${h} h` : `resets in ${h} h ${m} min`
+  }
+  return `resets ${clockText(resetsAt, true)}`
+}
+
+const clockText = (ms: number, withDay: boolean): string => {
+  const d = new Date(ms)
+  const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  return withDay ? `${d.toLocaleDateString([], { weekday: 'short' })} ${time}` : time
+}
+
+/** When a window resets, for a tooltip: "14:10" within a day, "Thu 09:00" from then on. Empty when unknown. */
+export function resetsAtText(resetsAt: number | null | undefined, now: number): string {
+  if (typeof resetsAt !== 'number' || !Number.isFinite(resetsAt)) return ''
+  return clockText(resetsAt, resetsAt - now >= DAY)
+}
+
+/** A clock time ("14:00") for "limited until": the same format as the resume time in the status sentence. */
+export function clockLabel(ms: number | null | undefined): string {
+  return typeof ms === 'number' && Number.isFinite(ms) ? clockText(ms, false) : ''
+}
 
 // ---------------------------------------------------------------- forget an engagement (engagement-2 spec 6)
 
