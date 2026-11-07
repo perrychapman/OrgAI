@@ -76,12 +76,16 @@ function bandSnapshotOf(s: StoreState): BandSnapshot {
   const known = new Set(s.projects.map((p) => p.id))
   const runs: BandRunIn[] = Object.values(s.runs)
     .filter((r) => isRunLive(r) && !isTeamSurfaceRun(r.summary) && (isVirtualProjectId(r.summary.projectId) || known.has(r.summary.projectId)))
-    .map((r) => ({
-      summary: r.summary,
-      ...(r.plan ? { plan: r.plan } : {}),
-      agents: r.agents,
-      decisions: waitingItems(r, projectKindOf(s.projects.find((p) => p.id === r.summary.projectId))).length
-    }))
+    .map((r) => {
+      const items = waitingItems(r, projectKindOf(s.projects.find((p) => p.id === r.summary.projectId)))
+      return {
+        summary: r.summary,
+        ...(r.plan ? { plan: r.plan } : {}),
+        agents: r.agents,
+        decisions: items.length,
+        ...(items[0] ? { firstDecision: items[0].label } : {})
+      }
+    })
   return { runs, projects: s.projects, virtualProjects: s.virtualProjects }
 }
 

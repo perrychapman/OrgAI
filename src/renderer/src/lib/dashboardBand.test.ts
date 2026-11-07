@@ -7,6 +7,9 @@ import {
   bandAgents,
   bandModel,
   bandSignature,
+  bandWorkFacts,
+  clipAtWord,
+  decisionLine,
   countParts,
   currentStep,
   decisionsSuffix,
@@ -21,6 +24,68 @@ import {
   type BandRow,
   type BandRunIn
 } from './dashboardBand'
+import { statusSentence } from './dashboard'
+
+describe('bandWorkFacts (walk-3 M1: one source for the status sentence and the band)', () => {
+  const sentence = (f: ReturnType<typeof bandWorkFacts>): string =>
+    statusSentence({ workingAgents: f.workingAgents, agentRuns: f.counts.working, workingRuns: f.counts.working, openRuns: f.total, pausedRuns: 0, closedWaiting: 0 })
+  it('counts no working agents in a run that waits on a decision', () => {
+    const runs = [
+      // The root still says "Delegating" while its report waits on a card: the run waits, nobody counts as working.
+      input('wait', [root({ state: 'delegating' }), ag('r1', { state: 'waiting' }), ag('r2', { state: 'thinking' })], { decisions: 1, firstDecision: 'Allow: Run npm test' }),
+      input('idle', [root({ state: 'idle' })], { summary: summary('idle', { status: 'idle' }) })
+    ]
+    const f = bandWorkFacts(runs, [project()], {})
+    expect(f.workingAgents).toBe(0)
+    expect(f.counts).toEqual({ working: 0, waiting: 1, idle: 1 })
+    expect(sentence(f)).toBe('2 runs open, none working.')
+  })
+  it('agrees with bandModel counts', () => {
+    const runs = [
+      input('w1', [root(), ag('a'), ag('b', { state: 'tool' })], { summary: summary('w1', { startedAt: 2 }) }),
+      input('w2', [root(), ag('c', { state: 'idle' })], { summary: summary('w2', { startedAt: 3 }) }),
+      input('wait', [root({ state: 'delegating' }), ag('d', { state: 'thinking' })], { decisions: 2, summary: summary('wait', { startedAt: 4 }) }),
+      input('idle', [root({ state: 'idle' })], { summary: summary('idle', { status: 'idle', startedAt: 5 }) })
+    ]
+    const f = bandWorkFacts(runs, [project()], {})
+    const m = bandModel(runs, [project()], {}, NOW, { ...caps, bandRuns: 10 })
+    expect(f.counts).toEqual(m.counts)
+    expect(f.workingAgents).toBe(4)
+    expect(sentence(f)).toBe('4 agents working in 2 runs.')
+  })
+})
+
+describe('decisionLine and clipAtWord (walk-3 M5)', () => {
+  it('cuts at a word boundary with an ellipsis', () => {
+    expect(clipAtWord('Allow: Run npm test', 64)).toBe('Allow: Run npm test')
+    const long = 'Allow: Run npm run build and then deploy everything to production now'
+    const out = clipAtWord(long, 40)
+    expect(out.length).toBeLessThanOrEqual(40)
+    expect(out.endsWith('…')).toBe(true)
+    expect(long.startsWith(out.slice(0, -1))).toBe(true)
+    expect(long[out.length - 1]).toBe(' ')
+  })
+  it('hard-cuts only one very long word', () => {
+    const out = clipAtWord(`Allow: ${'x'.repeat(100)}`, 30)
+    expect(out.length).toBe(30)
+    expect(out.endsWith('…')).toBe(true)
+  })
+  it('is undefined without a decision', () => {
+    expect(decisionLine(undefined)).toBeUndefined()
+    expect(decisionLine('  ')).toBeUndefined()
+    expect(decisionLine('Allow: Edit example.ts')).toBe('Allow: Edit example.ts')
+  })
+  it('replaces the root activity on a waiting run header, never the raw command', () => {
+    const runs = [
+      input('wait', [root({ state: 'delegating', activity: 'Needs approval: $ cd C:\\Users\\x\\.claude\\worktrees\\agent-1 && npm test' })], {
+        decisions: 1,
+        firstDecision: 'Allow: Run npm test'
+      })
+    ]
+    const m = bandModel(runs, [project()], {}, NOW, caps)
+    expect(m.projects[0].runs[0].line2).toBe('Allow: Run npm test')
+  })
+})
 
 const NOW = 1_000_000
 const ag = (id: string, over: Partial<AgentInstance> = {}): AgentInstance =>
