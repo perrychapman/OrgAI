@@ -1,7 +1,7 @@
-import { readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { AgentInstance, ConnectionId, ImageAttachment, McpServerSpec, PermissionSuggestion, PluginSpec, ProviderId, Role, RunEvent, RunPlan, TokenUsage, TranscriptBlock } from '@shared/types'
-import { CHAT_HARNESS_TOOLS, ENGAGEMENT_CONTEXT_TOOL, HARNESS_PROJECT_ID, KNOWLEDGE_FACT_MAX_CHARS, KNOWLEDGE_RECALL_TOOL, KNOWLEDGE_TOOL, MCP_HARNESS_TOOLS, SKILLS_PROJECT_ID, SKILL_ASSIST_HARNESS_TOOLS, SKILL_HARNESS_TOOLS, SPAWN_TOOL } from '@shared/types'
+import { CHAT_HARNESS_TOOLS, ENGAGEMENT_CONTEXT_TOOL, HARNESS_PROJECT_ID, KNOWLEDGE_FACT_MAX_CHARS, KNOWLEDGE_RECALL_TOOL, KNOWLEDGE_TOOL, MCP_HARNESS_TOOLS, OUTPUT_TOOLS, SKILLS_PROJECT_ID, SKILL_ASSIST_HARNESS_TOOLS, SKILL_HARNESS_TOOLS, SPAWN_TOOL } from '@shared/types'
 import { mcpServersForRole, newId, projectKindOf } from '@shared/defaults'
 import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo, type CompletionInput, type ExecActivityReason, type PeerMessage, type RootTurnEnd, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type SessionSettlement } from './types'
 import { datum, harnessToolsFor, isBlockingHarnessTool, type ConfigChange, type ConfigChangeResult, type HarnessTool, type HarnessToolAudience, type HarnessToolHooks, type McpAttachResult } from './harnessTools'
@@ -61,6 +61,12 @@ import { APP_REFERENCE_TOOL, OPEN_IN_APP_TOOL, PROPOSE_APP_SETTINGS_TOOL, PROPOS
  * "Acme billing" twice (the second shows the dedupe path), says MOCK_KNOWLEDGE_RECALLED, and plays the default script
  * with the first report's brief naming Jane Doe so knowledgeContext fires with purpose 'spawn'; MOCK_KNOWLEDGE_NONE
  * without a knowledge graph.
+ * [mock:outputs] (outputsSteps, work runs of a stored project): the root says MOCK_OUTPUTS_START, calls produce_output
+ * for a docx "Project plan" (Markdown with bold, italic, bullets, a table, a numbered list, a rule and fenced code), an
+ * xlsx "Budget" (two sheets; the cell '=SUM(B2:B4)' is passed through for main to store as text), a mermaid
+ * "Architecture diagram" and a markdown "Summary", writes a real 1x1 PNG to `<project>/outputs/logo.png` itself and
+ * register_output's it as "Logo", then register_output's '../outside.txt' (main refuses it; the script goes on), says
+ * MOCK_OUTPUTS_DONE and plays the default script. Without ctx.outputs it says MOCK_OUTPUTS_NONE instead.
  *
  *
  * Chat (quick) markers (quick runs, default script): [mock:chat-edit] (chatEditSteps): list_projects, then an Edit of
@@ -156,6 +162,11 @@ export type MockStep =
    * read back, the retire is skipped with a log line; the run never fails on it.
    */
   | { type: 'retireFact'; node: string; fact: string; reason?: string }
+  /**
+   * The root writes a file itself (no tool card, no transcript row; like an agent's own Write): `base64` decoded to
+   * `<project folder>/<path>`, parent folders created. A failure is logged at warn and the script goes on.
+   */
+  | { type: 'writeFile'; path: string; base64: string }
   /**
    * The plan's usage limit rejects the next request: reports ctx.rateLimited (with `until` ms from now,
    * when given) and ends the session, like the Claude adapter does at the next result.
@@ -741,6 +752,81 @@ export function knowledgeRecallSteps(): MockStep[] {
   ]
 }
 
+/** Trigger token (work runs of a stored project, default script): the root produces and registers outputs first (outputsSteps). */
+export const OUTPUTS_TOKEN = '[mock:outputs]'
+/** The root's first sentence on a [mock:outputs] run. */
+export const MOCK_OUTPUTS_START = 'I will produce the deliverables first.'
+/** The root's sentence after the [mock:outputs] steps (4 produced + 1 registered; the refused register does not count). */
+export const MOCK_OUTPUTS_DONE = 'I produced 5 outputs.'
+/** The root's sentence when [mock:outputs] is set but the run has no outputs (ctx.outputs missing). */
+export const MOCK_OUTPUTS_NONE = 'No outputs are available in this run.'
+/** A real 1x1 PNG the [mock:outputs] root writes itself before register_output. */
+export const MOCK_OUTPUT_PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
+/** Where that PNG lands, relative to the project folder (also the register_output path). */
+export const MOCK_OUTPUT_PNG_PATH = 'outputs/logo.png'
+/** The docx Markdown: heading, bold / italic, bullets, a GFM table, a numbered list, a rule and fenced code. */
+export const MOCK_OUTPUT_DOCX_MARKDOWN = [
+  '# Project plan',
+  '',
+  'This plan covers the **scope**, the *phases* and who owns each one.',
+  '',
+  '- Agree the scope with the sponsor',
+  '- Build in two phases',
+  '- Launch after the review',
+  '',
+  '| Phase | Owner | Weeks |',
+  '| --- | --- | --- |',
+  '| Design | Ana | 2 |',
+  '| Build | Ben | 6 |',
+  '| Launch | Cleo | 1 |',
+  '',
+  '1. Sign off the plan',
+  '2. Start the design phase',
+  '',
+  '---',
+  '',
+  '```',
+  'npm run build',
+  '```'
+].join('\n')
+/** The xlsx workbook. The '=SUM' string is deliberate: main must store it as text, never a formula. */
+export const MOCK_OUTPUT_WORKBOOK = {
+  sheets: [
+    {
+      name: 'Budget',
+      columns: [{ header: 'Item' }, { header: 'Cost', width: 14 }],
+      rows: [['Design', 1200], ['Build', 3400], ['Launch', 800], ['=SUM(B2:B4)', 'see note']],
+      numberFormat: [null, '#,##0.00']
+    },
+    { name: 'Notes', rows: [['Prepared by the mock team'], ['Costs are illustrative']] }
+  ]
+}
+export const MOCK_OUTPUT_MERMAID = 'flowchart LR\n  A[Client] --> B[API]\n  B --> C[(Database)]\n  B --> D[Queue]'
+export const MOCK_OUTPUT_SUMMARY = '# Summary\n\nThe plan, budget and diagram are in the outputs folder.\n\n- Project plan\n- Budget\n- Architecture diagram\n\n| Item | State |\n| --- | --- |\n| Plan | done |'
+
+/**
+ * The [mock:outputs] steps, each output call a real harness tool call through the mock's tool path (RunManager writes
+ * the index, emits output.created and writes the harness rows): the start sentence; produce_output docx "Project plan"
+ * (fileName project-plan), xlsx "Budget" (the tool's `workbook` field), mermaid "Architecture diagram", markdown
+ * "Summary"; the root writes MOCK_OUTPUT_PNG_PATH itself (writeFile) and calls register_output "Logo" on it; then
+ * register_output '../outside.txt' "Outside", which main refuses (the script goes on); then the done sentence.
+ */
+export function outputsSteps(): MockStep[] {
+  const produce = (args: Record<string, unknown>): MockStep => ({ type: 'harness', name: OUTPUT_TOOLS.produce, args, retryOnRevise: false })
+  const register = (args: Record<string, unknown>): MockStep => ({ type: 'harness', name: OUTPUT_TOOLS.register, args, retryOnRevise: false })
+  return [
+    { type: 'text', text: MOCK_OUTPUTS_START },
+    produce({ kind: 'docx', title: 'Project plan', fileName: 'project-plan', description: 'Scope, phases and owners', content: MOCK_OUTPUT_DOCX_MARKDOWN }),
+    produce({ kind: 'xlsx', title: 'Budget', workbook: MOCK_OUTPUT_WORKBOOK }),
+    produce({ kind: 'mermaid', title: 'Architecture diagram', content: MOCK_OUTPUT_MERMAID }),
+    produce({ kind: 'markdown', title: 'Summary', content: MOCK_OUTPUT_SUMMARY }),
+    { type: 'writeFile', path: MOCK_OUTPUT_PNG_PATH, base64: MOCK_OUTPUT_PNG_BASE64 },
+    register({ path: MOCK_OUTPUT_PNG_PATH, title: 'Logo', description: 'Written by the mock with its own tools' }),
+    register({ path: '../outside.txt', title: 'Outside' }),
+    { type: 'text', text: MOCK_OUTPUTS_DONE }
+  ]
+}
+
 /**
  * The id of the live fact whose text is `text` in an engagement_knowledge `get` result: its fact lines read
  * `  kf_<id> | <text>` with ` | retired` appended on a retired one. The text is compared as datum() renders it
@@ -1308,6 +1394,13 @@ export class MockSession implements RuntimeSession {
       const lead = this.firstSpawnableSlug(this.root)
       return deepTreeSteps(lead, this.firstSpawnableSlug(this.rolesBySlug.get(lead), lead))
     }
+    if (!this.isSetup && this.ctx.run.kind === 'work' && !this.ctx.run.quick && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(OUTPUTS_TOKEN)) {
+      // The tools are bound on every work run and answer "Outputs are not available" themselves without ctx.outputs.
+      const available = !!this.ctx.outputs && this.tools.some((t) => t.name === OUTPUT_TOOLS.produce)
+      if (!available) this.log('info', 'Mock [mock:outputs]: this run has no outputs (not a work run of a stored project), so the output steps are skipped.')
+      const first: MockStep[] = available ? outputsSteps() : [{ type: 'text', text: MOCK_OUTPUTS_NONE }]
+      return [...first, ...DEFAULT_WORK]
+    }
     if (!this.isSetup && this.ctx.run.kind === 'work' && !this.ctx.run.quick && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(KNOWLEDGE_RECALL_TOKEN)) {
       const available = !!this.ctx.knowledge && !!this.ctx.knowledgeRecall && this.tools.some((t) => t.name === KNOWLEDGE_RECALL_TOOL)
       if (available) return knowledgeRecallSteps()
@@ -1461,6 +1554,17 @@ export class MockSession implements RuntimeSession {
       }
       case 'retireFact':
         return this.retireFactStep(step)
+      case 'writeFile': {
+        const target = join(this.ctx.project.path, step.path)
+        try {
+          mkdirSync(dirname(target), { recursive: true })
+          writeFileSync(target, Buffer.from(step.base64, 'base64'))
+          this.log('info', `Mock: wrote ${step.path} in the project folder.`)
+        } catch (e) {
+          this.log('warn', `Mock: could not write ${step.path}: ${(e as Error).message}`)
+        }
+        return
+      }
       case 'harnessAnswer':
         return this.harnessAnswerStep(step)
       case 'firstProject':
