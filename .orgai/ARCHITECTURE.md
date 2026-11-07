@@ -598,7 +598,7 @@ components/layout:
 - SDK and provider behaviour claims are verified with a smoke script and recorded in CLAUDE.md with the version, or marked unverified there.
 - Worktree commit and merge belong to the harness. Never register WorktreeCreate or WorktreeRemove hooks just to observe.
 - Each feature lands as one descriptive commit plus a merge commit ('Merge <feature>').
-- Branches: dev is the integration branch, main is stable and protected; releases are v<version> tags on main (release.yml refuses other refs). Stable versions are plain semver (0.1.5); dev builds are `<next patch>-devN` (0.1.6-dev1, 0.1.6-dev2, ...), and the release drops the tag. Agent runs happen on dev.
+- Branches: dev is the integration branch, main is stable and changes only through PRs from dev (branch protection is an owner setting; see CONTRIBUTING.md Maintainer settings); releases are v<version> tags on main (release.yml refuses other refs). Stable versions are plain semver (0.1.5); dev builds are `<next patch>-devN` (0.1.6-dev1, 0.1.6-dev2, ...), and the release drops the tag. Agent runs happen on dev.
 - Push as you go: after each merged feature passes the local gate (typecheck, the whole unit suite, build, only the e2e scripts for the area changed, and the Reviewer where required), the orchestrator pushes dev to origin (`git push origin dev`) before starting the next step; the final report confirms origin/dev equals local dev. The full e2e:free chain is not run locally (owner decision 2026-11-05, it duplicated CI) but runs in CI on windows-latest and macos-15 on every push to dev. A red CI run is a blocker, triaged and fixed at once, and other runs do not push on top of a red dev except to fix it. Never push main directly (release PRs only).
 - Build output (out/, release/, release-*/, *.tsbuildinfo) is gitignored. Never commit it.
 - Local builds live only in `release/win-unpacked` (current, described by `release/BUILD.txt`) and `release/previous` (the one before, with its own `BUILD.txt`), both kept by `npm run pack`. Agents never create other `release-*` folders.
@@ -624,7 +624,7 @@ components/layout:
 - Install: `npm install`
 - Dev (hot reload): `npm run dev`
 - Dev without tokens: `ORGAI_MOCK=1 npm run dev`
-- Free local gate (typecheck, unit tests, build, e2e:free): `npm run check`
+- `npm run check` runs typecheck, unit tests, build and the full e2e:free chain; the local gate is typecheck, `npm test`, build and only the e2e scripts of the area changed, and the full e2e:free runs in CI (owner decision 2026-11-05)
 - Publish a passed gate: `git push origin dev`
 - Typecheck: `npm run typecheck`
 - Unit tests: `npm test`
