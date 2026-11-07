@@ -237,10 +237,18 @@ describe('propose_project_settings', () => {
   })
 
   it('the card title is main-written and names the project and every field (review H1)', async () => {
-    const ctx = chatCtx({ storedProject: () => stored({ kind: 'engagement' }) })
+    const ctx = chatCtx({ storedProject: () => stored({ kind: 'engagement', permissionMode: 'default' }) })
     await call(ctx, { title: 'Harmless tweak', permissionMode: 'auto', client: 'Acme', brief: 'New brief' })
     const req = vi.mocked(ctx.requestProposal).mock.calls[0][0]
-    expect(req.title).toBe('Settings for project "Real project": brief (new text); permissionMode → auto; client → Acme')
+    expect(req.title).toBe('Settings for project "Real project": Brief (new text); Permission mode Ask for everything risky → Unattended; Client unset → Acme')
+  })
+
+  it('the title uses human labels and values, with no raw field names', async () => {
+    const ctx = chatCtx({ storedProject: () => stored({ maxBudgetUsd: 2 }) })
+    await call(ctx, { maxBudgetUsd: 5, autoContinue: false })
+    const title = vi.mocked(ctx.requestProposal).mock.calls[0][0].title
+    expect(title).toBe('Settings for project "Real project": Estimated-cost cap per run $2 → $5; Keep going unattended unset → Off')
+    expect(title).not.toMatch(/maxBudgetUsd|autoContinue/)
   })
 
   it('a decline for one project never blocks the same change for another (review L1)', async () => {

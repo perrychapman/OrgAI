@@ -16,8 +16,11 @@ import {
   type AppSettingChange,
   type AppSettingValue,
   type AppSettings,
-  type AppSettingsProposableField
+  type AppSettingsProposableField,
+  type PermissionMode,
+  type ProjectSettingsProposableField
 } from './types'
+import { PERMISSION_MODE_SHORT } from './view/settingsCopy'
 import { MAX_AUTO_CONTINUES_LIMIT } from './defaults'
 
 /** The name each proposable field has in App settings (card rows and the tool's answers). */
@@ -46,6 +49,34 @@ export const APP_SETTING_FIELD_LABELS: Readonly<Record<AppSettingsProposableFiel
   communityPrices: 'Community model prices',
   defaultAutoContinue: 'Keep going until the plan is complete, for new projects',
   defaultMaxAutoContinues: 'Automatic continues per run for new projects'
+}
+
+/** The name each field propose_project_settings may set has in Project settings (card title and the renderer card). */
+export const PROJECT_SETTING_FIELD_LABELS: Readonly<Record<ProjectSettingsProposableField, string>> = {
+  brief: 'Brief',
+  permissionMode: 'Permission mode',
+  maxBudgetUsd: 'Estimated-cost cap per run',
+  maxSubagentDepth: 'Max subagent depth',
+  maxConcurrentSubagents: 'Max concurrent subagents',
+  isolateWriters: 'Isolate writing reports',
+  reviewMerges: 'Review merges',
+  autoContinue: 'Keep going unattended',
+  maxAutoContinues: 'Automatic continues per run',
+  client: 'Client'
+}
+
+/**
+ * A project setting's value as the card says it: undefined "unset", null "No cap" (numeric caps) or "unset", booleans
+ * On / Off, maxBudgetUsd "$5", permission modes by their short UI name, anything else its text cut at 60 chars.
+ */
+export function projectSettingValueText(field: ProjectSettingsProposableField, value: unknown): string {
+  if (value === undefined) return 'unset'
+  if (value === null) return field === 'maxBudgetUsd' || field === 'maxSubagentDepth' || field === 'maxConcurrentSubagents' || field === 'maxAutoContinues' ? 'No cap' : 'unset'
+  if (typeof value === 'boolean') return value ? 'On' : 'Off'
+  if (field === 'maxBudgetUsd' && typeof value === 'number' && Number.isFinite(value)) return `$${Number.isInteger(value) ? value : value.toFixed(2)}`
+  if (field === 'permissionMode' && typeof value === 'string') return PERMISSION_MODE_SHORT[value as PermissionMode] ?? value
+  const s = String(value)
+  return s.length > 60 ? `${s.slice(0, 59)}…` : s
 }
 
 type Kind =

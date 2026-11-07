@@ -23,7 +23,7 @@ import { clampText } from '../capabilities/sanitize'
 import { APP_REFERENCE_ACTIONS, APP_REFERENCE_BUDGET_MAX, APP_REFERENCE_BUDGET_MIN, APP_REFERENCE_ID_MAX_CHARS, APP_REFERENCE_QUERY_MAX_CHARS, APP_REFERENCE_TOOL, APP_SETTINGS_PROPOSABLE_FIELDS, APP_SETTINGS_PROPOSAL_MAX_CHANGES, OPEN_IN_APP_TOOL, PROJECT_SETTINGS_PROPOSABLE_FIELDS, PROPOSE_APP_SETTINGS_TOOL, PROPOSE_PROJECT_SETTINGS_TOOL, isVirtualProjectId, type AppSettingChange, type AppSettingValue, type SettingsProposalPayload } from '@shared/types'
 import { SAFE_ID } from '@shared/defaults'
 import { isAtlasSurfaceId } from '@shared/view/atlas'
-import { APP_SETTING_FIELD_LABELS, appSettingValue, appSettingValueProblem } from '@shared/appSettingsProposal'
+import { APP_SETTING_FIELD_LABELS, PROJECT_SETTING_FIELD_LABELS, projectSettingValueText, appSettingValue, appSettingValueProblem } from '@shared/appSettingsProposal'
 
 /**
  * The harness's own tools, defined once for every provider. Each definition is a name, a description,
@@ -2748,9 +2748,11 @@ export function appSettingsCardTitle(changes: readonly AppSettingChange[]): stri
 
 const TITLE_TOO_LONG = `REVISE. The settings were not shown to the user: the card cannot list that many changes in full. Propose fewer changes per card (its summary must fit ${SETTINGS_CARD_TITLE_MAX} characters), one card after another.`
 
-export function projectSettingsCardTitle(projectName: string, payload: SettingsProposalPayload): string {
+export function projectSettingsCardTitle(projectName: string, payload: SettingsProposalPayload, stored?: Partial<Record<string, unknown>>): string {
   const parts = PROJECT_SETTINGS_PROPOSABLE_FIELDS.filter((k) => payload[k] !== undefined).map((k) =>
-    k === 'brief' ? 'brief (new text)' : `${k} → ${cardValue(payload[k] ?? null)}`
+    k === 'brief'
+      ? `${PROJECT_SETTING_FIELD_LABELS.brief} (new text)`
+      : `${PROJECT_SETTING_FIELD_LABELS[k]} ${projectSettingValueText(k, stored?.[k])} → ${projectSettingValueText(k, payload[k] ?? null)}`
   )
   return `Settings for project "${clampText(projectName, 80) || 'unnamed'}": ${parts.join('; ')}`
 }
@@ -2809,7 +2811,7 @@ export const proposeProjectSettings = defineTool({
       ;(payload as unknown as Record<string, unknown>)[key] = v
     }
     if (Object.keys(payload).every((k) => k === 'rationale')) return 'Nothing to change: no setting was given for that project.'
-    const cardTitle = projectSettingsCardTitle(project.name, payload)
+    const cardTitle = projectSettingsCardTitle(project.name, payload, project as unknown as Record<string, unknown>)
     if (cardTitle.length > SETTINGS_CARD_TITLE_MAX) return TITLE_TOO_LONG
     const d = await askProposal(ctx, { kind: 'settings', agentId: ROOT_AGENT_ID, title: cardTitle, payload, target: { projectId: project.id, projectName: project.name } })
     return decisionText(d, 'The project settings were applied; they take effect from its next run.')
