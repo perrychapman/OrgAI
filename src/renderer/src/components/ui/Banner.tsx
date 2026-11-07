@@ -1,5 +1,5 @@
 import type { ReactElement, ReactNode } from 'react'
-import { useRef, useState } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 import { CircleAlert, CircleCheck, Info, TriangleAlert, X } from 'lucide-react'
 import { Icon } from './Icon'
 import { IconButton } from './IconButton'
@@ -70,10 +70,18 @@ export function BannerPresence({ show, children }: { show: boolean; children: Re
   // `revealed`: the arrival animation has played for this showing (cleared when the banner goes away).
   const [revealed, setRevealed] = useState(false)
   if (!show && revealed) setRevealed(false)
+  const boxRef = useRef<HTMLDivElement>(null)
+  useLayoutEffect(() => {
+    // A leaving banner is inert: never leave focus on its Dismiss or Undo while it fades.
+    if (show) return
+    const a = document.activeElement
+    if (a && a !== document.body && boxRef.current?.contains(a)) (a as HTMLElement).blur?.()
+  }, [show])
   if (!show && !exit.mounted) return null
   const arrive = show && wasHidden.current && !revealed
   return (
     <div
+      ref={boxRef}
       className="banner-presence leave-collapse"
       data-arrive={arrive ? 'true' : undefined}
       onAnimationEnd={(e) => {

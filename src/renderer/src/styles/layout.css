@@ -260,21 +260,22 @@ html[data-resizing] * {
 
 /*
  * Side panel collapse / expand glide (docs/design/motion.md 3.6). SidePanel calls beginLayoutMotion() for the user's
- * Hide / Show, which sets html[data-layout-moving] for the length of the glide; the column transition exists only then,
+ * Hide / Show, which sets html[data-columns-moving] for the length of the glide (a tray glide sets only
+ * html[data-layout-moving], which defers canvas refits and moves no columns); the column transition exists only then,
  * so first layout, window resizes, the auto-collapse, a budget rail and drags (html[data-resizing]) all snap. The panel
  * is clipped and its body keeps at least the panel minimum while it moves, so its content never reflows narrower.
  * The data-side-wide composer move stays a snap.
  */
-html[data-layout-moving] :is(.run-body, .editor, .live, .knowledge, .outputs) {
+html[data-columns-moving] :is(.run-body, .editor, .live, .knowledge, .outputs) {
   transition: grid-template-columns var(--dur-slow) var(--ease-in-out);
 }
 html[data-resizing] :is(.run-body, .editor, .live, .knowledge, .outputs) {
   transition: none;
 }
-html[data-layout-moving] .side-panel {
+html[data-columns-moving] .side-panel {
   overflow: hidden;
 }
-html[data-layout-moving] .side-panel-body {
+html[data-columns-moving] .side-panel-body {
   min-width: 280px;
 }
 .side-panel[data-collapsed='true'] .side-rail {

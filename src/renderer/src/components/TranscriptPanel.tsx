@@ -540,6 +540,14 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
   const userScrolled = (): void => {
     lastUserScroll.current = Date.now()
   }
+  // A smooth follow in flight (start time, 0 = none): its in-between scroll events are not the user leaving the end
+  // (review M2), so onScroll ignores them until scrollend, a user gesture, or a 1 s safety limit.
+  const autoScroll = useRef(0)
+  const smoothTo = (el: HTMLElement, top: number): void => {
+    autoScroll.current = Date.now()
+    el.addEventListener('scrollend', () => (autoScroll.current = 0), { once: true })
+    el.scrollTo({ top, behavior: 'smooth' })
+  }
   useEffect(() => {
     const el = listRef.current
     if (variant !== 'conversation' || !el || !stuck.current) return
@@ -548,7 +556,7 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
     prevLast.current = lastEntryId
     const delta = el.scrollHeight - el.scrollTop - el.clientHeight
     const behavior = rowAdded ? followBehavior({ delta, viewportHeight: el.clientHeight, sinceUserScrollMs: Date.now() - lastUserScroll.current, reducedMotion: reduced }) : 'auto'
-    if (behavior === 'smooth') el.scrollTo({ top: el.scrollHeight, behavior })
+    if (behavior === 'smooth') smoothTo(el, el.scrollHeight)
     else el.scrollTop = el.scrollHeight
   }, [variant, lastEntryId, partial, showThinking, reduced])
 
@@ -558,7 +566,9 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
       if (!el) return
       stuck.current = true
       setAway(false)
-      el.scrollTo({ top: el.scrollHeight, behavior: followBehavior({ delta: el.scrollHeight - el.scrollTop - el.clientHeight, viewportHeight: el.clientHeight, sinceUserScrollMs: Infinity, reducedMotion: reduced }) })
+      const behavior = followBehavior({ delta: el.scrollHeight - el.scrollTop - el.clientHeight, viewportHeight: el.clientHeight, sinceUserScrollMs: Infinity, reducedMotion: reduced })
+      if (behavior === 'smooth') smoothTo(el, el.scrollHeight)
+      else el.scrollTop = el.scrollHeight
     }
     return (
       <div className="conversation-body" data-testid="conversation-transcript">
@@ -574,6 +584,9 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
           onPointerDown={userScrolled}
           onScroll={(e) => {
             const el = e.currentTarget
+            const started = autoScroll.current
+            if (started && lastUserScroll.current < started && Date.now() - started < 1000) return
+            autoScroll.current = 0
             const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight <= STICK_PX
             stuck.current = atEnd
             setAway(!atEnd)

@@ -125,9 +125,9 @@ export function SidePanel({
     return () => parent.removeAttribute('data-side-wide')
   }, [wide])
   // A user collapse or expand (the Hide and Show buttons) glides the column (layout.css,
-  // gated on html[data-layout-moving]); canvases skip refits while it moves and refit once at the end. Drags, first
+  // gated on html[data-columns-moving]); canvases skip refits while it moves and refit once at the end. Drags, first
   // layout, window resizes, the auto-collapse and the budget rail never glide.
-  const glide = (): void => beginLayoutMotion(tokenMs('--dur-slow'))
+  const glide = (): void => beginLayoutMotion(tokenMs('--dur-slow'), { columns: true })
   const first = useRef(true)
   useEffect(() => {
     if (first.current) {

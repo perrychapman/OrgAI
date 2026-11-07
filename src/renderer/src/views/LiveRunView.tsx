@@ -459,7 +459,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   }, [layout, fitView])
 
   // Glide (motion.md 3.12): a change of layout, node style or topology moves the nodes with a transform transition
-  // while the canvas carries data-layout-moving. The first layout of a canvas never glides; above 60 nodes it snaps.
+  // while the canvas carries data-canvas-gliding. The first layout of a canvas never glides; above 60 nodes it snaps.
   const glideSeen = useRef<string | null>(null)
   const glideUntil = useRef(0)
   useLayoutEffect(() => {

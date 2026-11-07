@@ -13,22 +13,28 @@ const listeners = new Set<Listener>()
 /** Extra time after the transition before the settled signal, so the last frame has been laid out. */
 export const LAYOUT_SETTLE_MARGIN_MS = 50
 
-function setAttr(on: boolean): void {
+function setAttr(name: string, on: boolean): void {
   if (typeof document === 'undefined') return
-  if (on) document.documentElement.setAttribute('data-layout-moving', '')
-  else document.documentElement.removeAttribute('data-layout-moving')
+  if (on) document.documentElement.setAttribute(name, '')
+  else document.documentElement.removeAttribute(name)
 }
 
-/** Marks a layout glide of `ms` starting now. Overlapping calls extend the window; one settled signal at the end. */
-export function beginLayoutMotion(ms: number, now = Date.now()): void {
+/**
+ * Marks a layout glide of `ms` starting now. Overlapping calls extend the window; one settled signal at the end.
+ * `columns: true` (the user's side panel Hide / Show) also sets <html data-columns-moving>, the only window in which
+ * layout.css lets panel columns transition; a tray glide never does, so an auto-collapse or a window resize during it
+ * still snaps (review L).
+ */
+export function beginLayoutMotion(ms: number, options: { columns?: boolean } = {}, now = Date.now()): void {
   if (!(ms > 0)) {
     // Reduced motion or no transition: the resize is instant, a refit right away is what the canvas already does.
     return
   }
+  if (options.columns) setAttr('data-columns-moving', true)
   const end = now + ms + LAYOUT_SETTLE_MARGIN_MS
   if (end <= until) return
   until = end
-  setAttr(true)
+  setAttr('data-layout-moving', true)
   if (timer !== undefined) clearTimeout(timer)
   timer = setTimeout(settle, end - now)
 }
@@ -36,7 +42,8 @@ export function beginLayoutMotion(ms: number, now = Date.now()): void {
 function settle(): void {
   timer = undefined
   until = 0
-  setAttr(false)
+  setAttr('data-layout-moving', false)
+  setAttr('data-columns-moving', false)
   for (const l of [...listeners]) {
     try {
       l()
@@ -64,5 +71,6 @@ export function resetLayoutMotion(): void {
   timer = undefined
   until = 0
   listeners.clear()
-  setAttr(false)
+  setAttr('data-layout-moving', false)
+  setAttr('data-columns-moving', false)
 }

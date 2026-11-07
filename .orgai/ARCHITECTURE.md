@@ -680,7 +680,15 @@ components/layout:
 - Harness-written transcript entries (source 'harness') render as quiet system rows with the detail behind a disclosure, never as user or model messages.
 - Appearance is consumed through the <html> attributes and CSS vars that lib/theme.ts sets. Views never read AppSettings.appearance to style themselves.
 - Icons are lucide-react via the Icon wrapper. No Unicode glyphs as icons.
-- Motion respects prefers-reduced-motion.
+- Motion (docs/design/motion.md): durations, easings and distances only through the tokens in styles/tokens.css (which
+  collapse to ~0 under both `prefers-reduced-motion` and `:root[data-reduce-motion='on']`; global.css also forces
+  0.01 ms); shared keyframes and `.motion-*` classes in styles/motion.css; transform and opacity only, except collapse
+  heights and the sidebar / side panel columns. Entry motion only for arrivals (`lib/useArrival.ts`, never first paint,
+  relaunch or a scope switch); exits only for the user's own removals, retained by `lib/useExitPresence.ts` with
+  `exitProps` (inert + aria-hidden) and focus moved or dropped in the same tick, never left in a leaving node. Canvases
+  defer refits while `lib/layoutMotion.ts` reports a glide. Nothing blocks input; JS reads `useReducedMotion()` /
+  `reducedMotionNow()` from lib/canvas.ts. e2e never waits on an animation (wait for `[open]` or a state, not
+  "visible", right after a close) and `setReduceMotion` / `motionOff` in e2e/lib.mjs set the switch.
 - Path containment checks between a user-chosen or stored path and the data dir compare the lexical and the real spelling of both sides (CI runners have short-name or symlinked temp dirs; local machines usually do not).
 - Unit tests are *.test.ts files beside the module they test. They run with vitest in the node environment and never spend tokens.
 - Smoke scripts and the e2e scripts setup, history and worktree spend real tokens. Run them only with explicit approval. e2e:free (layout, runs, proposals, maintenance, connections, connectors, import, skills, usage, team, assistants, permissions) is safe and must pass after UI changes, with selectors updated in the same change. e2e/runs.mjs also covers run titles on the mock adapter: a 6+ word prompt gives a 4-word tab, sidebar and run-window title with the full prompt in the tab tooltip, and `[mock:title-fail]` falls back to the prompt excerpt.

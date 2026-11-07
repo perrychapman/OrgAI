@@ -4,6 +4,9 @@ import { useArrival } from '../../lib/useArrival'
 import { exitProps, tokenMs } from '../../lib/useExitPresence'
 import { Button } from '../ui/Button'
 
+/** How long a user-removal mark waits for its row to leave (an answer's `*.resolved` event) before it is forgotten. */
+const EXIT_MARK_TTL_MS = 10_000
+
 /**
  * Which rows left because the user did something (an answered inline decision, Clear). Only those play an exit
  * (docs/design/motion.md 2.3, 3.10): they fade and fold shut so the siblings glide up. A row that leaves because a run
@@ -20,7 +23,13 @@ export function useRowExits(): RowExits {
   return useMemo(
     () => ({
       mark: (keys: Iterable<string>) => {
-        for (const k of keys) ref.current.add(k)
+        const marked = [...keys]
+        for (const k of marked) ref.current.add(k)
+        // A mark is for this one exit: forget it once the exit is over, so a key that comes back later and leaves for
+        // another reason (a run ended elsewhere) goes at once (review L).
+        window.setTimeout(() => {
+          for (const k of marked) ref.current.delete(k)
+        }, EXIT_MARK_TTL_MS)
       },
       unmark: (key: string) => {
         ref.current.delete(key)

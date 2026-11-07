@@ -38,7 +38,7 @@ import { CanvasBackdrop } from '../components/canvas/CanvasBackdrop'
 import { CanvasMinimap } from '../components/canvas/CanvasMinimap'
 import { CanvasStyleButton } from '../components/canvas/CanvasStyleButton'
 import { CANVAS_EDGE_TYPES } from '../components/canvas/RadialEdge'
-import { EDGE_TYPE, HEX_GAP, HEX_TILE, beginCanvasGlide, edgeStroke, fitMs, reportingLineRole, ringStepFor, stationGeometry, useCanvasOptions, useNodeArrival, useNodeDims, useReducedMotion } from '../lib/canvas'
+import { EDGE_TYPE, HEX_GAP, HEX_TILE, beginCanvasGlide, edgeStroke, fitMs, refitMs, reportingLineRole, ringStepFor, stationGeometry, useCanvasOptions, useNodeArrival, useNodeDims, useReducedMotion } from '../lib/canvas'
 import { isLayoutMoving, onLayoutSettled } from '../lib/layoutMotion'
 import { STATION_CORNER_RADIUS, STATION_LINE_WIDTH } from '../lib/canvasShapes'
 
@@ -106,15 +106,13 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
           pending = true
           return
         }
-        const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-        void flowRef.current?.fitView({ padding: 0.3, maxZoom: 1, duration: reduced ? 0 : 150 })
+        void flowRef.current?.fitView({ padding: 0.3, maxZoom: 1, duration: refitMs() })
       }, 100)
     })
     const unsettled = onLayoutSettled(() => {
       if (!pending) return
       pending = false
-      const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-      void flowRef.current?.fitView({ padding: 0.3, maxZoom: 1, duration: reduced ? 0 : 150 })
+      void flowRef.current?.fitView({ padding: 0.3, maxZoom: 1, duration: refitMs() })
     })
     ro.observe(el)
     return () => {
@@ -130,6 +128,7 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
     if (!stage || typeof ResizeObserver === 'undefined') return undefined
     let t: ReturnType<typeof setTimeout> | undefined
     let last = -1
+    let pendingOff: (() => void) | undefined
     const ro = new ResizeObserver((entries) => {
       const h = entries[0]?.contentRect.height ?? stage.clientHeight
       if (last < 0) {
@@ -142,20 +141,22 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
         last = stage.clientHeight
         if (isLayoutMoving()) {
           // The tray is gliding: wait for it to settle, then fit once.
-          const off = onLayoutSettled(() => {
-            off()
-            const r = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-            void flowRef.current?.fitView({ padding: 0.3, maxZoom: 1, duration: r ? 0 : 150 })
+          // One pending listener at most; the effect cleanup removes it.
+          if (pendingOff) return
+          pendingOff = onLayoutSettled(() => {
+            pendingOff?.()
+            pendingOff = undefined
+            void flowRef.current?.fitView({ padding: 0.3, maxZoom: 1, duration: refitMs() })
           })
           return
         }
-        const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-        void flowRef.current?.fitView({ padding: 0.3, maxZoom: 1, duration: reduced ? 0 : 150 })
+        void flowRef.current?.fitView({ padding: 0.3, maxZoom: 1, duration: refitMs() })
       }, 150)
     })
     ro.observe(stage)
     return () => {
       clearTimeout(t)
+      pendingOff?.()
       ro.disconnect()
     }
   }, [])
@@ -300,8 +301,7 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
   useEffect(() => {
     if (importState !== 'available' && importState !== 'reverted') return undefined
     const t = window.setTimeout(() => {
-      const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-      void flowRef.current?.fitView({ padding: 0.3, maxZoom: 1, duration: reduced ? 0 : 150 })
+      void flowRef.current?.fitView({ padding: 0.3, maxZoom: 1, duration: refitMs() })
     }, 120)
     if (importState === 'reverted') {
       const button = importNotice?.source === 'template' ? 'team-templates' : 'import-agents'

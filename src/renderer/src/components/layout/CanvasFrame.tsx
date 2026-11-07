@@ -1,5 +1,5 @@
 import type { ReactElement, ReactNode, Ref } from 'react'
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { beginLayoutMotion } from '../../lib/layoutMotion'
 import { exitProps, tokenMs, useExitPresence } from '../../lib/useExitPresence'
 
@@ -11,6 +11,8 @@ export const COMPACT_FRAME_HEIGHT = 480
  * the composer and shrink the frame again, forever.
  */
 export const COMPACT_EXIT_MARGIN = 64
+/** A tray that opens this soon after the frame mounted is treated as present at first paint (no arrival motion). */
+const TRAY_ARRIVAL_GRACE_MS = 1000
 const FrameContext = createContext<{ compact: boolean; announce: ((text: string) => void) | null }>({ compact: false, announce: null })
 
 /** True while the surrounding CanvasFrame is under the compact height (cards fold their body, a proposal may take the stage). */
@@ -205,9 +207,22 @@ export function FrameTray({
   const last = useRef<ReactNode>(null)
   if (has) last.current = children
   // Arrival rule: a tray present at the first render (relaunch, pending cards) never animates; one that opens later does.
+  // Pending cards that reach the store just after the run view mounted (relaunch, run switch) count as present at first
+  // paint: a tray opening within TRAY_ARRIVAL_GRACE_MS of mount never animates (review L).
+  const mountedAt = useRef(Date.now())
   const wasEmpty = useRef(!has)
   if (!has) wasEmpty.current = true
+  const arriving = has && wasEmpty.current && Date.now() - mountedAt.current > TRAY_ARRIVAL_GRACE_MS
+  if (has && !arriving && Date.now() - mountedAt.current <= TRAY_ARRIVAL_GRACE_MS) wasEmpty.current = false
   const prevHas = useRef(has)
+  const sectionRef = useRef<HTMLElement>(null)
+  useLayoutEffect(() => {
+    // The emptied tray is kept (inert) for its exit: focus must never stay on a control in it. Whoever resolved the card
+    // moves focus on in the same tick; if nothing did, drop it to the document rather than a dying button.
+    if (has) return
+    const a = document.activeElement
+    if (a && a !== document.body && sectionRef.current?.contains(a)) (a as HTMLElement).blur?.()
+  }, [has])
   useEffect(() => {
     // The stage resizes while the tray opens or folds shut: tell the canvas to refit once afterwards, not every frame.
     if (prevHas.current !== has) beginLayoutMotion(tokenMs('--dur-base'))
@@ -217,9 +232,10 @@ export function FrameTray({
   return (
     // tabIndex -1: a programmatic jump can land on the region itself when it holds no button.
     <section
+      ref={sectionRef}
       className="frame-tray"
       data-compact={compact ? 'true' : undefined}
-      data-arrive={has && wasEmpty.current ? 'true' : undefined}
+      data-arrive={arriving ? 'true' : undefined}
       aria-label={label}
       tabIndex={-1}
       title={shortcutHint}

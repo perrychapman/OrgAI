@@ -276,6 +276,12 @@
     overlay var(--dur-fast) allow-discrete,
     display var(--dur-fast) allow-discrete;
 }
+/* While a closed dialog fades out (overlay kept for --dur-fast), clicks pass through to the page: a click there must
+   not reach the leaving dialog and call onClose again (review L). */
+.dialog:not([open]),
+.dialog:not([open])::backdrop {
+  pointer-events: none;
+}
 .dialog[open]::backdrop {
   opacity: 1;
   transition:
@@ -553,6 +559,8 @@
   background: var(--field-bg);
   color: transparent;
   transition: background var(--dur-instant), border-color var(--dur-instant);
+  /* Decorative: the transformed tick paints above the hidden input, so clicks must pass through to it. */
+  pointer-events: none;
 }
 .checkbox-box svg {
   width: 12px;

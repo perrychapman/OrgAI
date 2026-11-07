@@ -77,20 +77,28 @@ export function Tabs({
     setBar((b) => (b && b.x === x && b.w === w ? b : { x, w }))
   }
   useLayoutEffect(measure, [value, signature])
+  const measureRef = useRef(measure)
+  measureRef.current = measure
+  // The observer lives across selection changes (review M3): a new observer always fires once right after layout, and
+  // that snap would cancel the slide a tab change just started. Its first callback is skipped; later ones are resizes.
   useEffect(() => {
     setReady(true)
     const list = listRef.current
     if (!list || typeof ResizeObserver === 'undefined') return undefined
+    let first = true
     const ro = new ResizeObserver(() => {
+      if (first) {
+        first = false
+        return
+      }
       list.setAttribute('data-snap', '')
-      measure()
+      measureRef.current()
       requestAnimationFrame(() => list.removeAttribute('data-snap'))
     })
     ro.observe(list)
     for (const el of refs.current.values()) ro.observe(el)
     return () => ro.disconnect()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [value, signature])
+  }, [signature])
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>): void => {
     const i = enabled.findIndex((t) => t.id === value)

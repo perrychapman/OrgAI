@@ -248,7 +248,9 @@ try {
   check((await auditRow.isVisible()) && (await taxRow.isVisible()), 'rows under an expanded header are visible')
   await shot('sidebar-grouped-dark')
   await acme.click()
-  await sleep(200)
+  // The group folds over --dur-base (.motion-collapse): wait for the rows' state, never a fixed time.
+  await auditRow.waitFor({ state: 'hidden', timeout: 3000 }).catch(() => {})
+  await taxRow.waitFor({ state: 'hidden', timeout: 3000 }).catch(() => {})
   check((await acme.getAttribute('aria-expanded')) === 'false' && !(await auditRow.isVisible()) && !(await taxRow.isVisible()), 'collapsing hides the rows and flips aria-expanded')
   await shot('sidebar-collapsed-dark')
   const stored = await page.evaluate(() => localStorage.getItem('orgai.sidebarClientGroups'))
@@ -258,7 +260,7 @@ try {
   check((await page.locator('.sidebar [data-testid=nav-client-group][data-client="Acme Corp"]').getAttribute('aria-expanded')) === 'false', 'collapse state survives a reload')
   await page.locator('.sidebar [data-testid=nav-client-group][data-client="Acme Corp"]').focus()
   await page.keyboard.press('Enter')
-  await sleep(200)
+  await auditRow.waitFor({ state: 'visible', timeout: 3000 }).catch(() => {})
   check((await page.locator('.sidebar [data-testid=nav-client-group][data-client="Acme Corp"]').getAttribute('aria-expanded')) === 'true' && (await auditRow.isVisible()), 'Enter on a focused header expands it again')
 
   // Engagement rows carry a kind mark; code rows do not.

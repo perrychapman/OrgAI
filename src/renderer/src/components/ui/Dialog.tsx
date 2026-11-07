@@ -48,6 +48,10 @@ export function Dialog({
       // back to the opener only when it is still on nothing or inside the closed dialog.
       const now = document.activeElement
       if (!now || now === document.body || el.contains(now)) opener?.focus?.()
+      // The panel stays mounted (inert) for its exit: if the opener could not take focus (it was <body> or is gone),
+      // never leave focus on a control inside the leaving dialog; drop it to the document instead.
+      const still = document.activeElement
+      if (still && still !== document.body && el.contains(still)) (still as HTMLElement).blur?.()
     }
   }, [open])
   return (

@@ -378,7 +378,8 @@ export const GLIDE_MAX_NODES = 60
 export const GLIDE_END_MARGIN_MS = 50
 /** At most this many working nodes breathe at once (motion.md 3.18). */
 export const BREATHE_MAX_NODES = 12
-const GLIDE_ATTR = 'data-layout-moving'
+// Not data-layout-moving: that one sits on <html> (lib/layoutMotion.ts) for column and tray glides.
+const GLIDE_ATTR = 'data-canvas-gliding'
 const glideTimers = new WeakMap<Element, number>()
 
 /** The glide length in ms, or 0 when the canvas has too many nodes or motion is reduced. */
@@ -389,6 +390,18 @@ export function glideMs(nodeCount: number): number {
 }
 
 /** The fit animation length: 0 reduced, else the slow token. */
+/** True when the OS or App settings > Reduce motion asks for reduced motion, read now (for callbacks outside render). */
+export function reducedMotionNow(): boolean {
+  if (typeof document !== 'undefined' && document.documentElement.getAttribute('data-reduce-motion') === 'on') return true
+  return typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+}
+
+/** Duration of a quiet refit after a resize (ms): 0 under either reduced-motion switch, else --dur-fast + --dur-instant. */
+export function refitMs(): number {
+  if (reducedMotionNow()) return 0
+  return tokenMs('--dur-fast') + tokenMs('--dur-instant')
+}
+
 export function fitMs(reduced: boolean): number {
   if (reduced) return 0
   const ms = tokenMs('--dur-slow')
@@ -396,7 +409,7 @@ export function fitMs(reduced: boolean): number {
 }
 
 /**
- * Marks the canvas as gliding: its `.react-flow` gets `data-layout-moving` (flow.css turns the node transition on and
+ * Marks the canvas as gliding: its `.react-flow` gets `data-canvas-gliding` (flow.css turns the node transition on and
  * hides edges meanwhile) and loses it after the glide. Call it before the commit that moves the nodes. Returns the ms
  * until the glide has settled (0 when nothing glides, so the caller may refit at once).
  */

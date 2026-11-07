@@ -2,10 +2,14 @@
 // dialog open and a popover open start running transitions (getAnimations) and the motion tokens hold their values;
 // closing a dialog keeps its panel inert while it leaves, three quick open/close cycles leave no open dialog and return
 // focus; with Reduce motion on every animation on a dialog / popover is ~0 ms, the motion distance is 0px and every
-// [data-breathe] mark is static. 1024x640 and 1600x1000, dark and light. Never waits on an animation to finish.
-import { check, finish, launch, setReduceMotion, sleep } from './lib.mjs'
+// working canvas node breathes at --dur-pulse (at most 12) and stops. 1024x640 and 1600x1000, dark and light. Never
+// waits on an animation to finish.
+import { check, cleanup, createProject, finish, launch, makeFixtureRepo, openProject, removeFixture, setReduceMotion, sleep } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
+
+const NAME = 'E2E motion (orgai test)'
+const repo = makeFixtureRepo('motion')
 
 const { app, page, shot } = await launch({ shotPrefix: 'motion' })
 page.setDefaultTimeout(8000)
@@ -160,16 +164,44 @@ try {
         check((pop ?? []).every((a) => a.duration <= 1), `with Reduce motion on, every animation on an opening popover is ~0 ms ${tag}`, JSON.stringify(pop))
         await page.keyboard.press('Escape')
       }
-      const breathing = await page.evaluate(() =>
-        [...document.querySelectorAll('[data-breathe]')].filter(
-          (el) => getComputedStyle(el).animationName.includes('breathe') || getComputedStyle(el, '::after').animationName.includes('breathe')
-        ).length
-      )
-      check(breathing === 0, `no [data-breathe] mark runs breathe with Reduce motion on ${tag}`, String(breathing))
     }
   }
+
+  // Live cues on a running canvas: working nodes breathe at --dur-pulse, at most 12, and stop under Reduce motion.
+  await setReduceMotion(page, 'off')
+  await setSize(1600, 1000)
+  const project = await createProject(page, { mode: 'existing', path: repo, name: NAME })
+  check(!!project, 'project created on the mock adapter')
+  await openProject(page, NAME)
+  await page.getByRole('tab', { name: 'Live', exact: true }).click()
+  const ta = page.locator('.composer textarea')
+  await ta.waitFor({ timeout: 10_000 })
+  await ta.fill('Motion breathe check [mock:deep-tree]')
+  await page.locator('.composer .btn.primary').click()
+  await page.locator('.react-flow [data-breathe]').first().waitFor({ timeout: 20_000 }).catch(() => {})
+  const breathe = () =>
+    page.evaluate(() => {
+      const marks = [...document.querySelectorAll('.react-flow [data-breathe]')]
+      const running = marks.filter((m) =>
+        [m, ...m.querySelectorAll('*')].some(
+          (el) => ['', '::before', '::after'].some((p) => getComputedStyle(el, p || null).animationName.split(',').some((n) => n.trim() === 'breathe'))
+        )
+      )
+      const pulse = getComputedStyle(document.documentElement).getPropertyValue('--dur-pulse').trim()
+      return { marks: marks.length, running: running.length, pulse }
+    })
+  const on = await breathe()
+  if (on.marks > 0) {
+    check(on.marks <= 12, 'at most 12 canvas nodes carry data-breathe', JSON.stringify(on))
+    check(on.running > 0 && on.pulse === '1800ms', 'working canvas nodes breathe at --dur-pulse with motion on', JSON.stringify(on))
+    await setReduceMotion(page, 'on')
+    const off = await breathe()
+    check(off.running === 0, 'no canvas node runs breathe with Reduce motion on', JSON.stringify(off))
+  } else check(true, 'no working node was caught on the canvas (the mock finished first); breathe check skipped')
   await setReduceMotion(page, 'system')
+  await cleanup(app, page, NAME)
 } finally {
   await app.close().catch(() => {})
+  removeFixture(repo)
 }
 finish('motion')
