@@ -297,6 +297,8 @@ export const ASK_ORGAI_SEED = 'How do I '
 export async function askOrgAI(): Promise<void> {
   closeKeyboardShortcuts()
   await useAppStore.getState().openAssistant('quick', { instruction: ASK_ORGAI_SEED, fresh: true })
+  // After the dialog's own focus return (review L6).
+  await new Promise<void>((r) => (typeof requestAnimationFrame === 'function' ? requestAnimationFrame(() => r()) : setTimeout(r, 0)))
   useAppStore.getState().focusComposer()
 }
 

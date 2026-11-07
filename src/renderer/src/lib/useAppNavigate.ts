@@ -2,8 +2,8 @@ import { useEffect, useSyncExternalStore } from 'react'
 import type { AppNavigateEvent } from '@shared/types'
 import { isVirtualProjectId } from '@shared/types'
 import { openNewProject, useAppStore } from '../store/useAppStore'
-import { navigationFor, type NavigationPlan } from './appNavigate'
-import { announceMenu, openKeyboardShortcuts } from './menuActions'
+import { navigationFor, type NavigationPlan, type NavTarget } from './appNavigate'
+import { announceMenu, menuStateFor, openKeyboardShortcuts } from './menuActions'
 import { focusPaneHeading, requestAppSettingsSection, requestProjectSettingsSection } from './settingsTarget'
 import { openSettingsAdvanced } from '../components/settings/SettingsAdvanced'
 import { scrollWithin } from './scrollWithin'
@@ -40,8 +40,15 @@ export const currentNavBanner = (): NavBanner | null => banner
 export function useNavBanner(): NavBanner | null {
   return useSyncExternalStore(subscribe, currentNavBanner, currentNavBanner)
 }
+/** Dismiss: the banner goes and focus moves to the page's heading instead of falling to <body> (review L1). */
 export function dismissNavBanner(): void {
   setBanner(null)
+  requestAnimationFrame(() => {
+    const a = document.activeElement
+    if (a && a !== document.body) return
+    const pane = document.querySelector<HTMLElement>('#main-content .settings-pane-title')
+    focusHeading(pane ?? document.querySelector<HTMLElement>('#main-content h1'))
+  })
 }
 
 type State = ReturnType<typeof useAppStore.getState>
@@ -61,10 +68,28 @@ function focusHeading(el: HTMLElement | null | undefined): boolean {
   return document.activeElement === el
 }
 
-/** Nothing on the destination took focus: it is still on <body> or outside the main area. */
-function focusLost(): boolean {
+
+/** Focus sits on a form control or button inside the main area (something a key press could change or press). */
+function onControl(): boolean {
   const a = document.activeElement
-  return !a || a === document.body || !document.getElementById('main-content')?.contains(a)
+  return !!a && !!document.getElementById('main-content')?.contains(a) && a.matches('input, select, textarea, button, [role=radio], [role=switch], [role=option], a[href]')
+}
+
+const isHeading = (el: Element | null): boolean => !!el && (/^H[1-6]$/.test(el.tagName) || el.classList.contains('settings-pane-title'))
+
+/** The destination's heading: the target section's title, else the settings pane title, else the view's h1. */
+function landOnHeading(t: NavTarget): void {
+  const a = document.activeElement
+  if (isHeading(a) && document.getElementById('main-content')?.contains(a)) return
+  const sectionId = t.kind === 'app' ? t.target : t.kind === 'project' ? t.section : undefined
+  const section = sectionId ? document.getElementById(sectionId) : null
+  const title = section?.querySelector<HTMLElement>('.settings-section-title, .settings-group-title, h2, h3')
+  if (title && title.checkVisibility?.() !== false && focusHeading(title)) return
+  if ((t.kind === 'app' || (t.kind === 'project' && t.view === 'settings')) && document.querySelector('.settings-pane-title')) {
+    focusPaneHeading({ preventScroll: true })
+    if (isHeading(document.activeElement)) return
+  }
+  focusHeading(document.querySelector<HTMLElement>('#main-content h1'))
 }
 
 async function perform(plan: Extract<NavigationPlan, { ok: true }>, event: AppNavigateEvent): Promise<void> {
@@ -121,15 +146,17 @@ async function perform(plan: Extract<NavigationPlan, { ok: true }>, event: AppNa
       break
     }
   }
-  // Land focus on the destination's heading when the destination's own deep link did not (spec: never the banner).
+  // Land focus on the destination's heading, never on a control: some deep links focus a setting (the checked canvas
+  // style, the Team assistant select) where an arrow key would change it (review M1; coordinator: headings only).
   await nextFrame()
   await nextFrame()
   if (t.kind === 'shell') {
-    if (t.what === 'sidebar') focusHeading(document.getElementById('sidebar'))
-    else if (t.what !== 'shortcuts') document.querySelector<HTMLElement>(`[data-testid="${t.what === 'account' ? 'auth-pill' : 'needs-you-row'}"]`)?.focus()
-  } else if (focusLost()) {
-    if (t.kind === 'app' || (t.kind === 'project' && t.view === 'settings')) focusPaneHeading({ preventScroll: true })
-    if (focusLost()) focusHeading(document.querySelector<HTMLElement>('#main-content h1'))
+    if (t.what !== 'shortcuts') focusHeading(document.getElementById('sidebar'))
+  } else if (!(t.kind === 'run' && t.composer)) {
+    landOnHeading(t)
+    // App settings focuses its target once its settings load; check again after that.
+    await new Promise((r) => setTimeout(r, 400))
+    if (onControl()) landOnHeading(t)
   }
   // A part of a page (a Team or History section, a run part): bring its first element into view inside its scroller.
   if (t.kind === 'project' && t.view !== 'settings') {
@@ -148,9 +175,10 @@ export async function handleAppNavigate(event: AppNavigateEvent): Promise<void> 
   const st = useAppStore.getState()
   const plan = navigationFor(event, { projects: st.projects, runProjectId: st.runs[event?.runId]?.summary.projectId })
   if (!plan.ok) {
-    // Nothing moved: say it where the user is (the chat's run notice), and show the banner without a way back.
+    // Nothing moved: say it where the user is. On a run view the run tabs' notice is visible already (review L2);
+    // elsewhere the banner shows it, without a way back.
     announceMenu(plan.message)
-    setBanner({ seq: ++seq, message: plan.message, home: locationKey(useAppStore.getState()) })
+    if (!onRunView()) setBanner({ seq: ++seq, message: plan.message, home: locationKey(useAppStore.getState()) })
     return
   }
   try {
@@ -161,8 +189,16 @@ export async function handleAppNavigate(event: AppNavigateEvent): Promise<void> 
   // The banner is not for the run that asked when the destination is that very run.
   const after = useAppStore.getState()
   const backTo = after.view === 'run' && after.selectedProjectId && after.activeRunByProject[after.selectedProjectId] === event.runId ? undefined : event.runId
-  setBanner({ seq: ++seq, message: plan.message, ...(backTo ? { runId: backTo } : {}), home: locationKey(after) })
+  // Inside the asking run itself the run tabs' visible notice says it; a banner would repeat it (review L2).
+  if (backTo || !onRunView()) setBanner({ seq: ++seq, message: plan.message, ...(backTo ? { runId: backTo } : {}), home: locationKey(after) })
+  else setBanner(null)
   announceMenu(plan.message)
+}
+
+/** A run view with its run tabs on screen: announceMenu then shows the sentence there, visibly. */
+function onRunView(): boolean {
+  const s = useAppStore.getState()
+  return s.view === 'run' && menuStateFor(s).hasProject
 }
 
 /** "Back to chat": the run that asked, in its project's Live view, with the composer focused. Clears the banner. */

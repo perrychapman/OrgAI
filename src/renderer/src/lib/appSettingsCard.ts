@@ -128,7 +128,9 @@ export function projectSettingRows(payload: SettingsProposalPayload, kind: Proje
   const add = (field: string, label: string, now: string | undefined, next: string): void => {
     rows.push({ field, label, now: project ? (now ?? unknown) : unknown, next })
   }
-  if (engagement && payload.client !== undefined) add('client', 'Client or case', project?.client?.trim() ? showHidden(oneLine(project.client, 120)) : 'Not set', payload.client.trim() ? showHidden(oneLine(payload.client, 120)) : 'Cleared')
+  // Every field the payload sets is listed, whatever kind the card guessed (a target project not loaded reads as code;
+  // main sends client only for engagements). Review M2: nothing the user approves may be hidden.
+  if (payload.client !== undefined) add('client', 'Client or case', project?.client?.trim() ? showHidden(oneLine(project.client, 120)) : 'Not set', payload.client.trim() ? showHidden(oneLine(payload.client, 120)) : 'Cleared')
   if (payload.permissionMode) add('permissionMode', 'Permission mode', project && permissionModeWord(project.permissionMode), permissionModeWord(payload.permissionMode))
   if (payload.maxBudgetUsd !== undefined) add('maxBudgetUsd', 'Spend cap per run', project && (project.maxBudgetUsd === undefined ? 'No cap' : dollars(project.maxBudgetUsd)), payload.maxBudgetUsd === null ? 'No cap' : dollars(payload.maxBudgetUsd))
   if (payload.maxSubagentDepth !== undefined) add('maxSubagentDepth', 'Max subagent depth', project && (project.maxSubagentDepth === undefined ? 'Automatic' : String(project.maxSubagentDepth)), String(payload.maxSubagentDepth))

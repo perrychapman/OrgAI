@@ -182,7 +182,7 @@ export function navigationFor(event: AppNavigateEvent, state: NavigationState): 
   } else if (surface.scope === 'run') {
     // No project named: the run view part of the run that asked (a Chat run lives in the Chat assistant).
     projectId = state.runProjectId ?? 'quick'
-    if (crumbs[0] === 'Project') crumbs[0] = isVirtualProjectId(projectId) ? 'This conversation' : (state.projects.find((p) => p.id === projectId)?.name ?? 'Project')
+    if (crumbs[0] === 'Project') crumbs[0] = isVirtualProjectId(projectId) ? 'This conversation' : plainLabel(state.projects.find((p) => p.id === projectId)?.name ?? '', 60) || 'Project'
   }
   const path = crumbs.join(SEP)
   return { ok: true, target, ...(projectId ? { projectId } : {}), path, message: `${who} opened ${path} for you.`, testIds }

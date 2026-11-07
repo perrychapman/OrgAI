@@ -9,6 +9,7 @@ import { pathStatus } from '../../lib/projectsForm'
 import { connectionLabel } from '../../lib/connectionLabel'
 import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../../lib/settingsTarget'
 import { newRunDraftKey, useAppStore } from '../../store/useAppStore'
+import { ASK_ORGAI_SEED } from '../../lib/menuActions'
 import { Button } from '../ui/Button'
 import { EmptyState } from '../ui/EmptyState'
 import { Input } from '../ui/Input'
@@ -51,7 +52,10 @@ export default function ChatStartPage({ project }: { project: Project }): ReactE
   /** Put `value` in the instruction field (the start page's composer) and focus it with the caret at the end. */
   const fillInstruction = (value: string): void => {
     const st = useAppStore.getState()
-    st.setComposerDraft(draftKey, { text: value, images: st.composerDrafts[draftKey]?.images ?? [] })
+    // A chip replaces only an empty field, the seed or another example; text the user typed is kept (review L4).
+    const now = (st.composerDrafts[draftKey]?.text ?? '').trim()
+    const replace = !now || now === ASK_ORGAI_SEED.trim() || CHAT_EXAMPLES.some((ex) => ex.text === now)
+    st.setComposerDraft(draftKey, { text: replace ? value : `${st.composerDrafts[draftKey]?.text.trimEnd()}\n${value}`, images: st.composerDrafts[draftKey]?.images ?? [] })
     requestAnimationFrame(() => {
       const field = document.querySelector<HTMLTextAreaElement>('[data-testid="assistant-start-quick"] .composer textarea')
       if (!field) return

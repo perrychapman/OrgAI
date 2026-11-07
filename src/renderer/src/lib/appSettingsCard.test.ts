@@ -68,4 +68,8 @@ describe('projectSettingRows', () => {
       ['Give each writer its own copy (git worktrees)', 'Unknown', 'On']
     ])
   })
+  it('never hides a client change, even when the kind is guessed as code (review M2)', () => {
+    const rows = projectSettingRows({ rationale: '', client: 'Acme' }, 'code', undefined)
+    expect(rows.map((r) => r.field)).toEqual(['client'])
+  })
 })
