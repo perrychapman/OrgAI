@@ -356,7 +356,7 @@ const gridsOf = (sheets: SheetPreview[]): Grid[] => sheets.map((s) => ({ name: s
 // ---------- slides ----------
 
 function slideSig(s: SlidePreview): string {
-  return createHash('sha1').update(JSON.stringify([s.background ?? null, s.shapes, s.notes ?? null])).digest('hex')
+  return createHash('sha1').update(JSON.stringify([s.background ?? null, s.shapes, s.notes ?? null], (k, v) => (k === 'dataUrl' && typeof v === 'string' ? `img:${v.length}:${createHash('sha1').update(v).digest('hex').slice(0, 12)}` : v))).digest('hex')
 }
 
 function diffSlides(a: SlidePreview[], b: SlidePreview[], truncated: boolean): OutputDiff {

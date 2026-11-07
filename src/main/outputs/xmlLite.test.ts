@@ -46,4 +46,10 @@ describe('xmlLite', () => {
     expect(Object.getPrototypeOf(r.attrs)).toBeNull()
     expect(({} as Record<string, unknown>).x).toBeUndefined()
   })
+  it('fails once a shared element budget runs out, across parses', () => {
+    const budget = { left: 5 }
+    parseXml('<a><b/><c/></a>', {}, budget)
+    expect(budget.left).toBe(2)
+    expect(() => parseXml('<a><b/><c/></a>', {}, budget)).toThrow(XmlLiteError)
+  })
 })

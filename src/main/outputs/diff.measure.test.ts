@@ -70,3 +70,24 @@ describe('sheet and deck diff timing', () => {
     expect(t).toBeLessThan(15_000)
   })
 })
+
+describe('diffOps step budget', () => {
+  it('500,000 lines with sparse changes finishes and returns a valid script', () => {
+    const a = Array.from({ length: 500_000 }, (_, i) => `line ${i}`)
+    const b = a.slice()
+    for (let i = 1000; i < 500_000; i += 997) b[i] = `changed ${i}`
+    const t0 = performance.now()
+    const ops = diffOps(a, b)
+    const t = performance.now() - t0
+    console.log(`[diff measure] 500k lines sparse: ${t.toFixed(0)} ms, ${ops.length} ops`)
+    expect(ops.length).toBeGreaterThan(400_000)
+    expect(t).toBeLessThan(20_000)
+  })
+  it('falls back to a coarse result when the step budget is exhausted', () => {
+    const a = Array.from({ length: 2000 }, (_, i) => `a${i}`)
+    const b = Array.from({ length: 2000 }, (_, i) => `b${i}`)
+    const ops = diffOps(a, b, 100_000, 1000)
+    expect(ops.filter((o) => o.op === 'del').length).toBe(2000)
+    expect(ops.filter((o) => o.op === 'add').length).toBe(2000)
+  })
+})

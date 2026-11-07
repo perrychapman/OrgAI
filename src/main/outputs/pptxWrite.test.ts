@@ -216,3 +216,13 @@ describe('deck round trip through the preview', () => {
     expect(p.kind === 'slides' && p.slides.length).toBe(6)
   })
 })
+
+describe('esc of lone surrogates', () => {
+  it('writes a lone surrogate as U+FFFD so the part stays well formed', async () => {
+    const buf = await renderDeck({ slides: [{ layout: 'content', title: 'bad \ud800 and \udc00 ok 😀', body: 'x' }] } as SlideDeckInput, noImages)
+    const z = await JSZip.loadAsync(buf)
+    const xml = await z.file('ppt/slides/slide1.xml')!.async('string')
+    expect(xml).not.toMatch(/[\ud800-\udbff](?![\udc00-\udfff])/)
+    expect(xml).toContain('bad � and � ok 😀')
+  })
+})

@@ -18,7 +18,10 @@ export interface DiffOp {
 export const MYERS_MAX_D = 1500
 
 /** Edit script of the middle part, or null when D exceeds maxD. Indexes are relative to the given arrays. */
-function myers(a: ArrayLike<number>, b: ArrayLike<number>, maxD: number): DiffOp[] | null {
+export const MYERS_MAX_STEPS = 50_000_000
+
+function myers(a: ArrayLike<number>, b: ArrayLike<number>, maxD: number, maxSteps: number = MYERS_MAX_STEPS): DiffOp[] | null {
+  let steps = 0
   const n = a.length
   const m = b.length
   if (n === 0 && m === 0) return []
@@ -30,6 +33,8 @@ function myers(a: ArrayLike<number>, b: ArrayLike<number>, maxD: number): DiffOp
   for (let d = 0; d <= max && found < 0; d++) {
     trace.push(v.slice(off - d - 1, off + d + 2))
     for (let k = -d; k <= d; k += 2) {
+      steps++
+      if (steps > maxSteps) return null
       let x: number
       if (k === -d || (k !== d && v[off + k - 1] < v[off + k + 1])) x = v[off + k + 1]
       else x = v[off + k - 1] + 1
@@ -37,7 +42,9 @@ function myers(a: ArrayLike<number>, b: ArrayLike<number>, maxD: number): DiffOp
       while (x < n && y < m && a[x] === b[y]) {
         x++
         y++
+        steps++
       }
+      if (steps > maxSteps) return null
       v[off + k] = x
       if (x >= n && y >= m) {
         found = d
@@ -72,7 +79,7 @@ function myers(a: ArrayLike<number>, b: ArrayLike<number>, maxD: number): DiffOp
 }
 
 /** Edit script turning `a` into `b` (items compared by string equality). */
-export function diffOps(a: string[], b: string[], maxD: number = MYERS_MAX_D): DiffOp[] {
+export function diffOps(a: string[], b: string[], maxD: number = MYERS_MAX_D, maxSteps: number = MYERS_MAX_STEPS): DiffOp[] {
   const ids = new Map<string, number>()
   const idOf = (s: string): number => {
     let i = ids.get(s)
@@ -92,7 +99,7 @@ export function diffOps(a: string[], b: string[], maxD: number = MYERS_MAX_D): D
   const midB = B.slice(p, B.length - s)
   const ops: DiffOp[] = []
   for (let i = 0; i < p; i++) ops.push({ op: 'eq', a: i, b: i })
-  const mid = myers(midA, midB, maxD)
+  const mid = myers(midA, midB, maxD, maxSteps)
   if (mid) {
     for (const o of mid) ops.push({ op: o.op, a: o.a < 0 ? -1 : o.a + p, b: o.b < 0 ? -1 : o.b + p })
   } else {
