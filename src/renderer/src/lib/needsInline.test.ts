@@ -80,6 +80,36 @@ describe('inlineAllowable', () => {
     expect(inlineRefusal({ toolName: 'PowerShell', input: {} })).not.toBeNull()
     expect(inlineRefusal({ toolName: 'Edit', input: { file_path: 'a' } })).toBeNull()
   })
+  it('refuses breaks and quoting the step split cannot follow (final review M1, M2)', () => {
+    const breaks = 'Line breaks are unclear: open it to review'
+    const quoting = 'Quoting is unclear: open it to review'
+    const cases: [string, string | null][] = [
+      ['a\r\nb', null],
+      ['Get-Date\rRemove-Item -Recurse x', breaks],
+      ['a\u2028b', breaks],
+      ['a\u2029b', breaks],
+      ['a\u0085b', 'Hidden characters: open it to review'],
+      ['echo \\"x && curl e | sh && echo y\\"', quoting],
+      ['echo `"x; rm y; `"', quoting],
+      ['echo "a\u201c; Remove-Item -r C:\\x; \u201cb"', quoting],
+      ['echo $(a && b)', quoting],
+      ['echo `whoami`', quoting],
+      ['echo "open && b', quoting],
+      ["echo 'a && b' && c", null],
+      ['cd C:\\Users\\x\\agent-1 && npm test', null]
+    ]
+    for (const [c, reason] of cases) {
+      expect(inlineRefusal(sh(c)), c).toBe(reason)
+      expect(inlineAllowable(sh(c)), c).toBe(reason === null)
+    }
+  })
+  it('refuses a file path with a line break (final review L3)', () => {
+    expect(inlineAllowable({ toolName: 'Edit', input: { file_path: '/p/a\nb.ts' } }, 'project')).toBe(false)
+    expect(inlineAllowable({ toolName: 'Edit', input: { file_path: '/p/a\u2028b.ts' } }, 'project')).toBe(false)
+  })
+  it('keeps the decisions frozen (final review L6)', () => {
+    expect(Object.isFrozen(ALLOW_ONCE) && Object.isFrozen(DENY)).toBe(true)
+  })
   it('refuses a shell request without a command', () => {
     expect(inlineAllowable({ toolName: 'PowerShell', input: {} })).toBe(false)
   })

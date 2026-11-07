@@ -1044,8 +1044,17 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
 - Dashboard (pass 2, GitHub #36; spec `docs/design/dashboard-2.md`, which supersedes `dashboard.md` 2-5 and 7-9;
   pre-walk `ux-review-dashboard-3-pre.md`): `views/DashboardView.tsx` (store View id stays 'projects') is the page
   scroll; `.dashboard-grid` is the `dash` container; the work area `.dash-work` is one track in DOM order (needs, now,
-  strip, setup, paused, ended) and from 880 px two tracks with the band spanning the right column; with no open run
-  (`data-now-empty`) the strip moves under the band at `data-size=tall`. Two-track rows carry no row gap (areas below the
+  strip, setup, paused, ended) and from 880 px two tracks with the band spanning the right column. Fix-up after walk 3
+  (e9c6fc54 plus the UI Lead's finish; spec section 21.1): instruments are boxed (Needs you rows, the only amber surface;
+  Right now; Last 14 days), lists unboxed (To set up, Paused, Recently ended: gap 0 and a hairline; Needs you keeps
+  `--space-2`; its rules are `styles/dashboard-needs.css`, imported after dashboard.css); tiles never tint, decisions
+  included. Quiet states: with no decision Needs you stays mounted but `hidden` with no empty line and `.dash-work` gets
+  `data-needs-empty`; with no open run the band is hidden and it gets `data-now-empty`; band live without a decision puts
+  the band left and the strip and lists right; decisions without a band put Needs you beside the tall strip and the lists
+  full width below; both quiet is the tall strip across, then the lists in a wrapping row (a lone list takes the whole
+  row). The tall strip is 190 px; under 700 px of region (`useShortRegion`) a compact strip beside decisions draws
+  `data-dense`. The band's height budget (`useBandBudget`: the other column + 180, at least 440, never reads the band;
+  `fitBandModel` lowers agent rows to 2, then runs to 3) is `dash-now[data-budget]`. Two-track rows carry no row gap (areas below the
   first space themselves with a top margin), so an empty region leaves no hole. Caps narrow / wide (1280 px,
   `dashCaps.ts` through a ResizeObserver): Needs 3/5, band runs 3/5, agent rows 6/12 (4/6 per run), To set up 3/5,
   Paused / Recently ended 4/6, each with "Show N more". Regions: status bar `dashboard-hero` (`HeroBand.tsx`:
@@ -1066,16 +1075,22 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   `connectionsNeeded`: mock-provider projects use no connection and under the mock adapter the default connection does
   not count, else a machine with no Claude login showed "Anthropic is not connected"); Paused `dash-paused` and
   Recently ended `dash-since` (`AttentionColumn.tsx`; a run the user ended in this window is left out, `dash-since-clear`
-  "Clear"); Projects `dash-projects` with `project-tile[data-name][data-id][data-state]` (`ProjectTile.tsx`: `tile-client`,
-  `tile-run[data-status]`, `tile-chips` / `tile-chip[data-kind=branches|suggestions|folder-trust]`, `tile-folder`,
+  "Clear", focus then goes to the next section heading); Projects `dash-projects` with `project-tile[data-name][data-id][data-state]` (`ProjectTile.tsx`: `tile-client`,
+  `tile-team[data-count]` (decorative: root plus up to seven role marks breadth first, `tile-team-more` "+N" past eight;
+  the Open button's name adds "team of N: A, B, C and M more"), `tile-run[data-status]` whose caption is "Needs you ·
+  <decision line>", "Running · <plan step>" or the outcome alone (an ended tile's status line is "Last run <time> ago"
+  without the outcome; never the root's raw activity), More as the li's last child so Tab goes Open, chips, More, `tile-chips` / `tile-chip[data-kind=branches|suggestions|folder-trust]`, `tile-folder`,
   `tile-cost` only when something was spent, menu `project-tile-new-run` / `-continue` / `-open-folder` (`app.openPath`
   on the project's own path only) / `-delete`). Inline answers: Allow once sends only `{ behavior: 'allow', scope: 'once' }`
   and Deny only the card's deny message (`decideIn` / `answerQuestionIn` in the store take the run id), never session or
   project scope, rules or the settings link, whatever `suggestions`, `maxScope` or `referenceFolder` say. Inline Allow is
-  offered only when what it approves is shown whole on the row and in the buttons' names: a shell command with no hidden
-  characters, one step per line, at most 2 lines and 200 chars and no runs of spaces or tabs (unclamped); a file tool
+  offered only when what it approves is shown whole on the row and in the buttons' names: a shell command (compound
+  ones too: split on `&&` `||` `;` outside quotes, each step whole on its own line with its operator kept, unclamped) of
+  at most 200 chars, 2 non-empty lines and 4 steps, with no hidden characters, no lone CR / LS / PS, no runs of spaces or
+  tabs and no quoting the split cannot follow (backslash or backtick before a quote, typographic quotes, `$(`, backticks,
+  an open quote); each refusal caption names its true reason; a file tool
   whose `permissionLocation` (the card's helper) is the project, a worktree, an allowed or a reference folder, with the
-  full path and the location line `dash-needs-where`; WebFetch / WebSearch with the URL or query (at most 200); never MCP,
+  full path (no line break in it) and the location line `dash-needs-where`; WebFetch / WebSearch with the URL or query (at most 200); never MCP,
   Agent or unknown tools. A question gets one-click options only for single choice, 2-4 options of at most 40 chars
   without descriptions. A sent answer locks the row (aria-disabled, focus kept) until its `*.resolved` event removes it;
   failures show `dash-needs-error`. Per-project signals: `useProjectSignals.ts` over `projectQueue.ts` (listWorktrees,
@@ -1087,11 +1102,22 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   mock, reduced motion, both sizes and themes, relaunch Recently ended) and by eye on mock data (1024x640 rail and
   1600x1000, dark and light: deep-tree live, permission waiting, ended, paused, an engagement, empty band after a
   relaunch). Reviewer: three Highs in the inline Allow path (clamped command, file without location, MCP args unseen)
-  fixed with M1-M3. Open: the spec's band order (working before waiting) can put the waiting run behind "Show 1 more
-  run" at 1024x640; with a tall band the left column can end 250 px above it at 1600x1000; the tile repeats "Ended when
-  OrgAI closed" in its status line and newest run; tall strip about 240 px (spec about 190); review L3 (focus when a
-  section's last row leaves), L7 (`decideIn` takes any decision); not driven: real plan windows, proxy spend, chips,
-  To set up rows, question options, a screen reader, macOS. Not built (need contracts): dashboard-2.md section 18.
+  fixed with M1-M3. Fix-up checks (UI Lead, 2026-11-07): typecheck, `npx vitest run src/renderer` (1180), build, and
+  e2e dashboard / layout / engagement / team-files green; dashboard.mjs adds the tile captions (live, ended "Last run"),
+  `tile-team` count 4 with no `tile-team-more` on a 4-role project and the "team of 4" name, no amber background on a
+  `[data-state=decisions]` tile, More a direct child and Tab Open-chips-More, an empty Needs you `hidden` with no empty
+  line, and a `[mock:fatigue]` compound `cd <worktree> && npm test` answered inline (two lines, whole command in both
+  names, the following outside edit not inline). Seen by eye at both sizes and themes in states one decision + live deep
+  tree, three decisions, relaunched, all quiet (measurements in spec 21.1). Final Reviewer (needsInline, NeedsInline,
+  AttentionColumn, AttentionSection, band budget): no Critical or High, no layout thrash; M1 (lone CR / LS / PS), M2
+  (escaped or typographic quotes, `$(`, backticks), L3 (line breaks in paths) and L6 (frozen decisions) fixed and
+  unit-tested. Open: Reviewer L1 (single `&` / `|` are not step separators; shown whole on one line), L4 (Glob / Grep
+  inline shows only the path, not the pattern), L5 (the pressed button's name does not say "Sending"); the band lists
+  waiting runs newest first while Needs you lists oldest first; `data-budget` keeps a stale value while the band is
+  hidden; no paused row was held on screen (the mock pause lasts 1.5 s; the clamp was checked by computed style);
+  review L3 (focus when a section's last row leaves), L7 (`decideIn` takes any decision); not driven: real plan
+  windows, proxy spend, chips, To set up rows, question options, `tile-team-more` past eight roles, a screen reader,
+  macOS. Not built (need contracts): dashboard-2.md section 18.
 
 - Engagement kind (renderer, phase 1; `docs/design/engagement.md`, walk `docs/design/ux-review-engagement.md`): the New project form opens with the `project-kind` fieldset (`project-kind-option[data-kind=code|engagement]`, native radios, none chosen on first launch, last kind in localStorage `orgai.lastProjectKind`, initial focus on the checked radio) and swaps fields per kind (engagement: `new-project-client`, "Working folder", `new-project-ref-*`, `architect-setup` "Start with the setup interview (recommended)", "Create and start interview"). Settings: `project-kind-line`, `project-client-input`, `reference-folder-*` above `allowed-folder-*` (move with `reference-folder-allow-changes` / `allowed-folder-make-readonly`), `maintenance-engagement-line` (no "Remove OrgAI files"). Cards: `perm-location[data-kind=reference]`, "Approve engagement plan", Needs-you rows say "Engagement plan" (`proposalKindLabel`, `waitingItems(run, projectKind)`; the DecisionTray chip in LiveRunView still says "Architecture"). Grouping (`lib/clientGroups.ts`): sidebar `nav-client-group[data-client]` with two or more distinct clients or whenever engagements and code projects are both listed (no client names at all: the group is "Engagements"; engagement rows carry `data-kind=engagement`, a Briefcase `nav-kind-mark` in the list and "<name> · Engagement" in the rail tooltip and name) (collapse in `orgai.sidebarClientGroups`), `nav-client-code-label`, rail `hr.nav-client-divider`, `tile-client`, `project-client`. e2e/engagement.mjs (in e2e:free) drives the form, creation, settings, reference card, Maintenance, grouping, tile and topbar at both sizes and themes; the architecture card, reference `perm-location`, the extras-save failure and `NewRunPage` copy are unit-tested or unseen only.
 - Resizable columns share one width budget (`lib/panelWidth.ts` `panelBudget`): the canvas keeps 280 px (`CANVAS_MIN_PX`); when the side panel minimum (280 px) does not fit it shows as its rail (saved width and choice kept, re-applied when space returns). `SidePanel` `autoCollapseBelow` reacts to first layout and window resizes only, never to handle drags. Resize handles: Enter or double-click resets, arrows move the splitter.

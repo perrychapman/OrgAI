@@ -6,6 +6,8 @@
 // Dashboard pass 2 (docs/design/dashboard-2.md section 17): the Right now band, the 14-day strip, inline answers in
 // Needs you (Allow once removes the row, no wider scope on the page), no false chips, To set up and Limits absent on
 // the mock, reduced motion on the band marks, the tile's newest run, folder and New run, Recently ended.
+// Fix-up after walk 3 (section 21.1): tile captions, the team row and its Open name, no amber tile, More last in the
+// tile's tab order, an empty Needs you `hidden`, and a [mock:fatigue] compound command answered inline.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { TMP, check, createProject, deleteProject, endSession, finish, gotoProjects, launch, log, makeFixtureRepo, openProject, projectTab, relaunch, removeFixture, screenshot, sleep } from './lib.mjs'
@@ -21,6 +23,8 @@ const INLINE = 'E2E dash inline (orgai test)'
 const repoA = makeFixtureRepo('dash-a')
 const repoB = makeFixtureRepo('dash-b')
 const repoC = makeFixtureRepo('dash-c')
+const COMPOUND = 'E2E dash compound (orgai test)'
+const repoD = makeFixtureRepo('dash-d')
 
 let { app, page, shot } = await launch({ shotPrefix: 'dashboard' })
 const setSize = async (w, h) => {
@@ -144,6 +148,50 @@ try {
   const tileFolder = tileOf(WAIT).locator('[data-testid=tile-folder]')
   check((await tileFolder.count()) === 1 && ((await tileFolder.getAttribute('title')) ?? '').length > ((await tileFolder.innerText()) ?? '').length, 'the tile folder is a name with the full path as its title')
   check(!/\d+ roles?\b/.test(tileText), 'the tile no longer counts roles', tileText)
+  // Fix-up (walk-3 M5): a live run's caption is "Needs you · <decision line>" while a card is open, never raw activity.
+  const waitCap = ((await tileRun.locator('.project-tile-run-cap').innerText().catch(() => '')) || '').replace(/\s+/g, ' ').trim()
+  check(/^Needs you · \S/.test(waitCap), 'the waiting tile caption reads "Needs you · <decision line>"', waitCap)
+  const busyCap = ((await tileOf(BUSY).locator('[data-testid=tile-run] .project-tile-run-cap').innerText().catch(() => '')) || '').replace(/\s+/g, ' ').trim()
+  check(/^(Running|Idle|Finished)( · \S.*)?$/.test(busyCap), 'the busy tile caption is the status word, with the plan step when there is one', busyCap)
+  // The team row: one mark per role (the root plus up to seven), "+N" only past eight roles; the Open name carries the team.
+  const team = await tileOf(BUSY).evaluate((li) => {
+    const row = li.querySelector('[data-testid=tile-team]')
+    return {
+      count: Number(row?.getAttribute('data-count') ?? -1),
+      marks: row ? row.querySelectorAll('.tile-team-root, .tile-team-mark').length : -1,
+      more: li.querySelectorAll('[data-testid=tile-team-more]').length,
+      hidden: row?.getAttribute('aria-hidden') ?? '',
+      name: li.querySelector('[data-testid=project-tile-main]')?.getAttribute('aria-label') ?? ''
+    }
+  })
+  check(team.count === 4 && team.marks === 4 && team.more === 0, 'the deep-tree project tile draws one team mark per role (4) and no "+N"', JSON.stringify(team))
+  check(team.hidden === 'true' && /, team of 4: [^,]+, [^,]+, [^,]+ and 1 more/.test(team.name), 'the team row is decorative and the Open name says "team of 4: ..."', team.name)
+  // Amber only on Needs you: a tile with decisions has the same background as any other tile.
+  await page.mouse.move(1, 1)
+  await sleep(200)
+  const bgs = await page.evaluate(() => {
+    const bg = (name) => {
+      const li = document.querySelector(`[data-testid=project-tile][data-name="${name}"]`)
+      return li ? { state: li.getAttribute('data-state'), bg: getComputedStyle(li).backgroundColor, img: getComputedStyle(li).backgroundImage } : null
+    }
+    return { wait: bg('E2E dash waiting (orgai test)'), busy: bg('E2E dash busy (orgai test)') }
+  })
+  check(bgs.wait?.state === 'decisions' && bgs.wait.bg === bgs.busy?.bg && bgs.wait.img === 'none', 'a [data-state=decisions] tile has no amber background', JSON.stringify(bgs))
+  // Structure and tab order: More is a direct child of the li (last in the DOM), so Tab goes Open, chips, More.
+  check((await tileOf(WAIT).locator(':scope > .project-tile-more [data-testid=project-tile-more]').count()) === 1, 'More sits in a direct child of the tile li')
+  await tileOf(WAIT).locator('[data-testid=project-tile-main]').focus()
+  const tabOrder = []
+  for (let i = 0; i < 4; i++) {
+    await page.keyboard.press('Tab')
+    const t = await page.evaluate(() => {
+      const a = document.activeElement
+      return { testid: a?.getAttribute('data-testid') ?? '', tile: a?.closest?.('[data-testid=project-tile]')?.getAttribute('data-name') ?? '' }
+    })
+    tabOrder.push(t)
+    if (t.testid === 'project-tile-more') break
+  }
+  const inTile = tabOrder.filter((t) => t.tile === WAIT).map((t) => t.testid)
+  check(inTile.length >= 1 && inTile[inTile.length - 1] === 'project-tile-more' && inTile.slice(0, -1).every((t) => t === 'tile-chip'), 'Tab from a tile Open goes through its chips to More', JSON.stringify(tabOrder))
   // 17.7 No false chips on mock projects with nothing pending; To set up and Limits stay away on the mock.
   check((await page.locator('[data-testid=tile-chip]').count()) === 0, 'no tile chip shows when nothing is pending')
   // Runners without a Claude login legitimately list the disconnected connection, so assert on content: no row about a
@@ -348,6 +396,38 @@ try {
   await sleep(500)
   check((await page.locator('[data-testid=dash-since-row]', { hasText: INLINE }).count()) === 0, 'a run the user just ended is not under Recently ended')
 
+  // ---- A compound command answered inline ([mock:fatigue]: `cd <worktree> && npm test`) ----
+  const compound = await createProject(page, { path: repoD, name: COMPOUND })
+  check(!!compound, 'fourth project created for the compound command')
+  await openProject(page, COMPOUND)
+  await startRun('Compound [mock:fatigue]')
+  await page.locator('section.frame-tray article.decision-card[data-kind="permission"]').first().waitFor({ timeout: 20_000 })
+  await gotoProjects(page)
+  const cRow = page.locator('[data-testid=dash-needs-row][data-kind=permission]', { hasText: 'agent-x' })
+  await cRow.first().waitFor({ timeout: 15_000 })
+  const cInfo = await cRow.first().evaluate((row) => ({
+    inline: row.getAttribute('data-inline'),
+    lines: (row.querySelector('.dash-needs-code')?.textContent ?? '').split('\n'),
+    allow: row.querySelector('[data-testid=dash-needs-allow]')?.getAttribute('aria-label') ?? '',
+    deny: row.querySelector('[data-testid=dash-needs-deny]')?.getAttribute('aria-label') ?? ''
+  }))
+  check(cInfo.inline === 'allow', 'a compound `cd x && npm test` row offers inline Allow', JSON.stringify(cInfo))
+  check(cInfo.lines.length === 2 && /^cd .*agent-x$/.test(cInfo.lines[0]) && cInfo.lines[1] === '&& npm test', 'each step is shown whole on its own line with its operator', JSON.stringify(cInfo.lines))
+  check(/^Allow once: .* wants to run cd .*agent-x && npm test/.test(cInfo.allow) && /^Deny: .*agent-x && npm test/.test(cInfo.deny), 'Allow once and Deny name the whole command', JSON.stringify(cInfo))
+  await cRow.first().locator('[data-testid=dash-needs-allow]').click()
+  await cRow.first().waitFor({ state: 'detached', timeout: 15_000 }).catch(() => {})
+  check((await cRow.count()) === 0, 'Allow once answers the compound command and removes its row')
+  const cLive = ((await page.locator('[data-testid=dashboard-live]').innerText().catch(() => '')) || '').replace(/\s+/g, ' ')
+  check(/Allowed once: /.test(cLive), 'dashboard-live reads "Allowed once: ..." for the compound command', cLive)
+  // The next card (an edit outside the project) is reviewed in the card, never allowed on the row.
+  const editRow = page.locator('[data-testid=dash-needs-row][data-kind=permission]', { hasText: 'README.md' })
+  if (await editRow.first().waitFor({ timeout: 15_000 }).then(() => true, () => false)) {
+    check((await editRow.first().getAttribute('data-inline')) === 'none', 'an edit outside the project is not offered inline', String(await editRow.first().getAttribute('data-inline')))
+  } else log('SKIP outside-edit row check: the second fatigue card did not arrive')
+  await openProject(page, COMPOUND)
+  await endSession(page)
+  await gotoProjects(page)
+
   // ---- Relaunch: runs cut by quit ----
   ;({ app, page, shot } = await relaunch(app, { shotPrefix: 'dashboard' }))
   await gotoProjects(page)
@@ -370,6 +450,8 @@ try {
       needsEmpty: work?.hasAttribute('data-needs-empty') ?? false,
       nowEmpty: work?.hasAttribute('data-now-empty') ?? false,
       needsShown: vis('[data-testid=dash-needs-you]'),
+      needsHiddenAttr: document.querySelector('[data-testid=dash-needs-you]')?.hasAttribute('hidden') ?? false,
+      needsText: (document.querySelector('[data-testid=dash-needs-you]')?.textContent ?? '').replace(/\s+/g, ' '),
       nowShown: vis('[data-testid=dash-now]'),
       size: strip?.getAttribute('data-size') ?? '',
       stripH: Math.round(strip?.getBoundingClientRect().height ?? 0),
@@ -377,7 +459,15 @@ try {
     }
   })
   check(quiet.needsEmpty && quiet.nowEmpty && !quiet.needsShown && !quiet.nowShown, 'with nothing running and no decision, Needs you and Right now are not drawn', JSON.stringify(quiet))
+  check(quiet.needsHiddenAttr && !/Nothing needs you/.test(quiet.needsText), 'an empty Needs you is `hidden` and holds no "Nothing needs you." line', JSON.stringify(quiet))
   check(/ Nothing needs you\.$/.test(quiet.status), 'the status sentence ends with "Nothing needs you."', quiet.status)
+  // Tiles of ended projects: "Last run <time> ago" with no outcome in the status line; the caption is the outcome alone.
+  const ended = await tileOf(BUSY).evaluate((li) => ({
+    status: (li.querySelector('.project-tile-status-text')?.textContent ?? '').replace(/\s+/g, ' ').trim(),
+    cap: (li.querySelector('[data-testid=tile-run] .project-tile-run-cap')?.textContent ?? '').replace(/\s+/g, ' ').trim()
+  }))
+  check(/^Last run \S/.test(ended.status) && !/Finished|Stopped|Failed|Ended/.test(ended.status), 'an ended project tile reads "Last run <time> ago" without the outcome', JSON.stringify(ended))
+  check(/^(Finished|Stopped|Failed|Ended when OrgAI closed)$/.test(ended.cap), 'an ended project tile caption is the outcome alone', JSON.stringify(ended))
   check(quiet.size === 'tall' && quiet.stripH >= 170 && quiet.stripH <= 200, 'the quiet-day strip is tall and about 190 px high', JSON.stringify(quiet))
 
   // M2: "All quiet" names the runs cut while they waited.
@@ -425,7 +515,7 @@ try {
 } finally {
   try {
     if (page && !page.isClosed()) {
-      for (const n of [WAIT, BUSY, INLINE]) {
+      for (const n of [WAIT, BUSY, INLINE, COMPOUND]) {
         const left = await deleteProject(page, n)
         check(left === 0, `project "${n}" deleted`, `${left} tile(s) left`)
       }
@@ -437,6 +527,7 @@ try {
   removeFixture(repoA)
   removeFixture(repoB)
   removeFixture(repoC)
+  removeFixture(repoD)
   finish('dashboard')
 }
 log('done')

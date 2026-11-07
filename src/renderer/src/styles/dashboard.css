@@ -121,19 +121,21 @@
   .dash-work[data-now-empty]:not([data-needs-empty]) .dash-area-strip {
     margin-block-start: 0;
   }
-  /* Both quiet: the strip at its tall size across the page, then the lists side by side. */
+  /* Both quiet: the strip at its tall size across the page, then the lists side by side. A wrapping row, not an
+     auto-fit grid: with one list the grid kept empty tracks under the spanning strip and the list sat in one of
+     them with a blank beside it; here a lone list takes the whole row. */
   .dash-work[data-now-empty][data-needs-empty] {
-    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-    grid-template-areas: none;
-    grid-template-rows: none;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
     gap: var(--space-4);
   }
   .dash-work[data-now-empty][data-needs-empty] .dash-area {
-    grid-area: auto;
+    flex: 1 1 320px;
     margin-block-start: 0;
   }
   .dash-work[data-now-empty][data-needs-empty] .dash-area-strip {
-    grid-column: 1 / -1;
+    flex-basis: 100%;
   }
 }
 
