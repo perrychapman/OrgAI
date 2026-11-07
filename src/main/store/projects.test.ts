@@ -434,6 +434,19 @@ describe('Role.model validation', () => {
     expect(sanitizeRoleModels(unchanged, undefined, log)).toEqual({ project: unchanged, changed: false })
   })
 
+  it('keeps Role.connection when it is a connection id and drops anything else', () => {
+    const roles = [
+      role({ id: 'a', slug: 'a', model: 'sonnet', connection: 'openai' }),
+      role({ id: 'b', slug: 'b', model: 'sonnet', connection: 'proxy-0123abcd' }),
+      role({ id: 'c', slug: 'c', model: 'sonnet', connection: '--evil' as never }),
+      role({ id: 'd', slug: 'd', model: 'sonnet', connection: 5 as never })
+    ]
+    const out = sanitizeRoleModels(project({ provider: claudeProvider(), roles }), undefined, () => {})
+    expect(out.changed).toBe(true)
+    expect(out.project.roles.map((r) => r.connection)).toEqual(['openai', 'proxy-0123abcd', undefined, undefined])
+    expect(Object.hasOwn(out.project.roles[2], 'connection')).toBe(false)
+  })
+
   it('uses the connection tier mapping given to it, and refuses an invalid mapped model', () => {
     const p = project({ provider: claudeProvider('litellm'), roles: [bad('--x1', 'everyday'), bad('--x2', 'deep')] })
     const tierContext = () => ({ connection: 'litellm' as const, tierModels: { everyday: 'claude-sonnet-4-5', deep: '--mapped-evil' } })

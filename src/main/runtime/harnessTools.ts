@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { constants as fsConstants, promises as fsp } from 'node:fs'
 import path from 'node:path'
-import type { EngagementNote, KnowledgeGraph, KnowledgeNode, KnowledgeSource, McpInstallDecision, McpLibraryEntry, McpProposalServer, McpRegistryEntry, McpServerSource, McpServerSpec, PlanStep, ProjectKind, Proposal, ProposalOutcome, QuestionAnswer, Role, RunPlan, SkillProposalItem } from '@shared/types'
+import type { ConnectionId, EngagementNote, KnowledgeGraph, KnowledgeNode, KnowledgeSource, McpInstallDecision, McpLibraryEntry, McpProposalServer, McpRegistryEntry, McpServerSource, McpServerSpec, PlanStep, ProjectKind, Proposal, ProposalOutcome, QuestionAnswer, Role, RunPlan, SkillProposalItem } from '@shared/types'
 import { BRIDGE_BRIEF_MAX_CHARS, BRIDGE_HARNESS_TOOLS, CHAT_HARNESS_TOOLS, ENGAGEMENT_CONTEXT_TOOL, ENGAGEMENT_CONTEXT_TOOL_MAX_CHARS, HARNESS_PROJECT_ID, KNOWLEDGE_COMMON_KINDS, KNOWLEDGE_COMMON_RELATIONS, KNOWLEDGE_EDGE_NOTE_MAX_CHARS, KNOWLEDGE_FACT_MAX_CHARS, KNOWLEDGE_NAME_MAX_CHARS, KNOWLEDGE_RECALL_QUERY_MAX_CHARS, KNOWLEDGE_RECALL_TOOL, KNOWLEDGE_SEARCH_LIMIT, KNOWLEDGE_SUMMARY_MAX_CHARS, KNOWLEDGE_TOOL, KNOWLEDGE_TOOL_ACTIONS, MCP_HARNESS_TOOLS, PERMISSION_MODES, PROJECT_CLIENT_MAX_CHARS, PROJECT_PEEK_BRIEF_CHARS, RUN_HARNESS_TOOLS, SKILLS_PROJECT_ID, SKILL_ASSIST_HARNESS_TOOLS, SKILL_CONFIG_ACTIONS, SKILL_HARNESS_TOOLS, SKILL_PROPOSAL_MAX_ITEMS, TOOL_CATALOG } from '@shared/types'
 import { knowledgeEdgesOf, knowledgeSearchLimit, knowledgeVocabulary, matchKnowledgeNodes, normalizeKnowledgeKey, resolveKnowledgeNode, searchKnowledge } from '@shared/knowledge'
 import { fenceDatum, fencedBlock, knowledgeField, knowledgeListItem } from '@shared/knowledgeIndex'
@@ -296,6 +296,7 @@ export const draftRoleSchema = z.object({
     .describe(
       "A tier: top, deep, everyday or fast (mapped to the project's connection), or inherit. An exact model id only when listed as available. Omit to keep an existing role's model (a role matched by slug or name keeps its model unless you name a different tier or listed id)."
     ),
+  connection: z.string().optional().describe("Optional: one of the listed connections; omit to use the project's"),
   canSpawn: z.boolean(),
   spawnable: z.array(z.string()).describe('Names of roles this role may delegate to, normally its direct reports'),
   reportsTo: z.string().nullable().describe('Name of the manager role, or null for the single root orchestrator')
@@ -323,8 +324,21 @@ function rolesFromDrafts(
   const base = modelContext(ctx)
   // A template role's model was already mapped onto this connection: keep it (a listed id is kept by resolveDraftModel).
   const mctx: DraftModelContext | undefined = base && extraModels.length ? { ...base, models: [...new Set([...(base.models ?? []), ...extraModels])] } : base
+  // Per-role connections: only the configured connections the session lists (ctx.connectionModels) are valid.
+  const runConnection = mctx?.connection ?? ctx.connection?.connection ?? 'anthropic'
+  const listed = ctx.connectionModels?.() ?? []
+  const others: Record<string, DraftModelContext> = {}
+  for (const c of listed) others[c.connection] = { connection: c.connection, tierModels: c.tierModels, models: c.models }
+  if (mctx) others[runConnection] = mctx
+  for (const d of drafts) {
+    if (d.connection === undefined || d.connection === null || d.connection === '') continue
+    if (typeof d.connection !== 'string' || !Object.hasOwn(others, d.connection)) {
+      const names = listed.length ? listed.map((c) => `${datum(c.connection, 64)} (${datum(c.name, 60)})`).join(', ') : `${datum(runConnection, 64)} (this project's connection)`
+      return { error: `REVISE. The org chart was not shown to the user: role "${datum(d.name, 60)}" names connection "${datum(String(d.connection), 64)}", which is not available. Valid connections: ${names}. Omit connection to use the project's.` }
+    }
+  }
   try {
-    converted = toRoles({ rationale, roles: drafts }, mctx)
+    converted = toRoles({ rationale, roles: drafts }, mctx, others)
   } catch (e) {
     return { error: `REVISE. The org chart could not be validated: ${(e as Error).message}` }
   }
@@ -353,8 +367,14 @@ function rolesFromDrafts(
     if (hit) matched.set(i, hit)
   })
   // A matched role keeps its model unless the draft names a different tier that resolves or a different listed id.
+  // A matched role keeps its stored connection unless the draft names a different valid one (then its model maps
+  // through the new connection, already done by toRoles); a kept role's model resolves through its own connection.
+  const named = (d: DraftRole): string | undefined => (typeof d.connection === 'string' && d.connection !== '' ? d.connection : undefined)
   for (const [i, cur] of matched) {
-    const r = revisedRoleModel(drafts[i].model, cur, mctx)
+    const c = named(drafts[i])
+    const curConnection = cur.reportsTo === null ? runConnection : cur.connection && Object.hasOwn(others, cur.connection) ? cur.connection : runConnection
+    if (c !== undefined && c !== curConnection) continue
+    const r = revisedRoleModel(drafts[i].model, cur, others[curConnection] ?? mctx)
     converted[i].model = r.model
     if (r.tier) converted[i].tier = r.tier
     else delete converted[i].tier
@@ -367,6 +387,16 @@ function rolesFromDrafts(
     roles = kept.roles
   }
   const merged = mergeOrgChart(ctx.project, roles)
+  // mergeOrgChart keeps a matched role's stored connection; a draft that names one decides it here.
+  for (const [i, d] of drafts.entries()) {
+    const c = named(d)
+    if (c === undefined) continue
+    const id = matched.get(i)?.id ?? converted[i].id
+    const role = merged.roles.find((r) => r.id === id)
+    if (!role) continue
+    if (c === runConnection || role.reportsTo === null) delete role.connection
+    else role.connection = c as ConnectionId
+  }
   const loop = reportingProblem(merged.roles)
   if (loop.length) {
     return {

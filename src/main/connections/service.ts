@@ -18,6 +18,7 @@ import {
   modelFamily,
   modelForTier,
   projectConnection,
+  roleConnection,
   proxyModelsUrl,
   proxyOf,
   proxyOpenAIBase
@@ -553,7 +554,7 @@ export class ConnectionService {
     const users = isProxyConnection(connection)
       ? this.deps.projects
           .list()
-          .filter((p) => projectConnection(p) === id)
+          .filter((p) => projectConnection(p) === id || p.roles.some((r) => roleConnection(r, p) === id))
           .slice(0, 50)
           .map((p) => ({ id: p.id, name: p.name }))
       : undefined
@@ -801,7 +802,7 @@ export class ConnectionService {
   async removeProxy(id: string): Promise<ProxyRemoveResult> {
     const proxy = typeof id === 'string' ? proxyOf(this.settingsNow(), id) : undefined
     if (!proxy) throw new Error('Unknown connection')
-    const users = this.deps.projects.list().filter((p) => projectConnection(p) === proxy.id)
+    const users = this.deps.projects.list().filter((p) => projectConnection(p) === proxy.id || p.roles.some((r) => roleConnection(r, p) === proxy.id))
     if (users.length) {
       const shown = users.slice(0, 5).map((p) => p.name)
       const more = users.length > 5 ? ` and ${users.length - 5} more` : ''
@@ -1023,12 +1024,31 @@ export class ConnectionService {
 
   /** Apply a remap to a project and keep provider.id on the adapter its models need. */
   private remapOne(project: Project, id: ConnectionId, tierModels: Tiers, previous: Tiers | undefined, reason: RemapReason): { project: Project; result: RemapResult } {
-    const out = remapProject(project, { connection: id, tierModels, previousTierModels: previous, catalog: this.catalogFor(id), reason })
+    // Only roles running on `id` (roleConnection) are touched; on 'switched' only roles without their own connection.
+    const include = (role: Project['roles'][number]): boolean =>
+      reason === 'switched' ? role.reportsTo === null || !role.connection : roleConnection(role, project) === id
+    const out = remapProject(project, { connection: id, tierModels, previousTierModels: previous, catalog: this.catalogFor(id), reason, include })
     let next = out.project
     if (reason === 'switched' || out.result.changes.length) {
       next = this.withAdapter(next)
     }
     return { project: next, result: out.result }
+  }
+
+  /** Remap every connection a project's roles run on, each through its own tier mapping; one merged result. */
+  private remapEachConnection(project: Project, reason: RemapReason): { project: Project; result: RemapResult } {
+    const own = projectConnection(project)
+    let current = project
+    const changes: RemapResult['changes'] = []
+    const ids = new Set<ConnectionId>([own, ...project.roles.map((r) => roleConnection(r, project))])
+    for (const id of ids) {
+      const record = this.record(id)
+      if (!record) continue
+      const out = this.remapOne(current, id, record.tierModels, undefined, reason)
+      current = out.project
+      changes.push(...out.result.changes)
+    }
+    return { project: current, result: { projectId: project.id, connection: own, reason, changes } }
   }
 
   /**
@@ -1066,7 +1086,7 @@ export class ConnectionService {
   private remapConnectionProjects(id: ConnectionId, tierModels: Tiers, previous: Tiers | undefined, reason: RemapReason): RemapResult[] {
     const results: RemapResult[] = []
     for (const p of this.deps.projects.list()) {
-      if (projectConnection(p) !== id) continue
+      if (projectConnection(p) !== id && !p.roles.some((r) => roleConnection(r, p) === id)) continue
       const { project, result } = this.remapOne(p, id, tierModels, previous, reason)
       if (!result.changes.length) continue
       this.deps.projects.save(project)
@@ -1086,8 +1106,9 @@ export class ConnectionService {
     if (connection) {
       project = { ...stored, provider: { ...stored.provider, connection, label: providerLabelFor(connection, this.settingsNow()) } }
     }
+    if (!connection) return this.remapEachConnection(project, 'manual')
     const tierModels = this.need(id).tierModels
-    return this.remapOne(project, id, tierModels, undefined, connection ? 'switched' : 'manual')
+    return this.remapOne(project, id, tierModels, undefined, 'switched')
   }
 
   remapModels(input: RemapModelsInput): RemapModelsOutput {
