@@ -1306,8 +1306,10 @@ and the frontend-design skill is not vendored in `.claude/skills` (only `run-des
   sticky, formula in the title, "More rows not shown." never a count), `output-md-view` Rendered | Source,
   `output-csv-table`, `output-text`, `output-svg-img` (SVG only as an img data URL), `output-image` with
   `output-image-size`, and `output-mermaid` (lazy mermaid 12.3.0, strict, `htmlLabels: false`, renders queued; the SVG
-  is inserted only after `lib/outputSvg.ts` `safeMermaidSvg` refused scripts, foreignObject, animation elements, `on*`,
-  external hrefs, script / html data addresses and non-fragment `url(`). Pure helpers: `lib/outputs.ts`,
+  is drawn only after `lib/outputSvg.ts` `safeMermaidSvg` refused scripts, foreignObject, animation elements, `on*`,
+  external hrefs, resource attributes, comments, processing instructions, non-SVG elements, script / html data addresses
+  and non-fragment `url(`; the checked root is imported with `document.importNode` into a shadow root, never re-parsed
+  from text, so there is no `dangerouslySetInnerHTML` in the renderer). Pure helpers: `lib/outputs.ts`,
   `lib/outputsRun.ts`, `lib/outputPreview.ts`, `lib/outputSvg.ts`, `lib/outputsList.ts`; atlas `run-outputs` /
   `project-outputs`. Checked by unit tests and `e2e/outputs.mjs` (mock `[mock:outputs]`, Windows, 1024x640 and
   1600x1000, both themes). Unverified: native Open / Show in folder / Save as, Copy SVG's clipboard, real Word / Excel
