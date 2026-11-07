@@ -87,6 +87,35 @@ describe('quickFolderEditCovered', () => {
     expect(quickFolderEditCovered(folder, join(folder, 'link', 'new', 'a.txt'))).toBe(false)
   })
 
+  it('refuses a dangling leaf link and a dangling directory link (lstat, not existsSync)', () => {
+    const missing = join(root, 'nowhere-at-all')
+    const type = process.platform === 'win32' ? 'junction' : 'dir'
+    mkdirSync(join(folder, 'docs'), { recursive: true })
+    try {
+      symlinkSync(missing, join(folder, 'docs', 'out.md'), 'file')
+      expect(quickFolderEditCovered(folder, join('docs', 'out.md'))).toBe(false)
+      expect(quickFolderEditCovered(folder, join(folder, 'docs', 'out.md'))).toBe(false)
+    } catch (e) {
+      if (e instanceof Error && e.name === 'AssertionError') throw e // links not permitted otherwise
+    }
+    try {
+      symlinkSync(missing, join(folder, 'dangling-dir'), type)
+      expect(quickFolderEditCovered(folder, join('dangling-dir', 'new.md'))).toBe(false)
+    } catch (e) {
+      if (e instanceof Error && e.name === 'AssertionError') throw e
+    }
+    expect(quickFolderEditCovered(folder, join('docs', 'plain.md'))).toBe(true)
+  })
+
+  it('refuses bidi and zero-width characters in the target', () => {
+    expect(quickFolderEditCovered(folder, 'a‮b.txt')).toBe(false)
+    expect(quickFolderEditCovered(folder, 'a​b.txt')).toBe(false)
+  })
+
+  it('protects agents.override.md', () => {
+    expect(quickFolderEditCovered(folder, 'AGENTS.override.md')).toBe(false)
+  })
+
   it('refuses win32 alternate spellings of protected names, only on win32', () => {
     for (const rel of ['.git./config', '.git /config', '.git::$INDEX_ALLOCATION/x', 'GIT~1/config', 'a.txt:stream', 'x/CLAUDE.md.']) {
       expect(quickFolderEditCovered(folder, rel, 'win32'), rel).toBe(false)
@@ -106,6 +135,10 @@ describe('editTargets and quickEditCovered', () => {
     expect(editTargets('Write', { changes: [{ path: 'a' }, { path: 'b' }] })).toEqual(['a', 'b'])
     expect(editTargets('Write', { changes: [{ path: 'a' }, {}] })).toBeNull()
     expect(editTargets('Bash', { command: 'ls' })).toBeNull()
+    // a change that moves the file is never covered (fail closed)
+    expect(editTargets('Write', { changes: [{ path: 'a', movePath: 'b' }] })).toBeNull()
+    expect(editTargets('Write', { changes: [{ path: 'a', move_path: '/etc/x' }] })).toBeNull()
+    expect(editTargets('Write', { changes: [{ path: 'a', movePath: null }] })).toEqual(['a'])
     expect(editTargets('Edit', null)).toBeNull()
     expect(editTargets('Edit', {})).toBeNull()
   })

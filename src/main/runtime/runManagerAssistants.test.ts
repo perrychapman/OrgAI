@@ -520,6 +520,17 @@ describe('Chat asks instead of being unable', () => {
       expect(ctx.quickSessionEdits?.()).toBe(false)
     })
 
+    it('strips hidden characters from adapter rule labels in the harness row', async () => {
+      const { m, ctx, run } = await quickRun()
+      const p = ctx.requestPermission({ agentId: 'root', toolName: 'Bash', input: {}, summary: 'b', ruleLabels: ['npm‮ test​'] })
+      m.decide(run.id, lastReq(run.id).request.id, { behavior: 'allow', scope: 'session' })
+      await p
+      const rows = harnessRows(run.id)
+      expect(rows).toHaveLength(1)
+      expect(rows[0]).not.toMatch(/[‮​]/)
+      expect(rows[0]).toContain('npm')
+    })
+
     it('has no flag on a normal run and the flag does not carry to a continuation', async () => {
       const r = rig({}, { live: true })
       await r.m.start({ project: makeProject({ path: folder() }), prompt: 'x' })
@@ -540,9 +551,10 @@ describe('Chat asks instead of being unable', () => {
       const { persistInstall, mcp } = mcpOptions()
       const { m, ctx, run } = await quickRun({ rigOptions: { mcp } })
       expect(ctx.requestMcpInstall).toBeTypeOf('function')
+      const rootSlug = ctx.roles.find((r) => r.reportsTo === null)!.slug
+      ctx.emit({ type: 'agent.upsert', runId: run.id, agent: { id: 'root', roleId: null, roleSlug: rootSlug, name: 'Root', parentId: null, spawnToolUseId: null, state: 'working', activity: '', inputTokens: 0, outputTokens: 0, costUsd: 0 } as never })
       const pending = ctx.requestMcpInstall!({ agentId: 'root', reason: 'need docs', spec: { ...spec(), roles: ['everything'] }, requiredSecrets: [] })
       const card = lastInstall(run.id).request
-      const rootSlug = ctx.roles.find((r) => r.reportsTo === null)!.slug
       expect(card.runOnly).toBe(true)
       expect(card.spec.roles).toEqual([rootSlug])
       m.answerMcpInstall(run.id, card.id, { approved: true, scope, spec: { ...card.spec, roles: ['someone-else'] } })
@@ -550,6 +562,17 @@ describe('Chat asks instead of being unable', () => {
       expect(persistInstall).not.toHaveBeenCalled()
       expect(ctx.mcpServers?.().map((s) => s.name)).toEqual(['docs'])
       expect(ctx.mcpServers?.()[0].roles).toEqual([rootSlug])
+    })
+
+    it('an unknown caller gets nobody, never the root role', async () => {
+      const { mcp } = mcpOptions()
+      const { m, ctx, run } = await quickRun({ rigOptions: { mcp } })
+      const pending = ctx.requestMcpInstall!({ agentId: 'ghost-agent', reason: 'r', spec: { ...spec(), roles: ['everything'] }, requiredSecrets: [] })
+      const card = lastInstall(run.id).request
+      expect(card.spec.roles).toEqual([])
+      m.answerMcpInstall(run.id, card.id, { approved: true, scope: 'run', spec: { ...card.spec, roles: ['someone-else'] } })
+      await pending
+      expect(ctx.mcpServers?.()[0].roles).toEqual([])
     })
 
     it('an adapter-sent runOnly is dropped on a normal run', async () => {

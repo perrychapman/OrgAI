@@ -220,8 +220,12 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     harness row ("You allowed <rule> for this chat."). Session edits: `src/main/quick/sessionEdits.ts`
     (`quickSessionEditSuggestion` on covered edit cards, never sent to a provider; `isQuickSessionEditGrant` in
     decide(); `RuntimeContext.quickSessionEdits`; `quickEditPreApproved` in every adapter after its deny gates; only
-    inside the folder by lexical and real path, never under .git/.claude/.codex/.agents/.orgai/.vscode/.idea/.github
-    or config files). MCP: `McpInstallRequest.runOnly: true`, approvals narrowed to 'run', `spec.roles` = the caller.
+    inside the folder by lexical and real path with no symlink or junction component below it (lstat, dangling links
+    included), never a Codex change with a move destination, never under .git/.claude/.codex/.agents/.orgai/.vscode/.idea/.github
+    or config files incl. agents.override.md). MCP: `McpInstallRequest.runOnly: true`, approvals narrowed to 'run' and
+    never persisted on any `summary.quick` run, `spec.roles` = the caller's role, `[]` (nobody) for an unknown caller;
+    per-role MCP grants are not enforced on Codex (open review M6). Rule labels in the "You allowed ..." row are stripped
+    of hidden characters. Check-then-write gap and in-folder package.json/Makefile edits: ARCHITECTURE.md Risks.
     Mock markers (quick runs, default script): `[mock:chat-edit]` (list_projects, Edit `<folder>/notes.md` asks;
     allow writes it and says "I wrote notes.md.", deny says "I did not change anything." and stops; then Bash
     `npm test` asks, then idle) and `[mock:chat-mcp]` (request_mcp_install of a pinned stdio server, says the answer,

@@ -459,6 +459,14 @@ describe('MCP tools', () => {
     expect(text).toContain('next run')
   })
 
+  it('request_mcp_install: on a quick run a missing hook never promises saving to the project', async () => {
+    const quick = runSummary({ kind: 'work', quick: { folder: '/x', team: 'single', allowEdits: false, gitRepo: false } })
+    const ctx = fakeCtx({ run: quick, requestMcpInstall: vi.fn(async () => ({ approved: true, scope: 'run' as const })) })
+    const text = await byName(workTools(ctx), 'request_mcp_install').call({ reason: 'r', manual: pinned })
+    expect(text).toContain('this chat only')
+    expect(text).not.toContain('saves it to the project')
+  })
+
   it('request_mcp_install: deny text is exact, with and without a note', async () => {
     const deny = (note?: string) =>
       fakeCtx({ requestMcpInstall: vi.fn(async () => ({ approved: false, scope: 'run' as const, ...(note ? { note } : {}) })) })

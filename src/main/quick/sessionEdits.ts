@@ -1,4 +1,6 @@
+import { lstatSync } from 'node:fs'
 import { isAbsolute, join, relative, resolve } from 'node:path'
+import { hiddenCharIn } from '../capabilities/sanitize'
 import type { PermissionDecision, PermissionRequest, PermissionSuggestion, RunSummary } from '@shared/types'
 import { QUICK_WRITE_TOOLS } from '@shared/types'
 import { canonicalDeep, isInside, isNetworkPath, pathKey } from './scratch'
@@ -30,6 +32,7 @@ export const QUICK_SESSION_ASK_FILES: readonly string[] = [
   'claude.md',
   'claude.local.md',
   'agents.md',
+  'agents.override.md',
   '.envrc',
   '.npmrc',
   '.yarnrc',
@@ -57,6 +60,13 @@ export function editTargets(toolName: string, input: unknown): string[] | null {
   const o = input as Record<string, unknown>
   if (o.grantRoot !== undefined && o.grantRoot !== null && o.grantRoot !== '') return null
   if (Array.isArray(o.changes) && o.changes.length) {
+    // A change that moves the file carries a destination the grant would have to judge too: fail closed.
+    for (const c of o.changes) {
+      if (c && typeof c === 'object') {
+        const r = c as Record<string, unknown>
+        if ((typeof r.movePath === 'string' && r.movePath !== '') || (typeof r.move_path === 'string' && r.move_path !== '')) return null
+      }
+    }
     const paths = o.changes.map((c) => (c && typeof c === 'object' ? (c as { path?: unknown }).path : undefined))
     return paths.every((p): p is string => typeof p === 'string' && p !== '') ? paths : null
   }
@@ -88,14 +98,15 @@ function segmentsOk(rel: string, platform: NodeJS.Platform): boolean {
 /**
  * True when a session edit grant may cover writing `target` on a quick run working in `folder`: the target (absolute,
  * or relative to `folder`) is strictly inside the folder both lexically (against either spelling of the folder) and by
- * the real path of its nearest existing ancestor (so a link inside the folder pointing elsewhere never counts), and no
+ * the real path of its nearest existing ancestor, and no component below the folder (leaf included) is a symlink or
+ * junction, dangling or not (lstat; any link inside the folder is refused, so a link can never carry a write out), and no
  * part of the path inside the folder is a QUICK_SESSION_ASK_DIRS folder or a QUICK_SESSION_ASK_FILES file (an agent
  * worktree under `.claude/worktrees/<name>` is judged from inside the worktree). Never true for a network path, a
  * path with control characters, or the folder itself.
  */
 export function quickFolderEditCovered(folder: string, target: unknown, platform: NodeJS.Platform = process.platform): boolean {
   if (typeof folder !== 'string' || !folder || !isAbsolute(folder)) return false
-  if (typeof target !== 'string' || !target || CONTROL.test(target)) return false
+  if (typeof target !== 'string' || !target || CONTROL.test(target) || hiddenCharIn(target) !== null) return false
   const abs = isAbsolute(target) ? target : join(folder, target)
   if (isNetworkPath(abs) || isNetworkPath(folder)) return false
   let realFolder: string
@@ -107,10 +118,33 @@ export function quickFolderEditCovered(folder: string, target: unknown, platform
     return false
   }
   const lexical = resolve(abs)
-  const lexRel = relInside(resolve(folder), lexical) ?? relInside(realFolder, lexical)
+  const lexBase = relInside(resolve(folder), lexical) !== null ? resolve(folder) : realFolder
+  const lexRel = relInside(lexBase, lexical)
   const realRel = relInside(realFolder, realTarget)
   if (lexRel === null || realRel === null) return false
+  if (!noLinkBelow(lexBase, lexRel)) return false
   return segmentsOk(lexRel, platform) && segmentsOk(realRel, platform)
+}
+
+/**
+ * True when no existing component from `base` down through `rel` (leaf included) is a symlink or junction. lstat, so a
+ * dangling link counts: the real-path check walks up while existsSync is false and existsSync follows links, which
+ * would read `<folder>/docs/out.md -> elsewhere` as a plain missing file. A missing component ends the walk (nothing
+ * below it exists); any other error fails closed.
+ */
+function noLinkBelow(base: string, rel: string): boolean {
+  let cur = base
+  for (const seg of rel.split(/[\\/]+/).filter(Boolean)) {
+    cur = join(cur, seg)
+    try {
+      if (lstatSync(cur).isSymbolicLink()) return false
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException)?.code
+      if (code === 'ENOENT' || code === 'ENOTDIR') return true
+      return false
+    }
+  }
+  return true
 }
 
 /** True when every file an edit call writes is covered (`editTargets` + `quickFolderEditCovered`). */
