@@ -6,7 +6,7 @@
 import { Box, Text } from 'ink'
 import { glyphs, toneColor } from '../theme'
 import type { InputEvent, Tone, TuiEnv } from '../types'
-import { padToWidth, textWidth, truncateEnd } from './text'
+import { graphemes, padToWidth, textWidth, truncateEnd } from './text'
 
 export interface Seg {
   text: string
@@ -52,7 +52,7 @@ export function cutSegs(segs: Seg[], width: number, env: TuiEnv, pad = false): S
   const whole = segs.map((s) => s.text).join('')
   const cut = pad ? padToWidth(whole, width, ell) : truncateEnd(whole, width, ell)
   if (cut === whole) return segs
-  // Re-split the cut text over the segments by length (the cut keeps a prefix of `whole`, plus maybe the ellipsis).
+  // Re-split the cut text over the segments (the cut keeps a grapheme-aligned prefix of `whole`, plus maybe the ellipsis).
   const out: Seg[] = []
   let pos = 0
   const keep = cut.startsWith(whole) ? whole.length : commonPrefix(whole, cut)
@@ -92,10 +92,13 @@ export function alignSegs(left: Seg[], right: Seg | undefined, width: number, en
   return [...l, { ...fill, text: ' '.repeat(pad) }, right]
 }
 
+/** Length (UTF-16 units of `a`) of the grapheme clusters `a` and `b` share from the start, so a cut never lands inside one. */
 function commonPrefix(a: string, b: string): number {
-  let i = 0
-  while (i < a.length && i < b.length && a[i] === b[i]) i++
-  return i
+  const ga = graphemes(a)
+  const gb = graphemes(b)
+  let n = 0
+  for (let i = 0; i < ga.length && i < gb.length && ga[i] === gb[i]; i++) n += ga[i]!.length
+  return n
 }
 
 /** Renders lines into a Box of exactly width x height (never more lines than height). */

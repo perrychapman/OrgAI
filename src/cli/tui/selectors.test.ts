@@ -4,6 +4,7 @@ import type { SnapshotResult } from '../client/runStream'
 import { project, record, summary } from '../testing/fakeContext'
 import {
   composerMode,
+  failedTurnSentence,
   orgTreeRows,
   partialRows,
   planView,
@@ -216,6 +217,23 @@ describe('statusSummary', () => {
     expect(statusSummary(s).statusWord).toBe('Stopped at its budget limit')
     s = applyEvent(s, ev({ type: 'run.status', runId: 'r1', status: 'error' }))
     expect(statusSummary(s).statusWord).toBe('Failed')
+  })
+
+  it('a failed root turn on an idle run reads "Idle · last turn failed" in the danger tone (#29 M5); a plain idle run does not', () => {
+    const run = (state: AgentInstance['state']): RunRecord => record(summary('r1', { status: 'idle' }), { agents: { root: agent('root', null, { state }) } })
+    let s = applySnapshot(base(), snap([summary('r1', { status: 'idle' })], [], run('error')), { activeRunId: 'r1' })
+    expect(statusSummary(s)).toMatchObject({ statusWord: 'Idle · last turn failed', tone: 'danger' })
+    s = applySnapshot(base(), snap([summary('r1', { status: 'idle' })], [], run('idle')), { activeRunId: 'r1' })
+    expect(statusSummary(s)).toMatchObject({ statusWord: 'Idle', tone: 'dim' })
+  })
+
+  it('the bare failure reason becomes a readable sentence in the transcript (#29 M5)', () => {
+    expect(failedTurnSentence('during execution')).toBe('The last turn failed (error during execution). Send a message to try again.')
+    expect(failedTurnSentence('error_max_turns')).toContain('error max turns')
+    expect(failedTurnSentence('Hello there')).toBe('Hello there')
+    let s = base()
+    s = applySnapshot(s, snap([summary('r1', { status: 'idle' })], [], record(summary('r1', { status: 'idle' }), { transcript: [entry('t1', { kind: 'text', text: 'during execution' })], agents: { root: agent('root', null) } })), { activeRunId: 'r1' })
+    expect(transcriptRows(s).rows[0].text).toMatch(/^The last turn failed/)
   })
 
   it('without an active run: no run fields; readOnlyReason and host kind pass through', () => {

@@ -10,7 +10,8 @@
  * characters and pastes), so it is rendered as typed.
  */
 import { Box, Text } from 'ink'
-import { useRef, useState, type ReactNode } from 'react'
+import { useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { styleFor } from './panes/lines'
 import { useFocusHandler, useTuiEnv } from './context'
 import {
   backspace,
@@ -31,11 +32,13 @@ import {
   type TextBuffer
 } from './input/textBuffer'
 import { sanitizeTty } from './sanitizeTty'
-import { asciiOnly, toneColor } from './theme'
+import { asciiOnly } from './theme'
 import type { ComposerMode, ComposerProps, InputEvent } from './types'
 
 /** At most this many text rows are visible; the view scrolls to keep the cursor's row shown. */
 export const COMPOSER_MAX_ROWS = 6
+/** The cursor when colour is off (an inverse cell would be invisible); ASCII-safe. */
+export const CURSOR_GLYPH = '|'
 
 const PROMPT_UNICODE: Record<ComposerMode, string> = { start: '✚', send: '❯', continue: '↻', quick: '?', readOnly: '·' }
 const PROMPT_ASCII: Record<ComposerMode, string> = { start: '+>', send: '>', continue: '>>', quick: '?>', readOnly: '--' }
@@ -48,8 +51,9 @@ export function promptGlyph(mode: ComposerMode, ascii: boolean): string {
 export function composerReduce(
   b: TextBuffer,
   e: InputEvent,
-  mode: ComposerMode
-): { buffer: TextBuffer; action?: 'submit' | 'palette' | 'leave'; submitted?: string } | null {
+  mode: ComposerMode,
+  canHelp = false
+): { buffer: TextBuffer; action?: 'submit' | 'palette' | 'leave' | 'help'; submitted?: string } | null {
   if (e.type === 'paste') return { buffer: insertText(b, e.text) }
   switch (e.name) {
     case 'char': {
@@ -85,6 +89,8 @@ export function composerReduce(
       }
       if (!ch) return null
       if (ch === '/' && b.text === '') return { buffer: b, action: 'palette' }
+      // A lone `?` on an empty composer shows the composer's keys (when the shell can); with text it is a character.
+      if (ch === '?' && b.text === '' && canHelp) return { buffer: b, action: 'help' }
       return { buffer: insertText(b, ch) }
     }
     case 'enter': {
@@ -135,7 +141,7 @@ export function Composer(props: ComposerProps) {
     'composer',
     (e) => {
       const p = propsRef.current
-      const r = composerReduce(bufRef.current, e, p.mode)
+      const r = composerReduce(bufRef.current, e, p.mode, p.onHelp !== undefined)
       if (!r) return false
       if (r.buffer !== bufRef.current) {
         bufRef.current = r.buffer
@@ -143,6 +149,7 @@ export function Composer(props: ComposerProps) {
       }
       if (r.action === 'submit' && r.submitted) p.onSubmit(r.submitted)
       else if (r.action === 'palette') p.onOpenPalette('/')
+      else if (r.action === 'help') p.onHelp?.()
       else if (r.action === 'leave') p.onLeave()
       return true
     },
@@ -151,36 +158,45 @@ export function Composer(props: ComposerProps) {
 
   const glyph = promptGlyph(props.mode, ascii)
   const promptW = glyph.length + 1
-  const textW = Math.max(1, props.width - promptW)
-  const accent = toneColor(props.mode === 'readOnly' ? 'dim' : 'accent', env)
-  const dim = toneColor('dim', env)
+  // With colour off an inverse cell would be invisible, so the cursor is a glyph and one column is kept for it.
+  const markCursor = !env.color && props.focused
+  const textW = Math.max(1, props.width - promptW - (markCursor ? 1 : 0))
+  const accent = styleFor({ tone: props.mode === 'readOnly' ? 'dim' : 'accent' }, env)
+  const dim = styleFor({ tone: 'dim' }, env)
   const reason = props.mode === 'readOnly' && props.disabledReason ? sanitizeTty(props.disabledReason).replace(/\n/g, ' ') : ''
+
+  const rows = buffer.text === '' ? [] : wrapBuffer(buffer, textW)
+  let cursorRow = rows.findIndex((r) => r.cursorAt !== undefined)
+  if (cursorRow < 0) cursorRow = rows.length - 1
+  const first = Math.max(0, Math.min(cursorRow - COMPOSER_MAX_ROWS + 1, rows.length - COMPOSER_MAX_ROWS))
+  const shown = rows.slice(first, first + COMPOSER_MAX_ROWS)
+  const rowCount = (buffer.text === '' ? 1 : shown.length) + (reason ? 1 : 0)
+  const reported = useRef<number | undefined>(undefined)
+  useLayoutEffect(() => {
+    if (reported.current === rowCount) return
+    reported.current = rowCount
+    propsRef.current.onRows?.(rowCount)
+  })
 
   if (buffer.text === '') {
     const placeholder = sanitizeTty(props.placeholder ?? '').replace(/\n/g, ' ')
     return (
       <Box flexDirection="column" width={props.width}>
         <Box>
-          <Text color={accent}>{glyph} </Text>
-          {props.focused ? <Text inverse> </Text> : null}
-          <Text dimColor color={dim} wrap="truncate-end">
+          <Text {...accent}>{glyph} </Text>
+          {props.focused ? <Text {...styleFor({ inverse: true }, env)}>{markCursor ? CURSOR_GLYPH : ' '}</Text> : null}
+          <Text {...dim} wrap="truncate-end">
             {placeholder}
           </Text>
         </Box>
         {reason ? (
-          <Text dimColor color={dim} wrap="truncate-end">
+          <Text {...dim} wrap="truncate-end">
             {reason}
           </Text>
         ) : null}
       </Box>
     )
   }
-
-  const rows = wrapBuffer(buffer, textW)
-  let cursorRow = rows.findIndex((r) => r.cursorAt !== undefined)
-  if (cursorRow < 0) cursorRow = rows.length - 1
-  const first = Math.max(0, Math.min(cursorRow - COMPOSER_MAX_ROWS + 1, rows.length - COMPOSER_MAX_ROWS))
-  const shown = rows.slice(first, first + COMPOSER_MAX_ROWS)
 
   return (
     <Box flexDirection="column" width={props.width}>
@@ -194,23 +210,30 @@ export function Composer(props: ComposerProps) {
           const before = row.cells.slice(0, at).join('')
           const under = row.cells[at] ?? ' '
           const after = row.cells.slice(at + 1).join('')
-          line = (
+          line = markCursor ? (
             <Text wrap="truncate-end">
               {before}
-              <Text inverse>{graphemeWidth(under) === 0 ? ' ' : under}</Text>
+              {CURSOR_GLYPH}
+              {row.cells[at] === undefined ? '' : under}
+              {after}
+            </Text>
+          ) : (
+            <Text wrap="truncate-end">
+              {before}
+              <Text {...styleFor({ inverse: true }, env)}>{graphemeWidth(under) === 0 ? ' ' : under}</Text>
               {after}
             </Text>
           )
         }
         return (
           <Box key={first + i}>
-            <Text color={first + i === 0 ? accent : undefined}>{lead}</Text>
+            <Text {...(first + i === 0 ? accent : {})}>{lead}</Text>
             {line}
           </Box>
         )
       })}
       {reason ? (
-        <Text dimColor color={dim} wrap="truncate-end">
+        <Text {...dim} wrap="truncate-end">
           {reason}
         </Text>
       ) : null}

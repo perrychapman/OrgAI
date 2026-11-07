@@ -178,15 +178,15 @@ describe('bindingsFor', () => {
 
   it('permission: y s a n with suggestions, a is two-step, n takes an optional note', () => {
     const bs = bindingsFor(tray('permission', permission()))
-    expect(bs.map((b) => b.key)).toEqual(['y', 's', 'a', 'n'])
+    expect(bs.map((b) => b.key)).toEqual(['y', 's', 'a', 'n', 'v'])
     expect(bs.find((b) => b.key === 'a')?.twoStep).toBe(true)
     expect(bs.find((b) => b.key === 'n')?.text).toBe('optional')
   })
 
   it('permission: only y and n under a reference folder or without suggestions', () => {
-    expect(keys(tray('permission', permission({ referenceFolder: '/ref' })))).toEqual(['y', 'n'])
-    expect(keys(tray('permission', permission({ suggestions: [], ruleLabels: [] })))).toEqual(['y', 'n'])
-    expect(keys(tray('permission', permission({ suggestions: undefined })))).toEqual(['y', 'n'])
+    expect(keys(tray('permission', permission({ referenceFolder: '/ref' })))).toEqual(['y', 'n', 'v'])
+    expect(keys(tray('permission', permission({ suggestions: [], ruleLabels: [] })))).toEqual(['y', 'n', 'v'])
+    expect(keys(tray('permission', permission({ suggestions: undefined })))).toEqual(['y', 'n', 'v'])
   })
 
   it('rules, merge and install keys', () => {

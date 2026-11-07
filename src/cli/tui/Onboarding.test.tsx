@@ -35,6 +35,38 @@ function mount(c?: ProjectPathCheck, env: Partial<TuiEnv> = {}) {
   return { r, choices, onCancel, send }
 }
 
+describe('Onboarding copy (#30 L8, L2)', () => {
+  it('explains the Architect and what Esc and q do', () => {
+    const a = mount(check())
+    const f = a.r.lastFrame() ?? ''
+    expect(f).toContain('built-in setup assistant')
+    expect(f).toContain('uses tokens')
+    expect(f).toContain('Esc or q leaves without creating a project')
+    a.r.unmount()
+  })
+
+  it('a rejected key shows a one-line hint naming the valid keys; a valid key clears it', async () => {
+    const a = mount(check())
+    await a.send(key('x'))
+    expect(a.r.lastFrame()).toContain('"x" is not a choice. Keys: 1, 2 or 3, e (edits), Esc or q (leave).')
+    expect(a.choices).toEqual([])
+    await a.send(key('e'))
+    expect(a.r.lastFrame()).not.toContain('is not a choice')
+    a.r.unmount()
+    const b = mount(check([{ source: 'claude-code', label: 'Claude Code', agentCount: 2 }] as never))
+    await b.send(key('x'))
+    expect(b.r.lastFrame()).toContain('Keys: 1, 2, 3, i,')
+    b.r.unmount()
+  })
+
+  it('has no SGR codes with colour off', () => {
+    const a = mount(check(), { color: false })
+    // eslint-disable-next-line no-control-regex
+    expect(a.r.lastFrame()).not.toMatch(/\x1b\[/)
+    a.r.unmount()
+  })
+})
+
 describe('Onboarding', () => {
   it('shows the folder and the three options with the quick-run note; [i] only with agent sources', () => {
     const a = mount(check())
