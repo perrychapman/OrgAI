@@ -306,7 +306,8 @@ Where things live:
   `motion-fade`, `motion-pop`, `motion-ping`, `motion-ring`; classes `.motion-enter` (stagger `--i`, capped at 5),
   `.motion-enter-lg/-xl/-x`, `.motion-pop`, `.motion-fade`, `.motion-view`, `.motion-ring`, `[data-ping]`,
   `.motion-exit`, `.motion-collapse[data-collapsed]` (collapsed child is `visibility: hidden`, so it leaves the tab order
-  and the accessibility tree), `.motion-none`; `interpolate-size: allow-keywords`; native `details::details-content`.
+  and the accessibility tree), `.motion-none`; `interpolate-size: allow-keywords`; native `details::details-content`
+  (fade on open only).
 - `lib/useArrival.ts` (`ArrivalTracker`, `useArrival(ids, scope, { maxPerBatch })`, `markArrived`): an arrived id is new
   for 1 s, so a re-render keeps its class and a row remount does not replay. `lib/useExitPresence.ts`
   (`useExitPresence`, `exitProps`, `tokenMs`, `cssTimeMs`). `lib/layoutMotion.ts` (`beginLayoutMotion(ms, { columns })`,
@@ -331,9 +332,11 @@ Per surface (what landed, and deviations):
 - 3.5 Sidebar: `.app[data-sidebar-motion]` transitions the columns on a user toggle only; content keeps its full width
   while it moves; labels fade in on expand only (they are conditionally rendered).
 - 3.6 Side panel: Hide / Show glide only; a prop-driven open, `revealOn` and auto-collapse snap.
-- 3.7 Disclosures: native `details` reveal on open; closing is instant (deviation: a reversed close kept closed content
-  visible and focusable, broke "hidden after close" e2e checks and the Advanced deep links). App/Project settings
-  "Advanced settings" carries `.motion-none`. Canvas Customise uses `.motion-collapse`; History member rows rise in.
+- 3.7 Disclosures: native `details` content fades in on open (opacity only); layout is final at once and closing is
+  instant (deviation: a height reveal left a growing box that overlapped the next row for 160 ms, and a reversed close
+  kept closed content visible and focusable; both broke e2e checks in knowledge-run, team-files, proposals and
+  connections and the Advanced deep links). App/Project settings "Advanced settings" carries `.motion-none`. Canvas
+  Customise uses `.motion-collapse` (height glide); History member rows rise in.
 - 3.8 Tray: a tray that opens after mount (not within 1 s of mount) plays `tray-open`; arriving cards get
   `.motion-enter-xl` + `.motion-ring`; the emptied tray is kept for `--dur-fast` (inert, focus dropped if still inside).
   No `.motion-collapse` wrapper (it would break `.frame-grid > .frame-tray`).

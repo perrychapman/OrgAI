@@ -167,25 +167,19 @@
 
 /* ---------- Native disclosures (spec 3.7) ---------- */
 /*
- * Opening reveals the height; closing is instant (deviation from spec 3.7, which reversed it): a closing transition
- * kept closed content visible and focusable for --dur-fast, which broke "hidden after close" checks and let a deep
- * link that closes and reopens measure a moving box. Disclosures opened by code before a scroll or focus (Advanced
- * settings deep links) carry .motion-none.
+ * Opening fades the content in; the layout is final at once and closing is instant (deviation from spec 3.7, which
+ * animated the height both ways). A height reveal kept the box growing for --dur-base after the click, so content that
+ * had just opened overlapped the next row and measured wrong, and a closing transition kept closed content visible and
+ * focusable; both broke the rule that a state is complete when it appears (e2e knowledge-run, team-files, proposals,
+ * connections). `.motion-collapse` still glides height where a region is button-controlled.
  */
 details::details-content {
-  block-size: 0;
   opacity: 0;
-  overflow: clip;
-  overflow-clip-margin: 4px;
   transition: none;
 }
 details[open]::details-content {
-  block-size: auto;
   opacity: 1;
-  transition:
-    block-size var(--dur-base) var(--ease-in-out),
-    opacity var(--dur-base) var(--ease-out),
-    content-visibility var(--dur-base) allow-discrete;
+  transition: opacity var(--dur-base) var(--ease-out);
 }
 /* Opt out for big content (transcript output, long lists): add .motion-none on the <details>. */
 details.motion-none::details-content {
