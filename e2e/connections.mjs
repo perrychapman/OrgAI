@@ -515,7 +515,7 @@ try {
   await lg.locator('[data-testid=proxy-notice]').waitFor({ timeout: 5000 })
   check(/Key saved\. Test and connect to apply\./.test((await lg.locator('[data-testid=proxy-notice]').textContent()) ?? ''), 'saving a key says to test and connect')
   await sleep(200)
-  check(await page.evaluate(() => document.activeElement?.matches('[data-testid=proxy-test]') === true), 'focus moves to Test and connect after Save key (M6)')
+  check(await page.evaluate(() => document.activeElement?.matches('[data-testid=proxy-test]') === true), 'focus moves to Test and connect after Save key (M6)', await page.evaluate(() => { const a = document.activeElement; return `${a?.tagName}#${a?.getAttribute('data-testid') ?? ''}.${a?.className ?? ''}` }))
   await lg.locator('[data-testid=proxy-test]').click()
   await page.waitForFunction(() => document.querySelector('[data-testid=connection-card][data-name="Lite gateway"] [data-testid=proxy-check][data-check=models]'), null, { timeout: 15_000 })
   check((await lg.locator('[data-testid=proxy-check][data-ok=true]').count()) === 3, 'the good key passes all three checks')
@@ -533,8 +533,13 @@ try {
   await sleep(200)
   check(await page.evaluate(() => document.activeElement?.matches('[data-testid=tier-select]') === true), 'focus stays in the tier editor after Apply mapping (M6)')
   check((await lg.locator('[data-testid=tier-auto]').count()) >= Math.min(autosBefore, 1) || autosBefore === 0, 'Automatic badges stay after a partial apply (M1)', String(autosBefore))
-  const vals = await lg.locator('[data-testid=tier-select]').evaluateAll((els) => els.map((e) => e.value))
-  check(vals.length === 4 && vals.every(Boolean), 'after a partial apply no tier select is left empty (M1)', vals.join('|'))
+  // An unmapped tier has value '' by design and shows "Automatic: <model>" as its (disabled) placeholder; "No model" is the empty case.
+  const shownTiers = () => lg.locator('[data-testid=tier-select]').evaluateAll((els) => els.map((e) => e.value || e.selectedOptions[0]?.text || ''))
+  const noneEmpty = (v) => v.length === 4 && v.every((t) => t && t !== 'No model')
+  const t0 = Date.now()
+  let vals = await shownTiers()
+  while (!noneEmpty(vals) && Date.now() - t0 < 5000) { await sleep(150); vals = await shownTiers() }
+  check(noneEmpty(vals),'after a partial apply no tier select is left empty (M1)', vals.join('|'))
 
   // Edit a URL; the models endpoint on another host gets a note.
   const lid = (await lg.getAttribute('data-provider')) ?? ''
