@@ -1,0 +1,285 @@
+/* The project tab "Outputs" (docs/design/outputs.md section 8). Tokens only; the page never scrolls, the list does. */
+.outputs-view {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) var(--side-panel-w, 360px);
+  grid-template-rows: minmax(0, 1fr);
+  grid-template-areas: 'filters main side';
+  container: outputs / inline-size;
+  overflow: hidden;
+  background: var(--surface-0);
+}
+.outputs-view:has(> .side-panel[data-collapsed='true']) {
+  grid-template-columns: auto minmax(0, 1fr) 40px;
+}
+.outputs-view > .side-panel {
+  grid-area: side;
+}
+
+/* ---------- Filter column ---------- */
+.outputs-filters {
+  grid-area: filters;
+  width: 240px;
+  box-sizing: border-box;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-3);
+  border-right: 1px solid var(--border-default);
+  background: var(--surface-1);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+@container outputs (max-width: 1100px) {
+  .outputs-filters {
+    width: 200px;
+    padding: var(--space-2);
+  }
+}
+.outputs-filters-title {
+  margin: 0;
+  font-size: var(--text-title-sm);
+  line-height: var(--text-title-sm-lh);
+  font-weight: var(--weight-semibold);
+}
+.outputs-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.outputs-search .input {
+  width: 100%;
+  padding-left: var(--space-8);
+  padding-right: var(--space-8);
+}
+.outputs-search-icon {
+  position: absolute;
+  left: var(--space-2);
+  display: inline-flex;
+  color: var(--text-tertiary);
+  pointer-events: none;
+}
+.outputs-search-clear {
+  position: absolute;
+  right: var(--space-0h);
+  display: inline-flex;
+}
+.outputs-chips-set {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+.outputs-legend {
+  display: block;
+  padding: 0;
+  margin: 0 0 var(--space-1h);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-secondary);
+  font-weight: var(--weight-semibold);
+}
+.outputs-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1h);
+}
+.outputs-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1h);
+  padding: 0 var(--space-3);
+  height: var(--control-sm);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-full);
+  background: var(--surface-1);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--text-small);
+  cursor: pointer;
+  white-space: nowrap;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.outputs-chip:hover {
+  background: var(--surface-2);
+  color: var(--text-primary);
+}
+.outputs-chip[aria-pressed='true'] {
+  background: var(--accent-soft);
+  border-color: var(--accent-soft-border);
+  color: var(--text-primary);
+}
+.outputs-chip:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.outputs-chip-n {
+  color: var(--text-tertiary);
+}
+.outputs-run-filter .select {
+  width: 100%;
+  min-width: 0;
+}
+.outputs-count {
+  margin: 0;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-tertiary);
+}
+
+/* ---------- Main: the list ---------- */
+.outputs-main {
+  grid-area: main;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.outputs-main > .banner {
+  margin: var(--space-3) var(--space-3) 0;
+}
+.outputs-main > .empty-state,
+.outputs-empty-wrap {
+  margin: auto;
+}
+.outputs-empty-wrap:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.outputs-loading {
+  padding: var(--space-3);
+}
+.outputs-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0 0 var(--space-4);
+  list-style: none;
+}
+.outputs-list:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.outputs-group,
+.outputs-group-rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.outputs-group-title {
+  box-sizing: border-box;
+  height: 32px;
+  margin: 0;
+  padding: var(--space-2) var(--space-3) 0;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  font-weight: var(--weight-semibold);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.outputs-group-n {
+  color: var(--text-tertiary);
+  font-weight: var(--weight-regular);
+}
+.outputs-more-wrap {
+  padding: var(--space-3);
+}
+.output-row {
+  box-sizing: border-box;
+  min-height: 64px;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3) var(--space-2) var(--space-4);
+  border-left: 3px solid transparent;
+  cursor: pointer;
+  min-width: 0;
+}
+.output-row:hover {
+  background: var(--surface-2);
+}
+.output-row[aria-selected='true'] {
+  background: var(--accent-soft);
+  border-left-color: var(--accent);
+}
+.output-row:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.output-row[data-missing='true'] .output-row-title,
+.output-row[data-missing='true'] .output-row-meta {
+  color: var(--text-tertiary);
+}
+.output-row-icon {
+  flex: none;
+  display: inline-flex;
+  padding-top: var(--space-0h);
+  color: var(--text-secondary);
+}
+.output-row-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0h);
+}
+.output-row-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.output-row-head .badge {
+  flex: none;
+}
+.output-row-title {
+  font-size: var(--text-body);
+  line-height: var(--text-body-lh);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.output-row-meta {
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.output-row-prov {
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---------- Detail pane ---------- */
+.outputs-pane {
+  padding: var(--space-3) var(--space-4) var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.output-notice {
+  margin: 0;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+}
+.output-notice:empty {
+  display: none;
+}
