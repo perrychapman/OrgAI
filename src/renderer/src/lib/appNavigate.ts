@@ -20,8 +20,8 @@ import {
   type ProjectSettingsSection
 } from '@shared/view/atlas'
 
-export type ProjectViewId = 'run' | 'history' | 'knowledge' | 'team' | 'settings'
-export type RunSideTab = 'transcript' | 'usage' | 'knowledge'
+export type ProjectViewId = 'run' | 'history' | 'outputs' | 'knowledge' | 'team' | 'settings'
+export type RunSideTab = 'transcript' | 'usage' | 'outputs' | 'knowledge'
 
 export type NavTarget =
   | { kind: 'dashboard'; newProject?: true }
@@ -67,6 +67,7 @@ export const SURFACE_TARGETS: Readonly<Record<AtlasSurfaceId, NavTarget>> = {
   'project-history': proj('history'),
   'project-history-runs': proj('history'),
   'project-history-trends': proj('history'),
+  'project-outputs': proj('outputs'),
   'project-knowledge': proj('knowledge'),
   'project-knowledge-list': proj('knowledge'),
   'project-knowledge-graph': proj('knowledge'),
@@ -120,6 +121,7 @@ export const SURFACE_TARGETS: Readonly<Record<AtlasSurfaceId, NavTarget>> = {
   'run-side-panel': { kind: 'run', sideTab: 'transcript' },
   'run-transcript': { kind: 'run', sideTab: 'transcript' },
   'run-usage': { kind: 'run', sideTab: 'usage' },
+  'run-outputs': { kind: 'run', sideTab: 'outputs' },
   'run-knowledge': { kind: 'run', sideTab: 'knowledge' },
   'run-decision-tray': { kind: 'run' },
   'run-composer': { kind: 'run', composer: true },
