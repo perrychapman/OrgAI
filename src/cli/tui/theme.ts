@@ -82,6 +82,15 @@ export function asciiOnly(env: TuiEnv): boolean {
   return !env.unicode || env.screenReader || env.dumbTerminal
 }
 
+/**
+ * The one list separator for status, tray and hint lines (issue #26 L11): ', ' for a screen reader, ' | ' in ASCII mode
+ * (no Unicode, TERM=dumb), else ' · '.
+ */
+export function separatorFor(env: Pick<TuiEnv, 'unicode' | 'screenReader' | 'dumbTerminal'>): string {
+  if (env.screenReader) return ', '
+  return asciiOnly(env as TuiEnv) ? ' | ' : ' · '
+}
+
 export function glyphs(env: TuiEnv): Glyphs {
   return asciiOnly(env) ? ASCII_GLYPHS : UNICODE_GLYPHS
 }
