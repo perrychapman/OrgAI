@@ -27,7 +27,7 @@ import {
 } from '@anthropic-ai/claude-agent-sdk'
 import type { AgentInstance, ImageAttachment, McpServerSpec, PluginSpec, Project, RunSummary, Role, RunEvent, TranscriptBlock, UsageStatus, WorktreeInfo } from '@shared/types'
 import type { PermissionDecision, PermissionSuggestion, ProviderAuth } from '@shared/types'
-import { KNOWLEDGE_RECALL_TOOL, SPAWN_TOOL } from '@shared/types'
+import { KNOWLEDGE_RECALL_TOOL, SPAWN_TOOL, isBuiltinConnectionId } from '@shared/types'
 import { ANTHROPIC_BUILTIN_MODELS, effectiveSubagentLimits, isolateWritersOn, mcpServersForRole, newId, planGuardEngaged, planGuardOf, projectKindOf, settingTier, tierForModel } from '@shared/defaults'
 import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo, type RunSkill, type CompletionInput, type RunConnection, type ResolvedMcpServer, type RuntimeAdapter, type PeerMessage, type RuntimeContext, type RuntimeSession, type RootTurnEnd, type SessionSettlement, type ExecActivityReason } from './types'
 import { isTrustRestrictedRun, isWorkspaceConfigPath } from '../quick/scratch'
@@ -471,9 +471,9 @@ export function redactSecrets(text: string, secrets: Iterable<string>): string {
   return out
 }
 
-/** True when the run reaches its models through a non-anthropic connection (LiteLLM). */
+/** True when the run reaches its models through a proxy connection (any id that is not a built-in one). */
 export function usesProxy(ctx: Pick<RuntimeContext, 'connection'>): boolean {
-  return !!ctx.connection && ctx.connection.connection !== 'anthropic'
+  return !!ctx.connection && !isBuiltinConnectionId(ctx.connection.connection)
 }
 
 /**
@@ -492,7 +492,7 @@ export function completionEnv(connection: RunConnection | undefined, base: NodeJ
   // No connection (drafts): isolated from routing vars, but the legacy inherited key still works.
   if (!connection) return isolateClaudeEnv(base, { keepApiKey: true })
   // The anthropic API key arrives through connection.env; nothing inherited authenticates.
-  return { ...isolateClaudeEnv(base, { proxy: connection.connection !== 'anthropic', keepApiKey: false }), ...scrubControlEnv(connection.env ?? {}) }
+  return { ...isolateClaudeEnv(base, { proxy: !isBuiltinConnectionId(connection.connection), keepApiKey: false }), ...scrubControlEnv(connection.env ?? {}) }
 }
 
 /**
@@ -1440,10 +1440,10 @@ export class ClaudeSession implements RuntimeSession {
     }
   }
 
-  /** Per-token prices when this run goes through LiteLLM with a priced catalog, else undefined. */
+  /** Per-token prices when this run goes through a proxy with a priced catalog, else undefined (keyed on pricing, not the id). */
   private litellmPricing() {
     const c = this.ctx.connection
-    return c?.connection === 'litellm' ? c.pricing : undefined
+    return c && !isBuiltinConnectionId(c.connection) ? c.pricing : undefined
   }
 
   /**
