@@ -1,4 +1,4 @@
-import type { ReactElement } from 'react'
+import type { CSSProperties, ReactElement } from 'react'
 import { useEffect, useMemo, useState } from 'react'
 import { ChevronDown, ChevronRight, Files, FolderPlus, History as HistoryIcon } from 'lucide-react'
 import type { RunSummary } from '@shared/types'
@@ -321,7 +321,7 @@ function MemberRow({ member, number, chat, onOpen }: { member: RunSummary; numbe
   const status = statusOfRun(live ?? { summary: member }, proj, false)
   const started = new Date(member.startedAt)
   return (
-    <tr className="run-member-row" id={memberRowId(member.id)} data-run={member.id}>
+    <tr className="run-member-row motion-enter" style={{ '--i': Math.min(number - 1, 5) } as CSSProperties} id={memberRowId(member.id)} data-run={member.id}>
       <td className="col-prompt">
         <div className="run-member">
           <span className="run-member-no">Session {number}</span>

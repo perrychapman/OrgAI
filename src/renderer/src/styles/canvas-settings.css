@@ -195,7 +195,12 @@
 /* Customise disclosure */
 .canvas-customise {
   display: grid;
-  gap: var(--space-2);
+  gap: 0;
+}
+
+/* The collapsed body keeps no gap behind it; the spacing travels inside the clipped child. */
+.canvas-customise > .motion-collapse > div {
+  padding-top: var(--space-2);
 }
 
 .canvas-customise-toggle {
@@ -225,15 +230,11 @@
 
 .canvas-customise-toggle .canvas-customise-chevron {
   display: inline-flex;
-  transition: transform var(--dur-fast) var(--ease-out);
+  transition: rotate var(--dur-fast) var(--ease-out);
 }
 
 .canvas-customise-toggle[aria-expanded='true'] .canvas-customise-chevron {
-  transform: rotate(90deg);
-}
-
-[data-reduce-motion='on'] .canvas-customise-toggle .canvas-customise-chevron {
-  transition: none;
+  rotate: 90deg;
 }
 
 .canvas-field {
