@@ -21,7 +21,8 @@ import { initials } from '../lib/layout'
 import { currentPlatform, isMacPlatform, modKeyLabel } from '../lib/platform'
 import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../lib/settingsTarget'
 import { devBuildLabel, isDevBuild } from '../lib/buildChannel'
-import { useSidebarCollapsed } from '../lib/useSidebarCollapsed'
+import { contentIsRail, useSidebarCollapsed } from '../lib/useSidebarCollapsed'
+import { useBellCue } from '../lib/useBellCue'
 import UsageMeter, { SpendBar, tightestWindow, UsageBar } from './UsageMeter'
 import { connectionLabel, isProxyId } from '../lib/connectionLabel'
 import { currentConnection, reportsSpend, spendLevel, spendRowFigure, spendRowLabel, spendRowPrefix, spendSentence } from '../lib/usage'
@@ -153,7 +154,9 @@ export default function Sidebar({
   const draftPage = useAppStore((s) => s.draftPage)
   const waiting = useAppStore(useShallow(waitingRuns))
   const indexes = useRunIndexes()
-  const { collapsed: rail, toggle, setCollapsed } = useSidebarCollapsed()
+  const { collapsed: railChosen, toggle, setCollapsed, motion } = useSidebarCollapsed()
+  // A collapse keeps the full content until the column has arrived (see contentIsRail).
+  const rail = contentIsRail(railChosen, motion)
   const [collapsed, setCollapsedRuns] = useState<Record<string, boolean>>({})
   const [collapsedClients, setCollapsedClients] = useState<Set<string>>(() => readCollapsedClients())
   // The selected project's row must stay reachable: opening it (or a project added to a collapsed client) expands its group.
@@ -177,6 +180,7 @@ export default function Sidebar({
   const teamItems = useTeamAttentionItems()
   const items = waiting.flatMap((r) => waitingItems(r))
   const needsCount = items.length + teamItems.length
+  const bellCue = useBellCue(needsCount)
 
   const inProject = (v: string): boolean => v !== 'projects' && v !== 'appSettings'
   const names = projects.map((p) => p.name)
@@ -396,8 +400,20 @@ export default function Sidebar({
           <Popover
             trigger={
               <>
-                <Icon icon={BellRing} size="sm" />
-                {rail ? <span className="nav-rail-count">{needsCount}</span> : <span className="nav-text">{needsLabel}</span>}
+                <span className={`needs-bell${bellCue.ring ? ' motion-ring' : ''}`}>
+                  <Icon icon={BellRing} size="sm" />
+                </span>
+                {rail ? (
+                  <span className="needs-count" data-ping={bellCue.ping ? '' : undefined} onAnimationEnd={bellCue.onPingEnd}>
+                    <span className="nav-rail-count">{needsCount}</span>
+                  </span>
+                ) : (
+                  <span className="nav-text">
+                    <span className="needs-count" data-ping={bellCue.ping ? '' : undefined} onAnimationEnd={bellCue.onPingEnd}>
+                      {needsLabel}
+                    </span>
+                  </span>
+                )}
                 {!rail && <Icon icon={ChevronDown} size="xs" />}
               </>
             }
@@ -500,7 +516,7 @@ export default function Sidebar({
                     title={`${g.label} (${g.items.length})`}
                     onClick={() => toggleClient(g.key)}
                   >
-                    <Icon icon={closed ? ChevronRight : ChevronDown} size="xs" />
+                    <Icon icon={ChevronDown} size="xs" />
                     <span className="nav-client-name">{g.label}</span>
                     <span className="nav-client-count">{` (${g.items.length})`}</span>
                     <span className="nav-client-fill" />
@@ -511,8 +527,11 @@ export default function Sidebar({
                       </Badge>
                     )}
                   </button>
-                  <div id={panelId} role="group" aria-label={g.label} hidden={closed}>
-                    {rows.map(renderEntry)}
+                  {/* Stays mounted: .motion-collapse glides the height and hides the rows (visibility) when closed. */}
+                  <div className="motion-collapse" data-collapsed={closed ? 'true' : 'false'}>
+                    <div id={panelId} role="group" aria-label={g.label}>
+                      {rows.map(renderEntry)}
+                    </div>
                   </div>
                 </div>
               )
