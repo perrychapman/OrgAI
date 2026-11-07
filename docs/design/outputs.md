@@ -191,4 +191,49 @@ surfaces with their testIds.
 
 ## 12. Implementation notes
 
-Filled in at hand-back.
+As landed on dev (2026-11-07). Deviations from sections 3-10 are listed here; everything else is as specified.
+
+Files: `components/outputs/` `OutputPreview.tsx` (fetch, cache, states), `DocumentView.tsx`, `SheetView.tsx`,
+`MermaidView.tsx`, `TextPreview.tsx` (markdown, csv, json, text), `ImagePreview.tsx`, `OutputsFilters.tsx`,
+`OutputsList.tsx`, plus the foundation files (`RunOutputs.tsx`, `OutputDetail.tsx`, `OutputActions.tsx`,
+`OutputKindIcon.tsx`, `useOutputAnnouncements.ts`, `revealOutputsTab.ts`); `views/OutputsView.tsx`; pure helpers
+`lib/outputs.ts`, `lib/outputsRun.ts`, `lib/outputPreview.ts` (`sheetCellText`, `isNumericCell`, `columnLetter`,
+`formulaText`, `parseCsv`, `prettyJson`, `isSafeImageDataUrl`, `svgDataUrl`, `safeDocHref`), `lib/outputSvg.ts`
+(`activeContentIn`, `safeMermaidSvg(svgText, parse?, serialize?)`), `lib/outputsList.ts` (`filterOutputs`,
+`matchesQuery`, `kindCounts`, `runOptions`, `dayGroups` / `dayLabel`, `countLine`, `producedText`, `titleTypeAhead`,
+`idAfterRemoval`, `resolveOutputFocus`, `newOutputIds`, `OUTPUTS_PAGE` 300); styles `outputs.css`,
+`outputs-preview.css`, `outputs-view.css`. Atlas surfaces `run-outputs` and `project-outputs` (with
+`lib/appNavigate.ts` targets).
+
+Previews:
+- Root `output-preview[data-state=loading|error|ready][data-kind]`; `output-preview-error` with `output-preview-retry`
+  "Try again"; `output-preview-none`.
+- Mermaid: lazy `import('mermaid')` 12.3.0, `securityLevel: 'strict'`, `htmlLabels: false` globally and for
+  flowcharts (labels otherwise render in `foreignObject`, which the gate refuses), renders queued one at a time
+  (a module-level promise chain, because mermaid's render is not re-entrant), re-rendered on a `data-theme` change.
+  `output-mermaid[data-state=drawing|ok|error|refused]`, `output-mermaid-view`, `output-mermaid-svg`,
+  `output-mermaid-copy` (+ `output-mermaid-copied`), `output-mermaid-error`, `output-mermaid-refused`.
+- The SVG gate (`safeMermaidSvg`) is two layers: Mermaid's own strict sanitizer, then an XML parse that refuses
+  `script`, `foreignObject`, `iframe`, `object`, `embed`, `animate`, `set`, `animateTransform`, `animateMotion`,
+  `handler`, `listener`, any `on*` attribute, `href` / `xlink:href` other than `#fragment`, `javascript:` /
+  `vbscript:` (whitespace and control characters squashed first), `data:text/html` / `data:application`,
+  `@import`, `expression(` and any `url(` not pointing at `#`; the re-serialized markup is scanned again. The parse and
+  serialize steps are injectable because vitest runs in node.
+- Sheets add `output-sheet-region` (the focusable scroller); text kinds add the wrapper `output-text-view`.
+
+Project tab: `outputs-view`, `outputs-main`, `outputs-group` / `outputs-group-title`, `output-row-title`,
+`output-row-prov`, `outputs-empty-filter`, `outputs-detail-body`, besides the section 8 ids.
+
+How checked: unit tests for every pure helper; `e2e/outputs.mjs` (in e2e:free; mock `[mock:outputs]`, 1024x640 and
+1600x1000, dark and light, Windows): run side tab rows and kinds, the document (heading, bold run, table rows,
+bullets), the sheet (two tabs, Cost cells, `=SUM(B2:B4)` as text), the drawn diagram (its four node labels) and its
+Source toggle, the rendered Markdown heading and its Source view, the PNG loaded (naturalWidth > 0), the
+RunMeta chip count, transcript rows (four produced, one registered, one refused reading "Refused" with no Show), the
+transcript Show landing on the item, the project tab (five rows under Today, kind chips with counts and OR, search,
+run filter, count line, type-ahead, one Tab stop, Enter to the heading, Esc back to the row, Clear the filters,
+Remove from list), the actions popover for produced and registered files, and no page scroll.
+
+Unverified: native Open / Show in folder / Save as, Copy SVG's clipboard result, real Word / Excel files (only files
+main produced), screen reader output, forced colours, macOS and Linux, rows past 300 (`outputs-more`), the 5 s
+announcement throttles. Open: no View > Outputs menu item and no Dashboard line (section 11), no UX walk of the
+built feature yet (`ux-review-outputs-pre.md` was before it).

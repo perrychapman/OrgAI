@@ -555,6 +555,14 @@ components/layout:
   only; while one is open the same controls send into it. It is recognised by kind 'setup' plus its prompt
   (`lib/orgChange.ts` holds the prompt contract and the display title "Org chart: ..."), so keep the start wording and
   `isOrgChangeRun` in step. The renderer never starts or filters `surface: 'team'` runs (main still accepts the field).
+- Run outputs (renderer; spec `docs/design/outputs.md`, section 12 has the landed details): the run side tab Outputs
+  (`components/outputs/RunOutputs.tsx`), the project tab Outputs (`views/OutputsView.tsx`, between History and
+  Knowledge on every stored project), the RunMeta chip and the transcript rows (`lib/outputsRun.ts`) read one list,
+  the store's `outputsByProject`. Previews are built as React elements from main's `OutputPreview`, never HTML; the one
+  exception is Mermaid's SVG, inserted only after `lib/outputSvg.ts` `safeMermaidSvg` (strict mode, `htmlLabels:
+  false`, renders queued). SVG outputs show only as an `img` data URL, images only from `data:image/(png|jpeg|gif|
+  webp);base64,`, document links only http(s) / mailto. CSP is unchanged. Checked by unit tests and `e2e/outputs.mjs`
+  on Windows at both sizes and themes; native actions, real Office files, screen readers, macOS and Linux unverified.
 
 - `src/renderer/src/`
 - `src/renderer/src/components/connections/`
