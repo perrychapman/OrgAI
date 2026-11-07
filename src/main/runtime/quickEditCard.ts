@@ -25,18 +25,43 @@ export function editInputAt(input: unknown, cwd: string): Record<string, unknown
   if ('file_path' in o) o.file_path = abs(o.file_path)
   if ('notebook_path' in o) o.notebook_path = abs(o.notebook_path)
   if (Array.isArray(o.changes)) {
-    o.changes = o.changes.map((c) => (c && typeof c === 'object' && 'path' in c ? { ...(c as Record<string, unknown>), path: abs((c as { path?: unknown }).path) } : c))
+    o.changes = o.changes.map((c) => {
+      if (!c || typeof c !== 'object') return c
+      const r = { ...(c as Record<string, unknown>) }
+      if ('path' in r) r.path = abs(r.path)
+      // A move destination resolves like a path (quickEditFree / quickEditCard still refuse any change carrying one).
+      if (typeof r.movePath === 'string') r.movePath = abs(r.movePath)
+      return r
+    })
   }
   return o
 }
 
-/** True when a quick run's session edit grant covers this edit (relative targets resolved against `cwd`). */
+/**
+ * True when any `changes[]` entry moves its file: a `movePath` / `move_path` key at the change or in its `kind` object,
+ * whatever its value except undefined / null (Codex 0.166 `kind: { type: 'update', move_path: <dest> }`, review H1). The
+ * quick grant judges source paths only, so such an edit is never covered and never offered the grant. Pure.
+ */
+export function editHasMove(input: unknown): boolean {
+  if (!input || typeof input !== 'object') return false
+  const changes = (input as { changes?: unknown }).changes
+  if (!Array.isArray(changes)) return false
+  const moves = (o: unknown): boolean =>
+    !!o && typeof o === 'object' && ['movePath', 'move_path'].some((k) => k in o && (o as Record<string, unknown>)[k] != null)
+  return changes.some((c) => moves(c) || (!!c && typeof c === 'object' && moves((c as { kind?: unknown }).kind)))
+}
+
+/**
+ * True when a quick run's session edit grant covers this edit (relative targets resolved against `cwd`). An edit that
+ * moves a file (editHasMove) is never covered, whatever quick/sessionEdits.ts decides.
+ */
 export function quickEditFree(
   ctx: { run: Pick<RunSummary, 'quick'>; quickSessionEdits?: () => boolean },
   toolName: string,
   input: unknown,
   cwd: string
 ): boolean {
+  if (editHasMove(input)) return false
   return quickEditPreApproved(ctx, toolName, editInputAt(input, cwd))
 }
 
@@ -52,7 +77,7 @@ export function quickEditCard(
   cwd: string,
   provider: PermissionSuggestion[]
 ): { suggestions: PermissionSuggestion[]; ruleLabels: string[]; quick: boolean } {
-  const offer = quickSessionEditSuggestion(run, toolName, editInputAt(input, cwd))
+  const offer = editHasMove(input) ? null : quickSessionEditSuggestion(run, toolName, editInputAt(input, cwd))
   const labels = suggestionLabels(provider)
   if (!offer) return { suggestions: provider, ruleLabels: labels, quick: false }
   return { suggestions: [...provider, offer], ruleLabels: [...labels, QUICK_SESSION_EDIT_LABEL], quick: true }

@@ -31,7 +31,7 @@ import {
   type PolicyChoice
 } from './codexProtocol'
 import { countUsage, setModelTokens } from './runUsage'
-import { CodexEventMapper, NETWORK_TOOLS, ThrottledPartial, fileChanges, type CodexUpdate } from './codexEvents'
+import { CodexEventMapper, NETWORK_TOOLS, ThrottledPartial, fileChangeTargets, fileChanges, type CodexUpdate } from './codexEvents'
 import { costFromPrice, openAiMix, priceFor } from './pricing'
 import {
   CodexAgentNetwork,
@@ -900,7 +900,7 @@ class CodexSession implements RuntimeSession {
     const archPath = this.ctx.project.setup?.architecturePath
     const item = this.mapper.item(itemId)
     if (this.setupLike || !archPath || !item || item.type !== 'fileChange' || item.status !== 'completed') return
-    if (!fileChanges(item).some((c) => isArchitectureFile(c.path, archPath))) return
+    if (!fileChangeTargets(fileChanges(item)).some((p) => p !== '' && isArchitectureFile(p, archPath))) return
     this.log('info', `${this.agents.get(agentId)?.name ?? agentId} updated ${archPath}`)
     void this.ctx.noteArchitectureUpdated().catch((e) => this.log('warn', `Could not record the architecture update: ${(e as Error).message}`))
   }
@@ -1292,9 +1292,12 @@ class CodexSession implements RuntimeSession {
     const agentId = this.agentOf(req.threadId)
     const item = this.mapper.item(req.itemId)
     const changes = item ? fileChanges(item) : []
+    // Every path the change writes: each source path and each move destination (`kind.move_path`, review H1). Every
+    // check below judges these, never the source paths alone; a malformed destination is '' and fails each check.
+    const targets = fileChangeTargets(changes)
     // Self-control gate first (cli-spec 3.4(1)): every changed path and the grantRoot as edit targets, declined without
     // a card. A change with no usable path is left to the checks below.
-    const selfChecks = [...changes.map((c) => c.path), ...(req.grantRoot ? [req.grantRoot] : [])]
+    const selfChecks = [...targets, ...(req.grantRoot ? [req.grantRoot] : [])]
       .filter((p): p is string => typeof p === 'string' && p.length > 0)
       .map((p) => ({ toolName: 'Edit', input: { file_path: p } }))
     if (selfChecks.length && this.selfControlDenied(agentId, selfChecks, this.integrator.worktreeOf(agentId)?.path ?? this.ctx.project.path)) {
@@ -1303,7 +1306,7 @@ class CodexSession implements RuntimeSession {
     const policy = this.threads.get(req.threadId)?.policy
     if (policy?.denyApprovals) return { decision: 'decline' }
     // Reference folders are read-only: declined without a card, before the accept-edits auto-accept and any rule.
-    const refDenial = this.referenceChangeDenial(agentId, changes, req.grantRoot)
+    const refDenial = this.referenceChangeDenial(agentId, targets.map((path) => ({ path })), req.grantRoot)
     if (refDenial) {
       // One harness row on the calling agent: "Refused: <file> is in a reference folder (read only)" (H2). The decline
       // itself carries no text to the agent (the approval answer is a bare decision).
@@ -1312,13 +1315,13 @@ class CodexSession implements RuntimeSession {
       return { decision: 'decline' }
     }
     const buildWorkspace = this.ctx.run.buildWorkspace
-    if (buildWorkspace && (changes.length ? changes.some((c) => isWorkspaceConfigPath(buildWorkspace, c.path)) : req.grantRoot ? isWorkspaceConfigPath(buildWorkspace, req.grantRoot) : false)) {
+    if (buildWorkspace && (targets.length ? targets.some((p) => isWorkspaceConfigPath(buildWorkspace, p)) : req.grantRoot ? isWorkspaceConfigPath(buildWorkspace, req.grantRoot) : false)) {
       this.log('warn', 'Declined a change under .claude/ in the build workspace.')
       this.transcript(agentId, { kind: 'system', text: 'Build sessions cannot write settings under .claude/ in the workspace.' }, { source: 'harness' })
       return { decision: 'decline' }
     }
     const saved = this.ctx.allowedRules?.() ?? this.savedRules()
-    const paths = changes.map((c) => c.path)
+    const paths = targets
     // Settings, hooks and VCS folders are never accepted silently, whatever rule or mode is in force.
     // Lexical and real path both (a link inside the project can name a protected folder elsewhere).
     const protectedPath = (p: string): boolean => {
@@ -1332,7 +1335,7 @@ class CodexSession implements RuntimeSession {
     const touchesProtected = paths.some(protectedPath) || (req.grantRoot ? protectedPath(req.grantRoot) : false)
     // A saved bare Edit / Write rule (legacy files) covers concrete changed files only, never a grantRoot request
     // (write access to a whole folder, possibly / or home: review re-check Medium).
-    if (!touchesProtected && paths.length > 0 && [...saved, ...this.sessionRules].some((r) => r === 'Edit' || r === 'Write')) return { decision: 'accept' }
+    if (!touchesProtected && paths.length > 0 && paths.every((p) => p !== '') && [...saved, ...this.sessionRules].some((r) => r === 'Edit' || r === 'Write')) return { decision: 'accept' }
     // Accept edits (the project's mode, read now: RunManager refreshes ctx.project, or the thread's policy) or a
     // session grant of it: concrete changed files inside the project, an allowed folder or a granted folder, by lexical
     // and real path, need no card. A grantRoot alone, or anything outside, asks.
@@ -1349,7 +1352,8 @@ class CodexSession implements RuntimeSession {
     }
     // Chat (quick) session edit grant, after every decline above: concrete changed files all inside the chat's folder
     // (quick/sessionEdits.ts; a grantRoot or no changes never counts) are accepted for this call only ('accept', never
-    // acceptForSession, so Codex keeps asking OrgAI for the next change).
+    // acceptForSession, so Codex keeps asking OrgAI for the next change). A change carrying `movePath` is never covered
+    // and never offered the session grant (quickEditCard.ts); `input.changes` carries it so the card shows the move.
     if (quickEditFree(this.ctx, 'Edit', input, this.integrator.worktreeOf(agentId)?.path ?? this.ctx.project.path)) return { decision: 'accept' }
     const { decision, granted } = await this.ask(agentId, 'Edit', input)
     if (decision.behavior === 'deny') return { decision: 'decline' }
