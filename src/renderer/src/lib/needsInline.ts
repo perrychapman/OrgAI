@@ -1,5 +1,5 @@
 import type { PermissionDecision, QuestionAnswer, RunSummary, UserQuestion } from '@shared/types'
-import { baseName, isHiddenCommand, oneLine } from './decisionTitle'
+import { baseName, oneLine } from './decisionTitle'
 import { hasHidden, showHidden } from './hiddenChars'
 import { parentPath, type PermissionLocationKind } from './permissionCopy'
 
@@ -22,7 +22,9 @@ export const INLINE_OPTION_MIN = 2
 export const INLINE_OPTION_MAX = 4
 export const INLINE_OPTION_LABEL_MAX = 40
 
-export const LONG_COMMAND_NOTE = 'Long command: open it to review'
+/** A compound command is shown step by step; more steps than this are reviewed in the card. */
+export const INLINE_COMMAND_MAX_STEPS = 4
+
 export const ANSWER_IN_RUN = 'Answer in the run'
 export const REFERENCE_LINE = 'Touches a reference folder (read only)'
 
@@ -74,10 +76,100 @@ export function otherFieldOf(request: InlineRequest): string | undefined {
   return key ? field(request.input, key) : undefined
 }
 
+export type StepOperator = '' | '&&' | '||' | ';'
+/** One step of a shell line with the operator that joins it to the step before ('' for the first step of a line). */
+export interface CommandStep {
+  op: StepOperator
+  text: string
+}
+
+/**
+ * Splits one shell line into steps on `&&`, `||` and `;` outside quotes (the same split as `shellSegments`), keeping
+ * the operator in front of each step. An empty step keeps its operator, so nothing the command says is dropped; only
+ * the empty tail after a final `;` goes.
+ */
+export function lineSteps(line: string): CommandStep[] {
+  const out: CommandStep[] = []
+  let op = '' as StepOperator
+  let cur = ''
+  let quote: string | null = null
+  const push = (next: StepOperator): void => {
+    out.push({ op, text: cur.trim() })
+    cur = ''
+    op = next
+  }
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i]
+    if (quote) {
+      cur += ch
+      if (ch === quote) quote = null
+      continue
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch
+      cur += ch
+      continue
+    }
+    if (ch === ';') {
+      push(';')
+      continue
+    }
+    if ((ch === '&' || ch === '|') && line[i + 1] === ch) {
+      push(ch === '&' ? '&&' : '||')
+      i++
+      continue
+    }
+    cur += ch
+  }
+  if (cur.trim() || op !== ';') out.push({ op, text: cur.trim() })
+  return out
+}
+
+/** Every step of a command, one list per non-empty line. */
+export function commandSteps(command: string): CommandStep[][] {
+  return command
+    .split(/\r?\n/)
+    .filter((l) => l.trim())
+    .map(lineSteps)
+}
+
+/** A step as a display line: "&& npm test". */
+export const stepText = (s: CommandStep): string => (s.op ? `${s.op} ${s.text}`.trimEnd() : s.text)
+
+/** The command as the row shows it: one line per step, the joining operator kept in front ("cd x" / "&& npm test"). */
+export function commandLines(command: string): string[] {
+  return commandSteps(command).flatMap((line) => line.map(stepText))
+}
+
+/**
+ * Why a shell command cannot be allowed on the row, as the row's caption, or null when it can. What Allow approves is
+ * shown whole (every step) on the row and in the buttons' names: no hidden characters, no runs of spaces or tabs, at
+ * most 200 characters, 2 non-empty lines and 4 steps.
+ */
+function commandRefusal(command: string): string | null {
+  if (hasHidden(command)) return 'Hidden characters: open it to review'
+  if (PADDED.test(command)) return 'Extra spaces could hide part of it: open it to review'
+  if (command.length > INLINE_COMMAND_MAX_CHARS) return `Long command (${command.length} characters): open it to review`
+  const lines = commandSteps(command)
+  if (lines.length > INLINE_COMMAND_MAX_LINES) return `${lines.length} lines: open it to review`
+  const steps = lines.reduce((n, l) => n + l.length, 0)
+  if (steps > INLINE_COMMAND_MAX_STEPS) return `${steps} steps: open it to review`
+  return null
+}
+
+/**
+ * The true reason a shell request is opened instead of answered on the row, or null when it can be answered there.
+ * Other tools have no caption (null). For shell requests `inlineAllowable(r) === (inlineRefusal(r) === null)`.
+ */
+export function inlineRefusal(request: InlineRequest, _location?: PermissionLocationKind | null): string | null {
+  if (!SHELL.has(request.toolName)) return null
+  const command = commandOf(request)
+  return command ? commandRefusal(command) : 'No command: open it to review'
+}
+
 /**
  * True when the row may offer Allow once; what it approves is shown whole on the row (review H1-H3).
- * - Shell: no hidden characters, one step per line as the card reads it, at most 2 non-empty lines and 200
- *   characters, no runs of spaces or tabs.
+ * - Shell: see `inlineRefusal`; a compound command is allowed when every step is shown (up to 4 steps).
  * - File tools: a path without hidden characters whose location (`permissionLocation` kind) is the project, a worktree,
  *   an allowed folder or a reference folder; `location` undefined or null (no project, unclear) is never inline.
  * - WebFetch / WebSearch: the URL or query, at most 200 characters, no hidden characters. Every other tool: never.
@@ -85,10 +177,7 @@ export function otherFieldOf(request: InlineRequest): string | undefined {
 export function inlineAllowable(request: InlineRequest, location?: PermissionLocationKind | null): boolean {
   if (SHELL.has(request.toolName)) {
     const command = commandOf(request)
-    if (!command) return false
-    if (hasHidden(command) || isHiddenCommand(request.toolName, request.input) || PADDED.test(command)) return false
-    const lines = command.split(/\r?\n/).filter((l) => l.trim())
-    return lines.length <= INLINE_COMMAND_MAX_LINES && command.length <= INLINE_COMMAND_MAX_CHARS
+    return !!command && commandRefusal(command) === null
   }
   if (EDIT.has(request.toolName) || request.toolName === 'Write' || READ.has(request.toolName)) {
     const path = filePathOf(request)
@@ -143,6 +232,18 @@ export function askVerb(toolName: string): string {
   return `use ${oneLine(toolName, 40)}`
 }
 
+/** A refused command, clipped: its first line, and its last step on its own line so the user sees what it ends with. */
+function previewOf(command: string): string {
+  const lines = commandSteps(command)
+  const flat = lines.flat()
+  const first = (command.split(/\r?\n/).find((l) => l.trim()) ?? '').trim()
+  const head = oneLine(showHidden(first), 100)
+  const last = flat[flat.length - 1]
+  if (!last || flat.length < 2) return head
+  const tail = oneLine(showHidden(stepText(last)), 100)
+  return `${head}\n… ${tail}`
+}
+
 export interface PermissionAsk {
   kind: 'shell' | 'file' | 'other'
   /** "{who} wants to {verb}:" */
@@ -170,9 +271,8 @@ export function permissionAsk(request: InlineRequest, who: string, allowable = i
   const lead = `${head}:`
   const command = commandOf(request)
   if (SHELL.has(request.toolName)) {
-    const first = (command ?? '').split(/\r?\n/).find((l) => l.trim()) ?? ''
-    const shown = allowable ? showHidden(command ?? '') : oneLine(showHidden(first), INLINE_COMMAND_MAX_CHARS)
-    return { kind: 'shell', lead, object: shown, long: !allowable, text: `${head} ${allowable ? shown.replace(/\r?\n/g, ' ; ') : oneLine(shown, 120)}` }
+    const shown = allowable ? showHidden(commandLines(command ?? '').join('\n')) : previewOf(command ?? '')
+    return { kind: 'shell', lead, object: shown, long: !allowable, text: `${head} ${allowable ? showHidden(command ?? '').replace(/\r?\n/g, ' ; ') : oneLine(shown, 120)}` }
   }
   const path = filePathOf(request)
   if (path && (EDIT.has(request.toolName) || request.toolName === 'Write' || READ.has(request.toolName))) {
@@ -241,7 +341,7 @@ export function hideUserEnded<T extends { run: Pick<RunSummary, 'endedBy' | 'end
 /** The caption of a paused run: "resumes at 14:05 if OrgAI stays open" or "waits for you to continue". */
 export function pausedCaption(s: Pick<RunSummary, 'autoResume' | 'pausedUntil'>, locale?: string): string {
   if (s.autoResume && s.pausedUntil) {
-    return `resumes at ${new Date(s.pausedUntil).toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' })} if OrgAI stays open`
+    return `resumes at ${new Date(s.pausedUntil).toLocaleTimeString(locale, { hour: 'numeric', minute: '2-digit' })} if OrgAI stays open`
   }
   return 'waits for you to continue'
 }

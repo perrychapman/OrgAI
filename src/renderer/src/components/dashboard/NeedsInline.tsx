@@ -13,8 +13,8 @@ import {
   ALLOW_ONCE,
   ANSWER_IN_RUN,
   DENY,
-  LONG_COMMAND_NOTE,
   REFERENCE_LINE,
+  inlineRefusal,
   allowedAnnouncement,
   answeredAnnouncement,
   deniedAnnouncement,
@@ -98,14 +98,14 @@ function permissionRow(item: RunNeedsItem, request: PermissionRequest, project: 
     reference,
     where,
     whereAttention: !!location?.attention,
-    note: ask.long ? LONG_COMMAND_NOTE : undefined,
+    note: ask.long ? (inlineRefusal(request, location?.kind ?? null) ?? undefined) : undefined,
     label: item.label,
     ask: (
       <>
         <span className="dash-needs-lead">{ask.lead}</span>
         {ask.kind === 'shell' ? (
-          // Whole when it can be allowed here (short by construction); clamped only when the card is the way to answer.
-          <code className="dash-needs-code" data-clamp={mode === 'allow' ? undefined : '2'}>
+          // Every step, whole, when it can be allowed here (one line per step, the operator kept); clipped first line plus last step otherwise.
+          <code className="dash-needs-code" data-clamp={mode === 'allow' ? undefined : '3'}>
             {ask.object}
           </code>
         ) : ask.kind === 'file' ? (

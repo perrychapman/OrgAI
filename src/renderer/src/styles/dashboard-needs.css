@@ -1,3 +1,8 @@
+/* A quiet empty Needs you stays mounted but hidden; a rule on .dash-section must not show it again. */
+.dash-section[hidden] {
+  display: none;
+}
+
 /* Needs you: warning tint. */
 .dash-needs-row {
   background: var(--warning-soft);
@@ -53,6 +58,32 @@
   line-clamp: 2;
   overflow: hidden;
   overflow-wrap: anywhere;
+}
+.dash-needs-code[data-clamp='3'] {
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+}
+/* L4: the chevron of a row answered in the run sits in the middle of the row, readable. */
+.dash-needs-main {
+  align-items: center;
+}
+.dash-needs-main > .dash-row-icon {
+  align-self: flex-start;
+}
+.dash-needs-main > svg:last-child {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  color: var(--text-secondary);
+}
+/* L7: the Paused reason may use two lines. */
+.dash-row-paused .dash-row-detail {
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
 }
 .dash-needs-code {
   font-family: var(--font-mono);
