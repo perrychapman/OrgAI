@@ -1,13 +1,20 @@
 import type { ReactElement } from 'react'
 import { useState } from 'react'
 import { isSafeImageDataUrl } from '../../lib/outputPreview'
-import { SegmentedControl } from '../ui/SegmentedControl'
+import { hintText } from '../../lib/diagramView'
+import { PanZoomSurface } from './diagram/PanZoomSurface'
+import { SurfaceToolbar } from './diagram/DiagramToolbar'
+import { usePanZoom } from './diagram/usePanZoom'
+import { useSurfaceNotes } from './diagram/useSurfaceNotes'
+import { useOutputView } from './previewStatus'
+import '../../styles/outputs-diagram.css'
 
-type Size = 'fit' | 'actual'
-
-/** A raster image from a checked data URL, fitted or at its own size. */
+/** A raster image from a checked data URL on the pan/zoom surface: fits at first, drag to move, zoom bar and keys. */
 export default function ImagePreview({ dataUrl, title }: { dataUrl: string; title: string }): ReactElement {
-  const [size, setSize] = useState<Size>('fit')
+  const { context } = useOutputView()
+  const [natural, setNatural] = useState<{ w: number; h: number } | null>(null)
+  const notes = useSurfaceNotes()
+  const pz = usePanZoom(natural, { wheel: context === 'dialog' ? 'zoom' : 'modifier', onSpeak: notes.speak })
   if (!isSafeImageDataUrl(dataUrl)) {
     return (
       <p className="output-preview-none" data-testid="output-preview-none">
@@ -15,27 +22,29 @@ export default function ImagePreview({ dataUrl, title }: { dataUrl: string; titl
       </p>
     )
   }
-  const img = <img className="output-image" data-size={size} data-testid="output-image" src={dataUrl} alt={title} />
   return (
-    <div className="output-image-wrap">
-      <div data-testid="output-image-size" data-value={size}>
-        <SegmentedControl<Size>
-          label="Size"
-          value={size}
-          onChange={setSize}
-          options={[
-            { value: 'fit', label: 'Fit' },
-            { value: 'actual', label: 'Actual size' }
-          ]}
-        />
-      </div>
-      {size === 'actual' ? (
-        <div className="output-scroll output-image-scroll" role="region" aria-label={`${title}, actual size`} tabIndex={0}>
-          {img}
+    <div className="diagram-viewer output-image-wrap" data-testid="output-image-viewer" data-context={context}>
+      <SurfaceToolbar pz={pz} label="Image controls" />
+      <div className="diagram-body" data-layout="column" data-view="diagram">
+        <div className="diagram-pane diagram-pane-view">
+          <PanZoomSurface pz={pz} title={title} kind="image" hint={hintText(context)}>
+            <img
+              className="pz-img output-image"
+              data-testid="output-image"
+              src={dataUrl}
+              alt={title}
+              draggable={false}
+              onLoad={(e) => {
+                const i = e.currentTarget
+                if (i.naturalWidth > 0 && i.naturalHeight > 0) setNatural({ w: i.naturalWidth, h: i.naturalHeight })
+              }}
+            />
+          </PanZoomSurface>
         </div>
-      ) : (
-        <div className="output-image-fit">{img}</div>
-      )}
+      </div>
+      <p className="sr-only" role="status" data-testid="output-live">
+        {notes.live}
+      </p>
     </div>
   )
 }

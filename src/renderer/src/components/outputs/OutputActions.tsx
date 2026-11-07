@@ -1,9 +1,10 @@
 import type { KeyboardEvent, ReactElement } from 'react'
 import { useId } from 'react'
-import { ExternalLink, FolderOpen, Link2, MoreHorizontal, Save, Trash2, X } from 'lucide-react'
+import { Copy, ExternalLink, FolderOpen, Link2, MoreHorizontal, Save, Trash2, X } from 'lucide-react'
 import type { RunOutput } from '@shared/types'
 import { useAppStore } from '../../store/useAppStore'
-import { canDeleteOutput, canOpenOutput } from '../../lib/outputs'
+import { canDeleteOutput, canOpenOutput, previewCacheFor, previewKey } from '../../lib/outputs'
+import { COPY_FAILED, SOURCE_COPIED } from '../../lib/diagramExport'
 import { cleanIpcError } from '../../lib/ipcError'
 import { HIDDEN_OR_CONTROL_RUN, showHidden } from '../../lib/hiddenChars'
 import { Icon } from '../ui/Icon'
@@ -24,6 +25,9 @@ function onMenuKey(e: KeyboardEvent<HTMLDivElement>): void {
 
 /** A title for a sentence: no control, bidi or zero-width characters. */
 const plainTitle = (s: string): string => s.replace(HIDDEN_OR_CONTROL_RUN, '').trim() || 'this output'
+
+/** Kinds whose preview is the file's own text, so "Copy source" has something to copy. */
+const SOURCE_KINDS: ReadonlySet<string> = new Set(['markdown', 'text', 'csv', 'json', 'mermaid', 'svg'])
 
 export const OUTPUT_OPEN_HINT = 'OrgAI does not open this kind of file. Show it in its folder instead.'
 
@@ -64,6 +68,29 @@ export default function OutputActions({
   }
   const open = canOpenOutput(output)
   const missing = output.missing === true
+  const copySource = (): void => {
+    void run(async () => {
+      // The cached preview holds the text; a miss fetches it (and caches it for the viewer).
+      const cache = previewCacheFor(output.projectId)
+      const key = previewKey(output)
+      let p = cache.get(key)
+      if (!p) {
+        p = await window.orgai.outputs.preview(ref)
+        cache.set(key, p)
+      }
+      if (p.kind !== 'text' && p.kind !== 'svg') {
+        notice('There is no source to copy for this file.')
+        return
+      }
+      try {
+        await navigator.clipboard.writeText(p.text)
+      } catch {
+        notice(COPY_FAILED)
+        return
+      }
+      notice(SOURCE_COPIED)
+    })
+  }
 
   const item = (testId: string, icon: typeof FolderOpen, label: string, onClick: () => void, danger?: boolean): ReactElement => (
     <button type="button" role="menuitem" className={`output-menuitem${danger ? ' danger' : ''}`} data-testid={testId} onClick={onClick}>
@@ -109,6 +136,7 @@ export default function OutputActions({
                   if ('path' in r) notice(`Saved a copy to ${r.path}.`)
                 })
               })}
+            {!missing && SOURCE_KINDS.has(output.kind) && item('output-copy-source', Copy, 'Copy source', () => { close(); copySource() })}
             {item('output-copy-path', Link2, 'Copy path', () => {
               close()
               void run(async () => {

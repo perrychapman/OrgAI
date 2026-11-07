@@ -1,7 +1,7 @@
 // The shown output (docs/design/outputs.md section 4): heading, meta, provenance with the run link, description,
 // toolbar (Open, More actions) and the preview. Shared by the run side tab and the project tab.
 import type { ReactElement } from 'react'
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Maximize2 } from 'lucide-react'
 import type { RunOutput } from '@shared/types'
 import { useAppStore, useRunIndexes } from '../../store/useAppStore'
@@ -75,6 +75,25 @@ export default function OutputDetail({ output, onRemoved, onNotice, autoFocus, n
   const heading = useRef<HTMLHeadingElement>(null)
   const [larger, setLarger] = useState(false)
   const [dialogNotice, setDialogNotice] = useState('')
+  const [full, setFull] = useState(false)
+  const openLarge = useCallback(() => setLarger(true), [])
+  const toggleFull = useCallback(() => setFull((f) => !f), [])
+  const closeLarger = (): void => {
+    setLarger(false)
+    setFull(false)
+  }
+  // Esc leaves Full window first (and the dialog stays open); a second Esc closes it as before. An open menu keeps its own Esc.
+  useEffect(() => {
+    if (!larger || !full) return undefined
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key !== 'Escape' || document.querySelector(':popover-open')) return
+      e.preventDefault()
+      e.stopPropagation()
+      setFull(false)
+    }
+    document.addEventListener('keydown', onKey, true)
+    return () => document.removeEventListener('keydown', onKey, true)
+  }, [larger, full])
   const [hint] = useState(() => narrowHint === true && takeWideHint())
   const index = useRunIndexes().get(output.runId)
   useEffect(() => {
@@ -151,17 +170,17 @@ export default function OutputDetail({ output, onRemoved, onNotice, autoFocus, n
         )}
         <OutputActions output={output} onRemoved={onRemoved} onNotice={onNotice} />
       </div>
-      {!missing && <OutputPreview output={output} labelledBy="output-detail-heading" />}
+      {!missing && <OutputPreview output={output} labelledBy="output-detail-heading" context="detail" onOpenLarge={openLarge} />}
       {larger && (
         <Dialog
           open
-          onClose={() => setLarger(false)}
+          onClose={closeLarger}
           title={showHidden(output.title)}
           description={hasHidden(output.title) ? 'The title has hidden characters, shown written out.' : undefined}
           size="lg"
           testId="output-dialog"
         >
-          <div className="output-dialog-body">
+          <div className="output-dialog-body" data-full={full ? 'true' : undefined}>
             <p className="output-detail-meta" data-testid="output-dialog-meta">
               {outputMetaLine(output)}
             </p>
@@ -179,7 +198,7 @@ export default function OutputDetail({ output, onRemoved, onNotice, autoFocus, n
                   onNotice?.(text)
                 }}
                 onRemoved={(id) => {
-                  setLarger(false)
+                  closeLarger()
                   onRemoved?.(id)
                 }}
               />
@@ -187,7 +206,7 @@ export default function OutputDetail({ output, onRemoved, onNotice, autoFocus, n
             <p className="outputs-notice" role="status" data-testid="output-dialog-notice">
               {dialogNotice}
             </p>
-            <OutputPreview output={output} />
+            <OutputPreview output={output} context="dialog" full={full} onToggleFull={toggleFull} />
           </div>
         </Dialog>
       )}
