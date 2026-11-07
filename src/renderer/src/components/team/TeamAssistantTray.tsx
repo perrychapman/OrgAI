@@ -27,6 +27,7 @@ import {
 import { cleanIpcError } from '../../lib/ipcError'
 import { openConnectorSetup } from './openConnectorSetup'
 import DraftPanel from '../DraftPanel'
+import { OrgChangePointer } from './OrgChangePointer'
 import { Banner } from '../ui/Banner'
 import { Button } from '../ui/Button'
 import { Checkbox } from '../ui/Checkbox'
@@ -107,6 +108,8 @@ export default function TeamAssistantTray({
           onClick={() => openProjectSettings(project.id, PROJECT_SETTINGS_SECTIONS.teamAssistant)}
         />
       </div>
+      {/* Both modes: an open org change session is never hidden behind the Design tab (walk H1). */}
+      <OrgChangePointer project={project} />
       <div role="tabpanel" id={panelDomId('team-mode', 'recommend')} hidden={mode !== 'recommend'} className="team-mode-pane">
         <RecommendPane project={project} scope={scope} active={mode === 'recommend'} onDesign={() => onModeChange('design')} />
       </div>

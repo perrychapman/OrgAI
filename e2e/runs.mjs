@@ -678,7 +678,7 @@ try {
   check((await chainRow.count()) === 1, 'History shows the continued chain as one row with data-sessions=2', String(await chainRow.count()))
   check(/Chain first turn/.test(await chainRow.first().innerText()), 'the chain row is named by its first turn')
   const chainTotal = await page.evaluate(async (pid) => {
-    const rows = (await window.orgai.runs.list(pid)).filter((r) => r.surface !== 'team')
+    const rows = await window.orgai.runs.list(pid)
     const parent = new Map(rows.map((r) => [r.id, r.id]))
     const find = (x) => {
       while (parent.get(x) !== x) x = parent.get(x)

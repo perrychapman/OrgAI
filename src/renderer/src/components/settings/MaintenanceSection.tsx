@@ -15,7 +15,7 @@ import { isolateWritersOn, projectKindOf } from '@shared/defaults'
 import { cleanIpcError } from '../../lib/ipcError'
 import { clearCountsLine } from '../../lib/knowledge'
 import { MAINTENANCE_ENGAGEMENT_LINE } from '../../lib/settingsCopy'
-import { orgChangePrompt } from '../../lib/orgChange'
+import { useOrgChange } from '../team/useOrgChange'
 import { SettingsGroup, SettingsSection } from './SettingsSection'
 
 /** The Maintenance notice after knowledge:clear (docs/design/knowledge.md section 9). */
@@ -28,9 +28,7 @@ export const ENGAGEMENT_DANGER_TEXT =
 /** Leftover report branches, the org chart and setup review, and (in a danger zone at the foot) removing OrgAI's files. */
 export function MaintenanceSection({ project }: { project: Project }): ReactElement {
   const loadProjects = useAppStore((s) => s.loadProjects)
-  const startSetup = useAppStore((s) => s.startSetup)
-  const setView = useAppStore((s) => s.setView)
-  const focusComposer = useAppStore((s) => s.focusComposer)
+  const orgChange = useOrgChange(project)
   const { confirm, dialog } = useConfirm()
   const [worktrees, setWorktrees] = useState<PendingWorktree[] | null>(null)
   const { forget, dialog: forgetDialog } = useForgetEngagement()
@@ -289,16 +287,14 @@ export function MaintenanceSection({ project }: { project: Project }): ReactElem
               disabled={busy !== null}
               onClick={() => {
                 setBusy('review')
-                void startSetup(orgChangePrompt('', projectKindOf(project)))
-                  .then(() => {
-                    setView('run')
-                    window.requestAnimationFrame(() => focusComposer())
-                  })
+                // One start path with the Team tab: while a session is open this only opens it.
+                void orgChange
+                  .revise('')
                   .catch((e: Error) => setNotice({ ok: false, message: cleanIpcError(e) }))
                   .finally(() => setBusy(null))
               }}
             >
-              {busy === 'review' ? 'Starting…' : 'Review the org chart and setup'}
+              {busy === 'review' ? 'Starting…' : orgChange.liveRunId ? 'Open the org change session' : 'Review the org chart and setup'}
             </Button>
           }
         />

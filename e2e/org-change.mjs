@@ -30,7 +30,6 @@ const resizeTo = async (w, h) => {
 }
 const setTheme = (t) => page.evaluate((x) => document.documentElement.setAttribute('data-theme', x), t)
 const selectedTab = () => page.locator('.run-tab[aria-selected=true]').first()
-const activeRunId = () => page.locator('.run-tab-wrap').evaluateAll((els) => els.map((e) => e.getAttribute('data-run')))
 
 /** Team > Design, type the text and start. Resolves once the Live run tab shows. */
 async function startFromTeam(text, tag) {
@@ -50,11 +49,15 @@ async function startChecks(tag, full) {
   const tab = (await selectedTab().innerText()) + ' ' + ((await selectedTab().getAttribute('aria-label')) ?? '')
   check(tab.includes(TITLE), `the run tab is titled "${TITLE}" at ${tag}`, tab.replace(/\s+/g, ' '))
   check((await page.locator('[data-testid=tab-live]').getAttribute('aria-selected')) === 'true', `the app switched to Live at ${tag}`)
+  // The notice clears after a few seconds: read it before waiting on anything else.
+  const notice = await page
+    .waitForFunction(() => document.querySelector('.run-tabs-notice')?.textContent ?? '', null, { timeout: 3000 })
+    .then((h) => h.jsonValue())
+    .catch(() => '')
+  check(/Org change session started/.test(notice), `the tabs notice says the session started at ${tag}`, notice)
   await page.waitForFunction(() => !!document.activeElement?.closest('.composer'), null, { timeout: 5000 }).catch(() => {})
   check(await page.evaluate(() => !!document.activeElement?.closest('.composer') || document.activeElement?.tagName === 'TEXTAREA'), `focus is in the composer at ${tag}`)
   check(/Org change session/.test(await page.locator('[data-testid=run-meta-kind]').innerText().catch(() => '')), `RunMeta names the kind at ${tag}`)
-  const notice = await page.locator(".run-tabs-notice").first().textContent({ timeout: 3000 }).catch(() => "")
-  check(/Org change session started/.test(notice), `the tabs notice says the session started at ${tag}`, notice)
   const card = page.locator('.frame-tray .decision-card').first()
   await card.waitFor({ timeout: 25_000 }).catch(() => {})
   check((await card.count()) === 1, `the Architect's card shows in the Live tray at ${tag}`)
@@ -70,7 +73,6 @@ async function fullFlow(w, h, theme) {
   await openProject(page, NAME).catch(() => {})
   await startFromTeam(TEXT, tag)
   await startChecks(tag, true)
-  const runIds = await activeRunId()
   const runId = await selectedTab().evaluate((el) => el.closest('.run-tab-wrap')?.getAttribute('data-run'))
 
   // Sidebar row (full sidebar only).
@@ -105,31 +107,37 @@ async function fullFlow(w, h, theme) {
   const back = await selectedTab().evaluate((el) => el.closest('.run-tab-wrap')?.getAttribute('data-run'))
   check(back === runId, `navigating back shows the same run at ${tag}`, `${runId} -> ${back}`)
 
-  // Team > Design pointer.
+  // Team tray pointer: shown in Recommend too (never hidden behind Design), and Design offers to send into the open session.
   await openTeam(page)
   const tray = page.locator('[data-testid=team-assistant]')
-  await tray.locator('[data-testid=architect-open]').click()
+  await tray.locator('[data-testid=team-mode-recommend]').click()
   const pointer = tray.locator('[data-testid=org-change-pointer]')
-  await pointer.waitFor({ timeout: 10_000 })
+  await pointer.waitFor({ timeout: 10_000 }).catch(() => {})
+  check((await tray.getAttribute('data-mode')) === 'recommend' && (await pointer.isVisible()), `the pointer shows while the tray is on Recommend at ${tag}`)
+  await tray.locator('[data-testid=architect-open]').click()
   const ptxt = await pointer.innerText()
   check(ptxt.includes(TITLE) && /is open/.test(ptxt), `Team > Design shows the pointer at ${tag}`, ptxt.replace(/\s+/g, ' '))
   check(!/\bR\?/.test(ptxt), 'the pointer has no "R?"')
+  check(/Send to the open session/.test(await tray.locator('[data-testid=org-change-start]').innerText()), 'with a session open, the start button sends into it')
   await shot(`pointer-${tag}`)
   await tray.locator('[data-testid=org-change-open]').click()
   await page.locator('[data-testid=run-meta]').waitFor({ timeout: 10_000 })
   check((await page.locator('[data-testid=tab-live]').getAttribute('aria-selected')) === 'true', 'Open session goes to Live')
   const opened = await selectedTab().evaluate((el) => el.closest('.run-tab-wrap')?.getAttribute('data-run'))
   check(opened === runId, 'Open session selects the same run tab', `${runId} -> ${opened}`)
-  check(await page.evaluate(() => !!document.activeElement?.closest('.decision-card, .composer')), 'Open session lands focus on the card or the composer')
+  const landed = await page
+    .waitForFunction(() => !!document.activeElement?.closest('.decision-card, .composer'), null, { timeout: 5000 })
+    .then(() => true)
+    .catch(() => false)
+  check(landed, 'Open session lands focus on the card or the composer')
 
-  // Needs-you in the topbar jumps to the card in Live.
+  // Needs-you in the topbar jumps to the card in Live (the mock's first card is still open here).
+  await openTeam(page)
   const pill = page.locator('[data-testid=topbar-needs-you]')
-  if (await pill.count()) {
-    await openTeam(page)
-    await pill.click()
-    await page.locator('.frame-tray .decision-card').first().waitFor({ timeout: 10_000 }).catch(() => {})
-    check((await page.locator('[data-testid=tab-live]').getAttribute('aria-selected')) === 'true' && (await page.locator('.frame-tray .decision-card').count()) >= 1, `the Needs-you pill lands on the card in Live at ${tag}`)
-  }
+  await pill.waitFor({ timeout: 10_000 })
+  await pill.click()
+  await page.locator('.frame-tray .decision-card').first().waitFor({ timeout: 10_000 }).catch(() => {})
+  check((await page.locator('[data-testid=tab-live]').getAttribute('aria-selected')) === 'true' && (await page.locator('.frame-tray .decision-card').count()) >= 1, `the Needs-you pill lands on the card in Live at ${tag}`)
 
   // End the session and check History.
   await endSession(page)
@@ -141,7 +149,6 @@ async function fullFlow(w, h, theme) {
   const hist = await page.locator('table, .history, main').first().innerText()
   check(hist.includes(TITLE) && !/\bR\?/.test(hist), 'the History row shows the display title', hist.replace(/\s+/g, ' ').slice(0, 200))
   await shot(`history-${tag}`)
-  void runIds
 }
 
 async function maintenanceReview() {

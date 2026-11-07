@@ -293,7 +293,8 @@ export default function Sidebar({
                     <span className="run-index">{tag}</span>
                     {orgChange && (
                       <span className="nav-kind" data-testid="nav-run-kind-mark">
-                        <Icon icon={Network} size="xs" label={ORG_CHANGE_KIND_LABEL} />
+                        {/* Decorative: the title already reads "Org chart: ..." (no doubled kind word for screen readers). */}
+                        <Icon icon={Network} size="xs" />
                       </span>
                     )}
                     <span className="nav-run-title">{displayRunName(first)}</span>
