@@ -28,8 +28,10 @@ const RESERVED = /^(con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³]|conin\$|conout
  * Mark-of-the-Web, which is why this list exists.
  */
 export const OPENABLE_EXTENSIONS: ReadonlySet<string> = new Set([
-  'docx', 'xlsx', 'pdf', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'md', 'markdown', 'txt', 'csv', 'json', 'mmd'
+  'docx', 'xlsx', 'pdf', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'md', 'markdown', 'txt', 'csv', 'json', 'mmd', 'mermaid'
 ])
+// svg is deliberately absent (review N1): the OS handler (Edge on Windows) runs embedded script from file://, and an
+// agent can rewrite the file after produce checked it. The in-app preview re-runs svgProblem and stays.
 
 export const NOT_OPENABLE_MESSAGE = 'OrgAI does not open this kind of file. Use Show in folder instead.'
 
