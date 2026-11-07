@@ -106,7 +106,7 @@ export interface AppProps {
 
 type Overlay =
   | { kind: 'confirm'; question: string; resolve(yes: boolean): void }
-  | { kind: 'text'; title: string; lines: string[]; offset: number }
+  | { kind: 'text'; title: string; lines: string[]; offset: number; /** The composer's keys: a printable key closes it and is typed into the composer. */ passThrough?: boolean }
   | { kind: 'runs'; rows: RunPickRow[]; sel: number }
 
 const isOpen = (status: RunStatus | undefined): boolean => status !== undefined && isOpenStatus(status)
@@ -132,7 +132,7 @@ export const PANES_NEED_FULLSCREEN = 'Panes need a full-screen terminal 70 colum
 export const PAGER_HINT = 'Set $PAGER (for example PAGER=less) to page long text.'
 
 /** The composer's placeholder: in send / continue modes it names the followed run (issue #29 M3). */
-export function placeholderFor(mode: ComposerMode, s: TuiState, width: number): string {
+export function placeholderFor(mode: ComposerMode, s: TuiState, width: number, env?: TuiEnv): string {
   const base = PLACEHOLDERS[mode]
   if ((mode !== 'send' && mode !== 'continue') || !s.activeRunId) return base
   const tag = runTagOf(s, s.activeRunId)
@@ -142,7 +142,9 @@ export function placeholderFor(mode: ComposerMode, s: TuiState, width: number): 
   const title = typeof raw === 'string' ? sanitizeTty(raw).replace(/\s+/g, ' ').trim() : ''
   if (!title) return prefix
   const room = width - 4 - prefix.length - 3
-  return room >= 6 ? `${prefix} · ${truncateEnd(title, room)}` : prefix
+  // One separator rule and the env's ellipsis (ASCII, screen reader), like every other line of the shell.
+  const sep = env ? separatorFor(env) : ' · '
+  return room >= 6 ? `${prefix}${sep}${truncateEnd(title, room - (sep.length - 3), env ? glyphs(env).ellipsis : undefined)}` : prefix
 }
 
 /** Wraps help / usage / pager-fallback lines to the overlay's text width (never cuts a line off). */
@@ -181,9 +183,9 @@ export function runForRef(s: TuiState, ref: string): string | undefined {
  * Inline mode prints into primary scrollback through one append-only list (Ink keeps a single Static): transcript rows
  * as they arrive, plus each NEW top tray card's detail lines once, so the card can be read above the 3-line footer.
  */
-function useScrollback(enabled: boolean, rows: TranscriptRow[], card: TrayCard | undefined, cols: number): TranscriptRow[] {
-  const ref = useRef<{ list: TranscriptRow[]; seen: Set<string> }>({ list: [], seen: new Set() })
-  if (!enabled) return rows
+function useScrollback(enabled: boolean, rows: TranscriptRow[], card: TrayCard | undefined, cols: number): { rows: TranscriptRow[]; printed: ReadonlySet<string> } {
+  const ref = useRef<{ list: TranscriptRow[]; seen: Set<string>; printed: Set<string> }>({ list: [], seen: new Set(), printed: new Set() })
+  if (!enabled) return { rows, printed: ref.current.printed }
   const st = ref.current
   let changed = false
   for (const r of rows) {
@@ -202,6 +204,8 @@ function useScrollback(enabled: boolean, rows: TranscriptRow[], card: TrayCard |
       } catch {
         lines = []
       }
+      // The tray reads this set: a card's decision keys unlock only once its body was printed here.
+      if (lines.length) st.printed.add(card.key)
       if (lines.length) {
         st.list.push({ key, runId: card.ref.runId, kind: 'system', text: lines.join('\n'), tone: 'warn' })
         changed = true
@@ -209,7 +213,7 @@ function useScrollback(enabled: boolean, rows: TranscriptRow[], card: TrayCard |
     }
   }
   if (changed) st.list = [...st.list]
-  return st.list
+  return { rows: st.list, printed: st.printed }
 }
 
 /** The launched run's chain is the one followed (TuiLaunch.runId is a member of it). */
@@ -441,7 +445,10 @@ export function App(props: AppProps) {
 
   // Keep focus on something that exists.
   useEffect(() => {
-    if (focus === 'tray' && cards.length === 0) setFocusState('composer')
+    if (focus === 'tray' && cards.length === 0) {
+      inputQueue.current = [] // keys meant for a card that is gone do not become composer text
+      setFocusState('composer')
+    }
     if (PANE_ORDER.includes(focus as PaneId) && !panes.some((p) => p.pane === focus)) setFocusState('composer')
     if (focus === 'inspector' && !inspecting) setFocusState(panes.some((p) => p.pane === 'tree') ? 'tree' : 'composer')
   }, [focus, cards.length, panes, inspecting])
@@ -451,8 +458,16 @@ export function App(props: AppProps) {
   useLayoutEffect(() => {
     if (pendingFocus.current === undefined || focus !== pendingFocus.current) return
     pendingFocus.current = undefined
-    const queued = inputQueue.current
+    let queued = inputQueue.current
     inputQueue.current = []
+    if (focus === 'tray') {
+      // Keys that were typed before the tray had focus (`/inbox\ry` in one chunk, Alt+D then a key) were not typed at
+      // the card, so they never act on it, and the card-swap guard has not seen them: drop the printable ones and keep
+      // navigation and Esc. With no card left (it was answered meanwhile) nothing is replayed (never turned into text).
+      const keep = cards.length === 0 ? [] : queued.filter((e) => !(e.type === 'key' && ((e.name === 'char' && !e.ctrl && !e.alt) || e.name === 'enter')))
+      if (keep.length < queued.length && cards.length > 0) notify('Press the key again.', 'dim')
+      queued = keep
+    }
     for (const e of queued) dispatchRef.current(e)
   })
 
@@ -776,7 +791,7 @@ export function App(props: AppProps) {
   }
   const openKeys = (scope: 'composer' | 'tray'): void => {
     const k = whichKeyLines(scope, env)
-    setOverlay({ kind: 'text', title: k.title, lines: k.lines, offset: 0 })
+    setOverlay({ kind: 'text', title: k.title, lines: k.lines, offset: 0, ...(scope === 'composer' ? { passThrough: true } : {}) })
   }
   const onComposerRows = useCallback((n: number): void => setComposerRows((c) => (c === n ? c : n)), [])
   const openRunsPicker = (runs: RunSummary[]): void => {
@@ -955,6 +970,12 @@ export function App(props: AppProps) {
       setOverlay(undefined)
       return
     }
+    if (overlay.passThrough && e.name === 'char' && !e.ctrl && !e.alt) {
+      // Opened by `?` on an empty composer: whatever the user types next is the start of their message.
+      setOverlay(undefined)
+      bus.dispatch(e, focusRef.current)
+      return
+    }
     if (named(e, 'down') || (e.name === 'char' && e.ch === 'j')) offset += 1
     else if (named(e, 'up') || (e.name === 'char' && e.ch === 'k')) offset -= 1
     else if (named(e, 'pagedown') || (e.name === 'char' && e.ch === ' ')) offset += page
@@ -1087,7 +1108,8 @@ export function App(props: AppProps) {
 
   const zoomFilter = zoomIds ? { agentIds: zoomIds } : {}
   const transcript = transcriptRows(state, zoomFilter)
-  const scrollback = useScrollback(inline, transcript.rows, top, size.cols)
+  // The footer shows the focused card (the inspector's `d` and Enter on a waiting row move it), so that is the one printed.
+  const { rows: scrollback, printed: printedCards } = useScrollback(inline, transcript.rows, focusedCard, size.cols)
   const notice = state.notices.at(-1)
   const hintRow: RowKind = focus === 'inspector' ? (inspectorView?.waiting ? 'waiting' : inspectorView?.worktree ? 'agent' : 'bare') : rowKind
   const hints = hintsFor(focus, readOnly, launch.stopOnQuit === true, hintRow, env)
@@ -1199,6 +1221,7 @@ export function App(props: AppProps) {
         onHelp={() => openKeys('tray')}
         onNotice={(text, tone) => notify(text, tone)}
         {...(trayFocusKey ? { focusKey: trayFocusKey } : {})}
+        {...(inline ? { printed: printedCards } : {})}
       />
     ) : null
 
@@ -1207,7 +1230,7 @@ export function App(props: AppProps) {
       width={plan.composer.width || size.cols}
       focused={focus === 'composer'}
       mode={mode}
-      placeholder={placeholderFor(mode, state, plan.composer.width || size.cols)}
+      placeholder={placeholderFor(mode, state, plan.composer.width || size.cols, env)}
       {...(state.readOnlyReason ? { disabledReason: state.readOnlyReason } : {})}
       onSubmit={submit}
       onOpenPalette={(initial) => {

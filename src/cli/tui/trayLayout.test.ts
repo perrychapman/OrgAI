@@ -21,7 +21,7 @@ describe('trayHeight', () => {
   })
 
   it('a long card hits the cap: 35% of the rows, at most 12, at least 5', () => {
-    const long = card('a', Array.from({ length: 80 }, (_, i) => `echo ${i}`).join(' && '))
+    const long = card('a', Array.from({ length: 60 }, (_, i) => `echo ${i}`).join('\n'))
     expect(trayHeight([long], 120, 40, false)).toBe(12)
     expect(trayHeight([long], 100, 30, false)).toBe(10)
     expect(trayHeight([long], 80, 24, false)).toBe(8)

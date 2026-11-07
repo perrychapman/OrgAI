@@ -600,6 +600,8 @@ export interface DecisionTrayProps {
   onHelp?(): void
   /** A one-line status notice (a rejected key, a gated decision key; issue #25 / #31 L2). */
   onNotice?(text: string, tone?: Tone): void
+  /** Footer variant: the keys of the cards whose body was printed into scrollback (absent = every card counts as printed). */
+  printed?: ReadonlySet<string>
 }
 
 export type ComposerMode = 'start' | 'send' | 'continue' | 'quick' | 'readOnly'

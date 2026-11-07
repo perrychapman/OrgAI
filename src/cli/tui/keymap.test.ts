@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { bindingsFor } from './decisions'
 import { glyphLegend, helpKeyLines, hintItems, KEYMAP, keysFor, paneHint, scopeOf, statusHint, whichKeyLines, type KeyScope } from './keymap'
 import { HELP_TEXT, SLASH_COMMANDS } from './slashCommands'
 
@@ -109,7 +110,21 @@ describe('hints are pane-aware and short', () => {
     expect(find('composer', 'Esc')?.hint?.text).toBe('Esc Esc interrupts')
     expect(find('composer', '? (empty composer)')?.label).toBe("The composer's keys")
     expect(find('tray', '?')?.label).toBe("The tray's keys")
-    expect(find('tray', 'Permission')?.label).toContain('n deny (opens an optional note), v full view; Up/Down scroll a long card, and y/s/a work once its end was shown')
+    expect(find('tray', 'Permission')?.label).toContain('n deny (opens an optional note), v full view; y/s/a work once the end of the command was shown (a cut command needs v)')
+    // L7: scrolling and the way back apply to every card kind.
+    expect(find('tray', 'Up, Down, PgUp, PgDn')?.label).toContain('every kind')
+    expect(find('tray', 'Esc')?.label).toContain('every kind')
+  })
+
+  it('the tray status hint reads the KEYMAP entries, so there is no second copy to drift (M5)', () => {
+    const o = { readOnly: false, stopOnQuit: false }
+    const trayHints = KEYMAP.filter((k) => k.scope === 'tray' && k.hint).sort((a, b) => a.hint!.order - b.hint!.order).map((k) => k.hint!.text)
+    expect(statusHint('tray', o)).toBe(trayHints.join(' · '))
+    const composerHints = KEYMAP.filter((k) => k.scope === 'composer' && k.hint).sort((a, b) => a.hint!.order - b.hint!.order).map((k) => k.hint!.text)
+    expect(statusHint('composer', o)).toBe([...composerHints, 'Ctrl+C twice quits'].join(' · '))
+    // "Tab panes" is said once.
+    expect(statusHint('composer', o).split('Tab panes').length - 1).toBe(1)
+    expect(statusHint('composer', { ...o, readOnly: true }).split('Tab panes').length - 1).toBe(1)
   })
 
   it('scopeOf maps pane focus targets and not the palette', () => {
@@ -134,4 +149,41 @@ describe('glyph legend', () => {
     expect(lines.join('\n')).toContain('o idle  * thinking  # tool  ! needs you  > delegating  v finished  x failed')
     expect(lines.join('\n')).toContain('/help')
   })
+})
+
+describe('every card binding is in its KEYMAP tray label (M5)', () => {
+  const base = { key: 'k', ref: { hostInstanceId: 'h', runId: 'r', requestId: 'q', kind: 'permission', revision: 1 }, runTag: 'R1', runKind: 'work', arrivedSeq: 1 }
+  const perm = { id: 'q', runId: 'r', agentId: 'root', toolName: 'Bash', input: { command: 'ls' }, summary: 's', suggestions: [{ type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'ls:*' }], behavior: 'allow', destination: 'session' }], ruleLabels: ['Bash(ls:*)'] }
+  const upsert = [{ id: 'gh', name: 'github', transport: 'stdio', command: 'npx', args: ['x@1.0.0'], source: 'agent' }]
+  const cards: [string, string, unknown][] = [
+    ['Permission', 'permission', { ...base, kind: 'permission', card: perm }],
+    ['Permission', 'permission (reference folder)', { ...base, kind: 'permission', card: { ...perm, referenceFolder: '/refs' } }],
+    ['Rule request', 'rules', { ...base, kind: 'rules', card: { id: 'q', runId: 'r', agentId: 'root', rules: ['Bash(gh:*)'], flagged: [] } }],
+    ['Proposal', 'proposal (work, no secrets)', { ...base, kind: 'proposal', card: { id: 'q', runId: 'r', agentId: 'root', kind: 'settings', title: 't', payload: {} } }],
+    ['Proposal', 'proposal (secrets)', { ...base, kind: 'proposal', card: { id: 'q', runId: 'r', agentId: 'root', kind: 'mcpServers', title: 't', payload: { upsert, secrets: [{ serverId: 'gh', kind: 'env', name: 'T' }] } } }],
+    ['Proposal', 'proposal (setup)', { ...base, kind: 'proposal', runKind: 'setup', card: { id: 'q', runId: 'r', agentId: 'root', kind: 'settings', title: 't', payload: {} } }],
+    ['Question', 'question (multiple, free text)', { ...base, kind: 'question', card: { id: 'q', runId: 'r', agentId: 'root', question: 'Q?', options: [{ label: 'A' }, { label: 'B' }], allowMultiple: true, allowFreeText: true } }],
+    ['Question', 'question (single)', { ...base, kind: 'question', card: { id: 'q', runId: 'r', agentId: 'root', question: 'Q?', options: [{ label: 'A' }], allowMultiple: false, allowFreeText: false } }],
+    ['Merge review', 'merge', { ...base, kind: 'merge', card: { id: 'q', runId: 'r', agentId: 'w', agentName: 'w', branch: 'b', path: '/x', changedFiles: [], stat: '', patch: '' } }],
+    ['MCP install', 'mcpInstall', { ...base, kind: 'mcpInstall', card: { id: 'q', runId: 'r', agentId: 'root', reason: 'r', spec: upsert[0], requiredSecrets: [] } }]
+  ]
+  for (const [keys, name, card] of cards) {
+    it(`${name}: every key and action is in the "${keys}" label`, () => {
+      const label = (KEYMAP.find((k) => k.scope === 'tray' && k.keys === keys)?.label ?? '').toLowerCase()
+      expect(label).not.toBe('')
+      const bs = bindingsFor(card as never)
+      expect(bs.length).toBeGreaterThan(0)
+      for (const b of bs) {
+        if (b.act === 'pick') {
+          expect(label).toContain('1-9 pick')
+          continue
+        }
+        const key = b.key
+        const word = b.label.toLowerCase().split(' ')[0]
+        expect(label, `${name}: ${b.key} ${b.label}`).toContain(`${key} ${word}`)
+        if (b.twoStep) expect(label, `${name}: ${b.key} asks to confirm`).toMatch(/confirm|ask/)
+        if (b.text === 'optional' && b.act === 'deny' && keys === 'Permission') expect(label).toContain('note')
+      }
+    })
+  }
 })

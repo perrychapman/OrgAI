@@ -146,7 +146,7 @@ describe('the org tree in the real App: folded, one line per agent, the waiting 
     expect(f).toContain('2 done  (1 failed)')
     const wait = f.split('\n').find((l) => l.includes('ort-2'))!
     expect(wait).toContain('Needs you')
-    expect(f).toMatch(/Needs you \(1\) • R1 • mock-lead-report-2 • permission/)
+    expect(f).toMatch(/Needs you \(1\) · R1 · mock-lead-report-2 · permission/)
     // The Worktrees and Plan panes are not drawn: nothing needs them.
     expect(f).not.toContain('Worktrees (')
     expect(f).not.toContain('No plan yet')
@@ -234,7 +234,7 @@ describe('the org tree in the real App: folded, one line per agent, the waiting 
     await m.send(named('home'))
     await m.send(key('n'))
     await m.send(named('enter'))
-    expect(m.frame()).toMatch(/Needs you \(1\) • R1 • mock-lead-report-2/)
+    expect(m.frame()).toMatch(/Needs you \(1\) · R1 · mock-lead-report-2/)
     expect(m.frame()).toContain('Allow once')
     m.r.unmount()
   })
