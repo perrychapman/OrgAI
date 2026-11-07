@@ -9,6 +9,7 @@ import SheetView from './SheetView'
 import TextPreview from './TextPreview'
 import ImagePreview from './ImagePreview'
 import SvgPreview from './SvgPreview'
+import SlideViewer from './SlideViewer'
 import '../../styles/outputs-preview.css'
 import '../../styles/outputs-diagram.css'
 
@@ -131,6 +132,9 @@ export default function OutputPreview({ output, context = 'detail', onOpenLarge,
       // An <img> with a data URL runs no script and loads nothing; never inlined.
       body = <SvgPreview text={p.text} title={output.title} />
 
+      break
+    case 'slides':
+      body = <SlideViewer size={p.size} slides={p.slides} truncatedSlides={p.truncatedSlides} title={output.title} />
       break
     case 'image':
       body = <ImagePreview dataUrl={p.dataUrl} title={output.title} />
