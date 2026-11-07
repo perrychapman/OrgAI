@@ -71,11 +71,22 @@ export interface DiscoveredModelInput {
   price?: ModelPrice
   /** LiteLLM litellm_params.model. */
   upstream?: string
+  /** A proxy's `owned_by` (untrusted; kept only when printable, at most 64 chars). */
+  ownedBy?: string
+}
+
+/** A proxy's owned_by as catalog text: a printable one-line string of at most 64 chars, else undefined. Pure. */
+export function cleanOwnedBy(v: unknown): string | undefined {
+  if (typeof v !== 'string') return undefined
+  const t = v.trim()
+  if (!t || t.length > 64 || !/^[\x20-\x7e]+$/.test(t)) return undefined
+  return t
 }
 
 export function makeDiscoveredModel(connection: ConnectionId, m: DiscoveredModelInput): ProviderModel {
   // Proxy text is untrusted: bounded here, prices must be within range or they are dropped.
   const cap = (v: string | undefined): string | undefined => v?.slice(0, 200)
+  const ownedBy = cleanOwnedBy(m.ownedBy)
   const price = sanitizeModelPrice(m.price)
   const upstream = cap(m.upstream)
   m = { ...m, label: cap(m.label), litellmProvider: cap(m.litellmProvider ?? undefined) ?? null }
@@ -93,7 +104,8 @@ export function makeDiscoveredModel(connection: ConnectionId, m: DiscoveredModel
     source: 'discovered',
     ...(m.recommended ? { recommended: true } : {}),
     ...(price ? { price } : {}),
-    ...(upstream ? { upstream } : {})
+    ...(upstream ? { upstream } : {}),
+    ...(ownedBy ? { ownedBy } : {})
   }
 }
 
