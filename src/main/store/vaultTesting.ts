@@ -68,7 +68,8 @@ export function fakeCustody(): FakeCustody {
       if (items.has(vaultId)) throw new CustodyError('denied', 'an item for this vault exists')
       const dek = randomBytes(32)
       items.set(vaultId, Buffer.from(dek))
-      return { dek, ...(scheme === 'key-file' && request?.keyFile ? { keyFile: request.keyFile } : {}) }
+      // dpapi-user stores a protected blob in vault.json (custody.wrapped): the fake's blob is the key itself, base64.
+      return { dek, ...(scheme === 'key-file' && request?.keyFile ? { keyFile: request.keyFile } : {}), ...(scheme === 'dpapi-user' ? { wrapped: dek.toString('base64') } : {}) }
     },
     open: async (vaultId, custody) => {
       calls.open++

@@ -22,8 +22,8 @@ let keyDir: string
 let dataDir: string
 
 beforeEach(() => {
-  root = realpathSync(mkdtempSync(join(tmpdir(), 'doctor-vault-')))
-  keyDir = realpathSync(mkdtempSync(join(tmpdir(), 'doctor-vault-key-')))
+  root = realpathSync.native(mkdtempSync(join(tmpdir(), 'doctor-vault-')))
+  keyDir = realpathSync.native(mkdtempSync(join(tmpdir(), 'doctor-vault-key-')))
   chmodSync(keyDir, 0o700)
   dataDir = join(root, 'data')
   mkdirSync(dataDir, { recursive: true })

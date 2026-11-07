@@ -42,8 +42,8 @@ const rpc = <T = unknown>(channel: string, ...params: unknown[]): Promise<T> => 
 const vaultExists = (): boolean => existsSync(join(dataDir, 'vault.json'))
 
 beforeEach(async () => {
-  root = realpathSync(mkdtempSync(join(tmpdir(), 'secret-real-')))
-  keyDir = realpathSync(mkdtempSync(join(tmpdir(), 'secret-real-key-')))
+  root = realpathSync.native(mkdtempSync(join(tmpdir(), 'secret-real-')))
+  keyDir = realpathSync.native(mkdtempSync(join(tmpdir(), 'secret-real-key-')))
   chmodSync(keyDir, 0o700)
   keyFile = join(keyDir, 'vault.key')
   dataDir = join(root, 'data')

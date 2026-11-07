@@ -17,8 +17,8 @@ let dataDir: string
 let keyFile: string
 
 beforeEach(() => {
-  root = realpathSync(mkdtempSync(join(tmpdir(), 'vault-real-')))
-  keyDir = realpathSync(mkdtempSync(join(tmpdir(), 'vault-real-key-')))
+  root = realpathSync.native(mkdtempSync(join(tmpdir(), 'vault-real-')))
+  keyDir = realpathSync.native(mkdtempSync(join(tmpdir(), 'vault-real-key-')))
   chmodSync(keyDir, 0o700)
   dataDir = join(root, 'data')
   mkdirSync(dataDir)
