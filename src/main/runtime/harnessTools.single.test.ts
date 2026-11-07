@@ -32,7 +32,7 @@ describe('harnessToolsFor: single-agent runs and engagements', () => {
 
   it('a single-agent run gets exactly the single set plus the native skill tools', () => {
     const ctx = fakeCtx({ run: runSummary({ kind: 'work', team: 'single' }) })
-    const base = SINGLE_TOOL_DEFS.map((d) => d.name).sort()
+    const base = [...SINGLE_TOOL_DEFS.map((d) => d.name), 'app_reference'].sort()
     expect(names(harnessToolsFor(ctx, {}, { nativeSkills: true }))).toEqual(base)
     const withSkills = names(harnessToolsFor(ctx))
     expect(withSkills).toEqual([...base, 'list_skills', 'load_skill'].sort())

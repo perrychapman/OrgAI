@@ -5,6 +5,9 @@
  */
 import type {
   ActivityLeaseKind,
+  AppNavigateEvent,
+  AppReferenceQuery,
+  AppReferenceResult,
   FocusRunTarget,
   HostActivitySnapshot,
   HostClientKind,
@@ -51,6 +54,11 @@ export interface DesktopHooks {
   openRunWindow(target: FocusRunTarget): void
   /** teamFiles:changed: send a project's team-files status to every window (desktop_only push; never to a socket). */
   teamFilesChanged?(status: TeamFilesStatus): void
+  /**
+   * An agent's open_in_app (RunManager -> SelfKnowledgeHooks.navigate): send an AppNavigateEvent on IPC.appNavigate to
+   * the live unscoped main window (restored, focused, created when closed). false only when no window can be made.
+   */
+  navigate?(event: AppNavigateEvent): boolean
 }
 
 /** host.status / host.stop, served by whoever owns the host lifecycle (bootstrap). */
@@ -91,6 +99,8 @@ export interface HostServices {
   kit?: KitService
   /** Team files (src/main/teamFiles/service.ts). Absent = the teamFiles channels answer 'not available' (older tests). */
   teamFiles?: TeamFilesService
+  /** The reference service (reference/appReference.ts); app:reference answers with status allowed. Absent = "not available". */
+  reference?: { query(q: AppReferenceQuery, opts: { status: boolean }): Promise<AppReferenceResult> }
   /** The push bus. Absent = the dispatcher makes its own. */
   events?: HostEventBus
   /** Lease tracking for idle exit and drain. Absent = no tracking (noopActivity). */

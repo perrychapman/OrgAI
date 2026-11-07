@@ -9,7 +9,7 @@ import { IPC, TEAM_FILES_IPC, runWindowHash } from '@shared/types'
 import { appUrlMatcher, isExternalWebUrl, scopedWindow, shouldBlockNavigation } from './windowScope'
 import { applyShellPath } from './shellEnv'
 import { stopSystemCertRead, trustSystemCertificates } from './systemCerts'
-import { installAppMenu, menuActionSender } from './appMenu'
+import { installAppMenu, menuActionSender, navigateSender } from './appMenu'
 import { registerIpc } from './ipc'
 import { Notifier } from './notifications'
 import { canWriteDir, dataDirOverride, installLogging, log, pickLogsDir } from './log'
@@ -380,6 +380,7 @@ app.whenReady().then(async () => {
   // Stores, services, adapters, background probes and housekeeping (cli-spec 3.2(2) step 4). The boot's markReady is
   // held back: daemon.json turns 'ready' below, once the listener matches Terminal access, so a client that waits for
   // 'ready' never reads "listening: false" from a host about to listen.
+  let cliShimForStatus: CliShimService | undefined
   const bootOwnership = {
     get info() {
       return owned.info
@@ -396,8 +397,20 @@ app.whenReady().then(async () => {
     ownership: bootOwnership,
     safeStorage,
     openExternal: (url) => shell.openExternal(url),
+    // The reference status snapshot reads the orgai command shim's state; the shim service is built after boot.
+    cliShimStatus: () => {
+      if (!cliShimForStatus) throw new Error('not ready')
+      return cliShimForStatus.status()
+    },
     desktop: {
       openRunWindow,
+      // open_in_app: the live main window (restored, focused; created when closed); queued until its renderer is ready.
+      // A headless host with no window open answers false (the tool says nothing could be shown) instead of opening one.
+      navigate: (event) => {
+        const hasMain = liveWindowScopes().some(([, scope]) => scope === undefined)
+        if (!hasMain && hostArgs.headless) return false
+        return navigateSender(() => BrowserWindow.getFocusedWindow(), liveWindowScopes, () => createWindow())(event)
+      },
       teamFilesChanged: (status) => {
         for (const win of BrowserWindow.getAllWindows()) {
           if (!win.isDestroyed()) win.webContents.send(TEAM_FILES_IPC.teamFilesChanged, status)
@@ -458,6 +471,7 @@ app.whenReady().then(async () => {
   // Open windows keep the desktop host busy (cli-spec 3.2(4) interactiveClients).
   h.activity.addSource('interactiveClients', () => BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed()).length)
   const cliShim = buildCliShim(h)
+  cliShimForStatus = cliShim
   // Start a project from a repository (desktop only: progress goes to the calling window, a closed window cancels).
   const clones = new RepoCloneService({
     dataDir,

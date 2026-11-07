@@ -80,7 +80,8 @@ export const PUSH_CHANNELS: readonly string[] = [
   IPC.appFocusRun,
   IPC.menuAction,
   IPC.projectsCloneProgress,
-  TEAM_FILES_IPC.teamFilesChanged
+  TEAM_FILES_IPC.teamFilesChanged,
+  IPC.appNavigate
 ]
 
 /** Every channel value the host knows: IPC (with TEMPLATE_ENGAGEMENT_IPC and KNOWLEDGE_IPC), MCP_SCOPE_IPC, KIT_IPC, HOST_IPC. */
@@ -259,6 +260,7 @@ export const CHANNEL_JSON_FIELDS: Readonly<Record<string, ChannelJsonFields>> = 
   'app:uninstallCliShim': {}, // desktop only
   'app:logPath': {}, // logPath()
   'app:info': {}, // buildAppInfo
+  'app:reference': {}, // appReferenceArgs: optional fields are left out
 
   // ---- permissions ----
   'permissions:list': {}, // projectRulesFile + readRules

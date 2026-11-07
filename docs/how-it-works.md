@@ -168,6 +168,24 @@ Work runs keep going until the job is done instead of stopping after each turn t
   waits for you, and the transcript and logs say why. App settings hold the defaults for new projects, and the
   Architect proposes both in its settings card. Continuing a finished run carries its plan over with a fresh count.
 
+## Asking OrgAI about itself
+
+Chat can answer questions about OrgAI: where a setting lives, what a screen does, which shortcut or menu item opens
+it, what the `orgai` command can do and which tools agents have. Help > "Ask OrgAI about itself…" opens Chat for that.
+The answers come from the app's own registries, not from a hand-written manual: an atlas of every screen with its path
+and how to reach it, a description of every app and project setting, the menu actions and shortcuts, the harness
+tools per run kind, the host channels, the CLI commands, the connector catalog and the docs bundled with the app
+(this file among them). A new screen, setting or menu action cannot land without its entry, because the build checks
+it.
+
+Agents read this reference through the `app_reference` tool (search, read, locate and, in Chat and the assistants, a
+status snapshot without any secrets). Chat, the Architect and the MCP and Skill assistants can also show you a place
+with `open_in_app`, which switches the main window to that screen and says who opened it; it only ever opens screens
+the atlas knows, a few at a time. Chat can propose changes to app settings (appearance, notifications, defaults for
+new projects, assistant models) and to a project's settings; nothing changes until you approve the card. Connections,
+keys, proxies, Terminal access, model prices, saved permission rules and the default connection are not proposable:
+change them in App settings yourself.
+
 ## Adding a provider
 
 Implement `RuntimeAdapter` in `src/main/runtime/`, register it in `src/main/index.ts`, and add its id to

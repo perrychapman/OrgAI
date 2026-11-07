@@ -104,6 +104,37 @@ describe('applyProposal (settings)', () => {
     payload: { rationale: 'r', ...payload }
   })
 
+  describe('targeted (Chat)', () => {
+    it('changes the settings without creating or changing project.setup', () => {
+      const p = store.create({ name: 'T', path: repo, brief: '' })
+      expect(p.setup).toBeUndefined()
+      const saved = service.applyProposal(p.id, settings(p.id, { brief: 'New brief', autoContinue: false, maxBudgetUsd: 3 }), { targeted: true })
+      expect(saved.brief).toBe('New brief')
+      expect(saved.autoContinue).toBe(false)
+      expect(saved.maxBudgetUsd).toBe(3)
+      expect(saved.setup).toBeUndefined()
+      expect(store.get(p.id)?.setup).toBeUndefined()
+      // A stored setup stays exactly as it was.
+      const withSetup = store.save({ ...store.get(p.id)!, setup: { kind: 'new', state: 'complete' } })
+      const again = service.applyProposal(p.id, settings(p.id, { reviewMerges: true }), { targeted: true })
+      expect(again.setup).toEqual(withSetup.setup)
+    })
+
+    it('refuses allowRules and bypassPermissions, and saves nothing', () => {
+      const p = store.create({ name: 'T', path: repo, brief: '' })
+      expect(() => service.applyProposal(p.id, settings(p.id, { allowRules: ['Bash(npm test:*)'], autoContinue: true }), { targeted: true })).toThrow('Saved permission rules are not changed from Chat.')
+      expect(() => service.applyProposal(p.id, settings(p.id, { permissionMode: 'bypassPermissions' }), { targeted: true })).toThrow(/Bypass/)
+      expect(store.get(p.id)?.autoContinue).toBeUndefined()
+      expect(listRules(repo)).toEqual([])
+    })
+
+    it('refuses every other kind', () => {
+      const p = store.create({ name: 'T', path: repo, brief: '' })
+      const arch: Proposal = { id: 'a', runId: 'r', agentId: 'root', title: 'A', createdAt: 0, kind: 'architecture', payload: full }
+      expect(() => service.applyProposal(p.id, arch, { targeted: true })).toThrow(/Only settings proposals/)
+    })
+  })
+
   it('does not write limits equal to the automatic ones, but writes different ones', () => {
     const p = store.create({ name: 'X', path: repo, brief: '' })
     const auto = effectiveSubagentLimits({ roles: p.roles })

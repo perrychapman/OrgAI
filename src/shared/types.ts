@@ -2,6 +2,7 @@
  * Shared domain types used by the main process, preload bridge and renderer.
  * Everything that crosses IPC is defined here.
  */
+import type { AtlasSurfaceId } from './view/atlas'
 
 // ---------- Providers ----------
 
@@ -2115,7 +2116,7 @@ export interface SkillsProposalPayload {
   rationale: string
 }
 
-export type ProposalKind = 'architecture' | 'orgChart' | 'settings' | 'mcpServers' | 'skills'
+export type ProposalKind = 'architecture' | 'orgChart' | 'settings' | 'mcpServers' | 'skills' | 'appSettings'
 
 interface ProposalBase {
   id: string
@@ -2132,6 +2133,12 @@ interface ProposalBase {
   effect?: ProposalEffect
   /** Card revision, set by RunManager when the card is created (1 for now). Decision calls may send expectedRevision. */
   revision?: number
+  /**
+   * The stored project a Chat proposal changes (section "Self-knowledge and self-configuration"): set on a 'settings'
+   * proposal from propose_project_settings, whose run (a quick run) has no project of its own. Main fills it from the
+   * stored project (never from agent text); the card names `projectName`. Absent = the run's own project.
+   */
+  target?: ProposalTarget
 }
 
 /** When an approved proposal takes effect (Proposal.effect). */
@@ -2143,6 +2150,7 @@ export type Proposal =
   | (ProposalBase & { kind: 'settings'; payload: SettingsProposalPayload })
   | (ProposalBase & { kind: 'mcpServers'; payload: McpServersProposalPayload })
   | (ProposalBase & { kind: 'skills'; payload: SkillsProposalPayload })
+  | (ProposalBase & { kind: 'appSettings'; payload: AppSettingsProposalPayload })
 
 /**
  * The user's answer to a proposal card (setup:decide). 'approve' applies it; 'revise' sends feedback and the agent may
@@ -3391,7 +3399,9 @@ export const MENU_ACTIONS = [
   'save-chat-as-project',
   'open-run-window',
   'canvas-zoom-in',
-  'canvas-zoom-out'
+  'canvas-zoom-out',
+  /** Help > "Ask OrgAI about itself…": opens Chat ready for a question about the app (section "Self-knowledge"). */
+  'ask-about-orgai'
 ] as const
 
 export type MenuAction = (typeof MENU_ACTIONS)[number]
@@ -4569,6 +4579,12 @@ export interface OrgAIApi {
     installCliShim(): Promise<CliShimResult>
     /** Remove the orgai command shim (only OrgAI's own). Never rejects; failures come back as ok: false. */
     uninstallCliShim(): Promise<CliShimResult>
+    /**
+     * app:reference: search or read OrgAI's own reference (the atlas of screens and settings, menus, shortcuts,
+     * harness tools, host channels, CLI commands, connectors and bundled docs), locate a setting or feature, or a
+     * secret-free status snapshot. Everything in `text` is fenced data.
+     */
+    reference(query: AppReferenceQuery): Promise<AppReferenceResult>
   }
 }
 
@@ -5399,7 +5415,16 @@ export const FOLDER_CONFIG_IPC = {
   projectsSetFolderConfigTrust: 'projects:setFolderConfigTrust'
 } as const
 
+/** Channels of "Self-knowledge and self-configuration" (section at the end of this file). Declared here for the same reason. */
+export const SELF_KNOWLEDGE_IPC = {
+  /** AppReferenceQuery -> AppReferenceResult (host scope 'read'). Rejects only for a malformed query. */
+  appReference: 'app:reference',
+  /** main -> renderer push of AppNavigateEvent (desktop only): an agent's open_in_app, sent to the live main window. */
+  appNavigate: 'app:navigate'
+} as const
+
 export const IPC = {
+  ...SELF_KNOWLEDGE_IPC,
   ...TEMPLATE_ENGAGEMENT_IPC,
   ...KNOWLEDGE_IPC,
   ...REPO_CLONE_IPC,
@@ -7102,4 +7127,195 @@ export interface OrgAIApi {
     enable(input: TeamFilesProjectInput): Promise<TeamFilesActionResult>
   }
   onTeamFilesChanged(cb: (status: TeamFilesStatus) => void): () => void
+}
+
+// ---- Self-knowledge and self-configuration ----
+//
+// OrgAI answers questions about itself and configures itself from its own registries, so the answers stay true as the
+// app grows. The atlas (src/shared/view/atlas.ts: every screen with its path and how to reach it, a doc per AppSettings
+// and Project field, a doc per MenuAction) is typed against these contracts, so a new field, screen or menu action
+// without a doc fails typecheck or atlas.test.ts. The main-process reference service (src/main/reference/) builds a
+// fenced corpus from the atlas and the code's registries (harness tool defs, HOST_CHANNEL_REGISTRY, CLI COMMANDS,
+// CONNECTORS) plus bundled docs. Channels: SELF_KNOWLEDGE_IPC (declared before IPC and spread into it).
+
+/** The atlas surface id union (the literal ids of ATLAS_SURFACE_IDS in src/shared/view/atlas.ts). */
+export type { AtlasSurfaceId } from './view/atlas'
+
+/** Harness tool: read OrgAI's own reference. Audience 'all', read-only, non-blocking, every run kind. */
+export const APP_REFERENCE_TOOL = 'app_reference'
+/** Harness tool: show the user a place in the app (an atlas surface). Chat, setup, MCP and Skill assistant roots only. */
+export const OPEN_IN_APP_TOOL = 'open_in_app'
+/** Harness tool: propose app-wide settings changes (Proposal kind 'appSettings'). Chat only. */
+export const PROPOSE_APP_SETTINGS_TOOL = 'propose_app_settings'
+/** Harness tool: propose a stored project's settings (Proposal kind 'settings' with `target`). Chat only. */
+export const PROPOSE_PROJECT_SETTINGS_TOOL = 'propose_project_settings'
+/** The self-knowledge and self-configuration tools Chat (quick runs) gets, in addition to list_projects. */
+export const CHAT_CONFIG_TOOLS = [APP_REFERENCE_TOOL, OPEN_IN_APP_TOOL, PROPOSE_APP_SETTINGS_TOOL, PROPOSE_PROJECT_SETTINGS_TOOL] as const
+
+/** app_reference / app:reference actions. 'status' is answered only on Chat, MCP and Skill assistant runs and over IPC. */
+export const APP_REFERENCE_ACTIONS = ['search', 'read', 'locate', 'status'] as const
+export type AppReferenceAction = (typeof APP_REFERENCE_ACTIONS)[number]
+
+/** Default and largest character budget of a search or locate answer (`AppReferenceResult.text.length <= budget`). */
+export const APP_REFERENCE_BUDGET_DEFAULT = 2000
+export const APP_REFERENCE_BUDGET_MIN = 400
+export const APP_REFERENCE_BUDGET_MAX = 8000
+/** Longest `query`; longer is refused (never cut). */
+export const APP_REFERENCE_QUERY_MAX_CHARS = 500
+/** Longest `id` (a section id, e.g. 'surface:app-settings-general-appearance', 'doc:how-it-works#asking-orgai'). */
+export const APP_REFERENCE_ID_MAX_CHARS = 200
+/** Most characters one `read` returns; a longer section is cut and says so. */
+export const APP_REFERENCE_READ_MAX_CHARS = 8000
+
+/**
+ * A request to the reference. search: `query` required, ranked sections within `budget` (default
+ * APP_REFERENCE_BUDGET_DEFAULT, clamped to APP_REFERENCE_BUDGET_MIN..APP_REFERENCE_BUDGET_MAX). read: `id` required (a
+ * section id from a hit). locate: `query` required, answered with atlas paths ("App settings › General › Appearance")
+ * and how to reach them plus the setting fields there. status: no other field. Hidden characters in `query` or `id`
+ * are refused. Inputs are rebuilt in main (host/args.ts appReferenceArgs); unknown fields are dropped.
+ */
+export interface AppReferenceQuery {
+  action: AppReferenceAction
+  query?: string
+  id?: string
+  budget?: number
+}
+
+/** What a reference section is built from. */
+export type AppReferenceSectionKind = 'surface' | 'setting' | 'menu' | 'shortcut' | 'tool' | 'channel' | 'command' | 'connector' | 'doc' | 'status'
+
+/** One ranked section of a search or locate answer. `id` is what `read` takes. */
+export interface AppReferenceHit {
+  id: string
+  kind: AppReferenceSectionKind
+  title: string
+  /** Relative score, 0 < score <= 1 (1 = the best hit of this answer). */
+  score: number
+}
+
+/**
+ * The answer. `text` is the whole answer for a model or a reader: ids, counts and the service's own sentences outside
+ * fences, every value from a registry or doc inside a fence (`<<<` `>>>`, look-alike substitution, like harnessTools
+ * `datum` / `fencedBlock`). Never secrets, keys, tokens or URLs with credentials. `hits` (search, locate) in rank order.
+ */
+export interface AppReferenceResult {
+  text: string
+  hits?: AppReferenceHit[]
+}
+
+/**
+ * main -> renderer push on SELF_KNOWLEDGE_IPC.appNavigate (desktop only): an agent asked to show the user a place.
+ * index.ts sends it to the live unscoped main window (restored and focused, created when closed), like menu actions.
+ * The renderer opens `surfaceId` (for project / engagement / run surfaces, in `projectId`) and announces "<agentLabel>
+ * opened <path>". `runId` is the run that asked (the renderer may link back to it). Main validated every field.
+ */
+export interface AppNavigateEvent {
+  surfaceId: AtlasSurfaceId
+  /** A stored (never virtual) project; present for project, engagement and (optionally) run surfaces, else absent. */
+  projectId?: string
+  runId: string
+  /** Who asked, for the announcement: the calling role's name ("Assistant", "Architect"), plain text, at most 80 chars. */
+  agentLabel: string
+}
+
+/** open_in_app limits per run (RunManager): at most this many navigations, and at most one per interval. */
+export const OPEN_IN_APP_PER_RUN_MAX = 20
+export const OPEN_IN_APP_MIN_INTERVAL_MS = 2000
+
+/** open_in_app's answer from RuntimeContext.navigate. `path` is atlasPath(surfaceId). */
+export type AppNavigateOutcome = { ok: true; path: string } | { ok: false; refusal: string }
+
+/**
+ * AppSettings fields an agent may propose (propose_app_settings), as dotted paths into AppSettings. Never main-owned
+ * fields, connections, proxies, auth, terminal access, model prices or the default connection (change those in App
+ * settings). Each path's top-level key has `proposable: true` in APP_SETTING_DOCS (atlas.test.ts checks).
+ */
+export const APP_SETTINGS_PROPOSABLE_FIELDS = [
+  'appearance.theme',
+  'appearance.accent',
+  'appearance.reduceMotion',
+  'appearance.canvas.pattern',
+  'appearance.canvas.tint',
+  'appearance.canvas.edges',
+  'appearance.canvas.layout',
+  'appearance.canvas.nodeStyle',
+  'appearance.canvas.minimap',
+  'notifications',
+  'defaultPermissionMode',
+  'defaultMaxBudgetUsd',
+  'defaultKeepRuns',
+  'defaultIsolateWriters',
+  'defaultRootModel',
+  'defaultReportModel',
+  'setupModel',
+  'mcpAssistModel',
+  'skillAssistModel',
+  'quickRunModel',
+  'opusGuardThreshold',
+  'communityPrices',
+  'defaultAutoContinue',
+  'defaultMaxAutoContinues'
+] as const
+export type AppSettingsProposableField = (typeof APP_SETTINGS_PROPOSABLE_FIELDS)[number]
+
+export function isAppSettingsProposableField(value: unknown): value is AppSettingsProposableField {
+  return typeof value === 'string' && (APP_SETTINGS_PROPOSABLE_FIELDS as readonly string[]).includes(value)
+}
+
+/** A proposable setting's value: null only clears an optional number (defaultMaxBudgetUsd = no cap). */
+export type AppSettingValue = string | number | boolean | null
+
+/** At most this many changes in one appSettings proposal. */
+export const APP_SETTINGS_PROPOSAL_MAX_CHANGES = 20
+
+/**
+ * One change of an appSettings proposal. `from` is the stored value when the card was created (main reads it; never
+ * the agent's), `to` the proposed value (validated per field by src/shared/appSettingsProposal.ts
+ * `appSettingValueProblem`), `label` the field's human name (from the atlas doc, never agent text).
+ */
+export interface AppSettingChange {
+  field: AppSettingsProposableField
+  from: AppSettingValue
+  to: AppSettingValue
+  label: string
+}
+
+/**
+ * Proposal kind 'appSettings' (propose_app_settings, Chat only): app-wide settings changes, each field at most once.
+ * Approval applies them through the settings:set path (args.ts settingsSetArgs, SettingsStore normalization, theme,
+ * settings:changed broadcast); Proposal.effect 'now'.
+ */
+export interface AppSettingsProposalPayload {
+  changes: AppSettingChange[]
+  rationale: string
+}
+
+/** ProposalBase.target: the stored project a Chat proposal changes, filled by main from the stored project. */
+export interface ProposalTarget {
+  projectId: string
+  /** The stored project's name when the card was created (display only). */
+  projectName: string
+}
+
+/**
+ * SettingsProposalPayload fields propose_project_settings may set (Chat). Not allowRules (saved permission rules are
+ * granted on permission cards and in Settings only), and permissionMode never 'bypassPermissions'.
+ */
+export const PROJECT_SETTINGS_PROPOSABLE_FIELDS = [
+  'brief',
+  'permissionMode',
+  'maxBudgetUsd',
+  'maxSubagentDepth',
+  'maxConcurrentSubagents',
+  'isolateWriters',
+  'reviewMerges',
+  'autoContinue',
+  'maxAutoContinues',
+  'client'
+] as const satisfies readonly (keyof SettingsProposalPayload & keyof Project)[]
+export type ProjectSettingsProposableField = (typeof PROJECT_SETTINGS_PROPOSABLE_FIELDS)[number]
+
+export interface OrgAIApi {
+  /** An agent's open_in_app asked to show a place (SELF_KNOWLEDGE_IPC.appNavigate). Returns an unsubscribe function. */
+  onAppNavigate(cb: (event: AppNavigateEvent) => void): () => void
 }

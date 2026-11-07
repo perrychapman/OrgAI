@@ -514,7 +514,7 @@ describe('MCP tools', () => {
     const assistCtx = (over = {}) => fakeCtx({ run: runSummary({ kind: 'mcp-assist' }), ...over })
 
     it('mcp-assist runs get list, search, propose and ask_user only', () => {
-      expect(harnessToolsFor(assistCtx()).map((t) => t.name)).toEqual(['list_mcp_servers', 'search_mcp_registry', 'propose_mcp_servers', 'ask_user', 'request_permission_rules'])
+      expect(harnessToolsFor(assistCtx()).map((t) => t.name)).toEqual(['list_mcp_servers', 'search_mcp_registry', 'propose_mcp_servers', 'ask_user', 'request_permission_rules', 'app_reference', 'open_in_app'])
     })
 
     it('validates, builds ids and secret slots, and returns the decision text', async () => {
@@ -925,7 +925,7 @@ describe('quick runs: tool set and list_projects', () => {
 
   it('binds the quick set only for quick work runs', () => {
     const names = harnessToolsFor(quickCtx()).map((t) => t.name)
-    expect(names).toEqual(['set_plan', 'update_plan', 'complete_plan', 'mark_blocked', 'ask_user', 'integrate_worktrees', 'request_permission_rules', 'list_projects', 'request_mcp_install', 'list_skill_library', 'read_library_skill'])
+    expect(names).toEqual(['set_plan', 'update_plan', 'complete_plan', 'mark_blocked', 'ask_user', 'integrate_worktrees', 'request_permission_rules', 'list_projects', 'request_mcp_install', 'list_skill_library', 'read_library_skill', 'app_reference', 'open_in_app', 'propose_app_settings', 'propose_project_settings'])
     for (const gone of ['propose_org_change', 'list_runs', 'message_run', 'list_mcp_servers', 'search_mcp_registry', 'propose_mcp_servers', 'propose_skills', 'list_skills', 'load_skill']) expect(names).not.toContain(gone)
     const work = harnessToolsFor(fakeCtx()).map((t) => t.name)
     expect(work).not.toContain('list_projects')
@@ -987,7 +987,7 @@ describe('Skill assistant tools', () => {
   const skCtx = (over = {}, projectId = 'p1') => fakeCtx({ run: runSummary({ kind: 'skill-assist' }), project: project({ id: projectId }), skillCatalog: catalog, ...over })
 
   it('skill-assist runs get the four assistant tools and ask_user; no other kind gets them', () => {
-    expect(harnessToolsFor(skCtx()).map((t) => t.name)).toEqual(['list_skill_library', 'read_library_skill', 'propose_skills', 'ask_user', 'request_permission_rules'])
+    expect(harnessToolsFor(skCtx()).map((t) => t.name)).toEqual(['list_skill_library', 'read_library_skill', 'propose_skills', 'ask_user', 'request_permission_rules', 'app_reference', 'open_in_app'])
     for (const c of [fakeCtx({ run: runSummary({ kind: 'mcp-assist' }) }), fakeCtx({ run: runSummary({ kind: 'work', quick: { folder: '/x', team: 'single', allowEdits: false, gitRepo: false } }) })]) {
       const n = harnessToolsFor(c).map((t) => t.name)
       expect(n).not.toContain('propose_skills')
