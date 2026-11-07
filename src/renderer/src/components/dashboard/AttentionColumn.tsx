@@ -4,15 +4,15 @@ import { CircleAlert, FileDiff, GitMerge, ListChecks, MessageCircleQuestion, Plu
 import { isVirtualProjectId, type Project, type RunSummary } from '@shared/types'
 import { projectKindOf } from '@shared/defaults'
 import { useAppStore, type RunState } from '../../store/useAppStore'
-import { Badge } from '../ui/Badge'
 import { Button } from '../ui/Button'
 import { Cost } from '../ui/Cost'
 import { Icon } from '../ui/Icon'
 import { AttentionSection } from './AttentionSection'
-import { useAllSummaries, useLiveRuns, useNow, useWaitingRuns } from './useDashboardData'
+import type { DashCaps } from './dashCaps'
+import { useAllSummaries, useNow, useWaitingRuns } from './useDashboardData'
 import { runCostInput } from '../../lib/cost'
-import { NEEDS_CAP, PAUSED_CAP, RUNNING_CAP, SINCE_LAST_SEEN_CAP, elapsedLabel, errorFirstLine, pausedRuns, planStepLabel, sinceLastSeen } from '../../lib/dashboard'
-import { locationLabel, runKindLabel } from '../../lib/assistants'
+import { NEEDS_CAP, PAUSED_CAP, SINCE_LAST_SEEN_CAP, errorFirstLine, pausedRuns, sinceLastSeen } from '../../lib/dashboard'
+import { locationLabel } from '../../lib/assistants'
 import { waitingItems, type WaitingItem, type WaitingKind } from '../../lib/needsYou'
 import { openTeamFilesDecision, useTeamAttentionItems } from '../../lib/menuActions'
 import { canContinue, relativeTime } from '../../lib/runChains'
@@ -100,52 +100,6 @@ function NeedsYouSection(): ReactElement {
               <span className="dash-row-text">
                 <span className="dash-row-line">{it.label}</span>
                 <span className="dash-row-cap">{it.kind === 'team' ? `${it.projectName} · Team` : `${locationLabel(it.projectId, projects)} · ${runName(it.run.summary)}`}</span>
-              </span>
-            </button>
-          </li>
-        )
-      }}
-    />
-  )
-}
-
-function RunningSection({ now }: { now: number }): ReactElement {
-  const live = useLiveRuns()
-  const projects = useAppStore((s) => s.projects)
-  const projectOf = useProjectLookup()
-  const focusRun = useAppStore((s) => s.focusRun)
-  return (
-    <AttentionSection
-      testId="dash-running"
-      title="Running now"
-      count={live.length}
-      items={live}
-      cap={RUNNING_CAP}
-      itemKey={(r) => r.summary.id}
-      empty="Nothing is running."
-      renderItem={(run) => {
-        const s = run.summary
-        const waiting = waitingItems(run).length > 0
-        const view = statusOfRun(run, projectOf(s.projectId), waiting)
-        const plan = planStepLabel(run.plan)
-        const elapsed = elapsedLabel(s.startedAt, now)
-        const chip = isVirtualProjectId(s.projectId) || s.quick ? runKindLabel(s) : null
-        return (
-          <li key={s.id} className="dash-row dash-row-running" data-testid="dash-running-row" data-status={view.word} data-row-key={s.id}>
-            <button type="button" className="dash-row-main" data-row-main="" onClick={() => void focusRun(s.projectId, s.id).then(settleFocus)}>
-              <Dot tone={view.tone} live />
-              <span className="dash-row-text">
-                <span className="dash-row-line">
-                  <span className="dash-status">{statusText(view)}</span>
-                  <span className="dash-row-name">{runName(s)}</span>
-                </span>
-                <span className="dash-row-cap">
-                  <span className="dash-clip">
-                    {locationLabel(s.projectId, projects)} · {elapsed === 'just started' ? elapsed : `for ${elapsed}`}
-                  </span>
-                  {plan && <span className="dash-num dash-plan">{plan}</span>}
-                  {chip && <Badge>{chip}</Badge>}
-                </span>
               </span>
             </button>
           </li>
@@ -302,19 +256,20 @@ function PausedSection({ summaries }: { summaries: RunSummary[] }): ReactElement
   )
 }
 
-/**
- * The Dashboard's attention column (spec 4): Needs you, Running now, Since you were last here, Paused, in that order.
- * Elapsed times re-render every 30 s and are never announced.
- */
-export function AttentionColumn({ lastSeen, clearedAt, onMarkAllSeen }: { lastSeen: number; clearedAt: number; onMarkAllSeen: () => void }): ReactElement {
+/** Needs you (docs/design/dashboard-2.md section 5), its own grid area. */
+export function NeedsYouRegion(_props: { caps: DashCaps; onAnnounce: (text: string) => void }): ReactElement {
+  return <NeedsYouSection />
+}
+
+/** Paused (section 9.1), its own grid area; renders nothing without paused runs. */
+export function PausedRegion(_props: { caps: DashCaps }): ReactElement | null {
+  const summaries = useAllSummaries()
+  return <PausedSection summaries={summaries} />
+}
+
+/** Recently ended (section 9.2), its own grid area; renders nothing when empty. */
+export function EndedRegion({ lastSeen, clearedAt, onMarkAllSeen }: { caps: DashCaps; lastSeen: number; clearedAt: number; onMarkAllSeen: () => void }): ReactElement | null {
   const now = useNow()
   const summaries = useAllSummaries()
-  return (
-    <div className="dash-attention">
-      <NeedsYouSection />
-      <RunningSection now={now} />
-      <SinceSection lastSeen={lastSeen} clearedAt={clearedAt} onMarkAllSeen={onMarkAllSeen} now={now} summaries={summaries} />
-      <PausedSection summaries={summaries} />
-    </div>
-  )
+  return <SinceSection lastSeen={lastSeen} clearedAt={clearedAt} onMarkAllSeen={onMarkAllSeen} now={now} summaries={summaries} />
 }

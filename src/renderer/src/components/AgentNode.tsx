@@ -7,7 +7,7 @@ import { agentLabel, splitLabelTail } from '../lib/agentTree'
 import { handlesFor, stationGeometry, stationHandleStyle, useCanvasOptions, useHandleRefresh } from '../lib/canvas'
 import type { AgentInstance } from '@shared/types'
 import { formatElapsed, formatTokens, initials } from '../lib/layout'
-import { agentProducedNothing } from '@shared/defaults'
+import { agentNoResult, isWorkingAgent, nodeActivity, worktreeLabel } from '../lib/agentActivity'
 import { agentCostInput, costView } from '../lib/cost'
 import { Cost } from './ui/Cost'
 import { Icon } from './ui/Icon'
@@ -15,7 +15,6 @@ import { activeRun, useAppStore } from '../store/useAppStore'
 
 export type AgentFlowNode = Node<{ agent: AgentInstance; color: string; isRoot: boolean }, 'agent'>
 
-const WORKING = new Set(['starting', 'thinking', 'tool', 'delegating'])
 
 /** A label that clips in the middle: the head takes the ellipsis, the last characters stay (see splitLabelTail). */
 function ClippedLabel({ label }: { label: string }): ReactElement {
@@ -46,24 +45,6 @@ export function MessageHandles({ hs }: { hs: (side: string) => { style?: CSSProp
   )
 }
 
-const WORKTREE_LABEL: Record<NonNullable<AgentInstance['worktree']>['status'], string> = {
-  active: 'isolated worktree',
-  merging: 'merging…',
-  merged: 'merged',
-  empty: 'no changes',
-  conflict: 'merge conflict',
-  removed: 'worktree removed',
-  review: 'awaiting your review',
-  held: 'held for later',
-  'waiting-children': 'waiting for its reports'
-}
-
-/** Nested reports merge into their parent's branch, not the main checkout. */
-function worktreeLabel(wt: NonNullable<AgentInstance['worktree']>): string {
-  if (wt.mergeTarget === 'parent' && wt.status === 'merged') return 'merged into parent'
-  return WORKTREE_LABEL[wt.status]
-}
-
 function AgentNodeView({ id, data, selected }: NodeProps<AgentFlowNode>): ReactElement {
   const { agent, color, isRoot } = data
   const [, tick] = useState(0)
@@ -83,10 +64,9 @@ function AgentNodeView({ id, data, selected }: NodeProps<AgentFlowNode>): ReactE
   const hasCost = !costView(costInput).empty
   // Ended without result text: its tokens bought nothing. A quiet dim and a tooltip, no badge.
   // The root is the orchestrator: it speaks the answer, so it is never flagged.
-  const noResult = !isRoot && agent.id !== 'root' && (!!agent.usage?.producedNothing || agentProducedNothing(agent))
-  // An idle run is not a pending decision: the root waits for a reply, "Waiting for you" is for a card.
-  const idleActivity = isRoot && agent.state === 'idle' && agent.activity === 'Waiting for you' ? 'Waiting for your reply' : agent.activity
-  const activity = streaming ? partial.replace(/\s+/g, ' ').trim().slice(0, 80) || 'Writing…' : noResult ? 'Ended without a result' : idleActivity
+  const noResult = agentNoResult(agent, isRoot)
+  // An idle run is not a pending decision: the root waits for a reply, "Waiting for you" is for a card (lib/agentActivity.ts).
+  const activity = streaming ? partial.replace(/\s+/g, ' ').trim().slice(0, 80) || 'Writing…' : nodeActivity(agent, { isRoot })
 
   const { layout, nodeStyle } = useCanvasOptions()
   useHandleRefresh(id, layout, nodeStyle)
@@ -186,7 +166,7 @@ function AgentNodeView({ id, data, selected }: NodeProps<AgentFlowNode>): ReactE
       </div>}
       {!compact && (
         <>
-          <div className={`activity ${streaming || WORKING.has(agent.state) ? 'working' : ''}`} title={activity}>
+          <div className={`activity ${streaming || isWorkingAgent(agent.state) ? 'working' : ''}`} title={activity}>
             {activity}
           </div>
           {agent.worktree && (

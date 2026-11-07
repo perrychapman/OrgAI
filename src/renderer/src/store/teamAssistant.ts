@@ -81,19 +81,27 @@ export function summaryFromReview(r: TeamReview): TeamReviewSummary {
 }
 
 const seeded = new Set<string>()
+const seeding = new Map<string, Promise<void>>()
 
 /** Seed a project's summary from its last persisted review once (a pushed summary wins). */
-export function seedTeamReview(projectId: string): void {
-  if (seeded.has(projectId)) return
+export function seedTeamReview(projectId: string): Promise<void> {
+  const pending = seeding.get(projectId)
+  if (pending) return pending
+  if (seeded.has(projectId)) return Promise.resolve()
   seeded.add(projectId)
-  void window.orgai.capabilities
+  const p = window.orgai.capabilities
     .lastReview(projectId)
     .then((r) => {
       if (!r) return
       if (useTeamAssistantStore.getState().summaries[projectId]) return
       useTeamAssistantStore.getState().setSummary(projectId, summaryFromReview(r))
     })
-    .catch(() => seeded.delete(projectId))
+    .catch(() => {
+      seeded.delete(projectId)
+    })
+    .finally(() => seeding.delete(projectId))
+  seeding.set(projectId, p)
+  return p
 }
 
 let unsubscribe: (() => void) | null = null
