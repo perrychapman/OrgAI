@@ -21,6 +21,8 @@ export interface KeyDef {
   label: string
   /** In the one-line hint: its place (lower first) and short wording. Absent = help and overlay only. */
   hint?: { order: number; text: string }
+  /** The hint in inline mode, where there is no pane to go to (replaces `hint.text`). */
+  inlineHint?: string
   /** The hint (not the help) applies only to these tree row kinds. */
   rows?: readonly RowKind[]
 }
@@ -38,7 +40,8 @@ export const KEYMAP: readonly KeyDef[] = [
   // ---- Composer ----
   { scope: 'composer', keys: 'Enter', label: 'Send; Alt+Enter adds a new line', hint: { order: 1, text: 'Enter sends' } },
   { scope: 'composer', keys: '/', label: 'Open the command palette (on an empty composer)', hint: { order: 2, text: '/ commands' } },
-  { scope: 'composer', keys: 'Tab', label: 'Go to the panes', hint: { order: 4, text: 'Tab panes' } },
+  { scope: 'composer', keys: 'Alt+D', label: 'Focus the Decision Tray (also F2)', hint: { order: 3, text: 'Alt+D decisions' } },
+  { scope: 'composer', keys: 'Tab', label: 'Go to the panes', hint: { order: 4, text: 'Tab panes' }, inlineHint: '/agent <name> shows an agent' },
   { scope: 'composer', keys: 'Esc', label: 'Interrupt the running turn (press twice)', hint: { order: 5, text: 'Esc Esc interrupts' } },
   { scope: 'composer', keys: '? (empty composer)', label: "The composer's keys" },
   // ---- Org tree ----
@@ -68,8 +71,11 @@ export const KEYMAP: readonly KeyDef[] = [
   { scope: 'inspector', keys: 'u', label: 'The usage tables in the pager (/usage)', hint: { order: 3, text: 'u usage' } },
   { scope: 'inspector', keys: 'Esc', label: 'Close; the tree keeps the same row', hint: { order: 4, text: 'Esc back' } },
   // ---- Decision Tray ----
-  { scope: 'tray', keys: '?', label: "The tray's keys" },
-  { scope: 'tray', keys: 'Permission', label: 'y allow once, s allow for the session, a always allow for the project (asks to confirm), n deny (opens an optional note), v full view; Up/Down scroll a long card, and y/s/a work once its end was shown' },
+  { scope: 'tray', keys: 'Card keys', label: 'Each card shows its own keys on its hint line; the kinds are listed below', hint: { order: 1, text: 'Keys on the card' } },
+  { scope: 'tray', keys: '?', label: "The tray's keys", hint: { order: 2, text: '? keys' } },
+  { scope: 'tray', keys: 'Up, Down, PgUp, PgDn', label: 'Scroll a long card (every kind)' },
+  { scope: 'tray', keys: 'Esc', label: 'Back to the composer (every kind); inside a note, confirm or secret field it cancels that first', hint: { order: 3, text: 'Esc back' } },
+  { scope: 'tray', keys: 'Permission', label: 'y allow once, s allow for the session, a always allow for the project (asks to confirm), n deny (opens an optional note), v full view; y/s/a work once the end of the command was shown (a cut command needs v)' },
   { scope: 'tray', keys: 'Rule request', label: 'r grant for the run, a always grant for the project (asks to confirm), n deny' },
   { scope: 'tray', keys: 'Proposal', label: 'y approve, e revise with a note, d decline, s enter secrets, v view in the pager' },
   { scope: 'tray', keys: 'Question', label: '1-9 pick an option, Space toggle (multiple choice), c custom answer, Enter submit' },
@@ -126,15 +132,18 @@ export function statusHint(focus: FocusTarget, opts: { readOnly: boolean; stopOn
   // One separator rule (theme.ts separatorFor): ', ' for a screen reader, ' | ' in ASCII, else ' · '.
   const sep = opts.env ? separatorFor(opts.env) : ' · '
   const quit = opts.stopOnQuit ? 'Ctrl+C twice stops and quits' : 'Ctrl+C twice quits'
-  // Inline mode has no panes to Tab to: say how to see an agent instead.
+  // Inline mode has no panes to Tab to: say how to see an agent instead. The words come from KEYMAP.
   const inline = opts.env?.bufferMode === 'inline'
-  const panes = inline ? '/agent <name> shows an agent' : 'Tab panes'
+  const ownHints = (scope: KeyScope, only?: readonly string[]): string[] =>
+    KEYMAP.filter((k) => k.scope === scope && k.hint && (!only || only.includes(k.keys)))
+      .sort((a, b) => a.hint!.order - b.hint!.order)
+      .map((k) => (inline && k.inlineHint ? k.inlineHint : k.hint!.text))
   const text = ((): string => {
     switch (focus) {
       case 'composer':
-        return opts.readOnly ? `Alt+D decisions · ${panes} · ${quit}` : `Enter sends · / commands · Alt+D decisions · ${panes} · Esc Esc interrupts · ${quit}`
+        return [...ownHints('composer', opts.readOnly ? ['Alt+D', 'Tab'] : undefined), quit].join(' · ')
       case 'tray':
-        return 'Keys on the card · ? keys · Esc back'
+        return ownHints('tray').join(' · ')
       case 'palette':
         return 'Enter runs · Esc closes'
       case 'onboarding':

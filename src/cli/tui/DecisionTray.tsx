@@ -22,8 +22,8 @@ import { boundCardClosedStatus, outcomeStatus, rejectionStatus, type TrayStatus 
 import { useFocusHandler, useTuiEnv } from './context'
 import {
   bindingsFor,
-  cardDetailLines,
-  cardFullText,
+  cardDetail,
+  cardFullView,
   cardKindWord,
   cardTitle,
   confirmQuestion,
@@ -100,7 +100,7 @@ function bindingKeyOf(e: KeyEvent): string | undefined {
 }
 
 /** Shown instead of the decision keys while the tray is not focused. */
-const UNFOCUSED_HINT = 'Alt+D to answer'
+const UNFOCUSED_HINT = 'Alt+D or F2 to answer'
 
 function actionFor(card: TrayCard, b: TrayBinding, extra: { text?: string; secrets?: Record<string, string> } = {}): TrayAction | null {
   switch (card.kind) {
@@ -253,9 +253,14 @@ export function DecisionTray(props: DecisionTrayProps) {
 
   function runBinding(card: TrayCard, b: TrayBinding): void {
     if (b.act === 'view') {
-      st.readAll = true
       const title = cardTitle(card)
-      void props.onViewText(title, cardFullText(card)).catch((e: unknown) => {
+      const full = cardFullView(card)
+      if (full.cut && card.kind === 'permission') {
+        // The full view itself is cut: the rest of the command cannot be read here, so v does not unlock y / s / a.
+        st.status = { text: 'The full view is cut at 64 KB: the rest cannot be read here. Deny it, or answer elsewhere.', tone: 'warn' }
+        bump()
+      } else st.readAll = true
+      void props.onViewText(title, full.text).catch((e: unknown) => {
         st.status = rejectionStatus(e)
         bump()
       })
@@ -367,7 +372,8 @@ export function DecisionTray(props: DecisionTrayProps) {
   const focused = props.focused
   const ell = g.ellipsis
   // Question lines carry a selection marker ("> [x] ") in front, so they wrap narrower and are never cut.
-  const detail = top ? cardDetailLines(top, width - (top.kind === 'question' ? 8 : 2)) : []
+  const detailView = top ? cardDetail(top, width - (top.kind === 'question' ? 8 : 2)) : undefined
+  const detail = detailView?.lines ?? []
   const statusRows = st.status ? 1 : 0
   const modeRows = st.mode.t !== 'idle' || st.pending ? 1 : 0
   let hints = top ? (focused ? wrapPhrases(hintPhrases(top, env.dumbTerminal), sep, width, ell) : [UNFOCUSED_HINT]) : []
@@ -391,8 +397,14 @@ export function DecisionTray(props: DecisionTrayProps) {
   const cueRows = cut && bodyAvail >= 2 ? 1 : 0
   const bodyRows = Math.max(1, bodyAvail - cueRows)
   st.scroll = Math.min(st.scroll, Math.max(0, detail.length - bodyRows))
-  // The body's last line is on screen: a long permission card may now be answered with y / s / a.
-  if (props.variant === 'footer' || st.scroll + bodyRows >= detail.length) st.readAll = true
+  // The body's last line is on screen: a long permission card may now be answered with y / s / a. A body that was
+  // cut (a long command) is never "on screen": only v, which shows all of it, unlocks. In the footer the body is printed
+  // into scrollback once, so the card counts as read when its key was printed (App passes the keys it printed).
+  if (top && !detailView?.capped) {
+    if (props.variant === 'footer') {
+      if (props.printed === undefined || props.printed.has(top.key)) st.readAll = true
+    } else if (st.scroll + bodyRows >= detail.length && 1 + bodyRows <= height) st.readAll = true
+  }
 
   function handle(e: InputEvent): boolean {
     guard.observe(topKey, now())
@@ -492,8 +504,14 @@ export function DecisionTray(props: DecisionTrayProps) {
       }
       return true
     }
-    if (props.variant === 'full' && card.kind === 'permission' && GATED_KEYS.has(k) && !st.readAll) {
-      notice('Read the whole command first: Down scrolls, v shows it all.')
+    if (card.kind === 'permission' && GATED_KEYS.has(k) && !st.readAll) {
+      notice(
+        detailView?.capped
+          ? 'The command is cut here: press v to read all of it first.'
+          : props.variant === 'footer'
+            ? 'Read the whole command first: v shows it all.'
+            : 'Read the whole command first: Down scrolls, v shows it all.'
+      )
       return true
     }
     const gated = env.dumbTerminal && !committed && b.act !== 'pick' && b.act !== 'toggle' && b.act !== 'submit'
@@ -567,7 +585,9 @@ export function DecisionTray(props: DecisionTrayProps) {
 
   const shown = detail.slice(st.scroll, st.scroll + bodyRows)
   const q = top.kind === 'question' && st.question?.key === top.key ? st.question : undefined
-  const header = `${focused ? '> ' : '  '}Needs you (${cards.length}) ${g.bullet} ${top.runTag} ${g.bullet} ${top.agentLabel ? `${top.agentLabel} ${g.bullet} ` : ''}${cardKindWord(top)}: ${title}`
+  // A screen reader hears words, not marker glyphs: "Focused:" instead of ">" and the separator rule's commas.
+  const lead = env.screenReader ? (focused ? 'Focused: ' : '') : focused ? '> ' : '  '
+  const header = `${lead}Needs you (${cards.length})${sep}${top.runTag}${sep}${top.agentLabel ? `${top.agentLabel}${sep}` : ''}${cardKindWord(top)}: ${title}`
   const hidden = detail.length - st.scroll - bodyRows
   const canView = bindingsFor(top).some((b) => b.act === 'view')
   const cue =
@@ -585,7 +605,7 @@ export function DecisionTray(props: DecisionTrayProps) {
   if (st.status) rows.push({ key: 'status', text: st.status.text, style: { tone: st.status.tone } })
   hints.forEach((h, i) => rows.push({ key: `h${i}`, text: h, style: focused ? { tone: 'accent' } : { dim: true } }))
   if (queueMode === 'list') {
-    for (const c of nextCards) rows.push({ key: `n${c.key}`, text: `${g.arrow} ${c.runTag} ${cardTitle(c)}`, style: { dim: true } })
+    for (const c of nextCards) rows.push({ key: `n${c.key}`, text: `${env.screenReader ? 'Next:' : g.arrow} ${c.runTag} ${cardTitle(c)}`, style: { dim: true } })
     if (moreRows) rows.push({ key: 'more', text: `and ${cards.length - 1 - NEXT_CARDS_MAX} more`, style: { dim: true } })
   } else if (queueMode === 'count') {
     rows.push({ key: 'count', text: `+${cards.length - 1} more ${cards.length - 1 === 1 ? 'card' : 'cards'}`, style: { dim: true } })

@@ -35,6 +35,7 @@ import {
 } from '../../shared/view/mcpProposal'
 import { pinnedVersionOf } from '../../shared/view/mcpVersion'
 import { collapseRules, noRuleLine, permissionOffer, referenceEffect, referenceLocation, ruleChip } from '../../shared/view/permissionCopy'
+import { graphemes, graphemeWidth, textWidth } from './panes/text'
 import { sanitizeTty } from './sanitizeTty'
 import type { DecisionCall, TrayCard } from './types'
 
@@ -501,7 +502,7 @@ function installLines(card: Extract<TrayCard, { kind: 'mcpInstall' }>): string[]
 
 type McpInstallRequest = Extract<TrayCard, { kind: 'mcpInstall' }>['card']
 
-function logicalLines(card: TrayCard, full: boolean): string[] {
+function rawLines(card: TrayCard, full: boolean): string[] {
   let lines: string[]
   switch (card.kind) {
     case 'permission':
@@ -527,33 +528,118 @@ function logicalLines(card: TrayCard, full: boolean): string[] {
   return lines
 }
 
-/** Wrap one line to `width` columns (code points; words kept whole when they fit). */
-export function wrapLine(line: string, width: number): string[] {
-  const w = Math.max(10, Math.floor(width))
-  const chars = Array.from(line)
-  if (chars.length <= w) return [line]
-  const out: string[] = []
-  let rest = chars
-  while (rest.length > w) {
-    let cut = w
-    for (let i = w; i > Math.floor(w / 2); i--) {
-      if (rest[i] === ' ') {
-        cut = i
+/** The most characters of one body item (a command, a summary) the card itself shows when the card has a full view. */
+export const CARD_ITEM_MAX = 600
+/** The most characters the full view (v) carries in all, for every card kind. */
+export const FULL_VIEW_MAX = 65536
+const FULL_VIEW_CUT = '(cut at 64 KB)'
+
+/** Cards that offer a full view (v): only they cut a body item at CARD_ITEM_MAX. */
+function hasFullView(card: TrayCard): boolean {
+  return card.kind === 'permission' || card.kind === 'proposal' || card.kind === 'merge'
+}
+
+/** `s` cut to `max` characters without splitting a surrogate pair. */
+function cutChars(s: string, max: number): string {
+  let end = Math.min(s.length, max)
+  const last = s.charCodeAt(end - 1)
+  if (end < s.length && last >= 0xd800 && last <= 0xdbff) end--
+  return s.slice(0, end)
+}
+
+/** The body items (each may hold line breaks); `cut` says the card or the full view left text out. */
+function logicalLines(card: TrayCard, full: boolean): { lines: string[]; cut: boolean } {
+  const raw = rawLines(card, full)
+  let cut = false
+  if (full) {
+    // One cap for every body kind: the whole full view carries at most FULL_VIEW_MAX characters.
+    let used = 0
+    const out: string[] = []
+    for (const l of raw) {
+      if (used + l.length > FULL_VIEW_MAX) {
+        const room = FULL_VIEW_MAX - used
+        if (room > 0) out.push(cutChars(l, room))
+        out.push(FULL_VIEW_CUT)
+        cut = true
         break
       }
+      used += l.length + 1
+      out.push(l)
     }
-    out.push(rest.slice(0, cut).join('').trimEnd())
-    rest = rest.slice(cut)
-    while (rest[0] === ' ') rest = rest.slice(1)
+    return { lines: out, cut }
   }
-  if (rest.length) out.push(rest.join(''))
+  const viewable = hasFullView(card)
+  const max = viewable ? CARD_ITEM_MAX : FULL_VIEW_MAX
+  const lines = raw.map((l) => {
+    if (l.length <= max) return l
+    cut = true
+    return `${cutChars(l, max)} ... (cut${viewable ? '; v shows all' : ''})`
+  })
+  return { lines, cut }
+}
+
+/**
+ * Wrap one line to `width` terminal columns (CJK and emoji count 2, never a code-point count). Breaks at the last space
+ * in the second half of the line when there is one, else hard at a grapheme boundary. Linear in the line.
+ */
+export function wrapLine(line: string, width: number): string[] {
+  const w = Math.max(10, Math.floor(width))
+  if (textWidth(line) <= w) return [line]
+  const gs = graphemes(line)
+  const ws = gs.map(graphemeWidth)
+  const n = gs.length
+  const out: string[] = []
+  let i = 0
+  while (i < n) {
+    let col = 0
+    let j = i
+    let space = -1
+    while (j < n && col + ws[j] <= w) {
+      if (gs[j] === ' ' && col * 2 > w) space = j
+      col += ws[j]
+      j++
+    }
+    if (j >= n) {
+      out.push(gs.slice(i).join(''))
+      break
+    }
+    let cutAt = j
+    if (gs[j] !== ' ' && space > i) cutAt = space
+    if (cutAt === i) cutAt = i + 1 // a grapheme wider than the line: never loop
+    out.push(gs.slice(i, cutAt).join('').trimEnd())
+    i = cutAt
+    while (i < n && gs[i] === ' ') i++
+  }
   return out
 }
 
+export interface CardDetail {
+  lines: string[]
+  /** A body item was cut at CARD_ITEM_MAX: the end of the card is not on screen until v shows it. */
+  capped: boolean
+}
+
+const detailCache = new WeakMap<object, Map<string, CardDetail>>()
+
+/** The card's wrapped body (memoised per card data and width) and whether it was cut. */
+export function cardDetail(card: TrayCard, width: number): CardDetail {
+  const data = card.card as object
+  const key = `${Math.floor(width)}|${card.kind}|${card.projectKind ?? ''}|${card.runKind}`
+  let perCard = detailCache.get(data)
+  const hit = perCard?.get(key)
+  if (hit) return hit
+  const { lines: items, cut } = logicalLines(card, false)
+  const lines: string[] = []
+  for (const l of items) for (const part of l.split('\n')) lines.push(...wrapLine(part, width))
+  const detail: CardDetail = { lines, capped: cut }
+  if (!perCard) detailCache.set(data, (perCard = new Map()))
+  if (perCard.size >= 8) perCard.clear()
+  perCard.set(key, detail)
+  return detail
+}
+
 export function cardDetailLines(card: TrayCard, width: number): string[] {
-  const out: string[] = []
-  for (const l of logicalLines(card, false)) for (const part of l.split('\n')) out.push(...wrapLine(part, width))
-  return out
+  return cardDetail(card, width).lines
 }
 
 /** The phrases of a card's key hint line ("y Allow once"), in order; the tray wraps them only between phrases. */
@@ -591,12 +677,20 @@ export function wrapPhrases(phrases: readonly string[], sep: string, width: numb
   return out
 }
 
-export function cardFullText(card: TrayCard): string {
+/** The full view (v) text and whether it was cut at FULL_VIEW_MAX. */
+export function cardFullView(card: TrayCard): { text: string; cut: boolean } {
   const head = `${cardTitle(card)}\n\n`
   if (card.kind === 'merge') {
     const m = card.card
     const stat = text(m.stat)
-    return `${head}${stat ? `${stat.trimEnd()}\n\n` : ''}${text(m.patch)}`
+    const patch = text(m.patch)
+    const cut = patch.length > FULL_VIEW_MAX
+    return { text: `${head}${stat ? `${stat.trimEnd()}\n\n` : ''}${cut ? `${cutChars(patch, FULL_VIEW_MAX)}\n${FULL_VIEW_CUT}` : patch}`, cut }
   }
-  return `${head}${logicalLines(card, true).join('\n')}\n`
+  const { lines, cut } = logicalLines(card, true)
+  return { text: `${head}${lines.join('\n')}\n`, cut }
+}
+
+export function cardFullText(card: TrayCard): string {
+  return cardFullView(card).text
 }

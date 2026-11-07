@@ -11,6 +11,7 @@ import { project, record, summary } from '../testing/fakeContext'
 import { App, overlayCue, placeholderFor, wrapOverlayLines } from './App'
 import { DEFAULT_TUI_ENV } from './context'
 import { KeyParser } from './input/keys'
+import { textWidth } from './panes/text'
 import { applyEvent, applyRecord, createInitialState, setActiveRun } from './state'
 import type { InputEvent, KeyEvent, TuiEnv, TuiLaunch, TuiState } from './types'
 
@@ -38,7 +39,7 @@ afterEach(() => {
   for (const r of mounted.splice(0)) r.unmount()
 })
 
-function mount(opts: { cols: number; rows: number; env?: Partial<TuiEnv>; inline?: boolean; state?: TuiState; launch?: TuiLaunch }) {
+function mount(opts: { cols: number; rows: number; env?: Partial<TuiEnv>; inline?: boolean; state?: TuiState; launch?: TuiLaunch; now?: () => number }) {
   const state = opts.state ?? stateWith()
   const listeners = new Set<(e: InputEvent) => void>()
   const session = {
@@ -81,7 +82,7 @@ function mount(opts: { cols: number; rows: number; env?: Partial<TuiEnv>; inline
       conn={{ client: {} as never, hello: {} as never, started: false } as never}
       input={{ subscribe: (fn) => (listeners.add(fn), () => void listeners.delete(fn)) }}
       processEnv={{}}
-      now={() => 1_000_000}
+      now={opts.now ?? (() => 1_000_000)}
       onExit={() => undefined}
     />
   )
@@ -122,7 +123,101 @@ describe('input across a focus change (issue #31 M9)', () => {
   })
 })
 
+describe('keys queued behind a move to the tray never answer a card (issue #25 / #31 review M3, L6)', () => {
+  function withMerge(): TuiState {
+    const review = { id: 'mr1', runId: 'run1', agentId: 'w', agentName: 'impl', branch: 'worktree-agent-1', path: '/x', changedFiles: ['a.ts'], stat: ' a.ts | 1 +', patch: '+x', createdAt: 1 }
+    return applyEvent(stateWith(), { seq: ++seq, event: { type: 'merge.request', runId: 'run1', review } as RunEvent })
+  }
+
+  it('"/inbox\\ry" on a permission card answers nothing and says to press again', async () => {
+    const clock = { t: 1_000_000 }
+    const m = mount({ cols: 120, rows: 40, state: stateWith({ waiting: true }), now: () => clock.t })
+    await tick()
+    const p = new KeyParser({ bracketedPaste: false })
+    m.emit(...p.feed('/inbox\ry'), ...p.flush())
+    await tick()
+    await tick()
+    expect(m.session.decide).not.toHaveBeenCalled()
+    // The tray has focus now, and a key pressed on its own (past the card-swap window) does act.
+    clock.t += 5000
+    await m.send(key('y'))
+    expect(m.session.decide).toHaveBeenCalledTimes(1)
+  })
+
+  it('"/inbox\\rm" on a merge review does not merge', async () => {
+    const m = mount({ cols: 120, rows: 40, state: withMerge() })
+    await tick()
+    const p = new KeyParser({ bracketedPaste: false })
+    m.emit(...p.feed('/inbox\rm'), ...p.flush())
+    await tick()
+    await tick()
+    expect(m.session.decide).not.toHaveBeenCalled()
+  })
+
+  it('Alt+D followed by a key in one chunk answers nothing, and the key is not typed into the composer either', async () => {
+    const clock = { t: 1_000_000 }
+    const m = mount({ cols: 120, rows: 40, state: stateWith({ waiting: true }), now: () => clock.t })
+    await tick()
+    m.emit(key('d', { alt: true }), key('y'))
+    await tick()
+    await tick()
+    expect(m.session.decide).not.toHaveBeenCalled()
+    expect(m.session.notify.mock.calls.map((c) => String(c[0]))).toContain('Press the key again.')
+    expect(m.frame()).not.toMatch(/❯ y/)
+    clock.t += 5000
+    await m.send(key('y'))
+    expect(m.session.decide).toHaveBeenCalledTimes(1)
+  })
+
+  it('navigation and Esc still replay after the move', async () => {
+    const m = mount({ cols: 120, rows: 40, state: stateWith({ waiting: true }) })
+    await tick()
+    m.emit(key('d', { alt: true }), named('escape'))
+    await tick()
+    await tick()
+    expect(m.frame()).not.toContain('> Needs you')
+  })
+})
+
+describe('inline footer: the card body is printed before its keys unlock (review M2)', () => {
+  function withCommand(command: string): TuiState {
+    const request = { id: 'perm2', runId: 'run1', agentId: 'root', toolName: 'Bash', input: { command }, summary: 'Run it' } as PermissionRequest
+    return applyEvent(stateWith(), { seq: ++seq, event: { type: 'permission.request', runId: 'run1', request } as RunEvent })
+  }
+
+  it('a short command is printed into scrollback and y then answers', async () => {
+    const clock = { t: 1_000_000 }
+    const m = mount({ cols: 100, rows: 30, inline: true, state: withCommand('npm test'), now: () => clock.t })
+    await tick()
+    expect(m.frame()).toContain('Command: npm test')
+    clock.t += 5000
+    await m.send(key('d', { alt: true }))
+    await m.send(key('y'))
+    expect(m.session.decide).toHaveBeenCalledTimes(1)
+  })
+
+  it('a cut command needs v even though it was printed', async () => {
+    const clock = { t: 1_000_000 }
+    const m = mount({ cols: 100, rows: 30, inline: true, state: withCommand('echo ' + 'x'.repeat(1500)), now: () => clock.t })
+    await tick()
+    expect(m.frame()).toContain('v shows all')
+    clock.t += 5000
+    await m.send(key('d', { alt: true }))
+    await m.send(key('y'))
+    expect(m.session.decide).not.toHaveBeenCalled()
+  })
+})
+
 describe('? on the composer (issue #30 L5)', () => {
+  it('any other printable key closes the keys overlay and is typed into the composer (L3)', async () => {
+    const m = mount({ cols: 120, rows: 40 })
+    await m.send(key('?'))
+    expect(m.frame()).toContain('Keys: Composer')
+    await m.send(key('h'))
+    expect(m.frame()).not.toContain('Keys: Composer')
+    expect(m.frame()).toContain('h')
+  })
+
   it('opens the composer keys on an empty composer, types ? when there is text', async () => {
     const m = mount({ cols: 120, rows: 40 })
     await m.send(key('?'))
@@ -182,6 +277,16 @@ describe('the composer names the run (issue #29 M3)', () => {
     expect(placeholderFor('start', s, 80)).toBe('Describe the work to start a run')
   })
 
+  it('placeholderFor follows the separator and ellipsis rules of the env (L1)', () => {
+    const s = stateWith({ title: 'Fix the login bug in the billing module for everyone' })
+    const env = (extra: Partial<TuiEnv>): TuiEnv => ({ ...DEFAULT_TUI_ENV, unicode: true, ...extra })
+    expect(placeholderFor('send', s, 40, env({}))).toMatch(/^Message R1 · .*…$/)
+    expect(placeholderFor('send', s, 40, env({ unicode: false }))).toMatch(/^Message R1 \| .*\.\.\.$/)
+    const sr = placeholderFor('send', s, 40, env({ screenReader: true }))
+    expect(sr).toMatch(/^Message R1, /)
+    expect(sr).not.toContain('·')
+  })
+
   it('shows it in the frame', async () => {
     const m = mount({ cols: 100, rows: 30, state: stateWith({ title: 'Fix the login bug' }) })
     await tick()
@@ -224,7 +329,7 @@ describe('the shell at four sizes', () => {
       await tick()
       const f = m.frame()
       expect(f).toContain('Message R1')
-      for (const l of f.split('\n')) expect([...l].length).toBeLessThanOrEqual(cols)
+      for (const l of f.split('\n')) expect(textWidth(l)).toBeLessThanOrEqual(cols)
       expect(f.split('\n').length).toBeLessThanOrEqual(rows)
     })
   }
