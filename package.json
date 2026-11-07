@@ -71,6 +71,7 @@
     "ink": "8.0.0",
     "lucide-react": "1.64.0",
     "mammoth": "1.13.0",
+    "mermaid": "12.3.0",
     "react": "19.3.1",
     "react-dom": "19.3.1",
     "react-markdown": "^10.1.0",
