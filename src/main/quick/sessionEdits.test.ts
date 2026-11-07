@@ -6,6 +6,7 @@ import type { PermissionRequest } from '@shared/types'
 import {
   QUICK_SESSION_EDIT_SUGGESTION,
   editTargets,
+  hasDotSegment,
   isQuickSessionEditGrant,
   isQuickSessionEditSuggestion,
   isQuickWriteTool,
@@ -25,6 +26,13 @@ beforeEach(() => {
 })
 afterEach(() => {
   rmSync(root, { recursive: true, force: true })
+})
+
+describe('hasDotSegment', () => {
+  it('flags any all-dots segment on either separator, including ...', () => {
+    for (const p of ['.', '..', 'a/./b', 'a\\..\\b', 'a/.../b', '...', 'x/....']) expect(hasDotSegment(p), p).toBe(true)
+    for (const p of ['a..b.md', '.hidden', 'v1.2/n.md', '..md', 'a//b']) expect(hasDotSegment(p), p).toBe(false)
+  })
 })
 
 describe('isQuickWriteTool', () => {
