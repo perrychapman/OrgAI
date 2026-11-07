@@ -114,6 +114,7 @@ export function bindingsFor(card: TrayCard): TrayBinding[] {
         out.push({ key: 'a', label: 'Always allow for project', act: 'allow-project', twoStep: true })
       }
       out.push({ key: 'n', label: 'Deny', act: 'deny', text: 'optional' })
+      out.push({ key: 'v', label: 'Full view', act: 'view' })
       return out
     }
     case 'rules':
@@ -310,16 +311,24 @@ export function cardKindWord(card: TrayCard): string {
   }
 }
 
-function inputText(input: unknown): string {
+/** The most characters of a tool input the full view (v) carries. */
+export const INPUT_FULL_MAX = 65536
+/** The most characters of a tool input the card itself shows before cutting with "...". */
+const INPUT_CARD_MAX = 600
+
+function inputText(input: unknown, full: boolean): string {
   try {
     const s = JSON.stringify(input)
-    return s === undefined ? '' : s.length > 600 ? `${s.slice(0, 599)}…` : s
+    if (s === undefined) return ''
+    const max = full ? INPUT_FULL_MAX : INPUT_CARD_MAX
+    if (s.length <= max) return s
+    return full ? `${s.slice(0, max)} (cut at ${max} characters)` : `${s.slice(0, max - 3)}...`
   } catch {
     return ''
   }
 }
 
-function permissionLines(card: Extract<TrayCard, { kind: 'permission' }>): string[] {
+function permissionLines(card: Extract<TrayCard, { kind: 'permission' }>, full = false): string[] {
   const c = card.card
   const out: string[] = []
   const tool = String(c.toolName ?? '')
@@ -329,7 +338,7 @@ function permissionLines(card: Extract<TrayCard, { kind: 'permission' }>): strin
   else {
     const file = [o.file_path, o.notebook_path, o.path].find((x) => typeof x === 'string')
     if (typeof file === 'string') out.push(`File: ${text(file)}`)
-    else out.push(`Tool: ${oneText(tool, 80)}${Object.keys(o).length ? ` ${text(inputText(c.input))}` : ''}`)
+    else out.push(`Tool: ${oneText(tool, 80)}${Object.keys(o).length ? ` ${text(inputText(c.input, full))}` : ''}`)
   }
   const offer = permissionOffer(c)
   if (offer.referenceFolder) {
@@ -496,7 +505,7 @@ function logicalLines(card: TrayCard, full: boolean): string[] {
   let lines: string[]
   switch (card.kind) {
     case 'permission':
-      lines = permissionLines(card)
+      lines = permissionLines(card, full)
       break
     case 'rules':
       lines = rulesLines(card)
@@ -544,6 +553,41 @@ export function wrapLine(line: string, width: number): string[] {
 export function cardDetailLines(card: TrayCard, width: number): string[] {
   const out: string[] = []
   for (const l of logicalLines(card, false)) for (const part of l.split('\n')) out.push(...wrapLine(part, width))
+  return out
+}
+
+/** The phrases of a card's key hint line ("y Allow once"), in order; the tray wraps them only between phrases. */
+export function hintPhrases(card: TrayCard, dumb: boolean): string[] {
+  const bs = bindingsFor(card)
+  const parts: string[] = []
+  const picks = bs.filter((b) => b.act === 'pick')
+  if (picks.length) parts.push(picks.length === 1 ? '1 Pick' : `1-${picks.length} Pick`)
+  for (const b of bs) {
+    if (b.act === 'pick') continue
+    const k = b.key === 'space' ? 'Space' : b.key === 'enter' ? 'Enter' : b.key
+    parts.push(`${k} ${b.label}${b.text === 'optional' ? ' (note)' : ''}`)
+  }
+  parts.push('Esc Back', '? Keys')
+  if (dumb) parts.push('(then Enter)')
+  return parts
+}
+
+/** Joins phrases with `sep` into lines of at most `width` columns, breaking only between phrases (a phrase wider than a line is cut with `ellipsis`). */
+export function wrapPhrases(phrases: readonly string[], sep: string, width: number, ellipsis = '...'): string[] {
+  const w = Math.max(10, Math.floor(width))
+  const out: string[] = []
+  let cur = ''
+  for (const raw of phrases) {
+    const chars = Array.from(raw)
+    const p = chars.length > w ? `${chars.slice(0, Math.max(1, w - ellipsis.length)).join('')}${ellipsis}` : raw
+    if (cur === '') cur = p
+    else if (Array.from(cur + sep + p).length <= w) cur += sep + p
+    else {
+      out.push(cur)
+      cur = p
+    }
+  }
+  if (cur !== '') out.push(cur)
   return out
 }
 
