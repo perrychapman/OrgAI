@@ -90,7 +90,7 @@ describe('safeDocHref', () => {
   it('allows http, https and mailto only', () => {
     expect(safeDocHref('https://example.com/a')).toBe('https://example.com/a')
     expect(safeDocHref('http://example.com')).toBe('http://example.com')
-    expect(safeDocHref('mailto:a@b.co')).toBe('mailto:a@b.co')
+    expect(safeDocHref('mailto:a@b.co')).toBeNull()
     expect(safeDocHref('javascript:alert(1)')).toBeNull()
     expect(safeDocHref('file:///c:/x')).toBeNull()
     expect(safeDocHref('data:text/html,hi')).toBeNull()

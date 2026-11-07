@@ -31,6 +31,7 @@ function SheetTable({ sheet }: { sheet: SheetPreview }): ReactElement {
                   return (
                     <td key={c} data-num={isNumericCell(cell) ? '' : undefined} title={cell?.f ? formulaText(cell.f) : undefined}>
                       {text}
+                      {cell?.f ? <span className="sr-only"> formula {formulaText(cell.f)}</span> : null}
                     </td>
                   )
                 })}

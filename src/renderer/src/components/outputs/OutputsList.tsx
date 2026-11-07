@@ -5,6 +5,7 @@ import { runTag } from '@shared/view/runLabels'
 import { isTypeAheadKey, nextTypeAhead, type TypeAhead } from '../../lib/knowledgeList'
 import { outputMetaLine, provenanceLine } from '../../lib/outputs'
 import { OUTPUTS_PAGE, dayGroups, titleTypeAhead } from '../../lib/outputsList'
+import { showHidden } from '../../lib/hiddenChars'
 import { Badge } from '../ui/Badge'
 import { Button } from '../ui/Button'
 import OutputKindIcon from './OutputKindIcon'
@@ -143,7 +144,8 @@ export function OutputsList({
       <ul ref={listRef} className="outputs-list" role="listbox" aria-label="Outputs" data-testid="outputs-list" tabIndex={-1} onKeyDown={onKeyDown} onFocus={onFocus}>
         {groups.map((g) => (
           <li key={g.key} role="presentation" className="outputs-group" data-testid="outputs-group">
-            <h2 id={`${uid}-g-${g.key}`} className="outputs-group-title" data-testid="outputs-group-title">
+            {/* Hidden from the tree (a listbox owns options and groups only); aria-labelledby still reads it as the group's name. */}
+            <h2 id={`${uid}-g-${g.key}`} className="outputs-group-title" data-testid="outputs-group-title" aria-hidden="true">
               {g.label} <span className="outputs-group-n">{g.items.length}</span>
             </h2>
             <ul role="group" aria-labelledby={`${uid}-g-${g.key}`} className="outputs-group-rows">
@@ -153,14 +155,14 @@ export function OutputsList({
             </ul>
           </li>
         ))}
-        {more > 0 && (
-          <li role="presentation" className="outputs-more">
-            <Button size="sm" testId="outputs-more" onClick={() => setLimit(shownCount + OUTPUTS_PAGE)}>
-              {`Show ${more} more`}
-            </Button>
-          </li>
-        )}
       </ul>
+      {more > 0 && (
+        <div className="outputs-more">
+          <Button size="sm" testId="outputs-more" onClick={() => setLimit(shownCount + OUTPUTS_PAGE)}>
+            {`Show ${more} more`}
+          </Button>
+        </div>
+      )}
     </div>
   )
 }
@@ -187,7 +189,7 @@ function OutputRow({ output, runLabel, selected, domId, onOpen }: { output: RunO
       <span className="outputs-row-body">
         <span className="outputs-row-head">
           <span className="outputs-row-title" data-testid="output-row-title" title={output.title}>
-            {output.title}
+            {showHidden(output.title)}
           </span>
           {output.missing && <Badge tone="attention">Missing</Badge>}
         </span>

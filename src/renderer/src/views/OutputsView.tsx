@@ -15,6 +15,8 @@ import '../styles/outputs-view.css'
 
 const HEADING_ID = 'output-detail-heading'
 const EMPTY: readonly RunOutput[] = []
+const NOTICE_MS = 8000
+const NOW_TICK_MS = 60_000
 
 /** Focus whatever `find` returns once the DOM has settled (two frames: React commit, then layout). */
 function focusLater(find: () => HTMLElement | null | undefined): void {
@@ -41,6 +43,12 @@ export default function OutputsView({ project }: { project: Project }): ReactEle
   const names = useMemo(() => new Map(summaries.map((s) => [s.id, runName(s)])), [summaries])
   const all = list ?? EMPTY
   const loaded = list !== undefined
+  // Day groups are judged against a minute-level clock, not Date.now() per render.
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const t = window.setInterval(() => setNow(Date.now()), NOW_TICK_MS)
+    return () => window.clearInterval(t)
+  }, [])
 
   useEffect(() => {
     void loadOutputs(projectId)
@@ -125,6 +133,11 @@ export default function OutputsView({ project }: { project: Project }): ReactEle
   const focusRow = useCallback((id: string | null): void => {
     requestAnimationFrame(() => listRef.current?.focusRow(id))
   }, [])
+  useEffect(() => {
+    if (!notice) return undefined
+    const t = window.setTimeout(() => setNotice(''), NOTICE_MS)
+    return () => window.clearTimeout(t)
+  }, [notice])
   const selectItem = useCallback((id: string | null): void => {
     setSelectedId(id)
     setNotice('')
@@ -148,8 +161,8 @@ export default function OutputsView({ project }: { project: Project }): ReactEle
     if (!selectedId || !loaded || all.some((o) => o.id === selectedId)) return
     const next = idAfterRemoval(before, selectedId)
     const target = next && rows.some((o) => o.id === next) ? next : (rows[0]?.id ?? null)
+    // The "Deleted X." notice stays: only a selection by the user (or the timer) clears it.
     setSelectedId(target)
-    setNotice('')
     const active = document.activeElement
     const lost = !active || active === document.body || !!active.closest('[data-testid=outputs-detail]') || !!active.closest('[data-testid=outputs-list]')
     if (!lost) return
@@ -204,7 +217,7 @@ export default function OutputsView({ project }: { project: Project }): ReactEle
             }
           />
         ) : (
-          <OutputsList ref={listRef} rows={rows} indexes={indexes} now={Date.now()} selectedId={selectedId} onSelect={selectItem} onOpen={openItem} />
+          <OutputsList ref={listRef} rows={rows} indexes={indexes} now={now} selectedId={selectedId} onSelect={selectItem} onOpen={openItem} />
         )}
       </div>
       <SidePanel label="output preview" persistKey="outputs" autoCollapseBelow={1100} revealOn={reveal} open={paneOpen} onOpenChange={setPaneOpen} testId="outputs-detail">

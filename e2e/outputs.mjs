@@ -248,8 +248,16 @@ async function runSideChecks(label, wide) {
   await showRunOutput('mermaid')
   const svg = detail().locator('[data-testid=output-mermaid-svg] svg')
   await svg.first().waitFor({ timeout: 20_000 })
-  const labels = clean(await detail().locator('[data-testid=output-mermaid-svg]').innerText())
+  // The drawing lives in a shadow root (checked nodes imported, never parsed as text).
+  const drawing = await detail().locator('[data-testid=output-mermaid-svg]').evaluate((el) => ({
+    shadow: !!el.shadowRoot,
+    text: el.shadowRoot?.textContent ?? '',
+    svgs: el.shadowRoot?.querySelectorAll('svg').length ?? 0,
+    stray: el.querySelectorAll('*').length + (el.shadowRoot?.querySelectorAll('img, p, iframe, form, input, meta').length ?? 0)
+  }))
+  const labels = clean(drawing.text)
   check(['Client', 'API', 'Database', 'Queue'].every((w) => labels.includes(w)), `${label}: the diagram draws its four nodes`, labels)
+  check(drawing.shadow && drawing.svgs === 1 && drawing.stray === 0, `${label}: the diagram sits in a shadow root as one svg with no img, p or form elements`, JSON.stringify(drawing))
   await detail().locator('[data-testid=output-mermaid-view]').getByText('Source', { exact: true }).click()
   const src = clean(await detail().locator('[data-testid=output-source]').first().innerText())
   check(/flowchart/.test(src) && /Client/.test(src), `${label}: the diagram source shows the text`, src.slice(0, 80))
@@ -417,10 +425,28 @@ async function removeChecks(label) {
   check(await until(async () => (await rows.count()) === 4), `${label}: Remove from list drops the row`)
   check(await until(async () => (await page.evaluate(() => document.activeElement?.getAttribute('data-testid'))) === 'output-row'), `${label}: focus moves to another row`)
   check((await outputsOf()).length === 4, `${label}: the index no longer lists it`)
+  const notice = page.locator('[data-testid=outputs-detail] [data-testid=output-notice]')
+  check(await until(async () => /Removed Summary from the list\./.test(clean(await notice.innerText())), 3000), `${label}: the project tab says "Removed Summary from the list."`, clean(await notice.innerText()))
   await noScroll(`${label}: after Remove`)
+  // Delete file on the project tab: the confirm, the notice and the row going.
+  await rows.filter({ hasText: 'Budget' }).first().click()
+  await more.first().waitFor({ timeout: 8000 })
+  await more.first().click()
+  await page.locator('[data-testid=output-delete]').click()
+  await page.locator('[data-testid=output-delete-confirm]').click()
+  check(await until(async () => (await rows.count()) === 3), `${label}: Delete file drops the row on the project tab`)
+  check(await until(async () => /Deleted Budget\./.test(clean(await notice.innerText())), 3000), `${label}: the project tab says "Deleted Budget."`, clean(await notice.innerText()))
+  check((await outputsOf()).length === 3, `${label}: the index no longer lists the deleted file`)
   await projectTab(page, 'Live').click()
   await openRunOutputsTab()
-  check(await until(async () => (await page.locator('[data-testid=run-output-row]').count()) === 4), `${label}: the run side tab dropped it too`)
+  check(await until(async () => (await page.locator('[data-testid=run-output-row]').count()) === 3), `${label}: the run side tab dropped both too`)
+  // Delete file on the run side tab.
+  await runRow('mermaid').locator('[data-testid=output-more]').click()
+  await page.locator('[data-testid=output-delete]').click()
+  await page.locator('[data-testid=output-delete-confirm]').click()
+  check(await until(async () => (await page.locator('[data-testid=run-output-row]').count()) === 2), `${label}: Delete file drops the row on the run side tab`)
+  const runNotice = page.locator('[data-testid=run-outputs] [data-testid=output-notice]')
+  check(await until(async () => /Deleted Architecture diagram\./.test(clean(await runNotice.innerText())), 3000), `${label}: the run side tab says "Deleted Architecture diagram."`, clean(await runNotice.innerText()))
 }
 
 try {

@@ -2,7 +2,7 @@
 // line (securityLevel 'strict'); this is the second: the markup is parsed as XML and refused when it holds anything
 // active, so the one place that inserts it (MermaidView) only ever inserts markup that passed. No React, no store.
 
-export type SafeSvg = { ok: true; svg: string } | { ok: false; reason: string }
+export type SafeSvg = { ok: true; root: Element } | { ok: false; reason: string }
 
 /** Elements that run code, load other documents or animate attributes. Compared lowercase on the local name. */
 const BLOCKED_ELEMENTS = new Set(['script', 'foreignobject', 'iframe', 'object', 'embed', 'animate', 'set', 'animatetransform', 'animatemotion', 'handler', 'listener'])
@@ -39,19 +39,17 @@ function defaultParse(s: string): Document {
   return new DOMParser().parseFromString(s, 'image/svg+xml')
 }
 
-function defaultSerialize(n: Node): string {
-  return new XMLSerializer().serializeToString(n)
-}
+const SVG_NS = 'http://www.w3.org/2000/svg'
+
+/** Attributes that load a resource or submit something; a drawing has no use for them. */
+const BLOCKED_ATTRIBUTES = new Set(['src', 'srcset', 'action', 'formaction', 'data', 'poster'])
 
 /**
- * Checks the SVG text Mermaid produced and returns its re-serialized markup. The DOM functions are injectable so the
- * checks run in a test without a browser.
+ * Checks the SVG text Mermaid produced and returns the checked root element. The caller inserts that tree with
+ * `document.importNode` and never as text, so no second parse can read it differently. The parse function is
+ * injectable so the checks run in a test without a browser.
  */
-export function safeMermaidSvg(
-  svgText: string,
-  parse: (s: string) => Document = defaultParse,
-  serialize: (n: Node) => string = defaultSerialize
-): SafeSvg {
+export function safeMermaidSvg(svgText: string, parse: (s: string) => Document = defaultParse): SafeSvg {
   let doc: Document
   try {
     doc = parse(svgText)
@@ -66,6 +64,10 @@ export function safeMermaidSvg(
   const visit = (el: Element): void => {
     if (problem) return
     const name = (el.localName ?? el.nodeName).toLowerCase()
+    if (el.namespaceURI !== SVG_NS) {
+      problem = `contains <${name}> outside the drawing's namespace`
+      return
+    }
     if (BLOCKED_ELEMENTS.has(name)) {
       problem = `contains <${name}>`
       return
@@ -77,6 +79,10 @@ export function safeMermaidSvg(
       const full = a.name.toLowerCase()
       if (an.startsWith('on') || full.startsWith('on')) {
         problem = `contains the ${an} handler`
+        return
+      }
+      if (BLOCKED_ATTRIBUTES.has(an) || BLOCKED_ATTRIBUTES.has(full)) {
+        problem = `contains the ${an} attribute`
         return
       }
       if (an === 'href' || full === 'xlink:href') {
@@ -98,14 +104,19 @@ export function safeMermaidSvg(
         return
       }
     }
-    for (let c = el.firstChild; c; c = c.nextSibling) {
-      if (c.nodeType === 1) visit(c as Element)
-      else if ((c.nodeType === 4 || c.nodeType === 3) && name !== 'style') {
-        // Text outside <style> is inert in SVG; CDATA only matters inside style, handled above.
-      }
+    for (let c = el.firstChild; c && !problem; c = c.nextSibling) {
+      // Comments and processing instructions have no place in a drawing; CDATA only inside <style> (checked above).
+      if (c.nodeType === 7 || c.nodeType === 8) problem = 'contains a comment or instruction'
+      else if (c.nodeType === 4 && name !== 'style') problem = 'contains raw character data'
+      else if (c.nodeType === 1) visit(c as Element)
     }
   }
-  visit(root)
+  // Nodes beside the root (a comment or instruction before or after it) are refused too, except the xml declaration.
+  for (let c = doc.firstChild; c && !problem; c = c.nextSibling) {
+    if (c.nodeType === 7 && (c as ProcessingInstruction).target?.toLowerCase() === 'xml') continue
+    if (c.nodeType === 7 || c.nodeType === 8) problem = 'contains a comment or instruction'
+  }
+  if (!problem) visit(root)
   if (problem) return { ok: false, reason: problem }
-  return { ok: true, svg: serialize(root) }
+  return { ok: true, root }
 }

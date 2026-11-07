@@ -1838,7 +1838,6 @@ export const useAppStore = create<AppState>((set, get) => ({
       set((s) => ({ projects: s.projects.map((p) => (p.id === e.project.id ? e.project : p)) }))
       return
     }
-    // What agents looked up or were given: ids and time only, kept per run for the Knowledge side tab.
     // A new or updated output (docs/design/outputs.md section 2): merged into a loaded list, else the list is fetched.
     if (e.type === 'output.created') {
       const pid = e.output?.projectId
@@ -1847,6 +1846,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       else void get().loadOutputs(pid)
       return
     }
+    // What agents looked up or were given: ids and time only, kept per run for the Knowledge side tab.
     if (e.type === 'knowledge.recalled') {
       const ev = cleanRecalledEvent(e)
       if (ev) set((s) => ({ knowledgeRecalledByRun: { ...s.knowledgeRecalledByRun, [e.runId]: addRecalled(s.knowledgeRecalledByRun[e.runId], ev) } }))

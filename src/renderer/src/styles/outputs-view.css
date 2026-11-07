@@ -254,6 +254,7 @@
   text-overflow: ellipsis;
 }
 .outputs-more {
+  flex: none;
   display: flex;
   justify-content: center;
   padding: var(--space-3);

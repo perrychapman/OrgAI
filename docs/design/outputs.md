@@ -92,11 +92,15 @@ The renderer never receives or inserts HTML; it builds elements from `OutputPrev
     (12.3.0), `initialize({ startOnLoad: false, securityLevel: 'strict', theme: data-theme light ? 'default' : 'dark' })`,
     `parse` first; a parse or render failure shows the source and a quiet line `output-mermaid-error` "This diagram
     could not be drawn: <message>." The rendered SVG is inserted only after `lib/outputSvg.ts` `safeMermaidSvg` parsed it
-    with DOMParser and refused any `script`, `foreignObject`, `iframe`, `object`, `embed`, `on*` attribute, external
+    with DOMParser and refused any element outside the SVG namespace, any comment or processing instruction and CDATA
+    outside `<style>`, any `src` / `srcset` / `action` / `formaction` / `data` / `poster` attribute, and any `script`, `foreignObject`, `iframe`, `object`, `embed`, `on*` attribute, external
     `href` / `xlink:href` (anything but `#fragment`), `javascript:` anywhere, `url(` that is not `url(#...)`; a refused
     SVG shows the source and "OrgAI did not show this drawing because it contained active content." The drawing sits in
-    `output-mermaid-svg` (`role=img`, `aria-label` = title). "Copy SVG" (`output-mermaid-copy`) copies the checked
-    markup. Re-rendered when the theme changes.
+    `output-mermaid-svg` (`role=img`, `aria-label` = title), a shadow root (`attachShadow({ mode: 'open' })`) that
+    receives the checked root through `document.importNode(root, true)` and `replaceChildren`; the markup is never
+    re-serialized into text and re-parsed as HTML (no `dangerouslySetInnerHTML` anywhere in the renderer), and Mermaid's
+    `<style>` and ids stay out of the app. Drawing and error text speak through OutputPreview's one always-mounted
+    `output-preview-status` region. "Copy SVG" (`output-mermaid-copy`) copies the checked tree serialized at copy time. Re-rendered when the theme changes.
   - csv: a table (`output-csv-table`, header row = first line, at most 500 rows, "More rows not shown.") when
     `parseCsv` succeeds, else a `pre`.
   - json, text and anything else: a monospace `pre` (`output-text`); json pretty-printed when it parses.
@@ -199,7 +203,7 @@ Files: `components/outputs/` `OutputPreview.tsx` (fetch, cache, states), `Docume
 `OutputKindIcon.tsx`, `useOutputAnnouncements.ts`, `revealOutputsTab.ts`); `views/OutputsView.tsx`; pure helpers
 `lib/outputs.ts`, `lib/outputsRun.ts`, `lib/outputPreview.ts` (`sheetCellText`, `isNumericCell`, `columnLetter`,
 `formulaText`, `parseCsv`, `prettyJson`, `isSafeImageDataUrl`, `svgDataUrl`, `safeDocHref`), `lib/outputSvg.ts`
-(`activeContentIn`, `safeMermaidSvg(svgText, parse?, serialize?)`), `lib/outputsList.ts` (`filterOutputs`,
+(`activeContentIn`, `safeMermaidSvg(svgText, parse?)` returning the checked root), `lib/outputsList.ts` (`filterOutputs`,
 `matchesQuery`, `kindCounts`, `runOptions`, `dayGroups` / `dayLabel`, `countLine`, `producedText`, `titleTypeAhead`,
 `idAfterRemoval`, `resolveOutputFocus`, `newOutputIds`, `OUTPUTS_PAGE` 300); styles `outputs.css`,
 `outputs-preview.css`, `outputs-view.css`. Atlas surfaces `run-outputs` and `project-outputs` (with
@@ -217,8 +221,10 @@ Previews:
   `script`, `foreignObject`, `iframe`, `object`, `embed`, `animate`, `set`, `animateTransform`, `animateMotion`,
   `handler`, `listener`, any `on*` attribute, `href` / `xlink:href` other than `#fragment`, `javascript:` /
   `vbscript:` (whitespace and control characters squashed first), `data:text/html` / `data:application`,
-  `@import`, `expression(` and any `url(` not pointing at `#`; the re-serialized markup is scanned again. The parse and
-  serialize steps are injectable because vitest runs in node.
+  `@import`, `expression(` and any `url(` not pointing at `#`, plus any element outside the SVG namespace, comments and
+  processing instructions anywhere, CDATA outside `<style>` and `src` / `srcset` / `action` / `formaction` / `data` /
+  `poster` attributes. The gate returns the checked root and MermaidView imports it into a shadow root; nothing is
+  re-serialized and re-parsed. The parse step is injectable because vitest runs in node.
 - Sheets add `output-sheet-region` (the focusable scroller); text kinds add the wrapper `output-text-view`.
 
 Project tab: `outputs-view`, `outputs-main`, `outputs-group` / `outputs-group-title`, `output-row-title`,

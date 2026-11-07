@@ -1,4 +1,5 @@
 import type { KeyboardEvent, ReactElement } from 'react'
+import { useId } from 'react'
 import { ExternalLink, FolderOpen, Link2, MoreHorizontal, Save, Trash2, X } from 'lucide-react'
 import type { RunOutput } from '@shared/types'
 import { useAppStore } from '../../store/useAppStore'
@@ -39,6 +40,7 @@ export default function OutputActions({
   onRemoved?: (id: string) => void
   onNotice?: (text: string) => void
 }): ReactElement {
+  const uid = useId()
   const { confirm, dialog } = useConfirm()
   const title = plainTitle(output.title)
   const ref = { projectId: output.projectId, outputId: output.id }
@@ -70,14 +72,21 @@ export default function OutputActions({
     </button>
   )
 
+  const hintId = !open && !missing ? `${uid}-open-hint` : undefined
   return (
     <>
+      {hintId && (
+        <span id={hintId} className="sr-only">
+          {OUTPUT_OPEN_HINT}
+        </span>
+      )}
       <Popover
         trigger={<Icon icon={MoreHorizontal} size="sm" />}
         triggerClassName="icon-btn size-sm"
         triggerLabel={`More actions for ${title}`}
         triggerTitle={`More actions for ${title}`}
         triggerTestId="output-more"
+        triggerDescribedBy={hintId}
         label={`Actions for ${title}`}
         role="menu"
         placement="bottom-end"
@@ -87,7 +96,7 @@ export default function OutputActions({
           <div className="output-menu" role="presentation" onKeyDown={onMenuKey}>
             {open && item('output-open', ExternalLink, 'Open', () => { close(); void shell(() => window.orgai.outputs.open(ref)) })}
             {!open && !missing && (
-              <p className="output-menu-hint" data-testid="output-open-hint">
+              <p className="output-menu-hint" data-testid="output-open-hint" aria-hidden="true">
                 {OUTPUT_OPEN_HINT}
               </p>
             )}
