@@ -1,8 +1,10 @@
 import type { ReactElement } from 'react'
 import { useEffect, useId, useRef, useState } from 'react'
 import { FolderOpen, Lock, Plus, X } from 'lucide-react'
-import type { Project, ProjectKind, ProjectPathCheck, RepoSourceParse, SetupKind } from '@shared/types'
+import type { ConnectionId, Project, ProjectKind, ProjectPathCheck, RepoSourceParse, SetupKind } from '@shared/types'
 import { PROJECT_CLIENT_MAX_CHARS } from '@shared/types'
+import { projectConnection } from '@shared/defaults'
+import { connectionLabel, isProxyId } from '../../lib/connectionLabel'
 import { useAppStore } from '../../store/useAppStore'
 import { cleanIpcError } from '../../lib/ipcError'
 import { examplePath } from '../../lib/platform'
@@ -12,7 +14,7 @@ import { TeamFoundPanel } from './TeamFoundPanel'
 import { groupTemplatesByKind, initialTemplateId, readLastTemplateId, templateOptionLabel, writeLastTemplateId } from '../../lib/templates'
 import { REFERENCE_FOLDERS_HINT } from '../settings/AllowedDirectoriesSection'
 import { firstWorkingFolderConflict } from '../../lib/folderLists'
-import { addReferenceFolder, effectiveName, isFullPath, newProjectConnectionView, pathStatus, readLastProjectKind, submitBlocker, writeLastProjectKind } from '../../lib/projectsForm'
+import { PROXY_TIER_NOTE, addReferenceFolder, chosenConnection, connectionChoices, effectiveName, isFullPath, newProjectConnectionView, pathStatus, readLastProjectKind, submitBlocker, writeLastProjectKind } from '../../lib/projectsForm'
 import { cloneTarget, emptyRepoFields, readLastCloneParent, repoBridge, setupChoiceAnnouncement, type RepoFields, type StartKind } from '../../lib/repoStart'
 import { clearRepoFailure, forgetRepoClone, repoSession, useRepoSession } from '../../lib/repoCloneSession'
 import { Button } from '../ui/Button'
@@ -61,6 +63,8 @@ interface NewProjectDraft {
   architect: boolean
   picked: SetupChoice | null
   useMock: boolean
+  /** The Connection Select's pick (null = the default). */
+  connection: ConnectionId | null
   repo: RepoFields
   /** The form is using the finished clone. */
   adopted: boolean
@@ -105,7 +109,7 @@ export function NewProjectForm({
     void useAppStore.getState().loadTemplates()
   }, [])
   const uid = useId()
-  const ids = { client: `${uid}-client`, ref: `${uid}-ref`, refErr: `${uid}-ref-err`, extrasErr: `${uid}-extras-err`, name: `${uid}-name`, brief: `${uid}-brief`, path: `${uid}-path`, pathMsg: `${uid}-path-msg`, foundMsg: `${uid}-found-msg`, dupMsg: `${uid}-dup-msg`, pathErr: `${uid}-path-err`, why: `${uid}-why` }
+  const ids = { client: `${uid}-client`, ref: `${uid}-ref`, refErr: `${uid}-ref-err`, extrasErr: `${uid}-extras-err`, conn: `${uid}-conn`, connHint: `${uid}-conn-hint`, name: `${uid}-name`, brief: `${uid}-brief`, path: `${uid}-path`, pathMsg: `${uid}-path-msg`, foundMsg: `${uid}-found-msg`, dupMsg: `${uid}-dup-msg`, pathErr: `${uid}-path-err`, why: `${uid}-why` }
 
   const [draft] = useState(() => {
     const d = parkedDraft
@@ -143,6 +147,14 @@ export function NewProjectForm({
   const [picked, setPicked] = useState<SetupChoice | null>(draft?.picked ?? null)
   const [useMock, setUseMock] = useState(draft?.useMock ?? true)
   const connectionView = newProjectConnectionView(connections, mockAvailable && useMock)
+  const mockOn = mockAvailable && useMock
+  const choices = connectionChoices(connections)
+  const [wantedConnection, setWantedConnection] = useState<ConnectionId | null>(draft?.connection ?? null)
+  const showConnectionSelect = !mockOn && choices.length >= 2
+  const selectedConnection = chosenConnection(choices, wantedConnection)
+  // Only a Select the user can see decides the connection; otherwise main's default stands.
+  const pickedConnection = showConnectionSelect ? selectedConnection : null
+  const pickedProxy = isProxyId(pickedConnection)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [check, setCheck] = useState<{ path: string; result: ProjectPathCheck } | null>(null)
@@ -333,7 +345,7 @@ export function NewProjectForm({
     if (text) setLiveText(text)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [folderCheck, cloned])
-  snapshot.current = { projectKind, client, refs, kind: pickedKind, name, path, brief, architect, picked, useMock, repo, adopted, cloneRunning: cloning }
+  snapshot.current = { projectKind, client, refs, kind: pickedKind, name, path, brief, architect, picked, useMock, connection: wantedConnection, repo, adopted, cloneRunning: cloning }
 
   const setPathValue = (v: string): void => {
     setPath(v)
@@ -444,6 +456,16 @@ export function NewProjectForm({
         // The project exists; wait for the user rather than leaving the form with the problem unseen.
         setPending({ project: created, message: extras.failed })
         return
+      }
+      // ProjectCreateInput has no connection field: main puts the project on the default connection, and a different
+      // pick is applied with the same projects:remapModels switch Project settings uses, before setup starts.
+      if (pickedConnection && pickedConnection !== projectConnection(created)) {
+        try {
+          const out = await window.orgai.projects.remapModels({ projectId: created.id, connection: pickedConnection })
+          useAppStore.getState().replaceProject(out.project)
+        } catch (err) {
+          useAppStore.getState().setSaveStatus({ state: 'error', at: Date.now(), message: `Could not start ${created.name} on ${connectionLabel(pickedConnection)}: ${cleanIpcError(err)} It is on the default connection; change it in Project settings.` })
+        }
       }
       await finish(created)
     } catch (err) {
@@ -853,6 +875,47 @@ export function NewProjectForm({
       </div>
       )}
 
+      {showConnectionSelect ? (
+        <div className="form-connection field" data-testid="new-project-connection">
+          <label htmlFor={ids.conn}>Connection</label>
+          <select
+            id={ids.conn}
+            className="select"
+            data-testid="new-project-connection-select"
+            value={selectedConnection ?? ''}
+            aria-describedby={ids.connHint}
+            onChange={(e) => setWantedConnection(e.target.value)}
+          >
+            <optgroup label="Built in">
+              {choices.filter((c) => !c.proxy).map((c) => (
+                <option key={c.id} value={c.id}>{c.label}</option>
+              ))}
+            </optgroup>
+            {choices.some((c) => c.proxy) && (
+              <optgroup label="Proxies">
+                {choices.filter((c) => c.proxy).map((c) => (
+                  <option key={c.id} value={c.id}>{c.label}</option>
+                ))}
+              </optgroup>
+            )}
+          </select>
+          <span id={ids.connHint} className="hint" data-testid="new-project-connection-hint">
+            {pickedProxy ? PROXY_TIER_NOTE : 'Roles start on this connection’s models.'}{' '}
+            <button
+              type="button"
+              className="link-btn"
+              data-testid="new-project-connection-change"
+              onClick={() => {
+                parkedDraft = snapshot.current
+                requestAppSettingsSection(APP_SETTINGS_SECTIONS.connections)
+                useAppStore.getState().setView('appSettings')
+              }}
+            >
+              Manage connections
+            </button>
+          </span>
+        </div>
+      ) : (
       <p className="form-connection muted" data-testid="new-project-connection">
         {connectionView.text}
         {connectionView.link && (
@@ -873,6 +936,7 @@ export function NewProjectForm({
           </>
         )}
       </p>
+      )}
 
       {pending && (
         <p id={ids.extrasErr} className="field-msg error" role="alert" data-testid="new-project-extras-error">

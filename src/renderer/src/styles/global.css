@@ -5,6 +5,7 @@
 @import './ui.css';
 @import './settings.css';
 @import './connections.css';
+@import './project-connection.css';
 @import './mcp.css';
 @import './mcp-library.css';
 @import './connectors.css';
