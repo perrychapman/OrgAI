@@ -1,6 +1,10 @@
 import type { ReactElement } from 'react'
 import { useEffect, useState } from 'react'
-import { Bot, ClipboardList, Clock, Database, Folder, ShieldAlert } from 'lucide-react'
+import { Bot, ClipboardList, Clock, Database, Files, Folder, ShieldAlert } from 'lucide-react'
+import { outputsCountLabel, outputsOfRuns } from '../lib/outputs'
+import { useOutputAnnouncements } from './outputs/useOutputAnnouncements'
+import { revealOutputsTab } from './outputs/revealOutputsTab'
+import '../styles/outputs.css'
 import type { Project } from '@shared/types'
 import { isVirtualProjectId } from '@shared/types'
 import { projectKindOf } from '@shared/defaults'
@@ -76,6 +80,9 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
       revealKnowledgeTab()
     } else useAppStore.getState().openKnowledgeItem({ projectId: project.id })
   }
+  // What the conversation produced (docs/design/outputs.md section 6): every member run, every agent.
+  const outputCount = useAppStore((s) => (run.summary.kind === 'work' && !summary.quick ? outputsOfRuns(s.outputsByProject[project.id], chain.map((m) => m.id)).length : 0))
+  useOutputAnnouncements(summary.id)
   const progress = run.plan ? planProgress(run.plan) : undefined
   const auto = autoContinueState({
     status: summary.status,
@@ -141,6 +148,23 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
           <Icon icon={Database} size="xs" />
           {recordedLabel(recorded, recordedPartial)}
           <span className="sr-only"> ({recordedText}{recordedPartial ? ', at least; some sessions are not loaded' : ''}; opens Knowledge)</span>
+        </button>
+      )}
+      {outputCount > 0 && (
+        <button
+          type="button"
+          className="run-meta-item run-meta-outputs"
+          data-testid="run-meta-outputs"
+          title={outputsCountLabel(outputCount)}
+          onClick={() => {
+            useAppStore.getState().openRunOutput(summary.id, null)
+            revealOutputsTab()
+          }}
+        >
+          <Icon icon={Files} size="xs" />
+          <span className="run-meta-outputs-count">{outputCount}</span>
+          <span className="run-meta-outputs-label">{outputCount === 1 ? 'output' : 'outputs'}</span>
+          <span className="sr-only">; opens the Outputs tab</span>
         </button>
       )}
       {sessions > 1 && (
