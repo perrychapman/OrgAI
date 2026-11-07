@@ -54,9 +54,15 @@ export function OutputsList({
   // ---- roving focus (one Tab stop) ----
   const current = useRef<string | null>(null)
   const [pendingFocus, setPendingFocus] = useState<string | null>(null)
+  const lastSelected = useRef<string | null>(null)
   useLayoutEffect(() => {
     const el = listRef.current
     if (!el) return
+    // A selection made elsewhere (the pane's previous / next) moves the roving stop with it.
+    if (selectedId !== lastSelected.current) {
+      lastSelected.current = selectedId
+      if (selectedId && shown.some((r) => r.id === selectedId)) current.current = selectedId
+    }
     if (!current.current || !shown.some((r) => r.id === current.current)) current.current = selectedId && shown.some((r) => r.id === selectedId) ? selectedId : (shown[0]?.id ?? null)
     for (const o of Array.from(el.querySelectorAll<HTMLElement>('[role=option]'))) o.tabIndex = o.dataset.id === current.current ? 0 : -1
   })
