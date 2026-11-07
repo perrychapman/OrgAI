@@ -12,6 +12,7 @@ import type {
   OutputsChangedEvent,
   RunOutput,
   RunUsage,
+  UsageOverview,
   UsageStats,
   UsageStatsQuery,
   AppSettings,
@@ -79,7 +80,20 @@ import { BridgedSessions, bridgeKey } from './bridge'
 import { QUICK_ASSISTANT_SLUG, adapterForProject, connectionName, connectionRecord, roleConnection, roleConnectionProblems, isKnownConnection, agentProducedNothing, isolateWritersOn, mcpSecretNames, mixedFamilyRefusal, modelFamily, newId, projectConnection, projectKindOf, projectRulesLocation, resolveModelSetting, runMessagingOn, settingTier, singleRunProject, writesToProjectFolder } from '@shared/defaults'
 import { referenceFolderOf } from './referenceDirectories'
 import { aliasesFor, priceAgentUsage, resolvePrice, type PricingContext } from './pricing'
-import { IntervalTimer, buildUsageCsv, buildUsageStats, computeRunUsage, emptyAgentUsage, legacySummaryUsage, monthRange, normalizeRunRecord } from './runUsage'
+import {
+  IntervalTimer,
+  buildUsageCsv,
+  buildUsageOverview,
+  buildUsageOverviewCsv,
+  buildUsageStats,
+  computeRunUsage,
+  emptyAgentUsage,
+  legacySummaryUsage,
+  monthRange,
+  normalizeRunRecord,
+  sanitizeUsageOverviewQuery,
+  type UsageOverviewNames
+} from './runUsage'
 import { knowledgeAutoContextOn } from '@shared/knowledge'
 import { RESUME_TEXT } from './prompts'
 import { dropLoneHighSurrogate, fenceDatum, knowledgeBrief, knowledgeContextBlock, knowledgeListItem, recallKnowledge } from '@shared/knowledgeIndex'
@@ -3256,11 +3270,42 @@ export class RunManager {
     const query = sanitizeUsageQuery(raw)
     const now = Date.now()
     const inRange = (s: RunSummary): boolean =>
+      s.projectId === query.projectId &&
       (query.kinds as RunKind[]).includes(s.kind) && (query.since === undefined || s.startedAt >= query.since) && (query.until === undefined || s.startedAt < query.until)
+    return buildUsageStats(this.usageSummaries(this.store.list(query.projectId), inRange, now), query, now)
+  }
+
+  /**
+   * runs:usageOverview: usage across every project (stored, virtual and a removed project's leftover runs); see
+   * UsageOverview. `names` resolves project and connection display names (the dispatcher's project lookup). Throws for
+   * a malformed month or project id list (sanitizeUsageOverviewQuery).
+   */
+  usageOverview(raw: unknown, names: UsageOverviewNames): UsageOverview {
+    const query = sanitizeUsageOverviewQuery(raw)
+    const now = Date.now()
+    const kinds = new Set(query.kinds)
+    const only = query.projectIds ? new Set(query.projectIds) : null
+    const inRange = (s: RunSummary): boolean =>
+      kinds.has(s.kind) && (!only || only.has(s.projectId)) && (query.since === undefined || s.startedAt >= query.since) && (query.until === undefined || s.startedAt < query.until)
+    return buildUsageOverview(this.usageSummaries(this.store.all(), inRange, now), query, names, now, new Set(this.runs.keys()))
+  }
+
+  /** runs:usageOverviewCsv: the overview's rows as CSV, at most USAGE_STATS_MAX_LIMIT (the query's limit is replaced). */
+  usageOverviewCsv(raw: unknown, names: UsageOverviewNames): string {
+    // A non-object raw (other than undefined / null) is passed through so the sanitizer refuses it.
+    const query = raw === undefined || raw === null ? { limit: USAGE_STATS_MAX_LIMIT } : typeof raw === 'object' && !Array.isArray(raw) ? { ...raw, limit: USAGE_STATS_MAX_LIMIT } : raw
+    return buildUsageOverviewCsv(this.usageOverview(query, names))
+  }
+
+  /**
+   * Summaries with usage filled for the usage queries: stored ones that pass `keep` (legacy ones normalized from their
+   * record once and written back to the index) plus live runs with their current usage.
+   */
+  private usageSummaries(stored: readonly RunSummary[], keep: (s: RunSummary) => boolean, now: number): RunSummary[] {
     const byId = new Map<string, RunSummary>()
     const fill: { id: string; usage: RunUsage }[] = []
-    for (const s of this.store.list(query.projectId)) {
-      if (!inRange(s) || this.runs.has(s.id)) continue
+    for (const s of stored) {
+      if (!keep(s) || this.runs.has(s.id)) continue
       if (s.usage) {
         byId.set(s.id, s)
         continue
@@ -3274,10 +3319,10 @@ export class RunManager {
     if (fill.length) this.store.setUsage(fill)
     // Live runs read their current usage, not the last saved one.
     for (const a of this.runs.values()) {
-      if (a.summary.projectId !== query.projectId || !inRange(a.summary)) continue
+      if (!keep(a.summary)) continue
       byId.set(a.summary.id, { ...a.summary, usage: this.currentUsage(a, now) })
     }
-    return buildUsageStats([...byId.values()], query, now)
+    return [...byId.values()]
   }
 
   // ---------- cross-run messaging ----------

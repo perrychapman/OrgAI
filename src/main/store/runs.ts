@@ -205,8 +205,10 @@ export class RunStore {
    */
   setUsage(updates: readonly { id: string; usage: RunUsage }[]): void {
     let changed = false
+    // One index for the batch: the app-wide usage overview may normalize every legacy run at once.
+    const byId = new Map(this.runs.map((r) => [r.id, r]))
     for (const u of updates) {
-      const run = this.runs.find((r) => r.id === u.id)
+      const run = byId.get(u.id)
       if (!run || run.usage) continue
       run.usage = u.usage
       changed = true

@@ -122,7 +122,7 @@ const SCOPE_TABLE: Readonly<Record<ChannelScope, readonly string[]>> = {
     'host.status', 'host.subscribe', 'app:info', 'app:logPath', 'settings:get', 'auth:status', 'projects:list', 'projects:get',
     'projects:checkPath', 'projects:previewRemap', 'projects:scanAgents', 'projects:previewImport', 'projects:removePreview',
     'projects:engagementDocument', 'projects:listNotes', 'projects:getNote', 'runs:list', 'runs:get', 'runs:listLive',
-    'runs:pendingCards', 'runs:usageStats', 'runs:usageCsv', 'runs:subscribe', 'runs:findDecision', 'permissions:list', 'permissions:ignored', 'connections:list',
+    'runs:pendingCards', 'runs:usageStats', 'runs:usageCsv', 'runs:usageOverview', 'runs:usageOverviewCsv', 'runs:subscribe', 'runs:findDecision', 'permissions:list', 'permissions:ignored', 'connections:list',
     'models:list', 'models:prices', 'mcp:list', 'mcp:registrySearch', 'mcpLibrary:list', 'connectors:list',
     'connectorPresets:list', 'skills:list', 'skills:read', 'skills:previewImport', 'skills:lastEvaluation', 'skillLibrary:list',
     'skillLibrary:read', 'capabilities:lastReview', 'maintenance:listWorktrees', 'maintenance:diff', 'templates:list',

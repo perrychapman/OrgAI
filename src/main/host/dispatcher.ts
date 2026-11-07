@@ -108,6 +108,8 @@ import type {
   SkillUpdateInput,
   TeamRecommendations,
   TeamReview,
+  UsageOverview,
+  UsageOverviewQuery,
   UsageStats,
   UsageStatsQuery
 } from '../../shared/types'
@@ -121,9 +123,11 @@ import {
   SECRETS_IPC,
   SKILLS_PROJECT_ID,
   TEAM_FILES_IPC,
+  VIRTUAL_PROJECT_LABELS,
   isVirtualProjectId
 } from '../../shared/types'
-import { projectConnection, projectKindOf } from '../../shared/defaults'
+import { connectionName, isKnownConnection, projectConnection, projectKindOf } from '../../shared/defaults'
+import type { UsageOverviewNames } from '../runtime/runUsage'
 import { emptyKnowledgeGraph } from '../../shared/knowledge'
 import { draftOrgChart } from '../ai/draft'
 import { buildAppInfo, buildSettingsInfo } from '../appInfo'
@@ -664,6 +668,22 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
     if (!project) throw new Error('Project not found')
     return runs.usageCsv(q, { project: project.name, client: project.client ?? '' })
   })
+  /** Project and connection names for the app-wide usage overview (stored projects read as they are now). */
+  const usageNames = (): UsageOverviewNames => {
+    const view = connections.effectiveSettings()
+    return {
+      project: (id) => {
+        if (isVirtualProjectId(id)) return { name: VIRTUAL_PROJECT_LABELS[id], kind: 'assistant' }
+        const p = projects.get(id)
+        if (!p) return null
+        const kind = projectKindOf(p)
+        return kind === 'engagement' && typeof p.client === 'string' && p.client ? { name: p.name, kind, client: p.client } : { name: p.name, kind }
+      },
+      connection: (id) => (isKnownConnection(view, id) ? connectionName(id, view) : 'Removed proxy')
+    }
+  }
+  handle(IPC.runsUsageOverview, (_e, query?: UsageOverviewQuery): UsageOverview => runs.usageOverview(query, usageNames()))
+  handle(IPC.runsUsageOverviewCsv, (_e, query?: UsageOverviewQuery): string => runs.usageOverviewCsv(query, usageNames()))
   registerTemplateEngagementIpc(handle, { projects, templates, dataDir: settings.dataDir, events })
   registerKnowledgeIpc(handle, { projects, dataDir: settings.dataDir, events })
   handle(IPC.windowOpenRun, (_e, input: FocusRunTarget): void => {

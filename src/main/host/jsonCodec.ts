@@ -234,6 +234,9 @@ export const CHANNEL_JSON_FIELDS: Readonly<Record<string, ChannelJsonFields>> = 
   'runs:listLive': {}, // runs.liveRuns()
   'runs:pendingCards': { note: 'Response cards may carry SettingsProposalPayload.maxBudgetUsd: null (domain null, kept by JSON).' },
   'runs:usageStats': {}, // runs.usageStats(UsageStatsQuery)
+  // runs.usageOverview(UsageOverviewQuery?): costUsd null is a domain value (unknown), kept by JSON; no undefined fields matter.
+  'runs:usageOverview': { note: 'Bulk response: up to USAGE_STATS_MAX_LIMIT rows plus rollups.' },
+  'runs:usageOverviewCsv': { note: 'Returns CSV text (a string), JSON safe.' }, // runs.usageOverviewCsv(UsageOverviewQuery?)
   'runs:startQuick': { note: IMAGES_NOTE }, // quickArgs.start
   'runs:promoteQuick': {}, // quickArgs.promote
   'window:openRun': { note: 'Opens a desktop window; desktop only.' }, // checkRunTarget(FocusRunTarget)

@@ -67,6 +67,45 @@ describe('mergeCosts', () => {
   })
 })
 
+describe('computeRunUsage agents without a result', () => {
+  it('records their cost and up to 20 of them, handle first', () => {
+    const p = (id: string, model: string, handle?: string): AgentInstance => {
+      const a = priced({ id, parentId: 'root', name: 'Worker-2', result: undefined, state: 'done', ...(handle ? { handle } : {}) }, model, tok(1000, 100))
+      return a
+    }
+    const root = priced({ id: 'root' }, 'claude-sonnet-4-5', tok(10))
+    const u = computeRunUsage(runSummary({ id: 'r', projectId: 'p' }), [root, p('w1', 'claude-sonnet-4-5', 'w-1'), p('w2', 'never-priced-zzz')], inputs())
+    expect(u.agentsWithoutResult).toBe(2)
+    expect(u.noResultCostUsd).toBeGreaterThan(0)
+    expect(u.noResultCostPartial).toBe(true)
+    expect(u.noResultAgents!.map((a) => [a.agentId, a.name, a.roleName, a.costUsd === null])).toEqual([
+      ['w1', 'w-1', 'Worker', false],
+      ['w2', 'Worker-2', 'Worker', true]
+    ])
+    const many = Array.from({ length: 25 }, (_, i) => p(`w${i}`, 'claude-sonnet-4-5'))
+    expect(computeRunUsage(runSummary({ id: 'r', projectId: 'p' }), [root, ...many], inputs()).noResultAgents).toHaveLength(20)
+    expect(computeRunUsage(runSummary({ id: 'r', projectId: 'p' }), [root], inputs())).not.toHaveProperty('noResultCostUsd')
+  })
+})
+
+describe('computeRunUsage connections', () => {
+  it('marks a connection whose agents are partly unpriced as costPartial', () => {
+    const builtin = (id: string, conn: string | undefined, model: string): AgentInstance => {
+      const a = agent({ id, ...(conn ? { connection: conn } : {}) })
+      setModelTokens(a, model, tok(1000, 100))
+      a.usage = priceAgentUsage(a.usage!, { overrides: [{ model: 'priced-x', price: { inputPerToken: 0.000001, outputPerToken: 0.000002 } }], catalog: [] })
+      return a
+    }
+    const u = computeRunUsage(
+      runSummary({ id: 'r', projectId: 'p', connection: 'anthropic' }),
+      [builtin('root', undefined, 'priced-x'), builtin('a', 'openai', 'priced-x'), builtin('b', 'openai', 'never-priced-zzz')],
+      inputs()
+    )
+    expect(u.connections!.openai).toMatchObject({ agents: 2, costPartial: true })
+    expect(u.connections!.anthropic).not.toHaveProperty('costPartial')
+  })
+})
+
 describe('computeRunUsage', () => {
   const summary = runSummary({ startedAt: 1000 })
 

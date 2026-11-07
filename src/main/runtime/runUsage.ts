@@ -1,6 +1,37 @@
-import type { AgentInstance, AgentUsage, CostSource, KnowledgeServedUsage, ModelUsageEntry, PriceSource, RoleUsage, RunRecord, RunSummary, RunUsage, SkillUseCount, TokenUsage, UsageStats, UsageStatsQuery, UsageTrendPoint } from '@shared/types'
+import type {
+  AgentInstance,
+  AgentUsage,
+  ConnectionId,
+  CostSource,
+  KnowledgeServedUsage,
+  ModelUsageEntry,
+  NoResultAgent,
+  PriceSource,
+  RoleUsage,
+  RunKind,
+  RunRecord,
+  RunSummary,
+  RunUsage,
+  RunUsageRow,
+  SkillUseCount,
+  TokenUsage,
+  UsageCostCoverage,
+  UsageOverview,
+  UsageOverviewConnection,
+  UsageOverviewModel,
+  UsageOverviewRole,
+  UsageOverviewRow,
+  UsageOverviewTrendPoint,
+  UsageProjectKind,
+  UsageProjectRollup,
+  UsageStats,
+  UsageStatsQuery,
+  UsageTrendPoint,
+  UsageTrendProjectSlice
+} from '@shared/types'
 import { agentProducedNothing, emptyTokens, totalTokens } from '@shared/defaults'
-import { USAGE_CSV_COLUMNS, USAGE_STATS_DEFAULT_LIMIT, USAGE_STATS_MAX_LIMIT } from '@shared/types'
+import { agentLabel } from '@shared/view/agentTree'
+import { isBuiltinConnectionId, RUN_KIND_LABELS, RUN_NO_RESULT_AGENTS_MAX, USAGE_CSV_COLUMNS, USAGE_OVERVIEW_CSV_COLUMNS, USAGE_OVERVIEW_MAX_PROJECT_IDS, USAGE_REMOVED_PROJECT_NAME, USAGE_STATS_DEFAULT_LIMIT, USAGE_STATS_MAX_LIMIT } from '@shared/types'
 
 /**
  * Vendor-neutral usage metrics: the adapter-facing tally helpers (below, used by claude.ts, codex.ts and mock.ts),
@@ -196,6 +227,8 @@ export function computeRunUsage(summary: RunSummary, agents: readonly AgentInsta
   const roleMap = new Map<string, { role: RoleUsage; parts: CostPart[]; models: Set<string> }>()
   let noResultAgents = 0
   let noResultTokens = 0
+  const noResultParts: AgentUsage[] = []
+  const noResultList: NoResultAgent[] = []
   let legacy = false
   agents.forEach((a, i) => {
     const u = usages[i]!
@@ -225,6 +258,10 @@ export function computeRunUsage(summary: RunSummary, agents: readonly AgentInsta
       r.noResultTokens += t
       noResultAgents++
       noResultTokens += t
+      noResultParts.push(u)
+      if (noResultList.length < RUN_NO_RESULT_AGENTS_MAX) {
+        noResultList.push({ agentId: a.id, name: agentLabel(a), roleName: stripHandle(a.name), tokens: { ...u.tokens }, costUsd: knownCost(u) })
+      }
     }
   })
   const roles: RoleUsage[] = [...roleMap.values()].map((g) => {
@@ -264,6 +301,12 @@ export function computeRunUsage(summary: RunSummary, agents: readonly AgentInsta
     updatedAt: now
   }
   if (cost.costPartial && !useProvider) usage.costPartial = true
+  if (noResultParts.length) {
+    const nr = mergeCosts(noResultParts)
+    usage.noResultCostUsd = nr.costUsd
+    if (nr.costPartial) usage.noResultCostPartial = true
+    usage.noResultAgents = noResultList
+  }
   if (multi) {
     const groups = new Map<string, { parts: AgentUsage[]; agents: number }>()
     agents.forEach((a, i) => {
@@ -274,7 +317,12 @@ export function computeRunUsage(summary: RunSummary, agents: readonly AgentInsta
       groups.set(key, g)
     })
     // The contract types the map as a total Record over ConnectionId (anthropic, openai, proxy ids); only the used keys exist.
-    usage.connections = Object.fromEntries([...groups].map(([k, g]) => [k, { costUsd: mergeCosts(g.parts).costUsd, agents: g.agents }])) as RunUsage['connections']
+    usage.connections = Object.fromEntries(
+      [...groups].map(([k, g]) => {
+        const c = mergeCosts(g.parts)
+        return [k, c.costPartial ? { costUsd: c.costUsd, agents: g.agents, costPartial: true as const } : { costUsd: c.costUsd, agents: g.agents }]
+      })
+    ) as RunUsage['connections']
   }
   if (hasProvider) usage.providerCostUsd = provider
   if (legacy) usage.legacy = true
@@ -517,6 +565,58 @@ export function sumRunUsage(list: readonly RunUsage[], now: number): RunUsage {
   return total
 }
 
+/** One RunUsageRow from a summary (a summary without usage reads as legacy). */
+function usageRow(s: RunSummary, now: number): RunUsageRow {
+  const row: RunUsageRow = { runId: s.id, kind: s.kind, status: s.status, prompt: oneLine(typeof s.prompt === 'string' ? s.prompt : '', 120), startedAt: s.startedAt, usage: s.usage ?? legacySummaryUsage(s, now) }
+  if (s.title) row.title = s.title
+  if (s.team === 'single') row.team = 'single'
+  if (s.endedAt !== undefined) row.endedAt = s.endedAt
+  if (s.resumedFrom) row.resumedFrom = s.resumedFrom
+  return row
+}
+
+/** A known, finite cost or null. */
+function knownCost(u: { costUsd: number | null }): number | null {
+  return u.costUsd !== null && Number.isFinite(u.costUsd) ? u.costUsd : null
+}
+
+/** Sum of the known costs; null when none is known. */
+function sumKnown(list: readonly { costUsd: number | null }[]): number | null {
+  let any = false
+  let n = 0
+  for (const u of list) {
+    const c = knownCost(u)
+    if (c === null) continue
+    any = true
+    n += c
+  }
+  return any ? n : null
+}
+
+function unknownOrPartial(u: RunUsage): boolean {
+  return u.costSource === 'unknown' || u.costPartial === true
+}
+
+/** One trend bucket over the runs' usages. */
+function trendPoint(label: string, start: number, list: readonly RunUsage[]): UsageTrendPoint {
+  const sum = (pick: (u: RunUsage) => number): number => list.reduce((n, u) => n + pick(u), 0)
+  return {
+    bucket: label,
+    start,
+    runs: list.length,
+    tokens: list.reduce((acc, u) => addTokens(acc, u.tokens), emptyTokens()),
+    costUsd: sumKnown(list),
+    costUnknownRuns: list.filter(unknownOrPartial).length,
+    turns: sum((u) => u.turns),
+    toolCalls: sum((u) => u.toolCalls),
+    nudges: sum((u) => u.nudges),
+    retries: sum((u) => u.retries),
+    wallMs: sum((u) => u.wallMs),
+    waitingMs: sum((u) => u.waitingMs),
+    noResultTokens: sum((u) => u.noResultTokens)
+  }
+}
+
 /** runs:usageStats over persisted summaries (each with usage filled). A summary without usage reads as legacy. */
 export function buildUsageStats(summaries: readonly RunSummary[], query: UsageStatsQuery, now: number): UsageStats {
   const kinds = query.kinds && query.kinds.length > 0 ? query.kinds : ['work' as const]
@@ -529,14 +629,7 @@ export function buildUsageStats(summaries: readonly RunSummary[], query: UsageSt
   // The newest runs win; roles, trend and totals cover only the returned rows.
   const limit = Math.min(USAGE_STATS_MAX_LIMIT, Math.max(1, Math.floor(Number.isFinite(query.limit) ? (query.limit as number) : USAGE_STATS_DEFAULT_LIMIT)))
   const truncated = picked.length > limit
-  const runs = picked.slice(0, limit).map((s) => {
-    const row: UsageStats['runs'][number] = { runId: s.id, kind: s.kind, status: s.status, prompt: oneLine(s.prompt, 120), startedAt: s.startedAt, usage: s.usage ?? legacySummaryUsage(s, now) }
-    if (s.title) row.title = s.title
-    if (s.team === 'single') row.team = 'single'
-    if (s.endedAt !== undefined) row.endedAt = s.endedAt
-    if (s.resumedFrom) row.resumedFrom = s.resumedFrom
-    return row
-  })
+  const runs = picked.slice(0, limit).map((s) => usageRow(s, now))
 
   const points = new Map<number, { label: string; runs: RunUsage[] }>()
   for (const r of runs) {
@@ -548,32 +641,528 @@ export function buildUsageStats(summaries: readonly RunSummary[], query: UsageSt
     }
     g.runs.push(r.usage)
   }
-  const trend: UsageTrendPoint[] = [...points.entries()]
-    .sort((a, b) => a[0] - b[0])
-    .map(([start, g]) => {
-      const known = g.runs.filter((u) => u.costUsd !== null)
-      const sum = (pick: (u: RunUsage) => number): number => g.runs.reduce((n, u) => n + pick(u), 0)
-      return {
-        bucket: g.label,
-        start,
-        runs: g.runs.length,
-        tokens: g.runs.reduce((acc, u) => addTokens(acc, u.tokens), emptyTokens()),
-        costUsd: known.length > 0 ? known.reduce((n, u) => n + (Number.isFinite(u.costUsd) ? (u.costUsd ?? 0) : 0), 0) : null,
-        costUnknownRuns: g.runs.filter((u) => u.costSource === 'unknown' || u.costPartial).length,
-        turns: sum((u) => u.turns),
-        toolCalls: sum((u) => u.toolCalls),
-        nudges: sum((u) => u.nudges),
-        retries: sum((u) => u.retries),
-        wallMs: sum((u) => u.wallMs),
-        waitingMs: sum((u) => u.waitingMs),
-        noResultTokens: sum((u) => u.noResultTokens)
-      }
-    })
+  const trend: UsageTrendPoint[] = [...points.entries()].sort((a, b) => a[0] - b[0]).map(([start, g]) => trendPoint(g.label, start, g.runs))
 
   const totals = sumRunUsage(runs.map((r) => r.usage), now)
   const stats: UsageStats = { projectId: query.projectId, runs, roles: totals.roles as UsageStats['roles'], trend, totals, generatedAt: now }
   if (truncated) stats.truncated = true
   return stats
+}
+
+// ---------- usageOverview (app-wide) ----------
+
+/** Local-midnight start of the bucket containing `t` and its label; 'month' = the 1st of the local month (YYYY-MM-01). */
+export function overviewBucketOf(t: number, bucket: 'day' | 'week' | 'month'): { start: number; label: string } {
+  if (bucket !== 'month') return bucketOf(t, bucket)
+  const d = new Date(t)
+  const y = d.getFullYear()
+  const m = d.getMonth()
+  return { start: new Date(y, m, 1).getTime(), label: `${y}-${pad2(m + 1)}-01` }
+}
+
+const ALL_RUN_KINDS = Object.keys(RUN_KIND_LABELS) as RunKind[]
+const OVERVIEW_ID = /^[A-Za-z0-9_-]{1,128}$/
+
+/** UsageOverviewQuery after main's defaults and checks (also UsageOverview.query). */
+export type SanitizedUsageOverviewQuery = UsageOverview['query']
+
+/**
+ * runs:usageOverview input from the renderer or a socket client, rebuilt: finite times, known kinds (default every
+ * kind), known bucket (default 'day'), limit clamped to 1..USAGE_STATS_MAX_LIMIT (default USAGE_STATS_DEFAULT_LIMIT).
+ * Throws "Invalid month" for a malformed range, "Invalid project ids" for a projectIds that is not an array of
+ * [A-Za-z0-9_-]{1,128} strings or has more than USAGE_OVERVIEW_MAX_PROJECT_IDS entries. Unknown fields are dropped.
+ * undefined / null = the empty query. Pure.
+ */
+export function sanitizeUsageOverviewQuery(raw: unknown): SanitizedUsageOverviewQuery {
+  if (raw !== undefined && raw !== null && (typeof raw !== 'object' || Array.isArray(raw))) throw new Error('Invalid usage query')
+  const q = (raw ?? {}) as Record<string, unknown>
+  const kinds = Array.isArray(q.kinds) ? [...new Set(q.kinds.filter((k): k is RunKind => (ALL_RUN_KINDS as readonly unknown[]).includes(k)))] : []
+  const out: SanitizedUsageOverviewQuery = {
+    kinds: kinds.length ? kinds : [...ALL_RUN_KINDS],
+    bucket: q.bucket === 'week' || q.bucket === 'month' ? q.bucket : 'day',
+    limit: USAGE_STATS_DEFAULT_LIMIT
+  }
+  if (typeof q.since === 'number' && Number.isFinite(q.since)) out.since = q.since
+  if (typeof q.until === 'number' && Number.isFinite(q.until)) out.until = q.until
+  if (q.range !== undefined && q.range !== null) {
+    const r = q.range
+    const { since, until } = monthRange(r && typeof r === 'object' ? ((r as { month?: unknown }).month as string) : '')
+    out.since = since
+    out.until = until
+  }
+  if (q.projectIds !== undefined && q.projectIds !== null) {
+    const ids = q.projectIds
+    // Array.from turns holes of a sparse array (structured clone keeps them; every() skips them) into undefined.
+    if (!Array.isArray(ids) || ids.length > USAGE_OVERVIEW_MAX_PROJECT_IDS || !Array.from(ids).every((id) => typeof id === 'string' && OVERVIEW_ID.test(id))) {
+      throw new Error('Invalid project ids')
+    }
+    if (ids.length) out.projectIds = [...new Set(ids as string[])]
+  }
+  const limit = typeof q.limit === 'number' && Number.isFinite(q.limit) ? Math.floor(q.limit) : USAGE_STATS_DEFAULT_LIMIT
+  out.limit = Math.min(USAGE_STATS_MAX_LIMIT, Math.max(1, limit))
+  return out
+}
+
+/** What the overview shows for a project id; null = the project is gone (its runs read as USAGE_REMOVED_PROJECT_NAME). */
+export interface UsageOverviewProjectInfo {
+  name: string
+  kind: UsageProjectKind
+  client?: string
+}
+
+/** Name lookups the caller supplies (main: ProjectStore, the virtual display projects, connectionName). */
+export interface UsageOverviewNames {
+  project(id: string): UsageOverviewProjectInfo | null
+  connection(id: ConnectionId): string
+}
+
+/** A whole count >= 0 from untrusted data (anything else is 0). */
+function count(v: unknown): number {
+  return typeof v === 'number' && Number.isFinite(v) && v > 0 ? Math.floor(v) : 0
+}
+
+/** A duration or token count >= 0 from untrusted data (anything else is 0). */
+function amount(v: unknown): number {
+  return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : 0
+}
+
+function cleanTokens(t: unknown): TokenUsage {
+  const o = t && typeof t === 'object' ? (t as Record<string, unknown>) : {}
+  return { input: amount(o.input), output: amount(o.output), cacheRead: amount(o.cacheRead), cacheWrite: amount(o.cacheWrite) }
+}
+
+const COST_SOURCES: readonly CostSource[] = ['provider', 'computed', 'unknown', 'none']
+
+/**
+ * A stored cost triple made consistent (review N1 / N2): a cost that is not a finite number >= 0 is null; null with
+ * any source but a clean 'none' becomes 'unknown' (junk never reads as $0); 'none' with spent tokens or a cost > 0
+ * becomes 'computed' (partial) or 'unknown'; a known cost under 'unknown' or a junk source becomes 'computed' and
+ * partial (a lower bound, never exact).
+ */
+export function cleanCost(rawCost: unknown, rawSource: unknown, rawPartial: unknown, spentTokens: number): { costUsd: number | null; costSource: CostSource; costPartial?: true } {
+  const cost = typeof rawCost === 'number' && Number.isFinite(rawCost) && rawCost >= 0 ? rawCost : null
+  const valid = COST_SOURCES.includes(rawSource as CostSource)
+  const source = rawSource as CostSource
+  const partial = rawPartial === true
+  if (valid && source === 'none') {
+    if (spentTokens <= 0 && (cost === null || cost === 0)) return { costUsd: 0, costSource: 'none' }
+    return cost !== null && cost > 0 ? { costUsd: cost, costSource: 'computed', costPartial: true } : { costUsd: null, costSource: 'unknown' }
+  }
+  // Only a valid 'none' says nothing was spent; junk never reads as $0.
+  if (cost === null) return { costUsd: null, costSource: 'unknown' }
+  if (!valid || source === 'unknown') return { costUsd: cost, costSource: 'computed', costPartial: true }
+  return partial ? { costUsd: cost, costSource: source, costPartial: true } : { costUsd: cost, costSource: source }
+}
+
+/**
+ * A stored RunUsage made safe for the overview: one malformed record must not break the app-wide view. Numbers become
+ * finite and >= 0, tokens objects, models and roles arrays of well-formed entries, costs through cleanCost, skills,
+ * knowledge and no-result agents filtered. `fallback` (legacy usage) when the value is not an object.
+ */
+function cleanStoredUsage(raw: unknown, fallback: () => RunUsage): RunUsage {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return fallback()
+  const u = raw as Partial<RunUsage> & Record<string, unknown>
+  const tokens = cleanTokens(u.tokens)
+  const runCost = cleanCost(u.costUsd, u.costSource, u.costPartial, totalTokens(tokens))
+  const models: ModelUsageEntry[] = (Array.isArray(u.models) ? u.models : [])
+    .filter((m): m is ModelUsageEntry => !!m && typeof m === 'object' && typeof (m as ModelUsageEntry).model === 'string')
+    .map((m) => {
+      const e: ModelUsageEntry = {
+        model: m.model,
+        tokens: cleanTokens(m.tokens),
+        costUsd: typeof m.costUsd === 'number' && Number.isFinite(m.costUsd) && m.costUsd >= 0 ? m.costUsd : null,
+        priceSource: Object.hasOwn(SOURCE_RANK, m.priceSource) ? m.priceSource : 'unknown'
+      }
+      if (amount(m.providerCostUsd) > 0) e.providerCostUsd = m.providerCostUsd
+      return e
+    })
+  const roles: RoleUsage[] = (Array.isArray(u.roles) ? u.roles : [])
+    .filter((r): r is RoleUsage => !!r && typeof r === 'object' && typeof (r as RoleUsage).roleSlug === 'string')
+    .map((r) => {
+      const roleTokens = cleanTokens(r.tokens)
+      const c = cleanCost(r.costUsd, r.costSource, r.costPartial, totalTokens(roleTokens))
+      const out: RoleUsage = {
+        roleId: typeof r.roleId === 'string' ? r.roleId : null,
+        roleSlug: r.roleSlug,
+        roleName: typeof r.roleName === 'string' ? r.roleName : r.roleSlug,
+        agents: count(r.agents),
+        tokens: roleTokens,
+        costUsd: c.costUsd,
+        costSource: c.costSource,
+        turns: count(r.turns),
+        toolCalls: count(r.toolCalls),
+        retries: count(r.retries),
+        agentWallMs: amount(r.agentWallMs),
+        agentsWithoutResult: count(r.agentsWithoutResult),
+        noResultTokens: amount(r.noResultTokens),
+        models: Array.isArray(r.models) ? r.models.filter((m): m is string => typeof m === 'string') : []
+      }
+      if (c.costPartial) out.costPartial = true
+      return out
+    })
+  const out: RunUsage = {
+    tokens,
+    costUsd: runCost.costUsd,
+    costSource: runCost.costSource,
+    models,
+    roles,
+    wallMs: amount(u.wallMs),
+    turns: count(u.turns),
+    toolCalls: count(u.toolCalls),
+    retries: count(u.retries),
+    agents: count(u.agents),
+    agentsWithoutResult: count(u.agentsWithoutResult),
+    noResultTokens: amount(u.noResultTokens),
+    nudges: count(u.nudges),
+    waitingMs: amount(u.waitingMs),
+    limitHoldMs: amount(u.limitHoldMs),
+    idleMs: amount(u.idleMs),
+    updatedAt: amount(u.updatedAt)
+  }
+  if (runCost.costPartial) out.costPartial = true
+  if (out.agentsWithoutResult > 0 && 'noResultCostUsd' in u) {
+    const nr = cleanCost(u.noResultCostUsd, u.noResultCostUsd === null ? 'unknown' : 'computed', u.noResultCostPartial, out.noResultTokens)
+    out.noResultCostUsd = nr.costUsd
+    if (nr.costPartial) out.noResultCostPartial = true
+  }
+  if (out.agentsWithoutResult > 0 && Array.isArray(u.noResultAgents)) {
+    out.noResultAgents = u.noResultAgents
+      .filter((a): a is NoResultAgent => !!a && typeof a === 'object' && typeof a.agentId === 'string' && typeof a.name === 'string')
+      .slice(0, RUN_NO_RESULT_AGENTS_MAX)
+      .map((a) => ({
+        agentId: a.agentId,
+        name: a.name,
+        roleName: typeof a.roleName === 'string' ? a.roleName : a.name,
+        tokens: cleanTokens(a.tokens),
+        costUsd: typeof a.costUsd === 'number' && Number.isFinite(a.costUsd) && a.costUsd >= 0 ? a.costUsd : null
+      }))
+  }
+  if (u.legacy === true) out.legacy = true
+  if (amount(u.providerCostUsd) > 0) out.providerCostUsd = u.providerCostUsd as number
+  if (Array.isArray(u.skills)) {
+    const skills = u.skills.filter(
+      (s): s is SkillUseCount => !!s && typeof s === 'object' && typeof s.skillId === 'string' && typeof s.name === 'string' && Array.isArray(s.roles) && s.roles.every((r) => typeof r === 'string')
+    )
+    if (skills.length) out.skills = mergeSkillCounts([skills])
+  }
+  const k = cleanKnowledgeUsage(u.knowledge)
+  if (k) out.knowledge = k
+  if (u.connections && typeof u.connections === 'object' && !Array.isArray(u.connections)) out.connections = u.connections
+  return out
+}
+
+/** RunUsage.connections from untrusted file data: entries with a known-or-null finite cost and a whole agent count >= 0. */
+function connectionParts(u: RunUsage): { id: ConnectionId; costUsd: number | null; agents: number; costPartial: boolean }[] | null {
+  const c = u.connections
+  if (!c || typeof c !== 'object' || Array.isArray(c)) return null
+  const out: { id: ConnectionId; costUsd: number | null; agents: number; costPartial: boolean }[] = []
+  for (const [id, v] of Object.entries(c)) {
+    if (!v || typeof v !== 'object' || !OVERVIEW_ID.test(id)) continue
+    const cost = v.costUsd
+    out.push({
+      id,
+      costUsd: typeof cost === 'number' && Number.isFinite(cost) && cost >= 0 ? cost : null,
+      agents: count(v.agents),
+      costPartial: v.costPartial === true
+    })
+  }
+  return out.length ? out : null
+}
+
+/** Higher known cost first (unknown last), then the tie-breaker. */
+function byCostDesc<T extends { costUsd: number | null }>(tie: (a: T, b: T) => number): (a: T, b: T) => number {
+  return (a, b) => {
+    const ca = knownCost(a) ?? -1
+    const cb = knownCost(b) ?? -1
+    return cb !== ca ? cb - ca : tie(a, b)
+  }
+}
+
+interface ProjectAcc {
+  info: UsageOverviewProjectInfo & { removed?: true }
+  usages: RunUsage[]
+  summaries: RunSummary[]
+  connections: Set<ConnectionId>
+}
+
+/** A cost the UI can state: non-null and not partial. */
+function costKnown(c: { costUsd: number | null; costPartial?: true }): boolean {
+  return knownCost(c) !== null && c.costPartial !== true
+}
+
+/** UsageCostCoverage over cost-carrying items, one per run. */
+function coverage(list: readonly { costUsd: number | null; costPartial?: true }[]): UsageCostCoverage {
+  let known = 0
+  for (const c of list) if (costKnown(c)) known++
+  return { costKnownRuns: known, costUnknownRuns: list.length - known }
+}
+
+/**
+ * runs:usageOverview over summaries of every project (each with usage filled; a summary without usage reads as
+ * legacy). Rollups cover every matched run; only `runs` is cut at the limit. `liveIds` marks rows live. Pure.
+ */
+export function buildUsageOverview(
+  summaries: readonly RunSummary[],
+  query: SanitizedUsageOverviewQuery,
+  names: UsageOverviewNames,
+  now: number,
+  liveIds: ReadonlySet<string> = new Set()
+): UsageOverview {
+  const kinds = new Set(query.kinds)
+  const only = query.projectIds ? new Set(query.projectIds) : null
+  const picked = summaries
+    .filter((s) => Number.isFinite(s.startedAt) && kinds.has(s.kind) && (!only || only.has(s.projectId)))
+    .filter((s) => (query.since === undefined || s.startedAt >= query.since) && (query.until === undefined || s.startedAt < query.until))
+    .sort((a, b) => b.startedAt - a.startedAt)
+
+  // Project info once per id.
+  const infoCache = new Map<string, UsageOverviewProjectInfo & { removed?: true }>()
+  const infoOf = (id: string): UsageOverviewProjectInfo & { removed?: true } => {
+    let info = infoCache.get(id)
+    if (!info) {
+      let found: UsageOverviewProjectInfo | null = null
+      try {
+        found = names.project(id)
+      } catch {
+        found = null
+      }
+      info = found ? { name: found.name, kind: found.kind, ...(found.client ? { client: found.client } : {}) } : { name: USAGE_REMOVED_PROJECT_NAME, kind: 'code', removed: true }
+      infoCache.set(id, info)
+    }
+    return info
+  }
+  const connName = (id: ConnectionId | null): string => {
+    if (id === null) return 'Unknown connection'
+    try {
+      return names.connection(id)
+    } catch {
+      return 'Removed proxy'
+    }
+  }
+
+  const usages: RunUsage[] = []
+  const projects = new Map<string, ProjectAcc>()
+  const models = new Map<string, { m: UsageOverviewModel; priced: boolean; unknown: boolean; projects: Set<string> }>()
+  const conns = new Map<string, { connection: ConnectionId | null; runs: number; agents: number; parts: { costUsd: number | null; costSource: CostSource; costPartial?: true }[] }>()
+  const points = new Map<number, { label: string; runs: RunUsage[]; byProject: Map<string, RunUsage[]> }>()
+  // Per project + role: one cost item per run, for the role's coverage.
+  const roleRuns = new Map<string, { costUsd: number | null; costPartial?: true }[]>()
+  const roleKey = (projectId: string, r: RoleUsage): string => `${projectId}\u0000${r.roleId ?? r.roleSlug}`
+  const rows: UsageOverviewRow[] = []
+
+  for (const s of picked) {
+    // Stored usage is file data: cleaned so one malformed record cannot break the app-wide view (review M2).
+    const u = cleanStoredUsage(s.usage, () => legacySummaryUsage(s, now))
+    usages.push(u)
+    const info = infoOf(s.projectId)
+    if (rows.length < query.limit) {
+      const row: UsageOverviewRow = { ...usageRow(s, now), usage: u, projectId: s.projectId, projectName: info.name, projectKind: info.kind }
+      if (info.client) row.client = info.client
+      if (info.removed) row.projectRemoved = true
+      if (s.connection) row.connection = s.connection
+      if (liveIds.has(s.id)) {
+        row.live = true
+        delete row.endedAt
+      }
+      if (s.endedBy) row.endedBy = s.endedBy
+      if (s.quick) row.quick = s.quick
+      if (u.legacy) row.legacy = true
+      rows.push(row)
+    }
+    const seenRoles = new Set<string>()
+    for (const r of u.roles) {
+      const key = roleKey(s.projectId, r)
+      if (seenRoles.has(key)) continue
+      seenRoles.add(key)
+      const list = roleRuns.get(key)
+      if (list) list.push(r)
+      else roleRuns.set(key, [r])
+    }
+
+    let p = projects.get(s.projectId)
+    if (!p) {
+      p = { info, usages: [], summaries: [], connections: new Set() }
+      projects.set(s.projectId, p)
+    }
+    p.usages.push(u)
+    p.summaries.push(s)
+
+    // Models: one count per run (RunUsage.models is per model already, but stay safe on duplicate entries).
+    const seenModels = new Set<string>()
+    for (const m of Array.isArray(u.models) ? u.models : []) {
+      if (!m || typeof m.model !== 'string') continue
+      let g = models.get(m.model)
+      if (!g) {
+        g = { m: { model: m.model, tokens: emptyTokens(), costUsd: null, priceSource: 'unknown', runs: 0, projects: 0, costKnownRuns: 0, costUnknownRuns: 0 }, priced: false, unknown: false, projects: new Set() }
+        models.set(m.model, g)
+      }
+      g.m.tokens = addTokens(g.m.tokens, m.tokens ?? emptyTokens())
+      const c = knownCost(m)
+      if (c !== null) {
+        g.priced = true
+        g.m.costUsd = (g.m.costUsd ?? 0) + c
+      } else if (totalTokens(m.tokens ?? emptyTokens()) > 0) g.unknown = true
+      if (typeof m.providerCostUsd === 'number' && Number.isFinite(m.providerCostUsd) && m.providerCostUsd > 0) g.m.providerCostUsd = (g.m.providerCostUsd ?? 0) + m.providerCostUsd
+      if (SOURCE_RANK[m.priceSource] < SOURCE_RANK[g.m.priceSource]) g.m.priceSource = m.priceSource
+      if (!seenModels.has(m.model)) {
+        seenModels.add(m.model)
+        g.m.runs++
+        // A run's share of a model is unknown when it spent tokens on it with no price.
+        if (c === null && totalTokens(m.tokens ?? emptyTokens()) > 0) g.m.costUnknownRuns++
+        else g.m.costKnownRuns++
+      }
+      g.projects.add(s.projectId)
+    }
+
+    // Connections: split multi-provider runs, else the whole run under its connection.
+    const split = connectionParts(u)
+    const addConn = (id: ConnectionId | null, agents: number, part: { costUsd: number | null; costSource: CostSource; costPartial?: true }): void => {
+      const key = id ?? ''
+      let g = conns.get(key)
+      if (!g) {
+        g = { connection: id, runs: 0, agents: 0, parts: [] }
+        conns.set(key, g)
+      }
+      g.runs++
+      g.agents += agents
+      g.parts.push(part)
+      if (id !== null) p.connections.add(id)
+    }
+    if (split) {
+      // Records saved before RunUsage.connections carried costPartial (review N3): a partial or unknown run whose parts
+      // say nothing marks every known part a lower bound, since which connection was short is not recorded.
+      const legacyPartial = unknownOrPartial(u) && !split.some((p) => p.costPartial)
+      for (const part of split) {
+        const source: CostSource = part.costUsd === null ? 'unknown' : u.costSource === 'provider' ? 'provider' : 'computed'
+        const partial = part.costUsd !== null && (part.costPartial || legacyPartial)
+        addConn(part.id, part.agents, partial ? { costUsd: part.costUsd, costSource: source, costPartial: true } : { costUsd: part.costUsd, costSource: source })
+      }
+    } else {
+      addConn(s.connection ?? null, u.agents, u)
+    }
+    if (split && s.connection) p.connections.add(s.connection)
+
+    const b = overviewBucketOf(s.startedAt, query.bucket)
+    let pt = points.get(b.start)
+    if (!pt) {
+      pt = { label: b.label, runs: [], byProject: new Map() }
+      points.set(b.start, pt)
+    }
+    pt.runs.push(u)
+    const list = pt.byProject.get(s.projectId)
+    if (list) list.push(u)
+    else pt.byProject.set(s.projectId, [u])
+  }
+
+  const sum = (list: readonly RunUsage[], pick: (u: RunUsage) => number): number => list.reduce((n, u) => n + (Number.isFinite(pick(u)) ? pick(u) : 0), 0)
+
+  const projectRows: UsageProjectRollup[] = [...projects.entries()].map(([projectId, p]) => {
+    const c = mergeCosts(p.usages)
+    const runsByKind: UsageProjectRollup['runsByKind'] = {}
+    for (const s of p.summaries) {
+      const k = s.kind === 'work' && s.team === 'single' ? 'ask' : s.kind
+      runsByKind[k] = (runsByKind[k] ?? 0) + 1
+    }
+    // Summaries are newest first.
+    const starts = { first: p.summaries[p.summaries.length - 1].startedAt, last: p.summaries[0].startedAt }
+    // Cost of agents without a result: a run with such agents but no noResultCostUsd (older record) counts as unknown.
+    const nr = mergeCosts(
+      p.usages
+        .filter((u) => u.agentsWithoutResult > 0)
+        .map((u) => (u.noResultCostUsd === undefined || u.noResultCostUsd === null ? { costUsd: null, costSource: 'unknown' as const } : { costUsd: u.noResultCostUsd, costSource: 'computed' as const, ...(u.noResultCostPartial ? { costPartial: true as const } : {}) }))
+    )
+    const out: UsageProjectRollup = {
+      ...coverage(p.usages),
+      projectId,
+      projectName: p.info.name,
+      projectKind: p.info.kind,
+      runs: p.usages.length,
+      runsByKind,
+      firstStartedAt: starts.first,
+      lastStartedAt: starts.last,
+      tokens: p.usages.reduce((acc, u) => addTokens(acc, u.tokens), emptyTokens()),
+      costUsd: c.costUsd,
+      costSource: c.costSource,
+      turns: sum(p.usages, (u) => u.turns),
+      toolCalls: sum(p.usages, (u) => u.toolCalls),
+      retries: sum(p.usages, (u) => u.retries),
+      nudges: sum(p.usages, (u) => u.nudges),
+      wallMs: sum(p.usages, (u) => u.wallMs),
+      waitingMs: sum(p.usages, (u) => u.waitingMs),
+      idleMs: sum(p.usages, (u) => u.idleMs),
+      limitHoldMs: sum(p.usages, (u) => u.limitHoldMs),
+      agents: sum(p.usages, (u) => u.agents),
+      agentsWithoutResult: sum(p.usages, (u) => u.agentsWithoutResult),
+      noResultTokens: sum(p.usages, (u) => u.noResultTokens),
+      noResultCostUsd: nr.costUsd,
+      connections: [...p.connections].sort()
+    }
+    if (p.info.client) out.client = p.info.client
+    if (p.info.removed) out.projectRemoved = true
+    if (c.costPartial) out.costPartial = true
+    if (nr.costPartial) out.noResultCostPartial = true
+    return out
+  })
+  projectRows.sort(byCostDesc((a, b) => totalTokens(b.tokens) - totalTokens(a.tokens) || a.projectName.localeCompare(b.projectName)))
+
+  const modelRows = [...models.values()]
+    .map((g) => {
+      const m: UsageOverviewModel = { ...g.m, costUsd: g.priced ? g.m.costUsd : null, projects: g.projects.size }
+      if (g.priced && g.unknown) m.costPartial = true
+      return m
+    })
+    .sort((a, b) => totalTokens(b.tokens) - totalTokens(a.tokens) || a.model.localeCompare(b.model))
+
+  const roleRows: UsageOverviewRole[] = []
+  for (const [projectId, p] of projects) {
+    for (const r of mergeRoles(p.usages.map((u) => u.roles))) {
+      roleRows.push({ ...r, ...coverage(roleRuns.get(roleKey(projectId, r)) ?? []), projectId, projectName: p.info.name })
+    }
+  }
+  roleRows.sort(byCostDesc((a, b) => totalTokens(b.tokens) - totalTokens(a.tokens)))
+
+  const connRows: UsageOverviewConnection[] = [...conns.values()].map((g) => {
+    const c = mergeCosts(g.parts)
+    const kind = g.connection === null ? null : isBuiltinConnectionId(g.connection) ? 'builtin' : 'proxy'
+    const out: UsageOverviewConnection = { connection: g.connection, name: connName(g.connection), kind, runs: g.runs, agents: g.agents, costUsd: c.costUsd, costSource: c.costSource, ...coverage(g.parts) }
+    if (c.costPartial) out.costPartial = true
+    return out
+  })
+  connRows.sort(byCostDesc((a, b) => b.agents - a.agents))
+
+  const trend: UsageOverviewTrendPoint[] = [...points.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([start, g]) => {
+      const byProject: UsageTrendProjectSlice[] = [...g.byProject.entries()].map(([projectId, list]) => ({
+        projectId,
+        runs: list.length,
+        tokens: list.reduce((acc, u) => addTokens(acc, u.tokens), emptyTokens()),
+        costUsd: sumKnown(list),
+        ...coverage(list),
+        wallMs: list.reduce((n, u) => n + u.wallMs, 0),
+        waitingMs: list.reduce((n, u) => n + u.waitingMs, 0)
+      }))
+      byProject.sort(byCostDesc((a, b) => totalTokens(b.tokens) - totalTokens(a.tokens)))
+      // costUnknownRuns from trendPoint and coverage agree (both: unknown or partial).
+      return { ...trendPoint(g.label, start, g.runs), ...coverage(g.runs), byProject }
+    })
+
+  const overview: UsageOverview = {
+    runs: rows,
+    projects: projectRows,
+    models: modelRows,
+    roles: roleRows,
+    connections: connRows,
+    trend,
+    totals: sumRunUsage(usages, now),
+    ...coverage(usages),
+    matchedRuns: picked.length,
+    query: { ...query, kinds: [...query.kinds], ...(query.projectIds ? { projectIds: [...query.projectIds] } : {}) },
+    generatedAt: now
+  }
+  if (picked.length > query.limit) overview.truncated = true
+  if (rows.length) overview.oldestIncludedAt = rows[rows.length - 1]!.startedAt
+  return overview
 }
 
 // ---------- month range and CSV export ----------
@@ -618,7 +1207,28 @@ export interface UsageCsvOptions {
  * returned rows (the newest ones); nothing marks that inside the file. Pure.
  */
 export function buildUsageCsv(stats: UsageStats, opts: UsageCsvOptions = {}): string {
-  const offsetOf = opts.offsetMinutes ?? ((t: number) => -new Date(t).getTimezoneOffset())
+  return usageCsvText(stats.runs, () => ({ project: opts.project ?? '', client: opts.client ?? '' }), opts.offsetMinutes)
+}
+
+/**
+ * runs:usageOverviewCsv body: USAGE_OVERVIEW_CSV_COLUMNS (USAGE_CSV_COLUMNS plus project_kind, connection, retries,
+ * nudges, no_result_tokens, idle_ms) with the same quoting, time formats and BOM as buildUsageCsv, one row per
+ * overview.runs entry (newest first) with that row's own projectName and client (blank when absent). Pure.
+ */
+export function buildUsageOverviewCsv(overview: Pick<UsageOverview, 'runs'>, opts: Pick<UsageCsvOptions, 'offsetMinutes'> = {}): string {
+  return usageCsvText(overview.runs, (r) => ({ project: r.projectName, client: r.client ?? '' }), opts.offsetMinutes, {
+    columns: USAGE_OVERVIEW_CSV_COLUMNS,
+    cells: (r) => [r.projectKind, r.connection ?? '', r.usage.retries, r.usage.nudges, r.usage.noResultTokens, Math.round(r.usage.idleMs)]
+  })
+}
+
+function usageCsvText<R extends RunUsageRow>(
+  rows: readonly R[],
+  names: (r: R) => { project: string; client: string },
+  offsetMinutes?: (t: number) => number,
+  extra?: { columns: readonly string[]; cells: (r: R) => (string | number)[] }
+): string {
+  const offsetOf = offsetMinutes ??((t: number) => -new Date(t).getTimezoneOffset())
   const valid = (t: number | undefined): t is number => typeof t === 'number' && Number.isFinite(t) && Math.abs(t) <= 8.64e15
   const utc = (t: number | undefined): string => (valid(t) ? new Date(t).toISOString() : '')
   const local = (t: number | undefined): string => {
@@ -631,12 +1241,13 @@ export function buildUsageCsv(stats: UsageStats, opts: UsageCsvOptions = {}): st
     const pad = (n: number): string => String(n).padStart(2, '0')
     return `${shifted.toISOString().slice(0, 19)}${mins < 0 ? '-' : '+'}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`
   }
-  const lines: string[] = [USAGE_CSV_COLUMNS.join(',')]
-  for (const r of stats.runs) {
+  const lines: string[] = [(extra ? extra.columns : USAGE_CSV_COLUMNS).join(',')]
+  for (const r of rows) {
     const u = r.usage
+    const n = names(r)
     const cells: (string | number)[] = [
-      opts.project ?? '',
-      opts.client ?? '',
+      n.project,
+      n.client,
       local(r.startedAt),
       utc(r.startedAt),
       local(r.endedAt),
@@ -649,7 +1260,8 @@ export function buildUsageCsv(stats: UsageStats, opts: UsageCsvOptions = {}): st
       u.tokens.cacheRead,
       u.tokens.cacheWrite,
       u.costUsd === null || !Number.isFinite(u.costUsd) ? '' : u.costUsd.toFixed(6),
-      u.costPartial ? 'true' : ''
+      u.costPartial ? 'true' : '',
+      ...(extra ? extra.cells(r) : [])
     ]
     lines.push(cells.map(csvCell).join(','))
   }

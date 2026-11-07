@@ -2440,6 +2440,15 @@ export interface RunUsage {
   agents: number
   agentsWithoutResult: number
   noResultTokens: number
+  /**
+   * Cost of the agents counted in agentsWithoutResult (mergeCosts over them): null = unknown, never 0 for spent tokens;
+   * noResultCostPartial = a lower bound. Absent when no agent ended without a result, and on runs saved before
+   * 2026-11-07 (computeRunUsage fills it on the next update of a live run only).
+   */
+  noResultCostUsd?: number | null
+  noResultCostPartial?: true
+  /** Those agents, in agent order, at most RUN_NO_RESULT_AGENTS_MAX (20). Absent when none, and on older runs. */
+  noResultAgents?: NoResultAgent[]
   /** Automatic continues the harness sent (RunPlan.autoContinues of this run; 0 without a plan). */
   nudges: number
   /** Time with at least one decision card open (permission, question, proposal, rules, merge, MCP install), ms. */
@@ -2457,10 +2466,26 @@ export interface RunUsage {
   /**
    * Multi-provider runs only (at least one agent with AgentInstance.connection other than the run's): cost and agent
    * count per connection, each agent priced with its own connection's pricing. costUsd null = unknown (never $0).
-   * Missing = every agent ran on the run's connection.
+   * Missing = every agent ran on the run's connection. `costPartial` (absent = false): some of that connection's agents
+   * had no price, so costUsd is a lower bound (records saved before it existed never carry it).
    */
-  connections?: Partial<Record<ConnectionId, { costUsd: number | null; agents: number }>>
+  connections?: Partial<Record<ConnectionId, { costUsd: number | null; agents: number; costPartial?: true }>>
   updatedAt: number
+}
+
+/** RunUsage.noResultAgents cap per run. */
+export const RUN_NO_RESULT_AGENTS_MAX = 20
+
+/** A report that ended (done or error) without result text (RunUsage.noResultAgents). */
+export interface NoResultAgent {
+  agentId: string
+  /** The agent's label as the canvas shows it: its handle, else its name (agentTree.ts agentLabel). */
+  name: string
+  /** The role's display name (the agent's name without a -n suffix). */
+  roleName: string
+  tokens: TokenUsage
+  /** The agent's cost: null = unknown. */
+  costUsd: number | null
 }
 
 /** RunUsage.knowledge: counted by RunManager, never by an adapter. */
@@ -2555,6 +2580,243 @@ export interface UsageStats {
   generatedAt: number
   /** More runs matched than `limit`; the oldest were left out. */
   truncated?: true
+}
+
+// ---------- App-wide usage overview (runs:usageOverview, runs:usageOverviewCsv) ----------
+
+/**
+ * runs:usageOverview input: usage across every project (stored projects, the three virtual assistant projects and
+ * runs left behind by a removed project). Every field is optional; main rebuilds the input (sanitizeUsageOverviewQuery
+ * in runUsage.ts) and refuses a malformed month or project id list.
+ */
+export interface UsageOverviewQuery {
+  /** Only runs started at or after this time (epoch ms). */
+  since?: number
+  /** Only runs started before this time (epoch ms). */
+  until?: number
+  /** A local calendar month; replaces since / until when set (UsageStatsRange). A malformed month is refused. */
+  range?: UsageStatsRange
+  /** Run kinds to include. Default (absent or empty): every RunKind, so assistant runs count. Unknown kinds are dropped. */
+  kinds?: RunKind[]
+  /**
+   * Trend bucket size: local calendar day, ISO week (Monday start) or local calendar month. Default 'day'. A 'month'
+   * bucket's label is the 1st of the month (YYYY-MM-01).
+   */
+  bucket?: 'day' | 'week' | 'month'
+  /**
+   * Only these projects (ids, virtual ids such as QUICK_PROJECT_ID included; a removed project's id still matches its
+   * leftover runs). Absent or empty = every project. At most USAGE_OVERVIEW_MAX_PROJECT_IDS; each must match
+   * [A-Za-z0-9_-]{1,128}, else the query is refused. Duplicates are dropped.
+   */
+  projectIds?: string[]
+  /**
+   * Most rows in UsageOverview.runs (the newest runs win). Default USAGE_STATS_DEFAULT_LIMIT (500), clamped to
+   * 1..USAGE_STATS_MAX_LIMIT (2000). Unlike UsageStats, the rollups (projects, models, roles, connections, trend,
+   * totals) always cover EVERY matched run, not only the returned rows.
+   */
+  limit?: number
+}
+
+/** UsageOverviewQuery.projectIds cap. */
+export const USAGE_OVERVIEW_MAX_PROJECT_IDS = 200
+
+/**
+ * What a usage row's project is: a stored project's ProjectKind, or 'assistant' for the virtual projects (Chat, MCP
+ * assistant, Skill assistant; isVirtualProjectId). A removed project reads as 'code' with `projectRemoved: true`.
+ */
+export type UsageProjectKind = ProjectKind | 'assistant'
+
+/**
+ * The display name main gives runs whose project no longer exists (`projectRemoved`). Run records do not keep the
+ * project's name, so this is the best name available.
+ */
+export const USAGE_REMOVED_PROJECT_NAME = 'Removed project'
+
+/**
+ * How many runs of a rollup have a cost the UI can state ("cost from 3 of 4 runs"). Known: the run's costUsd is
+ * non-null and not partial (a run that spent nothing, costSource 'none', counts as known). Unknown: costUsd null or
+ * costPartial. costKnownRuns + costUnknownRuns = the runs counted by that rollup. For a model or role the run's own
+ * share of that model or role decides; for a connection, its part of a multi-provider run.
+ */
+export interface UsageCostCoverage {
+  costKnownRuns: number
+  costUnknownRuns: number
+}
+
+/**
+ * One run in UsageOverview.runs: a RunUsageRow plus its project and connection. Per-model rows (tokens incl.
+ * cacheRead / cacheWrite, costUsd | null, priceSource) are `usage.models`; the reports that ended without a result are
+ * `usage.noResultAgents` (absent on older runs); `usage.legacy` is mirrored as `legacy`.
+ *
+ * Cache tokens: adapters write 0 when the provider reports nothing, so 0 and "not reported" cannot be told apart from
+ * the data. What is known: Claude runs report both cacheRead and cacheWrite; Codex runs (the openai connection, and a
+ * proxy root on a GPT family) report cached input as cacheRead and never report cacheWrite; legacy runs carry 0 for
+ * both (their input already includes cache).
+ */
+export interface UsageOverviewRow extends RunUsageRow {
+  projectId: string
+  /** The project's name now (Chat / MCP assistant / Skill assistant for virtual ids; USAGE_REMOVED_PROJECT_NAME when gone). */
+  projectName: string
+  projectKind: UsageProjectKind
+  /** Project.client of an engagement; absent otherwise. */
+  client?: string
+  /** The project was removed; its runs were kept. */
+  projectRemoved?: true
+  /** RunSummary.connection (absent on runs recorded before it existed). */
+  connection?: ConnectionId
+  /** The run is live in this host right now (RunManager holds it; endedAt is then absent). */
+  live?: true
+  /** RunSummary.endedBy (who ended it). */
+  endedBy?: RunEndedBy
+  /** RunSummary.quick (Chat runs only). */
+  quick?: QuickRunInfo
+  /** usage.legacy mirrored: figures from a record saved before usage tracking, approximate. */
+  legacy?: true
+}
+
+/** Per-project rollup in UsageOverview.projects, over every matched run of that project. */
+export interface UsageProjectRollup extends UsageCostCoverage {
+  projectId: string
+  projectName: string
+  projectKind: UsageProjectKind
+  client?: string
+  projectRemoved?: true
+  runs: number
+  /** Runs per kind; 'ask' counts work runs with team 'single' (and they are not counted under 'work'). Zero counts are absent. */
+  runsByKind: Partial<Record<RunKind | 'ask', number>>
+  /** Oldest and newest run start among the matched runs (epoch ms). */
+  firstStartedAt: number
+  lastStartedAt: number
+  tokens: TokenUsage
+  /** mergeCosts over the runs: null = unknown (never 0 for spent tokens); costPartial = a lower bound. */
+  costUsd: number | null
+  costSource: CostSource
+  costPartial?: true
+  turns: number
+  toolCalls: number
+  retries: number
+  nudges: number
+  wallMs: number
+  waitingMs: number
+  idleMs: number
+  limitHoldMs: number
+  /** Agent instances across the runs, roots included. */
+  agents: number
+  agentsWithoutResult: number
+  noResultTokens: number
+  /**
+   * Cost of the agents that ended without a result, summed over the runs that record it (RunUsage.noResultCostUsd):
+   * null = unknown; noResultCostPartial = a lower bound, also set when a run with such agents predates the field.
+   * 0 when no agent ended without a result.
+   */
+  noResultCostUsd: number | null
+  noResultCostPartial?: true
+  /** Distinct RunSummary.connection values of the runs (plus RunUsage.connections keys of multi-provider runs). */
+  connections: ConnectionId[]
+}
+
+/** One model across every matched run (UsageOverview.models). Coverage counts runs that used the model. */
+export interface UsageOverviewModel extends UsageCostCoverage {
+  model: string
+  tokens: TokenUsage
+  /** Sum of the known costs; null when no run priced this model's tokens. */
+  costUsd: number | null
+  /** Some runs' tokens of this model had no price: costUsd is a lower bound. */
+  costPartial?: true
+  /** The best price source seen (override > proxy > builtin > community > provider > unknown). */
+  priceSource: PriceSource
+  /** Provider-reported cost summed, when any (> 0). */
+  providerCostUsd?: number
+  /** Runs that used this model. */
+  runs: number
+  /** Distinct projects that used this model. */
+  projects: number
+}
+
+/** One role of one project across its matched runs (UsageOverview.roles); keyed by projectId + (roleId ?? roleSlug). */
+export interface UsageOverviewRole extends RoleUsage, UsageCostCoverage {
+  projectId: string
+  projectName: string
+  /** Runs in which the role had at least one agent. */
+  runs: number
+}
+
+/**
+ * One connection across every matched run (UsageOverview.connections). A multi-provider run (RunUsage.connections
+ * set) splits its cost and agents per connection; any other run counts whole under RunSummary.connection. `connection`
+ * null = runs recorded before RunSummary.connection existed.
+ */
+export interface UsageOverviewConnection extends UsageCostCoverage {
+  connection: ConnectionId | null
+  /** Display name: Anthropic, OpenAI, a proxy's name, "Removed proxy" for an id no longer configured, "Unknown connection" for null. */
+  name: string
+  /** 'builtin' (anthropic, openai), 'proxy' (any other id, configured or removed), null for `connection` null. */
+  kind: 'builtin' | 'proxy' | null
+  /** Runs with at least one agent on this connection. */
+  runs: number
+  agents: number
+  costUsd: number | null
+  costSource: CostSource
+  costPartial?: true
+}
+
+/** One project's share of a trend bucket (UsageOverviewTrendPoint.byProject). */
+export interface UsageTrendProjectSlice extends UsageCostCoverage {
+  projectId: string
+  runs: number
+  /** Tokens of the project's runs in the bucket, all four kinds (cache included). */
+  tokens: TokenUsage
+  /** Sum of the project's known run costs in the bucket; null when none of its runs there had a known cost. */
+  costUsd: number | null
+  wallMs: number
+  waitingMs: number
+}
+
+/**
+ * A trend bucket of the overview: UsageTrendPoint (bucket = local date of the start, start = local midnight epoch ms in
+ * the main process's zone) plus coverage and the per-project breakdown for a stacked chart.
+ */
+export interface UsageOverviewTrendPoint extends UsageTrendPoint, UsageCostCoverage {
+  /** Projects with runs in the bucket, highest known cost first, then most tokens. */
+  byProject: UsageTrendProjectSlice[]
+}
+
+/**
+ * runs:usageOverview result. Built from persisted summaries (legacy ones normalized once and written back, as in
+ * runs:usageStats) and, for live runs, their current usage. Unknown cost is null, never 0; costPartial marks a lower
+ * bound everywhere. Rollups cover every matched run; only `runs` is limited.
+ */
+export interface UsageOverview extends UsageCostCoverage {
+  /** Newest first, at most the query's limit. */
+  runs: UsageOverviewRow[]
+  /** Highest known cost first, then most tokens, then name. */
+  projects: UsageProjectRollup[]
+  /** Most tokens first. */
+  models: UsageOverviewModel[]
+  /** Highest known cost first, then most tokens. */
+  roles: UsageOverviewRole[]
+  /** Highest known cost first, then most agents. */
+  connections: UsageOverviewConnection[]
+  /** Oldest first, only buckets with runs. */
+  trend: UsageOverviewTrendPoint[]
+  /** Every matched run summed (sumRunUsage; totals.roles merges roles by id across projects, use `roles` instead). */
+  totals: RunUsage
+  /** Runs that matched (before the limit). */
+  matchedRuns: number
+  /** The query main actually ran (after defaults and clamping), so the UI can show what it is looking at. */
+  query: {
+    since?: number
+    until?: number
+    kinds: RunKind[]
+    bucket: 'day' | 'week' | 'month'
+    projectIds?: string[]
+    limit: number
+  }
+  generatedAt: number
+  /** More runs matched than `limit`; the oldest rows were left out of `runs` (the rollups still count them). */
+  truncated?: true
+  /** startedAt of the oldest row in `runs` (absent when `runs` is empty); with `truncated`, older runs are rolled up only. */
+  oldestIncludedAt?: number
 }
 
 // ---------- Runs ----------
@@ -4578,6 +4840,18 @@ export interface OrgAIApi {
     /** The same rows as usageStats as CSV text (USAGE_CSV_COLUMNS), at most USAGE_STATS_MAX_LIMIT rows. */
     usageCsv(query: UsageStatsQuery): Promise<string>
     /**
+     * Usage across every project (stored, virtual assistant projects and a removed project's leftover runs): per-run
+     * rows (newest first, limited), rollups per project, model, role and connection, trend buckets with a per-project
+     * breakdown, and totals over every matched run (see UsageOverview). Rejects a malformed month or project id list.
+     * Never spends tokens. The query may be omitted (every project, every kind, all time).
+     */
+    usageOverview(query?: UsageOverviewQuery): Promise<UsageOverview>
+    /**
+     * The overview's runs as CSV text (USAGE_OVERVIEW_CSV_COLUMNS, same quoting as usageCsv), each row with its own
+     * project and client names, newest first, at most USAGE_STATS_MAX_LIMIT rows (the query's limit is ignored).
+     */
+    usageOverviewCsv(query?: UsageOverviewQuery): Promise<string>
+    /**
      * Start a quick run (the Chat assistant): a project-less work run on QUICK_PROJECT_ID (RunSummary.quick set).
      * Rejects on an empty or too long prompt (QUICK_RUN_MAX_PROMPT_CHARS) or an invalid folder.
      */
@@ -4915,6 +5189,13 @@ export const USAGE_CSV_COLUMNS = [
   'cost_partial'
 ] as const
 
+/**
+ * runs:usageOverviewCsv columns, in order: USAGE_CSV_COLUMNS (unchanged; cache is already in tokens_cache_read /
+ * tokens_cache_write) followed by project_kind (UsageProjectKind), connection (the id, blank when unknown), retries,
+ * nudges, no_result_tokens and idle_ms. One row per UsageOverview.runs entry with its own project and client; same
+ * quoting, time formats and BOM as runs:usageCsv. Declared after USAGE_CSV_COLUMNS on purpose (module order).
+ */
+export const USAGE_OVERVIEW_CSV_COLUMNS = [...USAGE_CSV_COLUMNS, 'project_kind', 'connection', 'retries', 'nudges', 'no_result_tokens', 'idle_ms'] as const
 /** Channels of this section; spread into IPC. */
 export const TEMPLATE_ENGAGEMENT_IPC = {
   templatesList: 'templates:list',
@@ -5616,6 +5897,10 @@ export const IPC = {
   runsListLive: 'runs:listLive',
   runsPendingCards: 'runs:pendingCards',
   runsUsageStats: 'runs:usageStats',
+  /** UsageOverviewQuery -> UsageOverview (read scope). */
+  runsUsageOverview: 'runs:usageOverview',
+  /** UsageOverviewQuery -> CSV text (USAGE_OVERVIEW_CSV_COLUMNS, one row per run with its own project / client) (read scope). */
+  runsUsageOverviewCsv: 'runs:usageOverviewCsv',
   runsStartQuick: 'runs:startQuick',
   runsPromoteQuick: 'runs:promoteQuick',
   modelsPrices: 'models:prices',

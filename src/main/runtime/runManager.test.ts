@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentInstance, ImageAttachment, McpServerSpec, ModelPriceOverride, Project, Proposal, ProxyConnection, RunEvent, RunSummary, TokenUsage } from '@shared/types'
-import { setModelTokens } from './runUsage'
+import { setModelTokens, type UsageOverviewNames } from './runUsage'
 import type { RunSkill, RuntimeAdapter, RuntimeContext, RuntimeSession } from './types'
 import { ROOT_AGENT_ID } from './types'
 import { RESUME_TEXT, RUN_MESSAGE_INBOUND_LIMIT, RUN_MESSAGE_LIMIT, RUN_MESSAGE_QUEUE_LIMIT, RUN_MESSAGE_RECEIVE_TIMEOUT_MS, RUN_SKILL_LOAD_LIMIT, RunManager, refreshRoleGrants, sessionChain, type RunManagerOptions } from './runManager'
@@ -602,6 +602,38 @@ describe('RunManager.usageStats', () => {
     const stats = m.usageStats({ projectId: p.id })
     expect(stats.runs.map((r) => r.runId)).toContain(run.id)
     await m.stop(run.id)
+  })
+
+  it('usageOverview covers every project, normalizes legacy runs once and includes live runs', async () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    const { m, store } = manager(p, { delayMs: 50 })
+    const day = (d: number): number => new Date(2026, 9, d, 12).getTime()
+    store.upsert(runSummary({ id: 'l1', projectId: p.id, status: 'finished', startedAt: day(1), totalCostUsd: 0.5 }))
+    store.upsert(runSummary({ id: 'q1', projectId: 'quick', status: 'finished', startedAt: day(2), usage: { ...computeEmpty(), tokens: tok(7), costUsd: null, costSource: 'unknown' } }))
+    store.upsert(runSummary({ id: 'g1', projectId: 'gone', kind: 'setup', status: 'finished', startedAt: day(3), usage: { ...computeEmpty(), costUsd: 2, costSource: 'computed', tokens: tok(1) } }))
+    const names: UsageOverviewNames = {
+      project: (id) => (id === p.id ? { name: p.name, kind: 'code' } : id === 'quick' ? { name: 'Chat', kind: 'assistant' } : null),
+      connection: (id) => id
+    }
+    const live = await m.start({ project: p, prompt: 'live' })
+
+    const o = m.usageOverview(undefined, names)
+    expect(o.runs.map((r) => r.runId)).toEqual([live.id, 'g1', 'q1', 'l1'])
+    expect(o.runs.find((r) => r.runId === 'g1')).toMatchObject({ projectRemoved: true, projectName: 'Removed project' })
+    expect(o.projects.map((x) => x.projectId).sort()).toEqual(['gone', p.id, 'quick'].sort())
+    expect(o.projects.find((x) => x.projectId === 'quick')).toMatchObject({ costUsd: null, costSource: 'unknown' })
+    expect(store.get('l1')!.usage).toMatchObject({ legacy: true, costUsd: 0.5 })
+
+    expect(m.usageOverview({ projectIds: ['quick'] }, names).runs.map((r) => r.runId)).toEqual(['q1'])
+    expect(m.usageOverview({ kinds: ['setup'] }, names).runs.map((r) => r.runId)).toEqual(['g1'])
+    expect(() => m.usageOverview({ projectIds: ['a/b'] }, names)).toThrow('Invalid project ids')
+    expect(() => m.usageOverview({ range: { month: 'x' } }, names)).toThrow('Invalid month')
+
+    const csv = m.usageOverviewCsv({ limit: 1 }, names)
+    expect(csv.split('\r\n')).toHaveLength(5)
+    expect(m.usageOverviewCsv(null, names).split('\r\n')).toHaveLength(5)
+    expect(() => m.usageOverviewCsv('x', names)).toThrow('Invalid usage query')
+    await m.stop(live.id)
   })
 })
 
