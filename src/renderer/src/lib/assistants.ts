@@ -6,6 +6,7 @@ import type { Project, QuickRunInfo, RunSummary, VirtualProjectId } from '@share
 import { QUICK_PROJECT_ID, RUN_KIND_LABELS, VIRTUAL_PROJECT_LABELS, isVirtualProjectId } from '@shared/types'
 import { newProject } from '@shared/defaults'
 import { folderName } from './paths'
+import { showHidden } from './hiddenChars'
 
 /** The sidebar order of the Assistants group. */
 export const ASSISTANT_ORDER: VirtualProjectId[] = ['quick', 'harness', 'skills']
@@ -85,7 +86,7 @@ export interface ChatSummaryInput {
 /** The muted line on the Chat start page: where it works, what it may do, what runs it, and what it costs. */
 export function chatSummaryLine(i: ChatSummaryInput): string {
   const scratch = i.scratch || !i.folderName
-  const where = scratch ? 'Works in a private scratch area' : `Works in ${i.folderName}`
+  const where = scratch ? 'Works in a private scratch area' : `Works in ${showHidden(i.folderName ?? '')}`
   const model = i.model || 'the configured model'
   const runs = `Runs on ${model}${i.connection ? ` via ${i.connection}` : ''}`
   const tail = [runs, i.mock ? 'Mock run, no tokens' : 'Counts toward your usage'].map((s) => `${s}.`).join(' ')

@@ -42,7 +42,6 @@ export default function ChatStartPage({ project }: { project: Project }): ReactE
   const teamName = useId()
   const folderId = useId()
   const statusId = useId()
-  const editsLabel = useId()
   const editsHint = useId()
   const typed = text.trim()
 
@@ -171,7 +170,7 @@ export default function ChatStartPage({ project }: { project: Project }): ReactE
 
             <div className="assistant-switch-row">
               <div className="assistant-switch-text">
-                <span id={editsLabel}>{CHAT_CHANGES_SWITCH}</span>
+                <span aria-hidden="true">{CHAT_CHANGES_SWITCH}</span>
                 <span className="muted chat-edits-hint" id={editsHint}>
                   {chatChangesHint(scratch, folder ? folderName(folder) : undefined)}
                 </span>

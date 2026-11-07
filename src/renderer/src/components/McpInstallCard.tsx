@@ -23,7 +23,7 @@ export function installCommand(request: McpInstallRequest): string {
 }
 
 function describeOutcome(o: McpInstallOutcome, runOnly: boolean): string {
-  if (runOnly) return runOnlyOutcome(o.approved)
+  if (runOnly) return !o.approved && o.note ? `${runOnlyOutcome(false)}. Note sent: ${o.note}` : runOnlyOutcome(o.approved)
   if (o.approved) return o.scope === 'library' ? 'Approved for this project and your library' : o.scope === 'project' ? 'Approved for this project' : 'Approved for this run'
   return o.note ? `Denied. Note sent: ${o.note}` : 'Denied'
 }
@@ -99,7 +99,7 @@ export default function McpInstallCard({
         agentId={request.agentId}
         title={title}
         noAutoFocus
-        headerExtra={<Badge tone={resolved.approved ? 'success' : 'danger'}>{resolved.approved ? 'Approved' : 'Denied'}</Badge>}
+        headerExtra={<Badge tone={resolved.approved ? 'success' : 'danger'}>{resolved.approved ? (runOnly ? 'Added' : 'Approved') : runOnly ? 'Not added' : 'Denied'}</Badge>}
         primary={
           onDismiss ? (
             <Button size="sm" variant="ghost" onClick={onDismiss}>
@@ -138,7 +138,7 @@ export default function McpInstallCard({
         unpinned ? (
           <span className="mcpi-reason-disabled">Only pinned versions can be approved. Runs code on this machine.</span>
         ) : runOnly ? (
-          'Approving runs code on this machine until this chat ends.'
+          spec.transport === 'stdio' ? 'Adding it runs code on this machine until this chat ends.' : 'Adding it connects this chat to that address until the chat ends.'
         ) : (
           'Approving runs code on this machine. Scope below decides how long it stays.'
         )

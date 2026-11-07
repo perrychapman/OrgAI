@@ -203,7 +203,7 @@ export default function PermissionCard({ runId, request, who, onDecide }: Props)
         </Button>
       }
       secondary={
-        canScope ? (
+        canScope && (!sessionOnly || copy.session) ? (
           <>
             <Button size="sm" disabled={busy} onClick={() => send({ behavior: 'allow', scope: 'session' })}>
               Allow for session

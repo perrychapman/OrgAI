@@ -327,7 +327,7 @@ try {
     check((await page.getByText('Your turn. Reply, ask a follow-up, or end the session.').count()) > 0, 'Chat run reaches Idle with the follow-up label')
     await shot('chat-idle-1600x1000')
     const idleChip = page.locator('[data-testid=run-meta-access]')
-    check((await idleChip.getAttribute('data-state').catch(() => null)) === 'asks' && ((await idleChip.innerText().catch(() => '')) || '').trim() === 'asks first', 'a scratch Chat started with edits off shows the "asks first" chip')
+    check((await idleChip.getAttribute('data-state').catch(() => null)) === 'asks' && ((await idleChip.innerText().catch(() => '')) || '').trim().startsWith('asks first'), 'a scratch Chat started with edits off shows the "asks first" chip')
 
     // Conversation layout (H1): a one-assistant chat shows its transcript as the stage, the reply and the composer
     // fit at 1024x640 without page scroll, and the toolbar toggle swaps to the canvas and back.
@@ -500,7 +500,7 @@ try {
     check(await tabTo('Allow for session'), 'Allow for session is reachable with Tab')
     await page.keyboard.press('Enter')
     await page.locator('[data-testid=run-meta-access][data-state=session]').waitFor({ timeout: 10_000 }).catch(() => {})
-    check((await chip.getAttribute('data-state').catch(() => null)) === 'session' && ((await chip.innerText().catch(() => '')) || '').trim() === 'changes allowed this session', 'the chip turns to "changes allowed this session"')
+    check((await chip.getAttribute('data-state').catch(() => null)) === 'session' && ((await chip.innerText().catch(() => '')) || '').trim().startsWith('changes allowed this session'), 'the chip turns to "changes allowed this session"')
     const said = await page.locator('[data-testid=tray-announce]').filter({ hasText: 'Changes allowed for the rest of this chat.' }).first().waitFor({ timeout: 3000 }).then(() => true, () => false)
     check(said, 'the chip change is announced through tray-announce')
     await page.getByText('I wrote notes.md.').first().waitFor({ timeout: 20_000 }).catch(() => {})

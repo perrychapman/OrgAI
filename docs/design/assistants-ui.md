@@ -226,6 +226,9 @@ CLAUDE.md "Chat asks"). The renderer follows the walk's "What the ask path shoul
 - Install card with `runOnly`: title "Add a server: <name>", `mcp-install-run-only` "For this chat only. It is not added
   to your library.", no scope radios (always 'run'), buttons `mcp-install-approve` "Add for this chat" and
   `mcp-install-deny` "Don't add" (both testids on every install card), resolved "Added for this chat" / "Not added".
+- Rules request card (request_permission_rules): on a run with `quick` or `buildWorkspace` it offers Allow for this run
+  and Deny only (no "Always allow for project" or its sentence; main keeps a project grant on the run there).
+  `PermissionRuleRequest` has no `maxScope` yet, so the renderer reads the run summary.
 - Start page: the switch `chat-allow-edits` is the shared `ui/Switch` "Let it make changes", enabled for scratch too
   (hint through aria-describedby: "Changes happen in a private scratch folder. You approve each one." / "Changes happen
   in <folder>. You approve each one."); `chat-asks-line` "It asks before it changes anything." under the description;

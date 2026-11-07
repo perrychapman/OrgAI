@@ -42,11 +42,13 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
   // The Chat access chip. Turning to 'session' is announced once, never on mount.
   const announce = useFrameAnnounce()
   const accessState = summary.quick ? chatAccessState(summary.quick, !!run.sessionChanges) : null
-  const lastAccess = useRef(accessState)
+  // Keyed by run: RunMeta is not remounted on a tab switch, so another run's state must never count as a change.
+  const lastAccess = useRef({ runId: summary.id, state: accessState })
   useEffect(() => {
-    if (accessState === 'session' && lastAccess.current !== 'session') announce?.(CHAT_ACCESS_ANNOUNCEMENT)
-    lastAccess.current = accessState
-  }, [accessState, announce])
+    const prev = lastAccess.current
+    if (prev.runId === summary.id && accessState === 'session' && prev.state !== 'session') announce?.(CHAT_ACCESS_ANNOUNCEMENT)
+    lastAccess.current = { runId: summary.id, state: accessState }
+  }, [summary.id, accessState, announce])
   // The host's run usage is the truth; before the first run.usage event the strip total can lag the agent costs.
   const agentCosts = sumCosts(Object.values(run.agents).map(agentCostInput))
   const own =
@@ -136,6 +138,7 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
           {accessState && (
             <span className="run-meta-item run-meta-access" data-testid="run-meta-access" data-state={accessState} title={CHAT_ACCESS_TITLE[accessState]}>
               {CHAT_ACCESS_LABEL[accessState]}
+              <span className="sr-only">. {CHAT_ACCESS_TITLE[accessState]}</span>
             </span>
           )}
         </>
