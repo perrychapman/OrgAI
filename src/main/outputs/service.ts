@@ -1,4 +1,4 @@
-import { lstatSync, readFileSync, realpathSync, unlinkSync } from 'node:fs'
+import { lstatSync, realpathSync, unlinkSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import type {
   OutputCompareInput,
@@ -47,7 +47,9 @@ import {
   checkRegisteredPath,
   checkWritablePath,
   isOpenablePath,
+  readRegularCapped,
   relPathFor,
+  type CheckedFile,
   resolveProducedTarget,
   sameFile,
   writeFileAtomic,
@@ -69,7 +71,18 @@ import {
 import { previewFile } from './preview'
 import { type OutputVersionMeta, type StoredOutput, applyVersionFields, createOutputStore, newOutputId } from './store'
 import { mermaidProblem, renderProduced, svgProblem } from './writers'
-import { pruneVersions, readSnapshot, removeOutputData, removeSnapshot, sha256, snapshotExt, snapshotPath, writeSnapshot } from './versions'
+import {
+  VersionStorageFullError,
+  assertVersionRoom,
+  pruneVersions,
+  readSnapshot,
+  removeOutputData,
+  removeSnapshot,
+  sha256,
+  snapshotExt,
+  snapshotPath,
+  writeSnapshot
+} from './versions'
 
 /**
  * The run outputs service (api.ts OutputsServiceApi) over the index store, versions, notes, the path rules, the writers
@@ -101,12 +114,29 @@ function queuedHeavy<T>(run: () => Promise<T>, busy: T): Promise<T> {
   })
 }
 
+/** Wraps a union-result job so a full version store answers { refused } instead of throwing. */
+function refuseWhenFull<R>(fn: () => Promise<R>): () => Promise<R> {
+  return async () => {
+    try {
+      return await fn()
+    } catch (err) {
+      if (err instanceof VersionStorageFullError) return { refused: err.message } as R
+      throw err
+    }
+  }
+}
+
 const THUMB_PARALLEL = 2
 let thumbActive = 0
 const thumbWaiting: Array<() => void> = []
 
-async function queuedThumb<T>(run: () => Promise<T>): Promise<T> {
-  if (thumbActive >= THUMB_PARALLEL) await new Promise<void>((res) => thumbWaiting.push(res))
+const THUMB_WAITING_MAX = 50
+
+async function queuedThumb<T>(run: () => Promise<T>, busy: T): Promise<T> {
+  if (thumbActive >= THUMB_PARALLEL) {
+    if (thumbWaiting.length >= THUMB_WAITING_MAX) return busy
+    await new Promise<void>((res) => thumbWaiting.push(res))
+  }
   thumbActive++
   try {
     return await run()
@@ -194,8 +224,11 @@ const statOf = (file: string): { size: number; mtimeMs: number } | undefined => 
 const currentMeta = (e: StoredOutput): OutputVersionMeta | undefined => e.versions[e.versions.length - 1]
 const nextVersionNumber = (e: StoredOutput): number => Math.max(e.version ?? 1, ...e.versions.map((v) => v.n)) + 1
 
-export function createOutputsService(dataDir: string, options: OutputsServiceOptions & OutputsServiceEvents = {}): OutputsServiceApi {
+export function createOutputsService(dataDir: string, options: OutputsServiceOptions & OutputsServiceEvents & { versionsBytesMax?: number } = {}): OutputsServiceApi {
   const now = options.now ?? Date.now
+  const bytesMax = options.versionsBytesMax
+  /** Throws VersionStorageFullError when `extra` bytes of new snapshots would not fit this project even after pruning. */
+  const assertRoom = (projectId: string, extra: number, forId?: string): void => assertVersionRoom(store.list(projectId), extra, forId, bytesMax, now())
   const store = createOutputStore(dataDir, {
     onDropped: (projectId, ids) => {
       for (const id of ids) removeOutputData(dataDir, projectId, id)
@@ -241,11 +274,12 @@ export function createOutputsService(dataDir: string, options: OutputsServiceOpt
   }
 
   /** The entry's file after the register rules and "still the stored real path". */
-  function currentFile(scope: OutputScope, e: StoredOutput): string {
+  function currentChecked(scope: OutputScope, e: StoredOutput): CheckedFile {
     const c = checkRegisteredPath(e.path, scope, dataDir)
     if (!sameFile(c.path, e.path)) throw new Error('That file is no longer where the list says it is.')
-    return c.path
+    return c
   }
+  const currentFile = (scope: OutputScope, e: StoredOutput): string => currentChecked(scope, e).path
 
   function checkedPath(scope: OutputScope, outputId: string): string {
     checkScope(scope)
@@ -269,9 +303,11 @@ export function createOutputsService(dataDir: string, options: OutputsServiceOpt
     const e = entryOf(scope.projectId, id)
     if (e.versions.length) return e
     try {
-      const file = currentFile(scope, e)
-      const bytes = readFileSync(file)
+      const c = currentChecked(scope, e)
+      const file = c.path
+      const bytes = readRegularCapped(file, OUTPUT_FILE_MAX_BYTES, c)
       if (bytes.length !== e.bytes) return e
+      assertRoom(scope.projectId, bytes.length)
       const ext = snapshotExt(e.path)
       const meta: OutputVersionMeta = { n: 1, source: 'agent', createdAt: e.createdAt, title: e.title, bytes: bytes.length, digest: sha256(bytes), ext }
       if (e.runId) meta.runId = e.runId
@@ -280,6 +316,7 @@ export function createOutputsService(dataDir: string, options: OutputsServiceOpt
       writeSnapshot(dataDir, scope.projectId, id, 1, ext, bytes)
       return store.update(scope.projectId, id, { versions: [meta], stat: statOf(file) ?? e.stat }) ?? e
     } catch (err) {
+      if (err instanceof VersionStorageFullError) throw err
       log.warn(`outputs: could not snapshot version 1 of ${id}: ${(err as Error).message}`)
       return e
     }
@@ -303,6 +340,7 @@ export function createOutputsService(dataDir: string, options: OutputsServiceOpt
   function commitVersion(projectId: string, id: string, a: Commit): StoredOutput {
     const fresh = entryOf(projectId, id)
     const n = nextVersionNumber(fresh)
+    assertRoom(projectId, a.bytes.length, id)
     writeSnapshot(dataDir, projectId, id, n, a.ext, a.bytes)
     const meta: OutputVersionMeta = { n, source: a.source, createdAt: now(), title: a.title, bytes: a.bytes.length, digest: sha256(a.bytes), ext: a.ext }
     if (a.runId) meta.runId = a.runId
@@ -329,10 +367,10 @@ export function createOutputsService(dataDir: string, options: OutputsServiceOpt
     let file: string
     let bytes: Buffer
     try {
-      file = currentFile(scope, e)
-      const st = lstatSync(file)
-      if (st.size > OUTPUT_FILE_MAX_BYTES) return e
-      bytes = readFileSync(file)
+      const c = currentChecked(scope, e)
+      file = c.path
+      if (c.bytes > OUTPUT_FILE_MAX_BYTES) return e
+      bytes = readRegularCapped(file, OUTPUT_FILE_MAX_BYTES, c)
     } catch {
       return e
     }
@@ -396,7 +434,7 @@ export function createOutputsService(dataDir: string, options: OutputsServiceOpt
         read(path: string): Buffer {
           const c = checkRegisteredPath(path, scope, dataDir, { strictNames: true })
           if (c.bytes > OUTPUT_PPTX_IMAGE_MAX_BYTES) throw new Error(`That image is larger than ${Math.round(OUTPUT_PPTX_IMAGE_MAX_BYTES / 1024 / 1024)} MB.`)
-          return readFileSync(c.path)
+          return readRegularCapped(c.path, OUTPUT_PPTX_IMAGE_MAX_BYTES, c)
         }
       }
       const bytes = await renderProduced(input, images)
@@ -430,6 +468,7 @@ export function createOutputsService(dataDir: string, options: OutputsServiceOpt
           const updated = store.update(projectId, e.id, patch) ?? e
           return { output: publicEntry(updated), created: false, versioned: false }
         }
+        assertRoom(projectId, bytes.length, e.id)
         const written = writeProduced({ ...target, overwrite: fileThere }, bytes)
         void written
         let real = e.path
@@ -444,6 +483,7 @@ export function createOutputsService(dataDir: string, options: OutputsServiceOpt
         }
       }
 
+      assertRoom(projectId, bytes.length)
       const written = writeProduced({ ...target, overwrite: false }, bytes)
       const real = realOf(target.file) ?? target.file
       const relPath = relPathFor(scope.projectPath, real)
@@ -495,7 +535,7 @@ export function createOutputsService(dataDir: string, options: OutputsServiceOpt
       if (known) {
         if (known.kind !== inferred) log.warn(`outputs: ${known.id} keeps kind ${known.kind}; its path now implies ${inferred}`)
         const e = ensureV1(scope, known.id)
-        const bytes = readFileSync(checked.path)
+        const bytes = readRegularCapped(checked.path, OUTPUT_FILE_MAX_BYTES, checked)
         const digest = sha256(bytes)
         const base: Partial<StoredOutput> = { relPath: checked.relPath }
         if (description !== undefined) base.description = description
@@ -506,7 +546,8 @@ export function createOutputsService(dataDir: string, options: OutputsServiceOpt
         }
         return agentVersion(projectId, e, bytes, snapshotExt(checked.path), title, source, statOf(checked.path), base)
       }
-      const bytes = readFileSync(checked.path)
+      const bytes = readRegularCapped(checked.path, OUTPUT_FILE_MAX_BYTES, checked)
+      assertRoom(projectId, bytes.length)
       const createdAt = now()
       const id = newOutputId()
       const ext = snapshotExt(checked.path)
@@ -567,7 +608,7 @@ export function createOutputsService(dataDir: string, options: OutputsServiceOpt
       checkScope(scope)
       const e = entryOf(scope.projectId, outputId)
       const path = versionFile(scope, e, version)
-      return await queuedThumb(() => thumbForFile(path, e.kind))
+      return await queuedThumb(() => thumbForFile(path, e.kind), { kind: 'none' })
     } catch {
       return { kind: 'none' }
     }
@@ -602,7 +643,7 @@ export function createOutputsService(dataDir: string, options: OutputsServiceOpt
     try {
       const st = lstatSync(file)
       if (st.size > OUTPUT_EDIT_MAX_BYTES) return { refused: 'That file is too large to edit here.' }
-      const bytes = readFileSync(file)
+      const bytes = readRegularCapped(file, OUTPUT_EDIT_MAX_BYTES, { dev: st.dev, ino: st.ino })
       const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes).replace(/^﻿/, '')
       return { text, digest: sha256(bytes) }
     } catch {
@@ -626,7 +667,7 @@ export function createOutputsService(dataDir: string, options: OutputsServiceOpt
   }
 
   function saveEdit(scope: OutputScope, input: Omit<OutputSaveEditInput, 'projectId'>): Promise<OutputSaveEditResult> {
-    return queued(scope.projectId, async (): Promise<OutputSaveEditResult> => {
+    return queued(scope.projectId, refuseWhenFull(async (): Promise<OutputSaveEditResult> => {
       checkScope(scope)
       const e0 = entryOf(scope.projectId, input.outputId)
       if (!OUTPUT_EDITABLE_KINDS.includes(e0.kind)) return { refused: EDIT_REFUSED }
@@ -647,6 +688,7 @@ export function createOutputsService(dataDir: string, options: OutputsServiceOpt
       const e = captureIfChanged(scope, e0.id)
       // A change made outside OrgAI was just captured: the user's text was not based on it.
       if ((e.version ?? 1) !== (e0.version ?? 1) && !forceNew) return { stale: true, currentVersion: e.version ?? 1 }
+      assertRoom(scope.projectId, bytes.length, e.id)
       try {
         writeFileAtomic(file, bytes)
       } catch {
@@ -654,11 +696,11 @@ export function createOutputsService(dataDir: string, options: OutputsServiceOpt
       }
       const out = commitVersion(scope.projectId, e.id, { source: 'edit', bytes, ext: snapshotExt(e.path), title: e.title, stat: statOf(file) })
       return { ok: true, output: publicEntry(out), version: out.version ?? 0 }
-    })
+    }))
   }
 
   function restore(scope: OutputScope, outputId: string, version: number): Promise<OutputRestoreResult> {
-    return queued(scope.projectId, async (): Promise<OutputRestoreResult> => {
+    return queued(scope.projectId, refuseWhenFull(async (): Promise<OutputRestoreResult> => {
       checkScope(scope)
       const e0 = entryOf(scope.projectId, outputId)
       let file: string
@@ -675,6 +717,7 @@ export function createOutputsService(dataDir: string, options: OutputsServiceOpt
       if (!bytes) return { refused: 'That version is no longer stored.' }
       if (sha256(bytes) !== meta.digest) return { refused: "That version's stored copy is damaged." }
       if (version === (e.version ?? 1) && statOf(file)) return { refused: 'That is already the current version.' }
+      assertRoom(scope.projectId, bytes.length, e.id)
       try {
         writeFileAtomic(file, bytes)
       } catch {
@@ -682,7 +725,7 @@ export function createOutputsService(dataDir: string, options: OutputsServiceOpt
       }
       const out = commitVersion(scope.projectId, e.id, { source: 'restore', bytes, ext: snapshotExt(e.path), title: e.title, restoredFrom: version, stat: statOf(file) })
       return { ok: true, output: publicEntry(out), version: out.version ?? 0 }
-    })
+    }))
   }
 
   function update(projectId: string, input: Omit<OutputUpdateInput, 'projectId'>): RunOutput {
@@ -757,8 +800,28 @@ export function createOutputsService(dataDir: string, options: OutputsServiceOpt
 
   // ---------- delete / forget ----------
 
+  /** Capture a change made outside OrgAI (as an 'external' version) so it is not deleted unseen. True when one was recorded. */
+  function captureUnseen(scope: OutputScope, outputId: string): boolean {
+    let before = entryOf(scope.projectId, outputId)
+    try {
+      before = ensureV1(scope, outputId)
+    } catch (err) {
+      if (!(err instanceof VersionStorageFullError)) throw err
+    }
+    const after = captureIfChanged(scope, outputId)
+    const changed = after.versions.length !== before.versions.length || (after.version ?? 1) !== (before.version ?? 1)
+    if (changed) options.onChange?.(scope.projectId, [outputId], 'version')
+    return changed
+  }
+
   function deletePreview(scope: OutputScope, outputId: string): OutputDeletePreview {
     checkScope(scope)
+    entryOf(scope.projectId, outputId)
+    try {
+      captureUnseen(scope, outputId)
+    } catch (err) {
+      log.warn(`outputs: could not check ${outputId} for outside changes before the delete preview: ${(err as Error).message}`)
+    }
     const e = entryOf(scope.projectId, outputId)
     let missing = true
     try {
@@ -779,6 +842,9 @@ export function createOutputsService(dataDir: string, options: OutputsServiceOpt
   function remove(scope: OutputScope, input: { outputId: string; expectedVersionCount?: number }): Promise<RunOutput[]> {
     return queued(scope.projectId, async () => {
       checkScope(scope)
+      entryOf(scope.projectId, input.outputId)
+      // Content the user never saw must not be deleted: capture an outside change first, then ask again.
+      if (captureUnseen(scope, input.outputId)) throw new Error(CHANGED)
       const e = entryOf(scope.projectId, input.outputId)
       const count = e.versionCount ?? 1
       const mayOmit = e.source === 'produced' && count === 1
@@ -860,7 +926,7 @@ export function createOutputsService(dataDir: string, options: OutputsServiceOpt
       const version = input.version ?? current
       if (!versionExists(e, version)) throw new Error(NO_VERSION)
       const path = versionFile(scope, e, version)
-      const r = await textForAgent(path, e.kind)
+      const r = await queuedHeavy(() => textForAgent(path, e.kind), { refused: PREVIEW_BUSY } as Awaited<ReturnType<typeof textForAgent>>)
       if ('refused' in r) throw new Error(r.refused)
       return { action: 'read', id: e.id, title: e.title, kind: e.kind, version, text: r.text, truncated: r.truncated }
     }

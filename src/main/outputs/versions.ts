@@ -1,8 +1,9 @@
 import { createHash, randomBytes } from 'node:crypto'
-import { lstatSync, mkdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
+import { lstatSync, mkdirSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
-import { OUTPUT_ID_RE, OUTPUT_VERSIONS_BYTES_MAX, OUTPUT_VERSIONS_MAX } from '@shared/types'
+import { OUTPUT_FILE_MAX_BYTES, OUTPUT_ID_RE, OUTPUT_VERSIONS_BYTES_MAX, OUTPUT_VERSIONS_MAX } from '@shared/types'
 import { projectDataDir } from '../store/projectData'
+import { readRegularCapped } from './paths'
 import type { OutputVersionMeta, StoredOutput } from './store'
 
 /**
@@ -76,7 +77,7 @@ export function readSnapshot(dataDir: string, projectId: string, outputId: strin
     const p = snapshotPath(dataDir, projectId, outputId, n, ext)
     const st = lstatSync(p)
     if (!st.isFile() || st.isSymbolicLink()) return null
-    return readFileSync(p)
+    return readRegularCapped(p, OUTPUT_FILE_MAX_BYTES, { dev: st.dev, ino: st.ino })
   } catch {
     return null
   }
@@ -153,4 +154,33 @@ export function pruneVersions(entries: StoredOutput[], opts: PruneOptions = {}):
     }
   }
   return dropped
+}
+
+export const VERSION_STORAGE_FULL = "OrgAI's version storage for this project is full. Delete or remove outputs to make room."
+
+export class VersionStorageFullError extends Error {
+  constructor() {
+    super(VERSION_STORAGE_FULL)
+    this.name = 'VersionStorageFullError'
+  }
+}
+
+/** Bytes of every stored version in a project. */
+export function versionBytesTotal(entries: readonly StoredOutput[]): number {
+  return entries.reduce((s, o) => s + o.versions.reduce((t, v) => t + v.bytes, 0), 0)
+}
+
+/**
+ * Would `extra` more bytes of snapshots fit after pruning everything prunable? Simulated on copies (nothing is
+ * changed). `forId` names the entry the bytes become a version of; without it they are a new entry's v1. Throws
+ * VersionStorageFullError when the project would still be over `bytesMax`.
+ */
+export function assertVersionRoom(entries: readonly StoredOutput[], extra: number, forId?: string, bytesMax: number = OUTPUT_VERSIONS_BYTES_MAX, nowMs: number = Date.now()): void {
+  const fake = (n: number): OutputVersionMeta => ({ n, source: 'agent', createdAt: nowMs, title: '', bytes: extra, digest: '', ext: 'bin' })
+  const copies = entries.map((o) => ({ ...o, versions: [...o.versions] }))
+  const target = forId ? copies.find((o) => o.id === forId) : undefined
+  if (target) target.versions.push(fake(Math.max(target.version ?? 1, ...target.versions.map((v) => v.n)) + 1))
+  else copies.push({ id: '\u0000new', versions: [fake(1)] } as unknown as StoredOutput)
+  pruneVersions(copies, { bytesMax })
+  if (versionBytesTotal(copies) > bytesMax) throw new VersionStorageFullError()
 }

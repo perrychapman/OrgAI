@@ -1,8 +1,9 @@
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync, existsSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { chmodSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { OPENABLE_EXTENSIONS, checkDeletableFile, checkFileNameSegments, checkRegisteredPath, checkWritablePath, isOpenablePath, resolveProducedTarget, slugFromTitle, withKindExtension, writeFileAtomic, writeProduced } from './paths'
+import { OPENABLE_EXTENSIONS, checkDeletableFile, checkFileNameSegments, checkRegisteredPath, checkWritablePath, isOpenablePath, readRegularCapped, resolveProducedTarget, slugFromTitle, withKindExtension, writeFileAtomic, writeProduced } from './paths'
 import type { PathScope } from './paths'
 
 let root: string
@@ -298,5 +299,62 @@ describe('writable path and atomic write', () => {
     }
     expect(() => writeFileAtomic(join(project, 'l.md'), Buffer.from('bad'))).toThrow(/regular file/)
     expect(readFileSync(secret, 'utf8')).toBe('keep')
+  })
+  it.skipIf(process.platform === 'win32')('writeFileAtomic keeps the old file mode (L5)', () => {
+    const f = join(project, 'mode.md')
+    writeFileSync(f, 'a', { mode: 0o600 })
+    chmodSync(f, 0o600)
+    writeFileAtomic(f, Buffer.from('bb'))
+    expect(statSync(f).mode & 0o777).toBe(0o600)
+  })
+})
+
+describe('hard links (L5)', () => {
+  it('registered, deletable and writable checks and writeFileAtomic refuse a file with two links', () => {
+    const f = join(project, 'a.md')
+    writeFileSync(f, 'x')
+    const outside = join(root, 'outside.md')
+    linkSync(f, outside)
+    expect(() => checkRegisteredPath(f, scope(), data)).toThrow(/hard link/)
+    expect(() => checkDeletableFile(f, scope(), data)).toThrow(/hard link/)
+    expect(() => checkWritablePath(f, scope(), data)).toThrow(/hard link/)
+    expect(() => writeFileAtomic(f, Buffer.from('y'))).toThrow(/hard link/)
+    expect(readFileSync(outside, 'utf8')).toBe('x')
+  })
+})
+
+describe('readRegularCapped (M3)', () => {
+  it('reads a regular file and returns its bytes', () => {
+    const f = join(project, 'r.md')
+    writeFileSync(f, 'hello')
+    expect(readRegularCapped(f, 100).toString()).toBe('hello')
+    const c = checkRegisteredPath(f, scope(), data)
+    expect(readRegularCapped(f, 100, c).toString()).toBe('hello')
+  })
+  it('refuses a file over the cap, a mismatching identity, a hard link and a folder', () => {
+    const f = join(project, 'big.md')
+    writeFileSync(f, 'x'.repeat(50))
+    expect(() => readRegularCapped(f, 10)).toThrow(/larger than/)
+    const c = checkRegisteredPath(f, scope(), data)
+    expect(() => readRegularCapped(f, 100, { dev: c.dev, ino: -1 })).toThrow(/changed while/)
+    expect(() => readRegularCapped(f, 100, { dev: -1, ino: c.ino })).toThrow(/changed while/)
+    expect(() => readRegularCapped(project, 100)).toThrow()
+    linkSync(f, join(root, 'twin.md'))
+    expect(() => readRegularCapped(f, 100)).toThrow(/hard link/)
+  })
+  it.skipIf(process.platform === 'win32')('does not block on a FIFO swapped in for the file', () => {
+    const f = join(project, 'fifo.md')
+    try {
+      execFileSync('mkfifo', [f])
+    } catch {
+      return
+    }
+    expect(() => readRegularCapped(f, 100)).toThrow()
+  })
+  it.skipIf(process.platform === 'win32')('does not follow a symlink', () => {
+    const real = join(root, 'real.md')
+    writeFileSync(real, 'secret')
+    symlinkSync(real, join(project, 'l2.md'), 'file')
+    expect(() => readRegularCapped(join(project, 'l2.md'), 100)).toThrow()
   })
 })

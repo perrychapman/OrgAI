@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -466,6 +466,52 @@ describe('version caps through the service', () => {
     expect(existsSync(join(data, 'projects', 'p1', 'outputs', a.output.id, 'v2.md'))).toBe(false)
     expect(existsSync(join(data, 'projects', 'p1', 'outputs', a.output.id, 'v1.md'))).toBe(true)
   }, 60000)
+})
+
+describe('version storage cap (M4)', () => {
+  it('refuses produce, register and saveEdit with the full sentence and writes nothing', async () => {
+    const small = createOutputsService(data, { versionsBytesMax: 60 })
+    const full = "OrgAI's version storage for this project is full. Delete or remove outputs to make room."
+    const a = await small.produce(scope, md('A', { fileName: 'a.md', content: 'x'.repeat(30) }), src)
+    await small.produce(scope, md('B', { fileName: 'b.md', content: 'y'.repeat(30) }), src)
+    await expect(small.produce(scope, md('C', { fileName: 'c.md', content: 'z'.repeat(30) }), src)).rejects.toThrow(full)
+    expect(existsSync(join(project, 'outputs', 'c.md'))).toBe(false)
+    writeFileSync(join(project, 'mine.md'), 'q'.repeat(30))
+    await expect(small.register(scope, { path: 'mine.md', title: 'Mine' }, src)).rejects.toThrow(full)
+    expect(small.list('p1')).toHaveLength(2)
+    const r = await small.saveEdit(scope, { outputId: a.output.id, text: 'e'.repeat(30), baseVersion: 1 })
+    expect(r).toEqual({ refused: full })
+    expect(readFileSync(join(project, 'outputs', 'a.md'), 'utf8')).toBe('x'.repeat(30))
+    // an existing output cannot get a new produced version either, and its file stays as it was
+    await expect(small.produce(scope, md('A', { fileName: 'a.md', content: 'n'.repeat(30) }), src)).rejects.toThrow(full)
+    expect(readFileSync(join(project, 'outputs', 'a.md'), 'utf8')).toBe('x'.repeat(30))
+  })
+})
+
+describe('delete captures an unseen outside change (L3)', () => {
+  it('delete records the outside change as an external version, throws CHANGED and keeps the file', async () => {
+    const a = await svc.produce(scope, md('A', { fileName: 'a.md', content: 'one' }), src)
+    writeFileSync(a.output.path, 'edited outside')
+    await expect(svc.delete(scope, { outputId: a.output.id })).rejects.toThrow('This output changed. Check it and delete again.')
+    expect(existsSync(a.output.path)).toBe(true)
+    expect(svc.versions('p1', a.output.id).map((v) => v.source)).toEqual(['external', 'agent'])
+    expect(await svc.delete(scope, { outputId: a.output.id, expectedVersionCount: 2 })).toEqual([])
+    expect(existsSync(a.output.path)).toBe(false)
+  })
+  it('deletePreview captures first, then reports the counts', async () => {
+    const a = await svc.produce(scope, md('A', { fileName: 'a.md', content: 'one' }), src)
+    writeFileSync(a.output.path, 'edited outside')
+    expect(svc.deletePreview(scope, a.output.id)).toMatchObject({ versions: 2 })
+    expect(svc.get('p1', a.output.id)?.version).toBe(2)
+  })
+})
+
+describe('hard links (L5)', () => {
+  it('register refuses a file that has another hard link', async () => {
+    writeFileSync(join(project, 'a.md'), 'x')
+    linkSync(join(project, 'a.md'), join(root, 'elsewhere.md'))
+    await expect(svc.register(scope, { path: 'a.md', title: 'A' }, src)).rejects.toThrow(/hard link/)
+  })
 })
 
 describe('preview queue (L2)', () => {

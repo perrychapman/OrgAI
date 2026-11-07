@@ -1,4 +1,4 @@
-import { type Stats, closeSync, constants, lstatSync, mkdirSync, openSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { type Stats, chmodSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { OutputProduceKind } from '@shared/types'
@@ -231,11 +231,15 @@ export function writeProduced(t: ProducedTarget, data: Buffer): number {
 export function writeFileAtomic(file: string, data: Buffer): void {
   const st = lstatOrNull(file)
   if (st && (!st.isFile() || st.isSymbolicLink())) throw new Error('The file to write is no longer a regular file.')
+  if (st && st.nlink > 1) throw new Error(HARDLINK_MESSAGE)
   const tmp = join(dirname(file), `.${basename(file)}.${randomBytes(6).toString('hex')}.tmp`)
   try {
     writeFileSync(tmp, data, { flag: 'wx' })
+    // Keep the old file's permissions (a replace must not widen or narrow them); POSIX only.
+    if (st && process.platform !== 'win32') chmodSync(tmp, st.mode & 0o7777)
     const again = lstatOrNull(file)
     if (again && (!again.isFile() || again.isSymbolicLink())) throw new Error('The file to write is no longer a regular file.')
+    if (again && again.nlink > 1) throw new Error(HARDLINK_MESSAGE)
     renameSync(tmp, file)
   } catch (e) {
     rmSync(tmp, { force: true })
@@ -248,6 +252,44 @@ export interface CheckedFile {
   path: string
   relPath: string
   bytes: number
+  /** Identity from the lstat the check made; pass it to readRegularCapped so a swapped file is refused. */
+  dev: number
+  ino: number
+}
+
+const HARDLINK_MESSAGE = 'That file has more than one hard link, so it may be the same file as one elsewhere; OrgAI does not use it.'
+
+/**
+ * Read a regular file through ONE descriptor: opened with O_NOFOLLOW and O_NONBLOCK where the platform has them (a FIFO
+ * or device swapped in after a check then cannot block the main thread), fstat-ed (regular file, size <= cap, one hard
+ * link, and the same dev/ino as the earlier lstat when `expect` is given), then read for at most `cap` bytes. Throws a
+ * plain sentence.
+ */
+export function readRegularCapped(file: string, cap: number, expect?: { dev: number; ino: number }): Buffer {
+  const flags = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0)
+  let fd: number
+  try {
+    fd = openSync(file, flags)
+  } catch (e) {
+    throw new Error(`Could not read the file: ${(e as Error).message}`)
+  }
+  try {
+    const st = fstatSync(fd)
+    if (!st.isFile()) throw new Error('That path is not a regular file.')
+    if (st.nlink > 1) throw new Error(HARDLINK_MESSAGE)
+    if (st.size > cap) throw new Error(`That file is larger than ${Math.round(cap / 1024 / 1024)} MB.`)
+    if (expect && (st.dev !== expect.dev || st.ino !== expect.ino)) throw new Error('That file changed while OrgAI was reading it.')
+    const buf = Buffer.alloc(st.size)
+    let got = 0
+    while (got < buf.length) {
+      const n = readSync(fd, buf, got, buf.length - got, got)
+      if (n <= 0) break
+      got += n
+    }
+    return got === buf.length ? buf : buf.subarray(0, got)
+  } finally {
+    closeSync(fd)
+  }
 }
 
 /** relPath: relative to the project with forward slashes when inside it, else the absolute real path. */
@@ -295,6 +337,7 @@ export function checkRegisteredPath(raw: unknown, scope: PathScope, dataDir: str
   if (!st) throw new Error('That file does not exist.')
   if (st.isSymbolicLink()) throw new Error('That path is a link; outputs are not registered through links.')
   if (!st.isFile()) throw new Error('That path is not a regular file.')
+  if (st.nlink > 1) throw new Error(HARDLINK_MESSAGE)
   if (st.size > OUTPUT_FILE_MAX_BYTES) throw new Error(`That file is larger than ${Math.round(OUTPUT_FILE_MAX_BYTES / 1024 / 1024)} MB.`)
   let real: string
   try {
@@ -314,7 +357,7 @@ export function checkRegisteredPath(raw: unknown, scope: PathScope, dataDir: str
     /* keep */
   }
   if (hasGitSegment(realRoot, real) || hasGitSegment(root, real)) throw new Error('Files under .git are not accepted.')
-  return { path: real, relPath: relPathFor(scope.projectPath, real), bytes: st.size }
+  return { path: real, relPath: relPathFor(scope.projectPath, real), bytes: st.size, dev: st.dev, ino: st.ino }
 }
 
 /** True when `a` and `b` are the same file path (case-folded where the platform folds). */

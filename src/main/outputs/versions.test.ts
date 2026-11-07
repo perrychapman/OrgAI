@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { OutputVersionMeta, StoredOutput } from './store'
-import { ensureOutputDataDir, outputDataDir, pruneVersions, readSnapshot, removeOutputData, removeSnapshot, sha256, snapshotExt, snapshotPath, writeSnapshot } from './versions'
+import { VERSION_STORAGE_FULL, VersionStorageFullError, assertVersionRoom, ensureOutputDataDir, outputDataDir, pruneVersions, readSnapshot, removeOutputData, removeSnapshot, sha256, snapshotExt, snapshotPath, writeSnapshot } from './versions'
 
 let data: string
 beforeEach(() => {
@@ -104,5 +104,25 @@ describe('pruneVersions', () => {
     const o = out('out_1', [meta(1), meta(2)])
     expect(pruneVersions([o])).toEqual([])
     expect(o.versionsPruned).toBeUndefined()
+  })
+})
+
+describe('assertVersionRoom (M4)', () => {
+  it('passes when pruning makes room and does not change the entries', () => {
+    const a = out('out_a', [meta(1), meta(2), meta(3)])
+    expect(() => assertVersionRoom([a], 10, 'out_a', 40)).not.toThrow()
+    expect(a.versions).toHaveLength(3)
+    expect(a.versionsPruned).toBeUndefined()
+  })
+  it('refuses when v1, labelled and current versions alone leave no room', () => {
+    const a = out('out_a', [meta(1), meta(2, { label: 'keep' }), meta(3)])
+    expect(() => assertVersionRoom([a], 10, 'out_a', 25)).toThrow(VersionStorageFullError)
+    expect(() => assertVersionRoom([a], 10, undefined, 25)).toThrow(VERSION_STORAGE_FULL)
+    expect(a.versions).toHaveLength(3)
+  })
+  it('counts the new bytes as a new entry without forId', () => {
+    const a = out('out_a', [meta(1)])
+    expect(() => assertVersionRoom([a], 90, undefined, 100)).not.toThrow()
+    expect(() => assertVersionRoom([a], 91, undefined, 100)).toThrow(/storage for this project is full/)
   })
 })
