@@ -475,6 +475,11 @@ components/layout:
   with no target and the History run link land on a real element, and `SidePanel` returns focus to the rail's Show
   button after the user's Hide. Open: the "Show item details" click still drops focus to body; the 8 s timer, retired-group
   edge geometry and radial layout with the new handles are unverified.
+- Org change sessions (2026-11-07): changing the org chart from the Team tab or Settings > Maintenance is an ordinary
+  setup run (run tab, sidebar row, History, Needs-you, relaunch restore), started through `components/team/useOrgChange.ts`
+  only; while one is open the same controls send into it. It is recognised by kind 'setup' plus its prompt
+  (`lib/orgChange.ts` holds the prompt contract and the display title "Org chart: ..."), so keep the start wording and
+  `isOrgChangeRun` in step. The renderer never starts or filters `surface: 'team'` runs (main still accepts the field).
 
 - `src/renderer/src/`
 - `src/renderer/src/components/connections/`
