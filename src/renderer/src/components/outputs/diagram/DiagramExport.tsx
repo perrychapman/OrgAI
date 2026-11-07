@@ -10,7 +10,10 @@ import {
   SVG_NS,
   XMLNS_NS,
   backgroundRect,
+  bytesToBase64,
   downloadName,
+  savedImageNotice,
+  textToBase64,
   exportNotice,
   exportSize,
   parseExportOptions,
@@ -23,6 +26,7 @@ import {
 import { svgNaturalSize } from '../../../lib/outputZoom'
 import type { Size } from '../../../lib/diagramView'
 import { Icon } from '../../ui/Icon'
+import { useOutputDetail } from '../outputDetailContext'
 import { Popover } from '../../ui/Popover'
 import { SegmentedControl } from '../../ui/SegmentedControl'
 
@@ -194,25 +198,46 @@ export function useDiagramExport({
       }, EXPORT_FAILED),
     [guard, png, notify]
   )
+  // In an output's detail the native save dialog writes the file (outputs:saveImage; the path never comes from here);
+  // elsewhere (a compare pane) the browser downloads it.
+  const detail = useOutputDetail()
+  const target = detail ? { projectId: detail.output.projectId, outputId: detail.output.id } : null
+  const targetKey = target ? `${target.projectId}/${target.outputId}` : ''
+  const saveImage = useCallback(
+    async (mime: 'image/png' | 'image/svg+xml', dataBase64: string, name: string, extra = ''): Promise<boolean> => {
+      const api = window.orgai?.outputs
+      if (!targetKey || !api?.saveImage) return false
+      const [projectId, outputId] = [targetKey.slice(0, targetKey.indexOf('/')), targetKey.slice(targetKey.indexOf('/') + 1)]
+      notify(savedImageNotice(await api.saveImage({ projectId, outputId, suggestedName: name, mime, dataBase64 }), extra))
+      return true
+    },
+    [targetKey, notify]
+  )
   const savePng = useCallback(
     () =>
       void guard(async () => {
         const made = await png()
         if (!made) throw new Error('no drawing')
-        download(await made.blob, downloadName(title, 'png'))
+        const blob = await made.blob
+        const name = downloadName(title, 'png')
+        const extra = made.size.reduced ? 'The diagram is large, so it was saved smaller.' : ''
+        if (await saveImage('image/png', bytesToBase64(new Uint8Array(await blob.arrayBuffer())), name, extra)) return
+        download(blob, name)
         notify(exportNotice(optionsRef.current.scale, made.size, false))
       }, EXPORT_FAILED),
-    [guard, png, notify, title]
+    [guard, png, notify, title, saveImage]
   )
   const saveSvg = useCallback(
     () =>
       void guard(async () => {
         const text = svgSource ?? (await build(optionsRef.current, true))?.svg
         if (!text) throw new Error('no drawing')
-        download(new Blob([text], { type: 'image/svg+xml' }), downloadName(title, 'svg'))
+        const name = downloadName(title, 'svg')
+        if (await saveImage('image/svg+xml', textToBase64(text), name)) return
+        download(new Blob([text], { type: 'image/svg+xml' }), name)
         notify('Your browser is saving the file.')
       }, EXPORT_FAILED),
-    [guard, build, notify, title, svgSource]
+    [guard, build, notify, title, svgSource, saveImage]
   )
   const copySvg = useCallback(
     () =>

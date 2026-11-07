@@ -118,3 +118,15 @@ describe('names and themes', () => {
     expect(c.startOnLoad).toBe(false)
   })
 })
+
+describe('saveImage helpers', () => {
+  it('encodes bytes and text as base64', async () => {
+    const { bytesToBase64, textToBase64, savedImageNotice } = await import('./diagramExport')
+    expect(bytesToBase64(new Uint8Array([0x89, 0x50, 0x4e, 0x47]))).toBe('iVBORw==')
+    expect(textToBase64('<svg/>')).toBe(btoa('<svg/>'))
+    expect(bytesToBase64(new Uint8Array(100000)).length).toBeGreaterThan(100000)
+    expect(savedImageNotice({ path: 'C:/x/a.png' })).toBe('Saved a copy to C:/x/a.png.')
+    expect(savedImageNotice({ path: '/a.png' }, 'Smaller.')).toBe('Saved a copy to /a.png. Smaller.')
+    expect(savedImageNotice({ cancelled: true })).toBe('Nothing was saved.')
+  })
+})
