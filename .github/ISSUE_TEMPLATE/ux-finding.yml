@@ -1,0 +1,68 @@
+name: UX finding
+description: A usability, wording or accessibility problem found by a walk or by use.
+labels: ["ux-finding", "status: triage"]
+body:
+  - type: markdown
+    attributes:
+      value: Security problems do not go here; see SECURITY.md.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - tui
+        - cli
+        - main-runtime (includes permissions)
+        - adapters (claude*, codex*, mock.ts)
+        - renderer
+        - connections
+        - mcp
+        - skills
+        - knowledge
+        - docs
+        - ci
+    validations:
+      required: true
+  - type: textarea
+    id: affected
+    attributes:
+      label: Who is affected and what happens to them
+    validations:
+      required: true
+  - type: input
+    id: walk
+    attributes:
+      label: Walk reference (optional)
+      placeholder: docs/design/ux-review-<name>.md, finding id
+  - type: input
+    id: size
+    attributes:
+      label: Window size and theme
+      description: "1024x640 or 1600x1000; dark or light. For the TUI, the terminal size."
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance
+      description: What must be true when this is fixed.
+    validations:
+      required: true
+  - type: dropdown
+    id: sensitive
+    attributes:
+      label: Touches permissions, secrets, paths or spawning?
+      description: If yes, the fix needs a Reviewer pass.
+      options:
+        - "No"
+        - "Yes"
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: checked-by
+    attributes:
+      label: Checked by
+      description: "unit / e2e (name) / mock / live (with consent) / unverified (list what no run confirmed)."
+    validations:
+      required: true
