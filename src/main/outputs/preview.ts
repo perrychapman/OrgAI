@@ -12,7 +12,7 @@ import {
 } from '@shared/types'
 import { htmlToBlocks } from './htmlBlocks'
 import { svgProblem } from './writers'
-import { zipProblem } from './zipGuard'
+import { zipInfo, zipProblem } from './zipGuard'
 
 /**
  * previewFile(path, kind): the inline preview of one output file. Never throws; any problem is { kind: 'none', reason }.
@@ -28,7 +28,7 @@ import { zipProblem } from './zipGuard'
 
 const DOC_MAX_BYTES = 20 * 1024 * 1024
 const COUNT_EXTRA_ROWS = 20_000
-const COUNT_MS = 400
+const COUNT_MS = 150
 const DEADLINE_MS = 8_000
 const CELL_TEXT_MAX = 2000
 const SHEETS_TEXT_BUDGET = 4 * 1024 * 1024
@@ -125,11 +125,77 @@ function formulaOf(v: unknown): string | undefined {
   return undefined
 }
 
+/** One row's cells (columns past the cap dropped) and the widest column seen. Works for the streamed and the loaded Row. */
+function readRow(row: ExcelJS.Row, budget: { left: number }): { cells: SheetCell[]; maxCol: number } {
+  const out: SheetCell[] = []
+  let maxCol = 0
+  row.eachCell({ includeEmpty: false }, (cell: ExcelJS.Cell, col: number) => {
+    if (col > maxCol) maxCol = col
+    if (col > OUTPUT_PREVIEW_COLUMNS_MAX) return
+    while (out.length < col - 1) out.push({ v: null })
+    const sc: SheetCell = { v: plainValue(cell.value, budget) }
+    const f = formulaOf(cell.value)
+    if (f) sc.f = f
+    const fmt = cell.numFmt
+    if (typeof fmt === 'string' && fmt && fmt !== 'General' && fmt.length <= 64) sc.fmt = fmt
+    out[col - 1] = sc
+  })
+  return { cells: out, maxCol }
+}
+
+/** Largest uncompressed package the full-load fallback reads (workbook.xlsx.load inflates everything into memory). */
+const LOAD_FALLBACK_MAX_BYTES = 60 * 1024 * 1024
+
 async function previewXlsx(path: string): Promise<OutputPreview> {
   const buf = readCapped(path, DOC_MAX_BYTES)
   if (buf.length > DOC_MAX_BYTES) return none('This spreadsheet is larger than 20 MB, so OrgAI does not preview it; open it instead.')
-  const zp = zipProblem(buf)
-  if (zp) return none(`OrgAI did not preview this spreadsheet: ${zp}`)
+  const zi = zipInfo(buf)
+  if (zi.problem) return none(`OrgAI did not preview this spreadsheet: ${zi.problem}`)
+  const streamed = await previewXlsxStream(buf)
+  if (streamed.kind !== 'none') return streamed
+  // exceljs' streaming reader needs xl/workbook.xml before the sheets in the zip and throws otherwise (and exceljs' own
+  // writer does not always keep that order), so a failed stream falls back to a full load, bounded by uncompressed size.
+  if (zi.totalBytes > LOAD_FALLBACK_MAX_BYTES) return streamed
+  return (await previewXlsxLoaded(buf)) ?? streamed
+}
+
+/** Full-load reader: exact row and column totals, first OUTPUT_PREVIEW_* shown. Null when it cannot read the file. */
+async function previewXlsxLoaded(buf: Buffer): Promise<OutputPreview | null> {
+  try {
+    const wb = new ExcelJS.Workbook()
+    await wb.xlsx.load(buf as unknown as ArrayBuffer)
+    const budget = { left: SHEETS_TEXT_BUDGET }
+    const sheets: SheetPreview[] = []
+    let truncatedSheets = 0
+    for (const ws of wb.worksheets) {
+      if (sheets.length >= OUTPUT_PREVIEW_SHEETS_MAX || budget.left <= 0) {
+        truncatedSheets++
+        continue
+      }
+      const total = ws.rowCount
+      const shown = Math.min(total, OUTPUT_PREVIEW_ROWS_MAX)
+      const rows: SheetCell[][] = []
+      let maxCol = 0
+      for (let r = 1; r <= shown; r++) {
+        const rr = readRow(ws.getRow(r), budget)
+        if (rr.maxCol > maxCol) maxCol = rr.maxCol
+        rows.push(rr.cells)
+        if (budget.left <= 0) break
+      }
+      const sp: SheetPreview = { name: cellText(ws.name, budget), rows }
+      if (total > rows.length) sp.truncatedRows = total - rows.length
+      for (let r = shown + 1; r <= Math.min(total, shown + 1000); r++) maxCol = Math.max(maxCol, ws.getRow(r).cellCount)
+      if (maxCol > OUTPUT_PREVIEW_COLUMNS_MAX) sp.truncatedCols = maxCol - OUTPUT_PREVIEW_COLUMNS_MAX
+      sheets.push(sp)
+    }
+    if (!sheets.length) return none('This spreadsheet has no sheets to show.')
+    return { kind: 'sheets', sheets, ...(truncatedSheets ? { truncatedSheets } : {}) }
+  } catch {
+    return null
+  }
+}
+
+async function previewXlsxStream(buf: Buffer): Promise<OutputPreview> {
   const input = Readable.from([buf])
   const started = Date.now()
   const budget = { left: SHEETS_TEXT_BUDGET }
@@ -161,19 +227,9 @@ async function previewXlsx(path: string): Promise<OutputPreview> {
             lastNumber = number
             continue
           }
-          const out: SheetCell[] = []
-          row.eachCell({ includeEmpty: false }, (cell: ExcelJS.Cell, col: number) => {
-            if (col > maxCol) maxCol = col
-            if (col > OUTPUT_PREVIEW_COLUMNS_MAX) return
-            while (out.length < col - 1) out.push({ v: null })
-            const sc: SheetCell = { v: plainValue(cell.value, budget) }
-            const f = formulaOf(cell.value)
-            if (f) sc.f = f
-            const fmt = cell.numFmt
-            if (typeof fmt === 'string' && fmt && fmt !== 'General' && fmt.length <= 64) sc.fmt = fmt
-            out[col - 1] = sc
-          })
-          rows.push(out)
+          const rr = readRow(row, budget)
+          if (rr.maxCol > maxCol) maxCol = rr.maxCol
+          rows.push(rr.cells)
           seen++
           lastNumber = number
           if (budget.left <= 0 || Date.now() - started > DEADLINE_MS) {
@@ -188,7 +244,9 @@ async function previewXlsx(path: string): Promise<OutputPreview> {
         }
       }
       void seen
-      const sp: SheetPreview = { name: typeof sheet.name === 'string' ? cellText(sheet.name, budget) : `Sheet${sheets.length + 1}`, rows }
+      // WorksheetReader.name is set by exceljs from workbook.xml but missing from its typings.
+      const sheetName = (sheet as unknown as { name?: unknown }).name
+      const sp: SheetPreview = { name: typeof sheetName === 'string' ? cellText(sheetName, budget) : `Sheet${sheets.length + 1}`, rows }
       if (extra > 0) sp.truncatedRows = extra
       if (maxCol > OUTPUT_PREVIEW_COLUMNS_MAX) sp.truncatedCols = maxCol - OUTPUT_PREVIEW_COLUMNS_MAX
       sheets.push(sp)

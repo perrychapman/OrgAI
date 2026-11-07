@@ -57,14 +57,10 @@ describe('svg and image', () => {
     expect(((await previewFile(f('b.jpg', PNG), 'image')) as { dataUrl: string }).dataUrl).toMatch(/^data:image\/png/)
     expect((await previewFile(f('c.png', '<svg onload="alert(1)"/>'), 'image')).kind).toBe('none')
     expect((await previewFile(f('d.png', Buffer.concat([PNG, Buffer.alloc(OUTPUT_PREVIEW_IMAGE_MAX_BYTES)])), 'image')).kind).toBe('none')
-    expect(imageOf(Buffer.from('GIF89a....'))).toBe('gif')
+    const gif = Buffer.from('GIF89a\x01\x00\x01\x00\x00\x00\x00;', 'latin1')
+    expect(((await previewFile(f('e.gif', gif), 'image')) as { dataUrl: string }).dataUrl).toMatch(/^data:image\/gif;base64,/)
   })
 })
-
-function imageOf(b: Buffer): string {
-  const url = (b.toString('latin1').startsWith('GIF89a') ? 'gif' : '')
-  return url
-}
 
 describe('other', () => {
   it('pdf and other are open-only', async () => {
@@ -135,7 +131,7 @@ describe('xlsx', () => {
   it('a produced workbook with a "formula" string shows the text, no formula', async () => {
     const buf = await renderProduced({ kind: 'xlsx', title: 't', content: { sheets: [{ name: 'F', rows: [['=1+1']] }] } })
     const r = await previewFile(f('f.xlsx', buf), 'xlsx')
-    if (r.kind !== 'sheets') throw new Error('expected sheets')
+    if (r.kind !== 'sheets') throw new Error(`expected sheets: ${JSON.stringify(r)}`)
     expect(r.sheets[0].rows[0][0]).toEqual({ v: '=1+1' })
   })
   it('corrupt and bomb files answer none', async () => {

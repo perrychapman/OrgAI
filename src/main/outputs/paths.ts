@@ -1,4 +1,4 @@
-import { closeSync, constants, existsSync, lstatSync, mkdirSync, openSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { type Stats, closeSync, constants, existsSync, lstatSync, mkdirSync, openSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { OutputProduceKind } from '@shared/types'
@@ -62,7 +62,7 @@ export function withKindExtension(leaf: string, kind: OutputProduceKind): string
   return `${stem}.${ext}`
 }
 
-function lstatOrNull(p: string): ReturnType<typeof lstatSync> | null {
+function lstatOrNull(p: string): Stats | null {
   try {
     return lstatSync(p)
   } catch {

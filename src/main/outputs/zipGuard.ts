@@ -17,6 +17,17 @@ const CEN_SIG = 0x02014b50
 
 /** Why this buffer is not safe to unzip, or null. */
 export function zipProblem(buf: Buffer): string | null {
+  return zipInfo(buf).problem
+}
+
+/** The guard's verdict plus the central directory's total uncompressed size (0 when refused early). */
+export function zipInfo(buf: Buffer): { problem: string | null; totalBytes: number } {
+  let total = 0
+  const problem = scan(buf, (t) => (total = t))
+  return { problem, totalBytes: total }
+}
+
+function scan(buf: Buffer, setTotal: (n: number) => void): string | null {
   if (buf.length < 22) return 'The file is too small to be an Office document.'
   // EOCD sits at the end, followed by at most a 65535-byte comment.
   const from = Math.max(0, buf.length - 22 - 0xffff)
@@ -54,6 +65,7 @@ export function zipProblem(buf: Buffer): string | null {
     const commentLen = buf.readUInt16LE(p + 32)
     if (csize === 0xffffffff || usize === 0xffffffff) return 'ZIP64 packages are not supported.'
     total += usize
+    setTotal(total)
     if (total > ZIP_MAX_TOTAL_BYTES) return 'The package expands to more than 200 MB.'
     if (usize > RATIO_FLOOR_BYTES && (csize === 0 || usize / csize > ZIP_MAX_RATIO)) return 'A part of the package is compressed far beyond a normal ratio.'
     p += 46 + nameLen + extraLen + commentLen
