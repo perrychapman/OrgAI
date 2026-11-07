@@ -7,8 +7,7 @@
  *
  * Section ids: `<kind>:<key>`: surface:<atlas id>, setting:<field> | setting:project.<field>, menu:<action>,
  * shortcut:<key>, tool:<name>, channel:<channel>, command:<name>, connector:<id>, doc:<file>#<heading-slug>.
- * Shortcut rows are an optional input (`shortcuts`): shared/view/shortcuts.ts does not exist on every branch, and main
- * never imports renderer code, so the wiring code passes `SHORTCUTS` mapped to ShortcutRow.
+ * Shortcut rows default to shared/view/shortcuts.ts SHORTCUTS (`shortcutRows`); `deps.shortcuts` overrides them (tests).
  * Electron-free (noElectronImport.test.ts).
  */
 import { COMMANDS } from '../../cli/commandTable'
@@ -37,6 +36,7 @@ import { hiddenCharProblem } from '../capabilities/sanitize'
 import { HOST_CHANNEL_REGISTRY } from '../host/registry'
 import { harnessToolCatalog } from '../runtime/harnessTools'
 import { bundledDocs } from './docs'
+import { SHORTCUTS, type ShortcutDef } from '../../shared/view/shortcuts'
 
 export interface ShortcutRow {
   /** Stable key, e.g. 'toggle-sidebar'. */
@@ -356,6 +356,15 @@ export interface ReferenceStatusDeps {
   cliShim?(): CliShimStatus | Promise<CliShimStatus>
 }
 
+/** The shared shortcut table (src/shared/view/shortcuts.ts, the source the renderer re-exports) as reference rows. */
+export function shortcutRows(defs: readonly ShortcutDef[]): ShortcutRow[] {
+  return defs.map((d) => ({
+    key: d.label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''),
+    label: d.note ? `${d.label} (${d.note})` : d.label,
+    keys: d.combos.map((c) => c.map((k) => (k === 'Mod' ? 'Ctrl/Cmd' : k)).join('+')).join(' or ')
+  }))
+}
+
 export interface AppReferenceDeps {
   status?: ReferenceStatusDeps
   /** Optional shortcut rows (wired by the host from shared/view/shortcuts.ts). */
@@ -372,7 +381,7 @@ const SURFACE_KINDS: ReadonlySet<AppReferenceSectionKind> = new Set<AppReference
 
 export function createAppReference(deps: AppReferenceDeps = {}): AppReferenceService {
   let index: ReferenceIndex | undefined
-  const idx = (): ReferenceIndex => (index ??= buildReferenceIndex(buildReferenceCorpus({ shortcuts: deps.shortcuts, docs: deps.docs })))
+  const idx = (): ReferenceIndex => (index ??= buildReferenceIndex(buildReferenceCorpus({ shortcuts: deps.shortcuts ?? shortcutRows(SHORTCUTS), docs: deps.docs })))
 
   function ranked(q: string, budget: number, only: ReadonlySet<AppReferenceSectionKind> | undefined, label: string): AppReferenceResult {
     const ix = idx()

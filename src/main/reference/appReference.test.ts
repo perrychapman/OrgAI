@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { APP_REFERENCE_BUDGET_MIN, APP_REFERENCE_READ_MAX_CHARS } from '../../shared/types'
 import type { AppSettings, ConnectionInfo } from '../../shared/types'
-import { buildReferenceCorpus, createAppReference, splitMarkdown } from './appReference'
+import { buildReferenceCorpus, createAppReference, shortcutRows, splitMarkdown } from './appReference'
+import { SHORTCUTS } from '../../shared/view/shortcuts'
 import type { AppReferenceDeps } from './appReference'
 import { bundledDocs } from './docs'
 
@@ -96,5 +97,16 @@ describe('query', () => {
     const per = (performance.now() - t) / 10
     console.log(`app reference search: ${per.toFixed(1)} ms per query over the full corpus`)
     expect(per).toBeLessThan(2000)
+  })
+})
+
+describe('shortcuts', () => {
+  it('reads the shared shortcut table by default', async () => {
+    const rows = shortcutRows(SHORTCUTS)
+    expect(rows.length).toBe(SHORTCUTS.length)
+    expect(rows.find((r) => /sidebar/i.test(r.label))?.keys).toMatch(/Ctrl\/Cmd\+B/)
+    const ref = createAppReference({ docs: {} })
+    const res = await ref.query({ action: 'search', query: 'sidebar shortcut' }, { status: false })
+    expect(res.hits?.some((h) => h.kind === 'shortcut')).toBe(true)
   })
 })
