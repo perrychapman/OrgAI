@@ -1182,6 +1182,10 @@ and the frontend-design skill is not vendored in `.claude/skills` (only `run-des
   window at `#/run/<projectId>/<runId>`; `runs:listLive` lists live runs across projects.
 - Setup sessions (`RunSummary.kind === 'setup'`) run the built-in Architect from `src/shared/setup.ts`, never the
   project's roles. Proposals go through `RuntimeContext.requestProposal`; applying them is `src/main/setup/service.ts`.
+  - Revisions and retrospectives (2026-11-07, ARCHITECTURE.md "Architect revisions"): roles a revision does not
+    mention are kept (removal only through propose_org_chart `remove`), and an edited role keeps its model and tier
+    unless the draft names a different resolving tier or listed id; a new role's unmapped tier never silently becomes
+    'inherit' while a listed model or the root's model exists. Unit-tested only; no live Architect run.
   - A `PreToolUse` hook answering `permissionDecision: 'allow'` bypasses the permission system in every mode
     (verified in `scripts/smoke-permission-hook.mjs` on haiku under `dontAsk`: the first Bash call was denied, the
     in-process MCP tool got through on the hook alone, and the retried Bash call ran with zero `canUseTool` calls).
