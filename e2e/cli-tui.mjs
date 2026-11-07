@@ -12,7 +12,8 @@
 // b. Resize 120x30 -> 100x30 (stacked: the transcript starts at the left edge, the agents pane above it) -> 120x30
 //    (split: the transcript sits right of the agents pane); no \x1b[?1049l / \x1b[?1049h during the resizes.
 // c. Inline at 90x20 (below 100x24 at launch): no \x1b[?1049h at all; transcript rows land in the primary scrollback;
-//    the footer names the project.
+//    the footer carries the status bar. (The status bar drops the project name first when it does not fit, so these
+//    steps wait on "N need you", drawn once the project is loaded; the name is asserted through `orgai status`.)
 // d. Ctrl+Z (\x1a) in both modes: \x1b[?2004l and \x1b[?25h (full screen also \x1b[?1049l) are written and `ps` shows
 //    the TUI stopped (T); SIGCONT re-enables bracketed paste, re-enters \x1b[?1049h only in full screen, redraws, and
 //    typed text reaches the composer again.
@@ -56,7 +57,13 @@ const UI = {
   inlineArgs: ['tui'], // at 90x20 the TUI picks inline by size; `--inline` forces it at any size
   resolvedElsewhere: /Resolved in another window/i,
   /** The agents pane's heading (soft check: the layout is judged by where the transcript text starts). */
-  treeHeading: /\b(Agents|Org|Team)\b/
+  treeHeading: /\b(Agents|Org|Team)\b/,
+  /**
+   * The status bar's "N need(s) you" segment. It is drawn only once a project or run is known (StatusBar buildSegs), and it
+   * is never dropped by the fitting, which gives up the project name first (3d62f0b). So it is the ready signal for "the TUI
+   * has loaded the project" at any width; the project name itself is not reliably on screen (a long name does not fit).
+   */
+  statusReady: /\bneeds? you\b/
 }
 
 const skip = (why) => {
@@ -235,8 +242,8 @@ try {
     try {
       await t.waitFor((r) => r.includes('\x1b[?1049h') && r.includes('\x1b[?2004h'), 30_000, { raw: true })
       check(true, 'a: full screen at 120x30 enters the alternate screen and bracketed paste')
-      await t.waitFor(projectName, 20_000)
-      check(true, 'a: the status bar names the project')
+      await t.waitFor(UI.statusReady, 20_000)
+      check(true, 'a: the status bar shows the project is loaded (the name itself is dropped first when it does not fit)')
       await type(t, 'E2E start the run')
       t.key('enter')
       await t.waitFor('E2E-MARK-ALPHA', 30_000)
@@ -272,7 +279,7 @@ try {
       await t.signal('SIGCONT')
       await t.waitFor((r) => r.includes('\x1b[?1049h') && r.includes('\x1b[?2004h'), 10_000, { raw: true, since: cont })
       check(true, 'd: SIGCONT re-enters the alternate screen and bracketed paste')
-      await t.waitFor(projectName, 10_000)
+      await t.waitFor(UI.statusReady, 10_000)
       await type(t, 'E2E-AFTER-CONT')
       await t.waitFor('E2E-AFTER-CONT', 10_000)
       check(true, 'd: after SIGCONT the screen redraws and typed text reaches the composer')
@@ -295,7 +302,7 @@ try {
     const t = tui(['--host', 'inproc', ...UI.inlineArgs], { cols: 90, rows: 20, cwd: repo })
     open.push(t)
     try {
-      await t.waitFor(projectName, 30_000)
+      await t.waitFor(UI.statusReady, 30_000)
       await type(t, 'E2E inline run')
       t.key('enter')
       await t.waitFor((r) => r.includes('E2E-MARK-OMEGA'), 40_000, { raw: true })
@@ -304,7 +311,7 @@ try {
       const back = t.scrollback().join('\n')
       check(back.includes('E2E-MARK-ALPHA') && back.includes('E2E scroll line 1'), 'c: transcript rows land in the primary scrollback', esc(back.slice(-400)))
       const footer = t.screenLines().filter((l) => l.trim()).slice(-4).join('\n')
-      check(footer.includes(projectName), 'c: the pinned footer names the project', esc(t.screen()))
+      check(UI.statusReady.test(footer), 'c: the pinned footer carries the status bar', esc(t.screen()))
 
       const before = t.raw().length
       t.key('ctrl+z')
@@ -331,7 +338,7 @@ try {
     const t = tui(['--host', 'inproc', ...UI.fullscreenArgs], { cols: 120, rows: 30, cwd: repo, script: SCRIPTS.escapes })
     open.push(t)
     try {
-      await t.waitFor(projectName, 30_000)
+      await t.waitFor(UI.statusReady, 30_000)
       await type(t, 'E2E escapes')
       t.key('enter')
       await t.waitFor('E2E-ESC-DONE', 40_000)
@@ -501,7 +508,7 @@ try {
     const t = tui(['--host', 'inproc', ...UI.fullscreenArgs], { cols: 120, rows: 40, script: '', cwd: repo })
     open.push(t)
     try {
-      await t.waitFor(projectName, 30_000)
+      await t.waitFor(UI.statusReady, 30_000)
       await type(t, '[mock:deep-tree] E2E deep tree')
       t.key('enter')
       await t.waitFor('mock-lead', 40_000)
@@ -573,7 +580,7 @@ try {
     const t = tui(['--host', 'inproc', ...UI.fullscreenArgs], { cols: 120, rows: 30, cwd: repo })
     open.push(t)
     try {
-      await t.waitFor(projectName, 30_000)
+      await t.waitFor(UI.statusReady, 30_000)
       const tail = t.raw().length
       await t.signal('SIGTERM')
       const e = await Promise.race([t.exited, sleep(15_000).then(() => null)])
