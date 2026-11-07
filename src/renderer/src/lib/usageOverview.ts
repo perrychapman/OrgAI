@@ -532,6 +532,9 @@ export function foldRows(rows: readonly UsageOverviewRow[], f: UsageFilters, siz
 
     // roles
     for (const r of u.roles) {
+      // A role records one whole-role cost, no per-model split: under a model chip only roles that used the model
+      // stay, and their cost is unknown (never the whole-role figure).
+      if (model && !r.models.includes(model)) continue
       const key = `${row.projectId}\u0000${roleKeyOf(r)}`
       let e = roles.get(key)
       if (!e) {
@@ -540,7 +543,7 @@ export function foldRows(rows: readonly UsageOverviewRow[], f: UsageFilters, siz
         roles.set(key, e)
       }
       addTokens(e.tokens, r.tokens)
-      e._cost.parts.push({ costUsd: r.costUsd, costSource: r.costSource, ...(r.costPartial ? { costPartial: true } : {}) })
+      e._cost.parts.push(model ? { costUsd: null, costSource: 'unknown' } : { costUsd: r.costUsd, costSource: r.costSource, ...(r.costPartial ? { costPartial: true } : {}) })
       e.agents += r.agents
       e.turns += r.turns
       e.toolCalls += r.toolCalls
@@ -550,12 +553,13 @@ export function foldRows(rows: readonly UsageOverviewRow[], f: UsageFilters, siz
       e.noResultTokens += r.noResultTokens
       for (const m of r.models) if (!e.models.includes(m)) e.models.push(m)
       e.runs++
-      if (r.costUsd !== null && !r.costPartial && r.costSource !== 'unknown') e.costKnownRuns++
+      if (!model && r.costUsd !== null && !r.costPartial && r.costSource !== 'unknown') e.costKnownRuns++
       else e.costUnknownRuns++
     }
 
     // connections
-    const split = u.connections
+    // Under a model chip the split (whole-run cost per connection) would overstate: the model's cost goes to the row's connection.
+    const split = model ? undefined : u.connections
     const list: { id: string | null; cost: CostInput; agents: number }[] = split
       ? Object.entries(split).map(([id, v]) => ({ id, agents: v?.agents ?? 0, cost: v?.costUsd === null || v === undefined ? { costUsd: null, costSource: 'unknown' } : { costUsd: v.costUsd, costSource: 'computed', ...(v.costPartial ? { costPartial: true } : {}) } }))
       : [{ id: row.connection ?? null, agents: u.agents, cost: fig.cost }]

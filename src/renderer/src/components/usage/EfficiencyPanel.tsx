@@ -2,6 +2,7 @@ import type { ReactElement } from 'react'
 import { useId, useMemo, useRef, useState } from 'react'
 import { Info } from 'lucide-react'
 import { connectionLabel } from '../../lib/connectionLabel'
+import { TRUNCATED_LIMIT_LABEL } from '../../lib/usagePage'
 import {
   efficiencyByProject,
   efficiencyItems,
@@ -148,10 +149,12 @@ const COLUMNS: { col: EfficiencyColumn; label: string; num: boolean }[] = [
   { col: 'idle', label: 'Idle share', num: true }
 ]
 
-export default function EfficiencyPanel({ data, onPickSignal, announce }: EfficiencyPanelProps): ReactElement {
+export default function EfficiencyPanel({ data, overview, onPickSignal, announce }: EfficiencyPanelProps): ReactElement {
   const opts = useMemo(() => ({ connectionName: (id: string) => connectionLabel(id), trend: data.trend }), [data.trend])
   const items = useMemo(() => efficiencyItems(data.rows, opts), [data.rows, opts])
-  const summary = useMemo(() => efficiencySummary(data.rows, opts), [data.rows, opts])
+  const baseSummary = useMemo(() => efficiencySummary(data.rows, opts), [data.rows, opts])
+  // Efficiency is read from the returned rows only; say so when main cut the list (the banner already says it for folded figures).
+  const summary = overview.truncated && !data.folded ? `${baseSummary} From the newest ${TRUNCATED_LIMIT_LABEL} runs.` : baseSummary
   const byProject = useMemo(() => efficiencyByProject(data.rows, opts), [data.rows, opts])
   const [sort, setSort] = useState<{ col: EfficiencyColumn; dir: SortDir }>({ col: 'runs', dir: 'desc' })
   const table = useMemo(() => sortEfficiencyRows(byProject, sort.col, sort.dir), [byProject, sort])

@@ -8,7 +8,8 @@ import { ChartTable } from './ChartTable'
 import { CostText, RankedBars, useWidePage, type RankedItem } from './RankedBars'
 import '../../styles/usage-charts.css'
 
-const roleKey = (r: UsageOverviewRole): string => r.roleId ?? r.roleSlug
+const MODEL_COST_TITLE = 'Model cost per role is not recorded'
+const roleKey =(r: UsageOverviewRole): string => r.roleId ?? r.roleSlug
 const idOf = (r: UsageOverviewRole): string => `${r.projectId}\u0000${roleKey(r)}`
 
 export default function RolesPanel({ data, filters, onNarrow }: UsagePanelProps): ReactElement {
@@ -35,6 +36,7 @@ export default function RolesPanel({ data, filters, onNarrow }: UsagePanelProps)
     state: r.costUsd === null ? 'unknown' : r.costUnknownRuns > 0 ? 'partial' : 'known',
     fill: 'var(--text-secondary)',
     cost: rollupCost(r),
+    costTitle: filters.model ? MODEL_COST_TITLE : undefined,
     detail: `${formatTokens(tokenSum(r.tokens))} tokens`,
     note: r.retries > 0 ? `${r.retries} ${r.retries === 1 ? 'retry' : 'retries'}` : undefined,
     selected: !!filters.role && filters.role.projectId === r.projectId && filters.role.roleKey === roleKey(r)
@@ -44,6 +46,7 @@ export default function RolesPanel({ data, filters, onNarrow }: UsagePanelProps)
   const knownTotal = ranked.reduce((n, r) => n + (r.costUsd ?? 0), 0)
   const summary = (() => {
     if (ranked.length === 0) return 'No agents ran in this period.'
+    if (filters.model) return `${ranked.length} ${ranked.length === 1 ? 'role' : 'roles'} used this model. Model cost per role is not recorded.`
     if (!top || knownTotal <= 0) return 'Agents spent tokens, but no cost is known.'
     return `${nameOf(top)} is ${sharePercent(top.costUsd ?? 0, knownTotal)}% of the estimated cost.`
   })()
@@ -51,7 +54,7 @@ export default function RolesPanel({ data, filters, onNarrow }: UsagePanelProps)
   const rows = ranked.map((r) => ({
     key: idOf(r),
     data: { project: r.projectId, role: roleKey(r) },
-    cells: [r.roleName, r.projectName, r.runs, r.agents, formatTokens(tokenSum(r.tokens)), <CostText key="c" value={rollupCost(r)} />, r.retries]
+    cells: [r.roleName, r.projectName, r.runs, r.agents, formatTokens(tokenSum(r.tokens)), <CostText key="c" value={rollupCost(r)} title={filters.model ? MODEL_COST_TITLE : undefined} />, r.retries]
   }))
 
   return (
@@ -64,7 +67,7 @@ export default function RolesPanel({ data, filters, onNarrow }: UsagePanelProps)
       </div>
       {items.length > 0 ? (
         <RankedBars
-          label="Roles by estimated cost"
+          label={filters.model ? 'Roles that used this model, by tokens' : 'Roles by estimated cost'}
           items={items}
           rowTestId="usage-role-row"
           onActivate={(it) => {

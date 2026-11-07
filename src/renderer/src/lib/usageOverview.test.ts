@@ -194,6 +194,20 @@ describe('usageData', () => {
   it('marks folded figures of a truncated overview as a lower bound', () => {
     expect(usageData(overview(rows, { truncated: true }), { ...defaultUsageFilters(), noPrice: true }, conn).lowerBound).toBe(true)
   })
+  it('under a model chip keeps roles that used it with unknown cost, and puts model cost on the row connection', () => {
+    const two = usage({
+      roles: [
+        { ...usage().roles[0]!, models: ['sonnet-x'] },
+        { ...usage().roles[0]!, roleId: 'r2', roleSlug: 'other', roleName: 'Other', models: ['haiku-y'] }
+      ],
+      connections: { anthropic: { agents: 1, costUsd: 0.4 }, openai: { agents: 1, costUsd: 0.6 } }
+    })
+    const d = usageData(overview([row('a', { usage: two })]), { ...defaultUsageFilters(), model: 'sonnet-x' }, conn)
+    expect(d.roles.map((r) => r.roleSlug)).toEqual(['lead'])
+    expect(d.roles[0]!.costUsd).toBeNull()
+    expect(d.connections.map((c) => c.connection)).toEqual(['anthropic'])
+    expect(d.connections[0]!.costUsd).toBe(1)
+  })
   it('folds roles per project and role', () => {
     const d = usageData(overview(rows), { ...defaultUsageFilters(), role: { projectId: 'p1', roleKey: 'r1', label: 'Billing / Lead' } }, conn)
     expect(d.rows.map((r) => r.runId)).toEqual(['a', 'c'])

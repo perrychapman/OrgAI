@@ -308,7 +308,7 @@ export default function UsageFilterBar({ filters, onChange, now, compact, groups
             className="usage-more-panel"
             testId="usage-filters-more-panel"
           >
-            <div className="usage-more">
+            <div className="usage-more-filters">
               <section>
                 <h3 className="usage-more-h">Projects</h3>
                 {projectsPicker}

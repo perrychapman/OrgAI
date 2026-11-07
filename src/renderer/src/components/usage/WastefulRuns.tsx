@@ -4,7 +4,7 @@ import { formatDateTime } from '../../lib/dates'
 import { effectiveWastefulSort, WASTEFUL_MORE, WASTEFUL_SHOWN, WASTEFUL_SORT_LABELS, wastefulRuns } from '../../lib/usageEfficiency'
 import { rowCostInput, rowName, rowStatusWord } from '../../lib/usageRuns'
 import { useAppStore } from '../../store/useAppStore'
-import { Cost } from '../ui/Cost'
+import { CostText } from './RankedBars'
 import type { UsagePanelProps, WastefulSort } from './panelProps'
 import { TableWrap } from './usageTableParts'
 
@@ -32,6 +32,17 @@ export default function WastefulRuns({ data, sort, onSort, focusSeq }: WastefulR
     }
   }, [focusSeq])
 
+  // "Show N more" takes the button away: focus the first newly shown row's open button, else the heading (never body).
+  const sectionRef = useRef<HTMLElement>(null)
+  const focusAfterMore = useRef<string | null>(null)
+  useEffect(() => {
+    const id = focusAfterMore.current
+    if (!id) return
+    focusAfterMore.current = null
+    const row = sectionRef.current?.querySelector<HTMLElement>(`[data-testid="usage-wasteful-row"][data-run="${CSS.escape(id)}"]`)
+    ;(row?.querySelector<HTMLElement>('.usage-run-open') ?? headingRef.current)?.focus()
+  }, [expanded])
+
   const effective = effectiveWastefulSort(sort, data.rows)
   const entries = useMemo(() => wastefulRuns(data.rows, effective), [data.rows, effective])
   const shown = entries.slice(0, expanded ? WASTEFUL_MORE : WASTEFUL_SHOWN)
@@ -40,7 +51,7 @@ export default function WastefulRuns({ data, sort, onSort, focusSeq }: WastefulR
   const anyUnknown = shown.some((e) => e.unknownCost)
 
   return (
-    <section className="usage-panel" id="usage-wasteful" aria-labelledby="usage-wasteful-h" data-testid="usage-wasteful">
+    <section ref={sectionRef} className="usage-panel" id="usage-wasteful" aria-labelledby="usage-wasteful-h" data-testid="usage-wasteful">
       <div className="usage-panel-head">
         <h2 id="usage-wasteful-h" tabIndex={-1} ref={headingRef}>
           Runs worth a look
@@ -106,10 +117,10 @@ export default function WastefulRuns({ data, sort, onSort, focusSeq }: WastefulR
                       </th>
                       <td className="nowrap">{formatDateTime(r.startedAt)}</td>
                       <td className="num">
-                        <Cost value={rowCostInput(r)} precision="page" />
+                        <CostText value={rowCostInput(r)} />
                         {effective === 'no-result' && nr !== undefined && (
                           <span className="usage-cell-sub">
-                            no result: <Cost value={{ costUsd: nr, costSource: nr === null ? 'unknown' : 'computed', ...(r.usage.noResultCostPartial ? { costPartial: true } : {}), sourceMixed: true }} precision="page" />
+                            no result: <CostText value={{ costUsd: nr, costSource: nr === null ? 'unknown' : 'computed', ...(r.usage.noResultCostPartial ? { costPartial: true } : {}), sourceMixed: true }} />
                           </span>
                         )}
                       </td>
@@ -125,7 +136,10 @@ export default function WastefulRuns({ data, sort, onSort, focusSeq }: WastefulR
           </TableWrap>
           {anyUnknown && <p className="usage-note">Runs with an unknown cost come after the others, ordered by tokens.</p>}
           {more > 0 && (
-            <button type="button" className="btn ghost sm usage-more-btn" data-testid="usage-wasteful-more" onClick={() => setExpanded(true)}>
+            <button type="button" className="btn ghost sm usage-more-btn" data-testid="usage-wasteful-more" onClick={() => {
+                focusAfterMore.current = entries[WASTEFUL_SHOWN]?.row.runId ?? null
+                setExpanded(true)
+              }}>
               Show {more} more
             </button>
           )}

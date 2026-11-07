@@ -202,6 +202,14 @@
   font-size: var(--text-caption);
   white-space: nowrap;
 }
+.topbar .usage-live-note {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+  font-size: var(--text-caption);
+}
 
 /* Header: scope line, subtitle, CSV status */
 .usage-header {
@@ -296,7 +304,7 @@
   min-width: 20rem;
   max-width: min(24rem, calc(100vw - 16px));
 }
-.usage-more {
+.usage-more-filters {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
@@ -491,7 +499,7 @@
   font-size: var(--text-caption);
   line-height: var(--text-caption-lh);
 }
-.usage-link {
+.usage-text-link {
   padding: 0;
   border: 0;
   background: none;
@@ -500,7 +508,7 @@
   text-decoration: underline;
   cursor: pointer;
 }
-.usage-link:focus-visible {
+.usage-text-link:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
   border-radius: var(--radius-xs);

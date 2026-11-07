@@ -5,10 +5,10 @@ import { costFigureText } from '../../lib/usageCharts'
 import '../../styles/usage-charts.css'
 
 /** One cost figure on the page: "No price" for unknown (never $0), "+" and "~" as costView says, full value in the title. */
-export function CostText({ value }: { value: CostInput }): ReactElement {
+export function CostText({ value, title }: { value: CostInput; title?: string }): ReactElement {
   const v = costView(value, { precision: 'page' })
   return (
-    <span className={`cost cost-${v.kind}`} title={v.title || undefined}>
+    <span className={`cost cost-${v.kind}`} title={title ?? (v.title || undefined)}>
       {costFigureText(value)}
     </span>
   )
@@ -47,6 +47,8 @@ export interface RankedItem {
   /** A CSS colour (a token reference). */
   fill: string
   cost: CostInput
+  /** Replaces the cost's own title (why it is unknown). */
+  costTitle?: string
   /** "14 runs" or "1.2M tokens". */
   detail: string
   /** Plain text after the detail ("3 retries"). */
@@ -154,7 +156,7 @@ export function RankedBars({
               e.preventDefault()
               onMenu(item, e.currentTarget)
             }}
-            aria-pressed={item.selected ? true : undefined}
+            aria-current={item.selected ? 'true' : undefined}
             title={item.name}
           >
             <span className="uc-rank-name">
@@ -164,7 +166,7 @@ export function RankedBars({
             {item.sub && <span className="uc-rank-sub">{item.sub}</span>}
             <RankBar fraction={item.fraction} state={item.state} fill={item.fill} />
             <span className="uc-rank-cost">
-              <CostText value={item.cost} />
+              <CostText value={item.cost} title={item.costTitle} />
             </span>
             <span className="uc-rank-detail">
               {item.detail}
