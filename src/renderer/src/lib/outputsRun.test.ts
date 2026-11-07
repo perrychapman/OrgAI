@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { RunOutput, TranscriptEntry } from '@shared/types'
-import { announceText, collapseOutputCalls, matchOutputId } from './outputsRun'
+import { announceText, collapseOutputCalls, matchOutputId, producedSentence, unannouncedTitles } from './outputsRun'
 
 let n = 0
 const id = (): string => `e${++n}`
@@ -44,10 +44,10 @@ describe('collapseOutputCalls', () => {
     const c = collapseOutputCalls(e)
     const rows = [...c.rows.values()]
     expect(rows.map((r) => [r.state, r.text])).toEqual([
-      ['produced', 'Produced document Project plan'],
-      ['produced', 'Produced workbook Budget'],
-      ['produced', 'Produced diagram Architecture diagram'],
-      ['produced', 'Produced file Summary'],
+      ['produced', 'Produced Word document Project plan'],
+      ['produced', 'Produced Excel workbook Budget'],
+      ['produced', 'Produced Diagram Architecture diagram'],
+      ['produced', 'Produced Markdown Summary'],
       ['registered', 'Registered output Logo'],
       ['refused', 'Refused: that file is outside the project folder.']
     ])
@@ -74,7 +74,7 @@ describe('collapseOutputCalls', () => {
     const e = [use('t1', 'produce_output'), result('t1', 'Produced xlsx "Budget" at outputs/Budget.xlsx (4 KB). done')]
     const c = collapseOutputCalls(e)
     expect(c.hidden.has(e[0].id)).toBe(true)
-    expect(c.rows.get(e[1].id)).toMatchObject({ state: 'produced', text: 'Produced workbook Budget', title: 'Budget' })
+    expect(c.rows.get(e[1].id)).toMatchObject({ state: 'produced', text: 'Produced Excel workbook Budget', title: 'Budget' })
   })
 
   it('pairs by agent and ignores other tools', () => {
@@ -100,6 +100,33 @@ describe('matchOutputId', () => {
   })
   it('matches a title main altered for the prompt', () => {
     expect(matchOutputId([out({ title: 'A <b> C' })], 'r1', 'A ‹b› C')).toBe('out_0000000000000001')
+  })
+})
+
+describe('producedSentence', () => {
+  it('uses the one label per kind and "file" for an unknown one', () => {
+    expect(producedSentence('docx', 'Plan')).toBe('Produced Word document Plan')
+    expect(producedSentence('xlsx', 'Budget')).toBe('Produced Excel workbook Budget')
+    expect(producedSentence('svg', 'Logo')).toBe('Produced SVG Logo')
+    expect(producedSentence(undefined, 'X')).toBe('Produced file X')
+    expect(producedSentence('constructor', 'X')).toBe('Produced file X')
+  })
+  it('maps the older harness words when no result names the kind', () => {
+    const e = [harness('Produced workbook Budget'), harness('Produced document Plan')]
+    const c = collapseOutputCalls(e)
+    expect(c.rows.get(e[0].id)?.text).toBe('Produced Excel workbook Budget')
+    expect(c.rows.get(e[1].id)?.text).toBe('Produced Word document Plan')
+  })
+})
+
+describe('unannouncedTitles', () => {
+  it('counts what the chain holds now that was neither there at the start nor said', () => {
+    const mine = [out({ id: 'e', title: 'E' }), out({ id: 'd', title: 'D' }), out({ id: 'c', title: 'C' }), out({ id: 'b', title: 'B' }), out({ id: 'a', title: 'A' })]
+    // 'a' was there at the start; b..e arrived (one of them while the throttle waited): the sentence counts all 4.
+    const titles = unannouncedTitles(mine, new Set(['a']))
+    expect(titles).toEqual(['B', 'C', 'D', 'E'])
+    expect(announceText(titles)).toBe('Produced 4 outputs')
+    expect(unannouncedTitles(mine, new Set(['a', 'b', 'c', 'd', 'e']))).toEqual([])
   })
 })
 

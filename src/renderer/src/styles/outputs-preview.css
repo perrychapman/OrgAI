@@ -303,3 +303,53 @@ h6.output-doc-heading {
 .output-image {
   background: var(--surface-0);
 }
+
+/* ---------- Zoom (diagram and SVG previews) ---------- */
+.output-zoom {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+.output-zoom-readout {
+  min-width: 4ch;
+  font-variant-numeric: tabular-nums;
+}
+.output-svg-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-height: 0;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.output-svg-stage {
+  flex: 1 1 auto;
+  padding: var(--space-3);
+  background: var(--surface-1);
+}
+.output-svg-stage .output-svg-img {
+  display: block;
+  margin: 0 auto;
+}
+/* A zoomed diagram or drawing keeps a readable stage even in a short panel. */
+.output-mermaid-stage,
+.output-svg-stage {
+  min-height: 160px;
+}
+/* Inline the stage has a set height (Fit needs a box that does not follow its content); in the Larger view it fills the dialog. */
+.output-mermaid-stage,
+.output-svg-stage {
+  flex: 0 0 auto;
+  height: min(50vh, 440px);
+}
+.output-dialog-body .output-mermaid-stage,
+.output-dialog-body .output-svg-stage {
+  flex: 1 1 0;
+  height: auto;
+  min-height: 0;
+}
+.output-dialog-body .output-mermaid,
+.output-dialog-body .output-svg-wrap,
+.output-dialog-body .output-preview {
+  flex: 1 1 0;
+}

@@ -118,7 +118,16 @@ export default function OutputActions({
             })}
             {item('output-forget', X, 'Remove from list', () => {
               close()
-              void run(async () => removed(await window.orgai.outputs.forget(ref), `Removed ${title} from the list.`))
+              void run(async () => {
+                // The index entry is gone for good: the contract has no way to bring it back (docs/design/outputs.md section 12).
+                const ok = await confirm({
+                  title: `Remove ${title} from the list?`,
+                  body: `The file stays at ${output.relPath}. It leaves OrgAI's list and cannot be added back from here.`,
+                  confirmLabel: 'Remove',
+                  confirmTestId: 'output-forget-confirm'
+                })
+                if (ok) removed(await window.orgai.outputs.forget(ref), `Removed ${title} from the list.`)
+              })
             })}
             {canDeleteOutput(output) &&
               item(

@@ -50,7 +50,8 @@ const JOIN_MAX_CHARS = 600
 export function joinAnnouncement(prev: { text: string; at: number } | null, text: string, now: number): string {
   if (!prev || !prev.text || now - prev.at >= JOIN_WINDOW_MS) return text
   if (prev.text === text || prev.text.endsWith(` ${text}`)) return prev.text
-  const joined = `${prev.text} ${text}`
+  // A full stop between lines that end without one, so a screen reader does not run two sentences together.
+  const joined = `${prev.text}${/[.!?:]$/.test(prev.text.trimEnd()) ? '' : '.'} ${text}`
   return joined.length > JOIN_MAX_CHARS ? text : joined
 }
 

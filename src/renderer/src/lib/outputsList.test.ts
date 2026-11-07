@@ -25,6 +25,11 @@ describe('filter', () => {
     expect(matchesQuery(list[1], 'budget.xlsx')).toBe(true)
     expect(matchesQuery(list[1], 'outputs/bud')).toBe(true)
     expect(matchesQuery(list[1], 'zzz')).toBe(false)
+    // the app's words and the extension
+    expect(matchesQuery(list[0], 'word')).toBe(true)
+    expect(matchesQuery(list[1], 'excel')).toBe(true)
+    expect(matchesQuery(list[1], 'xlsx')).toBe(true)
+    expect(matchesQuery(list[0], 'excel')).toBe(false)
     expect(matchesQuery(list[1], '   ')).toBe(true)
   })
   it('ORs kinds and ANDs the run', () => {
@@ -38,7 +43,9 @@ describe('filter', () => {
       ['image', 1],
       ['xlsx', 1]
     ])
-    expect(counts.find((c) => c.kind === 'xlsx')?.label).toBe('Spreadsheets')
+    expect(counts.find((c) => c.kind === 'xlsx')?.label).toBe('Excel')
+    expect(counts.find((c) => c.kind === 'docx')?.label).toBe('Word')
+    expect(counts.find((c) => c.kind === 'image')?.label).toBe('Image')
   })
 })
 

@@ -212,6 +212,81 @@ async function showRunOutput(kind) {
   await page.locator(`[data-testid=output-detail][data-kind=${kind}]`).waitFor({ timeout: 8000 })
 }
 const detail = () => page.locator('[data-testid=output-detail]').first()
+let hintChecked = false
+
+/** Zoom of the diagram in `scope` (the detail, or the Larger view): buttons, keys, limits, drawing size. */
+async function zoomIn(scope, label) {
+  const zoom = scope.locator('[data-testid=output-mermaid-zoom]')
+  await zoom.waitFor({ timeout: 8000 })
+  const value = () => zoom.getAttribute('data-value')
+  const drawn = () => scope.locator('[data-testid=output-mermaid-svg]').first().evaluate((el) => el.shadowRoot?.querySelector('svg')?.getBoundingClientRect().width ?? 0)
+  check((await value()) === 'fit', `${label}: the diagram opens at Fit`, await value())
+  // Fit follows the measured box: wait for the drawing to settle at the size the readout names.
+  const pct = async () => Number.parseInt(await zoom.locator('[data-testid=output-zoom-readout]').innerText(), 10) / 100
+  check(await until(async () => Math.abs((await drawn()) - 552 * (await pct())) < 2, 4000), `${label}: Fit sizes the drawing to the readout`, `${await pct()} ${await drawn()}`)
+  const fitW = await drawn()
+  await scope.locator('[data-testid=output-zoom-actual]').click()
+  check((await value()) === '1' && (await until(async () => (await drawn()) !== fitW, 3000)), `${label}: 100% sets data-value 1 and resizes the drawing`, `${await value()} ${fitW} ${await drawn()}`)
+  await scope.locator('[data-testid=output-zoom-in]').click()
+  const inV = Number(await value())
+  const inW = await drawn()
+  check(inV > 1 && inW > 0, `${label}: Zoom in raises the scale`, String(inV))
+  await scope.locator('[data-testid=output-zoom-out]').click()
+  await scope.locator('[data-testid=output-zoom-out]').click()
+  check(Number(await value()) < 1, `${label}: Zoom out lowers it`, await value())
+  // Keys while the region has focus.
+  const region = scope.locator('[role=region][aria-label$=" diagram"]').first()
+  await region.focus()
+  await page.keyboard.press('0')
+  check((await value()) === '1', `${label}: key 0 returns to 100%`, await value())
+  await page.keyboard.press('+')
+  check((await value()) === '1.25', `${label}: key + zooms in a step`, await value())
+  await page.keyboard.press('-')
+  await page.keyboard.press('-')
+  check(Number(await value()) < 1, `${label}: key - zooms out`, await value())
+  for (let i = 0; i < 12; i++) await page.keyboard.press('+')
+  check((await value()) === '4' && (await scope.locator('[data-testid=output-zoom-in]').isDisabled()), `${label}: zoom stops at 400%`, await value())
+  for (let i = 0; i < 20; i++) await page.keyboard.press('-')
+  check((await value()) === '0.25' && (await scope.locator('[data-testid=output-zoom-out]').isDisabled()), `${label}: zoom stops at 25%`, await value())
+  await scope.locator('[data-testid=output-zoom-fit]').click()
+  check((await value()) === 'fit', `${label}: Fit returns to fit`, await value())
+}
+async function zoomChecks(label) {
+  await zoomIn(detail(), `${label} inline`)
+  await noScroll(`${label}: after zooming the diagram`)
+}
+
+/** Larger view: opens a near-window dialog with the same preview and actions, zoom works there, Esc returns focus. */
+async function largerViewChecks(label) {
+  const btn = detail().locator('[data-testid=output-detail-expand]')
+  check((await btn.count()) === 1 && (await btn.getAttribute('aria-label')) === 'Larger view', `${label}: the detail has a Larger view button`)
+  const inlineW = await detail().locator('[data-testid=output-mermaid-stage], [role=region][aria-label$=" diagram"]').first().evaluate((el) => el.getBoundingClientRect().width)
+  await btn.click()
+  const dlg = page.locator('[data-testid=output-dialog]')
+  await dlg.waitFor({ state: 'visible', timeout: 5000 })
+  const box = await dlg.evaluate((el) => {
+    const r = el.getBoundingClientRect()
+    return { w: r.width, h: r.height, vw: innerWidth, vh: innerHeight }
+  })
+  check(box.w >= box.vw - 64 && box.h >= box.vh - 64, `${label}: the Larger view fills the window`, JSON.stringify(box))
+  check((await dlg.locator('h2').innerText()) === 'Architecture diagram' && (await dlg.locator('[data-testid=output-more]').count()) === 1, `${label}: the Larger view is titled by the output and offers its actions`)
+  await dlg.locator('[data-testid=output-mermaid-svg] svg').first().waitFor({ timeout: 20_000 }).catch(() => {})
+  const dlgW = await dlg.locator('[role=region][aria-label$=" diagram"]').first().evaluate((el) => el.getBoundingClientRect().width)
+  check(dlgW > inlineW, `${label}: the diagram has more room in the Larger view`, `${inlineW} -> ${dlgW}`)
+  const stageH = await dlg.locator('[role=region][aria-label$=" diagram"]').first().evaluate((el) => el.getBoundingClientRect().height)
+  check(stageH >= Math.min(box.vh - 220, 300), `${label}: the diagram stage uses the dialog height`, String(stageH))
+  await zoomIn(dlg, `${label} dialog`)
+  await noScroll(`${label}: Larger view open`)
+  await snap(`${label}-larger`)
+  await page.keyboard.press('Escape')
+  await dlg.waitFor({ state: 'hidden', timeout: 5000 })
+  check(await until(async () => (await page.evaluate(() => document.activeElement?.getAttribute('data-testid'))) === 'output-detail-expand'), `${label}: Esc closes the Larger view and focus returns to its button`)
+  await btn.click()
+  await dlg.waitFor({ state: 'visible', timeout: 5000 })
+  await dlg.getByRole('button', { name: 'Close dialog' }).click()
+  await dlg.waitFor({ state: 'hidden', timeout: 5000 })
+  check(await until(async () => (await page.evaluate(() => document.activeElement?.getAttribute('data-testid'))) === 'output-detail-expand'), `${label}: the close button returns focus to Larger view too`)
+}
 
 /** Run side tab: rows, previews, chip. */
 async function runSideChecks(label, wide) {
@@ -229,6 +304,17 @@ async function runSideChecks(label, wide) {
   await showRunOutput('docx')
   const doc = detail().locator('[data-testid=output-doc]')
   await doc.waitFor({ timeout: 8000 })
+  // The narrow-panel hint shows once, the first time a detail opens in a panel under 480 px.
+  const hint = page.locator('[data-testid=output-wide-hint]')
+  if (!hintChecked) {
+    hintChecked = true
+    const narrow = (await page.locator('[data-testid=run-outputs]').getAttribute('data-mode')) === 'detail'
+    check(narrow ? (await hint.count()) === 1 && /Drag the panel edge or use Larger view/.test(clean(await hint.innerText())) : true, `${label}: a narrow panel's first detail says how to get more room`, String(await hint.count()))
+  } else {
+    check((await hint.count()) === 0, `${label}: the hint does not come back`)
+  }
+  check((await detail().locator('[data-testid=output-ext]').first().innerText()) === '.docx', `${label}: the detail shows the .docx extension badge`)
+  check(/Word document/.test(clean(await detail().locator('[data-testid=output-detail-meta]').innerText())), `${label}: the detail says "Word document"`)
   check((await doc.locator('h4, h5, h6').count()) >= 1 && (await doc.locator('strong').count()) >= 1 && (await doc.locator('table').count()) === 1, `${label}: the document preview shows a heading, a bold run and a table`)
   check((await doc.locator('table tr').count()) === 4 && (await doc.locator('ul > li').count()) === 3, `${label}: the table has three rows under its header and the list three bullets`)
   await noScroll(`${label}: document preview`)
@@ -263,6 +349,8 @@ async function runSideChecks(label, wide) {
   check(/flowchart/.test(src) && /Client/.test(src), `${label}: the diagram source shows the text`, src.slice(0, 80))
   await detail().locator('[data-testid=output-mermaid-view]').getByText('Diagram', { exact: true }).click()
   await noScroll(`${label}: diagram preview`)
+  await zoomChecks(label)
+  await largerViewChecks(label)
   if (wide) await snap(`${label}-diagram`)
 
   // Markdown
@@ -303,6 +391,8 @@ async function transcriptChecks(label) {
   const refused = page.locator('[data-testid=output-write-row][data-state=refused]')
   check(/Refused/.test(clean(await refused.first().innerText())) && (await refused.first().locator('[data-testid=output-write-show]').count()) === 0, `${label}: the refused row reads "Refused" and has no Show link`, clean(await refused.first().innerText()))
   check((await outputsOf()).length === 5, `${label}: the refused register added no entry`)
+  const rowTexts = (await rows.allInnerTexts()).map(clean)
+  check(rowTexts.some((t) => /^Produced Word document Project plan/.test(t)) && rowTexts.some((t) => /^Produced Excel workbook Budget/.test(t)) && rowTexts.some((t) => /^Produced Diagram Architecture diagram/.test(t)), `${label}: transcript rows use the one kind vocabulary ("Produced Word document Project plan")`, rowTexts.join(' | ').slice(0, 300))
   // Show lands on the item in the side tab.
   const budget = (await outputsOf()).find((o) => o.title === 'Budget')
   const row = rows.filter({ hasText: 'Budget' }).first()
@@ -325,6 +415,10 @@ async function projectTabChecks(label) {
   const group = clean(await page.locator('[data-testid=outputs-group-title]').first().innerText())
   check(/^Today/.test(group), `${label}: rows are grouped under Today`, group)
   check(/5 outputs/.test(clean(await page.locator('[data-testid=outputs-count]').innerText())), `${label}: the count line says 5 outputs`)
+  const exts = await rows.evaluateAll((els) => els.map((e) => e.querySelector('[data-testid=output-ext]')?.textContent ?? ''))
+  check(exts.join(',') === '.png,.md,.mmd,.xlsx,.docx', `${label}: every row carries its extension badge`, exts.join(','))
+  const metas = await rows.evaluateAll((els) => els.map((e) => e.querySelector('.outputs-row-meta')?.textContent ?? ''))
+  check(metas.some((m) => /^Word document · /.test(m)) && metas.some((m) => /^Excel workbook · /.test(m)), `${label}: list rows say Word document and Excel workbook`, metas.join(' | ').slice(0, 200))
   await noScroll(`${label}: Outputs tab`)
   await snap(`${label}-list`)
 }
@@ -333,6 +427,8 @@ async function filterChecks(label) {
   const rows = page.locator('[data-testid=output-row]')
   await page.locator('[data-testid=outputs-kind-all]').waitFor()
   check((await page.locator('[data-testid=outputs-kind]').count()) === 5, `${label}: five kind chips with counts`)
+  const chipTexts = await page.locator('[data-testid=outputs-kind]').evaluateAll((els) => els.map((e) => `${e.getAttribute('data-kind')}:${(e.textContent ?? '').replace(/\s*\d+$/, '').trim()}:${e.getAttribute('title')}`))
+  check(chipTexts.includes('docx:Word:Word document') && chipTexts.includes('xlsx:Excel:Excel workbook'), `${label}: the kind chips say Word and Excel with the full label as title`, chipTexts.join(' | '))
   await page.locator('[data-testid=outputs-kind][data-kind=docx]').click()
   check((await rows.count()) === 1 && (await page.locator('[data-testid=outputs-kind][data-kind=docx]').getAttribute('aria-pressed')) === 'true', `${label}: a kind chip filters`)
   check(/1 of 5 outputs/.test(clean(await page.locator('[data-testid=outputs-count]').innerText())), `${label}: the count line follows the filter`)
@@ -343,6 +439,12 @@ async function filterChecks(label) {
   const search = page.locator('[data-testid=outputs-search]')
   await search.fill('budget')
   check(await until(async () => (await rows.count()) === 1), `${label}: search narrows to the Budget row`)
+  await search.fill('excel')
+  check(await until(async () => (await rows.count()) === 1 && /Budget/.test(clean(await rows.first().innerText()))), `${label}: searching "excel" finds the workbook`)
+  await search.fill('word')
+  check(await until(async () => (await rows.count()) === 1 && /Project plan/.test(clean(await rows.first().innerText()))), `${label}: searching "word" finds the document`)
+  await search.fill('.xlsx')
+  check(await until(async () => (await rows.count()) === 1), `${label}: searching the extension finds the file`)
   await search.fill('zzzz-nothing')
   check(await until(async () => (await page.locator('[data-testid=outputs-clear-filters]').count()) === 1), `${label}: no matches offers Clear the filters`)
   await page.locator('[data-testid=outputs-clear-filters]').click()
@@ -392,6 +494,21 @@ async function keyboardChecks(label) {
   await noScroll(`${label}: after the keyboard pass`)
 }
 
+/** History: a quiet "5 outputs" chip on the conversation's row opens the run on its Outputs tab. */
+async function historyChecks(label) {
+  await projectTab(page, 'History').click()
+  const chip = page.locator('[data-testid=history-outputs]')
+  await chip.first().waitFor({ timeout: 10_000 })
+  check((await chip.count()) === 1 && /^5 outputs$/.test(clean(await chip.first().innerText())), `${label}: History shows "5 outputs" on the row`, clean(await chip.first().innerText()))
+  await noScroll(`${label}: History with the outputs chip`)
+  await snap(`${label}-history`)
+  await chip.first().focus()
+  await page.keyboard.press('Enter')
+  const tab = page.locator('[data-testid=side-tab-outputs]')
+  check(await until(async () => (await tab.count()) === 1 && (await tab.getAttribute('aria-selected')) === 'true'), `${label}: the chip opens the run on its Outputs tab`)
+  check(await until(async () => (await page.locator('[data-testid=run-outputs-list], [data-testid=output-detail]').count()) >= 1), `${label}: the Outputs tab shows the outputs`)
+}
+
 async function actionChecks(label) {
   const rows = page.locator('[data-testid=output-row]')
   const more = page.locator('[data-testid=outputs-detail] [data-testid=output-more]')
@@ -416,12 +533,25 @@ async function actionChecks(label) {
 }
 
 async function removeChecks(label) {
+  await page.locator('[data-testid=tab-outputs]').click()
   const rows = page.locator('[data-testid=output-row]')
   const more = page.locator('[data-testid=outputs-detail] [data-testid=output-more]')
   await rows.filter({ hasText: 'Summary' }).first().click()
   await more.first().waitFor({ timeout: 8000 })
   await more.first().click()
   await page.locator('[data-testid=output-forget]').click()
+  // The index entry cannot be brought back from the app, so Remove asks first and says where the file stays.
+  const forgetDlg = page.locator('[data-testid=output-forget-confirm]')
+  await forgetDlg.waitFor({ timeout: 5000 })
+  const forgetText = clean(await page.locator('dialog[open]').innerText())
+  check(/The file stays at outputs\/.+ It leaves OrgAI's list and cannot be added back from here\./.test(forgetText), `${label}: the Remove confirm says the file stays and the entry cannot come back`, forgetText.slice(0, 200))
+  check((await forgetDlg.innerText()).trim() === 'Remove', `${label}: the confirm's primary is Remove`)
+  await page.keyboard.press('Escape')
+  await forgetDlg.waitFor({ state: 'hidden', timeout: 5000 })
+  check((await rows.count()) === 5 && (await outputsOf()).length === 5, `${label}: cancelling the Remove confirm keeps the output`)
+  await more.first().click()
+  await page.locator('[data-testid=output-forget]').click()
+  await forgetDlg.click()
   check(await until(async () => (await rows.count()) === 4), `${label}: Remove from list drops the row`)
   check(await until(async () => (await page.evaluate(() => document.activeElement?.getAttribute('data-testid'))) === 'output-row'), `${label}: focus moves to another row`)
   check((await outputsOf()).length === 4, `${label}: the index no longer lists it`)
@@ -490,6 +620,7 @@ try {
         await filterChecks(label)
         await keyboardChecks(label)
         await actionChecks(label)
+        await historyChecks(label)
       }
     } catch (e) {
       check(false, `${label}: project tab checks`, e.message.split('\n')[0])

@@ -3,7 +3,8 @@ import { useAppStore, useProjectSummaries } from '../../store/useAppStore'
 import { chainOf } from '../../lib/runChains'
 import { HIDDEN_OR_CONTROL_RUN } from '../../lib/hiddenChars'
 import { outputsOfRuns } from '../../lib/outputs'
-import { announceText } from '../../lib/outputsRun'
+import type { RunOutput } from '@shared/types'
+import { announceText, unannouncedTitles } from '../../lib/outputsRun'
 import { useFrameAnnounce } from '../layout/CanvasFrame'
 
 /** At most one polite announcement per this long (docs/design/outputs.md section 3). */
@@ -22,7 +23,7 @@ export function useOutputAnnouncements(runId: string): void {
   const list = useAppStore((s) => (projectId ? s.outputsByProject[projectId] : undefined))
   const seen = useRef<Set<string> | null>(null)
   const scope = useRef('')
-  const pending = useRef<string[]>([])
+  const latest = useRef<RunOutput[]>([])
   const lastAt = useRef(0)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const say = useRef(announce)
@@ -40,7 +41,7 @@ export function useOutputAnnouncements(runId: string): void {
     if (scope.current !== key) {
       scope.current = key
       seen.current = null
-      pending.current = []
+      latest.current = []
       if (timer.current) clearTimeout(timer.current)
       timer.current = null
     }
@@ -50,17 +51,18 @@ export function useOutputAnnouncements(runId: string): void {
       seen.current = new Set(mine.map((o) => o.id))
       return
     }
-    const known = seen.current
-    const fresh = mine.filter((o) => !known.has(o.id))
-    if (fresh.length === 0) return
-    for (const o of fresh) known.add(o.id)
-    pending.current.push(...fresh.reverse().map((o) => o.title.replace(HIDDEN_OR_CONTROL_RUN, '')))
+    latest.current = mine
+    if (unannouncedTitles(mine, seen.current).length === 0) return
+    // The count is read when the sentence is said (after the throttle), from the chain's outputs then, so it
+    // agrees with the chip and the list however many arrived while it waited.
     const flush = (): void => {
       timer.current = null
-      const titles = pending.current
-      pending.current = []
+      const known = seen.current
+      const titles = known ? unannouncedTitles(latest.current, known) : []
+      if (!known || titles.length === 0) return
+      for (const o of latest.current) known.add(o.id)
       lastAt.current = Date.now()
-      const text = announceText(titles)
+      const text = announceText(titles.map((t) => t.replace(HIDDEN_OR_CONTROL_RUN, '')))
       if (text) say.current?.(text)
     }
     if (timer.current) return

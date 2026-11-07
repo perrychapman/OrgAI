@@ -11,6 +11,7 @@ import { Button } from '../ui/Button'
 import OutputActions from './OutputActions'
 import OutputDetail from './OutputDetail'
 import OutputKindIcon from './OutputKindIcon'
+import ExtBadge from './ExtBadge'
 import '../../styles/outputs.css'
 
 /** How long a notice line stays. */
@@ -139,7 +140,7 @@ export default function RunOutputs({ runId, projectId }: { runId: string; projec
         ))}
       {shown && (
         <div className="run-output-detail" onKeyDown={onDetailKey}>
-          <OutputDetail key={shown.id} output={shown} onRemoved={removed} onNotice={say} />
+          <OutputDetail key={shown.id} output={shown} onRemoved={removed} onNotice={say} narrowHint={!wide} />
         </div>
       )}
     </div>
@@ -175,8 +176,11 @@ function OutputRow({
         <OutputKindIcon kind={output.kind} />
       </span>
       <div className="run-output-text">
-        <span className="run-output-title" title={title}>
-          {title}
+        <span className="run-output-head">
+          <span className="run-output-title" title={title}>
+            {title}
+          </span>
+          <ExtBadge fileName={output.fileName} />
         </span>
         <span className="run-output-meta">{output.missing ? `File missing · ${outputMetaLine(output)}` : outputMetaLine(output)}</span>
         <span className="run-output-prov">{provenanceLine(output, tag !== undefined ? runTag(tag) : undefined)}</span>

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { RunOutput } from '@shared/types'
-import { PreviewCache, canDeleteOutput, canOpenOutput, formatBytes, mergeOutput, outputKindLabel, outputMetaLine, outputsCountLabel, outputsOfRuns, previewKey, provenanceLine } from './outputs'
+import { PreviewCache, canDeleteOutput, canOpenOutput, extBadgeText, fileExtension, formatBytes, kindChipLabel, kindLabel, mergeOutput, outputKindLabel, outputMetaLine, outputSearchTerms, outputsCountLabel, outputsOfRuns, previewKey, provenanceLine } from './outputs'
 
 function out(id: string, extra: Partial<RunOutput> = {}): RunOutput {
   return {
@@ -21,10 +21,40 @@ function out(id: string, extra: Partial<RunOutput> = {}): RunOutput {
 
 describe('outputs helpers', () => {
   it('labels kinds in plain words', () => {
-    expect(outputKindLabel('docx')).toBe('Document')
-    expect(outputKindLabel('xlsx')).toBe('Spreadsheet')
-    expect(outputKindLabel('mermaid')).toBe('Diagram')
-    expect(outputKindLabel('other')).toBe('File')
+    expect(kindLabel('docx')).toBe('Word document')
+    expect(kindLabel('xlsx')).toBe('Excel workbook')
+    expect(kindLabel('mermaid')).toBe('Diagram')
+    expect(kindLabel('markdown')).toBe('Markdown')
+    expect(kindLabel('text')).toBe('Text')
+    expect(kindLabel('csv')).toBe('CSV')
+    expect(kindLabel('json')).toBe('JSON')
+    expect(kindLabel('svg')).toBe('SVG')
+    expect(kindLabel('image')).toBe('Image')
+    expect(kindLabel('pdf')).toBe('PDF')
+    expect(kindLabel('other')).toBe('File')
+    expect(outputKindLabel('docx')).toBe('Word document')
+  })
+
+  it('shortens only the two Office chips', () => {
+    expect(kindChipLabel('docx')).toBe('Word')
+    expect(kindChipLabel('xlsx')).toBe('Excel')
+    expect(kindChipLabel('mermaid')).toBe('Diagram')
+  })
+
+  it('reads the extension for the badge', () => {
+    expect(extBadgeText('Project plan.docx')).toBe('.docx')
+    expect(extBadgeText('a.b.XLSX')).toBe('.xlsx')
+    expect(extBadgeText('outputs\\x.md')).toBe('.md')
+    expect(extBadgeText('README')).toBe('')
+    expect(extBadgeText('.env')).toBe('')
+    expect(extBadgeText('x.not an ext')).toBe('')
+    expect(fileExtension('x.verylongextension')).toBe('')
+  })
+
+  it('search terms carry the kind name, extension and the words a user types', () => {
+    const terms = outputSearchTerms(out('a'))
+    expect(terms).toEqual(expect.arrayContaining(['Word document', 'docx', 'word']))
+    expect(outputSearchTerms(out('b', { kind: 'xlsx', fileName: 'b.xlsx' }))).toEqual(expect.arrayContaining(['excel', 'xlsx']))
   })
 
   it('formats sizes and never says 0 KB for a non-empty file', () => {
@@ -41,7 +71,7 @@ describe('outputs helpers', () => {
   })
 
   it('builds the meta and provenance lines', () => {
-    expect(outputMetaLine(out('a'))).toBe('Document · 38 KB · outputs/a.docx')
+    expect(outputMetaLine(out('a'))).toBe('Word document · 38 KB · outputs/a.docx')
     expect(provenanceLine({ role: 'Analyst', createdAt: Date.UTC(2026, 10, 7, 12) }, 'R1')).toMatch(/^Analyst · R1 · 7 Nov 2026$/)
     expect(provenanceLine({ createdAt: Date.UTC(2026, 10, 7, 12) })).toMatch(/^An agent · 7 Nov 2026$/)
     expect(provenanceLine({ role: '  ', createdAt: Date.UTC(2026, 10, 7, 12) }, 'R2')).toMatch(/^An agent · R2 /)

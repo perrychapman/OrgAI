@@ -6,6 +6,8 @@
 
 import type { RunOutput, TranscriptEntry } from '@shared/types'
 import { OUTPUT_TOOLS } from '@shared/types'
+import type { OutputKind } from '@shared/types'
+import { OUTPUT_KIND_LABEL, kindLabel } from './outputs'
 import { bareToolName } from './transcriptRows'
 
 export type OutputWriteState = 'produced' | 'registered' | 'refused'
@@ -34,7 +36,17 @@ const PRODUCED_ROW_RE = /^Produced (?:document|workbook|diagram|file) (.*)$/s
 const REGISTERED_ROW_RE = /^Registered output (.*)$/s
 /** The tool result: `Produced docx "Title" at outputs/x.docx (38 KB). ...`; the title can hold quotes, so greedy up to the last ` at `. */
 const RESULT_RE = /^(Produced|Registered) (\S+) "(.*)" at (.*) \([^()]*\)\./s
-const WORD_BY_KIND: Readonly<Record<string, string>> = { docx: 'document', xlsx: 'workbook', mermaid: 'diagram', svg: 'diagram' }
+/** The older words main's harness row uses, mapped to a kind (the file word names no kind). */
+const KIND_BY_WORD: Readonly<Record<string, OutputKind>> = { document: 'docx', workbook: 'xlsx', diagram: 'mermaid' }
+
+function isKind(k: string | undefined): k is OutputKind {
+  return k !== undefined && Object.prototype.hasOwnProperty.call(OUTPUT_KIND_LABEL, k)
+}
+
+/** "Produced Word document Project plan": the kind's one label (docs/design/outputs.md "Words"), "file" when unknown. */
+export function producedSentence(kind: string | undefined, title: string): string {
+  return `Produced ${isKind(kind) ? kindLabel(kind) : 'file'} ${title}`
+}
 
 /** produce_output or register_output, bare or `mcp__<server>__...`. */
 export function isOutputTool(name: string): boolean {
@@ -62,10 +74,12 @@ function parseResult(text: string): ParsedResult | null {
 function rowOfHarness(text: string, res: ParsedResult | null): OutputWriteRow {
   const produced = PRODUCED_ROW_RE.exec(text)
   const registered = produced ? null : REGISTERED_ROW_RE.exec(text)
+  const title = res?.title ?? (produced ?? registered)?.[1]?.trim() ?? ''
+  const word = produced ? /^Produced (document|workbook|diagram|file) /.exec(text)?.[1] : undefined
   return {
     state: produced ? 'produced' : 'registered',
-    text,
-    title: res?.title ?? (produced ?? registered)?.[1]?.trim() ?? '',
+    text: produced ? producedSentence(isKind(res?.kind) ? res?.kind : word ? KIND_BY_WORD[word] : undefined, title) : text,
+    title,
     relPath: res?.relPath
   }
 }
@@ -73,7 +87,7 @@ function rowOfHarness(text: string, res: ParsedResult | null): OutputWriteRow {
 /** The result's own words when no harness row exists (an older record): "Produced document X". */
 function rowOfResult(res: ParsedResult): OutputWriteRow {
   const registered = res.verb === 'Registered'
-  const text = registered ? `Registered output ${res.title}` : `Produced ${WORD_BY_KIND[res.kind] ?? 'file'} ${res.title}`
+  const text = registered ? `Registered output ${res.title}` : producedSentence(res.kind, res.title)
   return { state: registered ? 'registered' : 'produced', text, title: res.title, relPath: res.relPath }
 }
 
@@ -164,6 +178,11 @@ export function matchOutputId(
     if (!best || (o.updatedAt ?? o.createdAt) > (best.updatedAt ?? best.createdAt)) best = o
   }
   return best?.id
+}
+
+/** Titles (oldest first) of the chain's outputs not in `said` (those there at the start or already announced); `mine` is newest first. */
+export function unannouncedTitles(mine: readonly Pick<RunOutput, 'id' | 'title'>[], said: ReadonlySet<string>): string[] {
+  return mine.filter((o) => !said.has(o.id)).map((o) => o.title).reverse()
 }
 
 /** The one polite sentence for outputs that arrived since the last announcement. */

@@ -1,7 +1,9 @@
 import type { ReactElement } from 'react'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Check, Copy } from 'lucide-react'
 import { Button } from '../ui/Button'
+import { svgNaturalSize } from '../../lib/outputZoom'
+import { ZoomBar, useZoom } from './ZoomControl'
 import { SegmentedControl } from '../ui/SegmentedControl'
 import { safeMermaidSvg } from '../../lib/outputSvg'
 import { usePreviewStatus } from './previewStatus'
@@ -18,8 +20,13 @@ function statusFor(d: Drawn): string {
 }
 const REFUSED_TEXT = 'OrgAI did not show this drawing because it contained active content.'
 
-// Mermaid's own styles stay inside the shadow root; this one keeps the drawing inside its column.
-const SHADOW_STYLE = 'svg { max-width: 100%; height: auto; }'
+// Mermaid's own styles stay inside the shadow root; this one sizes the drawing (the zoom's pixel size, else its column).
+function shadowStyle(size: { w: number; h: number } | null): string {
+  // !important: Mermaid writes its own inline max-width on the root svg, which would otherwise cap an enlarged drawing.
+  return size
+    ? `svg { display: block !important; max-width: none !important; width: ${Math.round(size.w)}px !important; height: ${Math.round(size.h)}px !important; }`
+    : 'svg { max-width: 100%; height: auto; }'
+}
 
 /** lib/theme.ts resolves System to 'dark' | 'light' and writes it as data-theme on <html>. */
 function currentTheme(): 'light' | 'dark' {
@@ -109,14 +116,25 @@ export default function MermaidView({ text, title, truncated }: { text: string; 
   // The checked tree is imported into a shadow root: never re-parsed from text, and Mermaid's <style> and ids stay out of the app.
   const host = useRef<HTMLDivElement>(null)
   const okRoot = drawn.state === 'ok' ? drawn.root : null
+  const natural = useMemo(() => (okRoot ? svgNaturalSize(okRoot.getAttribute('viewBox'), okRoot.getAttribute('width'), okRoot.getAttribute('height')) : null), [okRoot])
+  const zoom = useZoom(natural)
+  const styleEl = useRef<HTMLStyleElement | null>(null)
+  const sizeW = zoom.size?.w
+  const sizeH = zoom.size?.h
   useEffect(() => {
     const el = host.current
     if (!el || !okRoot) return
     const shadow = el.shadowRoot ?? el.attachShadow({ mode: 'open' })
     const style = document.createElement('style')
-    style.textContent = SHADOW_STYLE
+    style.textContent = shadowStyle(sizeW && sizeH ? { w: sizeW, h: sizeH } : null)
+    styleEl.current = style
     shadow.replaceChildren(style, document.importNode(okRoot, true))
+    // The size is applied by the effect below; a new drawing only rebuilds the tree.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [okRoot, showSource])
+  useEffect(() => {
+    if (styleEl.current) styleEl.current.textContent = shadowStyle(sizeW && sizeH ? { w: sizeW, h: sizeH } : null)
+  }, [sizeW, sizeH, okRoot, showSource])
 
   const copy = (): void => {
     if (drawn.state !== 'ok') return
@@ -140,6 +158,7 @@ export default function MermaidView({ text, title, truncated }: { text: string; 
             ]}
           />
         </div>
+        {drawn.state === 'ok' && !showSource && <ZoomBar zoom={zoom} />}
         {drawn.state === 'ok' && (
           <Button size="sm" variant="ghost" icon={copied ? Check : Copy} onClick={copy} testId="output-mermaid-copy">
             Copy SVG
@@ -166,7 +185,7 @@ export default function MermaidView({ text, title, truncated }: { text: string; 
       ) : drawn.state === 'drawing' ? (
         <p className="output-preview-note">Drawing the diagram…</p>
       ) : drawn.state === 'ok' ? (
-        <div className="output-scroll output-mermaid-stage" role="region" aria-label={`${title} diagram`} tabIndex={0}>
+        <div ref={zoom.regionRef} className="output-scroll output-mermaid-stage" role="region" aria-label={`${title} diagram`} aria-keyshortcuts="+ - 0" tabIndex={0} onKeyDown={zoom.onKeyDown}>
           {/* The checked tree (safeMermaidSvg: XML namespace, no script, foreignObject, comment, instruction, handler,
               outside link or resource attribute, after Mermaid's own 'strict' sanitizer) is imported as nodes into a
               shadow root by the effect above. No markup string is ever parsed here. */}
