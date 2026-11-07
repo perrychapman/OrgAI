@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { isVirtualProjectId, type RunSummary } from '@shared/types'
+import { isVirtualProjectId, type Project, type RunSummary } from '@shared/types'
 import { isRunLive, useAppStore, waitingRuns, type RunState } from '../../store/useAppStore'
+import { projectKindOf } from '@shared/defaults'
+import { waitingItems } from '../../lib/needsYou'
+import { BAND_RECOMPUTE_MS, bandSignature, type BandRunIn } from '../../lib/dashboardBand'
 import { isTeamSurfaceRun } from '../../lib/runSurface'
 
 /**
@@ -58,4 +61,55 @@ export function useNow(ms = 30_000): number {
     return () => window.clearInterval(id)
   }, [ms])
   return now
+}
+
+/** What the Right now band draws from: open runs reduced to what it reads, plus the projects (spec 6.8). */
+export interface BandSnapshot {
+  runs: BandRunIn[]
+  projects: Project[]
+  virtualProjects: Partial<Record<string, Project>>
+}
+
+type StoreState = ReturnType<typeof useAppStore.getState>
+
+function bandSnapshotOf(s: StoreState): BandSnapshot {
+  const known = new Set(s.projects.map((p) => p.id))
+  const runs: BandRunIn[] = Object.values(s.runs)
+    .filter((r) => isRunLive(r) && !isTeamSurfaceRun(r.summary) && (isVirtualProjectId(r.summary.projectId) || known.has(r.summary.projectId)))
+    .map((r) => ({
+      summary: r.summary,
+      ...(r.plan ? { plan: r.plan } : {}),
+      agents: r.agents,
+      decisions: waitingItems(r, projectKindOf(s.projects.find((p) => p.id === r.summary.projectId))).length
+    }))
+  return { runs, projects: s.projects, virtualProjects: s.virtualProjects }
+}
+
+/**
+ * The band's snapshot, recomputed at most every `BAND_RECOMPUTE_MS` (trailing) and published only when what the band
+ * draws changed, so a burst of `agent.upsert` events renders once and an unrelated event renders nothing.
+ */
+export function useBandSnapshot(): BandSnapshot {
+  const [snap, setSnap] = useState<BandSnapshot>(() => bandSnapshotOf(useAppStore.getState()))
+  useEffect(() => {
+    let timer: number | undefined
+    let last = ''
+    const flush = (): void => {
+      timer = undefined
+      const next = bandSnapshotOf(useAppStore.getState())
+      const sig = bandSignature(next.runs, next.projects, next.virtualProjects)
+      if (sig === last) return
+      last = sig
+      setSnap(next)
+    }
+    flush()
+    const unsub = useAppStore.subscribe(() => {
+      if (timer === undefined) timer = window.setTimeout(flush, BAND_RECOMPUTE_MS)
+    })
+    return () => {
+      unsub()
+      if (timer !== undefined) window.clearTimeout(timer)
+    }
+  }, [])
+  return snap
 }
