@@ -4,9 +4,22 @@ import { Check, Copy } from 'lucide-react'
 import { Button } from '../ui/Button'
 import { SegmentedControl } from '../ui/SegmentedControl'
 import { safeMermaidSvg } from '../../lib/outputSvg'
+import { usePreviewStatus } from './previewStatus'
 
 type View = 'diagram' | 'source'
-type Drawn = { state: 'drawing' } | { state: 'ok'; svg: string } | { state: 'error'; message: string } | { state: 'refused' }
+type Drawn = { state: 'drawing' } | { state: 'ok'; root: Element } | { state: 'error'; message: string } | { state: 'refused' }
+
+/** The words OutputPreview's one status region speaks for each state of the drawing ('' when it is drawn). */
+function statusFor(d: Drawn): string {
+  if (d.state === 'drawing') return 'Drawing the diagram…'
+  if (d.state === 'error') return `This diagram could not be drawn: ${d.message}.`
+  if (d.state === 'refused') return REFUSED_TEXT
+  return ''
+}
+const REFUSED_TEXT = 'OrgAI did not show this drawing because it contained active content.'
+
+// Mermaid's own styles stay inside the shadow root; this one keeps the drawing inside its column.
+const SHADOW_STYLE = 'svg { max-width: 100%; height: auto; }'
 
 /** lib/theme.ts resolves System to 'dark' | 'light' and writes it as data-theme on <html>. */
 function currentTheme(): 'light' | 'dark' {
@@ -53,7 +66,7 @@ async function drawDiagram(text: string, theme: 'light' | 'dark'): Promise<Drawn
     }
     const { svg } = await m.render(id, text)
     const checked = safeMermaidSvg(svg)
-    return checked.ok ? { state: 'ok', svg: checked.svg } : { state: 'refused' }
+    return checked.ok ? { state: 'ok', root: checked.root } : { state: 'refused' }
   } catch (e) {
     return { state: 'error', message: messageOf(e) }
   } finally {
@@ -90,12 +103,25 @@ export default function MermaidView({ text, title, truncated }: { text: string; 
     return () => clearTimeout(t)
   }, [copied])
 
+  usePreviewStatus(statusFor(drawn))
   const showSource = view === 'source' || drawn.state === 'error' || drawn.state === 'refused'
+
+  // The checked tree is imported into a shadow root: never re-parsed from text, and Mermaid's <style> and ids stay out of the app.
+  const host = useRef<HTMLDivElement>(null)
+  const okRoot = drawn.state === 'ok' ? drawn.root : null
+  useEffect(() => {
+    const el = host.current
+    if (!el || !okRoot) return
+    const shadow = el.shadowRoot ?? el.attachShadow({ mode: 'open' })
+    const style = document.createElement('style')
+    style.textContent = SHADOW_STYLE
+    shadow.replaceChildren(style, document.importNode(okRoot, true))
+  }, [okRoot, showSource])
 
   const copy = (): void => {
     if (drawn.state !== 'ok') return
     void navigator.clipboard
-      ?.writeText(drawn.svg)
+      ?.writeText(new XMLSerializer().serializeToString(drawn.root))
       .then(() => setCopied(true))
       .catch(() => undefined)
   }
@@ -130,7 +156,7 @@ export default function MermaidView({ text, title, truncated }: { text: string; 
       )}
       {drawn.state === 'refused' && (
         <p className="output-preview-note output-preview-problem" data-testid="output-mermaid-refused">
-          OrgAI did not show this drawing because it contained active content.
+          {REFUSED_TEXT}
         </p>
       )}
       {showSource ? (
@@ -138,15 +164,13 @@ export default function MermaidView({ text, title, truncated }: { text: string; 
           {text}
         </pre>
       ) : drawn.state === 'drawing' ? (
-        <p className="output-preview-note" role="status">
-          Drawing the diagram…
-        </p>
+        <p className="output-preview-note">Drawing the diagram…</p>
       ) : drawn.state === 'ok' ? (
         <div className="output-scroll output-mermaid-stage" role="region" aria-label={`${title} diagram`} tabIndex={0}>
-          {/* The one place markup is inserted. It is safe because it passed safeMermaidSvg (parsed as XML, no script,
-              foreignObject, event handler, outside link or url(), re-serialized from the checked tree) after Mermaid's
-              own 'strict' sanitizer, and the window's CSP forbids script from anywhere but the app. */}
-          <div className="output-mermaid-svg" data-testid="output-mermaid-svg" role="img" aria-label={title} dangerouslySetInnerHTML={{ __html: drawn.svg }} />
+          {/* The checked tree (safeMermaidSvg: XML namespace, no script, foreignObject, comment, instruction, handler,
+              outside link or resource attribute, after Mermaid's own 'strict' sanitizer) is imported as nodes into a
+              shadow root by the effect above. No markup string is ever parsed here. */}
+          <div ref={host} className="output-mermaid-svg" data-testid="output-mermaid-svg" role="img" aria-label={title} />
         </div>
       ) : null}
       {truncated && (

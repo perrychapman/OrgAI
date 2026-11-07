@@ -6,14 +6,14 @@ import { activeContentIn, safeMermaidSvg } from './outputSvg'
 const parse = (s: string): Document =>
   new DOMParser({ errorHandler: { warning: () => {}, error: (m: string) => { throw new Error(m) }, fatalError: (m: string) => { throw new Error(m) } } }).parseFromString(s, 'image/svg+xml') as unknown as Document
 const serialize = (n: Node): string => new XMLSerializer().serializeToString(n as never)
-const check = (s: string) => safeMermaidSvg(s, parse, serialize)
+const check = (s: string) => safeMermaidSvg(s, parse)
 const wrap = (inner: string, attrs = ''): string => `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" ${attrs}>${inner}</svg>`
 
 describe('safeMermaidSvg', () => {
-  it('passes a plain drawing and returns re-serialized markup', () => {
+  it('passes a plain drawing and returns the checked root', () => {
     const r = check(wrap('<style>#m{fill:red;stroke:url(#grad)}</style><g class="node"><rect width="10" height="10" fill="url(#grad)"/><text>Hi</text></g><marker id="a"/><use href="#a"/>'))
     expect(r.ok).toBe(true)
-    if (r.ok) expect(r.svg).toContain('<text>Hi</text>')
+    if (r.ok) expect(serialize(r.root)).toContain('<text>Hi</text>')
   })
   it('refuses a root that is not svg', () => {
     expect(check('<html><body/></html>').ok).toBe(false)
@@ -51,6 +51,27 @@ describe('safeMermaidSvg', () => {
     expect(check(wrap('<rect fill="url(javascript:alert(1))"/>')).ok).toBe(false)
     expect(check(wrap('<style>.a{width:expression(alert(1))}</style>')).ok).toBe(false)
     expect(check(wrap('<style><![CDATA[.a{background:url(http://evil.example/x)}]]></style>')).ok).toBe(false)
+  })
+})
+
+describe('safeMermaidSvg, differences between XML and HTML parsing', () => {
+  it('refuses comments and processing instructions anywhere', () => {
+    expect(check(wrap('<!--><img src=x>--><g/>')).ok).toBe(false)
+    expect(check(wrap('<style><?x ><img src=x> ?>.a{fill:red}</style>')).ok).toBe(false)
+    expect(check(wrap('<g><!-- hi --></g>')).ok).toBe(false)
+    expect(check(`<!-- before -->${wrap('<g/>')}`).ok).toBe(false)
+  })
+  it('refuses CDATA outside style but not inside it', () => {
+    expect(check(wrap('<text><![CDATA[x]]></text>')).ok).toBe(false)
+    expect(check(wrap('<style><![CDATA[.a{fill:red}]]></style>')).ok).toBe(true)
+  })
+  it('refuses elements outside the SVG namespace', () => {
+    expect(check(wrap('<xhtml:p xmlns:xhtml="http://www.w3.org/1999/xhtml">x</xhtml:p>')).ok).toBe(false)
+    expect(check(wrap('<img xmlns="http://www.w3.org/1999/xhtml"/>')).ok).toBe(false)
+    expect(check('<svg xmlns="http://example.com/other"/>').ok).toBe(false)
+  })
+  it('refuses resource and form attributes', () => {
+    for (const a of ['src="x"', 'srcset="x"', 'action="x"', 'formaction="x"', 'data="x"', 'poster="x"']) expect(check(wrap(`<rect ${a}/>`)).ok, a).toBe(false)
   })
 })
 

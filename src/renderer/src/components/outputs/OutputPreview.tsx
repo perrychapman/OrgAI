@@ -4,6 +4,7 @@ import type { OutputPreview as OutputPreviewData, RunOutput } from '@shared/type
 import { previewCacheFor, previewKey } from '../../lib/outputs'
 import { svgDataUrl } from '../../lib/outputPreview'
 import { Button } from '../ui/Button'
+import { PreviewStatusContext } from './previewStatus'
 import DocumentView from './DocumentView'
 import SheetView from './SheetView'
 import TextPreview from './TextPreview'
@@ -27,6 +28,7 @@ export default function OutputPreview({ output }: OutputPreviewProps): ReactElem
     return hit ? { status: 'ready', preview: hit } : { status: 'loading' }
   })
   const [attempt, setAttempt] = useState(0)
+  const [bodyStatus, setBodyStatus] = useState('')
   const seq = useRef(0)
   const missing = output.missing === true
 
@@ -64,25 +66,39 @@ export default function OutputPreview({ output }: OutputPreviewProps): ReactElem
 
   if (missing) return null
 
+  // One polite region stays mounted through loading, error and ready, so a change of state is spoken.
+  const status = state.status === 'loading' ? 'Loading preview…' : state.status === 'error' ? 'Could not load the preview.' : bodyStatus
+  const statusRegion = (
+    <p className="sr-only" role="status" data-testid="output-preview-status">
+      {status}
+    </p>
+  )
+
   if (state.status === 'loading') {
     return (
-      <div className="output-preview" data-testid="output-preview" data-state="loading" role="status">
-        <p className="output-preview-note">Loading preview…</p>
-      </div>
+      <PreviewStatusContext.Provider value={setBodyStatus}>
+        {statusRegion}
+        <div className="output-preview" data-testid="output-preview" data-state="loading">
+          <p className="output-preview-note">Loading preview…</p>
+        </div>
+      </PreviewStatusContext.Provider>
     )
   }
   if (state.status === 'error') {
     return (
-      <div className="output-preview" data-testid="output-preview" data-state="error">
-        <p className="output-preview-note output-preview-problem" data-testid="output-preview-error">
-          Could not load the preview.
-        </p>
-        <div>
-          <Button size="sm" onClick={() => setAttempt((n) => n + 1)} testId="output-preview-retry">
-            Try again
-          </Button>
+      <PreviewStatusContext.Provider value={setBodyStatus}>
+        {statusRegion}
+        <div className="output-preview" data-testid="output-preview" data-state="error">
+          <p className="output-preview-note output-preview-problem" data-testid="output-preview-error">
+            Could not load the preview.
+          </p>
+          <div>
+            <Button size="sm" onClick={() => setAttempt((n) => n + 1)} testId="output-preview-retry">
+              Try again
+            </Button>
+          </div>
         </div>
-      </div>
+      </PreviewStatusContext.Provider>
     )
   }
 
@@ -117,8 +133,11 @@ export default function OutputPreview({ output }: OutputPreviewProps): ReactElem
       )
   }
   return (
-    <div className="output-preview" data-testid="output-preview" data-state="ready" data-kind={p.kind}>
-      {body}
-    </div>
+    <PreviewStatusContext.Provider value={setBodyStatus}>
+      {statusRegion}
+      <div className="output-preview" data-testid="output-preview" data-state="ready" data-kind={p.kind}>
+        {body}
+      </div>
+    </PreviewStatusContext.Provider>
   )
 }

@@ -26,8 +26,11 @@ export function Popover({
   className,
   testId,
   triggerTestId,
+  triggerDescribedBy,
   onOpenChange
 }: {
+  /** id of an element that describes the trigger (aria-describedby). */
+  triggerDescribedBy?: string
   /** Content of the trigger button (icon and/or text). */
   trigger: ReactNode
   /** aria-label of the trigger when its content is an icon only. */
@@ -132,6 +135,7 @@ export function Popover({
         aria-haspopup={role === 'group' ? undefined : role}
         aria-controls={id}
         aria-label={triggerLabel}
+        aria-describedby={triggerDescribedBy}
         title={triggerTitle}
         data-testid={triggerTestId}
       >

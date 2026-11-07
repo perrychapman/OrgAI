@@ -156,14 +156,14 @@ export function svgDataUrl(text: string): string {
   return `data:image/svg+xml;base64,${btoa(bin)}`
 }
 
-/** A document link is shown as a link only for http:, https: and mailto:. */
+/** A document link is shown as a link only for http: and https:. */
 export function safeDocHref(href: unknown): string | null {
   if (typeof href !== 'string') return null
   const t = href.trim()
   if (!t) return null
   try {
     const u = new URL(t)
-    return u.protocol === 'http:' || u.protocol === 'https:' || u.protocol === 'mailto:' ? t : null
+    return u.protocol === 'http:' || u.protocol === 'https:' ? t : null
   } catch {
     return null
   }

@@ -1,5 +1,6 @@
 import type { ReactElement, ReactNode } from 'react'
 import type { DocumentBlock, DocumentRun } from '@shared/types'
+import { spoofHost } from '../Markdown'
 import { isSafeImageDataUrl, safeDocHref } from '../../lib/outputPreview'
 
 /** A heading's level shifted down so the document never competes with the detail's own headings: h1 -> h4, capped at h6. */
@@ -23,6 +24,7 @@ function Runs({ runs }: { runs: readonly DocumentRun[] }): ReactElement {
           node = (
             <a href={href} title={href} target="_blank" rel="noreferrer noopener">
               {node}
+              {spoofHost(href, r.text) && <span className="md-link-host"> ({spoofHost(href, r.text)})</span>}
             </a>
           )
         }
