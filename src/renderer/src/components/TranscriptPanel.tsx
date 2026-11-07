@@ -2,6 +2,7 @@ import type { ReactElement, ReactNode } from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertTriangle,
+  Files,
   Bot,
   CheckCircle2,
   Circle,
@@ -46,6 +47,9 @@ import { Icon } from './ui/Icon'
 import { TabPanel, Tabs, type TabItem } from './ui/Tabs'
 import { autoContinueLine, bareToolName, humanizeToolResult, humanizeToolUse, omittedLabel, type FeedItem, type ToolKind } from '../lib/transcriptRows'
 import { collapseKnowledgeWrites, readRowText, recallOutputText, type KnowledgeRow } from '../lib/knowledgeRun'
+import RunOutputs from './outputs/RunOutputs'
+import { revealOutputsTab } from './outputs/revealOutputsTab'
+import { collapseOutputCalls, matchOutputId, type OutputWriteRow } from '../lib/outputsRun'
 
 /** Distance from the end of the conversation under which it still counts as scrolled to the end. */
 const STICK_PX = 48
@@ -273,6 +277,44 @@ function KnowledgeWriteRow({ row, body, projectId, runId }: { row: KnowledgeRow;
 }
 
 /**
+ * The harness row that stands for a produce_output / register_output call (docs/design/outputs.md section 7): the
+ * sentence, a "Show" link to the item in the Outputs tab when the index has it, and the tool result behind "Show details".
+ */
+function OutputWriteRowView({ row, body, runId, tabRunId }: { row: OutputWriteRow; body: string | undefined; runId: string; tabRunId: string }): ReactElement {
+  const outputs = useAppStore((s) => {
+    const pid = s.runs[runId]?.summary.projectId
+    return pid ? s.outputsByProject[pid] : undefined
+  })
+  const id = row.state === 'refused' ? undefined : matchOutputId(outputs, runId, row.title, row.relPath)
+  return (
+    <div className="entry system harness output-write-row" data-testid="output-write-row" data-state={row.state}>
+      <Icon icon={row.state === 'refused' ? AlertTriangle : Files} size="sm" />
+      <div className="tool-main">
+        <span className="entry-plain">{row.text}</span>
+        {id && (
+          <>
+            {' '}
+            <button type="button" className="link-btn output-write-show" data-testid="output-write-show" aria-label={`Show ${row.title} in Outputs`} onClick={() => {
+                useAppStore.getState().openRunOutput(tabRunId, id)
+                revealOutputsTab()
+              }}
+            >
+              Show
+            </button>
+          </>
+        )}
+        {body && row.state !== 'refused' && (
+          <details className="entry-detail">
+            <summary>Show details</summary>
+            <pre>{body}</pre>
+          </details>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/**
  * A knowledge read (spec 3.4): "Recalled N items about <query>" with the tool's answer under "Show output", or the quiet
  * "Added N known items: ..." row. The look of a write row, no Open link.
  */
@@ -312,7 +354,12 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
     const project = s.projects.find((p) => p.id === run.projectId)
     return !!project && projectKindOf(project) === 'engagement'
   })
-  const tab: SideTab = planTab === 'knowledge' && !showKnowledgeTab ? 'transcript' : planTab
+  // The Outputs tab: work runs of stored projects, never setup runs, quick runs or the assistants.
+  const showOutputsTab = useAppStore((s) => {
+    const run = s.runs[runId]?.summary
+    return !!run && run.kind === 'work' && !run.quick && !isVirtualProjectId(run.projectId)
+  })
+  const tab: SideTab = (planTab === 'knowledge' && !showKnowledgeTab) || (planTab === 'outputs' && !showOutputsTab) ? 'transcript' : planTab
 
   // One list for both shapes: the merged feed, or this run's entries as feed items.
   const items = useMemo<FeedItem[]>(() => feed ?? ownEntries.map((entry) => ({ kind: 'entry' as const, runId, entry })), [feed, ownEntries, runId])
@@ -337,7 +384,9 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
   // One knowledge write is one row too: the harness "Recorded <kind> <name>" row stands for the engagement_knowledge /
   // engagement_context call and its result (docs/design/knowledge.md section 7).
   const knowledge = useMemo(() => collapseKnowledgeWrites(entries), [entries])
-  const shown = (e: TranscriptEntry): boolean => (showThinking || e.block.kind !== 'thinking') && !skillLoads.hidden.has(e.id) && !knowledge.hidden.has(e.id)
+  const outputCalls = useMemo(() => collapseOutputCalls(entries), [entries])
+  const shown = (e: TranscriptEntry): boolean =>
+    (showThinking || e.block.kind !== 'thinking') && !skillLoads.hidden.has(e.id) && !knowledge.hidden.has(e.id) && !outputCalls.hidden.has(e.id)
   const visible = entries.filter(shown)
 
   const rows = items.map((item) => {
@@ -385,11 +434,16 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
         )
       case 'tool_use':
         return <ToolUseRow key={e.id} name={b.name} input={b.input} label={knowledge.labels.get(e.id)} />
-      case 'tool_result':
+      case 'tool_result': {
+        const oRow = outputCalls.rows.get(e.id)
+        if (oRow) return <OutputWriteRowView key={e.id} row={oRow} body={outputCalls.body.get(e.id)} runId={item.runId} tabRunId={runId} />
         return <ToolResultRow key={e.id} toolName={toolNames.get(b.toolUseId)} content={b.content} isError={b.isError} />
+      }
       case 'system': {
         const peer = parsePeerNote(b.text)
         if (peer) return <PeerNoteRow key={e.id} note={peer} at={e.at} />
+        const oRow = e.source === 'harness' ? outputCalls.rows.get(e.id) : undefined
+        if (oRow) return <OutputWriteRowView key={e.id} row={oRow} body={outputCalls.body.get(e.id)} runId={item.runId} tabRunId={runId} />
         const harness = e.source === 'harness'
         const kRow = harness ? knowledge.rows.get(e.id) : undefined
         if (kRow) return <KnowledgeWriteRow key={e.id} row={kRow} body={knowledge.body.get(e.id)} projectId={projectId} runId={runId} />
@@ -499,6 +553,7 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
     { id: 'transcript', label: 'Transcript', testId: 'side-tab-transcript' },
     ...(showPlanTab ? [{ id: 'plan', label: 'Plan', icon: plan?.status === 'blocked' ? AlertTriangle : undefined, testId: 'side-tab-plan' }] : []),
     { id: 'usage', label: 'Usage', testId: 'side-tab-usage' },
+    ...(showOutputsTab ? [{ id: 'outputs', label: 'Outputs', testId: 'side-tab-outputs' }] : []),
     ...(showKnowledgeTab ? [{ id: 'knowledge', label: 'Knowledge', testId: 'side-tab-knowledge' }] : []),
     { id: 'logs', label: 'Logs', count: errorCount, testId: 'side-tab-logs' }
   ]
@@ -527,6 +582,11 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
       {tab === 'usage' && (
         <TabPanel idPrefix={idPrefix} id="usage" value={tab}>
           <UsagePanel runId={runId} agent={agent} />
+        </TabPanel>
+      )}
+      {tab === 'outputs' && projectId && (
+        <TabPanel idPrefix={idPrefix} id="outputs" value={tab} className="run-outputs-panel">
+          <RunOutputs runId={runId} projectId={projectId} />
         </TabPanel>
       )}
       {tab === 'knowledge' && projectId && (
@@ -560,7 +620,7 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
           <Checkbox checked={showThinking} onChange={setShowThinking} label="Show thinking" />
         </div>
       )}
-      {tab === 'plan' || tab === 'usage' || tab === 'knowledge' || (tab === 'transcript' && finished && !agent) ? null : tab === 'transcript' ? (
+      {tab === 'plan' || tab === 'usage' || tab === 'outputs' || tab === 'knowledge' || (tab === 'transcript' && finished && !agent) ? null : tab === 'transcript' ? (
         <TabPanel idPrefix={idPrefix} id="transcript" value={tab} className="transcript">
           {!agent && <p className="panel-note">Select an agent on the chart to read its transcript.</p>}
           {agent && visible.length === 0 && !partial && <p className="panel-note">Nothing yet.</p>}
