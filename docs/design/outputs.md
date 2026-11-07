@@ -61,7 +61,7 @@ to the run's chain (every member, every agent); the project tab shows all of it.
 (`output-run-link`, lands like the Knowledge history link: opens the run, focus on the composer, else the selected run
 tab, else the topbar h1), the description if any (ClampText), `output-missing` ("The file is gone from <relPath>. It
 was moved or deleted outside OrgAI.") instead of a preview when `missing`, then a toolbar: "Open" (secondary,
-`output-detail-open`, hidden for 'other'; title "Opens in the app your computer uses for this kind of file") and the
+`output-detail-open`, hidden for 'other' and 'svg'; title "Opens in the app your computer uses for this kind of file") and the
 More actions popover, then `OutputPreview`.
 
 `OutputPreview` fetches `outputs:preview` on demand with a sequence guard; while waiting
@@ -112,7 +112,7 @@ Every preview region that scrolls is focusable (`tabIndex=0`) with a name; one t
 ## 5. Actions (`components/outputs/OutputActions.tsx`)
 
 IconButton `output-more` ("More actions for <title>", `MoreHorizontal`) opening the `Popover` `output-actions`:
-"Open" (`output-open`; never for kind 'other', where a quiet line `output-open-hint` reads "OrgAI does not open this
+"Open" (`output-open`; never for kind 'other' or 'svg' (`canOpenOutput`; main refuses both), where a quiet line `output-open-hint` reads "OrgAI does not open this
 kind of file. Show it in its folder instead."), "Show in folder" (`output-reveal`), "Save as…" (`output-save-as`),
 "Copy path" (`output-copy-path`, copies `path`), "Remove from list" (`output-forget`, the file stays), "Delete file…"
 (`output-delete`, only `source === 'produced'` and not missing; `useConfirm` `confirmTestId: 'output-delete-confirm'`,
