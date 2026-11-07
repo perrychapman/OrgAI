@@ -240,6 +240,9 @@ try {
       const about = page.locator('[data-testid=about-block]')
       check((await about.count()) === 1, `about block present at ${w}x${h} ${theme}`)
       await about.scrollIntoViewIfNeeded()
+      const maker = page.locator('[data-testid=about-maker]')
+      check((await maker.count()) === 1 && (await maker.textContent())?.trim() === 'Cybrid Software LLC', `about shows the maker ${w}x${h} ${theme}`)
+      check((await maker.getAttribute('href')) === 'https://cybridsoftware.com', 'maker link points at cybridsoftware.com')
       const aboutText = (await about.textContent()) ?? ''
       check(aboutText.includes(PKG_VERSION), `about block shows version ${PKG_VERSION}`, aboutText.slice(0, 80))
       const info = await page.evaluate(() => window.orgai.app.info())

@@ -45,6 +45,8 @@ import { focusCheckedPreset } from '../components/canvas/CanvasPresetGroup'
 
 /** Same debounce the project store uses for project saves. */
 const SAVE_DELAY_MS = 350
+const MAKER_NAME = 'Cybrid Software LLC'
+const MAKER_URL = 'https://cybridsoftware.com'
 
 const THEME_OPTIONS: { value: ThemeMode; label: string }[] = [
   { value: 'dark', label: 'Dark' },
@@ -612,6 +614,12 @@ export default function AppSettingsView(): ReactElement {
                       <Badge tone="accent">Mock adapter</Badge>
                     </span>
                   )}
+                </dd>
+                <dt>Made by</dt>
+                <dd>
+                  <a className="connector-link" href={MAKER_URL} target="_blank" rel="noreferrer noopener" data-testid="about-maker">
+                    {MAKER_NAME}
+                  </a>
                 </dd>
                 <dt>Platform</dt>
                 <dd>
