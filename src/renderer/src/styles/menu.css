@@ -56,6 +56,25 @@
   gap: var(--space-1);
 }
 
+/* An agent opened this place (open_in_app): one in-flow banner under the topbar, never over the content. */
+.app-navigate-banner {
+  flex: none;
+  padding: var(--space-2) var(--space-4) 0;
+}
+.app-navigate-banner .banner {
+  align-items: center;
+  padding: var(--space-2) var(--space-3);
+}
+.app-navigate-banner .banner-main {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
+}
+.app-navigate-banner .banner-actions {
+  margin-top: 0;
+}
+
 /* Footer line "Not sure where something is? Ask OrgAI", left of Close. */
 .shortcuts-ask {
   display: inline-flex;

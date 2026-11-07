@@ -559,7 +559,7 @@ function targetLine(name: string, project: Project | undefined): string {
     if (folder) parts.push(clampLabel(showHidden(folder), 60))
     parts.push(connectionLabel(projectConnection(project)))
   }
-  return parts.join(' · ')
+  return `Applies to ${parts.join(' · ')}`
 }
 
 /** Helper line of a target settings card: names the footnote about saved commands only when the proposal carries rules. */
