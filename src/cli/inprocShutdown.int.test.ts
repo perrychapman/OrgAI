@@ -87,18 +87,26 @@ describe.skipIf(process.platform === 'win32')('the in-process host at the shutdo
     child.kill('SIGTERM')
     let taken = false
     let goneWhenTaken: boolean[] = []
+    let takenAt = 0
     const end = Date.now() + 30_000
     while (!taken && Date.now() < end) {
       if (await contend(dataDir)) {
         taken = true
-        goneWhenTaken = [child.exitCode !== null || child.signalCode !== null || (await isGone(ready.pid)), await isGone(git), await isGone(hook)]
+        goneWhenTaken = [true, await isGone(git), await isGone(hook)]
+        takenAt = Date.now()
       } else {
         await new Promise((r) => setTimeout(r, 50))
       }
     }
     expect(taken).toBe(true)
-    // The folder was free only once the owner process had exited and both descendants were gone.
+    // The folder is released from the process's own 'exit' hook (the last JavaScript it runs), so a contender can see it
+    // free a few ms before the OS reports the process gone (macOS CI: a take at that moment read the owner as alive).
+    // What must hold: both descendants were gone at the take, and the owner exits right after it, within a short bound.
     expect(goneWhenTaken).toEqual([true, true, true])
+    const code = await Promise.race([exited, new Promise<'late'>((r) => setTimeout(() => r('late'), 3000))])
+    expect(code).not.toBe('late')
+    expect(Date.now() - takenAt).toBeLessThan(5000)
+    expect(await isGone(ready.pid)).toBe(true)
     expect(await exited).toBe(1)
     expect(stderr).toContain(INPROC_HARD_LIMIT_MESSAGE)
     // Never the normal path: the stop that a CLI command awaits never resolved (the process ended first).
