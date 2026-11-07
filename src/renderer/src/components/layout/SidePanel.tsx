@@ -4,6 +4,8 @@ import { PanelRightClose, PanelRightOpen } from 'lucide-react'
 import { IconButton } from '../ui/IconButton'
 import { PANEL_W, nextWide, panelBudget, usePersistedWidth } from '../../lib/panelWidth'
 import { ResizeHandle } from './ResizeHandle'
+import { beginLayoutMotion } from '../../lib/layoutMotion'
+import { tokenMs } from '../../lib/useExitPresence'
 
 const PREF_PREFIX = 'orgai.sidePanel.'
 const WIDTH_PREFIX = 'orgai.sidePanelW.'
@@ -122,6 +124,10 @@ export function SidePanel({
     else parent.removeAttribute('data-side-wide')
     return () => parent.removeAttribute('data-side-wide')
   }, [wide])
+  // A user collapse or expand (the Hide and Show buttons) glides the column (layout.css,
+  // gated on html[data-layout-moving]); canvases skip refits while it moves and refit once at the end. Drags, first
+  // layout, window resizes, the auto-collapse and the budget rail never glide.
+  const glide = (): void => beginLayoutMotion(tokenMs('--dur-slow'))
   const first = useRef(true)
   useEffect(() => {
     if (first.current) {
@@ -135,6 +141,7 @@ export function SidePanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [revealOn])
   const setCollapsed = (c: boolean): void => {
+    glide()
     setInner(c)
     onOpenChange?.(!c)
     if (persistKey) {

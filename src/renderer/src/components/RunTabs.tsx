@@ -1,4 +1,4 @@
-import type { KeyboardEvent as ReactKeyboardEvent, ReactElement } from 'react'
+import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, ReactElement, RefObject } from 'react'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { AppWindow, ChevronDown, CircleAlert, EyeOff, Pencil, Plus, X } from 'lucide-react'
 import { useShallow } from 'zustand/react/shallow'
@@ -13,9 +13,59 @@ import { runTag, shortPrompt } from '../lib/runLabels'
 import { displayRunName, runKindWord } from '../lib/orgChange'
 import { statusOfRun, statusText, type RunTone } from '../lib/runStatus'
 import { Icon } from './ui/Icon'
+import { useArrival } from '../lib/useArrival'
+import { tokenMs } from '../lib/useExitPresence'
 
 /** Longest prompt excerpt put in a tab tooltip. */
 const PROMPT_TIP_CHARS = 300
+/** Tabs that appear this soon after a project opened are restored ones, not arrivals (no entry motion). */
+const TAB_ARRIVAL_GRACE_MS = 1500
+
+/** A tab the user just hid, kept for one exit duration so it fades instead of vanishing. */
+interface TabGhost {
+  key: string
+  /** Where it sat among the visible tabs. */
+  at: number
+  tag: string
+  title: string
+  tone: RunTone | 'none'
+  draft: boolean
+  selected: boolean
+}
+
+/**
+ * Position of the selected tab's accent bar, measured before paint (and when `signature` or the strip's size changes).
+ * `ready` turns the slide on after the first measure, so first paint and a resize never glide.
+ */
+function useSlidingBar(listRef: RefObject<HTMLDivElement | null>, selector: string, signature: string): { x: number; w: number; shown: boolean; ready: boolean } {
+  const [pos, setPos] = useState<{ x: number; w: number } | null>(null)
+  const [ready, setReady] = useState(false)
+  const measure = useCallback((): void => {
+    const el = listRef.current?.querySelector<HTMLElement>(selector)
+    if (!el || el.offsetWidth === 0) {
+      setPos((p) => (p === null ? p : null))
+      return
+    }
+    // Inside the 1 px border of the tab (the bar replaces the old inset accent shadow).
+    const x = el.offsetLeft + 1
+    const w = Math.max(0, el.offsetWidth - 2)
+    setPos((p) => (p && p.x === x && p.w === w ? p : { x, w }))
+  }, [listRef, selector])
+  useLayoutEffect(measure, [measure, signature])
+  useEffect(() => {
+    setReady(true)
+    const list = listRef.current
+    if (!list || typeof ResizeObserver === 'undefined') return undefined
+    const ro = new ResizeObserver(() => {
+      setReady(false)
+      measure()
+      requestAnimationFrame(() => setReady(true))
+    })
+    ro.observe(list)
+    return () => ro.disconnect()
+  }, [listRef, measure])
+  return { x: pos?.x ?? 0, w: pos?.w ?? 0, shown: pos !== null, ready }
+}
 
 const DRAFT_ID = 'new'
 
@@ -195,6 +245,23 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
   let visible = items.slice(0, limit)
   if (selectedIdx >= limit && limit > 0) visible = [...items.slice(0, limit - 1), items[selectedIdx]]
   const visibleIds = new Set(visible.map((t) => t.id))
+
+  // Motion (docs/design/motion.md 3.4). A tab that arrives while the user is looking slides in; one the user hides
+  // leaves a ghost for one exit duration (the real tab is gone at once, focus has already moved); the selected tab's
+  // accent bar is one element that slides.
+  const arrivalScope = useRef({ scope: project.id, at: Date.now() })
+  if (arrivalScope.current.scope !== project.id) arrivalScope.current = { scope: project.id, at: Date.now() }
+  const arrived = useArrival(
+    items.map((t) => t.key),
+    project.id,
+    { maxPerBatch: 1 }
+  )
+  // Tabs restored a moment after a project opened (open chains load lazily) are not arrivals.
+  const isArrival = (key: string): boolean => Date.now() - arrivalScope.current.at > TAB_ARRIVAL_GRACE_MS && arrived(key)
+  const [ghosts, setGhosts] = useState<TabGhost[]>([])
+  const bar = useSlidingBar(listRef, '.run-tab-wrap.selected', `${selectedId}|${visible.map((t) => t.key).join(',')}|${ghosts.length}`)
+  const rows: Array<{ item?: TabItem; ghost?: TabGhost }> = visible.map((item) => ({ item }))
+  for (const g of [...ghosts].sort((a, b) => a.at - b.at)) rows.splice(Math.min(g.at, rows.length), 0, { ghost: g })
   const hidden = items.filter((t) => !visibleIds.has(t.id))
   const hiddenWaiting = hidden.filter((t) => t.run && needsYou(t.run)).length
   const hiddenMarked = hidden.some((t) => view(t).unread > 0 || view(t).hasDraft)
@@ -222,6 +289,14 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
   }
   const hide = (item: TabItem): void => {
     refocus.current = true
+    const at = visible.findIndex((t) => t.key === item.key)
+    const ms = tokenMs('--dur-fast')
+    if (ms > 0 && at >= 0) {
+      const v = view(item)
+      const ghost: TabGhost = { key: item.key, at, tag: v.tag, title: v.title, tone: v.tone, draft: item.kind === 'draft', selected: item.id === selectedId }
+      setGhosts((g) => [...g, ghost])
+      window.setTimeout(() => setGhosts((g) => g.filter((x) => x !== ghost)), ms)
+    }
     if (item.kind === 'draft') closeDraft()
     else dismissRun(item.id)
   }
@@ -347,11 +422,34 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
   return (
     <div className="run-tabs" ref={barRef} data-testid="run-tabs">
       <div className="run-tablist" role="tablist" aria-label="Open runs" aria-orientation="horizontal" ref={listRef} onKeyDown={onKeyDown}>
-        {visible.map((item) => {
+        {rows.map((row) => {
+          if (row.ghost) {
+            const g = row.ghost
+            return (
+              <div key={`ghost-${g.key}`} className={`run-tab-ghost${g.selected ? ' selected' : ''}`} aria-hidden="true" inert>
+                {g.draft ? (
+                  <span className="run-tab-glyph">
+                    <Icon icon={Plus} size="xs" />
+                  </span>
+                ) : (
+                  <span className={`run-dot ${g.tone}`} aria-hidden="true" />
+                )}
+                <span className="run-tab-index">{g.tag}</span>
+                <span className="run-tab-title">{g.title}</span>
+              </div>
+            )
+          }
+          const item = row.item as TabItem
           const v = view(item)
           const selected = item.id === selectedId
           return (
-            <div key={item.key} className={`run-tab-wrap ${selected ? 'selected' : ''}`} role="presentation" data-run={item.id} data-chain={item.key}>
+            <div
+              key={item.key}
+              className={`run-tab-wrap ${selected ? 'selected' : ''}${isArrival(item.key) ? ' motion-enter-x' : ''}`}
+              role="presentation"
+              data-run={item.id}
+              data-chain={item.key}
+            >
               <button
                 type="button"
                 role="tab"
@@ -398,6 +496,7 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
             </div>
           )
         })}
+        {bar.shown && <span className="run-tab-bar" aria-hidden="true" data-ready={bar.ready ? '' : undefined} style={{ '--bar-x': `${bar.x}px`, '--bar-w': bar.w } as CSSProperties} />}
       </div>
       {hidden.length > 0 && (
         <div className="run-tab-more-wrap">
@@ -493,7 +592,13 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
       </button>
       {/* Always mounted, so a screen reader is already watching the region when a notice arrives. */}
       <span className="run-tabs-notice" role="status" ref={noticeRef}>
-        {notice ?? ''}
+        {notice ? (
+          <span key={notice} className="motion-fade">
+            {notice}
+          </span>
+        ) : (
+          ''
+        )}
       </span>
     </div>
   )

@@ -1,5 +1,5 @@
-import { useRef } from 'react'
-import type { KeyboardEvent, ReactElement, ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import type { CSSProperties, KeyboardEvent, ReactElement, ReactNode } from 'react'
 import type { LucideIcon } from 'lucide-react'
 import { Icon } from './Icon'
 
@@ -18,6 +18,10 @@ export interface TabItem {
 
 export const tabDomId = (prefix: string, id: string): string => `${prefix}-tab-${id}`
 export const panelDomId = (prefix: string, id: string): string => `${prefix}-panel-${id}`
+
+/** The tablist the user last changed, and when: a TabPanel that mounts right after it fades in (docs/design/motion.md 3.6). */
+const lastUserChange = { prefix: '', at: 0 }
+const USER_CHANGE_WINDOW_MS = 400
 
 /**
  * Underline tabs. role=tablist with a roving tabindex: only the selected tab is in the tab order, Left/Right
@@ -47,7 +51,46 @@ export function Tabs({
   className?: string
 }): ReactElement {
   const refs = useRef(new Map<string, HTMLButtonElement>())
+  const listRef = useRef<HTMLDivElement>(null)
   const enabled = tabs.filter((t) => !t.disabled)
+  const change = (id: string): void => {
+    lastUserChange.prefix = idPrefix
+    lastUserChange.at = Date.now()
+    onChange(id)
+  }
+
+  // One 2 px indicator slides under the selected tab (transform only). It is measured before paint and on resize;
+  // `data-ready` turns the transition on after the first measure, and a resize snaps (data-snap) instead of gliding.
+  const [bar, setBar] = useState<{ x: number; w: number } | null>(null)
+  const [ready, setReady] = useState(false)
+  const signature = tabs.map((t) => `${t.id}:${t.label}:${t.count ?? ''}`).join('|')
+  const measure = (): void => {
+    const list = listRef.current
+    const el = refs.current.get(value)
+    if (!list || !el || el.offsetWidth === 0) {
+      setBar((b) => (b === null ? b : null))
+      return
+    }
+    const pad = parseFloat(getComputedStyle(el).paddingLeft) || 0
+    const x = el.offsetLeft + pad
+    const w = Math.max(0, el.offsetWidth - pad * 2)
+    setBar((b) => (b && b.x === x && b.w === w ? b : { x, w }))
+  }
+  useLayoutEffect(measure, [value, signature])
+  useEffect(() => {
+    setReady(true)
+    const list = listRef.current
+    if (!list || typeof ResizeObserver === 'undefined') return undefined
+    const ro = new ResizeObserver(() => {
+      list.setAttribute('data-snap', '')
+      measure()
+      requestAnimationFrame(() => list.removeAttribute('data-snap'))
+    })
+    ro.observe(list)
+    for (const el of refs.current.values()) ro.observe(el)
+    return () => ro.disconnect()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value, signature])
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>): void => {
     const i = enabled.findIndex((t) => t.id === value)
@@ -59,13 +102,15 @@ export function Tabs({
     if (next < 0 || enabled.length === 0) return
     e.preventDefault()
     const target = enabled[next]
-    onChange(target.id)
+    change(target.id)
     refs.current.get(target.id)?.focus()
   }
 
   return (
     <div
+      ref={listRef}
       role="tablist"
+      data-ready={ready && bar ? '' : undefined}
       aria-label={label}
       aria-orientation="horizontal"
       className={['tabs-list', compact ? 'compact' : '', className ?? ''].filter(Boolean).join(' ')}
@@ -90,7 +135,7 @@ export function Tabs({
             className="tabs-tab"
             data-testid={t.testId}
             aria-label={t.count !== undefined && t.count > 0 && t.countLabel ? `${t.label}, ${t.countLabel}` : undefined}
-            onClick={() => onChange(t.id)}
+            onClick={() => change(t.id)}
           >
             {t.icon && <Icon icon={t.icon} size="sm" />}
             {t.label}
@@ -98,6 +143,7 @@ export function Tabs({
           </button>
         )
       })}
+      {bar && <span className="tabs-indicator" aria-hidden="true" style={{ '--tab-x': `${bar.x}px`, '--tab-w': bar.w } as CSSProperties} />}
     </div>
   )
 }
@@ -118,7 +164,23 @@ export function TabPanel({
 }): ReactElement | null {
   if (id !== value) return null
   return (
-    <div role="tabpanel" id={panelDomId(idPrefix, id)} aria-labelledby={tabDomId(idPrefix, id)} tabIndex={0} className={className}>
+    <TabPanelBody idPrefix={idPrefix} id={id} className={className}>
+      {children}
+    </TabPanelBody>
+  )
+}
+
+/** Mounts when its tab is selected; a user's tab change a moment ago (this tablist only) gives it the view fade. */
+function TabPanelBody({ idPrefix, id, className, children }: { idPrefix: string; id: string; className?: string; children: ReactNode }): ReactElement {
+  const [fade] = useState(() => lastUserChange.prefix === idPrefix && Date.now() - lastUserChange.at < USER_CHANGE_WINDOW_MS)
+  return (
+    <div
+      role="tabpanel"
+      id={panelDomId(idPrefix, id)}
+      aria-labelledby={tabDomId(idPrefix, id)}
+      tabIndex={0}
+      className={[className, fade ? 'motion-view' : ''].filter(Boolean).join(' ') || undefined}
+    >
       {children}
     </div>
   )
