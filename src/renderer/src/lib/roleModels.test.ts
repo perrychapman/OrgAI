@@ -47,9 +47,15 @@ describe('role model choice', () => {
 })
 
 describe('exact model groups', () => {
-  it('groups a LiteLLM catalog by family', () => {
+  it('groups a proxy catalog by family and names the family in each option', () => {
     const g = exactModelGroups([m('claude-a', 'claude'), m('gpt-a', 'openai'), m('llama', 'other')], true, 'inherit')
-    expect(g.filter((x) => x.label).map((x) => x.label)).toEqual(['Claude', 'OpenAI', 'Other'])
+    expect(g.filter((x) => x.label).map((x) => x.label)).toEqual(['Claude', 'GPT', 'Other'])
+    expect(g.flatMap((x) => x.options).map((o) => o.label)).toEqual(['Not set (use the tier above)', 'claude-a · Claude', 'gpt-a · GPT', 'llama · Other'])
+  })
+  it('keeps a GPT exact model custom and readable on the chip', () => {
+    expect(roleModelChoice({ model: 'gpt-a' }, { deep: 'claude-a' })).toBe('custom')
+    expect(roleChipLabel({ model: 'gpt-a' })).toBe('gpt-a')
+    expect(roleChipLabel({ model: 'gpt-a', tier: 'fast' })).toBe('Fast')
   })
   it('lists other connections in one group and marks a missing model', () => {
     const g = exactModelGroups([m('a', 'claude')], false, 'gone')

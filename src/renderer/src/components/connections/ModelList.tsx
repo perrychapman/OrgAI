@@ -9,7 +9,8 @@ import { Button } from '../ui/Button'
 import { Icon } from '../ui/Icon'
 import { Input } from '../ui/Input'
 import { SegmentedControl } from '../ui/SegmentedControl'
-import { FAMILY_LABEL, formatContext, groupByFamily } from '../../lib/remap'
+import { formatContext, groupByFamily } from '../../lib/remap'
+import { FAMILY_WORD, familyCountsText, mixedFamilies, routeHintFor } from '../../lib/modelFamily'
 
 type Filter = 'all' | ModelFamily
 
@@ -48,13 +49,18 @@ export default function ModelList({
     [models, filter, query]
   )
   const groups = groupByFamily(filtered)
+  // Said once per list, only for a proxy whose models report the URL they go through.
+  const routeHint = useMemo(() => routeHintFor(models ?? []), [models])
 
   return (
     <div className="model-list" data-provider={id}>
       <button type="button" className="group-toggle" aria-expanded={open} aria-controls={listId} onClick={() => setOpen((v) => !v)}>
         <Icon icon={open ? ChevronDown : ChevronRight} size="sm" />
         <strong>Models</strong>
-        <span className="muted tabular">({models?.length ?? '…'})</span>
+        <span className="muted tabular" data-testid="model-list-count">
+          ({models?.length ?? '…'}
+          {models && models.length > 0 && mixedFamilies(models) ? `: ${familyCountsText(models)}` : ''})
+        </span>
       </button>
       {open && (
         <div id={listId} className="model-body">
@@ -89,10 +95,15 @@ export default function ModelList({
                 <SegmentedControl
                   label="Filter models by family"
                   value={filter}
-                  options={(['all', 'claude', 'openai', 'other'] as Filter[]).map((f) => ({ value: f, label: `${f === 'all' ? 'All' : FAMILY_LABEL[f]} ${counts[f]}` }))}
+                  options={(['all', 'claude', 'openai', 'other'] as Filter[]).map((f) => ({ value: f, label: `${f === 'all' ? 'All' : FAMILY_WORD[f]} ${counts[f]}` }))}
                   onChange={setFilter}
                 />
               </div>
+              {routeHint && (
+                <p className="hint" data-testid="model-route-hint">
+                  {routeHint}
+                </p>
+              )}
               {filtered.length === 0 ? (
                 <div className="empty-inline">
                   <Icon icon={SearchX} size="lg" />
@@ -106,7 +117,7 @@ export default function ModelList({
                   {groups.map((g) => (
                     <div key={g.family} role="listitem" className="model-group">
                       <div className="model-group-title">
-                        <strong>{FAMILY_LABEL[g.family]}</strong> <span className="muted tabular">{g.models.length}</span>
+                        <strong>{FAMILY_WORD[g.family]}</strong> <span className="muted tabular">{g.models.length}</span>
                       </div>
                       <ul>
                         {g.models.map((m) => (

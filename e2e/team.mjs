@@ -112,6 +112,75 @@ async function sectionExactModel(page) {
   })
 }
 
+/**
+ * A project on a mixed-family proxy: the Exact model select sits in the main role panel (not under Advanced), grouped
+ * Claude / GPT / Other with the family in each option, and a GPT model is selectable. The project is moved back and the
+ * proxy removed afterwards. Checked at both sizes and themes.
+ */
+async function sectionProxyExactModel(page, app, shot) {
+  const NAME_PX = 'E2E gateway'
+  const project = await findProject(page, NAME)
+  const proxyId = await page.evaluate(async (name) => {
+    const made = await window.orgai.connections.createProxy({ name, anthropicBaseUrl: 'https://mock-proxy.example.com', apiKey: 'whatever' })
+    await window.orgai.connections.connect(made.connection.id)
+    return made.connection.id
+  }, NAME_PX)
+  try {
+    await page.evaluate(([pid, id]) => window.orgai.projects.remapModels({ projectId: pid, connection: id }), [project.id, proxyId])
+    await page.reload()
+    await page.waitForSelector('.sidebar', { timeout: 30_000 })
+    await openProject(page, NAME)
+    await openTeam(page)
+    await selectReviewer(page)
+    await page.evaluate(() => {
+      const fold = document.querySelector('[data-testid=role-model-fold]')
+      if (fold) fold.open = true
+    })
+    const exactSel = page.locator('[data-testid=role-exact-model]')
+    await exactSel.waitFor({ state: 'visible', timeout: 20_000 })
+    check(await exactSel.evaluate((el) => !el.closest('[data-testid=role-model-advanced]')), 'on a proxy project Exact model is in the main role panel, not under Advanced')
+    for (const [w, h] of SIZES) {
+      await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), [w, h])
+      await sleep(500)
+      for (const theme of THEMES) {
+        await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme)
+        await sleep(250)
+        const tag = `at ${w}x${h} ${theme}`
+        check(await exactSel.isVisible(), `Exact model is visible ${tag}`)
+        const m = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }))
+        check(m.sw <= m.cw, `no horizontal scroll with the proxy picker ${tag}`, JSON.stringify(m))
+        await shot(`proxy-exact-${w}x${h}-${theme}`)
+      }
+    }
+    const groups = await exactSel.evaluate((s) => [...s.querySelectorAll('optgroup')].map((g) => ({ label: g.label, options: [...g.querySelectorAll('option')].map((o) => o.textContent ?? '') })))
+    check(groups.map((g) => g.label).join() === 'Claude,GPT,Other', 'Exact model is grouped Claude, GPT, Other', groups.map((g) => g.label).join())
+    check(groups.every((g) => g.options.every((o) => o.endsWith(` · ${g.label}`))), 'each option names its family', JSON.stringify(groups))
+    check(/Any model E2E gateway serves\./.test(await page.locator('.model-select', { has: exactSel }).innerText()), 'the description names the proxy by its own name')
+    await exactSel.selectOption('gpt-6-sol')
+    await sleep(900)
+    const after = await reviewer(page)
+    check(after.role.model === 'gpt-6-sol', 'picking a GPT model pins it on the role', after.role.model)
+    check((await page.locator('[data-testid=role-model]').inputValue()) === 'custom', 'the Model select reads as an exact model')
+    const chip = await page.locator('.react-flow__node', { hasText: 'Reviewer' }).first().innerText()
+    check(/gpt-6-sol/.test(chip), 'the org chart node shows the GPT model', chip)
+    await exactSel.selectOption('')
+    await sleep(600)
+  } finally {
+    await page.evaluate(
+      async ([pid, id]) => {
+        await window.orgai.projects.remapModels({ projectId: pid, connection: 'anthropic' }).catch(() => {})
+        await window.orgai.connections.removeProxy(id).catch(() => {})
+      },
+      [project.id, proxyId]
+    )
+    await page.reload()
+    await page.waitForSelector('.sidebar', { timeout: 30_000 })
+    await openProject(page, NAME)
+    await openTeam(page)
+    await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'))
+  }
+}
+
 async function sectionTools(page) {
   const block = page.locator('[data-testid=role-capabilities]')
   const before = (await reviewer(page)).role.tools
@@ -578,6 +647,8 @@ try {
   await sectionDismiss(page, shot, app)
   await sectionDesignDecisions(page, shot)
   await sectionExactModel(page)
+  await sectionProxyExactModel(page, app, shot)
+  await selectReviewer(page)
   // Screenshots: both sizes in both themes, with the block holding content.
   await page.locator('[data-testid=role-capabilities] [data-testid=role-add-skill]').click()
   await page.locator('[data-testid=capability-chooser]').waitFor()
