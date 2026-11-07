@@ -48,9 +48,9 @@ export function proposalFoldSummary(proposal: Proposal, ctx: ProposalContext): s
     case 'orgChart':
       return diffOrgChart(ctx.roles, proposal.payload.roles).summary || undefined
     case 'appSettings':
-      return appSettingsSummary(proposal.payload.changes, foldList) ?? (oneLine(proposal.title, 120) || undefined)
+      return appSettingsSummary(proposal.payload.changes) ?? (oneLine(proposal.title, 120) || undefined)
     case 'settings':
-      if (proposal.target) return projectSettingsSummary(projectSettingRows(proposal.payload, ctx.projectKind ?? 'code', undefined), !!proposal.payload.brief, foldList) ?? (oneLine(proposal.title, 120) || undefined)
+      if (proposal.target) return projectSettingsSummary(projectSettingRows(proposal.payload, ctx.projectKind ?? 'code', undefined), !!proposal.payload.brief, proposal.target.projectName) ?? (oneLine(proposal.title, 120) || undefined)
       return oneLine(proposal.title, 120) || undefined
     default:
       return oneLine(proposal.title, 120) || undefined

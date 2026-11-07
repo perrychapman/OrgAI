@@ -33,6 +33,13 @@ describe('collapseSelfHelp', () => {
       expect(out.rows.get(c.id)).toEqual({ tool: 'app_reference', text: "Looked up theme in OrgAI's reference", body: 'Appearance: pick a theme' })
     })
   }
+  it('folds list_projects and its result into one quiet row', () => {
+    const c = call('mcp__orgai__list_projects', {})
+    const r = result(c, '1 OrgAI project.')
+    const out = collapseSelfHelp([c, r])
+    expect(out.hidden.has(r.id)).toBe(true)
+    expect(out.rows.get(c.id)).toEqual({ tool: 'list_projects', text: 'Listed your OrgAI projects', body: '1 OrgAI project.' })
+  })
   it('keeps a refused app_reference result visible', () => {
     const c = call('app_reference', { action: 'read', id: 'zzz' })
     const r = result(c, 'REFUSED: unknown section')

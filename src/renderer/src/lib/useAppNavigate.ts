@@ -80,16 +80,36 @@ const isHeading = (el: Element | null): boolean => !!el && (/^H[1-6]$/.test(el.t
 /** The destination's heading: the target section's title, else the settings pane title, else the view's h1. */
 function landOnHeading(t: NavTarget): void {
   const a = document.activeElement
-  if (isHeading(a) && document.getElementById('main-content')?.contains(a)) return
   const sectionId = t.kind === 'app' ? t.target : t.kind === 'project' ? t.section : undefined
   const section = sectionId ? document.getElementById(sectionId) : null
   const title = section?.querySelector<HTMLElement>('.settings-section-title, .settings-group-title, h2, h3')
-  if (title && title.checkVisibility?.() !== false && focusHeading(title)) return
+  // A section destination lands on the section's own heading, even when the pane's title already has focus (UX M3, L5).
+  if (title && title.checkVisibility?.() !== false && (title === a || focusHeading(title))) {
+    bannerAnchor = title
+    return
+  }
+  if (isHeading(a) && document.getElementById('main-content')?.contains(a)) {
+    bannerAnchor = a as HTMLElement
+    return
+  }
   if ((t.kind === 'app' || (t.kind === 'project' && t.view === 'settings')) && document.querySelector('.settings-pane-title')) {
     focusPaneHeading({ preventScroll: true })
-    if (isHeading(document.activeElement)) return
+    if (isHeading(document.activeElement)) {
+      bannerAnchor = document.activeElement as HTMLElement
+      return
+    }
   }
   focusHeading(document.querySelector<HTMLElement>('#main-content h1'))
+  bannerAnchor = document.activeElement as HTMLElement | null
+}
+
+/** The heading the navigation landed on: Tab from it goes to the banner's actions, which sit above it in the DOM (UX M3). */
+let bannerAnchor: HTMLElement | null = null
+export const navBannerAnchor = (): HTMLElement | null => (bannerAnchor && bannerAnchor.isConnected ? bannerAnchor : null)
+
+/** True when the run that asked has a decision card (a pending proposal) open. */
+export function useChangeWaiting(runId: string | undefined): boolean {
+  return useAppStore((s) => (runId ? (s.runs[runId]?.proposals.length ?? 0) > 0 : false))
 }
 
 async function perform(plan: Extract<NavigationPlan, { ok: true }>, event: AppNavigateEvent): Promise<void> {
@@ -156,7 +176,7 @@ async function perform(plan: Extract<NavigationPlan, { ok: true }>, event: AppNa
     landOnHeading(t)
     // App settings focuses its target once its settings load; check again after that.
     await new Promise((r) => setTimeout(r, 400))
-    if (onControl()) landOnHeading(t)
+    if (onControl() || document.activeElement?.classList.contains('settings-pane-title')) landOnHeading(t)
   }
   // A part of a page (a Team or History section, a run part): bring its first element into view inside its scroller.
   if (t.kind === 'project' && t.view !== 'settings') {

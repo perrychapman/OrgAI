@@ -10,10 +10,12 @@ import { showHidden } from './hiddenChars'
 import { bareToolName } from './transcriptRows'
 
 export const QUERY_MAX = 60
+export const LIST_PROJECTS_TOOL = 'list_projects'
+export const LIST_PROJECTS_TEXT = 'Listed your OrgAI projects'
 
 /** One folded row: the sentence, the tool it stands for, the result behind "Show output" and whether it failed. */
 export interface SelfHelpRow {
-  tool: 'app_reference' | 'open_in_app'
+  tool: 'app_reference' | 'open_in_app' | 'list_projects'
   text: string
   body?: string
   failed?: boolean
@@ -67,6 +69,10 @@ export function collapseSelfHelp(entries: readonly TranscriptEntry[], projectNam
       const failed = !!result && (result.isError || isRefusedResult(result.content))
       if (failed) return // the failed result keeps its own row; the call keeps its default label
       rows.set(e.id, { tool: 'app_reference', text: appReferenceText(b.input), body: result?.content.trim() || undefined })
+      if (res) hidden.add(res.id)
+    } else if (tool === LIST_PROJECTS_TOOL) {
+      if (result?.isError) return
+      rows.set(e.id, { tool: 'list_projects', text: LIST_PROJECTS_TEXT, body: result?.content.trim() || undefined })
       if (res) hidden.add(res.id)
     } else if (tool === OPEN_IN_APP_TOOL) {
       const refused = !!result && (result.isError || isRefusedResult(result.content))
