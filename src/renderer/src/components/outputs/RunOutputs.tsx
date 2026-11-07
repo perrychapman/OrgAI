@@ -3,7 +3,10 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { ArrowLeft } from 'lucide-react'
 import type { RunOutput } from '@shared/types'
 import { chainKeyOf, chainOf } from '../../lib/runChains'
-import { outputMetaLine, outputsOfRuns, provenanceLine } from '../../lib/outputs'
+import { outputsOfRuns } from '../../lib/outputs'
+import { RUN_ROW_THUMB_KINDS, currentProvenance, isNewVersion, rowMetaLine } from '../../lib/outputsList'
+import { OutputBadges, OutputThumb } from './OutputThumb'
+import { useOutputThumb } from './useOutputThumb'
 import { showHidden } from '../../lib/hiddenChars'
 import { runTag } from '../../lib/runLabels'
 import { useAppStore, useProjectSummaries, useRunIndexes } from '../../store/useAppStore'
@@ -182,6 +185,10 @@ function OutputRow({
   onRemoved: (id: string) => void
 }): ReactElement {
   const title = showHidden(output.title)
+  const seen = useAppStore((s) => s.outputSeenVersion)
+  const wantsThumb = RUN_ROW_THUMB_KINDS.has(output.kind)
+  const { ref, thumb } = useOutputThumb({ ...output, missing: output.missing || !wantsThumb ? true : undefined })
+  const meta = rowMetaLine(output)
   return (
     <li
       className="run-output-row"
@@ -191,8 +198,8 @@ function OutputRow({
       data-missing={output.missing ? 'true' : undefined}
       aria-current={current ? 'true' : undefined}
     >
-      <span className="run-output-icon">
-        <OutputKindIcon kind={output.kind} />
+      <span className="run-output-icon" ref={ref}>
+        {wantsThumb ? <OutputThumb thumb={thumb} kind={output.kind} size="run" /> : <OutputKindIcon kind={output.kind} />}
       </span>
       <div className="run-output-text">
         <span className="run-output-head">
@@ -200,9 +207,10 @@ function OutputRow({
             {title}
           </span>
           <ExtBadge fileName={output.fileName} />
+          <OutputBadges openNotes={output.openNoteCount ?? 0} isNew={isNewVersion(output, seen)} />
         </span>
-        <span className="run-output-meta">{output.missing ? `File missing · ${outputMetaLine(output)}` : outputMetaLine(output)}</span>
-        <span className="run-output-prov">{provenanceLine(output, tag !== undefined ? runTag(tag) : undefined)}</span>
+        <span className="run-output-meta">{output.missing ? `File missing · ${meta}` : meta}</span>
+        <span className="run-output-prov">{currentProvenance(output, (id) => (id === output.runId && tag !== undefined ? runTag(tag) : undefined))}</span>
       </div>
       <div className="run-output-actions">
         <Button variant="primary" size="sm" testId="run-output-show" ariaLabel={`Show ${title}`} onClick={onShow}>
