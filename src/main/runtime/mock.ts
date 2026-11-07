@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { AgentInstance, ConnectionId, ImageAttachment, McpServerSpec, PermissionSuggestion, PluginSpec, ProviderId, Role, RunEvent, RunPlan, TokenUsage, TranscriptBlock } from '@shared/types'
 import { CHAT_HARNESS_TOOLS, ENGAGEMENT_CONTEXT_TOOL, HARNESS_PROJECT_ID, KNOWLEDGE_FACT_MAX_CHARS, KNOWLEDGE_RECALL_TOOL, KNOWLEDGE_TOOL, MCP_HARNESS_TOOLS, SKILLS_PROJECT_ID, SKILL_ASSIST_HARNESS_TOOLS, SKILL_HARNESS_TOOLS, SPAWN_TOOL } from '@shared/types'
@@ -21,6 +21,7 @@ import { ContinuationDriver, PLAN_TOOLS, stepActivity } from './continuation'
 import { authFailureMessage, describeTool, harnessToolActivity } from './activity'
 import { EDIT_TOOLS, allowRuleStrings, applyAllowScope, chooseSuggestions, editTargetOf, isOfferableDirectory, listRules, suggestionLabels, type AllowScopePersist } from './permissionRules'
 import { isTrustRestrictedRun, isWorkspaceConfigPath } from '../quick/scratch'
+import { quickEditCard, quickEditFree } from './quickEditCard'
 import { composeFirstMessage, peerMessageText } from './prompts'
 import { firstMessageHiddenContext, spawnKnowledge, userMessageKnowledge, withSpawnKnowledge, withUserMessageKnowledge } from './knowledgeDelivery'
 import { resolveParent } from './agentTree'
@@ -59,6 +60,16 @@ import { cliProjectSettings, projectSettingsLoad } from './claude'
  * "Acme billing" twice (the second shows the dedupe path), says MOCK_KNOWLEDGE_RECALLED, and plays the default script
  * with the first report's brief naming Jane Doe so knowledgeContext fires with purpose 'spawn'; MOCK_KNOWLEDGE_NONE
  * without a knowledge graph.
+ *
+ *
+ * Chat (quick) markers (quick runs, default script): [mock:chat-edit] (chatEditSteps): list_projects, then an Edit of
+ * `<folder>/notes.md` that asks through ctx.requestPermission (the card carries the quick session edit suggestion);
+ * allowed, the file is really written (MOCK_CHAT_NOTES) and the assistant says "I wrote notes.md.", then Bash `npm test`
+ * asks (allowed: "npm test passed.", nothing runs; denied: "I did not run npm test."); a denied edit says "I did not
+ * change anything." and the turn ends (no Bash). After a session allow of a covered edit, RunManager's
+ * ctx.quickSessionEdits() makes later covered edits free (quickEditFree), like the Claude and Codex adapters.
+ * [mock:chat-mcp] (CHAT_MCP_STEPS): request_mcp_install for the [mock:mcp-midrun] server through the real harness tool,
+ * then "The server was added for this chat." or "You declined the server."; the mock attaches 'now'.
  *
  * Every user message and spawn brief goes through ctx.knowledgeContext like the other adapters (knowledgeDelivery.ts);
  * the mock has no model, so what a model would receive is kept in `deliveredMessages` and scripted replies echo only
@@ -110,6 +121,12 @@ export type MockStep =
       background?: boolean
       /** Provider-style permission suggestions passed to chooseSuggestions as `provided` (like the CLI's canUseTool). */
       suggestions?: PermissionSuggestion[]
+      /** After the call ran (allowed or pre-approved): write this text to `input.file_path` for real (Edit / Write steps). */
+      writeContent?: string
+      /** After the call ran: the root says this. */
+      onAllow?: string
+      /** After a deny: the root says this and the turn ends (the rest of the steps are skipped). */
+      onDeny?: string
     }
   /** Spawn a report. `role` is a slug; default: the first role the parent may spawn. */
   | { type: 'spawn'; id: string; role?: string; description: string; parent?: string; /** Handle; default <role>-<n>. */ name?: string; /** The brief it receives; default `description`. */ brief?: string }
@@ -126,6 +143,8 @@ export type MockStep =
       retryOnRevise?: boolean
       /** After the call, the root says this text with "{result}" replaced by the tool's answer. */
       echo?: string
+      /** After the call, the root says `then` when the answer contains `contains`, else `else`. */
+      echoIf?: { contains: string; then: string; else: string }
     }
   /**
    * engagement_knowledge from the root: `get` the entity `node` (a name), find the id of its live fact whose text is
@@ -349,6 +368,55 @@ const MCP_MIDRUN_STEPS: MockStep[] = [
   { type: 'tool', agent: MOCK_MIDRUN_REPORT, name: MOCK_MIDRUN_TOOL, ask: true, result: 'PONG' },
   { type: 'finish', id: MOCK_MIDRUN_REPORT, result: 'Pinged the new MCP server.' },
   { type: 'text', text: 'Mock: the new MCP server was used.' }
+]
+
+/** Trigger token (Chat / quick runs, default script): an edit and a command that ask (chatEditSteps). */
+export const CHAT_EDIT_TOKEN = '[mock:chat-edit]'
+/** Trigger token (Chat / quick runs, default script): request_mcp_install for the mock-midrun server (CHAT_MCP_STEPS). */
+export const CHAT_MCP_TOKEN = '[mock:chat-mcp]'
+/** The text [mock:chat-edit] writes into `<folder>/notes.md` once the edit is allowed. */
+export const MOCK_CHAT_NOTES = '# Notes\n\nWritten by the mock Chat assistant.\n'
+export const MOCK_CHAT_EDIT_DONE = 'I wrote notes.md.'
+export const MOCK_CHAT_EDIT_DENIED = 'I did not change anything.'
+export const MOCK_CHAT_TEST_DONE = 'npm test passed.'
+export const MOCK_CHAT_TEST_DENIED = 'I did not run npm test.'
+export const MOCK_CHAT_MCP_ADDED = 'The server was added for this chat.'
+export const MOCK_CHAT_MCP_DECLINED = 'You declined the server.'
+
+/**
+ * The [mock:chat-edit] turn in a Chat folder: list_projects, then an Edit of `<folder>/notes.md` that asks like a real
+ * call (a covered edit's card offers the quick session edit grant). Allowed: the file is written for real and the
+ * assistant says MOCK_CHAT_EDIT_DONE, then Bash `npm test` asks (allowed: MOCK_CHAT_TEST_DONE, nothing really runs;
+ * denied: MOCK_CHAT_TEST_DENIED). Denied: MOCK_CHAT_EDIT_DENIED and the turn ends there.
+ */
+export function chatEditSteps(folder: string): MockStep[] {
+  return [
+    { type: 'harness', name: CHAT_HARNESS_TOOLS[0], args: {} },
+    {
+      type: 'tool',
+      name: 'Edit',
+      input: { file_path: join(folder, 'notes.md'), old_string: '', new_string: MOCK_CHAT_NOTES },
+      ask: true,
+      writeContent: MOCK_CHAT_NOTES,
+      onAllow: MOCK_CHAT_EDIT_DONE,
+      onDeny: MOCK_CHAT_EDIT_DENIED
+    },
+    { type: 'tool', name: 'Bash', input: { command: 'npm test' }, ask: true, result: 'Tests passed.', onAllow: MOCK_CHAT_TEST_DONE, onDeny: MOCK_CHAT_TEST_DENIED }
+  ]
+}
+
+/** The [mock:chat-mcp] turn: request_mcp_install (the [mock:mcp-midrun] server) through the real harness tool, then the answer. */
+const CHAT_MCP_STEPS: MockStep[] = [
+  {
+    type: 'harness',
+    name: MCP_HARNESS_TOOLS.requestInstall,
+    retryOnRevise: false,
+    args: {
+      reason: 'Mock: this chat needs a server it does not have.',
+      manual: { name: MOCK_MIDRUN_SERVER, transport: 'stdio', command: 'npx', args: ['-y', 'mock-midrun-server@1.0.0'] }
+    },
+    echoIf: { contains: 'The user approved', then: MOCK_CHAT_MCP_ADDED, else: MOCK_CHAT_MCP_DECLINED }
+  }
 ]
 
 /** Trigger token (work runs, default script): the permission-fatigue script (fatigueSteps). */
@@ -754,6 +822,8 @@ export class MockSession implements RuntimeSession {
   private inTurn = false
   /** Set by a 'fail' step: the SDK-style subtype the current root turn failed with. */
   private turnFailure: string | null = null
+  /** Set by a tool step's `onDeny`: the rest of this turn's steps are skipped (the turn ends normally). */
+  private turnHalt = false
   /** Set by a 'rateLimit' step: the turn ended on a usage limit. */
   private limited = false
   private stopSignal: Promise<typeof STOPPED>
@@ -1156,6 +1226,8 @@ export class MockSession implements RuntimeSession {
       return this.defaultSkillAssistSteps()
     }
     if (this.ctx.run.kind === 'work' && this.ctx.run.quick && this.script.work === DEFAULT_WORK) {
+      if (this.ctx.prompt.includes(CHAT_EDIT_TOKEN)) return chatEditSteps(this.ctx.run.quick.folder)
+      if (this.ctx.prompt.includes(CHAT_MCP_TOKEN)) return CHAT_MCP_STEPS
       const n = this.ctx.listProjects?.().length ?? 0
       return [
         { type: 'harness', name: CHAT_HARNESS_TOOLS[0], args: {} },
@@ -1257,6 +1329,7 @@ export class MockSession implements RuntimeSession {
   private async turn(steps: MockStep[]): Promise<void> {
     this.interrupted = false
     this.turnFailure = null
+    this.turnHalt = false
     this.inTurn = true
     try {
       this.setState(ROOT_AGENT_ID, 'thinking', 'Thinking…')
@@ -1264,7 +1337,7 @@ export class MockSession implements RuntimeSession {
         await this.pause(this.script.delayMs)
         if (this.stopped || this.interrupted) break
         await this.step(step)
-        if (this.turnFailure) break
+        if (this.turnFailure || this.turnHalt) break
       }
       if (this.stopped) {
         // A usage limit ends the session mid-turn: the turn end is still reported (limited), then the session ends.
@@ -1295,6 +1368,7 @@ export class MockSession implements RuntimeSession {
     } finally {
       this.inTurn = false
       this.turnFailure = null
+      this.turnHalt = false
     }
   }
 
@@ -1348,6 +1422,9 @@ export class MockSession implements RuntimeSession {
         const result = await this.harnessStep(step)
         if (step.echo !== undefined && result !== undefined && !this.stopped && !this.interrupted) {
           await this.step({ type: 'text', text: step.echo.replace('{result}', result) })
+        }
+        if (step.echoIf && result !== undefined && !this.stopped && !this.interrupted) {
+          await this.step({ type: 'text', text: result.includes(step.echoIf.contains) ? step.echoIf.then : step.echoIf.else })
         }
         return
       }
@@ -1486,6 +1563,7 @@ export class MockSession implements RuntimeSession {
     if (step.ask || ref?.forced) {
       const restricted = isTrustRestrictedRun(this.ctx.run)
       let suggestions: PermissionSuggestion[] = []
+      let cardSuggestions: PermissionSuggestion[] = []
       let preApproved = false
       let opts: MatchOptions | undefined
       // A touching shell command skips every allow path (and never reads matchOptionsFor, which an unreadable list breaks).
@@ -1502,6 +1580,7 @@ export class MockSession implements RuntimeSession {
         // A read under a reference folder gets no suggestions (M2).
         const chosen = ref ? [] : chooseSuggestions(step.name, input, step.suggestions, false, { ...opts, userMcpServers })
         suggestions = restricted ? chosen.filter((s) => s.type !== 'setMode') : chosen
+        cardSuggestions = suggestions
         const rules = allowRuleStrings(suggestions)
         // A quick run or build session never reads saved rules from the user's folder (same as the Claude adapter).
         // Saved rules come from ctx.savedRules() (OrgAI's data folder for engagements), else the folder's file.
@@ -1519,7 +1598,13 @@ export class MockSession implements RuntimeSession {
           matchingRule(step.name, input, usable, opts) !== undefined ||
           this.editPreApproved(step.name, input, restricted)
       }
+      // Chat (quick) session edit grant (same as the Claude and Codex adapters): after every deny gate above, an edit
+      // whose every file is inside the chat's folder needs no card once the user allowed a covered edit for the session.
+      if (!preApproved && !ref && quickEditFree(this.ctx, step.name, input, this.ctx.project.path)) preApproved = true
       if (!preApproved) {
+        // A covered quick edit also offers "Allow for session"; that suggestion is on the card only (applyAllowScope
+        // below gets `suggestions` without it), so it never turns on sessionAcceptEdits.
+        const card = ref ? { suggestions: cardSuggestions, ruleLabels: suggestionLabels(cardSuggestions) } : quickEditCard(this.ctx.run, step.name, input, this.ctx.project.path, cardSuggestions)
         this.setState(agentId, 'waiting', `Needs approval: ${describeTool(step.name, input)}`)
         const decision = await this.untilStopped(
           this.ctx.requestPermission({
@@ -1527,7 +1612,7 @@ export class MockSession implements RuntimeSession {
             toolName: step.name,
             input,
             summary: describeTool(step.name, input),
-            ...(suggestions.length ? { suggestions, ruleLabels: suggestionLabels(suggestions) } : {}),
+            ...(card.suggestions.length ? { suggestions: card.suggestions, ruleLabels: card.ruleLabels } : {}),
             ...refField
           })
         )
@@ -1537,14 +1622,14 @@ export class MockSession implements RuntimeSession {
         if (decision.behavior === 'deny') {
           this.transcript(agentId, { kind: 'tool_result', toolUseId: id, content: decision.message, isError: true })
           this.setState(agentId, 'thinking', 'Thinking…')
+          if (step.onDeny !== undefined) {
+            await this.step({ type: 'text', text: step.onDeny })
+            this.turnHalt = true
+          }
           return
         }
         // A reference-folder card grants this call only: no rule, folder or mode is kept.
-        if (ref || !opts) {
-          this.transcript(agentId, { kind: 'tool_result', toolUseId: id, content: step.result ?? 'ok', isError: false })
-          this.setState(agentId, 'thinking', 'Thinking…')
-          return
-        }
+        if (ref || !opts) return this.toolRan(agentId, id, step, input)
         // Same as the Claude adapter: a trust-restricted run never persists anything (project scope becomes session).
         const granted = applyAllowScope(
           this.ctx.project.path,
@@ -1563,8 +1648,26 @@ export class MockSession implements RuntimeSession {
         }
       }
     }
-    this.transcript(agentId, { kind: 'tool_result', toolUseId: id, content: step.result ?? 'ok', isError: false })
+    return this.toolRan(agentId, id, step, input)
+  }
+
+  /** A tool call that ran: its result, then the step's `writeContent` (written for real) and `onAllow` text. */
+  private async toolRan(agentId: string, id: string, step: Extract<MockStep, { type: 'tool' }>, input: Record<string, unknown>): Promise<void> {
+    let content = step.result ?? 'ok'
+    let isError = false
+    if (step.writeContent !== undefined) {
+      const target = typeof input.file_path === 'string' ? input.file_path : ''
+      try {
+        if (!target) throw new Error('no file_path')
+        writeFileSync(target, step.writeContent)
+      } catch (e) {
+        content = `Could not write ${target || 'the file'}: ${(e as Error).message}`
+        isError = true
+      }
+    }
+    this.transcript(agentId, { kind: 'tool_result', toolUseId: id, content, isError })
     this.setState(agentId, 'thinking', 'Thinking…')
+    if (step.onAllow !== undefined && !isError) await this.step({ type: 'text', text: step.onAllow })
   }
 
   /**
