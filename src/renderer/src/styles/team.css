@@ -328,7 +328,7 @@
   gap: var(--space-2);
 }
 
-/* The Architect in the tray: a header row, then the form. The tray scrolls; nothing floats over the chart. */
+/* The Team assistant tray: a header row, then the form. The tray scrolls; nothing floats over the chart. */
 .team-assistant {
   display: flex;
   flex-direction: column;
