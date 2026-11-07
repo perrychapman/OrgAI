@@ -190,6 +190,7 @@ import {
   quickArgs,
   removalFacts,
   settingsSetArgs,
+  appReferenceArgs,
   skillAssistArgs,
   templateEngagementArgs,
   withEffectiveDefault
@@ -369,6 +370,11 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
   const mock = adapterIds.includes('mock')
   // Always served: without a usage monitor the answer is null (nothing to refresh).
   handle(IPC.usageRefresh, () => usage?.refresh() ?? Promise.resolve(null))
+  // app:reference (read scope): the user and terminal clients may see the secret-free status snapshot.
+  handle(IPC.appReference, (_e, raw: unknown) => {
+    const q = appReferenceArgs(raw)
+    return services.reference ? services.reference.query(q, { status: true }) : Promise.resolve({ text: 'The reference is not available in this host.' })
+  })
   /**
    * A stored project, or the display project of a virtual id (harness, quick = "Chat", skills). Never listed by
    * projects:list. The Chat's display project has no roles and creates no directory.

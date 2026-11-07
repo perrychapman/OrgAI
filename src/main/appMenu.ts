@@ -1,7 +1,8 @@
 import { app, BrowserWindow, Menu, shell } from 'electron'
 import type { MenuItemConstructorOptions } from 'electron'
 import { EMPTY_MENU_STATE, IPC, isMenuAction } from '../shared/types'
-import type { MenuAction, MenuActionEvent, MenuState } from '../shared/types'
+import type { AppNavigateEvent, MenuAction, MenuActionEvent, MenuState } from '../shared/types'
+import { isAtlasSurfaceId } from '../shared/view/atlas'
 import { logsDir } from './log'
 
 /** The only URLs the Help menu ever opens. */
@@ -236,6 +237,7 @@ export function buildMenuTemplate(opts: MenuTemplateOptions): MenuItemConstructo
       { label: 'Documentation', click: () => opts.openExternal(DOCS_URL) },
       { label: 'Report an issue', click: () => opts.openExternal(ISSUES_URL) },
       item('keyboard-shortcuts', 'Keyboard shortcuts'),
+      item('ask-about-orgai', 'Ask OrgAI about itself…'),
       sep,
       { label: 'Open logs folder', click: () => opts.openLogs() },
       { label: 'Open data folder', click: () => opts.openDataFolder?.() },
@@ -268,6 +270,8 @@ export const MENU_QUEUE_CAP = 8
 const windowStates = new Map<number, MenuState>()
 const readyWindows = new Set<number>()
 const queues = new Map<number, MenuAction[]>()
+// open_in_app navigations waiting for a window's first menu.setState (same readiness signal as menu actions).
+const navQueues = new Map<number, AppNavigateEvent[]>()
 const tracked = new Set<number>()
 let windowAccess: { focusedId: () => number | undefined; mainId: () => number | undefined } | null = null
 let rebuild: ((focused: MenuState, main: MenuState) => void) | null = null
@@ -310,6 +314,7 @@ function trackWindow(win: { id: number; once?(event: 'closed', listener: () => v
     windowStates.delete(id)
     readyWindows.delete(id)
     queues.delete(id)
+    navQueues.delete(id)
     tracked.delete(id)
     refreshMenu()
   })
@@ -426,6 +431,56 @@ export function menuActionSender<W extends WindowLike>(
   }
 }
 
+/**
+ * DesktopHooks.navigate: an agent's open_in_app. Goes to the live unscoped main window like a 'main' menu action
+ * (restored when minimized, focused; created through `createMain` when none is live). A window whose renderer has not
+ * yet called menu.setState (its readiness signal; React has not mounted before then, so did-finish-load is too early)
+ * queues the event (at most MENU_QUEUE_CAP, oldest dropped) and gets it on that first call. The event is re-validated
+ * here (known surface id, string fields). Returns false only when the event is invalid or no window can be made.
+ */
+export function navigateSender<W extends WindowLike>(
+  getFocused: () => W | null,
+  getWindows: () => [W, unknown][],
+  createMain?: () => W
+): (event: AppNavigateEvent) => boolean {
+  const live = (w: WindowLike | null | undefined): w is W => !!w && !w.isDestroyed() && !w.webContents.isDestroyed()
+  return (event) => {
+    try {
+      if (!event || typeof event !== 'object' || !isAtlasSurfaceId(event.surfaceId)) return false
+      if (typeof event.runId !== 'string' || typeof event.agentLabel !== 'string' || event.agentLabel.length > 80) return false
+      if (event.projectId !== undefined && typeof event.projectId !== 'string') return false
+      const clean: AppNavigateEvent = {
+        surfaceId: event.surfaceId,
+        ...(event.projectId !== undefined ? { projectId: event.projectId } : {}),
+        runId: event.runId,
+        agentLabel: event.agentLabel
+      }
+      const all = getWindows().filter(([w]) => live(w))
+      const focused = getFocused()
+      let main: W | undefined = all.find(([, scope]) => scope === undefined)?.[0]
+      if (main) {
+        if (main !== focused) {
+          if (main.isMinimized?.()) main.restore?.()
+          main.focus?.()
+        }
+      } else if (createMain) main = createMain()
+      if (!live(main)) return false
+      if (main.id !== undefined && !readyWindows.has(main.id)) {
+        trackWindow({ id: main.id, once: main.once?.bind(main) })
+        const q = [...(navQueues.get(main.id) ?? []), clean]
+        while (q.length > MENU_QUEUE_CAP) q.shift()
+        navQueues.set(main.id, q)
+        return true
+      }
+      main.webContents.send(IPC.appNavigate, clean)
+      return true
+    } catch (e) {
+      console.warn(`Could not deliver app navigation: ${(e as Error).message}`)
+      return false
+    }
+  }
+}
+
 /** Opens a Help URL only when it is exactly DOCS_URL or ISSUES_URL; anything else is refused with a warning. */
 export function openHelpUrl(url: string, open: (url: string) => void): boolean {
   if (url !== DOCS_URL && url !== ISSUES_URL) {
@@ -459,6 +514,8 @@ export function setMenuState(
   if (!wasReady) {
     const queued = queues.get(id) ?? []
     queues.delete(id)
+    const queuedNav = navQueues.get(id) ?? []
+    navQueues.delete(id)
     const wc = win.webContents
     if (wc && !win.isDestroyed?.() && !wc.isDestroyed()) {
       for (const action of queued) {
@@ -467,6 +524,13 @@ export function setMenuState(
           wc.send(IPC.menuAction, payload)
         } catch (e) {
           console.warn(`Could not deliver menu action ${action}: ${(e as Error).message}`)
+        }
+      }
+      for (const event of queuedNav) {
+        try {
+          wc.send(IPC.appNavigate, event)
+        } catch (e) {
+          console.warn(`Could not deliver app navigation: ${(e as Error).message}`)
         }
       }
     }

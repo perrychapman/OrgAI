@@ -4,6 +4,7 @@
  * its existing tests. Relative imports only (noElectronImport.test.ts).
  */
 import { existsSync } from 'node:fs'
+import { APP_REFERENCE_ACTIONS, type AppReferenceQuery } from '../../shared/types'
 import type {
   FolderConfigTrustInput,
   ProjectCreateInput,
@@ -1181,4 +1182,30 @@ export function folderConfigTrustArgs(input: unknown): FolderConfigTrustInput {
   if (typeof i.trust !== 'boolean') throw new Error('Choose whether to trust or stop trusting this folder\'s config.')
   if (typeof i.digest !== 'string' || i.digest.length > 64) throw new Error("Review this folder's config first.")
   return { projectId, trust: i.trust, digest: i.digest }
+}
+
+/**
+ * app:reference input rebuilt: a plain object with an action from APP_REFERENCE_ACTIONS, optional `query` / `id`
+ * (strings) and `budget` (finite number); unknown fields dropped. Length and hidden-character limits are enforced by
+ * the reference service itself (it answers a refusal sentence), not here. Throws a readable Error for a bad shape.
+ */
+export function appReferenceArgs(raw: unknown): AppReferenceQuery {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('The reference query must be an object.')
+  const i = raw as Record<string, unknown>
+  const action = i.action
+  if (typeof action !== 'string' || !(APP_REFERENCE_ACTIONS as readonly string[]).includes(action)) {
+    throw new Error(`The reference action must be one of: ${APP_REFERENCE_ACTIONS.join(', ')}.`)
+  }
+  const out: AppReferenceQuery = { action: action as AppReferenceQuery['action'] }
+  for (const key of ['query', 'id'] as const) {
+    const v = i[key]
+    if (v === undefined || v === null) continue
+    if (typeof v !== 'string') throw new Error(`The reference ${key} must be text.`)
+    out[key] = v
+  }
+  if (i.budget !== undefined && i.budget !== null) {
+    if (typeof i.budget !== 'number' || !Number.isFinite(i.budget)) throw new Error('The reference budget must be a number.')
+    out.budget = i.budget
+  }
+  return out
 }

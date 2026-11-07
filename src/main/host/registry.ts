@@ -112,7 +112,8 @@ const SCOPE_TABLE: Readonly<Record<ChannelScope, readonly string[]>> = {
     'models:list', 'models:prices', 'mcp:list', 'mcp:registrySearch', 'mcpLibrary:list', 'connectors:list',
     'connectorPresets:list', 'skills:list', 'skills:read', 'skills:previewImport', 'skills:lastEvaluation', 'skillLibrary:list',
     'skillLibrary:read', 'capabilities:lastReview', 'maintenance:listWorktrees', 'maintenance:diff', 'templates:list',
-    'knowledge:get', 'knowledge:inferredLinks', 'kit:previewBundle', 'projects:folderConfig', 'teamFiles:listAttention'
+    'knowledge:get', 'knowledge:inferredLinks', 'kit:previewBundle', 'projects:folderConfig', 'teamFiles:listAttention',
+    'app:reference'
   ],
   operate: [
     'runs:start', 'runs:startQuick', 'runs:continue', 'runs:send', 'runs:interrupt', 'runs:stop', 'runs:resumeNow',
@@ -159,6 +160,7 @@ const PUSH_TABLE: Readonly<Record<string, Omit<PushChannelEntry, 'direction'>>> 
   [IPC.appFocusRun]: { delivery: 'desktop_only', source: 'notifications.ts (notification click focuses a run)' },
   [IPC.menuAction]: { delivery: 'desktop_only', source: 'appMenu.ts (application menu item click)' },
   [IPC.projectsCloneProgress]: { delivery: 'desktop_only', source: 'ipc.ts registerRepoIpc (progress of a clone the window started)' },
+  [IPC.appNavigate]: { delivery: 'desktop_only', source: 'RunManager open_in_app -> SelfKnowledgeHooks.navigate -> DesktopHooks.navigate (index.ts, the live main window; never on the bus, never a socket)' },
   [TEAM_FILES_IPC.teamFilesChanged]: { delivery: 'desktop_only', source: 'host/bootstrap.ts TeamFilesService broadcastStatus -> DesktopHooks.teamFilesChanged (index.ts, every window; never on the bus, never a socket)' }
 }
 
@@ -210,6 +212,7 @@ const SOURCE_TABLE: Readonly<Record<string, readonly string[]>> = {
   'host dispatcher (HOST_IPC, socket only; RunManager.findDecision, cli-spec Wave 3)': [HOST_IPC.runsFindDecision],
   'socket transport (Wave 2 socketServer.ts; cli-spec 3.3(4).1)': [HOST_IPC.runsSubscribe],
   'socket transport (Wave 2 socketServer.ts; cli-spec 3.3(4).2)': [HOST_METHODS.hostSubscribe],
+  'host dispatcher (reference/appReference.ts, self-knowledge)': [IPC.appReference],
   'host dispatcher (HostControl.status, bootstrap.ts)': [HOST_METHODS.hostStatus],
   'host dispatcher (HostControl.stop, bootstrap.ts)': [HOST_METHODS.hostStop]
 }

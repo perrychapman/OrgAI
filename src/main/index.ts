@@ -9,7 +9,7 @@ import { IPC, TEAM_FILES_IPC, runWindowHash } from '@shared/types'
 import { appUrlMatcher, isExternalWebUrl, scopedWindow, shouldBlockNavigation } from './windowScope'
 import { applyShellPath } from './shellEnv'
 import { stopSystemCertRead, trustSystemCertificates } from './systemCerts'
-import { installAppMenu, menuActionSender } from './appMenu'
+import { installAppMenu, menuActionSender, navigateSender } from './appMenu'
 import { registerIpc } from './ipc'
 import { Notifier } from './notifications'
 import { canWriteDir, dataDirOverride, installLogging, log, pickLogsDir } from './log'
@@ -398,6 +398,13 @@ app.whenReady().then(async () => {
     openExternal: (url) => shell.openExternal(url),
     desktop: {
       openRunWindow,
+      // open_in_app: the live main window (restored, focused; created when closed); queued until its renderer is ready.
+      // A headless host with no window open answers false (the tool says nothing could be shown) instead of opening one.
+      navigate: (event) => {
+        const hasMain = liveWindowScopes().some(([, scope]) => scope === undefined)
+        if (!hasMain && hostArgs.headless) return false
+        return navigateSender(() => BrowserWindow.getFocusedWindow(), liveWindowScopes, () => createWindow())(event)
+      },
       teamFilesChanged: (status) => {
         for (const win of BrowserWindow.getAllWindows()) {
           if (!win.isDestroyed()) win.webContents.send(TEAM_FILES_IPC.teamFilesChanged, status)
