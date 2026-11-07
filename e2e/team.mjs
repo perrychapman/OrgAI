@@ -126,6 +126,9 @@ async function sectionProxyExactModel(page, app, shot) {
     return made.connection.id
   }, NAME_PX)
   try {
+    // A role edit from the earlier sections is saved 350 ms after the last change (the save indicator reads "Saving…"
+    // until then); remapping first would let that stale copy overwrite the project's new connection.
+    await page.waitForSelector('[data-testid=save-indicator].is-saving', { state: 'detached', timeout: 10_000 })
     await page.evaluate(([pid, id]) => window.orgai.projects.remapModels({ projectId: pid, connection: id }), [project.id, proxyId])
     await page.reload()
     await page.waitForSelector('.sidebar', { timeout: 30_000 })
