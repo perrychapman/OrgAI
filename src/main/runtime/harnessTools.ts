@@ -1093,7 +1093,7 @@ export const requestMcpInstall = defineTool({
   name: MCP_HARNESS_TOOLS.requestInstall,
   audience: 'spawners',
   description:
-    'Ask the user to add an MCP server this task needs (a GitHub, database, browser or docs server...). Blocks until they approve or deny. Give a concise reason. Either name a registry server (found with search_mcp_registry) or describe one manually. Versions must be pinned. Never put secret values anywhere: list the NAMES of secret env vars or headers and the user fills them in. Ask once per server per run.',
+    'Ask the user to add an MCP server this task needs (a GitHub, database, browser or docs server...). Blocks until they approve or deny. Give a concise reason. Either name a registry server (if you have a registry search tool) or describe one manually. Versions must be pinned. Never put secret values anywhere: list the NAMES of secret env vars or headers and the user fills them in. Ask once per server per run.',
   inputSchema: z.object({
     reason: z.string().min(1).describe('Why the task needs this server, one or two sentences'),
     registry: z

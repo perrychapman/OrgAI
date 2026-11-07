@@ -225,7 +225,12 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
     Mock markers (quick runs, default script): `[mock:chat-edit]` (list_projects, Edit `<folder>/notes.md` asks;
     allow writes it and says "I wrote notes.md.", deny says "I did not change anything." and stops; then Bash
     `npm test` asks, then idle) and `[mock:chat-mcp]` (request_mcp_install of a pinned stdio server, says the answer,
-    idle). Verified by unit tests, fake query() / fake Codex app-server and the mock only; nothing live.
+    idle). Codex (source-read at rust-v0.166.0, not run live): under approval policy `untrusted`, `safety.rs`
+    `assess_patch_safety` returns AskUser before the writable-path check, so every apply_patch (in-workspace too)
+    raises a file-change approval, and `exec_policy.rs` prompts for every command no execpolicy allow rule matches
+    (no bundled "known safe" list found); an ApprovedForSession apply_patch approval is keyed per exact file path
+    (`ApplyPatchApprovalKey`). The shell approval key, the first-attempt orchestrator branch and Windows
+    restricted-token enforcement were not confirmed. Verified by unit tests, fake query() / fake Codex app-server and the mock only; nothing live.
   - Plan nudges (UX M5): `continuation.ts` `planNudgesApply(run)` is false for a quick run with team 'single' (a
     conversation), and RunManager folds it into `RuntimeContext.autoContinue`, so no adapter's ContinuationDriver
     sends set-plan or continue nudges there; interrupt holds and auto-resume are unchanged, team 'default' keeps nudges.
