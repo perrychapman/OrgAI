@@ -95,6 +95,8 @@
   all: unset;
   box-sizing: border-box;
   display: block;
+  /* A block button still sizes to its content; pin it to the title so a long name ellipsises before More. */
+  width: 100%;
   min-width: 0;
   cursor: pointer;
 }

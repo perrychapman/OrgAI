@@ -1,5 +1,7 @@
-import type { ConnectorInfo, McpLibraryInfo, McpServerInfo, Project } from '@shared/types'
+import type { ConnectionId, ConnectionInfo, ConnectorInfo, McpLibraryInfo, McpServerInfo, Project } from '@shared/types'
 import { connectorEase } from '@shared/connectors'
+import { projectConnection } from '@shared/defaults'
+import { connectionsInUse } from './usage'
 import { needsSignIn, waitingLabel } from './roleCapabilities'
 
 /**
@@ -36,6 +38,22 @@ export function usedByCaption(names: readonly string[]): string {
   if (list.length === 0) return ''
   if (list.length <= NAMES_MAX) return `Used by ${list.join(', ')}`
   return `Used by ${list.slice(0, NAMES_MAX).join(', ')} and ${list.length - NAMES_MAX} more`
+}
+
+/**
+ * The connections a run could fail on. A project on the mock adapter uses no connection, and under the mock adapter
+ * (ORGAI_MOCK) new projects and Chat run on the mock too, so the default connection counts only outside it. Without
+ * this a machine with no Claude login (CI) showed "Anthropic is not connected." on a mock-only Dashboard.
+ */
+export function connectionsNeeded(
+  connections: readonly Pick<ConnectionInfo, 'connection'>[] | null | undefined,
+  defaultConnection: ConnectionId | null | undefined,
+  projects: readonly Project[],
+  mockAdapter: boolean
+): { inUse: Set<ConnectionId>; projects: Project[] } {
+  const real = projects.filter((p) => p.provider?.id !== 'mock')
+  const inUse = mockAdapter ? new Set<ConnectionId>(real.map((p) => projectConnection(p))) : connectionsInUse(connections, defaultConnection, real)
+  return { inUse, projects: real }
 }
 
 /** The row for a connection problem the helper already worded ("OpenAI is not connected. 2 projects use it."). */

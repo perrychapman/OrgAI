@@ -14,6 +14,11 @@ export const OUTCOME_ORDER: readonly Outcome[] = ['failed', 'open', 'paused', 'f
 
 export type CostKind = 'none' | 'known' | 'partial' | 'unknown'
 
+/** Waiting under a second would read "0s"; it counts as none ("Waited on you" shows only when above zero, spec 7.2). */
+export function waitedShown(ms: number): boolean {
+  return ms >= 1000
+}
+
 export type LedgerRun = Pick<RunSummary, 'id' | 'startedAt' | 'status' | 'totalCostUsd'> &
   Partial<Pick<RunSummary, 'kind' | 'usage' | 'endedBy' | 'endedWithApp'>>
 
@@ -172,7 +177,7 @@ export function dayReadout(day: DayBucket): string {
   const parts = [`${plural(day.runs, 'run', 'runs')} started${failed > 0 ? ` (${failed} failed)` : ''}`]
   const cost = costPart(day.cost)
   if (cost) parts.push(cost)
-  if (day.waitingMs > 0) parts.push(`waited on you ${formatDuration(day.waitingMs)}`)
+  if (waitedShown(day.waitingMs)) parts.push(`waited on you ${formatDuration(day.waitingMs)}`)
   return `${when}: ${parts.join(' · ')}`
 }
 
@@ -186,6 +191,6 @@ export function dayAriaLabel(day: DayBucket): string {
     .map(([w, n]) => `${n} ${w}`)
     .join(', ')
   const cost = costPart(day.cost)
-  const tail = [cost ? `cost ${cost}` : '', day.waitingMs > 0 ? `waited on you ${formatDuration(day.waitingMs)}` : ''].filter(Boolean)
+  const tail = [cost ? `cost ${cost}` : '', waitedShown(day.waitingMs) ? `waited on you ${formatDuration(day.waitingMs)}` : ''].filter(Boolean)
   return `${when}: ${plural(day.runs, 'run', 'runs')} (${detail})${tail.length > 0 ? `, ${tail.join(', ')}` : ''}`
 }
