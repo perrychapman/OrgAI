@@ -9,7 +9,7 @@ import { assistantRunToOpen } from '../lib/assistantNav'
 import { secretsNextFor, type ProposalNext } from '../lib/proposalNext'
 import type { KnowledgeFocusRequest } from '../lib/knowledge'
 import { forgetPreviewCache, mergeOutput } from '../lib/outputs'
-import type { RunOutput } from '@shared/types'
+import type { OutputsChangedEvent, RunOutput } from '@shared/types'
 import { addRecalled, cleanRecalledEvent, type RecalledEvent } from '../lib/runKnowledge'
 import { adoptEndFacts, statusEventEndFacts, CHAIN_EAGER_MEMBERS, CHAIN_FETCH_CONCURRENCY, CHAIN_WALK_MAX_HOPS, chainGroups, chainIdsToLoad, chainKeyOf, chainOf, needsYou, runBatched, type ChainGroup } from '../lib/runChains'
 import { cutWhile, settleEndedAgents } from '../lib/runStatus'
@@ -85,6 +85,24 @@ export type SideTab = 'transcript' | 'plan' | 'usage' | 'outputs' | 'knowledge' 
 export interface OutputsFocusRequest {
   projectId: string
   outputId?: string
+}
+
+/** A revise request this window sent (outputs-2 11.4), kept until the team's version lands or the run ends. Session only. */
+export interface PendingRevision {
+  requestId: string
+  runId: string
+  projectId: string
+  outputId: string
+  title: string
+  /** The version the user looked at when asking. */
+  version: number
+  at: number
+}
+
+/** An unsaved editor draft of one output (outputs-2 9: kept in memory per output id for the session). */
+export interface OutputDraft {
+  baseVersion: number
+  text: string
 }
 
 /** The run Outputs side tab's state per chain: the output shown in the detail, if any. */
@@ -234,6 +252,23 @@ interface AppState {
   runOutputsByChain: Record<string, RunOutputsUi>
   /** Show the run's Outputs side tab, on one output when `outputId` is given (null closes the detail). */
   openRunOutput(runId: string, outputId?: string | null): void
+  /**
+   * Bumped per output id on every outputs:changed push naming it (any `what`) and on output.versioned / output.created,
+   * so hooks that fetch versions, notes, revisions or a preview of one output refetch (components/outputs/useOutputData.ts).
+   */
+  outputTick: Record<string, number>
+  /** The newest outputs:changed push per output id (what changed), for status lines that react to a kind of change. */
+  outputChange: Record<string, { what: OutputsChangedEvent['what']; at: number }>
+  /** The version the user last saw per output id (session only; drives the "New" badge). Set on first list load and by markOutputSeen. */
+  outputSeenVersion: Record<string, number>
+  markOutputSeen(outputId: string, version: number): void
+  /** Unsaved editor drafts per output id (session only). null clears. */
+  outputDrafts: Record<string, OutputDraft>
+  setOutputDraft(outputId: string, draft: OutputDraft | null): void
+  /** Revise requests sent from this window, per run id (RunMeta `run-meta-revision`). */
+  pendingRevisionsByRun: Record<string, PendingRevision[]>
+  addPendingRevision(p: PendingRevision): void
+  removePendingRevision(requestId: string): void
   /** Selected project-settings pane per project id (lib/settingsTarget PROJECT_SETTINGS_PANES); absent means General. */
   projectSettingsPane: Record<string, string>
   setProjectSettingsPane(projectId: string, pane: string): void
@@ -838,6 +873,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   outputsByProject: {},
   outputsFocus: null,
   runOutputsByChain: {},
+  outputTick: {},
+  outputChange: {},
+  outputSeenVersion: {},
+  outputDrafts: {},
+  pendingRevisionsByRun: {},
   projectSettingsPane: {},
   selectedProjectId: null,
   view: 'projects',
@@ -1156,7 +1196,48 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   setOutputs(projectId, list) {
-    set((s) => ({ outputsByProject: { ...s.outputsByProject, [projectId]: list } }))
+    set((s) => {
+      // The first sight of an output counts as seen, so only versions that arrive while the window is open read "New".
+      let seen = s.outputSeenVersion
+      for (const o of list) {
+        if (seen[o.id] === undefined) {
+          if (seen === s.outputSeenVersion) seen = { ...seen }
+          seen[o.id] = o.version ?? 1
+        }
+      }
+      return { outputsByProject: { ...s.outputsByProject, [projectId]: list }, outputSeenVersion: seen }
+    })
+  },
+
+  markOutputSeen(outputId, version) {
+    if (get().outputSeenVersion[outputId] === version) return
+    set((s) => ({ outputSeenVersion: { ...s.outputSeenVersion, [outputId]: version } }))
+  },
+
+  setOutputDraft(outputId, draft) {
+    set((s) => {
+      if (draft) return { outputDrafts: { ...s.outputDrafts, [outputId]: draft } }
+      if (!(outputId in s.outputDrafts)) return {}
+      const { [outputId]: _gone, ...rest } = s.outputDrafts
+      return { outputDrafts: rest }
+    })
+  },
+
+  addPendingRevision(p) {
+    set((s) => ({ pendingRevisionsByRun: { ...s.pendingRevisionsByRun, [p.runId]: [...(s.pendingRevisionsByRun[p.runId] ?? []).filter((x) => x.requestId !== p.requestId), p] } }))
+  },
+
+  removePendingRevision(requestId) {
+    set((s) => {
+      const next: Record<string, PendingRevision[]> = {}
+      let changed = false
+      for (const [runId, list] of Object.entries(s.pendingRevisionsByRun)) {
+        const kept = list.filter((x) => x.requestId !== requestId)
+        if (kept.length !== list.length) changed = true
+        if (kept.length > 0) next[runId] = kept
+      }
+      return changed ? { pendingRevisionsByRun: next } : {}
+    })
   },
 
   openOutputItem(req) {
@@ -1303,7 +1384,22 @@ export const useAppStore = create<AppState>((set, get) => ({
     window.orgai.onTeamFilesChanged?.((status) => get().setTeamFilesStatus(status))
     // Outputs: refetch a project's list on any change, only once something has loaded it.
     window.orgai.onOutputsChanged?.((ev) => {
-      if (ev?.projectId && get().outputsByProject[ev.projectId]) void get().loadOutputs(ev.projectId)
+      if (!ev?.projectId) return
+      const ids = Array.isArray(ev.ids) ? ev.ids.filter((id): id is string => typeof id === 'string') : []
+      if (ids.length > 0) {
+        const at = Date.now()
+        set((s) => {
+          const tick = { ...s.outputTick }
+          const change = { ...s.outputChange }
+          for (const id of ids) {
+            tick[id] = (tick[id] ?? 0) + 1
+            change[id] = { what: ev.what, at }
+          }
+          return { outputTick: tick, outputChange: change }
+        })
+      }
+      // Notes and revision changes leave the list's version fields alone except openNoteCount, so every push refetches.
+      if (get().outputsByProject[ev.projectId]) void get().loadOutputs(ev.projectId)
     })
     void get().loadTeamFilesAttention()
     await get().loadProjects()
@@ -1839,12 +1935,26 @@ export const useAppStore = create<AppState>((set, get) => ({
       return
     }
     // A new or updated output (docs/design/outputs.md section 2): merged into a loaded list, else the list is fetched.
-    if (e.type === 'output.created') {
+    if (e.type === 'output.created' || e.type === 'output.versioned') {
       const pid = e.output?.projectId
-      if (!pid) return
+      const oid = e.output?.id
+      if (!pid || !oid) return
+      set((s) => ({ outputTick: { ...s.outputTick, [oid]: (s.outputTick[oid] ?? 0) + 1 } }))
       if (get().outputsByProject[pid]) set((s) => ({ outputsByProject: { ...s.outputsByProject, [pid]: mergeOutput(s.outputsByProject[pid], e.output) } }))
       else void get().loadOutputs(pid)
+      // A new version of an output this window asked the team to revise answers that request (the run's own record says
+      // exactly which; RevisionStatus re-reads outputs:revisions on the tick).
+      if (e.type === 'output.versioned') {
+        for (const p of Object.values(get().pendingRevisionsByRun).flat()) if (p.outputId === oid) get().removePendingRevision(p.requestId)
+      }
       return
+    }
+    // A run that ended without answering drops its pending revisions (the detail's RevisionStatus says so from outputs:revisions).
+    if (e.type === 'run.status' && (e.status === 'finished' || e.status === 'error') && get().pendingRevisionsByRun[e.runId]) {
+      set((s) => {
+        const { [e.runId]: _ended, ...rest } = s.pendingRevisionsByRun
+        return { pendingRevisionsByRun: rest }
+      })
     }
     // What agents looked up or were given: ids and time only, kept per run for the Knowledge side tab.
     if (e.type === 'knowledge.recalled') {
