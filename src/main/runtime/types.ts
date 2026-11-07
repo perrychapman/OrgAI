@@ -534,6 +534,16 @@ export interface RuntimeContext {
    */
   listProjects?(): ProjectPeek[]
   /**
+   * Chat (quick) runs only: true once the user answered "Allow for session" on a card for an edit inside the chat's
+   * folder that offered the quick session-edit suggestion (quick/sessionEdits.ts `quickSessionEditSuggestion`).
+   * RunManager owns the flag (decide() re-checks the card's tool and path) and binds this only on quick runs.
+   * Adapters read it through `quickEditPreApproved` and never pass the setMode suggestion on to a provider: the
+   * provider stays in its asking mode, and only edits `quickFolderEditCovered` accepts (inside the folder, by lexical
+   * and real path, never under .git, .claude, .codex, .agents, .orgai, .vscode, .idea, .github or the listed config
+   * files) become free. Missing = no session edit grant.
+   */
+  quickSessionEdits?(): boolean
+  /**
    * Skill assistant runs ('skill-assist'): the skill library and, in a project session, the project's skills with
    * the role ids that load them (SkillInfo.grantedTo; resolve to slugs through ctx.project.roles). `project` is empty
    * on the virtual SKILLS_PROJECT_ID. Missing = the skill tools say the library is unavailable.
