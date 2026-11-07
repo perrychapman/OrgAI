@@ -229,6 +229,19 @@ describe('menuStateChanged', () => {
   })
 })
 
+describe('shared tables and Ask OrgAI', () => {
+  it('SHORTCUTS is the shared table', async () => {
+    const shared = await import('@shared/view/shortcuts')
+    expect(actions.SHORTCUTS).toBe(shared.SHORTCUTS)
+  })
+  it('ask-about-orgai opens a fresh Chat with the seed and focuses the composer', async () => {
+    actions.routeMenuAction('ask-about-orgai')
+    await vi.runAllTimersAsync()
+    expect(store.openAssistant).toHaveBeenCalledWith('quick', { instruction: actions.ASK_ORGAI_SEED, fresh: true })
+    expect(store.focusComposer).toHaveBeenCalled()
+  })
+})
+
 describe('shortcuts', () => {
   it('names Ctrl or Cmd', () => {
     expect(actions.keyLabel('Mod', false)).toBe('Ctrl')

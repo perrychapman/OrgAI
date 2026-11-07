@@ -520,6 +520,18 @@ components/layout:
   with no target and the History run link land on a real element, and `SidePanel` returns focus to the rail's Show
   button after the user's Hide. Open: the "Show item details" click still drops focus to body; the 8 s timer, retired-group
   edge geometry and radial layout with the new handles are unverified.
+- Self-help (renderer; spec `docs/design/self-help.md`, pre-walk `docs/design/ux-review-self-help-pre.md`): the
+  deep-link id tables and SHORTCUTS live in `src/shared/view/atlas.ts` / `shortcuts.ts`; `lib/settingsTarget.ts` and
+  `lib/menuActions.ts` only re-export them (settingsTarget.test.ts / menuActions.test.ts pin the same objects), so a new
+  pane or section is added in the atlas. Agent navigation (`app:navigate`) is planned by the pure `lib/appNavigate.ts`
+  (`SURFACE_TARGETS`: a total Record over the atlas ids, so a new surface without a target fails typecheck;
+  `navigationFor` refuses unknown or virtual projects and engagement places on code projects; menu surfaces are never
+  navigated, only named) and performed once per window by `lib/useAppNavigate.ts` (installed in AppMenuLayer before
+  the first menu.setState), which reuses the existing deep links, lands focus on a heading only (never a control), shows
+  `AppNavigateBanner` under the destination topbar and speaks through `announceMenu`. Self-config proposal cards
+  (`components/proposals/AppSettingsProposalBody.tsx`, `ProjectSettingsChanges.tsx`, `lib/appSettingsCard.ts`) and
+  transcript rows (`lib/selfHelpRows.ts`) are renderer-side because `transcriptRows.ts` is a shared re-export.
+  Checked by unit tests and `e2e/self-help.mjs`; the mock-driven card path is unrun in this branch (markers on dev).
 
 - `src/renderer/src/`
 - `src/renderer/src/components/connections/`

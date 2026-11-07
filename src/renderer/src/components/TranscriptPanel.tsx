@@ -7,6 +7,7 @@ import {
   Circle,
   CircleDot,
   Database,
+  ExternalLink,
   FileText,
   HelpCircle,
   BookOpen,
@@ -45,6 +46,7 @@ import { Checkbox } from './ui/Checkbox'
 import { Icon } from './ui/Icon'
 import { TabPanel, Tabs, type TabItem } from './ui/Tabs'
 import { autoContinueLine, bareToolName, humanizeToolResult, humanizeToolUse, omittedLabel, type FeedItem, type ToolKind } from '../lib/transcriptRows'
+import { collapseSelfHelp, type SelfHelpRow } from '../lib/selfHelpRows'
 import { collapseKnowledgeWrites, readRowText, recallOutputText, type KnowledgeRow } from '../lib/knowledgeRun'
 
 /** Distance from the end of the conversation under which it still counts as scrolled to the end. */
@@ -293,6 +295,24 @@ function KnowledgeReadRow({ text, body }: { text: string; body: string | undefin
   )
 }
 
+/** An app_reference lookup or an open_in_app, as one quiet row; the tool's answer sits under "Show output". */
+function SelfHelpRowView({ row }: { row: SelfHelpRow }): ReactElement {
+  return (
+    <div className="entry system harness self-help-row" data-testid="self-help-row" data-tool={row.tool}>
+      <Icon icon={row.tool === 'open_in_app' ? ExternalLink : BookOpen} size="sm" />
+      <div className="tool-main">
+        <span className="entry-plain">{row.text}</span>
+        {row.body && (
+          <details className="entry-detail">
+            <summary>Show output</summary>
+            <pre>{row.body}</pre>
+          </details>
+        )}
+      </div>
+    </div>
+  )
+}
+
 export default function TranscriptPanel({ runId, agent, entries: ownEntries, feed, logs, finished, variant = 'panel', tagRunId, lead }: Props): ReactElement {
   const selectedTab = useAppStore((s) => s.sideTabByRun[runId] ?? 'transcript')
   const projectId = useAppStore((s) => s.runs[runId]?.summary.projectId)
@@ -337,7 +357,10 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
   // One knowledge write is one row too: the harness "Recorded <kind> <name>" row stands for the engagement_knowledge /
   // engagement_context call and its result (docs/design/knowledge.md section 7).
   const knowledge = useMemo(() => collapseKnowledgeWrites(entries), [entries])
-  const shown = (e: TranscriptEntry): boolean => (showThinking || e.block.kind !== 'thinking') && !skillLoads.hidden.has(e.id) && !knowledge.hidden.has(e.id)
+  // Self-help tools (app_reference, open_in_app, propose_*): one quiet row or a sentence each (lib/selfHelpRows.ts).
+  const projects = useAppStore((s) => s.projects)
+  const selfHelp = useMemo(() => collapseSelfHelp(entries, (id) => projects.find((p) => p.id === id)?.name), [entries, projects])
+  const shown = (e: TranscriptEntry): boolean => (showThinking || e.block.kind !== 'thinking') && !skillLoads.hidden.has(e.id) && !knowledge.hidden.has(e.id) && !selfHelp.hidden.has(e.id)
   const visible = entries.filter(shown)
 
   const rows = items.map((item) => {
@@ -383,14 +406,19 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
             {b.text}
           </div>
         )
-      case 'tool_use':
-        return <ToolUseRow key={e.id} name={b.name} input={b.input} label={knowledge.labels.get(e.id)} />
+      case 'tool_use': {
+        const sRow = selfHelp.rows.get(e.id)
+        if (sRow) return <SelfHelpRowView key={e.id} row={sRow} />
+        return <ToolUseRow key={e.id} name={b.name} input={b.input} label={knowledge.labels.get(e.id) ?? selfHelp.labels.get(e.id)} />
+      }
       case 'tool_result':
         return <ToolResultRow key={e.id} toolName={toolNames.get(b.toolUseId)} content={b.content} isError={b.isError} />
       case 'system': {
         const peer = parsePeerNote(b.text)
         if (peer) return <PeerNoteRow key={e.id} note={peer} at={e.at} />
         const harness = e.source === 'harness'
+        const sRow = harness ? selfHelp.rows.get(e.id) : undefined
+        if (sRow) return <SelfHelpRowView key={e.id} row={sRow} />
         const kRow = harness ? knowledge.rows.get(e.id) : undefined
         if (kRow) return <KnowledgeWriteRow key={e.id} row={kRow} body={knowledge.body.get(e.id)} projectId={projectId} runId={runId} />
         if (harness && knowledge.reads.has(e.id)) return <KnowledgeReadRow key={e.id} text={readRowText(b.text, knowledge.repeats.get(e.id))} body={knowledge.body.get(e.id)} />
