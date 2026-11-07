@@ -119,7 +119,7 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
     <div className="run-meta" data-testid="run-meta">
       {next && nextCopy && (
         <span className="run-meta-item run-meta-next">
-          {next ? proposalNextLead(next) : nextCopy.lead}{' '}
+          {proposalNextLead(next)}{' '}
           <button type="button" className="link-btn" data-testid={nextCopy.testId} onClick={goNext}>
             {nextCopy.action}
           </button>
