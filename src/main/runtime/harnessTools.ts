@@ -1168,6 +1168,7 @@ export const requestMcpInstall = defineTool({
     const where = decision.scope === 'library' ? ' for this project (saved to your MCP library)' : decision.scope === 'project' ? ' for this project' : ' for this run'
     const lead = `The user approved installing ${final.name}${where}.${note ? ` Note from the user: ${note}` : ''}`
     if (!hooks.addMcpServer) {
+      if (ctx.run.quick) return `${lead} It could not be attached to this running session, and in a chat it exists for this chat only, so it is not available. Continue without it.`
       return `${lead} It could not be attached to this running session, so it will be available from the next run${decision.scope === 'run' ? ' only if the user saves it to the project' : ''}. Continue without it for now.`
     }
     try {

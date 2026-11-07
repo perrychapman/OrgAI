@@ -89,6 +89,7 @@ import type { SkillRunSource } from '../skills/types'
 import { RunStore } from '../store/runs'
 import type { SetupService } from '../setup/service'
 import { log, logPermission, logRunEvent } from '../log'
+import { clampText } from '../capabilities/sanitize'
 import { hasContent, sanitizeImages } from './attachments'
 import { breakParentCycles } from './agentTree'
 import { describePlanChange, peerDeliveryBlocked, planNudgesApply } from './continuation'
@@ -3294,12 +3295,13 @@ export class RunManager {
     const savedToProject = narrowed?.behavior === 'allow' && narrowed.scope === 'project'
     this.broadcast({ type: 'permission.resolved', runId, requestId, ...(savedToProject ? { savedToProject: true as const } : {}), ...(narrowed?.behavior === 'allow' && narrowed.scope ? { scope: narrowed.scope } : {}), ...(opts.decidedBy ? { decidedBy: opts.decidedBy } : {}) })
     if (active.summary.quick && narrowed?.behavior === 'allow' && narrowed.scope === 'session') {
-      const labels = (pending.request.ruleLabels ?? []).map((l) => excerpt(String(l), 80)).filter(Boolean).join(', ')
+      // Adapter labels are built from the agent's own command text: strip hidden characters before they reach a row.
+      const labels = (pending.request.ruleLabels ?? []).map((l) => excerpt(clampText(String(l), 80), 80)).filter(Boolean).join(', ')
       const what = isQuickSessionEditGrant(active.summary, pending.request, narrowed)
         ? "edits in this chat's folder"
         : labels
           ? excerpt(labels, 200)
-          : excerpt(String(pending.request.toolName), 80)
+          : excerpt(clampText(String(pending.request.toolName), 80), 80)
       systemBlock(active, Date.now(), `You allowed ${what} for this chat.`)
     }
     this.cardSettled(active)
@@ -3553,9 +3555,9 @@ export class RunManager {
     if (active.summary.quick) {
       // Chat: the server lives in this run only and only the calling agent's role may use it.
       request.runOnly = true
-      const proj = getProject()
-      const slug = active.record.agents[req.agentId]?.roleSlug ?? (proj.roles.find((r) => r.reportsTo === null) ?? proj.roles[0])?.slug
-      if (slug) request.spec = { ...request.spec, roles: [slug] }
+      // An unknown caller (no agent record, no slug) gets nobody rather than the root role.
+      const slug = active.record.agents[req.agentId]?.roleSlug
+      request.spec = { ...request.spec, roles: slug ? [slug] : [] }
     }
     return new Promise((resolve) => {
       active.pendingInstalls.set(request.id, {
@@ -3588,7 +3590,8 @@ export class RunManager {
 
   /** Validate an install answer and apply it (save the server or keep it for this run). Never throws. */
   private settleInstall(active: ActiveRun, request: McpInstallRequest, raw: McpInstallDecision, project: Project, setProject: (saved: Project) => void): McpInstallDecision {
-    const quickRun = !!active.summary.quick && project.id === QUICK_PROJECT_ID
+    // Any quick run: scope 'run' and never persisted, whatever project the run sits on.
+    const quickRun = !!active.summary.quick
     const scope = quickRun ? 'run' : raw?.scope === 'project' ? 'project' : raw?.scope === 'library' ? 'library' : 'run'
     const note = typeof raw?.note === 'string' && raw.note.trim() ? raw.note.trim().slice(0, 600) : undefined
     if (!raw?.approved) return { approved: false, scope, ...(note ? { note } : {}) }
@@ -3602,7 +3605,7 @@ export class RunManager {
       !!this.options.mcp?.libraryEntries?.().some((e) => e.id === id)
     if (taken) return refuse('a server with that id already exists.')
     const spec = mergeInstallEdit(request.spec, raw.spec)
-    if (quickRun && request.spec.roles) spec.roles = [...request.spec.roles]
+    if (quickRun) spec.roles = [...(request.spec.roles ?? [])]
     const others = [...(project.mcpServers ?? []), ...[...active.runServers.values()].map((r) => r.spec)]
     const errors = validateSpec(spec, others)
     if (errors.length) return { approved: false, scope, note: `The harness did not install it: ${errors.join(' ')}` }
