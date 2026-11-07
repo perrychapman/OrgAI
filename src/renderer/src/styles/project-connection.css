@@ -87,3 +87,12 @@
   margin: 0 0 var(--space-2);
   padding-left: var(--space-4);
 }
+/* The URL note is not a tier: set it apart from the tier bullets. */
+.remap-routes {
+  margin-top: var(--space-3);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border);
+  list-style: none;
+  padding-left: 0;
+  color: var(--text-secondary);
+}

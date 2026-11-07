@@ -126,6 +126,18 @@ export default function ProxyCard({
     return () => clearTimeout(t)
   }, [focusToken, id, onFocused])
 
+  // Save changes and Save key unmount their own button; focus goes to the action that logically follows (Test and connect).
+  const focusTestSoon = (): void => {
+    const go = (): void => {
+      const active = document.activeElement
+      // Only rescue focus that was dropped (page body) or sits on a control that just went away.
+      if (active && active !== document.body && active.isConnected && !active.closest('[data-testid=secret-field]')) return
+      card.current?.querySelector<HTMLElement>('[data-testid=proxy-test]')?.focus()
+    }
+    requestAnimationFrame(go)
+    setTimeout(go, 150)
+  }
+
   const save = async (): Promise<ConnectionInfo | null> => {
     setShowErrors(true)
     if (hasErrors) return null
@@ -332,6 +344,7 @@ export default function ProxyCard({
                   onSave={async (v) => {
                     setInfo(await window.orgai.connections.setSecret({ id, apiKey: v }))
                     setNotice('Key saved. Test and connect to apply.')
+                    focusTestSoon()
                   }}
                   onClear={async () => {
                     setInfo(await window.orgai.connections.setSecret({ id, apiKey: null }))
@@ -351,7 +364,7 @@ export default function ProxyCard({
               )}
               <div className="conn-actions">
                 {dirty && (
-                  <Button loading={busy === 'save'} disabled={busy !== null} onClick={() => void save()} testId="proxy-save">
+                  <Button loading={busy === 'save'} disabled={busy !== null} onClick={() => void save().then((r) => r && focusTestSoon())} testId="proxy-save">
                     Save changes
                   </Button>
                 )}

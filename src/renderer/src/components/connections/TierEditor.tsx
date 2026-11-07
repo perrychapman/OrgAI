@@ -1,5 +1,5 @@
 import type { ReactElement } from 'react'
-import { useEffect, useId, useMemo, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import type { ConnectionInfo, ModelRef, ModelTier, ProviderConnection, ProviderModel } from '@shared/types'
 import { MODEL_TIER_OPTIONS } from '@shared/types'
@@ -12,6 +12,8 @@ import { Icon } from '../ui/Icon'
 import { ModelSelect, type ModelGroup } from '../ui/ModelSelect'
 import RemapPreviewDialog from '../RemapPreviewDialog'
 import { groupByFamily, previewRemap } from '../../lib/remap'
+import { effectiveTiers } from '../../lib/tierMapping'
+import { useConnectionsAnnounce } from './announce'
 import { FAMILY_WORD, mixedFamilies, withFamily } from '../../lib/modelFamily'
 
 type Draft = Partial<Record<ModelTier, ModelRef>>
@@ -36,6 +38,9 @@ export default function TierEditor({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const projects = useAppStore((s) => s.projects)
+  const announce = useConnectionsAnnounce()
+  const rows = useRef<HTMLDivElement>(null)
+  const nameOf = (info.connection as { name?: string }).name ?? id
   const dirty = !same(draft, saved)
 
   // Pick up changes from outside (events, other windows) while there are no staged edits.
@@ -69,6 +74,9 @@ export default function TierEditor({
     try {
       await onSave({ ...info.connection, tierModels: draft } as ProviderConnection)
       setPreview(false)
+      announce(`Mapping applied on ${nameOf}. ${MODEL_TIER_OPTIONS.map((o) => `${o.label}: ${draft[o.value] || 'automatic'}`).join(', ')}.`)
+      // Apply mapping unmounts with the staged edits; keep focus inside the editor on the first tier.
+      requestAnimationFrame(() => rows.current?.querySelector<HTMLElement>('select')?.focus())
     } catch (e) {
       setError((e as Error).message)
     } finally {
@@ -80,7 +88,8 @@ export default function TierEditor({
   const mapped = MODEL_TIER_OPTIONS.filter((o) => saved[o.value])
   const allAuto = mapped.length > 0 && mapped.every((o) => info.connection.autoTiers?.includes(o.value))
 
-  const stale = MODEL_TIER_OPTIONS.filter((o) => draft[o.value] && !known.has(draft[o.value]!))
+  const effective = useMemo(() => effectiveTiers(id, draft, models), [id, draft, models])
+  const stale =MODEL_TIER_OPTIONS.filter((o) => draft[o.value] && !known.has(draft[o.value]!))
 
   return (
     <div className="tier-editor">
@@ -101,9 +110,10 @@ export default function TierEditor({
         )}
       </div>
       {open && (
-      <div id={bodyId} className="tier-rows">
+      <div id={bodyId} className="tier-rows" ref={rows}>
         {MODEL_TIER_OPTIONS.map((o, i) => {
           const value = draft[o.value] ?? ''
+          const eff = effective[i]
           const invalid = !!value && !known.has(value)
           const dup = MODEL_TIER_OPTIONS.slice(0, i).find((p) => value && draft[p.value] === value)
           return (
@@ -111,7 +121,7 @@ export default function TierEditor({
               <div className="tier-label">
                 <strong>
                   {o.label}
-                  {info.connection.autoTiers?.includes(o.value) && (
+                  {(info.connection.autoTiers?.includes(o.value) || eff.automatic) && (
                     <>
                       {' '}
                       <Badge testId="tier-auto" title="Chosen automatically; moves to a newer model when one is discovered. Choosing a model makes it manual.">Automatic</Badge>
@@ -126,7 +136,7 @@ export default function TierEditor({
                 mono
                 value={value}
                 groups={invalid ? [{ options: [{ value, label: `${value} (unavailable)`, disabled: true }] }, ...groups] : groups}
-                placeholder="No model"
+                placeholder={eff.automatic ? `Automatic: ${eff.model}` : 'No model'}
                 invalid={invalid}
                 message={invalid ? `${value} is no longer available. Pick another.` : dup ? `Same model as ${dup.label}` : undefined}
                 onChange={(v) => setDraft({ ...draft, [o.value]: v })}

@@ -72,12 +72,13 @@ export function modelSettingGroups(value: string, sources: readonly ModelSource[
     const own = (src.catalog ?? []).filter((x) => x.connection === src.id)
     if (!own.length) continue
     const mixed = mixedFamilies(own)
-    groups.push({
-      label: src.name,
-      options: own
-        .filter((m) => !seen.has(m.id) && (seen.add(m.id), true))
-        .map((m) => ({ value: m.id, label: withFamily(`${m.label || m.id}${m.recommended ? ' (recommended)' : ''}`, m.family, mixed) }))
-    })
+    // A setting stores a bare model id, so a second connection serving the same id cannot be told apart: the id is listed
+    // once, under the first connection that offers it (selecting it runs it wherever the project's connection serves it).
+    // A connection whose ids were all listed already gets no group (never an empty optgroup).
+    const options = own
+      .filter((m) => !seen.has(m.id) && (seen.add(m.id), true))
+      .map((m) => ({ value: m.id, label: withFamily(`${m.label || m.id}${m.recommended ? ' (recommended)' : ''}`, m.family, mixed) }))
+    if (options.length) groups.push({ label: src.name, options })
   }
   const all = sources.flatMap((s) => s.catalog ?? [])
   const known = value === 'inherit' || MODEL_TIER_OPTIONS.some((o) => o.value === value) || all.some((m) => m.id === value)
