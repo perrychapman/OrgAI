@@ -141,10 +141,11 @@
 .diagram-empty {
   padding: var(--space-3);
 }
-/* Embedded: a set height (a stage inside a scrolling column cannot follow its content), never under 240 px. */
+/* Embedded: a set height (a stage inside a scrolling column cannot follow its content), never under 240 px. About 40% of
+   the window (spec 8.9) so the head and toolbar stay in view at 1024x640: 269 px there, 420 px at 1600x1000. */
 .diagram-viewer[data-context='detail'] .diagram-pane-view .pz-stage {
   flex: 0 0 auto;
-  height: clamp(240px, 52vh, 480px);
+  height: clamp(240px, 42vh, 480px);
 }
 .diagram-viewer[data-context='detail'] .diagram-pane-source {
   flex: 0 0 auto;

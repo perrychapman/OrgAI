@@ -9,7 +9,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as zlib from 'node:zlib'
-import { TMP, check, cleanup, createProject, finish, launch, makeFixtureRepo, projectTab, screenshot, sleep } from './lib.mjs'
+import { TMP, check, cleanup, createProject, deleteProject, finish, launch, makeFixtureRepo, projectTab, screenshot, sleep } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const USE_SCRIPT = process.env.E2E_OUTPUTS_SCRIPT === '1'
@@ -167,7 +167,7 @@ let project
 const outputsOf = () => page.evaluate((id) => window.orgai.outputs.list(id), project.id)
 
 /** Start the work run on the Live tab. */
-async function startRun() {
+async function startRun(prompt = USE_SCRIPT ? 'Produce the deliverables' : 'Produce the deliverables [mock:outputs]') {
   await projectTab(page, 'Live').click()
   if (!(await page.locator('.new-run').count())) {
     await page.keyboard.press('Control+t')
@@ -175,7 +175,7 @@ async function startRun() {
   }
   const ta = page.locator('.composer textarea')
   await ta.waitFor({ timeout: 10_000 })
-  await ta.fill(USE_SCRIPT ? 'Produce the deliverables' : 'Produce the deliverables [mock:outputs]')
+  await ta.fill(prompt)
   await page.locator('.composer .btn.primary').click()
   await page.locator('[data-testid=run-meta]').waitFor({ timeout: 15_000 })
 }
@@ -218,36 +218,41 @@ let hintChecked = false
 async function zoomIn(scope, label) {
   const zoom = scope.locator('[data-testid=output-mermaid-zoom]')
   await zoom.waitFor({ timeout: 8000 })
+  const vp = scope.locator('[data-testid=diagram-viewport]').first()
+  await vp.waitFor({ timeout: 20_000 })
   const value = () => zoom.getAttribute('data-value')
-  const drawn = () => scope.locator('[data-testid=output-mermaid-svg]').first().evaluate((el) => el.shadowRoot?.querySelector('svg')?.getBoundingClientRect().width ?? 0)
-  check((await value()) === 'fit', `${label}: the diagram opens at Fit`, await value())
-  // Fit follows the measured box: wait for the drawing to settle at the size the readout names.
-  const pct = async () => Number.parseInt(await zoom.locator('[data-testid=output-zoom-readout]').innerText(), 10) / 100
-  check(await until(async () => Math.abs((await drawn()) - 552 * (await pct())) < 2, 4000), `${label}: Fit sizes the drawing to the readout`, `${await pct()} ${await drawn()}`)
-  const fitW = await drawn()
+  const k = async () => Number(await vp.getAttribute('data-k'))
+  const drawn = () => scope.locator('[data-testid=output-mermaid-svg]').first().evaluate((el) => el.getBoundingClientRect().width)
+  const naturalW = Number(await vp.getAttribute('data-natural-w'))
+  check((await value()) === 'fit' && (await vp.getAttribute('data-mode')) === 'fit', `${label}: the diagram opens at Fit`, await value())
+  check(await until(async () => Math.abs((await drawn()) - naturalW * (await k())) < 2, 4000), `${label}: the drawing is drawn at the scale the viewport names`, `${await k()} ${await drawn()}`)
   await scope.locator('[data-testid=output-zoom-actual]').click()
-  check((await value()) === '1' && (await until(async () => (await drawn()) !== fitW, 3000)), `${label}: 100% sets data-value 1 and resizes the drawing`, `${await value()} ${fitW} ${await drawn()}`)
+  check((await value()) === '1' && (await vp.getAttribute('data-mode')) === 'free', `${label}: Actual size sets 100%`, String(await value()))
+  check(/^100\s?%$/.test(clean(await zoom.locator('[data-testid=output-zoom-readout]').innerText())), `${label}: the readout says 100%`)
+  const order = await zoom.evaluate((el) => Array.from(el.querySelectorAll('[data-testid]')).map((c) => c.getAttribute('data-testid')).join(','))
+  check(order === 'output-zoom-out,output-zoom-readout,output-zoom-in,output-zoom-fit,output-zoom-actual', `${label}: the zoom bar reads - readout + Fit Actual size`, order)
   await scope.locator('[data-testid=output-zoom-in]').click()
-  const inV = Number(await value())
-  const inW = await drawn()
-  check(inV > 1 && inW > 0, `${label}: Zoom in raises the scale`, String(inV))
+  check((await k()) > 1, `${label}: Zoom in raises the scale`, String(await k()))
   await scope.locator('[data-testid=output-zoom-out]').click()
   await scope.locator('[data-testid=output-zoom-out]').click()
-  check(Number(await value()) < 1, `${label}: Zoom out lowers it`, await value())
-  // Keys while the region has focus.
-  const region = scope.locator('[role=region][aria-label$=" diagram"]').first()
-  await region.focus()
-  await page.keyboard.press('0')
-  check((await value()) === '1', `${label}: key 0 returns to 100%`, await value())
+  check((await k()) < 1, `${label}: Zoom out lowers it`, String(await k()))
+  // Keys while the viewport has focus.
+  await vp.focus()
+  await page.keyboard.press('1')
+  check(Math.abs((await k()) - 1) < 0.001, `${label}: key 1 is actual size`, String(await k()))
   await page.keyboard.press('+')
-  check((await value()) === '1.25', `${label}: key + zooms in a step`, await value())
+  check(Math.abs((await k()) - 1.25) < 0.01, `${label}: key + zooms in a step`, String(await k()))
   await page.keyboard.press('-')
   await page.keyboard.press('-')
-  check(Number(await value()) < 1, `${label}: key - zooms out`, await value())
-  for (let i = 0; i < 12; i++) await page.keyboard.press('+')
-  check((await value()) === '4' && (await scope.locator('[data-testid=output-zoom-in]').isDisabled()), `${label}: zoom stops at 400%`, await value())
-  for (let i = 0; i < 20; i++) await page.keyboard.press('-')
-  check((await value()) === '0.25' && (await scope.locator('[data-testid=output-zoom-out]').isDisabled()), `${label}: zoom stops at 25%`, await value())
+  check((await k()) < 1, `${label}: key - zooms out`, String(await k()))
+  for (let i = 0; i < 16; i++) await page.keyboard.press('+')
+  check(Math.abs((await k()) - 8) < 0.01 && (await scope.locator('[data-testid=output-zoom-in]').getAttribute('aria-disabled')) === 'true', `${label}: zoom stops at 800%`, String(await k()))
+  for (let i = 0; i < 30; i++) await page.keyboard.press('-')
+  check(Math.abs((await k()) - 0.02) < 0.001 && (await scope.locator('[data-testid=output-zoom-out]').getAttribute('aria-disabled')) === 'true', `${label}: zoom stops at 2%`, String(await k()))
+  await page.keyboard.press('0')
+  check((await vp.getAttribute('data-mode')) === 'fit', `${label}: key 0 fits again`)
+  await page.keyboard.press('ArrowRight')
+  check((await vp.getAttribute('data-mode')) === 'free', `${label}: an arrow key pans`)
   await scope.locator('[data-testid=output-zoom-fit]').click()
   check((await value()) === 'fit', `${label}: Fit returns to fit`, await value())
 }
@@ -260,7 +265,7 @@ async function zoomChecks(label) {
 async function largerViewChecks(label) {
   const btn = detail().locator('[data-testid=output-detail-expand]')
   check((await btn.count()) === 1 && (await btn.getAttribute('aria-label')) === 'Larger view', `${label}: the detail has a Larger view button`)
-  const inlineW = await detail().locator('[data-testid=output-mermaid-stage], [role=region][aria-label$=" diagram"]').first().evaluate((el) => el.getBoundingClientRect().width)
+  const inlineW = await detail().locator('[data-testid=diagram-viewport]').first().evaluate((el) => el.getBoundingClientRect().width)
   await btn.click()
   const dlg = page.locator('[data-testid=output-dialog]')
   await dlg.waitFor({ state: 'visible', timeout: 5000 })
@@ -270,10 +275,12 @@ async function largerViewChecks(label) {
   })
   check(box.w >= box.vw - 64 && box.h >= box.vh - 64, `${label}: the Larger view fills the window`, JSON.stringify(box))
   check((await dlg.locator('h2').innerText()) === 'Architecture diagram' && (await dlg.locator('[data-testid=output-more]').count()) === 1, `${label}: the Larger view is titled by the output and offers its actions`)
-  await dlg.locator('[data-testid=output-mermaid-svg] svg').first().waitFor({ timeout: 20_000 }).catch(() => {})
-  const dlgW = await dlg.locator('[role=region][aria-label$=" diagram"]').first().evaluate((el) => el.getBoundingClientRect().width)
+  const dvp = dlg.locator('[data-testid=diagram-viewport]').first()
+  await dvp.waitFor({ timeout: 20_000 })
+  check(await until(async () => (await page.evaluate(() => document.activeElement?.getAttribute('data-testid'))) === 'diagram-viewport', 4000), `${label}: opening the Larger view lands focus on the drawing`)
+  const dlgW = await dvp.evaluate((el) => el.getBoundingClientRect().width)
   check(dlgW > inlineW, `${label}: the diagram has more room in the Larger view`, `${inlineW} -> ${dlgW}`)
-  const stageH = await dlg.locator('[role=region][aria-label$=" diagram"]').first().evaluate((el) => el.getBoundingClientRect().height)
+  const stageH = await dvp.evaluate((el) => el.getBoundingClientRect().height)
   check(stageH >= Math.min(box.vh - 220, 300), `${label}: the diagram stage uses the dialog height`, String(stageH))
   await zoomIn(dlg, `${label} dialog`)
   await noScroll(`${label}: Larger view open`)
@@ -294,6 +301,8 @@ async function runSideChecks(label, wide) {
   const kinds = await page.locator('[data-testid=run-output-row]').evaluateAll((els) => els.map((e) => e.getAttribute('data-kind')))
   check(kinds.length === 5 && ['docx', 'xlsx', 'mermaid', 'markdown', 'image'].every((k) => kinds.includes(k)), `${label}: the run side tab lists five outputs of the right kinds`, kinds.join(','))
   await noScroll(`${label}: run Outputs tab`)
+  const tabCount = page.locator('[data-testid=side-tab-outputs-count]')
+  check((await tabCount.count()) === 1 && clean(await tabCount.innerText()) === '5', `${label}: the Outputs side tab shows its count (M1)`, (await tabCount.count()) ? clean(await tabCount.innerText()) : 'none')
 
   // RunMeta chip: "5 outputs" (icon and count under 1100 px, the label in the title).
   const chip = page.locator('[data-testid=run-meta-outputs]')
@@ -328,6 +337,27 @@ async function runSideChecks(label, wide) {
   const cells = clean(await sheets.locator('[data-testid=output-sheet-table]').first().innerText()).replace(/,/g, '')
   check(/1200/.test(cells) && /3400/.test(cells) && /\b800\b/.test(cells), `${label}: the Cost cells read 1200, 3400 and 800`, cells.slice(0, 120))
   check(cells.includes('=SUM(B2:B4)'), `${label}: the formula-looking cell is shown as text`, cells.slice(0, 160))
+  const formulaNote = detail().locator('[data-testid=output-sheet-formula-note]')
+  check((await formulaNote.count()) === 1 && clean(await formulaNote.innerText()) === 'Shown as text. OrgAI does not calculate formulas.', `${label}: the sheet says formulas are shown as text (V1)`)
+  // Previous / next (M3): from the workbook, Next and Previous move through the list in its order; a click keeps focus on the button.
+  const stepper = page.locator('[data-testid=output-stepper]')
+  check((await stepper.count()) === 1, `${label}: the detail offers previous / next`)
+  const order = await page.evaluate(async (pid) => (await window.orgai.outputs.list(pid)).map((o) => o.kind), project.id)
+  const pos = clean(await page.locator('[data-testid=output-position]').innerText())
+  check(/^\d+ of 5$/.test(pos), `${label}: the counter reads "N of 5"`, pos)
+  const at = Number(pos.split(' ')[0])
+  const nextBtn = page.locator('[data-testid=output-next]')
+  const prevBtn = page.locator('[data-testid=output-prev]')
+  const target = at < 5 ? nextBtn : prevBtn
+  await target.click()
+  const want = at < 5 ? at + 1 : at - 1
+  check(await until(async () => clean(await page.locator('[data-testid=output-position]').innerText()) === `${want} of 5`), `${label}: a step moves the counter`, clean(await page.locator('[data-testid=output-position]').innerText()))
+  check((await detail().getAttribute('data-kind')) !== 'xlsx' && order.length === 5, `${label}: the detail shows the neighbouring output`, await detail().getAttribute('data-kind'))
+  check((await page.evaluate(() => document.activeElement?.getAttribute('data-testid'))) === (at < 5 ? 'output-next' : 'output-prev'), `${label}: focus stays on the step button`)
+  // Alt+Left / Alt+Right inside the detail step back and land on the heading.
+  await detail().locator('#output-detail-heading').focus()
+  await page.keyboard.press(at < 5 ? 'Alt+ArrowLeft' : 'Alt+ArrowRight')
+  check(await until(async () => clean(await page.locator('[data-testid=output-position]').innerText()) === `${at} of 5` && (await page.evaluate(() => document.activeElement?.id)) === 'output-detail-heading'), `${label}: Alt+arrow steps back and focuses the heading`)
   await noScroll(`${label}: sheet preview`)
 
   // Diagram
@@ -344,10 +374,11 @@ async function runSideChecks(label, wide) {
   const labels = clean(drawing.text)
   check(['Client', 'API', 'Database', 'Queue'].every((w) => labels.includes(w)), `${label}: the diagram draws its four nodes`, labels)
   check(drawing.shadow && drawing.svgs === 1 && drawing.stray === 0, `${label}: the diagram sits in a shadow root as one svg with no img, p or form elements`, JSON.stringify(drawing))
-  await detail().locator('[data-testid=output-mermaid-view]').getByText('Source', { exact: true }).click()
-  const src = clean(await detail().locator('[data-testid=output-source]').first().innerText())
+  await detail().locator('[data-testid=diagram-mode]').getByText('Source', { exact: true }).click()
+  const src = clean(await detail().locator('[data-testid=diagram-source]').first().inputValue())
   check(/flowchart/.test(src) && /Client/.test(src), `${label}: the diagram source shows the text`, src.slice(0, 80))
-  await detail().locator('[data-testid=output-mermaid-view]').getByText('Diagram', { exact: true }).click()
+  await detail().locator('[data-testid=diagram-mode]').getByText('Diagram', { exact: true }).click()
+  check((await detail().locator('[data-testid=output-open-large]').count()) === 1, `${label}: a diagram in the panel offers Open large`)
   await noScroll(`${label}: diagram preview`)
   await zoomChecks(label)
   await largerViewChecks(label)
@@ -392,7 +423,11 @@ async function transcriptChecks(label) {
   check(/Refused/.test(clean(await refused.first().innerText())) && (await refused.first().locator('[data-testid=output-write-show]').count()) === 0, `${label}: the refused row reads "Refused" and has no Show link`, clean(await refused.first().innerText()))
   check((await outputsOf()).length === 5, `${label}: the refused register added no entry`)
   const rowTexts = (await rows.allInnerTexts()).map(clean)
-  check(rowTexts.some((t) => /^Produced Word document Project plan/.test(t)) && rowTexts.some((t) => /^Produced Excel workbook Budget/.test(t)) && rowTexts.some((t) => /^Produced Diagram Architecture diagram/.test(t)), `${label}: transcript rows use the one kind vocabulary ("Produced Word document Project plan")`, rowTexts.join(' | ').slice(0, 300))
+  check(
+    rowTexts.some((t) => /^Produced Word document: Project plan/.test(t)) && rowTexts.some((t) => /^Produced Excel workbook: Budget/.test(t)) && rowTexts.some((t) => /^Produced diagram: Architecture diagram/.test(t)) && rowTexts.some((t) => /^Registered image: Logo/.test(t)),
+    `${label}: transcript rows read "Produced diagram: Architecture diagram" (kind word, colon, title)`,
+    rowTexts.join(' | ').slice(0, 300)
+  )
   // Show lands on the item in the side tab.
   const budget = (await outputsOf()).find((o) => o.title === 'Budget')
   const row = rows.filter({ hasText: 'Budget' }).first()
@@ -419,6 +454,15 @@ async function projectTabChecks(label) {
   check(exts.join(',') === '.png,.md,.mmd,.xlsx,.docx', `${label}: every row carries its extension badge`, exts.join(','))
   const metas = await rows.evaluateAll((els) => els.map((e) => e.querySelector('.outputs-row-meta')?.textContent ?? ''))
   check(metas.some((m) => /^Word document · /.test(m)) && metas.some((m) => /^Excel workbook · /.test(m)), `${label}: list rows say Word document and Excel workbook`, metas.join(' | ').slice(0, 200))
+  // M2: entering the tab selects the newest output without moving focus.
+  const paneDetail = page.locator('[data-testid=outputs-detail] [data-testid=output-detail]')
+  const railedPane = (await page.locator('aside[data-testid=outputs-detail][data-collapsed=true]').count()) === 1
+  const selectedOk = await until(async () => {
+    if (railedPane) return (await rows.first().getAttribute('aria-selected')) === 'true' || (await paneDetail.count()) === 1
+    return (await paneDetail.count()) === 1 && (await paneDetail.getAttribute('data-id')) === (await rows.first().getAttribute('data-id'))
+  }, 5000)
+  check(selectedOk, `${label}: the newest output is selected on entering the tab`, railedPane ? 'pane railed' : '')
+  check((await page.evaluate(() => document.activeElement?.id)) !== 'output-detail-heading', `${label}: the default selection does not take focus`)
   await noScroll(`${label}: Outputs tab`)
   await snap(`${label}-list`)
 }
@@ -429,6 +473,19 @@ async function filterChecks(label) {
   check((await page.locator('[data-testid=outputs-kind]').count()) === 5, `${label}: five kind chips with counts`)
   const chipTexts = await page.locator('[data-testid=outputs-kind]').evaluateAll((els) => els.map((e) => `${e.getAttribute('data-kind')}:${(e.textContent ?? '').replace(/\s*\d+$/, '').trim()}:${e.getAttribute('title')}`))
   check(chipTexts.includes('docx:Word:Word document') && chipTexts.includes('xlsx:Excel:Excel workbook'), `${label}: the kind chips say Word and Excel with the full label as title`, chipTexts.join(' | '))
+  // V3: the chips are one Tab stop with arrow keys.
+  const kindsBar = page.locator('[data-testid=outputs-kinds]')
+  const stops = await kindsBar.evaluate((el) => ({ role: el.getAttribute('role'), tab0: el.querySelectorAll('button[tabindex="0"]').length, all: el.querySelectorAll('button').length }))
+  check(stops.role === 'toolbar' && stops.tab0 === 1 && stops.all === 6, `${label}: the kind chips are one toolbar with one Tab stop`, JSON.stringify(stops))
+  await page.locator('[data-testid=outputs-kind-all]').focus()
+  await page.keyboard.press('ArrowRight')
+  const focusedKind = await page.evaluate(() => document.activeElement?.getAttribute('data-testid'))
+  check(focusedKind === 'outputs-kind', `${label}: ArrowRight moves to the next chip`, String(focusedKind))
+  await page.keyboard.press('Space')
+  check(await until(async () => (await rows.count()) === 1), `${label}: Space toggles the focused chip`)
+  await page.keyboard.press('Home')
+  await page.keyboard.press('Enter')
+  check(await until(async () => (await rows.count()) === 5), `${label}: Home and Enter reset to All kinds`)
   await page.locator('[data-testid=outputs-kind][data-kind=docx]').click()
   check((await rows.count()) === 1 && (await page.locator('[data-testid=outputs-kind][data-kind=docx]').getAttribute('aria-pressed')) === 'true', `${label}: a kind chip filters`)
   check(/1 of 5 outputs/.test(clean(await page.locator('[data-testid=outputs-count]').innerText())), `${label}: the count line follows the filter`)
@@ -591,6 +648,234 @@ async function removeChecks(label) {
   check(await until(async () => /^Removed .+ from the list\.$/.test(clean(await notice.innerText())), 3000), `${label}: a Remove from inside the Larger view is still announced in the surface's notice`, clean(await notice.innerText()))
 }
 
+// ---------- diagram viewer (docs/design/outputs-2.md section 8) on a second project ----------
+// [mock:outputs] makes one small diagram only, so this run comes from an ORGAI_MOCK_SCRIPT set in main (the mock reads the
+// script per run): an 80-shape flowchart, a two-node one and a broken one.
+const NAME2 = 'E2E diagrams (orgai test)'
+const repo2 = path.join(base, 'repo-diagrams')
+makeFixtureRepo('outputs-diagrams', { at: repo2 })
+function largeFlowchart() {
+  const lines = ['flowchart TD']
+  for (let i = 1; i <= 40; i++) {
+    lines.push(`  S${i}[Service ${i}] --> D${i}[(Store ${i})]`)
+    if (i < 40) lines.push(`  S${i} --> S${i + 1}`)
+  }
+  return lines.join('\n') + '\n'
+}
+const TINY = 'flowchart TD\n  A[Start] --> B[End]\n'
+const BROKEN = 'flowchart TD\n  A[Start --> B\n'
+const diagramScript = {
+  delayMs: 100,
+  work: [
+    { type: 'text', text: 'Drawing the diagrams.' },
+    { type: 'harness', name: 'produce_output', args: { kind: 'mermaid', title: 'Large system map', fileName: 'large-system-map', content: largeFlowchart() } },
+    { type: 'harness', name: 'produce_output', args: { kind: 'mermaid', title: 'Tiny map', fileName: 'tiny-map', content: TINY } },
+    { type: 'harness', name: 'produce_output', args: { kind: 'mermaid', title: 'Broken diagram', fileName: 'broken-diagram', content: BROKEN } },
+    { type: 'text', text: 'Three diagrams are ready.' }
+  ]
+}
+let project2
+
+async function showByTitle(title) {
+  const back = page.locator('[data-testid=run-output-back]')
+  if (await back.count()) {
+    await back.click()
+    await page.locator('[data-testid=run-outputs-list]').waitFor({ timeout: 5000 })
+  }
+  await page.locator('[data-testid=run-output-row]').filter({ hasText: title }).first().locator('[data-testid=run-output-show]').click()
+  await page.locator('[data-testid=output-detail-heading]', { hasText: title }).first().waitFor({ timeout: 8000 })
+}
+const rectOf = (loc) => loc.evaluate((el) => {
+  const r = el.getBoundingClientRect()
+  return { l: r.left, t: r.top, r: r.right, b: r.bottom, w: r.width, h: r.height }
+})
+const vAttr = async (vp) => ({ k: Number(await vp.getAttribute('data-k')), x: Number(await vp.getAttribute('data-x')), y: Number(await vp.getAttribute('data-y')), mode: await vp.getAttribute('data-mode') })
+// Keyframe animations only (spec 14.1: pan, zoom and Fit never animate; hover and focus colour transitions are the shared controls' own).
+const running = (loc) =>
+  loc.evaluate((el) =>
+    el
+      .getAnimations({ subtree: true })
+      .filter((a) => a.playState === 'running' && a.constructor.name !== 'CSSTransition')
+      .map((a) => `${a.constructor.name}:${a.animationName ?? ''}:${a.effect?.target?.className ?? ''}`)
+      .join(' | ')
+  )
+
+/** The drawing is wholly inside the viewport and centred; returns the fill ratio. */
+async function fitFacts(scope) {
+  const vp = scope.locator('[data-testid=diagram-viewport]').first()
+  const host = scope.locator('[data-testid=output-mermaid-svg]').first()
+  const a = await rectOf(vp)
+  const d = await rectOf(host)
+  const inside = d.l >= a.l - 1 && d.t >= a.t - 1 && d.r <= a.r + 1 && d.b <= a.b + 1
+  const centred = Math.abs(d.l + d.w / 2 - (a.l + a.w / 2)) < 2 && Math.abs(d.t + d.h / 2 - (a.t + a.h / 2)) < 2
+  return { inside, centred, fill: Math.max(d.w / a.w, d.h / a.h), vp: a, d }
+}
+
+async function diagramChecks(label, full) {
+  await openRunOutputsTab()
+  // Large diagram: Fit shows all of it, the note names it.
+  await showByTitle('Large system map')
+  const vp = detail().locator('[data-testid=diagram-viewport]').first()
+  await vp.waitFor({ timeout: 30_000 })
+  await sleep(300)
+  const shapes = Number(await vp.getAttribute('data-shapes'))
+  check(shapes >= 80, `${label}: the large diagram counts its shapes`, String(shapes))
+  const note = detail().locator('[data-testid=diagram-large-note]')
+  check((await note.count()) === 1 && /^Large diagram, \d+ shapes\. Zoom in to read, or open the larger view\./.test(clean(await note.innerText())), `${label}: the large-diagram note shows`, (await note.count()) ? clean(await note.innerText()) : 'none')
+  // The detail column scrolls in a short panel: bring the drawing into view before pointing at it.
+  await vp.scrollIntoViewIfNeeded()
+  const vpBox = await rectOf(vp)
+  check(vpBox.h >= 239 && vpBox.w >= 200, `${label}: the viewport is at least 240 px tall in the panel`, JSON.stringify(vpBox))
+  let f = await fitFacts(detail())
+  const v0 = await vAttr(vp)
+  check(v0.mode === 'fit' && v0.k < 1 && f.inside && f.fill >= 0.8, `${label}: Fit shows the whole large diagram and fills the viewport`, JSON.stringify({ ...v0, fill: f.fill.toFixed(2), inside: f.inside }))
+  // Plain wheel passes through in the panel; Ctrl+wheel zooms about the pointer.
+  const cx = vpBox.l + vpBox.w / 2
+  const cy = vpBox.t + vpBox.h / 2
+  const hit = await page.evaluate(([x, y]) => {
+    const el = document.elementFromPoint(x, y)
+    return `${el?.tagName}.${el?.className}[${el?.getAttribute('data-testid') ?? ''}] in viewport: ${!!el?.closest('[data-testid=diagram-viewport]')}`
+  }, [cx, cy])
+  check(/in viewport: true/.test(hit), `${label}: the pointer reaches the viewport`, `${hit} ${JSON.stringify(vpBox)}`)
+  await page.mouse.move(cx, cy)
+  await page.mouse.wheel(0, -200)
+  await sleep(250)
+  check((await vAttr(vp)).k === v0.k, `${label}: a plain wheel in the panel does not zoom`)
+  // The plain wheel may have scrolled the detail column: point at the viewport again.
+  await vp.scrollIntoViewIfNeeded()
+  const again = await rectOf(vp)
+  await page.mouse.move(again.l + again.w / 2, again.t + again.h / 2)
+  await page.keyboard.down('Control')
+  await page.mouse.wheel(0, -200)
+  await page.keyboard.up('Control')
+  check(await until(async () => (await vAttr(vp)).k > v0.k * 1.05, 2000), `${label}: Ctrl+wheel zooms in`, JSON.stringify(await vAttr(vp)))
+  check((await vAttr(vp)).mode === 'free', `${label}: zooming leaves fit mode`)
+  // Drag pans.
+  const before = await vAttr(vp)
+  const gx = again.l + again.w / 2
+  const gy = again.t + again.h / 2
+  await page.mouse.move(gx, gy)
+  await page.mouse.down()
+  for (let i = 1; i <= 8; i++) await page.mouse.move(gx + i * 10, gy + i * 5)
+  await page.mouse.up()
+  const dragged = await vAttr(vp)
+  check(Math.abs(dragged.x - before.x - 80) <= 6 && Math.abs(dragged.y - before.y - 40) <= 6, `${label}: dragging moves the drawing`, JSON.stringify({ before, dragged }))
+  // Keys.
+  await vp.focus()
+  const hint = detail().locator('[data-testid=diagram-hint]')
+  check((await hint.count()) === 1 && /Drag to move/.test(clean(await hint.textContent())), `${label}: the viewport says how to move and zoom`)
+  // At 100% the drawing is far bigger than the viewport, so a pan is never clamped.
+  await page.keyboard.press('1')
+  let p = await vAttr(vp)
+  await page.keyboard.press('ArrowUp')
+  let q = await vAttr(vp)
+  check(Math.abs(Math.abs(q.y - p.y) - 48) < 1, `${label}: an arrow key pans 48 px`, `${p.y} -> ${q.y}`)
+  p = q
+  await page.keyboard.press('Shift+ArrowLeft')
+  q = await vAttr(vp)
+  check(Math.abs(Math.abs(q.x - p.x) - 192) < 1, `${label}: Shift+arrow pans 192 px`, `${p.x} -> ${q.x}`)
+  await page.keyboard.press('0')
+  check((await vAttr(vp)).mode === 'fit', `${label}: 0 fits the drawing again`)
+  // Double-click toggles Fit and 100%.
+  await vp.dblclick({ position: { x: vpBox.w / 2, y: vpBox.h / 2 } })
+  check(await until(async () => Math.abs((await vAttr(vp)).k - 1) < 0.001, 2000), `${label}: double-click shows 100%`, JSON.stringify(await vAttr(vp)))
+  await vp.dblclick({ position: { x: vpBox.w / 2, y: vpBox.h / 2 } })
+  check(await until(async () => (await vAttr(vp)).mode === 'fit', 2000), `${label}: double-click again fits`)
+  const anims = await running(detail())
+  check(anims === '', `${label}: nothing animates in the viewer`, anims)
+  await noScroll(`${label}: large diagram in the panel`)
+  await snap(`${label}-large`)
+
+  // A tiny diagram is never shrunk below 100% nor blown past 150%, and sits centred.
+  await showByTitle('Tiny map')
+  const tvp = detail().locator('[data-testid=diagram-viewport]').first()
+  await tvp.waitFor({ timeout: 20_000 })
+  await sleep(300)
+  const tv = await vAttr(tvp)
+  f = await fitFacts(detail())
+  check(tv.mode === 'fit' && tv.k >= 1 - 1e-6 && tv.k <= 1.5 + 1e-6 && f.inside && f.centred, `${label}: a small diagram fits between 100% and 150%, centred`, JSON.stringify({ ...tv, centred: f.centred }))
+  check((await detail().locator('[data-testid=diagram-large-note]').count()) === 0, `${label}: no large note on a small diagram`)
+
+  // A broken diagram keeps its source on screen with the error.
+  await showByTitle('Broken diagram')
+  const viewer = detail().locator('[data-testid=output-mermaid]').first()
+  check(await until(async () => (await viewer.getAttribute('data-state')) === 'error', 20_000), `${label}: a broken diagram reports an error state`, String(await viewer.getAttribute('data-state')))
+  const err = detail().locator('[data-testid=diagram-error]')
+  check((await err.count()) === 1 && /(syntax error on line \d+, so it cannot be drawn\. The source is below\.|cannot be drawn:)/.test(clean(await err.innerText())), `${label}: the error pane explains`, (await err.count()) ? clean(await err.innerText()).slice(0, 160) : 'none')
+  check(['split', 'source'].includes(String(await viewer.getAttribute('data-view'))) && (await detail().locator('[data-testid=diagram-source]').inputValue()).includes('A[Start'), `${label}: the source stays visible beside the error`, String(await viewer.getAttribute('data-view')))
+  // The toolbar stays one reachable Tab stop after the mode changed by itself (never an unchecked radio; reviewer H1).
+  const stop = await detail().locator('[data-testid=diagram-toolbar]').evaluate((bar) => {
+    const s = Array.from(bar.querySelectorAll('[tabindex="0"]')).filter((el) => !el.closest('[popover]'))
+    const el = s[0]
+    return { n: s.length, ok: !!el && !(el instanceof HTMLInputElement && el.type === 'radio' && !el.checked) }
+  })
+  check(stop.n === 1 && stop.ok, `${label}: the diagram toolbar keeps one reachable Tab stop`, JSON.stringify(stop))
+  const go = detail().locator('[data-testid=diagram-goto-line]')
+  if (await go.count()) {
+    await go.click()
+    check(await until(async () => (await page.evaluate(() => document.activeElement?.getAttribute('data-testid'))) === 'diagram-source', 2000), `${label}: Go to line focuses the source`)
+  }
+  await noScroll(`${label}: broken diagram`)
+
+  if (!full) return
+  // Larger view of the tiny diagram: plain wheel zooms, overview, Full window and Esc order, split live editing, export.
+  await showByTitle('Tiny map')
+  await detail().locator('[data-testid=output-open-large]').click()
+  const dlg = page.locator('[data-testid=output-dialog]')
+  await dlg.waitFor({ state: 'visible', timeout: 5000 })
+  const dvp = dlg.locator('[data-testid=diagram-viewport]').first()
+  await dvp.waitFor({ timeout: 20_000 })
+  check(await until(async () => (await page.evaluate(() => document.activeElement?.getAttribute('data-testid'))) === 'diagram-viewport', 4000), `${label}: Open large lands focus on the drawing`)
+  const db = await rectOf(dvp)
+  const k0 = (await vAttr(dvp)).k
+  await page.mouse.move(db.l + db.w / 2, db.t + db.h / 2)
+  await page.mouse.wheel(0, -300)
+  check(await until(async () => (await vAttr(dvp)).k > k0 * 1.05, 2000), `${label}: a plain wheel zooms in the Larger view`, `${k0} -> ${(await vAttr(dvp)).k}`)
+  await dvp.focus()
+  await page.keyboard.press('o')
+  check(await until(async () => (await dlg.locator('[data-testid=diagram-overview]').count()) === 1, 2000), `${label}: O shows the overview`)
+  await page.keyboard.press('o')
+  check(await until(async () => (await dlg.locator('[data-testid=diagram-overview]').count()) === 0, 2000), `${label}: O hides it again`)
+  await page.keyboard.press('f')
+  const body = dlg.locator('.output-dialog-body')
+  check(await until(async () => (await body.getAttribute('data-full')) !== null, 2000), `${label}: F turns on Full window`)
+  const fullBox = await rectOf(dlg)
+  const win = await page.evaluate(() => ({ w: innerWidth, h: innerHeight }))
+  check(fullBox.w >= win.w - 2 && fullBox.h >= win.h - 2, `${label}: Full window covers the window`, JSON.stringify({ fullBox, win }))
+  await page.keyboard.press('Escape')
+  check(await until(async () => (await body.getAttribute('data-full')) === null, 2000) && (await dlg.isVisible()), `${label}: the first Esc leaves Full window and keeps the viewer`)
+  // Split: live preview of scratch edits; a broken edit keeps the last good drawing.
+  await dlg.locator('[data-testid=diagram-mode]').getByText('Split', { exact: true }).click()
+  const ta = dlg.locator('[data-testid=diagram-source]')
+  await ta.waitFor({ timeout: 5000 })
+  const shadowText = () => dlg.locator('[data-testid=output-mermaid-svg]').first().evaluate((el) => el.shadowRoot?.textContent ?? '')
+  await ta.fill('flowchart TD\n  A[Start] --> Z[Zed]\n')
+  check(await until(async () => (await shadowText()).includes('Zed'), 8000), `${label}: Split redraws the edited source`)
+  check((await dlg.locator('[data-testid=diagram-scratch-note]').count()) === 1, `${label}: the scratch note says edits are not saved`)
+  check(/^Line \d+, column \d+ · /.test(clean(await dlg.locator('[data-testid=diagram-source-status]').innerText())), `${label}: the source status names the line and column`)
+  await ta.fill('flowchart TD\n  A[Start --> Z\n')
+  check(await until(async () => (await dlg.locator('[data-testid=diagram-error]').count()) === 1, 8000), `${label}: a broken edit shows the error pane`)
+  check((await dlg.locator('[data-testid=diagram-stale-badge]').count()) === 1 && (await shadowText()).includes('Zed'), `${label}: the last drawing that worked stays, marked`)
+  check((await ta.inputValue()).includes('A[Start --> Z'), `${label}: the broken source stays on screen`)
+  await ta.fill(TINY)
+  await until(async () => (await dlg.locator('[data-testid=diagram-error]').count()) === 0, 8000)
+  // Export: Copy SVG answers with a notice (copied, or the clipboard's refusal; never a failure to make it).
+  const exportBtn = dlg.locator('[data-testid=diagram-export]')
+  if (await exportBtn.count()) {
+    await exportBtn.click()
+    await dlg.locator('[data-testid=diagram-copy-svg]').click()
+    const n = dlg.locator('[data-testid=diagram-notice]')
+    check(await until(async () => (await n.count()) === 1 && clean(await n.innerText()).length > 0, 5000), `${label}: Copy SVG answers with a notice`)
+    check(!/could not make/i.test(clean(await n.innerText())), `${label}: the SVG was made`, clean(await n.innerText()))
+  } else check(false, `${label}: the Larger view toolbar shows Export`)
+  const dlgAnims = await running(dlg)
+  check(dlgAnims === '', `${label}: nothing animates in the Larger view`, dlgAnims)
+  await noScroll(`${label}: Larger view with Split`)
+  await snap(`${label}-split`)
+  await dlg.getByRole('button', { name: 'Close dialog' }).click()
+  await dlg.waitFor({ state: 'hidden', timeout: 5000 })
+}
+
 try {
   project = await createProject(page, { mode: 'existing', path: repo, name: NAME })
   check(!!project, 'project created on the mock adapter')
@@ -610,7 +895,8 @@ try {
     { w: 1024, h: 640, theme: 'dark' },
     { w: 1024, h: 640, theme: 'light' }
   ]
-  for (const [i, c] of combos.entries()) {
+  // E2E_DIAGRAMS_ONLY=1 skips straight to the diagram viewer section (a quicker loop while working on it).
+  for (const [i, c] of process.env.E2E_DIAGRAMS_ONLY === '1' ? [] : combos.entries()) {
     const label = `${c.w}x${c.h} ${c.theme}`
     await setSize(c.w, c.h)
     await setTheme(c.theme)
@@ -639,12 +925,45 @@ try {
     }
   }
   // Last: Remove from list drops the item from both lists.
-  try {
+  if (process.env.E2E_DIAGRAMS_ONLY !== '1') try {
     await removeChecks('1024x640 light')
   } catch (e) {
     check(false, 'remove checks', e.message.split('\n')[0])
   }
+  // The diagram viewer on its own project, driven by a script set in main for that run only.
+  try {
+    const scriptFile = path.join(base, 'diagrams-script.json')
+    fs.writeFileSync(scriptFile, JSON.stringify(diagramScript))
+    await app.evaluate((_electron, file) => {
+      process.env.ORGAI_MOCK_SCRIPT = file
+    }, scriptFile)
+    project2 = await createProject(page, { mode: 'existing', path: repo2, name: NAME2 })
+    check(!!project2, 'the diagrams project was created')
+    await startRun('Draw the diagrams')
+    const n = () => page.evaluate((id) => window.orgai.outputs.list(id).then((l) => l.length), project2.id)
+    check(await until(async () => (await n()) >= 3, 60_000), 'the scripted run produced three diagrams', String(await n()))
+    await sleep(1000)
+    const combos = [
+      { w: 1600, h: 1000, theme: 'dark' },
+      { w: 1600, h: 1000, theme: 'light' },
+      { w: 1024, h: 640, theme: 'dark' },
+      { w: 1024, h: 640, theme: 'light' }
+    ]
+    for (const [i, c] of combos.entries()) {
+      const label = `diagrams ${c.w}x${c.h} ${c.theme}`
+      await setSize(c.w, c.h)
+      await setTheme(c.theme)
+      try {
+        await diagramChecks(label, i === 0 || i === 3)
+      } catch (e) {
+        check(false, `${label}: diagram checks`, e.message.split('\n')[0])
+      }
+    }
+  } catch (e) {
+    check(false, 'diagram viewer checks', e.message.split('\n')[0])
+  }
 } finally {
+  if (project2 && page && !page.isClosed()) await deleteProject(page, NAME2).catch(() => {})
   await cleanup(app, page, NAME)
   fs.rmSync(base, { recursive: true, force: true })
 }

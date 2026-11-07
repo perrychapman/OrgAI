@@ -8,6 +8,6 @@ export function svgNaturalSize(viewBox: string | null, width: string | null, hei
   const w = parseFloat(width ?? '')
   const h = parseFloat(height ?? '')
   // A percentage is not a size.
-  if (w > 0 && h > 0 && !(width ?? '').includes('%') && !(height ?? '').includes('%')) return { w, h }
+  if (Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0 && !(width ?? '').includes('%') && !(height ?? '').includes('%')) return { w, h }
   return null
 }

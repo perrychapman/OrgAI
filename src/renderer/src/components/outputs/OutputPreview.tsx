@@ -86,16 +86,19 @@ export default function OutputPreview({ output, context = 'detail', onOpenLarge,
   if (state.status === 'loading') {
     return (
       <PreviewStatusContext.Provider value={setBodyStatus}>
-        {statusRegion}
-        <div className="output-preview" data-testid="output-preview" data-state="loading">
-          <p className="output-preview-note">Loading preview…</p>
-        </div>
+        <OutputViewContext.Provider value={view}>
+          {statusRegion}
+          <div className="output-preview" data-testid="output-preview" data-state="loading">
+            <p className="output-preview-note">Loading preview…</p>
+          </div>
+        </OutputViewContext.Provider>
       </PreviewStatusContext.Provider>
     )
   }
   if (state.status === 'error') {
     return (
       <PreviewStatusContext.Provider value={setBodyStatus}>
+        <OutputViewContext.Provider value={view}>
         {statusRegion}
         <div className="output-preview" data-testid="output-preview" data-state="error">
           <p className="output-preview-note output-preview-problem" data-testid="output-preview-error">
@@ -107,6 +110,7 @@ export default function OutputPreview({ output, context = 'detail', onOpenLarge,
             </Button>
           </div>
         </div>
+        </OutputViewContext.Provider>
       </PreviewStatusContext.Provider>
     )
   }

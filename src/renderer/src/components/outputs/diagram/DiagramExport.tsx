@@ -121,6 +121,7 @@ export function useDiagramExport({
 }): ExportApi {
   const [options, setAll] = useState<ExportOptions>(loadOptions)
   const [busy, setBusy] = useState(false)
+  const running = useRef(false)
   const optionsRef = useRef(options)
   optionsRef.current = options
   const setOptions = useCallback((patch: Partial<ExportOptions>): void => {
@@ -145,12 +146,16 @@ export function useDiagramExport({
 
   const guard = useCallback(
     async (fn: () => Promise<void>, failure: string): Promise<void> => {
+      // One export at a time: a second click while one runs is ignored.
+      if (running.current) return
+      running.current = true
       setBusy(true)
       try {
         await fn()
       } catch {
         notify(failure)
       } finally {
+        running.current = false
         setBusy(false)
       }
     },
@@ -160,11 +165,27 @@ export function useDiagramExport({
   const copyPng = useCallback(
     () =>
       void guard(async () => {
-        const made = await png()
-        if (!made) throw new Error('no drawing')
-        // The clipboard takes the promise, so the permission check happens inside the user's click.
+        // The clipboard gets the promise synchronously inside the user's click (a light-theme redraw can take longer than
+        // the click's user activation lasts); the image fills it in when it is ready.
+        const making = png()
+        let write: Promise<void>
         try {
-          await navigator.clipboard.write([new ClipboardItem({ 'image/png': made.blob })])
+          write = navigator.clipboard.write([
+            new ClipboardItem({
+              'image/png': making.then((m) => {
+                if (!m) throw new Error('no drawing')
+                return m.blob
+              })
+            })
+          ])
+        } catch {
+          notify(COPY_REFUSED)
+          return
+        }
+        const made = await making
+        if (!made) throw new Error('no drawing')
+        try {
+          await write
         } catch {
           notify(COPY_REFUSED)
           return

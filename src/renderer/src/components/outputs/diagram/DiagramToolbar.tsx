@@ -19,9 +19,15 @@ const MODE_OPTIONS: { value: DiagramMode; label: string }[] = [
   { value: 'source', label: 'Source' }
 ]
 
-/** The toolbar's controls in DOM order, outside any open popover (their own keys are theirs). */
+/**
+ * The toolbar's controls in DOM order, outside any open popover (their own keys are theirs). A radio group counts as one
+ * control, its checked radio: Chromium never lets Tab land on an unchecked radio of a group with a checked one, so an
+ * unchecked radio as the roving stop would drop the whole toolbar out of the Tab order. Up/Down change the mode natively.
+ */
 function itemsOf(bar: HTMLElement): HTMLElement[] {
-  return Array.from(bar.querySelectorAll<HTMLElement>('button, input[type=radio]')).filter((el) => !el.closest('[popover]') && !(el as HTMLButtonElement).disabled)
+  return Array.from(bar.querySelectorAll<HTMLElement>('button, input[type=radio]')).filter(
+    (el) => !el.closest('[popover]') && !(el as HTMLButtonElement).disabled && !(el instanceof HTMLInputElement && el.type === 'radio' && !el.checked)
+  )
 }
 
 /** Arrow keys move between the toolbar's controls; only one is a Tab stop (a roving tabindex set after every render). */
@@ -35,6 +41,8 @@ function useRoving(): { ref: React.RefObject<HTMLDivElement | null>; onKeyDown: 
     if (items.length === 0) return
     if (!active.current || !items.includes(active.current)) active.current = items[0]
     for (const el of items) el.tabIndex = el === active.current ? 0 : -1
+    // A radio that lost its check (the mode changed) leaves the roving set; it must not keep an old tabindex 0.
+    for (const r of Array.from(bar.querySelectorAll<HTMLInputElement>('input[type=radio]'))) if (!r.checked && !r.closest('[popover]')) r.tabIndex = -1
   })
   const onFocus = (): void => {
     const el = document.activeElement as HTMLElement | null
@@ -49,6 +57,8 @@ function useRoving(): { ref: React.RefObject<HTMLDivElement | null>; onKeyDown: 
     const bar = ref.current
     if (!bar || (e.target as HTMLElement).closest('[popover]')) return
     if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return
+    // Alt+Left/Right steps between outputs (stepKeyHandler); other modifiers keep their own jobs.
+    if (e.altKey || e.ctrlKey || e.metaKey) return
     const items = itemsOf(bar)
     const at = items.indexOf(e.target as HTMLElement)
     if (at < 0) return

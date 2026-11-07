@@ -271,12 +271,8 @@ export default function DiagramViewer({ text, title, truncated }: DiagramViewerP
       )}
       {large && showViewport && (
         <p className="diagram-large-note" role="note" data-testid="diagram-large-note">
+          {/* The toolbar's primary "Open large" sits just above, so the note carries no second one. */}
           {largeNote(facts.shapes)}
-          {context === 'detail' && onOpenLarge && (
-            <Button size="sm" testId="diagram-large-open" onClick={onOpenLarge}>
-              Open large
-            </Button>
-          )}
         </p>
       )}
       {state === 'guard' && (
@@ -292,7 +288,7 @@ export default function DiagramViewer({ text, title, truncated }: DiagramViewerP
           The preview stops here. Open the file to read the rest.
         </p>
       )}
-      {showError && <DiagramError kind={state === 'refused' ? 'refused' : 'error'} message={errorMessage} onGoToLine={goToLine} />}
+      {showError && <DiagramError key={state === 'refused' ? 'refused' : 'error'} kind={state === 'refused' ? 'refused' : 'error'} message={errorMessage} onGoToLine={goToLine} />}
       <div className="diagram-body" data-layout={rowLayout ? 'row' : 'column'} data-view={view}>
         {showViewport && (
           <div className="diagram-pane diagram-pane-view">
