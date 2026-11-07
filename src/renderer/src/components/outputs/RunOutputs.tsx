@@ -11,6 +11,7 @@ import { Button } from '../ui/Button'
 import OutputActions from './OutputActions'
 import OutputDetail from './OutputDetail'
 import OutputKindIcon from './OutputKindIcon'
+import { OutputStepper, stepKeyHandler } from './OutputStepper'
 import ExtBadge from './ExtBadge'
 import '../../styles/outputs.css'
 
@@ -75,7 +76,11 @@ export default function RunOutputs({ runId, projectId }: { runId: string; projec
 
   // ---- show / back / removed, with the focus each one lands on ----
   const pendingFocus = useRef<FocusTarget | null>(null)
-  const open = (id: string | null): void => useAppStore.getState().openRunOutput(runId, id)
+  const [grabFocus, setGrabFocus] = useState(true)
+  const open = (id: string | null): void => {
+    if (id) setGrabFocus(true)
+    useAppStore.getState().openRunOutput(runId, id)
+  }
   const back = (): void => {
     if (!shown) return
     pendingFocus.current = { id: shown.id }
@@ -102,7 +107,15 @@ export default function RunOutputs({ runId, projectId }: { runId: string; projec
     })
   }, [shown, list])
 
+  // Previous / next: a click keeps focus on the button (the detail does not grab it); the keys put it on the heading.
+  const step = (to: string, viaKeyboard: boolean): void => {
+    setGrabFocus(viaKeyboard)
+    useAppStore.getState().openRunOutput(runId, to)
+  }
+  const onStepKey = stepKeyHandler(list, shown?.id ?? null, step)
+
   const onDetailKey = (e: KeyboardEvent<HTMLDivElement>): void => {
+    onStepKey(e)
     if (e.key !== 'Escape' || e.defaultPrevented) return
     // A menu or dialog inside the detail closes itself first.
     if ((e.target as Element).closest('[popover], dialog, [role=dialog]')) return
@@ -124,6 +137,7 @@ export default function RunOutputs({ runId, projectId }: { runId: string; projec
           <Button variant="ghost" size="sm" icon={ArrowLeft} testId="run-output-back" onClick={back}>
             Back to outputs
           </Button>
+          <OutputStepper rows={list} id={shown?.id ?? null} onStep={step} />
         </div>
       )}
       {showList &&
@@ -140,7 +154,12 @@ export default function RunOutputs({ runId, projectId }: { runId: string; projec
         ))}
       {shown && (
         <div className="run-output-detail" onKeyDown={onDetailKey}>
-          <OutputDetail key={shown.id} output={shown} onRemoved={removed} onNotice={say} narrowHint={!wide} />
+          {!detailOnly && (
+            <div className="run-output-stepbar">
+              <OutputStepper rows={list} id={shown.id} onStep={step} />
+            </div>
+          )}
+          <OutputDetail key={shown.id} output={shown} onRemoved={removed} onNotice={say} narrowHint={!wide} autoFocus={grabFocus} />
         </div>
       )}
     </div>

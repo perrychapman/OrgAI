@@ -6,8 +6,14 @@ import { columnLetter, formulaText, isNumericCell, sheetCellText } from '../../l
 
 function SheetTable({ sheet }: { sheet: SheetPreview }): ReactElement {
   const cols = sheet.rows.reduce((n, r) => Math.max(n, r.length), 0)
+  const hasFormulaText = sheet.rows.some((row) => row.some((cell) => sheetCellText(cell).startsWith('=')))
   return (
     <>
+      {hasFormulaText ? (
+        <p className="output-preview-note" data-testid="output-sheet-formula-note">
+          Shown as text. OrgAI does not calculate formulas.
+        </p>
+      ) : null}
       <div className="output-scroll output-sheet-region" role="region" aria-label={`${sheet.name} cells`} tabIndex={0} data-testid="output-sheet-region">
         <table className="output-sheet-table" data-testid="output-sheet-table">
           <caption className="sr-only">{sheet.name}</caption>

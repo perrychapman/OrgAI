@@ -43,9 +43,21 @@ function isKind(k: string | undefined): k is OutputKind {
   return k !== undefined && Object.prototype.hasOwnProperty.call(OUTPUT_KIND_LABEL, k)
 }
 
-/** "Produced Word document Project plan": the kind's one label (docs/design/outputs.md "Words"), "file" when unknown. */
+/** The kind word in a sentence: the one label, lower case unless it is a proper name (Word, Excel, Markdown, CSV, JSON, SVG, PDF). */
+export function kindWord(kind: string | undefined): string {
+  if (!isKind(kind)) return 'file'
+  const label = kindLabel(kind)
+  return /^(Word|Excel|Markdown|CSV|JSON|SVG|PDF)/.test(label) ? label : label.charAt(0).toLowerCase() + label.slice(1)
+}
+
+/** "Produced Word document: Project plan", "Produced diagram: Architecture diagram"; "file" when the kind is unknown. */
 export function producedSentence(kind: string | undefined, title: string): string {
-  return `Produced ${isKind(kind) ? kindLabel(kind) : 'file'} ${title}`
+  return `Produced ${kindWord(kind)}: ${title}`
+}
+
+/** "Registered image: Logo". */
+export function registeredSentence(kind: string | undefined, title: string): string {
+  return `Registered ${kindWord(kind)}: ${title}`
 }
 
 /** produce_output or register_output, bare or `mcp__<server>__...`. */
@@ -78,7 +90,7 @@ function rowOfHarness(text: string, res: ParsedResult | null): OutputWriteRow {
   const word = produced ? /^Produced (document|workbook|diagram|file) /.exec(text)?.[1] : undefined
   return {
     state: produced ? 'produced' : 'registered',
-    text: produced ? producedSentence(isKind(res?.kind) ? res?.kind : word ? KIND_BY_WORD[word] : undefined, title) : text,
+    text: produced ? producedSentence(isKind(res?.kind) ? res?.kind : word ? KIND_BY_WORD[word] : undefined, title) : registeredSentence(res?.kind, title),
     title,
     relPath: res?.relPath
   }
@@ -87,7 +99,7 @@ function rowOfHarness(text: string, res: ParsedResult | null): OutputWriteRow {
 /** The result's own words when no harness row exists (an older record): "Produced document X". */
 function rowOfResult(res: ParsedResult): OutputWriteRow {
   const registered = res.verb === 'Registered'
-  const text = registered ? `Registered output ${res.title}` : producedSentence(res.kind, res.title)
+  const text = registered ? registeredSentence(res.kind, res.title) : producedSentence(res.kind, res.title)
   return { state: registered ? 'registered' : 'produced', text, title: res.title, relPath: res.relPath }
 }
 
