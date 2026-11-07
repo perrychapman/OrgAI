@@ -1,6 +1,14 @@
-// STUB (UI Lead foundation): replaced by the previews engineer. Signature is fixed: docs/design/outputs.md section 4.
 import type { ReactElement } from 'react'
-import type { RunOutput } from '@shared/types'
+import { useEffect, useRef, useState } from 'react'
+import type { OutputPreview as OutputPreviewData, RunOutput } from '@shared/types'
+import { previewCacheFor, previewKey } from '../../lib/outputs'
+import { svgDataUrl } from '../../lib/outputPreview'
+import { Button } from '../ui/Button'
+import DocumentView from './DocumentView'
+import SheetView from './SheetView'
+import TextPreview from './TextPreview'
+import ImagePreview from './ImagePreview'
+import '../../styles/outputs-preview.css'
 
 export interface OutputPreviewProps {
   output: RunOutput
@@ -8,12 +16,109 @@ export interface OutputPreviewProps {
   labelledBy?: string
 }
 
-export default function OutputPreview({ output }: OutputPreviewProps): ReactElement {
+type State = { status: 'loading' } | { status: 'error' } | { status: 'ready'; preview: OutputPreviewData }
+
+/** The in-window preview of one output, fetched on demand and cached per project. Renders nothing for a missing file. */
+export default function OutputPreview({ output }: OutputPreviewProps): ReactElement | null {
+  const { projectId, id } = output
+  const key = previewKey(output)
+  const [state, setState] = useState<State>(() => {
+    const hit = output.missing ? undefined : previewCacheFor(projectId).get(key)
+    return hit ? { status: 'ready', preview: hit } : { status: 'loading' }
+  })
+  const [attempt, setAttempt] = useState(0)
+  const seq = useRef(0)
+  const missing = output.missing === true
+
+  useEffect(() => {
+    if (missing) return
+    const mine = ++seq.current
+    const cache = previewCacheFor(projectId)
+    const hit = attempt === 0 ? cache.get(key) : undefined
+    if (hit) {
+      setState({ status: 'ready', preview: hit })
+      return
+    }
+    setState({ status: 'loading' })
+    let p: Promise<OutputPreviewData>
+    try {
+      p = window.orgai.outputs.preview({ projectId, outputId: id })
+    } catch {
+      setState({ status: 'error' })
+      return
+    }
+    p.then(
+      (preview) => {
+        if (seq.current !== mine) return
+        cache.set(key, preview)
+        setState({ status: 'ready', preview })
+      },
+      () => {
+        if (seq.current === mine) setState({ status: 'error' })
+      }
+    )
+    return () => {
+      seq.current++
+    }
+  }, [projectId, id, key, attempt, missing])
+
+  if (missing) return null
+
+  if (state.status === 'loading') {
+    return (
+      <div className="output-preview" data-testid="output-preview" data-state="loading" role="status">
+        <p className="output-preview-note">Loading preview…</p>
+      </div>
+    )
+  }
+  if (state.status === 'error') {
+    return (
+      <div className="output-preview" data-testid="output-preview" data-state="error">
+        <p className="output-preview-note output-preview-problem" data-testid="output-preview-error">
+          Could not load the preview.
+        </p>
+        <div>
+          <Button size="sm" onClick={() => setAttempt((n) => n + 1)} testId="output-preview-retry">
+            Try again
+          </Button>
+        </div>
+      </div>
+    )
+  }
+
+  const p = state.preview
+  let body: ReactElement
+  switch (p.kind) {
+    case 'document':
+      body = <DocumentView blocks={p.blocks} truncated={p.truncated} title={output.title} />
+      break
+    case 'sheets':
+      body = <SheetView sheets={p.sheets} truncatedSheets={p.truncatedSheets} />
+      break
+    case 'text':
+      body = <TextPreview kind={output.kind} text={p.text} truncated={p.truncated} title={output.title} />
+      break
+    case 'svg':
+      // An <img> with a data URL runs no script and loads nothing; never inlined.
+      body = (
+        <div className="output-image-fit">
+          <img className="output-image" data-testid="output-svg-img" src={svgDataUrl(p.text)} alt={output.title} />
+        </div>
+      )
+      break
+    case 'image':
+      body = <ImagePreview dataUrl={p.dataUrl} title={output.title} />
+      break
+    default:
+      body = (
+        <p className="output-preview-note" data-testid="output-preview-none">
+          {p.reason}
+        </p>
+      )
+  }
   return (
-    <div className="output-preview" data-testid="output-preview" data-kind="none">
-      <p className="output-preview-none" data-testid="output-preview-none">
-        Preview of {output.title} is not built yet.
-      </p>
+    <div className="output-preview" data-testid="output-preview" data-state="ready" data-kind={p.kind}>
+      {body}
     </div>
   )
 }
