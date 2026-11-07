@@ -11,6 +11,8 @@ export interface Zoom {
   scale: number
   /** The drawing's size at that scale in px, or null while its own size is unknown. */
   size: { w: number; h: number } | null
+  /** What the last user action said ("Zoom 125%"); empty until one happens. */
+  said: string
   setValue: (v: ZoomValue) => void
   step: (dir: 'in' | 'out') => void
   /** Ref callback for the focusable scroll region the drawing sits in. */
@@ -38,23 +40,34 @@ export function useZoom(natural: { w: number; h: number } | null): Zoom {
     ro.observe(region)
     return () => ro.disconnect()
   }, [region])
+  const [said, setSaid] = useState('')
   const scale = natural ? scaleOf(value, natural, box) : 1
+  // Only a user action speaks; a Fit that follows a resize stays silent.
+  const set = useCallback((v: ZoomValue) => {
+    setValue(v)
+    setSaid(v === 'fit' ? 'Fit to window' : `Zoom ${zoomPercent(v)}`)
+  }, [])
   const step = useCallback(
-    (dir: 'in' | 'out') => setValue((was) => stepZoom(natural ? scaleOf(was, natural, box) : 1, dir)),
-    [natural, box]
+    (dir: 'in' | 'out') => {
+      const next = stepZoom(natural ? scaleOf(value, natural, box) : 1, dir)
+      setValue(next)
+      setSaid(`Zoom ${zoomPercent(next)}`)
+    },
+    [natural, box, value]
   )
   const onKeyDown = (e: KeyboardEvent<HTMLElement>): void => {
     const act = zoomKeyAction(e)
     if (!act) return
     e.preventDefault()
-    if (act === 'actual') setValue(1)
+    if (act === 'actual') set(1)
     else step(act)
   }
   return {
     value,
     scale,
     size: natural ? { w: natural.w * scale, h: natural.h * scale } : null,
-    setValue,
+    said,
+    setValue: set,
     step,
     regionRef: setRegion,
     onKeyDown
@@ -66,16 +79,19 @@ export function ZoomBar({ zoom }: { zoom: Zoom }): ReactElement {
   const fit = zoom.value === 'fit'
   return (
     <div className="output-zoom" role="group" aria-label="Zoom" data-testid="output-mermaid-zoom" data-value={fit ? 'fit' : String(zoom.scale)}>
-      <IconButton icon={Minus} size="sm" label="Zoom out" testId="output-zoom-out" disabled={zoom.scale <= ZOOM_MIN} onClick={() => zoom.step('out')} />
+      <IconButton icon={Minus} size="sm" label="Zoom out" testId="output-zoom-out" inert={zoom.scale <= ZOOM_MIN} onClick={() => zoom.step('out')} />
       <Button size="sm" variant={fit ? 'secondary' : 'ghost'} testId="output-zoom-fit" ariaLabel="Fit to window" title="Fit the drawing to the preview" icon={Maximize} onClick={() => zoom.setValue('fit')}>
         Fit
       </Button>
       <Button size="sm" variant={!fit && zoom.scale === 1 ? 'secondary' : 'ghost'} testId="output-zoom-actual" ariaLabel="Actual size, 100 percent" onClick={() => zoom.setValue(1)}>
         100%
       </Button>
-      <IconButton icon={Plus} size="sm" label="Zoom in" testId="output-zoom-in" disabled={zoom.scale >= ZOOM_MAX} onClick={() => zoom.step('in')} />
-      <span className="output-quiet output-zoom-readout" data-testid="output-zoom-readout" role="status">
+      <IconButton icon={Plus} size="sm" label="Zoom in" testId="output-zoom-in" inert={zoom.scale >= ZOOM_MAX} onClick={() => zoom.step('in')} />
+      <span className="output-quiet output-zoom-readout" data-testid="output-zoom-readout">
         {zoomPercent(zoom.scale)}
+      </span>
+      <span className="sr-only" role="status" data-testid="output-zoom-status">
+        {zoom.said}
       </span>
     </div>
   )

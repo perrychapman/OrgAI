@@ -577,6 +577,18 @@ async function removeChecks(label) {
   check(await until(async () => (await page.locator('[data-testid=run-output-row]').count()) === 2), `${label}: Delete file drops the row on the run side tab`)
   const runNotice = page.locator('[data-testid=run-outputs] [data-testid=output-notice]')
   check(await until(async () => /Deleted Architecture diagram\./.test(clean(await runNotice.innerText())), 3000), `${label}: the run side tab says "Deleted Architecture diagram."`, clean(await runNotice.innerText()))
+  // Remove from inside the Larger view: the dialog closes, so the surface's own notice has to say it.
+  await page.locator('[data-testid=tab-outputs]').click()
+  await rows.first().waitFor({ timeout: 8000 })
+  await rows.first().click()
+  await page.locator('[data-testid=outputs-detail] [data-testid=output-detail-expand]').first().click()
+  const dlg = page.locator('[data-testid=output-dialog]')
+  await dlg.waitFor({ state: 'visible', timeout: 5000 })
+  await dlg.locator('[data-testid=output-more]').click()
+  await page.locator('[data-testid=output-forget]').click()
+  await page.locator('[data-testid=output-forget-confirm]').click()
+  await dlg.waitFor({ state: 'hidden', timeout: 5000 })
+  check(await until(async () => /^Removed .+ from the list\.$/.test(clean(await notice.innerText())), 3000), `${label}: a Remove from inside the Larger view is still announced in the surface's notice`, clean(await notice.innerText()))
 }
 
 try {

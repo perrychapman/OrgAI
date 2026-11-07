@@ -28,11 +28,11 @@ export interface OutputDetailProps {
   onNotice?: (text: string) => void
   /** Focus the heading on mount (the default). */
   autoFocus?: boolean
-  /** The run side tab's panel is narrower than the wide split: say once per session how to get more room. */
+  /** The run side tab's panel is narrower than the wide split: say once ever (a saved flag) how to get more room. */
   narrowHint?: boolean
 }
 
-/** localStorage flag: the narrow-panel hint was shown this session. */
+/** localStorage flag: the narrow-panel hint was shown once (it never comes back). */
 export const WIDE_HINT_KEY = 'orgai.outputsWideHint'
 export const WIDE_HINT_TEXT = 'Drag the panel edge or use Larger view'
 
@@ -153,7 +153,14 @@ export default function OutputDetail({ output, onRemoved, onNotice, autoFocus, n
       </div>
       {!missing && <OutputPreview output={output} labelledBy="output-detail-heading" />}
       {larger && (
-        <Dialog open onClose={() => setLarger(false)} title={showHidden(output.title)} size="lg" testId="output-dialog">
+        <Dialog
+          open
+          onClose={() => setLarger(false)}
+          title={showHidden(output.title)}
+          description={hasHidden(output.title) ? 'The title has hidden characters, shown written out.' : undefined}
+          size="lg"
+          testId="output-dialog"
+        >
           <div className="output-dialog-body">
             <p className="output-detail-meta" data-testid="output-dialog-meta">
               {outputMetaLine(output)}
@@ -166,7 +173,11 @@ export default function OutputDetail({ output, onRemoved, onNotice, autoFocus, n
               )}
               <OutputActions
                 output={output}
-                onNotice={(text) => setDialogNotice(text)}
+                onNotice={(text) => {
+                  // The dialog closes on a removal, so the surface's own region says it too.
+                  setDialogNotice(text)
+                  onNotice?.(text)
+                }}
                 onRemoved={(id) => {
                   setLarger(false)
                   onRemoved?.(id)

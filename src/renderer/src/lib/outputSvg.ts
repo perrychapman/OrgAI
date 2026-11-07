@@ -5,7 +5,7 @@
 export type SafeSvg = { ok: true; root: Element } | { ok: false; reason: string }
 
 /** Elements that run code, load other documents or animate attributes. Compared lowercase on the local name. */
-const BLOCKED_ELEMENTS = new Set(['script', 'foreignobject', 'iframe', 'object', 'embed', 'animate', 'set', 'animatetransform', 'animatemotion', 'handler', 'listener'])
+const BLOCKED_ELEMENTS = new Set(['script', 'foreignobject', 'iframe', 'object', 'embed', 'animate', 'set', 'animatetransform', 'animatemotion', 'handler', 'listener', 'a'])
 
 /** Drops whitespace and control characters browsers ignore inside a URL scheme ("java\tscript:"). */
 function squash(v: string): string {
@@ -20,7 +20,10 @@ function squash(v: string): string {
 
 /** A problem in an attribute value or style text, or null. `url(` may only point at a fragment (#id). */
 export function activeContentIn(text: string): string | null {
+  // A backslash is a CSS escape that can spell any of the words below; a drawing has no use for one.
+  if (text.includes('\\')) return 'an escaped character'
   const s = squash(text)
+  if (s.includes('image-set(') || /(^|[^a-z-])src\(/.test(s)) return 'an address that is not inside the drawing'
   if (s.includes('javascript:') || s.includes('vbscript:')) return 'a script address'
   if (s.includes('@import')) return 'a style import'
   if (s.includes('expression(')) return 'a style expression'
@@ -42,7 +45,7 @@ function defaultParse(s: string): Document {
 const SVG_NS = 'http://www.w3.org/2000/svg'
 
 /** Attributes that load a resource or submit something; a drawing has no use for them. */
-const BLOCKED_ATTRIBUTES = new Set(['src', 'srcset', 'action', 'formaction', 'data', 'poster'])
+const BLOCKED_ATTRIBUTES = new Set(['src', 'srcset', 'action', 'formaction', 'data', 'poster', 'tabindex'])
 
 /**
  * Checks the SVG text Mermaid produced and returns the checked root element. The caller inserts that tree with

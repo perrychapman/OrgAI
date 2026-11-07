@@ -71,7 +71,18 @@ describe('safeMermaidSvg, differences between XML and HTML parsing', () => {
     expect(check('<svg xmlns="http://example.com/other"/>').ok).toBe(false)
   })
   it('refuses resource and form attributes', () => {
-    for (const a of ['src="x"', 'srcset="x"', 'action="x"', 'formaction="x"', 'data="x"', 'poster="x"']) expect(check(wrap(`<rect ${a}/>`)).ok, a).toBe(false)
+    for (const a of ['src="x"', 'srcset="x"', 'action="x"', 'formaction="x"', 'data="x"', 'poster="x"', 'tabindex="0"', 'tabindex="-1"']) expect(check(wrap(`<rect ${a}/>`)).ok, a).toBe(false)
+  })
+  it('refuses links, even to a fragment', () => {
+    expect(check(wrap('<a href="#x"><text>x</text></a>')).ok).toBe(false)
+    expect(check(wrap('<a><text>x</text></a>')).ok).toBe(false)
+  })
+  it('refuses CSS escapes and other ways to name an address', () => {
+    expect(check(wrap('<style>.a{background:\\75rl(http://evil.example/x)}</style>')).ok).toBe(false)
+    expect(check(wrap('<rect style="fill:u\\72l(http://evil.example/x)"/>')).ok).toBe(false)
+    expect(check(wrap('<style>.a{background:image-set("http://evil.example/x.png" 1x)}</style>')).ok).toBe(false)
+    expect(check(wrap('<style>.a{background:src("http://evil.example/x.png")}</style>')).ok).toBe(false)
+    expect(check(wrap('<style>.a{background:image-set(url(#a) 1x)}</style>')).ok).toBe(false)
   })
 })
 
