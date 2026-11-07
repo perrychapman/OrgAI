@@ -256,6 +256,21 @@ describe('xlsx size caps (M2)', () => {
   })
 })
 
+describe('docx image content-type gate (L1)', () => {
+  it('blips at a non-image part are neither read nor charged, so a later real image still previews', async () => {
+    const one = (id: string): string =>
+      `<w:p><w:r><w:pict><v:imagedata xmlns:v="urn:schemas-microsoft-com:vml" xmlns:r="${DOC_REL}" r:id="${id}"/></w:pict></w:r></w:p>`
+    const relsXml = `<Relationships xmlns="${NS_REL}"><Relationship Id="rIdXml" Type="${DOC_REL}/hyperlink" Target="document.xml"/><Relationship Id="rIdImg" Type="${DOC_REL}/image" Target="media/image1.png"/></Relationships>`
+    const png = Buffer.concat([PNG_HEAD, randomBytes(2000)])
+    // 250 reads of the main part would exhaust the 200-read cap (and the byte budget) if they were charged.
+    const text = `${body(para('Start') + one('rIdXml').repeat(250) + one('rIdImg'))}<!--${randomBytes(600_000).toString('hex')}-->`
+    const buf = await miniDocx({ main: text, docRels: relsXml, extra: { 'word/media/image1.png': png } })
+    const r = await previewFile(f('gate.docx', buf), 'docx')
+    expect(r.kind).toBe('document')
+    if (r.kind === 'document') expect(r.blocks.filter((b) => b.type === 'image').length).toBe(1)
+  }, 60_000)
+})
+
 describe('zipGuard duplicate names ignore a leading slash', () => {
   it('"/a.xml" and "a.xml" are one name', async () => {
     const z = new JSZip()

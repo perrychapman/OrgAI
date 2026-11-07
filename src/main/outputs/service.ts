@@ -14,7 +14,26 @@ import { renderProduced } from './writers'
  * previews. Electron-free. Every refusal is an Error whose message is one plain sentence.
  */
 
-const NOT_LISTED = "That output is not in this project's list."
+/** Previews run on the main thread and one can hold hundreds of MB, so one runs at a time per process; later calls wait. */
+const PREVIEW_QUEUE_MAX = 8
+const PREVIEW_BUSY = 'Too many previews are loading. Try again in a moment.'
+let previewTail: Promise<unknown> = Promise.resolve()
+let previewsPending = 0
+
+function queuedPreview(path: string, kind: OutputKind): Promise<OutputPreview> {
+  if (previewsPending >= PREVIEW_QUEUE_MAX) return Promise.resolve({ kind: 'none', reason: PREVIEW_BUSY })
+  previewsPending++
+  const run = previewTail.then(() => previewFile(path, kind))
+  previewTail = run.then(
+    () => undefined,
+    () => undefined
+  )
+  return run.finally(() => {
+    previewsPending--
+  })
+}
+
+const NOT_LISTED ="That output is not in this project's list."
 
 function cleanTitle(raw: unknown): string {
   if (typeof raw !== 'string') throw new Error('The title must be text.')
@@ -203,7 +222,7 @@ export function createOutputsService(dataDir: string): OutputsServiceApi {
       } catch (err) {
         return { kind: 'none', reason: (err as Error).message }
       }
-      return previewFile(path, e.kind)
+      return queuedPreview(path, e.kind)
     },
 
     checkedPath,

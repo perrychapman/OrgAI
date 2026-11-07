@@ -1,9 +1,16 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { OutputPreview } from '@shared/types'
 import type { OutputsServiceApi, OutputScope } from './api'
 import { createOutputsService } from './service'
+
+const previewHook = vi.hoisted(() => ({ fn: undefined as undefined | ((...a: unknown[]) => Promise<unknown>) }))
+vi.mock('./preview', async (orig) => {
+  const real = await orig<typeof import('./preview')>()
+  return { ...real, previewFile: (...a: Parameters<typeof real.previewFile>) => (previewHook.fn ? previewHook.fn(...a) : real.previewFile(...a)) }
+})
 
 let root: string
 let project: string
@@ -284,5 +291,40 @@ describe('forget and delete', () => {
     expect(() => svc.delete(scope, 'out_0000000000000000')).toThrow(/not in this project/)
     expect(svc.list('nope')).toEqual([])
     expect(svc.list('../x')).toEqual([])
+  })
+})
+
+describe('preview queue (L2)', () => {
+  afterEach(() => {
+    previewHook.fn = undefined
+  })
+  it('runs previews one at a time, survives a rejection, and answers none past 8 pending', async () => {
+    const order: string[] = []
+    let n = 0
+    const gates: Array<() => void> = []
+    previewHook.fn = async (): Promise<OutputPreview> => {
+      const i = n++
+      order.push(`start${i}`)
+      if (i === 0) throw new Error('boom')
+      await new Promise<void>((res) => gates.push(res))
+      order.push(`end${i}`)
+      return { kind: 'none', reason: `ran ${i}` }
+    }
+    const o = (await svc.produce(scope, md('Q'), src)).output
+    const calls = Array.from({ length: 8 }, () => svc.preview(scope, o.id))
+    const ninth = await svc.preview(scope, o.id)
+    expect(ninth).toEqual({ kind: 'none', reason: 'Too many previews are loading. Try again in a moment.' })
+    const settled = calls.map((c) => c.then((v) => v, (e: Error) => `err:${e.message}`))
+    for (let i = 0; i < 7; i++) {
+      await vi.waitFor(() => expect(gates.length).toBe(i + 1))
+      expect(order.filter((x) => x.startsWith('start')).length).toBe(i + 2)
+      gates[i]()
+    }
+    const results = await Promise.all(settled)
+    expect(results[0]).toBe('err:boom')
+    expect(order.slice(0, 5)).toEqual(['start0', 'start1', 'end1', 'start2', 'end2'])
+    // the queue is free again
+    previewHook.fn = async () => ({ kind: 'none', reason: 'after' })
+    expect(await svc.preview(scope, o.id)).toEqual({ kind: 'none', reason: 'after' })
   })
 })

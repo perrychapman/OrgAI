@@ -215,6 +215,7 @@ export const DOCX_PREVIEW_MAX_XML_BYTES = 3 * 1024 * 1024
 /** Room for styles, numbering, theme, rels and content types next to the main part. */
 export const DOCX_XML_ALLOWANCE = 512 * 1024
 
+const DOCX_IMAGE_TYPES: ReadonlySet<string> = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp'])
 const DOCX_TOO_LARGE = 'This document is too large to preview here. Open it instead.'
 
 /** No single package entry above this is read by a preview (one read, one string, one buffer). */
@@ -291,6 +292,8 @@ export async function previewDocx(path: string, maxXmlBytes: number = DOCX_PREVI
     const convertImage = mammoth.images.imgElement(async (image) => {
       if (imageReads.count >= DOCX_PREVIEW_IMAGES_MAX) return noImage
       if (imageReads.bytes >= OUTPUT_PREVIEW_DOC_IMAGES_TOTAL_BYTES) return noImage
+      // htmlBlocks drops every other data URL, so a blip aimed at XML or an embedding is never read or charged.
+      if (!DOCX_IMAGE_TYPES.has(image.contentType)) return noImage
       imageReads.count++
       const data = await image.read('base64')
       const read = Math.ceil((data.length * 3) / 4)
