@@ -359,6 +359,53 @@ describe('readForAgent', () => {
   })
 })
 
+describe('heavy queue and thumb queue (M1, L7)', () => {
+  it('readForAgent waits behind a running heavy job and answers the busy sentence when 8 are pending', async () => {
+    const o = (await svc.produce(scope, md('Q'), src)).output
+    const gates: Array<() => void> = []
+    fmt.compare = async (): Promise<OutputDiff> => {
+      await new Promise<void>((res) => gates.push(res))
+      return { kind: 'none', reason: 'done' }
+    }
+    let textStarted = false
+    fmt.text = async () => {
+      textStarted = true
+      return { text: 'ok', truncated: false }
+    }
+    const held = Array.from({ length: 8 }, () => svc.compare(scope, { outputId: o.id, a: 1, b: 1 }))
+    await expect(svc.readForAgent(scope, { action: 'read', outputId: o.id })).rejects.toThrow('Too many previews are loading. Try again in a moment.')
+    expect(textStarted).toBe(false)
+    gates[0]()
+    await vi.waitFor(() => expect(gates.length).toBe(2))
+    // one slot is free again, but the new read still queues behind the 7 pending jobs
+    const read = svc.readForAgent(scope, { action: 'read', outputId: o.id })
+    await new Promise((r) => setTimeout(r, 20))
+    expect(textStarted).toBe(false)
+    for (let i = 1; i < 8; i++) {
+      await vi.waitFor(() => expect(gates.length).toBe(i + 1))
+      gates[i]()
+    }
+    expect(await read).toMatchObject({ action: 'read', text: 'ok' })
+    expect(textStarted).toBe(true)
+    await Promise.all(held)
+  })
+  it('thumb answers none past 50 waiting', async () => {
+    const o = (await svc.produce(scope, md('T'), src)).output
+    const gates: Array<() => void> = []
+    fmt.thumb = async (): Promise<OutputThumb> => {
+      await new Promise<void>((res) => gates.push(res))
+      return { kind: 'lines', lines: ['x'] }
+    }
+    const calls = Array.from({ length: 52 }, () => svc.thumb(scope, o.id, 1))
+    expect(await svc.thumb(scope, o.id, 1)).toEqual({ kind: 'none' })
+    for (let i = 0; i < 52; i++) {
+      await vi.waitFor(() => expect(gates.length).toBeGreaterThan(i))
+      gates[i]()
+    }
+    expect((await Promise.all(calls)).every((c) => c.kind === 'lines')).toBe(true)
+  })
+})
+
 describe('older version previews, thumbs and compare', () => {
   it('previews an older version from its snapshot and says so when it is gone', async () => {
     const a = (await svc.produce(scope, md('Doc'), src)).output
