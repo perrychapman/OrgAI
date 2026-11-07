@@ -952,3 +952,34 @@ B's `SetupGaps` uses C's project queue for `mcp.list`; C exports `enqueueProject
 stays in `HeroBand` (B); A and C announce through the `onAnnounce` prop DashboardView already passes. Token additions
 (section 15) go in with the shell. A UX walk on mock data at both sizes and themes follows the merge, then the
 Reviewer pass for the inline answers.
+
+## 21. Implementation notes (after the first look and the Reviewer, 2026-11-07)
+
+These change the sections above; where they differ, this section wins.
+
+- 5.2 inline Allow (Reviewer H1-H3, M1-M3): what Allow once approves is shown whole on the row and in the buttons'
+  accessible names, never a cut.
+  - Shell: as written, plus no runs of 2+ spaces and no tab. The command renders unclamped when it can be allowed. The
+    2-line clamp stays only for rows that open the card.
+  - File tools: offered only when the PermissionCard's `permissionLocation` kind is project, worktree, allowed or
+    reference. The context is the same as the card's: project path, allowed and reference folders, the agent's worktree
+    path, and `referenceLocation` for a `referenceFolder`. The path must be at most 200 characters.
+    - The row adds the card's location line (`dash-needs-where`, warning text when the location needs attention).
+    - The folder caption wraps whole, left to right (`<bdi dir=ltr>`, no rtl start-ellipsis).
+    - Names carry the full path.
+  - Other tools: only WebFetch (`input.url`) and WebSearch (`input.query`), at most 200 characters, with no hidden
+    characters or line breaks, shown whole in mono. MCP tools, Agent and unknown tools are `data-inline=none`, because
+    main's summary leaves their arguments out.
+  - Buttons use `aria-disabled`, not `disabled`, so a pressed button keeps focus. After a successful send the row stays
+    locked until its `*.resolved` event removes it, so a second press never answers twice. The option group is named
+    "Answer: {question}".
+- 7.2: "Waited on you" and the readout's waited part show from 1 second up. A sub-second wait read "0s".
+- 8: mock-provider projects use no connection. Under the mock adapter the default connection does not count, so a
+  machine with no Claude login (CI) does not get "Anthropic is not connected." on a mock-only Dashboard.
+- 2.1: in two tracks the work area has no row gap. Areas below the first row space themselves with a top margin, so a
+  region that renders nothing leaves no hole. Before this, each empty named row kept a 16 px gap: 64 px under "Nothing
+  needs you." with the band empty.
+- 4: measured against the real status bar it is 36 px at 1024x640 (the under-600 px-height rule) and 40 px at
+  1600x1000. The earlier 98 px reading was the placeholder. The e2e keeps its 88 px ceiling.
+- 10.1: the tile cost hides a reported $0 and spells an unknown cost "Cost unknown". The tile's Open button is pinned
+  to the title width, so a long name ellipsises before More instead of running under it.

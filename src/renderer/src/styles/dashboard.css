@@ -57,6 +57,16 @@
       'paused now'
       'ended  now';
     grid-template-rows: repeat(4, auto) 1fr;
+    /* A named row whose region renders nothing still has its gaps, so a quiet left column opened 16 px holes per
+       empty row. Rows carry no gap; every area below the first row spaces itself with a top margin instead (an empty
+       area is display: none, so it adds nothing). */
+    row-gap: 0;
+  }
+  .dash-area-strip,
+  .dash-area-setup,
+  .dash-area-paused,
+  .dash-area-ended {
+    margin-block-start: var(--space-4);
   }
   .dash-area-needs {
     grid-area: needs;
@@ -100,11 +110,6 @@
 
 /* ---------- Attention column ---------- */
 
-.dash-attention {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-5);
-}
 .dash-section {
   display: flex;
   flex-direction: column;
@@ -214,9 +219,6 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.dash-row-needs .dash-row-line {
-  display: block;
-}
 .dash-status {
   flex: none;
   font-weight: var(--weight-semibold);
@@ -293,7 +295,12 @@
   font-size: var(--text-caption);
   color: var(--text-secondary);
 }
-.dash-needs-code,
+/* Clamped only when the row cannot be allowed here: a command that can be allowed is shown whole (review H1). */
+.dash-needs-code {
+  display: block;
+  overflow-wrap: anywhere;
+}
+.dash-needs-code[data-clamp],
 .dash-needs-question {
   display: -webkit-box;
   -webkit-box-orient: vertical;
@@ -312,11 +319,30 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* What an inline Allow approves (a URL or query) is shown whole. */
+.dash-needs-object[data-whole] {
+  overflow: visible;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: var(--text-mono);
+}
 .dash-needs-file {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
-  gap: var(--space-1);
+  column-gap: var(--space-1);
   min-width: 0;
+}
+/* The file name and the location line wrap whole: they say what Allow once approves (re-check Lows). */
+.dash-needs-row .dash-needs-filename,
+.dash-needs-row .dash-needs-where {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+}
+.dash-needs-where[data-attention] {
+  color: var(--warning-text);
 }
 .dash-needs-filename {
   flex: none;
@@ -326,15 +352,13 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* The whole folder, left to right, wrapping (review H2: an rtl start-ellipsis cut the root and moved slashes). */
 .dash-needs-folder {
   min-width: 0;
   font-size: var(--text-caption);
   color: var(--text-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  direction: rtl;
-  text-align: left;
+  overflow-wrap: anywhere;
+  unicode-bidi: isolate;
 }
 .dash-needs-reference {
   display: flex;
@@ -405,26 +429,16 @@
   box-shadow: var(--halo-dot-live);
 }
 
-/* Running: a 2 px edge in the working colour, and the working glow on a Running row. */
-.dash-row-running {
-  border-left: 2px solid var(--state-working);
-  --role: var(--state-working);
-}
-.dash-row-running[data-status='Running'] {
-  box-shadow: var(--glow-working);
-}
 .dash-row-since[data-status='Failed'] {
   border-left: 2px solid var(--state-error);
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .dash-dot[data-live='true'],
-  .dash-row-running[data-status='Running'] {
+  .dash-dot[data-live='true'] {
     box-shadow: none;
   }
 }
-:root[data-reduce-motion='on'] .dash-dot[data-live='true'],
-:root[data-reduce-motion='on'] .dash-row-running[data-status='Running'] {
+:root[data-reduce-motion='on'] .dash-dot[data-live='true'] {
   box-shadow: none;
 }
 

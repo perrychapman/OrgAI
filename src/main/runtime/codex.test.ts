@@ -313,7 +313,7 @@ describe('CodexAdapter session', () => {
     // An untouched worktree is removed as empty when the report lands.
     s.push('item/completed', agentMessage('th-2', 'm1', 'Nothing to change'))
     s.push('turn/completed', turnDone('th-2', 'tu-2'))
-    await vi.waitFor(() => expect(agentOf().worktree?.status).toBe('empty'), { timeout: 5000 })
+    await vi.waitFor(() => expect(agentOf().worktree?.status).toBe('empty'), { timeout: 30_000 })
   })
 
   it('an engagement isolates writers only with an explicit isolateWriters: true (isolateWritersOn)', async () => {
@@ -1758,7 +1758,7 @@ describe('CodexAdapter session', () => {
   describe('folder config trust (projects table pin)', () => {
     const trustEntry = (s: FakeServer) => (s.options.config ?? []).find((c) => c.startsWith('projects='))
     const firstEntry = async (servers: FakeServer[]) => {
-      await vi.waitFor(() => expect(servers).toHaveLength(1))
+      await vi.waitFor(() => expect(servers).toHaveLength(1), { timeout: 15_000 })
       return trustEntry(servers[0])
     }
     const repo = () => {

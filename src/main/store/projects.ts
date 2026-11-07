@@ -3,7 +3,7 @@ import { basename, dirname, isAbsolute, join, posix, win32, type PlatformPath } 
 import type { AppSettings, ConnectionId, Project, ProjectCreateInput, ProjectPathCheck, Role } from '@shared/types'
 import { hiddenCharIn } from '../capabilities/sanitize'
 import { HARNESS_PROJECT_ID, PROJECT_CLIENT_MAX_CHARS, PROJECT_ALLOWED_DIRECTORIES_MAX, PROJECT_ALLOWED_DIRECTORY_MAX_CHARS, isModelTier, isProjectKind, isVirtualProjectId } from '@shared/types'
-import { isSafeId, modelForTier, newProject, preferEverydayNearLimit, projectConnection, storedSkillEvaluation, teamReviewOf, type TierContext } from '@shared/defaults'
+import { isConnectionId, isSafeId, modelForTier, newProject, preferEverydayNearLimit, projectConnection, storedSkillEvaluation, teamReviewOf, type TierContext } from '@shared/defaults'
 import { migrateProject } from '../connections/remap'
 import { validModelId } from '../connections/codexAccount'
 import { isInsideEither, pathKey, samePath } from '../quick/scratch'
@@ -38,6 +38,12 @@ export function sanitizeRoleModels(
   if (!project || !Array.isArray(project.roles)) return { project, changed: false }
   let changed = false
   const roles = project.roles.map((role): Role => {
+    // Role.connection stays as saved when it names a connection id; anything else is dropped (never resolved or filled).
+    if (role && typeof role === 'object' && Object.hasOwn(role, 'connection') && !(typeof role.connection === 'string' && isConnectionId(role.connection))) {
+      const { connection: _drop, ...rest } = role
+      role = rest as Role
+      changed = true
+    }
     if (!role || typeof role !== 'object' || acceptableRoleModel(role.model)) return role
     changed = true
     let connection: ConnectionId = 'anthropic'

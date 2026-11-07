@@ -33,6 +33,16 @@ function base() {
 }
 
 describe('mergeOrgChart', () => {
+  it('a matched role takes the proposed connection, and loses a stored one the proposal leaves out', () => {
+    const p = base()
+    p.roles[1] = { ...p.roles[1], connection: 'openai' }
+    const lead = role('n1', 'Lead', { canSpawn: true, spawnable: ['n2'] })
+    const kept = mergeOrgChart(p, [lead, role('n2', 'Engineer', { reportsTo: 'n1', connection: 'proxy-0000abcd' })])
+    expect(kept.roles.find((r) => r.id === 'r-eng')?.connection).toBe('proxy-0000abcd')
+    const dropped = mergeOrgChart(p, [lead, role('n2', 'Engineer', { reportsTo: 'n1' })])
+    expect(dropped.roles.find((r) => r.id === 'r-eng')).not.toHaveProperty('connection')
+  })
+
   it('keeps ids, slugs, colours, effort and grants of matched roles and takes the proposal fields', () => {
     const p = base()
     const proposed = [

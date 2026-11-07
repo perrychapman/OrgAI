@@ -3,8 +3,7 @@ import { useEffect, useMemo, useState } from 'react'
 import type { ConnectorInfo, McpLibraryInfo, McpServerInfo } from '@shared/types'
 import { useAppStore } from '../../store/useAppStore'
 import { APP_SETTINGS_PANES, requestAppSettingsSection, requestConnector } from '../../lib/settingsTarget'
-import { connectionRow, libraryRows, orderSetupRows, projectServerRows, projectsWithOwnServers, type SetupRow, type SetupTarget } from '../../lib/setupGaps'
-import { connectionsInUse } from '../../lib/usage'
+import { connectionRow, connectionsNeeded, libraryRows, orderSetupRows, projectServerRows, projectsWithOwnServers, type SetupRow, type SetupTarget } from '../../lib/setupGaps'
 import { Button } from '../ui/Button'
 import { AttentionSection } from './AttentionSection'
 import type { DashCaps } from './dashCaps'
@@ -21,6 +20,7 @@ export function SetupGaps({ caps }: { caps: DashCaps }): ReactElement | null {
   const connections = useAppStore((s) => s.connections)
   const defaultConnection = useAppStore((s) => s.defaultConnection)
   const projects = useAppStore((s) => s.projects)
+  const mockAdapter = useAppStore((s) => s.appInfo?.mockAdapter)
   const [library, setLibrary] = useState<McpLibraryInfo[]>([])
   const [connectors, setConnectors] = useState<ConnectorInfo[]>([])
   const [serverRows, setServerRows] = useState<Record<string, SetupRow[]>>({})
@@ -48,10 +48,12 @@ export function SetupGaps({ caps }: { caps: DashCaps }): ReactElement | null {
   }, [])
 
   // A connection that connected, disconnected or was added changes what the library can sign in to.
+  // Keyed on ids, states and enabled flags, so a status refresh that changes nothing does not refetch (review L2).
+  const connectionsKey = (connections ?? []).map((c) => `${c.connection.id}:${c.status.state}:${c.connection.enabled === false ? 0 : 1}`).join('|')
   useEffect(() => {
     if (loaded) loadLibrary()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connections])
+  }, [connectionsKey])
 
   // Each project with servers of its own: one mcp.list per project per session, through the shared queue.
   const wanted = useMemo(() => projectsWithOwnServers(projects), [projects])
@@ -74,16 +76,16 @@ export function SetupGaps({ caps }: { caps: DashCaps }): ReactElement | null {
   }, [loaded, wantedKey])
 
   const rows = useMemo<SetupRow[]>(() => {
-    const inUse = connectionsInUse(connections, defaultConnection, projects)
+    const needed = connectionsNeeded(connections, defaultConnection, projects, !!mockAdapter)
     const projectIds = new Set(projects.map((p) => p.id))
     return orderSetupRows([
-      ...connectionProblems(connections, inUse, projects).map(connectionRow),
+      ...connectionProblems(connections, needed.inUse, needed.projects).map(connectionRow),
       ...libraryRows(library, connectors),
       ...Object.entries(serverRows)
         .filter(([id]) => projectIds.has(id))
         .flatMap(([, r]) => r)
     ])
-  }, [connections, defaultConnection, projects, library, connectors, serverRows])
+  }, [connections, defaultConnection, projects, mockAdapter, library, connectors, serverRows])
 
   const setView = useAppStore((s) => s.setView)
   const openMcpLibrary = useAppStore((s) => s.openMcpLibrary)

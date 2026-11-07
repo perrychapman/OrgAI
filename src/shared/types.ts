@@ -417,11 +417,41 @@ export interface AdapterChoice {
   /** Family of the root role's model, when it is known. */
   family?: ModelFamily
   /**
-   * Ids of roles whose model family differs from the adapter's. Informational on 'litellm' (show it as a notice);
-   * a work run is refused only per mixedFamilyRefusal: on LiteLLM when the root has no family, and on the
+   * Ids of roles ON THE ROOT'S CONNECTION whose model family differs from the adapter's (roles on another connection
+   * are never listed here). Informational on a proxy (those roles are also in `bridged`, since they need the other
+   * adapter); a work run is refused only per mixedFamilyRefusal: on a proxy when the root has no family, and on the
    * single-family connections (anthropic, openai), where their catalogs make it unreachable.
    */
   mismatched: string[]
+  /**
+   * Bridged reports (multi-provider org charts): non-root roles whose (connection, adapter) differs from the root's
+   * (adapter, connection): a role with its own Role.connection, or a role on the root's proxy whose model family needs
+   * the other adapter. Each runs in a child session the harness starts (runtime/bridge.ts) with its own RunConnection.
+   * adapterForProject always fills it (empty = every role is native); optional so older constructors stay valid
+   * (missing = none). Mock projects: a role whose connection differs from the project's is bridged on 'mock'.
+   */
+  bridged?: BridgedRoleChoice[]
+}
+
+/** AdapterChoice.bridged entry: one role that runs in its own child session. */
+export interface BridgedRoleChoice {
+  roleId: string
+  connection: ConnectionId
+  adapter: ProviderId
+}
+
+/**
+ * defaults.ts roleConnectionProblems entry: a non-root role whose connection cannot run it. 'unknown': the id names no
+ * connection (a removed proxy); 'not-configured': connectionConfigured is false (turned off, no key or base URL);
+ * 'disconnected': the live status (when the caller passes statuses) is definitely 'disconnected'. `message` is one
+ * readable sentence naming the role and the connection, for the UI and the work-run refusal.
+ */
+export interface RoleConnectionProblem {
+  roleId: string
+  roleName: string
+  connection: ConnectionId
+  problem: 'unknown' | 'not-configured' | 'disconnected'
+  message: string
 }
 
 /** Push events on the connections:event channel (main -> renderer). */
@@ -542,6 +572,17 @@ export interface Role {
    * Codex and mock: list_skills / load_skill answer only with the caller's grants).
    */
   skills?: string[]
+  /**
+   * Multi-provider org charts (bridged reports): the connection this role's agents run on. Missing = the project's
+   * connection. Read ONLY through defaults.ts `roleConnection(role, project)`, which ignores it on the root (the root
+   * always runs on the project's connection, Project.provider.connection) and on mock projects' root. The role's
+   * model / tier resolves against THIS connection's tierModels and catalog. A role whose (connection, adapter) differs
+   * from the root's is a bridged report (AdapterChoice.bridged): it runs in its own child session started by the
+   * harness (delegate_agent), never through the root's native spawn tool. Stored as saved when it passes
+   * `isConnectionId` (a built-in id or a proxy id shape; a removed proxy's id is kept and reported by
+   * roleConnectionProblems); anything else is dropped on read and save. Never filled or resolved by a store.
+   */
+  connection?: ConnectionId
 }
 
 /**
@@ -1742,6 +1783,19 @@ export const RUN_PEER_PROMPT_CHARS = 120
 /** RunSummary.title and the run.title event: at most this many characters (cut on a word boundary with …). */
 export const RUN_TITLE_MAX_CHARS = 32
 
+// ---------- Multi-provider org charts (bridged reports) ----------
+
+/**
+ * delegate_agent (audience 'spawners', blocking, work runs whose chart has bridged roles only): start a bridged
+ * report (a role on another connection or adapter, AdapterChoice.bridged) in its own child session and return its
+ * final text as fenced data. Codex hands bridged roles to the same child path from spawn_agent.
+ */
+export const BRIDGE_HARNESS_TOOLS = { delegate: 'delegate_agent' } as const
+/** delegate_agent brief: at most this many characters (longer is refused, never cut). */
+export const BRIDGE_BRIEF_MAX_CHARS = 32_000
+/** A bridged report's final text handed back to its parent: cut to this many characters with a note. */
+export const BRIDGE_RESULT_MAX_CHARS = 16_000
+
 // ---------- App settings (global) ----------
 
 /** 'system' follows the OS (Electron nativeTheme); the renderer resolves it with matchMedia('(prefers-color-scheme: dark)'). */
@@ -2400,6 +2454,12 @@ export interface RunUsage {
   skills?: SkillUseCount[]
   /** Knowledge graph reads served to agents (knowledge_recall and auto context). Missing = none (or an older run). */
   knowledge?: KnowledgeServedUsage
+  /**
+   * Multi-provider runs only (at least one agent with AgentInstance.connection other than the run's): cost and agent
+   * count per connection, each agent priced with its own connection's pricing. costUsd null = unknown (never $0).
+   * Missing = every agent ran on the run's connection.
+   */
+  connections?: Partial<Record<ConnectionId, { costUsd: number | null; agents: number }>>
   updatedAt: number
 }
 
@@ -2542,6 +2602,12 @@ export interface AgentInstance {
   worktree?: WorktreeInfo
   /** Name other agents use to address it (SendMessage), e.g. "implementer-2". */
   handle?: string
+  /**
+   * The connection this agent ran on. Set by RunManager on every agent.upsert (adapter values are replaced): the
+   * root and native reports get the run's connection (RunSummary.connection), a bridged report and the agents of its
+   * child session get the bridged role's connection. Missing on older records (= the run's connection).
+   */
+  connection?: ConnectionId
 }
 
 /** One agent-to-agent message (SendMessage), as drawn on the live canvas. */

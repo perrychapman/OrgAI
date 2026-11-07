@@ -140,7 +140,7 @@ describe('projectConnection and adapterForProject', () => {
       { ...c, model: 'inherit' }
     ]
     const choice = adapterForProject({ provider: { ...p.provider, connection: 'litellm' }, roles }, catalog)
-    expect(choice).toEqual({ adapter: 'codex', connection: 'litellm', family: 'openai', mismatched: [b.id] })
+    expect(choice).toEqual({ adapter: 'codex', connection: 'litellm', family: 'openai', mismatched: [b.id], bridged: [{ roleId: b.id, connection: 'litellm', adapter: 'claude' }] })
     const claudeRoot = adapterForProject({ provider: { ...p.provider, connection: 'litellm' }, roles: [{ ...root, model: 'team-claude' }] }, catalog)
     expect(claudeRoot.adapter).toBe('claude')
     // A mixed chart on LiteLLM is informational: the root's family picked the adapter, the run may start.

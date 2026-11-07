@@ -30,6 +30,9 @@ import { SHELL_TOOLS, isFreeCdTarget, matchOptionsFor, matchingRule, type MatchO
 import { countUsage, setModelTokens, usageOf } from './runUsage'
 import { cliProjectSettings, projectSettingsLoad } from './claude'
 import { APP_REFERENCE_TOOL, OPEN_IN_APP_TOOL, PROPOSE_APP_SETTINGS_TOOL, PROPOSE_PROJECT_SETTINGS_TOOL } from '@shared/types'
+import { bridgedRolesOf, bridgedSpawnDenial } from './claude'
+import { BRIDGE_HARNESS_TOOLS } from '@shared/types'
+import { buildRolePrompt } from './prompts'
 
 /**
  * A scripted, token-free provider. It plays a script of steps and emits the same normalized RunEvents a
@@ -155,6 +158,8 @@ export type MockStep =
       echo?: string
       /** After the call, the root says `then` when the answer contains `contains`, else `else`. */
       echoIf?: { contains: string; then: string; else: string }
+      /** After the call, the root says the answer's first non-empty line, or this text when it has none. */
+      echoFirstLine?: string
     }
   /**
    * engagement_knowledge from the root: `get` the entity `node` (a name), find the id of its live fact whose text is
@@ -846,6 +851,26 @@ export function knowledgeFactId(result: string, text: string): string | undefine
   return undefined
 }
 
+export const BRIDGED_TOKEN = '[mock:bridged]'
+/** The brief the [mock:bridged] root hands its first bridged report. */
+export const MOCK_BRIDGED_BRIEF = 'Mock bridged brief.'
+/** The root's sentence when [mock:bridged] is set but the run has no bridged report (no ctx.bridge or no bridged roles). */
+export const MOCK_BRIDGED_NONE = 'No bridged report in this run.'
+/** The root's sentence after delegate_agent answered nothing. */
+export const MOCK_BRIDGED_DONE = 'Mock delegation done.'
+/** What the root of a bridged child session (ctx.bridgedChild) says before it goes idle. */
+export const MOCK_BRIDGED_CHILD_TEXT = 'Mock bridged report done.'
+
+/**
+ * The [mock:bridged] turn (work runs, default script): delegate_agent through the real harness tool for `slug` (the
+ * first bridged role), say the result's first line, then the default script. Without a bridged role: one sentence,
+ * then the default script.
+ */
+export function bridgedSteps(slug: string | undefined, rest: MockStep[]): MockStep[] {
+  if (!slug) return [{ type: 'text', text: MOCK_BRIDGED_NONE }, ...rest]
+  return [{ type: 'harness', name: BRIDGE_HARNESS_TOOLS.delegate, retryOnRevise: false, args: { role: slug, brief: MOCK_BRIDGED_BRIEF }, echoFirstLine: MOCK_BRIDGED_DONE }, ...rest]
+}
+
 export const CONFIG_CHANGE_TOKEN = '[mock:config-change]'
 /** The server and the skill the [mock:config-change] script proposes. */
 export const MOCK_CONFIG_SERVER = 'mock-notes'
@@ -1325,6 +1350,8 @@ export class MockSession implements RuntimeSession {
    * (ORGAI_MOCK_SCRIPT or MockAdapterOptions.script) runs exactly as written.
    */
   private firstTurnSteps(): MockStep[] {
+    const bridged = this.bridgedTurnSteps()
+    if (bridged) return bridged
     const library = this.ctx.mcpLibrary?.() ?? []
     if (this.ctx.run.kind === 'mcp-assist') {
       const steps = this.script.mcpAssist
@@ -1417,6 +1444,50 @@ export class MockSession implements RuntimeSession {
     return this.isSetup ? this.script.setup : this.script.work
   }
 
+  /**
+   * Bridged reports (work runs, default script), or null. A bridged child session's root (ctx.bridgedChild) says
+   * MOCK_BRIDGED_CHILD_TEXT and its turn ends (idle; never nudged, autoContinue is false). [mock:bridged] on a parent
+   * run: bridgedSteps for the first bridged role, then the default script.
+   */
+  private bridgedTurnSteps(): MockStep[] | null {
+    if (this.isSetup || this.ctx.run.kind !== 'work' || this.ctx.run.quick || this.script.work !== DEFAULT_WORK) return null
+    if (this.ctx.bridgedChild) return [{ type: 'text', text: MOCK_BRIDGED_CHILD_TEXT }]
+    if (!this.ctx.prompt.includes(BRIDGED_TOKEN)) return null
+    const first = bridgedRolesOf(this.ctx)[0]
+    const available = !!first && this.tools.some((t) => t.name === BRIDGE_HARNESS_TOOLS.delegate)
+    if (!available) this.log('info', 'Mock [mock:bridged]: this run has no bridged report, so the delegation step is skipped.')
+    return bridgedSteps(available ? first.slug : undefined, DEFAULT_WORK)
+  }
+
+  /**
+   * The system prompt a real adapter would give `role` in this session (buildRolePrompt with the run's flags, bridged
+   * marks included: bridgeVia 'delegate_agent' like Claude). For tests; the mock sends no prompts.
+   */
+  rolePromptFor(role: Role): string {
+    const bridgedRoles = bridgedRolesOf(this.ctx)
+    return buildRolePrompt(role, this.ctx.roles, this.ctx.project, {
+      isSetup: this.isSetup,
+      isolation: false,
+      ...(this.ctx.run.quick ? { quick: this.ctx.run.quick } : {}),
+      ...(this.ctx.run.team ? { team: this.ctx.run.team } : {}),
+      ...(bridgedRoles.length ? { bridgedRoles, bridgeVia: 'delegate_agent' as const } : {}),
+      ...(this.ctx.bridgedChild ? { bridged: true } : {})
+    })
+  }
+
+  /** Spawn step ids whose native spawn was refused (a bridged role); their later steps are skipped. */
+  private deniedSpawns = new Set<string>()
+
+  /** True for a step played by, spawned under or finishing an agent whose spawn was refused. */
+  private stepOfDeniedSpawn(step: MockStep): boolean {
+    const ids: (string | undefined)[] = []
+    if ('agent' in step) ids.push(step.agent)
+    if (step.type === 'spawn') ids.push(step.parent)
+    if (step.type === 'finish') ids.push(step.id)
+    if (step.type === 'message') ids.push(step.from)
+    return ids.some((id) => id !== undefined && this.deniedSpawns.has(id))
+  }
+
   /** The headless exec markers' first turn (work runs, default script), or null. */
   private execMarkerSteps(): MockStep[] | null {
     if (this.isSetup || this.ctx.run.kind !== 'work' || this.ctx.run.quick || this.script.work !== DEFAULT_WORK) return null
@@ -1497,6 +1568,7 @@ export class MockSession implements RuntimeSession {
   }
 
   private async step(step: MockStep): Promise<void> {
+    if (this.deniedSpawns.size && this.stepOfDeniedSpawn(step)) return
     switch (step.type) {
       case 'text': {
         const agentId = step.agent ?? ROOT_AGENT_ID
@@ -1549,6 +1621,10 @@ export class MockSession implements RuntimeSession {
         }
         if (step.echoIf && result !== undefined && !this.stopped && !this.interrupted) {
           await this.step({ type: 'text', text: result.includes(step.echoIf.contains) ? step.echoIf.then : step.echoIf.else })
+        }
+        if (step.echoFirstLine !== undefined && !this.stopped && !this.interrupted) {
+          const line = (result ?? '').split(/\r?\n/).map((l) => l.trim()).find(Boolean)
+          await this.step({ type: 'text', text: line ?? step.echoFirstLine })
         }
         return
       }
@@ -1921,6 +1997,10 @@ export class MockSession implements RuntimeSession {
   /** The first role `parent` may spawn, else the first non-root role, else `fallback` (default: the root's slug). */
   private firstSpawnableSlug(parent: Role | undefined, fallback?: string): string {
     const allowed = parent ? this.ctx.roles.filter((r) => parent.spawnable.includes(r.id)) : []
+    // A bridged role is never spawned natively (delegate_agent only); prefer a native one when there is one.
+    const bridged = new Set(bridgedRolesOf(this.ctx).map((b) => b.roleId))
+    const native = allowed.find((r) => !bridged.has(r.id))
+    if (native) return native.slug
     return allowed[0]?.slug ?? fallback ?? this.ctx.roles.find((r) => r.reportsTo !== null)?.slug ?? this.root.slug
   }
 
@@ -1934,6 +2014,14 @@ export class MockSession implements RuntimeSession {
     const toolUseId = newId('tu')
     this.transcript(parentId, { kind: 'tool_use', id: toolUseId, name: SPAWN_TOOL, input })
     countUsage(parent, 'toolCalls')
+    // Like Claude's PreToolUse: a bridged role is never spawned natively. The step's later steps are skipped.
+    const bridgedDenial = bridgedSpawnDenial(this.ctx, slug)
+    if (bridgedDenial) {
+      this.log('warn', `Blocked spawn: ${parent.roleSlug} -> ${slug} (bridged role)`)
+      this.transcript(parentId, { kind: 'tool_result', toolUseId, content: bridgedDenial, isError: true })
+      this.deniedSpawns.add(step.id)
+      return
+    }
     this.setState(parentId, 'delegating', describeTool(SPAWN_TOOL, input))
     this.spawnToolUse.set(step.id, toolUseId)
     if (!this.agents.has(step.id)) this.noteActivity('subagent')

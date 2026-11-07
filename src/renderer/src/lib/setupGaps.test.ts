@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import type { ConnectorInfo, McpLibraryInfo, McpServerInfo } from '@shared/types'
+import type { ConnectionInfo, ConnectorInfo, McpLibraryInfo, McpServerInfo, Project } from '@shared/types'
 import { CONNECTORS } from '@shared/connectors'
-import { connectionRow, libraryRows, orderSetupRows, projectServerRows, projectsWithOwnServers, usedByCaption } from './setupGaps'
+import { connectionRow, connectionsNeeded,libraryRows, orderSetupRows, projectServerRows, projectsWithOwnServers, usedByCaption } from './setupGaps'
 
 const used = (...names: string[]): McpLibraryInfo['usedBy'] => names.map((n, i) => ({ projectId: `p${i}`, projectName: n }))
 
@@ -142,5 +142,20 @@ describe('connectionRow and ordering', () => {
     const r = (kind: Parameters<typeof orderSetupRows>[0][number]['kind'], line: string): Parameters<typeof orderSetupRows>[0][number] => ({ kind, id: `${kind}-${line}`, line, action: 'x', target: { type: 'connections' } })
     const out = orderSetupRows([r('connector', 'a'), r('project-server', 'a'), r('service', 'b'), r('connection', 'z'), r('project-value', 'a'), r('service', 'A')])
     expect(out.map((x) => `${x.kind}:${x.line}`)).toEqual(['connection:z', 'service:A', 'service:b', 'project-value:a', 'project-server:a', 'connector:a'])
+  })
+})
+
+describe('connectionsNeeded', () => {
+  const conn = (id: string): Pick<ConnectionInfo, 'connection'> => ({ connection: { id, enabled: true } }) as unknown as Pick<ConnectionInfo, 'connection'>
+  const proj = (id: string, provider: string): Project => ({ id, provider: { id: provider }, roles: [] }) as unknown as Project
+  it('a mock-only Dashboard under the mock adapter needs no connection (CI has no Claude login)', () => {
+    const out = connectionsNeeded([conn('anthropic'), conn('openai')], 'anthropic', [proj('a', 'mock'), proj('b', 'mock')], true)
+    expect([...out.inUse]).toEqual([])
+    expect(out.projects).toEqual([])
+  })
+  it('outside the mock adapter the default connection still counts, and mock projects never do', () => {
+    const out = connectionsNeeded([conn('anthropic'), conn('openai')], 'anthropic', [proj('a', 'mock')], false)
+    expect(out.inUse.has('anthropic')).toBe(true)
+    expect(out.projects).toEqual([])
   })
 })

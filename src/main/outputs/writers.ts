@@ -105,6 +105,12 @@ function decodeEntities(s: string): string {
   })
 }
 
+/** True when the innermost open element's local name (prefix dropped, lowercased) is `style`. */
+function inStyle(stack: string[]): boolean {
+  const top = stack[stack.length - 1]
+  return top !== undefined && top.slice(top.lastIndexOf(':') + 1).toLowerCase() === 'style'
+}
+
 /** CSS-ish text (style element or attribute value): no @import, no escapes, url() only to a fragment. */
 function cssProblem(raw: string): string | null {
   const s = decodeEntities(raw)
@@ -152,7 +158,7 @@ export function svgProblem(raw: string): string | null {
       if (entityProblem(between)) return 'The SVG uses an entity that is not defined (only &amp; &lt; &gt; &quot; &apos; and numbers).'
       if (between.trim()) {
         if (!sawRoot || rootClosed) return 'The SVG has text outside its <svg> element.'
-        if (stack[stack.length - 1] === 'style') {
+        if (inStyle(stack)) {
           const p = cssProblem(between)
           if (p) return p
         }
@@ -172,7 +178,7 @@ export function svgProblem(raw: string): string | null {
       const e = text.indexOf(']]>', i + 9)
       if (e < 0) return 'The SVG has an unclosed CDATA section.'
       if (!sawRoot || rootClosed) return 'The SVG has text outside its <svg> element.'
-      if (stack[stack.length - 1] === 'style') {
+      if (inStyle(stack)) {
         const p = cssProblem(text.slice(i + 9, e))
         if (p) return p
       }

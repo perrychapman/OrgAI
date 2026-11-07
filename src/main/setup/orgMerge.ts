@@ -97,6 +97,9 @@ export function mergeOrgChart(existing: Pick<Project, 'roles' | 'mcpServers' | '
       }
       if (p.tier !== undefined) role.tier = p.tier
       else delete role.tier
+      // The proposed model was resolved on the proposed role's connection, so the connection follows the proposal.
+      if (p.connection !== undefined) role.connection = p.connection
+      else delete role.connection
       if (p.mcpServers !== undefined) role.mcpServers = [...p.mcpServers]
       if (p.skills !== undefined) role.skills = [...p.skills]
     }

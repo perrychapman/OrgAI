@@ -68,7 +68,8 @@ export function useProjectSignals(projects: readonly Project[]): Record<string, 
       const known = (id: string): boolean => latest.current.some((p) => p.id === id)
       for (const id of plan.worktrees) {
         done.current.add(`worktrees:${id}`)
-        void projectQueue.enqueue('worktrees', id, () => window.orgai.maintenance.listWorktrees(id)).then((list) => {
+        // A project deleted while queued is skipped: no git call for it (spec 10.4, review L1).
+        void projectQueue.enqueue('worktrees', id, () => (known(id) ? window.orgai.maintenance.listWorktrees(id) : Promise.resolve(null))).then((list) => {
           if (!alive.current || !known(id)) return
           setBranches((b) => (b[id] === branchCount(list) ? b : { ...b, [id]: branchCount(list) }))
         })

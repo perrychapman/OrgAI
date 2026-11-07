@@ -103,7 +103,15 @@ export function createOutputsService(dataDir: string): OutputsServiceApi {
         fileName: input.fileName,
         overwrite: input.overwrite === true,
         mayOverwrite: (abs) => {
-          const e = store.byPath(scope.projectId, abs)
+          // The index holds real paths; the project path may be a link spelling (8.3 temp names, /var vs /private/var).
+          let e = store.byPath(scope.projectId, abs)
+          if (!e) {
+            try {
+              e = store.byPath(scope.projectId, realpathSync.native(abs))
+            } catch {
+              /* keep undefined */
+            }
+          }
           return !!e && e.source === 'produced' && e.runId === source.runId
         }
       })

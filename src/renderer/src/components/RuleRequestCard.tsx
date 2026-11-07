@@ -7,6 +7,7 @@ import { Badge } from './ui/Badge'
 import { Button } from './ui/Button'
 import { Textarea } from './ui/Textarea'
 import { rulesTitle } from '../lib/decisionTitle'
+import { useAppStore } from '../store/useAppStore'
 
 interface Props {
   runId: string
@@ -30,6 +31,12 @@ export default function RuleRequestCard({ runId, request, who, onDecide }: Props
     void submit(() => onDecide(decision))
   }
 
+  // Chat runs and MCP build sessions are trust-restricted: main keeps a 'project' grant on the run and saves nothing,
+  // so the card never offers or promises a saved rule there.
+  const restricted = useAppStore((st) => {
+    const s = st.runs[runId]?.summary
+    return !!(s?.quick || s?.buildWorkspace)
+  })
   const flagged = new Set(request.flagged ?? [])
   const risky = request.rules.filter((r) => flagged.has(r) || isWholeToolRule(r)).length
   return (
@@ -45,7 +52,7 @@ export default function RuleRequestCard({ runId, request, who, onDecide }: Props
       helper={
         <ul className="decision-scopes">
           <li>Allow for this run: takes effect now for this run and its reports.</li>
-          <li>Always allow for project: also saves the rules for future runs.</li>
+          {!restricted && <li>Always allow for project: also saves the rules for future runs.</li>}
           <li>Deny: the agent is told to find another route.</li>
         </ul>
       }
@@ -55,9 +62,11 @@ export default function RuleRequestCard({ runId, request, who, onDecide }: Props
         </Button>
       }
       secondary={
-        <Button size="sm" disabled={busy} onClick={() => send({ behavior: 'grant', scope: 'project' })}>
-          Always allow for project
-        </Button>
+        restricted ? undefined : (
+          <Button size="sm" disabled={busy} onClick={() => send({ behavior: 'grant', scope: 'project' })}>
+            Always allow for project
+          </Button>
+        )
       }
       deny={
         <Button variant="danger" size="sm" disabled={busy} onClick={() => send(note.trim() ? { behavior: 'deny', message: note.trim() } : { behavior: 'deny' })}>

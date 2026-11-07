@@ -1,7 +1,7 @@
 import type { PermissionDecision, QuestionAnswer, RunSummary, UserQuestion } from '@shared/types'
 import { baseName, isHiddenCommand, oneLine } from './decisionTitle'
 import { hasHidden, showHidden } from './hiddenChars'
-import { parentPath } from './permissionCopy'
+import { parentPath, type PermissionLocationKind } from './permissionCopy'
 
 /**
  * The Dashboard's inline answers (docs/design/dashboard-2.md 5.2). Pure. The Dashboard answers Allow once and Deny for
@@ -53,22 +53,51 @@ export function filePathOf(request: InlineRequest): string | undefined {
 }
 
 /**
- * True when the row may offer Allow once. Shell: no hidden characters, one step per line as the card reads it, at most
- * 2 non-empty lines and 200 characters. File tools: always. Other tools: a short summary without hidden characters.
+ * Where a file tool works must be one of these for inline Allow (the PermissionCard's location kinds): outside the
+ * project or a place OrgAI cannot work out is opened in the card, where the location line and full path are shown.
  */
-export function inlineAllowable(request: InlineRequest): boolean {
+const INLINE_FILE_LOCATIONS: ReadonlySet<PermissionLocationKind> = new Set(['project', 'worktree', 'allowed', 'reference'])
+
+/**
+ * Tools other than shells and files that may be allowed inline, with the one input field the row shows whole. Anything
+ * else (MCP tools, Agent, unknown tools) only has main's activity summary, which leaves the arguments out, so it is
+ * opened in the card (review H3).
+ */
+const INLINE_OTHER_FIELD: Readonly<Record<string, string>> = { WebFetch: 'url', WebSearch: 'query' }
+
+/** Runs of spaces or a tab can push a command's tail out of view; such a command is reviewed in the card (review M3). */
+const PADDED = / {2,}|\t/
+
+/** The field an inline "other" tool shows whole, or undefined when the tool is not offered inline. */
+export function otherFieldOf(request: InlineRequest): string | undefined {
+  const key = INLINE_OTHER_FIELD[request.toolName]
+  return key ? field(request.input, key) : undefined
+}
+
+/**
+ * True when the row may offer Allow once; what it approves is shown whole on the row (review H1-H3).
+ * - Shell: no hidden characters, one step per line as the card reads it, at most 2 non-empty lines and 200
+ *   characters, no runs of spaces or tabs.
+ * - File tools: a path without hidden characters whose location (`permissionLocation` kind) is the project, a worktree,
+ *   an allowed folder or a reference folder; `location` undefined or null (no project, unclear) is never inline.
+ * - WebFetch / WebSearch: the URL or query, at most 200 characters, no hidden characters. Every other tool: never.
+ */
+export function inlineAllowable(request: InlineRequest, location?: PermissionLocationKind | null): boolean {
   if (SHELL.has(request.toolName)) {
     const command = commandOf(request)
     if (!command) return false
-    if (hasHidden(command) || isHiddenCommand(request.toolName, request.input)) return false
+    if (hasHidden(command) || isHiddenCommand(request.toolName, request.input) || PADDED.test(command)) return false
     const lines = command.split(/\r?\n/).filter((l) => l.trim())
     return lines.length <= INLINE_COMMAND_MAX_LINES && command.length <= INLINE_COMMAND_MAX_CHARS
   }
   if (EDIT.has(request.toolName) || request.toolName === 'Write' || READ.has(request.toolName)) {
-    return !!filePathOf(request) && !hasHidden(filePathOf(request))
+    const path = filePathOf(request)
+    // Main refuses edits in a reference folder before any allow path, so only reads get a button there.
+    const where = !!location && INLINE_FILE_LOCATIONS.has(location) && (location !== 'reference' || READ.has(request.toolName))
+    return !!path && !hasHidden(path) && path.length <= INLINE_SUMMARY_MAX_CHARS && where
   }
-  const summary = request.summary ?? ''
-  return summary.trim().length > 0 && summary.length <= INLINE_SUMMARY_MAX_CHARS && !hasHidden(summary)
+  const value = otherFieldOf(request)
+  return !!value && value.length <= INLINE_SUMMARY_MAX_CHARS && !hasHidden(value) && !/[\r\n]/.test(value)
 }
 
 /**
@@ -91,8 +120,8 @@ export function inlineOptions(question: Pick<UserQuestion, 'options' | 'allowMul
 export type InlineMode = 'allow' | 'options' | 'none'
 
 /** The row's `data-inline` for a permission request. */
-export function permissionInlineMode(request: InlineRequest): InlineMode {
-  return inlineAllowable(request) ? 'allow' : 'none'
+export function permissionInlineMode(request: InlineRequest, location?: PermissionLocationKind | null): InlineMode {
+  return inlineAllowable(request, location) ? 'allow' : 'none'
 }
 
 /** The row's `data-inline` for a question. */
@@ -130,27 +159,31 @@ export interface PermissionAsk {
   text: string
 }
 
-/** The two-line ask of a permission row (spec 5.1). `who` is the agent's label. */
-export function permissionAsk(request: InlineRequest, who: string): PermissionAsk {
+/**
+ * The two-line ask of a permission row (spec 5.1). `who` is the agent's label. When inline Allow is offered (`allowable`)
+ * the object is what is approved, whole: the command, the full path, the URL or query; `text` (the buttons' names and
+ * the main button's) carries it whole too, never a cut.
+ */
+export function permissionAsk(request: InlineRequest, who: string, allowable = inlineAllowable(request)): PermissionAsk {
   const name = oneLine(who, 64) || 'An agent'
   const head = `${name} wants to ${askVerb(request.toolName)}`
   const lead = `${head}:`
   const command = commandOf(request)
   if (SHELL.has(request.toolName)) {
-    const allowable = inlineAllowable(request)
     const first = (command ?? '').split(/\r?\n/).find((l) => l.trim()) ?? ''
     const shown = allowable ? showHidden(command ?? '') : oneLine(showHidden(first), INLINE_COMMAND_MAX_CHARS)
-    return { kind: 'shell', lead, object: shown, long: !allowable, text: `${head} ${oneLine(shown, 120)}` }
+    return { kind: 'shell', lead, object: shown, long: !allowable, text: `${head} ${allowable ? shown.replace(/\r?\n/g, ' ; ') : oneLine(shown, 120)}` }
   }
   const path = filePathOf(request)
   if (path && (EDIT.has(request.toolName) || request.toolName === 'Write' || READ.has(request.toolName))) {
     const clean = showHidden(path)
     const file = baseName(clean)
     const folder = parentPath(clean)
-    return { kind: 'file', lead, object: file, folder: folder === '.' ? undefined : folder, full: clean, long: false, text: `${head} ${file}` }
+    return { kind: 'file', lead, object: file, folder: folder === '.' ? undefined : folder, full: clean, long: false, text: `${head} ${oneLine(clean, 400)}` }
   }
-  const summary = oneLine(showHidden(request.summary ?? ''), INLINE_SUMMARY_MAX_CHARS)
-  return { kind: 'other', lead, object: summary, long: false, text: `${head} ${summary}` }
+  const value = otherFieldOf(request)
+  const shown = value !== undefined ? showHidden(value) : oneLine(showHidden(request.summary ?? ''), INLINE_SUMMARY_MAX_CHARS)
+  return { kind: 'other', lead, object: shown, long: false, text: `${head} ${oneLine(shown, 400)}` }
 }
 
 /** A question's text on one line, at most 200 characters. */

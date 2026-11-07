@@ -10,6 +10,8 @@ export interface RemapOptions {
   /** The mapping before this change. Used to tell a role still on the old default from an explicit user pick. */
   previousTierModels?: Partial<Record<ModelTier, ModelRef>>
   reason: RemapReason
+  /** Only these roles are touched (default: all). Multi-provider charts remap each role through its own connection. */
+  include?: (role: Project['roles'][number]) => boolean
 }
 
 /**
@@ -27,6 +29,7 @@ export function remapProject(project: Project, opts: RemapOptions): { project: P
   const changes: RemapChange[] = []
   const roles = project.roles.map((role) => {
     if (!role.tier || role.model === 'inherit') return role
+    if (opts.include && !opts.include(role)) return role
     const target = opts.tierModels[role.tier]
     if (!target || role.model === target) return role
     if (opts.reason !== 'switched') {

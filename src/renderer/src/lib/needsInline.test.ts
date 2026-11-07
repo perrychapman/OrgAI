@@ -42,17 +42,32 @@ describe('inlineAllowable', () => {
   it('refuses a shell request without a command', () => {
     expect(inlineAllowable({ toolName: 'PowerShell', input: {} })).toBe(false)
   })
-  it('allows file tools with a path', () => {
-    expect(inlineAllowable({ toolName: 'Edit', input: { file_path: '/p/a.ts' } })).toBe(true)
-    expect(inlineAllowable({ toolName: 'Write', input: { file_path: 'a.ts' } })).toBe(true)
-    expect(inlineAllowable({ toolName: 'Read', input: { path: '/p' } })).toBe(true)
-    expect(inlineAllowable({ toolName: 'Edit', input: {} })).toBe(false)
+  it('refuses runs of spaces or a tab that could push the tail out of view (review M3)', () => {
+    expect(inlineAllowable(sh(`npm test${' '.repeat(80)}--x`))).toBe(false)
+    expect(inlineAllowable(sh('npm\ttest'))).toBe(false)
+    expect(inlineAllowable(sh('npm  test'))).toBe(false)
   })
-  it('allows other tools only with a short clean summary', () => {
-    expect(inlineAllowable({ toolName: 'WebFetch', summary: 'Fetch example.com' })).toBe(true)
-    expect(inlineAllowable({ toolName: 'WebFetch', summary: 'x'.repeat(201) })).toBe(false)
-    expect(inlineAllowable({ toolName: 'WebFetch', summary: 'a\u202eb' })).toBe(false)
-    expect(inlineAllowable({ toolName: 'WebFetch', summary: '' })).toBe(false)
+  it('allows file tools only where the card would say the project, a worktree, an allowed or a reference folder (review H2)', () => {
+    expect(inlineAllowable({ toolName: 'Edit', input: { file_path: '/p/a.ts' } }, 'project')).toBe(true)
+    expect(inlineAllowable({ toolName: 'Write', input: { file_path: 'a.ts' } }, 'worktree')).toBe(true)
+    expect(inlineAllowable({ toolName: 'Read', input: { path: '/p' } }, 'allowed')).toBe(true)
+    expect(inlineAllowable({ toolName: 'Read', input: { path: '/ref/a' } }, 'reference')).toBe(true)
+    expect(inlineAllowable({ toolName: 'Edit', input: { file_path: '/ref/a' } }, 'reference')).toBe(false)
+    expect(inlineAllowable({ toolName: 'Write', input: { file_path: '/home/u/.bashrc' } }, 'outside')).toBe(false)
+    expect(inlineAllowable({ toolName: 'Edit', input: { file_path: 'C:x' } }, 'unknown')).toBe(false)
+    expect(inlineAllowable({ toolName: 'Edit', input: { file_path: '/p/a.ts' } })).toBe(false)
+    expect(inlineAllowable({ toolName: 'Edit', input: { file_path: '/p/a.ts' } }, null)).toBe(false)
+    expect(inlineAllowable({ toolName: 'Edit', input: {} }, 'project')).toBe(false)
+    expect(inlineAllowable({ toolName: 'Edit', input: { file_path: `/p/${'a'.repeat(200)}` } }, 'project')).toBe(false)
+  })
+  it('allows only WebFetch and WebSearch among other tools, by the field it shows whole (review H3)', () => {
+    expect(inlineAllowable({ toolName: 'WebFetch', input: { url: 'https://example.com/a?q=1' }, summary: 'Fetching example.com' })).toBe(true)
+    expect(inlineAllowable({ toolName: 'WebSearch', input: { query: 'vitest docs' } })).toBe(true)
+    expect(inlineAllowable({ toolName: 'WebFetch', input: { url: `https://e.com/${'x'.repeat(200)}` } })).toBe(false)
+    expect(inlineAllowable({ toolName: 'WebFetch', input: { url: 'https://e.com/\u202e' } })).toBe(false)
+    expect(inlineAllowable({ toolName: 'WebFetch', summary: 'Fetch example.com' })).toBe(false)
+    expect(inlineAllowable({ toolName: 'mcp__slack__post_message', input: { text: 'hi' }, summary: 'Using mcp__slack__post_message' })).toBe(false)
+    expect(inlineAllowable({ toolName: 'Agent', input: { prompt: 'x' }, summary: 'Spawn' })).toBe(false)
   })
   it('sets the row mode', () => {
     expect(permissionInlineMode(sh('npm test'))).toBe('allow')
@@ -108,9 +123,15 @@ describe('permissionAsk', () => {
     expect(permissionAsk({ toolName: 'Write', input: { file_path: 'a.md' } }, 'w').lead).toBe('w wants to write:')
     expect(permissionAsk({ toolName: 'Read', input: { path: '/p/a' } }, 'w').lead).toBe('w wants to read:')
   })
-  it('names other tools and uses the summary', () => {
-    const a = permissionAsk({ toolName: 'WebFetch', summary: 'Fetch example.com' }, 'w')
-    expect(a).toMatchObject({ kind: 'other', lead: 'w wants to use WebFetch:', object: 'Fetch example.com' })
+  it('names other tools and shows the URL whole, else the summary', () => {
+    const a = permissionAsk({ toolName: 'WebFetch', input: { url: 'https://example.com/a?q=secret' }, summary: 'Fetching example.com' }, 'w')
+    expect(a).toMatchObject({ kind: 'other', lead: 'w wants to use WebFetch:', object: 'https://example.com/a?q=secret', text: 'w wants to use WebFetch https://example.com/a?q=secret' })
+    expect(permissionAsk({ toolName: 'mcp__x__y', summary: 'Using mcp__x__y' }, 'w').object).toBe('Using mcp__x__y')
+  })
+  it('names the whole command and the whole path in the text the buttons are named by (review H1, H2)', () => {
+    const cmd = `npm run build -- --output ${'d/'.repeat(40)}x`
+    expect(permissionAsk(sh(cmd), 'w', true).text).toBe(`w wants to run ${cmd}`)
+    expect(permissionAsk({ toolName: 'Write', input: { file_path: '/home/u/.config/autostart/x.desktop' } }, 'w', true).text).toBe('w wants to write /home/u/.config/autostart/x.desktop')
   })
 })
 
