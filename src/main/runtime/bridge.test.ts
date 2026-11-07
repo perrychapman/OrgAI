@@ -45,11 +45,14 @@ function agentOf(over: Partial<AgentInstance> & { id: string }): AgentInstance {
 class FakeAdapter implements RuntimeAdapter {
   sessions: FakeSession[] = []
   startError: Error | undefined
+  /** When set, start() waits for it (a child still opening). */
+  gate: Promise<void> | undefined
   /** Runs inside start(), before the session exists (events during start). */
   duringStart: ((ctx: RuntimeContext) => void) | undefined
   constructor(public id: 'claude' | 'codex' | 'mock') {}
   async start(ctx: RuntimeContext): Promise<RuntimeSession> {
     if (this.startError) throw this.startError
+    if (this.gate) await this.gate
     this.duringStart?.(ctx)
     const s = new FakeSession(ctx)
     this.sessions.push(s)
@@ -367,8 +370,8 @@ describe('BridgedSessions.spawn', () => {
 
   it('stopAll stops every child and resolves their spawns "Stopped: <reason>"', async () => {
     const r = rig()
-    const a = r.b.spawn({ role: 'oa', brief: 'one' })
-    const c = r.b.spawn({ role: 'solo', brief: 'two' })
+    const a = r.b.spawn({ role: 'oa', brief: 'one', parentAgentId: ROOT_AGENT_ID })
+    const c = r.b.spawn({ role: 'solo', brief: 'two', parentAgentId: ROOT_AGENT_ID })
     await tick()
     expect(r.b.activeCount()).toBe(2)
     await r.b.stopAll('the run was stopped')
@@ -491,5 +494,124 @@ describe('BridgedSessions.spawn', () => {
     expect(ctx.knowledgeRecall!({} as never, {})).toBe('recall')
     r.codex.sessions[0]!.status('idle')
     await done
+  })
+})
+
+describe('bridge review fixes', () => {
+  it('M1: refuses an unknown caller while a live non-root agent may delegate', async () => {
+    const r = rig()
+    r.agents.set('lead2', agentOf({ id: 'lead2', roleId: 'r-oa', roleSlug: 'oa', name: 'OpenAI lead', parentId: ROOT_AGENT_ID, handle: 'oa-9', state: 'thinking' }))
+    await expect(r.b.spawn({ role: 'oa2', brief: 'b' })).rejects.toThrow('OrgAI could not tell which agent called delegate_agent; call it again when your reports are done.')
+    r.agents.set('lead2', agentOf({ id: 'lead2', roleId: 'r-oa', roleSlug: 'oa', name: 'OpenAI lead', parentId: ROOT_AGENT_ID, handle: 'oa-9', state: 'done' }))
+    const p = r.b.spawn({ role: 'oa', brief: 'b' })
+    await r.b.stopAll('test')
+    expect((await p).ok).toBe(false)
+  })
+
+  it('M2: secrets by name, userinfo, bearer and header parts, minimum 8 characters', () => {
+    const s = connectionSecrets([
+      {
+        connection: 'openai',
+        adapter: 'codex',
+        apiKey: 'plain-api-key',
+        env: {
+          MY_AUTH_TOKEN: 'a/b\\c-value-1',
+          PROXY_URL: 'https://user:hunter2hunter@proxy.example/v1',
+          X_HEADER: 'Bearer bearer-value-99',
+          Y_HEADER: 'x-api-key: header-value-77',
+          SHORT_TOKEN: 'abc',
+          OPENAI_BASE_URL: 'https://api.example/v1'
+        }
+      }
+    ])
+    expect(s).toEqual(expect.arrayContaining(['plain-api-key', 'a/b\\c-value-1', 'hunter2hunter', 'user:hunter2hunter', 'bearer-value-99', 'header-value-77']))
+    expect(s).not.toContain('abc')
+    expect(s).not.toContain('https://api.example/v1')
+    expect(s).not.toContain('https://user:hunter2hunter@proxy.example/v1')
+    expect(connectionSecrets([{ connection: 'openai', adapter: 'codex', apiKey: 'short' }])).toEqual([])
+  })
+
+  it('M3: the child gets the depth and concurrency left, and no spawning at the last level', async () => {
+    const r = rig({ project: { maxSubagentDepth: 2, maxConcurrentSubagents: 4 } })
+    r.agents.set('w1', agentOf({ id: 'w1', roleId: 'r-eng', parentId: ROOT_AGENT_ID, state: 'thinking' }))
+    const p = r.b.spawn({ role: 'oa', brief: 'b', parentAgentId: ROOT_AGENT_ID })
+    await tick()
+    const ctx = r.codex.ctx
+    expect(ctx.project.maxSubagentDepth).toBe(1)
+    expect(ctx.project.maxConcurrentSubagents).toBe(2)
+    expect(ctx.roles.find((x) => x.id === 'r-oa')!.spawnable).toEqual(['r-oa2'])
+    await r.b.stopAll('t')
+    await p
+
+    const r2 = rig({ project: { maxSubagentDepth: 1, maxConcurrentSubagents: 1 } })
+    const q = r2.b.spawn({ role: 'oa', brief: 'b', parentAgentId: ROOT_AGENT_ID })
+    await tick()
+    const c2 = r2.codex.ctx
+    expect(c2.roles.map((x) => x.id)).toEqual(['r-oa'])
+    expect(c2.roles[0]).toMatchObject({ canSpawn: false, spawnable: [] })
+    expect(c2.project.maxSubagentDepth).toBe(1)
+    expect(c2.project.maxConcurrentSubagents).toBe(1)
+    await r2.b.stopAll('t')
+    await q
+  })
+
+  it('L1: card display text is redacted, decision fields are not', async () => {
+    const r = rig({ parent: { requestPermissionRules: vi.fn(async () => ({ behavior: 'deny' as const })), requestMcpInstall: vi.fn(async () => ({ approved: false })) } as unknown as Partial<RuntimeContext> })
+    const p = r.b.spawn({ role: 'oa', brief: 'b', parentAgentId: ROOT_AGENT_ID })
+    await tick()
+    const ctx = r.codex.ctx
+    const key = 'sk-openai-secret-999'
+    await ctx.requestPermission({ agentId: ROOT_AGENT_ID, toolName: 'Bash', input: { command: `echo ${key}` }, summary: `Run echo ${key}` })
+    await ctx.requestQuestion({ agentId: ROOT_AGENT_ID, question: `Use ${key}?`, options: [{ label: 'yes', description: `with ${key}` }], allowMultiple: false, allowFreeText: false })
+    await ctx.requestPermissionRules!({ agentId: ROOT_AGENT_ID, rules: ['Bash(npm test:*)'], reason: `because ${key}` })
+    await ctx.requestMcpInstall!({ agentId: ROOT_AGENT_ID, reason: `needs ${key}` } as never)
+    const perm = (r.parent.requestPermission as ReturnType<typeof vi.fn>).mock.calls[0]![0]
+    expect(perm.summary).toBe('Run echo [redacted]')
+    expect(perm.input).toEqual({ command: `echo ${key}` })
+    const q = (r.parent.requestQuestion as ReturnType<typeof vi.fn>).mock.calls[0]![0]
+    expect(q.question).toBe('Use [redacted]?')
+    expect(q.options[0]).toEqual({ label: 'yes', description: 'with [redacted]' })
+    expect((r.parent.requestPermissionRules as ReturnType<typeof vi.fn>).mock.calls[0]![0]).toMatchObject({ rules: ['Bash(npm test:*)'], reason: 'because [redacted]' })
+    expect((r.parent.requestMcpInstall as ReturnType<typeof vi.fn>).mock.calls[0]![0].reason).toBe('needs [redacted]')
+    await r.b.stopAll('t')
+    await p
+  })
+
+  it('L4: stopAll waits for a child still opening and stops the session it produced', async () => {
+    const r = rig()
+    let open!: () => void
+    r.codex.gate = new Promise<void>((res) => {
+      open = res
+    })
+    const p = r.b.spawn({ role: 'oa', brief: 'b', parentAgentId: ROOT_AGENT_ID })
+    await tick()
+    let stopped = false
+    const all = r.b.stopAll('quit').then(() => {
+      stopped = true
+    })
+    await tick()
+    expect(stopped).toBe(false)
+    open()
+    await all
+    expect(r.codex.sessions).toHaveLength(1)
+    expect(r.codex.sessions[0]!.stop).toHaveBeenCalledTimes(1)
+    expect((await p).ok).toBe(false)
+  })
+
+  it('L4: stopAll gives up on a child that never opens after 5 s', async () => {
+    vi.useFakeTimers()
+    const r = rig()
+    r.codex.gate = new Promise<void>(() => {})
+    void r.b.spawn({ role: 'oa', brief: 'b', parentAgentId: ROOT_AGENT_ID })
+    await vi.advanceTimersByTimeAsync(0)
+    let done = false
+    const all = r.b.stopAll('quit').then(() => {
+      done = true
+    })
+    await vi.advanceTimersByTimeAsync(4900)
+    expect(done).toBe(false)
+    await vi.advanceTimersByTimeAsync(200)
+    await all
+    expect(done).toBe(true)
   })
 })
