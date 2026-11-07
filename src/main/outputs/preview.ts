@@ -1,5 +1,4 @@
 import { closeSync, fstatSync, lstatSync, openSync, readSync } from 'node:fs'
-import { Readable } from 'node:stream'
 import ExcelJS from 'exceljs'
 import mammoth from 'mammoth'
 import type { OutputKind, OutputPreview, SheetCell, SheetPreview } from '@shared/types'
@@ -12,24 +11,19 @@ import {
 } from '@shared/types'
 import { htmlToBlocks } from './htmlBlocks'
 import { svgProblem } from './writers'
-import { zipEntryNames, zipEntrySize, zipInfo, zipProblem, zipVerifyEntries } from './zipGuard'
+import { zipInfo, zipProblem, zipSumSizes, zipVerifyEntries } from './zipGuard'
 
 /**
  * previewFile(path, kind): the inline preview of one output file. Never throws; any problem is { kind: 'none', reason }.
  * The caller (service.preview) has already re-checked the path (checkedPath); this still lstats it as a regular file.
  *
  * docx: size <= 20 MB, zipGuard, mammoth.convertToHtml with externalFileAccess: false (always; CVE-2025-11849), and
- * its HTML is untrusted input to htmlBlocks. xlsx: size <= 20 MB, zipGuard, then exceljs' STREAMING reader over the
- * buffer, which stops after OUTPUT_PREVIEW_ROWS_MAX rows per sheet and OUTPUT_PREVIEW_SHEETS_MAX sheets (measured:
- * 10,000 x 26 loads in about 1.1 s with workbook.xlsx.load, the stream reads the first 500 rows in about 0.1 s).
- * The stream cannot know the sheet's true size, so a row count beyond the cap is what was seen before the hard read
- * limit (COUNT_EXTRA_ROWS rows or COUNT_MS ms): a LOWER BOUND, not the total.
+ * its HTML is untrusted input to htmlBlocks. xlsx: size <= 20 MB, zipGuard (declared uncompressed <= 60 MB), then
+ * exceljs' JSZip-based workbook.xlsx.load (exact row totals; shows OUTPUT_PREVIEW_ROWS_MAX rows per sheet and
+ * OUTPUT_PREVIEW_SHEETS_MAX sheets). The streaming reader is not used (it walks local headers; Reviewer H1).
  */
 
 const DOC_MAX_BYTES = 20 * 1024 * 1024
-const COUNT_EXTRA_ROWS = 20_000
-const COUNT_MS = 150
-const DEADLINE_MS = 8_000
 const CELL_TEXT_MAX = 2000
 const SHEETS_TEXT_BUDGET = 4 * 1024 * 1024
 
@@ -144,7 +138,7 @@ function readRow(row: ExcelJS.Row, budget: { left: number }): { cells: SheetCell
 }
 
 /** Largest uncompressed package the full-load fallback reads (workbook.xlsx.load inflates everything into memory). */
-const LOAD_FALLBACK_MAX_BYTES = 60 * 1024 * 1024
+const LOAD_MAX_BYTES = 60 * 1024 * 1024
 
 async function previewXlsx(path: string): Promise<OutputPreview> {
   const buf = readCapped(path, DOC_MAX_BYTES)
@@ -153,31 +147,10 @@ async function previewXlsx(path: string): Promise<OutputPreview> {
   if (zi.problem) return none(`OrgAI did not preview this spreadsheet: ${zi.problem}`)
   const zv = zipVerifyEntries(buf)
   if (zv) return none(`OrgAI did not preview this spreadsheet: ${zv}`)
-  const small = zi.totalBytes <= LOAD_FALLBACK_MAX_BYTES
-  // exceljs' streaming reader reads the zip in order: workbook.xml, its rels and sharedStrings.xml must come before the
-  // first sheet, or it drops sheets, names them SheetN and leaves string cells empty WITHOUT throwing (measured on
-  // re-ordered copies of one workbook). So the stream is used only for a package in that order; any other order, or a
-  // stream that throws, takes a full load (bounded by uncompressed size).
-  if (small && !streamSafeOrder(zipEntryNames(buf))) {
-    const loaded = await previewXlsxLoaded(buf)
-    if (loaded) return loaded
-  }
-  const streamed = await previewXlsxStream(buf)
-  if (streamed.kind !== 'none') return streamed
-  if (!small) return streamed
-  return (await previewXlsxLoaded(buf)) ?? streamed
-}
-
-/** True when workbook.xml, its rels and (when present) sharedStrings.xml all precede the first worksheet entry. */
-export function streamSafeOrder(names: string[]): boolean {
-  const at = (n: string): number => names.indexOf(n)
-  const firstSheet = names.findIndex((n) => n.startsWith('xl/worksheets/') && n.endsWith('.xml'))
-  if (firstSheet < 0) return true
-  const before = (n: string, required: boolean): boolean => {
-    const i = at(n)
-    return i < 0 ? !required : i < firstSheet
-  }
-  return before('xl/workbook.xml', true) && before('xl/_rels/workbook.xml.rels', true) && before('xl/sharedStrings.xml', false)
+  if (zi.totalBytes > LOAD_MAX_BYTES) return none('This spreadsheet expands to more than 60 MB, so OrgAI does not preview it; open it instead.')
+  // Always the JSZip-based full load: it reads the central directory, which zipGuard checked. exceljs' streaming reader
+  // walks local headers and was not safe against a crafted descriptor entry (Reviewer H1), so it is not used.
+  return (await previewXlsxLoaded(buf)) ?? none('OrgAI could not read this spreadsheet.')
 }
 
 /** Full-load reader: exact row and column totals, first OUTPUT_PREVIEW_* shown. Null when it cannot read the file. */
@@ -216,71 +189,6 @@ async function previewXlsxLoaded(buf: Buffer): Promise<OutputPreview | null> {
   }
 }
 
-async function previewXlsxStream(buf: Buffer): Promise<OutputPreview> {
-  const input = Readable.from([buf])
-  const started = Date.now()
-  const budget = { left: SHEETS_TEXT_BUDGET }
-  const sheets: SheetPreview[] = []
-  let truncatedSheets = 0
-  try {
-    const reader = new ExcelJS.stream.xlsx.WorkbookReader(input, { sharedStrings: 'cache', hyperlinks: 'cache', styles: 'cache', worksheets: 'emit', entries: 'emit' })
-    for await (const sheet of reader) {
-      if (sheets.length >= OUTPUT_PREVIEW_SHEETS_MAX || budget.left <= 0 || Date.now() - started > DEADLINE_MS) {
-        truncatedSheets++
-        continue
-      }
-      const rows: SheetCell[][] = []
-      let seen = 0
-      let extra = 0
-      let maxCol = 0
-      let countStart = 0
-      let lastNumber = 0
-      for await (const row of sheet) {
-        const number = typeof row.number === 'number' ? row.number : lastNumber + 1
-        if (rows.length < OUTPUT_PREVIEW_ROWS_MAX) {
-          // keep gaps between row numbers as empty rows (up to the cap)
-          while (lastNumber + 1 < number && rows.length < OUTPUT_PREVIEW_ROWS_MAX) {
-            rows.push([])
-            lastNumber++
-          }
-          if (rows.length >= OUTPUT_PREVIEW_ROWS_MAX) {
-            extra++
-            lastNumber = number
-            continue
-          }
-          const rr = readRow(row, budget)
-          if (rr.maxCol > maxCol) maxCol = rr.maxCol
-          rows.push(rr.cells)
-          seen++
-          lastNumber = number
-          if (budget.left <= 0 || Date.now() - started > DEADLINE_MS) {
-            extra++
-            break
-          }
-        } else {
-          if (!countStart) countStart = Date.now()
-          extra++
-          lastNumber = number
-          if (extra >= COUNT_EXTRA_ROWS || Date.now() - countStart > COUNT_MS) break
-        }
-      }
-      void seen
-      // WorksheetReader.name is set by exceljs from workbook.xml but missing from its typings.
-      const sheetName = (sheet as unknown as { name?: unknown }).name
-      const sp: SheetPreview = { name: typeof sheetName === 'string' ? cellText(sheetName, budget) : `Sheet${sheets.length + 1}`, rows }
-      if (extra > 0) sp.truncatedRows = extra
-      if (maxCol > OUTPUT_PREVIEW_COLUMNS_MAX) sp.truncatedCols = maxCol - OUTPUT_PREVIEW_COLUMNS_MAX
-      sheets.push(sp)
-    }
-  } catch (e) {
-    if (!sheets.length) return none(`OrgAI could not read this spreadsheet: ${(e as Error).message}`)
-  } finally {
-    input.destroy()
-  }
-  if (!sheets.length) return none('This spreadsheet has no sheets to show.')
-  return { kind: 'sheets', sheets, ...(truncatedSheets ? { truncatedSheets } : {}) }
-}
-
 // ---------- docx ----------
 
 /**
@@ -288,6 +196,9 @@ async function previewXlsxStream(buf: Buffer): Promise<OutputPreview> {
  * with this size, so a bigger document answers "too large to preview" at once (see preview.measure.test.ts for the table).
  */
 export const DOCX_PREVIEW_MAX_XML_BYTES = 3 * 1024 * 1024
+
+/** Room for styles, numbering, theme, rels and content types next to the main part. */
+export const DOCX_XML_ALLOWANCE = 512 * 1024
 
 const DOCX_TOO_LARGE = 'This document is too large to preview here. Open it instead.'
 
@@ -297,8 +208,9 @@ export async function previewDocx(path: string, maxXmlBytes: number = DOCX_PREVI
   if (buf.length > DOC_MAX_BYTES) return none('This document is larger than 20 MB, so OrgAI does not preview it; open it instead.')
   const zp = zipProblem(buf)
   if (zp) return none(`OrgAI did not preview this document: ${zp}`)
-  const xmlSize = zipEntrySize(buf, 'word/document.xml')
-  if (xmlSize !== null && xmlSize > maxXmlBytes) return none(DOCX_TOO_LARGE)
+  // mammoth finds the main part through _rels/.rels (any name), so cap every XML / rels part together, not one name.
+  const xmlSize = zipSumSizes(buf, (n) => /\.(xml|rels)$/i.test(n) && !n.toLowerCase().startsWith('word/media/'))
+  if (xmlSize !== null && xmlSize > maxXmlBytes + DOCX_XML_ALLOWANCE) return none(DOCX_TOO_LARGE)
   const zv = zipVerifyEntries(buf)
   if (zv) return none(`OrgAI did not preview this document: ${zv}`)
   try {

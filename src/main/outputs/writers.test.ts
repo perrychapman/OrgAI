@@ -58,6 +58,8 @@ describe('svg namespaces, loading attributes and CSS', () => {
     ['image-set attr', `<svg ${NS}><rect style="fill:image-set(url(#a) 1x)"/></svg>`],
     ['image-set style', `<svg ${NS}><style>a{background:IMAGE-SET("x" 1x)}</style></svg>`],
     ['@import style', `<svg ${NS}><style>@import "x.css";</style></svg>`],
+    ['@import in a prefixed style element', `<svg ${NS}><s:style xmlns:s="http://www.w3.org/2000/svg">@import "x.css";</s:style></svg>`],
+    ['@import in an upper-case prefixed style', `<svg ${NS}><s:STYLE xmlns:s="http://www.w3.org/2000/svg">@import "x.css";</s:STYLE></svg>`],
     ['@import attr', `<svg ${NS}><rect style="@import 'x'"/></svg>`]
   ])('refuses %s', (_n, svg) => {
     expect(svgProblem(svg)).toBeTruthy()

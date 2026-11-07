@@ -206,4 +206,88 @@ describe('zipVerifyEntries: archives the unzip libraries could read differently'
     z.writeUInt32LE(0, recordEnd(z, z.readUInt32LE(z.length - 22 + 16)) + 42) // second record points at the first entry
     expect(zipVerifyEntries(z)).toMatch(/does not match its directory/)
   })
+
+  describe('data descriptor entries (flag 0x08), as unzipper would read them', () => {
+    const SIG = Buffer.from([0x50, 0x4b, 0x07, 0x08])
+    it('refuses a local size that is neither 0 nor the directory size', async () => {
+      const z = await deflate(three(), true)
+      expect(zipVerifyEntries(z)).toBeNull()
+      const o = localOffsets(z)[0]
+      for (const [at, v] of [[18, 1], [22, 7], [18, 0xffffffff]] as const) {
+        const bad = Buffer.from(z)
+        bad.writeUInt32LE(v, o + at)
+        expect(zipVerifyEntries(bad)).toMatch(/does not match its directory/)
+      }
+    })
+    it('refuses an unsigned descriptor', async () => {
+      const z = await deflate(three(), true)
+      const o = localOffsets(z)[0]
+      const cs = z.readUInt32LE(o + 18) || z.readUInt32LE(z.readUInt32LE(z.length - 22 + 16) + 20)
+      const sigAt = o + 30 + z.readUInt16LE(o + 26) + z.readUInt16LE(o + 28) + cs
+      expect(z.subarray(sigAt, sigAt + 4).equals(SIG)).toBe(true)
+      const unsigned = shiftOffsets(Buffer.concat([z.subarray(0, sigAt), z.subarray(sigAt + 4)]), sigAt, -4)
+      expect(zipVerifyEntries(unsigned)).toMatch(/does not match its directory/)
+    })
+    it('refuses a descriptor signature inside the entry data', async () => {
+      const z = await deflate(three(), true)
+      const o = localOffsets(z)[0]
+      const start = o + 30 + z.readUInt16LE(o + 26) + z.readUInt16LE(o + 28)
+      const bad = Buffer.from(z)
+      SIG.copy(bad, start + 2)
+      expect(zipVerifyEntries(bad)).toMatch(/does not match its directory/)
+    })
+    it('refuses a stored entry with flag 0x08', async () => {
+      const z = Buffer.from(await new JSZip().file('a.txt', 'hello').generateAsync({ type: 'uint8array' }))
+      const o = localOffsets(z)[0]
+      const cd = z.readUInt32LE(z.length - 22 + 16)
+      const withDescriptor = Buffer.concat([z.subarray(0, cd), Buffer.alloc(16), z.subarray(cd)])
+      withDescriptor.writeUInt16LE(8, o + 6)
+      shiftOffsets(withDescriptor, cd, 16)
+      expect(zipVerifyEntries(withDescriptor)).toMatch(/does not match its directory/)
+    })
+  })
+
+  describe('names the unzip libraries could read differently', () => {
+    /** One stored entry with a chosen name, flags and extra field. */
+    function tiny(name: Buffer, flags: number, extra: Buffer): Buffer {
+      const data = Buffer.from('hi')
+      const local = Buffer.alloc(30)
+      local.writeUInt32LE(0x04034b50, 0)
+      local.writeUInt16LE(flags, 6)
+      local.writeUInt32LE(2, 18)
+      local.writeUInt32LE(2, 22)
+      local.writeUInt16LE(name.length, 26)
+      local.writeUInt16LE(extra.length, 28)
+      const lpart = Buffer.concat([local, name, extra, data])
+      const cen = Buffer.alloc(46)
+      cen.writeUInt32LE(0x02014b50, 0)
+      cen.writeUInt16LE(flags, 8)
+      cen.writeUInt32LE(2, 20)
+      cen.writeUInt32LE(2, 24)
+      cen.writeUInt16LE(name.length, 28)
+      cen.writeUInt16LE(extra.length, 30)
+      const cd = Buffer.concat([cen, name, extra])
+      const eocd = Buffer.alloc(22)
+      eocd.writeUInt32LE(0x06054b50, 0)
+      eocd.writeUInt16LE(1, 8)
+      eocd.writeUInt16LE(1, 10)
+      eocd.writeUInt32LE(cd.length, 12)
+      eocd.writeUInt32LE(lpart.length, 16)
+      return Buffer.concat([lpart, cd, eocd])
+    }
+    it('accepts an ASCII name, and a non-ASCII name flagged UTF-8', () => {
+      expect(zipVerifyEntries(tiny(Buffer.from('a.txt'), 0, Buffer.alloc(0)))).toBeNull()
+      expect(zipVerifyEntries(tiny(Buffer.from('é.txt'), 0x800, Buffer.alloc(0)))).toBeNull()
+    })
+    it('refuses a Unicode Path extra field (0x7075)', () => {
+      const extra = Buffer.alloc(4 + 6)
+      extra.writeUInt16LE(0x7075, 0)
+      extra.writeUInt16LE(6, 2)
+      expect(zipProblem(tiny(Buffer.from('a.txt'), 0, extra))).toMatch(/name/)
+      expect(zipVerifyEntries(tiny(Buffer.from('a.txt'), 0, extra))).toMatch(/name/)
+    })
+    it('refuses a non-ASCII name without the UTF-8 flag', () => {
+      expect(zipProblem(tiny(Buffer.from('é.txt'), 0, Buffer.alloc(0)))).toMatch(/name/)
+    })
+  })
 })
