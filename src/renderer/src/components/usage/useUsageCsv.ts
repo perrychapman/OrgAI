@@ -1,8 +1,12 @@
 import { useCallback, useRef, useState } from 'react'
 import { cleanIpcError } from '../../lib/ipcError'
 import { copiedText, csvRowCount } from '../../lib/trends'
-import { overviewQuery, type UsageFilters } from '../../lib/usageOverview'
+import { needsClientFold, overviewQuery, type UsageFilters } from '../../lib/usageOverview'
 import { usageCsvFileName } from '../../lib/usagePage'
+
+/** Main writes the CSV from the period, kinds and projects; the chips on top are not applied (main owns the quoting, so the renderer builds nothing). */
+export const CSV_FOLD_NOTE = 'The CSV covers the period, kinds and projects; the other filters are not applied.'
+const withFoldNote = (text: string, f: UsageFilters): string => (needsClientFold(f) ? `${text} ${CSV_FOLD_NOTE}` : text)
 
 export interface UsageCsv {
   status: { text: string; failed: boolean } | null
@@ -32,7 +36,7 @@ export function useUsageCsv(filters: UsageFilters): UsageCsv {
       const { csv } = await fetchCsv()
       // No BOM on the clipboard: pasted text would start with an invisible character.
       await navigator.clipboard.writeText(csv.replace(/^﻿/, ''))
-      setStatus({ text: copiedText(csvRowCount(csv)), failed: false })
+      setStatus({ text: withFoldNote(copiedText(csvRowCount(csv)), ref.current), failed: false })
     } catch (e) {
       setStatus({ text: `Could not copy: ${cleanIpcError(e)}`, failed: true })
     } finally {
@@ -54,7 +58,7 @@ export function useUsageCsv(filters: UsageFilters): UsageCsv {
       a.remove()
       window.setTimeout(() => URL.revokeObjectURL(url), 10_000)
       // The renderer cannot see where or whether the download finishes, so the notice says only what is known.
-      setStatus({ text: 'Your browser is saving the CSV.', failed: false })
+      setStatus({ text: withFoldNote('Your browser is saving the CSV.', ref.current), failed: false })
     } catch (e) {
       setStatus({ text: `Could not save: ${cleanIpcError(e)}`, failed: true })
     } finally {

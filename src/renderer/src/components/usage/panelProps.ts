@@ -2,7 +2,7 @@
  * Props every Usage page panel takes (docs/design/usage-app.md sections 6, 7). UsageView owns the state and passes
  * these down; panels never read the store's usage filters themselves, so a panel renders from its props alone.
  */
-import type { UsageOverview } from '@shared/types'
+import type { UsageOverview, UsageOverviewTrendPoint } from '@shared/types'
 import type { PeriodSpan, UsageBucket, UsageData, UsageFilters, UsageNarrowing } from '../../lib/usageOverview'
 
 /** "Runs worth a look" sort (6.6). 'no-result' is the default when the data carries noResultCostUsd. */
@@ -26,4 +26,8 @@ export interface UsagePanelProps {
   onNarrow: (n: UsageNarrowing) => void
   /** Say one sentence through the page's polite region (usage-live); at most one per 2 s, the view joins. */
   announce: (text: string) => void
+  /** SpendPanel only: the trend without the day pick, so the chart keeps its context after a bucket click. */
+  periodTrend?: UsageOverviewTrendPoint[]
+  /** SpendPanel only: Esc on a bar while a day is picked removes the day chip. */
+  onClearBucket?: () => void
 }

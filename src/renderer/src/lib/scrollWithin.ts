@@ -19,13 +19,14 @@ export function scrollContainerOf(el: Element): HTMLElement | null {
 /** The clamped scrollTop that puts a target at `block` inside a container (pure; offsets in px). */
 export function targetScrollTop(
   block: 'start' | 'center' | 'nearest',
-  m: { current: number; targetTop: number; targetHeight: number; clientHeight: number; scrollHeight: number }
+  m: { current: number; targetTop: number; targetHeight: number; clientHeight: number; scrollHeight: number; padTop?: number }
 ): number {
   const max = Math.max(0, m.scrollHeight - m.clientHeight)
+  const pad = m.padTop && m.padTop > 0 ? m.padTop : 0
   let top: number
-  if (block === 'start') top = m.current + m.targetTop
+  if (block === 'start') top = m.current + m.targetTop - pad
   else if (block === 'center') top = m.current + m.targetTop - (m.clientHeight - m.targetHeight) / 2
-  else if (m.targetTop < 0) top = m.current + m.targetTop
+  else if (m.targetTop < pad) top = m.current + m.targetTop - pad
   else if (m.targetTop + m.targetHeight > m.clientHeight) top = m.current + Math.min(m.targetTop, m.targetTop + m.targetHeight - m.clientHeight)
   else top = m.current
   return Math.round(Math.min(max, Math.max(0, top)))
@@ -53,7 +54,8 @@ export function scrollWithin(el: Element | null | undefined, block: 'start' | 'c
       targetTop: t.top - b.top,
       targetHeight: t.height,
       clientHeight: box.clientHeight,
-      scrollHeight: box.scrollHeight
+      scrollHeight: box.scrollHeight,
+      padTop: Number.parseFloat(getComputedStyle(box).scrollPaddingTop) || 0
     })
   }
   resetShiftedAncestors(box?.parentElement ?? el.parentElement)

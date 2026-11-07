@@ -535,12 +535,9 @@ try {
     check(lat <= 12_000, 'live: the live note appears within 12 s of a run starting with the page open (no wait for it to end)', `${lat} ms`)
     check(/still going/.test(await T('usage-live-note').innerText()), 'live: the live note appears while a run is going')
     const offLive = await offsets()
-    // The live note is a line the spec adds to the summary strip, so everything below it moves down by exactly that
-    // line once. Anything else moving (a panel by a different amount, the scroller) is a real shift.
-    const noteH = await T('usage-live-note').evaluate((el) => Math.round(el.getBoundingClientRect().height))
+    // The live note sits in the topbar beside "Updated": nothing below it may move (spec 17.5).
     const deltas = ['spend', 'projects', 'eff'].map((k) => offLive[k] - offBefore[k])
-    check(deltas.every((d) => Math.abs(d - deltas[0]) <= 2) && deltas[0] <= noteH + 8 && offLive.scroll === offBefore.scroll, 'live: the live note moves the panels below it by its own height and nothing else shifts', JSON.stringify({ offBefore, offLive, noteH }))
-    log('info: the live note pushes the panels below the summary down by', deltas[0], 'px (spec 10 adds the line, spec 17.5 asks for no shift)')
+    check(deltas.every((d) => Math.abs(d) <= 2) && offLive.scroll === offBefore.scroll, 'live: the live note shifts nothing below it', JSON.stringify({ offBefore, offLive }))
   } else skip('live note', 'the live run did not show in 40 s (the page refetches at most every 30 s while a run is live and on end)')
   const focusMid = await focusInfo()
   check(focusMid.testid === focusBefore.testid, 'live: focus does not move while a live run refreshes the page', JSON.stringify({ focusBefore, focusMid }))

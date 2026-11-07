@@ -5,18 +5,24 @@ import { USAGE_SUBTITLE } from '../../lib/usagePage'
 import type { UsageCsv } from './useUsageCsv'
 
 /** The topbar's right side: Copy as CSV, Save CSV... and the quiet "Updated 14:02" (not announced). */
-export function UsageTopbarActions({ csv, disabled, updated }: { csv: UsageCsv; disabled: boolean; updated: string | null }): ReactElement {
+export function UsageTopbarActions({ csv, disabled, updated, liveNote }: { csv: UsageCsv; disabled: boolean; updated: string | null; liveNote?: string | null }): ReactElement {
   return (
     <>
+      {liveNote && (
+        // Beside "Updated": a topbar item, so a run starting or ending moves nothing below (spec 17.5).
+        <span className="usage-live-note" data-testid="usage-live-note" title={liveNote}>
+          {liveNote}
+        </span>
+      )}
       {updated && (
         <span className="usage-updated" data-testid="usage-updated">
           {updated}
         </span>
       )}
-      <Button icon={ClipboardCopy} size="sm" disabled={disabled || csv.busy} onClick={() => void csv.copy()} testId="usage-copy-csv">
+      <Button icon={ClipboardCopy} size="sm" disabled={disabled} inert={csv.busy} onClick={() => void csv.copy()} testId="usage-copy-csv">
         Copy as CSV
       </Button>
-      <Button icon={Download} size="sm" disabled={disabled || csv.busy} onClick={() => void csv.save()} testId="usage-save-csv">
+      <Button icon={Download} size="sm" disabled={disabled} inert={csv.busy} onClick={() => void csv.save()} testId="usage-save-csv">
         Save CSV...
       </Button>
     </>

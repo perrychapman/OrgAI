@@ -93,6 +93,9 @@ export default function UsageView(): ReactElement {
   const pending = useRef<Pending | null>(null)
   const pendingFocus = useRef<{ chipKey: string | null } | null>(null)
   const loadedSaid = useRef(false)
+  const h1Ref = useRef<HTMLHeadingElement>(null)
+  // A button that disappears when it is used (Retry, Use 30 days) hands focus to the page heading, never to body.
+  const focusHeading = useCallback(() => h1Ref.current?.focus({ preventScroll: true }), [])
 
   // ---- one polite region, at most one announcement per 2 s ----
   const [said, setSaid] = useState<{ text: string; seq: number }>({ text: '', seq: 0 })
@@ -161,6 +164,11 @@ export default function UsageView(): ReactElement {
   const previousData = useMemo(
     () => (state.previous ? { data: usageData(state.previous.overview, { ...filters, bucketPick: null }, connectionName), truncated: !!state.previous.overview.truncated } : null),
     [state.previous, filters]
+  )
+  // The spend chart's trend without the day pick (M3): only a pick changes it, so the same data is reused otherwise.
+  const periodTrend = useMemo(
+    () => (overview && filters.bucketPick ? usageData(overview, { ...filters, bucketPick: null }, connectionName).trend : undefined),
+    [overview, filters]
   )
   const series = useMemo(() => {
     if (!overview) return new Map<string, number>()
@@ -261,7 +269,20 @@ export default function UsageView(): ReactElement {
     applyFilters(clearedFilters(filters), { cleared: true })
   }, [filters, applyFilters])
 
-  const useThirtyDays = useCallback(() => applyFilters({ ...filters, period: { kind: 'days', days: 30 }, bucketPick: null }), [filters, applyFilters])
+  const useThirtyDays = useCallback(() => {
+    applyFilters({ ...filters, period: { kind: 'days', days: 30 }, bucketPick: null })
+    focusHeading()
+  }, [filters, applyFilters, focusHeading])
+  const retry = useCallback(() => {
+    focusHeading()
+    state.retry()
+  }, [focusHeading, state])
+
+  // Esc at bucket level clears the day chip (spec 7.4) with the chip-removal focus and announcement path.
+  const onClearBucket = useCallback(() => {
+    const chip = chips.find((c) => c.kind === 'bucket')
+    if (chip) onRemoveChip(chip)
+  }, [chips, onRemoveChip])
 
   // Focus after a removal: the next chip's remove button, else the filter bar's first control; never body.
   useLayoutEffect(() => {
@@ -340,9 +361,9 @@ export default function UsageView(): ReactElement {
   return (
     <div className="usage-view" ref={rootRef} data-testid="usage-view" aria-busy={state.busy}>
       <div className="topbar">
-        <h1>Usage</h1>
+        <h1 ref={h1Ref} tabIndex={-1}>Usage</h1>
         <div className="spacer" />
-        {!emptyAll && <UsageTopbarActions csv={csv} disabled={!data || noRuns} updated={state.updatedAt ? updatedText(state.updatedAt) : null} />}
+        {!emptyAll && <UsageTopbarActions csv={csv} disabled={!data || noRuns} liveNote={data ? liveNote(data.totals.liveRuns) : null} updated={state.updatedAt ? updatedText(state.updatedAt) : null} />}
       </div>
       <AppNavigateBanner />
       <div className="usage-scroll" ref={scrollRef}>
@@ -365,8 +386,8 @@ export default function UsageView(): ReactElement {
               />
               <UsageChips chips={chips} onRemove={onRemoveChip} onClear={onClearAll} />
               {notes?.truncated && <TruncatedBanner note={notes.truncated} onUseThirtyDays={useThirtyDays} />}
-              {state.refreshFailedFrom !== null && <RefreshFailed text={refreshFailedText(state.refreshFailedFrom)} onRetry={state.retry} />}
-              {state.error && !overview && <LoadError message={state.error} onRetry={state.retry} />}
+              {state.refreshFailedFrom !== null && <RefreshFailed text={refreshFailedText(state.refreshFailedFrom)} onRetry={retry} />}
+              {state.error && !overview && <LoadError message={state.error} onRetry={retry} />}
               {!overview && !state.error && <LoadingSkeleton />}
               {panelProps && summary && data && notes && (
                 <>
@@ -374,7 +395,6 @@ export default function UsageView(): ReactElement {
                     items={summary}
                     coverage={costCoverage(data.totals)}
                     modelChip={filters.model}
-                    liveNote={liveNote(data.totals.liveRuns)}
                     onNoPrice={() => onNarrow({ noPrice: true })}
                   />
                   <SummaryNotes notes={notes} />
@@ -382,7 +402,7 @@ export default function UsageView(): ReactElement {
                     <EmptyFiltered model={emptyModel(filters, chips, anyRuns?.lastAt ?? null, barNow)} onClear={onClearAll} onUseThirtyDays={useThirtyDays} />
                   ) : (
                     <>
-                      <SpendPanel {...panelProps} />
+                      <SpendPanel {...panelProps} periodTrend={periodTrend} onClearBucket={filters.bucketPick ? onClearBucket : undefined} />
                       <div className="usage-where">
                         <ProjectsPanel {...panelProps} />
                         <ModelsPanel {...panelProps} />

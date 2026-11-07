@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { UsageOverview, UsageProjectRollup } from '@shared/types'
+import type { RunStatus, UsageOverview, UsageProjectRollup } from '@shared/types'
 import { USAGE_STATS_MAX_LIMIT } from '@shared/types'
 import { useAppStore } from '../../store/useAppStore'
 import { cleanIpcError } from '../../lib/ipcError'
@@ -10,6 +10,7 @@ import {
   anyLiveRow,
   endedRefetchDelay,
   livePollDue,
+  settledStatus,
   staleRunIds,
   type RunStatusFact
 } from '../../lib/usagePage'
@@ -67,6 +68,7 @@ export function useUsageOverview(filters: UsageFilters): UsageOverviewState {
   const endedTimer = useRef<number | null>(null)
   const handled = useRef(new Set<string>())
   const checkRef = useRef<() => void>(() => undefined)
+  const previousFetched = useRef('')
 
   const run = useCallback(async (silent: boolean): Promise<void> => {
     const f = filtersRef.current
@@ -131,6 +133,13 @@ export function useUsageOverview(filters: UsageFilters): UsageOverviewState {
         startedAt: r.summary.startedAt,
         ...(r.summary.endedAt !== undefined ? { endedAt: r.summary.endedAt } : {})
       }))
+      // A run that went live again (a resume) forgets its ended / paused marks, so its next pause or end refetches again.
+      for (const f of facts) {
+        if (settledStatus(f.status)) continue
+        for (const k of [...handled.current]) {
+          if (k.startsWith(`${f.id}:`) && settledStatus(k.slice(f.id.length + 1) as RunStatus)) handled.current.delete(k)
+        }
+      }
       const ids = staleRunIds(o.runs, facts, o.generatedAt, sinceRef.current).filter((id) => {
         const status = facts.find((f) => f.id === id)?.status
         return !handled.current.has(`${id}:${status}`)
@@ -171,14 +180,26 @@ export function useUsageOverview(filters: UsageFilters): UsageOverviewState {
     if (!settledKey) return
     const f = filtersRef.current
     if (f.bucketPick) {
+      // A day is not comparable with a whole earlier span: no deltas; the next unpicked state fetches again.
+      previousFetched.current = ''
       setPrevious(null)
+      return
+    }
+    // The earlier span does not change while the page stays on it, so a silent refetch of the current span (a new
+    // settledKey) reuses what was fetched. The rows are kept (limit max) because the cost-per-run delta is a median.
+    const query = { ...previousQuery(f, Date.now()), limit: USAGE_STATS_MAX_LIMIT }
+    const pk = JSON.stringify(query)
+    if (pk === previousFetched.current) {
+      setPrevious((p) => (p ? { ...p, key: settledKey } : p))
       return
     }
     let live = true
     window.orgai.runs
-      .usageOverview({ ...previousQuery(f, Date.now()), limit: USAGE_STATS_MAX_LIMIT })
+      .usageOverview(query)
       .then((o) => {
-        if (live) setPrevious({ overview: o, key: settledKey })
+        if (!live) return
+        previousFetched.current = pk
+        setPrevious({ overview: o, key: settledKey })
       })
       .catch(() => {
         if (live) setPrevious(null)

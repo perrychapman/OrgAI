@@ -186,7 +186,7 @@ describe('notes', () => {
     const n = dataNotes({ ...base, data: d, truncated: true, matchedRuns: 2430, oldestIncludedAt: new Date(2026, 9, 12).getTime(), spanDays: 90 })
     expect(n.truncated?.text).toContain('newest 2,000 of 2,430 runs')
     expect(n.truncated?.text).toContain('Runs before 12 Oct are not listed.')
-    expect(n.truncated?.text).toContain('Totals and charts still count every run.')
+    expect(n.truncated?.text).toContain('still count every run; Efficiency and the run tables use the listed ones.')
     expect(n.truncated?.offerThirtyDays).toBe(true)
     const folded = data([row('a')], { truncated: true }, { ...f0, noPrice: true })
     expect(dataNotes({ ...base, data: folded, truncated: true }).truncated?.text).toContain('at least these amounts')

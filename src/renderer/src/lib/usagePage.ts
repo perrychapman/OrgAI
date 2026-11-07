@@ -244,7 +244,7 @@ export function dataNotes(a: { data: UsageData; truncated: boolean; oldestInclud
     const cut = a.oldestIncludedAt !== undefined ? ` Runs before ${dateWithYearIfOld(a.oldestIncludedAt, a.now)} are not listed.` : ''
     const figures = data.folded
       ? ' Because of the filters you chose, the figures below count only the listed runs, so they are at least these amounts.'
-      : ' Totals and charts still count every run.'
+      : ' Totals, spend and the project, model and role lists still count every run; Efficiency and the run tables use the listed ones.'
     truncated = {
       text: `The lists show the newest ${TRUNCATED_LIMIT_LABEL} of ${a.matchedRuns.toLocaleString('en-GB')} runs.${cut}${figures} Narrow the period to see them all.`,
       offerThirtyDays: a.spanDays > 30

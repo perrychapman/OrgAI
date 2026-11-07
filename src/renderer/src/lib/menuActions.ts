@@ -3,7 +3,7 @@ import { teamAttentionItems, type TeamAttentionItem } from './teamFiles'
 import { EMPTY_MENU_STATE, isMenuAction, isVirtualProjectId, type MenuAction, type MenuState } from '@shared/types'
 import { isRunLive, openNewChat, openNewProject, useAppStore, type RunState } from '../store/useAppStore'
 import { menuHandlerFor, runMenuAction } from './menuRegistry'
-import { offersSaveAsProject } from './assistants'
+import { assistantLabel, offersSaveAsProject } from './assistants'
 import { waitingItems } from './needsYou'
 import { APP_SETTINGS_PANES, APP_SETTINGS_SECTIONS, requestAppSettingsSection, requestSkillLibrary } from './settingsTarget'
 import { toggleSidebar } from './useSidebarCollapsed'
@@ -286,9 +286,21 @@ function fallback(action: MenuAction): string | void {
       return void askOrgAI()
     case 'show-usage':
       st.openUsage({})
-      announceMenu('Usage, all projects.')
+      announceMenu(usageMenuAnnouncement(st))
       return
   }
+}
+
+/** "Usage, all projects." unless the page keeps a project narrowing: then the name, or the count (L4). */
+export function usageMenuAnnouncement(st: { usageFilters: { projectIds: readonly string[] }; projects: readonly { id: string; name: string }[] }): string {
+  const ids = st.usageFilters.projectIds
+  if (ids.length === 0) return 'Usage, all projects.'
+  if (ids.length === 1) {
+    const id = ids[0]!
+    const name = isVirtualProjectId(id) ? assistantLabel(id) : (st.projects.find((p) => p.id === id)?.name ?? 'one project')
+    return `Usage, ${name}.`
+  }
+  return `Usage, ${ids.length} projects.`
 }
 
 /** The seed Help > Ask OrgAI about itself puts in a fresh Chat (UX rec 2: a start, not a full question). */

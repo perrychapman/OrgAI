@@ -21,7 +21,7 @@ import {
   type RunSortKey
 } from '../../lib/usageRuns'
 import { useAppStore } from '../../store/useAppStore'
-import { Cost } from '../ui/Cost'
+import { CostText } from './RankedBars'
 import type { UsagePanelProps } from './panelProps'
 import { SortTh, useOverflowX } from './usageTableParts'
 import '../../styles/usage-tables.css'
@@ -62,6 +62,30 @@ function RunsTable({ rows }: { rows: ReturnType<typeof sortRunRows> }): ReactEle
       frame.current = 0
     }
   }, [windowed, shown])
+
+  // "Show N more" takes the button away: focus goes to the first newly shown row's open button (never body).
+  const focusAfterMore = useRef<{ id: string; index: number } | null>(null)
+  useEffect(() => {
+    const want = focusAfterMore.current
+    const wrap = wrapRef.current
+    if (!want || !wrap) return
+    focusAfterMore.current = null
+    const find = (): HTMLElement | null => wrap.querySelector<HTMLElement>(`[data-run="${CSS.escape(want.id)}"] .usage-run-open`)
+    const first = find()
+    if (first) {
+      first.focus()
+      return
+    }
+    // A removed project's row has no button: the section heading is the stable fallback.
+    if (wrap.querySelector(`[data-run="${CSS.escape(want.id)}"]`)) {
+      document.getElementById('usage-runs-h')?.focus()
+      return
+    }
+    // Windowed: bring the row into the rendered window, then focus it once it exists.
+    wrap.scrollTop = Math.max(0, want.index * RUN_ROW_PX - wrap.clientHeight / 2)
+    setScroll({ top: wrap.scrollTop, height: wrap.clientHeight })
+    window.requestAnimationFrame(() => window.requestAnimationFrame(() => (find() ?? document.getElementById('usage-runs-h'))?.focus()))
+  }, [shown])
 
   const win = windowed ? runsWindow(visible.length, scroll.top, scroll.height) : { start: 0, end: visible.length, before: 0, after: 0 }
   const onSort = (key: RunSortKey): void => setSort((s) => (s.key === key ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: RUN_SORT_FIRST[key] }))
@@ -142,7 +166,7 @@ function RunsTable({ rows }: { rows: ReturnType<typeof sortRunRows> }): ReactEle
                     {formatTokens(totalTokens(r.usage.tokens))}
                   </td>
                   <td className="num">
-                    <Cost value={rowCostInput(r)} precision="page" />
+                    <CostText value={rowCostInput(r)} />
                   </td>
                   <td className="num" title={cache.title}>
                     {cache.text}
@@ -160,7 +184,11 @@ function RunsTable({ rows }: { rows: ReturnType<typeof sortRunRows> }): ReactEle
         </table>
       </div>
       {remaining > 0 && (
-        <button type="button" className="btn ghost sm usage-more-btn" data-testid="usage-runs-more" onClick={() => setShown(sorted.length)}>
+        <button type="button" className="btn ghost sm usage-more-btn" data-testid="usage-runs-more" onClick={() => {
+            const next = sorted[shown]
+            if (next) focusAfterMore.current = { id: next.runId, index: shown }
+            setShown(sorted.length)
+          }}>
           Show {remaining.toLocaleString()} more
         </button>
       )}

@@ -59,7 +59,9 @@ interface Bar {
   notLoaded: boolean
 }
 
-export default function SpendPanel({ data, overview, filters, bucket, span, series, onNarrow, announce }: UsagePanelProps): ReactElement {
+export default function SpendPanel({ data, overview, filters, bucket, span, series, onNarrow, announce, periodTrend, onClearBucket }: UsagePanelProps): ReactElement {
+  // A day pick narrows data.trend to that bucket; the chart keeps the whole period (the pick stays outlined, the rest dims).
+  const trend = periodTrend ?? data.trend
   const hatchId = `ucsp${useId().replace(/[^a-zA-Z0-9]/g, '')}`
   const rootRef = useRef<HTMLDivElement>(null)
   const plotRef = useRef<HTMLDivElement>(null)
@@ -78,15 +80,15 @@ export default function SpendPanel({ data, overview, filters, bucket, span, seri
     return () => ro.disconnect()
   }, [])
 
-  const unpriced = useMemo(() => allUnpriced(data.trend), [data.trend])
+  const unpriced = useMemo(() => allUnpriced(trend), [trend])
   const metric: Metric = chosen ?? (unpriced ? 'tokens' : 'cost')
-  const names = useMemo(() => new Map(data.projects.map((p) => [p.projectId, p.projectName])), [data.projects])
+  const names = useMemo(() => new Map([...overview.projects, ...data.projects].map((p) => [p.projectId, p.projectName])), [overview.projects, data.projects])
   const nameOf = (key: string, seg?: Segment): string =>
     key === OTHER_KEY ? `Other (${seg?.projects ?? 0} ${seg?.projects === 1 ? 'project' : 'projects'})` : (names.get(key) ?? 'Removed project')
 
   const bars: Bar[] = useMemo(() => {
     const oldest = data.lowerBound ? overview.oldestIncludedAt : undefined
-    return fillBuckets(data.trend, span.since, span.until, bucket).map((slot) => {
+    return fillBuckets(trend, span.since, span.until, bucket).map((slot) => {
       const segments = slot.point ? segmentsOf(slot.point.byProject, series, metric) : []
       return {
         slot,
@@ -95,7 +97,7 @@ export default function SpendPanel({ data, overview, filters, bucket, span, seri
         notLoaded: oldest !== undefined && !slot.point && bucketEnd(slot.start, bucket) <= oldest
       }
     })
-  }, [data.trend, data.lowerBound, overview.oldestIncludedAt, span.since, span.until, bucket, series, metric])
+  }, [trend, data.lowerBound, overview.oldestIncludedAt, span.since, span.until, bucket, series, metric])
 
   const wide = rootW >= WIDE_PANEL_PX
   const totalH = wide ? 220 : 180
@@ -202,6 +204,7 @@ export default function SpendPanel({ data, overview, filters, bucket, span, seri
         break
       case 'Escape':
         if (s !== null) focusEl(i, null)
+        else if (filters.bucketPick && onClearBucket) onClearBucket()
         else return
         break
       case 'Enter':
@@ -460,7 +463,7 @@ export default function SpendPanel({ data, overview, filters, bucket, span, seri
                   className="uc-legend-btn"
                   data-testid="usage-spend-legend-row"
                   data-project={p.projectId}
-                  aria-pressed={selectedProject}
+                  aria-current={selectedProject ? 'true' : undefined}
                   title={`${p.projectName}: narrow to this project`}
                   onClick={() => onNarrow({ projectId: p.projectId })}
                 >
