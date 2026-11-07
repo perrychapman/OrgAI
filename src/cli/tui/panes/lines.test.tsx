@@ -44,4 +44,11 @@ describe('styleFor', () => {
     expect(styleFor({ dim: true }, env())).toEqual({ dimColor: true })
     expect(styleFor({ tone: 'dim', bold: true, inverse: true }, env({ color: false }))).toEqual({})
   })
+
+  it('does not dim readable semantic text twice and keeps accessible output plain', () => {
+    expect(styleFor({ tone: 'muted', dim: true }, env())).toEqual({ color: '#a3adc2' })
+    for (const mode of [{ color: false }, { screenReader: true }, { dumbTerminal: true }]) {
+      expect(styleFor({ tone: 'identity', dim: true, bold: true, inverse: true }, env(mode))).toEqual({})
+    }
+  })
 })

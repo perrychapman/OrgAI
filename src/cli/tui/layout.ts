@@ -1,11 +1,11 @@
 /**
- * Pure pane layout (W4-T3, cli-spec 5.1). Full-screen: a 1-row status bar on top, the body, then the Decision Tray,
- * the open slash palette (`paletteRows`, between the tray and the composer) and the Composer at the bottom; the body is
+ * Pure pane layout (W4-T3, cli-spec 5.1). Full-screen: the body, then the Decision Tray,
+ * the open slash palette (`paletteRows`), Composer and 1-row status footer; the body is
  * a two-column split from SPLIT_MIN_COLS columns and one stacked column below (re-run on every resize; the buffer mode
- * itself never changes). Rows are handed out in the order status, composer (the real count the shell passes, 1..7),
+ * itself never changes). Rows are handed out in the order status, composer (the real count the shell passes),
  * palette, tray; the body gets the rest. The split leaves a 1-column gutter between its two columns (`plan.gutter`;
  * 0 when stacked or when only one column is shown). Inline: the transcript goes to scrollback through Ink's <Static>
- * (a height-0 box) under a pinned footer: status, tray and composer lines (one row each), plus the palette's rows.
+ * (a height-0 box) above a pinned footer: tray, palette, composer and status.
  *
  * Guarantees for any input: integer sizes >= 0, column widths plus the gutter sum to at most `cols`, each column's
  * heights plus the status, tray, palette and composer rows sum to at most `rows`, hidden panes get no box, and the
@@ -63,7 +63,7 @@ export function computeLayout(input: LayoutInput): LayoutPlan {
     }
   }
 
-  // Priority for rows: status, composer (the real count the shell passes, 1..7), the open palette, then the tray;
+  // Priority for rows: status, composer (the real count the shell passes), the open palette, then the tray;
   // the body gets what is left.
   const statusRows = Math.min(1, rows)
   const composerH = Math.min(nat(input.composerRows), rows - statusRows)

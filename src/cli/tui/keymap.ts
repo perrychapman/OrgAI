@@ -50,7 +50,7 @@ export const KEYMAP: readonly KeyDef[] = [
   { scope: 'tree', keys: 'Up, Down', label: 'Move between agents', hint: { order: 1, text: 'Up/Down move' } },
   { scope: 'tree', keys: 'Enter', label: 'Open the agent inspector (on a group: unfold it; on an agent that needs you: its decision)', hint: { order: 2, text: 'Enter details' }, rows: ['agent'] },
   { scope: 'tree', keys: 'Enter', label: 'Open that agent\'s decision card', hint: { order: 2, text: 'Enter decide' }, rows: ['waiting'] },
-  { scope: 'tree', keys: 'Right, Enter', label: 'Unfold a "N done" group', hint: { order: 2, text: 'Enter/Right unfold' }, rows: ['group'] },
+  { scope: 'tree', keys: 'Right, Enter', label: 'Unfold a "N done" group', hint: { order: 0, text: 'Enter/Right unfold' }, rows: ['group'] },
   { scope: 'tree', keys: 'Left', label: 'Fold an unfolded group back' },
   { scope: 'tree', keys: 'h', label: 'Hide / show finished agents (/fold)', hint: { order: 4, text: 'h finished' }, rows: ['group', 'agent'] },
   { scope: 'tree', keys: 'n, N', label: 'Jump to the next / previous agent that needs you', hint: { order: 3, text: 'n next needs-you' }, rows: ['agent', 'waiting'] },
@@ -60,6 +60,7 @@ export const KEYMAP: readonly KeyDef[] = [
   { scope: 'transcript', keys: 'Up, Down', label: 'Scroll a line', hint: { order: 1, text: 'Up/Down scroll' } },
   { scope: 'transcript', keys: 'PgUp, PgDn', label: 'Scroll a page', hint: { order: 2, text: 'PgUp/PgDn page' } },
   { scope: 'transcript', keys: 'Home, End', label: 'Oldest row / back to the newest', hint: { order: 3, text: 'End newest' } },
+  { scope: 'transcript', keys: 'Enter', label: 'Expand / collapse completed tool activity', hint: { order: 4, text: 'Enter tools' } },
   // ---- Plan ----
   { scope: 'plan', keys: 'Up, Down, PgUp, PgDn, Home, End', label: 'Scroll the plan', hint: { order: 1, text: 'Up/Down scroll' } },
   // ---- Worktrees ----
@@ -67,6 +68,7 @@ export const KEYMAP: readonly KeyDef[] = [
   { scope: 'worktrees', keys: 'Enter, v', label: 'View the diff in the pager', hint: { order: 2, text: 'v diff' } },
   // ---- Agent inspector ----
   { scope: 'inspector', keys: 'Up, Down, PgUp, PgDn, Home, End', label: "Scroll this agent's transcript", hint: { order: 5, text: 'Up/Down scroll' } },
+  { scope: 'inspector', keys: 'Enter', label: 'Expand / collapse completed tool activity' },
   { scope: 'inspector', keys: 'd', label: "Go to this agent's decision card", hint: { order: 2, text: 'd decide' }, rows: ['waiting'] },
   { scope: 'inspector', keys: 'w', label: 'Open its worktree diff in the pager', hint: { order: 1, text: 'w diff' }, rows: ['agent'] },
   { scope: 'inspector', keys: 't', label: 'Show / hide its thinking rows', hint: { order: 2, text: 't thinking' } },

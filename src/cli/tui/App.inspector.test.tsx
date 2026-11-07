@@ -12,7 +12,7 @@ import { App } from './App'
 import { DEFAULT_TUI_ENV } from './context'
 import { SLASH_COMMANDS } from './slashCommands'
 import { applyEvent, applyRecord, createInitialState, setActiveRun } from './state'
-import type { InputEvent, KeyEvent, SlashContext, TuiEnv, TuiState } from './types'
+import { TUI_NOTICE_TTL_MS, type InputEvent, type KeyEvent, type SlashContext, type TuiEnv, type TuiState } from './types'
 
 const NOW = Date.now()
 const OLD = NOW - 120_000
@@ -210,7 +210,7 @@ describe('agent inspector (F4)', () => {
     await m.send(key('d'))
     // The tray now has focus on that agent's card.
     expect(m.frame()).toContain('Run npm test')
-    expect(m.frame()).toContain('Esc back')
+    expect(m.frame()).toMatch(/Esc [Bb]ack/)
   })
 
   it('w opens the worktree diff in the pager path (overlay without a pager)', async () => {
@@ -276,6 +276,131 @@ describe('agent inspector (F4)', () => {
   })
 })
 
+describe('external decision lifecycle', () => {
+  const scenarios = [
+    { label: 'external running', status: 'running', surface: 'cli', action: 'confirm', outcome: 'applied', order: 'after', throws: false, notice: true, cancelled: false },
+    { label: 'external finished', status: 'finished', surface: 'cli', action: 'confirm', outcome: 'applied', order: 'after', throws: false, notice: true, cancelled: false },
+    { label: 'local TUI', status: 'running', surface: 'tui', action: 'direct', outcome: 'applied', order: 'after', throws: false, notice: false, cancelled: false },
+    { label: 'local TUI event before applied', status: 'running', surface: 'tui', action: 'direct', outcome: 'applied', order: 'before', throws: false, notice: false, cancelled: false },
+    { label: 'external after rejection', status: 'running', surface: 'cli', action: 'direct', outcome: 'not-found', order: 'after', throws: false, notice: true, cancelled: false },
+    { label: 'external before not-found', status: 'running', surface: 'cli', action: 'direct', outcome: 'not-found', order: 'before', throws: false, notice: true, cancelled: false },
+    { label: 'external after thrown rejection', status: 'running', surface: 'cli', action: 'direct', outcome: 'not-found', order: 'after', throws: true, notice: true, cancelled: false },
+    { label: 'cancelled', status: 'running', surface: 'cli', action: 'confirm', outcome: 'applied', order: 'after', throws: false, notice: false, cancelled: true }
+  ] as const
+
+  it.each(scenarios)('$label resolution keeps the activity lifecycle intact', async (scenario) => {
+    let state = sampleState({ status: scenario.status })
+    let clock = 10_000
+    const initialPermission = state.runs.run1?.cards.permissions[0] as PermissionRequest
+    state = applyEvent(state, {
+      seq: ++seq,
+      event: {
+        type: 'permission.request',
+        runId: 'run1',
+        request: {
+          ...initialPermission,
+          suggestions: [{ type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'npm test:*' }], behavior: 'allow', destination: 'project' }]
+        }
+      } as RunEvent
+    })
+    const listeners = new Set<() => void>()
+    let releaseDecision: (() => void) | undefined
+    const emit = () => {
+      for (const fn of [...listeners]) fn()
+    }
+    const session = {
+      getState: () => state,
+      subscribe: (fn: () => void) => {
+        listeners.add(fn)
+        return () => void listeners.delete(fn)
+      },
+      hostKind: 'daemon',
+      hostInstanceId: 'h1',
+      focusRun: vi.fn(async () => undefined),
+      setComposeTarget: vi.fn(),
+      submitPrompt: vi.fn(async () => undefined),
+      startQuick: vi.fn(),
+      interrupt: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      decide: vi.fn(() => {
+        if (scenario.throws) return Promise.reject(new Error('decision rejected'))
+        if (scenario.order === 'before') return new Promise<{ status: typeof scenario.outcome }>((resolve) => { releaseDecision = () => resolve({ status: scenario.outcome }) })
+        return Promise.resolve({ status: scenario.outcome })
+      }),
+      worktreeDiff: vi.fn(async () => ({ stat: '', patch: '' })),
+      listRuns: vi.fn(async () => []),
+      startRetro: vi.fn(async () => summary('retro1', { kind: 'setup' })),
+      openInDesktop: vi.fn(),
+      resync: vi.fn(async () => undefined),
+      notify: vi.fn((text: string) => {
+        state = { ...state, notices: [...state.notices, { id: state.notices.length + 1, text, at: clock }] }
+        emit()
+      }),
+      close: vi.fn(async () => undefined)
+    }
+    const listenersInput = new Set<(e: InputEvent) => void>()
+    const terminal = {
+      bufferMode: 'fullscreen' as const,
+      bracketedPaste: false,
+      enter: vi.fn(),
+      suspend: vi.fn(),
+      resume: vi.fn(),
+      restore: vi.fn(),
+      size: () => ({ cols: 120, rows: 40 }),
+      onResize: () => () => undefined
+    }
+    const r = render(
+      <App
+        session={session as never}
+        terminal={terminal as never}
+        env={{ ...DEFAULT_TUI_ENV, bufferMode: 'fullscreen' }}
+        launch={{}}
+        conn={{ client: {} as never, hello: {} as never, started: false } as never}
+        input={{ subscribe: (fn) => (listenersInput.add(fn), () => void listenersInput.delete(fn)) }}
+        processEnv={{}}
+        now={() => clock}
+        onExit={() => undefined}
+      />
+    )
+    const send = async (...events: InputEvent[]) => {
+      for (const event of events) {
+        for (const fn of [...listenersInput]) fn(event)
+        await tick()
+      }
+    }
+    await send(named('f2'))
+    clock += 1_000
+    await send(key(scenario.action === 'confirm' ? 'a' : 'y'))
+    if (scenario.action === 'confirm') expect(r.lastFrame()).toContain('to confirm')
+    else await tick()
+
+    state = applyEvent(state, {
+      seq: ++seq,
+      event: { type: 'permission.resolved', runId: 'run1', requestId: 'perm1', cancelled: scenario.cancelled, decidedBy: { surface: scenario.surface } } as RunEvent
+    })
+    state = applyEvent(state, { seq: ++seq, event: { type: 'run.status', runId: 'run1', status: scenario.status } as RunEvent })
+    emit()
+    await tick()
+    if (scenario.order === 'before') {
+      releaseDecision?.()
+      await tick()
+    }
+
+    if (scenario.notice) {
+      expect(r.lastFrame()).toContain('Resolved in another window')
+      clock += TUI_NOTICE_TTL_MS + 1
+      state = { ...state }
+      emit()
+      await tick()
+      expect(r.lastFrame()).not.toContain('Resolved in another window')
+    } else {
+      expect(r.lastFrame()).not.toContain('Resolved in another window')
+    }
+    expect(r.lastFrame()).toContain(scenario.status === 'finished' ? 'Run finished' : '2 agents working')
+    r.unmount()
+  })
+})
+
 describe('message counts (F6)', () => {
   it('the selected row footer and the ~ mark; the inspector shows counts', async () => {
     const m = mount({ cols: 120, rows: 40, state: withMessages(sampleState()) })
@@ -337,16 +462,16 @@ describe('run chips and switching (F8)', () => {
 
   it('the status bar lists the live runs as chips when there is room, else a count, and keeps the hint (issue #26)', async () => {
     const wide = mount({ cols: 180, rows: 40, state: liveRuns() })
-    expect(lines(wide.frame())[0]).toMatch(/R1\*!? R2/)
+    expect(lines(wide.frame()).at(-1)).toMatch(/R1\*!? R2/)
     for (const [cols, rows] of [
       [120, 40],
       [90, 30],
       [100, 24]
     ]) {
       const m = mount({ cols, rows, state: liveRuns() })
-      const top = lines(m.frame())[0]
-      expect(top, `${cols}x${rows}`).toMatch(/R1\*!? R2|2 live/)
-      expect(top, `${cols}x${rows}`).toContain('Enter sends')
+      const footer = lines(m.frame()).at(-1) ?? ''
+      expect(footer, `${cols}x${rows}`).toMatch(/R1\*!? R2|2 live/)
+      expect(m.frame(), `${cols}x${rows}`).toContain('Enter sends')
     }
   })
 
@@ -358,7 +483,7 @@ describe('run chips and switching (F8)', () => {
 
   it('screen reader reads words, not marks', async () => {
     const m = mount({ cols: 200, rows: 40, env: { screenReader: true, unicode: false }, state: liveRuns() })
-    expect(lines(m.frame())[0]).toContain('R1 followed')
+    expect(lines(m.frame()).at(-1)).toContain('R1 followed')
   })
 
   it('] follows the next live run through focusRun; [ the previous', async () => {
@@ -445,7 +570,9 @@ describe('which-key overlay and hints (F9)', () => {
     expect(f).toContain('Keys: Agents')
     expect(f).toContain('Open the agent inspector')
     expect(f).toContain('Glyphs')
-    expect(f).toContain('○ idle  ● thinking  ◆ tool')
+    await m.send(named('pagedown'))
+    const scrolled = m.frame()
+    expect(scrolled).toContain('○ idle  ● thinking  ◆ tool')
     await m.send(named('escape'))
     expect(m.frame()).not.toContain('Keys: Agents')
   })

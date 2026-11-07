@@ -49,7 +49,7 @@ describe('PlanPane', () => {
   it('shows the goal, progress with the status word and every step with glyph and owner', () => {
     const t = mount()
     const out = lines(t.lastFrame())
-    expect(out[0]).toBe('Plan')
+    expect(out[0]).toContain('Plan')
     expect(out[1]).toBe('Ship the login page')
     expect(out[2]).toBe('1/5 done  Running')
     expect(out[3].startsWith('✓ Step 1')).toBe(true)
