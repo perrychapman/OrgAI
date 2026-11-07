@@ -139,7 +139,7 @@ describe('ConnectionService litellm', () => {
     await configureLiteLLM(ctx)
     await ctx.service.connect('litellm')
     const conn = ctx.settings.get().proxies[0]
-    const info = await ctx.service.update({ ...conn, anthropicBaseUrl: 'http://localhost:5000', hasApiKey: false })
+    const info = await ctx.service.update({ ...conn, anthropicBaseUrl: `${conn.anthropicBaseUrl}/v2`, hasApiKey: false })
     expect(info.status).toMatchObject({ state: 'disconnected', detail: 'Changed. Test and connect to apply.' })
     expect((info.connection as ProxyConnection).hasApiKey).toBe(true)
   })

@@ -4,7 +4,8 @@ import { proxyModelFamily } from '@shared/defaults'
 import type { ProxyKind } from '@shared/types'
 import { classifyFamily, cleanOwnedBy, makeDiscoveredModel } from './catalog'
 import { validModelId } from './codexAccount'
-import { MOCK_BAD_KEY, isLocalOrPrivateHost, isMockProxyUrl, mockProxyModels, normalizeProxyUrl } from './proxy'
+import { hiddenCharIn } from '../capabilities/sanitize'
+import { MOCK_BAD_KEY, isMockProxyUrl, mockProxyModels, normalizeProxyUrl } from './proxy'
 import { sanitizeModelPrice } from '../runtime/pricing'
 
 /**
@@ -41,20 +42,15 @@ type FetchLike = typeof fetch
 
 /** Validate and normalize a proxy base URL (no trailing slash). Throws a short human error. */
 export function normalizeBaseUrl(raw: string): string {
-  const text = raw.trim()
-  if (!text) throw new Error('LiteLLM base URL is empty')
-  let url: URL
-  try {
-    url = new URL(text)
-  } catch {
-    throw new Error(`"${text}" is not a valid URL`)
-  }
-  if (url.protocol === 'http:') {
-    if (!isLocalOrPrivateHost(url.hostname)) throw new Error('LiteLLM over http is only allowed for localhost. Use https.')
-  } else if (url.protocol !== 'https:') {
-    throw new Error(`Unsupported URL scheme ${url.protocol} (use https)`)
-  }
-  return `${url.origin}${url.pathname.replace(/\/+$/, '')}`
+  return normalizeProxyUrl(raw, 'Base URL')
+}
+
+/** Remote text for a status line: whitespace collapsed, control / zero-width / bidi characters dropped. */
+function printableText(s: string): string {
+  return Array.from(s.replace(/\s+/g, ' '))
+    .filter((c) => !hiddenCharIn(c))
+    .join('')
+    .trim()
 }
 
 function hostOf(base: string): string {
@@ -96,7 +92,7 @@ async function getJsonUrl(url: string, path: string, base: string, key: string, 
       try {
         const body = (await res.json()) as { error?: { message?: unknown } | string; detail?: unknown }
         const msg = typeof body.error === 'string' ? body.error : body.error?.message ?? body.detail
-        if (typeof msg === 'string' && msg) reason = msg.split(key).join('***').slice(0, 120)
+        if (typeof msg === 'string' && msg) reason = printableText(msg.split(key).join('***')).slice(0, 120)
       } catch {
         // keep statusText
       }

@@ -106,7 +106,7 @@ describe('review hardening (self-configuration fix-up)', () => {
     await ctx.service.connect('litellm')
     expect(ctx.settings.get().defaultConnection).toBe('litellm')
     const logs = ctx.logs.length
-    await ctx.service.update({ ...ctx.settings.get().proxies[0], anthropicBaseUrl: 'http://localhost:4001/' })
+    await ctx.service.update({ ...ctx.settings.get().proxies[0], anthropicBaseUrl: 'http://localhost:4000/v2' })
     expect(ctx.statuses.at(-1)).toEqual({ connection: 'litellm', state: 'disconnected' })
     expect(ctx.settings.get().defaultConnection).toBe('litellm')
     expect(ctx.service.effectiveDefault()).toBe('litellm')

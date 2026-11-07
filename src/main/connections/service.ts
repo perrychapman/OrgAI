@@ -137,6 +137,20 @@ function providerLabelFor(id: ConnectionId, v: Pick<AppSettings, 'proxies'>): st
   return id === 'anthropic' ? 'Claude' : id === 'openai' ? 'Codex (ChatGPT)' : connectionName(id, v)
 }
 
+/** Origins (scheme + host + port) that receive a proxy's key: base, effective OpenAI base and effective models URL. */
+function proxyOrigins(p: ProxyConnection): Set<string> {
+  const out = new Set<string>()
+  for (const u of [p.anthropicBaseUrl, p.openaiBaseUrl || p.anthropicBaseUrl, p.modelsUrl || p.anthropicBaseUrl]) {
+    if (!u) continue
+    try {
+      out.add(new URL(u).origin)
+    } catch {
+      // an unparsable stored value never counts as an origin
+    }
+  }
+  return out
+}
+
 /**
  * Connections and the model catalog: probes, logins, discovery, tier mapping, project remaps and the per-run
  * model access (RunConnection). Proxy connections (AppSettings.proxies) are any number; each has its own key in the
@@ -696,7 +710,20 @@ export class ConnectionService {
     const fresh = this.need(c.id)
     if (isProxyConnection(old) && isProxyConnection(fresh)) {
       const moved = (['name', 'anthropicBaseUrl', 'openaiBaseUrl', 'modelsUrl'] as const).some((k) => (old[k] ?? '') !== (fresh[k] ?? ''))
-      if (moved) this.setStatus(old.id, { state: 'disconnected', detail: 'Changed. Test and connect to apply.', checkedAt: this.now() }, { definite: false })
+      const oldOrigins = proxyOrigins(old)
+      const newHost = [...proxyOrigins(fresh)].some((o) => !oldOrigins.has(o))
+      if (newHost && fresh.hasApiKey) {
+        // The saved key must never travel to a host the user did not enter it for.
+        this.deps.secrets.delete(proxySecretKey(fresh.id))
+        this.deps.settings.setProxyKeyStored(fresh.id, false)
+        this.setStatus(
+          old.id,
+          { state: 'disconnected', detail: 'The address moved to another host, so the saved key was removed. Enter the key again.', checkedAt: this.now() },
+          { definite: false }
+        )
+      } else if (moved) {
+        this.setStatus(old.id, { state: 'disconnected', detail: 'Changed. Test and connect to apply.', checkedAt: this.now() }, { definite: false })
+      }
     }
     if (!sameTiers(old.tierModels, fresh.tierModels)) {
       this.broadcastRemaps(this.remapConnectionProjects(c.id, fresh.tierModels, old.tierModels, 'tierModels'))
