@@ -6,7 +6,7 @@
  */
 import { Box, Text } from 'ink'
 import { basename } from 'node:path'
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { Project, ProjectPathCheck, RunStatus, RunSummary } from '../../shared/types'
 import { nextSettleAt, settleTimerDelay } from '../../shared/view/foldFinished'
 import { isOpenStatus } from '../../shared/view/runChains'
@@ -25,7 +25,7 @@ import { showInPager } from './pager'
 import { PlanPane } from './PlanPane'
 import { sanitizeTty } from './sanitizeTty'
 import { agentLabel } from '../render'
-import { PaneLines, cutSegs } from './panes/lines'
+import { PaneLines, cutSegs, styleFor } from './panes/lines'
 import { runPickLines, runPickRows, type RunPickRow } from './runPick'
 import { adjacentLiveRun, agentDetail, cardsByAgent, collapseTarget, composerMode, offersRetro, orgTreeRows, partialRows, planView, resolveSelectedRow, runTagOf, statusSummary, subtreeIds, topCard, transcriptRows, trayCards, worktreeRows } from './selectors'
 import { usageText } from './usageText'
@@ -33,8 +33,8 @@ import { SLASH_COMMANDS } from './slashCommands'
 import { SlashPalette } from './SlashPalette'
 import { StatusBar } from './StatusBar'
 import type { TuiTerminal } from './terminal'
-import { asciiOnly, glyphs, toneColor } from './theme'
-import { truncateEnd } from './panes/text'
+import { asciiOnly, glyphs, separatorFor } from './theme'
+import { truncateEnd, wrapText } from './panes/text'
 import { TranscriptPane } from './TranscriptPane'
 import { trayHeight } from './trayLayout'
 import type {
@@ -54,7 +54,7 @@ import type {
   TuiSessionApi,
   TuiState
 } from './types'
-import { TUI_TRAFFIC_MS } from './types'
+import { ESC_INTERRUPT_MS, TUI_TRAFFIC_MS } from './types'
 import { WorktreesPane } from './WorktreesPane'
 
 /** 128 + SIGINT: a stopOnQuit session that was quit (types.ts EXIT.sigint; not imported to keep this file pure TUI). */
@@ -123,6 +123,39 @@ export const PLACEHOLDERS: Record<ComposerMode, string> = {
   continue: 'Send to continue this session with its memory',
   quick: 'Ask about this folder (a quick run)',
   readOnly: ''
+}
+
+export const ESC_AGAIN = 'Press Esc again to interrupt the run.'
+export const NOTHING_RUNNING = 'Nothing is running.'
+export const READ_ONLY_ESC = 'This session is read-only: there is nothing to interrupt.'
+export const PANES_NEED_FULLSCREEN = 'Panes need a full-screen terminal 70 columns wide; /agent <name> shows an agent.'
+export const PAGER_HINT = 'Set $PAGER (for example PAGER=less) to page long text.'
+
+/** The composer's placeholder: in send / continue modes it names the followed run (issue #29 M3). */
+export function placeholderFor(mode: ComposerMode, s: TuiState, width: number): string {
+  const base = PLACEHOLDERS[mode]
+  if ((mode !== 'send' && mode !== 'continue') || !s.activeRunId) return base
+  const tag = runTagOf(s, s.activeRunId)
+  if (mode === 'continue') return `Send to continue ${tag} with its memory`
+  const prefix = `Message ${tag}`
+  const raw = s.runs[s.activeRunId]?.summary.title
+  const title = typeof raw === 'string' ? sanitizeTty(raw).replace(/\s+/g, ' ').trim() : ''
+  if (!title) return prefix
+  const room = width - 4 - prefix.length - 3
+  return room >= 6 ? `${prefix} · ${truncateEnd(title, room)}` : prefix
+}
+
+/** Wraps help / usage / pager-fallback lines to the overlay's text width (never cuts a line off). */
+export function wrapOverlayLines(lines: readonly string[], width: number): string[] {
+  const w = Math.max(10, width)
+  return lines.flatMap((l) => (l === '' ? [''] : wrapText(l, w)))
+}
+
+/** "lines 1-18 of 40 · more below" / "end" (the overlay's position cue). */
+export function overlayCue(offset: number, room: number, total: number, sep: string): string {
+  if (total <= room) return ''
+  const last = Math.min(total, offset + room)
+  return `lines ${offset + 1}-${last} of ${total}${sep}${last >= total ? 'end' : 'more below'}`
 }
 
 /** The status line's hint for a focus (keymap.ts holds the keys; panes show their own keys on their bottom line). */
@@ -256,7 +289,17 @@ export function App(props: AppProps) {
   const [onboarding, setOnboarding] = useState<boolean>(launch.onboarding !== undefined)
   const [check, setCheck] = useState<ProjectPathCheck | undefined>(undefined)
   const [quickEdits, setQuickEdits] = useState<boolean | undefined>(undefined)
-  const [focus, setFocusState] = useState<FocusTarget>(launch.onboarding ? 'onboarding' : 'composer')
+  const [focus, setFocusRaw] = useState<FocusTarget>(launch.onboarding ? 'onboarding' : 'composer')
+  // Focus lives in a ref too, updated synchronously by every focus change, and input that arrives while a change is
+  // still waiting for its commit is queued and replayed (in order) once the new target has registered its handler
+  // (issue #31 M9: "/runs\r" in one chunk).
+  const focusRef = useRef<FocusTarget>(launch.onboarding ? 'onboarding' : 'composer')
+  const pendingFocus = useRef<FocusTarget | undefined>(undefined)
+  const inputQueue = useRef<InputEvent[]>([])
+  const lastEsc = useRef<number | undefined>(undefined)
+  const panesNoticeShown = useRef(false)
+  const openedNoticeDone = useRef(false)
+  const [composerRows, setComposerRows] = useState(1)
   // Tree and transcript are on unless /tree or /transcript hide them; Plan and Worktrees follow `userPanes` when the user
   // asked (/plan, /wt), else show only while something needs them (a blocked plan, a worktree in review or conflict).
   const [visible, setVisible] = useState<Record<PaneId, boolean>>({ tree: true, transcript: true, plan: true, worktrees: true })
@@ -281,6 +324,13 @@ export function App(props: AppProps) {
   const [maximised, setMaximised] = useState(false)
   const [, setFoldTick] = useState(0)
   const [, setRedraw] = useState(0)
+  const setFocusState = useCallback((t: FocusTarget): void => {
+    if (focusRef.current === t && pendingFocus.current === undefined) return
+    focusRef.current = t
+    pendingFocus.current = t
+    setFocusRaw(t)
+    setRedraw((n) => n + 1) // a commit always follows, so the queued input is flushed even when the state ends up unchanged
+  }, [])
   const lastCtrlC = useRef<number | undefined>(undefined)
   const exiting = useRef(false)
   const started = useRef(false)
@@ -360,20 +410,27 @@ export function App(props: AppProps) {
   const treeWanted = treeRows.length + 2
   // The inspector takes the right column (split) or the whole body; the layout keeps a transcript column for it.
   const layoutVisible: Record<PaneId, boolean> = inspecting ? { ...effective, transcript: true, plan: false } : effective
+  const paletteWanted = focus === 'palette' ? Math.min(10, Math.max(3, Math.floor(size.rows / 3))) : 0
   const plan = computeLayout({
     cols: size.cols,
     rows: size.rows,
     bufferMode: env.bufferMode,
     visible: layoutVisible,
     trayRows,
-    composerRows: COMPOSER_ROWS,
+    composerRows,
+    paletteRows: paletteWanted,
     treeRows: treeWanted,
     worktreeRows: worktreeData.length + 1
   })
-  const panes = plan.panes.filter((p) => layoutVisible[p.pane])
-  const bodyRows = Math.max(0, size.rows - plan.statusRows - plan.tray.height - plan.composer.height)
+  // Inline mode draws no pane, so nothing in `panes` exists to focus or show there.
+  const panes = inline ? [] : plan.panes.filter((p) => layoutVisible[p.pane])
+  const paletteBox = { width: plan.palette?.width || size.cols, height: plan.palette ? plan.palette.height : paletteWanted }
+  const bodyRows = Math.max(0, size.rows - plan.statusRows - plan.tray.height - plan.composer.height - paletteBox.height)
+  // Overlays are framed in full-screen mode only (no box fragments in scrollback, none for a screen reader).
+  const framed = !inline && !env.screenReader
   // Rows an overlay's lines get: its box is the body (the tray and composer stay), minus two borders, the title and the hint.
-  const overlayRoom = inline ? Math.max(1, size.rows - 6) : Math.max(1, bodyRows - 4)
+  const overlayRoom = inline ? Math.max(1, size.rows - 6) : Math.max(1, bodyRows - (framed ? 4 : 2))
+  const overlayWidth = Math.max(10, size.cols - 2 - (framed ? 2 : 0))
   const inspectorBox = inline
     ? { width: size.cols, height: Math.max(6, Math.min(16, size.rows - 5)) }
     : plan.mode === 'split'
@@ -388,6 +445,27 @@ export function App(props: AppProps) {
     if (PANE_ORDER.includes(focus as PaneId) && !panes.some((p) => p.pane === focus)) setFocusState('composer')
     if (focus === 'inspector' && !inspecting) setFocusState(panes.some((p) => p.pane === 'tree') ? 'tree' : 'composer')
   }, [focus, cards.length, panes, inspecting])
+
+  // After a focus change commits (children have registered their handlers in their own layout effects, which run
+  // first), replay the input that arrived meanwhile, in order, through the newest dispatch.
+  useLayoutEffect(() => {
+    if (pendingFocus.current === undefined || focus !== pendingFocus.current) return
+    pendingFocus.current = undefined
+    const queued = inputQueue.current
+    inputQueue.current = []
+    for (const e of queued) dispatchRef.current(e)
+  })
+
+  // Opening on a run that needs you which is not the newest one: say so once (issue #29 M3).
+  useEffect(() => {
+    if (openedNoticeDone.current || onboarding || !state.activeRunId) return
+    openedNoticeDone.current = true
+    if (launch.runId || launch.prompt || launch.resumeText) return
+    const id = state.activeRunId
+    if (state.runOrder.at(-1) === id || !cards.some((c) => c.ref.runId === id)) return
+    notify(`Opened ${runTagOf(state, id)}: it needs you. /new starts a new run.`)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.activeRunId, onboarding])
 
   // A resize while suspended is picked up by the resume listener (setSize(terminal.size())).
   useEffect(() => terminal.onResize((cols, rows) => (terminal.suspended === true ? undefined : setSize({ cols, rows }))), [terminal])
@@ -512,7 +590,7 @@ export function App(props: AppProps) {
       } catch (e) {
         notify(`Could not open the pager: ${errText(e)}`, 'warn')
       }
-      if (shown === 'no-pager') setOverlay({ kind: 'text', title: sanitizeTty(title), lines: sanitizeTty(text).split('\n'), offset: 0 })
+      if (shown === 'no-pager') setOverlay({ kind: 'text', title: sanitizeTty(title), lines: [...sanitizeTty(text).split('\n'), '', PAGER_HINT], offset: 0 })
     },
     [processEnv, terminal, notify]
   )
@@ -696,8 +774,14 @@ export function App(props: AppProps) {
       .then((d) => openText(`Changes on ${sanitizeTty(branch)}`, `${d.stat}\n\n${d.patch}`))
       .catch((err: unknown) => notify(`Could not read the diff: ${errText(err)}`, 'danger'))
   }
+  const openKeys = (scope: 'composer' | 'tray'): void => {
+    const k = whichKeyLines(scope, env)
+    setOverlay({ kind: 'text', title: k.title, lines: k.lines, offset: 0 })
+  }
+  const onComposerRows = useCallback((n: number): void => setComposerRows((c) => (c === n ? c : n)), [])
   const openRunsPicker = (runs: RunSummary[]): void => {
-    const rows = runPickRows(runs, session.getState().project?.id)
+    const waiting = new Set(trayCards(session.getState()).map((c) => c.ref.runId))
+    const rows = runPickRows(runs, session.getState().project?.id, waiting)
     if (rows.length === 0) {
       notify('No runs yet.')
       return
@@ -798,7 +882,15 @@ export function App(props: AppProps) {
   ]
   const cycle = (dir: 1 | -1): void => {
     const r = ring()
-    const i = r.indexOf(focus)
+    if (r.length <= 1) {
+      // Only the composer: in inline mode (also --inline, a screen reader, TERM=dumb, a narrow terminal) no pane is drawn.
+      if (inline && !panesNoticeShown.current) {
+        panesNoticeShown.current = true
+        notify(PANES_NEED_FULLSCREEN)
+      }
+      return
+    }
+    const i = r.indexOf(focusRef.current)
     setFocusState(r[(i < 0 ? 0 : i + dir + r.length) % r.length])
   }
   const focusTray = (): void => {
@@ -857,7 +949,7 @@ export function App(props: AppProps) {
     }
     if (overlay.kind !== 'text') return
     const page = overlayRoom
-    const max = Math.max(0, overlay.lines.length - page)
+    const max = Math.max(0, wrapOverlayLines(overlay.lines, overlayWidth).length - page)
     let offset = overlay.offset
     if (named(e, 'escape') || ctrl(e, 'c') || (e.name === 'char' && !e.ctrl && e.ch === 'q')) {
       setOverlay(undefined)
@@ -874,6 +966,13 @@ export function App(props: AppProps) {
 
   const dispatch = (e: InputEvent): void => {
     if (exiting.current) return
+    // A focus change is waiting for its commit: hold the input until the new target's handler is registered.
+    if (pendingFocus.current !== undefined) {
+      if (inputQueue.current.length < 512) inputQueue.current.push(e)
+      return
+    }
+    const focus = focusRef.current
+    if (!named(e, 'escape')) lastEsc.current = undefined
     // KeyParser keeps the first PASTE_MAX_CHARS of a paste and drops the rest.
     if (e.type === 'paste' && e.text.length >= PASTE_MAX_CHARS) notify(PASTE_CUT_NOTICE, 'warn')
     if (overlay) {
@@ -957,9 +1056,23 @@ export function App(props: AppProps) {
         setFocusState('composer')
         return
       }
-      if (isWorking(activeStatus) && !readOnly) {
-        notify('Interrupting the run...')
-        session.interrupt().catch((err: unknown) => notify(`Could not interrupt: ${errText(err)}`, 'danger'))
+      const cur = session.getState()
+      const working = isWorking(cur.activeRunId ? cur.runs[cur.activeRunId]?.summary.status : undefined)
+      if (cur.readOnlyReason !== undefined) {
+        notify(READ_ONLY_ESC)
+      } else if (!working) {
+        notify(NOTHING_RUNNING)
+      } else {
+        // A stray Esc must not stop work: the first press asks, a second within ESC_INTERRUPT_MS interrupts.
+        const t = now()
+        if (lastEsc.current !== undefined && t - lastEsc.current <= ESC_INTERRUPT_MS) {
+          lastEsc.current = undefined
+          notify('Interrupting the run...')
+          session.interrupt().catch((err: unknown) => notify(`Could not interrupt: ${errText(err)}`, 'danger'))
+        } else {
+          lastEsc.current = t
+          notify(ESC_AGAIN)
+        }
       }
       return
     }
@@ -978,10 +1091,12 @@ export function App(props: AppProps) {
   const notice = state.notices.at(-1)
   const hintRow: RowKind = focus === 'inspector' ? (inspectorView?.waiting ? 'waiting' : inspectorView?.worktree ? 'agent' : 'bare') : rowKind
   const hints = hintsFor(focus, readOnly, launch.stopOnQuit === true, hintRow, env)
-  const dim = toneColor('dim', env)
-  const listSep = asciiOnly(env) ? ' | ' : ' · '
-  // Overlay frames: Unicode single lines, 'classic' (+ - |) in ASCII mode, none for a screen reader.
-  const boxBorder: { borderStyle?: 'single' | 'classic' } = env.screenReader ? {} : { borderStyle: asciiOnly(env) ? 'classic' : 'single' }
+  const dimStyle = styleFor({ tone: 'dim' }, env)
+  const boldStyle = styleFor({ bold: true }, env)
+  const listSep = separatorFor(env)
+  // Overlay frames (full-screen only): Unicode single lines, 'classic' (+ - |) in ASCII mode; none inline (no box
+  // fragments in scrollback) and none for a screen reader.
+  const boxBorder: { borderStyle?: 'single' | 'classic' } = framed ? { borderStyle: asciiOnly(env) ? 'classic' : 'single' } : {}
 
   const inspectorNode = (() => {
     if (!inspecting || !inspectorView || !inspectorId) return null
@@ -1081,6 +1196,8 @@ export function App(props: AppProps) {
           setFocusState('composer')
         }}
         now={now}
+        onHelp={() => openKeys('tray')}
+        onNotice={(text, tone) => notify(text, tone)}
         {...(trayFocusKey ? { focusKey: trayFocusKey } : {})}
       />
     ) : null
@@ -1090,7 +1207,7 @@ export function App(props: AppProps) {
       width={plan.composer.width || size.cols}
       focused={focus === 'composer'}
       mode={mode}
-      placeholder={PLACEHOLDERS[mode]}
+      placeholder={placeholderFor(mode, state, plan.composer.width || size.cols)}
       {...(state.readOnlyReason ? { disabledReason: state.readOnlyReason } : {})}
       onSubmit={submit}
       onOpenPalette={(initial) => {
@@ -1098,14 +1215,16 @@ export function App(props: AppProps) {
         setFocusState('palette')
       }}
       onLeave={focusTray}
+      onHelp={() => openKeys('composer')}
+      onRows={onComposerRows}
     />
   )
 
   const palette =
     focus === 'palette' ? (
       <SlashPalette
-        width={size.cols}
-        height={Math.min(10, Math.max(3, Math.floor(size.rows / 3)))}
+        width={paletteBox.width}
+        height={paletteBox.height}
         focused
         query={paletteQuery}
         commands={SLASH_COMMANDS}
@@ -1120,37 +1239,49 @@ export function App(props: AppProps) {
       />
     ) : null
 
-  const status = <StatusBar width={size.cols} summary={summary} {...(notice ? { notice } : {})} hints={hints} />
+  const status = <StatusBar width={size.cols} summary={summary} {...(notice ? { notice } : {})} hints={hints} now={now} />
 
   const overlayNode = overlay ? (
     overlay.kind === 'runs' ? (
       <Box {...boxBorder} flexDirection="column" paddingX={1} height={inline ? undefined : Math.max(3, Math.min(bodyRows, overlay.rows.length + 4))}>
-        <Text bold>Runs</Text>
-        {runPickLines(overlay.rows, overlay.sel, Math.max(10, size.cols - 4), state.activeRunId, glyphs(env).ellipsis)
+        <Text {...boldStyle}>Runs</Text>
+        {runPickLines(overlay.rows, overlay.sel, overlayWidth, state.activeRunId, glyphs(env).ellipsis)
           .slice(Math.max(0, Math.min(overlay.sel - overlayRoom + 1, overlay.rows.length - overlayRoom)))
           .slice(0, overlayRoom)
           .map((l, i) => (
-            <Text key={i} wrap="truncate-end" {...(l.startsWith('>') ? { bold: true } : {})}>
+            <Text key={i} wrap="truncate-end" {...(l.startsWith('>') ? boldStyle : {})}>
               {l}
             </Text>
           ))}
-        <Text color={dim}>{['Up / Down select', 'Enter opens', 'c continues', 'r retrospective', 'Esc closes'].join(listSep)}</Text>
+        <Text wrap="truncate-end" {...dimStyle}>
+          {['Up / Down select', 'Enter opens', 'c continues', 'r retrospective', 'Esc closes'].join(listSep)}
+        </Text>
       </Box>
     ) : overlay.kind === 'confirm' ? (
       <Box {...boxBorder} flexDirection="column" paddingX={1}>
-        <Text bold>{sanitizeTty(overlay.question)}</Text>
-        <Text color={dim}>{['y: yes', 'n or Esc: no'].join(listSep)}</Text>
+        <Text {...boldStyle}>{sanitizeTty(overlay.question)}</Text>
+        <Text {...dimStyle}>{['y: yes', 'n or Esc: no'].join(listSep)}</Text>
       </Box>
     ) : (
-      <Box {...boxBorder} flexDirection="column" paddingX={1} height={inline ? undefined : Math.max(3, bodyRows)}>
-        <Text bold>{overlay.title}</Text>
-        {overlay.lines.slice(overlay.offset, overlay.offset + overlayRoom).map((l, i) => (
-          <Text key={i} wrap="truncate-end">
-            {l ? truncateEnd(l, Math.max(10, size.cols - 4), glyphs(env).ellipsis) : ' '}
-          </Text>
-        ))}
-        <Text color={dim}>{['Up / Down / PgUp / PgDn scroll', 'q or Esc closes'].join(listSep)}</Text>
-      </Box>
+      (() => {
+        const wrapped = wrapOverlayLines(overlay.lines, overlayWidth)
+        const offset = Math.min(overlay.offset, Math.max(0, wrapped.length - overlayRoom))
+        const cue = overlayCue(offset, overlayRoom, wrapped.length, listSep)
+        const hintParts = [...(cue ? [cue] : []), 'Up/Down PgUp/PgDn scroll', 'q or Esc closes']
+        return (
+          <Box {...boxBorder} flexDirection="column" paddingX={1} height={inline ? undefined : Math.max(3, bodyRows)}>
+            <Text {...boldStyle}>{overlay.title}</Text>
+            {wrapped.slice(offset, offset + overlayRoom).map((l, i) => (
+              <Text key={i} wrap="truncate-end">
+                {l || ' '}
+              </Text>
+            ))}
+            <Text wrap="truncate-end" {...dimStyle}>
+              {hintParts.join(listSep)}
+            </Text>
+          </Box>
+        )
+      })()
     )
   ) : null
 
@@ -1185,6 +1316,7 @@ export function App(props: AppProps) {
             {plan.mode === 'split' ? (
               <>
                 <Box flexDirection="column">{col(0).map(paneNode)}</Box>
+                <Box width={plan.gutter ?? 0} flexShrink={0} />
                 <Box flexDirection="column" flexGrow={1}>
                   {inspectorNode ?? col(1).map(paneNode)}
                 </Box>
