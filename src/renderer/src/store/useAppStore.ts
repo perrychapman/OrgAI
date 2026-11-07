@@ -439,6 +439,10 @@ interface AppState {
   interrupt(): Promise<void>
   stopRun(): Promise<void>
   decide(requestId: string, decision: PermissionDecision): Promise<void>
+  /** Answer a permission card of a given run (the Dashboard's inline Allow once / Deny; `decide` acts on the active run). */
+  decideIn(runId: string, requestId: string, decision: PermissionDecision): Promise<void>
+  /** Answer a question card of a given run (the Dashboard's inline options). */
+  answerQuestionIn(runId: string, questionId: string, answer: QuestionAnswer): Promise<void>
   decideProposal(proposalId: string, decision: ProposalDecision): Promise<void>
   answerQuestion(questionId: string, answer: QuestionAnswer): Promise<void>
   /** Answer a request_permission_rules card. */
@@ -1672,6 +1676,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   async decide(requestId, decision) {
     const run = activeRun(get())
     if (run) await window.orgai.runs.decide({ runId: run.summary.id, requestId, decision })
+  },
+
+  async decideIn(runId, requestId, decision) {
+    await window.orgai.runs.decide({ runId, requestId, decision })
+  },
+
+  async answerQuestionIn(runId, questionId, answer) {
+    await window.orgai.setup.answer({ runId, questionId, answer })
   },
 
   async decideProposal(proposalId, decision) {

@@ -434,6 +434,12 @@
   --halo-warning: 0 0 0 3px color-mix(in oklab, var(--warning) 16%, transparent);
   --halo-dot-live: 0 0 0 4px var(--success-soft);
   --halo-dot-warning: 0 0 0 4px var(--warning-soft);
+  /* Dashboard (docs/design/dashboard-2.md 15): the working agent mark's halo, its breathing period, and the activity
+     strip's bars (today in the accent text colour). */
+  --halo-working: 0 0 0 3px color-mix(in oklab, var(--state-working) 28%, transparent);
+  --dur-pulse: 1800ms;
+  --dash-strip-bar: var(--text-tertiary);
+  --dash-strip-today: var(--accent-text);
   --inset-border-strong: inset 0 0 0 1px var(--border-strong);
 
   /* Brand gradients (docs/design/ui-review-2.md C.2). --gradient-mark is for the mark only; --gradient-ui is the
@@ -452,6 +458,12 @@
 .agent-node,
 .role-node {
   --glow-working: 0 0 0 1px color-mix(in oklab, var(--role) 50%, transparent), 0 0 24px color-mix(in oklab, var(--role) 22%, transparent);
+}
+
+/* Dashboard Right now band: reporting lines in the parent's role colour (--line-role set inline). */
+.dash-agent-row,
+.dash-run-head {
+  --dash-line: color-mix(in oklab, var(--line-role, var(--edge)) 70%, var(--border-default));
 }
 
 /* Glow is invisible on light surfaces; the working border stays. */

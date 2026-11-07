@@ -1,5 +1,6 @@
-import type { ConnectionId, ConnectionInfo, Project, RunSummary } from '@shared/types'
-import { projectConnection } from '@shared/defaults'
+import { isVirtualProjectId, type ConnectionId, type ConnectionInfo, type PendingWorktree, type Project, type RunSummary } from '@shared/types'
+import { projectConnection, projectKindOf } from '@shared/defaults'
+import { relativeTime } from '../../lib/runChains'
 import { runCostInput, sumCosts, type CostInput } from '../../lib/cost'
 import { WEEK_MS } from '../../lib/dashboard'
 import { folderName } from '../../lib/paths'
@@ -112,4 +113,66 @@ export function connectionProblems(
     out.push({ id, text: users > 0 ? `${head} ${plural(users, 'project uses', 'projects use')} it.` : head })
   }
   return out
+}
+
+// ---------- Tile signals and chips (docs/design/dashboard-2.md 10) ----------
+
+/** Branches waiting: worktrees with commits ahead or uncommitted files (clean leftovers do not count). */
+export function branchesWaiting(list: readonly Pick<PendingWorktree, 'commitsAhead' | 'uncommittedFiles'>[] | null | undefined): number {
+  if (!Array.isArray(list)) return 0
+  return list.filter((w) => w.commitsAhead > 0 || w.uncommittedFiles > 0).length
+}
+
+export type TileChipKind = 'branches' | 'suggestions' | 'folder-trust'
+
+export interface TileChip {
+  kind: TileChipKind
+  /** Visible text. */
+  text: string
+  /** Accessible name: the text and the project. */
+  name: string
+}
+
+/** The chips of a tile, only non-zero ones, in the order branches, suggestions, folder trust. Branches only for code projects. */
+export function tileChips(input: { projectName: string; code: boolean; branches: number; suggestions: number; untrusted: boolean }): TileChip[] {
+  const chips: TileChip[] = []
+  if (input.code && input.branches > 0) {
+    const text = `${plural(input.branches, 'branch', 'branches')} waiting`
+    chips.push({ kind: 'branches', text, name: `${text} in ${input.projectName}` })
+  }
+  if (input.suggestions > 0) {
+    const text = plural(input.suggestions, 'team suggestion', 'team suggestions')
+    chips.push({ kind: 'suggestions', text, name: `${text} in ${input.projectName}` })
+  }
+  if (input.untrusted) {
+    const text = 'Folder settings to review'
+    chips.push({ kind: 'folder-trust', text, name: `${text} in ${input.projectName}` })
+  }
+  return chips
+}
+
+/** The project ids that get a worktree call: real code projects only. */
+export function worktreeTargets(projects: readonly Pick<Project, 'id' | 'kind'>[]): string[] {
+  return projects.filter((p) => projectKindOf(p as Project) === 'code' && !isVirtualProjectId(p.id)).map((p) => p.id)
+}
+
+/** The newest run by start (id breaks ties); the caller passes live runs first so a live copy wins over history. */
+export function newestSummary<T extends { id: string; startedAt: number }>(summaries: readonly T[]): T | undefined {
+  let best: T | undefined
+  for (const s of summaries) {
+    if (!best || s.startedAt > best.startedAt || (s.startedAt === best.startedAt && s.id.localeCompare(best.id) > 0)) best = s
+  }
+  return best
+}
+
+/** "Continue {name}" in the More menu: the run name cut at 32 characters with an ellipsis. */
+export function continueLabel(name: string): string {
+  const chars = [...name]
+  return `Continue ${chars.length > 32 ? `${chars.slice(0, 31).join('')}…` : name}`
+}
+
+/** The caption of a tile's newest run: live "Idle · Waiting for your reply", ended "Finished · 2 h ago". */
+export function tileRunCaption(input: { live: boolean; statusWord: string; activity?: string; endedAt?: number; now: number }): string {
+  if (input.live) return input.activity ? `${input.statusWord} · ${input.activity}` : input.statusWord
+  return input.endedAt ? `${input.statusWord} · ${relativeTime(input.endedAt, input.now)}` : input.statusWord
 }

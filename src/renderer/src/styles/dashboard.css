@@ -1,7 +1,10 @@
 @import './dashboard-projects.css';
+@import './dashboard-band.css';
+@import './dashboard-strip.css';
 
-/* ---------- Dashboard (docs/design/dashboard.md) ----------
-   Region layout, hero band and the attention column. Project tiles and fact cards: dashboard-projects.css. */
+/* ---------- Dashboard (docs/design/dashboard-2.md) ----------
+   Page grid (section 2) and the attention rows (Needs you, Paused, Recently ended). Status bar, strip and To set up:
+   dashboard-strip.css. Right now band: dashboard-band.css. Project tiles: dashboard-projects.css. */
 
 /* The scroll region under the topbar. One page scroll, no per-column scroll. Its padding sits on the grid, because a
    container cannot be styled by its own container query. */
@@ -12,177 +15,75 @@
   min-height: 0;
   overflow: auto;
 }
+/* Rows: status bar, forget notice, work area, projects. `dash` is the inline-size container the regions query. */
 .dashboard-grid {
+  container: dash / inline-size;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   align-content: start;
   gap: var(--space-4);
   padding: var(--space-4);
 }
-.dash-hero,
-.dash-first {
-  grid-column: 1 / -1;
-}
-.dash-attention,
-.dash-projects-region,
-.dash-facts {
-  min-width: 0;
-}
-@container dashboard (min-width: 900px) {
+@container dashboard (min-width: 1100px) {
   .dashboard-grid {
     padding: var(--space-6);
-    grid-template-columns: minmax(320px, 2fr) minmax(0, 3fr);
-  }
-  .dash-attention {
-    grid-column: 1;
-    grid-row: 2 / span 2;
-  }
-  .dash-projects-region {
-    grid-column: 2;
-    grid-row: 2;
-  }
-  .dash-facts {
-    grid-column: 2;
-    grid-row: 3;
   }
 }
-/* The cards inside .dash-facts lay themselves out (.dash-facts-grid in dashboard-projects.css). */
-@container dashboard (min-width: 1280px) {
-  .dashboard-grid {
-    grid-template-columns: minmax(340px, 4fr) minmax(0, 7fr) minmax(260px, 3fr);
-  }
-  .dash-attention {
-    grid-column: 1;
-    grid-row: 2;
-  }
-  .dash-projects-region {
-    grid-column: 2;
-    grid-row: 2;
-  }
-  .dash-facts {
-    grid-column: 3;
-    grid-row: 2;
-  }
-}
-
-/* ---------- Hero band ---------- */
-
-.dash-hero {
-  position: relative;
-  isolation: isolate;
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  grid-template-areas: 'mark main facts';
-  align-items: center;
-  column-gap: var(--space-4);
-  min-height: 120px;
-  padding: var(--space-4) var(--space-6);
-  background: var(--surface-1);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-xl);
-  overflow: hidden;
-}
-/* The org chart echo: a dot grid in the canvas pattern colour, faint, gone under the "no pattern" canvas setting. */
-.dash-hero::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  z-index: -1;
-  background-image: radial-gradient(var(--canvas-pattern) 1.5px, transparent 1.5px);
-  background-size: 16px 16px;
-  opacity: var(--canvas-wash-opacity);
-  pointer-events: none;
-}
-:root[data-canvas-pattern='none'] .dash-hero::before {
-  display: none;
-}
-:root[data-canvas-pattern='grid'] .dash-hero::before {
-  background-image:
-    linear-gradient(var(--canvas-pattern) 1px, transparent 1px),
-    linear-gradient(90deg, var(--canvas-pattern) 1px, transparent 1px);
-  background-size: 16px 16px;
-}
-.dash-hero::after {
-  content: '';
-  position: absolute;
-  inset: 0 0 auto 0;
-  height: 3px;
-  z-index: -1;
-  background: var(--gradient-ui);
-  pointer-events: none;
-}
-.dash-hero-mark {
-  grid-area: mark;
-  width: 32px;
-  height: 32px;
-  border-radius: var(--radius-md);
-  background: var(--gradient-mark);
-}
-.dash-hero-main {
-  grid-area: main;
+.dashboard-grid > * {
   min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
 }
-.dash-hero-figure {
-  margin: 0;
-  font-size: var(--text-display);
-  font-weight: var(--weight-semibold);
-  line-height: 1.15;
-  color: var(--text-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+
+/* The work area: one track in DOM order (needs, now, strip, setup, paused, ended); two tracks from 880 px, the band
+   spanning every row on the right. An area whose region renders nothing collapses. */
+.dash-work {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-4);
+  align-items: start;
 }
-.dash-hero-sub {
-  margin: 0;
-  font-size: var(--text-small);
-  color: var(--text-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.dash-area {
+  min-width: 0;
 }
-.dash-hero-facts {
-  grid-area: facts;
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  font-size: var(--text-caption);
-  color: var(--text-tertiary);
-}
-.dash-hero-facts:empty {
+.dash-area:empty {
   display: none;
 }
-/* Compact height: the facts move under the subline. */
-@container dashboard (max-height: 719px) {
-  .dash-hero {
-    min-height: 88px;
-    padding: var(--space-2) var(--space-4);
+@container dash (min-width: 880px) {
+  .dash-work {
+    grid-template-columns: minmax(340px, 5fr) minmax(0, 7fr);
     grid-template-areas:
-      'mark main'
-      'mark facts';
-    grid-template-columns: auto minmax(0, 1fr);
-    row-gap: 0;
+      'needs  now'
+      'strip  now'
+      'setup  now'
+      'paused now'
+      'ended  now';
+    grid-template-rows: repeat(4, auto) 1fr;
   }
-  .dash-hero-main {
-    gap: 0;
+  .dash-area-needs {
+    grid-area: needs;
   }
-  .dash-hero-facts {
-    justify-self: start;
+  .dash-area-now {
+    grid-area: now;
   }
-}
-/* Narrow: the facts always sit under the text. */
-@container dashboard (max-width: 599px) {
-  .dash-hero {
+  .dash-area-strip {
+    grid-area: strip;
+  }
+  .dash-area-setup {
+    grid-area: setup;
+  }
+  .dash-area-paused {
+    grid-area: paused;
+  }
+  .dash-area-ended {
+    grid-area: ended;
+  }
+  /* Band empty: the band is one line and the strip takes the right column under it at its tall size. */
+  .dash-work[data-now-empty] {
     grid-template-areas:
-      'mark main'
-      'mark facts';
-    grid-template-columns: auto minmax(0, 1fr);
-    row-gap: var(--space-1);
-  }
-  .dash-hero-facts {
-    justify-self: start;
+      'needs  now'
+      'setup  strip'
+      'paused strip'
+      'ended  strip';
+    grid-template-rows: auto auto auto 1fr;
   }
 }
 
@@ -351,12 +252,127 @@
 }
 
 /* Needs you: warning tint. */
-.dash-row-needs {
+.dash-needs-row {
   background: var(--warning-soft);
   border-color: var(--warning-border);
+  container: needs-row / inline-size;
 }
-.dash-row-needs:hover {
+.dash-needs-row:hover {
   border-color: var(--warning);
+}
+.dash-needs-main {
+  align-items: flex-start;
+}
+.dash-needs-main > .dash-row-icon {
+  padding-top: 2px;
+}
+.dash-needs-place {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-small);
+}
+.dash-needs-project {
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+.dash-needs-run {
+  color: var(--text-secondary);
+}
+.dash-needs-ask {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  font-size: var(--text-small);
+  color: var(--text-primary);
+}
+.dash-needs-lead {
+  font-size: var(--text-caption);
+  color: var(--text-secondary);
+}
+.dash-needs-code,
+.dash-needs-question {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.dash-needs-code {
+  font-family: var(--font-mono);
+  font-size: var(--text-mono);
+  white-space: pre-wrap;
+}
+.dash-needs-object {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dash-needs-file {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.dash-needs-filename {
+  flex: none;
+  max-width: 100%;
+  font-weight: var(--weight-semibold);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dash-needs-folder {
+  min-width: 0;
+  font-size: var(--text-caption);
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+.dash-needs-reference {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--text-caption);
+  color: var(--text-secondary);
+}
+.dash-needs-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  align-content: center;
+  justify-content: flex-end;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-2) var(--space-2) 0;
+  max-width: 60cqi;
+}
+.dash-needs-deny {
+  color: var(--danger-text, var(--danger));
+}
+.dash-needs-error {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 0 var(--space-3) var(--space-2);
+  font-size: var(--text-caption);
+  color: var(--danger-text, var(--danger));
+}
+/* Narrow rows stack the buttons under the ask. */
+@container needs-row (max-width: 360px) {
+  .dash-needs-row[data-has-action='true'] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .dash-needs-actions {
+    justify-content: flex-start;
+    padding: 0 var(--space-3) var(--space-2);
+    max-width: none;
+  }
 }
 
 /* Status dot: colour always sits beside its word. */
