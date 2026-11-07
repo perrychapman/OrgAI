@@ -412,7 +412,7 @@ try {
       const card1Gone = await t.waitFor((s) => !s.includes('Allow once'), 10_000).then(() => true, () => false)
       check(card1Gone, "g: card 1's hints leave the tray once it is allowed", esc(t.screen()))
       const req2ev = await waitEv('card 2', 'permission.request', (e) => cmdOf(e) === 'npm run card-two')
-      // An unfocused tray shows "Alt+D or F2 to answer" instead of its keys (issue #25), a focused one "Allow once".
+      // An unfocused tray shows "Alt+D or F2 to answer" instead of its keys (issue #25, L8), a focused one "Allow once".
       await t.waitFor((s) => /Allow once|Alt\+D or F2 to answer/.test(s) && s.includes('card-two'), 10_000)
       const drawnAt = Date.now()
       t.write('\x1bOQy') // F2 (in case focus moved while the tray was empty) and `y`, right after card 2 is drawn

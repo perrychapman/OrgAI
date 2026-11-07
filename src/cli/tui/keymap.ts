@@ -25,6 +25,8 @@ export interface KeyDef {
   inlineHint?: string
   /** The hint (not the help) applies only to these tree row kinds. */
   rows?: readonly RowKind[]
+  /** The tray shows this instead of the card keys while it has no focus. */
+  unfocusedHint?: string
 }
 
 export const KEYMAP: readonly KeyDef[] = [
@@ -71,6 +73,7 @@ export const KEYMAP: readonly KeyDef[] = [
   { scope: 'inspector', keys: 'u', label: 'The usage tables in the pager (/usage)', hint: { order: 3, text: 'u usage' } },
   { scope: 'inspector', keys: 'Esc', label: 'Close; the tree keeps the same row', hint: { order: 4, text: 'Esc back' } },
   // ---- Decision Tray ----
+  { scope: 'tray', keys: 'Alt+D, F2', label: 'Focus the tray to answer; until it has focus a card shows only this', unfocusedHint: 'Alt+D or F2 to answer' },
   { scope: 'tray', keys: 'Card keys', label: 'Each card shows its own keys on its hint line; the kinds are listed below', hint: { order: 1, text: 'Keys on the card' } },
   { scope: 'tray', keys: '?', label: "The tray's keys", hint: { order: 2, text: '? keys' } },
   { scope: 'tray', keys: 'Up, Down, PgUp, PgDn', label: 'Scroll a long card (every kind)' },
@@ -83,6 +86,9 @@ export const KEYMAP: readonly KeyDef[] = [
   { scope: 'tray', keys: 'MCP install', label: 'r allow for the run, p save to the project, l save to the library (both ask), n deny' },
   { scope: 'tray', keys: 'TERM=dumb', label: 'press Enter after a decision key' }
 ]
+
+/** Shown by the tray instead of the decision keys while it is not focused (read from KEYMAP). */
+export const UNFOCUSED_HINT: string = KEYMAP.find((d) => d.unfocusedHint)?.unfocusedHint ?? 'Alt+D to answer'
 
 export const SCOPE_TITLE: Record<KeyScope, string> = {
   global: 'Anywhere',

@@ -8,7 +8,7 @@ import { render } from 'ink-testing-library'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { PermissionRequest, RunEvent } from '../../shared/types'
 import { project, record, summary } from '../testing/fakeContext'
-import { App, overlayCue, placeholderFor, wrapOverlayLines } from './App'
+import { App, KEY_DROPPED_NOTICE, INPUT_QUEUE_FULL_NOTICE, overlayCue, placeholderFor, wrapOverlayLines } from './App'
 import { DEFAULT_TUI_ENV } from './context'
 import { KeyParser } from './input/keys'
 import { textWidth } from './panes/text'
@@ -118,6 +118,28 @@ describe('input across a focus change (issue #31 M9)', () => {
     expect(m.frame()).not.toContain('/runs')
   })
 
+  it('#35 L2: a paste queued behind Alt+D is dropped, not replayed into the tray', async () => {
+    const m = mount({ cols: 120, rows: 40, state: stateWith({ waiting: true }) })
+    await tick()
+    m.emit(key('d', { alt: true }), { type: 'paste', text: 'secret-looking text' })
+    await tick()
+    await tick()
+    // The drop notice fires although no printable key was queued: only the paste was dropped.
+    expect(m.session.notify.mock.calls.map((c) => String(c[0]))).toContain(KEY_DROPPED_NOTICE)
+    expect(m.session.decide).not.toHaveBeenCalled()
+  })
+
+  it('#35 L3: overflowing the 512-event input queue says so once, in dim', async () => {
+    const m = mount({ cols: 120, rows: 40, state: stateWith({ waiting: true }) })
+    await tick()
+    m.emit(key('d', { alt: true }), ...Array.from({ length: 700 }, () => key('x')))
+    await tick()
+    await tick()
+    const calls = m.session.notify.mock.calls.filter((c) => c[0] === INPUT_QUEUE_FULL_NOTICE)
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.[1]).toBe('dim')
+  })
+
   it('one KeyParser chunk "/runs\\r" does the same', async () => {
     const m = mount({ cols: 100, rows: 30 })
     await tick()
@@ -169,7 +191,7 @@ describe('keys queued behind a move to the tray never answer a card (issue #25 /
     await tick()
     await tick()
     expect(m.session.decide).not.toHaveBeenCalled()
-    expect(m.session.notify.mock.calls.map((c) => String(c[0]))).toContain('Press the key again.')
+    expect(m.session.notify.mock.calls.map((c) => String(c[0]))).toContain(KEY_DROPPED_NOTICE)
     expect(m.frame()).not.toMatch(/❯ y/)
     clock.t += 5000
     await m.send(key('y'))
@@ -432,7 +454,7 @@ describe('re-walk fixes (R2, issue #25 and #26 follow-ups)', () => {
     expect(m.frame()).toContain('Message R1')
   })
 
-  it('R2-L6: a key that came with Alt+D is dropped with "Press the key again.", and the swap guard does not overwrite that', async () => {
+  it('R2-L6: a key that came with Alt+D is dropped with the KEY_DROPPED_NOTICE, and the swap guard does not overwrite that', async () => {
     const clock = { t: 1_000_000 }
     const m = mount({ cols: 100, rows: 30, state: stateWith({ waiting: true }), now: () => clock.t })
     await tick()
@@ -440,12 +462,12 @@ describe('re-walk fixes (R2, issue #25 and #26 follow-ups)', () => {
     m.emit(key('d', { alt: true }), key('y'))
     await tick()
     await tick()
-    expect(m.frame()).toContain('Press the key again.')
+    expect(m.session.getState().notices.at(-1)?.text).toBe(KEY_DROPPED_NOTICE)
     expect(m.session.decide).not.toHaveBeenCalled()
     // y again inside the guard window: still no decision, and the dropped-key notice keeps the line.
     await m.send(key('y'))
     expect(m.session.decide).not.toHaveBeenCalled()
-    expect(m.frame()).toContain('Press the key again.')
+    expect(m.session.getState().notices.at(-1)?.text).toBe(KEY_DROPPED_NOTICE)
     expect(m.frame()).not.toContain('card just changed')
   })
 
