@@ -18,7 +18,7 @@ import { activeRun, useAppStore } from '../store/useAppStore'
  * many delegations. Counts and cost cover the subtree.
  */
 export type DoneGroupFlowNode = Node<
-  { parentId: string; parentName: string; agents: AgentInstance[]; color: string; onToggle: (parentId: string) => void; label?: string; earlier?: boolean },
+  { parentId: string; parentName: string; agents: AgentInstance[]; color: string; onToggle: (parentId: string) => void; label?: string; earlier?: boolean; arrived?: boolean },
   'done-group'
 >
 
@@ -30,7 +30,7 @@ export function groupId(parentId: string): string {
 }
 
 function DoneGroupNodeView({ id, data, selected }: NodeProps<DoneGroupFlowNode>): ReactElement {
-  const { agents, color, parentId, parentName, onToggle, label, earlier } = data
+  const { agents, color, parentId, parentName, onToggle, label, earlier, arrived } = data
   const failed = agents.filter((a) => a.state === 'error').length
   const done = agents.length - failed
   const cost = sumCosts(agents.map(agentCostInput))
@@ -88,7 +88,7 @@ function DoneGroupNodeView({ id, data, selected }: NodeProps<DoneGroupFlowNode>)
       data-count={agents.length}
       data-style={nodeStyle}
       data-label={station ? geo.label : undefined}
-      className={`done-group ${earlier ? 'earlier' : ''} ${selected ? 'selected' : ''}`}
+      className={`done-group ${earlier ? 'earlier' : ''} ${selected ? 'selected' : ''} ${arrived ? 'motion-pop' : ''}`}
       data-earlier={earlier ? 'true' : undefined}
       style={{ ['--role' as string]: color, ...(station ? { width: geo.width, height: geo.height } : {}) }}
       title={tip}

@@ -3,6 +3,7 @@ import { Check, TriangleAlert } from 'lucide-react'
 import { splitLabelTail } from '@shared/view/agentTree'
 import { Cost } from '../ui/Cost'
 import { costView, runCostInput } from '../../lib/cost'
+import { useArrival } from '../../lib/useArrival'
 import {
   agentRowName,
   doneText,
@@ -51,16 +52,21 @@ export interface BandRunProps {
   run: BandRunModel
   now: number
   onOpen: (projectId: string, runId: string, agentId: string | null, rootId: string | null) => void
+  /** Stagger index while this run is arriving (rises in); undefined otherwise. */
+  enter?: number
 }
 
 /** One run in the band: the header button, then its agent rows (spec 6.3 and 6.4). */
-export function BandRun({ run, now, onOpen }: BandRunProps): ReactElement {
+export function BandRun({ run, now, onOpen, enter }: BandRunProps): ReactElement {
+  // Agent rows joining a run that is already on screen rise in; the run's own first render never animates (scope = run id).
+  const rowArrived = useArrival(run.rows.map((r) => (r.kind === 'agent' ? `a:${r.id}` : r.kind)), run.id, { maxPerBatch: 5 })
   const cost = costView(runCostInput(run.summary), { compact: true })
   const tone = run.status.tone
   const openRoot = (): void => onOpen(run.projectId, run.id, null, run.rootId)
   return (
     <li
-      className="dash-run"
+      className={enter !== undefined ? 'dash-run motion-enter' : 'dash-run'}
+      style={enter !== undefined ? ({ '--i': enter } as CSSProperties) : undefined}
       data-testid="dash-running-row"
       data-status={run.status.word}
       data-run={run.id}
@@ -99,7 +105,7 @@ export function BandRun({ run, now, onOpen }: BandRunProps): ReactElement {
           {run.rows.map((row) => {
             if (row.kind === 'agent') {
               return (
-                <li key={`a:${row.id}`}>
+                <li key={`a:${row.id}`} className={rowArrived(`a:${row.id}`) ? 'motion-enter' : undefined}>
                   <button
                     type="button"
                     className="dash-agent-row"

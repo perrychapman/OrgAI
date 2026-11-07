@@ -292,3 +292,80 @@ Pure CSS, can go first and in parallel: slices 1 (entry), 2 and the breathe unif
 - D4 `::backdrop` token inheritance in Chromium 140: verified only from memory; first slice confirms and falls back to `:root` literal durations if needed.
 - D5 Whether the bell cue throttle is shared with the polite announcements (spec says 5 s).
 - D6 React 19 `<ViewTransition>` is not used (canary only, unchecked for the pinned version).
+
+## 7. Implementation notes (2026-11-07, UI Lead)
+
+Decisions taken: D1 zero (global 0.01 ms rule kept; it now also covers `::backdrop` and `::details-content` in separate
+rules so an unknown pseudo-element never drops the main rule). D2 plain `.motion-view`, no View Transitions. D3 60
+nodes. D4 checked: `getComputedStyle(dialog, '::backdrop').transitionDuration` read `0.16s` in Electron 45, so tokens
+resolve on the backdrop and no literal fallback exists. D5 the bell cue throttle is 5 s (`lib/useBellCue.ts`), separate
+from the tray's announcement join. D6 not used.
+
+Where things live:
+- `styles/motion.css` (imported right after tokens.css): keyframes `motion-rise(-lg/-xl)`, `motion-slide-in`,
+  `motion-fade`, `motion-pop`, `motion-ping`, `motion-ring`; classes `.motion-enter` (stagger `--i`, capped at 5),
+  `.motion-enter-lg/-xl/-x`, `.motion-pop`, `.motion-fade`, `.motion-view`, `.motion-ring`, `[data-ping]`,
+  `.motion-exit`, `.motion-collapse[data-collapsed]` (collapsed child is `visibility: hidden`, so it leaves the tab order
+  and the accessibility tree), `.motion-none`; `interpolate-size: allow-keywords`; native `details::details-content`
+  (fade on open only).
+- `lib/useArrival.ts` (`ArrivalTracker`, `useArrival(ids, scope, { maxPerBatch })`, `markArrived`): an arrived id is new
+  for 1 s, so a re-render keeps its class and a row remount does not replay. `lib/useExitPresence.ts`
+  (`useExitPresence`, `exitProps`, `tokenMs`, `cssTimeMs`). `lib/layoutMotion.ts` (`beginLayoutMotion(ms, { columns })`,
+  `isLayoutMoving`, `onLayoutSettled`; `<html data-layout-moving>` defers canvas refits, `<html data-columns-moving>`
+  is the only window in which side panel columns transition). Unit tests: `lib/motion.test.ts`.
+- `lib/canvas.ts`: `useNodeArrival`, `beginCanvasGlide` (`.react-flow[data-canvas-gliding]`), `fitMs`, `refitMs`,
+  `reducedMotionNow`, `breatheIndex`.
+
+Per surface (what landed, and deviations):
+- 3.1 Dialog: CSS enter/exit with `@starting-style`, `overlay` / `display` allow-discrete; the panel and its last content
+  are kept (inert, aria-hidden) for `--dur-fast`; a closed dialog and its backdrop take no pointer events while they
+  fade; if the opener cannot take focus back (it was `<body>`) focus is dropped, never left in the leaving panel. Callers
+  that mount `<Dialog>` only while open (CopyDialog, SaveAsProjectDialog, ConnectorDialog, Kit dialogs, NoteDialog,
+  ImportAgentsDialog, OutputDetail) get no exit.
+- 3.2 Popover: enter scale + fade with `transform-origin` from the placed side (`data-side`), exit fade; content kept
+  through the exit.
+- 3.3 Tabs: one sliding `.tabs-indicator` (CSS in shell.css), observer created once per tab set so a selection change
+  is never snapped; project views keyed with `.motion-view` on a user section change only; SidePanel tab bodies through
+  `TabPanel`; settings pane switch in `SettingsPage`.
+- 3.4 Run tabs: arrival slide for a new tab (not within 1.5 s of opening a project), a non-interactive ghost fades on a
+  user close (the real tab leaves at once, so focus and e2e selectors are unchanged), sliding `.run-tab-bar`.
+- 3.5 Sidebar: `.app[data-sidebar-motion]` transitions the columns on a user toggle only; content keeps its full width
+  while it moves; labels fade in on expand only (they are conditionally rendered).
+- 3.6 Side panel: Hide / Show glide only; a prop-driven open, `revealOn` and auto-collapse snap.
+- 3.7 Disclosures: native `details` content fades in on open (opacity only); layout is final at once and closing is
+  instant (deviation: a height reveal left a growing box that overlapped the next row for 160 ms, and a reversed close
+  kept closed content visible and focusable; both broke e2e checks in knowledge-run, team-files, proposals and
+  connections and the Advanced deep links). App/Project settings "Advanced settings" carries `.motion-none`. Canvas
+  Customise uses `.motion-collapse` (height glide); History member rows rise in.
+- 3.8 Tray: a tray that opens after mount (not within 1 s of mount) plays `tray-open`; arriving cards get
+  `.motion-enter-xl` + `.motion-ring`; the emptied tray is kept for `--dur-fast` (inert, focus dropped if still inside).
+  No `.motion-collapse` wrapper (it would break `.frame-grid > .frame-tray`).
+- 3.9 Bell: `useBellCue` pings the topbar and sidebar badges when the count rises, not within 2 s of mount, at most
+  once per 5 s.
+- 3.10 Banners: `BannerPresence` exists in `ui/Banner.tsx` but no banner uses it yet (open). Needs-you rows rise in
+  after the page settled; answered inline rows and Clear fold out; other removals are instant.
+- 3.11 Transcript: arrivals at `--dur-fade` while following, at most 6 per batch; smooth follow per
+  `lib/transcriptFollow.ts`, and its own scroll events are ignored until `scrollend` so follow is never lost.
+  `conversation-jump` is entry-only (still unmounted when hidden).
+- 3.12-3.13 Canvas: pop-in on inner node roots for new ids; glide on auto-layout up to 60 nodes; edges fade out and
+  back in around a glide instead of racing ahead; fit durations from tokens and both reduced switches.
+- 3.14-3.15 Dashboard: band runs and agent rows rise in on arrival; tiles rise in when created; the band and the New
+  project regions still snap in height (kept unmounting: the grid keys off `[hidden]` and e2e checks absence).
+- 3.16 Controls: switch thumb `--ease-spring`, checkbox tick scale, press `scale(0.98)`. Radio dots not done (styles in
+  files owned elsewhere).
+- 3.17 Skeleton: 200 ms appear delay, 0.6-1 pulse at `--dur-pulse`.
+- 3.18 Live cues: every breathe at `--dur-pulse` / `--ease-in-out`, keyframe opacity 0.7-1, canvas cap 12 with a 150 ms
+  phase per `--i`; `dash-breathe`, `dash-row-in`, `dash-row-fade` and `pop-in` are deleted.
+- 3.19 Knowledge: arrivals, detail and List/Graph `.motion-view`, notice fade, `neural-card-in` on `--dur-fade`.
+
+Checks: `e2e/motion.mjs` (in e2e:free): tokens, a dialog and a popover open start running transitions, a leaving
+dialog panel is inert and aria-hidden and gone after its exit, three quick open/close cycles leave no open dialog and no
+focus inside one, under Reduce motion every animation on an opening dialog / popover is ~0 ms and the backdrop
+transition is ~0, working canvas nodes breathe at `--dur-pulse` (at most 12) and stop under Reduce motion; 1024x640 and
+1600x1000, dark and light. e2e helpers `setReduceMotion` / `motionOff` (e2e/lib.mjs). e2e that reopen a dialog right
+after closing it should wait for `[open]`, not "visible" (a closing dialog is displayed for `--dur-fast`).
+
+Open: BannerPresence adoption; band and New project height reveal; radio dot; sidebar label fade on collapse; side
+panel glide for prop-driven opens; popover may show at its old position for a frame on reopen (Reviewer L); literal
+`150ms` breathe phase and `12ms` strip stagger; tray `block-size` jump when docked beside the stage; the spec's
+2.4-3.2 s breathing range in the motion-design skill disagrees with `--dur-pulse` 1800 ms (kept the token).

@@ -645,10 +645,10 @@
 .skill-eval > summary > svg {
   flex: none;
   color: var(--text-secondary);
-  transition: transform var(--dur-fast) ease;
+  transition: rotate var(--dur-fast) var(--ease-out);
 }
 .skill-eval[open] > summary > svg {
-  transform: rotate(90deg);
+  rotate: 90deg;
 }
 .skill-eval-when {
   min-width: 0;

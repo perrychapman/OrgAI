@@ -1,5 +1,5 @@
 import type { ReactElement } from 'react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   ReactFlow,
   MarkerType,
@@ -15,7 +15,9 @@ import { CanvasMinimap } from '../components/canvas/CanvasMinimap'
 import { CanvasStyleButton } from '../components/canvas/CanvasStyleButton'
 import { CANVAS_EDGE_TYPES } from '../components/canvas/RadialEdge'
 import { STATION_CORNER_RADIUS, STATION_LINE_WIDTH } from '../lib/canvasShapes'
-import { EDGE_TYPE, HEX_GAP, HEX_TILE, agentNodeSize, edgeStroke, groupNodeSize, handlesFor, reportingLineRole, ringStepFor, useCanvasOptions, useNodeDims, useReducedMotion } from '../lib/canvas'
+import { EDGE_TYPE, HEX_GAP, HEX_TILE, agentNodeSize, beginCanvasGlide, breatheIndex, edgeStroke, fitMs, groupNodeSize, handlesFor, reportingLineRole, ringStepFor, useCanvasOptions, useNodeArrival, useNodeDims, useReducedMotion } from '../lib/canvas'
+import { isLayoutMoving, onLayoutSettled } from '../lib/layoutMotion'
+import { isWorkingAgent } from '../lib/agentActivity'
 import type { AgentInstance, CanvasNodeStyle, McpInstallOutcome, McpInstallRequest, Project, Proposal, ProposalDecision, ProposalKind } from '@shared/types'
 import { isVirtualProjectId } from '@shared/types'
 import type { VirtualProjectId } from '@shared/types'
@@ -96,7 +98,7 @@ function zoomOutCanvas(rf: { zoomOut: (o?: { duration: number }) => unknown }, r
   void rf.zoomOut({ duration: reduced ? 0 : ZOOM_MS })
 }
 function fitCanvas(rf: { fitView: (o?: FitViewOptions) => unknown }, reduced: boolean): void {
-  void rf.fitView(fitOpts({ duration: reduced ? 0 : ZOOM_MS }))
+  void rf.fitView(fitOpts({ duration: fitMs(reduced) }))
 }
 
 /** A message edge glows (Starfield) and is marked fresh for this long. */
@@ -192,6 +194,10 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
     return undefined
   })
   const setRunLayout = useAppStore((s) => s.setRunLayout)
+  // The stage fades in on a user's toggle between conversation and agents, never on first show (motion.md 3.20).
+  const [toggledTo, setToggledTo] = useState<string | null>(null)
+  const toggleTimer = useRef<number | undefined>(undefined)
+  useEffect(() => () => window.clearTimeout(toggleTimer.current), [])
   const pendingFocus = useAppStore((s) => s.pendingDecisionFocus === runId)
   const clearDecisionFocus = useAppStore((s) => s.clearDecisionFocus)
   const { fitView, zoomIn, zoomOut } = useReactFlow()
@@ -363,6 +369,13 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
     [agents, chain.earlier, collapseFinished, expandedGroups, now]
   )
 
+  // Pop-in only for nodes that arrive while the canvas is shown (motion.md 3.12, 2.2). A group is a node too (3.13).
+  // The scope includes the loaded member count so earlier sessions loading in lazily are seen, not new.
+  const arrivalIds = useMemo(() => [...visibleAgents.map((a) => a.id), ...[...groups.keys()].map((p) => groupId(p))], [visibleAgents, groups])
+  const nodeArrival = useNodeArrival(arrivalIds, `${project.id}:${chainIds[0]}:${members.length}`)
+  // Only the first 12 working nodes (node order) breathe; the rest keep their colour and word.
+  const breathing = useMemo(() => breatheIndex(visibleAgents.map((a) => ({ id: a.id, working: isWorkingAgent(a.state) }))), [visibleAgents])
+
   // An expanded key whose agent has left the canvas (it finished and folded) is dropped, so expanding the group it is
   // now in shows that agent folded like its siblings (review L2). Earlier-session keys stay.
   useEffect(() => {
@@ -389,6 +402,8 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
     (key: string) => {
       const members = groups.get(key) ?? []
       const shownNow = isEarlierKey(key) ? members.length : members.filter((m) => m.parentId === key).length
+      // The revealed reports pop (an expand is the user's own action; 3.13).
+      nodeArrival.markArrived(isEarlierKey(key) ? members.map((m) => m.id) : members.filter((m) => m.parentId === key).map((m) => m.id))
       // A report group remembers when it was opened: reports that finish later fold again (ux-review-fold.md M1).
       setExpandedGroups((g) => ({ ...g, [key]: isEarlierKey(key) ? true : Date.now() }))
       const parent = groupParent(key)
@@ -403,7 +418,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
         )
       }
     },
-    [groups, groupParent, groupParentName, selectAgent]
+    [groups, groupParent, groupParentName, selectAgent, nodeArrival.markArrived]
   )
 
   // Recompute the tree layout only when the set of shown nodes or their parent links change.
@@ -443,14 +458,31 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
     return () => clearTimeout(t)
   }, [layout, fitView])
 
+  // Glide (motion.md 3.12): a change of layout, node style or topology moves the nodes with a transform transition
+  // while the canvas carries data-canvas-gliding. The first layout of a canvas never glides; above 60 nodes it snaps.
+  const glideSeen = useRef<string | null>(null)
+  const glideUntil = useRef(0)
+  useLayoutEffect(() => {
+    if (glideSeen.current === null) {
+      glideSeen.current = layoutKey
+      return
+    }
+    if (glideSeen.current === layoutKey) return
+    glideSeen.current = layoutKey
+    const total = beginCanvasGlide(canvasRef.current, arrivalIds.length)
+    glideUntil.current = total ? Date.now() + total : 0
+  }, [layoutKey])
+
   const lastTopology = useRef('')
   useEffect(() => {
     if (topologyKey && layoutKey !== lastTopology.current) {
       lastTopology.current = layoutKey
+      // One refit, after the glide has ended (immediately when nothing glides).
+      const left = glideUntil.current - Date.now()
       const t = setTimeout(() => {
         if (stageHidden()) return
-        void fitView(fitOpts({ duration: reducedMotion ? 0 : 300 }))
-      }, 60)
+        void fitView(fitOpts({ duration: fitMs(reducedMotion) }))
+      }, left > 0 ? left + 10 : 60)
       return () => clearTimeout(t)
     }
     return undefined
@@ -468,7 +500,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
       ...(nodeDims.dims[agent.id] ? { measured: nodeDims.dims[agent.id] } : {}),
       // Name tags, stations and hexes: the accessible name leads with the label the node shows (handle, then role name).
       ...(options.nodeStyle !== 'card' ? { ariaLabel: agentLabel(agent) === agent.name ? agent.name : `${agentLabel(agent)}, ${agent.name}` } : {}),
-      data: { agent, color: roleColor(agent.roleId, agent.roleSlug), isRoot: agent.parentId === null }
+      data: { agent, color: roleColor(agent.roleId, agent.roleSlug), isRoot: agent.parentId === null, ...(nodeArrival.isNew(agent.id) ? { arrived: true } : {}), ...(breathing.has(agent.id) ? { breathe: breathing.get(agent.id) } : {}) }
     }))
     const groupNodes: CanvasNode[] = [...groups.entries()].map(([parentId, members]) => {
       const parent = agentLookup.get(groupParent(parentId) ?? '')
@@ -482,11 +514,11 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
         initialWidth: groupSize.width,
         initialHeight: groupSize.height,
         ...(nodeDims.dims[groupId(parentId)] ? { measured: nodeDims.dims[groupId(parentId)] } : {}),
-        data: { parentId, parentName: groupParentName(parentId), agents: members, color: parent ? roleColor(parent.roleId, parent.roleSlug) : neutralRoleColor, onToggle: expandGroup, ...(earlier ? { label: earlierLabel(members.length), earlier: true } : {}) }
+        data: { parentId, parentName: groupParentName(parentId), agents: members, color: parent ? roleColor(parent.roleId, parent.roleSlug) : neutralRoleColor, onToggle: expandGroup, ...(nodeArrival.isNew(groupId(parentId)) ? { arrived: true } : {}), ...(earlier ? { label: earlierLabel(members.length), earlier: true } : {}) }
       }
     })
     return [...agentNodes, ...groupNodes]
-  }, [visibleAgents, groups, positions, selectedAgentId, roleColor, agentLookup, groupParent, groupParentName, expandGroup, neutralRoleColor, agentSize, groupSize, nodeDims.dims, options.nodeStyle])
+  }, [visibleAgents, groups, positions, selectedAgentId, roleColor, agentLookup, groupParent, groupParentName, expandGroup, neutralRoleColor, agentSize, groupSize, nodeDims.dims, options.nodeStyle, nodeArrival.arrivedKey, breathing])
 
   // Controlled nodes: keep React Flow's measured sizes so the minimap draws every node (H1).
   // Enter or Space on a focused node arrives as a 'select' change (React Flow's own key handler); it selects like a click.
@@ -661,7 +693,12 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
     const t = setTimeout(() => {
       // An expanded proposal in a compact frame takes the stage's room (height 0): nothing to fit then.
       if (stageHidden()) return
-      void fitView(fitOpts({ duration: reducedMotion ? 0 : 200 }))
+      // A tray or panel glide is still resizing the stage: refit once when it settles.
+      if (isLayoutMoving()) {
+        refitPending.current = true
+        return
+      }
+      void fitView(fitOpts({ duration: fitMs(reducedMotion) }))
     }, 80)
     return () => clearTimeout(t)
   }, [cardsKey, fitView])
@@ -739,6 +776,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   // Re-fit when the canvas container itself changes size (window resize, side panel, decisions region).
   const canvasRef = useRef<HTMLDivElement>(null)
   const reducedRef = useRef(reducedMotion)
+  const refitPending = useRef(false)
   reducedRef.current = reducedMotion
   useEffect(() => {
     const el = canvasRef.current
@@ -761,8 +799,19 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
       clearTimeout(t)
       t = setTimeout(() => {
         if (stageHidden()) return
+        // The sidebar, side panel or tray is gliding: no refit per frame, one when it settles (lib/layoutMotion.ts).
+        if (isLayoutMoving()) {
+          refitPending.current = true
+          return
+        }
         void fitView(fitOpts({ duration: reducedRef.current ? 0 : 150 }))
       }, 100)
+    })
+    const unsettled = onLayoutSettled(() => {
+      if (!refitPending.current) return
+      refitPending.current = false
+      if (stageHidden()) return
+      void fitView(fitOpts({ duration: reducedRef.current ? 0 : 150 }))
     })
     ro.observe(el)
     // An expanded proposal in a compact frame collapses the stage to height 0 (the canvas stays mounted, nothing floats).
@@ -780,6 +829,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
     if (stage) so?.observe(stage)
     return () => {
       clearTimeout(t)
+      unsettled()
       ro.disconnect()
       so?.disconnect()
     }
@@ -923,7 +973,14 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   // otherwise read a whole proposal body aloud.
   const seenDecisions = useRef<{ runId: string; keys: Set<string> } | null>(null)
   const decisionKeys = decisionItems.map((d) => d.key).join('|')
-  menuRef.current = { conversation, hasDecision: decisionItems.length > 0, toggleCollapse, toggleLayout: () => setRunLayout(runId, conversation ? 'canvas' : 'conversation') }
+  const toggleRunLayout = (): void => {
+    const next = conversation ? 'canvas' : 'conversation'
+    setToggledTo(next)
+    window.clearTimeout(toggleTimer.current)
+    toggleTimer.current = window.setTimeout(() => setToggledTo(null), 400)
+    setRunLayout(runId, next)
+  }
+  menuRef.current = { conversation, hasDecision: decisionItems.length > 0, toggleCollapse, toggleLayout: () => toggleRunLayout() }
   useEffect(() => {
     const prior = seenDecisions.current
     const now = new Set(decisionItems.filter((d) => !isRecord(d.key)).map((d) => d.key))
@@ -1004,13 +1061,13 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
                 label={conversation ? 'Show agents' : 'Show conversation'}
                 size="sm"
                 testId="run-layout-toggle"
-                onClick={() => setRunLayout(runId, conversation ? 'canvas' : 'conversation')}
+                onClick={toggleRunLayout}
               />
             </div>
           </FrameToolbar>
           <FrameStage>
             {conversation ? (
-              <div className="conversation-stage" data-testid="run-conversation">
+              <div className={`conversation-stage${toggledTo === 'conversation' ? ' motion-view' : ''}`} data-testid="run-conversation">
                 <TranscriptPanel variant="conversation" runId={runId} tagRunId={chainIds[chainIds.length - 1]} agent={rootAgent} entries={[]} feed={feed} lead={loadEarlierRow} logs={[]} />
               </div>
             ) : (
@@ -1020,6 +1077,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
               nodeTypes={nodeTypes}
               edgeTypes={CANVAS_EDGE_TYPES}
               data-layout={options.layout}
+              className={toggledTo === 'canvas' ? 'motion-view' : undefined}
               onNodesChange={onNodesChange}
               onNodeClick={onNodeClick}
               onPaneClick={() => selectAgent(null)}

@@ -14,7 +14,8 @@ import { Icon } from './ui/Icon'
 import { activeRun, useAppStore } from '../store/useAppStore'
 import { connectionTag, connectionTagTitle } from '../lib/roleConnection'
 
-export type AgentFlowNode = Node<{ agent: AgentInstance; color: string; isRoot: boolean }, 'agent'>
+/** `arrived`: new since the canvas was shown (pops in once). `breathe`: its phase slot when it is one of the first 12 working nodes. */
+export type AgentFlowNode = Node<{ agent: AgentInstance; color: string; isRoot: boolean; arrived?: boolean; breathe?: number }, 'agent'>
 
 
 /** A label that clips in the middle: the head takes the ellipsis, the last characters stay (see splitLabelTail). */
@@ -47,7 +48,7 @@ export function MessageHandles({ hs }: { hs: (side: string) => { style?: CSSProp
 }
 
 function AgentNodeView({ id, data, selected }: NodeProps<AgentFlowNode>): ReactElement {
-  const { agent, color, isRoot } = data
+  const { agent, color, isRoot, arrived, breathe } = data
   const [, tick] = useState(0)
   const live = !agent.endedAt
 
@@ -115,10 +116,11 @@ function AgentNodeView({ id, data, selected }: NodeProps<AgentFlowNode>): ReactE
 
   return (
     <div
-      className={`agent-node state-${agent.state} ${selected ? 'selected' : ''} ${noResult ? 'no-result' : ''} ${isRoot ? 'is-root' : ''}`}
+      className={`agent-node state-${agent.state} ${selected ? 'selected' : ''} ${noResult ? 'no-result' : ''} ${isRoot ? 'is-root' : ''} ${arrived ? 'motion-pop' : ''}`}
       data-style={nodeStyle}
       data-label={station ? geo.label : undefined}
-      style={{ ['--role' as string]: color, ...(station ? { width: geo.width, height: geo.height } : {}) }}
+      data-breathe={breathe !== undefined ? '' : undefined}
+      style={{ ['--role' as string]: color, ...(breathe !== undefined ? { ['--i' as string]: breathe } : {}), ...(station ? { width: geo.width, height: geo.height } : {}) }}
       title={compact ? compactTip : noResult ? 'Ended without a result: its tokens produced nothing' : undefined}
     >
       {!isRoot && <Handle type="target" position={sides.target as Position} {...hs(sides.target)} />}

@@ -5,6 +5,7 @@ import type { KnowledgeGroup, KnowledgeItem, RunFacts } from '../../lib/knowledg
 import { itemName, itemRetired } from '../../lib/knowledge'
 import type { ListEntry, TypeAhead } from '../../lib/knowledgeList'
 import { WINDOW_THRESHOLD, edgeRow, flattenGroups, isTypeAheadKey, nextTypeAhead, rowIndexOf, scrollTopFor, stepRow, typeAheadMatch, windowRange } from '../../lib/knowledgeList'
+import { useArrival } from '../../lib/useArrival'
 import { Icon } from '../ui/Icon'
 import { KnowledgeRow } from './KnowledgeRow'
 import { onMenuKey } from './menuKeys'
@@ -32,8 +33,14 @@ export function KnowledgeList({
   onSelect,
   onOpen,
   onRetire,
-  onEditNote
+  onEditNote,
+  scope,
+  enter
 }: {
+  /** Project + filter key: a change of scope never animates the rows it reveals. */
+  scope: string
+  /** The list was just switched to from the graph: it enters with the view swap. */
+  enter?: boolean
   ref?: Ref<KnowledgeListHandle>
   domId: string
   groups: readonly KnowledgeGroup[]
@@ -52,6 +59,8 @@ export function KnowledgeList({
   const menuRef = useRef<HTMLDivElement>(null)
   const entries = useMemo(() => flattenGroups(groups), [groups])
   const rows = useMemo(() => entries.filter((e): e is Extract<ListEntry, { type: 'row' }> => e.type === 'row'), [entries])
+  // Rows appended while the list is open fade in; windowing, filter changes and bursts of more than 12 never do.
+  const isNew = useArrival(useMemo(() => rows.map((r) => r.item.id), [rows]), scope, { maxPerBatch: 12 })
   const rowDomId = useCallback((id: string): string => `${uid}-row-${id}`, [uid])
 
   // ---- windowing ----
@@ -266,7 +275,7 @@ export function KnowledgeList({
       <ul
         ref={listRef}
         id={domId}
-        className="knowledge-list"
+        className={enter ? 'knowledge-list motion-view' : 'knowledge-list'}
         role="listbox"
         aria-label="Items"
         data-testid="knowledge-list"
@@ -288,7 +297,7 @@ export function KnowledgeList({
             )}
             <ul role="group" aria-labelledby={g.titleId} aria-label={g.withTitle ? undefined : g.label} className="knowledge-group-rows">
               {g.rows.map((item) => (
-                <KnowledgeRow key={item.id} item={item} runs={runs} selected={item.id === selectedId} showAgentBadge={showAgentBadge} domId={rowDomId(item.id)} onOpen={onOpen} onMenu={openMenu} />
+                <KnowledgeRow key={item.id} item={item} runs={runs} selected={item.id === selectedId} showAgentBadge={showAgentBadge} domId={rowDomId(item.id)} arrive={isNew(item.id)} onOpen={onOpen} onMenu={openMenu} />
               ))}
             </ul>
           </li>

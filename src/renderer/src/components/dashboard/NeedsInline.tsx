@@ -30,6 +30,7 @@ import {
   type InlineMode
 } from '../../lib/needsInline'
 import { Icon } from '../ui/Icon'
+import { rowMotionProps, type RowMotion } from './AttentionSection'
 
 export interface RunNeedsItem extends WaitingItem {
   projectId: string
@@ -158,20 +159,29 @@ function rowModel(item: NeedsItem, project: Project | undefined): RowModel {
 /**
  * One Needs you row (docs/design/dashboard-2.md 5): the place first (project · run), then the ask, and for a permission
  * or a short question the answer buttons. Only Allow once and Deny are ever offered for a permission, whatever the
- * request carries. The row never leaves on its own: it goes when the `*.resolved` event removes the card.
+ * request carries. The row never leaves on its own: it goes when the `*.resolved` event removes the card. Motion
+ * (docs/design/motion.md 3.10): a row that arrives while the page is open enters with `.motion-enter`; one the user
+ * answered here (`onExpectExit`) fades and folds shut after its resolved event; one removed because a run ended elsewhere
+ * leaves at once.
  */
 export function NeedsRow({
   item,
   projectName,
   runName,
   onOpen,
-  onAnnounce
+  onAnnounce,
+  motion,
+  onExpectExit
 }: {
   item: NeedsItem
   projectName: string
   runName?: string
   onOpen: () => void
   onAnnounce: (text: string) => void
+  /** How the section says this row moves (arrival, leaving); absent = static. */
+  motion?: RowMotion
+  /** An answer is going out (true) or failed (false): the row's coming removal is then the user's own, so it may play its exit. */
+  onExpectExit?: (expected: boolean) => void
 }): ReactElement {
   const decideIn = useAppStore((s) => s.decideIn)
   const answerQuestionIn = useAppStore((s) => s.answerQuestionIn)
@@ -195,11 +205,14 @@ export function NeedsRow({
     inFlight.current = true
     setBusy(id)
     setError(null)
+    // Before the send: the `*.resolved` event can land before the promise settles, and the row's removal is the user's own.
+    onExpectExit?.(true)
     try {
       await act()
       setSent(true)
       onAnnounce(done)
     } catch (err) {
+      onExpectExit?.(false)
       const text = sendFailure(cleanIpcError(err))
       setError(text)
       onAnnounce(text)
@@ -215,7 +228,7 @@ export function NeedsRow({
 
   return (
     <li
-      className="dash-row dash-needs-row"
+      {...(motion ? rowMotionProps(motion, 'dash-row dash-needs-row') : { className: 'dash-row dash-needs-row' })}
       data-testid="dash-needs-row"
       data-kind={item.kind}
       data-run={runId ?? ''}

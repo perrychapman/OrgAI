@@ -520,3 +520,22 @@ export async function windowShift(page) {
     }
   })
 }
+
+/**
+ * Appearance > Reduce motion ('on' | 'off' | 'system', docs/design/motion.md 5). With 'on', every motion token is ~0 and
+ * entry offsets are 0, so state changes are instant. Waits until <html data-reduce-motion> follows.
+ */
+export async function setReduceMotion(page, mode) {
+  await page.evaluate(async (m) => {
+    const info = await window.orgai.settings.get()
+    const { dataDir: _d, appVersion: _v, ...s } = info
+    await window.orgai.settings.set({ ...s, appearance: { ...s.appearance, reduceMotion: m } })
+  }, mode)
+  // lib/theme.ts writes data-reduce-motion='on' only for 'on' and removes it otherwise.
+  await page
+    .waitForFunction((m) => (document.documentElement.getAttribute('data-reduce-motion') === 'on') === (m === 'on'), mode, { timeout: 5000 })
+    .catch(() => {})
+}
+
+/** Shortcut: reduced motion on. */
+export const motionOff = (page) => setReduceMotion(page, 'on')

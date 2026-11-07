@@ -1,5 +1,5 @@
 import type { ReactElement, ReactNode } from 'react'
-import { useRef } from 'react'
+import { useRef, useState } from 'react'
 import { PaneTitleContext } from './SettingsSection'
 import { SettingsNav, settingsPanelId, settingsTabId, type SettingsNavItem } from './SettingsNav'
 
@@ -30,6 +30,8 @@ export function SettingsPage({
   children: ReactNode
 }): ReactElement {
   const scroller = useRef<HTMLDivElement>(null)
+  // Only a pane the user picked arrives with the view recipe; first render and deep links swap with no motion.
+  const [picked, setPicked] = useState<string | null>(null)
   const paneLabel = panes.find((p) => p.id === active)?.label ?? ''
   return (
     <div className="settings-scroll" ref={scroller}>
@@ -43,10 +45,11 @@ export function SettingsPage({
           onSelect={(id) => {
             if (id === active) return
             if (scroller.current) scroller.current.scrollTop = 0
+            setPicked(id)
             onSelect(id)
           }}
         />
-        <div className="settings-col" role="tabpanel" id={settingsPanelId(idBase)} aria-labelledby={settingsTabId(idBase, active)}>
+        <div key={active} className={picked === active ? 'settings-col motion-view' : 'settings-col'} role="tabpanel" id={settingsPanelId(idBase)} aria-labelledby={settingsTabId(idBase, active)}>
           <h2 className="settings-pane-title" id={`${idBase}-pane-title`} tabIndex={-1}>
             {paneLabel}
           </h2>
