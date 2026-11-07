@@ -650,7 +650,10 @@ describe('CodexAdapter session', () => {
         ;(ctx.requestPermission as any).mockResolvedValueOnce({ behavior: 'allow', scope: 'session' })
         await s.ask('item/fileChange/requestApproval', fe())
         const req = (ctx.requestPermission as any).mock.calls[0][0]
-        expect((req.suggestions ?? []).some((x: { type: string }) => x.type === 'setMode')).toBe(false)
+        // The provider's setMode is dropped; the only one left is the card-only quick session edit suggestion
+        // (quickEditCard), which never turns on sessionAcceptEdits. Without ctx.quickSessionEdits the next edit asks.
+        expect((req.suggestions ?? []).filter((x: { type: string }) => x.type === 'setMode')).toEqual([{ type: 'setMode', mode: 'acceptEdits', destination: 'session' }])
+        expect((session as any).sessionAcceptEdits).toBe(false)
         chg(s, join(dir, 'b.ts'), 'f2')
         await s.ask('item/fileChange/requestApproval', fe('f2'))
         expect(ctx.requestPermission).toHaveBeenCalledTimes(2)
