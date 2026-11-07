@@ -442,6 +442,20 @@ describe('authFailureFrom', () => {
     expect(authFailureFrom(assistant(text, 'cloud_credential_error'))).toBe(text)
     expect(authFailureFrom(assistant(text, 'oauth_org_not_allowed'))).toBe(text)
   })
+  it('names the proxy in complete() when the connection carries a name', async () => {
+    const { ClaudeAdapter } = await import('./claude')
+    const before = sdk.queries.length
+    const p = new ClaudeAdapter().complete({
+      system: 's',
+      prompt: 'hi',
+      kind: 'title',
+      connection: { connection: 'proxy-0a1b2c3d', adapter: 'claude', env: {}, name: 'Team gateway' }
+    } as never)
+    await vi.waitFor(() => expect(sdk.queries.length).toBe(before + 1))
+    sdk.queries[before]!.emit(assistant('', 'authentication_failed'))
+    await expect(p).rejects.toThrow(/Team gateway/)
+    sdk.queries.length = before
+  })
   it('detects an error result and ignores a normal one', () => {
     expect(authFailureFrom({ type: 'result', subtype: 'success', is_error: true, result: 'Invalid API key · Please run /login' } as never)).not.toBeNull()
     expect(authFailureFrom({ type: 'result', subtype: 'success', is_error: false, result: 'Done.' } as never)).toBeNull()

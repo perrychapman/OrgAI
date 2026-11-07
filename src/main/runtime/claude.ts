@@ -3109,7 +3109,7 @@ export class ClaudeSession implements RuntimeSession {
   /** The run's closing status: 'error' with the readable message after an auth failure, else 'finished'. */
   private emitEnd(): void {
     const runId = this.ctx.run.id
-    if (this.authFailed) this.emit({ type: 'run.status', runId, status: 'error', error: authFailureMessage(this.ctx.connection?.connection) })
+    if (this.authFailed) this.emit({ type: 'run.status', runId, status: 'error', error: authFailureMessage(this.ctx.connection?.connection, this.ctx.connection?.name) })
     else this.emit({ type: 'run.status', runId, status: 'finished' })
   }
 
@@ -3117,7 +3117,7 @@ export class ClaudeSession implements RuntimeSession {
   private failAuth(raw: string): void {
     if (this.authFailed) return
     this.authFailed = true
-    const message = authFailureMessage(this.ctx.connection?.connection)
+    const message = authFailureMessage(this.ctx.connection?.connection, this.ctx.connection?.name)
     const detail = authFailureDetail(raw, this.secrets)
     this.transcript(ROOT_ID, { kind: 'system', text: message, ...(detail ? { detail } : {}) }, { source: 'harness' })
     this.log('error', `Authentication failed${detail ? `: ${detail}` : ''}`)
@@ -3550,7 +3550,7 @@ export class ClaudeAdapter implements RuntimeAdapter {
         } else if (msg.type === 'result' && msg.subtype !== 'success') {
           throw new Error(`Completion failed: ${msg.subtype}`)
         }
-        if (authFailureFrom(msg) !== null) throw new Error(authFailureMessage(input.connection?.connection))
+        if (authFailureFrom(msg) !== null) throw new Error(authFailureMessage(input.connection?.connection, input.connection?.name))
       }
     } catch (err) {
       if (input.signal?.aborted) throw new Error('Completion cancelled')
@@ -3559,7 +3559,7 @@ export class ClaudeAdapter implements RuntimeAdapter {
       link?.dispose()
     }
     if (input.signal?.aborted) throw new Error('Completion cancelled')
-    if (isAuthFailure({ text })) throw new Error(authFailureMessage(input.connection?.connection))
+    if (isAuthFailure({ text })) throw new Error(authFailureMessage(input.connection?.connection, input.connection?.name))
     return text
   }
 }
