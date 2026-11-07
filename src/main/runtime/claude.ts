@@ -28,7 +28,7 @@ import {
 import type { AgentInstance, ImageAttachment, McpServerSpec, PluginSpec, Project, RunSummary, Role, RunEvent, TranscriptBlock, UsageStatus, WorktreeInfo } from '@shared/types'
 import type { PermissionDecision, PermissionSuggestion, ProviderAuth } from '@shared/types'
 import { BRIDGE_HARNESS_TOOLS, KNOWLEDGE_RECALL_TOOL, SPAWN_TOOL, isBuiltinConnectionId } from '@shared/types'
-import { ANTHROPIC_BUILTIN_MODELS, effectiveSubagentLimits, isolateWritersOn, mcpServersForRole, newId, planGuardEngaged, planGuardOf, projectKindOf, settingTier, tierForModel } from '@shared/defaults'
+import { ANTHROPIC_BUILTIN_MODELS, connectionName, projectConnection, roleConnection, effectiveSubagentLimits, isolateWritersOn, mcpServersForRole, newId, planGuardEngaged, planGuardOf, projectKindOf, settingTier, tierForModel } from '@shared/defaults'
 import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo, type BridgedRole, type RunSkill, type CompletionInput, type RunConnection, type ResolvedMcpServer, type RuntimeAdapter, type PeerMessage, type RuntimeContext, type RuntimeSession, type RootTurnEnd, type SessionSettlement, type ExecActivityReason } from './types'
 import { isTrustRestrictedRun, isWorkspaceConfigPath } from '../quick/scratch'
 import { quickEditCard, quickEditFree } from './quickEditCard'
@@ -516,7 +516,10 @@ export function buildEnv(ctx: RuntimeContext, base: NodeJS.ProcessEnv = process.
   // Bundled skills (and any not granted) must not be offered; set after isolation, which strips CLAUDE_CODE_DISABLE_*.
   // The verified route is the env var (disableBundledSkills is a Settings field, not an Options field).
   if (!isSetupLikeRun(ctx.run.kind)) env.CLAUDE_CODE_DISABLE_BUNDLED_SKILLS = '1'
-  if (!proxy && project.provider.auth.kind === 'apiKey') {
+  // A bridged child on another connection than the project's must not inherit the project's API key: only its own
+  // RunConnection.env authenticates it.
+  const foreignChild = !!ctx.bridgedChild && !!ctx.connection && projectConnection(project) !== ctx.connection.connection
+  if (!proxy && !foreignChild && project.provider.auth.kind === 'apiKey') {
     const key = base[project.provider.auth.envVar]
     if (key) env.ANTHROPIC_API_KEY = key
   }
@@ -554,13 +557,31 @@ export function authFailureFrom(msg: SDKMessage): string | null {
   return null
 }
 
-/** The run's bridged roles (RuntimeContext.bridge, read at call time); none inside a bridged child or when unreadable. */
+/**
+ * The run's bridged roles (RuntimeContext.bridge, read at call time); none inside a bridged child. Fails closed: when
+ * bridge.roles() throws, every non-root role whose roleConnection differs from this session's connection counts as
+ * bridged (no AgentDefinition, native spawn denied), so an unreadable bridge never lets the CLI run a role on the
+ * wrong connection.
+ */
 export function bridgedRolesOf(ctx: RuntimeContext): BridgedRole[] {
   if (!ctx.bridge || ctx.bridgedChild) return []
   try {
     return ctx.bridge.roles()
   } catch {
-    return []
+    const own = ctx.connection?.connection ?? projectConnection(ctx.project)
+    return ctx.roles
+      .filter((r) => r.reportsTo !== null && roleConnection(r, ctx.project) !== own)
+      .map((r) => {
+        const connection = roleConnection(r, ctx.project)
+        return {
+          roleId: r.id,
+          slug: r.slug,
+          name: r.name,
+          connection,
+          connectionName: connectionName(connection),
+          adapter: connection === 'openai' ? 'codex' : 'claude'
+        }
+      })
   }
 }
 
@@ -1865,6 +1886,15 @@ export class ClaudeSession implements RuntimeSession {
         this.log('warn', `Blocked ${input.tool_name} by ${this.agents.get(agentId)?.name ?? agentId}: ${mcpDenial}`)
         return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: mcpDenial } }
       }
+      // delegate_agent's own caller is a first-in-first-out guess (HarnessCallerTracker), so the org chart is enforced
+      // here from the hook's agent_type, before any allow path.
+      if (input.tool_name === `${ORGAI_TOOL_PREFIX}${BRIDGE_HARNESS_TOOLS.delegate}`) {
+        const delegateDenial = this.delegateDenial(input)
+        if (delegateDenial) {
+          this.log('warn', `Blocked ${input.tool_name} by ${this.agents.get(agentId)?.name ?? agentId}: ${delegateDenial}`)
+          return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: delegateDenial } }
+        }
+      }
       // The Skill gate comes first: no saved rule, auto-allow or later path may let an ungranted skill through.
       // It reads the LIVE grants (ctx.skills()), so an ungrant or a removal approved mid-run applies at the next call.
       if (input.tool_name === 'Skill') {
@@ -2163,6 +2193,23 @@ export class ClaudeSession implements RuntimeSession {
     if (byType) return byType
     const roleId = this.agents.get(input.agent_id)?.roleId
     return roleId ? this.ctx.roles.find((r) => r.id === roleId) : undefined
+  }
+
+  /**
+   * The org-chart check for a delegate_agent call: the caller (callerRole: the root for the main thread) must have
+   * canSpawn and list the bridged role named by tool_input.role (slug or id) in its spawnable. A role that is not
+   * bridged falls through (the tool refuses it itself).
+   */
+  private delegateDenial(input: PreToolUseHookInput): string | undefined {
+    const raw = (input.tool_input ?? {}) as Record<string, unknown>
+    const wanted = typeof raw.role === 'string' ? raw.role.trim() : ''
+    if (!wanted) return undefined
+    const target = bridgedRolesOf(this.ctx).find((b) => b.slug === wanted || b.roleId === wanted)
+    if (!target) return undefined
+    const caller = this.callerRole(input)
+    if (caller?.canSpawn && caller.spawnable.includes(target.roleId)) return undefined
+    const callerName = caller?.name ?? input.agent_type ?? input.agent_id ?? 'this agent'
+    return `Role ${callerName} may not delegate to ${target.name}.`
   }
 
   /** The MCP gate for one call (mcp__ tools and the resource tools). Fails closed if the live server list cannot be read. */
