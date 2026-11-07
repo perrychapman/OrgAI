@@ -7,6 +7,7 @@ import type { DashCaps } from './dashCaps'
 import { useAllSummaries, useBandSnapshot, useNow } from './useDashboardData'
 import { bandHeightEstimate, bandModel, countParts, fitBandModel, emptyLine, moreRunsLabel } from '../../lib/dashboardBand'
 import { pausedRuns } from '../../lib/dashboard'
+import { useArrival } from '../../lib/useArrival'
 import { nextSettleAt, settleTimerDelay } from '../../lib/foldFinished'
 
 /** After a row opens a run: the agent's canvas node when it exists, else the topbar heading unless focus is already somewhere real. */
@@ -73,6 +74,31 @@ export function RightNowBand({ caps, budget }: { caps: DashCaps; budget?: number
   )
   const paused = useMemo(() => pausedRuns(summaries).length, [summaries])
 
+  // Motion (spec 3.14): arrivals after first paint rise in; first paint, relaunch and a hidden band never animate.
+  const flatRuns = model.projects.flatMap((p) => p.runs.map((r) => r.id))
+  const runArrived = useArrival(flatRuns, 'band', { maxPerBatch: 5 })
+  const [reveal, setReveal] = useState<{ from: number } | null>(null)
+  useEffect(() => {
+    if (!reveal) return
+    const id = window.setTimeout(() => setReveal(null), 1000)
+    return () => window.clearTimeout(id)
+  }, [reveal])
+  const toggleAll = (): void => {
+    setReveal(showAll ? null : { from: flatRuns.length })
+    setShowAll((v) => !v)
+  }
+  const wasEmpty = useRef<boolean | null>(null)
+  const [bandArrived, setBandArrived] = useState(false)
+  useEffect(() => {
+    const empty = model.total === 0
+    const appeared = wasEmpty.current === true && !empty
+    wasEmpty.current = empty
+    if (!appeared) return undefined
+    setBandArrived(true)
+    const id = window.setTimeout(() => setBandArrived(false), 1000)
+    return () => window.clearTimeout(id)
+  }, [model.total])
+
   // Focus rules (6.5): a focused agent row that leaves hands focus to its run header; a run header that leaves, to the
   // next header, else the previous, else the heading. Live updates never move focus otherwise.
   const focused = useRef<{ key: string; runKeys: string[] } | null>(null)
@@ -117,7 +143,7 @@ export function RightNowBand({ caps, budget }: { caps: DashCaps; budget?: number
   return (
     <section
       ref={rootRef}
-      className="dash-section dash-now"
+      className={bandArrived ? 'dash-section dash-now motion-enter' : 'dash-section dash-now'}
       data-testid="dash-now"
       data-working={model.counts.working}
       data-waiting={model.counts.waiting}
@@ -160,14 +186,17 @@ export function RightNowBand({ caps, budget }: { caps: DashCaps; budget?: number
                 {p.client && <span className="dash-now-client"> · {p.client}</span>}
               </h3>
               <ul className="dash-runs">
-                {p.runs.map((r) => (
-                  <BandRun key={r.id} run={r} now={elapsedNow} onOpen={openRun} />
-                ))}
+                {p.runs.map((r) => {
+                  const at = flatRuns.indexOf(r.id)
+                  const revealed = reveal !== null && at >= reveal.from
+                  const enter = revealed ? Math.min(at - reveal.from, 5) : runArrived(r.id) ? 0 : undefined
+                  return <BandRun key={r.id} run={r} now={elapsedNow} onOpen={openRun} enter={enter} />
+                })}
               </ul>
             </section>
           ))}
           {(model.hiddenRuns > 0 || showAll) && model.total > caps.bandRuns && (
-            <Button variant="ghost" size="sm" testId="dash-now-more" onClick={() => setShowAll((v) => !v)}>
+            <Button variant="ghost" size="sm" testId="dash-now-more" onClick={toggleAll}>
               {showAll ? 'Show fewer' : moreRunsLabel(model.hiddenRuns)}
             </Button>
           )}

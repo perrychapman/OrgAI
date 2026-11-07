@@ -20,6 +20,7 @@ import type { TeamAttentionItem } from '../../lib/teamFiles'
 import { projectStatus } from '../../lib/projectStatus'
 import { displayRunName } from '../../lib/orgChange'
 import { statusOfRun, statusText } from '../../lib/runStatus'
+import { useArrival } from '../../lib/useArrival'
 import { Input } from '../ui/Input'
 import { useConfirm } from '../ui/ConfirmDialog'
 import { ProjectTile, type TileModel } from './ProjectTile'
@@ -134,6 +135,12 @@ export function ProjectsGrid({ onAnnounce }: { onAnnounce: (text: string) => voi
   const teamItems = useTeamAttentionItems()
   const ordered = useMemo(() => projectAttentionOrder(projects, buildAttentionCtx(Object.values(runs), history, teamItems)), [projects, runs, history, teamItems])
   const searching = projects.length > SEARCH_AFTER
+  // A tile created or cloned while the page is open rises in; first paint and search filtering never animate.
+  const tileArrived = useArrival(
+    projects.map((p) => p.id),
+    '',
+    { maxPerBatch: 3 }
+  )
   const shown = useMemo(() => (searching ? filterProjects(ordered, query) : ordered), [ordered, query, searching])
   // Branch counts and team suggestions for the chips: after first paint, three calls at a time, once per session.
   const signals = useProjectSignals(ordered)
@@ -249,6 +256,7 @@ export function ProjectsGrid({ onAnnounce }: { onAnnounce: (text: string) => voi
           {models.map((m) => (
             <ProjectTile
               key={m.project.id}
+              enter={tileArrived(m.project.id)}
               model={m}
               onOpen={() => open(m.project.id)}
               onDelete={() => void remove(m)}
