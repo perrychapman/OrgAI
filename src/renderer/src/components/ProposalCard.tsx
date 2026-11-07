@@ -1,7 +1,12 @@
 import type { ReactElement, ReactNode } from 'react'
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { Minus, Pencil, Plus, TriangleAlert } from 'lucide-react'
-import type { Proposal, ProposalDecision, ProjectKind, Role } from '@shared/types'
+import type { Project, Proposal, ProposalDecision, ProjectKind, Role } from '@shared/types'
+import { folderName } from '../lib/paths'
+import { connectionLabel } from '../lib/connectionLabel'
+import { projectSettingRows, type ProjectSettingRow } from '../lib/appSettingsCard'
+import { AppSettingsProposalBody } from './proposals/AppSettingsProposalBody'
+import { ProjectSettingsChanges } from './proposals/ProjectSettingsChanges'
 import { PERMISSION_MODE_OPTIONS, PROPOSAL_NOTE_MAX_CHARS, proposalSecretKey } from '@shared/types'
 import { initials } from '../lib/layout'
 import { useAppStore } from '../store/useAppStore'
@@ -20,7 +25,7 @@ import { SkillsProposalBody } from './proposals/SkillsProposalBody'
 import { useMcpCurrent } from './proposals/useCurrent'
 import { ClampText } from './proposals/ClampText'
 import { clampLabel } from '../lib/clampLabel'
-import { projectKindOf, projectRulesLocation } from '@shared/defaults'
+import { projectConnection, projectKindOf, projectRulesLocation } from '@shared/defaults'
 import { projectKindCopy, settingsApplyNoteFor, type ArchitectureHeadings } from '../lib/projectKindCopy'
 
 interface Props {
@@ -84,9 +89,16 @@ export default function ProposalCard({ proposal, runId, currentRoles, who, agent
   const runSummary = useAppStore((st) => st.runs[runId]?.summary)
   const isSetup = runSummary?.kind === 'setup'
   const canSkip = isSetup && proposal.kind === 'mcpServers'
-  const canDecline = !isSetup && (proposal.kind === 'mcpServers' || proposal.kind === 'orgChart' || proposal.kind === 'skills')
+  const target = proposal.kind === 'settings' || proposal.kind === 'appSettings' ? proposal.target : undefined
+  const selfHelp = proposal.kind === 'appSettings' || (proposal.kind === 'settings' && !!target)
+  const canDecline = !isSetup && (proposal.kind === 'mcpServers' || proposal.kind === 'orgChart' || proposal.kind === 'skills' || selfHelp)
   const project = useAppStore((st) => st.projects.find((p) => p.id === runSummary?.projectId))
-  const kind = projectKindOf(project)
+  // A Chat proposal for another project is worded for that project's kind, never the virtual project's.
+  const targetProject = useAppStore((st) => (target ? st.projects.find((p) => p.id === target.projectId) : undefined))
+  const kind = projectKindOf(target ? targetProject : project)
+  const targetName = target ? clampLabel(showHidden(target.projectName), 40) || 'this project' : ''
+  const targetKind = target ? kind : undefined
+  const settingRows = useMemo(() => (proposal.kind === 'settings' && target ? projectSettingRows(proposal.payload, kind, targetProject) : []), [proposal, target, kind, targetProject])
   const kindCopy = projectKindCopy(kind)
   const mcp = proposal.kind === 'mcpServers' ? proposal.payload : null
   const scope = mcp ? proposalScope(mcp) : 'project'
@@ -97,8 +109,8 @@ export default function ProposalCard({ proposal, runId, currentRoles, who, agent
   const skillCurrent = useMemo(() => ({ roles: currentRoles, skills: project?.skills ?? [] }), [currentRoles, project?.skills])
   const mcpLoading = !!mcp && mcpCurrent.status === 'loading'
   const foldSummary = useMemo(
-    () => (mcpLoading ? undefined : proposalFoldSummary(proposal, { roles: currentRoles, mcpServers: mcpCurrent.servers, skills: skillCurrent })),
-    [proposal, currentRoles, mcpCurrent.servers, skillCurrent, mcpLoading]
+    () => (mcpLoading ? undefined : proposalFoldSummary(proposal, { roles: currentRoles, mcpServers: mcpCurrent.servers, skills: skillCurrent, projectKind: targetKind })),
+    [proposal, currentRoles, mcpCurrent.servers, skillCurrent, mcpLoading, targetKind]
   )
   const hasSecrets = !!mcp && uniqueSecretSlots(mcp).length > 0
   const effectCopy = proposalEffectCopy(proposal.effect, isSetup ? 'architect' : runSummary?.kind === 'mcp-assist' || runSummary?.kind === 'skill-assist' || runSummary?.quick ? 'assistant' : 'orchestrator')
@@ -109,9 +121,13 @@ export default function ProposalCard({ proposal, runId, currentRoles, who, agent
         ? skillsApplyNote(proposal.payload)
         : proposal.kind === 'architecture'
           ? kindCopy.architectureApplyNote
-          : proposal.kind === 'settings'
-            ? settingsApplyNoteFor(kind, projectRulesLocation(project))
-            : APPLY_NOTE[proposal.kind]
+          : proposal.kind === 'appSettings'
+            ? 'Applies now to every project and window.'
+            : proposal.kind === 'settings'
+              ? target
+                ? targetSettingsNote(proposal.payload, kind, targetProject)
+                : settingsApplyNoteFor(kind, projectRulesLocation(project))
+              : APPLY_NOTE[proposal.kind]
 
   const setSecret = (index: number, v: string): void => setSecretValues((cur) => ({ ...cur, [index]: v }))
 
@@ -148,7 +164,18 @@ export default function ProposalCard({ proposal, runId, currentRoles, who, agent
       agentId={agentId}
       expandSignal={expandSignal}
       focusDetails
-      title={proposal.kind === 'architecture' ? kindCopy.architectureTitle : proposalTitle(proposal.kind)}
+      title={proposal.kind === 'architecture' ? kindCopy.architectureTitle : target && proposal.kind === 'settings' ? oneLine(`Change settings of ${targetName}`) : proposal.kind === 'appSettings' ? 'Change app settings' : proposalTitle(proposal.kind)}
+      target={
+        proposal.kind === 'appSettings' ? (
+          <Badge tone="info" testId="proposal-target-badge">
+            App settings
+          </Badge>
+        ) : target ? (
+          <Badge tone="info" testId="proposal-target-badge" title={showHidden(target.projectName)}>
+            {targetName}
+          </Badge>
+        ) : undefined
+      }
       summary={foldSummary}
       helper={
         <>
@@ -163,8 +190,8 @@ export default function ProposalCard({ proposal, runId, currentRoles, who, agent
       }
       primary={
         mode === 'idle' ? (
-          <Button variant="primary" onClick={approve} disabled={busy || mcpLoading}>
-            Approve
+          <Button variant="primary" onClick={approve} disabled={busy || mcpLoading} testId="proposal-approve">
+            {proposal.kind === 'appSettings' ? 'Apply to App settings' : target && proposal.kind === 'settings' ? `Apply to ${clampLabel(targetName, 40)}` : 'Approve'}
           </Button>
         ) : mode === 'revise' ? (
           <Button variant="primary" onClick={revise} disabled={busy || !feedback.trim()}>
@@ -179,10 +206,16 @@ export default function ProposalCard({ proposal, runId, currentRoles, who, agent
       secondary={
         mode === 'idle' ? (
           <>
+            {/* Self-help cards put Decline beside Apply, before Request changes (UX M4). */}
+            {canDecline && selfHelp && (
+              <Button onClick={() => setMode('decline')} disabled={busy} testId="proposal-decline">
+                Decline
+              </Button>
+            )}
             <Button onClick={() => setMode('revise')} disabled={busy} testId="proposal-revise">
               Request changes
             </Button>
-            {canDecline && (
+            {canDecline && !selfHelp && (
               <Button variant="ghost" onClick={() => setMode('decline')} disabled={busy} testId="proposal-decline">
                 Not now
               </Button>
@@ -203,7 +236,13 @@ export default function ProposalCard({ proposal, runId, currentRoles, who, agent
       {proposal.title.trim() && <p className="proposal-lead">{oneLine(proposal.title, 200)}</p>}
       {proposal.kind === 'architecture' && <ArchitectureBody payload={proposal.payload} headings={kindCopy.architecture} />}
       {proposal.kind === 'orgChart' && <OrgChartBody payload={proposal.payload} currentRoles={currentRoles} />}
-      {proposal.kind === 'settings' && <SettingsBody payload={proposal.payload} kind={kind} />}
+      {proposal.kind === 'settings' && target && (
+        <p className="proposal-target" data-testid="proposal-target">
+          {targetLine(target.projectName, targetProject)}
+        </p>
+      )}
+      {proposal.kind === 'settings' && <SettingsBody payload={proposal.payload} kind={kind} rows={target ? settingRows : undefined} />}
+      {proposal.kind === 'appSettings' && <AppSettingsProposalBody payload={proposal.payload} />}
       {proposal.kind === 'mcpServers' && <McpProposalBody proposalId={proposal.id} payload={proposal.payload} current={mcpCurrent} roles={currentRoles} secretValues={secretValues} setSecret={setSecret} />}
       {proposal.kind === 'skills' && <SkillsProposalBody proposalId={proposal.id} payload={proposal.payload} current={skillCurrent} projectId={project?.id} />}
       {mode !== 'idle' && (
@@ -512,7 +551,24 @@ function OrgChartBody({ payload, currentRoles }: { payload: Extract<Proposal, { 
   )
 }
 
-function SettingsBody({ payload, kind }: { payload: Extract<Proposal, { kind: 'settings' }>['payload']; kind: ProjectKind }): ReactElement {
+/** "Notes API · notes-api · Anthropic": name, folder and connection of a Chat proposal's target; only the name when the project is not loaded. */
+function targetLine(name: string, project: Project | undefined): string {
+  const parts = [clampLabel(showHidden(name), 60)]
+  if (project) {
+    const folder = folderName(project.path)
+    if (folder) parts.push(clampLabel(showHidden(folder), 60))
+    parts.push(connectionLabel(projectConnection(project)))
+  }
+  return parts.join(' · ')
+}
+
+/** Helper line of a target settings card: names the footnote about saved commands only when the proposal carries rules. */
+function targetSettingsNote(payload: Extract<Proposal, { kind: 'settings' }>['payload'], kind: ProjectKind, project: Project | undefined): string {
+  if (payload.allowRules && payload.allowRules.length > 0) return settingsApplyNoteFor(kind, projectRulesLocation(project))
+  return payload.brief ? 'Approving updates the settings and brief of this project.' : 'Approving updates the settings of this project.'
+}
+
+function SettingsBody({ payload, kind, rows: tableRows }: { payload: Extract<Proposal, { kind: 'settings' }>['payload']; kind: ProjectKind; rows?: ProjectSettingRow[] }): ReactElement {
   const rows: [string, string][] = []
   const engagement = kind === 'engagement'
   if (engagement && payload.client !== undefined) rows.push(['Client or case', payload.client.trim() ? showHidden(oneLine(payload.client, 120)) : 'Cleared'])
@@ -529,7 +585,10 @@ function SettingsBody({ payload, kind }: { payload: Extract<Proposal, { kind: 's
   return (
     <>
       <p className="proposal-rationale">{showHidden(payload.rationale)}</p>
-      {rows.length > 0 && (
+      {tableRows ? (
+        <ProjectSettingsChanges rows={tableRows} />
+      ) : (
+        rows.length > 0 && (
         <div className="proposal-kv">
           {rows.map(([k, v]) => (
             <span key={k} className="proposal-kv-row">
@@ -538,6 +597,7 @@ function SettingsBody({ payload, kind }: { payload: Extract<Proposal, { kind: 's
             </span>
           ))}
         </div>
+        )
       )}
       {payload.allowRules && payload.allowRules.length > 0 && (
         <Section title="Commands that never ask">

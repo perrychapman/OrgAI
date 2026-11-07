@@ -189,3 +189,69 @@
 .org-diff-resp-tag {
   font-weight: 600;
 }
+
+/* Setting / Now / New tables (app settings card, Chat-proposed project settings). Compact three-column grid; text wraps, so the table never scrolls sideways. */
+.proposal-target {
+  margin: 0;
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.proposal-table-wrap {
+  min-width: 0;
+}
+.proposal-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: var(--text-small);
+  text-align: left;
+}
+.proposal-table th,
+.proposal-table td {
+  padding: var(--space-1) var(--space-2) var(--space-1) 0;
+  text-align: left;
+  vertical-align: top;
+  font-weight: var(--weight-regular);
+  overflow-wrap: anywhere;
+}
+.proposal-table thead th {
+  font-weight: var(--weight-semibold);
+  color: var(--text-tertiary);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.proposal-table th:first-child,
+.proposal-table td:first-child {
+  width: 40%;
+}
+.proposal-table-name {
+  color: var(--text-primary);
+}
+.proposal-table-group th {
+  padding-top: var(--space-3);
+  font-weight: var(--weight-semibold);
+  color: var(--text-secondary);
+}
+.proposal-table-now {
+  color: var(--text-tertiary);
+  text-decoration: line-through;
+  text-decoration-color: var(--border-strong);
+}
+.proposal-table-new {
+  color: var(--text-primary);
+  font-weight: var(--weight-regular);
+}
+.proposal-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: var(--space-1);
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--border-strong);
+  vertical-align: baseline;
+}
+.appsettings-proposal {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
