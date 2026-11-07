@@ -112,3 +112,51 @@ Files that would need to change (read from the code, not tried):
 - A second project (cross-project navigation and the Needs-you jump from another project) was not walked; one project only.
 - A screen reader was not used; announcements were read from the DOM and focus logs only.
 - macOS, Linux, a real Architect (live model), packaged builds.
+
+## Status after the change
+
+Reviewer: UX Researcher. Build: `c5eaf8e1` (dev line, 0.1.7-dev1), `npm run build` in this worktree. How it ran: `ORGAI_MOCK=1`, fresh temp data dir per script (own `E2E_DATA_DIR`-less `launch()` dirs), Windows, one mock code project "OrgWalk" created with setup skipped. 1024x640 (56 px rail) and 1600x1000, dark and light (`data-theme`). Flows: Team > Design start, Live tab, sidebar, Team pointer, bell, Dashboard, History, Settings > Maintenance, a second text sent while the session is open, every card answered (permission, architecture, org chart, run settings), End session; a keyboard-only pass at 1024x640 light; a relaunch at 1600x1000 dark with a card open. Combinations: 1600 dark and 1024 light full flow; 1600 light and 1024 dark full flow again (`w2.mjs`), so every size/theme pair was seen. Scripts and shots: `e2e/shots/ux/org-change-session-2/` (gitignored; `w1`-`w4.mjs`; shot names below are relative to it and carry a `<width>-<theme>-` prefix, `kb-`, `rl-` or `m-`).
+
+### Verdict: MET (with Medium and Low follow-ups)
+
+The user's complaint is resolved. A Team > Design change now opens on Live as `R1 Org chart: add a database specialist under the…`, appears in the sidebar under the project (`nav-run`, kind mark, status word), in History as kind "Org change", in Dashboard "Needs you" and "Running now", and survives navigation and relaunch. The Team tray points back at it in both modes, and starting again sends into it. Maintenance starts the same kind of session. No "R?" was seen on any surface I opened. The remaining issues are copy and focus details, none blocking.
+
+### Per-finding status
+
+| Id | Status | Evidence |
+| --- | --- | --- |
+| H1 session cannot be left and found again | Fixed | `1600-dark-01-live`: tab, sidebar row, Live. `1600-dark-03-dashboard`: "Running now 1 Needs you Org chart: add a database specialist under the…". `04-history`: row kind "Org change", Open / Open in Live. Team Recommend mode shows the pointer (`02-team-pointer`, "…is open · Needs you. Open session"); Open session returns to the run. At 1024 (rail) the way back is the project's "OR" dot, the run tab and the bell (`1024-light-01-live-perm`, `03-bell`). Relaunch with a card open: tab `R2 Org chart: add a QA lead` "Ended when OrgAI closed", cut notice, composer "Pick up where it was cut off." (`rl-03-restored`); History and the project tile say "Ended when OrgAI closed". |
+| H2 attention state contradicts the rest | Fixed | Project row "1 decision · 1 run" (was "· 0 runs"), Dashboard Running now lists it, hero "1 needs you / 1 run open". After every card: tab status "Idle", pointer "is open · Idle. Open session" (`1024-dark-07-team-idle`), banner "Org change applied: architecture, org chart, run settings" with Open Team and End session (`1600-dark-10-after-cards`); End session from the run strip works, tab becomes "Stopped", History "Stopped / Continue". |
+| M1 leak into New run page as "R?" | Fixed | "+" tab page says "1 other run keeps going" and names "R1: Org chart review" (`m-03-new-run-page`); no "R?" in bell, Dashboard, sidebar, pointer, History, tab strip. The run tab is real (no half-state). |
+| M2 Maintenance hidden / "Setup complete" banner after quit | Fixed | "Review the org chart and setup" is present on a project with no architecture document (`m-01-maintenance-fresh`); click opens `R1 Org chart review` with its own tab and sidebar row (`m-02`); with a session open the button reads "Open the org change session" (`1024-dark-08-maintenance`). No `setup-complete` banner on the relaunched cut run (`rl-03`, text "<none>"). Titles are now distinct ("Org chart review" vs "Org chart: add a QA lead"). |
+| M3 Org retrospective only on a finished work run | Not re-walked | Not part of the change; unchanged by reading the brief. |
+| M4 keyboard / screen reader | Partly fixed | Order Design tab, gear, textarea, start button is sensible (`K design tab1-3`). Bell item (Enter) lands on the card; sidebar bell and topbar pill both reach the run; the bell item is announced "Allow: Run git status --short, OrgWalk · R1: Org chart: add a…" (a real number, not "R?"). After the last card focus moves to the composer, after End session to the composer ("Message the orchestrator."). Gaps: see M-new-1 (focus at 1024 lands on the card's "Details"), the topbar pill is still Team-only (Live relies on the tab and bell), and I did not confirm Enter on a Dashboard Needs-you row. |
+| M5 card cramped in Team tray at 1024x640 | Fixed | The card now lives in the Live tray: permission card 154 px, proposal cards 130 px, stage 253-277 px, composer 96 px, no page scroll (640/640). Header, summary ("2 added, 4 removed") and the Approve / Request changes bar are fully visible (`1024-light-05-card2`). The Added / Removed rows hide behind the collapsed "Details" disclosure. A many-role card was not driven. |
+| L1 "R?" label | Fixed | None seen anywhere walked (sidebar, bell, Dashboard, History, strip, pointer, New run page, run panel head shows "R1 Architect"). |
+| L2 tray status easy to miss | Fixed | The pointer line sits above both modes and reads Needs you / Idle; no hidden "session ended" below the fold. After End session the pointer disappears and Team shows nothing about the ended session (acceptable; History has it). |
+| L3 titles are the whole prompt | Partly fixed | Titles now name the change ("Org chart: add a database specialist under the…"), Maintenance "Org chart review". The tail "under the…" is still the prompt cut at about 44 characters, so a long ask still shows its beginning only. |
+
+### New findings
+
+**M-new-1 (Medium). At 1024x640 focus after starting or jumping lands on the card's "Details" button, not on the decision.** `1024-light` / `1024-dark` (`focus: BUTTON.decision-details label=Details card=true`) after Team start, bell Enter, pill Enter and for the first three cards in the keyboard pass; at 1600x1000 it lands on "Allow once" (`1600-light` focus log). A keyboard user hears "Details" with a collapsed disclosure and has to Tab to Allow once. Steps: 1024x640, Team > Design, type text, Enter on "Revise with the Architect". Fix: focus the card's primary button (or the card heading) in the compact layout as in the wide one.
+
+**M-new-2 (Medium, boundary of the change). "Setup is not finished ... Resume setup" shows on the New run page of a project while an org change session is live** (`m-03-new-run-page`: "Setup is not finished. The Architect scans the repository ... Resume setup", beside "1 other run keeps going"). The project was made with setup skipped, so this is old behaviour, but now a user who has just started an org change sees an invitation to start a second Architect run. Fix: show "Resume setup" only when no setup-kind run is live, or point at the open session.
+
+**L-new-1 (Low). Redundant End session.** The "Org change applied" banner repeats "End session" beside the run strip's own button (`1600-dark-10-after-cards`; my locator hit two buttons). Keep one, or word the banner's "Done, end session".
+
+**L-new-2 (Low). Run strip squeezes at 1024.** The "Org change session started. Its questions and proposals appear here, and it stays in the sidebar while it is open." notice sits beside the tab and clips both the tab title ("Org chart: add a database specialis") and itself (`1024-light-01-live-perm`). It clears after a few seconds. Also the notice says "stays in the sidebar" while the 1024 rail has no run list (the project dot and Live tab are the way back); the sentence is true only at the full sidebar.
+
+**L-new-3 (Low). Sidebar run row has no status word when idle.** Row shows a blue dot and title (`1600-dark-10-after-cards`); "Needs you" shows as a word, Idle only as the dot. Check the dot has an accessible name (not verified).
+
+**L-new-4 (Low). After a relaunch with a card open the Dashboard says "All quiet. Nothing needs you."** while the project tile reads "Last run just now · Ended when OrgAI closed" (`rl-05-dash`). Same as the existing quit behaviour for any run; the proposal the user was reviewing is recoverable only by opening the restored tab and continuing. Not specific to this change.
+
+Positives worth keeping: the pointer is quiet in both themes (plain line with a link, no banner chrome, `1024-light-02-team-pointer`, `1600-light-02-team-pointer`, readable in dark `1600-dark-02-team-pointer`); "Send to the open session" delivered the second text into the same run (transcript "Also add a QA lead.", notice "Sent to the open org change session.", still one tab and one sidebar row, `1600-dark-08-after-send`, `10-after-cards`).
+
+### Not driven
+
+- The Team "Open session" link by keyboard, and Enter on a Dashboard Needs-you row (clicked only in the earlier pre-walk).
+- A many-role org chart proposal and its Added rows (mock gives 2 added, 4 removed), "Request changes", a decision declined mid-session.
+- The 1600x1000 keyboard pass (done at 1024x640 light only); screen reader output (focus and DOM text only; the bell item's accessible name read from `aria-label` text, live-region announcements not heard).
+- Sidebar run row's accessible name for status; org retrospective (M3); a second project and cross-project jump; an engagement project; run-scoped windows.
+- Reaching `R?` through `runTag` callers while history loads (CLAUDE.md lists it as open); I did not catch a loading moment.
+- macOS, Linux, a real Architect, packaged builds.
