@@ -49,20 +49,11 @@ async function until(check: () => boolean, ms: number): Promise<boolean> {
 }
 
 /**
- * host.stop without force is refused while a background task runs. The boot-time `claude auth status` probe counts as
- * one (it holds the data folder as its cwd), and on a CI runner with the CLI it can still be running a moment after
- * ready, so a stop sent at once gets { stopping: false, refusedBecause: { backgroundTasks } }. Retry until it is
- * accepted (the probe is bounded by its own 15 s timeout) and fail with the last refusal.
+ * A plain host.stop is accepted at once, even while the boot-time `claude auth status` probe runs: the probe is aborted
+ * at quiesce and the drain waits for its exit before ownership is released (never a refusal).
  */
 async function stopHost(client: { call<T>(channel: string, args: unknown[]): Promise<T> }): Promise<{ stopping: boolean }> {
-  const end = Date.now() + 25_000
-  let last: { stopping: boolean; refusedBecause?: unknown } = { stopping: false }
-  while (Date.now() < end) {
-    last = await client.call<{ stopping: boolean; refusedBecause?: unknown }>('host.stop', [{ force: false }])
-    if (last.stopping) return last
-    await new Promise((r) => setTimeout(r, 250))
-  }
-  throw new Error(`host.stop stayed refused: ${JSON.stringify(last)}`)
+  return client.call<{ stopping: boolean }>('host.stop', [{ force: false }])
 }
 
 /** The host environment:this process's, without any ORGAI_* of the developer's shell, on the mock adapter. */
