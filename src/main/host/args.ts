@@ -36,6 +36,18 @@ import type {
   McpServerSpec,
   MergeDecision,
   OutputRef,
+  OutputCompareInput,
+  OutputDeleteInput,
+  OutputNoteAddInput,
+  OutputNoteAnchor,
+  OutputNoteRemoveInput,
+  OutputNoteUpdateInput,
+  OutputPreviewInput,
+  OutputReviseInput,
+  OutputSaveEditInput,
+  OutputSaveImageInput,
+  OutputUpdateInput,
+  OutputVersionRef,
   PermissionDecision,
   PermissionRuleDecision,
   QuestionAnswer,
@@ -69,6 +81,10 @@ import {
   KNOWLEDGE_LINK_ID_RE,
   KNOWLEDGE_NODE_FACTS_MAX,
   OUTPUT_ID_RE,
+  OUTPUT_NOTE_ID_RE,
+  OUTPUT_NOTES_MAX,
+  OUTPUT_EXPORT_IMAGE_MAX_BYTES,
+  OUTPUT_EDIT_MAX_BYTES,
   PROPOSAL_NOTE_MAX_CHARS,
   QUICK_RUN_MAX_PROMPT_CHARS,
   isVirtualProjectId
@@ -1218,9 +1234,79 @@ export function appReferenceArgs(raw: unknown): AppReferenceQuery {
   return out
 }
 
+/** A shallow cap on any text an outputs:* input carries; the service (or handler) enforces the real limits with a sentence. */
+const OUTPUT_ARG_TEXT_MAX = 200_000
+
+function outputObject(input: unknown, what = 'Project not found'): Record<string, unknown> {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error(what)
+  return input as Record<string, unknown>
+}
+
+function outputText(v: unknown, field: string, max = OUTPUT_ARG_TEXT_MAX): string {
+  if (typeof v !== 'string') throw new Error(`The ${field} must be text.`)
+  if (v.length > max) throw new Error(`The ${field} is too long.`)
+  return v
+}
+
+function outputInt(v: unknown, field: string, min = 1): number {
+  if (typeof v !== 'number' || !Number.isInteger(v) || v < min || v > 1_000_000_000) throw new Error(`The ${field} is not valid.`)
+  return v
+}
+
+function outputFrac(v: unknown, field: string): number {
+  if (typeof v !== 'number' || !Number.isFinite(v)) throw new Error(`The note position (${field}) is not valid.`)
+  return v
+}
+
+/** A note anchor rebuilt shallowly (known fields of one known type, finite numbers, capped strings); the service validates deeply. */
+function outputAnchor(raw: unknown): OutputNoteAnchor {
+  const a = outputObject(raw, 'The note position is not valid.')
+  switch (a.type) {
+    case 'text':
+      return { type: 'text', start: outputInt(a.start, 'note start', 0), end: outputInt(a.end, 'note end', 0), quote: outputText(a.quote, 'note quote', 10_000) }
+    case 'block':
+      return {
+        type: 'block',
+        index: outputInt(a.index, 'note block', 0),
+        start: outputInt(a.start, 'note start', 0),
+        end: outputInt(a.end, 'note end', 0),
+        quote: outputText(a.quote, 'note quote', 10_000)
+      }
+    case 'cells': {
+      const out: OutputNoteAnchor = {
+        type: 'cells',
+        sheet: outputText(a.sheet, 'sheet name', 200),
+        r1: outputInt(a.r1, 'note row', 0),
+        c1: outputInt(a.c1, 'note column', 0),
+        r2: outputInt(a.r2, 'note row', 0),
+        c2: outputInt(a.c2, 'note column', 0)
+      }
+      if (a.quote !== undefined && a.quote !== null) out.quote = outputText(a.quote, 'note quote', 10_000)
+      return out
+    }
+    case 'region': {
+      if (a.shape !== 'box' && a.shape !== 'ellipse') throw new Error('The note position is not valid.')
+      const out: OutputNoteAnchor = { type: 'region', shape: a.shape, x: outputFrac(a.x, 'x'), y: outputFrac(a.y, 'y'), w: outputFrac(a.w, 'w'), h: outputFrac(a.h, 'h') }
+      if (a.slide !== undefined && a.slide !== null) out.slide = outputInt(a.slide, 'note slide')
+      if (a.labels !== undefined && a.labels !== null) {
+        if (!Array.isArray(a.labels) || a.labels.length > 200) throw new Error('The note position is not valid.')
+        out.labels = a.labels.map((l) => outputText(l, 'note label', 10_000))
+      }
+      return out
+    }
+    case 'slide':
+      return { type: 'slide', slide: outputInt(a.slide, 'note slide') }
+    case 'whole':
+      return { type: 'whole' }
+    default:
+      throw new Error('The note position is not valid.')
+  }
+}
+
 /**
  * outputs:* inputs (types.ts "Run outputs"), rebuilt field by field: a safe project id (a virtual id passes; the
- * handler answers it) and an output id matching OUTPUT_ID_RE; extra fields dropped, other shapes refused.
+ * handler answers it), an output id matching OUTPUT_ID_RE, note ids matching OUTPUT_NOTE_ID_RE, integers >= 1 for
+ * versions, strings with caps; extra fields dropped, other shapes refused. The renderer never sends a path.
  */
 export const outputArgs = {
   projectId(id: unknown): string {
@@ -1228,10 +1314,114 @@ export const outputArgs = {
     return id
   },
   ref(input: unknown): OutputRef {
-    if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Project not found')
-    const i = input as Record<string, unknown>
+    const i = outputObject(input)
     if (!isSafeId(i.projectId)) throw new Error('Project not found')
     if (typeof i.outputId !== 'string' || !OUTPUT_ID_RE.test(i.outputId)) throw new Error('Output not found')
     return { projectId: i.projectId, outputId: i.outputId }
+  },
+  preview(input: unknown): OutputPreviewInput {
+    const ref = outputArgs.ref(input)
+    const v = (input as Record<string, unknown>).version
+    return v === undefined || v === null ? ref : { ...ref, version: outputInt(v, 'version') }
+  },
+  versionRef(input: unknown): OutputVersionRef {
+    const ref = outputArgs.ref(input)
+    return { ...ref, version: outputInt((input as Record<string, unknown>).version, 'version') }
+  },
+  compare(input: unknown): OutputCompareInput {
+    const ref = outputArgs.ref(input)
+    const i = input as Record<string, unknown>
+    return { ...ref, a: outputInt(i.a, 'version'), b: outputInt(i.b, 'version') }
+  },
+  saveEdit(input: unknown): OutputSaveEditInput {
+    const ref = outputArgs.ref(input)
+    const i = input as Record<string, unknown>
+    const out: OutputSaveEditInput = {
+      ...ref,
+      baseVersion: outputInt(i.baseVersion, 'version'),
+      text: outputText(i.text, 'text', OUTPUT_EDIT_MAX_BYTES + 1024)
+    }
+    if (i.forceNew !== undefined && i.forceNew !== null) {
+      if (typeof i.forceNew !== 'boolean') throw new Error('forceNew must be true or false.')
+      out.forceNew = i.forceNew
+    }
+    return out
+  },
+  update(input: unknown): OutputUpdateInput {
+    const ref = outputArgs.ref(input)
+    const i = input as Record<string, unknown>
+    const out: OutputUpdateInput = { ...ref }
+    if (i.title !== undefined && i.title !== null) out.title = outputText(i.title, 'title', 10_000)
+    if (i.description !== undefined && i.description !== null) out.description = outputText(i.description, 'description', 10_000)
+    if (i.versionLabel !== undefined && i.versionLabel !== null) {
+      const l = outputObject(i.versionLabel, 'The version label is not valid.')
+      out.versionLabel = { n: outputInt(l.n, 'version'), label: outputText(l.label, 'label', 10_000) }
+    }
+    return out
+  },
+  delete(input: unknown): OutputDeleteInput {
+    const ref = outputArgs.ref(input)
+    const v = (input as Record<string, unknown>).expectedVersionCount
+    return v === undefined || v === null ? ref : { ...ref, expectedVersionCount: outputInt(v, 'version count', 0) }
+  },
+  noteAdd(input: unknown): OutputNoteAddInput {
+    const ref = outputArgs.ref(input)
+    const i = input as Record<string, unknown>
+    return { ...ref, version: outputInt(i.version, 'version'), anchor: outputAnchor(i.anchor), text: outputText(i.text, 'note', 20_000) }
+  },
+  noteUpdate(input: unknown): OutputNoteUpdateInput {
+    const ref = outputArgs.ref(input)
+    const i = input as Record<string, unknown>
+    if (typeof i.noteId !== 'string' || !OUTPUT_NOTE_ID_RE.test(i.noteId)) throw new Error('Note not found')
+    const out: OutputNoteUpdateInput = { ...ref, noteId: i.noteId }
+    if (i.text !== undefined && i.text !== null) out.text = outputText(i.text, 'note', 20_000)
+    if (i.status !== undefined && i.status !== null) {
+      if (i.status !== 'open' && i.status !== 'resolved') throw new Error('A note can be set to open or resolved only.')
+      out.status = i.status
+    }
+    return out
+  },
+  noteRemove(input: unknown): OutputNoteRemoveInput {
+    const ref = outputArgs.ref(input)
+    const i = input as Record<string, unknown>
+    if (typeof i.noteId !== 'string' || !OUTPUT_NOTE_ID_RE.test(i.noteId)) throw new Error('Note not found')
+    return { ...ref, noteId: i.noteId }
+  },
+  revise(input: unknown): OutputReviseInput {
+    const ref = outputArgs.ref(input)
+    const i = input as Record<string, unknown>
+    if (i.scope !== 'whole' && i.scope !== 'selection' && i.scope !== 'notes') throw new Error('The revise scope is not valid.')
+    const t = outputObject(i.target, 'The revise target is not valid.')
+    let target: OutputReviseInput['target']
+    if (t.type === 'new') target = { type: 'new' }
+    else if (t.type === 'run' && isSafeId(t.runId)) target = { type: 'run', runId: t.runId }
+    else throw new Error('The revise target is not valid.')
+    const out: OutputReviseInput = {
+      ...ref,
+      version: outputInt(i.version, 'version'),
+      scope: i.scope,
+      instruction: outputText(i.instruction, 'instruction', 100_000),
+      target
+    }
+    if (i.anchor !== undefined && i.anchor !== null) out.anchor = outputAnchor(i.anchor)
+    if (i.noteIds !== undefined && i.noteIds !== null) {
+      if (!Array.isArray(i.noteIds) || i.noteIds.length > OUTPUT_NOTES_MAX) throw new Error('The note list is not valid.')
+      out.noteIds = i.noteIds.map((n) => {
+        if (typeof n !== 'string' || !OUTPUT_NOTE_ID_RE.test(n)) throw new Error('Note not found')
+        return n
+      })
+    }
+    return out
+  },
+  saveImage(input: unknown): OutputSaveImageInput {
+    const ref = outputArgs.ref(input)
+    const i = input as Record<string, unknown>
+    if (i.mime !== 'image/png' && i.mime !== 'image/svg+xml') throw new Error('Only PNG and SVG pictures can be saved.')
+    return {
+      ...ref,
+      suggestedName: outputText(i.suggestedName, 'file name', 255),
+      mime: i.mime,
+      dataBase64: outputText(i.dataBase64, 'picture', Math.ceil(OUTPUT_EXPORT_IMAGE_MAX_BYTES / 3) * 4 + 8)
+    }
   }
 }

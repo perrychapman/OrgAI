@@ -279,14 +279,34 @@ export const CHANNEL_JSON_FIELDS: Readonly<Record<string, ChannelJsonFields>> = 
   'teamFiles:undo': {},
   'teamFiles:commit': {},
   'teamFiles:enable': {},
-  // ---- run outputs (OUTPUTS_IPC; outputArgs rebuilds each input, no optional fields) ----
+  // ---- run outputs (OUTPUTS_IPC; outputArgs rebuilds each input). Optional fields are left out or sent as undefined by a
+  // client, never meaningful as null: outputArgs treats undefined and null alike (so nothing needs decoding), except
+  // where listed as clearable below. ----
   'outputs:list': {},
-  'outputs:preview': {},
+  'outputs:preview': { clearable: ['version'], note: 'version missing or null = the current version' },
   'outputs:forget': {},
-  'outputs:delete': {},
+  'outputs:delete': { clearable: ['expectedVersionCount'] },
   'outputs:open': {}, // desktop only
   'outputs:reveal': {}, // desktop only
   'outputs:saveAs': {}, // desktop only
+  'outputs:saveImage': {}, // desktop only
+  'outputs:deletePreview': {},
+  'outputs:versions': {},
+  'outputs:readSource': {},
+  'outputs:thumb': {},
+  'outputs:compare': {},
+  'outputs:notes': {},
+  'outputs:revisions': {},
+  'outputs:reviseOptions': {},
+  'outputs:saveEdit': { clearable: ['forceNew'] },
+  'outputs:restore': {},
+  'outputs:update': { clearable: ['title', 'description', 'versionLabel'], note: 'an absent field is unchanged; description / label "" clears' },
+  'outputs:noteAdd': {},
+  'outputs:noteUpdate': { clearable: ['text', 'status'] },
+  'outputs:noteRemove': {},
+  'outputs:revise': { clearable: ['anchor', 'noteIds'] },
+  'outputs:watch': {},
+  'outputs:unwatch': {},
   'permissions:remove': {}, // permissionRuleArgs
   'permissions:add': {}, // permissionRuleArgs + permissionAddRefusal
   'permissions:decideRequest': {}, // runs.decideRules(runId, requestId, PermissionRuleDecision)

@@ -223,7 +223,8 @@ describe('plan tools', () => {
       'list_runs',
       'message_run',
       'produce_output',
-      'register_output'
+      'register_output',
+      'read_output'
     ])
     expect(names.filter((n) => !isBlockingHarnessTool(n))).toEqual([
       'set_plan',
@@ -238,7 +239,8 @@ describe('plan tools', () => {
       'list_runs',
       'message_run',
       'produce_output',
-      'register_output'
+      'register_output',
+      'read_output'
     ])
     expect(setupTools(fakeCtx()).map((t) => t.name)).not.toContain('set_plan')
   })

@@ -53,13 +53,14 @@ function fakeOutputs(projectPath: string) {
     calls,
     produce: async (input, caller) => {
       calls.push({ fn: 'produce', input, caller })
-      return entry(input.kind, input.title, `outputs/${input.fileName ?? input.title}`, 'produced')
+      return { output: entry(input.kind, input.title, `outputs/${input.fileName ?? input.title}`, 'produced'), created: true }
     },
     register: async (input, caller) => {
       calls.push({ fn: 'register', input, caller })
       if (input.path.includes('..')) throw new Error('That file is outside the project folder and its allowed folders.')
-      return entry(input.kind ?? 'image', input.title, input.path, 'registered')
-    }
+      return { output: entry(input.kind ?? 'image', input.title, input.path, 'registered'), created: true }
+    },
+    read: async () => ({ action: 'list' as const, items: [], more: 0 })
   }
   return outputs
 }

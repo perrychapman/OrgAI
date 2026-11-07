@@ -57,7 +57,7 @@ interface Call {
 }
 
 /** An OutputsServiceApi that records its calls and answers with a RunOutput built from the input. */
-function fakeService(over: { created?: boolean; fail?: string } = {}) {
+function fakeService(over: { created?: boolean; versioned?: boolean; fail?: string; ended?: string[] } = {}) {
   const calls: Call[] = []
   let n = 0
   const make = (scope: OutputScope, input: { title: string }, source: OutputSource, kind: RunOutput['kind'], origin: RunOutput['source']): RunOutput => {
@@ -75,7 +75,8 @@ function fakeService(over: { created?: boolean; fail?: string } = {}) {
       relPath: `outputs/f${n}`,
       bytes: 10,
       createdAt: 1,
-      source: origin
+      source: origin,
+      ...(over.versioned ? { version: 2 } : {})
     }
   }
   const api: OutputsServiceApi & { calls: Call[] } = {
@@ -83,20 +84,22 @@ function fakeService(over: { created?: boolean; fail?: string } = {}) {
     produce: vi.fn(async (scope, input, source) => {
       if (over.fail) throw new Error(over.fail)
       calls.push({ fn: 'produce', scope, input, source })
-      return { output: make(scope, input, source, input.kind, 'produced'), created: over.created ?? true }
+      return { output: make(scope, input, source, input.kind, 'produced'), created: over.created ?? true, ...(over.versioned !== undefined ? { versioned: over.versioned } : {}) }
     }),
     register: vi.fn(async (scope, input, source) => {
       if (over.fail) throw new Error(over.fail)
       calls.push({ fn: 'register', scope, input, source })
-      return { output: make(scope, input, source, input.kind ?? 'other', 'registered'), created: over.created ?? true }
+      return { output: make(scope, input, source, input.kind ?? 'other', 'registered'), created: over.created ?? true, ...(over.versioned !== undefined ? { versioned: over.versioned } : {}) }
     }),
     list: vi.fn(() => []),
     get: vi.fn(),
     preview: vi.fn(),
     checkedPath: vi.fn(),
     forget: vi.fn(() => []),
-    delete: vi.fn(() => [])
-  }
+    delete: vi.fn(async () => []),
+    runEnded: vi.fn(() => over.ended ?? []),
+    readForAgent: vi.fn(async () => ({ action: 'list' as const, items: [], more: 0 }))
+  } as unknown as OutputsServiceApi & { calls: Call[] }
   return api
 }
 
@@ -164,7 +167,9 @@ describe('RuntimeContext.outputs: calls', () => {
     const run = await m.start({ project: p, prompt: 'go' })
     const ctx = ctxs[0]
     ctx.emit({ type: 'agent.upsert', runId: run.id, agent: agentWith({ id: 'a-sub', roleSlug: 'engineer' }) })
-    const out = await ctx.outputs!.produce({ ...doc, kind: 'docx' }, { agentId: 'a-sub' })
+    const result = await ctx.outputs!.produce({ ...doc, kind: 'docx' }, { agentId: 'a-sub' })
+    const out = result.output
+    expect(result.created).toBe(true)
     expect(outputs.calls[0].scope).toEqual({ projectId: 'p1', projectPath: p.path, allowedDirectories: [], referenceDirectories: [] })
     expect(outputs.calls[0].input).toEqual(doc)
     expect(outputs.calls[0].source).toEqual({ runId: run.id, agentId: 'a-sub', role: 'Engineer' })
@@ -190,7 +195,54 @@ describe('RuntimeContext.outputs: calls', () => {
     await m.stopAll()
   })
 
-  it('names the row by kind and says updated when the service updated an entry', async () => {
+  it('names the row by kind for a new output', async () => {
+    const outputs = fakeService()
+    const { m, ctxs } = rig({ outputs })
+    await m.start({ project: makeProject({ id: 'p1', path: folder() }), prompt: 'go' })
+    const o = ctxs[0].outputs!
+    await o.produce({ kind: 'xlsx', title: 'Budget', content: { sheets: [{ name: 'S', rows: [] }] } }, {})
+    await o.produce({ kind: 'mermaid', title: 'Flow', content: 'graph TD' }, {})
+    await o.produce({ kind: 'svg', title: 'Logo', content: '<svg/>' }, {})
+    await o.produce({ kind: 'csv', title: 'Data', content: 'a,b' }, {})
+    await o.produce({ kind: 'pptx', title: 'Plan', content: { slides: [{ layout: 'title', title: 'Hi' }] } }, {})
+    await o.register({ path: 'x.pdf', title: 'Deck' }, {})
+    expect(rows().map((r) => r.text)).toEqual(['Produced workbook Budget', 'Produced diagram Flow', 'Produced diagram Logo', 'Produced file Data', 'Produced deck Plan', 'Registered output Deck'])
+    await m.stopAll()
+  })
+
+  it('a new version emits output.versioned (not output.created), writes "Updated ... to version N" and pushes version', async () => {
+    const outputs = fakeService({ created: false, versioned: true })
+    const outputsChanged = vi.fn()
+    const { m, ctxs } = rig({ outputs, outputsChanged })
+    const run = await m.start({ project: makeProject({ id: 'p1', path: folder() }), prompt: 'go' })
+    const r = await ctxs[0].outputs!.produce({ kind: 'xlsx', title: 'Budget', content: { sheets: [{ name: 'S', rows: [] }] } }, {})
+    await ctxs[0].outputs!.register({ path: 'x.pdf', title: 'Deck' }, {})
+    expect(created()).toEqual([])
+    const versioned = events.filter((e) => e.type === 'output.versioned')
+    expect(versioned).toEqual([
+      { type: 'output.versioned', runId: run.id, output: r.output },
+      { type: 'output.versioned', runId: run.id, output: expect.objectContaining({ title: 'Deck', version: 2 }) }
+    ])
+    expect(rows().map((x) => x.text)).toEqual(['Updated Budget to version 2', 'Updated Deck to version 2'])
+    expect(outputsChanged).toHaveBeenNthCalledWith(1, { projectId: 'p1', ids: [r.output.id], what: 'version' })
+    await m.stopAll()
+  })
+
+  it('an unchanged result emits no event, writes "No change; still version N", pushes updated and costs no slot', async () => {
+    const outputs = fakeService({ created: false, versioned: false })
+    const outputsChanged = vi.fn()
+    const { m, ctxs } = rig({ outputs, outputsChanged })
+    await m.start({ project: makeProject({ id: 'p1', path: folder() }), prompt: 'go' })
+    const o = ctxs[0].outputs!
+    for (let i = 0; i < OUTPUTS_RUN_MAX + 5; i++) await o.produce({ kind: 'text', title: 'Same', content: 'x' }, {})
+    expect(created()).toEqual([])
+    expect(events.filter((e) => e.type === 'output.versioned')).toEqual([])
+    expect(rows()[0].text).toBe('No change; still version 1')
+    expect(outputsChanged.mock.calls[0][0]).toMatchObject({ what: 'updated' })
+    await m.stopAll()
+  })
+
+  it('the old updated wording stays out: a created:false result without versioned is an unchanged one', async () => {
     const outputs = fakeService({ created: false })
     const outputsChanged = vi.fn()
     const { m, ctxs } = rig({ outputs, outputsChanged })
@@ -201,7 +253,7 @@ describe('RuntimeContext.outputs: calls', () => {
     await o.produce({ kind: 'svg', title: 'Logo', content: '<svg/>' }, {})
     await o.produce({ kind: 'csv', title: 'Data', content: 'a,b' }, {})
     await o.register({ path: 'x.pdf', title: 'Deck' }, {})
-    expect(rows().map((r) => r.text)).toEqual(['Produced workbook Budget', 'Produced diagram Flow', 'Produced diagram Logo', 'Produced file Data', 'Registered output Deck'])
+    expect(rows().map((r) => r.text)).toEqual(Array(5).fill('No change; still version 1'))
     expect(outputsChanged).toHaveBeenCalledTimes(5)
     expect(outputsChanged.mock.calls[0][0]).toMatchObject({ projectId: 'p1', what: 'updated' })
     await m.stopAll()
@@ -237,7 +289,7 @@ describe('RuntimeContext.outputs: calls', () => {
     })
     const { m, ctxs } = rig({ outputs, outputsChanged })
     await m.start({ project: makeProject({ id: 'p1', path: folder() }), prompt: 'go' })
-    await expect(ctxs[0].outputs!.produce(doc, {})).resolves.toMatchObject({ title: 'Q3 report' })
+    await expect(ctxs[0].outputs!.produce(doc, {})).resolves.toMatchObject({ created: true, output: { title: 'Q3 report' } })
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('outputsChanged broadcast failed: bus down'))
     await m.stopAll()
   })
@@ -316,5 +368,70 @@ describe('RuntimeContext.outputs: scope at call time', () => {
     expect(scope.referenceDirectories).toContain(resolve(inside))
     expect(scope.projectId).toBe('p1')
     expect(scope.projectPath).toBe(proj)
+  })
+})
+
+describe('RuntimeContext.outputs: read, run end and revise helpers', () => {
+  it('read goes to the service with the project scope, takes no slot and writes no row or event', async () => {
+    const outputs = fakeService()
+    const p = makeProject({ id: 'p1', path: folder() })
+    const { m, ctxs } = rig({ outputs })
+    await m.start({ project: p, prompt: 'go' })
+    const answer = await ctxs[0].outputs!.read({ action: 'list' }, {})
+    expect(answer).toEqual({ action: 'list', items: [], more: 0 })
+    expect(outputs.readForAgent).toHaveBeenCalledWith(expect.objectContaining({ projectId: 'p1', projectPath: p.path }), { action: 'list' })
+    expect(rows()).toEqual([])
+    expect(created()).toEqual([])
+    // A refusal from the service reaches the tool as a throw.
+    vi.mocked(outputs.readForAgent).mockRejectedValueOnce(new Error('OrgAI cannot read this kind of file as text.'))
+    await expect(ctxs[0].outputs!.read({ action: 'read', outputId: 'out_0123456789abcdef' }, {})).rejects.toThrow('cannot read this kind')
+    await m.stopAll()
+  })
+
+  it('calls runEnded at the run outcome and pushes revision for the ids it returns', async () => {
+    const outputs = fakeService({ ended: ['out_0123456789abcdef'] })
+    const outputsChanged = vi.fn()
+    const { m, ctxs } = rig({ outputs, outputsChanged })
+    const run = await m.start({ project: makeProject({ id: 'p1', path: folder() }), prompt: 'go' })
+    expect(outputs.runEnded).not.toHaveBeenCalled()
+    ctxs[0].emit({ type: 'run.status', runId: run.id, status: 'finished' })
+    expect(outputs.runEnded).toHaveBeenCalledWith('p1', run.id)
+    expect(outputsChanged).toHaveBeenCalledWith({ projectId: 'p1', ids: ['out_0123456789abcdef'], what: 'revision' })
+    await m.stopAll()
+  })
+
+  it('a paused status is not an outcome: runEnded waits; no ids means no push', async () => {
+    const outputs = fakeService()
+    const outputsChanged = vi.fn()
+    const { m, ctxs } = rig({ outputs, outputsChanged })
+    const run = await m.start({ project: makeProject({ id: 'p1', path: folder() }), prompt: 'go' })
+    ctxs[0].emit({ type: 'run.status', runId: run.id, status: 'paused', pausedUntil: Date.now() + 60_000, autoResume: false })
+    expect(outputs.runEnded).not.toHaveBeenCalled()
+    ctxs[0].emit({ type: 'run.status', runId: run.id, status: 'finished' })
+    expect(outputs.runEnded).toHaveBeenCalledTimes(1)
+    expect(outputsChanged).not.toHaveBeenCalled()
+    await m.stopAll()
+  })
+
+  it('a throwing runEnded never breaks the run end', async () => {
+    const outputs = fakeService()
+    vi.mocked(outputs.runEnded).mockImplementation(() => {
+      throw new Error('disk full')
+    })
+    const { m, ctxs } = rig({ outputs })
+    const run = await m.start({ project: makeProject({ id: 'p1', path: folder() }), prompt: 'go' })
+    ctxs[0].emit({ type: 'run.status', runId: run.id, status: 'finished' })
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('runEnded failed'))
+    expect(m.summary(run.id)?.status).toBe('finished')
+    await m.stopAll()
+  })
+
+  it('liveRunFacts reports a live run (status, no hold, no cards) and null for an unknown one; isQuitting is false', async () => {
+    const { m } = rig({ outputs: fakeService() })
+    const run = await m.start({ project: makeProject({ id: 'p1', path: folder() }), prompt: 'go' })
+    expect(m.liveRunFacts(run.id)).toEqual({ status: 'running', limitHold: false, pendingCards: 0 })
+    expect(m.liveRunFacts('nope')).toBeNull()
+    expect(m.isQuitting()).toBe(false)
+    await m.stopAll()
   })
 })

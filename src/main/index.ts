@@ -328,7 +328,12 @@ function createWindow(scope?: FocusRunTarget): BrowserWindow {
   })
 
   windowScopes.set(win, scope)
-  win.on('closed', () => windowScopes.delete(win))
+  // The web contents id is read now: it is gone when 'closed' fires. A closed window's output watches end with it.
+  const webContentsId = win.webContents.id
+  win.on('closed', () => {
+    windowScopes.delete(win)
+    host?.services.outputWatcher?.dropOwner(`window:${webContentsId}`)
+  })
   win.on('ready-to-show', () => (WINDOW_INACTIVE ? win.showInactive() : win.show()))
   notifier?.attach(win)
   // window.open and target=_blank never create a window: http(s) links go to the user's browser, anything else
@@ -463,6 +468,8 @@ app.whenReady().then(async () => {
       // open_in_app: the live main window only, queued until its renderer is ready; focused only while OrgAI is the
       // foreground app, else flashed (appMenu.ts navigateSender, review M2). No main window open: false, never a new one.
       navigate: (event) => navigateSender(() => BrowserWindow.getFocusedWindow(), liveWindowScopes)(event),
+      // outputs:delete moves the file to the OS trash (the service deletes for good when this is missing or throws).
+      trashItem: (p) => shell.trashItem(p),
       teamFilesChanged: (status) => {
         for (const win of BrowserWindow.getAllWindows()) {
           if (!win.isDestroyed()) win.webContents.send(TEAM_FILES_IPC.teamFilesChanged, status)
@@ -553,6 +560,21 @@ app.whenReady().then(async () => {
   if (teamFiles) {
     void teamFiles.checkAll().catch((e) => log.warn(`Team files boot check failed: ${e instanceof Error ? e.message : String(e)}`))
     app.on('browser-window-focus', () => teamFiles.focused())
+  }
+  // Outputs: a window focus looks (stat only) for outside edits to the outputs opened this session and the newest ones
+  // of the projects this app shows (scoped windows' projects plus every project whose outputs were opened); at most once
+  // per 2 s. The watcher turns a settled change into an 'external' version.
+  const outputWatcher = h.services.outputWatcher
+  if (outputWatcher) {
+    let lastOutputsCheck = 0
+    app.on('browser-window-focus', () => {
+      const now = Date.now()
+      if (now - lastOutputsCheck < 2000) return
+      lastOutputsCheck = now
+      const ids = new Set(outputWatcher.openedProjectIds())
+      for (const [, scope] of liveWindowScopes()) if (scope?.projectId) ids.add(scope.projectId)
+      if (ids.size) outputWatcher.checkProjects([...ids])
+    })
   }
   // `events` given: registerIpc leaves forwarding the bus to windows to the listener above.
   registerIpc({ ...h.services, openRunWindow, events: h.events, dispatcher: h.dispatcher, cliShim, repoClone: clones })

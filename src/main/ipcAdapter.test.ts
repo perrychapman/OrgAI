@@ -85,7 +85,7 @@ describe('registerIpc (thin adapter)', () => {
     expect([...handlers.keys()].sort()).toEqual([...expected].sort())
     for (const ch of handlers.keys()) expect(SOCKET_ONLY.has(ch), ch).toBe(false)
     expect(handlers.has(IPC.usageRefresh)).toBe(true)
-    expect(DESKTOP_ONLY_CHANNELS).toHaveLength(27)
+    expect(DESKTOP_ONLY_CHANNELS).toHaveLength(28)
   })
 
   it('DESKTOP_ONLY_CHANNELS is exactly the registry desktop_only request set', () => {
