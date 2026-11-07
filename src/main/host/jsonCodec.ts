@@ -9,7 +9,7 @@
  *
  * Standalone and pure: no electron import, no file I/O. Wave 1's src/main/host/registry.ts imports it.
  */
-import { HOST_IPC, IPC, KIT_IPC, MCP_SCOPE_IPC, TEAM_FILES_IPC } from '../../shared/types'
+import { HOST_IPC, IPC, KIT_IPC, MCP_SCOPE_IPC, OUTPUTS_IPC, TEAM_FILES_IPC } from '../../shared/types'
 
 // ---------- Safe parse / stringify ----------
 
@@ -80,12 +80,13 @@ export const PUSH_CHANNELS: readonly string[] = [
   IPC.appFocusRun,
   IPC.menuAction,
   IPC.projectsCloneProgress,
-  TEAM_FILES_IPC.teamFilesChanged
+  TEAM_FILES_IPC.teamFilesChanged,
+  OUTPUTS_IPC.outputsChanged
 ]
 
 /** Every channel value the host knows: IPC (with TEMPLATE_ENGAGEMENT_IPC and KNOWLEDGE_IPC), MCP_SCOPE_IPC, KIT_IPC, HOST_IPC. */
 export function allChannels(): string[] {
-  return [...Object.values(IPC), ...Object.values(MCP_SCOPE_IPC), ...Object.values(KIT_IPC), ...Object.values(TEAM_FILES_IPC), ...Object.values(HOST_IPC)]
+  return [...Object.values(IPC), ...Object.values(MCP_SCOPE_IPC), ...Object.values(KIT_IPC), ...Object.values(TEAM_FILES_IPC), ...Object.values(OUTPUTS_IPC), ...Object.values(HOST_IPC)]
 }
 
 /** Every request channel: allChannels() minus PUSH_CHANNELS. */
@@ -273,6 +274,14 @@ export const CHANNEL_JSON_FIELDS: Readonly<Record<string, ChannelJsonFields>> = 
   'teamFiles:undo': {},
   'teamFiles:commit': {},
   'teamFiles:enable': {},
+  // ---- run outputs (OUTPUTS_IPC; outputArgs rebuilds each input, no optional fields) ----
+  'outputs:list': {},
+  'outputs:preview': {},
+  'outputs:forget': {},
+  'outputs:delete': {},
+  'outputs:open': {}, // desktop only
+  'outputs:reveal': {}, // desktop only
+  'outputs:saveAs': {}, // desktop only
   'permissions:remove': {}, // permissionRuleArgs
   'permissions:add': {}, // permissionRuleArgs + permissionAddRefusal
   'permissions:decideRequest': {}, // runs.decideRules(runId, requestId, PermissionRuleDecision)
