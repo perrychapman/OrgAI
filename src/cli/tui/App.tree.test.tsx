@@ -172,7 +172,7 @@ describe('the org tree in the real App: folded, one line per agent, the waiting 
     expect(f.split('\n').length).toBeLessThanOrEqual(24)
     expect(f).toContain('mock-lead-report-2')
     expect(f).toMatch(/Needs you \(1\)/)
-    expect(f).toContain('Message the run')
+    expect(f).toContain('Message R1')
     m.r.unmount()
   })
 
@@ -183,7 +183,7 @@ describe('the org tree in the real App: folded, one line per agent, the waiting 
     expect(f).not.toContain('Agents 6')
     const tail = f.trimEnd().split('\n').slice(-3)
     expect(tail.join('\n')).toContain('mock-lead-report-2: ')
-    expect(tail.join('\n')).toContain('Message the run')
+    expect(tail.join('\n')).toContain('Message R1')
     m.r.unmount()
   })
 

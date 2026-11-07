@@ -22,7 +22,8 @@ vi.mock('./selectors', () => {
     planView: () => undefined,
     worktreeRows: () => [],
     statusSummary: (s: S) => ({ needsYou: (s.testCards ?? []).length, liveRuns: s.testLive ?? 0, connection: 'live' }),
-    composerMode: () => 'send'
+    composerMode: () => 'send',
+    runTagOf: (s: { runOrder: string[] }, id: string) => `R${s.runOrder.indexOf(id) + 1}`
   }
 })
 
@@ -389,9 +390,41 @@ describe('App focus and routing', () => {
     s.set({ runs: { run_1: { summary: { id: 'run_1', status: 'running' } } } })
     await tick()
     await m.send(named('escape'))
+    expect(s.api.interrupt).not.toHaveBeenCalled()
+    expect(s.api.notify).toHaveBeenLastCalledWith('Press Esc again to interrupt the run.', undefined)
+    await m.send(named('escape'))
     expect(s.api.interrupt).toHaveBeenCalledTimes(1)
+    expect(s.api.notify).toHaveBeenLastCalledWith('Interrupting the run...', undefined)
     m.r.unmount()
   })
+
+  it('the second Esc after ESC_INTERRUPT_MS only asks again; an idle run says nothing is running', async () => {
+    let t = 1000
+    const s = fakeSession({ activeRunId: 'run_1', runs: { run_1: { summary: { id: 'run_1', status: 'running' } } } })
+    const m = mount({ session: s, now: () => t })
+    await m.send(named('escape'))
+    t += 2000
+    await m.send(named('escape'))
+    expect(s.api.interrupt).not.toHaveBeenCalled()
+    await m.send(key('x'), named('escape')) // a key in between resets
+    expect(s.api.interrupt).not.toHaveBeenCalled()
+    s.set({ runs: { run_1: { summary: { id: 'run_1', status: 'idle' } } } })
+    await tick()
+    await m.send(named('escape'))
+    expect(s.api.notify).toHaveBeenLastCalledWith('Nothing is running.', undefined)
+    m.r.unmount()
+  })
+
+  it('Tab in inline mode never moves focus to invisible panes and explains once', async () => {
+    const m = mount({ inline: true })
+    await tick()
+    await m.send(named('tab'), named('tab'))
+    expect(m.frame()).toContain('COMPOSER*')
+    const calls = m.s.api.notify.mock.calls.filter((c) => String(c[0]).startsWith('Panes need a full-screen'))
+    expect(calls.length).toBe(1)
+    m.r.unmount()
+  })
+
 
   it('Ctrl+Z suspends and stops through the terminal', async () => {
     const m = mount()

@@ -136,16 +136,16 @@ describe('Composer', () => {
   })
 
   it('wraps to the width and shows at most COMPOSER_MAX_ROWS rows', async () => {
-    const t = setup({ width: 12 })
+    const t = setup({ width: 13 }) // one column is kept for the glyph cursor (colour is off here)
     await t.send('abcdefghijklmnop')
     const rows = t.frame().split('\n')
     expect(rows.length).toBe(2)
     expect(rows[0]).toContain('abcdefghij')
-    expect(rows[1].trim()).toBe('klmnop')
+    expect(rows[1].trim()).toBe('klmnop|')
     await t.send({ type: 'paste', text: '\n1\n2\n3\n4\n5\n6\n7' })
     const many = t.frame().split('\n')
     expect(many.length).toBe(COMPOSER_MAX_ROWS)
-    expect(many[many.length - 1].trim()).toBe('7')
+    expect(many[many.length - 1].trim()).toBe('7|')
     t.r.unmount()
   })
 
@@ -153,6 +153,34 @@ describe('Composer', () => {
     const t = setup({ focused: false, mode: 'start' })
     expect(t.bus.has('composer')).toBe(false)
     expect(t.frame()).toMatch(/^(✚|\+>) /)
+    t.r.unmount()
+  })
+
+  it('draws a glyph cursor when colour is off, and reports its rows', async () => {
+    const onRows = vi.fn()
+    const t = setup({ onRows })
+    expect(t.frame()).toContain('|')
+    expect(onRows).toHaveBeenLastCalledWith(1)
+    await t.send({ type: 'paste', text: '\n1\n2' })
+    expect(onRows).toHaveBeenLastCalledWith(3)
+    t.r.unmount()
+  })
+
+  it('a lone ? on an empty composer calls onHelp; with text it is a character', async () => {
+    const onHelp = vi.fn()
+    const t = setup({ onHelp })
+    await t.send('?')
+    expect(onHelp).toHaveBeenCalledTimes(1)
+    await t.send('a?')
+    expect(onHelp).toHaveBeenCalledTimes(1)
+    expect(t.frame()).toContain('a?')
+    t.r.unmount()
+  })
+
+  it('without onHelp ? types', async () => {
+    const t = setup()
+    await t.send('?')
+    expect(t.frame()).toContain('?')
     t.r.unmount()
   })
 })

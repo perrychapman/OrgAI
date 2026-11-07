@@ -569,7 +569,7 @@ describe('overlays in ASCII and screen-reader mode (review M1, L1)', () => {
     const f = region((await openRuns({ unicode: false, screenReader: true })).frame(), 'Runs', 'Esc closes')
     expect(f).not.toContain('+--')
     expect(f).not.toMatch(/[┌┐└┘│─·]/)
-    expect(f).toContain('Enter opens | c continues')
+    expect(f).toContain('Enter opens, c continues')
     expect(f).toContain('First run')
   })
 
