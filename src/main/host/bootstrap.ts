@@ -659,7 +659,7 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
       mcp.dispose()
       skillEvaluation.dispose()
       // `claude auth status` children have their cwd in the data folder: end them; the drain waits for their exit
-      // (backgroundTasks source below) before ownership is released and the folder can be removed.
+      // (the tracker's settleOnly, never counted toward a stop refusal) before ownership is released and the folder can be removed.
       connections.abortProbes()
       // An org chart draft's model call (no timeout of its own) would hold its mutation lease until the hard limit.
       dispatcherRef?.quiesce()
@@ -675,6 +675,8 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     // Every live run, waiting ones included: a non-forced drain (idle exit, `orgai daemon stop`) ends those too, as cut
     // by the app ("Ended when OrgAI closed", continuable), before the writers settle and ownership is released.
     liveRuns: () => rm.liveRunCount(),
+    // Auth probe children (abortProbes at quiesce) are awaited in the settle phase only: never a stop refusal.
+    settleOnly: () => authChildrenInFlight(),
     // Past the deadline (or on a throw) write every live run as cut by the app now (RunManager.markQuit).
     forceStopFallback: () => rm.markQuit(),
     log: (m) => log.info(m)
@@ -687,7 +689,7 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
   activity.addSource('liveRuns', () => rm.busyRunCount())
   activity.addSource('pausedAutoResumes', () => rm.activeResumeTimerCount() + rm.inFlightResumeCount())
   activity.addSource('activeWorktreeOps', () => repoLockActivity())
-  activity.addSource('backgroundTasks', () => rm.titleTaskCount() + caps.inFlightCount() + skillEvaluation.inFlightCount() + authChildrenInFlight())
+  activity.addSource('backgroundTasks', () => rm.titleTaskCount() + caps.inFlightCount() + skillEvaluation.inFlightCount())
   activity.addSource('activeOAuthFlows', () => mcp.activeAuthorizationCount() + connections.pendingLoginCount())
 
   const hostControl: HostControl = {

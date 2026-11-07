@@ -68,6 +68,12 @@ export interface HostActivityOptions {
   settleLogMs?: number
   /** How often the drain re-reads the writer counts while it waits. Default DEFAULT_SETTLE_POLL_MS. */
   settlePollMs?: number
+  /**
+   * Work the drain awaits after quiesce but that never causes a stop refusal and is not in any snapshot (bootstrap:
+   * `claude auth status` children, which hold the data folder as their cwd and are aborted at quiesce). Counted like a
+   * writer in the settle phase only, so ownership is not released before it is 0.
+   */
+  settleOnly?: () => number
   log?: (m: string) => void
 }
 
@@ -367,7 +373,9 @@ export class HostActivityTracker implements HostActivityTrackerApi {
       if (this.abandoned) return
       if (this.forceRequested && !this.forceStopped) await this.forceStopOnce()
       const { counts } = this.take().snap
-      const busy = SETTLE_KINDS.filter((k) => counts[k] > 0)
+      const busy: string[] = SETTLE_KINDS.filter((k) => counts[k] > 0).map((k) => `${k} ${counts[k]}`)
+      const extra = this.settleOnlyCount()
+      if (extra > 0) busy.push(`probes ${extra}`)
       if (!busy.length) return
       if (!announced) {
         announced = true
@@ -379,10 +387,22 @@ export class HostActivityTracker implements HostActivityTrackerApi {
       }
       if (!logged && this.now() - start >= logAfter) {
         logged = true
-        this.log(`Activity: still waiting for in-flight work before giving up the data folder: ${busy.map((k) => `${k} ${counts[k]}`).join(', ')}`)
+        this.log(`Activity: still waiting for in-flight work before giving up the data folder: ${busy.join(', ')}`)
       }
       // Through globalThis at call time, so vi.useFakeTimers() replaces it.
       await new Promise<void>((r) => globalThis.setTimeout(r, pollMs))
+    }
+  }
+
+  /** opts.settleOnly, 0 when absent; a throw or a non-count counts as 1 (keep waiting; the hard limit ends it). */
+  private settleOnlyCount(): number {
+    if (!this.opts.settleOnly) return 0
+    try {
+      const n = this.opts.settleOnly()
+      if (typeof n === 'number' && Number.isFinite(n) && n >= 0) return n
+      return 1
+    } catch {
+      return 1
     }
   }
 

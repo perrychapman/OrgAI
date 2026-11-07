@@ -513,6 +513,30 @@ describe('HostActivityTracker requestDrain (Wave 7: never releases, settles ever
     expect(second.logs.some((l) => l.includes('no runs table'))).toBe(true)
   })
 
+  it('a settleOnly count (auth probe) never refuses a stop, but the drain waits for it before onDrained', async () => {
+    vi.useFakeTimers()
+    let probes = 1
+    const order: string[] = []
+    const onDrained = vi.fn(() => order.push('onDrained'))
+    const { a } = tracker({
+      ownership: fakeOwnership(),
+      settlePollMs: 10,
+      settleOnly: () => probes,
+      quiesce: () => order.push('abort'),
+      onDrained
+    })
+    expect(a.snapshot().idle).toBe(true)
+    const p = a.requestDrain()
+    await vi.advanceTimersByTimeAsync(200)
+    expect(order).toEqual(['abort'])
+    expect(onDrained).not.toHaveBeenCalled() // the probe child has not exited: ownership stays
+    probes = 0 // the child exited
+    await vi.advanceTimersByTimeAsync(50)
+    await expect(p).resolves.toEqual({ stopping: true })
+    await vi.advanceTimersByTimeAsync(20)
+    expect(order).toEqual(['abort', 'onDrained'])
+  })
+
   it('abandonSettle ends the writer wait and onDrained is never called', async () => {
     vi.useFakeTimers()
     const onDrained = vi.fn()
