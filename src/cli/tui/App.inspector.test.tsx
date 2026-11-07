@@ -12,7 +12,7 @@ import { App } from './App'
 import { DEFAULT_TUI_ENV } from './context'
 import { SLASH_COMMANDS } from './slashCommands'
 import { applyEvent, applyRecord, createInitialState, setActiveRun } from './state'
-import type { InputEvent, KeyEvent, SlashContext, TuiEnv, TuiState } from './types'
+import { TUI_NOTICE_TTL_MS, type InputEvent, type KeyEvent, type SlashContext, type TuiEnv, type TuiState } from './types'
 
 const NOW = Date.now()
 const OLD = NOW - 120_000
@@ -273,6 +273,131 @@ describe('agent inspector (F4)', () => {
       expect(f).toContain('transcript (this agent')
       expect(f).not.toMatch(/[─│•→✓●]/)
     }
+  })
+})
+
+describe('external decision lifecycle', () => {
+  const scenarios = [
+    { label: 'external running', status: 'running', surface: 'cli', action: 'confirm', outcome: 'applied', order: 'after', throws: false, notice: true, cancelled: false },
+    { label: 'external finished', status: 'finished', surface: 'cli', action: 'confirm', outcome: 'applied', order: 'after', throws: false, notice: true, cancelled: false },
+    { label: 'local TUI', status: 'running', surface: 'tui', action: 'direct', outcome: 'applied', order: 'after', throws: false, notice: false, cancelled: false },
+    { label: 'local TUI event before applied', status: 'running', surface: 'tui', action: 'direct', outcome: 'applied', order: 'before', throws: false, notice: false, cancelled: false },
+    { label: 'external after rejection', status: 'running', surface: 'cli', action: 'direct', outcome: 'not-found', order: 'after', throws: false, notice: true, cancelled: false },
+    { label: 'external before not-found', status: 'running', surface: 'cli', action: 'direct', outcome: 'not-found', order: 'before', throws: false, notice: true, cancelled: false },
+    { label: 'external after thrown rejection', status: 'running', surface: 'cli', action: 'direct', outcome: 'not-found', order: 'after', throws: true, notice: true, cancelled: false },
+    { label: 'cancelled', status: 'running', surface: 'cli', action: 'confirm', outcome: 'applied', order: 'after', throws: false, notice: false, cancelled: true }
+  ] as const
+
+  it.each(scenarios)('$label resolution keeps the activity lifecycle intact', async (scenario) => {
+    let state = sampleState({ status: scenario.status })
+    let clock = 10_000
+    const initialPermission = state.runs.run1?.cards.permissions[0] as PermissionRequest
+    state = applyEvent(state, {
+      seq: ++seq,
+      event: {
+        type: 'permission.request',
+        runId: 'run1',
+        request: {
+          ...initialPermission,
+          suggestions: [{ type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'npm test:*' }], behavior: 'allow', destination: 'project' }]
+        }
+      } as RunEvent
+    })
+    const listeners = new Set<() => void>()
+    let releaseDecision: (() => void) | undefined
+    const emit = () => {
+      for (const fn of [...listeners]) fn()
+    }
+    const session = {
+      getState: () => state,
+      subscribe: (fn: () => void) => {
+        listeners.add(fn)
+        return () => void listeners.delete(fn)
+      },
+      hostKind: 'daemon',
+      hostInstanceId: 'h1',
+      focusRun: vi.fn(async () => undefined),
+      setComposeTarget: vi.fn(),
+      submitPrompt: vi.fn(async () => undefined),
+      startQuick: vi.fn(),
+      interrupt: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      decide: vi.fn(() => {
+        if (scenario.throws) return Promise.reject(new Error('decision rejected'))
+        if (scenario.order === 'before') return new Promise<{ status: typeof scenario.outcome }>((resolve) => { releaseDecision = () => resolve({ status: scenario.outcome }) })
+        return Promise.resolve({ status: scenario.outcome })
+      }),
+      worktreeDiff: vi.fn(async () => ({ stat: '', patch: '' })),
+      listRuns: vi.fn(async () => []),
+      startRetro: vi.fn(async () => summary('retro1', { kind: 'setup' })),
+      openInDesktop: vi.fn(),
+      resync: vi.fn(async () => undefined),
+      notify: vi.fn((text: string) => {
+        state = { ...state, notices: [...state.notices, { id: state.notices.length + 1, text, at: clock }] }
+        emit()
+      }),
+      close: vi.fn(async () => undefined)
+    }
+    const listenersInput = new Set<(e: InputEvent) => void>()
+    const terminal = {
+      bufferMode: 'fullscreen' as const,
+      bracketedPaste: false,
+      enter: vi.fn(),
+      suspend: vi.fn(),
+      resume: vi.fn(),
+      restore: vi.fn(),
+      size: () => ({ cols: 120, rows: 40 }),
+      onResize: () => () => undefined
+    }
+    const r = render(
+      <App
+        session={session as never}
+        terminal={terminal as never}
+        env={{ ...DEFAULT_TUI_ENV, bufferMode: 'fullscreen' }}
+        launch={{}}
+        conn={{ client: {} as never, hello: {} as never, started: false } as never}
+        input={{ subscribe: (fn) => (listenersInput.add(fn), () => void listenersInput.delete(fn)) }}
+        processEnv={{}}
+        now={() => clock}
+        onExit={() => undefined}
+      />
+    )
+    const send = async (...events: InputEvent[]) => {
+      for (const event of events) {
+        for (const fn of [...listenersInput]) fn(event)
+        await tick()
+      }
+    }
+    await send(named('f2'))
+    clock += 1_000
+    await send(key(scenario.action === 'confirm' ? 'a' : 'y'))
+    if (scenario.action === 'confirm') expect(r.lastFrame()).toContain('to confirm')
+    else await tick()
+
+    state = applyEvent(state, {
+      seq: ++seq,
+      event: { type: 'permission.resolved', runId: 'run1', requestId: 'perm1', cancelled: scenario.cancelled, decidedBy: { surface: scenario.surface } } as RunEvent
+    })
+    state = applyEvent(state, { seq: ++seq, event: { type: 'run.status', runId: 'run1', status: scenario.status } as RunEvent })
+    emit()
+    await tick()
+    if (scenario.order === 'before') {
+      releaseDecision?.()
+      await tick()
+    }
+
+    if (scenario.notice) {
+      expect(r.lastFrame()).toContain('Resolved in another window')
+      clock += TUI_NOTICE_TTL_MS + 1
+      state = { ...state }
+      emit()
+      await tick()
+      expect(r.lastFrame()).not.toContain('Resolved in another window')
+    } else {
+      expect(r.lastFrame()).not.toContain('Resolved in another window')
+    }
+    expect(r.lastFrame()).toContain(scenario.status === 'finished' ? 'Run finished' : '2 agents working')
+    r.unmount()
   })
 })
 

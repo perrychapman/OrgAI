@@ -18,6 +18,7 @@ import { RunActivity } from './RunActivity'
 import { RunCompletion } from './RunCompletion'
 import { TUI_NO_DECIDE_NOTICE } from './session'
 import { InputBus, InputBusContext, TuiEnvContext } from './context'
+import { surfaceWords } from './cards/status'
 import { DecisionTray, GUARD_ARRIVED_NOTICE, GUARD_SWAPPED_NOTICE } from './DecisionTray'
 import { cardDetailLines } from './decisions'
 import { isTrayFocusKey, PASTE_MAX_CHARS } from './input/keys'
@@ -59,7 +60,7 @@ import type {
   TuiSessionApi,
   TuiState
 } from './types'
-import { ESC_INTERRUPT_MS, TUI_TRAFFIC_MS, type TuiNotice } from './types'
+import { ESC_INTERRUPT_MS, TUI_RESOLVED_MAX, TUI_TRAFFIC_MS, type TuiNotice } from './types'
 import { WorktreesPane } from './WorktreesPane'
 
 /** 128 + SIGINT: a stopOnQuit session that was quit (types.ts EXIT.sigint; not imported to keep this file pure TUI). */
@@ -356,6 +357,45 @@ export function App(props: AppProps) {
   const label = launch.title ?? 'The run'
 
   const notify = useCallback((text: string, tone?: Parameters<TuiSessionApi['notify']>[1]) => session.notify(text, tone), [session])
+  // A working run replaces the tray with RunActivity as soon as its last card leaves. Keep an app-level notice for a
+  // card resolved by another surface so that the message survives that component swap (including batched events).
+  const seenResolved = useRef(new Set(state.resolved.map((r) => r.key)))
+  const localDecisions = useRef(new Map<string, { outcome: 'pending' | 'applied'; resolved?: (typeof state.resolved)[number] }>())
+  const trackedSession = useRef(session)
+  const activeRunId = useRef(state.activeRunId)
+  let sessionChanged = false
+  activeRunId.current = state.activeRunId
+  if (trackedSession.current !== session) {
+    sessionChanged = true
+    trackedSession.current = session
+    seenResolved.current = new Set(session.getState().resolved.map((r) => r.key))
+    localDecisions.current.clear()
+  }
+  const announceResolved = useCallback((info: (typeof state.resolved)[number]): void => {
+    if (info.ref.runId !== activeRunId.current || info.cancelled || !info.decidedBy) return
+    notify(`Resolved in another window (${surfaceWords(info.decidedBy)})`, 'dim')
+  }, [notify])
+  useEffect(() => {
+    if (sessionChanged) return
+    const current = new Set(state.resolved.map((r) => r.key))
+    for (const key of seenResolved.current) if (!current.has(key)) seenResolved.current.delete(key)
+    for (const info of state.resolved) {
+      if (seenResolved.current.has(info.key)) continue
+      seenResolved.current.add(info.key)
+      if (info.cancelled || !info.decidedBy) {
+        localDecisions.current.delete(info.key)
+        continue
+      }
+      const local = localDecisions.current.get(info.key)
+      if (local) {
+        if (local.outcome === 'applied') localDecisions.current.delete(info.key)
+        else local.resolved = info
+        continue
+      }
+      announceResolved(info)
+    }
+    while (localDecisions.current.size > TUI_RESOLVED_MAX) localDecisions.current.delete(localDecisions.current.keys().next().value as string)
+  }, [announceResolved, sessionChanged, state.resolved])
   // A notice that was about a state the user has left (another run followed, the prompt sent) stops showing at once
   // (R2-L1, L8). Kept as the notice object, so a session switch that restarts notice ids cannot hide a new one.
   const [dismissedNotice, setDismissedNotice] = useState<TuiNotice | undefined>(undefined)
@@ -1280,7 +1320,29 @@ export function App(props: AppProps) {
         variant={inline ? 'footer' : 'full'}
         cards={cards}
         resolved={state.resolved}
-        onDecide={(_card, call) => session.decide(call)}
+        onDecide={(card, call) => {
+          const attempt = { outcome: 'pending' as const }
+          localDecisions.current.set(card.key, attempt)
+          while (localDecisions.current.size > TUI_RESOLVED_MAX) localDecisions.current.delete(localDecisions.current.keys().next().value as string)
+          return session.decide(call).then((outcome) => {
+            const local = localDecisions.current.get(card.key)
+            if (local !== attempt) return outcome
+            if (outcome.status === 'applied') {
+              if (local?.resolved) localDecisions.current.delete(card.key)
+              else if (local) local.outcome = 'applied'
+            } else {
+              if (local?.resolved) announceResolved(local.resolved)
+              localDecisions.current.delete(card.key)
+            }
+            return outcome
+          }, (error: unknown) => {
+            const local = localDecisions.current.get(card.key)
+            if (local !== attempt) throw error
+            if (local?.resolved) announceResolved(local.resolved)
+            localDecisions.current.delete(card.key)
+            throw error
+          })
+        }}
         onViewText={openText}
         onLeave={() => {
           setTrayFocusKey(undefined)
