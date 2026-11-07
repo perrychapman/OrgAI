@@ -10,7 +10,9 @@ import { bandWorkFacts } from '../../lib/dashboardBand'
 import { connectionsInUse, reportsSpend, spendLevel, spendRowLabel, spendSentence } from '../../lib/usage'
 import { SpendBar, tightestWindowRow, usageRows } from '../UsageMeter'
 import { usageIsStale, windowLabel } from './dashboardProjects'
-import { useAllSummaries, useBandSnapshot, useNow } from './useDashboardData'
+import { combinedDecisionCount } from '../../lib/needsYou'
+import { useTeamAttentionItems } from '../../lib/menuActions'
+import { useAllSummaries, useBandSnapshot, useNow, useWaitingRuns } from './useDashboardData'
 
 /**
  * The Dashboard's status bar (docs/design/dashboard-2.md section 4): one sentence about the work, the plan limits in use
@@ -71,6 +73,13 @@ function windowEntry(id: ConnectionId, usage: UsageStatus, now: number): LimitEn
   return { id, kind: 'window', level: t.level, name, main: `${windowLabel(t.label)} ${Math.round(t.pct)}%`, resets, pct: Math.min(100, Math.max(0, t.pct)), title }
 }
 
+/** The bell's count: open decisions of runs plus team-files items (lib/needsYou.ts). */
+export function useDecisionTotal(): number {
+  const waiting = useWaitingRuns()
+  const teamItems = useTeamAttentionItems()
+  return useMemo(() => combinedDecisionCount(waiting, teamItems), [waiting, teamItems])
+}
+
 export function HeroBand({
   firstLaunch,
   announce,
@@ -108,7 +117,8 @@ export function HeroBand({
     [summaries, lastSeen, clearedAt, now]
   )
 
-  const sentence = statusSentence({ firstLaunch, ...counts, openRuns: live.length, pausedRuns: paused.length, pausedUntil, closedWaiting })
+  const decisions = useDecisionTotal()
+  const sentence = statusSentence({ firstLaunch, nothingNeedsYou: projects.length > 0 && decisions === 0, ...counts,openRuns: live.length, pausedRuns: paused.length, pausedUntil, closedWaiting })
 
   // Limits: one entry per connection in use that reports something, none under the mock adapter or for API keys.
   const entries = useMemo<LimitEntry[]>(() => {

@@ -5,7 +5,7 @@ import { Button } from '../ui/Button'
 import { BandRun } from './BandRun'
 import type { DashCaps } from './dashCaps'
 import { useAllSummaries, useBandSnapshot, useNow } from './useDashboardData'
-import { bandModel, countParts, emptyLine, moreRunsLabel } from '../../lib/dashboardBand'
+import { bandHeightEstimate, bandModel, countParts, fitBandModel, emptyLine, moreRunsLabel } from '../../lib/dashboardBand'
 import { pausedRuns } from '../../lib/dashboard'
 import { nextSettleAt, settleTimerDelay } from '../../lib/foldFinished'
 
@@ -41,7 +41,7 @@ function openRun(projectId: string, runId: string, agentId: string | null, rootI
 }
 
 /** The Right now band (docs/design/dashboard-2.md section 6): runs as small subway lines, never announced. */
-export function RightNowBand({ caps }: { caps: DashCaps; onAnnounce: (text: string) => void }): ReactElement {
+export function RightNowBand({ caps, budget }: { caps: DashCaps; budget?: number; onAnnounce: (text: string) => void }): ReactElement {
   const snap = useBandSnapshot()
   const elapsedNow = useNow()
   const summaries = useAllSummaries()
@@ -67,9 +67,9 @@ export function RightNowBand({ caps }: { caps: DashCaps; onAnnounce: (text: stri
   }, [settleDue])
 
   const model = useMemo(
-    () => bandModel(snap.runs, snap.projects, snap.virtualProjects, Date.now(), caps, { showAllRuns: showAll }),
+    () => fitBandModel(caps, budget, (c) => bandModel(snap.runs, snap.projects, snap.virtualProjects, Date.now(), c, { showAllRuns: showAll })),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [snap, caps, showAll, tick]
+    [snap, caps, budget, showAll, tick]
   )
   const paused = useMemo(() => pausedRuns(summaries).length, [summaries])
 
@@ -122,7 +122,11 @@ export function RightNowBand({ caps }: { caps: DashCaps; onAnnounce: (text: stri
       data-working={model.counts.working}
       data-waiting={model.counts.waiting}
       data-idle={model.counts.idle}
+      data-budget={budget}
+      data-estimate={bandHeightEstimate(model)}
       aria-labelledby="dash-now-heading"
+      // No open run: the status sentence already says "Nothing is running", so the band is not drawn twice (walk-3).
+      hidden={model.total === 0 ? true : undefined}
       onFocus={onFocus}
       onBlur={onBlur}
     >

@@ -7,12 +7,12 @@ import {
   agentRowName,
   doneText,
   moreAgentsText,
+  openedText,
   runHeadName,
   type BandAgentRow,
   type BandRow,
   type BandRun as BandRunModel
 } from '../../lib/dashboardBand'
-import { elapsedLabel } from '../../lib/dashboard'
 
 /** At most this many marks breathe (the wide cap, spec 3.4). */
 const MAX_BREATHING = 12
@@ -56,7 +56,6 @@ export interface BandRunProps {
 /** One run in the band: the header button, then its agent rows (spec 6.3 and 6.4). */
 export function BandRun({ run, now, onOpen }: BandRunProps): ReactElement {
   const cost = costView(runCostInput(run.summary), { compact: true })
-  const elapsed = elapsedLabel(run.startedAt, now)
   const tone = run.status.tone
   const openRoot = (): void => onOpen(run.projectId, run.id, null, run.rootId)
   return (
@@ -75,7 +74,7 @@ export function BandRun({ run, now, onOpen }: BandRunProps): ReactElement {
         data-row-main=""
         data-focus-key={`run:${run.id}`}
         style={{ '--line-role': run.rootColor } as CSSProperties}
-        title={`Open for ${elapsed}`}
+        title={openedText(run.startedAt, now).replace(/^./, (c) => c.toUpperCase())}
         aria-label={runHeadName(run, cost.empty ? '' : cost.text, now)}
         onClick={openRoot}
       >

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { bandBudget } from '../../lib/dashboardBand'
 
 /** Row caps per region (docs/design/dashboard-2.md 2.4): "narrow" under 1280 px of work-area width, "wide" from it. */
 export interface DashCaps {
@@ -19,6 +20,59 @@ export const WIDE_CAPS: DashCaps = { wide: true, needs: 5, bandRuns: 5, bandAgen
 
 export function capsFor(width: number): DashCaps {
   return width >= WIDE_AT_PX ? WIDE_CAPS : NARROW_CAPS
+}
+
+/** Under this much height in the scroll region the page is "short" (1024x640 leaves 584 px): the strip draws dense. */
+export const SHORT_REGION_PX = 700
+
+export function isShortRegion(height: number): boolean {
+  return height > 0 && height < SHORT_REGION_PX
+}
+
+/** Whether the Dashboard's scroll region (the element's closest `.dashboard`) is short, kept current by a ResizeObserver. */
+export function useShortRegion(el: HTMLElement | null): boolean {
+  const [short, setShort] = useState(false)
+  useEffect(() => {
+    const region = el?.closest<HTMLElement>('.dashboard')
+    if (!region || typeof ResizeObserver === 'undefined') return
+    const measure = (): void => setShort(isShortRegion(region.clientHeight))
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(region)
+    return () => ro.disconnect()
+  }, [el])
+  return short
+}
+
+/**
+ * The band's height budget (walk-3 M4): in two tracks, the other column's measured height plus the slack. The other
+ * column is every visible area except the band's; it never depends on the band, so this cannot feed back on itself.
+ * Undefined in one track and while nothing else is drawn.
+ */
+export function useBandBudget(el: HTMLElement | null): number | undefined {
+  const [budget, setBudget] = useState<number | undefined>(undefined)
+  useEffect(() => {
+    if (!el || typeof ResizeObserver === 'undefined') return
+    const measure = (): void => {
+      const twoTracks = getComputedStyle(el).gridTemplateColumns.trim().split(/\s+/).length >= 2
+      let other = 0
+      if (twoTracks) {
+        const top = el.getBoundingClientRect().top
+        for (const area of Array.from(el.children) as HTMLElement[]) {
+          if (area.classList.contains('dash-area-now') || area.offsetParent === null) continue
+          other = Math.max(other, area.getBoundingClientRect().bottom - top)
+        }
+      }
+      const next = twoTracks ? bandBudget(other) : undefined
+      setBudget((b) => (b === next ? b : next))
+    }
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    for (const child of Array.from(el.children)) ro.observe(child)
+    return () => ro.disconnect()
+  }, [el])
+  return budget
 }
 
 /**

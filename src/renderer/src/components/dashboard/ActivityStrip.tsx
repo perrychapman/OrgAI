@@ -15,8 +15,13 @@ import { useAllSummaries, useNow } from './useDashboardData'
 
 const SIZES = {
   compact: { track: 40, ledger: 30, ticks: 6, height: 74 },
-  tall: { track: 72, ledger: 48, ticks: 10, height: 126 }
+  /** Compact in a short window or beside a tall Needs you column (walk-3 M6): the bars and totals stay on screen. */
+  dense: { track: 26, ledger: 21, ticks: 4, height: 50 },
+  /** The quiet days' size, 190 px in all (walk-3 M4; the weekday initials share the date row). */
+  tall: { track: 44, ledger: 36, ticks: 7, height: 81 }
 } as const
+
+export type StripSize = 'compact' | 'tall'
 
 const TICK_H = 3
 const TICK_PITCH = 5
@@ -36,7 +41,7 @@ function DayColumn({
   index: number
   last: boolean
   max: number
-  size: 'compact' | 'tall'
+  size: keyof typeof SIZES
   pinned: boolean
   onPin: () => void
   onHover: (on: boolean) => void
@@ -77,18 +82,22 @@ function DayColumn({
         })}
       </svg>
       <span className="dash-strip-labels" aria-hidden="true">
-        {(index === 0 || last) && <span className={`dash-strip-end${last ? ' is-last' : ''}`}>{last ? 'Today' : shortDate(day.start)}</span>}
+        {index === 0 || last ? (
+          <span className={`dash-strip-end${last ? ' is-last' : ''}`}>{last ? 'Today' : shortDate(day.start)}</span>
+        ) : (
+          size === 'tall' && (
+            <span className="dash-strip-initial" data-near-end={index === 1 || index === 12 ? '' : undefined}>
+              {weekdayInitial(day.start)}
+            </span>
+          )
+        )}
       </span>
-      {size === 'tall' && (
-        <span className="dash-strip-initial" aria-hidden="true">
-          {weekdayInitial(day.start)}
-        </span>
-      )}
     </button>
   )
 }
 
-export function ActivityStrip({ size }: { size: 'compact' | 'tall' }): ReactElement {
+export function ActivityStrip({ size, dense = false }: { size: StripSize; dense?: boolean }): ReactElement {
+  const drawn: keyof typeof SIZES = size === 'compact' && dense ? 'dense' : size
   const headingId = useId()
   const summaries = useAllSummaries()
   const now = useNow(60_000)
@@ -122,7 +131,7 @@ export function ActivityStrip({ size }: { size: 'compact' | 'tall' }): ReactElem
 
   const cost = totals.cost
   return (
-    <section className="dash-section dash-strip" data-testid="dash-strip" data-size={size} aria-labelledby={headingId}>
+    <section className="dash-section dash-strip" data-testid="dash-strip" data-size={size} data-dense={drawn === 'dense' ? '' : undefined} aria-labelledby={headingId}>
       <div className="dash-strip-head">
         <h2 id={headingId} className="dash-strip-title">
           Last 14 days
@@ -154,7 +163,7 @@ export function ActivityStrip({ size }: { size: 'compact' | 'tall' }): ReactElem
             index={i}
             last={i === days.length - 1}
             max={max}
-            size={size}
+            size={drawn}
             pinned={pinned === d.key}
             onPin={() => setPinned((p) => (p === d.key ? null : d.key))}
             onHover={(on) => setHover((h) => (on ? d.key : h === d.key ? null : h))}

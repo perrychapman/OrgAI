@@ -120,6 +120,12 @@ describe('dayLedger cost', () => {
     expect(dayReadout(days[13])).not.toContain('$0')
   })
 
+  it('names an unknown cost once in the accessible name (walk-3 L1)', () => {
+    const days = dayLedger([run('a', at(2026, 11, 7), { cost: null })], NOW)
+    expect(dayAriaLabel(days[13])).toContain('cost unknown')
+    expect(dayAriaLabel(days[13])).not.toContain('cost cost')
+  })
+
   it('marks a day partial when a known cost sits beside an unknown one, or a run is itself partial', () => {
     const mixed = dayLedger([run('a', at(2026, 11, 7, 9), { cost: 1 }), run('b', at(2026, 11, 7, 10), { cost: null })], NOW)
     expect(mixed[13].costKind).toBe('partial')
