@@ -345,13 +345,8 @@ async function sectionAssistant(page, shot) {
   await page.waitForFunction(() => document.querySelector('[data-testid=team-recommend-pane]')?.getAttribute('data-phase') === 'idle', null, { timeout: 20_000 })
   check((await tray.locator(`[data-testid=capability-card][data-name="${dname}"]`).count()) === 0, 'a dismissed card does not return after Re-check setup')
 
-  // Design mode: the Architect session is an ordinary run in Live (full coverage in e2e/org-change.mjs).
-  await startOrgChange(page)
-  check((await page.locator('[data-testid=tab-live]').getAttribute('aria-selected')) === 'true', 'the org change session opens in Live')
-  check((await page.locator('.run-tab').count()) >= 1, 'the org change session has its own run tab')
-  await endSession(page)
-  await openTeam(page)
-  await tray.locator('[data-testid=team-mode-recommend]').click()
+  // Design mode (the Architect session is an ordinary run in Live) is covered by sectionDesignDecisions and
+  // e2e/org-change.mjs; starting one here would end a run before sectionDismiss, which changes its dismissed list.
 }
 
 async function startOrgChange(page) {
@@ -366,6 +361,8 @@ async function startOrgChange(page) {
 async function sectionDesignDecisions(page, shot) {
   const tray = page.locator('[data-testid=team-assistant]')
   await startOrgChange(page)
+  check((await page.locator('[data-testid=tab-live]').getAttribute('aria-selected')) === 'true', 'the org change session opens in Live')
+  check((await page.locator('.run-tab').count()) >= 1, 'the org change session has its own run tab')
   const card = page.locator('.frame-tray .decision-card').first()
   await card.waitFor({ timeout: 20_000 })
   check(true, 'the Architect permission card shows in the Live tray')
