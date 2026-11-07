@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
 import type { PermissionSuggestion } from '@shared/types'
-import { QUICK_SESSION_EDIT_LABEL, editInputAt, quickEditCard, quickEditFree } from './quickEditCard'
+import { QUICK_SESSION_EDIT_LABEL, editHasMove, editInputAt, quickEditCard, quickEditFree } from './quickEditCard'
 import { runSummary } from './testHelpers'
 
 const folder = realpathSync.native(mkdtempSync(join(tmpdir(), 'orgai-quick-card-')))
@@ -51,5 +51,34 @@ describe('quickEditCard', () => {
     expect(quickEditFree(on, 'Edit', { file_path: join(folder, '.git', 'HEAD') }, folder)).toBe(false)
     expect(quickEditFree(on, 'Edit', { changes: [{ path: join(folder, 'a.md') }], grantRoot: folder }, folder)).toBe(false)
     expect(quickEditFree(on, 'Bash', { command: 'echo hi > a.md' }, folder)).toBe(false)
+  })
+
+  it('never covers or offers the grant for a change that moves its file, wherever it goes (review H1)', () => {
+    const on = { run: quickRun, quickSessionEdits: () => true }
+    const src = join(folder, 'a.md')
+    // Sanity: the same change without a move is covered.
+    expect(quickEditFree(on, 'Edit', { changes: [{ path: src, kind: 'update' }] }, folder)).toBe(true)
+    for (const change of [
+      { path: src, kind: 'update', movePath: join(realpathSync.native(tmpdir()), '.bashrc') },
+      { path: src, kind: 'update', movePath: join(folder, '.claude', 'settings.json') },
+      // Even a destination inside the folder, a relative one, a malformed '' or the raw Codex shape.
+      { path: src, kind: 'update', movePath: join(folder, 'sub', 'b.md') },
+      { path: src, kind: 'update', movePath: 'b.md' },
+      { path: src, kind: 'update', movePath: '' },
+      { path: src, kind: { type: 'update', move_path: join(folder, 'b.md') } },
+      { path: src, move_path: join(folder, 'b.md') }
+    ]) {
+      const input = { file_path: src, changes: [{ path: join(folder, 'ok.md'), kind: 'update' }, change] }
+      expect(quickEditFree(on, 'Edit', input, folder), JSON.stringify(change)).toBe(false)
+      const card = quickEditCard(quickRun, 'Edit', input, folder, [])
+      expect(card.quick, JSON.stringify(change)).toBe(false)
+      expect(card.ruleLabels).not.toContain(QUICK_SESSION_EDIT_LABEL)
+    }
+    // A null move is no move here (what quick/sessionEdits.ts decides for it is its own business).
+    expect(editHasMove({ changes: [{ path: src, kind: { type: 'update', move_path: null } }] })).toBe(false)
+    expect(editHasMove({ changes: [{ path: src, kind: { type: 'update', move_path: 'x' } }] })).toBe(true)
+    expect(editHasMove({ file_path: src })).toBe(false)
+    // editInputAt resolves a relative destination like a path.
+    expect(editInputAt({ changes: [{ path: 'a.md', movePath: 'b.md' }] }, folder)).toEqual({ changes: [{ path: join(folder, 'a.md'), movePath: join(folder, 'b.md') }] })
   })
 })

@@ -264,6 +264,21 @@ function safeJson(v: unknown): string {
 export interface FileChangeSummary {
   path: string
   kind: 'add' | 'update' | 'delete'
+  /**
+   * Where an update moves the file (Codex 0.166 `kind: { type: 'update', move_path: <dest> }`, shape from the schema
+   * and fixtures/codex-turn-tools.jsonl; a live move was never observed). Absent when there is no move (null or no
+   * field). A move field that is present but not a non-empty string becomes '' so every check fails closed: callers
+   * must treat any `movePath` key, '' included, as a second write target they cannot clear.
+   */
+  movePath?: string
+}
+
+/** The move destination of one raw change: undefined for no move, '' for a malformed one (fail closed). */
+function moveDestination(c: Record<string, unknown>): string | undefined {
+  const kind = isRec(c.kind) ? c.kind : undefined
+  const raw = kind && 'move_path' in kind ? kind.move_path : kind && 'movePath' in kind ? kind.movePath : 'move_path' in c ? c.move_path : c.movePath
+  if (raw === undefined || raw === null) return undefined
+  return typeof raw === 'string' && raw.trim() !== '' ? raw : ''
 }
 
 export function fileChanges(item: CodexItem): FileChangeSummary[] {
@@ -271,8 +286,14 @@ export function fileChanges(item: CodexItem): FileChangeSummary[] {
   return item.changes.flatMap((c): FileChangeSummary[] => {
     if (!isRec(c) || !str(c.path)) return []
     const kind = isRec(c.kind) ? str(c.kind.type) : str(c.kind)
-    return [{ path: str(c.path) as string, kind: kind === 'add' || kind === 'delete' ? kind : 'update' }]
+    const movePath = moveDestination(c)
+    return [{ path: str(c.path) as string, kind: kind === 'add' || kind === 'delete' ? kind : 'update', ...(movePath !== undefined ? { movePath } : {}) }]
   })
+}
+
+/** Every path a change list writes: each source path plus each move destination ('' for a malformed one). */
+export function fileChangeTargets(changes: readonly FileChangeSummary[]): string[] {
+  return changes.flatMap((c) => (c.movePath !== undefined ? [c.path, c.movePath] : [c.path]))
 }
 
 function commandFailed(item: CodexItem): boolean {
@@ -291,7 +312,7 @@ function fileChangeResult(item: CodexItem): string {
   const changes = fileChanges(item)
   if (item.status === 'declined') return 'The change was declined and not applied.'
   if (!changes.length) return str(item.status) ?? ''
-  return changes.map((c) => `${c.kind} ${basename(c.path)}`).join('\n')
+  return changes.map((c) => `${c.kind} ${basename(c.path)}${c.movePath !== undefined ? ` -> ${c.movePath ? basename(c.movePath) : '(unknown)'}` : ''}`).join('\n')
 }
 
 /** Parse fixture JSONL (one `{method, params}` per line) into raw notifications. */

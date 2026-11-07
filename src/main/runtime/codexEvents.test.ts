@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { CodexEventMapper, ThrottledPartial, contentText, parseJsonl, type CodexUpdate } from './codexEvents'
+import { CodexEventMapper, ThrottledPartial, contentText, fileChangeTargets, fileChanges, parseJsonl, type CodexUpdate } from './codexEvents'
 import { parseNotification } from './codexProtocol'
 
 function fixture(name: string): { method: string; params: unknown }[] {
@@ -129,6 +129,38 @@ describe('parsing', () => {
     const m = new CodexEventMapper()
     for (const n of fixture('codex-turn-tools.jsonl')) m.handle(n.method, n.params)
     expect(m.item('it-f1')?.type).toBe('fileChange')
+    // The fixture's `move_path: null` is no move: no movePath key.
+    expect(fileChanges(m.item('it-f1')!)).toEqual([{ path: '/repo/src/a.ts', kind: 'update' }])
+  })
+
+  it('carries a move destination on each change and lists it as a write target (review H1)', () => {
+    const item = (changes: unknown[]) => ({ type: 'fileChange', id: 'f', changes }) as never
+    const changes = fileChanges(
+      item([
+        { path: '/r/a.md', kind: { type: 'update', move_path: '/home/u/.bashrc' }, diff: '' },
+        { path: '/r/b.md', kind: { type: 'update', move_path: null }, diff: '' },
+        { path: '/r/c.md', kind: { type: 'update', movePath: '/r/.claude/settings.json' }, diff: '' },
+        { path: '/r/d.md', kind: { type: 'update', move_path: 7 }, diff: '' },
+        { path: '/r/e.md', kind: { type: 'update', move_path: '  ' }, diff: '' },
+        { path: '/r/f.md', kind: 'add' }
+      ])
+    )
+    expect(changes).toEqual([
+      { path: '/r/a.md', kind: 'update', movePath: '/home/u/.bashrc' },
+      { path: '/r/b.md', kind: 'update' },
+      { path: '/r/c.md', kind: 'update', movePath: '/r/.claude/settings.json' },
+      // Malformed destinations become '' so every check fails closed.
+      { path: '/r/d.md', kind: 'update', movePath: '' },
+      { path: '/r/e.md', kind: 'update', movePath: '' },
+      { path: '/r/f.md', kind: 'add' }
+    ])
+    expect(fileChangeTargets(changes)).toEqual(['/r/a.md', '/home/u/.bashrc', '/r/b.md', '/r/c.md', '/r/.claude/settings.json', '/r/d.md', '', '/r/e.md', '', '/r/f.md'])
+    // The transcript tool input and result show the move.
+    const m = new CodexEventMapper()
+    const started = m.handle('item/started', { threadId: 't', turnId: 'u', item: { type: 'fileChange', id: 'mv', status: 'inProgress', changes: [{ path: '/r/a.md', kind: { type: 'update', move_path: '/home/u/.bashrc' }, diff: '' }] } })
+    expect(JSON.stringify(started)).toContain('"movePath":"/home/u/.bashrc"')
+    const done = m.handle('item/completed', { threadId: 't', turnId: 'u', item: { type: 'fileChange', id: 'mv', status: 'completed', changes: [{ path: '/r/a.md', kind: { type: 'update', move_path: '/home/u/.bashrc' }, diff: '' }] } })
+    expect(JSON.stringify(done)).toContain('update a.md -> .bashrc')
   })
 })
 

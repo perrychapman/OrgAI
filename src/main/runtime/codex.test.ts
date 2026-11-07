@@ -659,6 +659,44 @@ describe('CodexAdapter session', () => {
         expect(ctx.requestPermission).toHaveBeenCalledTimes(2)
       })
 
+      it('judges a move destination like a path: accept-edits and a blanket Edit rule ask for a move out of the folder or into .claude/ (review H1)', async () => {
+        const mv = (s: FakeServer, dest: unknown, id: string) =>
+          s.push('item/started', { threadId: 'th-1', turnId: 'tu-1', item: { type: 'fileChange', id, status: 'inProgress', changes: [{ path: join(dir, 'a.ts'), kind: { type: 'update', move_path: dest }, diff: '' }] } })
+        const { ctx, s } = await started('acceptEdits')
+        mv(s, join(dir, '..', 'outside-mv.ts'), 'm1')
+        await s.ask('item/fileChange/requestApproval', fe('m1'))
+        mv(s, join(dir, '.claude', 'settings.json'), 'm2')
+        await s.ask('item/fileChange/requestApproval', fe('m2'))
+        // A malformed destination (present, not a non-empty string) fails closed.
+        mv(s, 42, 'm3')
+        await s.ask('item/fileChange/requestApproval', fe('m3'))
+        expect(ctx.requestPermission).toHaveBeenCalledTimes(3)
+        expect((ctx.requestPermission as any).mock.calls[0][0].input.changes).toEqual([{ path: join(dir, 'a.ts'), kind: 'update', movePath: join(dir, '..', 'outside-mv.ts') }])
+        // A move that stays inside the project is still free in accept-edits.
+        mv(s, join(dir, 'b.ts'), 'm4')
+        expect(await s.ask('item/fileChange/requestApproval', fe('m4'))).toEqual({ decision: 'accept' })
+        expect(ctx.requestPermission).toHaveBeenCalledTimes(3)
+        // editPathsFree itself refuses a destination outside, under a protected folder, or empty.
+        const free = (paths: string[]) => (session as any).editPathsFree(paths) as boolean
+        expect(free([join(dir, 'a.ts'), join(dir, '..', 'outside-mv.ts')])).toBe(false)
+        expect(free([join(dir, 'a.ts'), join(dir, '.claude', 'settings.json')])).toBe(false)
+        expect(free([join(dir, 'a.ts'), ''])).toBe(false)
+        await session?.stop()
+        const blanket = await started('default', { allowedRules: () => ['Edit'] })
+        mv(blanket.s, join(dir, '.git', 'config'), 'm5')
+        await blanket.s.ask('item/fileChange/requestApproval', fe('m5'))
+        mv(blanket.s, 42, 'm6')
+        await blanket.s.ask('item/fileChange/requestApproval', fe('m6'))
+        expect(blanket.ctx.requestPermission).toHaveBeenCalledTimes(2)
+      })
+
+      it('declines a build-session update moved under .claude/ without a card (review H1)', async () => {
+        const { ctx, s } = await started('default', { run: runSummary({ kind: 'mcp-assist', buildWorkspace: dir }) })
+        s.push('item/started', { threadId: 'th-1', turnId: 'tu-1', item: { type: 'fileChange', id: 'f', status: 'inProgress', changes: [{ path: join(dir, 'a.ts'), kind: { type: 'update', move_path: join(dir, '.claude', 'settings.json') }, diff: '' }] } })
+        expect(await s.ask('item/fileChange/requestApproval', fe())).toEqual({ decision: 'decline' })
+        expect(ctx.requestPermission).not.toHaveBeenCalled()
+      })
+
       it('passes the command cwd through to the card', async () => {
         const { ctx, s } = await started('default')
         await s.ask('item/commandExecution/requestApproval', { ...cmd('npm test'), cwd: dir })
@@ -807,6 +845,14 @@ describe('CodexAdapter session', () => {
         expect(codexWritableRoots({ run: runSummary({}), allowedDirectories: () => [join(ref, 'sub'), other], referenceDirectories: () => [ref] })).toEqual([other])
         expect(codexWritableRoots({ run: runSummary({}), allowedDirectories: () => [tmpdir(), other], referenceDirectories: () => [ref] })).toEqual([other])
         expect(codexWritableRoots({ run: runSummary({ quick: { folder: dir } as never }), allowedDirectories: () => [other] })).toEqual([])
+      })
+
+      it('declines without a card an update in the project whose move destination is in a reference folder (review H1)', async () => {
+        const { ctx, s } = await started('acceptEdits', { referenceDirectories: () => [ref], allowedRules: () => ['Edit', 'Write'] })
+        s.push('item/started', { threadId: 'th-1', turnId: 'tu-1', item: { type: 'fileChange', id: 'f1', status: 'inProgress', changes: [{ path: join(dir, 'ok.ts'), kind: { type: 'update', move_path: join(ref, 'brief.md') }, diff: '' }] } })
+        expect(await s.ask('item/fileChange/requestApproval', edit)).toEqual({ decision: 'decline' })
+        expect(ctx.requestPermission).not.toHaveBeenCalled()
+        expect(harnessRows(ctx)[0]).toMatchObject({ entry: { block: { text: 'Refused: brief.md is in a reference folder (read only)' } } })
       })
 
       it('declines a change under a reference folder without a card, with a warn log and a harness row, even in acceptEdits with a blanket rule', async () => {
@@ -1187,6 +1233,32 @@ describe('CodexAdapter session', () => {
           }
           await s.ask('item/fileChange/requestApproval', { ...edit, itemId: 'none', grantRoot: dir })
           expect(ctx.requestPermission).toHaveBeenCalledTimes(n + 1)
+        } finally {
+          rmSync(outside, { recursive: true, force: true })
+        }
+      })
+
+      it('a move out of the folder or into .claude/ asks with the grant on, shows the destination and never offers the grant (review H1)', async () => {
+        const outside = realpathSync.native(mkdtempSync(join(tmpdir(), 'orgai-codex-chat-mv-')))
+        try {
+          const { ctx, s, editsOn } = await startedQuick(() => ({ behavior: 'allow', scope: 'session' }))
+          change(s, [join(dir, 'a.md')])
+          await s.ask('item/fileChange/requestApproval', edit)
+          expect(editsOn()).toBe(true)
+          const move = (dest: string, id: string) =>
+            s.push('item/started', { threadId: 'th-1', turnId: 'tu-1', item: { type: 'fileChange', id, status: 'inProgress', changes: [{ path: join(dir, 'a.md'), kind: { type: 'update', move_path: dest }, diff: '' }] } })
+          const dests = [join(outside, '.bashrc'), join(dir, '.claude', 'settings.json'), join(dir, 'inside.md')]
+          let n = 1
+          for (const dest of dests) {
+            const id = `mv${n}`
+            move(dest, id)
+            await s.ask('item/fileChange/requestApproval', { ...edit, itemId: id })
+            n++
+            expect(ctx.requestPermission, dest).toHaveBeenCalledTimes(n)
+            const card = (ctx.requestPermission as any).mock.calls[n - 1][0]
+            expect(card.input.changes).toEqual([{ path: join(dir, 'a.md'), kind: 'update', movePath: dest }])
+            expect(card.ruleLabels ?? []).not.toContain(QUICK_SESSION_EDIT_LABEL)
+          }
         } finally {
           rmSync(outside, { recursive: true, force: true })
         }
