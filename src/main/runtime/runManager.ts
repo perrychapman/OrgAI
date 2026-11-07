@@ -80,6 +80,9 @@ import { isTrustRestrictedRun, isInsideEither, samePath, canonicalDeep } from '.
 import { MCP_ASSIST_MODEL_LABEL, QUICK_RUN_MODEL_LABEL, SETUP_MODEL_LABEL, SKILL_ASSIST_MODEL_LABEL, resolveBuiltinModel, type ResolvedBuiltinModel } from './builtinModel'
 import { ROOT_AGENT_ID, isSetupLikeRun, type RootTurnEnd, type CompletionInput, type KnowledgeCaller, type KnowledgeStoreApi, type ResolvedMcpServer, type RunMessageOutcome, type RunConnection, type RunSkill, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type SessionSettlement, type SkillAssistCatalog } from './types'
 import type { SelfKnowledgeHooks } from './types'
+import { OPEN_IN_APP_MIN_INTERVAL_MS, OPEN_IN_APP_PER_RUN_MAX, type AppNavigateEvent, type AppNavigateOutcome, type AppReferenceQuery } from '@shared/types'
+import { atlasPath, atlasSurface, isAtlasSurfaceId, type AtlasSurfaceId } from '@shared/view/atlas'
+import { clampText } from '../capabilities/sanitize'
 import { datum } from './harnessTools'
 import type { SkillRunSource } from '../skills/types'
 import { RunStore } from '../store/runs'
@@ -369,6 +372,9 @@ interface ActiveRun {
   knowledgeWrites: number
   /** The writes cap was reached and logged once. */
   knowledgeCapWarned?: boolean
+  /** open_in_app places shown this run and when the last one went out (OPEN_IN_APP_PER_RUN_MAX / OPEN_IN_APP_MIN_INTERVAL_MS). */
+  appOpens?: number
+  appOpenedAt?: number
   /** Per named receiving agent: node id -> the signature last served in full (knowledge_recall and auto context). In memory only. */
   knowledgeShown: Map<string, Map<string, string>>
   /** Per named receiving agent: node id -> the signature last put in an automatic context block, full or not. In memory only. */
@@ -1922,6 +1928,18 @@ export class RunManager {
             }
           : {}),
         ...(isQuick && this.options.listProjects ? { listProjects: () => this.options.listProjects!() } : {}),
+        ...(this.options.selfKnowledge
+          ? {
+              appReference: (q: AppReferenceQuery) => this.options.selfKnowledge!.reference(q, { status: isQuick || kind === 'mcp-assist' || kind === 'skill-assist' }),
+              ...(isQuick || setupLike ? { navigate: (target: { surfaceId: AtlasSurfaceId; projectId?: string }, caller: { agentId?: string }) => this.navigateFor(active, target, caller) } : {}),
+              ...(isQuick
+                ? {
+                    appSettings: () => this.options.selfKnowledge!.settings(),
+                    storedProject: (projectId: string) => this.storedProjectFor(projectId)
+                  }
+                : {})
+            }
+          : {}),
         ...(!bare && !isQuick && kind === 'work' && this.options.skillAssist
           ? {
               skillCatalog: () => this.options.skillAssist!.catalog(project.id),
@@ -2479,6 +2497,58 @@ export class RunManager {
   private knowledgeRow(a: ActiveRun, agentId: string, text: string): void {
     const shown = agentId === ROOT_AGENT_ID || a.record.agents[agentId] ? agentId : ROOT_AGENT_ID
     a.emit({ type: 'transcript', runId: a.summary.id, entry: { id: newId('t'), agentId: shown, at: Date.now(), source: 'harness', block: { kind: 'system', text } } })
+  }
+
+  /** A stored, non-virtual project (Chat's propose_project_settings target, open_in_app project checks). */
+  private storedProjectFor(projectId: string): Project | undefined {
+    if (typeof projectId !== 'string' || isVirtualProjectId(projectId)) return undefined
+    let p: Project | null | undefined
+    try {
+      p = this.options.resolveProject?.(projectId)
+    } catch {
+      p = undefined
+    }
+    return p && !isVirtualProjectId(p.id) ? p : undefined
+  }
+
+  /**
+   * ctx.navigate (open_in_app): limits, surface and project checks, then one AppNavigateEvent through
+   * options.selfKnowledge.navigate and one harness row on the calling agent.
+   */
+  private navigateFor(a: ActiveRun, target: { surfaceId: AtlasSurfaceId; projectId?: string }, caller: { agentId?: string }): AppNavigateOutcome {
+    const sk = this.options.selfKnowledge
+    if (!sk) return { ok: false, refusal: 'This run cannot open places in the app.' }
+    if (!isAtlasSurfaceId(target?.surfaceId)) return { ok: false, refusal: 'That is not a place OrgAI knows; use app_reference locate to find the surface id.' }
+    if ((a.appOpens ?? 0) >= OPEN_IN_APP_PER_RUN_MAX) return { ok: false, refusal: `Already opened ${OPEN_IN_APP_PER_RUN_MAX} places in this run.` }
+    const now = Date.now()
+    if (a.appOpenedAt !== undefined && now - a.appOpenedAt < OPEN_IN_APP_MIN_INTERVAL_MS) return { ok: false, refusal: 'Wait a moment before opening another place.' }
+    const scope = atlasSurface(target.surfaceId)?.scope ?? 'app'
+    let projectId: string | undefined
+    if (scope === 'project' || scope === 'engagement' || scope === 'run') {
+      if (target.projectId === undefined) {
+        if (scope !== 'run') return { ok: false, refusal: 'That place belongs to a project; give projectId (call list_projects for ids).' }
+      } else {
+        const project = this.storedProjectFor(target.projectId)
+        if (!project) return { ok: false, refusal: 'No such project; call list_projects for ids.' }
+        if (scope === 'engagement' && projectKindOf(project) !== 'engagement') return { ok: false, refusal: 'That place only exists in engagement projects.' }
+        projectId = project.id
+      }
+    }
+    const agent = caller.agentId && caller.agentId !== ROOT_AGENT_ID ? a.record.agents[caller.agentId] : a.record.agents[ROOT_AGENT_ID]
+    const agentLabel = clampText(agent?.name || a.rootRole, 80) || 'Assistant'
+    const event: AppNavigateEvent = { surfaceId: target.surfaceId, ...(projectId ? { projectId } : {}), runId: a.summary.id, agentLabel }
+    let shown = false
+    try {
+      shown = sk.navigate(event)
+    } catch (e) {
+      log.warn(`open_in_app could not be delivered: ${e instanceof Error ? e.message : String(e)}`)
+    }
+    if (!shown) return { ok: false, refusal: 'No OrgAI window is open to show it in.' }
+    a.appOpens = (a.appOpens ?? 0) + 1
+    a.appOpenedAt = now
+    const path = atlasPath(target.surfaceId)
+    this.knowledgeRow(a, caller.agentId ?? ROOT_AGENT_ID, `Opened ${path} for you`)
+    return { ok: true, path }
   }
 
   /** Push projects:engagementChanged for an agent write (index.ts passes the broadcaster); never throws into the tool. */
@@ -3219,7 +3289,19 @@ export class RunManager {
         let waitingForSecrets: string[] | undefined
         {
           try {
-            if (active.summary.projectId === HARNESS_PROJECT_ID) {
+            if (proposal.kind === 'appSettings') {
+              // App-wide settings: Chat only, applied through the settings path (RunManagerOptions.selfKnowledge).
+              if (!active.summary.quick || !this.options.selfKnowledge) throw new Error('App settings can only be changed from Chat.')
+              this.options.selfKnowledge.applyAppSettings(proposal.payload)
+            } else if (proposal.target) {
+              // A stored project's settings changed from Chat: re-resolve the target, settings only, setup untouched.
+              if (!active.summary.quick) throw new Error('Only Chat can change another project\'s settings.')
+              if (proposal.kind !== 'settings') throw new Error('Only settings proposals can target a project.')
+              const target = this.storedProjectFor(proposal.target.projectId)
+              if (!target) throw new Error('That project no longer exists.')
+              const updated = this.setup.applyProposal(target.id, proposal, { targeted: true })
+              this.broadcast({ type: 'project.updated', runId: active.summary.id, project: updated })
+            } else if (active.summary.projectId === HARNESS_PROJECT_ID) {
               // The harness project is virtual: its proposals change the MCP library only, never a stored project.
               if (proposal.kind !== 'mcpServers') throw new Error('Only MCP library proposals can be applied here.')
               this.setup.applyLibraryProposal(proposal.payload as McpServersProposalPayload, active.summary.buildWorkspace ? { buildWorkspace: active.summary.buildWorkspace } : {})

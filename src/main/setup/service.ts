@@ -241,9 +241,16 @@ export class SetupService {
 
   /** Apply an approved proposal. Returns the saved project. */
   /** opts.projectOnly (work runs): an MCP proposal never writes the MCP library (review M3) and a skills proposal never changes the skill library (review L3). */
-  applyProposal(projectId: string, proposal: Proposal, opts: { projectOnly?: boolean } = {}): Project {
+  applyProposal(projectId: string, proposal: Proposal, opts: { projectOnly?: boolean; targeted?: true } = {}): Project {
     const project = this.projects.get(projectId)
     if (!project) throw new Error('Project not found')
+    // A targeted proposal (Chat's propose_project_settings) changes a stored project from outside any setup session:
+    // settings only, and it never creates or changes project.setup.
+    if (opts.targeted && proposal.kind !== 'settings') throw new Error('Only settings proposals can target a project from Chat.')
+    if (opts.targeted && proposal.kind === 'settings') {
+      if (proposal.payload.permissionMode === 'bypassPermissions') throw new Error('Bypass permissions can only be turned on in the project settings.')
+      if (Array.isArray(proposal.payload.allowRules) && proposal.payload.allowRules.length) throw new Error('Saved permission rules are not changed from Chat.')
+    }
     const setup: ProjectSetup = project.setup ?? { kind: 'existing', state: 'in_progress' }
     switch (proposal.kind) {
       case 'architecture': {
@@ -263,7 +270,7 @@ export class SetupService {
       }
       case 'settings': {
         const p = proposal.payload
-        const next: Project = { ...project, setup }
+        const next: Project = opts.targeted ? { ...project } : { ...project, setup }
         if (typeof p.brief === 'string' && p.brief.trim()) next.brief = p.brief.trim()
         if (isPermissionMode(p.permissionMode)) next.permissionMode = p.permissionMode
         if (p.maxBudgetUsd === null) delete next.maxBudgetUsd
