@@ -10,6 +10,8 @@ export interface DraftRole {
   prompt: string
   tools: string[]
   model?: string
+  /** Optional: a configured connection id the role runs on (omit for the project's). */
+  connection?: string
   canSpawn: boolean
   spawnable: string[]
   reportsTo: string | null
@@ -169,7 +171,14 @@ export function revisedRoleModel(raw: unknown, current: Pick<Role, 'model' | 'ti
   return hit
 }
 
-export function toRoles(payload: DraftPayload, models?: DraftModelContext): Role[] {
+/**
+ * `others` maps a connection id to its DraftModelContext: a draft naming one of them maps its tier / model through it
+ * and the Role carries `connection` (omitted when it equals the run's connection, `models.connection`).
+ */
+export function toRoles(payload: DraftPayload, models?: DraftModelContext, others?: Record<string, DraftModelContext>): Role[] {
+  const own = models?.connection ?? 'anthropic'
+  const ctxOf = (d: DraftRole): DraftModelContext | undefined =>
+    typeof d.connection === 'string' && others && Object.hasOwn(others, d.connection) ? others[d.connection] : models
   const validTools = new Set<string>(TOOL_CATALOG)
   const drafts = payload.roles
 
@@ -181,13 +190,18 @@ export function toRoles(payload: DraftPayload, models?: DraftModelContext): Role
     responsibilities: Array.isArray(d.responsibilities) ? d.responsibilities.map(String) : [],
     prompt: d.prompt?.trim() || '',
     tools: (Array.isArray(d.tools) ? d.tools : []).filter((t): t is ToolName => validTools.has(t)),
-    ...mapModel(d.model, models),
+    ...mapModel(d.model, ctxOf(d)),
     canSpawn: !!d.canSpawn,
     spawnable: [],
     reportsTo: null,
     position: { x: 0, y: 0 },
     color: ROLE_COLORS[i % ROLE_COLORS.length]
   }))
+
+  drafts.forEach((d, i) => {
+    const c = ctxOf(d)?.connection
+    if (c && c !== own) roles[i].connection = c
+  })
 
   // De-duplicate slugs.
   const seen = new Map<string, number>()
@@ -213,6 +227,7 @@ export function toRoles(payload: DraftPayload, models?: DraftModelContext): Role
   const roots = roles.filter((r) => r.reportsTo === null)
   const root = roots[0] ?? roles[0]
   root.reportsTo = null
+  delete root.connection // the root always runs on the project's connection
   for (const r of roles) if (r !== root && (r.reportsTo === null || !roles.some((x) => x.id === r.reportsTo))) r.reportsTo = root.id
 
   // Any manager implicitly may spawn its direct reports.
