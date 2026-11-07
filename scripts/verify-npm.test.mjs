@@ -227,9 +227,22 @@ function fakeRoot({ shrinkwrap = true } = {}) {
   return { root, pkg, sw }
 }
 
-/** A runner that "installs" the package into the prefix and answers orgai, claude and npm config. */
+/** The command a `cmd.exe /d /s /c "<shim>" args...` call stands for ({ command: shim, args }); any other command as is. */
+function unwrapCmdShim(cmd) {
+  const a = cmd.args
+  if (!/cmd(\.exe)?$/i.test(cmd.command) || a[0] !== '/d' || a[1] !== '/s' || a[2] !== '/c' || typeof a[3] !== 'string') return cmd
+  let line = a[3]
+  if (line.length > 1 && line.startsWith('"') && line.endsWith('"')) line = line.slice(1, -1)
+  const words = [...line.matchAll(/"([^"]*)"|(\S+)/g)].map((m) => m[1] ?? m[2])
+  return { ...cmd, command: words[0], args: words.slice(1) }
+}
+
+/** A runner that "installs the package into the prefix and answers orgai, claude and npm config. */
 function fakeRun(calls, { pkg, sw }, answers = {}) {
-  return async (cmd) => {
+  return async (rawCmd) => {
+    // Windows runs orgai.cmd as `cmd.exe /d /s /c ""<orgai.cmd>" "arg" ..."` (one verbatim string): read it back as the
+    // orgai arguments, so the answers below are the same on every platform.
+    const cmd = unwrapCmdShim(rawCmd)
     calls.push(cmd)
     const a = cmd.args
     if (a.includes('config')) return { code: 0, stdout: 'https://registry.example/\n', stderr: '' }

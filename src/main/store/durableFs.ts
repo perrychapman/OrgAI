@@ -2,7 +2,7 @@
  * Durable file replacement for vault.json and secrets.json (docs/design/cli-standalone.md 5.5 "Durability and
  * failures"): write a temp file, fsync it, rename it over the target, then fsync the directory on POSIX. Windows has no
  * directory fsync (Node's renameSync is MoveFileEx with MOVEFILE_REPLACE_EXISTING), and POSIX file systems that refuse
- * a directory fsync (EINVAL, ENOTSUP, EOPNOTSUPP) are treated like Windows: a power loss right after such a rename may
+ * a directory fsync (EINVAL, ENOTSUP, EOPNOTSUPP, EISDIR, EPERM) are treated like Windows: a power loss right after such a rename may
  * lose it (accepted, documented).
  *
  * Every failure says whether the target is known to be unchanged ('unchanged': it happened before the rename) or not
@@ -65,7 +65,7 @@ export function errorCode(e: unknown): string | undefined {
 }
 
 /** Directory fsync codes that mean "not supported here": treated like Windows (skipped). */
-const DIR_FSYNC_UNSUPPORTED = new Set(['EINVAL', 'ENOTSUP', 'EOPNOTSUPP', 'EISDIR'])
+const DIR_FSYNC_UNSUPPORTED = new Set(['EINVAL', 'ENOTSUP', 'EOPNOTSUPP', 'EISDIR', 'EPERM'])
 
 export interface DurableOptions {
   fs?: VaultFs

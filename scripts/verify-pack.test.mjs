@@ -290,11 +290,20 @@ function fakeRelease(unpacked) {
  */
 const hasArg = (cmd, word) => cmd.args.some((x) => x.includes(word))
 
+/** The orgai words of a call: on Windows `cmd.exe /d /s /c ""<shim>" "word" ..."` is read back into its words, else the args. */
+function wordsOf(cmd) {
+  const a = cmd.args
+  if (a[0] !== '/d' || a[1] !== '/s' || a[2] !== '/c' || typeof a[3] !== 'string') return a
+  let line = a[3]
+  if (line.length > 1 && line.startsWith('"') && line.endsWith('"')) line = line.slice(1, -1)
+  return [...line.matchAll(/"([^"]*)"|(\S+)/g)].map((m) => m[1] ?? m[2])
+}
+
 /** Canned answers per command; records each call. */
 function fakeRunner(calls, overrides = {}) {
   return async (cmd) => {
     calls.push(cmd)
-    const a = cmd.args
+    const a = wordsOf(cmd)
     if (a.includes('--version')) return overrides.version ?? { code: 0, stdout: `${VERSION} channel app commit 0123456789ab\n`, stderr: '' }
     if (a.includes('doctor')) return { code: 0, stdout: overrides.doctor ?? doctorDoc(), stderr: '' }
     if (a.includes('exec')) {

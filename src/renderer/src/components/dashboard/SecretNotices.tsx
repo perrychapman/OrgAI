@@ -77,18 +77,25 @@ export function SecretNotices(): ReactElement | null {
 
   const notices = useMemo(() => (status ? secretNotices(status, names) : []), [status, names])
 
-  /** After an action: refetch, then focus the first button of what remains, else the heading. */
+  /**
+   * After an action: refetch, then (once the new notices are committed) focus the first button of what remains, else the
+   * heading. An effect rather than animation frames: frames are paused in a window that is not visible, and the old
+   * notice is gone by then, so focus would be left on the body.
+   */
+  const focusedFor = useRef(0)
+  const [settled, setSettled] = useState(0)
   const settle = async (): Promise<void> => {
-    const next = await refresh()
-    requestAnimationFrame(() =>
-      requestAnimationFrame(() => {
-        const left = next ? secretNotices(next, names) : []
-        const target = left.length ? root.current?.querySelector<HTMLElement>(`[data-testid=${TESTID[left[0].kind]}] button`) : null
-        if (target) target.focus()
-        else focusHeading()
-      })
-    )
+    await refresh()
+    setSettled((n) => n + 1)
   }
+  useEffect(() => {
+    if (settled === focusedFor.current) return
+    focusedFor.current = settled
+    const first = notices[0]
+    const target = first ? root.current?.querySelector<HTMLElement>(`[data-testid=${TESTID[first.kind]}] button`) : null
+    if (target) target.focus()
+    else focusHeading()
+  }, [notices, settled])
 
   // A refusal that points at "the notice on the Dashboard" is read inside that notice: say what happened instead.
   const fail = (kind: SecretNotice['kind'], e: unknown): void => {

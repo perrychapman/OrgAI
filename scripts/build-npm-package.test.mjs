@@ -27,7 +27,8 @@ test('repositoryFor uses GITHUB_REPOSITORY when it is a plain owner/name', () =>
 })
 
 test('npmInvocation prefers npm-cli.js and never a shell', () => {
-  const exists = (p) => p === '/n/lib/node_modules/npm/bin/npm-cli.js' || p === '/x/npm-cli.js'
+  // Host-neutral: path.join answers with backslashes on Windows, so compare with forward slashes.
+  const exists = (p) => ['/n/lib/node_modules/npm/bin/npm-cli.js', '/x/npm-cli.js'].includes(p.replaceAll('\\', '/'))
   assert.deepEqual(npmInvocation({ npm_execpath: '/x/npm-cli.js' }, '/n/bin/node', 'darwin', exists), { command: '/n/bin/node', prefix: ['/x/npm-cli.js'] })
   assert.deepEqual(npmInvocation({ npm_execpath: '/x/pnpm.cjs' }, '/n/bin/node', 'darwin', exists), { command: '/n/bin/node', prefix: [path.join('/n/bin', '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js')] })
   assert.deepEqual(npmInvocation({}, '/other/node', 'linux', () => false), { command: 'npm', prefix: [] })

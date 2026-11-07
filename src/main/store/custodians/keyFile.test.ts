@@ -78,12 +78,12 @@ describe('parseKeyFileContent (5.3.1 content)', () => {
 
 describe('keyFilePathProblem (5.3.1 location)', () => {
   it('refuses relative paths and paths inside the user data folder or the data folder', () => {
-    expect(keyFilePathProblem('orgai.key', { userDataDir, dataDir, platform: 'linux' })).toMatch(/absolute/)
-    expect(keyFilePathProblem(join(userDataDir, 'orgai.key'), { userDataDir, dataDir, platform: 'linux' })).toMatch(/data folder/)
-    expect(keyFilePathProblem(join(dataDir, 'x', 'orgai.key'), { userDataDir, dataDir, platform: 'linux' })).toMatch(/data folder/)
-    expect(keyFilePathProblem(userDataDir, { userDataDir, dataDir, platform: 'linux' })).toMatch(/data folder/)
-    expect(keyFilePathProblem(join(outside, 'orgai.key'), { userDataDir, dataDir, platform: 'linux' })).toBeUndefined()
-    expect(keyFilePathProblem(join(outside, 'a\nb'), { userDataDir, dataDir, platform: 'linux' })).toMatch(/control/)
+    expect(keyFilePathProblem('orgai.key', { userDataDir, dataDir, platform: process.platform })).toMatch(/absolute/)
+    expect(keyFilePathProblem(join(userDataDir, 'orgai.key'), { userDataDir, dataDir, platform: process.platform })).toMatch(/data folder/)
+    expect(keyFilePathProblem(join(dataDir, 'x', 'orgai.key'), { userDataDir, dataDir, platform: process.platform })).toMatch(/data folder/)
+    expect(keyFilePathProblem(userDataDir, { userDataDir, dataDir, platform: process.platform })).toMatch(/data folder/)
+    expect(keyFilePathProblem(join(outside, 'orgai.key'), { userDataDir, dataDir, platform: process.platform })).toBeUndefined()
+    expect(keyFilePathProblem(join(outside, 'a\nb'), { userDataDir, dataDir, platform: process.platform })).toMatch(/control/)
   })
 
   posixOnly('refuses a path that reaches the data folder through a link (canonical spelling)', () => {
@@ -97,7 +97,7 @@ describe('keyFilePathProblem (5.3.1 location)', () => {
   })
 
   it('folds case on macOS and Windows', () => {
-    expect(keyFilePathProblem(join(userDataDir.toUpperCase(), 'k'), { userDataDir, dataDir, platform: 'darwin' })).toMatch(/data folder/)
+    expect(keyFilePathProblem('/USERS/ME/LIBRARY/ORGAI/k', { userDataDir: '/Users/me/Library/OrgAI', dataDir: '/Users/me/Library/OrgAI/data', platform: 'darwin' })).toMatch(/data folder/)
     expect(
       keyFilePathProblem('C:\\USERS\\ME\\APPDATA\\Roaming\\OrgAI\\orgai.key', { userDataDir: 'C:\\Users\\me\\AppData\\Roaming\\OrgAI', dataDir: 'C:\\Users\\me\\AppData\\Roaming\\OrgAI\\data', platform: 'win32' })
     ).toMatch(/data folder/)

@@ -345,16 +345,22 @@ async function winDacl(deps: WinDeps, path: string): Promise<SddlDacl | undefine
   }
 }
 
+/** The access list as plain SIDs and rights (no names, no values): added to a refusal so it can be diagnosed. */
+function describeDacl(d: SddlDacl): string {
+  if (d.nullDacl) return 'no access control'
+  return `${d.protected ? 'protected' : 'inherits'}: ${d.aces.map((a) => `${a.type}${a.flags.length ? `[${a.flags.join('')}]` : ''}:${a.rights}:${a.sid}`).join(' ') || 'no entries'}`
+}
+
 async function winVerifyDacl(deps: WinDeps, path: string, user: WinUser, phase: 'create' | 'open'): Promise<void> {
   const dacl = await winDacl(deps, path)
   if (!dacl) {
     throw new CustodyError('denied', `OrgAI could not read the access list of the key file ${path} (icacls answered in a form OrgAI does not recognise), so it cannot tell who may read it.`)
   }
   if (daclIsOwnerOnly(dacl, user)) return
-  if (phase === 'create') throw new CustodyError('denied', `OrgAI could not restrict the new key file ${path} to ${userLabel(user)}, so it deleted it.`)
+  if (phase === 'create') throw new CustodyError('denied', `OrgAI could not restrict the new key file ${path} to ${userLabel(user)}, so it deleted it (access list was ${describeDacl(dacl)}).`)
   throw new CustodyError(
     'denied',
-    `The key file ${path} is not limited to ${userLabel(user)} (other accounts or inherited entries may read it). Restrict it with \`${icaclsRemedy(path, user.sid)}\` and try again.`
+    `The key file ${path} is not limited to ${userLabel(user)} (other accounts or inherited entries may read it; access list ${describeDacl(dacl)}). Restrict it with \`${icaclsRemedy(path, user.sid)}\` and try again.`
   )
 }
 

@@ -244,11 +244,14 @@ describe('launcher: startBackground (Wave 7, cli-standalone.md 4.2)', () => {
       return { pid: 91, unref() {} }
     }
     const userDataDir = join(base, 'ud')
+    // Host-platform absolute paths (a POSIX literal is not absolute on Windows, where the spawn cwd is the exe's folder).
+    const nodeExe = resolve('/usr/local/bin/node')
+    const entry = resolve('/pkg/out/cli/orgai.mjs')
     const env = { PATH: '/bin', ORGAI_SECRET_X: 'nope', ELECTRON_RUN_AS_NODE: '1', ORGAI_DAEMON_IDLE_MINUTES: '5' }
-    const l = createLauncher({ dataDir, userDataDir, userChoseDataDir: true, env, spawn, runtime: { execPath: '/usr/local/bin/node' }, cliEntry: '/pkg/out/cli/orgai.mjs' })
+    const l = createLauncher({ dataDir, userDataDir, userChoseDataDir: true, env, spawn, runtime: { execPath: nodeExe }, cliEntry: entry })
     expect(l.startBackground!('node')).toEqual({ pid: 91, hostKinds: ['node'] })
-    expect(calls[0].command).toBe('/usr/local/bin/node')
-    expect(calls[0].args).toEqual(['/pkg/out/cli/orgai.mjs', 'daemon', 'run-node'])
+    expect(calls[0].command).toBe(nodeExe)
+    expect(calls[0].args).toEqual([entry, 'daemon', 'run-node'])
     const o = calls[0].options
     expect(o.detached).toBe(true)
     expect(o.windowsHide).toBe(true)
@@ -262,7 +265,7 @@ describe('launcher: startBackground (Wave 7, cli-standalone.md 4.2)', () => {
     if (process.platform !== 'win32') expect(statSync(log).mode & 0o777).toBe(0o600)
     // The host environment: no secrets, no ELECTRON_RUN_AS_NODE, the chosen data folder, the idle setting kept.
     expect(o.env).toEqual({ PATH: '/bin', ORGAI_DAEMON_IDLE_MINUTES: '5', ORGAI_DATA_DIR: userDataDir })
-    expect(o.cwd).toBe('/usr/local/bin')
+    expect(o.cwd).toBe(dirname(nodeExe))
   })
 
   it("'node' refuses on Electron (no real Node) and without a bundle", () => {
@@ -279,9 +282,11 @@ describe('launcher: startBackground (Wave 7, cli-standalone.md 4.2)', () => {
       calls.push({ command, args })
       return { pid: 5, unref() {} }
     }
-    const l = createLauncher({ dataDir, userDataDir: base, userChoseDataDir: false, env: { ORGAI_ELECTRON_PATH: '/opt/e', ORGAI_APP_ROOT: '/opt/app' }, spawn })
+    const electron = resolve('/opt/e')
+    const appRoot = resolve('/opt/app')
+    const l = createLauncher({ dataDir, userDataDir: base, userChoseDataDir: false, env: { ORGAI_ELECTRON_PATH: electron, ORGAI_APP_ROOT: appRoot }, spawn })
     expect(l.startBackground!('app')).toEqual({ pid: 5, hostKinds: ['headless-host', 'desktop'] })
-    expect(calls[0]).toEqual({ command: '/opt/e', args: ['/opt/app', '--headless-host'] })
+    expect(calls[0]).toEqual({ command: electron, args: [appRoot, '--headless-host'] })
   })
 
   it('a background host that exits before it is ready fails waitForReady with its exit code', async () => {
@@ -466,7 +471,7 @@ describe('launcher: packaged app (cli-spec 7, Wave 6)', () => {
   it('a missing app.asar is broken naming it, even under the running app binary (4.1 step 3; review round 1)', () => {
     const { bundleDir, binary, asar } = fakeApp(true, 'app', false)
     for (const runtime of [{ execPath: '/usr/bin/node' }, { execPath: binary, electron: '45.1.0' }]) {
-      const l = createLauncher({ dataDir, userDataDir: '', userChoseDataDir: false, env: {}, bundleDir, platform: 'darwin', runtime })
+      const l = createLauncher({ dataDir, userDataDir: '', userChoseDataDir: false, env: {}, bundleDir, platform: PLAT, runtime })
       expect(l.resolve()).toEqual({ error: packagedAppMissing(asar), path: asar })
       expect(l.locate()).toEqual({ status: 'broken', path: asar, message: packagedAppMissing(asar) })
     }
@@ -474,7 +479,7 @@ describe('launcher: packaged app (cli-spec 7, Wave 6)', () => {
 
   it('no install.json: the packaged layout still counts (only an app has that path shape; until WP-A writes the file)', () => {
     const { bundleDir, binary } = fakeApp(true, null)
-    const l = createLauncher({ dataDir, userDataDir: '', userChoseDataDir: false, env: {}, bundleDir, platform: 'darwin', runtime: { execPath: '/usr/bin/node' } })
+    const l = createLauncher({ dataDir, userDataDir: '', userChoseDataDir: false, env: {}, bundleDir, platform: PLAT, runtime: { execPath: '/usr/bin/node' } })
     expect(l.resolve()).toEqual({ command: binary, args: [], source: 'packaged' })
     expect(l.locate()).toMatchObject({ status: 'found', source: 'packaged' })
     // An unreadable install.json never takes it.

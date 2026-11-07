@@ -1,3 +1,4 @@
+import { resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { HostScope, SecretsStatusResult } from '../../shared/types'
 import { VAULT_MESSAGES } from '../../main/store/vaultTypes'
@@ -89,7 +90,7 @@ describe('orgai secrets init', () => {
   it('sends an absolute key file (resolved against the cwd) and prints the backup warning', async () => {
     const { f, client } = setup({ 'secrets:init': () => ({ action: 'created', status: status({ scheme: 'key-file', keyFile: '/home/u/keys/orgai.key' }) }) })
     expect(await run(f, ['init', '--key-file', '../keys/orgai.key'])).toBe(EXIT.ok)
-    expect(client.callsOf('secrets:init')).toEqual([[{ keyFile: '/home/u/keys/orgai.key' }]])
+    expect(client.callsOf('secrets:init')).toEqual([[{ keyFile: resolve('/home/u/keys/orgai.key') }]])
     expect(f.out()).toContain('Created secure storage (key file: /home/u/keys/orgai.key).')
     expect(f.out()).toContain(KEY_FILE_BACKUP_WARNING)
   })
@@ -102,7 +103,7 @@ describe('orgai secrets init', () => {
     expect(f.err()).toContain("outside OrgAI's data folder")
     expect(client.calls).toEqual([])
     expect(await run(f, ['init', '--key-file', '/keys/k', '--import'])).toBe(EXIT.ok)
-    expect(client.callsOf('secrets:init')).toEqual([[{ keyFile: '/keys/k', importKeyFile: true }]])
+    expect(client.callsOf('secrets:init')).toEqual([[{ keyFile: resolve('/keys/k'), importKeyFile: true }]])
   })
 
   it('no flags: the OS scheme; a host refusal is exit 1', async () => {
