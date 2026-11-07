@@ -549,6 +549,11 @@ components/layout:
   (`components/proposals/AppSettingsProposalBody.tsx`, `ProjectSettingsChanges.tsx`, `lib/appSettingsCard.ts`) and
   transcript rows (`lib/selfHelpRows.ts`) are renderer-side because `transcriptRows.ts` is a shared re-export.
   Checked by unit tests and `e2e/self-help.mjs`; the mock-driven card path is unrun in this branch (markers on dev).
+- Org change sessions (2026-11-07): changing the org chart from the Team tab or Settings > Maintenance is an ordinary
+  setup run (run tab, sidebar row, History, Needs-you, relaunch restore), started through `components/team/useOrgChange.ts`
+  only; while one is open the same controls send into it. It is recognised by kind 'setup' plus its prompt
+  (`lib/orgChange.ts` holds the prompt contract and the display title "Org chart: ..."), so keep the start wording and
+  `isOrgChangeRun` in step. The renderer never starts or filters `surface: 'team'` runs (main still accepts the field).
 
 - `src/renderer/src/`
 - `src/renderer/src/components/connections/`

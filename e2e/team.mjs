@@ -345,32 +345,37 @@ async function sectionAssistant(page, shot) {
   await page.waitForFunction(() => document.querySelector('[data-testid=team-recommend-pane]')?.getAttribute('data-phase') === 'idle', null, { timeout: 20_000 })
   check((await tray.locator(`[data-testid=capability-card][data-name="${dname}"]`).count()) === 0, 'a dismissed card does not return after Re-check setup')
 
-  // Design mode: an Architect session that stays on the Team tab and off the Live strip.
-  await tray.locator('[data-testid=architect-open]').click()
-  const box = tray.locator('textarea').first()
-  await box.fill('Add a database specialist.')
-  await tray.getByRole('button', { name: 'Revise with the Architect' }).click()
-  await tray.locator('[data-testid=architect-session]').waitFor({ timeout: 15_000 })
-  check((await page.locator('[data-testid=tab-team]').getAttribute('aria-selected')) === 'true', 'the Architect session does not leave the Team tab')
-  check((await page.locator('.run-tab').count()) === 0, 'the Architect session has no run tab on the Live strip')
-  await tray.locator('[data-testid=team-mode-recommend]').click()
+  // Design mode (the Architect session is an ordinary run in Live) is covered by sectionDesignDecisions and
+  // e2e/org-change.mjs; starting one here would end a run before sectionDismiss, which changes its dismissed list.
 }
 
-/** Design mode hosts the Architect's permission card; the Needs-you pill brings the user back to it. */
-async function sectionDesignDecisions(page, shot) {
+async function startOrgChange(page) {
   const tray = page.locator('[data-testid=team-assistant]')
   await tray.locator('[data-testid=architect-open]').click()
-  const card = tray.locator('[data-testid=architect-decisions] .decision-card').first()
-  await card.waitFor({ timeout: 20_000 })
-  check(true, 'the Architect permission card shows in the Design tray')
-  check(!/R\?/.test(await tray.locator('[data-testid=architect-decisions]').innerText()), 'the Architect card is not labelled R?')
+  await tray.locator('textarea').first().fill('Add a database specialist.')
+  await tray.locator('[data-testid=org-change-start]').click()
+  await page.locator('[data-testid=run-meta]').waitFor({ timeout: 15_000 })
+}
+
+/** The Architect's permission card shows in the Live tray; the Needs-you pill brings the user back to it from Team. */
+async function sectionDesignDecisions(page, shot) {
+  const tray = page.locator('[data-testid=team-assistant]')
+  await startOrgChange(page)
+  check((await page.locator('[data-testid=tab-live]').getAttribute('aria-selected')) === 'true', 'the org change session opens in Live')
+  check((await page.locator('.run-tab').count()) >= 1, 'the org change session has its own run tab')
+  const card = page.locator('.frame-tray .decision-card').first()
+  await card.waitFor({ timeout: 20_000 }).catch(() => {})
+  check((await card.count()) === 1 && (await card.isVisible()), 'the Architect permission card shows in the Live tray')
+  check(!/R\?/.test(await page.locator('.frame-tray').innerText()), 'the Architect card is not labelled R?')
   await shot('design-permission')
-  await tray.locator('[data-testid=team-mode-recommend]').click()
+  await openTeam(page)
+  await tray.locator('[data-testid=architect-open]').click()
+  check((await tray.locator('[data-testid=org-change-pointer]').count()) === 1, 'Team > Design points at the open session')
   await page.locator('[data-testid=topbar-needs-you]').click()
-  await tray.locator('[data-testid=architect-decisions] .decision-card').first().waitFor({ timeout: 5_000 })
-  check((await tray.getAttribute('data-mode')) === 'design', 'the Needs-you pill switches the tray to Design')
-  await sleep(300)
-  check(await page.evaluate(() => !!document.activeElement?.closest('[data-testid=architect-decisions]')), 'the Needs-you pill focuses the Architect card')
+  await page.locator('.frame-tray .decision-card').first().waitFor({ timeout: 5_000 })
+  check((await page.locator('[data-testid=tab-live]').getAttribute('aria-selected')) === 'true', 'the Needs-you pill lands on the Architect card in Live')
+  await endSession(page)
+  await openTeam(page)
   await tray.locator('[data-testid=team-mode-recommend]').click()
 }
 

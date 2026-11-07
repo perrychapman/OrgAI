@@ -18,8 +18,7 @@ import { combinedDecisionCount, teamDecisionsFor } from '../../lib/needsYou'
 import { useTeamAttentionItems } from '../../lib/menuActions'
 import type { TeamAttentionItem } from '../../lib/teamFiles'
 import { projectStatus } from '../../lib/projectStatus'
-import { runName } from '../../lib/runLabels'
-import { isTeamSurfaceRun } from '../../lib/runSurface'
+import { displayRunName } from '../../lib/orgChange'
 import { statusOfRun, statusText } from '../../lib/runStatus'
 import { Input } from '../ui/Input'
 import { useConfirm } from '../ui/ConfirmDialog'
@@ -41,7 +40,7 @@ function tileModel(project: Project, runs: readonly RunState[], history: readonl
   const st = projectStatus({ open: live.length, decisions, newest: newest && status ? { startedAt: newest.startedAt, status } : undefined, now })
   const root = newestRun ? Object.values(newestRun.agents).find((a) => a.parentId === null) : undefined
   const isLive = !!newestRun && isRunLive(newestRun)
-  const continuable = newest && !isLive && canContinue(summaries, newest.id) ? { id: newest.id, name: runName(newest) } : null
+  const continuable = newest && !isLive && canContinue(summaries, newest.id) ? { id: newest.id, name: displayRunName(newest) } : null
   return {
     project,
     decisions,
@@ -52,7 +51,7 @@ function tileModel(project: Project, runs: readonly RunState[], history: readonl
       newest && status
         ? {
             id: newest.id,
-            name: runName(newest),
+            name: displayRunName(newest),
             word: status.word,
             caption: tileRunCaption({ live: isLive, statusWord: statusText(status), activity: root ? nodeActivity(root, { isRoot: true }) : undefined, endedAt: newest.endedAt ?? newest.startedAt, now })
           }
@@ -138,7 +137,6 @@ export function ProjectsGrid({ onAnnounce }: { onAnnounce: (text: string) => voi
   const models = useMemo(() => {
     const byProject = new Map<string, RunState[]>()
     for (const r of Object.values(runs)) {
-      if (isTeamSurfaceRun(r.summary)) continue
       const list = byProject.get(r.summary.projectId)
       if (list) list.push(r)
       else byProject.set(r.summary.projectId, [r])
@@ -174,7 +172,7 @@ export function ProjectsGrid({ onAnnounce }: { onAnnounce: (text: string) => voi
 
   const remove = async (model: TileModel): Promise<void> => {
     const { project } = model
-    const mine = Object.values(runs).filter((r) => r.summary.projectId === project.id && !isTeamSurfaceRun(r.summary))
+    const mine = Object.values(runs).filter((r) => r.summary.projectId === project.id)
     const openRuns = mine.filter((r) => isRunLive(r) || r.summary.status === 'paused').length
     const historyRuns = mergeSummaries(
       mine.map((r) => r.summary),

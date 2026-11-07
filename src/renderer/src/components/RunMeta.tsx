@@ -21,6 +21,7 @@ import TeamFilesPointer from './team/TeamFilesPointer'
 import { quickFolderLabel } from '../lib/assistants'
 import { CHAT_ACCESS_ANNOUNCEMENT, CHAT_ACCESS_LABEL, CHAT_ACCESS_TITLE, chatAccessState } from '../lib/chatPermissions'
 import { useFrameAnnounce } from './layout/CanvasFrame'
+import { isOrgChangeRun, ORG_CHANGE_KIND_LABEL } from '../lib/orgChange'
 
 /**
  * The run's quiet metadata line at the start of the canvas toolbar (12 px, tertiary): the run it continues, agents,
@@ -128,7 +129,11 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
         </span>
       )}
       {!isVirtualProjectId(project.id) && <TeamFilesPointer projectId={project.id} />}
-      {summary.kind === 'setup' && <span className="run-meta-item">Setup session</span>}
+      {summary.kind === 'setup' && (
+        <span className="run-meta-item" data-testid="run-meta-kind">
+          {isOrgChangeRun(summary) ? `${ORG_CHANGE_KIND_LABEL} session` : 'Setup session'}
+        </span>
+      )}
       {summary.quick && (
         <>
           <span className="run-meta-item run-meta-folder" title={summary.quick.scratch ? 'A private scratch folder' : summary.quick.folder}>

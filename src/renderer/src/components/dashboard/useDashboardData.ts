@@ -5,11 +5,9 @@ import { isRunLive, useAppStore, waitingRuns, type RunState } from '../../store/
 import { projectKindOf } from '@shared/defaults'
 import { waitingItems } from '../../lib/needsYou'
 import { BAND_RECOMPUTE_MS, bandSignature, type BandRunIn } from '../../lib/dashboardBand'
-import { isTeamSurfaceRun } from '../../lib/runSurface'
 
 /**
- * Every run summary the renderer holds, history merged with the live store (live wins), team-surface runs left out,
- * newest start first. The Dashboard's Since, Paused and cost figures read this.
+ * Every run summary the renderer holds, history merged with the live store (live wins), newest start first. The Dashboard's Since, Paused and cost figures read this.
  */
 export function useAllSummaries(): RunSummary[] {
   const history = useAppStore((s) => s.historyByProject)
@@ -22,7 +20,7 @@ export function useAllSummaries(): RunSummary[] {
     for (const r of Object.values(runs)) byId.set(r.summary.id, r.summary)
     // H2: a late event for a deleted project must not bring its run back.
     return [...byId.values()]
-      .filter((s) => !isTeamSurfaceRun(s) && (known.has(s.projectId) || isVirtualProjectId(s.projectId)))
+      .filter((s) => known.has(s.projectId) || isVirtualProjectId(s.projectId))
       .sort((a, b) => b.startedAt - a.startedAt || a.id.localeCompare(b.id))
   }, [history, runs, projects])
 }
@@ -47,7 +45,7 @@ export function useLiveRuns(): RunState[] {
   return useMemo(
     () =>
       Object.values(runs)
-        .filter((r) => isRunLive(r) && !isTeamSurfaceRun(r.summary) && (isVirtualProjectId(r.summary.projectId) || projects.some((p) => p.id === r.summary.projectId)))
+        .filter((r) => isRunLive(r) && (isVirtualProjectId(r.summary.projectId) || projects.some((p) => p.id === r.summary.projectId)))
         .sort((a, b) => a.summary.startedAt - b.summary.startedAt || a.summary.id.localeCompare(b.summary.id)),
     [runs, projects]
   )
@@ -75,7 +73,7 @@ type StoreState = ReturnType<typeof useAppStore.getState>
 function bandSnapshotOf(s: StoreState): BandSnapshot {
   const known = new Set(s.projects.map((p) => p.id))
   const runs: BandRunIn[] = Object.values(s.runs)
-    .filter((r) => isRunLive(r) && !isTeamSurfaceRun(r.summary) && (isVirtualProjectId(r.summary.projectId) || known.has(r.summary.projectId)))
+    .filter((r) => isRunLive(r) && (isVirtualProjectId(r.summary.projectId) || known.has(r.summary.projectId)))
     .map((r) => ({
       summary: r.summary,
       ...(r.plan ? { plan: r.plan } : {}),
