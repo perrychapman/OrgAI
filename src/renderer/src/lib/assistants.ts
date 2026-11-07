@@ -100,6 +100,16 @@ export const START_PAGE_COPY: Record<VirtualProjectId, { title: string; descript
   skills: { title: 'Improve your skills with the assistant', description: 'Review the skills in your library and write new ones. Skills for one project start from that project’s Skills section.' }
 }
 
+/** The Chat start page's hint above its example questions (UX self-help rec 1). */
+export const CHAT_EXAMPLES_HINT = 'Ask how OrgAI works, where a setting is, or a shortcut. For example:'
+
+/** Example questions on the Chat start page; a click puts the text in the instruction field. */
+export const CHAT_EXAMPLES: readonly { id: string; text: string }[] = [
+  { id: 'theme', text: 'Where do I change the theme?' },
+  { id: 'plan-guard', text: 'What does the plan guard do?' },
+  { id: 'permission-mode', text: 'Make new projects ask for everything risky' }
+]
+
 /** Button label of the ended-run replacement: "New chat" for Chat, else "New session". */
 export const newSessionLabel = (id: VirtualProjectId): string => (id === 'quick' ? 'New chat' : 'New session')
 

@@ -56,6 +56,15 @@
   gap: var(--space-1);
 }
 
+/* Footer line "Not sure where something is? Ask OrgAI", left of Close. */
+.shortcuts-ask {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-right: auto;
+  font-size: var(--text-small);
+}
+
 .shortcuts-or {
   font-size: var(--text-small);
   color: var(--text-tertiary);

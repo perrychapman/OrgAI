@@ -469,6 +469,15 @@
   gap: var(--space-2);
   min-width: 0;
 }
+/* "Not sure where something is? Ask OrgAI about itself" (self-help). */
+.about-ask {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin: var(--space-4) 0 0;
+  font-size: var(--text-small);
+}
 
 /* ---------- Project pane additions: quiet line, card list, add row, danger text ---------- */
 .settings-quiet {

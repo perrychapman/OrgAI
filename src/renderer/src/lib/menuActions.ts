@@ -282,7 +282,22 @@ function fallback(action: MenuAction): string | void {
     case 'canvas-zoom-in':
     case 'canvas-zoom-out':
       return NO_CANVAS
+    case 'ask-about-orgai':
+      return void askOrgAI()
   }
+}
+
+/** The seed Help > Ask OrgAI about itself puts in a fresh Chat (UX rec 2: a start, not a full question). */
+export const ASK_ORGAI_SEED = 'How do I '
+
+/**
+ * Help > Ask OrgAI about itself, the About pane's and the shortcuts dialog's "Ask OrgAI": a fresh Chat start page with
+ * the seed in the instruction field and focus there (the start page selects nothing, the caret sits after the seed).
+ */
+export async function askOrgAI(): Promise<void> {
+  closeKeyboardShortcuts()
+  await useAppStore.getState().openAssistant('quick', { instruction: ASK_ORGAI_SEED, fresh: true })
+  useAppStore.getState().focusComposer()
 }
 
 /** Routes one menu action; ignores unknown names and never throws. */
@@ -299,32 +314,10 @@ export function routeMenuAction(action: unknown): void {
 
 export { runMenuAction }
 
-// ---- keyboard shortcuts table (the dialog reads this one table) ----
+// ---- keyboard shortcuts table (the dialog and the app atlas read this one shared table) ----
 
-export interface ShortcutDef {
-  group: 'General' | 'Runs' | 'Canvas'
-  label: string
-  /** Alternatives; each is the keys pressed together. 'Mod' is Ctrl, or Cmd on a Mac. */
-  combos: string[][]
-  /** Extra condition, shown as a caption. */
-  note?: string
-}
-
-export const SHORTCUTS: readonly ShortcutDef[] = [
-  { group: 'General', label: 'New project', combos: [['Mod', 'N']] },
-  { group: 'General', label: 'New chat', combos: [['Mod', 'Shift', 'N']] },
-  { group: 'General', label: 'App settings', combos: [['Mod', ',']] },
-  { group: 'General', label: 'Collapse or expand the sidebar', combos: [['Mod', 'B']] },
-  { group: 'General', label: 'Live, History, Team, Project settings', combos: [['Mod', '1'], ['Mod', '2'], ['Mod', '3'], ['Mod', '4']] },
-  { group: 'Runs', label: 'New run', combos: [['Mod', 'T']] },
-  { group: 'Runs', label: 'Close tab', combos: [['Mod', 'W']] },
-  { group: 'Runs', label: 'Go to decision', combos: [['Mod', '.'], ['Alt', 'D']] },
-  { group: 'Runs', label: 'Open the tab menu', combos: [['Shift', 'F10']], note: 'on a focused tab' },
-  { group: 'Runs', label: 'Hide a finished tab', combos: [['Delete']], note: 'on a focused tab' },
-  { group: 'Canvas', label: 'Zoom in', combos: [['+']], note: 'with the canvas focused' },
-  { group: 'Canvas', label: 'Zoom out', combos: [['-']], note: 'with the canvas focused' },
-  { group: 'Canvas', label: 'Fit to view', combos: [['0']], note: 'with the canvas focused' }
-]
+export { SHORTCUTS } from '@shared/view/shortcuts'
+export type { ShortcutDef } from '@shared/view/shortcuts'
 
 export function isMacPlatform(): boolean {
   if (typeof navigator === 'undefined') return false
