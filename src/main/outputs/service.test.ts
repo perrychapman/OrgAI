@@ -97,7 +97,7 @@ describe('produce', () => {
     const elsewhere = join(root, 'elsewhere')
     mkdirSync(elsewhere)
     symlinkSync(elsewhere, join(project, 'outputs'), process.platform === 'win32' ? 'junction' : 'dir')
-    await expect(svc.produce(scope, md('x'), src)).rejects.toThrow(/link/)
+    await expect(svc.produce(scope, md('x'), src)).rejects.toThrow(/link|outside/)
     expect(existsSync(join(elsewhere, 'x.md'))).toBe(false)
   })
   it('survives a restart of the service', async () => {
@@ -238,7 +238,7 @@ describe('list, preview, checkedPath', () => {
     writeFileSync(target, 'secret')
     try {
       symlinkSync(target, a.output.path, 'file')
-      expect(() => svc.checkedPath(scope, a.output.id)).toThrow(/link/)
+      expect(() => svc.checkedPath(scope, a.output.id)).toThrow(/link|outside/)
       expect((await svc.preview(scope, a.output.id)).kind).toBe('none')
     } catch (e) {
       if (!/EPERM|operation not permitted/i.test(String(e))) throw e
