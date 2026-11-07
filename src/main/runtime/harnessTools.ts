@@ -262,7 +262,16 @@ export function answerText(answer: QuestionAnswer): string {
 /** What toRoles needs to map proposed role models onto the run's connection (undefined = anthropic builtins). */
 function modelContext(ctx: RuntimeContext): DraftModelContext | undefined {
   const c = ctx.connection
-  return c?.tierModels ? { connection: c.connection, tierModels: c.tierModels, ...(c.models ? { models: c.models } : {}) } : undefined
+  // The current chart root's concrete model is the last choice for a new role before 'inherit' (draft.ts mapModel).
+  const root = (ctx.project.roles ?? []).find((r) => r.reportsTo === null)
+  const fallback = root && root.model && root.model !== 'inherit' ? { model: root.model, ...(root.tier ? { tier: root.tier } : {}) } : undefined
+  if (!c?.tierModels && !fallback) return undefined
+  return {
+    connection: c?.connection ?? 'anthropic',
+    tierModels: c?.tierModels ?? {},
+    ...(c?.models ? { models: c.models } : {}),
+    ...(fallback ? { fallback } : {})
+  }
 }
 
 export const draftRoleSchema = z.object({
@@ -274,7 +283,12 @@ export const draftRoleSchema = z.object({
   tools: z
     .array(z.string())
     .describe(`Subset of: ${TOOL_CATALOG.join(', ')}. SendMessage and ListAgents let a role message other running agents and see who is running`),
-  model: z.string().describe("A tier: top, deep, everyday or fast (mapped to the project's connection), or inherit. An exact model id only when listed as available."),
+  model: z
+    .string()
+    .optional()
+    .describe(
+      "A tier: top, deep, everyday or fast (mapped to the project's connection), or inherit. An exact model id only when listed as available. Omit to keep an existing role's model (a role matched by slug or name keeps its model unless you name a different tier or listed id)."
+    ),
   canSpawn: z.boolean(),
   spawnable: z.array(z.string()).describe('Names of roles this role may delegate to, normally its direct reports'),
   reportsTo: z.string().nullable().describe('Name of the manager role, or null for the single root orchestrator')
@@ -290,12 +304,20 @@ type DraftRole = z.infer<typeof draftRoleSchema>
  * no grant fields (review H1), and mergeOrgChart so approved changes keep ids and grants. A problem comes back as
  * the REVISE text (nothing is shown to the user).
  */
-function rolesFromDrafts(ctx: RuntimeContext, rationale: string, drafts: DraftRole[], extraModels: string[] = []): { error: string } | { roles: Role[]; merged: OrgMergeResult } {
+function rolesFromDrafts(
+  ctx: RuntimeContext,
+  rationale: string,
+  drafts: DraftRole[],
+  extraModels: string[] = [],
+  /** Revision mode (propose_org_chart on a completed setup): unmentioned roles are kept, `remove` names the ones dropped. */
+  revision?: { remove: string[] }
+): { error: string } | { roles: Role[]; merged: OrgMergeResult } {
   let converted: Role[]
+  const base = modelContext(ctx)
+  // A template role's model was already mapped onto this connection: keep it (a listed id is kept by resolveDraftModel).
+  const mctx: DraftModelContext | undefined = base && extraModels.length ? { ...base, models: [...new Set([...(base.models ?? []), ...extraModels])] } : base
   try {
-    const base = modelContext(ctx)
-    // A template role's model was already mapped onto this connection: keep it (a listed id is kept by mapModel).
-    converted = toRoles({ rationale, roles: drafts }, base && extraModels.length ? { ...base, models: [...new Set([...(base.models ?? []), ...extraModels])] } : base)
+    converted = toRoles({ rationale, roles: drafts }, mctx)
   } catch (e) {
     return { error: `REVISE. The org chart could not be validated: ${(e as Error).message}` }
   }
@@ -315,7 +337,155 @@ function rolesFromDrafts(ctx: RuntimeContext, rationale: string, drafts: DraftRo
     delete role.mcpServers
     delete role.skills
   }
-  return { roles: converted, merged: mergeOrgChart(ctx.project, converted) }
+
+  // Which drafts match an existing role: mergeOrgChart keeps the proposed order and the matched role's id.
+  const probe = mergeOrgChart(ctx.project, converted)
+  const matched = new Map<number, Role>()
+  probe.roles.forEach((m, i) => {
+    const hit = existing.find((e) => e.id === m.id)
+    if (hit) matched.set(i, hit)
+  })
+  // A matched role keeps its model unless the draft names a different tier that resolves or a different listed id.
+  for (const [i, cur] of matched) {
+    const r = revisedRoleModel(drafts[i].model, cur, mctx)
+    converted[i].model = r.model
+    if (r.tier) converted[i].tier = r.tier
+    else delete converted[i].tier
+  }
+
+  if (!revision) return { roles: converted, merged: mergeOrgChart(ctx.project, converted) }
+  const kept = reviseKeepingUnmentioned(ctx.project, drafts, converted, matched, revision.remove)
+  if ('error' in kept) return kept
+  return { roles: kept.roles, merged: mergeOrgChart(ctx.project, kept.roles) }
+}
+
+const lower = (s: unknown): string => (typeof s === 'string' ? s.trim().toLowerCase() : '')
+
+/**
+ * Revision mode of propose_org_chart: the drafts are only the roles that change plus new ones. Every current role that
+ * no draft matches is kept unchanged (a structuredClone, so mergeOrgChart keeps its id, grants and position) unless its
+ * slug is in `remove`. Pure apart from mutating `converted` (toRoles output, not shared).
+ *
+ * Reporting lines: toRoles resolves manager and spawnable names only among the drafts, so a draft that names an
+ * unmentioned kept role (by name or slug, case-insensitive) is pointed at it here. Root rule: exactly one role has
+ * reportsTo null. A draft with no manager is the new root; when the old root was unmentioned and kept, the old root
+ * then reports to the draft root (re-pointed, not an error). With no draft root, the kept old root stays root. A kept
+ * role that reported to a removed role is re-pointed to the root, and removed ids leave every spawnable list. A chart
+ * that still has no single root (for example the root was removed and no draft replaces it) is a REVISE.
+ */
+function reviseKeepingUnmentioned(
+  project: RuntimeContext['project'],
+  drafts: DraftRole[],
+  converted: Role[],
+  matched: Map<number, Role>,
+  remove: string[]
+): { error: string } | { roles: Role[] } {
+  const existing = project.roles
+  const matchedIds = new Set([...matched.values()].map((r) => r.id))
+  const removeSlugs = [...new Set(remove.map((s) => s.trim()).filter(Boolean))]
+  for (const slug of removeSlugs) {
+    const role = existing.find((r) => r.slug === slug)
+    if (!role) return { error: `REVISE. The org chart was not shown to the user: remove names "${datum(slug, 60)}", which is not the slug of an existing role.` }
+    if (matchedIds.has(role.id)) return { error: `REVISE. The org chart was not shown to the user: "${datum(slug, 60)}" is both in remove and in roles. Either list the role or remove it.` }
+  }
+  const removedIds = new Set(existing.filter((r) => removeSlugs.includes(r.slug)).map((r) => r.id))
+  const keptRoles = existing.filter((r) => !matchedIds.has(r.id) && !removedIds.has(r.id)).map((r) => structuredClone(r))
+  const keptByRef = (name: unknown): Role | undefined => {
+    const n = lower(name)
+    return n ? keptRoles.find((k) => lower(k.name) === n || lower(k.slug) === n) : undefined
+  }
+  const draftIndexByName = new Map<string, number>()
+  drafts.forEach((d, i) => {
+    const n = lower(d.name)
+    if (n && !draftIndexByName.has(n)) draftIndexByName.set(n, i)
+  })
+
+  // Manager intent per draft: another draft, a kept role, or none (root candidate).
+  const keptManager = new Map<number, Role>()
+  const unresolved = new Set<number>() // names a manager nobody in the chart has: treated like "no manager"
+  const rootCandidates: number[] = []
+  drafts.forEach((d, i) => {
+    const ref = lower(d.reportsTo)
+    const at = ref ? draftIndexByName.get(ref) : undefined
+    if (at !== undefined && at !== i) return
+    const k = ref ? keptByRef(d.reportsTo) : undefined
+    if (k) {
+      keptManager.set(i, k)
+      return
+    }
+    if (ref && at === undefined) unresolved.add(i)
+    rootCandidates.push(i)
+  })
+  const keptRoot = keptRoles.find((k) => k.reportsTo === null)
+  // A draft that names no manager is the new root; a draft with an unknown manager only is when no draft names none.
+  const explicitRoots = rootCandidates.filter((i) => !unresolved.has(i))
+  const draftRoot = explicitRoots[0]
+  const rootId: string | undefined = draftRoot !== undefined ? converted[draftRoot].id : keptRoot?.id ?? (rootCandidates.length ? converted[rootCandidates[0]].id : undefined)
+
+  drafts.forEach((_, i) => {
+    const role = converted[i]
+    const k = keptManager.get(i)
+    if (k) role.reportsTo = k.id
+    else if (rootCandidates.includes(i)) role.reportsTo = role.id === rootId ? null : rootId ?? null
+  })
+  // Spawn targets: what the draft names (drafts and kept roles), then every direct report. toRoles' own list is rebuilt
+  // because its root pass assumed every draft without a manager reports to the first one.
+  drafts.forEach((d, i) => {
+    const role = converted[i]
+    const named: string[] = []
+    for (const n of Array.isArray(d.spawnable) ? d.spawnable : []) {
+      const at = draftIndexByName.get(lower(n))
+      const target = at !== undefined ? converted[at] : keptByRef(n)
+      if (target && target.id !== role.id) named.push(target.id)
+    }
+    role.spawnable = named
+    if (named.length) role.canSpawn = true
+  })
+  for (const r of converted) {
+    const reports = converted.filter((x) => x.reportsTo === r.id).map((x) => x.id)
+    if (reports.length) {
+      r.canSpawn = true
+      r.spawnable = [...new Set([...r.spawnable, ...reports])]
+    }
+  }
+
+  const rootRole = rootId ? [...converted, ...keptRoles].find((r) => r.id === rootId) : undefined
+  const chart = [...converted, ...keptRoles]
+  const chartIds = new Set(chart.map((r) => r.id))
+  for (const k of keptRoles) {
+    if (draftRoot !== undefined && k.id === keptRoot?.id) k.reportsTo = rootId ?? null
+    else if (k.reportsTo !== null && !chartIds.has(k.reportsTo) && !matchedIds.has(k.reportsTo)) k.reportsTo = rootId ?? null
+    k.spawnable = (k.spawnable ?? []).filter((id) => !removedIds.has(id))
+  }
+  // A role that reported to a removed role (a matched draft can too, through its existing id) goes to the root.
+  for (const r of chart) {
+    if (r.reportsTo !== null && removedIds.has(r.reportsTo)) r.reportsTo = rootId && r.id !== rootId ? rootId : null
+    r.spawnable = (r.spawnable ?? []).filter((id) => !removedIds.has(id) && id !== r.id)
+  }
+  // Managers may spawn their direct reports (kept managers gain the new reports).
+  const existingIdOf = new Map<string, string>() // proposed id of a matched draft -> the existing role's id
+  matched.forEach((cur, i) => existingIdOf.set(converted[i].id, cur.id))
+  for (const m of chart) {
+    const ids = new Set([m.id, existingIdOf.get(m.id) ?? m.id])
+    const reports = chart.filter((x) => x.reportsTo !== null && ids.has(x.reportsTo)).map((x) => x.id)
+    if (reports.length) {
+      m.canSpawn = true
+      m.spawnable = [...new Set([...m.spawnable, ...reports])]
+    }
+  }
+  if (!rootRole || chart.filter((r) => r.reportsTo === null).length !== 1) {
+    return { error: 'REVISE. The org chart was not shown to the user: the revised chart must have exactly one root orchestrator (reportsTo null). Name the root in roles, or keep the current one out of remove.' }
+  }
+
+  // New roles go below the existing chart so they do not land on top of kept roles.
+  const maxY = Math.max(0, ...existing.map((r) => r.position?.y ?? 0))
+  let n = 0
+  converted.forEach((r, i) => {
+    const cur = matched.get(i)
+    if (cur) r.position = { ...cur.position }
+    else r.position = { x: n++ * 300, y: maxY + 210 }
+  })
+  return { roles: chart }
 }
 
 /**
