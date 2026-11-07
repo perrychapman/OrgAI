@@ -93,7 +93,8 @@ async function partB() {
   check(noTty.code === 2 && noTty.err.includes('needs a terminal for the Architect interview'), 'init without a terminal exits 2', show(noTty))
 }
 
-const CARD_ON_SCREEN = /Approve|Allow once/
+// An unfocused tray shows only "Alt+D or F2 to answer" (keymap.ts UNFOCUSED_HINT); a focused one shows "Approve" / "Allow once".
+const CARD_ON_SCREEN = /Approve|Allow once|to answer/
 
 async function partC() {
   const dir = fixture('cli-init-tui')
