@@ -1290,7 +1290,30 @@ and the frontend-design skill is not vendored in `.claude/skills` (only `run-des
     custom round trip (skipped when the mock catalog has no id outside the tiers). Unit tests: scrollWithin,
     settingsCopy, roleModels, assistantModels, settingsTarget, permissionCopy. Non-Anthropic connections are not
     driven. Open: N7, N9, N13 and the Lows in ARCHITECTURE.md Risks.
-- e2e:free is `e2e/layout.mjs`, `dashboard.mjs`, `runs.mjs`, `proposals.mjs`, `maintenance.mjs`, `connections.mjs`, `project-connection.mjs`, `multi-provider.mjs`, `connectors.mjs`, `import.mjs`, `skills.mjs`, `usage.mjs`, `team.mjs`, `org-change.mjs`, `canvas.mjs`, `assistants.mjs`, `permissions.mjs`, `menu.mjs`, `self-help.mjs`, `engagement.mjs`, `engagement2.mjs`, `per-project.mjs`, `presets.mjs`, the three `knowledge*.mjs`, `clone-start.mjs`, `team-files.mjs`, `folder-trust.mjs`, `secrets-notices.mjs` and the PR 18 `cli-*.mjs` scripts: `cli-host`, `cli-readonly`, `cli-exec`, `cli-tui`, `cli-projects`, `cli-org`, `cli-connections`, `cli-mcp`, `cli-skills-kit` (package.json). Update selectors in the same change.
+- Run outputs (renderer; spec `docs/design/outputs.md`, landed details in its section 12): deliverables are shown inside
+  the window. Surfaces: run side tab `side-tab-outputs` (`run-outputs[data-mode=list|detail|split]`, `run-output-row`,
+  `run-output-show`, `run-output-back`), project tab `tab-outputs` between History and Knowledge on every stored project,
+  never the assistants (`views/OutputsView.tsx`: `outputs-filters`, `outputs-search`, `outputs-kind[data-kind]`,
+  `outputs-kind-all`, `outputs-run-filter`, `outputs-count`, `outputs-status`, listbox `outputs-list` of
+  `output-row[data-id][data-kind][data-missing]` grouped by day, `outputs-more` past 300, SidePanel `outputs-detail`,
+  `outputs-empty`, `outputs-clear-filters`), RunMeta chip `run-meta-outputs`, transcript rows
+  `output-write-row[data-state=produced|registered|refused]` with `output-write-show`. Detail `output-detail` (heading
+  `#output-detail-heading` takes focus, `output-run-link`, `output-missing`, `output-detail-open`) and the `output-more`
+  popover `output-actions` (Open only for kinds main opens, `canOpenOutput`; Delete only for produced files,
+  `output-delete-confirm`). Previews (`OutputPreview.tsx`, `output-preview[data-state][data-kind]`) are React elements
+  built from main's `OutputPreview`, never HTML: `output-doc` (headings shifted to h4..h6, links only http(s) / mailto,
+  images only safe data URLs), `output-sheets` (`output-sheet-tab`, `output-sheet-table`, letters and row numbers
+  sticky, formula in the title, "More rows not shown." never a count), `output-md-view` Rendered | Source,
+  `output-csv-table`, `output-text`, `output-svg-img` (SVG only as an img data URL), `output-image` with
+  `output-image-size`, and `output-mermaid` (lazy mermaid 12.3.0, strict, `htmlLabels: false`, renders queued; the SVG
+  is inserted only after `lib/outputSvg.ts` `safeMermaidSvg` refused scripts, foreignObject, animation elements, `on*`,
+  external hrefs, script / html data addresses and non-fragment `url(`). Pure helpers: `lib/outputs.ts`,
+  `lib/outputsRun.ts`, `lib/outputPreview.ts`, `lib/outputSvg.ts`, `lib/outputsList.ts`; atlas `run-outputs` /
+  `project-outputs`. Checked by unit tests and `e2e/outputs.mjs` (mock `[mock:outputs]`, Windows, 1024x640 and
+  1600x1000, both themes). Unverified: native Open / Show in folder / Save as, Copy SVG's clipboard, real Word / Excel
+  files, screen readers, macOS, Linux. Open: no View > Outputs menu item, no Dashboard line, rows past 300 not driven,
+  no UX walk of the built feature.
+- e2e:free is `e2e/layout.mjs`, `dashboard.mjs`, `runs.mjs`, `proposals.mjs`, `maintenance.mjs`, `connections.mjs`, `project-connection.mjs`, `multi-provider.mjs`, `connectors.mjs`, `import.mjs`, `skills.mjs`, `usage.mjs`, `team.mjs`, `org-change.mjs`, `canvas.mjs`, `assistants.mjs`, `permissions.mjs`, `menu.mjs`, `self-help.mjs`, `engagement.mjs`, `engagement2.mjs`, `per-project.mjs`, `presets.mjs`, the three `knowledge*.mjs`, `clone-start.mjs`, `team-files.mjs`, `folder-trust.mjs`, `outputs.mjs`, `secrets-notices.mjs` and the PR 18 `cli-*.mjs` scripts: `cli-host`, `cli-readonly`, `cli-exec`, `cli-tui`, `cli-projects`, `cli-org`, `cli-connections`, `cli-mcp`, `cli-skills-kit` (package.json). Update selectors in the same change.
 - Engagement phases 2-3, renderer (2026-11-04; `docs/design/engagement-2.md` "Implementation notes"): Team tab
   Templates menu (`team-templates`, save / apply dialogs, `template-notice` with Undo through `undoImport` and
   `ImportNotice.source: 'template'`), New project "Start from a template" (`setup-choice-template`,
